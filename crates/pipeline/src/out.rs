@@ -53,7 +53,10 @@ pub const SIZES: &str = "state/build/sizes.json";
 /// A unit's outputs that map tiles, the road index and rail stops read: its base pack, road values
 /// and roads' English (a prune of a unit drops them; its job also writes analysis grids, which
 /// none of those reads).
-pub const UNIT_OUTPUTS: [&str; 3] = ["base/", "global/roads/", "global/roaden/"];
+pub const UNIT_OUTPUTS: [&str; 4] = ["base/", "global/roads/", "global/roaden/", ROAD_IDS];
+
+/// A unit's road ids (its job's), sorted, each once: what the road → units index reads of it.
+pub const ROAD_IDS: &str = "global/roadids/";
 
 /// Hand-off `h`'s changes laid over manifest `m` (a name it removes, removed).
 pub fn lay_over(m: &mut BTreeMap<String, String>, h: &crate::handoff::Handoff) {

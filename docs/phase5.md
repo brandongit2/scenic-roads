@@ -133,12 +133,14 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 | `heritage` (network) | the heritage-sites outputs, the `areas` and `named` sets, the filtered planet within the cover, the pass's answers | `work/heritage/<d>/…` |
 | `marks` (worldwide) | the units' `work/pois` and `work/peaks`, the items' facts and views, the heritage job's outputs | `marks-*` packs, `markdata`, `global/marks/summary`, `work/marks/heritage-dots` |
 | `overlays` | the heritage job's outputs, `work/marks/heritage-dots` | `ov-*` packs, `ovdata`, `global/heritage/…` |
-| `stations` (roads chain) | the `rail` set, the built units' tiles | `stations` packs |
+| `stations` (roads chain) | the `rail` set, the z6 tiles within 20 km of a built unit | `stations` packs |
 | `ferries` (roads chain) | the `ferries` set, the ferry feeds (`dem/ferrygtfs.py`), the static timetables (docs/inputs.md §6.7.2) | `ferries` packs |
 
 **Keys** are the step version plus the content names of what a job reads. heritage-sites, heritage
-and items include the pass's date; the coverage enters as a hash of its shapes; stations and
-overlays name the built units; ferries the ferries set and the timetables' digest. `pass-sets` and
+and items include the pass's date; the coverage enters as a hash of its shapes; stations name
+the z6 tiles within 20 km of a built unit (`ovconv::cover_of`: a unit amid built ones changes
+nothing); overlays name the built units; ferries the ferries set, the ferry feeds' list (each zip by
+content) and the static timetables' index, all `ovconv::ferries_job` reads. `pass-sets` and
 `terrain-z8` run when their versioned outputs are missing. peaks (`agent::build::peaks_keys`) name
 the unit's candidates, the summits, `terrain-z8` and its max, the terrain hi packs within U + 30 km,
 and `TERRAIN_V` (raw tiles outside the packs are processed by its code), not the z12 tiles read

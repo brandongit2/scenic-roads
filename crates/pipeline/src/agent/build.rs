@@ -416,7 +416,19 @@ pub fn spoken_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opt
 /// catalog the map serves, accepted version of the translations and of the descriptions (it reads
 /// them: docs/inputs.md §6.3, §6.4), or step version: after each build, and after each batch taken
 /// in. None while either input has no accepted version yet.
-pub fn names_todo_work(served: Option<u64>, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+///
+/// Gated by time (`gate_open`): at most every `NAMES_TODO_EVERY_S` (`since`: seconds since it last
+/// ran) while units build; after any catalog once none's left (`idle`).
+pub fn names_todo_work(
+    served: Option<u64>,
+    m: &BTreeMap<String, String>,
+    done: &Keys,
+    since: Option<u64>,
+    idle: bool,
+) -> Option<Work> {
+    if !gate_open(idle, since, NAMES_TODO_EVERY_S) {
+        return None;
+    }
     let n = served?;
     let tr = m.get(&crate::inputs::logical(crate::inputs::translations::UNIT))?;
     let de = m.get(&crate::inputs::logical(crate::inputs::descriptions::UNIT))?;
@@ -1672,6 +1684,10 @@ pub struct Publishing {
     /// are made with the low zooms (always, without `low_later`), and a region is done with its
     /// pieces.
     pub near: bool,
+    /// Seconds since the landmark points and the area overlays last ran (`LastCatalog::since`;
+    /// None: not known): their cadence (`MARKS_EVERY_S`, `OVERLAYS_EVERY_S`).
+    pub since_marks: Option<u64>,
+    pub since_overlays: Option<u64>,
 }
 
 /// The lead's record of its catalogs (its folder's `publishing.json`): when the last went out, and
@@ -1688,6 +1704,69 @@ pub struct LastCatalog {
     /// restart or a change of lead: `Publish::held_for` counts from it, toward `CATALOG_CAP_S`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_at: Option<u64>,
+    /// The cadence-gated steps' (`GATED`) last runs as the lead saw them: the key recorded, and
+    /// when it was first seen changed (`LastCatalog::observe`). Only for when they're planned,
+    /// never in a key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ran: BTreeMap<String, Ran>,
+    /// The last plan had no unit or terrain left to build (`Plan::idle`; not kept).
+    #[serde(skip)]
+    pub idle: bool,
+}
+
+/// A cadence-gated step's last run (`LastCatalog::ran`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ran {
+    /// Its key recorded ("" for none).
+    pub key: String,
+    /// When that key was first seen; None when it was already there as this record began (when it
+    /// ran isn't known: it's due).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<u64>,
+}
+
+/// The landmark points at most this often (seconds; the owner's, a policy) while units build; at
+/// once when none's left.
+pub const MARKS_EVERY_S: u64 = 3600;
+/// The area overlays at most this often while units build; and after the last.
+pub const OVERLAYS_EVERY_S: u64 = 6 * 3600;
+/// The names' to-do lists at most this often while units build; after any catalog when none's left.
+pub const NAMES_TODO_EVERY_S: u64 = 24 * 3600;
+/// The steps gated by time: the gate decides only WHEN they're planned; their keys stay by content.
+pub const GATED: [&str; 3] = ["marks", "overlays", "names-todo"];
+
+impl LastCatalog {
+    /// Notes, at `now`, each gated step whose recorded key in `done` changed since last seen: a run
+    /// of it ended (the lead's own, or a member's merged). Whether the record changed.
+    pub fn observe(&mut self, done: &Keys, now: u64) -> bool {
+        let mut changed = false;
+        for step in GATED {
+            let key = done.lo.get(step).cloned().unwrap_or_default();
+            match self.ran.get_mut(step) {
+                Some(r) if r.key == key => {}
+                Some(r) => {
+                    *r = Ran { key, at: Some(now) };
+                    changed = true;
+                }
+                None => {
+                    self.ran.insert(step.to_string(), Ran { key, at: None });
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    /// Seconds since gated step `step` last ran, as seen (None: not known).
+    pub fn since(&self, step: &str, now: u64) -> Option<u64> {
+        self.ran.get(step).and_then(|r| r.at).map(|t| now.saturating_sub(t))
+    }
+}
+
+/// Whether a step gated by time (`GATED`) may be planned now: nothing's left to build (`idle`), its
+/// last run isn't known, or it was `every` seconds or more ago.
+pub fn gate_open(idle: bool, since: Option<u64>, every: u64) -> bool {
+    idle || since.is_none_or(|s| s >= every)
 }
 
 /// Publishing as the plan has it now, for the agent's log and the build status (`publishing`;
@@ -1808,6 +1887,8 @@ pub struct Plan {
     pub backfill: Vec<Work>,
     /// Publishing as planned now, for the log and the status.
     pub publishing: PublishLine,
+    /// No unit or terrain left to build: the steps gated by time (`GATED`) run at once.
+    pub idle: bool,
 }
 
 /// A region's work left (`Plan::regions`), as targets.
@@ -1936,7 +2017,7 @@ pub fn plan(
     let chains = |last: bool| -> Vec<Work> {
         rail_chain(cov, date, m, done, inputs)
             .into_iter()
-            .chain(landmarks_work(cov, date, m, done, inputs, &terrain_left, last))
+            .chain(landmarks_work(cov, date, m, done, inputs, &terrain_left, last, updates.way))
             .collect()
     };
     let Some(reach) = reach.filter(|_| !waiting) else {
@@ -2372,7 +2453,18 @@ pub fn plan(
     work.extend(depth);
     // Last of all, in idle time: the mids of current pieces that have none (expected the same).
     work.extend(backfill.iter().cloned());
-    Plan { work, ready, regions: lefts, low: plan_low, catalog_held, catalog_due, unknown, backfill, publishing }
+    Plan {
+        work,
+        ready,
+        regions: lefts,
+        low: plan_low,
+        catalog_held,
+        catalog_due,
+        unknown,
+        backfill,
+        publishing,
+        idle: last_now,
+    }
 }
 
 /// The map tiles `targets` to draw, a unit's together: grouped by the unit whose change made each
@@ -2590,6 +2682,7 @@ fn prune_units(
             ("base/", &built, "unit"),
             ("global/roads/", &built, "unit"),
             ("global/roaden/", &built, "unit"),
+            (crate::out::ROAD_IDS, &built, "unit"),
             ("work/pois/", &cands, "pois"),
             ("work/peaks/", &cands, "pois"),
         ] {
@@ -2671,12 +2764,10 @@ fn publish_chain(
     if !packs.is_empty() {
         return Some(Work { step: "pack".into(), targets: packs });
     }
-    // The road → units index, once the units' road values are made.
-    let roads: Vec<String> = m
-        .range("global/roads/".to_string()..)
-        .take_while(|(l, _)| l.starts_with("global/roads/"))
-        .map(|(l, c)| format!("{l}={c}"))
-        .collect();
+    // The road → units index, once the units' road values are made: on each unit's road ids by
+    // content (`global/roadids/`; a unit built before them: its road values), what the job reads
+    // (only those changed since the index before: `roadunits_reads`).
+    let roads: Vec<String> = roadunits_reads(m).into_iter().map(|(_, l, c)| format!("{l}={c}")).collect();
     if !roads.is_empty() {
         let mut ins = vec![format!("roadunits {ROADUNITS_V}")];
         ins.extend(roads);
@@ -2692,9 +2783,11 @@ fn publish_chain(
     }
 
     // Rail stops near the built units, and ferries worldwide, from the pass's sets (once there are
-    // units: before them there are no roads to ride to).
-    let built: Vec<&str> =
-        m.range("base/".to_string()..).take_while(|(l, _)| l.starts_with("base/")).map(|(l, _)| l.as_str()).collect();
+    // units: before them there are no roads to ride to). The stops are keyed on the z6 tiles they're
+    // kept for (crate::ovconv::cover_of: a unit within the halo of those built changes nothing).
+    let built = crate::ovconv::cover_of(
+        m.range("base/".to_string()..).take_while(|(l, _)| l.starts_with("base/")).map(|(l, _)| l),
+    );
     if !built.is_empty() {
         for (step, v, set, extra, per_unit) in [
             ("stations", STATIONS_V, "rail", String::new(), true),
@@ -2714,9 +2807,11 @@ fn publish_chain(
                 ins.push(f.clone());
                 ins.push(s.clone());
             }
-            // The stops are clipped to the built units' tiles; the ferries aren't clipped at all.
+            // The stops are clipped to the built units' tiles; the ferries aren't clipped at all (the
+            // set, the ferry feeds' list naming each zip by content, the static timetables' index:
+            // all ovconv::ferries_job reads).
             if per_unit {
-                ins.extend(built.iter().map(|s| s.to_string()));
+                ins.extend(built.iter().map(|(x, y)| format!("6/{x}/{y}")));
             }
             let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
             let k = h(&refs);
@@ -2737,6 +2832,24 @@ fn publish_chain(
         }
     }
     None
+}
+
+/// What the road → units index reads, per unit in `m`: (unit, logical name, content name) of its
+/// road ids (`global/roadids/`, the unit job's), or, for a unit built before they were made, its
+/// road values (`global/roads/`). In the units' order.
+pub fn roadunits_reads(m: &BTreeMap<String, String>) -> Vec<(Unit, String, String)> {
+    m.range("global/roads/".to_string()..)
+        .take_while(|(l, _)| l.starts_with("global/roads/"))
+        .filter_map(|(l, c)| {
+            let d = l.strip_prefix("global/roads/")?;
+            let u = Unit::parse(d)?;
+            let ids = format!("{}{d}", crate::out::ROAD_IDS);
+            Some(match m.get(&ids) {
+                Some(i) => (u, ids, i.clone()),
+                None => (u, l.clone(), c.clone()),
+            })
+        })
+        .collect()
 }
 
 /// The terrain's or slope's root key (`layer`): its lo packs by content name (a lo pack dropped,
@@ -2912,7 +3025,10 @@ fn landmarks_chain(
 /// and pageviews once every candidate is; the rest of the heritage chain once the heritage sites
 /// are; the landmark points once those four are (on the pass's heritage, never today's meanwhile);
 /// then the overlays. They don't wait for each other otherwise: the heritage chain (an hour and
-/// more of network) runs beside the candidates.
+/// more of network) runs beside the candidates. The landmark points and the overlays are gated by
+/// time (`gate_open`, `way`'s gaps): the points at most hourly while units build (`MARKS_EVERY_S`),
+/// the overlays every `OVERLAYS_EVERY_S`; both at once after the last unit.
+#[allow(clippy::too_many_arguments)]
 fn landmarks_work(
     cov: &Coverage,
     date: &str,
@@ -2921,6 +3037,7 @@ fn landmarks_work(
     inputs: &BTreeMap<String, String>,
     terrain_left: &BTreeSet<String>,
     last: bool,
+    way: Publishing,
 ) -> Vec<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     let mut out = Vec::new();
@@ -2973,10 +3090,15 @@ fn landmarks_work(
         Some(_) => true,
     };
     if peaks_built && items_built && heritage_built {
+        // (Points stale but not due yet: the overlays, which read their dots, wait too.)
         let k = marks_key(date, m, &units);
         if done.lo.get("marks").map(String::as_str) != Some(k.as_str()) {
-            out.push(Work { step: "marks".into(), targets: vec![("marks".into(), k)] });
-        } else if let Some(k) = overlays_key(date, m).filter(|k| last && done.lo.get("overlays") != Some(k)) {
+            if gate_open(last, way.since_marks, MARKS_EVERY_S) {
+                out.push(Work { step: "marks".into(), targets: vec![("marks".into(), k)] });
+            }
+        } else if let Some(k) = overlays_key(date, m)
+            .filter(|k| gate_open(last, way.since_overlays, OVERLAYS_EVERY_S) && done.lo.get("overlays") != Some(k))
+        {
             out.push(Work { step: "overlays".into(), targets: vec![("overlays".into(), k)] });
         }
     }
@@ -6137,6 +6259,18 @@ pub(crate) mod tests {
         m.insert("global/roads/6-40-20".into(), "global/roads/6-40-20.2222222222222222.sect".into());
         assert_ne!(key(&m, "stations"), stations, "stops are clipped to the built units");
         assert_eq!(key(&m, "ferries"), ferries);
+        // A unit amid those built: the z6 tiles the stops are kept for (within 20 km of a unit) are
+        // the same; the stops too.
+        for (x, y) in [(49, 19), (50, 19), (51, 19), (49, 20), (51, 20), (49, 21), (50, 21), (51, 21)] {
+            m.insert(format!("base/6-{x}-{y}"), format!("base/6-{x}-{y}.2222222222222222.sect"));
+        }
+        let stations = key(&m, "stations");
+        m.insert("base/6-50-20".into(), "base/6-50-20.2222222222222222.sect".into());
+        assert_eq!(key(&m, "stations"), stations, "keyed on the tiles the stops are kept for");
+        // (A unit's base pack made again: neither.)
+        m.insert("base/6-28-16".into(), "base/6-28-16.7777777777777777.sect".into());
+        assert_eq!(key(&m, "stations"), stations);
+        assert_eq!(key(&m, "ferries"), ferries);
         // Another list (a ferry feed fetched again), other static files: the ferries again.
         let mut m2 = m.clone();
         m2.insert(
@@ -6550,7 +6684,7 @@ pub(crate) mod tests {
         m.insert("work/trailends/d".into(), "work/trailends/d.8888888888888888.json".into());
         m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
         let each = c.by_region();
-        let plan = |m: &BTreeMap<String, String>, done: &Keys| {
+        let plan_with = |m: &BTreeMap<String, String>, done: &Keys, way: Publishing| {
             super::plan(
                 &c,
                 "d",
@@ -6566,11 +6700,12 @@ pub(crate) mod tests {
                     since_catalog: None,
                     held_for: None,
                     held: false,
-                    way: Default::default(),
+                    way,
                 },
             )
             .work
         };
+        let plan = |m: &BTreeMap<String, String>, done: &Keys| plan_with(m, done, Publishing::default());
         let line = |w: &[Work]| {
             w.iter()
                 .map(|x| format!("{} {}", x.step, x.targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(",")))
@@ -6642,6 +6777,105 @@ pub(crate) mod tests {
         let peaks = plan(&m, &done).into_iter().find(|x| x.step == "peaks").unwrap();
         done.record("peaks", &peaks.targets);
         assert_eq!(marks(&m, &done), ["marks"]);
+        // Gated by time while units build: the points at most hourly, the overlays every 6 h (their
+        // keys as they were: only when they're planned changes).
+        let gated = |m: &BTreeMap<String, String>, done: &Keys, way: Publishing| {
+            plan_with(m, done, way)
+                .into_iter()
+                .filter(|x| matches!(x.step.as_str(), "marks" | "overlays"))
+                .map(|x| (x.step, x.targets[0].1.clone()))
+                .collect::<Vec<_>>()
+        };
+        let way = |marks: u64, overlays: u64| Publishing {
+            since_marks: Some(marks),
+            since_overlays: Some(overlays),
+            ..Default::default()
+        };
+        // (The pass's heritage job's outputs, which the overlays wait for.)
+        let src = crate::markconv::heritage_source("d");
+        for s in ["layer-heritage", "details-heritage", "props-heritage"] {
+            m.insert(format!("{src}/{s}"), format!("{src}/{s}.1313131313131313.json"));
+        }
+        assert!(plan_with(&m, &done, way(0, 0)).iter().any(|x| x.step == "unit"), "units still build");
+        assert!(gated(&m, &done, way(MARKS_EVERY_S - 1, 0)).is_empty());
+        let due = gated(&m, &done, way(MARKS_EVERY_S, 0));
+        assert_eq!(due, gated(&m, &done, Publishing::default()));
+        assert_eq!(due[0].0, "marks");
+        done.record("marks", &[("marks".into(), due[0].1.clone())]);
+        m.insert(crate::markconv::HERITAGE_DOTS.into(), "global/marks/dots.1212121212121212.json".into());
+        assert!(gated(&m, &done, way(0, OVERLAYS_EVERY_S - 1)).is_empty());
+        let due = gated(&m, &done, way(0, OVERLAYS_EVERY_S));
+        assert_eq!(due.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["overlays"]);
+        assert_eq!(due, gated(&m, &done, Publishing::default()));
+    }
+
+    /// The steps gated by time: when each last ran, as its recorded key changed; its gate open
+    /// when idle, not known, or its time is up.
+    #[test]
+    fn the_gated_steps_runs_are_seen_by_their_keys() {
+        let mut r = LastCatalog::default();
+        let mut done = Keys::default();
+        done.record("marks", &[("marks".into(), "k1".into())]);
+        assert!(r.observe(&done, 100));
+        // (Already there as the record began: when it ran isn't known.)
+        assert_eq!(r.since("marks", 200), None);
+        assert!(!r.observe(&done, 150));
+        done.record("marks", &[("marks".into(), "k2".into())]);
+        assert!(r.observe(&done, 300));
+        assert_eq!(r.since("marks", 400), Some(100));
+        assert_eq!(r.since("overlays", 400), None);
+        // Kept across a restart.
+        let back: LastCatalog = serde_json::from_slice(&serde_json::to_vec(&r).unwrap()).unwrap();
+        assert_eq!(back.since("marks", 400), Some(100));
+        assert!(gate_open(false, None, 10) && gate_open(true, Some(0), 10) && gate_open(false, Some(10), 10));
+        assert!(!gate_open(false, Some(9), 10));
+    }
+
+    /// The names' to-do lists: daily while units build, after any catalog when none's left.
+    #[test]
+    fn the_names_to_do_runs_daily_or_when_idle() {
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        for u in [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT] {
+            m.insert(crate::inputs::logical(u), format!("sources/inputs/{u}/@index.1111111111111111.json"));
+        }
+        let mut done = Keys::default();
+        let w = names_todo_work(Some(1), &m, &done, None, false).unwrap();
+        done.record("names-todo", &w.targets);
+        assert!(names_todo_work(Some(1), &m, &done, None, true).is_none(), "made for this catalog");
+        assert!(names_todo_work(Some(2), &m, &done, Some(NAMES_TODO_EVERY_S - 1), false).is_none());
+        let k = names_todo_work(Some(2), &m, &done, Some(NAMES_TODO_EVERY_S), false).unwrap().targets;
+        assert_eq!(names_todo_work(Some(2), &m, &done, Some(0), true).unwrap().targets, k, "the key by content");
+    }
+
+    /// The road index is keyed on each unit's road ids by content (a unit without them: its road
+    /// values), what its job reads.
+    #[test]
+    fn the_road_index_is_keyed_on_the_road_ids() {
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.1111111111111111.sect".into());
+        m.insert("global/roads/6-29-16".into(), "global/roads/6-29-16.2222222222222222.sect".into());
+        m.insert("global/roadids/6-29-16".into(), "global/roadids/6-29-16.3333333333333333.sect".into());
+        let r = roadunits_reads(&m);
+        let names: Vec<&str> = r.iter().map(|x| x.2.as_str()).collect();
+        assert_eq!(
+            names,
+            ["global/roads/6-28-16.1111111111111111.sect", "global/roadids/6-29-16.3333333333333333.sect"]
+        );
+        let key = |m: &BTreeMap<String, String>| {
+            remaining(&Keys::default(), |d| roads_chain("d", m, d, None))
+                .into_iter()
+                .find(|w| w.step == "roadunits")
+                .unwrap()
+                .targets[0]
+                .1
+                .clone()
+        };
+        let k = key(&m);
+        // Road values made again with the same roads: the same ids, the same key.
+        m.insert("global/roads/6-29-16".into(), "global/roads/6-29-16.4444444444444444.sect".into());
+        assert_eq!(key(&m), k);
+        m.insert("global/roadids/6-29-16".into(), "global/roadids/6-29-16.5555555555555555.sect".into());
+        assert_ne!(key(&m), k);
     }
 
     /// The 3D buildings' sources as agent::input_digests has them: every z6 tile within 1 km of

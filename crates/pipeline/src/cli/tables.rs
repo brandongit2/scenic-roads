@@ -89,7 +89,7 @@ pub const SCENIC_BUILD: Table = Table {
         c("heritage", "[--pass d] [--regions dir] [--dem dir] [--cache dir]", "the heritage chain", &[], &["--pass", "--regions", "--dem", "--cache"], 0),
         c("heritage-sites", "[--pass d] [--regions dir] [--dem dir] [--cache dir] [--heritage-index i] [--heritage-matches-index i]", "the heritage sites", &[], &["--pass", "--regions", "--dem", "--cache", "--heritage-index", "--heritage-matches-index"], 0),
         c("overlays", "[--pass d]", "the overlays", &[], PASS, 0),
-        c("roadunits", "", "the road → units index from every unit's road values", &[], &[], 0),
+        c("roadunits", "", "the road → units index from the units' road ids", &[], &[], 0),
         c("terrain", "[T …] [--regions dir] [--pass d] [--raw dir] [--expect-same T,…] [--pieces-of Q,…]", "the terrain of z6 tiles T near the coverage (pieces), or of z3 tiles' whole (default: all of them)", &[], &["--regions", "--pass", "--raw", "--expect-same", "--pieces-of"], ANY),
         c("terrain-lo", "<Q …> [--raw dir] [--regions dir] [--pass d]", "z3 tiles Q's zoomed-out terrain (lo packs, z3–8) from their pieces' mids", &[], &["--raw", "--regions", "--pass"], ANY),
         c("terrain-z8", "[--raw dir]", "coarse terrain for the whole world", &[], &["--raw"], 0),

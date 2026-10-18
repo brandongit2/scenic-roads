@@ -100,14 +100,19 @@ fn z3_of(lon: f64, lat: f64) -> String {
 
 /// The z6 tiles meeting the coverage (the base packs' units) grown by `HALO_KM`: where hi tiles go.
 fn hi_cover(out: &Out) -> HashSet<(u32, u32)> {
-    let grown: Vec<_> = out
-        .manifest
-        .keys()
+    cover_of(out.manifest.keys()).into_iter().collect()
+}
+
+/// The z6 tiles within `HALO_KM` of the built units, by the manifest's logical names `names` (its
+/// `base/` ones): what the rail stops are kept for (`stations_job`), so the stations' key
+/// (agent::build) names these, not the units.
+pub fn cover_of<'a>(names: impl Iterator<Item = &'a String>) -> std::collections::BTreeSet<(u32, u32)> {
+    let grown: Vec<_> = names
         .filter_map(|k| k.strip_prefix("base/"))
         .filter_map(Unit::parse)
         .map(|u| grow(tile_bounds(u.z, u.x, u.y), HALO_KM))
         .collect();
-    let mut s = HashSet::new();
+    let mut s = std::collections::BTreeSet::new();
     for x in 0..64u32 {
         for y in 0..64u32 {
             let b = tile_bounds(6, x, y);

@@ -667,8 +667,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   `reach.json.zst` (`{fmt, date, units: {"6/x/y": {owned: [w, s, e, n] | null, long: [{owned,
   ferry, verts}]}}}`, E7: the box of a unit's ways within its tile + 20 km, and every way reaching
   further, whole; `pipeline::reach`); `pass.json`.
-- **Global files:** `global/roads/<u>` (above); `global/roadunits` (`pairs`: sorted u64 road, u64
-  unit key); `global/railfreq` (as `/api/railfreq`); `global/marks/summary` (`{fmt, kinds,
+- **Global files:** `global/roads/<u>` (above); `global/roadids/<u>` (`ids`: the unit's road ids,
+  sorted u64, each once); `global/roadunits` (`pairs`: sorted u64 road, u64 unit key; `srcs`: JSON
+  `[[unit key, content name of what it read]]`); `global/railfreq` (as `/api/railfreq`); `global/marks/summary` (`{fmt, kinds,
   tiers}`); `global/roaden/<u>` (`{OSM way id: English}` where `name:en` differs); `global/spoken`
   (`names::spoken::Spoken::to_bytes`); `global/heritage/*`.
 - **Grid layers:** `grid-{class,canopy,cover}` hi packs of z11 tiles, encoding `u8-zstd`, not served.

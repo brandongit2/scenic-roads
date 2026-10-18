@@ -5686,6 +5686,17 @@ impl Agent {
         }
     }
 
+    /// The steps gated by time whose recorded keys in `done` changed: noted run now in the lead's
+    /// record (build::LastCatalog::observe).
+    fn note_ran(&self, done: &build::Keys) {
+        let mut r = self.catalogs.borrow_mut();
+        if r.observe(done, now_s()) && self.keeps_publishing() {
+            if let Err(e) = write_published(&self.o.home, &r) {
+                eprintln!("agent: noting the steps run: {e:#}");
+            }
+        }
+    }
+
     /// When a catalog due was first held back (build::LastCatalog::held_at), kept in the lead's
     /// record when it changes.
     fn note_held(&self, held_at: Option<u64>) {
@@ -6160,7 +6171,13 @@ impl Agent {
         // (From the translations' and descriptions' accepted versions, which the agent names: the
         // job reads them through the accessor, never the drop boxes.)
         let served = served_catalog(&root.join("catalog")).map(|c| c.n);
-        if let Some(w) = build::names_todo_work(served, &manifest, &keys) {
+        // (The steps gated by time: when each last ran, as its recorded key changed.)
+        self.note_ran(&keys);
+        let (since, idle) = {
+            let r = self.catalogs.borrow();
+            (r.since("names-todo", now_s()), r.idle)
+        };
+        if let Some(w) = build::names_todo_work(served, &manifest, &keys, since, idle) {
             let n = w.targets[0].1.clone();
             let mut args = Vec::new();
             for unit in [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT] {
@@ -6327,6 +6344,8 @@ impl Agent {
             low_later: sw.low_later,
             since_low: self.catalogs.borrow().low_at.map(|t| now_s().saturating_sub(t)),
             near: sw.near,
+            since_marks: self.catalogs.borrow().since("marks", now_s()),
+            since_overlays: self.catalogs.borrow().since("overlays", now_s()),
         };
         // (The served catalog's units, read again only when a newer catalog is there: the map tiles
         // to draw grouped by the unit that changed.)
@@ -6356,6 +6375,7 @@ impl Agent {
                 },
             )
         };
+        self.catalogs.borrow_mut().idle = planned.idle;
         // The units held until the heritage registers are first accepted: said, not a silent stall.
         if let Some(why) = build::heritage_awaits_acceptance(cov, date, &manifest, &inputs) {
             waiting.push(Waiting {

@@ -18,7 +18,7 @@
 //!                                written to the NAS, snapshotted around each step's program (for
 //!                                tools/check/same.py and tail.mjs)
 //!   tail-spec U                  unit U's tail as a task gives it a worker (tools/check/tail.mjs)
-//!   roadunits                    the road → units index from every unit's road values
+//!   roadunits                    the road → units index from the units' road ids
 //!   terrain [T …] [--regions dir] [--pass d] [--raw dir] [--expect-same T,…]  the terrain from AWS's
 //!                                raw tiles (cached in --raw), GLO-30 and the basemap's water: of z6
 //!                                tiles T near the coverage (pieces: each one's hi pack, z9–12, and
@@ -907,6 +907,26 @@ fn put_roads(out: &mut Out, u: Unit, recs: &[pipeline::legacy::RoadRec], keep: O
         &[("roads", b(recs)), ("byroad", b(&byroad))],
         keep,
     )
+}
+
+/// A unit's road ids (`pipeline::out::ROAD_IDS`): its road values' roads, sorted, each once, as
+/// section "ids" (u64); what the road → units index reads of it (`roadunits`).
+fn put_road_ids(out: &mut Out, u: Unit, recs: &[pipeline::legacy::RoadRec]) -> Result<String> {
+    let ids = road_ids(recs);
+    put_sect(
+        out,
+        &format!("{}{}", pipeline::out::ROAD_IDS, u.dash()),
+        serde_json::json!({"fmt": 1, "unit": u.slash()}),
+        &[("ids", b(&ids))],
+    )
+}
+
+/// Road values' roads, sorted, each once.
+fn road_ids(recs: &[pipeline::legacy::RoadRec]) -> Vec<u64> {
+    let mut ids: Vec<u64> = recs.iter().map(|r| r.road).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
 }
 
 fn put_sect(out: &mut Out, logical: &str, meta: serde_json::Value, sections: &[(&str, &[u8])]) -> Result<String> {
@@ -4239,8 +4259,8 @@ fn settle_tails(
 }
 
 /// A unit's last part, its folder ready: the grids its packs lacked, its scenic results kept for
-/// its next run, its base pack, road values and roads' English saved, its folders removed, and what
-/// it cost noted. `how`: where its tail's last steps ran. (What it saves is
+/// its next run, its base pack, road values, road ids and roads' English saved, its folders
+/// removed, and what it cost noted. `how`: where its tail's last steps ran. (What it saves is
 /// `pipeline::unit::saved_files`, all a helper's hand-off may change: keep the two together.)
 fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     let Built { u, dir, bdir, rep, tools, carry, piece, t, peak, group, disk, sizes, .. } = b;
@@ -4279,11 +4299,11 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     if rep.kept_ways == 0 || rep.owned == 0 {
         // None of its ways in the coverage (any more): a base pack and road values from an
         // earlier coverage go, so the map and the map tiles stop showing them.
-        let gone: Vec<String> =
-            [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash()), format!("global/roaden/{}", u.dash())]
-                .into_iter()
-                .filter(|l| out.get(l).is_some())
-                .collect();
+        let gone: Vec<String> = pipeline::out::UNIT_OUTPUTS
+            .iter()
+            .map(|p| format!("{p}{}", u.dash()))
+            .filter(|l| out.get(l).is_some())
+            .collect();
         if !gone.is_empty() {
             for l in &gone {
                 out.remove(l);
@@ -4354,6 +4374,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     {
         let _p = pipeline::timings::sub("the unit's written", Class::NasWrite);
         put_roads(out, u, &recs, Some(&tools.base_packs()))?;
+        put_road_ids(out, u, &recs)?;
     }
     // The roads' own English (OSM's name:en where it isn't the name), for the server to show
     // with them.
@@ -4416,7 +4437,7 @@ fn prune_step(out: &mut Out, args: &[String]) -> Result<()> {
         let (kind, at) = t.split_once(' ').with_context(|| format!("{t:?}: a prune target is \"<kind> <z/x/y>\""))?;
         let d = Unit::parse(at).with_context(|| format!("{t:?}: not a tile"))?.dash();
         let logicals = match kind {
-            "unit" => vec![format!("base/{d}"), format!("global/roads/{d}"), format!("global/roaden/{d}")],
+            "unit" => pipeline::out::UNIT_OUTPUTS.iter().map(|p| format!("{p}{d}")).collect(),
             "pois" => vec![format!("work/pois/{d}"), format!("work/peaks/{d}")],
             "pack" => vec![format!("hidata/{d}"), format!("layers/roads/hi/{d}"), format!("layers/rails/hi/{d}")],
             "lo" => vec![format!("layers/roads/lo/{d}"), format!("layers/rails/lo/{d}")],
@@ -4492,20 +4513,38 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The road → units index from every unit's road values in the manifest.
+/// The road → units index from every unit's road ids in the manifest (a unit built before them: its
+/// road values; `pipeline::agent::build::roadunits_reads`). Only the lists changed since the index
+/// before are read: it names each unit's list by content (section "srcs"), and a unit whose list
+/// it names as now keeps its pairs from it. The same index as one made from every list.
 fn roadunits(out: &mut Out) -> Result<()> {
-    let mut pairs: Vec<(u64, u64)> = Vec::new();
-    let units: Vec<(Unit, String)> = out
-        .manifest
-        .iter()
-        .filter_map(|(k, v)| k.strip_prefix("global/roads/").and_then(Unit::parse).map(|u| (u, v.clone())))
-        .collect();
-    let p = phase("the areas' road values read", Class::NasRead);
-    for (k, (u, content)) in units.iter().enumerate() {
-        pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas' road values read");
+    let reads = pipeline::agent::build::roadunits_reads(&out.manifest);
+    let srcs: Vec<(u64, String)> = reads.iter().map(|(u, _, c)| (u.key(), c.clone())).collect();
+    // (The index before, and the lists it was made from.)
+    let p = phase("the index before read", Class::NasRead);
+    let before: Option<(BTreeMap<u64, String>, Vec<u64>)> = out.get("global/roadunits").and_then(|c| {
+        let r = store::sect::SectReader::open(store::range::PlainFile::open(&out.path(c)).ok()?).ok()?;
+        let s: Vec<(u64, String)> = serde_json::from_slice(&r.read("srcs").ok()?).ok()?;
+        Some((s.into_iter().collect(), r.read_pod("pairs").ok()?))
+    });
+    drop(p);
+    let (was, flat_before) = before.unwrap_or_default();
+    let kept: std::collections::BTreeSet<u64> =
+        srcs.iter().filter(|(u, c)| was.get(u) == Some(c)).map(|(u, _)| *u).collect();
+    let mut pairs: Vec<(u64, u64)> =
+        flat_before.chunks_exact(2).map(|p| (p[0], p[1])).filter(|(_, u)| kept.contains(u)).collect();
+    let fresh: Vec<&(Unit, String, String)> = reads.iter().filter(|(u, _, _)| !kept.contains(&u.key())).collect();
+    let p = phase("the units' road ids read", Class::NasRead);
+    for (k, (u, l, content)) in fresh.iter().enumerate() {
+        pipeline::agent::jobs::report(k as u64, fresh.len() as u64, "units' road ids read");
         let r = store::sect::SectReader::open(store::range::PlainFile::open(&out.path(content))?)?;
-        let recs: Vec<pipeline::legacy::RoadRec> = r.read_pod("roads")?;
-        pairs.extend(recs.iter().map(|x| (x.road, u.key())));
+        if l.starts_with(pipeline::out::ROAD_IDS) {
+            let ids: Vec<u64> = r.read_pod("ids")?;
+            pairs.extend(ids.iter().map(|&id| (id, u.key())));
+        } else {
+            let recs: Vec<pipeline::legacy::RoadRec> = r.read_pod("roads")?;
+            pairs.extend(road_ids(&recs).into_iter().map(|id| (id, u.key())));
+        }
         p.count(0, 1);
     }
     drop(p);
@@ -4513,10 +4552,22 @@ fn roadunits(out: &mut Out) -> Result<()> {
     pairs.sort_unstable();
     pairs.dedup();
     let flat: Vec<u64> = pairs.iter().flat_map(|&(r, u)| [r, u]).collect();
+    let srcs_json = serde_json::to_vec(&srcs)?;
     drop(p);
     let _p = phase("uploaded", Class::NasWrite);
-    put_sect(out, "global/roadunits", serde_json::json!({"fmt": 1, "pairs": pairs.len()}), &[("pairs", b(&flat))])?;
-    eprintln!("roadunits: {} roads×units over {} units", pairs.len(), units.len());
+    put_sect(
+        out,
+        "global/roadunits",
+        serde_json::json!({"fmt": 1, "pairs": pairs.len()}),
+        &[("pairs", b(&flat)), ("srcs", &srcs_json)],
+    )?;
+    eprintln!(
+        "roadunits: {} roads×units over {} units ({} lists read, {} kept from the index before)",
+        pairs.len(),
+        reads.len(),
+        fresh.len(),
+        kept.len()
+    );
     Ok(())
 }
 
@@ -6183,5 +6234,52 @@ mod tests {
         for (top, left) in [(50, -10), (60, -10), (50, 0), (60, 0)] {
             assert!(names.contains(&format!("meta_chm_lat={top}.0_lon={left}.0_p95.tif")), "{top} {left}: {names:?}");
         }
+    }
+
+    /// The road → units index from the units' road ids (a unit built before them: its road
+    /// values), reading only the lists changed since the index before: the same index as one made
+    /// from every list.
+    #[test]
+    fn the_road_index_reads_only_the_lists_changed() {
+        use pipeline::legacy::{RoadRec, Unit};
+        let rec = |road: u64| RoadRec { road, len: 1.0, offset: 0.0, dir: 0, _pad: [0; 7] };
+        let (a, b, c) = (Unit::parse("6/1/1").unwrap(), Unit::parse("6/1/2").unwrap(), Unit::parse("6/1/3").unwrap());
+        // (a built before the road ids: its road values alone; b and c with theirs.)
+        let fill = |out: &mut pipeline::out::Out, c_roads: &[RoadRec]| {
+            super::put_roads(out, a, &[rec(5), rec(1), rec(5)], None).unwrap();
+            for (u, rs) in [(b, &[rec(1), rec(2)][..]), (c, c_roads)] {
+                super::put_roads(out, u, rs, None).unwrap();
+                super::put_road_ids(out, u, rs).unwrap();
+            }
+        };
+        let pairs = |out: &pipeline::out::Out| -> Vec<u64> {
+            let f = store::range::PlainFile::open(&out.path(out.get("global/roadunits").unwrap())).unwrap();
+            store::sect::SectReader::open(f).unwrap().read_pod("pairs").unwrap()
+        };
+        let flat = |v: &[(u64, u64)]| v.iter().flat_map(|&(r, u)| [r, u]).collect::<Vec<_>>();
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+        fill(&mut out, &[rec(3)]);
+        super::roadunits(&mut out).unwrap();
+        let (ka, kb, kc) = (a.key(), b.key(), c.key());
+        let mut want = vec![(1, ka), (1, kb), (2, kb), (3, kc), (5, ka)];
+        want.sort_unstable();
+        assert_eq!(pairs(&out), flat(&want));
+        // c's list changed, a's and b's files gone from the NAS: only c's is read.
+        for l in ["global/roads/6-1-1", "global/roadids/6-1-2"] {
+            std::fs::remove_file(out.path(out.get(l).unwrap())).unwrap();
+        }
+        super::put_road_ids(&mut out, c, &[rec(4)]).unwrap();
+        super::roadunits(&mut out).unwrap();
+        let mut want: Vec<(u64, u64)> = want.into_iter().map(|p| if p.1 == kc { (4, kc) } else { p }).collect();
+        want.sort_unstable();
+        assert_eq!(pairs(&out), flat(&want));
+        // Made afresh from every list: the same file.
+        let fresh = tempfile::tempdir().unwrap();
+        let mut o2 = pipeline::out::Out::unbound(fresh.path(), &fresh.path().join("scratch")).unwrap();
+        fill(&mut o2, &[rec(4)]);
+        super::roadunits(&mut o2).unwrap();
+        assert_eq!(o2.get("global/roadunits"), out.get("global/roadunits"));
     }
 }

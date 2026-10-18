@@ -652,7 +652,8 @@ The unit job runs the unit's programs on a unit folder, wiped at each run:
    later run redoes only new samples and those near grid tiles whose terrain or land cover changed;
    a change of `scache::SCENIC_V` redoes all.
 7. **Output:** the base pack (per-vertex arrays and records, indexed by z9 sub-tile),
-   `global/roads/<u>`, `global/roaden/<u>` (the roads' own English), and `grid-*` hi packs. A unit
+   `global/roads/<u>`, `global/roadids/<u>` (its roads' ids, what the road → units index reads),
+   `global/roaden/<u>` (the roads' own English), and `grid-*` hi packs. A unit
    left with no ways in the coverage drops them.
 
 Elevations are u16 decimetres from −500 m (to 6,053.5 m); readers also take older packs' i16.
@@ -685,7 +686,9 @@ index, so a new release rebuilds every unit.
 
 ### Worldwide steps after the units
 
-- **Road → units index** (`global/roadunits`): for whole-road hover.
+- **Road → units index** (`global/roadunits`): for whole-road hover. From the units' road ids
+  (`global/roadids/<u>`; a unit built before them: its road values), keyed on them by content; it
+  reads only the lists changed since the index before, which names each by content (`srcs`).
 - **Labels** (per pass): places, states, seas, lakes and parks from the labels set (`dem/labels.py`,
   with own English, kana reading, OSM languages and OSM object: §7).
 - **Water** (per pass): above.
@@ -695,8 +698,9 @@ index, so a new release rebuilds every unit.
   §6.7.0) and the static timetables (§6.7.2).
 - **Rail service** (below).
 - **Landmarks:** `docs/phase5.md`.
-- **The to-do lists:** `names-todo` after each catalog the map serves (§7); `timetables-todo` after
-  each rail and ferries run (docs/inputs.md §6.7.3).
+- **The to-do lists:** `names-todo` after a catalog the map serves, at most daily while units
+  build, after any once none's left (§7, `NAMES_TODO_EVERY_S`); `timetables-todo` after each rail
+  and ferries run (docs/inputs.md §6.7.3).
 
 ### Rail service
 
@@ -887,7 +891,8 @@ lines hold for their source area's languages.
 `kana`, `l` the languages OSM gives its name, `o` its OSM object); the basemap (`name:en`, `name:fr`,
 and from the next pass `osmpass::BASEMAP_LANGUAGES`); roads (`global/roaden/<u>`, no language tags).
 
-**To-do** (`pipeline::namestodo`, the `names-todo` job, after each catalog the map serves):
+**To-do** (`pipeline::namestodo`, the `names-todo` job, after a catalog the map serves: at most
+daily while units build, after any once none's left):
 - **`inputs/translations/todo/<language>.jsonl`:** each name something in the coverage has with no
   English of its own and no line in any language spoken there. Read from labels, roads and rail
   lines (base packs, each way placed once by the ways-here index), and landmarks. Names already in
@@ -1172,7 +1177,11 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
    - **Rail service**, from the start: `rail-feeds`, then `rail` (§6, Rail service).
    - **Landmarks**, from the start, each step once what it reads is built
      (`agent::build::landmarks_work`): candidates, peaks, items, the heritage chain, marks, then the
-     overlays after the last unit.
+     overlays. Marks at most hourly while units build (`MARKS_EVERY_S`), the overlays at most every
+     6 h (`OVERLAYS_EVERY_S`); both at once after the last unit.
+   - **Gated by time** (`build::GATED`: marks, overlays, names-todo): the gate decides only when
+     a step is planned; its key stays by content. When each last ran is the lead's observation of
+     its recorded key changing (`LastCatalog::observe`, kept in `publishing.json`; not known: due).
    - **3D buildings** (`docs/buildings3d.md` §3.3; `agent::build::bld_work`): `bld-fetch`, a prune,
      `bldprep` per z6 tile, then `bldtiles` once a tile and its 8 neighbours are prepared, in the
      regions' order.
