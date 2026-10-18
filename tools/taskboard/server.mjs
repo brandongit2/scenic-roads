@@ -46,6 +46,7 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS items_parent ON items(parent);
   CREATE INDEX IF NOT EXISTS items_num ON items(num);
+  CREATE UNIQUE INDEX IF NOT EXISTS items_num_unique ON items(num) WHERE num IS NOT NULL;
   CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
     item TEXT,
@@ -170,6 +171,26 @@ const jsonBody = async (req) => { try { return JSON.parse((await readBody(req, 2
 const validId = (s) => typeof s === "string" && /^[A-Za-z0-9_\-.~:@+]{1,200}$/.test(s) && s !== "." && s !== "..";
 const newId = () => { const a = "abcdefghijklmnopqrstuvwxyz0123456789"; const b = crypto.randomBytes(20); return Array.from(b, (x) => a[x % a.length]).join(""); };
 
+
+// Every task has a number, and no two share one (owner, 18 Oct): a task written without `num` is
+// given the next (the larger of the counter, meta/counter's `next`, and one past the highest), the
+// counter moved past it; one written with another item's number is refused (409), whoever writes.
+function numberTask(id, doc) {
+  if (!doc || doc.kind !== "task") return null;
+  if (doc.num === undefined || doc.num === null) {
+    const top = stmt(`SELECT MAX(num) AS m FROM items`).get().m || 0;
+    const c = getDoc("meta", "counter") || {};
+    const n = Math.max(Number(c.next) || 0, top + 1);
+    doc.num = n;
+    putDoc("meta", "counter", { ...c, next: n + 1 });
+    return null;
+  }
+  if (!Number.isInteger(doc.num) || doc.num < 1) return "a task's num must be a whole number from 1";
+  const other = stmt(`SELECT id FROM items WHERE num = ? AND id != ?`).get(doc.num, id);
+  if (other) return `#${doc.num} is already ${other.id}'s`;
+  return null;
+}
+
 async function api(req, res, url) {
   const parts = url.pathname.split("/").slice(2).map(decodeURIComponent); // after /api
   const [what, col, id] = parts;
@@ -225,8 +246,14 @@ async function api(req, res, url) {
         if (cur === null) { db.exec("ROLLBACK"); return fail(res, 404, "invalid_argument", "no such document"); }
         const merged = { ...cur };
         for (const [k, v] of Object.entries(b)) { if (v === null) delete merged[k]; else merged[k] = v; }
+        const bad = col === "items" ? numberTask(id, merged) : null;
+        if (bad) { db.exec("ROLLBACK"); return fail(res, 409, "conflict", bad); }
         putDoc(col, id, merged);
-      } else putDoc(col, id, b);
+      } else {
+        const bad = col === "items" ? numberTask(id, b) : null;
+        if (bad) { db.exec("ROLLBACK"); return fail(res, 409, "conflict", bad); }
+        putDoc(col, id, b);
+      }
       db.exec("COMMIT");
     } catch (e) {
       db.exec("ROLLBACK");
