@@ -4,7 +4,14 @@
 
 use super::{Cmd, Table, ANY};
 
-const fn c(name: &'static str, args: &'static str, about: &'static str, flags: &'static [&'static str], opts: &'static [&'static str], pos: usize) -> Cmd {
+const fn c(
+    name: &'static str,
+    args: &'static str,
+    about: &'static str,
+    flags: &'static [&'static str],
+    opts: &'static [&'static str],
+    pos: usize,
+) -> Cmd {
     Cmd { name, args, about, flags, opts, pos }
 }
 
@@ -137,7 +144,14 @@ pub const SCENIC_METRICS: Table = Table {
         c("prep", "<unit_dir>", "road sample points with observer eye heights; per-vertex drape heights", &[], &[], 1),
         c("canopy", "<unit_dir>", "canopy heights: grid layers, near-field horizons, roadside trees", &[], &[], 1),
         c("view", "<unit_dir>", "far-field viewshed and landscape metrics", &[], &[], 1),
-        c("buildings", "<unit_dir> <dir>", "roadside buildings per sample from the footprints (the folder given)", &[], &[], 2),
+        c(
+            "buildings",
+            "<unit_dir> <dir>",
+            "roadside buildings per sample from the footprints (the folder given)",
+            &[],
+            &[],
+            2,
+        ),
         c("flags", "<unit_dir>", "the flag channels again on the view's metrics", &[], &[], 1),
     ],
 };
@@ -168,13 +182,62 @@ pub const COASTCHECK: Table = Table {
     default: None,
     common: &[],
     cmds: &[
-        c("build", "--set <water set .osm.pbf> --water-polygons <zip> --out <store folder> [--index <type>]", "the water at full detail into a store", &[], &["--set", "--water-polygons", "--out", "--index"], 0),
-        c("serve", "--store <store folder> [--port 18095]", "the store's coverage served as raster tiles", &[], &["--store", "--port"], 0),
-        c("tile", "--store <store folder> <z> <x> <y> [--size 512]", "one coverage tile as a PNG on stdout", &[], &["--store", "--size"], 3),
-        c("stats", "--store <store folder> --z <z> [--sample n] [--size n]", "how big a coverage layer would be", &[], &["--store", "--z", "--sample", "--size"], 0),
-        c("water-packs", "--tiles <dir> --catalog <n.json.zst> --root <dir>", "water-build's tiles as the water layer's packs in a test root. Never the NAS's", &[], &["--tiles", "--catalog", "--root"], 0),
-        c("water-build", "--basemap <pmtiles> [--only x/y,…] [--lakefill f] --out <dir>", "pipeline::water's build into a folder", &[], &["--basemap", "--only", "--lakefill", "--out"], 0),
-        c("mark-sea", "--store <store folder> --water-polygons <zip>", "the sea's rings marked in a store", &[], &["--store", "--water-polygons"], 0),
+        c(
+            "build",
+            "--set <water set .osm.pbf> --water-polygons <zip> --out <store folder> [--index <type>]",
+            "the water at full detail into a store",
+            &[],
+            &["--set", "--water-polygons", "--out", "--index"],
+            0,
+        ),
+        c(
+            "serve",
+            "--store <store folder> [--port 18095]",
+            "the store's coverage served as raster tiles",
+            &[],
+            &["--store", "--port"],
+            0,
+        ),
+        c(
+            "tile",
+            "--store <store folder> <z> <x> <y> [--size 512]",
+            "one coverage tile as a PNG on stdout",
+            &[],
+            &["--store", "--size"],
+            3,
+        ),
+        c(
+            "stats",
+            "--store <store folder> --z <z> [--sample n] [--size n]",
+            "how big a coverage layer would be",
+            &[],
+            &["--store", "--z", "--sample", "--size"],
+            0,
+        ),
+        c(
+            "water-packs",
+            "--tiles <dir> --catalog <n.json.zst> --root <dir>",
+            "water-build's tiles as the water layer's packs in a test root. Never the NAS's",
+            &[],
+            &["--tiles", "--catalog", "--root"],
+            0,
+        ),
+        c(
+            "water-build",
+            "--basemap <pmtiles> [--only x/y,…] [--lakefill f] --out <dir>",
+            "pipeline::water's build into a folder",
+            &[],
+            &["--basemap", "--only", "--lakefill", "--out"],
+            0,
+        ),
+        c(
+            "mark-sea",
+            "--store <store folder> --water-polygons <zip>",
+            "the sea's rings marked in a store",
+            &[],
+            &["--store", "--water-polygons"],
+            0,
+        ),
     ],
 };
 

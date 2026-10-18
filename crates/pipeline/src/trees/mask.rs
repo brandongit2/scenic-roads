@@ -77,7 +77,11 @@ impl Shapes {
             shapes: Vec<Vec<Vec<[f64; 2]>>>,
         }
         let c: Cov = serde_json::from_str(json).context("the coverage's shapes")?;
-        let shapes = c.shapes.iter().map(|rings| rings.iter().filter(|r| r.len() >= 3).map(|r| Ring::new(r)).collect::<Result<Vec<_>>>()).collect::<Result<_>>()?;
+        let shapes = c
+            .shapes
+            .iter()
+            .map(|rings| rings.iter().filter(|r| r.len() >= 3).map(|r| Ring::new(r)).collect::<Result<Vec<_>>>())
+            .collect::<Result<_>>()?;
         Ok(Shapes { shapes })
     }
 

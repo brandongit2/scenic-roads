@@ -107,7 +107,10 @@ pub fn path(key: &str) -> String {
 /// Whether `name` is a day folder's (`YYYY-MM-DD`).
 fn is_day(name: &str) -> bool {
     let b = name.as_bytes();
-    b.len() == 10 && b[4] == b'-' && b[7] == b'-' && b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
 /// Writes `e` to the journal, whole, by a temporary name (a reader sees all of it or none); its
@@ -295,7 +298,11 @@ mod tests {
     use std::cell::RefCell;
 
     fn entry(term: u64, n: u64, at: u64) -> Entry {
-        let h = Handoff { changes: [("base/6-1-1".to_string(), Some("base/6-1-1.1111111111111111.base".to_string()))].into(), done: Some(("unit".into(), vec![("6/1/1".into(), "k1".into())])), ..Default::default() };
+        let h = Handoff {
+            changes: [("base/6-1-1".to_string(), Some("base/6-1-1.1111111111111111.base".to_string()))].into(),
+            done: Some(("unit".into(), vec![("6/1/1".into(), "k1".into())])),
+            ..Default::default()
+        };
         Entry { member: "m-000000000000000a".into(), lease: LeaseId { term, n }, step: "unit".into(), handoff: h, at }
     }
 
@@ -362,7 +369,9 @@ mod tests {
         assert_eq!(list(&nas, Some("2026-10-06")).unwrap(), ["2026-10-06/5-2", "2026-10-06/5-3"]);
         note_refusal(&nas, "2026-10-06/5-2", "writes outside its step's names").unwrap();
         assert_eq!(list(&nas, None).unwrap(), ["2026-10-05/5-1", "2026-10-06/5-2", "2026-10-06/5-3"], "still listed");
-        assert!(matches!(read(&nas, "2026-10-06/5-2").unwrap(), Read::Entry(e) if e.lease == LeaseId { term: 5, n: 2 }));
+        assert!(
+            matches!(read(&nas, "2026-10-06/5-2").unwrap(), Read::Entry(e) if e.lease == LeaseId { term: 5, n: 2 })
+        );
         assert_eq!(refusal(&nas, "2026-10-06/5-2").unwrap().as_deref(), Some("writes outside its step's names"));
         // Noted again (another lead's, or a first try cut short): the first why kept.
         note_refusal(&nas, "2026-10-06/5-2", "again").unwrap();

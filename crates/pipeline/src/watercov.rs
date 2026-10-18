@@ -75,8 +75,22 @@ pub struct GeomWriter {
 impl GeomWriter {
     pub fn create(dir: &Path) -> Result<GeomWriter> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-        let f = |n: &str| -> Result<BufWriter<std::fs::File>> { Ok(BufWriter::with_capacity(1 << 20, std::fs::File::create(dir.join(n)).with_context(|| format!("create {n}"))?)) };
-        Ok(GeomWriter { dir: dir.to_path_buf(), boxes: f("boxes.bin")?, offsets: f("offsets.bin")?, points: f("points.bin")?, rings: 0, npoints: 0, skipped: 0, sea_rings: None })
+        let f = |n: &str| -> Result<BufWriter<std::fs::File>> {
+            Ok(BufWriter::with_capacity(
+                1 << 20,
+                std::fs::File::create(dir.join(n)).with_context(|| format!("create {n}"))?,
+            ))
+        };
+        Ok(GeomWriter {
+            dir: dir.to_path_buf(),
+            boxes: f("boxes.bin")?,
+            offsets: f("offsets.bin")?,
+            points: f("points.bin")?,
+            rings: 0,
+            npoints: 0,
+            skipped: 0,
+            sea_rings: None,
+        })
     }
 
     /// A ring (world units; closed or not), oriented as an outer ring (`outer`) or a hole whatever
@@ -104,7 +118,8 @@ impl GeomWriter {
         let mut a = 0.0f64;
         for i in 0..r.len() {
             let (p, q) = (r[i], r[(i + 1) % r.len()]);
-            let (px, py, qx, qy) = (f64::from(p[0] - x0), f64::from(p[1] - y0), f64::from(q[0] - x0), f64::from(q[1] - y0));
+            let (px, py, qx, qy) =
+                (f64::from(p[0] - x0), f64::from(p[1] - y0), f64::from(q[0] - x0), f64::from(q[1] - y0));
             a += px * qy - qx * py;
         }
         if a == 0.0 {
@@ -151,7 +166,9 @@ impl GeomWriter {
         let boxes: Vec<[u32; 4]> = read_vec(&self.dir.join("boxes.bin"))?;
         let n = 1usize << GRID_Z;
         let shift = 32 - u32::from(GRID_Z);
-        let cells_of = |b: &[u32; 4]| ((b[0] >> shift) as usize..=(b[2] >> shift) as usize, (b[1] >> shift) as usize..=(b[3] >> shift) as usize);
+        let cells_of = |b: &[u32; 4]| {
+            ((b[0] >> shift) as usize..=(b[2] >> shift) as usize, (b[1] >> shift) as usize..=(b[3] >> shift) as usize)
+        };
         let mut counts = vec![0u64; n * n + 1];
         for b in &boxes {
             let (xs, ys) = cells_of(b);
@@ -178,7 +195,12 @@ impl GeomWriter {
         }
         write_vec(&self.dir.join("grid.bin"), &counts)?;
         write_vec(&self.dir.join("cells.bin"), &cells)?;
-        std::fs::write(self.dir.join("meta.json"), serde_json::to_vec(&serde_json::json!({"fmt": 1, "rings": self.rings, "points": self.npoints, "grid_z": GRID_Z, "skipped": self.skipped, "sea_rings": self.sea_rings.unwrap_or(0)}))?)?;
+        std::fs::write(
+            self.dir.join("meta.json"),
+            serde_json::to_vec(
+                &serde_json::json!({"fmt": 1, "rings": self.rings, "points": self.npoints, "grid_z": GRID_Z, "skipped": self.skipped, "sea_rings": self.sea_rings.unwrap_or(0)}),
+            )?,
+        )?;
         Ok((self.rings, self.npoints))
     }
 }
@@ -189,7 +211,8 @@ fn read_vec<T: bytemuck::Pod>(p: &Path) -> Result<Vec<T>> {
 }
 
 fn write_vec<T: bytemuck::Pod>(p: &Path, v: &[T]) -> Result<()> {
-    let mut w = BufWriter::with_capacity(1 << 20, std::fs::File::create(p).with_context(|| format!("create {}", p.display()))?);
+    let mut w =
+        BufWriter::with_capacity(1 << 20, std::fs::File::create(p).with_context(|| format!("create {}", p.display()))?);
     w.write_all(bytemuck::cast_slice(v))?;
     w.flush()?;
     Ok(())
@@ -216,11 +239,20 @@ fn map(p: &Path) -> Result<memmap2::Mmap> {
 
 impl Geom {
     pub fn open(dir: &Path) -> Result<Geom> {
-        let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("meta.json")).with_context(|| format!("{}: no store", dir.display()))?)?;
+        let meta: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.join("meta.json")).with_context(|| format!("{}: no store", dir.display()))?,
+        )?;
         if meta["fmt"] != 1 || meta["grid_z"] != u64::from(GRID_Z) {
             bail!("{}: a store of another format ({meta})", dir.display());
         }
-        Ok(Geom { boxes: map(&dir.join("boxes.bin"))?, offsets: map(&dir.join("offsets.bin"))?, points: map(&dir.join("points.bin"))?, grid: read_vec(&dir.join("grid.bin"))?, cells: map(&dir.join("cells.bin"))?, sea_rings: meta["sea_rings"].as_u64().unwrap_or(0) as u32 })
+        Ok(Geom {
+            boxes: map(&dir.join("boxes.bin"))?,
+            offsets: map(&dir.join("offsets.bin"))?,
+            points: map(&dir.join("points.bin"))?,
+            grid: read_vec(&dir.join("grid.bin"))?,
+            cells: map(&dir.join("cells.bin"))?,
+            sea_rings: meta["sea_rings"].as_u64().unwrap_or(0) as u32,
+        })
     }
 
     pub fn rings(&self) -> usize {
@@ -242,11 +274,14 @@ impl Geom {
     /// once, ascending.
     pub fn rings_in(&self, b: [u64; 4]) -> Vec<u32> {
         let boxes = self.boxes();
-        let meets = |r: &[u32; 4]| u64::from(r[0]) <= b[2] && u64::from(r[2]) >= b[0] && u64::from(r[1]) <= b[3] && u64::from(r[3]) >= b[1];
+        let meets = |r: &[u32; 4]| {
+            u64::from(r[0]) <= b[2] && u64::from(r[2]) >= b[0] && u64::from(r[1]) <= b[3] && u64::from(r[3]) >= b[1]
+        };
         let shift = 32 - u32::from(GRID_Z);
         let n = 1usize << GRID_Z;
         let (cx0, cy0) = ((b[0] >> shift) as usize, (b[1] >> shift) as usize);
-        let (cx1, cy1) = (((b[2].min(u64::from(u32::MAX))) >> shift) as usize, ((b[3].min(u64::from(u32::MAX))) >> shift) as usize);
+        let (cx1, cy1) =
+            (((b[2].min(u64::from(u32::MAX))) >> shift) as usize, ((b[3].min(u64::from(u32::MAX))) >> shift) as usize);
         if (cx1 - cx0 + 1) * (cy1 - cy0 + 1) > 64 {
             // A box over many cells (a low zoom's tile): every ring's box asked.
             return (0..boxes.len() as u32).into_par_iter().filter(|&i| meets(&boxes[i as usize])).collect();
@@ -256,7 +291,12 @@ impl Geom {
         for cy in cy0..=cy1 {
             for cx in cx0..=cx1 {
                 let c = cy * n + cx;
-                out.extend(cells[self.grid[c] as usize..self.grid[c + 1] as usize].iter().copied().filter(|&i| meets(&boxes[i as usize])));
+                out.extend(
+                    cells[self.grid[c] as usize..self.grid[c + 1] as usize]
+                        .iter()
+                        .copied()
+                        .filter(|&i| meets(&boxes[i as usize])),
+                );
             }
         }
         out.sort_unstable();
@@ -447,7 +487,12 @@ pub fn tile_coverage_of(g: &Geom, z: u8, x: u32, y: u32, size: usize, which: Whi
 // ---- reading the sources --------------------------------------------------------------------------
 
 /// The pass's `water` set's filter (pipeline::osmpass::SETS): the areas below.
-pub const SET_FILTER: &[&str] = &["wr/natural=water", "wr/landuse=reservoir,basin,salt_pond", "wr/waterway=dock", "wr/water=river,stream,canal,ditch,drain,pond,basin,wastewater"];
+pub const SET_FILTER: &[&str] = &[
+    "wr/natural=water",
+    "wr/landuse=reservoir,basin,salt_pond",
+    "wr/waterway=dock",
+    "wr/water=river,stream,canal,ditch,drain,pond,basin,wastewater",
+];
 /// What the basemap draws as water, as osmium's area tags (the export's `area_tags`): OpenMapTiles'
 /// water polygons (natural=water, the reservoir, basin and salt pond land uses, docks, and
 /// water=river … wastewater; not bays, which it reads but doesn't draw).
@@ -542,7 +587,9 @@ pub fn read_water_polygons(mut r: impl Read, w: &mut GeomWriter) -> Result<u64> 
     if word(0) != 9994 {
         bail!("not a shapefile");
     }
-    let mut left = (u64::try_from(word(24)).context("the shapefile's length")? * 2).checked_sub(100).context("the shapefile's length")?;
+    let mut left = (u64::try_from(word(24)).context("the shapefile's length")? * 2)
+        .checked_sub(100)
+        .context("the shapefile's length")?;
     let mut polygons = 0u64;
     let mut batch: Vec<Vec<u8>> = Vec::with_capacity(256);
     while left > 0 {
@@ -550,7 +597,8 @@ pub fn read_water_polygons(mut r: impl Read, w: &mut GeomWriter) -> Result<u64> 
         while batch.len() < 256 && left > 0 {
             let mut rh = [0u8; 8];
             r.read_exact(&mut rh).context("a record's header")?;
-            let len = usize::try_from(i32::from_be_bytes([rh[4], rh[5], rh[6], rh[7]])).context("a record's length")? * 2;
+            let len =
+                usize::try_from(i32::from_be_bytes([rh[4], rh[5], rh[6], rh[7]])).context("a record's length")? * 2;
             let mut body = vec![0u8; len];
             r.read_exact(&mut body).context("a record cut short")?;
             left = left.checked_sub(8 + len as u64).context("a record past the shapefile's length")?;
@@ -589,7 +637,9 @@ fn shp_rings(b: &[u8]) -> Vec<(Vec<[f64; 2]>, bool)> {
         if e <= s + 2 || e > npts {
             continue;
         }
-        let r: Vec<[f64; 2]> = (s..e).map(|i| [f64_at(pts_at + 16 * i) / WORLD_M + 0.5, 0.5 - f64_at(pts_at + 16 * i + 8) / WORLD_M]).collect();
+        let r: Vec<[f64; 2]> = (s..e)
+            .map(|i| [f64_at(pts_at + 16 * i) / WORLD_M + 0.5, 0.5 - f64_at(pts_at + 16 * i + 8) / WORLD_M])
+            .collect();
         // y flipped: clockwise with y up is positive with y down.
         let outer = area2(&r) > 0.0;
         out.push((r, outer));
@@ -622,7 +672,15 @@ mod tests {
         // Tile 10/500/300, 256 px: a square of pixels 10–20 × 30–50.
         let px = 1.0 / (256.0 * 1024.0);
         let (ox, oy) = (500.0 / 1024.0, 300.0 / 1024.0);
-        let (_d, g) = store(&[(vec![[ox + 10.0 * px, oy + 30.0 * px], [ox + 20.0 * px, oy + 30.0 * px], [ox + 20.0 * px, oy + 50.0 * px], [ox + 10.0 * px, oy + 50.0 * px]], true)]);
+        let (_d, g) = store(&[(
+            vec![
+                [ox + 10.0 * px, oy + 30.0 * px],
+                [ox + 20.0 * px, oy + 30.0 * px],
+                [ox + 20.0 * px, oy + 50.0 * px],
+                [ox + 10.0 * px, oy + 50.0 * px],
+            ],
+            true,
+        )]);
         let c = tile_coverage(&g, 10, 500, 300, 256);
         for y in 0..256 {
             for x in 0..256 {
@@ -675,10 +733,12 @@ mod tests {
         let n = 2000;
         let (cx, cy) = ((1000.0 + 0.3) / 4096.0, (2000.0 + 0.6) / 4096.0);
         let r = 37.3 / (256.0 * 4096.0);
-        let ring: Vec<[f64; 2]> = (0..n).map(|i| {
-            let a = i as f64 / n as f64 * std::f64::consts::TAU;
-            [cx + r * a.cos(), cy + r * a.sin()]
-        }).collect();
+        let ring: Vec<[f64; 2]> = (0..n)
+            .map(|i| {
+                let a = i as f64 / n as f64 * std::f64::consts::TAU;
+                [cx + r * a.cos(), cy + r * a.sin()]
+            })
+            .collect();
         let area_px12 = 0.5 * area2(&ring).abs() * (256.0 * 4096.0f64).powi(2);
         let (_d, g) = store(&[(ring, true)]);
         for z in [12u8, 10, 8, 5] {

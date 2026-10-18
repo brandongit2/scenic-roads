@@ -44,7 +44,10 @@ pub(crate) fn check_range(file_len: u64, off: u64, len: usize) -> Result<(), IoE
     if off.checked_add(len as u64).is_some_and(|end| end <= file_len) {
         Ok(())
     } else {
-        Err(IoError::Io(io::Error::new(io::ErrorKind::UnexpectedEof, format!("bytes {off}..+{len} are past the end ({file_len} bytes)"))))
+        Err(IoError::Io(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!("bytes {off}..+{len} are past the end ({file_len} bytes)"),
+        )))
     }
 }
 

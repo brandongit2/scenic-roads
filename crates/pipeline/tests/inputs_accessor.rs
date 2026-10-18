@@ -15,10 +15,28 @@ use common::*;
 
 /// What names a drop box in Rust (in a line with `sources/inputs` taken out: the checked copies
 /// aren't a drop box).
-const MARKERS: &[&str] = &["\"inputs", "join(\"inputs\")", "/inputs/", "\"translations", "}/translations", "\"descriptions", "}/descriptions"];
+const MARKERS: &[&str] = &[
+    "\"inputs",
+    "join(\"inputs\")",
+    "/inputs/",
+    "\"translations",
+    "}/translations",
+    "\"descriptions",
+    "}/descriptions",
+];
 
 /// What names a drop box in the Python steps (likewise).
-const PY_MARKERS: &[&str] = &["\"inputs", "'inputs", "/ \"inputs\"", "/ 'inputs'", "/inputs/", "\"translations", "'translations", "\"descriptions", "'descriptions"];
+const PY_MARKERS: &[&str] = &[
+    "\"inputs",
+    "'inputs",
+    "/ \"inputs\"",
+    "/ 'inputs'",
+    "/inputs/",
+    "\"translations",
+    "'translations",
+    "\"descriptions",
+    "'descriptions",
+];
 
 /// Whether line `l` (its code) names a drop box by `markers` or a unit's name.
 fn names_a_drop_box(l: &str, markers: &[&str], units: &[String]) -> bool {
@@ -73,9 +91,12 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
 ];
 
 /// The same of the Python steps.
-const PY_EXEMPT: &[(&str, &str, &str, &str)] = &[
-    ("dem/railfeeds.py", "keys", "\"inputs/keys.env's keys (KEY=value lines; # comments).\"", "inputs/keys.env, not an input (§2): named in its docstring"),
-];
+const PY_EXEMPT: &[(&str, &str, &str, &str)] = &[(
+    "dem/railfeeds.py",
+    "keys",
+    "\"inputs/keys.env's keys (KEY=value lines; # comments).\"",
+    "inputs/keys.env, not an input (§2): named in its docstring",
+)];
 
 /// Each gate unit's name as code would write it in a path. (The regions', the heritage
 /// registers' and matches', the elevation datasets' and the source declarations' aside: "regions",
@@ -86,7 +107,14 @@ const PY_EXEMPT: &[(&str, &str, &str, &str)] = &[
 /// `MARKERS` catches.)
 fn unit_markers() -> Vec<String> {
     use pipeline::inputs::{elevation, heritage, heritage_matches, regions, sources};
-    pipeline::inputs::UNITS.iter().chain([&pipeline::inputs::TEST_UNIT]).filter(|u| ![regions::UNIT, heritage::UNIT, heritage_matches::UNIT, elevation::UNIT, sources::UNIT].contains(*u)).map(|u| format!("\"{u}")).collect()
+    pipeline::inputs::UNITS
+        .iter()
+        .chain([&pipeline::inputs::TEST_UNIT])
+        .filter(|u| {
+            ![regions::UNIT, heritage::UNIT, heritage_matches::UNIT, elevation::UNIT, sources::UNIT].contains(*u)
+        })
+        .map(|u| format!("\"{u}"))
+        .collect()
 }
 
 /// The lines naming a drop box outside the accessor, and the exemptions that matched none.
@@ -118,7 +146,9 @@ fn scan() -> (Vec<String>, Vec<String>) {
             if ACCESSOR.iter().any(|a| body.contains(a)) {
                 continue;
             }
-            if let Some(k) = EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == name && l.contains(anchor)) {
+            if let Some(k) =
+                EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == name && l.contains(anchor))
+            {
                 used.insert(k);
                 continue;
             }
@@ -145,14 +175,22 @@ fn scan() -> (Vec<String>, Vec<String>) {
             if PY_ACCESSOR.iter().any(|a| body.contains(a)) {
                 continue;
             }
-            if let Some(k) = PY_EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == name && l.contains(anchor)) {
+            if let Some(k) =
+                PY_EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == name && l.contains(anchor))
+            {
                 py_used.insert(k);
                 continue;
             }
             bad.push(format!("{rel}:{} in {name}: {}", i + 1, l.trim()));
         }
     }
-    let unused: Vec<String> = EXEMPT.iter().enumerate().filter(|(k, _)| !used.contains(k)).chain(PY_EXEMPT.iter().enumerate().filter(|(k, _)| !py_used.contains(k))).map(|(_, (f, n, a, _))| format!("{f}: {n}: {a}")).collect();
+    let unused: Vec<String> = EXEMPT
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| !used.contains(k))
+        .chain(PY_EXEMPT.iter().enumerate().filter(|(k, _)| !py_used.contains(k)))
+        .map(|(_, (f, n, a, _))| format!("{f}: {n}: {a}"))
+        .collect();
     (bad, unused)
 }
 
@@ -196,7 +234,10 @@ static D: [&str; 1] = ["translations"];"#;
     // (An accessor call named in a string isn't one; a marker with `sources/inputs` out of it.)
     assert!(!code_of("let s = \"inputs::open(\";").contains("inputs::open("));
     assert!(!py_code("x = 'inputs.arg(p)'  # inputs.arg(").contains("inputs.arg("));
-    assert!(names_a_drop_box("root.join(\"x/inputs/y\")", MARKERS, &[]) && !names_a_drop_box("\"sources/inputs/x\"", MARKERS, &[]));
+    assert!(
+        names_a_drop_box("root.join(\"x/inputs/y\")", MARKERS, &[])
+            && !names_a_drop_box("\"sources/inputs/x\"", MARKERS, &[])
+    );
     assert!(names_a_drop_box("p = root / 'inputs' / 'x'", PY_MARKERS, &[]));
     let py = ["X = Path(\"inputs\")", "def f():", "    return \"inputs/a\"", "", "def g():", "    pass"];
     assert_eq!(enclosing_py(&py, 0).map(|e| e.0).as_deref(), Some("X"));
@@ -209,7 +250,14 @@ static D: [&str; 1] = ["translations"];"#;
 fn the_steps_root_refuses_a_drop_box_path() {
     let d = tempfile::tempdir().unwrap();
     let out = pipeline::out::Out::unbound(d.path(), &d.path().join("s")).unwrap();
-    for p in ["inputs/regions/wales.toml", "inputs/_gate-test/a.jsonl", "translations/fr.jsonl", "descriptions/x.jsonl", "inputs", "./inputs/keys.env"] {
+    for p in [
+        "inputs/regions/wales.toml",
+        "inputs/_gate-test/a.jsonl",
+        "translations/fr.jsonl",
+        "descriptions/x.jsonl",
+        "inputs",
+        "./inputs/keys.env",
+    ] {
         let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.path(p))).expect_err(p);
         let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
         assert!(msg.contains("inputs_accessor.rs") && msg.contains("drop box"), "{p}: {msg}");
@@ -224,7 +272,8 @@ fn the_steps_root_refuses_a_drop_box_path() {
 /// `translations/` or `descriptions/`). (Passed over, said, without python3.)
 #[test]
 fn the_python_steps_open_inputs_through_their_helper() {
-    let ok = store::spawn::status(store::spawn::command("python3").args(["-I", "-c", "pass"])).is_ok_and(|s| s.success());
+    let ok =
+        store::spawn::status(store::spawn::command("python3").args(["-I", "-c", "pass"])).is_ok_and(|s| s.success());
     if !ok {
         eprintln!("python3 isn't here: dem/inputs.py not run");
         return;
@@ -243,6 +292,13 @@ for p in ["/nas/sources/inputs/_gate-test/a.0123456789abcdef.jsonl", "/nas/sourc
     assert str(inputs.arg(p)) == p, p
 print("ok")
 "#;
-    let out = store::spawn::output(store::spawn::command("python3").arg("-I").arg("-c").arg(code).arg(root().join("dem"))).unwrap();
-    assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "ok", "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let out =
+        store::spawn::output(store::spawn::command("python3").arg("-I").arg("-c").arg(code).arg(root().join("dem")))
+            .unwrap();
+    assert!(
+        out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "ok",
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

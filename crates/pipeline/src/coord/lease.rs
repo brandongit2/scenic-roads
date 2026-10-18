@@ -62,7 +62,9 @@ impl Lease {
     /// What it's for, in a few words.
     pub fn what(&self) -> String {
         match &self.work {
-            Work::Job { step, targets } => format!("{step} {}", targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" ")),
+            Work::Job { step, targets } => {
+                format!("{step} {}", targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "))
+            }
             Work::Task { id } => format!("task {id}"),
         }
     }
@@ -116,7 +118,10 @@ impl Leases {
     }
 
     fn saved(&self) -> Saved {
-        Saved { next: self.next, leases: self.by_id.values().filter(|l| matches!(l.work, Work::Job { .. })).cloned().collect() }
+        Saved {
+            next: self.next,
+            leases: self.by_id.values().filter(|l| matches!(l.work, Work::Job { .. })).cloned().collect(),
+        }
     }
 
     /// The jobs' leases as `save` writes them, for the pool's state per term (docs/pool.md §7.5):
@@ -166,7 +171,10 @@ impl Leases {
 
     /// Every target of `step` held now, by anyone.
     pub fn held(&self, step: &str, now: Instant) -> BTreeSet<String> {
-        self.live(now).filter(|l| matches!(&l.work, Work::Job { step: s, .. } if s == step)).flat_map(|l| l.targets().iter().map(|t| t.0.clone())).collect()
+        self.live(now)
+            .filter(|l| matches!(&l.work, Work::Job { step: s, .. } if s == step))
+            .flat_map(|l| l.targets().iter().map(|t| t.0.clone()))
+            .collect()
     }
 
     /// Which leases workers other than `me` hold, as a number that changes whenever one is
@@ -184,7 +192,20 @@ impl Leases {
         let id = self.next;
         self.next += 1;
         let granted_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        self.by_id.insert(id, Lease { id, term: self.term, granted_at, worker: worker.to_string(), work, granted: now, deadline: now + self.ttl, progress: None, frac: None });
+        self.by_id.insert(
+            id,
+            Lease {
+                id,
+                term: self.term,
+                granted_at,
+                worker: worker.to_string(),
+                work,
+                granted: now,
+                deadline: now + self.ttl,
+                progress: None,
+                frac: None,
+            },
+        );
         id
     }
 
@@ -205,7 +226,14 @@ impl Leases {
     }
 
     /// `renew`, with how far the work is (0–1), when the worker says.
-    pub fn renew_frac(&mut self, id: u64, worker: &str, progress: Option<String>, frac: Option<f64>, now: Instant) -> bool {
+    pub fn renew_frac(
+        &mut self,
+        id: u64,
+        worker: &str,
+        progress: Option<String>,
+        frac: Option<f64>,
+        now: Instant,
+    ) -> bool {
         match self.by_id.get_mut(&id) {
             Some(l) if l.worker == worker && l.deadline > now => {
                 l.deadline = now + self.ttl;
@@ -311,7 +339,11 @@ mod tests {
         l.save(&p).unwrap();
         let t3 = t2 + Duration::from_secs(5000);
         let mut back = Leases::load(&p, Duration::from_secs(600), t3);
-        assert_eq!(back.all(t3).iter().map(|x| (x.id, x.worker.as_str())).collect::<Vec<_>>(), [(a, "m1")], "tasks aren't saved");
+        assert_eq!(
+            back.all(t3).iter().map(|x| (x.id, x.worker.as_str())).collect::<Vec<_>>(),
+            [(a, "m1")],
+            "tasks aren't saved"
+        );
         assert_eq!(back.all(t3)[0].progress.as_deref(), Some("2/6 areas"));
         assert!(back.grant("m1", job(&[("6/3/3", "k4")]), t3) > t + 1);
         // Finished by its worker only; this Mac's own dropped at a restart.

@@ -172,7 +172,8 @@ impl<T: bytemuck::Pod> Big<T> {
             return;
         }
         let size = std::mem::size_of::<T>();
-        let mut m = memmap2::MmapMut::map_anon(want.max(2 * self.capacity()).max(16384 / size) * size).expect("memory for the places");
+        let mut m = memmap2::MmapMut::map_anon(want.max(2 * self.capacity()).max(16384 / size) * size)
+            .expect("memory for the places");
         let old = self.as_slice();
         bytemuck::cast_slice_mut::<u8, T>(&mut m[..])[..old.len()].copy_from_slice(old);
         self.map = Some(m);
@@ -280,7 +281,8 @@ fn each_label(tile: &[u8], z: u8, x: u32, y: u32, mut f: impl FnMut(&Label)) -> 
     let t = names::mvt::Tile::decode(&raw)?;
     for layer in t.layers.iter().filter(|l| l.name == "l" && l.extent > 0) {
         let key = |k: &str| layer.keys.iter().position(|x| x == k).map(|i| i as u32);
-        let (kn, ken, kk, kc, ks, kmz, kms, kkana, kl) = (key("n"), key("en"), key("k"), key("c"), key("s"), key("mz"), key("ms"), key("kana"), key("l"));
+        let (kn, ken, kk, kc, ks, kmz, kms, kkana, kl) =
+            (key("n"), key("en"), key("k"), key("c"), key("s"), key("mz"), key("ms"), key("kana"), key("l"));
         for feat in &layer.features {
             let get = |k: Option<u32>| -> Option<&names::mvt::Value> {
                 let k = k?;
@@ -427,7 +429,8 @@ impl Chunk {
         let shown = match names {
             Some(n) => {
                 let kind = if l.kind == "place" { names::Kind::of_place(l.class) } else { names::Kind::Other };
-                let osm: Vec<names::Lang> = l.langs.map(|v| v.split(',').filter_map(names::Lang::parse).collect()).unwrap_or_default();
+                let osm: Vec<names::Lang> =
+                    l.langs.map(|v| v.split(',').filter_map(names::Lang::parse).collect()).unwrap_or_default();
                 n.display_at(kind, l.name, own, &osm, l.lon, l.lat)
             }
             None => names::DisplayRef::new(l.name, own),
@@ -514,7 +517,13 @@ impl Places {
             w += c.words.as_slice().iter().filter(|x| keep[x[0] as usize] == 1).count();
             at += keep.len();
         }
-        let mut p = Places { places: Big::with_capacity(n), classes: Vec::new(), text: Big::with_capacity(t), folded: Big::with_capacity(f), words: Big::with_capacity(w) };
+        let mut p = Places {
+            places: Big::with_capacity(n),
+            classes: Vec::new(),
+            text: Big::with_capacity(t),
+            folded: Big::with_capacity(f),
+            words: Big::with_capacity(w),
+        };
         let mut at = 0;
         for c in chunks {
             let keep = &keep.as_slice()[at..at + c.places.len()];
@@ -568,7 +577,8 @@ impl Places {
 
     fn text_of(&self, i: usize) -> &str {
         let (ps, t) = (self.places.as_slice(), self.text.as_slice());
-        std::str::from_utf8(&t[ps[i].text as usize..ps.get(i + 1).map_or(t.len(), |p| p.text as usize)]).unwrap_or_default()
+        std::str::from_utf8(&t[ps[i].text as usize..ps.get(i + 1).map_or(t.len(), |p| p.text as usize)])
+            .unwrap_or_default()
     }
 
     /// The `n` places best found by `q` (two letters at least, or an ideograph or kana: `too_short`):
@@ -595,7 +605,13 @@ impl Places {
         for &[at, i] in &words[lo..hi] {
             let at = at as usize;
             let start = at == 0 || f[at - 1] == SEP as u8;
-            let t = if start && f[at + q.len()] == SEP as u8 { 3 } else if start { 2 } else { 1 };
+            let t = if start && f[at + q.len()] == SEP as u8 {
+                3
+            } else if start {
+                2
+            } else {
+                1
+            };
             let e = &mut tier[i as usize];
             if *e == 0 {
                 found.push(i);
@@ -639,11 +655,19 @@ impl Places {
         for (i, p) in self.places.as_slice().iter().enumerate() {
             let (lon, lat) = (p.lon as f64, p.lat as f64);
             // (A ring across the antimeridian has longitudes past ±180.)
-            let lon = if lon < w { lon + 360.0 } else if lon > e { lon - 360.0 } else { lon };
+            let lon = if lon < w {
+                lon + 360.0
+            } else if lon > e {
+                lon - 360.0
+            } else {
+                lon
+            };
             if lon < w || lon > e || lat < s || lat > n || !crate::downloads::inside(ring, [lon, lat]) {
                 continue;
             }
-            let r = if p.kind == 0 { 1000.0 } else { 0.0 } + p.score as f64 + (NEAR - 3.0 * (1.0 + km(c.0, c.1, lon, lat)).log10()).max(0.0);
+            let r = if p.kind == 0 { 1000.0 } else { 0.0 }
+                + p.score as f64
+                + (NEAR - 3.0 * (1.0 + km(c.0, c.1, lon, lat)).log10()).max(0.0);
             if best.is_none_or(|(b, _)| r > b) {
                 best = Some((r, i as u32));
             }
@@ -657,7 +681,17 @@ impl Places {
         let i = h.place as usize;
         let p = &self.places.as_slice()[i];
         let (name, en, main, sub) = names_of(self.text_of(i));
-        Found { name, en, main, sub, kind: KINDS[p.kind as usize], class: &self.classes[p.class as usize], lon: p.lon as f64, lat: p.lat as f64, zoom: p.zoom as f64 / 10.0 }
+        Found {
+            name,
+            en,
+            main,
+            sub,
+            kind: KINDS[p.kind as usize],
+            class: &self.classes[p.class as usize],
+            lon: p.lon as f64,
+            lat: p.lat as f64,
+            zoom: p.zoom as f64 / 10.0,
+        }
     }
 }
 
@@ -705,7 +739,8 @@ pub struct Found<'a> {
 fn sources(cat: &Catalog) -> Vec<(String, u8)> {
     let Some(layer) = cat.layers.get("labels") else { return Vec::new() };
     let content = |l: &String| cat.files.get(l).map(|f| f.file.clone());
-    let hi = layer.hi.iter().filter(|(t, _)| cat.hidata.contains_key(*t)).filter_map(|(_, l)| Some((content(l)?, 12u8)));
+    let hi =
+        layer.hi.iter().filter(|(t, _)| cat.hidata.contains_key(*t)).filter_map(|(_, l)| Some((content(l)?, 12u8)));
     hi.chain(layer.lo.values().filter_map(|l| Some((content(l)?, 8u8)))).collect()
 }
 
@@ -742,7 +777,8 @@ fn build(data: &Data, packs: &[(String, u8)], names: Option<&names::Namer>) -> R
     }
     let pool = rayon::ThreadPoolBuilder::new().num_threads(THREADS).thread_name(|i| format!("places-{i}")).build()?;
     pool.install(|| {
-        let read: Vec<Result<Chunk>> = packs.par_iter().map(|(content, z)| read_pack(data, content, *z, names)).collect();
+        let read: Vec<Result<Chunk>> =
+            packs.par_iter().map(|(content, z)| read_pack(data, content, *z, names)).collect();
         let mut b = Built::default();
         let mut chunks = Vec::with_capacity(read.len());
         let mut first_bad = None;
@@ -762,7 +798,11 @@ fn build(data: &Data, packs: &[(String, u8)], names: Option<&names::Namer>) -> R
         b.first = b.first.or(first_bad);
         if chunks.iter().all(|c| c.tiles == 0) && (b.unread > 0 || b.bad > 0) {
             let why = b.first.unwrap_or_default();
-            return Err(if b.unread > 0 { anyhow!("none of the labels' {} packs could be read ({why})", packs.len()) } else { anyhow!("none of the labels' {} tiles could be read ({why})", b.bad) });
+            return Err(if b.unread > 0 {
+                anyhow!("none of the labels' {} packs could be read ({why})", packs.len())
+            } else {
+                anyhow!("none of the labels' {} tiles could be read ({why})", b.bad)
+            });
         }
         b.places = Places::from_chunks(chunks);
         Ok(b)
@@ -833,7 +873,8 @@ impl Drop for Making<'_> {
     fn drop(&mut self) {
         if std::thread::panicking() {
             eprintln!("places: the build panicked");
-            *self.0.failed.lock().unwrap_or_else(|e| e.into_inner()) = Some(("the build failed (a fault: the server's log says where)".into(), Instant::now()));
+            *self.0.failed.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(("the build failed (a fault: the server's log says where)".into(), Instant::now()));
         }
         self.0.making.store(false, Ordering::SeqCst);
     }
@@ -845,7 +886,12 @@ impl Index {
     pub fn get(self: &Arc<Self>, data: &Arc<Data>, names: &Arc<NamesState>) -> Got {
         *self.used.lock().unwrap() = Some(Instant::now());
         let key = self.key(data, names);
-        let cur = self.made.read().unwrap().as_ref().map(|m| (m.places.clone(), m.key == key && m.partial.is_none_or(|t| t.elapsed() < PARTIAL)));
+        let cur = self
+            .made
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|m| (m.places.clone(), m.key == key && m.partial.is_none_or(|t| t.elapsed() < PARTIAL)));
         let resting = self.failed.lock().unwrap().as_ref().is_some_and(|(_, t)| t.elapsed() < REST);
         if !cur.as_ref().is_some_and(|c| c.1) && !resting && !self.making.swap(true, Ordering::SeqCst) {
             self.spawn(data.clone(), names.clone());
@@ -892,9 +938,18 @@ impl Index {
                     Ok(b) => {
                         let skipped = match (b.unread, b.bad) {
                             (0, 0) => String::new(),
-                            (u, n) => format!("; passed over: {u} packs, {n} tiles (the first, {})", b.first.as_deref().unwrap_or_default()),
+                            (u, n) => format!(
+                                "; passed over: {u} packs, {n} tiles (the first, {})",
+                                b.first.as_deref().unwrap_or_default()
+                            ),
                         };
-                        eprintln!("places: {} of catalog {} ({} MB) in {:.1} s{skipped}", b.places.len(), cat.n, b.places.bytes() >> 20, t.elapsed().as_secs_f64());
+                        eprintln!(
+                            "places: {} of catalog {} ({} MB) in {:.1} s{skipped}",
+                            b.places.len(),
+                            cat.n,
+                            b.places.bytes() >> 20,
+                            t.elapsed().as_secs_f64()
+                        );
                         let n = me.count.fetch_add(1, Ordering::SeqCst) + 1;
                         let partial = (b.unread > 0).then(Instant::now);
                         *me.made.write().unwrap() = Some(Made { places: Arc::new(b.places), key, n, partial });
@@ -982,12 +1037,19 @@ fn km(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
     6371.0 * 2.0 * a.sqrt().min(1.0).asin()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn label(name: &'static str, en: Option<&'static str>, kind: &'static str, class: &'static str, s: f64, lon: f64, lat: f64) -> Label<'static> {
+    fn label(
+        name: &'static str,
+        en: Option<&'static str>,
+        kind: &'static str,
+        class: &'static str,
+        s: f64,
+        lon: f64,
+        lat: f64,
+    ) -> Label<'static> {
         Label { id: None, name, en, kana: None, langs: None, kind, class, s, mz: 10.0, ms: None, lon, lat }
     }
 
@@ -1035,7 +1097,10 @@ mod tests {
         assert_eq!(p.len(), 6, "the isolated dwelling left out");
         // The whole name first (the two villages, the nearer first), then names that start so,
         // then a word inside one.
-        assert_eq!(hits_of(&p, "louise", Some((-120.0, 49.5))), ["Louise village", "Louise village", "Louiseville town", "Lake Louise hamlet", "Lake Louise lake"]);
+        assert_eq!(
+            hits_of(&p, "louise", Some((-120.0, 49.5))),
+            ["Louise village", "Louise village", "Louiseville town", "Lake Louise hamlet", "Lake Louise lake"]
+        );
         assert_eq!(p.place(&p.search("louise", Some((-120.0, 49.5)), 1)[0]).lon, -122.0);
         // Words in order, as typed; the English, and inside a name without spaces.
         assert_eq!(hits_of(&p, "lake lou", None), ["Lake Louise hamlet", "Lake Louise lake"]);
@@ -1044,7 +1109,10 @@ mod tests {
         assert_eq!(hits_of(&p, "浜", None), ["横浜 city"]);
         assert!(p.search("", None, 10).is_empty());
         let f = p.place(&p.search("yokohama", None, 1)[0]);
-        assert_eq!((f.name, f.en, f.main, f.sub, f.kind, f.zoom), ("横浜", Some("Yokohama"), "横浜", Some("Yokohama"), "place", 11.0));
+        assert_eq!(
+            (f.name, f.en, f.main, f.sub, f.kind, f.zoom),
+            ("横浜", Some("Yokohama"), "横浜", Some("Yokohama"), "place", 11.0)
+        );
         // At most n, the best.
         assert_eq!(hits_of(&p, "lo", None).len(), 5);
         assert_eq!(p.search("lo", None, 2).len(), 2);
@@ -1052,7 +1120,13 @@ mod tests {
 
     #[test]
     fn one_letter_alone_isnt_searched_but_an_ideograph_is() {
-        let p = Places::from_labels(&[label("Sable", None, "place", "town", 60.0, 0.0, 0.0), label("横浜", None, "place", "city", 76.0, 139.6, 35.4)], None);
+        let p = Places::from_labels(
+            &[
+                label("Sable", None, "place", "town", 60.0, 0.0, 0.0),
+                label("横浜", None, "place", "city", 76.0, 139.6, 35.4),
+            ],
+            None,
+        );
         assert!(p.search("s", None, 8).is_empty());
         assert!(p.search(" S. ", None, 8).is_empty());
         assert_eq!(p.search("sa", None, 8).len(), 1);
@@ -1074,14 +1148,23 @@ mod tests {
             ],
             None,
         );
-        assert_eq!(hits_of(&p, "louis", None), ["Port Louis hamlet", "Louisbourg town", "Saint-Louis-du-Ha! Ha! village"]);
+        assert_eq!(
+            hits_of(&p, "louis", None),
+            ["Port Louis hamlet", "Louisbourg town", "Saint-Louis-du-Ha! Ha! village"]
+        );
         let r: Vec<f64> = p.search("louis", None, 10).iter().map(|h| h.rank).collect();
         assert_eq!(r, [331.0, 264.0, 155.0]);
     }
 
     #[test]
     fn hangul_is_found_from_any_syllable() {
-        let p = Places::from_labels(&[label("서울특별시", Some("Seoul"), "place", "city", 79.0, 127.0, 37.5), label("부산광역시", Some("Busan"), "place", "city", 78.0, 129.0, 35.1)], None);
+        let p = Places::from_labels(
+            &[
+                label("서울특별시", Some("Seoul"), "place", "city", 79.0, 127.0, 37.5),
+                label("부산광역시", Some("Busan"), "place", "city", 78.0, 129.0, 35.1),
+            ],
+            None,
+        );
         assert_eq!(hits_of(&p, "특별시", None), ["서울특별시 city"]);
         assert_eq!(hits_of(&p, "서울", None), ["서울특별시 city"]);
         assert_eq!(hits_of(&p, "광역", None), ["부산광역시 city"]);
@@ -1112,12 +1195,22 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, text).unwrap();
             let f = std::fs::File::options().write(true).open(&p).unwrap();
-            f.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))).unwrap();
+            f.set_times(
+                std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() - Duration::from_secs(3600)),
+            )
+            .unwrap();
         }
         let n = names::Names::load(dir.path()).unwrap();
         let pt = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
-        let rect = |code: &str, w: f64, s: f64, e: f64, n: f64| names::spoken::Area { code: code.into(), area_km2: (e - w) * (n - s), polygons: vec![vec![vec![pt(w, s), pt(e, s), pt(e, n), pt(w, n)]]] };
-        let spoken = names::Spoken::build(&names::Table::parse("JP\tja\nFR\tfr\n"), [rect("JP", 128.0, 30.0, 146.0, 46.0), rect("FR", -5.0, 42.0, 8.0, 51.0)]);
+        let rect = |code: &str, w: f64, s: f64, e: f64, n: f64| names::spoken::Area {
+            code: code.into(),
+            area_km2: (e - w) * (n - s),
+            polygons: vec![vec![vec![pt(w, s), pt(e, s), pt(e, n), pt(w, n)]]],
+        };
+        let spoken = names::Spoken::build(
+            &names::Table::parse("JP\tja\nFR\tfr\n"),
+            [rect("JP", 128.0, 30.0, 146.0, 46.0), rect("FR", -5.0, 42.0, 8.0, 51.0)],
+        );
         (dir, names::Namer { names: n, spoken: Some(std::sync::Arc::new(spoken)) })
     }
 
@@ -1174,9 +1267,23 @@ mod tests {
             put(3, Value::String(class.to_string()));
             put(4, Value::Double(*imp));
             let zz = |n: i32| ((n << 1) ^ (n >> 31)) as u32;
-            features.push(names::mvt::Feature { id: Some(*id), tags, geom_type: Some(1), geometry: vec![9, zz(*px), zz(*py)], ..Default::default() });
+            features.push(names::mvt::Feature {
+                id: Some(*id),
+                tags,
+                geom_type: Some(1),
+                geometry: vec![9, zz(*px), zz(*py)],
+                ..Default::default()
+            });
         }
-        let layer = names::mvt::Layer { name: "l".into(), version: 2, extent: 4096, keys, values, features, unknown: Vec::new() };
+        let layer = names::mvt::Layer {
+            name: "l".into(),
+            version: 2,
+            extent: 4096,
+            keys,
+            values,
+            features,
+            unknown: Vec::new(),
+        };
         names::mvt::gzip(&names::mvt::Tile { layers: vec![layer], unknown: Vec::new() }.encode()).unwrap()
     }
 
@@ -1195,7 +1302,8 @@ mod tests {
             let path = nas.join(&content);
             if !missing.contains(key) && !path.exists() {
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-                let mut w = store::pack::PackWriter::create(&path, serde_json::json!({ "layer": "labels" }), true).unwrap();
+                let mut w =
+                    store::pack::PackWriter::create(&path, serde_json::json!({ "layer": "labels" }), true).unwrap();
                 for (z, x, y, tile) in tiles {
                     w.add(*z, *x, *y, tile, 0).unwrap();
                 }
@@ -1217,14 +1325,23 @@ mod tests {
     /// map's areas (6/32/21) with a zoom-12 tile of Lake Louise and Banff (its copy: dem/labels.py
     /// puts what shows by zoom 8 in its zoom-12 tile too).
     fn packs() -> Vec<Pack<'static>> {
-        let lo = labels_tile(&[(1, "Banff", None, "place", "town", 62.0, (100, 200)), (2, "横浜", Some("Yokohama"), "place", "city", 76.0, (900, 900))]);
-        let hi = labels_tile(&[(3, "Lake Louise", None, "water", "lake", 5.0, (2048, 2048)), (1, "Banff", None, "place", "town", 62.0, (1600, 3200))]);
+        let lo = labels_tile(&[
+            (1, "Banff", None, "place", "town", 62.0, (100, 200)),
+            (2, "横浜", Some("Yokohama"), "place", "city", 76.0, (900, 900)),
+        ]);
+        let hi = labels_tile(&[
+            (3, "Lake Louise", None, "water", "lake", 5.0, (2048, 2048)),
+            (1, "Banff", None, "place", "town", 62.0, (1600, 3200)),
+        ]);
         vec![("3/4/2", 1, vec![(8, 130, 70, lo)]), ("6/32/21", 2, vec![(12, 2050, 1350, hi)])]
     }
 
     async fn ask(s: &S, q: &str, near: Option<&str>) -> serde_json::Value {
         let r = search(State(s.clone()), Query(SearchQ { q: q.into(), near: near.map(str::to_string), n: None })).await;
-        assert_eq!(r.headers().get(header::CACHE_CONTROL).map(|v| v.to_str().unwrap().to_string()).as_deref(), Some("no-store"));
+        assert_eq!(
+            r.headers().get(header::CACHE_CONTROL).map(|v| v.to_str().unwrap().to_string()).as_deref(),
+            Some("no-store")
+        );
         let b = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice::<serde_json::Value>(&b).unwrap()
     }
@@ -1258,10 +1375,16 @@ mod tests {
         assert_eq!(v["hits"].as_array().map(Vec::len), Some(1));
         let (lon, lat) = names::mvt::tile_to_lonlat(12, 2050, 1350, 4096, 1600.0, 3200.0);
         let b = &v["hits"][0];
-        assert_eq!((b["name"].as_str(), b["main"].as_str(), b["class"].as_str(), b["zoom"].as_f64()), (Some("Banff"), Some("Banff"), Some("town"), Some(12.5)));
+        assert_eq!(
+            (b["name"].as_str(), b["main"].as_str(), b["class"].as_str(), b["zoom"].as_f64()),
+            (Some("Banff"), Some("Banff"), Some("town"), Some(12.5))
+        );
         assert_eq!((b["lon"].as_f64(), b["lat"].as_f64()), (Some(lon as f32 as f64), Some(lat as f32 as f64)));
         let y = &ask(&s, "yoko", Some("nonsense")).await["hits"][0];
-        assert_eq!((y["name"].as_str(), y["en"].as_str(), y["main"].as_str(), y["sub"].as_str()), (Some("横浜"), Some("Yokohama"), Some("横浜"), Some("Yokohama")));
+        assert_eq!(
+            (y["name"].as_str(), y["en"].as_str(), y["main"].as_str(), y["sub"].as_str()),
+            (Some("横浜"), Some("Yokohama"), Some("横浜"), Some("Yokohama"))
+        );
         let l = &ask(&s, "lake lou", None).await["hits"][0];
         assert_eq!(l["kind"].as_str(), Some("water"));
         assert!(ask(&s, "nowhere", None).await["hits"].as_array().unwrap().is_empty());
@@ -1281,7 +1404,13 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::copy(nas.path().join(&c), p).unwrap();
         }
-        let data = crate::data::Data::open(crate::data::Options { home: home.path().to_owned(), nas_root: Some(nas.path().to_owned()), mirror: true, reserve: 0 }).unwrap();
+        let data = crate::data::Data::open(crate::data::Options {
+            home: home.path().to_owned(),
+            nas_root: Some(nas.path().to_owned()),
+            mirror: true,
+            reserve: 0,
+        })
+        .unwrap();
         assert!(sources(&data.catalog()).iter().all(|(c, _)| data.mirror.as_ref().unwrap().local(c).is_some()));
         let m = build(&data, &sources(&data.catalog()), None).unwrap();
         let all = |p: &Places| (0..p.len()).map(|i| p.text_of(i).to_string()).collect::<Vec<_>>();
@@ -1300,15 +1429,25 @@ mod tests {
         let s = crate::test_state(home.path(), nas.path());
         assert!(s.names.sync(&s.data));
         let pt = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
-        let japan = names::spoken::Area { code: "JP".into(), area_km2: 1.0, polygons: vec![vec![vec![pt(128.0, 30.0), pt(146.0, 30.0), pt(146.0, 46.0), pt(128.0, 46.0)]]] };
+        let japan = names::spoken::Area {
+            code: "JP".into(),
+            area_km2: 1.0,
+            polygons: vec![vec![vec![pt(128.0, 30.0), pt(146.0, 30.0), pt(146.0, 46.0), pt(128.0, 46.0)]]],
+        };
         s.names.set_spoken(names::Spoken::build(&names::Table::parse("JP\tja\n"), [japan]));
         let (lon, lat) = names::mvt::tile_to_lonlat(8, x, y, 4096, 2048.0, 2048.0);
-        assert_eq!(s.names.snapshot().map(|n| n.here(lon, lat).iter().map(|l| l.as_str().to_owned()).collect::<Vec<_>>()), None);
+        assert_eq!(
+            s.names.snapshot().map(|n| n.here(lon, lat).iter().map(|l| l.as_str().to_owned()).collect::<Vec<_>>()),
+            None
+        );
         s.names.reload();
         assert_eq!(s.names.snapshot().unwrap().here(lon, lat).iter().map(|l| l.as_str()).collect::<Vec<_>>(), ["ja"]);
         assert_eq!(ready(&s).await["ready"], true);
         let h = &ask(&s, "yokohama shi", None).await["hits"][0];
-        assert_eq!((h["name"].as_str(), h["en"].as_str(), h["main"].as_str(), h["sub"].as_str()), (Some("横浜"), None, Some("横浜"), Some("Yokohama-shi")));
+        assert_eq!(
+            (h["name"].as_str(), h["en"].as_str(), h["main"].as_str(), h["sub"].as_str()),
+            (Some("横浜"), None, Some("横浜"), Some("Yokohama-shi"))
+        );
     }
 
     #[tokio::test]
@@ -1362,7 +1501,8 @@ mod tests {
         // One whose hi pack changed: made again (the old searched meanwhile).
         let mut ps3 = packs();
         ps3[1].1 = 3;
-        ps3[1].2 = vec![(12, 2050, 1350, labels_tile(&[(3, "Moraine Lake", None, "water", "lake", 5.0, (2048, 2048))]))];
+        ps3[1].2 =
+            vec![(12, 2050, 1350, labels_tile(&[(3, "Moraine Lake", None, "water", "lake", 5.0, (2048, 2048))]))];
         catalog(nas.path(), 3, &ps3, &[]);
         assert!(s.data.refresh_catalog());
         assert_eq!(ask(&s, "lake louise", None).await["hits"].as_array().map(Vec::len), Some(1), "the old, meanwhile");
@@ -1400,22 +1540,53 @@ mod tests {
     fn the_builds_places() {
         let Some(root) = std::env::var_os("SCENIC_PLACES_ROOT") else { return };
         let home = tempfile::tempdir().unwrap();
-        let data = crate::data::Data::open(crate::data::Options { home: home.path().to_owned(), nas_root: Some(root.into()), mirror: false, reserve: 0 }).unwrap();
+        let data = crate::data::Data::open(crate::data::Options {
+            home: home.path().to_owned(),
+            nas_root: Some(root.into()),
+            mirror: false,
+            reserve: 0,
+        })
+        .unwrap();
         let t = Instant::now();
         let b = build(&data, &sources(&data.catalog()), None).unwrap();
         let p = b.places;
-        eprintln!("{} places, {} words, {} MB, {:.1} s; passed over: {} packs, {} tiles", p.len(), p.words.len(), p.bytes() >> 20, t.elapsed().as_secs_f64(), b.unread, b.bad);
+        eprintln!(
+            "{} places, {} words, {} MB, {:.1} s; passed over: {} packs, {} tiles",
+            p.len(),
+            p.words.len(),
+            p.bytes() >> 20,
+            t.elapsed().as_secs_f64(),
+            b.unread,
+            b.bad
+        );
         let mut by: std::collections::HashMap<(u8, u8), usize> = std::collections::HashMap::new();
         for q in p.places.as_slice() {
             *by.entry((q.kind, q.class)).or_default() += 1;
         }
         let mut by: Vec<_> = by.into_iter().collect();
         by.sort_by(|a, b| b.1.cmp(&a.1));
-        eprintln!("{}", by.iter().take(25).map(|((k, c), n)| format!("{} {} {n}", KINDS[*k as usize], p.classes[*c as usize])).collect::<Vec<_>>().join(", "));
+        eprintln!(
+            "{}",
+            by.iter()
+                .take(25)
+                .map(|((k, c), n)| format!("{} {} {n}", KINDS[*k as usize], p.classes[*c as usize]))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         for q in ["banff", "lake louise", "paris", "tokyo", "san fran", "st john"] {
             let t = Instant::now();
             let hits = p.search(q, Some((-100.0, 45.0)), 5);
-            eprintln!("{q}: {:.1} ms: {}", t.elapsed().as_secs_f64() * 1000.0, hits.iter().map(|h| { let f = p.place(h); format!("{} ({} {}, {:.2} {:.2})", f.main, f.kind, f.class, f.lon, f.lat) }).collect::<Vec<_>>().join("; "));
+            eprintln!(
+                "{q}: {:.1} ms: {}",
+                t.elapsed().as_secs_f64() * 1000.0,
+                hits.iter()
+                    .map(|h| {
+                        let f = p.place(h);
+                        format!("{} ({} {}, {:.2} {:.2})", f.main, f.kind, f.class, f.lon, f.lat)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
         }
     }
 }

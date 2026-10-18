@@ -34,7 +34,10 @@ fn put(root: &std::path::Path, cat: &mut Catalog, logical: &str, size: usize) ->
 
 fn put_bytes(root: &std::path::Path, cat: &mut Catalog, logical: &str, ext: &str, body: &[u8]) -> String {
     let name = write_atomic(root, logical, ext, Source::Bytes(body)).unwrap();
-    cat.files.insert(logical.into(), FileRef { file: name.clone(), size: body.len() as u64, fmt: 1, extra: Default::default() });
+    cat.files.insert(
+        logical.into(),
+        FileRef { file: name.clone(), size: body.len() as u64, fmt: 1, extra: Default::default() },
+    );
     name
 }
 
@@ -90,7 +93,8 @@ fn catalog(root: &std::path::Path) -> Catalog {
 }
 
 fn logicals(f: &Files) -> Vec<String> {
-    let mut v: Vec<String> = f.names.iter().map(|(n, _)| store::naming::parse_content_name(n).unwrap().logical.to_string()).collect();
+    let mut v: Vec<String> =
+        f.names.iter().map(|(n, _)| store::naming::parse_content_name(n).unwrap().logical.to_string()).collect();
     v.sort();
     v
 }
@@ -102,11 +106,25 @@ fn an_areas_files_are_its_tiles_hi_packs_and_base_packs_and_the_hi_data_around()
     let f = files_of(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]);
     // Its tile's packs, the terrain of the tile within 25 km across the meridian (for the
     // viewshed), the hi data within 50 km.
-    assert_eq!(logicals(&f), ["base/6-31-21", "global/roads/6-31-21", "hidata/6-31-21", "hidata/6-32-21", "layers/roads/hi/6-31-21", "layers/terrain/hi/6-31-21", "layers/terrain/hi/6-32-21"]);
+    assert_eq!(
+        logicals(&f),
+        [
+            "base/6-31-21",
+            "global/roads/6-31-21",
+            "hidata/6-31-21",
+            "hidata/6-32-21",
+            "layers/roads/hi/6-31-21",
+            "layers/terrain/hi/6-31-21",
+            "layers/terrain/hi/6-32-21"
+        ]
+    );
     assert_eq!(f.bytes, 30_031 + 4_031 + 5_031 + 5_032 + 20_031 + 10_031 + 10_032);
     // And the basemap's zooms 11–14 over its tile, after its files.
     let p = area_part(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]);
-    assert_eq!(p.items.last(), Some(&Item::Piece { archive: cat.content("layers/basemap/world").unwrap().into(), piece: Piece::Tile(31, 21) }));
+    assert_eq!(
+        p.items.last(),
+        Some(&Item::Piece { archive: cat.content("layers/basemap/world").unwrap().into(), piece: Piece::Tile(31, 21) })
+    );
     assert_eq!(p.items.len(), 8);
 }
 
@@ -149,8 +167,14 @@ async fn downloading_the_world_regions_and_views() {
     assert_eq!(m.usage(), (0, 0), "nothing downloaded, nothing copied");
     let lo = m.piece_size(cat.content("layers/basemap/world").unwrap(), Piece::Lo).unwrap();
     let piece = m.piece_size(cat.content("layers/basemap/world").unwrap(), Piece::Tile(31, 21)).unwrap();
-    assert_eq!(v["world"], json!({"bytes": 300 + 1_000 + 2_000 + lo, "here": 0, "unknown": 0, "on": false, "at": null, "state": null}));
-    assert_eq!(v["regions"]["london"], json!({"name": "London", "bytes": london.files.bytes + piece, "here": 0, "unknown": 0, "on": false, "state": null}));
+    assert_eq!(
+        v["world"],
+        json!({"bytes": 300 + 1_000 + 2_000 + lo, "here": 0, "unknown": 0, "on": false, "at": null, "state": null})
+    );
+    assert_eq!(
+        v["regions"]["london"],
+        json!({"name": "London", "bytes": london.files.bytes + piece, "here": 0, "unknown": 0, "on": false, "state": null})
+    );
 
     // London downloaded: the World with it; written to downloads.json; copied by the thread.
     let (code, _) = region(&s, "london", true).await;
@@ -158,7 +182,10 @@ async fn downloading_the_world_regions_and_views() {
     let asked = Downloads::load(home.path()).asked();
     assert!(asked.world.is_some() && asked.regions.iter().map(|r| r.name.as_str()).eq(["London"]));
     let v = get(&s).await;
-    assert_eq!((v["world"]["state"].as_str(), v["regions"]["london"]["state"].as_str()), (Some("queued"), Some("queued")));
+    assert_eq!(
+        (v["world"]["state"].as_str(), v["regions"]["london"]["state"].as_str()),
+        (Some("queued"), Some("queued"))
+    );
     tokio::task::block_in_place(|| settle(&s));
     let v = get(&s).await;
     assert_eq!((v["world"]["state"].as_str(), v["regions"]["london"]["state"].as_str()), (Some("done"), Some("done")));
@@ -181,7 +208,10 @@ async fn downloading_the_world_regions_and_views() {
     // A region the catalog doesn't have (not built yet): listed, nothing to copy.
     region(&s, "kanto", true).await;
     let v = get(&s).await;
-    assert_eq!(v["regions"]["kanto"], json!({"name": "kanto", "bytes": 0, "here": 0, "unknown": 0, "on": true, "state": "missing"}));
+    assert_eq!(
+        v["regions"]["kanto"],
+        json!({"name": "kanto", "bytes": 0, "here": 0, "unknown": 0, "on": true, "state": "missing"})
+    );
     let (code, v) = region(&s, "../x", true).await;
     assert_eq!(code, StatusCode::BAD_REQUEST, "{v}");
     region(&s, "kanto", false).await;
@@ -192,17 +222,26 @@ async fn downloading_the_world_regions_and_views() {
     let (code, v) = call(post_view_size(State(s.clone()), Json(Outline { outline: outline.clone() })).await).await;
     assert_eq!(code, StatusCode::OK, "{v}");
     assert_eq!((v["with_world"].as_u64(), v["fits"].as_bool()), (Some(0), Some(true)), "the World's here already");
-    let (code, v) = call(post_view(State(s.clone()), Json(NewView { outline: outline.clone(), name: None })).await).await;
+    let (code, v) =
+        call(post_view(State(s.clone()), Json(NewView { outline: outline.clone(), name: None })).await).await;
     assert_eq!(code, StatusCode::OK, "{v}");
     assert_eq!(v["name"].as_str(), Some("51.90° N, 4.30° E"));
     let id = v["id"].as_str().unwrap().to_string();
-    let (code, _) = call(put_view(State(s.clone()), Path(id.clone()), Json(Rename { name: "  Rotterdam\n ".into() })).await).await;
+    let (code, _) =
+        call(put_view(State(s.clone()), Path(id.clone()), Json(Rename { name: "  Rotterdam\n ".into() })).await).await;
     assert_eq!(code, StatusCode::OK);
     tokio::task::block_in_place(|| settle(&s));
     let v = get(&s).await;
     let view = &v["views"][0];
-    assert_eq!((view["id"].as_str(), view["name"].as_str(), view["state"].as_str()), (Some(id.as_str()), Some("Rotterdam"), Some("done")));
-    for bad in [NewView { outline: outline[..2].to_vec(), name: None }, NewView { outline: vec![[0.0, 95.0]; 4], name: None }, NewView { outline: outline.clone(), name: Some(" ".into()) }] {
+    assert_eq!(
+        (view["id"].as_str(), view["name"].as_str(), view["state"].as_str()),
+        (Some(id.as_str()), Some("Rotterdam"), Some("done"))
+    );
+    for bad in [
+        NewView { outline: outline[..2].to_vec(), name: None },
+        NewView { outline: vec![[0.0, 95.0]; 4], name: None },
+        NewView { outline: outline.clone(), name: Some(" ".into()) },
+    ] {
         assert_eq!(call(post_view(State(s.clone()), Json(bad)).await).await.0, StatusCode::BAD_REQUEST);
     }
     assert_eq!(call(delete_view(State(s.clone()), Path(id.clone())).await).await.0, StatusCode::OK);
@@ -215,16 +254,27 @@ async fn a_download_that_wouldnt_fit_is_refused_with_the_numbers() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     catalog(nas.path());
     // A reserve no disk has: nothing fits.
-    let data = Data::open(crate::data::Options { home: home.path().to_owned(), nas_root: Some(nas.path().to_owned()), mirror: true, reserve: u64::MAX / 4 }).unwrap();
+    let data = Data::open(crate::data::Options {
+        home: home.path().to_owned(),
+        nas_root: Some(nas.path().to_owned()),
+        mirror: true,
+        reserve: u64::MAX / 4,
+    })
+    .unwrap();
     let s = crate::test_state_from(home.path(), data);
     let (code, v) = region(&s, "london", true).await;
     assert_eq!(code, StatusCode::BAD_REQUEST);
     let e = v["error"].as_str().unwrap();
-    assert!(e.starts_with("Downloading “London”, with the World, zoomed out, takes ") && e.contains("it has 0 MB free above the reserve"), "{e}");
+    assert!(
+        e.starts_with("Downloading “London”, with the World, zoomed out, takes ")
+            && e.contains("it has 0 MB free above the reserve"),
+        "{e}"
+    );
     assert_eq!(s.downloads.asked(), Asked::default(), "not downloaded");
     let (code, v) = call(put_world(State(s.clone()), Json(On { on: true })).await).await;
     assert_eq!(code, StatusCode::BAD_REQUEST, "{v}");
-    let (_, v) = call(post_view_size(State(s.clone()), Json(Outline { outline: rect(-0.3, 51.4, -0.1, 51.6) })).await).await;
+    let (_, v) =
+        call(post_view_size(State(s.clone()), Json(Outline { outline: rect(-0.3, 51.4, -0.1, 51.6) })).await).await;
     assert_eq!((v["room"].as_u64(), v["fits"].as_bool()), (Some(0), Some(false)));
     assert!(v["with_world"].as_u64().unwrap() > 3_300);
 }
@@ -235,10 +285,16 @@ async fn what_a_mac_kept_becomes_downloads_and_the_rest_goes() {
     let cat = catalog(nas.path());
     // Before downloads: London kept, and the mirror holding all of the map (the old essentials,
     // London's, the rest, the whole basemap).
-    std::fs::write(home.path().join(OLD_FILE), serde_json::to_vec(&json!({"fmt": 1, "regions": [{"id": "london", "name": "London", "at": 1}], "views": []})).unwrap()).unwrap();
+    std::fs::write(
+        home.path().join(OLD_FILE),
+        serde_json::to_vec(&json!({"fmt": 1, "regions": [{"id": "london", "name": "London", "at": 1}], "views": []}))
+            .unwrap(),
+    )
+    .unwrap();
     {
         let m = Mirror::open(home.path().to_owned(), 0).unwrap();
-        let all = Wanted { items: cat.files.values().map(|f| Item::File { name: f.file.clone(), size: f.size }).collect() };
+        let all =
+            Wanted { items: cat.files.values().map(|f| Item::File { name: f.file.clone(), size: f.size }).collect() };
         let pool = store::IoPool::new(2, Duration::from_secs(60), nas.path().to_owned());
         m.sync(&cat, &all, nas.path(), &pool, &Control::FREE).unwrap();
     }
@@ -270,7 +326,13 @@ fn a_damaged_downloads_file_is_set_aside() {
 async fn the_reserve_is_set_kept_and_bounded_and_the_mirror_takes_it_at_once() {
     let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     catalog(nas.path());
-    let data = Data::open(crate::data::Options { home: home.path().to_owned(), nas_root: Some(nas.path().to_owned()), mirror: true, reserve: crate::reserve::load(home.path()) * 1_000_000_000 }).unwrap();
+    let data = Data::open(crate::data::Options {
+        home: home.path().to_owned(),
+        nas_root: Some(nas.path().to_owned()),
+        mirror: true,
+        reserve: crate::reserve::load(home.path()) * 1_000_000_000,
+    })
+    .unwrap();
     let s = crate::test_state_from(home.path(), data);
     let m = s.data.mirror.clone().unwrap();
     assert_eq!(m.reserve(), 30_000_000_000, "unset: 30 GB");

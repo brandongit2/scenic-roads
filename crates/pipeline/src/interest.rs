@@ -111,7 +111,9 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
     // Best first: score descending, then index (np.lexsort((arange(n), -score))).
     // (Compared as numpy does: −0.0 equals 0.0.)
     let mut order: Vec<u32> = (0..n as u32).collect();
-    order.sort_by(|&a, &b| (-score[a as usize]).partial_cmp(&(-score[b as usize])).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b)));
+    order.sort_by(|&a, &b| {
+        (-score[a as usize]).partial_cmp(&(-score[b as usize])).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b))
+    });
     // The plane: x scaled by each point's own latitude.
     let xy: Vec<[f64; 2]> = (0..n).map(|i| [lon[i] * 111.32 * lat[i].to_radians().dcos(), lat[i] * 110.57]).collect();
     let planar = |i: usize, j: u32| -> f64 {
@@ -176,9 +178,36 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
 /// like (interest.py VIEW_ITEM: a mine or chapel tagged as a viewpoint doesn't).
 pub fn view_item(description_en: &str) -> bool {
     const WORDS: [&str; 30] = [
-        "viewpoint", "lookout", "observation", "belvedere", "mirador", "mountain", "hill", "peak", "summit", "cliff", "headland",
-        "promontory", "point", "cape", "peninsula", "pass", "gorge", "canyon", "valley", "falls", "waterfall", "geosite", "park",
-        "tower", "lighthouse", "beach", "bay", "island", "lake", "col",
+        "viewpoint",
+        "lookout",
+        "observation",
+        "belvedere",
+        "mirador",
+        "mountain",
+        "hill",
+        "peak",
+        "summit",
+        "cliff",
+        "headland",
+        "promontory",
+        "point",
+        "cape",
+        "peninsula",
+        "pass",
+        "gorge",
+        "canyon",
+        "valley",
+        "falls",
+        "waterfall",
+        "geosite",
+        "park",
+        "tower",
+        "lighthouse",
+        "beach",
+        "bay",
+        "island",
+        "lake",
+        "col",
     ];
     let d = description_en.to_lowercase();
     WORDS.iter().any(|w| {
@@ -186,7 +215,8 @@ pub fn view_item(description_en: &str) -> bool {
             return d.contains(w);
         }
         // `col\b`: "col" followed by a non-word character or the end.
-        d.match_indices("col").any(|(i, _)| d[i + 3..].chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '_')))
+        d.match_indices("col")
+            .any(|(i, _)| d[i + 3..].chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '_')))
     })
 }
 
@@ -225,12 +255,21 @@ pub const NAME_GAP: f64 = 3.0;
 /// more interesting place of its kind and name spans a pixel (between equally known ones, the more
 /// isolated is the more interesting). `order`: the places as the layer has them (by fame); `key`:
 /// a place's kind group and name; `fa`, `ia` rounded as the files hold them. Returns how many wait.
-pub fn same_names(order: &[usize], key: &dyn Fn(usize) -> (String, String), lon: &[f64], lat: &[f64], fa: &[f64], ia: &[f64], mz: &mut [f64]) -> usize {
+pub fn same_names(
+    order: &[usize],
+    key: &dyn Fn(usize) -> (String, String),
+    lon: &[f64],
+    lat: &[f64],
+    fa: &[f64],
+    ia: &[f64],
+    mz: &mut [f64],
+) -> usize {
     let mut groups: std::collections::BTreeMap<(String, String), Vec<usize>> = Default::default();
     for &i in order {
         let (kind, name) = key(i);
         // " ".join(name.casefold().split()): lowercase, with casefold's ß → ss and ς → σ.
-        let name = name.to_lowercase().replace('ß', "ss").replace('ς', "σ").split_whitespace().collect::<Vec<_>>().join(" ");
+        let name =
+            name.to_lowercase().replace('ß', "ss").replace('ς', "σ").split_whitespace().collect::<Vec<_>>().join(" ");
         if !name.is_empty() && !mz[i].is_nan() {
             groups.entry((kind, name)).or_default().push(i);
         }
@@ -238,7 +277,11 @@ pub fn same_names(order: &[usize], key: &dyn Fn(usize) -> (String, String), lon:
     let mut n = 0;
     for idx in groups.values().filter(|v| v.len() >= 2) {
         let score: Vec<f64> = idx.iter().map(|&i| fa[i] + 1e-4 * ia[i] / (1.0 + ia[i])).collect();
-        let iso = isolation(&idx.iter().map(|&i| lon[i]).collect::<Vec<_>>(), &idx.iter().map(|&i| lat[i]).collect::<Vec<_>>(), &score);
+        let iso = isolation(
+            &idx.iter().map(|&i| lon[i]).collect::<Vec<_>>(),
+            &idx.iter().map(|&i| lat[i]).collect::<Vec<_>>(),
+            &score,
+        );
         for (j, &i) in idx.iter().enumerate() {
             let m = py_round(min_zoom(lat[i], iso[j]) + NAME_GAP, 2);
             if m > mz[i] {
@@ -257,7 +300,15 @@ mod tests {
     #[test]
     fn rounds_as_python() {
         // round(x, n) in CPython.
-        for (x, n, want) in [(0.25, 1, 0.2), (0.35, 1, 0.3), (1.0005, 3, 1.0), (2.675, 2, 2.67), (0.125, 2, 0.12), (-0.05, 1, -0.1), (12345.65, 1, 12345.6)] {
+        for (x, n, want) in [
+            (0.25, 1, 0.2),
+            (0.35, 1, 0.3),
+            (1.0005, 3, 1.0),
+            (2.675, 2, 2.67),
+            (0.125, 2, 0.12),
+            (-0.05, 1, -0.1),
+            (12345.65, 1, 12345.6),
+        ] {
             assert_eq!(py_round(x, n), want, "round({x}, {n})");
         }
     }
@@ -274,12 +325,29 @@ mod tests {
                     return IA_BEST;
                 }
                 let p = |k: usize| [lon[k] * 111.32 * lat[k].to_radians().dcos(), lat[k] * 110.57];
-                let d = others.iter().map(|&j| { let (a, b) = (p(i), p(j)); let (dx, dy) = (a[0] - b[0], a[1] - b[1]); (dx * dx + dy * dy).sqrt() }).fold(f64::INFINITY, f64::min);
+                let d = others
+                    .iter()
+                    .map(|&j| {
+                        let (a, b) = (p(i), p(j));
+                        let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
+                        (dx * dx + dy * dy).sqrt()
+                    })
+                    .fold(f64::INFINITY, f64::min);
                 if d <= NEAR_KM {
                     return d;
                 }
-                let v = |k: usize| { let (la, lo) = (lat[k].to_radians(), lon[k].to_radians()); [la.dcos() * lo.dcos(), la.dcos() * lo.dsin(), la.dsin()] };
-                let c = others.iter().map(|&j| { let (a, b) = (v(i), v(j)); let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]); (dx * dx + dy * dy + dz * dz).sqrt() }).fold(f64::INFINITY, f64::min);
+                let v = |k: usize| {
+                    let (la, lo) = (lat[k].to_radians(), lon[k].to_radians());
+                    [la.dcos() * lo.dcos(), la.dcos() * lo.dsin(), la.dsin()]
+                };
+                let c = others
+                    .iter()
+                    .map(|&j| {
+                        let (a, b) = (v(i), v(j));
+                        let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+                        (dx * dx + dy * dy + dz * dz).sqrt()
+                    })
+                    .fold(f64::INFINITY, f64::min);
                 6371.0 * 2.0 * (c / 2.0).min(1.0).dasin()
             })
             .collect()
@@ -295,7 +363,11 @@ mod tests {
         };
         let (mut lon, mut lat, mut sc) = (Vec::new(), Vec::new(), Vec::new());
         for k in 0..600 {
-            let (clon, clat) = if k % 50 == 0 { (rnd() * 360.0 - 180.0, rnd() * 160.0 - 80.0) } else { (6.0 + rnd() * 2.0, 45.0 + rnd() * 2.0) };
+            let (clon, clat) = if k % 50 == 0 {
+                (rnd() * 360.0 - 180.0, rnd() * 160.0 - 80.0)
+            } else {
+                (6.0 + rnd() * 2.0, 45.0 + rnd() * 2.0)
+            };
             lon.push(clon);
             lat.push(clat);
             sc.push((rnd() * 20.0).floor() / 10.0); // many ties
@@ -325,7 +397,13 @@ pub fn fp_num(v: &serde_json::Value) -> Option<f64> {
         serde_json::Value::Null => return None,
         serde_json::Value::String(s) if s.is_empty() => return None,
         serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Bool(b) => if *b { "True".into() } else { "False".into() },
+        serde_json::Value::Bool(b) => {
+            if *b {
+                "True".into()
+            } else {
+                "False".into()
+            }
+        }
         other => other.to_string(),
     };
     // -?\d+(?:[.,]\d+)?
@@ -359,7 +437,13 @@ pub fn fp_year(v: &serde_json::Value) -> Option<i64> {
     let s = match v {
         serde_json::Value::Null => return None,
         serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Bool(b) => if *b { "True".into() } else { "False".into() },
+        serde_json::Value::Bool(b) => {
+            if *b {
+                "True".into()
+            } else {
+                "False".into()
+            }
+        }
         other => other.to_string(),
     };
     // -?\d{3,4}: the leftmost match; greedy, so 4 digits when there are.
@@ -402,7 +486,11 @@ fn round_json(v: f64, n: usize, was_int: bool) -> serde_json::Value {
 
 /// A stop & sight's filter values (filterprops.py `pois`) from its details record `d` (OSM tags and
 /// `wd`, the Wikidata facts) and its peak computation `pk` (prominence `p`, isolation `iso`).
-pub fn poi_filter_props(kind: &str, d: &serde_json::Value, pk: Option<&serde_json::Value>) -> serde_json::Map<String, serde_json::Value> {
+pub fn poi_filter_props(
+    kind: &str,
+    d: &serde_json::Value,
+    pk: Option<&serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
     use serde_json::{json, Value};
     let mut p = serde_json::Map::new();
     let null = Value::Null;
@@ -423,22 +511,40 @@ pub fn poi_filter_props(kind: &str, d: &serde_json::Value, pk: Option<&serde_jso
             if let Some((v, _)) = pr {
                 p.insert("pr".into(), json!(py_round(v, 0) as i64));
             }
-            let iso = if wd.get("isolation").is_some() { wget("isolation").as_f64().map(|v| v / 1000.0) } else { pk.and_then(|k| k.get("iso")).and_then(Value::as_f64) };
+            let iso = if wd.get("isolation").is_some() {
+                wget("isolation").as_f64().map(|v| v / 1000.0)
+            } else {
+                pk.and_then(|k| k.get("iso")).and_then(Value::as_f64)
+            };
             if let Some(v) = iso {
                 p.insert("is".into(), json!(py_round(v, 2)));
             }
         }
         "waterfall" => {
-            let h = fp_num(get("height")).map(|v| (v, false)).or_else(|| wget("height").as_f64().map(|v| (v, is_int(wget("height")))));
+            let h = fp_num(get("height"))
+                .map(|v| (v, false))
+                .or_else(|| wget("height").as_f64().map(|v| (v, is_int(wget("height")))));
             if let Some((v, int)) = h {
                 p.insert("h".into(), round_json(v, 1, int));
             }
         }
         "lighthouse" => {
-            let h = fp_num(get("height")).map(|v| (v, false)).or_else(|| wget("height").as_f64().map(|v| (v, is_int(wget("height")))));
-            let fh_src = if truthy(get("seamark:light:height")) { get("seamark:light:height") } else { get("seamark:light:1:height") };
-            let fh = fp_num(fh_src).map(|v| (v, false)).or_else(|| wget("focal").as_f64().map(|v| (v, is_int(wget("focal")))));
-            let rg_src = if truthy(get("seamark:light:range")) { get("seamark:light:range") } else { get("seamark:light:1:range") };
+            let h = fp_num(get("height"))
+                .map(|v| (v, false))
+                .or_else(|| wget("height").as_f64().map(|v| (v, is_int(wget("height")))));
+            let fh_src = if truthy(get("seamark:light:height")) {
+                get("seamark:light:height")
+            } else {
+                get("seamark:light:1:height")
+            };
+            let fh = fp_num(fh_src)
+                .map(|v| (v, false))
+                .or_else(|| wget("focal").as_f64().map(|v| (v, is_int(wget("focal")))));
+            let rg_src = if truthy(get("seamark:light:range")) {
+                get("seamark:light:range")
+            } else {
+                get("seamark:light:1:range")
+            };
             let rg = fp_num(rg_src).map(|v| (v, false));
             let y = fp_year(if truthy(get("start_date")) { get("start_date") } else { wget("inception") });
             for (key, v) in [("h", h), ("fh", fh), ("rg", rg)] {

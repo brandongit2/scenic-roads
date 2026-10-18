@@ -99,7 +99,9 @@ pub fn clear_request(home: &Path, r: &Request) {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum LeadAsk {
-    Give { to: String },
+    Give {
+        to: String,
+    },
     Take {
         #[serde(default)]
         force: bool,
@@ -180,7 +182,11 @@ pub fn stop_paused(step: &str) -> ! {
 /// Notes `target` of `step` done: its outputs are saved (in the manifest, or the hand-off).
 pub fn done(step: &str, target: &str) {
     let Some(p) = std::env::var_os(DONE_ENV) else { return };
-    let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| f.write_all(format!("{step} {target}\n").as_bytes()));
+    let r = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+        .and_then(|mut f| f.write_all(format!("{step} {target}\n").as_bytes()));
     if let Err(e) = r {
         eprintln!("{step} {target}: noting it done: {e}");
     }
@@ -223,9 +229,16 @@ mod tests {
         clear_request(d.path(), &r2);
         assert!(take_request(d.path()).is_none());
         // A lead ask: the menu's JSON as written by hand, taken once.
-        std::fs::write(d.path().join(LEAD_REQUEST), r#"{"ask": {"kind": "take", "force": true}, "by": "the menu bar on m1", "at": 5}"#).unwrap();
+        std::fs::write(
+            d.path().join(LEAD_REQUEST),
+            r#"{"ask": {"kind": "take", "force": true}, "by": "the menu bar on m1", "at": 5}"#,
+        )
+        .unwrap();
         assert_eq!(peek_lead(d.path()).map(|r| r.ask), Some(LeadAsk::Take { force: true, downgrade: false }));
-        assert_eq!(take_lead(d.path()).map(|r| (r.ask, r.at)), Some((LeadAsk::Take { force: true, downgrade: false }, 5)));
+        assert_eq!(
+            take_lead(d.path()).map(|r| (r.ask, r.at)),
+            Some((LeadAsk::Take { force: true, downgrade: false }, 5))
+        );
         assert!(take_lead(d.path()).is_none());
         request_lead(d.path(), LeadAsk::Give { to: "MacBook-Air".into() }, "scenic lead on m1").unwrap();
         assert_eq!(take_lead(d.path()).map(|r| r.ask), Some(LeadAsk::Give { to: "MacBook-Air".into() }));

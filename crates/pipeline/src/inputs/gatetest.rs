@@ -27,11 +27,27 @@ impl Checks for GateTest {
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
         let mut c = FileCheck::default();
         if !path.ends_with(".jsonl") {
-            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not jsonl"], vec![path.into()], format!("{path} isn't the drop box's shape: _gate-test takes .jsonl files of {{\"k\": …, \"v\": …}} lines")));
+            c.findings.push(Finding::new(
+                SHAPE,
+                Level::Error,
+                &[path],
+                &["not jsonl"],
+                vec![path.into()],
+                format!(
+                    "{path} isn't the drop box's shape: _gate-test takes .jsonl files of {{\"k\": …, \"v\": …}} lines"
+                ),
+            ));
             return c;
         }
         let Ok(text) = std::str::from_utf8(bytes) else {
-            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not utf-8"], vec![path.into()], format!("{path} isn't UTF-8 text")));
+            c.findings.push(Finding::new(
+                SHAPE,
+                Level::Error,
+                &[path],
+                &["not utf-8"],
+                vec![path.into()],
+                format!("{path} isn't UTF-8 text"),
+            ));
             return c;
         };
         let (mut bad, mut neg) = (Vec::new(), Vec::new());
@@ -55,14 +71,32 @@ impl Checks for GateTest {
         if !bad.is_empty() {
             let found = content(&bad);
             let refs: Vec<&str> = found.iter().map(String::as_str).collect();
-            let mut f = Finding::new(LINE, Level::Error, &[path], &refs, vec![path.into()], format!("{path}: {} line{} not {{\"k\": <string>, \"v\": <number>}}", bad.len(), if bad.len() == 1 { "" } else { "s" }));
+            let mut f = Finding::new(
+                LINE,
+                Level::Error,
+                &[path],
+                &refs,
+                vec![path.into()],
+                format!(
+                    "{path}: {} line{} not {{\"k\": <string>, \"v\": <number>}}",
+                    bad.len(),
+                    if bad.len() == 1 { "" } else { "s" }
+                ),
+            );
             f.lines = bad;
             c.findings.push(f);
         }
         if !neg.is_empty() {
             let found = content(&neg);
             let refs: Vec<&str> = found.iter().map(String::as_str).collect();
-            let mut f = Finding::new(NEG, Level::Warning, &[path], &refs, vec![path.into()], format!("{path}: {} line{} with a negative v", neg.len(), if neg.len() == 1 { "" } else { "s" }));
+            let mut f = Finding::new(
+                NEG,
+                Level::Warning,
+                &[path],
+                &refs,
+                vec![path.into()],
+                format!("{path}: {} line{} with a negative v", neg.len(), if neg.len() == 1 { "" } else { "s" }),
+            );
             f.lines = neg;
             c.findings.push(f);
         }
@@ -72,6 +106,13 @@ impl Checks for GateTest {
 
     fn removed(&self, path: &str, was: &FileEntry) -> Vec<Finding> {
         let lines = was.facts.get("lines").and_then(|v| v.as_u64()).unwrap_or(0);
-        vec![Finding::new(REMOVED, Level::Warning, &[path], &[&was.file], vec![path.into()], format!("{path} removed ({lines} line{} accepted)", if lines == 1 { "" } else { "s" }))]
+        vec![Finding::new(
+            REMOVED,
+            Level::Warning,
+            &[path],
+            &[&was.file],
+            vec![path.into()],
+            format!("{path} removed ({lines} line{} accepted)", if lines == 1 { "" } else { "s" }),
+        )]
     }
 }

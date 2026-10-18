@@ -31,5 +31,9 @@ fn no_instant_is_dated_back_from_now() {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let mut found = Vec::new();
     scan(crates, &mut found);
-    assert!(found.is_empty(), "an Instant dated back from now (panics on a Mac booted lately; make the limit injectable):\n{}", found.join("\n"));
+    assert!(
+        found.is_empty(),
+        "an Instant dated back from now (panics on a Mac booted lately; make the limit injectable):\n{}",
+        found.join("\n")
+    );
 }

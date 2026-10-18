@@ -219,7 +219,14 @@ impl Header {
         ] {
             h.extend_from_slice(&v.to_le_bytes());
         }
-        h.extend_from_slice(&[u8::from(self.clustered), self.internal_compression.to_u8(), self.tile_compression.to_u8(), self.tile_type.to_u8(), self.min_zoom, self.max_zoom]);
+        h.extend_from_slice(&[
+            u8::from(self.clustered),
+            self.internal_compression.to_u8(),
+            self.tile_compression.to_u8(),
+            self.tile_type.to_u8(),
+            self.min_zoom,
+            self.max_zoom,
+        ]);
         for v in [self.min_lon_e7, self.min_lat_e7, self.max_lon_e7, self.max_lat_e7] {
             h.extend_from_slice(&v.to_le_bytes());
         }
@@ -457,7 +464,10 @@ pub struct PmTiles {
 
 impl std::fmt::Debug for PmTiles {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PmTiles").field("header", &self.header).field("root_entries", &self.root.len()).finish_non_exhaustive()
+        f.debug_struct("PmTiles")
+            .field("header", &self.header)
+            .field("root_entries", &self.root.len())
+            .finish_non_exhaustive()
     }
 }
 
@@ -488,7 +498,12 @@ impl PmTiles {
             src.read_at(h.root_offset, h.root_length as usize)?
         };
         let root = parse_directory(&decompress(&raw, h.internal_compression)?).context("root directory")?;
-        Ok(Self { src, header: h, root: Arc::new(root), leaves: Mutex::new(Lru { cap: leaves, tick: 0, map: HashMap::new() }) })
+        Ok(Self {
+            src,
+            header: h,
+            root: Arc::new(root),
+            leaves: Mutex::new(Lru { cap: leaves, tick: 0, map: HashMap::new() }),
+        })
     }
 
     pub fn header(&self) -> &Header {
@@ -714,7 +729,12 @@ mod tests {
                 let mut root = Vec::new();
                 for chunk in entries.chunks(n) {
                     let leaf = gzip(&encode_dir(chunk));
-                    root.push(DirEntry { tile_id: chunk[0].tile_id, offset: leaves.len() as u64, length: leaf.len() as u32, run_length: 0 });
+                    root.push(DirEntry {
+                        tile_id: chunk[0].tile_id,
+                        offset: leaves.len() as u64,
+                        length: leaf.len() as u32,
+                        run_length: 0,
+                    });
                     leaves.extend_from_slice(&leaf);
                 }
                 (encode_dir(&root), leaves)
@@ -729,7 +749,16 @@ mod tests {
         let mut h = Vec::new();
         h.extend_from_slice(MAGIC);
         h.push(3);
-        for v in [root_off, root.len() as u64, meta_off, meta.len() as u64, leaf_off, leaves.len() as u64, data_off, data.len() as u64] {
+        for v in [
+            root_off,
+            root.len() as u64,
+            meta_off,
+            meta.len() as u64,
+            leaf_off,
+            leaves.len() as u64,
+            data_off,
+            data.len() as u64,
+        ] {
             h.extend_from_slice(&v.to_le_bytes());
         }
         let addressed = tiles.len() as u64;
@@ -776,7 +805,10 @@ mod tests {
         let (file, tiles) = build(None);
         let a = PmTiles::open(Box::new(file)).unwrap();
         let h = a.header().clone();
-        assert_eq!((h.tile_type, h.tile_compression, h.internal_compression), (TileType::Mvt, Compression::None, Compression::Gzip));
+        assert_eq!(
+            (h.tile_type, h.tile_compression, h.internal_compression),
+            (TileType::Mvt, Compression::None, Compression::Gzip)
+        );
         assert_eq!((h.min_zoom, h.max_zoom, h.clustered), (0, 5, true));
         assert_eq!(h.bounds(), [-180.0, -85.0511287, 180.0, 85.0511287]);
         assert_eq!(h.center(), (1.5, -2.5, 2));
@@ -804,7 +836,10 @@ mod tests {
         assert!(parse_directory(&[0xff; 11]).is_err());
         // An offset of 0 for the first entry has nothing to follow.
         assert!(parse_directory(&[1, 0, 1, 1, 0]).is_err());
-        assert_eq!(parse_directory(&[1, 0, 1, 1, 1]).unwrap(), [DirEntry { tile_id: 0, offset: 0, length: 1, run_length: 1 }]);
+        assert_eq!(
+            parse_directory(&[1, 0, 1, 1, 1]).unwrap(),
+            [DirEntry { tile_id: 0, offset: 0, length: 1, run_length: 1 }]
+        );
     }
 
     /// The Singapore basemap part, when this checkout has it (it isn't in git).
@@ -821,7 +856,10 @@ mod tests {
     fn real_archive_every_entry_resolves() {
         let Some(a) = singapore() else { return };
         let h = a.header().clone();
-        assert_eq!((h.tile_type, h.tile_compression, h.internal_compression), (TileType::Mvt, Compression::Gzip, Compression::Gzip));
+        assert_eq!(
+            (h.tile_type, h.tile_compression, h.internal_compression),
+            (TileType::Mvt, Compression::Gzip, Compression::Gzip)
+        );
         assert_eq!((h.min_zoom, h.max_zoom), (0, 14));
         assert!(h.leaf_length > 0, "the archive uses leaf directories");
         let (mut entries, mut addressed) = (0u64, 0u64);
@@ -910,7 +948,12 @@ mod tests {
             assert_eq!(got, want, "{z}/{x}/{y}");
         }
         // Tiles over Singapore are MVT, with layers the metadata lists.
-        let known: Vec<String> = a.metadata().unwrap()["vector_layers"].as_array().unwrap().iter().map(|l| l["id"].as_str().unwrap().to_string()).collect();
+        let known: Vec<String> = a.metadata().unwrap()["vector_layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["id"].as_str().unwrap().to_string())
+            .collect();
         for (z, x, y) in [(0, 0, 0), (10, 807, 508), (14, 12917, 8130)] {
             let layers = mvt_layers(&gunzip(&a.get(z, x, y).unwrap().unwrap()));
             assert!(layers.iter().any(|l| l == "water"), "{z}/{x}/{y}: {layers:?}");

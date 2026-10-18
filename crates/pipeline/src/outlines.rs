@@ -16,9 +16,9 @@
 //! | `srings`, `spoints` | the same, simplified for drawing (Douglas–Peucker; 1 km for countries, 250 m for levels 3–4, 60 m finer) |
 //! | `strings` | names, `\n`-separated; index 0 is "" |
 
-use det::Det;
 use anyhow::{bail, ensure, Context, Result};
 use bytemuck::{Pod, Zeroable};
+use det::Det;
 use rayon::prelude::*;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -170,7 +170,9 @@ fn parse(line: &str) -> Option<Parsed> {
         return None;
     }
     let g = f.get("geometry")?;
-    let e7 = |v: &Value| -> Option<[i32; 2]> { Some([(v.get(0)?.as_f64()? * 1e7).round() as i32, (v.get(1)?.as_f64()? * 1e7).round() as i32]) };
+    let e7 = |v: &Value| -> Option<[i32; 2]> {
+        Some([(v.get(0)?.as_f64()? * 1e7).round() as i32, (v.get(1)?.as_f64()? * 1e7).round() as i32])
+    };
     let ring = |r: &Value| -> Option<Vec<[i32; 2]>> { r.as_array()?.iter().map(e7).collect() };
     let poly = |p: &Value| -> Option<Vec<Vec<[i32; 2]>>> { p.as_array()?.iter().map(ring).collect() };
     let polys: Vec<Vec<Vec<[i32; 2]>>> = match g.get("type")?.as_str()? {
@@ -304,7 +306,13 @@ fn osmium(args: &mut Command, what: &str) -> Result<()> {
 pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &str)>) -> Result<Summary> {
     std::fs::create_dir_all(work)?;
     let rels_opl = work.join("outlines-relations.opl");
-    osmium(store::spawn::command("osmium").args(["cat", "-t", "relation", "-f", "opl", "--overwrite", "-o"]).arg(&rels_opl).arg(set), "osmium cat (the outline set's relations)")?;
+    osmium(
+        store::spawn::command("osmium")
+            .args(["cat", "-t", "relation", "-f", "opl", "--overwrite", "-o"])
+            .arg(&rels_opl)
+            .arg(set),
+        "osmium cat (the outline set's relations)",
+    )?;
     let rels = opl::kept_relations(BufReader::with_capacity(1 << 20, std::fs::File::open(&rels_opl)?))?;
     std::fs::remove_file(&rels_opl).ok();
     let geo = work.join("outlines.geojsonseq");
@@ -314,11 +322,11 @@ pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &s
     std::fs::remove_file(&idx).ok();
     let st = store::spawn::status(
         store::spawn::command("osmium")
-        .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite"])
-        .arg(format!("--index-type=sparse_file_array,{}", idx.display()))
-        .arg("-o")
-        .arg(&geo)
-        .arg(set),
+            .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite"])
+            .arg(format!("--index-type=sparse_file_array,{}", idx.display()))
+            .arg("-o")
+            .arg(&geo)
+            .arg(set),
     )
     .context("run osmium export")?;
     std::fs::remove_file(&idx).ok();
@@ -328,7 +336,8 @@ pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &s
     let mut parsed = parsed?;
     let have: std::collections::HashSet<u64> = parsed.iter().map(|p| p.id).collect();
     let missing: Vec<&opl::Relation> = rels.iter().filter(|r| !have.contains(&r.id)).collect();
-    let (countries, others): (Vec<&opl::Relation>, Vec<&opl::Relation>) = missing.into_iter().partition(|r| r.country());
+    let (countries, others): (Vec<&opl::Relation>, Vec<&opl::Relation>) =
+        missing.into_iter().partition(|r| r.country());
     let mut sum = Summary { unassembled: others.iter().map(|r| r.id).collect(), ..Default::default() };
     if !countries.is_empty() {
         // Their ways and nodes from the set.
@@ -341,7 +350,15 @@ pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &s
             }
         }
         std::fs::write(&ids, list)?;
-        osmium(store::spawn::command("osmium").args(["getid", "-r", "-f", "opl", "--overwrite", "-i"]).arg(&ids).arg("-o").arg(&members).arg(set), "osmium getid (the unassembled countries' ways)")?;
+        osmium(
+            store::spawn::command("osmium")
+                .args(["getid", "-r", "-f", "opl", "--overwrite", "-i"])
+                .arg(&ids)
+                .arg("-o")
+                .arg(&members)
+                .arg(set),
+            "osmium getid (the unassembled countries' ways)",
+        )?;
         let geom = opl::Geometry::read(BufReader::with_capacity(1 << 20, std::fs::File::open(&members)?))?;
         std::fs::remove_file(&ids).ok();
         std::fs::remove_file(&members).ok();
@@ -380,7 +397,9 @@ impl Previous {
     fn open(path: &Path, date: &str) -> Option<Previous> {
         let r = Outlines::open(path).and_then(|o| Ok((o, Outlines::stale_in(path)?)));
         match r {
-            Ok((outlines, stale)) => Some(Previous { outlines, date: date.to_string(), stale: stale.into_iter().collect() }),
+            Ok((outlines, stale)) => {
+                Some(Previous { outlines, date: date.to_string(), stale: stale.into_iter().collect() })
+            }
             Err(e) => {
                 eprintln!("outlines: the previous pass's ({date}) can't be read: {e:#}");
                 None
@@ -391,7 +410,10 @@ impl Previous {
 
 /// Repairs each of `rels` ([`repair`]) with the ways and nodes of `geom`: the outlines made, with
 /// the widest gap each closed, and each that couldn't be with why.
-fn repair_all<'a>(rels: &[&'a opl::Relation], geom: &opl::Geometry) -> (Vec<(Parsed, f64)>, Vec<(&'a opl::Relation, String)>) {
+fn repair_all<'a>(
+    rels: &[&'a opl::Relation],
+    geom: &opl::Geometry,
+) -> (Vec<(Parsed, f64)>, Vec<(&'a opl::Relation, String)>) {
     let (mut ok, mut failed) = (Vec::new(), Vec::new());
     for &r in rels {
         let res = repair(r, geom).and_then(|(polys, gap)| {
@@ -412,7 +434,10 @@ fn repair_all<'a>(rels: &[&'a opl::Relation], geom: &opl::Geometry) -> (Vec<(Par
 /// rings; its names and codes this pass's tags), [`flag::STALE`], with why and the date of the
 /// pass its rings are from (the previous pass's, or the one it had them from in turn); and a line
 /// for each with no previous outline (none, or one that can't be read).
-fn keep_previous(failed: Vec<(&opl::Relation, String)>, previous: Option<&Previous>) -> (Vec<(Parsed, String, String)>, Vec<String>) {
+fn keep_previous(
+    failed: Vec<(&opl::Relation, String)>,
+    previous: Option<&Previous>,
+) -> (Vec<(Parsed, String, String)>, Vec<String>) {
     let (mut kept, mut lost) = (Vec::new(), Vec::new());
     for (r, why) in failed {
         let got = previous.and_then(|pv| pv.outlines.by_id(r.id).map(|rec| (pv, rec))).map(|(pv, rec)| {
@@ -423,7 +448,11 @@ fn keep_previous(failed: Vec<(&opl::Relation, String)>, previous: Option<&Previo
         });
         match got {
             Some(Ok((p, from))) => kept.push((p, why, from)),
-            Some(Err(e)) => lost.push(format!("relation {} ({}): {why}; the previous pass's outline can't be read: {e:#}", r.id, r.iso1())),
+            Some(Err(e)) => lost.push(format!(
+                "relation {} ({}): {why}; the previous pass's outline can't be read: {e:#}",
+                r.id,
+                r.iso1()
+            )),
             None => lost.push(format!("relation {} ({}): {why}", r.id, r.iso1())),
         }
     }
@@ -450,7 +479,10 @@ fn dist_m(a: [i32; 2], b: [i32; 2]) -> f64 {
 /// its own to).
 /// The widest gap closed with them. Refused: a node where more than two way ends meet (which way
 /// a ring takes there is a guess that can make it cross itself).
-pub(crate) fn rings_of(ways: &[Vec<(u64, [i32; 2])>], segments: &mut Vec<([i32; 2], [i32; 2])>) -> Result<(Vec<Vec<[i32; 2]>>, f64)> {
+pub(crate) fn rings_of(
+    ways: &[Vec<(u64, [i32; 2])>],
+    segments: &mut Vec<([i32; 2], [i32; 2])>,
+) -> Result<(Vec<Vec<[i32; 2]>>, f64)> {
     let mut ends: std::collections::BTreeMap<u64, Vec<usize>> = Default::default();
     for (i, w) in ways.iter().enumerate() {
         ensure!(w.len() >= 2, "a way of fewer than two nodes");
@@ -541,7 +573,8 @@ pub(crate) fn segments_of<'a>(ways: impl IntoIterator<Item = &'a Vec<(u64, [i32;
 /// Whether segments `a` and `b` cross at a point inside both (sharing an end, or touching, isn't).
 fn crosses(a: ([i32; 2], [i32; 2]), b: ([i32; 2], [i32; 2])) -> bool {
     let o = |p: [i32; 2], q: [i32; 2], r: [i32; 2]| -> i128 {
-        let v = (q[0] as i128 - p[0] as i128) * (r[1] as i128 - p[1] as i128) - (q[1] as i128 - p[1] as i128) * (r[0] as i128 - p[0] as i128);
+        let v = (q[0] as i128 - p[0] as i128) * (r[1] as i128 - p[1] as i128)
+            - (q[1] as i128 - p[1] as i128) * (r[0] as i128 - p[0] as i128);
         v.signum()
     };
     o(a.0, a.1, b.0) * o(a.0, a.1, b.1) < 0 && o(b.0, b.1, a.0) * o(b.0, b.1, a.1) < 0
@@ -555,7 +588,10 @@ fn repair(r: &opl::Relation, geom: &opl::Geometry) -> Result<(Vec<Vec<Vec<[i32; 
     let mut inner = Vec::new();
     for (w, role) in &r.ways {
         let nodes = geom.ways.get(w).with_context(|| format!("way {w} not in the set"))?;
-        let pts = nodes.iter().map(|n| geom.nodes.get(n).map(|p| (*n, *p)).with_context(|| format!("node {n} of way {w} not in the set"))).collect::<Result<Vec<_>>>()?;
+        let pts = nodes
+            .iter()
+            .map(|n| geom.nodes.get(n).map(|p| (*n, *p)).with_context(|| format!("node {n} of way {w} not in the set")))
+            .collect::<Result<Vec<_>>>()?;
         match role.as_str() {
             "outer" | "" => outer.push(pts),
             "inner" => inner.push(pts),
@@ -575,7 +611,10 @@ fn nest(outers: Vec<Vec<[i32; 2]>>, inners: Vec<Vec<[i32; 2]>>) -> Result<Vec<Ve
     let areas: Vec<f64> = outers.iter().map(|r| ring_area_m2(r).abs()).collect();
     let mut polys: Vec<Vec<Vec<[i32; 2]>>> = outers.into_iter().map(|o| vec![o]).collect();
     for h in inners {
-        let k = (0..polys.len()).filter(|&k| inside(&[&polys[k][0]], h[0])).min_by(|&x, &y| areas[x].total_cmp(&areas[y]).then(x.cmp(&y))).context("an inner ring in no outer one")?;
+        let k = (0..polys.len())
+            .filter(|&k| inside(&[&polys[k][0]], h[0]))
+            .min_by(|&x, &y| areas[x].total_cmp(&areas[y]).then(x.cmp(&y)))
+            .context("an inner ring in no outer one")?;
         polys[k].push(h);
     }
     Ok(polys)
@@ -598,7 +637,8 @@ pub(crate) mod opl {
     }
 
     /// The tags an outline is made with ([`super::outline`]).
-    const KEYS: [&str; 7] = ["admin_level", "boundary", "ISO3166-1", "ISO3166-1:alpha2", "ISO3166-2", "name", "name:en"];
+    const KEYS: [&str; 7] =
+        ["admin_level", "boundary", "ISO3166-1", "ISO3166-1:alpha2", "ISO3166-2", "name", "name:en"];
 
     impl Relation {
         pub fn get(&self, k: &str) -> Option<&str> {
@@ -637,7 +677,10 @@ pub(crate) mod opl {
         let mut out = Vec::new();
         for l in r.lines() {
             let l = l?;
-            let Some(id) = l.split(' ').next().and_then(|f| f.strip_prefix('r')).and_then(|s| s.parse::<u64>().ok()) else { continue };
+            let Some(id) = l.split(' ').next().and_then(|f| f.strip_prefix('r')).and_then(|s| s.parse::<u64>().ok())
+            else {
+                continue;
+            };
             let all: Vec<(String, String)> = field(&l, 'T')
                 .unwrap_or("")
                 .split(',')
@@ -694,7 +737,11 @@ pub(crate) mod opl {
                         .unwrap_or("")
                         .split(',')
                         .filter(|s| !s.is_empty())
-                        .map(|s| s.strip_prefix('n').and_then(|s| s.parse().ok()).with_context(|| format!("way {id}: node {s}")))
+                        .map(|s| {
+                            s.strip_prefix('n')
+                                .and_then(|s| s.parse().ok())
+                                .with_context(|| format!("way {id}: node {s}"))
+                        })
                         .collect::<Result<Vec<u64>>>()?;
                     g.ways.insert(id, nodes);
                 }
@@ -735,7 +782,9 @@ pub fn assemble_geojsonseq(geo: &Path, out: &Path) -> Result<Summary> {
 /// code (Åland's AX, though tagged as Finland's FI-01 too), else read from its ISO 3166 code
 /// ([`territory_code`]: the Canaries' IC is reserved, not assigned: ES from ES-CN).
 fn own_code(iso1: &str, iso: &str) -> Option<String> {
-    (two_letters(iso1) && !RESERVED.contains(&iso1)).then(|| iso1.to_string()).or_else(|| territory_code(iso).map(str::to_owned))
+    (two_letters(iso1) && !RESERVED.contains(&iso1))
+        .then(|| iso1.to_string())
+        .or_else(|| territory_code(iso).map(str::to_owned))
 }
 
 /// ISO 3166-1's exceptionally reserved codes, which OSM tags some territories with (`IC` the
@@ -761,7 +810,10 @@ fn write(mut parsed: Vec<Parsed>, out: &Path, mut sum: Summary) -> Result<Summar
         i
     };
     // Simplify in parallel (rings in the same order as the polygons'), then lay out.
-    let simplified: Vec<Vec<Vec<[i32; 2]>>> = parsed.par_iter().map(|p| p.polys.iter().flatten().map(|r| simplify(r, tolerance_m(p.level))).collect()).collect();
+    let simplified: Vec<Vec<Vec<[i32; 2]>>> = parsed
+        .par_iter()
+        .map(|p| p.polys.iter().flatten().map(|r| simplify(r, tolerance_m(p.level))).collect())
+        .collect();
     // Which country each one lies in: the smallest country or territory outline holding a point
     // of it (a town in Guadeloupe lies in GP, not FR, whose relation holds Guadeloupe too).
     let mut countries: Vec<(usize, f64, crate::coverage::Shape)> = parsed
@@ -769,7 +821,15 @@ fn write(mut parsed: Vec<Parsed>, out: &Path, mut sum: Summary) -> Result<Summar
         .enumerate()
         .filter(|(_, p)| p.flags & flag::ISO1 != 0)
         .map(|(i, p)| {
-            let area: f64 = p.polys.iter().flat_map(|poly| poly.iter().enumerate().map(|(k, r)| if k == 0 { ring_area_m2(r).abs() } else { -ring_area_m2(r).abs() })).sum();
+            let area: f64 = p
+                .polys
+                .iter()
+                .flat_map(|poly| {
+                    poly.iter()
+                        .enumerate()
+                        .map(|(k, r)| if k == 0 { ring_area_m2(r).abs() } else { -ring_area_m2(r).abs() })
+                })
+                .sum();
             (i, area, crate::coverage::Shape::new(String::new(), p.polys.iter().flatten().cloned().collect(), 0.0))
         })
         .collect();
@@ -784,13 +844,17 @@ fn write(mut parsed: Vec<Parsed>, out: &Path, mut sum: Summary) -> Result<Summar
             // A point inside the area: its outer ring's centre, else its first point.
             let r = p.polys.first()?.first()?;
             let n = r.len().max(1) as i64;
-            let c = [(r.iter().map(|q| q[0] as i64).sum::<i64>() / n) as i32, (r.iter().map(|q| q[1] as i64).sum::<i64>() / n) as i32];
+            let c = [
+                (r.iter().map(|q| q[0] as i64).sum::<i64>() / n) as i32,
+                (r.iter().map(|q| q[1] as i64).sum::<i64>() / n) as i32,
+            ];
             let inside = |pt: [i32; 2]| countries.iter().find(|(_, sh)| sh.contains(pt)).map(|(i, _)| *i);
             inside(c).or_else(|| inside(r[0]))
         })
         .collect();
     let mut recs = Vec::with_capacity(parsed.len());
-    let (mut rings, mut points, mut srings, mut spoints): (Vec<Ring>, Vec<[i32; 2]>, Vec<Ring>, Vec<[i32; 2]>) = Default::default();
+    let (mut rings, mut points, mut srings, mut spoints): (Vec<Ring>, Vec<[i32; 2]>, Vec<Ring>, Vec<[i32; 2]>) =
+        Default::default();
     for (pi, (p, simple)) in parsed.iter().zip(simplified).enumerate() {
         let mut bbox = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
         let mut area = 0.0;
@@ -816,7 +880,11 @@ fn write(mut parsed: Vec<Parsed>, out: &Path, mut sum: Summary) -> Result<Summar
         }
         // A country's or territory's own code; else that of the one it lies in.
         let code = |q: &Parsed| own_code(&q.iso1, &q.iso).unwrap_or_default();
-        let country = if p.flags & flag::ISO1 != 0 { code(p) } else { country_of[pi].map(|c| code(&parsed[c])).unwrap_or_default() };
+        let country = if p.flags & flag::ISO1 != 0 {
+            code(p)
+        } else {
+            country_of[pi].map(|c| code(&parsed[c])).unwrap_or_default()
+        };
         if rings.len() == r0 {
             continue;
         }
@@ -892,7 +960,11 @@ impl Outlines {
     pub fn open(path: &Path) -> Result<Outlines> {
         let r = store::sect::SectReader::open(store::range::PlainFile::open(path)?)?;
         ensure!(r.meta().get("fmt").and_then(|v| v.as_str()) == Some(FORMAT), "{}: not {FORMAT}", path.display());
-        Ok(Outlines { recs: r.read_pod("recs")?, strings: String::from_utf8(r.read("strings")?)?.split('\n').map(str::to_string).collect(), file: r })
+        Ok(Outlines {
+            recs: r.read_pod("recs")?,
+            strings: String::from_utf8(r.read("strings")?)?.split('\n').map(str::to_string).collect(),
+            file: r,
+        })
     }
 
     pub fn string(&self, i: u32) -> &str {
@@ -905,11 +977,25 @@ impl Outlines {
 
     /// Rings `first..first + n` of `rings` with their points from `points`, and their kinds.
     fn read_rings(&self, rings: &str, points: &str, first: u32, n: u32) -> Result<Vec<(u32, Vec<[i32; 2]>)>> {
-        let rs: Vec<Ring> = bytemuck::pod_collect_to_vec(&self.file.read_part(rings, first as u64 * std::mem::size_of::<Ring>() as u64, n as usize * std::mem::size_of::<Ring>())?);
+        let rs: Vec<Ring> = bytemuck::pod_collect_to_vec(&self.file.read_part(
+            rings,
+            first as u64 * std::mem::size_of::<Ring>() as u64,
+            n as usize * std::mem::size_of::<Ring>(),
+        )?);
         let (Some(a), Some(b)) = (rs.first(), rs.last()) else { return Ok(Vec::new()) };
         let (start, end) = (a.start as u64, b.start as u64 + b.count as u64);
-        let pts: Vec<[i32; 2]> = bytemuck::pod_collect_to_vec(&self.file.read_part(points, start * 8, ((end - start) * 8) as usize)?);
-        Ok(rs.iter().map(|r| (r.kind, pts[(r.start as u64 - start) as usize..(r.start as u64 - start) as usize + r.count as usize].to_vec())).collect())
+        let pts: Vec<[i32; 2]> =
+            bytemuck::pod_collect_to_vec(&self.file.read_part(points, start * 8, ((end - start) * 8) as usize)?);
+        Ok(rs
+            .iter()
+            .map(|r| {
+                (
+                    r.kind,
+                    pts[(r.start as u64 - start) as usize..(r.start as u64 - start) as usize + r.count as usize]
+                        .to_vec(),
+                )
+            })
+            .collect())
     }
 
     pub fn rings(&self, o: &OutlineRec) -> Result<Vec<Vec<[i32; 2]>>> {
@@ -956,7 +1042,11 @@ impl Outlines {
     /// Every outline containing `p`, smallest area first.
     pub fn containing(&self, p: [i32; 2]) -> Result<Vec<&OutlineRec>> {
         let mut v = Vec::new();
-        for o in self.recs.iter().filter(|o| p[0] >= o.bbox[0] && p[0] <= o.bbox[2] && p[1] >= o.bbox[1] && p[1] <= o.bbox[3]) {
+        for o in self
+            .recs
+            .iter()
+            .filter(|o| p[0] >= o.bbox[0] && p[0] <= o.bbox[2] && p[1] >= o.bbox[1] && p[1] <= o.bbox[3])
+        {
             let rings = self.rings(o)?;
             if inside(&rings.iter().map(Vec::as_slice).collect::<Vec<_>>(), p) {
                 v.push(o);
@@ -981,7 +1071,8 @@ impl Outlines {
     /// The ISO 3166-1 and 3166-2 codes at `p` ("" where none).
     pub fn iso_at(&self, p: [i32; 2]) -> Result<(String, String)> {
         let c = self.containing(p)?;
-        let pick = |f: u8| c.iter().find(|o| o.flags & f != 0).map(|o| self.string(o.iso).to_string()).unwrap_or_default();
+        let pick =
+            |f: u8| c.iter().find(|o| o.flags & f != 0).map(|o| self.string(o.iso).to_string()).unwrap_or_default();
         Ok((pick(flag::ISO1), pick(flag::ISO2)))
     }
 }
@@ -1003,10 +1094,17 @@ fn spoken_code(o: &OutlineRec, string: &impl Fn(u32) -> String) -> Option<String
 /// The outlines the languages spoken where a thing is are drawn from (`names::spoken`): each ISO
 /// 3166-1 territory under its own code, and the subdivisions with a line of their own in `table`
 /// (Quebec, Wales, …), with their simplified polygons (`polygons`: an outer ring, then its holes).
-pub fn spoken_areas(table: &names::Table, recs: &[OutlineRec], string: impl Fn(u32) -> String, mut polygons: impl FnMut(&OutlineRec) -> Result<Vec<Vec<Vec<[i32; 2]>>>>) -> Result<Vec<names::spoken::Area>> {
+pub fn spoken_areas(
+    table: &names::Table,
+    recs: &[OutlineRec],
+    string: impl Fn(u32) -> String,
+    mut polygons: impl FnMut(&OutlineRec) -> Result<Vec<Vec<Vec<[i32; 2]>>>>,
+) -> Result<Vec<names::spoken::Area>> {
     let mut out = Vec::new();
     for o in recs {
-        let Some(code) = spoken_code(o, &string).filter(|c| table.wanted(c) && table.get(c).is_some()) else { continue };
+        let Some(code) = spoken_code(o, &string).filter(|c| table.wanted(c) && table.get(c).is_some()) else {
+            continue;
+        };
         out.push(names::spoken::Area { code, area_km2: f64::from(o.area_km2), polygons: polygons(o)? });
     }
     Ok(out)
@@ -1021,7 +1119,10 @@ pub fn spoken_codes(recs: &[OutlineRec], string: impl Fn(u32) -> String) -> std:
 impl Outlines {
     /// The languages spoken where, from these outlines and `table` ([`spoken_areas`]).
     pub fn spoken(&self, table: &names::Table) -> Result<names::Spoken> {
-        Ok(names::Spoken::build(table, spoken_areas(table, &self.recs, |i| self.string(i).to_owned(), |o| self.simple_polygons(o))?))
+        Ok(names::Spoken::build(
+            table,
+            spoken_areas(table, &self.recs, |i| self.string(i).to_owned(), |o| self.simple_polygons(o))?,
+        ))
     }
 
     /// The ISO 3166 code outline `o` is drawn under ([`spoken_codes`]: a territory's own ISO
@@ -1085,7 +1186,12 @@ mod tests {
         assert_eq!((p.id, p.level, p.iso.as_str(), p.flags), (7, 4, "XX-SQ", flag::ISO2));
         assert_eq!(p.polys[0].len(), 2);
         assert!(parse(&SQUARE_WITH_HOLE.replace("\"relation\"", "\"way\"")).is_none());
-        assert!(parse(&SQUARE_WITH_HOLE.replace("\"admin_level\":\"4\"", "\"admin_level\":\"10\"").replace(",\"ISO3166-2\":\"XX-SQ\"", "")).is_none());
+        assert!(parse(
+            &SQUARE_WITH_HOLE
+                .replace("\"admin_level\":\"4\"", "\"admin_level\":\"10\"")
+                .replace(",\"ISO3166-2\":\"XX-SQ\"", "")
+        )
+        .is_none());
         // An ISO code keeps it whatever its level.
         assert!(parse(&SQUARE_WITH_HOLE.replace("\"admin_level\":\"4\"", "\"admin_level\":\"10\"")).is_some());
     }
@@ -1096,8 +1202,13 @@ mod tests {
         // outline with neither in no country.
         let d = tempfile::tempdir().unwrap();
         let geo = d.path().join("o.geojsonseq");
-        let pr = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":9").replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"PR\",\"ISO3166-2\":\"US-PR\"");
-        let none = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":11").replace(",\"ISO3166-2\":\"XX-SQ\"", "").replace("[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]", "[[10,10],[11,10],[11,11],[10,11],[10,10]]");
+        let pr = SQUARE_WITH_HOLE
+            .replace("\"@id\":7", "\"@id\":9")
+            .replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"PR\",\"ISO3166-2\":\"US-PR\"");
+        let none = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":11").replace(",\"ISO3166-2\":\"XX-SQ\"", "").replace(
+            "[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]",
+            "[[10,10],[11,10],[11,11],[10,11],[10,10]]",
+        );
         std::fs::write(&geo, format!("\u{1e}{pr}\n\u{1e}{none}\n")).unwrap();
         let out = d.path().join("outlines.sect");
         assemble_geojsonseq(&geo, &out).unwrap();
@@ -1121,9 +1232,25 @@ mod tests {
         // with both codes where the subdivision code isn't the territory's own: its country.
         let d = tempfile::tempdir().unwrap();
         let geo = d.path().join("o.geojsonseq");
-        let pr = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":9").replace("\"admin_level\":\"4\"", "\"admin_level\":\"2\"").replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"PR\",\"ISO3166-2\":\"US-PR\"");
-        let town = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":12").replace("\"admin_level\":\"4\"", "\"admin_level\":\"8\"").replace(",\"ISO3166-2\":\"XX-SQ\"", "").replace("[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]", "[[0.1,0.1],[0.2,0.1],[0.2,0.2],[0.1,0.2],[0.1,0.1]]");
-        let canaries = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":13").replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"IC\",\"ISO3166-2\":\"ES-CN\"").replace("[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]", "[[20,20],[21,20],[21,21],[20,21],[20,20]]");
+        let pr = SQUARE_WITH_HOLE
+            .replace("\"@id\":7", "\"@id\":9")
+            .replace("\"admin_level\":\"4\"", "\"admin_level\":\"2\"")
+            .replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"PR\",\"ISO3166-2\":\"US-PR\"");
+        let town = SQUARE_WITH_HOLE
+            .replace("\"@id\":7", "\"@id\":12")
+            .replace("\"admin_level\":\"4\"", "\"admin_level\":\"8\"")
+            .replace(",\"ISO3166-2\":\"XX-SQ\"", "")
+            .replace(
+                "[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]",
+                "[[0.1,0.1],[0.2,0.1],[0.2,0.2],[0.1,0.2],[0.1,0.1]]",
+            );
+        let canaries = SQUARE_WITH_HOLE
+            .replace("\"@id\":7", "\"@id\":13")
+            .replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"IC\",\"ISO3166-2\":\"ES-CN\"")
+            .replace(
+                "[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]",
+                "[[20,20],[21,20],[21,21],[20,21],[20,20]]",
+            );
         std::fs::write(&geo, format!("\u{1e}{pr}\n\u{1e}{town}\n\u{1e}{canaries}\n")).unwrap();
         let out = d.path().join("outlines.sect");
         assemble_geojsonseq(&geo, &out).unwrap();
@@ -1137,7 +1264,14 @@ mod tests {
     fn round_trip_and_lookup() {
         let d = tempfile::tempdir().unwrap();
         let geo = d.path().join("o.geojsonseq");
-        let big = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":3").replace("[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]", "[[-1,-1],[2,-1],[2,2],[-1,2],[-1,-1]]").replace("\"admin_level\":\"4\"", "\"admin_level\":\"2\"").replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"XX\"");
+        let big = SQUARE_WITH_HOLE
+            .replace("\"@id\":7", "\"@id\":3")
+            .replace(
+                "[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]",
+                "[[-1,-1],[2,-1],[2,2],[-1,2],[-1,-1]]",
+            )
+            .replace("\"admin_level\":\"4\"", "\"admin_level\":\"2\"")
+            .replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"XX\"");
         std::fs::write(&geo, format!("\u{1e}{SQUARE_WITH_HOLE}\n\u{1e}{big}\n")).unwrap();
         let out = d.path().join("outlines.sect");
         let s = assemble_geojsonseq(&geo, &out).unwrap();
@@ -1152,7 +1286,11 @@ mod tests {
         assert_eq!(o.country_code(o.by_id(7).unwrap()), "XX");
         assert_eq!(o.country_code(o.by_id(3).unwrap()), "XX");
         assert_eq!(o.string(o.by_id(7).unwrap().name_en), "Square");
-        assert_eq!(o.simple_polygons(o.by_id(7).unwrap()).unwrap().iter().map(Vec::len).collect::<Vec<_>>(), vec![2], "the hole nests in its polygon");
+        assert_eq!(
+            o.simple_polygons(o.by_id(7).unwrap()).unwrap().iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![2],
+            "the hole nests in its polygon"
+        );
         assert_eq!(o.string(o.by_id(7).unwrap().country), "XX", "inside the country");
         assert_eq!(o.string(o.by_id(3).unwrap().country), "XX", "a country's own");
         let a = o.by_id(7).unwrap().area_km2;
@@ -1163,10 +1301,12 @@ mod tests {
     #[test]
     fn simplify_keeps_shape() {
         let n = 1000;
-        let ring: Vec<[i32; 2]> = (0..=n).map(|i| {
-            let t = i as f64 / n as f64 * std::f64::consts::TAU;
-            [(t.dcos() * 1e6) as i32, (t.dsin() * 1e6) as i32]
-        }).collect();
+        let ring: Vec<[i32; 2]> = (0..=n)
+            .map(|i| {
+                let t = i as f64 / n as f64 * std::f64::consts::TAU;
+                [(t.dcos() * 1e6) as i32, (t.dsin() * 1e6) as i32]
+            })
+            .collect();
         let s = simplify(&ring, 100.0);
         assert!(s.len() > 8 && s.len() < 200, "{}", s.len());
         assert_eq!(s.first(), ring.first());
@@ -1226,7 +1366,10 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
         assert!(failed.is_empty(), "{failed:?}");
         let (p, gap) = &ok[0];
         assert!((gap - 55.7).abs() < 1.0, "{gap}");
-        assert_eq!((p.id, p.level, p.iso1.as_str(), p.flags, p.gap_m, p.name_en.as_str()), (100, 2, "PL", flag::ISO1 | flag::REPAIRED, 56, "Poland (test)"));
+        assert_eq!(
+            (p.id, p.level, p.iso1.as_str(), p.flags, p.gap_m, p.name_en.as_str()),
+            (100, 2, "PL", flag::ISO1 | flag::REPAIRED, 56, "Poland (test)")
+        );
         assert_eq!(p.polys.len(), 1);
         assert_eq!(p.polys[0].len(), 2, "the outer ring and its hole");
         let outer = &p.polys[0][0];
@@ -1268,7 +1411,9 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
         // The previous pass had relation 100 (a square, named otherwise), not 104.
         let d = tempfile::tempdir().unwrap();
         let geo = d.path().join("prev.geojsonseq");
-        let prev_square = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":100").replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"PL\"");
+        let prev_square = SQUARE_WITH_HOLE
+            .replace("\"@id\":7", "\"@id\":100")
+            .replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"PL\"");
         std::fs::write(&geo, format!("\u{1e}{prev_square}\n")).unwrap();
         let prev_file = d.path().join("prev.sect");
         assemble_geojsonseq(&geo, &prev_file).unwrap();
@@ -1279,8 +1424,16 @@ w3 v1 dV c1 t2026-09-27T00:00:00Z i1 ua T Nn6,n7,n8,n10,n6
         let (p, why, from) = &kept[0];
         assert!(why.starts_with("a gap of 2226 m"), "{why}");
         assert_eq!(from, "2026-08-01");
-        assert_eq!((p.id, p.flags, p.name_en.as_str()), (100, flag::ISO1 | flag::STALE, "Poland (test)"), "this pass's tags");
-        assert_eq!(p.polys, prev.outlines.polygons(prev.outlines.by_id(100).unwrap()).unwrap(), "the previous pass's rings");
+        assert_eq!(
+            (p.id, p.flags, p.name_en.as_str()),
+            (100, flag::ISO1 | flag::STALE, "Poland (test)"),
+            "this pass's tags"
+        );
+        assert_eq!(
+            p.polys,
+            prev.outlines.polygons(prev.outlines.by_id(100).unwrap()).unwrap(),
+            "the previous pass's rings"
+        );
         // Stored: flagged, and listed in the meta with the pass its rings are from.
         let out = d.path().join("o.sect");
         let sum = Summary { stale: vec![(100, "PL".into(), why.clone(), from.clone())], ..Default::default() };

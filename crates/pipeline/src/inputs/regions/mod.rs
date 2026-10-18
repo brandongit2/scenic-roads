@@ -130,7 +130,6 @@ impl Checks for Regions {
         self.ctx.as_ref().and_then(|c| c.not_ready.clone())
     }
 
-
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
         let mut c = FileCheck::default();
         let name = resolve::file_name(path);
@@ -214,13 +213,23 @@ impl Checks for Regions {
 
     fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
         let (date, o, e) = current(manifest);
-        vec![format!("regions pass {}", date.as_deref().unwrap_or("-")), format!("regions outlines {}", o.map(String::as_str).unwrap_or("-")), format!("regions extract {}", e.map(String::as_str).unwrap_or("-"))]
+        vec![
+            format!("regions pass {}", date.as_deref().unwrap_or("-")),
+            format!("regions outlines {}", o.map(String::as_str).unwrap_or("-")),
+            format!("regions extract {}", e.map(String::as_str).unwrap_or("-")),
+        ]
     }
 
     fn prepared(&self, root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
         let (date, o, e) = current(manifest);
         let outlines = o.map(|n| Outlines::open(&root.join(n)).with_context(|| format!("open {n}"))).transpose()?;
-        let extract = e.map(|n| std::fs::read(root.join(n)).with_context(|| format!("read {n}")).and_then(|b| extract::Extract::read(&b))).transpose()?;
+        let extract = e
+            .map(|n| {
+                std::fs::read(root.join(n))
+                    .with_context(|| format!("read {n}"))
+                    .and_then(|b| extract::Extract::read(&b))
+            })
+            .transpose()?;
         // (Other passes' outline sets in the records: what a pin naming one is compared with.)
         let mut others = BTreeMap::new();
         for (l, c) in manifest.range("sources/osm/".to_string()..).take_while(|(l, _)| l.starts_with("sources/osm/")) {
@@ -245,7 +254,12 @@ impl Checks for Regions {
 /// (fixtures: `place:<lon>,<lat>,<km>` a circle, `poly:<file>` a `.poly` in `dir`, an `osm:` part a
 /// small square at its id's place) stored under `root`, its index named in `manifest` (which the
 /// caller then writes as the records).
-pub fn accept_fixture(root: &Path, dir: &Path, recipes: &[crate::agent::recipes::Recipe], manifest: &mut BTreeMap<String, String>) -> String {
+pub fn accept_fixture(
+    root: &Path,
+    dir: &Path,
+    recipes: &[crate::agent::recipes::Recipe],
+    manifest: &mut BTreeMap<String, String>,
+) -> String {
     use crate::inputs::{FileEntry, Index};
     let mut index = Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), ..Default::default() };
     let put = |name: &str, b: &[u8]| {
@@ -258,22 +272,39 @@ pub fn accept_fixture(root: &Path, dir: &Path, recipes: &[crate::agent::recipes:
             let rings = match entry.strip_prefix("osm:") {
                 Some(id) => {
                     let k: i32 = id.parse::<i32>().unwrap() % 100;
-                    vec![vec![[k * 10_000_000, 0], [k * 10_000_000 + 1_000_000, 0], [k * 10_000_000 + 1_000_000, 1_000_000], [k * 10_000_000, 1_000_000]]]
+                    vec![vec![
+                        [k * 10_000_000, 0],
+                        [k * 10_000_000 + 1_000_000, 0],
+                        [k * 10_000_000 + 1_000_000, 1_000_000],
+                        [k * 10_000_000, 1_000_000],
+                    ]]
                 }
                 None => match entry.strip_prefix("place:") {
                     Some(v) => {
                         let n: Vec<f64> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                         vec![crate::coverage::fixture_circle(n[0], n[1], n[2])]
                     }
-                    None => crate::coverage::read_poly(&std::fs::read_to_string(dir.join(entry.trim_start_matches("poly:"))).unwrap()).unwrap(),
+                    None => crate::coverage::read_poly(
+                        &std::fs::read_to_string(dir.join(entry.trim_start_matches("poly:"))).unwrap(),
+                    )
+                    .unwrap(),
                 },
             };
             shapes.push(stored::Shape { from: entry.clone(), country: String::new(), tolerance_m: 0, rings });
         }
-        let g = stored::Geometry { id: r.id.clone(), osm: "2026-09-28".into(), shapes, relations: vec![], ways: vec![] }.encode();
+        let g =
+            stored::Geometry { id: r.id.clone(), osm: "2026-09-28".into(), shapes, relations: vec![], ways: vec![] }
+                .encode();
         let gname = format!("{}/@geometry/{}.{}.rgeo", super::store_dir(UNIT), r.id, store::naming::hash16(&g));
         put(&gname, &g);
-        let d = serde_json::to_vec(&stored::Drawn { fmt: 1, id: r.id.clone(), name: r.name.clone(), outline: r.outline.clone(), shapes: Default::default() }).unwrap();
+        let d = serde_json::to_vec(&stored::Drawn {
+            fmt: 1,
+            id: r.id.clone(),
+            name: r.name.clone(),
+            outline: r.outline.clone(),
+            shapes: Default::default(),
+        })
+        .unwrap();
         let dname = format!("{}/@drawn/{}.{}.json", super::store_dir(UNIT), r.id, store::naming::hash16(&d));
         put(&dname, &d);
         let text = toml::to_string(r).unwrap();

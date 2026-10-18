@@ -217,7 +217,14 @@ fn flood(d: &mut Dem, sx: i64, sy: i64, e: f32, budget: usize) -> Result<(f32, (
 
 /// Nearest pixel higher than e within max_km (tiles in order of distance, skipping tiles whose
 /// maximum isn't higher). Some((km, pixel)) or None.
-fn nearest_higher(d: &mut Dem, sx: i64, sy: i64, e: f32, max_km: f64, maxes: &mut HashMap<(i64, i64), f32>) -> Option<(f64, (i64, i64))> {
+fn nearest_higher(
+    d: &mut Dem,
+    sx: i64,
+    sy: i64,
+    e: f32,
+    max_km: f64,
+    maxes: &mut HashMap<(i64, i64), f32>,
+) -> Option<(f64, (i64, i64))> {
     let s_ll = d.lonlat(sx, sy);
     let km_of = |d: &Dem, x: i64, y: i64| {
         let ll = d.lonlat(x, y);
@@ -249,7 +256,9 @@ fn nearest_higher(d: &mut Dem, sx: i64, sy: i64, e: f32, max_km: f64, maxes: &mu
         }
         if let Some(t) = d.tile(tx, ty) {
             let ovp: &[(i64, i64, f32)] = d.ov.and_then(|o| o.tiles.get(&(tx, ty))).map(Vec::as_slice).unwrap_or(&[]);
-            let mx = *maxes.entry((tx, ty)).or_insert_with(|| t.iter().cloned().fold(f32::MIN, f32::max).max(ovp.iter().map(|p| p.2).fold(f32::MIN, f32::max)));
+            let mx = *maxes.entry((tx, ty)).or_insert_with(|| {
+                t.iter().cloned().fold(f32::MIN, f32::max).max(ovp.iter().map(|p| p.2).fold(f32::MIN, f32::max))
+            });
             if mx > e + 0.5 {
                 for &(x, y, v) in ovp {
                     if v > e + 0.5 {
@@ -300,7 +309,8 @@ pub struct Out {
 impl Out {
     /// As peaks.json has it.
     pub fn json(&self) -> serde_json::Value {
-        let mut v = serde_json::json!({ "i": self.i, "e": self.e, "p": self.p, "c": self.c, "ce": self.ce, "iso": self.iso });
+        let mut v =
+            serde_json::json!({ "i": self.i, "e": self.e, "p": self.p, "c": self.c, "ce": self.ce, "iso": self.iso });
         if self.pl {
             v["pl"] = true.into();
         }
@@ -318,7 +328,6 @@ fn round5(ll: [f64; 2]) -> [f64; 2] {
     [(ll[0] * 1e5).round() / 1e5, (ll[1] * 1e5).round() / 1e5]
 }
 
-
 /// A peak: its index (handed back), position and tagged elevation (NaN: none).
 #[derive(Clone, Copy, Debug)]
 pub struct Peak {
@@ -332,7 +341,8 @@ pub struct Peak {
 pub fn coarse_tiles(arc: &Archive) -> HashMap<(u32, u32), Tile> {
     let mut z8: HashMap<(u32, u32), Tile> = HashMap::new();
     for e in arc.entries() {
-        let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+        let (z, x, y) =
+            ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
         if z == COARSE_Z {
             if let Some(b) = arc.get(z, x, y) {
                 if let Ok(mut t) = decode_terrain_png(b) {
@@ -373,7 +383,9 @@ pub fn run(peaks: &[Peak], z12: &dyn Tiles, z8: &HashMap<(u32, u32), Tile>) -> a
                 .iter()
                 .map(|&Peak { i, lon, lat, ele }| {
                     let (px, py) = d.px(lon, lat);
-                    let r = (150.0 / (dist_m(lon, lat, lon + 0.001, lat) / 0.001 * 360.0 / ((1u64 << FINE_Z) as f64 * 256.0))).ceil() as i64;
+                    let r = (150.0
+                        / (dist_m(lon, lat, lon + 0.001, lat) / 0.001 * 360.0 / ((1u64 << FINE_Z) as f64 * 256.0)))
+                        .ceil() as i64;
                     let (mut sx, mut sy, mut e) = (px, py, f32::MIN);
                     for dy in -r..=r {
                         for dx in -r..=r {
@@ -416,7 +428,11 @@ pub fn run(peaks: &[Peak], z12: &dyn Tiles, z8: &HashMap<(u32, u32), Tile>) -> a
     }
     drop(d0);
     let e_eff = |sm: &Summit| -> f32 {
-        if sm.dem > f32::MIN && sm.ele.is_finite() && sm.ele >= sm.dem - 30.0 && sm.ele <= sm.dem + 200.0 { sm.ele.max(sm.dem) } else { sm.dem }
+        if sm.dem > f32::MIN && sm.ele.is_finite() && sm.ele >= sm.dem - 30.0 && sm.ele <= sm.dem + 200.0 {
+            sm.ele.max(sm.dem)
+        } else {
+            sm.dem
+        }
     };
     let (mut ov12, mut ov8) = (Overlay::default(), Overlay::default());
     for sm in &summits {
@@ -455,7 +471,17 @@ pub fn run(peaks: &[Peak], z12: &dyn Tiles, z8: &HashMap<(u32, u32), Tile>) -> a
                     let (i, lon, lat) = (sm.i, sm.lon, sm.lat);
                     let (sx, sy) = sm.s;
                     let e = e_eff(sm);
-                    let mut out = Out { i, e: e.max(0.0), p: 0.0, pl: false, c: [lon, lat], ce: 0.0, iso: 0.0, il: false, hi: None };
+                    let mut out = Out {
+                        i,
+                        e: e.max(0.0),
+                        p: 0.0,
+                        pl: false,
+                        c: [lon, lat],
+                        ce: 0.0,
+                        iso: 0.0,
+                        il: false,
+                        hi: None,
+                    };
                     let mut flood_done = false;
                     if e > f32::MIN {
                         if let Ok((col, at, reached)) = flood(&mut d, sx, sy, e, FINE_MAX) {
@@ -491,7 +517,10 @@ pub fn run(peaks: &[Peak], z12: &dyn Tiles, z8: &HashMap<(u32, u32), Tile>) -> a
         .collect();
     let need_flood = fine.iter().filter(|f| !f.flood_done).count();
     let need_iso = fine.iter().filter(|f| !f.iso_done).count();
-    eprintln!("fine stage done ({:.0?}): {need_flood} peaks need the coarse flood, {need_iso} the coarse isolation search", t0.elapsed());
+    eprintln!(
+        "fine stage done ({:.0?}): {need_flood} peaks need the coarse flood, {need_iso} the coarse isolation search",
+        t0.elapsed()
+    );
 
     let done2 = AtomicUsize::new(0);
     let total2 = fine.iter().filter(|f| !f.flood_done || !f.iso_done).count();

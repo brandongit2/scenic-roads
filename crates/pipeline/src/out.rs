@@ -87,13 +87,20 @@ fn read_as_of(spec: &str) -> Result<BTreeMap<String, String>> {
         #[serde(default)]
         over: bool,
     }
-    let (p, began) = spec.rsplit_once('#').and_then(|(p, b)| Some((p, b.parse::<u64>().ok()?))).with_context(|| format!("{UNITS_AS_OF_ENV}={spec:?}: not <path>#<began>"))?;
+    let (p, began) = spec
+        .rsplit_once('#')
+        .and_then(|(p, b)| Some((p, b.parse::<u64>().ok()?)))
+        .with_context(|| format!("{UNITS_AS_OF_ENV}={spec:?}: not <path>#<began>"))?;
     let b = std::fs::read(p).with_context(|| format!("read the map update's units, {p}"))?;
     let r: MapUpdate = serde_json::from_slice(&b).with_context(|| format!("parse {p}"))?;
     if r.began == began && !r.over {
         return Ok(r.units);
     }
-    anyhow::bail!("{p} is no longer the map update this job is for (it began at {began}; the file's began at {}{})", r.began, if r.over { ", and is over" } else { "" })
+    anyhow::bail!(
+        "{p} is no longer the map update this job is for (it began at {began}; the file's began at {}{})",
+        r.began,
+        if r.over { ", and is over" } else { "" }
+    )
 }
 
 /// Hand-off `h`'s changes laid over manifest `m` (a name it removes, removed).
@@ -149,7 +156,6 @@ fn hashes_of(p: &Path) -> Result<(String, String)> {
     Ok((store::naming::hex16(&b3.finalize()), format!("{:x}", sha.finalize())))
 }
 
-
 impl Out {
     /// A job of `step`'s: `root`, the NAS project folder (or a local folder standing in for it);
     /// `scratch`, local space. It puts and removes only `step`'s outputs (`for_step`).
@@ -192,12 +198,26 @@ impl Out {
         let mut manifest = manifest;
         if let Some(p) = unmerged {
             let b = std::fs::read(p).with_context(|| format!("read this Mac's unmerged hand-offs, {}", p.display()))?;
-            let h: crate::handoff::Handoff = serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display()))?;
+            let h: crate::handoff::Handoff =
+                serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display()))?;
             lay_over(&mut manifest, &h);
         }
         // (A helper's job hands off only its own uploads.)
-        let pending = if handoff.is_some() { BTreeMap::new() } else { read_record(&root.join("state/build/pending.json"))? };
-        Ok(Out { root: root.to_path_buf(), manifest, changes: BTreeMap::new(), checked: Default::default(), pending, manifest_path, scratch: scratch.to_path_buf(), handoff, as_of, step: None, outside: Vec::new() })
+        let pending =
+            if handoff.is_some() { BTreeMap::new() } else { read_record(&root.join("state/build/pending.json"))? };
+        Ok(Out {
+            root: root.to_path_buf(),
+            manifest,
+            changes: BTreeMap::new(),
+            checked: Default::default(),
+            pending,
+            manifest_path,
+            scratch: scratch.to_path_buf(),
+            handoff,
+            as_of,
+            step: None,
+            outside: Vec::new(),
+        })
     }
 
     /// Binds this to a job of `step` (scenic-build, as it starts a step): from now on it puts and
@@ -226,8 +246,14 @@ impl Out {
         let Some(step) = &self.step else { return Ok(()) };
         match crate::agent::steps::writes(step, logical, removal) {
             Some(true) => Ok(()),
-            Some(false) => bail!("{} {logical}, outside {step}'s outputs (crate::agent::steps)", if removal { "removes" } else { "writes" }),
-            None if self.handoff.is_some() => bail!("{} {logical}: {step} isn't a step the steps table knows, so its hand-off may change nothing", if removal { "removes" } else { "writes" }),
+            Some(false) => bail!(
+                "{} {logical}, outside {step}'s outputs (crate::agent::steps)",
+                if removal { "removes" } else { "writes" }
+            ),
+            None if self.handoff.is_some() => bail!(
+                "{} {logical}: {step} isn't a step the steps table knows, so its hand-off may change nothing",
+                if removal { "removes" } else { "writes" }
+            ),
             None => Ok(()),
         }
     }
@@ -293,7 +319,11 @@ impl Out {
             // In use again: a fresh time keeps GC's age rule from taking it before a catalog does
             // (GC looks at a file's time again right before it removes it). One that can't be
             // touched, or is gone once touched (GC took it between), is uploaded again.
-            let touched = std::fs::File::options().write(true).open(&dest).and_then(|f| f.set_modified(std::time::SystemTime::now())).is_ok();
+            let touched = std::fs::File::options()
+                .write(true)
+                .open(&dest)
+                .and_then(|f| f.set_modified(std::time::SystemTime::now()))
+                .is_ok();
             if !touched || !dest.exists() {
                 existed = false;
                 let again = store::naming::write_atomic_hashed(&self.root, logical, ext, local, &h, size)?;
@@ -315,7 +345,13 @@ impl Out {
     /// `put_file`, saying how far it is to `on` about once a second, as (bytes, total): it reads the
     /// file twice (its name's hash and its checksum; the copy) and the copy once more on the NAS, for
     /// a large file most of a step's time.
-    pub fn put_file_with(&mut self, logical: &str, ext: &str, local: &Path, on: &(dyn Fn(u64, u64) + Sync)) -> Result<String> {
+    pub fn put_file_with(
+        &mut self,
+        logical: &str,
+        ext: &str,
+        local: &Path,
+        on: &(dyn Fn(u64, u64) + Sync),
+    ) -> Result<String> {
         let total = 3 * std::fs::metadata(local)?.len();
         let start = store::naming::moved();
         let stop = std::sync::atomic::AtomicBool::new(false);
@@ -348,10 +384,15 @@ impl Out {
         std::fs::write(&local, bytes)?;
         let got = store::naming::write_atomic_hashed(&self.root, logical, ext, &local, &h, bytes.len() as u64);
         if got.is_ok() && existed {
-            let touched = std::fs::File::options().write(true).open(&dest).and_then(|f| f.set_modified(std::time::SystemTime::now())).is_ok();
+            let touched = std::fs::File::options()
+                .write(true)
+                .open(&dest)
+                .and_then(|f| f.set_modified(std::time::SystemTime::now()))
+                .is_ok();
             if !touched || !dest.exists() {
                 existed = false;
-                let again = store::naming::write_atomic_hashed(&self.root, logical, ext, &local, &h, bytes.len() as u64);
+                let again =
+                    store::naming::write_atomic_hashed(&self.root, logical, ext, &local, &h, bytes.len() as u64);
                 std::fs::remove_file(&local).ok();
                 anyhow::ensure!(again? == name, "{logical}: wrote another name than {name}");
             }
@@ -398,13 +439,22 @@ impl Out {
         let _p = crate::timings::phase("records saved", crate::timings::Class::NasWrite);
         // (Nothing saved of a job that named something outside its step's outputs.)
         if let Some(first) = self.outside.first() {
-            bail!("{first}{}: nothing saved", if self.outside.len() > 1 { format!(" (and {} more)", self.outside.len() - 1) } else { String::new() });
+            bail!(
+                "{first}{}: nothing saved",
+                if self.outside.len() > 1 { format!(" (and {} more)", self.outside.len() - 1) } else { String::new() }
+            );
         }
         if let Some(dir) = &self.handoff {
             if self.changes.is_empty() && self.pending.is_empty() && self.checked.is_empty() {
                 return Ok(());
             }
-            let h = crate::handoff::Handoff { changes: self.changes.clone(), pending: self.pending.clone(), checked: self.checked.iter().cloned().collect(), done: None, raw: Vec::new() };
+            let h = crate::handoff::Handoff {
+                changes: self.changes.clone(),
+                pending: self.pending.clone(),
+                checked: self.checked.iter().cloned().collect(),
+                done: None,
+                raw: Vec::new(),
+            };
             crate::handoff::write(dir, &h)?;
             self.changes.clear();
             self.pending.clear();
@@ -572,16 +622,34 @@ mod tests {
         let root = d.path().join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join("state/build/manifest.json"), r#"{"sources/osm/2026-09-01/pass": "sources/osm/2026-09-01/pass.1111111111111111.json", "sources/osm/2026-10-01/sets/old": "x"}"#).unwrap();
-        let h = crate::handoff::Handoff { changes: [("sources/osm/2026-10-01/filtered".to_string(), Some("sources/osm/2026-10-01/filtered.2222222222222222.osm.pbf".to_string())), ("sources/osm/2026-10-01/sets/old".to_string(), None)].into(), ..Default::default() };
+        let h = crate::handoff::Handoff {
+            changes: [
+                (
+                    "sources/osm/2026-10-01/filtered".to_string(),
+                    Some("sources/osm/2026-10-01/filtered.2222222222222222.osm.pbf".to_string()),
+                ),
+                ("sources/osm/2026-10-01/sets/old".to_string(), None),
+            ]
+            .into(),
+            ..Default::default()
+        };
         let f = d.path().join("unmerged.json");
         std::fs::write(&f, serde_json::to_vec(&h).unwrap()).unwrap();
         let mut out = Out::open_with(&root, &d.path().join("scratch"), None, Some(&f)).unwrap();
         out.for_step("osm-pass");
-        assert_eq!(out.get("sources/osm/2026-10-01/filtered"), Some("sources/osm/2026-10-01/filtered.2222222222222222.osm.pbf"));
-        assert!(out.get("sources/osm/2026-10-01/sets/old").is_none() && out.get("sources/osm/2026-09-01/pass").is_some());
+        assert_eq!(
+            out.get("sources/osm/2026-10-01/filtered"),
+            Some("sources/osm/2026-10-01/filtered.2222222222222222.osm.pbf")
+        );
+        assert!(
+            out.get("sources/osm/2026-10-01/sets/old").is_none() && out.get("sources/osm/2026-09-01/pass").is_some()
+        );
         assert!(out.changes.is_empty(), "the snapshot's, not this job's");
         let plain = Out::open_with(&root, &d.path().join("scratch"), None, None).unwrap();
-        assert!(plain.get("sources/osm/2026-10-01/filtered").is_none() && plain.get("sources/osm/2026-10-01/sets/old").is_some());
+        assert!(
+            plain.get("sources/osm/2026-10-01/filtered").is_none()
+                && plain.get("sources/osm/2026-10-01/sets/old").is_some()
+        );
         // (A file that can't be read fails the job rather than open the snapshot without them.)
         assert!(Out::open_with(&root, &d.path().join("scratch"), None, Some(&d.path().join("missing.json"))).is_err());
     }
@@ -647,7 +715,11 @@ mod tests {
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
         std::fs::File::options().write(true).open(&dest).unwrap().set_modified(old).unwrap();
         assert_eq!(out.store_bytes("sources/inputs/_gate-test/a", "jsonl", b"the same lines").unwrap(), name);
-        assert!(std::fs::metadata(&dest).unwrap().modified().unwrap().elapsed().unwrap() < std::time::Duration::from_secs(600), "touched");
+        assert!(
+            std::fs::metadata(&dest).unwrap().modified().unwrap().elapsed().unwrap()
+                < std::time::Duration::from_secs(600),
+            "touched"
+        );
         assert!(out.pending.is_empty(), "reused, not uploaded");
         // Can't be touched (read-only here): taken as an upload of its own, its check pending.
         let mut perm = std::fs::metadata(&dest).unwrap().permissions();
@@ -722,12 +794,21 @@ mod tests {
         assert_eq!(std::fs::metadata(&m).unwrap().modified().unwrap(), theirs);
         assert_eq!(out.get("b"), Some("b.2222222222222222.x"));
         // No temporary file left beside them.
-        assert!(std::fs::read_dir(root.join("state/build")).unwrap().all(|e| !crate::whole::is_tmp(&e.unwrap().path())));
+        assert!(std::fs::read_dir(root.join("state/build"))
+            .unwrap()
+            .all(|e| !crate::whole::is_tmp(&e.unwrap().path())));
     }
 
     #[test]
     fn a_map_updates_job_reads_the_units_as_they_were_and_saves_only_its_own_changes() {
-        let then: BTreeMap<String, String> = [("base/6-1-1", "base/6-1-1.1111111111111111.base"), ("global/roads/6-1-1", "global/roads/6-1-1.1111111111111111.roads"), ("base/6-3-3", "base/6-3-3.3333333333333333.base")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let then: BTreeMap<String, String> = [
+            ("base/6-1-1", "base/6-1-1.1111111111111111.base"),
+            ("global/roads/6-1-1", "global/roads/6-1-1.1111111111111111.roads"),
+            ("base/6-3-3", "base/6-3-3.3333333333333333.base"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
         // Since: 6/1/1 rebuilt, 6/2/2 built, 6/3/3 pruned; a tile drawn.
         let now: BTreeMap<String, String> = [
             ("base/6-1-1", "base/6-1-1.aaaaaaaaaaaaaaaa.base"),
@@ -741,7 +822,10 @@ mod tests {
         .collect();
         let seen = units_as_of(&now, &then);
         assert_eq!(seen.get("base/6-1-1").map(String::as_str), Some("base/6-1-1.1111111111111111.base"));
-        assert_eq!(seen.get("global/roads/6-1-1").map(String::as_str), Some("global/roads/6-1-1.1111111111111111.roads"));
+        assert_eq!(
+            seen.get("global/roads/6-1-1").map(String::as_str),
+            Some("global/roads/6-1-1.1111111111111111.roads")
+        );
         assert!(!seen.contains_key("base/6-2-2") && !seen.contains_key("base/6-3-3"));
         assert_eq!(seen.get("global/roadunits"), now.get("global/roadunits"));
         assert_eq!(seen.get("hidata/6-1-1"), now.get("hidata/6-1-1"));
@@ -752,7 +836,12 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&now).unwrap()).unwrap();
         let map_update = d.path().join("map-update.json");
-        std::fs::write(&map_update, serde_json::to_vec(&serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": then })).unwrap()).unwrap();
+        std::fs::write(
+            &map_update,
+            serde_json::to_vec(&serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": then }))
+                .unwrap(),
+        )
+        .unwrap();
         let spec = format!("{}#1", map_update.display());
         let mut out = Out::open_as_of(&root, &d.path().join("s"), Some(&spec)).unwrap();
         assert_eq!(out.manifest, seen);
@@ -765,11 +854,23 @@ mod tests {
         assert_eq!(on_disk, want);
         // Its file unreadable, another map update's, or the map update over: the job fails rather than read
         // other units than its map update's.
-        assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&format!("{}#1", d.path().join("none.json").display()))).is_err());
+        assert!(Out::open_as_of(
+            &root,
+            &d.path().join("s"),
+            Some(&format!("{}#1", d.path().join("none.json").display()))
+        )
+        .is_err());
         assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&format!("{}#2", map_update.display()))).is_err());
         let e = read_as_of(&format!("{}#2", map_update.display())).unwrap_err().to_string();
         assert!(e.contains("no longer the map update") && e.contains("began at 1"), "{e}");
-        std::fs::write(&map_update, serde_json::to_vec(&serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": {}, "over": true })).unwrap()).unwrap();
+        std::fs::write(
+            &map_update,
+            serde_json::to_vec(
+                &serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": {}, "over": true }),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&spec)).is_err());
     }
 
@@ -818,7 +919,10 @@ mod tests {
         out.set("layers/terrain/hi/6-1-3", Some("layers/terrain/hi/6-1-3.1111111111111111.pack".into()));
         out.remove("base/6-1-3");
         let e = format!("{:#}", out.save().unwrap_err());
-        assert!(e.contains("layers/terrain/hi/6-1-3") && e.contains("and 1 more") && e.contains("nothing saved"), "{e}");
+        assert!(
+            e.contains("layers/terrain/hi/6-1-3") && e.contains("and 1 more") && e.contains("nothing saved"),
+            "{e}"
+        );
         assert_eq!(read_record::<BTreeMap<String, String>>(&root.join("state/build/manifest.json")).unwrap(), saved);
         assert!(out.save().is_err(), "it stays failed");
         // A step the table doesn't know: held to nothing while it writes the manifest (a tool run
@@ -826,7 +930,8 @@ mod tests {
         let mut tool = Out::open(&root, &d.path().join("s2"), "patch-ferries").unwrap();
         tool.put_bytes("sources/osm/2026-09-28/pieces/6-1-2", "osm", b"p").unwrap();
         tool.handoff = Some(d.path().join("handoff"));
-        assert!(format!("{:#}", tool.put_bytes("sources/osm/2026-09-28/pieces/6-1-3", "osm", b"q").unwrap_err()).contains("isn't a step the steps table knows"));
+        assert!(format!("{:#}", tool.put_bytes("sources/osm/2026-09-28/pieces/6-1-3", "osm", b"q").unwrap_err())
+            .contains("isn't a step the steps table knows"));
         // Not bound to a step (the agent merging hand-offs): anything.
         let mut merge = Out::unbound(&root, &d.path().join("s3")).unwrap();
         merge.set("layers/terrain/hi/6-1-4", Some("layers/terrain/hi/6-1-4.2222222222222222.pack".into()));

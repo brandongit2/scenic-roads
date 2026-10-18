@@ -26,7 +26,9 @@ fn used(dir: &Path) -> u64 {
 /// only the mirror's files.
 fn mirror_on(root: &Path, capacity: &Arc<AtomicU64>, reserve: u64) -> Mirror {
     let (m, cap) = (root.join("mirror"), capacity.clone());
-    Mirror::open(root.to_owned(), reserve).unwrap().with_free_space(move |_| Ok(cap.load(SeqCst).saturating_sub(used(&m))))
+    Mirror::open(root.to_owned(), reserve)
+        .unwrap()
+        .with_free_space(move |_| Ok(cap.load(SeqCst).saturating_sub(used(&m))))
 }
 
 fn big(root: &Path) -> Mirror {
@@ -56,7 +58,10 @@ impl Nas {
     /// Puts a file on the "NAS" and lists it in `cat`.
     fn put(&self, cat: &mut Catalog, logical: &str, ext: &str, body: &[u8]) -> String {
         let name = write_atomic(self.root(), logical, ext, Source::Bytes(body)).unwrap();
-        cat.files.insert(logical.into(), FileRef { file: name.clone(), size: body.len() as u64, fmt: 1, extra: Default::default() });
+        cat.files.insert(
+            logical.into(),
+            FileRef { file: name.clone(), size: body.len() as u64, fmt: 1, extra: Default::default() },
+        );
         name
     }
 }
@@ -134,14 +139,21 @@ fn basemap(cat: &Catalog) -> String {
 
 /// The World download: the essentials, then the basemap's lo piece.
 fn world(cat: &Catalog) -> Vec<Item> {
-    let mut v: Vec<Item> = essentials(cat).into_iter().map(|n| Item::File { size: cat.files.values().find(|f| f.file == n).unwrap().size, name: n }).collect();
+    let mut v: Vec<Item> = essentials(cat)
+        .into_iter()
+        .map(|n| Item::File { size: cat.files.values().find(|f| f.file == n).unwrap().size, name: n })
+        .collect();
     v.push(Item::Piece { archive: basemap(cat), piece: Piece::Lo });
     v
 }
 
 /// An area's download: its hi pack, base pack, road values and hi data, then its basemap piece.
 fn area(cat: &Catalog, tile: &str) -> Vec<Item> {
-    let mut v: Vec<Item> = ["global/roads", "hidata", "base", "layers/roads/hi"].iter().map(|d| cat.files[&format!("{d}/{tile}")].clone()).map(|f| Item::File { name: f.file, size: f.size }).collect();
+    let mut v: Vec<Item> = ["global/roads", "hidata", "base", "layers/roads/hi"]
+        .iter()
+        .map(|d| cat.files[&format!("{d}/{tile}")].clone())
+        .map(|f| Item::File { name: f.file, size: f.size })
+        .collect();
     let (x, y) = tile.strip_prefix("6-").unwrap().split_once('-').unwrap();
     v.push(Item::Piece { archive: basemap(cat), piece: Piece::Tile(x.parse().unwrap(), y.parse().unwrap()) });
     v
@@ -168,11 +180,21 @@ fn sync(m: &Mirror, cat: &Catalog, w: &Wanted, nas: &Nas) -> SyncStats {
 #[test]
 fn the_lake_fill_is_an_essential_and_the_outlines_are_not() {
     let mut cat = Catalog::default();
-    for (key, l) in [("lakefill", "work/lakefill/2026-09-28"), ("outlines", "sources/osm/2026-09-28/outlines"), ("railfreq", "global/railfreq")] {
-        cat.files.insert(l.to_string(), FileRef { file: format!("{l}.0123456789abcdef.bin"), size: 1, fmt: 1, ..Default::default() });
+    for (key, l) in [
+        ("lakefill", "work/lakefill/2026-09-28"),
+        ("outlines", "sources/osm/2026-09-28/outlines"),
+        ("railfreq", "global/railfreq"),
+    ] {
+        cat.files.insert(
+            l.to_string(),
+            FileRef { file: format!("{l}.0123456789abcdef.bin"), size: 1, fmt: 1, ..Default::default() },
+        );
         cat.global.insert(key.to_string(), l.to_string());
     }
-    assert_eq!(essentials(&cat), ["global/railfreq.0123456789abcdef.bin", "work/lakefill/2026-09-28.0123456789abcdef.bin"]);
+    assert_eq!(
+        essentials(&cat),
+        ["global/railfreq.0123456789abcdef.bin", "work/lakefill/2026-09-28.0123456789abcdef.bin"]
+    );
 }
 
 #[test]
@@ -194,8 +216,15 @@ fn the_world_and_an_area_are_copied_in_order_and_verified() {
     let cat = two_areas(&nas, 1, 0, 1);
     let w = wanted(&[world(&cat), area(&cat, "6-32-21")]);
     // The essentials in copy order: worldwide files, root and lo packs, the per-tile records.
-    let names: Vec<&str> = essentials(&cat).iter().map(|c| parse_content_name(c).unwrap().logical).map(|l| cat.files.keys().find(|k| k.as_str() == l).unwrap().as_str()).collect();
-    assert_eq!(names, ["global/railfreq", "layers/roads/lo/3-4-2", "layers/roads/root", "markdata/6-32-21", "ovdata/3-4-2"]);
+    let names: Vec<&str> = essentials(&cat)
+        .iter()
+        .map(|c| parse_content_name(c).unwrap().logical)
+        .map(|l| cat.files.keys().find(|k| k.as_str() == l).unwrap().as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["global/railfreq", "layers/roads/lo/3-4-2", "layers/roads/root", "markdata/6-32-21", "ovdata/3-4-2"]
+    );
     let s = sync(&m, &cat, &w, &nas);
     assert_eq!((s.copied, s.failed, s.pending, s.end), (11, 0, 0, SyncEnd::Done));
     for i in &w.items {
@@ -204,7 +233,9 @@ fn the_world_and_an_area_are_copied_in_order_and_verified() {
         }
     }
     // Not B, nor the outlines.
-    assert!(!m.has(cat.content("base/6-33-21").unwrap()) && !m.has(cat.content("sources/osm/2026-09-28/outlines").unwrap()));
+    assert!(
+        !m.has(cat.content("base/6-33-21").unwrap()) && !m.has(cat.content("sources/osm/2026-09-28/outlines").unwrap())
+    );
     // The pieces: each tile of theirs, as the archive has it; no other.
     let src = pieces::open_file(&nas.root().join(basemap(&cat))).unwrap();
     for p in [Piece::Lo, Piece::Tile(32, 21)] {
@@ -258,9 +289,17 @@ fn what_no_download_wants_goes_and_the_rest_stays_as_it_is() {
     m.on_remove(move |n| r2.lock().unwrap().extend(n.iter().cloned()));
     let w = wanted(&[world(&cat), area(&cat, "6-32-21")]);
     let s = sync(&m, &cat, &w, &nas);
-    let gone = ["base/6-33-21", "global/roads/6-33-21", "hidata/6-33-21", "layers/basemap/world", "layers/roads/hi/6-33-21", "sources/osm/2026-09-28/outlines"];
+    let gone = [
+        "base/6-33-21",
+        "global/roads/6-33-21",
+        "hidata/6-33-21",
+        "layers/basemap/world",
+        "layers/roads/hi/6-33-21",
+        "sources/osm/2026-09-28/outlines",
+    ];
     assert_eq!((s.removed, s.copied), (gone.len() as u32, 2), "only the two pieces are copied");
-    let mut told: Vec<String> = removed.lock().unwrap().iter().map(|c| parse_content_name(c).unwrap().logical.to_string()).collect();
+    let mut told: Vec<String> =
+        removed.lock().unwrap().iter().map(|c| parse_content_name(c).unwrap().logical.to_string()).collect();
     told.sort();
     assert_eq!(told, gone);
     assert_eq!(here(&m, &cat).len(), cat.files.len() - gone.len());
@@ -270,12 +309,24 @@ fn what_no_download_wants_goes_and_the_rest_stays_as_it_is() {
     let w = wanted(&[world(&cat)]);
     let s = sync(&m, &cat, &w, &nas);
     assert_eq!((s.removed, s.copied), (5, 0));
-    assert!(removed.lock().unwrap().contains(&format!("{BASEMAP}/{}/6-32-21.pmtiles", hash_of(&basemap(&cat)).unwrap())));
-    assert!(m.piece_local(&basemap(&cat), Piece::Tile(32, 21)).is_none() && m.piece_local(&basemap(&cat), Piece::Lo).is_some());
+    assert!(removed
+        .lock()
+        .unwrap()
+        .contains(&format!("{BASEMAP}/{}/6-32-21.pmtiles", hash_of(&basemap(&cat)).unwrap())));
+    assert!(
+        m.piece_local(&basemap(&cat), Piece::Tile(32, 21)).is_none()
+            && m.piece_local(&basemap(&cat), Piece::Lo).is_some()
+    );
     // Nothing downloaded: nothing here.
     sync(&m, &cat, &Wanted::default(), &nas);
     assert_eq!(m.usage(), (0, 0));
-    assert!(!home.path().join("mirror").join(BASEMAP).join(hash_of(&basemap(&cat)).unwrap()).join("lo.pmtiles").exists());
+    assert!(!home
+        .path()
+        .join("mirror")
+        .join(BASEMAP)
+        .join(hash_of(&basemap(&cat)).unwrap())
+        .join("lo.pmtiles")
+        .exists());
 }
 
 #[test]
@@ -290,7 +341,10 @@ fn a_new_catalog_replaces_what_changed() {
     nas.put(&mut cat2, "layers/basemap/world", "pmtiles", &pieces::archive(&basemap_tiles(77), Compression::Gzip));
     let s = sync(&m, &cat2, &wanted(&[world(&cat2), area(&cat2, "6-33-21")]), &nas);
     assert_eq!((s.copied, s.removed, s.pending), (3, 3, 0), "{s:?}");
-    assert!(!home.path().join("mirror").join(BASEMAP).join(hash_of(&basemap(&cat1)).unwrap()).exists(), "the old basemap's pieces go, with their sizes");
+    assert!(
+        !home.path().join("mirror").join(BASEMAP).join(hash_of(&basemap(&cat1)).unwrap()).exists(),
+        "the old basemap's pieces go, with their sizes"
+    );
     assert!(m.piece_local(&basemap(&cat2), Piece::Tile(33, 21)).is_some());
     assert!(!m.has(cat1.content("base/6-33-21").unwrap()) && m.has(cat2.content("base/6-33-21").unwrap()));
 }
@@ -443,7 +497,11 @@ fn damaged_nas_files_are_not_kept() {
     fs::write(&bm, &b).unwrap();
     let s = sync(&m, &cat, &wanted(&[world(&cat), area(&cat, "6-32-21")]), &nas);
     assert_eq!((s.copied, s.failed, s.pending, s.end), (8, 3, 3, SyncEnd::Done), "{s:?}");
-    assert!(m.local(&hi).is_none() && m.local(&lo).is_none() && m.piece_local(&basemap(&cat), Piece::Tile(32, 21)).is_none());
+    assert!(
+        m.local(&hi).is_none()
+            && m.local(&lo).is_none()
+            && m.piece_local(&basemap(&cat), Piece::Tile(32, 21)).is_none()
+    );
     assert!(!m.piece_part(&basemap(&cat), Piece::Tile(32, 21)).exists());
     assert!(nas.pool.is_online());
 }
@@ -553,9 +611,24 @@ fn the_buildings_and_their_field_are_copied_after_the_other_hi_packs_their_lo_in
         l.lo.insert("3/2/3".into(), format!("layers/{name}/lo/3-2-3"));
         c.layers.insert(name.into(), l);
     }
-    let mut v = ["layers/buildings-field/hi/6-18-24", "layers/buildings/hi/6-18-24", "layers/roads/hi/6-18-24", "layers/buildings-field/lo/3-2-3", "layers/roads/lo/3-2-3"];
+    let mut v = [
+        "layers/buildings-field/hi/6-18-24",
+        "layers/buildings/hi/6-18-24",
+        "layers/roads/hi/6-18-24",
+        "layers/buildings-field/lo/3-2-3",
+        "layers/roads/lo/3-2-3",
+    ];
     copy_order(&c, &mut v);
-    assert_eq!(v, ["layers/buildings-field/lo/3-2-3", "layers/roads/lo/3-2-3", "layers/roads/hi/6-18-24", "layers/buildings-field/hi/6-18-24", "layers/buildings/hi/6-18-24"]);
+    assert_eq!(
+        v,
+        [
+            "layers/buildings-field/lo/3-2-3",
+            "layers/roads/lo/3-2-3",
+            "layers/roads/hi/6-18-24",
+            "layers/buildings-field/hi/6-18-24",
+            "layers/buildings/hi/6-18-24"
+        ]
+    );
     let e = essential_logicals(&c);
     assert!(e.contains("layers/buildings-field/lo/3-2-3") && !e.contains("layers/buildings-field/hi/6-18-24"));
 }

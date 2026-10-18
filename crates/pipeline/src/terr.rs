@@ -28,11 +28,7 @@ impl<'a> TerrainCache<'a> {
             self.tiles.clear();
         }
         let arc = self.arc;
-        let t = self
-            .tiles
-            .entry((tx, ty))
-            .or_insert_with(|| tile_with_fallback(arc, TZ, tx, ty).map(Arc::new))
-            .clone();
+        let t = self.tiles.entry((tx, ty)).or_insert_with(|| tile_with_fallback(arc, TZ, tx, ty).map(Arc::new)).clone();
         match t {
             Some(t) => bilinear(&t, 256, px - tx as f64 * 256.0, py - ty as f64 * 256.0),
             None => 0.0,

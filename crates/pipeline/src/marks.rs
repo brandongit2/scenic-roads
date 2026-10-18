@@ -2,21 +2,25 @@
 //! marks tile format the app reads (RDMT), ids, the score and the filters' fields, and the keep
 //! rule of the zoomed-out (thinned) tiles. Shared by the build (the `marks` job) and the server, which answers the In view statistics from markdata.
 
-use det::Det;
 use anyhow::{bail, ensure, Context, Result};
 use bytemuck::{Pod, Zeroable};
+use det::Det;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 /// The point kinds, in the order markdata's `kinds` section lists them.
-pub const KINDS: [&str; 8] = ["viewpoint", "peak", "waterfall", "lighthouse", "covered_bridge", "rest", "trailhead", "heritage"];
+pub const KINDS: [&str; 8] =
+    ["viewpoint", "peak", "waterfall", "lighthouse", "covered_bridge", "rest", "trailhead", "heritage"];
 
 pub fn kind_index(k: &str) -> Option<usize> {
     KINDS.iter().position(|x| *x == k)
 }
 
 /// Heritage tiers (basemap.ts HERITAGE_TIERS): [`MarkPt::tier`] indexes these.
-pub const TIERS: [&str; 16] = ["w.c", "w.n", "n.top", "n.second", "n.lower", "n.mon", "n.land", "n.hist", "n.fed", "p.des", "p.reg", "p.area", "m.des", "m.reg", "m.area", "m.agr"];
+pub const TIERS: [&str; 16] = [
+    "w.c", "w.n", "n.top", "n.second", "n.lower", "n.mon", "n.land", "n.hist", "n.fed", "p.des", "p.reg", "p.area",
+    "m.des", "m.reg", "m.area", "m.agr",
+];
 
 pub fn tier_index(t: &str) -> Option<u8> {
     TIERS.iter().position(|x| *x == t).map(|i| i as u8)
@@ -253,8 +257,14 @@ pub fn axis_pos(axis: Axis, v: f64) -> f64 {
 #[derive(Clone, Copy, Debug)]
 pub enum FilterKind {
     /// A number in a range; `year`: a year (not a size, for the thinned tiles' keep rule).
-    Range { domain: (f64, f64), axis: Axis, year: bool },
-    Flag { bit: Option<u32> },
+    Range {
+        domain: (f64, f64),
+        axis: Axis,
+        year: bool,
+    },
+    Flag {
+        bit: Option<u32>,
+    },
 }
 
 /// One of the stops' filters.
@@ -634,7 +644,9 @@ pub fn keep_zooms(pts: &[KeepPt]) -> Vec<u8> {
             }
             for f in 0..nsizes {
                 let mut has: Vec<usize> = idx.iter().copied().filter(|&i| !pts[i].sizes[f].is_nan()).collect();
-                has.sort_by(|&a, &c| pts[c].sizes[f].total_cmp(&pts[a].sizes[f]).then(pts[a].pt.rank.cmp(&pts[c].pt.rank)));
+                has.sort_by(|&a, &c| {
+                    pts[c].sizes[f].total_cmp(&pts[a].sizes[f]).then(pts[a].pt.rank.cmp(&pts[c].pt.rank))
+                });
                 has.iter().take(KEEP_TOP_FILTER).for_each(|&i| keep(i));
             }
         }
@@ -708,7 +720,9 @@ pub fn objects(items: &[&[u8]]) -> Vec<u8> {
 
 /// The `k`-th object of an [`objects`] block.
 pub fn object(block: &[u8], k: usize) -> Result<&[u8]> {
-    let u = |o: usize| -> Result<usize> { Ok(u32::from_le_bytes(block.get(o..o + 4).context("objects block")?.try_into().unwrap()) as usize) };
+    let u = |o: usize| -> Result<usize> {
+        Ok(u32::from_le_bytes(block.get(o..o + 4).context("objects block")?.try_into().unwrap()) as usize)
+    };
     let n = u(0)?;
     ensure!(k < n, "object {k} of {n}");
     let base = 4 + 4 * (n + 1);
@@ -773,7 +787,9 @@ pub fn write_markdata(path: &Path, tile: (u32, u32), rows: &[Vec<Row>], summits:
 
 /// Checks markdata's sections against what [`write_markdata`] writes (the reader's assumptions).
 pub fn check_markdata(sections: &dyn Fn(&str) -> Option<u64>) -> Result<()> {
-    for (s, size) in [("kinds", 8u64), ("ids", 8), ("pts", 28), ("fvals", 8), ("props_idx", 16), ("info_idx", 16), ("summits", 24)] {
+    for (s, size) in
+        [("kinds", 8u64), ("ids", 8), ("pts", 28), ("fvals", 8), ("props_idx", 16), ("info_idx", 16), ("summits", 24)]
+    {
         let Some(len) = sections(s) else { bail!("markdata without {s}") };
         ensure!(len % size == 0, "markdata {s}: {len} bytes");
     }
@@ -793,7 +809,14 @@ mod tests {
     #[test]
     fn log10_as_node_on_this_mac() {
         // Math.log10 in Node (V8, arm64) where the platform's log10 differs in the last bit.
-        for (x, y) in [(0x4027000000000000, 0x3ff0f89e4c741b00), (0x4057000000000000, 0x3fff6bacc8ebb67f), (0x4012ccccc0000000, 0x3fe581d3547b2aa4), (0x3ff4ccccc0000000, 0x3fbd2b63f7561d47), (0x40d3880000000000, 0x401134413509f7a0), (0x3fa999999999999a, 0xbff4d104d427de80)] {
+        for (x, y) in [
+            (0x4027000000000000, 0x3ff0f89e4c741b00),
+            (0x4057000000000000, 0x3fff6bacc8ebb67f),
+            (0x4012ccccc0000000, 0x3fe581d3547b2aa4),
+            (0x3ff4ccccc0000000, 0x3fbd2b63f7561d47),
+            (0x40d3880000000000, 0x401134413509f7a0),
+            (0x3fa999999999999a, 0xbff4d104d427de80),
+        ] {
             assert_eq!(log10_js(f64::from_bits(x)).to_bits(), y, "log10({})", f64::from_bits(x));
         }
     }
@@ -840,7 +863,18 @@ mod tests {
 
     #[test]
     fn tile_round_trip() {
-        let pt = |lon: f64, rank: u32| MarkPt { lon: e7(lon), lat: e7(51.5), fa: 1.5, ia: 0.25, mz: f32::NAN, rank, kz: 3, class: 0, tier: 0, flags: flag::NAMED };
+        let pt = |lon: f64, rank: u32| MarkPt {
+            lon: e7(lon),
+            lat: e7(51.5),
+            fa: 1.5,
+            ia: 0.25,
+            mz: f32::NAN,
+            rank,
+            kz: 3,
+            class: 0,
+            tier: 0,
+            flags: flag::NAMED,
+        };
         let t = MarkTile {
             ids: vec![4, HASHED + 77],
             fvals: vec![vec![1.0, f64::NAN], vec![0.45, 2.0]],
@@ -878,9 +912,21 @@ mod tests {
         let mut pts: Vec<MarkPt> = Vec::new();
         for i in 0..600u32 {
             let named = i % 50 == 0;
-            pts.push(MarkPt { lon: e7(-10.0 + i as f64 * 0.01), lat: e7(45.0), fa: (i % 97) as f32 / 20.0, ia: 0.06 + (i % 89) as f32, mz: if named { 2.5 } else { f32::NAN }, rank: i, kz: 0, class: 0, tier: 0, flags: if named { flag::NAMED } else { 0 } });
+            pts.push(MarkPt {
+                lon: e7(-10.0 + i as f64 * 0.01),
+                lat: e7(45.0),
+                fa: (i % 97) as f32 / 20.0,
+                ia: 0.06 + (i % 89) as f32,
+                mz: if named { 2.5 } else { f32::NAN },
+                rank: i,
+                kz: 0,
+                class: 0,
+                tier: 0,
+                flags: if named { flag::NAMED } else { 0 },
+            });
         }
-        let kp: Vec<KeepPt> = pts.iter().map(|p| KeepPt { lon: deg(p.lon), lat: deg(p.lat), pt: p, sizes: vec![] }).collect();
+        let kp: Vec<KeepPt> =
+            pts.iter().map(|p| KeepPt { lon: deg(p.lon), lat: deg(p.lat), pt: p, sizes: vec![] }).collect();
         let kz = keep_zooms(&kp);
         // At zoom 0 one tile holds all 600: at most 5 × 256 kept by score, plus names (mz 2.5 ≤ z − 3
         // from zoom 6 only: none).
@@ -896,7 +942,8 @@ mod tests {
         for (p, k) in pts2.iter_mut().zip(&kz) {
             p.kz = *k;
         }
-        let kp2: Vec<KeepPt> = pts2.iter().map(|p| KeepPt { lon: deg(p.lon), lat: deg(p.lat), pt: p, sizes: vec![] }).collect();
+        let kp2: Vec<KeepPt> =
+            pts2.iter().map(|p| KeepPt { lon: deg(p.lon), lat: deg(p.lat), pt: p, sizes: vec![] }).collect();
         let idx: Vec<usize> = (0..kp2.len()).collect();
         let cells = speck_cells(&kp2, &idx, 0, 0, 0);
         assert_eq!(cells.iter().map(|c| c.count as usize).sum::<usize>(), 600 - at0);

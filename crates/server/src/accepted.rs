@@ -34,7 +34,9 @@ pub fn synced(data: &Data, unit: &str, local: &Path) -> anyhow::Result<Option<Sy
     if !pool.is_online() {
         return Ok(None);
     }
-    let read = |p: &str| -> anyhow::Result<Vec<u8>> { Ok(crate::views::RemoteFile::new(root.join(p), pool.clone()).read_all()?) };
+    let read = |p: &str| -> anyhow::Result<Vec<u8>> {
+        Ok(crate::views::RemoteFile::new(root.join(p), pool.clone()).read_all()?)
+    };
     served::sync(&read, unit, local).map(Some)
 }
 
@@ -52,17 +54,22 @@ pub fn put(nas: &Path, unit: &str, files: &[(&str, &str)]) -> String {
         std::fs::create_dir_all(nas.join(name).parent().unwrap()).unwrap();
         std::fs::write(nas.join(name), bytes).unwrap();
     };
-    let mut index = pipeline::inputs::Index { fmt: 1, unit: unit.into(), checks: format!("{unit} 1"), ..Default::default() };
+    let mut index =
+        pipeline::inputs::Index { fmt: 1, unit: unit.into(), checks: format!("{unit} 1"), ..Default::default() };
     for (p, b) in files {
         let file = pipeline::inputs::copy_name(unit, p, &store::naming::hash16(b.as_bytes())).unwrap();
         put(&file, b.as_bytes());
-        index.files.insert(p.to_string(), pipeline::inputs::FileEntry { file, size: b.len() as u64, keyed: "-".into(), facts: Default::default() });
+        index.files.insert(
+            p.to_string(),
+            pipeline::inputs::FileEntry { file, size: b.len() as u64, keyed: "-".into(), facts: Default::default() },
+        );
     }
     let ib = serde_json::to_vec(&index).unwrap();
     let name = format!("{}/@index.{}.json", pipeline::inputs::store_dir(unit), store::naming::hash16(&ib));
     put(&name, &ib);
     let records = nas.join(served::RECORDS);
-    let mut m: BTreeMap<String, String> = std::fs::read(&records).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let mut m: BTreeMap<String, String> =
+        std::fs::read(&records).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     m.insert(pipeline::inputs::logical(unit), name.clone());
     put(served::RECORDS, &serde_json::to_vec(&m).unwrap());
     name

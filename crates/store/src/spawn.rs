@@ -174,7 +174,10 @@ pub fn accept(listener: &TcpListener) -> io::Result<(TcpStream, SocketAddr)> {
             return Err(io::Error::last_os_error());
         }
         if flags & libc::O_NONBLOCK == 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "accept on a blocking listener would hold every child's start back"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "accept on a blocking listener would hold every child's start back",
+            ));
         }
     }
     sockets(|| listener.accept())
@@ -219,7 +222,13 @@ mod tests {
         // A path is kept as given.
         assert_eq!(find("./run".as_ref(), &path(&[b])), PathBuf::from("./run"));
         // Refused without a start: a bare name, a relative path, a missing or unrunnable absolute one.
-        for p in [PathBuf::from("run"), PathBuf::from("bin/run"), bin.join("gone"), other.join("plain"), other.join("broken")] {
+        for p in [
+            PathBuf::from("run"),
+            PathBuf::from("bin/run"),
+            bin.join("gone"),
+            other.join("plain"),
+            other.join("broken"),
+        ] {
             assert_eq!(settle(&Command::new(&p)).unwrap_err().kind(), io::ErrorKind::NotFound, "{}", p.display());
         }
         settle(&Command::new(bin.join("run"))).unwrap();

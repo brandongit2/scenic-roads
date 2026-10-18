@@ -74,7 +74,10 @@ pub fn is_group(path: &str) -> bool {
 
 impl Folder {
     /// The folder of the files at `paths`, `read` giving each one's bytes.
-    pub fn read(paths: impl IntoIterator<Item = String>, read: &dyn Fn(&str) -> anyhow::Result<Vec<u8>>) -> anyhow::Result<Folder> {
+    pub fn read(
+        paths: impl IntoIterator<Item = String>,
+        read: &dyn Fn(&str) -> anyhow::Result<Vec<u8>>,
+    ) -> anyhow::Result<Folder> {
         let mut f = Folder::default();
         let mut by_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -105,11 +108,31 @@ impl Folder {
             }
         }
         for (id, ps) in by_id.into_iter().filter(|(_, ps)| ps.len() > 1) {
-            f.problems.push(Problem { check: "rg-dup-id", about: vec![id.clone()], found: ps.clone(), files: ps.clone(), message: format!("region {id} is in {} files: {} (an id is unique across every folder)", ps.len(), ps.join(", ")) });
+            f.problems.push(Problem {
+                check: "rg-dup-id",
+                about: vec![id.clone()],
+                found: ps.clone(),
+                files: ps.clone(),
+                message: format!(
+                    "region {id} is in {} files: {} (an id is unique across every folder)",
+                    ps.len(),
+                    ps.join(", ")
+                ),
+            });
             f.regions.remove(&id);
         }
         for (n, ps) in by_name.into_iter().filter(|(_, ps)| ps.len() > 1) {
-            f.problems.push(Problem { check: "rg-dup-id", about: vec![n.clone()], found: ps.clone(), files: ps.clone(), message: format!("shape {n} is in {} files: {} (a shape's name is unique across every folder)", ps.len(), ps.join(", ")) });
+            f.problems.push(Problem {
+                check: "rg-dup-id",
+                about: vec![n.clone()],
+                found: ps.clone(),
+                files: ps.clone(),
+                message: format!(
+                    "shape {n} is in {} files: {} (a shape's name is unique across every folder)",
+                    ps.len(),
+                    ps.join(", ")
+                ),
+            });
             f.shapes.remove(&n);
         }
         Ok(f)
@@ -172,7 +195,16 @@ pub fn resolve(folder: &Folder, ctx: &Context) -> Outcome {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn visit(id: &str, folder: &Folder, ctx: &Context, state: &mut BTreeMap<String, u8>, stack: &mut Vec<String>, held: &mut BTreeSet<String>, keys: &mut BTreeMap<String, String>, out: &mut Outcome) {
+fn visit(
+    id: &str,
+    folder: &Folder,
+    ctx: &Context,
+    state: &mut BTreeMap<String, u8>,
+    stack: &mut Vec<String>,
+    held: &mut BTreeSet<String>,
+    keys: &mut BTreeMap<String, String>,
+    out: &mut Outcome,
+) {
     match state.get(id) {
         Some(2) => return,
         Some(1) => {
@@ -181,7 +213,13 @@ fn visit(id: &str, folder: &Folder, ctx: &Context, state: &mut BTreeMap<String, 
             let mut ring: Vec<String> = stack[at..].to_vec();
             ring.sort();
             let files: Vec<String> = ring.iter().filter_map(|r| folder.regions.get(r).map(|x| x.0.clone())).collect();
-            out.problems.push(Problem { check: "rg-loop", about: ring.clone(), found: Vec::new(), files, message: format!("a loop of region: references: {}", ring.join(" → ")) });
+            out.problems.push(Problem {
+                check: "rg-loop",
+                about: ring.clone(),
+                found: Vec::new(),
+                files,
+                message: format!("a loop of region: references: {}", ring.join(" → ")),
+            });
             held.extend(ring);
             return;
         }
@@ -192,7 +230,13 @@ fn visit(id: &str, folder: &Folder, ctx: &Context, state: &mut BTreeMap<String, 
     stack.push(id.to_string());
     for dep in r.regions() {
         if !folder.regions.contains_key(dep) {
-            out.problems.push(Problem { check: "rg-ref", about: vec![id.to_string(), format!("region:{dep}")], found: Vec::new(), files: vec![path.clone()], message: format!("{id}: region:{dep} names no region") });
+            out.problems.push(Problem {
+                check: "rg-ref",
+                about: vec![id.to_string(), format!("region:{dep}")],
+                found: Vec::new(),
+                files: vec![path.clone()],
+                message: format!("{id}: region:{dep} names no region"),
+            });
             held.insert(id.to_string());
             continue;
         }
@@ -204,13 +248,25 @@ fn visit(id: &str, folder: &Folder, ctx: &Context, state: &mut BTreeMap<String, 
         return;
     }
     if let Some(dep) = r.regions().into_iter().find(|d| held.contains(*d) || !out.resolved.contains_key(*d)) {
-        out.problems.push(Problem { check: "rg-ref", about: vec![id.to_string(), format!("region:{dep}")], found: vec!["held".into()], files: vec![path.clone()], message: format!("{id}: region:{dep} is held, and so this region with it") });
+        out.problems.push(Problem {
+            check: "rg-ref",
+            about: vec![id.to_string(), format!("region:{dep}")],
+            found: vec!["held".into()],
+            files: vec![path.clone()],
+            message: format!("{id}: region:{dep} is held, and so this region with it"),
+        });
         held.insert(id.to_string());
         return;
     }
     // What it's resolved from: its file, the pins, the shapes it names, those it names' own keys, the
     // context.
-    let mut parts = vec![ctx.names.clone(), ctx.pass.unwrap_or("-").to_string(), path.clone(), folder.hashes.get(path).cloned().unwrap_or_default(), format!("{:?}", folder.pins)];
+    let mut parts = vec![
+        ctx.names.clone(),
+        ctx.pass.unwrap_or("-").to_string(),
+        path.clone(),
+        folder.hashes.get(path).cloned().unwrap_or_default(),
+        format!("{:?}", folder.pins),
+    ];
     for n in r.shapes() {
         parts.push(format!("{n} {:?}", folder.shapes.get(n).map(|s| folder.hashes.get(&s.0))));
     }
@@ -273,14 +329,37 @@ fn relations_through(r: &Region, folder: &Folder, seen: &mut BTreeSet<String>, o
     }
 }
 
-fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BTreeMap<String, Resolved>, needs: &mut BTreeSet<Id>) -> Result<Resolved, Vec<Problem>> {
+fn resolve_one(
+    r: &Region,
+    path: &str,
+    folder: &Folder,
+    ctx: &Context,
+    done: &BTreeMap<String, Resolved>,
+    needs: &mut BTreeSet<Id>,
+) -> Result<Resolved, Vec<Problem>> {
     let mut ps = Vec::new();
     // The pin.
     let Some(pin) = folder.pin(r) else {
-        return Err(vec![problem("rg-pin", r, path, vec!["none".into()], format!("{}: no OSM pin: inputs/regions/pins.toml names the pass the folder is written against (osm = \"{}\")", r.id, ctx.pass.unwrap_or("<the pass's date>")))]);
+        return Err(vec![problem(
+            "rg-pin",
+            r,
+            path,
+            vec!["none".into()],
+            format!(
+                "{}: no OSM pin: inputs/regions/pins.toml names the pass the folder is written against (osm = \"{}\")",
+                r.id,
+                ctx.pass.unwrap_or("<the pass's date>")
+            ),
+        )]);
     };
     let Some(pass) = ctx.pass else {
-        return Err(vec![problem("rg-pin-mismatch", r, path, vec![pin.into(), "-".into()], format!("{}: pinned to OSM {pin}; the build has no OSM pass yet", r.id))]);
+        return Err(vec![problem(
+            "rg-pin-mismatch",
+            r,
+            path,
+            vec![pin.into(), "-".into()],
+            format!("{}: pinned to OSM {pin}; the build has no OSM pass yet", r.id),
+        )]);
     };
     if pin != pass {
         let mut rels = BTreeSet::new();
@@ -298,16 +377,29 @@ fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BT
                 _ => other.push(format!("osm:{id}")),
             }
         }
-        let mut msg = format!("{}: pinned to OSM {pin}; the build's pass is {pass}: move the pin in inputs/regions/pins.toml.", r.id);
+        let mut msg = format!(
+            "{}: pinned to OSM {pin}; the build's pass is {pass}: move the pin in inputs/regions/pins.toml.",
+            r.id
+        );
         if !changed.is_empty() || same > 0 || !missing.is_empty() {
-            msg += &format!(" Changed: {}. Unchanged: {same}. Missing: {}.", if changed.is_empty() { "none".into() } else { changed.join(", ") }, if missing.is_empty() { "none".into() } else { missing.join(", ") });
+            msg += &format!(
+                " Changed: {}. Unchanged: {same}. Missing: {}.",
+                if changed.is_empty() { "none".into() } else { changed.join(", ") },
+                if missing.is_empty() { "none".into() } else { missing.join(", ") }
+            );
         }
         if !other.is_empty() {
-            msg += &format!(" Not compared (the pinned pass's outlines aren't in the records, or not in its outline set): {}.", other.join(", "));
+            msg += &format!(
+                " Not compared (the pinned pass's outlines aren't in the records, or not in its outline set): {}.",
+                other.join(", ")
+            );
         }
         let ways = r.ways();
         if !ways.is_empty() {
-            msg += &format!(" Its lines' ways (not compared): {}.", ways.iter().map(|w| format!("w{w}")).collect::<Vec<_>>().join(", "));
+            msg += &format!(
+                " Its lines' ways (not compared): {}.",
+                ways.iter().map(|w| format!("w{w}")).collect::<Vec<_>>().join(", ")
+            );
         }
         return Err(vec![problem("rg-pin-mismatch", r, path, vec![pin.into(), pass.into()], msg)]);
     }
@@ -330,7 +422,13 @@ fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BT
                                 }
                                 leaves.insert(key, Leaf::Rings(vec![(rings64(&rs), 1000)], o.country_code(rec)));
                             }
-                            Err(e) => ps.push(problem("rg-osm-no-area", r, path, vec![key.clone()], format!("{}: {key}: the pass's outline can't be read: {e:#}", r.id))),
+                            Err(e) => ps.push(problem(
+                                "rg-osm-no-area",
+                                r,
+                                path,
+                                vec![key.clone()],
+                                format!("{}: {key}: the pass's outline can't be read: {e:#}", r.id),
+                            )),
                         }
                         continue;
                     }
@@ -340,8 +438,24 @@ fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BT
                         needs.insert(Id::R(*id));
                         ps.push(problem("rg-extract", r, path, vec![key.clone(), pass.into()], format!("{}: {key} isn't in the pass's outline set: waiting for the regions' extract of OSM {pass} to have it", r.id)));
                     }
-                    Some(None) => ps.push(problem("rg-osm-missing", r, path, vec![key.clone(), pass.into()], format!("{}: {key}: OSM {pass} has no such relation", r.id))),
-                    Some(Some(rel)) if rel.rings.is_empty() => ps.push(problem("rg-osm-no-area", r, path, vec![key.clone(), pass.into()], format!("{}: {key}: its rings don't close into an area in OSM {pass} ({})", r.id, rel.problem.as_deref().unwrap_or("no rings")))),
+                    Some(None) => ps.push(problem(
+                        "rg-osm-missing",
+                        r,
+                        path,
+                        vec![key.clone(), pass.into()],
+                        format!("{}: {key}: OSM {pass} has no such relation", r.id),
+                    )),
+                    Some(Some(rel)) if rel.rings.is_empty() => ps.push(problem(
+                        "rg-osm-no-area",
+                        r,
+                        path,
+                        vec![key.clone(), pass.into()],
+                        format!(
+                            "{}: {key}: its rings don't close into an area in OSM {pass} ({})",
+                            r.id,
+                            rel.problem.as_deref().unwrap_or("no rings")
+                        ),
+                    )),
                     Some(Some(rel)) => {
                         leaves.insert(key, Leaf::Rings(vec![(rings64(&rel.rings), 1000)], String::new()));
                     }
@@ -350,8 +464,20 @@ fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BT
             Part::Shape(n) => {
                 let key = part.to_string();
                 match folder.shapes.get(n) {
-                    None => ps.push(problem("rg-shape", r, path, vec![key.clone()], format!("{}: {key}: no shape file of that name in the folder", r.id))),
-                    Some((sp, Err(e))) => ps.push(Problem { check: "rg-shape", about: vec![r.id.clone()], found: vec![key.clone(), e.clone()], files: vec![path.to_string(), sp.clone()], message: format!("{}: {key}: {e}", r.id) }),
+                    None => ps.push(problem(
+                        "rg-shape",
+                        r,
+                        path,
+                        vec![key.clone()],
+                        format!("{}: {key}: no shape file of that name in the folder", r.id),
+                    )),
+                    Some((sp, Err(e))) => ps.push(Problem {
+                        check: "rg-shape",
+                        about: vec![r.id.clone()],
+                        found: vec![key.clone(), e.clone()],
+                        files: vec![path.to_string(), sp.clone()],
+                        message: format!("{}: {key}: {e}", r.id),
+                    }),
                     Some((_, Ok(polys))) => {
                         leaves.insert(key, Leaf::Rings(vec![(super::shapes::flat(polys), 0)], String::new()));
                     }
@@ -360,7 +486,10 @@ fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BT
             Part::Region(d) => {
                 let res = &done[d];
                 let shapes = res.geometry.shapes.iter().map(|s| (rings64(&s.rings), s.tolerance_m)).collect();
-                leaves.insert(part.to_string(), Leaf::Rings(shapes, res.geometry.shapes.first().map(|s| s.country.clone()).unwrap_or_default()));
+                leaves.insert(
+                    part.to_string(),
+                    Leaf::Rings(shapes, res.geometry.shapes.first().map(|s| s.country.clone()).unwrap_or_default()),
+                );
             }
             _ => {}
         }
@@ -378,7 +507,13 @@ fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BT
                             needs.insert(Id::W(*w));
                             ps.push(problem("rg-extract", r, path, vec![format!("w{w}"), pass.into()], format!("{}: line {name}: way {w}: waiting for the regions' extract of OSM {pass} to have it", r.id)));
                         }
-                        Some(None) => ps.push(problem("rg-osm-missing", r, path, vec![format!("w{w}"), pass.into()], format!("{}: line {name}: OSM {pass} has no way {w}", r.id))),
+                        Some(None) => ps.push(problem(
+                            "rg-osm-missing",
+                            r,
+                            path,
+                            vec![format!("w{w}"), pass.into()],
+                            format!("{}: line {name}: OSM {pass} has no way {w}", r.id),
+                        )),
                         Some(Some(way)) => got.push(way),
                     }
                 }
@@ -387,7 +522,13 @@ fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BT
                         Ok(pts) => {
                             leaves.insert(format!("line:{name}"), Leaf::Line(geom::unwrap(&rings64(&[pts])[0])));
                         }
-                        Err((a, b)) => ps.push(problem("rg-line", r, path, vec![name.clone(), format!("w{a}"), format!("w{b}")], format!("{}: line {name}: ways {a} and {b} don't join (no end node shared)", r.id))),
+                        Err((a, b)) => ps.push(problem(
+                            "rg-line",
+                            r,
+                            path,
+                            vec![name.clone(), format!("w{a}"), format!("w{b}")],
+                            format!("{}: line {name}: ways {a} and {b} don't join (no end node shared)", r.id),
+                        )),
                     }
                 }
             }
@@ -427,7 +568,10 @@ fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BT
     let mut unwrapped: BTreeMap<String, Leaf> = BTreeMap::new();
     for (k, leaf) in leaves {
         let l = match leaf {
-            Leaf::Rings(shapes, c) => Leaf::Rings(shapes.into_iter().map(|(rs, t)| (rs.iter().map(|r| geom::unwrap(r)).collect(), t)).collect(), c),
+            Leaf::Rings(shapes, c) => Leaf::Rings(
+                shapes.into_iter().map(|(rs, t)| (rs.iter().map(|r| geom::unwrap(r)).collect(), t)).collect(),
+                c,
+            ),
             Leaf::Line(p) => Leaf::Line(p),
         };
         match &l {
@@ -451,14 +595,18 @@ fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BT
         .into_iter()
         .map(|(k, l)| {
             let l = match l {
-                Leaf::Rings(shapes, c) => Leaf::Rings(shapes.into_iter().map(|(rs, t)| (rs.iter().map(|r| frame.place(r)).collect(), t)).collect(), c),
+                Leaf::Rings(shapes, c) => Leaf::Rings(
+                    shapes.into_iter().map(|(rs, t)| (rs.iter().map(|r| frame.place(r)).collect(), t)).collect(),
+                    c,
+                ),
                 Leaf::Line(p) => Leaf::Line(frame.place(&p)),
             };
             (k, l)
         })
         .collect();
     let eval_all = |parts: &[Part], direct: bool, ps: &mut Vec<Problem>| -> Area {
-        let areas: Vec<Area> = parts.iter().filter_map(|p| eval(p, direct, &placed, r, path).map_err(|e| ps.push(e)).ok()).collect();
+        let areas: Vec<Area> =
+            parts.iter().filter_map(|p| eval(p, direct, &placed, r, path).map_err(|e| ps.push(e)).ok()).collect();
         geom::union_all(&areas)
     };
     let mut result = eval_all(&r.outline, true, &mut ps);
@@ -472,7 +620,13 @@ fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BT
         return Err(ps);
     }
     if result.is_empty() {
-        return Err(vec![problem("rg-empty", r, path, Vec::new(), format!("{}: the region has no area (a minus taking everything, an intersect meeting nothing?)", r.id))]);
+        return Err(vec![problem(
+            "rg-empty",
+            r,
+            path,
+            Vec::new(),
+            format!("{}: the region has no area (a minus taking everything, an intersect meeting nothing?)", r.id),
+        )]);
     }
     let mut from = r.outline_text().join(", ");
     if !r.intersect.is_empty() {
@@ -482,10 +636,14 @@ fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BT
         from += &format!(" − {}", r.minus.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", "));
     }
     // The country: its first `osm:` part's (or a `region:`'s first shape's).
-    let country = r.parts().into_iter().find_map(|p| match (p, placed.get(&p.to_string())) {
-        (Part::Osm(_) | Part::Region(_), Some(Leaf::Rings(_, c))) if !c.is_empty() => Some(c.clone()),
-        _ => None,
-    }).unwrap_or_default();
+    let country = r
+        .parts()
+        .into_iter()
+        .find_map(|p| match (p, placed.get(&p.to_string())) {
+            (Part::Osm(_) | Part::Region(_), Some(Leaf::Rings(_, c))) if !c.is_empty() => Some(c.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
     let pieces = Frame::split(&result);
     let n = pieces.len();
     let mut shapes = Vec::new();
@@ -494,7 +652,11 @@ fn resolve_one(r: &Region, path: &str, folder: &Folder, ctx: &Context, done: &BT
         let f = piece_name(&from, k, n);
         let rings32: Vec<Vec<[i32; 2]>> = piece.rings().iter().map(|r| super::shapes::to_i32(r)).collect();
         let t = crate::coverage::draw_tolerance_m(&rings32);
-        let polys: Vec<Vec<Vec<[i32; 2]>>> = piece.polys.iter().map(|p| p.iter().map(|r| crate::outlines::simplify(&super::shapes::to_i32(r), t)).collect()).collect();
+        let polys: Vec<Vec<Vec<[i32; 2]>>> = piece
+            .polys
+            .iter()
+            .map(|p| p.iter().map(|r| crate::outlines::simplify(&super::shapes::to_i32(r), t)).collect())
+            .collect();
         drawn.insert(f.clone(), degrees(&polys));
         shapes.push(Shape { from: f, country: country.clone(), tolerance_m: 0, rings: rings32 });
     }
@@ -555,7 +717,11 @@ fn eval(part: &Part, direct: bool, placed: &BTreeMap<String, Leaf>, r: &Region, 
                 .iter()
                 .map(|(rs, tol)| {
                     let a = Area::from_rings(rs);
-                    if direct && *tol > 0 { geom::buffer_area(&a, *tol as f64) } else { a }
+                    if direct && *tol > 0 {
+                        geom::buffer_area(&a, *tol as f64)
+                    } else {
+                        a
+                    }
                 })
                 .collect();
             Ok(geom::union_all(&areas))
@@ -570,7 +736,16 @@ fn eval(part: &Part, direct: bool, placed: &BTreeMap<String, Leaf>, r: &Region, 
         Part::Cut { of, line, left } => {
             let Some(Leaf::Line(pts)) = placed.get(&format!("line:{line}")) else { unreachable!("every line read") };
             if let Some((i, j)) = geom::self_crossing(pts, false) {
-                return Err(problem("rg-line", r, path, vec![line.clone(), "crosses".into()], format!("{}: line {line} crosses itself (its segments {i} and {j}): a line that cuts may not", r.id)));
+                return Err(problem(
+                    "rg-line",
+                    r,
+                    path,
+                    vec![line.clone(), "crosses".into()],
+                    format!(
+                        "{}: line {line} crosses itself (its segments {i} and {j}): a line that cuts may not",
+                        r.id
+                    ),
+                ));
             }
             let a = eval(of, false, placed, r, path)?;
             geom::cut(&a, pts, *left).map_err(|geom::CutError::EndsInside(at)| {

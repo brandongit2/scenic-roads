@@ -91,13 +91,17 @@ pub fn apply(a: &Value, p: &Value) -> Result<Value> {
             Ok(Value::Object(out))
         }
         "a" => {
-            let (Some(ids), Some(set)) = (v["ids"].as_array(), v["set"].as_object()) else { bail!("an array's patch lacks ids or set") };
+            let (Some(ids), Some(set)) = (v["ids"].as_array(), v["set"].as_object()) else {
+                bail!("an array's patch lacks ids or set")
+            };
             let was = a.as_array().and_then(|x| by_id(x)).unwrap_or_default();
             ids.iter()
                 .map(|id| {
                     let Some(id) = id.as_str() else { bail!("an id isn't a string") };
                     match (set.get(id), was.get(id)) {
-                        (Some(pk), w) => apply(w.copied().unwrap_or(&Value::Null), pk).with_context(|| format!("in {id}")),
+                        (Some(pk), w) => {
+                            apply(w.copied().unwrap_or(&Value::Null), pk).with_context(|| format!("in {id}"))
+                        }
                         (None, Some(w)) => Ok((*w).clone()),
                         (None, None) => bail!("{id} is neither kept nor set"),
                     }
@@ -172,7 +176,11 @@ mod tests {
                 6 => {
                     // (An array of objects with ids: the coverage's regions; sometimes a repeat.)
                     let n = self.below(5);
-                    Value::Array((0..n).map(|_| json!({"id": format!("r{}", self.below(6)), "v": self.value(depth - 1)})).collect())
+                    Value::Array(
+                        (0..n)
+                            .map(|_| json!({"id": format!("r{}", self.below(6)), "v": self.value(depth - 1)}))
+                            .collect(),
+                    )
                 }
                 _ => {
                     let n = self.below(4);

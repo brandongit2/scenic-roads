@@ -133,7 +133,9 @@ fn prepare(fs: &[Feature]) -> Vec<TF> {
                 .collect()
         };
         let (kind, mut rings, outer) = match &f.geom {
-            Geom::Points(ps) => (Kind::Point, ps.iter().map(|p| to(std::slice::from_ref(p))).collect::<Vec<_>>(), vec![]),
+            Geom::Points(ps) => {
+                (Kind::Point, ps.iter().map(|p| to(std::slice::from_ref(p))).collect::<Vec<_>>(), vec![])
+            }
             Geom::Lines(ls) => (Kind::Line, ls.iter().filter(|l| l.len() >= 2).map(|l| to(l)).collect(), vec![]),
             Geom::Polygons(ps) => {
                 let mut rings = Vec::new();
@@ -299,7 +301,14 @@ fn clip(fs: &[TF], lo: f64, hi: f64, axis: usize) -> Vec<TF> {
 
 /// One layer's tiles: `(z, x, y, MVT bytes)` for zooms `minz..=maxz` wherever a feature shows,
 /// `want(z, x, y)` limiting which tiles are made (and descended into).
-pub fn tiles(layer: &str, fs: &[Feature], minz: u8, maxz: u8, want: &(dyn Fn(u8, u32, u32) -> bool + Sync), emit: &mut dyn FnMut(u8, u32, u32, Vec<u8>)) {
+pub fn tiles(
+    layer: &str,
+    fs: &[Feature],
+    minz: u8,
+    maxz: u8,
+    want: &(dyn Fn(u8, u32, u32) -> bool + Sync),
+    emit: &mut dyn FnMut(u8, u32, u32, Vec<u8>),
+) {
     let prepared = prepare(fs);
     let mut stack: Vec<(u8, u32, u32, Vec<TF>)> = vec![(0, 0, 0, prepared)];
     while let Some((z, x, y, feats)) = stack.pop() {
@@ -367,7 +376,9 @@ fn encode(layer: &str, src: &[Feature], feats: &[TF], z: u8, x: u32, y: u32) -> 
     // Vertices kept at this zoom: importance at least the tolerance (squared, Mercator units).
     let tol = TOLERANCE / (n * e);
     let tol2 = tol * tol;
-    let to = |v: &V| -> (i32, i32) { (((v.x * n - x as f64) * e).round() as i32, ((v.y * n - y as f64) * e).round() as i32) };
+    let to = |v: &V| -> (i32, i32) {
+        (((v.x * n - x as f64) * e).round() as i32, ((v.y * n - y as f64) * e).round() as i32)
+    };
     let mut keys: Vec<String> = Vec::new();
     let mut values: Vec<Value> = Vec::new();
     let mut kix: HashMap<String, u32> = HashMap::new();
@@ -457,12 +468,29 @@ fn encode(layer: &str, src: &[Feature], feats: &[TF], z: u8, x: u32, y: u32) -> 
             tags.push(ki);
             tags.push(vi);
         }
-        out_feats.push(MvtFeature { id: Some(s.id), tags, geom_type: Some(geom_type), geometry: geom, unknown: Vec::new() });
+        out_feats.push(MvtFeature {
+            id: Some(s.id),
+            tags,
+            geom_type: Some(geom_type),
+            geometry: geom,
+            unknown: Vec::new(),
+        });
     }
     if out_feats.is_empty() {
         return None;
     }
-    let t = Tile { layers: vec![Layer { name: layer.to_string(), version: 2, extent: EXTENT, keys, values, features: out_feats, unknown: Vec::new() }], unknown: Vec::new() };
+    let t = Tile {
+        layers: vec![Layer {
+            name: layer.to_string(),
+            version: 2,
+            extent: EXTENT,
+            keys,
+            values,
+            features: out_feats,
+            unknown: Vec::new(),
+        }],
+        unknown: Vec::new(),
+    };
     Some(t.encode())
 }
 
@@ -476,7 +504,12 @@ mod tests {
 
     #[test]
     fn a_polygon_across_tiles() {
-        let f = Feature { id: 7, geom: Geom::Polygons(vec![vec![square(-1.0, 50.0, 2.0)]]), props: vec![("n".into(), Value::String("a".into()))], minzoom: 0 };
+        let f = Feature {
+            id: 7,
+            geom: Geom::Polygons(vec![vec![square(-1.0, 50.0, 2.0)]]),
+            props: vec![("n".into(), Value::String("a".into()))],
+            minzoom: 0,
+        };
         let mut got = Vec::new();
         tiles("t", &[f], 0, 6, &|_, _, _| true, &mut |z, x, y, b| got.push((z, x, y, b)));
         // Zoom 6: the square spans the 0° meridian, so two columns of tiles.
@@ -537,7 +570,12 @@ mod tests {
 
     #[test]
     fn a_line_leaving_and_coming_back() {
-        let r = vec![V { x: 0.1, y: 0.5, imp: 1.0 }, V { x: 0.9, y: 0.5, imp: 1.0 }, V { x: 0.9, y: 0.6, imp: 1.0 }, V { x: 0.1, y: 0.6, imp: 1.0 }];
+        let r = vec![
+            V { x: 0.1, y: 0.5, imp: 1.0 },
+            V { x: 0.9, y: 0.5, imp: 1.0 },
+            V { x: 0.9, y: 0.6, imp: 1.0 },
+            V { x: 0.1, y: 0.6, imp: 1.0 },
+        ];
         let parts = clip_line(&r, 0.0, 0.5, 0);
         assert_eq!(parts.len(), 2);
         assert!((parts[0].last().unwrap().x - 0.5).abs() < 1e-12);

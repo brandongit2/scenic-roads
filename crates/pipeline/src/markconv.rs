@@ -15,7 +15,8 @@ use std::path::PathBuf;
 pub const HERITAGE_DOTS: &str = "work/marks/heritage-dots";
 
 /// The stops & sights kinds (each its own file; heritage is one more).
-pub const POI_KINDS: [&str; 7] = ["viewpoint", "peak", "waterfall", "lighthouse", "covered_bridge", "rest", "trailhead"];
+pub const POI_KINDS: [&str; 7] =
+    ["viewpoint", "peak", "waterfall", "lighthouse", "covered_bridge", "rest", "trailhead"];
 
 /// Where a pass's heritage comes from: the heritage job's outputs (`work/heritage/<date>`).
 pub fn heritage_source(date: &str) -> String {
@@ -27,7 +28,8 @@ pub fn heritage_source(date: &str) -> String {
 pub(crate) fn src_bytes(out: &Out, src: &str, stem: &str) -> Result<Vec<u8>> {
     let logical = format!("{src}/{stem}");
     let content = out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?;
-    let mirror = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/scenic/mirror").join(content));
+    let mirror = std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join("Library/Application Support/scenic/mirror").join(content));
     // (Its own phase, or a sub-phase of the one reading it: crate::timings.)
     let p = crate::timings::phase("the heritage outputs read", crate::timings::Class::NasRead);
     // (The mirror's copy read under a shared lock, so the mirror's delete, under an exclusive one,
@@ -107,11 +109,18 @@ fn heritage_points(out: &Out, src: &str, pts: &mut Vec<Pt>) -> Result<()> {
         let fnum = |key: &str| props.get(key).and_then(Value::as_f64);
         let level = fnum("level");
         let tier = marks::heritage_tier(props.get("t").and_then(Value::as_str), level);
-        let tier_i = marks::tier_index(tier).with_context(|| format!("layer-heritage #{rank}: unknown tier {tier:?}"))?;
+        let tier_i =
+            marks::tier_index(tier).with_context(|| format!("layer-heritage #{rank}: unknown tier {tier:?}"))?;
         // dotData's class: level class (World Heritage, national top grade, the rest) + 3 × group.
         let l = level.filter(|v| *v != 0.0 && !v.is_nan()).unwrap_or(5.0);
         let group = ["w", "n", "p", "m"].iter().position(|g| tier.starts_with(g)).unwrap_or(3) as u8;
-        let class = (if l == 1.0 { 0 } else if l == 2.0 { 1 } else { 2 }) + 3 * group;
+        let class = (if l == 1.0 {
+            0
+        } else if l == 2.0 {
+            1
+        } else {
+            2
+        }) + 3 * group;
         let named = props.get("name").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
         // JavaScript's truthiness, as the app's index reads `pt` (an empty string isn't a part).
         let component = props.get("pt").is_some_and(|v| match v {
@@ -138,7 +147,16 @@ fn heritage_points(out: &Out, src: &str, pts: &mut Vec<Pt>) -> Result<()> {
         // its DFHD id; else the legacy reference (tier, place, name, record URL).
         let url = info.and_then(|v| v["props"]["url"].as_str()).unwrap_or("");
         let name = props.get(if component { "cn" } else { "name" }).and_then(Value::as_str).unwrap_or("");
-        let reference = match (whc_site(url), component, info.and_then(|v| v["props"]["dfhd_id"].as_str().map(str::to_string).or_else(|| v["props"]["dfhd_id"].as_u64().map(|n| n.to_string())))) {
+        let reference = match (
+            whc_site(url),
+            component,
+            info.and_then(|v| {
+                v["props"]["dfhd_id"]
+                    .as_str()
+                    .map(str::to_string)
+                    .or_else(|| v["props"]["dfhd_id"].as_u64().map(|n| n.to_string()))
+            }),
+        ) {
             (Some(site), false, _) if tier.starts_with('w') => format!("whc:{site}"),
             (_, _, Some(d)) => format!("reg:dfhd:{d}"),
             _ => format!("legacy:heritage|{tier}|{},{}|{name}|{url}", pt.lon, pt.lat),
@@ -162,7 +180,13 @@ pub struct Converted {
 }
 
 fn id_sources(pts: &[Point]) -> Vec<IdSource> {
-    pts.iter().map(|p| IdSource { osm: p.osm, reference: p.reference.clone(), canon: format!("{}{}", Value::Object(p.props.clone()), p.info.as_deref().unwrap_or("")) }).collect()
+    pts.iter()
+        .map(|p| IdSource {
+            osm: p.osm,
+            reference: p.reference.clone(),
+            canon: format!("{}{}", Value::Object(p.props.clone()), p.info.as_deref().unwrap_or("")),
+        })
+        .collect()
 }
 
 /// Writes points as the map reads them: ids (unique over every point: an OSM id only when no other
@@ -182,7 +206,12 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
     let dots: BTreeMap<u64, (u64, f64, f64)> = all
         .iter()
         .filter(|(_, p)| p.kind == kh && p.pt.flags & flag::COMPONENT == 0)
-        .filter_map(|(id, p)| Some((p.info.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok())?["i"].as_u64()?, (*id, p.lon, p.lat))))
+        .filter_map(|(id, p)| {
+            Some((
+                p.info.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok())?["i"].as_u64()?,
+                (*id, p.lon, p.lat),
+            ))
+        })
         .collect();
     {
         let _p = phase("markdata tiles uploaded", Class::NasWrite);
@@ -198,13 +227,20 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
         let sizes = marks::size_fields(KINDS[k]);
         let fields = marks::fields(KINDS[k]);
         let si: Vec<usize> = sizes.iter().map(|s| fields.iter().position(|f| f == s).unwrap()).collect();
-        let kp: Vec<KeepPt> = idx.iter().map(|&j| { let p = &all[j].1; KeepPt { lon: p.lon, lat: p.lat, pt: &p.pt, sizes: si.iter().map(|&f| p.fvals[f]).collect() } }).collect();
+        let kp: Vec<KeepPt> = idx
+            .iter()
+            .map(|&j| {
+                let p = &all[j].1;
+                KeepPt { lon: p.lon, lat: p.lat, pt: &p.pt, sizes: si.iter().map(|&f| p.fvals[f]).collect() }
+            })
+            .collect();
         let kz = marks::keep_zooms(&kp);
         drop(kp);
         for (&j, z) in idx.iter().zip(kz) {
             all[j].1.pt.kz = z;
         }
-        let kept: Vec<usize> = (0..=marks::THIN_MAX_Z).map(|z| idx.iter().filter(|&&j| all[j].1.pt.kz <= z).count()).collect();
+        let kept: Vec<usize> =
+            (0..=marks::THIN_MAX_Z).map(|z| idx.iter().filter(|&&j| all[j].1.pt.kz <= z).count()).collect();
         eprintln!("marks: {:<15} {:>7} points; kept at z0–5: {kept:?}", KINDS[k], idx.len());
     }
 
@@ -228,7 +264,13 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
             let mut rows: Vec<Vec<Row>> = (0..KINDS.len()).map(|_| Vec::new()).collect();
             for &j in tiles.get(&t).map(Vec::as_slice).unwrap_or(&[]) {
                 let (id, p) = &all[j];
-                rows[p.kind].push(Row { id: *id, pt: p.pt, fvals: p.fvals.clone(), props: Value::Object(p.props.clone()).to_string().into_bytes(), info: p.info.clone().unwrap_or_default().into_bytes() });
+                rows[p.kind].push(Row {
+                    id: *id,
+                    pt: p.pt,
+                    fvals: p.fvals.clone(),
+                    props: Value::Object(p.props.clone()).to_string().into_bytes(),
+                    info: p.info.clone().unwrap_or_default().into_bytes(),
+                });
             }
             for r in &mut rows {
                 r.sort_by_key(|r| r.id);
@@ -261,7 +303,13 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
         crate::agent::jobs::within(0.5 + 0.5 * n as f64 / kinds);
         let kind = KINDS[k];
         let made_p = phase("thinned tiles made", Class::Compute);
-        let kp: Vec<KeepPt> = idx.iter().map(|&j| { let p = &all[j].1; KeepPt { lon: p.lon, lat: p.lat, pt: &p.pt, sizes: Vec::new() } }).collect();
+        let kp: Vec<KeepPt> = idx
+            .iter()
+            .map(|&j| {
+                let p = &all[j].1;
+                KeepPt { lon: p.lon, lat: p.lat, pt: &p.pt, sizes: Vec::new() }
+            })
+            .collect();
         let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
         for z in 0..=marks::THIN_MAX_Z {
             let mut at: BTreeMap<(u32, u32), Vec<usize>> = BTreeMap::new();
@@ -278,10 +326,15 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
                     let cells: Vec<Cell> = marks::speck_cells(&kp, qs, z, x, y);
                     let tile = MarkTile {
                         ids: keep.iter().map(|&q| all[idx[q]].0).collect(),
-                        fvals: (0..marks::fields(kind).len()).map(|f| keep.iter().map(|&q| all[idx[q]].1.fvals[f]).collect()).collect(),
+                        fvals: (0..marks::fields(kind).len())
+                            .map(|f| keep.iter().map(|&q| all[idx[q]].1.fvals[f]).collect())
+                            .collect(),
                         pts: keep.iter().map(|&q| *kp[q].pt).collect(),
                         cells,
-                        props: keep.iter().map(|&q| Value::Object(all[idx[q]].1.props.clone()).to_string().into_bytes()).collect(),
+                        props: keep
+                            .iter()
+                            .map(|&q| Value::Object(all[idx[q]].1.props.clone()).to_string().into_bytes())
+                            .collect(),
                     };
                     let raw = tile.encode();
                     let gz = gzip(&raw)?;
@@ -297,7 +350,15 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
         let _p = phase("thinned packs uploaded", Class::NasWrite);
         for ((scope, rz, rx, ry), mut tiles) in packs {
             tiles.sort_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
-            if let Some((l, _)) = crate::layers::write_pack(out, &format!("marks-{kind}"), "rdmt", true, scope, (rz, rx, ry), &mut tiles.into_iter())? {
+            if let Some((l, _)) = crate::layers::write_pack(
+                out,
+                &format!("marks-{kind}"),
+                "rdmt",
+                true,
+                scope,
+                (rz, rx, ry),
+                &mut tiles.into_iter(),
+            )? {
                 wrote.insert(l);
             }
         }
@@ -315,8 +376,19 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
             }
         }
     }
-    out.put_bytes("global/marks/summary", "json", &serde_json::to_vec(&serde_json::json!({ "fmt": 1, "kinds": totals, "tiers": tiers }))?)?;
-    let stale: Vec<String> = out.manifest.keys().filter(|k| (k.starts_with("markdata/") || k.starts_with("layers/marks-")) && !wrote.contains(*k) && out.may_remove(k)).cloned().collect();
+    out.put_bytes(
+        "global/marks/summary",
+        "json",
+        &serde_json::to_vec(&serde_json::json!({ "fmt": 1, "kinds": totals, "tiers": tiers }))?,
+    )?;
+    let stale: Vec<String> = out
+        .manifest
+        .keys()
+        .filter(|k| {
+            (k.starts_with("markdata/") || k.starts_with("layers/marks-")) && !wrote.contains(*k) && out.may_remove(k)
+        })
+        .cloned()
+        .collect();
     for k in &stale {
         out.remove(k);
     }

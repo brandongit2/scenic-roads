@@ -42,7 +42,10 @@ impl MarkView {
         let fields: Vec<Vec<&'static str>> = KINDS.iter().map(|k| marks::fields(k)).collect();
         // The file's own fields must be today's (a new filter is a format change).
         for (k, f) in KINDS.iter().zip(&fields) {
-            let theirs: Vec<&str> = s.meta["fields"][k].as_array().map(|a| a.iter().filter_map(|v| v.as_str()).collect()).unwrap_or_default();
+            let theirs: Vec<&str> = s.meta["fields"][k]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
             ensure!(theirs == *f, "markdata {content}: {k}'s fields {theirs:?}, not {f:?}");
         }
         let mut fval_at = Vec::with_capacity(KINDS.len());
@@ -60,7 +63,21 @@ impl MarkView {
         let info_idx = s.sect::<[u64; 2]>("info_idx")?.all()?.cast::<[u64; 2]>().to_vec();
         let summits = s.sect::<SummitRec>("summits")?.all()?.cast::<SummitRec>().to_vec();
         let summit_names = s.get("summit_names")?.bytes().to_vec();
-        Ok(MarkView { tile, content, kinds, fval_at, fields, ids, pts, fvals, props_idx, info_idx, summits, summit_names, s })
+        Ok(MarkView {
+            tile,
+            content,
+            kinds,
+            fval_at,
+            fields,
+            ids,
+            pts,
+            fvals,
+            props_idx,
+            info_idx,
+            summits,
+            summit_names,
+            s,
+        })
     }
 
     pub fn is_remote(&self) -> bool {

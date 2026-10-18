@@ -234,7 +234,8 @@ impl Carry {
     /// when the run made none (a unit left without ways).
     pub fn save(&self, build: &Path) -> Result<()> {
         let cache = unit_dir(build);
-        let have = KEPT_OUTPUTS.iter().chain(&KEPT_GRIDS).all(|f| build.join(f).exists()) && KEPT_CACHE.iter().all(|f| cache.join(f).exists());
+        let have = KEPT_OUTPUTS.iter().chain(&KEPT_GRIDS).all(|f| build.join(f).exists())
+            && KEPT_CACHE.iter().all(|f| cache.join(f).exists());
         // (This Mac's own temporary folder: both Macs may keep the same unit's at once.)
         let tmp = self.dir.with_extension(format!("{}.tmp", crate::agent::cond::host()));
         if tmp.exists() {
@@ -278,7 +279,9 @@ impl Carry {
             store::sys::copy_data(e.path(), tmp.join(e.file_name()))?;
         }
         // (Replaced meanwhile: what was copied may mix two runs.)
-        if std::fs::read(self.dir.join("basis.json")).ok().as_deref() != Some(&first[..]) || std::fs::read(tmp.join("basis.json")).ok().as_deref() != Some(&first[..]) {
+        if std::fs::read(self.dir.join("basis.json")).ok().as_deref() != Some(&first[..])
+            || std::fs::read(tmp.join("basis.json")).ok().as_deref() != Some(&first[..])
+        {
             std::fs::remove_dir_all(&tmp).ok();
             return Ok(false);
         }
@@ -308,7 +311,8 @@ impl Carry {
             return Ok(None);
         }
         let then: HashMap<[u32; 2], String> = kept.basis.into_iter().collect();
-        let changed: Vec<[u32; 2]> = grid_basis(build)?.into_iter().filter(|(t, h)| then.get(t) != Some(h)).map(|(t, _)| t).collect();
+        let changed: Vec<[u32; 2]> =
+            grid_basis(build)?.into_iter().filter(|(t, h)| then.get(t) != Some(h)).map(|(t, _)| t).collect();
         let cache = unit_dir(build);
         std::fs::create_dir_all(&cache)?;
         for f in KEPT_OUTPUTS {
@@ -324,15 +328,18 @@ impl Carry {
         std::fs::write(cache.join("changed.tiles"), bytemuck::cast_slice(&changed))?;
         // Replaced meanwhile (the other Mac keeping this unit's results too): what was copied may
         // mix two runs, so it isn't used. (Two runs on the same basis kept the same results.)
-        anyhow::ensure!(std::fs::read(self.dir.join("basis.json")).ok().as_deref() == Some(&first[..]), "replaced while it was read (the other Mac kept this unit's results meanwhile)");
+        anyhow::ensure!(
+            std::fs::read(self.dir.join("basis.json")).ok().as_deref() == Some(&first[..]),
+            "replaced while it was read (the other Mac kept this unit's results meanwhile)"
+        );
         Ok(Some(std::fs::metadata(cache.join("canopy.keys"))?.len() as usize / 8))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use det::Det;
     use super::*;
+    use det::Det;
 
     /// A unit's folder after a run: `tiles` in grid.idx, terrain `elev` for every cell.
     fn build_with(d: &Path, keys: &[u64], tiles: &[[u32; 2]], elev: &[i16]) {
@@ -379,16 +386,22 @@ mod tests {
         // A sample at the changed tile's centre is near something new; one at the other's isn't.
         let centre = |t: [u32; 2]| {
             let lon = (t[0] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD * 360.0 - 180.0;
-            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (t[1] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD)).dsinh().datan().to_degrees();
+            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (t[1] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD))
+                .dsinh()
+                .datan()
+                .to_degrees();
             (lon, lat)
         };
-        assert!(ch.near(centre(tiles[1]).0, centre(tiles[1]).1, 1) && !ch.near(centre(tiles[0]).0, centre(tiles[0]).1, 1));
+        assert!(
+            ch.near(centre(tiles[1]).0, centre(tiles[1]).1, 1) && !ch.near(centre(tiles[0]).0, centre(tiles[0]).1, 1)
+        );
     }
 
     #[test]
     fn results_copied_ahead_restore_as_the_kept_ones_while_they_are_them() {
         let d = tempfile::tempdir().unwrap();
-        let (run1, kept, ahead) = (d.path().join("run1"), d.path().join("kept/6-32-21"), d.path().join("units/6-32-21-carry"));
+        let (run1, kept, ahead) =
+            (d.path().join("run1"), d.path().join("kept/6-32-21"), d.path().join("units/6-32-21-carry"));
         let tiles = [[1025u32, 673u32], [1056, 677]];
         build_with(&run1, &[11, 22, 33], &tiles, &[100, 200]);
         let c = Carry { dir: kept.clone() };
@@ -432,7 +445,11 @@ mod tests {
         std::fs::create_dir_all(&run).unwrap();
         assert_eq!(Carry { dir: kept.clone() }.restore(&run).unwrap(), None);
         std::fs::create_dir_all(&kept).unwrap();
-        std::fs::write(kept.join("basis.json"), serde_json::to_vec(&Kept { v: SCENIC_V + 1, basis: Vec::new() }).unwrap()).unwrap();
+        std::fs::write(
+            kept.join("basis.json"),
+            serde_json::to_vec(&Kept { v: SCENIC_V + 1, basis: Vec::new() }).unwrap(),
+        )
+        .unwrap();
         assert_eq!(Carry { dir: kept.clone() }.restore(&run).unwrap(), None);
         // A run that made no scenic results drops what was kept.
         Carry { dir: kept.clone() }.save(&run).unwrap();

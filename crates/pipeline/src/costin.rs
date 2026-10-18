@@ -10,8 +10,8 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 struct State {
     /// The store's read count and the GeoTIFFs opened as the target began.
@@ -97,7 +97,11 @@ extern "C" fn write_reads() {
 }
 
 fn append_reads(p: &Path, bytes: u64, tiffs: u64) {
-    let r = std::fs::OpenOptions::new().create(true).append(true).open(p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{bytes} {tiffs}\n").as_bytes()));
+    let r = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{bytes} {tiffs}\n").as_bytes()));
     if let Err(e) = r {
         eprintln!("{}: noting what was read: {e}", p.display());
     }

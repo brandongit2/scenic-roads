@@ -136,7 +136,11 @@ impl History {
         }
         if let Some(p) = &self.path {
             let line = serde_json::to_string(&e).unwrap_or_default();
-            let r = std::fs::OpenOptions::new().create(true).append(true).open(p).and_then(|mut f| f.write_all(format!("{line}\n").as_bytes()));
+            let r = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(p)
+                .and_then(|mut f| f.write_all(format!("{line}\n").as_bytes()));
             if let Err(err) = r {
                 eprintln!("coordinator: keeping the history: {err}");
             }
@@ -229,7 +233,9 @@ impl History {
             }
             // What it finished.
             let finished = match e.kind.as_str() {
-                "end" | "done" if e.ok != Some(false) || !e.targets.is_empty() => Some((e.step.clone().unwrap_or_default(), e.targets.len() as u32)),
+                "end" | "done" if e.ok != Some(false) || !e.targets.is_empty() => {
+                    Some((e.step.clone().unwrap_or_default(), e.targets.len() as u32))
+                }
                 "task" => Some((e.step.clone().unwrap_or_else(|| "tail".into()), 1)),
                 _ => None,
             };
@@ -295,9 +301,19 @@ mod tests {
         let t = (now_s() / 3600 - 24) * 3600;
         // The lead's job over the hour's end, a worker's lease within the first, a page's task.
         h.add(Event { step: Some("unit".into()), ..ev("start", t + 1800, "m4") });
-        h.add(Event { step: Some("unit".into()), targets: vec!["6/1/1".into(), "6/1/2".into()], ok: Some(true), ..ev("end", t + 4500, "m4") });
+        h.add(Event {
+            step: Some("unit".into()),
+            targets: vec!["6/1/1".into(), "6/1/2".into()],
+            ok: Some(true),
+            ..ev("end", t + 4500, "m4")
+        });
         h.add(Event { lease: Some(7), step: Some("terrain".into()), ..ev("lease", t + 600, "m1") });
-        h.add(Event { lease: Some(7), step: Some("terrain".into()), targets: vec!["3/1/1".into()], ..ev("done", t + 1200, "m1") });
+        h.add(Event {
+            lease: Some(7),
+            step: Some("terrain".into()),
+            targets: vec!["3/1/1".into()],
+            ..ev("done", t + 1200, "m1")
+        });
         h.add(Event { secs: Some(60.0), ..ev("task", t + 4000, "ipad") });
         h.add(ev("pause", t + 5000, "m4"));
         let r = h.rates(t + 5400, 2);

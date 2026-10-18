@@ -60,13 +60,17 @@ pub fn valid_feed_id(s: &str) -> bool {
 
 /// A key's name in `inputs/keys.env`: upper-case letters, digits and `_`, not starting with a digit.
 pub fn valid_key_name(s: &str) -> bool {
-    s.bytes().next().is_some_and(|b| b.is_ascii_uppercase() || b == b'_') && s.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    s.bytes().next().is_some_and(|b| b.is_ascii_uppercase() || b == b'_')
+        && s.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// A day, `YYYY-MM-DD`.
 pub fn valid_day(s: &str) -> bool {
     let b = s.as_bytes();
-    b.len() == 10 && b[4] == b'-' && b[7] == b'-' && s.bytes().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && s.bytes().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
 /// The id a declaration's path gives (`sncf.toml` → `sncf`), or None when it isn't one.
@@ -87,11 +91,22 @@ fn parse(path: &str, bytes: &[u8]) -> (Option<Value>, Vec<Finding>) {
     let Some(d) = d else { return (None, fs) };
     // (It parsed as TOML: parse_description said so.)
     let t: toml::Table = toml::from_str(std::str::from_utf8(bytes).unwrap_or("")).unwrap_or_default();
-    let mut bad = |what: &str, msg: String| fs.push(Finding::new(DATA, Level::Error, &[path], &[what], vec![path.into()], format!("{path}: {msg} (docs/inputs.md §6.7.1)")));
+    let mut bad = |what: &str, msg: String| {
+        fs.push(Finding::new(
+            DATA,
+            Level::Error,
+            &[path],
+            &[what],
+            vec![path.into()],
+            format!("{path}: {msg} (docs/inputs.md §6.7.1)"),
+        ))
+    };
     let ids = |v: Option<&toml::Value>, what: &str, bad: &mut dyn FnMut(&str, String)| -> Vec<String> {
         match v {
             None => Vec::new(),
-            Some(toml::Value::Array(a)) if a.iter().all(|x| x.as_str().is_some_and(valid_feed_id)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+            Some(toml::Value::Array(a)) if a.iter().all(|x| x.as_str().is_some_and(valid_feed_id)) => {
+                a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
+            }
             Some(_) => {
                 bad(what, format!("`{what}` isn't a list of feed ids"));
                 Vec::new()
@@ -145,7 +160,12 @@ fn parse(path: &str, bytes: &[u8]) -> (Option<Value>, Vec<Finding>) {
     }
     let refresh = match data.get("refresh") {
         None => REFRESH_DAYS,
-        Some(x) => match x.as_str().and_then(|s| s.strip_prefix("days:")).and_then(|n| n.parse::<i64>().ok()).filter(|n| *n >= 1) {
+        Some(x) => match x
+            .as_str()
+            .and_then(|s| s.strip_prefix("days:"))
+            .and_then(|n| n.parse::<i64>().ok())
+            .filter(|n| *n >= 1)
+        {
             Some(n) => n,
             None => {
                 bad("refresh", "`refresh` isn't days:<n>".into());
@@ -155,7 +175,9 @@ fn parse(path: &str, bytes: &[u8]) -> (Option<Value>, Vec<Finding>) {
     };
     let modes: Vec<String> = match t.get("modes") {
         None => Vec::new(),
-        Some(toml::Value::Array(a)) if a.iter().all(|x| x.as_str().is_some_and(|m| MODES.contains(&m))) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+        Some(toml::Value::Array(a)) if a.iter().all(|x| x.as_str().is_some_and(|m| MODES.contains(&m))) => {
+            a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
+        }
         Some(_) => {
             bad("modes", format!("`modes` isn't a list of {MODES:?}"));
             Vec::new()
@@ -193,11 +215,18 @@ fn parse(path: &str, bytes: &[u8]) -> (Option<Value>, Vec<Finding>) {
             bad("country", "`country` isn't a table of feed id → ISO 3166 code".into());
         }
         let replaces = table("replaces", &mut bad);
-        if replaces.iter().any(|(k, v)| !valid_feed_id(k) || !v.as_array().is_some_and(|a| a.iter().all(|x| x.as_str().is_some_and(valid_feed_id)))) {
+        if replaces.iter().any(|(k, v)| {
+            !valid_feed_id(k) || !v.as_array().is_some_and(|a| a.iter().all(|x| x.as_str().is_some_and(valid_feed_id)))
+        }) {
             bad("replaces", "`replaces` isn't a table of feed id → feed ids".into());
         }
         let own = table("own_code", &mut bad);
-        if own.iter().any(|(k, v)| !(k.contains('-') && super::credits::iso_3166(k)) || !v.as_str().is_some_and(|c| c.is_empty() || (c.len() == 2 && c.bytes().all(|b| b.is_ascii_uppercase())))) {
+        if own.iter().any(|(k, v)| {
+            !(k.contains('-') && super::credits::iso_3166(k))
+                || !v
+                    .as_str()
+                    .is_some_and(|c| c.is_empty() || (c.len() == 2 && c.bytes().all(|b| b.is_ascii_uppercase())))
+        }) {
             bad("own_code", "`own_code` isn't a table of ISO 3166-2 code → alpha-2 code or \"\"".into());
         }
         feed["exclude"] = exclude.into();
@@ -208,7 +237,9 @@ fn parse(path: &str, bytes: &[u8]) -> (Option<Value>, Vec<Finding>) {
         feed["replaces"] = ids(t.get("replaces"), "replaces", &mut bad).into();
         let routes = match t.get("ferry_routes") {
             None => Vec::new(),
-            Some(toml::Value::Array(a)) if a.iter().all(|x| x.is_str()) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
+            Some(toml::Value::Array(a)) if a.iter().all(|x| x.is_str()) => {
+                a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()
+            }
             Some(_) => {
                 bad("ferry_routes", "`ferry_routes` isn't a list of route ids".into());
                 Vec::new()
@@ -251,7 +282,9 @@ fn named_ids(feed: &Value) -> Vec<(&'static str, String)> {
         Value::Object(m) => {
             for (k, v) in m {
                 out.push(("replaces", k.clone()));
-                out.extend(v.as_array().into_iter().flatten().filter_map(Value::as_str).map(|s| ("replaces", s.to_string())));
+                out.extend(
+                    v.as_array().into_iter().flatten().filter_map(Value::as_str).map(|s| ("replaces", s.to_string())),
+                );
             }
         }
         _ => {}
@@ -281,7 +314,12 @@ impl Checks for Feeds {
             c.facts.insert("description".into(), serde_json::to_value(d).unwrap_or_default());
             c.keyed = Some(store::naming::hash16(feed.to_string().as_bytes()));
             // (One that replaces another is held with it when that one is held.)
-            c.refers = named_ids(&feed).into_iter().filter(|(what, _)| *what == "replaces").map(|(_, id)| format!("{id}.toml")).filter(|p| p != path).collect();
+            c.refers = named_ids(&feed)
+                .into_iter()
+                .filter(|(what, _)| *what == "replaces")
+                .map(|(_, id)| format!("{id}.toml"))
+                .filter(|p| p != path)
+                .collect();
             c.refers.sort();
             c.refers.dedup();
             c.facts.insert("feed".into(), feed);
@@ -301,21 +339,46 @@ impl Checks for Feeds {
         if catalogues.len() > 1 {
             let files: Vec<String> = catalogues.iter().map(|s| s.to_string()).collect();
             let refs: Vec<&str> = files.iter().map(String::as_str).collect();
-            out.push(Finding::new(TWO_CATALOGUES, Level::Error, &refs, &[], files.clone(), format!("{} declare the catalogue: there's one", files.join(", "))));
+            out.push(Finding::new(
+                TWO_CATALOGUES,
+                Level::Error,
+                &refs,
+                &[],
+                files.clone(),
+                format!("{} declare the catalogue: there's one", files.join(", ")),
+            ));
         }
         let declared: BTreeSet<&str> = feeds.values().filter_map(|f| f["id"].as_str()).collect();
         for (p, f) in &feeds {
             if let Some(cat) = &self.catalogue_ids {
-                let unknown: Vec<String> = named_ids(f).into_iter().filter(|(_, id)| !declared.contains(id.as_str()) && !cat.contains(id)).map(|(what, id)| format!("{what} {id}")).collect();
+                let unknown: Vec<String> = named_ids(f)
+                    .into_iter()
+                    .filter(|(_, id)| !declared.contains(id.as_str()) && !cat.contains(id))
+                    .map(|(what, id)| format!("{what} {id}"))
+                    .collect();
                 if !unknown.is_empty() {
                     let refs: Vec<&str> = unknown.iter().map(String::as_str).collect();
-                    out.push(Finding::new(UNKNOWN, Level::Warning, &[p], &refs, vec![p.clone()], format!("{p} names feeds neither declared nor in the catalogue: {}", unknown.join(", "))));
+                    out.push(Finding::new(
+                        UNKNOWN,
+                        Level::Warning,
+                        &[p],
+                        &refs,
+                        vec![p.clone()],
+                        format!("{p} names feeds neither declared nor in the catalogue: {}", unknown.join(", ")),
+                    ));
                 }
             }
             if let (Some(terr), Some(own)) = (&self.territories, f["own_code"].as_object()) {
                 let none: Vec<&str> = own.keys().filter(|k| !terr.contains(*k)).map(String::as_str).collect();
                 if !none.is_empty() {
-                    out.push(Finding::new(NO_OUTLINE, Level::Warning, &[p], &none, vec![p.clone()], format!("{p}: own_code names territories no outline of the pass has: {}", none.join(", "))));
+                    out.push(Finding::new(
+                        NO_OUTLINE,
+                        Level::Warning,
+                        &[p],
+                        &none,
+                        vec![p.clone()],
+                        format!("{p}: own_code names territories no outline of the pass has: {}", none.join(", ")),
+                    ));
                 }
             }
         }
@@ -325,13 +388,21 @@ impl Checks for Feeds {
         }
         for (url, ps) in by_url.into_iter().filter(|(_, ps)| ps.len() > 1) {
             let refs: Vec<&str> = ps.iter().map(String::as_str).collect();
-            out.push(Finding::new(SAME_URL, Level::Warning, &refs, &[url], ps.clone(), format!("{} declare one URL, {url}", ps.join(", "))));
+            out.push(Finding::new(
+                SAME_URL,
+                Level::Warning,
+                &refs,
+                &[url],
+                ps.clone(),
+                format!("{} declare one URL, {url}", ps.join(", ")),
+            ));
         }
         Ok(out)
     }
 
     fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
-        let mut v: Vec<String> = super::languages::outlines_of(manifest).map(|o| format!("outlines {o}")).into_iter().collect();
+        let mut v: Vec<String> =
+            super::languages::outlines_of(manifest).map(|o| format!("outlines {o}")).into_iter().collect();
         v.extend(manifest.get(crate::rail::CATALOGUE).map(|c| format!("catalogue {c}")));
         v
     }
@@ -361,9 +432,13 @@ pub fn catalogue_ids(path: &Path) -> Result<BTreeSet<String>> {
     let text = std::fs::read_to_string(path)?;
     let mut lines = text.lines();
     let head = lines.next().unwrap_or("");
-    let col = head.split(',').position(|c| c.trim_matches('"') == "id").ok_or_else(|| anyhow::anyhow!("no id column"))?;
+    let col =
+        head.split(',').position(|c| c.trim_matches('"') == "id").ok_or_else(|| anyhow::anyhow!("no id column"))?;
     // (The id is in the first columns, before any quoted field with a comma.)
-    Ok(lines.filter_map(|l| l.split(',').nth(col).map(|s| s.trim_matches('"').to_string())).filter(|s| valid_feed_id(s)).collect())
+    Ok(lines
+        .filter_map(|l| l.split(',').nth(col).map(|s| s.trim_matches('"').to_string()))
+        .filter(|s| valid_feed_id(s))
+        .collect())
 }
 
 /// The accepted declarations, as the fetching job reads them (`facts.feed`), in path order.
@@ -371,7 +446,9 @@ pub fn of_accepted(a: &super::Accepted) -> Result<Vec<Value>> {
     let mut out = Vec::new();
     for (p, _) in a.files() {
         let (f, findings) = parse(p, &a.read(p)?);
-        out.push(f.ok_or_else(|| anyhow::anyhow!("{p}: accepted, but doesn't parse: {:?}", findings.first().map(|f| &f.message)))?);
+        out.push(f.ok_or_else(|| {
+            anyhow::anyhow!("{p}: accepted, but doesn't parse: {:?}", findings.first().map(|f| &f.message))
+        })?);
     }
     Ok(out)
 }
@@ -513,7 +590,10 @@ url = "https://files.mobilitydatabase.org/feeds_v2.csv"
         let c = checks(&Feeds::default(), "sg-lta-train.toml", LTA);
         assert!(c.findings.is_empty(), "{:?}", c.findings);
         let f = &c.facts["feed"];
-        assert_eq!(f["fetch"], json!({"method": "get-key-json-link", "header": "AccountKey", "key": "LTA_ACCOUNT_KEY", "link": "value[0].link"}));
+        assert_eq!(
+            f["fetch"],
+            json!({"method": "get-key-json-link", "header": "AccountKey", "key": "LTA_ACCOUNT_KEY", "link": "value[0].link"})
+        );
         assert_eq!((f["refresh_days"].as_i64(), f["modes"].as_array().map(Vec::len)), (Some(3), Some(0)));
         // Held with a declaration it replaces, were that one held.
         assert_eq!(c.refers, vec!["mdb-1076.toml", "mdb-3051.toml"]);
@@ -541,12 +621,32 @@ url = "https://files.mobilitydatabase.org/feeds_v2.csv"
         bad("sg-lta-train.toml", LTA.replace("header = \"AccountKey\"\n", ""), "fetch `header`");
         bad("sg-lta-train.toml", LTA.replace("link = \"value[0].link\"\n", ""), "fetch `link`");
         bad("sg-lta-train.toml", LTA.replace("\"mdb-1076\"", "\"mdb 1076\""), "`replaces`");
-        bad("mobility-database.toml", CATALOGUE_TOML.replace("\"SG\", \"mdb-3409\"", "\"Singapore\", \"mdb-3409\""), "`country`");
-        bad("mobility-database.toml", CATALOGUE_TOML.replace("\"RS-KM\" = \"XK\"", "\"RS-KM\" = \"Kosovo\""), "`own_code`");
+        bad(
+            "mobility-database.toml",
+            CATALOGUE_TOML.replace("\"SG\", \"mdb-3409\"", "\"Singapore\", \"mdb-3409\""),
+            "`country`",
+        );
+        bad(
+            "mobility-database.toml",
+            CATALOGUE_TOML.replace("\"RS-KM\" = \"XK\"", "\"RS-KM\" = \"Kosovo\""),
+            "`own_code`",
+        );
         bad("mobility-database.toml", CATALOGUE_TOML.replace("\"FI-01\" = \"AX\"", "\"FI\" = \"AX\""), "`own_code`");
-        bad("sncf.toml", SNCF.replace("[data]", "pin = { zip = \"../x.zip\", day = \"2026-09-28\" }\n[data]"), "`pin`'s zip");
-        bad("sncf.toml", SNCF.replace("[data]", "pin = { zip = \"old/x.zip\", day = \"28 Sep\" }\n[data]"), "`pin`'s day");
-        let pinned = checks(&Feeds::default(), "sncf.toml", &SNCF.replace("[data]", "pin = { zip = \"old/sncf.zip\", day = \"2026-09-28\" }\n[data]"));
+        bad(
+            "sncf.toml",
+            SNCF.replace("[data]", "pin = { zip = \"../x.zip\", day = \"2026-09-28\" }\n[data]"),
+            "`pin`'s zip",
+        );
+        bad(
+            "sncf.toml",
+            SNCF.replace("[data]", "pin = { zip = \"old/x.zip\", day = \"28 Sep\" }\n[data]"),
+            "`pin`'s day",
+        );
+        let pinned = checks(
+            &Feeds::default(),
+            "sncf.toml",
+            &SNCF.replace("[data]", "pin = { zip = \"old/sncf.zip\", day = \"2026-09-28\" }\n[data]"),
+        );
         assert_eq!(pinned.facts["feed"]["pin"], json!({"zip": "old/sncf.zip", "day": "2026-09-28"}));
     }
 
@@ -565,7 +665,8 @@ url = "https://files.mobilitydatabase.org/feeds_v2.csv"
     }
 
     fn whole(f: &Feeds, files: &[(&str, String)]) -> Vec<Finding> {
-        let all: BTreeMap<String, Vec<u8>> = files.iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
+        let all: BTreeMap<String, Vec<u8>> =
+            files.iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
         let read = |p: &str| Ok(std::sync::Arc::new(all[p].clone()));
         f.whole(&Version { paths: all.keys().cloned().collect(), read: &read }).unwrap()
     }
@@ -573,23 +674,35 @@ url = "https://files.mobilitydatabase.org/feeds_v2.csv"
     #[test]
     fn a_version_whole() {
         let none = Feeds::default();
-        let ok = [("sncf.toml", SNCF.to_string()), ("sg-lta-train.toml", LTA.to_string()), ("mobility-database.toml", CATALOGUE_TOML.to_string())];
+        let ok = [
+            ("sncf.toml", SNCF.to_string()),
+            ("sg-lta-train.toml", LTA.to_string()),
+            ("mobility-database.toml", CATALOGUE_TOML.to_string()),
+        ];
         assert!(whole(&none, &ok).is_empty());
         // Two catalogues: an error. One URL twice: a warning.
-        let two = whole(&none, &[("a.toml", CATALOGUE_TOML.into()), ("b.toml", CATALOGUE_TOML.replace("feeds_v2", "feeds_v3"))]);
+        let two = whole(
+            &none,
+            &[("a.toml", CATALOGUE_TOML.into()), ("b.toml", CATALOGUE_TOML.replace("feeds_v2", "feeds_v3"))],
+        );
         assert!(two.iter().any(|f| f.level == Level::Error && f.check() == TWO_CATALOGUES));
         let same = whole(&none, &[("sncf.toml", SNCF.into()), ("sncf-copy.toml", SNCF.into())]);
         assert_eq!(same.iter().map(|f| (f.check(), f.level)).collect::<Vec<_>>(), vec![(SAME_URL, Level::Warning)]);
         // With the catalogue's ids and the pass's territories: feeds named that are neither declared
         // nor in it, and own codes no outline has, are warnings.
-        let known = Feeds { catalogue_ids: Some(["mdb-1076", "mdb-3051", "mdb-3409", "mdb-2933"].map(String::from).into()), territories: Some(["FI-01", "FR-971"].map(String::from).into()) };
+        let known = Feeds {
+            catalogue_ids: Some(["mdb-1076", "mdb-3051", "mdb-3409", "mdb-2933"].map(String::from).into()),
+            territories: Some(["FI-01", "FR-971"].map(String::from).into()),
+        };
         let w = whole(&known, &ok);
         assert!(!w.iter().any(|f| f.check() == UNKNOWN), "{w:?}");
         let own: Vec<&Finding> = w.iter().filter(|f| f.check() == NO_OUTLINE).collect();
         assert_eq!(own.len(), 1);
         assert!(own[0].message.contains("RS-KM") && !own[0].message.contains("FI-01"));
         let w = whole(&known, &[("sg-lta-train.toml", LTA.replace("mdb-1076", "mdb-9"))]);
-        assert!(w.iter().any(|f| f.check() == UNKNOWN && f.level == Level::Warning && f.message.contains("replaces mdb-9")));
+        assert!(w
+            .iter()
+            .any(|f| f.check() == UNKNOWN && f.level == Level::Warning && f.message.contains("replaces mdb-9")));
     }
 
     #[test]

@@ -258,7 +258,12 @@ mod tests {
     fn region(id: &str, w: f64, s: f64, e: f64, n: f64) -> DrawnRegion {
         let ring = vec![[w, s], [e, s], [e, n], [w, n], [w, s]];
         let entry = format!("poly:{id}.poly");
-        DrawnRegion { id: id.into(), name: id.into(), outline: vec![entry.clone()], shapes: [(entry, vec![vec![ring]])].into() }
+        DrawnRegion {
+            id: id.into(),
+            name: id.into(),
+            outline: vec![entry.clone()],
+            shapes: [(entry, vec![vec![ring]])].into(),
+        }
     }
 
     fn whats(cs: Vec<&Credit>) -> Vec<&'static str> {
@@ -273,7 +278,11 @@ mod tests {
             assert!(tokyo.contains(&w), "{w}");
         }
         assert!(tokyo[0].starts_with("Roads, water"));
-        for w in ["Forest leaf type, North America", "Lakes missing from OpenStreetMap in parts of Canada", "Forest leaf type, Europe"] {
+        for w in [
+            "Forest leaf type, North America",
+            "Lakes missing from OpenStreetMap in parts of Canada",
+            "Forest leaf type, Europe",
+        ] {
             assert!(!tokyo.contains(&w), "{w}");
         }
         // The data reaches 20 km past the coverage: Canada's box for a region a few km west of it,
@@ -285,14 +294,20 @@ mod tests {
         let both = whats(catalog_credits(&[region("tokyo", 139.5, 35.5, 140.0, 36.0)], &[e7(2.2, 48.7, 2.5, 48.9)]));
         assert!(both.contains(&"Forest leaf type, Europe") && !both.contains(&canvec));
         // Nothing served: the world's only.
-        assert!(whats(catalog_credits(&[], &[])).iter().all(|w| CREDITS.iter().any(|c| c.what == *w && c.areas.is_empty())));
+        assert!(whats(catalog_credits(&[], &[]))
+            .iter()
+            .all(|w| CREDITS.iter().any(|c| c.what == *w && c.areas.is_empty())));
     }
 
     #[test]
     fn credit_areas_are_boxes() {
         for c in CREDITS {
             for a in c.areas {
-                assert!(a[0] < a[2] && a[1] < a[3] && a[0] >= -180.0 && a[2] <= 180.0 && a[1] >= -90.0 && a[3] <= 90.0, "{}: {a:?}", c.what);
+                assert!(
+                    a[0] < a[2] && a[1] < a[3] && a[0] >= -180.0 && a[2] <= 180.0 && a[1] >= -90.0 && a[3] <= 90.0,
+                    "{}: {a:?}",
+                    c.what
+                );
             }
         }
     }
@@ -301,7 +316,10 @@ mod tests {
     #[test]
     fn licence_notices_kept() {
         let has = |what: &str, terms: &str| CREDITS.iter().any(|c| c.what == what && c.terms.contains(terms));
-        assert!(has("Roads, water, boundaries, places, parks, points of interest, Indigenous land boundaries", "© OpenStreetMap contributors, ODbL"));
+        assert!(has(
+            "Roads, water, boundaries, places, parks, points of interest, Indigenous land boundaries",
+            "© OpenStreetMap contributors, ODbL"
+        ));
         assert!(has("3D buildings", "ODbL 1.0") && has("Building heights where none are known", "CC BY 4.0"));
         // (The 3D buildings' credit names the release they're built from: the staged declaration's,
         // whose own credit replaces it once accepted.)

@@ -11,13 +11,13 @@
 //! A catalog records the coverage it was built for, simplified for drawing ([`DrawnRegion`]), so
 //! the map draws it from the catalog rather than from the recipes.
 
-use det::Det;
+#[cfg(test)]
+use crate::agent::recipes::Recipe;
 use crate::outlines::inside;
 #[cfg(test)]
 use crate::outlines::Outlines;
-#[cfg(test)]
-use crate::agent::recipes::Recipe;
 use anyhow::{bail, Context, Result};
+use det::Det;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -62,7 +62,13 @@ struct Memo {
 
 impl Default for Memo {
     fn default() -> Memo {
-        Memo { fingerprints: Default::default(), ways: Default::default(), budget: &MEMOS, gen: MEMOS.gen.load(std::sync::atomic::Ordering::SeqCst), bytes: 0 }
+        Memo {
+            fingerprints: Default::default(),
+            ways: Default::default(),
+            budget: &MEMOS,
+            gen: MEMOS.gen.load(std::sync::atomic::Ordering::SeqCst),
+            bytes: 0,
+        }
     }
 }
 
@@ -81,7 +87,8 @@ struct Budget {
     gen: std::sync::atomic::AtomicU64,
 }
 
-static MEMOS: Budget = Budget { cap: MEMO_CAP, bytes: std::sync::atomic::AtomicUsize::new(0), gen: std::sync::atomic::AtomicU64::new(0) };
+static MEMOS: Budget =
+    Budget { cap: MEMO_CAP, bytes: std::sync::atomic::AtomicUsize::new(0), gen: std::sync::atomic::AtomicU64::new(0) };
 
 /// The bytes the shapes' memos hold now (of the current generation), about.
 pub fn memo_bytes() -> usize {
@@ -95,12 +102,14 @@ impl Memo {
         use std::sync::atomic::Ordering::SeqCst;
         let b = self.budget;
         if !self.current() {
-            (self.fingerprints, self.ways, self.bytes, self.gen) = (Default::default(), Default::default(), 0, b.gen.load(SeqCst));
+            (self.fingerprints, self.ways, self.bytes, self.gen) =
+                (Default::default(), Default::default(), 0, b.gen.load(SeqCst));
         }
         if b.bytes.fetch_add(bytes, SeqCst) + bytes > b.cap {
             b.gen.fetch_add(1, SeqCst);
             b.bytes.store(0, SeqCst);
-            (self.fingerprints, self.ways, self.bytes, self.gen) = (Default::default(), Default::default(), 0, b.gen.load(SeqCst));
+            (self.fingerprints, self.ways, self.bytes, self.gen) =
+                (Default::default(), Default::default(), 0, b.gen.load(SeqCst));
             b.bytes.fetch_add(bytes, SeqCst);
         }
         self.bytes += bytes;
@@ -149,7 +158,8 @@ impl Shape {
         let lat = (bb[1].unsigned_abs().max(bb[3].unsigned_abs()) as f64 * 1e-7).min(85.0);
         let bx = (buffer_m / (M_PER_E7 * lat.to_radians().dcos())).ceil() as i32;
         let by = (buffer_m / M_PER_E7).ceil() as i32;
-        let bbox = [bb[0].saturating_sub(bx), bb[1].saturating_sub(by), bb[2].saturating_add(bx), bb[3].saturating_add(by)];
+        let bbox =
+            [bb[0].saturating_sub(bx), bb[1].saturating_sub(by), bb[2].saturating_add(bx), bb[3].saturating_add(by)];
         let grid = Grid::build(&rings, bbox, bx.max(by) as f64);
         Shape { source, rings, buffer_m, bbox, country: String::new(), grid, memo: Default::default() }
     }
@@ -191,7 +201,12 @@ impl Shape {
     /// Whether any of a way's points (`points`, lying in the box `b`, w, s, e, n E7) is in the shape
     /// (`contains`), the points known by their digest `key` (the same points, the same digest): kept
     /// (`Memo`).
-    pub fn touches_way<I: Iterator<Item = [i32; 2]>>(&self, key: &[u8; 32], b: [i32; 4], points: impl FnOnce() -> I) -> bool {
+    pub fn touches_way<I: Iterator<Item = [i32; 2]>>(
+        &self,
+        key: &[u8; 32],
+        b: [i32; 4],
+        points: impl FnOnce() -> I,
+    ) -> bool {
         if b[0] > self.bbox[2] || b[2] < self.bbox[0] || b[1] > self.bbox[3] || b[3] < self.bbox[1] {
             return false;
         }
@@ -210,7 +225,12 @@ impl Shape {
 
     /// Whether `p` (E7) is within the buffer of the boundary.
     fn near_edge(&self, p: [i32; 2]) -> bool {
-        if self.buffer_m <= 0.0 || p[0] < self.bbox[0] || p[0] > self.bbox[2] || p[1] < self.bbox[1] || p[1] > self.bbox[3] {
+        if self.buffer_m <= 0.0
+            || p[0] < self.bbox[0]
+            || p[0] > self.bbox[2]
+            || p[1] < self.bbox[1]
+            || p[1] > self.bbox[3]
+        {
             return false;
         }
         let (g, c) = (&self.grid, self.cell(p));
@@ -253,13 +273,21 @@ impl Shape {
         if r[0] < self.bbox[0] || r[2] > self.bbox[2] || r[1] < self.bbox[1] || r[3] > self.bbox[3] {
             return false;
         }
-        !self.edges_meeting(self.grown(r), &mut |_, _, _| true) && self.inside([((r[0] as i64 + r[2] as i64) / 2) as i32, ((r[1] as i64 + r[3] as i64) / 2) as i32])
+        !self.edges_meeting(self.grown(r), &mut |_, _, _| true)
+            && self.inside([((r[0] as i64 + r[2] as i64) / 2) as i32, ((r[1] as i64 + r[3] as i64) / 2) as i32])
     }
 
     /// The box w, s, e, n (E7) grown by the buffer, at its latitude furthest from the equator.
     fn grown(&self, r: [i32; 4]) -> [i64; 4] {
         let lat = (r[1].unsigned_abs().max(r[3].unsigned_abs()) as f64 * 1e-7).min(85.0);
-        let (bx, by) = if self.buffer_m > 0.0 { ((self.buffer_m / (M_PER_E7 * lat.to_radians().dcos())).ceil() as i64, (self.buffer_m / M_PER_E7).ceil() as i64) } else { (0, 0) };
+        let (bx, by) = if self.buffer_m > 0.0 {
+            (
+                (self.buffer_m / (M_PER_E7 * lat.to_radians().dcos())).ceil() as i64,
+                (self.buffer_m / M_PER_E7).ceil() as i64,
+            )
+        } else {
+            (0, 0)
+        };
         [r[0] as i64 - bx, r[1] as i64 - by, r[2] as i64 + bx, r[3] as i64 + by]
     }
 
@@ -276,7 +304,8 @@ impl Shape {
                 for &(ri, i) in &g.edges[cy * g.nx + cx] {
                     let ring = &self.rings[ri as usize];
                     let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
-                    if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) && f((ri, i), a, b) {
+                    if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) && f((ri, i), a, b)
+                    {
                         return true;
                     }
                 }
@@ -308,7 +337,11 @@ impl Shape {
     /// `fingerprint`, worked out.
     fn fingerprint_made(&self, r: [i32; 4]) -> Option<String> {
         let rg = self.grown(r);
-        if rg[0] > self.bbox[2] as i64 || rg[2] < self.bbox[0] as i64 || rg[1] > self.bbox[3] as i64 || rg[3] < self.bbox[1] as i64 {
+        if rg[0] > self.bbox[2] as i64
+            || rg[2] < self.bbox[0] as i64
+            || rg[1] > self.bbox[3] as i64
+            || rg[3] < self.bbox[1] as i64
+        {
             return None;
         }
         // Each edge once per place in the rings (a cell grid lists an edge in every cell it crosses);
@@ -316,7 +349,10 @@ impl Shape {
         let mut by_place: std::collections::BTreeMap<(u32, u32), [i32; 4]> = std::collections::BTreeMap::new();
         self.edges_meeting(rg, &mut |at, a, b| {
             // (Direction doesn't matter to which points are inside.)
-            by_place.insert(at, if (a[0], a[1]) <= (b[0], b[1]) { [a[0], a[1], b[0], b[1]] } else { [b[0], b[1], a[0], a[1]] });
+            by_place.insert(
+                at,
+                if (a[0], a[1]) <= (b[0], b[1]) { [a[0], a[1], b[0], b[1]] } else { [b[0], b[1], a[0], a[1]] },
+            );
             false
         });
         let mut edges: Vec<[i32; 4]> = by_place.into_values().collect();
@@ -326,7 +362,11 @@ impl Shape {
         let on_edge = |p: [i32; 2]| {
             edges.iter().any(|e| {
                 let (a, b, p) = ([e[0] as i64, e[1] as i64], [e[2] as i64, e[3] as i64], [p[0] as i64, p[1] as i64]);
-                (b[0] - a[0]) as i128 * (p[1] - a[1]) as i128 == (b[1] - a[1]) as i128 * (p[0] - a[0]) as i128 && p[0] >= a[0].min(b[0]) && p[0] <= a[0].max(b[0]) && p[1] >= a[1].min(b[1]) && p[1] <= a[1].max(b[1])
+                (b[0] - a[0]) as i128 * (p[1] - a[1]) as i128 == (b[1] - a[1]) as i128 * (p[0] - a[0]) as i128
+                    && p[0] >= a[0].min(b[0])
+                    && p[0] <= a[0].max(b[0])
+                    && p[1] >= a[1].min(b[1])
+                    && p[1] <= a[1].max(b[1])
             })
         };
         let mut reference = [r[0], r[1]];
@@ -352,7 +392,9 @@ fn segment_meets_box(a: [i64; 2], b: [i64; 2], r: [i64; 4]) -> bool {
     }
     // Both ends outside, boxes overlapping: it meets the box when the box's corners aren't all on
     // one side of its line.
-    let side = |p: [i64; 2]| ((b[0] - a[0]) as i128 * (p[1] - a[1]) as i128 - (b[1] - a[1]) as i128 * (p[0] - a[0]) as i128).signum();
+    let side = |p: [i64; 2]| {
+        ((b[0] - a[0]) as i128 * (p[1] - a[1]) as i128 - (b[1] - a[1]) as i128 * (p[0] - a[0]) as i128).signum()
+    };
     let s: Vec<i128> = [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]].iter().map(|&p| side(p)).collect();
     !(s.iter().all(|&v| v > 0) || s.iter().all(|&v| v < 0))
 }
@@ -375,7 +417,9 @@ fn dist2_m(p: [i32; 2], a: [i32; 2], b: [i32; 2], kx: f64) -> f64 {
 /// counted once, and one touching it not at all. (A point exactly on an edge is on the boundary,
 /// where either answer is right.)
 fn segments_cross(p1: [i64; 2], p2: [i64; 2], q1: [i64; 2], q2: [i64; 2]) -> bool {
-    let o = |a: [i64; 2], b: [i64; 2], c: [i64; 2]| ((b[0] - a[0]) as i128 * (c[1] - a[1]) as i128 - (b[1] - a[1]) as i128 * (c[0] - a[0]) as i128).signum();
+    let o = |a: [i64; 2], b: [i64; 2], c: [i64; 2]| {
+        ((b[0] - a[0]) as i128 * (c[1] - a[1]) as i128 - (b[1] - a[1]) as i128 * (c[0] - a[0]) as i128).signum()
+    };
     let side = |q: [i64; 2]| if o(p1, p2, q) < 0 { -1 } else { 1 };
     if side(q1) == side(q2) {
         return false;
@@ -464,7 +508,11 @@ pub fn read_poly(text: &str) -> Result<Vec<Vec<[i32; 2]>>> {
             if l == "END" {
                 break;
             }
-            let v: Vec<f64> = l.split_whitespace().map(|x| x.parse()).collect::<Result<_, _>>().with_context(|| format!("bad .poly line {l:?}"))?;
+            let v: Vec<f64> = l
+                .split_whitespace()
+                .map(|x| x.parse())
+                .collect::<Result<_, _>>()
+                .with_context(|| format!("bad .poly line {l:?}"))?;
             if v.len() < 2 {
                 bail!("bad .poly line {l:?}");
             }
@@ -485,7 +533,10 @@ pub fn fixture_circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
     (0..64)
         .map(|i| {
             let t = i as f64 / 64.0 * std::f64::consts::TAU;
-            [((lon + dx * t.dcos()) * 1e7).round() as i32, ((lat + dy * t.dsin()).clamp(-89.9, 89.9) * 1e7).round() as i32]
+            [
+                ((lon + dx * t.dcos()) * 1e7).round() as i32,
+                ((lat + dy * t.dsin()).clamp(-89.9, 89.9) * 1e7).round() as i32,
+            ]
         })
         .collect()
 }
@@ -580,7 +631,11 @@ impl Coverage {
         for r in recipes {
             for entry in &r.outline {
                 let rings = if let Some(v) = entry.strip_prefix("place:") {
-                    let n: Vec<f64> = v.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<_, _>>().with_context(|| entry.clone())?;
+                    let n: Vec<f64> = v
+                        .split(',')
+                        .map(|x| x.trim().parse::<f64>())
+                        .collect::<Result<_, _>>()
+                        .with_context(|| entry.clone())?;
                     vec![fixture_circle(n[0], n[1], n[2])]
                 } else if let Some(f) = entry.strip_prefix("poly:") {
                     read_poly(&std::fs::read_to_string(dir.join(f)).with_context(|| f.to_string())?)?
@@ -648,7 +703,8 @@ impl Coverage {
     /// the order) and its country, where `fingerprint` (sorted, by geometry alone) misses a change
     /// of order. The 3D buildings' tiles are keyed by it (docs/buildings3d.md §3.2).
     pub fn shapes_key(&self, b: [i32; 4]) -> String {
-        let v: Vec<String> = self.shapes.iter().filter_map(|s| s.fingerprint(b).map(|f| format!("{f}:{}", s.country))).collect();
+        let v: Vec<String> =
+            self.shapes.iter().filter_map(|s| s.fingerprint(b).map(|f| format!("{f}:{}", s.country))).collect();
         v.join(",")
     }
 
@@ -827,7 +883,10 @@ mod tests {
     fn a_drawn_region_meets_boxes_and_reads_back() {
         let ring = |pts: &[[f64; 2]]| pts.to_vec();
         let mut shapes = BTreeMap::new();
-        shapes.insert("shape:box.geojson".to_string(), vec![vec![ring(&[[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0], [10.0, 10.0]])]]);
+        shapes.insert(
+            "shape:box.geojson".to_string(),
+            vec![vec![ring(&[[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0], [10.0, 10.0]])]],
+        );
         let r = DrawnRegion { id: "a".into(), name: "A".into(), outline: vec!["shape:box.geojson".into()], shapes };
         let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
         assert!(r.meets_rect(b(10.9, 10.4, 11.2, 10.6)));
@@ -844,7 +903,11 @@ mod tests {
     fn each_regions_coverage_is_its_own_shapes() {
         let d = tempfile::tempdir().unwrap();
         let rs = vec![
-            Recipe { id: "a".into(), name: "A".into(), outline: vec!["place:20,20,10".into(), "place:21,20,10".into()] },
+            Recipe {
+                id: "a".into(),
+                name: "A".into(),
+                outline: vec!["place:20,20,10".into(), "place:21,20,10".into()],
+            },
             Recipe { id: "b".into(), name: "B".into(), outline: vec!["place:40,40,10".into()] },
         ];
         let all = Coverage::fixture(&rs, None, d.path()).unwrap();
@@ -867,7 +930,8 @@ mod tests {
         let ring = || vec![vec![e7(0.0, 50.0), e7(1.0, 50.0), e7(1.0, 51.0), e7(0.0, 51.0)]];
         let kept = Shape::new("r: poly:x".into(), ring(), 1000.0);
         let clone = kept.clone();
-        let boxes = [b(0.2, 49.9, 0.4, 50.1), b(0.4, 50.4, 0.6, 50.6), b(2.0, 50.4, 2.2, 50.6), b(0.9, 50.9, 1.1, 51.1)];
+        let boxes =
+            [b(0.2, 49.9, 0.4, 50.1), b(0.4, 50.4, 0.6, 50.6), b(2.0, 50.4, 2.2, 50.6), b(0.9, 50.9, 1.1, 51.1)];
         for bx in boxes {
             let fresh = Shape::new("r: poly:x".into(), ring(), 1000.0).fingerprint_made(bx);
             assert_eq!(kept.fingerprint(bx), fresh);
@@ -879,7 +943,9 @@ mod tests {
         let (inside, outside) = ([7u8; 32], [8u8; 32]);
         let never = || -> std::vec::IntoIter<[i32; 2]> { panic!("not asked: kept, or its box misses the shape's") };
         assert!(kept.touches_way(&inside, b(0.5, 50.5, 0.6, 50.6), || vec![e7(0.5, 50.5), e7(0.6, 50.6)].into_iter()));
-        assert!(!kept.touches_way(&outside, b(-0.5, 49.5, 0.5, 50.5), || vec![e7(-0.5, 50.5), e7(0.5, 49.5)].into_iter()));
+        assert!(
+            !kept.touches_way(&outside, b(-0.5, 49.5, 0.5, 50.5), || vec![e7(-0.5, 50.5), e7(0.5, 49.5)].into_iter())
+        );
         assert!(!kept.touches_way(&outside, b(3.0, 50.5, 3.1, 50.6), never));
         assert!(clone.touches_way(&inside, b(0.5, 50.5, 0.6, 50.6), never));
         assert_eq!(kept.memo.lock().unwrap().ways.len(), 2);
@@ -889,7 +955,8 @@ mod tests {
     fn the_memos_together_stay_under_their_cap() {
         // (Every shape's memo counts toward one budget: past its cap, all start again. A budget of
         // this test's own, so no other test's memos are emptied.)
-        let budget: &'static Budget = Box::leak(Box::new(Budget { cap: 1000, bytes: Default::default(), gen: Default::default() }));
+        let budget: &'static Budget =
+            Box::leak(Box::new(Budget { cap: 1000, bytes: Default::default(), gen: Default::default() }));
         let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
         let ring = |x: f64| vec![vec![e7(x, 50.0), e7(x + 1.0, 50.0), e7(x + 1.0, 51.0), e7(x, 51.0)]];
         let shape = |x: f64| {
@@ -920,7 +987,9 @@ mod tests {
     fn fingerprints_see_only_their_box() {
         let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
         let quad = |south: f64, north: f64| vec![vec![e7(0.0, south), e7(1.0, south), e7(1.0, north), e7(0.0, north)]];
-        let fp = |rings: Vec<Vec<[i32; 2]>>, bx: [i32; 4]| Coverage { shapes: vec![Shape::new("r: poly:x".into(), rings, 0.0)] }.fingerprint(bx);
+        let fp = |rings: Vec<Vec<[i32; 2]>>, bx: [i32; 4]| {
+            Coverage { shapes: vec![Shape::new("r: poly:x".into(), rings, 0.0)] }.fingerprint(bx)
+        };
         // A box across the south edge.
         let across = b(0.2, 49.9, 0.4, 50.1);
         let f0 = fp(quad(50.0, 51.0), across);
@@ -933,11 +1002,17 @@ mod tests {
         assert_eq!(fp(quad(50.0, 51.0), inner), fp(quad(49.0, 52.0), inner));
         assert_eq!(fp(quad(50.0, 51.0), b(2.0, 50.4, 2.2, 50.6)), "");
         // Same geometry from another region or entry: the same fingerprint.
-        let two = Coverage { shapes: vec![Shape::new("a: poly:x".into(), quad(50.0, 51.0), 0.0), Shape::new("b: osm:1".into(), quad(50.0, 51.0), 0.0)] };
+        let two = Coverage {
+            shapes: vec![
+                Shape::new("a: poly:x".into(), quad(50.0, 51.0), 0.0),
+                Shape::new("b: osm:1".into(), quad(50.0, 51.0), 0.0),
+            ],
+        };
         assert_eq!(two.fingerprint(across), f0);
         // The buffer: an edge 0.5 km outside the box is within a 1 km buffer of it.
         let near = b(0.2, 49.9, 0.4, 49.995);
-        let buffered = |south: f64| Coverage { shapes: vec![Shape::new("o".into(), quad(south, 51.0), 1000.0)] }.fingerprint(near);
+        let buffered =
+            |south: f64| Coverage { shapes: vec![Shape::new("o".into(), quad(south, 51.0), 1000.0)] }.fingerprint(near);
         assert_ne!(buffered(50.0), buffered(50.001), "the edge moved within the buffer's reach");
     }
 
@@ -973,7 +1048,8 @@ mod tests {
     fn boxes_meet_exactly() {
         let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
         // Singapore-sized (0.4° × 0.2°), between the points an 8×8 sample of a z6 tile would test.
-        let small = Shape::new("s".into(), vec![vec![e7(103.6, 1.2), e7(104.0, 1.2), e7(104.0, 1.4), e7(103.6, 1.4)]], 0.0);
+        let small =
+            Shape::new("s".into(), vec![vec![e7(103.6, 1.2), e7(104.0, 1.2), e7(104.0, 1.4), e7(103.6, 1.4)]], 0.0);
         assert!(small.meets_rect(b(101.25, 0.0, 106.875, 5.6)));
         assert!(!small.meets_rect(b(104.1, 1.0, 105.0, 2.0)));
         // A box wholly inside a big shape, no edge near it; one wholly in its hole.
@@ -986,18 +1062,21 @@ mod tests {
             for j in 0..40 {
                 let (x, y) = (-3.2 + i as f64 * 0.04, 54.3 + j as f64 * 0.035);
                 let r = b(x, y, x + 0.03, y + 0.02);
-                let any = (0..=6).any(|a| (0..=4).any(|c| big.contains(e7(x + a as f64 * 0.005, y + c as f64 * 0.005))));
+                let any =
+                    (0..=6).any(|a| (0..=4).any(|c| big.contains(e7(x + a as f64 * 0.005, y + c as f64 * 0.005))));
                 if any {
                     assert!(big.meets_rect(r), "box at {x},{y}");
                 }
             }
         }
         // A thin strip crossing a box with no vertex in it and no corner inside.
-        let strip = Shape::new("t".into(), vec![vec![e7(0.0, 10.0), e7(2.0, 10.0), e7(2.0, 10.001), e7(0.0, 10.001)]], 0.0);
+        let strip =
+            Shape::new("t".into(), vec![vec![e7(0.0, 10.0), e7(2.0, 10.0), e7(2.0, 10.001), e7(0.0, 10.001)]], 0.0);
         assert!(strip.meets_rect(b(0.9, 9.9, 1.1, 10.1)));
         assert!(!strip.meets_rect(b(0.9, 10.01, 1.1, 10.1)));
         // The buffer: 1 km around an osm: outline.
-        let buffered = Shape::new("o".into(), vec![vec![e7(0.0, 50.0), e7(1.0, 50.0), e7(1.0, 51.0), e7(0.0, 51.0)]], 1000.0);
+        let buffered =
+            Shape::new("o".into(), vec![vec![e7(0.0, 50.0), e7(1.0, 50.0), e7(1.0, 51.0), e7(0.0, 51.0)]], 1000.0);
         assert!(buffered.meets_rect(b(1.008, 50.5, 1.02, 50.6)));
         assert!(!buffered.meets_rect(b(1.03, 50.5, 1.04, 50.6)));
     }
@@ -1007,7 +1086,9 @@ mod tests {
         let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
         let square = |x: f64| vec![vec![e7(x, 50.0), e7(x + 1.0, 50.0), e7(x + 1.0, 51.0), e7(x, 51.0)]];
         // Two shapes side by side, the second overlapping the first's east edge.
-        let c = Coverage { shapes: vec![Shape::new("a".into(), square(0.0), 1000.0), Shape::new("b".into(), square(0.9), 0.0)] };
+        let c = Coverage {
+            shapes: vec![Shape::new("a".into(), square(0.0), 1000.0), Shape::new("b".into(), square(0.9), 0.0)],
+        };
         assert_eq!(c.shape_at(e7(0.5, 50.5)), Some(0));
         assert_eq!(c.shape_at(e7(0.95, 50.5)), Some(0), "in both: the first");
         assert_eq!(c.shape_at(e7(1.5, 50.5)), Some(1));

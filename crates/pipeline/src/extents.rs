@@ -27,7 +27,8 @@ pub fn load(root: &Path) -> Extents {
 /// whose header can't be read, or has no extent, is said and left out (looked at again next time),
 /// the rest kept: one left out is taken to lie within its reach (`unit_reach`).
 pub fn fill(root: &Path, m: &BTreeMap<String, String>, mut known: Extents) -> Result<(Extents, usize)> {
-    let contents: std::collections::BTreeSet<&String> = m.iter().filter(|(l, _)| l.starts_with("base/")).map(|(_, c)| c).collect();
+    let contents: std::collections::BTreeSet<&String> =
+        m.iter().filter(|(l, _)| l.starts_with("base/")).map(|(_, c)| c).collect();
     let mut read = 0;
     for c in &contents {
         if known.contains_key(*c) {

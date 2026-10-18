@@ -37,34 +37,84 @@ pub trait Det: Sized + Copy {
 macro_rules! det {
     ($t:ty, $sin:ident, $cos:ident, $tan:ident, $asin:ident, $acos:ident, $atan:ident, $atan2:ident, $sinh:ident, $cosh:ident, $tanh:ident, $asinh:ident, $atanh:ident, $exp:ident, $exp2:ident, $expm1:ident, $log:ident, $log1p:ident, $log2:ident, $log10:ident, $pow:ident, $hypot:ident, $cbrt:ident) => {
         impl Det for $t {
-            fn dsin(self) -> $t { libm::$sin(self) }
-            fn dcos(self) -> $t { libm::$cos(self) }
-            fn dtan(self) -> $t { libm::$tan(self) }
-            fn dasin(self) -> $t { libm::$asin(self) }
-            fn dacos(self) -> $t { libm::$acos(self) }
-            fn datan(self) -> $t { libm::$atan(self) }
-            fn datan2(self, x: $t) -> $t { libm::$atan2(self, x) }
-            fn dsinh(self) -> $t { libm::$sinh(self) }
-            fn dcosh(self) -> $t { libm::$cosh(self) }
-            fn dtanh(self) -> $t { libm::$tanh(self) }
-            fn dasinh(self) -> $t { libm::$asinh(self) }
-            fn datanh(self) -> $t { libm::$atanh(self) }
-            fn dexp(self) -> $t { libm::$exp(self) }
-            fn dexp2(self) -> $t { libm::$exp2(self) }
-            fn dexp_m1(self) -> $t { libm::$expm1(self) }
-            fn dln(self) -> $t { libm::$log(self) }
-            fn dln_1p(self) -> $t { libm::$log1p(self) }
-            fn dlog2(self) -> $t { libm::$log2(self) }
-            fn dlog10(self) -> $t { libm::$log10(self) }
-            fn dpowf(self, y: $t) -> $t { libm::$pow(self, y) }
-            fn dhypot(self, y: $t) -> $t { libm::$hypot(self, y) }
-            fn dcbrt(self) -> $t { libm::$cbrt(self) }
+            fn dsin(self) -> $t {
+                libm::$sin(self)
+            }
+            fn dcos(self) -> $t {
+                libm::$cos(self)
+            }
+            fn dtan(self) -> $t {
+                libm::$tan(self)
+            }
+            fn dasin(self) -> $t {
+                libm::$asin(self)
+            }
+            fn dacos(self) -> $t {
+                libm::$acos(self)
+            }
+            fn datan(self) -> $t {
+                libm::$atan(self)
+            }
+            fn datan2(self, x: $t) -> $t {
+                libm::$atan2(self, x)
+            }
+            fn dsinh(self) -> $t {
+                libm::$sinh(self)
+            }
+            fn dcosh(self) -> $t {
+                libm::$cosh(self)
+            }
+            fn dtanh(self) -> $t {
+                libm::$tanh(self)
+            }
+            fn dasinh(self) -> $t {
+                libm::$asinh(self)
+            }
+            fn datanh(self) -> $t {
+                libm::$atanh(self)
+            }
+            fn dexp(self) -> $t {
+                libm::$exp(self)
+            }
+            fn dexp2(self) -> $t {
+                libm::$exp2(self)
+            }
+            fn dexp_m1(self) -> $t {
+                libm::$expm1(self)
+            }
+            fn dln(self) -> $t {
+                libm::$log(self)
+            }
+            fn dln_1p(self) -> $t {
+                libm::$log1p(self)
+            }
+            fn dlog2(self) -> $t {
+                libm::$log2(self)
+            }
+            fn dlog10(self) -> $t {
+                libm::$log10(self)
+            }
+            fn dpowf(self, y: $t) -> $t {
+                libm::$pow(self, y)
+            }
+            fn dhypot(self, y: $t) -> $t {
+                libm::$hypot(self, y)
+            }
+            fn dcbrt(self) -> $t {
+                libm::$cbrt(self)
+            }
         }
     };
 }
 
-det!(f64, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, asinh, atanh, exp, exp2, expm1, log, log1p, log2, log10, pow, hypot, cbrt);
-det!(f32, sinf, cosf, tanf, asinf, acosf, atanf, atan2f, sinhf, coshf, tanhf, asinhf, atanhf, expf, exp2f, expm1f, logf, log1pf, log2f, log10f, powf, hypotf, cbrtf);
+det!(
+    f64, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, asinh, atanh, exp, exp2, expm1, log, log1p, log2,
+    log10, pow, hypot, cbrt
+);
+det!(
+    f32, sinf, cosf, tanf, asinf, acosf, atanf, atan2f, sinhf, coshf, tanhf, asinhf, atanhf, expf, exp2f, expm1f, logf,
+    log1pf, log2f, log10f, powf, hypotf, cbrtf
+);
 
 #[cfg(test)]
 mod tests {
@@ -75,7 +125,15 @@ mod tests {
         // Within a few ulp of the platform's own (which this replaces for its last bits).
         for x in [0.1f64, 0.7, 1.3, 2.9, 45.0f64.to_radians(), 1e-8, 123.456] {
             let t = x / (1.0 + x);
-            for (a, b) in [(x.dsin(), x.sin()), (x.dcos(), x.cos()), (x.dln(), x.ln()), (x.datan(), x.atan()), (x.dsinh(), x.sinh()), (x.dexp(), x.exp()), (t.datanh(), t.atanh())] {
+            for (a, b) in [
+                (x.dsin(), x.sin()),
+                (x.dcos(), x.cos()),
+                (x.dln(), x.ln()),
+                (x.datan(), x.atan()),
+                (x.dsinh(), x.sinh()),
+                (x.dexp(), x.exp()),
+                (t.datanh(), t.atanh()),
+            ] {
                 assert!((a - b).abs() <= 4.0 * f64::EPSILON * b.abs().max(1.0), "{x}: {a} vs {b}");
             }
         }

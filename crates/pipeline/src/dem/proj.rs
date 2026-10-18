@@ -61,7 +61,11 @@ impl Ellipsoid {
         let y_phi = (self.e2s * bda * s * s).mul_add(s, z);
         let x_phi = (-(self.es * cc * cc)).mul_add(cc, p);
         let phi = if x_phi <= 0.0 {
-            if c[2] >= 0.0 { FRAC_PI_2 } else { -FRAC_PI_2 }
+            if c[2] >= 0.0 {
+                FRAC_PI_2
+            } else {
+                -FRAC_PI_2
+            }
         } else {
             (y_phi / x_phi).datan()
         };
@@ -141,7 +145,11 @@ impl Atlas {
         let [f, t, p] = self.r;
         // The rotation matrix transposed: R00 = R11 = R22 = 1, R01 = p, R02 = -t, R10 = -p,
         // R12 = f, R20 = t, R21 = -f.
-        let local = [t.mul_add(z, 1.0f64.mul_add(x, -p * y)), (-f).mul_add(z, p.mul_add(x, 1.0 * y)), 1.0f64.mul_add(z, (-t).mul_add(x, f * y))];
+        let local = [
+            t.mul_add(z, 1.0f64.mul_add(x, -p * y)),
+            (-f).mul_add(z, p.mul_add(x, 1.0 * y)),
+            1.0f64.mul_add(z, (-t).mul_add(x, f * y)),
+        ];
         let (lam, phi) = self.grs.geodetic(local);
         // Lambert conformal conic.
         let lam = adjlon(adjlon(lam) - self.lam0);

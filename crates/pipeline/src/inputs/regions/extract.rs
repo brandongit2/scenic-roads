@@ -68,7 +68,8 @@ impl std::fmt::Display for Id {
 impl std::str::FromStr for Id {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Id> {
-        let n = |t: &str| t.parse::<u64>().ok().filter(|v| *v > 0).with_context(|| format!("{s:?}: r<relation> or w<way>"));
+        let n =
+            |t: &str| t.parse::<u64>().ok().filter(|v| *v > 0).with_context(|| format!("{s:?}: r<relation> or w<way>"));
         match s.split_at_checked(1) {
             Some(("r", t)) => Ok(Id::R(n(t)?)),
             Some(("w", t)) => Ok(Id::W(n(t)?)),
@@ -94,7 +95,11 @@ impl Extract {
 
     /// Every id it has.
     pub fn ids(&self) -> BTreeSet<Id> {
-        self.relations.keys().filter_map(|k| k.parse().ok().map(Id::R)).chain(self.ways.keys().filter_map(|k| k.parse().ok().map(Id::W))).collect()
+        self.relations
+            .keys()
+            .filter_map(|k| k.parse().ok().map(Id::R))
+            .chain(self.ways.keys().filter_map(|k| k.parse().ok().map(Id::W)))
+            .collect()
     }
 
     pub fn relation(&self, id: u64) -> Option<&Option<Relation>> {
@@ -116,8 +121,10 @@ pub fn key(date: &str, ids: &BTreeSet<Id>) -> String {
 
 /// The extract of `ids` from the OSM file `pbf` of pass `date`: three scans.
 pub fn make(pbf: &Path, date: &str, ids: &BTreeSet<Id>) -> Result<Extract> {
-    let want_r: HashSet<i64> = ids.iter().filter_map(|i| if let Id::R(r) = i { Some(*r as i64) } else { None }).collect();
-    let want_w: HashSet<i64> = ids.iter().filter_map(|i| if let Id::W(w) = i { Some(*w as i64) } else { None }).collect();
+    let want_r: HashSet<i64> =
+        ids.iter().filter_map(|i| if let Id::R(r) = i { Some(*r as i64) } else { None }).collect();
+    let want_w: HashSet<i64> =
+        ids.iter().filter_map(|i| if let Id::W(w) = i { Some(*w as i64) } else { None }).collect();
     let open = || ElementReader::from_path(pbf).with_context(|| format!("open {}", pbf.display()));
     // Scan 1: the relations, their tags and member ways (role, id) in order.
     type Rel = (i64, BTreeMap<String, String>, Vec<(String, i64)>);
@@ -125,7 +132,11 @@ pub fn make(pbf: &Path, date: &str, ids: &BTreeSet<Id>) -> Result<Extract> {
         |el| match el {
             Element::Relation(r) if want_r.contains(&r.id()) => {
                 let tags = r.tags().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-                let ms = r.members().filter(|m| m.member_type == osmpbf::RelMemberType::Way).map(|m| (m.role().unwrap_or("").to_string(), m.member_id)).collect();
+                let ms = r
+                    .members()
+                    .filter(|m| m.member_type == osmpbf::RelMemberType::Way)
+                    .map(|m| (m.role().unwrap_or("").to_string(), m.member_id))
+                    .collect();
                 vec![(r.id(), tags, ms)]
             }
             _ => Vec::new(),
@@ -136,42 +147,62 @@ pub fn make(pbf: &Path, date: &str, ids: &BTreeSet<Id>) -> Result<Extract> {
             a
         },
     )?;
-    let member_ways: HashSet<i64> = rels.iter().flat_map(|r| r.2.iter().map(|m| m.1)).chain(want_w.iter().copied()).collect();
+    let member_ways: HashSet<i64> =
+        rels.iter().flat_map(|r| r.2.iter().map(|m| m.1)).chain(want_w.iter().copied()).collect();
     // Scan 2: those ways' nodes.
-    let ways: HashMap<i64, Vec<i64>> = open()?.par_map_reduce(
-        |el| match el {
-            Element::Way(w) if member_ways.contains(&w.id()) => vec![(w.id(), w.refs().collect::<Vec<i64>>())],
-            _ => Vec::new(),
-        },
-        Vec::new,
-        |mut a, mut b| {
-            a.append(&mut b);
-            a
-        },
-    )?.into_iter().collect();
+    let ways: HashMap<i64, Vec<i64>> = open()?
+        .par_map_reduce(
+            |el| match el {
+                Element::Way(w) if member_ways.contains(&w.id()) => vec![(w.id(), w.refs().collect::<Vec<i64>>())],
+                _ => Vec::new(),
+            },
+            Vec::new,
+            |mut a, mut b| {
+                a.append(&mut b);
+                a
+            },
+        )?
+        .into_iter()
+        .collect();
     let node_ids: HashSet<i64> = ways.values().flatten().copied().collect();
     // Scan 3: the nodes' points.
-    let nodes: HashMap<i64, [i32; 2]> = open()?.par_map_reduce(
-        |el| match el {
-            Element::Node(n) if node_ids.contains(&n.id()) => vec![(n.id(), [n.decimicro_lon(), n.decimicro_lat()])],
-            Element::DenseNode(n) if node_ids.contains(&n.id()) => vec![(n.id(), [n.decimicro_lon(), n.decimicro_lat()])],
-            _ => Vec::new(),
-        },
-        Vec::new,
-        |mut a, mut b| {
-            a.append(&mut b);
-            a
-        },
-    )?.into_iter().collect();
+    let nodes: HashMap<i64, [i32; 2]> = open()?
+        .par_map_reduce(
+            |el| match el {
+                Element::Node(n) if node_ids.contains(&n.id()) => {
+                    vec![(n.id(), [n.decimicro_lon(), n.decimicro_lat()])]
+                }
+                Element::DenseNode(n) if node_ids.contains(&n.id()) => {
+                    vec![(n.id(), [n.decimicro_lon(), n.decimicro_lat()])]
+                }
+                _ => Vec::new(),
+            },
+            Vec::new,
+            |mut a, mut b| {
+                a.append(&mut b);
+                a
+            },
+        )?
+        .into_iter()
+        .collect();
     Ok(assemble(date, ids, &rels, &ways, &nodes))
 }
 
 /// The extract from what the scans found.
-pub fn assemble(date: &str, ids: &BTreeSet<Id>, rels: &[(i64, BTreeMap<String, String>, Vec<(String, i64)>)], ways: &HashMap<i64, Vec<i64>>, nodes: &HashMap<i64, [i32; 2]>) -> Extract {
+pub fn assemble(
+    date: &str,
+    ids: &BTreeSet<Id>,
+    rels: &[(i64, BTreeMap<String, String>, Vec<(String, i64)>)],
+    ways: &HashMap<i64, Vec<i64>>,
+    nodes: &HashMap<i64, [i32; 2]>,
+) -> Extract {
     let mut e = Extract { fmt: 1, pass: date.to_string(), ..Default::default() };
     // A way's nodes with their points; None when a node is missing.
-    let way_points = |w: i64| -> Option<Vec<(u64, [i32; 2])>> { ways.get(&w)?.iter().map(|n| nodes.get(n).map(|p| (*n as u64, *p))).collect() };
-    let by_id: HashMap<i64, &(i64, BTreeMap<String, String>, Vec<(String, i64)>)> = rels.iter().map(|r| (r.0, r)).collect();
+    let way_points = |w: i64| -> Option<Vec<(u64, [i32; 2])>> {
+        ways.get(&w)?.iter().map(|n| nodes.get(n).map(|p| (*n as u64, *p))).collect()
+    };
+    let by_id: HashMap<i64, &(i64, BTreeMap<String, String>, Vec<(String, i64)>)> =
+        rels.iter().map(|r| (r.0, r)).collect();
     for id in ids {
         match *id {
             Id::R(r) => {
@@ -189,12 +220,15 @@ pub fn assemble(date: &str, ids: &BTreeSet<Id>, rels: &[(i64, BTreeMap<String, S
                     } else {
                         let mut segs = crate::outlines::segments_of(ws.iter());
                         match crate::outlines::rings_of(&ws, &mut segs) {
-                            Ok((rings, _)) => rings.into_iter().map(|mut r| {
-                                if r.len() > 1 && r.first() == r.last() {
-                                    r.pop();
-                                }
-                                r
-                            }).collect(),
+                            Ok((rings, _)) => rings
+                                .into_iter()
+                                .map(|mut r| {
+                                    if r.len() > 1 && r.first() == r.last() {
+                                        r.pop();
+                                    }
+                                    r
+                                })
+                                .collect(),
                             Err(err) => {
                                 problem = Some(format!("{err:#}"));
                                 Vec::new()
@@ -207,7 +241,9 @@ pub fn assemble(date: &str, ids: &BTreeSet<Id>, rels: &[(i64, BTreeMap<String, S
                 e.relations.insert(r.to_string(), v);
             }
             Id::W(w) => {
-                let v = way_points(w as i64).filter(|p| p.len() >= 2).map(|p| Way { ends: [p[0].0, p[p.len() - 1].0], line: p.iter().map(|x| x.1).collect() });
+                let v = way_points(w as i64)
+                    .filter(|p| p.len() >= 2)
+                    .map(|p| Way { ends: [p[0].0, p[p.len() - 1].0], line: p.iter().map(|x| x.1).collect() });
                 e.ways.insert(w.to_string(), v);
             }
         }
@@ -237,10 +273,14 @@ pub fn run(out: &mut crate::out::Out, date: &str, ids: &BTreeSet<Id>) -> Result<
         }
     };
     // (The ids the filtered planet lacks: from the planet itself, when it's there.)
-    let lacking: BTreeSet<Id> = all.iter().copied().filter(|i| match i {
-        Id::R(r) => e.relation(*r) == Some(&None),
-        Id::W(w) => e.way(*w) == Some(&None),
-    }).collect();
+    let lacking: BTreeSet<Id> = all
+        .iter()
+        .copied()
+        .filter(|i| match i {
+            Id::R(r) => e.relation(*r) == Some(&None),
+            Id::W(w) => e.way(*w) == Some(&None),
+        })
+        .collect();
     if filtered.is_some() && !lacking.is_empty() && planet.exists() {
         let _p = phase("the planet read three times for the ids the filtered planet lacks", Class::NasRead);
         let more = make(&planet, date, &lacking)?;
@@ -252,8 +292,13 @@ pub fn run(out: &mut crate::out::Out, date: &str, ids: &BTreeSet<Id>) -> Result<
     out.set(&logical(date), Some(name.clone()));
     out.save()?;
     drop(p);
-    let missing = e.relations.values().filter(|v| v.is_none()).count() + e.ways.values().filter(|v| v.is_none()).count();
-    Ok(format!("regions-extract {date}: {} relations, {} ways ({missing} not in the pass): {name}", e.relations.len(), e.ways.len()))
+    let missing =
+        e.relations.values().filter(|v| v.is_none()).count() + e.ways.values().filter(|v| v.is_none()).count();
+    Ok(format!(
+        "regions-extract {date}: {} relations, {} ways ({missing} not in the pass): {name}",
+        e.relations.len(),
+        e.ways.len()
+    ))
 }
 
 #[cfg(test)]
@@ -303,7 +348,11 @@ pub(crate) mod tests {
         }
 
         /// Nodes (id, lon, lat E7), ways (id, node ids), relations (id, tags, member ways (role, id)).
-        pub fn file(nodes: &[(i64, i32, i32)], ways: &[(i64, Vec<i64>)], rels: &[(i64, Vec<(&str, &str)>, Vec<(&str, i64)>)]) -> Vec<u8> {
+        pub fn file(
+            nodes: &[(i64, i32, i32)],
+            ways: &[(i64, Vec<i64>)],
+            rels: &[(i64, Vec<(&str, &str)>, Vec<(&str, i64)>)],
+        ) -> Vec<u8> {
             let mut out = Vec::new();
             let mut hb = Vec::new();
             bytes(&mut hb, 4, b"OsmSchema-V0.6");
@@ -335,11 +384,14 @@ pub(crate) mod tests {
                 let mut w = Vec::new();
                 int(&mut w, 1, *id as u64);
                 let mut prev = 0i64;
-                let deltas: Vec<u64> = refs.iter().map(|r| {
-                    let d = zz(r - prev);
-                    prev = *r;
-                    d
-                }).collect();
+                let deltas: Vec<u64> = refs
+                    .iter()
+                    .map(|r| {
+                        let d = zz(r - prev);
+                        prev = *r;
+                        d
+                    })
+                    .collect();
                 packed(&mut w, 8, &deltas);
                 bytes(&mut wgroup, 3, &w);
             }
@@ -354,11 +406,14 @@ pub(crate) mod tests {
                 let roles: Vec<u64> = ms.iter().map(|m| sid(m.0, &mut strings)).collect();
                 packed(&mut r, 8, &roles);
                 let mut prev = 0i64;
-                let mem: Vec<u64> = ms.iter().map(|m| {
-                    let d = zz(m.1 - prev);
-                    prev = m.1;
-                    d
-                }).collect();
+                let mem: Vec<u64> = ms
+                    .iter()
+                    .map(|m| {
+                        let d = zz(m.1 - prev);
+                        prev = m.1;
+                        d
+                    })
+                    .collect();
                 packed(&mut r, 9, &mem);
                 packed(&mut r, 10, &vec![1; ms.len()]);
                 bytes(&mut rgroup, 4, &r);
@@ -385,7 +440,8 @@ pub(crate) mod tests {
         let p = d.path().join("planet.osm.pbf");
         // A square island of two ways (relation 7), a river of two ways (11, 12), a way of a node
         // that isn't there (13).
-        let nodes = [(1, 0, 0), (2, 10_000_000, 0), (3, 10_000_000, 10_000_000), (4, 0, 10_000_000), (5, 20_000_000, 0)];
+        let nodes =
+            [(1, 0, 0), (2, 10_000_000, 0), (3, 10_000_000, 10_000_000), (4, 0, 10_000_000), (5, 20_000_000, 0)];
         let ways = vec![(9, vec![1, 2, 3]), (10, vec![3, 4, 1]), (11, vec![2, 5]), (12, vec![5, 3]), (13, vec![1, 99])];
         let rels = vec![(7, vec![("type", "multipolygon"), ("natural", "water")], vec![("outer", 9), ("outer", 10)])];
         std::fs::write(&p, pbf::file(&nodes, &ways, &rels)).unwrap();
@@ -396,12 +452,18 @@ pub(crate) mod tests {
         assert_eq!(r.tags["natural"], "water");
         assert_eq!(r.problem, None);
         assert_eq!(e.relation(8), Some(&None), "missing: a fact of the extract");
-        assert_eq!(e.way(11).unwrap().as_ref().unwrap(), &Way { ends: [2, 5], line: vec![[10_000_000, 0], [20_000_000, 0]] });
+        assert_eq!(
+            e.way(11).unwrap().as_ref().unwrap(),
+            &Way { ends: [2, 5], line: vec![[10_000_000, 0], [20_000_000, 0]] }
+        );
         assert_eq!(e.way(13), Some(&None));
         assert!(e.has(Id::W(12)) && !e.has(Id::W(14)));
         assert_eq!(e.ids(), ids);
         // The same ids, the same bytes.
-        assert_eq!(serde_json::to_vec(&e).unwrap(), serde_json::to_vec(&make(&p, "2026-09-28", &ids).unwrap()).unwrap());
+        assert_eq!(
+            serde_json::to_vec(&e).unwrap(),
+            serde_json::to_vec(&make(&p, "2026-09-28", &ids).unwrap()).unwrap()
+        );
         assert_eq!(key("2026-09-28", &ids), key("2026-09-28", &ids.iter().rev().copied().collect()));
     }
 }

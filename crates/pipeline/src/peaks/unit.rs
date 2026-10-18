@@ -16,11 +16,11 @@
 //!   great-circle lower bound, x wrapping at the antimeridian; nothing higher within 5,000 km is a
 //!   lower bound of 5,000 km.
 
-use det::Det;
 use super::{despike, round5, tile_lat, Out, Overlay, COARSE_MAX, FINE_MAX, ISO_FINE_KM, TS};
 use crate::summits::Summit;
 use crate::terrain_z8::Z8;
 use anyhow::{Context, Result};
+use det::Det;
 use rayon::prelude::*;
 use roadcore::grid::decode_terrain_png;
 use roadcore::{merc, EARTH_R};
@@ -91,7 +91,13 @@ pub fn tile_lower_bound_m(lon: f64, lat: f64, z: u8, tx: u32, ty: u32) -> f64 {
     }
     let mut best = f64::MAX;
     // The parallels: at the longitude nearest the point's.
-    let near_lon = if inside_lon { lon } else if off - (lon1 - lon0) < 360.0 - off { lon1 } else { lon0 };
+    let near_lon = if inside_lon {
+        lon
+    } else if off - (lon1 - lon0) < 360.0 - off {
+        lon1
+    } else {
+        lon0
+    };
     for pl in [lat_s, lat_n] {
         best = best.min(gc_m(lon, lat, near_lon, pl));
     }
@@ -117,7 +123,11 @@ pub struct UnitZ12 {
 }
 
 impl UnitZ12 {
-    pub fn load(out: &crate::out::Out, raw: &crate::terrain_pack::RawTiles, want: &BTreeSet<(u32, u32)>) -> Result<UnitZ12> {
+    pub fn load(
+        out: &crate::out::Out,
+        raw: &crate::terrain_pack::RawTiles,
+        want: &BTreeSet<(u32, u32)>,
+    ) -> Result<UnitZ12> {
         // (From the terrain packs on the NAS, else AWS's raw tiles, cached or fetched: in parallel,
         // one phase, its tiles' bytes counted.)
         let p = crate::timings::phase("z12 terrain tiles loaded (packs, else AWS)", crate::timings::Class::NasRead);
@@ -138,9 +148,21 @@ impl UnitZ12 {
                     Some(b) => {
                         p.count(b.len() as u64, 1);
                         // A cached tile that doesn't decode is fetched again, once.
-                        let b = if decode_terrain_png(&b).is_ok() { b } else { raw.refetch(Z12, x, y)?.with_context(|| format!("AWS's z12 {x}/{y} is gone"))? };
+                        let b = if decode_terrain_png(&b).is_ok() {
+                            b
+                        } else {
+                            raw.refetch(Z12, x, y)?.with_context(|| format!("AWS's z12 {x}/{y} is gone"))?
+                        };
                         anyhow::ensure!(decode_terrain_png(&b).is_ok(), "AWS's z12 {x}/{y} doesn't decode");
-                        let (png, _, _) = crate::terrain_pack::process(b, Z12, x, y, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
+                        let (png, _, _) = crate::terrain_pack::process(
+                            b,
+                            Z12,
+                            x,
+                            y,
+                            &HashMap::new(),
+                            &HashMap::new(),
+                            &crate::terrain_pack::Sources::default(),
+                        );
                         Ok(((x, y), Some(Arc::new(png)), 1))
                     }
                     None => Ok(((x, y), None, 2)),
@@ -163,7 +185,11 @@ impl UnitZ12 {
 
     /// For tests: tiles given (None: sea).
     pub fn from_tiles(tiles: HashMap<(u32, u32), Option<Vec<u8>>>) -> UnitZ12 {
-        UnitZ12 { tiles: tiles.into_iter().map(|(k, v)| (k, v.map(Arc::new))).collect(), unexpected: AtomicUsize::new(0), from: (0, 0, 0) }
+        UnitZ12 {
+            tiles: tiles.into_iter().map(|(k, v)| (k, v.map(Arc::new))).collect(),
+            unexpected: AtomicUsize::new(0),
+            from: (0, 0, 0),
+        }
     }
 
     /// A tile's elevations, despiked (zeros for the sea); None for one not read before (or not
@@ -267,7 +293,11 @@ struct Ov8<'a> {
 impl Ov for Ov8<'_> {
     fn at(&self, p: (i64, i64)) -> Option<f32> {
         let a = self.over.get(&p).copied();
-        let b = self.base.px.get(&p).and_then(|v| v.iter().filter(|(i, _)| !self.near.contains(i)).map(|x| x.1).reduce(f32::max));
+        let b = self
+            .base
+            .px
+            .get(&p)
+            .and_then(|v| v.iter().filter(|(i, _)| !self.near.contains(i)).map(|x| x.1).reduce(f32::max));
         match (a, b) {
             (Some(a), Some(b)) => Some(a.max(b)),
             (a, b) => a.or(b),
@@ -414,7 +444,15 @@ fn flood(d: &mut UDem, ov: Option<&dyn Ov>, sx: i64, sy: i64, e: f32, budget: us
 /// of their exact lower bound, x wrapping, a tile scanned only when its highest pixel (the DEM's
 /// or the overlay's) is higher. `tile_max`: the DEM's highest in a tile when known without
 /// decoding it. Some((km, pixel)).
-fn nearest_higher(d: &mut UDem, ov: Option<&dyn Ov>, sx: i64, sy: i64, e: f32, max_km: f64, tile_max: &dyn Fn(u32, u32) -> Option<f32>) -> Option<(f64, (i64, i64))> {
+fn nearest_higher(
+    d: &mut UDem,
+    ov: Option<&dyn Ov>,
+    sx: i64,
+    sy: i64,
+    e: f32,
+    max_km: f64,
+    tile_max: &dyn Fn(u32, u32) -> Option<f32>,
+) -> Option<(f64, (i64, i64))> {
     let s = d.lonlat(sx, sy);
     let w = d.w();
     let n = 1i64 << d.z;
@@ -493,7 +531,14 @@ struct Seen {
 }
 
 /// Peaks of a unit: (key, result) in the peaks' order.
-pub fn run(peaks: &[UnitPeak], summits: &[Summit], base8: &Z8Base, z12: &UnitZ12, z8: &Z8, coarse_threads: usize) -> Result<Vec<(String, Out)>> {
+pub fn run(
+    peaks: &[UnitPeak],
+    summits: &[Summit],
+    base8: &Z8Base,
+    z12: &UnitZ12,
+    z8: &Z8,
+    coarse_threads: usize,
+) -> Result<Vec<(String, Out)>> {
     let t0 = std::time::Instant::now();
     let by_id: HashMap<&str, usize> = summits.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
     // The summits near the unit's peaks, by 0.1° cell.
@@ -548,7 +593,9 @@ pub fn run(peaks: &[UnitPeak], summits: &[Summit], base8: &Z8Base, z12: &UnitZ12
                 .map(|&(i, s)| {
                     let (lon, lat) = (s.lon as f64 * 1e-7, s.lat as f64 * 1e-7);
                     let (px, py) = d.px(lon, lat);
-                    let r = (150.0 / (gc_m(lon, lat, lon + 0.001, lat) / 0.001 * 360.0 / ((1u64 << Z12) as f64 * 256.0))).ceil() as i64;
+                    let r = (150.0
+                        / (gc_m(lon, lat, lon + 0.001, lat) / 0.001 * 360.0 / ((1u64 << Z12) as f64 * 256.0)))
+                        .ceil() as i64;
                     let (mut sx, mut sy, mut e) = (px, py, f32::MIN);
                     for dy in -r..=r {
                         for dx in -r..=r {
@@ -586,7 +633,12 @@ pub fn run(peaks: &[UnitPeak], summits: &[Summit], base8: &Z8Base, z12: &UnitZ12
                 (if s.4.is_finite() { s.4 } else { f32::MIN / 2.0 }, -dd)
             };
             *ks.iter()
-                .max_by(|&&a, &&b| score(a).partial_cmp(&score(b)).unwrap().then_with(|| summit_of(seen[b].0).order().cmp(&summit_of(seen[a].0).order())))
+                .max_by(|&&a, &&b| {
+                    score(a)
+                        .partial_cmp(&score(b))
+                        .unwrap()
+                        .then_with(|| summit_of(seen[b].0).order().cmp(&summit_of(seen[a].0).order()))
+                })
                 .unwrap()
         } else {
             ks[0]
@@ -600,12 +652,21 @@ pub fn run(peaks: &[UnitPeak], summits: &[Summit], base8: &Z8Base, z12: &UnitZ12
                 (s.1, d0.at(None, s.1 .0, s.1 .1).unwrap_or(f32::MIN))
             };
             let ele = s.4;
-            let e = if dem > f32::MIN && ele.is_finite() && ele >= dem - 30.0 && ele <= dem + 200.0 { ele.max(dem) } else { dem };
+            let e = if dem > f32::MIN && ele.is_finite() && ele >= dem - 30.0 && ele <= dem + 200.0 {
+                ele.max(dem)
+            } else {
+                dem
+            };
             info.insert(s.0, Seen { sp, e });
         }
     }
     drop(d0);
-    eprintln!("peaks: {} summits near {} peaks, {moved} moved off a shared pixel ({:.0?})", info.len(), peaks.len(), t0.elapsed());
+    eprintln!(
+        "peaks: {} summits near {} peaks, {moved} moved off a shared pixel ({:.0?})",
+        info.len(),
+        peaks.len(),
+        t0.elapsed()
+    );
 
     // The peaks in spatial order (each worker's tiles reused).
     let mut order: Vec<usize> = (0..peaks.len()).collect();
@@ -650,20 +711,33 @@ pub fn run(peaks: &[UnitPeak], summits: &[Summit], base8: &Z8Base, z12: &UnitZ12
                     let (sx, sy) = me.sp;
                     let e = me.e;
                     let s_ll = d.lonlat(sx, sy);
-                    let mut out = Out { i, e: e.max(0.0), p: 0.0, pl: false, c: [p.lon as f64 * 1e-7, p.lat as f64 * 1e-7], ce: 0.0, iso: 0.0, il: false, hi: None };
+                    let mut out = Out {
+                        i,
+                        e: e.max(0.0),
+                        p: 0.0,
+                        pl: false,
+                        c: [p.lon as f64 * 1e-7, p.lat as f64 * 1e-7],
+                        ce: 0.0,
+                        iso: 0.0,
+                        il: false,
+                        hi: None,
+                    };
                     let (mut flood_done, mut iso_done) = (e <= f32::MIN, e <= f32::MIN);
                     if e > f32::MIN {
                         // The reach in pixels at the summit's latitude, a little short.
                         let px_m = gc_m(s_ll[0], s_ll[1], s_ll[0] + 360.0 / (256.0 * 4096.0), s_ll[1]);
                         let r = (FINE_REACH_KM * 1000.0 / px_m * 0.995) as i64;
-                        if let Flood::Done(col, at, reached) = flood(&mut d, Some(&ov), sx, sy, e, FINE_MAX, Some(r * r)) {
+                        if let Flood::Done(col, at, reached) =
+                            flood(&mut d, Some(&ov), sx, sy, e, FINE_MAX, Some(r * r))
+                        {
                             out.p = e - col;
                             out.pl = !reached;
                             out.c = round5(d.lonlat(at.0, at.1));
                             out.ce = col;
                             flood_done = true;
                         }
-                        if let Some((km, at)) = nearest_higher(&mut d, Some(&ov), sx, sy, e, ISO_FINE_KM, &|_, _| None) {
+                        if let Some((km, at)) = nearest_higher(&mut d, Some(&ov), sx, sy, e, ISO_FINE_KM, &|_, _| None)
+                        {
                             out.iso = km;
                             out.hi = Some(round5(d.lonlat(at.0, at.1)));
                             iso_done = true;
@@ -679,7 +753,10 @@ pub fn run(peaks: &[UnitPeak], summits: &[Summit], base8: &Z8Base, z12: &UnitZ12
         })
         .collect();
     let failed_z12 = z12.unexpected();
-    anyhow::ensure!(failed_z12 == 0, "peaks: {failed_z12} z12 tiles were read that weren't loaded (the reach is wrong)");
+    anyhow::ensure!(
+        failed_z12 == 0,
+        "peaks: {failed_z12} z12 tiles were read that weren't loaded (the reach is wrong)"
+    );
     let need_coarse = fine.iter().filter(|f| !f.flood_done || !f.iso_done).count();
     eprintln!("peaks: fine stage done ({:.0?}), {need_coarse} need the coarse stage", t0.elapsed());
 

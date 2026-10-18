@@ -24,12 +24,16 @@ fn main() -> Result<()> {
             Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
             _ => (a.clone(), None),
         };
-        let mut value = |name: &str| -> Result<String> { inline.clone().or_else(|| args.next()).with_context(|| format!("{name} needs a value")) };
+        let mut value = |name: &str| -> Result<String> {
+            inline.clone().or_else(|| args.next()).with_context(|| format!("{name} needs a value"))
+        };
         match flag.as_str() {
             "--workers" => workers = value("--workers")?.parse().context("--workers")?,
             "--cache" => cache = Some(PathBuf::from(value("--cache")?)),
             "--no-cache" => no_cache = true,
-            f if f.starts_with('-') => bail!("unknown option {f}\nusage: elev <build_dir> [--workers N] [--cache DIR] [--no-cache]"),
+            f if f.starts_with('-') => {
+                bail!("unknown option {f}\nusage: elev <build_dir> [--workers N] [--cache DIR] [--no-cache]")
+            }
             _ if build.is_none() => build = Some(PathBuf::from(a)),
             _ => bail!("one build folder only\nusage: elev <build_dir> [--workers N] [--cache DIR] [--no-cache]"),
         }
@@ -38,7 +42,13 @@ fn main() -> Result<()> {
     let cache = cache.unwrap_or_else(|| build.parent().unwrap_or(&build).join("cache"));
     let env_dir = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     let cfg = Config { build, workers, cache, no_cache, store: env_dir("SCENIC_STORE") };
-    let plan = dem::declared::read_plan(&cfg.build)?.with_context(|| format!("{}: no {} (the unit job writes the declared elevation datasets' plan there)", cfg.build.display(), dem::declared::PLAN_FILE))?;
+    let plan = dem::declared::read_plan(&cfg.build)?.with_context(|| {
+        format!(
+            "{}: no {} (the unit job writes the declared elevation datasets' plan there)",
+            cfg.build.display(),
+            dem::declared::PLAN_FILE
+        )
+    })?;
     // (Its phases, for the unit job's phase that runs it: pipeline::timings.)
     pipeline::timings::job("elev", || dem::generic::run(&cfg, &plan, &Fetcher::from_env()).map(|_| ()))?;
     Ok(())

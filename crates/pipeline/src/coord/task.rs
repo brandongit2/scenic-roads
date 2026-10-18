@@ -115,7 +115,10 @@ const RECENT: usize = 20;
 /// folder: relative, no `..`, nothing odd.
 pub fn safe(path: &str) -> Option<&Path> {
     let p = Path::new(path);
-    let ok = !path.is_empty() && path.len() < 1024 && p.components().all(|c| matches!(c, Component::Normal(s) if !s.to_string_lossy().starts_with('.') || s.len() > 2));
+    let ok = !path.is_empty()
+        && path.len() < 1024
+        && p.components()
+            .all(|c| matches!(c, Component::Normal(s) if !s.to_string_lossy().starts_with('.') || s.len() > 2));
     ok.then_some(p).filter(|p| !p.to_string_lossy().contains('\0'))
 }
 
@@ -123,7 +126,15 @@ impl Tasks {
     pub fn new(dir: PathBuf) -> Tasks {
         // (Uploads left by a run before this one: their jobs are gone.)
         std::fs::remove_dir_all(&dir).ok();
-        Tasks { next: 1, by_id: BTreeMap::new(), dir, recent_mb: BTreeMap::new(), paces: BTreeMap::new(), explored: BTreeMap::new(), here_s: BTreeMap::new() }
+        Tasks {
+            next: 1,
+            by_id: BTreeMap::new(),
+            dir,
+            recent_mb: BTreeMap::new(),
+            paces: BTreeMap::new(),
+            explored: BTreeMap::new(),
+            here_s: BTreeMap::new(),
+        }
     }
 
     /// Takes a job's offer; its id.
@@ -137,7 +148,26 @@ impl Tasks {
         if recent.len() > RECENT {
             recent.pop_front();
         }
-        self.by_id.insert(id, Task { id, owner: o.owner, kind: o.kind, spec: o.spec, root: o.root, inputs: o.inputs, mem_mb: o.mem_mb, state: State::Offered, out, failed_on: BTreeSet::new(), offered: now, leased_at: None, wall_s: None, measuring: None, ahead: o.ahead });
+        self.by_id.insert(
+            id,
+            Task {
+                id,
+                owner: o.owner,
+                kind: o.kind,
+                spec: o.spec,
+                root: o.root,
+                inputs: o.inputs,
+                mem_mb: o.mem_mb,
+                state: State::Offered,
+                out,
+                failed_on: BTreeSet::new(),
+                offered: now,
+                leased_at: None,
+                wall_s: None,
+                measuring: None,
+                ahead: o.ahead,
+            },
+        );
         Ok(id)
     }
 
@@ -156,7 +186,17 @@ impl Tasks {
     /// coordinator restarts (paces are kept in memory).
     pub fn pick(&self, worker: &str, can: &[String], mem_mb: u64) -> Option<u64> {
         let slow = |kind: &str| self.paces.get(&(worker.to_string(), kind.to_string())).is_some_and(|&p| !beats(p));
-        self.by_id.values().filter(|t| matches!(t.state, State::Offered) && can.contains(&t.kind) && t.mem_mb <= mem_mb && !t.failed_on.contains(worker) && !slow(&t.kind)).min_by_key(|t| (t.offered, t.id)).map(|t| t.id)
+        self.by_id
+            .values()
+            .filter(|t| {
+                matches!(t.state, State::Offered)
+                    && can.contains(&t.kind)
+                    && t.mem_mb <= mem_mb
+                    && !t.failed_on.contains(worker)
+                    && !slow(&t.kind)
+            })
+            .min_by_key(|t| (t.offered, t.id))
+            .map(|t| t.id)
     }
 
     /// Whether `worker` (who does `can`, and can spare `mem_mb`) may take task `t` now, placement on
@@ -164,7 +204,11 @@ impl Tasks {
     /// task's head start left covers it (`covered`).
     pub fn may_take(&self, t: &Task, worker: &str, can: &[String], mem_mb: u64, now: Instant) -> bool {
         let slow = self.paces.get(&(worker.to_string(), t.kind.clone())).is_some_and(|&p| !beats(p));
-        matches!(t.state, State::Offered) && can.contains(&t.kind) && t.mem_mb <= mem_mb && !t.failed_on.contains(worker) && (!slow || self.covered(t, worker, now))
+        matches!(t.state, State::Offered)
+            && can.contains(&t.kind)
+            && t.mem_mb <= mem_mb
+            && !t.failed_on.contains(worker)
+            && (!slow || self.covered(t, worker, now))
     }
 
     /// Whether task `t`'s head start left at `now` covers `worker`'s run of it: its pace (with the
@@ -172,7 +216,10 @@ impl Tasks {
     /// the time since it was offered. Never for one not offered ahead, a worker not measured, or a
     /// kind this Mac's time at isn't measured.
     pub fn covered(&self, t: &Task, worker: &str, now: Instant) -> bool {
-        let (Some(ahead), Some(&here), Some(pace)) = (t.ahead, self.here_s.get(&t.kind), self.pace(worker, &t.kind)) else { return false };
+        let (Some(ahead), Some(&here), Some(pace)) = (t.ahead, self.here_s.get(&t.kind), self.pace(worker, &t.kind))
+        else {
+            return false;
+        };
         pace * MARGIN * here <= ahead * here - now.saturating_duration_since(t.offered).as_secs_f64()
     }
 
@@ -198,7 +245,9 @@ impl Tasks {
 
     /// The task leased as `lease`, if it's that worker's.
     pub fn by_lease(&mut self, lease: u64, worker: &str) -> Option<&mut Task> {
-        self.by_id.values_mut().find(|t| matches!(&t.state, State::Leased { lease: l, worker: w } if *l == lease && w == worker))
+        self.by_id
+            .values_mut()
+            .find(|t| matches!(&t.state, State::Leased { lease: l, worker: w } if *l == lease && w == worker))
     }
 
     /// An input of the task leased as `lease`: its file here and size, when the task reads it.
@@ -217,7 +266,16 @@ impl Tasks {
     /// The worker says it's done (at `now`): every output it names is here, whole, or it isn't
     /// done. Its unit, if it has one.
     #[allow(clippy::too_many_arguments)]
-    pub fn done(&mut self, lease: u64, worker: &str, outputs: Vec<Output>, removed: Vec<String>, secs: f64, peak_mb: u64, now: Instant) -> anyhow::Result<Option<String>> {
+    pub fn done(
+        &mut self,
+        lease: u64,
+        worker: &str,
+        outputs: Vec<Output>,
+        removed: Vec<String>,
+        secs: f64,
+        peak_mb: u64,
+        now: Instant,
+    ) -> anyhow::Result<Option<String>> {
         let t = self.by_lease(lease, worker).ok_or_else(|| anyhow::anyhow!("no such task lease"))?;
         for o in &outputs {
             let p = t.out.join(safe(&o.path).ok_or_else(|| anyhow::anyhow!("bad path {}", o.path))?);
@@ -238,7 +296,14 @@ impl Tasks {
 
     /// `fail`; `interrupted`: given back, not failed (the page reloaded or closed, or killed in the
     /// background): offered again to any worker, this one too.
-    pub fn fail_how(&mut self, lease: u64, worker: &str, why: &str, oom_mb: Option<u64>, interrupted: bool) -> Option<u64> {
+    pub fn fail_how(
+        &mut self,
+        lease: u64,
+        worker: &str,
+        why: &str,
+        oom_mb: Option<u64>,
+        interrupted: bool,
+    ) -> Option<u64> {
         let t = self.by_lease(lease, worker)?;
         // (One kept to measure its worker: no more to it.)
         if t.measuring.is_some() {
@@ -253,13 +318,19 @@ impl Tasks {
                 t.failed_on.insert(worker.to_string());
             }
         }
-        t.state = if t.failed_on.len() >= 2 { State::Failed { why: why.chars().take(2000).collect() } } else { State::Offered };
+        t.state = if t.failed_on.len() >= 2 {
+            State::Failed { why: why.chars().take(2000).collect() }
+        } else {
+            State::Offered
+        };
         Some(t.id)
     }
 
     /// The worker holding task lease `lease` went quiet: offered again, not to it.
     pub fn lapsed(&mut self, lease: u64) {
-        if let Some(t) = self.by_id.values_mut().find(|t| matches!(&t.state, State::Leased { lease: l, .. } if *l == lease)) {
+        if let Some(t) =
+            self.by_id.values_mut().find(|t| matches!(&t.state, State::Leased { lease: l, .. } if *l == lease))
+        {
             if t.measuring.is_some() {
                 let id = t.id;
                 self.close(id);
@@ -356,7 +427,15 @@ mod tests {
     use super::*;
 
     fn offer(tasks: &mut Tasks, root: &Path, mem: u64, now: Instant) -> u64 {
-        let o = Offer { owner: 9, kind: "tail".into(), spec: serde_json::json!({"unit": "6/1/1"}), root: root.to_path_buf(), inputs: [("u/a.bin".to_string(), 3)].into(), mem_mb: mem, ahead: None };
+        let o = Offer {
+            owner: 9,
+            kind: "tail".into(),
+            spec: serde_json::json!({"unit": "6/1/1"}),
+            root: root.to_path_buf(),
+            inputs: [("u/a.bin".to_string(), 3)].into(),
+            mem_mb: mem,
+            ahead: None,
+        };
         tasks.offer(o, now).unwrap()
     }
 
@@ -395,8 +474,23 @@ mod tests {
         std::fs::create_dir_all(up.parent().unwrap()).unwrap();
         std::fs::write(&up, b"12345").unwrap();
         assert!(ts.done(1, "phone", vec![Output { path: "u/out.bin".into(), size: 9 }], vec![], 1.0, 400, t0).is_err());
-        assert!(ts.done(1, "phone", vec![Output { path: "u/out.bin".into(), size: 5 }], vec!["u/x".into()], 1.0, 400, t0).is_err());
-        assert_eq!(ts.done(1, "phone", vec![Output { path: "u/out.bin".into(), size: 5 }], vec!["u/a.bin".into()], 1.0, 400, t0).unwrap().as_deref(), Some("6/1/1"));
+        assert!(ts
+            .done(1, "phone", vec![Output { path: "u/out.bin".into(), size: 5 }], vec!["u/x".into()], 1.0, 400, t0)
+            .is_err());
+        assert_eq!(
+            ts.done(
+                1,
+                "phone",
+                vec![Output { path: "u/out.bin".into(), size: 5 }],
+                vec!["u/a.bin".into()],
+                1.0,
+                400,
+                t0
+            )
+            .unwrap()
+            .as_deref(),
+            Some("6/1/1")
+        );
         assert!(!ts.withdraw(small), "a done task isn't withdrawn");
         assert_eq!(ts.close(small), None);
         assert!(!up.exists());
@@ -465,7 +559,10 @@ mod tests {
         // Waited for once an hour a worker.
         assert!(ts.may_explore("phone", t0));
         ts.explore("phone", t0);
-        assert!(!ts.may_explore("phone", t0 + std::time::Duration::from_secs(3599)) && ts.may_explore("phone", t0 + EXPLORE_EVERY));
+        assert!(
+            !ts.may_explore("phone", t0 + std::time::Duration::from_secs(3599))
+                && ts.may_explore("phone", t0 + EXPLORE_EVERY)
+        );
         assert!(beats(0.79) && !beats(0.8));
     }
 }

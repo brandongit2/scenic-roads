@@ -26,7 +26,10 @@ pub fn px(z: u8) -> f64 {
 pub fn lonlat(z: u8, c: f64, r: f64) -> (f64, f64) {
     let p = px(z);
     let (x, y) = (-HALF + c * p, HALF - r * p);
-    (x / HALF * 180.0, (2.0 * (y / HALF * std::f64::consts::PI).exp().atan() - std::f64::consts::FRAC_PI_2).to_degrees())
+    (
+        x / HALF * 180.0,
+        (2.0 * (y / HALF * std::f64::consts::PI).exp().atan() - std::f64::consts::FRAC_PI_2).to_degrees(),
+    )
 }
 
 /// The lon/lat box (w, s, e, n) of global pixels `c0..c0 + w`, `r0..r0 + h` at zoom z.
@@ -81,7 +84,13 @@ impl Source {
             let name = |k: &str| f.props.get(k).and_then(|v| v.as_str()).map(|n| dir.join(n));
             grids.push(Grid {
                 bbox: f.bbox,
-                zoom: f.props.get("zoom").and_then(|v| v.as_u64()).filter(|&z| z <= 18).with_context(|| format!("the depth source {}: a grid without a zoom", s.id))? as u8,
+                zoom: f
+                    .props
+                    .get("zoom")
+                    .and_then(|v| v.as_u64())
+                    .filter(|&z| z <= 18)
+                    .with_context(|| format!("the depth source {}: a grid without a zoom", s.id))?
+                    as u8,
                 file: name("file").with_context(|| format!("the depth source {}: a grid without a file", s.id))?,
                 zoom_file: name("zoom_file"),
                 low_file: name("low_file"),
@@ -106,7 +115,9 @@ impl Source {
 
     /// Its grids meeting lon/lat box `b`.
     pub fn meeting(&self, b: [f64; 4]) -> impl Iterator<Item = &Grid> {
-        self.grids.iter().filter(move |g| g.bbox[0] <= b[2] && g.bbox[2] >= b[0] && g.bbox[1] <= b[3] && g.bbox[3] >= b[1])
+        self.grids
+            .iter()
+            .filter(move |g| g.bbox[0] <= b[2] && g.bbox[2] >= b[0] && g.bbox[1] <= b[3] && g.bbox[3] >= b[1])
     }
 
     /// The finest zoom of its grids meeting `b`: at most what any pixel there can have (None: it
@@ -120,7 +131,8 @@ impl Source {
 /// of the declarations is accepted.
 pub fn declared(root: &Path, manifest: &std::collections::BTreeMap<String, String>) -> Result<Vec<Source>> {
     let Some(s) = crate::inputs::sources::open(root, manifest)? else { return Ok(Vec::new()) };
-    let mut out: Vec<Source> = s.many(crate::inputs::sources::DEPTH).iter().map(|d| Source::from_declared(root, d)).collect::<Result<_>>()?;
+    let mut out: Vec<Source> =
+        s.many(crate::inputs::sources::DEPTH).iter().map(|d| Source::from_declared(root, d)).collect::<Result<_>>()?;
     out.sort_by_key(|s| s.code);
     Ok(out)
 }
@@ -144,7 +156,11 @@ impl Reader {
         }
         let f = store::range::PlainFile::open(p).with_context(|| format!("{}", p.display()))?;
         let id = self.open.lock().unwrap().len() as u64;
-        let t = Arc::new(Tiff::open(Arc::new(f)).with_context(|| format!("{}", p.display()))?.with_shared_cache(id, self.cache.clone()));
+        let t = Arc::new(
+            Tiff::open(Arc::new(f))
+                .with_context(|| format!("{}", p.display()))?
+                .with_shared_cache(id, self.cache.clone()),
+        );
         self.open.lock().unwrap().insert(p.to_path_buf(), t.clone());
         Ok(t)
     }
@@ -165,7 +181,11 @@ pub struct Sample {
 fn origin(t: &Tiff, zoom: u8) -> Result<(i64, i64)> {
     let gt = t.transform(0)?;
     let p = px(zoom);
-    ensure!((gt[1] - p).abs() < p * 1e-6 && (gt[5] + p).abs() < p * 1e-6 && gt[2] == 0.0 && gt[4] == 0.0, "its pixels aren't zoom {zoom}'s ({} m)", gt[1]);
+    ensure!(
+        (gt[1] - p).abs() < p * 1e-6 && (gt[5] + p).abs() < p * 1e-6 && gt[2] == 0.0 && gt[4] == 0.0,
+        "its pixels aren't zoom {zoom}'s ({} m)",
+        gt[1]
+    );
     let (c, r) = ((gt[0] + HALF) / p, (HALF - gt[3]) / p);
     ensure!((c - c.round()).abs() < 1e-3 && (r - r.round()).abs() < 1e-3, "it isn't on zoom {zoom}'s pixel grid");
     Ok((c.round() as i64, r.round() as i64))
@@ -184,7 +204,13 @@ fn level_for(t: &Tiff, most: u32, c0: i64, r0: i64) -> (usize, u32) {
         }
         let l = r as u32;
         let f = 1i64 << l;
-        if l <= most && l > best.1 && img.width == w0.div_ceil(f as u32) && img.height == h0.div_ceil(f as u32) && c0 % f == 0 && r0 % f == 0 {
+        if l <= most
+            && l > best.1
+            && img.width == w0.div_ceil(f as u32)
+            && img.height == h0.div_ceil(f as u32)
+            && c0 % f == 0
+            && r0 % f == 0
+        {
             best = (i, l);
         }
     }
@@ -212,7 +238,8 @@ pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: u
     let b = window_box(z, c0, r0, w, h);
     let mut out: Option<Sample> = None;
     for g in src.meeting(b) {
-        let s = sample_grid(rd, g, z, c0, r0, w, h).with_context(|| format!("the depth source {}: {}", src.id, g.file.display()))?;
+        let s = sample_grid(rd, g, z, c0, r0, w, h)
+            .with_context(|| format!("the depth source {}: {}", src.id, g.file.display()))?;
         let Some(s) = s else { continue };
         match &mut out {
             None => out = Some(s),
@@ -238,9 +265,15 @@ fn sample_grid(rd: &Reader, g: &Grid, z: u8, c0: i64, r0: i64, w: usize, h: usiz
     let zt = g.zoom_file.as_deref().map(|p| rd.tiff(p)).transpose()?;
     let lt = g.low_file.as_deref().map(|p| rd.tiff(p)).transpose()?;
     for x in zt.iter().chain(lt.iter()) {
-        ensure!(origin(x, g.zoom)? == (gc, gr) && x.images()[0].width == t.images()[0].width && x.images()[0].height == t.images()[0].height, "its zoom or low-water file isn't on its own grid");
+        ensure!(
+            origin(x, g.zoom)? == (gc, gr)
+                && x.images()[0].width == t.images()[0].width
+                && x.images()[0].height == t.images()[0].height,
+            "its zoom or low-water file isn't on its own grid"
+        );
     }
-    let mut s = Sample { v: vec![f32::NAN; w * h], zoom: vec![0; w * h], class: vec![0; w * h], low: vec![f32::NAN; w * h] };
+    let mut s =
+        Sample { v: vec![f32::NAN; w * h], zoom: vec![0; w * h], class: vec![0; w * h], low: vec![f32::NAN; w * h] };
     if g.zoom >= z {
         let k = u32::from(g.zoom - z);
         if k > 24 {
@@ -408,12 +441,26 @@ pub(crate) mod tests {
         }
         use crate::geotiff::testtiff::{make_images, Opts};
         let sizes: Vec<(u32, u32)> = levels.iter().map(|l| (l.0, l.1)).collect();
-        let (b, _) = make_images(&sizes, Opts { tile: Some(64), ..Opts::default() }, gt, Some("nan"), &|k, x, y, _| f64::from(levels[k].2[(y * levels[k].0 + x) as usize]));
+        let (b, _) = make_images(&sizes, Opts { tile: Some(64), ..Opts::default() }, gt, Some("nan"), &|k, x, y, _| {
+            f64::from(levels[k].2[(y * levels[k].0 + x) as usize])
+        });
         std::fs::write(path, b).unwrap();
     }
 
     fn source(grids: Vec<Grid>) -> Source {
-        Source { id: "t".into(), code: 1, lake: false, band_m: 0.0, intertidal: false, datum_exact: true, label: "T".into(), datum: "MSL".into(), notice: None, grids, pin: "t".into() }
+        Source {
+            id: "t".into(),
+            code: 1,
+            lake: false,
+            band_m: 0.0,
+            intertidal: false,
+            datum_exact: true,
+            label: "T".into(),
+            datum: "MSL".into(),
+            notice: None,
+            grids,
+            pin: "t".into(),
+        }
     }
 
     fn bbox(zoom: u8, c: i64, r: i64, w: u32, h: u32) -> [f64; 4] {
@@ -428,7 +475,13 @@ pub(crate) mod tests {
         let plane = |x: i64, y: i64| -((x - c) as f32) * 0.5 - (y - r) as f32 * 0.25 - 10.0;
         let p = d.path().join("g.tif");
         grid_file(&p, zoom, c, r, 1024, 512, &plane);
-        let s = source(vec![Grid { bbox: bbox(zoom, c, r, 1024, 512), zoom, file: p.clone(), zoom_file: None, low_file: None }]);
+        let s = source(vec![Grid {
+            bbox: bbox(zoom, c, r, 1024, 512),
+            zoom,
+            file: p.clone(),
+            zoom_file: None,
+            low_file: None,
+        }]);
         let rd = Reader::default();
         // Two zooms out: each pixel the mean of 4 × 4 cells, from the 4× overview.
         let got = sample(&rd, &s, 10, c / 4 + 3, r / 4 + 5, 8, 8).unwrap().unwrap();

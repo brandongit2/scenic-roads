@@ -134,12 +134,25 @@ pub fn write_atomic(root: &Path, logical: &str, ext: &str, src: Source<'_>) -> R
 /// upload hashing it once for its name and its checksum together: pipeline's `Out::put_file`), so
 /// it isn't read for them again. The read-back is checked against them as against its own: a wrong
 /// hash, or a file changed since, fails as a corrupted write does, and leaves nothing.
-pub fn write_atomic_hashed(root: &Path, logical: &str, ext: &str, file: &Path, hash: &str, size: u64) -> Result<String> {
+pub fn write_atomic_hashed(
+    root: &Path,
+    logical: &str,
+    ext: &str,
+    file: &Path,
+    hash: &str,
+    size: u64,
+) -> Result<String> {
     ensure!(is_hash16(hash), "bad hash {hash:?}");
     write_atomic_as(root, logical, ext, Source::File(file), Some((hash.to_string(), size)))
 }
 
-fn write_atomic_as(root: &Path, logical: &str, ext: &str, src: Source<'_>, known: Option<(String, u64)>) -> Result<String> {
+fn write_atomic_as(
+    root: &Path,
+    logical: &str,
+    ext: &str,
+    src: Source<'_>,
+    known: Option<(String, u64)>,
+) -> Result<String> {
     ensure!(valid_logical(logical), "bad logical name {logical:?}");
     ensure!(valid_ext(ext), "bad extension {ext:?}");
     let (hash, size) = match (known, src) {
@@ -241,7 +254,8 @@ fn no_cache(f: &File) {
 /// two Macs building the same unit) never share one. GC sweeps those abandoned.
 pub(crate) fn tmp_path(path: &Path) -> PathBuf {
     static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    let host = HOST.get_or_init(|| crate::sys::hostname().map(|h| h.replace(['.', '/'], "-")).unwrap_or_else(|| "host".into()));
+    let host = HOST
+        .get_or_init(|| crate::sys::hostname().map(|h| h.replace(['.', '/'], "-")).unwrap_or_else(|| "host".into()));
     let mut s = OsString::from(path.as_os_str());
     s.push(format!(".{host}-{}.tmp", crate::sys::pid()));
     PathBuf::from(s)

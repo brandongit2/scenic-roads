@@ -164,7 +164,25 @@ struct Cfg {
 impl Cfg {
     /// The pool's, none of the knobs on.
     fn pool() -> Cfg {
-        Cfg { faults: 2400, end: 3900, stale: 30, draft: false, list_s: (0, 0), leave: false, old_days: 0, skew: 0, downgrade: false, cuts: false, op_s: (0, 0), lose: false, lag: 0, truncs: false, fails: false, stalls: false, lost_lists: false }
+        Cfg {
+            faults: 2400,
+            end: 3900,
+            stale: 30,
+            draft: false,
+            list_s: (0, 0),
+            leave: false,
+            old_days: 0,
+            skew: 0,
+            downgrade: false,
+            cuts: false,
+            op_s: (0, 0),
+            lose: false,
+            lag: 0,
+            truncs: false,
+            fails: false,
+            stalls: false,
+            lost_lists: false,
+        }
     }
 
     /// The default mix: the knobs, drawn from the seed.
@@ -273,7 +291,11 @@ impl MacW {
     /// apart): what its members told it meanwhile was lost.
     fn woke(&self, t: u64) -> u64 {
         let (from, to) = self.sleep;
-        if to <= t && to - from > driver::GAP_S + 10 { self.woke.max(to) } else { self.woke }
+        if to <= t && to - from > driver::GAP_S + 10 {
+            self.woke.max(to)
+        } else {
+            self.woke
+        }
     }
 }
 
@@ -447,28 +469,99 @@ impl World {
         let mut rng = Rng(seed);
         let macs: Vec<MacW> = (0..macs)
             .map(|k| {
-                let skew = if cfg.skew > 0 { rng.below(2 * cfg.skew + 1) as i64 - cfg.skew as i64 } else { rng.below(3) as i64 - 1 };
-                MacW { id: id(k), app: 0, skew, asleep_until: 0, slept: 0, busy_until: 0, ready_at: 0, inbox: Vec::new(), view: 0, leads: None, led: 0, gone: false, sleep: (0, 0), woke: 0, op_at: 0, caught: false }
+                let skew = if cfg.skew > 0 {
+                    rng.below(2 * cfg.skew + 1) as i64 - cfg.skew as i64
+                } else {
+                    rng.below(3) as i64 - 1
+                };
+                MacW {
+                    id: id(k),
+                    app: 0,
+                    skew,
+                    asleep_until: 0,
+                    slept: 0,
+                    busy_until: 0,
+                    ready_at: 0,
+                    inbox: Vec::new(),
+                    view: 0,
+                    leads: None,
+                    led: 0,
+                    gone: false,
+                    sleep: (0, 0),
+                    woke: 0,
+                    op_at: 0,
+                    caught: false,
+                }
             })
             .collect();
         let mut files = BTreeMap::new();
         // Today's records: one unit built.
-        files.insert("state/build/manifest.json".to_string(), serde_json::to_vec(&BTreeMap::from([(logical(TARGETS[0]), content(TARGETS[0], "k0"))])).unwrap());
-        files.insert("state/build/jobs.json".to_string(), format!("{{\"unit\": {{\"{}\": \"k0\"}}}}", TARGETS[0]).into_bytes());
+        files.insert(
+            "state/build/manifest.json".to_string(),
+            serde_json::to_vec(&BTreeMap::from([(logical(TARGETS[0]), content(TARGETS[0], "k0"))])).unwrap(),
+        );
+        files.insert(
+            "state/build/jobs.json".to_string(),
+            format!("{{\"unit\": {{\"{}\": \"k0\"}}}}", TARGETS[0]).into_bytes(),
+        );
         let mut written = BTreeMap::new();
         // A week of the journal's earlier days, an entry each that term 1's records lack.
         for d in 1..=cfg.old_days {
             let t = TARGETS[(d as usize) % TARGETS.len()];
             let k = format!("old{d}");
-            let h = Handoff { changes: [(logical(t), Some(content(t, &k)))].into(), done: Some(("unit".into(), vec![(t.into(), k.clone())])), ..Default::default() };
-            let e = Entry { member: id(0), lease: LeaseId { term: 0, n: d }, step: "unit".into(), handoff: h, at: T0 - d * 86_400 };
+            let h = Handoff {
+                changes: [(logical(t), Some(content(t, &k)))].into(),
+                done: Some(("unit".into(), vec![(t.into(), k.clone())])),
+                ..Default::default()
+            };
+            let e = Entry {
+                member: id(0),
+                lease: LeaseId { term: 0, n: d },
+                step: "unit".into(),
+                handoff: h,
+                at: T0 - d * 86_400,
+            };
             let key = e.key().expect("a day");
             files.insert(journal::path(&key), serde_json::to_vec(&e).unwrap());
             written.insert(key, Kind::Taken);
         }
         let n = macs.len();
         let looks = cfg.faults + 180;
-        let mut w = World { cfg, t: 0, rng, files, open: BTreeMap::new(), tmps: BTreeMap::new(), writes: BTreeMap::new(), caches: (0..n).map(|_| Cache::default()).collect(), macs, midway: false, turn: 0, done: false, drained: false, end: cfg.end, behind: None, made: BTreeMap::new(), leaders: BTreeMap::new(), landed: BTreeMap::new(), written, written_at: BTreeMap::new(), writers: BTreeMap::new(), acked: BTreeSet::new(), settles: BTreeMap::new(), looks, leases: BTreeMap::new(), caught: BTreeSet::new(), stood: BTreeMap::new(), unreadable: BTreeSet::new(), erroring: BTreeSet::new(), away: vec![0; n], wrong: Vec::new(), counts: BTreeMap::new(), trace: tracing.then(Vec::new) };
+        let mut w = World {
+            cfg,
+            t: 0,
+            rng,
+            files,
+            open: BTreeMap::new(),
+            tmps: BTreeMap::new(),
+            writes: BTreeMap::new(),
+            caches: (0..n).map(|_| Cache::default()).collect(),
+            macs,
+            midway: false,
+            turn: 0,
+            done: false,
+            drained: false,
+            end: cfg.end,
+            behind: None,
+            made: BTreeMap::new(),
+            leaders: BTreeMap::new(),
+            landed: BTreeMap::new(),
+            written,
+            written_at: BTreeMap::new(),
+            writers: BTreeMap::new(),
+            acked: BTreeSet::new(),
+            settles: BTreeMap::new(),
+            looks,
+            leases: BTreeMap::new(),
+            caught: BTreeSet::new(),
+            stood: BTreeMap::new(),
+            unreadable: BTreeSet::new(),
+            erroring: BTreeSet::new(),
+            away: vec![0; n],
+            wrong: Vec::new(),
+            counts: BTreeMap::new(),
+            trace: tracing.then(Vec::new),
+        };
         if cfg.old_days > 0 {
             w.count("old journal days");
         }
@@ -558,7 +651,9 @@ impl World {
     /// made after the config's end's last ten minutes.)
     fn goes_on(&mut self) -> bool {
         let Some(&h) = self.made.keys().next_back() else { return false };
-        let Some(r) = self.files.get(&records::path(h)).and_then(|b| serde_json::from_slice::<Records>(b).ok()) else { return false };
+        let Some(r) = self.files.get(&records::path(h)).and_then(|b| serde_json::from_slice::<Records>(b).ok()) else {
+            return false;
+        };
         let lack = self.written.iter().filter(|&(k, &kind)| !names(&r, k, kind)).count();
         // (Or its lead not caught up yet: an entry never whole, refused only after an hour of its
         // lead's reads; a listing its agent lost, asked for again two hours on.)
@@ -596,7 +691,12 @@ impl World {
     /// (review N1: either drops the handover).
     fn split(&mut self, me: usize, to: &str) {
         let k = mac_of(to);
-        if self.t >= self.cfg.faults || k >= self.macs.len() || !self.awake(k) || self.macs[k].gone || !self.rng.chance(P_SPLIT) {
+        if self.t >= self.cfg.faults
+            || k >= self.macs.len()
+            || !self.awake(k)
+            || self.macs[k].gone
+            || !self.rng.chance(P_SPLIT)
+        {
             return;
         }
         if self.cfg.leave && !self.macs.iter().any(|m| m.gone) && self.rng.chance(0.3) {
@@ -614,7 +714,9 @@ impl World {
             self.note(|| format!("mac{me} gets app development"));
         } else {
             let downgrade = self.cfg.downgrade;
-            self.note(|| format!("the owner asks mac{me} to take over (forced){}", if downgrade { " (on any app)" } else { "" }));
+            self.note(|| {
+                format!("the owner asks mac{me} to take over (forced){}", if downgrade { " (on any app)" } else { "" })
+            });
             self.deliver(me, Msg::TakeOver { force: true, downgrade });
         }
     }
@@ -645,7 +747,13 @@ impl World {
             let at = self.rng.below(n) as usize;
             let force = self.rng.chance(0.3);
             let downgrade = force && self.cfg.downgrade && self.rng.chance(0.5);
-            self.note(|| format!("the owner asks mac{at} to take over{}{}", if force { " (forced)" } else { "" }, if downgrade { " (on any app)" } else { "" }));
+            self.note(|| {
+                format!(
+                    "the owner asks mac{at} to take over{}{}",
+                    if force { " (forced)" } else { "" },
+                    if downgrade { " (on any app)" } else { "" }
+                )
+            });
             self.deliver(at, Msg::TakeOver { force, downgrade });
         }
         if self.rng.chance(P_APP) {
@@ -680,10 +788,18 @@ impl World {
             None => true,
             Some(t) => {
                 let gone = self.macs.get(mac_of(&t.member)).is_some_and(|m| m.gone);
-                let stood = self.files.get(&super::beat::path(&t.member)).and_then(|b| serde_json::from_slice::<Beat>(b).ok()).is_some_and(|b| b.stood_down == Some(h));
+                let stood = self
+                    .files
+                    .get(&super::beat::path(&t.member))
+                    .and_then(|b| serde_json::from_slice::<Beat>(b).ok())
+                    .is_some_and(|b| b.stood_down == Some(h));
                 // (A lead that stood down is taken over by itself, by a member the app rule lets:
                 // the owner steps in only when none can.)
-                let auto = (0..self.macs.len()).any(|k| !self.macs[k].gone && self.macs[k].id != t.member && term::app_at_least(&app(self.macs[k].app), &t.app));
+                let auto = (0..self.macs.len()).any(|k| {
+                    !self.macs[k].gone
+                        && self.macs[k].id != t.member
+                        && term::app_at_least(&app(self.macs[k].app), &t.app)
+                });
                 if !gone && !(stood && !auto) {
                     return;
                 }
@@ -692,15 +808,27 @@ impl World {
         };
         // (A Mac whose app is new enough; else any, the lead that stood down too, by the owner's
         // downgrade.)
-        let known = (1..=h).rev().find_map(|e| self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok())).map(|t| t.app).unwrap_or_default();
+        let known = (1..=h)
+            .rev()
+            .find_map(|e| self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()))
+            .map(|t| t.app)
+            .unwrap_or_default();
         let can: Vec<usize> = (0..self.macs.len()).filter(|&k| !self.macs[k].gone).collect();
         let Some(&first) = can.first() else { return };
-        let (at, downgrade) = match can.iter().find(|&&k| term::app_at_least(&app(self.macs[k].app), &known) && named.as_ref().is_none_or(|t| t.member != self.macs[k].id)) {
+        let (at, downgrade) = match can.iter().find(|&&k| {
+            term::app_at_least(&app(self.macs[k].app), &known)
+                && named.as_ref().is_none_or(|t| t.member != self.macs[k].id)
+        }) {
             Some(&k) => (k, false),
             None => (first, true),
         };
         self.count("the owner takes over a term with no lead");
-        self.note(|| format!("the owner sees no lead of term {h}: asks mac{at} to take over{}", if downgrade { " on its app" } else { "" }));
+        self.note(|| {
+            format!(
+                "the owner sees no lead of term {h}: asks mac{at} to take over{}",
+                if downgrade { " on its app" } else { "" }
+            )
+        });
         self.deliver(at, Msg::TakeOver { force: force || downgrade, downgrade });
     }
 
@@ -720,7 +848,8 @@ impl World {
                 self.turn = ready[self.rng.below(ready.len() as u64) as usize];
                 return;
             }
-            let next = self.macs.iter().map(|m| m.asleep_until.max(m.busy_until).max(m.ready_at)).min().unwrap_or(t + 1);
+            let next =
+                self.macs.iter().map(|m| m.asleep_until.max(m.busy_until).max(m.ready_at)).min().unwrap_or(t + 1);
             self.advance(next.max(t + 1));
         }
     }
@@ -743,7 +872,8 @@ impl World {
         }
         // (An entry another Mac renamed into place isn't there yet to this one's reads.)
         if let Some(&(who, at)) = self.writes.get(path).filter(|_| self.cfg.lag > 0 && entry_of(path).is_some()) {
-            let lag = (at.wrapping_mul(2_654_435_761) ^ (me as u64).wrapping_mul(40_503) ^ path.len() as u64) % (self.cfg.lag + 1);
+            let lag = (at.wrapping_mul(2_654_435_761) ^ (me as u64).wrapping_mul(40_503) ^ path.len() as u64)
+                % (self.cfg.lag + 1);
             if who != me && self.t < at + lag {
                 self.count("entry reads lagging");
                 self.caches[me].files.insert(path.to_string(), (None, at + lag));
@@ -807,7 +937,13 @@ impl World {
             }
         }
         let prefix = format!("{dir}/");
-        let names: BTreeSet<&str> = self.files.keys().filter_map(|k| k.strip_prefix(&prefix)).filter_map(|r| r.split('/').next()).filter(|n| !n.ends_with(".tmp")).collect();
+        let names: BTreeSet<&str> = self
+            .files
+            .keys()
+            .filter_map(|k| k.strip_prefix(&prefix))
+            .filter_map(|r| r.split('/').next())
+            .filter(|n| !n.ends_with(".tmp"))
+            .collect();
         let v: Vec<String> = names.into_iter().map(str::to_string).collect();
         let until = self.t + self.rng.below(self.cfg.stale + 1);
         self.caches[me].dirs.insert(dir.to_string(), (v.clone(), until));
@@ -894,7 +1030,9 @@ impl World {
         if let Some(&(who, at)) = self.writes.get(path) {
             if who != me && at > since {
                 self.count("late renames over another's write");
-                self.note(|| format!("mac{me}'s rename of {path}, written at {since}, lands over mac{who}'s write at {at}"));
+                self.note(|| {
+                    format!("mac{me}'s rename of {path}, written at {since}, lands over mac{who}'s write at {at}")
+                });
             }
         }
         self.files.insert(path.to_string(), b.clone());
@@ -937,8 +1075,11 @@ impl World {
             if !made {
                 return self.wrong(format!("mac{me} wrote over term {e}'s file"));
             }
-            let Ok(t) = serde_json::from_slice::<Term>(b) else { return self.wrong(format!("term {e}'s file isn't a term")) };
-            let term_at = |w: &World, e: u64| w.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok());
+            let Ok(t) = serde_json::from_slice::<Term>(b) else {
+                return self.wrong(format!("term {e}'s file isn't a term"));
+            };
+            let term_at =
+                |w: &World, e: u64| w.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok());
             if t.term != e || !self.macs.iter().any(|m| m.id == t.member) {
                 return self.wrong(format!("term {e}'s file names term {} and {}", t.term, t.member));
             }
@@ -947,8 +1088,14 @@ impl World {
             // read, whose maker checked it against the newest term it could read (`term::forced`),
             // which the world doesn't know.
             let back = t.how.starts_with(term::BACK);
-            let against = if back { e.checked_sub(2).and_then(|p| term_at(self, p)) } else { e.checked_sub(1).and_then(|p| term_at(self, p)) };
-            if let Some(p) = against.filter(|p| !term::app_at_least(&t.app, &p.app) && !t.how.contains(term::UNREAD) && !t.how.contains(term::DOWNGRADE)) {
+            let against = if back {
+                e.checked_sub(2).and_then(|p| term_at(self, p))
+            } else {
+                e.checked_sub(1).and_then(|p| term_at(self, p))
+            };
+            if let Some(p) = against.filter(|p| {
+                !term::app_at_least(&t.app, &p.app) && !t.how.contains(term::UNREAD) && !t.how.contains(term::DOWNGRADE)
+            }) {
                 self.wrong(format!("term {e} has app {}, older than term {}'s {}", t.app, p.term, p.app));
             }
             if t.how.contains(term::DOWNGRADE) {
@@ -960,20 +1107,39 @@ impl World {
                 // before at least (§6.5, §14): one asleep or gone is the owner's to take over.
                 let from = e.checked_sub(1).and_then(|p| term_at(self, p));
                 match from.as_ref().and_then(|p| self.stood.get(&(p.member.clone(), p.term)).copied()) {
-                    None => self.wrong(format!("term {e} was taken over automatically from a lead that didn't say it stood down ({:?})", from.map(|p| p.member))),
-                    Some(at) if self.t < at + driver::STOOD_DOWN_S => self.wrong(format!("term {e} was taken over automatically {} s after its lead said it stood down", self.t - at)),
+                    None => self.wrong(format!(
+                        "term {e} was taken over automatically from a lead that didn't say it stood down ({:?})",
+                        from.map(|p| p.member)
+                    )),
+                    Some(at) if self.t < at + driver::STOOD_DOWN_S => self.wrong(format!(
+                        "term {e} was taken over automatically {} s after its lead said it stood down",
+                        self.t - at
+                    )),
                     _ => {}
                 }
             }
             if t.how.contains("saved state lost") {
                 self.count("re-assertions with a saved state lost");
             }
-            if back && e.checked_sub(1).and_then(|p| term_at(self, p)).is_some_and(|p| !term::app_at_least(&t.app, &p.app)) {
+            if back
+                && e.checked_sub(1).and_then(|p| term_at(self, p)).is_some_and(|p| !term::app_at_least(&t.app, &p.app))
+            {
                 self.count("take-backs from a newer app");
             }
-            let kind = ["handed over", "taken back", "taken over", "re-asserted", "restarted", "the first Mac in the pool"].into_iter().find(|k| t.how.starts_with(k)).unwrap_or("other");
+            let kind =
+                ["handed over", "taken back", "taken over", "re-asserted", "restarted", "the first Mac in the pool"]
+                    .into_iter()
+                    .find(|k| t.how.starts_with(k))
+                    .unwrap_or("other");
             *self.counts.entry(kind).or_default() += 1;
-            self.note(|| format!("term {e}: {} ({}{})", t.member, t.how, t.seq.map(|s| format!(", records at {s}")).unwrap_or_default()));
+            self.note(|| {
+                format!(
+                    "term {e}: {} ({}{})",
+                    t.member,
+                    t.how,
+                    t.seq.map(|s| format!(", records at {s}")).unwrap_or_default()
+                )
+            });
         } else if let Some(e) = records_of(path) {
             let r = match serde_json::from_slice::<Records>(b) {
                 Ok(r) => r,
@@ -982,7 +1148,8 @@ impl World {
             if let Err(why) = consistent(&r) {
                 self.wrong(format!("term {e}'s records at {} aren't consistent: {why}", r.seq));
             }
-            let lead = self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member);
+            let lead =
+                self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member);
             if r.term != e || lead.as_deref() != Some(self.macs[me].id.as_str()) {
                 self.wrong(format!("mac{me} wrote term {e}'s records (of term {}); term {e} names {lead:?}", r.term));
             }
@@ -993,7 +1160,8 @@ impl World {
                     continue;
                 }
                 self.count("entries refused, never read whole");
-                if let Some(&w) = self.written_at.get(k).filter(|&&w| w + self.cfg.stale + self.cfg.lag + 600 < self.t) {
+                if let Some(&w) = self.written_at.get(k).filter(|&&w| w + self.cfg.stale + self.cfg.lag + 600 < self.t)
+                {
                     self.wrong(format!("term {e}'s records refuse {k} ({why}), whole on the share since {w} s"));
                 }
             }
@@ -1032,7 +1200,9 @@ impl World {
         } else if let Some(key) = entry_of(path).filter(|_| !self.erroring.contains(path)) {
             if let Ok(en) = serde_json::from_slice::<Entry>(b) {
                 let kind = match en.step.as_str() {
-                    _ if crate::agent::steps::outside_by(&en, &|l, removal| writes(&en.step, l, removal)).is_some() => Kind::Refused,
+                    _ if crate::agent::steps::outside_by(&en, &|l, removal| writes(&en.step, l, removal)).is_some() => {
+                        Kind::Refused
+                    }
                     "flaky" => Kind::Either,
                     _ => Kind::Taken,
                 };
@@ -1057,7 +1227,8 @@ impl World {
 
     fn leads(&mut self, me: usize, e: Option<u64>) {
         if let Some(e) = e {
-            let named = self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member);
+            let named =
+                self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member);
             if named.as_deref() != Some(self.macs[me].id.as_str()) {
                 self.wrong(format!("mac{me} leads term {e}, which names {named:?}"));
             }
@@ -1092,7 +1263,9 @@ impl World {
     /// A Mac took up a term: a handover's with the coordinator's state its old lead settled with,
     /// saved with the snapshot the term names (review M7: the records only).
     fn took_up(&mut self, me: usize, e: u64, how: &str, handed: Option<&serde_json::Value>) {
-        let Some(t) = self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()) else { return };
+        let Some(t) = self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()) else {
+            return;
+        };
         let Some(seq) = t.seq.filter(|_| how.starts_with("handed over")) else { return };
         match self.settles.get(&(t.from, seq)) {
             Some(v) if handed == Some(v) => self.count("coordinator states handed over"),
@@ -1111,7 +1284,9 @@ impl World {
     /// sleep in). And its term's last snapshot names every entry written before it (a listing is
     /// stale up to `Cfg::stale`). Called first after its step: as of its step's last operation.
     fn caught_up(&mut self, me: usize, e: u64, listed: Option<u64>) {
-        let Some(at) = listed else { return self.wrong(format!("mac{me} says term {e}'s records are caught up, and listed none")) };
+        let Some(at) = listed else {
+            return self.wrong(format!("mac{me} says term {e}'s records are caught up, and listed none"));
+        };
         if !self.caught.insert((e, at)) {
             return;
         }
@@ -1125,16 +1300,25 @@ impl World {
             self.wrong(format!("mac{me} says term {e}'s records are caught up by a listing begun at {began} s, before it woke at {woke} s"));
         }
         let how = self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.how);
-        let kept = how.as_deref().is_some_and(|h| h == "re-asserted before a sweep" || h == "re-asserted after a long step");
+        let kept =
+            how.as_deref().is_some_and(|h| h == "re-asserted before a sweep" || h == "re-asserted after a long step");
         if let Some(&(_, made)) = self.made.get(&e).filter(|_| !kept) {
             if began < made {
                 self.wrong(format!("mac{me} says term {e}'s records are caught up by a listing begun at {began} s, before the term was made at {made} s ({how:?})"));
             }
         }
         let named = self.landed.get(&e).map(|(_, h)| h.clone()).unwrap_or_default();
-        let missing: Vec<String> = self.written_at.iter().filter(|(k, &w)| w + self.cfg.stale + 1 < began && !named.contains(*k)).map(|(k, _)| k.clone()).collect();
+        let missing: Vec<String> = self
+            .written_at
+            .iter()
+            .filter(|(k, &w)| w + self.cfg.stale + 1 < began && !named.contains(*k))
+            .map(|(k, _)| k.clone())
+            .collect();
         if let Some(k) = missing.first() {
-            self.wrong(format!("mac{me} says term {e}'s records are caught up; they lack {k}, written before its listing ({} in all)", missing.len()));
+            self.wrong(format!(
+                "mac{me} says term {e}'s records are caught up; they lack {k}, written before its listing ({} in all)",
+                missing.len()
+            ));
         }
     }
 
@@ -1142,7 +1326,9 @@ impl World {
     fn merged(&mut self, applied: &[String], overtaken: usize, listed: bool) {
         let again = applied.iter().filter(|k| self.acked.contains(*k)).count() as u64;
         *self.counts.entry("acknowledged entries merged again by a later lead").or_default() += again;
-        let refused = applied.iter().filter(|k| self.files.contains_key(&format!("{}/{k}.why", journal::REJECTED))).count() as u64;
+        let refused =
+            applied.iter().filter(|k| self.files.contains_key(&format!("{}/{k}.why", journal::REJECTED))).count()
+                as u64;
         *self.counts.entry("entries another lead refused, taken").or_default() += refused;
         *self.counts.entry("entries passed over for a later lease's").or_default() += overtaken as u64;
         if listed {
@@ -1160,9 +1346,14 @@ impl World {
             return self.lost(&r, "the shared records");
         }
         if at + QUIET_S > self.cfg.end {
-            self.wrong(format!("term {h} was made at {at} s, in the run's last ten minutes (of {} s) or after: the terms don't settle", self.cfg.end));
+            self.wrong(format!(
+                "term {h} was made at {at} s, in the run's last ten minutes (of {} s) or after: the terms don't settle",
+                self.cfg.end
+            ));
         }
-        let Some(named) = self.files.get(&term::path(h)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member) else {
+        let Some(named) =
+            self.files.get(&term::path(h)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member)
+        else {
             return self.wrong(format!("term {h}'s file isn't whole at the end"));
         };
         for k in 0..self.macs.len() {
@@ -1187,10 +1378,14 @@ impl World {
         if let Err(why) = consistent(r) {
             self.wrong(format!("{whose} aren't consistent: {why}"));
         }
-        let lost: Vec<String> = self.written.iter().filter(|&(k, &kind)| !names(r, k, kind)).map(|(k, _)| k.clone()).collect();
+        let lost: Vec<String> =
+            self.written.iter().filter(|&(k, &kind)| !names(r, k, kind)).map(|(k, _)| k.clone()).collect();
         for k in lost {
             let gone = self.writers.get(&k).is_some_and(|&g| self.macs.get(g).is_some_and(|m| m.gone));
-            self.wrong(format!("entry {k}{} is lost: {whose} don't name it", if gone { " (of a Mac gone for good)" } else { "" }));
+            self.wrong(format!(
+                "entry {k}{} is lost: {whose} don't name it",
+                if gone { " (of a Mac gone for good)" } else { "" }
+            ));
         }
     }
 }
@@ -1336,7 +1531,8 @@ impl Sim {
             // over (§6.5: one gone isn't taken over by itself).
             if w.cfg.leave && !w.macs.iter().any(|m| m.gone) && w.t > w.cfg.faults / 3 && w.t < w.cfg.faults {
                 let h = w.made.keys().max().copied().unwrap_or(0);
-                let named = w.files.get(&term::path(h)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member);
+                let named =
+                    w.files.get(&term::path(h)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member);
                 let leads = w.macs[me].leads.is_some() || named.as_deref() == Some(w.macs[me].id.as_str());
                 if w.rng.chance(if leads { 0.005 } else { 0.02 }) {
                     w.macs[me].gone = true;
@@ -1459,7 +1655,23 @@ impl Mac {
         let me = Member { id: id(k), host: format!("mac{k}"), app: app(0) };
         let rng = Rng(seed ^ (k as u64 + 1).wrapping_mul(0xA076_1D64_78BD_642F));
         let driver = Driver::unlocked(me.clone(), driver::Saved::default());
-        Mac { sim, k, rng, me, driver, jobs: 0, term: 0, leads: None, listed: None, listings: Default::default(), n, coord: (0, 0), settled: None, gave: false, passing: None }
+        Mac {
+            sim,
+            k,
+            rng,
+            me,
+            driver,
+            jobs: 0,
+            term: 0,
+            leads: None,
+            listed: None,
+            listings: Default::default(),
+            n,
+            coord: (0, 0),
+            settled: None,
+            gave: false,
+            passing: None,
+        }
     }
 
     fn run(mut self) {
@@ -1561,7 +1773,12 @@ impl Mac {
             (false, _) => self.passing = None,
             (true, None) => self.passing = Some(awake),
             (true, Some(since)) if awake.saturating_sub(since) > PASSING_S => {
-                self.sim.op(|w, me| w.wrong(format!("mac{me} passed a handover {} s awake ago, neither over, taken back nor dropped", awake - since)))?;
+                self.sim.op(|w, me| {
+                    w.wrong(format!(
+                        "mac{me} passed a handover {} s awake ago, neither over, taken back nor dropped",
+                        awake - since
+                    ))
+                })?;
                 self.passing = Some(awake);
             }
             _ => {}
@@ -1569,7 +1786,9 @@ impl Mac {
         if let Some(downgrade) = forced.filter(|_| passing) {
             let q = self.driver.takeover(&self.sim);
             if q.refused.is_none() && (downgrade || q.downgrade.is_none()) {
-                self.sim.op(|w, me| w.wrong(format!("mac{me}'s forced takeover left the handover it passed waiting ({q:?})")))?;
+                self.sim.op(|w, me| {
+                    w.wrong(format!("mac{me}'s forced takeover left the handover it passed waiting ({q:?})"))
+                })?;
             }
         }
         // (A sweep needs both: its step re-asserted, and its records reflect the journal.)
@@ -1603,7 +1822,9 @@ impl Mac {
         if out.term > 0 && self.rng.chance(P_READ) {
             if let Ok(Some(r)) = Records::newest(&self.sim, out.term, false) {
                 if let Err(why) = consistent(&r) {
-                    self.sim.op(|w, me| w.wrong(format!("mac{me} read term {}'s records at {}, not consistent: {why}", r.term, r.seq)))?;
+                    self.sim.op(|w, me| {
+                        w.wrong(format!("mac{me} read term {}'s records at {}, not consistent: {why}", r.term, r.seq))
+                    })?;
                 }
             }
         }
@@ -1643,7 +1864,9 @@ impl Mac {
                 };
                 (self.settled, self.gave) = (None, false);
             }
-            Event::Merged { applied, overtaken, listed, .. } => self.sim.quiet(|w| w.merged(applied, *overtaken, *listed)),
+            Event::Merged { applied, overtaken, listed, .. } => {
+                self.sim.quiet(|w| w.merged(applied, *overtaken, *listed))
+            }
             Event::Waits { what: "take up", .. } => self.sim.count("take-ups tried again"),
             Event::Waits { what: "have a listing back", .. } => self.sim.count("listings overdue, asked for again"),
             Event::Failed { what: "save the records", .. } => self.sim.count("saves tried again"),
@@ -1663,10 +1886,33 @@ impl Mac {
         self.jobs += 1;
         let t = TARGETS[self.rng.below(TARGETS.len() as u64) as usize];
         let k = format!("k{}x{}", self.k, self.jobs);
-        let built = |k: &str| Handoff { changes: [(logical(t), Some(content(t, k)))].into(), pending: [(content(t, k), "sha".into())].into(), done: Some(("unit".into(), vec![(t.into(), k.to_string())])), ..Default::default() };
+        let built = |k: &str| Handoff {
+            changes: [(logical(t), Some(content(t, k)))].into(),
+            pending: [(content(t, k), "sha".into())].into(),
+            done: Some(("unit".into(), vec![(t.into(), k.to_string())])),
+            ..Default::default()
+        };
         let (step, h) = match self.rng.below(20) {
-            0 => ("unit", Handoff { changes: [(logical(t), Some(content(t, "bogus"))), (format!("elsewhere/{t}"), Some(format!("elsewhere/{t}.bogus.x")))].into(), done: Some(("unit".into(), vec![(t.into(), "bogus".into())])), ..Default::default() }),
-            1 | 2 => ("prune", Handoff { changes: [(logical(t), None)].into(), done: Some(("prune".into(), vec![(format!("unit {t}"), String::new())])), ..Default::default() }),
+            0 => (
+                "unit",
+                Handoff {
+                    changes: [
+                        (logical(t), Some(content(t, "bogus"))),
+                        (format!("elsewhere/{t}"), Some(format!("elsewhere/{t}.bogus.x"))),
+                    ]
+                    .into(),
+                    done: Some(("unit".into(), vec![(t.into(), "bogus".into())])),
+                    ..Default::default()
+                },
+            ),
+            1 | 2 => (
+                "prune",
+                Handoff {
+                    changes: [(logical(t), None)].into(),
+                    done: Some(("prune".into(), vec![(format!("unit {t}"), String::new())])),
+                    ..Default::default()
+                },
+            ),
             3 | 4 => ("flaky", built(&k)),
             _ => ("unit", built(&k)),
         };
@@ -1779,11 +2025,27 @@ impl Draft {
             self.jobs += 1;
             let t = TARGETS[self.rng.below(TARGETS.len() as u64) as usize];
             let k = format!("k{}x{}", self.k, self.jobs);
-            let h = Handoff { changes: [(logical(t), Some(content(t, &k)))].into(), done: Some(("unit".into(), vec![(t.into(), k.clone())])), ..Default::default() };
-            let e = Entry { member: self.me.id.clone(), lease: LeaseId { term: self.cur.term, n: self.jobs * 8 + self.k as u64 }, step: "unit".into(), handoff: h, at: now };
+            let h = Handoff {
+                changes: [(logical(t), Some(content(t, &k)))].into(),
+                done: Some(("unit".into(), vec![(t.into(), k.clone())])),
+                ..Default::default()
+            };
+            let e = Entry {
+                member: self.me.id.clone(),
+                lease: LeaseId { term: self.cur.term, n: self.jobs * 8 + self.k as u64 },
+                step: "unit".into(),
+                handoff: h,
+                at: now,
+            };
             journal::write(&self.sim, &e).ok();
         }
-        let b = Beat { member: self.me.id.clone(), host: self.me.host.clone(), app: self.me.app.clone(), leads: self.leads, ..Default::default() };
+        let b = Beat {
+            member: self.me.id.clone(),
+            host: self.me.host.clone(),
+            app: self.me.app.clone(),
+            leads: self.leads,
+            ..Default::default()
+        };
         self.sim.beat(b).ok();
         self.sim.idle()
     }
@@ -1805,9 +2067,19 @@ fn run(seed: u64, cfg: Cfg, tracing: bool) -> Ran {
             let sh = sh.clone();
             std::thread::spawn(move || {
                 let sim = Sim { sh: sh.clone(), me: k };
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| if cfg.draft { Draft::new(sim, k, seed).run() } else { Mac::new(sim, k, macs, seed).run() }));
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if cfg.draft {
+                        Draft::new(sim, k, seed).run()
+                    } else {
+                        Mac::new(sim, k, macs, seed).run()
+                    }
+                }));
                 if let Err(p) = r {
-                    let why = p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
+                    let why = p
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .unwrap_or_default();
                     let mut w = sh.lock();
                     w.wrong(format!("mac{k} panicked: {why}"));
                     w.done = true;
@@ -1821,7 +2093,11 @@ fn run(seed: u64, cfg: Cfg, tracing: bool) -> Ran {
     }
     let mut w = sh.lock();
     w.finish();
-    Ran { wrong: std::mem::take(&mut w.wrong), counts: std::mem::take(&mut w.counts), trace: w.trace.take().unwrap_or_default() }
+    Ran {
+        wrong: std::mem::take(&mut w.wrong),
+        counts: std::mem::take(&mut w.counts),
+        trace: w.trace.take().unwrap_or_default(),
+    }
 }
 
 /// How many times each kind of thing happened.
@@ -1864,7 +2140,13 @@ fn check_all(seeds: Range<u64>, cfg: impl Fn(u64) -> Cfg + Sync) -> Counts {
         let r = run(*seed, cfg(*seed), true);
         let tail = &r.trace[r.trace.len().saturating_sub(200)..];
         let seeds: Vec<u64> = bad.iter().map(|b| b.0).take(20).collect();
-        panic!("{} of {n} schedules went wrong (seeds {seeds:?}…); seed {seed} ({:?}):\n{}\n\nits last events:\n{}", bad.len(), cfg(*seed), r.wrong.join("\n"), tail.join("\n"));
+        panic!(
+            "{} of {n} schedules went wrong (seeds {seeds:?}…); seed {seed} ({:?}):\n{}\n\nits last events:\n{}",
+            bad.len(),
+            cfg(*seed),
+            r.wrong.join("\n"),
+            tail.join("\n")
+        );
     }
     counts
 }
@@ -1931,10 +2213,15 @@ fn the_pool_keeps_its_invariants_through_a_long_run() {
     // POOL_SIM_MINUTES' faults each (240), the knobs mixed as by default. (A run goes on past its
     // end while its last lead still merges what the faults left: `World::goes_on`.)
     let var = |v: &str, or: u64| std::env::var(v).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
-    let (from, n, faults) = (var("POOL_SIM_FROM", 1_000_000), var("POOL_SIM_SEEDS", 100_000), var("POOL_SIM_MINUTES", 240) * 60);
+    let (from, n, faults) =
+        (var("POOL_SIM_FROM", 1_000_000), var("POOL_SIM_SEEDS", 100_000), var("POOL_SIM_MINUTES", 240) * 60);
     let started = std::time::Instant::now();
     let counts = check_all(from..from + n, |seed| Cfg { faults, end: faults + 1500, ..Cfg::mixed(seed) });
-    eprintln!("{n} schedules of {} minutes' faults in {:.0} s\n{counts:#?}", faults / 60, started.elapsed().as_secs_f64());
+    eprintln!(
+        "{n} schedules of {} minutes' faults in {:.0} s\n{counts:#?}",
+        faults / 60,
+        started.elapsed().as_secs_f64()
+    );
 }
 
 #[test]
@@ -2023,7 +2310,16 @@ fn whole_entries_behind_many_not_whole_on_a_slow_share() {
     // entries its reads had found not whole, and time each step to read twenty. Read in the order
     // of their leases, the whole ones of the latest leases weren't reached until those before them
     // were refused, an hour on: it merged none for ten minutes, and the run ended with them lacking.
-    let cfg = Cfg { faults: 14_400, end: 15_900, cuts: true, op_s: (1, 4), lag: 524, truncs: true, fails: true, ..Cfg::pool() };
+    let cfg = Cfg {
+        faults: 14_400,
+        end: 15_900,
+        cuts: true,
+        op_s: (1, 4),
+        lag: 524,
+        truncs: true,
+        fails: true,
+        ..Cfg::pool()
+    };
     let r = run(1_003_691, cfg, false);
     assert!(r.wrong.is_empty(), "{:?}", r.wrong.iter().take(3).collect::<Vec<_>>());
 }
@@ -2050,7 +2346,11 @@ fn the_first_drafts_shared_records_lose_an_update_under_a_delayed_rename() {
     assert!(r.counts.get("late renames over another's write").is_some_and(|&n| n > 0), "seed {seed}: {:?}", r.wrong);
     let late: Vec<&String> = r.trace.iter().filter(|l| l.contains("rename of state/build/records.json")).collect();
     assert!(!late.is_empty(), "seed {seed}");
-    eprintln!("the first draft, seed {seed}:\n{}\n{}", late.iter().map(|l| l.as_str()).collect::<Vec<_>>().join("\n"), r.wrong.join("\n"));
+    eprintln!(
+        "the first draft, seed {seed}:\n{}\n{}",
+        late.iter().map(|l| l.as_str()).collect::<Vec<_>>().join("\n"),
+        r.wrong.join("\n")
+    );
 }
 
 #[test]
@@ -2102,10 +2402,12 @@ fn the_knobs_one_at_a_time() {
 fn every_seed_runs_the_same_every_time() {
     // POOL_SIM_SEEDS seeds (400), each run twice: the same events, wrongs and counts.
     let n = std::env::var("POOL_SIM_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(400);
-    let differ: Vec<u64> = (0..n).filter(|&seed| {
-        let (a, b) = (run(seed, Cfg::mixed(seed), true), run(seed, Cfg::mixed(seed), true));
-        a.trace != b.trace || a.wrong != b.wrong || a.counts != b.counts
-    }).collect();
+    let differ: Vec<u64> = (0..n)
+        .filter(|&seed| {
+            let (a, b) = (run(seed, Cfg::mixed(seed), true), run(seed, Cfg::mixed(seed), true));
+            a.trace != b.trace || a.wrong != b.wrong || a.counts != b.counts
+        })
+        .collect();
     assert!(differ.is_empty(), "{} of {n} seeds ran differently: {differ:?}", differ.len());
 }
 

@@ -43,7 +43,13 @@ pub fn smb_url() -> &'static str {
 
 /// Whether the Keychain has an internet password for `server` (its attributes only: no prompt).
 fn keychain_knows(server: &str) -> bool {
-    crate::spawn::status(crate::spawn::command("/usr/bin/security").args(["find-internet-password", "-s", server]).stdout(Stdio::null()).stderr(Stdio::null())).is_ok_and(|s| s.success())
+    crate::spawn::status(
+        crate::spawn::command("/usr/bin/security")
+            .args(["find-internet-password", "-s", server])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .is_ok_and(|s| s.success())
 }
 
 /// The URL to mount the share by away from home: the bare name (Tailscale's DNS sends it through the
@@ -94,7 +100,11 @@ pub fn find_mount(host_hint: &str, share: &str) -> Option<Mount> {
 /// Every SMB mount in the kernel's table.
 pub fn smb_mounts() -> Vec<Mount> {
     match mount_table() {
-        Ok(t) => t.into_iter().filter(|(fstype, _, _)| fstype == "smbfs").map(|(_, from, point)| Mount { point: PathBuf::from(point), from }).collect(),
+        Ok(t) => t
+            .into_iter()
+            .filter(|(fstype, _, _)| fstype == "smbfs")
+            .map(|(_, from, point)| Mount { point: PathBuf::from(point), from })
+            .collect(),
         Err(e) => {
             eprintln!("nas: can't read the mount table: {e}");
             Vec::new()
@@ -126,7 +136,10 @@ fn mount_table() -> io::Result<Vec<(String, String, String)>> {
             continue; // mounts were added meanwhile and may not all fit: ask again
         }
         buf.truncate(got as usize);
-        return Ok(buf.iter().map(|s| (c_string(&s.f_fstypename), c_string(&s.f_mntfromname), c_string(&s.f_mntonname))).collect());
+        return Ok(buf
+            .iter()
+            .map(|s| (c_string(&s.f_fstypename), c_string(&s.f_mntfromname), c_string(&s.f_mntonname)))
+            .collect());
     }
 }
 
@@ -195,7 +208,8 @@ fn applescript_escape(s: &str) -> String {
 /// Runs `cmd` to completion within `timeout`, killing it otherwise; an error with its stderr when
 /// it fails.
 fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<()> {
-    let mut child = crate::spawn::spawn(cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())).context("can't run it")?;
+    let mut child = crate::spawn::spawn(cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()))
+        .context("can't run it")?;
     let mut stderr = child.stderr.take();
     // Read stderr on the side so a chatty child can't block on a full pipe.
     let reader = thread::spawn(move || {
@@ -280,7 +294,10 @@ fn with_soft(text: &str, name: &str) -> Result<Option<String>> {
                 if v.trim().eq_ignore_ascii_case("yes") {
                     return Ok(None);
                 }
-                bail!("[{name}] sets soft={} (left as is; soft=yes is needed so a dead NAS can't hang the server)", v.trim());
+                bail!(
+                    "[{name}] sets soft={} (left as is; soft=yes is needed so a dead NAS can't hang the server)",
+                    v.trim()
+                );
             }
         }
     }
@@ -398,7 +415,10 @@ mod tests {
         // The section without soft: the line is added under its header.
         fs::write(&path, "[default]\nstreams=yes\n\n[fishandchips:personal]\nnotify_off=yes\n").unwrap();
         assert!(ensure_nsmb_conf_in(home.path(), "fishandchips", "personal").unwrap());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "[default]\nstreams=yes\n\n[fishandchips:personal]\nsoft=yes\nnotify_off=yes\n");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "[default]\nstreams=yes\n\n[fishandchips:personal]\nsoft=yes\nnotify_off=yes\n"
+        );
 
         // Already soft (any spacing or case): untouched.
         fs::write(&path, "[FISHANDCHIPS:PERSONAL]\n  Soft = YES\n").unwrap();

@@ -58,7 +58,10 @@ impl store::range::RangeRead for MapRange {
         let end = off.checked_add(len as u64).filter(|&e| e <= self.0.len() as u64);
         match end {
             Some(e) => Ok(self.0[off as usize..e as usize].to_vec()),
-            None => Err(store::iopool::IoError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "read past the end"))),
+            None => Err(store::iopool::IoError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "read past the end",
+            ))),
         }
     }
 }
@@ -249,7 +252,10 @@ impl SectView {
     /// `len` bytes from `start` within a section (for sections too big to read whole).
     pub fn get_part(&self, name: &str, start: u64, len: usize) -> Result<Vec<u8>> {
         let &(off, slen) = self.table.get(name).ok_or_else(|| anyhow::anyhow!("no section {name}"))?;
-        ensure!(start.checked_add(len as u64).is_some_and(|e| e <= slen), "bytes {start}+{len} outside section {name} ({slen})");
+        ensure!(
+            start.checked_add(len as u64).is_some_and(|e| e <= slen),
+            "bytes {start}+{len} outside section {name} ({slen})"
+        );
         match &self.src {
             Src::Local(m) => Ok(m[(off + start) as usize..(off + start) as usize + len].to_vec()),
             Src::Remote(r) => Ok(r.read_at(off + start, len)?),
@@ -402,13 +408,16 @@ impl<T: Pod> Sect<T> {
                     return Ok(Gathered::In(b, ranges.to_vec()));
                 }
                 let sz = std::mem::size_of::<T>() as u64;
-                let bytes: Vec<(u64, u64)> = ranges.iter().map(|r| (off + r.start as u64 * sz, r.len() as u64 * sz)).collect();
+                let bytes: Vec<(u64, u64)> =
+                    ranges.iter().map(|r| (off + r.start as u64 * sz, r.len() as u64 * sz)).collect();
                 let need = pages::missing(file, &bytes);
                 if need > len / 2 || need > pages::PAGES_PER_BATCH {
                     return Ok(Gathered::In(pages::whole(file, *off, *len)?, ranges.to_vec()));
                 }
                 pages::prefetch(file, &bytes)?;
-                Ok(Gathered::Owned(ranges.iter().map(|r| self.range(r.clone()).map(Cow::into_owned)).collect::<Result<_>>()?))
+                Ok(Gathered::Owned(
+                    ranges.iter().map(|r| self.range(r.clone()).map(Cow::into_owned)).collect::<Result<_>>()?,
+                ))
             }
         }
     }
@@ -500,7 +509,11 @@ impl BaseView {
             unit,
             ways: base.sect("ways")?,
             verts: base.sect("verts")?,
-            elev: if base.has("elevu") { ElevSect::U16(base.sect("elevu")?) } else { ElevSect::I16(base.sect("elev")?) },
+            elev: if base.has("elevu") {
+                ElevSect::U16(base.sect("elevu")?)
+            } else {
+                ElevSect::I16(base.sect("elev")?)
+            },
             grade: base.sect("grade")?,
             src: base.sect("src")?,
             scenic: if base.has("scenic") { Some(base.sect("scenic")?) } else { None },
@@ -552,7 +565,8 @@ impl BaseView {
                 (Some(b), _) | (None, Some(b)) => b,
                 (None, None) => {
                     let all = self.roads.all()?;
-                    let mut ix: Vec<[u64; 2]> = all.cast::<RoadRec>().iter().enumerate().map(|(i, r)| [r.road, i as u64]).collect();
+                    let mut ix: Vec<[u64; 2]> =
+                        all.cast::<RoadRec>().iter().enumerate().map(|(i, r)| [r.road, i as u64]).collect();
                     ix.sort_unstable();
                     let b = Blob::from_vec(bytemuck::cast_slice(&ix).to_vec());
                     match remote {
@@ -686,16 +700,31 @@ pub struct LTile {
 impl LTile {
     pub fn new(hv: &HiView, rail: bool) -> Result<LTile> {
         Ok(if rail {
-            LTile { parts: hv.lrparts.all()?, bins: hv.lrbins.all()?, railinfo: hv.railinfo.all()?, names: hv.rail_names()? }
+            LTile {
+                parts: hv.lrparts.all()?,
+                bins: hv.lrbins.all()?,
+                railinfo: hv.railinfo.all()?,
+                names: hv.rail_names()?,
+            }
         } else {
-            LTile { parts: hv.lparts.all()?, bins: hv.lbins.all()?, railinfo: Blob::from_vec(Vec::new()), names: Arc::new(Vec::new()) }
+            LTile {
+                parts: hv.lparts.all()?,
+                bins: hv.lbins.all()?,
+                railinfo: Blob::from_vec(Vec::new()),
+                names: Arc::new(Vec::new()),
+            }
         })
     }
     /// From records in memory (the tests' summaries of older hidata).
     #[cfg(test)]
     pub fn from_records(parts: &[LPart], bins: &[LBin], railinfo: &[RailInfo], names: Vec<String>) -> LTile {
         let b = |x: &[u8]| Blob::from_vec(x.to_vec());
-        LTile { parts: b(bytemuck::cast_slice(parts)), bins: b(bytemuck::cast_slice(bins)), railinfo: b(bytemuck::cast_slice(railinfo)), names: Arc::new(names) }
+        LTile {
+            parts: b(bytemuck::cast_slice(parts)),
+            bins: b(bytemuck::cast_slice(bins)),
+            railinfo: b(bytemuck::cast_slice(railinfo)),
+            names: Arc::new(names),
+        }
     }
     pub fn parts(&self) -> &[LPart] {
         self.parts.cast()

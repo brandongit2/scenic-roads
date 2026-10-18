@@ -153,15 +153,29 @@ fn errors_name_what_is_wrong() {
     // Not a zip, not the drop box's shape.
     assert_eq!(checks_of(&Gtfs.file("lake.zip", b"PK nothing")), vec![("tg-zip".to_string(), Level::Error)]);
     assert_eq!(checks_of(&Gtfs.file("lake.csv", b"")), vec![("tg-shape".to_string(), Level::Error)]);
-    assert_eq!(checks_of(&Gtfs.file("lake.toml", b"name = \"x\"\n")).iter().filter(|(_, l)| *l == Level::Error).count(), 2);
+    assert_eq!(
+        checks_of(&Gtfs.file("lake.toml", b"name = \"x\"\n")).iter().filter(|(_, l)| *l == Level::Error).count(),
+        2
+    );
 }
 
 #[test]
 fn calendar_dates_are_months_and_days() {
-    for (s, ok) in [("20000229", true), ("19990229", true), ("00000101", true), ("20001231", true), ("20000230", false), ("2000011", false), ("20001301", false), ("2000010a", false)] {
+    for (s, ok) in [
+        ("20000229", true),
+        ("19990229", true),
+        ("00000101", true),
+        ("20001231", true),
+        ("20000230", false),
+        ("2000011", false),
+        ("20001301", false),
+        ("2000010a", false),
+    ] {
         assert_eq!(valid_month_day(s), ok, "{s}");
     }
-    for (s, ok) in [("06:00:00", true), ("25:10:00", true), ("6:00:00", true), ("06:60:00", false), ("06:00", false), ("", false)] {
+    for (s, ok) in
+        [("06:00:00", true), ("25:10:00", true), ("6:00:00", true), ("06:60:00", false), ("06:00", false), ("", false)]
+    {
         assert_eq!(valid_time(s), ok, "{s}");
     }
 }
@@ -177,7 +191,9 @@ fn warnings_a_route_with_nothing_and_one_route_in_two_files() {
     let v = Version { paths: ["a.zip".to_string(), "b.zip".to_string(), "b.toml".to_string()].into(), read: &read };
     let w = Gtfs.whole(&v).unwrap();
     assert_eq!(w.len(), 3, "{w:?}");
-    assert!(w.iter().all(|f| f.check() == "tg-same-route" && f.level == Level::Warning && f.files == ["a.zip", "b.zip"]));
+    assert!(w
+        .iter()
+        .all(|f| f.check() == "tg-same-route" && f.level == Level::Warning && f.files == ["a.zip", "b.zip"]));
     // A zip and its description are held together.
     assert_eq!(Gtfs.partners("b.zip", &v.paths), vec!["b.toml".to_string()]);
     assert_eq!(Gtfs.partners("a.zip", &v.paths), Vec::<String>::new());

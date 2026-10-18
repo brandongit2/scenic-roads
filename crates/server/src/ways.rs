@@ -78,10 +78,12 @@ pub fn find_here(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<(
     }
     let mut failed = None;
     for (x, y) in tiles {
-        match s.data.hidata(&format!("6/{x}/{y}")).and_then(|hv| Ok(match hv {
-            Some(hv) => hv.find(id)?.map(|h| (hv, h)),
-            None => None,
-        })) {
+        match s.data.hidata(&format!("6/{x}/{y}")).and_then(|hv| {
+            Ok(match hv {
+                Some(hv) => hv.find(id)?.map(|h| (hv, h)),
+                None => None,
+            })
+        }) {
             Ok(Some(found)) => return Ok(Some(found)),
             Ok(None) => {}
             Err(e) => failed = Some(e),
@@ -155,19 +157,32 @@ pub fn way_info(s: &AppState, f: &Found) -> anyhow::Result<WayInfo> {
     let v = bp.verts.range(r.clone())?;
     let e = bp.elev.range(r.clone())?;
     anyhow::ensure!(!v.is_empty(), "way {} has no vertices", w.id);
-    let len: f64 = v.windows(2).map(|p| dist_m(p[0][0] as f64 * E7, p[0][1] as f64 * E7, p[1][0] as f64 * E7, p[1][1] as f64 * E7)).sum();
+    let len: f64 = v
+        .windows(2)
+        .map(|p| dist_m(p[0][0] as f64 * E7, p[0][1] as f64 * E7, p[1][0] as f64 * E7, p[1][1] as f64 * E7))
+        .sum();
     let mut counts = [0u32; NDEM];
     for &c in bp.src.range(r)?.iter() {
         counts[(c as usize).min(NDEM - 1)] += 1;
     }
     let n = w.vcount.max(1) as f32;
-    let sources = (1..NDEM).filter(|&k| counts[k] > 0).map(|k| (DemSource::label(k as u8).to_string(), counts[k] as f32 / n)).collect();
+    let sources = (1..NDEM)
+        .filter(|&k| counts[k] > 0)
+        .map(|k| (DemSource::label(k as u8).to_string(), counts[k] as f32 / n))
+        .collect();
     let name = bp.string(w.name).to_string();
     let name_en = s.road_en(w.id as u64);
     let mid = v[v.len() / 2];
     // A rail line's or a ferry's name is filed as another thing's, a road's as a road's.
     let kind = if class::is_rail(w.class) || w.class == class::FERRY { names::Kind::Other } else { names::Kind::Road };
-    let d = s.names.display(kind, &name, (!name_en.is_empty()).then_some(name_en.as_str()), &[], mid[0] as f64 * E7, mid[1] as f64 * E7);
+    let d = s.names.display(
+        kind,
+        &name,
+        (!name_en.is_empty()).then_some(name_en.as_str()),
+        &[],
+        mid[0] as f64 * E7,
+        mid[1] as f64 * E7,
+    );
     let rv = bp.road_val(f.index)?;
     Ok(WayInfo {
         idx: w.id as u64,
@@ -207,7 +222,11 @@ fn not_found() -> Response {
 pub async fn way_h(State(s): State<S>, Path(id): Path<u64>, Query(at): Query<At>) -> Response {
     let Some(p) = at.point() else { return (StatusCode::BAD_REQUEST, "at=lon,lat").into_response() };
     let s2 = s.clone();
-    match tokio::task::spawn_blocking(move || find_way(&s2, id, p).and_then(|f| f.map(|f| way_info(&s2, &f)).transpose())).await {
+    match tokio::task::spawn_blocking(move || {
+        find_way(&s2, id, p).and_then(|f| f.map(|f| way_info(&s2, &f)).transpose())
+    })
+    .await
+    {
         Ok(Ok(Some(w))) => ([(header::CACHE_CONTROL, "no-cache")], Json(w)).into_response(),
         Ok(Err(e)) => {
             eprintln!("way {id}: {e:#}");
@@ -370,7 +389,13 @@ fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<P
     }
     let has_ch = units.iter().all(|u| u.scenic.is_some());
     // Concatenate vertices along the road (a way's first vertex repeats the previous way's last).
-    let (mut pts, mut els, mut grs, mut srcs, mut chs): (Vec<[i32; 2]>, Vec<i32>, Vec<u8>, Vec<u8>, Vec<[u8; roadcore::scenic::ch::N]>) = Default::default();
+    let (mut pts, mut els, mut grs, mut srcs, mut chs): (
+        Vec<[i32; 2]>,
+        Vec<i32>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<[u8; roadcore::scenic::ch::N]>,
+    ) = Default::default();
     for (k, rw) in ways.iter().enumerate() {
         let (u, j) = slot[k];
         let uv = &units[u];
@@ -431,7 +456,10 @@ fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<P
             let (p, c, n) = (el(&vs[k - 1]), el(&vs[k]), el(&vs[k + 1]));
             (c > p && c >= n) || (c < p && c <= n)
         };
-        if dist[k] >= next || k + 1 == vs.len() || (is_ext && step > 10.0 && (dist[k] - dist[*keep.last().unwrap_or(&0)]) > 2.0) {
+        if dist[k] >= next
+            || k + 1 == vs.len()
+            || (is_ext && step > 10.0 && (dist[k] - dist[*keep.last().unwrap_or(&0)]) > 2.0)
+        {
             keep.push(k);
             next = dist[k] + step;
         }
@@ -440,10 +468,13 @@ fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<P
     Ok(Some(Profile {
         way: info,
         ways: recs.iter().map(|r| r.id as u64).collect(),
-        coords: keep.iter().map(|&k| {
-            let p = pt(&vs[k]);
-            [p[0] as f64 * E7, p[1] as f64 * E7]
-        }).collect(),
+        coords: keep
+            .iter()
+            .map(|&k| {
+                let p = pt(&vs[k]);
+                [p[0] as f64 * E7, p[1] as f64 * E7]
+            })
+            .collect(),
         dist: keep.iter().map(|&k| dist[k] as f32).collect(),
         elev: keep.iter().map(|&k| el(&vs[k]) as f32 / 10.0).collect(),
         grade: keep.iter().map(|&k| gr(&vs[k]) as f32 / 2.0).collect(),
@@ -454,7 +485,10 @@ fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<P
         descent_m: descent,
         max_grade: gmax as f32 / 2.0,
         avg_grade: ((climb + descent) / total * 100.0) as f32,
-        sources: (1..NDEM).filter(|&k| src_len[k] > 0.0).map(|k| (DemSource::label(k as u8).to_string(), src_len[k] / total)).collect(),
+        sources: (1..NDEM)
+            .filter(|&k| src_len[k] > 0.0)
+            .map(|k| (DemSource::label(k as u8).to_string(), src_len[k] / total))
+            .collect(),
         truncated,
         ch: if has_ch { keep.iter().map(|&k| chs[vs[k]]).collect() } else { Vec::new() },
     }))

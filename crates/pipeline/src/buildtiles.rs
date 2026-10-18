@@ -8,11 +8,11 @@
 //! release's bbox columns, its files in parallel, into local parts by tile, which are then merged
 //! per tile onto the NAS. A unit reads the tiles near its roads (`tiles_for`, `stage`).
 
-use det::Det;
 use crate::legacy::Unit;
 use crate::out::Out;
 use crate::reach::Reach;
 use anyhow::{Context, Result};
+use det::Det;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
@@ -72,7 +72,8 @@ impl Index {
     pub fn load(out: &Out, release: &str) -> Result<Option<Index>> {
         let Some(c) = out.get(&index_logical(release)) else { return Ok(None) };
         let p = out.path(c);
-        let mut ix: Index = serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("{}", p.display()))?).with_context(|| format!("{}", p.display()))?;
+        let mut ix: Index = serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("{}", p.display()))?)
+            .with_context(|| format!("{}", p.display()))?;
         ix.tag = c.rsplit('.').nth(1).unwrap_or("").to_string();
         Ok(Some(ix))
     }
@@ -97,7 +98,11 @@ pub fn local_tile(root: &Path, index: &Index, t: Unit, cache: &Path) -> Result<O
 /// Where tile `t` is on the NAS, where its copy in `cache` goes, and its length (`local_tile`).
 pub fn tile_copy(root: &Path, index: &Index, t: Unit, cache: &Path) -> Option<(PathBuf, PathBuf, u64)> {
     let want = index.bytes(t)?;
-    Some((tile_path(root, &index.release, t), cache.join("blobs/buildings").join(&index.tag).join(format!("{}-{}.f32", t.x, t.y)), want))
+    Some((
+        tile_path(root, &index.release, t),
+        cache.join("blobs/buildings").join(&index.tag).join(format!("{}-{}.f32", t.x, t.y)),
+        want,
+    ))
 }
 
 /// The copy of `src` at `local`, `want` bytes, made when it isn't there whole, and held.
@@ -157,7 +162,11 @@ fn row_edges() -> &'static [i32] {
     static EDGES: std::sync::OnceLock<Vec<i32>> = std::sync::OnceLock::new();
     EDGES.get_or_init(|| {
         let n = (1u32 << ZOOM) as f64;
-        (0..=1u32 << ZOOM).map(|y| ((std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n)).dsinh().datan().to_degrees() * 1e7).round() as i32).collect()
+        (0..=1u32 << ZOOM)
+            .map(|y| {
+                ((std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n)).dsinh().datan().to_degrees() * 1e7).round() as i32
+            })
+            .collect()
     })
 }
 
@@ -197,19 +206,29 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
     std::fs::create_dir_all(&parts)?;
     let free = crate::agent::room::disk_free(&parts)?;
     let started = std::fs::read_dir(&parts)?.flatten().filter(|e| e.path().join(".done").exists()).count();
-    anyhow::ensure!(free >= PARTS_ROOM || started > 0, "the scan's parts need ~{} GB free; {} GB free", PARTS_ROOM >> 30, free >> 30);
+    anyhow::ensure!(
+        free >= PARTS_ROOM || started > 0,
+        "the scan's parts need ~{} GB free; {} GB free",
+        PARTS_ROOM >> 30,
+        free >> 30
+    );
     use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
     let p = phase("buildings.py", Class::Mixed);
     let mut c = store::spawn::command("uv");
-    c.current_dir(dem).env(crate::inputs::sources::PYTHON_ENV, &declared).args(["run", "python", "buildings.py", "--world"]).arg(&parts).args(["--zoom", &ZOOM.to_string(), "--workers", &workers.to_string(), "--release", &release]);
+    c.current_dir(dem)
+        .env(crate::inputs::sources::PYTHON_ENV, &declared)
+        .args(["run", "python", "buildings.py", "--world"])
+        .arg(&parts)
+        .args(["--zoom", &ZOOM.to_string(), "--workers", &workers.to_string(), "--release", &release]);
     crate::timings::child(&mut c);
     let st = store::spawn::status(&mut c).context("run buildings.py")?;
     anyhow::ensure!(st.success(), "buildings.py: {st}");
     drop(p);
     eprintln!("buildings: the release scanned ({:.0?})", t0.elapsed());
     // Every file of the release scanned whole.
-    let files: Vec<String> = serde_json::from_slice(&std::fs::read(parts.join("files.json")).context("the release's files (files.json)")?)?;
+    let files: Vec<String> =
+        serde_json::from_slice(&std::fs::read(parts.join("files.json")).context("the release's files (files.json)")?)?;
     let done = (0..files.len()).filter(|i| parts.join(format!("{i:04}/.done")).exists()).count();
     anyhow::ensure!(!files.is_empty() && done == files.len(), "{done} of the release's {} files scanned", files.len());
     // Each tile's parts, from every file of the release.
@@ -251,7 +270,11 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
             std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
             // Read back, as every write to the NAS is.
             let back = std::fs::read(&tmp).with_context(|| format!("read back {}", tmp.display()))?;
-            anyhow::ensure!(store::naming::hash16(&back) == store::naming::hash16(bytes), "{}: read back differs", tmp.display());
+            anyhow::ensure!(
+                store::naming::hash16(&back) == store::naming::hash16(bytes),
+                "{}: read back differs",
+                tmp.display()
+            );
             std::fs::rename(&tmp, &dest)?;
             p.count(bytes.len() as u64, 1);
         }
@@ -277,7 +300,9 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
 /// holds a few such), so the same buildings make the same file.
 fn canonical(mut v: Vec<[f32; 4]>) -> Vec<[f32; 4]> {
     let key = |b: &[f32; 4]| b.map(f32::to_bits);
-    v.sort_unstable_by(|a, b| a.iter().zip(b).map(|(x, y)| x.total_cmp(y)).find(|o| o.is_ne()).unwrap_or(std::cmp::Ordering::Equal));
+    v.sort_unstable_by(|a, b| {
+        a.iter().zip(b).map(|(x, y)| x.total_cmp(y)).find(|o| o.is_ne()).unwrap_or(std::cmp::Ordering::Equal)
+    });
     v.dedup_by(|a, b| key(a) == key(b));
     v
 }
@@ -286,7 +311,14 @@ fn canonical(mut v: Vec<[f32; 4]>) -> Vec<[f32; 4]> {
 /// it): links to its tiles' files (`tiles_for` with its reach), those without buildings left out.
 /// The number of tiles linked.
 /// With `cache`, the links are to the tiles' copies there (`local_tile`), else to the NAS's files.
-pub fn stage(root: &Path, index: &Index, u: Unit, reach: Option<&Reach>, dir: &Path, cache: Option<&Path>) -> Result<usize> {
+pub fn stage(
+    root: &Path,
+    index: &Index,
+    u: Unit,
+    reach: Option<&Reach>,
+    dir: &Path,
+    cache: Option<&Path>,
+) -> Result<usize> {
     if dir.exists() {
         std::fs::remove_dir_all(dir)?;
     }
@@ -318,7 +350,10 @@ mod tests {
         // Its tile's z8 tiles and those within 20 km (+ 1 km): the same as the tiles meeting that box.
         let b = crate::hipack::grow(crate::reach::near_box(u), MARGIN_KM);
         let deg = |v: i32| v as f64 * 1e-7;
-        let want: Vec<Unit> = crate::stage::tiles_in(ZOOM, [deg(b[0]), deg(b[1]), deg(b[2]), deg(b[3])]).into_iter().map(|(x, y)| Unit { z: ZOOM, x, y }).collect();
+        let want: Vec<Unit> = crate::stage::tiles_in(ZOOM, [deg(b[0]), deg(b[1]), deg(b[2]), deg(b[3])])
+            .into_iter()
+            .map(|(x, y)| Unit { z: ZOOM, x, y })
+            .collect();
         assert_eq!(near, want);
         assert!(near.contains(&Unit { z: ZOOM, x: 128, y: 84 }) && near.len() == 36, "{near:?}");
         // Its own long road out to the next z6 tile but one reads the z8 tiles along it; a ferry,
@@ -363,7 +398,13 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let u = Unit { z: 6, x: 32, y: 21 };
         let near = tiles_for(u, None);
-        let index = Index { fmt: 1, release: TEST_RELEASE.into(), zoom: ZOOM, tiles: [(near[0].slash(), 5), (near[7].slash(), 9)].into(), tag: String::new() };
+        let index = Index {
+            fmt: 1,
+            release: TEST_RELEASE.into(),
+            zoom: ZOOM,
+            tiles: [(near[0].slash(), 5), (near[7].slash(), 9)].into(),
+            tag: String::new(),
+        };
         let staged = d.path().join("staged");
         assert_eq!(stage(d.path(), &index, u, None, &staged, None).unwrap(), 2);
         let link = std::fs::read_link(staged.join(format!("{}.f32", near[7].dash()))).unwrap();
@@ -387,7 +428,8 @@ mod tests {
         assert_eq!(local_tile(d.path(), &index, near[7], &cache).unwrap().unwrap(), link);
         assert_eq!(std::fs::metadata(&link).unwrap().len(), 16 * 9);
         std::fs::write(tile_path(d.path(), TEST_RELEASE, near[0]), b"cut").unwrap();
-        std::fs::remove_file(cache.join(format!("blobs/buildings/0123456789abcdef/{}-{}.f32", near[0].x, near[0].y))).unwrap();
+        std::fs::remove_file(cache.join(format!("blobs/buildings/0123456789abcdef/{}-{}.f32", near[0].x, near[0].y)))
+            .unwrap();
         assert!(local_tile(d.path(), &index, near[0], &cache).is_err());
         assert!(local_tile(d.path(), &index, near[1], &cache).unwrap().is_none());
     }

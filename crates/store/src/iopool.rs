@@ -15,9 +15,9 @@
 //! The API is blocking (std threads and channels), for use from plain threads or
 //! `spawn_blocking`.
 
+use crate::sys::PosIo;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Write};
-use crate::sys::PosIo;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::SeqCst};
@@ -92,7 +92,15 @@ impl PoolConfig {
     /// `threads` workers and `op_timeout`; a probe every 3 s, under the same timeout; 2 spare
     /// threads; 3 s for the share to answer after an overrun.
     pub fn new(threads: usize, op_timeout: Duration, probe: PathBuf) -> Self {
-        Self { threads: threads.max(1), op_timeout, probe, probe_interval: Duration::from_secs(3), probe_timeout: op_timeout, spare: 2, alive_timeout: Duration::from_secs(3) }
+        Self {
+            threads: threads.max(1),
+            op_timeout,
+            probe,
+            probe_interval: Duration::from_secs(3),
+            probe_timeout: op_timeout,
+            spare: 2,
+            alive_timeout: Duration::from_secs(3),
+        }
     }
 }
 
@@ -222,7 +230,13 @@ impl IoPool {
     /// The breaker's state and the threads' counts.
     pub fn status(&self) -> PoolStatus {
         let c = lock(&self.inner.counts);
-        PoolStatus { online: self.is_online(), offline_since: c.offline_since, workers: c.workers, stuck: c.stuck, timeouts: c.timeouts }
+        PoolStatus {
+            online: self.is_online(),
+            offline_since: c.offline_since,
+            workers: c.workers,
+            stuck: c.stuck,
+            timeouts: c.timeouts,
+        }
     }
 
     /// Calls `f(online)` on every change of state (from whichever thread caused it; keep it short).
@@ -263,7 +277,8 @@ impl IoPool {
         let probe = self.inner.cfg.probe.clone();
         let run = Box::new(move || {
             let _ = tx.send(Msg::Started);
-            let r = panic::catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| Err(io::Error::other("NAS operation panicked")));
+            let r = panic::catch_unwind(AssertUnwindSafe(f))
+                .unwrap_or_else(|_| Err(io::Error::other("NAS operation panicked")));
             // A file missing because the whole share is gone means the NAS is offline.
             let gone = matches!(&r, Err(e) if e.kind() == io::ErrorKind::NotFound) && fs::metadata(&probe).is_err();
             let _ = tx.send(Msg::Done(r, gone));
@@ -280,7 +295,9 @@ impl IoPool {
             match rx.recv_timeout(left.min(POLL)) {
                 Ok(Msg::Started) => break,
                 Ok(Msg::Done(r, gone)) => return self.inner.finish(r, gone),
-                Err(RecvTimeoutError::Disconnected) => return Err(IoError::Io(io::Error::other("the NAS I/O pool has shut down"))),
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(IoError::Io(io::Error::other("the NAS I/O pool has shut down")))
+                }
                 Err(RecvTimeoutError::Timeout) => {
                     let offline = !self.is_online();
                     if !offline && Instant::now() < deadline {
@@ -301,7 +318,9 @@ impl IoPool {
 
         match rx.recv_timeout(timeout) {
             Ok(Msg::Done(r, gone)) => self.inner.finish(r, gone),
-            Ok(Msg::Started) | Err(RecvTimeoutError::Disconnected) => Err(IoError::Io(io::Error::other("NAS operation lost"))),
+            Ok(Msg::Started) | Err(RecvTimeoutError::Disconnected) => {
+                Err(IoError::Io(io::Error::other("NAS operation lost")))
+            }
             Err(RecvTimeoutError::Timeout) => {
                 if state.compare_exchange(RUNNING, ABANDONED, SeqCst, SeqCst).is_err() {
                     // It finished just as the time ran out; the result is already in the channel.
@@ -353,7 +372,13 @@ impl IoPool {
     }
 
     /// `read_at` with its own timeout.
-    pub fn read_at_timeout(&self, file: &Arc<File>, off: u64, len: usize, timeout: Duration) -> Result<Vec<u8>, IoError> {
+    pub fn read_at_timeout(
+        &self,
+        file: &Arc<File>,
+        off: u64,
+        len: usize,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, IoError> {
         let f = file.clone();
         self.call_timeout(timeout, move || {
             let mut buf = vec![0u8; len];
@@ -393,7 +418,12 @@ impl IoPool {
                 let e = e?;
                 // Gone between the listing and the stat: skip it.
                 let Ok(m) = e.metadata() else { continue };
-                out.push(DirItem { name: e.file_name().to_string_lossy().into_owned(), is_dir: m.is_dir(), len: m.len(), modified: m.modified().ok() });
+                out.push(DirItem {
+                    name: e.file_name().to_string_lossy().into_owned(),
+                    is_dir: m.is_dir(),
+                    len: m.len(),
+                    modified: m.modified().ok(),
+                });
             }
             out.sort_by(|a, b| a.name.cmp(&b.name));
             Ok(out)
@@ -666,7 +696,6 @@ fn is_disconnect(e: &io::Error) -> bool {
     crate::sys::is_disconnect(e)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -685,7 +714,11 @@ mod tests {
     const WATCHDOG: Duration = Duration::from_secs(300);
 
     fn cfg(probe: PathBuf, threads: usize, timeout_ms: u64) -> PoolConfig {
-        PoolConfig { probe_interval: Duration::from_millis(20), alive_timeout: Duration::from_secs(600), ..PoolConfig::new(threads, Duration::from_millis(timeout_ms), probe) }
+        PoolConfig {
+            probe_interval: Duration::from_millis(20),
+            alive_timeout: Duration::from_secs(600),
+            ..PoolConfig::new(threads, Duration::from_millis(timeout_ms), probe)
+        }
     }
 
     /// Polls `cond` until it holds; false only past the watchdog (`what` it waited for, said).
@@ -814,7 +847,9 @@ mod tests {
         assert_eq!(fs::read(deeper.join("c.bin")).unwrap(), b"new");
         assert!(!tmp.exists());
         // An ordinary error leaves the NAS online.
-        assert!(matches!(pool.read_all(&dir.path().join("missing")), Err(IoError::Io(e)) if e.kind() == io::ErrorKind::NotFound));
+        assert!(
+            matches!(pool.read_all(&dir.path().join("missing")), Err(IoError::Io(e)) if e.kind() == io::ErrorKind::NotFound)
+        );
         assert!(pool.is_online());
         // A panicking operation is an error, and its worker lives on.
         assert!(matches!(pool.call(|| -> io::Result<()> { panic!("boom") }), Err(IoError::Io(_))));
@@ -847,7 +882,10 @@ mod tests {
         let t0 = Instant::now();
         let ran = Arc::new(AtomicBool::new(false));
         let r2 = ran.clone();
-        assert!(matches!(pool.call_timeout(Duration::from_secs(600), move || Ok(r2.store(true, SeqCst))), Err(IoError::Offline)));
+        assert!(matches!(
+            pool.call_timeout(Duration::from_secs(600), move || Ok(r2.store(true, SeqCst))),
+            Err(IoError::Offline)
+        ));
         assert!(matches!(pool.read_all(&dir.path().join("x")), Err(IoError::Offline)));
         assert!(t0.elapsed() < Duration::from_secs(600) && !ran.load(SeqCst));
 
@@ -908,7 +946,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let probe = dir.path().join("share");
         fs::create_dir(&probe).unwrap();
-        let pool = IoPool::with_config(PoolConfig { probe_interval: Duration::from_secs(60), ..cfg(probe.clone(), 4, 100) });
+        let pool =
+            IoPool::with_config(PoolConfig { probe_interval: Duration::from_secs(60), ..cfg(probe.clone(), 4, 100) });
         fs::remove_dir(&probe).unwrap();
         // Reads overrun: the first to find the share gone trips the breaker; any call after that is
         // refused.

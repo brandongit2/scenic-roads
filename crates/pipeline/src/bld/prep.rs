@@ -67,7 +67,12 @@ pub fn read_frame(r: &mut dyn Read) -> Result<Option<Frame>> {
 }
 
 /// Writes a frame (tests, and anything else that hands records to `read_stream`).
-pub fn write_frame(w: &mut dyn std::io::Write, kind: u8, mut header: serde_json::Value, cols: &[(&str, &[u8])]) -> Result<()> {
+pub fn write_frame(
+    w: &mut dyn std::io::Write,
+    kind: u8,
+    mut header: serde_json::Value,
+    cols: &[(&str, &[u8])],
+) -> Result<()> {
     header["cols"] = serde_json::Value::Array(cols.iter().map(|(n, b)| serde_json::json!([n, b.len()])).collect());
     let h = serde_json::to_vec(&header)?;
     w.write_all(&[kind])?;
@@ -121,7 +126,14 @@ pub fn wkb_polygons(b: &[u8], pts: &mut Vec<[f64; 2]>, rings: &mut Vec<(u32, u32
             let dims = 2 + usize::from(z || iso == 1 || iso == 3) + usize::from(m || iso == 2 || iso == 3);
             Ok((le, b, dims))
         }
-        fn polygon(&mut self, le: bool, dims: usize, poly: u32, pts: &mut Vec<[f64; 2]>, rings: &mut Vec<(u32, u32)>) -> Result<()> {
+        fn polygon(
+            &mut self,
+            le: bool,
+            dims: usize,
+            poly: u32,
+            pts: &mut Vec<[f64; 2]>,
+            rings: &mut Vec<(u32, u32)>,
+        ) -> Result<()> {
             let nr = self.u32(le)?;
             for _ in 0..nr {
                 let np = self.u32(le)?;
@@ -229,9 +241,18 @@ pub struct Ghsl {
 impl Ghsl {
     fn add(&mut self, f: &Frame) -> Result<()> {
         let h = &f.header;
-        let t: Vec<f64> = h["transform"].as_array().context("GHSL window: transform")?.iter().map(|v| v.as_f64().unwrap_or(f64::NAN)).collect();
-        ensure!(t.len() == 6 && t.iter().all(|v| v.is_finite()) && t[1] > 0.0 && t[5] < 0.0, "GHSL window: transform {t:?}");
-        let (w, hh) = (h["width"].as_u64().context("width")? as usize, h["height"].as_u64().context("height")? as usize);
+        let t: Vec<f64> = h["transform"]
+            .as_array()
+            .context("GHSL window: transform")?
+            .iter()
+            .map(|v| v.as_f64().unwrap_or(f64::NAN))
+            .collect();
+        ensure!(
+            t.len() == 6 && t.iter().all(|v| v.is_finite()) && t[1] > 0.0 && t[5] < 0.0,
+            "GHSL window: transform {t:?}"
+        );
+        let (w, hh) =
+            (h["width"].as_u64().context("width")? as usize, h["height"].as_u64().context("height")? as usize);
         let data = f.cols.get("data").context("GHSL window: data")?;
         ensure!(data.len() == w * hh * 4, "GHSL window: {} bytes for {w} × {hh}", data.len());
         self.wins.push(Window {
@@ -446,10 +467,29 @@ impl Prepped {
         let cmap = if part { Vec::new() } else { self.classes.map(&dicts["class"])? };
         let smap = if part { Vec::new() } else { self.subtypes.map(&dicts["subtype"])? };
         let parents: &[[u8; 36]] = if part { col(f, "parent", n, 36)?.as_chunks::<36>().0 } else { &[] };
-        let osm_ds = dicts["dataset"].as_array().and_then(|a| a.iter().position(|v| v.as_str() == Some("OpenStreetMap")));
-        let code = |m: &[u16], v: i32| -> u16 { if v >= 0 { m.get(v as usize).copied().unwrap_or(0) } else { 0 } };
-        let dm = |v: f64| -> u16 { if v.is_finite() && v > 0.0 { (v * 10.0).round().min(65535.0) as u16 } else { 0 } };
-        let fl = |v: i32| -> u8 { if v >= 1 { v.min(255) as u8 } else { 0 } };
+        let osm_ds =
+            dicts["dataset"].as_array().and_then(|a| a.iter().position(|v| v.as_str() == Some("OpenStreetMap")));
+        let code = |m: &[u16], v: i32| -> u16 {
+            if v >= 0 {
+                m.get(v as usize).copied().unwrap_or(0)
+            } else {
+                0
+            }
+        };
+        let dm = |v: f64| -> u16 {
+            if v.is_finite() && v > 0.0 {
+                (v * 10.0).round().min(65535.0) as u16
+            } else {
+                0
+            }
+        };
+        let fl = |v: i32| -> u8 {
+            if v >= 1 {
+                v.min(255) as u8
+            } else {
+                0
+            }
+        };
         let ghsl = &self.ghsl_wins;
         let rows: Vec<Result<Option<Row>, u8>> = (0..n)
             .into_par_iter()
@@ -483,7 +523,11 @@ impl Prepped {
                     verts.extend(r.iter().map(|q| [e7(q[0]), e7(q[1])]));
                 }
                 let r0 = roff[i] as usize;
-                let osm = if osm_ds.is_some_and(|o| fds[i] == o as i32) { std::str::from_utf8(&rid[r0..roff[i + 1] as usize]).map(osm_id).unwrap_or(0) } else { 0 };
+                let osm = if osm_ds.is_some_and(|o| fds[i] == o as i32) {
+                    std::str::from_utf8(&rid[r0..roff[i + 1] as usize]).map(osm_id).unwrap_or(0)
+                } else {
+                    0
+                };
                 let hs = if hds[i] >= 0 { hds[i] } else { fds[i] };
                 let mut flags = if part { flag::PART } else { 0 };
                 if !part && has_parts[i] != 0 {
@@ -576,7 +620,9 @@ impl Prepped {
         let mut ord: Vec<u32> = (0..self.len() as u32).collect();
         ord.par_sort_unstable_by_key(|&i| (self.key[i as usize], self.id[i as usize], i));
         let before = ord.len();
-        ord.dedup_by(|b, a| self.id[*a as usize] == self.id[*b as usize] && self.key[*a as usize] == self.key[*b as usize]);
+        ord.dedup_by(|b, a| {
+            self.id[*a as usize] == self.id[*b as usize] && self.key[*a as usize] == self.key[*b as usize]
+        });
         self.stats.duplicates = (before - ord.len()) as u64;
         ord
     }
@@ -641,7 +687,19 @@ impl Prepped {
                 nb += 1;
             }
         }
-        let meta = Meta { fmt: 1, tile: t.slash(), release: release.to_string(), buildings: nb, parts: np, srcs, classes, subtypes, roofs, ghsl: "R2023A".into(), read: self.read.clone() };
+        let meta = Meta {
+            fmt: 1,
+            tile: t.slash(),
+            release: release.to_string(),
+            buildings: nb,
+            parts: np,
+            srcs,
+            classes,
+            subtypes,
+            roofs,
+            ghsl: "R2023A".into(),
+            read: self.read.clone(),
+        };
         // Blocks: the records of each z14 tile, a thousand tiles at a time compressed in parallel.
         let mut groups: Vec<(u64, std::ops::Range<usize>)> = Vec::new();
         let mut s = 0;
@@ -693,7 +751,9 @@ impl Prepped {
                 ensure!(self.stats.rows == 0, "bldprep.py sent a GHSL window after rows");
                 self.ghsl_wins.add(f)?;
             }
-            kind::BUILDINGS => self.add_rows(f, t, false).with_context(|| format!("buildings of {}", f.header["src"]))?,
+            kind::BUILDINGS => {
+                self.add_rows(f, t, false).with_context(|| format!("buildings of {}", f.header["src"]))?
+            }
             kind::PARTS => self.add_rows(f, t, true).with_context(|| format!("parts of {}", f.header["src"]))?,
             kind::END => {
                 self.read = f.header.clone();
@@ -714,14 +774,20 @@ impl Prepped {
 /// (crate::inputs::sources, given bldprep.py by `SCENIC_SOURCES`).
 pub fn run(out: &mut Out, t: Unit, dem: &Path) -> Result<Stats> {
     let release = crate::buildtiles::release_of(out.root(), &out.manifest)?;
-    let declared = crate::inputs::sources::write_for_python(out.root(), &out.manifest, &out.scratch_file("bldprep-sources"))?;
+    let declared =
+        crate::inputs::sources::write_for_python(out.root(), &out.manifest, &out.scratch_file("bldprep-sources"))?;
     ensure!(t.z == 6, "bldprep takes z6 tiles ({} isn't one)", t.slash());
     let t0 = std::time::Instant::now();
     use crate::timings::{phase, Class};
     // (bldprep.py reading the sources as this reads its stream: one phase, its own under it.)
     let streamed = phase("bldprep.py, its stream read", Class::Mixed);
     let mut c = store::spawn::command("uv");
-    c.current_dir(dem).env(crate::inputs::sources::PYTHON_ENV, &declared).args(["run", "python", "bldprep.py", "--root"]).arg(out.root()).args(["--tile", &t.slash(), "--release", &release]).stdout(std::process::Stdio::piped());
+    c.current_dir(dem)
+        .env(crate::inputs::sources::PYTHON_ENV, &declared)
+        .args(["run", "python", "bldprep.py", "--root"])
+        .arg(out.root())
+        .args(["--tile", &t.slash(), "--release", &release])
+        .stdout(std::process::Stdio::piped());
     crate::timings::child(&mut c);
     let mut child = store::spawn::spawn(&mut c).context("run bldprep.py")?;
     // The stream read on its own thread, a few frames ahead, so Python reads on while records are
@@ -756,7 +822,9 @@ pub fn run(out: &mut Out, t: Unit, dem: &Path) -> Result<Stats> {
             if p.take(&f, t)? {
                 return Ok(frames);
             }
-            if let (kind::BUILDINGS | kind::PARTS, Some(k), Some(n)) = (f.kind, f.header["k"].as_u64(), f.header["of"].as_u64()) {
+            if let (kind::BUILDINGS | kind::PARTS, Some(k), Some(n)) =
+                (f.kind, f.header["k"].as_u64(), f.header["of"].as_u64())
+            {
                 if k % 25 == 0 || k + 1 == n {
                     crate::agent::jobs::report(k + 1, n, "row groups read");
                 }
@@ -840,7 +908,18 @@ pub(crate) mod tests {
 
     impl Default for B<'_> {
         fn default() -> Self {
-            B { id: 0, rings: Vec::new(), height: f64::NAN, floors: i32::MIN, class: "", dataset: "OpenStreetMap", osm: "", underground: false, has_parts: false, parent: 0 }
+            B {
+                id: 0,
+                rings: Vec::new(),
+                height: f64::NAN,
+                floors: i32::MIN,
+                class: "",
+                dataset: "OpenStreetMap",
+                osm: "",
+                underground: false,
+                has_parts: false,
+                parent: 0,
+            }
         }
     }
 
@@ -857,7 +936,8 @@ pub(crate) mod tests {
         let (mut goff, mut geom) = (vec![0u64], Vec::new());
         let (mut roff, mut rid) = (vec![0u64], Vec::new());
         let (mut h, mut mh, mut nf, mut mf) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        let (mut cls, mut sub, mut roof, mut hp, mut ug, mut fds, mut hds) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut cls, mut sub, mut roof, mut hp, mut ug, mut fds, mut hds) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let classes: Vec<&str> = {
             let mut v: Vec<&str> = bs.iter().map(|b| b.class).filter(|c| !c.is_empty()).collect();
             v.dedup();
@@ -892,7 +972,21 @@ pub(crate) mod tests {
         let goff: Vec<u8> = bytemuck::cast_slice(&goff).to_vec();
         let roff: Vec<u8> = bytemuck::cast_slice(&roff).to_vec();
         let header = serde_json::json!({ "n": n, "src": "test", "dicts": { "class": classes, "subtype": [], "roof": [], "dataset": datasets } });
-        let mut cols: Vec<(&str, &[u8])> = vec![("id", &ids), ("geom_off", &goff), ("geom", &geom), ("height", &h), ("min_height", &mh), ("num_floors", &nf), ("min_floor", &mf), ("roof", &roof), ("is_underground", &ug), ("fds", &fds), ("hds", &hds), ("rid_off", &roff), ("rid", &rid)];
+        let mut cols: Vec<(&str, &[u8])> = vec![
+            ("id", &ids),
+            ("geom_off", &goff),
+            ("geom", &geom),
+            ("height", &h),
+            ("min_height", &mh),
+            ("num_floors", &nf),
+            ("min_floor", &mf),
+            ("roof", &roof),
+            ("is_underground", &ug),
+            ("fds", &fds),
+            ("hds", &hds),
+            ("rid_off", &roff),
+            ("rid", &rid),
+        ];
         if part {
             cols.push(("parent", &parents));
         } else {
@@ -962,14 +1056,18 @@ pub(crate) mod tests {
         let t = Unit { z: 6, x: 32, y: 22 };
         let mut s = MAGIC.to_vec();
         let b = |id: u128, lon: f64, lat: f64| B { id, rings: vec![square(lon, lat, 0.0002)], ..Default::default() };
-        frame(&mut s, false, &[
-            B { height: 21.5, class: "apartments", osm: "w77@3", ..b(3, 2.3470, 48.8580) },
-            B { floors: 6, ..b(1, 2.3480, 48.8590) },
-            b(2, 8.0, 48.8),
-            B { underground: true, ..b(4, 2.35, 48.86) },
-            B { has_parts: true, ..b(5, 2.3490, 48.8600) },
-            B { has_parts: true, ..b(6, 2.3500, 48.8610) },
-        ]);
+        frame(
+            &mut s,
+            false,
+            &[
+                B { height: 21.5, class: "apartments", osm: "w77@3", ..b(3, 2.3470, 48.8580) },
+                B { floors: 6, ..b(1, 2.3480, 48.8590) },
+                b(2, 8.0, 48.8),
+                B { underground: true, ..b(4, 2.35, 48.86) },
+                B { has_parts: true, ..b(5, 2.3490, 48.8600) },
+                B { has_parts: true, ..b(6, 2.3500, 48.8610) },
+            ],
+        );
         frame(&mut s, true, &[B { parent: 5, height: 30.0, ..b(7, 2.34905, 48.86005) }]);
         end(&mut s);
         let p = read_stream(&mut &s[..], t).unwrap();

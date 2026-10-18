@@ -131,11 +131,7 @@ pub struct RunRec {
 impl RunRec {
     /// The main thread's top-level phases' wall time.
     pub fn timed_s(&self) -> f64 {
-        self.phases
-            .iter()
-            .filter(|p| !p.background)
-            .map(|p| p.wall_s)
-            .sum()
+        self.phases.iter().filter(|p| !p.background).map(|p| p.wall_s).sum()
     }
 }
 
@@ -215,10 +211,7 @@ pub fn cpu_us() -> Option<u64> {
 }
 
 fn now_s() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 /// Starts timing this process's run as a job of `kind` (its step), from now. Again: no change.
@@ -265,11 +258,7 @@ impl Phase {
 
     /// A phase that times nothing (no run being timed).
     pub fn none() -> Phase {
-        Phase {
-            open: None,
-            t: Instant::now(),
-            cpu: None,
-        }
+        Phase { open: None, t: Instant::now(), cpu: None }
     }
 }
 
@@ -300,11 +289,7 @@ fn open(name: &str, class: Class) -> Phase {
         return Phase::none();
     }
     let parent = inner;
-    let idx = match r
-        .accs
-        .iter()
-        .position(|a| a.name == name && a.parent == parent)
-    {
+    let idx = match r.accs.iter().position(|a| a.name == name && a.parent == parent) {
         Some(i) => i,
         None => {
             r.accs.push(Acc {
@@ -346,11 +331,7 @@ fn open(name: &str, class: Class) -> Phase {
     STACK.with(|s| s.borrow_mut().push(o.clone()));
     let cpu = cpu_us();
     r.overhead_ns += t_in.elapsed().as_nanos() as u64;
-    Phase {
-        open: Some(o),
-        t: Instant::now(),
-        cpu,
-    }
+    Phase { open: Some(o), t: Instant::now(), cpu }
 }
 
 impl Drop for Phase {
@@ -369,11 +350,8 @@ impl Drop for Phase {
             }
         });
         // Its child programs' phases (read before the lock: files).
-        let kids: Vec<PhaseRec> = o
-            .children
-            .lock()
-            .map(|c| c.iter().flat_map(|p| take_child(p)).collect())
-            .unwrap_or_default();
+        let kids: Vec<PhaseRec> =
+            o.children.lock().map(|c| c.iter().flat_map(|p| take_child(p)).collect()).unwrap_or_default();
         let mut g = run().lock().unwrap();
         let Some(r) = g.as_mut() else { return };
         if let Some(i) = r.open.iter().position(|x| Arc::ptr_eq(x, &o)) {
@@ -419,11 +397,7 @@ fn merge_into(list: &mut Vec<PhaseRec>, k: PhaseRec) {
             p.files += k.files;
             p.overlapped |= k.overlapped;
         }
-        None => list.push(PhaseRec {
-            sub: Vec::new(),
-            background: false,
-            ..k
-        }),
+        None => list.push(PhaseRec { sub: Vec::new(), background: false, ..k }),
     }
 }
 
@@ -439,24 +413,13 @@ pub fn count(bytes: u64, files: u64) {
 
 /// Records a span timed by the caller (a lap: `crate::unit::Laps`) as phase `name`, as `phase`
 /// would have, with the CPU taken since `cpu0` (`cpu_us()` at its start).
-pub fn record(
-    name: &str,
-    class: Class,
-    wall: std::time::Duration,
-    cpu0: Option<u64>,
-    bytes: u64,
-    files: u64,
-) {
+pub fn record(name: &str, class: Class, wall: std::time::Duration, cpu0: Option<u64>, bytes: u64, files: u64) {
     let mut g = run().lock().unwrap();
     let Some(r) = g.as_mut().filter(|r| !r.finished) else {
         return;
     };
     let me = std::thread::current().id();
-    let idx = match r
-        .accs
-        .iter()
-        .position(|a| a.name == name && a.parent.is_none())
-    {
+    let idx = match r.accs.iter().position(|a| a.name == name && a.parent.is_none()) {
         Some(i) => i,
         None => {
             r.accs.push(Acc {
@@ -521,16 +484,7 @@ fn take_child(p: &Path) -> Vec<PhaseRec> {
     };
     std::fs::remove_file(p).ok();
     let r: Option<RunRec> = serde_json::from_slice(&b).ok();
-    r.map(|r| {
-        r.phases
-            .into_iter()
-            .map(|p| PhaseRec {
-                sub: Vec::new(),
-                ..p
-            })
-            .collect()
-    })
-    .unwrap_or_default()
+    r.map(|r| r.phases.into_iter().map(|p| PhaseRec { sub: Vec::new(), ..p }).collect()).unwrap_or_default()
 }
 
 /// The run so far as a record (`ok` as given).
@@ -590,10 +544,8 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
             sub,
         }
     };
-    let phases: Vec<PhaseRec> = (0..accs.len())
-        .filter(|&i| accs[i].parent.is_none() && accs[i].n > 0)
-        .map(rec_of)
-        .collect();
+    let phases: Vec<PhaseRec> =
+        (0..accs.len()).filter(|&i| accs[i].parent.is_none() && accs[i].n > 0).map(rec_of).collect();
     let wall_s = r.t0.elapsed().as_secs_f64();
     let cpu_s = match (r.cpu0, cpu_us()) {
         (Some(a), Some(b)) => Some(b.saturating_sub(a) as f64 / 1e6),
@@ -607,9 +559,7 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
         start: r.start_wall,
         wall_s,
         cpu_s,
-        threads: std::env::var("RAYON_NUM_THREADS")
-            .ok()
-            .and_then(|t| t.parse().ok()),
+        threads: std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()),
         ok,
         untimed_s: 0.0,
         overhead_s: r.overhead_ns as f64 / 1e9,
@@ -674,11 +624,7 @@ pub fn secs(s: f64) -> String {
     } else if s < 3600.0 {
         format!("{} min {} s", (s / 60.0) as u64, (s % 60.0) as u64)
     } else {
-        format!(
-            "{} h {} min",
-            (s / 3600.0) as u64,
-            (s % 3600.0 / 60.0) as u64
-        )
+        format!("{} h {} min", (s / 3600.0) as u64, (s % 3600.0 / 60.0) as u64)
     }
 }
 
@@ -702,18 +648,10 @@ pub fn table(r: &RunRec) -> String {
         if r.ok { "ok" } else { "failed" }
     );
     let line = |s: &mut String, indent: &str, p: &PhaseRec| {
-        let share = if r.wall_s > 0.0 {
-            p.wall_s / r.wall_s * 100.0
-        } else {
-            0.0
-        };
+        let share = if r.wall_s > 0.0 { p.wall_s / r.wall_s * 100.0 } else { 0.0 };
         let mut extra = Vec::new();
         if let Some(c) = p.cpu_s {
-            extra.push(format!(
-                "CPU {}{}",
-                secs(c),
-                if p.overlapped { " ~" } else { "" }
-            ));
+            extra.push(format!("CPU {}{}", secs(c), if p.overlapped { " ~" } else { "" }));
         }
         if p.n > 1 {
             extra.push(format!("×{}", p.n));
@@ -746,17 +684,8 @@ pub fn table(r: &RunRec) -> String {
             line(&mut s, "  ", q);
         }
     }
-    let share = if r.wall_s > 0.0 {
-        r.untimed_s / r.wall_s * 100.0
-    } else {
-        0.0
-    };
-    s.push_str(&format!(
-        "timings: {:<40} {:>10} {:>4.0}%\n",
-        "(untimed)",
-        secs(r.untimed_s),
-        share
-    ));
+    let share = if r.wall_s > 0.0 { r.untimed_s / r.wall_s * 100.0 } else { 0.0 };
+    s.push_str(&format!("timings: {:<40} {:>10} {:>4.0}%\n", "(untimed)", secs(r.untimed_s), share));
     s
 }
 
@@ -775,18 +704,11 @@ pub fn append(p: &Path, rec: &RunRec) -> std::io::Result<()> {
     }
     let mut line = serde_json::to_vec(rec).map_err(std::io::Error::other)?;
     line.push(b'\n');
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(p)?
-        .write_all(&line)?;
+    std::fs::OpenOptions::new().create(true).append(true).open(p)?.write_all(&line)?;
     if std::fs::metadata(p)?.len() > LOG_MAX {
         let b = std::fs::read(p)?;
         let cut = b.len() / 2;
-        let from = b[cut..]
-            .iter()
-            .position(|&c| c == b'\n')
-            .map_or(b.len(), |i| cut + i + 1);
+        let from = b[cut..].iter().position(|&c| c == b'\n').map_or(b.len(), |i| cut + i + 1);
         write_whole(p, &b[from..])?;
     }
     Ok(())
@@ -797,9 +719,7 @@ pub fn read_log(p: &Path) -> Vec<RunRec> {
     let Ok(s) = std::fs::read_to_string(p) else {
         return Vec::new();
     };
-    s.lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect()
+    s.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
 }
 
 /// Takes the record a job left at `p` (`SCENIC_TIMINGS`), the file gone after; `host` stamped on it.
@@ -853,11 +773,7 @@ fn add_phase(list: &mut Vec<PhaseSum>, p: &PhaseRec, total: f64, top: bool) {
     let i = match list.iter().position(|q| q.name == p.name) {
         Some(i) => i,
         None => {
-            list.push(PhaseSum {
-                name: p.name.clone(),
-                class: p.class,
-                ..Default::default()
-            });
+            list.push(PhaseSum { name: p.name.clone(), class: p.class, ..Default::default() });
             list.len() - 1
         }
     };
@@ -889,33 +805,18 @@ fn shares(list: &mut [PhaseSum], total: f64) {
 
 /// The runs of each kind (or of `kind`), their last `last` each (oldest first in `runs`), and of
 /// `host` alone when given, summed: each phase's totals and share.
-pub fn summary(
-    runs: &[RunRec],
-    kind: Option<&str>,
-    last: usize,
-    host: Option<&str>,
-) -> Vec<KindSum> {
-    let mut kinds: Vec<&str> = runs
-        .iter()
-        .map(|r| r.kind.as_str())
-        .filter(|k| kind.is_none_or(|w| w == *k))
-        .collect();
+pub fn summary(runs: &[RunRec], kind: Option<&str>, last: usize, host: Option<&str>) -> Vec<KindSum> {
+    let mut kinds: Vec<&str> = runs.iter().map(|r| r.kind.as_str()).filter(|k| kind.is_none_or(|w| w == *k)).collect();
     kinds.sort();
     kinds.dedup();
     kinds
         .into_iter()
         .map(|k| {
-            let mut mine: Vec<&RunRec> = runs
-                .iter()
-                .filter(|r| r.kind == k && host.is_none_or(|h| h == r.host))
-                .collect();
+            let mut mine: Vec<&RunRec> =
+                runs.iter().filter(|r| r.kind == k && host.is_none_or(|h| h == r.host)).collect();
             let skip = mine.len().saturating_sub(last);
             mine.drain(..skip);
-            let mut s = KindSum {
-                kind: k.to_string(),
-                runs: mine.len(),
-                ..Default::default()
-            };
+            let mut s = KindSum { kind: k.to_string(), runs: mine.len(), ..Default::default() };
             for r in &mine {
                 s.failed += !r.ok as usize;
                 if !s.hosts.contains(&r.host) {
@@ -951,11 +852,7 @@ pub fn last_runs(runs: &[RunRec], kind: Option<&str>, last: usize) -> Vec<RunRec
             keep[i] = true;
         }
     }
-    runs.iter()
-        .zip(keep)
-        .filter(|(_, k)| *k)
-        .map(|(r, _)| r.clone())
-        .collect()
+    runs.iter().zip(keep).filter(|(_, k)| *k).map(|(r, _)| r.clone()).collect()
 }
 
 /// `summary`, readably: a table per kind. CPU marked `~` is approximate (the phase overlapped
@@ -1019,11 +916,7 @@ pub fn summary_text(sums: &[KindSum]) -> String {
         out.push_str(&format!(
             "  {:<44} {:>5.1}% {:>11} {:>11}\n\n",
             "(untimed)",
-            if k.wall_s > 0.0 {
-                k.untimed_s / k.wall_s * 100.0
-            } else {
-                0.0
-            },
+            if k.wall_s > 0.0 { k.untimed_s / k.wall_s * 100.0 } else { 0.0 },
             secs(k.untimed_s),
             secs(k.untimed_s / n)
         ));
@@ -1053,9 +946,18 @@ mod tests {
         // tests' phases (their code's, on their threads) would come into this run meanwhile.
         const ALONE: &str = "SCENIC_TEST_ALONE";
         if std::env::var_os(ALONE).is_none() {
-            let out = store::spawn::output(store::spawn::command(std::env::current_exe().unwrap()).args(["--exact", "timings::tests::phases_add_up_nest_and_take_in_children"]).env(ALONE, "1")).unwrap();
+            let out = store::spawn::output(
+                store::spawn::command(std::env::current_exe().unwrap())
+                    .args(["--exact", "timings::tests::phases_add_up_nest_and_take_in_children"])
+                    .env(ALONE, "1"),
+            )
+            .unwrap();
             let said = String::from_utf8_lossy(&out.stdout);
-            assert!(out.status.success() && said.contains(" 1 passed"), "{said}{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             return;
         }
         reset();
@@ -1076,12 +978,7 @@ mod tests {
             // A child program's phases, as one writes them.
             let mut c = store::spawn::command("true");
             child(&mut c);
-            let to = c
-                .get_envs()
-                .find(|(k, _)| *k == PHASES_TO_ENV)
-                .and_then(|(_, v)| v)
-                .map(PathBuf::from)
-                .unwrap();
+            let to = c.get_envs().find(|(k, _)| *k == PHASES_TO_ENV).and_then(|(_, v)| v).map(PathBuf::from).unwrap();
             let kid = RunRec {
                 v: 1,
                 kind: "x".into(),
@@ -1091,11 +988,7 @@ mod tests {
                     wall_s: 1.5,
                     n: 1,
                     bytes: 7,
-                    sub: vec![PhaseRec {
-                        name: "deep".into(),
-                        n: 1,
-                        ..Default::default()
-                    }],
+                    sub: vec![PhaseRec { name: "deep".into(), n: 1, ..Default::default() }],
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -1136,7 +1029,19 @@ mod tests {
         assert!((r.untimed_s - (r.wall_s - r.timed_s()).max(0.0)).abs() < 1e-9);
         assert!(table(&r).contains("(untimed)"));
         // A transfer's rate beside its bytes.
-        let net = RunRec { wall_s: 4.0, phases: vec![PhaseRec { name: "its files fetched from the coordinator".into(), class: Class::Net, wall_s: 4.0, n: 1, bytes: 8_000_000, files: 2, ..Default::default() }], ..Default::default() };
+        let net = RunRec {
+            wall_s: 4.0,
+            phases: vec![PhaseRec {
+                name: "its files fetched from the coordinator".into(),
+                class: Class::Net,
+                wall_s: 4.0,
+                n: 1,
+                bytes: 8_000_000,
+                files: 2,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
         assert!(table(&net).contains("8.0 MB, 2.0 MB/s, 2 files"), "{}", table(&net));
         finish(true);
         drop(held);
@@ -1167,13 +1072,7 @@ mod tests {
             wall_s: w,
             ok,
             untimed_s: 1.0,
-            phases: vec![
-                PhaseRec {
-                    sub: vec![ph("inner", 1.0, 5)],
-                    ..ph("read", 6.0, 10)
-                },
-                ph("write", 3.0, 0),
-            ],
+            phases: vec![PhaseRec { sub: vec![ph("inner", 1.0, 5)], ..ph("read", 6.0, 10) }, ph("write", 3.0, 0)],
             ..Default::default()
         };
         let runs = [
@@ -1199,35 +1098,21 @@ mod tests {
         assert!(!rec.exists());
         // Summed: kinds in order, the last two runs of unit.
         let s = summary(&back, None, 2, None);
-        assert_eq!(
-            s.iter().map(|k| k.kind.as_str()).collect::<Vec<_>>(),
-            ["peaks", "unit"]
-        );
+        assert_eq!(s.iter().map(|k| k.kind.as_str()).collect::<Vec<_>>(), ["peaks", "unit"]);
         let u = &s[1];
         assert_eq!((u.runs, u.failed, u.wall_s, u.untimed_s), (2, 1, 20.0, 2.0));
         assert_eq!(u.hosts, ["m1", "m4"]);
-        assert_eq!(
-            (u.phases[0].wall_s, u.phases[0].bytes, u.phases[0].share),
-            (12.0, 20, 0.6)
-        );
-        assert_eq!(
-            (u.phases[0].sub[0].name.as_str(), u.phases[0].sub[0].wall_s),
-            ("inner", 2.0)
-        );
+        assert_eq!((u.phases[0].wall_s, u.phases[0].bytes, u.phases[0].share), (12.0, 20, 0.6));
+        assert_eq!((u.phases[0].sub[0].name.as_str(), u.phases[0].sub[0].wall_s), ("inner", 2.0));
         let m4 = summary(&back, Some("unit"), 10, Some("m4"));
         assert_eq!((m4.len(), m4[0].runs), (1, 2));
         let t = summary_text(&s);
         assert!(
-            t.contains("unit — 2 runs (1 not ok) on m1, m4")
-                && t.contains("(untimed)")
-                && t.contains("  inner"),
+            t.contains("unit — 2 runs (1 not ok) on m1, m4") && t.contains("(untimed)") && t.contains("  inner"),
             "{t}"
         );
         // Cut to its newer half past the limit.
-        let big = RunRec {
-            id: "x".repeat(1 << 20),
-            ..run("unit", "m4", true, 1.0)
-        };
+        let big = RunRec { id: "x".repeat(1 << 20), ..run("unit", "m4", true, 1.0) };
         for _ in 0..17 {
             append(&log, &big).unwrap();
         }

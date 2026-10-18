@@ -256,7 +256,14 @@ impl Nas for Mem {
 
     fn list(&self, dir: &str) -> Result<Vec<String>> {
         let prefix = format!("{dir}/");
-        let names: std::collections::BTreeSet<String> = self.0.borrow().keys().filter_map(|k| k.strip_prefix(&prefix)).filter_map(|rest| rest.split('/').next()).map(str::to_string).collect();
+        let names: std::collections::BTreeSet<String> = self
+            .0
+            .borrow()
+            .keys()
+            .filter_map(|k| k.strip_prefix(&prefix))
+            .filter_map(|rest| rest.split('/').next())
+            .map(str::to_string)
+            .collect();
         Ok(names.into_iter().collect())
     }
 

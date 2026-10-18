@@ -88,9 +88,22 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     let text = std::str::from_utf8(bytes).map_err(|_| vec!["isn't UTF-8 text".to_string()])?;
     let v: toml::Table = toml::from_str(text).map_err(|e| vec![format!("isn't TOML: {}", e.message())])?;
     let mut why = Vec::new();
-    const DESCRIPTION: [&str; 10] = ["name", "what", "credit", "licence", "licence_url", "source", "retrieved", "territory", "redistribute", "notes"];
+    const DESCRIPTION: [&str; 10] = [
+        "name",
+        "what",
+        "credit",
+        "licence",
+        "licence_url",
+        "source",
+        "retrieved",
+        "territory",
+        "redistribute",
+        "notes",
+    ];
     for k in v.keys() {
-        if !DESCRIPTION.contains(&k.as_str()) && !["surface", "heights", "rank", "code", "terrain", "data"].contains(&k.as_str()) {
+        if !DESCRIPTION.contains(&k.as_str())
+            && !["surface", "heights", "rank", "code", "terrain", "data"].contains(&k.as_str())
+        {
             why.push(format!("`{k}` isn't a field of an elevation declaration (docs/inputs.md §6.8)"));
         }
     }
@@ -108,9 +121,15 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     }
     let heights = s("heights").unwrap_or_default();
     if heights == "mixed" && !terrain {
-        why.push("`heights` is \"mixed\": allowed for the terrain alone (`terrain = true`), never for the roads' elevations".into());
+        why.push(
+            "`heights` is \"mixed\": allowed for the terrain alone (`terrain = true`), never for the roads' elevations"
+                .into(),
+        );
     } else if heights != "mixed" && !HEIGHTS.contains(&heights.as_str()) {
-        why.push(format!("`heights` is \"{heights}\", a height reference the app doesn't know ({})", HEIGHTS.join(", ")));
+        why.push(format!(
+            "`heights` is \"{heights}\", a height reference the app doesn't know ({})",
+            HEIGHTS.join(", ")
+        ));
     }
     let rank = match v.get("rank") {
         None => None,
@@ -143,13 +162,16 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     let strings = |k: &str, why: &mut Vec<String>| -> Vec<String> {
         match d.get(k) {
             None => Vec::new(),
-            Some(x) => match x.as_array().map(|a| a.iter().map(|e| e.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()) {
-                Some(Some(v)) => v,
-                _ => {
-                    why.push(format!("`data.{k}` isn't a list of strings"));
-                    Vec::new()
+            Some(x) => {
+                match x.as_array().map(|a| a.iter().map(|e| e.as_str().map(str::to_string)).collect::<Option<Vec<_>>>())
+                {
+                    Some(Some(v)) => v,
+                    _ => {
+                        why.push(format!("`data.{k}` isn't a list of strings"));
+                        Vec::new()
+                    }
                 }
-            },
+            }
         }
     };
     let format = ds("format").unwrap_or_default();
@@ -218,7 +240,10 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
         };
         let encoding = ds("encoding").unwrap_or_default();
         if !ENCODINGS.contains(&encoding.as_str()) {
-            why.push(format!("`data.encoding` is \"{encoding}\", an encoding the app doesn't know ({})", ENCODINGS.join(", ")));
+            why.push(format!(
+                "`data.encoding` is \"{encoding}\", an encoding the app doesn't know ({})",
+                ENCODINGS.join(", ")
+            ));
         }
         Data::Tiles { url, zoom, encoding }
     };
@@ -315,7 +340,10 @@ impl Cover {
         let (x, y) = (lon.floor() as i32, lat.floor() as i32);
         let edge_x = lon == lon.floor();
         let edge_y = lat == lat.floor();
-        self.cells.contains(&(x, y)) || (edge_x && self.cells.contains(&(x - 1, y))) || (edge_y && self.cells.contains(&(x, y - 1))) || (edge_x && edge_y && self.cells.contains(&(x - 1, y - 1)))
+        self.cells.contains(&(x, y))
+            || (edge_x && self.cells.contains(&(x - 1, y)))
+            || (edge_y && self.cells.contains(&(x, y - 1)))
+            || (edge_x && edge_y && self.cells.contains(&(x - 1, y - 1)))
     }
 
     /// Whether box w, s, e, n (degrees) meets it.
@@ -323,11 +351,22 @@ impl Cover {
         if self.world {
             return true;
         }
-        let (x0, x1, y0, y1) = (b[0].floor() as i32 - 1, b[2].floor() as i32, b[1].floor() as i32 - 1, b[3].floor() as i32);
+        let (x0, x1, y0, y1) =
+            (b[0].floor() as i32 - 1, b[2].floor() as i32, b[1].floor() as i32 - 1, b[3].floor() as i32);
         if ((x1 - x0 + 1) as i64) * ((y1 - y0 + 1) as i64) > self.cells.len() as i64 {
-            return self.cells.iter().any(|&(x, y)| (x as f64) <= b[2] && (x + 1) as f64 >= b[0] && (y as f64) <= b[3] && (y + 1) as f64 >= b[1]);
+            return self.cells.iter().any(|&(x, y)| {
+                (x as f64) <= b[2] && (x + 1) as f64 >= b[0] && (y as f64) <= b[3] && (y + 1) as f64 >= b[1]
+            });
         }
-        (x0..=x1).any(|x| (y0..=y1).any(|y| self.cells.contains(&(x, y)) && (x as f64) <= b[2] && (x + 1) as f64 >= b[0] && (y as f64) <= b[3] && (y + 1) as f64 >= b[1]))
+        (x0..=x1).any(|x| {
+            (y0..=y1).any(|y| {
+                self.cells.contains(&(x, y))
+                    && (x as f64) <= b[2]
+                    && (x + 1) as f64 >= b[0]
+                    && (y as f64) <= b[3]
+                    && (y + 1) as f64 >= b[1]
+            })
+        })
     }
 }
 
@@ -422,7 +461,11 @@ pub fn parse_index(bytes: &[u8]) -> std::result::Result<TileIndex, String> {
     let crs = match v["crs"]["properties"]["name"].as_str() {
         None => 4326,
         Some(n) => {
-            let code = n.rsplit(':').next().and_then(|c| c.parse::<u16>().ok()).ok_or_else(|| format!("its crs \"{n}\" isn't an EPSG code"))?;
+            let code = n
+                .rsplit(':')
+                .next()
+                .and_then(|c| c.parse::<u16>().ok())
+                .ok_or_else(|| format!("its crs \"{n}\" isn't an EPSG code"))?;
             if code == 84 || n.ends_with("CRS84") {
                 4326
             } else {
@@ -438,8 +481,15 @@ pub fn parse_index(bytes: &[u8]) -> std::result::Result<TileIndex, String> {
         let p = &f["properties"];
         let w = match (p["url"].as_str(), p["file"].as_str()) {
             (Some(u), None) if u.starts_with("https://") || u.starts_with("http://") => Where::Url(u.to_string()),
-            (None, Some(f)) if !f.is_empty() && !f.starts_with('/') && !f.split('/').any(|c| c == "..") => Where::File(f.to_string()),
-            _ => return Err(format!("feature {} names no file: a `url` (http or https) or a `file` in the dataset's folder", i + 1)),
+            (None, Some(f)) if !f.is_empty() && !f.starts_with('/') && !f.split('/').any(|c| c == "..") => {
+                Where::File(f.to_string())
+            }
+            _ => {
+                return Err(format!(
+                    "feature {} names no file: a `url` (http or https) or a `file` in the dataset's folder",
+                    i + 1
+                ))
+            }
         };
         if !seen.insert(w.clone()) {
             return Err(format!("feature {} names a file an earlier feature names", i + 1));
@@ -449,7 +499,11 @@ pub fn parse_index(bytes: &[u8]) -> std::result::Result<TileIndex, String> {
             fn go(c: &serde_json::Value, depth: u8, b: &mut [f64; 4]) -> bool {
                 match c.as_array() {
                     Some(a) if depth == 0 => {
-                        let (Some(x), Some(y)) = (a.first().and_then(|x| x.as_f64()), a.get(1).and_then(|y| y.as_f64())) else { return false };
+                        let (Some(x), Some(y)) =
+                            (a.first().and_then(|x| x.as_f64()), a.get(1).and_then(|y| y.as_f64()))
+                        else {
+                            return false;
+                        };
                         *b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
                         true
                     }
@@ -563,8 +617,14 @@ fn accepted_all(a: &crate::inputs::Accepted) -> Result<Vec<Accepted>> {
     let mut out = Vec::new();
     for (p, f) in &a.index.files {
         let Some(id) = p.strip_suffix(".toml").filter(|s| !s.contains('/')) else { continue };
-        let declaration: Declaration = serde_json::from_value(f.facts.get("declaration").cloned().with_context(|| format!("{p}: no declaration in the index"))?).with_context(|| format!("{p}: its declaration"))?;
-        let measured: Measured = serde_json::from_value(f.facts.get("measured").cloned().with_context(|| format!("{p}: nothing measured in the index"))?).with_context(|| format!("{p}: what was measured"))?;
+        let declaration: Declaration = serde_json::from_value(
+            f.facts.get("declaration").cloned().with_context(|| format!("{p}: no declaration in the index"))?,
+        )
+        .with_context(|| format!("{p}: its declaration"))?;
+        let measured: Measured = serde_json::from_value(
+            f.facts.get("measured").cloned().with_context(|| format!("{p}: nothing measured in the index"))?,
+        )
+        .with_context(|| format!("{p}: what was measured"))?;
         out.push(Accepted { id: id.to_string(), path: p.clone(), declaration, measured, keyed: f.keyed.clone() });
     }
     out.sort_by_key(|d| order_key(d.declaration.rank, d.measured.resolution, &d.declaration.surface, &d.id));
@@ -616,7 +676,9 @@ pub fn plan(a: &crate::inputs::Accepted, near: [f64; 4]) -> Result<Plan> {
             continue;
         }
         let source = match &d.declaration.data {
-            Data::Tiles { url, zoom, encoding } => Source::Tiles { url: url.clone(), zoom: *zoom, encoding: encoding.clone() },
+            Data::Tiles { url, zoom, encoding } => {
+                Source::Tiles { url: url.clone(), zoom: *zoom, encoding: encoding.clone() }
+            }
             Data::Geotiff { urls, index, files, read_resolution, store } => {
                 let crs = d.measured.crs.context("a GeoTIFF dataset without its CRS measured")?;
                 let nb = if crs == 3979 { native_box(crs, near, 1000.0)? } else { near };
@@ -645,7 +707,13 @@ pub fn plan(a: &crate::inputs::Accepted, near: [f64; 4]) -> Result<Plan> {
                 Source::Geotiff { crs, read_resolution: *read_resolution, store: *store, files: list }
             }
         };
-        out.push(Dataset { id: d.id.clone(), code: d.declaration.code, resolution: d.measured.resolution, cover: d.measured.cover.clone(), source });
+        out.push(Dataset {
+            id: d.id.clone(),
+            code: d.declaration.code,
+            resolution: d.measured.resolution,
+            cover: d.measured.cover.clone(),
+            source,
+        });
     }
     Ok(Plan { fmt: 1, version: a.version.clone(), tag: tagged, datasets: out })
 }
@@ -654,7 +722,11 @@ pub fn plan(a: &crate::inputs::Accepted, near: [f64; 4]) -> Result<Plan> {
 fn locate(a: &crate::inputs::Accepted, id: &str, w: &Where) -> Result<String> {
     match w {
         Where::Url(u) => Ok(u.clone()),
-        Where::File(f) => Ok(a.path(&format!("{id}/{f}")).with_context(|| format!("{id}/{f} isn't in the accepted version"))?.to_string_lossy().into_owned()),
+        Where::File(f) => Ok(a
+            .path(&format!("{id}/{f}"))
+            .with_context(|| format!("{id}/{f} isn't in the accepted version"))?
+            .to_string_lossy()
+            .into_owned()),
     }
 }
 
@@ -774,7 +846,9 @@ encoding = "terrarium"
             "features":[{"type":"Feature","properties":{"url":"https://e.org/a.tif"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[10,0],[10,5],[0,5],[0,0]]]}}]}"#;
         let t = parse_index(ix).unwrap();
         assert_eq!((t.crs, t.files[0].1), (3979, [0.0, 0.0, 10.0, 5.0]));
-        assert!(parse_index(br#"{"type":"FeatureCollection","features":[{"properties":{},"geometry":null}]}"#).unwrap_err().contains("names no file"));
+        assert!(parse_index(br#"{"type":"FeatureCollection","features":[{"properties":{},"geometry":null}]}"#)
+            .unwrap_err()
+            .contains("names no file"));
         assert!(glob("*.tif", "a.tif") && !glob("*.tif", "x/a.tif") && glob("x/?.tif", "x/a.tif"));
     }
 }

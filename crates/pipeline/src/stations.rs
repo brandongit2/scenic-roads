@@ -9,8 +9,8 @@
 //! order; a stop takes the largest spacing of the lines calling there and that line's service
 //! group. Read from the OSM pass's `rail` set, worldwide.
 
-use det::Det;
 use anyhow::{Context, Result};
+use det::Det;
 use osmpbf::{Element, ElementReader};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -22,12 +22,56 @@ pub const INTERCITY: u8 = 3;
 pub const HERITAGE: u8 = 4;
 
 const INTERCITY_WORDS: &[&str] = &[
-    "tgv", "inoui", "ouigo", "intercités", "intercites", "eurostar", "thalys", "lyria", "ave ", "alvia", "euromed",
-    "iryo", "avlo", "talgo", "alfa pendular", "intercidades", "amtrak", "via rail", "acela", "lner", "avanti",
-    "crosscountry", "cross country", "sleeper", "night riviera", "nightjet", "intercity", "inter city", "inter-city",
-    "enterprise", "adirondack", "maple leaf", "vermonter", "ethan allen", "downeaster", "lake shore", "the canadian",
-    "the ocean", "northeast regional", "hull chelsea", "transcantábrico", "costa verde express", "al andalus",
-    "shinkansen", "新幹線", "特急", "limited express", "高鐵", "自強", "thsr",
+    "tgv",
+    "inoui",
+    "ouigo",
+    "intercités",
+    "intercites",
+    "eurostar",
+    "thalys",
+    "lyria",
+    "ave ",
+    "alvia",
+    "euromed",
+    "iryo",
+    "avlo",
+    "talgo",
+    "alfa pendular",
+    "intercidades",
+    "amtrak",
+    "via rail",
+    "acela",
+    "lner",
+    "avanti",
+    "crosscountry",
+    "cross country",
+    "sleeper",
+    "night riviera",
+    "nightjet",
+    "intercity",
+    "inter city",
+    "inter-city",
+    "enterprise",
+    "adirondack",
+    "maple leaf",
+    "vermonter",
+    "ethan allen",
+    "downeaster",
+    "lake shore",
+    "the canadian",
+    "the ocean",
+    "northeast regional",
+    "hull chelsea",
+    "transcantábrico",
+    "costa verde express",
+    "al andalus",
+    "shinkansen",
+    "新幹線",
+    "特急",
+    "limited express",
+    "高鐵",
+    "自強",
+    "thsr",
 ];
 
 /// A route relation's service group (extract.rs rail_route).
@@ -50,7 +94,12 @@ pub fn group(t: &HashMap<String, String>) -> Option<u8> {
                 Some("long_distance" | "high_speed" | "night" | "international" | "car_shuttle") => Some(INTERCITY),
                 Some(_) => Some(COMMUTER),
                 None => {
-                    let text = ["name", "brand", "network", "operator"].iter().map(|k| get(k).unwrap_or("")).collect::<Vec<_>>().join(" ").to_lowercase();
+                    let text = ["name", "brand", "network", "operator"]
+                        .iter()
+                        .map(|k| get(k).unwrap_or(""))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .to_lowercase();
                     Some(if INTERCITY_WORDS.iter().any(|w| text.contains(w)) { INTERCITY } else { COMMUTER })
                 }
             }
@@ -62,13 +111,15 @@ pub fn group(t: &HashMap<String, String>) -> Option<u8> {
 /// Great-circle distance (m).
 pub fn dist(a: (f64, f64), b: (f64, f64)) -> f64 {
     let (la1, la2) = (a.1.to_radians(), b.1.to_radians());
-    let h = ((la2 - la1) / 2.0).dsin().powi(2) + la1.dcos() * la2.dcos() * ((b.0 - a.0).to_radians() / 2.0).dsin().powi(2);
+    let h =
+        ((la2 - la1) / 2.0).dsin().powi(2) + la1.dcos() * la2.dcos() * ((b.0 - a.0).to_radians() / 2.0).dsin().powi(2);
     12_742_000.0 * h.sqrt().min(1.0).dasin()
 }
 
 /// A name for merging: lowercase, without words like "station" and punctuation.
 pub fn norm(name: &str) -> String {
-    const WORDS: &[&str] = &["station", "gare", "estación", "estação", "halt", "stop", "platform", "quai", "voie", "bahnhof", "駅"];
+    const WORDS: &[&str] =
+        &["station", "gare", "estación", "estação", "halt", "stop", "platform", "quai", "voie", "bahnhof", "駅"];
     let lower = name.to_lowercase();
     // Words as \b…\b in Python's re (Unicode word characters).
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
@@ -145,13 +196,15 @@ struct Building {
 /// their member ways, the nodes needed), then merged in routes' id order.
 pub fn stops(pbf: &Path) -> Result<Vec<Stop>> {
     // Pass 1: the passenger routes, by id.
-    let mut routes: Vec<(i64, HashMap<String, String>, Vec<(u8, i64, String)>)> = ElementReader::from_path(pbf)
-        .with_context(|| format!("open {}", pbf.display()))?
-        .par_map_reduce(
+    let mut routes: Vec<(i64, HashMap<String, String>, Vec<(u8, i64, String)>)> =
+        ElementReader::from_path(pbf).with_context(|| format!("open {}", pbf.display()))?.par_map_reduce(
             |el| match el {
                 Element::Relation(r) => {
                     let t: HashMap<String, String> = r.tags().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-                    if !matches!(t.get("route").map(String::as_str), Some("train" | "subway" | "tram" | "light_rail" | "monorail" | "funicular")) {
+                    if !matches!(
+                        t.get("route").map(String::as_str),
+                        Some("train" | "subway" | "tram" | "light_rail" | "monorail" | "funicular")
+                    ) {
                         return Vec::new();
                     }
                     let ms = r
@@ -177,14 +230,20 @@ pub fn stops(pbf: &Path) -> Result<Vec<Stop>> {
         )?;
     routes.sort_by_key(|r| r.0);
     let wanted = |role: &str| role.starts_with("stop") || role.starts_with("platform");
-    let member_ways: HashSet<i64> = routes.iter().flat_map(|r| r.2.iter()).filter(|m| m.0 == 1 && wanted(&m.2)).map(|m| m.1).collect();
-    let member_nodes: HashSet<i64> = routes.iter().flat_map(|r| r.2.iter()).filter(|m| m.0 == 0 && wanted(&m.2)).map(|m| m.1).collect();
+    let member_ways: HashSet<i64> =
+        routes.iter().flat_map(|r| r.2.iter()).filter(|m| m.0 == 1 && wanted(&m.2)).map(|m| m.1).collect();
+    let member_nodes: HashSet<i64> =
+        routes.iter().flat_map(|r| r.2.iter()).filter(|m| m.0 == 0 && wanted(&m.2)).map(|m| m.1).collect();
     // A stop object: tagged public_transport=*, or railway=station, halt, stop, tram_stop, platform.
-    let stop_tags = |t: &HashMap<&str, &str>| t.contains_key("public_transport") || matches!(t.get("railway"), Some(&("station" | "halt" | "stop" | "tram_stop" | "platform")));
+    let stop_tags = |t: &HashMap<&str, &str>| {
+        t.contains_key("public_transport")
+            || matches!(t.get("railway"), Some(&("station" | "halt" | "stop" | "tram_stop" | "platform")))
+    };
     let obj_of = |t: &HashMap<&str, &str>, c: (f64, f64)| {
         let name = t.get("name").copied().unwrap_or("").to_string();
         let en = t.get("name:en").filter(|e| !e.is_empty() && **e != name).map(|e| e.to_string());
-        let station = matches!(t.get("railway"), Some(&("station" | "halt"))) || t.get("public_transport") == Some(&"station");
+        let station =
+            matches!(t.get("railway"), Some(&("station" | "halt"))) || t.get("public_transport") == Some(&"station");
         Obj { c, name, en, station }
     };
     // Pass 2: the member ways that are stop objects, and their nodes.
@@ -207,27 +266,28 @@ pub fn stops(pbf: &Path) -> Result<Vec<Stop>> {
     )?;
     let way_nodes: HashSet<i64> = ways.iter().flat_map(|w| w.1.iter().copied()).collect();
     // Pass 3: the nodes: stop objects among the members, and the stop ways' vertices.
-    let nodes: Vec<(i64, (f64, f64), Option<HashMap<String, String>>)> = ElementReader::from_path(pbf)?.par_map_reduce(
-        |el| {
-            let (id, c, tags): (i64, (f64, f64), Vec<(&str, &str)>) = match el {
-                Element::Node(n) => (n.id(), (n.lon(), n.lat()), n.tags().collect()),
-                Element::DenseNode(n) => (n.id(), (n.lon(), n.lat()), n.tags().collect()),
-                _ => return Vec::new(),
-            };
-            let member = member_nodes.contains(&id);
-            if !member && !way_nodes.contains(&id) {
-                return Vec::new();
-            }
-            let t: HashMap<&str, &str> = tags.into_iter().collect();
-            let keep = member && stop_tags(&t);
-            vec![(id, c, keep.then(|| t.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))]
-        },
-        Vec::new,
-        |mut a, mut b| {
-            a.append(&mut b);
-            a
-        },
-    )?;
+    let nodes: Vec<(i64, (f64, f64), Option<HashMap<String, String>>)> = ElementReader::from_path(pbf)?
+        .par_map_reduce(
+            |el| {
+                let (id, c, tags): (i64, (f64, f64), Vec<(&str, &str)>) = match el {
+                    Element::Node(n) => (n.id(), (n.lon(), n.lat()), n.tags().collect()),
+                    Element::DenseNode(n) => (n.id(), (n.lon(), n.lat()), n.tags().collect()),
+                    _ => return Vec::new(),
+                };
+                let member = member_nodes.contains(&id);
+                if !member && !way_nodes.contains(&id) {
+                    return Vec::new();
+                }
+                let t: HashMap<&str, &str> = tags.into_iter().collect();
+                let keep = member && stop_tags(&t);
+                vec![(id, c, keep.then(|| t.into_iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))]
+            },
+            Vec::new,
+            |mut a, mut b| {
+                a.append(&mut b);
+                a
+            },
+        )?;
     let coords: HashMap<i64, (f64, f64)> = nodes.iter().map(|n| (n.0, n.1)).collect();
     let mut objs: HashMap<(u8, i64), Obj> = HashMap::new();
     for (id, c, t) in &nodes {
@@ -242,7 +302,10 @@ pub fn stops(pbf: &Path) -> Result<Vec<Stop>> {
         if cs.is_empty() || cs.len() < refs.len() {
             continue;
         }
-        let c = (cs.iter().map(|p| p.0).sum::<f64>() / cs.len() as f64, cs.iter().map(|p| p.1).sum::<f64>() / cs.len() as f64);
+        let c = (
+            cs.iter().map(|p| p.0).sum::<f64>() / cs.len() as f64,
+            cs.iter().map(|p| p.1).sum::<f64>() / cs.len() as f64,
+        );
         let t: HashMap<&str, &str> = t.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         objs.insert((1, *id), obj_of(&t, c));
     }
@@ -276,13 +339,22 @@ pub fn stops(pbf: &Path) -> Result<Vec<Stop>> {
                 }
             }
         }
-        stops.push(Building { c: (x, y), station: o.station, names: vec![(o.name.clone(), 1, o.en.clone())], sp: 0.0, g: None, m: 0, members: vec![key] });
+        stops.push(Building {
+            c: (x, y),
+            station: o.station,
+            names: vec![(o.name.clone(), 1, o.en.clone())],
+            sp: 0.0,
+            g: None,
+            m: 0,
+            members: vec![key],
+        });
         cells.entry((nm, named, cx, cy)).or_default().push(stops.len() - 1);
         Some(stops.len() - 1)
     };
     for (_, tags, members) in &routes {
         let Some(g) = group(tags) else { continue };
-        let mut sm: Vec<(u8, i64)> = members.iter().filter(|m| m.0 != 2 && m.2.starts_with("stop")).map(|m| (m.0, m.1)).collect();
+        let mut sm: Vec<(u8, i64)> =
+            members.iter().filter(|m| m.0 != 2 && m.2.starts_with("stop")).map(|m| (m.0, m.1)).collect();
         if sm.len() < 2 {
             sm = members.iter().filter(|m| m.0 != 2 && m.2.starts_with("platform")).map(|m| (m.0, m.1)).collect();
         }

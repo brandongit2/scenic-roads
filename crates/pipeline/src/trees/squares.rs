@@ -28,7 +28,14 @@ fn kept_whole(f: &Path) -> bool {
 /// Canopy square (`top`, `left`)'s cover and height files in `chm`: copied from the NAS's `store`,
 /// or downloaded into it first (once); false when Meta has none there. `said` is told how much of
 /// the square is done (0–1): each file half of it, a download's share as it comes.
-pub fn canopy(chm: &Path, store: &Path, top: i32, left: i32, said: &dyn Fn(f64), urls: &std::collections::BTreeMap<String, String>) -> Result<bool> {
+pub fn canopy(
+    chm: &Path,
+    store: &Path,
+    top: i32,
+    left: i32,
+    said: &dyn Fn(f64),
+    urls: &std::collections::BTreeMap<String, String>,
+) -> Result<bool> {
     let mut there = true;
     for (j, kind) in ["cover5m", "p95"].into_iter().enumerate() {
         let name = chm_name(top, left, kind);
@@ -155,7 +162,8 @@ fn download(url: Option<&str>, path: &Path, coming: &dyn Fn(f64)) -> Result<()> 
                 200 => {}
                 c => return Ok(Some(format!("status {c}"))),
             }
-            let want: Option<u64> = r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
+            let want: Option<u64> =
+                r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
             // (The NAS not taking it now: tried again, as a download cut short.)
             let on_nas = |e: std::io::Error| -> Result<Option<String>> { Ok(Some(format!("{}: {e}", tmp.display()))) };
             let mut f = match std::fs::File::create(&tmp) {
@@ -226,7 +234,12 @@ pub fn complete(p: &Path) -> bool {
     if !crate::whole::tiff_file_whole(p) {
         return false;
     }
-    let Ok(t) = store::range::PlainFile::open(p).map_err(anyhow::Error::from).and_then(|f| crate::geotiff::Tiff::open(std::sync::Arc::new(f))) else { return false };
+    let Ok(t) = store::range::PlainFile::open(p)
+        .map_err(anyhow::Error::from)
+        .and_then(|f| crate::geotiff::Tiff::open(std::sync::Arc::new(f)))
+    else {
+        return false;
+    };
     t.metadata_item("complete") == Some("1") || t.metadata_item("source").is_some_and(|s| s.starts_with("NALCMS"))
 }
 
@@ -235,13 +248,26 @@ pub fn complete(p: &Path) -> bool {
 /// `leaf` is the leaf-type sources), which says how far it is: inside the European source's box from
 /// it, inside the North American's from it, none elsewhere (no source).
 pub fn leaf_types(sqs: &[(i32, i32)], dir: &Path, dem: &Path, leaf: &LeafSources, file: &Path) -> Result<()> {
-    let meets = |b: [f64; 4], top: i32, left: i32| (left as f64) < b[2] && (left + 10) as f64 > b[0] && ((top - 10) as f64) < b[3] && top as f64 > b[1];
-    let to_make = sqs.iter().filter(|&&(t, l)| (meets(leaf.europe_box, t, l) || meets(leaf.north_america_box, t, l)) && !complete(&dir.join(leaf_name(t, l)))).count();
+    let meets = |b: [f64; 4], top: i32, left: i32| {
+        (left as f64) < b[2] && (left + 10) as f64 > b[0] && ((top - 10) as f64) < b[3] && top as f64 > b[1]
+    };
+    let to_make = sqs
+        .iter()
+        .filter(|&&(t, l)| {
+            (meets(leaf.europe_box, t, l) || meets(leaf.north_america_box, t, l))
+                && !complete(&dir.join(leaf_name(t, l)))
+        })
+        .count();
     if to_make == 0 {
         return Ok(());
     }
     let mut c = store::spawn::command("uv");
-    c.current_dir(dem).args(["run", "python", "leaftype.py", "--make"]).arg(dir).arg("--sources").arg(std::path::absolute(file)?).args(sqs.iter().map(|(t, l)| format!("{t},{l}")));
+    c.current_dir(dem)
+        .args(["run", "python", "leaftype.py", "--make"])
+        .arg(dir)
+        .arg("--sources")
+        .arg(std::path::absolute(file)?)
+        .args(sqs.iter().map(|(t, l)| format!("{t},{l}")));
     crate::timings::child(&mut c);
     let st = store::spawn::status(&mut c).context("run leaftype.py")?;
     anyhow::ensure!(st.success(), "leaftype.py: {st}");

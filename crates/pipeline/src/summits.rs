@@ -68,17 +68,29 @@ fn concat<T>(mut a: Vec<T>, mut b: Vec<T>) -> Vec<T> {
 /// The summits of `pbf` (the `summits` set), without their z8 heights.
 pub fn read_set(pbf: &Path) -> Result<Vec<Summit>> {
     // Pass 1: the summits mapped as nodes, and the ways' node lists.
-    let (mut nodes, mut ways): (Vec<Summit>, Vec<(i64, &'static str, Vec<i64>)>) = ElementReader::from_path(pbf)
-        .with_context(|| format!("open {}", pbf.display()))?
-        .par_map_reduce(
+    let (mut nodes, mut ways): (Vec<Summit>, Vec<(i64, &'static str, Vec<i64>)>) =
+        ElementReader::from_path(pbf).with_context(|| format!("open {}", pbf.display()))?.par_map_reduce(
             |el| {
                 let node = |id: i64, lon: i32, lat: i32, tags: &mut dyn Iterator<Item = (&str, &str)>| {
                     let (kind, ele) = kind_of(tags);
-                    kind.map(|k| Summit { id: format!("n{id}"), kind: k.into(), lon, lat, ele: crate::candidates::parse_ele(ele).map(f32::round), z8: None })
+                    kind.map(|k| Summit {
+                        id: format!("n{id}"),
+                        kind: k.into(),
+                        lon,
+                        lat,
+                        ele: crate::candidates::parse_ele(ele).map(f32::round),
+                        z8: None,
+                    })
                 };
                 match el {
-                    Element::DenseNode(n) => (node(n.id(), n.decimicro_lon(), n.decimicro_lat(), &mut n.tags()).into_iter().collect(), Vec::new()),
-                    Element::Node(n) => (node(n.id(), n.decimicro_lon(), n.decimicro_lat(), &mut n.tags()).into_iter().collect(), Vec::new()),
+                    Element::DenseNode(n) => (
+                        node(n.id(), n.decimicro_lon(), n.decimicro_lat(), &mut n.tags()).into_iter().collect(),
+                        Vec::new(),
+                    ),
+                    Element::Node(n) => (
+                        node(n.id(), n.decimicro_lon(), n.decimicro_lat(), &mut n.tags()).into_iter().collect(),
+                        Vec::new(),
+                    ),
                     Element::Way(w) => match kind_of(w.tags()).0 {
                         Some(k) => (Vec::new(), vec![(w.id(), k, w.refs().collect())]),
                         None => (Vec::new(), Vec::new()),
@@ -98,8 +110,12 @@ pub fn read_set(pbf: &Path) -> Result<Vec<Summit>> {
     } else {
         ElementReader::from_path(pbf)?.par_map_reduce(
             |el| match el {
-                Element::DenseNode(n) if need.binary_search(&n.id()).is_ok() => vec![(n.id(), n.decimicro_lon(), n.decimicro_lat())],
-                Element::Node(n) if need.binary_search(&n.id()).is_ok() => vec![(n.id(), n.decimicro_lon(), n.decimicro_lat())],
+                Element::DenseNode(n) if need.binary_search(&n.id()).is_ok() => {
+                    vec![(n.id(), n.decimicro_lon(), n.decimicro_lat())]
+                }
+                Element::Node(n) if need.binary_search(&n.id()).is_ok() => {
+                    vec![(n.id(), n.decimicro_lon(), n.decimicro_lat())]
+                }
                 _ => Vec::new(),
             },
             Vec::new,
@@ -109,13 +125,23 @@ pub fn read_set(pbf: &Path) -> Result<Vec<Summit>> {
     pos.sort_unstable();
     ways.sort_by_key(|w| w.0);
     for (id, kind, refs) in ways {
-        let pts: Vec<(i64, i64)> = refs.iter().filter_map(|r| pos.binary_search_by_key(r, |p| p.0).ok().map(|i| (pos[i].1 as i64, pos[i].2 as i64))).collect();
+        let pts: Vec<(i64, i64)> = refs
+            .iter()
+            .filter_map(|r| pos.binary_search_by_key(r, |p| p.0).ok().map(|i| (pos[i].1 as i64, pos[i].2 as i64)))
+            .collect();
         if pts.is_empty() {
             continue;
         }
         let n = pts.len() as i64;
         let (sx, sy) = pts.iter().fold((0i64, 0i64), |a, p| (a.0 + p.0, a.1 + p.1));
-        nodes.push(Summit { id: format!("w{id}"), kind: kind.into(), lon: (sx / n) as i32, lat: (sy / n) as i32, ele: None, z8: None });
+        nodes.push(Summit {
+            id: format!("w{id}"),
+            kind: kind.into(),
+            lon: (sx / n) as i32,
+            lat: (sy / n) as i32,
+            ele: None,
+            z8: None,
+        });
     }
     nodes.sort_by_key(Summit::order);
     Ok(nodes)
@@ -169,7 +195,9 @@ pub fn write(path: &Path, summits: &[Summit]) -> Result<()> {
 }
 
 pub fn read(path: &Path) -> Result<Vec<Summit>> {
-    let r = std::io::BufReader::new(zstd::Decoder::new(std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?)?);
+    let r = std::io::BufReader::new(zstd::Decoder::new(
+        std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?,
+    )?);
     r.lines().map(|l| Ok(serde_json::from_str(&l?)?)).collect()
 }
 

@@ -140,7 +140,13 @@ impl Records {
 
     /// The build's records as today's three files hold them (term 1's, as the pool begins).
     pub fn today(nas: &dyn Nas) -> Result<Records> {
-        Ok(Records { term: 1, manifest: read_or_default(nas, TODAY[0])?, keys: read_or_default(nas, TODAY[1])?, pending: read_or_default(nas, TODAY[2])?, ..Default::default() })
+        Ok(Records {
+            term: 1,
+            manifest: read_or_default(nas, TODAY[0])?,
+            keys: read_or_default(nas, TODAY[1])?,
+            pending: read_or_default(nas, TODAY[2])?,
+            ..Default::default()
+        })
     }
 
     /// Saves them as their term's next snapshot (`seq` one more), whole; term 1's also to today's
@@ -175,7 +181,8 @@ impl Records {
     /// of an older lease's entry after a newer one's was merged).
     pub fn apply(&mut self, key: &str, e: &Entry) -> bool {
         let h = &e.handoff;
-        let slots: Vec<(String, String)> = h.done.iter().flat_map(|(step, ts)| ts.iter().flat_map(|(t, _)| slots(step, t))).collect();
+        let slots: Vec<(String, String)> =
+            h.done.iter().flat_map(|(step, ts)| ts.iter().flat_map(|(t, _)| slots(step, t))).collect();
         if slots.iter().any(|(s, t)| self.last.get(s).and_then(|m| m.get(t)).is_some_and(|l| *l > e.lease)) {
             self.reflected.insert(key.to_string());
             return false;
@@ -345,7 +352,12 @@ pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check
             Ok(()) => {
                 if r.apply(&k, &e) {
                     if let Some((step, targets)) = &e.handoff.done {
-                        out.done.push((k.clone(), e.member.clone(), step.clone(), targets.iter().map(|t| t.0.clone()).collect()));
+                        out.done.push((
+                            k.clone(),
+                            e.member.clone(),
+                            step.clone(),
+                            targets.iter().map(|t| t.0.clone()).collect(),
+                        ));
                     }
                     out.applied.push(k);
                 } else {
@@ -400,7 +412,11 @@ pub fn start(nas: &dyn Nas, t: &Term, own: Option<&Records>, today: bool) -> Res
     let mut r = match (base, t.seq) {
         (Some(b), _) if b.term == t.term => b,
         (Some(b), Some(s)) if b.term == t.from && b.seq >= s => b,
-        (b, Some(s)) => bail!("term {}'s records handed over at {s} aren't readable yet (read: {}): try again shortly", t.from, b.map_or("none".into(), |b| format!("term {}'s at {}", b.term, b.seq))),
+        (b, Some(s)) => bail!(
+            "term {}'s records handed over at {s} aren't readable yet (read: {}): try again shortly",
+            t.from,
+            b.map_or("none".into(), |b| format!("term {}'s at {}", b.term, b.seq))
+        ),
         (Some(b), None) => b,
         (None, None) => bail!("no records to take term {} up from", t.term),
     };
@@ -440,7 +456,14 @@ pub fn handed(r: &mut Records, t: &Term) -> Option<serde_json::Value> {
 /// `check`ed first; saved as `t`'s first snapshot, and the refusals noted. When the save fails,
 /// `own` keeps the records as tried, numbered: passed again, the next try numbers on (no two
 /// versions of a snapshot that may both land share a number).
-pub fn take_up(nas: &dyn Nas, t: &Term, own: &mut Option<Records>, keys: &[String], check: Check, today: bool) -> Result<TakenUp> {
+pub fn take_up(
+    nas: &dyn Nas,
+    t: &Term,
+    own: &mut Option<Records>,
+    keys: &[String],
+    check: Check,
+    today: bool,
+) -> Result<TakenUp> {
     let mut r = start(nas, t, own.as_ref(), today)?;
     let handed = handed(&mut r, t);
     let merged = merge(nas, &mut r, keys, check);
@@ -472,8 +495,19 @@ mod tests {
     /// An entry of lease `term`-`n` building unit `t` with key `k`.
     fn built(term: u64, n: u64, t: &str, k: &str) -> Entry {
         let content = format!("base/{t}.{k}.base");
-        let h = Handoff { changes: [(format!("base/{t}"), Some(content.clone()))].into(), pending: [(content, "sha".into())].into(), done: Some(("unit".into(), vec![(t.into(), k.into())])), ..Default::default() };
-        Entry { member: "m-000000000000000b".into(), lease: LeaseId { term, n }, step: "unit".into(), handoff: h, at: DAY + n }
+        let h = Handoff {
+            changes: [(format!("base/{t}"), Some(content.clone()))].into(),
+            pending: [(content, "sha".into())].into(),
+            done: Some(("unit".into(), vec![(t.into(), k.into())])),
+            ..Default::default()
+        };
+        Entry {
+            member: "m-000000000000000b".into(),
+            lease: LeaseId { term, n },
+            step: "unit".into(),
+            handoff: h,
+            at: DAY + n,
+        }
     }
 
     fn any(_: &Entry, _: &Records) -> std::result::Result<(), String> {
@@ -516,7 +550,11 @@ mod tests {
         stopped.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
         stopped.create_new(FIRST, b"").unwrap();
         assert!(Records::newest(&stopped, 1, false).unwrap_err().is::<FirstUnreadable>());
-        assert_eq!(Records::newest(&stopped, 1, true).unwrap().map(|r| r.manifest.len()), Some(1), "today's files after `STALE_S`");
+        assert_eq!(
+            Records::newest(&stopped, 1, true).unwrap().map(|r| r.manifest.len()),
+            Some(1),
+            "today's files after `STALE_S`"
+        );
         let a = lead("development");
         let t1 = term::bootstrap(&stopped, &a, DAY, true).unwrap().unwrap();
         let taken = up(&stopped, &t1, None, &any).unwrap();
@@ -539,7 +577,13 @@ mod tests {
         let keys: Vec<String> = [&a, &b, &bad].iter().map(|e| journal::write(&nas, e).unwrap()).collect();
         let short = "2026-10-06/3-7".to_string();
         nas.create_new(&journal::path(&short), b"").unwrap();
-        let check = |e: &Entry, _: &Records| if e.step == "bogus" { Err("writes outside its step's names".to_string()) } else { Ok(()) };
+        let check = |e: &Entry, _: &Records| {
+            if e.step == "bogus" {
+                Err("writes outside its step's names".to_string())
+            } else {
+                Ok(())
+            }
+        };
         let mut told = keys.clone();
         told.push(short.clone());
         told.push(keys[0].clone());
@@ -576,8 +620,13 @@ mod tests {
         // older than the prune doesn't bring it back.
         let other = journal::write(&nas, &built(3, 4, "6-1-2", "k4")).unwrap();
         assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&other), &any).applied, [other]);
-        let h = Handoff { changes: [("base/6-1-1".to_string(), None)].into(), done: Some(("prune".into(), vec![("unit 6-1-1".into(), String::new())])), ..Default::default() };
-        let prune = journal::write(&nas, &Entry { step: "prune".into(), handoff: h, ..built(3, 12, "6-1-1", "-") }).unwrap();
+        let h = Handoff {
+            changes: [("base/6-1-1".to_string(), None)].into(),
+            done: Some(("prune".into(), vec![("unit 6-1-1".into(), String::new())])),
+            ..Default::default()
+        };
+        let prune =
+            journal::write(&nas, &Entry { step: "prune".into(), handoff: h, ..built(3, 12, "6-1-1", "-") }).unwrap();
         assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&prune), &any).applied, [prune]);
         let late = journal::write(&nas, &built(3, 10, "6-1-1", "k10")).unwrap();
         assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&late), &any).overtaken, [late]);
@@ -593,7 +642,10 @@ mod tests {
         // share under load an hour of reads.)
         let nas = Mem::default();
         let mut r = Records { term: 3, ..Default::default() };
-        let mut keys: Vec<String> = [(3, 9, "6-1-1"), (2, 4, "6-1-2"), (3, 1, "6-1-3")].iter().map(|&(t, n, u)| journal::write(&nas, &built(t, n, u, "k")).unwrap()).collect();
+        let mut keys: Vec<String> = [(3, 9, "6-1-1"), (2, 4, "6-1-2"), (3, 1, "6-1-3")]
+            .iter()
+            .map(|&(t, n, u)| journal::write(&nas, &built(t, n, u, "k")).unwrap())
+            .collect();
         by_lease(&mut keys);
         assert_eq!(keys, ["2026-10-06/2-4", "2026-10-06/3-1", "2026-10-06/3-9"]);
         let reads = Cell::new(0);
@@ -634,13 +686,19 @@ mod tests {
             }
         }
         let mem = Mem::default();
-        let keys: Vec<String> = [(3, 1, "6-1-1"), (3, 2, "6-1-2")].iter().map(|&(t, n, u)| journal::write(&mem, &built(t, n, u, "k")).unwrap()).collect();
+        let keys: Vec<String> = [(3, 1, "6-1-1"), (3, 2, "6-1-2")]
+            .iter()
+            .map(|&(t, n, u)| journal::write(&mem, &built(t, n, u, "k")).unwrap())
+            .collect();
         let short = "2026-10-06/3-3".to_string();
         mem.write_whole(&journal::path(&short), b"{\"member\":").unwrap();
         let nas = Failing(mem, journal::path(&keys[0]));
         let mut r = Records { term: 3, ..Default::default() };
         let m = merge(&nas, &mut r, &[keys.clone(), vec![short.clone()]].concat(), &any);
-        assert_eq!((m.failed, m.unread, m.applied, m.waiting), (vec![keys[0].clone()], vec![], vec![keys[1].clone()], vec![short]));
+        assert_eq!(
+            (m.failed, m.unread, m.applied, m.waiting),
+            (vec![keys[0].clone()], vec![], vec![keys[1].clone()], vec![short])
+        );
     }
 
     #[test]
@@ -661,7 +719,10 @@ mod tests {
         // horizon doesn't move it back.
         let y = journal::write(&nas, &built(4, 2, "6-1-2", "k2")).unwrap();
         r.forget_before("2026-10-01");
-        assert_eq!((merge(&nas, &mut r, std::slice::from_ref(&y), &any).applied, r.horizon.as_str()), (vec![y], "2026-10-14"));
+        assert_eq!(
+            (merge(&nas, &mut r, std::slice::from_ref(&y), &any).applied, r.horizon.as_str()),
+            (vec![y], "2026-10-14")
+        );
     }
 
     #[test]
@@ -679,8 +740,11 @@ mod tests {
         merge(&nas, &mut r1, &[k1], &any);
         r1.save(&nas).unwrap();
         // Taken over: term 2 starts from term 1's snapshot and replays the other.
-        let b = Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "20261005-2202-61eb22c".into() };
-        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1.clone()) }, &b, "taken over", DAY + 60).unwrap().unwrap();
+        let b =
+            Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "20261005-2202-61eb22c".into() };
+        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1.clone()) }, &b, "taken over", DAY + 60)
+            .unwrap()
+            .unwrap();
         // A reader while term 2 has no snapshot yet: term 1's.
         assert_eq!(Records::newest(&nas, 2, false).unwrap().map(|r| (r.term, r.seq)), Some((1, 3)));
         let up2 = up(&nas, &t2, None, &any).unwrap();
@@ -690,9 +754,15 @@ mod tests {
         assert_eq!(Records::load(&nas, 2).unwrap(), Some(up2.records.clone()));
         assert_eq!(Records::newest(&nas, 2, false).unwrap(), Some(up2.records.clone()));
         // Term 3 made, its lead gone before saving anything: term 4 starts from term 2's.
-        let t3 = term::claim(&nas, &Current { term: 2, lead: Some(t2.clone()) }, &a, "taken over", DAY + 120).unwrap().unwrap();
+        let t3 = term::claim(&nas, &Current { term: 2, lead: Some(t2.clone()) }, &a, "taken over", DAY + 120)
+            .unwrap()
+            .unwrap();
         let t4 = term::claim(&nas, &Current { term: 3, lead: Some(t3) }, &b, "taken over", DAY + 900).unwrap().unwrap();
-        assert_eq!(Records::newest(&nas, 4, false).unwrap().map(|r| r.term), Some(2), "readers meanwhile: term 2's (review L6: none)");
+        assert_eq!(
+            Records::newest(&nas, 4, false).unwrap().map(|r| r.term),
+            Some(2),
+            "readers meanwhile: term 2's (review L6: none)"
+        );
         let up4 = up(&nas, &t4, None, &any).unwrap();
         assert_eq!((up4.records.term, up4.records.reflected.len()), (4, 2));
         // Tried again after its save landed: from its own snapshot, its number going on.
@@ -716,8 +786,10 @@ mod tests {
         r2.handed = Some(serde_json::json!({"leases": ["1-4"]}));
         r2.save(&nas).unwrap();
         // Handed over at seq 4 (term 1's snapshot read as at 3: a stale read): not yet.
-        let b = Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "20261005-2202-61eb22c".into() };
-        let mut t2 = Term::after(&Current { term: 1, lead: Some(t1) }, &b, "handed over by Mac-mini", DAY + 60).unwrap();
+        let b =
+            Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "20261005-2202-61eb22c".into() };
+        let mut t2 =
+            Term::after(&Current { term: 1, lead: Some(t1) }, &b, "handed over by Mac-mini", DAY + 60).unwrap();
         t2.seq = Some(r2.seq);
         assert!(matches!(term::make(&nas, &t2).unwrap(), Made::Ours));
         let fresh = nas.read(&path(1)).unwrap().unwrap();
@@ -738,7 +810,9 @@ mod tests {
         let mut own = taken.records.clone();
         let e4 = built(2, 4, "6-1-4", "k4");
         own.apply(&e4.key().unwrap(), &e4);
-        let t3 = term::claim(&nas, &Current { term: 2, lead: Some(t2) }, &b, "re-asserted after a gap", DAY + 900).unwrap().unwrap();
+        let t3 = term::claim(&nas, &Current { term: 2, lead: Some(t2) }, &b, "re-asserted after a gap", DAY + 900)
+            .unwrap()
+            .unwrap();
         let up3 = up(&nas, &t3, Some(own), &any).unwrap();
         assert_eq!(up3.records.keys.unit.get("6-1-4").map(String::as_str), Some("k4"));
     }
@@ -750,10 +824,15 @@ mod tests {
         // records lack it, and no take-up will list the journal again: its member tells term 2's
         // lead of it, as of every entry term 2's lead hasn't acknowledged.
         let nas = Mem::default();
-        let (a, b) = (lead("development"), Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() });
+        let (a, b) = (
+            lead("development"),
+            Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() },
+        );
         let t1 = term::bootstrap(&nas, &a, DAY, false).unwrap().unwrap();
         let mut r1 = up(&nas, &t1, None, &any).unwrap().records;
-        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over by MacBook-Air", DAY + 700).unwrap().unwrap();
+        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over by MacBook-Air", DAY + 700)
+            .unwrap()
+            .unwrap();
         let mut r2 = up(&nas, &t2, None, &any).unwrap().records;
         let mut mine = journal::Mine::default();
         let x = journal::write(&nas, &built(1, 9, "6-1-1", "k9")).unwrap();
@@ -791,10 +870,15 @@ mod tests {
         // lapsed, or its app's write-sets are older) and sets it aside. (Review M1: the current
         // lead, whose check would take it, refused it unread.)
         let nas = Mem::default();
-        let (a, b) = (lead("development"), Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() });
+        let (a, b) = (
+            lead("development"),
+            Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() },
+        );
         let t1 = term::bootstrap(&nas, &a, DAY, false).unwrap().unwrap();
         let mut r1 = up(&nas, &t1, None, &any).unwrap().records;
-        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over by MacBook-Air", DAY + 700).unwrap().unwrap();
+        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over by MacBook-Air", DAY + 700)
+            .unwrap()
+            .unwrap();
         let mut r2 = up(&nas, &t2, None, &any).unwrap().records;
         let x = journal::write(&nas, &built(1, 5, "6-1-1", "k5")).unwrap();
         let stale = |_: &Entry, _: &Records| Err::<(), String>("6-1-1 leased again since".into());
@@ -856,10 +940,15 @@ mod tests {
         // (Review L1: the try started again from term 1's records at 0, and two versions of term
         // 2's records, with other entries, were both numbered 1.)
         let nas = LostSave::default();
-        let (a, b) = (lead("development"), Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() });
+        let (a, b) = (
+            lead("development"),
+            Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() },
+        );
         let t1 = term::bootstrap(&nas, &a, DAY, false).unwrap().unwrap();
         up(&nas, &t1, None, &any).unwrap();
-        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over by MacBook-Air", DAY + 700).unwrap().unwrap();
+        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over by MacBook-Air", DAY + 700)
+            .unwrap()
+            .unwrap();
         journal::write(&nas, &built(1, 1, "6-1-1", "k1")).unwrap();
         nas.lost.set(true);
         let mut own = None;

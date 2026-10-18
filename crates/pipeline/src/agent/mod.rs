@@ -35,8 +35,8 @@ pub mod pool;
 pub mod publish;
 pub mod recipes;
 pub mod rekey;
-pub mod room;
 pub mod resume;
+pub mod room;
 pub mod steps;
 pub mod tiles;
 
@@ -48,7 +48,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-
 
 /// Free space the OSM pass needs on the lead to start: the filtered planet (about half the
 /// planet's 95 GB) with room to spare. The planet is read from the NAS when there's no room to
@@ -135,9 +134,19 @@ fn write_map_update(home: &Path, r: &build::MapUpdate) -> Result<()> {
     crate::whole::write(&home.join(MAP_UPDATE_FILE), &serde_json::to_vec(r)?)
 }
 
-
 /// The pass's worldwide steps the checklist counts, after the planet's own.
-const WORLDWIDE_STEPS: [&str; 10] = ["pass-sets", "outlines", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water"];
+const WORLDWIDE_STEPS: [&str; 10] = [
+    "pass-sets",
+    "outlines",
+    "trailends",
+    "reach",
+    "terrain-z8",
+    "buildings",
+    "summits",
+    "labels",
+    "lakefill",
+    "water",
+];
 
 /// The loop's pool steps passed over in a row, a tick holding the run, before the status says the
 /// pool's step hangs (about a minute of the loop's steps; or at once past `STALL_S`).
@@ -169,8 +178,18 @@ pub(crate) fn clash(a: &str, b: &str) -> bool {
 /// still to come and the reserve: bytes) past the disk's free space, `disk` saying both (the other's
 /// left, the free: bytes), called only once the rest fits.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn beside_why(mine: Option<crate::coord::Measured>, theirs: Option<crate::coord::Measured>, waiting: bool, held: Option<u64>, limit: u64, disk: impl FnOnce() -> (u64, u64), beside: &str) -> Option<String> {
-    let Some(mine) = mine else { return Some(format!("a cold start (no run of its step measured yet): it runs alone, once {beside} ends")) };
+pub(crate) fn beside_why(
+    mine: Option<crate::coord::Measured>,
+    theirs: Option<crate::coord::Measured>,
+    waiting: bool,
+    held: Option<u64>,
+    limit: u64,
+    disk: impl FnOnce() -> (u64, u64),
+    beside: &str,
+) -> Option<String> {
+    let Some(mine) = mine else {
+        return Some(format!("a cold start (no run of its step measured yet): it runs alone, once {beside} ends"));
+    };
     let Some(theirs) = theirs else { return Some(format!("{beside} beside it is a cold start, which runs alone")) };
     if limit == 0 {
         return Some("this Mac's memory can't be read: nothing starts beside another job".into());
@@ -184,7 +203,12 @@ pub(crate) fn beside_why(mine: Option<crate::coord::Measured>, theirs: Option<cr
     };
     let gb = |mb: u64| mb as f64 / 1024.0;
     if mine.mem_mb + theirs_mb > limit {
-        return Some(format!("measured at {:.1} GB, with {beside}'s {:.1} GB past this Mac's limit of {:.1} GB", gb(mine.mem_mb), gb(theirs_mb), gb(limit)));
+        return Some(format!(
+            "measured at {:.1} GB, with {beside}'s {:.1} GB past this Mac's limit of {:.1} GB",
+            gb(mine.mem_mb),
+            gb(theirs_mb),
+            gb(limit)
+        ));
     }
     let (left, free) = disk();
     let need = (mine.disk_mb << 20) + left + room::RESERVE;
@@ -285,9 +309,20 @@ impl Tell {
     /// didn't answer.
     fn to(&self, c: &crate::coord::client::Client) -> bool {
         let (id, r) = match self {
-            Tell::Done(d) => (d.lease, c.done(d).map(|h| if let crate::coord::client::Handed::Refused(why) = h { eprintln!("agent: the lead refused lease {}'s end: {why} (it lapses)", d.lease) })),
-            Tell::GiveBack { id, why, floors, disks, job_disk } => (*id, c.end_with(*id, why, true, floors, disks, *job_disk)),
-            Tell::Fail { id, why, floors, disks, job_disk } => (*id, c.end_with(*id, why, false, floors, disks, *job_disk)),
+            Tell::Done(d) => (
+                d.lease,
+                c.done(d).map(|h| {
+                    if let crate::coord::client::Handed::Refused(why) = h {
+                        eprintln!("agent: the lead refused lease {}'s end: {why} (it lapses)", d.lease)
+                    }
+                }),
+            ),
+            Tell::GiveBack { id, why, floors, disks, job_disk } => {
+                (*id, c.end_with(*id, why, true, floors, disks, *job_disk))
+            }
+            Tell::Fail { id, why, floors, disks, job_disk } => {
+                (*id, c.end_with(*id, why, false, floors, disks, *job_disk))
+            }
         };
         match r {
             Ok(()) => true,
@@ -327,9 +362,14 @@ fn helper_need(step: &str) -> u64 {
 /// still can't have its room once the caches are emptied is given back (`run_once`). With the
 /// owner's disk room target (`floor`, room::Target), that much more stays free.
 fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
-    steps::SHARED.iter().copied().chain(["tail", crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND]).filter(|s| free.saturating_add(cheap) >= floor.saturating_add(helper_need(s) + room::margin(helper_need(s)))).map(str::to_string).collect()
+    steps::SHARED
+        .iter()
+        .copied()
+        .chain(["tail", crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND])
+        .filter(|s| free.saturating_add(cheap) >= floor.saturating_add(helper_need(s) + room::margin(helper_need(s))))
+        .map(str::to_string)
+        .collect()
 }
-
 
 /// Whether `p` is an archive copy a terrain job's target (`id`: "terrain 3/x/y", an area's whole
 /// run; "terrain 6/x/y", a piece; "terrain-lo 3/x/y", an assembly) reads at once: an area's run its
@@ -347,7 +387,10 @@ fn terrain_reads(id: &str, p: &Path) -> bool {
     }
     match (id.split_once(' '), area) {
         (Some(("terrain", t)), Some(a)) => match tile(t) {
-            Some((3, x, y)) => matches!(a, (3, ax, ay) if (ax, ay) == (x, y)) || matches!(a, (6, ax, ay) if (ax >> 3, ay >> 3) == (x, y)),
+            Some((3, x, y)) => {
+                matches!(a, (3, ax, ay) if (ax, ay) == (x, y))
+                    || matches!(a, (6, ax, ay) if (ax >> 3, ay >> 3) == (x, y))
+            }
             Some((6, x, y)) => a == (6, x, y),
             _ => false,
         },
@@ -457,8 +500,20 @@ fn read_costs(p: &Path) -> Vec<(String, crate::coord::Cost)> {
         .filter_map(|l| {
             let v: serde_json::Value = serde_json::from_str(l).ok()?;
             // (`sizes`: a line from a job before them has none.)
-            let sizes = v["sizes"].as_object().map(|m| m.iter().filter_map(|(k, n)| Some((k.clone(), n.as_u64()?))).collect()).unwrap_or_default();
-            Some((v["unit"].as_str()?.to_string(), crate::coord::Cost { peak_mb: v["peak_mb"].as_u64()?, secs: v["secs"].as_u64().unwrap_or(0), worker: None, v: v["v"].as_u64().unwrap_or(0) as u32, sizes }))
+            let sizes = v["sizes"]
+                .as_object()
+                .map(|m| m.iter().filter_map(|(k, n)| Some((k.clone(), n.as_u64()?))).collect())
+                .unwrap_or_default();
+            Some((
+                v["unit"].as_str()?.to_string(),
+                crate::coord::Cost {
+                    peak_mb: v["peak_mb"].as_u64()?,
+                    secs: v["secs"].as_u64().unwrap_or(0),
+                    worker: None,
+                    v: v["v"].as_u64().unwrap_or(0) as u32,
+                    sizes,
+                },
+            ))
         })
         .collect()
 }
@@ -721,7 +776,9 @@ thread_local! {
 
 /// Whether `p` is the real NAS's or the app's real home: a test never writes there.
 pub fn is_live_path(p: &Path) -> bool {
-    p.starts_with("/Volumes") || std::env::var_os("HOME").is_some_and(|h| p.starts_with(Path::new(&h).join("Library/Application Support/scenic")))
+    p.starts_with("/Volumes")
+        || std::env::var_os("HOME")
+            .is_some_and(|h| p.starts_with(Path::new(&h).join("Library/Application Support/scenic")))
 }
 
 /// The NAS project folder: the share's mount, by whatever name it's mounted. When it's missing and
@@ -754,7 +811,9 @@ fn find_live_root(mount: bool) -> Option<PathBuf> {
                     eprintln!("agent: mounting the NAS: {e:#}");
                 }
             }
-            None => eprintln!("agent: away from home, and the Keychain has no password for the NAS's Tailscale name ({HOST})"),
+            None => eprintln!(
+                "agent: away from home, and the Keychain has no password for the NAS's Tailscale name ({HOST})"
+            ),
         }
         return find_mount(HOST, SHARE).map(|m| m.point.join(PROJECT));
     }
@@ -762,7 +821,8 @@ fn find_live_root(mount: bool) -> Option<PathBuf> {
 }
 
 /// The shares with a check still waiting on a hung mount: no second one starts meanwhile.
-static CHECKING: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
+static CHECKING: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 /// How long the NAS took to answer the last check (ms; u64::MAX: it didn't), for the status.
 static ANSWERED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
@@ -803,7 +863,6 @@ struct Coverages {
     each: Vec<(String, crate::coverage::Coverage)>,
 }
 
-
 /// How long the regions' work waits after the owner changes a recipe or an outline file, for more
 /// edits: three edits in a row built the same regions' heritage sites three times, and their
 /// terrain twice (2026-10-05). At most `EDIT_HOLD_MAX` from the first of a run of edits, each within
@@ -813,7 +872,10 @@ const EDIT_HOLD_MAX: Duration = Duration::from_secs(60 * 60);
 
 /// While a run of edits (its first and last: `Agent::edited_at`) holds the regions' work: how long
 /// ago the last was, and how long the hold has left (at `now`).
-fn edit_held(edited: Option<(std::time::SystemTime, std::time::SystemTime)>, now: std::time::SystemTime) -> Option<(Duration, Duration)> {
+fn edit_held(
+    edited: Option<(std::time::SystemTime, std::time::SystemTime)>,
+    now: std::time::SystemTime,
+) -> Option<(Duration, Duration)> {
     let (first, last) = edited?;
     let (run, age) = (now.duration_since(first).ok()?, now.duration_since(last).ok()?);
     (age < EDIT_HOLD && run < EDIT_HOLD_MAX).then(|| (age, (EDIT_HOLD - age).min(EDIT_HOLD_MAX - run)))
@@ -1109,13 +1171,20 @@ impl Agent {
         std::fs::create_dir_all(&o.home).with_context(|| format!("create {}", o.home.display()))?;
         let lock = AgentLock::try_take(&o.home)?;
         if lock.is_none() {
-            anyhow::ensure!(o.dry_run, "another agent is running on this Mac (its lock is {})", o.home.join("agent.lock").display());
+            anyhow::ensure!(
+                o.dry_run,
+                "another agent is running on this Mac (its lock is {})",
+                o.home.join("agent.lock").display()
+            );
             eprintln!("agent: another agent is running; planning only");
         }
         if lock.is_none() {
             o.dry_run = true;
         }
-        let mut mem: Memory = std::fs::read(o.home.join("state.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut mem: Memory = std::fs::read(o.home.join("state.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
         let app = app_version(&o.bin);
         if mem.app != app {
             if !mem.retry.is_empty() {
@@ -1139,13 +1208,20 @@ impl Agent {
                         Some(side) => {
                             let (r1, out) = pool::Run::start(side, &o.home);
                             o.helper = r1.role == pool::Role::Member;
-                            eprintln!("agent: the pool is on: this Mac's member {} {} (term {})", r1.side.member().id, if o.helper { "works as a member" } else { "leads" }, out.term);
+                            eprintln!(
+                                "agent: the pool is on: this Mac's member {} {} (term {})",
+                                r1.side.member().id,
+                                if o.helper { "works as a member" } else { "leads" },
+                                out.term
+                            );
                             run = Some(r1);
                             first = Some((out, r.clone()));
                         }
                         // (Its lock held by another process: this one starts nothing, and tries the
                         // lock again each loop, restarting into the pool once it has it.)
-                        None => eprintln!("agent: another process is this Mac's member in the pool; waiting for its lock"),
+                        None => {
+                            eprintln!("agent: another process is this Mac's member in the pool; waiting for its lock")
+                        }
                     }
                 }
             }
@@ -1153,7 +1229,11 @@ impl Agent {
         // The lead's agent coordinates (not a member's, nor a dry run's, nor a process not in the
         // pool), with a root of its own too (a test's, on a port of its own, SCENIC_COORD_PORT).
         let pooled = run.is_some();
-        let coord = if !o.helper && lock.is_some() && !o.dry_run && pooled { make_coordinator(&o, run.as_ref(), &app, &cond::host_name()).map(std::sync::Arc::new) } else { None };
+        let coord = if !o.helper && lock.is_some() && !o.dry_run && pooled {
+            make_coordinator(&o, run.as_ref(), &app, &cond::host_name()).map(std::sync::Arc::new)
+        } else {
+            None
+        };
         if let (Some(r), Some((out, root))) = (run.as_mut(), &first) {
             pool::took_up(r, coord.as_deref(), &out.events, out.leads, &cond::host_name(), &[]);
             // (The terms' events a member's process before this one kept, for this coordinator's
@@ -1165,11 +1245,106 @@ impl Agent {
         }
         // The build's pause as this agent last knew it (a member that can't reach the lead stays
         // as it was).
-        let pause: Option<crate::control::Pause> = std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let pause: Option<crate::control::Pause> =
+            std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         // (A map update's file that doesn't read: none under way, the next begins afresh.)
         let map_update = read_map_update(&o.home);
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, grace: DRAIN_GRACE, room_target: None, toward_tried: None, floor_short: None, floor_held: None, toward_goal: Default::default(), mem_set: None, guard_on: None, guard_hold: None, guard_last: None, sampler: memguard::Sampler::new(SLOTS), total: 0, guard_backoff: BTreeMap::new(), slots_on: false, proxy: None, resume: false, placement: false, brokers: false, broker: None, broker_failed: None, broker_https: None, held_progress: None, disk_room: None, probe, lead_awake: None, last_root: None, update_handed: None, mac: cond::Mac::Real, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), planned: None, queued: Default::default(), coord, published: None, client: None, owed: Vec::new(), cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), update_decision: Default::default(), timetables: Default::default(), update_logged: Default::default(), catalog_seen: Default::default(), map_update: std::cell::RefCell::new(map_update), publishing: Default::default(), update_measured: Default::default(), planned_tiles: Default::default(), member_id: run.as_ref().map(|r| r.side.member().id.clone()), ticking: run.as_ref().map(|r| r.ticking.clone()), publish_gen: Default::default(), unpublishing: None, pool_skips: 0, pool_hung: None, pool_seen: run.as_ref().map(|r| r.pool_view()), held_entries: Vec::new(), in_process_owed: None, pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))), ticker: None, restart_for: None, inputs: Gate::default(), start_soon: Default::default() })
+        Ok(Agent {
+            host: cond::host_name(),
+            app,
+            started: now_s(),
+            mem,
+            slots: Default::default(),
+            beside_why: None,
+            free_set: None,
+            grace: DRAIN_GRACE,
+            room_target: None,
+            toward_tried: None,
+            floor_short: None,
+            floor_held: None,
+            toward_goal: Default::default(),
+            mem_set: None,
+            guard_on: None,
+            guard_hold: None,
+            guard_last: None,
+            sampler: memguard::Sampler::new(SLOTS),
+            total: 0,
+            guard_backoff: BTreeMap::new(),
+            slots_on: false,
+            proxy: None,
+            resume: false,
+            placement: false,
+            brokers: false,
+            broker: None,
+            broker_failed: None,
+            broker_https: None,
+            held_progress: None,
+            disk_room: None,
+            probe,
+            lead_awake: None,
+            last_root: None,
+            update_handed: None,
+            mac: cond::Mac::Real,
+            sleep: SleepWatch::default(),
+            last_mount_try: None,
+            last_beat: None,
+            progress: None,
+            reach: Default::default(),
+            tiles,
+            coverage: Default::default(),
+            edits: Default::default(),
+            edited_at: Default::default(),
+            _lock: lock,
+            o,
+            me,
+            piece_sizes: Default::default(),
+            planned: None,
+            queued: Default::default(),
+            coord,
+            published: None,
+            client: None,
+            owed: Vec::new(),
+            cheap: None,
+            last_catalog: Default::default(),
+            ready: Default::default(),
+            pause,
+            pause_local: false,
+            mirrored: None,
+            pause_pushed: false,
+            cache_size: Default::default(),
+            heard: None,
+            caches_task: None,
+            trim_failed: None,
+            answers_seed: None,
+            answers_seeded: false,
+            helper_caches: BTreeMap::new(),
+            orphans: Vec::new(),
+            last_cond: None,
+            forecast: Default::default(),
+            update_decision: Default::default(),
+            timetables: Default::default(),
+            update_logged: Default::default(),
+            catalog_seen: Default::default(),
+            map_update: std::cell::RefCell::new(map_update),
+            publishing: Default::default(),
+            update_measured: Default::default(),
+            planned_tiles: Default::default(),
+            member_id: run.as_ref().map(|r| r.side.member().id.clone()),
+            ticking: run.as_ref().map(|r| r.ticking.clone()),
+            publish_gen: Default::default(),
+            unpublishing: None,
+            pool_skips: 0,
+            pool_hung: None,
+            pool_seen: run.as_ref().map(|r| r.pool_view()),
+            held_entries: Vec::new(),
+            in_process_owed: None,
+            pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))),
+            ticker: None,
+            restart_for: None,
+            inputs: Gate::default(),
+            start_soon: Default::default(),
+        })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1220,10 +1395,21 @@ impl Agent {
         let lead = self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()).and_then(|v| v.lead.clone());
         let host = lead.as_ref().map_or("the lead".to_string(), |l| l.host.clone());
         let cause = crate::pool::reachable::cause_of(&text);
-        let r = crate::pool::reachable::Reach { member: String::new(), what: "coordinator".into(), ok: false, at: 0, since: 0, cause: Some(cause), why: text.clone() };
+        let r = crate::pool::reachable::Reach {
+            member: String::new(),
+            what: "coordinator".into(),
+            ok: false,
+            at: 0,
+            since: 0,
+            cause: Some(cause),
+            why: text.clone(),
+        };
         match cause {
             crate::pool::reachable::Cause::Other => format!("{host}'s coordinator can't be reached: {text}"),
-            _ => format!("{host}'s coordinator can't be reached from this Mac: {} ({text})", crate::pool::reachable::words(&r, &host)),
+            _ => format!(
+                "{host}'s coordinator can't be reached from this Mac: {} ({text})",
+                crate::pool::reachable::words(&r, &host)
+            ),
         }
     }
 
@@ -1239,18 +1425,38 @@ impl Agent {
             _ => None,
         };
         // (A job's folder from before the pool, drained into the journal: tasks' alone here.)
-        let dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && Some(p) != running.as_ref() && !p.join("work.json").exists()).collect();
+        let dirs: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir() && Some(p) != running.as_ref() && !p.join("work.json").exists())
+            .collect();
         if dirs.is_empty() {
             return;
         }
         let Some(client) = self.client(root, waiting) else { return };
         for d in dirs {
-            let Some(lease) = d.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok()) else { continue };
-            let result: Option<serde_json::Value> = std::fs::read(d.join("result.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            let Some(lease) = d.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok()) else {
+                continue;
+            };
+            let result: Option<serde_json::Value> =
+                std::fs::read(d.join("result.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
             let sent = (|| -> Result<crate::coord::client::Handed> {
                 // A task's: its outputs and what it took.
-                if let Some(t) = result.as_ref().filter(|r| r["ok"].as_bool() == Some(true)).map(|r| &r["task"]).filter(|t| t.is_object()) {
-                    let d = crate::coord::Done { lease, outputs: serde_json::from_value(t["outputs"].clone())?, removed: serde_json::from_value(t["removed"].clone())?, secs: t["secs"].as_f64().unwrap_or(0.0), peak_mb: t["peak_mb"].as_u64().unwrap_or(0), timings: read_timings(&d), ..Default::default() };
+                if let Some(t) = result
+                    .as_ref()
+                    .filter(|r| r["ok"].as_bool() == Some(true))
+                    .map(|r| &r["task"])
+                    .filter(|t| t.is_object())
+                {
+                    let d = crate::coord::Done {
+                        lease,
+                        outputs: serde_json::from_value(t["outputs"].clone())?,
+                        removed: serde_json::from_value(t["removed"].clone())?,
+                        secs: t["secs"].as_f64().unwrap_or(0.0),
+                        peak_mb: t["peak_mb"].as_u64().unwrap_or(0),
+                        timings: read_timings(&d),
+                        ..Default::default()
+                    };
                     return client.done(&d);
                 }
                 let why = match &result {
@@ -1284,7 +1490,11 @@ impl Agent {
                     std::fs::remove_dir_all(&d).ok();
                 }
                 Err(e) => {
-                    waiting.push(Waiting { step: None, what: "Handing work back".into(), why: format!("{e:#}; trying again") });
+                    waiting.push(Waiting {
+                        step: None,
+                        what: "Handing work back".into(),
+                        why: format!("{e:#}; trying again"),
+                    });
                     break;
                 }
             }
@@ -1306,10 +1516,23 @@ impl Agent {
             "bldprep" => vec!["--dem".into(), dem()],
             "bldtiles" => vec!["--pass".into(), date.to_string()],
             "terrain-water" => vec!["--pass".into(), date.to_string()],
-            "items" | "heritage-sites" | "heritage" | "rail" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache".into(), s(&cache)],
-            "peaks" => vec!["--pass".into(), date.to_string(), "--raw".into(), s(&cache.join("aws-terrarium")), "--cache".into(), s(&cache), "--coarse-threads".into(), "6".into()],
+            "items" | "heritage-sites" | "heritage" | "rail" => {
+                vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache".into(), s(&cache)]
+            }
+            "peaks" => vec![
+                "--pass".into(),
+                date.to_string(),
+                "--raw".into(),
+                s(&cache.join("aws-terrarium")),
+                "--cache".into(),
+                s(&cache),
+                "--coarse-threads".into(),
+                "6".into(),
+            ],
             "unit" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache-dir".into(), s(&cache)],
-            "trees" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--chm".into(), s(&cache.join("chm10"))],
+            "trees" => {
+                vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--chm".into(), s(&cache.join("chm10"))]
+            }
             "trees-lo" => vec!["--pass".into(), date.to_string()],
             // The server's mirror on this Mac (the agent's home is inside the app's) has the same
             // files: used instead of a second copy where it has them.
@@ -1340,7 +1563,11 @@ impl Agent {
             return Vec::new();
         }
         if self.newer_app() {
-            waiting.push(Waiting { step: None, what: "Building".into(), why: "restarting into the newly installed app".into() });
+            waiting.push(Waiting {
+                step: None,
+                what: "Building".into(),
+                why: "restarting into the newly installed app".into(),
+            });
             return Vec::new();
         }
         // The work its disk has room for (what its caches can free counted at most every ten
@@ -1356,7 +1583,9 @@ impl Agent {
         };
         // (A job given back for the owner's disk room target lately: no work asked for until a job
         // ends, the target changes or ten minutes pass; the caches are freed toward it meanwhile.)
-        if let Some((t, n, at)) = self.floor_short.filter(|f| f.0 == self.floor() && f.2.elapsed() < Duration::from_secs(600)) {
+        if let Some((t, n, at)) =
+            self.floor_short.filter(|f| f.0 == self.floor() && f.2.elapsed() < Duration::from_secs(600))
+        {
             if room::disk_free(&self.o.home).unwrap_or(0) < n {
                 waiting.push(Waiting { step: None, what: "Building".into(), why: format!("a job was given back for the disk room target ({}) {} min ago: asking for work again once the disk has room past it, or in ten minutes", room::size(t), at.elapsed().as_secs() / 60) });
                 return Vec::new();
@@ -1388,8 +1617,16 @@ impl Agent {
         if can.is_empty() {
             let need = helper_need(crate::trees::task::KIND);
             let floor = self.floor();
-            let past = if floor > 0 { format!(", past the disk room target's {}", room::size(floor)) } else { String::new() };
-            waiting.push(Waiting { step: None, what: "Building".into(), why: format!("the disk has too little room ({:.1} GB free needed{past}, with what its caches can free)", (need + room::margin(need)) as f64 / (1u64 << 30) as f64) });
+            let past =
+                if floor > 0 { format!(", past the disk room target's {}", room::size(floor)) } else { String::new() };
+            waiting.push(Waiting {
+                step: None,
+                what: "Building".into(),
+                why: format!(
+                    "the disk has too little room ({:.1} GB free needed{past}, with what its caches can free)",
+                    (need + room::margin(need)) as f64 / (1u64 << 30) as f64
+                ),
+            });
             return Vec::new();
         }
         let away = helper_away(c);
@@ -1422,7 +1659,16 @@ impl Agent {
             self.know_pause(None);
         }
         match asked {
-            Ok(Some(crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, as_of, .. })) if steps::SHARED.contains(&step.as_str()) || (every && every::offered(&step)) || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) => {
+            Ok(Some(crate::coord::Grant {
+                lease,
+                term,
+                work: crate::coord::Granted::Job { step, targets, pass },
+                as_of,
+                ..
+            })) if steps::SHARED.contains(&step.as_str())
+                || (every && every::offered(&step))
+                || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) =>
+            {
                 // (A resumable job, its progress on this Mac: resumed in its own scratch folder,
                 // its step's whole hand-off as the lead's own job's, no done record: its target,
                 // the pass's date, is no step's target. crate::agent::resume.)
@@ -1436,10 +1682,15 @@ impl Agent {
                 // (Its step and targets, kept with its saves: should this agent stop, the next hands
                 // off what of them it finished.)
                 let work = match pooled {
-                    Some(l) => serde_json::to_vec(&pool::JobKept { step: step.clone(), targets: if resumed { Vec::new() } else { targets.clone() }, lease: l }),
+                    Some(l) => serde_json::to_vec(&pool::JobKept {
+                        step: step.clone(),
+                        targets: if resumed { Vec::new() } else { targets.clone() },
+                        lease: l,
+                    }),
                     None => serde_json::to_vec(&build::Work { step: step.clone(), targets: targets.clone() }),
                 };
-                let kept = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(dir.join("work.json"), work.unwrap_or_default()));
+                let kept = std::fs::create_dir_all(&dir)
+                    .and_then(|()| std::fs::write(dir.join("work.json"), work.unwrap_or_default()));
                 if let Err(e) = kept {
                     waiting.push(Waiting { step: None, what: "Building".into(), why: format!("{e}") });
                     fail(self, lease, &format!("its outbox: {e}"));
@@ -1447,7 +1698,12 @@ impl Agent {
                 }
                 let s = |p: &Path| p.to_string_lossy().into_owned();
                 // The lead's own command for it, its saves handed off (SCENIC_HANDOFF).
-                let mut cmd = vec!["/usr/bin/env".to_string(), format!("SCENIC_HANDOFF={}", dir.display()), format!("SCENIC_COSTS={}", dir.join("costs.jsonl").display()), format!("{}={}", crate::timings::TIMINGS_ENV, dir.join(TIMINGS_FILE).display())];
+                let mut cmd = vec![
+                    "/usr/bin/env".to_string(),
+                    format!("SCENIC_HANDOFF={}", dir.display()),
+                    format!("SCENIC_COSTS={}", dir.join("costs.jsonl").display()),
+                    format!("{}={}", crate::timings::TIMINGS_ENV, dir.join(TIMINGS_FILE).display()),
+                ];
                 if resumed {
                     // (Its target the pass's date, its key the planet's path in the NAS's folder.)
                     let (date, planet) = targets.first().cloned().unwrap_or_default();
@@ -1457,28 +1713,56 @@ impl Agent {
                         None => Held::Leased { lease, dir },
                     };
                     self.slots[0].lease = Some(lease_kept);
-                    let what = format!("Reading the OpenStreetMap planet of {date} (resumed here, its progress on this Mac)");
-                    return vec![JobSpec { id: format!("{step} {date}"), what, cmd, needs, restart_after_sleep: true, record: None }];
+                    let what =
+                        format!("Reading the OpenStreetMap planet of {date} (resumed here, its progress on this Mac)");
+                    return vec![JobSpec {
+                        id: format!("{step} {date}"),
+                        what,
+                        cmd,
+                        needs,
+                        restart_after_sleep: true,
+                        record: None,
+                    }];
                 }
                 // (A map update's step: the map update's units, as the lead granted them, read from its folder
                 // as the lead's own job reads its map update's file.)
                 if let Some(a) = as_of {
                     let f = dir.join(MAP_UPDATE_FILE);
-                    let wrote = serde_json::to_vec(&serde_json::json!({ "began": a.began, "units": a.units })).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&f, &b));
+                    let wrote = serde_json::to_vec(&serde_json::json!({ "began": a.began, "units": a.units }))
+                        .map_err(anyhow::Error::from)
+                        .and_then(|b| crate::whole::write(&f, &b));
                     if let Err(e) = wrote {
-                        waiting.push(Waiting { step: None, what: "Building".into(), why: format!("the map update's units: {e:#}") });
+                        waiting.push(Waiting {
+                            step: None,
+                            what: "Building".into(),
+                            why: format!("the map update's units: {e:#}"),
+                        });
                         fail(self, lease, &format!("the map update's units: {e:#}"));
                         return Vec::new();
                     }
                     cmd.push(format!("{}={}#{}", crate::out::UNITS_AS_OF_ENV, f.display(), a.began));
                 }
-                cmd.extend([s(&self.o.bin.join("scenic-build")), step.clone(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join(&step))]);
+                cmd.extend([
+                    s(&self.o.bin.join("scenic-build")),
+                    step.clone(),
+                    "--root".into(),
+                    s(root),
+                    "--scratch".into(),
+                    s(&self.o.home.join("scratch").join(&step)),
+                ]);
                 cmd.extend(targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t) && *t != step));
                 cmd.extend(self.step_args(&step, &pass));
                 // (Pieces made again as they are, by the build's records as read: expected the
                 // same. Records that can't be read now expect nothing.)
                 if matches!(step.as_str(), "trees" | "terrain" | "slope") {
-                    let same = build::Keys::load_with(root, &[]).map(|k| expect_same(&build::Work { step: step.clone(), targets: targets.clone() }, &self.as_read(root, k))).unwrap_or_default();
+                    let same = build::Keys::load_with(root, &[])
+                        .map(|k| {
+                            expect_same(
+                                &build::Work { step: step.clone(), targets: targets.clone() },
+                                &self.as_read(root, k),
+                            )
+                        })
+                        .unwrap_or_default();
                     if !same.is_empty() {
                         cmd.extend(["--expect-same".to_string(), same.join(",")]);
                     }
@@ -1490,7 +1774,14 @@ impl Agent {
                     Some(l) => Held::Pooled { id: lease, term: l.term, dir, own: false },
                     None => Held::Leased { lease, dir },
                 });
-                vec![JobSpec { id, what, cmd, needs, restart_after_sleep: true, record: Some(build::Work { step, targets }) }]
+                vec![JobSpec {
+                    id,
+                    what,
+                    cmd,
+                    needs,
+                    restart_after_sleep: true,
+                    record: Some(build::Work { step, targets }),
+                }]
             }
             Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Task { id, task, .. }, .. })) => {
                 // A task (a unit's tail, or a 3D buildings' z8 area, for the lead's job), run here
@@ -1536,10 +1827,19 @@ impl Agent {
                 } else {
                     format!("Scenery for the lead's area {unit}")
                 };
-                vec![JobSpec { id: format!("task {id}"), what, cmd, needs: Needs { nas: true }, restart_after_sleep: false, record: None }]
+                vec![JobSpec {
+                    id: format!("task {id}"),
+                    what,
+                    cmd,
+                    needs: Needs { nas: true },
+                    restart_after_sleep: false,
+                    record: None,
+                }]
             }
             // (A resumable job granted as resuming was switched off here: given back, not failed.)
-            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, .. }, .. })) if resume::RESUMABLE.contains(&step.as_str()) => {
+            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, .. }, .. }))
+                if resume::RESUMABLE.contains(&step.as_str()) =>
+            {
                 if let Some(c) = &self.client {
                     if let Err(e) = c.give_back(lease, "resuming is off on this Mac now") {
                         eprintln!("agent: giving lease {lease} of {step} back: {e:#} (it lapses)");
@@ -1549,7 +1849,9 @@ impl Agent {
             }
             // (A step of the plan granted as every step to every member was switched off here: given
             // back, not failed.)
-            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, .. }, .. })) if every::offered(&step) => {
+            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, .. }, .. }))
+                if every::offered(&step) =>
+            {
                 if let Some(c) = &self.client {
                     if let Err(e) = c.give_back(lease, "every step to every member is off on this Mac now") {
                         eprintln!("agent: giving lease {lease} of {step} back: {e:#} (it lapses)");
@@ -1563,7 +1865,11 @@ impl Agent {
             }
             Ok(None) => {
                 self.know_pause(None);
-                waiting.push(Waiting { step: None, what: "Building".into(), why: "the lead has nothing for this Mac now".into() });
+                waiting.push(Waiting {
+                    step: None,
+                    what: "Building".into(),
+                    why: "the lead has nothing for this Mac now".into(),
+                });
                 Vec::new()
             }
             Err(e) => {
@@ -1598,7 +1904,10 @@ impl Agent {
         // but those its run measured: learned whatever the guard does.
         // (The lead's client, made again when it isn't there, as `beat` makes it: a lead a moment
         // ago has none, its job's end told to the new lead all the same.)
-        if self.client.is_none() && self.coord.is_none() && matches!(self.slots[k].lease, Some(Held::Pooled { .. } | Held::Leased { .. })) {
+        if self.client.is_none()
+            && self.coord.is_none()
+            && matches!(self.slots[k].lease, Some(Held::Pooled { .. } | Held::Leased { .. }))
+        {
             if let Some(r) = self.last_root.clone() {
                 self.client(&r, &mut Vec::new());
             }
@@ -1606,7 +1915,13 @@ impl Agent {
         let watch = self.sampler.unwatch(k).unwrap_or_default();
         // (None from a job stopped for yielding: what it held says nothing of its targets.)
         let no_floors = self.slots[k].yield_stopped;
-        let floors_of = |costs: &[(String, crate::coord::Cost)]| if no_floors { Vec::new() } else { watch.floors(&costs.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>()) };
+        let floors_of = |costs: &[(String, crate::coord::Cost)]| {
+            if no_floors {
+                Vec::new()
+            } else {
+                watch.floors(&costs.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>())
+            }
+        };
         // (And what they took on the disk at least, and the job over its run: learned whatever the
         // switch, docs/pool.md §7.7.)
         let disks = watch.disk_floors();
@@ -1641,13 +1956,17 @@ impl Agent {
             Some(Held::Pooled { id, dir, own, .. }) => {
                 // Its hand-off (its saves, the targets it finished, whatever stopped it) to the
                 // journal, by the pool's next step; its folder kept until a saved state holds it.
-                let kept: Option<pool::JobKept> = std::fs::read(dir.join("work.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+                let kept: Option<pool::JobKept> =
+                    std::fs::read(dir.join("work.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
                 let costs = read_costs(&if own { self.costs_path(k) } else { dir.join("costs.jsonl") });
                 let entry = match (&kept, self.member_id.as_deref()) {
                     (Some(w), Some(me)) => match pool::entry_of(&dir, me, w.lease, &w.step, done, now_s()) {
                         Ok(e) => e,
                         Err(e) => {
-                            eprintln!("agent: {}'s hand-off can't be read ({e:#}); its work is done again", dir.display());
+                            eprintln!(
+                                "agent: {}'s hand-off can't be read ({e:#}); its work is done again",
+                                dir.display()
+                            );
                             None
                         }
                     },
@@ -1682,9 +2001,34 @@ impl Agent {
                     // a lead's duty as pass-sets', by having ended so, whatever it handed off.)
                     let no_targets = kept.as_ref().is_some_and(|w| w.targets.is_empty());
                     let tell = match entry.as_ref() {
-                        Some(e) if e.handoff.done.is_some() => Tell::Done(Box::new(crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, floors, disks, job_disk_mb: job_disk, failed, journaled: true, timings, ..Default::default() })),
-                        e if no_targets && outcome == Outcome::Done && !guard_stopped => Tell::Done(Box::new(crate::coord::Done { lease: id, handoff: e.map(|e| e.handoff.clone()), costs, floors, disks, job_disk_mb: job_disk, journaled: true, timings, ..Default::default() })),
-                        _ if matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped => Tell::GiveBack { id, why: note.to_string(), floors, disks, job_disk },
+                        Some(e) if e.handoff.done.is_some() => Tell::Done(Box::new(crate::coord::Done {
+                            lease: id,
+                            handoff: Some(e.handoff.clone()),
+                            costs,
+                            floors,
+                            disks,
+                            job_disk_mb: job_disk,
+                            failed,
+                            journaled: true,
+                            timings,
+                            ..Default::default()
+                        })),
+                        e if no_targets && outcome == Outcome::Done && !guard_stopped => {
+                            Tell::Done(Box::new(crate::coord::Done {
+                                lease: id,
+                                handoff: e.map(|e| e.handoff.clone()),
+                                costs,
+                                floors,
+                                disks,
+                                job_disk_mb: job_disk,
+                                journaled: true,
+                                timings,
+                                ..Default::default()
+                            }))
+                        }
+                        _ if matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped => {
+                            Tell::GiveBack { id, why: note.to_string(), floors, disks, job_disk }
+                        }
                         _ => Tell::Fail { id, why: note.to_string(), floors, disks, job_disk },
                     };
                     if self.coord.is_some() {
@@ -1716,10 +2060,12 @@ impl Agent {
                 // off; else given back, failed or (stopped, not failed) interrupted.
                 // (A failed job's finished targets are handed off too, the rest held against it.)
                 let step = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref().map(|w| w.step.clone()));
-                let done = step.filter(|_| outcome != Outcome::Interrupted && !done.is_empty()).map(|s| (s, done.to_vec()));
+                let done =
+                    step.filter(|_| outcome != Outcome::Interrupted && !done.is_empty()).map(|s| (s, done.to_vec()));
                 let failed = outcome == Outcome::Failed && done.is_some();
                 // A task's: what `scenic run-task` wrote (its outputs are with the coordinator already).
-                let task: Option<serde_json::Value> = std::fs::read(dir.join("task.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+                let task: Option<serde_json::Value> =
+                    std::fs::read(dir.join("task.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
                 let ok = match &task {
                     Some(t) => outcome == Outcome::Done && t["ok"] == true,
                     None => done.is_some(),
@@ -1776,7 +2122,8 @@ impl Agent {
             self.owed = owed.into_iter().filter(|(at, _)| now.saturating_sub(*at) < OWED_S).collect();
             return;
         };
-        let left: Vec<(u64, Tell)> = owed.into_iter().filter(|(at, t)| !t.to(c) && now.saturating_sub(*at) < OWED_S).collect();
+        let left: Vec<(u64, Tell)> =
+            owed.into_iter().filter(|(at, t)| !t.to(c) && now.saturating_sub(*at) < OWED_S).collect();
         self.owed = left;
     }
 
@@ -1786,7 +2133,11 @@ impl Agent {
     fn beat(&mut self, k: usize, root: Option<&Path>) -> bool {
         self.slots[k].beaten = Some(Instant::now());
         // (Its progress as the status last read it: what it said, out of sight or not.)
-        let progress = self.slots[k].running.as_ref().and_then(|r| r.said.clone().or_else(|| jobs::progress(&r.log).map(|(d, t, u)| (d, t, u, None)))).map(|(d, t, u, _)| format!("{}/{t:.0} {u}", (d * 10.0).floor() / 10.0));
+        let progress = self.slots[k]
+            .running
+            .as_ref()
+            .and_then(|r| r.said.clone().or_else(|| jobs::progress(&r.log).map(|(d, t, u)| (d, t, u, None))))
+            .map(|(d, t, u, _)| format!("{}/{t:.0} {u}", (d * 10.0).floor() / 10.0));
         match self.slots[k].lease.clone() {
             // (Its lease through the lead wherever it is now: this process's coordinator while it
             // leads, the lead's by HTTP while it's a member, whoever granted it: docs/pool.md §7.6.)
@@ -1866,7 +2217,11 @@ impl Agent {
         };
         let rec = match &handed {
             // (Read, not taken: it goes with the hand-off.)
-            Some(_) => handed.as_deref().and_then(|p| p.parent()).and_then(read_timings).map(|r| crate::timings::RunRec { host: self.worker_of(k), ..r }),
+            Some(_) => handed
+                .as_deref()
+                .and_then(|p| p.parent())
+                .and_then(read_timings)
+                .map(|r| crate::timings::RunRec { host: self.worker_of(k), ..r }),
             None => crate::timings::take_record(&self.timings_path(k), &self.worker_of(k)),
         };
         let Some(rec) = rec else { return };
@@ -1913,7 +2268,10 @@ impl Agent {
     fn waiting_words(&self, k: usize) -> Option<String> {
         let n = self.waiting_on(k)?;
         let who = if n.worker.is_empty() { "a worker" } else { n.worker.as_str() };
-        Some(format!("waiting on {who} for its unit's tail ({} min so far): its room free for a job beside it", now_s().saturating_sub(n.since) / 60))
+        Some(format!(
+            "waiting on {who} for its unit's tail ({} min so far): its room free for a job beside it",
+            now_s().saturating_sub(n.since) / 60
+        ))
     }
 
     /// Slot `k`'s worker in the build's history and the forecast: this Mac, or its second job.
@@ -2109,7 +2467,10 @@ impl Agent {
                 std::thread::sleep(Duration::from_millis(200));
             }
             if !t.thread.is_finished() {
-                eprintln!("agent: this Mac's caches' {} hasn't ended in a minute; left to the next agent", if t.ask.is_some() { "clear" } else { "trim" });
+                eprintln!(
+                    "agent: this Mac's caches' {} hasn't ended in a minute; left to the next agent",
+                    if t.ask.is_some() { "clear" } else { "trim" }
+                );
             }
         }
         let root = self.o.root.clone().or_else(|| self.root());
@@ -2149,7 +2510,9 @@ impl Agent {
         // Back home with the share mounted through Tailscale (mounted while away): unmounted while
         // nothing runs, and mounted again by the LAN name below, at the LAN's speed.
         if home && self.idle() && self.o.root.is_none() {
-            if let Some(m) = store::nas::find_mount(store::nas::HOST, store::nas::SHARE).filter(|m| !store::nas::by_lan_name(m)) {
+            if let Some(m) =
+                store::nas::find_mount(store::nas::HOST, store::nas::SHARE).filter(|m| !store::nas::by_lan_name(m))
+            {
                 eprintln!("agent: home again; remounting the NAS by its LAN name (it was mounted as {})", m.from);
                 if let Err(e) = store::nas::unmount(&m.point, Duration::from_secs(30)) {
                     eprintln!("agent: {e:#}");
@@ -2215,8 +2578,17 @@ impl Agent {
         // view not fresh. Restarting into a new part, nothing either.)
         let pool_holds: Option<String> = match (&gates, self.pool_restart()) {
             (_, Some(why)) => Some(format!("restarting: {why}")),
-            (None, None) if self._lock.is_some() && !self.o.dry_run => Some("not in the pool yet: waiting for the NAS, or for this Mac's member's lock (another process holds it)".into()),
-            (Some(g), None) if !self.o.helper && !g.duties => Some(if g.settle { "the lead is handing the build over".into() } else if g.leads.is_some() { "the lead re-asserts its term first".into() } else { "this Mac no longer leads the build".into() }),
+            (None, None) if self._lock.is_some() && !self.o.dry_run => Some(
+                "not in the pool yet: waiting for the NAS, or for this Mac's member's lock (another process holds it)"
+                    .into(),
+            ),
+            (Some(g), None) if !self.o.helper && !g.duties => Some(if g.settle {
+                "the lead is handing the build over".into()
+            } else if g.leads.is_some() {
+                "the lead re-asserts its term first".into()
+            } else {
+                "this Mac no longer leads the build".into()
+            }),
             _ => None,
         };
         // The pass's answers on the NAS, once this agent starts (the lead's).
@@ -2248,7 +2620,12 @@ impl Agent {
                 }
             }
             for l in c.expire() {
-                eprintln!("agent: {}'s lease of {} lapsed (no word for {} min); offered again", l.worker, l.what(), crate::coord::TTL.as_secs() / 60);
+                eprintln!(
+                    "agent: {}'s lease of {} lapsed (no word for {} min); offered again",
+                    l.worker,
+                    l.what(),
+                    crate::coord::TTL.as_secs() / 60
+                );
             }
         }
         // A helper's finished jobs not yet with the coordinator: sent before anything new.
@@ -2276,19 +2653,36 @@ impl Agent {
             (Some(r), true) => self.plan_seen(r),
             _ => 0,
         };
-        let last = self.planned.as_ref().map(|p| LastPlan { age: p.at.elapsed(), seen: p.seen, soon: p.soon, at: p.replan_at });
+        let last = self.planned.as_ref().map(|p| LastPlan {
+            age: p.at.elapsed(),
+            seen: p.seen,
+            soon: p.soon,
+            at: p.replan_at,
+        });
         let plan_due = plan_due(idle && !self.o.helper, ended, last, seen, now_s(), every);
         let plan = match &root {
             Some(root) if self.o.helper => {
                 // A member plans nothing: it asks the lead for work, once its last is handed back.
                 let unsent = std::fs::read_dir(self.outbox()).map(|mut d| d.next().is_some()).unwrap_or(false);
                 // (Not while a trim or a clear runs here: `caches_busy`.)
-                let plan = if idle && !unsent && self.caches_task.is_none() { self.helper_job(root, &c, &mut waiting) } else { Vec::new() };
+                let plan = if idle && !unsent && self.caches_task.is_none() {
+                    self.helper_job(root, &c, &mut waiting)
+                } else {
+                    Vec::new()
+                };
                 let regions = match &self.planned {
                     Some(p) if !plan_due => p.regions.clone(),
                     _ => load_regions(root).0,
                 };
-                self.planned = Some(Planned { at: Instant::now(), seen: 0, soon: false, replan_at: None, waiting: waiting.clone(), regions, bad: Vec::new() });
+                self.planned = Some(Planned {
+                    at: Instant::now(),
+                    seen: 0,
+                    soon: false,
+                    replan_at: None,
+                    waiting: waiting.clone(),
+                    regions,
+                    bad: Vec::new(),
+                });
                 plan
             }
             Some(root) if plan_due => {
@@ -2296,7 +2690,15 @@ impl Agent {
                 let seen = if seen == 0 { self.plan_seen(root) } else { seen };
                 let plan = self.plan(root, &c, &mut waiting);
                 let (regions, bad) = load_regions(root);
-                self.planned = Some(Planned { at: Instant::now(), seen, soon: false, replan_at: None, waiting: waiting.clone(), regions, bad });
+                self.planned = Some(Planned {
+                    at: Instant::now(),
+                    seen,
+                    soon: false,
+                    replan_at: None,
+                    waiting: waiting.clone(),
+                    regions,
+                    bad,
+                });
                 plan
             }
             Some(_) => {
@@ -2308,7 +2710,11 @@ impl Agent {
                 if let Some(p) = self.planned.as_mut() {
                     p.seen = 0;
                 }
-                waiting.push(Waiting { step: None, what: "All building".into(), why: "the NAS isn't reachable (away from home, or it's off)".into() });
+                waiting.push(Waiting {
+                    step: None,
+                    what: "All building".into(),
+                    why: "the NAS isn't reachable (away from home, or it's off)".into(),
+                });
                 Vec::new()
             }
         };
@@ -2319,7 +2725,10 @@ impl Agent {
         if newer && (idle || self.slots[0].update_wait.is_some()) {
             // (Its job under way given time to reach its safe point: how long, and why.)
             let why = match (&self.slots[0].update_wait, self.slots[0].drain_since) {
-                (Some((g, words)), Some(t)) if self.slots[0].running.is_some() => { let g = g.unwrap_or(self.grace); format!("restarting into the newly installed app once its job reaches a safe point, at most {} min more ({} min in all: {words})", g.saturating_sub(t.elapsed()).as_secs().div_ceil(60), g.as_secs().div_ceil(60)) }
+                (Some((g, words)), Some(t)) if self.slots[0].running.is_some() => {
+                    let g = g.unwrap_or(self.grace);
+                    format!("restarting into the newly installed app once its job reaches a safe point, at most {} min more ({} min in all: {words})", g.saturating_sub(t.elapsed()).as_secs().div_ceil(60), g.as_secs().div_ceil(60))
+                }
                 _ => "restarting into the newly installed app".into(),
             };
             waiting.push(Waiting { step: None, what: "Building".into(), why });
@@ -2411,7 +2820,8 @@ impl Agent {
             _ => Vec::new(),
         };
         self.note_helpers_caches(&helpers);
-        let now_steps: Vec<String> = self.slots.iter().filter_map(|s| s.running.as_ref().and_then(|r| step_of(&r.spec.id))).collect();
+        let now_steps: Vec<String> =
+            self.slots.iter().filter_map(|s| s.running.as_ref().and_then(|r| step_of(&r.spec.id))).collect();
         annotate(&mut checklist, &now_steps, &helpers, &waiting);
         let job = self.job_view(0);
         let beside = self.job_view(1);
@@ -2424,7 +2834,11 @@ impl Agent {
             conditions: c,
             job,
             beside,
-            beside_why: if self.second_allowed() && self.slots[1].running.is_none() { self.beside_why.clone() } else { None },
+            beside_why: if self.second_allowed() && self.slots[1].running.is_none() {
+                self.beside_why.clone()
+            } else {
+                None
+            },
             test_disk_extra_mb: Some(cond::test_disk_extra_mb()).filter(|&m| m > 0),
             waiting,
             recent: self.mem.recent.clone(),
@@ -2434,7 +2848,25 @@ impl Agent {
             checklist,
             helpers,
             capacity: self.coord.as_ref().map(|c| c.capacities()).unwrap_or_default(),
-            workers: self.coord.as_ref().map(|c| c.workers().into_iter().map(|(name, w)| WorkerView { name, label: w.label, kind: w.kind, what: w.what, mem_mb: w.mem_mb, done: w.done, failed: w.failed, bad: w.bad }).collect()).unwrap_or_default(),
+            workers: self
+                .coord
+                .as_ref()
+                .map(|c| {
+                    c.workers()
+                        .into_iter()
+                        .map(|(name, w)| WorkerView {
+                            name,
+                            label: w.label,
+                            kind: w.kind,
+                            what: w.what,
+                            mem_mb: w.mem_mb,
+                            done: w.done,
+                            failed: w.failed,
+                            bad: w.bad,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             pause: self.pause.clone(),
             resources: Some(self.resources(root.as_deref())),
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
@@ -2458,7 +2890,11 @@ impl Agent {
         }
         // A helper's own status, never the heartbeat (the Macs' status bars show the main agent's,
         // and its helpers'), here and on the NAS.
-        let (local, shared) = if self.o.helper { ("helper.json".to_string(), format!("state/helpers/{}.json", self.host)) } else { ("status.json".to_string(), "state/status.json".to_string()) };
+        let (local, shared) = if self.o.helper {
+            ("helper.json".to_string(), format!("state/helpers/{}.json", self.host))
+        } else {
+            ("status.json".to_string(), "state/status.json".to_string())
+        };
         write_replace(&self.o.home.join(&local), &body).ok();
         // (Not a dry run's, in a home of its own: the NAS's is the real agent's.)
         if let (Some(root), false) = (&root, self.o.dry_run) {
@@ -2466,8 +2902,14 @@ impl Agent {
             // change every loop): only whether the user is at the Mac counts.
             let idle_s = if c.user_active() { 0 } else { cond::AWAY_S };
             // (Nor this Mac's load, memory and the NAS's answer, which change every loop too.)
-            let same = serde_json::to_vec(&Status { beat: 0, conditions: Conditions { idle_s, ..c }, resources: None, ..status.clone() })?;
-            let due = self.last_beat.as_ref().is_none_or(|(b, t)| *b != same || t.elapsed() >= Duration::from_secs(120));
+            let same = serde_json::to_vec(&Status {
+                beat: 0,
+                conditions: Conditions { idle_s, ..c },
+                resources: None,
+                ..status.clone()
+            })?;
+            let due =
+                self.last_beat.as_ref().is_none_or(|(b, t)| *b != same || t.elapsed() >= Duration::from_secs(120));
             if due {
                 std::fs::create_dir_all(root.join("state/helpers")).ok();
                 match write_replace(&root.join(&shared), &body) {
@@ -2489,7 +2931,8 @@ impl Agent {
         if let Some(st) = r.poll()? {
             // (Its own run's time as it says, else as seen here: an ended job is seen at the next
             // loop, up to 20 s later.)
-            let wall = run_time.filter(|w| *w <= r.elapsed().as_secs_f64() + 1.0).unwrap_or_else(|| r.elapsed().as_secs_f64());
+            let wall =
+                run_time.filter(|w| *w <= r.elapsed().as_secs_f64() + 1.0).unwrap_or_else(|| r.elapsed().as_secs_f64());
             let secs = wall.round() as u64;
             let ok = st.success();
             // Stopped at a safe point, the build pausing (crate::control): not a failure. (Only
@@ -2504,18 +2947,46 @@ impl Agent {
             let r = self.slots[k].running.as_mut().unwrap();
             let note = if ok {
                 // (GC's warnings, its job's note in the status: agent::gc::Report::warnings.)
-                if step_of(&r.spec.id).as_deref() == Some("gc") { jobs::tail(&r.log, 50).lines().filter(|l| l.contains("gc: warning:")).collect::<Vec<_>>().join("\n") } else { String::new() }
+                if step_of(&r.spec.id).as_deref() == Some("gc") {
+                    jobs::tail(&r.log, 50).lines().filter(|l| l.contains("gc: warning:")).collect::<Vec<_>>().join("\n")
+                } else {
+                    String::new()
+                }
             } else if paused {
                 format!("paused at a safe point, {} of {of} done; the rest goes on when the build does", done.len())
             } else {
-                format!("{st}{}\n{}", if done.is_empty() { String::new() } else { format!(" ({} of {of} done and kept)", done.len()) }, jobs::tail(&r.log, 20))
+                format!(
+                    "{st}{}\n{}",
+                    if done.is_empty() { String::new() } else { format!(" ({} of {of} done and kept)", done.len()) },
+                    jobs::tail(&r.log, 20)
+                )
             };
             let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
             // (A catalog's own line of what it did: crate::pubtimes::CatalogStats.)
-            let cat_stats = if ok && step == "catalog" { crate::pubtimes::CatalogStats::from_log(&jobs::tail(&r.log, 60)) } else { None };
+            let cat_stats = if ok && step == "catalog" {
+                crate::pubtimes::CatalogStats::from_log(&jobs::tail(&r.log, 60))
+            } else {
+                None
+            };
             self.progress_ended(&id, ok);
-            eprintln!("agent: {id} {} after {} s", if ok { "finished" } else if paused { "paused at a safe point" } else { "failed" }, if wall < 10.0 { format!("{wall:.1}") } else { secs.to_string() });
-            let how = if ok { String::new() } else if paused { "paused at a safe point".to_string() } else { format!("failed ({st})") };
+            eprintln!(
+                "agent: {id} {} after {} s",
+                if ok {
+                    "finished"
+                } else if paused {
+                    "paused at a safe point"
+                } else {
+                    "failed"
+                },
+                if wall < 10.0 { format!("{wall:.1}") } else { secs.to_string() }
+            );
+            let how = if ok {
+                String::new()
+            } else if paused {
+                "paused at a safe point".to_string()
+            } else {
+                format!("failed ({st})")
+            };
             self.note_end(k, &step, &done, secs, ok, &how);
             // (What a target of its step takes here, for the forecast: the first job's, and the
             // second's network work, whose time the job beside it doesn't change.)
@@ -2527,9 +2998,23 @@ impl Agent {
             if ok && step == "catalog" {
                 let ready = self.ready.borrow().clone();
                 let (n, data) = (cat_stats.as_ref().map(|c| c.n), cat_stats.and_then(|c| serde_json::to_value(c).ok()));
-                self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step: Some(step.clone()), targets: ready, secs: Some(wall), n, data, ..crate::coord::history::Event::new("catalog") });
+                self.note(crate::coord::history::Event {
+                    worker: Some(self.host.clone()),
+                    step: Some(step.clone()),
+                    targets: ready,
+                    secs: Some(wall),
+                    n,
+                    data,
+                    ..crate::coord::history::Event::new("catalog")
+                });
             }
-            let outcome = if ok { Outcome::Done } else if paused { Outcome::Paused } else { Outcome::Failed };
+            let outcome = if ok {
+                Outcome::Done
+            } else if paused {
+                Outcome::Paused
+            } else {
+                Outcome::Failed
+            };
             // (The coordinator's record of what's done.)
             let handed = done.clone();
             // (A catalog's done record handed off: its map update is over.)
@@ -2558,7 +3043,11 @@ impl Agent {
             return Ok(false);
         }
         let paused_job = self.slots[k].running.as_ref().unwrap().paused.is_some();
-        if (!paused_job || self.pause.is_some()) && self.slots[k].lease.is_some() && self.slots[k].beaten.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) && !self.beat(k, root) {
+        if (!paused_job || self.pause.is_some())
+            && self.slots[k].lease.is_some()
+            && self.slots[k].beaten.is_none_or(|t| t.elapsed() >= Duration::from_secs(60))
+            && !self.beat(k, root)
+        {
             // (A job paused for its conditions doesn't beat: its lease lapses, and its work may go
             // to another. One paused by the user does, its lease kept, a member hearing whether
             // the lead's pause is over.)
@@ -2584,7 +3073,8 @@ impl Agent {
         // (Only for a drain that is the update's: a pause, a condition or the memory guard first.)
         let for_update_only = {
             let s = &self.slots[k];
-            s.mem_drain.is_none() && s.running.as_ref().is_some_and(|r| stop_for(&r.spec.needs, c, pause.as_ref()).is_none())
+            s.mem_drain.is_none()
+                && s.running.as_ref().is_some_and(|r| stop_for(&r.spec.needs, c, pause.as_ref()).is_none())
         };
         let wait = match (&update, &self.slots[k].update_wait) {
             (Some(_), None) if for_update_only => Some(self.update_wait(k)),
@@ -2604,7 +3094,10 @@ impl Agent {
                 slot.drain_since = Some(Instant::now());
             }
         }
-        match stop_for(&r.spec.needs, c, pause.as_ref()).or_else(|| slot.mem_drain.clone().map(|why| (crate::control::Mode::Drain, why))).or_else(|| update.clone().map(|why| (crate::control::Mode::Drain, why))) {
+        match stop_for(&r.spec.needs, c, pause.as_ref())
+            .or_else(|| slot.mem_drain.clone().map(|why| (crate::control::Mode::Drain, why)))
+            .or_else(|| update.clone().map(|why| (crate::control::Mode::Drain, why)))
+        {
             Some((crate::control::Mode::Freeze, why)) => {
                 if r.paused.is_none() {
                     eprintln!("agent: pausing {}: {why}", r.spec.id);
@@ -2621,7 +3114,11 @@ impl Agent {
                 }
                 if for_update && slot.update_wait.is_none() {
                     let (g, words) = wait.unwrap_or((None, String::new()));
-                    eprintln!("agent: {} has {} min to reach a safe point before the update stops it: {words}", r.spec.id, g.unwrap_or(grace).as_secs().div_ceil(60));
+                    eprintln!(
+                        "agent: {} has {} min to reach a safe point before the update stops it: {words}",
+                        r.spec.id,
+                        g.unwrap_or(grace).as_secs().div_ceil(60)
+                    );
                     slot.update_wait = Some((g, words));
                 }
                 let since = *slot.drain_since.get_or_insert_with(|| {
@@ -2634,8 +3131,15 @@ impl Agent {
                 // (For the update, not frozen past the grace: the loop stops it then, its finished
                 // targets kept, and restarts, `Agent::update_due`.)
                 if r.paused.is_none() && since.elapsed() >= grace && !for_update {
-                    eprintln!("agent: {} reached no safe point in {} min; frozen where it is", r.spec.id, DRAIN_GRACE.as_secs() / 60);
-                    r.pause(&format!("{why}; frozen where it is (it reached no safe point in {} min): it goes on from there", DRAIN_GRACE.as_secs() / 60));
+                    eprintln!(
+                        "agent: {} reached no safe point in {} min; frozen where it is",
+                        r.spec.id,
+                        DRAIN_GRACE.as_secs() / 60
+                    );
+                    r.pause(&format!(
+                        "{why}; frozen where it is (it reached no safe point in {} min): it goes on from there",
+                        DRAIN_GRACE.as_secs() / 60
+                    ));
                 } else if r.paused.is_some() && since.elapsed() < grace {
                     // (Frozen for a condition that's back: it goes on to its safe point.)
                     r.resume();
@@ -2661,7 +3165,14 @@ impl Agent {
     /// failure, there's room on the disk for it, and (a shared step's) its targets are held for it;
     /// true when it started (a dry run: when it would have). Why not goes in `waiting` (the first
     /// slot's: the second says its own, `beside_why`).
-    fn try_start(&mut self, k: usize, spec: JobSpec, c: &Conditions, root: Option<&Path>, waiting: &mut Vec<Waiting>) -> bool {
+    fn try_start(
+        &mut self,
+        k: usize,
+        spec: JobSpec,
+        c: &Conditions,
+        root: Option<&Path>,
+        waiting: &mut Vec<Waiting>,
+    ) -> bool {
         let mut said: Vec<Waiting> = Vec::new();
         let started = self.try_start_said(k, spec, c, root, &mut said);
         if k == 0 {
@@ -2731,7 +3242,11 @@ impl Agent {
         // (A helper's job came from the coordinator, which keeps a target it failed from it for an
         // hour, doubling: no wait of its own on top.)
         match self.mem.retry.get(&spec.id).filter(|_| !self.o.helper) {
-            Some(&(n, until)) if now_s() < until => Some(format!("failed {n} time{} in a row; trying again in {} min", if n == 1 { "" } else { "s" }, (until - now_s()).div_ceil(60))),
+            Some(&(n, until)) if now_s() < until => Some(format!(
+                "failed {n} time{} in a row; trying again in {} min",
+                if n == 1 { "" } else { "s" },
+                (until - now_s()).div_ceil(60)
+            )),
             _ => None,
         }
     }
@@ -2739,7 +3254,8 @@ impl Agent {
     /// While the first job runs, why the plan's jobs before the next its slot would start wait
     /// (their own reasons, the job beside it), as the start loop says.
     fn why_waiting(&self, plan: &[JobSpec], c: &Conditions, waiting: &mut Vec<Waiting>) {
-        let running: Vec<&str> = self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| r.spec.id.as_str())).collect();
+        let running: Vec<&str> =
+            self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| r.spec.id.as_str())).collect();
         for spec in plan.iter().filter(|s| !running.contains(&s.id.as_str())) {
             match self.wait_reason(spec, c).or_else(|| self.waits_for_second(spec)) {
                 Some(why) => waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why }),
@@ -2751,7 +3267,8 @@ impl Agent {
     /// The job the first slot would start next: the plan's first that isn't running, left to the
     /// second job, or waiting for a reason of its own.
     fn head<'a>(&self, plan: &'a [JobSpec], c: &Conditions) -> Option<&'a JobSpec> {
-        let running: Vec<&str> = self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| r.spec.id.as_str())).collect();
+        let running: Vec<&str> =
+            self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| r.spec.id.as_str())).collect();
         plan.iter().find(|s| !running.contains(&s.id.as_str()) && self.wait_reason(s, c).is_none())
     }
 
@@ -2789,7 +3306,14 @@ impl Agent {
         }
     }
 
-    fn try_start_said(&mut self, k: usize, spec: JobSpec, c: &Conditions, root: Option<&Path>, waiting: &mut Vec<Waiting>) -> bool {
+    fn try_start_said(
+        &mut self,
+        k: usize,
+        spec: JobSpec,
+        c: &Conditions,
+        root: Option<&Path>,
+        waiting: &mut Vec<Waiting>,
+    ) -> bool {
         if let Some(why) = self.wait_reason(&spec, c) {
             waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
             return false;
@@ -2803,21 +3327,41 @@ impl Agent {
         if let (Some(run), false) = (self.try_pooled(), self.o.helper) {
             let st = step_of(&spec.id).unwrap_or_default();
             let Some(mut run) = run else {
-                waiting.push(Waiting { step: Some(st), what: spec.what.clone(), why: "the pool's step is under way (its share slow to answer)".into() });
+                waiting.push(Waiting {
+                    step: Some(st),
+                    what: spec.what.clone(),
+                    why: "the pool's step is under way (its share slow to answer)".into(),
+                });
                 self.start_soon.set(true);
                 return false;
             };
             if run.gates.leads.is_some() && !run.gates.duties {
-                waiting.push(Waiting { step: Some(st), what: spec.what.clone(), why: if run.gates.settle { "the lead is handing the build over".into() } else { "the lead re-asserts its term first".into() } });
+                waiting.push(Waiting {
+                    step: Some(st),
+                    what: spec.what.clone(),
+                    why: if run.gates.settle {
+                        "the lead is handing the build over".into()
+                    } else {
+                        "the lead re-asserts its term first".into()
+                    },
+                });
                 return false;
             }
             if pool::PUBLISHES.contains(&st.as_str()) && !run.gates.publish() {
-                waiting.push(Waiting { step: Some(st), what: spec.what.clone(), why: "waits for the pool's records to reflect the journal (a listing of every day merged)".into() });
+                waiting.push(Waiting {
+                    step: Some(st),
+                    what: spec.what.clone(),
+                    why: "waits for the pool's records to reflect the journal (a listing of every day merged)".into(),
+                });
                 return false;
             }
             if pool::SWEEPS.contains(&st.as_str()) && !run.gates.sweep() {
                 run.reassert = true;
-                waiting.push(Waiting { step: Some(st), what: spec.what.clone(), why: "this Mac re-asserts its term first, its records caught up".into() });
+                waiting.push(Waiting {
+                    step: Some(st),
+                    what: spec.what.clone(),
+                    why: "this Mac re-asserts its term first, its records caught up".into(),
+                });
                 return false;
             }
             run.cx.duty |= is_duty(&spec.id);
@@ -2842,11 +3386,19 @@ impl Agent {
         // (The owner's disk room target stays free past the job's own room: room::Target.)
         let floor = self.floor_for(&step);
         let room = need.saturating_add(floor);
-        let others: Vec<String> = self.slots.iter().enumerate().filter(|(j, _)| *j != k).filter_map(|(_, s)| s.running.as_ref().map(|r| step_of(&r.spec.id).unwrap_or_default())).collect();
+        let others: Vec<String> = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != k)
+            .filter_map(|(_, s)| s.running.as_ref().map(|r| step_of(&r.spec.id).unwrap_or_default()))
+            .collect();
         let other = !others.is_empty();
         // (Room-making fell short of the target lately: not tried again until a job ends, the
         // target changes or ten minutes pass; the job waits.)
-        let short = self.floor_short.is_some_and(|(t, n, at)| t == floor && room >= n && at.elapsed() < Duration::from_secs(600));
+        let short = self
+            .floor_short
+            .is_some_and(|(t, n, at)| t == floor && room >= n && at.elapsed() < Duration::from_secs(600));
         // (By measure, the first slot alone waits for the reserve too, the target none: started
         // short of it, the disk guard would freeze it at once and give it back, and the next job
         // likewise, each kept from this Mac an hour.)
@@ -2869,7 +3421,14 @@ impl Agent {
             // (What this job and the queued ones read goes last: a terrain run's own area's
             // archive copies, the pageview months for an items or heritage job, …)
             let mut hints = self.hints();
-            hints.add(&step, &spec.record.as_ref().map(|w| w.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>()).unwrap_or_default());
+            hints.add(
+                &step,
+                &spec
+                    .record
+                    .as_ref()
+                    .map(|w| w.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            );
             if let Some(t) = id.strip_prefix("terrain ") {
                 hints.add("terrain", &[t.to_string()]);
             }
@@ -2902,7 +3461,11 @@ impl Agent {
             if held && !self.o.helper && self.disk_free() < room {
                 waiting.push(Waiting { step: Some(step), what: what.clone(), why: self.floor_why(need) });
                 self.floor_held = Some(room);
-                self.floor_short = Some((floor, self.floor_short.filter(|f| f.0 == floor).map_or(room, |f| f.1.min(room)), Instant::now()));
+                self.floor_short = Some((
+                    floor,
+                    self.floor_short.filter(|f| f.0 == floor).map_or(room, |f| f.1.min(room)),
+                    Instant::now(),
+                ));
                 return false;
             }
         } else if held && !self.o.helper && self.disk_free() < room {
@@ -2916,7 +3479,12 @@ impl Agent {
         if self.o.helper {
             let free = room::disk_free(&self.o.home).unwrap_or(0);
             if free < room {
-                let why = format!("too little room on its disk: {} GB free, {} GB needed{}", free >> 30, room >> 30, if floor > 0 { self.floor_words() } else { String::new() });
+                let why = format!(
+                    "too little room on its disk: {} GB free, {} GB needed{}",
+                    free >> 30,
+                    room >> 30,
+                    if floor > 0 { self.floor_words() } else { String::new() }
+                );
                 waiting.push(Waiting { step: None, what: what.clone(), why: why.clone() });
                 // (Held by the owner's target alone: not held against its targets, and no work
                 // asked for meanwhile (`helper_job`), but freed toward (`goal`).)
@@ -2937,7 +3505,11 @@ impl Agent {
                 Some(c) => match c.hold(&step, &targets) {
                     Some(id) => Some(id),
                     None => {
-                        waiting.push(Waiting { step: None, what: what.clone(), why: "another worker took part of it; planning again".into() });
+                        waiting.push(Waiting {
+                            step: None,
+                            what: what.clone(),
+                            why: "another worker took part of it; planning again".into(),
+                        });
                         return false;
                     }
                 },
@@ -2950,10 +3522,19 @@ impl Agent {
             };
             // Recorded since this loop read the keys (another worker built it meanwhile): not built
             // again.
-            let done = self.planning_keys(r).map(|keys| spec.record.as_ref().is_some_and(|w| w.targets.iter().any(|(t, k)| keys.recorded(&w.step, t) == Some(k.as_str()))));
+            let done = self.planning_keys(r).map(|keys| {
+                spec.record
+                    .as_ref()
+                    .is_some_and(|w| w.targets.iter().any(|(t, k)| keys.recorded(&w.step, t) == Some(k.as_str())))
+            });
             if done.unwrap_or(true) {
                 let_go(self);
-                waiting.push(Waiting { step: None, what: what.clone(), why: "another worker built part of it meanwhile (or the keys can't be read now); planning again".into() });
+                waiting.push(Waiting {
+                    step: None,
+                    what: what.clone(),
+                    why: "another worker built part of it meanwhile (or the keys can't be read now); planning again"
+                        .into(),
+                });
                 return false;
             }
             self.slots[k].lease = lease.map(Held::Own);
@@ -2961,19 +3542,33 @@ impl Agent {
         // In the pool, every job of the lead's holds a lease of its coordinator, and saves into a
         // folder of its own (`<term>-<id>`), handed to the journal as it ends (docs/pool.md §7.3).
         if let (Some(_), false) = (&self.pool, self.o.helper) {
-            let w = spec.record.clone().unwrap_or_else(|| build::Work { step: step_of(&id).unwrap_or_default(), targets: Vec::new() });
+            let w = spec
+                .record
+                .clone()
+                .unwrap_or_else(|| build::Work { step: step_of(&id).unwrap_or_default(), targets: Vec::new() });
             let held = match self.slots[k].lease.take() {
                 Some(Held::Own(n)) => Some(n),
                 _ => self.coord.as_ref().and_then(|c| c.hold(&w.step, &w.targets)),
             };
             let (Some(n), Some(c)) = (held, &self.coord) else {
-                waiting.push(Waiting { step: Some(w.step.clone()), what: what.clone(), why: if self.coord.is_none() { "this Mac's coordinator isn't running: no lease to hand its work off under".into() } else { "another worker holds part of it; planning again".into() } });
+                waiting.push(Waiting {
+                    step: Some(w.step.clone()),
+                    what: what.clone(),
+                    why: if self.coord.is_none() {
+                        "this Mac's coordinator isn't running: no lease to hand its work off under".into()
+                    } else {
+                        "another worker holds part of it; planning again".into()
+                    },
+                });
                 return false;
             };
             let lease = crate::pool::journal::LeaseId { term: c.lease_term(n), n };
             let dir = pool::job_dir(&self.o.home, lease);
             let kept = pool::JobKept { step: w.step.clone(), targets: w.targets.clone(), lease };
-            if let Err(e) = std::fs::create_dir_all(&dir).map_err(anyhow::Error::from).and_then(|()| crate::whole::write(&dir.join("work.json"), &serde_json::to_vec(&kept)?)) {
+            if let Err(e) = std::fs::create_dir_all(&dir)
+                .map_err(anyhow::Error::from)
+                .and_then(|()| crate::whole::write(&dir.join("work.json"), &serde_json::to_vec(&kept)?))
+            {
                 c.finish(n, &[]);
                 waiting.push(Waiting { step: Some(w.step), what: what.clone(), why: format!("its folder: {e:#}") });
                 return false;
@@ -3009,10 +3604,18 @@ impl Agent {
         }
         // (Any job of the plan, in its order.)
         let picks: Vec<&JobSpec> = plan.iter().collect();
-        let first = self.slots[0].running.as_ref().map(|r| (step_of(&r.spec.id).unwrap_or_default(), r.spec.id.clone(), crate::sys::footprint_of_group(r.pgid).map_or(0, |b| b >> 20), self.spec_peak(&r.spec)));
+        let first = self.slots[0].running.as_ref().map(|r| {
+            (
+                step_of(&r.spec.id).unwrap_or_default(),
+                r.spec.id.clone(),
+                crate::sys::footprint_of_group(r.pgid).map_or(0, |b| b >> 20),
+                self.spec_peak(&r.spec),
+            )
+        });
         if self.slots[0].running.as_ref().is_some_and(|r| self.runs_alone(&r.spec)) {
             let f = first.unwrap().0;
-            let what = self.slots[0].running.as_ref().map_or_else(|| steps::title(&f).to_string(), |r| r.spec.what.clone());
+            let what =
+                self.slots[0].running.as_ref().map_or_else(|| steps::title(&f).to_string(), |r| r.spec.what.clone());
             self.beside_why = Some(format!("{what} is a cold start (no run of its step measured yet): it runs alone"));
             return;
         }
@@ -3021,7 +3624,10 @@ impl Agent {
         if let Some(h) = self.head(plan, c) {
             let hs = step_of(&h.id).unwrap_or_default();
             if self.runs_alone(h) {
-                self.beside_why = Some(format!("{} runs alone, next (a cold start): nothing starts beside the first job until it has", h.what));
+                self.beside_why = Some(format!(
+                    "{} runs alone, next (a cold start): nothing starts beside the first job until it has",
+                    h.what
+                ));
                 return;
             }
             if self.disk_free() < self.need_of(0, h).saturating_add(self.floor_for(&hs)) {
@@ -3057,7 +3663,16 @@ impl Agent {
     fn spec_peak(&self, spec: &JobSpec) -> u64 {
         let step = step_of(&spec.id).unwrap_or_default();
         match (&self.coord, spec.record.as_ref()) {
-            (Some(c), Some(w)) => w.targets.iter().map(|(t, _)| c.peak(&w.step, t).unwrap_or_else(|| first_peak(&w.step)).max(c.floor(&w.step, t).map_or(0, |f| f.mb))).max().unwrap_or(0),
+            (Some(c), Some(w)) => w
+                .targets
+                .iter()
+                .map(|(t, _)| {
+                    c.peak(&w.step, t)
+                        .unwrap_or_else(|| first_peak(&w.step))
+                        .max(c.floor(&w.step, t).map_or(0, |f| f.mb))
+                })
+                .max()
+                .unwrap_or(0),
             _ => first_peak(&step),
         }
     }
@@ -3198,8 +3813,23 @@ impl Agent {
             let trouble = self.sampler.in_trouble();
             if total > limit || trouble {
                 let gb = |mb: u64| mb as f64 / 1024.0;
-                let why = if trouble { "the Mac short of memory".to_string() } else { format!("the jobs here holding {:.1} GB together, past this Mac's limit of {:.1} GB", gb(total), gb(limit)) };
-                let beside = self.slots.iter().enumerate().find(|(b, _)| *b != k).and_then(|(_, s)| s.running.as_ref()).map(|r| r.spec.id.clone()).unwrap_or_default();
+                let why = if trouble {
+                    "the Mac short of memory".to_string()
+                } else {
+                    format!(
+                        "the jobs here holding {:.1} GB together, past this Mac's limit of {:.1} GB",
+                        gb(total),
+                        gb(limit)
+                    )
+                };
+                let beside = self
+                    .slots
+                    .iter()
+                    .enumerate()
+                    .find(|(b, _)| *b != k)
+                    .and_then(|(_, s)| s.running.as_ref())
+                    .map(|r| r.spec.id.clone())
+                    .unwrap_or_default();
                 return self.yield_stop(k, &format!("given back by the memory guard: started beside {beside} while it waited on a worker, it yields now that {beside} goes on, {why}"));
             }
         }
@@ -3207,7 +3837,11 @@ impl Agent {
             return false;
         }
         let draining: Vec<bool> = self.slots.iter().map(|s| s.mem_drain.is_some()).collect();
-        let late = (0..SLOTS).find(|&k| draining[k] && !self.slots[k].mem_drain_alone && self.slots[k].drain_since.is_some_and(|t| t.elapsed() >= self.grace));
+        let late = (0..SLOTS).find(|&k| {
+            draining[k]
+                && !self.slots[k].mem_drain_alone
+                && self.slots[k].drain_since.is_some_and(|t| t.elapsed() >= self.grace)
+        });
         let gb = |mb: u64| mb as f64 / 1024.0;
         let id_of = |a: &Self, k: usize| a.slots[k].running.as_ref().map(|r| r.spec.id.clone()).unwrap_or_default();
         let yields: Vec<bool> = (0..SLOTS).map(|k| self.yielding(k)).collect();
@@ -3320,7 +3954,8 @@ impl Agent {
     /// disk floor learned). True when it stopped a job.
     fn disk_guard(&mut self, root: Option<&Path>) -> bool {
         self.sampler.set_disk(true, room::RESERVE, &self.o.home);
-        let frozen: Vec<usize> = (0..SLOTS).filter(|&k| self.slots[k].running.is_some() && self.sampler.disk_frozen(k)).collect();
+        let frozen: Vec<usize> =
+            (0..SLOTS).filter(|&k| self.slots[k].running.is_some() && self.sampler.disk_frozen(k)).collect();
         if frozen.is_empty() {
             self.disk_room = None;
             return false;
@@ -3337,14 +3972,20 @@ impl Agent {
             return false;
         }
         // (Of several frozen, the one taking the most is given back first: the most room back.)
-        let k = frozen.iter().copied().max_by_key(|&k| (self.sampler.disk_now(k).unwrap_or(0), std::cmp::Reverse(k))).unwrap_or(frozen[0]);
+        let k = frozen
+            .iter()
+            .copied()
+            .max_by_key(|&k| (self.sampler.disk_now(k).unwrap_or(0), std::cmp::Reverse(k)))
+            .unwrap_or(frozen[0]);
         let ours = self.caches_task.as_ref().is_some_and(|t| t.disk);
         match self.disk_room {
             Some(_) if ours => false,
             // (Made, and still short: the scratch of jobs given back here, the oldest first; still
             // short, given back.)
             Some(_) if self.caches_task.is_none() => {
-                if self.free_given_back(room::RESERVE + room::margin(room::RESERVE)) > 0 && self.disk_free() >= room::RESERVE {
+                if self.free_given_back(room::RESERVE + room::margin(room::RESERVE)) > 0
+                    && self.disk_free() >= room::RESERVE
+                {
                     return false;
                 }
                 self.disk_room = None;
@@ -3356,11 +3997,16 @@ impl Agent {
             _ => {
                 let Some(r) = root else { return false };
                 let (cache, sources) = (self.o.home.join("cache"), r.join("sources"));
-                let goal = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(room::RESERVE + room::margin(room::RESERVE)));
+                let goal =
+                    std::sync::Arc::new(std::sync::atomic::AtomicU64::new(room::RESERVE + room::margin(room::RESERVE)));
                 let hints = self.hints();
-                match std::thread::Builder::new().name("caches".into()).spawn(move || room::toward(&cache, &sources, goal, &hints)) {
+                match std::thread::Builder::new()
+                    .name("caches".into())
+                    .spawn(move || room::toward(&cache, &sources, goal, &hints))
+                {
                     Ok(thread) => {
-                        self.caches_task = Some(CachesTask { ask: None, toward: None, disk: true, began: Instant::now(), thread });
+                        self.caches_task =
+                            Some(CachesTask { ask: None, toward: None, disk: true, began: Instant::now(), thread });
                         self.disk_room = Some(Instant::now());
                         // (One loop at a time, `--once`: waited for.)
                         if self.o.once {
@@ -3379,7 +4025,8 @@ impl Agent {
     /// Room-making's last resort: the scratch of jobs given back here deleted, the oldest first,
     /// until the disk has `need` free; never one a job running or frozen here uses. The bytes freed.
     fn free_given_back(&self, need: u64) -> u64 {
-        let busy: Vec<PathBuf> = self.slots.iter().filter_map(|s| s.running.as_ref().and_then(|r| scratch_of(&r.spec))).collect();
+        let busy: Vec<PathBuf> =
+            self.slots.iter().filter_map(|s| s.running.as_ref().and_then(|r| scratch_of(&r.spec))).collect();
         room::free_given_back(&self.o.home, need, &busy, &|| self.disk_free())
     }
 
@@ -3390,7 +4037,9 @@ impl Agent {
     fn measured_job(&self, spec: &JobSpec) -> Option<crate::coord::Measured> {
         let c = self.coord.as_ref()?;
         match spec.record.as_ref() {
-            Some(w) if !w.targets.is_empty() => c.measured_batch(&w.step, &w.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>()),
+            Some(w) if !w.targets.is_empty() => {
+                c.measured_batch(&w.step, &w.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
+            }
             _ => {
                 let key = own_cost_key(&spec.id);
                 let step = memguard::step_of_key(&key).to_string();
@@ -3444,7 +4093,15 @@ impl Agent {
         let r = self.slots[other].running.as_ref()?;
         let beside = steps::title(&step_of(&r.spec.id).unwrap_or_default()).to_string();
         // (The disk's reads only once the memory fits: `disk` is called last.)
-        beside_why(self.measured_job(spec), self.measured_job(&r.spec), self.waiting_on(other).is_some(), self.held_mb(other), memguard::limit_mb(self.total_mb()), || (self.disk_left(other), self.disk_free()), &beside)
+        beside_why(
+            self.measured_job(spec),
+            self.measured_job(&r.spec),
+            self.waiting_on(other).is_some(),
+            self.held_mb(other),
+            memguard::limit_mb(self.total_mb()),
+            || (self.disk_left(other), self.disk_free()),
+            &beside,
+        )
     }
 
     /// The job in slot `k` the memory guard drained the one beside, while it runs: nothing starts
@@ -3462,7 +4119,13 @@ impl Agent {
             (true, 0) => Some("this Mac's memory can't be read: nothing is stopped".to_string()),
             _ => None,
         };
-        memguard::View { on: why_off.is_none(), limit_mb: limit, held_mb: (0..SLOTS).filter_map(|k| self.held_mb(k)).sum(), why_off, last: self.guard_last.clone() }
+        memguard::View {
+            on: why_off.is_none(),
+            limit_mb: limit,
+            held_mb: (0..SLOTS).filter_map(|k| self.held_mb(k)).sum(),
+            why_off,
+            last: self.guard_last.clone(),
+        }
     }
 
     /// The targets of the plan's `works` the memory guard holds (its switch on): those whose floor,
@@ -3503,8 +4166,14 @@ impl Agent {
                 // lead is the owner's call, `scenic lead give`).
                 let (s, v) = if n_all == 1 { ("", "s") } else { ("s", "") };
                 let remedy = match c.roomiest_agent().filter(|(_, l)| *l >= need) {
-                    Some((m, l)) => format!("{m}'s limit is {:.1} GB: hand it the lead (`scenic lead give {m}`), or fix the step's memory", gb(l)),
-                    None => "no member's limit fits it: a step whose memory grows with its target, for the owner to see to".to_string(),
+                    Some((m, l)) => format!(
+                        "{m}'s limit is {:.1} GB: hand it the lead (`scenic lead give {m}`), or fix the step's memory",
+                        gb(l)
+                    ),
+                    None => {
+                        "no member's limit fits it: a step whose memory grows with its target, for the owner to see to"
+                            .to_string()
+                    }
                 };
                 h.why.push(Waiting { step: Some(w.step.clone()), what: steps::title(&w.step).into(), why: format!("{n_all} target{s} need{v} about {:.1} GB, past the lead's limit of {:.1} GB; this step runs only on the lead. {remedy} (`scenic pool floors --clear` once it's fixed)", gb(need), gb(limit)) });
             } else if n_all > 0 {
@@ -3545,7 +4214,8 @@ impl Agent {
                 r.moved = Some((frac, now_s()));
             }
             let (t0, f0, _, _) = r.progress_base.as_ref().unwrap();
-            let eta_s = (frac > *f0 && r.paused.is_none()).then(|| (t0.elapsed().as_secs_f64() * (1.0 - frac) / (frac - f0)) as u64);
+            let eta_s = (frac > *f0 && r.paused.is_none())
+                .then(|| (t0.elapsed().as_secs_f64() * (1.0 - frac) / (frac - f0)) as u64);
             JobProgress { done, total, unit, eta_s, moved_at: r.moved.map(|m| m.1) }
         });
         slot.job_eta = progress.as_ref().and_then(|p| p.eta_s);
@@ -3573,7 +4243,8 @@ impl Agent {
             // (Marked counted now: one walk at a time.)
             let now = Instant::now();
             self.cache_size.lock().unwrap().0 = Some(now);
-            let (cache, helper, size, nas) = (self.o.home.join("cache"), self.o.helper, self.cache_size.clone(), root.map(Path::to_path_buf));
+            let (cache, helper, size, nas) =
+                (self.o.home.join("cache"), self.o.helper, self.cache_size.clone(), root.map(Path::to_path_buf));
             std::thread::spawn(move || {
                 let n = room::sizes(&cache, helper, nas.as_deref());
                 // (Not over a count made since, a trim's or a clear's.)
@@ -3584,7 +4255,12 @@ impl Agent {
             });
         }
         let ms = ANSWERED_MS.load(std::sync::atomic::Ordering::Relaxed);
-        self.mac.resources(&self.o.home, root, bytes.map(|b| (b.cheap as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0), (ms != u64::MAX && root.is_some()).then_some(ms))
+        self.mac.resources(
+            &self.o.home,
+            root,
+            bytes.map(|b| (b.cheap as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0),
+            (ms != u64::MAX && root.is_some()).then_some(ms),
+        )
     }
 
     /// This Mac's caches between jobs (room::trim, room::clear), each on a thread of its own while the
@@ -3623,7 +4299,12 @@ impl Agent {
             let target = self.floor();
             let hints = self.hints();
             self.caches_start_toward(target, goal, move || room::toward(&cache, &s, at, &hints));
-        } else if let Some(s) = sources.filter(|_| why.is_none() && home && self.trim_due() && self.trim_failed.is_none_or(|t| t.elapsed() >= Duration::from_secs(600))) {
+        } else if let Some(s) = sources.filter(|_| {
+            why.is_none()
+                && home
+                && self.trim_due()
+                && self.trim_failed.is_none_or(|t| t.elapsed() >= Duration::from_secs(600))
+        }) {
             // (The lead keeps its canopy squares: every pass's areas read them again.)
             let (squares, helper) = (cache.join("chm10"), self.o.helper);
             self.caches_start(None, move || room::trim(&cache, &s, &|p| !helper && p.starts_with(&squares)));
@@ -3652,13 +4333,21 @@ impl Agent {
         }
         self.orphans.retain(jobs::Group::is_the_jobs);
         let busy = self.slots.iter().any(|s| s.running.is_some()) || !self.orphans.is_empty();
-        let Some(root) = root.filter(|_| !self.answers_seeded && !busy && !self.o.helper && self._lock.is_some() && !self.o.dry_run) else { return };
+        let Some(root) =
+            root.filter(|_| !self.answers_seeded && !busy && !self.o.helper && self._lock.is_some() && !self.o.dry_run)
+        else {
+            return;
+        };
         self.answers_seeded = true;
-        let (root, cache, scratch) = (root.to_path_buf(), self.o.home.join("cache"), self.o.home.join("scratch/answers"));
+        let (root, cache, scratch) =
+            (root.to_path_buf(), self.o.home.join("cache"), self.o.home.join("scratch/answers"));
         // (With the budgets on, alone among the steps keeping answers here by their lock, and each
         // archive sent under the answers' lease on the NAS: crate::answers::Local, Lease.)
         let leased = true;
-        match std::thread::Builder::new().name("answers".into()).spawn(move || crate::answers::seed(&root, &cache, &scratch, leased)) {
+        match std::thread::Builder::new()
+            .name("answers".into())
+            .spawn(move || crate::answers::seed(&root, &cache, &scratch, leased))
+        {
             Ok(t) => self.answers_seed = Some(t),
             Err(e) => eprintln!("agent: the pass's answers not sent to the NAS now (its thread didn't start: {e})"),
         }
@@ -3672,9 +4361,15 @@ impl Agent {
     }
 
     /// Starts a trim or a clear (`ask`) on a thread of its own; one that can't start is a failure.
-    fn caches_start(&mut self, ask: Option<room::ClearRequest>, work: impl FnOnce() -> Result<room::Freed> + Send + 'static) {
+    fn caches_start(
+        &mut self,
+        ask: Option<room::ClearRequest>,
+        work: impl FnOnce() -> Result<room::Freed> + Send + 'static,
+    ) {
         match std::thread::Builder::new().name("caches".into()).spawn(work) {
-            Ok(thread) => self.caches_task = Some(CachesTask { ask, toward: None, disk: false, began: Instant::now(), thread }),
+            Ok(thread) => {
+                self.caches_task = Some(CachesTask { ask, toward: None, disk: false, began: Instant::now(), thread })
+            }
             Err(e) => self.caches_failed(anyhow::anyhow!("its thread didn't start: {e}"), ask),
         }
     }
@@ -3682,9 +4377,22 @@ impl Agent {
     /// Starts a freeing toward the owner's disk room target (`target`; `goal`, the room it frees
     /// toward, bytes) on a thread of its own; one that can't start is tried again with the next
     /// (`toward_due`).
-    fn caches_start_toward(&mut self, target: u64, goal: u64, work: impl FnOnce() -> Result<room::Freed> + Send + 'static) {
+    fn caches_start_toward(
+        &mut self,
+        target: u64,
+        goal: u64,
+        work: impl FnOnce() -> Result<room::Freed> + Send + 'static,
+    ) {
         match std::thread::Builder::new().name("caches".into()).spawn(work) {
-            Ok(thread) => self.caches_task = Some(CachesTask { ask: None, toward: Some((target, goal)), disk: false, began: Instant::now(), thread }),
+            Ok(thread) => {
+                self.caches_task = Some(CachesTask {
+                    ask: None,
+                    toward: Some((target, goal)),
+                    disk: false,
+                    began: Instant::now(),
+                    thread,
+                })
+            }
             Err(e) => eprintln!("agent: freeing the caches toward the disk room target: its thread didn't start: {e}"),
         }
     }
@@ -3700,7 +4408,9 @@ impl Agent {
         }
         // (Tried lately toward as much or more: not again. The target and a held job's room past it
         // don't take turns.)
-        let fresh = self.toward_tried.is_some_and(|(t, at)| t >= target && now_s().saturating_sub(at) < 600 && self.mem.worked_at <= at);
+        let fresh = self
+            .toward_tried
+            .is_some_and(|(t, at)| t >= target && now_s().saturating_sub(at) < 600 && self.mem.worked_at <= at);
         (!fresh).then_some(target)
     }
 
@@ -3739,7 +4449,10 @@ impl Agent {
             (None, Some((t, g))) => format!("freed toward the disk room target ({}){}", room::size(t), room_past(t, g)),
             (None, None) => "trimmed".to_string(),
         };
-        Some(format!("this Mac's caches are being {doing} ({} min so far); jobs run meanwhile, keeping what they use", t.began.elapsed().as_secs() / 60))
+        Some(format!(
+            "this Mac's caches are being {doing} ({} min so far); jobs run meanwhile, keeping what they use",
+            t.began.elapsed().as_secs() / 60
+        ))
     }
 
     /// A trim or a clear done (waited for, when it isn't yet), its result recorded. Asked to stop
@@ -3752,10 +4465,18 @@ impl Agent {
         if t.disk {
             match r {
                 Ok(f) => {
-                    let note = format!("made room for the job the disk guard froze: {}; {} free", f.say(), room::size(self.disk_free()));
+                    let note = format!(
+                        "made room for the job the disk guard froze: {}; {} free",
+                        f.say(),
+                        room::size(self.disk_free())
+                    );
                     eprintln!("agent: {note}");
                     if f.bytes() > 0 {
-                        self.note(crate::coord::history::Event { worker: Some(self.host.clone()), note, ..crate::coord::history::Event::new("caches") });
+                        self.note(crate::coord::history::Event {
+                            worker: Some(self.host.clone()),
+                            note,
+                            ..crate::coord::history::Event::new("caches")
+                        });
                     }
                     self.count_caches();
                 }
@@ -3766,7 +4487,9 @@ impl Agent {
         if let Some((target, goal)) = t.toward {
             match r {
                 Ok(f) => self.toward_record(f, target, goal),
-                Err(e) => eprintln!("agent: freeing the caches toward the disk room target: {e:#}; trying again in ten minutes"),
+                Err(e) => eprintln!(
+                    "agent: freeing the caches toward the disk room target: {e:#}; trying again in ten minutes"
+                ),
             }
             return;
         }
@@ -3780,7 +4503,9 @@ impl Agent {
     /// minutes.
     fn caches_failed(&mut self, e: anyhow::Error, ask: Option<room::ClearRequest>) {
         match ask {
-            Some(ask) => self.caches_record(room::Freed { why_not: Some(format!("{e:#}")), ..Default::default() }, Some(ask)),
+            Some(ask) => {
+                self.caches_record(room::Freed { why_not: Some(format!("{e:#}")), ..Default::default() }, Some(ask))
+            }
             None => {
                 eprintln!("agent: trimming the caches: {e:#}; trying again in ten minutes");
                 self.trim_failed = Some(Instant::now());
@@ -3822,10 +4547,20 @@ impl Agent {
         f.at = now_s();
         (f.target, f.goal) = (Some(target), (goal > target).then_some(goal));
         let free = self.disk_free();
-        let note = format!("freed its caches toward the disk room target ({}){}: {}; {} free", room::size(target), room_past(target, goal), f.say(), room::size(free));
+        let note = format!(
+            "freed its caches toward the disk room target ({}){}: {}; {} free",
+            room::size(target),
+            room_past(target, goal),
+            f.say(),
+            room::size(free)
+        );
         eprintln!("agent: {note}");
         if f.bytes() > 0 {
-            self.note(crate::coord::history::Event { worker: Some(self.host.clone()), note, ..crate::coord::history::Event::new("caches") });
+            self.note(crate::coord::history::Event {
+                worker: Some(self.host.clone()),
+                note,
+                ..crate::coord::history::Event::new("caches")
+            });
         }
         self.mem.toward = Some(f);
         // (The jobs held by the target wait on: each starts once the disk has its room, and room-
@@ -3847,7 +4582,12 @@ impl Agent {
             trimmed: self.mem.trimmed.clone(),
             cleared: self.mem.cleared.clone(),
             declined: self.mem.declined.clone(),
-            room: Some(room::RoomView { target: self.room_target.clone(), free: self.disk_free(), toward: self.mem.toward.clone(), short: self.room_short(nas) }),
+            room: Some(room::RoomView {
+                target: self.room_target.clone(),
+                free: self.disk_free(),
+                toward: self.mem.toward.clone(),
+                short: self.room_short(nas),
+            }),
         }
     }
 
@@ -3868,7 +4608,8 @@ impl Agent {
             return work_left(self.forecast.borrow().as_ref(), since);
         }
         if self.heard.as_ref().is_none_or(|h| h.read.elapsed() >= Duration::from_secs(60)) {
-            let st: Option<Status> = std::fs::read(root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            let st: Option<Status> =
+                std::fs::read(root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
             let left = st.as_ref().map(|s| match s.job.as_ref().or(s.beside.as_ref()) {
                 Some(j) => Some(format!("the lead runs a job ({})", j.what)),
                 None => work_left(s.forecast.as_ref(), since),
@@ -3876,7 +4617,9 @@ impl Agent {
             self.heard = Some(Heard { read: Instant::now(), beat: st.map(|s| s.beat), left: left.flatten() });
         }
         match self.heard.as_ref().map(|h| (h.beat, &h.left)) {
-            Some((Some(beat), _)) if now_s().saturating_sub(beat) > 600 => Some(format!("the lead hasn't been heard from for {} min", now_s().saturating_sub(beat) / 60)),
+            Some((Some(beat), _)) if now_s().saturating_sub(beat) > 600 => {
+                Some(format!("the lead hasn't been heard from for {} min", now_s().saturating_sub(beat) / 60))
+            }
             Some((Some(_), left)) => left.clone(),
             _ => Some("the lead's status can't be read now".into()),
         }
@@ -3917,7 +4660,10 @@ impl Agent {
         for h in helpers {
             let Some(c) = &h.caches else { continue };
             let (seen, mut kept) = *self.helper_caches.entry(h.host.clone()).or_insert((self.started, 0));
-            let mut new: Vec<(bool, &room::Freed)> = [(true, &c.trimmed), (false, &c.cleared), (false, &c.declined)].into_iter().filter_map(|(t, f)| Some((t, f.as_ref().filter(|f| f.at > seen)?))).collect();
+            let mut new: Vec<(bool, &room::Freed)> = [(true, &c.trimmed), (false, &c.cleared), (false, &c.declined)]
+                .into_iter()
+                .filter_map(|(t, f)| Some((t, f.as_ref().filter(|f| f.at > seen)?)))
+                .collect();
             new.sort_by_key(|n| n.1.at);
             for (trimmed, f) in new {
                 if !trimmed || f.bytes() > 0 || f.left != kept {
@@ -3961,7 +4707,11 @@ impl Agent {
         // (No timings left from the slot's last job, for this one's hand-off to carry.)
         self.slots[k].timings_out = None;
         let log = self.o.home.join("logs").join(format!("{}.log", spec.id.replace([' ', '/'], "-")));
-        eprintln!("agent: starting {}{} ({threads} threads)", spec.id, if k > 0 { " beside the first job" } else { "" });
+        eprintln!(
+            "agent: starting {}{} ({threads} threads)",
+            spec.id,
+            if k > 0 { " beside the first job" } else { "" }
+        );
         // The lead's jobs hand their saves off as every job does (no job writes the records,
         // docs/pool.md §7.3), note what their units cost, and may offer tasks to other workers
         // through the coordinator; a member's hand theirs off likewise (SCENIC_HANDOFF, in their
@@ -3978,8 +4728,12 @@ impl Agent {
             }
             // A map update's step that reads the units: as they were when the map update began.
             let step = spec.record.as_ref().map(|w| w.step.as_str()).unwrap_or("");
-            if let Some(r) = self.map_update.borrow().as_ref().filter(|r| !r.over && build::AS_OF_STEPS.contains(&step)) {
-                env.push((crate::out::UNITS_AS_OF_ENV.into(), format!("{}#{}", self.o.home.join(MAP_UPDATE_FILE).display(), r.began)));
+            if let Some(r) = self.map_update.borrow().as_ref().filter(|r| !r.over && build::AS_OF_STEPS.contains(&step))
+            {
+                env.push((
+                    crate::out::UNITS_AS_OF_ENV.into(),
+                    format!("{}#{}", self.o.home.join(MAP_UPDATE_FILE).display(), r.began),
+                ));
             }
         } else if let Some(b) = &self.broker {
             // (A member's job offers its tasks through this Mac's broker, docs/pool.md §8.)
@@ -4041,9 +4795,13 @@ impl Agent {
             }
             None => None,
         };
-        let scratch =spec.cmd.iter().position(|a| a == "--scratch").and_then(|i| spec.cmd.get(i + 1)).map(PathBuf::from);
+        let scratch =
+            spec.cmd.iter().position(|a| a == "--scratch").and_then(|i| spec.cmd.get(i + 1)).map(PathBuf::from);
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let (step, targets) = spec.record.as_ref().map_or((spec.id.split(' ').next().map(str::to_string), Vec::new()), |w| (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect()));
+        let (step, targets) =
+            spec.record.as_ref().map_or((spec.id.split(' ').next().map(str::to_string), Vec::new()), |w| {
+                (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect())
+            });
         let what = spec.what.clone();
         // (Its costs file afresh: a line an earlier job left, a target begun and never ended, would
         // name a target under way that isn't, crate::agent::memguard.)
@@ -4056,12 +4814,32 @@ impl Agent {
             _ => None,
         };
         let (w_step, w_targets) = (step.clone().unwrap_or_default(), targets.clone());
-        self.slots[k].running = Some(Running::start(spec, threads, &env, log, &self.record_path(k), Some(&done), sandbox)?);
+        self.slots[k].running =
+            Some(Running::start(spec, threads, &env, log, &self.record_path(k), Some(&done), sandbox)?);
         self.slots[k].beaten = None;
         if let Some(pgid) = self.slots[k].running.as_ref().map(|r| r.pgid) {
-            self.sampler.watch(k, memguard::Watch { pgid, costs, done: done.clone(), step: w_step, targets: w_targets, own_key, written, scratch, ..Default::default() });
+            self.sampler.watch(
+                k,
+                memguard::Watch {
+                    pgid,
+                    costs,
+                    done: done.clone(),
+                    step: w_step,
+                    targets: w_targets,
+                    own_key,
+                    written,
+                    scratch,
+                    ..Default::default()
+                },
+            );
         }
-        self.note(crate::coord::history::Event { worker: Some(self.worker_of(k)), step, targets, what, ..crate::coord::history::Event::new("start") });
+        self.note(crate::coord::history::Event {
+            worker: Some(self.worker_of(k)),
+            step,
+            targets,
+            what,
+            ..crate::coord::history::Event::new("start")
+        });
         Ok(())
     }
 
@@ -4077,9 +4855,21 @@ impl Agent {
     /// (`how`: empty when it succeeded).
     fn note_end(&self, k: usize, step: &str, done: &[(String, String)], secs: u64, ok: bool, how: &str) {
         // (A job with no record of its own, the pass's or the daily ones, by its id's first word.)
-        let (id, what) = self.slots[k].running.as_ref().map_or((String::new(), String::new()), |r| (r.spec.id.clone(), r.spec.what.clone()));
+        let (id, what) = self.slots[k]
+            .running
+            .as_ref()
+            .map_or((String::new(), String::new()), |r| (r.spec.id.clone(), r.spec.what.clone()));
         let step = if step.is_empty() { id.split(' ').next().unwrap_or("").to_string() } else { step.to_string() };
-        self.note(crate::coord::history::Event { worker: Some(self.worker_of(k)), step: (!step.is_empty()).then_some(step), targets: done.iter().map(|t| t.0.clone()).collect(), secs: Some(secs as f64), ok: Some(ok), what, note: how.to_string(), ..crate::coord::history::Event::new("end") });
+        self.note(crate::coord::history::Event {
+            worker: Some(self.worker_of(k)),
+            step: (!step.is_empty()).then_some(step),
+            targets: done.iter().map(|t| t.0.clone()).collect(),
+            secs: Some(secs as f64),
+            ok: Some(ok),
+            what,
+            note: how.to_string(),
+            ..crate::coord::history::Event::new("end")
+        });
     }
 
     /// Notes the lead's conditions as they change (mains or battery, the NAS, home or away, a
@@ -4091,7 +4881,11 @@ impl Agent {
         }
         if let Some(was) = self.last_cond {
             if was.ac != c.ac {
-                said.push(if c.ac { "on mains power".into() } else { format!("on battery{}", c.battery.map(|b| format!(" ({b}%)")).unwrap_or_default()) });
+                said.push(if c.ac {
+                    "on mains power".into()
+                } else {
+                    format!("on battery{}", c.battery.map(|b| format!(" ({b}%)")).unwrap_or_default())
+                });
             }
             if was.nas != c.nas {
                 said.push(if c.nas { "the NAS answers again".into() } else { "the NAS doesn't answer".into() });
@@ -4102,7 +4896,11 @@ impl Agent {
         }
         self.last_cond = Some(*c);
         if !said.is_empty() {
-            self.note(crate::coord::history::Event { worker: Some(self.host.clone()), note: said.join("; "), ..crate::coord::history::Event::new("conditions") });
+            self.note(crate::coord::history::Event {
+                worker: Some(self.host.clone()),
+                note: said.join("; "),
+                ..crate::coord::history::Event::new("conditions")
+            });
         }
     }
 
@@ -4151,9 +4949,17 @@ impl Agent {
         r.low_at = if r.low { Some(r.began) } else { self.map_update.borrow().as_ref().and_then(|p| p.low_at) };
         if self.keeps_map_updates() {
             write_map_update(&self.o.home, &r)?;
-            self.note(crate::coord::history::Event { targets: r.regions.clone(), note: if r.last { "the last".into() } else { String::new() }, ..crate::coord::history::Event::new("map-update") });
+            self.note(crate::coord::history::Event {
+                targets: r.regions.clone(),
+                note: if r.last { "the last".into() } else { String::new() },
+                ..crate::coord::history::Event::new("map-update")
+            });
         }
-        eprintln!("agent: a map update begins, publishing {} region(s){}", r.regions.len(), if r.last { " (the last)" } else { "" });
+        eprintln!(
+            "agent: a map update begins, publishing {} region(s){}",
+            r.regions.len(),
+            if r.last { " (the last)" } else { "" }
+        );
         *self.map_update.borrow_mut() = Some(r);
         Ok(())
     }
@@ -4164,7 +4970,9 @@ impl Agent {
         u.gap_basis = match (per_region, self.update_measured.get()) {
             (false, _) => "the hour: a map update per region is off".into(),
             (true, None) => "the hour: no map update measured yet".into(),
-            (true, Some(s)) if u.gap_s >= build::PUBLISH_EVERY_S => format!("the hour: twice the measured {s:.0} s is more"),
+            (true, Some(s)) if u.gap_s >= build::PUBLISH_EVERY_S => {
+                format!("the hour: twice the measured {s:.0} s is more")
+            }
             (true, Some(s)) => format!("twice the last map updates' measured {s:.0} s"),
         };
         if let Some(p) = &self.pause {
@@ -4181,7 +4989,12 @@ impl Agent {
     /// The map update under way told to this Mac's coordinator, with the plan's offers made from the
     /// same map update (every step to every member: a map update's step is granted only with it).
     fn offer_update(&self, c: &crate::coord::Coordinator) {
-        let map_update = self.map_update.borrow().as_ref().filter(|r| !r.over && self.every_on()).map(|r| (r.began, r.units.clone()));
+        let map_update = self
+            .map_update
+            .borrow()
+            .as_ref()
+            .filter(|r| !r.over && self.every_on())
+            .map(|r| (r.began, r.units.clone()));
         if map_update.as_ref().map(|r| r.0) != c.map_update_began() {
             c.set_map_update(map_update.map(|(began, units)| crate::coord::AsOf { began, units }));
         }
@@ -4212,7 +5025,9 @@ impl Agent {
         if self.timetables.borrow().as_ref().is_some_and(|t| &t.0 == c) {
             return;
         }
-        if let Some(v) = std::fs::read(root.join(c)).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) {
+        if let Some(v) =
+            std::fs::read(root.join(c)).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        {
             *self.timetables.borrow_mut() = Some((c.clone(), crate::timetables::View::of(&v)));
         }
     }
@@ -4234,7 +5049,8 @@ impl Agent {
         }
         for b in self.handoff_bases(root) {
             stat(&mut h, &b);
-            let mut hosts: Vec<PathBuf> = std::fs::read_dir(&b).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+            let mut hosts: Vec<PathBuf> =
+                std::fs::read_dir(&b).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
             hosts.sort();
             for d in hosts {
                 d.hash(&mut h);
@@ -4248,7 +5064,16 @@ impl Agent {
         }
         serde_json::to_string(&self.pause).unwrap_or_default().hash(&mut h);
         // (Faster publishing's switches, the hold on catalogs, the catalogs' folders.)
-        for f in [publish::UPDATE_PER_REGION, publish::LOW_ZOOM_LATER, publish::UPDATE_SHARE, publish::DELTA_CATALOG, publish::NEAR_SLOPE, "inputs/hold-catalog", "catalog", "catalog-held"] {
+        for f in [
+            publish::UPDATE_PER_REGION,
+            publish::LOW_ZOOM_LATER,
+            publish::UPDATE_SHARE,
+            publish::DELTA_CATALOG,
+            publish::NEAR_SLOPE,
+            "inputs/hold-catalog",
+            "catalog",
+            "catalog-held",
+        ] {
             stat(&mut h, &root.join(f));
         }
         // (The coordinator's leases: one lapsed, given back or taken frees or holds targets.)
@@ -4323,11 +5148,26 @@ impl Agent {
             if let Some(w) = held {
                 waiting.push(w);
             } else if !jar.exists() {
-                waiting.push(Waiting { step: Some("osm-pass".into()), what, why: "sources/basemap/planetiler.jar is missing on the NAS".into() });
+                waiting.push(Waiting {
+                    step: Some("osm-pass".into()),
+                    what,
+                    why: "sources/basemap/planetiler.jar is missing on the NAS".into(),
+                });
             } else if !started && free < PASS_SPACE {
-                waiting.push(Waiting { step: Some("osm-pass".into()), what, why: format!("needs {} GB free on this Mac ({} GB free)", PASS_SPACE >> 30, free >> 30) });
+                waiting.push(Waiting {
+                    step: Some("osm-pass".into()),
+                    what,
+                    why: format!("needs {} GB free on this Mac ({} GB free)", PASS_SPACE >> 30, free >> 30),
+                });
             } else {
-                out.push(JobSpec { id: format!("osm-pass {date}"), what, cmd: self.osm_pass_cmd(root, &planet, &date), needs: Needs { nas: true }, restart_after_sleep: true, record: None });
+                out.push(JobSpec {
+                    id: format!("osm-pass {date}"),
+                    what,
+                    cmd: self.osm_pass_cmd(root, &planet, &date),
+                    needs: Needs { nas: true },
+                    restart_after_sleep: true,
+                    record: None,
+                });
             }
         }
 
@@ -4336,7 +5176,8 @@ impl Agent {
 
         // The gate's checks before every other step (docs/inputs.md §4.3): a change is checked
         // before the plan builds with stale inputs.
-        let (checks, rest): (Vec<JobSpec>, Vec<JobSpec>) = std::mem::take(&mut out).into_iter().partition(|j| j.record.as_ref().is_some_and(|w| w.step == "inputs"));
+        let (checks, rest): (Vec<JobSpec>, Vec<JobSpec>) =
+            std::mem::take(&mut out).into_iter().partition(|j| j.record.as_ref().is_some_and(|w| w.step == "inputs"));
         out = checks;
         out.extend(rest);
         // Daily: the user's folders backed up, replaced files removed.
@@ -4344,7 +5185,14 @@ impl Agent {
             out.push(JobSpec {
                 id: "backup".into(),
                 what: steps::title("backup").into(),
-                cmd: vec![s(&me), "backup".into(), "--root".into(), s(root), "--local".into(), s(&self.o.home.join("backups"))],
+                cmd: vec![
+                    s(&me),
+                    "backup".into(),
+                    "--root".into(),
+                    s(root),
+                    "--local".into(),
+                    s(&self.o.home.join("backups")),
+                ],
                 needs: Needs { nas: true },
                 restart_after_sleep: true,
                 record: None,
@@ -4369,7 +5217,13 @@ impl Agent {
     /// worldwide jobs, each gated by its own inputs, then what `build::plan` finds stale (its
     /// chains), each step's targets in one run of `scenic-build`. The agent runs the first not
     /// waiting out a failure, so one failing job doesn't hold up the others.
-    fn region_work(&self, root: &Path, pass: Option<&str>, newer: Option<&str>, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+    fn region_work(
+        &self,
+        root: &Path,
+        pass: Option<&str>,
+        newer: Option<&str>,
+        waiting: &mut Vec<Waiting>,
+    ) -> Vec<JobSpec> {
         let mut held = Holds::default();
         let jobs = self.region_jobs(root, pass, newer, waiting, &mut held);
         let jobs = hold_for_sources(jobs, held.sources, waiting);
@@ -4379,33 +5233,61 @@ impl Agent {
     /// `region_work`'s jobs before the holds: `held.lakefill` set when the pass's lake fill holds
     /// the jobs that read it (`hold_for_lakefill`), `held.sources` while no version of the source
     /// declarations is accepted (`hold_for_sources`).
-    fn region_jobs(&self, root: &Path, pass: Option<&str>, newer: Option<&str>, waiting: &mut Vec<Waiting>, held: &mut Holds) -> Vec<JobSpec> {
+    fn region_jobs(
+        &self,
+        root: &Path,
+        pass: Option<&str>,
+        newer: Option<&str>,
+        waiting: &mut Vec<Waiting>,
+        held: &mut Holds,
+    ) -> Vec<JobSpec> {
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
-        let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match crate::out::read_record(&root.join("state/build/manifest.json")).and_then(|m| Ok((m, self.planning_keys(root)?))) {
-            Ok(r) => r,
-            Err(e) => {
-                waiting.push(Waiting { step: None, what: "Building".into(), why: format!("the build's records can't be read now: {e:#}") });
-                return Vec::new();
-            }
-        };
+        let (manifest, keys): (BTreeMap<String, String>, build::Keys) =
+            match crate::out::read_record(&root.join("state/build/manifest.json"))
+                .and_then(|m| Ok((m, self.planning_keys(root)?)))
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    waiting.push(Waiting {
+                        step: None,
+                        what: "Building".into(),
+                        why: format!("the build's records can't be read now: {e:#}"),
+                    });
+                    return Vec::new();
+                }
+            };
         // (Once a readers' switch is recorded, an app older than the one it was recorded on reads
         // the wrong regions: it builds nothing, and says so.)
-        let regions_app = crate::inputs::regions::read::switch_app(&manifest, &|n| std::fs::read(root.join(n)).with_context(|| format!("read {n}"))).map_err(|e| format!("{e:#}"));
+        let regions_app = crate::inputs::regions::read::switch_app(&manifest, &|n| {
+            std::fs::read(root.join(n)).with_context(|| format!("read {n}"))
+        })
+        .map_err(|e| format!("{e:#}"));
         // (And the coordinator grants nothing to an app older than it, a page's included.)
         if let (Some(c), Ok(min)) = (&self.coord, &regions_app) {
             c.set_min_app(min.clone());
         }
         if let Err(why) = crate::inputs::regions::read::may_lead(&self.app, &regions_app) {
-            waiting.push(Waiting { step: None, what: "All building".into(), why: format!("this Mac can't build now: {why}") });
+            waiting.push(Waiting {
+                step: None,
+                what: "All building".into(),
+                why: format!("this Mac can't build now: {why}"),
+            });
             return Vec::new();
         }
         // (The regions from the same records as the coverage.)
-        let (recipes, unread): (Vec<recipes::Recipe>, Vec<(String, String)>) = match crate::inputs::regions::read::source(root, &manifest).and_then(|a| crate::inputs::regions::read::recipes(&a)) {
-            Ok(r) => (r, Vec::new()),
-            Err(e) => (Vec::new(), vec![("regions".into(), format!("{e:#}"))]),
-        };
+        let (recipes, unread): (Vec<recipes::Recipe>, Vec<(String, String)>) =
+            match crate::inputs::regions::read::source(root, &manifest)
+                .and_then(|a| crate::inputs::regions::read::recipes(&a))
+            {
+                Ok(r) => (r, Vec::new()),
+                Err(e) => (Vec::new(), vec![("regions".into(), format!("{e:#}"))]),
+            };
         if let Some((_, why)) = unread.iter().find(|(f, _)| f == "regions") {
-            waiting.push(Waiting { step: None, what: "Building the regions".into(), why: format!("the regions can't be read now: {why}") });
+            waiting.push(Waiting {
+                step: None,
+                what: "Building the regions".into(),
+                why: format!("the regions can't be read now: {why}"),
+            });
         }
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let build_bin = s(&self.o.bin.join("scenic-build"));
@@ -4415,7 +5297,8 @@ impl Agent {
         // command, the step by its id's.)
         let job = |id: String, step: &str, extra: Vec<String>, record: Option<build::Work>| {
             let scratch = self.o.home.join("scratch").join(step);
-            let mut cmd = vec![build_bin.clone(), step.to_string(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
+            let mut cmd =
+                vec![build_bin.clone(), step.to_string(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
             cmd.extend(extra);
             let what = steps::title(step_of(&id).as_deref().unwrap_or(step)).to_string();
             // (Every job needs the NAS; none waits for power or home, the owner's choice: the pass's
@@ -4441,10 +5324,20 @@ impl Agent {
                 let made = manifest.contains_key(&format!("sources/osm/{date}/outlines"));
                 jobs.push(job(format!("outlines {date}"), "outlines", p.clone(), Some(w)));
                 if build::outlines_hold(made, failures) {
-                    waiting.push(Waiting { step: None, what: "Building".into(), why: "waits for the pass's outlines to be assembled (the outlines job)".into() });
+                    waiting.push(Waiting {
+                        step: None,
+                        what: "Building".into(),
+                        why: "waits for the pass's outlines to be assembled (the outlines job)".into(),
+                    });
                     return jobs;
                 }
-                waiting.push(Waiting { step: Some("outlines".into()), what: steps::title("outlines").into(), why: format!("failed {failures} times in a row: the rest goes on with the outlines the pass has meanwhile") });
+                waiting.push(Waiting {
+                    step: Some("outlines".into()),
+                    what: steps::title("outlines").into(),
+                    why: format!(
+                        "failed {failures} times in a row: the rest goes on with the outlines the pass has meanwhile"
+                    ),
+                });
             }
             if let Some(w) = build::trailends_work(date, &manifest, &keys) {
                 jobs.push(job(format!("trailends {date}"), "trailends", p.clone(), Some(w)));
@@ -4456,21 +5349,44 @@ impl Agent {
                 match why {
                     // Made, but it doesn't decode: made again.
                     crate::reach::LoadError::Bad(e) => {
-                        waiting.push(Waiting { step: None, what: steps::stage_title("roads").into(), why: format!("the pass's reaches don't read ({e}); making them again") });
+                        waiting.push(Waiting {
+                            step: None,
+                            what: steps::stage_title("roads").into(),
+                            why: format!("the pass's reaches don't read ({e}); making them again"),
+                        });
                         if let Some(k) = build::reach_key(date, &manifest) {
-                            jobs.push(reach_job(build::Work { step: "reach".into(), targets: vec![("reach".into(), k)] }));
+                            jobs.push(reach_job(build::Work {
+                                step: "reach".into(),
+                                targets: vec![("reach".into(), k)],
+                            }));
                         }
                     }
-                    crate::reach::LoadError::Io(e) => waiting.push(Waiting { step: None, what: steps::stage_title("roads").into(), why: format!("the pass's reaches can't be read now: {e}") }),
+                    crate::reach::LoadError::Io(e) => waiting.push(Waiting {
+                        step: None,
+                        what: steps::stage_title("roads").into(),
+                        why: format!("the pass's reaches can't be read now: {e}"),
+                    }),
                 }
             }
             if !manifest.contains_key(&crate::terrain_z8::logical()) {
-                jobs.push(job("terrain-z8".into(), "terrain-z8", vec!["--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))], None));
+                jobs.push(job(
+                    "terrain-z8".into(),
+                    "terrain-z8",
+                    vec!["--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))],
+                    None,
+                ));
             }
             // (Of the declared release: none before the source declarations are accepted.)
             let release = crate::buildtiles::release_of(root, &manifest).ok();
-            if let Some(release) = release.as_deref().filter(|r| !manifest.contains_key(&crate::buildtiles::index_logical(r))) {
-                jobs.push(job(format!("buildings {release}"), "buildings", vec!["--dem".into(), s(&self.o.bin.join("dem"))], None));
+            if let Some(release) =
+                release.as_deref().filter(|r| !manifest.contains_key(&crate::buildtiles::index_logical(r)))
+            {
+                jobs.push(job(
+                    format!("buildings {release}"),
+                    "buildings",
+                    vec!["--dem".into(), s(&self.o.bin.join("dem"))],
+                    None,
+                ));
             } else if let Ok(rd) = std::fs::read_dir(self.o.home.join("scratch/buildings")) {
                 // Made: the scan's parts (~40 GB) go, even from a run stopped before it removed them.
                 for e in rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("parts-")) {
@@ -4478,20 +5394,44 @@ impl Agent {
                 }
             }
             if let Some(w) = build::summits_work(date, &manifest, &keys) {
-                jobs.push(job(format!("summits {date}"), "summits", [p.clone(), vec!["--cache".into(), s(&self.o.home.join("cache"))]].concat(), Some(w)));
+                jobs.push(job(
+                    format!("summits {date}"),
+                    "summits",
+                    [p.clone(), vec!["--cache".into(), s(&self.o.home.join("cache"))]].concat(),
+                    Some(w),
+                ));
             }
             if let Some(w) = build::labels_work(date, &manifest, &keys) {
-                jobs.push(job(format!("labels {date}"), "labels", [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(), Some(w)));
+                jobs.push(job(
+                    format!("labels {date}"),
+                    "labels",
+                    [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(),
+                    Some(w),
+                ));
             }
             let table = manifest.get(&crate::inputs::logical(crate::inputs::languages::UNIT));
             if let (Some(w), Some(table)) = (build::spoken_work(date, &manifest, &keys), table) {
                 // (The languages' accepted version the key names.)
-                jobs.push(job(format!("spoken {date}"), "spoken", [p.clone(), vec!["--languages-index".to_string(), table.clone()]].concat(), Some(w)));
+                jobs.push(job(
+                    format!("spoken {date}"),
+                    "spoken",
+                    [p.clone(), vec!["--languages-index".to_string(), table.clone()]].concat(),
+                    Some(w),
+                ));
             } else if table.is_none() && manifest.contains_key(&format!("sources/osm/{date}/outlines")) {
-                waiting.push(Waiting { step: Some("spoken".into()), what: steps::title("spoken").into(), why: "the languages' first accepted version (the input check takes inputs/languages/ in)".into() });
+                waiting.push(Waiting {
+                    step: Some("spoken".into()),
+                    what: steps::title("spoken").into(),
+                    why: "the languages' first accepted version (the input check takes inputs/languages/ in)".into(),
+                });
             }
             if !manifest.contains_key(&crate::inputs::logical(crate::inputs::heritage::UNIT)) {
-                waiting.push(Waiting { step: Some("heritage-sites".into()), what: steps::title("heritage-sites").into(), why: "the heritage registers' first accepted version (the input check takes inputs/heritage/ in)".into() });
+                waiting.push(Waiting {
+                    step: Some("heritage-sites".into()),
+                    what: steps::title("heritage-sites").into(),
+                    why: "the heritage registers' first accepted version (the input check takes inputs/heritage/ in)"
+                        .into(),
+                });
             }
             // (The lakes filled from Canada's own data first: while the lakefill job has work, unless
             // it has failed LAKEFILL_HOLDS times in a row (counted on this Mac, from nought again with
@@ -4502,7 +5442,11 @@ impl Agent {
             match crate::lakefill::run::planned_source(root, &manifest) {
                 Err(e) => {
                     held.lakefill = true;
-                    waiting.push(Waiting { step: Some("lakefill".into()), what: steps::title("lakefill").into(), why: e });
+                    waiting.push(Waiting {
+                        step: Some("lakefill".into()),
+                        what: steps::title("lakefill").into(),
+                        why: e,
+                    });
                 }
                 Ok(source) => {
                     let lakefill = build::lakefill_work(date, &manifest, &keys, source.as_deref());
@@ -4528,17 +5472,33 @@ impl Agent {
             let n = w.targets[0].1.clone();
             let mut args = Vec::new();
             for unit in [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT] {
-                args.extend([format!("--{unit}-index"), manifest.get(&crate::inputs::logical(unit)).cloned().unwrap_or_default()]);
+                args.extend([
+                    format!("--{unit}-index"),
+                    manifest.get(&crate::inputs::logical(unit)).cloned().unwrap_or_default(),
+                ]);
             }
             jobs.push(job(format!("names-todo {n}"), "names-todo", args, Some(w)));
-        } else if served.is_some() && [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT].iter().any(|u| !manifest.contains_key(&crate::inputs::logical(u))) {
-            waiting.push(Waiting { step: Some("names-todo".into()), what: steps::title("names-todo").into(), why: "the translations' or the descriptions' first accepted version (the input check takes them in)".into() });
+        } else if served.is_some()
+            && [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT]
+                .iter()
+                .any(|u| !manifest.contains_key(&crate::inputs::logical(u)))
+        {
+            waiting.push(Waiting {
+                step: Some("names-todo".into()),
+                what: steps::title("names-todo").into(),
+                why: "the translations' or the descriptions' first accepted version (the input check takes them in)"
+                    .into(),
+            });
         }
         if recipes.is_empty() {
             return jobs;
         }
         let Some(date) = pass else {
-            waiting.push(Waiting { step: None, what: "Building the regions".into(), why: "the first OpenStreetMap pass (it makes the outlines regions are drawn from)".into() });
+            waiting.push(Waiting {
+                step: None,
+                what: "Building the regions".into(),
+                why: "the first OpenStreetMap pass (it makes the outlines regions are drawn from)".into(),
+            });
             return jobs;
         };
         // (The pass's worldwide jobs: the forecast's before the regions'.)
@@ -4554,7 +5514,12 @@ impl Agent {
         // The timetables' to-do list and report, after each rail and ferries run (lead-only: it
         // writes into the static timetables' drop box's todo/, never read as an input).
         if let Some(w) = build::timetables_todo_work(cov, &manifest, &keys) {
-            jobs.push(job("timetables-todo".into(), "timetables-todo", vec!["--pass".to_string(), date.to_string()], Some(w)));
+            jobs.push(job(
+                "timetables-todo".into(),
+                "timetables-todo",
+                vec!["--pass".to_string(), date.to_string()],
+                Some(w),
+            ));
         }
         self.note_timetables(root, &manifest);
         let mut done = keys;
@@ -4575,7 +5540,10 @@ impl Agent {
         // (The key names the timetable feeds' declarations fetch with, for rail-feeds' key: "?" while
         // their index can't be read, and rail-feeds waits.)
         if let Some(ix) = manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
-            inputs.insert("feed-keys".into(), crate::inputs::feeds::index_key_names(root, ix).map(|k| k.join(",")).unwrap_or_else(|_| "?".into()));
+            inputs.insert(
+                "feed-keys".into(),
+                crate::inputs::feeds::index_key_names(root, ix).map(|k| k.join(",")).unwrap_or_else(|_| "?".into()),
+            );
         }
         let held = root.join("inputs/hold-catalog").exists();
         // The base packs' extents (crate::extents), kept by the lead alone, against its manifest:
@@ -4586,7 +5554,9 @@ impl Agent {
             let t = std::time::Instant::now();
             match crate::extents::keep(root, &manifest) {
                 Ok(0) => {}
-                Ok(n) => eprintln!("extents: {n} base packs' headers read and kept in {:.1} s", t.elapsed().as_secs_f64()),
+                Ok(n) => {
+                    eprintln!("extents: {n} base packs' headers read and kept in {:.1} s", t.elapsed().as_secs_f64())
+                }
                 Err(e) => eprintln!("extents: not kept now: {e:#}"),
             }
         }
@@ -4594,33 +5564,64 @@ impl Agent {
         if !manifest.contains_key(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
             waiting.push(Waiting { step: None, what: steps::stage_title("trains").into(), why: "the timetable feeds' declarations' first accepted version (inputs/timetables/feeds/: the input check takes them in)".into() });
         } else if inputs.get("keys").map(String::as_str) == Some("?") {
-            waiting.push(Waiting { step: None, what: steps::stage_title("trains").into(), why: "inputs/keys.env can't be read now".into() });
+            waiting.push(Waiting {
+                step: None,
+                what: steps::stage_title("trains").into(),
+                why: "inputs/keys.env can't be read now".into(),
+            });
         } else if inputs.get("feed-keys").map(String::as_str) == Some("?") {
-            waiting.push(Waiting { step: None, what: steps::stage_title("trains").into(), why: "the timetable feeds' accepted declarations can't be read now".into() });
+            waiting.push(Waiting {
+                step: None,
+                what: steps::stage_title("trains").into(),
+                why: "the timetable feeds' accepted declarations can't be read now".into(),
+            });
         }
         // (The ferries count the ferry feeds: without their list, rail-feeds' to make, they wait.)
-        if manifest.contains_key(&crate::osmpass::set_name(date, "ferries")) && !manifest.contains_key(crate::rail::FERRY_FEEDS) {
-            waiting.push(Waiting { step: Some("ferries".into()), what: steps::title("ferries").into(), why: "the ferry feeds' list (rail-feeds makes it once the timetable feeds' declarations are accepted)".into() });
+        if manifest.contains_key(&crate::osmpass::set_name(date, "ferries"))
+            && !manifest.contains_key(crate::rail::FERRY_FEEDS)
+        {
+            waiting.push(Waiting {
+                step: Some("ferries".into()),
+                what: steps::title("ferries").into(),
+                why: "the ferry feeds' list (rail-feeds makes it once the timetable feeds' declarations are accepted)"
+                    .into(),
+            });
         }
         // (The trains and the ferries count the static files too: without their accepted version,
         // they wait, rather than be counted without them.)
         if !manifest.contains_key(&crate::inputs::logical(crate::inputs::gtfs::UNIT)) {
             let why = "the static timetables' first accepted version (inputs/timetables/gtfs/: the input check takes them in)";
             if manifest.contains_key(crate::rail::FEEDS) {
-                waiting.push(Waiting { step: Some("rail".into()), what: steps::stage_title("trains").into(), why: why.into() });
+                waiting.push(Waiting {
+                    step: Some("rail".into()),
+                    what: steps::stage_title("trains").into(),
+                    why: why.into(),
+                });
             }
             if manifest.contains_key(&crate::osmpass::set_name(date, "ferries")) {
-                waiting.push(Waiting { step: Some("ferries".into()), what: steps::title("ferries").into(), why: why.into() });
+                waiting.push(Waiting {
+                    step: Some("ferries".into()),
+                    what: steps::title("ferries").into(),
+                    why: why.into(),
+                });
             }
         }
         if inputs.get("bld-release").map(String::as_str) == Some("?") {
-            waiting.push(Waiting { step: None, what: steps::stage_title("buildings").into(), why: "the 3D buildings' sources' indexes on the NAS can't be read now".into() });
+            waiting.push(Waiting {
+                step: None,
+                what: steps::stage_title("buildings").into(),
+                why: "the 3D buildings' sources' indexes on the NAS can't be read now".into(),
+            });
         }
         // The regions the map's catalog has (or the held one's, when catalogs are held for review)
         // and how long ago it went out: what the plan publishes regions by.
         // (The held ones, once there are any: the first goes by what's served.)
         let held_dir = root.join("catalog-held");
-        let dir = if held && store::catalog::list(&held_dir).is_ok_and(|ns| !ns.is_empty()) { held_dir } else { root.join("catalog") };
+        let dir = if held && store::catalog::list(&held_dir).is_ok_and(|ns| !ns.is_empty()) {
+            held_dir
+        } else {
+            root.join("catalog")
+        };
         let (on_map, since_publish) = self.on_map(&dir, &recipes);
         // (The map's: the served catalog's, held ones aside.)
         self.catalog_seen.set(served_catalog(&root.join("catalog")));
@@ -4646,11 +5647,31 @@ impl Agent {
             // or a loop that couldn't take the build lock, plans too.)
             let times = rekey::FileTimes::new(root);
             rekey::as_read(&mut done, cov, date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
-            build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), &tiles, build::MapUpdates { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over), held, way })
+            build::plan(
+                &cov,
+                date,
+                &manifest,
+                &done,
+                &inputs,
+                reach.as_deref(),
+                &tiles,
+                build::MapUpdates {
+                    each: &covs.each,
+                    on_map: &on_map,
+                    since_last,
+                    current: kept.as_ref().filter(|r| !r.over),
+                    held,
+                    way,
+                },
+            )
         };
         // The units held until the heritage registers are first accepted: said, not a silent stall.
         if let Some(why) = build::heritage_awaits_acceptance(cov, date, &manifest, &inputs) {
-            waiting.push(Waiting { step: Some("heritage-sites".into()), what: steps::stage_title("sites").into(), why: format!("the regions' units wait: {why}") });
+            waiting.push(Waiting {
+                step: Some("heritage-sites".into()),
+                what: steps::stage_title("sites").into(),
+                why: format!("the regions' units wait: {why}"),
+            });
         }
         // Units whose terrain can't be worked out now (a pack's index unread): they wait for it.
         // Or the declared elevation datasets: before their switch (docs/inputs.md §6.8), or while
@@ -4669,7 +5690,10 @@ impl Agent {
         let edit_hold = edit_held(self.edited_at.get(), std::time::SystemTime::now());
         // (Hand-offs of work done not yet merged: counted as built, their files not yet in the
         // manifest.)
-        let unmerged = self.handoff_bases(root).iter().any(|b| crate::handoff::waiting_in(b).map(|w| w.iter().any(|(_, h)| h.done.is_some())).unwrap_or(false));
+        let unmerged = self
+            .handoff_bases(root)
+            .iter()
+            .any(|b| crate::handoff::waiting_in(b).map(|w| w.iter().any(|(_, h)| h.done.is_some())).unwrap_or(false));
         if planned.ends {
             self.end_update();
         }
@@ -4689,7 +5713,11 @@ impl Agent {
                 planned.update.why = format!("{} (but it {why})", planned.update.why);
             }
             if let Some(why) = not_now {
-                waiting.push(Waiting { step: Some("catalog".into()), what: steps::stage_title("publish").into(), why: format!("the next map update {why}") });
+                waiting.push(Waiting {
+                    step: Some("catalog".into()),
+                    what: steps::stage_title("publish").into(),
+                    why: format!("the next map update {why}"),
+                });
                 planned.work.retain(|w| !build::AS_OF_STEPS.contains(&w.step.as_str()) && w.step != "prune");
             }
         }
@@ -4701,10 +5729,14 @@ impl Agent {
         let ready = planned.ready;
         *self.ready.borrow_mut() = ready.clone();
         // (As the catalog's `--ready`: each with the outline it was built with.)
-        let ready_arg: String = ready.iter().map(|id| match recipes.iter().find(|r| &r.id == id) {
-            Some(r) => format!("{id}={}", recipes::outline_digest(&r.outline)),
-            None => id.clone(),
-        }).collect::<Vec<_>>().join(",");
+        let ready_arg: String = ready
+            .iter()
+            .map(|id| match recipes.iter().find(|r| &r.id == id) {
+                Some(r) => format!("{id}={}", recipes::outline_digest(&r.outline)),
+                None => id.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(",");
         let mut plan = planned.work;
         // (The map update's map tiles as first planned at their keys, for publishing's times:
         // crate::pubtimes::PlannedNotes, what was noted known again after a restart or a change of
@@ -4719,7 +5751,12 @@ impl Agent {
                     notes.seed_from_nas(root.to_path_buf());
                 }
             }
-            let tiles: Vec<(String, String)> = plan.iter().chain(update_left.iter()).filter(|w| w.step == "pack").flat_map(|w| w.targets.iter().cloned()).collect();
+            let tiles: Vec<(String, String)> = plan
+                .iter()
+                .chain(update_left.iter())
+                .filter(|w| w.step == "pack")
+                .flat_map(|w| w.targets.iter().cloned())
+                .collect();
             let new = notes.new_tiles(&tiles);
             if !new.is_empty() {
                 let served = notes.served(&root.join("catalog"));
@@ -4730,7 +5767,11 @@ impl Agent {
             }
         }
         if let Some(why) = credits_unread.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
-            waiting.push(Waiting { step: Some("catalog".into()), what: steps::stage_title("publish").into(), why: format!("the inputs' descriptions (their credits) can't be read now: {why}") });
+            waiting.push(Waiting {
+                step: Some("catalog".into()),
+                what: steps::stage_title("publish").into(),
+                why: format!("the inputs' descriptions (their credits) can't be read now: {why}"),
+            });
             plan.retain(|w| w.step != "catalog");
         }
         // Just edited: the regions' work waits a while for more edits (each would build again what
@@ -4748,19 +5789,35 @@ impl Agent {
         let held_by_others = |step: &str, t: &str| self.coord.as_ref().is_some_and(|c| c.held(step).contains(t));
         let held_wait = planned.publish_waits.iter().find(|(st, t)| held_by_others(st, t));
         if let Some((st, t)) = held_wait.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
-            let mine = self.slots.iter().filter_map(|s| s.running.as_ref()).any(|r| r.spec.record.as_ref().is_some_and(|w| w.step == *st && w.targets.iter().any(|x| x.0 == *t)));
+            let mine =
+                self.slots.iter().filter_map(|s| s.running.as_ref()).any(|r| {
+                    r.spec.record.as_ref().is_some_and(|w| w.step == *st && w.targets.iter().any(|x| x.0 == *t))
+                });
             let who = if mine { "this Mac's job" } else { "another worker" };
-            waiting.push(Waiting { step: Some("catalog".into()), what: steps::stage_title("publish").into(), why: format!("waits for {who} building the {} of {t}", if st.starts_with("slope") { "slope" } else { "tree cover" }) });
+            waiting.push(Waiting {
+                step: Some("catalog".into()),
+                what: steps::stage_title("publish").into(),
+                why: format!(
+                    "waits for {who} building the {} of {t}",
+                    if st.starts_with("slope") { "slope" } else { "tree cover" }
+                ),
+            });
             plan.retain(|w| w.step != "catalog");
         } else if unmerged && plan.iter().any(|w| w.step == "catalog") {
-            waiting.push(Waiting { step: Some("catalog".into()), what: steps::stage_title("publish").into(), why: "waits for a helper's work to be merged".into() });
+            waiting.push(Waiting {
+                step: Some("catalog".into()),
+                what: steps::stage_title("publish").into(),
+                why: "waits for a helper's work to be merged".into(),
+            });
             plan.retain(|w| w.step != "catalog");
         }
         // (What room-making lets go last: `hints`.)
         *self.queued.borrow_mut() = plan.clone();
         // A unit's piece's size (content-named files never change: each looked up once).
         let size = |u: &str| {
-            let Some(c) = manifest.get(&format!("sources/osm/{date}/pieces/{}", u.replace('/', "-"))) else { return u64::MAX };
+            let Some(c) = manifest.get(&format!("sources/osm/{date}/pieces/{}", u.replace('/', "-"))) else {
+                return u64::MAX;
+            };
             if let Some(&n) = self.piece_sizes.borrow().get(c) {
                 return n;
             }
@@ -4800,13 +5857,21 @@ impl Agent {
         // step to every member: a cold start runs alone in the pool).
         if let (Some(c), true) = (&self.coord, every_on) {
             for w in plan.iter_mut().filter(|w| !w.targets.is_empty() && c.cold_under_way(&w.step)) {
-                waiting.push(Waiting { step: Some(w.step.clone()), what: steps::title(&w.step).to_string(), why: "its first job, never measured, runs on another member now: its others wait for its measure".into() });
+                waiting.push(Waiting {
+                    step: Some(w.step.clone()),
+                    what: steps::title(&w.step).to_string(),
+                    why: "its first job, never measured, runs on another member now: its others wait for its measure"
+                        .into(),
+                });
                 w.targets.clear();
             }
         }
         // (Every step to every member: the plan's every step offered but the lead's own,
         // crate::agent::every.)
-        for w in plan.iter_mut().filter(|w| steps::SHARED.contains(&w.step.as_str()) || (every_on && every::offered(&w.step))) {
+        for w in plan
+            .iter_mut()
+            .filter(|w| steps::SHARED.contains(&w.step.as_str()) || (every_on && every::offered(&w.step)))
+        {
             // What another worker builds now isn't planned here: what it leased from this Mac's
             // coordinator.
             let mut others = BTreeSet::new();
@@ -4823,7 +5888,11 @@ impl Agent {
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
                 s => first_peak(s),
             };
-            offers.push(crate::coord::Offer { step: w.step.clone(), targets: w.targets.iter().map(|(t, k)| (t.clone(), k.clone(), guess(t))).collect(), batch: job_size(&w.step, regions) });
+            offers.push(crate::coord::Offer {
+                step: w.step.clone(),
+                targets: w.targets.iter().map(|(t, k)| (t.clone(), k.clone(), guess(t))).collect(),
+                batch: job_size(&w.step, regions),
+            });
         }
         // A step's targets offered together, in plan order (the plan lists a step's work by region:
         // a helper takes from the far end of all of it). (A step with nothing left: none offered.)
@@ -4846,7 +5915,9 @@ impl Agent {
         let mut alone: Vec<build::Work> = Vec::new();
         for w in plan.iter_mut() {
             w.targets.retain(|t| !holds.here.contains(&(w.step.clone(), t.0.clone())));
-            let (one, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut w.targets).into_iter().partition(|t| holds.alone.contains(&(w.step.clone(), t.0.clone())));
+            let (one, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut w.targets)
+                .into_iter()
+                .partition(|t| holds.alone.contains(&(w.step.clone(), t.0.clone())));
             w.targets = rest;
             alone.extend(one.into_iter().map(|t| build::Work { step: w.step.clone(), targets: vec![t] }));
         }
@@ -4861,7 +5932,10 @@ impl Agent {
                 None if planned.regions.is_empty() => Some("the areas wait for the pass's heritage sites, reaches and roadside buildings; what the regions need is known once they're made".to_string()),
                 None => None,
             };
-            let z6: BTreeMap<String, usize> = build::coverage_tiles(cov).into_iter().map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len())).collect();
+            let z6: BTreeMap<String, usize> = build::coverage_tiles(cov)
+                .into_iter()
+                .map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len()))
+                .collect();
             let peak = |step: &str, t: &str| match step {
                 "unit" | "pois" => crate::coord::unit_peak(&BTreeMap::new(), t, size(t)),
                 "terrain" => terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }),
@@ -4869,11 +5943,40 @@ impl Agent {
                 s => first_peak(s),
             };
             let mut before = before;
-            before.extend(plan.iter().filter(|w| w.step == "heritage-sites").map(|w| job(format!("heritage-sites {date}"), "heritage-sites", Vec::new(), Some(w.clone()))));
-            let chains = build::chains_left(cov, date, &manifest, &done, &inputs, reach.as_deref(), &self.terrain_tiles(root, &manifest));
+            before.extend(
+                plan.iter()
+                    .filter(|w| w.step == "heritage-sites")
+                    .map(|w| job(format!("heritage-sites {date}"), "heritage-sites", Vec::new(), Some(w.clone()))),
+            );
+            let chains = build::chains_left(
+                cov,
+                date,
+                &manifest,
+                &done,
+                &inputs,
+                reach.as_deref(),
+                &self.terrain_tiles(root, &manifest),
+            );
             // (A fault in it costs the status its forecast, never the agent.)
-            let under_way = self.map_update.borrow().as_ref().filter(|r| !r.over).map(|r| (r.regions.clone(), r.last, update_left.clone()));
-            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.forecast_now(root, &before, &planned.regions, &planned.backfill, chains, since_last, under_way, blind, &peak)));
+            let under_way = self
+                .map_update
+                .borrow()
+                .as_ref()
+                .filter(|r| !r.over)
+                .map(|r| (r.regions.clone(), r.last, update_left.clone()));
+            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.forecast_now(
+                    root,
+                    &before,
+                    &planned.regions,
+                    &planned.backfill,
+                    chains,
+                    since_last,
+                    under_way,
+                    blind,
+                    &peak,
+                )
+            }));
             match made {
                 Ok(f) => *self.forecast.borrow_mut() = Some(f),
                 Err(_) => {
@@ -4885,37 +5988,56 @@ impl Agent {
         plan.retain(|w| !w.targets.is_empty());
         // (A map update shared: the lead's own job of a map update's map tiles takes its share, the rest left
         // to the members asking: crate::agent::publish.)
-        let share_on = self.publishing.get().share && self.every_on() && self.map_update.borrow().as_ref().is_some_and(|r| !r.over);
+        let share_on = self.publishing.get().share
+            && self.every_on()
+            && self.map_update.borrow().as_ref().is_some_and(|r| !r.over);
         let coord = self.coord.as_ref().filter(|_| share_on);
-        let size = |step: &str, total: usize, n: usize| match coord.filter(|_| publish::SHARED_IN_UPDATE.contains(&step)) {
-            Some(c) => publish::lead_share(total, n, c.members_asking(step)),
-            None => n,
-        };
+        let size =
+            |step: &str, total: usize, n: usize| match coord.filter(|_| publish::SHARED_IN_UPDATE.contains(&step)) {
+                Some(c) => publish::lead_share(total, n, c.members_asking(step)),
+                None => n,
+            };
         for (w, total) in batches_sized(plan, &size) {
             // Held for review: the catalog goes to catalog-held/ (no server reads it), once.
             if w.step == "catalog" && held {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
                 if done.catalog_held.as_deref() == Some(k.as_str()) {
-                    waiting.push(Waiting { step: None, what: steps::stage_title("publish").into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
+                    waiting.push(Waiting {
+                        step: None,
+                        what: steps::stage_title("publish").into(),
+                        why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into(),
+                    });
                     // (Its map update's done: the held catalog is its.)
                     self.end_update();
                     continue;
                 }
-                let mut j = job("catalog-held".into(), "catalog", vec!["--held".into(), "--ready".into(), ready_arg.clone()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
+                let mut j = job(
+                    "catalog-held".into(),
+                    "catalog",
+                    vec!["--held".into(), "--ready".into(), ready_arg.clone()],
+                    Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }),
+                );
                 j.needs = Needs { nas: true };
                 jobs.push(j);
                 continue;
             }
-            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t) && *t != w.step).collect();
+            let mut extra: Vec<String> =
+                w.targets.iter().map(|t| t.0.clone()).filter(|t| every::names_target(t) && *t != w.step).collect();
             extra.extend(self.step_args(&w.step, date));
             // (The timetable feeds' declarations: the accepted version it was planned with.)
             if w.step == "rail-feeds" {
-                extra.extend(["--feeds-index".to_string(), manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)).cloned().unwrap_or_default()]);
+                extra.extend([
+                    "--feeds-index".to_string(),
+                    manifest.get(&crate::inputs::logical(crate::inputs::feeds::UNIT)).cloned().unwrap_or_default(),
+                ]);
             }
             // (The static timetables: the accepted version the trains and the ferries were planned
             // with.)
             if w.step == "rail" || w.step == "ferries" {
-                extra.extend(["--gtfs-index".to_string(), manifest.get(&crate::inputs::logical(crate::inputs::gtfs::UNIT)).cloned().unwrap_or_default()]);
+                extra.extend([
+                    "--gtfs-index".to_string(),
+                    manifest.get(&crate::inputs::logical(crate::inputs::gtfs::UNIT)).cloned().unwrap_or_default(),
+                ]);
             }
             // (The heritage registers' and matches' accepted versions the plan read: the job reads
             // them, never the drop boxes.)
@@ -4963,7 +6085,18 @@ impl Agent {
     /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
     /// their measured speed; each machine free once its job under way is done.
     #[allow(clippy::too_many_arguments)]
-    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], backfill: &[build::Work], chains: [Vec<build::Work>; 5], since_last: Option<u64>, under_way: Option<(Vec<String>, bool, Vec<build::Work>)>, blind: Option<String>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
+    fn forecast_now(
+        &self,
+        root: &Path,
+        before: &[JobSpec],
+        regions: &[build::RegionLeft],
+        backfill: &[build::Work],
+        chains: [Vec<build::Work>; 5],
+        since_last: Option<u64>,
+        under_way: Option<(Vec<String>, bool, Vec<build::Work>)>,
+        blind: Option<String>,
+        peak: &dyn Fn(&str, &str) -> u64,
+    ) -> forecast::Forecast {
         use forecast::{Cost, Machine};
         let (costs, leased, events, mem) = match &self.coord {
             Some(c) => c.for_forecast(),
@@ -4975,7 +6108,9 @@ impl Agent {
         let helpers: Vec<Status> = helpers(root);
         let mut names: BTreeSet<String> = helpers.iter().map(|h| h.host.clone()).collect();
         names.extend(costs.values().filter_map(|c| c.worker.clone()));
-        names.extend(events.iter().filter(|e| matches!(e.kind.as_str(), "done" | "lease")).filter_map(|e| e.worker.clone()));
+        names.extend(
+            events.iter().filter(|e| matches!(e.kind.as_str(), "done" | "lease")).filter_map(|e| e.worker.clone()),
+        );
         names.remove(&self.host);
         // (The second job: its units beside the first's, at about four fifths of its pace until
         // measured.)
@@ -5012,27 +6147,53 @@ impl Agent {
         let need_mb = |step: &str, t: &str| book.need(step, t, 0, peak(step, t)).mem_mb;
         let cost = |step: &str, t: &str| -> Cost {
             match costs.get(&crate::coord::cost_key(step, t)) {
-                Some(c) => Cost { secs: c.secs as f64 * pace(c.worker.as_ref()), known: true, peak_mb: need_mb(step, t) },
+                Some(c) => {
+                    Cost { secs: c.secs as f64 * pace(c.worker.as_ref()), known: true, peak_mb: need_mb(step, t) }
+                }
                 None => Cost { secs: per(step), known: false, peak_mb: need_mb(step, t) },
             }
         };
         // The lead's own steps: what a target took here lately (measured), else a first guess.
         let mine = |step: &str, n: usize| -> Cost {
-            let (each, known) = self.mem.step_secs.get(&secs_key(step)).map_or((first_secs(step), false), |&t| (t, true));
+            let (each, known) =
+                self.mem.step_secs.get(&secs_key(step)).map_or((first_secs(step), false), |&t| (t, true));
             Cost { secs: each * n.max(1) as f64, known, peak_mb: 0 }
         };
         let step_of = |id: &str| id.split(' ').next().unwrap_or("").to_string();
         // (Each job before the regions' is a step of its own; one running now is its slot's
         // running item below, its time left its slot's.)
-        let before: Vec<forecast::Job> = before.iter().map(|j| (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))).collect();
+        let before: Vec<forecast::Job> = before
+            .iter()
+            .map(|j| {
+                (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))
+            })
+            .collect();
         // A map update: as the last ones took (beginning to catalog), else the chain's steps'
         // times; the last map update, the roads' chain as it stands now, if more (none when it's done),
         // less what the map update under way still does (the roads' chain counts its work too, which
         // goes out with it).
         let [roads, rail, landmarks, buildings, depth] = chains;
-        let chain_s = |works: &[build::Work]| -> f64 { works.iter().map(|w| if steps::SHARED.contains(&w.step.as_str()) { w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum() } else { mine(&w.step, w.targets.len()).secs }).sum() };
+        let chain_s = |works: &[build::Work]| -> f64 {
+            works
+                .iter()
+                .map(|w| {
+                    if steps::SHARED.contains(&w.step.as_str()) {
+                        w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum()
+                    } else {
+                        mine(&w.step, w.targets.len()).secs
+                    }
+                })
+                .sum()
+        };
         self.update_measured.set(forecast::update_secs(&events));
-        let update_s = forecast::update_secs(&events).unwrap_or_else(|| ["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"].iter().map(|s| mine(s, 1).secs).sum::<f64>() + mine("pack", 8).secs + mine("lo", 2).secs);
+        let update_s = forecast::update_secs(&events).unwrap_or_else(|| {
+            ["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"]
+                .iter()
+                .map(|s| mine(s, 1).secs)
+                .sum::<f64>()
+                + mine("pack", 8).secs
+                + mine("lo", 2).secs
+        });
         let ahead = under_way.as_ref().map_or(0.0, |u| chain_s(&u.2));
         let last_update_s = if roads.is_empty() { 0.0 } else { update_s.max(chain_s(&roads) - ahead) };
         // The trains' and the landmarks' chains from the start (their steps once what they read is
@@ -5043,9 +6204,17 @@ impl Agent {
             let jobs: Vec<forecast::Job> = if steps::SHARED.contains(&w.step.as_str()) {
                 w.targets.iter().map(|t| (w.step.clone(), t.0.clone(), cost(&w.step, &t.0))).collect()
             } else {
-                vec![(w.step.clone(), w.targets.first().map(|t| t.0.clone()).unwrap_or_default(), mine(&w.step, w.targets.len()))]
+                vec![(
+                    w.step.clone(),
+                    w.targets.first().map(|t| t.0.clone()).unwrap_or_default(),
+                    mine(&w.step, w.targets.len()),
+                )]
             };
-            if w.step == "overlays" { after.extend(jobs) } else { chain_jobs.extend(jobs) }
+            if w.step == "overlays" {
+                after.extend(jobs)
+            } else {
+                chain_jobs.extend(jobs)
+            }
         }
         if !rail.is_empty() || !landmarks.is_empty() || !buildings.is_empty() || !depth.is_empty() {
             after.push(("catalog".into(), "after the chains".into(), mine("catalog", 1)));
@@ -5060,7 +6229,11 @@ impl Agent {
                         let (mut todo, mut did) = (0.0, 0.0);
                         for (t, _) in &w.targets {
                             let c = cost(&w.step, t).secs;
-                            if done.contains(t) { did += c } else { todo += c }
+                            if done.contains(t) {
+                                did += c
+                            } else {
+                                todo += c
+                            }
                         }
                         todo - (r.elapsed().as_secs_f64() - did).max(0.0)
                     }
@@ -5073,23 +6246,61 @@ impl Agent {
         };
         // (A worker that takes tails around: each of this Mac's units the moment its job gives it to
         // take its tail, crate::offload.)
-        let unit_extra_s = if self.coord.as_ref().is_some_and(|c| c.tail_takers()) { crate::offload::LEASE_WAIT.as_secs_f64() } else { 0.0 };
-        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, equal: false, mem_mb: u64::MAX, busy_s: busy(0, 1.0), unit_extra_s }];
+        let unit_extra_s = if self.coord.as_ref().is_some_and(|c| c.tail_takers()) {
+            crate::offload::LEASE_WAIT.as_secs_f64()
+        } else {
+            0.0
+        };
+        let mut machines = vec![Machine {
+            name: self.host.clone(),
+            speed: 1.0,
+            measured: true,
+            helper: false,
+            second: false,
+            equal: false,
+            mem_mb: u64::MAX,
+            busy_s: busy(0, 1.0),
+            unit_extra_s,
+        }];
         // Its second job: what fits beside the first (a quarter of its memory, say); while the Mac's
         // in use, as it is now, its network work alone.
         if self.second_allowed() {
             let (speed, measured) = speeds.get(&second).copied().unwrap_or((0.8, false));
             let mem_mb = (self.mac.resources(&self.o.home, None, None, None).mem_gb * 256.0) as u64;
-            machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, equal: false, mem_mb, busy_s: busy(1, speed), unit_extra_s });
+            machines.push(Machine {
+                name: second.clone(),
+                speed,
+                measured,
+                helper: false,
+                second: true,
+                equal: false,
+                mem_mb,
+                busy_s: busy(1, speed),
+                unit_extra_s,
+            });
         }
         for h in &helpers {
             let (speed, measured) = speeds.get(&h.host).copied().unwrap_or((0.5, false));
             // (Its lease's targets at its pace, less the time since it took them, if longer than its
             // part's.)
-            let lease_left = leased.iter().filter(|l| l.0 == h.host).map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64).fold(0.0, f64::max);
+            let lease_left = leased
+                .iter()
+                .filter(|l| l.0 == h.host)
+                .map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64)
+                .fold(0.0, f64::max);
             let eta = h.job.as_ref().map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
             let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
-            machines.push(Machine { name: h.host.clone(), speed, measured, helper: true, second: false, equal: false, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s, unit_extra_s: 0.0 });
+            machines.push(Machine {
+                name: h.host.clone(),
+                speed,
+                measured,
+                helper: true,
+                second: false,
+                equal: false,
+                mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144),
+                busy_s,
+                unit_extra_s: 0.0,
+            });
         }
         // What's being built now, and by which.
         let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -5111,10 +6322,33 @@ impl Agent {
         // (The map update under way: its chain left as its steps take, a minute at least.)
         let under_way = under_way.map(|(ids, last, left)| (ids, last, chain_s(&left).max(60.0)));
         // (The pieces' mids made in idle time, last.)
-        let idle: Vec<forecast::Job> = backfill.iter().flat_map(|w| w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone(), cost(&w.step, t)))).collect();
+        let idle: Vec<forecast::Job> = backfill
+            .iter()
+            .flat_map(|w| w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone(), cost(&w.step, t))))
+            .collect();
         // (A region's map update an hour after the last began, or a map update per region's gap.)
-        let gap_s = if self.publishing.get().per_region { publish::update_gap(self.update_measured.get()) } else { build::PUBLISH_EVERY_S } as f64;
-        let inp = forecast::Input { now: now_s(), before, regions, cost: &cost, update_s, last_update_s, blind, chains: chain_jobs, after, idle, since_last, gap_s, under_way, machines, running };
+        let gap_s = if self.publishing.get().per_region {
+            publish::update_gap(self.update_measured.get())
+        } else {
+            build::PUBLISH_EVERY_S
+        } as f64;
+        let inp = forecast::Input {
+            now: now_s(),
+            before,
+            regions,
+            cost: &cost,
+            update_s,
+            last_update_s,
+            blind,
+            chains: chain_jobs,
+            after,
+            idle,
+            since_last,
+            gap_s,
+            under_way,
+            machines,
+            running,
+        };
         let mut f = forecast::forecast(&inp);
         // (A slot's job waiting on a worker holding its unit's tail: said beside its machine.)
         f.waiting = (0..SLOTS).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();
@@ -5124,14 +6358,35 @@ impl Agent {
         // its speed measured against this Mac (placement::measured_speeds; one not measured, this
         // Mac's), busy with its leases' targets left.
         if let (Some(c), true) = (&self.coord, self.pool.is_some()) {
-            let workers: Vec<forecast::PoolWorker> = c.workers().into_iter().map(|(n, w)| (n, w.kind == "web", w.mem_mb)).collect();
+            let workers: Vec<forecast::PoolWorker> =
+                c.workers().into_iter().map(|(n, w)| (n, w.kind == "web", w.mem_mb)).collect();
             let names: Vec<String> = workers.iter().map(|w| w.0.clone()).filter(|n| *n != self.host).collect();
             let measured = placement::measured_speeds(&events, &self.host, &names);
-            let lead = Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, equal: false, mem_mb: u64::MAX, busy_s: busy(0, 1.0), unit_extra_s };
+            let lead = Machine {
+                name: self.host.clone(),
+                speed: 1.0,
+                measured: true,
+                helper: false,
+                second: false,
+                equal: false,
+                mem_mb: u64::MAX,
+                busy_s: busy(0, 1.0),
+                unit_extra_s,
+            };
             let second = self.second_allowed().then(|| {
                 let sp = measured.get(&second).copied().unwrap_or(1.0);
                 let mem_mb = (self.mac.resources(&self.o.home, None, None, None).mem_gb * 256.0) as u64;
-                Machine { name: second.clone(), speed: sp, measured: measured.contains_key(&second), helper: false, second: false, equal: false, mem_mb, busy_s: busy(1, sp), unit_extra_s: 0.0 }
+                Machine {
+                    name: second.clone(),
+                    speed: sp,
+                    measured: measured.contains_key(&second),
+                    helper: false,
+                    second: false,
+                    equal: false,
+                    mem_mb,
+                    busy_s: busy(1, sp),
+                    unit_extra_s: 0.0,
+                }
             });
             let (lanes, mut running) = forecast::pool_lanes(lead, second, &workers, &measured, &leased, &cost);
             for k in 0..SLOTS {
@@ -5159,44 +6414,75 @@ impl Agent {
         let have = self.latest_pass(root);
         // The planet: a newer one's under way (or waiting), else done.
         let newer = matches!(crate::osmpass::newer_planet(root, have.as_deref()), Ok(Some(_)));
-        items.push(build::Item { step: "osm-pass".into(), left: Some((newer || have.is_none()) as usize), ..Default::default() });
+        items.push(build::Item {
+            step: "osm-pass".into(),
+            left: Some((newer || have.is_none()) as usize),
+            ..Default::default()
+        });
         let Some(date) = have else {
             // Nothing to size the rest by until a pass is complete: its steps, to come.
             items.extend(WORLDWIDE_STEPS.iter().map(|s| build::Item { step: s.to_string(), ..Default::default() }));
             items.extend(build::checklist_to_come());
             return build::fold(&items, &next, &notes);
         };
-        let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
         let keys = build::Keys::load(root);
         // Countries the pass couldn't assemble, kept as the previous pass's outlines: said on the
         // pass's line until a pass has them whole (crate::outlines::assemble).
         if let Some(c) = manifest.get(&format!("sources/osm/{date}/outlines")) {
             if let Ok(stale) = crate::outlines::Outlines::stale_in(&root.join(c)) {
                 if !stale.is_empty() {
-                    notes.insert("pass", format!("Outlines kept from an earlier pass (broken in this planet's OpenStreetMap): {}", stale.iter().map(|(id, from)| format!("relation {id} (the {from} pass's)")).collect::<Vec<_>>().join(", ")));
+                    notes.insert(
+                        "pass",
+                        format!(
+                            "Outlines kept from an earlier pass (broken in this planet's OpenStreetMap): {}",
+                            stale
+                                .iter()
+                                .map(|(id, from)| format!("relation {id} (the {from} pass's)"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    );
                 }
             }
         }
         // The pass's worldwide steps, each one run left or none.
         let left = [
             !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(&date, st.0))),
-            build::outlines_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("sources/osm/{date}/outlines")),
-            build::trailends_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&crate::osmpass::set_name(&date, "hikes")),
+            build::outlines_work(&date, &manifest, &keys).is_some()
+                || !manifest.contains_key(&format!("sources/osm/{date}/outlines")),
+            build::trailends_work(&date, &manifest, &keys).is_some()
+                || !manifest.contains_key(&crate::osmpass::set_name(&date, "hikes")),
             build::reach_work(&date, &manifest, &keys).is_some(),
             !manifest.contains_key(&crate::terrain_z8::logical()),
-            crate::buildtiles::release_of(root, &manifest).map_or(true, |r| !manifest.contains_key(&crate::buildtiles::index_logical(&r))),
-            build::summits_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
+            crate::buildtiles::release_of(root, &manifest)
+                .map_or(true, |r| !manifest.contains_key(&crate::buildtiles::index_logical(&r))),
+            build::summits_work(&date, &manifest, &keys).is_some()
+                || !manifest.contains_key(&format!("work/summits/{date}")),
             build::labels_work(&date, &manifest, &keys).is_some(),
             // (A source folder that can't be read: held, left, as the jobs see it.)
-            crate::lakefill::run::planned_source(root, &manifest).map_or(true, |s| build::lakefill_work(&date, &manifest, &keys, s.as_deref()).is_some()),
+            crate::lakefill::run::planned_source(root, &manifest)
+                .map_or(true, |s| build::lakefill_work(&date, &manifest, &keys, s.as_deref()).is_some()),
             build::water_work(&date, &manifest, &keys).is_some(),
         ];
-        items.extend(WORLDWIDE_STEPS.iter().zip(left).map(|(s, l)| build::Item { step: s.to_string(), left: Some(l as usize), ..Default::default() }));
-        next.insert("pass", WORLDWIDE_STEPS.iter().zip(left).filter(|(_, l)| *l).map(|(s, _)| steps::title(s).to_string()).collect());
+        items.extend(WORLDWIDE_STEPS.iter().zip(left).map(|(s, l)| build::Item {
+            step: s.to_string(),
+            left: Some(l as usize),
+            ..Default::default()
+        }));
+        next.insert(
+            "pass",
+            WORLDWIDE_STEPS.iter().zip(left).filter(|(_, l)| *l).map(|(s, _)| steps::title(s).to_string()).collect(),
+        );
         if regions.is_empty() {
             return build::fold(&items, &next, &notes);
         }
-        let Ok(covs) = self.coverage(root, &manifest, &date, regions, false) else { return build::fold(&items, &next, &notes) };
+        let Ok(covs) = self.coverage(root, &manifest, &date, regions, false) else {
+            return build::fold(&items, &next, &notes);
+        };
         let cov = &covs.all;
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         let tiles = self.terrain_tiles(root, &manifest);
@@ -5205,7 +6491,17 @@ impl Agent {
         let mut keys = keys;
         let times = rekey::FileTimes::new(root);
         rekey::as_read(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
-        let (more, more_next) = build::checklist(cov, &date, &manifest, &keys, &inputs, root.join("inputs/hold-catalog").exists(), reach.as_deref(), &self.ready.borrow(), &tiles);
+        let (more, more_next) = build::checklist(
+            cov,
+            &date,
+            &manifest,
+            &keys,
+            &inputs,
+            root.join("inputs/hold-catalog").exists(),
+            reach.as_deref(),
+            &self.ready.borrow(),
+            &tiles,
+        );
         items.extend(more);
         next.extend(more_next);
         build::fold(&items, &next, &notes)
@@ -5214,7 +6510,10 @@ impl Agent {
     /// Per region, how many of its areas are built (none before the first pass makes the outlines).
     fn region_progress(&self, root: &Path, regions: &[recipes::Recipe]) -> BTreeMap<String, build::RegionState> {
         let Some(date) = self.latest_pass(root) else { return BTreeMap::new() };
-        let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
         let Ok(covs) = self.coverage(root, &manifest, &date, regions, false) else { return BTreeMap::new() };
         let (cov, each) = (&covs.all, &covs.each);
         let mut keys = build::Keys::load(root);
@@ -5235,7 +6534,10 @@ impl Agent {
         if recipes.is_empty() || !unread.is_empty() {
             return keys;
         }
-        let Ok(manifest) = crate::out::read_record::<BTreeMap<String, String>>(&root.join("state/build/manifest.json")) else { return keys };
+        let Ok(manifest) = crate::out::read_record::<BTreeMap<String, String>>(&root.join("state/build/manifest.json"))
+        else {
+            return keys;
+        };
         let Ok(covs) = self.coverage(root, &manifest, &date, &recipes, false) else { return keys };
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         let tiles = self.terrain_tiles(root, &manifest);
@@ -5246,11 +6548,19 @@ impl Agent {
 
     /// The terrain packs' indexes `manifest` names, those not yet held read (from `pack-idx/`, else
     /// the NAS: half a minute for the whole build's, once).
-    fn terrain_tiles(&self, root: &Path, manifest: &BTreeMap<String, String>) -> std::cell::Ref<'_, tiles::TerrainTiles> {
+    fn terrain_tiles(
+        &self,
+        root: &Path,
+        manifest: &BTreeMap<String, String>,
+    ) -> std::cell::Ref<'_, tiles::TerrainTiles> {
         let t = std::time::Instant::now();
         let n = self.tiles.borrow_mut().load(root, manifest);
         if n > 0 {
-            eprintln!("agent: read the indexes of {n} terrain pack{} in {:.1} s", if n == 1 { "" } else { "s" }, t.elapsed().as_secs_f64());
+            eprintln!(
+                "agent: read the indexes of {n} terrain pack{} in {:.1} s",
+                if n == 1 { "" } else { "s" },
+                t.elapsed().as_secs_f64()
+            );
         }
         self.tiles.borrow()
     }
@@ -5258,7 +6568,13 @@ impl Agent {
     /// The pass's reaches (crate::reach), once they're made for the current version (Ok(None)
     /// until then: no unit is planned, and the reach job comes first among the pass's worldwide
     /// jobs), or why they can't be read.
-    fn current_reach(&self, root: &Path, manifest: &BTreeMap<String, String>, keys: &build::Keys, date: &str) -> Result<Option<std::rc::Rc<crate::reach::Reaches>>, crate::reach::LoadError> {
+    fn current_reach(
+        &self,
+        root: &Path,
+        manifest: &BTreeMap<String, String>,
+        keys: &build::Keys,
+        date: &str,
+    ) -> Result<Option<std::rc::Rc<crate::reach::Reaches>>, crate::reach::LoadError> {
         if build::reach_work(date, manifest, keys).is_some() {
             return Ok(None);
         }
@@ -5283,15 +6599,27 @@ impl Agent {
     /// take a quarter of an hour once the US's states were in, 2026-10-05.) `edits`: the recipes
     /// are all of them (every one read), and a change to them is the owner's edit (the plan's; not
     /// the heartbeat's, whose read may have failed).
-    fn coverage(&self, root: &Path, manifest: &BTreeMap<String, String>, date: &str, recipes: &[recipes::Recipe], edits: bool) -> Result<std::rc::Rc<Coverages>, String> {
+    fn coverage(
+        &self,
+        root: &Path,
+        manifest: &BTreeMap<String, String>,
+        date: &str,
+        recipes: &[recipes::Recipe],
+        edits: bool,
+    ) -> Result<std::rc::Rc<Coverages>, String> {
         let _ = (date, recipes);
         // (The accepted version: keyed by its index's name, an edit being a new version.)
-        let a = crate::inputs::regions::read::source(root, manifest).map_err(|e| format!("the regions' accepted version: {e:#}"))?;
+        let a = crate::inputs::regions::read::source(root, manifest)
+            .map_err(|e| format!("the regions' accepted version: {e:#}"))?;
         let (key, seen) = (Some(format!("accepted {}", a.version)), Some(a.version.clone()));
         if let Some(e) = seen.filter(|_| edits) {
             if self.edits.borrow().as_ref().is_some_and(|last| *last != e) {
                 let now = std::time::SystemTime::now();
-                let first = self.edited_at.get().filter(|(_, last)| last.elapsed().is_ok_and(|a| a < EDIT_HOLD)).map_or(now, |(first, _)| first);
+                let first = self
+                    .edited_at
+                    .get()
+                    .filter(|(_, last)| last.elapsed().is_ok_and(|a| a < EDIT_HOLD))
+                    .map_or(now, |(first, _)| first);
                 self.edited_at.set(Some((first, now)));
             }
             *self.edits.borrow_mut() = Some(e);
@@ -5322,7 +6650,16 @@ impl Agent {
             let Ok(t) = std::fs::metadata(&path).and_then(|m| m.modified()) else { continue };
             if cached.as_ref().is_none_or(|c| c.0 != (dir.to_path_buf(), n)) {
                 let Ok(cat) = store::catalog::read_n(dir, n) else { continue };
-                let regions: BTreeMap<String, Vec<String>> = cat.coverage.get("regions").and_then(serde_json::Value::as_array).into_iter().flatten().filter_map(|r| Some((r["id"].as_str()?.to_string(), serde_json::from_value(r["outline"].clone()).ok()?))).collect();
+                let regions: BTreeMap<String, Vec<String>> = cat
+                    .coverage
+                    .get("regions")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|r| {
+                        Some((r["id"].as_str()?.to_string(), serde_json::from_value(r["outline"].clone()).ok()?))
+                    })
+                    .collect();
                 *cached = Some(((dir.to_path_buf(), n), regions));
             }
             at = Some(t);
@@ -5341,7 +6678,10 @@ impl Agent {
             return (BTreeMap::new(), since_publish);
         }
         let had = &cached.as_ref().unwrap().1;
-        let on_map = had.iter().map(|(id, outline)| (id.clone(), recipes.iter().any(|r| &r.id == id && &r.outline == outline))).collect();
+        let on_map = had
+            .iter()
+            .map(|(id, outline)| (id.clone(), recipes.iter().any(|r| &r.id == id && &r.outline == outline)))
+            .collect();
         (on_map, since_publish)
     }
 
@@ -5380,7 +6720,11 @@ impl Agent {
                             self.pause_local = false;
                         }
                         Some(Err(e)) => {
-                            waiting.push(Waiting { step: None, what: "Pausing".into(), why: format!("this Mac's ask isn't with the lead yet ({e:#}); it holds here meanwhile") });
+                            waiting.push(Waiting {
+                                step: None,
+                                what: "Pausing".into(),
+                                why: format!("this Mac's ask isn't with the lead yet ({e:#}); it holds here meanwhile"),
+                            });
                             self.pause_local = true;
                         }
                         None => self.pause_local = true,
@@ -5406,8 +6750,12 @@ impl Agent {
             if let (Some(r), false) = (root, self.mirrored.as_ref() == Some(&p)) {
                 let path = r.join("state/build/pause.json");
                 let kept = match &p {
-                    Some(x) => serde_json::to_vec(x).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&path, &b)),
-                    None => std::fs::remove_file(&path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).map_err(anyhow::Error::from),
+                    Some(x) => {
+                        serde_json::to_vec(x).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&path, &b))
+                    }
+                    None => std::fs::remove_file(&path)
+                        .or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
+                        .map_err(anyhow::Error::from),
                 };
                 match kept {
                     Ok(()) => self.mirrored = Some(p),
@@ -5427,7 +6775,9 @@ impl Agent {
         let path = self.o.home.join("pause.json");
         let kept = match &p {
             Some(x) => serde_json::to_vec(x).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&path, &b)),
-            None => std::fs::remove_file(&path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).map_err(anyhow::Error::from),
+            None => std::fs::remove_file(&path)
+                .or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) })
+                .map_err(anyhow::Error::from),
         };
         if let Err(e) = kept {
             eprintln!("agent: keeping the pause: {e:#}");
@@ -5465,7 +6815,11 @@ impl Agent {
     /// targets.
     fn stopped(&mut self, k: usize, why: &str) {
         let done = self.finished_targets(k, false);
-        let step = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref().map(|w| w.step.clone())).unwrap_or_default();
+        let step = self.slots[k]
+            .running
+            .as_ref()
+            .and_then(|r| r.spec.record.as_ref().map(|w| w.step.clone()))
+            .unwrap_or_default();
         let secs = self.slots[k].running.as_ref().map_or(0, |r| r.elapsed().as_secs());
         if let Some(id) = self.slots[k].running.as_ref().map(|r| r.spec.id.clone()) {
             self.worked(&id);
@@ -5576,7 +6930,13 @@ impl Agent {
         let now = Instant::now();
         // A member's broker, for its own jobs' tasks (tried again five minutes after it failed; not
         // while a tick holds the run: the next loop).
-        if self.coord.is_none() && self.broker.is_none() && self.o.helper && !self.o.dry_run && self._lock.is_some() && brokers::stale(self.broker_failed, now, brokers::HTTPS_EVERY) {
+        if self.coord.is_none()
+            && self.broker.is_none()
+            && self.o.helper
+            && !self.o.dry_run
+            && self._lock.is_some()
+            && brokers::stale(self.broker_failed, now, brokers::HTTPS_EVERY)
+        {
             let tried = match self.try_pooled() {
                 Some(Some(run)) => Some(make_coordinator_on(&self.o, Some(&run), &self.app, &self.host, broker_port())),
                 _ => None,
@@ -5585,7 +6945,10 @@ impl Agent {
                 match made {
                     Some(b) => {
                         b.become_broker();
-                        eprintln!("agent: this Mac's broker started at {}: its jobs' tasks are offered there", b.contact.urls.join(", "));
+                        eprintln!(
+                            "agent: this Mac's broker started at {}: its jobs' tasks are offered there",
+                            b.contact.urls.join(", ")
+                        );
                         self.broker = Some(std::sync::Arc::new(b));
                     }
                     None => self.broker_failed = Some(now),
@@ -5595,7 +6958,12 @@ impl Agent {
         let Some(c) = self.coord.as_ref().or(self.broker.as_ref()) else { return };
         if let Some(b) = &self.broker {
             for l in b.expire() {
-                eprintln!("agent: {}'s lease of {} lapsed at this Mac's broker (no word for {} min); offered again", l.worker, l.what(), crate::coord::TTL.as_secs() / 60);
+                eprintln!(
+                    "agent: {}'s lease of {} lapsed at this Mac's broker (no word for {} min); offered again",
+                    l.worker,
+                    l.what(),
+                    crate::coord::TTL.as_secs() / 60
+                );
             }
             // (Its pages paused as the build is: the lead's pause, as this member knows it.)
             if b.pause() != self.pause {
@@ -5633,7 +7001,13 @@ impl Agent {
         if self.held_progress.is_none() {
             let me = self.member_id.clone()?;
             match resume::read(root, &me) {
-                Ok(p) => self.held_progress = Some(p.unwrap_or(resume::Progress { member: me, worker: self.host.clone(), jobs: BTreeMap::new() })),
+                Ok(p) => {
+                    self.held_progress = Some(p.unwrap_or(resume::Progress {
+                        member: me,
+                        worker: self.host.clone(),
+                        jobs: BTreeMap::new(),
+                    }))
+                }
                 Err(e) => {
                     eprintln!("agent: this Mac's progress file can't be read now ({e:#})");
                     return None;
@@ -5662,7 +7036,9 @@ impl Agent {
         }
         match resume::write(root, &p) {
             Ok(()) => self.held_progress = Some(p),
-            Err(e) => eprintln!("agent: this Mac's progress of {job} not noted on the NAS ({e:#}): the lead may run it elsewhere"),
+            Err(e) => eprintln!(
+                "agent: this Mac's progress of {job} not noted on the NAS ({e:#}): the lead may run it elsewhere"
+            ),
         }
     }
 
@@ -5707,7 +7083,8 @@ impl Agent {
             return;
         }
         let now = self.resume_now();
-        let running: BTreeSet<String> = self.slots.iter().filter_map(|s| s.running.as_ref()).map(|r| r.spec.id.clone()).collect();
+        let running: BTreeSet<String> =
+            self.slots.iter().filter_map(|s| s.running.as_ref()).map(|r| r.spec.id.clone()).collect();
         // (The records read only for a finished job's: the manifest is large.)
         let latest = p.jobs.values().any(|h| h.done).then(|| self.latest_pass(root)).flatten();
         for (job, h) in &p.jobs {
@@ -5718,10 +7095,17 @@ impl Agent {
                 }
                 continue;
             }
-            let complete = h.done && job.strip_prefix("osm-pass ").is_some_and(|d| latest.as_deref().is_some_and(|l| l >= d));
+            let complete =
+                h.done && job.strip_prefix("osm-pass ").is_some_and(|d| latest.as_deref().is_some_and(|l| l >= d));
             let released = resume::released(root, &p.member, job, h.began());
             if complete || !resume::live(h, now, released) {
-                let why = if complete { "its pass is in the records" } else if released { "the owner released it" } else { "a day since its job last ran here" };
+                let why = if complete {
+                    "its pass is in the records"
+                } else if released {
+                    "the owner released it"
+                } else {
+                    "a day since its job last ran here"
+                };
                 eprintln!("agent: {job}'s progress here no longer held for this Mac ({why})");
                 self.note_progress(root, job, None);
             }
@@ -5762,14 +7146,22 @@ impl Agent {
                 Ok(p) => files.extend(p),
                 Err(e) => {
                     offer(None);
-                    return Some(Waiting { step: Some("osm-pass".into()), what, why: format!("a member's progress can't be read now ({e:#})") });
+                    return Some(Waiting {
+                        step: Some("osm-pass".into()),
+                        what,
+                        why: format!("a member's progress can't be read now ({e:#})"),
+                    });
                 }
             }
         }
         // A member running it under a lease of this coordinator: not run here too, whatever its
         // file says now (released, its day out, or read stale meanwhile).
         if self.coord.as_ref().is_some_and(|c| c.held("osm-pass").contains(date)) {
-            return Some(Waiting { step: Some("osm-pass".into()), what, why: "running on a member under its lease (its progress is on that Mac)".into() });
+            return Some(Waiting {
+                step: Some("osm-pass".into()),
+                what,
+                why: "running on a member under its lease (its progress is on that Mac)".into(),
+            });
         }
         let now = self.resume_now();
         match resume::decide(&id, &me, &files, now, &|m, at| resume::released(root, m, &id, at)) {
@@ -5777,11 +7169,23 @@ impl Agent {
                 offer(None);
                 // (A member that noted it lately may be running it under a lease the restored
                 // state lacks: not run here too until its note is old.)
-                resume::running_elsewhere(&id, &me, &files, now).map(|p| Waiting { step: Some("osm-pass".into()), what, why: format!("may be running on {} ({}): its progress noted {} min ago", p.worker, p.member, now.saturating_sub(p.jobs[&id].at) / 60) })
+                resume::running_elsewhere(&id, &me, &files, now).map(|p| Waiting {
+                    step: Some("osm-pass".into()),
+                    what,
+                    why: format!(
+                        "may be running on {} ({}): its progress noted {} min ago",
+                        p.worker,
+                        p.member,
+                        now.saturating_sub(p.jobs[&id].at) / 60
+                    ),
+                })
             }
             resume::Decision::Offer { member, worker, until } => {
                 let key = planet.strip_prefix(root).unwrap_or(planet.as_path()).to_string_lossy().into_owned();
-                offer(Some((worker.clone(), crate::coord::Offer { step: "osm-pass".into(), targets: vec![(date.clone(), key, 0)], batch: 1 })));
+                offer(Some((
+                    worker.clone(),
+                    crate::coord::Offer { step: "osm-pass".into(), targets: vec![(date.clone(), key, 0)], batch: 1 },
+                )));
                 let h = until.saturating_sub(now).div_ceil(3600);
                 Some(Waiting { step: Some("osm-pass".into()), what, why: format!("its progress is on {worker}'s disk ({member}): offered to it alone for {h} h more (a member asleep or away holds it so), or until the owner releases it (scenic pool release {member} \"{id}\")") })
             }
@@ -5829,7 +7233,10 @@ impl Agent {
             if let Some(r) = pool::try_lock(shared) {
                 break r;
             }
-            anyhow::ensure!(since.elapsed() < Duration::from_secs(30), "the pool's step holds its state (its share slow to answer)");
+            anyhow::ensure!(
+                since.elapsed() < Duration::from_secs(30),
+                "the pool's step holds its state (its share slow to answer)"
+            );
             std::thread::sleep(Duration::from_millis(100));
         };
         let mine = run.side.driver().mine();
@@ -5846,20 +7253,33 @@ impl Agent {
         self.tend_proxy(r);
         if let Some(on) = resume::on(r) {
             if on != self.resume {
-                eprintln!("agent: resuming on its Mac, and a pass complete by the records, is {}", if on { "on" } else { "off" });
+                eprintln!(
+                    "agent: resuming on its Mac, and a pass complete by the records, is {}",
+                    if on { "on" } else { "off" }
+                );
             }
             self.resume = on;
         }
         self.tend_progress(r);
         if let Some(on) = placement::on(r) {
             if on != self.placement {
-                eprintln!("agent: placement by how crucial a job is, and work offered ahead, is {}", if on { "on" } else { "off" });
+                eprintln!(
+                    "agent: placement by how crucial a job is, and work offered ahead, is {}",
+                    if on { "on" } else { "off" }
+                );
             }
             self.placement = on;
         }
         if let Some(on) = brokers::on(r) {
             if on != self.brokers {
-                eprintln!("agent: tasks brokered by every member are {}", if on { "on (this Mac's jobs' tasks its own broker's; pages from the members' addresses answered)" } else { "off" });
+                eprintln!(
+                    "agent: tasks brokered by every member are {}",
+                    if on {
+                        "on (this Mac's jobs' tasks its own broker's; pages from the members' addresses answered)"
+                    } else {
+                        "off"
+                    }
+                );
             }
             self.brokers = on;
         }
@@ -5988,7 +7408,9 @@ impl Agent {
                 if let (Some(r), true, false) = (root, self.published.is_some(), busy) {
                     let (c, r, gens) = (co.clone(), r.to_path_buf(), self.publish_gen.clone());
                     let at = gens.load(std::sync::atomic::Ordering::SeqCst);
-                    self.unpublishing = Some(std::thread::spawn(move || c.unpublish_unless(&r, &|| gens.load(std::sync::atomic::Ordering::SeqCst) != at)));
+                    self.unpublishing = Some(std::thread::spawn(move || {
+                        c.unpublish_unless(&r, &|| gens.load(std::sync::atomic::Ordering::SeqCst) != at)
+                    }));
                     self.published = None;
                 }
             }
@@ -6039,7 +7461,8 @@ impl Agent {
                 run.settled = serde_json::to_value(co.pool_state()).ok();
             }
         }
-        let able = c.home && (c.ac || c.battery.is_none_or(|b| b >= cond::BATTERY_MIN)) && self.disk_free() >= room::RESERVE;
+        let able =
+            c.home && (c.ac || c.battery.is_none_or(|b| b >= cond::BATTERY_MIN)) && self.disk_free() >= room::RESERVE;
         #[cfg(test)]
         let able = TEST_ABLE.with(|t| t.get()).unwrap_or(able);
         let home = self.o.home.clone();
@@ -6055,7 +7478,19 @@ impl Agent {
         if let Some(co) = &self.coord {
             co.set_member(&run.side.member().id);
         }
-        run.cx = pool::Cx { root: Some(r.to_path_buf()), home: home.clone(), coord: self.coord.clone(), able, duty, starting: false, lead_answered, broker: self.brokering(), broker_https: self.broker_https.as_ref().and_then(|h| h.1.clone()), lead_urls, lead_failed };
+        run.cx = pool::Cx {
+            root: Some(r.to_path_buf()),
+            home: home.clone(),
+            coord: self.coord.clone(),
+            able,
+            duty,
+            starting: false,
+            lead_answered,
+            broker: self.brokering(),
+            broker_https: self.broker_https.as_ref().and_then(|h| h.1.clone()),
+            lead_urls,
+            lead_failed,
+        };
         // (The jobs an earlier process left, once `run` stopped any still running.)
         run.take_left(&home);
         run.drain(lead.then(|| home.join("coord/journal")).as_deref(), &home.join("outbox"));
@@ -6075,10 +7510,14 @@ impl Agent {
         if change {
             self.change_part(r, &out);
         }
-        let keep: Vec<u64> = self.slots.iter().filter_map(|s| match &s.lease {
-            Some(Held::Pooled { id, .. } | Held::Own(id)) => Some(*id),
-            _ => None,
-        }).collect();
+        let keep: Vec<u64> = self
+            .slots
+            .iter()
+            .filter_map(|s| match &s.lease {
+                Some(Held::Pooled { id, .. } | Held::Own(id)) => Some(*id),
+                _ => None,
+            })
+            .collect();
         let mut run = self.pooled()?;
         // (With the terms a tick took up, whose coordinator's part is this step's.)
         let mut took = std::mem::take(&mut run.pending_took_up);
@@ -6088,8 +7527,14 @@ impl Agent {
         run.cx.coord = self.coord.clone();
         run.cx.broker = self.brokering();
         for e in &out.events {
-            if let crate::pool::driver::Event::Failed { what, why } | crate::pool::driver::Event::Waits { what, why } = e {
-                waiting.push(Waiting { step: None, what: "The pool".into(), why: format!("couldn't {what} yet: {why}") });
+            if let crate::pool::driver::Event::Failed { what, why } | crate::pool::driver::Event::Waits { what, why } =
+                e
+            {
+                waiting.push(Waiting {
+                    step: None,
+                    what: "The pool".into(),
+                    why: format!("couldn't {what} yet: {why}"),
+                });
             }
         }
         let g = run.gates.clone();
@@ -6098,12 +7543,19 @@ impl Agent {
         }
         drop(run);
         if lead && g.leads.is_some() {
-            let saved = !out.events.iter().any(|e| matches!(e, crate::pool::driver::Event::Failed { what: "save the records", .. }));
+            let saved = !out
+                .events
+                .iter()
+                .any(|e| matches!(e, crate::pool::driver::Event::Failed { what: "save the records", .. }));
             self.pool_lead_files(r, saved);
             // (A catalog and GC read today's files: caught up only once they hold these records.)
             let mut run = self.pooled()?;
             if run.behind() {
-                waiting.push(Waiting { step: None, what: "The pool".into(), why: "today's records files aren't written from the lead's yet".into() });
+                waiting.push(Waiting {
+                    step: None,
+                    what: "The pool".into(),
+                    why: "today's records files aren't written from the lead's yet".into(),
+                });
             }
             return Some(run.gates.clone());
         }
@@ -6120,7 +7572,9 @@ impl Agent {
         let Some(role) = self.pooled().map(|r| r.role) else { return };
         match (role, out.leads) {
             (pool::Role::Member, Some(term)) => {
-                let made = self.broker.take().or_else(|| make_coordinator(&self.o, self.pooled().as_deref(), &self.app, &self.host).map(std::sync::Arc::new));
+                let made = self.broker.take().or_else(|| {
+                    make_coordinator(&self.o, self.pooled().as_deref(), &self.app, &self.host).map(std::sync::Arc::new)
+                });
                 match made {
                     Some(c) => {
                         eprintln!("agent: this Mac leads term {term}: its coordinator started, its jobs going on");
@@ -6135,7 +7589,9 @@ impl Agent {
                     }
                     None => {
                         if let Some(mut run) = self.pooled() {
-                            run.restart.get_or_insert_with(|| format!("it leads term {term}, and its coordinator didn't start in this process"));
+                            run.restart.get_or_insert_with(|| {
+                                format!("it leads term {term}, and its coordinator didn't start in this process")
+                            });
                         }
                     }
                 }
@@ -6199,7 +7655,14 @@ impl Agent {
         if self.lead_awake.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None))) {
             return;
         }
-        self.lead_awake = store::spawn::spawn(store::spawn::command("/usr/bin/caffeinate").args(["-i", "-w", &std::process::id().to_string()]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())).ok();
+        self.lead_awake = store::spawn::spawn(
+            store::spawn::command("/usr/bin/caffeinate")
+                .args(["-i", "-w", &std::process::id().to_string()])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()),
+        )
+        .ok();
     }
 
     fn lead_awake_off(&mut self) {
@@ -6220,10 +7683,23 @@ impl Agent {
             return;
         }
         {
-            let Some(mut run) = self.pooled().filter(|p| p.role == pool::Role::Lead && p.gates.leads.is_some()) else { return };
-            let Some(m) = run.controls.view.as_ref().and_then(|v| v.members.iter().find(|m| !m.me && m.app == newer && m.can_lead).cloned()) else { return };
+            let Some(mut run) = self.pooled().filter(|p| p.role == pool::Role::Lead && p.gates.leads.is_some()) else {
+                return;
+            };
+            let Some(m) = run
+                .controls
+                .view
+                .as_ref()
+                .and_then(|v| v.members.iter().find(|m| !m.me && m.app == newer && m.can_lead).cloned())
+            else {
+                return;
+            };
             eprintln!("agent: a newer app ({newer}) waits on this Mac's job; handing the lead to {}, on it", m.host);
-            run.controls.page.push(crate::control::LeadRequest { ask: crate::control::LeadAsk::Give { to: m.member.clone() }, by: format!("this Mac's update to {newer}, waiting on its job"), at: now_s() });
+            run.controls.page.push(crate::control::LeadRequest {
+                ask: crate::control::LeadAsk::Give { to: m.member.clone() },
+                by: format!("this Mac's update to {newer}, waiting on its job"),
+                at: now_s(),
+            });
         }
         self.update_handed = Some(newer);
     }
@@ -6242,15 +7718,24 @@ impl Agent {
                     Err(e) => eprintln!("agent: today's records from term {}'s: {e:#}", rec.term),
                 }
             }
-            let new: Vec<(String, crate::rawpack::Pack)> = rec.raw.iter().filter(|(_, p)| !run.named_raw.contains(&p.name)).cloned().collect();
+            let new: Vec<(String, crate::rawpack::Pack)> =
+                rec.raw.iter().filter(|(_, p)| !run.named_raw.contains(&p.name)).cloned().collect();
             if !new.is_empty() {
                 if let Ok(Some(lock)) = crate::out::BuildLock::try_take(root) {
                     match crate::rawpack::name_handed(&root.join("sources/aws-terrarium"), &new, &lock) {
                         Ok(n) => {
                             let again: BTreeSet<&str> = n.again.iter().map(|(_, p)| p.name.as_str()).collect();
-                            run.named_raw.extend(new.iter().filter(|(_, p)| !again.contains(p.name.as_str())).map(|(_, p)| p.name.clone()));
+                            run.named_raw.extend(
+                                new.iter()
+                                    .filter(|(_, p)| !again.contains(p.name.as_str()))
+                                    .map(|(_, p)| p.name.clone()),
+                            );
                             if n.new > 0 {
-                                eprintln!("agent: named {} raw tiles' archive{} in the raw store's index", n.new, if n.new == 1 { "" } else { "s" });
+                                eprintln!(
+                                    "agent: named {} raw tiles' archive{} in the raw store's index",
+                                    n.new,
+                                    if n.new == 1 { "" } else { "s" }
+                                );
                             }
                         }
                         Err(e) => eprintln!("agent: naming the raw tiles' archives: {e:#}"),
@@ -6289,7 +7774,10 @@ impl Agent {
         if self.app == "development" {
             return None;
         }
-        std::fs::read_link(apps.join("current")).ok().and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned())).filter(|cur| *cur != self.app)
+        std::fs::read_link(apps.join("current"))
+            .ok()
+            .and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .filter(|cur| *cur != self.app)
     }
 
     /// The gate's part of a loop: the listing thread started (on the lead or in a dry
@@ -6297,7 +7785,10 @@ impl Agent {
     /// acceptances, which this Mac writes itself (docs/inputs.md §4.5).
     fn tend_gate(&mut self, root: &Path) {
         if !self.o.helper && self.inputs.watch.as_ref().is_none_or(|(r, _)| r != root) {
-            self.inputs.watch = Some((root.to_path_buf(), crate::inputs::watch::Watch::start(root.to_path_buf(), crate::inputs::watch::EVERY)));
+            self.inputs.watch = Some((
+                root.to_path_buf(),
+                crate::inputs::watch::Watch::start(root.to_path_buf(), crate::inputs::watch::EVERY),
+            ));
         }
         // (Not a dry run's: the asks are the agent's that runs.)
         if self.o.dry_run {
@@ -6320,7 +7811,11 @@ impl Agent {
                     tell.push(serde_json::json!({ "unit": a.unit, "forget": true }));
                 } else {
                     self.inputs.forget.borrow_mut().insert(a.unit.clone());
-                    eprintln!("agent: {} asked to forget {}'s records", if a.by.is_empty() { "someone" } else { &a.by }, a.unit);
+                    eprintln!(
+                        "agent: {} asked to forget {}'s records",
+                        if a.by.is_empty() { "someone" } else { &a.by },
+                        a.unit
+                    );
                 }
                 continue;
             }
@@ -6331,13 +7826,23 @@ impl Agent {
                 if a.full {
                     self.inputs.full.borrow_mut().insert(a.unit.clone());
                 }
-                eprintln!("agent: {} asked to check {}{}", if a.by.is_empty() { "someone" } else { &a.by }, a.unit, if a.full { " in full" } else { "" });
+                eprintln!(
+                    "agent: {} asked to check {}{}",
+                    if a.by.is_empty() { "someone" } else { &a.by },
+                    a.unit,
+                    if a.full { " in full" } else { "" }
+                );
             }
             if a.all || !a.accept.is_empty() || !a.unaccept.is_empty() {
                 // The unit's held report as the last plan read it, else as the records name it now.
-                let shown = self.inputs.view.borrow().iter().find(|v| v.unit == a.unit).map(|v| crate::inputs::Report { findings: v.findings.iter().map(|s| s.finding.clone()).collect(), ..Default::default() });
+                let shown =
+                    self.inputs.view.borrow().iter().find(|v| v.unit == a.unit).map(|v| crate::inputs::Report {
+                        findings: v.findings.iter().map(|s| s.finding.clone()).collect(),
+                        ..Default::default()
+                    });
                 let held = shown.or_else(|| {
-                    let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).ok()?;
+                    let m: BTreeMap<String, String> =
+                        crate::out::read_record(&root.join("state/build/manifest.json")).ok()?;
                     crate::inputs::read_report(root, m.get(&crate::inputs::held_logical(&a.unit))?).ok()
                 });
                 match crate::inputs::apply_ask(root, &a, held.as_ref(), &member) {
@@ -6371,7 +7876,13 @@ impl Agent {
     /// The gate's checks to run (docs/inputs.md §4.3): each unit on the gate whose check's key
     /// (its listing, acceptances, accepted index) isn't the one last recorded, a full check daily
     /// or when asked; and the status's entries, from the records it plans with.
-    fn gate_work(&self, root: &Path, manifest: &BTreeMap<String, String>, keys: &build::Keys, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+    fn gate_work(
+        &self,
+        root: &Path,
+        manifest: &BTreeMap<String, String>,
+        keys: &build::Keys,
+        waiting: &mut Vec<Waiting>,
+    ) -> Vec<JobSpec> {
         let units = crate::inputs::units(root);
         let mut jobs = Vec::new();
         let mut checking: BTreeSet<String> = BTreeSet::new();
@@ -6386,21 +7897,32 @@ impl Agent {
             for unit in &units {
                 let Some(checks) = crate::inputs::checks(unit) else { continue };
                 if let Some(why) = watch.failed(unit) {
-                    waiting.push(Waiting { step: Some("inputs".into()), what: format!("Checking {unit}"), why: format!("its drop box can't be listed now: {why}") });
+                    waiting.push(Waiting {
+                        step: Some("inputs".into()),
+                        what: format!("Checking {unit}"),
+                        why: format!("its drop box can't be listed now: {why}"),
+                    });
                 }
                 let Some(l) = watch.get(unit) else { continue };
                 // (Nothing dropped yet and nothing ever taken in or held: nothing to check.)
                 let empty = l.listing.files.is_empty() && l.listing.strays.is_empty() && l.listing.misplaced.is_empty();
-                if empty && [crate::inputs::logical(unit), crate::inputs::held_logical(unit)].iter().all(|r| !manifest.contains_key(r)) {
+                if empty
+                    && [crate::inputs::logical(unit), crate::inputs::held_logical(unit)]
+                        .iter()
+                        .all(|r| !manifest.contains_key(r))
+                {
                     continue;
                 }
                 // (Daily by the records' last full check, whichever Mac made it: a new lead doesn't
                 // repeat one made less than a day ago.)
                 let full_at = manifest.get(&crate::inputs::listed_logical(unit)).and_then(|n| {
                     let mut seen = self.inputs.full_at.borrow_mut();
-                    *seen.entry(n.clone()).or_insert_with(|| crate::inputs::read_listed_file(root, n).ok().and_then(|l| l.full_at))
+                    *seen
+                        .entry(n.clone())
+                        .or_insert_with(|| crate::inputs::read_listed_file(root, n).ok().and_then(|l| l.full_at))
                 });
-                let full = self.inputs.full.borrow().contains(*unit) || full_at.is_none_or(|t| now_s().saturating_sub(t) >= 86400);
+                let full = self.inputs.full.borrow().contains(*unit)
+                    || full_at.is_none_or(|t| now_s().saturating_sub(t) >= 86400);
                 let mut key = crate::inputs::check_key(checks, &l.listing, &l.accepted, manifest);
                 if full {
                     key = build::h(&[&key, "full"]);
@@ -6415,24 +7937,54 @@ impl Agent {
                 // (Named by the unit flat, `timetables+gtfs`: a nested unit's name is one file's.)
                 let flat = crate::inputs::flat(unit);
                 let planned = self.o.home.join("inputs-listing").join(format!("{flat}.{key}.json"));
-                let wrote = std::fs::create_dir_all(planned.parent().unwrap()).map_err(anyhow::Error::from).and_then(|()| {
-                    for e in std::fs::read_dir(planned.parent().unwrap())?.flatten() {
-                        if e.file_name().to_string_lossy().starts_with(&format!("{flat}.")) && e.path() != planned {
-                            std::fs::remove_file(e.path()).ok();
+                let wrote =
+                    std::fs::create_dir_all(planned.parent().unwrap()).map_err(anyhow::Error::from).and_then(|()| {
+                        for e in std::fs::read_dir(planned.parent().unwrap())?.flatten() {
+                            if e.file_name().to_string_lossy().starts_with(&format!("{flat}.")) && e.path() != planned {
+                                std::fs::remove_file(e.path()).ok();
+                            }
                         }
-                    }
-                    crate::whole::write(&planned, &serde_json::to_vec(&crate::inputs::Planned { listing: l.listing.clone(), accepted: l.accepted.clone() })?)
-                });
+                        crate::whole::write(
+                            &planned,
+                            &serde_json::to_vec(&crate::inputs::Planned {
+                                listing: l.listing.clone(),
+                                accepted: l.accepted.clone(),
+                            })?,
+                        )
+                    });
                 if let Err(e) = wrote {
-                    waiting.push(Waiting { step: Some("inputs".into()), what: format!("Checking {unit}"), why: format!("its listing can't be kept for the check: {e:#}") });
+                    waiting.push(Waiting {
+                        step: Some("inputs".into()),
+                        what: format!("Checking {unit}"),
+                        why: format!("its listing can't be kept for the check: {e:#}"),
+                    });
                     continue;
                 }
-                let mut cmd = vec![s(&self.o.bin.join("scenic-build")), "inputs".into(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join("inputs")), unit.to_string(), "--listing".into(), s(&planned), "--dem".into(), s(&self.o.bin.join("dem"))];
+                let mut cmd = vec![
+                    s(&self.o.bin.join("scenic-build")),
+                    "inputs".into(),
+                    "--root".into(),
+                    s(root),
+                    "--scratch".into(),
+                    s(&self.o.home.join("scratch").join("inputs")),
+                    unit.to_string(),
+                    "--listing".into(),
+                    s(&planned),
+                    "--dem".into(),
+                    s(&self.o.bin.join("dem")),
+                ];
                 if full {
                     cmd.push("--full".into());
                 }
                 let id = if full { format!("inputs {unit} full") } else { format!("inputs {unit}") };
-                jobs.push(JobSpec { id, what: format!("Checking the inputs dropped in {unit}{}", if full { ", every file" } else { "" }), cmd, needs: Needs { nas: true }, restart_after_sleep: true, record: Some(build::Work { step: "inputs".into(), targets: vec![(target, key)] }) });
+                jobs.push(JobSpec {
+                    id,
+                    what: format!("Checking the inputs dropped in {unit}{}", if full { ", every file" } else { "" }),
+                    cmd,
+                    needs: Needs { nas: true },
+                    restart_after_sleep: true,
+                    record: Some(build::Work { step: "inputs".into(), targets: vec![(target, key)] }),
+                });
             }
         }
         // The regions' extract, when their check holds files waiting for ids it lacks (its held
@@ -6447,16 +7999,42 @@ impl Agent {
         if !self.o.helper {
             let s = |p: &Path| p.to_string_lossy().into_owned();
             for unit in self.inputs.forget.borrow().iter() {
-                let named = [crate::inputs::logical(unit), crate::inputs::held_logical(unit), crate::inputs::listed_logical(unit)].iter().any(|l| manifest.contains_key(l));
+                let named = [
+                    crate::inputs::logical(unit),
+                    crate::inputs::held_logical(unit),
+                    crate::inputs::listed_logical(unit),
+                ]
+                .iter()
+                .any(|l| manifest.contains_key(l));
                 if units.contains(&unit.as_str()) || !named || !crate::inputs::valid_unit(unit) {
                     continue;
                 }
-                let cmd = vec![s(&self.o.bin.join("scenic-build")), "inputs".into(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join("inputs")), unit.clone(), "--forget".into()];
-                jobs.push(JobSpec { id: format!("inputs {unit} forget"), what: format!("Forgetting {unit}'s records"), cmd, needs: Needs { nas: true }, restart_after_sleep: true, record: Some(build::Work { step: "inputs".into(), targets: vec![(format!("inputs/{unit}"), "forget".into())] }) });
+                let cmd = vec![
+                    s(&self.o.bin.join("scenic-build")),
+                    "inputs".into(),
+                    "--root".into(),
+                    s(root),
+                    "--scratch".into(),
+                    s(&self.o.home.join("scratch").join("inputs")),
+                    unit.clone(),
+                    "--forget".into(),
+                ];
+                jobs.push(JobSpec {
+                    id: format!("inputs {unit} forget"),
+                    what: format!("Forgetting {unit}'s records"),
+                    cmd,
+                    needs: Needs { nas: true },
+                    restart_after_sleep: true,
+                    record: Some(build::Work {
+                        step: "inputs".into(),
+                        targets: vec![(format!("inputs/{unit}"), "forget".into())],
+                    }),
+                });
             }
         }
         let accepted = self.inputs.watch.as_ref().map(|(_, w)| w.accepted()).unwrap_or_default();
-        *self.inputs.view.borrow_mut() = crate::inputs::view::of(root, manifest, &units, &checking, &accepted, &mut self.inputs.cache.borrow_mut());
+        *self.inputs.view.borrow_mut() =
+            crate::inputs::view::of(root, manifest, &units, &checking, &accepted, &mut self.inputs.cache.borrow_mut());
         jobs
     }
 
@@ -6474,7 +8052,11 @@ impl Agent {
         if ids.is_empty() {
             return None;
         }
-        if let Some(e) = manifest.get(&extract::logical(&date)).and_then(|n| std::fs::read(root.join(n)).ok()).and_then(|b| extract::Extract::read(&b).ok()) {
+        if let Some(e) = manifest
+            .get(&extract::logical(&date))
+            .and_then(|n| std::fs::read(root.join(n)).ok())
+            .and_then(|b| extract::Extract::read(&b).ok())
+        {
             ids.extend(e.ids());
         }
         let key = extract::key(&date, &ids);
@@ -6484,8 +8066,26 @@ impl Agent {
         }
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let list: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
-        let cmd = vec![s(&self.o.bin.join("scenic-build")), "regions-extract".into(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join("regions-extract")), "--pass".into(), date.clone(), "--ids".into(), list.join(",")];
-        Some(JobSpec { id: format!("regions-extract {date}"), what: "Extracting the regions' OSM relations and ways".into(), cmd, needs: Needs { nas: true }, restart_after_sleep: true, record: Some(build::Work { step: "regions-extract".into(), targets: vec![(target, key)] }) })
+        let cmd = vec![
+            s(&self.o.bin.join("scenic-build")),
+            "regions-extract".into(),
+            "--root".into(),
+            s(root),
+            "--scratch".into(),
+            s(&self.o.home.join("scratch").join("regions-extract")),
+            "--pass".into(),
+            date.clone(),
+            "--ids".into(),
+            list.join(","),
+        ];
+        Some(JobSpec {
+            id: format!("regions-extract {date}"),
+            what: "Extracting the regions' OSM relations and ways".into(),
+            cmd,
+            needs: Needs { nas: true },
+            restart_after_sleep: true,
+            record: Some(build::Work { step: "regions-extract".into(), targets: vec![(target, key)] }),
+        })
     }
 
     /// Whether the loop restarts into a newer app now: one is installed and the first job's slot
@@ -6527,15 +8127,24 @@ impl Agent {
             let costs = self.coord.as_ref().map(|c| c.for_forecast().0).unwrap_or_default();
             let book = crate::needs::Book::new(&costs);
             let own = |step: &str| self.mem.step_secs.get(&secs_key(step)).copied();
-            let secs = |step: &str, t: &str| book.secs(step, t, r.threads as u32).map(|s| s as f64).or_else(|| own(step));
+            let secs =
+                |step: &str, t: &str| book.secs(step, t, r.threads as u32).map(|s| s as f64).or_else(|| own(step));
             let expected = match r.spec.record.as_ref() {
                 Some(w) => {
                     let done = crate::control::read_done(&self.done_path(k), &w.step);
                     // (The target under way timed from when the job last noted one done, its
                     // done file's change, else its start.)
-                    let noted = std::fs::metadata(self.done_path(k)).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+                    let noted = std::fs::metadata(self.done_path(k))
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_secs());
                     let on_it = now_s().saturating_sub(if done.is_empty() { r.started } else { noted.max(r.started) });
-                    w.targets.iter().find(|t| !done.contains(&t.0)).and_then(|t| secs(&w.step, &t.0)).map(|s| s - on_it as f64)
+                    w.targets
+                        .iter()
+                        .find(|t| !done.contains(&t.0))
+                        .and_then(|t| secs(&w.step, &t.0))
+                        .map(|s| s - on_it as f64)
                 }
                 None => own(r.spec.id.split(' ').next().unwrap_or("")).map(|s| s - r.elapsed().as_secs_f64()),
             };
@@ -6546,7 +8155,14 @@ impl Agent {
             }
         };
         let wait = Duration::from_secs_f64(left * UPDATE_MARGIN).min(UPDATE_CAP).max(base);
-        (Some(wait), format!("its target under way needs about {} min more {from} (×{UPDATE_MARGIN}, at most {} h)", (left / 60.0).ceil() as u64, UPDATE_CAP.as_secs() / 3600))
+        (
+            Some(wait),
+            format!(
+                "its target under way needs about {} min more {from} (×{UPDATE_MARGIN}, at most {} h)",
+                (left / 60.0).ceil() as u64,
+                UPDATE_CAP.as_secs() / 3600
+            ),
+        )
     }
 
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).
@@ -6555,7 +8171,10 @@ impl Agent {
         if self.app == "development" {
             return false;
         }
-        std::fs::read_link(apps.join("current")).ok().and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned())).is_some_and(|cur| cur != self.app)
+        std::fs::read_link(apps.join("current"))
+            .ok()
+            .and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .is_some_and(|cur| cur != self.app)
     }
 }
 
@@ -6577,12 +8196,16 @@ pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
     }
     // The regions as a catalog records them; "?" when they can't be read now (build::catalog_work
     // then waits).
-    inputs.insert("regions".into(), crate::inputs::regions::read::source_now(root).map(|a| a.version).unwrap_or_else(|_| "?".into()));
+    inputs.insert(
+        "regions".into(),
+        crate::inputs::regions::read::source_now(root).map(|a| a.version).unwrap_or_else(|_| "?".into()),
+    );
     inputs.insert("keys".into(), key_names(&root.join("inputs/keys.env")).unwrap_or_else(|| "?".into()));
     // The 3D buildings' sources, of the declared releases (crate::inputs::sources): what each z6
     // tile's bldprep reads, and its rows, and what the keys name of the declarations ("bld-key");
     // none before they're accepted (no 3D buildings' work), "?" while they can't be read now.
-    match crate::inputs::sources::open_now(root).and_then(|s| s.map(|s| crate::bld::sources::declared(&s)).transpose()) {
+    match crate::inputs::sources::open_now(root).and_then(|s| s.map(|s| crate::bld::sources::declared(&s)).transpose())
+    {
         Ok(Some((release, ghsl, key))) => {
             inputs.extend(crate::bld::sources::digests(root, &release, &ghsl));
             inputs.insert("bld-key".into(), key);
@@ -6603,7 +8226,12 @@ fn key_names(path: &Path) -> Option<String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(String::new()),
         Err(_) => return None,
     };
-    let mut names: Vec<&str> = text.lines().filter_map(|l| l.split_once('=')).filter(|(k, v)| !k.trim().starts_with('#') && !v.trim().is_empty()).map(|(k, _)| k.trim()).collect();
+    let mut names: Vec<&str> = text
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .filter(|(k, v)| !k.trim().starts_with('#') && !v.trim().is_empty())
+        .map(|(k, _)| k.trim())
+        .collect();
     names.sort_unstable();
     names.dedup();
     Some(names.join(","))
@@ -6665,15 +8293,20 @@ fn load_regions(root: &Path) -> (Vec<recipes::Recipe>, Vec<(String, String)>) {
     }
 }
 
-
 /// Why the build isn't done, by its forecast (None: nothing left to build, no map update under way, no
 /// machine busy). One more than ten minutes old (the plan can't be made now), or made before the
 /// last job here ended (`since`: a "done" from before it, as a job that starts and ends between two
 /// forecasts leaves), doesn't say.
 fn work_left(f: Option<&forecast::Forecast>, since: u64) -> Option<String> {
     match f {
-        Some(f) if now_s().saturating_sub(f.at) > 600 => Some(format!("the build's forecast is {} min old", now_s().saturating_sub(f.at) / 60)),
-        Some(f) if !f.nothing_left() => Some(f.why.as_ref().map_or_else(|| "the build has work left".to_string(), |w| format!("the build has work left: {w}"))),
+        Some(f) if now_s().saturating_sub(f.at) > 600 => {
+            Some(format!("the build's forecast is {} min old", now_s().saturating_sub(f.at) / 60))
+        }
+        Some(f) if !f.nothing_left() => Some(
+            f.why
+                .as_ref()
+                .map_or_else(|| "the build has work left".to_string(), |w| format!("the build has work left: {w}")),
+        ),
         Some(f) if f.at < since => Some("the build's forecast is from before the last job here ended".into()),
         Some(_) => None,
         None => Some("the build has no forecast yet".into()),
@@ -6688,7 +8321,11 @@ fn caches_event(worker: &str, trimmed: bool, f: &room::Freed) -> crate::coord::h
         None if trimmed => format!("trimmed its caches after the build: {}", f.say()),
         None => format!("cleared its build caches{asked}: {}", f.say()),
     };
-    crate::coord::history::Event { worker: Some(worker.to_string()), note, ..crate::coord::history::Event::new("caches") }
+    crate::coord::history::Event {
+        worker: Some(worker.to_string()),
+        note,
+        ..crate::coord::history::Event::new("caches")
+    }
 }
 
 /// A freeing toward the room target's goal past the target, in words: ", and the 30.0 GB a job
@@ -6722,9 +8359,14 @@ fn hold_for_sources(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>) 
     if !held {
         return jobs;
     }
-    let (kept, out): (Vec<JobSpec>, Vec<JobSpec>) = jobs.into_iter().partition(|j| !build::reads_sources(&step_of(&j.id).unwrap_or_default()));
+    let (kept, out): (Vec<JobSpec>, Vec<JobSpec>) =
+        jobs.into_iter().partition(|j| !build::reads_sources(&step_of(&j.id).unwrap_or_default()));
     for j in out {
-        waiting.push(Waiting { step: step_of(&j.id), what: j.what, why: "the source declarations' first accepted version (the input check takes inputs/sources/ in)".into() });
+        waiting.push(Waiting {
+            step: step_of(&j.id),
+            what: j.what,
+            why: "the source declarations' first accepted version (the input check takes inputs/sources/ in)".into(),
+        });
     }
     kept
 }
@@ -6738,9 +8380,14 @@ fn hold_for_lakefill(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>)
     if !held {
         return jobs;
     }
-    let (kept, out): (Vec<JobSpec>, Vec<JobSpec>) = jobs.into_iter().partition(|j| !build::reads_lakefill(&step_of(&j.id).unwrap_or_default()));
+    let (kept, out): (Vec<JobSpec>, Vec<JobSpec>) =
+        jobs.into_iter().partition(|j| !build::reads_lakefill(&step_of(&j.id).unwrap_or_default()));
     for j in out {
-        waiting.push(Waiting { step: step_of(&j.id), what: j.what, why: "waits for Canada's missing lakes to be filled (the lakefill job)".into() });
+        waiting.push(Waiting {
+            step: step_of(&j.id),
+            what: j.what,
+            why: "waits for Canada's missing lakes to be filled (the lakefill job)".into(),
+        });
     }
     kept
 }
@@ -6770,7 +8417,8 @@ fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waitin
         if before_left && !busy(p) {
             p.left = Some(p.left.unwrap_or(0).max(1));
             // (Its own, a catalog failing, says more.)
-            p.note.get_or_insert_with(|| "as each region is done (at most hourly), and once the steps above are".into());
+            p.note
+                .get_or_insert_with(|| "as each region is done (at most hourly), and once the steps above are".into());
         }
     }
 }
@@ -6783,7 +8431,11 @@ fn update_why(app: &str) -> String {
 /// Why a running job stops, and how, if it does: at once (frozen where it is) without what it can't
 /// save without, the NAS, or away from home with a job that needs it; as the build's pause says;
 /// at its next safe point when the battery runs low (CPU work), before the charge runs out.
-fn stop_for(n: &Needs, c: &Conditions, pause: Option<&crate::control::Pause>) -> Option<(crate::control::Mode, String)> {
+fn stop_for(
+    n: &Needs,
+    c: &Conditions,
+    pause: Option<&crate::control::Pause>,
+) -> Option<(crate::control::Mode, String)> {
     use crate::control::Mode;
     match lapsed(n, c) {
         Some(why) => Some((Mode::Freeze, why)),
@@ -6805,7 +8457,13 @@ fn make_coordinator(o: &Options, run: Option<&pool::Run>, app: &str, host: &str)
 }
 
 /// `make_coordinator`, on `port` (a member's broker's: `broker_port`).
-fn make_coordinator_on(o: &Options, run: Option<&pool::Run>, app: &str, host: &str, port: u16) -> Option<crate::coord::Coordinator> {
+fn make_coordinator_on(
+    o: &Options,
+    run: Option<&pool::Run>,
+    app: &str,
+    host: &str,
+    port: u16,
+) -> Option<crate::coord::Coordinator> {
     if let Some(r) = run {
         if let Err(e) = pool::seed(r.side.nas(), &o.home.join("coord")) {
             eprintln!("agent: the pool's token: {e:#}");
@@ -6892,7 +8550,11 @@ fn expect_same(w: &build::Work, done: &build::Keys) -> Vec<String> {
     if !matches!(w.step.as_str(), "trees" | "terrain" | "slope") {
         return Vec::new();
     }
-    w.targets.iter().filter(|(t, k)| t.starts_with("6/") && done.recorded(&w.step, t) == Some(k.as_str())).map(|t| t.0.clone()).collect()
+    w.targets
+        .iter()
+        .filter(|(t, k)| t.starts_with("6/") && done.recorded(&w.step, t) == Some(k.as_str()))
+        .map(|t| t.0.clone())
+        .collect()
 }
 
 /// A step's targets in batches, each its own job recording its own targets (a failure or a restart
@@ -6937,7 +8599,10 @@ fn helpers(root: &Path) -> Vec<Status> {
 
 /// A job's step and targets when both Macs run its step (crate::agent::steps::SHARED).
 fn shared_targets(spec: &JobSpec) -> Option<(String, Vec<String>)> {
-    spec.record.as_ref().filter(|w| steps::SHARED.contains(&w.step.as_str())).map(|w| (w.step.clone(), w.targets.iter().map(|t| t.0.clone()).collect()))
+    spec.record
+        .as_ref()
+        .filter(|w| steps::SHARED.contains(&w.step.as_str()))
+        .map(|w| (w.step.clone(), w.targets.iter().map(|t| t.0.clone()).collect()))
 }
 
 /// The newest catalog in `dir` that reads, its number and when it went out: what the map's server
@@ -7028,7 +8693,9 @@ fn first_secs(step: &str) -> f64 {
 /// Whether the regions' own work is in `plan` (terrain, slope, tree cover, units): the 3D buildings
 /// then go in smaller jobs (`job_size`).
 fn regions_left(plan: &[build::Work]) -> bool {
-    plan.iter().any(|w| matches!(w.step.as_str(), "terrain" | "terrain-lo" | "slope" | "slope-lo" | "trees" | "trees-lo" | "unit"))
+    plan.iter().any(|w| {
+        matches!(w.step.as_str(), "terrain" | "terrain-lo" | "slope" | "slope-lo" | "trees" | "trees-lo" | "unit")
+    })
 }
 
 /// Targets per job of `step` (`batch_size`), but the 3D buildings' while the regions' own work is
@@ -7093,7 +8760,10 @@ mod tests {
         let c = read_costs(&p);
         assert_eq!(c.len(), 2);
         assert_eq!(c[0].0, "terrain 6/1/2");
-        assert_eq!(c[0].1.sizes, [("bytes".to_string(), 5000), ("km2".into(), 380000), ("threads".into(), 8), ("tiffs".into(), 12)].into());
+        assert_eq!(
+            c[0].1.sizes,
+            [("bytes".to_string(), 5000), ("km2".into(), 380000), ("threads".into(), 8), ("tiffs".into(), 12)].into()
+        );
         assert_eq!((c[0].1.peak_mb, c[0].1.secs, c[0].1.v), (900, 40, 3));
         assert!(c[1].1.sizes.is_empty());
         let j = serde_json::to_value(&c[1].1).unwrap();
@@ -7145,8 +8815,23 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("catalog")).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
-        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec![], needs: Needs { nas: true }, restart_after_sleep: true, record: None };
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: true,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        let job = |id: &str| JobSpec {
+            id: id.into(),
+            what: id.into(),
+            cmd: vec![],
+            needs: Needs { nas: true },
+            restart_after_sleep: true,
+            record: None,
+        };
         let plan = vec![job("backup"), job("gc"), job("pass-sets d")];
         assert_eq!(a.replan_at(&plan, 1000), None);
         a.mem.retry.insert("backup".into(), (2, 1600));
@@ -7179,7 +8864,15 @@ mod tests {
         std::fs::create_dir_all(root.join("catalog")).unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: true,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         let mut last = a.plan_seen(&root);
         assert_ne!(last, 0);
         assert_eq!(a.plan_seen(&root), last);
@@ -7223,7 +8916,11 @@ mod tests {
         let id = {
             let mut s = co.shared.lock().unwrap();
             let t = s.now();
-            s.leases.grant("other-mac", crate::coord::lease::Work::Job { step: "gc".into(), targets: vec![("t".into(), "k".into())] }, t)
+            s.leases.grant(
+                "other-mac",
+                crate::coord::lease::Work::Job { step: "gc".into(), targets: vec![("t".into(), "k".into())] },
+                t,
+            )
         };
         let now = a.plan_seen(&root);
         assert_ne!(now, last);
@@ -7246,7 +8943,15 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("catalog")).unwrap();
-        let a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
+        let a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: true,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         let s = |p: &Path| p.to_string_lossy().into_owned();
         for st in steps::TABLE.iter() {
             let step = st.name.to_string();
@@ -7259,7 +8964,15 @@ mod tests {
                 if crate::cli::tables::SCENIC_BUILD.get(&step).is_some_and(|c| c.pos == 0) && target != step {
                     continue;
                 }
-                let mut cmd = vec!["SCENIC_X=1".to_string(), s(&a.o.bin.join("scenic-build")), step.clone(), "--root".into(), s(&root), "--scratch".into(), s(&home.join("scratch").join(&step))];
+                let mut cmd = vec![
+                    "SCENIC_X=1".to_string(),
+                    s(&a.o.bin.join("scenic-build")),
+                    step.clone(),
+                    "--root".into(),
+                    s(&root),
+                    "--scratch".into(),
+                    s(&home.join("scratch").join(&step)),
+                ];
                 cmd.extend([target.to_string()].into_iter().filter(|t| every::names_target(t) && *t != step));
                 cmd.extend(a.step_args(&step, "2026-10-01"));
                 if matches!(step.as_str(), "trees" | "terrain" | "slope") {
@@ -7293,7 +9006,14 @@ mod tests {
     #[test]
     fn a_terrain_run_reads_its_own_areas_archives() {
         let packs = Path::new("/c/aws-terrarium/packs");
-        for (name, ours) in [("3-1-2.0123456789abcdef.tiles", true), ("6-8-16.0123456789abcdef.tiles", true), ("6-15-23.0123456789abcdef.tiles", true), ("6-16-16.0123456789abcdef.tiles", false), ("3-1-3.0123456789abcdef.tiles", false), ("root.0123456789abcdef.tiles", false)] {
+        for (name, ours) in [
+            ("3-1-2.0123456789abcdef.tiles", true),
+            ("6-8-16.0123456789abcdef.tiles", true),
+            ("6-15-23.0123456789abcdef.tiles", true),
+            ("6-16-16.0123456789abcdef.tiles", false),
+            ("3-1-3.0123456789abcdef.tiles", false),
+            ("root.0123456789abcdef.tiles", false),
+        ] {
             assert_eq!(terrain_reads("terrain 3/1/2", &packs.join(name)), ours, "{name}");
         }
         // Not a terrain run's, or not an archive copy.
@@ -7301,8 +9021,15 @@ mod tests {
         assert!(!terrain_reads("terrain-root terrain-root", &packs.join("root.0123456789abcdef.tiles")));
         assert!(!terrain_reads("terrain 3/1/2", Path::new("/c/aws-terrarium/12/2048/1500.png")));
         // A piece its z6 tile's; an assembly its area's.
-        assert!(terrain_reads("terrain 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles")) && !terrain_reads("terrain 6/8/16", &packs.join("6-8-17.0123456789abcdef.tiles")) && !terrain_reads("terrain 6/8/16", &packs.join("3-1-2.0123456789abcdef.tiles")));
-        assert!(terrain_reads("terrain-lo 3/1/2", &packs.join("3-1-2.0123456789abcdef.tiles")) && !terrain_reads("terrain-lo 3/1/2", &packs.join("6-8-16.0123456789abcdef.tiles")));
+        assert!(
+            terrain_reads("terrain 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles"))
+                && !terrain_reads("terrain 6/8/16", &packs.join("6-8-17.0123456789abcdef.tiles"))
+                && !terrain_reads("terrain 6/8/16", &packs.join("3-1-2.0123456789abcdef.tiles"))
+        );
+        assert!(
+            terrain_reads("terrain-lo 3/1/2", &packs.join("3-1-2.0123456789abcdef.tiles"))
+                && !terrain_reads("terrain-lo 3/1/2", &packs.join("6-8-16.0123456789abcdef.tiles"))
+        );
     }
 
     #[test]
@@ -7315,23 +9042,48 @@ mod tests {
         keys.record("unit", &[("6/1/1".to_string(), "k1".to_string())]);
         keys.save(&root).unwrap();
         // Hand-offs the coordinator journaled here: they count as built until drained.
-        let done = |u: &str, k: &str| crate::handoff::Handoff { done: Some(("unit".into(), vec![(u.into(), k.into())])), ..Default::default() };
+        let done = |u: &str, k: &str| crate::handoff::Handoff {
+            done: Some(("unit".into(), vec![(u.into(), k.into())])),
+            ..Default::default()
+        };
         crate::handoff::write(&home.join("coord/journal/m1"), &done("6/1/2", "k2")).unwrap();
         crate::handoff::write(&home.join("coord/journal/m1"), &done("6/1/3", "k3")).unwrap();
         // The files they save count too (a tree cover piece's mid: build::tree_work), but one a
         // later hand-off removes.
-        let save = |l: &str, c: Option<&str>| crate::handoff::Handoff { changes: [(l.to_string(), c.map(str::to_string))].into(), ..Default::default() };
-        crate::handoff::write(&home.join("coord/journal/m1"), &save("work/trees-mid/6-28-16", Some("work/trees-mid/6-28-16.1111111111111111.sect"))).unwrap();
-        crate::handoff::write(&home.join("coord/journal/m1"), &save("layers/trees-cover/hi/6-28-17", Some("layers/trees-cover/hi/6-28-17.2222222222222222.pack"))).unwrap();
+        let save = |l: &str, c: Option<&str>| crate::handoff::Handoff {
+            changes: [(l.to_string(), c.map(str::to_string))].into(),
+            ..Default::default()
+        };
+        crate::handoff::write(
+            &home.join("coord/journal/m1"),
+            &save("work/trees-mid/6-28-16", Some("work/trees-mid/6-28-16.1111111111111111.sect")),
+        )
+        .unwrap();
+        crate::handoff::write(
+            &home.join("coord/journal/m1"),
+            &save("layers/trees-cover/hi/6-28-17", Some("layers/trees-cover/hi/6-28-17.2222222222222222.pack")),
+        )
+        .unwrap();
         crate::handoff::write(&home.join("coord/journal/m1"), &save("layers/trees-cover/hi/6-28-17", None)).unwrap();
         let k = a.planning_keys(&root).unwrap();
-        assert_eq!((k.recorded("unit", "6/1/1"), k.recorded("unit", "6/1/2"), k.recorded("unit", "6/1/3")), (Some("k1"), Some("k2"), Some("k3")));
+        assert_eq!(
+            (k.recorded("unit", "6/1/1"), k.recorded("unit", "6/1/2"), k.recorded("unit", "6/1/3")),
+            (Some("k1"), Some("k2"), Some("k3"))
+        );
         assert_eq!(k.handed.iter().collect::<Vec<_>>(), ["work/trees-mid/6-28-16"]);
         assert!(build::Keys::load(&root).handed.is_empty(), "never in the keys saved");
     }
 
     fn agent(root: &Path, home: &Path) -> Agent {
-        test_agent(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/nonexistent/bin"), dry_run: true, once: true, helper: false }).unwrap()
+        test_agent(Options {
+            root: Some(root.to_path_buf()),
+            home: home.to_path_buf(),
+            bin: PathBuf::from("/nonexistent/bin"),
+            dry_run: true,
+            once: true,
+            helper: false,
+        })
+        .unwrap()
     }
 
     #[test]
@@ -7339,8 +9091,28 @@ mod tests {
         let gb = |n: u64| n << 30;
         // 20 GB free and 10 of caches it may empty: the 15 GB steps (and their margin: tree cover's
         // pieces, terrain's and slope's, and the 3D buildings' among them) and tasks.
-        assert_eq!(helper_steps(gb(20), gb(10), 0), ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "depth", "tail", "bldtile", "treeblock", "terrainsub"]);
-        assert_eq!(helper_steps(gb(70), 0, 0), [steps::SHARED.to_vec(), vec!["tail", "bldtile", "treeblock", "terrainsub"]].concat());
+        assert_eq!(
+            helper_steps(gb(20), gb(10), 0),
+            [
+                "terrain",
+                "slope",
+                "trees",
+                "unit",
+                "pois",
+                "peaks",
+                "bldprep",
+                "bldtiles",
+                "depth",
+                "tail",
+                "bldtile",
+                "treeblock",
+                "terrainsub"
+            ]
+        );
+        assert_eq!(
+            helper_steps(gb(70), 0, 0),
+            [steps::SHARED.to_vec(), vec!["tail", "bldtile", "treeblock", "terrainsub"]].concat()
+        );
         assert_eq!(helper_steps(gb(10), gb(5), 0), ["tail", "bldtile", "treeblock", "terrainsub"]);
         // (Tree cover's rows and terrain's subtrees need 1 GB.)
         assert_eq!(helper_steps(gb(3), gb(2), 0), ["treeblock", "terrainsub"]);
@@ -7357,9 +9129,24 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.free_set = Some(40 << 30);
-        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: None };
+        let job = |id: &str| JobSpec {
+            id: id.into(),
+            what: id.into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: None,
+        };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         // A 20 GB target, which the disk has (40 GB free): a job's reserve, 30 GB, past it doesn't
         // fit, nor can the (empty) caches make it. The first waits, saying why; a job after it
@@ -7368,7 +9155,12 @@ mod tests {
         room::set_target(&home, Some(20 << 30), "a test").unwrap();
         a.room_target = room::target(&home);
         let mut w = Vec::new();
-        a.start_first(&[job("terrain 3/1/1"), job("unit 6/1/1"), job("unit 6/1/2"), job("backup daily")], &cond, Some(&root), &mut w);
+        a.start_first(
+            &[job("terrain 3/1/1"), job("unit 6/1/1"), job("unit 6/1/2"), job("backup daily")],
+            &cond,
+            Some(&root),
+            &mut w,
+        );
         assert_eq!(w.iter().map(|w| w.what.as_str()).collect::<Vec<_>>(), ["terrain 3/1/1"], "{w:?}");
         assert!(w.iter().all(|w| w.why.contains("disk room target")), "{w:?}");
         assert_eq!(a.slots[0].running.as_ref().map(|r| r.spec.id.as_str()), Some("backup daily"));
@@ -7406,7 +9198,11 @@ mod tests {
         std::fs::create_dir_all(root.join("sources/osm/2026-09-28")).unwrap();
         std::fs::write(root.join("sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"), b"x").unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        std::fs::write(root.join("state/build/manifest.json"), br#"{"sources/osm/2026-09-28/filtered":"sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"}"#).unwrap();
+        std::fs::write(
+            root.join("state/build/manifest.json"),
+            br#"{"sources/osm/2026-09-28/filtered":"sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"}"#,
+        )
+        .unwrap();
         // (The freeing's thread sees a test's disk, 1 TB free unless it says: a target past it.)
         let big = (1u64 << 40) + (100 << 30);
         room::set_target(&home, Some(big), "a test").unwrap();
@@ -7417,7 +9213,10 @@ mod tests {
         assert!(a.caches_task.is_none());
         let t = a.mem.toward.clone().unwrap();
         assert_eq!((t.target, t.bytes()), (Some(big), 1100), "{t:?}");
-        assert!(!c.join("base/base/6-1-1.0000000000000001.base").exists() && !c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists());
+        assert!(
+            !c.join("base/base/6-1-1.0000000000000001.base").exists()
+                && !c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists()
+        );
         assert_eq!(a.toward_due(), None, "not again for ten minutes, or until a job ends");
         let short = a.room_short(true).unwrap();
         assert!(short.contains("nothing more to free"), "{short}");
@@ -7437,9 +9236,20 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.free_set = Some(40 << 30);
-        let (used, idle) = (home.join("cache/base/base/6-1-1.0000000000000001.base"), home.join("cache/base/base/6-1-2.0000000000000002.base"));
+        let (used, idle) = (
+            home.join("cache/base/base/6-1-1.0000000000000001.base"),
+            home.join("cache/base/base/6-1-2.0000000000000002.base"),
+        );
         put(&used, &[0; 1000]);
         put(&idle, &[0; 500]);
         // A job runs (the daily backup: it keeps no target), holding one of the packs.
@@ -7467,9 +9277,24 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("sources")).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.free_set = Some(40 << 30);
-        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: None };
+        let job = |id: &str| JobSpec {
+            id: id.into(),
+            what: id.into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: None,
+        };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         std::fs::create_dir_all(home.join("cache/base/base")).unwrap();
         std::fs::write(home.join("cache/base/base/6-1-1.0000000000000001.base"), vec![0u8; 1000]).unwrap();
@@ -7510,7 +9335,15 @@ mod tests {
     fn an_end_the_lead_doesnt_take_is_owed() {
         let d = tempfile::tempdir().unwrap();
         // (A root of its own, no catalog/: the NAS away, the pool off.)
-        let mut a = test_agent(Options { root: Some(d.path().join("nas")), home: d.path().join("home"), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(d.path().join("nas")),
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: true,
+        })
+        .unwrap();
         let fail = |id| Tell::Fail { id, why: "x".into(), floors: Vec::new(), disks: Vec::new(), job_disk: 0 };
         a.tell_or_owe(fail(1));
         assert_eq!(a.owed.len(), 1, "no client: owed");
@@ -7520,7 +9353,16 @@ mod tests {
         assert!(a.client.as_ref().unwrap().round_failed());
         a.tell_or_owe(Tell::GiveBack { id: 3, why: "x".into(), floors: Vec::new(), disks: Vec::new(), job_disk: 0 });
         a.tell_or_owe(Tell::Done(Box::new(crate::coord::Done { lease: 4, ..Default::default() })));
-        assert_eq!(a.owed.iter().map(|(_, t)| match t { Tell::Fail { id, .. } | Tell::GiveBack { id, .. } => *id, Tell::Done(d) => d.lease }).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+        assert_eq!(
+            a.owed
+                .iter()
+                .map(|(_, t)| match t {
+                    Tell::Fail { id, .. } | Tell::GiveBack { id, .. } => *id,
+                    Tell::Done(d) => d.lease,
+                })
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
         let (url, tried) = crate::coord::client::tests::answering(200);
         a.client = Some(crate::coord::client::Client::at(vec![url], "t".into(), "m1"));
         a.owed.clear();
@@ -7537,14 +9379,30 @@ mod tests {
         assert!(is_live_path(Path::new("/Volumes/personal/projects/scenic-roads")));
         let d = tempfile::tempdir().unwrap();
         assert!(!is_live_path(d.path()));
-        let o = |root: Option<PathBuf>| Options { root, home: d.path().join("home"), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: true };
+        let o = |root: Option<PathBuf>| Options {
+            root,
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: true,
+            once: true,
+            helper: true,
+        };
         assert!(std::panic::catch_unwind(|| test_agent(o(None))).is_err(), "no root");
-        assert!(std::panic::catch_unwind(|| test_agent(o(Some("/Volumes/personal/projects/scenic-roads".into())))).is_err(), "the NAS");
+        assert!(
+            std::panic::catch_unwind(|| test_agent(o(Some("/Volumes/personal/projects/scenic-roads".into())))).is_err(),
+            "the NAS"
+        );
         if let Some(h) = std::env::var_os("HOME") {
-            let live = Options { home: Path::new(&h).join("Library/Application Support/scenic"), ..o(Some(d.path().join("nas"))) };
+            let live = Options {
+                home: Path::new(&h).join("Library/Application Support/scenic"),
+                ..o(Some(d.path().join("nas")))
+            };
             assert!(std::panic::catch_unwind(|| test_agent(live)).is_err(), "the app's home");
         }
-        assert!(std::panic::catch_unwind(|| crate::pool::nas::Share::new(Path::new("/Volumes/x/scenic-roads"))).is_err(), "a share on the NAS");
+        assert!(
+            std::panic::catch_unwind(|| crate::pool::nas::Share::new(Path::new("/Volumes/x/scenic-roads"))).is_err(),
+            "a share on the NAS"
+        );
         TEST_ROOT.with(|t| *t.borrow_mut() = Some("/Volumes/personal/projects/scenic-roads".into()));
         let tripped = std::panic::catch_unwind(|| find_root(false)).is_err();
         TEST_ROOT.with(|t| *t.borrow_mut() = None);
@@ -7556,7 +9414,15 @@ mod tests {
     fn a_loop_begins_a_round() {
         let d = tempfile::tempdir().unwrap();
         // (A root of its own, no catalog/: the NAS away, the pool off.)
-        let mut a = test_agent(Options { root: Some(d.path().join("nas")), home: d.path().join("home"), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(d.path().join("nas")),
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: true,
+        })
+        .unwrap();
         a.begin_round();
         a.client = Some(crate::coord::client::Client::at(vec![crate::coord::client::tests::dead()], "t".into(), "m1"));
         a.begin_round();
@@ -7574,9 +9440,28 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         // The lead's coordinator offers slope, which this member fits.
         let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
-        c.offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
-        a.client = Some(crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1"));
+        c.offer(
+            "2026-09-28",
+            vec![crate::coord::Offer {
+                step: "slope".into(),
+                targets: vec![("3/2/2".into(), "k".into(), 100)],
+                batch: 2,
+            }],
+        );
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: true,
+        })
+        .unwrap();
+        a.client = Some(crate::coord::client::Client::at(
+            vec![format!("http://127.0.0.1:{port}")],
+            c.contact.token.clone(),
+            "m1",
+        ));
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let mut w = Vec::new();
         let jobs = a.helper_job(&root, &cond, &mut w);
@@ -7599,7 +9484,11 @@ mod tests {
         // they share guarded where it's used, their memory and disk by their measures).
         assert!(!clash("unit", "heritage") && !clash("trees", "items") && !clash("items", "heritage"));
         assert!(!clash("unit", "unit") && !clash("pois", "pois") && !clash("bldtiles", "bldtiles"));
-        assert!(clash("items", "items") && clash("catalog", "catalog") && clash("bldprep", "bldprep") == !steps::SHARED.contains(&"bldprep"));
+        assert!(
+            clash("items", "items")
+                && clash("catalog", "catalog")
+                && clash("bldprep", "bldprep") == !steps::SHARED.contains(&"bldprep")
+        );
         assert!(!clash("terrain", "peaks") && !clash("osm-pass", "items") && !clash("water", "bldtiles"));
     }
 
@@ -7609,15 +9498,40 @@ mod tests {
         // Vermont's 6/19/23 (6.8 M) 1.2 GB. B5's pilot raised New York's 14.6 M records with the
         // field in 7.9 GB, Toronto's 9.5 M in 3.8 GB, Kantō's 30.3 M in 10.2 GB. Offered above each.
         assert_eq!((bld_peak("bldprep", 16_505_246), bld_peak("bldtiles", 16_505_246)), (2818, 8725));
-        assert!(bld_peak("bldprep", 6_771_191) > 1243 && bld_peak("bldtiles", 14_611_533) > 7889 && bld_peak("bldtiles", 9_496_532) > 3843 && bld_peak("bldtiles", 30_320_309) > 10200);
+        assert!(
+            bld_peak("bldprep", 6_771_191) > 1243
+                && bld_peak("bldtiles", 14_611_533) > 7889
+                && bld_peak("bldtiles", 9_496_532) > 3843
+                && bld_peak("bldtiles", 30_320_309) > 10200
+        );
         // A tile reading nothing (a GHSL tile alone): its fixed part.
         assert_eq!((bld_peak("bldprep", 0), bld_peak("bldtiles", 0)), (300, 1800));
         assert_eq!((batch_size("bldprep"), batch_size("bldtiles")), (8, 16));
         // While the regions' own work is left, smaller jobs of them.
-        let w = |step: &str, n: usize| build::Work { step: step.into(), targets: (0..n).map(|i| (format!("6/{i}/0"), format!("k{i}"))).collect() };
-        let sizes = |plan: Vec<build::Work>| batches(plan).into_iter().filter(|(w, _)| w.step.starts_with("bld")).map(|(w, _)| (w.step, w.targets.len())).collect::<Vec<_>>();
-        assert_eq!(sizes(vec![w("bldprep", 3), w("bldtiles", 5)]), [("bldprep".to_string(), 3), ("bldtiles".to_string(), 5)]);
-        assert_eq!(sizes(vec![w("unit", 1), w("bldprep", 3), w("bldtiles", 5)]), [("bldprep".to_string(), 2), ("bldprep".to_string(), 1), ("bldtiles".to_string(), 4), ("bldtiles".to_string(), 1)]);
+        let w = |step: &str, n: usize| build::Work {
+            step: step.into(),
+            targets: (0..n).map(|i| (format!("6/{i}/0"), format!("k{i}"))).collect(),
+        };
+        let sizes = |plan: Vec<build::Work>| {
+            batches(plan)
+                .into_iter()
+                .filter(|(w, _)| w.step.starts_with("bld"))
+                .map(|(w, _)| (w.step, w.targets.len()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sizes(vec![w("bldprep", 3), w("bldtiles", 5)]),
+            [("bldprep".to_string(), 3), ("bldtiles".to_string(), 5)]
+        );
+        assert_eq!(
+            sizes(vec![w("unit", 1), w("bldprep", 3), w("bldtiles", 5)]),
+            [
+                ("bldprep".to_string(), 2),
+                ("bldprep".to_string(), 1),
+                ("bldtiles".to_string(), 4),
+                ("bldtiles".to_string(), 1)
+            ]
+        );
     }
 
     #[test]
@@ -7625,7 +9539,15 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
         a.free_set = Some(40 << 30);
         a.mem_set = Some((16 << 10, 12 << 10));
@@ -7634,20 +9556,45 @@ mod tests {
         let job = |id: &str| {
             let step = id.split(' ').next().unwrap();
             let scratch = home.join("scratch").join(step).to_string_lossy().into_owned();
-            let record = Some(build::Work { step: step.into(), targets: vec![(id.split(' ').nth(1).unwrap().into(), "k".into())] });
-            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "--scratch".into(), scratch], needs: Needs { nas: false }, restart_after_sleep: false, record }
+            let record = Some(build::Work {
+                step: step.into(),
+                targets: vec![(id.split(' ').nth(1).unwrap().into(), "k".into())],
+            });
+            JobSpec {
+                id: id.into(),
+                what: id.into(),
+                cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "--scratch".into(), scratch],
+                needs: Needs { nas: false },
+                restart_after_sleep: false,
+                record,
+            }
         };
         // Beside the map tiles, the heritage chain, not a unit (too large beside them, by their
         // measures).
-        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step), ..Default::default() };
-        a.coord.as_ref().unwrap().add_costs(&[(crate::coord::cost_key("pack", "6/1/1"), cost("pack", 1024)), (crate::coord::cost_key("heritage", "heritage"), cost("heritage", 2048)), (crate::coord::cost_key("unit", "6/1/1"), cost("unit", 15 << 10))]);
+        let cost = |step: &str, mb: u64| crate::coord::Cost {
+            peak_mb: mb,
+            secs: 60,
+            worker: None,
+            v: crate::coord::cost_version(step),
+            ..Default::default()
+        };
+        a.coord.as_ref().unwrap().add_costs(&[
+            (crate::coord::cost_key("pack", "6/1/1"), cost("pack", 1024)),
+            (crate::coord::cost_key("heritage", "heritage"), cost("heritage", 2048)),
+            (crate::coord::cost_key("unit", "6/1/1"), cost("unit", 15 << 10)),
+        ]);
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(a.try_start(0, job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
         let plan = vec![job("unit 6/1/1"), job("pack 6/1/1"), job("heritage heritage")];
         a.start_second(&plan, &cond, Some(&root));
         let second = a.slots[1].running.as_ref().map(|r| (r.spec.id.clone(), r.spec.cmd[4].clone()));
         // Its scratch folder its own.
-        assert_eq!(second, Some(("heritage heritage".to_string(), home.join("scratch-2/heritage").to_string_lossy().into_owned())), "{:?}", a.beside_why);
+        assert_eq!(
+            second,
+            Some(("heritage heritage".to_string(), home.join("scratch-2/heritage").to_string_lossy().into_owned())),
+            "{:?}",
+            a.beside_why
+        );
         assert!(a.record_path(1).exists() && a.record_path(0).exists());
         // In the history as the second job.
         let (_, _, events, _) = a.coord.as_ref().unwrap().for_forecast();
@@ -7659,7 +9606,13 @@ mod tests {
         }
         // Beside a cold start (the OSM pass, never measured), none.
         a.slots = Default::default();
-        assert!(a.try_start(0, JobSpec { record: None, ..job("osm-pass 2026-09-28") }, &cond, Some(&root), &mut Vec::new()));
+        assert!(a.try_start(
+            0,
+            JobSpec { record: None, ..job("osm-pass 2026-09-28") },
+            &cond,
+            Some(&root),
+            &mut Vec::new()
+        ));
         a.start_second(&plan, &cond, Some(&root));
         assert!(a.slots[1].running.is_none());
         assert!(a.beside_why.as_deref().is_some_and(|w| w.contains("alone")), "{:?}", a.beside_why);
@@ -7675,12 +9628,27 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
         a.free_set = Some(100 << 30);
         // (A Mac of 16 GB: its limit 12 GB.)
         a.mem_set = Some((16 << 10, 12 << 10));
-        let job = |step: &str, t: &str| JobSpec { id: format!("{step} {t}"), what: step.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }) };
+        let job = |step: &str, t: &str| JobSpec {
+            id: format!("{step} {t}"),
+            what: step.into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
+        };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let stop = |a: &mut Agent| {
             for k in 0..SLOTS {
@@ -7694,19 +9662,42 @@ mod tests {
         // A cold start (no target of its step measured): alone, nothing beside it.
         assert!(a.try_start(0, job("terrain", "6/1/1"), &cond, Some(&root), &mut Vec::new()));
         a.start_second(&[job("pack", "6/2/2")], &cond, Some(&root));
-        assert!(a.slots[1].running.is_none() && a.beside_why.as_deref().is_some_and(|w| w.contains("cold start")), "{:?}", a.beside_why);
+        assert!(
+            a.slots[1].running.is_none() && a.beside_why.as_deref().is_some_and(|w| w.contains("cold start")),
+            "{:?}",
+            a.beside_why
+        );
         stop(&mut a);
         // Measured: terrain 4 GB and 10 GB of disk; labels (a step the table runs alone) 6 GB; peaks
         // (a raw-tile reader, as terrain) 5 GB; a unit 9 GB.
         let c = a.coord.as_ref().unwrap();
-        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step), ..Default::default() };
-        c.add_costs(&[(crate::coord::cost_key("terrain", "6/1/1"), cost("terrain", 4096)), (crate::coord::cost_key("labels", "labels"), cost("labels", 6144)), (crate::coord::cost_key("peaks", "6/2/2"), cost("peaks", 5120)), (crate::coord::cost_key("unit", "6/3/3"), cost("unit", 9216))]);
-        c.add_disks(&[(crate::coord::cost_key("terrain", "6/1/1"), 10 << 10), (crate::coord::cost_key("peaks", "6/2/2"), 25 << 10)]);
+        let cost = |step: &str, mb: u64| crate::coord::Cost {
+            peak_mb: mb,
+            secs: 60,
+            worker: None,
+            v: crate::coord::cost_version(step),
+            ..Default::default()
+        };
+        c.add_costs(&[
+            (crate::coord::cost_key("terrain", "6/1/1"), cost("terrain", 4096)),
+            (crate::coord::cost_key("labels", "labels"), cost("labels", 6144)),
+            (crate::coord::cost_key("peaks", "6/2/2"), cost("peaks", 5120)),
+            (crate::coord::cost_key("unit", "6/3/3"), cost("unit", 9216)),
+        ]);
+        c.add_disks(&[
+            (crate::coord::cost_key("terrain", "6/1/1"), 10 << 10),
+            (crate::coord::cost_key("peaks", "6/2/2"), 25 << 10),
+        ]);
         // Beside terrain: labels starts, though the table runs it alone and it isn't of the second
         // job's list; the unit before it in the plan doesn't fit the memory left.
         assert!(a.try_start(0, job("terrain", "6/1/1"), &cond, Some(&root), &mut Vec::new()));
         a.start_second(&[job("unit", "6/3/3"), job("labels", "labels")], &cond, Some(&root));
-        assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(), Some("labels labels"), "{:?}", a.beside_why);
+        assert_eq!(
+            a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(),
+            Some("labels labels"),
+            "{:?}",
+            a.beside_why
+        );
         // The first slot beside labels: a unit waits for it, past the limit together.
         assert!(a.waits_for_second(&job("unit", "6/3/3")).is_some_and(|w| w.contains("past this Mac's limit")));
         stop(&mut a);
@@ -7715,10 +9706,19 @@ mod tests {
         assert!(a.try_start(0, job("terrain", "6/1/1"), &cond, Some(&root), &mut Vec::new()));
         a.free_set = Some(50 << 30);
         a.start_second(&[job("peaks", "6/2/2")], &cond, Some(&root));
-        assert!(a.slots[1].running.is_none() && a.beside_why.as_deref().is_some_and(|w| w.contains("on the disk")), "{:?}", a.beside_why);
+        assert!(
+            a.slots[1].running.is_none() && a.beside_why.as_deref().is_some_and(|w| w.contains("on the disk")),
+            "{:?}",
+            a.beside_why
+        );
         a.free_set = Some(100 << 30);
         a.start_second(&[job("peaks", "6/2/2")], &cond, Some(&root));
-        assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(), Some("peaks 6/2/2"), "{:?}", a.beside_why);
+        assert_eq!(
+            a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(),
+            Some("peaks 6/2/2"),
+            "{:?}",
+            a.beside_why
+        );
         stop(&mut a);
         // A target of a measured step, itself never run: by its step's largest (a prior), not cold.
         assert!(a.measured_job(&job("peaks", "6/9/9")).is_some_and(|m| m.mem_mb == 5120 && !m.own));
@@ -7733,16 +9733,40 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
         a.free_set = Some(100 << 30);
         // (A Mac of 16 GB: its limit 12 GB.)
         a.mem_set = Some((16 << 10, 12 << 10));
-        let job = |step: &str, t: &str| JobSpec { id: format!("{step} {t}"), what: step.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }) };
+        let job = |step: &str, t: &str| JobSpec {
+            id: format!("{step} {t}"),
+            what: step.into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
+        };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let c = a.coord.as_ref().unwrap();
-        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step), ..Default::default() };
-        c.add_costs(&[(crate::coord::cost_key("unit", "6/3/3"), cost("unit", 9216)), (crate::coord::cost_key("labels", "labels"), cost("labels", 6144))]);
+        let cost = |step: &str, mb: u64| crate::coord::Cost {
+            peak_mb: mb,
+            secs: 60,
+            worker: None,
+            v: crate::coord::cost_version(step),
+            ..Default::default()
+        };
+        c.add_costs(&[
+            (crate::coord::cost_key("unit", "6/3/3"), cost("unit", 9216)),
+            (crate::coord::cost_key("labels", "labels"), cost("labels", 6144)),
+        ]);
         assert!(a.try_start(0, job("unit", "6/3/3"), &cond, Some(&root), &mut Vec::new()));
         let tick = |a: &mut Agent, held: Vec<Option<u64>>| {
             a.sampler.set_test(Some(held), Some(false));
@@ -7756,7 +9780,12 @@ mod tests {
         tick(&mut a, vec![Some(1 << 10), None]);
         let labels = [job("labels", "labels")];
         a.start_second(&labels, &cond, Some(&root));
-        assert!(a.slots[1].running.is_none() && a.beside_why.as_deref().is_some_and(|w| w.contains("past this Mac's limit")), "{:?}", a.beside_why);
+        assert!(
+            a.slots[1].running.is_none()
+                && a.beside_why.as_deref().is_some_and(|w| w.contains("past this Mac's limit")),
+            "{:?}",
+            a.beside_why
+        );
         // A stale file (a process not of the job's): the same.
         let note = |pid: u32| crate::offload::WaitNote { pid, worker: "ipad".into(), task: 7, since: now_s() };
         assert!(note(1).keep(&a.waiting_path(0)).map(std::mem::forget).is_some());
@@ -7769,9 +9798,17 @@ mod tests {
         assert_eq!(a.waiting_on(0).map(|n| n.worker), Some("ipad".to_string()));
         assert!(a.job_view(0).and_then(|j| j.waiting).is_some_and(|w| w.contains("waiting on ipad")));
         a.start_second(&labels, &cond, Some(&root));
-        assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(), Some("labels labels"), "{:?}", a.beside_why);
+        assert_eq!(
+            a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(),
+            Some("labels labels"),
+            "{:?}",
+            a.beside_why
+        );
         assert_eq!(a.slots[1].yields.as_deref(), Some("unit 6/3/3"));
-        assert_eq!(a.slots[1].running.as_ref().map(|r| r.threads), Some(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)));
+        assert_eq!(
+            a.slots[1].running.as_ref().map(|r| r.threads),
+            Some(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
+        );
         // The tail back, the unit going on (its file gone): within the limit, the Mac not short of
         // memory, nothing.
         std::fs::remove_file(a.waiting_path(0)).unwrap();
@@ -7781,7 +9818,12 @@ mod tests {
         // waited for), given back, not kept from this Mac, no floor learned of it; the unit goes on.
         tick(&mut a, vec![Some(5 << 10), Some(8 << 10)]);
         assert!(a.guard());
-        assert!(a.slots[1].running.is_none() && a.slots[1].yields.is_none() && a.slots[0].running.is_some() && a.slots[0].mem_drain.is_none());
+        assert!(
+            a.slots[1].running.is_none()
+                && a.slots[1].yields.is_none()
+                && a.slots[0].running.is_some()
+                && a.slots[0].mem_drain.is_none()
+        );
         assert!(a.guard_backoff.is_empty(), "{:?}", a.guard_backoff);
         assert!(a.coord.as_ref().unwrap().floor("labels", "labels").is_none());
         // Started beside it again, the Mac short of memory though within the limit: stopped at once.
@@ -7820,14 +9862,29 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/pool")).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.free_set = Some(100 << 30);
         a.mem_set = Some((48 << 10, 42 << 10));
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let seen = d.path().join("seen");
         let job = |step: &str, t: &str| {
             let script = format!("env > {0}/{step}.env; /usr/bin/nc -v -z -G 5 192.0.2.1 9 2> {0}/{step}.out; echo done >> {0}/{step}.out", seen.display());
-            JobSpec { id: format!("{step} {t}"), what: step.into(), cmd: vec!["/bin/sh".into(), "-c".into(), script], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }) }
+            JobSpec {
+                id: format!("{step} {t}"),
+                what: step.into(),
+                cmd: vec!["/bin/sh".into(), "-c".into(), script],
+                needs: Needs { nas: false },
+                restart_after_sleep: false,
+                record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
+            }
         };
         std::fs::create_dir_all(&seen).unwrap();
         let stop = |a: &mut Agent| {
@@ -7855,7 +9912,12 @@ mod tests {
             let out = seen.join(format!("{step}.out"));
             assert!(std::fs::read_to_string(&out).unwrap().contains("done"));
             let env = std::fs::read_to_string(seen.join(format!("{step}.env"))).unwrap();
-            assert!(env.contains(&format!("HTTPS_PROXY={url}\n")) && env.contains(&format!("{}={url}\n", crate::budget::PROXY_ENV)) && env.contains("NO_PROXY=localhost,127.0.0.1,::1\n"), "{env}");
+            assert!(
+                env.contains(&format!("HTTPS_PROXY={url}\n"))
+                    && env.contains(&format!("{}={url}\n", crate::budget::PROXY_ENV))
+                    && env.contains("NO_PROXY=localhost,127.0.0.1,::1\n"),
+                "{env}"
+            );
             assert!(std::fs::read_to_string(&out).unwrap().contains("Operation not permitted"), "{step}: sandboxed");
         }
         stop(&mut a);
@@ -7874,11 +9936,26 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
         a.mem_set = Some((16 << 10, 12 << 10));
         let g: u64 = 1 << 30;
-        let job = |t: &str| JobSpec { id: format!("terrain {t}"), what: "terrain".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "terrain".into(), targets: vec![(t.into(), "k".into())] }) };
+        let job = |t: &str| JobSpec {
+            id: format!("terrain {t}"),
+            what: "terrain".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "terrain".into(), targets: vec![(t.into(), "k".into())] }),
+        };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         a.free_set = Some(100 * g);
         assert!(a.try_start(0, job("6/1/1"), &cond, Some(&root), &mut Vec::new()));
@@ -7902,8 +9979,21 @@ mod tests {
         assert!(!a.disk_guard(Some(&root)));
         assert!(a.disk_guard(Some(&root)) && a.slots[0].running.is_none(), "given back");
         assert!(!a.mem.retry.contains_key("terrain 6/1/1"), "not held against it as a failure");
-        assert!(a.coord.as_ref().unwrap().disks().get(&crate::coord::cost_key("terrain", "6/1/1")).is_some_and(|mb| *mb >= 7 << 10), "{:?}", a.coord.as_ref().unwrap().disks());
-        assert!(a.guard_last.as_ref().is_some_and(|(_, w)| w.contains("given back by the disk guard")), "{:?}", a.guard_last);
+        assert!(
+            a.coord
+                .as_ref()
+                .unwrap()
+                .disks()
+                .get(&crate::coord::cost_key("terrain", "6/1/1"))
+                .is_some_and(|mb| *mb >= 7 << 10),
+            "{:?}",
+            a.coord.as_ref().unwrap().disks()
+        );
+        assert!(
+            a.guard_last.as_ref().is_some_and(|(_, w)| w.contains("given back by the disk guard")),
+            "{:?}",
+            a.guard_last
+        );
         // Two frozen (the second filling the disk past half the reserve meanwhile), no room to make:
         // the one taking the most given back first, the other kept frozen until the next decision.
         a.free_set = Some(200 * g);
@@ -7916,7 +10006,10 @@ mod tests {
         assert!(a.sampler.disk_frozen(0) && a.sampler.disk_frozen(1));
         a.free_set = Some(10 * g);
         assert!(!a.disk_guard(Some(&root)));
-        assert!(a.disk_guard(Some(&root)) && a.slots[1].running.is_none() && a.slots[0].running.is_some(), "the larger given back");
+        assert!(
+            a.disk_guard(Some(&root)) && a.slots[1].running.is_none() && a.slots[0].running.is_some(),
+            "the larger given back"
+        );
         assert!(a.sampler.disk_frozen(0));
         a.free_set = Some(40 * g);
         assert!(!a.disk_guard(Some(&root)) && !a.sampler.disk_frozen(0), "the other goes on once there's room");
@@ -7934,7 +10027,15 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
         a.mem_set = Some((64 << 10, 56 << 10));
         let g: u64 = 1 << 30;
@@ -7942,13 +10043,32 @@ mod tests {
         // 40 map tiles of 1 GB each on the disk, one of 3 GB; a unit of 10 GB.
         let tiles: Vec<String> = (0..40).map(|i| format!("6/{i}/0")).collect();
         let c = a.coord.as_ref().unwrap();
-        let cost = |step: &str, mb: u64| crate::coord::Cost { peak_mb: mb, secs: 60, worker: None, v: crate::coord::cost_version(step), ..Default::default() };
-        c.add_costs(&[(crate::coord::cost_key("pack", "6/0/0"), cost("pack", 1000)), (crate::coord::cost_key("unit", "6/9/9"), cost("unit", 4000))]);
+        let cost = |step: &str, mb: u64| crate::coord::Cost {
+            peak_mb: mb,
+            secs: 60,
+            worker: None,
+            v: crate::coord::cost_version(step),
+            ..Default::default()
+        };
+        c.add_costs(&[
+            (crate::coord::cost_key("pack", "6/0/0"), cost("pack", 1000)),
+            (crate::coord::cost_key("unit", "6/9/9"), cost("unit", 4000)),
+        ]);
         let mut disks: Vec<(String, u64)> = tiles.iter().map(|t| (crate::coord::cost_key("pack", t), 1024)).collect();
         disks[39].1 = 3072;
         disks.push((crate::coord::cost_key("unit", "6/9/9"), 10 << 10));
         c.add_disks(&disks);
-        let batch = JobSpec { id: "pack 6/0/0".into(), what: "map tiles".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "pack".into(), targets: tiles.iter().map(|t| (t.clone(), "k".into())).collect() }) };
+        let batch = JobSpec {
+            id: "pack 6/0/0".into(),
+            what: "map tiles".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work {
+                step: "pack".into(),
+                targets: tiles.iter().map(|t| (t.clone(), "k".into())).collect(),
+            }),
+        };
         assert_eq!(a.measured_job(&batch).map(|m| m.disk_mb), Some(39 * 1024 + 3072), "summed, not its largest");
         a.free_set = Some(100 * g);
         assert!(a.try_start(0, batch, &cond, Some(&root), &mut Vec::new()));
@@ -7958,7 +10078,14 @@ mod tests {
         a.sampler.set_test_disk(Some(60 * g), Some(vec![Some(5 * g), None]));
         a.sampler.tick();
         assert_eq!(a.disk_left(0), (34 * 1024 + 3072) << 20);
-        let unit = JobSpec { id: "unit 6/9/9".into(), what: "a unit".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "unit".into(), targets: vec![("6/9/9".into(), "k".into())] }) };
+        let unit = JobSpec {
+            id: "unit 6/9/9".into(),
+            what: "a unit".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "unit".into(), targets: vec![("6/9/9".into(), "k".into())] }),
+        };
         // 10 GB, 37 GB to come and the 30 kept free: past 60 GB free (its largest alone, 3 GB, would
         // have let it start, and the guard give it back an hour on, and again).
         a.free_set = Some(60 * g);
@@ -7973,7 +10100,10 @@ mod tests {
         // same once room-making has done what it can.
         c_disks_huge(a.coord.as_ref().unwrap());
         a.free_set = Some(40 * g);
-        assert!(a.try_start(0, unit.clone(), &cond, Some(&root), &mut Vec::new()), "started alone, the guard its backstop");
+        assert!(
+            a.try_start(0, unit.clone(), &cond, Some(&root), &mut Vec::new()),
+            "started alone, the guard its backstop"
+        );
         if let Some(r) = a.slots[0].running.as_mut() {
             r.stop(Duration::from_secs(5));
         }
@@ -7994,7 +10124,10 @@ mod tests {
         scratched.cmd.extend(["--scratch".into(), mine.to_string_lossy().into_owned()]);
         let mut w = Vec::new();
         assert!(!a.try_start(0, scratched, &cond, Some(&root), &mut w));
-        assert!(a.slots[0].running.is_none() && w.iter().any(|x| x.why.contains("waits for room on the disk")), "{w:?}");
+        assert!(
+            a.slots[0].running.is_none() && w.iter().any(|x| x.why.contains("waits for room on the disk")),
+            "{w:?}"
+        );
         assert!(mine.exists() && !other.exists(), "its own scratch kept, the other's freed for room");
         a.floor_short = None;
         // So too with the owner's room target set: alone, the reserve and the target are what it
@@ -8002,7 +10135,10 @@ mod tests {
         a.room_target = Some(room::Target { bytes: 20 * g, by: "a test".into(), at: now_s() });
         a.free_set = Some(room::RESERVE + 21 * g);
         let mut w = Vec::new();
-        assert!(a.try_start(0, unit.clone(), &cond, Some(&root), &mut w), "started alone past a high floor, the target kept: {w:?}");
+        assert!(
+            a.try_start(0, unit.clone(), &cond, Some(&root), &mut w),
+            "started alone past a high floor, the target kept: {w:?}"
+        );
         if let Some(r) = a.slots[0].running.as_mut() {
             r.stop(Duration::from_secs(5));
         }
@@ -8017,15 +10153,33 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
         a.free_set = Some(40 << 30);
         // (A Mac of 16 GB: its limit 12 GB.)
         a.mem_set = Some((16 << 10, 12 << 10));
         let job = |id: &str, targets: &[&str]| {
             let step = id.split(' ').next().unwrap();
-            let record = Some(build::Work { step: step.into(), targets: targets.iter().map(|t| (t.to_string(), "k".to_string())).collect() });
-            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record }
+            let record = Some(build::Work {
+                step: step.into(),
+                targets: targets.iter().map(|t| (t.to_string(), "k".to_string())).collect(),
+            });
+            JobSpec {
+                id: id.into(),
+                what: id.into(),
+                cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+                needs: Needs { nas: false },
+                restart_after_sleep: false,
+                record,
+            }
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         // (A costs file an earlier job left, naming a target begun and never ended: gone as the next
@@ -8049,11 +10203,19 @@ mod tests {
         // (asked through its channel), and nothing starts beside the larger meanwhile.
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], false);
         assert!(!a.guard());
-        assert!(a.slots[1].mem_drain.as_deref().is_some_and(|w| w.contains("past this Mac's limit of 12.0 GB")), "{:?}", a.slots[1].mem_drain);
+        assert!(
+            a.slots[1].mem_drain.as_deref().is_some_and(|w| w.contains("past this Mac's limit of 12.0 GB")),
+            "{:?}",
+            a.slots[1].mem_drain
+        );
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], false);
         assert_eq!(std::fs::read_to_string(a.control_path(1)).unwrap(), "drain");
         a.start_second(&[job("unit 6/3/3", &["6/3/3"])], &cond, Some(&root));
-        assert!(a.beside_why.as_deref().is_some_and(|w| w.contains("nothing starts beside terrain 6/1/1")), "{:?}", a.beside_why);
+        assert!(
+            a.beside_why.as_deref().is_some_and(|w| w.contains("nothing starts beside terrain 6/1/1")),
+            "{:?}",
+            a.beside_why
+        );
         // The drained one reaching no safe point in the time a pause gives: stopped at once.
         a.grace = Duration::ZERO;
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], false);
@@ -8073,13 +10235,27 @@ mod tests {
         assert!(a.sampler.frozen(0));
         assert!(a.guard() && a.slots[0].running.is_none());
         let c = a.coord.as_ref().unwrap();
-        assert_eq!((c.floor("terrain", "6/1/1").map(|f| (f.mb, f.alone)), c.floor("terrain", "6/1/2")), (Some((13 << 10, false)), None));
+        assert_eq!(
+            (c.floor("terrain", "6/1/1").map(|f| (f.mb, f.alone)), c.floor("terrain", "6/1/2")),
+            (Some((13 << 10, false)), None)
+        );
         assert!(!a.mem.retry.contains_key("terrain 6/1/1"), "not held against it as a failure");
-        assert!(a.wait_reason(&job("terrain 6/1/1", &["6/1/1"]), &cond).is_some_and(|w| w.contains("tried here again in 60 min")));
+        assert!(a
+            .wait_reason(&job("terrain 6/1/1", &["6/1/1"]), &cond)
+            .is_some_and(|w| w.contains("tried here again in 60 min")));
         let v = a.guard_view();
-        assert!(v.on && v.limit_mb == 12 << 10 && v.last.as_ref().is_some_and(|(_, w)| w.contains("terrain 6/1/1 stopped by the memory guard: it held 13.0 GB")), "{v:?}");
+        assert!(
+            v.on && v.limit_mb == 12 << 10
+                && v.last
+                    .as_ref()
+                    .is_some_and(|(_, w)| w.contains("terrain 6/1/1 stopped by the memory guard: it held 13.0 GB")),
+            "{v:?}"
+        );
         // A batch's floor past the limit: the target tried again in a job of its own, not held.
-        let works = vec![build::Work { step: "terrain".into(), targets: vec![("6/1/1".into(), "k".into()), ("6/1/2".into(), "k".into())] }];
+        let works = vec![build::Work {
+            step: "terrain".into(),
+            targets: vec![("6/1/1".into(), "k".into()), ("6/1/2".into(), "k".into())],
+        }];
         let h = a.guard_holds(&works);
         assert!(h.here.is_empty() && h.alone.contains(&("terrain".to_string(), "6/1/1".to_string())));
         // Learned alone (a job of that one target): held here, and everywhere while no Mac has room,
@@ -8091,26 +10267,63 @@ mod tests {
         let c = a.coord.as_ref().unwrap();
         assert_eq!(c.floor("terrain", "6/1/1").map(|f| (f.mb, f.alone)), Some((14 << 10, true)));
         let h = a.guard_holds(&works);
-        assert!(h.here.contains(&("terrain".to_string(), "6/1/1".to_string())) && h.here.len() == 1 && h.all.len() == 1 && h.alone.is_empty());
+        assert!(
+            h.here.contains(&("terrain".to_string(), "6/1/1".to_string()))
+                && h.here.len() == 1
+                && h.all.len() == 1
+                && h.alone.is_empty()
+        );
         assert!(h.why[0].why.contains("more than any Mac in the pool has"), "{:?}", h.why);
-        let w = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{}", c.contact.urls[0].rsplit(':').next().unwrap())], c.contact.token.clone(), "big");
-        let _ = w.ask(&crate::coord::Ask { kind: "native".into(), label: Some("big (helper)".into()), can: vec!["terrain".into()], mem_mb: 30 << 10, limit_mb: Some(42 << 10), ..Default::default() });
+        let w = crate::coord::client::Client::at(
+            vec![format!("http://127.0.0.1:{}", c.contact.urls[0].rsplit(':').next().unwrap())],
+            c.contact.token.clone(),
+            "big",
+        );
+        let _ = w.ask(&crate::coord::Ask {
+            kind: "native".into(),
+            label: Some("big (helper)".into()),
+            can: vec!["terrain".into()],
+            mem_mb: 30 << 10,
+            limit_mb: Some(42 << 10),
+            ..Default::default()
+        });
         let h = a.guard_holds(&works);
-        assert!(h.here.len() == 1 && h.all.is_empty() && h.why[0].why.contains("left to a Mac with room"), "{:?}", h.why);
+        assert!(
+            h.here.len() == 1 && h.all.is_empty() && h.why[0].why.contains("left to a Mac with room"),
+            "{:?}",
+            h.why
+        );
         // A step only the lead runs (heritage), its floor past the lead's limit: judged against the
         // lead's limit, held, the status naming the member whose limit fits it and how to hand it
         // the lead; past every member's, no member named.
         let c = a.coord.as_ref().unwrap();
         let lead_only = vec![build::Work { step: "heritage".into(), targets: vec![("heritage".into(), "k".into())] }];
-        let floor = |mb| vec![(crate::coord::cost_key("heritage", "heritage"), memguard::Floor { mb, alone: true, v: crate::coord::cost_version("heritage") })];
+        let floor = |mb| {
+            vec![(
+                crate::coord::cost_key("heritage", "heritage"),
+                memguard::Floor { mb, alone: true, v: crate::coord::cost_version("heritage") },
+            )]
+        };
         c.add_floors(&floor(14 << 10));
         let h = a.guard_holds(&lead_only);
         assert!(h.all.len() == 1, "{:?}", h.why);
         let why = &h.why[0].why;
-        assert!(why.contains("past the lead's limit of 12.0 GB; this step runs only on the lead") && why.contains("big's limit is 42.0 GB") && why.contains("`scenic lead give big`") && !why.contains("(helper)") && !why.contains("more than any Mac"), "{why}");
+        assert!(
+            why.contains("past the lead's limit of 12.0 GB; this step runs only on the lead")
+                && why.contains("big's limit is 42.0 GB")
+                && why.contains("`scenic lead give big`")
+                && !why.contains("(helper)")
+                && !why.contains("more than any Mac"),
+            "{why}"
+        );
         c.add_floors(&floor(50 << 10));
         let why = &a.guard_holds(&lead_only).why[0].why;
-        assert!(why.contains("past the lead's limit of 12.0 GB") && why.contains("no member's limit fits it") && !why.contains("lead give"), "{why}");
+        assert!(
+            why.contains("past the lead's limit of 12.0 GB")
+                && why.contains("no member's limit fits it")
+                && !why.contains("lead give"),
+            "{why}"
+        );
         c.floors(true, Some("heritage"), None);
         // The job beside the larger drained when the larger is the second slot's: the first slot
         // starts nothing until the larger ends.
@@ -8118,7 +10331,9 @@ mod tests {
         assert!(a.try_start(0, job("pack 6/4/4", &["6/4/4"]), &cond, Some(&root), &mut Vec::new()));
         tick(&mut a, vec![Some(4 << 10), Some(9 << 10)], false);
         assert!(!a.guard() && a.slots[0].mem_drain.is_some());
-        assert!(a.waits_for_second(&job("unit 6/3/3", &["6/3/3"])).is_some_and(|w| w.contains("held more memory together")));
+        assert!(a
+            .waits_for_second(&job("unit 6/3/3", &["6/3/3"]))
+            .is_some_and(|w| w.contains("held more memory together")));
         // This Mac's memory unknown: nothing stopped, the status saying why.
         a.mem_set = Some((0, 0));
         tick(&mut a, vec![Some(20 << 10), Some(20 << 10)], true);
@@ -8145,10 +10360,28 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
-        let r = build::MapUpdate { began: 100, regions: vec!["a".into()], last: false, units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(), over: false, low: true, low_at: None };
+        let a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        let r = build::MapUpdate {
+            began: 100,
+            regions: vec!["a".into()],
+            last: false,
+            units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(),
+            over: false,
+            low: true,
+            low_at: None,
+        };
         a.keep_map_update(r.clone()).unwrap();
-        let file = || -> build::MapUpdate { serde_json::from_slice(&std::fs::read(home.join(MAP_UPDATE_FILE)).unwrap()).unwrap() };
+        let file = || -> build::MapUpdate {
+            serde_json::from_slice(&std::fs::read(home.join(MAP_UPDATE_FILE)).unwrap()).unwrap()
+        };
         // (It makes the low zooms: noted as when they were last made.)
         assert_eq!(file(), build::MapUpdate { low_at: Some(100), ..r.clone() });
         // Its catalog made: over, kept without its units (whatever changed meanwhile goes out with
@@ -8159,7 +10392,15 @@ mod tests {
         assert!(f.over && f.units.is_empty() && f.began == 100);
         // A dry run beside it (a second agent on this Mac, planning only): its map updates its own, never
         // the file the real one's jobs read.
-        let dry = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
+        let dry = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: true,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         dry.keep_map_update(build::MapUpdate { began: 200, ..r.clone() }).unwrap();
         assert_eq!(file().began, 100);
         // The next map update leaving the low zooms (crate::agent::publish): when they were last made carried.
@@ -8168,33 +10409,67 @@ mod tests {
         a.keep_map_update(build::MapUpdate { began: 400, ..r }).unwrap();
         assert_eq!(file().low_at, Some(400));
         // (A file from before the low zooms later: it made the low zooms, none noted.)
-        let old: build::MapUpdate = serde_json::from_str(r#"{"began":1,"regions":[],"last":false,"units":{}}"#).unwrap();
+        let old: build::MapUpdate =
+            serde_json::from_str(r#"{"began":1,"regions":[],"last":false,"units":{}}"#).unwrap();
         assert!(old.low && old.low_at.is_none());
     }
 
     #[test]
     fn a_map_update_shared_the_leads_own_job_of_its_map_tiles_takes_its_share() {
-        let w = |step: &str, n: usize| build::Work { step: step.into(), targets: (0..n).map(|i| (format!("6/1/{i}"), "k".into())).collect() };
-        let sizes = |b: Vec<(build::Work, usize)>| b.into_iter().map(|(w, t)| (w.step, w.targets.len(), t)).collect::<Vec<_>>();
+        let w = |step: &str, n: usize| build::Work {
+            step: step.into(),
+            targets: (0..n).map(|i| (format!("6/1/{i}"), "k".into())).collect(),
+        };
+        let sizes =
+            |b: Vec<(build::Work, usize)>| b.into_iter().map(|(w, t)| (w.step, w.targets.len(), t)).collect::<Vec<_>>();
         // (One member asking: half each, the lead's from the front; the other steps as they were.)
-        let share = |step: &str, total: usize, n: usize| if publish::SHARED_IN_UPDATE.contains(&step) { publish::lead_share(total, n, 1) } else { n };
-        assert_eq!(sizes(batches_sized(vec![w("pack", 10), w("roadunits", 1)], &share)), [("pack".to_string(), 5, 10), ("pack".to_string(), 5, 10), ("roadunits".to_string(), 1, 1)]);
+        let share = |step: &str, total: usize, n: usize| {
+            if publish::SHARED_IN_UPDATE.contains(&step) {
+                publish::lead_share(total, n, 1)
+            } else {
+                n
+            }
+        };
+        assert_eq!(
+            sizes(batches_sized(vec![w("pack", 10), w("roadunits", 1)], &share)),
+            [("pack".to_string(), 5, 10), ("pack".to_string(), 5, 10), ("roadunits".to_string(), 1, 1)]
+        );
         assert_eq!(sizes(batches(vec![w("pack", 10)])), [("pack".to_string(), 10, 10)]);
     }
 
     /// An agent that runs jobs (no dry run), the NAS at `root`: the lead's, or a member's.
     fn running_agent(root: &Path, home: &Path, helper: bool) -> Agent {
-        test_agent(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper }).unwrap()
+        test_agent(Options {
+            root: Some(root.to_path_buf()),
+            home: home.to_path_buf(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper,
+        })
+        .unwrap()
     }
 
     /// A forecast made now: the build done (nothing left to build), or not.
     fn forecast_now(done: bool) -> forecast::Forecast {
-        forecast::Forecast { at: now_s(), done_at: (!done).then(|| now_s() + 3600), why: done.then(|| forecast::NOTHING_LEFT.to_string()), ..Default::default() }
+        forecast::Forecast {
+            at: now_s(),
+            done_at: (!done).then(|| now_s() + 3600),
+            why: done.then(|| forecast::NOTHING_LEFT.to_string()),
+            ..Default::default()
+        }
     }
 
     /// A job that waits half a minute, needing nothing.
     fn waiting_job(id: &str) -> JobSpec {
-        JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: None }
+        JobSpec {
+            id: id.into(),
+            what: id.into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: None,
+        }
     }
 
     fn put(p: &Path, b: &[u8]) {
@@ -8226,7 +10501,11 @@ mod tests {
         assert_eq!(a.tend_caches(Some(&root), true), None);
         assert!(!copy(1).exists() && c.join("chm10/a.tif").exists());
         assert_eq!(a.mem.trimmed.as_ref().map(|f| (f.bytes(), f.left)), Some((1000, 0)));
-        assert_eq!(a.cache_size.lock().unwrap().1.as_ref().map(|n| n.cheap), Some(crate::whole::testfiles::tiff(false).len() as u64), "counted again");
+        assert_eq!(
+            a.cache_size.lock().unwrap().1.as_ref().map(|n| n.cheap),
+            Some(crate::whole::testfiles::tiff(false).len() as u64),
+            "counted again"
+        );
         put(&copy(2), &[1; 1000]);
         a.tend_caches(Some(&root), true);
         assert!(copy(2).exists(), "once per finished state");
@@ -8238,7 +10517,10 @@ mod tests {
         assert!(copy(2).exists());
         a.forecast.borrow_mut().as_mut().unwrap().at -= 5;
         a.worked("unit 6/1/1");
-        assert_eq!(a.tend_caches(Some(&root), true).as_deref(), Some("the build's forecast is from before the last job here ended"));
+        assert_eq!(
+            a.tend_caches(Some(&root), true).as_deref(),
+            Some("the build's forecast is from before the last job here ended")
+        );
         assert!(copy(2).exists());
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         a.tend_caches(Some(&root), true);
@@ -8310,12 +10592,33 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         // (Not one loop at a time: the trim isn't waited for.)
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: false, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: false,
+            helper: false,
+        })
+        .unwrap();
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         // A trim under way (one that waits to be let go): the loop isn't held, and jobs start
         // meanwhile (what they use they hold: store::cachefile).
         let (go, wait) = std::sync::mpsc::channel::<()>();
-        a.caches_task = Some(CachesTask { ask: None, toward: None, disk: false, began: Instant::now(), thread: std::thread::spawn(move || wait.recv().map(|()| room::Freed { freed: BTreeMap::from([("blobs".to_string(), 1000)]), ..Default::default() }).map_err(anyhow::Error::from)) });
+        a.caches_task = Some(CachesTask {
+            ask: None,
+            toward: None,
+            disk: false,
+            began: Instant::now(),
+            thread: std::thread::spawn(move || {
+                wait.recv()
+                    .map(|()| room::Freed {
+                        freed: BTreeMap::from([("blobs".to_string(), 1000)]),
+                        ..Default::default()
+                    })
+                    .map_err(anyhow::Error::from)
+            }),
+        });
         assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.starts_with("this Mac's caches are being trimmed")));
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(a.try_start(0, waiting_job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
@@ -8342,16 +10645,21 @@ mod tests {
         let mut a = running_agent(&root, &home, false);
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         // (A process group of its own, as a job's.)
-        let mut left = store::spawn::spawn(store::spawn::command("/bin/sh").args(["-c", "sleep 3600"]).process_group(0)).unwrap();
+        let mut left =
+            store::spawn::spawn(store::spawn::command("/bin/sh").args(["-c", "sleep 3600"]).process_group(0)).unwrap();
         let pgid = left.id() as i32;
-        let group = |leader_start: u64| jobs::Group { pgid, leader_start, started: now_s() - 5, id: "unit 6/1/1".into() };
+        let group =
+            |leader_start: u64| jobs::Group { pgid, leader_start, started: now_s() - 5, id: "unit 6/1/1".into() };
         // Its group's id another program's now (another leader's start time): not the job's.
         a.orphans.push(group(1));
         assert_eq!(a.tend_caches(Some(&root), true), None);
         assert!(a.orphans.is_empty());
         // The job's: held while it runs, not once it's gone.
         a.orphans.push(group(crate::sys::process_start(pgid).unwrap()));
-        assert_eq!(a.tend_caches(Some(&root), true).as_deref(), Some("a job an earlier agent left still runs here (unit 6/1/1)"));
+        assert_eq!(
+            a.tend_caches(Some(&root), true).as_deref(),
+            Some("a job an earlier agent left still runs here (unit 6/1/1)")
+        );
         left.kill().unwrap();
         left.wait().unwrap();
         assert_eq!(a.tend_caches(Some(&root), true), None);
@@ -8367,10 +10675,26 @@ mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let c = home.join("cache");
         put(&c.join("base/base/6-1-1.0000000000000001.base"), &[1; 500]);
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: false, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: false,
+            helper: false,
+        })
+        .unwrap();
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         let (go, wait) = std::sync::mpsc::channel::<()>();
-        a.caches_task = Some(CachesTask { ask: None, toward: None, disk: false, began: Instant::now(), thread: std::thread::spawn(move || wait.recv().map(|()| room::Freed::default()).map_err(anyhow::Error::from)) });
+        a.caches_task = Some(CachesTask {
+            ask: None,
+            toward: None,
+            disk: false,
+            began: Instant::now(),
+            thread: std::thread::spawn(move || {
+                wait.recv().map(|()| room::Freed::default()).map_err(anyhow::Error::from)
+            }),
+        });
         room::request_clear(&home, "scenic clean on m4").unwrap();
         let settle = |a: &mut Agent| {
             while a.caches_task.as_ref().is_some_and(|t| !t.thread.is_finished()) {
@@ -8403,8 +10727,27 @@ mod tests {
         put(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), &[1; 1000]);
         let mut a = running_agent(&root, &home, true);
         let beat = |at: u64, done: bool, job: Option<&str>| {
-            let job = job.map(|id| JobView { id: id.into(), what: format!("Ranking the world's place labels ({id})"), started: at, paused: None, pausing: None, tail: String::new(), parts: Vec::new(), part: None, progress: None, mem_mb: None, threads: None, waiting: None });
-            let st = Status { host: "the-lead".into(), beat: at, job, forecast: Some(forecast::Forecast { at, ..forecast_now(done) }), ..Default::default() };
+            let job = job.map(|id| JobView {
+                id: id.into(),
+                what: format!("Ranking the world's place labels ({id})"),
+                started: at,
+                paused: None,
+                pausing: None,
+                tail: String::new(),
+                parts: Vec::new(),
+                part: None,
+                progress: None,
+                mem_mb: None,
+                threads: None,
+                waiting: None,
+            });
+            let st = Status {
+                host: "the-lead".into(),
+                beat: at,
+                job,
+                forecast: Some(forecast::Forecast { at, ..forecast_now(done) }),
+                ..Default::default()
+            };
             std::fs::write(root.join("state/status.json"), serde_json::to_vec(&st).unwrap()).unwrap();
         };
         // No word from the lead: nothing goes.
@@ -8426,7 +10769,9 @@ mod tests {
         beat(now_s(), true, None);
         a.heard = None;
         assert_eq!(a.tend_caches(Some(&root), true), None);
-        assert!(!c.join("chm10/a.tif").exists() && !c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack").exists());
+        assert!(
+            !c.join("chm10/a.tif").exists() && !c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack").exists()
+        );
         assert_eq!(a.mem.trimmed.as_ref().map(|f| (f.bytes(), f.left)), Some((tif.len() as u64 + 1000, 0)));
         // (Its own status says so: the lead notes it in the history from there.)
         assert!(a.mem.trimmed.as_ref().is_some_and(|f| f.why_not.is_none() && f.at >= a.started));
@@ -8452,13 +10797,22 @@ mod tests {
         // Asked while a job an earlier agent left runs here (its programs may not hold what they
         // use): not cleared, and why said; the ask taken up all the same.
         use std::os::unix::process::CommandExt;
-        let mut left = store::spawn::spawn(store::spawn::command("/bin/sh").args(["-c", "sleep 3600"]).process_group(0)).unwrap();
+        let mut left =
+            store::spawn::spawn(store::spawn::command("/bin/sh").args(["-c", "sleep 3600"]).process_group(0)).unwrap();
         let pgid = left.id() as i32;
-        a.orphans.push(jobs::Group { pgid, leader_start: crate::sys::process_start(pgid).unwrap(), started: now_s() - 5, id: "backup".into() });
+        a.orphans.push(jobs::Group {
+            pgid,
+            leader_start: crate::sys::process_start(pgid).unwrap(),
+            started: now_s() - 5,
+            id: "backup".into(),
+        });
         let r = room::request_clear(&home, "scenic clean on m4").unwrap();
         a.tend_caches(Some(&root), true);
         let f = a.mem.declined.clone().unwrap();
-        assert_eq!((f.asked, f.bytes(), f.why_not.as_deref()), (Some(r.at), 0, Some("a job an earlier agent left still runs here (backup)")));
+        assert_eq!(
+            (f.asked, f.bytes(), f.why_not.as_deref()),
+            (Some(r.at), 0, Some("a job an earlier agent left still runs here (backup)"))
+        );
         assert!(!asked(&home) && c.join("chm10/a.tif").exists() && a.mem.cleared.is_none());
         left.kill().unwrap();
         left.wait().unwrap();
@@ -8470,10 +10824,25 @@ mod tests {
         assert_eq!(a.tend_caches(Some(&root), true), None);
         let f = a.mem.cleared.clone().unwrap();
         assert_eq!((f.asked, f.by.as_deref(), f.why_not.as_deref()), (Some(r.at), Some("the menu bar on m4"), None));
-        assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 500), ("blobs".to_string(), 1000), ("canopy".to_string(), tif.len() as u64)]));
-        assert!(!c.join("chm10/a.tif").exists() && root.join("sources/canopy/a.tif").exists() && c.join("unit-stages.json").exists());
+        assert_eq!(
+            f.freed,
+            BTreeMap::from([
+                ("base".to_string(), 500),
+                ("blobs".to_string(), 1000),
+                ("canopy".to_string(), tif.len() as u64)
+            ])
+        );
+        assert!(
+            !c.join("chm10/a.tif").exists()
+                && root.join("sources/canopy/a.tif").exists()
+                && c.join("unit-stages.json").exists()
+        );
         assert!(!asked(&home));
-        assert_eq!(a.cache_size.lock().unwrap().1, Some(room::Sizes::default()), "counted again: nothing left to clear");
+        assert_eq!(
+            a.cache_size.lock().unwrap().1,
+            Some(room::Sizes::default()),
+            "counted again: nothing left to clear"
+        );
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.slots[0].running = None;
         // Declined later (no NAS): said apart, the last clear done kept.
@@ -8483,7 +10852,15 @@ mod tests {
         assert_eq!(a.mem.cleared.as_ref().map(|f| f.asked), Some(Some(r.at)));
         // A dry run beside it (another agent runs the jobs) takes up no ask.
         room::request_clear(&home, "scenic clean on m4").unwrap();
-        let mut dry = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
+        let mut dry = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: true,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         *dry.forecast.borrow_mut() = Some(forecast_now(true));
         dry.tend_caches(Some(&root), true);
         assert!(home.join(room::CLEAR_REQUEST).exists());
@@ -8496,7 +10873,19 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let mut a = running_agent(&root, &home, false);
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
-        let helper = |at: u64, bytes: u64, left: u64| Status { host: "m1".into(), caches: Some(room::Caches { trimmed: Some(room::Freed { at, freed: BTreeMap::from([("canopy".to_string(), bytes)]), left, ..Default::default() }), ..Default::default() }), ..Default::default() };
+        let helper = |at: u64, bytes: u64, left: u64| Status {
+            host: "m1".into(),
+            caches: Some(room::Caches {
+                trimmed: Some(room::Freed {
+                    at,
+                    freed: BTreeMap::from([("canopy".to_string(), bytes)]),
+                    left,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
         // One from before this agent started (the one before noted it), then a new one, twice; one
         // that freed nothing, keeping nothing new (none); one that freed nothing but keeps more.
         a.note_helpers_caches(&[helper(a.started - 60, 3 << 30, 0)]);
@@ -8506,8 +10895,15 @@ mod tests {
         a.note_helpers_caches(&[helper(a.started + 12, 0, 2 << 30)]);
         a.note_helpers_caches(&[helper(a.started + 15, 0, 2 << 30)]);
         let (_, _, events, _) = a.coord.as_ref().unwrap().for_forecast();
-        let noted: Vec<(Option<&str>, &str)> = events.iter().filter(|e| e.kind == "caches").map(|e| (e.worker.as_deref(), e.note.as_str())).collect();
-        assert_eq!(noted, [(Some("m1"), "trimmed its caches after the build: 3.0 GB freed (canopy squares 3.0 GB)"), (Some("m1"), "trimmed its caches after the build: 0 MB freed; 2.0 GB kept (the NAS hasn't it yet)")]);
+        let noted: Vec<(Option<&str>, &str)> =
+            events.iter().filter(|e| e.kind == "caches").map(|e| (e.worker.as_deref(), e.note.as_str())).collect();
+        assert_eq!(
+            noted,
+            [
+                (Some("m1"), "trimmed its caches after the build: 3.0 GB freed (canopy squares 3.0 GB)"),
+                (Some("m1"), "trimmed its caches after the build: 0 MB freed; 2.0 GB kept (the NAS hasn't it yet)")
+            ]
+        );
     }
 
     /// A root as the build has it before the units' keys changed: a pass whose reaches build
@@ -8522,7 +10918,8 @@ mod tests {
         let date = "2026-09-28";
         std::fs::create_dir_all(root.join("catalog")).unwrap();
         put(&root.join(format!("sources/osm/{date}/pass.1111111111111111.json")), b"{}");
-        let recipes = vec![recipes::Recipe { id: "a".into(), name: "A".into(), outline: vec!["place:-21.9,64.13,20".into()] }];
+        let recipes =
+            vec![recipes::Recipe { id: "a".into(), name: "A".into(), outline: vec!["place:-21.9,64.13,20".into()] }];
         let cov = crate::coverage::Coverage::fixture(&recipes, None, &root.join("inputs/outlines")).unwrap();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         crate::inputs::regions::accept_fixture(root, &root.join("inputs/outlines"), &recipes, &mut m);
@@ -8534,14 +10931,24 @@ mod tests {
         put(&root.join(&rc), &reaches.encode().unwrap());
         m.insert(crate::reach::logical(date), rc);
         // (What the units wait for: the heritage sites' inputs and outputs, the buildings' index.)
-        m.insert(crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"));
+        m.insert(
+            crate::osmpass::set_name(date, "areas"),
+            format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"),
+        );
         crate::inputs::heritage::accept_fixture(root, &mut m);
         crate::inputs::elevation::accept_fixture(root, &mut m);
-        m.insert(crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE), format!("{}.6767676767676767.json", crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE)));
-        m.insert(crate::heritage::base_logical(date, "heritage-sources"), format!("work/heritage/{date}/base/heritage-sources.5656565656565656.json"));
+        m.insert(
+            crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE),
+            format!("{}.6767676767676767.json", crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE)),
+        );
+        m.insert(
+            crate::heritage::base_logical(date, "heritage-sources"),
+            format!("work/heritage/{date}/base/heritage-sources.5656565656565656.json"),
+        );
         let lo = "layers/terrain/lo/3-3-2.1111111111111111.pack";
         std::fs::create_dir_all(root.join(lo).parent().unwrap()).unwrap();
-        let mut w = store::pack::PackWriter::create(&root.join(lo), serde_json::json!({"layer": "terrain"}), false).unwrap();
+        let mut w =
+            store::pack::PackWriter::create(&root.join(lo), serde_json::json!({"layer": "terrain"}), false).unwrap();
         for z in 3..=8u8 {
             for x in 3 << (z - 3)..4 << (z - 3) {
                 for y in 2 << (z - 3)..3 << (z - 3) {
@@ -8553,17 +10960,26 @@ mod tests {
         m.insert("layers/terrain/lo/3-3-2".into(), lo.into());
         m.insert("base/6-28-17".into(), "base/6-28-17.6666666666666666.base".into());
         // Tree cover's z3 tile, its whole run's packs written now (by the trees program).
-        for (l, c) in [("layers/trees-cover/lo/3-3-2", "layers/trees-cover/lo/3-3-2.7777777777777777.pack"), ("layers/trees-cover/hi/6-28-17", "layers/trees-cover/hi/6-28-17.8888888888888888.pack")] {
+        for (l, c) in [
+            ("layers/trees-cover/lo/3-3-2", "layers/trees-cover/lo/3-3-2.7777777777777777.pack"),
+            ("layers/trees-cover/hi/6-28-17", "layers/trees-cover/hi/6-28-17.8888888888888888.pack"),
+        ] {
             put(&root.join(c), b"pack");
             m.insert(l.into(), c.into());
         }
         put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
         let mut keys = build::Keys::default();
         keys.lo.insert("reach".into(), build::reach_key(date, &m).unwrap());
-        keys.record("heritage-sites", &build::heritage_sites_work(&cov, date, &m, &keys, &input_digests(root)).unwrap().targets);
+        keys.record(
+            "heritage-sites",
+            &build::heritage_sites_work(&cov, date, &m, &keys, &input_digests(root)).unwrap().targets,
+        );
         keys.record("terrain", &rekey::v1::terrain_slope_targets(&cov, &m).0);
         keys.record("trees", &rekey::v1::trees_targets(&cov, &m));
-        let old = rekey::v1::unit_keys(&cov, date, &m, Some(&reaches), &input_digests(root), crate::buildtiles::TEST_RELEASE).pop().unwrap();
+        let old =
+            rekey::v1::unit_keys(&cov, date, &m, Some(&reaches), &input_digests(root), crate::buildtiles::TEST_RELEASE)
+                .pop()
+                .unwrap();
         assert_eq!(old.0.slash(), "6/28/17");
         keys.record("unit", &[("6/28/17".into(), old.1.clone())]);
         // (Under the new keys as recorded, it would be built again.)
@@ -8575,7 +10991,23 @@ mod tests {
         // (Terrain's z3 record read as its pieces and assembly, as every reader reads it.)
         let mut read = keys.clone();
         rekey::derive(&mut read, &cov, &m, &tiles);
-        let plan = build::plan(&cov, date, &m, &read, &input_digests(root), Some(&reaches), &tiles, build::MapUpdates { each: &cov.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() });
+        let plan = build::plan(
+            &cov,
+            date,
+            &m,
+            &read,
+            &input_digests(root),
+            Some(&reaches),
+            &tiles,
+            build::MapUpdates {
+                each: &cov.by_region(),
+                on_map: &BTreeMap::new(),
+                since_last: None,
+                current: None,
+                held: false,
+                way: Default::default(),
+            },
+        );
         assert!(plan.work.iter().any(|w| w.step == "unit" && w.targets[0].0 == "6/28/17"), "{:?}", plan.work);
         keys.save(root).unwrap();
         old.1
@@ -8592,8 +11024,11 @@ mod tests {
         assert!(!root.to_string_lossy().contains("projects/scenic-roads"), "not the project folder");
         let date = "2026-09-28";
         rekey_root_with(&root, [-220_000_000, 640_000_000, -10_000_000, 641_600_000]);
-        let m: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
-        let cov = crate::coverage::Coverage::accepted(&root, &crate::inputs::regions::read::source(&root, &m).unwrap(), None).unwrap();
+        let m: BTreeMap<String, String> =
+            serde_json::from_slice(&std::fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
+        let cov =
+            crate::coverage::Coverage::accepted(&root, &crate::inputs::regions::read::source(&root, &m).unwrap(), None)
+                .unwrap();
         let reaches = crate::reach::Reaches::load(&root, &m, date).ok().flatten().expect("the reaches");
         let mut keys = build::Keys::load(&root);
         let tiles = {
@@ -8603,7 +11038,23 @@ mod tests {
         };
         let mut read = keys.clone();
         rekey::derive(&mut read, &cov, &m, &tiles);
-        let plan = build::plan(&cov, date, &m, &read, &input_digests(&root), Some(&reaches), &tiles, build::MapUpdates { each: &cov.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false, way: Default::default() });
+        let plan = build::plan(
+            &cov,
+            date,
+            &m,
+            &read,
+            &input_digests(&root),
+            Some(&reaches),
+            &tiles,
+            build::MapUpdates {
+                each: &cov.by_region(),
+                on_map: &BTreeMap::new(),
+                since_last: None,
+                current: None,
+                held: false,
+                way: Default::default(),
+            },
+        );
         let unit = plan.work.iter().find(|w| w.step == "unit").expect("the unit to build").targets.clone();
         keys.record("unit", &unit);
         keys.save(&root).unwrap();
@@ -8619,7 +11070,10 @@ mod tests {
         let date = "2026-09-28";
         let mf = root.join("state/build/manifest.json");
         let mut m: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(&mf).unwrap()).unwrap();
-        m.insert(crate::osmpass::set_name(date, "outlines"), format!("sources/osm/{date}/sets/outlines.2323232323232323.osm.pbf"));
+        m.insert(
+            crate::osmpass::set_name(date, "outlines"),
+            format!("sources/osm/{date}/sets/outlines.2323232323232323.osm.pbf"),
+        );
         // (Outlines the pass made itself, before the step: no record of the step's.)
         m.insert(format!("sources/osm/{date}/outlines"), format!("sources/osm/{date}/outlines.2424242424242424.sect"));
         put(&mf, &serde_json::to_vec(&m).unwrap());
@@ -8632,16 +11086,27 @@ mod tests {
         assert_eq!(o.record.as_ref().map(|r| r.step.as_str()), Some("outlines"));
         assert!(o.cmd[1] == "outlines" && o.cmd.windows(2).any(|p| p == ["--pass", date]), "{:?}", o.cmd);
         // Nothing else of the build meanwhile (the z8 terrain, which waits for nothing else, among it).
-        assert!(!ids(&plan).iter().any(|i| i.starts_with("terrain-z8") || i.starts_with("unit ") || i.starts_with("spoken") || i.starts_with("lakefill")), "{:?}", ids(&plan));
+        assert!(
+            !ids(&plan).iter().any(|i| i.starts_with("terrain-z8")
+                || i.starts_with("unit ")
+                || i.starts_with("spoken")
+                || i.starts_with("lakefill")),
+            "{:?}",
+            ids(&plan)
+        );
         assert!(w.iter().any(|x| x.why.contains("outlines job")), "{w:?}");
         // Made under its key: the rest comes back, and no outlines job.
         let mut keys = build::Keys::load(&root);
         keys.record("outlines", &build::outlines_work(date, &m, &keys).unwrap().targets);
         keys.save(&root).unwrap();
         let plan = a.plan(&root, &cond, &mut Vec::new());
-        assert!(!ids(&plan).iter().any(|i| i.starts_with("outlines")) && ids(&plan).iter().any(|i| i.starts_with("terrain-z8")), "{:?}", ids(&plan));
+        assert!(
+            !ids(&plan).iter().any(|i| i.starts_with("outlines"))
+                && ids(&plan).iter().any(|i| i.starts_with("terrain-z8")),
+            "{:?}",
+            ids(&plan)
+        );
     }
-
 
     #[test]
     fn the_checklist_says_which_steps_helpers_take() {
@@ -8663,13 +11128,24 @@ mod tests {
         let sw = crate::inputs::switched_logical(crate::inputs::regions::UNIT);
         let name = format!("{sw}.1111111111111111.json");
         put(&root.join(&name), br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#);
-        put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&BTreeMap::from([(sw.clone(), name)])).unwrap());
+        put(
+            &root.join("state/build/manifest.json"),
+            &serde_json::to_vec(&BTreeMap::from([(sw.clone(), name)])).unwrap(),
+        );
         let a = agent(&root, &home);
         let (mut w, mut held) = (Vec::new(), Holds::default());
         assert!(a.region_jobs(&root, None, None, &mut w, &mut held).is_empty());
-        assert!(w.iter().any(|x| x.why.contains("older than the one the newer readers' switch (the regions', the elevation datasets') was recorded on")), "{w:?}");
+        assert!(
+            w.iter().any(|x| x.why.contains(
+                "older than the one the newer readers' switch (the regions', the elevation datasets') was recorded on"
+            )),
+            "{w:?}"
+        );
         // Its file unreadable: unknown, so nothing either.
-        put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&BTreeMap::from([(sw, "gone.json".to_string())])).unwrap());
+        put(
+            &root.join("state/build/manifest.json"),
+            &serde_json::to_vec(&BTreeMap::from([(sw, "gone.json".to_string())])).unwrap(),
+        );
         let mut w = Vec::new();
         assert!(a.region_jobs(&root, None, None, &mut w, &mut held).is_empty());
         assert!(w.iter().any(|x| x.why.contains("can't be read now")), "{w:?}");
@@ -8681,7 +11157,12 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("catalog")).unwrap();
         let mut m = BTreeMap::new();
-        crate::inputs::regions::accept_fixture(&root, &root, &[recipes::Recipe { id: "x".into(), name: "X".into(), outline: vec!["osm:1".into()] }], &mut m);
+        crate::inputs::regions::accept_fixture(
+            &root,
+            &root,
+            &[recipes::Recipe { id: "x".into(), name: "X".into(), outline: vec!["osm:1".into()] }],
+            &mut m,
+        );
         put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
         let mut a = agent(&root, &home);
         a.step().unwrap();
@@ -8690,7 +11171,12 @@ mod tests {
         assert!(st.conditions.nas);
         // (The regions' check of their accepted version comes first, the gate's jobs first of all;
         // the backup after it.)
-        assert!(st.waiting.iter().any(|w| w.what == crate::agent::steps::title("backup") || w.what.starts_with("Checking the inputs dropped in regions")), "{:?}", st.waiting);
+        assert!(
+            st.waiting.iter().any(|w| w.what == crate::agent::steps::title("backup")
+                || w.what.starts_with("Checking the inputs dropped in regions")),
+            "{:?}",
+            st.waiting
+        );
         // Once backed up today, it isn't due.
         a.mem.last_ok.insert("backup".into(), now_s());
         let mut w = Vec::new();
@@ -8712,7 +11198,12 @@ mod tests {
         let put = |text: &str| {
             let p = dropbox.join("a.jsonl");
             std::fs::write(&p, text).unwrap();
-            std::fs::File::options().write(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(60)).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+                .unwrap();
         };
         put("{\"k\": \"x\", \"v\": -1}\n");
         let mut a = agent(&root, &home);
@@ -8734,10 +11225,15 @@ mod tests {
         // The first check: a full one, before every other job.
         let plan = a.plan(&root, &c, &mut w);
         assert_eq!(plan[0].id, format!("inputs {unit} full"));
-        assert!(plan[0].cmd[1] == "inputs" && plan[0].cmd.ends_with(&["--full".to_string()]) && plan[0].cmd.contains(&unit.to_string()));
+        assert!(
+            plan[0].cmd[1] == "inputs"
+                && plan[0].cmd.ends_with(&["--full".to_string()])
+                && plan[0].cmd.contains(&unit.to_string())
+        );
         // (Given the listing and acceptances its key was made from: inputs::Planned.)
         let at = plan[0].cmd.iter().position(|a| a == "--listing").unwrap();
-        let given: crate::inputs::Planned = serde_json::from_slice(&std::fs::read(&plan[0].cmd[at + 1]).unwrap()).unwrap();
+        let given: crate::inputs::Planned =
+            serde_json::from_slice(&std::fs::read(&plan[0].cmd[at + 1]).unwrap()).unwrap();
         assert_eq!(given.listing.files.keys().cloned().collect::<Vec<_>>(), ["a.jsonl"]);
         let work = plan[0].record.clone().unwrap();
         assert_eq!(work.targets[0].0, format!("inputs/{unit}"));
@@ -8766,7 +11262,11 @@ mod tests {
         // An acceptance asked of the agent: written by it (not by a dry run's), and the drop boxes
         // listed again, so its key changes and the unit's checked again.
         a.o.dry_run = false;
-        crate::inputs::ask(&home, &crate::inputs::Ask { unit: unit.into(), all: true, by: "a test".into(), ..Default::default() }).unwrap();
+        crate::inputs::ask(
+            &home,
+            &crate::inputs::Ask { unit: unit.into(), all: true, by: "a test".into(), ..Default::default() },
+        )
+        .unwrap();
         a.tend_gate(&root);
         a.o.dry_run = true;
         assert_eq!(crate::inputs::acceptances(&root, unit).unwrap().len(), 1);
@@ -8784,14 +11284,21 @@ mod tests {
             assert!(t.elapsed() < Duration::from_secs(30), "listed");
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(b.plan(&root, &c, &mut w).iter().filter(|j| j.id.starts_with("inputs ")).all(|j| !j.id.ends_with(" full")), "a new lead doesn't repeat a full check less than a day old");
+        assert!(
+            b.plan(&root, &c, &mut w).iter().filter(|j| j.id.starts_with("inputs ")).all(|j| !j.id.ends_with(" full")),
+            "a new lead doesn't repeat a full check less than a day old"
+        );
         // Off the gate: no longer shown, nor checked; its records forgotten when asked, by a job of
         // the lead's.
         std::fs::remove_file(root.join(crate::inputs::TEST_FLAG)).unwrap();
         b.step().unwrap();
         assert!(read_status(Some(&root), &d.path().join("home-b")).unwrap().inputs.is_empty());
         b.o.dry_run = false;
-        crate::inputs::ask(&d.path().join("home-b"), &crate::inputs::Ask { unit: unit.into(), forget: true, ..Default::default() }).unwrap();
+        crate::inputs::ask(
+            &d.path().join("home-b"),
+            &crate::inputs::Ask { unit: unit.into(), forget: true, ..Default::default() },
+        )
+        .unwrap();
         b.tend_gate(&root);
         b.o.dry_run = true;
         let plan = b.plan(&root, &c, &mut w);
@@ -8808,7 +11315,9 @@ mod tests {
     fn an_edit_to_the_regions_is_noticed() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        let r = |p: &str| vec![recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec![format!("place:{p},20")] }];
+        let r = |p: &str| {
+            vec![recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec![format!("place:{p},20")] }]
+        };
         let mut m1 = BTreeMap::new();
         crate::inputs::regions::accept_fixture(&root, &root, &r("-21.9,64.13"), &mut m1);
         let mut m2 = BTreeMap::new();
@@ -8826,7 +11335,10 @@ mod tests {
         // A run of edits holds the work an hour at most.
         let now = std::time::SystemTime::now();
         let ago = |m: u64| now - Duration::from_secs(m * 60);
-        assert_eq!(edit_held(Some((ago(50), ago(1))), now), Some((Duration::from_secs(60), Duration::from_secs(10 * 60))));
+        assert_eq!(
+            edit_held(Some((ago(50), ago(1))), now),
+            Some((Duration::from_secs(60), Duration::from_secs(10 * 60)))
+        );
         assert!(edit_held(Some((ago(61), ago(1))), now).is_none());
         assert!(edit_held(Some((ago(20), ago(16))), now).is_none());
     }
@@ -8841,7 +11353,15 @@ mod tests {
         std::fs::create_dir_all(apps.join("v1")).unwrap();
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: apps.join("v1"), dry_run: true, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: apps.join("v1"),
+            dry_run: true,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         assert_eq!(a.app, "v1");
         a.step().unwrap();
         let st = read_status(Some(&root), &home).unwrap();
@@ -8867,9 +11387,24 @@ mod tests {
         std::fs::create_dir_all(apps.join("v1")).unwrap();
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: apps.join("v1"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: apps.join("v1"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.free_set = Some(40 << 30);
-        let job = |id: &str, t: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "bldtiles".into(), targets: vec![(t.into(), "k".into())] }) };
+        let job = |id: &str, t: &str| JobSpec {
+            id: id.into(),
+            what: id.into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "bldtiles".into(), targets: vec![(t.into(), "k".into())] }),
+        };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         // (The two `sleep`s killed whatever the test's end, an assertion failing too.)
         struct Kill(Vec<i32>);
@@ -8897,7 +11432,10 @@ mod tests {
         tend(&mut a);
         for k in 0..SLOTS {
             assert_eq!(std::fs::read_to_string(a.control_path(k)).unwrap(), "drain");
-            assert_eq!(a.slots[k].running.as_ref().unwrap().pausing.as_deref(), Some("restarting into the newly installed app (v2)"));
+            assert_eq!(
+                a.slots[k].running.as_ref().unwrap().pausing.as_deref(),
+                Some("restarting into the newly installed app (v2)")
+            );
         }
         assert!(!a.update_due());
         // Past the grace with no safe point: not frozen (it would never end), the restart due; the
@@ -8936,9 +11474,24 @@ mod tests {
         std::fs::create_dir_all(apps.join("v1")).unwrap();
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: apps.join("v1"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: apps.join("v1"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.free_set = Some(40 << 30);
-        let job = |id: &str, step: &str, t: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }) };
+        let job = |id: &str, step: &str, t: &str| JobSpec {
+            id: id.into(),
+            what: id.into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }),
+        };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         struct Kill(i32);
         impl Drop for Kill {
@@ -9030,10 +11583,25 @@ mod tests {
         std::fs::create_dir_all(apps.join("v1")).unwrap();
         std::fs::create_dir_all(apps.join("v2")).unwrap();
         std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
-        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: apps.join("v1"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: apps.join("v1"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.free_set = Some(40 << 30);
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
-        let spec = JobSpec { id: "trees 6/1/1".into(), what: "x".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "trees".into(), targets: vec![("6/1/1".into(), "k".into())] }) };
+        let spec = JobSpec {
+            id: "trees 6/1/1".into(),
+            what: "x".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "trees".into(), targets: vec![("6/1/1".into(), "k".into())] }),
+        };
         assert!(a.try_start(0, spec, &cond, Some(&root), &mut Vec::new()));
         let pgid = a.slots[0].running.as_ref().unwrap().pgid;
         std::fs::remove_file(apps.join("current")).unwrap();
@@ -9066,7 +11634,10 @@ mod tests {
         a.free_set = Some(PASS_SPACE / 4);
         let mut w = Vec::new();
         let plan = a.plan(&root, &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() }, &mut w);
-        assert!(!plan.iter().any(|j| j.id == "osm-pass 2026-09-28") && w.iter().any(|x| x.why.contains("GB free")), "{w:?}");
+        assert!(
+            !plan.iter().any(|j| j.id == "osm-pass 2026-09-28") && w.iter().any(|x| x.why.contains("GB free")),
+            "{w:?}"
+        );
         // A complete pass of that planet: nothing to do.
         std::fs::write(root.join("sources/osm/2026-09-28/pass.0123456789abcdef.json"), b"{}").unwrap();
         let mut w = Vec::new();
@@ -9075,15 +11646,20 @@ mod tests {
 
     #[test]
     fn steps_in_batches() {
-        let w = |step: &str, n: usize| build::Work { step: step.into(), targets: (0..n).map(|i| (format!("6/{i}/0"), format!("k{i}"))).collect() };
+        let w = |step: &str, n: usize| build::Work {
+            step: step.into(),
+            targets: (0..n).map(|i| (format!("6/{i}/0"), format!("k{i}"))).collect(),
+        };
         let b = batches(vec![w("unit", 14), w("roadunits", 1), w("terrain", 2), w("pois", 3)]);
         let shape: Vec<(String, usize, usize)> = b.iter().map(|(w, t)| (w.step.clone(), w.targets.len(), *t)).collect();
         assert_eq!(
             shape,
-            [("unit", 6, 14), ("unit", 6, 14), ("unit", 2, 14), ("roadunits", 1, 1), ("terrain", 2, 2), ("pois", 3, 3)].map(|(s, n, t)| (s.to_string(), n, t))
+            [("unit", 6, 14), ("unit", 6, 14), ("unit", 2, 14), ("roadunits", 1, 1), ("terrain", 2, 2), ("pois", 3, 3)]
+                .map(|(s, n, t)| (s.to_string(), n, t))
         );
         // Every target once, in order, with its key.
-        let units: Vec<&(String, String)> = b.iter().filter(|(w, _)| w.step == "unit").flat_map(|(w, _)| &w.targets).collect();
+        let units: Vec<&(String, String)> =
+            b.iter().filter(|(w, _)| w.step == "unit").flat_map(|(w, _)| &w.targets).collect();
         assert_eq!(units.len(), 14);
         assert!(units.iter().enumerate().all(|(i, t)| t.0 == format!("6/{i}/0") && t.1 == format!("k{i}")));
     }
@@ -9097,7 +11673,13 @@ mod tests {
         done.slope.insert("6/40/20".into(), "piece".into());
         done.terrain.insert("6/41/20".into(), "earlier".into());
         for step in ["terrain", "slope"] {
-            let w = build::Work { step: step.into(), targets: vec![("6/40/20".into(), build::none_piece_key(step, "6/40/20")), ("6/41/20".into(), build::none_piece_key(step, "6/41/20"))] };
+            let w = build::Work {
+                step: step.into(),
+                targets: vec![
+                    ("6/40/20".into(), build::none_piece_key(step, "6/40/20")),
+                    ("6/41/20".into(), build::none_piece_key(step, "6/41/20")),
+                ],
+            };
             assert!(expect_same(&w, &done).is_empty(), "{step}");
         }
     }
@@ -9109,11 +11691,17 @@ mod tests {
             done.trees.insert(t.into(), k.into());
         }
         done.trees_lo.insert("3/3/2".into(), "d".into());
-        let w = |step: &str, ts: &[(&str, &str)]| build::Work { step: step.into(), targets: ts.iter().map(|(t, k)| (t.to_string(), k.to_string())).collect() };
+        let w = |step: &str, ts: &[(&str, &str)]| build::Work {
+            step: step.into(),
+            targets: ts.iter().map(|(t, k)| (t.to_string(), k.to_string())).collect(),
+        };
         // One by one in a batch (a helper takes the far end of an offer, so a batch can mix them): a
         // piece the records have under the key it's made with (its mid made), not one under another
         // key (stale) nor one never made.
-        assert_eq!(expect_same(&w("trees", &[("6/28/16", "a"), ("6/28/17", "b2"), ("6/29/16", "e")]), &done), ["6/28/16"]);
+        assert_eq!(
+            expect_same(&w("trees", &[("6/28/16", "a"), ("6/28/17", "b2"), ("6/29/16", "e")]), &done),
+            ["6/28/16"]
+        );
         // A z3 tile's whole run, an assembly, another step: never.
         assert!(expect_same(&w("trees", &[("3/3/2", "c")]), &done).is_empty());
         assert!(expect_same(&w("trees-lo", &[("3/3/2", "d")]), &done).is_empty());
@@ -9127,7 +11715,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("keys.env");
         assert_eq!(key_names(&p).as_deref(), Some(""), "no file: no keys");
-        std::fs::write(&p, "LTA_ACCOUNT_KEY=s3cr3t\nODPT_KEY=\n# OLD_KEY=x\n TDX_CLIENT_ID = abc \nnot a line\n").unwrap();
+        std::fs::write(&p, "LTA_ACCOUNT_KEY=s3cr3t\nODPT_KEY=\n# OLD_KEY=x\n TDX_CLIENT_ID = abc \nnot a line\n")
+            .unwrap();
         let names = key_names(&p).unwrap();
         assert_eq!(names, "LTA_ACCOUNT_KEY,TDX_CLIENT_ID", "the keys with values, by name");
         assert!(!names.contains("s3cr3t") && !names.contains("abc"));
@@ -9137,32 +11726,83 @@ mod tests {
     /// once it's made, or after its failures, they're queued.
     #[test]
     fn the_jobs_reading_the_lake_fill_wait_for_it() {
-        let spec = |id: &str| JobSpec { id: id.into(), what: format!("doing {id}"), cmd: Vec::new(), needs: Needs { nas: true }, restart_after_sleep: true, record: None };
-        let jobs = || ["lakefill 2026-09-28", "labels 2026-09-28", "water 2026-09-28", "terrain-water terrain-water", "terrain 6/18/20", "catalog catalog", "catalog-held catalog-held", "unit 6/1/2"].map(spec).to_vec();
+        let spec = |id: &str| JobSpec {
+            id: id.into(),
+            what: format!("doing {id}"),
+            cmd: Vec::new(),
+            needs: Needs { nas: true },
+            restart_after_sleep: true,
+            record: None,
+        };
+        let jobs = || {
+            [
+                "lakefill 2026-09-28",
+                "labels 2026-09-28",
+                "water 2026-09-28",
+                "terrain-water terrain-water",
+                "terrain 6/18/20",
+                "catalog catalog",
+                "catalog-held catalog-held",
+                "unit 6/1/2",
+            ]
+            .map(spec)
+            .to_vec()
+        };
         let ids = |v: &[JobSpec]| v.iter().map(|j| j.id.clone()).collect::<Vec<_>>();
         let mut waiting = Vec::new();
         let kept = hold_for_lakefill(jobs(), true, &mut waiting);
         assert_eq!(ids(&kept), ["lakefill 2026-09-28", "labels 2026-09-28", "terrain 6/18/20", "unit 6/1/2"]);
-        assert_eq!(waiting.iter().map(|w| w.step.clone().unwrap()).collect::<Vec<_>>(), ["water", "terrain-water", "catalog", "catalog-held"]);
+        assert_eq!(
+            waiting.iter().map(|w| w.step.clone().unwrap()).collect::<Vec<_>>(),
+            ["water", "terrain-water", "catalog", "catalog-held"]
+        );
         assert!(waiting.iter().all(|w| w.why.contains("lakefill")));
         // Not held (the fill made, or failed LAKEFILL_HOLDS times): all queued, nothing said.
         let mut waiting = Vec::new();
         assert_eq!(ids(&hold_for_lakefill(jobs(), false, &mut waiting)), ids(&jobs()));
         assert!(waiting.is_empty());
         // What holds: the lakefill job's work, until its failures reach LAKEFILL_HOLDS.
-        assert!(build::water_waits_for_lakefill(true, build::LAKEFILL_HOLDS - 1) && !build::water_waits_for_lakefill(true, build::LAKEFILL_HOLDS));
+        assert!(
+            build::water_waits_for_lakefill(true, build::LAKEFILL_HOLDS - 1)
+                && !build::water_waits_for_lakefill(true, build::LAKEFILL_HOLDS)
+        );
     }
 
     /// Before the source declarations' first accepted version, the jobs that read them wait, said in
     /// the checklist; the rest go on.
     #[test]
     fn the_jobs_reading_the_declared_sources_wait_for_them() {
-        let spec = |id: &str| JobSpec { id: id.into(), what: format!("doing {id}"), cmd: Vec::new(), needs: Needs { nas: true }, restart_after_sleep: true, record: None };
-        let jobs = || ["labels 2026-09-28", "unit 6/1/2", "terrain 6/18/20", "trees 6/3/4", "items 2026-09-28", "heritage 2026-09-28", "heritage-sites 2026-09-28"].map(spec).to_vec();
+        let spec = |id: &str| JobSpec {
+            id: id.into(),
+            what: format!("doing {id}"),
+            cmd: Vec::new(),
+            needs: Needs { nas: true },
+            restart_after_sleep: true,
+            record: None,
+        };
+        let jobs = || {
+            [
+                "labels 2026-09-28",
+                "unit 6/1/2",
+                "terrain 6/18/20",
+                "trees 6/3/4",
+                "items 2026-09-28",
+                "heritage 2026-09-28",
+                "heritage-sites 2026-09-28",
+            ]
+            .map(spec)
+            .to_vec()
+        };
         let ids = |v: &[JobSpec]| v.iter().map(|j| j.id.clone()).collect::<Vec<_>>();
         let mut waiting = Vec::new();
-        assert_eq!(ids(&hold_for_sources(jobs(), true, &mut waiting)), ["labels 2026-09-28", "terrain 6/18/20", "heritage-sites 2026-09-28"]);
-        assert_eq!(waiting.iter().map(|w| w.step.clone().unwrap()).collect::<Vec<_>>(), ["unit", "trees", "items", "heritage"]);
+        assert_eq!(
+            ids(&hold_for_sources(jobs(), true, &mut waiting)),
+            ["labels 2026-09-28", "terrain 6/18/20", "heritage-sites 2026-09-28"]
+        );
+        assert_eq!(
+            waiting.iter().map(|w| w.step.clone().unwrap()).collect::<Vec<_>>(),
+            ["unit", "trees", "items", "heritage"]
+        );
         assert!(waiting.iter().all(|w| w.why.contains("inputs/sources/")));
         let mut waiting = Vec::new();
         assert_eq!(ids(&hold_for_sources(jobs(), false, &mut waiting)), ids(&jobs()));
@@ -9171,9 +11811,39 @@ mod tests {
 
     #[test]
     fn the_checklist_says_why_a_step_waits() {
-        let step = |what: &str, steps: &[&str], left: usize| build::Line { id: what.to_lowercase(), what: what.into(), steps: steps.iter().map(|s| s.to_string()).collect(), left: Some(left), ..Default::default() };
-        let list = || vec![step("Pass", &["pass-sets", "reach"], 1), step("Roads", &["unit"], 3), step("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], 2), step("Publishing", &["catalog", "catalog-held"], 0)];
-        let helper = Status { host: "m1".into(), job: Some(JobView { id: "unit 6/1/2".into(), what: String::new(), started: 0, pausing: None, paused: None, tail: String::new(), progress: None, parts: Vec::new(), part: None, mem_mb: None, threads: None, waiting: None }), ..Default::default() };
+        let step = |what: &str, steps: &[&str], left: usize| build::Line {
+            id: what.to_lowercase(),
+            what: what.into(),
+            steps: steps.iter().map(|s| s.to_string()).collect(),
+            left: Some(left),
+            ..Default::default()
+        };
+        let list = || {
+            vec![
+                step("Pass", &["pass-sets", "reach"], 1),
+                step("Roads", &["unit"], 3),
+                step("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], 2),
+                step("Publishing", &["catalog", "catalog-held"], 0),
+            ]
+        };
+        let helper = Status {
+            host: "m1".into(),
+            job: Some(JobView {
+                id: "unit 6/1/2".into(),
+                what: String::new(),
+                started: 0,
+                pausing: None,
+                paused: None,
+                tail: String::new(),
+                progress: None,
+                parts: Vec::new(),
+                part: None,
+                mem_mb: None,
+                threads: None,
+                waiting: None,
+            }),
+            ..Default::default()
+        };
         let waiting = [Waiting { step: Some("reach".into()), what: "How far…".into(), why: "away from home".into() }];
         let mut l = list();
         annotate(&mut l, &["heritage".to_string()], &[helper], &waiting);
@@ -9183,10 +11853,13 @@ mod tests {
         // Publishing waits for the steps above, though its catalog is current.
         assert!(!l[3].finished() && l[3].note.as_deref().is_some_and(|n| n.starts_with("as each region is done")));
         // All above done: done.
-        let mut l: Vec<build::Line> = list().into_iter().map(|mut s| {
-            s.left = Some(0);
-            s
-        }).collect();
+        let mut l: Vec<build::Line> = list()
+            .into_iter()
+            .map(|mut s| {
+                s.left = Some(0);
+                s
+            })
+            .collect();
         annotate(&mut l, &[], &[], &[]);
         assert!(l.iter().all(|s| s.finished() && s.note.is_none()));
         // A line not sized yet (trains a day before its sources) holds publishing up no more than a
@@ -9196,7 +11869,8 @@ mod tests {
         assert!(l[3].finished() && l[3].note.is_none());
         let mut l = list();
         l[3].left = Some(1);
-        let failing = [Waiting { step: Some("catalog".into()), what: String::new(), why: "failed 3 times in a row".into() }];
+        let failing =
+            [Waiting { step: Some("catalog".into()), what: String::new(), why: "failed 3 times in a row".into() }];
         annotate(&mut l, &[], &[], &failing);
         assert_eq!(l[3].note.as_deref(), Some("failed 3 times in a row"));
     }
@@ -9204,7 +11878,8 @@ mod tests {
     #[test]
     fn conditions_gate_jobs() {
         let n = Needs { nas: true };
-        let at = |ac: bool, nas: bool, home: bool, battery: Option<u8>| Conditions { ac, nas, home, idle_s: 0, battery };
+        let at =
+            |ac: bool, nas: bool, home: bool, battery: Option<u8>| Conditions { ac, nas, home, idle_s: 0, battery };
         assert!(lapsed(&n, &at(true, true, true, None)).is_none());
         assert!(lapsed(&n, &at(true, false, true, None)).unwrap().contains("NAS"));
         // At any charge, at home or away (the owner's choice): only the NAS.
@@ -9215,7 +11890,8 @@ mod tests {
         // A running job stops at once without the NAS (it can't save), and as the build's pause says;
         // never for the battery.
         use crate::control::{Mode, Pause};
-        let (drain, now) = (Pause::new(Mode::Drain, "the menu bar on m4"), Pause::new(Mode::Freeze, "scenic pause on m4"));
+        let (drain, now) =
+            (Pause::new(Mode::Drain, "the menu bar on m4"), Pause::new(Mode::Freeze, "scenic pause on m4"));
         let mode = |c: Conditions, p: Option<&Pause>| stop_for(&n, &c, p).map(|s| s.0);
         assert_eq!(mode(at(true, true, true, None), None), None);
         assert_eq!(mode(at(true, true, true, None), Some(&drain)), Some(Mode::Drain));
@@ -9244,7 +11920,8 @@ mod pool_tests {
         let r = d.join("nas");
         std::fs::create_dir_all(r.join("state/build")).unwrap();
         std::fs::create_dir_all(r.join("catalog")).unwrap();
-        std::fs::write(r.join("state/build/manifest.json"), r#"{"base/6-1-1": "base/6-1-1.1111111111111111.base"}"#).unwrap();
+        std::fs::write(r.join("state/build/manifest.json"), r#"{"base/6-1-1": "base/6-1-1.1111111111111111.base"}"#)
+            .unwrap();
         std::fs::write(r.join("state/build/jobs.json"), r#"{"unit": {"6/1/1": "k1"}}"#).unwrap();
         std::fs::write(r.join("state/build/pending.json"), "{}").unwrap();
         r
@@ -9294,7 +11971,11 @@ mod pool_tests {
             if done(a) {
                 return;
             }
-            assert!(Instant::now() < end, "not done in {WATCHDOG:?}: {:?}", read_status(None, &a.o.home).map(|s| s.waiting));
+            assert!(
+                Instant::now() < end,
+                "not done in {WATCHDOG:?}: {:?}",
+                read_status(None, &a.o.home).map(|s| s.waiting)
+            );
             std::thread::sleep(Duration::from_millis(250));
         }
     }
@@ -9303,7 +11984,8 @@ mod pool_tests {
 
     /// A member's Mac with more room than its lead's test Mac (`cond::Mac::TEST`'s 16 GB), as the
     /// M4's 48 GB: a cold start (no job of its step measured) goes to it, whatever Mac runs the test.
-    const MEMBER_MAC: cond::Mac = cond::Mac::Fixed { ac: true, battery: None, idle_s: 0, home: true, mem_gb: 48.0, mem_free_pct: 75 };
+    const MEMBER_MAC: cond::Mac =
+        cond::Mac::Fixed { ac: true, battery: None, idle_s: 0, home: true, mem_gb: 48.0, mem_free_pct: 75 };
 
     fn stop_jobs(a: &mut Agent) {
         for k in 0..SLOTS {
@@ -9318,7 +12000,15 @@ mod pool_tests {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         assert!(!r.join("state/pool").exists());
-        let mut a = test_agent(Options { root: Some(r.clone()), home: d.path().join("app-folder/agent"), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("app-folder/agent"),
+            bin: PathBuf::from("/nonexistent/bin"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         assert!(a.pool.is_some(), "this Mac's member in the pool, with no switch on the NAS");
         a.step().unwrap();
         assert!(r.join(crate::pool::term::DIR).join("1.json").exists(), "term 1 made");
@@ -9332,7 +12022,15 @@ mod pool_tests {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
-        let mut a = test_agent(Options { root: Some(r.clone()), home: d.path().join("app-folder/agent"), bin, dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("app-folder/agent"),
+            bin,
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         a.mem.last_ok.insert("backup".into(), now_s());
         a.mem.last_ok.insert("gc".into(), now_s());
         a.step().unwrap();
@@ -9391,7 +12089,11 @@ mod pool_tests {
         a.step().unwrap();
         assert!(a.published.is_none(), "kept off while it hangs");
         let st = read_status(Some(&r), &a.o.home).unwrap();
-        assert!(st.waiting.iter().any(|w| w.why.contains("has hung") && w.why.contains("the NAS isn't answering")), "{:?}", st.waiting);
+        assert!(
+            st.waiting.iter().any(|w| w.why.contains("has hung") && w.why.contains("the NAS isn't answering")),
+            "{:?}",
+            st.waiting
+        );
         // It returns: cleared, granting and published again.
         ticking.end();
         tx.send(()).unwrap();
@@ -9412,8 +12114,17 @@ mod pool_tests {
         let bin = app(d.path());
         let home = d.path().join("app-folder/agent");
         // (`--helper` passed, as the M1's launch file does: the pool says what it is.)
-        let mut a = test_agent(Options { root: Some(r.clone()), home: home.clone(), bin: bin.clone(), dry_run: false, once: true, helper: true }).unwrap();
-        let (role, leads, me) = a.pooled().map(|run| (run.role, run.gates.leads, run.side.member().id.clone())).expect("the pool's part");
+        let mut a = test_agent(Options {
+            root: Some(r.clone()),
+            home: home.clone(),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: true,
+        })
+        .unwrap();
+        let (role, leads, me) =
+            a.pooled().map(|run| (run.role, run.gates.leads, run.side.member().id.clone())).expect("the pool's part");
         assert_eq!((role, leads), (pool::Role::Lead, Some(1)));
         assert!(!a.o.helper && a.coord.is_some(), "it leads: its coordinator runs");
         // (Its writer's file changed after term 1: no one names the writer any more.)
@@ -9422,18 +12133,35 @@ mod pool_tests {
         assert!(d.path().join(format!("app-folder/pool-{me}.lock")).exists() && home.join("pool/saved.json").exists());
         // Its first job (the daily backup) runs under a lease of its term, its saves handed off; the
         // records it merges are today's files' too (term 1's saves write them).
-        until(&mut a, |a| crate::agent::build::Keys::load(a.o.root.as_ref().unwrap()).lo.is_empty() && a.pooled().is_some_and(|p| p.side.driver().records().is_some_and(|r| r.pending.contains_key("work/backup.0123456789abcdef.json"))));
+        until(&mut a, |a| {
+            crate::agent::build::Keys::load(a.o.root.as_ref().unwrap()).lo.is_empty()
+                && a.pooled().is_some_and(|p| {
+                    p.side
+                        .driver()
+                        .records()
+                        .is_some_and(|r| r.pending.contains_key("work/backup.0123456789abcdef.json"))
+                })
+        });
         let env = std::fs::read_to_string(bin.join("env-backup")).unwrap();
         assert!(env.contains("SCENIC_HANDOFF="), "{env}");
         assert!(env.contains(&format!("{}", home.join("pool/jobs/1-").display())), "{env}");
         let rec = a.pooled().unwrap().side.driver().records().unwrap().clone();
-        assert!(rec.reflected.iter().any(|k| k.ends_with(&format!("/1-{}", rec.reflected.iter().next().unwrap().rsplit('-').next().unwrap()))));
-        assert!(std::fs::read_dir(home.join("pool/jobs")).map_or(true, |mut d| d.next().is_none()), "its folder removed once its saved state held the entry");
+        assert!(rec
+            .reflected
+            .iter()
+            .any(|k| k.ends_with(&format!("/1-{}", rec.reflected.iter().next().unwrap().rsplit('-').next().unwrap()))));
+        assert!(
+            std::fs::read_dir(home.join("pool/jobs")).map_or(true, |mut d| d.next().is_none()),
+            "its folder removed once its saved state held the entry"
+        );
         // The writer isn't named any more (its file as it was), the coordinator's state of its term
         // and its history are on the NAS, its heartbeat names it.
         assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap(), "another-mac");
         assert!(r.join(pool::state_path(1)).exists());
-        assert!(std::fs::read_dir(r.join("state/coord/history")).unwrap().flatten().any(|day| day.path().join(format!("{me}.jsonl")).exists()));
+        assert!(std::fs::read_dir(r.join("state/coord/history"))
+            .unwrap()
+            .flatten()
+            .any(|day| day.path().join(format!("{me}.jsonl")).exists()));
         assert!(r.join(crate::pool::beat::path(&me)).exists());
         let st = read_status(Some(&r), &home).unwrap();
         let pv = st.pool.expect("the pool in its status");
@@ -9457,30 +12185,71 @@ mod pool_tests {
         let bin = app(d.path());
         // The lead (this Mac is the writer: term 1 is its), and a member, another process with a
         // folder (and member) of its own; its `--helper` or not, the pool says.
-        let dry = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: true, once: true, helper: false }).unwrap();
+        let dry = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: true,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         assert!(dry.pool.is_none(), "a dry run takes no part");
         drop(dry);
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         m.mac = MEMBER_MAC;
         assert_eq!(m.pooled().unwrap().role, pool::Role::Member);
         assert!(m.o.helper && m.coord.is_none());
         let (il, im) = (lead.pooled().unwrap().side.member().id.clone(), m.pooled().unwrap().side.member().id.clone());
         assert_ne!(il, im);
         // The lead's coordinator offers slope; the member asks, and runs it under `1-<lease>`.
-        lead.coord.as_ref().unwrap().offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
+        lead.coord.as_ref().unwrap().offer(
+            "2026-09-28",
+            vec![crate::coord::Offer {
+                step: "slope".into(),
+                targets: vec![("3/2/2".into(), "k".into(), 100)],
+                batch: 2,
+            }],
+        );
         until(&mut m, |m| m.slots[0].running.is_some() || m.pooled().is_some_and(|p| !p.entries.is_empty()));
         let env = std::fs::read_to_string(bin.join("env-slope")).unwrap_or_default();
         until(&mut m, |m| m.slots[0].running.is_none() && m.pooled().is_some_and(|p| p.entries.is_empty()));
-        assert!(std::fs::read_to_string(bin.join("env-slope")).unwrap().contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())), "{env}");
+        assert!(
+            std::fs::read_to_string(bin.join("env-slope"))
+                .unwrap()
+                .contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())),
+            "{env}"
+        );
         // Its entry in the journal, told to the lead by mail; the lead, knowing the member, merges it.
         lead.pooled().unwrap().side.know(&im);
-        until(&mut lead, |l| l.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k")));
+        until(&mut lead, |l| {
+            l.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k"))
+        });
         let rec = lead.pooled().unwrap().side.driver().records().unwrap().clone();
-        assert_eq!(rec.manifest.get("layers/slope/lo/3-2-2").map(String::as_str), Some("layers/slope/lo/3-2-2.0123456789abcdef.pack"));
+        assert_eq!(
+            rec.manifest.get("layers/slope/lo/3-2-2").map(String::as_str),
+            Some("layers/slope/lo/3-2-2.0123456789abcdef.pack")
+        );
         let key = rec.reflected.iter().find(|k| k.contains("/1-")).cloned().unwrap();
         assert!(r.join(crate::pool::journal::path(&key)).exists());
         // Acknowledged: the member tells it no more.
@@ -9504,22 +12273,70 @@ mod pool_tests {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         let im = m.pooled().unwrap().side.member().id.clone();
         lead.pooled().unwrap().side.know(&im);
         // `pack` of 6/1/1 measured (a run of it said what it took), offered.
         let c = lead.coord.as_ref().unwrap();
-        c.add_costs(&[(crate::coord::cost_key("pack", "6/1/1"), crate::coord::Cost { peak_mb: 100, secs: 60, worker: None, v: crate::coord::cost_version("pack"), ..Default::default() })]);
-        c.offer("2026-09-28", vec![crate::coord::Offer { step: "pack".into(), targets: vec![("6/1/1".into(), "kp".into(), 100)], batch: 16 }]);
-        let asked = |l: &Agent| l.coord.as_ref().unwrap().workers().into_iter().find(|(_, w)| w.kind == "native").map(|(_, w)| (w.can.clone(), w.ask.as_ref().and_then(|a| a.disk_mb)));
+        c.add_costs(&[(
+            crate::coord::cost_key("pack", "6/1/1"),
+            crate::coord::Cost {
+                peak_mb: 100,
+                secs: 60,
+                worker: None,
+                v: crate::coord::cost_version("pack"),
+                ..Default::default()
+            },
+        )]);
+        c.offer(
+            "2026-09-28",
+            vec![crate::coord::Offer {
+                step: "pack".into(),
+                targets: vec![("6/1/1".into(), "kp".into(), 100)],
+                batch: 16,
+            }],
+        );
+        let asked = |l: &Agent| {
+            l.coord
+                .as_ref()
+                .unwrap()
+                .workers()
+                .into_iter()
+                .find(|(_, w)| w.kind == "native")
+                .map(|(_, w)| (w.can.clone(), w.ask.as_ref().and_then(|a| a.disk_mb)))
+        };
         // The lead's coordinator told (with its own room, and its map update under way: `pack` is a
         // map update's step, its job reading the units as the map update began), the member asking for every
         // step.
-        *lead.map_update.borrow_mut() = Some(build::MapUpdate { began: 1_791_000_000, regions: Vec::new(), last: true, units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(), over: false, low: true, low_at: None });
+        *lead.map_update.borrow_mut() = Some(build::MapUpdate {
+            began: 1_791_000_000,
+            regions: Vec::new(),
+            last: true,
+            units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(),
+            over: false,
+            low: true,
+            low_at: None,
+        });
         lead.pool_switch(Some(&r));
         // (Told with the plan's offers, as the lead's planning does.)
         lead.offer_update(lead.coord.as_ref().unwrap());
@@ -9528,17 +12345,35 @@ mod pool_tests {
         until(&mut m, |m| m.slots[0].running.is_some() || bin.join("env-pack").exists());
         until(&mut m, |m| m.slots[0].running.is_none() && m.pooled().is_some_and(|p| p.entries.is_empty()));
         let (can, disk) = asked(&lead).unwrap();
-        assert!(can.iter().any(|s| s == "pack") && can.iter().any(|s| s == "lo") && !can.iter().any(|s| s == "catalog") && disk.is_some(), "{can:?}");
+        assert!(
+            can.iter().any(|s| s == "pack")
+                && can.iter().any(|s| s == "lo")
+                && !can.iter().any(|s| s == "catalog")
+                && disk.is_some(),
+            "{can:?}"
+        );
         // Its Mac's capacity carried by its ask (the test's Mac: 16 GB, on mains, in use, its cores
         // all free), and the lead's own set by its loop: both kept, the lead's first.
         let caps = lead.coord.as_ref().unwrap().capacities();
         assert_eq!(caps.len(), 2, "{caps:?}");
         let mc = &caps[1].1;
         assert_eq!(mc.limit_mb, memguard::limit_mb(16 << 10));
-        assert!(mc.mem_mb <= mc.limit_mb && mc.cores_free == mc.cores && mc.ac && mc.in_use && mc.nas && mc.disk_mb > 0 && mc.at > 0, "{mc:?}");
+        assert!(
+            mc.mem_mb <= mc.limit_mb
+                && mc.cores_free == mc.cores
+                && mc.ac
+                && mc.in_use
+                && mc.nas
+                && mc.disk_mb > 0
+                && mc.at > 0,
+            "{mc:?}"
+        );
         let env = std::fs::read_to_string(bin.join("env-pack")).unwrap();
         assert!(env.contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())), "{env}");
-        let as_of = env.lines().find_map(|l| l.strip_prefix(&format!("{}=", crate::out::UNITS_AS_OF_ENV))).expect("the map update's units");
+        let as_of = env
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{}=", crate::out::UNITS_AS_OF_ENV)))
+            .expect("the map update's units");
         assert!(as_of.ends_with("/map-update.json#1791000000"), "{as_of}");
         let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(bin.join("as-of-pack")).unwrap()).unwrap();
         assert_eq!(kept["units"]["base/6-1-1"], "base/6-1-1.1111111111111111.base");
@@ -9546,9 +12381,14 @@ mod pool_tests {
         lead.end_update();
         assert!(lead.coord.as_ref().unwrap().map_update_began().is_none());
         // Its entry merged by the lead, within pack's write-set.
-        until(&mut lead, |l| l.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("pack", "6/1/1") == Some("kp")));
+        until(&mut lead, |l| {
+            l.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("pack", "6/1/1") == Some("kp"))
+        });
         let rec = lead.pooled().unwrap().side.driver().records().unwrap().clone();
-        assert_eq!(rec.manifest.get("layers/roads/hi/6-1-1").map(String::as_str), Some("layers/roads/hi/6-1-1.0123456789abcdef.pack"));
+        assert_eq!(
+            rec.manifest.get("layers/roads/hi/6-1-1").map(String::as_str),
+            Some("layers/roads/hi/6-1-1.0123456789abcdef.pack")
+        );
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
     }
@@ -9565,11 +12405,27 @@ mod pool_tests {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         let im = m.pooled().unwrap().side.member().id.clone();
         lead.pooled().unwrap().side.know(&im);
         // Off: not told.
@@ -9578,14 +12434,37 @@ mod pool_tests {
         assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.is_none());
         // On: told, the forecast's slack and speeds in it.
         switch_on(&r, placement::SWITCH);
-        *lead.forecast.borrow_mut() = Some(forecast::Forecast { done_at: Some(1000), steps: vec![forecast::StepFc { step: "slope".into(), done_at: Some(1000), ..Default::default() }], ..Default::default() });
+        *lead.forecast.borrow_mut() = Some(forecast::Forecast {
+            done_at: Some(1000),
+            steps: vec![forecast::StepFc { step: "slope".into(), done_at: Some(1000), ..Default::default() }],
+            ..Default::default()
+        });
         lead.pool_switch(Some(&r));
         m.pool_switch(Some(&r));
-        assert_eq!(lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.as_ref().map(|p| p.0.slack_of("slope")), Some(0));
+        assert_eq!(
+            lead.coord.as_ref().unwrap().shared.lock().unwrap().placement.as_ref().map(|p| p.0.slack_of("slope")),
+            Some(0)
+        );
         // `slope` of 3/2/2 measured, offered: the member alone asking, drawn to it.
         let c = lead.coord.as_ref().unwrap();
-        c.add_costs(&[(crate::coord::cost_key("slope", "3/2/2"), crate::coord::Cost { peak_mb: 100, secs: 60, worker: None, v: crate::coord::cost_version("slope"), ..Default::default() })]);
-        c.offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 1 }]);
+        c.add_costs(&[(
+            crate::coord::cost_key("slope", "3/2/2"),
+            crate::coord::Cost {
+                peak_mb: 100,
+                secs: 60,
+                worker: None,
+                v: crate::coord::cost_version("slope"),
+                ..Default::default()
+            },
+        )]);
+        c.offer(
+            "2026-09-28",
+            vec![crate::coord::Offer {
+                step: "slope".into(),
+                targets: vec![("3/2/2".into(), "k".into(), 100)],
+                batch: 1,
+            }],
+        );
         // (Read once its job has ended: the fake job's `env >` makes the file before it writes it,
         // so the file's being there says nothing of its lines. Only the member's job runs slope:
         // the lead isn't stepped after it's offered.)
@@ -9615,7 +12494,15 @@ mod pool_tests {
         let date = "2026-10-01";
         let pass = format!("osm-pass {date}");
         let bin = app(d.path());
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.free_set = Some(400 << 30);
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
@@ -9625,7 +12512,15 @@ mod pool_tests {
         std::fs::write(r.join(format!("sources/osm/{date}/planet.osm.pbf")), "planet").unwrap();
         std::fs::create_dir_all(r.join("sources/basemap")).unwrap();
         std::fs::write(r.join("sources/basemap/planetiler.jar"), "jar").unwrap();
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         let im = m.pooled().unwrap().side.member().id.clone();
         lead.pooled().unwrap().side.know(&im);
         let planned = |a: &Agent| {
@@ -9637,7 +12532,15 @@ mod pool_tests {
         let scratch = d.path().join(format!("m/agent/scratch/osm-{date}"));
         std::fs::create_dir_all(&scratch).unwrap();
         std::fs::write(scratch.join("filter.done"), "").unwrap();
-        let held = |at: u64, done: bool| resume::Progress { member: im.clone(), worker: cond::host_name(), jobs: [(pass.clone(), resume::Held { at, done, scratch: scratch.to_string_lossy().into_owned(), since: 0 })].into() };
+        let held = |at: u64, done: bool| resume::Progress {
+            member: im.clone(),
+            worker: cond::host_name(),
+            jobs: [(
+                pass.clone(),
+                resume::Held { at, done, scratch: scratch.to_string_lossy().into_owned(), since: 0 },
+            )]
+            .into(),
+        };
         resume::write(&r, &held(now_s() - 3600, false)).unwrap();
         // Off: the lead plans it as before, whoever holds progress.
         lead.pool_switch(Some(&r));
@@ -9651,14 +12554,36 @@ mod pool_tests {
         let (here, w) = planned(&lead);
         assert!(!here && w.iter().any(|w| w.why.contains("offered to it alone")), "{w:?}");
         // (Its earlier stage's entry, handed and not yet merged: laid over the snapshot for its job.)
-        let earlier = crate::pool::journal::Entry { member: im.clone(), lease: LeaseId { term: 1, n: 99 }, step: "osm-pass".into(), handoff: crate::handoff::Handoff { changes: [(format!("sources/osm/{date}/filtered"), Some(format!("sources/osm/{date}/filtered.2222222222222222.osm.pbf")))].into(), ..Default::default() }, at: now_s() };
+        let earlier = crate::pool::journal::Entry {
+            member: im.clone(),
+            lease: LeaseId { term: 1, n: 99 },
+            step: "osm-pass".into(),
+            handoff: crate::handoff::Handoff {
+                changes: [(
+                    format!("sources/osm/{date}/filtered"),
+                    Some(format!("sources/osm/{date}/filtered.2222222222222222.osm.pbf")),
+                )]
+                .into(),
+                ..Default::default()
+            },
+            at: now_s(),
+        };
         m.pooled().unwrap().entries.push((earlier, None));
-        assert!(m.unmerged_for("osm-pass").unwrap().changes.contains_key(&format!("sources/osm/{date}/filtered")) && m.unmerged_for("unit").unwrap().changes.is_empty());
+        assert!(
+            m.unmerged_for("osm-pass").unwrap().changes.contains_key(&format!("sources/osm/{date}/filtered"))
+                && m.unmerged_for("unit").unwrap().changes.is_empty()
+        );
         m.pooled().unwrap().entries.clear();
-        until(&mut m, |m| m.slots[0].running.as_ref().is_some_and(|j| j.spec.id == pass) || std::fs::read_to_string(bin.join("env-osm-pass")).is_ok());
+        until(&mut m, |m| {
+            m.slots[0].running.as_ref().is_some_and(|j| j.spec.id == pass)
+                || std::fs::read_to_string(bin.join("env-osm-pass")).is_ok()
+        });
         until(&mut m, |m| m.slots[0].running.is_none());
         let env = std::fs::read_to_string(bin.join("env-osm-pass")).unwrap();
-        assert!(env.contains("SCENIC_RESUME=1") && env.contains("SCENIC_UNMERGED=") && env.contains("SCENIC_HANDOFF="), "{env}");
+        assert!(
+            env.contains("SCENIC_RESUME=1") && env.contains("SCENIC_UNMERGED=") && env.contains("SCENIC_HANDOFF="),
+            "{env}"
+        );
         assert!(env.contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())), "{env}");
         assert!(lead.coord.as_ref().unwrap().held("osm-pass").is_empty(), "its lease ended at the lead, not lapsing");
         // Finished there: held, unoffered, until merged.
@@ -9667,7 +12592,12 @@ mod pool_tests {
         let (here, w) = planned(&lead);
         assert!(!here && w.iter().any(|w| w.why.contains("waiting to be merged")), "{w:?}");
         // Released, or its day out, while the member runs it under a lease: not run here too.
-        let lease = lead.coord.as_ref().unwrap().hold("osm-pass", &[(date.to_string(), format!("sources/osm/{date}/planet.osm.pbf"))]).unwrap();
+        let lease = lead
+            .coord
+            .as_ref()
+            .unwrap()
+            .hold("osm-pass", &[(date.to_string(), format!("sources/osm/{date}/planet.osm.pbf"))])
+            .unwrap();
         resume::write(&r, &held(now_s() - resume::HOLD_S - 1, false)).unwrap();
         let (here, w) = planned(&lead);
         assert!(!here && w.iter().any(|w| w.why.contains("under its lease")), "{w:?}");
@@ -9706,17 +12636,40 @@ mod pool_tests {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let bin = app(d.path());
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         m.mac = MEMBER_MAC;
         // The lead on a newer app than the member's (its updater ran first): the member gets
         // nothing, saying why, however long it asks.
         let theirs = m.app.clone();
         lead.coord.as_ref().unwrap().shared.lock().unwrap().app = "20261010-0900-aaaaaaa".into();
-        lead.coord.as_ref().unwrap().offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
+        lead.coord.as_ref().unwrap().offer(
+            "2026-09-28",
+            vec![crate::coord::Offer {
+                step: "slope".into(),
+                targets: vec![("3/2/2".into(), "k".into(), 100)],
+                batch: 2,
+            }],
+        );
         for _ in 0..3 {
             m.step().unwrap();
         }
@@ -9743,18 +12696,46 @@ mod pool_tests {
         let gate = d.path().join("gate");
         let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         m.mac = MEMBER_MAC;
         let im = m.pooled().unwrap().side.member().id.clone();
         lead.pooled().unwrap().side.know(&im);
-        lead.coord.as_ref().unwrap().offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
+        lead.coord.as_ref().unwrap().offer(
+            "2026-09-28",
+            vec![crate::coord::Offer {
+                step: "slope".into(),
+                targets: vec![("3/2/2".into(), "k".into(), 100)],
+                batch: 2,
+            }],
+        );
         until(&mut m, |m| m.slots[0].running.is_some());
         // The owner asks the lead, from its menu, to hand the build to the member, mid-job.
-        crate::control::request_lead(&lead.o.home, crate::control::LeadAsk::Give { to: im.clone() }, "the menu bar on l").unwrap();
+        crate::control::request_lead(
+            &lead.o.home,
+            crate::control::LeadAsk::Give { to: im.clone() },
+            "the menu bar on l",
+        )
+        .unwrap();
         fn both(lead: &mut Agent, m: &mut Agent, done: &dyn Fn(&Agent, &Agent) -> bool) {
             let end = Instant::now() + WATCHDOG;
             loop {
@@ -9763,7 +12744,11 @@ mod pool_tests {
                 if done(lead, m) {
                     return;
                 }
-                assert!(Instant::now() < end, "not done in {WATCHDOG:?}: {:?}", lead.pooled().unwrap().controls.kept.asked);
+                assert!(
+                    Instant::now() < end,
+                    "not done in {WATCHDOG:?}: {:?}",
+                    lead.pooled().unwrap().controls.kept.asked
+                );
                 std::thread::sleep(Duration::from_millis(250));
             }
         }
@@ -9772,23 +12757,38 @@ mod pool_tests {
         // the lead's ask is done, its process restarting into a member's.
         let asked = lead.pooled().unwrap().controls.kept.asked.clone().unwrap();
         assert_eq!(asked.ask, crate::control::LeadAsk::Give { to: im.clone() });
-        both(&mut lead, &mut m, &|l, _| l.pooled().unwrap().controls.kept.asked.as_ref().is_some_and(|a| a.state == lead::State::Done));
+        both(&mut lead, &mut m, &|l, _| {
+            l.pooled().unwrap().controls.kept.asked.as_ref().is_some_and(|a| a.state == lead::State::Done)
+        });
         assert!(lead.pool_restart().is_some_and(|w| w.contains("no longer leads")), "{:?}", lead.pool_restart());
         assert!(m.pool_restart().is_some_and(|w| w.contains("leads term 2")));
         assert!(m.slots[0].running.is_some(), "the job still runs");
         std::fs::write(&gate, b"").unwrap();
         // The job, granted in term 1, ran on: its entry reached the new lead's records.
-        both(&mut lead, &mut m, &|_, m| m.slots[0].running.is_none() && m.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k")));
+        both(&mut lead, &mut m, &|_, m| {
+            m.slots[0].running.is_none()
+                && m.pooled()
+                    .unwrap()
+                    .side
+                    .driver()
+                    .records()
+                    .is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k"))
+        });
         // The statuses say so: the old lead's view, the history's terms.
         let st = read_status(None, &lead.o.home).unwrap();
         let v = st.pool.and_then(|p| p.lead).expect("the controls' view");
         assert_eq!(v.lead.as_ref().map(|l| l.member.as_str()), Some(im.as_str()));
         let events = lead.coord.as_ref().unwrap().history_since(0);
-        assert!(events.iter().any(|e| e.kind == "term" && e.note.starts_with("term 2: handed over by")), "{:?}", events.iter().filter(|e| e.kind == "term").collect::<Vec<_>>());
+        assert!(
+            events.iter().any(|e| e.kind == "term" && e.note.starts_with("term 2: handed over by")),
+            "{:?}",
+            events.iter().filter(|e| e.kind == "term").collect::<Vec<_>>()
+        );
         // And on the NAS, in the old lead's own history file, once each, with its step down.
         let il = lead.pooled().unwrap().side.member().id.clone();
         let day = crate::pool::journal::day(now_s()).unwrap();
-        let mine = std::fs::read_to_string(r.join("state/coord/history").join(day).join(format!("{il}.jsonl"))).unwrap();
+        let mine =
+            std::fs::read_to_string(r.join("state/coord/history").join(day).join(format!("{il}.jsonl"))).unwrap();
         assert_eq!(mine.matches("term 2: handed over by").count(), 1, "{mine}");
         assert!(mine.contains("stepped down from term 1: handed over to"), "{mine}");
         stop_jobs(&mut lead);
@@ -9808,20 +12808,48 @@ mod pool_tests {
         let gate = d.path().join("gate");
         let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         m.mac = MEMBER_MAC;
         m.step().unwrap();
         assert!(lead.slots_on && m.slots_on);
         let (il, im) = (lead.pooled().unwrap().side.member().id.clone(), m.pooled().unwrap().side.member().id.clone());
         lead.pooled().unwrap().side.know(&im);
         // The member's job, granted by the lead in term 1, runs while the owner hands the lead to it.
-        lead.coord.as_ref().unwrap().offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
+        lead.coord.as_ref().unwrap().offer(
+            "2026-09-28",
+            vec![crate::coord::Offer {
+                step: "slope".into(),
+                targets: vec![("3/2/2".into(), "k".into(), 100)],
+                batch: 2,
+            }],
+        );
         until(&mut m, |m| m.slots[0].running.is_some());
-        crate::control::request_lead(&lead.o.home, crate::control::LeadAsk::Give { to: im.clone() }, "the menu bar on l").unwrap();
+        crate::control::request_lead(
+            &lead.o.home,
+            crate::control::LeadAsk::Give { to: im.clone() },
+            "the menu bar on l",
+        )
+        .unwrap();
         fn both(lead: &mut Agent, m: &mut Agent, done: &dyn Fn(&Agent, &Agent) -> bool) {
             let end = Instant::now() + WATCHDOG;
             loop {
@@ -9830,11 +12858,17 @@ mod pool_tests {
                 if done(lead, m) {
                     return;
                 }
-                assert!(Instant::now() < end, "not done in {WATCHDOG:?}: {:?}", lead.pooled().unwrap().controls.kept.asked);
+                assert!(
+                    Instant::now() < end,
+                    "not done in {WATCHDOG:?}: {:?}",
+                    lead.pooled().unwrap().controls.kept.asked
+                );
                 std::thread::sleep(Duration::from_millis(250));
             }
         }
-        both(&mut lead, &mut m, &|l, m| m.pooled().unwrap().side.driver().leads() == Some(2) && m.coord.is_some() && l.coord.is_none());
+        both(&mut lead, &mut m, &|l, m| {
+            m.pooled().unwrap().side.driver().leads() == Some(2) && m.coord.is_some() && l.coord.is_none()
+        });
         // Neither restarts: the member leads in its process, its coordinator started; the old lead
         // works as a member, its coordinator stopped; the job runs on.
         assert_eq!((lead.pool_restart(), m.pool_restart()), (None, None));
@@ -9844,13 +12878,30 @@ mod pool_tests {
         std::fs::write(&gate, b"").unwrap();
         // The job, granted in term 1, ends through its own Mac's coordinator now: its entry in the new
         // lead's records, its lease ended there.
-        both(&mut lead, &mut m, &|_, m| m.slots[0].running.is_none() && m.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k")));
+        both(&mut lead, &mut m, &|_, m| {
+            m.slots[0].running.is_none()
+                && m.pooled()
+                    .unwrap()
+                    .side
+                    .driver()
+                    .records()
+                    .is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k"))
+        });
         assert!(m.coord.as_ref().unwrap().held("slope").is_empty());
         // The old lead, a member now, asks the new lead for work by HTTP and runs it, its entry
         // reaching the new lead's records; still no restart.
         m.pooled().unwrap().side.know(&il);
-        m.coord.as_ref().unwrap().offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/3/2".into(), "k2".into(), 100)], batch: 2 }]);
-        both(&mut lead, &mut m, &|_, m| m.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/3/2") == Some("k2")));
+        m.coord.as_ref().unwrap().offer(
+            "2026-09-28",
+            vec![crate::coord::Offer {
+                step: "slope".into(),
+                targets: vec![("3/3/2".into(), "k2".into(), 100)],
+                batch: 2,
+            }],
+        );
+        both(&mut lead, &mut m, &|_, m| {
+            m.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/3/2") == Some("k2"))
+        });
         assert_eq!((lead.pool_restart(), m.pool_restart()), (None, None));
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
@@ -9879,12 +12930,28 @@ mod pool_tests {
         let gate = d.path().join("gate");
         let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = slope ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
         let lport = lead.coord.as_ref().unwrap().port();
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         m.mac = MEMBER_MAC;
         m.step().unwrap();
         let (il, im) = (lead.pooled().unwrap().side.member().id.clone(), m.pooled().unwrap().side.member().id.clone());
@@ -9893,14 +12960,30 @@ mod pool_tests {
         // The member's broker, on a port of its own; the lead's coordinator brokers the lead's.
         assert!(m.coord.is_none() && m.broker.as_ref().is_some_and(|b| b.port() == bport) && lead.broker.is_none());
         // Its job given its broker's address (it waits at the gate meanwhile).
-        lead.coord.as_ref().unwrap().offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
+        lead.coord.as_ref().unwrap().offer(
+            "2026-09-28",
+            vec![crate::coord::Offer {
+                step: "slope".into(),
+                targets: vec![("3/2/2".into(), "k".into(), 100)],
+                batch: 2,
+            }],
+        );
         until(&mut m, |m| m.slots[0].running.is_some());
         // A task each: the member's job's at its broker, the lead's own at its coordinator.
         let offer = |port: u16, token: &str, unit: &str| -> u64 {
-            let job = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], token.to_string(), "job");
+            let job =
+                crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], token.to_string(), "job");
             let root = d.path().join(format!("task-{port}"));
             std::fs::create_dir_all(&root).unwrap();
-            let o = crate::coord::task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": unit }), root, inputs: Default::default(), mem_mb: 300, ahead: None };
+            let o = crate::coord::task::Offer {
+                owner: 42,
+                kind: "tail".into(),
+                spec: serde_json::json!({ "unit": unit }),
+                root,
+                inputs: Default::default(),
+                mem_mb: 300,
+                ahead: None,
+            };
             job.post_json("/task/offer", &serde_json::to_value(&o).unwrap()).unwrap().1["id"].as_u64().unwrap()
         };
         let mt = offer(bport, &m.broker.as_ref().unwrap().job_token, "6/1/1");
@@ -9910,7 +12993,14 @@ mod pool_tests {
             a.pooled().unwrap().brokers_read = None;
             a.step().unwrap();
         };
-        let told = |a: &Agent, who: &str| a.coord.as_ref().or(a.broker.as_ref()).unwrap().shared.lock().unwrap().brokers.as_ref().is_some_and(|b| b.peers.iter().any(|p| p.member == who && p.broker.as_ref().is_some_and(|b| b.waiting.get("tail").is_some_and(|w| w.n == 1))));
+        let told = |a: &Agent, who: &str| {
+            a.coord.as_ref().or(a.broker.as_ref()).unwrap().shared.lock().unwrap().brokers.as_ref().is_some_and(|b| {
+                b.peers.iter().any(|p| {
+                    p.member == who
+                        && p.broker.as_ref().is_some_and(|b| b.waiting.get("tail").is_some_and(|w| w.n == 1))
+                })
+            })
+        };
         let end = Instant::now() + WATCHDOG;
         while !(told(&lead, &im) && told(&m, &il)) {
             fresh(&mut lead);
@@ -9928,9 +13018,22 @@ mod pool_tests {
         let (code, w, _) = call(lport, "/work/where", serde_json::json!({ "can": ["tail"], "mem_mb": 1000 }));
         assert_eq!(code, 200);
         let at: Vec<&str> = w["brokers"].as_array().unwrap().iter().map(|b| b["base"].as_str().unwrap()).collect();
-        let base_of = |c: &crate::coord::Coordinator| crate::coord::brokers::base(&crate::coord::brokers::Broker { urls: c.contact.urls.clone(), ..Default::default() }, false).unwrap();
-        assert!(at.contains(&base_of(m.broker.as_ref().unwrap()).as_str()) && at.contains(&base_of(lead.coord.as_ref().unwrap()).as_str()), "{w}");
-        assert_eq!(w["lead"].as_str(), crate::coord::brokers::origin(&lead.coord.as_ref().unwrap().contact.urls[0]).as_deref());
+        let base_of = |c: &crate::coord::Coordinator| {
+            crate::coord::brokers::base(
+                &crate::coord::brokers::Broker { urls: c.contact.urls.clone(), ..Default::default() },
+                false,
+            )
+            .unwrap()
+        };
+        assert!(
+            at.contains(&base_of(m.broker.as_ref().unwrap()).as_str())
+                && at.contains(&base_of(lead.coord.as_ref().unwrap()).as_str()),
+            "{w}"
+        );
+        assert_eq!(
+            w["lead"].as_str(),
+            crate::coord::brokers::origin(&lead.coord.as_ref().unwrap().contact.urls[0]).as_deref()
+        );
         // The page takes the member's task from the member's broker (another Mac's page: CORS),
         // and the lead's from the lead.
         let ask = serde_json::json!({ "worker": "ipad", "kind": "web", "can": ["tail"], "mem_mb": 1000, "cores": 4 });
@@ -9941,7 +13044,12 @@ mod pool_tests {
         assert_eq!((code, g["id"].as_u64()), (200, Some(lt)));
         let ll = g["lease"].as_u64().unwrap();
         // The lead handed to the member, in their processes.
-        crate::control::request_lead(&lead.o.home, crate::control::LeadAsk::Give { to: im.clone() }, "the menu bar on l").unwrap();
+        crate::control::request_lead(
+            &lead.o.home,
+            crate::control::LeadAsk::Give { to: im.clone() },
+            "the menu bar on l",
+        )
+        .unwrap();
         let end = Instant::now() + WATCHDOG;
         while !(m.pooled().unwrap().side.driver().leads() == Some(2) && m.coord.is_some() && lead.coord.is_none()) {
             lead.step().unwrap();
@@ -9957,7 +13065,11 @@ mod pool_tests {
         for (port, lease, id) in [(bport, ml, mt), (lport, ll, lt)] {
             let (code, b, _) = call(port, "/work/beat", serde_json::json!({ "worker": "ipad", "lease": lease }));
             assert_eq!((code, b["ok"].as_bool()), (200, Some(true)), "task {id}'s lease at {port}");
-            let (code, _, _) = call(port, "/work/done", serde_json::json!({ "worker": "ipad", "lease": lease, "outputs": [], "secs": 1.0, "peak_mb": 100 }));
+            let (code, _, _) = call(
+                port,
+                "/work/done",
+                serde_json::json!({ "worker": "ipad", "lease": lease, "outputs": [], "secs": 1.0, "peak_mb": 100 }),
+            );
             assert_eq!(code, 200, "task {id} handed back at {port}");
         }
         assert_eq!(lead.broker.as_ref().unwrap().brokered().1, 0);
@@ -9965,7 +13077,14 @@ mod pool_tests {
         // new lead.
         std::fs::write(&gate, b"").unwrap();
         let end = Instant::now() + WATCHDOG;
-        while !(m.slots[0].running.is_none() && m.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k"))) {
+        while !(m.slots[0].running.is_none()
+            && m.pooled()
+                .unwrap()
+                .side
+                .driver()
+                .records()
+                .is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k")))
+        {
             lead.step().unwrap();
             m.step().unwrap();
             assert!(Instant::now() < end, "the job's end not merged");
@@ -9989,7 +13108,12 @@ mod pool_tests {
 
     /// A POST of JSON to this process's coordinator on `port`, as a page sends it: its status, its
     /// JSON, and the origin its answer allows (CORS).
-    fn http_post(port: u16, path: &str, headers: &[(&str, &str)], body: &str) -> (u16, serde_json::Value, Option<String>) {
+    fn http_post(
+        port: u16,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> (u16, serde_json::Value, Option<String>) {
         use std::io::{Read, Write};
         let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         let head: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
@@ -9999,7 +13123,11 @@ mod pool_tests {
         let text = String::from_utf8_lossy(&r).to_string();
         let (h, b) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
         let code = h.split(' ').nth(1).unwrap().parse().unwrap();
-        let acao = h.lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case("access-control-allow-origin")).map(|(_, v)| v.trim().to_string()));
+        let acao = h.lines().find_map(|l| {
+            l.split_once(':')
+                .filter(|(k, _)| k.eq_ignore_ascii_case("access-control-allow-origin"))
+                .map(|(_, v)| v.trim().to_string())
+        });
         (code, serde_json::from_str(b.trim()).unwrap_or_default(), acao)
     }
 
@@ -10015,11 +13143,27 @@ mod pool_tests {
         let gate = d.path().join("gate");
         let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pack ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         m.step().unwrap();
         let im = m.pooled().unwrap().side.member().id.clone();
         lead.pooled().unwrap().side.know(&im);
@@ -10027,11 +13171,23 @@ mod pool_tests {
         // the old lead's, under the old lead's, stay when it takes up.)
         m.host = "the-member".into();
         // The lead's own job, under its coordinator's lease, its files in the agent's folder.
-        let job = JobSpec { id: "pack 6/4/4".into(), what: "map tiles".into(), cmd: vec![bin.join("scenic-build").to_string_lossy().into_owned(), "pack".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "pack".into(), targets: vec![("6/4/4".into(), "kn".into())] }) };
+        let job = JobSpec {
+            id: "pack 6/4/4".into(),
+            what: "map tiles".into(),
+            cmd: vec![bin.join("scenic-build").to_string_lossy().into_owned(), "pack".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "pack".into(), targets: vec![("6/4/4".into(), "kn".into())] }),
+        };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
         assert!(matches!(lead.slots[0].lease, Some(Held::Pooled { own: true, .. })));
-        crate::control::request_lead(&lead.o.home, crate::control::LeadAsk::Give { to: im.clone() }, "the menu bar on l").unwrap();
+        crate::control::request_lead(
+            &lead.o.home,
+            crate::control::LeadAsk::Give { to: im.clone() },
+            "the menu bar on l",
+        )
+        .unwrap();
         let both = |lead: &mut Agent, m: &mut Agent, done: &dyn Fn(&Agent, &Agent) -> bool| {
             let end = Instant::now() + WATCHDOG;
             loop {
@@ -10040,15 +13196,24 @@ mod pool_tests {
                 if done(lead, m) {
                     return;
                 }
-                assert!(Instant::now() < end, "not done in {WATCHDOG:?}: {:?}", lead.pooled().unwrap().controls.kept.asked);
+                assert!(
+                    Instant::now() < end,
+                    "not done in {WATCHDOG:?}: {:?}",
+                    lead.pooled().unwrap().controls.kept.asked
+                );
                 std::thread::sleep(Duration::from_millis(250));
             }
         };
-        both(&mut lead, &mut m, &|l, m| m.pooled().unwrap().side.driver().leads().is_some() && m.coord.is_some() && l.coord.is_none());
+        both(&mut lead, &mut m, &|l, m| {
+            m.pooled().unwrap().side.driver().leads().is_some() && m.coord.is_some() && l.coord.is_none()
+        });
         // The old lead's job runs on, its lease renewed with the new lead by HTTP (it knows it: the
         // term's state handed over).
         assert!(lead.slots[0].running.is_some());
-        let lid = match lead.slots[0].lease { Some(Held::Pooled { id, .. }) => id, _ => panic!() };
+        let lid = match lead.slots[0].lease {
+            Some(Held::Pooled { id, .. }) => id,
+            _ => panic!(),
+        };
         assert!(m.coord.as_ref().unwrap().held("pack").contains("6/4/4"), "the new lead holds its lease");
         lead.slots[0].beaten = None;
         assert!(lead.beat(0, Some(&r)), "renewed by HTTP");
@@ -10058,7 +13223,15 @@ mod pool_tests {
         let il = lead.pooled().unwrap().side.member().id.clone();
         m.pooled().unwrap().side.know(&il);
         std::fs::write(&gate, b"").unwrap();
-        both(&mut lead, &mut m, &|l, m| l.slots[0].running.is_none() && m.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("pack", "6/4/4") == Some("kn")));
+        both(&mut lead, &mut m, &|l, m| {
+            l.slots[0].running.is_none()
+                && m.pooled()
+                    .unwrap()
+                    .side
+                    .driver()
+                    .records()
+                    .is_some_and(|r| r.keys.recorded("pack", "6/4/4") == Some("kn"))
+        });
         assert!(m.coord.as_ref().unwrap().held("pack").is_empty());
         assert_eq!((lead.pool_restart(), m.pool_restart()), (None, None));
         stop_jobs(&mut lead);
@@ -10080,21 +13253,49 @@ mod pool_tests {
         let gate = d.path().join("gate");
         let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", &format!("step=\"$1\"\n[ \"$step\" = pass-sets ] && while [ ! -e '{}' ]; do kill -0 $PPID 2>/dev/null || exit 1; sleep 0.05; done\n", gate.display()));
         std::fs::write(bin.join("scenic-build"), script).unwrap();
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         m.mem.last_ok.insert("backup".into(), now_s());
         m.mem.last_ok.insert("gc".into(), now_s());
         m.step().unwrap();
         let im = m.pooled().unwrap().side.member().id.clone();
         lead.pooled().unwrap().side.know(&im);
         m.host = "the-member".into();
-        let job = JobSpec { id: "pass-sets 2026-09-28".into(), what: "the pass's sets".into(), cmd: vec![bin.join("scenic-build").to_string_lossy().into_owned(), "pass-sets".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: None };
+        let job = JobSpec {
+            id: "pass-sets 2026-09-28".into(),
+            what: "the pass's sets".into(),
+            cmd: vec![bin.join("scenic-build").to_string_lossy().into_owned(), "pass-sets".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: None,
+        };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
-        crate::control::request_lead(&lead.o.home, crate::control::LeadAsk::Give { to: im.clone() }, "the menu bar on l").unwrap();
+        crate::control::request_lead(
+            &lead.o.home,
+            crate::control::LeadAsk::Give { to: im.clone() },
+            "the menu bar on l",
+        )
+        .unwrap();
         let both = |lead: &mut Agent, m: &mut Agent, done: &dyn Fn(&Agent, &Agent) -> bool| {
             let end = Instant::now() + WATCHDOG;
             loop {
@@ -10112,7 +13313,10 @@ mod pool_tests {
         std::fs::write(&gate, b"").unwrap();
         both(&mut lead, &mut m, &|l, _| l.slots[0].running.is_none());
         let h = m.coord.as_ref().unwrap().history_since(0);
-        assert!(h.iter().any(|e| e.kind == "done" && e.step.as_deref() == Some("pass-sets") && e.ok == Some(true)), "{h:?}");
+        assert!(
+            h.iter().any(|e| e.kind == "done" && e.step.as_deref() == Some("pass-sets") && e.ok == Some(true)),
+            "{h:?}"
+        );
         assert!(!h.iter().any(|e| e.kind == "fail" && e.step.as_deref() == Some("pass-sets")), "{h:?}");
         assert!(m.coord.as_ref().unwrap().leases_out() == 0, "its lease ended at once");
         stop_jobs(&mut lead);
@@ -10137,11 +13341,27 @@ mod pool_tests {
         std::fs::write(bin.join("scenic-build"), script).unwrap();
         // (Each coordinator on a port of its own: the frozen lead's still holds its own.)
         TEST_PORT.with(|p| p.set(Some(free_port())));
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         m.mem.last_ok.insert("backup".into(), now_s());
         m.mem.last_ok.insert("gc".into(), now_s());
         m.step().unwrap();
@@ -10150,14 +13370,26 @@ mod pool_tests {
         lead.pooled().unwrap().side.know(&im);
         m.pooled().unwrap().side.know(&il);
         m.host = "the-member".into();
-        let job = JobSpec { id: "pack 6/4/4".into(), what: "map tiles".into(), cmd: vec![bin.join("scenic-build").to_string_lossy().into_owned(), "pack".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "pack".into(), targets: vec![("6/4/4".into(), "kn".into())] }) };
+        let job = JobSpec {
+            id: "pack 6/4/4".into(),
+            what: "map tiles".into(),
+            cmd: vec![bin.join("scenic-build").to_string_lossy().into_owned(), "pack".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "pack".into(), targets: vec![("6/4/4".into(), "kn".into())] }),
+        };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
         // (Its coordinator's state, its job's lease with it, saved for the term: the loop after the grant.)
         lead.step().unwrap();
         // The lead "frozen" (not stepped): the member takes over, forced, on a port of its own.
         TEST_PORT.with(|p| p.set(Some(free_port())));
-        crate::control::request_lead(&m.o.home, crate::control::LeadAsk::Take { force: true, downgrade: false }, "scenic lead take on m").unwrap();
+        crate::control::request_lead(
+            &m.o.home,
+            crate::control::LeadAsk::Take { force: true, downgrade: false },
+            "scenic lead take on m",
+        )
+        .unwrap();
         until(&mut m, |m| m.coord.is_some() && m.published.is_some());
         assert!(m.coord.as_ref().unwrap().held("pack").contains("6/4/4"), "the new lead holds the frozen lead's lease");
         // The job ends while the lead is frozen; the lead wakes, its next loop ending it.
@@ -10182,9 +13414,25 @@ mod pool_tests {
         let r = nas(d.path());
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: bin.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.step().unwrap();
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin, dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin,
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         m.step().unwrap();
         assert_eq!(m.pooled().unwrap().role, pool::Role::Member);
         // (The port its coordinator would take is the lead's, still answering.)
@@ -10199,11 +13447,26 @@ mod pool_tests {
     fn an_own_jobs_timings_for_the_lead_are_the_slots_job_alone() {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
-        let mut a = test_agent(Options { root: Some(r.clone()), home: d.path().join("agent"), bin: app(d.path()), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("agent"),
+            bin: app(d.path()),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         let rec = || Some(crate::timings::RunRec { kind: "unit".into(), ..Default::default() });
         // (Left from the slot's last job.) A job starting there carries none of them.
         a.slots[0].timings_out = rec();
-        let spec = JobSpec { id: "x x".into(), what: "x".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: None };
+        let spec = JobSpec {
+            id: "x x".into(),
+            what: "x".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: None,
+        };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         a.start(0, spec, &cond).unwrap();
         assert_eq!(a.slots[0].timings_out, None);
@@ -10222,11 +13485,26 @@ mod pool_tests {
         let r = nas(d.path());
         switch_on(&r, pool::SLOTS);
         let bin = app(d.path());
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin, dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin,
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         lead.step().unwrap();
-        let catalog = JobSpec { id: "catalog catalog".into(), what: "catalog".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "catalog".into(), targets: vec![("catalog".into(), "kc".into())] }) };
+        let catalog = JobSpec {
+            id: "catalog catalog".into(),
+            what: "catalog".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "catalog".into(), targets: vec![("catalog".into(), "kc".into())] }),
+        };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, catalog, &cond, Some(&r), &mut Vec::new()));
         let port = TEST_PORT.with(|p| p.get()).unwrap();
@@ -10271,14 +13549,37 @@ mod pool_tests {
             }
         }
         std::os::unix::fs::symlink(&new, apps.join("current")).unwrap();
-        let mut lead = test_agent(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: old.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut lead = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("l/agent"),
+            bin: old.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         lead.mem.last_ok.insert("backup".into(), now_s());
         lead.mem.last_ok.insert("gc".into(), now_s());
         // (A job of its own, holding its update.)
-        let job = JobSpec { id: "pack 6/1/1".into(), what: "pack".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "pack".into(), targets: vec![("6/1/1".into(), "k".into())] }) };
+        let job = JobSpec {
+            id: "pack 6/1/1".into(),
+            what: "pack".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "pack".into(), targets: vec![("6/1/1".into(), "k".into())] }),
+        };
         lead.step().unwrap();
         assert_eq!(lead.pending_app().as_deref(), Some("20261010-0200-bbbbbbb"));
-        let mut m = test_agent(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: new.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let mut m = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("m/agent"),
+            bin: new.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         let im = m.pooled().unwrap().side.member().id.clone();
         lead.pooled().unwrap().side.know(&im);
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
@@ -10290,7 +13591,17 @@ mod pool_tests {
             assert!(Instant::now() < end, "not handed over: {:?}", lead.pooled().unwrap().controls.kept.asked);
             std::thread::sleep(Duration::from_millis(250));
         }
-        assert!(lead.pooled().unwrap().controls.kept.asked.as_ref().is_some_and(|a| a.by.contains("update to 20261010-0200-bbbbbbb")), "{:?}", lead.pooled().unwrap().controls.kept.asked);
+        assert!(
+            lead.pooled()
+                .unwrap()
+                .controls
+                .kept
+                .asked
+                .as_ref()
+                .is_some_and(|a| a.by.contains("update to 20261010-0200-bbbbbbb")),
+            "{:?}",
+            lead.pooled().unwrap().controls.kept.asked
+        );
         assert_eq!(lead.update_handed.as_deref(), Some("20261010-0200-bbbbbbb"));
         assert!(lead.slots[0].running.is_some(), "its job runs on");
         stop_jobs(&mut lead);
@@ -10306,9 +13617,20 @@ mod pool_tests {
         let mut a = agent_dry(&r, &home);
         let nas_: pool::SharedNas = std::sync::Arc::new(crate::pool::nas::Share::new(&r));
         let side = pool::Side::open(&home, &home.join("pool"), d.path(), "development", nas_).unwrap().unwrap();
-        a.pool = Some(std::sync::Arc::new(std::sync::Mutex::new(pool::Run::new(side, pool::Role::Lead, pool::Gates { term: 1, leads: Some(1), duties: true, ..Default::default() }))));
+        a.pool = Some(std::sync::Arc::new(std::sync::Mutex::new(pool::Run::new(
+            side,
+            pool::Role::Lead,
+            pool::Gates { term: 1, leads: Some(1), duties: true, ..Default::default() },
+        ))));
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 9999 };
-        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/usr/bin/true".into()], needs: Needs { nas: true }, restart_after_sleep: false, record: None };
+        let job = |id: &str| JobSpec {
+            id: id.into(),
+            what: id.into(),
+            cmd: vec!["/usr/bin/true".into()],
+            needs: Needs { nas: true },
+            restart_after_sleep: false,
+            record: None,
+        };
         // Not caught up: no catalog; a sweep asks for a re-assertion first.
         let mut w = Vec::new();
         assert!(!a.try_start(0, job("catalog"), &c, Some(&r), &mut w));
@@ -10333,11 +13655,23 @@ mod pool_tests {
         let home = d.path().join("app-folder/agent");
         let id = crate::pool::member_id(&home).unwrap();
         let held = crate::pool::MemberLock::take(&d.path().join("app-folder"), &id).unwrap().unwrap();
-        let mut a = test_agent(Options { root: Some(r.clone()), home: home.clone(), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(r.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/nonexistent/bin"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
         assert!(a.pool.is_none() && a.coord.is_none() && !a.o.dry_run, "waiting, not a dry run for good");
         a.step().unwrap();
         let st = read_status(Some(&r), &home).unwrap();
-        assert!(st.waiting.iter().any(|w| w.why.contains("not in the pool yet") && w.why.contains("member's lock")), "{:?}", st.waiting);
+        assert!(
+            st.waiting.iter().any(|w| w.why.contains("not in the pool yet") && w.why.contains("member's lock")),
+            "{:?}",
+            st.waiting
+        );
         assert!(a.pool_restart().is_none() && a.slots.iter().all(|s| s.running.is_none()));
         drop(held);
         a.step().unwrap();
@@ -10348,18 +13682,48 @@ mod pool_tests {
     fn a_hand_off_said_journaled_is_journaled_while_the_coordinators_pool_is_off() {
         let d = tempfile::tempdir().unwrap();
         let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
-        c.offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
-        let cl = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
-        let ask = crate::coord::Ask { kind: "native".into(), can: vec!["slope".into()], mem_mb: 64_000, max: 1, ..Default::default() };
+        c.offer(
+            "2026-09-28",
+            vec![crate::coord::Offer {
+                step: "slope".into(),
+                targets: vec![("3/2/2".into(), "k".into(), 100)],
+                batch: 2,
+            }],
+        );
+        let cl =
+            crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        let ask = crate::coord::Ask {
+            kind: "native".into(),
+            can: vec!["slope".into()],
+            mem_mb: 64_000,
+            max: 1,
+            ..Default::default()
+        };
         let g = cl.ask(&ask).unwrap().expect("granted");
-        let h = crate::handoff::Handoff { changes: [("layers/slope/lo/3-2-2".to_string(), Some("layers/slope/lo/3-2-2.0123456789abcdef.pack".to_string()))].into(), done: Some(("slope".into(), vec![("3/2/2".into(), "k".into())])), ..Default::default() };
-        cl.done(&crate::coord::Done { lease: g.lease, handoff: Some(h), journaled: true, ..Default::default() }).unwrap();
+        let h = crate::handoff::Handoff {
+            changes: [(
+                "layers/slope/lo/3-2-2".to_string(),
+                Some("layers/slope/lo/3-2-2.0123456789abcdef.pack".to_string()),
+            )]
+            .into(),
+            done: Some(("slope".into(), vec![("3/2/2".into(), "k".into())])),
+            ..Default::default()
+        };
+        cl.done(&crate::coord::Done { lease: g.lease, handoff: Some(h), journaled: true, ..Default::default() })
+            .unwrap();
         // (Switched off with the member's job under way: its hand-off kept here, to be merged.)
         assert_eq!(crate::handoff::waiting_in(&c.journal()).unwrap().len(), 1);
     }
 
     fn agent_dry(root: &Path, home: &Path) -> Agent {
-        test_agent(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/nonexistent/bin"), dry_run: true, once: true, helper: false }).unwrap()
+        test_agent(Options {
+            root: Some(root.to_path_buf()),
+            home: home.to_path_buf(),
+            bin: PathBuf::from("/nonexistent/bin"),
+            dry_run: true,
+            once: true,
+            helper: false,
+        })
+        .unwrap()
     }
-
 }

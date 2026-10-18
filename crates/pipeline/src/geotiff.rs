@@ -355,14 +355,27 @@ impl Tiff {
                 let Some(sz) = type_size(typ) else { continue };
                 let value = &e[4 + off_sz..];
                 let bytes = count.checked_mul(sz).context("TIFF entry size")?;
-                let (at, inline) = if bytes <= off_sz as u64 { (None, value[..bytes as usize].to_vec()) } else { (Some(order.uint(value)), Vec::new()) };
+                let (at, inline) = if bytes <= off_sz as u64 {
+                    (None, value[..bytes as usize].to_vec())
+                } else {
+                    (Some(order.uint(value)), Vec::new())
+                };
                 d.insert(tag, Entry { typ, count, at, inline });
             }
             dirs.push(d);
             ifd = order.uint(&b[n * ent_sz..]);
         }
         ensure!(!dirs.is_empty(), "a TIFF without images");
-        let mut t = Tiff { src, order, images: Vec::new(), transform: [0.0, 1.0, 0.0, 0.0, 0.0, 1.0], nodata: None, keys: GeoKeys::default(), metadata: Vec::new(), cache: None };
+        let mut t = Tiff {
+            src,
+            order,
+            images: Vec::new(),
+            transform: [0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            nodata: None,
+            keys: GeoKeys::default(),
+            metadata: Vec::new(),
+            cache: None,
+        };
         let main = t.image(&dirs[0]).context("TIFF image")?;
         t.images.push(main);
         for d in &dirs[1..] {
@@ -401,7 +414,9 @@ impl Tiff {
 
     /// Image `level`: 0 the full-resolution one, `k + 1` overview `k` (GDAL's OVERVIEW_LEVEL=k).
     pub fn level(&self, level: usize) -> Result<&Image> {
-        self.images.get(level).with_context(|| format!("no overview {} (the file has {})", level as i64 - 1, self.images.len() - 1))
+        self.images
+            .get(level)
+            .with_context(|| format!("no overview {} (the file has {})", level as i64 - 1, self.images.len() - 1))
     }
 
     /// GDAL's geotransform of image `level`: the full-resolution one's, its scale times the sizes'
@@ -473,7 +488,8 @@ impl Tiff {
     }
 
     fn image(&self, d: &BTreeMap<u16, Entry>) -> Result<Image> {
-        let one = |tag: u16, default: u64| -> Result<u64> { Ok(self.uints(d, tag)?.first().copied().unwrap_or(default)) };
+        let one =
+            |tag: u16, default: u64| -> Result<u64> { Ok(self.uints(d, tag)?.first().copied().unwrap_or(default)) };
         let width = one(IMAGE_WIDTH, 0)? as u32;
         let height = one(IMAGE_LENGTH, 0)? as u32;
         ensure!(width > 0 && height > 0, "TIFF image of {width}x{height}");
@@ -498,7 +514,21 @@ impl Tiff {
             let rps = one(ROWS_PER_STRIP, u32::MAX as u64)?.clamp(1, height as u64) as u32;
             (width, rps, self.striles(d, STRIP_OFFSETS)?, self.striles(d, STRIP_BYTE_COUNTS)?)
         };
-        Ok(Image { width, height, block_w, block_h, tiled, bits, format, spp, planar, compression, predictor, offsets, counts })
+        Ok(Image {
+            width,
+            height,
+            block_w,
+            block_h,
+            tiled,
+            bits,
+            format,
+            spp,
+            planar,
+            compression,
+            predictor,
+            offsets,
+            counts,
+        })
     }
 
     fn geo(&mut self, d: &BTreeMap<u16, Entry>) -> Result<()> {
@@ -512,8 +542,12 @@ impl Tiff {
                     let (id, loc, count, v) = (e[0] as u16, e[1] as u16, e[2] as usize, e[3] as usize);
                     let val = match loc {
                         0 => GeoValue::Short(v as u16),
-                        GEO_DOUBLE_PARAMS => GeoValue::Doubles(dbl.get(v..v + count).map(<[f64]>::to_vec).unwrap_or_default()),
-                        GEO_ASCII_PARAMS => GeoValue::Ascii(asc.get(v..v + count).unwrap_or("").trim_end_matches(['|', '\0']).to_string()),
+                        GEO_DOUBLE_PARAMS => {
+                            GeoValue::Doubles(dbl.get(v..v + count).map(<[f64]>::to_vec).unwrap_or_default())
+                        }
+                        GEO_ASCII_PARAMS => GeoValue::Ascii(
+                            asc.get(v..v + count).unwrap_or("").trim_end_matches(['|', '\0']).to_string(),
+                        ),
                         GEO_KEY_DIRECTORY => GeoValue::Short(k.get(v).copied().unwrap_or(0) as u16),
                         _ => continue,
                     };
@@ -591,7 +625,8 @@ impl Tiff {
                 return Ok(b);
             }
         }
-        let b = Arc::new(self.decode(img, index, by).with_context(|| format!("TIFF block {bx},{by} of image {level}"))?);
+        let b =
+            Arc::new(self.decode(img, index, by).with_context(|| format!("TIFF block {bx},{by} of image {level}"))?);
         if let Some((id, c)) = &self.cache {
             c.lock().unwrap().put((*id, level, index), b.clone());
         }
@@ -639,7 +674,12 @@ impl Tiff {
     /// reads a window into a Float32 buffer), row by row.
     pub fn read_window(&self, level: usize, x0: u32, y0: u32, w: u32, h: u32) -> Result<Vec<f32>> {
         let img = self.level(level)?;
-        ensure!(w > 0 && h > 0 && x0 as u64 + w as u64 <= img.width as u64 && y0 as u64 + h as u64 <= img.height as u64, "window {x0},{y0} {w}x{h} outside the {}x{} image", img.width, img.height);
+        ensure!(
+            w > 0 && h > 0 && x0 as u64 + w as u64 <= img.width as u64 && y0 as u64 + h as u64 <= img.height as u64,
+            "window {x0},{y0} {w}x{h} outside the {}x{} image",
+            img.width,
+            img.height
+        );
         let (bw, bh) = (img.block_w, img.block_h);
         let mut out = vec![0f32; w as usize * h as usize];
         for by in y0 / bh..=(y0 + h - 1) / bh {
@@ -671,7 +711,9 @@ impl Tiff {
 /// The dataset's items of GDAL's metadata XML (`<Item name="…">…</Item>`, those of no domain and no
 /// band), their text unescaped.
 fn metadata_items(xml: &str) -> Vec<(String, String)> {
-    let unescape = |s: &str| s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&");
+    let unescape = |s: &str| {
+        s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+    };
     let mut out = Vec::new();
     let mut rest = xml;
     while let Some(i) = rest.find("<Item ") {
@@ -689,7 +731,13 @@ fn metadata_items(xml: &str) -> Vec<(String, String)> {
                 (a, b)
             }
         };
-        let attr = |k: &str| attrs.split_once(&format!(" {k}=\"")).or_else(|| attrs.strip_prefix(&format!("{k}=\"")).map(|v| ("", v))).and_then(|(_, v)| v.split_once('"')).map(|(v, _)| v);
+        let attr = |k: &str| {
+            attrs
+                .split_once(&format!(" {k}=\""))
+                .or_else(|| attrs.strip_prefix(&format!("{k}=\"")).map(|v| ("", v)))
+                .and_then(|(_, v)| v.split_once('"'))
+                .map(|(v, _)| v)
+        };
         if attr("domain").is_some() || attr("sample").is_some() {
             continue;
         }
@@ -833,7 +881,8 @@ fn fp_diff(row: &mut [u8], bps: usize, stride: usize, tmp: &mut Vec<u8>) {
 
 /// GeoKeys for a geographic CRS by its EPSG code (as GDAL writes them for WGS 84).
 fn geographic_keys(epsg: u16) -> (Vec<u16>, Vec<f64>, String) {
-    let mut keys: Vec<[u16; 4]> = vec![[key::MODEL_TYPE, 0, 1, 2], [key::RASTER_TYPE, 0, 1, 1], [key::GEOGRAPHIC_TYPE, 0, 1, epsg]];
+    let mut keys: Vec<[u16; 4]> =
+        vec![[key::MODEL_TYPE, 0, 1, 2], [key::RASTER_TYPE, 0, 1, 1], [key::GEOGRAPHIC_TYPE, 0, 1, epsg]];
     let mut dbl = Vec::new();
     let mut asc = String::new();
     if epsg == 4326 {
@@ -858,7 +907,11 @@ fn nodata_text(v: f64) -> String {
     if v.is_nan() {
         "nan".into()
     } else if v.is_infinite() {
-        if v > 0.0 { "inf".into() } else { "-inf".into() }
+        if v > 0.0 {
+            "inf".into()
+        } else {
+            "-inf".into()
+        }
     } else {
         format!("{v}")
     }
@@ -868,10 +921,22 @@ fn nodata_text(v: f64) -> String {
 /// `tile`-pixel square tiles (edges filled with the nodata value, or 0), Deflate with the
 /// floating-point predictor; north-up geotransform `gt` in geographic CRS `epsg`, and GDAL's
 /// nodata tag.
-pub fn write_f32(width: u32, height: u32, data: &[f32], tile: u32, gt: [f64; 6], epsg: u16, nodata: Option<f64>) -> Result<Vec<u8>> {
+pub fn write_f32(
+    width: u32,
+    height: u32,
+    data: &[f32],
+    tile: u32,
+    gt: [f64; 6],
+    epsg: u16,
+    nodata: Option<f64>,
+) -> Result<Vec<u8>> {
     use rayon::prelude::*;
     use std::io::Write;
-    ensure!(data.len() == width as usize * height as usize && width > 0 && height > 0 && tile > 0, "a {width}x{height} raster of {} values", data.len());
+    ensure!(
+        data.len() == width as usize * height as usize && width > 0 && height > 0 && tile > 0,
+        "a {width}x{height} raster of {} values",
+        data.len()
+    );
     ensure!(gt[2] == 0.0 && gt[4] == 0.0 && gt[5] < 0.0, "a rotated or south-up geotransform");
     let (across, down) = (width.div_ceil(tile), height.div_ceil(tile));
     let fill = nodata.unwrap_or(0.0) as f32;
@@ -1002,7 +1067,17 @@ pub(crate) mod testtiff {
 
     impl Default for Opts {
         fn default() -> Self {
-            Opts { le: true, big: false, tile: Some(16), rows: 5, compression: 1, predictor: 1, kind: (3, 32), spp: 1, keys: &[] }
+            Opts {
+                le: true,
+                big: false,
+                tile: Some(16),
+                rows: 5,
+                compression: 1,
+                predictor: 1,
+                kind: (3, 32),
+                spp: 1,
+                keys: &[],
+            }
         }
     }
 
@@ -1036,12 +1111,22 @@ pub(crate) mod testtiff {
     /// A TIFF of images of `sizes` (the first full-resolution, the others overviews of it), in
     /// layout `o`, sample `s` of pixel (`x`, `y`) of image `k` being `val(k, x, y, s)`; and each
     /// image's band-1 values as f32.
-    pub fn make_images(sizes: &[(u32, u32)], o: Opts, gt: [f64; 6], nodata: Option<&str>, val: &dyn Fn(usize, u32, u32, usize) -> f64) -> (Vec<u8>, Vec<Vec<f32>>) {
+    pub fn make_images(
+        sizes: &[(u32, u32)],
+        o: Opts,
+        gt: [f64; 6],
+        nodata: Option<&str>,
+        val: &dyn Fn(usize, u32, u32, usize) -> f64,
+    ) -> (Vec<u8>, Vec<Vec<f32>>) {
         let bps = o.kind.1 as usize / 8;
         let spp = o.spp as usize;
         let ord = |v: u64, n: usize| -> Vec<u8> {
             let b = v.to_le_bytes();
-            if o.le { b[..n].to_vec() } else { b[..n].iter().rev().copied().collect() }
+            if o.le {
+                b[..n].to_vec()
+            } else {
+                b[..n].iter().rev().copied().collect()
+            }
         };
         let dbl = |v: f64| -> Vec<u8> { ord(v.to_bits(), 8) };
         let (cnt_sz, ent_sz, off_sz) = if o.big { (8usize, 20usize, 8usize) } else { (2, 12, 4) };
@@ -1082,7 +1167,9 @@ pub(crate) mod testtiff {
                                             row[2 * i..2 * i + 2].copy_from_slice(&b.wrapping_sub(a).to_le_bytes());
                                         }
                                         _ => {
-                                            let a = u32::from_le_bytes(row[4 * (i - spp)..4 * (i - spp) + 4].try_into().unwrap());
+                                            let a = u32::from_le_bytes(
+                                                row[4 * (i - spp)..4 * (i - spp) + 4].try_into().unwrap(),
+                                            );
                                             let b = u32::from_le_bytes(row[4 * i..4 * i + 4].try_into().unwrap());
                                             row[4 * i..4 * i + 4].copy_from_slice(&b.wrapping_sub(a).to_le_bytes());
                                         }
@@ -1151,11 +1238,21 @@ pub(crate) mod testtiff {
                 .collect();
             // Georeferencing on the full-resolution image, nodata on each.
             if k == 0 && !o.keys.is_empty() {
-                all.push((GEO_KEY_DIRECTORY, 3, o.keys.len() as u64, o.keys.iter().flat_map(|&v| ord(v as u64, 2)).collect()));
+                all.push((
+                    GEO_KEY_DIRECTORY,
+                    3,
+                    o.keys.len() as u64,
+                    o.keys.iter().flat_map(|&v| ord(v as u64, 2)).collect(),
+                ));
             }
             if k == 0 {
                 all.push((MODEL_PIXEL_SCALE, 12, 3, [gt[1], -gt[5], 0.0].iter().flat_map(|&v| dbl(v)).collect()));
-                all.push((MODEL_TIEPOINT, 12, 6, [0.0, 0.0, 0.0, gt[0], gt[3], 0.0].iter().flat_map(|&v| dbl(v)).collect()));
+                all.push((
+                    MODEL_TIEPOINT,
+                    12,
+                    6,
+                    [0.0, 0.0, 0.0, gt[0], gt[3], 0.0].iter().flat_map(|&v| dbl(v)).collect(),
+                ));
             }
             if let Some(nd) = nodata {
                 let mut a = nd.as_bytes().to_vec();
@@ -1163,7 +1260,12 @@ pub(crate) mod testtiff {
                 all.push((GDAL_NODATA, 2, a.len() as u64, a));
             }
             all.sort_by_key(|x| x.0);
-            values.push((0..h).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| sample_value(o.kind, val(k, x, y, 0))).collect());
+            values.push(
+                (0..h)
+                    .flat_map(|y| (0..w).map(move |x| (x, y)))
+                    .map(|(x, y)| sample_value(o.kind, val(k, x, y, 0)))
+                    .collect(),
+            );
             images.push((blocks, all));
         }
         // The directories (each followed by its values), then the blocks.
@@ -1171,7 +1273,10 @@ pub(crate) mod testtiff {
         let mut pos = header;
         for (_, ents) in &images {
             ifd_at.push(pos);
-            pos += cnt_sz + ent_sz * ents.len() + off_sz + ents.iter().filter(|x| x.3.len() > off_sz).map(|x| x.3.len()).sum::<usize>();
+            pos += cnt_sz
+                + ent_sz * ents.len()
+                + off_sz
+                + ents.iter().filter(|x| x.3.len() > off_sz).map(|x| x.3.len()).sum::<usize>();
         }
         let mut at = pos as u64;
         for (blocks, ents) in images.iter_mut() {
@@ -1258,10 +1363,16 @@ mod tests {
             for big in [false, true] {
                 for tile in [Some(16), None] {
                     for compression in [1, 5, 8, 50000] {
-                        for (kind, predictors) in [((3, 32), &[1u16, 2, 3][..]), ((2, 16), &[1, 2][..]), ((1, 16), &[1, 2][..]), ((1, 8), &[1, 2][..])] {
+                        for (kind, predictors) in [
+                            ((3, 32), &[1u16, 2, 3][..]),
+                            ((2, 16), &[1, 2][..]),
+                            ((1, 16), &[1, 2][..]),
+                            ((1, 8), &[1, 2][..]),
+                        ] {
                             for &predictor in predictors {
                                 for spp in [1u16, 3] {
-                                    let o = Opts { le, big, tile, rows: 6, compression, predictor, kind, spp, keys: &[] };
+                                    let o =
+                                        Opts { le, big, tile, rows: 6, compression, predictor, kind, spp, keys: &[] };
                                     let (b, vals) = make(w, h, o, gt, Some("-9999"));
                                     let t = open(b);
                                     let got = t.read_window(0, 0, 0, w, h).unwrap();
@@ -1270,7 +1381,11 @@ mod tests {
                                     let part = t.read_window(0, 5, 3, 20, 17).unwrap();
                                     for y in 0..17 {
                                         for x in 0..20 {
-                                            assert_eq!(part[y * 20 + x].to_bits(), vals[(y + 3) * w as usize + x + 5].to_bits(), "{o:?}");
+                                            assert_eq!(
+                                                part[y * 20 + x].to_bits(),
+                                                vals[(y + 3) * w as usize + x + 5].to_bits(),
+                                                "{o:?}"
+                                            );
                                         }
                                     }
                                     assert_eq!(t.transform(0).unwrap(), gt);
@@ -1368,7 +1483,10 @@ mod tests {
         let gt = [100.0, 2.0, 0.0, 500.0, 0.0, -2.0];
         for big in [false, true] {
             let o = Opts { big, compression: 5, ..Opts::default() };
-            let (b, vals) = super::testtiff::make_images(&[(40, 30), (20, 15), (10, 8)], o, gt, Some("-32767"), &|k, x, y, _| (k * 1000) as f64 + (y * 100 + x) as f64);
+            let (b, vals) =
+                super::testtiff::make_images(&[(40, 30), (20, 15), (10, 8)], o, gt, Some("-32767"), &|k, x, y, _| {
+                    (k * 1000) as f64 + (y * 100 + x) as f64
+                });
             let t = open(b);
             assert_eq!(t.images().len(), 3);
             assert_eq!(t.transform(1).unwrap(), [100.0, 4.0, 0.0, 500.0, 0.0, -4.0]);

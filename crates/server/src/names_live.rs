@@ -27,8 +27,18 @@ pub enum Rules {
     Stations,
 }
 
-const AREAS: names::mvt::LayerRule<'static> = names::mvt::LayerRule { layer: "a", name_keys: &["name", "n"], en_keys: &["en"], kind: names::mvt::KindRule::Fixed(Kind::Other) };
-const STATIONS: names::mvt::LayerRule<'static> = names::mvt::LayerRule { layer: "s", name_keys: &["n"], en_keys: &["en"], kind: names::mvt::KindRule::Fixed(Kind::Other) };
+const AREAS: names::mvt::LayerRule<'static> = names::mvt::LayerRule {
+    layer: "a",
+    name_keys: &["name", "n"],
+    en_keys: &["en"],
+    kind: names::mvt::KindRule::Fixed(Kind::Other),
+};
+const STATIONS: names::mvt::LayerRule<'static> = names::mvt::LayerRule {
+    layer: "s",
+    name_keys: &["n"],
+    en_keys: &["en"],
+    kind: names::mvt::KindRule::Fixed(Kind::Other),
+};
 
 fn rules(r: Rules) -> &'static [names::mvt::LayerRule<'static>] {
     match r {
@@ -108,7 +118,15 @@ impl NamesState {
 
     /// A name's display form (`osm`: the languages OSM gives it, where known). Before the lines
     /// and the spoken languages have loaded: the name and its own English.
-    pub fn display(&self, kind: Kind, name: &str, own_en: Option<&str>, osm: &[Lang], lon: f64, lat: f64) -> names::Display {
+    pub fn display(
+        &self,
+        kind: Kind,
+        name: &str,
+        own_en: Option<&str>,
+        osm: &[Lang],
+        lon: f64,
+        lat: f64,
+    ) -> names::Display {
         self.touch();
         match self.snapshot() {
             Some(n) => n.display_at(kind, name, own_en, osm, lon, lat).to_display(),
@@ -133,10 +151,19 @@ impl NamesState {
                 langs.insert(l, serde_json::Value::from(v));
             }
         }
-        let spoken = self.spoken.read().unwrap().as_ref().map(|(c, s)| serde_json::json!({"outlines": c, "version": s.version()}));
+        let spoken = self
+            .spoken
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|(c, s)| serde_json::json!({"outlines": c, "version": s.version()}));
         let mut out = serde_json::json!({"langs": langs, "spoken": spoken});
         if self.current.read().unwrap().is_none() {
-            out["waiting"] = serde_json::Value::from(if g.is_none() { "the translations" } else { "the spoken languages (names show their own English alone until then)" });
+            out["waiting"] = serde_json::Value::from(if g.is_none() {
+                "the translations"
+            } else {
+                "the spoken languages (names show their own English alone until then)"
+            });
         }
         out
     }
@@ -193,7 +220,9 @@ impl NamesState {
                             me.reload();
                         }
                     }
-                    std::thread::sleep(next_sync.saturating_duration_since(std::time::Instant::now()).max(Duration::from_secs(1)));
+                    std::thread::sleep(
+                        next_sync.saturating_duration_since(std::time::Instant::now()).max(Duration::from_secs(1)),
+                    );
                 }
             })
             .ok();
@@ -222,7 +251,14 @@ impl NamesState {
         }
         if changed {
             let s = n.summary();
-            eprintln!("translations: {} lines, {} names in {} files, languages {:?} ({:.1?})", s.lines, s.names, s.files, s.langs.keys().collect::<Vec<_>>(), t.elapsed());
+            eprintln!(
+                "translations: {} lines, {} names in {} files, languages {:?} ({:.1?})",
+                s.lines,
+                s.names,
+                s.files,
+                s.langs.keys().collect::<Vec<_>>(),
+                t.elapsed()
+            );
         }
         *self.names.write().unwrap() = Some(n);
         if changed || self.current.read().unwrap().is_none() {
@@ -244,7 +280,11 @@ impl NamesState {
             }
             match data.global(logical).map(|b| b.map(|b| Spoken::from_bytes(&b))) {
                 Ok(Some(Ok(s))) => {
-                    eprintln!("names: the spoken languages from {} ({} regions)", content.as_deref().unwrap_or(logical), s.regions().count());
+                    eprintln!(
+                        "names: the spoken languages from {} ({} regions)",
+                        content.as_deref().unwrap_or(logical),
+                        s.regions().count()
+                    );
                     self.set_spoken_from(content.unwrap_or_else(|| logical.clone()), s);
                     return;
                 }
@@ -268,7 +308,11 @@ impl NamesState {
             let t = std::time::Instant::now();
             match table.as_ref().map(|(t, _)| crate::regions::spoken_from_outlines(data, t)).unwrap_or(Ok(None)) {
                 Ok(Some(s)) => {
-                    eprintln!("names: the spoken languages from {content} ({} regions, {:.1?})", s.regions().count(), t.elapsed());
+                    eprintln!(
+                        "names: the spoken languages from {content} ({} regions, {:.1?})",
+                        s.regions().count(),
+                        t.elapsed()
+                    );
                     std::fs::create_dir_all(&self.spoken_dir).ok();
                     let tmp = file.with_extension("tmp");
                     if std::fs::write(&tmp, s.to_bytes()).and_then(|_| std::fs::rename(&tmp, &file)).is_ok() {
@@ -293,12 +337,20 @@ impl NamesState {
             // Offline: the newest kept.
             let newest = std::fs::read_dir(&self.spoken_dir).ok().and_then(|rd| {
                 rd.flatten()
-                    .filter(|e| e.file_name().to_string_lossy().starts_with("spoken-") && e.file_name().to_string_lossy().ends_with(".bin"))
+                    .filter(|e| {
+                        e.file_name().to_string_lossy().starts_with("spoken-")
+                            && e.file_name().to_string_lossy().ends_with(".bin")
+                    })
                     .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
             });
             if let Some(e) = newest {
                 if let Some(s) = std::fs::read(e.path()).ok().and_then(|b| Spoken::from_bytes(&b).ok()) {
-                    let content = e.file_name().to_string_lossy().trim_start_matches("spoken-").trim_end_matches(".bin").to_owned();
+                    let content = e
+                        .file_name()
+                        .to_string_lossy()
+                        .trim_start_matches("spoken-")
+                        .trim_end_matches(".bin")
+                        .to_owned();
                     self.set_spoken_from(content, s);
                 }
             }
@@ -313,10 +365,16 @@ impl NamesState {
         if let Err(e) = crate::accepted::synced(data, unit, &self.languages) {
             eprintln!("names: {unit}: {e:#}");
         }
-        let kept = crate::accepted::files(&self.languages).and_then(|f| f.get(pipeline::inputs::languages::TABLE).cloned());
+        let kept =
+            crate::accepted::files(&self.languages).and_then(|f| f.get(pipeline::inputs::languages::TABLE).cloned());
         if let Some((local, content)) = kept {
             match std::fs::read_to_string(&local) {
-                Ok(text) => return Some((names::Table::parse(&text), pipeline::inputs::hash_of(&content).unwrap_or("accepted").to_string())),
+                Ok(text) => {
+                    return Some((
+                        names::Table::parse(&text),
+                        pipeline::inputs::hash_of(&content).unwrap_or("accepted").to_string(),
+                    ))
+                }
                 Err(e) => eprintln!("names: {}: {e}", local.display()),
             }
         }
@@ -346,7 +404,14 @@ mod tests {
 
     fn france() -> Spoken {
         let pt = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
-        Spoken::build(&names::Table::parse("FR\tfr\n"), [names::spoken::Area { code: "FR".into(), area_km2: 1.0, polygons: vec![vec![vec![pt(-5.0, 42.0), pt(8.0, 42.0), pt(8.0, 51.0), pt(-5.0, 51.0)]]] }])
+        Spoken::build(
+            &names::Table::parse("FR\tfr\n"),
+            [names::spoken::Area {
+                code: "FR".into(),
+                area_km2: 1.0,
+                polygons: vec![vec![vec![pt(-5.0, 42.0), pt(8.0, 42.0), pt(8.0, 51.0), pt(-5.0, 51.0)]]],
+            }],
+        )
     }
 
     fn line(sub: &str) -> String {
@@ -387,7 +452,8 @@ mod tests {
         std::fs::create_dir_all(nas.path().join("translations")).unwrap();
         std::fs::write(nas.path().join("translations/late.jsonl"), line("Wrong Lake")).unwrap();
         let v = crate::accepted::put(nas.path(), "translations", &[("answers/fr-001.jsonl", &line("Blue Lake"))]);
-        let index: pipeline::inputs::Index = serde_json::from_slice(&std::fs::read(nas.path().join(&v)).unwrap()).unwrap();
+        let index: pipeline::inputs::Index =
+            serde_json::from_slice(&std::fs::read(nas.path().join(&v)).unwrap()).unwrap();
         let copy = nas.path().join(&index.files["answers/fr-001.jsonl"].file);
         let good = std::fs::read(&copy).unwrap();
         // (Its bytes not its name's yet: this Mac can't copy the records' version.)
@@ -408,7 +474,11 @@ mod tests {
         assert!(!s.names.sync(&s.data));
         // A batch taken in: shown, and a French tile's ETag part changes; not where French isn't
         // spoken, nor as another kind.
-        crate::accepted::put(nas.path(), "translations", &[("answers/fr-001.jsonl", &line("Blue Lake")), ("answers/fr-002.jsonl", &line("Azure Lake"))]);
+        crate::accepted::put(
+            nas.path(),
+            "translations",
+            &[("answers/fr-001.jsonl", &line("Blue Lake")), ("answers/fr-002.jsonl", &line("Azure Lake"))],
+        );
         assert!(s.names.sync(&s.data));
         s.names.reload();
         assert_eq!(sub(&s).as_deref(), Some("Azure Lake"));

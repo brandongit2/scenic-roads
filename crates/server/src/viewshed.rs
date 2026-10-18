@@ -10,9 +10,9 @@ use axum::{
 };
 use base64::Engine;
 use roadcore::grid::{cell_m, cell_of, class as lc, WORLD};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
 pub struct Q {
@@ -79,7 +79,13 @@ impl<'a> Grid<'a> {
             .clone()
     }
 
-    fn u8_tile(s: &crate::AppState, map: &mut HashMap<(i64, i64), Option<Arc<Vec<u8>>>>, layer: &str, tx: i64, ty: i64) -> Option<Arc<Vec<u8>>> {
+    fn u8_tile(
+        s: &crate::AppState,
+        map: &mut HashMap<(i64, i64), Option<Arc<Vec<u8>>>>,
+        layer: &str,
+        tx: i64,
+        ty: i64,
+    ) -> Option<Arc<Vec<u8>>> {
         map.entry((tx, ty))
             .or_insert_with(|| {
                 if tx < 0 || ty < 0 || tx >= 2048 || ty >= 2048 {
@@ -99,12 +105,14 @@ impl<'a> Grid<'a> {
 
     fn canopy(&mut self, gx: i64, gy: i64) -> u8 {
         let s = self.s;
-        Self::u8_tile(s, &mut self.can, "grid-canopy", gx >> 8, gy >> 8).map_or(0, |t| t[((gy & 255) * 256 + (gx & 255)) as usize])
+        Self::u8_tile(s, &mut self.can, "grid-canopy", gx >> 8, gy >> 8)
+            .map_or(0, |t| t[((gy & 255) * 256 + (gx & 255)) as usize])
     }
 
     fn class(&mut self, gx: i64, gy: i64) -> Option<u8> {
         let s = self.s;
-        Self::u8_tile(s, &mut self.cls, "grid-class", gx >> 8, gy >> 8).map(|t| t[((gy & 255) * 256 + (gx & 255)) as usize])
+        Self::u8_tile(s, &mut self.cls, "grid-class", gx >> 8, gy >> 8)
+            .map(|t| t[((gy & 255) * 256 + (gx & 255)) as usize])
     }
 
     /// Bilinear terrain at fractional cell coordinates (cell centres at +0.5).
@@ -144,7 +152,11 @@ fn compute(s: &crate::AppState, q: Q) -> Option<Out> {
             let Some(tc) = g.terrain(cx, cy) else { break };
             // Near the observer use interpolated terrain (a coarse cell can sit above eye level
             // on a summit), and no canopy: the observer is standing at a clearing or lookout.
-            let t = if d < 3.0 * cm { g.bilinear(gx + ux * d / cm, gy + uy * d / cm).map_or(tc as f64, |v| v as f64) } else { tc as f64 };
+            let t = if d < 3.0 * cm {
+                g.bilinear(gx + ux * d / cm, gy + uy * d / cm).map_or(tc as f64, |v| v as f64)
+            } else {
+                tc as f64
+            };
             let h = t + if d < 60.0 { 0.0 } else { g.canopy(cx, cy) as f64 };
             let drop = d * d / (2.0 * r_eff);
             let sl = (h - eye - drop) / d;

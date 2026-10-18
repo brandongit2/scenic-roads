@@ -11,10 +11,10 @@
 //! spans, unless it's here already: `copied_whole`), or a published catalog's (`Source::Catalog`,
 //! another root's for a pilot).
 
-use det::Det;
 use crate::out::Out;
 use crate::terrain_pack::ManifestTiles;
 use anyhow::{Context, Result};
+use det::Det;
 use roadcore::archive::ArchiveWriter;
 use roadcore::grid::{decode_terrain_png, CELLS};
 use std::collections::HashMap;
@@ -25,7 +25,6 @@ use store::range::PlainFile;
 
 /// How far past the unit the copies reach, km (10 km of buffer ways, then 15 km of view, rounded up).
 pub const MARGIN_KM: f64 = 30.0;
-
 
 /// Where the global-source layers are read from.
 pub enum Source<'a> {
@@ -73,7 +72,9 @@ impl Source<'_> {
     /// one, else the NAS's (`file` copies it first).
     fn file_here(&self, logical: &str) -> Option<PathBuf> {
         match self {
-            Source::Manifest(out, Some(blobs)) => out.get(logical).map(|c| blobs.have(c).unwrap_or_else(|| out.path(c))),
+            Source::Manifest(out, Some(blobs)) => {
+                out.get(logical).map(|c| blobs.have(c).unwrap_or_else(|| out.path(c)))
+            }
             _ => self.file(logical),
         }
     }
@@ -231,7 +232,8 @@ fn read_tiles(pf: &PlainFile, idx: &PackIndex, tiles: &[(u8, u32, u32)]) -> Resu
     use store::range::RangeRead;
     const SPAN_GAP: u64 = 256 << 10;
     const SPAN_MAX: u64 = 32 << 20;
-    let mut ents: Vec<(store::pack::Entry, (u8, u32, u32))> = tiles.iter().filter_map(|&(z, x, y)| idx.find(z, x, y).map(|e| (e, (z, x, y)))).collect();
+    let mut ents: Vec<(store::pack::Entry, (u8, u32, u32))> =
+        tiles.iter().filter_map(|&(z, x, y)| idx.find(z, x, y).map(|e| (e, (z, x, y)))).collect();
     ents.sort_unstable_by_key(|(e, _)| (e.offset, e.key));
     let mut spans: Vec<(u64, u64, Vec<(store::pack::Entry, (u8, u32, u32))>)> = Vec::new();
     for (e, t) in ents {
@@ -251,7 +253,13 @@ fn read_tiles(pf: &PlainFile, idx: &PackIndex, tiles: &[(u8, u32, u32)]) -> Resu
             v.iter()
                 .map(|(e, t)| {
                     let blob = b[(e.offset - s0) as usize..(e.offset - s0) as usize + e.len as usize].to_vec();
-                    anyhow::ensure!(store::naming::xxh3(&blob) == e.hash, "tile {}/{}/{}: checksum mismatch (a damaged pack or read)", t.0, t.1, t.2);
+                    anyhow::ensure!(
+                        store::naming::xxh3(&blob) == e.hash,
+                        "tile {}/{}/{}: checksum mismatch (a damaged pack or read)",
+                        t.0,
+                        t.1,
+                        t.2
+                    );
                     Ok((*t, blob))
                 })
                 .collect()
@@ -269,7 +277,8 @@ pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
     std::fs::create_dir_all(dir)?;
     let mut st = Staged::default();
     // Terrain z0–12 as a tile archive (PNG blobs as they are).
-    let want: Vec<(u8, u32, u32)> = (0..=12u8).flat_map(|z| tiles_in(z, b).into_iter().map(move |(x, y)| (z, x, y))).collect();
+    let want: Vec<(u8, u32, u32)> =
+        (0..=12u8).flat_map(|z| tiles_in(z, b).into_iter().map(move |(x, y)| (z, x, y))).collect();
     let mut got = terrain_tiles(src, b, &want)?;
     let tmp = dir.join("terrain.tiles.tmp");
     let mut w = ArchiveWriter::create(&tmp, r#"{"format":"png","encoding":"terrarium"}"#)?;
@@ -331,7 +340,6 @@ pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
     Ok(st)
 }
 
-
 fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
     let p = dir.join(name);
     let tmp = dir.join(format!("{name}.tmp"));
@@ -343,7 +351,6 @@ fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn tile_ranges() {
@@ -363,7 +370,9 @@ mod tests {
         let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
         let (x6, y6) = (31u32, 19u32);
         let b = tile_box_grown(6, x6, y6, MARGIN_KM);
-        assert!(copied_whole(12, x6 << 6, y6 << 6, b) && copied_whole(9, x6 << 3, y6 << 3, b) && copied_whole(8, 0, 0, b));
+        assert!(
+            copied_whole(12, x6 << 6, y6 << 6, b) && copied_whole(9, x6 << 3, y6 << 3, b) && copied_whole(8, 0, 0, b)
+        );
         assert!(!copied_whole(12, (x6 + 1) << 6, y6 << 6, b) && !copied_whole(10, (x6 - 1) << 4, (y6 + 1) << 4, b));
         // One terrain PNG for every z11 tile (staging decodes them), other tiles' bytes their own.
         let png = roadcore::grid::encode_terrain_png(&vec![123.0f32; 256 * 256], 256, 256).unwrap();
@@ -378,7 +387,16 @@ mod tests {
                     }
                 }
             }
-            crate::layers::write_pack(&mut out, "terrain", "terrarium-png", false, "hi", (6, px, py), &mut tiles.into_iter()).unwrap();
+            crate::layers::write_pack(
+                &mut out,
+                "terrain",
+                "terrarium-png",
+                false,
+                "hi",
+                (6, px, py),
+                &mut tiles.into_iter(),
+            )
+            .unwrap();
         }
         let blobs = store::blobs::Blobs::new(d.path().join("blobs"));
         let staged = |src: &Source, to: &str| {
@@ -389,11 +407,17 @@ mod tests {
         let plain = staged(&Source::Manifest(&out, None), "plain");
         let here = staged(&Source::Manifest(&out, Some(&blobs)), "here");
         assert!(plain == here, "staged the same");
-        let copies: Vec<String> = blobs.list().iter().map(|f| f.0.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        let copies: Vec<String> =
+            blobs.list().iter().map(|f| f.0.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(copies.len(), 1, "{copies:?}");
         assert!(copies[0].starts_with(&format!("6-{x6}-{y6}.")), "its own pack alone: {copies:?}");
         let src = Source::Manifest(&out, Some(&blobs));
-        let ahead: Vec<&str> = src.pack_contents(b).iter().map(|c| c.rsplit('/').next().unwrap().split('.').next().unwrap()).map(|n| if n == format!("6-{x6}-{y6}") { "own" } else { "other" }).collect();
+        let ahead: Vec<&str> = src
+            .pack_contents(b)
+            .iter()
+            .map(|c| c.rsplit('/').next().unwrap().split('.').next().unwrap())
+            .map(|n| if n == format!("6-{x6}-{y6}") { "own" } else { "other" })
+            .collect();
         assert_eq!(ahead, ["own"], "only its own copied ahead");
         // A neighbour's copy here, where there is one, is read instead: the same staged.
         blobs.get(out.root(), out.get(&format!("layers/terrain/hi/6-{}-{y6}", x6 + 1)).unwrap()).unwrap();
@@ -419,4 +443,3 @@ pub fn grid_tiles_in(dir: &Path, var: &str, x6: u32, y6: u32) -> Result<Vec<(u8,
     out.sort_by_key(|t| (t.1, t.2));
     Ok(out)
 }
-

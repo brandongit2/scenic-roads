@@ -62,7 +62,9 @@ pub enum Extent {
 /// required field missing or of the wrong type). `keyed`: the digest of the fields that enter keys
 /// (`territory`, `redistribute`).
 pub fn parse_description(path: &str, bytes: &[u8]) -> (Option<Description>, Vec<Finding>, String) {
-    let err = |what: &str, msg: String| Finding::new("description", Level::Error, &[path], &[what], vec![path.to_string()], msg);
+    let err = |what: &str, msg: String| {
+        Finding::new("description", Level::Error, &[path], &[what], vec![path.to_string()], msg)
+    };
     let text = match std::str::from_utf8(bytes) {
         Ok(t) => t,
         Err(_) => return (None, vec![err("utf-8", format!("{path} isn't UTF-8 text"))], String::new()),
@@ -74,7 +76,10 @@ pub fn parse_description(path: &str, bytes: &[u8]) -> (Option<Description>, Vec<
     let mut fs = Vec::new();
     for req in ["credit", "licence"] {
         if !v.get(req).and_then(|x| x.as_str()).is_some_and(|s| !s.trim().is_empty()) {
-            fs.push(err(req, format!("{path}: `{req}` is required (a source without its credit would break its terms)")));
+            fs.push(err(
+                req,
+                format!("{path}: `{req}` is required (a source without its credit would break its terms)"),
+            ));
         }
     }
     for (k, x) in &v {
@@ -82,7 +87,10 @@ pub fn parse_description(path: &str, bytes: &[u8]) -> (Option<Description>, Vec<
             "name" | "what" | "credit" | "licence" | "licence_url" | "source" | "notes" => x.is_str(),
             "retrieved" => x.is_str() || x.is_datetime(),
             "redistribute" => x.is_bool(),
-            "territory" => x.as_str() == Some("world") || x.as_array().is_some_and(|a| a.iter().all(|c| c.as_str().is_some_and(iso_3166))),
+            "territory" => {
+                x.as_str() == Some("world")
+                    || x.as_array().is_some_and(|a| a.iter().all(|c| c.as_str().is_some_and(iso_3166)))
+            }
             // (A declaration's own table, and anything the unit's shape adds, are its checks'.)
             _ => true,
         };
@@ -96,20 +104,39 @@ pub fn parse_description(path: &str, bytes: &[u8]) -> (Option<Description>, Vec<
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
     let territory: Vec<String> = match v.get("territory") {
         Some(t) if t.as_str() == Some("world") => vec!["world".into()],
-        Some(t) => t.as_array().map(|a| a.iter().filter_map(|c| c.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+        Some(t) => {
+            t.as_array().map(|a| a.iter().filter_map(|c| c.as_str().map(str::to_string)).collect()).unwrap_or_default()
+        }
         None => Vec::new(),
     };
     let redistribute = v.get("redistribute").and_then(|x| x.as_bool()).unwrap_or(true);
-    let retrieved = v.get("retrieved").map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).unwrap_or_default();
-    let d = Description { name: s("name"), what: s("what"), credit: s("credit"), licence: s("licence"), licence_url: s("licence_url"), source: s("source"), retrieved, territory: territory.clone(), redistribute, notes: s("notes") };
-    let keyed = store::naming::hash16(format!("territory {}\nredistribute {redistribute}", territory.join(",")).as_bytes());
+    let retrieved =
+        v.get("retrieved").map(|x| x.as_str().map(str::to_string).unwrap_or_else(|| x.to_string())).unwrap_or_default();
+    let d = Description {
+        name: s("name"),
+        what: s("what"),
+        credit: s("credit"),
+        licence: s("licence"),
+        licence_url: s("licence_url"),
+        source: s("source"),
+        retrieved,
+        territory: territory.clone(),
+        redistribute,
+        notes: s("notes"),
+    };
+    let keyed =
+        store::naming::hash16(format!("territory {}\nredistribute {redistribute}", territory.join(",")).as_bytes());
     (Some(d), Vec::new(), keyed)
 }
 
 /// An ISO 3166-1 alpha-2 code (`FR`) or 3166-2 subdivision (`CA-QC`), by its syntax.
 pub fn iso_3166(c: &str) -> bool {
     let (country, sub) = c.split_once('-').map_or((c, None), |(a, b)| (a, Some(b)));
-    country.len() == 2 && country.bytes().all(|b| b.is_ascii_uppercase()) && sub.is_none_or(|s| (1..=3).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+    country.len() == 2
+        && country.bytes().all(|b| b.is_ascii_uppercase())
+        && sub.is_none_or(|s| {
+            (1..=3).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        })
 }
 
 /// An accepted description, as the catalog lists it.
@@ -140,7 +167,9 @@ impl Described {
         let d = &self.description;
         let what = if d.what.is_empty() { &d.name } else { &d.what };
         let mut v = serde_json::json!({ "what": what, "source": d.credit, "terms": d.licence });
-        if let Some((rid, "toml")) = (self.unit == super::heritage::UNIT).then(|| super::heritage::split(&self.path)).flatten() {
+        if let Some((rid, "toml")) =
+            (self.unit == super::heritage::UNIT).then(|| super::heritage::split(&self.path)).flatten()
+        {
             v["register"] = rid.into();
         }
         match &self.extent {
@@ -171,7 +200,9 @@ static READ: Mutex<Option<HashMap<String, Vec<Described>>>> = Mutex::new(None);
 /// order. An error when an index can't be read now.
 pub fn described(root: &Path, manifest: &BTreeMap<String, String>) -> anyhow::Result<Vec<Described>> {
     let mut out = Vec::new();
-    for (l, name) in manifest.range("sources/inputs/".to_string()..).take_while(|(l, _)| l.starts_with("sources/inputs/")) {
+    for (l, name) in
+        manifest.range("sources/inputs/".to_string()..).take_while(|(l, _)| l.starts_with("sources/inputs/"))
+    {
         if super::record_of(l).is_none_or(|(_, r)| r != "@index") {
             continue;
         }
@@ -192,23 +223,47 @@ pub fn digest(described: &[Described]) -> Option<String> {
     if described.is_empty() {
         return None;
     }
-    let lines: Vec<String> = described.iter().map(|d| format!("{} {}\n{}", d.unit, d.path, serde_json::to_string(&d.credit()).unwrap_or_default())).collect();
+    let lines: Vec<String> = described
+        .iter()
+        .map(|d| format!("{} {}\n{}", d.unit, d.path, serde_json::to_string(&d.credit()).unwrap_or_default()))
+        .collect();
     Some(store::naming::hash16(lines.join("\n").as_bytes()))
 }
 
 /// The credits a catalog lists (`rules::catalog_credits`' rule): `rules::CREDITS`' in its order, a
 /// description in place of the entry of its `what`, then the other descriptions in unit and path
 /// order.
-pub fn catalog_credits(regions: &[crate::coverage::DrawnRegion], extents: &[[i32; 4]], described: &[Described]) -> Vec<serde_json::Value> {
+pub fn catalog_credits(
+    regions: &[crate::coverage::DrawnRegion],
+    extents: &[[i32; 4]],
+    described: &[Described],
+) -> Vec<serde_json::Value> {
     catalog_credits_with(regions, extents, described, &[])
 }
 
 /// `catalog_credits`, the descriptions `also` names (unit, path) listed wherever they are: the depth
 /// sources whose data the catalog's depth holds, which reaches 200 nautical miles past the coverage
 /// (crate::depth), so a source's territory beside the coverage isn't enough to tell.
-pub fn catalog_credits_with(regions: &[crate::coverage::DrawnRegion], extents: &[[i32; 4]], described: &[Described], also: &[(String, String)]) -> Vec<serde_json::Value> {
-    let listed: Vec<&Described> = described.iter().filter(|d| also.iter().any(|(u, p)| *u == d.unit && *p == d.path) || d.areas().is_some_and(|a| crate::rules::listed(&a, regions, extents))).collect();
-    let what = |d: &Described| if d.description.what.is_empty() { d.description.name.clone() } else { d.description.what.clone() };
+pub fn catalog_credits_with(
+    regions: &[crate::coverage::DrawnRegion],
+    extents: &[[i32; 4]],
+    described: &[Described],
+    also: &[(String, String)],
+) -> Vec<serde_json::Value> {
+    let listed: Vec<&Described> = described
+        .iter()
+        .filter(|d| {
+            also.iter().any(|(u, p)| *u == d.unit && *p == d.path)
+                || d.areas().is_some_and(|a| crate::rules::listed(&a, regions, extents))
+        })
+        .collect();
+    let what = |d: &Described| {
+        if d.description.what.is_empty() {
+            d.description.name.clone()
+        } else {
+            d.description.what.clone()
+        }
+    };
     let mut out: Vec<serde_json::Value> = Vec::new();
     let mut used = vec![false; listed.len()];
     for c in crate::rules::CREDITS {
@@ -221,7 +276,9 @@ pub fn catalog_credits_with(regions: &[crate::coverage::DrawnRegion], extents: &
             }
             // (A description of it not listed here: it wins all the same.)
             None if described.iter().any(|d| what(d) == c.what) => {}
-            None if crate::rules::listed(c.areas, regions, extents) => out.push(serde_json::to_value(c).unwrap_or_default()),
+            None if crate::rules::listed(c.areas, regions, extents) => {
+                out.push(serde_json::to_value(c).unwrap_or_default())
+            }
             None => {}
         }
     }
@@ -230,7 +287,12 @@ pub fn catalog_credits_with(regions: &[crate::coverage::DrawnRegion], extents: &
     // layers, one credit.)
     let mut merged: Vec<serde_json::Value> = Vec::new();
     for c in out {
-        let same = |m: &serde_json::Value| m["what"] == c["what"] && m["source"] == c["source"] && m["terms"] == c["terms"] && m.get("register") == c.get("register");
+        let same = |m: &serde_json::Value| {
+            m["what"] == c["what"]
+                && m["source"] == c["source"]
+                && m["terms"] == c["terms"]
+                && m.get("register") == c.get("register")
+        };
         match merged.iter_mut().find(|m| same(m)) {
             Some(m) => match (m.get("areas").cloned(), c.get("areas")) {
                 (Some(serde_json::Value::Array(mut a)), Some(serde_json::Value::Array(b))) => {

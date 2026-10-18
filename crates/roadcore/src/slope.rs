@@ -92,10 +92,31 @@ pub fn merge4(c: [&Quarters; 4]) -> Quarters {
     const SORT4: [(usize, usize); 5] = [(0, 1), (2, 3), (0, 2), (1, 3), (1, 2)];
     const MERGE44: [(usize, usize); 9] = [(0, 4), (1, 5), (2, 6), (3, 7), (2, 4), (3, 5), (1, 2), (3, 4), (5, 6)];
     const MERGE88: [(usize, usize); 25] = [
-        (0, 8), (1, 9), (2, 10), (3, 11), (4, 12), (5, 13), (6, 14), (7, 15),
-        (4, 8), (5, 9), (6, 10), (7, 11),
-        (2, 4), (3, 5), (6, 8), (7, 9), (10, 12), (11, 13),
-        (1, 2), (3, 4), (5, 6), (7, 8), (9, 10), (11, 12), (13, 14),
+        (0, 8),
+        (1, 9),
+        (2, 10),
+        (3, 11),
+        (4, 12),
+        (5, 13),
+        (6, 14),
+        (7, 15),
+        (4, 8),
+        (5, 9),
+        (6, 10),
+        (7, 11),
+        (2, 4),
+        (3, 5),
+        (6, 8),
+        (7, 9),
+        (10, 12),
+        (11, 13),
+        (1, 2),
+        (3, 4),
+        (5, 6),
+        (7, 8),
+        (9, 10),
+        (11, 12),
+        (13, 14),
     ];
     let key = |b: i32| b ^ (((b >> 31) as u32) >> 1) as i32;
     let mut v = [0i32; 16];
@@ -127,7 +148,12 @@ mod tests {
 
     #[test]
     fn round_trip_keeps_the_mean() {
-        let tiles: Vec<Quarters> = (0..256).map(|i| { let s = i as f32 * 0.37; [s, s, s, s] }).collect();
+        let tiles: Vec<Quarters> = (0..256)
+            .map(|i| {
+                let s = i as f32 * 0.37;
+                [s, s, s, s]
+            })
+            .collect();
         let png = encode_slope4(&tiles, 16, 16).unwrap();
         let back = decode_slope4(&png).unwrap();
         for (a, b) in tiles.iter().zip(&back) {
@@ -166,7 +192,12 @@ mod tests {
             assert_eq!(merge4(c), merge_by_sorting(c), "{bits:016b}");
         }
         // The bits of awkward values: zeros of either sign, NaNs, subnormals, infinities.
-        let odd = [[3.0f32, -0.0, 0.0, 1.0], [f32::NAN, 2.0, -1.0, 0.5], [7.0, 7.0, f32::INFINITY, -0.0], [1e-40, -1e-40, -f32::NAN, 3.0]];
+        let odd = [
+            [3.0f32, -0.0, 0.0, 1.0],
+            [f32::NAN, 2.0, -1.0, 0.5],
+            [7.0, 7.0, f32::INFINITY, -0.0],
+            [1e-40, -1e-40, -f32::NAN, 3.0],
+        ];
         let c = [&odd[0], &odd[1], &odd[2], &odd[3]];
         assert_eq!(merge4(c).map(f32::to_bits), merge_by_sorting(c).map(f32::to_bits));
         let mut s = 0x9e3779b97f4a7c15u64;
@@ -190,7 +221,12 @@ mod tests {
 
     #[test]
     fn quarters_of_the_encoded_bytes_are_the_decoded_ones() {
-        let q: Vec<Quarters> = (0..256).map(|i| { let s = i as f32 * 1.7; [s, s * 0.5, s * 2.0, 400.0 - s] }).collect();
+        let q: Vec<Quarters> = (0..256)
+            .map(|i| {
+                let s = i as f32 * 1.7;
+                [s, s * 0.5, s * 2.0, 400.0 - s]
+            })
+            .collect();
         let rgba = channels(&q);
         assert_eq!(quarters(&rgba), decode_slope4(&png_rgba(&rgba, 16, 16).unwrap()).unwrap());
     }

@@ -18,7 +18,12 @@ fn rect(z: u8, x: u32, y: u32, u0: f64, v0: f64, u1: f64, v1: f64) -> Option<[f6
     let n = f64::from(1u32 << (z - 6));
     let to = |u: f64, base: u32, t: u32| ((f64::from(base) + u) * n - f64::from(t)) * 256.0;
     let (x0, x1, y0, y1) = (to(u0, T.0, x), to(u1, T.0, x), to(v0, T.1, y), to(v1, T.1, y));
-    (x1 > 0.0 && x0 < 256.0 && y1 > 0.0 && y0 < 256.0).then_some([x0.max(-4.0), y0.max(-4.0), x1.min(260.0), y1.min(260.0)])
+    (x1 > 0.0 && x0 < 256.0 && y1 > 0.0 && y0 < 256.0).then_some([
+        x0.max(-4.0),
+        y0.max(-4.0),
+        x1.min(260.0),
+        y1.min(260.0),
+    ])
 }
 
 /// The water: the sea west of the middle of `T`, a lake (OSM id 77) in its north-east.
@@ -64,7 +69,13 @@ fn sources(dir: &Path) -> Vec<Source> {
             label: format!("S{code}"),
             datum: "MSL".into(),
             notice: None,
-            grids: vec![SGrid { bbox: window_box(zoom, c0, r0, (c1 - c0) as usize, (r1 - r0) as usize), zoom, file: p, zoom_file: None, low_file: None }],
+            grids: vec![SGrid {
+                bbox: window_box(zoom, c0, r0, (c1 - c0) as usize, (r1 - r0) as usize),
+                zoom,
+                file: p,
+                zoom_file: None,
+                low_file: None,
+            }],
             pin: format!("s{code}"),
         }
     };
@@ -108,7 +119,11 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
     let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
     let q = (T.0 >> 3, T.1 >> 3);
     let n_lo = build_lo(&mut out, &srcs, &Fixture, q).unwrap();
-    assert!(n_lo > 0 && out.get(&lo_logical(LAYER, q.0, q.1)).is_some() && out.get(&lo_logical(CLASS_LAYER, q.0, q.1)).is_some());
+    assert!(
+        n_lo > 0
+            && out.get(&lo_logical(LAYER, q.0, q.1)).is_some()
+            && out.get(&lo_logical(CLASS_LAYER, q.0, q.1)).is_some()
+    );
     let n_hi = build_hi(&mut out, &srcs, &Fixture, T).unwrap();
     assert!(n_hi > 0 && out.get(&hi_logical(LAYER, T.0, T.1)).is_some());
     let lo = (3, q.0, q.1);
@@ -148,7 +163,10 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
 
     // A tile the layer lacks, made from its stored ancestor, is what the composition scaled up
     // there: the open sea at z9 is the z8 tile's quadrant.
-    let get = |z: u8, x: u32, y: u32| -> anyhow::Result<fall::Stored> { Ok(tile(&out, LAYER, "lo", lo, z, x, y).map(|b| std::sync::Arc::new(fall::decode(Kind::Terrarium, &b).unwrap()))) };
+    let get = |z: u8, x: u32, y: u32| -> anyhow::Result<fall::Stored> {
+        Ok(tile(&out, LAYER, "lo", lo, z, x, y)
+            .map(|b| std::sync::Arc::new(fall::decode(Kind::Terrarium, &b).unwrap())))
+    };
     let (x, y, px, py) = where_(9, 0.45, 0.6);
     let (g, stored) = fall::served(&get, Kind::Terrarium, 9, x, y).unwrap().unwrap();
     assert!(!stored);
@@ -157,8 +175,14 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
 
     // The same again, byte for byte: the piece made again from the same lo packs keeps its
     // content names.
-    let names: Vec<Option<String>> = [hi_logical(LAYER, T.0, T.1), hi_logical(CLASS_LAYER, T.0, T.1)].iter().map(|l| out.get(l).map(str::to_string)).collect();
+    let names: Vec<Option<String>> = [hi_logical(LAYER, T.0, T.1), hi_logical(CLASS_LAYER, T.0, T.1)]
+        .iter()
+        .map(|l| out.get(l).map(str::to_string))
+        .collect();
     build_hi(&mut out, &srcs, &Fixture, T).unwrap();
-    let again: Vec<Option<String>> = [hi_logical(LAYER, T.0, T.1), hi_logical(CLASS_LAYER, T.0, T.1)].iter().map(|l| out.get(l).map(str::to_string)).collect();
+    let again: Vec<Option<String>> = [hi_logical(LAYER, T.0, T.1), hi_logical(CLASS_LAYER, T.0, T.1)]
+        .iter()
+        .map(|l| out.get(l).map(str::to_string))
+        .collect();
     assert_eq!(names, again);
 }

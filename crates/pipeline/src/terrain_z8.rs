@@ -45,7 +45,8 @@ pub fn build(out: &mut Out, raw: &RawTiles) -> Result<(usize, usize)> {
                 crate::agent::jobs::report(k as u64, (n * n) as u64, "z8 tiles");
             }
             let Some(b) = b else { return Ok((x, y, None)) };
-            let (png, _, _) = process(b, Z, x, y, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
+            let (png, _, _) =
+                process(b, Z, x, y, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
             let mut e = decode_terrain_png(&png).with_context(|| format!("8/{x}/{y}"))?;
             crate::peaks::despike(&mut e, Z, crate::peaks::tile_lat(Z, y));
             let mx = e.iter().cloned().fold(0f32, f32::max);
@@ -70,7 +71,11 @@ pub fn build(out: &mut Out, raw: &RawTiles) -> Result<(usize, usize)> {
     let p = phase("the pack written", Class::Disk);
     tiles.sort_by_key(|t| (t.0, t.1));
     let local = out.scratch_file("terrain-z8.pack");
-    let mut w = store::pack::PackWriter::create(&local, serde_json::json!({"layer": "terrain-z8", "encoding": "terrarium-png", "version": V}), false)?;
+    let mut w = store::pack::PackWriter::create(
+        &local,
+        serde_json::json!({"layer": "terrain-z8", "encoding": "terrarium-png", "version": V}),
+        false,
+    )?;
     for (x, y, png) in &tiles {
         w.add(Z, *x, *y, png, png.len() as u32)?;
     }
@@ -219,7 +224,15 @@ mod tests {
         [(Z, 40, 90), (9, 145, 195), (12, 640, 1440)]
             .iter()
             .map(|&(z, x, y)| {
-                let (out, _, _) = process(png.clone(), z, x, y, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
+                let (out, _, _) = process(
+                    png.clone(),
+                    z,
+                    x,
+                    y,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    &crate::terrain_pack::Sources::default(),
+                );
                 let got = roadcore::grid::decode_terrain_png(&out).unwrap();
                 // (The repair changes it: the values below see its rules.)
                 assert_ne!(got, input);
@@ -237,7 +250,8 @@ mod tests {
         let (r, _) = roadcore::grid::repair_terrain_with(&mut t, 9, crate::terrain_pack::tile_lat(9, 195), None);
         assert!(r.seam >= 3, "{r:?}");
         let png = roadcore::grid::encode_terrain_png(&raw_tile(), 256, 256).unwrap();
-        let (out, _, _) = process(png, 9, 145, 195, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
+        let (out, _, _) =
+            process(png, 9, 145, 195, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
         let got = roadcore::grid::decode_terrain_png(&out).unwrap();
         for ox in [140, 170] {
             let v = got[(145 + 7) * 256 + ox + 7];
@@ -250,7 +264,15 @@ mod tests {
         // A change here is a change to the z8 (bump `V`: a new logical name, so the summits and
         // every unit's peaks again) and to the peaks' z12 outside the packs (bump
         // crate::agent::build::TERRAIN_V, which the peaks' key names); then update the values.
-        assert_eq!((V, crate::agent::build::TERRAIN_V), (3, 3), "the raw path's versions changed: update the values below");
-        assert_eq!(raw_path(), vec![12970933280215579373, 1265511795488754836, 16515892396236032722], "terrain_pack::process's raw path makes other elevations: bump terrain_z8::V and TERRAIN_V");
+        assert_eq!(
+            (V, crate::agent::build::TERRAIN_V),
+            (3, 3),
+            "the raw path's versions changed: update the values below"
+        );
+        assert_eq!(
+            raw_path(),
+            vec![12970933280215579373, 1265511795488754836, 16515892396236032722],
+            "terrain_pack::process's raw path makes other elevations: bump terrain_z8::V and TERRAIN_V"
+        );
     }
 }

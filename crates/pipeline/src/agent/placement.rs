@@ -60,7 +60,15 @@ pub struct Placement {
 impl Placement {
     /// From the forecast: its steps' slack, and the speeds it measured (not those it guessed).
     pub fn from_forecast(f: &super::forecast::Forecast) -> Placement {
-        Placement { slack: slack(f), speed: f.speed.iter().filter(|(w, s)| !f.guessed.contains(w) && s.is_finite() && **s > 0.0).map(|(w, s)| (w.clone(), *s)).collect() }
+        Placement {
+            slack: slack(f),
+            speed: f
+                .speed
+                .iter()
+                .filter(|(w, s)| !f.guessed.contains(w) && s.is_finite() && **s > 0.0)
+                .map(|(w, s)| (w.clone(), *s))
+                .collect(),
+        }
     }
 
     /// Step `step`'s slack (u64::MAX: none known).
@@ -77,12 +85,18 @@ impl Placement {
 /// The workers `names` measured against the lead (`lead`) by the build's history
 /// (super::forecast::speeds: the shared steps both did), those measured alone.
 pub fn measured_speeds(events: &[crate::coord::history::Event], lead: &str, names: &[String]) -> BTreeMap<String, f64> {
-    super::forecast::speeds(events, lead, names, 1.0).into_iter().filter(|(_, (_, m))| *m).map(|(n, (s, _))| (n, s)).collect()
+    super::forecast::speeds(events, lead, names, 1.0)
+        .into_iter()
+        .filter(|(_, (_, m))| *m)
+        .map(|(n, (s, _))| (n, s))
+        .collect()
 }
 
 /// Each step's slack in forecast `f` (s): the build's end less the step's (0 when it ends last).
 pub fn slack(f: &super::forecast::Forecast) -> BTreeMap<String, u64> {
-    let Some(end) = f.done_at.or_else(|| f.steps.iter().filter_map(|s| s.done_at).max()) else { return BTreeMap::new() };
+    let Some(end) = f.done_at.or_else(|| f.steps.iter().filter_map(|s| s.done_at).max()) else {
+        return BTreeMap::new();
+    };
     f.steps.iter().filter_map(|s| Some((s.step.clone(), end.saturating_sub(s.done_at?)))).collect()
 }
 
@@ -172,7 +186,14 @@ mod tests {
     #[test]
     fn a_members_speed_is_measured_under_its_own_name() {
         use crate::coord::history::Event;
-        let run = |w: &str, secs: f64| Event { worker: Some(w.into()), step: Some("peaks".into()), targets: vec!["6/1/1".into()], secs: Some(secs), ok: Some(true), ..Event::new("done") };
+        let run = |w: &str, secs: f64| Event {
+            worker: Some(w.into()),
+            step: Some("peaks".into()),
+            targets: vec!["6/1/1".into()],
+            secs: Some(secs),
+            ok: Some(true),
+            ..Event::new("done")
+        };
         let mut ev: Vec<Event> = (0..3).map(|_| run("MacBook-Pro-de-Brandon", 300.0)).collect();
         ev.extend((0..3).map(|_| run("m4", 100.0)));
         ev.push(run("ipad", 50.0));
@@ -184,7 +205,17 @@ mod tests {
     #[test]
     fn the_long_poles_have_no_slack() {
         use super::super::forecast::{Forecast, StepFc};
-        let f = Forecast { done_at: Some(1000), steps: vec![StepFc { step: "terrain".into(), done_at: Some(1000), ..Default::default() }, StepFc { step: "pack".into(), done_at: Some(400), ..Default::default() }, StepFc { step: "x".into(), done_at: None, ..Default::default() }], speed: [("m1".to_string(), 0.5), ("ipad".to_string(), 0.2)].into(), guessed: vec!["ipad".into()], ..Default::default() };
+        let f = Forecast {
+            done_at: Some(1000),
+            steps: vec![
+                StepFc { step: "terrain".into(), done_at: Some(1000), ..Default::default() },
+                StepFc { step: "pack".into(), done_at: Some(400), ..Default::default() },
+                StepFc { step: "x".into(), done_at: None, ..Default::default() },
+            ],
+            speed: [("m1".to_string(), 0.5), ("ipad".to_string(), 0.2)].into(),
+            guessed: vec!["ipad".into()],
+            ..Default::default()
+        };
         let p = Placement::from_forecast(&f);
         assert_eq!((p.slack_of("terrain"), p.slack_of("pack"), p.slack_of("x")), (0, 600, u64::MAX));
         assert_eq!((p.weight("m1"), p.weight("ipad"), p.weight("m4")), (0.5, 1.0, 1.0));

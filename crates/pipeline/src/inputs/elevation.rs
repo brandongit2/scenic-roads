@@ -105,7 +105,10 @@ fn data_digest(v: &Version, id: &str, d: &Declaration) -> String {
     for p in &v.paths {
         if let Some(rest) = p.strip_prefix(&format!("{id}/")) {
             if files.iter().any(|g| declared::glob(g, rest)) {
-                lines.push(format!("file {rest} {}", (v.read)(p).map(|b| store::naming::hash16(&b)).unwrap_or_default()));
+                lines.push(format!(
+                    "file {rest} {}",
+                    (v.read)(p).map(|b| store::naming::hash16(&b)).unwrap_or_default()
+                ));
             }
         }
     }
@@ -138,7 +141,14 @@ fn sample_of(n: usize) -> Vec<usize> {
 
 impl Elevation {
     /// What dataset `id` declared as `d` has, read from its data (memoized by `memo_key`).
-    fn measure(&self, id: &str, d: &Declaration, territory: &[String], v: &Version, memo_key: &str) -> std::result::Result<Measured, String> {
+    fn measure(
+        &self,
+        id: &str,
+        d: &Declaration,
+        territory: &[String],
+        v: &Version,
+        memo_key: &str,
+    ) -> std::result::Result<Measured, String> {
         if let Some(m) = self.memo.lock().unwrap().get(memo_key) {
             return m.clone();
         }
@@ -147,23 +157,42 @@ impl Elevation {
         m
     }
 
-    fn measure_now(&self, id: &str, d: &Declaration, territory: &[String], v: &Version) -> std::result::Result<Measured, String> {
+    fn measure_now(
+        &self,
+        id: &str,
+        d: &Declaration,
+        territory: &[String],
+        v: &Version,
+    ) -> std::result::Result<Measured, String> {
         let world = territory == ["world"];
         match &d.data {
             Data::Tiles { zoom, url, encoding } => {
                 if world {
                     self.tile_size(url, *zoom, encoding, &[[-1.0, -1.0, 1.0, 1.0]])?;
-                    return Ok(Measured { crs: None, resolution: crate::dem::generic::tile_resolution(*zoom, 0.0), cover: None });
+                    return Ok(Measured {
+                        crs: None,
+                        resolution: crate::dem::generic::tile_resolution(*zoom, 0.0),
+                        cover: None,
+                    });
                 }
                 if territory.is_empty() {
-                    return Err("a tile pyramid needs its `territory` (its coverage can't be read from a header)".into());
+                    return Err(
+                        "a tile pyramid needs its `territory` (its coverage can't be read from a header)".into()
+                    );
                 }
-                let o = self.outlines.as_ref().ok_or("the pass's outlines can't be read now, and a tile pyramid's coverage is its territory's")?;
+                let o = self
+                    .outlines
+                    .as_ref()
+                    .ok_or("the pass's outlines can't be read now, and a tile pyramid's coverage is its territory's")?;
                 let boxes = territory_boxes(o, territory)?;
                 self.tile_size(url, *zoom, encoding, &boxes)?;
                 let cells = declared::geographic_cells(&boxes);
                 let mid = cells.iter().map(|c| c.1 as f64 + 0.5).sum::<f64>() / cells.len() as f64;
-                Ok(Measured { crs: None, resolution: crate::dem::generic::tile_resolution(*zoom, mid), cover: Some(declared::cells_to_boxes(&cells)) })
+                Ok(Measured {
+                    crs: None,
+                    resolution: crate::dem::generic::tile_resolution(*zoom, mid),
+                    cover: Some(declared::cells_to_boxes(&cells)),
+                })
             }
             Data::Geotiff { urls, index, files, read_resolution, store } => {
                 let fetch = self.fetch.as_ref().ok_or("nothing reads the data here")?;
@@ -197,34 +226,52 @@ impl Elevation {
                 let mut crs = None;
                 let mut resolution: f64 = 0.0;
                 // (The index's files sampled; every other file read, its coverage its own.)
-                let mut picks: BTreeSet<usize> = sample_of(list.len()).into_iter().filter(|&k| list[k].1.is_some()).collect();
+                let mut picks: BTreeSet<usize> =
+                    sample_of(list.len()).into_iter().filter(|&k| list[k].1.is_some()).collect();
                 picks.extend((0..list.len()).filter(|&k| list[k].1.is_none()));
                 let mut masks: Vec<Mask> = Vec::new();
                 for k in picks {
                     let (w, footprint) = &list[k];
                     let src: Arc<dyn store::range::RangeRead> = if w.starts_with("http") && *store {
-                        let dir = self.store.as_ref().ok_or("its files are read from the store, and no store is given here")?.join(id);
-                        crate::dem::generic::stored(id, &dir, w).map_err(|e| format!("{e:#}"))?.ok_or_else(|| format!("{w}: the store notes the source has no such file"))?
+                        let dir = self
+                            .store
+                            .as_ref()
+                            .ok_or("its files are read from the store, and no store is given here")?
+                            .join(id);
+                        crate::dem::generic::stored(id, &dir, w)
+                            .map_err(|e| format!("{e:#}"))?
+                            .ok_or_else(|| format!("{w}: the store notes the source has no such file"))?
                     } else if w.starts_with("http") {
-                        crate::dem::generic::open_url(&**fetch, w).map_err(|e| format!("{w}: {e:#}"))?.ok_or_else(|| format!("{w}: the server has no such file"))?
+                        crate::dem::generic::open_url(&**fetch, w)
+                            .map_err(|e| format!("{w}: {e:#}"))?
+                            .ok_or_else(|| format!("{w}: the server has no such file"))?
                     } else {
                         Arc::new((v.read)(w).map_err(|e| format!("{w}: {e:#}"))?.as_ref().clone())
                     };
-                    let t = crate::geotiff::Tiff::open(src).map_err(|e| format!("{w}: its header can't be read ({e:#})"))?;
+                    let t = crate::geotiff::Tiff::open(src)
+                        .map_err(|e| format!("{w}: its header can't be read ({e:#})"))?;
                     let keys = t.geo_keys();
-                    let c = keys.short(crate::geotiff::key::PROJECTED_CS_TYPE).or_else(|| keys.short(crate::geotiff::key::GEOGRAPHIC_TYPE)).ok_or_else(|| format!("{w}: names no EPSG CRS"))?;
+                    let c = keys
+                        .short(crate::geotiff::key::PROJECTED_CS_TYPE)
+                        .or_else(|| keys.short(crate::geotiff::key::GEOGRAPHIC_TYPE))
+                        .ok_or_else(|| format!("{w}: names no EPSG CRS"))?;
                     if !declared::CRSS.contains(&c) {
                         return Err(format!("{w}: EPSG:{c} isn't a CRS the app can project"));
                     }
                     if index_crs.is_some_and(|ic| ic != c && !(ic == 4326 && c == 4269)) {
-                        return Err(format!("{w} is in EPSG:{c}, its index's footprints in EPSG:{}", index_crs.unwrap()));
+                        return Err(format!(
+                            "{w} is in EPSG:{c}, its index's footprints in EPSG:{}",
+                            index_crs.unwrap()
+                        ));
                     }
                     if crs.is_some_and(|x| x != c) {
                         return Err(format!("{w} is in EPSG:{c}, the dataset's other files in EPSG:{}", crs.unwrap()));
                     }
                     crs = Some(c);
-                    let level = crate::dem::generic::level_for(&t, c, *read_resolution).map_err(|e| format!("{w}: {e:#}"))?;
-                    resolution = resolution.max(crate::dem::generic::resolution(&t, c, level).map_err(|e| format!("{w}: {e:#}"))?);
+                    let level =
+                        crate::dem::generic::level_for(&t, c, *read_resolution).map_err(|e| format!("{w}: {e:#}"))?;
+                    resolution = resolution
+                        .max(crate::dem::generic::resolution(&t, c, level).map_err(|e| format!("{w}: {e:#}"))?);
                     if footprint.is_none() {
                         masks.push(valid_data(&t).map_err(|e| format!("{w}: {e:#}"))?);
                     }
@@ -236,7 +283,11 @@ impl Elevation {
                     None
                 } else {
                     let cells = if crs == 3979 {
-                        declared::projected_cells_where(crs, &|x, y| boxes.iter().any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3]) || masks.iter().any(|m| m.holds(x, y))).map_err(|e| format!("{e:#}"))?
+                        declared::projected_cells_where(crs, &|x, y| {
+                            boxes.iter().any(|b| x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3])
+                                || masks.iter().any(|m| m.holds(x, y))
+                        })
+                        .map_err(|e| format!("{e:#}"))?
                     } else {
                         let mut c = declared::geographic_cells(&boxes);
                         for m in &masks {
@@ -260,10 +311,15 @@ impl Elevation {
     fn tile_size(&self, url: &str, zoom: u32, encoding: &str, boxes: &[[f64; 4]]) -> std::result::Result<(), String> {
         let fetch = self.fetch.as_ref().ok_or("nothing reads the data here")?;
         for b in boxes.iter().take(4) {
-            let (fx, fy) = crate::dem::proj::mercator_tile((b[0] + b[2]) / 2.0, ((b[1] + b[3]) / 2.0).clamp(-85.0, 85.0), zoom);
-            let u = url.replace("{z}", &zoom.to_string()).replace("{x}", &(fx.floor() as i64).to_string()).replace("{y}", &(fy.floor() as i64).to_string());
+            let (fx, fy) =
+                crate::dem::proj::mercator_tile((b[0] + b[2]) / 2.0, ((b[1] + b[3]) / 2.0).clamp(-85.0, 85.0), zoom);
+            let u = url
+                .replace("{z}", &zoom.to_string())
+                .replace("{x}", &(fx.floor() as i64).to_string())
+                .replace("{y}", &(fy.floor() as i64).to_string());
             let Some(png) = fetch.get(&u).map_err(|e| format!("{u}: {e:#}"))? else { continue };
-            let (w, h, _) = crate::dem::encoding::decode(encoding, &png).map_err(|e| format!("{u}: not a PNG the app reads ({e:#})"))?;
+            let (w, h, _) = crate::dem::encoding::decode(encoding, &png)
+                .map_err(|e| format!("{u}: not a PNG the app reads ({e:#})"))?;
             let px = crate::dem::generic::TILE_PX;
             if (w, h) != (px, px) {
                 return Err(format!("{u} is a {w} × {h} tile: tile pyramids are read as {px} × {px}"));
@@ -356,13 +412,28 @@ impl Checks for Elevation {
                 if let Some(i) = index {
                     named.insert(i.clone());
                     if !v.paths.contains(i) {
-                        out.push(Finding::new(MISSING, Level::Error, &[path], &[i], vec![path.clone()], format!("{path} names {i}, which isn't there")));
+                        out.push(Finding::new(
+                            MISSING,
+                            Level::Error,
+                            &[path],
+                            &[i],
+                            vec![path.clone()],
+                            format!("{path} names {i}, which isn't there"),
+                        ));
                         continue;
                     }
                 }
                 for g in files {
-                    if !v.paths.iter().any(|p| p.strip_prefix(&format!("{id}/")).is_some_and(|r| declared::glob(g, r))) {
-                        out.push(Finding::new(MISSING, Level::Error, &[path], &[g], vec![path.clone()], format!("{path}: no file in {id}/ is {g}")));
+                    if !v.paths.iter().any(|p| p.strip_prefix(&format!("{id}/")).is_some_and(|r| declared::glob(g, r)))
+                    {
+                        out.push(Finding::new(
+                            MISSING,
+                            Level::Error,
+                            &[path],
+                            &[g],
+                            vec![path.clone()],
+                            format!("{path}: no file in {id}/ is {g}"),
+                        ));
                     }
                 }
             }
@@ -382,7 +453,9 @@ impl Checks for Elevation {
         }
         for p in &v.paths {
             let orphan = match kind(p) {
-                Kind::Data(id) => (!ids.contains(id)).then(|| format!("{p}: no declaration names its dataset ({id}.toml)")),
+                Kind::Data(id) => {
+                    (!ids.contains(id)).then(|| format!("{p}: no declaration names its dataset ({id}.toml)"))
+                }
                 Kind::Index => (!named.contains(p)).then(|| format!("{p}: no declaration names it as its index")),
                 _ => None,
             };
@@ -393,7 +466,10 @@ impl Checks for Elevation {
         // Two datasets of one rank and resolution meeting: their order would fall to their ids.
         for (i, (a, da, ma)) in measured.iter().enumerate() {
             for (b, db, mb) in &measured[i + 1..] {
-                let same = da.rank.unwrap_or(0) == db.rank.unwrap_or(0) && (ma.resolution - mb.resolution).abs() < 0.5 && da.surface == db.surface && da.terrain == db.terrain;
+                let same = da.rank.unwrap_or(0) == db.rank.unwrap_or(0)
+                    && (ma.resolution - mb.resolution).abs() < 0.5
+                    && da.surface == db.surface
+                    && da.terrain == db.terrain;
                 let (ca, cb) = (declared::Cover::of(ma.cover.as_deref()), declared::Cover::of(mb.cover.as_deref()));
                 let meet = ca.world || cb.world || ca.cells.iter().any(|c| cb.cells.contains(c));
                 if same && meet {
@@ -412,7 +488,9 @@ impl Checks for Elevation {
         // records it.)
         let app = match &self.app {
             Some(a) => a.clone(),
-            None => crate::agent::app_version(std::env::current_exe()?.parent().ok_or_else(|| anyhow::anyhow!("the program's folder"))?),
+            None => crate::agent::app_version(
+                std::env::current_exe()?.parent().ok_or_else(|| anyhow::anyhow!("the program's folder"))?,
+            ),
         };
         if !crate::pool::term::is_version(&app) {
             return Ok(None);
@@ -462,9 +540,16 @@ impl Checks for Elevation {
         };
         #[cfg(test)]
         if let Some((fetch, app)) = TEST_PREPARED.with(|t| t.borrow().clone()) {
-            return Ok(Some(Box::new(Elevation { app: Some(app), store: Some(root.join("sources/fetched")), ..Elevation::new(fetch, outlines) })));
+            return Ok(Some(Box::new(Elevation {
+                app: Some(app),
+                store: Some(root.join("sources/fetched")),
+                ..Elevation::new(fetch, outlines)
+            })));
         }
-        Ok(Some(Box::new(Elevation { store: Some(root.join("sources/fetched")), ..Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines) })))
+        Ok(Some(Box::new(Elevation {
+            store: Some(root.join("sources/fetched")),
+            ..Elevation::new(Arc::new(crate::fetch::Fetcher::from_env()), outlines)
+        })))
     }
 }
 
@@ -504,7 +589,11 @@ impl Mask {
     /// Whether point x, y (in the file's CRS) is in a pixel with data.
     fn holds(&self, x: f64, y: f64) -> bool {
         let (c, r) = ((x - self.gt[0]) / self.gt[1], (y - self.gt[3]) / self.gt[5]);
-        c >= 0.0 && r >= 0.0 && (c as usize) < self.w && (r as usize) < self.h && self.valid[r as usize * self.w + c as usize]
+        c >= 0.0
+            && r >= 0.0
+            && (c as usize) < self.w
+            && (r as usize) < self.h
+            && self.valid[r as usize * self.w + c as usize]
     }
 
     /// A box (w, s, e, n in its CRS) per run of pixels with data along a row.
@@ -544,7 +633,12 @@ fn valid_data(t: &crate::geotiff::Tiff) -> Result<Mask> {
     if w * h > MASK_MAX_PX {
         let g0 = t.transform(0)?;
         let i0 = t.level(0)?;
-        return Ok(Mask { gt: [g0[0], g0[1] * i0.width as f64, 0.0, g0[3], 0.0, g0[5] * i0.height as f64], w: 1, h: 1, valid: vec![true] });
+        return Ok(Mask {
+            gt: [g0[0], g0[1] * i0.width as f64, 0.0, g0[3], 0.0, g0[5] * i0.height as f64],
+            w: 1,
+            h: 1,
+            valid: vec![true],
+        });
     }
     let a = t.read_window(level, 0, 0, img.width, img.height)?;
     let nodata = t.nodata();
@@ -566,28 +660,74 @@ pub fn switched(manifest: &BTreeMap<String, String>) -> bool {
 /// switch recorded (the units' tests: they're built only from the declared datasets).
 #[cfg(test)]
 pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
-    let d = Declaration { surface: "ground".into(), heights: "EGM2008".into(), rank: None, code: 4, terrain: false, data: Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() } };
+    let d = Declaration {
+        surface: "ground".into(),
+        heights: "EGM2008".into(),
+        rank: None,
+        code: 4,
+        terrain: false,
+        data: Data::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() },
+    };
     let measured = Measured { crs: None, resolution: 150.0, cover: None };
     let entry = |id: &str, d: &Declaration, measured: Measured, keyed: &str| {
         let mut facts = serde_json::Map::new();
         facts.insert("declaration".into(), serde_json::to_value(d).unwrap());
         facts.insert("measured".into(), serde_json::to_value(&measured).unwrap());
-        (format!("{id}.toml"), super::FileEntry { file: format!("{}/{id}.0000000000000000.toml", super::store_dir(UNIT)), size: 0, keyed: keyed.into(), facts })
+        (
+            format!("{id}.toml"),
+            super::FileEntry {
+                file: format!("{}/{id}.0000000000000000.toml", super::store_dir(UNIT)),
+                size: 0,
+                keyed: keyed.into(),
+                facts,
+            },
+        )
     };
     let mut files = BTreeMap::from([entry("world", &d, measured, "w")]);
     // (The terrain's: its base and its northern dataset, by an index of two 1° tiles, both where the
     // code fetched them before they were declared, so its records from then are re-keyed.)
-    let base = Declaration { surface: "surface".into(), heights: "mixed".into(), rank: None, code: 0, terrain: true, data: Data::Tiles { url: "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png".into(), zoom: 12, encoding: "terrarium".into() } };
+    let base = Declaration {
+        surface: "surface".into(),
+        heights: "mixed".into(),
+        rank: None,
+        code: 0,
+        terrain: true,
+        data: Data::Tiles {
+            url: "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png".into(),
+            zoom: 12,
+            encoding: "terrarium".into(),
+        },
+    };
     files.extend([entry("terrarium", &base, Measured { crs: None, resolution: 38.0, cover: None }, "t")]);
-    let north = Declaration { surface: "surface".into(), heights: "EGM2008".into(), rank: None, code: 0, terrain: true, data: Data::Geotiff { urls: vec![], index: Some("glo30.geojson".into()), files: vec![], read_resolution: None, store: false } };
+    let north = Declaration {
+        surface: "surface".into(),
+        heights: "EGM2008".into(),
+        rank: None,
+        code: 0,
+        terrain: true,
+        data: Data::Geotiff {
+            urls: vec![],
+            index: Some("glo30.geojson".into()),
+            files: vec![],
+            read_resolution: None,
+            store: false,
+        },
+    };
     files.extend([entry("glo30", &north, Measured { crs: Some(4326), resolution: 30.0, cover: None }, "g")]);
     let feature = |la: i32, lo: i32| serde_json::json!({ "type": "Feature", "properties": { "url": format!("https://copernicus-dem-30m.s3.amazonaws.com/N{la}_W{}_DEM.tif", -lo), "mask": format!("https://copernicus-dem-30m.s3.amazonaws.com/N{la}_W{}_FLM.tif", -lo) }, "geometry": { "type": "Polygon", "coordinates": [[[lo, la], [lo + 1, la], [lo + 1, la + 1], [lo, la + 1], [lo, la]]] } });
-    let index = serde_json::to_vec(&serde_json::json!({ "type": "FeatureCollection", "features": [feature(64, -148), feature(65, -148)] })).unwrap();
+    let index = serde_json::to_vec(
+        &serde_json::json!({ "type": "FeatureCollection", "features": [feature(64, -148), feature(65, -148)] }),
+    )
+    .unwrap();
     let ifile = format!("{}/glo30.0000000000000000.geojson", super::store_dir(UNIT));
     std::fs::create_dir_all(root.join(super::store_dir(UNIT))).unwrap();
     std::fs::write(root.join(&ifile), &index).unwrap();
-    files.insert("glo30.geojson".into(), super::FileEntry { file: ifile, size: index.len() as u64, keyed: "i".into(), facts: Default::default() });
-    let index = super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
+    files.insert(
+        "glo30.geojson".into(),
+        super::FileEntry { file: ifile, size: index.len() as u64, keyed: "i".into(), facts: Default::default() },
+    );
+    let index =
+        super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
     let body = serde_json::to_vec(&index).unwrap();
     let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&body));
     std::fs::create_dir_all(root.join(super::store_dir(UNIT))).unwrap();

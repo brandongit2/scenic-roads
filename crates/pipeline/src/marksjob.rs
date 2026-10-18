@@ -2,7 +2,9 @@
 //! chain's scripts make theirs (dem/filterprops.py, dem/interest.py, dem/layers.py), for markdata and the
 //! thinned tiles (`markconv::write`). This part: the stops & sights.
 
-use crate::interest::{fame, isolation, min_zoom, percentile, poi_base, poi_filter_props, py_round, same_names, view_item};
+use crate::interest::{
+    fame, isolation, min_zoom, percentile, poi_base, poi_filter_props, py_round, same_names, view_item,
+};
 use crate::markconv::Point;
 use crate::marks::{self, flag, MarkPt};
 use serde_json::{json, Map, Value};
@@ -80,8 +82,16 @@ pub fn poi_points(cands: &[Candidate], views: &HashMap<String, f64>) -> Vec<Poin
             "waterfall" => num(p, "h"),
             "lighthouse" => {
                 let null = Value::Null;
-                let (fh, h, rg) = (p.get("fh").unwrap_or(&null), p.get("h").unwrap_or(&null), p.get("rg").unwrap_or(&null));
-                (if truthy(fh) { fh } else if truthy(h) { h } else { rg }).as_f64()
+                let (fh, h, rg) =
+                    (p.get("fh").unwrap_or(&null), p.get("h").unwrap_or(&null), p.get("rg").unwrap_or(&null));
+                (if truthy(fh) {
+                    fh
+                } else if truthy(h) {
+                    h
+                } else {
+                    rg
+                })
+                .as_f64()
             }
             "covered_bridge" => num(p, "len"),
             _ => None,
@@ -93,13 +103,24 @@ pub fn poi_points(cands: &[Candidate], views: &HashMap<String, f64>) -> Vec<Poin
         let sp = percentile(&idx.iter().map(|&i| size(i, &props[i])).collect::<Vec<_>>());
         for (m, &i) in idx.iter().enumerate() {
             let d = &cands[i].details;
-            let mut qid = d.get("wikidata").and_then(Value::as_str).unwrap_or("").split(';').next().unwrap_or("").trim().to_string();
+            let mut qid = d
+                .get("wikidata")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if *g == "viewpoint" && !view_item(d["wd"].get("d_en").and_then(Value::as_str).unwrap_or("")) {
                 qid.clear();
             }
             let sl = if qid.is_empty() { 0 } else { d["wd"].get("sl").and_then(Value::as_u64).unwrap_or(0) };
             let (f, v) = fame(if qid.is_empty() { None } else { views.get(&qid).copied() }, sl);
-            let rich = ["wikidata", "wikipedia", "description", "website", "image"].iter().filter(|t| d.get(**t).is_some_and(truthy)).count();
+            let rich = ["wikidata", "wikipedia", "description", "website", "image"]
+                .iter()
+                .filter(|t| d.get(**t).is_some_and(truthy))
+                .count();
             base[i] = poi_base(f, !cands[i].name.is_empty(), rich, sp[m]);
             pv[i] = v;
         }
@@ -107,7 +128,11 @@ pub fn poi_points(cands: &[Candidate], views: &HashMap<String, f64>) -> Vec<Poin
     // Isolation per kind, in the candidates' order (ties: the earlier one).
     let mut ia = vec![0f64; n];
     for idx in groups.values() {
-        let r = isolation(&idx.iter().map(|&i| cands[i].lon).collect::<Vec<_>>(), &idx.iter().map(|&i| cands[i].lat).collect::<Vec<_>>(), &idx.iter().map(|&i| base[i]).collect::<Vec<_>>());
+        let r = isolation(
+            &idx.iter().map(|&i| cands[i].lon).collect::<Vec<_>>(),
+            &idx.iter().map(|&i| cands[i].lat).collect::<Vec<_>>(),
+            &idx.iter().map(|&i| base[i]).collect::<Vec<_>>(),
+        );
         for (m, &i) in idx.iter().enumerate() {
             ia[i] = r[m];
         }
@@ -120,7 +145,15 @@ pub fn poi_points(cands: &[Candidate], views: &HashMap<String, f64>) -> Vec<Poin
     order.sort_by(|&a, &b| fa[a].partial_cmp(&fa[b]).unwrap());
     let lon: Vec<f64> = cands.iter().map(|c| c.lon).collect();
     let lat: Vec<f64> = cands.iter().map(|c| c.lat).collect();
-    same_names(&order, &|i| (group_of(&cands[i].kind).to_string(), cands[i].name.clone()), &lon, &lat, &fa, &ia1, &mut mz);
+    same_names(
+        &order,
+        &|i| (group_of(&cands[i].kind).to_string(), cands[i].name.clone()),
+        &lon,
+        &lat,
+        &fa,
+        &ia1,
+        &mut mz,
+    );
     let mut out = Vec::with_capacity(n);
     let mut rank_in: HashMap<&str, u32> = HashMap::new();
     for &i in &order {
@@ -148,7 +181,8 @@ pub fn poi_points(cands: &[Candidate], views: &HashMap<String, f64>) -> Vec<Poin
             kz: marks::KZ_NONE,
             class: 0,
             tier: 0,
-            flags: if c.name.is_empty() { 0 } else { flag::NAMED } | if c.kind == "picnic_site" { flag::PICNIC } else { 0 },
+            flags: if c.name.is_empty() { 0 } else { flag::NAMED }
+                | if c.kind == "picnic_site" { flag::PICNIC } else { 0 },
         };
         *rank += 1;
         let fvals = marks::fields(g).iter().map(|f| marks::num(p, f)).collect();
@@ -174,17 +208,84 @@ pub fn poi_points(cands: &[Candidate], views: &HashMap<String, f64>) -> Vec<Poin
 
 /// The tags the popups keep: every kind's, and each kind's own.
 pub fn detail_keys(kind: &str) -> Vec<&'static str> {
-    let common = ["description", "website", "wikipedia", "wikidata", "operator", "access", "fee", "opening_hours", "start_date", "heritage", "alt_name", "name:en"];
+    let common = [
+        "description",
+        "website",
+        "wikipedia",
+        "wikidata",
+        "operator",
+        "access",
+        "fee",
+        "opening_hours",
+        "start_date",
+        "heritage",
+        "alt_name",
+        "name:en",
+    ];
     let own: &[&str] = match kind {
-        "peak" => &["prominence", "isolation", "munro", "corbett", "graham", "donald", "marilyn", "hewitt", "wainwright", "nuttall", "communication:amateur_radio:sota", "summit:cross", "summit:register", "volcano:status", "volcano:type", "natural"],
+        "peak" => &[
+            "prominence",
+            "isolation",
+            "munro",
+            "corbett",
+            "graham",
+            "donald",
+            "marilyn",
+            "hewitt",
+            "wainwright",
+            "nuttall",
+            "communication:amateur_radio:sota",
+            "summit:cross",
+            "summit:register",
+            "volcano:status",
+            "volcano:type",
+            "natural",
+        ],
         "waterfall" => &["height", "width", "intermittent", "seasonal"],
         "lighthouse" => &[
-            "height", "seamark:light:character", "seamark:light:colour", "seamark:light:period", "seamark:light:range", "seamark:light:height", "seamark:light:sequence", "seamark:light:reference", "seamark:name",
-            "building:colour", "tower:type", "historic", "heritage:operator", "seamark:light:1:character", "seamark:light:1:colour", "seamark:light:1:period", "seamark:light:1:range", "seamark:light:1:height",
+            "height",
+            "seamark:light:character",
+            "seamark:light:colour",
+            "seamark:light:period",
+            "seamark:light:range",
+            "seamark:light:height",
+            "seamark:light:sequence",
+            "seamark:light:reference",
+            "seamark:name",
+            "building:colour",
+            "tower:type",
+            "historic",
+            "heritage:operator",
+            "seamark:light:1:character",
+            "seamark:light:1:colour",
+            "seamark:light:1:period",
+            "seamark:light:1:range",
+            "seamark:light:1:height",
         ],
         "viewpoint" => &["direction", "tower:type", "height", "ele", "man_made"],
-        "picnic_site" => &["toilets", "drinking_water", "shelter", "bench", "picnic_table", "fireplace", "bbq", "covered", "capacity"],
-        "rest_area" => &["toilets", "drinking_water", "shelter", "picnic_table", "bench", "fuel", "restaurant", "shop", "wheelchair", "capacity"],
+        "picnic_site" => &[
+            "toilets",
+            "drinking_water",
+            "shelter",
+            "bench",
+            "picnic_table",
+            "fireplace",
+            "bbq",
+            "covered",
+            "capacity",
+        ],
+        "rest_area" => &[
+            "toilets",
+            "drinking_water",
+            "shelter",
+            "picnic_table",
+            "bench",
+            "fuel",
+            "restaurant",
+            "shop",
+            "wheelchair",
+            "capacity",
+        ],
         "trailhead" => &["toilets", "drinking_water", "parking", "capacity", "route_ref", "hiking", "shelter"],
         "covered_bridge" => &["bridge:structure", "bridge:name", "material", "historic", "bridge:ref", "layer"],
         _ => &[],
@@ -211,7 +312,9 @@ pub fn from_unit(c: &crate::candidates::Cand, peak: Option<Value>, facts: &HashM
         d.insert("viewpoint".into(), json!("yes"));
     }
     // As today: the facts only for a tag that is one QID.
-    if let Some(q) = c.qid.as_deref().filter(|q| q.len() > 1 && q.starts_with('Q') && q[1..].bytes().all(|b| b.is_ascii_digit())) {
+    if let Some(q) =
+        c.qid.as_deref().filter(|q| q.len() > 1 && q.starts_with('Q') && q[1..].bytes().all(|b| b.is_ascii_digit()))
+    {
         if let Some(f) = facts.get(q) {
             d.insert("wd".into(), f.clone());
         }
@@ -248,6 +351,17 @@ pub fn summits_list(pts: &[Point]) -> Vec<(marks::SummitRec, String)> {
         .into_iter()
         .enumerate()
         // (As layers.py rounds: the points to 6 decimals, then the summits list to 5.)
-        .map(|(rank, (e, x, y, n))| (marks::SummitRec { rank: rank as u32, lon: marks::e7(py_round(py_round(x, 6), 5)), lat: marks::e7(py_round(py_round(y, 6), 5)), pad: 0, ele: py_round(e, 0) }, n))
+        .map(|(rank, (e, x, y, n))| {
+            (
+                marks::SummitRec {
+                    rank: rank as u32,
+                    lon: marks::e7(py_round(py_round(x, 6), 5)),
+                    lat: marks::e7(py_round(py_round(y, 6), 5)),
+                    pad: 0,
+                    ele: py_round(e, 0),
+                },
+                n,
+            )
+        })
         .collect()
 }

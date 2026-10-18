@@ -69,7 +69,12 @@ impl OvView {
                 let json = self.rec("parks", k)?;
                 let v: serde_json::Value = serde_json::from_str(&json)?;
                 let b = &v["bbox"];
-                let bbox = [b[0].as_f64().unwrap_or(0.0), b[1].as_f64().unwrap_or(0.0), b[2].as_f64().unwrap_or(0.0), b[3].as_f64().unwrap_or(0.0)];
+                let bbox = [
+                    b[0].as_f64().unwrap_or(0.0),
+                    b[1].as_f64().unwrap_or(0.0),
+                    b[2].as_f64().unwrap_or(0.0),
+                    b[3].as_f64().unwrap_or(0.0),
+                ];
                 let norm = crate::details::norm(v["name"].as_str().unwrap_or(""));
                 out.push(Park { norm, bbox, area: v["area_km2"].as_f64().unwrap_or(0.0), json });
             }
@@ -79,7 +84,12 @@ impl OvView {
 }
 
 /// The area overlays' tiles: `/tiles/ov/{name}/{z}/{x}/{y}` from the catalog's `ov-{name}`.
-pub async fn ov_tile(State(s): State<S>, Path((name, z, x, y)): Path<(String, u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+pub async fn ov_tile(
+    State(s): State<S>,
+    Path((name, z, x, y)): Path<(String, u8, u32, u32)>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
     if !matches!(name.as_str(), "heritage-areas" | "indigenous" | "special" | "whs") {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -120,7 +130,8 @@ pub fn parks_near(s: &crate::AppState, lon: f64, lat: f64) -> anyhow::Result<Vec
     let n = 8i64;
     let x = (((lon + 180.0) / 360.0 * n as f64).floor() as i64).clamp(0, n - 1);
     let sl = lat.clamp(-85.0, 85.0).to_radians().sin();
-    let y = (((0.5 - ((1.0 + sl) / (1.0 - sl)).ln() / (4.0 * std::f64::consts::PI)) * n as f64).floor() as i64).clamp(0, n - 1);
+    let y = (((0.5 - ((1.0 + sl) / (1.0 - sl)).ln() / (4.0 * std::f64::consts::PI)) * n as f64).floor() as i64)
+        .clamp(0, n - 1);
     let mut out = Vec::new();
     for dx in -1..=1i64 {
         for dy in -1..=1i64 {

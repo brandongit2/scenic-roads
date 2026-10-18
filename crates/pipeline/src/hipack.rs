@@ -3,11 +3,11 @@
 //! and rail tiles z4–8). Each reads the base packs of every unit whose geometry reaches the area,
 //! never anything per region.
 
-use det::Det;
 use crate::basepack::BasePack;
 use crate::legacy::Unit;
 use crate::tiling::{self, Encoded, WayIn};
 use anyhow::Result;
+use det::Det;
 use rayon::prelude::*;
 use roadcore::scenic::{ch, Sample};
 use roadcore::tile::TileLine;
@@ -32,7 +32,12 @@ pub fn grow(b: Bounds, km: f64) -> Bounds {
     let dlon = (dlat / lat_max.to_radians().dcos()).min(180.0);
     let e7 = |d: f64| (d / E7).round() as i64;
     let c = |v: i64| v.clamp(-1_800_000_000, 1_800_000_000) as i32;
-    [c(b[0] as i64 - e7(dlon)), c(b[1] as i64 - e7(dlat)).max(-850_000_000), c(b[2] as i64 + e7(dlon)), c(b[3] as i64 + e7(dlat)).min(850_000_000)]
+    [
+        c(b[0] as i64 - e7(dlon)),
+        c(b[1] as i64 - e7(dlat)).max(-850_000_000),
+        c(b[2] as i64 + e7(dlon)),
+        c(b[3] as i64 + e7(dlat)).min(850_000_000),
+    ]
 }
 
 pub fn meets(a: Bounds, b: Bounds) -> bool {
@@ -96,13 +101,21 @@ pub fn way_inputs<'a>(packs: &[&'a BasePack], staged: &[Staged]) -> Result<Vec<W
 }
 
 /// Road and rail tiles for zooms `zs` of the tiles under (zr, xr, yr), from `ways`.
-pub fn tiles(ways: &[WayIn], zr: u8, xr: u32, yr: u32, zs: std::ops::RangeInclusive<u8>, progress: bool) -> (Vec<Encoded>, Vec<Encoded>) {
+pub fn tiles(
+    ways: &[WayIn],
+    zr: u8,
+    xr: u32,
+    yr: u32,
+    zs: std::ops::RangeInclusive<u8>,
+    progress: bool,
+) -> (Vec<Encoded>, Vec<Encoded>) {
     let (mut roads, mut rails) = (Vec::new(), Vec::new());
     for z in zs {
         let sh = z - zr;
         let keep = move |x: u32, y: u32| x >> sh == xr && y >> sh == yr;
         let pieces = tiling::cut(z, ways, &keep, progress);
-        let (rp, dp): (Vec<(u64, TileLine)>, Vec<(u64, TileLine)>) = pieces.into_iter().partition(|p| class::is_rail(p.1.style & 0x0f));
+        let (rp, dp): (Vec<(u64, TileLine)>, Vec<(u64, TileLine)>) =
+            pieces.into_iter().partition(|p| class::is_rail(p.1.style & 0x0f));
         roads.extend(tiling::encode_zoom(z, 14, &dp));
         rails.extend(tiling::encode_zoom(z, 14, &rp));
     }
@@ -124,7 +137,9 @@ pub struct HiData {
 }
 
 fn way_len(v: &[[i32; 2]]) -> f64 {
-    v.windows(2).map(|p| dist_m(p[0][0] as f64 * E7, p[0][1] as f64 * E7, p[1][0] as f64 * E7, p[1][1] as f64 * E7)).sum()
+    v.windows(2)
+        .map(|p| dist_m(p[0][0] as f64 * E7, p[0][1] as f64 * E7, p[1][0] as f64 * E7, p[1][1] as f64 * E7))
+        .sum()
 }
 
 /// The hidata of z6 tile `t`: `in_t` are the ways meeting T.
@@ -143,7 +158,16 @@ pub fn hidata(t: Unit, packs: &[&BasePack], in_t: &[Staged]) -> Result<HiData> {
             if class::is_rail(w.class) {
                 extra |= extra::RAIL;
             }
-            Ok(Here { id: w.id as u64, owner: bp.unit.key(), index: s.way, class: w.class, flags: w.flags, extra, _pad: 0, bbox: s.bbox })
+            Ok(Here {
+                id: w.id as u64,
+                owner: bp.unit.key(),
+                index: s.way,
+                class: w.class,
+                flags: w.flags,
+                extra,
+                _pad: 0,
+                bbox: s.bbox,
+            })
         })
         .collect::<Result<_>>()?;
     here.sort_unstable_by_key(|h| (h.id, h.owner, h.index));
@@ -219,11 +243,28 @@ pub fn hidata(t: Unit, packs: &[&BasePack], in_t: &[Staged]) -> Result<HiData> {
             if h.extra & extra::UNNAMED != 0 {
                 fl |= 4;
             }
-            parts.push(Part { road: q.road, offset: q.off, first: psamples.len() as u32, count: 0, road_len: q.road_len, class: h.class, flags: fl, _pad: [0; 6] });
+            parts.push(Part {
+                road: q.road,
+                offset: q.off,
+                first: psamples.len() as u32,
+                count: 0,
+                road_len: q.road_len,
+                class: h.class,
+                flags: fl,
+                _pad: [0; 6],
+            });
         }
         let p = parts.last_mut().unwrap();
         p.count += 1;
-        psamples.push(PSample { way: q.here, offset: q.off, lon: q.s.lon, lat: q.s.lat, eye: q.s.eye, flags: q.s.flags, _pad: [0; 3] });
+        psamples.push(PSample {
+            way: q.here,
+            offset: q.off,
+            lon: q.s.lon,
+            lat: q.s.lat,
+            eye: q.s.eye,
+            flags: q.s.flags,
+            _pad: [0; 3],
+        });
         pch.push(q.c);
     }
     // The rail ways' lines (name, route, colour, relation, services), by their place in `here`.

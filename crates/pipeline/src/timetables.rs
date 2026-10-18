@@ -56,11 +56,18 @@ pub fn read_rels(r: impl BufRead) -> Result<Vec<Rel>> {
         let mut f = l.split(' ');
         let Some(id) = f.next().and_then(|h| h.strip_prefix('r')).and_then(|s| s.parse().ok()) else { continue };
         let field = |c: char| l.split(' ').skip(1).find_map(|x| x.strip_prefix(c)).unwrap_or("");
-        let tags: BTreeMap<String, String> = field('T').split(',').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (unescape(k), unescape(v))).collect();
+        let tags: BTreeMap<String, String> = field('T')
+            .split(',')
+            .filter_map(|kv| kv.split_once('='))
+            .map(|(k, v)| (unescape(k), unescape(v)))
+            .collect();
         if !tags.get("route").is_some_and(|r| SERVICES.contains(&r.as_str())) {
             continue;
         }
-        let ways = field('M').split(',').filter_map(|m| m.split_once('@').map_or(m, |(r, _)| r).strip_prefix('w')?.parse().ok()).collect();
+        let ways = field('M')
+            .split(',')
+            .filter_map(|m| m.split_once('@').map_or(m, |(r, _)| r).strip_prefix('w')?.parse().ok())
+            .collect();
         out.push(Rel { id, tags, ways });
     }
     out.sort_by_key(|r| r.id);
@@ -103,7 +110,14 @@ pub fn rail_lines(rels: &[Rel], len: &HashMap<u64, f64>, served: &HashSet<u64>) 
         let with: f64 = ways.iter().filter(|w| served.contains(w)).filter_map(|w| len.get(w)).sum::<f64>() / 1000.0;
         let first = rs[0];
         let tag = |k: &str| rs.iter().find_map(|r| r.tags.get(k)).cloned().unwrap_or_default();
-        let operator = { let o = tag("operator"); if o.is_empty() { tag("network") } else { o } };
+        let operator = {
+            let o = tag("operator");
+            if o.is_empty() {
+                tag("network")
+            } else {
+                o
+            }
+        };
         out.push(json!({
             "osm": format!("r{}", first.id), "kind": "rail", "name": tag("name"), "ref": tag("ref"),
             "operator": operator,
@@ -123,7 +137,10 @@ type Key = [u32; 4];
 
 /// The positions of a pairs file's records (rail::PAIR bytes each).
 pub fn pair_keys(pairs: &[u8]) -> HashSet<Key> {
-    pairs.chunks_exact(crate::rail::PAIR).map(|r| [0, 4, 8, 12].map(|i| u32::from_le_bytes(r[i..i + 4].try_into().unwrap()))).collect()
+    pairs
+        .chunks_exact(crate::rail::PAIR)
+        .map(|r| [0, 4, 8, 12].map(|i| u32::from_le_bytes(r[i..i + 4].try_into().unwrap())))
+        .collect()
 }
 
 /// railfreq's `rail-miss.bin`.
@@ -136,7 +153,13 @@ pub fn miss_keys(miss: &[u8]) -> HashSet<Key> {
 /// track (`missed`), "a line OSM lacks"; a static route whose `osm` pin names neither a relation
 /// (`rels`) nor a way (`ways`) of the pass's rail in the coverage. Each as ferries.py writes its
 /// own: `{mode, source, static, route, name, agency, osm, why}`.
-pub fn rail_unmatched(routes: &Value, kept: &HashSet<Key>, missed: &HashSet<Key>, rels: &HashSet<u64>, ways: &HashSet<u64>) -> Vec<Value> {
+pub fn rail_unmatched(
+    routes: &Value,
+    kept: &HashSet<Key>,
+    missed: &HashSet<Key>,
+    rels: &HashSet<u64>,
+    ways: &HashSet<u64>,
+) -> Vec<Value> {
     let key = |p: &Value| -> Option<Key> {
         let a = p.as_array()?;
         let f = |i: usize| a.get(i).and_then(Value::as_f64).map(|v| (v as f32).to_bits());
@@ -145,7 +168,13 @@ pub fn rail_unmatched(routes: &Value, kept: &HashSet<Key>, missed: &HashSet<Key>
     let pairs: Vec<Option<Key>> = routes["pairs"].as_array().map(|a| a.iter().map(key).collect()).unwrap_or_default();
     let mut out = Vec::new();
     for r in routes["routes"].as_array().into_iter().flatten() {
-        let mine: Vec<Key> = r["pairs"].as_array().into_iter().flatten().filter_map(|i| pairs.get(i.as_u64()? as usize).copied().flatten()).filter(|k| kept.contains(k)).collect();
+        let mine: Vec<Key> = r["pairs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|i| pairs.get(i.as_u64()? as usize).copied().flatten())
+            .filter(|k| kept.contains(k))
+            .collect();
         let pin = r["osm"].as_str().unwrap_or("");
         let pinned_to_nothing = !pin.is_empty()
             && match (pin.as_bytes()[0], pin[1..].parse::<u64>()) {
@@ -197,7 +226,9 @@ pub fn merge(rail: &Value, ferries: &Value, inside: &dyn Fn([i32; 2]) -> bool) -
         }
     }
     for l in ferries["lines"].as_array().into_iter().flatten() {
-        let e7 = |p: &Value| -> Option<[i32; 2]> { Some([(p.get(0)?.as_f64()? * 1e7).round() as i32, (p.get(1)?.as_f64()? * 1e7).round() as i32]) };
+        let e7 = |p: &Value| -> Option<[i32; 2]> {
+            Some([(p.get(0)?.as_f64()? * 1e7).round() as i32, (p.get(1)?.as_f64()? * 1e7).round() as i32])
+        };
         if l["ends"].as_array().into_iter().flatten().filter_map(e7).any(inside) {
             lines.push(l.clone());
         }
@@ -214,8 +245,16 @@ pub fn merge(rail: &Value, ferries: &Value, inside: &dyn Fn([i32; 2]) -> bool) -
             Value::Object(o)
         })
         .collect();
-    todo.sort_by(|a, b| b["priority"].as_f64().unwrap_or(0.0).total_cmp(&a["priority"].as_f64().unwrap_or(0.0)).then_with(|| a["kind"].as_str().cmp(&b["kind"].as_str())).then_with(|| a["osm"].as_str().cmp(&b["osm"].as_str())));
-    let mut unmatched: Vec<Value> = rail["unmatched"].as_array().into_iter().chain(ferries["unmatched"].as_array()).flatten().cloned().collect();
+    todo.sort_by(|a, b| {
+        b["priority"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&a["priority"].as_f64().unwrap_or(0.0))
+            .then_with(|| a["kind"].as_str().cmp(&b["kind"].as_str()))
+            .then_with(|| a["osm"].as_str().cmp(&b["osm"].as_str()))
+    });
+    let mut unmatched: Vec<Value> =
+        rail["unmatched"].as_array().into_iter().chain(ferries["unmatched"].as_array()).flatten().cloned().collect();
     let s = |v: &Value, k: &str| v[k].as_str().unwrap_or("").to_string();
     unmatched.sort_by_key(|v| (s(v, "mode"), s(v, "source"), s(v, "route")));
     let r = Report {
@@ -295,7 +334,18 @@ impl View {
             ferry: n(&report["by_kind"]["ferry"]),
             file: s(report, "file"),
             unmatched_total: all.len() as u64,
-            unmatched: all.iter().take(VIEW_MAX).map(|u| Unmatched { mode: s(u, "mode"), source: s(u, "source"), route: s(u, "route"), name: s(u, "name"), osm: s(u, "osm"), why: s(u, "why") }).collect(),
+            unmatched: all
+                .iter()
+                .take(VIEW_MAX)
+                .map(|u| Unmatched {
+                    mode: s(u, "mode"),
+                    source: s(u, "source"),
+                    route: s(u, "route"),
+                    name: s(u, "name"),
+                    osm: s(u, "osm"),
+                    why: s(u, "why"),
+                })
+                .collect(),
         }
     }
 
@@ -336,7 +386,10 @@ r5 v1 Ttype=route,route=tram,name=Far Mw99@\n";
         let l = rail_lines(&rels, &len, &served);
         assert_eq!(l.len(), 2, "both directions one line; a line with no way in the coverage left out");
         let s1 = l.iter().find(|x| x["osm"] == "r1").unwrap();
-        assert_eq!((s1["km"].as_f64(), s1["served_km"].as_f64(), s1["operator"].as_str()), (Some(6.0), Some(3.0), Some("ZVV")));
+        assert_eq!(
+            (s1["km"].as_f64(), s1["served_km"].as_f64(), s1["operator"].as_str()),
+            (Some(6.0), Some(3.0), Some("ZVV"))
+        );
         let f = l.iter().find(|x| x["osm"] == "r4").unwrap();
         assert_eq!(f["passenger"], false);
     }
@@ -360,8 +413,16 @@ r5 v1 Ttype=route,route=tram,name=Far Mw99@\n";
         let kept: HashSet<Key> = [k(1.0, 2.0, 1.5, 2.5), k(1.5, 2.5, 2.0, 3.0)].into();
         let missed: HashSet<Key> = [k(1.5, 2.5, 2.0, 3.0)].into();
         let u = rail_unmatched(&routes, &kept, &missed, &[1].into(), &[5].into());
-        let got: Vec<(&str, &str)> = u.iter().map(|v| (v["route"].as_str().unwrap(), v["why"].as_str().unwrap())).collect();
-        assert_eq!(got, vec![("gone", "its stops match no OpenStreetMap track"), ("p", "its osm pin names no rail line of this pass")], "a route beyond the coverage isn't reported; a route with one pair matched isn't");
+        let got: Vec<(&str, &str)> =
+            u.iter().map(|v| (v["route"].as_str().unwrap(), v["why"].as_str().unwrap())).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("gone", "its stops match no OpenStreetMap track"),
+                ("p", "its osm pin names no rail line of this pass")
+            ],
+            "a route beyond the coverage isn't reported; a route with one pair matched isn't"
+        );
         assert!(u[0].get("pairs").is_none());
     }
 
@@ -380,7 +441,10 @@ r5 v1 Ttype=route,route=tram,name=Far Mw99@\n";
         let (todo, report, r) = merge(&rail, &ferries, &inside);
         let ids: Vec<&str> = todo.iter().map(|l| l["osm"].as_str().unwrap()).collect();
         assert_eq!(ids, vec!["r1", "w9", "r3"], "by priority: a freight line's tenth");
-        assert_eq!(todo[0].as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>(), ["osm", "kind", "name", "ref", "operator", "from", "to", "km", "priority"].map(String::from).into());
+        assert_eq!(
+            todo[0].as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>(),
+            ["osm", "kind", "name", "ref", "operator", "from", "to", "km", "priority"].map(String::from).into()
+        );
         assert_eq!((r.rail, r.ferry, r.unmatched), (2, 1, 2));
         let v = View::of(&report);
         assert_eq!((v.to_do, v.unmatched_total, v.unmatched[0].mode.as_str()), (3, 2, "ferry"));
@@ -393,14 +457,21 @@ r5 v1 Ttype=route,route=tram,name=Far Mw99@\n";
         let root = d.path().join("root");
         // (The pieces, each its job's.)
         let rail = br#"{"lines": [{"osm": "r1", "kind": "rail", "km": 5.0, "served_km": 0.0, "passenger": true}], "unmatched": []}"#;
-        for (step, l, v) in [("rail", RAIL_LINES, &rail[..]), ("ferries", FERRY_LINES, &br#"{"lines": [], "unmatched": []}"#[..])] {
+        for (step, l, v) in
+            [("rail", RAIL_LINES, &rail[..]), ("ferries", FERRY_LINES, &br#"{"lines": [], "unmatched": []}"#[..])]
+        {
             let mut o = crate::out::Out::open(&root, &d.path().join("scratch"), step).unwrap();
             o.put_bytes(l, "json", v).unwrap();
             o.save().unwrap();
         }
         let mut out = crate::out::Out::open(&root, &d.path().join("scratch"), "timetables-todo").unwrap();
         std::fs::write(d.path().join("sq.poly"), "sq\n1\n 0 0\n 1 0\n 1 1\n 0 1\nEND\nEND\n").unwrap();
-        let cov = crate::coverage::Coverage::fixture(&[crate::agent::recipes::Recipe { id: "s".into(), name: "S".into(), outline: vec!["poly:sq.poly".into()] }], None, d.path()).unwrap();
+        let cov = crate::coverage::Coverage::fixture(
+            &[crate::agent::recipes::Recipe { id: "s".into(), name: "S".into(), outline: vec!["poly:sq.poly".into()] }],
+            None,
+            d.path(),
+        )
+        .unwrap();
         let r = run(&mut out, &cov, &root).unwrap();
         assert_eq!(r.rail, 1);
         let todo = root.join("inputs/timetables/gtfs/todo");

@@ -4,10 +4,10 @@
 //! (`SIGSTOP` to the group while a condition it needs lapses; `SIGCONT` when it holds again), and
 //! stopped as a group.
 
+use crate::sys::Signal;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use crate::sys::Signal;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -98,11 +98,20 @@ impl Running {
     /// appended to `log`, and records it in `record` (with `done_file`, where it notes the targets
     /// it finishes); under `sandbox`, a profile of `sandbox-exec` (crate::budget::SANDBOX: no way
     /// out but through its agent's proxy), when given.
-    pub fn start(spec: JobSpec, threads: usize, env: &[(&str, &str)], log: PathBuf, record: &Path, done_file: Option<&Path>, sandbox: Option<&str>) -> Result<Running> {
+    pub fn start(
+        spec: JobSpec,
+        threads: usize,
+        env: &[(&str, &str)],
+        log: PathBuf,
+        record: &Path,
+        done_file: Option<&Path>,
+        sandbox: Option<&str>,
+    ) -> Result<Running> {
         if let Some(d) = log.parent() {
             std::fs::create_dir_all(d)?;
         }
-        let mut out = File::options().create(true).append(true).open(&log).with_context(|| format!("open {}", log.display()))?;
+        let mut out =
+            File::options().create(true).append(true).open(&log).with_context(|| format!("open {}", log.display()))?;
         // (A job's log keeps its earlier runs': this run's begins here, and only what follows is
         // its progress, parts and last lines.)
         std::io::Write::write_all(&mut out, format!("{RUN_START}{} ({}) ===\n", spec.id, now_s()).as_bytes())?;
@@ -122,16 +131,43 @@ impl Running {
         c.arg(prog).args(args);
         // (The Python steps' output reaches the log, and so the status, as they print it: piped, it
         // would wait in their buffers, for minutes.)
-        c.env("RAYON_NUM_THREADS", threads.to_string()).env("PYTHONUNBUFFERED", "1").envs(env.iter().copied()).stdin(Stdio::null()).stdout(out).stderr(err);
+        c.env("RAYON_NUM_THREADS", threads.to_string())
+            .env("PYTHONUNBUFFERED", "1")
+            .envs(env.iter().copied())
+            .stdin(Stdio::null())
+            .stdout(out)
+            .stderr(err);
         // Its own process group, so pausing and stopping reach every process it starts.
         crate::sys::own_group(&mut c);
         let child = store::spawn::spawn(&mut c).with_context(|| format!("start {}", spec.id))?;
         let pgid = child.id() as i32;
         let caffeinate = keep_awake(child.id());
         let started = now_s();
-        let rec = Record { id: spec.id.clone(), pgid, started, leader_start: process_start(pgid).unwrap_or(0), work: spec.record.clone(), done_file: done_file.map(Path::to_path_buf) };
+        let rec = Record {
+            id: spec.id.clone(),
+            pgid,
+            started,
+            leader_start: process_start(pgid).unwrap_or(0),
+            work: spec.record.clone(),
+            done_file: done_file.map(Path::to_path_buf),
+        };
         std::fs::write(record, serde_json::to_vec(&rec)?)?;
-        Ok(Running { spec, child, caffeinate, pgid, started, log, paused: None, pausing: None, started_at: Instant::now(), progress_base: None, parts: None, said: None, moved: None, threads })
+        Ok(Running {
+            spec,
+            child,
+            caffeinate,
+            pgid,
+            started,
+            log,
+            paused: None,
+            pausing: None,
+            started_at: Instant::now(),
+            progress_base: None,
+            parts: None,
+            said: None,
+            moved: None,
+            threads,
+        })
     }
 
     /// Pauses the job's whole process group (`why` goes to the status), and lets the Mac sleep.
@@ -186,7 +222,14 @@ impl Running {
 /// Keeps the Mac awake while process `pid` runs: no idle sleep (on battery too: -i), no system sleep
 /// on mains power (-s), ending with it (-w).
 fn keep_awake(pid: u32) -> Option<Child> {
-    store::spawn::spawn(store::spawn::command("/usr/bin/caffeinate").args(["-i", "-s", "-w", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())).ok()
+    store::spawn::spawn(
+        store::spawn::command("/usr/bin/caffeinate")
+            .args(["-i", "-s", "-w", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .ok()
 }
 
 impl Drop for Running {
@@ -276,7 +319,11 @@ pub fn tail(log: &Path, n: usize) -> String {
     let s = end_of(log);
     // Progress bars redraw with carriage returns: keep each line's last state. (The parts' lines
     // are the status's list, not text to show.)
-    let lines: Vec<&str> = s.lines().map(|l| l.rsplit('\r').next().unwrap_or(l)).filter(|l| !l.trim().is_empty() && !l.starts_with("parts: ")).collect();
+    let lines: Vec<&str> = s
+        .lines()
+        .map(|l| l.rsplit('\r').next().unwrap_or(l))
+        .filter(|l| !l.trim().is_empty() && !l.starts_with("parts: "))
+        .collect();
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
@@ -475,7 +522,14 @@ mod tests {
     use super::*;
 
     fn spec(cmd: &[&str]) -> JobSpec {
-        JobSpec { id: "t".into(), what: "test".into(), cmd: cmd.iter().map(|s| s.to_string()).collect(), needs: Needs::default(), restart_after_sleep: false, record: None }
+        JobSpec {
+            id: "t".into(),
+            what: "test".into(),
+            cmd: cmd.iter().map(|s| s.to_string()).collect(),
+            needs: Needs::default(),
+            restart_after_sleep: false,
+            record: None,
+        }
     }
 
     /// What `f` finds of job `r`, once it does: the tests wait for what the job did, not for a
@@ -500,7 +554,16 @@ mod tests {
     fn runs_pauses_and_stops() {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("job.json");
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "echo hello; sleep 3600"]), 2, &[], d.path().join("log"), &rec, None, None).unwrap();
+        let mut r = Running::start(
+            spec(&["/bin/sh", "-c", "echo hello; sleep 3600"]),
+            2,
+            &[],
+            d.path().join("log"),
+            &rec,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(rec.exists());
         // Running: what it says reaches its log. Paused, it hasn't ended; stopped, it has, by the
         // stop's signal.
@@ -531,9 +594,24 @@ mod tests {
             fi
             echo "unit $t" >> "$SCENIC_DONE"
         done"#;
-        let env = [(crate::control::CONTROL_ENV, control.to_str().unwrap()), (crate::control::DONE_ENV, done.to_str().unwrap()), ("ON", on.to_str().unwrap())];
-        let mut r = Running::start(spec(&["/bin/sh", "-c", script]), 1, &env, d.path().join("log"), &d.path().join("job.json"), Some(&done), None).unwrap();
-        wait_for(&mut r, "on its third target", |_| std::fs::read_to_string(&on).is_ok_and(|s| s.trim() == "6/1/3").then_some(()));
+        let env = [
+            (crate::control::CONTROL_ENV, control.to_str().unwrap()),
+            (crate::control::DONE_ENV, done.to_str().unwrap()),
+            ("ON", on.to_str().unwrap()),
+        ];
+        let mut r = Running::start(
+            spec(&["/bin/sh", "-c", script]),
+            1,
+            &env,
+            d.path().join("log"),
+            &d.path().join("job.json"),
+            Some(&done),
+            None,
+        )
+        .unwrap();
+        wait_for(&mut r, "on its third target", |_| {
+            std::fs::read_to_string(&on).is_ok_and(|s| s.trim() == "6/1/3").then_some(())
+        });
         std::fs::write(&control, b"drain").unwrap();
         let st = wait_for(&mut r, "stopped at its next safe point", |r| r.poll().unwrap());
         assert_eq!(st.code(), Some(crate::control::PAUSED_EXIT));
@@ -548,13 +626,21 @@ mod tests {
         // As a step prints them (pipeline::agent::jobs::part), with its output between.
         let names = ["Getting ready (osmium)", "Details: Wikidata's facts", "Uploading"];
         let line = |i: usize| format!("parts: {i} {}\n", serde_json::to_string(&names).unwrap());
-        std::fs::write(&log, format!("{}progress: 0/3 parts (Getting ready)\nosmium: done\n{}some output\n", line(0), line(1))).unwrap();
+        std::fs::write(
+            &log,
+            format!("{}progress: 0/3 parts (Getting ready)\nosmium: done\n{}some output\n", line(0), line(1)),
+        )
+        .unwrap();
         assert_eq!(parts(&log), Some((1, names.iter().map(|s| s.to_string()).collect())));
         // A run after it: none of the earlier run's.
         let mut f = File::options().append(true).open(&log).unwrap();
         std::io::Write::write_all(&mut f, format!("{RUN_START}t (1) ===\nstarting\n").as_bytes()).unwrap();
         assert_eq!((parts(&log), progress(&log), tail(&log, 5).as_str()), (None, None, "starting"));
-        std::fs::write(&log, format!("{}progress: 0/3 parts (Getting ready)\nosmium: done\n{}some output\n", line(0), line(1))).unwrap();
+        std::fs::write(
+            &log,
+            format!("{}progress: 0/3 parts (Getting ready)\nosmium: done\n{}some output\n", line(0), line(1)),
+        )
+        .unwrap();
         // Not text to show; and a line out of range is none.
         assert_eq!(tail(&log, 5), "progress: 0/3 parts (Getting ready)\nosmium: done\nsome output");
         std::fs::write(&log, format!("parts: 7 {}\n", serde_json::to_string(&names).unwrap())).unwrap();
@@ -605,7 +691,12 @@ mod tests {
         assert_eq!(lines, ["[>   ]  0% ", "[=>  ]  50% ", "done", "last"]);
         // A program's progress, seen as it runs; its other lines on to the log.
         let mut seen = Vec::new();
-        let st = run_watched(store::spawn::command("/bin/sh").args(["-c", "echo 'progress: 1/4 x' >&2; echo hi >&2; printf '[=> ] 75%%\r' >&2"]), |f| seen.push(f)).unwrap();
+        let st = run_watched(
+            store::spawn::command("/bin/sh")
+                .args(["-c", "echo 'progress: 1/4 x' >&2; echo hi >&2; printf '[=> ] 75%%\r' >&2"]),
+            |f| seen.push(f),
+        )
+        .unwrap();
         assert!(st.success());
         assert_eq!(seen, [0.25, 0.75]);
     }
@@ -657,7 +748,9 @@ mod tests {
             let first = String::from_utf8_lossy(&b[..n]).lines().next().unwrap_or_default().to_string();
             write!(s, "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nupstream saw: {first}\n").unwrap();
         });
-        let budget = Arc::new(Budget::new(&d.path().join("nas"), "m-test", Arc::new(StepClock::at(1_800_000_000_000))).with_ledger());
+        let budget = Arc::new(
+            Budget::new(&d.path().join("nas"), "m-test", Arc::new(StepClock::at(1_800_000_000_000))).with_ledger(),
+        );
         let proxy = Proxy::start(budget.clone(), Some(Arc::new(move |_: &str, _: u16| Some(up_addr)))).unwrap();
         let env: Vec<(String, String)> = proxy.env();
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -665,7 +758,16 @@ mod tests {
             "/usr/bin/nc -v -z -G 5 192.0.2.1 9; echo \"out=$?\"; /usr/bin/nc -z -G 5 127.0.0.1 {port}; echo \"here=$?\"; /usr/bin/curl -sS -m 20 http://en.wikipedia.org/w/api.php; echo \"curl=$?\""
         );
         let log = d.path().join("log");
-        let mut r = Running::start(spec(&["/bin/sh", "-c", &script]), 1, &env, log.clone(), &d.path().join("job.json"), None, Some(crate::budget::SANDBOX)).unwrap();
+        let mut r = Running::start(
+            spec(&["/bin/sh", "-c", &script]),
+            1,
+            &env,
+            log.clone(),
+            &d.path().join("job.json"),
+            None,
+            Some(crate::budget::SANDBOX),
+        )
+        .unwrap();
         let st = r.wait().unwrap();
         assert!(st.success());
         let text = std::fs::read_to_string(&log).unwrap();
@@ -679,7 +781,16 @@ mod tests {
     #[test]
     fn exit_status() {
         let d = tempfile::tempdir().unwrap();
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "exit 3"]), 1, &[], d.path().join("log"), &d.path().join("job.json"), None, None).unwrap();
+        let mut r = Running::start(
+            spec(&["/bin/sh", "-c", "exit 3"]),
+            1,
+            &[],
+            d.path().join("log"),
+            &d.path().join("job.json"),
+            None,
+            None,
+        )
+        .unwrap();
         let st = loop {
             if let Some(s) = r.poll().unwrap() {
                 break s;
@@ -694,7 +805,16 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("job.json");
         // The shell leaves a sleep behind in its group and exits: an orphan, as after a crash.
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "/bin/sleep 3600 & echo started"]), 1, &[], d.path().join("log"), &rec, None, None).unwrap();
+        let mut r = Running::start(
+            spec(&["/bin/sh", "-c", "/bin/sleep 3600 & echo started"]),
+            1,
+            &[],
+            d.path().join("log"),
+            &rec,
+            None,
+            None,
+        )
+        .unwrap();
         while r.poll().unwrap().is_none() {
             std::thread::sleep(Duration::from_millis(50));
         }

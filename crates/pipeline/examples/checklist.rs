@@ -16,7 +16,9 @@ use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let [_, root, idx, out] = args.as_slice() else { anyhow::bail!("usage: checklist <root> <pack-idx copy> <out.json>") };
+    let [_, root, idx, out] = args.as_slice() else {
+        anyhow::bail!("usage: checklist <root> <pack-idx copy> <out.json>")
+    };
     let root = PathBuf::from(root);
     let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
     let date = pipeline::osmpass::latest_pass_by(&root, false).ok_or_else(|| anyhow::anyhow!("no complete pass"))?;
@@ -29,7 +31,17 @@ fn main() -> anyhow::Result<()> {
     let inputs = pipeline::agent::input_digests(&root);
     let times = FileTimes::new(&root);
     as_read(&mut keys, &cov, &date, &m, reach.as_ref(), &inputs, &tiles, &times);
-    let (items, next) = checklist(&cov, &date, &m, &keys, &inputs, root.join("inputs/hold-catalog").exists(), reach.as_ref(), &[], &tiles);
+    let (items, next) = checklist(
+        &cov,
+        &date,
+        &m,
+        &keys,
+        &inputs,
+        root.join("inputs/hold-catalog").exists(),
+        reach.as_ref(),
+        &[],
+        &tiles,
+    );
     let lines = fold(&items, &next, &BTreeMap::new());
     std::fs::write(out, serde_json::to_vec_pretty(&lines)?)?;
     eprintln!("{} lines, {} items, written to {out}", lines.len(), items.len());

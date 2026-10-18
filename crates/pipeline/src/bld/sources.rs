@@ -117,12 +117,24 @@ impl Sources {
                 stale.push((name, f.bbox.unwrap_or([-180.0, -90.0, 180.0, 90.0])));
                 continue;
             };
-            let rgs: Vec<([f64; 4], u64)> = ft.rgs.iter().filter(|g| g.len() >= 4).map(|g| ([g[0], g[1], g[2], g[3]], g.get(4).copied().unwrap_or(0.0) as u64)).collect();
-            let bbox = rgs.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, (g, _)| [b[0].min(g[0]), b[1].min(g[1]), b[2].max(g[2]), b[3].max(g[3])]);
+            let rgs: Vec<([f64; 4], u64)> = ft
+                .rgs
+                .iter()
+                .filter(|g| g.len() >= 4)
+                .map(|g| ([g[0], g[1], g[2], g[3]], g.get(4).copied().unwrap_or(0.0) as u64))
+                .collect();
+            let bbox = rgs.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, (g, _)| {
+                [b[0].min(g[0]), b[1].min(g[1]), b[2].max(g[2]), b[3].max(g[3])]
+            });
             files.push(File { part: name.contains("type=building_part/"), name, etag: f.etag, rgs, bbox });
         }
         let ghsl = match std::fs::read(root.join(ghsl).join("index.json")) {
-            Ok(b) => serde_json::from_slice::<GhslIndex>(&b).context("GHSL's index.json")?.tiles.into_iter().map(|(n, t)| (n, t.size, t.bbox)).collect(),
+            Ok(b) => serde_json::from_slice::<GhslIndex>(&b)
+                .context("GHSL's index.json")?
+                .tiles
+                .into_iter()
+                .map(|(n, t)| (n, t.size, t.bbox))
+                .collect(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e).context("GHSL's index.json"),
         };
@@ -141,7 +153,8 @@ impl Sources {
             if !meets(f.bbox, bx) {
                 continue;
             }
-            let hit: Vec<String> = f.rgs.iter().enumerate().filter(|(_, g)| meets(g.0, bx)).map(|(k, _)| k.to_string()).collect();
+            let hit: Vec<String> =
+                f.rgs.iter().enumerate().filter(|(_, g)| meets(g.0, bx)).map(|(k, _)| k.to_string()).collect();
             if !hit.is_empty() {
                 out.push(format!("{} {} {}", f.name, f.etag, hit.join(",")));
             }
@@ -164,7 +177,11 @@ impl Sources {
     pub fn rows_for(&self, x: u32, y: u32) -> u64 {
         let b = super::tile_box_deg(6, x, y);
         let pb = [b[0] - PART_MARGIN_DEG, b[1] - PART_MARGIN_DEG, b[2] + PART_MARGIN_DEG, b[3] + PART_MARGIN_DEG];
-        self.files.iter().filter(|f| meets(f.bbox, if f.part { pb } else { b })).flat_map(|f| f.rgs.iter().filter(move |g| meets(g.0, if f.part { pb } else { b })).map(|g| g.1)).sum()
+        self.files
+            .iter()
+            .filter(|f| meets(f.bbox, if f.part { pb } else { b }))
+            .flat_map(|f| f.rgs.iter().filter(move |g| meets(g.0, if f.part { pb } else { b })).map(|g| g.1))
+            .sum()
     }
 }
 
@@ -182,10 +199,23 @@ pub struct Memo {
 impl Memo {
     pub fn get(&mut self, root: &Path, release: &str, ghsl: &str) -> Result<Option<std::sync::Arc<Sources>>> {
         let base = root.join(release_dir(release));
-        let stamp: Vec<(u64, u64)> = [base.join("buildings.json"), base.join("footers.json.gz"), root.join(ghsl).join("index.json")]
-            .iter()
-            .map(|p| std::fs::metadata(p).map(|m| (m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos() as u64))).unwrap_or((0, 0)))
-            .collect();
+        let stamp: Vec<(u64, u64)> =
+            [base.join("buildings.json"), base.join("footers.json.gz"), root.join(ghsl).join("index.json")]
+                .iter()
+                .map(|p| {
+                    std::fs::metadata(p)
+                        .map(|m| {
+                            (
+                                m.len(),
+                                m.modified()
+                                    .ok()
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map_or(0, |d| d.as_nanos() as u64),
+                            )
+                        })
+                        .unwrap_or((0, 0))
+                })
+                .collect();
         let key = (root.to_path_buf(), format!("{release} {ghsl}"), stamp);
         if self.at.as_ref() == Some(&key) {
             return Ok(self.held.clone());
@@ -273,11 +303,17 @@ pub(crate) mod tests {
     #[test]
     fn the_declared_sources_are_what_the_code_had() {
         let s = crate::inputs::sources::staged();
-        assert_eq!(declared(&s).unwrap(), ("2026-09-23.1".to_string(), "sources/ghsl/R2023A".to_string(), "2026-09-23.1".to_string()));
+        assert_eq!(
+            declared(&s).unwrap(),
+            ("2026-09-23.1".to_string(), "sources/ghsl/R2023A".to_string(), "2026-09-23.1".to_string())
+        );
         let b = s.role(crate::inputs::sources::BUILDINGS).unwrap();
         assert_eq!(b.url().unwrap(), "https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com/");
         assert_eq!(b.param_strs("types").unwrap(), ["building_part", "building"]);
-        assert_eq!((b.param_str("s3").unwrap(), b.param_str("region").unwrap()), ("s3://overturemaps-us-west-2", "us-west-2"));
+        assert_eq!(
+            (b.param_str("s3").unwrap(), b.param_str("region").unwrap()),
+            ("s3://overturemaps-us-west-2", "us-west-2")
+        );
         assert_eq!(b.digest(), crate::agent::rekey::declared_before::BUILDINGS);
         let g = s.role(crate::inputs::sources::BUILDING_HEIGHTS).unwrap();
         assert_eq!(g.digest(), crate::agent::rekey::declared_before::BUILDING_HEIGHTS);
@@ -286,7 +322,10 @@ pub(crate) mod tests {
         assert_eq!(g.index.len(), 346);
         for f in &g.index {
             let name = f.url.strip_prefix(folder).unwrap();
-            let rc = name.strip_prefix("GHS_BUILT_H_ANBH_E2018_GLOBE_R2023A_4326_3ss_V1_0_R").and_then(|r| r.strip_suffix(".zip")).unwrap();
+            let rc = name
+                .strip_prefix("GHS_BUILT_H_ANBH_E2018_GLOBE_R2023A_4326_3ss_V1_0_R")
+                .and_then(|r| r.strip_suffix(".zip"))
+                .unwrap();
             let (r, c) = rc.split_once("_C").unwrap();
             let (r, c): (f64, f64) = (r.parse().unwrap(), c.parse().unwrap());
             let (top, left) = (top0 - deg * (r - 1.0), left0 + deg * (c - 1.0));
@@ -295,7 +334,10 @@ pub(crate) mod tests {
         // Another release is another key, as a new constant was.
         let mut other = b.clone();
         other.data.version = Some("2026-11-18.0".into());
-        assert_eq!(other.key_part(("2026-11-18.0", crate::agent::rekey::declared_before::BUILDINGS)), format!("source overture-buildings {}", b.keyed));
+        assert_eq!(
+            other.key_part(("2026-11-18.0", crate::agent::rekey::declared_before::BUILDINGS)),
+            format!("source overture-buildings {}", b.keyed)
+        );
     }
 
     #[test]
@@ -307,10 +349,25 @@ pub(crate) mod tests {
         // (The stale files left out of what's read; the one meeting the tile named in its reads,
         // bldprep.py failing on it there; the far one not.)
         assert_eq!((s.files.len(), s.stale.len()), (2, 2));
-        assert_eq!(s.read_for(56, 25), ["theme=buildings/type=building/a.parquet ea 0", "theme=buildings/type=building_part/p.parquet ep 0", "stale theme=buildings/type=building/stale-near.parquet", "ghsl G_R5_C30.zip 123"]);
+        assert_eq!(
+            s.read_for(56, 25),
+            [
+                "theme=buildings/type=building/a.parquet ea 0",
+                "theme=buildings/type=building_part/p.parquet ep 0",
+                "stale theme=buildings/type=building/stale-near.parquet",
+                "ghsl G_R5_C30.zip 123"
+            ]
+        );
         assert_eq!(s.rows_for(56, 25), 1020);
         // The tile west of it: the parts' row group only (it meets that tile itself), no building's.
-        assert_eq!(s.read_for(55, 25), ["theme=buildings/type=building_part/p.parquet ep 0", "stale theme=buildings/type=building/stale-near.parquet", "ghsl G_R5_C30.zip 123"]);
+        assert_eq!(
+            s.read_for(55, 25),
+            [
+                "theme=buildings/type=building_part/p.parquet ep 0",
+                "stale theme=buildings/type=building/stale-near.parquet",
+                "ghsl G_R5_C30.zip 123"
+            ]
+        );
         assert!(s.read_for(10, 10).is_empty());
         // Kept while the indexes stay as they are; read again once one changes.
         let mut m = Memo::default();

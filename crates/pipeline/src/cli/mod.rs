@@ -53,7 +53,8 @@ fn is_help(a: &str) -> bool {
 
 /// A flag: `--x`, or `-x` (not a number such as `-12.5,40`).
 fn is_flag(a: &str) -> bool {
-    a.starts_with("--") || (a.len() > 1 && a.starts_with('-') && !a[1..].starts_with(|c: char| c.is_ascii_digit() || c == '.'))
+    a.starts_with("--")
+        || (a.len() > 1 && a.starts_with('-') && !a[1..].starts_with(|c: char| c.is_ascii_digit() || c == '.'))
 }
 
 impl Table {
@@ -63,7 +64,10 @@ impl Table {
 
     /// Its usage: every command's.
     pub fn listing(&self) -> String {
-        let mut s = format!("{}: {}\n\nusage: {} <command> [flags]   (`{} <command> --help`: a command's own)\n\n", self.prog, self.about, self.prog, self.prog);
+        let mut s = format!(
+            "{}: {}\n\nusage: {} <command> [flags]   (`{} <command> --help`: a command's own)\n\n",
+            self.prog, self.about, self.prog, self.prog
+        );
         for c in self.cmds {
             s += &format!("  {}\n", line(self.prog, c));
         }
@@ -106,7 +110,11 @@ impl Table {
                 None => return Err(format!("{}: {:?} before a command\n\n{}", self.prog, args[0], self.listing())),
             },
         };
-        let named = if words.first().is_some_and(|w| cmd.name.split(' ').next() == Some(*w)) { cmd.name.split(' ').count() } else { 0 };
+        let named = if words.first().is_some_and(|w| cmd.name.split(' ').next() == Some(*w)) {
+            cmd.name.split(' ').count()
+        } else {
+            0
+        };
         let mut pos = 0;
         let mut refused = None;
         let mut it = args.iter().skip(named);
@@ -209,7 +217,16 @@ mod tests {
 
     #[test]
     fn help_anywhere_runs_nothing() {
-        for l in ["--help", "-h", "help", "pool --help", "pool on -h", "give m n --help", "pool on --nwo --help", "status --root --help"] {
+        for l in [
+            "--help",
+            "-h",
+            "help",
+            "pool --help",
+            "pool on -h",
+            "give m n --help",
+            "pool on --nwo --help",
+            "status --root --help",
+        ] {
             assert_eq!(check(l), Ok("HELP"), "{l}");
         }
         let Ok(Checked::Help(s)) = T.check(&["pool".into(), "--help".into()]) else { panic!() };

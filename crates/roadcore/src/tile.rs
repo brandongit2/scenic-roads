@@ -58,7 +58,8 @@ pub mod surface {
             "paving_stones" | "sett" | "cobblestone" | "unhewn_cobblestone" | "bricks" | "metal" | "wood" => SETT,
             "compacted" | "fine_gravel" => COMPACTED,
             "gravel" | "pebblestone" | "unpaved" | "shells" => GRAVEL,
-            "dirt" | "earth" | "ground" | "mud" | "sand" | "grass" | "rock" | "clay" | "woodchips" | "grass_paver" | "snow" | "ice" | "salt" => DIRT,
+            "dirt" | "earth" | "ground" | "mud" | "sand" | "grass" | "rock" | "clay" | "woodchips" | "grass_paver"
+            | "snow" | "ice" | "salt" => DIRT,
             _ => UNKNOWN,
         }
     }

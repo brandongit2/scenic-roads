@@ -42,12 +42,18 @@ fn id_like(s: &str, first: &[char]) -> bool {
 
 /// What's wrong with a description line, or None.
 fn fault(l: &str) -> Option<&'static str> {
-    let Ok(serde_json::Value::Object(v)) = serde_json::from_str::<serde_json::Value>(l) else { return Some("not a JSON object") };
+    let Ok(serde_json::Value::Object(v)) = serde_json::from_str::<serde_json::Value>(l) else {
+        return Some("not a JSON object");
+    };
     match (v.get("qid"), v.get("id")) {
         (Some(_), Some(_)) => return Some("both qid and id"),
         (None, None) => return Some("neither qid nor id"),
-        (Some(q), None) if !q.as_str().is_some_and(|q| id_like(q, &['Q']) && !q[1..].starts_with('0')) => return Some("a qid not Q<digits>"),
-        (None, Some(i)) if !i.as_str().is_some_and(|i| id_like(i, &['n', 'w', 'r'])) => return Some("an id not n, w or r and digits"),
+        (Some(q), None) if !q.as_str().is_some_and(|q| id_like(q, &['Q']) && !q[1..].starts_with('0')) => {
+            return Some("a qid not Q<digits>")
+        }
+        (None, Some(i)) if !i.as_str().is_some_and(|i| id_like(i, &['n', 'w', 'r'])) => {
+            return Some("an id not n, w or r and digits")
+        }
         _ => {}
     }
     let drop = match v.get("drop") {
@@ -105,7 +111,14 @@ impl Checks for Descriptions {
             return c;
         }
         let Ok(text) = std::str::from_utf8(bytes) else {
-            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not utf-8"], vec![path.into()], format!("{path} isn't UTF-8 text")));
+            c.findings.push(Finding::new(
+                SHAPE,
+                Level::Error,
+                &[path],
+                &["not utf-8"],
+                vec![path.into()],
+                format!("{path} isn't UTF-8 text"),
+            ));
             return c;
         };
         let (mut bad, mut long, mut nosrc) = (Vec::new(), Vec::new(), Vec::new());
@@ -125,7 +138,11 @@ impl Checks for Descriptions {
                 long.push((n, l, format!("{words} words")));
             }
             if v.get("src").is_none() {
-                nosrc.push((n, l, v.get("qid").or_else(|| v.get("id")).and_then(|x| x.as_str()).unwrap_or("").to_string()));
+                nosrc.push((
+                    n,
+                    l,
+                    v.get("qid").or_else(|| v.get("id")).and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                ));
             }
         }
         let mut push = |check: &str, level: Level, ls: &[(usize, &str, String)], message: String| {
@@ -138,8 +155,18 @@ impl Checks for Descriptions {
         };
         let k = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
         push(LINE, Level::Error, &bad, format!("{path}: {} not a description ({{\"qid\": \"Q…\"}} or {{\"id\": \"n…\"|\"w…\"|\"r…\"}}, \"long\" unless \"drop\": true)", k(bad.len(), "line", "lines")));
-        push(LONG, Level::Warning, &long, format!("{path}: {} over the brief's {MOST_WORDS} words", k(long.len(), "description", "descriptions")));
-        push(SRC, Level::Warning, &nosrc, format!("{path}: {} without src (what it was written from)", k(nosrc.len(), "description", "descriptions")));
+        push(
+            LONG,
+            Level::Warning,
+            &long,
+            format!("{path}: {} over the brief's {MOST_WORDS} words", k(long.len(), "description", "descriptions")),
+        );
+        push(
+            SRC,
+            Level::Warning,
+            &nosrc,
+            format!("{path}: {} without src (what it was written from)", k(nosrc.len(), "description", "descriptions")),
+        );
         c.facts.insert("lines".into(), n_lines.into());
         c
     }

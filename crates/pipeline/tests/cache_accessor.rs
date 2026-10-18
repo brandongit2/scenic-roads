@@ -102,13 +102,20 @@ fn files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 fn enclosing(lines: &[&str], i: usize, kw: &str) -> Option<(String, String)> {
     let starts = |l: &str| {
         let t = l.trim_start();
-        let t = t.strip_prefix("pub(crate) ").or_else(|| t.strip_prefix("pub(super) ")).or_else(|| t.strip_prefix("pub ")).unwrap_or(t);
+        let t = t
+            .strip_prefix("pub(crate) ")
+            .or_else(|| t.strip_prefix("pub(super) "))
+            .or_else(|| t.strip_prefix("pub "))
+            .unwrap_or(t);
         let t = t.strip_prefix("async ").unwrap_or(t);
-        t.strip_prefix(kw).map(|r| r.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string())
+        t.strip_prefix(kw)
+            .map(|r| r.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string())
     };
     let indent = |l: &str| l.len() - l.trim_start().len();
     let (at, name) = (0..=i).rev().find_map(|k| starts(lines[k]).map(|n| (k, n)))?;
-    let end = (at + 1..lines.len()).find(|&k| starts(lines[k]).is_some() && indent(lines[k]) <= indent(lines[at]) && !lines[k].trim().is_empty()).unwrap_or(lines.len());
+    let end = (at + 1..lines.len())
+        .find(|&k| starts(lines[k]).is_some() && indent(lines[k]) <= indent(lines[at]) && !lines[k].trim().is_empty())
+        .unwrap_or(lines.len());
     Some((name, lines[at..end].join("\n")))
 }
 
@@ -126,14 +133,23 @@ fn every_cache_read_goes_through_the_accessor() {
         let text = std::fs::read_to_string(&f).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         // (Tests aside: they make their own caches.)
-        let end = (1..lines.len()).find(|&k| ["mod tests", "pub mod tests", "pub(crate) mod tests"].iter().any(|m| lines[k].trim_start().starts_with(m)) && lines[k - 1].contains("cfg(test)")).unwrap_or(lines.len());
+        let end = (1..lines.len())
+            .find(|&k| {
+                ["mod tests", "pub mod tests", "pub(crate) mod tests"]
+                    .iter()
+                    .any(|m| lines[k].trim_start().starts_with(m))
+                    && lines[k - 1].contains("cfg(test)")
+            })
+            .unwrap_or(lines.len());
         for i in 0..end {
             let l = lines[i];
             if l.trim_start().starts_with("//") || !MARKERS.iter().any(|m| l.contains(m)) {
                 continue;
             }
             let Some((name, body)) = enclosing(&lines, i, "fn ") else { continue };
-            if body.contains("cachefile::") || EXEMPT.iter().any(|(ef, en, _)| *ef == rel && (*en == "*" || *en == name)) {
+            if body.contains("cachefile::")
+                || EXEMPT.iter().any(|(ef, en, _)| *ef == rel && (*en == "*" || *en == name))
+            {
                 continue;
             }
             bad.push(format!("{rel}:{} in fn {name}: {}", i + 1, l.trim()));
@@ -167,7 +183,10 @@ fn every_exemption_names_a_function_there() {
     let root = root();
     for (f, name, _) in EXEMPT {
         let text = std::fs::read_to_string(root.join(f)).unwrap_or_else(|_| panic!("{f} isn't there"));
-        assert!(*name == "*" || text.contains(&format!("fn {name}(")) || text.contains(&format!("fn {name}<")), "{f}: no fn {name}");
+        assert!(
+            *name == "*" || text.contains(&format!("fn {name}(")) || text.contains(&format!("fn {name}<")),
+            "{f}: no fn {name}"
+        );
     }
 }
 
@@ -176,7 +195,8 @@ fn every_exemption_names_a_function_there() {
 /// what the first did. (Passed over, said, where python3 has no `compression.zstd`: before 3.14.)
 #[test]
 fn the_python_steps_hold_what_they_read() {
-    let ok = store::spawn::status(store::spawn::command("python3").args(["-I", "-c", "from compression import zstd"])).is_ok_and(|s| s.success());
+    let ok = store::spawn::status(store::spawn::command("python3").args(["-I", "-c", "from compression import zstd"]))
+        .is_ok_and(|s| s.success());
     if !ok {
         eprintln!("python3 with compression.zstd isn't here: pageviews_chaos.py not run");
         return;
@@ -184,7 +204,17 @@ fn the_python_steps_hold_what_they_read() {
     let d = tempfile::tempdir().unwrap();
     // (No network, as the script makes sure for itself too: SCENIC_FETCH_OFFLINE, and a proxy that
     // refuses for what it runs.)
-    let out = store::spawn::output(store::spawn::command("python3").env("SCENIC_FETCH_OFFLINE", "1").env("ALL_PROXY", "http://127.0.0.1:9").env("HTTPS_PROXY", "http://127.0.0.1:9").env("HTTP_PROXY", "http://127.0.0.1:9").arg("-I").arg(root().join("tools/check/pageviews_chaos.py")).arg(d.path())).unwrap();
+    let out = store::spawn::output(
+        store::spawn::command("python3")
+            .env("SCENIC_FETCH_OFFLINE", "1")
+            .env("ALL_PROXY", "http://127.0.0.1:9")
+            .env("HTTPS_PROXY", "http://127.0.0.1:9")
+            .env("HTTP_PROXY", "http://127.0.0.1:9")
+            .arg("-I")
+            .arg(root().join("tools/check/pageviews_chaos.py"))
+            .arg(d.path()),
+    )
+    .unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{err}");
     assert!(err.contains("40 lookups alike") && !err.contains("\"deleted\": 0"), "{err}");
@@ -207,13 +237,22 @@ fn every_internet_request_asks_first() {
         let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
         let text = std::fs::read_to_string(&f).unwrap();
         let lines: Vec<&str> = text.lines().collect();
-        let end = (1..lines.len()).find(|&k| ["mod tests", "pub mod tests", "pub(crate) mod tests"].iter().any(|m| lines[k].trim_start().starts_with(m)) && lines[k - 1].contains("cfg(test)")).unwrap_or(lines.len());
+        let end = (1..lines.len())
+            .find(|&k| {
+                ["mod tests", "pub mod tests", "pub(crate) mod tests"]
+                    .iter()
+                    .any(|m| lines[k].trim_start().starts_with(m))
+                    && lines[k - 1].contains("cfg(test)")
+            })
+            .unwrap_or(lines.len());
         for i in 0..end {
             if !lines[i].contains(".call()") || lines[i].trim_start().starts_with("//") {
                 continue;
             }
             let Some((name, body)) = enclosing(&lines, i, "fn ") else { continue };
-            if body.contains("online(") || ASKED_ELSEWHERE.iter().any(|(ef, en, _)| *ef == rel && (*en == "*" || *en == name)) {
+            if body.contains("online(")
+                || ASKED_ELSEWHERE.iter().any(|(ef, en, _)| *ef == rel && (*en == "*" || *en == name))
+            {
                 continue;
             }
             bad.push(format!("{rel}:{} in fn {name}", i + 1));

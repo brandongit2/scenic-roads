@@ -197,20 +197,18 @@ impl Kept {
             self.send(&here, scratch)?;
             return Ok(true);
         };
-        let r = (|| {
-            match mark {
-                Some(m) if m.archive == nas.hash => {
-                    self.send(&here, scratch)?;
-                    Ok(true)
-                }
-                m => {
-                    let base = m.map(|m| m.files).unwrap_or_default();
-                    match self.reconcile(&nas, &here, &base, scratch)? {
-                        Ok(sent) => Ok(sent),
-                        Err(n) => {
-                            eprintln!("answers: {n} changed here and on the NAS since this Mac last matched {}, and can't be merged: left as it is there (the next start takes it)", self.nas.display());
-                            Ok(false)
-                        }
+        let r = (|| match mark {
+            Some(m) if m.archive == nas.hash => {
+                self.send(&here, scratch)?;
+                Ok(true)
+            }
+            m => {
+                let base = m.map(|m| m.files).unwrap_or_default();
+                match self.reconcile(&nas, &here, &base, scratch)? {
+                    Ok(sent) => Ok(sent),
+                    Err(n) => {
+                        eprintln!("answers: {n} changed here and on the NAS since this Mac last matched {}, and can't be merged: left as it is there (the next start takes it)", self.nas.display());
+                        Ok(false)
                     }
                 }
             }
@@ -256,7 +254,8 @@ impl Kept {
                 aside = self.nas.with_file_name(format!("{}.bad-{now}-{k}", self.name()));
             }
             self.still_ours()?;
-            crate::whole::rename_over(&self.nas, &aside).with_context(|| format!("move {} aside", self.nas.display()))?;
+            crate::whole::rename_over(&self.nas, &aside)
+                .with_context(|| format!("move {} aside", self.nas.display()))?;
             eprintln!("answers: {} doesn't read whole ({e:#}): moved aside as {}", self.nas.display(), aside.display());
             return Ok(None);
         }
@@ -386,7 +385,9 @@ impl Kept {
     fn drop_here(&self, n: &str) -> Result<()> {
         let to = self.dir.join(n);
         match std::fs::remove_file(&to) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e).with_context(|| format!("remove {}", to.display())),
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("remove {}", to.display()))
+            }
             _ => Ok(()),
         }
     }
@@ -441,7 +442,11 @@ fn line_key(line: &[u8]) -> Option<String> {
 
 /// A JSON object's entries: `theirs`, then those of `ours` with a key `theirs` lacks.
 fn merge_entries(theirs: &[u8], ours: &[u8]) -> Option<Vec<u8>> {
-    let (Ok(serde_json::Value::Object(mut t)), Ok(serde_json::Value::Object(o))) = (serde_json::from_slice(theirs), serde_json::from_slice(ours)) else { return None };
+    let (Ok(serde_json::Value::Object(mut t)), Ok(serde_json::Value::Object(o))) =
+        (serde_json::from_slice(theirs), serde_json::from_slice(ours))
+    else {
+        return None;
+    };
     for (k, v) in o {
         t.entry(k).or_insert(v);
     }
@@ -450,9 +455,17 @@ fn merge_entries(theirs: &[u8], ours: &[u8]) -> Option<Vec<u8>> {
 
 /// The days anything was fetched (`{first, last}`): the first of both, the last of both.
 fn merge_days(theirs: &[u8], ours: &[u8]) -> Option<Vec<u8>> {
-    let (Ok(serde_json::Value::Object(t)), Ok(serde_json::Value::Object(o))) = (serde_json::from_slice::<serde_json::Value>(theirs), serde_json::from_slice::<serde_json::Value>(ours)) else { return None };
-    let days = |k: &str| [&t, &o].into_iter().filter_map(|m| m.get(k)?.as_str().map(str::to_string)).collect::<Vec<_>>();
-    serde_json::to_vec(&serde_json::json!({"first": days("first").into_iter().min(), "last": days("last").into_iter().max()})).ok()
+    let (Ok(serde_json::Value::Object(t)), Ok(serde_json::Value::Object(o))) =
+        (serde_json::from_slice::<serde_json::Value>(theirs), serde_json::from_slice::<serde_json::Value>(ours))
+    else {
+        return None;
+    };
+    let days =
+        |k: &str| [&t, &o].into_iter().filter_map(|m| m.get(k)?.as_str().map(str::to_string)).collect::<Vec<_>>();
+    serde_json::to_vec(
+        &serde_json::json!({"first": days("first").into_iter().min(), "last": days("last").into_iter().max()}),
+    )
+    .ok()
 }
 
 /// Each of `names` under `dir` that's there, with its hash16.
@@ -492,9 +505,24 @@ fn readable(p: &Path) -> Result<()> {
 /// `names` under `dir` as one archive `to`: tar (without macOS's extended attributes), zstd with
 /// its checksum.
 fn pack(dir: &Path, names: &[String], to: &Path) -> Result<()> {
-    let list = to.with_file_name(format!("{}.list", to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+    let list = to.with_file_name(format!(
+        "{}.list",
+        to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    ));
     std::fs::write(&list, names.iter().map(|n| format!("{n}\0")).collect::<String>())?;
-    let mut tar = store::spawn::spawn(store::spawn::command("tar").env("COPYFILE_DISABLE", "1").arg("--null").arg("-cf").arg("-").arg("-C").arg(dir).arg("-T").arg(&list).stdout(Stdio::piped())).context("run tar")?;
+    let mut tar = store::spawn::spawn(
+        store::spawn::command("tar")
+            .env("COPYFILE_DISABLE", "1")
+            .arg("--null")
+            .arg("-cf")
+            .arg("-")
+            .arg("-C")
+            .arg(dir)
+            .arg("-T")
+            .arg(&list)
+            .stdout(Stdio::piped()),
+    )
+    .context("run tar")?;
     let r = (|| -> Result<()> {
         let mut z = zstd::Encoder::new(std::fs::File::create(to)?, LEVEL)?;
         z.include_checksum(true)?;
@@ -511,7 +539,9 @@ fn pack(dir: &Path, names: &[String], to: &Path) -> Result<()> {
 
 /// Archive `from` unpacked into `dir`.
 fn unpack(from: &Path, dir: &Path) -> Result<()> {
-    let mut tar = store::spawn::spawn(store::spawn::command("tar").arg("-xf").arg("-").arg("-C").arg(dir).stdin(Stdio::piped())).context("run tar")?;
+    let mut tar =
+        store::spawn::spawn(store::spawn::command("tar").arg("-xf").arg("-").arg("-C").arg(dir).stdin(Stdio::piped()))
+            .context("run tar")?;
     let r = (|| -> Result<()> {
         let mut z = zstd::Decoder::new(std::fs::File::open(from)?)?;
         match std::io::copy(&mut z, tar.stdin.as_mut().context("tar's input")?) {
@@ -532,18 +562,34 @@ fn unpack(from: &Path, dir: &Path) -> Result<()> {
 /// The items job's answers for pass `date` in its cache `dir` (dem/items.py's): the items' facts,
 /// their Wikipedia articles and the days they were fetched.
 pub fn items_files(dir: &Path, date: &str) -> Vec<String> {
-    [format!("facts-{date}.jsonl"), format!("wp-{date}.jsonl"), format!("fetched-{date}.json")].into_iter().filter(|n| dir.join(n).is_file()).collect()
+    [format!("facts-{date}.jsonl"), format!("wp-{date}.jsonl"), format!("fetched-{date}.json")]
+        .into_iter()
+        .filter(|n| dir.join(n).is_file())
+        .collect()
 }
 
 /// The items job's for pass `date`: its cache `dir`, its archive in the NAS's project folder `root`.
 pub fn items(root: &Path, dir: &Path, date: &str) -> Kept {
-    Kept { nas: root.join(format!("sources/items/{date}/answers.tar.zst")), dir: dir.to_path_buf(), mark: dir.join(format!("kept-{date}.json")), lease: None, holding: Default::default() }
+    Kept {
+        nas: root.join(format!("sources/items/{date}/answers.tar.zst")),
+        dir: dir.to_path_buf(),
+        mark: dir.join(format!("kept-{date}.json")),
+        lease: None,
+        holding: Default::default(),
+    }
 }
 
 /// What the heritage chain makes again on every run from the pass, in its working copy: not answers.
 /// The named places' export (`osm/`, the heritage job's), whsshapes.py's extracts of the pass's
 /// planet (`whs/`) and heritagewd.py's matches (`wd/items.jsonl`).
-const REMADE: [&str; 6] = ["whs/tagged.osm.pbf", "whs/ids.txt", "whs/whs.osm.pbf", "whs/whs.geojsonseq", "whs/relations.opl", "wd/items.jsonl"];
+const REMADE: [&str; 6] = [
+    "whs/tagged.osm.pbf",
+    "whs/ids.txt",
+    "whs/whs.osm.pbf",
+    "whs/whs.geojsonseq",
+    "whs/relations.opl",
+    "wd/items.jsonl",
+];
 
 /// The heritage chain's answers in this pass's working copy `epoch` (`heritage-<date>` in the cache):
 /// its files, but what the chain makes again each run (`REMADE`, `osm/`), the marks (names from a
@@ -551,7 +597,15 @@ const REMADE: [&str; 6] = ["whs/tagged.osm.pbf", "whs/ids.txt", "whs/whs.osm.pbf
 pub fn heritage_files(epoch: &Path) -> Vec<String> {
     let mut names = Vec::new();
     files_under(epoch, epoch, &mut names);
-    let mut out: Vec<String> = names.into_iter().filter(|n| !n.split('/').any(|c| c.starts_with('.')) && !crate::whole::is_tmp(Path::new(n)) && !n.starts_with("osm/") && !REMADE.contains(&n.as_str())).collect();
+    let mut out: Vec<String> = names
+        .into_iter()
+        .filter(|n| {
+            !n.split('/').any(|c| c.starts_with('.'))
+                && !crate::whole::is_tmp(Path::new(n))
+                && !n.starts_with("osm/")
+                && !REMADE.contains(&n.as_str())
+        })
+        .collect();
     out.sort();
     out
 }
@@ -559,7 +613,13 @@ pub fn heritage_files(epoch: &Path) -> Vec<String> {
 /// The heritage chain's for pass `date`: its working copy `epoch`, its archive in the NAS's project
 /// folder `root`.
 pub fn heritage(root: &Path, epoch: &Path, date: &str) -> Kept {
-    Kept { nas: heritage_archive(root, date), dir: epoch.to_path_buf(), mark: epoch.join(".kept.json"), lease: None, holding: Default::default() }
+    Kept {
+        nas: heritage_archive(root, date),
+        dir: epoch.to_path_buf(),
+        mark: epoch.join(".kept.json"),
+        lease: None,
+        holding: Default::default(),
+    }
 }
 
 /// The heritage chain's archive of pass `date`'s answers.
@@ -584,7 +644,11 @@ pub fn heritage_start(root: &Path, epoch: &Path, date: &str, legacy: Option<&Pat
         return Ok(None);
     }
     let mut earlier: Vec<String> = match std::fs::read_dir(root.join("sources/items")) {
-        Ok(rd) => rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|d| crate::osmpass::is_date(d) && d.as_str() < date).collect(),
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|d| crate::osmpass::is_date(d) && d.as_str() < date)
+            .collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e).context("list sources/items"),
     };
@@ -600,11 +664,20 @@ pub fn heritage_start(root: &Path, epoch: &Path, date: &str, legacy: Option<&Pat
     // (A snapshot the manifest names but that can't be read now, the NAS away: an error, the job
     // tried again; never an empty copy kept as the pass's answers.)
     if let Some(l) = legacy {
-        let md = std::fs::metadata(l).with_context(|| format!("the registers' snapshot {} can't be read", l.display()))?;
+        let md =
+            std::fs::metadata(l).with_context(|| format!("the registers' snapshot {} can't be read", l.display()))?;
         ensure!(md.is_file(), "the registers' snapshot {} isn't a file", l.display());
     }
     let kept: Vec<PathBuf> = match std::fs::read_dir(root.join(format!("sources/items/{date}"))) {
-        Ok(rd) => rd.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("heritage-") && n.ends_with(".tar.zst"))).collect(),
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("heritage-") && n.ends_with(".tar.zst"))
+            })
+            .collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e).context("list the pass's answers"),
     };
@@ -674,7 +747,10 @@ pub fn seed(root: &Path, cache: &Path, scratch: &Path, leased: bool) -> Result<V
     if epoch.join(".done").is_file() {
         let (k, files) = (heritage(root, &epoch, &date).leased(root, leased), heritage_files(&epoch));
         if !files.is_empty() && lacks(&k)? && k.keep(&files, scratch)? {
-            said.push(format!("the heritage chain's answers for the {date} pass sent to the NAS ({} files)", files.len()));
+            said.push(format!(
+                "the heritage chain's answers for the {date} pass sent to the NAS ({} files)",
+                files.len()
+            ));
         }
     }
     Ok(said)
@@ -732,7 +808,12 @@ pub struct Lease {
 impl Lease {
     /// Takes the lease at `path`, waiting while another holds it (a lapsed one broken).
     pub fn take(path: &Path) -> Result<Lease> {
-        let token = format!("{}-{}-{}", crate::agent::jobs::now_s(), std::process::id(), store::naming::hash16(format!("{:?}", std::time::Instant::now()).as_bytes()));
+        let token = format!(
+            "{}-{}-{}",
+            crate::agent::jobs::now_s(),
+            std::process::id(),
+            store::naming::hash16(format!("{:?}", std::time::Instant::now()).as_bytes())
+        );
         let by = format!("{} (pid {})", hostname(), std::process::id());
         let mut said = false;
         loop {
@@ -740,7 +821,9 @@ impl Lease {
                 Tried::Taken => break,
                 Tried::Held(until, who) => {
                     if !said {
-                        eprintln!("answers: waiting for the answers' lease ({who} holds it, until {until} at the latest)");
+                        eprintln!(
+                            "answers: waiting for the answers' lease ({who} holds it, until {until} at the latest)"
+                        );
                         said = true;
                     }
                     std::thread::sleep(LEASE_AGAIN);
@@ -781,7 +864,9 @@ impl Lease {
 pub fn lease_is(path: &Path, token: &str, now: u64) -> Result<()> {
     match read_lease(path).with_context(|| format!("read {}", path.display()))? {
         Some(h) if h.token == token && h.until > now => Ok(()),
-        Some(h) if h.token == token => anyhow::bail!("the answers' lease lapsed ({} s past its end): nothing written", now - h.until),
+        Some(h) if h.token == token => {
+            anyhow::bail!("the answers' lease lapsed ({} s past its end): nothing written", now - h.until)
+        }
         Some(h) => anyhow::bail!("the answers' lease is {}'s now: nothing written", h.by),
         None => anyhow::bail!("the answers' lease is gone (broken by another taker): nothing written"),
     }
@@ -811,7 +896,11 @@ fn hostname() -> String {
 
 fn read_lease(path: &Path) -> std::io::Result<Option<LeaseFile>> {
     match std::fs::read(path) {
-        Ok(b) => Ok(serde_json::from_slice(&b).ok().or(Some(LeaseFile { by: "a holder whose lease doesn't read whole".into(), token: String::new(), until: 0 }))),
+        Ok(b) => Ok(serde_json::from_slice(&b).ok().or(Some(LeaseFile {
+            by: "a holder whose lease doesn't read whole".into(),
+            token: String::new(),
+            until: 0,
+        }))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
@@ -847,7 +936,10 @@ fn try_lease_with(path: &Path, by: &str, token: &str, now: u64, between: &mut dy
         }
         // (Lapsed: broken.)
         between();
-        let aside = path.with_file_name(format!("{}.lapsed-{token}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        let aside = path.with_file_name(format!(
+            "{}.lapsed-{token}",
+            path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        ));
         match std::fs::rename(path, &aside) {
             Ok(()) => {
                 let moved = read_lease(&aside)?;
@@ -915,7 +1007,12 @@ impl Local {
     fn open(cache: &Path, name: &str) -> Result<std::fs::File> {
         std::fs::create_dir_all(cache).with_context(|| format!("make {}", cache.display()))?;
         let p = cache.join(name);
-        std::fs::File::options().create(true).truncate(false).write(true).open(&p).with_context(|| format!("open {}", p.display()))
+        std::fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&p)
+            .with_context(|| format!("open {}", p.display()))
     }
 
     /// A step's hold, for its run: shared with other steps', after any writer waiting.
@@ -950,7 +1047,10 @@ impl Local {
         if std::env::var_os(crate::budget::PROXY_ENV).is_none() {
             return Ok(None);
         }
-        let _p = crate::timings::phase("waiting for the agent to send the pass's answers (if it is)", crate::timings::Class::Disk);
+        let _p = crate::timings::phase(
+            "waiting for the agent to send the pass's answers (if it is)",
+            crate::timings::Class::Disk,
+        );
         Local::reader(cache).map(Some)
     }
 }
@@ -1041,7 +1141,10 @@ mod tests {
         let k = items(&root, &m4, "2026-09-28");
         assert_eq!(k.sync(&items_files(&m4, "2026-09-28"), &scratch).unwrap(), Synced::Sent);
         assert!(root.join("sources/items/2026-09-28/answers.tar.zst").is_file());
-        assert_eq!(archived(&k, &scratch).keys().collect::<Vec<_>>(), ["facts-2026-09-28.jsonl", "fetched-2026-09-28.json", "wp-2026-09-28.jsonl"]);
+        assert_eq!(
+            archived(&k, &scratch).keys().collect::<Vec<_>>(),
+            ["facts-2026-09-28.jsonl", "fetched-2026-09-28.json", "wp-2026-09-28.jsonl"]
+        );
         // Again: nothing to send, at the start or the end.
         assert_eq!(k.sync(&items_files(&m4, "2026-09-28"), &scratch).unwrap(), Synced::Same);
         assert!(!k.keep(&items_files(&m4, "2026-09-28"), &scratch).unwrap());
@@ -1055,7 +1158,10 @@ mod tests {
         assert_eq!(std::fs::read_dir(root.join("sources/items/2026-09-28")).unwrap().count(), 1);
         assert_eq!(std::fs::read_dir(&scratch).unwrap().flatten().filter(|e| e.file_name() != "look").count(), 0);
         // Neither has any of another pass: nothing done.
-        assert_eq!(items(&root, &m1, "2026-10-12").sync(&items_files(&m1, "2026-10-12"), &scratch).unwrap(), Synced::None);
+        assert_eq!(
+            items(&root, &m1, "2026-10-12").sync(&items_files(&m1, "2026-10-12"), &scratch).unwrap(),
+            Synced::None
+        );
         assert!(!root.join("sources/items/2026-10-12").exists());
     }
 
@@ -1172,7 +1278,10 @@ mod tests {
         put(&m4.join("fetched-2026-09-28.json"), "{\"first\":\"2026-10-05\",\"last\":\"2026-10-05\"}");
         assert!(k4.keep(&files(&m4), &scratch).unwrap());
         let a = archived(&k4, &scratch);
-        assert_eq!((a["facts-2026-09-28.jsonl"].clone(), a["wp-2026-09-28.jsonl"].clone()), (qids(&["Q1", "Q2"]), qids(&["Q1"])));
+        assert_eq!(
+            (a["facts-2026-09-28.jsonl"].clone(), a["wp-2026-09-28.jsonl"].clone()),
+            (qids(&["Q1", "Q2"]), qids(&["Q1"]))
+        );
         assert_eq!(read(&m4.join("wp-2026-09-28.jsonl")), qids(&["Q1"]));
         assert_eq!(a["fetched-2026-09-28.json"], "{\"first\":\"2026-10-05\",\"last\":\"2026-10-06\"}");
         // A file both added to: the lines of both.
@@ -1208,7 +1317,14 @@ mod tests {
         let k = items(&root, &m4, "2026-09-28");
         assert_eq!(k.sync(&items_files(&m4, "2026-09-28"), &scratch).unwrap(), Synced::Sent);
         assert_eq!(archived(&k, &scratch)["facts-2026-09-28.jsonl"], "a\n");
-        let aside = |n: usize| std::fs::read_dir(&folder).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("answers.tar.zst.bad-")).count() == n;
+        let aside = |n: usize| {
+            std::fs::read_dir(&folder)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("answers.tar.zst.bad-"))
+                .count()
+                == n
+        };
         assert!(aside(1), "the damaged one kept beside it");
         // A byte of it changed since (its checksum): a Mac with none takes nothing and changes
         // nothing here, the archive moved aside too; one with its own sends them.
@@ -1221,7 +1337,10 @@ mod tests {
         assert!(!m1.exists() && !nas.exists());
         assert!(aside(2), "each kept");
         put(&m1.join("wp-2026-09-28.jsonl"), "w\n");
-        assert_eq!(items(&root, &m1, "2026-09-28").sync(&items_files(&m1, "2026-09-28"), &scratch).unwrap(), Synced::Sent);
+        assert_eq!(
+            items(&root, &m1, "2026-09-28").sync(&items_files(&m1, "2026-09-28"), &scratch).unwrap(),
+            Synced::Sent
+        );
         assert_eq!(archived(&k, &scratch).keys().collect::<Vec<_>>(), ["wp-2026-09-28.jsonl"]);
     }
 
@@ -1248,7 +1367,11 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, scratch) = (d.path().join("nas"), d.path().join("scratch"));
         let epoch = d.path().join("cache/heritage-2026-09-28");
-        assert_eq!(heritage_start(&root, &epoch, "2026-09-28", None).unwrap(), None, "no earlier pass's: an empty copy");
+        assert_eq!(
+            heritage_start(&root, &epoch, "2026-09-28", None).unwrap(),
+            None,
+            "no earlier pass's: an empty copy"
+        );
         let k = heritage(&root, &epoch, "2026-09-28");
         assert_eq!(k.sync(&heritage_files(&epoch), &scratch).unwrap(), Synced::None);
         // A run: the caches it asked, a park facts file; what it makes again each run; a temporary
@@ -1273,7 +1396,10 @@ mod tests {
         assert!(!k1.keep(&heritage_files(&other), &scratch).unwrap(), "its run adds nothing: nothing sent");
         // A new pass: its copy starts from the last pass's answers, and sends them as its own.
         let next = d.path().join("cache/heritage-2027-03-01");
-        assert_eq!(heritage_start(&root, &next, "2027-03-01", None).unwrap(), Some(heritage_archive(&root, "2026-09-28")));
+        assert_eq!(
+            heritage_start(&root, &next, "2027-03-01", None).unwrap(),
+            Some(heritage_archive(&root, "2026-09-28"))
+        );
         assert_eq!(heritage_files(&next), files);
         let k2 = heritage(&root, &next, "2027-03-01");
         assert_eq!(k2.sync(&heritage_files(&next), &scratch).unwrap(), Synced::Sent);
@@ -1298,7 +1424,13 @@ mod tests {
             n.sort();
             n
         };
-        for (f, b) in [("es/andalucia.geojson", "register"), ("wd/ids.jsonl", "old ids"), ("wd/items.jsonl", "remade"), ("desc/en.jsonl", "old desc"), ("whs/wd-p757.json", "old whs")] {
+        for (f, b) in [
+            ("es/andalucia.geojson", "register"),
+            ("wd/ids.jsonl", "old ids"),
+            ("wd/items.jsonl", "remade"),
+            ("desc/en.jsonl", "old desc"),
+            ("whs/wd-p757.json", "old whs"),
+        ] {
             put(&snap.join(f), b);
         }
         let legacy = root.join("sources/registers/legacy.1111111111111111.tar.zst");
@@ -1324,7 +1456,10 @@ mod tests {
         assert!(heritage_files(&away).is_empty());
         let epoch = d.path().join("cache").join(format!("heritage-{date}"));
         assert_eq!(heritage_start(&root, &epoch, date, Some(&legacy)).unwrap(), Some(legacy.clone()));
-        assert_eq!(heritage_files(&epoch), ["areas-wikidata.json", "desc/en.jsonl", "wd/ids.jsonl", "whs/wd-p757.json"]);
+        assert_eq!(
+            heritage_files(&epoch),
+            ["areas-wikidata.json", "desc/en.jsonl", "wd/ids.jsonl", "whs/wd-p757.json"]
+        );
         assert_eq!(read(&epoch.join("wd/ids.jsonl")), "new ids", "the pass's answers over the snapshot's");
         assert_eq!(read(&epoch.join("desc/en.jsonl")), "old desc");
         assert!(!d.path().join("cache").join(format!(".heritage-start-{date}")).exists());
@@ -1344,14 +1479,35 @@ mod tests {
     #[test]
     fn answers_by_key_merge_and_other_files_dont() {
         // Lines by "qid", or "prop" and "id"; a last line cut short dropped; the NAS's first.
-        let m = merge("facts-2026-09-28.jsonl", b"{\"qid\":\"Q1\",\"v\":1}\n{\"qid\":\"Q2\"}\n", b"{\"qid\":\"Q1\",\"v\":2}\n{\"qid\":\"Q3\"}\n{\"qid\":\"Q4").unwrap();
+        let m = merge(
+            "facts-2026-09-28.jsonl",
+            b"{\"qid\":\"Q1\",\"v\":1}\n{\"qid\":\"Q2\"}\n",
+            b"{\"qid\":\"Q1\",\"v\":2}\n{\"qid\":\"Q3\"}\n{\"qid\":\"Q4",
+        )
+        .unwrap();
         assert_eq!(String::from_utf8(m).unwrap(), "{\"qid\":\"Q1\",\"v\":1}\n{\"qid\":\"Q2\"}\n{\"qid\":\"Q3\"}\n");
-        let m = merge("wd/ids.jsonl", b"{\"prop\":\"P1216\",\"id\":\"1\",\"rows\":[]}\n", b"{\"prop\":\"P1216\",\"id\":\"2\",\"rows\":[]}\n").unwrap();
+        let m = merge(
+            "wd/ids.jsonl",
+            b"{\"prop\":\"P1216\",\"id\":\"1\",\"rows\":[]}\n",
+            b"{\"prop\":\"P1216\",\"id\":\"2\",\"rows\":[]}\n",
+        )
+        .unwrap();
         assert_eq!(m.iter().filter(|&&c| c == b'\n').count(), 2);
         assert!(merge("wd/wp.jsonl", b"{\"qid\":\"Q1\"}\n", b"no key\n").is_none());
         // Entries of the caches kept as objects; the days fetched, first and last.
-        assert_eq!(merge("areas-wikidata.json", b"{\"a\":1,\"b\":2}", b"{\"b\":3,\"c\":4}").unwrap(), b"{\"a\":1,\"b\":2,\"c\":4}");
-        assert_eq!(merge("fetched-2026-09-28.json", b"{\"first\":\"2026-10-06\",\"last\":\"2026-10-07\"}", b"{\"first\":\"2026-10-05\",\"last\":\"2026-10-06\"}").unwrap(), b"{\"first\":\"2026-10-05\",\"last\":\"2026-10-07\"}");
+        assert_eq!(
+            merge("areas-wikidata.json", b"{\"a\":1,\"b\":2}", b"{\"b\":3,\"c\":4}").unwrap(),
+            b"{\"a\":1,\"b\":2,\"c\":4}"
+        );
+        assert_eq!(
+            merge(
+                "fetched-2026-09-28.json",
+                b"{\"first\":\"2026-10-06\",\"last\":\"2026-10-07\"}",
+                b"{\"first\":\"2026-10-05\",\"last\":\"2026-10-06\"}"
+            )
+            .unwrap(),
+            b"{\"first\":\"2026-10-05\",\"last\":\"2026-10-07\"}"
+        );
         // A register's download, or any other: not merged.
         assert!(merge("nrhp.json", b"{}", b"{}").is_none());
         assert!(merge("es/new-register.json", b"[]", b"[1]").is_none());
@@ -1438,7 +1594,8 @@ mod tests {
         let aside = p.with_file_name("answers.lease.lapsed-x");
         std::fs::rename(&p, &aside).unwrap();
         assert_eq!(try_lease(&p, "m2", "c", late).unwrap(), Tried::Taken);
-        assert!(create_new(&p, &std::fs::read(&aside).unwrap()).is_err_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists));
+        assert!(create_new(&p, &std::fs::read(&aside).unwrap())
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists));
         std::fs::remove_file(&aside).unwrap();
         // (A finds its lease gone at its check, and can't renew it; C holds it alone.)
         assert!(lease_is(&p, "a", late).is_err() && !renew_lease(&p, "a", late));
@@ -1475,7 +1632,9 @@ mod tests {
         // (Another takes the path: the holder's file replaced.)
         std::fs::remove_file(root.join(LEASE)).unwrap();
         assert_eq!(try_lease(&root.join(LEASE), "m1", "other", crate::agent::jobs::now_s()).unwrap(), Tried::Taken);
-        let e = k.send(&hashes(&cache.join("items"), &items_files(&cache.join("items"), "2026-09-28")).unwrap(), &scratch).unwrap_err();
+        let e = k
+            .send(&hashes(&cache.join("items"), &items_files(&cache.join("items"), "2026-09-28")).unwrap(), &scratch)
+            .unwrap_err();
         assert!(format!("{e:#}").contains("nothing written"), "{e:#}");
         assert!(!k.nas.exists(), "no archive written");
         // (Its lease, given back, leaves the other's.)
@@ -1535,7 +1694,9 @@ mod tests {
     #[test]
     #[ignore]
     fn two_macs_take_the_answers_lease_in_turn() {
-        let p = PathBuf::from(std::env::var("SCENIC_TEST_LEASE").expect("SCENIC_TEST_LEASE: the lease's path in a scratch folder"));
+        let p = PathBuf::from(
+            std::env::var("SCENIC_TEST_LEASE").expect("SCENIC_TEST_LEASE: the lease's path in a scratch folder"),
+        );
         assert!(!p.to_string_lossy().contains("/projects/scenic-roads"), "not the project folder");
         let me = hostname();
         let ms = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();

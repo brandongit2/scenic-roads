@@ -114,7 +114,9 @@ impl Summary {
 /// whatever order its tiles came in.
 fn keep(list: &mut Vec<(String, u32, u32)>, t: (String, u32, u32), by: usize) {
     list.push(t);
-    list.sort_by(|a, b| if by == 1 { (b.1, b.2).cmp(&(a.1, a.2)) } else { (b.2, b.1).cmp(&(a.2, a.1)) }.then(a.0.cmp(&b.0)));
+    list.sort_by(|a, b| {
+        if by == 1 { (b.1, b.2).cmp(&(a.1, a.2)) } else { (b.2, b.1).cmp(&(a.2, a.1)) }.then(a.0.cmp(&b.0))
+    });
     list.truncate(8);
 }
 
@@ -153,10 +155,16 @@ pub(super) fn box14(key: u64) -> [i32; 4] {
 /// The blocks area `a` (a z8 tile of T) reads: its own (T's blocks in it), then those within
 /// [`MARGIN_M`] around it, as (file, entry) with `files` T and its neighbours ((dy + 1) × 3 + dx + 1).
 pub(super) fn area_blocks(files: &[Option<WorkFile>], t: Unit, a: (u32, u32)) -> (Vec<(usize, IndexEntry)>, usize) {
-    let own: Vec<(usize, IndexEntry)> = files[4].as_ref().map_or(Vec::new(), |f| f.index.iter().filter(|e| {
-        let (_, x, y) = key_zxy(e.key);
-        (x >> 6, y >> 6) == a
-    }).map(|e| (4, *e)).collect());
+    let own: Vec<(usize, IndexEntry)> = files[4].as_ref().map_or(Vec::new(), |f| {
+        f.index
+            .iter()
+            .filter(|e| {
+                let (_, x, y) = key_zxy(e.key);
+                (x >> 6, y >> 6) == a
+            })
+            .map(|e| (4, *e))
+            .collect()
+    });
     let n_own = own.len();
     let mut out = own;
     // The area's box grown by the margin, in world units.
@@ -197,10 +205,14 @@ pub type AddTile<'a> = dyn FnMut(u8, u32, u32, &[u8], u32) -> Result<()> + 'a;
 /// T's z8 areas with buildings (T's work file's, as `area_blocks` has them), in order.
 pub fn areas_of(files: &[Option<WorkFile>]) -> Vec<(u32, u32)> {
     let Some(own) = files.get(4).and_then(Option::as_ref) else { return Vec::new() };
-    let mut areas: Vec<(u32, u32)> = own.index.iter().map(|e| {
-        let (_, x, y) = key_zxy(e.key);
-        (x >> 6, y >> 6)
-    }).collect();
+    let mut areas: Vec<(u32, u32)> = own
+        .index
+        .iter()
+        .map(|e| {
+            let (_, x, y) = key_zxy(e.key);
+            (x >> 6, y >> 6)
+        })
+        .collect();
     areas.sort_unstable();
     areas.dedup();
     areas
@@ -208,7 +220,13 @@ pub fn areas_of(files: &[Option<WorkFile>]) -> Vec<(u32, u32)> {
 
 /// Every tile of T (its work file and its neighbours' in `files`, as `area_blocks` has them), in
 /// order (each z8 area's, by zoom, x, y), given to `add` (the field's left out).
-pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, sites: &[[i32; 2]], add: &mut AddTile) -> Result<Summary> {
+pub fn tiles_of(
+    files: &[Option<WorkFile>],
+    cov: &Coverage,
+    t: Unit,
+    sites: &[[i32; 2]],
+    add: &mut AddTile,
+) -> Result<Summary> {
     ensure!(files.len() == 9, "T and its 8 neighbours");
     let mut sum = Summary::default();
     let areas = areas_of(files);
@@ -226,12 +244,20 @@ pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, sites: &[[i
 /// its mid carrying the heritage list of its own that hold one of `sites`, E7). It reads
 /// only the blocks `area_blocks` names, and the coverage where they are: a task's files
 /// (`super::task::cut`) give the same tiles.
-pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, u32), sites: &[[i32; 2]], add: &mut AddTile) -> Result<(Summary, field::AreaField)> {
+pub fn area_tiles(
+    files: &[Option<WorkFile>],
+    cov: &Coverage,
+    t: Unit,
+    a: (u32, u32),
+    sites: &[[i32; 2]],
+    add: &mut AddTile,
+) -> Result<(Summary, field::AreaField)> {
     ensure!(files.len() == 9, "T and its 8 neighbours");
     let mut sum = Summary::default();
     let codes: Vec<Option<Codes>> = files.iter().map(|f| f.as_ref().map(|f| Codes::of(&f.meta))).collect();
     let (list, n_own) = area_blocks(files, t, a);
-    let blocks: Vec<Block> = list.par_iter().map(|(fi, e)| files[*fi].as_ref().unwrap().block(e)).collect::<Result<_>>()?;
+    let blocks: Vec<Block> =
+        list.par_iter().map(|(fi, e)| files[*fi].as_ref().unwrap().block(e)).collect::<Result<_>>()?;
     // The records filled here: the area's own, and those within COPY_M around it (copied into
     // its tiles where they reach them).
     let reach = grown_area(a, COPY_M);
@@ -326,7 +352,8 @@ pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, 
                             .or_else(|| {
                                 let (wx, wy) = world7(b.cen[i]);
                                 let cos = (b.cen[i][1] as f64 * 1e-7).to_radians().dcos();
-                                near.height(wx * EQ, wy * EQ, cos, b.area[i], &mut s1, &mut s2).map(|(h, _)| (h, src::NEIGHBOURS))
+                                near.height(wx * EQ, wy * EQ, cos, b.area[i], &mut s1, &mut s2)
+                                    .map(|(h, _)| (h, src::NEIGHBOURS))
                             })
                             .unwrap_or_else(|| {
                                 let class = Meta::name(cd.classes, b.class[i]);
@@ -334,8 +361,21 @@ pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, 
                             });
                         (h, 0, s)
                     };
-                    let k = if part { 1 } else if b.flags[i] & flag::HAS_PARTS != 0 { 2 } else { 0 };
-                    Some(Filled { h, m, s, f: if s == src::FLOORS { b.f[i] } else { 0 }, c: tiles::kind_of(subtype), k })
+                    let k = if part {
+                        1
+                    } else if b.flags[i] & flag::HAS_PARTS != 0 {
+                        2
+                    } else {
+                        0
+                    };
+                    Some(Filled {
+                        h,
+                        m,
+                        s,
+                        f: if s == src::FLOORS { b.f[i] } else { 0 },
+                        c: tiles::kind_of(subtype),
+                        k,
+                    })
                 })
                 .collect()
         })
@@ -399,7 +439,8 @@ pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, 
         }
     }
     let list: Vec<((u8, u32, u32), Vec<Feat>)> = by_tile.into_iter().collect();
-    let made: Vec<Option<(Vec<u8>, u32, u32)>> = list.par_iter().map(|((z, x, y), feats)| tiles::encode(*z, *x, *y, feats)).collect::<Result<_>>()?;
+    let made: Vec<Option<(Vec<u8>, u32, u32)>> =
+        list.par_iter().map(|((z, x, y), feats)| tiles::encode(*z, *x, *y, feats)).collect::<Result<_>>()?;
     for (((z, x, y), _), m) in list.iter().zip(made) {
         if let Some((gz, raw, n)) = m {
             add(*z, *x, *y, &gz, raw)?;
@@ -408,7 +449,10 @@ pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, 
     }
     drop(list);
     let her = {
-        let own: Vec<field::Foot> = own_feet.iter().map(|&i| field::Foot { polys: feet[i].polys.clone(), h: feet[i].h, m: feet[i].m }).collect();
+        let own: Vec<field::Foot> = own_feet
+            .iter()
+            .map(|&i| field::Foot { polys: feet[i].polys.clone(), h: feet[i].h, m: feet[i].m })
+            .collect();
         field::heritage(a, &own, sites)
     };
     if her.len() >= 4 {
@@ -467,7 +511,9 @@ pub fn build_lo(out: &mut Out, q: Unit) -> Result<usize> {
         }
     }
     let p = phase("the mids read, the levels made", Class::Compute);
-    let tiles = field::lo((q.x, q.y), &|x, y| paths.get(&(x, y)).map(|p| std::fs::read(p).with_context(|| format!("read {}", p.display()))).transpose())?;
+    let tiles = field::lo((q.x, q.y), &|x, y| {
+        paths.get(&(x, y)).map(|p| std::fs::read(p).with_context(|| format!("read {}", p.display()))).transpose()
+    })?;
     drop(p);
     let logical = field::lo_logical(q.x, q.y);
     if tiles.is_empty() {
@@ -479,7 +525,8 @@ pub fn build_lo(out: &mut Out, q: Unit) -> Result<usize> {
         return Ok(0);
     }
     let local = out.scratch_file(&format!("{logical}.pack"));
-    let meta = serde_json::json!({"layer": field::LAYER, "scope": "lo", "root": q.slash(), "encoding": field::ENCODING});
+    let meta =
+        serde_json::json!({"layer": field::LAYER, "scope": "lo", "root": q.slash(), "encoding": field::ENCODING});
     let mut w = store::pack::PackWriter::create(&local, meta, false)?;
     let mut bytes = 0usize;
     for (z, x, y, b) in &tiles {
@@ -491,7 +538,14 @@ pub fn build_lo(out: &mut Out, q: Unit) -> Result<usize> {
     out.put_file(&logical, "pack", &local)?;
     drop(p);
     out.save()?;
-    eprintln!("bldfield-lo {}: {} mids, {} tiles ({:.1} MB) ({:.0?})", q.slash(), paths.len(), tiles.len(), bytes as f64 / 1e6, t0.elapsed());
+    eprintln!(
+        "bldfield-lo {}: {} mids, {} tiles ({:.1} MB) ({:.0?})",
+        q.slash(),
+        paths.len(),
+        tiles.len(),
+        bytes as f64 / 1e6,
+        t0.elapsed()
+    );
     Ok(tiles.len())
 }
 
@@ -506,8 +560,10 @@ pub fn sites(out: &Out, t: Unit) -> Result<Vec<[i32; 2]>> {
             None => Ok(Vec::new()),
         }
     };
-    let parts: std::collections::BTreeSet<[i32; 2]> = read(crate::heritage::parts_logical(&d, t.x, t.y))?.into_iter().collect();
-    let mut s: Vec<[i32; 2]> = read(crate::heritage::pos_logical(&d, t.x, t.y))?.into_iter().filter(|p| !parts.contains(p)).collect();
+    let parts: std::collections::BTreeSet<[i32; 2]> =
+        read(crate::heritage::parts_logical(&d, t.x, t.y))?.into_iter().collect();
+    let mut s: Vec<[i32; 2]> =
+        read(crate::heritage::pos_logical(&d, t.x, t.y))?.into_iter().filter(|p| !parts.contains(p)).collect();
     s.sort_unstable();
     s.dedup();
     Ok(s)
@@ -532,7 +588,8 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
     // The field's hi pack (levels 14–9), and its areas' level-8 planes and heritage lists for the mid.
     let field_logical = field::hi_logical(t.x, t.y);
     let field_local = out.scratch_file(&format!("{field_logical}.pack"));
-    let fmeta = serde_json::json!({"layer": field::LAYER, "scope": "hi", "root": t.slash(), "encoding": field::ENCODING});
+    let fmeta =
+        serde_json::json!({"layer": field::LAYER, "scope": "hi", "root": t.slash(), "encoding": field::ENCODING});
     let mut fw = store::pack::PackWriter::create(&field_local, fmeta, false)?;
     let mut mids: BTreeMap<(u32, u32), field::Mid> = BTreeMap::new();
     let sites = sites(out, t)?;
@@ -584,7 +641,14 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
     }
     drop(mids);
     let p = phase("uploaded", Class::NasWrite);
-    for (k, (logical, local, ext, keep)) in [(&logical, &local, "pack", n > 0), (&field_logical, &field_local, "pack", has_field), (&mid_logical, &mid_local, "zst", has_field)].into_iter().enumerate() {
+    for (k, (logical, local, ext, keep)) in [
+        (&logical, &local, "pack", n > 0),
+        (&field_logical, &field_local, "pack", has_field),
+        (&mid_logical, &mid_local, "zst", has_field),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         if keep {
             let name = Some(out.put_file(logical, ext, local)?);
             match k {
@@ -605,7 +669,16 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
         eprintln!("bldtiles {}: no building in the coverage ({:.0?})", t.slash(), t0.elapsed());
         return Ok(sum);
     }
-    eprintln!("bldtiles {}: {} buildings and {} parts in {} tiles, the field's {} tiles ({:.1} MB) ({:.0?})", t.slash(), sum.buildings, sum.parts, sum.tiles, sum.field_tiles.iter().sum::<u64>(), sum.field_bytes.iter().sum::<u64>() as f64 / 1e6, t0.elapsed());
+    eprintln!(
+        "bldtiles {}: {} buildings and {} parts in {} tiles, the field's {} tiles ({:.1} MB) ({:.0?})",
+        t.slash(),
+        sum.buildings,
+        sum.parts,
+        sum.tiles,
+        sum.field_tiles.iter().sum::<u64>(),
+        sum.field_bytes.iter().sum::<u64>() as f64 / 1e6,
+        t0.elapsed()
+    );
     Ok(sum)
 }
 
@@ -613,11 +686,19 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
 mod tests {
     use super::*;
     use crate::agent::recipes::Recipe;
-    use crate::bld::prep::{self, tests::{end, frame, square, B}};
+    use crate::bld::prep::{
+        self,
+        tests::{end, frame, square, B},
+    };
 
     fn cov(outline: &str, country: &str) -> Coverage {
         let d = tempfile::tempdir().unwrap();
-        let mut c = Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![outline.into()] }], None, d.path()).unwrap();
+        let mut c = Coverage::fixture(
+            &[Recipe { id: "r".into(), name: "R".into(), outline: vec![outline.into()] }],
+            None,
+            d.path(),
+        )
+        .unwrap();
         for s in &mut c.shapes {
             s.country = country.into();
         }
@@ -651,7 +732,12 @@ mod tests {
         ];
         // Ten measured houses 12 m tall around (lon + 0.003, lat), and one unmeasured among them.
         for k in 0..10 {
-            bs.push(B { id: 10 + k, rings: vec![square(lon + 0.003 + 0.0003 * (k % 5) as f64, lat + 0.0003 * (k / 5) as f64, 0.0002)], height: 12.0, ..Default::default() });
+            bs.push(B {
+                id: 10 + k,
+                rings: vec![square(lon + 0.003 + 0.0003 * (k % 5) as f64, lat + 0.0003 * (k / 5) as f64, 0.0002)],
+                height: 12.0,
+                ..Default::default()
+            });
         }
         bs.push(B { id: 99, rings: vec![square(lon + 0.0036, lat + 0.0006, 0.0002)], ..Default::default() });
         let mut files: Vec<Option<WorkFile>> = (0..9).map(|_| None).collect();
@@ -669,12 +755,21 @@ mod tests {
         // Z14 tiles alone, the 45 m tower's too.
         assert!(got.iter().all(|t| t.0 == 14));
         // The unmeasured house: its neighbours' 12 m. The far one: France's houses, 7 m.
-        let z14: Vec<names::mvt::Tile> = got.iter().filter(|t| t.0 == 14).map(|t| names::mvt::Tile::decode(&names::mvt::gunzip_if_gzip(&t.3).unwrap()).unwrap()).collect();
+        let z14: Vec<names::mvt::Tile> = got
+            .iter()
+            .filter(|t| t.0 == 14)
+            .map(|t| names::mvt::Tile::decode(&names::mvt::gunzip_if_gzip(&t.3).unwrap()).unwrap())
+            .collect();
         let mut hs: Vec<(u64, u64)> = Vec::new();
         for tl in &z14 {
             let l = &tl.layers[0];
             for f in &l.features {
-                let get = |k: &str| f.tags.chunks(2).find(|kv| l.keys[kv[0] as usize] == k).map(|kv| match l.values[kv[1] as usize] { names::mvt::Value::Uint(v) => v, _ => 0 });
+                let get = |k: &str| {
+                    f.tags.chunks(2).find(|kv| l.keys[kv[0] as usize] == k).map(|kv| match l.values[kv[1] as usize] {
+                        names::mvt::Value::Uint(v) => v,
+                        _ => 0,
+                    })
+                };
                 hs.push((get("h").unwrap(), get("s").unwrap()));
             }
         }
@@ -686,10 +781,12 @@ mod tests {
         // The same bytes on one thread.
         let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
         let mut again: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
-        pool.install(|| tiles_of(&files, &c, t, &[], &mut |z, x, y, gz, raw| {
-            again.push((z, x, y, gz.to_vec(), raw));
-            Ok(())
-        }))
+        pool.install(|| {
+            tiles_of(&files, &c, t, &[], &mut |z, x, y, gz, raw| {
+                again.push((z, x, y, gz.to_vec(), raw));
+                Ok(())
+            })
+        })
         .unwrap();
         assert_eq!(again, got);
     }
@@ -704,7 +801,14 @@ mod tests {
         l.features
             .iter()
             .map(|f| {
-                let get = |k: &str| f.tags.chunks(2).find(|kv| l.keys[kv[0] as usize] == k).map_or(0, |kv| match l.values[kv[1] as usize] { names::mvt::Value::Uint(v) => v, _ => 0 });
+                let get = |k: &str| {
+                    f.tags.chunks(2).find(|kv| l.keys[kv[0] as usize] == k).map_or(0, |kv| {
+                        match l.values[kv[1] as usize] {
+                            names::mvt::Value::Uint(v) => v,
+                            _ => 0,
+                        }
+                    })
+                };
                 (get("h"), get("s"), get("o"))
             })
             .collect()
@@ -722,7 +826,12 @@ mod tests {
         let lat = 48.86;
         let mut bs = vec![B { id: 1, rings: vec![square(line - 0.0001, lat, 0.0003)], ..Default::default() }];
         for k in 0..10 {
-            bs.push(B { id: 10 + k, rings: vec![square(line + 0.0008 + 0.0003 * (k % 5) as f64, lat + 0.0003 * (k / 5) as f64, 0.0002)], height: 12.0, ..Default::default() });
+            bs.push(B {
+                id: 10 + k,
+                rings: vec![square(line + 0.0008 + 0.0003 * (k % 5) as f64, lat + 0.0003 * (k / 5) as f64, 0.0002)],
+                height: 12.0,
+                ..Default::default()
+            });
         }
         let edge = crate::bld::tile_box_deg(8, 130, 88)[0];
         bs.push(B { id: 2, rings: vec![square(edge - 0.0001, lat, 0.0003)], height: 30.0, ..Default::default() });

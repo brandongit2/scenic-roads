@@ -19,8 +19,8 @@
 //! which lets the DEM stage sample every raster cell a road crosses. Outside North America and
 //! Japan the elevation sources are 20–30 m, so there the spacing is at least `COARSE_SPACING_M`.
 
-use det::Det;
 use anyhow::{Context, Result};
+use det::Det;
 use osmpbf::{Element, ElementReader};
 use pipeline::{bytes_bar, morton, ProgressRead};
 use rayon::prelude::*;
@@ -132,7 +132,24 @@ impl Poi {
 
 /// Tags every stop & sight keeps for its details, and each kind's own (marksjob::detail_keys; plus
 /// the Japanese romanisations, the English name where there's no name:en).
-const KEEP_COMMON: &[&str] = &["name", "ele", "description", "website", "wikipedia", "wikidata", "operator", "access", "fee", "opening_hours", "start_date", "heritage", "alt_name", "name:en", "name:ja-Latn", "name:ja_rm"];
+const KEEP_COMMON: &[&str] = &[
+    "name",
+    "ele",
+    "description",
+    "website",
+    "wikipedia",
+    "wikidata",
+    "operator",
+    "access",
+    "fee",
+    "opening_hours",
+    "start_date",
+    "heritage",
+    "alt_name",
+    "name:en",
+    "name:ja-Latn",
+    "name:ja_rm",
+];
 
 /// A line's length, planar (111.32 km per degree of longitude at the segment's mean latitude,
 /// 110.57 of latitude), in metres rounded half-even.
@@ -157,18 +174,97 @@ fn lon_cells(lat_e7: i32, r_m: f64, cell_e7: i64) -> i64 {
 
 fn keep_of(kind: &str) -> &'static [&'static str] {
     match kind {
-        "peak" => &["prominence", "isolation", "munro", "corbett", "graham", "donald", "marilyn", "hewitt", "wainwright", "nuttall",
-            "communication:amateur_radio:sota", "summit:cross", "summit:register", "volcano:status", "volcano:type", "natural", "tourism"],
+        "peak" => &[
+            "prominence",
+            "isolation",
+            "munro",
+            "corbett",
+            "graham",
+            "donald",
+            "marilyn",
+            "hewitt",
+            "wainwright",
+            "nuttall",
+            "communication:amateur_radio:sota",
+            "summit:cross",
+            "summit:register",
+            "volcano:status",
+            "volcano:type",
+            "natural",
+            "tourism",
+        ],
         "waterfall" => &["height", "width", "intermittent", "seasonal", "waterway", "natural"],
-        "lighthouse" => &["height", "seamark:light:character", "seamark:light:colour", "seamark:light:period", "seamark:light:range",
-            "seamark:light:height", "seamark:light:sequence", "seamark:light:reference", "seamark:name", "building:colour", "tower:type",
-            "historic", "heritage:operator", "seamark:light:1:character", "seamark:light:1:colour", "seamark:light:1:period",
-            "seamark:light:1:range", "seamark:light:1:height", "man_made"],
+        "lighthouse" => &[
+            "height",
+            "seamark:light:character",
+            "seamark:light:colour",
+            "seamark:light:period",
+            "seamark:light:range",
+            "seamark:light:height",
+            "seamark:light:sequence",
+            "seamark:light:reference",
+            "seamark:name",
+            "building:colour",
+            "tower:type",
+            "historic",
+            "heritage:operator",
+            "seamark:light:1:character",
+            "seamark:light:1:colour",
+            "seamark:light:1:period",
+            "seamark:light:1:range",
+            "seamark:light:1:height",
+            "man_made",
+        ],
         "viewpoint" => &["direction", "tower:type", "height", "man_made", "tourism"],
-        "picnic_site" => &["toilets", "drinking_water", "shelter", "bench", "picnic_table", "fireplace", "bbq", "covered", "capacity", "tourism", "leisure"],
-        "rest_area" => &["toilets", "drinking_water", "shelter", "picnic_table", "bench", "fuel", "restaurant", "shop", "wheelchair", "capacity", "highway"],
-        "trailhead" | "trail_parking" => &["toilets", "drinking_water", "parking", "capacity", "route_ref", "hiking", "shelter", "highway", "amenity", "trailhead"],
-        "covered_bridge" => &["bridge:structure", "bridge:name", "material", "historic", "bridge:ref", "layer", "bridge", "covered", "length"],
+        "picnic_site" => &[
+            "toilets",
+            "drinking_water",
+            "shelter",
+            "bench",
+            "picnic_table",
+            "fireplace",
+            "bbq",
+            "covered",
+            "capacity",
+            "tourism",
+            "leisure",
+        ],
+        "rest_area" => &[
+            "toilets",
+            "drinking_water",
+            "shelter",
+            "picnic_table",
+            "bench",
+            "fuel",
+            "restaurant",
+            "shop",
+            "wheelchair",
+            "capacity",
+            "highway",
+        ],
+        "trailhead" | "trail_parking" => &[
+            "toilets",
+            "drinking_water",
+            "parking",
+            "capacity",
+            "route_ref",
+            "hiking",
+            "shelter",
+            "highway",
+            "amenity",
+            "trailhead",
+        ],
+        "covered_bridge" => &[
+            "bridge:structure",
+            "bridge:name",
+            "material",
+            "historic",
+            "bridge:ref",
+            "layer",
+            "bridge",
+            "covered",
+            "length",
+        ],
         _ => &[],
     }
 }
@@ -210,8 +306,15 @@ fn scenic_route(t: &Tags) -> Option<String> {
         || name.ends_with(" trail")
         || name.contains("chemin du roy")
         || name.contains("chemins d'eau")
-        || (!numbered && (name.starts_with("route du ") || name.starts_with("route de la ") || name.starts_with("route des ")));
-    hit.then(|| if name_raw.is_empty() { t.get("network").unwrap_or("Scenic route").to_string() } else { name_raw.to_string() })
+        || (!numbered
+            && (name.starts_with("route du ") || name.starts_with("route de la ") || name.starts_with("route des ")));
+    hit.then(|| {
+        if name_raw.is_empty() {
+            t.get("network").unwrap_or("Scenic route").to_string()
+        } else {
+            name_raw.to_string()
+        }
+    })
 }
 
 /// Car parks for a trail: named for one ("… Trail Parking", "Stationnement du sentier …",
@@ -224,8 +327,9 @@ fn trail_parking(t: &Tags) -> bool {
         return true;
     }
     let name = t.get("name").unwrap_or("").to_lowercase();
-    name.split(|c: char| !c.is_alphanumeric())
-        .any(|w| matches!(w, "trail" | "trails" | "trailhead" | "sentier" | "sentiers" | "randonnée" | "randonnee" | "hiking"))
+    name.split(|c: char| !c.is_alphanumeric()).any(|w| {
+        matches!(w, "trail" | "trails" | "trailhead" | "sentier" | "sentiers" | "randonnée" | "randonnee" | "hiking")
+    })
 }
 
 /// A point's kind. `candidates`: as the landmark candidates have them (docs/phase5.md "pois"): a
@@ -256,7 +360,6 @@ fn poi_kind(t: &Tags, candidates: bool) -> Option<&'static str> {
     }
 }
 
-
 struct Tags<'a>(Vec<(&'a str, &'a str)>);
 
 impl<'a> Tags<'a> {
@@ -273,8 +376,19 @@ fn denied_value(v: &str) -> bool {
     v.split(';').all(|p| {
         matches!(
             p.trim(),
-            "no" | "private" | "customers" | "delivery" | "agricultural" | "forestry" | "permit"
-                | "military" | "emergency" | "residents" | "psv" | "bus" | "taxi" | "official"
+            "no" | "private"
+                | "customers"
+                | "delivery"
+                | "agricultural"
+                | "forestry"
+                | "permit"
+                | "military"
+                | "emergency"
+                | "residents"
+                | "psv"
+                | "bus"
+                | "taxi"
+                | "official"
         )
     })
 }
@@ -290,22 +404,44 @@ fn car_denied(t: &Tags) -> bool {
 }
 
 const UNPAVED: &[&str] = &[
-    "unpaved", "gravel", "fine_gravel", "dirt", "earth", "ground", "sand", "grass", "compacted",
-    "pebblestone", "mud", "rock", "woodchips", "clay", "grass_paver", "shells", "salt", "snow", "ice",
+    "unpaved",
+    "gravel",
+    "fine_gravel",
+    "dirt",
+    "earth",
+    "ground",
+    "sand",
+    "grass",
+    "compacted",
+    "pebblestone",
+    "mud",
+    "rock",
+    "woodchips",
+    "clay",
+    "grass_paver",
+    "shells",
+    "salt",
+    "snow",
+    "ice",
 ];
 
 /// A passenger-capable track: (group when no route relation uses it, or u8::MAX), flags.
 fn rail_track(t: &Tags) -> Option<(u8, u8)> {
     let kind = t.get("railway")?;
-    if !matches!(kind, "rail" | "light_rail" | "subway" | "tram" | "narrow_gauge" | "funicular" | "monorail" | "preserved") {
+    if !matches!(
+        kind,
+        "rail" | "light_rail" | "subway" | "tram" | "narrow_gauge" | "funicular" | "monorail" | "preserved"
+    ) {
         return None;
     }
-    if matches!(t.get("service"), Some("yard" | "siding" | "spur" | "crossover")) || t.is("area", "yes")
+    if matches!(t.get("service"), Some("yard" | "siding" | "spur" | "crossover"))
+        || t.is("area", "yes")
         || matches!(t.get("usage"), Some("industrial" | "military" | "freight" | "test"))
     {
         return None;
     }
-    let tourist = kind == "preserved" || t.is("railway:preserved", "yes") || t.is("usage", "tourism") || t.is("tourism", "yes");
+    let tourist =
+        kind == "preserved" || t.is("railway:preserved", "yes") || t.is("usage", "tourism") || t.is("tourism", "yes");
     let rack = t.get("railway:rack").or(t.get("rack")).is_some_and(|v| v != "no");
     let fallback = if tourist || rack || kind == "funicular" {
         class::HERITAGE
@@ -328,20 +464,67 @@ fn rail_track(t: &Tags) -> Option<(u8, u8)> {
 
 /// Names that mark a long-distance service when a train route has no `service` tag.
 const INTERCITY_WORDS: &[&str] = &[
-    "tgv", "inoui", "ouigo", "intercités", "intercites", "eurostar", "thalys", "lyria", "ave ", "alvia", "euromed",
-    "iryo", "avlo", "talgo", "alfa pendular", "intercidades", "amtrak", "via rail", "acela", "lner", "avanti",
-    "crosscountry", "cross country", "sleeper", "night riviera", "nightjet", "intercity", "inter city", "inter-city",
-    "enterprise", "adirondack", "maple leaf", "vermonter", "ethan allen", "downeaster", "lake shore", "the canadian",
-    "the ocean", "northeast regional", "hull chelsea", "transcantábrico", "costa verde express", "al andalus",
+    "tgv",
+    "inoui",
+    "ouigo",
+    "intercités",
+    "intercites",
+    "eurostar",
+    "thalys",
+    "lyria",
+    "ave ",
+    "alvia",
+    "euromed",
+    "iryo",
+    "avlo",
+    "talgo",
+    "alfa pendular",
+    "intercidades",
+    "amtrak",
+    "via rail",
+    "acela",
+    "lner",
+    "avanti",
+    "crosscountry",
+    "cross country",
+    "sleeper",
+    "night riviera",
+    "nightjet",
+    "intercity",
+    "inter city",
+    "inter-city",
+    "enterprise",
+    "adirondack",
+    "maple leaf",
+    "vermonter",
+    "ethan allen",
+    "downeaster",
+    "lake shore",
+    "the canadian",
+    "the ocean",
+    "northeast regional",
+    "hull chelsea",
+    "transcantábrico",
+    "costa verde express",
+    "al andalus",
 ];
 
 /// Service group of a passenger route relation.
 fn rail_route(t: &Tags) -> Option<u8> {
     let route = t.get("route")?;
-    let tourist = matches!(t.get("service"), Some("tourism" | "heritage")) || t.is("tourism", "yes") || t.is("historic", "yes")
-        || t.is("railway:preserved", "yes") || t.is("heritage:railway", "yes");
+    let tourist = matches!(t.get("service"), Some("tourism" | "heritage"))
+        || t.is("tourism", "yes")
+        || t.is("historic", "yes")
+        || t.is("railway:preserved", "yes")
+        || t.is("heritage:railway", "yes");
     Some(match route {
-        "tram" => if tourist { class::HERITAGE } else { class::TRAM },
+        "tram" => {
+            if tourist {
+                class::HERITAGE
+            } else {
+                class::TRAM
+            }
+        }
         "subway" | "light_rail" | "monorail" => class::METRO,
         "funicular" => class::HERITAGE,
         "train" => {
@@ -349,11 +532,22 @@ fn rail_route(t: &Tags) -> Option<u8> {
                 class::HERITAGE
             } else {
                 match t.get("service") {
-                    Some("long_distance" | "high_speed" | "night" | "international" | "car_shuttle") => class::INTERCITY,
+                    Some("long_distance" | "high_speed" | "night" | "international" | "car_shuttle") => {
+                        class::INTERCITY
+                    }
                     Some(_) => class::COMMUTER,
                     None => {
-                        let text = ["name", "brand", "network", "operator"].iter().filter_map(|k| t.get(k)).collect::<Vec<_>>().join(" ").to_lowercase();
-                        if INTERCITY_WORDS.iter().any(|w| text.contains(w)) { class::INTERCITY } else { class::COMMUTER }
+                        let text = ["name", "brand", "network", "operator"]
+                            .iter()
+                            .filter_map(|k| t.get(k))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                            .to_lowercase();
+                        if INTERCITY_WORDS.iter().any(|w| text.contains(w)) {
+                            class::INTERCITY
+                        } else {
+                            class::COMMUTER
+                        }
                     }
                 }
             }
@@ -374,12 +568,30 @@ fn parse_colour(v: Option<&str>) -> u32 {
         Some(((n >> 8 & 15) * 0x110000) | ((n >> 4 & 15) * 0x1100) | ((n & 15) * 0x11))
     } else {
         match v.as_str() {
-            "red" => Some(0xff0000), "blue" => Some(0x0000ff), "green" => Some(0x008000), "yellow" => Some(0xffff00),
-            "orange" => Some(0xffa500), "purple" => Some(0x800080), "brown" => Some(0xa52a2a), "black" => Some(0x000000),
-            "white" => Some(0xffffff), "grey" | "gray" => Some(0x808080), "pink" => Some(0xffc0cb), "cyan" | "aqua" => Some(0x00ffff),
-            "magenta" | "fuchsia" => Some(0xff00ff), "navy" => Some(0x000080), "maroon" => Some(0x800000), "olive" => Some(0x808000),
-            "teal" => Some(0x008080), "lime" => Some(0x00ff00), "silver" => Some(0xc0c0c0), "gold" => Some(0xffd700),
-            "violet" => Some(0xee82ee), "darkgreen" => Some(0x006400), "darkblue" => Some(0x00008b), "lightblue" => Some(0xadd8e6),
+            "red" => Some(0xff0000),
+            "blue" => Some(0x0000ff),
+            "green" => Some(0x008000),
+            "yellow" => Some(0xffff00),
+            "orange" => Some(0xffa500),
+            "purple" => Some(0x800080),
+            "brown" => Some(0xa52a2a),
+            "black" => Some(0x000000),
+            "white" => Some(0xffffff),
+            "grey" | "gray" => Some(0x808080),
+            "pink" => Some(0xffc0cb),
+            "cyan" | "aqua" => Some(0x00ffff),
+            "magenta" | "fuchsia" => Some(0xff00ff),
+            "navy" => Some(0x000080),
+            "maroon" => Some(0x800000),
+            "olive" => Some(0x808000),
+            "teal" => Some(0x008080),
+            "lime" => Some(0x00ff00),
+            "silver" => Some(0xc0c0c0),
+            "gold" => Some(0xffd700),
+            "violet" => Some(0xee82ee),
+            "darkgreen" => Some(0x006400),
+            "darkblue" => Some(0x00008b),
+            "lightblue" => Some(0xadd8e6),
             _ => None,
         }
     };
@@ -474,7 +686,14 @@ fn network_code(lon: f64, lat: f64, ref_: &str, c: u8) -> u8 {
         }
     }
     // Spain writes "A-7", "AP-7", "N-340", "C-31", "CV-500", "M-30" …
-    if sep == Some('-') && lat < 44.0 && lon < 4.5 && !(lon < -6.2 && lat < 42.2 && pre.len() <= 2 && matches!(pre.as_str(), "A" | "IP" | "IC" | "N" | "EN" | "R" | "ER" | "M" | "EM")) {
+    if sep == Some('-')
+        && lat < 44.0
+        && lon < 4.5
+        && !(lon < -6.2
+            && lat < 42.2
+            && pre.len() <= 2
+            && matches!(pre.as_str(), "A" | "IP" | "IC" | "N" | "EN" | "R" | "ER" | "M" | "EM"))
+    {
         return match pre.as_str() {
             "A" | "AP" | "AG" | "AC" | "AS" | "AV" | "EX" if c >= class::TRUNK => n::ES_AUTOVIA,
             "A" | "AP" => n::ES_AUTOVIA,
@@ -494,9 +713,16 @@ fn network_code(lon: f64, lat: f64, ref_: &str, c: u8) -> u8 {
         };
     }
     // Ireland (the Republic): M, N (national primary ≤ 33, secondary above), R.
-    let ireland = lon < -5.9 && (51.3..55.5).contains(&lat) && !(lon > -8.2 && lat > 54.0 && !matches!(pre.as_str(), "N" | "R"));
+    let ireland =
+        lon < -5.9 && (51.3..55.5).contains(&lat) && !(lon > -8.2 && lat > 54.0 && !matches!(pre.as_str(), "N" | "R"));
     if ireland && matches!(pre.as_str(), "M" | "N" | "R") {
-        let k: u32 = rest.trim_start_matches([' ', '-']).chars().take_while(|ch| ch.is_ascii_digit()).collect::<String>().parse().unwrap_or(0);
+        let k: u32 = rest
+            .trim_start_matches([' ', '-'])
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0);
         return match pre.as_str() {
             "M" => n::IE_MOTORWAY,
             "N" if k <= 33 => n::IE_NATIONAL_PRIMARY,
@@ -661,7 +887,13 @@ fn main() -> Result<()> {
                     Element::Way(w) => {
                         let t = Tags(w.tags().collect());
                         if let Some(kind) = poi_kind(&t, candidates) {
-                            out.poi_ways.push((kind, t.get("name").unwrap_or("").to_string(), w.refs().collect(), w.id(), kept_tags(&t, kind)));
+                            out.poi_ways.push((
+                                kind,
+                                t.get("name").unwrap_or("").to_string(),
+                                w.refs().collect(),
+                                w.id(),
+                                kept_tags(&t, kind),
+                            ));
                         }
                         if t.is("covered", "yes") || t.is("bridge", "covered") {
                             out.bridge_tags.push((w.id(), kept_tags(&t, "covered_bridge")));
@@ -669,7 +901,11 @@ fn main() -> Result<()> {
                         if let Some((c, f)) = classify(&t) {
                             out.ways.push(RawWay {
                                 id: w.id(),
-                                route: if f & flag::SCENIC != 0 { t.get("name").unwrap_or("Scenic road").to_string() } else { String::new() },
+                                route: if f & flag::SCENIC != 0 {
+                                    t.get("name").unwrap_or("Scenic road").to_string()
+                                } else {
+                                    String::new()
+                                },
                                 class: c,
                                 flags: f,
                                 lanes: t.get("lanes").and_then(|v| v.parse().ok()).unwrap_or(0),
@@ -706,20 +942,35 @@ fn main() -> Result<()> {
                         let t = Tags(r.tags().collect());
                         if matches!(t.get("route"), Some("hiking" | "foot")) {
                             let name = t.get("name").or(t.get("ref")).unwrap_or("").replace('\n', " ");
-                            let ids: Vec<i64> = r.members().filter(|m| m.member_type == osmpbf::RelMemberType::Way).map(|m| m.member_id).collect();
+                            let ids: Vec<i64> = r
+                                .members()
+                                .filter(|m| m.member_type == osmpbf::RelMemberType::Way)
+                                .map(|m| m.member_id)
+                                .collect();
                             if !ids.is_empty() {
                                 out.hikes.push((name, ids, r.id()));
                             }
                         }
                         if let Some(group) = rail_route(&t) {
-                            let (name, ref_) = (t.get("name").unwrap_or("").replace('\n', " "), t.get("ref").unwrap_or("").replace('\n', " "));
+                            let (name, ref_) = (
+                                t.get("name").unwrap_or("").replace('\n', " "),
+                                t.get("ref").unwrap_or("").replace('\n', " "),
+                            );
                             let label = if ref_.is_empty() { name.clone() } else { ref_.clone() };
                             let colour = parse_colour(t.get("colour"));
                             for m in r.members() {
                                 if m.member_type == osmpbf::RelMemberType::Way {
                                     let role = m.role().unwrap_or("");
                                     if role.is_empty() || matches!(role, "forward" | "backward" | "main" | "route") {
-                                        out.rail_uses.push(RailUse { way: m.member_id, rel: r.id(), group, colour, label: label.clone(), name: name.clone(), ref_: ref_.clone() });
+                                        out.rail_uses.push(RailUse {
+                                            way: m.member_id,
+                                            rel: r.id(),
+                                            group,
+                                            colour,
+                                            label: label.clone(),
+                                            name: name.clone(),
+                                            ref_: ref_.clone(),
+                                        });
                                     }
                                 }
                             }
@@ -762,7 +1013,13 @@ fn main() -> Result<()> {
             class::METRO => 3,
             _ => 4,
         };
-        rail_uses.par_sort_unstable_by(|a, b| a.way.cmp(&b.way).then(rank(a.group).cmp(&rank(b.group))).then(a.label.cmp(&b.label)).then(a.rel.cmp(&b.rel)));
+        rail_uses.par_sort_unstable_by(|a, b| {
+            a.way
+                .cmp(&b.way)
+                .then(rank(a.group).cmp(&rank(b.group)))
+                .then(a.label.cmp(&b.label))
+                .then(a.rel.cmp(&b.rel))
+        });
         rail_uses.dedup_by(|a, b| a.way == b.way && a.group == b.group && a.label == b.label);
         let (mut kept, mut dropped, mut via_routes) = (0usize, 0usize, 0usize);
         for w in ways.iter_mut() {
@@ -805,13 +1062,15 @@ fn main() -> Result<()> {
             let mut labels: Vec<&str> = uses.iter().map(|u| u.label.as_str()).filter(|l| !l.is_empty()).collect();
             labels.dedup();
             let more = labels.len().saturating_sub(4);
-            w.route = labels[..labels.len().min(4)].join(" · ") + &if more > 0 { format!(" +{more}") } else { String::new() };
+            w.route =
+                labels[..labels.len().min(4)].join(" · ") + &if more > 0 { format!(" +{more}") } else { String::new() };
         }
         ways.retain(|w| w.class != u8::MAX);
         eprintln!("rail: {kept} passenger tracks ({via_routes} on route relations), {dropped} other tracks dropped");
     }
     // (in way id order, as the ways are)
-    let rail_rels_bytes: Vec<u8> = rail_rels.iter().flat_map(|(w, r)| w.to_le_bytes().into_iter().chain(r.to_le_bytes())).collect();
+    let rail_rels_bytes: Vec<u8> =
+        rail_rels.iter().flat_map(|(w, r)| w.to_le_bytes().into_iter().chain(r.to_le_bytes())).collect();
     std::fs::write(roadcore::tmp(&out, "rail-rels.bin"), &rail_rels_bytes)?;
     if rail_rels_only {
         roadcore::commit(&out, &["rail-rels.bin"])?;
@@ -832,7 +1091,8 @@ fn main() -> Result<()> {
 
     // ---- Pass 1b: end nodes of hiking-route member ways (relations come after ways in a file) ----
     // (Not when the pass's ends are given: those are the whole routes', and carry their positions.)
-    let given_ends: Option<Vec<pipeline::trailends::End>> = trailends.as_deref().map(pipeline::trailends::read).transpose()?;
+    let given_ends: Option<Vec<pipeline::trailends::End>> =
+        trailends.as_deref().map(pipeline::trailends::read).transpose()?;
     if given_ends.is_some() {
         hikes.clear();
     }
@@ -979,7 +1239,18 @@ fn main() -> Result<()> {
         let n = pts.len() as i64;
         let (sx, sy) = pts.iter().fold((0i64, 0i64), |a, p| (a.0 + p.0, a.1 + p.1));
         let nodes: Vec<[i32; 2]> = pts.iter().map(|p| [p.0 as i32, p.1 as i32]).collect();
-        pois.push(Poi { kind, lon: (sx / n) as i32, lat: (sy / n) as i32, name: name.clone(), ele: None, osm: Some(format!("w{id}")), key: None, tags: tags.clone(), nodes, length_m: None });
+        pois.push(Poi {
+            kind,
+            lon: (sx / n) as i32,
+            lat: (sy / n) as i32,
+            name: name.clone(),
+            ele: None,
+            osm: Some(format!("w{id}")),
+            key: None,
+            tags: tags.clone(),
+            nodes,
+            length_m: None,
+        });
     }
 
     // Hiking-route ends within 300 m of a drivable road are trailheads (named after the route).
@@ -992,7 +1263,11 @@ fn main() -> Result<()> {
                 Some(&p) => p,
                 None => {
                     let v = needed.binary_search(n).ok().map(|i| coords[i].load(Relaxed)).unwrap_or(u64::MAX);
-                    if v == u64::MAX { (i32::MIN, 0) } else { (v as u32 as i32, (v >> 32) as u32 as i32) }
+                    if v == u64::MAX {
+                        (i32::MIN, 0)
+                    } else {
+                        (v as u32 as i32, (v >> 32) as u32 as i32)
+                    }
                 }
             };
             pts.push(p);
@@ -1014,7 +1289,10 @@ fn main() -> Result<()> {
                 for dx in -kx..=kx {
                     for dy in -1..=1 {
                         for &k in cand.get(&(cx + dx, cy + dy)).map(|v| v.as_slice()).unwrap_or(&[]) {
-                            if !near[k] && dist_m(lon as f64 * E7, lat as f64 * E7, pts[k].0 as f64 * E7, pts[k].1 as f64 * E7) < 300.0 {
+                            if !near[k]
+                                && dist_m(lon as f64 * E7, lat as f64 * E7, pts[k].0 as f64 * E7, pts[k].1 as f64 * E7)
+                                    < 300.0
+                            {
                                 near[k] = true;
                             }
                         }
@@ -1026,7 +1304,18 @@ fn main() -> Result<()> {
         for (k, (name, node, rel)) in route_ends.iter().enumerate() {
             if near[k] {
                 let tags = if name.is_empty() { Vec::new() } else { vec![("name".to_string(), name.clone())] };
-                pois.push(Poi { kind: "trail_route", lon: pts[k].0, lat: pts[k].1, name: name.clone(), ele: None, osm: None, key: Some(format!("trail:{rel}:{node}")), tags, nodes: Vec::new(), length_m: None });
+                pois.push(Poi {
+                    kind: "trail_route",
+                    lon: pts[k].0,
+                    lat: pts[k].1,
+                    name: name.clone(),
+                    ele: None,
+                    osm: None,
+                    key: Some(format!("trail:{rel}:{node}")),
+                    tags,
+                    nodes: Vec::new(),
+                    length_m: None,
+                });
                 n += 1;
             }
         }
@@ -1050,7 +1339,14 @@ fn main() -> Result<()> {
         let cell = |p: &Poi| ((p.lon as i64).div_euclid(20_000), (p.lat as i64).div_euclid(20_000)); // ≈ 0.002°
         for i in order {
             let (cx, cy) = cell(&pois[i]);
-            let near = |j: usize| dist_m(pois[i].lon as f64 * E7, pois[i].lat as f64 * E7, pois[j].lon as f64 * E7, pois[j].lat as f64 * E7) < 150.0;
+            let near = |j: usize| {
+                dist_m(
+                    pois[i].lon as f64 * E7,
+                    pois[i].lat as f64 * E7,
+                    pois[j].lon as f64 * E7,
+                    pois[j].lat as f64 * E7,
+                ) < 150.0
+            };
             let kx = lon_cells(pois[i].lat, 150.0, 20_000);
             let dup = (-kx..=kx)
                 .flat_map(|dx| (-1..=1).map(move |dy| (cx + dx, cy + dy)))
@@ -1086,7 +1382,11 @@ fn main() -> Result<()> {
     let spacing_at = |p: [i32; 2]| {
         let (lon, lat) = (p[0] as f64 * E7, p[1] as f64 * E7);
         let japan = (122.5..154.0).contains(&lon) && (20.0..46.5).contains(&lat);
-        if lon < -40.0 || japan { spacing } else { spacing.max(COARSE_SPACING_M) }
+        if lon < -40.0 || japan {
+            spacing
+        } else {
+            spacing.max(COARSE_SPACING_M)
+        }
     };
     let lookup = |id: i64| -> Option<(usize, i32, i32)> {
         let i = needed.binary_search(&id).ok()?;
@@ -1204,7 +1504,11 @@ fn main() -> Result<()> {
             class: w.class,
             flags: w.flags,
             lanes: w.lanes,
-            network: if class::is_rail(w.class) { 0 } else { network_code(b.pts[0][0] as f64 * E7, b.pts[0][1] as f64 * E7, &w.ref_, w.class) },
+            network: if class::is_rail(w.class) {
+                0
+            } else {
+                network_code(b.pts[0][0] as f64 * E7, b.pts[0][1] as f64 * E7, &w.ref_, w.class)
+            },
             rail: w.rail,
             _pad: 0,
             route: intern(&w.route),
@@ -1212,13 +1516,26 @@ fn main() -> Result<()> {
         });
         if w.flags & flag::COVERED != 0 {
             let m = b.pts[b.pts.len() / 2];
-            let tags = bridge_tags.binary_search_by_key(&w.id, |b| b.0).map(|i| bridge_tags[i].1.clone()).unwrap_or_default();
+            let tags =
+                bridge_tags.binary_search_by_key(&w.id, |b| b.0).map(|i| bridge_tags[i].1.clone()).unwrap_or_default();
             // Its own nodes (the points are densified): what its length is measured on, for a line
             // (not a closed way) of some length.
-            let nodes: Vec<[i32; 2]> = w.refs.iter().filter_map(|&r| lookup(r).map(|(_, lat, lon)| [lon, lat])).collect();
+            let nodes: Vec<[i32; 2]> =
+                w.refs.iter().filter_map(|&r| lookup(r).map(|(_, lat, lon)| [lon, lat])).collect();
             let line = w.refs.first() != w.refs.last() && nodes.windows(2).any(|p| p[0] != p[1]);
             let length_m = line.then(|| line_m(&nodes));
-            pois.push(Poi { kind: "covered_bridge", lon: m[0], lat: m[1], name: w.name.clone(), ele: None, osm: Some(format!("w{}", w.id)), key: None, tags, nodes, length_m });
+            pois.push(Poi {
+                kind: "covered_bridge",
+                lon: m[0],
+                lat: m[1],
+                name: w.name.clone(),
+                ele: None,
+                osm: Some(format!("w{}", w.id)),
+                key: None,
+                tags,
+                nodes,
+                length_m,
+            });
         }
     }
     wv.flush()?;
@@ -1251,10 +1568,19 @@ fn main() -> Result<()> {
         *counts.entry(p.kind).or_default() += 1;
     }
     eprintln!("POIs: {counts:?}");
-    std::fs::write(roadcore::tmp(&out, "pois.json"), serde_json::to_vec(&serde_json::json!({ "type": "FeatureCollection", "features": features }))?)?;
+    std::fs::write(
+        roadcore::tmp(&out, "pois.json"),
+        serde_json::to_vec(&serde_json::json!({ "type": "FeatureCollection", "features": features }))?,
+    )?;
     roadcore::commit(&out, &["verts.bin", "ways.bin", "strings.txt", "name-en.json", "pois.json", "rail-rels.bin"])?;
 
-    eprintln!("\nwrote {} ways, {} vertices ({} original nodes), {} strings", recs.len(), vtotal, orig_total, strings.len());
+    eprintln!(
+        "\nwrote {} ways, {} vertices ({} original nodes), {} strings",
+        recs.len(),
+        vtotal,
+        orig_total,
+        strings.len()
+    );
     let mut total = 0.0;
     for (c, l) in len_by_class.iter().enumerate() {
         eprintln!("  {:>14}: {:>10.0} km", class::NAMES[c], l / 1000.0);
@@ -1270,7 +1596,12 @@ mod tests {
     /// gave them in; the shorter name wins over both.
     #[test]
     fn a_ways_route_is_the_same_whatever_the_order() {
-        let pairs = vec![(7, "Blue Ridge".to_string()), (7, "Ocean Road".to_string()), (3, "A1A".to_string()), (7, "Seaway Rte".to_string())];
+        let pairs = vec![
+            (7, "Blue Ridge".to_string()),
+            (7, "Ocean Road".to_string()),
+            (3, "A1A".to_string()),
+            (7, "Seaway Rte".to_string()),
+        ];
         let mut want = None;
         for k in 0..24 {
             let mut v = pairs.clone();

@@ -61,7 +61,14 @@ pub fn sub_of(z: u8, x: u32, y: u32) -> (u32, u32) {
 
 /// Subtrees named `8/x/y,…`.
 pub fn parse_subtrees(s: &str) -> Result<Vec<(u32, u32)>> {
-    s.split(',').map(|b| crate::legacy::Unit::parse(b.trim()).filter(|u| u.z == 8).map(|u| (u.x, u.y)).with_context(|| format!("not a z8 subtree: {b}"))).collect()
+    s.split(',')
+        .map(|b| {
+            crate::legacy::Unit::parse(b.trim())
+                .filter(|u| u.z == 8)
+                .map(|u| (u.x, u.y))
+                .with_context(|| format!("not a z8 subtree: {b}"))
+        })
+        .collect()
 }
 
 /// Subtrees as `parse_subtrees` reads them.
@@ -75,7 +82,8 @@ pub fn subtrees_arg(list: &[(u32, u32)]) -> String {
 /// subtree alone.
 pub fn groups(levels: &Levels, water: Option<&dyn WaterSource>) -> Result<Vec<Vec<(u32, u32)>>> {
     use rayon::prelude::*;
-    let subs: BTreeSet<(u32, u32)> = levels.iter().flat_map(|(z, t)| t.iter().map(move |&(x, y)| sub_of(*z, x, y))).collect();
+    let subs: BTreeSet<(u32, u32)> =
+        levels.iter().flat_map(|(z, t)| t.iter().map(move |&(x, y)| sub_of(*z, x, y))).collect();
     let index: BTreeMap<(u32, u32), usize> = subs.iter().enumerate().map(|(i, s)| (*s, i)).collect();
     let mut parent: Vec<usize> = (0..subs.len()).collect();
     fn root(p: &mut [usize], mut i: usize) -> usize {
@@ -86,8 +94,14 @@ pub fn groups(levels: &Levels, water: Option<&dyn WaterSource>) -> Result<Vec<Ve
         i
     }
     if let Some(w) = water {
-        let tiles: Vec<(u8, u32, u32)> = levels.iter().flat_map(|(z, t)| t.iter().map(move |&(x, y)| (*z, x, y))).collect();
-        let lakes: Vec<Result<Vec<u64>>> = tiles.par_iter().map(|&(z, x, y)| Ok(w.polys(z, x, y)?.into_iter().filter(|p| p.kind == Kind::Lake).map(|p| p.id).collect())).collect();
+        let tiles: Vec<(u8, u32, u32)> =
+            levels.iter().flat_map(|(z, t)| t.iter().map(move |&(x, y)| (*z, x, y))).collect();
+        let lakes: Vec<Result<Vec<u64>>> = tiles
+            .par_iter()
+            .map(|&(z, x, y)| {
+                Ok(w.polys(z, x, y)?.into_iter().filter(|p| p.kind == Kind::Lake).map(|p| p.id).collect())
+            })
+            .collect();
         let mut first: HashMap<u64, usize> = HashMap::new();
         for (&(z, x, y), ids) in tiles.iter().zip(lakes) {
             let s = index[&sub_of(z, x, y)];
@@ -111,7 +125,10 @@ pub fn groups(levels: &Levels, water: Option<&dyn WaterSource>) -> Result<Vec<Ve
 
 /// `levels` cut to the subtrees `subs` (`keep`), or to the others (`!keep`).
 pub fn levels_of(levels: &Levels, subs: &BTreeSet<(u32, u32)>, keep: bool) -> Levels {
-    levels.iter().map(|(z, t)| (*z, t.iter().copied().filter(|&(x, y)| subs.contains(&sub_of(*z, x, y)) == keep).collect())).collect()
+    levels
+        .iter()
+        .map(|(z, t)| (*z, t.iter().copied().filter(|&(x, y)| subs.contains(&sub_of(*z, x, y)) == keep).collect()))
+        .collect()
 }
 
 /// The tiles of `levels`.
@@ -252,7 +269,14 @@ pub struct CutReport {
 
 /// Group `group`'s task file at `path`, of piece `piece` (`levels`: the group's part of its levels),
 /// from what the job's run reads (`raw`, `src`).
-pub fn cut(piece: (u32, u32), group: &[(u32, u32)], levels: &Levels, raw: &dyn RawSource, src: &Sources, path: &Path) -> Result<CutReport> {
+pub fn cut(
+    piece: (u32, u32),
+    group: &[(u32, u32)],
+    levels: &Levels,
+    raw: &dyn RawSource,
+    src: &Sources,
+    path: &Path,
+) -> Result<CutReport> {
     use rayon::prelude::*;
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
@@ -276,7 +300,18 @@ pub fn cut(piece: (u32, u32), group: &[(u32, u32)], levels: &Levels, raw: &dyn R
         }
     }
     let meta_cells: Vec<(i32, i32, String, usize, usize, usize, usize, usize)> = Vec::new();
-    let mut meta = Meta { fmt: FMT, step: KIND.into(), v: crate::agent::build::TERRAIN_V as u64, piece: format!("6/{}/{}", piece.0, piece.1), subtrees: subtrees_arg(group), levels: levels.clone(), water: src.water.is_some(), north: src.north.is_some(), coarse: src.coarse.is_some(), cells: meta_cells };
+    let mut meta = Meta {
+        fmt: FMT,
+        step: KIND.into(),
+        v: crate::agent::build::TERRAIN_V as u64,
+        piece: format!("6/{}/{}", piece.0, piece.1),
+        subtrees: subtrees_arg(group),
+        levels: levels.clone(),
+        water: src.water.is_some(),
+        north: src.north.is_some(),
+        coarse: src.coarse.is_some(),
+        cells: meta_cells,
+    };
     let mut windows: Vec<((i32, i32), Vec<u8>)> = Vec::new();
     if let Some(n) = src.north {
         for (&(la, lo), boxes) in &cells {
@@ -351,10 +386,18 @@ pub struct Inputs {
 impl Inputs {
     pub fn open(path: &Path) -> Result<Inputs> {
         let what = || path.display().to_string();
-        let r = store::sect::SectReader::open(store::range::PlainFile::open(path).with_context(what)?).with_context(what)?;
-        let meta: Meta = serde_json::from_value(r.meta().clone()).with_context(|| format!("{}: not a terrain task", what()))?;
+        let r = store::sect::SectReader::open(store::range::PlainFile::open(path).with_context(what)?)
+            .with_context(what)?;
+        let meta: Meta =
+            serde_json::from_value(r.meta().clone()).with_context(|| format!("{}: not a terrain task", what()))?;
         ensure!(meta.fmt == FMT && meta.step == KIND, "{}: not a terrain task of format {FMT}", what());
-        ensure!(meta.v == crate::agent::build::TERRAIN_V as u64, "{}: a task of terrain version {}, not {}", what(), meta.v, crate::agent::build::TERRAIN_V);
+        ensure!(
+            meta.v == crate::agent::build::TERRAIN_V as u64,
+            "{}: a task of terrain version {}, not {}",
+            what(),
+            meta.v,
+            crate::agent::build::TERRAIN_V
+        );
         let mut cells = HashMap::new();
         for (la, lo, kind, w, r0, rows, c0, cols) in &meta.cells {
             let got = match kind.as_str() {
@@ -362,7 +405,11 @@ impl Inputs {
                 "missing" => Got::Missing,
                 "cell" => {
                     let n = rows * cols;
-                    let b = if n == 0 { Vec::new() } else { zstd::bulk::decompress(&r.read(&format!("c-{la}-{lo}"))?, n * 5)? };
+                    let b = if n == 0 {
+                        Vec::new()
+                    } else {
+                        zstd::bulk::decompress(&r.read(&format!("c-{la}-{lo}"))?, n * 5)?
+                    };
                     ensure!(b.len() == n * 5, "GLO-30 cell {la},{lo}: {} bytes, not {}", b.len(), n * 5);
                     let e = b[..n * 4].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
                     let filled = b[n * 4..].iter().map(|&f| f != 0).collect();
@@ -378,7 +425,9 @@ impl Inputs {
 
     /// The piece and the group's subtrees.
     pub fn piece(&self) -> Result<(u32, u32)> {
-        let u = crate::legacy::Unit::parse(&self.meta.piece).filter(|u| u.z == 6).context("a task's piece isn't a z6 tile")?;
+        let u = crate::legacy::Unit::parse(&self.meta.piece)
+            .filter(|u| u.z == 6)
+            .context("a task's piece isn't a z6 tile")?;
         Ok((u.x, u.y))
     }
 
@@ -386,7 +435,11 @@ impl Inputs {
     /// the job's run has): its tiles, sorted, and its mid's part.
     pub fn make(&self) -> Result<(Vec<Made>, Mid)> {
         let coarse = crate::terrain_pack::Coarse::new(self);
-        let src = Sources { north: self.meta.north.then_some(self as &dyn Cells), water: self.meta.water.then_some(self as &dyn WaterSource), coarse: self.meta.coarse.then_some(&coarse) };
+        let src = Sources {
+            north: self.meta.north.then_some(self as &dyn Cells),
+            water: self.meta.water.then_some(self as &dyn WaterSource),
+            coarse: self.meta.coarse.then_some(&coarse),
+        };
         crate::terrain_pack::make_piece(self, &src, self.meta.levels.clone())
     }
 }
@@ -397,7 +450,13 @@ impl RawSource for Inputs {
         let n = name("r", z, x, y);
         Ok((if self.r.section(&n).is_some() { Some(self.r.read(&n)?) } else { None }, false))
     }
-    fn prefetch_counted(&self, _z: u8, tiles: &[(u32, u32)], _threads: usize, done: &std::sync::atomic::AtomicU64) -> Result<usize> {
+    fn prefetch_counted(
+        &self,
+        _z: u8,
+        tiles: &[(u32, u32)],
+        _threads: usize,
+        done: &std::sync::atomic::AtomicU64,
+    ) -> Result<usize> {
         done.fetch_add(tiles.len() as u64, std::sync::atomic::Ordering::Relaxed);
         Ok(0)
     }
@@ -440,12 +499,21 @@ pub fn write_hi(path: &Path, piece: &str, subtrees: &str, hi: &[Made]) -> Result
 /// of those, and no other).
 pub fn read_hi(path: &Path, piece: &str, subtrees: &str, raw: &BTreeSet<(u8, u32, u32)>) -> Result<Vec<Made>> {
     let what = || path.display().to_string();
-    let r = store::sect::SectReader::open(store::range::PlainFile::open(path).with_context(what)?).with_context(what)?;
+    let r =
+        store::sect::SectReader::open(store::range::PlainFile::open(path).with_context(what)?).with_context(what)?;
     let m = r.meta();
-    ensure!(m["fmt"].as_u64() == Some(FMT) && m["step"] == KIND && m["piece"] == piece && m["subtrees"] == subtrees, "{}: not {piece}'s {subtrees}", what());
+    ensure!(
+        m["fmt"].as_u64() == Some(FMT) && m["step"] == KIND && m["piece"] == piece && m["subtrees"] == subtrees,
+        "{}: not {piece}'s {subtrees}",
+        what()
+    );
     let mut out = Vec::new();
     for s in r.sections() {
-        let k: Vec<u32> = s.name.strip_prefix("t-").map(|n| n.split('-').filter_map(|v| v.parse().ok()).collect()).unwrap_or_default();
+        let k: Vec<u32> = s
+            .name
+            .strip_prefix("t-")
+            .map(|n| n.split('-').filter_map(|v| v.parse().ok()).collect())
+            .unwrap_or_default();
         ensure!(k.len() == 3 && k[0] <= 12, "{}: a section {:?}", what(), s.name);
         let t = (k[0] as u8, k[1], k[2]);
         ensure!(raw.contains(&t), "{}: {}/{}/{} isn't a tile of the task's", what(), t.0, t.1, t.2);
@@ -458,7 +526,12 @@ pub fn read_hi(path: &Path, piece: &str, subtrees: &str, raw: &BTreeSet<(u8, u32
 
 /// Whether two runs' tiles and mids are the same bytes (the mids' values bit for bit).
 pub fn same(a: &(Vec<Made>, Mid), b: &(Vec<Made>, Mid)) -> bool {
-    let bits = |m: &Mid| (m.quads.iter().map(|(k, v)| (*k, v.iter().map(|f| f.to_bits()).collect::<Vec<_>>())).collect::<Vec<_>>(), m.levels.iter().map(|(k, v)| (*k, v.to_bits())).collect::<Vec<_>>());
+    let bits = |m: &Mid| {
+        (
+            m.quads.iter().map(|(k, v)| (*k, v.iter().map(|f| f.to_bits()).collect::<Vec<_>>())).collect::<Vec<_>>(),
+            m.levels.iter().map(|(k, v)| (*k, v.to_bits())).collect::<Vec<_>>(),
+        )
+    };
     a.0 == b.0 && bits(&a.1) == bits(&b.1)
 }
 
@@ -466,7 +539,13 @@ pub fn same(a: &(Vec<Made>, Mid), b: &(Vec<Made>, Mid)) -> bool {
 /// folder; `unit` its first subtree (what its cost is kept under), and its subtrees.
 pub fn spec(group: &[(u32, u32)], version: &str, input: u64) -> serde_json::Value {
     let args = ["--in", &format!("{{dir}}/{INPUT}"), "--out", "{dir}"];
-    let run = crate::unit::Run { what: KIND.into(), prog: "terrainsub".into(), args: args.iter().map(|a| a.to_string()).collect(), env: vec![], reads: vec![format!("{{dir}}/{INPUT}")] };
+    let run = crate::unit::Run {
+        what: KIND.into(),
+        prog: "terrainsub".into(),
+        args: args.iter().map(|a| a.to_string()).collect(),
+        env: vec![],
+        reads: vec![format!("{{dir}}/{INPUT}")],
+    };
     let first = group.first().map(|(x, y)| format!("8/{x}/{y}")).unwrap_or_default();
     serde_json::json!({ "unit": first, "subtrees": subtrees_arg(group), "version": version, "runs": [run], "inputs": [[format!("u/{INPUT}"), input]], "places": crate::offload::places() })
 }
@@ -509,7 +588,13 @@ impl<'a> Offers<'a> {
     /// Offers some of piece `piece`'s groups (its levels `levels`, read from `raw` and `src`),
     /// their folders under the job's tasks' folder, while workers that take them are around: none
     /// without `offload`.
-    pub fn offer(offload: Option<&'a Offload>, piece: (u32, u32), levels: &Levels, raw: &dyn RawSource, src: &Sources) -> Offers<'a> {
+    pub fn offer(
+        offload: Option<&'a Offload>,
+        piece: (u32, u32),
+        levels: &Levels,
+        raw: &dyn RawSource,
+        src: &Sources,
+    ) -> Offers<'a> {
         Self::offer_after(offload, piece, levels, raw, src, 0)
     }
 
@@ -517,7 +602,14 @@ impl<'a> Offers<'a> {
     /// next piece offered ahead: the piece under way's): each group's head start, told with it when
     /// the job offers ahead (`offer_ahead`), is the tiles made here before the run needs it (those,
     /// and this piece's own it makes first) over the group's.
-    pub fn offer_after(offload: Option<&'a Offload>, piece: (u32, u32), levels: &Levels, raw: &dyn RawSource, src: &Sources, before: usize) -> Offers<'a> {
+    pub fn offer_after(
+        offload: Option<&'a Offload>,
+        piece: (u32, u32),
+        levels: &Levels,
+        raw: &dyn RawSource,
+        src: &Sources,
+        before: usize,
+    ) -> Offers<'a> {
         let mut o = Offers { offload, piece, out: Vec::new(), here: Default::default() };
         let Some(off) = offload else { return o };
         let workers = off.workers(KIND);
@@ -533,7 +625,8 @@ impl<'a> Offers<'a> {
             }
         };
         let depth = workers.min(MOST).min(groups.len().saturating_sub(1));
-        let chosen: Vec<&Vec<(u32, u32)>> = groups.iter().rev().filter(|g| g.len() <= MOST_SUBTREES).take(depth).collect();
+        let chosen: Vec<&Vec<(u32, u32)>> =
+            groups.iter().rev().filter(|g| g.len() <= MOST_SUBTREES).take(depth).collect();
         // (The run's own tiles of this piece, made before it settles any group out.)
         let out_subs: BTreeSet<(u32, u32)> = chosen.iter().flat_map(|g| g.iter().copied()).collect();
         let own = count(&levels_of(levels, &out_subs, false));
@@ -544,14 +637,33 @@ impl<'a> Offers<'a> {
                 let c = cut(piece, g, &lv, raw, src, &root.join("u").join(INPUT))?;
                 let made = c.made;
                 let ahead = (count(&lv) > 0).then(|| (before + own) as f64 / count(&lv) as f64);
-                let task = off.offer_spec_ahead(KIND, spec(g, off.version(), c.bytes), &root, [(format!("u/{INPUT}"), c.bytes)].into(), mem_mb(c.bytes, &lv), ahead)?;
-                eprintln!("terrain 6/{}/{}: subtrees {} offered ({} tiles, {:.1} MB)", piece.0, piece.1, subtrees_arg(g), c.tiles, c.bytes as f64 / 1e6);
+                let task = off.offer_spec_ahead(
+                    KIND,
+                    spec(g, off.version(), c.bytes),
+                    &root,
+                    [(format!("u/{INPUT}"), c.bytes)].into(),
+                    mem_mb(c.bytes, &lv),
+                    ahead,
+                )?;
+                eprintln!(
+                    "terrain 6/{}/{}: subtrees {} offered ({} tiles, {:.1} MB)",
+                    piece.0,
+                    piece.1,
+                    subtrees_arg(g),
+                    c.tiles,
+                    c.bytes as f64 / 1e6
+                );
                 Ok(Out { task, group: g.clone(), levels: lv, made })
             })();
             match offered {
                 Ok(x) => o.out.push(x),
                 Err(e) => {
-                    eprintln!("terrain 6/{}/{}: subtrees {} not offered ({e:#}); made here", piece.0, piece.1, subtrees_arg(g));
+                    eprintln!(
+                        "terrain 6/{}/{}: subtrees {} not offered ({e:#}); made here",
+                        piece.0,
+                        piece.1,
+                        subtrees_arg(g)
+                    );
                     break;
                 }
             }
@@ -603,7 +715,10 @@ impl<'a> Offers<'a> {
             let hi = read_hi(&d.join(HI), &piece, &subs, &o.made)?;
             let (t, mid) = crate::terrain_pack::read_mid(&d.join(MID))?;
             ensure!(t == self.piece, "a mid of 6/{}/{}", t.0, t.1);
-            ensure!(mid.quads.keys().all(|&(x, y)| o.group.contains(&sub_of(9, x, y))), "a mid with another group's tiles");
+            ensure!(
+                mid.quads.keys().all(|&(x, y)| o.group.contains(&sub_of(9, x, y))),
+                "a mid with another group's tiles"
+            );
             Ok((hi, mid))
         };
         let got: std::cell::RefCell<Option<(Vec<Made>, Mid)>> = Default::default();
@@ -690,24 +805,42 @@ mod tests {
             }
             let n = (1u64 << z) as f64 * 256.0;
             let px = |lon: f64| (lon + 180.0) / 360.0 * n - x as f64 * 256.0;
-            let py = |lat: f64| (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n - y as f64 * 256.0;
-            let rect = |kind, id, [w, s, e, nn]: [f64; 4]| Poly { kind, id, rings: vec![vec![[px(w), py(nn)], [px(e), py(nn)], [px(e), py(s)], [px(w), py(s)]]] };
+            let py =
+                |lat: f64| (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n - y as f64 * 256.0;
+            let rect = |kind, id, [w, s, e, nn]: [f64; 4]| Poly {
+                kind,
+                id,
+                rings: vec![vec![[px(w), py(nn)], [px(e), py(nn)], [px(e), py(s)], [px(w), py(s)]]],
+            };
             let (a, b) = (z8_box(self.a), z8_box(self.b));
             // (Near the coverage, at `a`'s south-east corner: the edge `b` east of `a`, or south.)
             let _ = b;
             let (ce, cs) = (a[2], a[1]);
-            let lake = if self.b.0 > self.a.0 { [ce - 0.03, cs + 0.01, ce + 0.03, cs + 0.03] } else { [ce - 0.08, cs - 0.01, ce - 0.03, cs + 0.01] };
+            let lake = if self.b.0 > self.a.0 {
+                [ce - 0.03, cs + 0.01, ce + 0.03, cs + 0.03]
+            } else {
+                [ce - 0.08, cs - 0.01, ce - 0.03, cs + 0.01]
+            };
             let inner = [ce - 0.12, cs + 0.03, ce - 0.08, cs + 0.05];
             let sea = [ce - 0.2, cs + 0.06, ce - 0.15, cs + 0.08];
             let all = [rect(Kind::Lake, 9, lake), rect(Kind::Lake, 11, inner), rect(Kind::Sea, 0, sea)];
             // (A tile has the polygons that meet it.)
             let n2 = (1u64 << z) as f64;
-            let tb = [x as f64 / n2 * 360.0 - 180.0, (std::f64::consts::PI * (1.0 - 2.0 * (y + 1) as f64 / n2)).sinh().atan().to_degrees(), (x + 1) as f64 / n2 * 360.0 - 180.0, (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n2)).sinh().atan().to_degrees()];
+            let tb = [
+                x as f64 / n2 * 360.0 - 180.0,
+                (std::f64::consts::PI * (1.0 - 2.0 * (y + 1) as f64 / n2)).sinh().atan().to_degrees(),
+                (x + 1) as f64 / n2 * 360.0 - 180.0,
+                (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n2)).sinh().atan().to_degrees(),
+            ];
             let meets = |r: [f64; 4]| r[0] < tb[2] && r[2] > tb[0] && r[1] < tb[3] && r[3] > tb[1];
-            Ok([(lake, 0usize), (inner, 1), (sea, 2)].into_iter().filter(|(r, _)| meets(*r)).map(|(_, i)| {
-                let p = &all[i];
-                Poly { kind: p.kind, id: p.id, rings: p.rings.clone() }
-            }).collect())
+            Ok([(lake, 0usize), (inner, 1), (sea, 2)]
+                .into_iter()
+                .filter(|(r, _)| meets(*r))
+                .map(|(_, i)| {
+                    let p = &all[i];
+                    Poly { kind: p.kind, id: p.id, rings: p.rings.clone() }
+                })
+                .collect())
         }
         fn pin(&self) -> String {
             "test".into()
@@ -718,7 +851,16 @@ mod tests {
     /// a corner of four of its subtrees (12.656°E, 70.10°N: z8 columns 136–137, rows 56–57, in z6
     /// tile 6/34/14), and its raw tiles under `d`: the piece, its coverage, its raw tiles' cache.
     fn north_piece(d: &Path) -> ((u32, u32), Coverage, RawTiles) {
-        let cov = Coverage::fixture(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:12.656,70.10,1".into()] }], None, d).unwrap();
+        let cov = Coverage::fixture(
+            &[crate::agent::recipes::Recipe {
+                id: "r".into(),
+                name: "R".into(),
+                outline: vec!["place:12.656,70.10,1".into()],
+            }],
+            None,
+            d,
+        )
+        .unwrap();
         let by_q = crate::agent::build::coverage_tiles(&cov);
         let (&q, ts) = by_q.iter().next().unwrap();
         assert!(ts.contains(&(34, 14)), "{ts:?}");
@@ -738,7 +880,12 @@ mod tests {
         let subs = groups(&levels, None).unwrap();
         assert_eq!(subs, [vec![(136, 56)], vec![(136, 57)], vec![(137, 56)], vec![(137, 57)]]);
         // Two subtrees side by side (in a column, or a row): a lake across their edge.
-        let (a, b) = subs.iter().flatten().flat_map(|&a| subs.iter().flatten().map(move |&b| (a, b))).find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1)).unwrap();
+        let (a, b) = subs
+            .iter()
+            .flatten()
+            .flat_map(|&a| subs.iter().flatten().map(move |&b| (a, b)))
+            .find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1))
+            .unwrap();
         let water = Across { a, b };
         let cells = cells();
         let coarse = Coarse::new(&raw);
@@ -760,7 +907,10 @@ mod tests {
             let one = inp.make().unwrap();
             // (Written and read back as the job takes them.)
             write_hi(&d.path().join("hi.sect"), &inp.meta.piece, &inp.meta.subtrees, &one.0).unwrap();
-            assert_eq!(read_hi(&d.path().join("hi.sect"), &inp.meta.piece, &inp.meta.subtrees, &c.made).unwrap(), one.0);
+            assert_eq!(
+                read_hi(&d.path().join("hi.sect"), &inp.meta.piece, &inp.meta.subtrees, &c.made).unwrap(),
+                one.0
+            );
             assert!(read_hi(&d.path().join("hi.sect"), &inp.meta.piece, "8/1/1", &c.made).is_err(), "another group's");
             let alone = crate::terrain_pack::make_piece(&raw, &src, lv).unwrap();
             assert!(same(&one, &alone), "group {}: from its file as made here", subtrees_arg(g));
@@ -773,8 +923,14 @@ mod tests {
         // Not closed under its lakes, the piece isn't the same: the lake's level differs.
         let split = levels_of(&levels, &[a].into(), true);
         let rest = levels_of(&levels, &[a].into(), false);
-        let (x, y) = (crate::terrain_pack::make_piece(&raw, &src, split).unwrap(), crate::terrain_pack::make_piece(&raw, &src, rest).unwrap());
-        assert!(x.1.levels.get(&9) != whole.1.levels.get(&9) || y.1.levels.get(&9) != whole.1.levels.get(&9), "the test's lake has a level of each side's own");
+        let (x, y) = (
+            crate::terrain_pack::make_piece(&raw, &src, split).unwrap(),
+            crate::terrain_pack::make_piece(&raw, &src, rest).unwrap(),
+        );
+        assert!(
+            x.1.levels.get(&9) != whole.1.levels.get(&9) || y.1.levels.get(&9) != whole.1.levels.get(&9),
+            "the test's lake has a level of each side's own"
+        );
         // A tile the task wasn't cut for is refused, not "none"; a window too small, a panic.
         let g = &gs[0];
         let inp = Inputs::open(&d.path().join(format!("t-{}-{}", g[0].0, g[0].1)).join(INPUT)).unwrap();
@@ -786,28 +942,63 @@ mod tests {
         let p = water.polys(12, (a.0 << 4) + 15, (a.1 << 4) + 15).unwrap();
         assert!(!p.is_empty(), "the lake at its corner");
         let back = polys_from(&polys_bytes(&p)).unwrap();
-        assert_eq!(back.iter().map(|q| (q.kind, q.id, q.rings.clone())).collect::<Vec<_>>(), p.iter().map(|q| (q.kind, q.id, q.rings.clone())).collect::<Vec<_>>());
+        assert_eq!(
+            back.iter().map(|q| (q.kind, q.id, q.rings.clone())).collect::<Vec<_>>(),
+            p.iter().map(|q| (q.kind, q.id, q.rings.clone())).collect::<Vec<_>>()
+        );
         assert!(polys_from(&polys_bytes(&p)[..10]).is_err());
         assert_eq!(parse_subtrees(&subtrees_arg(&[a, b])).unwrap(), [a, b]);
     }
 
     /// The piece's run with `offload` into root `name` under `d`: its hi pack's and mid's content
     /// names.
-    fn piece(d: &Path, name: &str, t: (u32, u32), cov: &Coverage, raw: &RawTiles, src: &Sources, offload: Option<&Offload>) -> (Option<String>, Option<String>) {
+    fn piece(
+        d: &Path,
+        name: &str,
+        t: (u32, u32),
+        cov: &Coverage,
+        raw: &RawTiles,
+        src: &Sources,
+        offload: Option<&Offload>,
+    ) -> (Option<String>, Option<String>) {
         let mut out = Out::unbound(&d.join(name), &d.join(format!("{name}-scratch"))).unwrap();
-        rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap().install(|| build_piece_with(&mut out, raw, t, cov, src, false, &|_, _, _| {}, offload)).unwrap();
-        (out.get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)).map(str::to_string), out.get(&mid_logical(t.0, t.1)).map(|c| {
-            let (_, m) = read_mid(&out.path(c)).unwrap();
-            format!("{:?}", (m.quads.iter().map(|(k, v)| (*k, v.iter().map(|f| f.to_bits()).collect::<Vec<_>>())).collect::<Vec<_>>(), m.levels.iter().map(|(k, v)| (*k, v.to_bits())).collect::<Vec<_>>()))
-        }))
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| build_piece_with(&mut out, raw, t, cov, src, false, &|_, _, _| {}, offload))
+            .unwrap();
+        (
+            out.get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)).map(str::to_string),
+            out.get(&mid_logical(t.0, t.1)).map(|c| {
+                let (_, m) = read_mid(&out.path(c)).unwrap();
+                format!(
+                    "{:?}",
+                    (
+                        m.quads
+                            .iter()
+                            .map(|(k, v)| (*k, v.iter().map(|f| f.to_bits()).collect::<Vec<_>>()))
+                            .collect::<Vec<_>>(),
+                        m.levels.iter().map(|(k, v)| (*k, v.to_bits())).collect::<Vec<_>>()
+                    )
+                )
+            }),
+        )
     }
 
     /// A worker in a thread: asks until it's given a task (each 0.2 s, up to 20 s), runs it as the
     /// program `terrainsub` does, sends what it wrote (`spoil`: a tile spoilt first), done.
-    fn worker(url: &str, token: &str, name: &str, home: PathBuf, spoil: bool) -> std::thread::JoinHandle<Option<serde_json::Value>> {
+    fn worker(
+        url: &str,
+        token: &str,
+        name: &str,
+        home: PathBuf,
+        spoil: bool,
+    ) -> std::thread::JoinHandle<Option<serde_json::Value>> {
         let m = Client::at(vec![url.to_string()], token.to_string(), name);
         std::thread::spawn(move || {
-            let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
+            let ask =
+                crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
             let mut g = None;
             for _ in 0..100 {
                 if let Some(x) = m.ask(&ask).unwrap() {
@@ -824,7 +1015,12 @@ mod tests {
                 let p = i[0].as_str().unwrap();
                 std::fs::write(home.join(p), m.get_bytes(&format!("/work/in/{}/{p}", g.lease)).unwrap()).unwrap();
             }
-            let args: Vec<String> = task["runs"][0]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().replace("{dir}", &u.to_string_lossy())).collect();
+            let args: Vec<String> = task["runs"][0]["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a.as_str().unwrap().replace("{dir}", &u.to_string_lossy()))
+                .collect();
             assert_eq!(args[0], "--in");
             let inp = Inputs::open(Path::new(&args[1])).unwrap();
             let (mut hi, mid) = inp.make().unwrap();
@@ -854,7 +1050,12 @@ mod tests {
         let (t, cov, raw) = north_piece(p);
         let levels = piece_levels(&cov, t);
         let subs = groups(&levels, None).unwrap();
-        let (a, b) = subs.iter().flatten().flat_map(|&a| subs.iter().flatten().map(move |&b| (a, b))).find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1)).unwrap();
+        let (a, b) = subs
+            .iter()
+            .flatten()
+            .flat_map(|&a| subs.iter().flatten().map(move |&b| (a, b)))
+            .find(|(a, b)| (b.0 == a.0 + 1 && b.1 == a.1) || (b.0 == a.0 && b.1 == a.1 + 1))
+            .unwrap();
         let water = Across { a, b };
         let cells = cells();
         let coarse = Coarse::new(&raw);
@@ -864,7 +1065,8 @@ mod tests {
         let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");
         let url = format!("http://127.0.0.1:{port}");
         let tok = c.contact.token.clone();
-        let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
+        let ask =
+            crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
         // No worker around: nothing offered, the same piece.
         let o = Offload::at(url.clone(), c.job_token.clone(), &p.join("job"));
         assert_eq!(piece(p, "none", t, &cov, &raw, &src, Some(&o)), alone);
@@ -882,7 +1084,8 @@ mod tests {
         fast();
         // (Waited on until it's back: this is the exchange, not the waiting rule, and the worker is
         // a thread of this test.)
-        let patient = Offload::at(url.clone(), c.job_token.clone(), &p.join("job-patient")).waiting(crate::offload::Waiting::UntilDone);
+        let patient = Offload::at(url.clone(), c.job_token.clone(), &p.join("job-patient"))
+            .waiting(crate::offload::Waiting::UntilDone);
         let w = worker(&url, &tok, "m1", p.join("m1"), false);
         assert_eq!(piece(p, "taken", t, &cov, &raw, &src, Some(&patient)), alone);
         let task = w.join().unwrap().unwrap();
@@ -926,7 +1129,15 @@ mod tests {
         for (k, &t) in pieces.iter().enumerate() {
             for (z, tiles) in piece_levels(&cov, t) {
                 n_tiles += tiles.len();
-                let ids: Vec<Vec<u64>> = tiles.par_iter().map(|&(x, y)| tile_water(&water as &dyn WaterSource, z, x, y).unwrap().map(|w| w.ids.iter().copied().filter(|i| i >> 63 == 1).collect()).unwrap_or_default()).collect();
+                let ids: Vec<Vec<u64>> = tiles
+                    .par_iter()
+                    .map(|&(x, y)| {
+                        tile_water(&water as &dyn WaterSource, z, x, y)
+                            .unwrap()
+                            .map(|w| w.ids.iter().copied().filter(|i| i >> 63 == 1).collect())
+                            .unwrap_or_default()
+                    })
+                    .collect();
                 let mut by: HashMap<u64, Vec<(u32, u32)>> = HashMap::new();
                 for (&(x, y), v) in tiles.iter().zip(ids) {
                     own += v.len();
@@ -937,9 +1148,18 @@ mod tests {
                 for (i, v) in by.into_iter().filter(|(_, v)| v.len() > 1) {
                     let lonlat = |(x, y): (u32, u32)| {
                         let n = (1u64 << z) as f64;
-                        ((x as f64 + 0.5) / n * 360.0 - 180.0, (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + 0.5) / n)).sinh().atan().to_degrees())
+                        (
+                            (x as f64 + 0.5) / n * 360.0 - 180.0,
+                            (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + 0.5) / n)).sinh().atan().to_degrees(),
+                        )
                     };
-                    println!("piece 6/{}/{} z{z} key {i:#x}: tiles {:?} at {:?}", t.0, t.1, v, v.iter().map(|&p| lonlat(p)).collect::<Vec<_>>());
+                    println!(
+                        "piece 6/{}/{} z{z} key {i:#x}: tiles {:?} at {:?}",
+                        t.0,
+                        t.1,
+                        v,
+                        v.iter().map(|&p| lonlat(p)).collect::<Vec<_>>()
+                    );
                     shared.push((t, z, i, v));
                 }
             }
@@ -976,18 +1196,41 @@ mod tests {
         let mut out = Out::unbound(&root, &scratch.join("job")).unwrap();
         let cov = live_coverage(&out);
         let opened = crate::terrain_pack::SourceFiles::open(&out, false).unwrap();
-        let raw = RawTiles::with_store(&PathBuf::from(env("TT_RAW")), &root.join("sources/aws-terrarium"), &opened.declared.base);
+        let raw = RawTiles::with_store(
+            &PathBuf::from(env("TT_RAW")),
+            &root.join("sources/aws-terrarium"),
+            &opened.declared.base,
+        );
         let coarse = Coarse::new(&raw);
         let src = opened.sources(Some(&coarse));
-        let c = crate::coord::Coordinator::start(&scratch.join("coord"), Some(PathBuf::from(env("TT_WASM"))), port, "m4", "").unwrap();
+        let c = crate::coord::Coordinator::start(
+            &scratch.join("coord"),
+            Some(PathBuf::from(env("TT_WASM"))),
+            port,
+            "m4",
+            "",
+        )
+        .unwrap();
         let url = format!("http://127.0.0.1:{port}");
-        let off = Offload::at(url.clone(), c.job_token.clone(), &scratch.join("offload")).waiting(crate::offload::Waiting::UntilDone);
+        let off = Offload::at(url.clone(), c.job_token.clone(), &scratch.join("offload"))
+            .waiting(crate::offload::Waiting::UntilDone);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let native = env("TT_WORKER") == "native";
         let w = native.then(|| {
-            let (m, bin, dir, stop) = (Client::at(vec![url.clone()], c.contact.token.clone(), "m1"), PathBuf::from(env("TT_BIN")), scratch.join("native"), stop.clone());
+            let (m, bin, dir, stop) = (
+                Client::at(vec![url.clone()], c.contact.token.clone(), "m1"),
+                PathBuf::from(env("TT_BIN")),
+                scratch.join("native"),
+                stop.clone(),
+            );
             std::thread::spawn(move || {
-                let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 8192, cores: 8, ..Default::default() };
+                let ask = crate::coord::Ask {
+                    kind: "native".into(),
+                    can: vec![KIND.into()],
+                    mem_mb: 8192,
+                    cores: 8,
+                    ..Default::default()
+                };
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                     let Some(g) = m.ask(&ask).unwrap() else {
                         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -995,7 +1238,13 @@ mod tests {
                     };
                     let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
                     let r = crate::offload::run_task(&m, g.lease, &task, &dir, &bin, None).unwrap();
-                    let done = crate::coord::Done { lease: g.lease, outputs: serde_json::from_value(r["outputs"].clone()).unwrap(), secs: r["secs"].as_f64().unwrap(), peak_mb: r["peak_mb"].as_u64().unwrap(), ..Default::default() };
+                    let done = crate::coord::Done {
+                        lease: g.lease,
+                        outputs: serde_json::from_value(r["outputs"].clone()).unwrap(),
+                        secs: r["secs"].as_f64().unwrap(),
+                        peak_mb: r["peak_mb"].as_u64().unwrap(),
+                        ..Default::default()
+                    };
                     m.done(&done).unwrap();
                 }
             })
@@ -1003,7 +1252,14 @@ mod tests {
         // (A page: waited for, up to ten minutes.)
         let began = std::time::Instant::now();
         let who = loop {
-            let found = c.shared.lock().unwrap().workers.iter().find(|(_, w)| w.can.iter().any(|k| k == KIND)).map(|(n, _)| n.clone());
+            let found = c
+                .shared
+                .lock()
+                .unwrap()
+                .workers
+                .iter()
+                .find(|(_, w)| w.can.iter().any(|k| k == KIND))
+                .map(|(n, _)| n.clone());
             if let Some(n) = found {
                 break n;
             }
@@ -1011,7 +1267,10 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(500));
         };
         eprintln!("worker: {who}");
-        let pieces: Vec<(u32, u32)> = env("TT_PIECES").split(',').map(|p| crate::legacy::Unit::parse(p).filter(|u| u.z == 6).map(|u| (u.x, u.y)).unwrap()).collect();
+        let pieces: Vec<(u32, u32)> = env("TT_PIECES")
+            .split(',')
+            .map(|p| crate::legacy::Unit::parse(p).filter(|u| u.z == 6).map(|u| (u.x, u.y)).unwrap())
+            .collect();
         for (k, &t) in pieces.iter().enumerate() {
             let (hi_l, mid_l) = (format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1));
             let (hi_was, mid_was) = (out.get(&hi_l).map(str::to_string), out.get(&mid_l).map(str::to_string));
@@ -1023,11 +1282,17 @@ mod tests {
             }
             let t0 = std::time::Instant::now();
             out.remove(&mid_l);
-            crate::terrain_pack::build_piece_with(&mut out, &raw, t, &cov, &src, true, &|_, _, _| {}, Some(&off)).unwrap();
+            crate::terrain_pack::build_piece_with(&mut out, &raw, t, &cov, &src, true, &|_, _, _| {}, Some(&off))
+                .unwrap();
             assert_eq!(out.get(&hi_l).map(str::to_string), hi_was, "6/{}/{}'s hi pack", t.0, t.1);
             assert_eq!(out.get(&mid_l).map(str::to_string), mid_was, "6/{}/{}'s mid", t.0, t.1);
             let s = c.shared.lock().unwrap();
-            let costs: Vec<String> = s.costs.iter().filter(|(k, _)| k.starts_with(KIND)).map(|(k, v)| format!("{k}: {} MB", v.peak_mb)).collect();
+            let costs: Vec<String> = s
+                .costs
+                .iter()
+                .filter(|(k, _)| k.starts_with(KIND))
+                .map(|(k, v)| format!("{k}: {} MB", v.peak_mb))
+                .collect();
             println!("6/{}/{}: the same hi pack ({}) and mid ({}) in {:.1} s; {who}: done {}, checked {}, bad {}; costs {costs:?}", t.0, t.1, hi_was.unwrap(), mid_was.unwrap(), t0.elapsed().as_secs_f64(), s.workers[&who].done, s.workers[&who].checked, s.workers[&who].bad);
             assert!(!s.workers[&who].bad);
         }
@@ -1036,5 +1301,4 @@ mod tests {
             w.join().unwrap();
         }
     }
-
 }

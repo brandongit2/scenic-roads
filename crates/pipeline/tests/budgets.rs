@@ -49,10 +49,22 @@ const OFF: &[&str] = &[".proxy(None)", "ProxyHandler({})", "--noproxy", "no_prox
 
 /// The lines turning the proxy off: by file and what the line says, with why.
 const BYPASS: &[(&str, &str, &str)] = &[
-    ("crates/pipeline/src/bin/scenic-metrics.rs", ".proxy(None)", "the owner's metrics tool, run by hand on this Mac, asking the agents here and on the LAN: never a job"),
+    (
+        "crates/pipeline/src/bin/scenic-metrics.rs",
+        ".proxy(None)",
+        "the owner's metrics tool, run by hand on this Mac, asking the agents here and on the LAN: never a job",
+    ),
     ("dem/budget.py", "ProxyHandler({})", "the hold told to the proxy itself, on this Mac"),
-    ("crates/pipeline/src/budget/proxy.rs", "NO_PROXY", "the job's own Mac (its coordinator on 127.0.0.1) direct: the sandbox allows it"),
-    ("crates/pipeline/src/agent/mod.rs", "NO_PROXY=localhost,127.0.0.1,::1", "a test: the job's environment as the proxy gives it"),
+    (
+        "crates/pipeline/src/budget/proxy.rs",
+        "NO_PROXY",
+        "the job's own Mac (its coordinator on 127.0.0.1) direct: the sandbox allows it",
+    ),
+    (
+        "crates/pipeline/src/agent/mod.rs",
+        "NO_PROXY=localhost,127.0.0.1,::1",
+        "a test: the job's environment as the proxy gives it",
+    ),
 ];
 
 /// Whether `text` names a metered host (in a URL, a query's prefix, a string).
@@ -79,7 +91,12 @@ fn jobs_code() -> Vec<(String, String)> {
     files(&root.join("dem"), "py", &mut fs);
     let mut out: Vec<(String, String)> = fs
         .into_iter()
-        .map(|f| (f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"), std::fs::read_to_string(&f).unwrap_or_default()))
+        .map(|f| {
+            (
+                f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/"),
+                std::fs::read_to_string(&f).unwrap_or_default(),
+            )
+        })
         .collect();
     out.sort();
     out
@@ -102,7 +119,10 @@ fn every_file_naming_wikimedia_is_listed_with_how_it_asks() {
         }
     }
     let stale: Vec<_> = ASKS.iter().enumerate().filter(|(i, _)| !used.contains(i)).map(|(_, (f, _))| *f).collect();
-    assert!(bad.is_empty(), "files naming a metered host, not listed in ASKS with how their requests go through the proxy: {bad:?}");
+    assert!(
+        bad.is_empty(),
+        "files naming a metered host, not listed in ASKS with how their requests go through the proxy: {bad:?}"
+    );
     assert!(stale.is_empty(), "ASKS lists files that name no metered host any more: {stale:?}");
 }
 
@@ -111,7 +131,10 @@ fn the_python_that_asks_tells_a_429() {
     let code: std::collections::BTreeMap<String, String> = jobs_code().into_iter().collect();
     for f in REPORTS {
         let t = &code[*f];
-        assert!(t.contains("import budget") && t.contains("budget.seen("), "{f}: asks a metered host, so tells the proxy a 429 (budget.seen)");
+        assert!(
+            t.contains("import budget") && t.contains("budget.seen("),
+            "{f}: asks a metered host, so tells the proxy a 429 (budget.seen)"
+        );
     }
 }
 
@@ -130,7 +153,12 @@ fn nothing_turns_the_proxy_off_but_what_is_listed() {
             }
         }
     }
-    let stale: Vec<_> = BYPASS.iter().enumerate().filter(|(i, _)| !used.contains(i)).map(|(_, (f, w, _))| format!("{f}: {w}")).collect();
+    let stale: Vec<_> = BYPASS
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !used.contains(i))
+        .map(|(_, (f, w, _))| format!("{f}: {w}"))
+        .collect();
     assert!(bad.is_empty(), "lines turning the proxy off, not listed in BYPASS with why:\n{}", bad.join("\n"));
     assert!(stale.is_empty(), "BYPASS lists lines that aren't there any more: {stale:?}");
 }
@@ -141,7 +169,8 @@ fn nothing_turns_the_proxy_off_but_what_is_listed() {
 fn the_pythons_hosts_are_the_budgets() {
     let t = std::fs::read_to_string(root().join("dem/budget.py")).unwrap();
     let list = |name: &str| -> Vec<String> {
-        let start = t.find(&format!("\n{name} = (")).unwrap_or_else(|| panic!("{name} in dem/budget.py")) + name.len() + 5;
+        let start =
+            t.find(&format!("\n{name} = (")).unwrap_or_else(|| panic!("{name} in dem/budget.py")) + name.len() + 5;
         let end = start + t[start..].find(')').unwrap();
         t[start..end].split(',').map(|s| s.trim().trim_matches('"').to_string()).filter(|s| !s.is_empty()).collect()
     };

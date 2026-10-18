@@ -458,7 +458,11 @@ fn main() {
                         // Texel coordinates in the block: z14 units are 2^-26 of the world, texels 2^-23.
                         let ox = (x14 as f64 * 4096.0 - bx as f64 * 32768.0) / 8.0;
                         let oy = (y14 as f64 * 4096.0 - by as f64 * 32768.0) / 8.0;
-                        let rings: Vec<Vec<(f64, f64)>> = f.rings.iter().map(|r| r.iter().map(|p| (ox + p[0] as f64 / 8.0, oy + p[1] as f64 / 8.0)).collect()).collect();
+                        let rings: Vec<Vec<(f64, f64)>> = f
+                            .rings
+                            .iter()
+                            .map(|r| r.iter().map(|p| (ox + p[0] as f64 / 8.0, oy + p[1] as f64 / 8.0)).collect())
+                            .collect();
                         let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
                         for r in &rings {
                             for p in r {
@@ -483,7 +487,13 @@ fn main() {
                         }
                         let area = 0.5 * a2.abs() * side * side;
                         let class = CLASS_TOP.iter().filter(|&&t| f.h >= t).count();
-                        let g = if class <= 1 && area >= 2000.0 { 2 + class } else if class <= 1 { class } else { 2 + class };
+                        let g = if class <= 1 && area >= 2000.0 {
+                            2 + class
+                        } else if class <= 1 {
+                            class
+                        } else {
+                            2 + class
+                        };
                         if accf[g].is_empty() {
                             accf[g] = vec![0f32; STRIDE * B];
                             accv[g] = vec![0f32; STRIDE * B];
@@ -606,7 +616,14 @@ fn main() {
     let s = out.stats.lock().unwrap();
     let mut js = String::from("{");
     for (i, (z, (n, b, mx))) in s.iter().enumerate() {
-        js += &format!("{}\"{}\": {{\"tiles\": {}, \"bytes\": {}, \"max\": {}}}", if i > 0 { ", " } else { "" }, z, n, b, mx);
+        js += &format!(
+            "{}\"{}\": {{\"tiles\": {}, \"bytes\": {}, \"max\": {}}}",
+            if i > 0 { ", " } else { "" },
+            z,
+            n,
+            b,
+            mx
+        );
     }
     js += "}";
     std::fs::write(format!("{}/stats.json", out.dir), &js).unwrap();

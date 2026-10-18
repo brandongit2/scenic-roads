@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 /// A Hugging Face dataset's file list, with sizes, from its URL (`<host>/datasets/<owner>/<name>`).
 pub fn listing_url(mirror: &str) -> Result<String> {
     let m = mirror.trim_end_matches('/');
-    let (host, rest) = m.split_once("/datasets/").context("--mirror: a Hugging Face dataset's URL (<host>/datasets/<owner>/<name>)")?;
+    let (host, rest) = m
+        .split_once("/datasets/")
+        .context("--mirror: a Hugging Face dataset's URL (<host>/datasets/<owner>/<name>)")?;
     Ok(format!("{host}/api/datasets/{rest}?blobs=true"))
 }
 
@@ -45,8 +47,10 @@ pub fn tiles(listing: &[u8], first: &[String]) -> Result<Vec<Tile>> {
     for s in sib {
         let Some(p) = s["rfilename"].as_str() else { continue };
         let parts: Vec<&str> = p.split('/').collect();
-        let [ "tiles", dir, name ] = parts[..] else { continue };
-        let (Some(square), true) = (dir.strip_suffix("_FABDEM_V1-2"), name.ends_with("_FABDEM_V1-2.tif")) else { continue };
+        let ["tiles", dir, name] = parts[..] else { continue };
+        let (Some(square), true) = (dir.strip_suffix("_FABDEM_V1-2"), name.ends_with("_FABDEM_V1-2.tif")) else {
+            continue;
+        };
         let size = s["size"].as_u64().with_context(|| format!("{p}: no size in the listing"))?;
         let sha256 = s["lfs"]["sha256"].as_str().map(str::to_string);
         out.push(Tile { path: p.to_string(), square: square.to_string(), name: name.to_string(), size, sha256 });
@@ -296,7 +300,16 @@ pub struct Done {
 
 /// Every tile of `tiles` not in `store` (by name), downloaded through `work` and stored, in order;
 /// a tile that fails is noted and the run goes on. `say` hears each line of progress.
-pub fn run(get: &dyn Get, mirror: &str, tiles: &[Tile], store: &Path, work: &Path, tries: u32, wait: &dyn Fn(Duration), say: &mut dyn FnMut(&str)) -> Result<Done> {
+pub fn run(
+    get: &dyn Get,
+    mirror: &str,
+    tiles: &[Tile],
+    store: &Path,
+    work: &Path,
+    tries: u32,
+    wait: &dyn Fn(Duration),
+    say: &mut dyn FnMut(&str),
+) -> Result<Done> {
     let _held = lock_work(work)?;
     std::fs::create_dir_all(store)?;
     let have = stored(store)?;
@@ -304,7 +317,13 @@ pub fn run(get: &dyn Get, mirror: &str, tiles: &[Tile], store: &Path, work: &Pat
     let todo: Vec<&Tile> = tiles.iter().filter(|t| !have.contains(&t.name)).collect();
     done.skipped = tiles.len() - todo.len();
     let total: u64 = todo.iter().map(|t| t.size).sum();
-    say(&format!("fabdem-fetch: {} tiles listed, {} stored already, {} to fetch ({:.1} GiB)", tiles.len(), done.skipped, todo.len(), total as f64 / (1u64 << 30) as f64));
+    say(&format!(
+        "fabdem-fetch: {} tiles listed, {} stored already, {} to fetch ({:.1} GiB)",
+        tiles.len(),
+        done.skipped,
+        todo.len(),
+        total as f64 / (1u64 << 30) as f64
+    ));
     let t0 = Instant::now();
     for (i, t) in todo.iter().enumerate() {
         let part = work.join(format!("{}.part", t.name));
@@ -413,7 +432,14 @@ mod tests {
     }
 
     fn mem(files: Vec<(String, Vec<u8>)>, breaks: Vec<usize>, whole: bool) -> Mem {
-        Mem { files: Mutex::new(files.into_iter().collect()), breaks: Mutex::new(breaks), whole, asked: Mutex::default(), swap: Mutex::default(), deaf: false }
+        Mem {
+            files: Mutex::new(files.into_iter().collect()),
+            breaks: Mutex::new(breaks),
+            whole,
+            asked: Mutex::default(),
+            swap: Mutex::default(),
+            deaf: false,
+        }
     }
 
     fn hex(b: &[u8]) -> String {
@@ -425,7 +451,9 @@ mod tests {
         fn get(&self, url: &str, from: u64, if_range: Option<&str>) -> Result<Answer> {
             let first = !self.asked.lock().unwrap().iter().any(|(u, _)| u == url);
             self.asked.lock().unwrap().push((url.to_string(), from));
-            let Some(b) = self.files.lock().unwrap().get(url).cloned() else { return Ok(Answer { status: 404, etag: None, body: Box::new(std::io::empty()) }) };
+            let Some(b) = self.files.lock().unwrap().get(url).cloned() else {
+                return Ok(Answer { status: 404, etag: None, body: Box::new(std::io::empty()) });
+            };
             if first {
                 if let Some((u, nb)) = self.swap.lock().unwrap().take_if(|(u, _)| u == url) {
                     self.files.lock().unwrap().insert(u, nb);
@@ -433,7 +461,8 @@ mod tests {
             }
             let etag = Some(format!("\"{}\"", hex(&b)));
             let same = self.deaf || if_range.is_none_or(|t| Some(t) == etag.as_deref());
-            let (status, mut body) = if from > 0 && !self.whole && same { (206, b[from as usize..].to_vec()) } else { (200, b.clone()) };
+            let (status, mut body) =
+                if from > 0 && !self.whole && same { (206, b[from as usize..].to_vec()) } else { (200, b.clone()) };
             if let Some(n) = self.breaks.lock().unwrap().pop() {
                 body.truncate(n);
                 struct Broken(std::io::Cursor<Vec<u8>>);
@@ -453,7 +482,8 @@ mod tests {
 
     fn tif(k: u32) -> Vec<u8> {
         let data: Vec<f32> = (0..300 * 200).map(|i| (i % 911) as f32 + k as f32).collect();
-        write_f32(300, 200, &data, 512, [k as f64, 1.0 / 3600.0, 0.0, 10.0, 0.0, -1.0 / 3600.0], 4326, Some(-9999.0)).unwrap()
+        write_f32(300, 200, &data, 512, [k as f64, 1.0 / 3600.0, 0.0, 10.0, 0.0, -1.0 / 3600.0], 4326, Some(-9999.0))
+            .unwrap()
     }
 
     fn listing_of(files: &[(&str, usize)]) -> Vec<u8> {
@@ -463,7 +493,13 @@ mod tests {
 
     #[test]
     fn the_listing_gives_tiles_the_blocked_squares_first() {
-        let l = listing_of(&[("license.txt", 9), ("FABDEM_v1-2_tiles.geojson", 5), ("tiles/N40E000-N50E010_FABDEM_V1-2/N48E002_FABDEM_V1-2.tif", 7), ("tiles/N20W110-N30W100_FABDEM_V1-2/N25W105_FABDEM_V1-2.tif", 8), ("tiles/N00E000-N10E010_FABDEM_V1-2/N00E006_FABDEM_V1-2.tif", 6)]);
+        let l = listing_of(&[
+            ("license.txt", 9),
+            ("FABDEM_v1-2_tiles.geojson", 5),
+            ("tiles/N40E000-N50E010_FABDEM_V1-2/N48E002_FABDEM_V1-2.tif", 7),
+            ("tiles/N20W110-N30W100_FABDEM_V1-2/N25W105_FABDEM_V1-2.tif", 8),
+            ("tiles/N00E000-N10E010_FABDEM_V1-2/N00E006_FABDEM_V1-2.tif", 6),
+        ]);
         let t = tiles(&l, &["N20W110-N30W100".into()]).unwrap();
         let names: Vec<&str> = t.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["N25W105_FABDEM_V1-2.tif", "N00E006_FABDEM_V1-2.tif", "N48E002_FABDEM_V1-2.tif"]);
@@ -492,14 +528,20 @@ mod tests {
         assert_eq!((done.stored, done.skipped, done.failed.len()), (1, 1, 0));
         let asked = mem.asked.lock().unwrap().clone();
         assert_eq!(asked, vec![(ub.clone(), 0), (ub.clone(), 1000), (ub.clone(), 1000 + (b.len() / 2) as u64)]);
-        let got = crate::geotiff::Tiff::open(Arc::new(std::fs::read(store.join("N02E002_FABDEM_V1-2.tif")).unwrap())).unwrap();
+        let got = crate::geotiff::Tiff::open(Arc::new(std::fs::read(store.join("N02E002_FABDEM_V1-2.tif")).unwrap()))
+            .unwrap();
         let want = crate::geotiff::Tiff::open(Arc::new(b.clone())).unwrap();
         assert_eq!(got.read_window(0, 0, 0, 300, 200).unwrap(), want.read_window(0, 0, 0, 300, 200).unwrap());
         assert_eq!((got.transform(0).unwrap(), got.nodata()), (want.transform(0).unwrap(), want.nodata()));
-        let mut names: Vec<String> = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let mut names: Vec<String> =
+            std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         assert_eq!(names, ["N01E001_FABDEM_V1-2.tif", "N02E002_FABDEM_V1-2.tif", "N34E140.none"]);
-        assert_eq!(std::fs::read_dir(&work).unwrap().filter(|e| e.as_ref().unwrap().file_name() != ".lock").count(), 0, "no part left");
+        assert_eq!(
+            std::fs::read_dir(&work).unwrap().filter(|e| e.as_ref().unwrap().file_name() != ".lock").count(),
+            0,
+            "no part left"
+        );
         assert!(lines.iter().any(|l| l.starts_with("[1/1]")));
         mem.asked.lock().unwrap().clear();
         let again = run(&mem, MIRROR, &t, &store, &work, 5, &|_| {}, &mut |_| {}).unwrap();
@@ -527,10 +569,18 @@ mod tests {
         let failed: Vec<&str> = done.failed.iter().map(|f| f.0.as_str()).collect();
         assert_eq!(failed, ["N03E003_FABDEM_V1-2.tif", "N05E005_FABDEM_V1-2.tif"]);
         assert_eq!(done.stored, 1);
-        let names: Vec<String> = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-        assert_eq!(listing_url(&format!("{MIRROR}/")).unwrap(), "https://mirror.example/api/datasets/o/fabdem?blobs=true");
+        let names: Vec<String> =
+            std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(
+            listing_url(&format!("{MIRROR}/")).unwrap(),
+            "https://mirror.example/api/datasets/o/fabdem?blobs=true"
+        );
         assert_eq!(names, ["N04E004_FABDEM_V1-2.tif"], "nothing else in the store, no temporary file");
-        assert_eq!(mem.asked.lock().unwrap().iter().filter(|(x, _)| *x == u(pb2)).count(), 3, "a range answered whole started again, then downloaded once more");
+        assert_eq!(
+            mem.asked.lock().unwrap().iter().filter(|(x, _)| *x == u(pb2)).count(),
+            3,
+            "a range answered whole started again, then downloaded once more"
+        );
     }
 
     /// Two tiles padded to one length (a TIFF's trailing bytes are never read).
@@ -564,9 +614,14 @@ mod tests {
         assert_eq!(done.failed.len(), 1);
         assert!(done.failed[0].1.contains("SHA-256"), "{:?}", done.failed);
         assert_eq!(m.asked.lock().unwrap().iter().filter(|(x, _)| *x == u(pa)).count(), 2, "fetched once more");
-        let names: Vec<String> = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        let names: Vec<String> =
+            std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["N06E006_FABDEM_V1-2.tif"]);
-        let left: Vec<String> = std::fs::read_dir(&work).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n != ".lock").collect();
+        let left: Vec<String> = std::fs::read_dir(&work)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n != ".lock")
+            .collect();
         assert!(left.is_empty(), "{left:?}");
     }
 
@@ -585,7 +640,11 @@ mod tests {
         *m.swap.lock().unwrap() = Some((url.clone(), new.clone()));
         let done = run(&m, MIRROR, &t, &store, &work, 3, &|_| {}, &mut |_| {}).unwrap();
         assert!(done.failed.is_empty(), "{:?}", done.failed);
-        assert_eq!(m.asked.lock().unwrap().clone(), vec![(url.clone(), 0), (url.clone(), 1000)], "the resume answered whole, no fetch again");
+        assert_eq!(
+            m.asked.lock().unwrap().clone(),
+            vec![(url.clone(), 0), (url.clone(), 1000)],
+            "the resume answered whole, no fetch again"
+        );
         // A server deaf to `If-Range` (206 of the new file): its ETag differs from the part's, so
         // the part is started again, never spliced.
         let (store2, work2) = (d.path().join("fabdem2"), d.path().join("work2"));
@@ -595,8 +654,14 @@ mod tests {
         let done = run(&m, MIRROR, &t, &store2, &work2, 3, &|_| {}, &mut |_| {}).unwrap();
         assert!(done.failed.is_empty(), "{:?}", done.failed);
         assert_eq!(m.asked.lock().unwrap().clone(), vec![(url.clone(), 0), (url.clone(), 1000), (url.clone(), 0)]);
-        assert_eq!(std::fs::read(store2.join("N07E007_FABDEM_V1-2.tif")).unwrap(), std::fs::read(store.join("N07E007_FABDEM_V1-2.tif")).unwrap());
-        let got = crate::geotiff::Tiff::open(std::sync::Arc::new(std::fs::read(store.join("N07E007_FABDEM_V1-2.tif")).unwrap())).unwrap();
+        assert_eq!(
+            std::fs::read(store2.join("N07E007_FABDEM_V1-2.tif")).unwrap(),
+            std::fs::read(store.join("N07E007_FABDEM_V1-2.tif")).unwrap()
+        );
+        let got = crate::geotiff::Tiff::open(std::sync::Arc::new(
+            std::fs::read(store.join("N07E007_FABDEM_V1-2.tif")).unwrap(),
+        ))
+        .unwrap();
         let want = crate::geotiff::Tiff::open(std::sync::Arc::new(new)).unwrap();
         assert_eq!(got.read_window(0, 0, 0, 300, 200).unwrap(), want.read_window(0, 0, 0, 300, 200).unwrap());
     }
@@ -608,7 +673,11 @@ mod tests {
         let held = lock_work(d.path()).unwrap();
         let e = format!("{:#}", lock_work(d.path()).unwrap_err());
         assert!(e.contains("another fabdem-fetch is using the work folder"), "{e}");
-        let e = format!("{:#}", run(&mem(vec![], vec![], false), MIRROR, &[], &d.path().join("s"), d.path(), 1, &|_| {}, &mut |_| {}).unwrap_err());
+        let e = format!(
+            "{:#}",
+            run(&mem(vec![], vec![], false), MIRROR, &[], &d.path().join("s"), d.path(), 1, &|_| {}, &mut |_| {})
+                .unwrap_err()
+        );
         assert!(e.contains("another fabdem-fetch"), "{e}");
         drop(held);
         assert!(lock_work(d.path()).is_ok());

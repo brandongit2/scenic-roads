@@ -37,14 +37,18 @@ fn the_declared_squares_are_where_the_code_read_them() {
         assert!(before(name).contains(url), "{name}: {url}");
     }
     // (The equator's row: 29 squares, most under `lat=-0.0`.)
-    let equator: Vec<&String> = s.canopy.iter().filter(|(n, _)| n.starts_with("meta_chm_lat=0.0_")).map(|(_, u)| u).collect();
+    let equator: Vec<&String> =
+        s.canopy.iter().filter(|(n, _)| n.starts_with("meta_chm_lat=0.0_")).map(|(_, u)| u).collect();
     assert_eq!(equator.len(), 29 * 3);
     assert!(equator.iter().filter(|u| u.contains("lat=-0.0")).count() > 60);
     assert_eq!(s.canopy[&chm_name(50, 0, "p95")], format!("{prefix}/meta_chm_lat=50.0_lon=0.0_p95.tif"));
     let l = &s.leaf;
     assert_eq!(l.europe, "https://image.discomap.eea.europa.eu/arcgis/rest/services/GioLandPublic/HRL_DominantLeafType2018/ImageServer/exportImage");
     assert_eq!(l.north_america, "https://www.cec.org/files/atlas_layers/1_terrestrial_ecosystems/1_01_0_land_cover_2020_30m/land_cover_2020v2_30m_tif.zip");
-    assert_eq!((l.north_america_member, l.europe_box, l.north_america_box), ([38952, 2668629085], [-40.0, 20.0, 40.0, 75.0], [-180.0, 14.0, -50.0, 84.0]));
+    assert_eq!(
+        (l.north_america_member, l.europe_box, l.north_america_box),
+        ([38952, 2668629085], [-40.0, 20.0, 40.0, 75.0], [-180.0, 14.0, -50.0, 84.0])
+    );
 }
 
 /// An `n` × `n` one-band TIFF of `bits`-bit unsigned samples in 512-pixel tiles, Deflate: tile
@@ -55,7 +59,13 @@ fn tiff(n: u32, bits: u16, tile: &dyn Fn(u32, u32) -> Option<Vec<u8>>, meta: &[(
 }
 
 /// `tiff` with GDAL's nodata tag: a sparse tile reads as it.
-fn tiff_nodata(n: u32, bits: u16, tile: &dyn Fn(u32, u32) -> Option<Vec<u8>>, meta: &[(&str, &str)], nodata: Option<&str>) -> Vec<u8> {
+fn tiff_nodata(
+    n: u32,
+    bits: u16,
+    tile: &dyn Fn(u32, u32) -> Option<Vec<u8>>,
+    meta: &[(&str, &str)],
+    nodata: Option<&str>,
+) -> Vec<u8> {
     const T: u32 = 512;
     let across = n.div_ceil(T);
     let mut blobs: Vec<Vec<u8>> = Vec::new();
@@ -73,10 +83,29 @@ fn tiff_nodata(n: u32, bits: u16, tile: &dyn Fn(u32, u32) -> Option<Vec<u8>>, me
             }));
         }
     }
-    let xml = if meta.is_empty() { String::new() } else { format!("<GDALMetadata>\n{}</GDALMetadata>\n\0", meta.iter().map(|(k, v)| format!("  <Item name=\"{k}\">{v}</Item>\n")).collect::<String>()) };
+    let xml = if meta.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<GDALMetadata>\n{}</GDALMetadata>\n\0",
+            meta.iter().map(|(k, v)| format!("  <Item name=\"{k}\">{v}</Item>\n")).collect::<String>()
+        )
+    };
     let count = which.len() as u32;
     // Header, directory, its arrays and the metadata, then the tiles.
-    let mut entries: Vec<(u16, u16, u32, u32)> = vec![(256, 4, 1, n), (257, 4, 1, n), (258, 3, 1, bits as u32), (259, 3, 1, 8), (262, 3, 1, 1), (277, 3, 1, 1), (322, 3, 1, T), (323, 3, 1, T), (324, 4, count, 0), (325, 4, count, 0), (339, 3, 1, 1)];
+    let mut entries: Vec<(u16, u16, u32, u32)> = vec![
+        (256, 4, 1, n),
+        (257, 4, 1, n),
+        (258, 3, 1, bits as u32),
+        (259, 3, 1, 8),
+        (262, 3, 1, 1),
+        (277, 3, 1, 1),
+        (322, 3, 1, T),
+        (323, 3, 1, T),
+        (324, 4, count, 0),
+        (325, 4, count, 0),
+        (339, 3, 1, 1),
+    ];
     if !xml.is_empty() {
         entries.push((42112, 2, xml.len() as u32, 0));
     }
@@ -104,7 +133,9 @@ fn tiff_nodata(n: u32, bits: u16, tile: &dyn Fn(u32, u32) -> Option<Vec<u8>>, me
             325 => (arrays + 4 * count as usize) as u32,
             42112 => xml_at as u32,
             42113 if nd.len() > 4 => nd_at as u32,
-            42113 => u32::from_le_bytes(nd.as_bytes().iter().copied().chain([0; 4]).take(4).collect::<Vec<u8>>().try_into().unwrap()),
+            42113 => u32::from_le_bytes(
+                nd.as_bytes().iter().copied().chain([0; 4]).take(4).collect::<Vec<u8>>().try_into().unwrap(),
+            ),
             _ => e.3,
         };
         out.extend_from_slice(&e.0.to_le_bytes());
@@ -162,10 +193,28 @@ fn leaf_at(r: u32, c: u32) -> u32 {
 pub(crate) fn squares_dir() -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     let chm = |tx: u32, ty: u32| (43..=45).contains(&tx) && ty == 8;
-    std::fs::write(d.path().join(chm_name(50, 0, "cover5m")), tiff(40000, 16, &|tx, ty| chm(tx, ty).then(|| samples(tx, ty, 16, &cover_at)), &[])).unwrap();
-    std::fs::write(d.path().join(chm_name(50, 0, "p95")), tiff(40000, 16, &|tx, ty| chm(tx, ty).then(|| samples(tx, ty, 16, &height_at)), &[])).unwrap();
+    std::fs::write(
+        d.path().join(chm_name(50, 0, "cover5m")),
+        tiff(40000, 16, &|tx, ty| chm(tx, ty).then(|| samples(tx, ty, 16, &cover_at)), &[]),
+    )
+    .unwrap();
+    std::fs::write(
+        d.path().join(chm_name(50, 0, "p95")),
+        tiff(40000, 16, &|tx, ty| chm(tx, ty).then(|| samples(tx, ty, 16, &height_at)), &[]),
+    )
+    .unwrap();
     let leaf = |tx: u32, ty: u32| (21..=22).contains(&tx) && ty == 4;
-    std::fs::write(d.path().join(leaf_name(50, 0)), tiff_nodata(20000, 8, &|tx, ty| leaf(tx, ty).then(|| samples(tx, ty, 8, &leaf_at)), &[("complete", "1"), ("source", "test")], Some("255"))).unwrap();
+    std::fs::write(
+        d.path().join(leaf_name(50, 0)),
+        tiff_nodata(
+            20000,
+            8,
+            &|tx, ty| leaf(tx, ty).then(|| samples(tx, ty, 8, &leaf_at)),
+            &[("complete", "1"), ("source", "test")],
+            Some("255"),
+        ),
+    )
+    .unwrap();
     d
 }
 
@@ -199,7 +248,10 @@ fn geometry_as_trees_py() {
     assert_eq!(squares_of(b), [(50, 0)]);
     assert_eq!(squares_of(tile_bounds(8, 130, 86)), [(60, 0), (50, 0)]);
     assert_eq!(squares_of([-0.5, 9.5, 0.5, 10.5]), [(20, -10), (20, 0), (10, -10), (10, 0)]);
-    assert_eq!((chm_name(50, -10, "p95"), leaf_name(50, -10)), ("meta_chm_lat=50.0_lon=-10.0_p95.tif".to_string(), "lat50_lon-10.tif".to_string()));
+    assert_eq!(
+        (chm_name(50, -10, "p95"), leaf_name(50, -10)),
+        ("meta_chm_lat=50.0_lon=-10.0_p95.tif".to_string(), "lat50_lon-10.tif".to_string())
+    );
     // A square's pixel for a latitude and longitude, none outside it.
     let p = indices(50, 0, CHM_RES, &[-0.0001, 0.0, 9.99999, 10.0], &[49.9999, 40.0001, 40.0, 50.0]);
     assert_eq!(p.n, 40000);
@@ -212,10 +264,17 @@ fn geometry_as_trees_py() {
 #[test]
 fn rings_densified_and_burnt_as_gdal() {
     // trees.py's densify of [[0, 0], [0.12, 0], [0.12, 0.07], [0, 0]].
-    let s = Shapes::parse(r#"{"shapes": [[[[0, 0], [0.12, 0], [0.12, 0.07], [0, 0]], [[1, 1], [2, 2]]], []]}"#).unwrap();
+    let s =
+        Shapes::parse(r#"{"shapes": [[[[0, 0], [0.12, 0], [0.12, 0.07], [0, 0]], [[1, 1], [2, 2]]], []]}"#).unwrap();
     assert_eq!((s.shapes.len(), s.shapes[0].len(), s.shapes[1].len()), (2, 1, 0), "a ring of two points left out");
     assert_eq!(s.shapes[0][0].bbox, [0.0, 0.0, 0.12, 0.07]);
-    let lens = [(0.039999999999999994, 0.0), (0.07999999999999999, 0.0), (0.12, 0.035), (0.08, 0.046666666666666676), (0.04000000000000001, 0.023333333333333338)];
+    let lens = [
+        (0.039999999999999994, 0.0),
+        (0.07999999999999999, 0.0),
+        (0.12, 0.035),
+        (0.08, 0.046666666666666676),
+        (0.04000000000000001, 0.023333333333333338),
+    ];
     let r = s.shapes[0][0].merc_for_test();
     for (lon, lat) in lens {
         assert!(r.contains(&merc(lon, lat)), "{lon} {lat}");
@@ -227,7 +286,9 @@ fn rings_densified_and_burnt_as_gdal() {
     assert!(on(10, 10) && on(20, 20) && !on(9, 10) && !on(21, 20) && !on(10, 21));
     assert_eq!(bits.iter().map(|w| w.count_ones()).sum::<u32>(), 11 * 11);
     // Off the block: nothing.
-    assert!(fill_ring_for_test(&[[-5.0, -5.0], [-1.0, -5.0], [-1.0, 5000.0], [-5.0, 5000.0], [-5.0, -5.0]]).iter().all(|&w| w == 0));
+    assert!(fill_ring_for_test(&[[-5.0, -5.0], [-1.0, -5.0], [-1.0, 5000.0], [-5.0, 5000.0], [-5.0, -5.0]])
+        .iter()
+        .all(|&w| w == 0));
 }
 
 #[test]
@@ -254,13 +315,27 @@ fn classes_means_and_their_order() {
     assert_eq!(class([4, 1, 1, 1]), 0);
     assert_eq!(class([0, 1, 5, 5]), 2);
     // numpy's two-axis mean: (a + b) + (c + d), in float32.
-    let r = Rows { width: 2, cover: vec![16777216.0, 1.0, 1.0, 1.0], height: vec![0.0; 4], leaf: [vec![1, 0, 0, 0], vec![0; 4], vec![0; 4], vec![0, 1, 1, 1], vec![0; 4]] };
+    let r = Rows {
+        width: 2,
+        cover: vec![16777216.0, 1.0, 1.0, 1.0],
+        height: vec![0.0; 4],
+        leaf: [vec![1, 0, 0, 0], vec![0; 4], vec![0; 4], vec![0, 1, 1, 1], vec![0; 4]],
+    };
     let d = r.down_for_test();
     assert_eq!(d.cover, [4194304.5]);
     assert_eq!(d.leaf[0], [1]);
     assert_eq!(d.leaf[3], [3]);
     // A block's zoom-8 values, written and read back.
-    let mut t = Tops { x: 3, y: 9, rows: Rows { width: TS, cover: (0..TS * TS).map(|i| i as f32 * 0.37).collect(), height: vec![1.5; TS * TS], leaf: Default::default() } };
+    let mut t = Tops {
+        x: 3,
+        y: 9,
+        rows: Rows {
+            width: TS,
+            cover: (0..TS * TS).map(|i| i as f32 * 0.37).collect(),
+            height: vec![1.5; TS * TS],
+            leaf: Default::default(),
+        },
+    };
     for (k, l) in t.rows.leaf.iter_mut().enumerate() {
         *l = (0..TS * TS).map(|i| ((i * (k + 1)) % 257) as u32).collect();
     }
@@ -275,15 +350,50 @@ fn zooms_above_the_blocks() {
     // Two blocks of z7 tile 7/66/44: one all cover 40 % and height 10 m, broadleaf; the other
     // nothing; the other two quarters no block.
     let n = TS * TS;
-    let full = Tops { x: 132, y: 88, rows: Rows { width: TS, cover: vec![40.0; n], height: vec![10.0; n], leaf: [vec![0; n], vec![256; n], vec![0; n], vec![0; n], vec![0; n]] } };
-    let none = Tops { x: 133, y: 89, rows: Rows { width: TS, cover: vec![0.0; n], height: vec![0.0; n], leaf: [vec![256; n], vec![0; n], vec![0; n], vec![0; n], vec![0; n]] } };
-    let tops: BTreeMap<(u32, u32), Vec<u8>> = [full, none].iter().map(|t| ((t.x, t.y), t.to_bytes().unwrap())).collect();
+    let full = Tops {
+        x: 132,
+        y: 88,
+        rows: Rows {
+            width: TS,
+            cover: vec![40.0; n],
+            height: vec![10.0; n],
+            leaf: [vec![0; n], vec![256; n], vec![0; n], vec![0; n], vec![0; n]],
+        },
+    };
+    let none = Tops {
+        x: 133,
+        y: 89,
+        rows: Rows {
+            width: TS,
+            cover: vec![0.0; n],
+            height: vec![0.0; n],
+            leaf: [vec![256; n], vec![0; n], vec![0; n], vec![0; n], vec![0; n]],
+        },
+    };
+    let tops: BTreeMap<(u32, u32), Vec<u8>> =
+        [full, none].iter().map(|t| ((t.x, t.y), t.to_bytes().unwrap())).collect();
     let said = std::sync::Mutex::new(Vec::new());
     let tiles = lower(&tops, &|d, t| said.lock().unwrap().push((d, t))).unwrap();
     let said = said.into_inner().unwrap();
     assert_eq!((said.first(), said.last()), (Some(&(0, 4)), Some(&(4, 4))), "one tile at each of zoom 7 to 4");
     let keys: Vec<(u8, u8, u32, u32)> = tiles.iter().map(|t| (t.layer, t.z, t.x, t.y)).collect();
-    assert_eq!(keys, [(0, 7, 66, 44), (1, 7, 66, 44), (2, 7, 66, 44), (0, 6, 33, 22), (1, 6, 33, 22), (2, 6, 33, 22), (0, 5, 16, 11), (1, 5, 16, 11), (2, 5, 16, 11), (0, 4, 8, 5), (1, 4, 8, 5), (2, 4, 8, 5)]);
+    assert_eq!(
+        keys,
+        [
+            (0, 7, 66, 44),
+            (1, 7, 66, 44),
+            (2, 7, 66, 44),
+            (0, 6, 33, 22),
+            (1, 6, 33, 22),
+            (2, 6, 33, 22),
+            (0, 5, 16, 11),
+            (1, 5, 16, 11),
+            (2, 5, 16, 11),
+            (0, 4, 8, 5),
+            (1, 4, 8, 5),
+            (2, 4, 8, 5)
+        ]
+    );
     // Zoom 7: the full block's quarter 40 % (its pixels' means) and broadleaf, the rest nothing.
     let rgb = |t: &Tile, x: usize, y: usize| {
         let d = decode(&t.webp);
@@ -291,9 +401,16 @@ fn zooms_above_the_blocks() {
         (d[i] as u32) << 8 | d[i + 1] as u32
     };
     assert_eq!((rgb(&tiles[0], 10, 10), rgb(&tiles[0], 200, 10), rgb(&tiles[0], 10, 200)), (32768 + 40, 32768, 32768));
-    assert_eq!((rgb(&tiles[2], 10, 10), rgb(&tiles[2], 200, 200)), (32768 + 1, 32768), "broadleaf; not forest (no data shows as 0)");
+    assert_eq!(
+        (rgb(&tiles[2], 10, 10), rgb(&tiles[2], 200, 200)),
+        (32768 + 1, 32768),
+        "broadleaf; not forest (no data shows as 0)"
+    );
     // Zoom 4: the block is 16 × 16 of its pixels (64..80, 128..144).
-    assert_eq!((rgb(&tiles[9], 70, 130), rgb(&tiles[9], 0, 0), rgb(&tiles[11], 70, 130)), (32768 + 40, 32768, 32768 + 1));
+    assert_eq!(
+        (rgb(&tiles[9], 70, 130), rgb(&tiles[9], 0, 0), rgb(&tiles[11], 70, 130)),
+        (32768 + 40, 32768, 32768 + 1)
+    );
 }
 
 /// A block's zoom-12 pixel (i, j) as trees.py makes it from the synthetic squares: cover, height
@@ -319,12 +436,21 @@ fn a_block_from_its_squares() {
     let d = squares_dir();
     let shapes = Shapes::parse(COVERAGE).unwrap();
     let fetch = crate::fetch::MapFetch::default();
-    let inp = Inputs { chm: Source::Dir(d.path().into()), leaf: Source::Dir(d.path().into()), fetch: &fetch, record: None, there: None };
+    let inp = Inputs {
+        chm: Source::Dir(d.path().into()),
+        leaf: Source::Dir(d.path().into()),
+        fetch: &fetch,
+        record: None,
+        there: None,
+    };
     let out = block(&shapes, &inp, 132, 88).unwrap();
     // Tiles only where there's something: zoom 12's first two down the west (the squares' data
     // reach the second; the coverage ends within the first column) and those above them.
     let z12: Vec<(u8, u32, u32)> = out.tiles.iter().filter(|t| t.z == 12).map(|t| (t.layer, t.x, t.y)).collect();
-    assert_eq!(z12, [(0, 2112, 1408), (1, 2112, 1408), (2, 2112, 1408), (0, 2112, 1409), (1, 2112, 1409), (2, 2112, 1409)]);
+    assert_eq!(
+        z12,
+        [(0, 2112, 1408), (1, 2112, 1408), (2, 2112, 1408), (0, 2112, 1409), (1, 2112, 1409), (2, 2112, 1409)]
+    );
     assert_eq!(out.tiles.len(), 18);
     // Pixel by pixel as trees.py has them (the hole of the coverage and its edge among them).
     let b = tile_bounds(8, 132, 88);
@@ -337,7 +463,12 @@ fn a_block_from_its_squares() {
                 let inside = m[(bi * BS + bj) / 64] >> ((bi * BS + bj) % 64) & 1 == 1;
                 let k = (i * TS + j) * 3;
                 let got = (px[k] as u32) << 8 | px[k + 1] as u32;
-                assert_eq!(got, expected(132, 88, bi, bj, inside)[t.layer as usize], "tile {:?} pixel {i},{j}", (t.layer, t.x, t.y));
+                assert_eq!(
+                    got,
+                    expected(132, 88, bi, bj, inside)[t.layer as usize],
+                    "tile {:?} pixel {i},{j}",
+                    (t.layer, t.x, t.y)
+                );
             }
         }
     }
@@ -356,7 +487,16 @@ fn the_z3_run_and_its_blocks_alike() {
     const COV: &str = r#"{"shapes": [[[[5.66, 48.2], [7.2, 48.2], [7.2, 48.91], [5.66, 48.91]]]]}"#;
     std::fs::write(o.path().join("cov.json"), COV).unwrap();
     let run = |threads: usize, out: &str| {
-        let a = Run { tile: (3, 4, 2), coverage: o.path().join("cov.json"), chm: d.path().into(), chm_store: o.path().join("store"), sources: sources_file(o.path()), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
+        let a = Run {
+            tile: (3, 4, 2),
+            coverage: o.path().join("cov.json"),
+            chm: d.path().into(),
+            chm_store: o.path().join("store"),
+            sources: sources_file(o.path()),
+            leaf: d.path().into(),
+            out: o.path().join(out),
+            dem: o.path().into(),
+        };
         rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| z3(&a)).unwrap()
     };
     let n1 = run(1, "one");
@@ -367,7 +507,13 @@ fn the_z3_run_and_its_blocks_alike() {
     let blocks = z3_blocks(&shapes, 4, 2);
     assert_eq!(blocks, [(132, 88), (133, 88)]);
     let fetch = crate::fetch::MapFetch::default();
-    let inp = Inputs { chm: Source::Dir(d.path().into()), leaf: Source::Dir(d.path().into()), fetch: &fetch, record: None, there: None };
+    let inp = Inputs {
+        chm: Source::Dir(d.path().into()),
+        leaf: Source::Dir(d.path().into()),
+        fetch: &fetch,
+        record: None,
+        there: None,
+    };
     let dirs: Vec<PathBuf> = blocks
         .iter()
         .rev()
@@ -389,7 +535,15 @@ fn the_z3_run_and_its_blocks_alike() {
 /// An archive's tiles: (z, x, y) → bytes.
 fn tiles_of(p: &Path) -> BTreeMap<(u8, u32, u32), Vec<u8>> {
     let a = Archive::open(p).unwrap();
-    a.entries().iter().map(|e| (((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32), a.get_entry(e).to_vec())).collect()
+    a.entries()
+        .iter()
+        .map(|e| {
+            (
+                ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32),
+                a.get_entry(e).to_vec(),
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -400,7 +554,16 @@ fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
     // tile 3/4/2, the squares' data in each.
     const COV: &str = r#"{"shapes": [[[[5.5, 48.85], [9.5, 48.85], [9.5, 48.95], [5.5, 48.95]]]]}"#;
     std::fs::write(o.path().join("cov.json"), COV).unwrap();
-    let run = |tile: (u8, u32, u32), out: &str| Run { tile, coverage: o.path().join("cov.json"), chm: d.path().into(), chm_store: o.path().join("store"), sources: sources_file(o.path()), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
+    let run = |tile: (u8, u32, u32), out: &str| Run {
+        tile,
+        coverage: o.path().join("cov.json"),
+        chm: d.path().into(),
+        chm_store: o.path().join("store"),
+        sources: sources_file(o.path()),
+        leaf: d.path().into(),
+        out: o.path().join(out),
+        dem: o.path().into(),
+    };
     let pool = |n: usize| rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
     let n3 = pool(4).install(|| z3(&run((3, 4, 2), "z3"))).unwrap();
     let shapes = Shapes::parse(COV).unwrap();
@@ -408,7 +571,11 @@ fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
     pieces.sort_unstable();
     pieces.dedup();
     assert_eq!(pieces, [(32, 21), (32, 22), (33, 21), (33, 22)]);
-    assert_eq!(blocks_of(&shapes, 6, 33, 22), [(132, 88), (133, 88), (134, 88)], "a z6 tile's blocks, as the z3 tile's");
+    assert_eq!(
+        blocks_of(&shapes, 6, 33, 22),
+        [(132, 88), (133, 88), (134, 88)],
+        "a z6 tile's blocks, as the z3 tile's"
+    );
     let mut mids = Vec::new();
     for &(x, y) in &pieces {
         let out = format!("z6-{x}-{y}");
@@ -426,7 +593,10 @@ fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
         for &(x, y) in &pieces {
             let p = tiles_of(&o.path().join(format!("z6-{x}-{y}")).join(&f));
             assert!(!p.is_empty() || i == 2, "{l}: tiles in 6/{x}/{y}");
-            assert!(p.keys().all(|k| (9..=12).contains(&k.0) && (k.1 >> (k.0 - 6), k.2 >> (k.0 - 6)) == (x, y)), "{l}: 6/{x}/{y}'s own zoom 9 to 12");
+            assert!(
+                p.keys().all(|k| (9..=12).contains(&k.0) && (k.1 >> (k.0 - 6), k.2 >> (k.0 - 6)) == (x, y)),
+                "{l}: 6/{x}/{y}'s own zoom 9 to 12"
+            );
             parts.extend(p);
         }
         assert_eq!(parts, whole, "{l}: the pieces and their assembly, tile for tile");
@@ -443,7 +613,10 @@ fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
     assemble_lo(&rev, &o.path().join("lo2"), &|_, _| {}).unwrap();
     for l in LAYERS {
         let f = format!("trees-{l}.tiles");
-        assert_eq!(std::fs::read(o.path().join("lo2").join(&f)).unwrap(), std::fs::read(o.path().join("lo").join(&f)).unwrap());
+        assert_eq!(
+            std::fs::read(o.path().join("lo2").join(&f)).unwrap(),
+            std::fs::read(o.path().join("lo").join(&f)).unwrap()
+        );
     }
     // Not a tile twice, nor another z3 tile's.
     assert!(assemble_lo(&[mids[0].clone(), mids[0].clone()], &o.path().join("x"), &|_, _| {}).is_err());
@@ -477,14 +650,19 @@ fn results_in_order_on_any_threads() {
         })
         .unwrap();
         assert_eq!(got, (0..50).map(|i| (i, i * i)).collect::<Vec<_>>(), "{threads} threads");
-        let failed = pool.install(|| in_order(50, |i| if i == 17 { anyhow::bail!("block {i}") } else { Ok(i) }, |_| {}, |_, _| Ok(())));
+        let failed = pool.install(|| {
+            in_order(50, |i| if i == 17 { anyhow::bail!("block {i}") } else { Ok(i) }, |_| {}, |_, _| Ok(()))
+        });
         assert!(failed.is_err_and(|e| e.to_string() == "block 17"));
         if threads > 1 {
             // A block that panics on a thread fails the run, rather than leave it waiting; as does
             // a panic where the results are written.
-            let panicked = pool.install(|| in_order(50, |i| if i == 23 { panic!("block {i}") } else { Ok(i) }, |_| {}, |_, _| Ok(())));
+            let panicked = pool
+                .install(|| in_order(50, |i| if i == 23 { panic!("block {i}") } else { Ok(i) }, |_| {}, |_, _| Ok(())));
             assert!(panicked.is_err_and(|e| e.to_string() == "item 23 panicked: block 23"));
-            let sunk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.install(|| in_order(50, Ok, |_| {}, |i, _| if i == 5 { panic!("written") } else { Ok(()) }))));
+            let sunk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                pool.install(|| in_order(50, Ok, |_| {}, |i, _| if i == 5 { panic!("written") } else { Ok(()) }))
+            }));
             assert!(sunk.is_err());
         }
     }
@@ -546,7 +724,11 @@ fn items_with_parallel_work_of_their_own_never_hang_it() {
                 Ok(got) => break got,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     let now = steps.load(Relaxed);
-                    assert!(now > seen, "in_order hung in run {run}: no item's work moved in {STALL:?} ({now} of {} steps done)", RUNS * ITEMS * STEPS);
+                    assert!(
+                        now > seen,
+                        "in_order hung in run {run}: no item's work moved in {STALL:?} ({now} of {} steps done)",
+                        RUNS * ITEMS * STEPS
+                    );
                     seen = now;
                 }
                 Err(e) => panic!("in_order's thread ended without its result: {e}"),
@@ -564,7 +746,13 @@ fn reads_recorded_and_read_back() {
     let shapes = Shapes::parse(COVERAGE).unwrap();
     let m = tempfile::tempdir().unwrap();
     let none = crate::fetch::MapFetch::default();
-    let inp = Inputs { chm: Source::Dir(d.path().into()), leaf: Source::Dir(d.path().into()), fetch: &none, record: Some(m.path().into()), there: None };
+    let inp = Inputs {
+        chm: Source::Dir(d.path().into()),
+        leaf: Source::Dir(d.path().into()),
+        fetch: &none,
+        record: Some(m.path().into()),
+        there: None,
+    };
     let a = block(&shapes, &inp, 132, 88).unwrap();
     assert!(a.kept > 0 && a.kept < 8 << 20, "{} bytes kept", a.kept);
     let fetch = crate::fetch::Fetcher::new(Some(m.path().into()), None, false);
@@ -580,8 +768,13 @@ fn leaf_type_squares_complete() {
     let d = tempfile::tempdir().unwrap();
     let small = |meta: &[(&str, &str)]| tiff(1024, 8, &|_, _| None, meta);
     std::fs::write(d.path().join("a.tif"), small(&[("complete", "1")])).unwrap();
-    std::fs::write(d.path().join("b.tif"), small(&[("source", "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°")])).unwrap();
-    std::fs::write(d.path().join("c.tif"), small(&[("source", "Copernicus HRL Dominant Leaf Type 2018 (EEA)")])).unwrap();
+    std::fs::write(
+        d.path().join("b.tif"),
+        small(&[("source", "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°")]),
+    )
+    .unwrap();
+    std::fs::write(d.path().join("c.tif"), small(&[("source", "Copernicus HRL Dominant Leaf Type 2018 (EEA)")]))
+        .unwrap();
     let mut cut = small(&[("complete", "1")]);
     cut.truncate(100);
     std::fs::write(d.path().join("d.tif"), cut).unwrap();
@@ -590,7 +783,14 @@ fn leaf_type_squares_complete() {
     // None to make (outside both sources' boxes, or complete): leaftype.py isn't run.
     std::fs::write(d.path().join(leaf_name(50, 0)), small(&[("complete", "1")])).unwrap();
     let s = run_sources();
-    squares::leaf_types(&[(50, 0), (40, 120)], d.path(), Path::new("/nonexistent"), &s.leaf, Path::new("/nonexistent/sources.json")).unwrap();
+    squares::leaf_types(
+        &[(50, 0), (40, 120)],
+        d.path(),
+        Path::new("/nonexistent"),
+        &s.leaf,
+        Path::new("/nonexistent/sources.json"),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -639,7 +839,16 @@ fn room_making_mid_run_never_reads_a_square_as_none_there() {
         std::fs::copy(d.path().join(chm_name(50, 0, k)), store.join(chm_name(50, 0, k))).unwrap();
     }
     let run = |out: &str| {
-        let a = Run { tile: (3, 4, 2), coverage: o.path().join("cov.json"), chm: chm.clone(), chm_store: store.clone(), sources: sources_file(o.path()), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
+        let a = Run {
+            tile: (3, 4, 2),
+            coverage: o.path().join("cov.json"),
+            chm: chm.clone(),
+            chm_store: store.clone(),
+            sources: sources_file(o.path()),
+            leaf: d.path().into(),
+            out: o.path().join(out),
+            dem: o.path().into(),
+        };
         let n = z3(&a).unwrap();
         // (This process's holds let go, as the job's end would.)
         for k in ["cover5m", "p95"] {
@@ -668,7 +877,11 @@ fn room_making_mid_run_never_reads_a_square_as_none_there() {
     assert_eq!(busy, calm);
     for l in LAYERS {
         let f = format!("trees-{l}.tiles");
-        assert_eq!(std::fs::read(o.path().join("busy").join(&f)).unwrap(), std::fs::read(o.path().join("calm").join(&f)).unwrap(), "{l}: the same with room-making under way");
+        assert_eq!(
+            std::fs::read(o.path().join("busy").join(&f)).unwrap(),
+            std::fs::read(o.path().join("calm").join(&f)).unwrap(),
+            "{l}: the same with room-making under way"
+        );
     }
 }
 

@@ -22,18 +22,24 @@ fn main() -> Result<()> {
             Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
             _ => (a.clone(), None),
         };
-        let mut value = |name: &str| -> Result<String> { inline.clone().or_else(|| args.next()).with_context(|| format!("{name} needs a value")) };
+        let mut value = |name: &str| -> Result<String> {
+            inline.clone().or_else(|| args.next()).with_context(|| format!("{name} needs a value"))
+        };
         match flag.as_str() {
             "--workers" => workers = value("--workers")?.parse().context("--workers")?,
             "--only" => only = Some(PathBuf::from(value("--only")?)),
-            f if f.starts_with('-') => bail!("unknown option {f}\nusage: landcover <build_dir> [--workers N] [--only <slots.u32>]"),
+            f if f.starts_with('-') => {
+                bail!("unknown option {f}\nusage: landcover <build_dir> [--workers N] [--only <slots.u32>]")
+            }
             _ if build.is_none() => build = Some(PathBuf::from(a)),
             _ => bail!("one build folder only\nusage: landcover <build_dir> [--workers N] [--only <slots.u32>]"),
         }
     }
     let build = build.context("usage: landcover <build_dir> [--workers N] [--only <slots.u32>]")?;
     let fetch = Fetcher::from_env();
-    let cover = pipeline::unit::UnitSources::read(&build)?.land_cover.context("the unit's sources.json names no land-cover source")?;
+    let cover = pipeline::unit::UnitSources::read(&build)?
+        .land_cover
+        .context("the unit's sources.json names no land-cover source")?;
     match only {
         Some(p) => {
             let raw = std::fs::read(&p).with_context(|| p.display().to_string())?;

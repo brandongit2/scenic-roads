@@ -52,9 +52,27 @@ impl Term {
     /// current term can't be read whole (its app isn't known: wait, or `force`).
     pub fn after(cur: &Current, lead: &Member, how: &str, now: u64) -> Result<Term> {
         ensure!(cur.term >= 1, "term 1 is made by `bootstrap`, its records first");
-        let Some(c) = &cur.lead else { bail!("term {} can't be read whole yet: its lead and app aren't known", cur.term) };
-        ensure!(app_at_least(&lead.app, &c.app), "{} runs app {}, older than term {}'s {}: update it first", lead.host, lead.app, c.term, c.app);
-        Ok(Term { term: cur.term + 1, member: lead.id.clone(), host: lead.host.clone(), app: lead.app.clone(), since: now, how: how.to_string(), from: cur.term, seq: None })
+        let Some(c) = &cur.lead else {
+            bail!("term {} can't be read whole yet: its lead and app aren't known", cur.term)
+        };
+        ensure!(
+            app_at_least(&lead.app, &c.app),
+            "{} runs app {}, older than term {}'s {}: update it first",
+            lead.host,
+            lead.app,
+            c.term,
+            c.app
+        );
+        Ok(Term {
+            term: cur.term + 1,
+            member: lead.id.clone(),
+            host: lead.host.clone(),
+            app: lead.app.clone(),
+            since: now,
+            how: how.to_string(),
+            from: cur.term,
+            seq: None,
+        })
     }
 
     /// Its lead.
@@ -106,7 +124,8 @@ pub fn next(nas: &dyn Nas, e: u64) -> Result<bool> {
 /// The current term: from the lead's hint, or a listing of `terms/` when there's none, then
 /// checked upward from there (either may be stale, never ahead). Once, at a Mac's start.
 pub fn current(nas: &dyn Nas) -> Result<Current> {
-    let hinted = nas.read(HINT)?.and_then(|b| serde_json::from_slice::<Term>(&b).ok()).map(|t| t.term).filter(|&e| e > 0);
+    let hinted =
+        nas.read(HINT)?.and_then(|b| serde_json::from_slice::<Term>(&b).ok()).map(|t| t.term).filter(|&e| e > 0);
     let mut e = match hinted {
         Some(e) if nas.exists(&path(e))? => e,
         _ => nas.list(DIR)?.iter().filter_map(|n| n.strip_suffix(".json")?.parse::<u64>().ok()).max().unwrap_or(0),
@@ -191,10 +210,32 @@ pub fn claim(nas: &dyn Nas, cur: &Current, me: &Member, how: &str, now: u64) -> 
 /// as its app would, and a target on a newer app that doesn't take up can't leave the build with
 /// no lead.
 pub fn back(own: &Term, passed: &Term, me: &Member, how: &str, now: u64) -> Result<Term> {
-    ensure!(own.member == me.id && passed.from == own.term && passed.term == own.term + 1, "term {} isn't the handover of term {} by {}", passed.term, own.term, me.host);
-    ensure!(app_at_least(&me.app, &own.app), "{} runs app {}, older than term {}'s {}: update it first", me.host, me.app, own.term, own.app);
+    ensure!(
+        own.member == me.id && passed.from == own.term && passed.term == own.term + 1,
+        "term {} isn't the handover of term {} by {}",
+        passed.term,
+        own.term,
+        me.host
+    );
+    ensure!(
+        app_at_least(&me.app, &own.app),
+        "{} runs app {}, older than term {}'s {}: update it first",
+        me.host,
+        me.app,
+        own.term,
+        own.app
+    );
     ensure!(how.starts_with(BACK), "a take-back's how begins {BACK:?}");
-    Ok(Term { term: passed.term + 1, member: me.id.clone(), host: me.host.clone(), app: me.app.clone(), since: now, how: how.to_string(), from: passed.term, seq: None })
+    Ok(Term {
+        term: passed.term + 1,
+        member: me.id.clone(),
+        host: me.host.clone(),
+        app: me.app.clone(),
+        since: now,
+        how: how.to_string(),
+        from: passed.term,
+        seq: None,
+    })
 }
 
 /// The owner's forced takeover (§6.5, `scenic lead take --force`): the term after `cur` naming
@@ -223,7 +264,16 @@ pub fn forced(nas: &dyn Nas, cur: &Current, me: &Member, how: &str, now: u64, do
         ensure!(downgrade, "{} runs app {}, older than term {}'s {}: update it first", me.host, me.app, k.term, k.app);
         how = format!("{how} ({DOWNGRADE}: app {}, older than term {}'s {})", me.app, k.term, k.app);
     }
-    Ok(Term { term: cur.term + 1, member: me.id.clone(), host: me.host.clone(), app: me.app.clone(), since: now, how, from: cur.term, seq: None })
+    Ok(Term {
+        term: cur.term + 1,
+        member: me.id.clone(),
+        host: me.host.clone(),
+        app: me.app.clone(),
+        since: now,
+        how,
+        from: cur.term,
+        seq: None,
+    })
 }
 
 /// `forced`, made: the term when this Mac's create won, None when another's did.
@@ -246,7 +296,16 @@ pub fn bootstrap(nas: &dyn Nas, me: &Member, now: u64, force: bool) -> Result<Op
     }
     let how = if force { format!("taken over by {}", me.host) } else { "the first Mac in the pool".to_string() };
     super::records::first(nas)?;
-    let t = Term { term: 1, member: me.id.clone(), host: me.host.clone(), app: me.app.clone(), since: now, how, from: 0, seq: None };
+    let t = Term {
+        term: 1,
+        member: me.id.clone(),
+        host: me.host.clone(),
+        app: me.app.clone(),
+        since: now,
+        how,
+        from: 0,
+        seq: None,
+    };
     match make(nas, &t)? {
         Made::Ours => Ok(Some(t)),
         Made::Theirs => read(nas, 1),
@@ -268,7 +327,8 @@ pub fn write_hint(nas: &dyn Nas, t: &Term) -> Result<()> {
 /// say, and slicing it mid-character would panic. None: not a published app's ("development").
 fn when(v: &str) -> Option<&[u8]> {
     let v = v.as_bytes();
-    (v.len() > 14 && v[8] == b'-' && v[13] == b'-' && v[..8].iter().chain(&v[9..13]).all(u8::is_ascii_digit)).then(|| &v[..13])
+    (v.len() > 14 && v[8] == b'-' && v[13] == b'-' && v[..8].iter().chain(&v[9..13]).all(u8::is_ascii_digit))
+        .then(|| &v[..13])
 }
 
 /// Whether `v` is a published app's version (one `app_at_least` orders).
@@ -318,10 +378,22 @@ mod tests {
     #[test]
     fn of_two_macs_making_a_term_one_wins_and_a_retry_knows_its_own() {
         let nas = Mem::default();
-        let (a, b) = (member("m-000000000000000a", "20261005-2202-61eb22c"), member("m-000000000000000b", "20261005-2202-61eb22c"));
+        let (a, b) = (
+            member("m-000000000000000a", "20261005-2202-61eb22c"),
+            member("m-000000000000000b", "20261005-2202-61eb22c"),
+        );
         // Term 1 only by bootstrap, its records first.
         assert!(Term::after(&Current::default(), &a, "taken over", 100).is_err());
-        let t1 = Term { term: 1, member: a.id.clone(), host: a.host.clone(), app: a.app.clone(), since: 100, how: "by hand".into(), from: 0, seq: None };
+        let t1 = Term {
+            term: 1,
+            member: a.id.clone(),
+            host: a.host.clone(),
+            app: a.app.clone(),
+            since: 100,
+            how: "by hand".into(),
+            from: 0,
+            seq: None,
+        };
         assert!(make(&nas, &t1).is_err() && !nas.exists(&path(1)).unwrap());
         let t1 = bootstrap(&nas, &a, 100, false).unwrap().unwrap();
         let cur = current(&nas).unwrap();
@@ -330,7 +402,10 @@ mod tests {
         assert!(matches!(make(&nas, &ta).unwrap(), Made::Ours));
         assert!(matches!(make(&nas, &tb).unwrap(), Made::Theirs), "b's create lost");
         assert!(matches!(make(&nas, &ta).unwrap(), Made::Ours), "a's own, tried again (its first call's answer lost)");
-        assert!(matches!(make(&nas, &Term { since: 230, ..ta.clone() }).unwrap(), Made::Ours), "tried again a moment later");
+        assert!(
+            matches!(make(&nas, &Term { since: 230, ..ta.clone() }).unwrap(), Made::Ours),
+            "tried again a moment later"
+        );
         assert_eq!(read(&nas, 2).unwrap(), Some(ta.clone()));
         assert_eq!(read(&nas, 1).unwrap(), Some(t1));
         // A term can only follow the one before it.
@@ -343,12 +418,30 @@ mod tests {
     #[test]
     fn the_app_rule_refuses_an_older_app() {
         let a = member("m-000000000000000a", "20261005-2202-61eb22c");
-        let cur = Current { term: 4, lead: Some(Term { term: 4, member: a.id, host: a.host, app: a.app, since: 0, how: "handed over".into(), from: 3, seq: None }) };
+        let cur = Current {
+            term: 4,
+            lead: Some(Term {
+                term: 4,
+                member: a.id,
+                host: a.host,
+                app: a.app,
+                since: 0,
+                how: "handed over".into(),
+                from: 3,
+                seq: None,
+            }),
+        };
         assert!(Term::after(&cur, &member("m-000000000000000b", "20261004-0910-1a2b3c4"), "handed over", 1).is_err());
         let t = Term::after(&cur, &member("m-000000000000000b", "20261012-0910-1a2b3c4"), "handed over", 1).unwrap();
         assert_eq!((t.term, t.from, t.member.as_str()), (5, 4, "m-000000000000000b"));
         // Its lead unknown (its file being made): not until it's known, or by force.
-        assert!(Term::after(&Current { term: 4, lead: None }, &member("m-000000000000000b", "development"), "taken over", 1).is_err());
+        assert!(Term::after(
+            &Current { term: 4, lead: None },
+            &member("m-000000000000000b", "development"),
+            "taken over",
+            1
+        )
+        .is_err());
         assert!(app_at_least("20261005-2202-61eb22c", "20261005-2202-0000000"), "the same minute");
         assert!(app_at_least("20261005-2203-61eb22c", "20261005-2202-61eb22c"));
         assert!(!app_at_least("20261005-2201-61eb22c", "20261005-2202-61eb22c"));
@@ -360,7 +453,10 @@ mod tests {
     #[test]
     fn a_forced_takeover_passes_a_term_that_cant_be_read_but_not_the_app_rule() {
         let nas = Mem::default();
-        let (a, b) = (member("m-000000000000000a", "20261005-2202-61eb22c"), member("m-000000000000000b", "20261005-2202-61eb22c"));
+        let (a, b) = (
+            member("m-000000000000000a", "20261005-2202-61eb22c"),
+            member("m-000000000000000b", "20261005-2202-61eb22c"),
+        );
         bootstrap(&nas, &a, 100, false).unwrap().unwrap();
         // Term 2 made, its maker stopped before its bytes: no one leads it.
         nas.create_new(&path(2), b"").unwrap();
@@ -370,7 +466,10 @@ mod tests {
         let old = member("m-000000000000000b", "20261004-0000-61eb22c");
         assert!(force(&nas, &cur, &old, "taken over by MacBook-Air", 200, false).is_err(), "older than term 1's app");
         let t = force(&nas, &cur, &b, "taken over by MacBook-Air", 200, false).unwrap().unwrap();
-        assert_eq!((t.term, t.from, t.how.as_str()), (3, 2, "taken over by MacBook-Air (forced past: term 2 unreadable)"));
+        assert_eq!(
+            (t.term, t.from, t.how.as_str()),
+            (3, 2, "taken over by MacBook-Air (forced past: term 2 unreadable)")
+        );
         // A term that can be read: as `claim`.
         let t4 = force(&nas, &current(&nas).unwrap(), &a, "taken over by Mac-mini", 300, false).unwrap().unwrap();
         assert_eq!((t4.term, t4.how.as_str()), (4, "taken over by Mac-mini"));
@@ -379,7 +478,10 @@ mod tests {
     #[test]
     fn term_one_is_the_first_macs_to_make() {
         let nas = Mem::default();
-        let (m4, m1) = (Member { id: "m-0000000000000004".into(), host: "Mac-mini".into(), app: "development".into() }, Member { id: "m-0000000000000001".into(), host: "MacBook-Air".into(), app: "development".into() });
+        let (m4, m1) = (
+            Member { id: "m-0000000000000004".into(), host: "Mac-mini".into(), app: "development".into() },
+            Member { id: "m-0000000000000001".into(), host: "MacBook-Air".into(), app: "development".into() },
+        );
         nas.write_whole("state/build/manifest.json", br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
         let t = bootstrap(&nas, &m4, 11, false).unwrap().unwrap();
         assert_eq!((t.term, t.member.as_str(), t.from), (1, "m-0000000000000004", 0));
@@ -389,9 +491,15 @@ mod tests {
         assert_eq!((r.term, r.seq, r.manifest.len()), (1, 1, 1));
         // The first Mac to start makes it; the owner's say-so, any Mac.
         let fresh = Mem::default();
-        assert_eq!(bootstrap(&fresh, &m1, 13, false).unwrap().map(|t| (t.member, t.how)), Some((m1.id.clone(), "the first Mac in the pool".to_string())));
+        assert_eq!(
+            bootstrap(&fresh, &m1, 13, false).unwrap().map(|t| (t.member, t.how)),
+            Some((m1.id.clone(), "the first Mac in the pool".to_string()))
+        );
         let forced = Mem::default();
-        assert_eq!(bootstrap(&forced, &m1, 14, true).unwrap().map(|t| (t.member, t.how)), Some((m1.id.clone(), "taken over by MacBook-Air".to_string())));
+        assert_eq!(
+            bootstrap(&forced, &m1, 14, true).unwrap().map(|t| (t.member, t.how)),
+            Some((m1.id.clone(), "taken over by MacBook-Air".to_string()))
+        );
     }
 
     /// A NAS whose next create makes the file and then fails before its bytes (the share went away
@@ -455,7 +563,10 @@ mod tests {
         nas.down.set(true);
         assert!(matches!(make(&nas, &t3).unwrap(), Made::Unfinished(_)));
         assert_eq!(current(&nas).unwrap(), Current { term: 3, lead: None });
-        assert!(claim(&nas, &current(&nas).unwrap(), &b, "taken over by b-host", 900).is_err(), "no Mac follows it meanwhile");
+        assert!(
+            claim(&nas, &current(&nas).unwrap(), &b, "taken over by b-host", 900).is_err(),
+            "no Mac follows it meanwhile"
+        );
         nas.down.set(false);
         finish(&nas, &t3).unwrap();
         assert_eq!(current(&nas).unwrap(), Current { term: 3, lead: Some(t3) });
@@ -471,7 +582,8 @@ mod tests {
         let cur = Current { term: 1, lead: Some(t1) };
         nas.lost_answer.set(true);
         assert!(claim(&nas, &cur, &a, "re-asserted after a gap", 200).is_err());
-        let t2 = claim(&nas, &cur, &a, "re-asserted after a gap", 230).unwrap().expect("its own, made by its first try");
+        let t2 =
+            claim(&nas, &cur, &a, "re-asserted after a gap", 230).unwrap().expect("its own, made by its first try");
         assert_eq!((t2.term, t2.since), (2, 230));
         assert_eq!(read(&nas, 2).unwrap().map(|t| (t.member, t.since)), Some((a.id.clone(), 200)));
         // Another Mac's term, the same but for its lead, is another's.
@@ -488,7 +600,8 @@ mod tests {
         let a = member("m-000000000000000a", "20261005-2202-61eb22c");
         let b = member("m-000000000000000b", "20261006-0900-1a2b3c4");
         let t1 = bootstrap(&nas, &a, 100, false).unwrap().unwrap();
-        let mut t2 = Term::after(&Current { term: 1, lead: Some(t1.clone()) }, &b, "handed over by a-host", 160).unwrap();
+        let mut t2 =
+            Term::after(&Current { term: 1, lead: Some(t1.clone()) }, &b, "handed over by a-host", 160).unwrap();
         t2.seq = Some(1);
         assert!(matches!(make(&nas, &t2).unwrap(), Made::Ours));
         let cur = current(&nas).unwrap();
@@ -497,8 +610,21 @@ mod tests {
         // Taken back: checked against the term it handed over.
         let t3 = back(&t1, &t2, &a, "taken back: b-host didn't take up", 300).unwrap();
         assert_eq!((t3.term, t3.from, t3.member.as_str()), (3, 2, a.id.as_str()));
-        assert!(back(&t1, &t2, &b, "taken back: b-host didn't take up", 300).is_err(), "only by the Mac that handed it over");
-        assert!(back(&t1, &t2, &member("m-000000000000000a", "20261004-0000-61eb22c"), "taken back: b-host didn't take up", 300).is_err(), "older than its own term");
+        assert!(
+            back(&t1, &t2, &b, "taken back: b-host didn't take up", 300).is_err(),
+            "only by the Mac that handed it over"
+        );
+        assert!(
+            back(
+                &t1,
+                &t2,
+                &member("m-000000000000000a", "20261004-0000-61eb22c"),
+                "taken back: b-host didn't take up",
+                300
+            )
+            .is_err(),
+            "older than its own term"
+        );
         // The owner's downgrade: past the app rule, saying so.
         let t3 = force(&nas, &cur, &a, "taken over by a-host", 300, true).unwrap().unwrap();
         assert_eq!(t3.how, "taken over by a-host (the owner's downgrade: app 20261005-2202-61eb22c, older than term 2's 20261006-0900-1a2b3c4)");

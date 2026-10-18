@@ -125,18 +125,42 @@ pub struct Declaration {
 pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     let text = std::str::from_utf8(bytes).map_err(|_| vec!["isn't UTF-8 text".to_string()])?;
     let v: toml::Table = toml::from_str(text).map_err(|e| vec![format!("isn't TOML: {}", e.message())])?;
-    const DESCRIPTION: [&str; 10] = ["name", "what", "credit", "licence", "licence_url", "source", "retrieved", "territory", "redistribute", "notes"];
-    let mut why: Vec<String> = v.keys().filter(|k| !DESCRIPTION.contains(&k.as_str()) && k.as_str() != "data").map(|k| format!("`{k}` isn't a field of a source declaration (docs/inputs.md §6.9)")).collect();
+    const DESCRIPTION: [&str; 10] = [
+        "name",
+        "what",
+        "credit",
+        "licence",
+        "licence_url",
+        "source",
+        "retrieved",
+        "territory",
+        "redistribute",
+        "notes",
+    ];
+    let mut why: Vec<String> = v
+        .keys()
+        .filter(|k| !DESCRIPTION.contains(&k.as_str()) && k.as_str() != "data")
+        .map(|k| format!("`{k}` isn't a field of a source declaration (docs/inputs.md §6.9)"))
+        .collect();
     let data: Data = match v.get("data").cloned().map(|d| d.try_into::<Data>()) {
         None => return Err([why, vec!["no `[data]` table".into()]].concat()),
         Some(Err(e)) => return Err([why, vec![format!("`[data]`: {}", e.message())]].concat()),
         Some(Ok(d)) => d,
     };
     match ROLES.iter().find(|r| r.0 == data.role) {
-        None => why.push(format!("`role` is \"{}\": one of {}", data.role, ROLES.iter().map(|r| r.0).collect::<Vec<_>>().join(", "))),
+        None => why.push(format!(
+            "`role` is \"{}\": one of {}",
+            data.role,
+            ROLES.iter().map(|r| r.0).collect::<Vec<_>>().join(", ")
+        )),
         Some((_, formats, placeholders)) => {
             if !formats.contains(&data.format.as_str()) {
-                why.push(format!("`format` is \"{}\": the {} role reads {}", data.format, data.role, formats.join(", ")));
+                why.push(format!(
+                    "`format` is \"{}\": the {} role reads {}",
+                    data.format,
+                    data.role,
+                    formats.join(", ")
+                ));
             }
             let ways = data.url.is_some() as usize + (!data.urls.is_empty()) as usize + data.index.is_some() as usize;
             if ways != 1 {
@@ -151,7 +175,11 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
                     let end = rest[i..].find('}').map_or(rest.len(), |j| i + j + 1);
                     let p = &rest[i..end];
                     if !placeholders.contains(&p) {
-                        why.push(format!("{u}: {p} isn't a placeholder the {} role fills ({})", data.role, if placeholders.is_empty() { "none".to_string() } else { placeholders.join(", ") }));
+                        why.push(format!(
+                            "{u}: {p} isn't a placeholder the {} role fills ({})",
+                            data.role,
+                            if placeholders.is_empty() { "none".to_string() } else { placeholders.join(", ") }
+                        ));
                     }
                     rest = &rest[end..];
                 }
@@ -177,7 +205,8 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
 }
 
 /// The fields of a depth source's `params` (docs/inputs.md §6.10, crate::depth::sources).
-pub const DEPTH_PARAMS: [&str; 8] = ["code", "water", "label", "datum", "band_m", "intertidal", "datum_exact", "notice"];
+pub const DEPTH_PARAMS: [&str; 8] =
+    ["code", "water", "label", "datum", "band_m", "intertidal", "datum_exact", "notice"];
 
 /// What's wrong with a depth source's `[data]` (docs/inputs.md §6.10): an index (its depth grids),
 /// and its params: `code` (1–15, the source byte the class tiles carry), `water` (`sea` or `lake`:
@@ -226,7 +255,12 @@ fn depth_params(d: &Data) -> Vec<String> {
 pub fn depth_index_problems(f: &[Feature]) -> Vec<String> {
     let mut why = Vec::new();
     for (i, x) in f.iter().enumerate() {
-        let name_ok = |k: &str| x.props.get(k).and_then(|v| v.as_str()).is_some_and(|n| !n.is_empty() && !n.contains("..") && !n.starts_with('/') && n.ends_with(".tif"));
+        let name_ok = |k: &str| {
+            x.props
+                .get(k)
+                .and_then(|v| v.as_str())
+                .is_some_and(|n| !n.is_empty() && !n.contains("..") && !n.starts_with('/') && n.ends_with(".tif"))
+        };
         if !name_ok("file") {
             why.push(format!("feature {} names no `file` (a .tif in the source's folder)", i + 1));
         }
@@ -265,7 +299,12 @@ pub fn parse_index(bytes: &[u8]) -> std::result::Result<Vec<Feature>, String> {
     let mut out = Vec::with_capacity(feats.len());
     for (i, f) in feats.iter().enumerate() {
         let props = f["properties"].as_object().cloned().unwrap_or_default();
-        let url = props.get("url").and_then(|u| u.as_str()).filter(|u| u.starts_with("https://") || u.starts_with("http://")).ok_or_else(|| format!("feature {} names no `url` (http or https)", i + 1))?.to_string();
+        let url = props
+            .get("url")
+            .and_then(|u| u.as_str())
+            .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+            .ok_or_else(|| format!("feature {} names no `url` (http or https)", i + 1))?
+            .to_string();
         let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
         fn walk(v: &serde_json::Value, b: &mut [f64; 4]) {
             match v.as_array() {
@@ -388,7 +427,14 @@ impl Checks for SourcesCheck {
             if let Some(i) = &d.data.index {
                 named.insert(i.clone());
                 if !v.paths.contains(i) {
-                    out.push(Finding::new(MISSING, Level::Error, &[path], &[i], vec![path.clone()], format!("{path} names {i}, which isn't there")));
+                    out.push(Finding::new(
+                        MISSING,
+                        Level::Error,
+                        &[path],
+                        &[i],
+                        vec![path.clone()],
+                        format!("{path} names {i}, which isn't there"),
+                    ));
                 }
             }
         }
@@ -401,19 +447,47 @@ impl Checks for SourcesCheck {
                 let why = parse_index(&(v.read)(i)?).map(|f| depth_index_problems(&f)).unwrap_or_default();
                 if !why.is_empty() {
                     let refs: Vec<&str> = why.iter().map(String::as_str).collect();
-                    out.push(Finding::new(INDEX, Level::Error, &[path, i], &refs, vec![i.clone()], format!("{i} (the depth grids of {path}): {}", why.join("; "))));
+                    out.push(Finding::new(
+                        INDEX,
+                        Level::Error,
+                        &[path, i],
+                        &refs,
+                        vec![i.clone()],
+                        format!("{i} (the depth grids of {path}): {}", why.join("; ")),
+                    ));
                 }
             }
         }
         for (c, paths) in codes.iter().filter(|(_, p)| p.len() > 1) {
-            out.push(Finding::new(ROLE, Level::Error, paths, &[&c.to_string()], paths.iter().map(|p| p.to_string()).collect(), format!("{} each take the depth source code {c}: one a source", paths.join(", "))));
+            out.push(Finding::new(
+                ROLE,
+                Level::Error,
+                paths,
+                &[&c.to_string()],
+                paths.iter().map(|p| p.to_string()).collect(),
+                format!("{} each take the depth source code {c}: one a source", paths.join(", ")),
+            ));
         }
         for (role, paths) in roles.iter().filter(|(r, p)| p.len() > 1 && !MANY.contains(r)) {
-            out.push(Finding::new(ROLE, Level::Error, paths, &[role], paths.iter().map(|p| p.to_string()).collect(), format!("{} each declare the {role} role: the app reads one source a role", paths.join(", "))));
+            out.push(Finding::new(
+                ROLE,
+                Level::Error,
+                paths,
+                &[role],
+                paths.iter().map(|p| p.to_string()).collect(),
+                format!("{} each declare the {role} role: the app reads one source a role", paths.join(", ")),
+            ));
         }
         for p in &v.paths {
             if matches!(kind(p), Kind::Index) && !named.contains(p) {
-                out.push(Finding::new(ORPHAN, Level::Warning, &[p], &[], vec![p.clone()], format!("{p}: no declaration names it as its index")));
+                out.push(Finding::new(
+                    ORPHAN,
+                    Level::Warning,
+                    &[p],
+                    &[],
+                    vec![p.clone()],
+                    format!("{p}: no declaration names it as its index"),
+                ));
             }
         }
         Ok(out)
@@ -432,7 +506,10 @@ impl Checks for SourcesCheck {
             } else if desc.territory.is_empty() {
                 None
             } else {
-                self.outlines.as_ref().and_then(|o| super::elevation::territory_boxes(o, &desc.territory).ok()).map(|b| serde_json::json!(b))
+                self.outlines
+                    .as_ref()
+                    .and_then(|o| super::elevation::territory_boxes(o, &desc.territory).ok())
+                    .map(|b| serde_json::json!(b))
             };
             if let Some(e) = extent {
                 let mut facts = serde_json::Map::new();
@@ -484,35 +561,60 @@ impl Source {
 
     /// Its pinned release.
     pub fn version(&self) -> Result<&str> {
-        self.data.version.as_deref().with_context(|| format!("the {} source, {}, names no `version`", self.data.role, self.id))
+        self.data
+            .version
+            .as_deref()
+            .with_context(|| format!("the {} source, {}, names no `version`", self.data.role, self.id))
     }
 
     /// Its format's field `k`.
     pub fn param(&self, k: &str) -> Result<&serde_json::Value> {
-        self.data.params.get(k).with_context(|| format!("the {} source, {}, has no `params.{k}`", self.data.role, self.id))
+        self.data
+            .params
+            .get(k)
+            .with_context(|| format!("the {} source, {}, has no `params.{k}`", self.data.role, self.id))
     }
 
     /// Its format's field `k`, a string.
     pub fn param_str(&self, k: &str) -> Result<&str> {
-        self.param(k)?.as_str().with_context(|| format!("the {} source, {}: `params.{k}` isn't a string", self.data.role, self.id))
+        self.param(k)?
+            .as_str()
+            .with_context(|| format!("the {} source, {}: `params.{k}` isn't a string", self.data.role, self.id))
     }
 
     /// Its format's field `k`, an integer.
     pub fn param_u64(&self, k: &str) -> Result<u64> {
-        self.param(k)?.as_u64().with_context(|| format!("the {} source, {}: `params.{k}` isn't a whole number", self.data.role, self.id))
+        self.param(k)?
+            .as_u64()
+            .with_context(|| format!("the {} source, {}: `params.{k}` isn't a whole number", self.data.role, self.id))
     }
 
     /// Its format's field `k`, strings.
     pub fn param_strs(&self, k: &str) -> Result<Vec<String>> {
-        let v = self.param(k)?.as_array().with_context(|| format!("the {} source, {}: `params.{k}` isn't a list", self.data.role, self.id))?;
-        v.iter().map(|x| x.as_str().map(str::to_string).with_context(|| format!("the {} source, {}: `params.{k}` holds something not a string", self.data.role, self.id))).collect()
+        let v = self
+            .param(k)?
+            .as_array()
+            .with_context(|| format!("the {} source, {}: `params.{k}` isn't a list", self.data.role, self.id))?;
+        v.iter()
+            .map(|x| {
+                x.as_str().map(str::to_string).with_context(|| {
+                    format!("the {} source, {}: `params.{k}` holds something not a string", self.data.role, self.id)
+                })
+            })
+            .collect()
     }
 
     /// The digest of what it names (its `[data]` and its index's features): what `key_part`
     /// compares with what the code named before it was declared.
     pub fn digest(&self) -> String {
-        let feats: Vec<String> = self.index.iter().map(|f| format!("{:?} {} {}", f.bbox, f.url, serde_json::Value::Object(f.props.clone()))).collect();
-        store::naming::hash16(format!("{}\n{}", serde_json::to_string(&self.data).unwrap_or_default(), feats.join("\n")).as_bytes())
+        let feats: Vec<String> = self
+            .index
+            .iter()
+            .map(|f| format!("{:?} {} {}", f.bbox, f.url, serde_json::Value::Object(f.props.clone())))
+            .collect();
+        store::naming::hash16(
+            format!("{}\n{}", serde_json::to_string(&self.data).unwrap_or_default(), feats.join("\n")).as_bytes(),
+        )
     }
 
     /// What a step's key names of it, where the key named it in code before (`before`: the code's
@@ -545,7 +647,9 @@ pub struct Sources {
 impl Sources {
     /// The source declared for role `role`, or why there's none.
     pub fn role(&self, role: &str) -> Result<&Source> {
-        self.by_role.get(role).with_context(|| format!("no source is declared for the {role} role (inputs/sources/, docs/inputs.md §6.9)"))
+        self.by_role.get(role).with_context(|| {
+            format!("no source is declared for the {role} role (inputs/sources/, docs/inputs.md §6.9)")
+        })
     }
 
     /// Every source, by role.
@@ -565,7 +669,10 @@ pub fn of(a: &super::Accepted) -> Result<Sources> {
     let mut many: BTreeMap<String, Vec<Source>> = BTreeMap::new();
     for (path, f) in &a.index.files {
         let Some(id) = path.strip_suffix(".toml") else { continue };
-        let d: Declaration = serde_json::from_value(f.facts.get("declaration").cloned().with_context(|| format!("{path}: no declaration in the index"))?).with_context(|| format!("{path}: its declaration"))?;
+        let d: Declaration = serde_json::from_value(
+            f.facts.get("declaration").cloned().with_context(|| format!("{path}: no declaration in the index"))?,
+        )
+        .with_context(|| format!("{path}: its declaration"))?;
         let index = match &d.data.index {
             Some(i) => parse_index(&a.read(i)?).map_err(|e| anyhow::anyhow!("{i}: {e}"))?,
             None => Vec::new(),
@@ -608,7 +715,8 @@ pub fn open_now(root: &Path) -> Result<Option<Sources>> {
 
 /// The accepted sources, or why the step can't read them (none accepted yet: it waits for them).
 pub fn read(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Sources> {
-    open(root, manifest)?.context("no version of the source declarations is accepted (inputs/sources/, docs/inputs.md §6.9)")
+    open(root, manifest)?
+        .context("no version of the source declarations is accepted (inputs/sources/, docs/inputs.md §6.9)")
 }
 
 /// What the units' keys name of the declared sources they read (the land cover, the canopy): each
@@ -685,9 +793,18 @@ pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
         let (stem, ext) = path.rsplit_once('.').unwrap();
         let file = format!("{}/{stem}.{}.{ext}", super::store_dir(UNIT), store::naming::hash16(b));
         std::fs::write(root.join(&file), b).unwrap();
-        files.insert(path.to_string(), super::FileEntry { file, size: b.len() as u64, keyed: c.keyed.unwrap_or_else(|| store::naming::hash16(b)), facts: c.facts });
+        files.insert(
+            path.to_string(),
+            super::FileEntry {
+                file,
+                size: b.len() as u64,
+                keyed: c.keyed.unwrap_or_else(|| store::naming::hash16(b)),
+                facts: c.facts,
+            },
+        );
     }
-    let index = super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
+    let index =
+        super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
     let body = serde_json::to_vec(&index).unwrap();
     let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&body));
     std::fs::write(root.join(&name), body).unwrap();
@@ -728,7 +845,8 @@ mod tests {
         bad("role = \"canopy\"\nformat = \"geotiff\"\nindex = \"i.geojson\"\nrefresh = \"daily\"\n");
         bad("role = \"canopy\"\nformat = \"geotiff\"\nindex = \"i.geojson\"\nmirror = \"x\"\n");
         // (The description's own shape: its credit.)
-        let c = SourcesCheck::default().file("x.toml", b"[data]\nrole = \"canopy\"\nformat = \"geotiff\"\nindex = \"i.geojson\"\n");
+        let c = SourcesCheck::default()
+            .file("x.toml", b"[data]\nrole = \"canopy\"\nformat = \"geotiff\"\nindex = \"i.geojson\"\n");
         assert!(c.findings.iter().any(|f| f.check() == DESC), "{:?}", c.findings);
         assert!(SourcesCheck::default().file("a/b.toml", b"").findings.iter().any(|f| f.check() == SHAPE));
     }
@@ -742,11 +860,22 @@ mod tests {
         assert!(parse_index(br#"{"type":"FeatureCollection","features":[{"properties":{},"geometry":null}]}"#).is_err());
         let a = decl("role = \"canopy\"\nformat = \"geotiff\"\nindex = \"sq.geojson\"\n");
         let b = decl("role = \"canopy\"\nformat = \"geotiff\"\nindex = \"other.geojson\"\n");
-        let files: BTreeMap<&str, Vec<u8>> = BTreeMap::from([("a.toml", a.into_bytes()), ("b.toml", b.into_bytes()), ("sq.geojson", ix.to_vec()), ("stray.geojson", ix.to_vec())]);
+        let files: BTreeMap<&str, Vec<u8>> = BTreeMap::from([
+            ("a.toml", a.into_bytes()),
+            ("b.toml", b.into_bytes()),
+            ("sq.geojson", ix.to_vec()),
+            ("stray.geojson", ix.to_vec()),
+        ]);
         let read = |p: &str| Ok(std::sync::Arc::new(files[p].clone()));
         let v = Version { paths: files.keys().map(|s| s.to_string()).collect(), read: &read };
-        let checks: Vec<String> = SourcesCheck::default().whole(&v).unwrap().iter().map(|f| f.check().to_string()).collect();
-        assert!(checks.contains(&MISSING.to_string()) && checks.contains(&ROLE.to_string()) && checks.contains(&ORPHAN.to_string()), "{checks:?}");
+        let checks: Vec<String> =
+            SourcesCheck::default().whole(&v).unwrap().iter().map(|f| f.check().to_string()).collect();
+        assert!(
+            checks.contains(&MISSING.to_string())
+                && checks.contains(&ROLE.to_string())
+                && checks.contains(&ORPHAN.to_string()),
+            "{checks:?}"
+        );
     }
 
     /// The declarations staged for the drop box (producers/sources/) pass the input check, file by
@@ -778,7 +907,10 @@ mod tests {
         assert_eq!(v[WIKIDATA]["url"], "https://qlever.dev/api/wikidata");
         assert_eq!(v[WIKIPEDIA]["url"], "https://en.wikipedia.org/w/api.php");
         assert_eq!(v[WIKIDATA_LIVE]["url"], "https://query.wikidata.org/sparql");
-        assert_eq!(v[PAGEVIEWS]["url"], "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2");
+        assert_eq!(
+            v[PAGEVIEWS]["url"],
+            "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2"
+        );
     }
 
     /// The units' and tree cover's keys name the land-cover, canopy and leaf-type declarations only
@@ -787,7 +919,12 @@ mod tests {
     fn the_units_and_trees_keys_name_their_sources_once_changed() {
         use crate::agent::rekey::declared_before as b;
         let s = staged();
-        for (role, before) in [(LAND_COVER, b::LAND_COVER), (CANOPY, b::CANOPY), (LEAF_EUROPE, b::LEAF_EUROPE), (LEAF_NORTH_AMERICA, b::LEAF_NORTH_AMERICA)] {
+        for (role, before) in [
+            (LAND_COVER, b::LAND_COVER),
+            (CANOPY, b::CANOPY),
+            (LEAF_EUROPE, b::LEAF_EUROPE),
+            (LEAF_NORTH_AMERICA, b::LEAF_NORTH_AMERICA),
+        ] {
             assert_eq!(s.role(role).unwrap().digest(), before, "{role}");
         }
         assert_eq!((unit_extra(&s).unwrap(), trees_extra(&s).unwrap()), (None, None));
@@ -807,19 +944,22 @@ mod tests {
     #[test]
     fn the_depth_declarations_pass_the_check() {
         let staged: [(&str, &[u8]); 13] = [
-        ("bluetopo.toml", include_bytes!("../../../../producers/depth/declarations/bluetopo.toml")),
-        ("emodnet-dtm.toml", include_bytes!("../../../../producers/depth/declarations/emodnet-dtm.toml")),
-        ("gblq.toml", include_bytes!("../../../../producers/depth/declarations/gblq.toml")),
-        ("gebco-2026.toml", include_bytes!("../../../../producers/depth/declarations/gebco-2026.toml")),
-        ("gttm.toml", include_bytes!("../../../../producers/depth/declarations/gttm.toml")),
-        ("masswildlife-ponds.toml", include_bytes!("../../../../producers/depth/declarations/masswildlife-ponds.toml")),
-        ("mn-dnr-lakes.toml", include_bytes!("../../../../producers/depth/declarations/mn-dnr-lakes.toml")),
-        ("ncei-crm.toml", include_bytes!("../../../../producers/depth/declarations/ncei-crm.toml")),
-        ("ncei-greatlakes.toml", include_bytes!("../../../../producers/depth/declarations/ncei-greatlakes.toml")),
-        ("nonna-10.toml", include_bytes!("../../../../producers/depth/declarations/nonna-10.toml")),
-        ("nonna-100.toml", include_bytes!("../../../../producers/depth/declarations/nonna-100.toml")),
-        ("shom-homonim-100.toml", include_bytes!("../../../../producers/depth/declarations/shom-homonim-100.toml")),
-        ("shom-homonim-20.toml", include_bytes!("../../../../producers/depth/declarations/shom-homonim-20.toml")),
+            ("bluetopo.toml", include_bytes!("../../../../producers/depth/declarations/bluetopo.toml")),
+            ("emodnet-dtm.toml", include_bytes!("../../../../producers/depth/declarations/emodnet-dtm.toml")),
+            ("gblq.toml", include_bytes!("../../../../producers/depth/declarations/gblq.toml")),
+            ("gebco-2026.toml", include_bytes!("../../../../producers/depth/declarations/gebco-2026.toml")),
+            ("gttm.toml", include_bytes!("../../../../producers/depth/declarations/gttm.toml")),
+            (
+                "masswildlife-ponds.toml",
+                include_bytes!("../../../../producers/depth/declarations/masswildlife-ponds.toml"),
+            ),
+            ("mn-dnr-lakes.toml", include_bytes!("../../../../producers/depth/declarations/mn-dnr-lakes.toml")),
+            ("ncei-crm.toml", include_bytes!("../../../../producers/depth/declarations/ncei-crm.toml")),
+            ("ncei-greatlakes.toml", include_bytes!("../../../../producers/depth/declarations/ncei-greatlakes.toml")),
+            ("nonna-10.toml", include_bytes!("../../../../producers/depth/declarations/nonna-10.toml")),
+            ("nonna-100.toml", include_bytes!("../../../../producers/depth/declarations/nonna-100.toml")),
+            ("shom-homonim-100.toml", include_bytes!("../../../../producers/depth/declarations/shom-homonim-100.toml")),
+            ("shom-homonim-20.toml", include_bytes!("../../../../producers/depth/declarations/shom-homonim-20.toml")),
         ];
         let mut codes = BTreeSet::new();
         for (p, b) in staged {
@@ -838,7 +978,16 @@ mod tests {
 
     #[test]
     fn a_key_part_is_the_codes_while_the_declaration_names_the_same() {
-        let s = Source { id: "x".into(), data: parse(decl("role = \"pageviews\"\nformat = \"pageviews-dump\"\nurl = \"https://d.org/{y}-{m}\"\n").as_bytes()).unwrap().data, keyed: "k".into(), index: Vec::new() };
+        let s = Source {
+            id: "x".into(),
+            data: parse(
+                decl("role = \"pageviews\"\nformat = \"pageviews-dump\"\nurl = \"https://d.org/{y}-{m}\"\n").as_bytes(),
+            )
+            .unwrap()
+            .data,
+            keyed: "k".into(),
+            index: Vec::new(),
+        };
         assert_eq!(s.key_part(("old", &s.digest())), "old");
         assert_eq!(s.key_part(("old", "another")), "source x k");
     }

@@ -32,12 +32,22 @@ const CHECK: &str = "tr-check";
 /// passed over, a byte order mark at the start dropped.
 pub(crate) fn lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    text.split('\n').enumerate().map(|(i, l)| (i + 1, l.strip_suffix('\r').unwrap_or(l))).filter(|(_, l)| !l.trim().is_empty())
+    text.split('\n')
+        .enumerate()
+        .map(|(i, l)| (i + 1, l.strip_suffix('\r').unwrap_or(l)))
+        .filter(|(_, l)| !l.trim().is_empty())
 }
 
 /// One finding about lines of a file: its id names the lines' content (`raw`), its `lines` what's
 /// shown of each (`shown`).
-pub(crate) fn about_lines(check: &str, level: Level, path: &str, raw: &[&str], shown: Vec<(usize, String)>, message: String) -> Finding {
+pub(crate) fn about_lines(
+    check: &str,
+    level: Level,
+    path: &str,
+    raw: &[&str],
+    shown: Vec<(usize, String)>,
+    message: String,
+) -> Finding {
     let mut f = Finding::new(check, level, &[path], raw, vec![path.to_string()], message);
     f.lines = shown;
     f
@@ -71,7 +81,14 @@ impl Checks for Translations {
             return c;
         }
         let Ok(text) = std::str::from_utf8(bytes) else {
-            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not utf-8"], vec![path.into()], format!("{path} isn't UTF-8 text")));
+            c.findings.push(Finding::new(
+                SHAPE,
+                Level::Error,
+                &[path],
+                &["not utf-8"],
+                vec![path.into()],
+                format!("{path} isn't UTF-8 text"),
+            ));
             return c;
         };
         let (mut bad, mut old) = (Vec::new(), Vec::new());
@@ -126,7 +143,12 @@ impl Checks for Translations {
         if flags.is_empty() {
             return Ok(Vec::new());
         }
-        let all: Vec<&str> = text.strip_prefix('\u{feff}').unwrap_or(text).split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+        let all: Vec<&str> = text
+            .strip_prefix('\u{feff}')
+            .unwrap_or(text)
+            .split('\n')
+            .map(|l| l.strip_suffix('\r').unwrap_or(l))
+            .collect();
         let line = |n: usize| all.get(n - 1).copied().unwrap_or("");
         let mut raw: Vec<String> = Vec::new();
         let mut shown = Vec::new();
@@ -143,12 +165,22 @@ impl Checks for Translations {
             }
         }
         let refs: Vec<&str> = raw.iter().map(String::as_str).collect();
-        Ok(vec![about_lines(CHECK, Level::Warning, path, &refs, shown, format!("{path}: {} the translators' checker (check.py) flags", plural(flags.len(), "line", "lines")))])
+        Ok(vec![about_lines(
+            CHECK,
+            Level::Warning,
+            path,
+            &refs,
+            shown,
+            format!("{path}: {} the translators' checker (check.py) flags", plural(flags.len(), "line", "lines")),
+        )])
     }
 
     fn context(&self, _manifest: &std::collections::BTreeMap<String, String>) -> Vec<String> {
         // (The checker and the Python it runs in: a change to either checks the unit again, so a
         // held or changed file is read again under it; files already taken in stay as they are.)
-        vec![format!("check.py {}", store::naming::hash16(super::lint::CHECK.as_bytes())), format!("python {}", super::lint::PYTHON_VERSION.trim())]
+        vec![
+            format!("check.py {}", store::naming::hash16(super::lint::CHECK.as_bytes())),
+            format!("python {}", super::lint::PYTHON_VERSION.trim()),
+        ]
     }
 }

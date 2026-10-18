@@ -49,7 +49,9 @@ impl std::fmt::Display for Part {
                 Target::Part(p) => write!(f, "{{buffer {p} {by}}}"),
                 Target::Line(l) => write!(f, "{{buffer line:{l} {by}}}"),
             },
-            Part::Cut { of, line, left } => write!(f, "{{cut {of} line:{line} {}}}", if *left { "left" } else { "right" }),
+            Part::Cut { of, line, left } => {
+                write!(f, "{{cut {of} line:{line} {}}}", if *left { "left" } else { "right" })
+            }
         }
     }
 }
@@ -128,7 +130,8 @@ impl Region {
 
     /// The relations it names (sorted, once each).
     pub fn relations(&self) -> Vec<u64> {
-        let mut v: Vec<u64> = self.parts().into_iter().filter_map(|p| if let Part::Osm(id) = p { Some(*id) } else { None }).collect();
+        let mut v: Vec<u64> =
+            self.parts().into_iter().filter_map(|p| if let Part::Osm(id) = p { Some(*id) } else { None }).collect();
         v.sort();
         v.dedup();
         v
@@ -136,7 +139,12 @@ impl Region {
 
     /// The ways its lines name (sorted, once each).
     pub fn ways(&self) -> Vec<u64> {
-        let mut v: Vec<u64> = self.lines.values().filter_map(|l| if let Line::Ways(w) = l { Some(w.clone()) } else { None }).flatten().collect();
+        let mut v: Vec<u64> = self
+            .lines
+            .values()
+            .filter_map(|l| if let Line::Ways(w) = l { Some(w.clone()) } else { None })
+            .flatten()
+            .collect();
         v.sort();
         v.dedup();
         v
@@ -144,7 +152,11 @@ impl Region {
 
     /// The regions it names (`region:`).
     pub fn regions(&self) -> Vec<&str> {
-        let mut v: Vec<&str> = self.parts().into_iter().filter_map(|p| if let Part::Region(id) = p { Some(id.as_str()) } else { None }).collect();
+        let mut v: Vec<&str> = self
+            .parts()
+            .into_iter()
+            .filter_map(|p| if let Part::Region(id) = p { Some(id.as_str()) } else { None })
+            .collect();
         v.sort();
         v.dedup();
         v
@@ -152,7 +164,11 @@ impl Region {
 
     /// The shape files it names (`shape:`).
     pub fn shapes(&self) -> Vec<&str> {
-        let mut v: Vec<&str> = self.parts().into_iter().filter_map(|p| if let Part::Shape(n) = p { Some(n.as_str()) } else { None }).collect();
+        let mut v: Vec<&str> = self
+            .parts()
+            .into_iter()
+            .filter_map(|p| if let Part::Shape(n) = p { Some(n.as_str()) } else { None })
+            .collect();
         v.sort();
         v.dedup();
         v
@@ -183,13 +199,17 @@ pub fn valid_id(id: &str) -> bool {
 
 /// A shape file's name: `<name>.geojson`, no path.
 pub fn valid_shape_name(n: &str) -> bool {
-    n.strip_suffix(".geojson").is_some_and(|s| !s.is_empty() && !s.starts_with(['.', '@', '#', '_']) && !s.contains(['/', '\\']))
+    n.strip_suffix(".geojson")
+        .is_some_and(|s| !s.is_empty() && !s.starts_with(['.', '@', '#', '_']) && !s.contains(['/', '\\']))
 }
 
 /// A distance: a number and `m`, `km` or `nmi`, positive, at most 200 km; in metres.
 pub fn parse_distance(s: &str) -> Result<f64, String> {
     let t = s.trim();
-    let (num, unit) = t.split_at(t.find(|c: char| c.is_ascii_alphabetic()).ok_or_else(|| format!("{s:?}: a distance is a number and m, km or nmi"))?);
+    let (num, unit) = t.split_at(
+        t.find(|c: char| c.is_ascii_alphabetic())
+            .ok_or_else(|| format!("{s:?}: a distance is a number and m, km or nmi"))?,
+    );
     let v: f64 = num.trim().parse().map_err(|_| format!("{s:?}: a distance is a number and m, km or nmi"))?;
     let m = match unit.trim() {
         "m" => v,
@@ -206,7 +226,14 @@ pub fn parse_distance(s: &str) -> Result<f64, String> {
 fn parse_part(v: &toml::Value) -> Result<Part, Fault> {
     match v {
         toml::Value::String(s) => {
-            let (kind, rest) = s.split_once(':').ok_or_else(|| fault("part", format!("{s:?}: a part is osm:<relation>, shape:<name>.geojson, region:<id>, or a table (buffer, cut)")))?;
+            let (kind, rest) = s.split_once(':').ok_or_else(|| {
+                fault(
+                    "part",
+                    format!(
+                        "{s:?}: a part is osm:<relation>, shape:<name>.geojson, region:<id>, or a table (buffer, cut)"
+                    ),
+                )
+            })?;
             match kind {
                 "osm" => rest.parse::<u64>().ok().filter(|id| *id > 0 && !rest.starts_with('0')).map(Part::Osm).ok_or_else(|| fault("part", format!("{s:?}: not a relation id"))),
                 "shape" if valid_shape_name(rest) => Ok(Part::Shape(rest.into())),
@@ -223,10 +250,15 @@ fn parse_part(v: &toml::Value) -> Result<Part, Fault> {
                 if let Some(k) = keys.iter().find(|k| !["buffer", "by"].contains(k)) {
                     return Err(fault("toml", format!("a buffer has no field {k:?} (buffer, by)")));
                 }
-                let by = t.get("by").and_then(|v| v.as_str()).ok_or_else(|| fault("part", "a buffer needs by = \"<distance>\""))?;
+                let by = t
+                    .get("by")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| fault("part", "a buffer needs by = \"<distance>\""))?;
                 let m = parse_distance(by).map_err(|e| fault("part", e))?;
                 let of = match t.get("buffer") {
-                    Some(toml::Value::String(s)) if s.starts_with("line:") => Target::Line(s["line:".len()..].to_string()),
+                    Some(toml::Value::String(s)) if s.starts_with("line:") => {
+                        Target::Line(s["line:".len()..].to_string())
+                    }
                     Some(v) => Target::Part(parse_part(v)?),
                     None => unreachable!(),
                 };
@@ -235,7 +267,11 @@ fn parse_part(v: &toml::Value) -> Result<Part, Fault> {
                 if let Some(k) = keys.iter().find(|k| !["cut", "by", "keep"].contains(k)) {
                     return Err(fault("toml", format!("a cut has no field {k:?} (cut, by, keep)")));
                 }
-                let line = t.get("by").and_then(|v| v.as_str()).and_then(|s| s.strip_prefix("line:")).ok_or_else(|| fault("part", "a cut needs by = \"line:<name>\""))?;
+                let line = t
+                    .get("by")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.strip_prefix("line:"))
+                    .ok_or_else(|| fault("part", "a cut needs by = \"line:<name>\""))?;
                 let left = match t.get("keep").and_then(|v| v.as_str()) {
                     Some("left") => true,
                     Some("right") => false,
@@ -244,7 +280,13 @@ fn parse_part(v: &toml::Value) -> Result<Part, Fault> {
                 let of = parse_part(t.get("cut").unwrap())?;
                 Ok(Part::Cut { of: Box::new(of), line: line.to_string(), left })
             } else {
-                Err(fault("part", format!("a table part is {{ buffer = …, by = … }} or {{ cut = …, by = …, keep = … }}, not {{ {} }}", keys.join(", "))))
+                Err(fault(
+                    "part",
+                    format!(
+                        "a table part is {{ buffer = …, by = … }} or {{ cut = …, by = …, keep = … }}, not {{ {} }}",
+                        keys.join(", ")
+                    ),
+                ))
             }
         }
         other => Err(fault("toml", format!("a part is a string or a table, not {}", other.type_str()))),
@@ -278,7 +320,9 @@ struct RawLine {
 fn pins_of(raw: BTreeMap<String, toml::Value>) -> Result<BTreeMap<String, String>, Fault> {
     let mut out = BTreeMap::new();
     for (k, v) in raw {
-        let Some(s) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) else { return Err(fault("pin", format!("pin {k:?}: a non-empty string"))) };
+        let Some(s) = v.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+            return Err(fault("pin", format!("pin {k:?}: a non-empty string")));
+        };
         if k == "osm" && !crate::osmpass::is_date(s) {
             return Err(fault("pin", format!("pin osm = {s:?}: the OSM pass's date (YYYY-MM-DD)")));
         }
@@ -308,7 +352,8 @@ pub fn parse_group(text: &str) -> Result<Group, Fault> {
 
 /// `pins.toml`, parsed.
 pub fn parse_pins(text: &str) -> Result<BTreeMap<String, String>, Fault> {
-    let raw: BTreeMap<String, toml::Value> = toml::from_str(text).map_err(|e| fault("toml", format!("pins.toml: {}", e.message())))?;
+    let raw: BTreeMap<String, toml::Value> =
+        toml::from_str(text).map_err(|e| fault("toml", format!("pins.toml: {}", e.message())))?;
     pins_of(raw)
 }
 
@@ -320,7 +365,10 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
     if !valid_id(&raw.id) {
         faults.push(fault("id", format!("id {:?}: lower-case letters, digits and dashes, 1–64 of them", raw.id)));
     } else if file_name.strip_suffix(".toml") != Some(raw.id.as_str()) {
-        faults.push(fault("id", format!("the file is {file_name} but its id is {:?}: a region's file is <id>.toml", raw.id)));
+        faults.push(fault(
+            "id",
+            format!("the file is {file_name} but its id is {:?}: a region's file is <id>.toml", raw.id),
+        ));
     }
     if raw.name.trim().is_empty() {
         faults.push(fault("id", "no name"));
@@ -337,18 +385,25 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
     let mut lines = BTreeMap::new();
     for (name, l) in raw.lines {
         if !valid_id(&name) {
-            faults.push(fault("line", format!("line {name:?}: a line's name is as an id (lower-case letters, digits, dashes)")));
+            faults.push(fault(
+                "line",
+                format!("line {name:?}: a line's name is as an id (lower-case letters, digits, dashes)"),
+            ));
             continue;
         }
         match (l.coords, l.ways) {
             (Some(c), None) => {
-                let pts: Vec<[i64; 2]> = c.iter().map(|p| [(p[0] * 1e7).round() as i64, (p[1] * 1e7).round() as i64]).collect();
+                let pts: Vec<[i64; 2]> =
+                    c.iter().map(|p| [(p[0] * 1e7).round() as i64, (p[1] * 1e7).round() as i64]).collect();
                 let mut distinct = pts.clone();
                 distinct.dedup();
                 if distinct.len() < 2 {
                     faults.push(fault("line", format!("line {name}: at least two distinct points")));
                 } else if c.iter().any(|p| !(-180.0..=180.0).contains(&p[0]) || !(-90.0..=90.0).contains(&p[1])) {
-                    faults.push(fault("line", format!("line {name}: a point outside longitude −180…180, latitude −90…90 (longitude first)")));
+                    faults.push(fault(
+                        "line",
+                        format!("line {name}: a point outside longitude −180…180, latitude −90…90 (longitude first)"),
+                    ));
                 } else {
                     lines.insert(name, Line::Coords(pts));
                 }
@@ -382,7 +437,11 @@ mod tests {
         let r = parse("spain-mainland.toml", "id = \"spain-mainland\"\nname = \"Mainland Spain\"\noutline = [\"osm:1311341\"]\nminus = [\"osm:349000\", \"region:canaries\"]\n").unwrap();
         assert_eq!(r.minus, vec![Part::Osm(349000), Part::Region("canaries".into())]);
         assert!(!r.is_plain());
-        let r = parse("azores.toml", "id = \"azores\"\nname = \"Azores\"\noutline = [{ buffer = \"osm:1629145\", by = \"12 nmi\" }]\n").unwrap();
+        let r = parse(
+            "azores.toml",
+            "id = \"azores\"\nname = \"Azores\"\noutline = [{ buffer = \"osm:1629145\", by = \"12 nmi\" }]\n",
+        )
+        .unwrap();
         assert_eq!(r.outline_text(), vec!["{buffer osm:1629145 12 nmi}"]);
         let r = parse("spain-north.toml", "id = \"spain-north\"\nname = \"Northern Spain\"\noutline = [{ cut = \"region:spain-mainland\", by = \"line:split\", keep = \"left\" }]\n[lines.split]\ncoords = [[-9.8, 42.0], [3.6, 41.6]]\n").unwrap();
         assert_eq!(r.lines["split"], Line::Coords(vec![[-98_000_000, 420_000_000], [36_000_000, 416_000_000]]));
@@ -399,13 +458,46 @@ mod tests {
         let check = |name: &str, text: &str| parse(name, text).unwrap_err().iter().map(|f| f.check).collect::<Vec<_>>();
         assert_eq!(check("a.toml", "id = \"a\"\nname = \"A\"\noutline = [\"osm:1\"]\nminsu = []\n"), vec!["toml"]);
         assert_eq!(check("b.toml", "id = \"a\"\nname = \"A\"\noutline = [\"osm:1\"]\n"), vec!["id"]);
-        assert_eq!(check("a.toml", "id = \"a\"\nname = \"A\"\noutline = [\"poly:x.poly\", \"place:1,2,3\", \"geofabrik:europe\"]\n"), vec!["part", "part", "part"]);
-        assert_eq!(check("a.toml", "id = \"a\"\nname = \"A\"\noutline = [{ buffer = \"osm:1\", by = \"300 km\" }]\n"), vec!["part"]);
-        assert_eq!(check("a.toml", "id = \"a\"\nname = \"A\"\noutline = [{ cut = \"osm:1\", by = \"line:x\", keep = \"up\" }]\n"), vec!["part"]);
-        assert_eq!(check("a.toml", "id = \"a\"\nname = \"A\"\noutline = [{ cut = \"osm:1\", by = \"line:x\", keep = \"up\" }]\n"), vec!["part"]);
-        assert_eq!(check("a.toml", "id = \"a\"\nname = \"A\"\noutline = [{ cut = \"osm:1\", by = \"line:x\", keep = \"left\" }]\n"), vec!["ref"]);
-        assert_eq!(check("a.toml", "id = \"a\"\nname = \"A\"\noutline = [\"osm:1\"]\n[lines.x]\ncoords = [[1, 2], [1, 2]]\n"), vec!["line"]);
-        assert_eq!(check("a.toml", "id = \"a\"\nname = \"A\"\noutline = [\"osm:1\"]\n[pins]\nosm = \"yesterday\"\n"), vec!["pin"]);
+        assert_eq!(
+            check(
+                "a.toml",
+                "id = \"a\"\nname = \"A\"\noutline = [\"poly:x.poly\", \"place:1,2,3\", \"geofabrik:europe\"]\n"
+            ),
+            vec!["part", "part", "part"]
+        );
+        assert_eq!(
+            check("a.toml", "id = \"a\"\nname = \"A\"\noutline = [{ buffer = \"osm:1\", by = \"300 km\" }]\n"),
+            vec!["part"]
+        );
+        assert_eq!(
+            check(
+                "a.toml",
+                "id = \"a\"\nname = \"A\"\noutline = [{ cut = \"osm:1\", by = \"line:x\", keep = \"up\" }]\n"
+            ),
+            vec!["part"]
+        );
+        assert_eq!(
+            check(
+                "a.toml",
+                "id = \"a\"\nname = \"A\"\noutline = [{ cut = \"osm:1\", by = \"line:x\", keep = \"up\" }]\n"
+            ),
+            vec!["part"]
+        );
+        assert_eq!(
+            check(
+                "a.toml",
+                "id = \"a\"\nname = \"A\"\noutline = [{ cut = \"osm:1\", by = \"line:x\", keep = \"left\" }]\n"
+            ),
+            vec!["ref"]
+        );
+        assert_eq!(
+            check("a.toml", "id = \"a\"\nname = \"A\"\noutline = [\"osm:1\"]\n[lines.x]\ncoords = [[1, 2], [1, 2]]\n"),
+            vec!["line"]
+        );
+        assert_eq!(
+            check("a.toml", "id = \"a\"\nname = \"A\"\noutline = [\"osm:1\"]\n[pins]\nosm = \"yesterday\"\n"),
+            vec!["pin"]
+        );
         assert_eq!(check("a.toml", "id = \"a\"\nname = \"\"\noutline = []\n"), vec!["id", "id"]);
         assert_eq!(parse_distance("12 nmi"), Ok(22224.0));
         assert_eq!(parse_distance("500m"), Ok(500.0));

@@ -78,8 +78,17 @@ fn first_point(g: &serde_json::Value) -> Option<[f64; 2]> {
 
 /// Sets `<prefix>main` (when it differs from the name) and `<prefix>sub` (when there is one) on an
 /// object, for the name in `name_key`. Whether it set either.
-pub(crate) fn put_names(s: &AppState, o: &mut serde_json::Map<String, serde_json::Value>, name_key: &str, own: Option<&str>, at: [f64; 2], prefix: &str) -> bool {
-    let Some(name) = o.get(name_key).and_then(|x| x.as_str()).filter(|x| !x.is_empty()).map(str::to_owned) else { return false };
+pub(crate) fn put_names(
+    s: &AppState,
+    o: &mut serde_json::Map<String, serde_json::Value>,
+    name_key: &str,
+    own: Option<&str>,
+    at: [f64; 2],
+    prefix: &str,
+) -> bool {
+    let Some(name) = o.get(name_key).and_then(|x| x.as_str()).filter(|x| !x.is_empty()).map(str::to_owned) else {
+        return false;
+    };
     let d = s.names.display(names::Kind::Other, &name, own, &[], at[0], at[1]);
     let mut set = false;
     if d.main != name {
@@ -107,8 +116,15 @@ pub(crate) fn with_names(s: &AppState, raw: &[u8]) -> Vec<u8> {
         for f in feats {
             let Some(at) = f.get("geometry").and_then(first_point) else { continue };
             let Some(props) = f.get_mut("properties").and_then(|p| p.as_object_mut()) else { continue };
-            let Some(key) = NAME_KEYS.iter().find(|k| props.get(**k).and_then(|x| x.as_str()).is_some_and(|x| !x.is_empty())) else { continue };
-            let own = EN_KEYS.iter().find_map(|k| props.get(*k).and_then(|x| x.as_str()).filter(|x| !x.is_empty())).map(str::to_owned);
+            let Some(key) =
+                NAME_KEYS.iter().find(|k| props.get(**k).and_then(|x| x.as_str()).is_some_and(|x| !x.is_empty()))
+            else {
+                continue;
+            };
+            let own = EN_KEYS
+                .iter()
+                .find_map(|k| props.get(*k).and_then(|x| x.as_str()).filter(|x| !x.is_empty()))
+                .map(str::to_owned);
             changed |= put_names(s, props, key, own.as_deref(), at, "");
             changed |= put_names(s, props, "cn", None, at, "c");
         }
@@ -116,7 +132,11 @@ pub(crate) fn with_names(s: &AppState, raw: &[u8]) -> Vec<u8> {
         if let Some(lines) = v.get_mut("lines").and_then(|l| l.as_object_mut()) {
             for l in lines.values_mut() {
                 let Some(o) = l.as_object_mut() else { continue };
-                let Some(at) = o.get("ends").and_then(|e| e.get(0)).and_then(|p| Some([p.get(0)?.as_f64()?, p.get(1)?.as_f64()?])) else { continue };
+                let Some(at) =
+                    o.get("ends").and_then(|e| e.get(0)).and_then(|p| Some([p.get(0)?.as_f64()?, p.get(1)?.as_f64()?]))
+                else {
+                    continue;
+                };
                 changed |= put_names(s, o, "name", None, at, "");
             }
         }
@@ -153,7 +173,9 @@ async fn packed(s: &Arc<AppState>, logical: &str) -> Option<(String, Arc<Packed>
     let cell = s.packs.cell(&content, names);
     let (s2, l2, c2) = (s.clone(), logical.to_string(), content.clone());
     let p = cell
-        .get_or_try_init(|| async move { tokio::task::spawn_blocking(move || prepare(&s2, &l2, &c2, names)).await.ok().flatten().ok_or(()) })
+        .get_or_try_init(|| async move {
+            tokio::task::spawn_blocking(move || prepare(&s2, &l2, &c2, names)).await.ok().flatten().ok_or(())
+        })
         .await
         .ok()?
         .clone();
@@ -170,7 +192,10 @@ pub async fn respond_layer(s: &Arc<AppState>, logical: &str, headers: &HeaderMap
     let (content, p) = packed(s, logical).await?;
     let cache = cache_control(versioned, "no-cache");
     if headers.get(header::IF_NONE_MATCH).is_some_and(|v| v == p.etag) {
-        return Some((StatusCode::NOT_MODIFIED, [(header::ETAG, p.etag.clone()), (header::CACHE_CONTROL, cache)]).into_response());
+        return Some(
+            (StatusCode::NOT_MODIFIED, [(header::ETAG, p.etag.clone()), (header::CACHE_CONTROL, cache)])
+                .into_response(),
+        );
     }
     let ctype = if content.ends_with(".json") { "application/geo+json" } else { "application/octet-stream" };
     Some(

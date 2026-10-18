@@ -145,7 +145,7 @@ pub fn read(root: &Path, member: &str) -> Result<Option<Progress>> {
 /// Writes this member's progress file whole (its own alone).
 pub fn write(root: &Path, p: &Progress) -> Result<()> {
     std::fs::create_dir_all(root.join(DIR))?;
-    crate::whole::write(&root.join(path(&p.member)),&serde_json::to_vec_pretty(p)?)
+    crate::whole::write(&root.join(path(&p.member)), &serde_json::to_vec_pretty(p)?)
 }
 
 /// Whether the owner released `member`'s progress of `job` that began at `at`.
@@ -157,12 +157,16 @@ pub fn released(root: &Path, member: &str, job: &str, at: u64) -> bool {
 /// wherever it fits from then. What it released, or why nothing.
 pub fn release(root: &Path, member: &str, job: &str) -> Result<String> {
     let p = read(root, member)?.with_context(|| format!("{member} has no progress file"))?;
-    let h = p.jobs.get(job).with_context(|| format!("{member}'s progress holds no {job:?} (it holds {:?})", p.jobs.keys().collect::<Vec<_>>()))?;
+    let h = p.jobs.get(job).with_context(|| {
+        format!("{member}'s progress holds no {job:?} (it holds {:?})", p.jobs.keys().collect::<Vec<_>>())
+    })?;
     let r = root.join(release_path(member, job, h.began()));
     std::fs::create_dir_all(r.parent().unwrap())?;
     match std::fs::OpenOptions::new().write(true).create_new(true).open(&r) {
         Ok(_) => Ok(format!("{job}'s progress on {member} ({}) released: the lead runs it wherever it fits", p.worker)),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(format!("{job}'s progress on {member} was released already")),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Ok(format!("{job}'s progress on {member} was released already"))
+        }
         Err(e) => Err(e).with_context(|| format!("make {}", r.display())),
     }
 }
@@ -190,12 +194,24 @@ pub enum Decision {
 pub fn decide(job: &str, me: &str, files: &[Progress], now: u64, released: &dyn Fn(&str, u64) -> bool) -> Decision {
     let holds = |p: &Progress| p.jobs.get(job).filter(|h| live(h, now, released(&p.member, h.began()))).cloned();
     if let Some(h) = files.iter().filter(|p| p.member == me).find_map(holds) {
-        return if h.done { Decision::Wait(format!("finished on this Mac, its entry waiting to be merged (until {})", h.began() + HOLD_S)) } else { Decision::Plan };
+        return if h.done {
+            Decision::Wait(format!(
+                "finished on this Mac, its entry waiting to be merged (until {})",
+                h.began() + HOLD_S
+            ))
+        } else {
+            Decision::Plan
+        };
     }
-    let newest = files.iter().filter(|p| p.member != me).filter_map(|p| holds(p).map(|h| (p, h))).max_by_key(|(_, h)| h.at);
+    let newest =
+        files.iter().filter(|p| p.member != me).filter_map(|p| holds(p).map(|h| (p, h))).max_by_key(|(_, h)| h.at);
     match newest {
-        Some((p, h)) if h.done => Decision::Wait(format!("finished on {} ({}), its entry waiting to be merged", p.worker, p.member)),
-        Some((p, h)) => Decision::Offer { member: p.member.clone(), worker: p.worker.clone(), until: h.began() + HOLD_S },
+        Some((p, h)) if h.done => {
+            Decision::Wait(format!("finished on {} ({}), its entry waiting to be merged", p.worker, p.member))
+        }
+        Some((p, h)) => {
+            Decision::Offer { member: p.member.clone(), worker: p.worker.clone(), until: h.began() + HOLD_S }
+        }
         None => Decision::Plan,
     }
 }
@@ -203,7 +219,10 @@ pub fn decide(job: &str, me: &str, files: &[Progress], now: u64, released: &dyn 
 /// Another member whose file shows job `job` not finished and noted within `FRESH_S` of `now`: it
 /// may be running it now, so the lead doesn't run it too.
 pub fn running_elsewhere<'a>(job: &str, me: &str, files: &'a [Progress], now: u64) -> Option<&'a Progress> {
-    files.iter().filter(|p| p.member != me).find(|p| p.jobs.get(job).is_some_and(|h| !h.done && now < h.at.saturating_add(FRESH_S)))
+    files
+        .iter()
+        .filter(|p| p.member != me)
+        .find(|p| p.jobs.get(job).is_some_and(|h| !h.done && now < h.at.saturating_add(FRESH_S)))
 }
 
 /// The jobs member file `p` holds for its own Mac to ask for at `now` (live, not finished).
@@ -245,7 +264,14 @@ mod tests {
     use crate::pool::journal::LeaseId;
 
     fn file(member: &str, worker: &str, jobs: &[(&str, u64, bool)]) -> Progress {
-        Progress { member: member.into(), worker: worker.into(), jobs: jobs.iter().map(|(j, at, done)| (j.to_string(), Held { at: *at, done: *done, ..Default::default() })).collect() }
+        Progress {
+            member: member.into(),
+            worker: worker.into(),
+            jobs: jobs
+                .iter()
+                .map(|(j, at, done)| (j.to_string(), Held { at: *at, done: *done, ..Default::default() }))
+                .collect(),
+        }
     }
 
     const PASS: &str = "osm-pass 2026-10-01";
@@ -256,11 +282,20 @@ mod tests {
         let none = |_: &str, _: u64| false;
         // No one holds it: the lead runs it, as before.
         assert_eq!(decide(PASS, "m-lead", &[], T, &none), Decision::Plan);
-        assert_eq!(decide(PASS, "m-lead", &[file("m-b", "mac-b", &[("osm-pass 2026-09-01", T, false)])], T, &none), Decision::Plan);
+        assert_eq!(
+            decide(PASS, "m-lead", &[file("m-b", "mac-b", &[("osm-pass 2026-09-01", T, false)])], T, &none),
+            Decision::Plan
+        );
         // A member's: offered to it alone, until a day after its job last ran there.
         let b = file("m-b", "mac-b", &[(PASS, T, false)]);
-        assert_eq!(decide(PASS, "m-lead", std::slice::from_ref(&b), T + 3600, &none), Decision::Offer { member: "m-b".into(), worker: "mac-b".into(), until: T + HOLD_S });
-        assert_eq!(decide(PASS, "m-lead", std::slice::from_ref(&b), T + HOLD_S - 1, &none), Decision::Offer { member: "m-b".into(), worker: "mac-b".into(), until: T + HOLD_S });
+        assert_eq!(
+            decide(PASS, "m-lead", std::slice::from_ref(&b), T + 3600, &none),
+            Decision::Offer { member: "m-b".into(), worker: "mac-b".into(), until: T + HOLD_S }
+        );
+        assert_eq!(
+            decide(PASS, "m-lead", std::slice::from_ref(&b), T + HOLD_S - 1, &none),
+            Decision::Offer { member: "m-b".into(), worker: "mac-b".into(), until: T + HOLD_S }
+        );
         // A day on, or released by the owner: the lead's to place again.
         assert_eq!(decide(PASS, "m-lead", std::slice::from_ref(&b), T + HOLD_S, &none), Decision::Plan);
         let rel = |m: &str, at: u64| m == "m-b" && at == T;
@@ -273,10 +308,14 @@ mod tests {
         assert_eq!(decide(PASS, "m-lead", &[b.clone(), mine], T + 60, &none), Decision::Plan);
         // Two members': the newest.
         let c = file("m-c", "mac-c", &[(PASS, T + 10, false)]);
-        assert!(matches!(decide(PASS, "m-lead", &[b.clone(), c], T + 60, &none), Decision::Offer { member, .. } if member == "m-c"));
+        assert!(
+            matches!(decide(PASS, "m-lead", &[b.clone(), c], T + 60, &none), Decision::Offer { member, .. } if member == "m-c")
+        );
         // Finished there: neither run nor offered until merged (or a day on).
         let done = file("m-b", "mac-b", &[(PASS, T, true)]);
-        assert!(matches!(decide(PASS, "m-lead", std::slice::from_ref(&done), T + 60, &none), Decision::Wait(w) if w.contains("mac-b")));
+        assert!(
+            matches!(decide(PASS, "m-lead", std::slice::from_ref(&done), T + 60, &none), Decision::Wait(w) if w.contains("mac-b"))
+        );
         assert_eq!(decide(PASS, "m-lead", &[done], T + HOLD_S + 1, &none), Decision::Plan);
         let mine_done = file("m-lead", "mac-a", &[(PASS, T, true)]);
         assert!(matches!(decide(PASS, "m-lead", &[mine_done], T + 60, &none), Decision::Wait(_)));
@@ -289,11 +328,21 @@ mod tests {
         let none = |_: &str, _: u64| false;
         let mut p = file("m-b", "mac-b", &[]);
         p.jobs.insert(PASS.into(), Held { at: T + HOLD_S - 60, since: T, done: false, scratch: String::new() });
-        assert!(matches!(decide(PASS, "m-lead", std::slice::from_ref(&p), T + HOLD_S - 30, &none), Decision::Offer { until, .. } if until == T + HOLD_S));
-        assert_eq!(decide(PASS, "m-lead", std::slice::from_ref(&p), T + HOLD_S, &none), Decision::Plan, "its last failure a minute ago doesn't hold it past the day");
+        assert!(
+            matches!(decide(PASS, "m-lead", std::slice::from_ref(&p), T + HOLD_S - 30, &none), Decision::Offer { until, .. } if until == T + HOLD_S)
+        );
+        assert_eq!(
+            decide(PASS, "m-lead", std::slice::from_ref(&p), T + HOLD_S, &none),
+            Decision::Plan,
+            "its last failure a minute ago doesn't hold it past the day"
+        );
         assert!(asks(&p, T + HOLD_S, &|_, _| false).is_empty());
         let rel = |m: &str, at: u64| m == "m-b" && at == T;
-        assert_eq!(decide(PASS, "m-lead", std::slice::from_ref(&p), T + 60, &rel), Decision::Plan, "released by when it began");
+        assert_eq!(
+            decide(PASS, "m-lead", std::slice::from_ref(&p), T + 60, &rel),
+            Decision::Plan,
+            "released by when it began"
+        );
     }
 
     /// A member's progress noted lately, not finished: maybe running, whatever its day or a
@@ -315,8 +364,20 @@ mod tests {
     fn a_refused_entry_is_not_laid_over_the_snapshot() {
         let d = tempfile::tempdir().unwrap();
         let nas = crate::pool::nas::Share::new(d.path());
-        let e = |n: u64, step: &str| Entry { member: "m-b".into(), lease: LeaseId { term: 2, n }, step: step.into(), handoff: Handoff { changes: [(format!("sources/osm/d/x{n}"), Some("c".to_string()))].into(), ..Default::default() }, at: T };
-        let keys: Vec<String> = [e(1, "osm-pass"), e(2, "osm-pass"), e(3, "terrain")].iter().map(|x| crate::pool::journal::write(&nas, x).unwrap()).collect();
+        let e = |n: u64, step: &str| Entry {
+            member: "m-b".into(),
+            lease: LeaseId { term: 2, n },
+            step: step.into(),
+            handoff: Handoff {
+                changes: [(format!("sources/osm/d/x{n}"), Some("c".to_string()))].into(),
+                ..Default::default()
+            },
+            at: T,
+        };
+        let keys: Vec<String> = [e(1, "osm-pass"), e(2, "osm-pass"), e(3, "terrain")]
+            .iter()
+            .map(|x| crate::pool::journal::write(&nas, x).unwrap())
+            .collect();
         crate::pool::journal::note_refusal(&nas, &keys[1], "outside its step's write-set").unwrap();
         let mut missing = keys.clone();
         missing.push("2026-01-01/2-9".into());
@@ -326,7 +387,11 @@ mod tests {
 
     #[test]
     fn a_member_asks_only_for_what_its_own_file_holds_live() {
-        let p = file("m-b", "mac-b", &[(PASS, T, false), ("osm-pass 2026-09-01", T - HOLD_S, false), ("osm-pass 2026-08-01", T, true)]);
+        let p = file(
+            "m-b",
+            "mac-b",
+            &[(PASS, T, false), ("osm-pass 2026-09-01", T - HOLD_S, false), ("osm-pass 2026-08-01", T, true)],
+        );
         assert_eq!(asks(&p, T + 1, &|_, _| false), vec![PASS.to_string()]);
         assert!(asks(&p, T + 1, &|j, at| j == PASS && at == T).is_empty());
         assert!(asks(&p, T + HOLD_S, &|_, _| false).is_empty());
@@ -359,8 +424,19 @@ mod tests {
 
     #[test]
     fn unmerged_lays_a_steps_entries_in_lease_order() {
-        let e = |n: u64, step: &str, l: &str, c: Option<&str>| Entry { member: "m-b".into(), lease: LeaseId { term: 2, n }, step: step.into(), handoff: Handoff { changes: [(l.to_string(), c.map(str::to_string))].into(), ..Default::default() }, at: T };
-        let es = [e(7, "osm-pass", "sources/osm/d/sets/rail", Some("b")), e(3, "osm-pass", "sources/osm/d/sets/rail", Some("a")), e(4, "osm-pass", "sources/osm/d/filtered", Some("f")), e(5, "terrain", "layers/terrain/x", Some("t"))];
+        let e = |n: u64, step: &str, l: &str, c: Option<&str>| Entry {
+            member: "m-b".into(),
+            lease: LeaseId { term: 2, n },
+            step: step.into(),
+            handoff: Handoff { changes: [(l.to_string(), c.map(str::to_string))].into(), ..Default::default() },
+            at: T,
+        };
+        let es = [
+            e(7, "osm-pass", "sources/osm/d/sets/rail", Some("b")),
+            e(3, "osm-pass", "sources/osm/d/sets/rail", Some("a")),
+            e(4, "osm-pass", "sources/osm/d/filtered", Some("f")),
+            e(5, "terrain", "layers/terrain/x", Some("t")),
+        ];
         let h = unmerged("osm-pass", &es);
         assert_eq!(h.changes.get("sources/osm/d/sets/rail"), Some(&Some("b".to_string())));
         assert_eq!(h.changes.get("sources/osm/d/filtered"), Some(&Some("f".to_string())));

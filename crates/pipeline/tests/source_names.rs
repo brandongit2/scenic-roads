@@ -30,15 +30,25 @@ use std::path::{Path, PathBuf};
 const SCOPE: &[&str] = &["crates", "dem", "web/src", "tools", "scripts"];
 
 /// Folders never scanned: the task board (its history), and what's built or installed.
-const SKIP_DIRS: &[&str] = &["tests", "target", "node_modules", ".venv", "__pycache__", "taskboard", "dist", "dist-publish"];
+const SKIP_DIRS: &[&str] =
+    &["tests", "target", "node_modules", ".venv", "__pycache__", "taskboard", "dist", "dist-publish"];
 
 /// The file types read, by extension.
-const EXTS: &[&str] = &["rs", "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "toml", "yaml", "yml", "sh", "zsh", "swift", "c", "h", "css", "html"];
+const EXTS: &[&str] = &[
+    "rs", "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "toml", "yaml", "yml", "sh", "zsh", "swift", "c", "h",
+    "css", "html",
+];
 
 /// Links the app may write: the W3C's namespaces (SVG's, a format's), OpenStreetMap (its data and tags are the map's schema; a link opens a
 /// feature or a place there), and Wikidata's and Wikipedia's pages, opened from an item's id or
 /// title.
-const LINKS: &[&str] = &["http://www.w3.org/", "https://www.openstreetmap.org/", "https://planet.openstreetmap.org/", "https://www.wikidata.org/wiki/", ".wikipedia.org/wiki/"];
+const LINKS: &[&str] = &[
+    "http://www.w3.org/",
+    "https://www.openstreetmap.org/",
+    "https://planet.openstreetmap.org/",
+    "https://www.wikidata.org/wiki/",
+    ".wikipedia.org/wiki/",
+];
 
 /// What §6.9's table keeps in code, cited by an exemption's reason as `kept (§6.9, <row>)`; the row
 /// must be in the table and say "kept in code".
@@ -92,19 +102,34 @@ fn markers(root: &Path) -> BTreeMap<String, String> {
             continue;
         }
         let from = t.strip_prefix(root).unwrap().to_string_lossy().into_owned();
-        let d: toml::Table = toml::from_str(&std::fs::read_to_string(&t).unwrap()).unwrap_or_else(|e| panic!("{from}: {e}"));
+        let d: toml::Table =
+            toml::from_str(&std::fs::read_to_string(&t).unwrap()).unwrap_or_else(|e| panic!("{from}: {e}"));
         let data = d.get("data").and_then(|v| v.as_table());
         let mut urls: Vec<String> = Vec::new();
         urls.extend(d.get("source").and_then(|v| v.as_str()).map(str::to_string));
         if let Some(data) = data {
             urls.extend(data.get("url").and_then(|v| v.as_str()).map(str::to_string));
-            urls.extend(data.get("urls").and_then(|v| v.as_array()).into_iter().flatten().filter_map(|v| v.as_str()).map(str::to_string));
+            urls.extend(
+                data.get("urls")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str())
+                    .map(str::to_string),
+            );
             if let Some(ix) = data.get("index").and_then(|v| v.as_str()) {
                 let p = t.parent().unwrap().join(ix);
                 // (An index made where it's dropped isn't staged: its files' hosts aren't known here.)
                 if let Ok(s) = std::fs::read_to_string(&p) {
-                    let g: serde_json::Value = serde_json::from_str(&s).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
-                    let hosts: std::collections::BTreeSet<String> = g["features"].as_array().into_iter().flatten().filter_map(|f| f["properties"]["url"].as_str()).filter_map(host_marker).collect();
+                    let g: serde_json::Value =
+                        serde_json::from_str(&s).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+                    let hosts: std::collections::BTreeSet<String> = g["features"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|f| f["properties"]["url"].as_str())
+                        .filter_map(host_marker)
+                        .collect();
                     out.extend(hosts.into_iter().map(|h| (h, from.clone())));
                 }
             }
@@ -123,13 +148,18 @@ fn markers(root: &Path) -> BTreeMap<String, String> {
         // encoding's word (a `[data]` value of any declaration): `w:`, as the name writes it, a
         // whole word.)
         let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        let words: Vec<&str> = name.split(|c: char| !(c.is_alphanumeric() || c == '&' || c == '-')).filter(|w| !w.is_empty()).collect();
+        let words: Vec<&str> =
+            name.split(|c: char| !(c.is_alphanumeric() || c == '&' || c == '-')).filter(|w| !w.is_empty()).collect();
         if words.len() >= 2 && words[0].starts_with(|c: char| c.is_alphabetic()) {
             // (Two words of plain English capitalised, "Terrain Tiles", are matched as written: in
             // lower case they're common words.)
-            let plain = |w: &str| w.chars().next().is_some_and(char::is_uppercase) && w.chars().skip(1).all(char::is_lowercase);
+            let plain =
+                |w: &str| w.chars().next().is_some_and(char::is_uppercase) && w.chars().skip(1).all(char::is_lowercase);
             let pair = format!("{} {}", words[0], words[1]);
-            out.insert(if plain(words[0]) && plain(words[1]) { pair } else { format!("ci:{}", pair.to_lowercase()) }, from.clone());
+            out.insert(
+                if plain(words[0]) && plain(words[1]) { pair } else { format!("ci:{}", pair.to_lowercase()) },
+                from.clone(),
+            );
         }
         let id = t.file_stem().unwrap().to_string_lossy().split('-').next().unwrap_or("").to_lowercase();
         if id.len() >= 5 && !data_words.contains(&id) {
@@ -173,7 +203,9 @@ fn names(l: &str, lower: &str, m: &str) -> bool {
     }
     if let Some(w) = m.strip_prefix("w:") {
         let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
-        return l.match_indices(w).any(|(k, _)| !word(l[..k].chars().next_back()) && !word(l[k + w.len()..].chars().next()));
+        return l
+            .match_indices(w)
+            .any(|(k, _)| !word(l[..k].chars().next_back()) && !word(l[k + w.len()..].chars().next()));
     }
     l.contains(m)
 }
@@ -182,7 +214,9 @@ fn names(l: &str, lower: &str, m: &str) -> bool {
 fn host_marker(u: &str) -> Option<String> {
     let rest = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://"))?;
     let host = rest.split(['/', '?', '#']).next()?;
-    let shared = host.strip_suffix(".amazonaws.com").is_some_and(|s| s == "s3" || (s.starts_with("s3.") && !s[3..].contains('.')));
+    let shared = host
+        .strip_suffix(".amazonaws.com")
+        .is_some_and(|s| s == "s3" || (s.starts_with("s3.") && !s[3..].contains('.')));
     if shared {
         let bucket = rest[host.len()..].trim_start_matches('/').split(['/', '{']).next().filter(|b| !b.is_empty())?;
         return Some(format!("{host}/{bucket}"));
@@ -203,7 +237,9 @@ fn local_host(h: &str) -> bool {
     let label = |s: &str| h == s || h.ends_with(&format!(".{s}"));
     !h.contains('.')
         || h.starts_with("127.")
-        || h.strip_prefix("100.").and_then(|r| r.split('.').next()?.parse::<u8>().ok()).is_some_and(|o| (64..128).contains(&o))
+        || h.strip_prefix("100.")
+            .and_then(|r| r.split('.').next()?.parse::<u8>().ok())
+            .is_some_and(|o| (64..128).contains(&o))
         || h.starts_with("192.168.")
         || h.starts_with("10.")
         || h.starts_with("192.0.2.")
@@ -219,7 +255,13 @@ fn urls(l: &str) -> Vec<&str> {
     let mut at = 0;
     while let Some(k) = l[at..].find("http").map(|k| k + at) {
         let r = &l[k..];
-        let len = if r.starts_with("https://") { 8 } else if r.starts_with("http://") { 7 } else { 0 };
+        let len = if r.starts_with("https://") {
+            8
+        } else if r.starts_with("http://") {
+            7
+        } else {
+            0
+        };
         if len == 0 {
             at = k + 4;
             continue;
@@ -251,7 +293,11 @@ fn hits(l: &str, marks: &BTreeMap<String, String>) -> Vec<String> {
         let h = u.split("://").nth(1).unwrap_or("").split(['/', '?', '#']).next().unwrap_or("");
         // (A host behind a template, `${x}.host`: the host after it.)
         let h = templated_rest(h).unwrap_or(h);
-        if h.is_empty() || local_host(h) || LINKS.iter().any(|a| u.contains(a)) || out.iter().any(|m| u.contains(m.as_str())) {
+        if h.is_empty()
+            || local_host(h)
+            || LINKS.iter().any(|a| u.contains(a))
+            || out.iter().any(|m| u.contains(m.as_str()))
+        {
             continue;
         }
         out.push(u.to_string());
@@ -414,7 +460,13 @@ fn code_lines(rel: &str, text: &str) -> (Vec<String>, Vec<String>) {
                 }
             }
         }
-        "sh" | "zsh" | "toml" | "yaml" | "yml" => code.extend(lines.iter().map(|l| if l.trim_start().starts_with('#') { String::new() } else { cut_comment(l, true, &['"', '\'']) })),
+        "sh" | "zsh" | "toml" | "yaml" | "yml" => code.extend(lines.iter().map(|l| {
+            if l.trim_start().starts_with('#') {
+                String::new()
+            } else {
+                cut_comment(l, true, &['"', '\''])
+            }
+        })),
         "css" | "html" | "json" => code.extend(lines.iter().map(|l| l.to_string())),
         _ => {
             let mut in_block = false;
@@ -438,7 +490,11 @@ fn code_lines(rel: &str, text: &str) -> (Vec<String>, Vec<String>) {
 /// Whether a file is a test's (not the app's code).
 fn is_test(rel: &str) -> bool {
     let name = rel.rsplit('/').next().unwrap_or(rel);
-    name == "tests.rs" || name.ends_with("_tests.rs") || name.starts_with("test_") || name.contains(".test.") || name.contains(".spec.")
+    name == "tests.rs"
+        || name.ends_with("_tests.rs")
+        || name.starts_with("test_")
+        || name.contains(".test.")
+        || name.contains(".spec.")
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -479,15 +535,25 @@ fn scan() -> (Vec<String>, Vec<String>) {
                 continue;
             }
             let line = text.lines().nth(i).unwrap_or("");
-            if let Some(k) = EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == items[i] && line.contains(anchor)) {
+            if let Some(k) =
+                EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == items[i] && line.contains(anchor))
+            {
                 used.insert(k);
                 continue;
             }
-            let why: Vec<String> = h.iter().map(|m| marks.get(m).map_or_else(|| format!("{m} (a URL)"), |d| format!("{m} ({d})"))).collect();
+            let why: Vec<String> = h
+                .iter()
+                .map(|m| marks.get(m).map_or_else(|| format!("{m} (a URL)"), |d| format!("{m} ({d})")))
+                .collect();
             bad.push(format!("{rel}:{} in {}: {}\n    names {}", i + 1, items[i], line.trim(), why.join(", ")));
         }
     }
-    let unused = EXEMPT.iter().enumerate().filter(|(k, _)| !used.contains(k)).map(|(_, (f, n, a, _))| format!("{f}: {n}: {a}")).collect();
+    let unused = EXEMPT
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| !used.contains(k))
+        .map(|(_, (f, n, a, _))| format!("{f}: {n}: {a}"))
+        .collect();
     (bad, unused)
 }
 
@@ -526,27 +592,56 @@ fn what_is_kept_in_code_is_in_the_table() {
 /// lead); URLs found, local ones and allowed links passed, IRIs aside; comments cut, strings kept.
 #[test]
 fn the_scanner_finds_sources_by_their_declarations() {
-    assert_eq!(host_marker("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png").as_deref(), Some("s3.amazonaws.com/elevation-tiles-prod"));
+    assert_eq!(
+        host_marker("https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png").as_deref(),
+        Some("s3.amazonaws.com/elevation-tiles-prod")
+    );
     assert_eq!(host_marker("https://s3.us-west-2.amazonaws.com/b/x").as_deref(), Some("s3.us-west-2.amazonaws.com/b"));
-    assert_eq!(host_marker("https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/x.tif").as_deref(), Some("esa-worldcover.s3.eu-central-1.amazonaws.com"));
-    let marks: BTreeMap<String, String> = [("data.example-source.org".to_string(), "a.toml".to_string()), ("Some Source".into(), "a.toml".into())].into();
+    assert_eq!(
+        host_marker("https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/x.tif").as_deref(),
+        Some("esa-worldcover.s3.eu-central-1.amazonaws.com")
+    );
+    let marks: BTreeMap<String, String> =
+        [("data.example-source.org".to_string(), "a.toml".to_string()), ("Some Source".into(), "a.toml".into())].into();
     assert_eq!(hits("let h = \"data.example-source.org\";", &marks), ["data.example-source.org"]);
     assert_eq!(hits("x = 'Some Source v2'", &marks), ["Some Source"]);
     assert_eq!(hits("u = \"https://other.org/x.zip\"", &marks), ["https://other.org/x.zip"]);
-    for ok in ["\"http://127.0.0.1:8080/x\"", "`https://${host}/x`", "\"https://m4.tail1.ts.net/\"", "\"http://x\"", "`https://www.openstreetmap.org/${id}`", "`https://${l}.wikipedia.org/wiki/${t}`", "PREFIX wd: <http://www.wikidata.org/entity/>"] {
+    for ok in [
+        "\"http://127.0.0.1:8080/x\"",
+        "`https://${host}/x`",
+        "\"https://m4.tail1.ts.net/\"",
+        "\"http://x\"",
+        "`https://www.openstreetmap.org/${id}`",
+        "`https://${l}.wikipedia.org/wiki/${t}`",
+        "PREFIX wd: <http://www.wikidata.org/entity/>",
+    ] {
         assert!(hits(ok, &marks).is_empty(), "{ok}");
     }
-    let marks: BTreeMap<String, String> = [("ci:overture maps".to_string(), "o.toml".to_string()), ("w:CanVec".into(), "c.toml".into()), ("s3.amazonaws.com/b".into(), "b.toml".into())].into();
+    let marks: BTreeMap<String, String> = [
+        ("ci:overture maps".to_string(), "o.toml".to_string()),
+        ("w:CanVec".into(), "c.toml".into()),
+        ("s3.amazonaws.com/b".into(), "b.toml".into()),
+    ]
+    .into();
     assert_eq!(hits("source: 'OVERTURE Maps (OSM)'", &marks), ["ci:overture maps"]);
     assert_eq!(hits("\"CanVec's zips\"", &marks), ["w:CanVec"]);
     assert!(hits("\"canvec_lakes\", \"MyCanVecX\"", &marks).is_empty());
     assert_eq!(hits("`https://${r}.s3.amazonaws.com/x`", &marks), ["https://${r}.s3.amazonaws.com/x"]);
     assert_eq!(hits("\"http://100.1.2.3/x\"", &marks), ["http://100.1.2.3/x"]);
     assert!(hits("\"http://100.70.85.80:8080/x\"", &marks).is_empty());
-    assert_eq!(cut_comment("let u = \"https://a.org\"; // https://b.org", false, &['"']), "let u = \"https://a.org\"; ");
-    assert_eq!(cut_comment("const M: &str = r#\"{\"u\":\"https://a.org\"}\"#; // c", false, &['"']), "const M: &str = r#\"{\"u\":\"https://a.org\"}\"#; ");
+    assert_eq!(
+        cut_comment("let u = \"https://a.org\"; // https://b.org", false, &['"']),
+        "let u = \"https://a.org\"; "
+    );
+    assert_eq!(
+        cut_comment("const M: &str = r#\"{\"u\":\"https://a.org\"}\"#; // c", false, &['"']),
+        "const M: &str = r#\"{\"u\":\"https://a.org\"}\"#; "
+    );
     assert_eq!(cut_comment("x = \"#a\"  # https://b.org", true, &['"', '\'']), "x = \"#a\"  ");
-    let (code, _) = code_lines("a.py", "def f():\n    \"\"\"Reads https://b.org.\n    more\"\"\"\n    q = f\"\"\"\n    <https://c.org/>\n    \"\"\"\n");
+    let (code, _) = code_lines(
+        "a.py",
+        "def f():\n    \"\"\"Reads https://b.org.\n    more\"\"\"\n    q = f\"\"\"\n    <https://c.org/>\n    \"\"\"\n",
+    );
     assert_eq!(code[1], "");
     assert_eq!(code[2], "");
     assert!(code[4].contains("c.org"));

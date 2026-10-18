@@ -49,7 +49,11 @@ pub fn valid_code(c: &str) -> bool {
     let two = |s: &str| s.len() == 2 && s.bytes().all(|b| b.is_ascii_uppercase());
     match c.split_once('-') {
         None => two(c),
-        Some((country, sub)) => two(country) && (1..=3).contains(&sub.len()) && sub.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()),
+        Some((country, sub)) => {
+            two(country)
+                && (1..=3).contains(&sub.len())
+                && sub.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        }
     }
 }
 
@@ -119,7 +123,14 @@ impl Checks for Languages {
             return c;
         }
         let Ok(text) = std::str::from_utf8(bytes) else {
-            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not utf-8"], vec![path.into()], format!("{path} isn't UTF-8 text")));
+            c.findings.push(Finding::new(
+                SHAPE,
+                Level::Error,
+                &[path],
+                &["not utf-8"],
+                vec![path.into()],
+                format!("{path} isn't UTF-8 text"),
+            ));
             return c;
         };
         let (mut bad, mut twice, mut orphan) = (Vec::new(), Vec::new(), Vec::new());
@@ -150,8 +161,21 @@ impl Checks for Languages {
             c.findings.push(about_lines(check, level, path, &raw, shown, message));
         };
         push(LINE, Level::Error, &bad, format!("{path}: {} not a territory's line (<ISO 3166 code>, a tab, its languages' subtags separated by commas)", plural(bad.len(), "line", "lines")));
-        push(TWICE, Level::Error, &twice, format!("{path}: {} a code an earlier line has (one line a code)", plural(twice.len(), "line names", "lines name")));
-        push(COUNTRY, Level::Warning, &orphan, format!("{path}: {} whose country has no line", plural(orphan.len(), "subdivision", "subdivisions")));
+        push(
+            TWICE,
+            Level::Error,
+            &twice,
+            format!(
+                "{path}: {} a code an earlier line has (one line a code)",
+                plural(twice.len(), "line names", "lines name")
+            ),
+        );
+        push(
+            COUNTRY,
+            Level::Warning,
+            &orphan,
+            format!("{path}: {} whose country has no line", plural(orphan.len(), "subdivision", "subdivisions")),
+        );
         // (What affects the raster: the table as read, so a comment edited reruns nothing.)
         let table = names::Table::parse(text);
         c.keyed = Some(store::naming::hash16(table.to_tsv(&[]).as_bytes()));
@@ -169,9 +193,18 @@ impl Checks for Languages {
     fn whole(&self, v: &Version) -> Result<Vec<Finding>> {
         let mut out = Vec::new();
         let all: Vec<String> = v.paths.iter().cloned().collect();
-        for (want, what) in [(TABLE, "the table"), (ABOUT, "its description (CLDR's version, licence and credit: docs/inputs.md §5.1)")] {
+        for (want, what) in
+            [(TABLE, "the table"), (ABOUT, "its description (CLDR's version, licence and credit: docs/inputs.md §5.1)")]
+        {
             if !v.paths.contains(want) {
-                out.push(Finding::new(MISSING, Level::Error, &[want], &["absent"], all.clone(), format!("languages has no {want}: {what}")));
+                out.push(Finding::new(
+                    MISSING,
+                    Level::Error,
+                    &[want],
+                    &["absent"],
+                    all.clone(),
+                    format!("languages has no {want}: {what}"),
+                ));
             }
         }
         let (Some(codes), true) = (&self.codes, v.paths.contains(TABLE)) else { return Ok(out) };
@@ -188,7 +221,17 @@ impl Checks for Languages {
         if !none.is_empty() {
             let raw: Vec<&str> = none.iter().map(|(_, l, _)| *l).collect();
             let shown = none.iter().map(|(n, _, why)| (*n, why.clone())).collect();
-            out.push(about_lines(OUTLINE, Level::Warning, TABLE, &raw, shown, format!("{TABLE}: {} the newest pass's outlines don't have (no effect on the map)", plural(none.len(), "code", "codes"))));
+            out.push(about_lines(
+                OUTLINE,
+                Level::Warning,
+                TABLE,
+                &raw,
+                shown,
+                format!(
+                    "{TABLE}: {} the newest pass's outlines don't have (no effect on the map)",
+                    plural(none.len(), "code", "codes")
+                ),
+            ));
         }
         Ok(out)
     }
@@ -240,8 +283,23 @@ mod tests {
     #[test]
     fn codes_and_languages() {
         assert!(valid_code("FR") && valid_code("CA-QC") && valid_code("GB-WLS") && valid_code("FR-971"));
-        assert!(!valid_code("fr") && !valid_code("FRA") && !valid_code("CA-") && !valid_code("CA-QUEB") && !valid_code("C1"));
-        assert!(valid_lang("fr") && valid_lang("yue") && !valid_lang("FR") && !valid_lang("hant") && !valid_lang("latn") && !valid_lang("zh_Hant") && !valid_lang("f") && !valid_lang(""));
+        assert!(
+            !valid_code("fr")
+                && !valid_code("FRA")
+                && !valid_code("CA-")
+                && !valid_code("CA-QUEB")
+                && !valid_code("C1")
+        );
+        assert!(
+            valid_lang("fr")
+                && valid_lang("yue")
+                && !valid_lang("FR")
+                && !valid_lang("hant")
+                && !valid_lang("latn")
+                && !valid_lang("zh_Hant")
+                && !valid_lang("f")
+                && !valid_lang("")
+        );
     }
 
     #[test]
@@ -253,13 +311,19 @@ mod tests {
         // A comment edited: the same keyed digest.
         assert_eq!(l.file(TABLE, b"# CLDR 47\nCA\ten,fr\nCA-QC\tfr,en\nHK\tyue,en\n").keyed, ok.keyed);
         let bad = l.file(TABLE, b"CA\ten,fr\nFR fr\nfr\tfr\nDE\t\nIT\tit,IT\nCA\ten\nES-CT\tca,es\n");
-        assert_eq!(ids(&bad.findings), [("la-line", Level::Error), ("la-twice", Level::Error), ("la-country", Level::Warning)]);
+        assert_eq!(
+            ids(&bad.findings),
+            [("la-line", Level::Error), ("la-twice", Level::Error), ("la-country", Level::Warning)]
+        );
         assert_eq!(bad.findings[0].lines.iter().map(|(n, _)| *n).collect::<Vec<_>>(), [2, 3, 4, 5]);
         assert_eq!(bad.findings[1].lines, [(6, "CA a second time".to_string())]);
         assert_eq!(bad.findings[2].lines, [(7, "no line for ES".to_string())]);
         // Its id names the lines: the same lines elsewhere in the file, the same finding.
         let moved = l.file(TABLE, b"# moved\nCA\ten,fr\nFR fr\nfr\tfr\nDE\t\nIT\tit,IT\nCA\ten\nES-CT\tca,es\n");
-        assert_eq!(moved.findings.iter().map(|f| &f.id).collect::<Vec<_>>(), bad.findings.iter().map(|f| &f.id).collect::<Vec<_>>());
+        assert_eq!(
+            moved.findings.iter().map(|f| &f.id).collect::<Vec<_>>(),
+            bad.findings.iter().map(|f| &f.id).collect::<Vec<_>>()
+        );
         assert_eq!(ids(&l.file("notes.txt", b"x").findings), [("la-shape", Level::Error)]);
         assert_eq!(ids(&l.file(TABLE, b"\xff").findings), [("la-shape", Level::Error)]);
         assert_eq!(ids(&l.file(ABOUT, b"credit = \"CLDR\"\n").findings), [("description", Level::Error)]);
@@ -269,7 +333,8 @@ mod tests {
 
     #[test]
     fn the_version_whole() {
-        let files: BTreeMap<&str, &[u8]> = BTreeMap::from([(TABLE, b"CA\ten,fr\nCA-QC\tfr,en\nXX\tfr\n" as &[u8]), (ABOUT, b"" as &[u8])]);
+        let files: BTreeMap<&str, &[u8]> =
+            BTreeMap::from([(TABLE, b"CA\ten,fr\nCA-QC\tfr,en\nXX\tfr\n" as &[u8]), (ABOUT, b"" as &[u8])]);
         let read = |p: &str| -> Result<std::sync::Arc<Vec<u8>>> { Ok(std::sync::Arc::new(files[p].to_vec())) };
         let v = |paths: &[&str]| Version { paths: paths.iter().map(|p| p.to_string()).collect(), read: &read };
         let known = Languages { codes: Some(["CA", "CA-QC", "FR"].map(String::from).into()) };
@@ -281,8 +346,12 @@ mod tests {
         assert!(Languages { codes: None }.whole(&v(&[TABLE, ABOUT])).unwrap().is_empty());
         // Without either file: an error.
         assert_eq!(ids(&Languages { codes: None }.whole(&v(&[ABOUT])).unwrap()), [("la-missing", Level::Error)]);
-        assert_eq!(ids(&known.whole(&v(&[TABLE])).unwrap()), [("la-missing", Level::Error), ("la-outline", Level::Warning)]);
-        let e = super::super::FileEntry { file: String::new(), size: 0, keyed: String::new(), facts: Default::default() };
+        assert_eq!(
+            ids(&known.whole(&v(&[TABLE])).unwrap()),
+            [("la-missing", Level::Error), ("la-outline", Level::Warning)]
+        );
+        let e =
+            super::super::FileEntry { file: String::new(), size: 0, keyed: String::new(), facts: Default::default() };
         assert_eq!(ids(&known.removed(TABLE, &e)), [("la-missing", Level::Error)]);
         assert!(known.removed(ABOUT, &e).is_empty());
     }

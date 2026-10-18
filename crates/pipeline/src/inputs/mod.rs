@@ -47,7 +47,18 @@ pub mod watch;
 pub const INPUTS_V: u32 = 1;
 
 /// The gate units on the gate (each input's task adds its own).
-pub const UNITS: [&str; 10] = [languages::UNIT, translations::UNIT, descriptions::UNIT, regions::UNIT, feeds::UNIT, gtfs::UNIT, heritage::UNIT, heritage_matches::UNIT, elevation::UNIT, sources::UNIT];
+pub const UNITS: [&str; 10] = [
+    languages::UNIT,
+    translations::UNIT,
+    descriptions::UNIT,
+    regions::UNIT,
+    feeds::UNIT,
+    gtfs::UNIT,
+    heritage::UNIT,
+    heritage_matches::UNIT,
+    elevation::UNIT,
+    sources::UNIT,
+];
 
 /// The test unit (docs/inputs.md §4.10): not real data; on the gate while `TEST_FLAG` exists.
 pub const TEST_UNIT: &str = "_gate-test";
@@ -91,7 +102,8 @@ static REGIONS: std::sync::LazyLock<regions::Regions> = std::sync::LazyLock::new
 /// The registers' checks as a file's own checks read them (the check job's are
 /// `Checks::prepared`'s, with the accepted version's counts and the pass's outlines).
 static HERITAGE: std::sync::LazyLock<heritage::Heritage> = std::sync::LazyLock::new(heritage::Heritage::default);
-static MATCHES: std::sync::LazyLock<heritage_matches::Matches> = std::sync::LazyLock::new(heritage_matches::Matches::default);
+static MATCHES: std::sync::LazyLock<heritage_matches::Matches> =
+    std::sync::LazyLock::new(heritage_matches::Matches::default);
 static ELEVATION: std::sync::LazyLock<elevation::Elevation> = std::sync::LazyLock::new(elevation::Elevation::default);
 static SOURCES: std::sync::LazyLock<sources::SourcesCheck> = std::sync::LazyLock::new(sources::SourcesCheck::default);
 
@@ -123,7 +135,10 @@ pub const RECORDS: [&str; 4] = ["@index", "@held", "@listed", "@switched"];
 /// A unit's name: `/`-separated components of lower-case letters, digits, `-` and `_`
 /// (`timetables/gtfs`).
 pub fn valid_unit(u: &str) -> bool {
-    !u.is_empty() && u.split('/').all(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'))
+    !u.is_empty()
+        && u.split('/').all(|c| {
+            !c.is_empty() && c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+        })
 }
 
 /// The records' entry naming unit `unit`'s accepted index (`sources/inputs/<unit>/@index`: a
@@ -220,12 +235,26 @@ impl Finding {
     /// A finding of check `check` (a short name: `gt-line`), about `about` (identities: a file's
     /// path, a region's id), having found `found` (what makes it this finding: the flagged lines'
     /// content, the counts and the versions compared, a place rounded to 100 m).
-    pub fn new(check: &str, level: Level, about: &[&str], found: &[&str], files: Vec<String>, message: String) -> Finding {
+    pub fn new(
+        check: &str,
+        level: Level,
+        about: &[&str],
+        found: &[&str],
+        files: Vec<String>,
+        message: String,
+    ) -> Finding {
         let mut parts = vec![check];
         parts.extend(about);
         parts.push("--");
         parts.extend(found);
-        Finding { id: format!("{check}.{}", store::naming::hash16(parts.join("\n").as_bytes())), level, files, message, at: None, lines: Vec::new() }
+        Finding {
+            id: format!("{check}.{}", store::naming::hash16(parts.join("\n").as_bytes())),
+            level,
+            files,
+            message,
+            at: None,
+            lines: Vec::new(),
+        }
     }
 
     /// The check it's of (its id's first part).
@@ -243,7 +272,10 @@ impl Finding {
 /// A finding id: `<check>.<16 hex>`, the check's name lower-case letters, digits and dashes.
 pub fn valid_id(id: &str) -> bool {
     let Some((c, h)) = id.split_once('.') else { return false };
-    !c.is_empty() && c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    !c.is_empty()
+        && c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && h.len() == 16
+        && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 // ---- A unit's checks ---------------------------------------------------------------------------
@@ -381,7 +413,12 @@ impl FileEntry {
     /// The files stored with it: its copy, and those its facts name (a content name under
     /// `sources/inputs/`: a region's stored geometry), which GC keeps while it's kept.
     pub fn stored(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.file.as_str()).chain(self.facts.values().filter_map(|v| v.as_str()).filter(|s| s.starts_with("sources/inputs/") && store::naming::parse_content_name(s).is_some()))
+        std::iter::once(self.file.as_str()).chain(
+            self.facts
+                .values()
+                .filter_map(|v| v.as_str())
+                .filter(|s| s.starts_with("sources/inputs/") && store::naming::parse_content_name(s).is_some()),
+        )
     }
 }
 
@@ -421,7 +458,9 @@ pub struct Listed {
 
 /// A unit's check's state, as the records name it (empty before its first check).
 pub fn read_listed(root: &Path, manifest: &BTreeMap<String, String>, unit: &str) -> Result<Listed> {
-    let Some(name) = manifest.get(&listed_logical(unit)) else { return Ok(Listed { fmt: 1, unit: unit.into(), ..Default::default() }) };
+    let Some(name) = manifest.get(&listed_logical(unit)) else {
+        return Ok(Listed { fmt: 1, unit: unit.into(), ..Default::default() });
+    };
     read_listed_file(root, name)
 }
 
@@ -517,7 +556,11 @@ pub fn read_report(root: &Path, name: &str) -> Result<Report> {
 pub fn copy_name(unit: &str, path: &str, hash16: &str) -> Option<String> {
     let (dir, name) = path.rsplit_once('/').map_or(("", path), |(d, n)| (d, n));
     let (stem, ext) = name.split_once('.').unwrap_or((name, "bin"));
-    let logical = if dir.is_empty() { format!("{}/{stem}", store_dir(unit)) } else { format!("{}/{dir}/{stem}", store_dir(unit)) };
+    let logical = if dir.is_empty() {
+        format!("{}/{stem}", store_dir(unit))
+    } else {
+        format!("{}/{dir}/{stem}", store_dir(unit))
+    };
     let n = format!("{logical}.{hash16}.{ext}");
     store::naming::parse_content_name(&n).is_some_and(|c| c.logical == logical).then_some(n)
 }
@@ -582,7 +625,11 @@ pub fn list(root: &Path, unit: &str, recursive: bool) -> Result<Listing> {
                 }
                 continue;
             }
-            let t = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+            let t = md
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs());
             l.files.insert(path, (md.len(), t));
         }
     }
@@ -685,7 +732,14 @@ pub fn accept(root: &Path, unit: &str, f: &Finding, member: &str, by: &str) -> R
     anyhow::ensure!(valid_unit(unit), "{unit:?} isn't a unit's name");
     let d = accepted_dir(root, unit);
     std::fs::create_dir_all(&d).with_context(|| format!("create {}", d.display()))?;
-    let a = Acceptance { id: f.id.clone(), member: member.to_string(), host: crate::agent::cond::host_name(), at: crate::agent::jobs::now_s(), by: by.to_string(), message: f.message.clone() };
+    let a = Acceptance {
+        id: f.id.clone(),
+        member: member.to_string(),
+        host: crate::agent::cond::host_name(),
+        at: crate::agent::jobs::now_s(),
+        by: by.to_string(),
+        message: f.message.clone(),
+    };
     let body = serde_json::to_vec_pretty(&a)?;
     let p = d.join(format!("{}.json", f.id));
     match std::fs::File::options().write(true).create_new(true).open(&p) {
@@ -712,13 +766,17 @@ pub fn unaccept(root: &Path, unit: &str, id: &str) -> Result<bool> {
 /// An acceptance's file, read.
 pub fn read_acceptance(root: &Path, unit: &str, id: &str) -> Result<Acceptance> {
     let p = accepted_dir(root, unit).join(format!("{id}.json"));
-    serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("read {}", p.display()))?).with_context(|| format!("parse {}", p.display()))
+    serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("read {}", p.display()))?)
+        .with_context(|| format!("parse {}", p.display()))
 }
 
 /// This Mac's member id as its agent keeps it (crate::pool::member_id), never made here: "-" when
 /// it has none yet.
 pub fn member_of(agent_home: &Path) -> String {
-    std::fs::read_to_string(agent_home.join("member")).ok().and_then(|s| s.lines().next().map(str::trim).filter(|id| crate::pool::is_member_id(id)).map(str::to_string)).unwrap_or_else(|| "-".into())
+    std::fs::read_to_string(agent_home.join("member"))
+        .ok()
+        .and_then(|s| s.lines().next().map(str::trim).filter(|id| crate::pool::is_member_id(id)).map(str::to_string))
+        .unwrap_or_else(|| "-".into())
 }
 
 // ---- The check's key ---------------------------------------------------------------------------
@@ -726,7 +784,12 @@ pub fn member_of(agent_home: &Path) -> String {
 /// The key of unit `unit`'s check (§4.3): the step's and the checks' versions, the listing (a
 /// trigger: names, sizes, times), the acceptances, the accepted index named now and whatever else
 /// its checks read. When it changes, the unit is checked again.
-pub fn check_key(checks: &dyn Checks, listing: &Listing, accepted: &BTreeSet<String>, manifest: &BTreeMap<String, String>) -> String {
+pub fn check_key(
+    checks: &dyn Checks,
+    listing: &Listing,
+    accepted: &BTreeSet<String>,
+    manifest: &BTreeMap<String, String>,
+) -> String {
     let mut parts = vec![format!("inputs {INPUTS_V}"), format!("{} {}", checks.unit(), checks.version())];
     parts.extend(listing.files.iter().map(|(p, (s, t))| format!("{p} {s} {t}")));
     parts.extend(listing.strays.iter().map(|p| format!("stray {p}")));
@@ -779,7 +842,8 @@ pub fn ask(home: &Path, a: &Ask) -> Result<()> {
 pub fn take_asks(home: &Path) -> Vec<Ask> {
     let d = home.join(ASKS);
     let Ok(rd) = std::fs::read_dir(&d) else { return Vec::new() };
-    let mut names: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+    let mut names: Vec<PathBuf> =
+        rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
     names.sort();
     let mut out = Vec::new();
     for p in names {
@@ -796,7 +860,20 @@ pub fn take_asks(home: &Path) -> Vec<Ask> {
 pub fn apply_ask(root: &Path, a: &Ask, held: Option<&Report>, member: &str) -> Result<Vec<String>> {
     let mut said = Vec::new();
     let findings: Vec<&Finding> = held.map(|r| r.findings.iter().collect()).unwrap_or_default();
-    let want: Vec<&Finding> = if a.all { findings.iter().copied().filter(|f| f.level == Level::Warning).collect() } else { a.accept.iter().map(|id| findings.iter().copied().find(|f| &f.id == id).with_context(|| format!("no finding {id} of {} is held now", a.unit))).collect::<Result<_>>()? };
+    let want: Vec<&Finding> = if a.all {
+        findings.iter().copied().filter(|f| f.level == Level::Warning).collect()
+    } else {
+        a.accept
+            .iter()
+            .map(|id| {
+                findings
+                    .iter()
+                    .copied()
+                    .find(|f| &f.id == id)
+                    .with_context(|| format!("no finding {id} of {} is held now", a.unit))
+            })
+            .collect::<Result<_>>()?
+    };
     for f in want {
         if accept(root, &a.unit, f, member, &a.by)? {
             said.push(format!("accepted {} ({})", f.id, f.message));

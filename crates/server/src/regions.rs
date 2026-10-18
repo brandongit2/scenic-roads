@@ -50,7 +50,8 @@ impl OutlineIndex {
         let Some(sect) = data.sect(logical)? else { return Ok(None) };
         let content = data.content(logical).unwrap_or_default();
         let recs: Vec<OutlineRec> = bytemuck::pod_collect_to_vec(sect.get("recs")?.bytes());
-        let strings: Vec<String> = String::from_utf8_lossy(sect.get("strings")?.bytes()).split('\n').map(str::to_string).collect();
+        let strings: Vec<String> =
+            String::from_utf8_lossy(sect.get("strings")?.bytes()).split('\n').map(str::to_string).collect();
         Ok(Some(OutlineIndex { content, sect, recs, strings }))
     }
 
@@ -61,14 +62,18 @@ impl OutlineIndex {
     /// An outline's rings (`simple`: the simplified ones), read from the file, with their kinds
     /// (0 outer, 1 inner).
     fn rings_kinds(&self, o: &OutlineRec, simple: bool) -> Result<Vec<(u32, Vec<[i32; 2]>)>> {
-        let (rs, ps, first, n) = if simple { ("srings", "spoints", o.srings, o.nsrings) } else { ("rings", "points", o.rings, o.nrings) };
+        let (rs, ps, first, n) =
+            if simple { ("srings", "spoints", o.srings, o.nsrings) } else { ("rings", "points", o.rings, o.nrings) };
         let rb = self.sect.get_part(rs, first as u64 * 16, n as usize * 16)?;
         let rings: Vec<Ring> = bytemuck::pod_collect_to_vec(&rb);
         let (Some(a), Some(b)) = (rings.first(), rings.last()) else { return Ok(Vec::new()) };
         let (start, end) = (a.start, b.start + b.count as u64);
         let pb = self.sect.get_part(ps, start * 8, ((end - start) * 8) as usize)?;
         let pts: Vec<[i32; 2]> = bytemuck::pod_collect_to_vec(&pb);
-        Ok(rings.iter().map(|r| (r.kind, pts[(r.start - start) as usize..(r.start - start) as usize + r.count as usize].to_vec())).collect())
+        Ok(rings
+            .iter()
+            .map(|r| (r.kind, pts[(r.start - start) as usize..(r.start - start) as usize + r.count as usize].to_vec()))
+            .collect())
     }
 
     /// An outline's rings (`simple`: the simplified ones).
@@ -216,7 +221,14 @@ pub struct Listed {
 
 impl Listed {
     fn of(r: &pipeline::inputs::regions::file::Region, path: String) -> Listed {
-        Listed { id: r.id.clone(), name: r.name.clone(), outline: r.outline_text(), path, state: String::new(), held: Vec::new() }
+        Listed {
+            id: r.id.clone(),
+            name: r.name.clone(),
+            outline: r.outline_text(),
+            path,
+            state: String::new(),
+            held: Vec::new(),
+        }
     }
 }
 
@@ -254,7 +266,10 @@ fn load_all(pool: &IoPool, dir: &std::path::Path) -> Result<ListedAll> {
                 Err(IoError::Io(e)) if pool.is_online() => Err(e.into()),
                 Err(e) => return Err(e).with_context(|| format!("read {}", p.display())),
             };
-            match text.and_then(|t| pipeline::inputs::regions::file::parse(&it.name, &t).map_err(|fs| anyhow::anyhow!(fs.iter().map(|f| f.message.clone()).collect::<Vec<_>>().join("; ")))) {
+            match text.and_then(|t| {
+                pipeline::inputs::regions::file::parse(&it.name, &t)
+                    .map_err(|fs| anyhow::anyhow!(fs.iter().map(|f| f.message.clone()).collect::<Vec<_>>().join("; ")))
+            }) {
                 Ok(r) => ok.push(Listed::of(&r, path)),
                 Err(e) => bad.push((path, format!("{e:#}"))),
             }
@@ -303,7 +318,8 @@ pub async fn list(State(s): State<S>) -> Response {
             }
             None => {
                 // Away: the last list read.
-                let last: Vec<Listed> = std::fs::read(&cache).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+                let last: Vec<Listed> =
+                    std::fs::read(&cache).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
                 let t = tree(&s2, &last);
                 Json(json!({ "regions": last, "bad": [], "offline": true, "tree": t })).into_response()
             }
@@ -317,13 +333,21 @@ pub async fn list(State(s): State<S>) -> Response {
 
 /// The regions' records on the NAS: the accepted index and the held report, each when named and
 /// read (through the pool).
-fn records(s: &crate::AppState, pool: &IoPool) -> Option<(Option<pipeline::inputs::Index>, Option<pipeline::inputs::Report>)> {
+fn records(
+    s: &crate::AppState,
+    pool: &IoPool,
+) -> Option<(Option<pipeline::inputs::Index>, Option<pipeline::inputs::Report>)> {
     let root = s.data.nas_root()?;
     let read = |p: &str| pool.read_all(&root.join(p)).ok();
-    let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&read(pipeline::inputs::served::RECORDS)?).ok()?;
+    let m: std::collections::BTreeMap<String, String> =
+        serde_json::from_slice(&read(pipeline::inputs::served::RECORDS)?).ok()?;
     let unit = pipeline::inputs::regions::UNIT;
-    let index = m.get(&pipeline::inputs::logical(unit)).and_then(|n| read(n)).and_then(|b| serde_json::from_slice(&b).ok());
-    let held = m.get(&pipeline::inputs::held_logical(unit)).and_then(|n| read(n)).and_then(|b| serde_json::from_slice(&b).ok());
+    let index =
+        m.get(&pipeline::inputs::logical(unit)).and_then(|n| read(n)).and_then(|b| serde_json::from_slice(&b).ok());
+    let held = m
+        .get(&pipeline::inputs::held_logical(unit))
+        .and_then(|n| read(n))
+        .and_then(|b| serde_json::from_slice(&b).ok());
     Some((index, held))
 }
 
@@ -333,13 +357,21 @@ fn records(s: &crate::AppState, pool: &IoPool) -> Option<(Option<pipeline::input
 fn states(s: &crate::AppState, pool: &IoPool, list: &mut [Listed]) {
     let Some((index, held)) = records(s, pool) else { return };
     for r in list.iter_mut() {
-        let findings: Vec<Value> = held.iter().flat_map(|h| h.findings.iter()).filter(|f| f.files.contains(&r.path)).map(|f| json!({ "id": f.id, "message": f.message })).collect();
+        let findings: Vec<Value> = held
+            .iter()
+            .flat_map(|h| h.findings.iter())
+            .filter(|f| f.files.contains(&r.path))
+            .map(|f| json!({ "id": f.id, "message": f.message }))
+            .collect();
         if held.as_ref().is_some_and(|h| h.held.contains(&r.path)) {
             r.state = "held".into();
             r.held = findings;
             continue;
         }
-        let same = index.as_ref().and_then(|i| i.files.get(&r.path)).is_some_and(|e| e.facts.get("name").and_then(Value::as_str) == Some(r.name.as_str()) && e.facts.get("outline") == Some(&json!(r.outline)));
+        let same = index.as_ref().and_then(|i| i.files.get(&r.path)).is_some_and(|e| {
+            e.facts.get("name").and_then(Value::as_str) == Some(r.name.as_str())
+                && e.facts.get("outline") == Some(&json!(r.outline))
+        });
         r.state = if same { "accepted" } else { "checking" }.into();
     }
 }
@@ -349,14 +381,18 @@ fn states(s: &crate::AppState, pool: &IoPool, list: &mut [Listed]) {
 /// copy kept on this Mac; with none yet, the folders of the files listed, by their own names.
 fn tree(s: &crate::AppState, listed: &[Listed]) -> pipeline::inputs::regions::read::Folder {
     sync_accepted(s);
-    let kept: Option<pipeline::inputs::served::Kept> = std::fs::read(accepted_dir(s).join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    let kept: Option<pipeline::inputs::served::Kept> =
+        std::fs::read(accepted_dir(s).join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
     let index = kept.map(|k| k.index).unwrap_or_else(|| {
         let mut i = pipeline::inputs::Index::default();
         for l in listed {
             let mut facts = serde_json::Map::new();
             facts.insert("id".into(), l.id.clone().into());
             facts.insert("geometry".into(), "-".into());
-            i.files.insert(l.path.clone(), pipeline::inputs::FileEntry { file: String::new(), size: 0, keyed: String::new(), facts });
+            i.files.insert(
+                l.path.clone(),
+                pipeline::inputs::FileEntry { file: String::new(), size: 0, keyed: String::new(), facts },
+            );
         }
         i
     });
@@ -375,8 +411,12 @@ pub fn sync_accepted(s: &crate::AppState) {
     if !pool.is_online() {
         return;
     }
-    let read = |p: &str| -> anyhow::Result<Vec<u8>> { Ok(crate::views::RemoteFile::new(root.join(p), pool.clone()).read_all()?) };
-    if let Err(e) = pipeline::inputs::served::sync_with(&read, pipeline::inputs::regions::UNIT, &accepted_dir(s), &["drawn"]) {
+    let read = |p: &str| -> anyhow::Result<Vec<u8>> {
+        Ok(crate::views::RemoteFile::new(root.join(p), pool.clone()).read_all()?)
+    };
+    if let Err(e) =
+        pipeline::inputs::served::sync_with(&read, pipeline::inputs::regions::UNIT, &accepted_dir(s), &["drawn"])
+    {
         eprintln!("regions: the accepted copy wasn't brought up to date: {e:#}");
     }
 }
@@ -470,7 +510,14 @@ pub fn recorded(cat: &store::catalog::Catalog) -> Vec<DrawnRegion> {
 /// straight from its coverage: /api/catalog asks for them every minute.
 pub fn recorded_list(cat: &store::catalog::Catalog) -> Vec<Value> {
     let regions = cat.coverage.get("regions").and_then(Value::as_array);
-    regions.map(|rs| rs.iter().filter(|r| r.is_object()).map(|r| json!({ "id": r["id"], "name": r["name"], "outline": r["outline"] })).collect()).unwrap_or_default()
+    regions
+        .map(|rs| {
+            rs.iter()
+                .filter(|r| r.is_object())
+                .map(|r| json!({ "id": r["id"], "name": r["name"], "outline": r["outline"] }))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The recorded regions' outlines as GeoJSON features, one per entry in each recipe's order, with
@@ -482,7 +529,10 @@ fn recorded_features(regions: &[DrawnRegion], ix: Option<&OutlineIndex>) -> Vec<
         for entry in &r.outline {
             let Some(coords) = r.shapes.get(entry) else { continue };
             let mut props = json!({ "region": r.id, "region_name": r.name, "entry": entry });
-            let area = entry.strip_prefix("osm:").and_then(|id| id.parse::<u64>().ok()).and_then(|id| ix.and_then(|ix| ix.by_id(id).map(|o| ix.summary(o))));
+            let area = entry
+                .strip_prefix("osm:")
+                .and_then(|id| id.parse::<u64>().ok())
+                .and_then(|id| ix.and_then(|ix| ix.by_id(id).map(|o| ix.summary(o))));
             if let (Some(Value::Object(a)), Some(p)) = (area, props.as_object_mut()) {
                 for (k, v) in a {
                     p.entry(k).or_insert(v);
@@ -509,7 +559,10 @@ pub async fn coverage(State(s): State<S>) -> Response {
             None
         });
         let feats = recorded_features(&regions, ix.as_deref());
-        Ok(Json(json!({ "type": "FeatureCollection", "features": feats, "regions": recorded_list(&cat), "catalog": cat.n })).into_response())
+        Ok(Json(
+            json!({ "type": "FeatureCollection", "features": feats, "regions": recorded_list(&cat), "catalog": cat.n }),
+        )
+        .into_response())
     })
     .await
     .map(|r| r.unwrap_or_else(|e| err(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}"))))
@@ -531,7 +584,11 @@ mod tests {
     /// away, however slowly a busy Mac answers it.
     fn hung_pool(root: &std::path::Path) -> Arc<IoPool> {
         let cfg = store::iopool::PoolConfig::new(2, Duration::from_millis(300), root.to_owned());
-        IoPool::with_config(store::iopool::PoolConfig { probe_interval: Duration::from_millis(50), alive_timeout: Duration::from_secs(600), ..cfg })
+        IoPool::with_config(store::iopool::PoolConfig {
+            probe_interval: Duration::from_millis(50),
+            alive_timeout: Duration::from_secs(600),
+            ..cfg
+        })
     }
 
     /// A region file's text.
@@ -569,7 +626,11 @@ mod tests {
         assert_eq!(load_all(&pool, &dir).unwrap(), (vec![], vec![]));
         std::fs::create_dir_all(dir.join("eu/pt")).unwrap();
         std::fs::write(dir.join("borders.toml"), region("borders", "Scottish Borders")).unwrap();
-        std::fs::write(dir.join("eu/pt/azores.toml"), "id = \"azores\"\nname = \"Azores\"\noutline = [{ buffer = \"osm:1629145\", by = \"12 nmi\" }]\n").unwrap();
+        std::fs::write(
+            dir.join("eu/pt/azores.toml"),
+            "id = \"azores\"\nname = \"Azores\"\noutline = [{ buffer = \"osm:1629145\", by = \"12 nmi\" }]\n",
+        )
+        .unwrap();
         // Broken ones reported; other files (a `.toml.removed` among them), ignored names, pins.toml
         // and how/ left out.
         std::fs::write(dir.join("bad.toml"), "id = \"other\"\nname = \"x\"\noutline = [\"osm:1\"]").unwrap();
@@ -579,7 +640,10 @@ mod tests {
         std::fs::create_dir_all(dir.join("how")).unwrap();
         std::fs::write(dir.join("how/example.toml"), region("example", "Example")).unwrap();
         let (ok, bad) = load_all(&pool, &dir).unwrap();
-        assert_eq!(ok.iter().map(|l| (l.id.as_str(), l.path.as_str())).collect::<Vec<_>>(), [("azores", "eu/pt/azores.toml"), ("borders", "borders.toml")]);
+        assert_eq!(
+            ok.iter().map(|l| (l.id.as_str(), l.path.as_str())).collect::<Vec<_>>(),
+            [("azores", "eu/pt/azores.toml"), ("borders", "borders.toml")]
+        );
         assert_eq!(bad.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["bad.toml"]);
         assert!(pool.is_online());
     }
@@ -599,7 +663,9 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let (h, d) = (hung.clone(), dir.clone());
         std::thread::spawn(move || tx.send(load_all(&h, &d).unwrap_err()).ok());
-        let e = rx.recv_timeout(Duration::from_secs(300)).unwrap_or_else(|_| panic!("the listing waited on the hung read: no answer in 5 min"));
+        let e = rx
+            .recv_timeout(Duration::from_secs(300))
+            .unwrap_or_else(|_| panic!("the listing waited on the hung read: no answer in 5 min"));
         assert!(IoError::find(&e).is_some(), "{e:#}");
         release(&stuck);
         // The share still answers, so it's busy rather than away: the rest goes on.
@@ -655,7 +721,13 @@ mod tests {
         assert_eq!(f[0]["properties"], json!({"region": "b", "region_name": "B", "entry": "poly:b.poly"}));
         assert_eq!(f[0]["geometry"], json!({"type": "MultiPolygon", "coordinates": [[ring]]}));
         // The regions, outlines left out; every region recorded, drawn or not.
-        assert_eq!(recorded_list(&c), [json!({"id": "b", "name": "B", "outline": ["poly:b.poly", "osm:7"]}), json!({"id": "a", "name": "A", "outline": ["place:1,2,3"]})]);
+        assert_eq!(
+            recorded_list(&c),
+            [
+                json!({"id": "b", "name": "B", "outline": ["poly:b.poly", "osm:7"]}),
+                json!({"id": "a", "name": "A", "outline": ["place:1,2,3"]})
+            ]
+        );
         // Catalogs made before catalogs recorded their coverage: none (then it's the recipes').
         for old in [json!({"regions": []}), Value::Null, json!({"regions": ["northumberland"]})] {
             assert!(recorded(&catalog(old.clone())).is_empty() && recorded_list(&catalog(old)).is_empty());

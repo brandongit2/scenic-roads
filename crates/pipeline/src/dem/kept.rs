@@ -15,7 +15,8 @@ use store::range::PlainFile;
 pub fn store(dir: &Path, name: &str, src: &Path) -> Result<PathBuf> {
     let f = dir.join(name);
     std::fs::create_dir_all(dir)?;
-    let t = Tiff::open(Arc::new(std::fs::read(src).with_context(|| src.display().to_string())?)).with_context(|| name.to_string())?;
+    let t = Tiff::open(Arc::new(std::fs::read(src).with_context(|| src.display().to_string())?))
+        .with_context(|| name.to_string())?;
     let img = t.level(0)?.clone();
     let data = t.read_window(0, 0, 0, img.width, img.height).with_context(|| name.to_string())?;
     let gt = t.transform(0)?;
@@ -38,7 +39,10 @@ pub fn store(dir: &Path, name: &str, src: &Path) -> Result<PathBuf> {
             (Some(a), Some(b)) => eq(a, b),
             (a, b) => a.is_none() && b.is_none(),
         };
-        ensure!(same && nodata_same && back.transform(0)? == gt, "{name}: the copy written to the store reads back different");
+        ensure!(
+            same && nodata_same && back.transform(0)? == gt,
+            "{name}: the copy written to the store reads back different"
+        );
         std::fs::rename(&tmp, &f)?;
         Ok(())
     })();

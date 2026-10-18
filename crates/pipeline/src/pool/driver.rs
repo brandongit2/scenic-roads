@@ -316,7 +316,13 @@ pub enum Event {
     /// Journal entries merged: applied, passed over (an older lease's), refused; and whether they
     /// came from a listing.
     /// (`done`: the applied entries' jobs done, crate::pool::records::Merged::done.)
-    Merged { applied: Vec<String>, overtaken: usize, refused: usize, listed: bool, done: Vec<crate::pool::records::MergedJob> },
+    Merged {
+        applied: Vec<String>,
+        overtaken: usize,
+        refused: usize,
+        listed: bool,
+        done: Vec<crate::pool::records::MergedJob>,
+    },
     /// Something it couldn't do this step, to try again: what, and why.
     Waits { what: &'static str, why: String },
     /// A duty met an error and stopped there; the step went on.
@@ -506,9 +512,39 @@ impl Driver {
 
     fn without(me: Member, saved: Saved) -> Driver {
         let known = saved.member == me.id;
-        let saved = if known { saved } else { Saved { member: me.id.clone(), mine: saved.mine.unwritten_only(), ..Default::default() } };
+        let saved = if known {
+            saved
+        } else {
+            Saved { member: me.id.clone(), mine: saved.mine.unwritten_only(), ..Default::default() }
+        };
         let passing = saved.passing.clone().map(|(own, passed, hand)| Passing { own, passed, hand, records: None });
-        Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: BTreeMap::new(), asks: 0, swept: 0, back: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None, unread: None, first_unread: None, reports: Vec::new() }
+        Driver {
+            me,
+            lock: None,
+            stopped: None,
+            cur: Current::default(),
+            saved,
+            known,
+            lead: None,
+            passing,
+            taking: None,
+            spare: None,
+            must: None,
+            slept: false,
+            clocks: None,
+            due: None,
+            asked: BTreeMap::new(),
+            asks: 0,
+            swept: 0,
+            back: 0,
+            handed_by: BTreeMap::new(),
+            restarted: true,
+            first: None,
+            stood: None,
+            unread: None,
+            first_unread: None,
+            reports: Vec::new(),
+        }
     }
 
     /// What to keep for the next process: saved after every step that changed it, before that
@@ -555,9 +591,15 @@ impl Driver {
         let mut unsure = None;
         match self.lock.as_mut().filter(|_| self.stopped.is_none()).map(MemberLock::check) {
             Some(Ok(false)) => {
-                let why = format!("another process holds {}", self.lock.as_ref().map_or(Path::new(""), MemberLock::path).display());
+                let why = format!(
+                    "another process holds {}",
+                    self.lock.as_ref().map_or(Path::new(""), MemberLock::path).display()
+                );
                 if let Some(l) = self.lead.take() {
-                    out.events.push(Event::SteppedDown { term: l.term.term, why: format!("this process isn't the member's only one: {why}") });
+                    out.events.push(Event::SteppedDown {
+                        term: l.term.term,
+                        why: format!("this process isn't the member's only one: {why}"),
+                    });
                 }
                 self.passing = None;
                 self.stopped = Some(why);
@@ -601,7 +643,8 @@ impl Driver {
         }
         self.finish(io, &mut out);
         // What it heard.
-        let (mut tells, mut hand_asks, mut takeover, mut led_by_target, mut passed) = (Vec::new(), Vec::new(), None, false, None);
+        let (mut tells, mut hand_asks, mut takeover, mut led_by_target, mut passed) =
+            (Vec::new(), Vec::new(), None, false, None);
         for (from, m) in heard.msgs {
             match m {
                 Msg::Tell(keys) => tells.push((from, keys)),
@@ -616,7 +659,10 @@ impl Driver {
                     passed = Some(t);
                 }
                 Msg::Passed(_) => {}
-                Msg::Leads(e) => led_by_target |= self.passing.as_ref().is_some_and(|p| p.passed.term == e && p.passed.member == from),
+                Msg::Leads(e) => {
+                    led_by_target |=
+                        self.passing.as_ref().is_some_and(|p| p.passed.term == e && p.passed.member == from)
+                }
                 Msg::HandTo(to) => hand_asks.push(to),
             }
         }
@@ -687,7 +733,10 @@ impl Driver {
             out.duties = l.hand.grants() && self.must.is_none();
             out.settle = matches!(l.hand, Handover::Settling { .. });
             out.fresh &= self.must.is_none();
-            out.caught_up = l.listed_at.is_some_and(|at| end.0.saturating_sub(at) < RELIST_S) && !l.dirty && l.waiting.is_empty() && self.must.is_none();
+            out.caught_up = l.listed_at.is_some_and(|at| end.0.saturating_sub(at) < RELIST_S)
+                && !l.dirty
+                && l.waiting.is_empty()
+                && self.must.is_none();
             out.listed_at = l.listed_at;
             out.held = l.held.iter().map(|(k, w)| (k.clone(), w.clone())).collect();
         } else {
@@ -709,7 +758,8 @@ impl Driver {
         if self.cur.term == 0 {
             // (Term 1 made by this call: its `since` this call's.)
             let now = io.now();
-            let made = term::bootstrap(io, &self.me, now, false)?.is_some_and(|t| t.member == self.me.id && t.since == now);
+            let made =
+                term::bootstrap(io, &self.me, now, false)?.is_some_and(|t| t.member == self.me.id && t.since == now);
             if made {
                 self.saved.made = self.saved.made.max(1);
             }
@@ -735,7 +785,9 @@ impl Driver {
             self.cur = Current { term: e, lead: term::read(io, e)? };
         }
         // (Made, and its bytes landed: its maker sends it only then.)
-        if let Some(t) = passed.filter(|t| t.term > self.cur.term || (t.term == self.cur.term && self.cur.lead.is_none())) {
+        if let Some(t) =
+            passed.filter(|t| t.term > self.cur.term || (t.term == self.cur.term && self.cur.lead.is_none()))
+        {
             self.cur = Current { term: t.term, lead: Some(t) };
         }
         self.saved.term = self.saved.term.max(self.cur.term);
@@ -748,7 +800,10 @@ impl Driver {
         // (A later term made past it meanwhile: it's no one's to lead, and isn't finished.)
         if term::next(io, t.term).unwrap_or(false) {
             self.saved.unfinished = None;
-            out.events.push(Event::Waits { what: "finish the term it made", why: format!("term {} was made past it: left unfinished", t.term + 1) });
+            out.events.push(Event::Waits {
+                what: "finish the term it made",
+                why: format!("term {} was made past it: left unfinished", t.term + 1),
+            });
             return;
         }
         match term::finish(io, &t) {
@@ -828,7 +883,8 @@ impl Driver {
                 // merged too, so a sweep's step is caught up. Not after a sleep: what was written
                 // meanwhile, told to it and lost, a listing finds.)
                 if let Some(n) = self.lead.as_mut() {
-                    (n.told, n.waiting, n.unreadable, n.said, n.refused, n.held) = (l.told, l.waiting, l.unreadable, l.said, l.refused, l.held);
+                    (n.told, n.waiting, n.unreadable, n.said, n.refused, n.held) =
+                        (l.told, l.waiting, l.unreadable, l.said, l.refused, l.held);
                     if l.listed_at.is_some() && !slept {
                         n.listed_at = l.listed_at;
                         (self.due, self.asked) = (due, asked);
@@ -854,11 +910,19 @@ impl Driver {
         if self.saved.unfinished.is_some() {
             return;
         }
-        let Some(t) = self.cur.lead.clone().filter(|t| t.member == self.me.id && t.term >= self.saved.led) else { return };
+        let Some(t) = self.cur.lead.clone().filter(|t| t.member == self.me.id && t.term >= self.saved.led) else {
+            return;
+        };
         if !term::app_at_least(&self.me.app, &t.app) {
             if self.saved.stood_down != Some(t.term) {
                 self.saved.stood_down = Some(t.term);
-                out.events.push(Event::SteppedDown { term: t.term, why: format!("can't re-assert: {} runs app {}, older than term {}'s {}", self.me.host, self.me.app, t.term, t.app) });
+                out.events.push(Event::SteppedDown {
+                    term: t.term,
+                    why: format!(
+                        "can't re-assert: {} runs app {}, older than term {}'s {}",
+                        self.me.host, self.me.app, t.term, t.app
+                    ),
+                });
             }
             return;
         }
@@ -870,7 +934,12 @@ impl Driver {
         if t.term > self.saved.led && !unrecorded && !self.taking.as_ref().is_some_and(|r| r.term == t.term) {
             match io.exists(&records::path(t.term)) {
                 Ok(there) => older = there,
-                Err(e) => return out.events.push(Event::Waits { what: "take up", why: format!("term {}: whether its records are there: {e:#}", t.term) }),
+                Err(e) => {
+                    return out.events.push(Event::Waits {
+                        what: "take up",
+                        why: format!("term {}: whether its records are there: {e:#}", t.term),
+                    })
+                }
             }
         }
         if t.term > self.saved.led && !older {
@@ -886,7 +955,10 @@ impl Driver {
         match Term::after(&self.cur, &self.me, how, io.now()).and_then(|n| Ok((term::make(io, &n)?, n))) {
             Ok((made, n)) => {
                 if !self.made(io, out, n, made) {
-                    out.events.push(Event::Waits { what: "re-assert", why: format!("term {} made by another first", self.cur.term + 1) });
+                    out.events.push(Event::Waits {
+                        what: "re-assert",
+                        why: format!("term {} made by another first", self.cur.term + 1),
+                    });
                 }
             }
             Err(e) => out.events.push(Event::Failed { what: "re-assert", why: format!("{e:#}") }),
@@ -922,7 +994,9 @@ impl Driver {
         // listing of the journal follows.)
         if let Err(e) = r.save(io) {
             self.taking = Some(r);
-            return out.events.push(Event::Failed { what: "save the records", why: format!("taking up term {}: {e:#}", t.term) });
+            return out
+                .events
+                .push(Event::Failed { what: "save the records", why: format!("taking up term {}: {e:#}", t.term) });
         }
         r.handed = None;
         // The lead's hint (§6.1: for old apps, and to save a listing; never the truth).
@@ -938,7 +1012,20 @@ impl Driver {
         out.fresh = true;
         out.events.push(Event::TookUp { term: t.term, how: t.how.clone(), handed });
         let horizon = r.horizon.clone();
-        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), unreadable: BTreeMap::new(), said: BTreeSet::new(), turn: 0, listed_at: None, dirty: false, refused: Vec::new(), held: BTreeMap::new() });
+        self.lead = Some(Lead {
+            term: t.clone(),
+            records: r,
+            hand: Handover::Leading,
+            told: BTreeMap::new(),
+            waiting: BTreeSet::new(),
+            unreadable: BTreeMap::new(),
+            said: BTreeSet::new(),
+            turn: 0,
+            listed_at: None,
+            dirty: false,
+            refused: Vec::new(),
+            held: BTreeMap::new(),
+        });
         // A take-up lists the journal: every day not forgotten.
         self.due = Some((Some(horizon).filter(|h| !h.is_empty()), true));
         self.asked.clear();
@@ -955,7 +1042,18 @@ impl Driver {
     /// The lead's step: merge what members told it and what a listing found (and what's waiting to
     /// be read whole), save, acknowledge, note the refusals; hand over.
     #[allow(clippy::too_many_arguments)]
-    fn lead_step(&mut self, io: &dyn Io, out: &mut Out, tells: Vec<(String, Vec<String>)>, asks: Vec<String>, listed: Option<Listed>, settled: Option<serde_json::Value>, check: Check, busy: u64, learnt: bool) {
+    fn lead_step(
+        &mut self,
+        io: &dyn Io,
+        out: &mut Out,
+        tells: Vec<(String, Vec<String>)>,
+        asks: Vec<String>,
+        listed: Option<Listed>,
+        settled: Option<serde_json::Value>,
+        check: Check,
+        busy: u64,
+        learnt: bool,
+    ) {
         let me = self.me.id.clone();
         // An ask, checked (§6.3): as `hand_to` answers the controls.
         let ask = asks.last().cloned().and_then(|to| match self.hand_to(io, &to) {
@@ -977,7 +1075,8 @@ impl Driver {
         for k in own {
             l.told.insert(k, me.clone());
         }
-        let mut keys: Vec<String> = l.told.keys().chain(&l.waiting).chain(l.held.keys()).filter(|k| !l.records.handles(k)).cloned().collect();
+        let mut keys: Vec<String> =
+            l.told.keys().chain(&l.waiting).chain(l.held.keys()).filter(|k| !l.records.handles(k)).cloned().collect();
         let from_listing = listed.is_some();
         if let Some(listed) = listed {
             // (A listing of every day, its take-up's or a daily one: once merged and saved, the
@@ -1004,7 +1103,8 @@ impl Driver {
         // the last of them waited behind the first until those were refused, an hour on.)
         records::by_lease(&mut keys);
         keys.dedup();
-        let (fresh, mut again): (Vec<String>, Vec<String>) = keys.into_iter().partition(|k| !l.unreadable.contains_key(k));
+        let (fresh, mut again): (Vec<String>, Vec<String>) =
+            keys.into_iter().partition(|k| !l.unreadable.contains_key(k));
         if !again.is_empty() {
             let at = l.turn % again.len();
             again.rotate_left(at);
@@ -1016,7 +1116,13 @@ impl Driver {
         if !m.applied.is_empty() || !m.refused.is_empty() || !m.overtaken.is_empty() {
             l.dirty = true;
             l.refused.extend(m.refused.iter().cloned());
-            out.events.push(Event::Merged { applied: m.applied.clone(), overtaken: m.overtaken.len(), refused: m.refused.len(), listed: from_listing, done: m.done.clone() });
+            out.events.push(Event::Merged {
+                applied: m.applied.clone(),
+                overtaken: m.overtaken.len(),
+                refused: m.refused.len(),
+                listed: from_listing,
+                done: m.done.clone(),
+            });
         }
         // What its check holds is merged again next step (said once as it's first held); what it
         // read this step and didn't hold is no longer held.
@@ -1038,7 +1144,12 @@ impl Driver {
         // errors on. A read that failed when none answered (the share away) says nothing, and
         // starts the time again; one the step's time left unread keeps it, and isn't refused
         // unread.
-        let answered = learnt || !(m.applied.is_empty() && m.overtaken.is_empty() && m.refused.is_empty() && m.forgotten.is_empty() && m.waiting.is_empty());
+        let answered = learnt
+            || !(m.applied.is_empty()
+                && m.overtaken.is_empty()
+                && m.refused.is_empty()
+                && m.forgotten.is_empty()
+                && m.waiting.is_empty());
         let awake = io.awake();
         for k in &m.failed {
             if answered {
@@ -1054,15 +1165,24 @@ impl Driver {
         let read: Vec<String> = m.waiting.iter().chain(m.failed.iter().filter(|_| answered)).cloned().collect();
         // (One waiting long: said, once, naming it.)
         for k in &read {
-            if let Some(&(at, failing)) = l.unreadable.get(k).filter(|&&(at, _)| awake.saturating_sub(at) >= WAIT_SAID_S) {
+            if let Some(&(at, failing)) =
+                l.unreadable.get(k).filter(|&&(at, _)| awake.saturating_sub(at) >= WAIT_SAID_S)
+            {
                 if l.said.insert(k.clone()) {
-                    let how = if failing { "its reads failing, the share answering others" } else { "short, or not there" };
-                    out.events.push(Event::Waits { what: "read an entry whole", why: format!("{k}: {how}, for {} minutes", awake.saturating_sub(at) / 60) });
+                    let how =
+                        if failing { "its reads failing, the share answering others" } else { "short, or not there" };
+                    out.events.push(Event::Waits {
+                        what: "read an entry whole",
+                        why: format!("{k}: {how}, for {} minutes", awake.saturating_sub(at) / 60),
+                    });
                 }
             }
         }
         l.said.retain(|k| l.waiting.contains(k));
-        let never: Vec<String> = read.into_iter().filter(|k| l.unreadable.get(k).is_some_and(|&(at, _)| awake.saturating_sub(at) >= UNREADABLE_S)).collect();
+        let never: Vec<String> = read
+            .into_iter()
+            .filter(|k| l.unreadable.get(k).is_some_and(|&(at, _)| awake.saturating_sub(at) >= UNREADABLE_S))
+            .collect();
         if !never.is_empty() {
             let why = format!("not read whole in {} minutes", UNREADABLE_S / 60);
             for k in &never {
@@ -1072,12 +1192,20 @@ impl Driver {
                 l.refused.push((k.clone(), why.clone()));
             }
             l.dirty = true;
-            out.events.push(Event::Merged { applied: Vec::new(), overtaken: 0, refused: never.len(), listed: false, done: Vec::new() });
+            out.events.push(Event::Merged {
+                applied: Vec::new(),
+                overtaken: 0,
+                refused: never.len(),
+                listed: false,
+                done: Vec::new(),
+            });
         }
         if l.dirty {
             match l.records.save(io) {
                 Ok(()) => l.dirty = false,
-                Err(err) => out.events.push(Event::Failed { what: "save the records", why: format!("term {e}: {err:#}") }),
+                Err(err) => {
+                    out.events.push(Event::Failed { what: "save the records", why: format!("term {e}: {err:#}") })
+                }
             }
         }
         // Refusals its saved records name (this step's, or an earlier one's, a re-assertion's
@@ -1112,15 +1240,32 @@ impl Driver {
                 }
             }
         }
-        let settled = (!l.dirty && m.waiting.is_empty() && m.unread.is_empty() && m.failed.is_empty() && l.records.handed.is_some()).then_some(l.records.seq);
+        let settled = (!l.dirty
+            && m.waiting.is_empty()
+            && m.unread.is_empty()
+            && m.failed.is_empty()
+            && l.records.handed.is_some())
+        .then_some(l.records.seq);
         let target = match &l.hand {
             Handover::Offered { to, .. } | Handover::Settling { to, .. } => Beat::read(io, to).ok().flatten(),
             _ => None,
         };
         let was = l.hand.clone();
-        let step = l.hand.step(e, &Seen { now: io.now(), current: self.cur.term, ask: ask.as_deref(), target: target.as_ref(), settled, taken_up: false });
+        let step = l.hand.step(
+            e,
+            &Seen {
+                now: io.now(),
+                current: self.cur.term,
+                ask: ask.as_deref(),
+                target: target.as_ref(),
+                settled,
+                taken_up: false,
+            },
+        );
         match (&was, &l.hand) {
-            (Handover::Leading, Handover::Offered { to, .. }) => out.events.push(Event::Handover { term: e, to: to.clone(), what: "offered" }),
+            (Handover::Leading, Handover::Offered { to, .. }) => {
+                out.events.push(Event::Handover { term: e, to: to.clone(), what: "offered" })
+            }
             (Handover::Offered { .. }, Handover::Settling { to, .. }) => {
                 // (A fresh settle: the coordinator's state written for it, not an earlier one's.)
                 l.records.handed = None;
@@ -1136,10 +1281,14 @@ impl Driver {
             Do::StepDown => self.step_down(out, "a later term exists"),
             Do::Pass { to, seq } => {
                 let b = target.filter(|b| b.member == to);
-                let t = match b.map(|b| Term::after(&self.cur, &b.member(), &format!("handed over by {}", self.me.host), io.now())) {
+                let t = match b
+                    .map(|b| Term::after(&self.cur, &b.member(), &format!("handed over by {}", self.me.host), io.now()))
+                {
                     Some(Ok(t)) => t,
                     other => {
-                        let why = other.map_or("its heartbeat isn't readable".to_string(), |r| r.err().map(|e| format!("{e:#}")).unwrap_or_default());
+                        let why = other.map_or("its heartbeat isn't readable".to_string(), |r| {
+                            r.err().map(|e| format!("{e:#}")).unwrap_or_default()
+                        });
                         out.events.push(Event::Waits { what: "hand the lead over", why: format!("to {to}: {why}") });
                         let l = self.lead.as_mut().expect("leading");
                         l.hand.abandon();
@@ -1156,7 +1305,8 @@ impl Driver {
                         l.hand.passed(now);
                         out.events.push(Event::Handover { term: e, to: to.clone(), what: "passed" });
                         out.events.push(Event::SteppedDown { term: e, why: format!("handed over to {to}") });
-                        self.passing = Some(Passing { own: l.term, passed: t.clone(), hand: l.hand, records: Some(l.records) });
+                        self.passing =
+                            Some(Passing { own: l.term, passed: t.clone(), hand: l.hand, records: Some(l.records) });
                         self.made(io, out, t, made);
                     }
                     Err(err) => {
@@ -1187,28 +1337,37 @@ impl Driver {
         }
         let target = Beat::read(io, &to).ok().flatten();
         let snapshot = told || io.exists(&records::path(p.passed.term)).unwrap_or(false);
-        let seen = Seen { now: io.now(), current: self.cur.term, target: target.as_ref(), taken_up: snapshot, ..Default::default() };
+        let seen = Seen {
+            now: io.now(),
+            current: self.cur.term,
+            target: target.as_ref(),
+            taken_up: snapshot,
+            ..Default::default()
+        };
         match p.hand.step(p.own.term, &seen) {
             Do::Done => out.events.push(Event::Handover { term: p.own.term, to, what: "over" }),
-            Do::TakeBack { to } if self.cur.term == p.passed.term => match term::back(&p.own, &p.passed, &self.me, &format!("{}: {to} didn't take up", term::BACK), io.now()) {
-                Ok(t) => match term::make(io, &t) {
-                    Ok(made) => {
-                        self.spare = p.records.take();
-                        if self.made(io, out, t, made) {
-                            out.events.push(Event::Handover { term: p.own.term, to, what: "taken back" });
+            Do::TakeBack { to } if self.cur.term == p.passed.term => {
+                match term::back(&p.own, &p.passed, &self.me, &format!("{}: {to} didn't take up", term::BACK), io.now())
+                {
+                    Ok(t) => match term::make(io, &t) {
+                        Ok(made) => {
+                            self.spare = p.records.take();
+                            if self.made(io, out, t, made) {
+                                out.events.push(Event::Handover { term: p.own.term, to, what: "taken back" });
+                            }
                         }
-                    }
+                        Err(e) => {
+                            out.events.push(Event::Failed { what: "take the lead back", why: format!("{e:#}") });
+                            self.passing = Some(p);
+                        }
+                    },
                     Err(e) => {
+                        out.events.push(Event::Handover { term: p.own.term, to, what: "dropped" });
                         out.events.push(Event::Failed { what: "take the lead back", why: format!("{e:#}") });
-                        self.passing = Some(p);
+                        self.spare = p.records.take();
                     }
-                },
-                Err(e) => {
-                    out.events.push(Event::Handover { term: p.own.term, to, what: "dropped" });
-                    out.events.push(Event::Failed { what: "take the lead back", why: format!("{e:#}") });
-                    self.spare = p.records.take();
                 }
-            },
+            }
             _ => self.passing = Some(p),
         }
     }
@@ -1217,7 +1376,11 @@ impl Driver {
     /// Mac's own handover still waiting for its target too).
     fn take_over(&mut self, io: &dyn Io, out: &mut Out, force: bool, downgrade: bool) {
         let needs = self.takeover(io);
-        let why = needs.refused.clone().or_else(|| needs.force.clone().filter(|_| !force)).or_else(|| needs.downgrade.clone().filter(|_| !downgrade));
+        let why = needs
+            .refused
+            .clone()
+            .or_else(|| needs.force.clone().filter(|_| !force))
+            .or_else(|| needs.downgrade.clone().filter(|_| !downgrade));
         if let Some(why) = why {
             return out.events.push(Event::Waits { what: "take over", why });
         }
@@ -1242,11 +1405,18 @@ impl Driver {
             }
             return;
         }
-        let t = if force || downgrade { term::forced(io, &self.cur, &self.me, &how, now, downgrade) } else { Term::after(&self.cur, &self.me, &how, now) };
+        let t = if force || downgrade {
+            term::forced(io, &self.cur, &self.me, &how, now, downgrade)
+        } else {
+            Term::after(&self.cur, &self.me, &how, now)
+        };
         match t.and_then(|t| Ok((term::make(io, &t)?, t))) {
             Ok((made, t)) => {
                 if !self.made(io, out, t, made) {
-                    out.events.push(Event::Waits { what: "take over", why: format!("term {} made by another first", self.cur.term + 1) });
+                    out.events.push(Event::Waits {
+                        what: "take over",
+                        why: format!("term {} made by another first", self.cur.term + 1),
+                    });
                 }
             }
             Err(e) => out.events.push(Event::Failed { what: "take over", why: format!("{e:#}") }),
@@ -1258,7 +1428,14 @@ impl Driver {
     /// then lowest member id) had their turn, `AUTO_RANK_S` each.
     fn auto_take_over(&mut self, io: &dyn Io, out: &mut Out, members: &[String], able: bool) {
         let t = match &self.cur.lead {
-            Some(t) if t.member != self.me.id && self.lead.is_none() && self.passing.is_none() && self.saved.unfinished.is_none() => t.clone(),
+            Some(t)
+                if t.member != self.me.id
+                    && self.lead.is_none()
+                    && self.passing.is_none()
+                    && self.saved.unfinished.is_none() =>
+            {
+                t.clone()
+            }
             _ => {
                 self.stood = None;
                 return;
@@ -1285,7 +1462,11 @@ impl Driver {
         let mut can = vec![self.me.clone()];
         for m in members.iter().filter(|m| **m != self.me.id && **m != t.member) {
             if let Ok(Some(b)) = Beat::read(io, m) {
-                if !b.out_of_touch(now) && b.leads.is_none() && b.stood_down.is_none() && term::app_at_least(&b.app, &t.app) {
+                if !b.out_of_touch(now)
+                    && b.leads.is_none()
+                    && b.stood_down.is_none()
+                    && term::app_at_least(&b.app, &t.app)
+                {
                     can.push(b.member());
                 }
             }
@@ -1299,7 +1480,10 @@ impl Driver {
         match Term::after(&self.cur, &self.me, &how, io.now()).and_then(|n| Ok((term::make(io, &n)?, n))) {
             Ok((made, n)) => {
                 if !self.made(io, out, n, made) {
-                    out.events.push(Event::Waits { what: "take over", why: format!("term {} made by another first", self.cur.term + 1) });
+                    out.events.push(Event::Waits {
+                        what: "take over",
+                        why: format!("term {} made by another first", self.cur.term + 1),
+                    });
                 }
             }
             Err(e) => out.events.push(Event::Failed { what: "take over", why: format!("{e:#}") }),
@@ -1313,7 +1497,13 @@ impl Driver {
     /// turn, `AUTO_RANK_S` each (§6.5: why it's safe). Not by a Mac that knows it made the term
     /// (`Saved::unfinished`): it finishes it.
     fn take_past_unread(&mut self, io: &dyn Io, out: &mut Out, members: &[String], able: bool, learnt: bool) {
-        if !learnt || self.cur.term == 0 || self.cur.lead.is_some() || self.lead.is_some() || self.passing.is_some() || self.saved.unfinished.is_some() {
+        if !learnt
+            || self.cur.term == 0
+            || self.cur.lead.is_some()
+            || self.lead.is_some()
+            || self.passing.is_some()
+            || self.saved.unfinished.is_some()
+        {
             self.unread = None;
             return;
         }
@@ -1363,11 +1553,19 @@ impl Driver {
             self.unread = None;
             return;
         }
-        let how = format!("taken over by {}: term {} unreadable for {} min", self.me.host, self.cur.term, awake.saturating_sub(since) / 60);
+        let how = format!(
+            "taken over by {}: term {} unreadable for {} min",
+            self.me.host,
+            self.cur.term,
+            awake.saturating_sub(since) / 60
+        );
         match term::forced(io, &self.cur, &self.me, &how, now, false).and_then(|n| Ok((term::make(io, &n)?, n))) {
             Ok((made, n)) => {
                 if !self.made(io, out, n, made) {
-                    out.events.push(Event::Waits { what: "take over", why: format!("term {} made by another first", self.cur.term + 1) });
+                    out.events.push(Event::Waits {
+                        what: "take over",
+                        why: format!("term {} made by another first", self.cur.term + 1),
+                    });
                 }
             }
             Err(e) => out.events.push(Event::Failed { what: "take over", why: format!("{e:#}") }),
@@ -1385,7 +1583,10 @@ impl Driver {
             return false;
         }
         let others: Vec<&String> = members.iter().filter(|m| **m != self.me.id).collect();
-        !others.is_empty() && others.iter().all(|m| matches!(Beat::read(io, m), Ok(Some(b)) if !b.out_of_touch(now) && b.leads != Some(self.cur.term)))
+        !others.is_empty()
+            && others.iter().all(
+                |m| matches!(Beat::read(io, m), Ok(Some(b)) if !b.out_of_touch(now) && b.leads != Some(self.cur.term)),
+            )
     }
 
     /// Since when (awake clock) its reads have found the current term there but too short to read
@@ -1407,9 +1608,15 @@ impl Driver {
             return t;
         }
         if let Some(p) = &self.passing {
-            t.force = Some(format!("this Mac's handover of term {} waits for {} to take up: forced, it's dropped", p.own.term, p.passed.host));
+            t.force = Some(format!(
+                "this Mac's handover of term {} waits for {} to take up: forced, it's dropped",
+                p.own.term, p.passed.host
+            ));
         }
-        let app = |k: &Term| (!term::app_at_least(&self.me.app, &k.app)).then(|| format!("this Mac's app {} is older than term {}'s {}", self.me.app, k.term, k.app));
+        let app = |k: &Term| {
+            (!term::app_at_least(&self.me.app, &k.app))
+                .then(|| format!("this Mac's app {} is older than term {}'s {}", self.me.app, k.term, k.app))
+        };
         match &self.cur.lead {
             // (No term yet: the owner's say-so makes term 1 here, its records first.)
             _ if self.cur.term == 0 => {}
@@ -1430,7 +1637,9 @@ impl Driver {
                     Ok(Some(b)) => {
                         let now = io.now();
                         if !b.out_of_touch(now) && b.stood_down != Some(c.term) {
-                            t.force.get_or_insert_with(|| format!("{} leads, in touch: its beat {} s old", c.host, now.saturating_sub(b.beat)));
+                            t.force.get_or_insert_with(|| {
+                                format!("{} leads, in touch: its beat {} s old", c.host, now.saturating_sub(b.beat))
+                            });
                         }
                     }
                     Ok(None) => {}
@@ -1464,7 +1673,9 @@ impl Driver {
             return Err(format!("its app {} is older than term {}'s {}", b.app, t.term, t.app));
         }
         // (§6.8: a member another reports it can't reach would grant nobody else work.)
-        if let Some(why) = super::reachable::why_unreachable(&self.reports, to, if b.host.is_empty() { to } else { &b.host }, now) {
+        if let Some(why) =
+            super::reachable::why_unreachable(&self.reports, to, if b.host.is_empty() { to } else { &b.host }, now)
+        {
             return Err(why);
         }
         Ok(())
@@ -1487,7 +1698,15 @@ impl Driver {
             if quiet < OVERDUE_S {
                 return;
             }
-            out.events.push(Event::Waits { what: "have a listing back", why: format!("listing {} of the journal, asked for {} minutes ago, none back for {} minutes: asked for again", self.asks, now.saturating_sub(a.at) / 60, quiet / 60) });
+            out.events.push(Event::Waits {
+                what: "have a listing back",
+                why: format!(
+                    "listing {} of the journal, asked for {} minutes ago, none back for {} minutes: asked for again",
+                    self.asks,
+                    now.saturating_sub(a.at) / 60,
+                    quiet / 60
+                ),
+            });
         }
         if self.due.is_none() && l.listed_at.is_none_or(|at| now.saturating_sub(at) + AHEAD_S >= RELIST_S) {
             self.due = Some((Some(l.records.horizon.clone()).filter(|h| !h.is_empty()), true));
@@ -1521,7 +1740,18 @@ impl Driver {
             }
         }
         let stood_down = self.saved.stood_down.filter(|&e| e == self.cur.term && self.lead.is_none());
-        Beat { member: self.me.id.clone(), host: self.me.host.clone(), app: self.me.app.clone(), beat: io.now(), leads, handing_to, ready_for, stood_down, addresses: Vec::new(), reach: Vec::new() }
+        Beat {
+            member: self.me.id.clone(),
+            host: self.me.host.clone(),
+            app: self.me.app.clone(),
+            beat: io.now(),
+            leads,
+            handing_to,
+            ready_for,
+            stood_down,
+            addresses: Vec::new(),
+            reach: Vec::new(),
+        }
     }
 }
 
@@ -1559,7 +1789,15 @@ mod tests {
 
     impl<'a> Mac<'a> {
         fn new(mem: &'a Mem) -> Mac<'a> {
-            Mac { mem, wall: Cell::new(T0), awake: Cell::new(1_000), down: Cell::new(false), fail: Default::default(), wfail: Default::default(), short: Default::default() }
+            Mac {
+                mem,
+                wall: Cell::new(T0),
+                awake: Cell::new(1_000),
+                down: Cell::new(false),
+                fail: Default::default(),
+                wfail: Default::default(),
+                short: Default::default(),
+            }
         }
 
         /// Time passes, awake.
@@ -1681,7 +1919,11 @@ mod tests {
     }
 
     fn entry(member: &str, term: u64, n: u64, t: &str) -> Entry {
-        let h = Handoff { changes: [(format!("base/{t}"), Some(format!("base/{t}.k{n}.base")))].into(), done: Some(("unit".into(), vec![(t.into(), format!("k{n}"))])), ..Default::default() };
+        let h = Handoff {
+            changes: [(format!("base/{t}"), Some(format!("base/{t}.k{n}.base")))].into(),
+            done: Some(("unit".into(), vec![(t.into(), format!("k{n}"))])),
+            ..Default::default()
+        };
         Entry { member: member.into(), lease: LeaseId { term, n }, step: "unit".into(), handoff: h, at: T0 + n }
     }
 
@@ -1721,7 +1963,10 @@ mod tests {
         assert!(b.takeover(&ib) == Takeover::default(), "the lead stood down: no force");
         assert_eq!(step(&mut b, &ib, asks(Ask::TakeOver { force: false, downgrade: false })).leads, Some(2));
         ia.pass(20);
-        assert!(step(&mut a, &ia, asks(Ask::TakeOver { force: true, downgrade: false })).events.iter().any(|e| matches!(e, Event::Waits { what: "take over", why } if why.contains("older"))));
+        assert!(step(&mut a, &ia, asks(Ask::TakeOver { force: true, downgrade: false }))
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Waits { what: "take over", why } if why.contains("older"))));
         let o = step(&mut a, &ia, asks(Ask::TakeOver { force: true, downgrade: true }));
         assert_eq!(o.leads, Some(3), "{:?}", o.events);
     }
@@ -1792,7 +2037,8 @@ mod tests {
         let mut dropped = false;
         for _ in 0..8 {
             ia.pass(30);
-            dropped |= step(&mut a, &ia, able()).events.iter().any(|e| matches!(e, Event::Handover { what: "dropped", .. }));
+            dropped |=
+                step(&mut a, &ia, able()).events.iter().any(|e| matches!(e, Event::Handover { what: "dropped", .. }));
         }
         assert!(dropped);
         ia.pass(30);
@@ -1826,7 +2072,11 @@ mod tests {
         let o = step(&mut b, &ib, Heard { listed: Some(Listed { n: list.n + 7, keys: Vec::new() }), ..able() });
         assert!(!o.caught_up);
         ib.pass(20);
-        let o = step(&mut b, &ib, Heard { listed: Some(Listed { n: list.n, keys: journal::list(&mem, None).unwrap() }), ..able() });
+        let o = step(
+            &mut b,
+            &ib,
+            Heard { listed: Some(Listed { n: list.n, keys: journal::list(&mem, None).unwrap() }), ..able() },
+        );
         assert!(o.caught_up, "{:?}", o.events);
         assert!(Records::load(&mem, 2).unwrap().unwrap().handles(&x));
     }
@@ -1848,7 +2098,10 @@ mod tests {
         // With its saved state: a restart re-asserts too, saying so.
         ia.pass(20);
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), a.saved());
-        assert!(step(&mut a, &ia, able()).events.iter().any(|e| matches!(e, Event::Made { term: 3, how } if how.starts_with("restarted"))));
+        assert!(step(&mut a, &ia, able())
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Made { term: 3, how } if how.starts_with("restarted"))));
         // Lost again, onto a development build: it stands down; restarted onto its app, with the
         // state that process saved, it still doesn't take term 3 up again.
         ia.pass(20);
@@ -1910,8 +2163,15 @@ mod tests {
         let e = entry(B, 1, 3, "6-1-1");
         let key = journal::write(&mem, &e).unwrap();
         let hold = std::cell::Cell::new(true);
-        let check = |_: &Entry, _: &Records| if hold.get() { Err(format!("{}its member runs a newer app", records::HOLD)) } else { Ok(()) };
-        let said = |o: &Out| o.events.iter().filter(|ev| matches!(ev, Event::Waits { what: "merge an entry", .. })).count();
+        let check = |_: &Entry, _: &Records| {
+            if hold.get() {
+                Err(format!("{}its member runs a newer app", records::HOLD))
+            } else {
+                Ok(())
+            }
+        };
+        let said =
+            |o: &Out| o.events.iter().filter(|ev| matches!(ev, Event::Waits { what: "merge an entry", .. })).count();
         ia.pass(20);
         let o = a.step(&ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() }, &check);
         assert_eq!(o.held, [(key.clone(), "its member runs a newer app".to_string())]);
@@ -1926,8 +2186,16 @@ mod tests {
         hold.set(false);
         ia.pass(20);
         let o = a.step(&ia, able(), &check);
-        assert!(o.held.is_empty() && Records::load(&mem, 1).unwrap().unwrap().reflected.contains(&key), "{:?}", o.events);
-        assert!(o.send.iter().any(|(to, m)| to == B && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))), "{:?}", o.send);
+        assert!(
+            o.held.is_empty() && Records::load(&mem, 1).unwrap().unwrap().reflected.contains(&key),
+            "{:?}",
+            o.events
+        );
+        assert!(
+            o.send.iter().any(|(to, m)| to == B && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))),
+            "{:?}",
+            o.send
+        );
     }
 
     #[test]
@@ -1945,7 +2213,10 @@ mod tests {
         let key = entry(B, 1, 3, "6-1-1").key().unwrap();
         mem.write_whole(&journal::path(&key), b"{\"member\":").unwrap();
         ia.pass(20);
-        assert!(!step(&mut a, &ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() }).caught_up, "told of it, not whole");
+        assert!(
+            !step(&mut a, &ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() }).caught_up,
+            "told of it, not whole"
+        );
         for _ in 0..11 {
             ia.pass(300);
             assert!(!step(&mut a, &ia, able()).caught_up, "55 minutes: read again");
@@ -1956,7 +2227,11 @@ mod tests {
         let why = Records::load(&mem, 1).unwrap().unwrap().rejected.get(&key).cloned();
         assert!(why.as_deref().is_some_and(|w| w.contains("not read whole")), "{why:?}");
         assert_eq!(journal::refusal(&mem, &key).unwrap(), why, "noted for the owner");
-        assert!(o.send.iter().any(|(to, m)| to == B && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))), "{:?}", o.send);
+        assert!(
+            o.send.iter().any(|(to, m)| to == B && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))),
+            "{:?}",
+            o.send
+        );
     }
 
     #[test]
@@ -2015,7 +2290,8 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default(), MemberLock::take(dir.path(), A).unwrap().unwrap());
+        let mut a =
+            Driver::new(member(A, "Mac-mini", V1), Saved::default(), MemberLock::take(dir.path(), A).unwrap().unwrap());
         let list = step(&mut a, &ia, able()).list.unwrap();
         ia.pass(20);
         assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() }).duties);
@@ -2024,7 +2300,11 @@ mod tests {
         let o = step(&mut a, &ia, able());
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(o.stop.is_none() && o.leads == Some(1) && !o.duties && !o.caught_up, "{o:?}");
-        assert!(o.events.iter().any(|e| matches!(e, Event::Failed { what: "check the member's lock", .. })), "{:?}", o.events);
+        assert!(
+            o.events.iter().any(|e| matches!(e, Event::Failed { what: "check the member's lock", .. })),
+            "{:?}",
+            o.events
+        );
         ia.pass(20);
         let o = step(&mut a, &ia, able());
         assert!(o.stop.is_none() && o.leads == Some(1) && o.duties && o.caught_up, "{o:?}");
@@ -2041,7 +2321,8 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default(), MemberLock::take(dir.path(), A).unwrap().unwrap());
+        let mut a =
+            Driver::new(member(A, "Mac-mini", V1), Saved::default(), MemberLock::take(dir.path(), A).unwrap().unwrap());
         let o = step(&mut a, &ia, able());
         assert_eq!((o.leads, o.stop), (Some(1), None));
         std::fs::remove_file(&path).unwrap();
@@ -2055,7 +2336,10 @@ mod tests {
         let o = a.step(&ia, Heard { entries: vec![e.clone()], ..able() }, &any);
         assert!(o.stop.is_some() && o.leads.is_none() && o.send.is_empty(), "{o:?}");
         assert!(o.events.iter().any(|e| matches!(e, Event::SteppedDown { term: 1, .. })), "{:?}", o.events);
-        assert!(a.saved().mine.unwritten().any(|k| *k == e.key().unwrap()), "the hand-off handed to it kept, for the agent to save");
+        assert!(
+            a.saved().mine.unwritten().any(|k| *k == e.key().unwrap()),
+            "the hand-off handed to it kept, for the agent to save"
+        );
         ia.pass(20);
         assert!(a.step(&ia, able(), &any).stop.is_some(), "for good");
         assert_eq!(*mem.0.borrow(), before, "nothing written");
@@ -2141,7 +2425,10 @@ mod tests {
             step(&mut a, &ia, able());
         }
         let took = took.expect("taken over");
-        assert!((STOOD_DOWN_S + AUTO_RANK_S..STOOD_DOWN_S + AUTO_RANK_S + 20).contains(&took), "{took} s after it saw the stand-down");
+        assert!(
+            (STOOD_DOWN_S + AUTO_RANK_S..STOOD_DOWN_S + AUTO_RANK_S + 20).contains(&took),
+            "{took} s after it saw the stand-down"
+        );
     }
 
     #[test]
@@ -2231,7 +2518,10 @@ mod tests {
         for i in 1..=200 {
             ia.pass(20);
             let o = step(&mut a, &ia, able());
-            if o.events.iter().any(|e| matches!(e, Event::Waits { what: "read an entry whole", why } if why.contains(&key))) {
+            if o.events
+                .iter()
+                .any(|e| matches!(e, Event::Waits { what: "read an entry whole", why } if why.contains(&key)))
+            {
                 said.get_or_insert(i);
             }
             if o.caught_up {
@@ -2292,7 +2582,10 @@ mod tests {
         for _ in 0..70 {
             ia.pass(60);
             step(&mut a, &ia, able());
-            assert!(!Records::load(&mem, 1).unwrap().unwrap().rejected.contains_key(&key), "refused while every read of it failed");
+            assert!(
+                !Records::load(&mem, 1).unwrap().unwrap().rejected.contains_key(&key),
+                "refused while every read of it failed"
+            );
         }
         ia.down.set(false);
         ia.pass(60);
@@ -2314,7 +2607,14 @@ mod tests {
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         let list = step(&mut a, &ia, able()).list.unwrap();
         ia.pass(20);
-        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: journal::list(&mem, None).unwrap() }), ..able() }).caught_up);
+        assert!(
+            step(
+                &mut a,
+                &ia,
+                Heard { listed: Some(Listed { n: list.n, keys: journal::list(&mem, None).unwrap() }), ..able() }
+            )
+            .caught_up
+        );
         let mut old = entry(C, 1, 9, "6-1-2");
         old.at = T0 - 3 * 86_400;
         let key = journal::write(&mem, &old).unwrap();
@@ -2328,7 +2628,14 @@ mod tests {
             }
             if let Some(l) = &o.list {
                 ia.pass(20);
-                step(&mut a, &ia, Heard { listed: Some(Listed { n: l.n, keys: journal::list(&mem, l.since.as_deref()).unwrap() }), ..able() });
+                step(
+                    &mut a,
+                    &ia,
+                    Heard {
+                        listed: Some(Listed { n: l.n, keys: journal::list(&mem, l.since.as_deref()).unwrap() }),
+                        ..able()
+                    },
+                );
             }
             if merged.is_none() && Records::newest(&mem, a.leads().unwrap(), false).unwrap().unwrap().handles(&key) {
                 merged = Some(i);
@@ -2350,7 +2657,10 @@ mod tests {
         let list = step(&mut a, &ia, able()).list.unwrap();
         let at = ia.now();
         ia.pass(20);
-        assert_eq!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).listed_at, Some(at));
+        assert_eq!(
+            step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).listed_at,
+            Some(at)
+        );
         let (mut daily, mut heard) = (None, able());
         while ia.now() < at + RELIST_S {
             ia.pass(300);
@@ -2403,7 +2713,10 @@ mod tests {
             }
             if let Some((l, done)) = running.take() {
                 if ia.now() >= done {
-                    heard = Heard { listed: Some(Listed { n: l.n, keys: journal::list(&mem, l.since.as_deref()).unwrap() }), ..able() };
+                    heard = Heard {
+                        listed: Some(Listed { n: l.n, keys: journal::list(&mem, l.since.as_deref()).unwrap() }),
+                        ..able()
+                    };
                 } else {
                     running = Some((l, done));
                 }
@@ -2436,7 +2749,10 @@ mod tests {
             again = o.list;
         }
         let again = again.unwrap();
-        assert!(ia.now() >= T0 + OVERDUE_S && again.since.is_none() && again.n > lost.n, "every day, two hours on: {again:?}");
+        assert!(
+            ia.now() >= T0 + OVERDUE_S && again.since.is_none() && again.n > lost.n,
+            "every day, two hours on: {again:?}"
+        );
         assert_eq!(said, 1, "said once");
         ia.pass(20);
         let o = step(&mut a, &ia, Heard { listed: Some(Listed { n: again.n, keys: Vec::new() }), ..able() });
@@ -2517,8 +2833,23 @@ mod tests {
         let e = entry(A, 1, 1, "6-1-4");
         r.apply(&e.key().unwrap(), &e);
         r.save(&mem).unwrap();
-        let t2 = term::forced(&mem, &term::current(&mem).unwrap(), &member(B, "MacBook-Air", V1), "taken over by MacBook-Air", T0 + 60, false).unwrap();
-        let stale = Stale(&mem, vec![(records::path(1), None), (records::FIRST.into(), Some(Vec::new())), ("state/build/jobs.json".into(), Some(old_jobs))]);
+        let t2 = term::forced(
+            &mem,
+            &term::current(&mem).unwrap(),
+            &member(B, "MacBook-Air", V1),
+            "taken over by MacBook-Air",
+            T0 + 60,
+            false,
+        )
+        .unwrap();
+        let stale = Stale(
+            &mem,
+            vec![
+                (records::path(1), None),
+                (records::FIRST.into(), Some(Vec::new())),
+                ("state/build/jobs.json".into(), Some(old_jobs)),
+            ],
+        );
         let err = records::start(&stale, &t2, None, false).unwrap_err();
         assert!(err.is::<records::FirstUnreadable>(), "tried again: {err:#}");
         let r2 = records::start(&mem, &t2, None, false).unwrap();
@@ -2534,7 +2865,16 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         mem.create_new(records::FIRST, b"").unwrap();
-        let t1 = Term { term: 1, member: A.into(), host: "Mac-mini".into(), app: V1.into(), since: T0, how: "the first Mac in the pool".into(), from: 0, seq: None };
+        let t1 = Term {
+            term: 1,
+            member: A.into(),
+            host: "Mac-mini".into(),
+            app: V1.into(),
+            since: T0,
+            how: "the first Mac in the pool".into(),
+            from: 0,
+            seq: None,
+        };
         mem.create_new(&term::path(1), &serde_json::to_vec_pretty(&t1).unwrap()).unwrap();
         let ia = Mac::new(&mem);
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved { member: A.into(), ..Default::default() });
@@ -2558,7 +2898,16 @@ mod tests {
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
         for e in [2, 3] {
-            let t = Term { term: e, member: B.into(), host: "MacBook-Air".into(), app: V1.into(), since: T0 + e, how: "taken over by MacBook-Air".into(), from: e - 1, seq: None };
+            let t = Term {
+                term: e,
+                member: B.into(),
+                host: "MacBook-Air".into(),
+                app: V1.into(),
+                since: T0 + e,
+                how: "taken over by MacBook-Air".into(),
+                from: e - 1,
+                seq: None,
+            };
             mem.create_new(&term::path(e), &serde_json::to_vec_pretty(&t).unwrap()).unwrap();
         }
         *ia.fail.borrow_mut() = Some("terms/3".into());
@@ -2587,7 +2936,11 @@ mod tests {
         let mut restored = Driver::unlocked(member(A, "Mac-mini", V1), backup);
         let o = step(&mut restored, &ia, able());
         assert_eq!(o.leads, Some(3), "{:?}", o.events);
-        assert!(o.events.iter().any(|e| matches!(e, Event::Made { term: 3, how } if how.contains("older than the term"))), "{:?}", o.events);
+        assert!(
+            o.events.iter().any(|e| matches!(e, Event::Made { term: 3, how } if how.contains("older than the term"))),
+            "{:?}",
+            o.events
+        );
         assert!(!o.events.iter().any(|e| matches!(e, Event::TookUp { term: 2, .. })), "{:?}", o.events);
     }
 
@@ -2613,7 +2966,11 @@ mod tests {
         let mut restored = Driver::unlocked(member(B, "MacBook-Air", V1), backup);
         let o = step(&mut restored, &ib, able());
         assert_eq!(o.leads, Some(3), "{:?}", o.events);
-        assert!(o.events.iter().any(|e| matches!(e, Event::Made { term: 3, how } if how.contains("older than the term"))), "{:?}", o.events);
+        assert!(
+            o.events.iter().any(|e| matches!(e, Event::Made { term: 3, how } if how.contains("older than the term"))),
+            "{:?}",
+            o.events
+        );
         assert!(!o.events.iter().any(|e| matches!(e, Event::TookUp { term: 2, .. })), "{:?}", o.events);
     }
 
@@ -2787,7 +3144,10 @@ mod tests {
         // (Seen first at round 0, so half an hour on is round 6.)
         assert_eq!(i, 6, "after half an hour, not before");
         let t = term::read(&mem, 3).unwrap().unwrap();
-        assert_eq!((t.from, t.how.as_str()), (2, "taken over by Mac-mini: term 2 unreadable for 30 min (forced past: term 2 unreadable)"));
+        assert_eq!(
+            (t.from, t.how.as_str()),
+            (2, "taken over by Mac-mini: term 2 unreadable for 30 min (forced past: term 2 unreadable)")
+        );
         assert!(!mem.exists(&term::path(4)).unwrap(), "B follows term 3; it makes none of its own");
         assert_eq!(b.current().lead.as_ref().map(|t| t.member.as_str()), Some(A));
     }
@@ -2804,7 +3164,16 @@ mod tests {
         // Term 2 made, its bytes landing twenty minutes on (its maker, C, finishing it): it's
         // led, and no one takes it past.
         mem.create_new(&term::path(2), b"").unwrap();
-        let t2 = Term { term: 2, member: C.into(), host: "iMac".into(), app: V1.into(), since: T0, how: "re-asserted after a gap".into(), from: 1, seq: None };
+        let t2 = Term {
+            term: 2,
+            member: C.into(),
+            host: "iMac".into(),
+            app: V1.into(),
+            since: T0,
+            how: "re-asserted after a gap".into(),
+            from: 1,
+            seq: None,
+        };
         for i in 0..12 {
             if i == 4 {
                 mem.write_whole(&term::path(2), &serde_json::to_vec(&t2).unwrap()).unwrap();
@@ -2905,7 +3274,10 @@ mod tests {
         ib.down.set(true);
         *ib.fail.borrow_mut() = Some("terms/2.json".into());
         // (A beats on, unable to lead: only B's reads count.)
-        let (abl, una) = (|| Heard { members: vec![A.into(), B.into()], ..able() }, || Heard { able: false, members: vec![A.into(), B.into()], ..able() });
+        let (abl, una) = (
+            || Heard { members: vec![A.into(), B.into()], ..able() },
+            || Heard { able: false, members: vec![A.into(), B.into()], ..able() },
+        );
         for _ in 0..12 {
             ia.pass(300);
             step(&mut a, &ia, una());
@@ -2939,10 +3311,22 @@ mod tests {
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         step(&mut a, &Mac::new(&mem), able());
         mem.create_new(&term::path(2), b"").unwrap();
-        let t2 = Term { term: 2, member: B.into(), host: "MacBook-Air".into(), app: V1.into(), since: T0, how: "re-asserted after a gap".into(), from: 1, seq: None };
+        let t2 = Term {
+            term: 2,
+            member: B.into(),
+            host: "MacBook-Air".into(),
+            app: V1.into(),
+            since: T0,
+            how: "re-asserted after a gap".into(),
+            from: 1,
+            seq: None,
+        };
         mem.create_new(&term::path(3), b"{}").unwrap();
         assert!(term::finish(&mem, &t2).is_err(), "term 3 past it");
-        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved { member: B.into(), unfinished: Some(t2), term: 2, ..Default::default() });
+        let mut b = Driver::unlocked(
+            member(B, "MacBook-Air", V1),
+            Saved { member: B.into(), unfinished: Some(t2), term: 2, ..Default::default() },
+        );
         let o = step(&mut b, &ib, able());
         assert!(o.events.iter().any(|e| matches!(e, Event::Waits { what: "finish the term it made", why } if why.contains("left unfinished"))), "{:?}", o.events);
         assert!(b.saved().unfinished.is_none());
@@ -2970,7 +3354,15 @@ mod tests {
         // report gone, it is again.
         let mut bc = Beat::read(&mem, C).unwrap().unwrap();
         let clean = bc.clone();
-        bc.reach = vec![super::super::reachable::Reach { member: B.into(), what: "broker".into(), ok: false, at: bc.beat, since: bc.beat - 300, cause: Some(super::super::reachable::Cause::TimedOut), why: "timeout: connect".into() }];
+        bc.reach = vec![super::super::reachable::Reach {
+            member: B.into(),
+            what: "broker".into(),
+            ok: false,
+            at: bc.beat,
+            since: bc.beat - 300,
+            cause: Some(super::super::reachable::Cause::TimedOut),
+            why: "timeout: connect".into(),
+        }];
         (a.reports, b.reports) = (vec![bc.clone()], vec![bc]);
         let why = a.hand_to(&ia, B).unwrap_err();
         assert!(why.starts_with("unreachable from iMac: connection timed out (MacBook-Air asleep, off the network, or its firewall blocking Scenic"), "{why}");
@@ -3013,10 +3405,15 @@ mod tests {
         // A stall: one operation of six minutes.
         io.1.set(0);
         io.0.pass(20);
-        let stall = Slow(Mac { wall: Cell::new(io.0.now()), awake: Cell::new(io.0.awake()), ..Mac::new(&mem) }, Cell::new(360));
+        let stall =
+            Slow(Mac { wall: Cell::new(io.0.now()), awake: Cell::new(io.0.awake()), ..Mac::new(&mem) }, Cell::new(360));
         a.step(&stall, able(), &any);
         stall.1.set(0);
         stall.0.pass(20);
-        assert!(a.step(&stall, able(), &any).events.iter().any(|e| matches!(e, Event::Made { how, .. } if how == "re-asserted after a long step")));
+        assert!(a
+            .step(&stall, able(), &any)
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Made { how, .. } if how == "re-asserted after a long step")));
     }
 }

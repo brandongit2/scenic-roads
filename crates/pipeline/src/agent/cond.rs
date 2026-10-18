@@ -88,12 +88,27 @@ impl Mac {
 
     /// `resources`: a fixed Mac's memory its own, its disk's free space as the agent's tests set it
     /// (super::room::disk_free), no load or NAS measured.
-    pub fn resources(&self, home: &std::path::Path, root: Option<&std::path::Path>, cache_gb: Option<f64>, nas_ms: Option<u64>) -> Resources {
+    pub fn resources(
+        &self,
+        home: &std::path::Path,
+        root: Option<&std::path::Path>,
+        cache_gb: Option<f64>,
+        nas_ms: Option<u64>,
+    ) -> Resources {
         match *self {
             Mac::Real => resources(home, root, cache_gb, nas_ms),
-            Mac::Fixed { mem_gb, mem_free_pct, .. } => {
-                Resources { mem_gb, mem_free_pct: Some(mem_free_pct), cores: 8, load1: None, disk_free_gb: super::room::disk_free(home).ok().map(|b| (b as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0), cache_gb, nas_ms, nas_free_tb: None }
-            }
+            Mac::Fixed { mem_gb, mem_free_pct, .. } => Resources {
+                mem_gb,
+                mem_free_pct: Some(mem_free_pct),
+                cores: 8,
+                load1: None,
+                disk_free_gb: super::room::disk_free(home)
+                    .ok()
+                    .map(|b| (b as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0),
+                cache_gb,
+                nas_ms,
+                nas_free_tb: None,
+            },
         }
     }
 }
@@ -121,14 +136,25 @@ fn parse_power(ps: &str) -> (bool, Option<u8>) {
 /// Seconds since the last keyboard or mouse input (IOHIDSystem's HIDIdleTime, in nanoseconds);
 /// u64::MAX when it can't be read.
 pub fn idle_seconds() -> u64 {
-    let Ok(o) = store::spawn::output(store::spawn::command("/usr/sbin/ioreg").args(["-c", "IOHIDSystem", "-d", "4", "-r", "-k", "HIDIdleTime"])) else {
+    let Ok(o) = store::spawn::output(store::spawn::command("/usr/sbin/ioreg").args([
+        "-c",
+        "IOHIDSystem",
+        "-d",
+        "4",
+        "-r",
+        "-k",
+        "HIDIdleTime",
+    ])) else {
         return u64::MAX;
     };
     parse_idle(&String::from_utf8_lossy(&o.stdout)).unwrap_or(u64::MAX)
 }
 
 fn parse_idle(ioreg: &str) -> Option<u64> {
-    ioreg.lines().find_map(|l| l.split_once("\"HIDIdleTime\" = ").and_then(|(_, v)| v.trim().parse::<u64>().ok())).map(|ns| ns / 1_000_000_000)
+    ioreg
+        .lines()
+        .find_map(|l| l.split_once("\"HIDIdleTime\" = ").and_then(|(_, v)| v.trim().parse::<u64>().ok()))
+        .map(|ns| ns / 1_000_000_000)
 }
 
 /// Notices sleep: the wall clock runs on while the Mac sleeps, the monotonic clock (uptime) doesn't.
@@ -168,7 +194,9 @@ pub fn free_bytes(path: &std::path::Path) -> Option<u64> {
 /// status, never silent.
 pub fn test_disk_extra_mb() -> u64 {
     static EXTRA: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *EXTRA.get_or_init(|| std::env::var("SCENIC_TEST_DISK_EXTRA_MB").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0).min(1 << 20))
+    *EXTRA.get_or_init(|| {
+        std::env::var("SCENIC_TEST_DISK_EXTRA_MB").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0).min(1 << 20)
+    })
 }
 
 /// This Mac's resources, for the status (the worker page's machines): its memory and the share of
@@ -214,17 +242,24 @@ pub fn load1() -> Option<f64> {
 
 /// This Mac's resources now (`Resources`): its disk's where `home` is, the NAS's at `root`; the
 /// caches' and the NAS's answer as the agent last measured them.
-pub fn resources(home: &std::path::Path, root: Option<&std::path::Path>, cache_gb: Option<f64>, nas_ms: Option<u64>) -> Resources {
+pub fn resources(
+    home: &std::path::Path,
+    root: Option<&std::path::Path>,
+    cache_gb: Option<f64>,
+    nas_ms: Option<u64>,
+) -> Resources {
     static MEM: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
     let mem_gb = *MEM.get_or_init(|| {
         let o = store::spawn::output(store::spawn::command("/usr/sbin/sysctl").args(["-n", "hw.memsize"])).ok();
-        o.and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok()).map_or(0.0, |b| b as f64 / (1u64 << 30) as f64)
+        o.and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
+            .map_or(0.0, |b| b as f64 / (1u64 << 30) as f64)
     });
     // ("System-wide memory free percentage: 63%")
-    let mem_free_pct = store::spawn::output(store::spawn::command("/usr/bin/memory_pressure").arg("-Q")).ok().and_then(|o| {
-        let s = String::from_utf8_lossy(&o.stdout).into_owned();
-        s.split("free percentage:").nth(1)?.trim().trim_end_matches('%').trim().parse::<u8>().ok()
-    });
+    let mem_free_pct =
+        store::spawn::output(store::spawn::command("/usr/bin/memory_pressure").arg("-Q")).ok().and_then(|o| {
+            let s = String::from_utf8_lossy(&o.stdout).into_owned();
+            s.split("free percentage:").nth(1)?.trim().trim_end_matches('%').trim().parse::<u8>().ok()
+        });
     let load1 = load1();
     let gb = |b: u64| (b as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0;
     Resources {

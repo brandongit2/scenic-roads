@@ -15,7 +15,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-
 #[derive(Clone, Debug)]
 pub struct Blobs {
     dir: PathBuf,

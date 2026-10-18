@@ -27,7 +27,8 @@ const PATHS: &[&str] = &["state/build/manifest.json", "state/journal"];
 /// Whether line `l` (raw, its comment cut) with code `c` makes or writes a hand-off or an entry,
 /// or names the manifest's file or the journal's folder.
 fn writes_records(l: &str, c: &str) -> bool {
-    let made = MARKERS.iter().any(|m| c.contains(m)) && !c.contains("struct Handoff {") && !c.contains("impl Handoff {");
+    let made =
+        MARKERS.iter().any(|m| c.contains(m)) && !c.contains("struct Handoff {") && !c.contains("impl Handoff {");
     made || PATHS.iter().any(|p| l.contains(p))
 }
 
@@ -79,7 +80,8 @@ fn scan() -> (Vec<String>, Vec<String>) {
     for f in rs {
         let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
         // (The writer itself; and test code in files of its own, `#[cfg(test)] mod sim` or `tests`.)
-        if rel == "crates/pipeline/src/out.rs" || rel == "crates/pipeline/src/pool/sim.rs" || rel.ends_with("/tests.rs") {
+        if rel == "crates/pipeline/src/out.rs" || rel == "crates/pipeline/src/pool/sim.rs" || rel.ends_with("/tests.rs")
+        {
             continue;
         }
         let text = std::fs::read_to_string(&f).unwrap();
@@ -92,14 +94,21 @@ fn scan() -> (Vec<String>, Vec<String>) {
                 continue;
             }
             let name = enclosing_rs(&code, i).map_or_else(|| "<top level>".to_string(), |e| e.0);
-            if let Some(k) = EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == name && l.contains(anchor)) {
+            if let Some(k) =
+                EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == name && l.contains(anchor))
+            {
                 used.insert(k);
                 continue;
             }
             bad.push(format!("{rel}:{} in {name}: {}", i + 1, l.trim()));
         }
     }
-    let unused = EXEMPT.iter().enumerate().filter(|(k, _)| !used.contains(k)).map(|(_, (f, n, a, _))| format!("{f}: {n}: {a}")).collect();
+    let unused = EXEMPT
+        .iter()
+        .enumerate()
+        .filter(|(k, _)| !used.contains(k))
+        .map(|(_, (f, n, a, _))| format!("{f}: {n}: {a}"))
+        .collect();
     (bad, unused)
 }
 
@@ -113,7 +122,11 @@ fn nothing_writes_the_records_but_through_out() {
 #[test]
 fn every_exemption_matches_a_line() {
     let (_, unused) = scan();
-    assert!(unused.is_empty(), "exemptions matching no line that writes the records (remove them):\n{}", unused.join("\n"));
+    assert!(
+        unused.is_empty(),
+        "exemptions matching no line that writes the records (remove them):\n{}",
+        unused.join("\n")
+    );
 }
 
 /// The markers: a hand-off made or written, an entry written, the manifest's file written; not the
@@ -121,9 +134,24 @@ fn every_exemption_matches_a_line() {
 #[test]
 fn the_markers() {
     let w = |l: &str| writes_records(l, &code_of(l));
-    assert!(w("crate::handoff::write(&dir, &h)?;") && w("let h = Handoff { raw, ..Default::default() };") && w("journal::write(&nas, &e)?;"));
-    assert!(w("std::fs::write(root.join(\"state/build/manifest.json\"), b)?;") && w("nas.write_whole(\"state/build/manifest.json\", &b)?;"));
-    assert!(w("let h = Handoff::default();") && w("let m = read_record(&root.join(\"state/build/manifest.json\"))?;") && w("const J: &str = \"state/journal\";"));
-    assert!(!w("pub struct Handoff {") && !w("impl Handoff {") && !w("let m = read_record(&root.join(\"state/build/jobs.json\"))?;"));
+    assert!(
+        w("crate::handoff::write(&dir, &h)?;")
+            && w("let h = Handoff { raw, ..Default::default() };")
+            && w("journal::write(&nas, &e)?;")
+    );
+    assert!(
+        w("std::fs::write(root.join(\"state/build/manifest.json\"), b)?;")
+            && w("nas.write_whole(\"state/build/manifest.json\", &b)?;")
+    );
+    assert!(
+        w("let h = Handoff::default();")
+            && w("let m = read_record(&root.join(\"state/build/manifest.json\"))?;")
+            && w("const J: &str = \"state/journal\";")
+    );
+    assert!(
+        !w("pub struct Handoff {")
+            && !w("impl Handoff {")
+            && !w("let m = read_record(&root.join(\"state/build/jobs.json\"))?;")
+    );
     assert!(!w("eprintln!(\"handoff::write( failed\");"));
 }

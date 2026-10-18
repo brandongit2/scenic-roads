@@ -9,13 +9,13 @@
 
 use crate::naming::xxh3;
 use crate::range::RangeRead;
+use crate::sys::PosIo;
 use anyhow::{bail, ensure, Context, Result};
 use bytemuck::{Pod, Zeroable};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
-use crate::sys::PosIo;
 use std::path::Path;
 
 pub use roadcore::archive::tile_key;
@@ -111,7 +111,13 @@ impl PackWriter {
         let meta = serde_json::to_vec(&meta)?;
         let mlen = u32::try_from(meta.len()).context("meta too large")?;
         // Read access too: deduplication compares candidates with the bytes already written.
-        let f = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path).with_context(|| format!("create {}", path.display()))?;
+        let f = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .with_context(|| format!("create {}", path.display()))?;
         let mut w = BufWriter::with_capacity(4 << 20, f);
         let flags = if gzip_blobs { FLAG_GZIP } else { 0 };
         w.write_all(MAGIC)?;
@@ -122,7 +128,16 @@ impl PackWriter {
         w.write_all(&mlen.to_le_bytes())?;
         w.write_all(&meta)?;
         let pos = (HEADER_LEN + meta.len()) as u64;
-        Ok(Self { w, pos, gzip: gzip_blobs, index: Vec::new(), keys: HashSet::new(), blobs: HashMap::new(), stats: PackStats::default(), failed: false })
+        Ok(Self {
+            w,
+            pos,
+            gzip: gzip_blobs,
+            index: Vec::new(),
+            keys: HashSet::new(),
+            blobs: HashMap::new(),
+            stats: PackStats::default(),
+            failed: false,
+        })
     }
 
     /// Adds tile z/x/y. `blob` is stored as given (gzip'd already when the pack's blobs are);
@@ -223,7 +238,10 @@ impl Head {
     fn parse(b: &[u8]) -> Result<Self> {
         ensure!(b.len() >= HEADER_LEN && &b[..8] == MAGIC, "not a pack");
         let version = u32::from_le_bytes(b[8..12].try_into()?);
-        ensure!((MIN_VERSION..=VERSION).contains(&version), "pack format version {version} isn't supported (this app reads {MIN_VERSION}–{VERSION})");
+        ensure!(
+            (MIN_VERSION..=VERSION).contains(&version),
+            "pack format version {version} isn't supported (this app reads {MIN_VERSION}–{VERSION})"
+        );
         Ok(Self {
             version,
             flags: u32::from_le_bytes(b[12..16].try_into()?),
@@ -287,7 +305,12 @@ impl PackIndex {
             .filter(|&end| end <= pack.len() as u64)
             .map(|end| &pack[h.index_offset as usize..end as usize]);
         let Some(index) = index else {
-            bail!("pack index ({} entries at {}) runs past the end ({} bytes); unfinished or cut short?", h.count, h.index_offset, pack.len());
+            bail!(
+                "pack index ({} entries at {}) runs past the end ({} bytes); unfinished or cut short?",
+                h.count,
+                h.index_offset,
+                pack.len()
+            );
         };
         ensure!(data_start <= pack.len(), "pack meta runs past the end");
         Self::parse(&pack[..data_start], index)
@@ -301,9 +324,16 @@ impl PackIndex {
         let h = Head::parse(&first)?;
         let data_start = (HEADER_LEN + h.meta_len) as u64;
         ensure!(data_start <= file_len, "pack meta runs past the end");
-        let ilen = h.count.checked_mul(ENTRY_LEN as u64).filter(|&n| h.index_offset.checked_add(n).is_some_and(|end| end <= file_len));
+        let ilen = h
+            .count
+            .checked_mul(ENTRY_LEN as u64)
+            .filter(|&n| h.index_offset.checked_add(n).is_some_and(|end| end <= file_len));
         let Some(ilen) = ilen else {
-            bail!("pack index ({} entries at {}) runs past the end ({file_len} bytes); unfinished or cut short?", h.count, h.index_offset);
+            bail!(
+                "pack index ({} entries at {}) runs past the end ({file_len} bytes); unfinished or cut short?",
+                h.count,
+                h.index_offset
+            );
         };
         let head_owned;
         let head = if first.len() as u64 >= data_start {
@@ -355,7 +385,8 @@ impl PackIndex {
             let (z, x, y) = e.zxy();
             ensure!(valid_tile(z, x, y) && tile_key(z, x, y) == e.key, "bad tile key {:#x} in pack index", e.key);
             ensure!(
-                e.offset >= self.data_start && e.offset.checked_add(u64::from(e.len)).is_some_and(|end| end <= self.index_offset),
+                e.offset >= self.data_start
+                    && e.offset.checked_add(u64::from(e.len)).is_some_and(|end| end <= self.index_offset),
                 "tile {z}/{x}/{y} points outside the pack's blobs"
             );
         }
@@ -394,12 +425,23 @@ impl PackIndex {
         let (version, flags) = (u32_at(8), u32_at(12));
         let (data_start, index_offset, count, meta_len) = (u64_at(16), u64_at(24), u64_at(32), u64_at(40));
         ensure!((MIN_VERSION..=VERSION).contains(&version), "pack index cache of version {version}");
-        let meta_end = usize::try_from(meta_len).ok().and_then(|n| FIXED.checked_add(n)).filter(|&e| e <= body.len()).context("pack index cache cut short")?;
+        let meta_end = usize::try_from(meta_len)
+            .ok()
+            .and_then(|n| FIXED.checked_add(n))
+            .filter(|&e| e <= body.len())
+            .context("pack index cache cut short")?;
         let meta = serde_json::from_slice(&body[FIXED..meta_end]).context("pack index cache meta")?;
         let start = meta_end.next_multiple_of(8);
         let entries = count.checked_mul(ENTRY_LEN as u64).and_then(|n| (start as u64).checked_add(n));
         ensure!(entries == Some(body.len() as u64), "pack index cache has the wrong size");
-        let ix = PackIndex { version, flags, meta, data_start, index_offset, entries: bytemuck::pod_collect_to_vec(&body[start..]) };
+        let ix = PackIndex {
+            version,
+            flags,
+            meta,
+            data_start,
+            index_offset,
+            entries: bytemuck::pod_collect_to_vec(&body[start..]),
+        };
         ix.validate()?;
         Ok(ix)
     }
@@ -427,7 +469,8 @@ mod tests {
             for x in 32 * s..32 * s + s {
                 for y in 21 * s..21 * s + s {
                     // Every third tile is the same "sea" tile.
-                    let body = if (x + y) % 3 == 0 { b"sea".to_vec() } else { format!("tile {z}/{x}/{y}").into_bytes() };
+                    let body =
+                        if (x + y) % 3 == 0 { b"sea".to_vec() } else { format!("tile {z}/{x}/{y}").into_bytes() };
                     t.push((z, x, y, body));
                 }
             }
@@ -436,7 +479,12 @@ mod tests {
     }
 
     fn write(path: &Path, gzip: bool) -> PackStats {
-        let mut w = PackWriter::create(path, json!({"layer": "roads", "scope": "hi", "root": "6/32/21", "minzoom": 9, "maxzoom": 10, "encoding": "rt7"}), gzip).unwrap();
+        let mut w = PackWriter::create(
+            path,
+            json!({"layer": "roads", "scope": "hi", "root": "6/32/21", "minzoom": 9, "maxzoom": 10, "encoding": "rt7"}),
+            gzip,
+        )
+        .unwrap();
         for (z, x, y, body) in tiles() {
             let blob = if gzip { gz(&body) } else { body.clone() };
             w.add(z, x, y, &blob, body.len() as u32).unwrap();

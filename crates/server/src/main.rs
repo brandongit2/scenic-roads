@@ -11,16 +11,17 @@
 //! server's 127.0.0.1), else every IPv4 address and IPv6's loopback. Nothing is loaded at start:
 //! the catalog says where everything is, and files are opened on first use.
 
+mod accepted;
 mod cache;
 mod data;
-mod accepted;
+mod depth;
 mod descriptions;
 mod details;
 mod downloads;
-mod names_live;
-mod ovdata;
 mod marks;
 mod markview;
+mod names_live;
+mod ovdata;
 mod pages;
 mod places;
 mod query;
@@ -28,12 +29,11 @@ mod regions;
 mod remote;
 mod reserve;
 mod terrain;
-mod depth;
 mod tiles;
 mod updater;
 mod views;
-mod water;
 mod viewshed;
+mod water;
 mod ways;
 
 use anyhow::Result;
@@ -110,10 +110,14 @@ impl AppState {
         let mut cur = self.road_en.lock().unwrap();
         if cur.as_ref().is_none_or(|(gg, _)| *gg != g) {
             let failed = std::cell::Cell::new(false);
-            let units: Vec<String> = self.data.catalog().files.keys().filter(|l| l.starts_with("global/roaden/")).cloned().collect();
+            let units: Vec<String> =
+                self.data.catalog().files.keys().filter(|l| l.starts_with("global/roaden/")).cloned().collect();
             let mut map: HashMap<u64, String> = HashMap::new();
             for l in units {
-                let part = self.global_or_note(&l, &failed).and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok()).unwrap_or_default();
+                let part = self
+                    .global_or_note(&l, &failed)
+                    .and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok())
+                    .unwrap_or_default();
                 map.extend(part.into_iter().filter_map(|(k, v)| k.parse().ok().map(|k| (k, v))));
             }
             if failed.get() {
@@ -138,7 +142,16 @@ impl AppState {
             let failed = std::cell::Cell::new(false);
             let v: Vec<(u32, f32)> = self
                 .global_or_note("global/railfreq", &failed)
-                .map(|b| b.chunks_exact(8).map(|c| (u32::from_le_bytes(c[..4].try_into().unwrap()), f32::from_le_bytes(c[4..].try_into().unwrap()).abs())).collect())
+                .map(|b| {
+                    b.chunks_exact(8)
+                        .map(|c| {
+                            (
+                                u32::from_le_bytes(c[..4].try_into().unwrap()),
+                                f32::from_le_bytes(c[4..].try_into().unwrap()).abs(),
+                            )
+                        })
+                        .collect()
+                })
                 .unwrap_or_default();
             if failed.get() {
                 return Arc::new(Vec::new());
@@ -158,7 +171,11 @@ impl AppState {
         }
         let meta = meta_json(self);
         let tok = |v: &serde_json::Value| v.as_str().map(str::to_string).or_else(|| v.as_u64().map(|n| n.to_string()));
-        let mut t: std::collections::HashSet<String> = meta.get("versions").and_then(|v| v.as_object()).map(|m| m.values().filter_map(tok).collect()).unwrap_or_default();
+        let mut t: std::collections::HashSet<String> = meta
+            .get("versions")
+            .and_then(|v| v.as_object())
+            .map(|m| m.values().filter_map(tok).collect())
+            .unwrap_or_default();
         // The packs' tokens (tiles' `?v=`).
         for l in meta.get("packs").and_then(|v| v.as_object()).into_iter().flat_map(|m| m.values()) {
             t.extend(l.get("root").and_then(tok));
@@ -180,7 +197,11 @@ impl AppState {
             }
         }
         let v = match (self.data.nas_root(), self.data.pool()) {
-            (Some(root), Some(pool)) if pool.is_online() => pool.read_all(&root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null),
+            (Some(root), Some(pool)) if pool.is_online() => pool
+                .read_all(&root.join("state/status.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or(serde_json::Value::Null),
             _ => serde_json::Value::Null,
         };
         *cur = Some((std::time::Instant::now(), v.clone()));
@@ -204,10 +225,21 @@ impl AppState {
             page: Option<String>,
         }
         let v = match (self.data.nas_root(), self.data.pool()) {
-            (Some(root), Some(pool)) if pool.is_online() => pool.read_all(&pipeline::coord::contact_path(&root)).ok().and_then(|b| serde_json::from_slice::<Urls>(&b).ok())
+            (Some(root), Some(pool)) if pool.is_online() => pool
+                .read_all(&pipeline::coord::contact_path(&root))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Urls>(&b).ok())
                 // (The HTTPS page first, as its address alone: the menu bar's web view loads no
                 // plain HTTP to a tailnet address.)
-                .map(|u| u.page.as_deref().and_then(|p| p.strip_suffix("work/")).map(str::to_string).into_iter().chain(u.urls).collect())
+                .map(|u| {
+                    u.page
+                        .as_deref()
+                        .and_then(|p| p.strip_suffix("work/"))
+                        .map(str::to_string)
+                        .into_iter()
+                        .chain(u.urls)
+                        .collect()
+                })
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
@@ -237,15 +269,21 @@ impl AppState {
     /// every five minutes); whether it's this Mac's; for this Mac's, the running job's log; and
     /// what this Mac has downloaded (downloads::summary); and the build page's addresses (`pages`).
     fn build_status(&self) -> serde_json::Value {
-        self.build_status_at(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))
+        self.build_status_at(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        )
     }
 
     /// `build_status` at `now` (unix seconds).
     fn build_status_at(&self, now: u64) -> serde_json::Value {
-        let own: Option<serde_json::Value> = std::fs::read(self.home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let own: Option<serde_json::Value> =
+            std::fs::read(self.home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let fresh = own.as_ref().and_then(|v| v["beat"].as_u64()).is_some_and(|b| now.saturating_sub(b) < 120);
         // A helper on this Mac (docs/plan.md §8, Two Macs; a pool's member): its own status, fresh.
-        let helper: Option<serde_json::Value> = std::fs::read(self.home.join("agent/helper.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).filter(|h: &serde_json::Value| h["beat"].as_u64().is_some_and(|b| now.saturating_sub(b) < 120));
+        let helper: Option<serde_json::Value> = std::fs::read(self.home.join("agent/helper.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .filter(|h: &serde_json::Value| h["beat"].as_u64().is_some_and(|b| now.saturating_sub(b) < 120));
         // (The lead's heartbeat on the NAS, written every two minutes at least while there's a
         // lead: older than ten, there's none to show, and a member shows its own status in its place,
         // so its menu bar stays fresh.)
@@ -262,27 +300,35 @@ impl AppState {
         };
         // Its own status, fresh, in place of what the lead last read of it (which stops while
         // the lead sleeps); not when it's the status shown.
-        if let (Some(h), Some(obj)) = (helper.filter(|h| !helping && h["host"] != status["host"]), status.as_object_mut()) {
+        if let (Some(h), Some(obj)) =
+            (helper.filter(|h| !helping && h["host"] != status["host"]), status.as_object_mut())
+        {
             let host = h["host"].clone();
-            let mut list: Vec<serde_json::Value> = obj.get("helpers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let mut list: Vec<serde_json::Value> =
+                obj.get("helpers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             list.retain(|x| x["host"] != host);
             list.push(serde_json::json!({"host": host, "beat": h["beat"], "job": h["job"], "pause": h["pause"], "here": true}));
             obj.insert("helpers".into(), serde_json::Value::Array(list));
         }
         let log = if local {
-            status["job"]["id"].as_str().map(|id| self.home.join("agent/logs").join(format!("{}.log", id.replace([' ', '/'], "-"))).display().to_string())
+            status["job"]["id"].as_str().map(|id| {
+                self.home.join("agent/logs").join(format!("{}.log", id.replace([' ', '/'], "-"))).display().to_string()
+            })
         } else {
             None
         };
         // This Mac's ask to pause or go on, while its agent hasn't taken it up (pipeline::control).
-        let asked = pipeline::control::peek_request(&self.home.join("agent")).map(|r| serde_json::json!({ "pause": r.pause.is_some(), "at": r.at }));
+        let asked = pipeline::control::peek_request(&self.home.join("agent"))
+            .map(|r| serde_json::json!({ "pause": r.pause.is_some(), "at": r.at }));
         // What this Mac has downloaded (the menu says when the map needs the NAS).
         let offline = downloads::summary(self);
         // This Mac in the pool (docs/pool.md §10, §11), as its own agent says (fresh: its status, or
         // its pool's own view, written each step of the pool's whatever its loop is doing), and its
         // lead ask while its agent hasn't taken it up.
-        let pool = pipeline::agent::lead::own_pool(&self.home.join("agent"), now, 120).map_or(serde_json::Value::Null, |(p, _)| serde_json::to_value(p).unwrap_or_default());
-        let lead_asked = pipeline::control::peek_lead(&self.home.join("agent")).map(|r| serde_json::to_value(r).unwrap_or_default());
+        let pool = pipeline::agent::lead::own_pool(&self.home.join("agent"), now, 120)
+            .map_or(serde_json::Value::Null, |(p, _)| serde_json::to_value(p).unwrap_or_default());
+        let lead_asked =
+            pipeline::control::peek_lead(&self.home.join("agent")).map(|r| serde_json::to_value(r).unwrap_or_default());
         // Where the menu bar's panel finds the build page.
         let pages = self.build_pages(local && !helping);
         serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "offline": offline, "pool": pool, "lead_asked": lead_asked, "pages": pages})
@@ -316,7 +362,11 @@ pub fn test_state(home: &std::path::Path, root: &std::path::Path) -> S {
 /// syncs it).
 #[cfg(test)]
 pub fn test_state_with(home: &std::path::Path, root: &std::path::Path, mirror: bool) -> S {
-    test_state_from(home, data::Data::open(data::Options { home: home.to_owned(), nas_root: Some(root.to_owned()), mirror, reserve: 0 }).unwrap())
+    test_state_from(
+        home,
+        data::Data::open(data::Options { home: home.to_owned(), nas_root: Some(root.to_owned()), mirror, reserve: 0 })
+            .unwrap(),
+    )
 }
 
 /// A server for tests over `data`, with this Mac's files in `home`.
@@ -345,9 +395,18 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
 /// `--mirror` with `--root` needs a `--home` of its own: mirrored into this Mac's own app folder
 /// (`default`), a root would let its mirror's files go, tidy its indexes away and add the root's
 /// catalog to its own.
-fn check_root_mirror(root: bool, mirror: bool, home: Option<&std::path::Path>, default: &std::path::Path) -> Result<()> {
+fn check_root_mirror(
+    root: bool,
+    mirror: bool,
+    home: Option<&std::path::Path>,
+    default: &std::path::Path,
+) -> Result<()> {
     if root && mirror {
-        anyhow::ensure!(home.is_some_and(|h| !same_dir(h, default)), "--mirror with --root needs a --home of its own, not this Mac's app folder ({})", default.display());
+        anyhow::ensure!(
+            home.is_some_and(|h| !same_dir(h, default)),
+            "--mirror with --root needs a --home of its own, not this Mac's app folder ({})",
+            default.display()
+        );
     }
     Ok(())
 }
@@ -425,7 +484,10 @@ async fn main() -> Result<()> {
     let port: u16 = arg("--port").map(|p| p.parse()).transpose()?.unwrap_or(pipeline::net::DEFAULT_PORT);
     let home = arg("--home").map(PathBuf::from).unwrap_or_else(data::default_home);
     if arg(OLD_RESERVE).is_some() {
-        eprintln!("server: {OLD_RESERVE} is ignored: the reserve is set in the Regions panel ({} GB now)", reserve::load(&home));
+        eprintln!(
+            "server: {OLD_RESERVE} is ignored: the reserve is set in the Regions panel ({} GB now)",
+            reserve::load(&home)
+        );
     }
     let no_mirror = std::env::args().any(|a| a == "--no-mirror");
     let root = arg("--root").map(PathBuf::from);
@@ -438,8 +500,17 @@ async fn main() -> Result<()> {
             eprintln!("nsmb.conf: {e:#}");
         }
     }
-    let d = data::Data::open(data::Options { home: home.clone(), nas_root: root.clone(), mirror, reserve: reserve::Setting::load(&home).bytes() })?;
-    eprintln!("catalog {} · NAS {}", d.catalog().n, d.nas_root().map(|p| p.display().to_string()).unwrap_or_else(|| "not mounted".into()));
+    let d = data::Data::open(data::Options {
+        home: home.clone(),
+        nas_root: root.clone(),
+        mirror,
+        reserve: reserve::Setting::load(&home).bytes(),
+    })?;
+    eprintln!(
+        "catalog {} · NAS {}",
+        d.catalog().n,
+        d.nas_root().map(|p| p.display().to_string()).unwrap_or_else(|| "not mounted".into())
+    );
     if root.is_none() {
         d.spawn_background();
     }
@@ -550,13 +621,19 @@ async fn main() -> Result<()> {
         .nest_service(
             "/fonts",
             tower::ServiceBuilder::new()
-                .layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=2592000")))
+                .layer(SetResponseHeaderLayer::if_not_present(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=2592000"),
+                ))
                 .service(ServeDir::new(fonts)),
         )
         // App files revalidate on every load (cheap 304s) so a new app is picked up.
         .fallback_service(
             tower::ServiceBuilder::new()
-                .layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, HeaderValue::from_static("no-cache")))
+                .layer(SetResponseHeaderLayer::if_not_present(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("no-cache"),
+                ))
                 .service(ServeDir::new(&web).fallback(ServeFile::new(web.join("index.html")))),
         )
         .layer(tower_http::compression::CompressionLayer::new().gzip(true))
@@ -566,7 +643,9 @@ async fn main() -> Result<()> {
         // roads.localhost …), for this machine's own pages alone (remote::local_origin).
         .layer(
             tower_http::cors::CorsLayer::new()
-                .allow_origin(tower_http::cors::AllowOrigin::predicate(|o, _| o.to_str().is_ok_and(remote::local_origin)))
+                .allow_origin(tower_http::cors::AllowOrigin::predicate(|o, _| {
+                    o.to_str().is_ok_and(remote::local_origin)
+                }))
                 .allow_methods(tower_http::cors::Any)
                 .allow_headers(tower_http::cors::Any),
         )
@@ -584,7 +663,9 @@ async fn main() -> Result<()> {
     let listener = pipeline::net::Listener::new(store::spawn::listen(addr)?)?.tap_io(|_| ());
     let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     if listen.is_none() {
-        if let Ok(l6) = store::spawn::listen(std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port))).and_then(pipeline::net::Listener::new) {
+        if let Ok(l6) = store::spawn::listen(std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)))
+            .and_then(pipeline::net::Listener::new)
+        {
             let svc6 = svc.clone();
             tokio::spawn(async move { axum::serve(l6.tap_io(|_| ()), svc6).await });
         }
@@ -597,7 +678,14 @@ async fn main() -> Result<()> {
 async fn rail_freq_h(State(s): State<S>, RawQuery(q): RawQuery) -> Response {
     let s2 = s.clone();
     match tokio::task::spawn_blocking(move || s2.data.global("global/railfreq")).await {
-        Ok(Ok(Some(b))) => ([(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream")), (header::CACHE_CONTROL, cache::cache_control(cache::versioned(q.as_deref()), "no-cache"))], b.to_vec()).into_response(),
+        Ok(Ok(Some(b))) => (
+            [
+                (header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream")),
+                (header::CACHE_CONTROL, cache::cache_control(cache::versioned(q.as_deref()), "no-cache")),
+            ],
+            b.to_vec(),
+        )
+            .into_response(),
         Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
         _ => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
@@ -611,7 +699,8 @@ async fn layer_h(State(s): State<S>, Path(name): Path<String>, RawQuery(q): RawQ
         Some(r) => r,
         // In the catalog but not read (the NAS away): try again later.
         None if s.data.content(&logical).is_some() => StatusCode::SERVICE_UNAVAILABLE.into_response(),
-        None => ([(header::CONTENT_TYPE, "application/geo+json")], r#"{"type":"FeatureCollection","features":[]}"#).into_response(),
+        None => ([(header::CONTENT_TYPE, "application/geo+json")], r#"{"type":"FeatureCollection","features":[]}"#)
+            .into_response(),
     }
 }
 
@@ -720,14 +809,30 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     for (k, f) in &cat.files {
         let Some(c) = store::naming::parse_content_name(&f.file) else { continue };
         if let Some(stem) = k.strip_prefix("global/heritage/") {
-            let v = if c.ext == "json" { named(c.hash16.to_string()) } else { serde_json::Value::from(c.hash16.to_string()) };
+            let v = if c.ext == "json" {
+                named(c.hash16.to_string())
+            } else {
+                serde_json::Value::from(c.hash16.to_string())
+            };
             versions.insert(format!("{stem}.{}", c.ext), v);
         } else if k == "global/railfreq" {
             versions.insert("rail-freq.bin".into(), serde_json::Value::from(c.hash16.to_string()));
         }
     }
     // Tile archives by their old names.
-    for (old, layer) in [("roads.tiles", "roads"), ("rails.tiles", "rails"), ("terrain.tiles", "terrain"), ("slope.tiles", "slope"), ("labels.tiles", "labels"), ("trees-cover.tiles", "trees-cover"), ("trees-height.tiles", "trees-height"), ("trees-leaf.tiles", "trees-leaf"), ("buildings.tiles", "buildings"), ("depth.tiles", "depth"), ("depth-class.tiles", "depth-class")] {
+    for (old, layer) in [
+        ("roads.tiles", "roads"),
+        ("rails.tiles", "rails"),
+        ("terrain.tiles", "terrain"),
+        ("slope.tiles", "slope"),
+        ("labels.tiles", "labels"),
+        ("trees-cover.tiles", "trees-cover"),
+        ("trees-height.tiles", "trees-height"),
+        ("trees-leaf.tiles", "trees-leaf"),
+        ("buildings.tiles", "buildings"),
+        ("depth.tiles", "depth"),
+        ("depth-class.tiles", "depth-class"),
+    ] {
         if cat.layers.contains_key(layer) {
             let v = s.data.layer_version(layer);
             versions.insert(old.into(), if layer == "labels" { named(v) } else { serde_json::Value::from(v) });
@@ -767,10 +872,16 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         let tok = |logical: &String| {
             cat.files.get(logical).map(|f| {
                 let v = pack_token(&f.file);
-                if names { named(v) } else { serde_json::Value::from(v) }
+                if names {
+                    named(v)
+                } else {
+                    serde_json::Value::from(v)
+                }
             })
         };
-        let by = |m: &std::collections::BTreeMap<String, String>| m.iter().filter_map(|(t, p)| tok(p).map(|v| (t.clone(), v))).collect::<serde_json::Map<_, _>>();
+        let by = |m: &std::collections::BTreeMap<String, String>| {
+            m.iter().filter_map(|(t, p)| tok(p).map(|v| (t.clone(), v))).collect::<serde_json::Map<_, _>>()
+        };
         let mut o = serde_json::Map::new();
         if let Some(v) = l.root.as_ref().and_then(tok) {
             o.insert("root".into(), v);
@@ -779,7 +890,8 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         o.insert("hi".into(), serde_json::Value::Object(by(&l.hi)));
         packs.insert(k.clone(), serde_json::Value::Object(o));
     }
-    let zooms: serde_json::Map<String, serde_json::Value> = cat.layers.iter().map(|(k, l)| (k.clone(), serde_json::json!([l.minzoom, l.maxzoom]))).collect();
+    let zooms: serde_json::Map<String, serde_json::Value> =
+        cat.layers.iter().map(|(k, l)| (k.clone(), serde_json::json!([l.minzoom, l.maxzoom]))).collect();
     if let Some(m) = meta.as_object_mut() {
         m.insert("versions".into(), serde_json::Value::Object(versions));
         m.insert("packs".into(), serde_json::Value::Object(packs));
@@ -836,11 +948,12 @@ async fn build_h(State(s): State<S>) -> Response {
 /// (tools/bench/inpage.mjs). At most 2 MB each (axum's body limit), and the folder at most
 /// BENCH_MAX_FILES results and BENCH_MAX_BYTES (save_bench).
 async fn bench_h(State(s): State<S>, RawQuery(q): RawQuery, b: axum::body::Bytes) -> Response {
-    let name = q
-        .as_deref()
-        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("name=")))
-        .filter(|n| !n.is_empty() && n.len() <= 120 && n.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'));
-    let Some(name) = name.map(str::to_owned) else { return (StatusCode::BAD_REQUEST, "?name= (letters, digits, - and _)").into_response() };
+    let name = q.as_deref().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("name="))).filter(|n| {
+        !n.is_empty() && n.len() <= 120 && n.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    });
+    let Some(name) = name.map(str::to_owned) else {
+        return (StatusCode::BAD_REQUEST, "?name= (letters, digits, - and _)").into_response();
+    };
     if serde_json::from_slice::<serde_json::Value>(&b).is_err() {
         return (StatusCode::BAD_REQUEST, "a JSON body").into_response();
     }
@@ -939,7 +1052,8 @@ async fn catalog_h(State(s): State<S>) -> Response {
 /// gives the name, comma-separated>` before its `at`.
 async fn names_h(State(s): State<S>, RawQuery(q): RawQuery) -> Response {
     let mut out = Vec::new();
-    let (mut name, mut own, mut kind, mut langs): (Option<String>, Option<String>, names::Kind, Vec<names::Lang>) = (None, None, names::Kind::Other, Vec::new());
+    let (mut name, mut own, mut kind, mut langs): (Option<String>, Option<String>, names::Kind, Vec<names::Lang>) =
+        (None, None, names::Kind::Other, Vec::new());
     for kv in q.as_deref().unwrap_or("").split('&') {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
         let v = urlencoding_decode(v);
@@ -951,7 +1065,14 @@ async fn names_h(State(s): State<S>, RawQuery(q): RawQuery) -> Response {
             "at" => {
                 let p: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
                 if let (Some(n), true) = (name.take(), p.len() == 2) {
-                    let d = s.names.display(std::mem::replace(&mut kind, names::Kind::Other), &n, own.take().as_deref().filter(|x| !x.is_empty()), &std::mem::take(&mut langs), p[0], p[1]);
+                    let d = s.names.display(
+                        std::mem::replace(&mut kind, names::Kind::Other),
+                        &n,
+                        own.take().as_deref().filter(|x| !x.is_empty()),
+                        &std::mem::take(&mut langs),
+                        p[0],
+                        p[1],
+                    );
                     out.push(serde_json::json!({"main": d.main, "sub": d.sub}));
                 }
             }
@@ -1012,7 +1133,10 @@ impl Region {
             return Some(Region { bb, poly: pts });
         }
         let b: Vec<f64> = bbox.split(',').filter_map(|x| x.parse().ok()).collect();
-        (b.len() == 4).then(|| Region { bb: [(b[0] / E7) as i32, (b[1] / E7) as i32, (b[2] / E7) as i32, (b[3] / E7) as i32], poly: Vec::new() })
+        (b.len() == 4).then(|| Region {
+            bb: [(b[0] / E7) as i32, (b[1] / E7) as i32, (b[2] / E7) as i32, (b[3] / E7) as i32],
+            poly: Vec::new(),
+        })
     }
 
     /// Point (E7 degrees) in view.
@@ -1099,13 +1223,20 @@ mod tests {
         std::fs::write(pipeline::coord::contact_path(nas.path()), contact.to_string()).unwrap();
         // A member: the lead's addresses from the NAS, nothing else of its contact.
         let body = test_state(home.path(), nas.path()).build_status();
-        assert_eq!(body["pages"], serde_json::json!(["http://100.70.85.80:8090/work/", "http://lead.local:8090/work/"]));
+        assert_eq!(
+            body["pages"],
+            serde_json::json!(["http://100.70.85.80:8090/work/", "http://lead.local:8090/work/"])
+        );
         let text = body.to_string();
         assert!(!text.contains(key) && !text.contains("never-sent") && !text.contains("token"));
         // The lead (its agent's status here, fresh): its own coordinator first.
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         std::fs::create_dir_all(home.path().join("agent")).unwrap();
-        std::fs::write(home.path().join("agent/status.json"), serde_json::json!({ "host": "lead", "beat": now }).to_string()).unwrap();
+        std::fs::write(
+            home.path().join("agent/status.json"),
+            serde_json::json!({ "host": "lead", "beat": now }).to_string(),
+        )
+        .unwrap();
         let body = test_state(home.path(), nas.path()).build_status_at(now);
         assert_eq!(body["local"], true);
         assert_eq!(body["pages"][0], format!("http://127.0.0.1:{}/work/", pipeline::coord::PORT));
@@ -1119,7 +1250,10 @@ mod tests {
         let contact = serde_json::json!({ "urls": ["http://100.70.85.80:8090"], "token": key, "page": "https://lead.tail0.ts.net/work/" });
         std::fs::write(pipeline::coord::contact_path(nas.path()), contact.to_string()).unwrap();
         let body = test_state(home.path(), nas.path()).build_status_at(now);
-        assert_eq!(body["pages"], serde_json::json!(["https://lead.tail0.ts.net/work/", "http://100.70.85.80:8090/work/"]));
+        assert_eq!(
+            body["pages"],
+            serde_json::json!(["https://lead.tail0.ts.net/work/", "http://100.70.85.80:8090/work/"])
+        );
         assert!(!body.to_string().contains(key));
     }
 
@@ -1131,14 +1265,26 @@ mod tests {
         let now = 1_791_300_000;
         std::fs::create_dir_all(nas.path().join("state")).unwrap();
         std::fs::create_dir_all(home.path().join("agent")).unwrap();
-        std::fs::write(home.path().join("agent/helper.json"), serde_json::json!({ "host": "member", "beat": now - 5, "job": null }).to_string()).unwrap();
+        std::fs::write(
+            home.path().join("agent/helper.json"),
+            serde_json::json!({ "host": "member", "beat": now - 5, "job": null }).to_string(),
+        )
+        .unwrap();
         // The lead heard from: its status, this member's beside it as a helper.
-        std::fs::write(nas.path().join("state/status.json"), serde_json::json!({ "host": "lead", "beat": now - 100 }).to_string()).unwrap();
+        std::fs::write(
+            nas.path().join("state/status.json"),
+            serde_json::json!({ "host": "lead", "beat": now - 100 }).to_string(),
+        )
+        .unwrap();
         let body = test_state(home.path(), nas.path()).build_status_at(now);
         assert_eq!((body["status"]["host"].as_str(), body["local"].as_bool()), (Some("lead"), Some(false)));
         assert_eq!(body["status"]["helpers"][0]["host"], "member");
         // Not for ten minutes: this member's own, as this Mac's, and no page of its own.
-        std::fs::write(nas.path().join("state/status.json"), serde_json::json!({ "host": "lead", "beat": now - 3 * 86_400 }).to_string()).unwrap();
+        std::fs::write(
+            nas.path().join("state/status.json"),
+            serde_json::json!({ "host": "lead", "beat": now - 3 * 86_400 }).to_string(),
+        )
+        .unwrap();
         let body = test_state(home.path(), nas.path()).build_status_at(now);
         assert_eq!((body["status"]["host"].as_str(), body["local"].as_bool()), (Some("member"), Some(true)));
         assert!(body["status"]["helpers"].is_null() && body["pages"] == serde_json::json!([]), "{body}");
@@ -1173,10 +1319,20 @@ mod tests {
     /// pack's content named after `hi`.
     fn roads_catalog(n: u64, hi: &str) -> store::catalog::Catalog {
         let mut c = store::catalog::Catalog::new(n);
-        let mut l = store::catalog::Layer { encoding: "mvt".into(), minzoom: 0, maxzoom: 14, root: Some("layers/roads/root".into()), ..Default::default() };
+        let mut l = store::catalog::Layer {
+            encoding: "mvt".into(),
+            minzoom: 0,
+            maxzoom: 14,
+            root: Some("layers/roads/root".into()),
+            ..Default::default()
+        };
         l.lo.insert("3/1/2".into(), "layers/roads/lo-3-1-2".into());
         l.hi.insert("6/8/16".into(), "layers/roads/hi-6-8-16".into());
-        for (logical, file) in [("layers/roads/root", "layers/roads/root.00000000000000aa.pack".to_string()), ("layers/roads/lo-3-1-2", "layers/roads/lo-3-1-2.00000000000000bb.pack".into()), ("layers/roads/hi-6-8-16", format!("layers/roads/hi-6-8-16.{hi}.pack"))] {
+        for (logical, file) in [
+            ("layers/roads/root", "layers/roads/root.00000000000000aa.pack".to_string()),
+            ("layers/roads/lo-3-1-2", "layers/roads/lo-3-1-2.00000000000000bb.pack".into()),
+            ("layers/roads/hi-6-8-16", format!("layers/roads/hi-6-8-16.{hi}.pack")),
+        ] {
             c.files.insert(logical.into(), store::catalog::FileRef { file, ..Default::default() });
         }
         c.layers.insert("roads".into(), l);
@@ -1192,12 +1348,26 @@ mod tests {
         let s = test_state(home.path(), nas.path());
         let packs = |s: &S| meta_json(s)["packs"]["roads"].clone();
         let p1 = packs(&s);
-        let (root, lo, hi1) = (p1["root"].as_str().unwrap().to_string(), p1["lo"]["3/1/2"].as_str().unwrap().to_string(), p1["hi"]["6/8/16"].as_str().unwrap().to_string());
+        let (root, lo, hi1) = (
+            p1["root"].as_str().unwrap().to_string(),
+            p1["lo"]["3/1/2"].as_str().unwrap().to_string(),
+            p1["hi"]["6/8/16"].as_str().unwrap().to_string(),
+        );
         assert_eq!(hi1.len(), 12);
         let cache = |s: &S, v: String| {
-            let app = Router::new().route("/tiles/roads/{z}/{x}/{y}", get(|| async { "tile" })).layer(axum::middleware::from_fn_with_state(s.clone(), versioned_caching));
+            let app = Router::new()
+                .route("/tiles/roads/{z}/{x}/{y}", get(|| async { "tile" }))
+                .layer(axum::middleware::from_fn_with_state(s.clone(), versioned_caching));
             async move {
-                let r = app.oneshot(axum::http::Request::builder().uri(format!("/tiles/roads/9/130/260?v={v}")).body(axum::body::Body::empty()).unwrap()).await.unwrap();
+                let r = app
+                    .oneshot(
+                        axum::http::Request::builder()
+                            .uri(format!("/tiles/roads/9/130/260?v={v}"))
+                            .body(axum::body::Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
                 r.headers()[header::CACHE_CONTROL].to_str().unwrap().to_string()
             }
         };
@@ -1217,8 +1387,22 @@ mod tests {
         assert_eq!(cache(&s, "000000000000".into()).await, "no-cache");
         // A tile the server makes (terrain the catalog hasn't: from ancestors, here flat) isn't
         // cached for good under a current token: a catalog changing only its sources would leave it stale.
-        let app = Router::new().route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile)).layer(axum::middleware::from_fn_with_state(s.clone(), versioned_caching)).with_state(s.clone());
-        let r = app.oneshot(axum::http::Request::builder().uri(format!("/tiles/terrain/9/130/260?v={}", p2["hi"]["6/8/16"].as_str().unwrap())).body(axum::body::Body::empty()).unwrap()).await.unwrap();
-        assert_eq!((r.status(), r.headers()[header::CACHE_CONTROL].to_str().unwrap()), (axum::http::StatusCode::OK, "no-cache"));
+        let app = Router::new()
+            .route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile))
+            .layer(axum::middleware::from_fn_with_state(s.clone(), versioned_caching))
+            .with_state(s.clone());
+        let r = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/tiles/terrain/9/130/260?v={}", p2["hi"]["6/8/16"].as_str().unwrap()))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (r.status(), r.headers()[header::CACHE_CONTROL].to_str().unwrap()),
+            (axum::http::StatusCode::OK, "no-cache")
+        );
     }
 }

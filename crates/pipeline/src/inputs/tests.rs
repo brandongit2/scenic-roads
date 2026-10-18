@@ -16,7 +16,11 @@ impl Box_ {
         self.files.insert(p.into(), (b.as_bytes().to_vec(), t));
     }
     fn listing(&self) -> Listing {
-        Listing { files: self.files.iter().map(|(p, (b, t))| (p.clone(), (b.len() as u64, *t))).collect(), strays: Vec::new(), ..Default::default() }
+        Listing {
+            files: self.files.iter().map(|(p, (b, t))| (p.clone(), (b.len() as u64, *t))).collect(),
+            strays: Vec::new(),
+            ..Default::default()
+        }
     }
 }
 
@@ -33,7 +37,14 @@ fn version_key(i: &Index) -> String {
 }
 
 /// One check of `b` against `prev` with `accepted` (and what it read), the taken copies kept.
-fn check(checks: &dyn Checks, b: &Box_, prev: Option<&Index>, accepted: &[&str], store: &Store, full: bool) -> Decision {
+fn check(
+    checks: &dyn Checks,
+    b: &Box_,
+    prev: Option<&Index>,
+    accepted: &[&str],
+    store: &Store,
+    full: bool,
+) -> Decision {
     let read = RefCell::new(Vec::<String>::new());
     let read_new = |p: &str| {
         read.borrow_mut().push(p.to_string());
@@ -43,7 +54,18 @@ fn check(checks: &dyn Checks, b: &Box_, prev: Option<&Index>, accepted: &[&str],
     let acc: BTreeSet<String> = accepted.iter().map(|s| s.to_string()).collect();
     let listing = b.listing();
     let prev_listed = prev.and_then(|i| store.listed.borrow().get(&version_key(i)).cloned()).unwrap_or_default();
-    let d = decide(&Given { checks, prev, prev_listed: &prev_listed, listing: &listing, unsettled: &BTreeSet::new(), accepted: &acc, full, read_new: &read_new, read_old: &read_old }).unwrap();
+    let d = decide(&Given {
+        checks,
+        prev,
+        prev_listed: &prev_listed,
+        listing: &listing,
+        unsettled: &BTreeSet::new(),
+        accepted: &acc,
+        full,
+        read_new: &read_new,
+        read_old: &read_old,
+    })
+    .unwrap();
     for (n, bytes) in &d.store {
         store.copies.borrow_mut().insert(n.clone(), bytes.to_vec());
     }
@@ -94,7 +116,11 @@ fn an_error_holds_and_the_last_good_version_stays() {
     let d = check(GT, &b, Some(&v1), &[], &store, false);
     assert_eq!(held(&d), ["a.jsonl"]);
     assert_eq!(d.index.files["a.jsonl"], v1.files["a.jsonl"], "the held edit keeps the accepted bytes");
-    assert_eq!(d.listed["a.jsonl"], ("{\"k\": \"x\", \"v\": 1}\n".len() as u64, 100), "and its listing, so it's read again next time");
+    assert_eq!(
+        d.listed["a.jsonl"],
+        ("{\"k\": \"x\", \"v\": 1}\n".len() as u64, 100),
+        "and its listing, so it's read again next time"
+    );
     assert!(d.index.files.contains_key("b.jsonl"));
     let r = d.report.as_ref().unwrap();
     assert_eq!(r.findings[0].level, Level::Error);
@@ -182,7 +208,10 @@ fn finding_ids_are_stable_across_unrelated_edits_and_new_when_a_flagged_line_cha
     b.put("a.jsonl", "{\"k\": \"x\", \"v\": 2}\n", 200);
     let v2 = check(GT, &b, Some(&v1), &[], &store, false).index;
     let empty = Box_::default();
-    assert_ne!(ids(&check(GT, &empty, Some(&v1), &[], &store, false)), ids(&check(GT, &empty, Some(&v2), &[], &store, false)));
+    assert_ne!(
+        ids(&check(GT, &empty, Some(&v1), &[], &store, false)),
+        ids(&check(GT, &empty, Some(&v2), &[], &store, false))
+    );
 }
 
 #[test]
@@ -237,7 +266,14 @@ impl Checks for Pairs {
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
         let mut c = FileCheck::default();
         if bytes == b"bad" {
-            c.findings.push(Finding::new("p-bad", Level::Error, &[path], &[], vec![path.into()], format!("{path} is bad")));
+            c.findings.push(Finding::new(
+                "p-bad",
+                Level::Error,
+                &[path],
+                &[],
+                vec![path.into()],
+                format!("{path} is bad"),
+            ));
         }
         if let Some(r) = std::str::from_utf8(bytes).ok().and_then(|t| t.strip_prefix("see ")) {
             c.refers.push(r.trim().to_string());
@@ -245,9 +281,18 @@ impl Checks for Pairs {
         c
     }
     fn whole(&self, v: &Version) -> Result<Vec<Finding>> {
-        let get = |p: &str| -> Result<Option<String>> { Ok(if v.paths.contains(p) { Some(String::from_utf8_lossy(&(v.read)(p)?).into_owned()) } else { None }) };
+        let get = |p: &str| -> Result<Option<String>> {
+            Ok(if v.paths.contains(p) { Some(String::from_utf8_lossy(&(v.read)(p)?).into_owned()) } else { None })
+        };
         Ok(if get("left.data")?.as_deref() == Some("left-old") && get("right.data")?.as_deref() == Some("right-new") {
-            vec![Finding::new("p-gap", Level::Warning, &["left", "right"], &[], vec!["left.data".into(), "right.data".into()], "a gap between left and right".into())]
+            vec![Finding::new(
+                "p-gap",
+                Level::Warning,
+                &["left", "right"],
+                &[],
+                vec!["left.data".into(), "right.data".into()],
+                "a gap between left and right".into(),
+            )]
         } else {
             Vec::new()
         })
@@ -311,7 +356,11 @@ fn a_version_checked_whole_holds_every_change_when_old_and_new_files_clash() {
 
 #[test]
 fn quiet_files_alone_are_settled() {
-    let now = Listing { files: [("a".to_string(), (1, 100)), ("b".to_string(), (2, 198)), ("c".to_string(), (1, 150))].into(), strays: vec![], ..Default::default() };
+    let now = Listing {
+        files: [("a".to_string(), (1, 100)), ("b".to_string(), (2, 198)), ("c".to_string(), (1, 150))].into(),
+        strays: vec![],
+        ..Default::default()
+    };
     // a and c old enough; b changed 2 s before the listing: left for the next.
     assert_eq!(settle(&now, 200).files.keys().cloned().collect::<Vec<_>>(), ["a", "c"]);
     // The same in two listings a few seconds apart is no proof it's whole: by its time alone.
@@ -333,7 +382,12 @@ fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
     let t = now - 6;
     let p = dropbox.join("a.jsonl");
     std::fs::write(&p, "{\"k\": \"x\", \"v\": 1}\n").unwrap();
-    std::fs::File::options().write(true).open(&p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t)).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&p)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t))
+        .unwrap();
     let raw = list(&root, TEST_UNIT, false).unwrap();
     // The listings at T+2 and T+5: it isn't settled at either.
     assert!(settle(&raw, t + 2).files.is_empty() && settle(&raw, t + 5).files.is_empty());
@@ -355,7 +409,10 @@ fn a_file_too_recent_is_neither_checked_nor_in_the_key_recorded() {
     assert!(open(&root, &m, TEST_UNIT).unwrap().unwrap().index.files.contains_key("a.jsonl"));
     // A planned listing a file has changed since: left as it was (here, out), not taken half-read.
     std::fs::write(&p, "{\"k\": \"x\", \"v\": 1}\n{\"k\":").unwrap();
-    let stale = Planned { listing: Listing { files: [("a.jsonl".to_string(), (1, 1))].into(), strays: vec![], ..Default::default() }, accepted: BTreeSet::new() };
+    let stale = Planned {
+        listing: Listing { files: [("a.jsonl".to_string(), (1, 1))].into(), strays: vec![], ..Default::default() },
+        accepted: BTreeSet::new(),
+    };
     let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_UNIT, false, Some(stale)).unwrap();
     let m2: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
@@ -390,12 +447,27 @@ fn an_accepted_file_changed_or_gone_since_the_plan_stays_accepted() {
     let planned = Planned { listing: listing.clone(), accepted: BTreeSet::new() };
     std::fs::write(dropbox.join("a.jsonl"), "{\"k\": \"x\",").unwrap();
     std::fs::remove_file(dropbox.join("b.jsonl")).unwrap();
-    let (l, acc, unsettled) = gate::candidate(&root, TEST_UNIT, false, Some(planned), crate::agent::jobs::now_s()).unwrap();
+    let (l, acc, unsettled) =
+        gate::candidate(&root, TEST_UNIT, false, Some(planned), crate::agent::jobs::now_s()).unwrap();
     assert_eq!(unsettled, ["a.jsonl".to_string(), "b.jsonl".to_string()].into());
     let read_new = |p: &str| -> Result<Vec<u8>> { panic!("{p} read though it changed since the plan") };
     let read_old = |e: &FileEntry| store.copies.borrow().get(&e.file).cloned().context("no copy");
-    let d2 = decide(&gate::Given { checks: GT, prev: Some(&v1.index), prev_listed: &v1.listed, listing: &l, unsettled: &unsettled, accepted: &acc, full: false, read_new: &read_new, read_old: &read_old }).unwrap();
-    assert!(!d2.changed && d2.report.is_none() && d2.index == v1.index, "both stay as accepted, b not taken as removed");
+    let d2 = decide(&gate::Given {
+        checks: GT,
+        prev: Some(&v1.index),
+        prev_listed: &v1.listed,
+        listing: &l,
+        unsettled: &unsettled,
+        accepted: &acc,
+        full: false,
+        read_new: &read_new,
+        read_old: &read_old,
+    })
+    .unwrap();
+    assert!(
+        !d2.changed && d2.report.is_none() && d2.index == v1.index,
+        "both stay as accepted, b not taken as removed"
+    );
     assert_eq!(d2.listed, v1.listed, "and their listed times stay, so the next check reads them again");
 }
 
@@ -411,14 +483,22 @@ fn a_nested_units_check_keeps_its_records_in_its_folder() {
     let put = |text: &str| {
         let p = dropbox.join("a.jsonl");
         std::fs::write(&p, text).unwrap();
-        std::fs::File::options().write(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60)).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60))
+            .unwrap();
     };
     put("{\"k\": \"x\", \"v\": 1}\n");
     let mut out = crate::out::Out::open(&root, &d.path().join("s"), "inputs").unwrap();
     gate::run(&mut out, TEST_NESTED, false, None).unwrap();
     let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     let a = open(&root, &m, TEST_NESTED).unwrap().unwrap();
-    assert!(a.version.starts_with("sources/inputs/_gate-nest/inner/@index.") && a.index.files["a.jsonl"].file.starts_with("sources/inputs/_gate-nest/inner/a."));
+    assert!(
+        a.version.starts_with("sources/inputs/_gate-nest/inner/@index.")
+            && a.index.files["a.jsonl"].file.starts_with("sources/inputs/_gate-nest/inner/a.")
+    );
     for l in m.keys() {
         assert_eq!(unit_of(l), Some(TEST_NESTED), "{l}");
         assert!(crate::agent::steps::row("inputs").is_some_and(|s| (s.writes)(l, false)), "{l}");
@@ -430,7 +510,10 @@ fn a_nested_units_check_keeps_its_records_in_its_folder() {
     let m2: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     assert_eq!(read_listed(&root, &m2, TEST_NESTED).unwrap().replaced.as_deref(), Some(a.version.as_str()));
     // A copy named like a record can't be one: '@' starts no drop-box name.
-    assert!(record_of("sources/inputs/_gate-nest/inner/index").is_none() && record_of("sources/inputs/x/b/@index").is_some_and(|r| r.0 == "x/b"));
+    assert!(
+        record_of("sources/inputs/_gate-nest/inner/index").is_none()
+            && record_of("sources/inputs/x/b/@index").is_some_and(|r| r.0 == "x/b")
+    );
     assert_eq!(flat(TEST_NESTED), "_gate-nest+inner");
 }
 
@@ -450,7 +533,10 @@ fn acceptances_of_files_changed_since_are_stale() {
     // a fixed: its warning no longer the version's; b's stays.
     b.put("a.jsonl", "{\"k\": \"x\", \"v\": 1}\n", 200);
     let v2 = check(GT, &b, Some(&v1), &refs, &store, false).index;
-    assert_eq!(v2.accepted.keys().cloned().collect::<Vec<_>>(), [ws.iter().find(|w| v1.accepted[*w] == ["b.jsonl"]).unwrap().clone()]);
+    assert_eq!(
+        v2.accepted.keys().cloned().collect::<Vec<_>>(),
+        [ws.iter().find(|w| v1.accepted[*w] == ["b.jsonl"]).unwrap().clone()]
+    );
     // In the status: a's acceptance stale.
     let d = tempfile::tempdir().unwrap();
     let root = d.path();
@@ -492,14 +578,22 @@ fn the_key_follows_the_listing_the_acceptances_and_the_index() {
     l2.files.insert("a.jsonl".into(), (10, 101));
     assert_ne!(check_key(GT, &l2, &none, &m), k, "a touch is a trigger");
     assert_ne!(check_key(GT, &l, &["gt-neg.0123456789abcdef".to_string()].into(), &m), k);
-    let m2: BTreeMap<String, String> = [(logical(TEST_UNIT), "sources/inputs/_gate-test/@index.0123456789abcdef.json".to_string())].into();
+    let m2: BTreeMap<String, String> =
+        [(logical(TEST_UNIT), "sources/inputs/_gate-test/@index.0123456789abcdef.json".to_string())].into();
     assert_ne!(check_key(GT, &l, &none, &m2), k);
 }
 
 #[test]
 fn acceptances_are_written_once_and_undone() {
     let d = tempfile::tempdir().unwrap();
-    let w = Finding::new("gt-neg", Level::Warning, &["a.jsonl"], &["x"], vec!["a.jsonl".into()], "a.jsonl: 1 line with a negative v".into());
+    let w = Finding::new(
+        "gt-neg",
+        Level::Warning,
+        &["a.jsonl"],
+        &["x"],
+        vec!["a.jsonl".into()],
+        "a.jsonl: 1 line with a negative v".into(),
+    );
     assert!(accept(d.path(), TEST_UNIT, &w, "m-0123456789abcdef", "test").unwrap());
     assert!(!accept(d.path(), TEST_UNIT, &w, "m-fedcba9876543210", "again").unwrap(), "create-new: the first stays");
     let a = read_acceptance(d.path(), TEST_UNIT, &w.id).unwrap();
@@ -510,10 +604,22 @@ fn acceptances_are_written_once_and_undone() {
     // An ask: all the held warnings (not its errors), and an id not held refused.
     let e = Finding::new("gt-line", Level::Error, &["b.jsonl"], &["y"], vec!["b.jsonl".into()], "b.jsonl: bad".into());
     let r = Report { findings: vec![w.clone(), e], ..Default::default() };
-    let said = apply_ask(d.path(), &Ask { unit: TEST_UNIT.into(), all: true, by: "test".into(), ..Default::default() }, Some(&r), "-").unwrap();
+    let said = apply_ask(
+        d.path(),
+        &Ask { unit: TEST_UNIT.into(), all: true, by: "test".into(), ..Default::default() },
+        Some(&r),
+        "-",
+    )
+    .unwrap();
     assert_eq!(said.len(), 1);
     assert_eq!(acceptances(d.path(), TEST_UNIT).unwrap(), [w.id.clone()].into());
-    assert!(apply_ask(d.path(), &Ask { unit: TEST_UNIT.into(), accept: vec!["gt-neg.ffffffffffffffff".into()], ..Default::default() }, Some(&r), "-").is_err());
+    assert!(apply_ask(
+        d.path(),
+        &Ask { unit: TEST_UNIT.into(), accept: vec!["gt-neg.ffffffffffffffff".into()], ..Default::default() },
+        Some(&r),
+        "-"
+    )
+    .is_err());
     // Asks left for the agent are taken in order, once.
     let home = d.path().join("agent");
     ask(&home, &Ask { unit: "a".into(), at: 2, ..Default::default() }).unwrap();
@@ -524,11 +630,26 @@ fn acceptances_are_written_once_and_undone() {
 
 #[test]
 fn copies_are_named_by_their_path_and_content() {
-    assert_eq!(copy_name("heritage", "fr-merimee.geojson", "0123456789abcdef").as_deref(), Some("sources/inputs/heritage/fr-merimee.0123456789abcdef.geojson"));
-    assert_eq!(copy_name("translations", "batches/2026-10.fr.jsonl", "0123456789abcdef").as_deref(), Some("sources/inputs/translations/batches/2026-10.0123456789abcdef.fr.jsonl"));
-    assert_eq!(copy_name("x", "README", "0123456789abcdef").as_deref(), Some("sources/inputs/x/README.0123456789abcdef.bin"));
+    assert_eq!(
+        copy_name("heritage", "fr-merimee.geojson", "0123456789abcdef").as_deref(),
+        Some("sources/inputs/heritage/fr-merimee.0123456789abcdef.geojson")
+    );
+    assert_eq!(
+        copy_name("translations", "batches/2026-10.fr.jsonl", "0123456789abcdef").as_deref(),
+        Some("sources/inputs/translations/batches/2026-10.0123456789abcdef.fr.jsonl")
+    );
+    assert_eq!(
+        copy_name("x", "README", "0123456789abcdef").as_deref(),
+        Some("sources/inputs/x/README.0123456789abcdef.bin")
+    );
     assert!(copy_name("x", "a\\b.json", "0123456789abcdef").is_none());
-    assert!(in_drop_box("inputs/regions/a.toml") && in_drop_box("translations/x.jsonl") && in_drop_box("descriptions") && !in_drop_box("sources/inputs/x/a.0123456789abcdef.toml") && !in_drop_box("inputsx/a"));
+    assert!(
+        in_drop_box("inputs/regions/a.toml")
+            && in_drop_box("translations/x.jsonl")
+            && in_drop_box("descriptions")
+            && !in_drop_box("sources/inputs/x/a.0123456789abcdef.toml")
+            && !in_drop_box("inputsx/a")
+    );
 }
 
 /// The job end to end, on a folder standing in for the NAS: the files stored content-named, the
@@ -569,7 +690,14 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     assert_eq!((v.len(), v[0].state, v[0].held.clone()), (1, view::State::Held, vec!["a.jsonl".to_string()]));
     assert!(v[0].line().contains("1 warning held"), "{}", v[0].line());
     // Checked again while held: still held, its findings shown, flagged checking.
-    let v = view::of(&root, &m2, &[TEST_UNIT], &[TEST_UNIT.to_string()].into(), &BTreeMap::new(), &mut view::Cache::default());
+    let v = view::of(
+        &root,
+        &m2,
+        &[TEST_UNIT],
+        &[TEST_UNIT.to_string()].into(),
+        &BTreeMap::new(),
+        &mut view::Cache::default(),
+    );
     assert!(v[0].state == view::State::Held && v[0].checking && !v[0].findings.is_empty());
     // Accepted: taken in, the report gone; the version replaced made young (its index touched),
     // so GC keeps it restorable.
@@ -580,7 +708,10 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     gate::run(&mut out, TEST_UNIT, false, None).unwrap();
     let m3: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
     assert_ne!(m3[&logical(TEST_UNIT)], a.version);
-    assert!(std::fs::metadata(root.join(&a.version)).unwrap().modified().unwrap() > old + std::time::Duration::from_secs(86400));
+    assert!(
+        std::fs::metadata(root.join(&a.version)).unwrap().modified().unwrap()
+            > old + std::time::Duration::from_secs(86400)
+    );
     assert!(!m3.contains_key(&held_logical(TEST_UNIT)));
     assert!(m3.contains_key(&listed_logical(TEST_UNIT)));
     assert_eq!(open(&root, &m3, TEST_UNIT).unwrap().unwrap().read("a.jsonl").unwrap(), b"{\"k\": \"x\", \"v\": -1}\n");
@@ -589,7 +720,8 @@ fn the_job_hands_off_the_accepted_version_and_the_report() {
     assert!(v[0].stale.is_empty(), "the acceptance is the version's: {:?}", v[0].stale);
     // The NAS root a step gets refuses a drop-box path, naming the caller.
     let out = crate::out::Out::unbound(&root, &d.path().join("s")).unwrap();
-    let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.path("inputs/_gate-test/a.jsonl"))).unwrap_err();
+    let e =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| out.path("inputs/_gate-test/a.jsonl"))).unwrap_err();
     let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
     assert!(msg.contains("tests.rs") && msg.contains("crate::inputs::open"), "{msg}");
     assert_eq!(out.path("sources/inputs/x"), root.join("sources/inputs/x"));
@@ -604,9 +736,15 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     let (none, f, _) = credits::parse_description("x.toml", b"what = \"x\"\nterritory = [\"france\"]\n");
     assert!(none.is_none() && f.len() == 3 && f.iter().all(|x| x.level == Level::Error), "{f:?}");
     // A credit edit changes the key's digest; the territory changes `keyed`, the credit doesn't.
-    let (_, _, k2) = credits::parse_description("x.toml", b"credit = \"other\"\nlicence = \"CC-BY-4.0\"\nterritory = [\"CA-QC\"]\n");
+    let (_, _, k2) =
+        credits::parse_description("x.toml", b"credit = \"other\"\nlicence = \"CC-BY-4.0\"\nterritory = [\"CA-QC\"]\n");
     assert_eq!(k2, keyed);
-    let mk = |credit: &str, extent: Option<credits::Extent>| credits::Described { unit: "heritage".into(), path: "qc.toml".into(), description: credits::Description { credit: credit.into(), ..d.clone() }, extent };
+    let mk = |credit: &str, extent: Option<credits::Extent>| credits::Described {
+        unit: "heritage".into(),
+        path: "qc.toml".into(),
+        description: credits::Description { credit: credit.into(), ..d.clone() },
+        extent,
+    };
     let qc = credits::Extent::Box([-79.8, 45.0, -57.1, 62.6]);
     let a = credits::digest(&[mk("A", Some(qc.clone()))]);
     assert!(a.is_some() && a != credits::digest(&[mk("B", Some(qc.clone()))]));
@@ -615,7 +753,12 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     // A heritage register's names it.
     let region = |w: f64, s: f64, e: f64, n: f64| {
         let ring = vec![[w, s], [e, s], [e, n], [w, n], [w, s]];
-        crate::coverage::DrawnRegion { id: "r".into(), name: "r".into(), outline: vec!["osm:1".into()], shapes: [("osm:1".to_string(), vec![vec![ring]])].into() }
+        crate::coverage::DrawnRegion {
+            id: "r".into(),
+            name: "r".into(),
+            outline: vec!["osm:1".into()],
+            shapes: [("osm:1".to_string(), vec![vec![ring]])].into(),
+        }
     };
     let mtl = credits::catalog_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[], &[mk("Ministere", Some(qc.clone()))]);
     let whats: Vec<&str> = mtl.iter().filter_map(|c| c["what"].as_str()).collect();
@@ -624,19 +767,47 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     let table = crate::rules::catalog_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[]).len();
     assert_eq!(mtl.len(), table + 1);
     // A description of a table entry's `what`: in its place, not added to it.
-    let lc = credits::Described { unit: "languages".into(), path: "about.toml".into(), description: credits::Description { what: "Land cover".into(), ..d.clone() }, extent: Some(credits::Extent::World("world".into())) };
+    let lc = credits::Described {
+        unit: "languages".into(),
+        path: "about.toml".into(),
+        description: credits::Description { what: "Land cover".into(), ..d.clone() },
+        extent: Some(credits::Extent::World("world".into())),
+    };
     let mtl = credits::catalog_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[], &[lc]);
     assert_eq!(mtl.len(), table);
-    assert!(mtl.iter().any(|c| c["what"] == "Land cover" && c["source"] == d.credit.as_str() && c.get("register").is_none()));
+    assert!(mtl
+        .iter()
+        .any(|c| c["what"] == "Land cover" && c["source"] == d.credit.as_str() && c.get("register").is_none()));
     let tokyo = credits::catalog_credits(&[region(139.5, 35.5, 140.0, 36.0)], &[], &[mk("Ministere", Some(qc))]);
     assert!(!tokyo.iter().any(|c| c["source"] == "Ministere"));
     // One the catalog's depth holds is listed wherever it is (the depth reaches past the coverage).
-    let depth = credits::catalog_credits_with(&[region(139.5, 35.5, 140.0, 36.0)], &[], &[mk("Ministere", Some(credits::Extent::Box([-79.8, 45.0, -57.1, 62.6])))], &[("heritage".into(), "qc.toml".into())]);
+    let depth = credits::catalog_credits_with(
+        &[region(139.5, 35.5, 140.0, 36.0)],
+        &[],
+        &[mk("Ministere", Some(credits::Extent::Box([-79.8, 45.0, -57.1, 62.6])))],
+        &[("heritage".into(), "qc.toml".into())],
+    );
     assert!(depth.iter().any(|c| c["source"] == "Ministere"));
     // A source for the whole world: anywhere; one whose extent isn't known yet: nowhere.
-    let world = credits::catalog_credits(&[], &[], &[credits::Described { description: credits::Description { what: "New world source".into(), ..d.clone() }, ..mk("W", Some(credits::Extent::World("world".into()))) }]);
+    let world = credits::catalog_credits(
+        &[],
+        &[],
+        &[credits::Described {
+            description: credits::Description { what: "New world source".into(), ..d.clone() },
+            ..mk("W", Some(credits::Extent::World("world".into())))
+        }],
+    );
     assert!(world.iter().any(|c| c["what"] == "New world source" && c.get("areas").is_none()));
-    assert!(!credits::catalog_credits(&[], &[], &[credits::Described { description: credits::Description { what: "Unknown".into(), ..d.clone() }, ..mk("U", None) }]).iter().any(|c| c["what"] == "Unknown"));
+    assert!(!credits::catalog_credits(
+        &[],
+        &[],
+        &[credits::Described {
+            description: credits::Description { what: "Unknown".into(), ..d.clone() },
+            ..mk("U", None)
+        }]
+    )
+    .iter()
+    .any(|c| c["what"] == "Unknown"));
 }
 
 // ---- The translations and the descriptions (docs/inputs.md §6.3, §6.4) -------------------------
@@ -652,7 +823,13 @@ fn with_stub_checker() {
         text.split('\n')
             .enumerate()
             .filter_map(|(i, l)| {
-                let p = if l.contains('ō') { "no macrons" } else if l.contains("\"Lake Long\"") || l.contains("\"Lake Round\"") { "the original's word order" } else { return None };
+                let p = if l.contains('ō') {
+                    "no macrons"
+                } else if l.contains("\"Lake Long\"") || l.contains("\"Lake Round\"") {
+                    "the original's word order"
+                } else {
+                    return None;
+                };
                 Some(lint::Flag { from: i + 1, to: i + 1, problem: p.into() })
             })
             .collect()
@@ -666,13 +843,21 @@ fn with_stub_checker() {
 fn check_py_flags_lines_in_its_flagged_mode() {
     if !store::spawn::output(store::spawn::command("uv").arg("--version")).is_ok_and(|o| o.status.success()) {
         // (Before a publish, which sets SCENIC_PUBLISH, a missing uv fails: the app's check needs it.)
-        assert!(std::env::var_os("SCENIC_PUBLISH").is_none(), "uv isn't here, and publishing needs it: the translations' checker runs in it");
+        assert!(
+            std::env::var_os("SCENIC_PUBLISH").is_none(),
+            "uv isn't here, and publishing needs it: the translations' checker runs in it"
+        );
         eprintln!("uv isn't here: check.py not run");
         return;
     }
     let d = tempfile::tempdir().unwrap();
     lint::set(lint::Python::uv(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dem"), d.path()));
-    let text = [tr_line("Lac Bleu", "fr", Some("Lac Bleu"), Some("Blue Lake")), tr_line("東京", "ja", Some("東京"), Some("Tōkyō")), tr_line("Lac Long", "fr", Some("Lake Long"), None)].concat();
+    let text = [
+        tr_line("Lac Bleu", "fr", Some("Lac Bleu"), Some("Blue Lake")),
+        tr_line("東京", "ja", Some("東京"), Some("Tōkyō")),
+        tr_line("Lac Long", "fr", Some("Lake Long"), None),
+    ]
+    .concat();
     let f = lint::flagged(text.as_bytes()).unwrap();
     assert_eq!(f.iter().map(|f| (f.from, f.to)).collect::<Vec<_>>(), [(2, 2), (3, 3)]);
     assert!(f[0].problem.contains("macrons") && f[1].problem.contains("word order"), "{f:?}");
@@ -681,11 +866,15 @@ fn check_py_flags_lines_in_its_flagged_mode() {
 }
 
 fn tr_line(n: &str, langs: &str, main: Option<&str>, sub: Option<&str>) -> String {
-    serde_json::json!({"n": n, "kind": "other", "langs": langs, "main": main, "sub": sub, "via": "test"}).to_string() + "\n"
+    serde_json::json!({"n": n, "kind": "other", "langs": langs, "main": main, "sub": sub, "via": "test"}).to_string()
+        + "\n"
 }
 
 fn finding<'a>(d: &'a Decision, check: &str) -> &'a Finding {
-    d.report.as_ref().and_then(|r| r.findings.iter().find(|f| f.check() == check)).unwrap_or_else(|| panic!("no {check} finding in {:?}", d.report))
+    d.report
+        .as_ref()
+        .and_then(|r| r.findings.iter().find(|f| f.check() == check))
+        .unwrap_or_else(|| panic!("no {check} finding in {:?}", d.report))
 }
 
 #[test]
@@ -745,11 +934,20 @@ fn the_translators_checker_warns_once_a_file_and_accepting_takes_exactly_its_lin
     assert_eq!(d2.index.accepted[&id], ["answers/a.jsonl"]);
     assert_eq!(d2.index.files["answers/a.jsonl"].facts["lines"], 3);
     // An unrelated line added, the flagged lines moved down: the same finding, still accepted.
-    b.put("answers/a.jsonl", &[tr_line("Mont Noir", "fr", Some("Mont Noir"), Some("Black Mountain")).as_str(), &fine, &macron, &order].concat(), 200);
+    b.put(
+        "answers/a.jsonl",
+        &[tr_line("Mont Noir", "fr", Some("Mont Noir"), Some("Black Mountain")).as_str(), &fine, &macron, &order]
+            .concat(),
+        200,
+    );
     let d3 = check(TR, &b, Some(&d2.index), &[&id], &store, false);
     assert!(d3.report.is_none() && d3.changed, "{:?}", d3.report);
     // A new suspicious line: a new finding, the edit held, the version before it kept.
-    b.put("answers/a.jsonl", &[fine.as_str(), &macron, &order, &tr_line("Lac Rond", "fr", Some("Lake Round"), None)].concat(), 300);
+    b.put(
+        "answers/a.jsonl",
+        &[fine.as_str(), &macron, &order, &tr_line("Lac Rond", "fr", Some("Lake Round"), None)].concat(),
+        300,
+    );
     let d4 = check(TR, &b, Some(&d3.index), &[&id], &store, false);
     let w4 = finding(&d4, "tr-check");
     assert_ne!(w4.id, id);
@@ -782,7 +980,8 @@ fn description_lines_out_of_shape_are_errors_and_long_or_unsourced_ones_warnings
     let words = |n: usize| vec!["word"; n].join(" ");
     let lines = [
         serde_json::json!({"qid": "Q1368", "long": "A fortified town.", "src": "Wikipedia"}).to_string(),
-        serde_json::json!({"id": "w123", "long": words(56), "src": [{"t": "Book", "u": "https://example.org"}]}).to_string(),
+        serde_json::json!({"id": "w123", "long": words(56), "src": [{"t": "Book", "u": "https://example.org"}]})
+            .to_string(),
         serde_json::json!({"qid": "Q9", "long": "Unsourced."}).to_string(),
         serde_json::json!({"qid": "Q9", "drop": true}).to_string(),
     ];
@@ -817,7 +1016,11 @@ fn description_lines_out_of_shape_are_errors_and_long_or_unsourced_ones_warnings
 #[test]
 fn the_descriptions_about_toml_is_their_credit() {
     let mut b = Box_::default();
-    b.put("about.toml", "what = \"Heritage descriptions\"\ncredit = \"Wikipedia\"\nlicence = \"CC-BY-SA-4.0\"\nterritory = \"world\"\n", 100);
+    b.put(
+        "about.toml",
+        "what = \"Heritage descriptions\"\ncredit = \"Wikipedia\"\nlicence = \"CC-BY-SA-4.0\"\nterritory = \"world\"\n",
+        100,
+    );
     let d = check(DE, &b, None, &[], &Store::default(), false);
     assert!(d.report.is_none(), "{:?}", d.report);
     let described = credits::of_index(&d.index);
@@ -852,13 +1055,30 @@ fn a_file_dropped_into_the_old_folder_is_an_error_saying_where_to_move_it() {
     assert_ne!(check_key(DE, &l, &none, &m), check_key(DE, &Listing { misplaced: vec![], ..l.clone() }, &none, &m));
     let read_new = |p: &str| Ok(std::fs::read(d.path().join("inputs/descriptions").join(p))?);
     let read_old = |_: &FileEntry| -> Result<Vec<u8>> { unreachable!() };
-    let dec = decide(&Given { checks: DE, prev: None, prev_listed: &BTreeMap::new(), listing: &l, unsettled: &BTreeSet::new(), accepted: &none, full: false, read_new: &read_new, read_old: &read_old }).unwrap();
+    let dec = decide(&Given {
+        checks: DE,
+        prev: None,
+        prev_listed: &BTreeMap::new(),
+        listing: &l,
+        unsettled: &BTreeSet::new(),
+        accepted: &none,
+        full: false,
+        read_new: &read_new,
+        read_old: &read_old,
+    })
+    .unwrap();
     assert!(dec.index.files.contains_key("a.jsonl"));
     let r = dec.report.unwrap();
     assert_eq!(r.held, ["descriptions/heritage/late.jsonl"]);
     assert_eq!(r.findings.len(), 1);
     assert_eq!(r.findings[0].level, Level::Error);
-    assert!(r.findings[0].message.contains("dropped into the old folder: move it to inputs/descriptions/heritage/late.jsonl"), "{}", r.findings[0].message);
+    assert!(
+        r.findings[0]
+            .message
+            .contains("dropped into the old folder: move it to inputs/descriptions/heritage/late.jsonl"),
+        "{}",
+        r.findings[0].message
+    );
 }
 
 fn parse_description_ok(b: &[u8]) -> (credits::Description, Vec<Finding>, String) {
@@ -895,7 +1115,10 @@ fn the_languages_table_is_checked_and_taken_in() {
     b.put("territories.tsv", "# CLDR 47\nCA\ten,fr\nCA-QC\tfr,en\nFR\tfr\nXK\tsq,sr\n", 300);
     let d3 = check(&la, &b, Some(&d1.index), &[], &store, false);
     let w = finding(&d3, "la-outline").clone();
-    assert_eq!((w.level, w.lines.clone(), d3.changed), (Level::Warning, vec![(5, "XK: no outline".to_string())], false));
+    assert_eq!(
+        (w.level, w.lines.clone(), d3.changed),
+        (Level::Warning, vec![(5, "XK: no outline".to_string())], false)
+    );
     let d4 = check(&la, &b, Some(&d1.index), &[&w.id], &store, false);
     assert!(d4.report.is_none() && d4.changed);
     assert_eq!(d4.index.files["territories.tsv"].facts["territories"], 4);

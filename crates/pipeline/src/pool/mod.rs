@@ -116,7 +116,12 @@ fn member_id_on(home: &Path, mac: Option<&str>) -> Result<String> {
 fn platform_uuid() -> Option<&'static str> {
     static UUID: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     UUID.get_or_init(|| {
-        let o = store::spawn::output(store::spawn::command("/usr/sbin/ioreg").args(["-rd1", "-c", "IOPlatformExpertDevice"])).ok()?;
+        let o = store::spawn::output(store::spawn::command("/usr/sbin/ioreg").args([
+            "-rd1",
+            "-c",
+            "IOPlatformExpertDevice",
+        ]))
+        .ok()?;
         parse_uuid(&String::from_utf8_lossy(&o.stdout))
     })
     .as_deref()
@@ -124,7 +129,11 @@ fn platform_uuid() -> Option<&'static str> {
 
 /// The IOPlatformUUID in `ioreg`'s output.
 fn parse_uuid(ioreg: &str) -> Option<String> {
-    ioreg.lines().find_map(|l| l.split_once("\"IOPlatformUUID\" = ")).map(|(_, v)| v.trim().trim_matches('"').to_string()).filter(|u| u.len() >= 32 && u.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
+    ioreg
+        .lines()
+        .find_map(|l| l.split_once("\"IOPlatformUUID\" = "))
+        .map(|(_, v)| v.trim().trim_matches('"').to_string())
+        .filter(|u| u.len() >= 32 && u.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
 }
 
 /// This process's hold on its member (crate::pool::driver's contract: one process per member): an
@@ -182,7 +191,8 @@ fn lock_file(path: &Path) -> Result<Option<crate::sys::PathLock>> {
 
 /// Whether `s` is a member id: `m-` and 16 lowercase hex digits.
 pub fn is_member_id(s: &str) -> bool {
-    s.strip_prefix("m-").is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+    s.strip_prefix("m-")
+        .is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
 }
 
 /// A new member id: the system's random bytes, with the time, the process and the host name in

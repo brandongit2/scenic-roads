@@ -47,7 +47,12 @@ pub fn own_english<'a>(tags: &[(&'a str, &'a str)], en_keys: &[&str]) -> Option<
     if let Some(v) = en_keys.iter().find_map(|k| get(k)) {
         return Some(Cow::Borrowed(v));
     }
-    if let Some((_, v)) = tags.iter().filter(|(_, v)| !v.trim().is_empty()).filter_map(|(k, v)| romanised(k).map(|r| (r, *v))).min_by_key(|(r, _)| *r) {
+    if let Some((_, v)) = tags
+        .iter()
+        .filter(|(_, v)| !v.trim().is_empty())
+        .filter_map(|(k, v)| romanised(k).map(|r| (r, *v)))
+        .min_by_key(|(r, _)| *r)
+    {
         return Some(Cow::Borrowed(v));
     }
     KANA_KEYS.iter().find_map(|k| get(k)).and_then(hepburn).map(Cow::Owned)
@@ -96,13 +101,25 @@ mod tests {
     #[test]
     fn own() {
         let en = ["name:en", "name_en"];
-        assert_eq!(own_english(&[("name", "東京"), ("name:en", "Tokyo"), ("name:ja-Latn", "Tōkyō")], &en).as_deref(), Some("Tokyo"));
-        assert_eq!(own_english(&[("name", "東京"), ("name:ja_rm", "Tōkyō rm"), ("name:ja-Latn", "Tōkyō")], &en).as_deref(), Some("Tōkyō"));
-        assert_eq!(own_english(&[("name", "中山"), ("name:zh-Latn-pinyin", "Zhōngshān")], &en).as_deref(), Some("Zhōngshān"));
+        assert_eq!(
+            own_english(&[("name", "東京"), ("name:en", "Tokyo"), ("name:ja-Latn", "Tōkyō")], &en).as_deref(),
+            Some("Tokyo")
+        );
+        assert_eq!(
+            own_english(&[("name", "東京"), ("name:ja_rm", "Tōkyō rm"), ("name:ja-Latn", "Tōkyō")], &en).as_deref(),
+            Some("Tōkyō")
+        );
+        assert_eq!(
+            own_english(&[("name", "中山"), ("name:zh-Latn-pinyin", "Zhōngshān")], &en).as_deref(),
+            Some("Zhōngshān")
+        );
         assert_eq!(own_english(&[("name", "松島"), ("name:ja-Hira", "まつしま")], &en).as_deref(), Some("Matsushima"));
         assert_eq!(own_english(&[("name", "松島"), ("kana", "マツシマ")], &en).as_deref(), Some("Matsushima"));
         assert_eq!(own_english(&[("name", "松島"), ("name:ja-Hira", "松しま")], &en), None);
-        assert_eq!(own_english(&[("name", "Lac"), ("name:en", " "), ("name_en", "Lake")], &en).as_deref(), Some("Lake"));
+        assert_eq!(
+            own_english(&[("name", "Lac"), ("name:en", " "), ("name_en", "Lake")], &en).as_deref(),
+            Some("Lake")
+        );
         assert_eq!(own_english(&[("name", "Lac"), ("name:fr", "Lac")], &en), None);
         assert_eq!(own_english(&[("n", "Lac"), ("en", "Lake")], &["en"]).as_deref(), Some("Lake"));
     }
@@ -110,8 +127,17 @@ mod tests {
     #[test]
     fn languages() {
         assert_eq!(strs(&osm_langs("Kêr", &[("name", "Kêr"), ("name:br", "Kêr"), ("name:fr", "Ker")])), ["br"]);
-        assert_eq!(strs(&osm_langs("中山", &[("name:zh-Hant", "中山"), ("name:ja", "中山"), ("name:ja-Latn", "中山"), ("name:zh", "中山")])), ["zh", "ja"]);
-        assert_eq!(strs(&osm_langs("Tokyo", &[("name:ja_rm", "Tokyo"), ("name:ja-Latn", "Tokyo")])), Vec::<&str>::new());
+        assert_eq!(
+            strs(&osm_langs(
+                "中山",
+                &[("name:zh-Hant", "中山"), ("name:ja", "中山"), ("name:ja-Latn", "中山"), ("name:zh", "中山")]
+            )),
+            ["zh", "ja"]
+        );
+        assert_eq!(
+            strs(&osm_langs("Tokyo", &[("name:ja_rm", "Tokyo"), ("name:ja-Latn", "Tokyo")])),
+            Vec::<&str>::new()
+        );
         assert_eq!(strs(&osm_langs("A", &[("l", "fr, br"), ("name:fr", "A")])), ["fr", "br"]);
         assert_eq!(strs(&osm_langs("A", &[("name:", "A"), ("name:x", "A"), ("name:latin", "A")])), Vec::<&str>::new());
     }

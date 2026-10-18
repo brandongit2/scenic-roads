@@ -110,7 +110,12 @@ pub fn polys_of_mvt(mvt: &[u8], z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
         if f.geom_type != Some(3) {
             continue;
         }
-        let prop = |name: &str| f.tags.chunks_exact(2).find(|kv| l.keys.get(kv[0] as usize).is_some_and(|k| k == name)).and_then(|kv| l.values.get(kv[1] as usize));
+        let prop = |name: &str| {
+            f.tags
+                .chunks_exact(2)
+                .find(|kv| l.keys.get(kv[0] as usize).is_some_and(|k| k == name))
+                .and_then(|kv| l.values.get(kv[1] as usize))
+        };
         let class = prop("class").and_then(|v| v.as_str()).unwrap_or("");
         let kind = match class {
             "ocean" => Kind::Sea,
@@ -134,7 +139,10 @@ pub fn polys_of_mvt(mvt: &[u8], z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
             // (No id: a key of this tile's own.)
             _ => own_key(z, x, y, k),
         };
-        let rings = decode_rings(&f.geometry).into_iter().map(|r| r.into_iter().map(|(px, py)| [px * s, py * s]).collect()).collect();
+        let rings = decode_rings(&f.geometry)
+            .into_iter()
+            .map(|r| r.into_iter().map(|(px, py)| [px * s, py * s]).collect())
+            .collect();
         out.push(Poly { kind, id, rings });
         let _ = (z, x, y);
     }
@@ -367,10 +375,13 @@ pub fn level(s: &LakeSamples) -> Option<f32> {
     let own = flat.then(|| {
         let total: u64 = ins.iter().map(|t| t.0 as u64).sum();
         let mut acc = 0u64;
-        ins.iter().find(|t| {
-            acc += t.0 as u64;
-            acc * 2 >= total
-        }).map(|t| t.1).unwrap()
+        ins.iter()
+            .find(|t| {
+                acc += t.0 as u64;
+                acc * 2 >= total
+            })
+            .map(|t| t.1)
+            .unwrap()
     });
     match (low, own) {
         (Some(l), Some(o)) if o <= l + FLAT_M => Some(o),
@@ -454,7 +465,8 @@ pub fn polys_digest(polys: &[Poly]) -> u64 {
 /// has any. What keys a terrain piece or assembly on the water it reads (agent::build).
 pub fn tiles_digest(src: &dyn WaterSource, tiles: &[(u8, u32, u32)]) -> Result<String> {
     use rayon::prelude::*;
-    let got: Vec<Result<u64>> = tiles.par_iter().map(|&(z, x, y)| src.polys(z, x, y).map(|p| polys_digest(&p))).collect();
+    let got: Vec<Result<u64>> =
+        tiles.par_iter().map(|&(z, x, y)| src.polys(z, x, y).map(|p| polys_digest(&p))).collect();
     let mut lines = String::new();
     for (&(z, x, y), d) in tiles.iter().zip(got) {
         let d = d?;
@@ -509,10 +521,12 @@ pub const AREA_FROM: &str = "z6-8";
 
 /// The water tiles z3 tile `q`'s assembly reads: z6–8, the whole of it (none coarser: `polys`).
 pub fn area_tiles(q: (u32, u32)) -> Vec<(u8, u32, u32)> {
-    (6..=8u8).flat_map(|z| {
-        let s = 1u32 << (z - 3);
-        (q.0 * s..(q.0 + 1) * s).flat_map(move |x| (q.1 * s..(q.1 + 1) * s).map(move |y| (z, x, y)))
-    }).collect()
+    (6..=8u8)
+        .flat_map(|z| {
+            let s = 1u32 << (z - 3);
+            (q.0 * s..(q.0 + 1) * s).flat_map(move |x| (q.1 * s..(q.1 + 1) * s).map(move |y| (z, x, y)))
+        })
+        .collect()
 }
 
 /// A terrain target's water reads: the target, what decides them (`WaterIdx`'s from), its tiles.
@@ -521,7 +535,12 @@ pub type Reads = (String, String, Vec<(u8, u32, u32)>);
 /// The digests `want` asks for (target, from, the tiles it reads), those `prior` (the same source's,
 /// made before) has with the same from kept, the others worked out from `src`; `progress` told each
 /// target done.
-pub fn make_idx(src: &dyn WaterSource, prior: Option<&WaterIdx>, want: &[Reads], progress: &dyn Fn(u64, u64)) -> Result<WaterIdx> {
+pub fn make_idx(
+    src: &dyn WaterSource,
+    prior: Option<&WaterIdx>,
+    want: &[Reads],
+    progress: &dyn Fn(u64, u64),
+) -> Result<WaterIdx> {
     let mut out = WaterIdx { fmt: IDX_FMT, step: "terrain-water".into(), pin: src.pin(), digests: Default::default() };
     if let Some(p) = prior.filter(|p| p.pin == out.pin) {
         out.digests = p.digests.clone();
@@ -676,14 +695,32 @@ pub mod tests {
             let zz = |v: i32| ((v << 1) ^ (v >> 31)) as u32;
             vec![9, zz(x0 as i32), zz(y0 as i32), 26, zz(d as i32), 0, 0, zz(d as i32), zz(-(d as i32)), 0, 15]
         };
-        let f = |tags: Vec<u32>, g: Vec<u32>| Feature { id: None, tags, geom_type: Some(3), geometry: g, ..Default::default() };
+        let f = |tags: Vec<u32>, g: Vec<u32>| Feature {
+            id: None,
+            tags,
+            geom_type: Some(3),
+            geometry: g,
+            ..Default::default()
+        };
         let l = Layer {
             name: "water".into(),
             version: 2,
             extent: 4096,
             keys: vec!["class".into(), "id".into(), "intermittent".into()],
-            values: vec![Value::String("ocean".into()), Value::String("lake".into()), Value::Uint(41279034), Value::Int(0), Value::String("river".into()), Value::Int(1)],
-            features: vec![f(vec![0, 0], sq(0, 0, 160)), f(vec![0, 1, 1, 2, 2, 3], sq(1600, 1600, 160)), f(vec![0, 4], sq(3200, 0, 160)), f(vec![0, 1, 2, 5], sq(0, 3200, 160))],
+            values: vec![
+                Value::String("ocean".into()),
+                Value::String("lake".into()),
+                Value::Uint(41279034),
+                Value::Int(0),
+                Value::String("river".into()),
+                Value::Int(1),
+            ],
+            features: vec![
+                f(vec![0, 0], sq(0, 0, 160)),
+                f(vec![0, 1, 1, 2, 2, 3], sq(1600, 1600, 160)),
+                f(vec![0, 4], sq(3200, 0, 160)),
+                f(vec![0, 1, 2, 5], sq(0, 3200, 160)),
+            ],
             unknown: vec![],
         };
         let t = Tile { layers: vec![l], unknown: vec![] };
@@ -705,5 +742,4 @@ pub mod tests {
         assert_ne!(own_key(12, 5, 0, 15), own_key(12, 6, 0, 15));
         assert_ne!(own_key(11, 5, 0, 0), own_key(12, 5, 0, 0));
     }
-
 }

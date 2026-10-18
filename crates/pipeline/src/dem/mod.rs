@@ -11,8 +11,8 @@
 
 pub mod declared;
 pub mod encoding;
-pub mod generic;
 pub mod fabdem_fetch;
+pub mod generic;
 pub mod kept;
 pub mod proj;
 pub mod sample;
@@ -74,21 +74,44 @@ const PAGE: usize = 16384;
 impl Progress {
     fn open(dir: &Path, stamp: String, n: usize) -> Result<Progress> {
         let (te, ts) = (dir.join("elev.f32.tmp"), dir.join("src.u8.tmp"));
-        let prev = std::fs::read_to_string(dir.join("dem-progress.json")).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let prev = std::fs::read_to_string(dir.join("dem-progress.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
         let pages = n.div_ceil(PAGE);
         if let Some(p) = prev.filter(|p| p["stamp"].as_str() == Some(stamp.as_str())) {
             if let (Ok(e), Ok(s)) = (std::fs::read(&te), std::fs::read(&ts)) {
                 if e.len() == 4 * n && s.len() == n {
-                    let done = p["done"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+                    let done = p["done"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
                     let files = (OpenOptions::new().write(true).open(&te)?, OpenOptions::new().write(true).open(&ts)?);
-                    return Ok(Progress { dir: dir.to_owned(), stamp, elev: bytemuck::pod_collect_to_vec(&e), src: s, done, dirty: vec![false; pages], resumed: true, files });
+                    return Ok(Progress {
+                        dir: dir.to_owned(),
+                        stamp,
+                        elev: bytemuck::pod_collect_to_vec(&e),
+                        src: s,
+                        done,
+                        dirty: vec![false; pages],
+                        resumed: true,
+                        files,
+                    });
                 }
             }
         }
         let (fe, fs) = (File::create(&te)?, File::create(&ts)?);
         fe.set_len(4 * n as u64)?;
         fs.set_len(n as u64)?;
-        Ok(Progress { dir: dir.to_owned(), stamp, elev: vec![f32::NAN; n], src: vec![0; n], done: BTreeSet::new(), dirty: vec![true; pages], resumed: false, files: (fe, fs) })
+        Ok(Progress {
+            dir: dir.to_owned(),
+            stamp,
+            elev: vec![f32::NAN; n],
+            src: vec![0; n],
+            done: BTreeSet::new(),
+            dirty: vec![true; pages],
+            resumed: false,
+            files: (fe, fs),
+        })
     }
 
     fn set(&mut self, i: usize, e: f32, s: u8) {
@@ -157,7 +180,11 @@ fn reuse(cache: &Path, verts: &[[i32; 2]], prog: &mut Progress) -> Result<()> {
     let sm = roadcore::mmap(&cache.join("dem-cache.src.u8"))?;
     let (ckeys, celev): (&[u64], &[f32]) = (bytemuck::cast_slice(&km[..]), bytemuck::cast_slice(&em[..]));
     let csrc: &[u8] = &sm;
-    ensure!(ckeys.len() == celev.len() && ckeys.len() == csrc.len(), "{}: DEM cache files out of step", cache.display());
+    ensure!(
+        ckeys.len() == celev.len() && ckeys.len() == csrc.len(),
+        "{}: DEM cache files out of step",
+        cache.display()
+    );
     let found: Vec<Option<usize>> = verts
         .par_iter()
         .map(|&v| {
@@ -207,7 +234,11 @@ fn write_cache(cache: &Path, verts: &[[i32; 2]], elev: &[f32], src: &[u8]) -> Re
     let ok: Vec<u64> = order.iter().map(|&i| keys[i as usize]).collect();
     let oe: Vec<f32> = order.iter().map(|&i| elev[i as usize]).collect();
     let os: Vec<u8> = order.iter().map(|&i| src[i as usize]).collect();
-    for (name, bytes) in [("keys.u64", bytemuck::cast_slice::<u64, u8>(&ok)), ("elev.f32", bytemuck::cast_slice(&oe)), ("src.u8", &os[..])] {
+    for (name, bytes) in [
+        ("keys.u64", bytemuck::cast_slice::<u64, u8>(&ok)),
+        ("elev.f32", bytemuck::cast_slice(&oe)),
+        ("src.u8", &os[..]),
+    ] {
         let tmp = cache.join(format!("dem-cache.{name}.tmp"));
         std::fs::write(&tmp, bytes)?;
         std::fs::rename(&tmp, cache.join(format!("dem-cache.{name}")))?;

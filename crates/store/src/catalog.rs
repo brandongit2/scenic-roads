@@ -149,7 +149,14 @@ impl Catalog {
         for b in &self.basemap {
             out.push(("basemap".into(), b.as_str()));
         }
-        for (what, m) in [("base", &self.base), ("roads", &self.roads), ("hidata", &self.hidata), ("markdata", &self.markdata), ("ovdata", &self.ovdata), ("global", &self.global)] {
+        for (what, m) in [
+            ("base", &self.base),
+            ("roads", &self.roads),
+            ("hidata", &self.hidata),
+            ("markdata", &self.markdata),
+            ("ovdata", &self.ovdata),
+            ("global", &self.global),
+        ] {
             for (k, v) in m {
                 out.push((format!("{what}[{k}]"), v.as_str()));
             }
@@ -162,7 +169,8 @@ impl Catalog {
     pub fn validate(&self) -> Result<()> {
         ensure!(self.fmt == FMT, "catalog format {} (this app writes {FMT})", self.fmt);
         for (logical, f) in &self.files {
-            let c = parse_content_name(&f.file).with_context(|| format!("files[{logical}]: {:?} isn't a content name", f.file))?;
+            let c = parse_content_name(&f.file)
+                .with_context(|| format!("files[{logical}]: {:?} isn't a content name", f.file))?;
             ensure!(c.logical == logical, "files[{logical}] names a file of {}", c.logical);
         }
         for (from, logical) in self.references() {
@@ -186,7 +194,11 @@ impl Catalog {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let json = zstd::stream::decode_all(bytes).context("catalog doesn't decompress")?;
         let c: Catalog = serde_json::from_slice(&json).context("catalog doesn't parse")?;
-        ensure!((MIN_FMT..=FMT).contains(&c.fmt), "catalog format {} isn't supported (this app reads {MIN_FMT}–{FMT})", c.fmt);
+        ensure!(
+            (MIN_FMT..=FMT).contains(&c.fmt),
+            "catalog format {} isn't supported (this app reads {MIN_FMT}–{FMT})",
+            c.fmt
+        );
         Ok(c)
     }
 }
@@ -242,7 +254,8 @@ pub fn write_copy(dir: &Path, cat: &Catalog) -> Result<PathBuf> {
     };
     match put_once(dir, &path, &bytes, &check)? {
         true => Ok(path),
-        false => same_as_existing(&path, cat)?.with_context(|| format!("{} appeared meanwhile with other content", path.display())),
+        false => same_as_existing(&path, cat)?
+            .with_context(|| format!("{} appeared meanwhile with other content", path.display())),
     }
 }
 
@@ -298,7 +311,8 @@ pub fn read(path: &Path) -> Result<Catalog> {
 /// that one (`Delta`), back to a whole one.
 pub fn read_n(dir: &Path, n: u64) -> Result<Catalog> {
     let names = Names::of_dir(dir)?;
-    materialize(dir, &names, n, None, &mut local_read)?.with_context(|| format!("catalog {n} in {} can't be read whole", dir.display()))
+    materialize(dir, &names, n, None, &mut local_read)?
+        .with_context(|| format!("catalog {n} in {} can't be read whole", dir.display()))
 }
 
 /// The file catalog `n` is in (whole, or as a delta), for its time: None when neither is there.
@@ -403,7 +417,12 @@ pub fn latest_nas_from(pool: &IoPool, dir: &Path, have: Option<&Catalog>) -> Res
 }
 
 /// The first catalog of `names` (highest first) that reads whole.
-fn pick(dir: &Path, names: &Names, have: Option<&Catalog>, read: &mut dyn FnMut(&Path) -> Result<Option<Vec<u8>>>) -> Result<Option<Catalog>> {
+fn pick(
+    dir: &Path,
+    names: &Names,
+    have: Option<&Catalog>,
+    read: &mut dyn FnMut(&Path) -> Result<Option<Vec<u8>>>,
+) -> Result<Option<Catalog>> {
     for n in names.numbers() {
         if let Some(c) = materialize(dir, names, n, have, read)? {
             return Ok(Some(c));
@@ -415,7 +434,13 @@ fn pick(dir: &Path, names: &Names, have: Option<&Catalog>, read: &mut dyn FnMut(
 /// Catalog `n` whole: its own file, or its delta applied to the one before it (`have` when that's
 /// the one, else read the same way), each step checked by the digests the delta carries. None
 /// (logged) when a file is damaged, missing or doesn't carry its own number, or a digest differs.
-fn materialize(dir: &Path, names: &Names, n: u64, have: Option<&Catalog>, read: &mut dyn FnMut(&Path) -> Result<Option<Vec<u8>>>) -> Result<Option<Catalog>> {
+fn materialize(
+    dir: &Path,
+    names: &Names,
+    n: u64,
+    have: Option<&Catalog>,
+    read: &mut dyn FnMut(&Path) -> Result<Option<Vec<u8>>>,
+) -> Result<Option<Catalog>> {
     let mut chain: Vec<Delta> = Vec::new();
     let mut at = n;
     let base = loop {
@@ -458,7 +483,10 @@ fn materialize(dir: &Path, names: &Names, n: u64, have: Option<&Catalog>, read: 
         }
     };
     if chain.len() >= MAX_CHAIN / 2 {
-        eprintln!("catalog: {n} is read through {} deltas (at most {MAX_CHAIN}): its writer should have written a whole one", chain.len());
+        eprintln!(
+            "catalog: {n} is read through {} deltas (at most {MAX_CHAIN}): its writer should have written a whole one",
+            chain.len()
+        );
     }
     let mut cat = base;
     for d in chain.iter().rev() {
@@ -524,7 +552,11 @@ impl Delta {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let json = zstd::stream::decode_all(bytes).context("delta doesn't decompress")?;
         let d: Delta = serde_json::from_slice(&json).context("delta doesn't parse")?;
-        ensure!((MIN_FMT..=FMT).contains(&d.fmt), "delta format {} isn't supported (this app reads {MIN_FMT}–{FMT})", d.fmt);
+        ensure!(
+            (MIN_FMT..=FMT).contains(&d.fmt),
+            "delta format {} isn't supported (this app reads {MIN_FMT}–{FMT})",
+            d.fmt
+        );
         Ok(d)
     }
 
@@ -534,7 +566,10 @@ impl Delta {
     /// A run of deltas as long as MAX_CHAIN, whatever their sizes, is due too (readers stop there).
     pub fn due_whole(since: &[u64], size: u64, whole: u64) -> bool {
         if since.len() + 1 >= MAX_CHAIN / 2 {
-            eprintln!("catalog: {} deltas since the last whole catalog (readers stop at {MAX_CHAIN}): a whole one now", since.len());
+            eprintln!(
+                "catalog: {} deltas since the last whole catalog (readers stop at {MAX_CHAIN}): a whole one now",
+                since.len()
+            );
             return true;
         }
         since.iter().sum::<u64>() + size >= whole
@@ -590,7 +625,8 @@ pub fn chain(dir: &Path, n: u64) -> Result<Vec<u64>> {
     let mut at = n;
     while !names.whole.contains(&at) && names.delta.contains(&at) && out.len() <= MAX_CHAIN {
         let p = dir.join(delta_file_name(at));
-        let d = Delta::decode(&fs::read(&p).with_context(|| format!("read {}", p.display()))?).with_context(|| format!("{}", p.display()))?;
+        let d = Delta::decode(&fs::read(&p).with_context(|| format!("read {}", p.display()))?)
+            .with_context(|| format!("{}", p.display()))?;
         at = d.of;
         out.push(at);
     }
@@ -633,7 +669,10 @@ mod tests {
         c.app = "0.1.0".into();
         let mut add = |logical: &str, ext: &str, size: u64| {
             let h = format!("{:016x}", n * 1000 + size);
-            c.files.insert(logical.into(), FileRef { file: content_name(logical, &h, ext), size, fmt: 1, extra: BTreeMap::new() });
+            c.files.insert(
+                logical.into(),
+                FileRef { file: content_name(logical, &h, ext), size, fmt: 1, extra: BTreeMap::new() },
+            );
             logical.to_string()
         };
         let root = add("layers/roads/root", "pack", 10);
@@ -781,7 +820,10 @@ mod tests {
         c.created = format!("2026-10-15T{:02}:00:00Z", n % 24);
         let add = |c: &mut Catalog, logical: &str, ext: &str| {
             let h = format!("{:016x}", n * 7919 + logical.len() as u64);
-            c.files.insert(logical.into(), FileRef { file: content_name(logical, &h, ext), size: n, fmt: 1, extra: BTreeMap::new() });
+            c.files.insert(
+                logical.into(),
+                FileRef { file: content_name(logical, &h, ext), size: n, fmt: 1, extra: BTreeMap::new() },
+            );
             logical.to_string()
         };
         let hi = add(&mut c, &format!("layers/roads/hi/6-{}-21", 30 + n % 5), "pack");
@@ -850,10 +892,17 @@ mod tests {
         let (since, _) = since_whole(&dir.path().join("none")).unwrap();
         assert!(since.is_empty());
         // A delta is smaller than the whole catalog it makes.
-        assert!(fs::metadata(d.join("11.delta.json.zst")).unwrap().len() < fs::metadata(whole.join("11.json.zst")).unwrap().len() / 2);
+        assert!(
+            fs::metadata(d.join("11.delta.json.zst")).unwrap().len()
+                < fs::metadata(whole.join("11.json.zst")).unwrap().len() / 2
+        );
         // An older app's reader lists only the whole ones (its names): it keeps to catalog 12's
         // last whole one, 12 itself here.
-        assert!(fs::read_dir(&d).unwrap().flatten().filter_map(|e| number(e.file_name().to_str()?)).all(|n| n % 3 == 0 || n == 1));
+        assert!(fs::read_dir(&d)
+            .unwrap()
+            .flatten()
+            .filter_map(|e| number(e.file_name().to_str()?))
+            .all(|n| n % 3 == 0 || n == 1));
     }
 
     #[test]

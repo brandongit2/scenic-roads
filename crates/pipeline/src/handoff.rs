@@ -73,7 +73,10 @@ fn merged(dir: &Path) -> Result<Option<String>> {
 /// isn't there.
 fn listing(dir: &Path) -> Result<Vec<PathBuf>> {
     match std::fs::read_dir(dir) {
-        Ok(rd) => rd.map(|e| e.map(|e| e.path())).collect::<std::io::Result<Vec<_>>>().with_context(|| format!("list {}", dir.display())),
+        Ok(rd) => rd
+            .map(|e| e.map(|e| e.path()))
+            .collect::<std::io::Result<Vec<_>>>()
+            .with_context(|| format!("list {}", dir.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e).with_context(|| format!("list {}", dir.display())),
     }
@@ -88,7 +91,14 @@ fn stamp(name: &str) -> Option<u128> {
 /// them), in the order written; None when one is damaged (its saves can't all go back: its units are
 /// built again).
 pub fn written_in(dir: &Path) -> Result<Option<Vec<Handoff>>> {
-    let mut files: Vec<PathBuf> = listing(dir)?.into_iter().filter(|p| p.extension().is_some_and(|x| x == "json") && !crate::whole::is_tmp(p) && p.file_name().is_some_and(|n| stamp(&n.to_string_lossy()).is_some())).collect();
+    let mut files: Vec<PathBuf> = listing(dir)?
+        .into_iter()
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "json")
+                && !crate::whole::is_tmp(p)
+                && p.file_name().is_some_and(|n| stamp(&n.to_string_lossy()).is_some())
+        })
+        .collect();
     files.sort();
     let mut out = Vec::new();
     for f in files {
@@ -127,9 +137,14 @@ pub fn waiting_in(base: &Path) -> Result<Vec<(PathBuf, Handoff)>> {
     let mut hosts: Vec<PathBuf> = listing(base)?.into_iter().filter(|p| p.is_dir()).collect();
     hosts.sort();
     for h in hosts {
-        let mut files: Vec<PathBuf> = listing(&h)?.into_iter().filter(|p| p.extension().is_some_and(|x| x == "json") && !crate::whole::is_tmp(p)).collect();
+        let mut files: Vec<PathBuf> = listing(&h)?
+            .into_iter()
+            .filter(|p| p.extension().is_some_and(|x| x == "json") && !crate::whole::is_tmp(p))
+            .collect();
         let done = merged(&h)?;
-        files.retain(|p| done.as_deref().is_none_or(|d| p.file_name().is_some_and(|n| n.to_string_lossy().as_ref() > d)));
+        files.retain(|p| {
+            done.as_deref().is_none_or(|d| p.file_name().is_some_and(|n| n.to_string_lossy().as_ref() > d))
+        });
         files.sort();
         let mut set_aside = false;
         for f in files {
@@ -162,10 +177,14 @@ mod tests {
         let base = d.path().join("journal");
         let m1 = base.join("m1");
         // A job's two saves, then its done record.
-        let save = |changes: &[(&str, Option<&str>)]| Handoff { changes: changes.iter().map(|(k, v)| (k.to_string(), v.map(str::to_string))).collect(), ..Default::default() };
+        let save = |changes: &[(&str, Option<&str>)]| Handoff {
+            changes: changes.iter().map(|(k, v)| (k.to_string(), v.map(str::to_string))).collect(),
+            ..Default::default()
+        };
         write(&m1, &save(&[("base/6-1-1", Some("base/6-1-1.3333333333333333.base"))])).unwrap();
         write(&m1, &save(&[("base/6-1-1", Some("base/6-1-1.4444444444444444.base")), ("base/6-1-2", None)])).unwrap();
-        write(&m1, &Handoff { done: Some(("unit".into(), vec![("6/1/1".into(), "k1".into())])), ..Default::default() }).unwrap();
+        write(&m1, &Handoff { done: Some(("unit".into(), vec![("6/1/1".into(), "k1".into())])), ..Default::default() })
+            .unwrap();
         // A file being written (a temporary name) waits.
         std::fs::write(m1.join("99999999999999999999-1.json.m1.7.tmp"), b"{").unwrap();
         let w = waiting_in(&base).unwrap();

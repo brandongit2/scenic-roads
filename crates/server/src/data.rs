@@ -118,7 +118,8 @@ pub struct Options {
 impl Data {
     pub fn open(o: Options) -> Result<Arc<Data>> {
         std::fs::create_dir_all(o.home.join("catalog"))?;
-        let mirror = if o.mirror { Some(Arc::new(store::mirror::Mirror::open(o.home.clone(), o.reserve)?)) } else { None };
+        let mirror =
+            if o.mirror { Some(Arc::new(store::mirror::Mirror::open(o.home.clone(), o.reserve)?)) } else { None };
         let d = Arc::new(Data {
             home: o.home.clone(),
             nas: RwLock::new(None),
@@ -222,7 +223,11 @@ impl Data {
     pub fn refresh_catalog(&self) -> bool {
         let (Some(root), Some(pool)) = (self.nas_root(), self.pool()) else { return false };
         let have = self.catalog();
-        match store::catalog::latest_nas_from(&pool, &root.join("catalog"), Some(&have).filter(|c| c.n > 0).map(|c| c.as_ref())) {
+        match store::catalog::latest_nas_from(
+            &pool,
+            &root.join("catalog"),
+            Some(&have).filter(|c| c.n > 0).map(|c| c.as_ref()),
+        ) {
             Ok(Some(c)) => {
                 if c.n != self.catalog().n {
                     eprintln!("catalog {} ({} files)", c.n, c.files.len());
@@ -329,7 +334,8 @@ impl Data {
         if let Some(v) = self.his.lock().unwrap().get(&content) {
             return Ok(Some(v));
         }
-        let v = Arc::new(HiView::new(SectView::open(self.src(&content)?)?).with_context(|| format!("hidata {content}"))?);
+        let v =
+            Arc::new(HiView::new(SectView::open(self.src(&content)?)?).with_context(|| format!("hidata {content}"))?);
         self.his.lock().unwrap().put(content, v.clone());
         Ok(Some(v))
     }
@@ -342,7 +348,10 @@ impl Data {
         if let Some(v) = self.marks.lock().unwrap().get(&content) {
             return Ok(Some(v));
         }
-        let v = Arc::new(crate::markview::MarkView::new(SectView::open(self.src(&content)?)?, content.clone()).with_context(|| format!("markdata {content}"))?);
+        let v = Arc::new(
+            crate::markview::MarkView::new(SectView::open(self.src(&content)?)?, content.clone())
+                .with_context(|| format!("markdata {content}"))?,
+        );
         self.marks.lock().unwrap().put(content, v.clone());
         Ok(Some(v))
     }
@@ -355,7 +364,9 @@ impl Data {
         if let Some(v) = self.ovs.lock().unwrap().get(&content) {
             return Ok(Some(v));
         }
-        let v = Arc::new(crate::ovdata::OvView::new(SectView::open(self.src(&content)?).with_context(|| format!("ovdata {content}"))?));
+        let v = Arc::new(crate::ovdata::OvView::new(
+            SectView::open(self.src(&content)?).with_context(|| format!("ovdata {content}"))?,
+        ));
         self.ovs.lock().unwrap().put(content, v.clone());
         Ok(Some(v))
     }
@@ -465,7 +476,8 @@ impl Data {
         let idx = self.index(content)?;
         // (Sorted by key: a zoom's tiles are together.)
         let first = idx.entries.partition_point(|e| e.key >> 58 < u64::from(z));
-        let mut es: Vec<store::pack::Entry> = idx.entries[first..].iter().take_while(|e| e.key >> 58 == u64::from(z)).copied().collect();
+        let mut es: Vec<store::pack::Entry> =
+            idx.entries[first..].iter().take_while(|e| e.key >> 58 == u64::from(z)).copied().collect();
         es.sort_by_key(|e| e.offset);
         fn end(e: &store::pack::Entry) -> u64 {
             e.offset + u64::from(e.len)
@@ -495,7 +507,9 @@ impl Data {
                     f.read_exact_at(&mut buf, lo).with_context(|| format!("read {content}"))?;
                     &buf
                 }
-                From::Src(Src::Local(m)) => m.get(lo as usize..hi as usize).ok_or_else(|| anyhow!("{content}: its index points past its end"))?,
+                From::Src(Src::Local(m)) => m
+                    .get(lo as usize..hi as usize)
+                    .ok_or_else(|| anyhow!("{content}: its index points past its end"))?,
                 From::Src(Src::Remote(r)) => {
                     buf = r.read_at(lo, (hi - lo) as usize).with_context(|| format!("read {content}"))?;
                     &buf
@@ -533,9 +547,13 @@ impl Data {
     /// mirror's piece holding it when it's here (its path in the mirror, `.basemap/…`), else the
     /// archive itself (on the NAS, or whole in the mirror).
     pub fn basemap_key(&self, archive: &str, z: u8, x: u32, y: u32) -> String {
-        let piece = self.mirror.as_ref().zip(store::pieces::Piece::of(z, x, y)).filter(|(m, p)| m.has_piece(archive, *p));
+        let piece =
+            self.mirror.as_ref().zip(store::pieces::Piece::of(z, x, y)).filter(|(m, p)| m.has_piece(archive, *p));
         match piece {
-            Some((m, p)) => m.piece_path(archive, p).strip_prefix(m.root().join("mirror")).map_or_else(|_| archive.to_string(), |r| r.to_string_lossy().into_owned()),
+            Some((m, p)) => m
+                .piece_path(archive, p)
+                .strip_prefix(m.root().join("mirror"))
+                .map_or_else(|_| archive.to_string(), |r| r.to_string_lossy().into_owned()),
             None => archive.to_string(),
         }
     }
@@ -569,7 +587,8 @@ impl Data {
         }
         let b = (|| -> Option<bool> {
             let (root, pool) = (self.nas_root()?, self.pool()?);
-            let v: serde_json::Value = serde_json::from_slice(&pool.read_all(&root.join("state/status.json")).ok()?).ok()?;
+            let v: serde_json::Value =
+                serde_json::from_slice(&pool.read_all(&root.join("state/status.json")).ok()?).ok()?;
             Some(runs(&v, 600, &["job"]))
         })()
         .unwrap_or(false);
@@ -660,7 +679,10 @@ pub fn host() -> &'static str {
 /// this Mac's file) this server's adoption of catalog `n` or its mirror's sync of it (`kind`): on a
 /// thread of its own, as the share may be slow, best effort.
 pub fn publish_event(root: &std::path::Path, kind: &str, n: u64, secs: Option<f64>) {
-    let (root, e) = (root.to_path_buf(), pipeline::pubtimes::ServerEvent { t: 0, host: host().to_string(), kind: kind.into(), n, secs });
+    let (root, e) = (
+        root.to_path_buf(),
+        pipeline::pubtimes::ServerEvent { t: 0, host: host().to_string(), kind: kind.into(), n, secs },
+    );
     let _ = std::thread::Builder::new().name("publog".into()).spawn(move || {
         if let Err(err) = pipeline::pubtimes::append_server(&root, e) {
             eprintln!("publishing's log on the NAS: {err}");
@@ -687,7 +709,8 @@ fn runs(v: &serde_json::Value, fresh_s: u64, slots: &[&str]) -> bool {
 /// `runs` at `now` (unix seconds).
 fn runs_at(v: &serde_json::Value, fresh_s: u64, slots: &[&str], now: u64) -> bool {
     let fresh = v.get("beat").and_then(|b| b.as_u64()).is_some_and(|b| now.saturating_sub(b) < fresh_s);
-    fresh && slots.iter().any(|k| v.get(*k).is_some_and(|j| !j.is_null() && j.get("paused").is_none_or(|p| p.is_null())))
+    fresh
+        && slots.iter().any(|k| v.get(*k).is_some_and(|j| !j.is_null() && j.get("paused").is_none_or(|p| p.is_null())))
 }
 
 #[cfg(test)]
@@ -701,7 +724,12 @@ mod tests {
         // A job in either slot asked; not a paused one, none, or a stale beat.
         let both = ["job", "beside"];
         assert!(runs_at(&json!({"beat": now, "job": null, "beside": {"id": "lo"}}), 120, &both, now));
-        assert!(!runs_at(&json!({"beat": now, "job": {"id": "pack 6/52/27", "paused": "the user asked"}}), 120, &both, now));
+        assert!(!runs_at(
+            &json!({"beat": now, "job": {"id": "pack 6/52/27", "paused": "the user asked"}}),
+            120,
+            &both,
+            now
+        ));
         assert!(!runs_at(&json!({"beat": now, "job": null}), 120, &both, now));
         assert!(!runs_at(&json!({"beat": now - 600, "job": {"id": "pack 6/52/27"}}), 120, &both, now));
         // The NAS's heartbeat (the lead's, read by every Mac): the first slot, fresh for ten
@@ -721,14 +749,27 @@ mod tests {
             let mut c = Catalog::new(n);
             for f in files {
                 let logical = format!("layers/roads/hi/{f}");
-                c.files.insert(logical.clone(), store::catalog::FileRef { file: format!("{logical}.{:016x}.pack", n), size: n, ..Default::default() });
+                c.files.insert(
+                    logical.clone(),
+                    store::catalog::FileRef {
+                        file: format!("{logical}.{:016x}.pack", n),
+                        size: n,
+                        ..Default::default()
+                    },
+                );
                 c.layers.entry("roads".into()).or_default().hi.insert(f.replace('-', "/"), logical);
             }
             c
         };
         let (one, two, three) = (cat(1, &["6-1-1"]), cat(2, &["6-1-1", "6-1-2"]), cat(3, &["6-1-2", "6-1-3"]));
         store::catalog::write(&dir, &one).unwrap();
-        let d = Data::open(Options { home: home.path().to_owned(), nas_root: Some(nas.path().to_owned()), mirror: false, reserve: 0 }).unwrap();
+        let d = Data::open(Options {
+            home: home.path().to_owned(),
+            nas_root: Some(nas.path().to_owned()),
+            mirror: false,
+            reserve: 0,
+        })
+        .unwrap();
         assert_eq!(*d.catalog(), one);
         store::catalog::write_delta(&dir, &one, &two).unwrap();
         assert!(d.refresh_catalog());
@@ -770,7 +811,10 @@ impl store::RangeRead for Whole {
         let end = off.checked_add(len as u64).filter(|&e| e <= b.len() as u64);
         match end {
             Some(e) => Ok(b[off as usize..e as usize].to_vec()),
-            None => Err(store::IoError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, format!("{len} bytes at {off} past the end ({})", b.len())))),
+            None => Err(store::IoError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("{len} bytes at {off} past the end ({})", b.len()),
+            ))),
         }
     }
 }

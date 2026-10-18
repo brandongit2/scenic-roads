@@ -40,7 +40,12 @@ pub fn kept_token(p: &Path) -> Result<String> {
 /// Whether `ip` may connect: this Mac, its LAN, the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48).
 pub fn allowed(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v) => v.is_loopback() || v.is_private() || v.is_link_local() || (v.octets()[0] == 100 && (64..128).contains(&v.octets()[1])),
+        IpAddr::V4(v) => {
+            v.is_loopback()
+                || v.is_private()
+                || v.is_link_local()
+                || (v.octets()[0] == 100 && (64..128).contains(&v.octets()[1]))
+        }
         IpAddr::V6(v) => match v.to_ipv4_mapped() {
             Some(v4) => allowed(IpAddr::V4(v4)),
             None => v.is_loopback() || (v.segments()[0] & 0xfe00) == 0xfc00 || (v.segments()[0] & 0xffc0) == 0xfe80,
@@ -58,7 +63,8 @@ pub fn loopback(ip: IpAddr) -> bool {
 
 /// The headers a proxy on this Mac adds to a request it hands over (`tailscale serve` sets
 /// X-Forwarded-For, and Tailscale-User-Login for a tailnet user's).
-const PROXIED: [&str; 6] = ["x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "forwarded", "tailscale-user-login"];
+const PROXIED: [&str; 6] =
+    ["x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "forwarded", "tailscale-user-login"];
 
 /// Whether a request is this Mac's own: from loopback, and not handed over by a proxy on this Mac
 /// (any header a proxy adds).
@@ -73,7 +79,13 @@ pub fn source(peer: IpAddr, h: &HeaderMap) -> String {
     if !loopback(peer) || own(peer, h) {
         return peer.to_string();
     }
-    let proxy_said = h.get_all("x-forwarded-for").iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(',')).next_back().and_then(|a| a.trim().parse::<IpAddr>().ok());
+    let proxy_said = h
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .next_back()
+        .and_then(|a| a.trim().parse::<IpAddr>().ok());
     proxy_said.map_or_else(|| "a proxy on this Mac".to_string(), |ip| ip.to_string())
 }
 
@@ -98,7 +110,9 @@ pub fn ours(host: &str) -> bool {
     let h = host.trim().to_ascii_lowercase();
     let name = match h.strip_prefix('[') {
         Some(v6) => return v6.split(']').next().is_some_and(|a| a.parse::<std::net::Ipv6Addr>().is_ok()),
-        None => h.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or(h.as_str(), |(n, _)| n),
+        None => {
+            h.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or(h.as_str(), |(n, _)| n)
+        }
     };
     let name = name.trim_end_matches('.');
     !name.is_empty()
@@ -114,10 +128,19 @@ pub fn local_origin(origin: &str) -> bool {
     let Some(rest) = origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://")) else { return false };
     let h = rest.to_ascii_lowercase();
     let name = match h.strip_prefix('[') {
-        Some(v6) => return v6.split(']').next().is_some_and(|a| a.parse::<std::net::Ipv6Addr>().is_ok_and(|ip| ip.is_loopback())),
-        None => h.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or(h.as_str(), |(n, _)| n),
+        Some(v6) => {
+            return v6
+                .split(']')
+                .next()
+                .is_some_and(|a| a.parse::<std::net::Ipv6Addr>().is_ok_and(|ip| ip.is_loopback()))
+        }
+        None => {
+            h.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or(h.as_str(), |(n, _)| n)
+        }
     };
-    name == "localhost" || name.ends_with(".localhost") || name.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.is_loopback())
+    name == "localhost"
+        || name.ends_with(".localhost")
+        || name.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// Whether a request's page, if it says one (`Origin`), is the service's own: this Mac's, or the
@@ -127,7 +150,11 @@ pub fn local_origin(origin: &str) -> bool {
 pub fn from_the_page(h: &HeaderMap) -> bool {
     let Some(o) = h.get(header::ORIGIN) else { return true };
     let Ok(o) = o.to_str() else { return false };
-    let named = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).is_some_and(|host| o.split_once("://").is_some_and(|(_, a)| a.eq_ignore_ascii_case(host)));
+    let named = |k: &str| {
+        h.get(k)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|host| o.split_once("://").is_some_and(|(_, a)| a.eq_ignore_ascii_case(host)))
+    };
     local_origin(o) || named("host") || named("x-forwarded-host")
 }
 
@@ -162,9 +189,21 @@ pub fn urls(port: u16) -> Vec<String> {
 /// `port`'s address over HTTPS, when `tailscale serve` proxies it ("https://<this Mac's tailnet
 /// name>/<path>").
 pub fn served_https(port: u16) -> Option<String> {
-    let cli = ["/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"].into_iter().find(|p| Path::new(p).exists())?;
+    let cli = [
+        "/opt/homebrew/bin/tailscale",
+        "/usr/local/bin/tailscale",
+        "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    ]
+    .into_iter()
+    .find(|p| Path::new(p).exists())?;
     // (Bounded: a stuck daemon mustn't hold up whoever asks.)
-    let mut child = store::spawn::spawn(store::spawn::command(cli).args(["serve", "status", "--json"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())).ok()?;
+    let mut child = store::spawn::spawn(
+        store::spawn::command(cli)
+            .args(["serve", "status", "--json"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null()),
+    )
+    .ok()?;
     let t = Instant::now();
     while child.try_wait().ok()?.is_none() {
         if t.elapsed() > Duration::from_secs(3) {
@@ -261,7 +300,9 @@ mod tests {
 
     #[test]
     fn who_may_connect() {
-        for ok in ["127.0.0.1", "::1", "100.70.85.80", "192.168.1.20", "10.0.0.3", "fd7a:115c:a1e0::1", "::ffff:100.100.1.1"] {
+        for ok in
+            ["127.0.0.1", "::1", "100.70.85.80", "192.168.1.20", "10.0.0.3", "fd7a:115c:a1e0::1", "::ffff:100.100.1.1"]
+        {
             assert!(allowed(ok.parse().unwrap()), "{ok}");
         }
         for no in ["8.8.8.8", "100.128.0.1", "2001:db8::1"] {
@@ -295,7 +336,11 @@ mod tests {
         assert_eq!(source("127.0.0.1".parse().unwrap(), &p), "a proxy on this Mac");
         // Reached: from here, the LAN, the tailnet, and through the proxy from those alone.
         let none = HeaderMap::new();
-        assert!(reached("127.0.0.1".parse().unwrap(), &none) && reached("192.168.1.20".parse().unwrap(), &none) && reached("100.70.85.80".parse().unwrap(), &none));
+        assert!(
+            reached("127.0.0.1".parse().unwrap(), &none)
+                && reached("192.168.1.20".parse().unwrap(), &none)
+                && reached("100.70.85.80".parse().unwrap(), &none)
+        );
         assert!(!reached("8.8.8.8".parse().unwrap(), &none));
         assert!(reached("127.0.0.1".parse().unwrap(), &h));
         let mut far = HeaderMap::new();
@@ -310,16 +355,42 @@ mod tests {
     #[test]
     fn a_page_elsewhere_is_never_this_macs() {
         use axum::http::HeaderValue;
-        for h in ["127.0.0.1:8080", "localhost:8080", "roads.localhost:8080", "[::1]:8080", "100.70.85.80:18085", "192.168.1.20:8080", "mac.tail1.ts.net", "mac.tail1.ts.net:8443", "Brandons-MacBook-Pro.local:8080", "macbookpro:8080", "fe80::1"] {
+        for h in [
+            "127.0.0.1:8080",
+            "localhost:8080",
+            "roads.localhost:8080",
+            "[::1]:8080",
+            "100.70.85.80:18085",
+            "192.168.1.20:8080",
+            "mac.tail1.ts.net",
+            "mac.tail1.ts.net:8443",
+            "Brandons-MacBook-Pro.local:8080",
+            "macbookpro:8080",
+            "fe80::1",
+        ] {
             assert!(ours(h), "{h}");
         }
-        for h in ["evil.example:8080", "evil.example", "127.0.0.1.nip.io:8080", "localhost.evil.example", "", "[nonsense]:80"] {
+        for h in [
+            "evil.example:8080",
+            "evil.example",
+            "127.0.0.1.nip.io:8080",
+            "localhost.evil.example",
+            "",
+            "[nonsense]:80",
+        ] {
             assert!(!ours(h), "{h}");
         }
-        for o in ["http://localhost:8080", "http://roads.localhost:8080", "http://127.0.0.1:5173", "http://[::1]:8080"] {
+        for o in ["http://localhost:8080", "http://roads.localhost:8080", "http://127.0.0.1:5173", "http://[::1]:8080"]
+        {
             assert!(local_origin(o), "{o}");
         }
-        for o in ["https://evil.example", "http://192.168.1.20:8080", "null", "http://localhost.evil.example", "http://127.0.0.1.nip.io"] {
+        for o in [
+            "https://evil.example",
+            "http://192.168.1.20:8080",
+            "null",
+            "http://localhost.evil.example",
+            "http://127.0.0.1.nip.io",
+        ] {
             assert!(!local_origin(o), "{o}");
         }
         let with = |pairs: &[(&str, &str)]| {
@@ -332,12 +403,19 @@ mod tests {
         // No page; this Mac's page; the device's page at the address it asks; a page elsewhere.
         assert!(from_the_page(&with(&[("host", "100.70.85.80:8080")])));
         assert!(from_the_page(&with(&[("host", "roads.localhost:8080"), ("origin", "http://127.0.0.1:8080")])));
-        assert!(from_the_page(&with(&[("host", "mac.tail1.ts.net:8443"), ("origin", "https://mac.tail1.ts.net:8443")])));
+        assert!(from_the_page(&with(&[
+            ("host", "mac.tail1.ts.net:8443"),
+            ("origin", "https://mac.tail1.ts.net:8443")
+        ])));
         assert!(!from_the_page(&with(&[("host", "127.0.0.1:8080"), ("origin", "https://evil.example")])));
         assert!(!from_the_page(&with(&[("host", "127.0.0.1:8080"), ("origin", "null")])));
         assert!(!from_the_page(&with(&[("host", "100.70.85.80:8080"), ("origin", "http://100.70.85.81:8080")])));
         // Through tailscale serve, the address the device asked for in X-Forwarded-Host.
-        assert!(from_the_page(&with(&[("host", "127.0.0.1:8080"), ("x-forwarded-host", "mac.tail1.ts.net:8443"), ("origin", "https://mac.tail1.ts.net:8443")])));
+        assert!(from_the_page(&with(&[
+            ("host", "127.0.0.1:8080"),
+            ("x-forwarded-host", "mac.tail1.ts.net:8443"),
+            ("origin", "https://mac.tail1.ts.net:8443")
+        ])));
     }
 
     #[test]

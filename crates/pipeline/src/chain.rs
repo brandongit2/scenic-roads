@@ -74,7 +74,10 @@ pub fn heading(a: [i32; 2], b: [i32; 2]) -> f32 {
 /// The chaining's view of a polyline: its ends, the headings leaving them, and its length.
 pub fn shape(v: &[[i32; 2]]) -> ([[i32; 2]; 2], [f32; 2], f32) {
     let n = v.len();
-    let len: f64 = v.windows(2).map(|p| dist_m(p[0][0] as f64 * E7, p[0][1] as f64 * E7, p[1][0] as f64 * E7, p[1][1] as f64 * E7)).sum();
+    let len: f64 = v
+        .windows(2)
+        .map(|p| dist_m(p[0][0] as f64 * E7, p[0][1] as f64 * E7, p[1][0] as f64 * E7, p[1][1] as f64 * E7))
+        .sum();
     if n < 2 {
         return ([v[0], v[0]], [0.0, 0.0], 0.0);
     }
@@ -198,7 +201,10 @@ pub fn pair(links: &[Link], refs: &[u32], at_node: &(dyn Fn([i32; 2]) -> bool + 
                         let cand = (lv, t, b.id, eb_code, ib);
                         let better = match &best {
                             None => true,
-                            Some(c) => (std::cmp::Reverse(cand.0), cand.1, cand.2, cand.3) < (std::cmp::Reverse(c.0), c.1, c.2, c.3),
+                            Some(c) => {
+                                (std::cmp::Reverse(cand.0), cand.1, cand.2, cand.3)
+                                    < (std::cmp::Reverse(c.0), c.1, c.2, c.3)
+                            }
                         };
                         if better {
                             best = Some(cand);
@@ -233,7 +239,13 @@ pub fn walk(links: &[Link], partner: &[[u32; 2]]) -> Vec<RoadVal> {
 
 /// `walk` over any way storage: each way's OSM id, length and whether it chains at all (the
 /// worldwide walk keeps only ids and lengths, a planet's worth in memory).
-pub fn walk_by(n: usize, id: impl Fn(usize) -> u64 + Sync, len: impl Fn(usize) -> f32, chained: impl Fn(usize) -> bool, partner: &[[u32; 2]]) -> Vec<RoadVal> {
+pub fn walk_by(
+    n: usize,
+    id: impl Fn(usize) -> u64 + Sync,
+    len: impl Fn(usize) -> f32,
+    chained: impl Fn(usize) -> bool,
+    partner: &[[u32; 2]],
+) -> Vec<RoadVal> {
     let mut out = vec![RoadVal { road: 0, len: 0.0, offset: 0.0, dir: 0 }; n];
     let mut done = vec![false; n];
     // Lowest id first, so a cycle is met at its lowest way (no order needed when sorted already).
@@ -345,7 +357,12 @@ mod tests {
     /// A way along points given in metres east/north of 45° N 0° E.
     fn way(id: u64, pts: &[(f64, f64)], name: u32, refs: (u32, u16), class: u8, oneway: bool) -> Link {
         let m = 1e7 / 111_320.0;
-        let v: Vec<[i32; 2]> = pts.iter().map(|&(x, y)| [(x * m / (45f64).to_radians().dcos()).round() as i32, (450_000_000.0 + y * m).round() as i32]).collect();
+        let v: Vec<[i32; 2]> = pts
+            .iter()
+            .map(|&(x, y)| {
+                [(x * m / (45f64).to_radians().dcos()).round() as i32, (450_000_000.0 + y * m).round() as i32]
+            })
+            .collect();
         let (ends, heading, len) = shape(&v);
         Link { id, kind: KIND_ROAD, class, oneway, name, refs_at: refs.0, refs_len: refs.1, ends, heading, len }
     }

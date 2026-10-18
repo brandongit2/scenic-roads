@@ -29,8 +29,8 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use crate::agent::memguard::{Floor, step_of_key};
-use crate::coord::{Cost, cost_key, cost_version};
+use crate::agent::memguard::{step_of_key, Floor};
+use crate::coord::{cost_key, cost_version, Cost};
 
 /// The safety margin over a fit's envelope.
 pub const MARGIN: f64 = 1.1;
@@ -124,7 +124,8 @@ impl Fit {
     }
 
     fn at(&self, x: f64, threads: Option<f64>) -> f64 {
-        ((self.base + self.k * x + self.per_thread.zip(threads).map_or(0.0, |(c, t)| c * t)) * MARGIN).clamp(0.0, self.top)
+        ((self.base + self.k * x + self.per_thread.zip(threads).map_or(0.0, |(c, t)| c * t)) * MARGIN)
+            .clamp(0.0, self.top)
     }
 }
 
@@ -176,7 +177,9 @@ fn tile(target: &str) -> Option<(u8, u32, u32)> {
 
 /// The sizes known of a cost (its measured `sizes`; its tile's area when it has no `km2`).
 fn sizes_of(key: &str, c: Option<&Cost>) -> BTreeMap<String, f64> {
-    let mut m: BTreeMap<String, f64> = c.map(|c| c.sizes.iter().filter(|(k, _)| *k != "threads").map(|(k, v)| (k.clone(), *v as f64)).collect()).unwrap_or_default();
+    let mut m: BTreeMap<String, f64> = c
+        .map(|c| c.sizes.iter().filter(|(k, _)| *k != "threads").map(|(k, v)| (k.clone(), *v as f64)).collect())
+        .unwrap_or_default();
     if let (false, Some((z, x, y))) = (m.contains_key("km2"), tile(key)) {
         m.insert("km2".into(), crate::costin::tile_km2(z, x, y) as f64);
     }
@@ -253,7 +256,16 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
         return None;
     }
     errs.sort_by(f64::total_cmp);
-    Some(Fit { size: size.into(), base, k, per_thread, top: top(&have), runs: have.len(), miss: miss as f64 / errs.len() as f64, err: errs[errs.len() / 2] })
+    Some(Fit {
+        size: size.into(),
+        base,
+        k,
+        per_thread,
+        top: top(&have),
+        runs: have.len(),
+        miss: miss as f64 / errs.len() as f64,
+        err: errs[errs.len() / 2],
+    })
 }
 
 /// The 90th percentile (nearest rank); None with none.
@@ -272,12 +284,22 @@ impl<'a> Book<'a> {
     }
 
     /// A Book over all three, keeping its own models.
-    pub fn with(costs: &'a BTreeMap<String, Cost>, floors: Option<&'a BTreeMap<String, Floor>>, disks: Option<&'a BTreeMap<String, u64>>) -> Self {
+    pub fn with(
+        costs: &'a BTreeMap<String, Cost>,
+        floors: Option<&'a BTreeMap<String, Floor>>,
+        disks: Option<&'a BTreeMap<String, u64>>,
+    ) -> Self {
         Book { costs, floors, disks, cache: CacheRef::Own(Cache::default()), rev: 0 }
     }
 
     /// A Book whose models are kept in `cache` while its owner's change count is `rev`.
-    pub fn kept(costs: &'a BTreeMap<String, Cost>, floors: &'a BTreeMap<String, Floor>, disks: &'a BTreeMap<String, u64>, cache: &'a Cache, rev: u64) -> Self {
+    pub fn kept(
+        costs: &'a BTreeMap<String, Cost>,
+        floors: &'a BTreeMap<String, Floor>,
+        disks: &'a BTreeMap<String, u64>,
+        cache: &'a Cache,
+        rev: u64,
+    ) -> Self {
         Book { costs, floors: Some(floors), disks: Some(disks), cache: CacheRef::Kept(cache), rev }
     }
 
@@ -306,7 +328,11 @@ impl<'a> Book<'a> {
             if y == 0 {
                 continue;
             }
-            out.push(Run { sizes: sizes_of(k, Some(c)), threads: c.sizes.get("threads").map(|&t| t as f64), y: y as f64 });
+            out.push(Run {
+                sizes: sizes_of(k, Some(c)),
+                threads: c.sizes.get("threads").map(|&t| t as f64),
+                y: y as f64,
+            });
         }
         out
     }
@@ -355,7 +381,8 @@ impl<'a> Book<'a> {
         let vals: Vec<u64> = match m {
             Measure::Mem => {
                 // (A target's own: its measure and floor, the larger.)
-                let mut by: BTreeMap<&String, u64> = self.costs.iter().filter(|(k, c)| of(k) && c.v >= v).map(|(k, c)| (k, c.peak_mb)).collect();
+                let mut by: BTreeMap<&String, u64> =
+                    self.costs.iter().filter(|(k, c)| of(k) && c.v >= v).map(|(k, c)| (k, c.peak_mb)).collect();
                 for (k, f) in self.floors.into_iter().flatten().filter(|(k, f)| of(k) && f.v >= v) {
                     let e = by.entry(k).or_default();
                     *e = (*e).max(f.mb);
@@ -430,7 +457,14 @@ impl<'a> Book<'a> {
             Some(crate::agent::steps::Kind::Fetch) => Io::Net,
             _ => Io::Nas,
         };
-        Need { mem_mb, mem_from, disk_mb: self.disk(step, target, threads), secs: self.secs(step, target, threads), cores: threads, io }
+        Need {
+            mem_mb,
+            mem_from,
+            disk_mb: self.disk(step, target, threads),
+            secs: self.secs(step, target, threads),
+            cores: threads,
+            io,
+        }
     }
 }
 
@@ -440,7 +474,10 @@ pub fn fit_table(book: &Book) -> String {
     let mut steps: Vec<&str> = book.costs.keys().map(|k| step_of_key(k)).collect();
     steps.sort();
     steps.dedup();
-    let mut out = format!("{:<14} {:<7} {:>5}  {:<10} {:>7} {:>7} {:>8}  fit\n", "step", "measure", "runs", "size", "miss", "error", "p90 err");
+    let mut out = format!(
+        "{:<14} {:<7} {:>5}  {:<10} {:>7} {:>7} {:>8}  fit\n",
+        "step", "measure", "runs", "size", "miss", "error", "p90 err"
+    );
     let mut poor: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for s in &steps {
         for m in Measure::ALL {
@@ -459,9 +496,33 @@ pub fn fit_table(book: &Book) -> String {
             match fits.first() {
                 Some(f) => {
                     let t = f.per_thread.map_or(String::new(), |c| format!(" + {c:.1}×threads"));
-                    out += &format!("{:<14} {:<7} {:>5}  {:<10} {:>6.1}% {:>6.1}% {:>8}  {}{:.0} + {:.4}×{}{t}\n", s, m.name(), n, f.size, f.miss * 100.0, f.err * 100.0, max_err, if f.good() { "" } else { "poor: " }, f.base, f.k, f.size);
+                    out += &format!(
+                        "{:<14} {:<7} {:>5}  {:<10} {:>6.1}% {:>6.1}% {:>8}  {}{:.0} + {:.4}×{}{t}\n",
+                        s,
+                        m.name(),
+                        n,
+                        f.size,
+                        f.miss * 100.0,
+                        f.err * 100.0,
+                        max_err,
+                        if f.good() { "" } else { "poor: " },
+                        f.base,
+                        f.k,
+                        f.size
+                    );
                 }
-                None => out += &format!("{:<14} {:<7} {:>5}  {:<10} {:>7} {:>7} {:>8}  poor: no size to fit on\n", s, m.name(), n, "-", "-", "-", max_err),
+                None => {
+                    out += &format!(
+                        "{:<14} {:<7} {:>5}  {:<10} {:>7} {:>7} {:>8}  poor: no size to fit on\n",
+                        s,
+                        m.name(),
+                        n,
+                        "-",
+                        "-",
+                        "-",
+                        max_err
+                    )
+                }
             }
             if !fits.first().is_some_and(Fit::good) {
                 poor.entry(s).or_default().push(m.name());
@@ -487,22 +548,39 @@ pub fn read_costs(p: &std::path::Path) -> anyhow::Result<(BTreeMap<String, Cost>
     for l in s.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(l) else { continue };
         let (Some(k), Some(peak)) = (v["unit"].as_str(), v["peak_mb"].as_u64()) else { continue };
-        let sizes = v["sizes"].as_object().map(|m| m.iter().filter_map(|(k, n)| Some((k.clone(), n.as_u64()?))).collect()).unwrap_or_default();
+        let sizes = v["sizes"]
+            .as_object()
+            .map(|m| m.iter().filter_map(|(k, n)| Some((k.clone(), n.as_u64()?))).collect())
+            .unwrap_or_default();
         if let Some(d) = v["disk_mb"].as_u64().filter(|&d| d > 0) {
             disks.insert(k.to_string(), d);
         }
-        costs.insert(k.to_string(), Cost { peak_mb: peak, secs: v["secs"].as_u64().unwrap_or(0), worker: None, v: v["v"].as_u64().unwrap_or(0) as u32, sizes });
+        costs.insert(
+            k.to_string(),
+            Cost {
+                peak_mb: peak,
+                secs: v["secs"].as_u64().unwrap_or(0),
+                worker: None,
+                v: v["v"].as_u64().unwrap_or(0) as u32,
+                sizes,
+            },
+        );
     }
     Ok((costs, disks))
 }
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn cost(peak: u64, secs: u64, sizes: &[(&str, u64)]) -> Cost {
-        Cost { peak_mb: peak, secs, worker: None, v: 0, sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect() }
+        Cost {
+            peak_mb: peak,
+            secs,
+            worker: None,
+            v: 0,
+            sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+        }
     }
 
     /// Memory that goes with a tile's area fits; a target never run is predicted by the fit over its
@@ -543,10 +621,17 @@ mod tests {
             costs.insert(format!("peaks 6/{i}/1"), cost(if i % 7 == 0 { 9000 } else { 300 + (i * 37) % 200 }, 5, &[]));
         }
         costs.insert("peaks 6/31/1".into(), cost(40_000, 5, &[]));
-        let floors = BTreeMap::from([("peaks 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 }), ("terrain 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 })]);
+        let floors = BTreeMap::from([
+            ("peaks 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 }),
+            ("terrain 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 }),
+        ]);
         let b = Book::with(&costs, Some(&floors), None);
         assert!(!b.fits("peaks", Measure::Mem).iter().any(Fit::good));
-        assert_eq!(b.mem("peaks", "6/40/1", 0, 1), (9000, From::Prior), "the 90th percentile: neither the outlier nor the floor");
+        assert_eq!(
+            b.mem("peaks", "6/40/1", 0, 1),
+            (9000, From::Prior),
+            "the 90th percentile: neither the outlier nor the floor"
+        );
         assert_eq!(b.mem("peaks", "6/50/1", 0, 1), (12_000, From::Measured));
         assert_eq!(b.mem("pois", "6/40/1", 0, 777), (777, From::Table));
         assert_eq!(b.need("pois", "6/40/1", 0, 777).secs, None);
@@ -572,7 +657,10 @@ mod tests {
         let mut costs = BTreeMap::new();
         for i in 1..=40u64 {
             let t = 4 + (i % 3) * 4;
-            costs.insert(format!("terrain-lo 3/{i}/1"), Cost { v: 1, ..cost(200 + i * 10 + t * 100, 5, &[("tiffs", i), ("threads", t)]) });
+            costs.insert(
+                format!("terrain-lo 3/{i}/1"),
+                Cost { v: 1, ..cost(200 + i * 10 + t * 100, 5, &[("tiffs", i), ("threads", t)]) },
+            );
         }
         let b = Book::new(&costs);
         let f = b.fits("terrain-lo", Measure::Mem).into_iter().find(|f| f.size == "tiffs").unwrap();

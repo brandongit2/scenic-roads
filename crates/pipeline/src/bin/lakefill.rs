@@ -143,8 +143,11 @@ fn opts(a: &[String], k: &str) -> Vec<String> {
 /// The lake-fill source's declaration (`--declaration <file.toml>`: one as dropped into
 /// inputs/sources/, producers/sources/canvec-lakes.toml), as the step reads it accepted.
 fn declaration(a: &[String]) -> Result<pipeline::inputs::sources::Source> {
-    let p = std::path::PathBuf::from(opt(a, "--declaration").context("--declaration <file.toml>: the lake-fill source's declaration")?);
-    let d = pipeline::inputs::sources::parse(&std::fs::read(&p).with_context(|| p.display().to_string())?).map_err(|why| anyhow::anyhow!("{}: {}", p.display(), why.join("; ")))?;
+    let p = std::path::PathBuf::from(
+        opt(a, "--declaration").context("--declaration <file.toml>: the lake-fill source's declaration")?,
+    );
+    let d = pipeline::inputs::sources::parse(&std::fs::read(&p).with_context(|| p.display().to_string())?)
+        .map_err(|why| anyhow::anyhow!("{}: {}", p.display(), why.join("; ")))?;
     let id = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     Ok(pipeline::inputs::sources::Source { id, data: d.data, keyed: String::new(), index: Vec::new() })
 }
@@ -175,7 +178,12 @@ fn fill(a: &[String]) -> Result<()> {
 
 fn merge(a: &[String]) -> Result<()> {
     let out = std::path::PathBuf::from(opt(a, "--out").context("--out")?);
-    let runs: Vec<std::path::PathBuf> = a.iter().enumerate().filter(|(i, x)| !x.starts_with("--") && (*i == 0 || a[i - 1] != "--out")).map(|(_, x)| x.into()).collect();
+    let runs: Vec<std::path::PathBuf> = a
+        .iter()
+        .enumerate()
+        .filter(|(i, x)| !x.starts_with("--") && (*i == 0 || a[i - 1] != "--out"))
+        .map(|(_, x)| x.into())
+        .collect();
     run::merge(&runs, &out)?;
     Ok(())
 }
@@ -193,7 +201,15 @@ fn catalog_add(a: &[String]) -> Result<()> {
     let content = store::naming::content_name(&logical, hash, "sect");
     std::fs::create_dir_all(root.join(&content).parent().unwrap())?;
     std::fs::copy(&fill, root.join(&content))?;
-    cat.files.insert(logical.clone(), store::catalog::FileRef { file: content.clone(), size: std::fs::metadata(&fill)?.len(), fmt: 1, ..Default::default() });
+    cat.files.insert(
+        logical.clone(),
+        store::catalog::FileRef {
+            file: content.clone(),
+            size: std::fs::metadata(&fill)?.len(),
+            fmt: 1,
+            ..Default::default()
+        },
+    );
     cat.global.insert("lakefill".into(), logical);
     cat.n += 1;
     let p = store::catalog::write_copy(&dir, &cat)?;
@@ -206,7 +222,8 @@ fn stats(a: &[String]) -> Result<()> {
     let path = std::path::PathBuf::from(opt(a, "--fill").context("--fill")?);
     let f = lf::Fill::open(&path, "stats")?;
     let mut region: std::collections::HashMap<nts::Key, String> = std::collections::HashMap::new();
-    let mut rd = std::io::BufRead::lines(std::io::BufReader::new(std::fs::File::open(opt(a, "--sheets").context("--sheets")?)?));
+    let mut rd =
+        std::io::BufRead::lines(std::io::BufReader::new(std::fs::File::open(opt(a, "--sheets").context("--sheets")?)?));
     let head: Vec<String> = rd.next().context("empty")??.split(',').map(str::to_string).collect();
     let col = |n: &str| head.iter().position(|h| h == n).context("a column");
     let (cw, cs, cr) = (col("west")?, col("south")?, col("region")?);
@@ -243,7 +260,12 @@ fn stats(a: &[String]) -> Result<()> {
     for (km2, lon, lat) in big.iter().take(15) {
         eprintln!("lakefill: {km2:.1} km² at {lat:.4}, {lon:.4}");
     }
-    let out: serde_json::Map<String, serde_json::Value> = by.into_iter().map(|(r, (n, km2, i))| (r, serde_json::json!({"lakes": n, "km2": (km2 * 10.0).round() / 10.0, "intermittent": i}))).collect();
+    let out: serde_json::Map<String, serde_json::Value> = by
+        .into_iter()
+        .map(|(r, (n, km2, i))| {
+            (r, serde_json::json!({"lakes": n, "km2": (km2 * 10.0).round() / 10.0, "intermittent": i}))
+        })
+        .collect();
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
 }
@@ -253,7 +275,10 @@ fn seamcheck(a: &[String]) -> Result<()> {
     use pipeline::lakefill::OsmWater;
     let f = lf::Fill::open(Path::new(&opt(a, "--fill").context("--fill")?), "check")?;
     let max: usize = opt(a, "--max").map(|v| v.parse()).transpose()?.unwrap_or(2000);
-    let pm = store::pmtiles::PmTiles::with_leaf_cache(Box::new(store::range::PlainFile::open(Path::new(&opt(a, "--basemap").context("--basemap")?))?), 4096)?;
+    let pm = store::pmtiles::PmTiles::with_leaf_cache(
+        Box::new(store::range::PlainFile::open(Path::new(&opt(a, "--basemap").context("--basemap")?))?),
+        4096,
+    )?;
     let osm = lf::BasemapOsm::new(pm);
     // The cut edges: a lake's edge along a sheet line (north–south on a sheet's longitude, or
     // east–west on a quarter degree), at least 20 m long.
@@ -296,7 +321,8 @@ fn seamcheck(a: &[String]) -> Result<()> {
         })
         .collect();
     osm.prepare(&boxes)?;
-    let (mut edge_m, mut with_osm_m, mut doubled_m2, mut sliver_rows, mut rows_both) = (0.0f64, 0.0f64, 0.0f64, 0u64, 0u64);
+    let (mut edge_m, mut with_osm_m, mut doubled_m2, mut sliver_rows, mut rows_both) =
+        (0.0f64, 0.0f64, 0.0f64, 0u64, 0u64);
     let mut slivers: Vec<f64> = Vec::new();
     for ((i, p, q), b) in cuts.iter().zip(&boxes) {
         let (_, lat) = lf::lonlat(*p);
@@ -337,7 +363,13 @@ fn seamcheck(a: &[String]) -> Result<()> {
             any = true;
             rows_both += 1;
             // The band between the lake's side and OSM's (in px), or none where they meet.
-            let gap = if l1 < o0 { (o0 - l1 - 1) as f64 } else if o1 < l0 { (l0 - o1 - 1) as f64 } else { 0.0 };
+            let gap = if l1 < o0 {
+                (o0 - l1 - 1) as f64
+            } else if o1 < l0 {
+                (l0 - o1 - 1) as f64
+            } else {
+                0.0
+            };
             if gap > 0.0 {
                 sliver_rows += 1;
                 slivers.push(gap * 0.5);
@@ -361,4 +393,3 @@ fn seamcheck(a: &[String]) -> Result<()> {
     );
     Ok(())
 }
-

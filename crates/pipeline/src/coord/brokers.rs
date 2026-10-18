@@ -85,7 +85,10 @@ pub fn origin(url: &str) -> Option<String> {
 fn tailnet(o: &str) -> bool {
     let host = o.split_once("://").map_or(o, |(_, h)| h);
     let name = host.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or(host, |(n, _)| n);
-    name.ends_with(".ts.net") || name.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]))
+    name.ends_with(".ts.net")
+        || name
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]))
 }
 
 /// The origins of a broker's pages: each of its addresses, but its LAN names (`.local`) when it has
@@ -140,7 +143,8 @@ pub fn answer(b: &Brokers, a: &Ask) -> serde_json::Value {
         })
         .collect();
     asks.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.host.cmp(&y.1.host)));
-    let brokers: Vec<serde_json::Value> = asks.iter().map(|(n, p, base)| serde_json::json!({ "base": base, "waiting": n })).collect();
+    let brokers: Vec<serde_json::Value> =
+        asks.iter().map(|(n, p, base)| serde_json::json!({ "base": base, "waiting": n })).collect();
     let members: Vec<String> = b.peers.iter().filter_map(|p| base(p.broker.as_ref()?, a.https)).collect();
     let lead = b.peers.iter().find(|p| p.lead).and_then(|p| base(p.broker.as_ref()?, a.https));
     serde_json::json!({ "brokers": brokers, "members": members, "lead": lead })
@@ -157,7 +161,12 @@ mod tests {
     use super::*;
 
     fn broker(urls: &[&str], https: Option<&str>, waiting: &[(&str, u32, u64)]) -> Broker {
-        Broker { urls: urls.iter().map(|u| u.to_string()).collect(), https: https.map(str::to_string), waiting: waiting.iter().map(|(k, n, mb)| (k.to_string(), Waiting { n: *n, mb: *mb })).collect(), out: 0 }
+        Broker {
+            urls: urls.iter().map(|u| u.to_string()).collect(),
+            https: https.map(str::to_string),
+            waiting: waiting.iter().map(|(k, n, mb)| (k.to_string(), Waiting { n: *n, mb: *mb })).collect(),
+            out: 0,
+        }
     }
 
     #[test]
@@ -167,24 +176,55 @@ mod tests {
         assert_eq!(origin("ftp://x"), None);
         assert_eq!(origin("https:///x"), None);
         let own = broker(&["http://100.70.85.80:8090", "http://m4.local:8090"], Some("https://m4.tail1.ts.net/"), &[]);
-        let m1 = Peer { member: "m-1".into(), host: "m1".into(), lead: false, broker: Some(broker(&["http://100.93.150.29:8090"], None, &[])) };
+        let m1 = Peer {
+            member: "m-1".into(),
+            host: "m1".into(),
+            lead: false,
+            broker: Some(broker(&["http://100.93.150.29:8090"], None, &[])),
+        };
         let old = Peer { member: "m-2".into(), host: "old".into(), lead: false, broker: None };
         let b = Brokers::new(vec![m1, old], &own);
         // (The LAN's name left out: a tailnet address is there.)
-        let want: BTreeSet<String> = ["http://100.70.85.80:8090", "https://m4.tail1.ts.net", "http://100.93.150.29:8090"].iter().map(|s| s.to_string()).collect();
+        let want: BTreeSet<String> =
+            ["http://100.70.85.80:8090", "https://m4.tail1.ts.net", "http://100.93.150.29:8090"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
         assert_eq!(b.origins, want);
         // With no tailnet address, the LAN's name is the page's.
-        assert_eq!(origins_of(&broker(&["http://m4.local:8090"], None, &[])), ["http://m4.local:8090".to_string()].into());
+        assert_eq!(
+            origins_of(&broker(&["http://m4.local:8090"], None, &[])),
+            ["http://m4.local:8090".to_string()].into()
+        );
     }
 
     #[test]
     fn where_answers_the_brokers_with_work_that_fits_most_waiting_first() {
         let can: Vec<String> = vec!["tail".into(), "bldtile".into()];
         let peers = vec![
-            Peer { member: "m-a".into(), host: "a".into(), lead: true, broker: Some(broker(&["http://100.1.1.1:8090"], Some("https://a.ts.net/"), &[("tail", 2, 800)])) },
-            Peer { member: "m-b".into(), host: "b".into(), lead: false, broker: Some(broker(&["http://100.1.1.2:8090"], None, &[("tail", 1, 600), ("bldtile", 4, 900)])) },
+            Peer {
+                member: "m-a".into(),
+                host: "a".into(),
+                lead: true,
+                broker: Some(broker(&["http://100.1.1.1:8090"], Some("https://a.ts.net/"), &[("tail", 2, 800)])),
+            },
+            Peer {
+                member: "m-b".into(),
+                host: "b".into(),
+                lead: false,
+                broker: Some(broker(&["http://100.1.1.2:8090"], None, &[("tail", 1, 600), ("bldtile", 4, 900)])),
+            },
             // (Too large for the page, and a kind it doesn't do.)
-            Peer { member: "m-c".into(), host: "c".into(), lead: false, broker: Some(broker(&["http://100.1.1.3:8090"], Some("https://c.ts.net/"), &[("tail", 9, 5000), ("terrainsub", 3, 100)])) },
+            Peer {
+                member: "m-c".into(),
+                host: "c".into(),
+                lead: false,
+                broker: Some(broker(
+                    &["http://100.1.1.3:8090"],
+                    Some("https://c.ts.net/"),
+                    &[("tail", 9, 5000), ("terrainsub", 3, 100)],
+                )),
+            },
             Peer { member: "m-d".into(), host: "d".into(), lead: false, broker: None },
         ];
         let b = Brokers::new(peers, &Broker::default());

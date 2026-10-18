@@ -98,7 +98,8 @@ impl Lake {
             }
             out.push(r);
         }
-        let big = out.iter().max_by(|a, b| crate::watercov::area2(a).abs().total_cmp(&crate::watercov::area2(b).abs()))?;
+        let big =
+            out.iter().max_by(|a, b| crate::watercov::area2(a).abs().total_cmp(&crate::watercov::area2(b).abs()))?;
         if crate::watercov::area2(big) < 0.0 {
             for r in &mut out {
                 r.reverse();
@@ -123,7 +124,8 @@ impl Lake {
 
     /// Its points on the fill's grid, sorted: the same for the same lake however its rings start.
     fn key(&self) -> u64 {
-        let mut pts: Vec<u64> = self.rings.iter().flatten().map(|p| (u64::from(quant(p[0])) << 32) | u64::from(quant(p[1]))).collect();
+        let mut pts: Vec<u64> =
+            self.rings.iter().flatten().map(|p| (u64::from(quant(p[0])) << 32) | u64::from(quant(p[1]))).collect();
         pts.sort_unstable();
         xxhash_rust::xxh3::xxh3_64(bytemuck::cast_slice(&pts))
     }
@@ -302,7 +304,9 @@ impl OsmWater for BasemapOsm {
                 let mut spans: Vec<(u64, u64)> = Vec::new();
                 for (o, l) in offs {
                     match spans.last_mut() {
-                        Some(s) if o <= s.1 + (1 << 20) && o + u64::from(l) - s.0 <= 256 << 20 => s.1 = s.1.max(o + u64::from(l)),
+                        Some(s) if o <= s.1 + (1 << 20) && o + u64::from(l) - s.0 <= 256 << 20 => {
+                            s.1 = s.1.max(o + u64::from(l))
+                        }
                         _ => spans.push((o, o + u64::from(l))),
                     }
                 }
@@ -316,7 +320,15 @@ impl OsmWater for BasemapOsm {
                     let k = bufs.partition_point(|b| b.0 <= o) - 1;
                     let (a, ref buf) = bufs[k];
                     let tw = crate::water::tile_water(&buf[(o - a) as usize..(o - a) as usize + l as usize])?;
-                    let rings = tw.rings.into_iter().map(|(_, r)| r.into_iter().map(|p| [(f64::from(x) + p[0] / tw.extent) / n, (f64::from(y) + p[1] / tw.extent) / n]).collect()).collect();
+                    let rings = tw
+                        .rings
+                        .into_iter()
+                        .map(|(_, r)| {
+                            r.into_iter()
+                                .map(|p| [(f64::from(x) + p[0] / tw.extent) / n, (f64::from(y) + p[1] / tw.extent) / n])
+                                .collect()
+                        })
+                        .collect();
                     out.push(((x, y), rings));
                 }
                 Ok(out)
@@ -455,7 +467,12 @@ fn gap_sheet(l: &Lake, gap: &(dyn Fn(nts::Key) -> bool + Sync)) -> Option<nts::K
 /// The source's pieces (`pieces`) as whole lakes, those meeting a gap sheet (`gap`) and touching
 /// none of OSM's water (`osm`) kept, by the module's rules. Deterministic: the lakes come out in
 /// the order of their first piece.
-pub fn select(pieces: Vec<Lake>, gap: &(dyn Fn(nts::Key) -> bool + Sync), osm: &dyn OsmWater, rules: &Rules) -> Result<Selected> {
+pub fn select(
+    pieces: Vec<Lake>,
+    gap: &(dyn Fn(nts::Key) -> bool + Sync),
+    osm: &dyn OsmWater,
+    rules: &Rules,
+) -> Result<Selected> {
     use rayon::prelude::*;
     let mut stats = Stats { pieces: pieces.len() as u64, ..Default::default() };
     // Doubles: the same points, however the rings start.
@@ -481,7 +498,8 @@ pub fn select(pieces: Vec<Lake>, gap: &(dyn Fn(nts::Key) -> bool + Sync), osm: &
             for k in 0..r.len() {
                 let (a, b) = (r[k], r[(k + 1) % r.len()]);
                 let (qa, qb) = ([quant(a[0]), quant(a[1])], [quant(b[0]), quant(b[1])]);
-                let (ka, kb) = ((u64::from(qa[0]) << 32) | u64::from(qa[1]), (u64::from(qb[0]) << 32) | u64::from(qb[1]));
+                let (ka, kb) =
+                    ((u64::from(qa[0]) << 32) | u64::from(qa[1]), (u64::from(qb[0]) << 32) | u64::from(qb[1]));
                 match edges.entry((ka.min(kb), ka.max(kb))) {
                     std::collections::hash_map::Entry::Occupied(e) => dsu.union(*e.get(), i as u32),
                     std::collections::hash_map::Entry::Vacant(e) => {
@@ -538,7 +556,9 @@ pub fn select(pieces: Vec<Lake>, gap: &(dyn Fn(nts::Key) -> bool + Sync), osm: &
                 }
                 // (A point on B's shore, within the grid's step, counts as inside.)
                 let eps2 = (2.0 / SCALE) * (2.0 / SCALE);
-                let on_b = |p: [f64; 2]| pb.rings.iter().any(|r| (0..r.len()).any(|k| seg_point2(r[k], r[(k + 1) % r.len()], p) <= eps2));
+                let on_b = |p: [f64; 2]| {
+                    pb.rings.iter().any(|r| (0..r.len()).any(|k| seg_point2(r[k], r[(k + 1) % r.len()], p) <= eps2))
+                };
                 if pa.rings.iter().flatten().all(|p| winding(&pb.rings, *p) != 0 || on_b(*p)) {
                     dropped[a as usize] = true;
                 }
@@ -549,7 +569,8 @@ pub fn select(pieces: Vec<Lake>, gap: &(dyn Fn(nts::Key) -> bool + Sync), osm: &
     let lakes: Vec<Lake> = groups
         .values()
         .filter_map(|m| {
-            let rings: Vec<Vec<[f64; 2]>> = m.iter().filter(|&&i| !dropped[i as usize]).flat_map(|&i| ps[i as usize].rings.clone()).collect();
+            let rings: Vec<Vec<[f64; 2]>> =
+                m.iter().filter(|&&i| !dropped[i as usize]).flat_map(|&i| ps[i as usize].rings.clone()).collect();
             // (Intermittent only when all of it is.)
             let intermittent = m.iter().filter(|&&i| !dropped[i as usize]).all(|&i| ps[i as usize].intermittent);
             (!rings.is_empty()).then_some(Lake { rings, intermittent })
@@ -568,7 +589,8 @@ pub fn select(pieces: Vec<Lake>, gap: &(dyn Fn(nts::Key) -> bool + Sync), osm: &
         let (b, t) = (l.bbox(), tol_of(l));
         [b[0] - t, b[1] - t, b[2] + t, b[3] + t]
     };
-    let boxes: Vec<[f64; 4]> = lakes.iter().zip(&in_sheet).filter(|(_, k)| k.is_some()).map(|(l, _)| grown(l)).collect();
+    let boxes: Vec<[f64; 4]> =
+        lakes.iter().zip(&in_sheet).filter(|(_, k)| k.is_some()).map(|(l, _)| grown(l)).collect();
     osm.prepare(&boxes)?;
     // (A gap sheet's box in world units, shrunk by `by` each way.)
     let sheet_box = |k: nts::Key, by: f64| {
@@ -594,7 +616,11 @@ pub fn select(pieces: Vec<Lake>, gap: &(dyn Fn(nts::Key) -> bool + Sync), osm: &
     };
     // A lake's part in boxes (each ring clipped to each; the parts abut along the boxes' edges).
     let part_in = |l: &Lake, boxes: &[[f64; 4]]| -> Lake {
-        let rings = boxes.iter().flat_map(|b| l.rings.iter().map(move |r| clip(r, *b))).filter(|r| r.len() >= 3 && crate::watercov::area2(r) != 0.0).collect();
+        let rings = boxes
+            .iter()
+            .flat_map(|b| l.rings.iter().map(move |r| clip(r, *b)))
+            .filter(|r| r.len() >= 3 && crate::watercov::area2(r) != 0.0)
+            .collect();
         Lake { rings, intermittent: l.intermittent }
     };
     // Each lake meeting a gap sheet: whether it touches OSM's water, and when it does only across
@@ -616,7 +642,8 @@ pub fn select(pieces: Vec<Lake>, gap: &(dyn Fn(nts::Key) -> bool + Sync), osm: &
             // the lake touch any of OSM's water? If not, its part in them completes OSM's.
             let sheets = gaps_of(l);
             let inner: Vec<[f64; 4]> = sheets.iter().map(|&s| sheet_box(s, 2.0 * tol)).collect();
-            let water_in: Vec<Vec<[f64; 2]>> = inner.iter().flat_map(|b| water.iter().map(move |r| clip(r, *b))).filter(|r| r.len() >= 3).collect();
+            let water_in: Vec<Vec<[f64; 2]>> =
+                inner.iter().flat_map(|b| water.iter().map(move |r| clip(r, *b))).filter(|r| r.len() >= 3).collect();
             let lake_in = part_in(l, &inner);
             if lake_in.rings.is_empty() || touches(&lake_in, &water_in, tol) {
                 return Ok(Some((k, true, None)));
@@ -720,7 +747,9 @@ pub fn write(path: &Path, lakes: &[Lake], meta: serde_json::Value) -> Result<()>
     }
     let n = 1usize << GRID_Z;
     let shift = 32 - u32::from(GRID_Z);
-    let cells_of = |b: &[u32; 4]| ((b[0] >> shift) as usize..=(b[2] >> shift) as usize, (b[1] >> shift) as usize..=(b[3] >> shift) as usize);
+    let cells_of = |b: &[u32; 4]| {
+        ((b[0] >> shift) as usize..=(b[2] >> shift) as usize, (b[1] >> shift) as usize..=(b[3] >> shift) as usize)
+    };
     let mut grid = vec![0u32; n * n + 1];
     for r in &recs {
         let (xs, ys) = cells_of(&r.bbox);
@@ -869,7 +898,18 @@ impl Fill {
         let rec = self.lakes()[i as usize];
         let (rings, pts) = (self.rings(), self.points());
         let rs = &rings[rec.first_ring as usize..(rec.first_ring + rec.nrings) as usize];
-        Lake { rings: rs.iter().map(|r| pts[r[0] as usize..(r[0] + r[1]) as usize].iter().map(|p| [f64::from(p[0]) / SCALE, f64::from(p[1]) / SCALE]).collect()).collect(), intermittent: rec.id & INTERMITTENT != 0 }
+        Lake {
+            rings: rs
+                .iter()
+                .map(|r| {
+                    pts[r[0] as usize..(r[0] + r[1]) as usize]
+                        .iter()
+                        .map(|p| [f64::from(p[0]) / SCALE, f64::from(p[1]) / SCALE])
+                        .collect()
+                })
+                .collect(),
+            intermittent: rec.id & INTERMITTENT != 0,
+        }
     }
 
     /// The lakes whose boxes meet box `b` (world units), ascending.
@@ -877,19 +917,31 @@ impl Fill {
         let q = |v: f64| (v.clamp(0.0, 1.0) * SCALE).min(SCALE - 1.0) as u64;
         let (x0, y0, x1, y1) = (q(b[0]), q(b[1]), q(b[2]), q(b[3]));
         let recs = self.lakes();
-        let meets = |r: &LakeRec| u64::from(r.bbox[0]) <= x1 && u64::from(r.bbox[2]) >= x0 && u64::from(r.bbox[1]) <= y1 && u64::from(r.bbox[3]) >= y0;
+        let meets = |r: &LakeRec| {
+            u64::from(r.bbox[0]) <= x1
+                && u64::from(r.bbox[2]) >= x0
+                && u64::from(r.bbox[1]) <= y1
+                && u64::from(r.bbox[3]) >= y0
+        };
         let shift = 32 - u32::from(GRID_Z);
         let n = 1usize << GRID_Z;
-        let (cx0, cy0, cx1, cy1) = ((x0 >> shift) as usize, (y0 >> shift) as usize, (x1 >> shift) as usize, (y1 >> shift) as usize);
+        let (cx0, cy0, cx1, cy1) =
+            ((x0 >> shift) as usize, (y0 >> shift) as usize, (x1 >> shift) as usize, (y1 >> shift) as usize);
         let mut out: Vec<u32> = if (cx1 - cx0 + 1) * (cy1 - cy0 + 1) > 64 {
             (0..recs.len() as u32).filter(|&i| meets(&recs[i as usize])).collect()
         } else {
-            let (grid, cells): (&[u32], &[u32]) = (self.r.cast("grid").unwrap_or(&[]), self.r.cast("cells").unwrap_or(&[]));
+            let (grid, cells): (&[u32], &[u32]) =
+                (self.r.cast("grid").unwrap_or(&[]), self.r.cast("cells").unwrap_or(&[]));
             let mut v = Vec::new();
             for cy in cy0..=cy1 {
                 for cx in cx0..=cx1 {
                     let c = cy * n + cx;
-                    v.extend(cells[grid[c] as usize..grid[c + 1] as usize].iter().copied().filter(|&i| meets(&recs[i as usize])));
+                    v.extend(
+                        cells[grid[c] as usize..grid[c + 1] as usize]
+                            .iter()
+                            .copied()
+                            .filter(|&i| meets(&recs[i as usize])),
+                    );
                 }
             }
             v
@@ -927,7 +979,9 @@ impl Fill {
                 .iter()
                 .map(|r| clip(r, b))
                 .filter(|r| r.len() >= 3)
-                .map(|r| r.iter().map(|p| [(p[0] * n - f64::from(x)) * extent, (p[1] * n - f64::from(y)) * extent]).collect())
+                .map(|r| {
+                    r.iter().map(|p| [(p[0] * n - f64::from(x)) * extent, (p[1] * n - f64::from(y)) * extent]).collect()
+                })
                 .collect();
             if !rings.is_empty() {
                 out.push((self.lakes()[i as usize].id, rings));
@@ -970,13 +1024,27 @@ impl Fill {
                 g.push(7 | (1 << 3));
             }
             if !g.is_empty() {
-                features.push(names::mvt::Feature { id: Some(id), tags: vec![0, 0], geom_type: Some(3), geometry: g, unknown: Vec::new() });
+                features.push(names::mvt::Feature {
+                    id: Some(id),
+                    tags: vec![0, 0],
+                    geom_type: Some(3),
+                    geometry: g,
+                    unknown: Vec::new(),
+                });
             }
         }
         if features.is_empty() {
             return None;
         }
-        let layer = names::mvt::Layer { name: "water".into(), version: 2, extent: 4096, keys: vec!["class".into()], values: vec![names::mvt::Value::String("lake".into())], features, unknown: Vec::new() };
+        let layer = names::mvt::Layer {
+            name: "water".into(),
+            version: 2,
+            extent: 4096,
+            keys: vec!["class".into()],
+            values: vec![names::mvt::Value::String("lake".into())],
+            features,
+            unknown: Vec::new(),
+        };
         Some(names::mvt::Tile { layers: vec![layer], unknown: Vec::new() }.encode())
     }
 }
@@ -989,7 +1057,9 @@ impl crate::water::Extra for Fill {
     fn z14(&self, x: u32, y: u32) -> Option<crate::water::Stored> {
         let bytes = self.mvt(crate::water::BASE_Z, x, y)?;
         // (A key of its own: the fill's name and the tile's lakes.)
-        let key = xxhash_rust::xxh3::xxh3_64(format!("{} {}", self.name, self.tile_key(crate::water::BASE_Z, x, y)).as_bytes());
+        let key = xxhash_rust::xxh3::xxh3_64(
+            format!("{} {}", self.name, self.tile_key(crate::water::BASE_Z, x, y)).as_bytes(),
+        );
         Some(crate::water::Stored { key, bytes: std::sync::Arc::new(bytes) })
     }
 }
@@ -1071,13 +1141,16 @@ pub mod shp {
             self.buf.resize(len, 0);
             self.r.read_exact(&mut self.buf).context("a record cut short")?;
             let b = &self.buf;
-            let i32le = |o: usize| -> Result<i32> { Ok(i32::from_le_bytes(b.get(o..o + 4).context("cut short")?.try_into()?)) };
-            let f64le = |o: usize| -> Result<f64> { Ok(f64::from_le_bytes(b.get(o..o + 8).context("cut short")?.try_into()?)) };
+            let i32le =
+                |o: usize| -> Result<i32> { Ok(i32::from_le_bytes(b.get(o..o + 4).context("cut short")?.try_into()?)) };
+            let f64le =
+                |o: usize| -> Result<f64> { Ok(f64::from_le_bytes(b.get(o..o + 8).context("cut short")?.try_into()?)) };
             if !matches!(i32le(0)?, 5 | 15 | 25) {
                 return Ok(Some(Vec::new()));
             }
             let (nparts, npoints) = (usize::try_from(i32le(36)?)?, usize::try_from(i32le(40)?)?);
-            let parts: Vec<usize> = (0..nparts).map(|k| i32le(44 + 4 * k).map(|v| v as usize)).collect::<Result<_>>()?;
+            let parts: Vec<usize> =
+                (0..nparts).map(|k| i32le(44 + 4 * k).map(|v| v as usize)).collect::<Result<_>>()?;
             let p0 = 44 + 4 * nparts;
             ensure!(p0 + 16 * npoints <= len, "a polygon's points run past its record");
             let mut rings = Vec::with_capacity(nparts);
@@ -1086,7 +1159,9 @@ pub mod shp {
                 if s > e || e > npoints {
                     bail!("a polygon's parts out of order");
                 }
-                rings.push((s..e).map(|j| Ok([f64le(p0 + 16 * j)?, f64le(p0 + 16 * j + 8)?])).collect::<Result<Vec<_>>>()?);
+                rings.push(
+                    (s..e).map(|j| Ok([f64le(p0 + 16 * j)?, f64le(p0 + 16 * j + 8)?])).collect::<Result<Vec<_>>>()?,
+                );
             }
             Ok(Some(rings))
         }
@@ -1123,7 +1198,8 @@ pub mod shp {
             let mut h = [0u8; 32];
             r.read_exact(&mut h).context("a dBASE table's header")?;
             let records = u32::from_le_bytes(h[4..8].try_into()?) as usize;
-            let (hlen, rlen) = (u16::from_le_bytes(h[8..10].try_into()?) as usize, u16::from_le_bytes(h[10..12].try_into()?) as usize);
+            let (hlen, rlen) =
+                (u16::from_le_bytes(h[8..10].try_into()?) as usize, u16::from_le_bytes(h[10..12].try_into()?) as usize);
             ensure!(hlen > 32, "not a dBASE table");
             let mut rest = vec![0u8; hlen - 32];
             r.read_exact(&mut rest)?;
@@ -1217,8 +1293,12 @@ pub mod zip {
         let len = f.len()?;
         let tail_len = len.min(70_000);
         let tail = f.read_at(len - tail_len, tail_len as usize)?;
-        let e = (0..tail.len().saturating_sub(21)).rev().find(|&i| u32le(&tail, i) == 0x0605_4b50).context("no end of central directory")?;
-        let (mut n, mut cd_size, mut cd_off) = (u64::from(u16le(&tail, e + 10)), u64::from(u32le(&tail, e + 12)), u64::from(u32le(&tail, e + 16)));
+        let e = (0..tail.len().saturating_sub(21))
+            .rev()
+            .find(|&i| u32le(&tail, i) == 0x0605_4b50)
+            .context("no end of central directory")?;
+        let (mut n, mut cd_size, mut cd_off) =
+            (u64::from(u16le(&tail, e + 10)), u64::from(u32le(&tail, e + 12)), u64::from(u32le(&tail, e + 16)));
         if n == 0xffff || cd_size == 0xffff_ffff || cd_off == 0xffff_ffff {
             // Zip64: its locator just before, pointing at its end record.
             ensure!(e >= 20 && u32le(&tail, e - 20) == 0x0706_4b50, "no Zip64 locator");
@@ -1232,7 +1312,8 @@ pub mod zip {
         while o + 46 <= cd.len() && u32le(&cd, o) == 0x0201_4b50 {
             let (method, crc) = (u16le(&cd, o + 10), u32le(&cd, o + 16));
             let (mut csize, mut size) = (u64::from(u32le(&cd, o + 20)), u64::from(u32le(&cd, o + 24)));
-            let (nl, el, cl) = (usize::from(u16le(&cd, o + 28)), usize::from(u16le(&cd, o + 30)), usize::from(u16le(&cd, o + 32)));
+            let (nl, el, cl) =
+                (usize::from(u16le(&cd, o + 28)), usize::from(u16le(&cd, o + 30)), usize::from(u16le(&cd, o + 32)));
             let mut offset = u64::from(u32le(&cd, o + 42));
             let name = String::from_utf8_lossy(&cd[o + 46..o + 46 + nl]).into_owned();
             // Zip64's extra field: the sizes and offset that didn't fit, in that order.
@@ -1303,7 +1384,10 @@ pub mod zip {
                 self.checked = true;
                 let crc = std::mem::take(&mut self.crc).finalize();
                 if (crc, self.n) != self.want {
-                    return Err(std::io::Error::other(format!("{}: CRC or size wrong ({crc:08x}, {} bytes; the zip says {:08x}, {})", self.name, self.n, self.want.0, self.want.1)));
+                    return Err(std::io::Error::other(format!(
+                        "{}: CRC or size wrong ({crc:08x}, {} bytes; the zip says {:08x}, {})",
+                        self.name, self.n, self.want.0, self.want.1
+                    )));
                 }
             }
             Ok(n)
@@ -1322,7 +1406,17 @@ pub mod zip {
             8 => Box::new(flate2::read::DeflateDecoder::new(raw)),
             k => bail!("{}: compression method {k}", m.name),
         };
-        Ok(Box::new(std::io::BufReader::with_capacity(1 << 20, Checked { r, crc: crc32fast::Hasher::new(), n: 0, want: (m.crc, m.size), name: m.name.clone(), checked: false })))
+        Ok(Box::new(std::io::BufReader::with_capacity(
+            1 << 20,
+            Checked {
+                r,
+                crc: crc32fast::Hasher::new(),
+                n: 0,
+                want: (m.crc, m.size),
+                name: m.name.clone(),
+                checked: false,
+            },
+        )))
     }
 
     #[cfg(test)]
@@ -1598,7 +1692,12 @@ mod tests {
         assert_eq!((s.stats.touching, s.stats.completed, s.stats.kept), (1, 1, 1));
         // Its part west of the line, abutting OSM's: the two together are the whole lake.
         let west = lake(&[sq(-72.02, 53.80, -72.0, 53.81)]);
-        assert!((s.lakes[0].area() - west.area()).abs() / west.area() < 1e-4, "{} against {}", s.lakes[0].area(), west.area());
+        assert!(
+            (s.lakes[0].area() - west.area()).abs() / west.area() < 1e-4,
+            "{} against {}",
+            s.lakes[0].area(),
+            west.area()
+        );
         assert!(s.lakes[0].bbox()[2] <= crate::watercov::world(-72.0, 53.8)[0] + 1e-12);
         // OSM's water inside the gap sheet touching it: left out still.
         let pond = sq(-72.019, 53.805, -72.018, 53.806);
@@ -1615,7 +1714,10 @@ mod tests {
         // It holds OSM's pond.
         assert_eq!(run(vec![l.clone()], vec![sq(-72.296, 53.804, -72.294, 53.806)]).stats.kept, 0);
         // A pond on its island isn't in it: kept.
-        let with_island = lake(&[sq(-72.3, 53.80, -72.29, 53.81), vec![[-72.297, 53.803], [-72.293, 53.803], [-72.293, 53.807], [-72.297, 53.807], [-72.297, 53.803]]]);
+        let with_island = lake(&[
+            sq(-72.3, 53.80, -72.29, 53.81),
+            vec![[-72.297, 53.803], [-72.293, 53.803], [-72.293, 53.807], [-72.297, 53.807], [-72.297, 53.803]],
+        ]);
         let s = run(vec![with_island], vec![sq(-72.2955, 53.8045, -72.2945, 53.8055)]);
         assert_eq!(s.stats.kept, 1);
     }
@@ -1701,7 +1803,8 @@ mod tests {
         let mut area = 0.0f64;
         for y in y0..=y1 {
             for x in x0..=x1 {
-                let get = |tx: u32, ty: u32| -> Result<Vec<crate::water::Stored>> { Ok(f.z14(tx, ty).into_iter().collect()) };
+                let get =
+                    |tx: u32, ty: u32| -> Result<Vec<crate::water::Stored>> { Ok(f.z14(tx, ty).into_iter().collect()) };
                 let c = crate::water::cover(14, x, y, &get, &blocks).unwrap();
                 assert!(c.sea.iter().all(|&v| v == 0.0));
                 let px = 1.0 / (n * crate::water::SIZE as f64);
@@ -1808,7 +1911,10 @@ mod tests {
         let tab = shp::table_of(&t).unwrap();
         assert_eq!(tab.fields, vec!["definit_en", "code"]);
         assert_eq!(tab.col("CODE"), Some(1));
-        assert_eq!(tab.rows, vec![vec!["Lake".to_string(), "4".to_string()], vec!["Reservoir".to_string(), "5".to_string()]]);
+        assert_eq!(
+            tab.rows,
+            vec![vec!["Lake".to_string(), "4".to_string()], vec!["Reservoir".to_string(), "5".to_string()]]
+        );
     }
 
     #[test]

@@ -30,7 +30,11 @@ pub fn load(home: &Path) -> u64 {
         Ok(b) => match serde_json::from_slice::<Kept>(&b) {
             Ok(k) if k.gb >= MIN_GB => k.gb,
             Ok(k) => {
-                eprintln!("reserve: {} says {} GB, under the least ({MIN_GB} GB); {DEFAULT_GB} GB", path.display(), k.gb);
+                eprintln!(
+                    "reserve: {} says {} GB, under the least ({MIN_GB} GB); {DEFAULT_GB} GB",
+                    path.display(),
+                    k.gb
+                );
                 DEFAULT_GB
             }
             Err(e) => {
@@ -90,7 +94,11 @@ impl Setting {
 pub fn save(home: &Path, gb: u64) -> Result<()> {
     let path = home.join(FILE);
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let tmp = home.join(format!("{FILE}.{}.{}.tmp", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let tmp = home.join(format!(
+        "{FILE}.{}.{}.tmp",
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     std::fs::write(&tmp, serde_json::to_vec(&Kept { gb })?).with_context(|| format!("write {}", tmp.display()))?;
     std::fs::rename(&tmp, &path).with_context(|| format!("rename {}", tmp.display()))?;
     Ok(())

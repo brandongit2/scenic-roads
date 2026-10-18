@@ -101,7 +101,9 @@ impl Updater {
         let exe = std::env::current_exe().ok().and_then(|p| p.canonicalize().ok());
         let apps = home.join("app").canonicalize().ok();
         let running = match (exe, apps) {
-            (Some(e), Some(a)) if e.starts_with(&a) => e.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()),
+            (Some(e), Some(a)) if e.starts_with(&a) => {
+                e.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())
+            }
             _ => None,
         };
         // (Starting isn't a use: until a request comes, the server warms nothing and polls the
@@ -130,7 +132,8 @@ impl Updater {
             return Ok(false);
         }
         // Already in place, waiting for the map to be idle to restart into it.
-        if std::fs::read_link(self.home.join("app/current")).ok().is_some_and(|l| l.as_os_str() == cur.version.as_str()) {
+        if std::fs::read_link(self.home.join("app/current")).ok().is_some_and(|l| l.as_os_str() == cur.version.as_str())
+        {
             return Ok(false);
         }
         let dest = self.home.join("app").join(&cur.version);
@@ -225,7 +228,9 @@ impl Updater {
                             Err(e) => eprintln!("app update: {e:#}"),
                         }
                     }
-                    if me.pending.load(Ordering::Relaxed) && now().saturating_sub(LAST_REQUEST.load(Ordering::Relaxed)) >= 60 {
+                    if me.pending.load(Ordering::Relaxed)
+                        && now().saturating_sub(LAST_REQUEST.load(Ordering::Relaxed)) >= 60
+                    {
                         eprintln!("exiting for the new app");
                         std::process::exit(0);
                     }
@@ -289,7 +294,11 @@ mod tests {
         std::fs::write(tmp.join("server"), b"half").unwrap();
         age(&tmp.join("server"), 7200);
         age(&tmp, 7200);
-        let u = Updater { home: d.path().to_path_buf(), running: Some("20261003-0000-ccccccc".into()), pending: AtomicBool::new(false) };
+        let u = Updater {
+            home: d.path().to_path_buf(),
+            running: Some("20261003-0000-ccccccc".into()),
+            pending: AtomicBool::new(false),
+        };
         u.prune("20261003-0000-ccccccc", "20261003-0000-ccccccc");
         assert!(!tmp.exists());
         assert!(!app.join("20261001-0000-aaaaaaa").exists());

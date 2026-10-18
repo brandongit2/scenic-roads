@@ -16,8 +16,12 @@ use std::path::Path;
 /// before the records say the readers switched (`sources/inputs/regions/@switched`: publish 1's
 /// runbook, docs/inputs.md §6.1.10, comes first), or when it can't be read now.
 pub fn source(root: &Path, manifest: &BTreeMap<String, String>) -> Result<Accepted> {
-    anyhow::ensure!(switched(manifest), "the records don't say the regions' readers switched: run publish 1's runbook first (docs/inputs.md §6.1.10)");
-    crate::inputs::open(root, manifest, super::UNIT)?.context("no accepted version of the regions yet (the input check takes inputs/regions/ in)")
+    anyhow::ensure!(
+        switched(manifest),
+        "the records don't say the regions' readers switched: run publish 1's runbook first (docs/inputs.md §6.1.10)"
+    );
+    crate::inputs::open(root, manifest, super::UNIT)?
+        .context("no accepted version of the regions yet (the input check takes inputs/regions/ in)")
 }
 
 /// Whether the records say the readers read the regions' accepted version.
@@ -29,14 +33,21 @@ pub fn switched(manifest: &BTreeMap<String, String>) -> bool {
 /// the records' `@switched` (its `app`): Ok(None)
 /// when not switched. One that can't be read or parsed, or names no app, is an error: unknown,
 /// never taken for an app every Mac passes.
-pub fn switch_app(manifest: &BTreeMap<String, String>, read: &dyn Fn(&str) -> Result<Vec<u8>>) -> Result<Option<String>> {
+pub fn switch_app(
+    manifest: &BTreeMap<String, String>,
+    read: &dyn Fn(&str) -> Result<Vec<u8>>,
+) -> Result<Option<String>> {
     // (The elevation datasets' switch too, #143: an app from before it would key and build the
     // units as before them. The newer of the two.)
     let mut newest: Option<String> = None;
     for unit in [super::UNIT, crate::inputs::elevation::UNIT] {
         let Some(name) = manifest.get(&crate::inputs::switched_logical(unit)) else { continue };
         let v: serde_json::Value = serde_json::from_slice(&read(name)?).with_context(|| format!("parse {name}"))?;
-        let app = v.get("app").and_then(|a| a.as_str()).filter(|a| !a.is_empty()).with_context(|| format!("{name} names no app"))?;
+        let app = v
+            .get("app")
+            .and_then(|a| a.as_str())
+            .filter(|a| !a.is_empty())
+            .with_context(|| format!("{name} names no app"))?;
         if newest.as_deref().is_none_or(|n| !crate::pool::term::app_at_least(n, app)) {
             newest = Some(app.to_string());
         }
@@ -86,9 +97,24 @@ pub fn listed(a: &Accepted) -> Result<Vec<Listed>> {
         if !p.ends_with(".toml") || super::resolve::is_pins(p) || super::resolve::is_group(p) {
             continue;
         }
-        let s = |k: &str| f.facts.get(k).and_then(|v| v.as_str()).map(str::to_string).with_context(|| format!("{}: {p} has no {k} in its facts", a.version));
-        let outline: Vec<String> = f.facts.get("outline").and_then(|o| serde_json::from_value(o.clone()).ok()).with_context(|| format!("{}: {p} has no outline in its facts", a.version))?;
-        v.push(Listed { path: p.clone(), recipe: Recipe { id: s("id")?, name: s("name")?, outline }, geometry: s("geometry")?, drawn: s("drawn")? });
+        let s = |k: &str| {
+            f.facts
+                .get(k)
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .with_context(|| format!("{}: {p} has no {k} in its facts", a.version))
+        };
+        let outline: Vec<String> = f
+            .facts
+            .get("outline")
+            .and_then(|o| serde_json::from_value(o.clone()).ok())
+            .with_context(|| format!("{}: {p} has no outline in its facts", a.version))?;
+        v.push(Listed {
+            path: p.clone(),
+            recipe: Recipe { id: s("id")?, name: s("name")?, outline },
+            geometry: s("geometry")?,
+            drawn: s("drawn")?,
+        });
     }
     v.sort_by(|a, b| a.recipe.id.cmp(&b.recipe.id));
     Ok(v)
@@ -124,18 +150,32 @@ pub fn tree(index: &crate::inputs::Index) -> Folder {
     fn build(path: &str, groups: &BTreeMap<String, super::file::Group>, regions: &[(String, String)]) -> Folder {
         let mut subs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (d, _) in regions {
-            let rest = if path.is_empty() { Some(d.as_str()) } else { d.strip_prefix(path).and_then(|r| r.strip_prefix('/')) };
+            let rest =
+                if path.is_empty() { Some(d.as_str()) } else { d.strip_prefix(path).and_then(|r| r.strip_prefix('/')) };
             if let Some(first) = rest.filter(|r| !r.is_empty()).map(|r| r.split('/').next().unwrap()) {
                 subs.insert(if path.is_empty() { first.to_string() } else { format!("{path}/{first}") });
             }
         }
         let mut folders: Vec<Folder> = subs.iter().map(|s| build(s, groups, regions)).collect();
-        folders.sort_by(|a, b| (a.order.is_none(), a.order, a.name.to_lowercase(), &a.path).cmp(&(b.order.is_none(), b.order, b.name.to_lowercase(), &b.path)));
+        folders.sort_by(|a, b| {
+            (a.order.is_none(), a.order, a.name.to_lowercase(), &a.path).cmp(&(
+                b.order.is_none(),
+                b.order,
+                b.name.to_lowercase(),
+                &b.path,
+            ))
+        });
         let mut ids: Vec<String> = regions.iter().filter(|(d, _)| d == path).map(|(_, i)| i.clone()).collect();
         ids.sort();
         let g = groups.get(path);
         let own = path.rsplit_once('/').map_or(path, |(_, n)| n).to_string();
-        Folder { path: path.to_string(), name: g.map_or(own, |g| g.name.clone()), order: g.and_then(|g| g.order), regions: ids, folders }
+        Folder {
+            path: path.to_string(),
+            name: g.map_or(own, |g| g.name.clone()),
+            order: g.and_then(|g| g.order),
+            regions: ids,
+            folders,
+        }
     }
     build("", &groups, &regions)
 }
@@ -185,7 +225,11 @@ impl Coverage {
         let made = || -> Result<Coverage> {
             let l = listed(a)?;
             let names: Vec<String> = l.iter().map(|x| x.geometry.clone()).collect();
-            let geoms: Vec<Geometry> = read_all(root, &names)?.iter().zip(&names).map(|(b, n)| Geometry::decode(b).with_context(|| n.clone())).collect::<Result<_>>()?;
+            let geoms: Vec<Geometry> = read_all(root, &names)?
+                .iter()
+                .zip(&names)
+                .map(|(b, n)| Geometry::decode(b).with_context(|| n.clone()))
+                .collect::<Result<_>>()?;
             anyhow::ensure!(!geoms.is_empty(), "no regions in {}", a.version);
             Ok(coverage_of(&geoms))
         };
@@ -211,8 +255,13 @@ impl Coverage {
 /// files.
 pub fn drawn(root: &Path, a: &Accepted, regions: &[Recipe]) -> Result<Vec<DrawnRegion>> {
     let l = listed(a)?;
-    let names: Vec<String> = regions.iter().filter_map(|r| l.iter().find(|x| x.recipe.id == r.id).map(|x| x.drawn.clone())).collect();
-    read_all(root, &names)?.iter().zip(&names).map(|(b, n)| serde_json::from_slice::<Drawn>(b).map(|d| d.region()).with_context(|| format!("parse {n}"))).collect()
+    let names: Vec<String> =
+        regions.iter().filter_map(|r| l.iter().find(|x| x.recipe.id == r.id).map(|x| x.drawn.clone())).collect();
+    read_all(root, &names)?
+        .iter()
+        .zip(&names)
+        .map(|(b, n)| serde_json::from_slice::<Drawn>(b).map(|d| d.region()).with_context(|| format!("parse {n}")))
+        .collect()
 }
 
 /// The coverage of a scratch folder of region files (`--regions <dir>`, for proofs: docs/inputs.md
@@ -237,9 +286,12 @@ pub fn coverage_of_folder(root: &Path, manifest: &BTreeMap<String, String>, dir:
         }
     }
     paths.sort();
-    let read = |p: &str| -> Result<std::sync::Arc<Vec<u8>>> { Ok(std::sync::Arc::new(std::fs::read(dir.join(p)).with_context(|| format!("read {p}"))?)) };
+    let read = |p: &str| -> Result<std::sync::Arc<Vec<u8>>> {
+        Ok(std::sync::Arc::new(std::fs::read(dir.join(p)).with_context(|| format!("read {p}"))?))
+    };
     let v = crate::inputs::Version { paths: paths.into_iter().collect(), read: &read };
-    let checks: Box<dyn crate::inputs::Checks> = crate::inputs::Checks::prepared(&super::Regions::default(), root, manifest)?.context("the regions' checks")?;
+    let checks: Box<dyn crate::inputs::Checks> =
+        crate::inputs::Checks::prepared(&super::Regions::default(), root, manifest)?.context("the regions' checks")?;
     if let Some(why) = checks.not_ready() {
         anyhow::bail!("the regions can't be checked now: {why}");
     }
@@ -248,7 +300,11 @@ pub fn coverage_of_folder(root: &Path, manifest: &BTreeMap<String, String>, dir:
         findings.extend(checks.file(p, &(v.read)(p)?).findings);
     }
     findings.extend(checks.whole(&v)?);
-    anyhow::ensure!(findings.is_empty(), "the folder's regions don't check: {}", findings.iter().map(|f| f.message.clone()).collect::<Vec<_>>().join("; "));
+    anyhow::ensure!(
+        findings.is_empty(),
+        "the folder's regions don't check: {}",
+        findings.iter().map(|f| f.message.clone()).collect::<Vec<_>>().join("; ")
+    );
     let d = checks.derive(&v, &Default::default())?;
     let mut geoms: Vec<Geometry> = Vec::new();
     for (name, bytes) in &d.store {

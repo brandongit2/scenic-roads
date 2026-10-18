@@ -10,8 +10,8 @@
 //!   vterrain.i16       drape height per vertex (metres) for 3D rendering: the terrain surface
 //!                      (under bridges too: decks are drawn at max(this, elevation)); tunnels: elevation
 
-use det::Det;
 use bytemuck::{Pod, Zeroable};
+use det::Det;
 
 pub const SAMPLE_SPACING_M: f64 = 100.0;
 pub const NEAR_AZ: usize = 32;

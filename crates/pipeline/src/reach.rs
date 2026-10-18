@@ -75,13 +75,27 @@ impl LongWay {
             let k = if ferry {
                 1
             } else {
-                let d = roadcore::dist_m(a[0] as f64 * roadcore::E7, a[1] as f64 * roadcore::E7, c[0] as f64 * roadcore::E7, c[1] as f64 * roadcore::E7);
-                if d > spacing { (d / spacing).ceil() as i64 } else { 1 }
+                let d = roadcore::dist_m(
+                    a[0] as f64 * roadcore::E7,
+                    a[1] as f64 * roadcore::E7,
+                    c[0] as f64 * roadcore::E7,
+                    c[1] as f64 * roadcore::E7,
+                );
+                if d > spacing {
+                    (d / spacing).ceil() as i64
+                } else {
+                    1
+                }
             };
-            (1..k).map(move |j| {
-                let t = j as f64 / k as f64;
-                [(a[0] as f64 + (c[0] - a[0]) as f64 * t).round() as i32, (a[1] as f64 + (c[1] - a[1]) as f64 * t).round() as i32]
-            }).chain(std::iter::once(c))
+            (1..k)
+                .map(move |j| {
+                    let t = j as f64 / k as f64;
+                    [
+                        (a[0] as f64 + (c[0] - a[0]) as f64 * t).round() as i32,
+                        (a[1] as f64 + (c[1] - a[1]) as f64 * t).round() as i32,
+                    ]
+                })
+                .chain(std::iter::once(c))
         }))
     }
 }
@@ -305,12 +319,22 @@ mod tests {
     #[test]
     fn long_ways_decide_by_touching() {
         let d = tempfile::tempdir().unwrap();
-        let cov = |place: &str| Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![place.into()] }], None, d.path()).unwrap();
+        let cov = |place: &str| {
+            Coverage::fixture(
+                &[Recipe { id: "r".into(), name: "R".into(), outline: vec![place.into()] }],
+                None,
+                d.path(),
+            )
+            .unwrap()
+        };
         // A tile owning a ferry from its coast (-20, 65) far east to (0, 60); its own roads far from
         // the coverage.
         let u = Unit { z: 6, x: 28, y: 16 };
         let ferry = LongWay { owned: true, ferry: true, verts: vec![e7(-20.0, 65.0), e7(-10.0, 62.0), e7(0.0, 60.0)] };
-        let r = Reach { owned: Some([e7(-21.0, 64.5)[0], e7(-21.0, 64.5)[1], e7(-20.5, 65.0)[0], e7(-20.5, 65.0)[1]]), long: vec![ferry] };
+        let r = Reach {
+            owned: Some([e7(-21.0, 64.5)[0], e7(-21.0, 64.5)[1], e7(-20.5, 65.0)[0], e7(-20.5, 65.0)[1]]),
+            long: vec![ferry],
+        };
         // Coverage around the ferry's far end: built for the ferry.
         assert!(r.builds(&cov("place:0,60,30")));
         // Coverage near neither: not built.
@@ -327,7 +351,12 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         // A 2 km circle; a straight road whose two nodes are 50 km apart on either side, passing
         // 1 km from its centre: no node inside, but the points extract puts along it are.
-        let cov = Coverage::fixture(&[Recipe { id: "c".into(), name: "C".into(), outline: vec!["place:0,50.0,2".into()] }], None, d.path()).unwrap();
+        let cov = Coverage::fixture(
+            &[Recipe { id: "c".into(), name: "C".into(), outline: vec!["place:0,50.0,2".into()] }],
+            None,
+            d.path(),
+        )
+        .unwrap();
         let road = LongWay { owned: true, ferry: false, verts: vec![e7(-0.35, 50.009), e7(0.35, 50.009)] };
         assert!(!cov.touches(&road.verts));
         assert!(road.touches(&cov));
@@ -338,7 +367,13 @@ mod tests {
     #[test]
     fn reaches_round_trip() {
         let mut r = Reaches { fmt: 1, date: "2026-09-28".into(), ..Default::default() };
-        r.units.insert("6/31/20".into(), Reach { owned: Some([1, 2, 3, 4]), long: vec![LongWay { owned: false, ferry: false, verts: vec![[5, 6], [7, 8]] }] });
+        r.units.insert(
+            "6/31/20".into(),
+            Reach {
+                owned: Some([1, 2, 3, 4]),
+                long: vec![LongWay { owned: false, ferry: false, verts: vec![[5, 6], [7, 8]] }],
+            },
+        );
         let back: Reaches = serde_json::from_slice(&zstd::decode_all(&r.encode().unwrap()[..]).unwrap()).unwrap();
         assert_eq!(back, r);
         assert_eq!(back.get(Unit { z: 6, x: 31, y: 20 }).unwrap().owned, Some([1, 2, 3, 4]));

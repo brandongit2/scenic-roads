@@ -14,8 +14,8 @@
 //! buildings  roadside buildings per sample from the footprints (the folder given)
 //! flags   the flag channels again (heritage, areas, buildings) on the view's metrics
 
-use det::Det;
 use anyhow::{bail, ensure, Context, Result};
+use det::Det;
 use pipeline::count_bar;
 use pipeline::scache::{self, GridChange};
 use pipeline::terr::TerrainCache;
@@ -106,7 +106,12 @@ fn prep(dir: &Path) -> Result<()> {
                 let mut acc = 0.0;
                 cd.push(0.0);
                 for j in 1..n {
-                    acc += dist_m(v[j - 1][0] as f64 * E7, v[j - 1][1] as f64 * E7, v[j][0] as f64 * E7, v[j][1] as f64 * E7);
+                    acc += dist_m(
+                        v[j - 1][0] as f64 * E7,
+                        v[j - 1][1] as f64 * E7,
+                        v[j][0] as f64 * E7,
+                        v[j][1] as f64 * E7,
+                    );
                     cd.push(acc);
                 }
                 let m = ((acc / SAMPLE_SPACING_M).round() as usize).max(1);
@@ -128,7 +133,13 @@ fn prep(dir: &Path) -> Result<()> {
                         lat: lat.round() as i32,
                         // Rail: a carriage window is higher than a car's.
                         eye: ground + if class::is_rail(w.class) { RAIL_EYE_M } else { EYE_M },
-                        flags: if tunnel { sflag::TUNNEL } else if bridge { sflag::BRIDGE } else { 0 },
+                        flags: if tunnel {
+                            sflag::TUNNEL
+                        } else if bridge {
+                            sflag::BRIDGE
+                        } else {
+                            0
+                        },
                         _pad: [0; 3],
                     });
                 }
@@ -264,7 +275,13 @@ impl Chm10 {
 /// `read_only`: the files read where they lie (a task's worker, the NAS's store): what's there
 /// whole, else an error; nothing downloaded, written, touched or removed there. `url`: the file's
 /// URL by the declared canopy source's index (pipeline::unit::UnitSources); none when it lists none.
-fn fetch_file(agent: &ureq::Agent, url: Option<&str>, path: &Path, store: Option<&Path>, read_only: bool) -> Result<Option<File>> {
+fn fetch_file(
+    agent: &ureq::Agent,
+    url: Option<&str>,
+    path: &Path,
+    store: Option<&Path>,
+    read_only: bool,
+) -> Result<Option<File>> {
     if read_only {
         let f = File::open(path).with_context(|| format!("{} isn't there to read", path.display()))?;
         if f.metadata()?.len() == 0 {
@@ -293,7 +310,8 @@ fn fetch_file(agent: &ureq::Agent, url: Option<&str>, path: &Path, store: Option
         }
         None
     };
-    let here = || -> Option<Option<File>> { store::cachefile::hold_existing(path).ok().flatten().and_then(|p| kept(&p)) };
+    let here =
+        || -> Option<Option<File>> { store::cachefile::hold_existing(path).ok().flatten().and_then(|p| kept(&p)) };
     if let Some(f) = here() {
         return Ok(f);
     }
@@ -305,7 +323,10 @@ fn fetch_file(agent: &ureq::Agent, url: Option<&str>, path: &Path, store: Option
         if let Some(d) = st.parent() {
             std::fs::create_dir_all(d)?;
         }
-        let lock = st.with_file_name(format!("{}.lock", st.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        let lock = st.with_file_name(format!(
+            "{}.lock",
+            st.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        ));
         loop {
             match kept(st) {
                 Some(None) => {
@@ -328,7 +349,11 @@ fn fetch_file(agent: &ureq::Agent, url: Option<&str>, path: &Path, store: Option
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     let age = std::fs::metadata(&lock).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
                     if age.is_some_and(|a| a > std::time::Duration::from_secs(1800)) {
-                        eprintln!("canopy: taking over {} (not touched for {:.0?})", lock.display(), age.unwrap_or_default());
+                        eprintln!(
+                            "canopy: taking over {} (not touched for {:.0?})",
+                            lock.display(),
+                            age.unwrap_or_default()
+                        );
                         std::fs::remove_file(&lock).ok();
                     } else {
                         std::thread::sleep(std::time::Duration::from_secs(20));
@@ -351,13 +376,17 @@ fn fetch_file(agent: &ureq::Agent, url: Option<&str>, path: &Path, store: Option
     for attempt in 0..6 {
         match agent.get(url).call() {
             Ok(mut r) => {
-                let want: Option<u64> = r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
+                let want: Option<u64> =
+                    r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
                 // Into a temporary file beside `path`, not memory (up to 1.2 GB), flushed. (A body cut
                 // short, or not a whole TIFF, is tried again, never kept.)
                 // (Held as it's written, store::cachefile's scratch file: room-making leaves it.)
                 let (tmp, mut f) = store::cachefile::scratch(path)?;
                 let got = (|| -> Result<Option<File>> {
-                    let Some(n) = copy_body(&mut r.body_mut().with_config().limit(3_000_000_000).reader(), &mut f)? else { return Ok(None) };
+                    let Some(n) = copy_body(&mut r.body_mut().with_config().limit(3_000_000_000).reader(), &mut f)?
+                    else {
+                        return Ok(None);
+                    };
                     f.sync_all()?;
                     if want.is_some_and(|w| w != n) || !pipeline::whole::tiff_whole(&f) {
                         return Ok(None);
@@ -516,7 +545,13 @@ fn read_at(f: &File, len: u64, off: u64, n: usize) -> Result<Vec<u8>> {
 /// length)`, each value through `f` (no data, 65535: 0). Each strip holding wanted rows is decoded
 /// whole, its wanted part straight into place; a strip that doesn't decode whole is an error (the
 /// file is damaged: canopy takes it again).
-fn decode_rows(read: &(dyn Fn(u64, usize) -> Result<Vec<u8>> + Sync), st: &Strips, rows: Range<usize>, cols: Range<usize>, f: impl Fn(u16) -> u8 + Sync) -> Result<Vec<u8>> {
+fn decode_rows(
+    read: &(dyn Fn(u64, usize) -> Result<Vec<u8>> + Sync),
+    st: &Strips,
+    rows: Range<usize>,
+    cols: Range<usize>,
+    f: impl Fn(u16) -> u8 + Sync,
+) -> Result<Vec<u8>> {
     let (w, rps, nc) = (st.width, st.rows_per_strip.max(1), cols.len());
     ensure!(cols.end <= w, "columns {cols:?} of {w}");
     let mut out = vec![0u8; nc * rows.len()];
@@ -542,7 +577,9 @@ fn decode_rows(read: &(dyn Fn(u64, usize) -> Result<Vec<u8>> + Sync), st: &Strip
         let raw = dec.decode(&src).map_err(|e| anyhow::anyhow!("strip {si}: {e:?}"))?;
         // (Its wanted rows whole, all columns: a strip that decodes short is damaged.)
         let skip = (first - si * rps) * w * 2;
-        let vals = raw.get(skip..skip + dst.len() / nc * w * 2).with_context(|| format!("strip {si} decodes short ({} bytes)", raw.len()))?;
+        let vals = raw
+            .get(skip..skip + dst.len() / nc * w * 2)
+            .with_context(|| format!("strip {si} decodes short ({} bytes)", raw.len()))?;
         for (o, v) in dst.chunks_exact_mut(nc).zip(vals.chunks_exact(w * 2)) {
             for (o, v) in o.iter_mut().zip(v[cols.start * 2..cols.end * 2].as_chunks::<2>().0) {
                 let x = u16::from_le_bytes(*v);
@@ -572,10 +609,19 @@ struct Layer<'a> {
 
 impl<'a> Layer<'a> {
     /// The layer's file, opened; None when Meta has none there.
-    fn open(agent: &'a ureq::Agent, url: Option<String>, path: PathBuf, store: Option<PathBuf>, read_only: bool, f: fn(u16) -> u8) -> Result<Option<Layer<'a>>> {
+    fn open(
+        agent: &'a ureq::Agent,
+        url: Option<String>,
+        path: PathBuf,
+        store: Option<PathBuf>,
+        read_only: bool,
+        f: fn(u16) -> u8,
+    ) -> Result<Option<Layer<'a>>> {
         let mut taken = 0;
         loop {
-            let Some(file) = fetch_file(agent, url.as_deref(), &path, store.as_deref(), read_only)? else { return Ok(None) };
+            let Some(file) = fetch_file(agent, url.as_deref(), &path, store.as_deref(), read_only)? else {
+                return Ok(None);
+            };
             match canopy_tiff(file) {
                 Ok(tiff) => return Ok(Some(Layer { agent, url, path, store, read_only, f, tiff, taken })),
                 Err(e) => damaged(&path, store.as_deref(), read_only, &mut taken, e)?,
@@ -593,7 +639,8 @@ impl<'a> Layer<'a> {
             };
             damaged(&self.path, self.store.as_deref(), self.read_only, &mut self.taken, e)?;
             // (Bands before this one have used the square: found missing now, it can't be passed over.)
-            let file = fetch_file(self.agent, self.url.as_deref(), &self.path, self.store.as_deref(), self.read_only)?.with_context(|| format!("{}: Meta has none there now", self.path.display()))?;
+            let file = fetch_file(self.agent, self.url.as_deref(), &self.path, self.store.as_deref(), self.read_only)?
+                .with_context(|| format!("{}: Meta has none there now", self.path.display()))?;
             got = canopy_tiff(file).and_then(|t| {
                 self.tiff = t;
                 self.tiff.read(w, self.f)
@@ -658,7 +705,17 @@ impl Bands {
     /// Bands of `size` rows over rows `row0..row1` of the square at `top`, `left`, for the samples
     /// (within reach: `touches`) and grid tiles to do.
     #[allow(clippy::too_many_arguments)]
-    fn plan(top: f64, left: f64, (row0, row1): (usize, usize), size: usize, samples: &[Sample], todo_s: &[bool], touches: impl Fn(f64, f64) -> bool, tiles: &[[u32; 2]], todo_t: &[bool]) -> Bands {
+    fn plan(
+        top: f64,
+        left: f64,
+        (row0, row1): (usize, usize),
+        size: usize,
+        samples: &[Sample],
+        todo_s: &[bool],
+        touches: impl Fn(f64, f64) -> bool,
+        tiles: &[[u32; 2]],
+        todo_t: &[bool],
+    ) -> Bands {
         let px = |v: f64| (v / C10_RES).floor();
         let n = (row1 - row0).div_ceil(size);
         let (mut win, mut by_band, mut outside) = (vec![Window::NONE; n], vec![Vec::new(); n], Vec::new());
@@ -671,7 +728,11 @@ impl Bands {
             }
             let (m_lon, m_lat) = m_per_deg(lat);
             let (dlon, dlat) = (NEAR_MAX_M / m_lon, NEAR_MAX_M / m_lat);
-            let w = Window::clip((px(top - (lat + dlat)) - 1.0, px(top - (lat - dlat)) + 1.0), (px(lon - dlon - left) - 1.0, px(lon + dlon - left) + 1.0), (row0, row1));
+            let w = Window::clip(
+                (px(top - (lat + dlat)) - 1.0, px(top - (lat - dlat)) + 1.0),
+                (px(lon - dlon - left) - 1.0, px(lon + dlon - left) + 1.0),
+                (row0, row1),
+            );
             // (None of its lookups here: its band's window wouldn't hold them.)
             if w.is_empty() {
                 outside.push(si as u32);
@@ -696,7 +757,13 @@ impl Bands {
                 let cols = (px(lon_of(gx + 0.25) - left), px(lon_of(gx + 255.0 + 0.75) - left));
                 for (cy, b) in cells.iter_mut().enumerate() {
                     let gy = g[1] as f64 * 256.0 + cy as f64;
-                    let row = |oy: f64| px(top - (std::f64::consts::PI * (1.0 - 2.0 * (gy + oy) / roadcore::grid::WORLD)).dsinh().datan().to_degrees());
+                    let row = |oy: f64| {
+                        px(top
+                            - (std::f64::consts::PI * (1.0 - 2.0 * (gy + oy) / roadcore::grid::WORLD))
+                                .dsinh()
+                                .datan()
+                                .to_degrees())
+                    };
                     let (ra, rb) = (row(0.25), row(0.75));
                     let w = Window::clip((ra.min(rb), ra.max(rb)), cols, (row0, row1));
                     if w.is_empty() {
@@ -735,12 +802,17 @@ fn canopy(dir: &Path) -> Result<()> {
     store::cachefile::make_dir(&cache)?;
     // The NAS's store of them (`sources/canopy/`), where each is downloaded once. Read where they
     // lie (SCENIC_CHM: a task's worker), or told the stores are only read: nothing written there.
-    let read_only = std::env::var_os("SCENIC_CHM").is_some() || std::env::var("SCENIC_STORES_READ_ONLY").is_ok_and(|v| !v.is_empty() && v != "0");
+    let read_only = std::env::var_os("SCENIC_CHM").is_some()
+        || std::env::var("SCENIC_STORES_READ_ONLY").is_ok_and(|v| !v.is_empty() && v != "0");
     let store = std::env::var_os("SCENIC_CANOPY_STORE").map(PathBuf::from).filter(|_| !read_only);
     // (Where the declared canopy source has each file, by the unit job: none needed where they're
     // read where they lie.)
     let urls = if read_only { Default::default() } else { pipeline::unit::UnitSources::read(dir)?.canopy };
-    let band = std::env::var("SCENIC_CANOPY_BAND").ok().and_then(|v| v.parse().ok()).filter(|&b: &usize| b > 0).unwrap_or(BAND_ROWS);
+    let band = std::env::var("SCENIC_CANOPY_BAND")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&b: &usize| b > 0)
+        .unwrap_or(BAND_ROWS);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(1800)))
         .user_agent("scenic-roads/0.1 (personal offline map)")
@@ -757,8 +829,11 @@ fn canopy(dir: &Path) -> Result<()> {
     // (The last run's outputs: each opened only when it's the size the cache says, and let go once
     // used, as in WebAssembly an open file is read whole into memory.)
     let sized = |name: &str, len: usize| std::fs::metadata(dir.join(name)).is_ok_and(|m| m.len() == len as u64);
-    let old_near = (!prev.is_empty() && sized("near.i8", prev.len() * NEAR_AZ)).then(|| Array::<i8>::open(&dir.join("near.i8")).ok()).flatten();
-    let old_road = sized("roadside.u8", prev.len() * 2).then(|| Array::<u8>::open(&dir.join("roadside.u8")).ok()).flatten();
+    let old_near = (!prev.is_empty() && sized("near.i8", prev.len() * NEAR_AZ))
+        .then(|| Array::<i8>::open(&dir.join("near.i8")).ok())
+        .flatten();
+    let old_road =
+        sized("roadside.u8", prev.len() * 2).then(|| Array::<u8>::open(&dir.join("roadside.u8")).ok()).flatten();
     let near: Vec<AtomicI8> = (0..samples.len() * NEAR_AZ).map(|_| AtomicI8::new(i8::MIN)).collect();
     let roadside: Vec<AtomicU8> = (0..samples.len() * 2).map(|_| AtomicU8::new(0)).collect();
     let todo_s: Vec<bool> = samples
@@ -789,7 +864,8 @@ fn canopy(dir: &Path) -> Result<()> {
     // Grid tiles: copied from the last run's layers where the tile was there (read tile by tile).
     let mut todo_t = vec![true; grid.tiles.len()];
     let n = change.prev_len() * CELLS;
-    let old = (n > 0 && sized("grid.canopy.u8", n) && sized("grid.cover.u8", n)).then(|| (File::open(dir.join("grid.canopy.u8")), File::open(dir.join("grid.cover.u8"))));
+    let old = (n > 0 && sized("grid.canopy.u8", n) && sized("grid.cover.u8", n))
+        .then(|| (File::open(dir.join("grid.canopy.u8")), File::open(dir.join("grid.cover.u8"))));
     if let Some((Ok(oc), Ok(ov))) = old {
         use store::sys::PosIo;
         let slot = change.prev_slots();
@@ -806,7 +882,10 @@ fn canopy(dir: &Path) -> Result<()> {
     // 10° tiles with something to do (a sample or grid tile, with the near-field margin).
     let margin = NEAR_MAX_M / 111_000.0 * 2.0;
     let touches = |top: i32, left: i32, lon: f64, lat: f64| {
-        lon >= left as f64 - margin && lon <= left as f64 + 10.0 + margin && lat <= top as f64 + margin && lat >= top as f64 - 10.0 - margin
+        lon >= left as f64 - margin
+            && lon <= left as f64 + 10.0 + margin
+            && lat <= top as f64 + margin
+            && lat >= top as f64 - 10.0 - margin
     };
     need.retain(|&(top, left)| {
         samples.iter().zip(&todo_s).any(|(s, &t)| t && touches(top, left, s.lon as f64 * E7, s.lat as f64 * E7))
@@ -817,7 +896,8 @@ fn canopy(dir: &Path) -> Result<()> {
                 let lon = (g[0] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD * 360.0 - 180.0;
                 let y = (g[1] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD;
                 let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).dsinh().datan().to_degrees();
-                touches(top, left, lon, lat) || (lon - (left as f64 + 5.0)).abs() < 6.0 && (lat - (top as f64 - 5.0)).abs() < 6.0
+                touches(top, left, lon, lat)
+                    || (lon - (left as f64 + 5.0)).abs() < 6.0 && (lat - (top as f64 - 5.0)).abs() < 6.0
             })
     });
     eprintln!(
@@ -844,9 +924,12 @@ fn canopy(dir: &Path) -> Result<()> {
             if !t {
                 continue;
             }
-            let lat_of = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y * 256.0 / roadcore::grid::WORLD)).dsinh().datan().to_degrees();
+            let lat_of = |y: f64| {
+                (std::f64::consts::PI * (1.0 - 2.0 * y * 256.0 / roadcore::grid::WORLD)).dsinh().datan().to_degrees()
+            };
             let lon_of = |x: f64| x * 256.0 / roadcore::grid::WORLD * 360.0 - 180.0;
-            let (w, e, n, so) = (lon_of(g[0] as f64), lon_of(g[0] as f64 + 1.0), lat_of(g[1] as f64), lat_of(g[1] as f64 + 1.0));
+            let (w, e, n, so) =
+                (lon_of(g[0] as f64), lon_of(g[0] as f64 + 1.0), lat_of(g[1] as f64), lat_of(g[1] as f64 + 1.0));
             if e >= left as f64 && w <= left as f64 + 10.0 && so <= top as f64 && n >= top as f64 - 10.0 {
                 (lat_lo, lat_hi) = (lat_lo.min(so), lat_hi.max(n));
             }
@@ -863,7 +946,16 @@ fn canopy(dir: &Path) -> Result<()> {
         let share: fn(u16) -> u8 = |v| ((v as u32).min(1000) * 255 / 1000) as u8;
         let layers: Vec<Option<Layer>> = [("median", height), ("p95", height), ("cover5m", share)]
             .par_iter()
-            .map(|&(st, f)| Layer::open(&agent, urls.get(&name(st)).cloned(), cache.join(name(st)), store.as_ref().map(|s| s.join(name(st))), read_only, f))
+            .map(|&(st, f)| {
+                Layer::open(
+                    &agent,
+                    urls.get(&name(st)).cloned(),
+                    cache.join(name(st)),
+                    store.as_ref().map(|s| s.join(name(st))),
+                    read_only,
+                    f,
+                )
+            })
             .collect::<Result<_>>()?;
         let Ok([Some(median), Some(p95), Some(cover)]) = <[Option<Layer>; 3]>::try_from(layers) else {
             pb.println(format!("canopy {top},{left}: no data"));
@@ -871,12 +963,26 @@ fn canopy(dir: &Path) -> Result<()> {
             continue;
         };
         let mut layers = [median, p95, cover];
-        let bands = Bands::plan(top as f64, left as f64, (row0, row1), band, samples, &todo_s, |lon, lat| touches(top, left, lon, lat), &grid.tiles, &todo_t);
+        let bands = Bands::plan(
+            top as f64,
+            left as f64,
+            (row0, row1),
+            band,
+            samples,
+            &todo_s,
+            |lon, lat| touches(top, left, lon, lat),
+            &grid.tiles,
+            &todo_t,
+        );
         for (k, (&w, band_samples)) in bands.win.iter().zip(&bands.samples).enumerate() {
             if w.is_empty() && band_samples.is_empty() {
                 continue;
             }
-            let read: Vec<Vec<u8>> = if w.is_empty() { vec![Vec::new(); 3] } else { layers.par_iter_mut().map(|l| l.read(w)).collect::<Result<_>>()? };
+            let read: Vec<Vec<u8>> = if w.is_empty() {
+                vec![Vec::new(); 3]
+            } else {
+                layers.par_iter_mut().map(|l| l.read(w)).collect::<Result<_>>()?
+            };
             let Ok([median, p95, cover]) = <[Vec<u8>; 3]>::try_from(read) else { unreachable!() };
             let t = Chm10 { left: left as f64, top: top as f64, row0, rows, win: w, median, p95, cover };
             let width = w.c1 - w.c0;
@@ -888,36 +994,48 @@ fn canopy(dir: &Path) -> Result<()> {
             // (Chm10::idx in two halves), for tiles with a cell row in the band (whose columns its
             // window holds). (A tile a task: a band's tiles are a short run of the list, which
             // rayon's usual split would leave to one or two threads.)
-            canopy_out.par_chunks_mut(CELLS).zip(cover_out.par_chunks_mut(CELLS)).zip(grid.tiles.par_iter().zip(&bands.cells)).with_max_len(1).for_each(|((can, cov), (tile, cells))| {
-                if !cells.iter().any(|&b| b as usize == k) {
-                    return;
-                }
-                let cols: Vec<[Option<usize>; 2]> = (0..256usize)
-                    .map(|cx| {
-                        let gx = tile[0] as f64 * 256.0 + cx as f64;
-                        [0.25, 0.75].map(|ox| t.col((gx + ox) / roadcore::grid::WORLD * 360.0 - 180.0))
-                    })
-                    .collect();
-                for cy in (0..256usize).filter(|&cy| cells[cy] as usize == k) {
-                    let gy = tile[1] as f64 * 256.0 + cy as f64;
-                    let rows = [0.25, 0.75].map(|oy| t.row((std::f64::consts::PI * (1.0 - 2.0 * (gy + oy) / roadcore::grid::WORLD)).dsinh().datan().to_degrees()));
-                    for (cx, c) in cols.iter().enumerate() {
-                        let (mut sh, mut sc, mut n) = (0u32, 0u32, 0u32);
-                        for (kx, ky) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                            if let (Some(c), Some(r)) = (c[kx], rows[ky]) {
-                                let i = r * width + c;
-                                sh += t.median[i] as u32;
-                                sc += t.cover[i] as u32;
-                                n += 1;
+            canopy_out
+                .par_chunks_mut(CELLS)
+                .zip(cover_out.par_chunks_mut(CELLS))
+                .zip(grid.tiles.par_iter().zip(&bands.cells))
+                .with_max_len(1)
+                .for_each(|((can, cov), (tile, cells))| {
+                    if !cells.iter().any(|&b| b as usize == k) {
+                        return;
+                    }
+                    let cols: Vec<[Option<usize>; 2]> = (0..256usize)
+                        .map(|cx| {
+                            let gx = tile[0] as f64 * 256.0 + cx as f64;
+                            [0.25, 0.75].map(|ox| t.col((gx + ox) / roadcore::grid::WORLD * 360.0 - 180.0))
+                        })
+                        .collect();
+                    for cy in (0..256usize).filter(|&cy| cells[cy] as usize == k) {
+                        let gy = tile[1] as f64 * 256.0 + cy as f64;
+                        let rows = [0.25, 0.75].map(|oy| {
+                            t.row(
+                                (std::f64::consts::PI * (1.0 - 2.0 * (gy + oy) / roadcore::grid::WORLD))
+                                    .dsinh()
+                                    .datan()
+                                    .to_degrees(),
+                            )
+                        });
+                        for (cx, c) in cols.iter().enumerate() {
+                            let (mut sh, mut sc, mut n) = (0u32, 0u32, 0u32);
+                            for (kx, ky) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                                if let (Some(c), Some(r)) = (c[kx], rows[ky]) {
+                                    let i = r * width + c;
+                                    sh += t.median[i] as u32;
+                                    sc += t.cover[i] as u32;
+                                    n += 1;
+                                }
+                            }
+                            if n > 0 {
+                                can[cy * 256 + cx] = (sh / n) as u8;
+                                cov[cy * 256 + cx] = (sc / n) as u8;
                             }
                         }
-                        if n > 0 {
-                            can[cy * 256 + cx] = (sh / n) as u8;
-                            cov[cy * 256 + cx] = (sc / n) as u8;
-                        }
                     }
-                }
-            });
+                });
 
             // Near field for the band's samples to do in (or within 300 m of) this tile.
             band_samples.par_iter().for_each(|&si| {
@@ -929,8 +1047,19 @@ fn canopy(dir: &Path) -> Result<()> {
         }
         // The samples just outside it: near_field over nothing read (every lookup finds nothing, as
         // it did when the whole square was read; a tunnel's horizon set all the same).
-        let none = Chm10 { left: left as f64, top: top as f64, row0, rows: 0, win: Window::NONE, median: Vec::new(), p95: Vec::new(), cover: Vec::new() };
-        bands.outside.par_iter().for_each(|&si| near_field(&samples[si as usize], si as usize, false, &none, &grid, terr, &near, &roadside));
+        let none = Chm10 {
+            left: left as f64,
+            top: top as f64,
+            row0,
+            rows: 0,
+            win: Window::NONE,
+            median: Vec::new(),
+            p95: Vec::new(),
+            cover: Vec::new(),
+        };
+        bands.outside.par_iter().for_each(|&si| {
+            near_field(&samples[si as usize], si as usize, false, &none, &grid, terr, &near, &roadside)
+        });
         pb.inc(1);
     }
     pb.finish_and_clear();
@@ -970,7 +1099,16 @@ fn m_per_deg(lat: f64) -> (f64, f64) {
 /// terrain + median canopy height to 300 m, plus roadside p95 tree height and forest cover
 /// within 150 m for the owning tile.
 #[allow(clippy::too_many_arguments)]
-fn near_field(s: &Sample, si: usize, owned: bool, t: &Chm10, grid: &GridIndex, terr: &[i16], near: &[AtomicI8], roadside: &[AtomicU8]) {
+fn near_field(
+    s: &Sample,
+    si: usize,
+    owned: bool,
+    t: &Chm10,
+    grid: &GridIndex,
+    terr: &[i16],
+    near: &[AtomicI8],
+    roadside: &[AtomicU8],
+) {
     let (lon, lat) = (s.lon as f64 * E7, s.lat as f64 * E7);
     let (m_lon, m_lat) = m_per_deg(lat);
     let (gx, gy) = roadcore::grid::cell_of(lon, lat);
@@ -983,7 +1121,8 @@ fn near_field(s: &Sample, si: usize, owned: bool, t: &Chm10, grid: &GridIndex, t
         while d <= NEAR_MAX_M {
             let (plon, plat) = (lon + sx * d / m_lon, lat + sy * d / m_lat);
             if let Some(i) = t.idx(plon, plat) {
-                let ground = roadcore::grid::terrain_bilinear(grid, terr, gx + sx * d / cm, gy - sy * d / cm).unwrap_or(eye - EYE_M);
+                let ground = roadcore::grid::terrain_bilinear(grid, terr, gx + sx * d / cm, gy - sy * d / cm)
+                    .unwrap_or(eye - EYE_M);
                 let h = ground + t.median[i] as f32;
                 best = best.max((h - eye) as f64 / d);
             }
@@ -1031,11 +1170,20 @@ mod tests {
     fn tiff(width: usize, height: usize, rps: usize) -> Vec<u8> {
         let mut strips = Vec::new();
         for r0 in (0..height).step_by(rps) {
-            let raw: Vec<u8> = (r0..(r0 + rps).min(height)).flat_map(|r| (0..width).flat_map(move |c| ((r * 100 + c) as u16).to_le_bytes())).collect();
+            let raw: Vec<u8> = (r0..(r0 + rps).min(height))
+                .flat_map(|r| (0..width).flat_map(move |c| ((r * 100 + c) as u16).to_le_bytes()))
+                .collect();
             strips.push(weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(&raw).unwrap());
         }
         let n = strips.len();
-        let tags: [(u16, Vec<u32>); 6] = [(256, vec![width as u32]), (257, vec![height as u32]), (259, vec![5]), (278, vec![rps as u32]), (273, vec![0; n]), (279, strips.iter().map(|s| s.len() as u32).collect())];
+        let tags: [(u16, Vec<u32>); 6] = [
+            (256, vec![width as u32]),
+            (257, vec![height as u32]),
+            (259, vec![5]),
+            (278, vec![rps as u32]),
+            (273, vec![0; n]),
+            (279, strips.iter().map(|s| s.len() as u32).collect()),
+        ];
         let ifd = 8;
         let arrays = ifd + 2 + tags.len() * 12 + 4;
         let mut b = b"II\x2a\x00".to_vec();
@@ -1044,7 +1192,14 @@ mod tests {
         // Arrays of more than one value after the directory, then the strips.
         let mut at = arrays;
         let data = arrays + 2 * 4 * n;
-        let offs: Vec<u32> = strips.iter().scan(data, |o, s| { let v = *o; *o += s.len(); Some(v as u32) }).collect();
+        let offs: Vec<u32> = strips
+            .iter()
+            .scan(data, |o, s| {
+                let v = *o;
+                *o += s.len();
+                Some(v as u32)
+            })
+            .collect();
         let mut tail = Vec::new();
         for (tag, vals) in &tags {
             let vals = if *tag == 273 { &offs } else { vals };
@@ -1101,7 +1256,10 @@ mod tests {
         let p = d.path().join("t.tif");
         std::fs::write(&p, &b).unwrap();
         let t = Tiff::open(File::open(&p).unwrap()).unwrap();
-        assert_eq!(t.read(Window { r0: 2, r1: 6, c0: 1, c1: 4 }, f).unwrap(), decode_rows(&at(&b), &st, 2..6, 1..4, f).unwrap());
+        assert_eq!(
+            t.read(Window { r0: 2, r1: 6, c0: 1, c1: 4 }, f).unwrap(),
+            decode_rows(&at(&b), &st, 2..6, 1..4, f).unwrap()
+        );
         assert!(canopy_tiff(File::open(&p).unwrap()).is_err(), "not 40000²");
         // A damaged directory (StripByteCounts, its sixth entry, counting 4 billion): an error.
         bad = b.clone();
@@ -1114,7 +1272,15 @@ mod tests {
     fn a_sample_just_outside_the_square_is_in_no_band() {
         // A square at 50° N, 90° W: a sample inside it, and one 0.005° west of it (within the margin
         // the square's read with, beyond its 300 m reach): that one in no band, its lookups none.
-        let at = |lon: f64, lat: f64| Sample { way: 0, dist: 0.0, lon: (lon / E7).round() as i32, lat: (lat / E7).round() as i32, eye: 0.0, flags: 0, _pad: [0; 3] };
+        let at = |lon: f64, lat: f64| Sample {
+            way: 0,
+            dist: 0.0,
+            lon: (lon / E7).round() as i32,
+            lat: (lat / E7).round() as i32,
+            eye: 0.0,
+            flags: 0,
+            _pad: [0; 3],
+        };
         let samples = [at(-89.5, 45.0), at(-90.005, 45.0)];
         let (top, left) = (50.0, -90.0);
         let px = |lat: f64| ((top - lat) / C10_RES).floor() as usize;
@@ -1123,18 +1289,33 @@ mod tests {
         assert_eq!(b.outside, [1]);
         assert_eq!(b.samples.iter().flatten().copied().collect::<Vec<_>>(), [0]);
         // An empty window: every lookup finds nothing, and none fails.
-        let none = Chm10 { left, top, row0: rows.0, rows: 0, win: Window::NONE, median: Vec::new(), p95: Vec::new(), cover: Vec::new() };
+        let none = Chm10 {
+            left,
+            top,
+            row0: rows.0,
+            rows: 0,
+            win: Window::NONE,
+            median: Vec::new(),
+            p95: Vec::new(),
+            cover: Vec::new(),
+        };
         assert_eq!(none.idx(-89.999, 45.0), None);
         assert_eq!(none.idx(-90.001, 45.0), None);
     }
 
     #[test]
     fn windows_clipped_and_joined() {
-        assert_eq!(Window::clip((-3.0, 5.0), (39_998.0, 40_005.0), (2, 100)), Window { r0: 2, r1: 6, c0: 39_998, c1: C10 });
+        assert_eq!(
+            Window::clip((-3.0, 5.0), (39_998.0, 40_005.0), (2, 100)),
+            Window { r0: 2, r1: 6, c0: 39_998, c1: C10 }
+        );
         assert!(Window::clip((200.0, 300.0), (0.0, 1.0), (2, 100)).is_empty());
         assert!(Window::clip((5.0, 4.0), (0.0, 1.0), (2, 100)).is_empty());
         // (A bound that's NaN or infinite is no bound.)
-        assert_eq!(Window::clip((f64::NAN, f64::INFINITY), (f64::NEG_INFINITY, f64::NAN), (2, 100)), Window { r0: 2, r1: 100, c0: 0, c1: C10 });
+        assert_eq!(
+            Window::clip((f64::NAN, f64::INFINITY), (f64::NEG_INFINITY, f64::NAN), (2, 100)),
+            Window { r0: 2, r1: 100, c0: 0, c1: C10 }
+        );
         let w = Window { r0: 50, r1: 60, c0: 10, c1: 20 };
         assert_eq!(Window::NONE.union(w), w);
         assert_eq!(w.union(Window::NONE), w);
@@ -1160,7 +1341,8 @@ mod tests {
         std::fs::write(store.join("a.tif"), &b).unwrap();
         std::fs::write(cache.join("a.tif"), &b[..b.len() - 1]).unwrap();
         for _ in 0..2 {
-            let f = fetch_file(&agent, never, &cache.join("a.tif"), Some(&store.join("a.tif")), false).unwrap().unwrap();
+            let f =
+                fetch_file(&agent, never, &cache.join("a.tif"), Some(&store.join("a.tif")), false).unwrap().unwrap();
             assert_eq!(whole(&f), b);
         }
         // Meta's "none there", from the NAS.
@@ -1181,11 +1363,17 @@ mod tests {
                     assert!(n > 0);
                     req.extend_from_slice(&buf[..n]);
                 }
-                s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).unwrap();
+                s.write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
+                        .as_bytes(),
+                )
+                .unwrap();
                 s.write_all(&body[..if cut { body.len() / 2 } else { body.len() }]).unwrap();
             }
         });
-        let f = fetch_file(&agent, Some(url.as_str()), &cache.join("c.tif"), Some(&store.join("c.tif")), false).unwrap().unwrap();
+        let f = fetch_file(&agent, Some(url.as_str()), &cache.join("c.tif"), Some(&store.join("c.tif")), false)
+            .unwrap()
+            .unwrap();
         server.join().unwrap();
         assert_eq!(whole(&f), b);
         assert_eq!(std::fs::read(cache.join("c.tif")).unwrap(), b);
@@ -1194,7 +1382,11 @@ mod tests {
         for dir in [&cache, &store] {
             for e in std::fs::read_dir(dir).unwrap() {
                 let p = e.unwrap().path();
-                assert!(!pipeline::whole::is_tmp(&p) && p.extension().is_some_and(|x| x == "tif"), "{} left", p.display());
+                assert!(
+                    !pipeline::whole::is_tmp(&p) && p.extension().is_some_and(|x| x == "tif"),
+                    "{} left",
+                    p.display()
+                );
             }
         }
         // Read where they lie (a task's worker): what's whole, Meta's "none there"; one cut short,

@@ -55,7 +55,8 @@ pub fn append_server(root: &Path, mut e: ServerEvent) -> std::io::Result<()> {
     }
     let dir = root.join(SERVERS);
     std::fs::create_dir_all(&dir)?;
-    let name: String = e.host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    let name: String =
+        e.host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     let line = serde_json::to_string(&e).map_err(std::io::Error::other)?;
     let p = dir.join(format!("{name}.jsonl"));
     if std::fs::metadata(&p).is_ok_and(|m| m.len() > SERVERS_MAX) {
@@ -138,7 +139,9 @@ pub const CATALOG_LINE: &str = "catalog-stats: ";
 impl CatalogStats {
     /// Catalog `n`'s, with the job's phases as timed so far (crate::timings; none untimed).
     pub fn now(n: u64, delta: bool, files: u64, stated: u64) -> CatalogStats {
-        let phases = crate::timings::snapshot(true).map(|r| r.phases.into_iter().map(|p| (p.name, p.wall_s)).collect()).unwrap_or_default();
+        let phases = crate::timings::snapshot(true)
+            .map(|r| r.phases.into_iter().map(|p| (p.name, p.wall_s)).collect())
+            .unwrap_or_default();
         CatalogStats { n, delta, files, stated, phases }
     }
 
@@ -148,7 +151,9 @@ impl CatalogStats {
 
     /// The last such line in a log's tail.
     pub fn from_log(tail: &str) -> Option<CatalogStats> {
-        tail.lines().rev().find_map(|l| l.find(CATALOG_LINE).and_then(|i| serde_json::from_str(&l[i + CATALOG_LINE.len()..]).ok()))
+        tail.lines()
+            .rev()
+            .find_map(|l| l.find(CATALOG_LINE).and_then(|i| serde_json::from_str(&l[i + CATALOG_LINE.len()..]).ok()))
     }
 }
 
@@ -157,13 +162,22 @@ impl CatalogStats {
 /// road values in the manifest `m` aren't what `served` (the served catalog's, by logical name)
 /// has: by unit ("6/x/y"), its tiles. A unit rebuilt the same (the same content names) made none
 /// stale.
-pub fn restaled_by(m: &BTreeMap<String, String>, reach: Option<&crate::reach::Reaches>, served: &BTreeMap<String, String>, tiles: &[String]) -> BTreeMap<String, Vec<String>> {
+pub fn restaled_by(
+    m: &BTreeMap<String, String>,
+    reach: Option<&crate::reach::Reaches>,
+    served: &BTreeMap<String, String>,
+    tiles: &[String],
+) -> BTreeMap<String, Vec<String>> {
     use crate::agent::build::{owns, unit_reach};
     use crate::legacy::Unit;
     let changed: Vec<(Unit, [i32; 4])> = m
         .keys()
         .filter_map(|l| l.strip_prefix("base/").and_then(Unit::parse))
-        .filter(|u| [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash())].iter().any(|l| m.get(l) != served.get(l)))
+        .filter(|u| {
+            [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash())]
+                .iter()
+                .any(|l| m.get(l) != served.get(l))
+        })
         .map(|u| (u, unit_reach(reach, m, u)))
         .collect();
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -181,7 +195,16 @@ pub fn restaled_by(m: &BTreeMap<String, String>, reach: Option<&crate::reach::Re
 /// The served catalog's base packs' and road values' content names, by logical name (what
 /// `restaled_by` compares with): the latest in `dir`, with its number.
 pub fn served_units(dir: &Path) -> anyhow::Result<Option<(u64, BTreeMap<String, String>)>> {
-    Ok(store::catalog::latest(dir)?.map(|c| (c.n, c.files.into_iter().filter(|(l, _)| l.starts_with("base/") || l.starts_with("global/roads/")).map(|(l, f)| (l, f.file)).collect())))
+    Ok(store::catalog::latest(dir)?.map(|c| {
+        (
+            c.n,
+            c.files
+                .into_iter()
+                .filter(|(l, _)| l.starts_with("base/") || l.starts_with("global/roads/"))
+                .map(|(l, f)| (l, f.file))
+                .collect(),
+        )
+    }))
 }
 
 /// How much of a planned tile's key a "planned" event keeps: enough to tell its keys apart.
@@ -195,7 +218,12 @@ fn cut(k: &str) -> String {
 /// whose change made them stale (`restaled_by`). Small: the keys cut short, each unit its own tiles.
 pub fn planned_event(tiles: &[(String, String)], by_unit: BTreeMap<String, Vec<String>>) -> Event {
     let keys: Vec<String> = tiles.iter().map(|(_, k)| cut(k)).collect();
-    Event { step: Some("pack".into()), targets: tiles.iter().map(|t| t.0.clone()).collect(), data: Some(serde_json::json!({ "k": keys, "units": by_unit })), ..Event::new("planned") }
+    Event {
+        step: Some("pack".into()),
+        targets: tiles.iter().map(|t| t.0.clone()).collect(),
+        data: Some(serde_json::json!({ "k": keys, "units": by_unit })),
+        ..Event::new("planned")
+    }
 }
 
 /// The (tile, key) pairs `events` say were planned since `since` (keys as `planned_event` keeps
@@ -203,7 +231,8 @@ pub fn planned_event(tiles: &[(String, String)], by_unit: BTreeMap<String, Vec<S
 pub fn planned_since<'a>(events: impl IntoIterator<Item = &'a Event>, since: u64) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
     for e in events.into_iter().filter(|e| e.kind == "planned" && e.t >= since) {
-        let keys: Vec<String> = e.data.as_ref().and_then(|d| serde_json::from_value(d["k"].clone()).ok()).unwrap_or_default();
+        let keys: Vec<String> =
+            e.data.as_ref().and_then(|d| serde_json::from_value(d["k"].clone()).ok()).unwrap_or_default();
         out.extend(e.targets.iter().cloned().zip(keys));
     }
     out
@@ -307,7 +336,11 @@ impl PlannedNotes {
 
 /// A "merged" event: the hand-offs merged's jobs (crate::pool::records::Merged::done).
 pub fn merged_event(done: &[crate::pool::records::MergedJob]) -> Event {
-    Event { targets: done.iter().map(|d| d.0.clone()).collect(), data: Some(serde_json::json!({ "done": done })), ..Event::new("merged") }
+    Event {
+        targets: done.iter().map(|d| d.0.clone()).collect(),
+        data: Some(serde_json::json!({ "done": done })),
+        ..Event::new("merged")
+    }
 }
 
 /// A unit's way to the map: when each stage was reached (unix seconds).
@@ -372,7 +405,8 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, 
     // The merges' jobs: (time, lease number, step, targets).
     let mut merges: Vec<(u64, Option<u64>, String, Vec<String>)> = Vec::new();
     for e in ev.iter().filter(|e| e.kind == "merged") {
-        let done: Vec<crate::pool::records::MergedJob> = e.data.as_ref().and_then(|d| serde_json::from_value(d["done"].clone()).ok()).unwrap_or_default();
+        let done: Vec<crate::pool::records::MergedJob> =
+            e.data.as_ref().and_then(|d| serde_json::from_value(d["done"].clone()).ok()).unwrap_or_default();
         for (key, _, step, targets) in done {
             // (`<day>/<term>-<n>`: the coordinator's lease is its `n`, which repeats across terms.)
             let n = key.rsplit(['/', '-']).next().and_then(|l| l.parse().ok());
@@ -383,26 +417,55 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, 
     for s in servers {
         by_host.entry(s.host.as_str()).or_default().push(s);
     }
-    let first_at = |host: &[&ServerEvent], kind: &str, n: u64, after: u64| host.iter().filter(|s| s.kind == kind && s.n >= n && s.t >= after).map(|s| s.t).min();
-    let stats_of = |c: &Event| -> Option<CatalogStats> { c.data.as_ref().and_then(|d| serde_json::from_value(d.clone()).ok()) };
+    let first_at = |host: &[&ServerEvent], kind: &str, n: u64, after: u64| {
+        host.iter().filter(|s| s.kind == kind && s.n >= n && s.t >= after).map(|s| s.t).min()
+    };
+    let stats_of =
+        |c: &Event| -> Option<CatalogStats> { c.data.as_ref().and_then(|d| serde_json::from_value(d.clone()).ok()) };
     let n_of = |c: &Event| c.n.or(stats_of(c).map(|s| s.n));
     // Each planned tile: when, which, and the units whose change made it stale.
     let planned: Vec<(u64, String, Vec<String>)> = ev
         .iter()
         .filter(|e| e.kind == "planned")
         .flat_map(|e| {
-            let units: BTreeMap<String, Vec<String>> = e.data.as_ref().and_then(|d| serde_json::from_value(d["units"].clone()).ok()).unwrap_or_default();
-            e.targets.iter().map(move |t| (e.t, t.clone(), units.iter().filter(|(_, ts)| ts.contains(t)).map(|(u, _)| u.clone()).collect())).collect::<Vec<_>>()
+            let units: BTreeMap<String, Vec<String>> =
+                e.data.as_ref().and_then(|d| serde_json::from_value(d["units"].clone()).ok()).unwrap_or_default();
+            e.targets
+                .iter()
+                .map(move |t| {
+                    (e.t, t.clone(), units.iter().filter(|(_, ts)| ts.contains(t)).map(|(u, _)| u.clone()).collect())
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
-    let pack_at = |tile: &str, after: u64, kinds: &[&str]| ev.iter().filter(|e| e.t >= after && e.step.as_deref() == Some("pack") && kinds.contains(&e.kind.as_str()) && e.ok != Some(false) && e.targets.iter().any(|t| t == tile)).map(|e| e.t).min();
+    let pack_at = |tile: &str, after: u64, kinds: &[&str]| {
+        ev.iter()
+            .filter(|e| {
+                e.t >= after
+                    && e.step.as_deref() == Some("pack")
+                    && kinds.contains(&e.kind.as_str())
+                    && e.ok != Some(false)
+                    && e.targets.iter().any(|t| t == tile)
+            })
+            .map(|e| e.t)
+            .min()
+    };
     let mut units: Vec<UnitChain> = Vec::new();
     let unit_ends: Vec<&Event> = ev.iter().copied().filter(|e| ok_job(e, "unit")).collect();
     for (i, e) in unit_ends.iter().enumerate() {
         for u in &e.targets {
             // (Its next build's are that one's.)
             let until = unit_ends[i + 1..].iter().find(|f| f.targets.contains(u)).map_or(u64::MAX, |f| f.t);
-            let merged = merges.iter().find(|(t, n, step, targets)| *t >= e.t && *t < until && step == "unit" && targets.contains(u) && (e.lease.is_none() || *n == e.lease)).map(|m| m.0);
+            let merged = merges
+                .iter()
+                .find(|(t, n, step, targets)| {
+                    *t >= e.t
+                        && *t < until
+                        && step == "unit"
+                        && targets.contains(u)
+                        && (e.lease.is_none() || *n == e.lease)
+                })
+                .map(|m| m.0);
             let hand = merged.unwrap_or(e.t);
             let mut mine: BTreeMap<&str, u64> = BTreeMap::new();
             for (t, tile, _) in planned.iter().filter(|(t, _, us)| *t >= hand && *t < until && us.contains(u)) {
@@ -413,7 +476,8 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, 
             let all_packed: Option<Vec<u64>> = packs.iter().copied().collect();
             let packed = all_packed.as_ref().and_then(|v| v.iter().max().copied());
             // (Its catalog: the first begun once it was merged and packed; a tile not packed yet, none.)
-            let cat = all_packed.map(|_| packed.unwrap_or(hand).max(hand)).and_then(|r| cats.iter().find(|c| began(c) >= r));
+            let cat =
+                all_packed.map(|_| packed.unwrap_or(hand).max(hand)).and_then(|r| cats.iter().find(|c| began(c) >= r));
             let mut uc = UnitChain {
                 unit: u.clone(),
                 worker: e.worker.clone(),
@@ -446,15 +510,27 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, 
         let (from, to) = (if i == 0 { 0 } else { began(cats[i - 1]) }, began(c));
         let next = cats.get(i + 1).map_or(u64::MAX, |n| n.t);
         let n = n_of(c);
-        let tiles: BTreeSet<&str> = planned.iter().filter(|(t, _, _)| *t > from && *t <= to).map(|p| p.1.as_str()).collect();
-        let mut cc = CatalogChain { n, t: c.t, secs: c.secs, stats: stats_of(c), tiles: tiles.len(), units: units.iter().filter(|u| u.catalog_t == Some(c.t)).count(), ..Default::default() };
+        let tiles: BTreeSet<&str> =
+            planned.iter().filter(|(t, _, _)| *t > from && *t <= to).map(|p| p.1.as_str()).collect();
+        let mut cc = CatalogChain {
+            n,
+            t: c.t,
+            secs: c.secs,
+            stats: stats_of(c),
+            tiles: tiles.len(),
+            units: units.iter().filter(|u| u.catalog_t == Some(c.t)).count(),
+            ..Default::default()
+        };
         if let Some(n) = n {
             for (host, hs) in &by_host {
                 if let Some(a) = first_at(hs, "adopt", n, c.t.saturating_sub(120)) {
                     cc.adopted.insert(host.to_string(), a.saturating_sub(c.t) as f64);
                 }
                 if let Some(s) = first_at(hs, "mirror-start", n, c.t.saturating_sub(120)) {
-                    let len = hs.iter().find(|e| e.kind == "mirror-end" && e.n >= n && e.t >= s).and_then(|e| e.secs.or(Some(e.t.saturating_sub(s) as f64)));
+                    let len = hs
+                        .iter()
+                        .find(|e| e.kind == "mirror-end" && e.n >= n && e.t >= s)
+                        .and_then(|e| e.secs.or(Some(e.t.saturating_sub(s) as f64)));
                     cc.mirrored.insert(host.to_string(), (s.saturating_sub(c.t) as f64, len));
                 }
             }
@@ -462,7 +538,13 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, 
         let ran: BTreeSet<&str> = ev
             .iter()
             .filter(|e| COUNTED.iter().any(|s| ok_job(e, s)))
-            .filter(|e| if e.step.as_deref() == Some("names-todo") { e.t > c.t && e.t <= next } else { e.t > from && e.t <= to })
+            .filter(|e| {
+                if e.step.as_deref() == Some("names-todo") {
+                    e.t > c.t && e.t <= next
+                } else {
+                    e.t > from && e.t <= to
+                }
+            })
             .filter_map(|e| e.step.as_deref())
             .collect();
         cc.ran = COUNTED.iter().filter(|s| ran.contains(*s)).map(|s| s.to_string()).collect();
@@ -519,33 +601,61 @@ pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
         if let Some(st) = &c.stats {
             o += &format!(", {} of {} files stat'ed", st.stated, st.files);
         }
-        o += &format!("; {} unit(s), {} map tile(s) planned; ran: {}\n", c.units, c.tiles, if c.ran.is_empty() { "none of them".into() } else { c.ran.join(", ") });
+        o += &format!(
+            "; {} unit(s), {} map tile(s) planned; ran: {}\n",
+            c.units,
+            c.tiles,
+            if c.ran.is_empty() { "none of them".into() } else { c.ran.join(", ") }
+        );
         for (h, a) in &c.adopted {
             let m = c.mirrored.get(h);
-            o += &format!("  {h}: adopted after {}, mirror began after {}, took {}\n", s(Some(*a)), s(m.map(|m| m.0)), s(m.and_then(|m| m.1)));
+            o += &format!(
+                "  {h}: adopted after {}, mirror began after {}, took {}\n",
+                s(Some(*a)),
+                s(m.map(|m| m.0)),
+                s(m.and_then(|m| m.1))
+            );
         }
         for (h, m) in c.mirrored.iter().filter(|(h, _)| !c.adopted.contains_key(*h)) {
             o += &format!("  {h}: not adopted; mirror began after {}, took {}\n", s(Some(m.0)), s(m.1));
         }
         for u in units.iter().filter(|u| u.catalog_t == Some(c.t)) {
             let st: Vec<String> = unit_stages(u).into_iter().map(|(k, v)| format!("{k} {}", s(v))).collect();
-            o += &format!("  unit {} ({}): {}; restaled {}\n", u.unit, u.worker.as_deref().unwrap_or("?"), st.join(", "), u.restaled);
+            o += &format!(
+                "  unit {} ({}): {}; restaled {}\n",
+                u.unit,
+                u.worker.as_deref().unwrap_or("?"),
+                st.join(", "),
+                u.restaled
+            );
         }
     }
     o += &format!("\nMedians over {} unit(s) and {} catalog(s):\n", units.len(), cats.len());
-    let names: Vec<&str> = units.first().map(|u| unit_stages(u).into_iter().map(|(k, _)| k).collect()).unwrap_or_default();
+    let names: Vec<&str> =
+        units.first().map(|u| unit_stages(u).into_iter().map(|(k, _)| k).collect()).unwrap_or_default();
     for (i, k) in names.iter().enumerate() {
         let v: Vec<f64> = units.iter().filter_map(|u| unit_stages(u)[i].1).collect();
         o += &format!("  {k}: {} ({} measured)\n", s(median(v.clone())), v.len());
     }
-    o += &format!("  restaled per unit: {}\n", median(units.iter().map(|u| u.restaled as f64).collect()).map_or("-".into(), |m| format!("{m:.1}")));
+    o += &format!(
+        "  restaled per unit: {}\n",
+        median(units.iter().map(|u| u.restaled as f64).collect()).map_or("-".into(), |m| format!("{m:.1}"))
+    );
     for delta in [true, false] {
-        let of: Vec<&CatalogStats> = cats.iter().filter_map(|c| c.stats.as_ref()).filter(|s| s.delta == delta).collect();
+        let of: Vec<&CatalogStats> =
+            cats.iter().filter_map(|c| c.stats.as_ref()).filter(|s| s.delta == delta).collect();
         if of.is_empty() {
             continue;
         }
-        let secs: Vec<f64> = cats.iter().filter(|c| c.stats.as_ref().is_some_and(|s| s.delta == delta)).filter_map(|c| c.secs).collect();
-        o += &format!("  {} catalogs ({}): {} in the job, {} files stat'ed\n", if delta { "delta" } else { "whole" }, of.len(), s(median(secs)), median(of.iter().map(|s| s.stated as f64).collect()).map_or("-".into(), |m| format!("{m:.0}")));
+        let secs: Vec<f64> =
+            cats.iter().filter(|c| c.stats.as_ref().is_some_and(|s| s.delta == delta)).filter_map(|c| c.secs).collect();
+        o += &format!(
+            "  {} catalogs ({}): {} in the job, {} files stat'ed\n",
+            if delta { "delta" } else { "whole" },
+            of.len(),
+            s(median(secs)),
+            median(of.iter().map(|s| s.stated as f64).collect()).map_or("-".into(), |m| format!("{m:.0}"))
+        );
         let mut phases: Vec<&String> = Vec::new();
         for st in &of {
             for (p, _) in &st.phases {
@@ -579,7 +689,11 @@ pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
 pub fn load_history(root: Option<&Path>, local: Option<&Path>, days: u64) -> Vec<Event> {
     let mut out: Vec<Event> = Vec::new();
     let since = now_s().saturating_sub(days * 86400);
-    let read = |p: &Path| -> Vec<Event> { std::fs::read_to_string(p).map(|t| t.lines().filter_map(|l| serde_json::from_str::<Event>(l).ok()).filter(|e| e.t >= since).collect()).unwrap_or_default() };
+    let read = |p: &Path| -> Vec<Event> {
+        std::fs::read_to_string(p)
+            .map(|t| t.lines().filter_map(|l| serde_json::from_str::<Event>(l).ok()).filter(|e| e.t >= since).collect())
+            .unwrap_or_default()
+    };
     if let Some(dir) = root.map(|r| r.join("state/coord/history")).filter(|d| d.is_dir()) {
         for d in (0..=days).filter_map(|k| crate::pool::journal::day(since + k * 86400)) {
             if let Ok(rd) = std::fs::read_dir(dir.join(d)) {
@@ -609,22 +723,43 @@ mod tests {
     }
 
     fn job(kind: &str, t: u64, step: &str, targets: &[&str], lease: Option<u64>) -> Event {
-        Event { step: Some(step.into()), targets: targets.iter().map(|s| s.to_string()).collect(), ok: Some(true), lease, worker: Some("m1".into()), secs: Some(10.0), ..ev(kind, t) }
+        Event {
+            step: Some(step.into()),
+            targets: targets.iter().map(|s| s.to_string()).collect(),
+            ok: Some(true),
+            lease,
+            worker: Some("m1".into()),
+            secs: Some(10.0),
+            ..ev(kind, t)
+        }
     }
 
     /// Catalog `n` written at `t`, its job `secs` long.
     fn catalog(t: u64, secs: f64, n: u64, delta: bool) -> Event {
-        let st = CatalogStats { n, delta, files: 1000, stated: if delta { 12 } else { 1000 }, phases: vec![("every file checked on the NAS".into(), if delta { 1.0 } else { 9.0 }), ("the catalog written".into(), 2.0)] };
+        let st = CatalogStats {
+            n,
+            delta,
+            files: 1000,
+            stated: if delta { 12 } else { 1000 },
+            phases: vec![
+                ("every file checked on the NAS".into(), if delta { 1.0 } else { 9.0 }),
+                ("the catalog written".into(), 2.0),
+            ],
+        };
         Event { n: Some(n), secs: Some(secs), data: serde_json::to_value(&st).ok(), ..ev("catalog", t) }
     }
 
     fn merged(t: u64, key: &str, step: &str, targets: &[&str]) -> Event {
-        Event { t, ..merged_event(&[(key.into(), "m-b".into(), step.into(), targets.iter().map(|s| s.to_string()).collect())]) }
+        Event {
+            t,
+            ..merged_event(&[(key.into(), "m-b".into(), step.into(), targets.iter().map(|s| s.to_string()).collect())])
+        }
     }
 
     fn planned(t: u64, tiles: &[&str], units: &[(&str, &[&str])]) -> Event {
         let tiles: Vec<(String, String)> = tiles.iter().map(|t| (t.to_string(), format!("key-of-{t}"))).collect();
-        let by: BTreeMap<String, Vec<String>> = units.iter().map(|(u, ts)| (u.to_string(), ts.iter().map(|s| s.to_string()).collect())).collect();
+        let by: BTreeMap<String, Vec<String>> =
+            units.iter().map(|(u, ts)| (u.to_string(), ts.iter().map(|s| s.to_string()).collect())).collect();
         Event { t, ..planned_event(&tiles, by) }
     }
 
@@ -669,7 +804,10 @@ mod tests {
         assert_eq!(c.mirrored["m1"], (40.0, Some(100.0)));
         assert_eq!(cats[0].ran, Vec::<String>::new());
         let a = units.iter().find(|u| u.unit == "6/1/1").unwrap();
-        assert_eq!((a.done, a.merged, a.planned, a.leased, a.packed, a.catalog, a.restaled), (1100, Some(1130), Some(1150), Some(1200), Some(1300), Some(8), 2));
+        assert_eq!(
+            (a.done, a.merged, a.planned, a.leased, a.packed, a.catalog, a.restaled),
+            (1100, Some(1130), Some(1150), Some(1200), Some(1300), Some(8), 2)
+        );
         assert_eq!(a.adopted, [("m1".to_string(), 1430), ("m4".into(), 1600)].into());
         assert_eq!(a.mirrored, [("m1".to_string(), 1540)].into());
         let b = units.iter().find(|u| u.unit == "6/5/5").unwrap();
@@ -720,7 +858,14 @@ mod tests {
         assert_eq!(cats[1].ran, Vec::<String>::new());
         assert_eq!(cats[2].ran, ["ferries"]);
         // (A tile never packed: no catalog yet.)
-        let (_, units) = chains(&[job("end", 10, "unit", &["6/4/4"], None), planned(20, &["6/4/4"], &[("6/4/4", &["6/4/4"])]), catalog(100, 5.0, 3, true)], &[]);
+        let (_, units) = chains(
+            &[
+                job("end", 10, "unit", &["6/4/4"], None),
+                planned(20, &["6/4/4"], &[("6/4/4", &["6/4/4"])]),
+                catalog(100, 5.0, 3, true),
+            ],
+            &[],
+        );
         assert_eq!(units[0].catalog, None);
     }
 
@@ -743,16 +888,36 @@ mod tests {
         ];
         let (_, units) = chains(&events, &[]);
         let m: Vec<(String, u64, Option<u64>)> = units.iter().map(|u| (u.unit.clone(), u.done, u.merged)).collect();
-        assert_eq!(m, [("6/1/1".to_string(), 100, Some(110)), ("6/2/2".into(), 200, Some(230)), ("6/1/1".into(), 300, Some(340))]);
+        assert_eq!(
+            m,
+            [("6/1/1".to_string(), 100, Some(110)), ("6/2/2".into(), 200, Some(230)), ("6/1/1".into(), 300, Some(340))]
+        );
     }
 
     /// The units whose change made a tile stale: its owners whose base pack or road values aren't
     /// the served catalog's; one rebuilt the same made none.
     #[test]
     fn a_tile_is_restaled_by_its_owners_that_changed() {
-        let m: BTreeMap<String, String> = [("base/6-28-16", "b1"), ("global/roads/6-28-16", "r1"), ("base/6-40-20", "b2"), ("global/roads/6-40-20", "r2"), ("base/6-28-17", "b3")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let m: BTreeMap<String, String> = [
+            ("base/6-28-16", "b1"),
+            ("global/roads/6-28-16", "r1"),
+            ("base/6-40-20", "b2"),
+            ("global/roads/6-40-20", "r2"),
+            ("base/6-28-17", "b3"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
         // (6-40-20 as served; 6-28-16's roads new; 6-28-17 not served yet.)
-        let served: BTreeMap<String, String> = [("base/6-28-16", "b1"), ("global/roads/6-28-16", "r0"), ("base/6-40-20", "b2"), ("global/roads/6-40-20", "r2")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        let served: BTreeMap<String, String> = [
+            ("base/6-28-16", "b1"),
+            ("global/roads/6-28-16", "r0"),
+            ("base/6-40-20", "b2"),
+            ("global/roads/6-40-20", "r2"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
         let r = restaled_by(&m, None, &served, &["6/28/16".into(), "6/40/20".into(), "6/28/17".into(), "6/0/0".into()]);
         assert_eq!(r.get("6/28/16").unwrap(), &["6/28/16", "6/28/17"]);
         assert_eq!(r.get("6/28/17").unwrap(), &["6/28/16", "6/28/17"]);
@@ -766,14 +931,21 @@ mod tests {
     /// and key: one stale again at a new key is noted again, once.
     #[test]
     fn planned_tiles_are_noted_once_per_key_across_restarts() {
-        let tiles = |ks: &[(&str, &str)]| -> Vec<(String, String)> { ks.iter().map(|(t, k)| (t.to_string(), k.to_string())).collect() };
+        let tiles = |ks: &[(&str, &str)]| -> Vec<(String, String)> {
+            ks.iter().map(|(t, k)| (t.to_string(), k.to_string())).collect()
+        };
         let first = tiles(&[("6/1/1", "aaaaaaaaaaaaaaaa1"), ("6/1/2", "bbbbbbbbbbbbbbbb")]);
         let e = Event { t: 500, ..planned_event(&first, BTreeMap::new()) };
         // (Before the map update began: not its.)
         let old = Event { t: 100, ..planned_event(&tiles(&[("6/9/9", "cccccccccccccccc")]), BTreeMap::new()) };
         let mut noted = planned_since([&e, &old], 400);
         assert_eq!(noted.len(), 2);
-        let now = tiles(&[("6/1/1", "aaaaaaaaaaaaaaaa1"), ("6/1/2", "dddddddddddddddd"), ("6/9/9", "cccccccccccccccc"), ("6/9/9", "cccccccccccccccc")]);
+        let now = tiles(&[
+            ("6/1/1", "aaaaaaaaaaaaaaaa1"),
+            ("6/1/2", "dddddddddddddddd"),
+            ("6/9/9", "cccccccccccccccc"),
+            ("6/9/9", "cccccccccccccccc"),
+        ]);
         let new = not_noted(&now, &noted);
         assert_eq!(new, tiles(&[("6/1/2", "dddddddddddddddd"), ("6/9/9", "cccccccccccccccc")]));
         note_planned(&mut noted, &new);
@@ -804,7 +976,11 @@ mod tests {
         let t = now_s() - 300;
         let dir = d.path().join("state/coord/history").join(crate::pool::journal::day(t).unwrap());
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("m-a.jsonl"), serde_json::to_string(&Event { t: t + 10, ..noted.clone() }).unwrap() + "\n").unwrap();
+        std::fs::write(
+            dir.join("m-a.jsonl"),
+            serde_json::to_string(&Event { t: t + 10, ..noted.clone() }).unwrap() + "\n",
+        )
+        .unwrap();
         let mut m = PlannedNotes::default();
         assert!(m.begin(t, &[ev("agent", t + 100)], t + 300));
         m.seed_from_nas(d.path().to_path_buf());
@@ -822,8 +998,14 @@ mod tests {
         std::fs::create_dir_all(&cats).unwrap();
         let cat = |n: u64, base: &str| {
             let mut c = store::catalog::Catalog { fmt: 1, n, ..Default::default() };
-            c.files.insert("base/6-1-1".into(), serde_json::from_value(serde_json::json!({"file": base, "size": 1})).unwrap());
-            c.files.insert("layers/roads/hi/6-1-1".into(), serde_json::from_value(serde_json::json!({"file": "x", "size": 1})).unwrap());
+            c.files.insert(
+                "base/6-1-1".into(),
+                serde_json::from_value(serde_json::json!({"file": base, "size": 1})).unwrap(),
+            );
+            c.files.insert(
+                "layers/roads/hi/6-1-1".into(),
+                serde_json::from_value(serde_json::json!({"file": "x", "size": 1})).unwrap(),
+            );
             store::catalog::write_copy(&cats, &c).unwrap();
         };
         assert!(m.served(&cats).is_empty());
@@ -863,20 +1045,35 @@ mod tests {
     #[test]
     fn the_servers_log_is_appended_per_mac_read_in_order_and_cut() {
         let d = tempfile::tempdir().unwrap();
-        append_server(d.path(), ServerEvent { t: 20, host: "Brandon's M4".into(), kind: "adopt".into(), n: 2, secs: None }).unwrap();
-        append_server(d.path(), ServerEvent { t: 10, host: "m1".into(), kind: "adopt".into(), n: 1, secs: None }).unwrap();
-        append_server(d.path(), ServerEvent { t: 30, host: "m1".into(), kind: "mirror-end".into(), n: 2, secs: Some(5.0) }).unwrap();
-        let files: Vec<String> = std::fs::read_dir(d.path().join(SERVERS)).unwrap().map(|f| f.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        append_server(
+            d.path(),
+            ServerEvent { t: 20, host: "Brandon's M4".into(), kind: "adopt".into(), n: 2, secs: None },
+        )
+        .unwrap();
+        append_server(d.path(), ServerEvent { t: 10, host: "m1".into(), kind: "adopt".into(), n: 1, secs: None })
+            .unwrap();
+        append_server(
+            d.path(),
+            ServerEvent { t: 30, host: "m1".into(), kind: "mirror-end".into(), n: 2, secs: Some(5.0) },
+        )
+        .unwrap();
+        let files: Vec<String> = std::fs::read_dir(d.path().join(SERVERS))
+            .unwrap()
+            .map(|f| f.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
         assert_eq!(files.len(), 2);
         let all = read_servers(d.path(), 0);
         assert_eq!(all.iter().map(|e| e.t).collect::<Vec<_>>(), [10, 20, 30]);
         assert_eq!(read_servers(d.path(), 15).len(), 2);
         // Past SERVERS_MAX: its newer half kept, the new line after it.
         let p = d.path().join(SERVERS).join("m1.jsonl");
-        let line = serde_json::to_string(&ServerEvent { t: 40, host: "m1".into(), kind: "adopt".into(), n: 3, secs: None }).unwrap();
+        let line =
+            serde_json::to_string(&ServerEvent { t: 40, host: "m1".into(), kind: "adopt".into(), n: 3, secs: None })
+                .unwrap();
         std::fs::write(&p, format!("{line}\n").repeat((SERVERS_MAX as usize / line.len()) + 10)).unwrap();
         let before = std::fs::read_to_string(&p).unwrap().lines().count();
-        append_server(d.path(), ServerEvent { t: 50, host: "m1".into(), kind: "adopt".into(), n: 4, secs: None }).unwrap();
+        append_server(d.path(), ServerEvent { t: 50, host: "m1".into(), kind: "adopt".into(), n: 4, secs: None })
+            .unwrap();
         let after: Vec<String> = std::fs::read_to_string(&p).unwrap().lines().map(str::to_string).collect();
         assert_eq!(after.len(), before - before / 2 + 1);
         assert!(after.last().unwrap().contains("\"n\":4"));

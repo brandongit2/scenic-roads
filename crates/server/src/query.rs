@@ -42,7 +42,8 @@ fn score_of(k: &[f32; NCOMP], w: &[f32; NCOMP], wsum: f32) -> f32 {
 }
 
 fn ride_score_of(k: &[f32; RNCOMP], known: bool, w: &[f32; RNCOMP]) -> f32 {
-    let pos: f32 = w.iter().enumerate().map(|(i, v)| if i == FREQ && !known { 0.0 } else { v.max(0.0) }).sum::<f32>().max(1e-6);
+    let pos: f32 =
+        w.iter().enumerate().map(|(i, v)| if i == FREQ && !known { 0.0 } else { v.max(0.0) }).sum::<f32>().max(1e-6);
     (k.iter().zip(w).map(|(a, b)| a * b).sum::<f32>() / pos).clamp(0.0, 1.0)
 }
 
@@ -107,7 +108,10 @@ fn answer<T: serde::Serialize>(r: Result<anyhow::Result<Option<T>>, tokio::task:
 }
 
 /// Runs a query on a blocking thread, stopping it if the client goes.
-async fn run<T: Serialize + Send + 'static>(what: &'static str, f: impl FnOnce(&Cancel) -> anyhow::Result<Option<T>> + Send + 'static) -> Response {
+async fn run<T: Serialize + Send + 'static>(
+    what: &'static str,
+    f: impl FnOnce(&Cancel) -> anyhow::Result<Option<T>> + Send + 'static,
+) -> Response {
     let cancel = Cancel::default();
     let _stop = SetOnDrop(cancel.clone());
     let r = tokio::task::spawn_blocking(move || f(&cancel)).await;
@@ -144,7 +148,12 @@ fn grown(region: &Region, margin_km: f64) -> [i32; 4] {
     let lat = (region.bb[1].unsigned_abs().max(region.bb[3].unsigned_abs()) as f64 * E7).min(85.0);
     let dlat = (margin_km / 111.32 / E7) as i32;
     let dlon = (margin_km / 111.32 / lat.to_radians().cos().max(0.05) / E7) as i32;
-    [region.bb[0].saturating_sub(dlon), region.bb[1].saturating_sub(dlat), region.bb[2].saturating_add(dlon), region.bb[3].saturating_add(dlat)]
+    [
+        region.bb[0].saturating_sub(dlon),
+        region.bb[1].saturating_sub(dlat),
+        region.bb[2].saturating_add(dlon),
+        region.bb[3].saturating_add(dlat),
+    ]
 }
 
 /// The hidata of the z6 tiles in view plus a margin; an error when one can't be read (a query
@@ -168,7 +177,13 @@ fn tiles_for(s: &AppState, region: &Region, margin_km: f64, cancel: &Cancel) -> 
 
 /// The summaries (roads' or rail's) of the z6 tiles in view plus a margin; None when one of those
 /// tiles has none (older hidata): the query is answered exactly then, never half and half.
-fn ltiles_for(s: &AppState, region: &Region, margin_km: f64, rail: bool, cancel: &Cancel) -> anyhow::Result<Option<Vec<LTile>>> {
+fn ltiles_for(
+    s: &AppState,
+    region: &Region,
+    margin_km: f64,
+    rail: bool,
+    cancel: &Cancel,
+) -> anyhow::Result<Option<Vec<LTile>>> {
     let views: Vec<anyhow::Result<Option<Arc<HiView>>>> = tiles_in(grown(region, margin_km))
         .into_par_iter()
         .map(|(x, y)| {
@@ -209,7 +224,12 @@ struct Smp {
 /// Every sample of the tiles' parts passing `keep(tile, part sample)`, in road and offset order,
 /// cut into runs of consecutive samples. Roads shorter than `min_len` (m) are left out: no window
 /// that long fits on them (drives, rides; rail lines want every run).
-fn runs(tiles: &[QTile], rail: bool, min_len: f32, keep: &(dyn Fn(&QTile, &PSample, f32) -> bool + Sync)) -> Vec<Vec<Smp>> {
+fn runs(
+    tiles: &[QTile],
+    rail: bool,
+    min_len: f32,
+    keep: &(dyn Fn(&QTile, &PSample, f32) -> bool + Sync),
+) -> Vec<Vec<Smp>> {
     let mut all: Vec<Smp> = tiles
         .par_iter()
         .enumerate()
@@ -230,7 +250,9 @@ fn runs(tiles: &[QTile], rail: bool, min_len: f32, keep: &(dyn Fn(&QTile, &PSamp
             out.into_iter()
         })
         .collect();
-    all.par_sort_unstable_by(|a, b| a.road.cmp(&b.road).then(a.off.total_cmp(&b.off)).then(a.tile.cmp(&b.tile)).then(a.k.cmp(&b.k)));
+    all.par_sort_unstable_by(|a, b| {
+        a.road.cmp(&b.road).then(a.off.total_cmp(&b.off)).then(a.tile.cmp(&b.tile)).then(a.k.cmp(&b.k))
+    });
     let mut out: Vec<Vec<Smp>> = Vec::new();
     for (i, s) in all.iter().enumerate() {
         if i == 0 || all[i - 1].road != s.road || s.off - all[i - 1].off > GAP_M {
@@ -314,7 +336,9 @@ fn lruns(tiles: &[LTile], min_len: f32, keep: &(dyn Fn(&LPart, &LBin) -> bool + 
             out.into_iter()
         })
         .collect();
-    all.par_sort_unstable_by(|a, b| a.road.cmp(&b.road).then(a.off0.total_cmp(&b.off0)).then(a.tile.cmp(&b.tile)).then(a.k.cmp(&b.k)));
+    all.par_sort_unstable_by(|a, b| {
+        a.road.cmp(&b.road).then(a.off0.total_cmp(&b.off0)).then(a.tile.cmp(&b.tile)).then(a.k.cmp(&b.k))
+    });
     let mut out: Vec<Vec<BRef>> = Vec::new();
     let mut reach = 0f32;
     for (i, b) in all.iter().enumerate() {
@@ -378,7 +402,11 @@ fn real_points(b: &LBin) -> Vec<(f32, [f64; 2])> {
     match b.n {
         0 | 1 => vec![(b.off0, deg(b.lon0, b.lat0))],
         2 => vec![(b.off0, deg(b.lon0, b.lat0)), (b.off0 + b.len, deg(b.lon1, b.lat1))],
-        _ => vec![(b.off0, deg(b.lon0, b.lat0)), (b.off0 + b.len * mid_u(b), deg(b.lonm, b.latm)), (b.off0 + b.len, deg(b.lon1, b.lat1))],
+        _ => vec![
+            (b.off0, deg(b.lon0, b.lat0)),
+            (b.off0 + b.len * mid_u(b), deg(b.lonm, b.latm)),
+            (b.off0 + b.len, deg(b.lon1, b.lat1)),
+        ],
     }
 }
 
@@ -390,16 +418,22 @@ fn window_geom(run: &[BRef], tiles: &[LTile], ps: &[(f32, u32, f32)], i: usize, 
     let mut bins: Vec<u32> = ps[i..=j].iter().map(|x| x.1).collect();
     bins.sort_unstable();
     bins.dedup();
-    let mut pts: Vec<(f32, [f64; 2])> = bins.iter().flat_map(|&k| real_points(bin_of(tiles, &run[k as usize]))).collect();
+    let mut pts: Vec<(f32, [f64; 2])> =
+        bins.iter().flat_map(|&k| real_points(bin_of(tiles, &run[k as usize]))).collect();
     pts.sort_by(|x, y| x.0.total_cmp(&y.0));
-    let nearest = |at: f32| pts.iter().enumerate().min_by(|x, y| (x.1 .0 - at).abs().total_cmp(&(y.1 .0 - at).abs())).map_or(0, |x| x.0);
+    let nearest = |at: f32| {
+        pts.iter().enumerate().min_by(|x, y| (x.1 .0 - at).abs().total_cmp(&(y.1 .0 - at).abs())).map_or(0, |x| x.0)
+    };
     let (s, e) = (nearest(a), nearest(b));
     pts[s.min(e)..=s.max(e)].iter().map(|p| p.1).collect()
 }
 
 /// The real sample of a bin nearest an offset along the road.
 fn nearest_point(b: &LBin, at: f32) -> [f64; 2] {
-    real_points(b).into_iter().min_by(|x, y| (x.0 - at).abs().total_cmp(&(y.0 - at).abs())).map_or(deg(b.lon0, b.lat0), |p| p.1)
+    real_points(b)
+        .into_iter()
+        .min_by(|x, y| (x.0 - at).abs().total_cmp(&(y.0 - at).abs()))
+        .map_or(deg(b.lon0, b.lat0), |p| p.1)
 }
 
 fn comps<const N: usize>(b: &LBin) -> [f32; N] {
@@ -504,7 +538,12 @@ pub struct DriveHit {
 }
 
 /// The best drives from the tiles' samples: (how many roads have one, the best `limit`).
-fn drives_exact(tiles: &[QTile], region: &Region, p: &DriveParams, cancel: &Cancel) -> anyhow::Result<(usize, Vec<DriveHit>)> {
+fn drives_exact(
+    tiles: &[QTile],
+    region: &Region,
+    p: &DriveParams,
+    cancel: &Cancel,
+) -> anyhow::Result<(usize, Vec<DriveHit>)> {
     let keep = |hv: &QTile, s: &PSample, road_len: f32| {
         let (c, f) = lsum::attrs(&hv.here()[s.way as usize]);
         p.keeps(c, f) && len_ok(road_len, p.lmin, p.lmax)
@@ -554,10 +593,13 @@ fn drives_exact(tiles: &[QTile], region: &Region, p: &DriveParams, cancel: &Canc
                 first: (hv_f.here()[pf.way as usize].id, deg(pf.lon, pf.lat)),
                 mid: (hv_m.here()[pm.way as usize].id, deg(pm.lon, pm.lat)),
                 parts,
-                geom: run[i..=j].iter().map(|s| {
-                    let q = sample(tiles, s).1;
-                    deg(q.lon, q.lat)
-                }).collect(),
+                geom: run[i..=j]
+                    .iter()
+                    .map(|s| {
+                        let q = sample(tiles, s).1;
+                        deg(q.lon, q.lat)
+                    })
+                    .collect(),
             }
         })
         .collect();
@@ -565,7 +607,12 @@ fn drives_exact(tiles: &[QTile], region: &Region, p: &DriveParams, cancel: &Canc
 }
 
 /// The best drives from the tiles' summaries, as `drives_exact`.
-fn drives_approx(tiles: &[LTile], region: &Region, p: &DriveParams, cancel: &Cancel) -> anyhow::Result<(usize, Vec<DriveHit>)> {
+fn drives_approx(
+    tiles: &[LTile],
+    region: &Region,
+    p: &DriveParams,
+    cancel: &Cancel,
+) -> anyhow::Result<(usize, Vec<DriveHit>)> {
     let keep = |lp: &LPart, b: &LBin| p.keeps(b.class, b.flags) && len_ok(lp.road_len, p.lmin, p.lmax);
     let runs = lruns(tiles, p.len, &keep);
     cancel.check()?;
@@ -650,7 +697,11 @@ fn compute_drives(st: &AppState, q: Q, cancel: &Cancel) -> anyhow::Result<Option
         limit: q.limit.unwrap_or(20).min(100),
     };
     let margin = p.len as f64 / 2000.0;
-    let lt = if q.approx == Some(1) && p.len >= LO_MIN_ROAD { ltiles_for(st, &region, margin, false, cancel)? } else { None };
+    let lt = if q.approx == Some(1) && p.len >= LO_MIN_ROAD {
+        ltiles_for(st, &region, margin, false, cancel)?
+    } else {
+        None
+    };
     let approx = lt.is_some();
     let (total, hits) = match lt {
         Some(lt) => drives_approx(&lt, &region, &p, cancel)?,
@@ -668,7 +719,14 @@ fn compute_drives(st: &AppState, q: Q, cancel: &Cancel) -> anyhow::Result<Option
             let rec = f.rec();
             let name = f.base.string(rec.name).to_string();
             let name_en = st.road_en(h.mid.0);
-            let d = st.names.display(names::Kind::Road, &name, (!name_en.is_empty()).then_some(name_en.as_str()), &[], h.mid.1[0], h.mid.1[1]);
+            let d = st.names.display(
+                names::Kind::Road,
+                &name,
+                (!name_en.is_empty()).then_some(name_en.as_str()),
+                &[],
+                h.mid.1[0],
+                h.mid.1[1],
+            );
             Some(Drive {
                 score: h.score * 100.0,
                 length_m: h.length_m,
@@ -773,7 +831,15 @@ impl Rail for Live<'_> {
         // From the tile's hidata when it has the lines (no base pack read: cold rides took 7–10 s).
         if t.hv.has_railinfo() {
             let Some((r, name, route)) = t.hv.rail_info(p.way)? else { return Ok(None) };
-            return Ok(Some(LineInfo { ident: rail_ident(&name, &route), services: route, colour: r.colour, rel: r.rel, way: id, rail: r.rail, class: r.class }));
+            return Ok(Some(LineInfo {
+                ident: rail_ident(&name, &route),
+                services: route,
+                colour: r.colour,
+                rel: r.rel,
+                way: id,
+                rail: r.rail,
+                class: r.class,
+            }));
         }
         let Some(f) = find_way(self.st, id, deg(p.lon, p.lat))? else { return Ok(None) };
         let r = f.rec();
@@ -793,7 +859,15 @@ impl Rail for Live<'_> {
             return None;
         }
         let (r, name, route) = t.rail_row(b.rinfo)?;
-        Some(LineInfo { ident: rail_ident(name, route), services: route.to_string(), colour: r.colour, rel: r.rel, way: b.way, rail: r.rail, class: r.class })
+        Some(LineInfo {
+            ident: rail_ident(name, route),
+            services: route.to_string(),
+            colour: r.colour,
+            rel: r.rel,
+            way: b.way,
+            rail: r.rail,
+            class: r.class,
+        })
     }
 }
 
@@ -848,7 +922,13 @@ pub struct RideHit {
 }
 
 /// Each line's best stretch from the tiles' samples: (how many lines have one, the best `limit`).
-fn rides_exact(tiles: &[QTile], region: &Region, p: &RideParams, r: &dyn Rail, cancel: &Cancel) -> anyhow::Result<(usize, Vec<RideHit>)> {
+fn rides_exact(
+    tiles: &[QTile],
+    region: &Region,
+    p: &RideParams,
+    r: &dyn Rail,
+    cancel: &Cancel,
+) -> anyhow::Result<(usize, Vec<RideHit>)> {
     let runs = runs(tiles, true, p.len, &|_, _, _| true);
     cancel.check()?;
     let in_view = |s: &Smp| {
@@ -914,10 +994,13 @@ fn rides_exact(tiles: &[QTile], region: &Region, p: &RideParams, r: &dyn Rail, c
                 mid_pos: deg(pm.lon, pm.lat),
                 trains,
                 parts,
-                geom: run[i..=j].iter().map(|s| {
-                    let q = sample(tiles, s).1;
-                    deg(q.lon, q.lat)
-                }).collect(),
+                geom: run[i..=j]
+                    .iter()
+                    .map(|s| {
+                        let q = sample(tiles, s).1;
+                        deg(q.lon, q.lat)
+                    })
+                    .collect(),
             }
         })
         .collect();
@@ -926,7 +1009,13 @@ fn rides_exact(tiles: &[QTile], region: &Region, p: &RideParams, r: &dyn Rail, c
 }
 
 /// Each line's best stretch from the tiles' summaries, as `rides_exact`.
-fn rides_approx(tiles: &[LTile], region: &Region, p: &RideParams, r: &dyn Rail, cancel: &Cancel) -> anyhow::Result<(usize, Vec<RideHit>)> {
+fn rides_approx(
+    tiles: &[LTile],
+    region: &Region,
+    p: &RideParams,
+    r: &dyn Rail,
+    cancel: &Cancel,
+) -> anyhow::Result<(usize, Vec<RideHit>)> {
     let runs = lruns(tiles, p.len, &|_, _| true);
     cancel.check()?;
     let mut hits: Vec<(f32, usize, usize, usize, LineInfo)> = runs
@@ -1036,10 +1125,16 @@ pub async fn rides(State(s): State<S>, Query(q): Query<RQ>) -> Response {
 fn compute_rides(st: &AppState, q: RQ, cancel: &Cancel) -> anyhow::Result<Option<RidesOut>> {
     let Some(region) = Region::parse(&q.bbox, q.poly.as_deref()) else { return Ok(None) };
     let Some(w) = weights(&q) else { return Ok(None) };
-    let p = RideParams { len: q.len.unwrap_or(5.0).clamp(0.5, 100.0) * 1000.0, w, groups: q.groups.unwrap_or(0xff), limit: q.limit.unwrap_or(30).min(100) };
+    let p = RideParams {
+        len: q.len.unwrap_or(5.0).clamp(0.5, 100.0) * 1000.0,
+        w,
+        groups: q.groups.unwrap_or(0xff),
+        limit: q.limit.unwrap_or(30).min(100),
+    };
     let rail = Live { st, freqs: st.rail_freqs() };
     let margin = p.len as f64 / 2000.0;
-    let lt = if q.approx == Some(1) && p.len >= LO_MIN_ROAD { ltiles_for(st, &region, margin, true, cancel)? } else { None };
+    let lt =
+        if q.approx == Some(1) && p.len >= LO_MIN_ROAD { ltiles_for(st, &region, margin, true, cancel)? } else { None };
     let approx = lt.is_some();
     let (total, hits) = match lt {
         Some(lt) => rides_approx(&lt, &region, &p, &rail, cancel)?,
@@ -1082,7 +1177,14 @@ pub struct LineAcc {
 }
 
 /// The runs' shares of the rail lines in view, from the tiles' samples.
-fn lines_exact(tiles: &[QTile], region: &Region, w: &[f32; RNCOMP], groups: u8, r: &dyn Rail, cancel: &Cancel) -> anyhow::Result<Vec<LineAcc>> {
+fn lines_exact(
+    tiles: &[QTile],
+    region: &Region,
+    w: &[f32; RNCOMP],
+    groups: u8,
+    r: &dyn Rail,
+    cancel: &Cancel,
+) -> anyhow::Result<Vec<LineAcc>> {
     let runs = runs(tiles, true, 0.0, &|_, _, _| true);
     cancel.check()?;
     let fe = FirstErr::default();
@@ -1130,7 +1232,14 @@ fn lines_exact(tiles: &[QTile], region: &Region, w: &[f32; RNCOMP], groups: u8, 
 /// The runs' shares of the rail lines in view, from the tiles' summaries: a bin is in view when
 /// its middle sample is, and stands for its samples' steps (to the next bin's first sample; a
 /// run's last bin, its own length).
-fn lines_approx(tiles: &[LTile], region: &Region, w: &[f32; RNCOMP], groups: u8, r: &dyn Rail, cancel: &Cancel) -> anyhow::Result<Vec<LineAcc>> {
+fn lines_approx(
+    tiles: &[LTile],
+    region: &Region,
+    w: &[f32; RNCOMP],
+    groups: u8,
+    r: &dyn Rail,
+    cancel: &Cancel,
+) -> anyhow::Result<Vec<LineAcc>> {
     let runs = lruns(tiles, 0.0, &|_, _| true);
     cancel.check()?;
     let accs: Vec<LineAcc> = runs

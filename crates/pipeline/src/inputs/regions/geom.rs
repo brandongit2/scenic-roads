@@ -43,10 +43,12 @@ fn ip(p: Pt) -> IntPoint<i64> {
 /// Twice the signed area of a ring (positive: counter-clockwise).
 pub fn area2(r: &[Pt]) -> i128 {
     let n = r.len();
-    (0..n).map(|i| {
-        let (a, b) = (r[i], r[(i + 1) % n]);
-        a[0] as i128 * b[1] as i128 - b[0] as i128 * a[1] as i128
-    }).sum()
+    (0..n)
+        .map(|i| {
+            let (a, b) = (r[i], r[(i + 1) % n]);
+            a[0] as i128 * b[1] as i128 - b[0] as i128 * a[1] as i128
+        })
+        .sum()
 }
 
 fn cross(o: Pt, a: Pt, b: Pt) -> i128 {
@@ -98,7 +100,10 @@ impl Area {
     }
 
     fn of(shapes: Vec<Vec<Vec<IntPoint<i64>>>>) -> Area {
-        let polys = shapes.into_iter().map(|s| s.into_iter().map(|c| c.into_iter().map(|p| [p.x, p.y]).collect()).collect()).collect();
+        let polys = shapes
+            .into_iter()
+            .map(|s| s.into_iter().map(|c| c.into_iter().map(|p| [p.x, p.y]).collect()).collect())
+            .collect();
         Area { polys }.canonical()
     }
 
@@ -159,7 +164,13 @@ impl Area {
 
     /// Shifted by `dx` in longitude.
     pub fn shifted(&self, dx: i64) -> Area {
-        Area { polys: self.polys.iter().map(|p| p.iter().map(|r| r.iter().map(|q| [q[0] + dx, q[1]]).collect()).collect()).collect() }
+        Area {
+            polys: self
+                .polys
+                .iter()
+                .map(|p| p.iter().map(|r| r.iter().map(|q| [q[0] + dx, q[1]]).collect()).collect())
+                .collect(),
+        }
     }
 
     /// Whether `p` is inside (even–odd over every ring; a point on an edge counts as inside).
@@ -209,7 +220,11 @@ pub fn bbox_of<'a>(pts: impl Iterator<Item = &'a Pt>) -> Option<[i64; 4]> {
 }
 
 fn on_segment(a: Pt, b: Pt, p: Pt) -> bool {
-    cross(a, b, p) == 0 && p[0] >= a[0].min(b[0]) && p[0] <= a[0].max(b[0]) && p[1] >= a[1].min(b[1]) && p[1] <= a[1].max(b[1])
+    cross(a, b, p) == 0
+        && p[0] >= a[0].min(b[0])
+        && p[0] <= a[0].max(b[0])
+        && p[1] >= a[1].min(b[1])
+        && p[1] <= a[1].max(b[1])
 }
 
 fn on_ring(r: &[Pt], p: Pt) -> bool {
@@ -238,11 +253,15 @@ pub fn inside_evenodd(rings: &[&Ring], p: Pt) -> bool {
 
 /// Whether segments a–b and c–d meet (touching included).
 pub fn segments_meet(a: Pt, b: Pt, c: Pt, d: Pt) -> bool {
-    let (d1, d2, d3, d4) = (cross(c, d, a).signum(), cross(c, d, b).signum(), cross(a, b, c).signum(), cross(a, b, d).signum());
+    let (d1, d2, d3, d4) =
+        (cross(c, d, a).signum(), cross(c, d, b).signum(), cross(a, b, c).signum(), cross(a, b, d).signum());
     if d1 * d2 < 0 && d3 * d4 < 0 {
         return true;
     }
-    (d1 == 0 && on_segment(c, d, a)) || (d2 == 0 && on_segment(c, d, b)) || (d3 == 0 && on_segment(a, b, c)) || (d4 == 0 && on_segment(a, b, d))
+    (d1 == 0 && on_segment(c, d, a))
+        || (d2 == 0 && on_segment(c, d, b))
+        || (d3 == 0 && on_segment(a, b, c))
+        || (d4 == 0 && on_segment(a, b, d))
 }
 
 /// Whether segments a–b and c–d cross properly or overlap (more than meeting at a shared end).
@@ -260,7 +279,8 @@ fn segments_cross_inner(a: Pt, b: Pt, c: Pt, d: Pt) -> bool {
         let mine = if a == c || a == d { b } else { a };
         let s = if a == c || a == d { a } else { b };
         // (Overlap when the two other ends lie on the same side of the shared one.)
-        ((other[0] - s[0]) as i128 * (mine[0] - s[0]) as i128 + (other[1] - s[1]) as i128 * (mine[1] - s[1]) as i128) > 0
+        ((other[0] - s[0]) as i128 * (mine[0] - s[0]) as i128 + (other[1] - s[1]) as i128 * (mine[1] - s[1]) as i128)
+            > 0
     }
 }
 
@@ -341,10 +361,13 @@ impl Frame {
         }
         // Each span on the circle, from its west end (0…TURN), sorted; the widest gap between one's
         // east end and the next's west end, going round.
-        let mut iv: Vec<[i64; 2]> = spans.iter().map(|s| {
-            let w = (s[0] + HALF).rem_euclid(TURN);
-            [w, w + (s[1] - s[0])]
-        }).collect();
+        let mut iv: Vec<[i64; 2]> = spans
+            .iter()
+            .map(|s| {
+                let w = (s[0] + HALF).rem_euclid(TURN);
+                [w, w + (s[1] - s[0])]
+            })
+            .collect();
         iv.sort();
         // Merged, then the gaps between (and round from the last to the first).
         let mut merged: Vec<[i64; 2]> = Vec::new();
@@ -400,7 +423,9 @@ impl Frame {
         let mut out = Vec::new();
         for k in k0..=k1 {
             let (w, e) = (-HALF + k * TURN, HALF + k * TURN);
-            let band = Area { polys: vec![vec![vec![[w, -910_000_000], [e, -910_000_000], [e, 910_000_000], [w, 910_000_000]]]] };
+            let band = Area {
+                polys: vec![vec![vec![[w, -910_000_000], [e, -910_000_000], [e, 910_000_000], [w, 910_000_000]]]],
+            };
             let piece = area.intersect(&band);
             if !piece.is_empty() {
                 out.push((k, piece.shifted(-k * TURN)));
@@ -523,7 +548,12 @@ fn sweep(pts: &[Pt], closed: bool, r: f64, out: &mut Vec<Ring>) {
         }
         let (ba, bb) = (bearing(a, b), bearing(a, b));
         let q = std::f64::consts::FRAC_PI_2;
-        out.push(vec![destination(a, ba - q, r), destination(b, bb - q, r), destination(b, bb + q, r), destination(a, ba + q, r)]);
+        out.push(vec![
+            destination(a, ba - q, r),
+            destination(b, bb - q, r),
+            destination(b, bb + q, r),
+            destination(a, ba + q, r),
+        ]);
     }
 }
 
@@ -628,7 +658,9 @@ pub fn cut(a: &Area, line: &[Pt], left: bool) -> Result<Area, CutError> {
     for poly in &a.polys {
         let piece = Area { polys: vec![poly.clone()] };
         let rings: Vec<&Ring> = poly.iter().collect();
-        let met = line.windows(2).any(|s| rings.iter().any(|r| (0..r.len()).any(|i| segments_meet(s[0], s[1], r[i], r[(i + 1) % r.len()]))))
+        let met = line
+            .windows(2)
+            .any(|s| rings.iter().any(|r| (0..r.len()).any(|i| segments_meet(s[0], s[1], r[i], r[(i + 1) % r.len()]))))
             || inside_evenodd(&rings, line[0]);
         if !met {
             // Kept whole when on the side kept: judged by its first point not on the line's side's edge.
@@ -705,7 +737,12 @@ mod tests {
 
     /// The geodesic distance (m) on WGS 84, Vincenty's inverse: the tests' measure of the buffers.
     pub(crate) fn vincenty(a: Pt, b: Pt) -> f64 {
-        let (l1, p1, l2, p2) = ((a[0] as f64 * 1e-7).to_radians(), (a[1] as f64 * 1e-7).to_radians(), (b[0] as f64 * 1e-7).to_radians(), (b[1] as f64 * 1e-7).to_radians());
+        let (l1, p1, l2, p2) = (
+            (a[0] as f64 * 1e-7).to_radians(),
+            (a[1] as f64 * 1e-7).to_radians(),
+            (b[0] as f64 * 1e-7).to_radians(),
+            (b[1] as f64 * 1e-7).to_radians(),
+        );
         let bb = A * (1.0 - F);
         let (u1, u2) = (((1.0 - F) * p1.dtan()).datan(), ((1.0 - F) * p2.dtan()).datan());
         let l = l2 - l1;
@@ -729,7 +766,12 @@ mod tests {
         let u2b = c2a * (A * A - bb * bb) / (bb * bb);
         let aa = 1.0 + u2b / 16384.0 * (4096.0 + u2b * (-768.0 + u2b * (320.0 - 175.0 * u2b)));
         let bk = u2b / 1024.0 * (256.0 + u2b * (-128.0 + u2b * (74.0 - 47.0 * u2b)));
-        let ds = bk * s_sig * (c2sm + bk / 4.0 * (c_sig * (-1.0 + 2.0 * c2sm * c2sm) - bk / 6.0 * c2sm * (-3.0 + 4.0 * s_sig * s_sig) * (-3.0 + 4.0 * c2sm * c2sm)));
+        let ds = bk
+            * s_sig
+            * (c2sm
+                + bk / 4.0
+                    * (c_sig * (-1.0 + 2.0 * c2sm * c2sm)
+                        - bk / 6.0 * c2sm * (-3.0 + 4.0 * s_sig * s_sig) * (-3.0 + 4.0 * c2sm * c2sm)));
         bb * aa * (sig - ds)
     }
 

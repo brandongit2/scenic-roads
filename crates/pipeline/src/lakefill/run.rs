@@ -4,8 +4,8 @@
 //! the `lakefill` step runs it (`all`). The `lakefill` tool runs each part on its own.
 
 use super::nts;
-use anyhow::{Context, Result};
 use crate::watercov::Raster;
+use anyhow::{Context, Result};
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -28,7 +28,6 @@ pub const PROVINCES: [(u64, &str); 13] = [
     (391178, "saskatchewan"),
     (391455, "yukon"),
 ];
-
 
 /// The survey's tile zoom and the pixels a side it draws each tile's water at.
 const SZ: u8 = 12;
@@ -67,7 +66,21 @@ pub fn sheets_csv(rows: &[SheetRow]) -> String {
     for r in rows {
         s.push_str(&format!(
             "{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{},{},{}\n",
-            r.sheet, r.west, r.south, r.east, r.north, r.region, r.land_km2, r.sea_km2, r.inland_km2, r.lakes[0], r.lakes[1], r.lakes[2], r.lakes[3], r.z12_bytes, r.z12_tiles
+            r.sheet,
+            r.west,
+            r.south,
+            r.east,
+            r.north,
+            r.region,
+            r.land_km2,
+            r.sea_km2,
+            r.inland_km2,
+            r.lakes[0],
+            r.lakes[1],
+            r.lakes[2],
+            r.lakes[3],
+            r.z12_bytes,
+            r.z12_tiles
         ));
     }
     s
@@ -146,7 +159,13 @@ pub fn gaps(rows: &[SheetRow]) -> Vec<Gap> {
         let area = R * R * (r.east - r.west).to_radians() * (r.north.to_radians().sin() - r.south.to_radians().sin());
         let land = (area - r.sea_km2 - r.inland_km2).max(0.0);
         let small = f64::from(r.lakes[0] + r.lakes[1] + r.lakes[2]);
-        ss.push(S { width: r.east - r.west, area, d: (land > MIN_LAND).then(|| small / land * 100.0), reference: None, why: Vec::new() });
+        ss.push(S {
+            width: r.east - r.west,
+            area,
+            d: (land > MIN_LAND).then(|| small / land * 100.0),
+            reference: None,
+            why: Vec::new(),
+        });
         idx.insert(key(r), i);
     }
     // A sheet's neighbours within `rad` (rows of other widths matched by longitude).
@@ -217,7 +236,13 @@ pub fn gaps(rows: &[SheetRow]) -> Vec<Gap> {
     rows.iter()
         .enumerate()
         .filter(|(i, _)| gap.contains(i))
-        .map(|(i, r)| Gap { row: r.clone(), area_km2: ss[i].area, density: ss[i].d.unwrap_or(0.0), reference: ss[i].reference, why: ss[i].why.clone() })
+        .map(|(i, r)| Gap {
+            row: r.clone(),
+            area_km2: ss[i].area,
+            density: ss[i].d.unwrap_or(0.0),
+            reference: ss[i].reference,
+            why: ss[i].why.clone(),
+        })
         .collect()
 }
 
@@ -228,7 +253,19 @@ pub fn gaps_csv(gaps: &[Gap]) -> String {
     let mut s = String::from("sheet,region,west,south,east,north,area_km2,small_lakes_per_100km2,neighbour_ref,why\n");
     for v in g {
         let r = &v.row;
-        s.push_str(&format!("{},{},{},{},{},{},{:.0},{:.2},{:.1},{}\n", r.sheet, r.region, r.west, r.south, r.east, r.north, v.area_km2, v.density, v.reference.unwrap_or(0.0), v.why.join("+")));
+        s.push_str(&format!(
+            "{},{},{},{},{},{},{:.0},{:.2},{:.1},{}\n",
+            r.sheet,
+            r.region,
+            r.west,
+            r.south,
+            r.east,
+            r.north,
+            v.area_km2,
+            v.density,
+            v.reference.unwrap_or(0.0),
+            v.why.join("+")
+        ));
     }
     s
 }
@@ -237,7 +274,10 @@ pub fn gaps_csv(gaps: &[Gap]) -> String {
 pub fn read_gaps_csv(text: &str) -> Result<HashSet<nts::Key>> {
     let mut lines = text.lines();
     let head: Vec<&str> = lines.next().context("an empty sheet list")?.split(',').collect();
-    let (cw, cs) = (head.iter().position(|h| *h == "west").context("no west")?, head.iter().position(|h| *h == "south").context("no south")?);
+    let (cw, cs) = (
+        head.iter().position(|h| *h == "west").context("no west")?,
+        head.iter().position(|h| *h == "south").context("no south")?,
+    );
     let mut out = HashSet::new();
     for l in lines {
         let v: Vec<&str> = l.split(',').collect();
@@ -301,12 +341,20 @@ impl FillOpts {
 /// it names what the code read, agent::rekey::declared_before::LAKE_FILL). Ok(None): its folder holds
 /// no zip (no fill made); Err: not declared, its declared folder not there (the zips not moved yet,
 /// or the NAS away), or not to be read now: the step and what reads its fill wait.
-pub fn planned_source(root: &Path, m: &std::collections::BTreeMap<String, String>) -> std::result::Result<Option<String>, String> {
-    let s = crate::inputs::sources::open(root, m).map_err(|e| format!("the declared sources can't be read now ({e:#})"))?.ok_or("the source declarations have no accepted version yet")?;
+pub fn planned_source(
+    root: &Path,
+    m: &std::collections::BTreeMap<String, String>,
+) -> std::result::Result<Option<String>, String> {
+    let s = crate::inputs::sources::open(root, m)
+        .map_err(|e| format!("the declared sources can't be read now ({e:#})"))?
+        .ok_or("the source declarations have no accepted version yet")?;
     let src = s.role(crate::inputs::sources::LAKE_FILL).map_err(|e| format!("{e:#}"))?;
     let dir = root.join(source_dir(src));
     if !dir.is_dir() {
-        return Err(format!("its source's folder, {}, isn't there (its zips are kept there: docs/inputs.md §6.9)", source_dir(src)));
+        return Err(format!(
+            "its source's folder, {}, isn't there (its zips are kept there: docs/inputs.md §6.9)",
+            source_dir(src)
+        ));
     }
     let pin = source_pin(&dir).map_err(|e| format!("its source's folder can't be read now ({e})"))?;
     Ok(pin.map(|p| match src.key_extra(crate::agent::rekey::declared_before::LAKE_FILL) {
@@ -347,14 +395,23 @@ pub fn source_pin(dir: &Path) -> std::io::Result<Option<String>> {
 }
 
 /// The longitude bands `all` fills one at a time (each 1.8–7.2 GB of memory, 2026-10-09).
-pub const BANDS: [(f64, f64); 6] = [(-142.0, -125.0), (-125.0, -110.0), (-110.0, -100.0), (-100.0, -85.0), (-85.0, -70.0), (-70.0, -50.0)];
+pub const BANDS: [(f64, f64); 6] =
+    [(-142.0, -125.0), (-125.0, -110.0), (-110.0, -100.0), (-100.0, -85.0), (-85.0, -70.0), (-70.0, -50.0)];
 
 /// The whole fill, as the `lakefill` step makes it: the survey of the basemap `basemap` over the
 /// outlines `outlines`, its gap sheets, and the fill of them from the declared lake-fill source
 /// `decl`'s zips under `sources` (`FillOpts::declared`) band by band (`BANDS`), merged; in `work` (a
 /// local folder: the survey, each band's run and the merged fill with its report). `part` is told each part as it starts (0 the
 /// survey, then each band, then the merge); `said`, the survey's progress. Returns the fill's file.
-pub fn all(basemap: &Path, outlines: &Path, sources: &Path, decl: &crate::inputs::sources::Source, work: &Path, part: &dyn Fn(usize), said: &(dyn Fn(u64, u64) + Sync)) -> Result<PathBuf> {
+pub fn all(
+    basemap: &Path,
+    outlines: &Path,
+    sources: &Path,
+    decl: &crate::inputs::sources::Source,
+    work: &Path,
+    part: &dyn Fn(usize),
+    said: &(dyn Fn(u64, u64) + Sync),
+) -> Result<PathBuf> {
     std::fs::create_dir_all(work)?;
     part(0);
     let rows = survey(basemap, outlines, said)?;
@@ -409,7 +466,10 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
     }
     let region_at = |lon: f64, lat: f64| -> Option<&str> {
         let p = [(lon * 1e7) as i32, (lat * 1e7) as i32];
-        polys.iter().find(|(_, r)| crate::outlines::inside(&r.iter().map(Vec::as_slice).collect::<Vec<_>>(), p)).map(|(n, _)| *n)
+        polys
+            .iter()
+            .find(|(_, r)| crate::outlines::inside(&r.iter().map(Vec::as_slice).collect::<Vec<_>>(), p))
+            .map(|(n, _)| *n)
     };
     let pm = store::pmtiles::PmTiles::with_leaf_cache(Box::new(store::range::PlainFile::open(base)?), 4096)?;
     // The z5 tiles over Canada's box.
@@ -419,7 +479,8 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
         let r = lat.to_radians();
         ((1.0 - (r.tan() + 1.0 / r.cos()).ln() / std::f64::consts::PI) / 2.0 * f64::from(1u32 << z)).floor() as u32
     };
-    let fives: Vec<(u32, u32)> = (ty(n, 5)..=ty(s, 5)).flat_map(|y| (tx(w, 5)..=tx(east, 5)).map(move |x| (x, y))).collect();
+    let fives: Vec<(u32, u32)> =
+        (ty(n, 5)..=ty(s, 5)).flat_map(|y| (tx(w, 5)..=tx(east, 5)).map(move |x| (x, y))).collect();
     let sheets: Mutex<HashMap<(i32, i32), Sheet>> = Mutex::new(HashMap::new());
     let done = std::sync::atomic::AtomicUsize::new(0);
     let base_id = |z: u8| ((1u64 << (2 * u32::from(z))) - 1) / 3;
@@ -436,7 +497,9 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
         let mut spans: Vec<(u64, u64)> = Vec::new();
         for (o, l) in offs {
             match spans.last_mut() {
-                Some(s) if o <= s.1 + (1 << 20) && o + u64::from(l) - s.0 <= 256 << 20 => s.1 = s.1.max(o + u64::from(l)),
+                Some(s) if o <= s.1 + (1 << 20) && o + u64::from(l) - s.0 <= 256 << 20 => {
+                    s.1 = s.1.max(o + u64::from(l))
+                }
                 _ => spans.push((o, o + u64::from(l))),
             }
         }
@@ -508,14 +571,23 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
                             // Ring area in km²: tile units² → metres² at this latitude.
                             let m = 40_075_016.686 * lat.to_radians().cos() / f64::from(1u32 << SZ) / ext;
                             let km2 = a2 / 2.0 * m * m / 1e6;
-                            let b = if km2 < 0.01 { 0 } else if km2 < 0.1 { 1 } else if km2 < 1.0 { 2 } else { 3 };
+                            let b = if km2 < 0.01 {
+                                0
+                            } else if km2 < 0.1 {
+                                1
+                            } else if km2 < 1.0 {
+                                2
+                            } else {
+                                3
+                            };
                             local.entry(sheet_of(lon, lat)).or_default().lakes[b] += 1;
                         }
                     }
                 }
                 let (sc, ic) = (sea.coverage(), inland.coverage());
                 for py in 0..PX {
-                    let (_, lat) = lonlat(SZ, f64::from(x) + 0.5 / PX as f64, f64::from(y) + (py as f64 + 0.5) / PX as f64);
+                    let (_, lat) =
+                        lonlat(SZ, f64::from(x) + 0.5 / PX as f64, f64::from(y) + (py as f64 + 0.5) / PX as f64);
                     let m = 40_075_016.686 * lat.to_radians().cos() / f64::from(1u32 << SZ) / PX as f64;
                     let a = m * m / 1e6;
                     for px in 0..PX {
@@ -557,7 +629,8 @@ pub fn survey(base: &Path, outlines: &Path, said: &(dyn Fn(u64, u64) + Sync)) ->
         let mut hits: HashMap<&str, u32> = HashMap::new();
         for i in 0..5 {
             for j in 0..5 {
-                let (lon, lat) = (wl + (el - wl) * (f64::from(i) + 0.5) / 5.0, sl + (nl - sl) * (f64::from(j) + 0.5) / 5.0);
+                let (lon, lat) =
+                    (wl + (el - wl) * (f64::from(i) + 0.5) / 5.0, sl + (nl - sl) * (f64::from(j) + 0.5) / 5.0);
                 if let Some(r) = region_at(lon, lat) {
                     *hits.entry(r).or_default() += 1;
                 }
@@ -624,7 +697,9 @@ pub fn shapefiles(src: &Path, layer: &str) -> Result<Vec<(Src, Src, Src)>> {
         let stem = n.rsplit('/').next().unwrap_or(&n).to_string();
         let l = layer.to_ascii_lowercase();
         // `waterbody_2.shp`, or a part of it (`waterbody_2_8.shp`).
-        stem.strip_suffix(".shp").is_some_and(|s| s == l || s.strip_prefix(&format!("{l}_")).is_some_and(|k| k.chars().all(|c| c.is_ascii_digit())))
+        stem.strip_suffix(".shp").is_some_and(|s| {
+            s == l || s.strip_prefix(&format!("{l}_")).is_some_and(|k| k.chars().all(|c| c.is_ascii_digit()))
+        })
     };
     if src.is_dir() {
         let mut stack = vec![src.to_path_buf()];
@@ -638,7 +713,11 @@ pub fn shapefiles(src: &Path, layer: &str) -> Result<Vec<(Src, Src, Src)>> {
                 } else if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("zip")) {
                     out.extend(shapefiles(&p, layer)?);
                 } else if is_layer(&p.to_string_lossy()) {
-                    out.push((Src::File(p.clone()), Src::File(p.with_extension("dbf")), Src::File(p.with_extension("prj"))));
+                    out.push((
+                        Src::File(p.clone()),
+                        Src::File(p.with_extension("dbf")),
+                        Src::File(p.with_extension("prj")),
+                    ));
                 }
             }
         }
@@ -649,7 +728,11 @@ pub fn shapefiles(src: &Path, layer: &str) -> Result<Vec<(Src, Src, Src)>> {
             let find = |ext: &str| ms.iter().find(|n| n.name.eq_ignore_ascii_case(&format!("{stem}.{ext}"))).cloned();
             let dbf = find("dbf").with_context(|| format!("{}: no .dbf", m.name))?;
             let prj = find("prj").with_context(|| format!("{}: no .prj", m.name))?;
-            out.push((Src::Zip(src.to_path_buf(), m.clone()), Src::Zip(src.to_path_buf(), dbf), Src::Zip(src.to_path_buf(), prj)));
+            out.push((
+                Src::Zip(src.to_path_buf(), m.clone()),
+                Src::Zip(src.to_path_buf(), dbf),
+                Src::Zip(src.to_path_buf(), prj),
+            ));
         }
     }
     Ok(out)
@@ -756,7 +839,10 @@ pub fn fill(o: &FillOpts, gaps: &HashSet<nts::Key>, band: Option<(f64, f64)>, ou
         drop(dbf);
         std::io::copy(&mut dr, &mut std::io::sink()).with_context(|| format!("{from}: its table"))?;
         std::io::copy(&mut shp.into_inner(), &mut std::io::sink()).with_context(|| format!("{from}: its shapes"))?;
-        eprintln!("lakefill: {from}: {records} records, {n} taken, {far} far from the gaps ({:.0} s)", t.elapsed().as_secs_f64());
+        eprintln!(
+            "lakefill: {from}: {records} records, {n} taken, {far} far from the gaps ({:.0} s)",
+            t.elapsed().as_secs_f64()
+        );
         Ok((pieces, by_value, serde_json::json!({"file": from, "records": records, "taken": n, "far": far})))
     };
     let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build()?;
@@ -771,7 +857,11 @@ pub fn fill(o: &FillOpts, gaps: &HashSet<nts::Key>, band: Option<(f64, f64)>, ou
         }
         read.push(i);
     }
-    eprintln!("lakefill: {} pieces read in {:.0} s; {field} values: {by_value:?}", pieces.len(), t.elapsed().as_secs_f64());
+    eprintln!(
+        "lakefill: {} pieces read in {:.0} s; {field} values: {by_value:?}",
+        pieces.len(),
+        t.elapsed().as_secs_f64()
+    );
     let pm = store::pmtiles::PmTiles::with_leaf_cache(Box::new(store::range::PlainFile::open(base)?), 4096)?;
     let osm = lf::BasemapOsm::new(pm);
     let gap = |k: nts::Key| gaps.contains(&k);
@@ -785,7 +875,8 @@ pub fn fill(o: &FillOpts, gaps: &HashSet<nts::Key>, band: Option<(f64, f64)>, ou
         e - w < MARGIN && n - s < MARGIN
     };
     let too_big = sel.lakes.iter().zip(&sel.sheet_of).filter(|(l, k)| mine.contains(k) && !whole(l)).count();
-    let (lakes, of): (Vec<lf::Lake>, Vec<nts::Key>) = sel.lakes.into_iter().zip(sel.sheet_of).filter(|(l, k)| whole(l) && mine.contains(k)).unzip();
+    let (lakes, of): (Vec<lf::Lake>, Vec<nts::Key>) =
+        sel.lakes.into_iter().zip(sel.sheet_of).filter(|(l, k)| whole(l) && mine.contains(k)).unzip();
     sel.sheets.retain(|k, _| mine.contains(k));
     (sel.lakes, sel.sheet_of) = (lakes, of);
     eprintln!("lakefill: {too_big} lakes over {MARGIN}° across left out (not read whole)");
@@ -796,7 +887,8 @@ pub fn fill(o: &FillOpts, gaps: &HashSet<nts::Key>, band: Option<(f64, f64)>, ou
         _ => true,
     };
     if confirm.is_some() {
-        let (lakes, of): (Vec<lf::Lake>, Vec<nts::Key>) = sel.lakes.into_iter().zip(sel.sheet_of).filter(|(_, k)| confirmed(k)).unzip();
+        let (lakes, of): (Vec<lf::Lake>, Vec<nts::Key>) =
+            sel.lakes.into_iter().zip(sel.sheet_of).filter(|(_, k)| confirmed(k)).unzip();
         sel.lakes = lakes;
         sel.sheet_of = of;
     }
@@ -833,7 +925,11 @@ pub fn merge(runs: &[PathBuf], out: &Path) -> Result<(PathBuf, serde_json::Value
     let mut stats: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     for r in runs {
         let dir = r.as_path();
-        let f = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "sect")).with_context(|| format!("{}: no fill", r.display()))?;
+        let f = std::fs::read_dir(dir)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.extension().is_some_and(|x| x == "sect"))
+            .with_context(|| format!("{}: no fill", r.display()))?;
         let fill = lf::Fill::open(&f, "run")?;
         for i in 0..fill.lakes().len() as u32 {
             if seen.insert(fill.lakes()[i as usize].id) {
@@ -852,7 +948,9 @@ pub fn merge(runs: &[PathBuf], out: &Path) -> Result<(PathBuf, serde_json::Value
         for k in ["source", "touching", "kept", "completed"] {
             *stats.entry(k.to_string()).or_default() += sh[k].as_u64().unwrap_or(0);
         }
-        *stats.entry(if sh["filled"].as_bool() == Some(false) { "sheets_left" } else { "sheets_filled" }.to_string()).or_default() += 1;
+        *stats
+            .entry(if sh["filled"].as_bool() == Some(false) { "sheets_left" } else { "sheets_filled" }.to_string())
+            .or_default() += 1;
     }
     if let Some(o) = meta.as_object_mut() {
         for k in ["fmt", "grid_z", "lakes", "rings", "points", "band"] {
@@ -884,14 +982,29 @@ mod tests {
         let s = crate::inputs::sources::staged();
         let src = s.role(crate::inputs::sources::LAKE_FILL).unwrap();
         let o = FillOpts::declared(Path::new("b.pmtiles"), Path::new("zips"), src).unwrap();
-        assert_eq!((o.layer.as_str(), o.field.as_str(), o.keep.clone(), o.intermittent.clone(), o.confirm), ("waterbody_2", "definit", ["20", "83", "86", "87"].map(String::from).to_vec(), Some(("perm_en".to_string(), "Intermittent".to_string())), Some(0.5)));
-        assert_eq!(serde_json::to_value(o.rules).unwrap(), serde_json::to_value(super::super::Rules::default()).unwrap());
+        assert_eq!(
+            (o.layer.as_str(), o.field.as_str(), o.keep.clone(), o.intermittent.clone(), o.confirm),
+            (
+                "waterbody_2",
+                "definit",
+                ["20", "83", "86", "87"].map(String::from).to_vec(),
+                Some(("perm_en".to_string(), "Intermittent".to_string())),
+                Some(0.5)
+            )
+        );
+        assert_eq!(
+            serde_json::to_value(o.rules).unwrap(),
+            serde_json::to_value(super::super::Rules::default()).unwrap()
+        );
         assert_eq!(source_dir(src), "sources/fetched/canvec-lakes");
         assert_eq!(src.digest(), crate::agent::rekey::declared_before::LAKE_FILL);
         assert_eq!(src.key_extra(crate::agent::rekey::declared_before::LAKE_FILL), None);
         let mut other = src.clone();
         other.data.params.insert("keep".into(), serde_json::json!(["83"]));
-        assert_eq!(other.key_extra(crate::agent::rekey::declared_before::LAKE_FILL), Some(format!("source canvec-lakes {}", src.keyed)));
+        assert_eq!(
+            other.key_extra(crate::agent::rekey::declared_before::LAKE_FILL),
+            Some(format!("source canvec-lakes {}", src.keyed))
+        );
     }
 
     /// The step's key names the declared source's zips by their pin alone, as it did before the
@@ -915,7 +1028,20 @@ mod tests {
     /// 50°N + r/4), all land, with `lakes`.
     fn row(c: i32, r: i32, lakes: [u32; 4]) -> SheetRow {
         let (w, s) = (-100.0 + f64::from(c) * 0.5, 50.0 + f64::from(r) * 0.25);
-        SheetRow { sheet: format!("{c}/{r}"), west: w, south: s, east: w + 0.5, north: s + 0.25, region: "test".into(), land_km2: 0.0, sea_km2: 0.0, inland_km2: 0.0, lakes, z12_bytes: 0, z12_tiles: 0 }
+        SheetRow {
+            sheet: format!("{c}/{r}"),
+            west: w,
+            south: s,
+            east: w + 0.5,
+            north: s + 0.25,
+            region: "test".into(),
+            land_km2: 0.0,
+            sea_km2: 0.0,
+            inland_km2: 0.0,
+            lakes,
+            z12_bytes: 0,
+            z12_tiles: 0,
+        }
     }
 
     const FULL: [u32; 4] = [500, 300, 100, 10];
@@ -951,7 +1077,14 @@ mod tests {
             // Big lakes but no small ones: its size curve cut off (and empty).
             ((5, 8), [0, 0, 1, 4]),
         ]);
-        assert_eq!(found(&rows), [("2/2".into(), vec!["neighbours", "empty"]), ("8/2".into(), vec!["neighbours"]), ("5/8".into(), vec!["neighbours", "empty", "truncated"])]);
+        assert_eq!(
+            found(&rows),
+            [
+                ("2/2".into(), vec!["neighbours", "empty"]),
+                ("8/2".into(), vec!["neighbours"]),
+                ("5/8".into(), vec!["neighbours", "empty", "truncated"])
+            ]
+        );
     }
 
     #[test]
@@ -1002,16 +1135,27 @@ mod tests {
         let set = |name: &str, bytes: &[u8], t: u64| {
             let p = d.path().join(name);
             std::fs::write(&p, bytes).unwrap();
-            std::fs::File::options().write(true).open(&p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t)).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(t))
+                .unwrap();
         };
         set("b_Hydro_shp.zip", b"12345", 1_700_000_000);
         set("a_Hydro_shp.zip", b"1", 1_700_000_100);
         set("notes.txt", b"x", 1);
         set("._a_Hydro_shp.zip", b"xx", 1);
-        assert_eq!(source_pin(d.path()).unwrap().as_deref(), Some("a_Hydro_shp.zip 1 1700000100\nb_Hydro_shp.zip 5 1700000000"));
+        assert_eq!(
+            source_pin(d.path()).unwrap().as_deref(),
+            Some("a_Hydro_shp.zip 1 1700000100\nb_Hydro_shp.zip 5 1700000000")
+        );
         // The same size, replaced: another source.
         set("a_Hydro_shp.zip", b"2", 1_700_000_200);
-        assert_eq!(source_pin(d.path()).unwrap().as_deref(), Some("a_Hydro_shp.zip 1 1700000200\nb_Hydro_shp.zip 5 1700000000"));
+        assert_eq!(
+            source_pin(d.path()).unwrap().as_deref(),
+            Some("a_Hydro_shp.zip 1 1700000200\nb_Hydro_shp.zip 5 1700000000")
+        );
         // A folder that can't be read is an error, not "no source".
         let f = d.path().join("notes.txt");
         assert!(source_pin(&f).is_err());
@@ -1049,12 +1193,21 @@ mod tests {
         m.insert(crate::lakefill::logical(date), "work/lakefill/2026-09-28.0123456789abcdef.sect".to_string());
         let filled = build::water_work(date, &m, &done).unwrap().targets[0].1.clone();
         assert_ne!(filled, water);
-        assert_eq!(crate::terrain_pack::water_source_pin(&m).unwrap(), "layers/basemap/world-x.0123456789abcdef.pmtiles + work/lakefill/2026-09-28.0123456789abcdef.sect");
+        assert_eq!(
+            crate::terrain_pack::water_source_pin(&m).unwrap(),
+            "layers/basemap/world-x.0123456789abcdef.pmtiles + work/lakefill/2026-09-28.0123456789abcdef.sect"
+        );
         // A newer pass's basemap: the older pass's fill is drawn by neither, until one is made from it.
         let newer = "2027-03-01";
-        m.insert(format!("layers/basemap/world-{newer}"), "layers/basemap/world-y.fedcba9876543210.pmtiles".to_string());
+        m.insert(
+            format!("layers/basemap/world-{newer}"),
+            "layers/basemap/world-y.fedcba9876543210.pmtiles".to_string(),
+        );
         assert_eq!(crate::lakefill::current(&m), None);
-        assert_eq!(crate::terrain_pack::water_source_pin(&m).unwrap(), "layers/basemap/world-y.fedcba9876543210.pmtiles");
+        assert_eq!(
+            crate::terrain_pack::water_source_pin(&m).unwrap(),
+            "layers/basemap/world-y.fedcba9876543210.pmtiles"
+        );
         let w_new = build::water_work(newer, &m, &done).unwrap().targets[0].1.clone();
         m.insert(crate::lakefill::logical(newer), "work/lakefill/2027-03-01.0123456789abcdef.sect".to_string());
         assert_ne!(build::water_work(newer, &m, &done).unwrap().targets[0].1, w_new);

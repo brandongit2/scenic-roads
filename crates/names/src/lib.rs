@@ -37,7 +37,11 @@ pub(crate) mod testdir {
     impl Dir {
         pub fn new() -> Dir {
             static N: AtomicU32 = AtomicU32::new(0);
-            let p = std::env::temp_dir().join(format!("names-test-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+            let p = std::env::temp_dir().join(format!(
+                "names-test-{}-{}",
+                std::process::id(),
+                N.fetch_add(1, Ordering::Relaxed)
+            ));
             let _ = fs::remove_dir_all(&p);
             fs::create_dir_all(&p).expect("temp dir");
             Dir(p)

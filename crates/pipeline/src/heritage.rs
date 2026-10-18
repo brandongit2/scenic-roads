@@ -8,10 +8,10 @@
 //! (`work/heritage/<d>/areas/6-x-y`, those whose bounding box meets the tile, each line keyed by
 //! its content so an unchanged polygon keeps its place).
 
-use det::Det;
 use crate::coverage::Coverage;
 use crate::out::Out;
 use anyhow::{Context, Result};
+use det::Det;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -26,7 +26,11 @@ pub fn cover_tiles(cov: &Coverage) -> Vec<(u32, u32)> {
     let parents: Vec<(u32, u32)> = crate::agent::build::coverage_tiles(cov).into_values().flatten().collect();
     let mut out: Vec<(u32, u32)> = parents
         .par_iter()
-        .flat_map_iter(|&(x6, y6)| (x6 * s..(x6 + 1) * s).flat_map(move |x| (y6 * s..(y6 + 1) * s).map(move |y| (x, y))).filter(|&(x, y)| crate::terrain_pack::near_coverage(cov, COVER_Z, x, y, COVER_KM)))
+        .flat_map_iter(|&(x6, y6)| {
+            (x6 * s..(x6 + 1) * s)
+                .flat_map(move |x| (y6 * s..(y6 + 1) * s).map(move |y| (x, y)))
+                .filter(|&(x, y)| crate::terrain_pack::near_coverage(cov, COVER_Z, x, y, COVER_KM))
+        })
         .collect();
     out.sort_unstable();
     out
@@ -34,7 +38,11 @@ pub fn cover_tiles(cov: &Coverage) -> Vec<(u32, u32)> {
 
 /// The boxes (degrees) of the z6 tiles holding the cover (`cover_tiles`' parents).
 pub fn cover_boxes(cov: &Coverage) -> Vec<[f64; 4]> {
-    crate::agent::build::coverage_tiles(cov).into_values().flatten().map(|(x, y)| crate::stage::tile_box_grown(6, x, y, 0.0)).collect()
+    crate::agent::build::coverage_tiles(cov)
+        .into_values()
+        .flatten()
+        .map(|(x, y)| crate::stage::tile_box_grown(6, x, y, 0.0))
+        .collect()
 }
 
 /// Whether a register's box meets the cover's boxes (`cover_boxes`).
@@ -46,7 +54,14 @@ pub fn meets(cover: &[[f64; 4]], b: [f64; 4]) -> bool {
 /// its files' keyed digests and its box (`-` without entries).
 pub fn registers_line(regs: &[crate::inputs::heritage::Register]) -> String {
     regs.iter()
-        .map(|r| format!("{}\t{}\t{}", r.id, r.keyed, r.bbox.map_or("-".to_string(), |b| b.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","))))
+        .map(|r| {
+            format!(
+                "{}\t{}\t{}",
+                r.id,
+                r.keyed,
+                r.bbox.map_or("-".to_string(), |b| b.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","))
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -67,7 +82,8 @@ pub fn parse_registers(s: &str) -> Vec<(String, String, Option<[f64; 4]>)> {
 /// (crate::agent::input_digests): None without an accepted version.
 pub fn registers_now(root: &Path) -> Result<Option<String>> {
     let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
-    Ok(crate::inputs::open(root, &m, crate::inputs::heritage::UNIT)?.map(|a| registers_line(&crate::inputs::heritage::registers(&a))))
+    Ok(crate::inputs::open(root, &m, crate::inputs::heritage::UNIT)?
+        .map(|a| registers_line(&crate::inputs::heritage::registers(&a))))
 }
 
 /// The registers of accepted version `a` whose entries meet the cover (`cover_boxes`): what the
@@ -160,7 +176,9 @@ pub fn slice_sites(heritage_json: &[u8]) -> Result<BTreeMap<(u32, u32), Vec<[i32
     let mut out: BTreeMap<(u32, u32), Vec<[i32; 2]>> = BTreeMap::new();
     for f in fc.features {
         // Points only, as the flags step reads them.
-        let (Some(lon), Some(lat)) = (f.geometry.coordinates[0].as_f64(), f.geometry.coordinates[1].as_f64()) else { continue };
+        let (Some(lon), Some(lat)) = (f.geometry.coordinates[0].as_f64(), f.geometry.coordinates[1].as_f64()) else {
+            continue;
+        };
         if f.geometry.kind != "Point" {
             continue;
         }
@@ -254,7 +272,9 @@ fn part_boxes(g: &serde_json::Value) -> Vec<[f64; 4]> {
 /// Every position of a GeoJSON geometry.
 fn points(coords: &serde_json::Value, out: &mut Vec<(f64, f64)>) {
     match coords {
-        serde_json::Value::Array(a) if a.len() >= 2 && a[0].is_number() => out.push((a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0))),
+        serde_json::Value::Array(a) if a.len() >= 2 && a[0].is_number() => {
+            out.push((a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)))
+        }
         serde_json::Value::Array(a) => a.iter().for_each(|c| points(c, out)),
         _ => {}
     }
@@ -280,7 +300,8 @@ pub fn slice_areas(area_shapes: &str) -> Result<BTreeMap<(u32, u32), Vec<(String
         }
         let h = store::naming::hash16(line.as_bytes());
         let boxes = if b[2] - b[0] > 180.0 { part_boxes(&v["geometry"]) } else { vec![b] };
-        let tiles: std::collections::BTreeSet<(u32, u32)> = boxes.into_iter().flat_map(|b| crate::stage::tiles_in(6, b)).collect();
+        let tiles: std::collections::BTreeSet<(u32, u32)> =
+            boxes.into_iter().flat_map(|b| crate::stage::tiles_in(6, b)).collect();
         for t in tiles {
             out.entry(t).or_default().push((h.clone(), line.to_string()));
         }
@@ -302,7 +323,11 @@ pub fn parts_logical(date: &str, x: u32, y: u32) -> String {
 }
 /// The newest pass with heritage slices in manifest `m`.
 pub fn latest_date(m: &BTreeMap<String, String>) -> Option<String> {
-    m.range("work/heritage/".to_string()..).take_while(|(l, _)| l.starts_with("work/heritage/")).filter(|(l, _)| l.contains("/pos/")).filter_map(|(l, _)| l.split('/').nth(2).map(str::to_string)).max()
+    m.range("work/heritage/".to_string()..)
+        .take_while(|(l, _)| l.starts_with("work/heritage/"))
+        .filter(|(l, _)| l.contains("/pos/"))
+        .filter_map(|(l, _)| l.split('/').nth(2).map(str::to_string))
+        .max()
 }
 pub fn areas_logical(date: &str, x: u32, y: u32) -> String {
     format!("work/heritage/{date}/areas/6-{x}-{y}")
@@ -314,7 +339,12 @@ pub fn base_logical(date: &str, stem: &str) -> String {
 
 /// Uploads the slices, removing the pass's slices this run didn't write (a tile that lost its
 /// sites or areas). How many of each went up.
-pub fn put_slices(out: &mut Out, date: &str, sites: &BTreeMap<(u32, u32), Vec<[i32; 2]>>, areas: &BTreeMap<(u32, u32), Vec<(String, String)>>) -> Result<(usize, usize)> {
+pub fn put_slices(
+    out: &mut Out,
+    date: &str,
+    sites: &BTreeMap<(u32, u32), Vec<[i32; 2]>>,
+    areas: &BTreeMap<(u32, u32), Vec<(String, String)>>,
+) -> Result<(usize, usize)> {
     let mut wrote: BTreeSet<String> = BTreeSet::new();
     for (&(x, y), pts) in sites {
         let l = pos_logical(date, x, y);
@@ -328,7 +358,13 @@ pub fn put_slices(out: &mut Out, date: &str, sites: &BTreeMap<(u32, u32), Vec<[i
         wrote.insert(l);
     }
     for prefix in [format!("work/heritage/{date}/pos/"), format!("work/heritage/{date}/areas/")] {
-        let stale: Vec<String> = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).map(|(l, _)| l.clone()).filter(|l| !wrote.contains(l) && out.may_remove(l)).collect();
+        let stale: Vec<String> = out
+            .manifest
+            .range(prefix.clone()..)
+            .take_while(|(l, _)| l.starts_with(&prefix))
+            .map(|(l, _)| l.clone())
+            .filter(|l| !wrote.contains(l) && out.may_remove(l))
+            .collect();
         for l in stale {
             out.remove(&l);
         }
@@ -345,7 +381,13 @@ pub fn put_parts(out: &mut Out, date: &str, parts: &BTreeMap<(u32, u32), Vec<[i3
         wrote.insert(l);
     }
     let prefix = format!("work/heritage/{date}/parts/");
-    let stale: Vec<String> = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).map(|(l, _)| l.clone()).filter(|l| !wrote.contains(l)).collect();
+    let stale: Vec<String> = out
+        .manifest
+        .range(prefix.clone()..)
+        .take_while(|(l, _)| l.starts_with(&prefix))
+        .map(|(l, _)| l.clone())
+        .filter(|l| !wrote.contains(l))
+        .collect();
     for l in stale {
         out.remove(&l);
     }
@@ -361,12 +403,22 @@ pub fn unit_inputs(out: &Out, date: &str, b: [f64; 4], dir: &Path) -> Result<(us
 
 /// The heritage-sites job's slices `unit_inputs` reads for box `b` (content names).
 pub fn unit_contents(out: &Out, date: &str, b: [f64; 4]) -> Vec<String> {
-    crate::stage::tiles_in(6, b).into_iter().flat_map(|(x, y)| [pos_logical(date, x, y), areas_logical(date, x, y)]).filter_map(|l| out.get(&l).map(str::to_string)).collect()
+    crate::stage::tiles_in(6, b)
+        .into_iter()
+        .flat_map(|(x, y)| [pos_logical(date, x, y), areas_logical(date, x, y)])
+        .filter_map(|l| out.get(&l).map(str::to_string))
+        .collect()
 }
 
 /// `unit_inputs`, the slices read from this Mac's copies of them (`blobs`: each copied whole once,
 /// where units side by side read the same ones) when given.
-pub fn unit_inputs_with(out: &Out, date: &str, b: [f64; 4], dir: &Path, blobs: Option<&store::blobs::Blobs>) -> Result<(usize, usize)> {
+pub fn unit_inputs_with(
+    out: &Out,
+    date: &str,
+    b: [f64; 4],
+    dir: &Path,
+    blobs: Option<&store::blobs::Blobs>,
+) -> Result<(usize, usize)> {
     let path = |c: &str| -> Result<std::path::PathBuf> {
         Ok(match blobs {
             Some(bl) => bl.get(out.root(), c).with_context(|| format!("copy {c}"))?,
@@ -381,7 +433,8 @@ pub fn unit_inputs_with(out: &Out, date: &str, b: [f64; 4], dir: &Path, blobs: O
     let mut polys: BTreeMap<String, String> = BTreeMap::new();
     for (x, y) in crate::stage::tiles_in(6, b) {
         if let Some(c) = out.get(&pos_logical(date, x, y)) {
-            let pts: Vec<[i32; 2]> = serde_json::from_slice(&std::fs::read(path(c)?)?).with_context(|| format!("{}", pos_logical(date, x, y)))?;
+            let pts: Vec<[i32; 2]> = serde_json::from_slice(&std::fs::read(path(c)?)?)
+                .with_context(|| format!("{}", pos_logical(date, x, y)))?;
             sites.extend(pts.into_iter().filter(inside));
         }
         if let Some(c) = out.get(&areas_logical(date, x, y)) {
@@ -392,8 +445,21 @@ pub fn unit_inputs_with(out: &Out, date: &str, b: [f64; 4], dir: &Path, blobs: O
     }
     sites.sort_unstable();
     sites.dedup();
-    let feats: Vec<String> = sites.iter().map(|p| format!(r#"{{"type":"Feature","geometry":{{"type":"Point","coordinates":[{},{}]}},"properties":{{}}}}"#, p[0] as f64 / 1e7, p[1] as f64 / 1e7)).collect();
-    write(dir, "heritage.json", format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, feats.join(",")).as_bytes())?;
+    let feats: Vec<String> = sites
+        .iter()
+        .map(|p| {
+            format!(
+                r#"{{"type":"Feature","geometry":{{"type":"Point","coordinates":[{},{}]}},"properties":{{}}}}"#,
+                p[0] as f64 / 1e7,
+                p[1] as f64 / 1e7
+            )
+        })
+        .collect();
+    write(
+        dir,
+        "heritage.json",
+        format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, feats.join(",")).as_bytes(),
+    )?;
     let body: String = polys.values().map(|l| format!("{l}\n")).collect();
     write(dir, "area-shapes.geojsonseq", body.as_bytes())?;
     Ok((sites.len(), polys.len()))
@@ -418,9 +484,13 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
         let mut m = BTreeMap::new();
-        for (x, y, pts, area) in [(20u32, 22u32, "[[-700000000,470000000],[-690000000,465000000]]", "{\"a\":1}\n{\"b\":2}\n"), (21, 22, "[[-640000000,468000000]]", "{\"b\":2}\n")] {
+        for (x, y, pts, area) in [
+            (20u32, 22u32, "[[-700000000,470000000],[-690000000,465000000]]", "{\"a\":1}\n{\"b\":2}\n"),
+            (21, 22, "[[-640000000,468000000]]", "{\"b\":2}\n"),
+        ] {
             for (l, body) in [(pos_logical("d", x, y), pts), (areas_logical("d", x, y), area)] {
-                let c = store::naming::write_atomic(&root, &l, "json", store::naming::Source::Bytes(body.as_bytes())).unwrap();
+                let c = store::naming::write_atomic(&root, &l, "json", store::naming::Source::Bytes(body.as_bytes()))
+                    .unwrap();
                 m.insert(l, c);
             }
         }
@@ -462,7 +532,12 @@ mod tests {
                 .iter()
                 .filter(|p| {
                     let r = p[0].as_array().unwrap();
-                    let (w, s, e, nn) = (r[0][0].as_f64().unwrap(), r[0][1].as_f64().unwrap(), r[2][0].as_f64().unwrap(), r[2][1].as_f64().unwrap());
+                    let (w, s, e, nn) = (
+                        r[0][0].as_f64().unwrap(),
+                        r[0][1].as_f64().unwrap(),
+                        r[2][0].as_f64().unwrap(),
+                        r[2][1].as_f64().unwrap(),
+                    );
                     x > w && x < e && y > s && y < nn
                 })
                 .count()
@@ -534,7 +609,9 @@ mod tests {
 "
         );
         let areas = slice_areas(shapes).unwrap();
-        let has = |t: (u32, u32), bit: &str| areas.get(&t).is_some_and(|v| v.iter().any(|(_, l)| l.contains(&format!("\"bit\":{bit}"))));
+        let has = |t: (u32, u32), bit: &str| {
+            areas.get(&t).is_some_and(|v| v.iter().any(|(_, l)| l.contains(&format!("\"bit\":{bit}"))))
+        };
         // At 52° N, z6 row 21: the refuge in the tiles at each edge, not the ones between.
         assert!(has((63, 21), "2") && has((0, 21), "2"));
         assert!(!(1..63).any(|x| has((x, 21), "2")));

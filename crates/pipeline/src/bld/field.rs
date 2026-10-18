@@ -353,16 +353,25 @@ fn cell(feet: &[Foot], list: &[u32], cx: u32, cy: u32) -> Planes {
     for &fi in list {
         let ft = &feet[fi as usize];
         let k = class_of(ft.h);
-        let a = acc[k].get_or_insert_with(|| Acc { f: vec![0; N * STRIDE], v: vec![0; N * STRIDE], gx: vec![0; N * STRIDE], gy: vec![0; N * STRIDE], w: vec![0; N * N] });
+        let a = acc[k].get_or_insert_with(|| Acc {
+            f: vec![0; N * STRIDE],
+            v: vec![0; N * STRIDE],
+            gx: vec![0; N * STRIDE],
+            gy: vec![0; N * STRIDE],
+            w: vec![0; N * N],
+        });
         // Its centroid (its polygons' area-weighted, in the cell's texels): every texel it covers
         // keeps the offset to it.
         let (mut ca, mut cxs, mut cys) = (0.0f64, 0.0f64, 0.0f64);
         for poly in &ft.polys {
             for (ri, r) in poly.iter().enumerate() {
-                let pts: Vec<(f64, f64)> = r.iter().map(|&p| {
-                    let (wx, wy) = world7(p);
-                    (wx * WORLD_TEXELS - ox, wy * WORLD_TEXELS - oy)
-                }).collect();
+                let pts: Vec<(f64, f64)> = r
+                    .iter()
+                    .map(|&p| {
+                        let (wx, wy) = world7(p);
+                        (wx * WORLD_TEXELS - ox, wy * WORLD_TEXELS - oy)
+                    })
+                    .collect();
                 let s = area2(&pts);
                 let sign = if (ri == 0) == (s < 0.0) { 1.0 } else { -1.0 };
                 for i in 0..pts.len() {
@@ -541,14 +550,16 @@ pub fn area(a: (u32, u32), feet: &[Foot], her: &[u8]) -> AreaField {
         up(12, bx, by, kids)
     };
     let z11 = |bx: u32, by: u32| -> (Tiles, Option<Planes>) {
-        let kids: Vec<(Tiles, Option<Planes>)> = (0..4u32).into_par_iter().map(|q| z12(bx * 2 + q % 2, by * 2 + q / 2)).collect();
+        let kids: Vec<(Tiles, Option<Planes>)> =
+            (0..4u32).into_par_iter().map(|q| z12(bx * 2 + q % 2, by * 2 + q / 2)).collect();
         up(11, bx, by, kids)
     };
     let z10: Vec<(Tiles, Option<Planes>)> = (0..16u32)
         .into_par_iter()
         .map(|i| {
             let (bx, by) = (a.0 * 4 + i % 4, a.1 * 4 + i / 4);
-            let kids: Vec<(Tiles, Option<Planes>)> = (0..4u32).into_par_iter().map(|q| z11(bx * 2 + q % 2, by * 2 + q / 2)).collect();
+            let kids: Vec<(Tiles, Option<Planes>)> =
+                (0..4u32).into_par_iter().map(|q| z11(bx * 2 + q % 2, by * 2 + q / 2)).collect();
             up(10, bx, by, kids)
         })
         .collect();
@@ -556,10 +567,12 @@ pub fn area(a: (u32, u32), feet: &[Foot], her: &[u8]) -> AreaField {
     let z9: Vec<(Tiles, Option<Planes>)> = (0..4u32)
         .map(|q| {
             let (bx, by) = (a.0 * 2 + q % 2, a.1 * 2 + q / 2);
-            let kids: Vec<(Tiles, Option<Planes>)> = (0..4u32).map(|c| {
-                let (x, y) = (bx * 2 + c % 2 - a.0 * 4, by * 2 + c / 2 - a.1 * 4);
-                z10[(y * 4 + x) as usize].take().unwrap()
-            }).collect();
+            let kids: Vec<(Tiles, Option<Planes>)> = (0..4u32)
+                .map(|c| {
+                    let (x, y) = (bx * 2 + c % 2 - a.0 * 4, by * 2 + c / 2 - a.1 * 4);
+                    z10[(y * 4 + x) as usize].take().unwrap()
+                })
+                .collect();
             up(9, bx, by, kids)
         })
         .collect();
@@ -570,14 +583,20 @@ pub fn area(a: (u32, u32), feet: &[Foot], her: &[u8]) -> AreaField {
         tiles.extend(t);
         planes.push(p);
     }
-    let mid = Planes::parent([planes[0].as_ref(), planes[1].as_ref(), planes[2].as_ref(), planes[3].as_ref()]).map(|planes| Mid { planes, heritage: her.to_vec() });
+    let mid = Planes::parent([planes[0].as_ref(), planes[1].as_ref(), planes[2].as_ref(), planes[3].as_ref()])
+        .map(|planes| Mid { planes, heritage: her.to_vec() });
     tiles.sort_by(|p, q| q.0.cmp(&p.0).then((p.1, p.2).cmp(&(q.1, q.2))));
     AreaField { tiles, mid }
 }
 
 /// A level's tile (`z`, `x`, `y`) from its four children's (nw, ne, sw, se: their tiles and planes):
 /// the children's tiles and its own, and its planes.
-fn up(z: u8, x: u32, y: u32, kids: Vec<(Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>)>) -> (Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>) {
+fn up(
+    z: u8,
+    x: u32,
+    y: u32,
+    kids: Vec<(Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>)>,
+) -> (Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>) {
     let mut tiles = Vec::new();
     let mut planes: Vec<Option<Planes>> = Vec::with_capacity(4);
     for (t, p) in kids {
@@ -644,7 +663,13 @@ pub fn encode(p: &Planes, allowed: u8, tail: &[u8]) -> Option<Vec<u8>> {
         let c = p.c[k].as_ref().unwrap();
         for i in 0..T * T {
             let f = c[0][i] as f64;
-            let q = |o: f32| if (f.clamp(0.0, 1.0).sqrt() * 255.0).round() > 0.0 { (o as f64 / f).round().clamp(-127.0, 127.0) as i32 + 128 } else { 128 };
+            let q = |o: f32| {
+                if (f.clamp(0.0, 1.0).sqrt() * 255.0).round() > 0.0 {
+                    (o as f64 / f).round().clamp(-127.0, 127.0) as i32 + 128
+                } else {
+                    128
+                }
+            };
             rgb.extend_from_slice(&[q(c[3][i]) as u8, q(c[4][i]) as u8, 0]);
         }
     }
@@ -679,7 +704,8 @@ fn inside(poly: &[&[[i32; 2]]], p: [i32; 2]) -> bool {
         for i in 0..n {
             let (a, b) = (r[i], r[(i + n - 1) % n]);
             if (a[1] > p[1]) != (b[1] > p[1]) {
-                let x = a[0] as i128 + (b[0] as i128 - a[0] as i128) * (p[1] as i128 - a[1] as i128) / (b[1] as i128 - a[1] as i128);
+                let x = a[0] as i128
+                    + (b[0] as i128 - a[0] as i128) * (p[1] as i128 - a[1] as i128) / (b[1] as i128 - a[1] as i128);
                 if (p[0] as i128) < x {
                     c = !c;
                 }
@@ -756,16 +782,22 @@ pub fn heritage(a: (u32, u32), feet: &[Foot], sites: &[[i32; 2]]) -> Vec<u8> {
             y1 = y1.max(p[1]);
         }
         let from = sorted.partition_point(|s| s[0] < x0);
-        let hit = sorted[from..].iter().take_while(|s| s[0] <= x1).any(|&s| s[1] >= y0 && s[1] <= y1 && ft.polys.iter().any(|poly| inside(poly, s)));
+        let hit = sorted[from..]
+            .iter()
+            .take_while(|s| s[0] <= x1)
+            .any(|&s| s[1] >= y0 && s[1] <= y1 && ft.polys.iter().any(|poly| inside(poly, s)));
         if !hit {
             continue;
         }
         let Some(ext) = ft.polys.first().and_then(|p| p.first()) else { continue };
         let scale = 256.0 * 65536.0;
-        let ring: Vec<[f64; 2]> = ext.iter().map(|&p| {
-            let (wx, wy) = world7(p);
-            [wx * scale - a.0 as f64 * 65536.0, wy * scale - a.1 as f64 * 65536.0]
-        }).collect();
+        let ring: Vec<[f64; 2]> = ext
+            .iter()
+            .map(|&p| {
+                let (wx, wy) = world7(p);
+                [wx * scale - a.0 as f64 * 65536.0, wy * scale - a.1 as f64 * 65536.0]
+            })
+            .collect();
         let pts = simplify_to(&ring, HERITAGE_PTS);
         out.extend_from_slice(&ft.h.to_le_bytes());
         out.extend_from_slice(&ft.m.to_le_bytes());
@@ -850,7 +882,10 @@ pub fn read_mid(b: &[u8]) -> Result<BTreeMap<(u32, u32), Mid>> {
 /// The lo levels (8–4) of z3 tile `q`, from its z6 tiles' mids (`mid(x, y)`: None where there's
 /// none; level 8 each area's planes, its heritage list after them): (level, x, y, `field5-webp`),
 /// by level from 8, then x, y.
-pub fn lo(q: (u32, u32), mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sync)) -> Result<Vec<(u8, u32, u32, Vec<u8>)>> {
+pub fn lo(
+    q: (u32, u32),
+    mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sync),
+) -> Result<Vec<(u8, u32, u32, Vec<u8>)>> {
     type Out = (Vec<(u8, u32, u32, Vec<u8>)>, Option<Planes>);
     fn node(z: u8, x: u32, y: u32, mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sync)) -> Result<Out> {
         if z == 6 {
@@ -866,7 +901,12 @@ pub fn lo(q: (u32, u32), mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sy
             let mut l7: Vec<Option<Planes>> = Vec::new();
             for q in 0..4u32 {
                 let (x7, y7) = (x * 2 + q % 2, y * 2 + q / 2);
-                let p = Planes::parent([get(x7 * 2, y7 * 2), get(x7 * 2 + 1, y7 * 2), get(x7 * 2, y7 * 2 + 1), get(x7 * 2 + 1, y7 * 2 + 1)]);
+                let p = Planes::parent([
+                    get(x7 * 2, y7 * 2),
+                    get(x7 * 2 + 1, y7 * 2),
+                    get(x7 * 2, y7 * 2 + 1),
+                    get(x7 * 2 + 1, y7 * 2 + 1),
+                ]);
                 if let Some(b) = p.as_ref().and_then(|p| encode(p, ALL_CLASSES, &[])) {
                     tiles.push((7, x7, y7, b));
                 }
@@ -879,7 +919,8 @@ pub fn lo(q: (u32, u32), mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sy
             return Ok((tiles, p6));
         }
         // (One z6 tile's mid at a time: `LO_PEAK_MB`.)
-        let kids: Vec<Out> = (0..4u32).map(|q| node(z + 1, x * 2 + q % 2, y * 2 + q / 2, mid)).collect::<Result<_>>()?;
+        let kids: Vec<Out> =
+            (0..4u32).map(|q| node(z + 1, x * 2 + q % 2, y * 2 + q / 2, mid)).collect::<Result<_>>()?;
         Ok(up(z, x, y, kids))
     }
     let mut tiles = Vec::new();

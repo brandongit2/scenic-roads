@@ -82,7 +82,14 @@ pub struct Composed {
 /// Composes block `b` from `sources` over `water`; `up(zv)` is the stored level `zv` scaled up onto
 /// the block (NODATA: none), `zmin` the layer's coarsest zoom. None when no source has data of the
 /// block's zoom there (at `ALL_UPTO` and coarser: any data) or it has no water.
-pub fn compose(b: Block, sources: &[Source], rd: &Reader, water: &Water, up: &mut dyn FnMut(u8) -> Result<Vec<f32>>, zmin: u8) -> Result<Option<Composed>> {
+pub fn compose(
+    b: Block,
+    sources: &[Source],
+    rd: &Reader,
+    water: &Water,
+    up: &mut dyn FnMut(u8) -> Result<Vec<f32>>,
+    zmin: u8,
+) -> Result<Option<Composed>> {
     let (w, h) = (b.w(), b.h());
     let n = w * h;
     let (c0, r0) = b.origin();
@@ -223,7 +230,12 @@ pub fn compose(b: Block, sources: &[Source], rd: &Reader, water: &Water, up: &mu
         if !water.water[i] {
             continue;
         }
-        let dries = water.lake[i] == 0 && inter[i] && k[i] != C_FILLED && c[i].is_finite() && low[i].is_finite() && c[i] > -low[i];
+        let dries = water.lake[i] == 0
+            && inter[i]
+            && k[i] != C_FILLED
+            && c[i].is_finite()
+            && low[i].is_finite()
+            && c[i] > -low[i];
         let code = if src[i] > 0 { (src[i] as u8) << 4 } else { 0 };
         out.class[i] = k[i] | if dries { DRIES } else { 0 } | code;
     }
@@ -239,7 +251,8 @@ fn fill(c: &mut [f32], k: &mut [u8], zz: &mut [i8], water: &Water, w: usize, h: 
     let (dv, iv) = nearest(&valid, w, h);
     let land: Vec<bool> = water.water.iter().map(|x| !x).collect();
     let (dl, _) = nearest(&land, w, h);
-    let lakes_with: std::collections::HashSet<u32> = (0..n).filter(|&i| valid[i] && water.lake[i] > 0).map(|i| water.lake[i]).collect();
+    let lakes_with: std::collections::HashSet<u32> =
+        (0..n).filter(|&i| valid[i] && water.lake[i] > 0).map(|i| water.lake[i]).collect();
     for i in 0..n {
         if !water.water[i] || c[i].is_finite() || dv[i] > g || dl[i] > g {
             continue;

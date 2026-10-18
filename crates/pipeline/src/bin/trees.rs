@@ -62,7 +62,24 @@ fn run() -> Result<()> {
                 Some((k, v)) => (k.to_string(), v.to_string()),
                 None => (f.to_string(), args.next().with_context(|| format!("--{f} needs a value\n{USAGE}"))?),
             };
-            if !["z3", "z6", "block", "blocks", "squares", "coverage", "sources", "chm", "chm-store", "leaf", "out", "workers", "dem", "record"].contains(&k.as_str()) {
+            if ![
+                "z3",
+                "z6",
+                "block",
+                "blocks",
+                "squares",
+                "coverage",
+                "sources",
+                "chm",
+                "chm-store",
+                "leaf",
+                "out",
+                "workers",
+                "dem",
+                "record",
+            ]
+            .contains(&k.as_str())
+            {
                 bail!("unknown option --{k}\n{USAGE}");
             }
             opts.insert(k, v);
@@ -85,7 +102,11 @@ fn run() -> Result<()> {
         }
         return within(&|| {
             let said = |done, total| pipeline::agent::jobs::report(done, total, "zoom 7–4 tiles");
-            let n = if assemble_lo { trees::assemble_lo(&rest, &out, &said)? } else { trees::assemble(&rest, &out, &said)? };
+            let n = if assemble_lo {
+                trees::assemble_lo(&rest, &out, &said)?
+            } else {
+                trees::assemble(&rest, &out, &said)?
+            };
             for (l, n) in trees::LAYERS.iter().zip(n) {
                 eprintln!("trees-{l}.tiles: {n} tiles");
             }
@@ -113,25 +134,49 @@ fn run() -> Result<()> {
     let cov = PathBuf::from(get("coverage")?);
     let shapes = Shapes::parse(&std::fs::read_to_string(&cov).with_context(|| cov.display().to_string())?)?;
     let fetch = Fetcher::from_env();
-    let there = opts.get("squares").map(|v| trees::task::parse_squares(v)).transpose().context("--squares top,left;…")?;
-    let inp = Inputs { chm: Source::parse(get("chm")?), leaf: Source::parse(get("leaf")?), fetch: &fetch, record: opts.get("record").map(PathBuf::from), there };
+    let there =
+        opts.get("squares").map(|v| trees::task::parse_squares(v)).transpose().context("--squares top,left;…")?;
+    let inp = Inputs {
+        chm: Source::parse(get("chm")?),
+        leaf: Source::parse(get("leaf")?),
+        fetch: &fetch,
+        record: opts.get("record").map(PathBuf::from),
+        there,
+    };
     let t0 = std::time::Instant::now();
     if let Some(list) = opts.get("blocks") {
         let list = trees::task::parse_blocks(list).with_context(|| format!("--blocks 8/x/y,…, not {list}"))?;
         return within(&|| {
             let kept = trees::blocks_files(&shapes, &inp, &list, &out)?;
-            let kept = if inp.record.is_some() { format!(", {:.1} MB of squares kept", kept as f64 / 1e6) } else { String::new() };
+            let kept = if inp.record.is_some() {
+                format!(", {:.1} MB of squares kept", kept as f64 / 1e6)
+            } else {
+                String::new()
+            };
             eprintln!("trees: {} blocks in {:.1} s{kept}", list.len(), t0.elapsed().as_secs_f64());
             Ok(())
         });
     }
     let b = get("block")?;
-    let u = pipeline::legacy::Unit::parse(b).filter(|u| u.z == trees::ZBLOCK).with_context(|| format!("--block 8/x/y, not {b}"))?;
+    let u = pipeline::legacy::Unit::parse(b)
+        .filter(|u| u.z == trees::ZBLOCK)
+        .with_context(|| format!("--block 8/x/y, not {b}"))?;
     within(&|| {
         let r = trees::block_files(&shapes, &inp, u.x, u.y, &out)?;
         let n = |l: u8| r.tiles.iter().filter(|t| t.layer == l).count();
-        let kept = if inp.record.is_some() { format!(", {:.1} MB of squares kept", r.kept as f64 / 1e6) } else { String::new() };
-        eprintln!("trees {}: {} cover, {} height, {} leaf-type tiles in {:.1} s{kept}", u.slash(), n(0), n(1), n(2), t0.elapsed().as_secs_f64());
+        let kept = if inp.record.is_some() {
+            format!(", {:.1} MB of squares kept", r.kept as f64 / 1e6)
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "trees {}: {} cover, {} height, {} leaf-type tiles in {:.1} s{kept}",
+            u.slash(),
+            n(0),
+            n(1),
+            n(2),
+            t0.elapsed().as_secs_f64()
+        );
         Ok(())
     })
 }

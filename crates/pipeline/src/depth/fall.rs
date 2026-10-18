@@ -47,14 +47,23 @@ pub fn decode(kind: Kind, bytes: &[u8]) -> Result<Grid> {
     let mut r = d.read_info()?;
     let mut buf = vec![0u8; r.output_buffer_size().ok_or_else(|| anyhow!("PNG too large"))?];
     let info = r.next_frame(&mut buf)?;
-    ensure!(info.width as usize == TILE && info.height as usize == TILE, "a {}×{} tile (want {TILE})", info.width, info.height);
+    ensure!(
+        info.width as usize == TILE && info.height as usize == TILE,
+        "a {}×{} tile (want {TILE})",
+        info.width,
+        info.height
+    );
     ensure!(info.bit_depth == png::BitDepth::Eight, "a {:?}-bit tile", info.bit_depth);
     let ch = info.color_type.samples();
     let px = &buf[..info.buffer_size()];
     Ok(match kind {
         Kind::Terrarium => {
             ensure!(ch >= 3, "a depth tile in {:?}", info.color_type);
-            Grid::F(px.chunks_exact(ch).map(|p| f32::from(p[0]) * 256.0 + f32::from(p[1]) + f32::from(p[2]) / 256.0 - 32768.0).collect())
+            Grid::F(
+                px.chunks_exact(ch)
+                    .map(|p| f32::from(p[0]) * 256.0 + f32::from(p[1]) + f32::from(p[2]) / 256.0 - 32768.0)
+                    .collect(),
+            )
         }
         Kind::Class => Grid::C(px.chunks_exact(ch).map(|p| p[0]).collect()),
     })
@@ -136,7 +145,13 @@ pub type Stored = Option<std::sync::Arc<Grid>>;
 /// Tile z/x/y as the map is given it: the stored tile, else made from its nearest stored ancestor
 /// (`upsample`, with that ancestor's neighbours for depth), else None (no ancestor: outside the
 /// layer). With the stored tile it says so (`true`).
-pub fn served(get: &dyn Fn(u8, u32, u32) -> Result<Stored>, kind: Kind, z: u8, x: u32, y: u32) -> Result<Option<(Grid, bool)>> {
+pub fn served(
+    get: &dyn Fn(u8, u32, u32) -> Result<Stored>,
+    kind: Kind,
+    z: u8,
+    x: u32,
+    y: u32,
+) -> Result<Option<(Grid, bool)>> {
     // (No such tile: past the layer's zooms, or off the world.)
     if !in_layer(z, x, y) {
         return Ok(None);
@@ -151,7 +166,11 @@ pub fn served(get: &dyn Fn(u8, u32, u32) -> Result<Stored>, kind: Kind, z: u8, x
         let n = 1i64 << az;
         for (dx, dy) in [(-1i64, -1i64), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
             let (nx, ny) = ((i64::from(ax) + dx).rem_euclid(n), i64::from(ay) + dy);
-            nbs.push(if kind == Kind::Terrarium && (0..n).contains(&ny) { get(az, nx as u32, ny as u32)? } else { None });
+            nbs.push(if kind == Kind::Terrarium && (0..n).contains(&ny) {
+                get(az, nx as u32, ny as u32)?
+            } else {
+                None
+            });
         }
         let nb: [Option<&Grid>; 8] = std::array::from_fn(|i| nbs[i].as_deref());
         return Ok(Some((upsample(k, x, y, &anc, nb), false)));
@@ -181,7 +200,11 @@ fn blend(q: [f32; 4], w: [f32; 4]) -> f32 {
             ws += w[i];
         }
     }
-    if ws > 0.0 { s / ws } else { NODATA }
+    if ws > 0.0 {
+        s / ws
+    } else {
+        NODATA
+    }
 }
 
 /// The ancestor with a one-pixel border from its neighbours ((TILE + 2)², row-major).
@@ -225,7 +248,9 @@ mod tests {
 
     #[test]
     fn no_tile_past_the_layer_or_off_the_world() {
-        let get = |_: u8, _: u32, _: u32| -> Result<Stored> { Ok(Some(std::sync::Arc::new(Grid::F(vec![-1.0; TILE * TILE])))) };
+        let get = |_: u8, _: u32, _: u32| -> Result<Stored> {
+            Ok(Some(std::sync::Arc::new(Grid::F(vec![-1.0; TILE * TILE]))))
+        };
         assert!(served(&get, Kind::Terrarium, 16, 0, 0).unwrap().is_some());
         for (z, x, y) in [(17, 0, 0), (40, 0, 0), (3, 8, 0), (3, 0, 8), (255, u32::MAX, 0)] {
             assert!(served(&get, Kind::Terrarium, z, x, y).unwrap().is_none(), "{z}/{x}/{y}");
@@ -272,7 +297,9 @@ mod tests {
     fn neighbours_fill_the_border() {
         let anc = tile(|_, _| -5.0);
         let east = tile(|_, _| -9.0);
-        let Grid::F(out) = upsample(1, 1, 0, &anc, [None, None, None, None, Some(&east), None, None, None]) else { panic!() };
+        let Grid::F(out) = upsample(1, 1, 0, &anc, [None, None, None, None, Some(&east), None, None, None]) else {
+            panic!()
+        };
         // The last column leans toward the eastern neighbour's -9.
         assert!(out[TILE - 1] < -5.5, "{}", out[TILE - 1]);
         assert!((out[0] + 5.0).abs() < 1e-4);

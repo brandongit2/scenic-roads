@@ -48,7 +48,9 @@ fn entry_ref(s: &str) -> bool {
 
 /// A line's match, or what's wrong with it.
 pub fn parse(l: &str) -> std::result::Result<Match, &'static str> {
-    let Ok(serde_json::Value::Object(v)) = serde_json::from_str::<serde_json::Value>(l) else { return Err("not a JSON object") };
+    let Ok(serde_json::Value::Object(v)) = serde_json::from_str::<serde_json::Value>(l) else {
+        return Err("not a JSON object");
+    };
     let side = |k: &str| v.get(k).and_then(|x| x.as_str()).filter(|s| entry_ref(s)).map(str::to_string);
     let (Some(a), Some(b)) = (side("a"), side("b")) else { return Err("a or b not <register>:<id>") };
     let Some(same) = v.get("same").and_then(|x| x.as_bool()) else { return Err("same not true or false") };
@@ -102,7 +104,14 @@ impl Checks for Matches {
             return c;
         }
         let Ok(text) = std::str::from_utf8(bytes) else {
-            c.findings.push(Finding::new(SHAPE, Level::Error, &[path], &["not utf-8"], vec![path.into()], format!("{path} isn't UTF-8 text")));
+            c.findings.push(Finding::new(
+                SHAPE,
+                Level::Error,
+                &[path],
+                &["not utf-8"],
+                vec![path.into()],
+                format!("{path} isn't UTF-8 text"),
+            ));
             return c;
         };
         let (mut bad, mut nowhere) = (Vec::new(), Vec::new());
@@ -113,7 +122,8 @@ impl Checks for Matches {
                 Ok(m) => {
                     n += 1;
                     if let Some(es) = &self.entries {
-                        let missing: Vec<&str> = [m.a.as_str(), m.b.as_str()].into_iter().filter(|e| !es.contains(*e)).collect();
+                        let missing: Vec<&str> =
+                            [m.a.as_str(), m.b.as_str()].into_iter().filter(|e| !es.contains(*e)).collect();
                         if !missing.is_empty() {
                             nowhere.push((k, l, format!("no accepted register has {}", missing.join(" or "))));
                         }
@@ -130,8 +140,21 @@ impl Checks for Matches {
             c.findings.push(about_lines(check, level, path, &raw, shown, message));
         };
         let k = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
-        push(LINE, Level::Error, &bad, format!("{path}: {} not a match ({{\"a\": \"<register>:<id>\", \"b\": …, \"same\": true|false}})", k(bad.len(), "line", "lines")));
-        push(NOWHERE, Level::Warning, &nowhere, format!("{path}: {} naming an entry no accepted register has", k(nowhere.len(), "match", "matches")));
+        push(
+            LINE,
+            Level::Error,
+            &bad,
+            format!(
+                "{path}: {} not a match ({{\"a\": \"<register>:<id>\", \"b\": …, \"same\": true|false}})",
+                k(bad.len(), "line", "lines")
+            ),
+        );
+        push(
+            NOWHERE,
+            Level::Warning,
+            &nowhere,
+            format!("{path}: {} naming an entry no accepted register has", k(nowhere.len(), "match", "matches")),
+        );
         c.facts.insert("matches".into(), n.into());
         c
     }
@@ -162,7 +185,21 @@ impl Checks for Matches {
             .map(|(p, ls)| {
                 let raw: Vec<&str> = ls.iter().map(|(_, l, _)| l.as_str()).collect();
                 let shown = ls.iter().map(|(k, _, why)| (*k, why.clone())).collect();
-                let mut f = about_lines(CONTRA, Level::Error, &p, &raw, shown, format!("{p}: {} a chain of same: true pairs joins", if ls.len() == 1 { "a same: false pair".to_string() } else { format!("{} same: false pairs", ls.len()) }));
+                let mut f = about_lines(
+                    CONTRA,
+                    Level::Error,
+                    &p,
+                    &raw,
+                    shown,
+                    format!(
+                        "{p}: {} a chain of same: true pairs joins",
+                        if ls.len() == 1 {
+                            "a same: false pair".to_string()
+                        } else {
+                            format!("{} same: false pairs", ls.len())
+                        }
+                    ),
+                );
                 f.files = v.paths.iter().cloned().collect();
                 f
             })
@@ -171,7 +208,10 @@ impl Checks for Matches {
 
     fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
         // (The registers' accepted version: a register's update checks the matches again.)
-        vec![format!("heritage {}", manifest.get(&super::logical(super::heritage::UNIT)).map(String::as_str).unwrap_or("-"))]
+        vec![format!(
+            "heritage {}",
+            manifest.get(&super::logical(super::heritage::UNIT)).map(String::as_str).unwrap_or("-")
+        )]
     }
 
     fn prepared(&self, root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {

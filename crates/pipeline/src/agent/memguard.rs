@@ -85,7 +85,11 @@ pub fn decide(held: &[Option<u64>], limit: u64, draining: &[bool], yields: &[boo
     if limit == 0 || total <= limit {
         return Act::Nothing;
     }
-    let Some((big, mb)) = held.iter().enumerate().filter_map(|(k, m)| m.map(|m| (k, m))).max_by_key(|&(k, m)| (m, std::cmp::Reverse(k))) else { return Act::Nothing };
+    let Some((big, mb)) =
+        held.iter().enumerate().filter_map(|(k, m)| m.map(|m| (k, m))).max_by_key(|&(k, m)| (m, std::cmp::Reverse(k)))
+    else {
+        return Act::Nothing;
+    };
     if mb > limit {
         return Act::Over(big);
     }
@@ -93,7 +97,8 @@ pub fn decide(held: &[Option<u64>], limit: u64, draining: &[bool], yields: &[boo
     if let Some(k) = (0..held.len()).find(|&k| yielding(k)) {
         return if draining.get(k).copied().unwrap_or(false) { Act::Nothing } else { Act::Drain(k) };
     }
-    match held.iter().enumerate().find(|&(k, m)| k != big && m.is_some() && !draining.get(k).copied().unwrap_or(false)) {
+    match held.iter().enumerate().find(|&(k, m)| k != big && m.is_some() && !draining.get(k).copied().unwrap_or(false))
+    {
         Some((k, _)) => Act::Drain(k),
         None => Act::Nothing,
     }
@@ -103,7 +108,8 @@ pub fn decide(held: &[Option<u64>], limit: u64, draining: &[bool], yields: &[boo
 /// (`pressure`), or a GB more swap in use (`swap`) than the least in use in the last few minutes
 /// (`swap_low`, over `SWAP_WINDOW`).
 pub fn trouble(pressure: Option<u32>, swap: Option<u64>, swap_low: Option<u64>) -> bool {
-    pressure.is_some_and(|p| p >= 2) || matches!((swap, swap_low), (Some(now), Some(low)) if now >= low.saturating_add(SWAP_GROWTH))
+    pressure.is_some_and(|p| p >= 2)
+        || matches!((swap, swap_low), (Some(now), Some(low)) if now >= low.saturating_add(SWAP_GROWTH))
 }
 
 /// The target a job is on, as its costs file says (`SCENIC_COSTS`: a `started` line as each target
@@ -281,7 +287,11 @@ impl Watch {
     pub fn floors(&self, measured: &[String]) -> Vec<(String, Floor)> {
         let alone = self.targets.len() <= 1;
         let v = crate::coord::cost_version(&self.step);
-        self.seen.iter().filter(|(k, mb)| !measured.contains(k) && **mb > 0).map(|(k, mb)| (k.clone(), Floor { mb: *mb, alone, v })).collect()
+        self.seen
+            .iter()
+            .filter(|(k, mb)| !measured.contains(k) && **mb > 0)
+            .map(|(k, mb)| (k.clone(), Floor { mb: *mb, alone, v }))
+            .collect()
     }
 
     /// The disk floors its run teaches (cost key → MB): the most it was seen to take while each
@@ -406,7 +416,10 @@ impl Sampler {
         if let Ok(mut g) = self.inner.lock() {
             // (Alone so far when no other job runs; the disk's free space as it begins.)
             w.alone = g.watches.iter().enumerate().all(|(j, o)| j == k || o.is_none());
-            w.free_start = g.free_set.or_else(|| g.disk_at.as_ref().and_then(|d| crate::agent::room::disk_free(d).ok())).or(w.free_start);
+            w.free_start = g
+                .free_set
+                .or_else(|| g.disk_at.as_ref().and_then(|d| crate::agent::room::disk_free(d).ok()))
+                .or(w.free_start);
             if let Some(s) = g.watches.get_mut(k) {
                 *s = Some(w);
             }
@@ -440,7 +453,11 @@ impl Sampler {
 
     /// Whether the disk guard froze slot `k`'s job.
     pub fn disk_frozen(&self, k: usize) -> bool {
-        self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.as_ref().map(|w| w.disk_frozen))).unwrap_or(false)
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|g| g.watches.get(k).and_then(|w| w.as_ref().map(|w| w.disk_frozen)))
+            .unwrap_or(false)
     }
 
     /// What slot `k`'s job takes on the disk now, by its counts (bytes).
@@ -501,7 +518,11 @@ impl Sampler {
 
     /// Whether the thread froze slot `k`'s job.
     pub fn frozen(&self, k: usize) -> bool {
-        self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.as_ref().map(|w| w.frozen))).unwrap_or(false)
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|g| g.watches.get(k).and_then(|w| w.as_ref().map(|w| w.frozen)))
+            .unwrap_or(false)
     }
 
     /// Lets slot `k`'s job go on, if the thread froze it (the guard turned off since).
@@ -558,7 +579,8 @@ impl Sampler {
                 Some(v) => v.get(k).copied().flatten(),
                 None => crate::sys::footprint_of_group(pgid).map(|b| b >> 20),
             };
-            let key = self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.clone())).and_then(|w| w.current());
+            let key =
+                self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.clone())).and_then(|w| w.current());
             got.push((k, pgid, held, key));
             cpu.push((k, pgid, crate::sys::cpu_of_group(pgid)));
         }
@@ -567,7 +589,9 @@ impl Sampler {
             let Ok(mut g) = self.inner.lock() else { return };
             for (k, pgid, held, key) in &got {
                 // (Only the job read: another started in its slot meanwhile takes none of it.)
-                let Some(w) = g.watches.get_mut(*k).and_then(Option::as_mut).filter(|w| w.pgid == *pgid) else { continue };
+                let Some(w) = g.watches.get_mut(*k).and_then(Option::as_mut).filter(|w| w.pgid == *pgid) else {
+                    continue;
+                };
                 w.held = *held;
                 if let (Some(mb), Some(key)) = (held, key) {
                     let e = w.seen.entry(key.clone()).or_insert(0);
@@ -576,7 +600,9 @@ impl Sampler {
             }
             let now = std::time::Instant::now();
             for (k, pgid, ns) in &cpu {
-                let Some(w) = g.watches.get_mut(*k).and_then(Option::as_mut).filter(|w| w.pgid == *pgid) else { continue };
+                let Some(w) = g.watches.get_mut(*k).and_then(Option::as_mut).filter(|w| w.pgid == *pgid) else {
+                    continue;
+                };
                 if let Some(ns) = *ns {
                     match w.cpu_mark {
                         Some((_, m)) if ns >= m && ns - m < BUSY_CPU => {}
@@ -586,11 +612,28 @@ impl Sampler {
             }
             let limit = g.limit_mb;
             // (Written once the lock is let go: the agent's loop doesn't wait on the write.)
-            live = g.file.clone().map(|f| (f, Live { at: crate::agent::jobs::now_s(), on: g.on, limit_mb: limit, held_mb: g.watches.iter().map(|w| w.as_ref().and_then(|w| w.held)).collect(), frozen: g.watches.iter().map(|w| w.as_ref().is_some_and(|w| w.frozen)).collect() }));
+            live = g.file.clone().map(|f| {
+                (
+                    f,
+                    Live {
+                        at: crate::agent::jobs::now_s(),
+                        on: g.on,
+                        limit_mb: limit,
+                        held_mb: g.watches.iter().map(|w| w.as_ref().and_then(|w| w.held)).collect(),
+                        frozen: g.watches.iter().map(|w| w.as_ref().is_some_and(|w| w.frozen)).collect(),
+                    },
+                )
+            });
             if !g.on || limit == 0 {
                 Vec::new()
             } else {
-                g.watches.iter().enumerate().filter_map(|(k, w)| w.as_ref().filter(|w| !w.frozen && w.held.is_some_and(|m| m > limit)).map(|_| k)).collect()
+                g.watches
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(k, w)| {
+                        w.as_ref().filter(|w| !w.frozen && w.held.is_some_and(|m| m > limit)).map(|_| k)
+                    })
+                    .collect()
             }
         };
         if let Some((f, l)) = live {
@@ -610,7 +653,11 @@ impl Sampler {
                 crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
             }
             w.frozen = true;
-            let what = format!("froze slot {k}'s job: it held {:.1} GB, past this Mac's limit of {:.1} GB, the Mac short of memory", w.held.unwrap_or(0) as f64 / 1024.0, limit as f64 / 1024.0);
+            let what = format!(
+                "froze slot {k}'s job: it held {:.1} GB, past this Mac's limit of {:.1} GB, the Mac short of memory",
+                w.held.unwrap_or(0) as f64 / 1024.0,
+                limit as f64 / 1024.0
+            );
             eprintln!("agent: memory guard {what}");
             g.froze.push((crate::agent::jobs::now_s(), what));
         }
@@ -632,7 +679,22 @@ impl Sampler {
         let now = std::time::Instant::now();
         // (Read outside the lock: the files take time.)
         let jobs: Vec<(usize, i32, PathBuf, Option<PathBuf>, bool)> = match self.inner.lock() {
-            Ok(g) => g.watches.iter().enumerate().filter_map(|(k, w)| w.as_ref().map(|w| (k, w.pgid, w.written.clone(), w.scratch.clone(), w.looked.is_none_or(|t| now.duration_since(t) >= DISK_EVERY)))).collect(),
+            Ok(g) => g
+                .watches
+                .iter()
+                .enumerate()
+                .filter_map(|(k, w)| {
+                    w.as_ref().map(|w| {
+                        (
+                            k,
+                            w.pgid,
+                            w.written.clone(),
+                            w.scratch.clone(),
+                            w.looked.is_none_or(|t| now.duration_since(t) >= DISK_EVERY),
+                        )
+                    })
+                })
+                .collect(),
             Err(_) => return,
         };
         let mut got: Vec<(usize, i32, u64, Option<u64>, Option<String>)> = Vec::new();
@@ -642,7 +704,8 @@ impl Sampler {
                 None => store::cachefile::read_written(&written),
             };
             let top = if set.is_some() { Some(0) } else { scratch.filter(|_| look).map(|d| top_bytes(&d)) };
-            let key = self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.clone())).and_then(|w| w.current());
+            let key =
+                self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.clone())).and_then(|w| w.current());
             got.push((k, pgid, w, top, key));
         }
         let Ok(mut g) = self.inner.lock() else { return };
@@ -657,7 +720,8 @@ impl Sampler {
             w.disk_now = written + w.scratch_top;
             w.disk_peak = w.disk_peak.max(w.disk_now);
             w.disk_hist.push_back((now, w.disk_now));
-            while w.disk_hist.len() > 1 && w.disk_hist.front().is_some_and(|(t, _)| now.duration_since(*t) > DISK_EVERY) {
+            while w.disk_hist.len() > 1 && w.disk_hist.front().is_some_and(|(t, _)| now.duration_since(*t) > DISK_EVERY)
+            {
                 w.disk_hist.pop_front();
             }
             let Some(key) = key else { continue };
@@ -711,7 +775,16 @@ impl Sampler {
             }
             return;
         }
-        let Some(k) = g.watches.iter().enumerate().filter_map(|(k, w)| w.as_ref().map(|w| (k, w.disk_growth(), w.disk_now))).max_by_key(|&(k, grew, now)| (grew, now, std::cmp::Reverse(k))).map(|(k, _, _)| k) else { return };
+        let Some(k) = g
+            .watches
+            .iter()
+            .enumerate()
+            .filter_map(|(k, w)| w.as_ref().map(|w| (k, w.disk_growth(), w.disk_now)))
+            .max_by_key(|&(k, grew, now)| (grew, now, std::cmp::Reverse(k)))
+            .map(|(k, _, _)| k)
+        else {
+            return;
+        };
         let real = g.held_set.is_none() && g.disk_set.is_none();
         let reserve = g.reserve;
         let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut) else { return };
@@ -778,7 +851,8 @@ mod tests {
     #[test]
     fn trouble_is_the_kernels_pressure_or_swap_grown() {
         // (Floors read as written before they said more: a bare MB.)
-        let old: BTreeMap<String, Floor> = serde_json::from_str(r#"{"a": 9000, "b": {"mb": 5, "alone": true, "v": 3}}"#).unwrap();
+        let old: BTreeMap<String, Floor> =
+            serde_json::from_str(r#"{"a": 9000, "b": {"mb": 5, "alone": true, "v": 3}}"#).unwrap();
         assert_eq!((old["a"], old["b"]), (Floor { mb: 9000, alone: false, v: 0 }, Floor { mb: 5, alone: true, v: 3 }));
         assert!(!trouble(Some(1), Some(5 << 30), Some(5 << 30)));
         assert!(trouble(Some(2), None, None) && trouble(Some(4), None, None));
@@ -794,14 +868,24 @@ mod tests {
         assert_eq!(current(&p), None);
         std::fs::write(&p, "{\"unit\":\"terrain 6/1/1\",\"started\":1}\n").unwrap();
         assert_eq!(current(&p).as_deref(), Some("terrain 6/1/1"));
-        std::fs::write(&p, "{\"unit\":\"terrain 6/1/1\",\"started\":1}\n{\"unit\":\"terrain 6/1/1\",\"peak_mb\":900,\"secs\":3}\n").unwrap();
+        std::fs::write(
+            &p,
+            "{\"unit\":\"terrain 6/1/1\",\"started\":1}\n{\"unit\":\"terrain 6/1/1\",\"peak_mb\":900,\"secs\":3}\n",
+        )
+        .unwrap();
         assert_eq!(current(&p), None);
         std::fs::write(&p, "{\"unit\":\"terrain 6/1/1\",\"started\":1}\n{\"unit\":\"terrain 6/1/1\",\"peak_mb\":900,\"secs\":3}\n{\"unit\":\"terrain 6/1/2\",\"started\":4}\nnot json\n").unwrap();
         assert_eq!(current(&p).as_deref(), Some("terrain 6/1/2"));
         // Its fallbacks: between targets, or a step that notes no costs, the first target not
         // noted done; a job of no targets, its own key; else none.
         let done = d.path().join("done.txt");
-        let mut w = Watch { costs: d.path().join("none.jsonl"), done: done.clone(), step: "pack".into(), targets: vec!["6/1/1".into(), "6/1/2".into()], ..Default::default() };
+        let mut w = Watch {
+            costs: d.path().join("none.jsonl"),
+            done: done.clone(),
+            step: "pack".into(),
+            targets: vec!["6/1/1".into(), "6/1/2".into()],
+            ..Default::default()
+        };
         assert_eq!(w.current().as_deref(), Some("pack 6/1/1"));
         std::fs::write(&done, "pack 6/1/1\n").unwrap();
         assert_eq!(w.current().as_deref(), Some("pack 6/1/2"));
@@ -816,10 +900,23 @@ mod tests {
 
     #[test]
     fn floors_from_what_a_run_held_but_what_it_measured() {
-        let w = Watch { step: "terrain".into(), targets: vec!["6/1/1".into(), "6/1/2".into()], seen: [("terrain 6/1/1".to_string(), 9000), ("terrain 6/1/2".to_string(), 7000)].into(), ..Default::default() };
+        let w = Watch {
+            step: "terrain".into(),
+            targets: vec!["6/1/1".into(), "6/1/2".into()],
+            seen: [("terrain 6/1/1".to_string(), 9000), ("terrain 6/1/2".to_string(), 7000)].into(),
+            ..Default::default()
+        };
         let v = crate::coord::cost_version("terrain");
-        assert_eq!(w.floors(&["terrain 6/1/2".to_string()]), [("terrain 6/1/1".to_string(), Floor { mb: 9000, alone: false, v })]);
-        let w = Watch { step: "water".into(), targets: vec!["water".into()], seen: [("water water".to_string(), 33000)].into(), ..Default::default() };
+        assert_eq!(
+            w.floors(&["terrain 6/1/2".to_string()]),
+            [("terrain 6/1/1".to_string(), Floor { mb: 9000, alone: false, v })]
+        );
+        let w = Watch {
+            step: "water".into(),
+            targets: vec!["water".into()],
+            seen: [("water water".to_string(), 33000)].into(),
+            ..Default::default()
+        };
         assert_eq!(w.floors(&[]), [("water water".to_string(), Floor { mb: 33000, alone: true, v: 0 })]);
         assert_eq!((step_of_key("6/1/1"), step_of_key("terrain 6/1/1")), ("unit", "terrain"));
     }
@@ -830,7 +927,17 @@ mod tests {
         let s = Sampler::new(2);
         s.set(true, 12 << 10);
         s.write_to(d.path().join(LIVE));
-        s.watch(0, Watch { pgid: 0, costs: d.path().join("c.jsonl"), done: d.path().join("d.txt"), step: "pack".into(), targets: vec!["6/1/1".into()], ..Default::default() });
+        s.watch(
+            0,
+            Watch {
+                pgid: 0,
+                costs: d.path().join("c.jsonl"),
+                done: d.path().join("d.txt"),
+                step: "pack".into(),
+                targets: vec!["6/1/1".into()],
+                ..Default::default()
+            },
+        );
         s.set_test(Some(vec![Some(5000), None]), Some(false));
         s.tick();
         s.set_test(Some(vec![Some(3000), None]), Some(false));
@@ -838,7 +945,10 @@ mod tests {
         assert_eq!(s.held(0), Some(3000));
         // Each sample written for the status, whatever the agent's loop waits on.
         let l = live(d.path()).unwrap();
-        assert!(l.on && l.limit_mb == 12 << 10 && l.held_mb == [Some(3000), None] && l.frozen == [false, false], "{l:?}");
+        assert!(
+            l.on && l.limit_mb == 12 << 10 && l.held_mb == [Some(3000), None] && l.frozen == [false, false],
+            "{l:?}"
+        );
         // Past the limit alone, the Mac not in trouble: not frozen.
         s.set_test(Some(vec![Some(13 << 10), None]), Some(false));
         s.tick();
@@ -850,13 +960,32 @@ mod tests {
         let w = s.unwatch(0).unwrap();
         assert_eq!(w.seen.get("pack 6/1/1"), Some(&(13 << 10)));
         // A new job in the slot (another process group) starts with nothing of the last's.
-        s.watch(0, Watch { pgid: 7, costs: d.path().join("c2.jsonl"), done: d.path().join("d3.txt"), step: "pack".into(), targets: vec!["6/1/3".into()], ..Default::default() });
+        s.watch(
+            0,
+            Watch {
+                pgid: 7,
+                costs: d.path().join("c2.jsonl"),
+                done: d.path().join("d3.txt"),
+                step: "pack".into(),
+                targets: vec!["6/1/3".into()],
+                ..Default::default()
+            },
+        );
         s.set_test(Some(vec![Some(100), None]), Some(false));
         s.tick();
         let w = s.unwatch(0).unwrap();
         assert!(!w.frozen && w.seen.get("pack 6/1/1").is_none() && w.seen.get("pack 6/1/3") == Some(&100));
         // Off, or the limit unknown: learning only.
-        s.watch(1, Watch { pgid: 0, step: "pack".into(), targets: vec!["6/2/2".into()], done: d.path().join("d2.txt"), ..Default::default() });
+        s.watch(
+            1,
+            Watch {
+                pgid: 0,
+                step: "pack".into(),
+                targets: vec!["6/2/2".into()],
+                done: d.path().join("d2.txt"),
+                ..Default::default()
+            },
+        );
         s.set(true, 0);
         s.set_test(Some(vec![None, Some(50 << 10)]), Some(true));
         s.tick();
@@ -877,7 +1006,17 @@ mod tests {
         let costs = d.path().join("c.jsonl");
         std::fs::write(&costs, "{\"unit\":\"terrain 6/1/1\",\"started\":1}\n").unwrap();
         s.set_test_disk(Some(100 * g), None);
-        s.watch(0, Watch { pgid: 0, costs: costs.clone(), done: d.path().join("d.txt"), step: "terrain".into(), targets: vec!["6/1/1".into(), "6/1/2".into()], ..Default::default() });
+        s.watch(
+            0,
+            Watch {
+                pgid: 0,
+                costs: costs.clone(),
+                done: d.path().join("d.txt"),
+                step: "terrain".into(),
+                targets: vec!["6/1/1".into(), "6/1/2".into()],
+                ..Default::default()
+            },
+        );
         // Alone: its accessors wrote 2 GB, the disk fell 5 GB (outside programs'): 5 GB its target's.
         s.set_test_disk(Some(95 * g), Some(vec![Some(2 * g), None]));
         s.tick();
@@ -886,7 +1025,17 @@ mod tests {
         s.set_test_disk(Some(95 * g), Some(vec![Some(2 * g), None]));
         s.tick();
         // A second job beside: the fall no longer counts for either.
-        s.watch(1, Watch { pgid: 1, costs: d.path().join("c2.jsonl"), done: d.path().join("d2.txt"), step: "pack".into(), targets: vec!["6/2/2".into()], ..Default::default() });
+        s.watch(
+            1,
+            Watch {
+                pgid: 1,
+                costs: d.path().join("c2.jsonl"),
+                done: d.path().join("d2.txt"),
+                step: "pack".into(),
+                targets: vec!["6/2/2".into()],
+                ..Default::default()
+            },
+        );
         s.set_test_disk(Some(60 * g), Some(vec![Some(3 * g), Some(g / 2)]));
         s.tick();
         assert_eq!(s.disk_now(0), Some(3 * g));

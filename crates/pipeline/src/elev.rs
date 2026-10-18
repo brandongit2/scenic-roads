@@ -13,8 +13,8 @@
 //!    interpolated linearly, so decks and tunnel floors are straight.
 //! 5. |grade| over ±25 m, again continuing across junctions (using final elevations).
 
-use det::Det;
 use crate::count_bar;
+use det::Det;
 use rayon::prelude::*;
 use roadcore::{class, dist_m, flag, WayRec, E7};
 use std::collections::HashMap;
@@ -92,7 +92,8 @@ impl<'a> Net<'a> {
                 let e = s + w.vcount as usize - 1;
                 let pick = |node: u32, inward_from: usize, at: usize| -> Option<(u32, bool)> {
                     let h_in = heading(verts, inward_from, at);
-                    let cands: Vec<&(u32, bool)> = inc[node as usize].iter().filter(|(c, _)| *c as usize != i).collect();
+                    let cands: Vec<&(u32, bool)> =
+                        inc[node as usize].iter().filter(|(c, _)| *c as usize != i).collect();
                     if cands.is_empty() {
                         return None;
                     }
@@ -203,7 +204,14 @@ fn fill_gaps(e: &mut [f32], dist: &[f64]) -> bool {
 }
 
 /// Extended (distance, value) series for way `w`: context before, the way itself, context after.
-fn extended(net: &Net<'_>, w: usize, dist: &[f64], vals: &[f32], reach: f64, into_structures: bool) -> (Vec<f64>, Vec<f32>, usize) {
+fn extended(
+    net: &Net<'_>,
+    w: usize,
+    dist: &[f64],
+    vals: &[f32],
+    reach: f64,
+    into_structures: bool,
+) -> (Vec<f64>, Vec<f32>, usize) {
     let s = net.ways[w].vstart as usize;
     let n = net.ways[w].vcount as usize;
     let before = net.context(w, false, reach, into_structures);
@@ -472,8 +480,20 @@ pub fn process(net: &Net, raw: &[f32]) -> Processed {
             let total = *dist.last().unwrap();
             let (va, vb) = (val[net.ends[i][0] as usize], val[net.ends[i][1] as usize]);
             if is_structure(w) {
-                let a = if va.is_finite() { va } else if ok[i] { e[0] as f64 } else { 0.0 };
-                let b = if vb.is_finite() { vb } else if ok[i] { *e.last().unwrap() as f64 } else { a };
+                let a = if va.is_finite() {
+                    va
+                } else if ok[i] {
+                    e[0] as f64
+                } else {
+                    0.0
+                };
+                let b = if vb.is_finite() {
+                    vb
+                } else if ok[i] {
+                    *e.last().unwrap() as f64
+                } else {
+                    a
+                };
                 for (k, x) in e.iter_mut().enumerate() {
                     let t = if total > 0.0 { dist[k] / total } else { 0.0 };
                     *x = (a + (b - a) * t) as f32;

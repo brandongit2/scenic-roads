@@ -22,21 +22,53 @@
 /// under `sources/`), and its duties outside the plan (the OSM pass, offered only to the Mac holding
 /// its progress: crate::agent::resume; GC, the backup, the input checks, the names and timetables to do: written into the drop boxes'
 /// `todo/`, outside the records).
-pub const LEAD_ONLY: [&str; 11] = ["catalog", "catalog-held", "prune", "bld-fetch", "osm-pass", "gc", "backup", "inputs", "names-todo", "timetables-todo", "regions-extract"];
+pub const LEAD_ONLY: [&str; 11] = [
+    "catalog",
+    "catalog-held",
+    "prune",
+    "bld-fetch",
+    "osm-pass",
+    "gc",
+    "backup",
+    "inputs",
+    "names-todo",
+    "timetables-todo",
+    "regions-extract",
+];
 
 /// Whether the lead offers its members `step`'s targets: a step of the steps
 /// table of targets by area (not a worldwide one: `names_target` of its name, a run alone, the
 /// spoken languages) that isn't the lead's (`LEAD_ONLY`) and doesn't keep the pass's answers
 /// (crate::agent::steps::ANSWERED), the shared steps among them.
 pub fn offered(step: &str) -> bool {
-    super::steps::row(step).is_some() && !LEAD_ONLY.contains(&step) && !super::steps::ANSWERED.contains(&step) && names_target(step) && !super::steps::alone(step) && step != "spoken"
+    super::steps::row(step).is_some()
+        && !LEAD_ONLY.contains(&step)
+        && !super::steps::ANSWERED.contains(&step)
+        && names_target(step)
+        && !super::steps::alone(step)
+        && step != "spoken"
 }
 
 /// Whether a job's command names target `t` (a step's worldwide target, its own name or a world
 /// root, isn't named: its step's job does the whole world), the lead's own jobs' and a member's
 /// alike.
 pub fn names_target(t: &str) -> bool {
-    !matches!(t, "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch" | "terrain-water") && !t.ends_with("-root")
+    !matches!(
+        t,
+        "catalog"
+            | "items"
+            | "marks"
+            | "roadunits"
+            | "stations"
+            | "ferries"
+            | "heritage-sites"
+            | "heritage"
+            | "overlays"
+            | "rail-feeds"
+            | "rail"
+            | "bld-fetch"
+            | "terrain-water"
+    ) && !t.ends_with("-root")
 }
 
 #[cfg(test)]
@@ -51,7 +83,33 @@ mod tests {
         for s in super::super::steps::SHARED {
             assert!(offered(s), "{s}");
         }
-        for s in ["catalog", "catalog-held", "prune", "bld-fetch", "osm-pass", "gc", "inputs", "items", "heritage", "heritage-sites", "tail", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "marks", "overlays", "rail", "rail-feeds", "terrain-water", "water", "labels", "spoken", "a step of a newer app"] {
+        for s in [
+            "catalog",
+            "catalog-held",
+            "prune",
+            "bld-fetch",
+            "osm-pass",
+            "gc",
+            "inputs",
+            "items",
+            "heritage",
+            "heritage-sites",
+            "tail",
+            "roadunits",
+            "stations",
+            "ferries",
+            "terrain-root",
+            "slope-root",
+            "marks",
+            "overlays",
+            "rail",
+            "rail-feeds",
+            "terrain-water",
+            "water",
+            "labels",
+            "spoken",
+            "a step of a newer app",
+        ] {
             assert!(!offered(s), "{s}");
         }
     }

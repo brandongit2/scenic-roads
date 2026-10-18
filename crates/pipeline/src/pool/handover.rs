@@ -190,7 +190,8 @@ impl Handover {
 /// none otherwise.
 pub fn ready_for(lead: &Beat, me: &str, able: bool) -> Option<Ready> {
     let h = lead.handing_to.as_ref()?;
-    (able && h.to == me && h.stage != Stage::Passed && lead.leads == Some(h.term)).then_some(Ready { term: h.term + 1, offer: h.offer })
+    (able && h.to == me && h.stage != Stage::Passed && lead.leads == Some(h.term))
+        .then_some(Ready { term: h.term + 1, offer: h.offer })
 }
 
 #[cfg(test)]
@@ -225,8 +226,15 @@ mod tests {
         assert!(!h.grants());
         assert_eq!(answer(&h, 7), b, "answered while it settles too");
         assert_eq!(h.step(7, &Seen { now: 140, target: Some(&b), ..Default::default() }), Do::Settle);
-        assert_eq!(h.step(7, &Seen { now: 150, settled: Some(12), ..Default::default() }), Do::Settle, "B's answer not read: not yet");
-        assert_eq!(h.step(7, &Seen { now: 150, target: Some(&b), settled: Some(12), ..Default::default() }), Do::Pass { to: B.into(), seq: 12 });
+        assert_eq!(
+            h.step(7, &Seen { now: 150, settled: Some(12), ..Default::default() }),
+            Do::Settle,
+            "B's answer not read: not yet"
+        );
+        assert_eq!(
+            h.step(7, &Seen { now: 150, target: Some(&b), settled: Some(12), ..Default::default() }),
+            Do::Pass { to: B.into(), seq: 12 }
+        );
         h.passed(152);
         assert_eq!(h, Handover::Passed { to: B.into(), offer: 100, at: 152 });
         assert_eq!(h.handing_to(7).map(|x| x.stage), Some(Stage::Passed));
@@ -246,7 +254,10 @@ mod tests {
         let mut h = Handover::Leading;
         h.step(7, &Seen { now: 100, ask: Some(B), ..Default::default() });
         let other = Beat { ready_for: Some(Ready { term: 8, offer: 100 }), ..beat("m-000000000000000c") };
-        assert_eq!(h.step(7, &Seen { now: 100 + OFFER_S - 1, target: Some(&other), ..Default::default() }), Do::Nothing);
+        assert_eq!(
+            h.step(7, &Seen { now: 100 + OFFER_S - 1, target: Some(&other), ..Default::default() }),
+            Do::Nothing
+        );
         assert!(matches!(h, Handover::Offered { .. }), "another's answer isn't B's");
         h.step(7, &Seen { now: 100 + OFFER_S, ..Default::default() });
         assert_eq!(h, Handover::Leading);
@@ -260,7 +271,10 @@ mod tests {
         h.step(7, &Seen { now: 300, ask: Some(B), ..Default::default() });
         let b = answer(&h, 7);
         h.step(7, &Seen { now: 310, target: Some(&b), ..Default::default() });
-        assert!(matches!(h.step(7, &Seen { now: 320, target: Some(&b), settled: Some(3), ..Default::default() }), Do::Pass { .. }));
+        assert!(matches!(
+            h.step(7, &Seen { now: 320, target: Some(&b), settled: Some(3), ..Default::default() }),
+            Do::Pass { .. }
+        ));
         h.abandon();
         assert_eq!(h, Handover::Leading);
         // Passed, and B never leads: taken back after two minutes (and asked again until made).
@@ -288,7 +302,11 @@ mod tests {
         h.step(7, &Seen { now: 100 + OFFER_S, ..Default::default() });
         assert_eq!(h, Handover::Leading, "unanswered in its time");
         h.step(7, &Seen { now: 4000, ask: Some(B), ..Default::default() });
-        assert_eq!(h.step(7, &Seen { now: 4001, target: Some(&old), ..Default::default() }), Do::Nothing, "an earlier offer's answer");
+        assert_eq!(
+            h.step(7, &Seen { now: 4001, target: Some(&old), ..Default::default() }),
+            Do::Nothing,
+            "an earlier offer's answer"
+        );
         let new = answer(&h, 7);
         assert_ne!(new, old);
         assert_eq!(h.step(7, &Seen { now: 4002, target: Some(&new), ..Default::default() }), Do::Settle);

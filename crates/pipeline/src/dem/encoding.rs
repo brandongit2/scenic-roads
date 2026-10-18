@@ -54,7 +54,8 @@ mod tests {
     fn the_encodings() {
         // 12.34 m and -5.5 m in GSI's, and its no data.
         let neg = (1i64 << 24) - 550;
-        let g = decode("gsi-png", &png(&[[0, 4, 210], [(neg >> 16) as u8, (neg >> 8) as u8, neg as u8], [128, 0, 0]])).unwrap();
+        let g = decode("gsi-png", &png(&[[0, 4, 210], [(neg >> 16) as u8, (neg >> 8) as u8, neg as u8], [128, 0, 0]]))
+            .unwrap();
         assert_eq!(g.2, vec![1234.0f32 * 0.01, -550.0f32 * 0.01, -1e9]);
         assert_eq!(decode("terrarium", &png(&[[128, 100, 128]])).unwrap().2, vec![100.5]);
         assert_eq!(decode("terrain-rgb", &png(&[[1, 134, 160]])).unwrap().2, vec![-10000.0 + 100000.0 * 0.1]);

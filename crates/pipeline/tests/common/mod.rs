@@ -135,12 +135,18 @@ pub fn item_name(l: &str) -> Option<(String, bool)> {
     }
     for p in ["const fn ", "async fn ", "unsafe fn ", "fn "] {
         if let Some(r) = t.strip_prefix(p) {
-            return Some((r.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string(), true));
+            return Some((
+                r.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string(),
+                true,
+            ));
         }
     }
     for p in ["const ", "static "] {
         if let Some(r) = t.strip_prefix(p) {
-            return Some((r.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string(), false));
+            return Some((
+                r.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string(),
+                false,
+            ));
         }
     }
     None
@@ -170,7 +176,9 @@ pub fn enclosing_py(lines: &[&str], i: usize) -> Option<(String, String)> {
     for k in (0..=i).rev() {
         let t = lines[k].trim_start();
         if let Some(r) = t.strip_prefix("def ").or_else(|| t.strip_prefix("async def ")) {
-            let end = (k + 1..lines.len()).find(|&m| !lines[m].trim().is_empty() && indent(lines[m]) <= indent(lines[k])).unwrap_or(lines.len());
+            let end = (k + 1..lines.len())
+                .find(|&m| !lines[m].trim().is_empty() && indent(lines[m]) <= indent(lines[k]))
+                .unwrap_or(lines.len());
             if end > i {
                 let name = r.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string();
                 return Some((name, lines[k..end].iter().map(|l| code(l)).collect::<Vec<_>>().join("\n")));
@@ -215,4 +223,3 @@ pub fn py_code(l: &str) -> String {
     }
     out
 }
-

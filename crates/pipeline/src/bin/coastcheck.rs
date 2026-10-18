@@ -54,17 +54,27 @@ fn main() -> Result<()> {
                 }
             }
             all.sort_by_key(|t| (t.0, t.1, t.2));
-            let mut groups: std::collections::BTreeMap<(&str, u8, u32, u32), Vec<(u8, u32, u32, PathBuf)>> = Default::default();
+            let mut groups: std::collections::BTreeMap<(&str, u8, u32, u32), Vec<(u8, u32, u32, PathBuf)>> =
+                Default::default();
             for t in all {
                 let (scope, pz, px, py) = pipeline::layers::pack_of(t.0, t.1, t.2);
                 groups.entry((scope, pz, px, py)).or_default().push(t);
             }
-            let mut layer = store::catalog::Layer { encoding: "water-png".into(), minzoom: 0, maxzoom: pipeline::water::STORED_MAXZ, ..Default::default() };
+            let mut layer = store::catalog::Layer {
+                encoding: "water-png".into(),
+                minzoom: 0,
+                maxzoom: pipeline::water::STORED_MAXZ,
+                ..Default::default()
+            };
             for ((scope, pz, px, py), ts) in groups {
                 let logical = format!("layers/water/{scope}/{pz}-{px}-{py}");
                 let tmp = root.join(format!("{logical}.tmp"));
                 std::fs::create_dir_all(tmp.parent().unwrap())?;
-                let mut w = store::pack::PackWriter::create(&tmp, serde_json::json!({"layer": "water", "scope": scope, "root": format!("{pz}/{px}/{py}"), "encoding": "water-png"}), false)?;
+                let mut w = store::pack::PackWriter::create(
+                    &tmp,
+                    serde_json::json!({"layer": "water", "scope": scope, "root": format!("{pz}/{px}/{py}"), "encoding": "water-png"}),
+                    false,
+                )?;
                 for (z, x, y, p) in ts {
                     let b = std::fs::read(p)?;
                     w.add(z, x, y, &b, b.len() as u32)?;
@@ -72,7 +82,14 @@ fn main() -> Result<()> {
                 w.finish()?;
                 let content = store::naming::content_name(&logical, &store::naming::hash16_file(&tmp)?, "pack");
                 std::fs::rename(&tmp, root.join(&content))?;
-                cat.files.insert(logical.clone(), store::catalog::FileRef { file: content.clone(), size: std::fs::metadata(root.join(&content))?.len(), ..Default::default() });
+                cat.files.insert(
+                    logical.clone(),
+                    store::catalog::FileRef {
+                        file: content.clone(),
+                        size: std::fs::metadata(root.join(&content))?.len(),
+                        ..Default::default()
+                    },
+                );
                 match scope {
                     "root" => layer.root = Some(logical),
                     "lo" => {
@@ -95,23 +112,35 @@ fn main() -> Result<()> {
             // measured without the NAS.
             use pipeline::water as wt;
             let t = std::time::Instant::now();
-            let pm = store::pmtiles::PmTiles::open(Box::new(store::range::PlainFile::open(&PathBuf::from(opt(&args, "--basemap").context("--basemap")?))?))?;
+            let pm = store::pmtiles::PmTiles::open(Box::new(store::range::PlainFile::open(&PathBuf::from(
+                opt(&args, "--basemap").context("--basemap")?,
+            ))?))?;
             let z14 = wt::Z14::read(&pm)?;
             eprintln!("coastcheck: z14 directory read in {:.0} s", t.elapsed().as_secs_f64());
-            let only: Option<Vec<(u32, u32)>> = opt(&args, "--only").map(|o| o.split(',').filter_map(|t| t.split_once('/').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))).collect());
+            let only: Option<Vec<(u32, u32)>> = opt(&args, "--only").map(|o| {
+                o.split(',')
+                    .filter_map(|t| t.split_once('/').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))))
+                    .collect()
+            });
             // (--lakefill f: the lakes filled from Canada's own data drawn too.)
             let fill = match opt(&args, "--lakefill") {
                 Some(f) => Some(pipeline::lakefill::Fill::open(Path::new(&f), &f)?),
                 None => None,
             };
-            let (tiles, made) = wt::build(&pm, &z14, fill.as_ref().map(|f| f as &dyn wt::Extra), only.as_deref(), &|d, n| eprintln!("coastcheck: {d}/{n} z5 tiles"))?;
+            let (tiles, made) =
+                wt::build(&pm, &z14, fill.as_ref().map(|f| f as &dyn wt::Extra), only.as_deref(), &|d, n| {
+                    eprintln!("coastcheck: {d}/{n} z5 tiles")
+                })?;
             let dir = PathBuf::from(opt(&args, "--out").context("--out")?);
             for (z, x, y, png) in &tiles {
                 let f = dir.join(format!("{z}/{x}/{y}.png"));
                 std::fs::create_dir_all(f.parent().unwrap())?;
                 std::fs::write(f, png)?;
             }
-            println!("{}", serde_json::to_string(&serde_json::json!({"made": made, "secs": t.elapsed().as_secs_f64()}))?);
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({"made": made, "secs": t.elapsed().as_secs_f64()}))?
+            );
             Ok(())
         }
         Some("mark-sea") => {
@@ -120,8 +149,17 @@ fn main() -> Result<()> {
             let dir = PathBuf::from(opt(&args, "--store").context("--store")?);
             let tmp = dir.join("sea-count.tmp");
             let mut w = GeomWriter::create(&tmp)?;
-            let mut unzip = store::spawn::spawn(store::spawn::command("/usr/bin/unzip").arg("-p").arg(opt(&args, "--water-polygons").context("--water-polygons")?).arg("water-polygons-split-3857/water_polygons.shp").stdout(std::process::Stdio::piped()))?;
-            wc::read_water_polygons(std::io::BufReader::with_capacity(4 << 20, unzip.stdout.take().context("unzip")?), &mut w)?;
+            let mut unzip = store::spawn::spawn(
+                store::spawn::command("/usr/bin/unzip")
+                    .arg("-p")
+                    .arg(opt(&args, "--water-polygons").context("--water-polygons")?)
+                    .arg("water-polygons-split-3857/water_polygons.shp")
+                    .stdout(std::process::Stdio::piped()),
+            )?;
+            wc::read_water_polygons(
+                std::io::BufReader::with_capacity(4 << 20, unzip.stdout.take().context("unzip")?),
+                &mut w,
+            )?;
             anyhow::ensure!(unzip.wait()?.success(), "unzip failed");
             let (n, _) = w.finish()?;
             std::fs::remove_dir_all(&tmp)?;
@@ -154,7 +192,14 @@ fn build(args: &[String]) -> Result<()> {
     let mut w = GeomWriter::create(&out)?;
     let t = std::time::Instant::now();
     // The sea's water polygons.
-    let mut unzip = store::spawn::spawn(store::spawn::command("/usr/bin/unzip").arg("-p").arg(&zip).arg("water-polygons-split-3857/water_polygons.shp").stdout(std::process::Stdio::piped())).context("run unzip")?;
+    let mut unzip = store::spawn::spawn(
+        store::spawn::command("/usr/bin/unzip")
+            .arg("-p")
+            .arg(&zip)
+            .arg("water-polygons-split-3857/water_polygons.shp")
+            .stdout(std::process::Stdio::piped()),
+    )
+    .context("run unzip")?;
     let shp = unzip.stdout.take().context("unzip's output")?;
     let polygons = wc::read_water_polygons(std::io::BufReader::with_capacity(4 << 20, shp), &mut w);
     anyhow::ensure!(unzip.wait()?.success(), "unzip failed");
@@ -162,19 +207,22 @@ fn build(args: &[String]) -> Result<()> {
     w.end_sea();
     // The inland water.
     let cfg = out.join("export.json");
-    std::fs::write(&cfg, serde_json::to_vec(&serde_json::json!({
-        "attributes": {"type": false, "id": false},
-        "area_tags": wc::AREA_TAGS,
-        "include_tags": ["natural", "water", "waterway", "landuse", "tunnel", "covered"],
-    }))?)?;
+    std::fs::write(
+        &cfg,
+        serde_json::to_vec(&serde_json::json!({
+            "attributes": {"type": false, "id": false},
+            "area_tags": wc::AREA_TAGS,
+            "include_tags": ["natural", "water", "waterway", "landuse", "tunnel", "covered"],
+        }))?,
+    )?;
     let mut child = store::spawn::spawn(
         pipeline::osmpass::osmium()
-        .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "--overwrite", "-o", "-"])
-        .arg("-c")
-        .arg(&cfg)
-        .arg(format!("--index-type={index}"))
-        .arg(&set)
-        .stdout(std::process::Stdio::piped()),
+            .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "--overwrite", "-o", "-"])
+            .arg("-c")
+            .arg(&cfg)
+            .arg(format!("--index-type={index}"))
+            .arg(&set)
+            .stdout(std::process::Stdio::piped()),
     )
     .context("run osmium export")?;
     let stdout = child.stdout.take().context("osmium's output")?;
@@ -219,7 +267,11 @@ fn raw_png(g: &Geom, z: u8, x: u32, y: u32, size: usize) -> Result<Vec<u8>> {
     }
     let sea = wc::tile_coverage_of(g, z, x, y, size, wc::Which::Sea);
     let inland = wc::tile_coverage_of(g, z, x, y, size, wc::Which::Inland);
-    let px: Vec<u8> = sea.iter().zip(&inland).flat_map(|(&s, &i)| [(255.0 * s).round() as u8, (255.0 * i).round() as u8, 0]).collect();
+    let px: Vec<u8> = sea
+        .iter()
+        .zip(&inland)
+        .flat_map(|(&s, &i)| [(255.0 * s).round() as u8, (255.0 * i).round() as u8, 0])
+        .collect();
     let mut out = Vec::new();
     {
         let mut e = png::Encoder::new(&mut out, size as u32, size as u32);
@@ -238,7 +290,11 @@ fn serve(args: &[String]) -> Result<()> {
     let g = Arc::new(Geom::open(&PathBuf::from(opt(args, "--store").context("--store")?))?);
     let port: u16 = opt(args, "--port").map_or(Ok(18095), |p| p.parse())?;
     eprintln!("coastcheck: {} rings; serving on 127.0.0.1:{port}", g.rings());
-    async fn tile(State(g): State<Arc<Geom>>, P((z, x, y)): P<(u8, u32, String)>, Query(q): Query<std::collections::HashMap<String, String>>) -> axum::response::Response {
+    async fn tile(
+        State(g): State<Arc<Geom>>,
+        P((z, x, y)): P<(u8, u32, String)>,
+        Query(q): Query<std::collections::HashMap<String, String>>,
+    ) -> axum::response::Response {
         let y: u32 = match y.trim_end_matches(".png").parse() {
             Ok(y) => y,
             Err(_) => return StatusCode::NOT_FOUND.into_response(),
@@ -250,9 +306,24 @@ fn serve(args: &[String]) -> Result<()> {
             _ => wc::Which::All,
         };
         let raw = q.contains_key("raw");
-        let r = tokio::task::spawn_blocking(move || if raw { raw_png(&g, z, x, y, size) } else { cov_png(&g, z, x, y, size, which) }).await;
+        let r = tokio::task::spawn_blocking(move || {
+            if raw {
+                raw_png(&g, z, x, y, size)
+            } else {
+                cov_png(&g, z, x, y, size, which)
+            }
+        })
+        .await;
         match r {
-            Ok(Ok(png)) => ([(header::CONTENT_TYPE, "image/png"), (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"), (header::CACHE_CONTROL, "no-store")], png).into_response(),
+            Ok(Ok(png)) => (
+                [
+                    (header::CONTENT_TYPE, "image/png"),
+                    (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                png,
+            )
+                .into_response(),
             _ => StatusCode::NOT_FOUND.into_response(),
         }
     }
@@ -280,31 +351,35 @@ fn stats(args: &[String]) -> Result<()> {
     let shift = 32 - u32::from(z);
     let t = std::time::Instant::now();
     // Tiles each edge passes through (its endpoints' tiles and those between, by small steps).
-    let marks: Vec<Vec<u64>> = (0..g.rings()).into_par_iter().chunks(1 << 16).map(|ids| {
-        let mut out = Vec::new();
-        for i in ids {
-            let r = g.ring(i);
-            let mut prev = r[r.len() - 1];
-            for &p in r {
-                let (x0, y0, x1, y1) = (prev[0] >> shift, prev[1] >> shift, p[0] >> shift, p[1] >> shift);
-                if x0 == x1 && y0 == y1 {
-                    out.push((y0 as u64) << 32 | x0 as u64);
-                } else {
-                    let steps = (x0.abs_diff(x1).max(y0.abs_diff(y1)) as u64 * 4 + 4) as f64;
-                    for k in 0..=steps as u64 {
-                        let f = k as f64 / steps;
-                        let x = (f64::from(prev[0]) + (f64::from(p[0]) - f64::from(prev[0])) * f) as u64 >> shift;
-                        let y = (f64::from(prev[1]) + (f64::from(p[1]) - f64::from(prev[1])) * f) as u64 >> shift;
-                        out.push(y << 32 | x);
+    let marks: Vec<Vec<u64>> = (0..g.rings())
+        .into_par_iter()
+        .chunks(1 << 16)
+        .map(|ids| {
+            let mut out = Vec::new();
+            for i in ids {
+                let r = g.ring(i);
+                let mut prev = r[r.len() - 1];
+                for &p in r {
+                    let (x0, y0, x1, y1) = (prev[0] >> shift, prev[1] >> shift, p[0] >> shift, p[1] >> shift);
+                    if x0 == x1 && y0 == y1 {
+                        out.push((y0 as u64) << 32 | x0 as u64);
+                    } else {
+                        let steps = (x0.abs_diff(x1).max(y0.abs_diff(y1)) as u64 * 4 + 4) as f64;
+                        for k in 0..=steps as u64 {
+                            let f = k as f64 / steps;
+                            let x = (f64::from(prev[0]) + (f64::from(p[0]) - f64::from(prev[0])) * f) as u64 >> shift;
+                            let y = (f64::from(prev[1]) + (f64::from(p[1]) - f64::from(prev[1])) * f) as u64 >> shift;
+                            out.push(y << 32 | x);
+                        }
                     }
+                    prev = p;
                 }
-                prev = p;
+                out.sort_unstable();
+                out.dedup();
             }
-            out.sort_unstable();
-            out.dedup();
-        }
-        out
-    }).collect();
+            out
+        })
+        .collect();
     let mut all: Vec<u64> = marks.into_iter().flatten().collect();
     all.par_sort_unstable();
     all.dedup();
@@ -312,29 +387,38 @@ fn stats(args: &[String]) -> Result<()> {
     // A sample, evenly through them.
     let step = (all.len() / sample.max(1)).max(1);
     let picked: Vec<u64> = all.iter().step_by(step).copied().take(sample).collect();
-    let sizes: Vec<(usize, usize, bool)> = picked.par_iter().map(|&k| {
-        let (x, y) = ((k & 0xffff_ffff) as u32, (k >> 32) as u32);
-        let sea = wc::tile_coverage_of(&g, z, x, y, size, wc::Which::Sea);
-        let inland = wc::tile_coverage_of(&g, z, x, y, size, wc::Which::Inland);
-        let all: Vec<u8> = sea.iter().zip(&inland).map(|(a, b)| (255.0 * (1.0 - (a + b).min(1.0))).round() as u8).collect();
-        let uniform = all.iter().all(|&v| v == all[0]);
-        let png1 = gray_png(&all, size);
-        // Two channels: the sea's and the inland water's.
-        let two: Vec<u8> = sea.iter().zip(&inland).flat_map(|(a, b)| [(255.0 * a).round() as u8, (255.0 * b).round() as u8]).collect();
-        let png2 = {
-            let mut out = Vec::new();
-            let mut e = png::Encoder::new(&mut out, size as u32, size as u32);
-            e.set_color(png::ColorType::GrayscaleAlpha);
-            e.set_compression(png::Compression::High);
-            let mut w = e.write_header().unwrap();
-            w.write_image_data(&two).unwrap();
-            drop(w);
-            out
-        };
-        (png1.len(), png2.len(), uniform)
-    }).collect();
+    let sizes: Vec<(usize, usize, bool)> = picked
+        .par_iter()
+        .map(|&k| {
+            let (x, y) = ((k & 0xffff_ffff) as u32, (k >> 32) as u32);
+            let sea = wc::tile_coverage_of(&g, z, x, y, size, wc::Which::Sea);
+            let inland = wc::tile_coverage_of(&g, z, x, y, size, wc::Which::Inland);
+            let all: Vec<u8> =
+                sea.iter().zip(&inland).map(|(a, b)| (255.0 * (1.0 - (a + b).min(1.0))).round() as u8).collect();
+            let uniform = all.iter().all(|&v| v == all[0]);
+            let png1 = gray_png(&all, size);
+            // Two channels: the sea's and the inland water's.
+            let two: Vec<u8> = sea
+                .iter()
+                .zip(&inland)
+                .flat_map(|(a, b)| [(255.0 * a).round() as u8, (255.0 * b).round() as u8])
+                .collect();
+            let png2 = {
+                let mut out = Vec::new();
+                let mut e = png::Encoder::new(&mut out, size as u32, size as u32);
+                e.set_color(png::ColorType::GrayscaleAlpha);
+                e.set_compression(png::Compression::High);
+                let mut w = e.write_header().unwrap();
+                w.write_image_data(&two).unwrap();
+                drop(w);
+                out
+            };
+            (png1.len(), png2.len(), uniform)
+        })
+        .collect();
     let k = sizes.len().max(1) as f64;
-    let (b1, b2) = (sizes.iter().map(|s| s.0).sum::<usize>() as f64 / k, sizes.iter().map(|s| s.1).sum::<usize>() as f64 / k);
+    let (b1, b2) =
+        (sizes.iter().map(|s| s.0).sum::<usize>() as f64 / k, sizes.iter().map(|s| s.1).sum::<usize>() as f64 / k);
     let uniform = sizes.iter().filter(|s| s.2).count();
     println!("{{\"z\": {z}, \"tiles\": {}, \"size\": {size}, \"sampled\": {}, \"uniform\": {uniform}, \"png1\": {:.0}, \"png2\": {:.0}, \"gb1\": {:.2}, \"gb2\": {:.2}, \"secs\": {:.0}}}", all.len(), sizes.len(), b1, b2, b1 * all.len() as f64 / 1e9, b2 * all.len() as f64 / 1e9, t.elapsed().as_secs_f64());
     Ok(())

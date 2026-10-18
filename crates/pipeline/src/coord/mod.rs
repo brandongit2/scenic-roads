@@ -122,7 +122,11 @@ pub fn cost_version(step: &str) -> u32 {
 /// A unit's predicted peak memory (MB): what it took last time, else about ten times its piece (the
 /// densest measured: 6.6 GB for 668 MB), and never under 3.7 GB (the canopy step's).
 pub fn unit_peak(costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 {
-    costs.get(unit).filter(|c| c.v >= cost_version("unit")).map(|c| c.peak_mb).unwrap_or_else(|| (piece >> 20).saturating_mul(10).max(3700))
+    costs
+        .get(unit)
+        .filter(|c| c.v >= cost_version("unit"))
+        .map(|c| c.peak_mb)
+        .unwrap_or_else(|| (piece >> 20).saturating_mul(10).max(3700))
 }
 
 /// The kinds of task a page may take: a unit's tail, a 3D buildings' z8 area (`bld::task::KIND`),
@@ -139,7 +143,11 @@ pub fn task_cost_key(kind: &str, unit: &str) -> String {
 /// What a job of `step` for `target` costs is kept under: a unit's by its target alone (as before
 /// other steps were offered), another step's as "<step> <target>".
 pub fn cost_key(step: &str, target: &str) -> String {
-    if step == "unit" { target.to_string() } else { format!("{step} {target}") }
+    if step == "unit" {
+        target.to_string()
+    } else {
+        format!("{step} {target}")
+    }
 }
 
 /// How long `target` of `step` is predicted to take `worker`: its last run's time (twice another
@@ -325,19 +333,27 @@ impl Shared {
     }
 
     fn save_costs(&self) {
-        let r = serde_json::to_vec(&self.costs).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&self.dir.join("costs.json"), &b));
+        let r = serde_json::to_vec(&self.costs)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| crate::whole::write(&self.dir.join("costs.json"), &b));
         if let Err(e) = r {
             eprintln!("coordinator: saving the costs: {e:#}");
         }
-        let r = serde_json::to_vec(&self.floors).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&self.dir.join("floors.json"), &b));
+        let r = serde_json::to_vec(&self.floors)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| crate::whole::write(&self.dir.join("floors.json"), &b));
         if let Err(e) = r {
             eprintln!("coordinator: saving the floors: {e:#}");
         }
-        let r = serde_json::to_vec(&self.disks).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&self.dir.join("disks.json"), &b));
+        let r = serde_json::to_vec(&self.disks)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| crate::whole::write(&self.dir.join("disks.json"), &b));
         if let Err(e) = r {
             eprintln!("coordinator: saving the disk floors: {e:#}");
         }
-        let r = serde_json::to_vec(&self.job_disks).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&self.dir.join("job-disks.json"), &b));
+        let r = serde_json::to_vec(&self.job_disks)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| crate::whole::write(&self.dir.join("job-disks.json"), &b));
         if let Err(e) = r {
             eprintln!("coordinator: saving the jobs' disk: {e:#}");
         }
@@ -420,14 +436,19 @@ impl Shared {
     /// The measures crate::needs reads (the costs, the floors and the disk floors), its models kept
     /// in `needs` until they change (`needs_rev`; their counts too, for a change made in place).
     fn book(&self) -> crate::needs::Book<'_> {
-        let rev = self.needs_rev.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((self.costs.len() as u64) << 40 | (self.floors.len() as u64) << 20 | self.disks.len() as u64);
+        let rev = self.needs_rev.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ ((self.costs.len() as u64) << 40 | (self.floors.len() as u64) << 20 | self.disks.len() as u64);
         crate::needs::Book::kept(&self.costs, &self.floors, &self.disks, &self.needs, rev)
     }
 
     /// The first guess of offered `target` of `step` (`first_guess` by the size it was offered
     /// with), 0 when it isn't offered.
     fn offered_guess(&self, step: &str, target: &str) -> u64 {
-        self.offers.iter().find(|o| o.step == step).and_then(|o| o.targets.iter().find(|t| t.0 == target)).map_or(0, |t| first_guess(&self.costs, step, target, t.2))
+        self.offers
+            .iter()
+            .find(|o| o.step == step)
+            .and_then(|o| o.targets.iter().find(|t| t.0 == target))
+            .map_or(0, |t| first_guess(&self.costs, step, target, t.2))
     }
 
     /// The targets of offer `o` that `a`'s worker may do now, as many as a job of it takes (units: as
@@ -438,7 +459,9 @@ impl Shared {
     fn pick(&self, o: &Offer, a: &Ask, now: Instant, away: bool) -> Vec<(String, String)> {
         let held = self.leases.held(&o.step, now);
         let backoff = |t: &str| match self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))) {
-            Some((at, n)) => now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5)),
+            Some((at, n)) => {
+                now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
+            }
             None => false,
         };
         let n = if o.step == "unit" { a.max.max(1) } else { o.batch.max(1) };
@@ -446,22 +469,37 @@ impl Shared {
         // next region's while the lead builds this one's units. The rest from the far end,
         // away from the lead's own (and near each other, for the caches).
         let open: Vec<&(String, String, u64)> = {
-            let order: Box<dyn Iterator<Item = &(String, String, u64)>> = if o.step == "terrain" { Box::new(o.targets.iter()) } else { Box::new(o.targets.iter().rev()) };
-            order.filter(|(t, k, _)| !held.contains(t) && self.done.get(&(o.step.clone(), t.clone())) != Some(k) && !backoff(t)).collect()
+            let order: Box<dyn Iterator<Item = &(String, String, u64)>> =
+                if o.step == "terrain" { Box::new(o.targets.iter()) } else { Box::new(o.targets.iter().rev()) };
+            order
+                .filter(|(t, k, _)| {
+                    !held.contains(t) && self.done.get(&(o.step.clone(), t.clone())) != Some(k) && !backoff(t)
+                })
+                .collect()
         };
-        let take = |v: Vec<&(String, String, u64)>| v.into_iter().map(|(t, k, _)| (t.clone(), k.clone())).collect::<Vec<_>>();
+        let take =
+            |v: Vec<&(String, String, u64)>| v.into_iter().map(|(t, k, _)| (t.clone(), k.clone())).collect::<Vec<_>>();
         if !away {
             // (A floor past a worker's limit keeps the target from it: its predicted memory is never
             // below it. The lead tries a target whose floor past its own limit was a batch's in a job
             // of its own, crate::agent's `guard_holds`; one under a worker's runs batched.)
-            return take(open.iter().copied().filter(|(t, _, size)| self.peak_of(&o.step, t, *size, a.cores) <= a.mem_mb).take(n).collect());
+            return take(
+                open.iter()
+                    .copied()
+                    .filter(|(t, _, size)| self.peak_of(&o.step, t, *size, a.cores) <= a.mem_mb)
+                    .take(n)
+                    .collect(),
+            );
         }
         let (Some(more), Some(max)) = (a.more_mb, a.max_secs) else { return Vec::new() };
         // Its owner away: a job that fits the more it spares then, as long as it ends in time.
         let mut left = max;
         take(
             open.into_iter()
-                .filter(|(t, _, size)| self.peak_of(&o.step, t, *size, a.cores) <= more && job_secs(&self.costs, &o.step, t, &a.worker).is_some_and(|s| s <= max))
+                .filter(|(t, _, size)| {
+                    self.peak_of(&o.step, t, *size, a.cores) <= more
+                        && job_secs(&self.costs, &o.step, t, &a.worker).is_some_and(|s| s <= max)
+                })
                 .take_while(|(t, _, _)| match job_secs(&self.costs, &o.step, t, &a.worker) {
                     Some(s) if s <= left => {
                         left -= s;
@@ -481,7 +519,11 @@ impl Shared {
     fn measured(&self, step: &str, target: &str) -> Option<Measured> {
         let b = self.book();
         let (mem_mb, from) = b.mem(step, target, 0, self.offered_guess(step, target));
-        (from != crate::needs::From::Table).then(|| Measured { mem_mb, disk_mb: b.disk(step, target, 0).unwrap_or(0), own: from == crate::needs::From::Measured })
+        (from != crate::needs::From::Table).then(|| Measured {
+            mem_mb,
+            disk_mb: b.disk(step, target, 0).unwrap_or(0),
+            own: from == crate::needs::From::Measured,
+        })
     }
 
     /// How long `target` of `step` is measured to take `worker` (s): its own run's (`job_secs`), else
@@ -500,7 +542,13 @@ impl Shared {
         let best = self
             .workers
             .iter()
-            .filter(|(_, w)| !w.bad && w.kind == "native" && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|a| now.duration_since(a) < ASKING) && w.can.iter().any(|c| c == step))
+            .filter(|(_, w)| {
+                !w.bad
+                    && w.kind == "native"
+                    && now.duration_since(w.seen) < AROUND
+                    && w.asked.is_some_and(|a| now.duration_since(a) < ASKING)
+                    && w.can.iter().any(|c| c == step)
+            })
             .max_by(|(n1, w1), (n2, w2)| room(w1).cmp(&room(w2)).then(n2.cmp(n1)))?;
         match self.every.and_then(|e| e.own) {
             Some(own) if own >= room(best.1) => None,
@@ -519,8 +567,12 @@ impl Shared {
     fn pick_every(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
         let held = self.leases.held(&o.step, now);
         let open = |t: &str, k: &str| {
-            let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5)));
-            !held.contains(t) && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k) && !backoff
+            let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
+                now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
+            });
+            !held.contains(t)
+                && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k)
+                && !backoff
         };
         let job_disk = self.job_disks.get(&o.step).copied().unwrap_or(0);
         let fits = |m: &Measured| m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb.max(job_disk) <= d);
@@ -531,14 +583,24 @@ impl Shared {
                 && match self.measured(&o.step, t) {
                     Some(m) => fits(&m),
                     // (Alone: no job of its step under way anywhere, the lead's own held by a lease too.)
-                    None => held.is_empty() && *cold_here.get_or_init(|| self.most_room(&o.step, now).as_deref() == Some(a.worker.as_str())),
+                    None => {
+                        held.is_empty()
+                            && *cold_here
+                                .get_or_init(|| self.most_room(&o.step, now).as_deref() == Some(a.worker.as_str()))
+                    }
                 }
         };
-        let after = self.last.get(&(a.worker.clone(), o.step.clone())).and_then(|l| o.targets.iter().position(|t| t.0 == *l)).map(|i| i + 1);
+        let after = self
+            .last
+            .get(&(a.worker.clone(), o.step.clone()))
+            .and_then(|l| o.targets.iter().position(|t| t.0 == *l))
+            .map(|i| i + 1);
         let start = match &self.placement {
             // (Placement on: from the target measured to take longest that's drawn to this worker.)
             Some((p, since)) => self.placed_start(o, a, p, *since, now, &held, &takeable),
-            None => after.filter(|&i| i < o.targets.len() && takeable(i)).or_else(|| (0..o.targets.len()).find(|&i| takeable(i))),
+            None => after
+                .filter(|&i| i < o.targets.len() && takeable(i))
+                .or_else(|| (0..o.targets.len()).find(|&i| takeable(i))),
         };
         let Some(start) = start else { return Vec::new() };
         let first = &o.targets[start];
@@ -548,7 +610,12 @@ impl Shared {
         for (t, k, _) in &o.targets[start + 1..] {
             let (Some(s), Some(m)) = (secs, self.measured(&o.step, t)) else { break };
             let Some(more) = self.secs_of(&o.step, t, &a.worker) else { break };
-            if pick.len() >= JOB_MAX || !open(t, k) || !fits(&m) || s + more > JOB_S || a.disk_mb.is_some_and(|d| (disk + m.disk_mb).max(job_disk) > d) {
+            if pick.len() >= JOB_MAX
+                || !open(t, k)
+                || !fits(&m)
+                || s + more > JOB_S
+                || a.disk_mb.is_some_and(|d| (disk + m.disk_mb).max(job_disk) > d)
+            {
                 break;
             }
             pick.push((t.clone(), k.clone()));
@@ -567,16 +634,41 @@ impl Shared {
     /// `pick_every`'s rules: not held (`held`), not done, not kept from it after it failed it, and
     /// its measures within the room its ask says.
     #[allow(clippy::too_many_arguments)]
-    fn may_take_measured(&self, o: &Offer, a: &Ask, t: &str, k: &str, m: &Measured, held: &BTreeSet<String>, now: Instant) -> bool {
-        let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5)));
+    fn may_take_measured(
+        &self,
+        o: &Offer,
+        a: &Ask,
+        t: &str,
+        k: &str,
+        m: &Measured,
+        held: &BTreeSet<String>,
+        now: Instant,
+    ) -> bool {
+        let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
+            now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
+        });
         let job_disk = self.job_disks.get(&o.step).copied().unwrap_or(0);
-        !held.contains(t) && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k) && !backoff && m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb.max(job_disk) <= d)
+        !held.contains(t)
+            && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k)
+            && !backoff
+            && m.mem_mb <= a.mem_mb
+            && a.disk_mb.is_none_or(|d| m.disk_mb.max(job_disk) <= d)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn placed_start(&self, o: &Offer, a: &Ask, p: &crate::agent::placement::Placement, since: Instant, now: Instant, held: &BTreeSet<String>, takeable: &dyn Fn(usize) -> bool) -> Option<usize> {
+    fn placed_start(
+        &self,
+        o: &Offer,
+        a: &Ask,
+        p: &crate::agent::placement::Placement,
+        since: Instant,
+        now: Instant,
+        held: &BTreeSet<String>,
+        takeable: &dyn Fn(usize) -> bool,
+    ) -> Option<usize> {
         use crate::agent::placement;
-        let mut order: Vec<(Option<u64>, usize)> = (0..o.targets.len()).map(|i| (self.secs_of(&o.step, &o.targets[i].0, &a.worker), i)).collect();
+        let mut order: Vec<(Option<u64>, usize)> =
+            (0..o.targets.len()).map(|i| (self.secs_of(&o.step, &o.targets[i].0, &a.worker), i)).collect();
         order.sort_by(|x, y| y.0.is_some().cmp(&x.0.is_some()).then(y.0.cmp(&x.0)).then(x.1.cmp(&y.1)));
         let window = now.saturating_duration_since(since).as_secs();
         order.into_iter().map(|(_, i)| i).find(|&i| {
@@ -589,8 +681,19 @@ impl Shared {
             let mut who: Vec<(String, f64)> = self
                 .workers
                 .iter()
-                .filter(|(n, w)| *n != &a.worker && !w.bad && w.kind == "native" && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|at| now.duration_since(at) < ASKING) && w.app.as_ref().is_none_or(|x| *x == self.app))
-                .filter(|(_, w)| w.ask.as_ref().is_some_and(|x| x.can.contains(&o.step) && self.may_take_measured(o, x, t, k, &m, held, now)))
+                .filter(|(n, w)| {
+                    *n != &a.worker
+                        && !w.bad
+                        && w.kind == "native"
+                        && now.duration_since(w.seen) < AROUND
+                        && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)
+                        && w.app.as_ref().is_none_or(|x| *x == self.app)
+                })
+                .filter(|(_, w)| {
+                    w.ask
+                        .as_ref()
+                        .is_some_and(|x| x.can.contains(&o.step) && self.may_take_measured(o, x, t, k, &m, held, now))
+                })
                 .map(|(n, _)| (n.clone(), p.weight(n)))
                 .collect();
             who.push((a.worker.clone(), p.weight(&a.worker)));
@@ -607,7 +710,8 @@ impl Shared {
         use crate::agent::placement;
         let (_, since) = self.placement.as_ref()?;
         let window = now.saturating_duration_since(*since).as_secs();
-        let mut ids: Vec<&task::Task> = self.tasks.by_id.values().filter(|t| self.tasks.may_take(t, &a.worker, &a.can, a.mem_mb, now)).collect();
+        let mut ids: Vec<&task::Task> =
+            self.tasks.by_id.values().filter(|t| self.tasks.may_take(t, &a.worker, &a.can, a.mem_mb, now)).collect();
         ids.sort_by_key(|t| (t.offered, t.id));
         // (The others around and asking, once an ask: each task then by its kind and memory.)
         // (Each by its own last ask, as `placed_start`'s: an agent on another app than this one's
@@ -615,8 +719,18 @@ impl Shared {
         let around: Vec<(&String, &Ask)> = self
             .workers
             .iter()
-            .filter(|(n, w)| *n != &a.worker && !w.bad && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|at| now.duration_since(at) < ASKING))
-            .filter_map(|(n, w)| w.ask.as_ref().filter(|x| x.kind != "native" || x.app.as_ref().is_none_or(|v| *v == self.app)).map(|x| (n, x)))
+            .filter(|(n, w)| {
+                *n != &a.worker
+                    && !w.bad
+                    && now.duration_since(w.seen) < AROUND
+                    && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)
+            })
+            .filter_map(|(n, w)| {
+                w.ask
+                    .as_ref()
+                    .filter(|x| x.kind != "native" || x.app.as_ref().is_none_or(|v| *v == self.app))
+                    .map(|x| (n, x))
+            })
             .collect();
         ids.into_iter()
             .find(|t| {
@@ -670,7 +784,14 @@ impl Shared {
     /// Each with its pace at the kind (None: not measured) and whether a job may wait for it to take
     /// one while its pace isn't measured (once an hour: task::EXPLORE_EVERY).
     fn takers(&self, t: &task::Task, now: Instant) -> Vec<serde_json::Value> {
-        let fits = |(n, w): &(&String, &Worker)| !w.bad && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|a| now.duration_since(a) < ASKING) && w.can.contains(&t.kind) && w.mem_mb >= t.mem_mb && !t.failed_on.contains(*n);
+        let fits = |(n, w): &(&String, &Worker)| {
+            !w.bad
+                && now.duration_since(w.seen) < AROUND
+                && w.asked.is_some_and(|a| now.duration_since(a) < ASKING)
+                && w.can.contains(&t.kind)
+                && w.mem_mb >= t.mem_mb
+                && !t.failed_on.contains(*n)
+        };
         self.workers
             .iter()
             .filter(fits)
@@ -684,15 +805,37 @@ impl Shared {
     fn seen(&mut self, worker: &str, what: String, a: Option<&Ask>, now: Instant) {
         if !self.workers.contains_key(worker) {
             let note = a.and_then(|a| a.label.as_deref()).map(|l| l.chars().take(80).collect()).unwrap_or_default();
-            self.history.add(history::Event { worker: Some(worker.to_string()), note, ..history::Event::new("worker") });
+            self.history.add(history::Event {
+                worker: Some(worker.to_string()),
+                note,
+                ..history::Event::new("worker")
+            });
             let holding: BTreeSet<String> = self.leases.all(now).iter().map(|l| l.worker.clone()).collect();
             self.workers.retain(|n, w| now.duration_since(w.seen) < Duration::from_secs(86400) || holding.contains(n));
         }
-        let w = self.workers.entry(worker.to_string()).or_insert_with(|| Worker { kind: String::new(), label: worker.to_string(), can: Vec::new(), mem_mb: 0, cores: 0, app: None, visible: None, cap: None, ask: None, seen: now, asked: None, what: String::new(), done: 0, failed: 0, checked: 0, bad: false });
+        let w = self.workers.entry(worker.to_string()).or_insert_with(|| Worker {
+            kind: String::new(),
+            label: worker.to_string(),
+            can: Vec::new(),
+            mem_mb: 0,
+            cores: 0,
+            app: None,
+            visible: None,
+            cap: None,
+            ask: None,
+            seen: now,
+            asked: None,
+            what: String::new(),
+            done: 0,
+            failed: 0,
+            checked: 0,
+            bad: false,
+        });
         w.seen = now;
         w.what = what.chars().take(WHAT_MAX).collect();
         if let Some(a) = a {
-            (w.kind, w.can, w.mem_mb, w.cores, w.app, w.visible) = (a.kind.clone(), a.can.clone(), a.mem_mb, a.cores, a.app.clone(), a.visible);
+            (w.kind, w.can, w.mem_mb, w.cores, w.app, w.visible) =
+                (a.kind.clone(), a.can.clone(), a.mem_mb, a.cores, a.app.clone(), a.visible);
             w.cap = a.cap.clone();
             w.ask = Some(a.clone());
             w.asked = Some(now);
@@ -744,7 +887,12 @@ impl Drop for Coordinator {
 /// The data servers whose files a task may read through the coordinator (`/work/net/…/web/…`): the
 /// elevations' (crate::dem; FABDEM is read from the store, never fetched) and land cover's
 /// (crate::landcover). Nothing else is fetched for a worker.
-pub const WEB_HOSTS: [&str; 4] = ["cyberjapandata.gsi.go.jp", "canelevation-dem.s3.ca-central-1.amazonaws.com", "prd-tnm.s3.amazonaws.com", "esa-worldcover.s3.eu-central-1.amazonaws.com"];
+pub const WEB_HOSTS: [&str; 4] = [
+    "cyberjapandata.gsi.go.jp",
+    "canelevation-dem.s3.ca-central-1.amazonaws.com",
+    "prd-tnm.s3.amazonaws.com",
+    "esa-worldcover.s3.eu-central-1.amazonaws.com",
+];
 
 /// What of the NAS a task may read through the coordinator (`/work/net/…/nas/…`): the sources the
 /// steps read (canopy squares, FABDEM, the tree cover's rasters, raw terrain).
@@ -975,7 +1123,13 @@ impl Coordinator {
     }
 
     #[cfg(target_os = "wasi")]
-    pub fn start_on(_dir: &Path, _wasm: Option<PathBuf>, _listener: std::net::TcpListener, _me: &str, _app: &str) -> Result<Coordinator> {
+    pub fn start_on(
+        _dir: &Path,
+        _wasm: Option<PathBuf>,
+        _listener: std::net::TcpListener,
+        _me: &str,
+        _app: &str,
+    ) -> Result<Coordinator> {
         anyhow::bail!("no coordinator in WebAssembly")
     }
 
@@ -984,14 +1138,22 @@ impl Coordinator {
         // (Listening first: a port in use writes nothing of its state. A coordinator this process
         // stopped has let its port go as its `stop` returned; another process's is no reason to
         // wait, and isn't waited for.)
-        let listener = anyhow::Context::with_context(store::spawn::listen(("0.0.0.0", port)), || format!("listen on port {port}"))?;
+        let listener = anyhow::Context::with_context(store::spawn::listen(("0.0.0.0", port)), || {
+            format!("listen on port {port}")
+        })?;
         Coordinator::start_on(dir, wasm, listener, me, app)
     }
 
     /// `start`, answering on `listener`, already listening (a test's, on a port it held from the
     /// start: no other can take it between).
     #[cfg(not(target_os = "wasi"))]
-    pub fn start_on(dir: &Path, wasm: Option<PathBuf>, listener: std::net::TcpListener, me: &str, app: &str) -> Result<Coordinator> {
+    pub fn start_on(
+        dir: &Path,
+        wasm: Option<PathBuf>,
+        listener: std::net::TcpListener,
+        me: &str,
+        app: &str,
+    ) -> Result<Coordinator> {
         let port = listener.local_addr()?.port();
         std::fs::create_dir_all(dir.join("journal"))?;
         let token = http::token(dir)?;
@@ -1001,15 +1163,32 @@ impl Coordinator {
         for l in leases.drop_where(|l| l.worker == me) {
             eprintln!("coordinator: {}'s lease ended with the agent before this one", l.what());
         }
-        let costs = std::fs::read(dir.join("costs.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let floors = std::fs::read(dir.join("floors.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let disks = std::fs::read(dir.join("disks.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let job_disks = std::fs::read(dir.join("job-disks.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let costs = std::fs::read(dir.join("costs.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let floors = std::fs::read(dir.join("floors.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let disks = std::fs::read(dir.join("disks.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let job_disks = std::fs::read(dir.join("job-disks.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
         // The build's pause, as it was when the agent before this one stopped (`{pause, at}`; an older
         // agent's, the pause alone).
-        let kept: serde_json::Value = std::fs::read(dir.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let kept: serde_json::Value = std::fs::read(dir.join("pause.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
         let (paused, pause_at): (Option<crate::control::Pause>, u64) = match kept.get("at") {
-            Some(at) if kept.get("pause").is_some() => (serde_json::from_value(kept["pause"].clone()).ok().flatten(), at.as_u64().unwrap_or(0)),
+            Some(at) if kept.get("pause").is_some() => {
+                (serde_json::from_value(kept["pause"].clone()).ok().flatten(), at.as_u64().unwrap_or(0))
+            }
             _ => {
                 let p: Option<crate::control::Pause> = serde_json::from_value(kept).ok();
                 let at = p.as_ref().map_or(0, |p| p.at);
@@ -1019,10 +1198,46 @@ impl Coordinator {
         // (No later than a minute from now: an ask's time past that is passed over, `AHEAD_S`.)
         let pause_at = pause_at.min(unix_now() + AHEAD_S);
         let mut history = history::History::load(Some(&dir.join("history.jsonl")));
-        history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
+        history.add(history::Event {
+            worker: Some(me.to_string()),
+            note: format!("app {app}"),
+            ..history::Event::new("agent")
+        });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, needs: Default::default(), needs_rev: 0, app: app.to_string(), paused, pause_at, history, moving: None, min_app: None, pool_member: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, placement: None, map_update: None, last: BTreeMap::new(), brokers: None, own_cap: None, dir: dir.to_path_buf(), clock: store::clock::real() };
+        let shared = Shared {
+            leases,
+            pass: String::new(),
+            offers: Vec::new(),
+            resume: None,
+            done: BTreeMap::new(),
+            failed: BTreeMap::new(),
+            tasks: task::Tasks::new(dir.join("tasks")),
+            workers: BTreeMap::new(),
+            costs,
+            floors,
+            disks,
+            job_disks,
+            needs: Default::default(),
+            needs_rev: 0,
+            app: app.to_string(),
+            paused,
+            pause_at,
+            history,
+            moving: None,
+            min_app: None,
+            pool_member: None,
+            lead_asks: Vec::new(),
+            inputs_asks: Vec::new(),
+            every: None,
+            placement: None,
+            map_update: None,
+            last: BTreeMap::new(),
+            brokers: None,
+            own_cap: None,
+            dir: dir.to_path_buf(),
+            clock: store::clock::real(),
+        };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -1033,9 +1248,31 @@ impl Coordinator {
         let (closed_tx, closed) = std::sync::mpsc::channel();
         let routes: Arc<std::sync::RwLock<bool>> = Default::default();
         let cors: Arc<std::sync::RwLock<Option<BTreeSet<String>>>> = Default::default();
-        let ctx = http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm, root: root.clone(), remote: Default::default(), routes: routes.clone(), cors: cors.clone() };
+        let ctx = http::Ctx {
+            shared: shared.clone(),
+            token: token.clone(),
+            job_token: job_token.clone(),
+            journal: dir.join("journal"),
+            wasm,
+            root: root.clone(),
+            remote: Default::default(),
+            routes: routes.clone(),
+            cors: cors.clone(),
+        };
         let urls = http::serve(listener, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
-        let c = Coordinator { shared, contact: Contact { urls, token, page: None }, job_token, port, me: me.to_string(), root, stopped, wake, closed: Mutex::new(Some(closed)), routes, cors };
+        let c = Coordinator {
+            shared,
+            contact: Contact { urls, token, page: None },
+            job_token,
+            port,
+            me: me.to_string(),
+            root,
+            stopped,
+            wake,
+            closed: Mutex::new(Some(closed)),
+            routes,
+            cors,
+        };
         c.write_page();
         Ok(c)
     }
@@ -1069,10 +1306,15 @@ impl Coordinator {
     /// screen on), else its first address. (No key in it: a device that's to help asks this Mac.)
     #[cfg(not(target_os = "wasi"))]
     fn write_page(&self) {
-        let Some(base) = http::served_https(self.port).or_else(|| self.contact.urls.first().map(|u| format!("{u}/"))) else { return };
+        let Some(base) = http::served_https(self.port).or_else(|| self.contact.urls.first().map(|u| format!("{u}/")))
+        else {
+            return;
+        };
         let page = self.shared.lock().unwrap().dir.join("page");
         let text = format!("{base}work/\n");
-        if std::fs::read_to_string(&page).ok().as_deref() != Some(text.as_str()) && crate::whole::write(&page, text.as_bytes()).is_ok() {
+        if std::fs::read_to_string(&page).ok().as_deref() != Some(text.as_str())
+            && crate::whole::write(&page, text.as_bytes()).is_ok()
+        {
             if let Ok(f) = std::fs::File::open(&page) {
                 store::sys::set_mode(&f, 0o600).ok();
             }
@@ -1169,9 +1411,15 @@ impl Coordinator {
     /// the plan has now is no longer kept out by hand.
     pub fn offer(&self, pass: &str, offers: Vec<Offer>) {
         let mut s = self.shared.lock().unwrap();
-        let planned: BTreeMap<(&str, &str), &str> = offers.iter().flat_map(|o| o.targets.iter().map(move |(t, k, _)| ((o.step.as_str(), t.as_str()), k.as_str()))).collect();
+        let planned: BTreeMap<(&str, &str), &str> = offers
+            .iter()
+            .flat_map(|o| o.targets.iter().map(move |(t, k, _)| ((o.step.as_str(), t.as_str()), k.as_str())))
+            .collect();
         let done = std::mem::take(&mut s.done);
-        s.done = done.into_iter().filter(|((st, t), k)| planned.get(&(st.as_str(), t.as_str())) == Some(&k.as_str())).collect();
+        s.done = done
+            .into_iter()
+            .filter(|((st, t), k)| planned.get(&(st.as_str(), t.as_str())) == Some(&k.as_str()))
+            .collect();
         s.pass = pass.to_string();
         s.offers = offers.into_iter().filter(|o| !o.targets.is_empty()).collect();
         let steps: BTreeSet<String> = s.offers.iter().map(|o| o.step.clone()).collect();
@@ -1197,7 +1445,11 @@ impl Coordinator {
         // (A capacity is refreshed only by an ask: a busy member's, older than `CAP_FRESH_S`, left out.)
         let fresh = |c: &Capacity| unix_now().saturating_sub(c.at) < CAP_FRESH_S;
         let own = s.own_cap.clone().filter(fresh).map(|c| (self.me.clone(), c));
-        let others = s.workers.iter().filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND).filter_map(|(n, w)| Some((n.clone(), w.cap.clone().filter(fresh)?)));
+        let others = s
+            .workers
+            .iter()
+            .filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND)
+            .filter_map(|(n, w)| Some((n.clone(), w.cap.clone().filter(fresh)?)));
         own.into_iter().chain(others).collect()
     }
 
@@ -1267,14 +1519,28 @@ impl Coordinator {
     pub fn members_asking(&self, step: &str) -> usize {
         let s = self.shared.lock().unwrap();
         let now = s.now();
-        s.workers.iter().filter(|(n, w)| **n != self.me && !w.bad && w.kind == "native" && w.asked.is_some_and(|at| now.duration_since(at) < ASKING) && w.can.iter().any(|c| c == step)).count()
+        s.workers
+            .iter()
+            .filter(|(n, w)| {
+                **n != self.me
+                    && !w.bad
+                    && w.kind == "native"
+                    && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)
+                    && w.can.iter().any(|c| c == step)
+            })
+            .count()
     }
 
     /// The targets of `step` leases of other workers than this Mac hold (its own jobs' aside).
     pub fn held_by_others(&self, step: &str) -> BTreeSet<String> {
         let s = self.shared.lock().unwrap();
         let now = s.now();
-        s.leases.all(now).iter().filter(|l| l.worker != self.me && matches!(&l.work, Work::Job { step: st, .. } if st == step)).flat_map(|l| l.targets().iter().map(|t| t.0.clone())).collect()
+        s.leases
+            .all(now)
+            .iter()
+            .filter(|l| l.worker != self.me && matches!(&l.work, Work::Job { step: st, .. } if st == step))
+            .flat_map(|l| l.targets().iter().map(|t| t.0.clone()))
+            .collect()
     }
 
     /// The leases' generation, this Mac's own jobs' left out (`Leases::generation`).
@@ -1301,7 +1567,14 @@ impl Coordinator {
             if let Work::Task { .. } = l.work {
                 s.tasks.lapsed(l.id);
             }
-            s.history.add(history::Event { worker: Some(l.worker.clone()), lease: Some(l.id), step, targets, note: l.what(), ..history::Event::new("lapse") });
+            s.history.add(history::Event {
+                worker: Some(l.worker.clone()),
+                lease: Some(l.id),
+                step,
+                targets,
+                note: l.what(),
+                ..history::Event::new("lapse")
+            });
         }
         if gone.iter().any(|l| matches!(l.work, Work::Job { .. })) {
             s.save_leases();
@@ -1394,7 +1667,11 @@ impl Coordinator {
     pub fn measured_batch(&self, step: &str, targets: &[String]) -> Option<Measured> {
         let each: Vec<Measured> = targets.iter().map(|t| self.measured(step, t)).collect::<Option<_>>()?;
         let job = self.job_disk(step);
-        Some(Measured { mem_mb: each.iter().map(|m| m.mem_mb).max().unwrap_or(0), disk_mb: each.iter().map(|m| m.disk_mb).sum::<u64>().max(job), own: each.iter().all(|m| m.own) })
+        Some(Measured {
+            mem_mb: each.iter().map(|m| m.mem_mb).max().unwrap_or(0),
+            disk_mb: each.iter().map(|m| m.disk_mb).sum::<u64>().max(job),
+            own: each.iter().all(|m| m.own),
+        })
     }
 
     /// The most disk a job of `step` took over its run (MB; 0: none seen).
@@ -1415,7 +1692,11 @@ impl Coordinator {
     pub fn largest_limit(&self) -> Option<u64> {
         let s = self.shared.lock().unwrap();
         let now = s.now();
-        s.workers.values().filter(|w| now.duration_since(w.seen) < Duration::from_secs(600)).filter_map(|w| w.ask.as_ref().and_then(|a| a.limit_mb)).max()
+        s.workers
+            .values()
+            .filter(|w| now.duration_since(w.seen) < Duration::from_secs(600))
+            .filter_map(|w| w.ask.as_ref().and_then(|a| a.limit_mb))
+            .max()
     }
 
     /// The agent among the workers heard from in the last ten minutes with the largest memory
@@ -1452,7 +1733,10 @@ impl Coordinator {
 
     /// What the forecast reads (crate::agent::forecast): what each target cost, the jobs leased now
     /// (worker, step, targets), the history kept, and the memory each worker spares (MB).
-    pub fn for_forecast(&self) -> (BTreeMap<String, Cost>, Vec<(String, String, Vec<String>, u64)>, Vec<history::Event>, BTreeMap<String, u64>) {
+    pub fn for_forecast(
+        &self,
+    ) -> (BTreeMap<String, Cost>, Vec<(String, String, Vec<String>, u64)>, Vec<history::Event>, BTreeMap<String, u64>)
+    {
         let s = self.shared.lock().unwrap();
         let now = s.now();
         // (Each with how long ago it was granted.)
@@ -1461,7 +1745,12 @@ impl Coordinator {
             .all(now)
             .iter()
             .filter_map(|l| match &l.work {
-                Work::Job { step, targets } => Some((l.worker.clone(), step.clone(), targets.iter().map(|t| t.0.clone()).collect(), now.duration_since(l.granted).as_secs())),
+                Work::Job { step, targets } => Some((
+                    l.worker.clone(),
+                    step.clone(),
+                    targets.iter().map(|t| t.0.clone()).collect(),
+                    now.duration_since(l.granted).as_secs(),
+                )),
                 Work::Task { .. } => None,
             })
             .collect();
@@ -1477,7 +1766,13 @@ impl Coordinator {
         let s = self.shared.lock().unwrap();
         let mb = s.tasks.typical_mb("tail").unwrap_or(0);
         let now = s.now();
-        s.workers.iter().any(|(n, w)| !w.bad && now.saturating_duration_since(w.seen) < AROUND && w.can.iter().any(|c| c == "tail") && w.mem_mb >= mb && s.tasks.pace(n, "tail").is_some_and(task::beats))
+        s.workers.iter().any(|(n, w)| {
+            !w.bad
+                && now.saturating_duration_since(w.seen) < AROUND
+                && w.can.iter().any(|c| c == "tail")
+                && w.mem_mb >= mb
+                && s.tasks.pace(n, "tail").is_some_and(task::beats)
+        })
     }
 
     /// The pool's member this coordinator answers as (`Shared::pool_member`).
@@ -1533,8 +1828,21 @@ impl Coordinator {
     pub fn pool_state(&self) -> PoolState {
         let s = self.shared.lock().unwrap();
         let (now, unix) = (s.now(), unix_now());
-        let failed = s.failed.iter().map(|((w, k), (at, n))| (w.clone(), k.clone(), unix.saturating_sub(now.duration_since(*at).as_secs()), *n)).collect();
-        PoolState { leases: s.leases.snapshot(), costs: s.costs.clone(), floors: s.floors.clone(), disks: s.disks.clone(), job_disks: s.job_disks.clone(), failed, pause: s.paused.clone(), pause_at: s.pause_at }
+        let failed = s
+            .failed
+            .iter()
+            .map(|((w, k), (at, n))| (w.clone(), k.clone(), unix.saturating_sub(now.duration_since(*at).as_secs()), *n))
+            .collect();
+        PoolState {
+            leases: s.leases.snapshot(),
+            costs: s.costs.clone(),
+            floors: s.floors.clone(),
+            disks: s.disks.clone(),
+            job_disks: s.job_disks.clone(),
+            failed,
+            pause: s.paused.clone(),
+            pause_at: s.pause_at,
+        }
     }
 
     /// Takes up `p`, another lead's state (a handover's, or the term before's): its leases over
@@ -1636,7 +1944,11 @@ impl Coordinator {
         s.done.clear();
         let gone = s.leases.drop_where(|l| matches!(l.work, Work::Job { .. }));
         if !gone.is_empty() {
-            eprintln!("coordinator: a broker now: {} job lease{} left to the lead", gone.len(), if gone.len() == 1 { "" } else { "s" });
+            eprintln!(
+                "coordinator: a broker now: {} job lease{} left to the lead",
+                gone.len(),
+                if gone.len() == 1 { "" } else { "s" }
+            );
         }
         s.save_leases();
     }
@@ -1645,7 +1957,11 @@ impl Coordinator {
     pub fn workers(&self) -> Vec<(String, Worker)> {
         let s = self.shared.lock().unwrap();
         let now = s.now();
-        s.workers.iter().filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND).map(|(n, w)| (n.clone(), w.clone())).collect()
+        s.workers
+            .iter()
+            .filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND)
+            .map(|(n, w)| (n.clone(), w.clone()))
+            .collect()
     }
 }
 
@@ -1700,7 +2016,9 @@ fn app_ok(theirs: Option<&str>, ours: &str) -> bool {
 fn app_newer(a: &str, b: &str) -> bool {
     // (By bytes: a version is a worker's to say, and slicing a string mid-character would panic with
     // the coordinator's lock held.)
-    let published = |v: &[u8]| v.len() > 14 && v[8] == b'-' && v[13] == b'-' && v[..8].iter().chain(&v[9..13]).all(u8::is_ascii_digit);
+    let published = |v: &[u8]| {
+        v.len() > 14 && v[8] == b'-' && v[13] == b'-' && v[..8].iter().chain(&v[9..13]).all(u8::is_ascii_digit)
+    };
     published(a.as_bytes()) && published(b.as_bytes()) && a.as_bytes()[..13] > b.as_bytes()[..13]
 }
 
@@ -1709,12 +2027,18 @@ fn app_newer(a: &str, b: &str) -> bool {
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn app_when(v: &str) -> String {
     let p: Vec<&str> = v.split('-').collect();
-    let month = |m: &str| ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].get(m.parse::<usize>().ok()?.checked_sub(1)?).copied();
+    let month = |m: &str| {
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+            .get(m.parse::<usize>().ok()?.checked_sub(1)?)
+            .copied()
+    };
     match p.as_slice() {
-        [d, t, _] if d.len() == 8 && t.len() == 4 && d.bytes().chain(t.bytes()).all(|b| b.is_ascii_digit()) => match month(&d[4..6]) {
-            Some(m) => format!("{} {m} {}:{} UTC", d[6..8].trim_start_matches('0'), &t[..2], &t[2..]),
-            None => v.to_string(),
-        },
+        [d, t, _] if d.len() == 8 && t.len() == 4 && d.bytes().chain(t.bytes()).all(|b| b.is_ascii_digit()) => {
+            match month(&d[4..6]) {
+                Some(m) => format!("{} {m} {}:{} UTC", d[6..8].trim_start_matches('0'), &t[..2], &t[2..]),
+                None => v.to_string(),
+            }
+        }
         _ => v.to_string(),
     }
 }
@@ -1747,7 +2071,10 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
 fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result<()> {
     // (Its lease's targets, or some of them: a job paused at a safe point hands off what it did.)
     match &h.done {
-        Some((s, ts)) => anyhow::ensure!(s == step && !ts.is_empty() && ts.iter().all(|t| targets.contains(t)), "its done record isn't its lease's"),
+        Some((s, ts)) => anyhow::ensure!(
+            s == step && !ts.is_empty() && ts.iter().all(|t| targets.contains(t)),
+            "its done record isn't its lease's"
+        ),
         None => anyhow::bail!("no done record"),
     }
     anyhow::ensure!(crate::agent::steps::SHARED.contains(&step), "a hand-off of {step} isn't work a worker does");
@@ -1760,7 +2087,10 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
     for (l, v) in &h.changes {
         anyhow::ensure!(did.iter().any(|(t, _)| saves(step, t, l)), "{l} isn't one of the files of the targets it did");
         if let Some(c) = v {
-            anyhow::ensure!(store::naming::parse_content_name(c).is_some_and(|n| n.logical == l), "{c} isn't a content name of {l}");
+            anyhow::ensure!(
+                store::naming::parse_content_name(c).is_some_and(|n| n.logical == l),
+                "{c} isn't a content name of {l}"
+            );
         }
     }
     let saved: BTreeSet<&String> = h.changes.values().flatten().collect();
@@ -1780,8 +2110,13 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
 /// pass as its target (crate::agent::resume).
 fn check_pooled(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result<()> {
     match &h.done {
-        Some((s, ts)) => anyhow::ensure!(s == step && !ts.is_empty() && ts.iter().all(|t| targets.contains(t)), "its done record isn't its lease's"),
-        None => anyhow::ensure!(targets.is_empty() || crate::agent::resume::RESUMABLE.contains(&step), "no done record"),
+        Some((s, ts)) => anyhow::ensure!(
+            s == step && !ts.is_empty() && ts.iter().all(|t| targets.contains(t)),
+            "its done record isn't its lease's"
+        ),
+        None => {
+            anyhow::ensure!(targets.is_empty() || crate::agent::resume::RESUMABLE.contains(&step), "no done record")
+        }
     }
     Ok(())
 }
@@ -1805,7 +2140,11 @@ fn floors_cleared(s: &mut Shared, clear: bool, step: Option<&str>, target: Optio
             s.save_costs();
         }
         if s.floors.len() != n {
-            eprintln!("coordinator: {} floor{} cleared", n - s.floors.len(), if n - s.floors.len() == 1 { "" } else { "s" });
+            eprintln!(
+                "coordinator: {} floor{} cleared",
+                n - s.floors.len(),
+                if n - s.floors.len() == 1 { "" } else { "s" }
+            );
             s.save_costs();
         }
     }
@@ -1816,7 +2155,10 @@ fn floors_cleared(s: &mut Shared, clear: bool, step: Option<&str>, target: Optio
 /// `pause.json` so the next agent starts with it.
 fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
     if at < s.pause_at {
-        eprintln!("coordinator: an ask to {} from before the last change passed over", if pause.is_some() { "pause" } else { "go on" });
+        eprintln!(
+            "coordinator: an ask to {} from before the last change passed over",
+            if pause.is_some() { "pause" } else { "go on" }
+        );
         return;
     }
     s.pause_at = at;
@@ -1827,12 +2169,21 @@ fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
     if s.paused != pause {
         eprintln!("coordinator: {}", pause.as_ref().map_or("the build goes on".to_string(), |p| p.why()));
         let e = match &pause {
-            Some(p) => history::Event { note: format!("{} ({})", p.by, if p.mode == crate::control::Mode::Freeze { "at once" } else { "at safe points" }), ..history::Event::new("pause") },
+            Some(p) => history::Event {
+                note: format!(
+                    "{} ({})",
+                    p.by,
+                    if p.mode == crate::control::Mode::Freeze { "at once" } else { "at safe points" }
+                ),
+                ..history::Event::new("pause")
+            },
             None => history::Event::new("resume"),
         };
         s.history.add(e);
     }
-    let kept = serde_json::to_vec(&serde_json::json!({ "pause": pause, "at": at })).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&s.dir.join("pause.json"), &b));
+    let kept = serde_json::to_vec(&serde_json::json!({ "pause": pause, "at": at }))
+        .map_err(anyhow::Error::from)
+        .and_then(|b| crate::whole::write(&s.dir.join("pause.json"), &b));
     if let Err(e) = kept {
         eprintln!("coordinator: keeping the pause: {e:#} (it holds until this agent stops)");
     }
@@ -1844,12 +2195,21 @@ fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
 /// go two days later, their tiles fetched again.
 #[cfg(not(target_os = "wasi"))]
 fn raw_again(journal: &Path, h: Option<&Handoff>) {
-    let raw: Vec<(String, crate::rawpack::Pack)> = h.into_iter().flat_map(|h| h.raw.iter()).filter(|(a, p)| crate::rawpack::is_area(a) && crate::rawpack::named_for(&p.name, a)).cloned().collect();
+    let raw: Vec<(String, crate::rawpack::Pack)> = h
+        .into_iter()
+        .flat_map(|h| h.raw.iter())
+        .filter(|(a, p)| crate::rawpack::is_area(a) && crate::rawpack::named_for(&p.name, a))
+        .cloned()
+        .collect();
     if raw.is_empty() {
         return;
     }
-    if let Err(e) = crate::handoff::write(&journal.join(crate::handoff::RAW_AGAIN), &Handoff { raw, ..Default::default() }) {
-        eprintln!("coordinator: a hand-off's raw tiles' archives not kept for naming ({e:#}): they go as unnamed ones do");
+    if let Err(e) =
+        crate::handoff::write(&journal.join(crate::handoff::RAW_AGAIN), &Handoff { raw, ..Default::default() })
+    {
+        eprintln!(
+            "coordinator: a hand-off's raw tiles' archives not kept for naming ({e:#}): they go as unnamed ones do"
+        );
     }
 }
 
@@ -1881,20 +2241,31 @@ struct Caller {
 #[cfg(not(target_os = "wasi"))]
 fn page_name(n: &str) -> String {
     let n = plain(n, 100);
-    if n.starts_with("page ") { n } else { format!("page {n}") }
+    if n.starts_with("page ") {
+        n
+    } else {
+        format!("page {n}")
+    }
 }
 
 /// What a page says of itself, as shown: no control or direction characters (a name that reads
 /// backwards), `max` characters at most, trimmed.
 #[cfg(not(target_os = "wasi"))]
 fn plain(s: &str, max: usize) -> String {
-    let bidi = |c: char| matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}');
+    let bidi =
+        |c: char| matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{feff}');
     s.chars().filter(|&c| !c.is_control() && !bidi(c)).take(max).collect::<String>().trim().to_string()
 }
 
 /// What a request asks of the shared state (JSON in, JSON out): (status, body).
 #[cfg(not(target_os = "wasi"))]
-fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller: &Caller) -> Result<(u16, serde_json::Value)> {
+fn route(
+    path: &str,
+    body: &[u8],
+    shared: &Mutex<Shared>,
+    journal: &Path,
+    caller: &Caller,
+) -> Result<(u16, serde_json::Value)> {
     let local = caller.local;
     let now = shared.lock().unwrap().now();
     // (While the build is paused, every lease is held, whatever went quiet meanwhile.)
@@ -1907,13 +2278,15 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
     let ok = serde_json::json!({ "ok": true });
     // (A page works under a page's name, whatever it says: never an agent's, `page_name`.)
     let own_name = |n: &str| caller.page.then(|| page_name(n));
-    let not_mine = || -> Result<(u16, serde_json::Value)> { Ok((403, serde_json::json!({ "error": "a page helps with a page's tasks alone" }))) };
+    let not_mine = || -> Result<(u16, serde_json::Value)> {
+        Ok((403, serde_json::json!({ "error": "a page helps with a page's tasks alone" })))
+    };
     match path {
         "/work/ask" => {
             let mut a: Ask = serde_json::from_slice(body)?;
             anyhow::ensure!(!a.worker.is_empty() && a.worker.len() <= 120, "a worker needs a name");
             // (A page: a page's tasks, the tails, the 3D buildings' areas and tree cover's rows, under a
-                // page's name.)
+            // page's name.)
             if let Some(n) = own_name(&a.worker) {
                 if a.kind != "web" || a.can.iter().any(|c| !PAGE_TASKS.contains(&c.as_str())) {
                     return not_mine();
@@ -1924,18 +2297,32 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let mut s = shared.lock().unwrap();
             // (Pages at once a day at most, by name: a page that names itself anew at every ask
             // can't fill the history or the workers.)
-            if caller.page && !s.workers.contains_key(&a.worker) && s.workers.keys().filter(|n| n.starts_with("page ")).count() >= PAGES_MAX {
-                return Ok((429, serde_json::json!({ "error": "too many pages have helped today: ask again tomorrow, or as one of them" })));
+            if caller.page
+                && !s.workers.contains_key(&a.worker)
+                && s.workers.keys().filter(|n| n.starts_with("page ")).count() >= PAGES_MAX
+            {
+                return Ok((
+                    429,
+                    serde_json::json!({ "error": "too many pages have helped today: ask again tomorrow, or as one of them" }),
+                ));
             }
             // The pool's lead moving or not fresh: nothing now (docs/pool.md §6.4).
             if let Some(why) = s.moving.clone() {
                 s.seen(&a.worker, format!("waiting: {why}"), None, now);
-                return Ok(if a.kind == "native" { (409, serde_json::json!({ "error": format!("the lead is moving ({why}); ask again in a moment") })) } else { (204, serde_json::Value::Null) });
+                return Ok(if a.kind == "native" {
+                    (409, serde_json::json!({ "error": format!("the lead is moving ({why}); ask again in a moment") }))
+                } else {
+                    (204, serde_json::Value::Null)
+                });
             }
             // The build paused: nothing (an agent told why, and the pause; a page, nothing now).
             if let Some(p) = s.paused.clone() {
                 s.seen(&a.worker, format!("waiting: {}", p.why()), None, now);
-                return Ok(if a.kind == "native" { (409, serde_json::json!({ "error": p.why(), "pause": p })) } else { (204, serde_json::Value::Null) });
+                return Ok(if a.kind == "native" {
+                    (409, serde_json::json!({ "error": p.why(), "pause": p }))
+                } else {
+                    (204, serde_json::Value::Null)
+                });
             }
             // An agent on another app than this one's waits until the two run the same (its updater
             // run, or this Mac's: an agent switches between jobs, a lead re-asserting on its new app;
@@ -1947,7 +2334,10 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 let why = if a.app.as_deref().is_some_and(|t| app_newer(t, &s.app)) {
                     format!("on the app of {theirs}, the lead on {}'s: it builds once the lead runs the same (its updater, or the lead handed to a Mac on the newer)", app_when(&s.app))
                 } else {
-                    format!("on the app of {theirs}, the lead on {}'s: it builds once it runs that one", app_when(&s.app))
+                    format!(
+                        "on the app of {theirs}, the lead on {}'s: it builds once it runs that one",
+                        app_when(&s.app)
+                    )
                 };
                 s.seen(&a.worker, why.clone(), None, now);
                 return Ok((409, serde_json::json!({ "error": why })));
@@ -1959,7 +2349,11 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 if !crate::pool::term::app_at_least(&theirs, &min) {
                     let why = format!("on the app of {}, older than the one the readers' switch was recorded on ({}): it builds once it runs that one or newer", if theirs.is_empty() { "an older one".to_string() } else { app_when(&theirs) }, app_when(&min));
                     s.seen(&a.worker, why.clone(), None, now);
-                    return Ok(if a.kind == "native" { (409, serde_json::json!({ "error": why })) } else { (204, serde_json::Value::Null) });
+                    return Ok(if a.kind == "native" {
+                        (409, serde_json::json!({ "error": why }))
+                    } else {
+                        (204, serde_json::Value::Null)
+                    });
                 }
             }
             s.seen(&a.worker, format!("asked for {}", a.can.join(" or ")), Some(&a), now);
@@ -1976,19 +2370,39 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             if let Some((_, o)) = s.resume.clone().filter(|(w, o)| *w == a.worker && a.can.contains(&o.step)) {
                 let held = s.leases.held(&o.step, now);
                 if !o.targets.iter().any(|(t, _, _)| held.contains(t)) {
-                    let pick: Vec<(String, String)> = o.targets.iter().map(|(t, k, _)| (t.clone(), k.clone())).collect();
-                    let lease = s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
+                    let pick: Vec<(String, String)> =
+                        o.targets.iter().map(|(t, k, _)| (t.clone(), k.clone())).collect();
+                    let lease =
+                        s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
                     s.save_leases();
-                    eprintln!("coordinator: {} took {} {} (its progress is on its Mac)", a.worker, o.step, pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "));
-                    s.history.add(history::Event { worker: Some(a.worker.clone()), lease: Some(lease), step: Some(o.step.clone()), targets: pick.iter().map(|t| t.0.clone()).collect(), ..history::Event::new("lease") });
+                    eprintln!(
+                        "coordinator: {} took {} {} (its progress is on its Mac)",
+                        a.worker,
+                        o.step,
+                        pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" ")
+                    );
+                    s.history.add(history::Event {
+                        worker: Some(a.worker.clone()),
+                        lease: Some(lease),
+                        step: Some(o.step.clone()),
+                        targets: pick.iter().map(|t| t.0.clone()).collect(),
+                        ..history::Event::new("lease")
+                    });
                     let pass = pick.first().map(|t| t.0.clone()).unwrap_or_default();
-                    let g = Grant { lease, term: s.leases.term, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass }, as_of: None };
+                    let g = Grant {
+                        lease,
+                        term: s.leases.term,
+                        ttl_s: TTL.as_secs(),
+                        work: Granted::Job { step: o.step.clone(), targets: pick, pass },
+                        as_of: None,
+                    };
                     return Ok((200, serde_json::to_value(g)?));
                 }
             }
             if !s.pass.is_empty() {
                 let offers = s.offers.clone();
-                let passes: &[bool] = if a.more_mb.is_some() && a.max_secs.is_some() { &[false, true] } else { &[false] };
+                let passes: &[bool] =
+                    if a.more_mb.is_some() && a.max_secs.is_some() { &[false, true] } else { &[false] };
                 // (Every step to every member: by the measures alone, its owner away or not.)
                 let every = s.every.is_some();
                 let passes = if every { &[false][..] } else { passes };
@@ -2005,7 +2419,10 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                             continue;
                         }
                         // (A map update's step only with the map update's units to grant it with.)
-                        if every && s.map_update.is_none() && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str()) {
+                        if every
+                            && s.map_update.is_none()
+                            && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str())
+                        {
                             continue;
                         }
                         let pick = if every { s.pick_every(o, &a, now) } else { s.pick(o, &a, now, away) };
@@ -2015,12 +2432,34 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                         if let Some(l) = pick.last() {
                             s.last.insert((a.worker.clone(), o.step.clone()), l.0.clone());
                         }
-                        let lease = s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
+                        let lease =
+                            s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
                         s.save_leases();
-                        eprintln!("coordinator: {} took {} {}", a.worker, o.step, pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "));
-                        s.history.add(history::Event { worker: Some(a.worker.clone()), lease: Some(lease), step: Some(o.step.clone()), targets: pick.iter().map(|t| t.0.clone()).collect(), ..history::Event::new("lease") });
-                        let as_of = if every && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str()) { s.map_update.clone() } else { None };
-                        let g = Grant { lease, term: s.leases.term, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass: s.pass.clone() }, as_of };
+                        eprintln!(
+                            "coordinator: {} took {} {}",
+                            a.worker,
+                            o.step,
+                            pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" ")
+                        );
+                        s.history.add(history::Event {
+                            worker: Some(a.worker.clone()),
+                            lease: Some(lease),
+                            step: Some(o.step.clone()),
+                            targets: pick.iter().map(|t| t.0.clone()).collect(),
+                            ..history::Event::new("lease")
+                        });
+                        let as_of = if every && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str()) {
+                            s.map_update.clone()
+                        } else {
+                            None
+                        };
+                        let g = Grant {
+                            lease,
+                            term: s.leases.term,
+                            ttl_s: TTL.as_secs(),
+                            work: Granted::Job { step: o.step.clone(), targets: pick, pass: s.pass.clone() },
+                            as_of,
+                        };
                         return Ok((200, serde_json::to_value(g)?));
                     }
                 }
@@ -2036,7 +2475,13 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 let t = s.tasks.by_id.get_mut(&id).unwrap();
                 t.state = task::State::Leased { lease, worker: a.worker.clone() };
                 t.leased_at = Some(now);
-                let g = Grant { lease, term: 0, ttl_s: TTL.as_secs(), work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb }, as_of: None };
+                let g = Grant {
+                    lease,
+                    term: 0,
+                    ttl_s: TTL.as_secs(),
+                    work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb },
+                    as_of: None,
+                };
                 eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
                 return Ok((200, serde_json::to_value(g)?));
             }
@@ -2049,7 +2494,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let s = shared.lock().unwrap();
             Ok(match &s.brokers {
                 Some(b) => (200, brokers::answer(b, &a)),
-                None => (404, serde_json::json!({ "error": "tasks aren't brokered by every member (state/pool/brokers)" })),
+                None => {
+                    (404, serde_json::json!({ "error": "tasks aren't brokered by every member (state/pool/brokers)" }))
+                }
             })
         }
         "/work/beat" => {
@@ -2097,7 +2544,10 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             // (`{"to": <member>}`), or have this Mac take it over (`{"take": true}`), unforced: the
             // owner's force and downgrade come from the Mac's own menu or `scenic lead` alone.
             let b: serde_json::Value = serde_json::from_slice(body)?;
-            anyhow::ensure!(b.get("force").is_none() && b.get("downgrade").is_none(), "forcing a takeover is for the Mac's own menu or `scenic lead take` alone");
+            anyhow::ensure!(
+                b.get("force").is_none() && b.get("downgrade").is_none(),
+                "forcing a takeover is for the Mac's own menu or `scenic lead take` alone"
+            );
             let ask = match (b["to"].as_str(), b["take"].as_bool()) {
                 (Some(to), None) if !to.is_empty() => crate::control::LeadAsk::Give { to: plain(to, 100) },
                 (None, Some(true)) => crate::control::LeadAsk::Take { force: false, downgrade: false },
@@ -2112,8 +2562,18 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             // `{"unit": <unit>, "accept": [<finding id>…]}` or `{"unit": <unit>, "all": true}`,
             // written by this Mac's agent (warnings alone: errors have no Accept).
             let b: serde_json::Value = serde_json::from_slice(body)?;
-            let unit = b["unit"].as_str().filter(|u| u.len() <= 64 && crate::inputs::valid_unit(u)).ok_or_else(|| anyhow::anyhow!("{{\"unit\": <unit>, \"accept\": [<id>…] | \"all\": true}}"))?;
-            let accept: Vec<String> = b["accept"].as_array().map(|a| a.iter().filter_map(|i| i.as_str().filter(|i| crate::inputs::valid_id(i)).map(str::to_string)).collect()).unwrap_or_default();
+            let unit = b["unit"]
+                .as_str()
+                .filter(|u| u.len() <= 64 && crate::inputs::valid_unit(u))
+                .ok_or_else(|| anyhow::anyhow!("{{\"unit\": <unit>, \"accept\": [<id>…] | \"all\": true}}"))?;
+            let accept: Vec<String> = b["accept"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|i| i.as_str().filter(|i| crate::inputs::valid_id(i)).map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
             let all = b["all"].as_bool() == Some(true);
             // (And a member's agent's word that the drop boxes or acceptances changed, `check`, so
             // they're listed now; or its owner's ask to forget a unit's records, `forget`: not a
@@ -2122,8 +2582,22 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let full = check && b["full"].as_bool() == Some(true);
             let forget = b["forget"].as_bool() == Some(true) && !caller.page;
             anyhow::ensure!(all || !accept.is_empty() || check || forget, "nothing to accept");
-            let by = if caller.page { format!("the build page ({})", caller.from) } else { format!("a member ({})", caller.from) };
-            shared.lock().unwrap().inputs_asks.push(crate::inputs::Ask { unit: unit.to_string(), accept, all, check, full, forget, by, at: unix_now(), ..Default::default() });
+            let by = if caller.page {
+                format!("the build page ({})", caller.from)
+            } else {
+                format!("a member ({})", caller.from)
+            };
+            shared.lock().unwrap().inputs_asks.push(crate::inputs::Ask {
+                unit: unit.to_string(),
+                accept,
+                all,
+                check,
+                full,
+                forget,
+                by,
+                at: unix_now(),
+                ..Default::default()
+            });
             Ok((200, ok))
         }
         "/work/done" => {
@@ -2157,10 +2631,15 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     let pooled = d.journaled && s.leases.term > 0;
                     // Refused (422): the worker gives the lease back as failed, and drops the work
                     // (but for its raw tiles' archives, as above).
-                    if let Err(e) = if pooled { check_pooled(&h, step, targets) } else { check_handoff(&h, step, targets) } {
+                    if let Err(e) =
+                        if pooled { check_pooled(&h, step, targets) } else { check_handoff(&h, step, targets) }
+                    {
                         // (From a worker on a newer app than this Mac's, whose step may save what
                         // this one's doesn't know of: its lease ends, not held against its targets.)
-                        if s.workers.get(&d.worker).is_some_and(|w| !s.app.is_empty() && w.app.as_deref() != Some(s.app.as_str())) {
+                        if s.workers
+                            .get(&d.worker)
+                            .is_some_and(|w| !s.app.is_empty() && w.app.as_deref() != Some(s.app.as_str()))
+                        {
                             s.leases.finish(d.lease, &d.worker, now);
                             s.save_leases();
                         }
@@ -2189,7 +2668,8 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     // while this coordinator's pool is off (switched off with the member's job
                     // under way): journaled, to be merged as any hand-off is.)
                     drop(s);
-                    let wrote = if pooled { Ok(()) } else { crate::handoff::write(&journal.join(folder(&d.worker)), &h) };
+                    let wrote =
+                        if pooled { Ok(()) } else { crate::handoff::write(&journal.join(folder(&d.worker)), &h) };
                     if let Err(e) = wrote {
                         let mut s = shared.lock().unwrap();
                         for (t, _) in &targets {
@@ -2200,17 +2680,39 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     }
                     s = shared.lock().unwrap();
                     let by = d.worker.clone();
-                    s.add_costs(d.costs.into_iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0))), &by);
+                    s.add_costs(
+                        d.costs.into_iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0))),
+                        &by,
+                    );
                     // (What the lease's targets took at least, those it didn't finish too.)
-                    let floors: Vec<(String, Floor)> = d.floors.into_iter().filter(|(u, _)| lease_targets.iter().any(|t| *u == cost_key(step, &t.0))).collect();
+                    let floors: Vec<(String, Floor)> = d
+                        .floors
+                        .into_iter()
+                        .filter(|(u, _)| lease_targets.iter().any(|t| *u == cost_key(step, &t.0)))
+                        .collect();
                     s.add_floors(&floors);
-                    let disks: Vec<(String, u64)> = d.disks.into_iter().filter(|(u, _)| lease_targets.iter().any(|t| *u == cost_key(step, &t.0)) || (lease_targets.is_empty() && crate::agent::memguard::step_of_key(u) == step)).collect();
+                    let disks: Vec<(String, u64)> = d
+                        .disks
+                        .into_iter()
+                        .filter(|(u, _)| {
+                            lease_targets.iter().any(|t| *u == cost_key(step, &t.0))
+                                || (lease_targets.is_empty() && crate::agent::memguard::step_of_key(u) == step)
+                        })
+                        .collect();
                     s.add_disks(&disks);
                     s.add_job_disk(step, d.job_disk_mb);
                     s.save_leases();
                     s.save_costs();
                     let secs = now.duration_since(l.granted).as_secs_f64();
-                    s.history.add(history::Event { worker: Some(d.worker.clone()), lease: Some(d.lease), step: Some(step.clone()), targets: targets.iter().map(|t| t.0.clone()).collect(), secs: Some(secs.round()), ok: Some(!d.failed), ..history::Event::new("done") });
+                    s.history.add(history::Event {
+                        worker: Some(d.worker.clone()),
+                        lease: Some(d.lease),
+                        step: Some(step.clone()),
+                        targets: targets.iter().map(|t| t.0.clone()).collect(),
+                        secs: Some(secs.round()),
+                        ok: Some(!d.failed),
+                        ..history::Event::new("done")
+                    });
                 }
                 Work::Task { id } => {
                     let kind = s.tasks.kind_of(*id);
@@ -2223,16 +2725,36 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     if let Some((here_s, wall_s)) = measured {
                         s.tasks.note_pace(&d.worker, &kind, wall_s, here_s);
                         s.tasks.close(*id);
-                        eprintln!("coordinator: {} took {wall_s:.0} s for a {kind} this Mac took {here_s:.0} s for", d.worker);
+                        eprintln!(
+                            "coordinator: {} took {wall_s:.0} s for a {kind} this Mac took {here_s:.0} s for",
+                            d.worker
+                        );
                     }
                     // What its unit's task takes, for the next time it's offered.
                     if let Some(u) = &unit {
-                        s.costs.insert(task_cost_key(&kind, u), Cost { peak_mb: d.peak_mb, secs: d.secs as u64, worker: Some(d.worker.clone()), v: 0, ..Default::default() });
+                        s.costs.insert(
+                            task_cost_key(&kind, u),
+                            Cost {
+                                peak_mb: d.peak_mb,
+                                secs: d.secs as u64,
+                                worker: Some(d.worker.clone()),
+                                v: 0,
+                                ..Default::default()
+                            },
+                        );
                         s.needs_rev += 1;
                         s.save_costs();
                     }
                     s.leases.finish(d.lease, &d.worker, now);
-                    s.history.add(history::Event { worker: Some(d.worker.clone()), lease: Some(d.lease), step: Some(kind), targets: unit.into_iter().collect(), secs: Some(d.secs.round()), ok: Some(true), ..history::Event::new("task") });
+                    s.history.add(history::Event {
+                        worker: Some(d.worker.clone()),
+                        lease: Some(d.lease),
+                        step: Some(kind),
+                        targets: unit.into_iter().collect(),
+                        secs: Some(d.secs.round()),
+                        ok: Some(true),
+                        ..history::Event::new("task")
+                    });
                 }
             }
             s.workers.get_mut(&d.worker).map(|w| w.done += 1);
@@ -2247,7 +2769,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             }
             f.error = f.error.chars().take(WHY_MAX).collect();
             let mut s = shared.lock().unwrap();
-            let Some(l) = s.leases.finish(f.lease, &f.worker, now) else { return Ok((410, serde_json::json!({ "error": "that lease is gone" }))) };
+            let Some(l) = s.leases.finish(f.lease, &f.worker, now) else {
+                return Ok((410, serde_json::json!({ "error": "that lease is gone" })));
+            };
             let kind = match &l.work {
                 Work::Task { id } => s.tasks.kind_of(*id),
                 Work::Job { .. } => String::new(),
@@ -2261,17 +2785,35 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                         }
                     }
                     // (What its targets took at least: a job stopped past its Mac's limit.)
-                    let floors: Vec<(String, Floor)> = f.floors.iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0))).cloned().collect();
-                    let disks: Vec<(String, u64)> = f.disks.iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0)) || (targets.is_empty() && crate::agent::memguard::step_of_key(u) == step)).cloned().collect();
+                    let floors: Vec<(String, Floor)> = f
+                        .floors
+                        .iter()
+                        .filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0)))
+                        .cloned()
+                        .collect();
+                    let disks: Vec<(String, u64)> = f
+                        .disks
+                        .iter()
+                        .filter(|(u, _)| {
+                            targets.iter().any(|t| *u == cost_key(step, &t.0))
+                                || (targets.is_empty() && crate::agent::memguard::step_of_key(u) == step)
+                        })
+                        .cloned()
+                        .collect();
                     if s.add_floors(&floors) | s.add_disks(&disks) | s.add_job_disk(step, f.job_disk_mb) {
                         s.save_costs();
                     }
                     s.save_leases();
                 }
                 Work::Task { .. } => {
-                    if let (Some(id), Some(peak)) = (s.tasks.fail_how(f.lease, &f.worker, &f.error, f.oom_mb, f.interrupted), f.oom_mb.filter(|_| !f.interrupted)) {
+                    if let (Some(id), Some(peak)) = (
+                        s.tasks.fail_how(f.lease, &f.worker, &f.error, f.oom_mb, f.interrupted),
+                        f.oom_mb.filter(|_| !f.interrupted),
+                    ) {
                         // Out of memory at `peak`: it takes more than that, next time too.
-                        if let Some(u) = s.tasks.by_id.get(&id).and_then(|t| t.spec["unit"].as_str().map(str::to_string)) {
+                        if let Some(u) =
+                            s.tasks.by_id.get(&id).and_then(|t| t.spec["unit"].as_str().map(str::to_string))
+                        {
                             let c = s.costs.entry(task_cost_key(&kind, &u)).or_default();
                             c.peak_mb = c.peak_mb.max(peak + peak / 4);
                             s.needs_rev += 1;
@@ -2285,11 +2827,22 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             }
             let why: String = f.error.chars().take(300).collect();
             let e = match &l.work {
-                Work::Job { step, targets } => history::Event { step: Some(step.clone()), targets: targets.iter().map(|t| t.0.clone()).collect(), ..history::Event::new("fail") },
+                Work::Job { step, targets } => history::Event {
+                    step: Some(step.clone()),
+                    targets: targets.iter().map(|t| t.0.clone()).collect(),
+                    ..history::Event::new("fail")
+                },
                 Work::Task { .. } => history::Event { step: Some(kind.clone()), ..history::Event::new("task-fail") },
             };
             let note = if f.interrupted { format!("stopped: {why}") } else { why.clone() };
-            s.history.add(history::Event { worker: Some(f.worker.clone()), lease: Some(f.lease), secs: Some(now.duration_since(l.granted).as_secs_f64().round()), ok: Some(false), note, ..e });
+            s.history.add(history::Event {
+                worker: Some(f.worker.clone()),
+                lease: Some(f.lease),
+                secs: Some(now.duration_since(l.granted).as_secs_f64().round()),
+                ok: Some(false),
+                note,
+                ..e
+            });
             s.seen(&f.worker, format!("failed {}: {why}", l.what()), None, now);
             eprintln!("coordinator: {} failed {}: {why}", f.worker, l.what());
             Ok((200, ok))
@@ -2308,10 +2861,17 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "for_s": now.duration_since(l.granted).as_secs(), "progress": l.progress })
                 })
                 .collect();
-            let workers: BTreeMap<&String, serde_json::Value> = s.workers.iter().map(|(n, w)| (n, serde_json::json!({ "worker": w, "seen_s": now.duration_since(w.seen).as_secs() }))).collect();
+            let workers: BTreeMap<&String, serde_json::Value> = s
+                .workers
+                .iter()
+                .map(|(n, w)| (n, serde_json::json!({ "worker": w, "seen_s": now.duration_since(w.seen).as_secs() })))
+                .collect();
             let tasks: Vec<serde_json::Value> = s.tasks.by_id.values().map(|t| serde_json::json!({ "id": t.id, "kind": t.kind, "mem_mb": t.mem_mb, "state": format!("{:?}", t.state).split([' ', '{']).next().unwrap_or("") })).collect();
             let offered: BTreeMap<&str, usize> = s.offers.iter().map(|o| (o.step.as_str(), o.targets.len())).collect();
-            Ok((200, serde_json::json!({ "pass": s.pass, "paused": s.paused, "offered": offered, "done": s.done.len(), "leases": leases, "workers": workers, "tasks": tasks })))
+            Ok((
+                200,
+                serde_json::json!({ "pass": s.pass, "paused": s.paused, "offered": offered, "done": s.done.len(), "leases": leases, "workers": workers, "tasks": tasks }),
+            ))
         }
         "/work/swarm" => {
             // The whole build at a glance, for the worker page: the lead's heartbeat (its
@@ -2319,7 +2879,12 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             // end, the forecast, the regions, its helpers), the leases, the workers, the tasks and
             // the history's hours.
             let s = shared.lock().unwrap();
-            let agent: serde_json::Value = s.dir.parent().and_then(|h| std::fs::read(h.join("status.json")).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null);
+            let agent: serde_json::Value = s
+                .dir
+                .parent()
+                .and_then(|h| std::fs::read(h.join("status.json")).ok())
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or(serde_json::Value::Null);
             // Each lease: whose, what (its step and targets), for how long, what it last said and how
             // far, since its last beat and until it lapses.
             let leases: Vec<serde_json::Value> = s
@@ -2361,7 +2926,10 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             // (What a task of each kind takes, typically: whether a page can take the tails the
             // schedule shows it.)
             let task_mb: BTreeMap<&str, Option<u64>> = PAGE_TASKS.iter().map(|k| (*k, s.tasks.typical_mb(k))).collect();
-            Ok((200, serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": tasks, "task_mb": task_mb, "seq": s.history.seq(), "rates": s.history.rates(unix, 24) })))
+            Ok((
+                200,
+                serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": tasks, "task_mb": task_mb, "seq": s.history.seq(), "rates": s.history.rates(unix, 24) }),
+            ))
         }
         "/work/history" => {
             // What happened after event `since` (the oldest first, at most `max`, 500 by default).
@@ -2374,14 +2942,18 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
         "/work/steps" => {
             // The steps table (crate::agent::steps, docs/pipeline.md): every step's and task's row
             // and the stages, for the page's words and colours (read once a load).
-            Ok((200, serde_json::json!({ "steps": crate::agent::steps::table(), "stages": crate::agent::steps::STAGES })))
+            Ok((
+                200,
+                serde_json::json!({ "steps": crate::agent::steps::table(), "stages": crate::agent::steps::STAGES }),
+            ))
         }
         "/work/floors" => {
             // The targets' floors (crate::agent::memguard), cleared (`{"clear": true}`, of a `step`,
             // of its `target`) first when asked: `scenic pool floors`.
             let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
             let mut s = shared.lock().unwrap();
-            let floors = floors_cleared(&mut s, b["clear"].as_bool() == Some(true), b["step"].as_str(), b["target"].as_str());
+            let floors =
+                floors_cleared(&mut s, b["clear"].as_bool() == Some(true), b["step"].as_str(), b["target"].as_str());
             Ok((200, serde_json::json!({ "floors": floors, "disks": s.disks })))
         }
         "/work/timings" => {
@@ -2390,7 +2962,10 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
             let last = b["last"].as_u64().map_or(20, |m| m.min(500)) as usize;
             let dir = shared.lock().unwrap().dir.clone();
-            Ok((200, serde_json::json!({ "runs": crate::timings::last_runs(&crate::timings::read_log(&dir.join("timings.jsonl")), b["kind"].as_str(), last) })))
+            Ok((
+                200,
+                serde_json::json!({ "runs": crate::timings::last_runs(&crate::timings::read_log(&dir.join("timings.jsonl")), b["kind"].as_str(), last) }),
+            ))
         }
         p if p.starts_with("/task/") && !local => anyhow::bail!("{p} is for this Mac's jobs"),
         "/task/offer" => {
@@ -2398,7 +2973,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let mut s = shared.lock().unwrap();
             // What its unit's task took last time (a worker's measure, with some room), in place of
             // the guess.
-            if let Some(c) = o.spec["unit"].as_str().and_then(|u| s.costs.get(&task_cost_key(&o.kind, u))).filter(|c| c.peak_mb > 0) {
+            if let Some(c) =
+                o.spec["unit"].as_str().and_then(|u| s.costs.get(&task_cost_key(&o.kind, u))).filter(|c| c.peak_mb > 0)
+            {
                 o.mem_mb = c.peak_mb + c.peak_mb / 10;
             }
             let id = s.tasks.offer(o, now)?;
@@ -2406,10 +2983,20 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
         }
         "/task/workers" => {
             // Who's around to take tasks of a kind, and the most memory one spares.
-            let kind: String = serde_json::from_slice::<serde_json::Value>(body).ok().and_then(|v| v["kind"].as_str().map(str::to_string)).unwrap_or_default();
+            let kind: String = serde_json::from_slice::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v["kind"].as_str().map(str::to_string))
+                .unwrap_or_default();
             let s = shared.lock().unwrap();
-            let around: Vec<&Worker> = s.workers.values().filter(|w| !w.bad && now.duration_since(w.seen) < AROUND && w.can.contains(&kind)).collect();
-            Ok((200, serde_json::json!({ "workers": around.len(), "mem_mb": around.iter().map(|w| w.mem_mb).max().unwrap_or(0) })))
+            let around: Vec<&Worker> = s
+                .workers
+                .values()
+                .filter(|w| !w.bad && now.duration_since(w.seen) < AROUND && w.can.contains(&kind))
+                .collect();
+            Ok((
+                200,
+                serde_json::json!({ "workers": around.len(), "mem_mb": around.iter().map(|w| w.mem_mb).max().unwrap_or(0) }),
+            ))
         }
         p if p.starts_with("/task/") => {
             // /task/<id>, /task/<id>/withdraw, /task/<id>/close
@@ -2418,7 +3005,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let mut s = shared.lock().unwrap();
             match parts.next() {
                 None => {
-                    let Some(t) = s.tasks.by_id.get(&id) else { return Ok((404, serde_json::json!({ "error": "no such task" }))) };
+                    let Some(t) = s.tasks.by_id.get(&id) else {
+                        return Ok((404, serde_json::json!({ "error": "no such task" })));
+                    };
                     let v = match &t.state {
                         // (With how many workers asking lately could take it now: a job about
                         // to take it back gives them a moment, crate::offload.)
@@ -2443,8 +3032,15 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 Some("explore") => {
                     // The job waits for the workers that could take it whose pace isn't measured:
                     // not again for an hour each.
-                    let Some(t) = s.tasks.by_id.get(&id) else { return Ok((404, serde_json::json!({ "error": "no such task" }))) };
-                    let names: Vec<String> = s.takers(t, now).iter().filter(|w| w["explore"] == true).filter_map(|w| w["worker"].as_str().map(str::to_string)).collect();
+                    let Some(t) = s.tasks.by_id.get(&id) else {
+                        return Ok((404, serde_json::json!({ "error": "no such task" })));
+                    };
+                    let names: Vec<String> = s
+                        .takers(t, now)
+                        .iter()
+                        .filter(|w| w["explore"] == true)
+                        .filter_map(|w| w["worker"].as_str().map(str::to_string))
+                        .collect();
                     for n in &names {
                         s.tasks.explore(n, now);
                     }
@@ -2469,7 +3065,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     if here_s.is_some_and(|h| s.tasks.measure(id, h)) {
                         return Ok((200, serde_json::json!({ "ok": true, "measuring": true })));
                     }
-                    if let (Some(c), Some(task::State::Done { worker, .. })) = (checked, s.tasks.by_id.get(&id).map(|t| t.state.clone())) {
+                    if let (Some(c), Some(task::State::Done { worker, .. })) =
+                        (checked, s.tasks.by_id.get(&id).map(|t| t.state.clone()))
+                    {
                         if let Some(w) = s.workers.get_mut(&worker) {
                             w.checked += 1;
                             if !c {
@@ -2517,32 +3115,77 @@ mod http {
         ("pool.js", "text/javascript", include_bytes!("../../../../web/work/pool.js")),
         ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/work/dash.css")),
         ("sw.js", "text/javascript", include_bytes!("../../../../web/work/sw.js")),
-        ("manifest.webmanifest", "application/manifest+json", include_bytes!("../../../../web/work/manifest.webmanifest")),
+        (
+            "manifest.webmanifest",
+            "application/manifest+json",
+            include_bytes!("../../../../web/work/manifest.webmanifest"),
+        ),
         ("icons/icon-192.png", "image/png", include_bytes!("../../../../web/work/icons/icon-192.png")),
         ("icons/icon-512.png", "image/png", include_bytes!("../../../../web/work/icons/icon-512.png")),
-        ("icons/icon-maskable-512.png", "image/png", include_bytes!("../../../../web/work/icons/icon-maskable-512.png")),
+        (
+            "icons/icon-maskable-512.png",
+            "image/png",
+            include_bytes!("../../../../web/work/icons/icon-maskable-512.png"),
+        ),
         ("icons/apple-touch-icon.png", "image/png", include_bytes!("../../../../web/work/icons/apple-touch-icon.png")),
-        ("vendor/browser_wasi_shim/index.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/index.js")),
-        ("vendor/browser_wasi_shim/wasi.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/wasi.js")),
-        ("vendor/browser_wasi_shim/wasi_defs.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/wasi_defs.js")),
-        ("vendor/browser_wasi_shim/fd.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fd.js")),
-        ("vendor/browser_wasi_shim/fs_mem.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fs_mem.js")),
-        ("vendor/browser_wasi_shim/fs_opfs.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fs_opfs.js")),
-        ("vendor/browser_wasi_shim/debug.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/debug.js")),
-        ("vendor/browser_wasi_shim/strace.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/strace.js")),
+        (
+            "vendor/browser_wasi_shim/index.js",
+            "text/javascript",
+            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/index.js"),
+        ),
+        (
+            "vendor/browser_wasi_shim/wasi.js",
+            "text/javascript",
+            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/wasi.js"),
+        ),
+        (
+            "vendor/browser_wasi_shim/wasi_defs.js",
+            "text/javascript",
+            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/wasi_defs.js"),
+        ),
+        (
+            "vendor/browser_wasi_shim/fd.js",
+            "text/javascript",
+            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fd.js"),
+        ),
+        (
+            "vendor/browser_wasi_shim/fs_mem.js",
+            "text/javascript",
+            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fs_mem.js"),
+        ),
+        (
+            "vendor/browser_wasi_shim/fs_opfs.js",
+            "text/javascript",
+            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fs_opfs.js"),
+        ),
+        (
+            "vendor/browser_wasi_shim/debug.js",
+            "text/javascript",
+            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/debug.js"),
+        ),
+        (
+            "vendor/browser_wasi_shim/strace.js",
+            "text/javascript",
+            include_bytes!("../../../../web/work/vendor/browser_wasi_shim/strace.js"),
+        ),
     ];
 
     /// The page's version: its files' hash, in its service worker (sw.js's VERSION), so a new
     /// app's page is a new service worker, which takes over.
     pub(super) fn page_version() -> &'static str {
         static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        V.get_or_init(|| store::naming::hash16(&PAGE.iter().flat_map(|(n, _, b)| n.as_bytes().iter().chain(b.iter()).copied()).collect::<Vec<u8>>()))
+        V.get_or_init(|| {
+            store::naming::hash16(
+                &PAGE.iter().flat_map(|(n, _, b)| n.as_bytes().iter().chain(b.iter()).copied()).collect::<Vec<u8>>(),
+            )
+        })
     }
 
     /// The page's files' addresses for its service worker (sw.js's PAGE, kept as it installs): all
     /// but the worker itself.
     pub(super) fn page_list() -> String {
-        let v: Vec<String> = PAGE.iter().filter(|(n, _, _)| *n != "sw.js").map(|(n, _, _)| format!("/work/{n}")).collect();
+        let v: Vec<String> =
+            PAGE.iter().filter(|(n, _, _)| *n != "sw.js").map(|(n, _, _)| format!("/work/{n}")).collect();
         serde_json::to_string(&v).unwrap_or_else(|_| "[]".into())
     }
 
@@ -2619,7 +3262,14 @@ mod http {
     }
 
     /// Listens on `port`, on a runtime of its own; this Mac's addresses for workers.
-    pub fn serve(listener: std::net::TcpListener, port: u16, ctx: Ctx, stopped: Arc<std::sync::atomic::AtomicBool>, wake: Arc<tokio::sync::Notify>, closed: std::sync::mpsc::Sender<()>) -> Result<Vec<String>> {
+    pub fn serve(
+        listener: std::net::TcpListener,
+        port: u16,
+        ctx: Ctx,
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+        wake: Arc<tokio::sync::Notify>,
+        closed: std::sync::mpsc::Sender<()>,
+    ) -> Result<Vec<String>> {
         listener.set_nonblocking(true)?;
         let routes = Router::new()
             .route("/work", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/")]) }))
@@ -2656,7 +3306,11 @@ mod http {
             .layer(axum::middleware::from_fn_with_state(ctx.clone(), cors))
             .layer(tower_http::catch_panic::CatchPanicLayer::new())
             .with_state(ctx);
-        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).thread_name("coordinator").enable_all().build()?;
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .thread_name("coordinator")
+            .enable_all()
+            .build()?;
         std::thread::Builder::new().name("coordinator".into()).spawn(move || {
             rt.block_on(async move {
                 match crate::net::Listener::new(listener) {
@@ -2703,7 +3357,12 @@ mod http {
     /// Takes connections: one from elsewhere, or past the cap, is closed before a byte is read;
     /// each is kept alive by TCP (a device gone without a word is noticed), its headers bounded in
     /// time (which closes idle ones too), and its whole life bounded.
-    async fn accept(listener: crate::net::Listener, app: Router, stopped: Arc<std::sync::atomic::AtomicBool>, wake: Arc<tokio::sync::Notify>) {
+    async fn accept(
+        listener: crate::net::Listener,
+        app: Router,
+        stopped: Arc<std::sync::atomic::AtomicBool>,
+        wake: Arc<tokio::sync::Notify>,
+    ) {
         use tower::ServiceExt;
         let room = Arc::new(tokio::sync::Semaphore::new(CONNECTIONS));
         // (Its connections: each ended, its socket closed, before a stop returns.)
@@ -2741,7 +3400,8 @@ mod http {
                 store::spawn::sockets(|| drop(stream));
                 continue;
             };
-            let keepalive = socket2::TcpKeepalive::new().with_time(Duration::from_secs(60)).with_interval(Duration::from_secs(15));
+            let keepalive =
+                socket2::TcpKeepalive::new().with_time(Duration::from_secs(60)).with_interval(Duration::from_secs(15));
             socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive).ok();
             let app = app.clone();
             let mut ending = ending.clone();
@@ -2752,7 +3412,10 @@ mod http {
                     req.extensions_mut().insert(ConnectInfo(peer));
                     app.clone().oneshot(req.map(Body::new))
                 });
-                let conn = hyper::server::conn::http1::Builder::new().timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(HEADERS_MAX).serve_connection(hyper_util::rt::TokioIo::new(stream), svc);
+                let conn = hyper::server::conn::http1::Builder::new()
+                    .timer(hyper_util::rt::TokioTimer::new())
+                    .header_read_timeout(HEADERS_MAX)
+                    .serve_connection(hyper_util::rt::TokioIo::new(stream), svc);
                 let mut conn = Box::pin(tokio::time::timeout(CONNECTION_MAX, conn));
                 // (Told to end: no linger set while `conn` still owns the stream, so dropping it
                 // resets the connection, the socket gone at once.)
@@ -2760,7 +3423,9 @@ mod http {
                     ending.wait_for(|e| *e).await.ok();
                     // SAFETY: `fd` is the stream `conn` owns, still open: `conn` is dropped only after
                     // the `select!`, this future completed or dropped.
-                    socket2::SockRef::from(&unsafe { BorrowedFd::borrow_raw(fd) }).set_linger(Some(Duration::ZERO)).ok();
+                    socket2::SockRef::from(&unsafe { BorrowedFd::borrow_raw(fd) })
+                        .set_linger(Some(Duration::ZERO))
+                        .ok();
                 };
                 tokio::select! {
                     _ = conn.as_mut() => {}
@@ -2775,12 +3440,17 @@ mod http {
     }
 
     fn error(code: StatusCode, why: impl std::fmt::Display) -> Response {
-        (code, [(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "error": why.to_string() }))).into_response()
+        (code, [(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "error": why.to_string() })))
+            .into_response()
     }
 
     /// A request's bearer credential (an empty one is none).
     fn bearer(h: &HeaderMap) -> Option<&str> {
-        h.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).map(str::trim).filter(|k| !k.is_empty())
+        h.get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
     }
 
     /// Who may ask what. This Mac, its LAN and the tailnet alone (and through the proxy on this Mac,
@@ -2801,7 +3471,9 @@ mod http {
             (s.leases.term, s.pool_member.clone())
         };
         if let (true, Some(m)) = (term > 0, member) {
-            if let (Ok(t), Ok(m)) = (axum::http::HeaderValue::from_str(&term.to_string()), axum::http::HeaderValue::from_str(&m)) {
+            if let (Ok(t), Ok(m)) =
+                (axum::http::HeaderValue::from_str(&term.to_string()), axum::http::HeaderValue::from_str(&m))
+            {
                 r.headers_mut().insert(super::POOL_TERM, t);
                 r.headers_mut().insert(super::POOL_MEMBER, m);
             }
@@ -2809,7 +3481,12 @@ mod http {
         r
     }
 
-    async fn gate(State(c): State<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, mut req: Request, next: Next) -> Response {
+    async fn gate(
+        State(c): State<Ctx>,
+        ConnectInfo(peer): ConnectInfo<SocketAddr>,
+        mut req: Request,
+        next: Next,
+    ) -> Response {
         let ip = peer.ip();
         if !crate::net::reached(ip, req.headers()) {
             return error(StatusCode::FORBIDDEN, "not from here");
@@ -2828,8 +3505,11 @@ mod http {
         let owner = key.as_deref().is_some_and(|k| crate::net::same(k, &c.token));
         let job = key.as_deref().is_some_and(|k| crate::net::same(k, &c.job_token));
         req.extensions_mut().insert(Caller { local, page: key.is_none(), from });
-        let is_page = req.method() == Method::GET && (matches!(path.as_str(), "/work" | "/work/watch" | "/work/watch/") || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
-        let is_view = req.method() == Method::POST && matches!(path.as_str(), "/work/swarm" | "/work/history" | "/work/steps");
+        let is_page = req.method() == Method::GET
+            && (matches!(path.as_str(), "/work" | "/work/watch" | "/work/watch/")
+                || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
+        let is_view =
+            req.method() == Method::POST && matches!(path.as_str(), "/work/swarm" | "/work/history" | "/work/steps");
         if is_page || is_view {
             return next.run(req).await;
         }
@@ -2850,7 +3530,17 @@ mod http {
         // A page: its own tasks, and pausing.
         let files = ["/work/in/", "/work/net/", "/work/out/"].iter().any(|p| path.starts_with(p));
         let theirs = match *req.method() {
-            Method::POST => matches!(path.as_str(), "/work/ask" | "/work/where" | "/work/beat" | "/work/done" | "/work/fail" | "/work/pause" | "/work/lead" | "/work/inputs"),
+            Method::POST => matches!(
+                path.as_str(),
+                "/work/ask"
+                    | "/work/where"
+                    | "/work/beat"
+                    | "/work/done"
+                    | "/work/fail"
+                    | "/work/pause"
+                    | "/work/lead"
+                    | "/work/inputs"
+            ),
             Method::GET => (files && !path.starts_with("/work/out/")) || path.starts_with("/work/prog/"),
             Method::PUT => path.starts_with("/work/out/"),
             _ => false,
@@ -2910,8 +3600,14 @@ mod http {
 
     async fn page(Url(file): Url<String>) -> Response {
         match PAGE.iter().find(|(n, _, _)| *n == file) {
-            Some(("sw.js", t, body)) => ([(header::CONTENT_TYPE, *t), (header::CACHE_CONTROL, "no-store")], String::from_utf8_lossy(body).replace("__VERSION__", page_version()).replace("__PAGE__", &page_list())).into_response(),
-            Some((_, t, body)) => ([(header::CONTENT_TYPE, *t), (header::CACHE_CONTROL, "no-store")], *body).into_response(),
+            Some(("sw.js", t, body)) => (
+                [(header::CONTENT_TYPE, *t), (header::CACHE_CONTROL, "no-store")],
+                String::from_utf8_lossy(body).replace("__VERSION__", page_version()).replace("__PAGE__", &page_list()),
+            )
+                .into_response(),
+            Some((_, t, body)) => {
+                ([(header::CONTENT_TYPE, *t), (header::CACHE_CONTROL, "no-store")], *body).into_response()
+            }
             None => error(StatusCode::NOT_FOUND, format!("no {file}")),
         }
     }
@@ -2924,7 +3620,12 @@ mod http {
     /// here answers), from whom the gate found.
     async fn json(State(c): State<Ctx>, req: Request) -> Response {
         let path = req.uri().path().to_string();
-        let is_json = req.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).and_then(|t| t.split(';').next()).is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json"));
+        let is_json = req
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|t| t.split(';').next())
+            .is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json"));
         if req.method() != Method::POST || !is_json {
             return error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "a POST of JSON (application/json)");
         }
@@ -2944,7 +3645,10 @@ mod http {
         });
         match routed.await {
             Ok(Ok((204, _))) => (StatusCode::NO_CONTENT, [(header::CACHE_CONTROL, "no-store")]).into_response(),
-            Ok(Ok((code, v))) => (StatusCode::from_u16(code).unwrap_or(StatusCode::OK), [(header::CACHE_CONTROL, "no-store")], Json(v)).into_response(),
+            Ok(Ok((code, v))) => {
+                (StatusCode::from_u16(code).unwrap_or(StatusCode::OK), [(header::CACHE_CONTROL, "no-store")], Json(v))
+                    .into_response()
+            }
             Ok(Err(e)) => error(StatusCode::BAD_REQUEST, format!("{e:#}")),
             Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
         }
@@ -2980,8 +3684,16 @@ mod http {
         if start > 0 && f.seek(std::io::SeekFrom::Start(start)).await.is_err() {
             return error(StatusCode::INTERNAL_SERVER_ERROR, "seek");
         }
-        let body = Body::from_stream(tokio_util::io::ReaderStream::with_capacity(tokio::io::AsyncReadExt::take(f, n), 1 << 20));
-        let mut resp = (code, [(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, "no-store"), (header::ACCEPT_RANGES, "bytes")], body).into_response();
+        let body = Body::from_stream(tokio_util::io::ReaderStream::with_capacity(
+            tokio::io::AsyncReadExt::take(f, n),
+            1 << 20,
+        ));
+        let mut resp = (
+            code,
+            [(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, "no-store"), (header::ACCEPT_RANGES, "bytes")],
+            body,
+        )
+            .into_response();
         resp.headers_mut().insert(header::CONTENT_LENGTH, n.into());
         if code == StatusCode::PARTIAL_CONTENT {
             if let Ok(v) = format!("bytes {start}-{}/{len}", start + n - 1).parse() {
@@ -2993,7 +3705,9 @@ mod http {
 
     /// A program's WebAssembly build.
     async fn prog(State(c): State<Ctx>, Url(name): Url<String>) -> Response {
-        let ok = name.strip_suffix(".wasm").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c == '-'));
+        let ok = name
+            .strip_suffix(".wasm")
+            .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c == '-'));
         match c.wasm.as_ref().filter(|_| ok) {
             Some(d) => send_file(&d.join(&name), "application/wasm", None, None).await,
             None => error(StatusCode::NOT_FOUND, format!("no {name}")),
@@ -3004,7 +3718,15 @@ mod http {
     async fn input(State(c): State<Ctx>, Url((lease, path)): Url<(u64, String)>, h: HeaderMap) -> Response {
         let found = c.shared.lock().unwrap().tasks.input(lease, &worker(&h), &path);
         match found {
-            Some((file, size)) => send_file(&file, "application/octet-stream", Some(size), h.get(header::RANGE).and_then(|v| v.to_str().ok())).await,
+            Some((file, size)) => {
+                send_file(
+                    &file,
+                    "application/octet-stream",
+                    Some(size),
+                    h.get(header::RANGE).and_then(|v| v.to_str().ok()),
+                )
+                .await
+            }
             None => error(StatusCode::NOT_FOUND, "not an input of that lease"),
         }
     }
@@ -3014,27 +3736,45 @@ mod http {
     /// <path>` a data server's file (one of `WEB_HOSTS`, over HTTPS). `?probe`: what's there
     /// ({kind, size}; 404 when nothing is); `?list`: a NAS folder's entries; else its bytes, a range
     /// at a time.
-    async fn net(State(c): State<Ctx>, Url((lease, path)): Url<(u64, String)>, q: axum::extract::RawQuery, h: HeaderMap) -> Response {
+    async fn net(
+        State(c): State<Ctx>,
+        Url((lease, path)): Url<(u64, String)>,
+        q: axum::extract::RawQuery,
+        h: HeaderMap,
+    ) -> Response {
         if c.shared.lock().unwrap().tasks.by_lease(lease, &worker(&h)).is_none() {
             return error(StatusCode::GONE, "that lease is gone");
         }
         let query = q.0.unwrap_or_default();
         let range = h.get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_string);
         if let Some(rel) = path.strip_prefix("nas/") {
-            let Some(rel) = task::safe(rel).filter(|r| NAS_PATHS.iter().any(|n| r.to_string_lossy().starts_with(n) || n.trim_end_matches('/') == r.to_string_lossy())) else {
+            let Some(rel) = task::safe(rel).filter(|r| {
+                NAS_PATHS
+                    .iter()
+                    .any(|n| r.to_string_lossy().starts_with(n) || n.trim_end_matches('/') == r.to_string_lossy())
+            }) else {
                 return error(StatusCode::FORBIDDEN, "not what a task reads");
             };
-            let Some(root) = c.root.lock().unwrap().clone() else { return error(StatusCode::SERVICE_UNAVAILABLE, "the NAS isn't here now") };
+            let Some(root) = c.root.lock().unwrap().clone() else {
+                return error(StatusCode::SERVICE_UNAVAILABLE, "the NAS isn't here now");
+            };
             let p = root.join(rel);
             // (Not there, or the NAS not answering: a task fails rather than take the second for
             // the first, as Taiwan's elevations would, from FABDEM.)
             let meta = match tokio::fs::metadata(&p).await {
                 Ok(m) => m,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return error(StatusCode::NOT_FOUND, "nothing there"),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return error(StatusCode::NOT_FOUND, "nothing there")
+                }
                 Err(e) => return error(StatusCode::SERVICE_UNAVAILABLE, format!("the NAS didn't answer: {e}")),
             };
             return match query.as_str() {
-                "probe" => Json(if meta.is_dir() { serde_json::json!({ "kind": "dir" }) } else { serde_json::json!({ "kind": "file", "size": meta.len() }) }).into_response(),
+                "probe" => Json(if meta.is_dir() {
+                    serde_json::json!({ "kind": "dir" })
+                } else {
+                    serde_json::json!({ "kind": "file", "size": meta.len() })
+                })
+                .into_response(),
                 "list" => {
                     // (A listing read in part, the NAS not answering, is an error, never fewer
                     // entries: Taiwan's MOI DTM files listed as none would be FABDEM's elevations.
@@ -3048,7 +3788,11 @@ mod http {
                                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                                 Err(e) => return Err(e),
                             };
-                            entries.push((e.file_name().to_string_lossy().into_owned(), if m.is_dir() { "dir" } else { "file" }, m.len()));
+                            entries.push((
+                                e.file_name().to_string_lossy().into_owned(),
+                                if m.is_dir() { "dir" } else { "file" },
+                                m.len(),
+                            ));
                         }
                         entries.sort();
                         Ok(entries)
@@ -3061,7 +3805,9 @@ mod http {
                 _ => send_file(&p, "application/octet-stream", None, range.as_deref()).await,
             };
         }
-        let Some((host, rest)) = path.strip_prefix("web/").and_then(|r| r.split_once('/')) else { return error(StatusCode::NOT_FOUND, "nas/… or web/<host>/…") };
+        let Some((host, rest)) = path.strip_prefix("web/").and_then(|r| r.split_once('/')) else {
+            return error(StatusCode::NOT_FOUND, "nas/… or web/<host>/…");
+        };
         if !WEB_HOSTS.contains(&host) {
             return error(StatusCode::FORBIDDEN, "not a data server a task reads");
         }
@@ -3074,12 +3820,24 @@ mod http {
                 return Ok(Json(serde_json::json!({ "kind": "file", "size": len })).into_response());
             }
             let (a, b) = match range.as_deref().and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.split_once('-')) {
-                Some((a, b)) => (a.parse::<u64>()?, if b.is_empty() { len.saturating_sub(1) } else { b.parse::<u64>()?.min(len.saturating_sub(1)) }),
+                Some((a, b)) => (
+                    a.parse::<u64>()?,
+                    if b.is_empty() { len.saturating_sub(1) } else { b.parse::<u64>()?.min(len.saturating_sub(1)) },
+                ),
                 None => (0, len.saturating_sub(1)),
             };
-            anyhow::ensure!(a <= b && b < len && b - a < RANGE_MAX, "a range of at most {} MB in the file", RANGE_MAX >> 20);
+            anyhow::ensure!(
+                a <= b && b < len && b - a < RANGE_MAX,
+                "a range of at most {} MB in the file",
+                RANGE_MAX >> 20
+            );
             let bytes = f.read_at(a, (b - a + 1) as usize).map_err(|e| anyhow::anyhow!("{e}"))?;
-            let mut resp = (StatusCode::PARTIAL_CONTENT, [(header::CONTENT_TYPE, "application/octet-stream"), (header::CACHE_CONTROL, "no-store")], bytes).into_response();
+            let mut resp = (
+                StatusCode::PARTIAL_CONTENT,
+                [(header::CONTENT_TYPE, "application/octet-stream"), (header::CACHE_CONTROL, "no-store")],
+                bytes,
+            )
+                .into_response();
             if let Ok(v) = format!("bytes {a}-{b}/{len}").parse() {
                 resp.headers_mut().insert(header::CONTENT_RANGE, v);
             }
@@ -3108,8 +3866,17 @@ mod http {
 
     /// A task's output, from the worker holding it: streamed aside (its own temporary name), flushed,
     /// then renamed into place if the task is still the worker's.
-    async fn output(State(c): State<Ctx>, Url((lease, path)): Url<(u64, String)>, h: HeaderMap, body: Body) -> Response {
-        if h.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok()).is_some_and(|n| n > UPLOAD_MAX) {
+    async fn output(
+        State(c): State<Ctx>,
+        Url((lease, path)): Url<(u64, String)>,
+        h: HeaderMap,
+        body: Body,
+    ) -> Response {
+        if h.get(header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .is_some_and(|n| n > UPLOAD_MAX)
+        {
             return error(StatusCode::PAYLOAD_TOO_LARGE, "too big");
         }
         let w = worker(&h);
@@ -3124,7 +3891,9 @@ mod http {
             let mut stream = body.into_data_stream();
             let mut n = 0u64;
             loop {
-                let next = tokio::time::timeout(CHUNK_TIME, futures_util::StreamExt::next(&mut stream)).await.map_err(|_| anyhow::anyhow!("no byte for {} s", CHUNK_TIME.as_secs()))?;
+                let next = tokio::time::timeout(CHUNK_TIME, futures_util::StreamExt::next(&mut stream))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("no byte for {} s", CHUNK_TIME.as_secs()))?;
                 let Some(chunk) = next else { break };
                 let chunk = chunk.map_err(|e| anyhow::anyhow!("{e}"))?;
                 n += chunk.len() as u64;
@@ -3257,7 +4026,11 @@ mod tests {
         let (c, _) = start_for_test(&d.path().join("a"), "m4", "");
         c.publish(&root).unwrap();
         // The next lead's contact, the pool's token the same, its addresses its own.
-        let next = Contact { urls: vec!["http://MacBook-Pro-de-Brandon.local:18091".into()], token: c.contact.token.clone(), page: None };
+        let next = Contact {
+            urls: vec!["http://MacBook-Pro-de-Brandon.local:18091".into()],
+            token: c.contact.token.clone(),
+            page: None,
+        };
         std::fs::write(contact_path(&root), serde_json::to_vec(&next).unwrap()).unwrap();
         c.unpublish(&root);
         assert!(contact_path(&root).exists(), "the next lead's contact stays");
@@ -3295,7 +4068,15 @@ mod tests {
     }
 
     fn ask(mem_mb: u64) -> Ask {
-        Ask { worker: "m1".into(), kind: "native".into(), can: vec!["unit".into()], mem_mb, cores: 8, max: 6, ..Default::default() }
+        Ask {
+            worker: "m1".into(),
+            kind: "native".into(),
+            can: vec!["unit".into()],
+            mem_mb,
+            cores: 8,
+            max: 6,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -3309,7 +4090,10 @@ mod tests {
         let new = r#"{"worker":"m1","can":["unit"],"mem_mb":6144,"cap":{"at":5,"limit_mb":12288,"held_mb":2000,"mem_mb":8000,"cores":8,"cores_free":6,"disk_mb":50000,"in_use":true,"ac":false,"battery":54,"nas":true,"home":true,"guard":true,"leases":[3,4],"nas_share":0.5}}"#;
         let a: Ask = serde_json::from_str(new).unwrap();
         let cap = a.cap.clone().unwrap();
-        assert_eq!((cap.limit_mb, cap.mem_mb, cap.cores_free, cap.disk_mb, cap.reserved_mb, cap.battery, cap.leases.clone()), (12_288, 8000, 6, 50_000, 0, Some(54), vec![3, 4]));
+        assert_eq!(
+            (cap.limit_mb, cap.mem_mb, cap.cores_free, cap.disk_mb, cap.reserved_mb, cap.battery, cap.leases.clone()),
+            (12_288, 8000, 6, 50_000, 0, Some(54), vec![3, 4])
+        );
         assert!(cap.in_use && !cap.ac && cap.nas && cap.guard);
         let partial: Capacity = serde_json::from_str(r#"{"limit_mb":1}"#).unwrap();
         assert_eq!(partial, Capacity { limit_mb: 1, ..Default::default() });
@@ -3323,12 +4107,27 @@ mod tests {
         c.offer_units("2026-09-28", vec![("6/1/1".into(), "k1".into(), 100 << 20)]);
         // The lead's own, then a member's from its ask; an older member's ask says none.
         c.set_capacity(Some(Capacity { at: unix_now(), limit_mb: 36_000, cores: 10, ac: true, ..Default::default() }));
-        let cap = Capacity { at: unix_now(), limit_mb: 12_288, mem_mb: 9000, cores: 8, cores_free: 7, disk_mb: 40_000, nas: true, home: true, leases: vec![], ..Default::default() };
+        let cap = Capacity {
+            at: unix_now(),
+            limit_mb: 12_288,
+            mem_mb: 9000,
+            cores: 8,
+            cores_free: 7,
+            disk_mb: 40_000,
+            nas: true,
+            home: true,
+            leases: vec![],
+            ..Default::default()
+        };
         w.ask(&Ask { cap: Some(cap.clone()), ..ask(4096) }).unwrap();
         let old = client::Client::at(w.urls(), c.contact.token.clone(), "old");
         old.ask(&ask(4096)).unwrap();
         let caps = c.capacities();
-        assert_eq!(caps.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["m4", "m1"], "the lead's first; the older member's none");
+        assert_eq!(
+            caps.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            ["m4", "m1"],
+            "the lead's first; the older member's none"
+        );
         assert_eq!(caps[0].1.limit_mb, 36_000);
         assert_eq!(caps[1].1, cap);
         // A capacity past CAP_FRESH_S (a busy member's last ask) left out, though its worker is around.
@@ -3341,8 +4140,20 @@ mod tests {
     }
 
     fn handoff(units: &[(&str, &str)]) -> Handoff {
-        let changes = units.iter().map(|(u, _)| (format!("base/{}", u.replace('/', "-")), Some(format!("base/{}.0000000000000003.base", u.replace('/', "-"))))).collect();
-        Handoff { changes, done: Some(("unit".into(), units.iter().map(|(u, k)| (u.to_string(), k.to_string())).collect())), ..Default::default() }
+        let changes = units
+            .iter()
+            .map(|(u, _)| {
+                (
+                    format!("base/{}", u.replace('/', "-")),
+                    Some(format!("base/{}.0000000000000003.base", u.replace('/', "-"))),
+                )
+            })
+            .collect();
+        Handoff {
+            changes,
+            done: Some(("unit".into(), units.iter().map(|(u, k)| (u.to_string(), k.to_string())).collect())),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -3350,14 +4161,26 @@ mod tests {
         // Terrain measured holding its whole area (before it wrote a z6 tile at a time): its
         // estimate instead; measured since: what it took.
         let mut costs = BTreeMap::new();
-        costs.insert(cost_key("terrain", "3/0/2"), Cost { peak_mb: 32_900, secs: 3000, worker: None, v: 0, ..Default::default() });
+        costs.insert(
+            cost_key("terrain", "3/0/2"),
+            Cost { peak_mb: 32_900, secs: 3000, worker: None, v: 0, ..Default::default() },
+        );
         assert_eq!(job_peak(&costs, "terrain", "3/0/2", 2400), 2400);
-        costs.insert(cost_key("terrain", "3/0/2"), Cost { peak_mb: 2100, secs: 3000, worker: None, v: cost_version("terrain"), ..Default::default() });
+        costs.insert(
+            cost_key("terrain", "3/0/2"),
+            Cost { peak_mb: 2100, secs: 3000, worker: None, v: cost_version("terrain"), ..Default::default() },
+        );
         assert_eq!(job_peak(&costs, "terrain", "3/0/2", 2400), 2100);
         // Slope likewise (written a z6 tile at a time too); other steps' measures stand.
-        costs.insert(cost_key("slope", "3/0/2"), Cost { peak_mb: 20_000, secs: 300, worker: None, v: 0, ..Default::default() });
+        costs.insert(
+            cost_key("slope", "3/0/2"),
+            Cost { peak_mb: 20_000, secs: 300, worker: None, v: 0, ..Default::default() },
+        );
         assert_eq!(job_peak(&costs, "slope", "3/0/2", 2000), 2000);
-        costs.insert(cost_key("peaks", "6/1/1"), Cost { peak_mb: 5000, secs: 300, worker: None, v: 0, ..Default::default() });
+        costs.insert(
+            cost_key("peaks", "6/1/1"),
+            Cost { peak_mb: 5000, secs: 300, worker: None, v: 0, ..Default::default() },
+        );
         assert_eq!(job_peak(&costs, "peaks", "6/1/1", 2500), 5000);
     }
 
@@ -3366,9 +4189,13 @@ mod tests {
     #[test]
     fn a_dense_unit_leaves_the_small_ones_to_a_12_gb_worker() {
         let (_d, c, w) = start();
-        let units: Vec<(String, String, u64)> = (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
+        let units: Vec<(String, String, u64)> =
+            (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
         c.offer_units("2026-09-28", units);
-        c.add_costs(&[("6/1/1".into(), Cost { peak_mb: 14_000, secs: 600, worker: None, v: cost_version("unit"), ..Default::default() })]);
+        c.add_costs(&[(
+            "6/1/1".into(),
+            Cost { peak_mb: 14_000, secs: 600, worker: None, v: cost_version("unit"), ..Default::default() },
+        )]);
         let g = w.ask(&Ask { max: 3, ..ask(12 << 10) }).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!("a job") };
         let mut ts: Vec<&str> = targets.iter().map(|(t, _)| t.as_str()).collect();
@@ -3379,25 +4206,37 @@ mod tests {
     #[test]
     fn the_history_and_the_swarm_say_what_happened_and_why() {
         let (_d, c, w) = start();
-        let units: Vec<(String, String, u64)> = (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
+        let units: Vec<(String, String, u64)> =
+            (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
         c.offer_units("2026-09-28", units);
         // A worker that spares 4 GB takes two areas (the third too big), hands one back.
         // (Each measured: a unit not measured would take its step's largest, crate::needs.)
         for (u, mb) in [("6/1/1", 9000), ("6/1/2", 3000), ("6/1/3", 3000)] {
-            c.shared.lock().unwrap().costs.insert(u.into(), Cost { peak_mb: mb, secs: 60, worker: None, v: cost_version("unit"), ..Default::default() });
+            c.shared.lock().unwrap().costs.insert(
+                u.into(),
+                Cost { peak_mb: mb, secs: 60, worker: None, v: cost_version("unit"), ..Default::default() },
+            );
         }
         let g = w.ask(&Ask { max: 2, ..ask(4096) }).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!("a job") };
         let one: Vec<(&str, &str)> = targets.iter().take(1).map(|(t, k)| (t.as_str(), k.as_str())).collect();
-        w.done(&Done { worker: "m1".into(), lease: g.lease, handoff: Some(handoff(&one)), ..Default::default() }).unwrap();
-        c.note(history::Event { worker: Some("m4".into()), targets: vec!["ohio".into()], ..history::Event::new("catalog") });
+        w.done(&Done { worker: "m1".into(), lease: g.lease, handoff: Some(handoff(&one)), ..Default::default() })
+            .unwrap();
+        c.note(history::Event {
+            worker: Some("m4".into()),
+            targets: vec!["ohio".into()],
+            ..history::Event::new("catalog")
+        });
         // What happened, in order, after a number.
         let (code, h) = w.post_json("/work/history", &serde_json::json!({ "since": 0 })).unwrap();
         assert_eq!(code, 200);
         let kinds: Vec<&str> = h["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["agent", "worker", "lease", "done", "catalog"]);
         let last = h["seq"].as_u64().unwrap();
-        assert!(w.post_json("/work/history", &serde_json::json!({ "since": last })).unwrap().1["events"].as_array().unwrap().is_empty());
+        assert!(w.post_json("/work/history", &serde_json::json!({ "since": last })).unwrap().1["events"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         // The swarm: the history's number and the hours; the worker's fit (the area it holds, the one
         // too big for it); the tasks by state.
         let (_, sw) = w.post_json("/work/swarm", &serde_json::json!({})).unwrap();
@@ -3405,7 +4244,10 @@ mod tests {
         assert_eq!(sw["rates"]["rows"].as_array().unwrap().len(), 24);
         let m1 = sw["workers"].as_array().unwrap().iter().find(|x| x["name"] == "m1").unwrap();
         let fit = &m1["fit"][0];
-        assert_eq!((fit["offered"].as_u64(), fit["done"].as_u64(), fit["too_big"].as_u64(), fit["fits"].as_u64()), (Some(3), Some(1), Some(1), Some(1)));
+        assert_eq!(
+            (fit["offered"].as_u64(), fit["done"].as_u64(), fit["too_big"].as_u64(), fit["fits"].as_u64()),
+            (Some(3), Some(1), Some(1), Some(1))
+        );
         assert!(sw["tasks"].is_object() && sw["leases"].as_array().unwrap().is_empty());
     }
 
@@ -3415,12 +4257,32 @@ mod tests {
         let (d, c, w) = start();
         c.offer_units("2026-09-28", vec![("6/1/1".into(), "k1".into(), 100 << 20)]);
         let g = w.ask(&ask(4096)).unwrap().unwrap();
-        let run = |kind: &str, host: &str| RunRec { v: 1, kind: kind.into(), host: host.into(), wall_s: 10.0, ok: true, phases: vec![PhaseRec { name: "records read".into(), wall_s: 1.0, n: 1, ..Default::default() }], ..Default::default() };
+        let run = |kind: &str, host: &str| RunRec {
+            v: 1,
+            kind: kind.into(),
+            host: host.into(),
+            wall_s: 10.0,
+            ok: true,
+            phases: vec![PhaseRec { name: "records read".into(), wall_s: 1.0, n: 1, ..Default::default() }],
+            ..Default::default()
+        };
         // A helper's, with its hand-off (its host as its lease says, whatever it said); this Mac's own.
-        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/1", "k1")])), timings: Some(run("unit", "someone")), ..Default::default() }).unwrap(), client::Handed::Taken);
+        assert_eq!(
+            w.done(&Done {
+                lease: g.lease,
+                handoff: Some(handoff(&[("6/1/1", "k1")])),
+                timings: Some(run("unit", "someone")),
+                ..Default::default()
+            })
+            .unwrap(),
+            client::Handed::Taken
+        );
         c.add_timings(&run("gc", "m4"));
         let kept = crate::timings::read_log(&d.path().join("coord/timings.jsonl"));
-        assert_eq!(kept.iter().map(|r| (r.kind.as_str(), r.host.as_str())).collect::<Vec<_>>(), [("unit", "m1"), ("gc", "m4")]);
+        assert_eq!(
+            kept.iter().map(|r| (r.kind.as_str(), r.host.as_str())).collect::<Vec<_>>(),
+            [("unit", "m1"), ("gc", "m4")]
+        );
         // Asked from another Mac: a kind's last runs.
         let (code, v) = w.post_json("/work/timings", &serde_json::json!({ "kind": "unit", "last": 5 })).unwrap();
         assert_eq!(code, 200);
@@ -3433,16 +4295,21 @@ mod tests {
         assert!(serde_json::from_value::<Done>(body).unwrap().timings.is_none());
         // A page's, as web/work/worker.js writes it (no CPU time).
         let page = serde_json::json!({ "v": 1, "kind": "task tail", "id": "task 7", "start": 1, "wall_s": 9.5, "ok": true, "untimed_s": 0.5, "overhead_s": 0, "phases": [{ "name": "its files fetched from the coordinator", "class": "net", "wall_s": 2.0, "n": 1, "bytes": 1000, "files": 3 }, { "name": "elevations (elev)", "class": "mixed", "wall_s": 7.0, "n": 1, "bytes": 0, "files": 0 }] });
-        let d: Done = serde_json::from_value(serde_json::json!({ "worker": "ipad", "lease": 999, "timings": page })).unwrap();
+        let d: Done =
+            serde_json::from_value(serde_json::json!({ "worker": "ipad", "lease": 999, "timings": page })).unwrap();
         let t = d.timings.unwrap();
-        assert_eq!((t.kind.as_str(), t.phases.len(), t.phases[1].class, t.phases[0].cpu_s), ("task tail", 2, crate::timings::Class::Mixed, None));
+        assert_eq!(
+            (t.kind.as_str(), t.phases.len(), t.phases[1].class, t.phases[0].cpu_s),
+            ("task tail", 2, crate::timings::Class::Mixed, None)
+        );
     }
 
     #[test]
     fn the_builds_pause_holds_for_every_worker() {
         use crate::control::{Mode, Pause};
         let (d, c, w) = start();
-        let units: Vec<(String, String, u64)> = (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
+        let units: Vec<(String, String, u64)> =
+            (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
         c.offer_units("2026-09-28", units.clone());
         let g = w.ask(&ask(4096)).unwrap().unwrap();
         // Paused (from a helper's menu, passed on by its agent): no work; an agent's told why and the
@@ -3468,11 +4335,18 @@ mod tests {
         // Going on: work again. A job paused at a safe point hands off what it did (those done, the
         // rest offered again); one stopped before any is given back, not held against its targets.
         c.set_pause(None, p.at + 1);
-        assert_eq!(w.beat_paused(g.lease, None).unwrap(), (true, None), "its lease kept through the pause and the restart");
+        assert_eq!(
+            w.beat_paused(g.lease, None).unwrap(),
+            (true, None),
+            "its lease kept through the pause and the restart"
+        );
         let Granted::Job { targets, .. } = &g.work else { panic!() };
         assert_eq!(targets.len(), 3);
         let part = handoff(&[("6/1/3", "k3")]);
-        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(part), ..Default::default() }).unwrap(), client::Handed::Taken);
+        assert_eq!(
+            w.done(&Done { lease: g.lease, handoff: Some(part), ..Default::default() }).unwrap(),
+            client::Handed::Taken
+        );
         let g = w.ask(&ask(4096)).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!() };
         assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/1/2", "6/1/1"]);
@@ -3506,7 +4380,12 @@ mod tests {
         c.offer_units("2026-09-28", vec![("6/1/1".into(), "k1".into(), 100 << 20)]);
         // One from before agents said (an older helper's ask), or on another: refused, why given.
         let e = w.ask(&ask(4096)).unwrap_err();
-        assert!(e.downcast_ref::<client::Refused>().is_some_and(|r| r.why.contains("an older one") && r.why.contains("5 Oct 15:08 UTC") && r.pause.is_none()), "{e:#}");
+        assert!(
+            e.downcast_ref::<client::Refused>().is_some_and(|r| r.why.contains("an older one")
+                && r.why.contains("5 Oct 15:08 UTC")
+                && r.pause.is_none()),
+            "{e:#}"
+        );
         let e = w.ask(&Ask { app: Some("20261005-0819-7638722".into()), ..ask(4096) }).unwrap_err();
         assert!(e.to_string().contains("5 Oct 08:19 UTC"), "{e:#}");
         assert!(c.held("unit").is_empty());
@@ -3520,9 +4399,19 @@ mod tests {
         let e = w.ask(&Ask { app: Some("20261006-0900-1234567".into()), ..ask(4096) }).unwrap_err();
         assert!(e.to_string().contains("once the lead runs the same"), "{e:#}");
         assert!(!app_ok(Some("20261005-1613-d05125b"), "20261005-1508-84142d3"));
-        assert!(app_newer("20261005-1613-d05125b", "20261005-1508-84142d3") && !app_newer("20261005-1508-84142d3", "20261005-1613-d05125b") && !app_newer("development", "20261005-1508-84142d3"));
-        assert!(!app_ok(Some("20261005-1508-aaaaaaa"), "20261005-1613-d05125b") && !app_ok(None, "20261005-1508-84142d3"));
-        assert!(app_ok(Some("development"), "development") && !app_ok(Some("development"), "20261005-1508-84142d3") && !app_ok(Some("20261005-1613-d05125b"), "development"));
+        assert!(
+            app_newer("20261005-1613-d05125b", "20261005-1508-84142d3")
+                && !app_newer("20261005-1508-84142d3", "20261005-1613-d05125b")
+                && !app_newer("development", "20261005-1508-84142d3")
+        );
+        assert!(
+            !app_ok(Some("20261005-1508-aaaaaaa"), "20261005-1613-d05125b") && !app_ok(None, "20261005-1508-84142d3")
+        );
+        assert!(
+            app_ok(Some("development"), "development")
+                && !app_ok(Some("development"), "20261005-1508-84142d3")
+                && !app_ok(Some("20261005-1613-d05125b"), "development")
+        );
         assert!(app_ok(None, ""));
         // Once a readers' switch is recorded on a newer app than the lead's, nothing for any
         // (the lead's own the same as the worker's), a page included; on the switch's own, again.
@@ -3533,18 +4422,33 @@ mod tests {
         assert!(w.ask(&Ask { app: Some("20261005-1508-84142d3".into()), ..ask(4096) }).is_ok());
         c.set_min_app(None);
         // Never a panic, whatever a worker says.
-        assert!(!app_ok(Some("20261005-150é-x"), "20261005-1508-84142d3") && !app_ok(Some("é"), "20261005-1508-84142d3") && !app_ok(Some(""), "x"));
+        assert!(
+            !app_ok(Some("20261005-150é-x"), "20261005-1508-84142d3")
+                && !app_ok(Some("é"), "20261005-1508-84142d3")
+                && !app_ok(Some(""), "x")
+        );
     }
 
     #[test]
     fn a_disk_floor_is_learned_rises_and_moves_and_a_step_measured_once_has_a_prior() {
         let (_d, c, w) = start();
-        c.offer("p", vec![Offer { step: "peaks".into(), targets: vec![("6/1/1".into(), "k 6/1/1".into(), 2500)], batch: 1 }]);
+        c.offer(
+            "p",
+            vec![Offer { step: "peaks".into(), targets: vec![("6/1/1".into(), "k 6/1/1".into(), 2500)], batch: 1 }],
+        );
         let g = w.ask(&Ask { can: vec!["peaks".into()], ..ask(8192) }).unwrap().unwrap();
         // A cold start: no target of its step measured.
         assert_eq!(c.measured("peaks", "6/1/1"), None);
         // Given back with what it took on the disk (its lease's targets' alone).
-        w.end_with(g.lease, "the build paused", true, &[], &[(cost_key("peaks", "6/1/1"), 7000), (cost_key("peaks", "6/9/9"), 1)], 0).unwrap();
+        w.end_with(
+            g.lease,
+            "the build paused",
+            true,
+            &[],
+            &[(cost_key("peaks", "6/1/1"), 7000), (cost_key("peaks", "6/9/9"), 1)],
+            0,
+        )
+        .unwrap();
         assert_eq!(c.disks(), [(cost_key("peaks", "6/1/1"), 7000)].into());
         // Only rises; it moves with the pool's state.
         c.add_disks(&[(cost_key("peaks", "6/1/1"), 3000)]);
@@ -3552,7 +4456,10 @@ mod tests {
         assert_eq!(c.pool_state().disks.get(&cost_key("peaks", "6/1/1")), Some(&7000));
         // Measured once: its own memory and disk; another target of its step, the step's largest
         // (a prior learned), until its own run says.
-        c.add_costs(&[(cost_key("peaks", "6/1/1"), Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() })]);
+        c.add_costs(&[(
+            cost_key("peaks", "6/1/1"),
+            Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() },
+        )]);
         assert_eq!(c.measured("peaks", "6/1/1"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: true }));
         assert_eq!(c.measured("peaks", "6/2/2"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: false }));
         assert_eq!(c.measured("pois", "6/2/2"), None);
@@ -3577,7 +4484,11 @@ mod tests {
     #[test]
     fn a_floor_keeps_a_target_from_a_worker_too_small_and_a_measure_takes_its_place() {
         let (_d, c, w) = start();
-        let o = |ts: &[(&str, u64)], batch: usize| Offer { step: "peaks".into(), targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(), batch };
+        let o = |ts: &[(&str, u64)], batch: usize| Offer {
+            step: "peaks".into(),
+            targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(),
+            batch,
+        };
         c.offer("p", vec![o(&[("6/1/1", 2500)], 1)]);
         let can = |mem: u64| Ask { can: vec!["peaks".into()], limit_mb: Some(12 << 10), ..ask(mem) };
         let f = |mb: u64, alone: bool| Floor { mb, alone, v: 0 };
@@ -3585,7 +4496,12 @@ mod tests {
         assert_eq!(c.largest_limit(), Some(12 << 10), "its Mac's limit, as it says");
         // Stopped past its Mac's limit: given back with what it held, the floor of its target (not
         // another's, nor a target of no lease of it).
-        w.give_back_with(g.lease, "stopped by the memory guard", &[(cost_key("peaks", "6/1/1"), f(9000, true)), (cost_key("peaks", "6/9/9"), f(1, true))]).unwrap();
+        w.give_back_with(
+            g.lease,
+            "stopped by the memory guard",
+            &[(cost_key("peaks", "6/1/1"), f(9000, true)), (cost_key("peaks", "6/9/9"), f(1, true))],
+        )
+        .unwrap();
         assert_eq!((c.floor("peaks", "6/1/1"), c.floor("peaks", "6/9/9")), (Some(f(9000, true)), None));
         assert_eq!(c.peak("peaks", "6/1/1"), Some(9000), "never below its floor");
         // Not to a worker that spares less; to one that spares more.
@@ -3596,12 +4512,26 @@ mod tests {
         assert_eq!(c.floor("peaks", "6/1/1").map(|f| f.mb), Some(9000));
         assert_eq!(c.pool_state().floors.get(&cost_key("peaks", "6/1/1")).map(|f| f.mb), Some(9000));
         // A run's measure takes its place.
-        c.add_costs(&[(cost_key("peaks", "6/1/1"), Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() })]);
+        c.add_costs(&[(
+            cost_key("peaks", "6/1/1"),
+            Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() },
+        )]);
         assert_eq!((c.floor("peaks", "6/1/1"), c.peak("peaks", "6/1/1")), (None, Some(3000)));
         let g = w.ask(&can(4096)).unwrap().unwrap();
         // A member's done carries its floors (of the lease's targets alone).
-        let h = Handoff { changes: [("work/peaks/6-1-1".to_string(), Some("work/peaks/6-1-1.0000000000000003.sect".to_string()))].into(), done: Some(("peaks".into(), vec![("6/1/1".into(), "k 6/1/1".into())])), ..Default::default() };
-        w.done(&Done { lease: g.lease, handoff: Some(h), floors: vec![(cost_key("peaks", "6/1/1"), f(3500, true)), (cost_key("peaks", "6/7/7"), f(9, true))], ..Default::default() }).unwrap();
+        let h = Handoff {
+            changes: [("work/peaks/6-1-1".to_string(), Some("work/peaks/6-1-1.0000000000000003.sect".to_string()))]
+                .into(),
+            done: Some(("peaks".into(), vec![("6/1/1".into(), "k 6/1/1".into())])),
+            ..Default::default()
+        };
+        w.done(&Done {
+            lease: g.lease,
+            handoff: Some(h),
+            floors: vec![(cost_key("peaks", "6/1/1"), f(3500, true)), (cost_key("peaks", "6/7/7"), f(9, true))],
+            ..Default::default()
+        })
+        .unwrap();
         assert_eq!((c.floor("peaks", "6/1/1").map(|f| f.mb), c.floor("peaks", "6/7/7")), (Some(3500), None));
         // A batch's floor gives way to one learned alone, even lower; a floor of an older way of its
         // step neither holds the target nor sizes it (crate::needs: a unit's v1 floors held malloc's
@@ -3614,7 +4544,10 @@ mod tests {
         // The OSM pass's floor puts an earlier pass's away.
         c.add_floors(&[(cost_key("osm-pass", "2026-08-01"), f(30_000, true))]);
         c.add_floors(&[(cost_key("osm-pass", "2026-09-28"), f(31_000, true))]);
-        assert_eq!((c.floor("osm-pass", "2026-08-01"), c.floor("osm-pass", "2026-09-28").map(|f| f.mb)), (None, Some(31_000)));
+        assert_eq!(
+            (c.floor("osm-pass", "2026-08-01"), c.floor("osm-pass", "2026-09-28").map(|f| f.mb)),
+            (None, Some(31_000))
+        );
         // A target whose floor is a batch's, under what a worker spares, goes batched as any.
         c.offer("p", vec![o(&[("6/4/1", 100), ("6/4/2", 100), ("6/4/3", 100)], 3)]);
         c.add_floors(&[(cost_key("peaks", "6/4/2"), f(2000, false))]);
@@ -3622,10 +4555,18 @@ mod tests {
         let Granted::Job { targets, .. } = g.work else { panic!() };
         assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/4/3", "6/4/2", "6/4/1"]);
         // Kept across a restart of the coordinator; cleared as the owner asks (`scenic pool floors`).
-        let kept: BTreeMap<String, Floor> = serde_json::from_slice(&std::fs::read(c.shared.lock().unwrap().dir.join("floors.json")).unwrap()).unwrap();
+        let kept: BTreeMap<String, Floor> =
+            serde_json::from_slice(&std::fs::read(c.shared.lock().unwrap().dir.join("floors.json")).unwrap()).unwrap();
         assert_eq!(kept.get(&cost_key("peaks", "6/2/2")), Some(&f(4000, true)));
-        let (code, v) = w.post_json("/work/floors", &serde_json::json!({ "clear": true, "step": "peaks", "target": "6/2/2" })).unwrap();
-        assert!(code == 200 && v["floors"].get(cost_key("peaks", "6/2/2")).is_none() && v["floors"].get(cost_key("peaks", "6/1/1")).is_some(), "{v}");
+        let (code, v) = w
+            .post_json("/work/floors", &serde_json::json!({ "clear": true, "step": "peaks", "target": "6/2/2" }))
+            .unwrap();
+        assert!(
+            code == 200
+                && v["floors"].get(cost_key("peaks", "6/2/2")).is_none()
+                && v["floors"].get(cost_key("peaks", "6/1/1")).is_some(),
+            "{v}"
+        );
         assert!(c.floors(true, Some("peaks"), None).keys().all(|k| !k.starts_with("peaks ")));
         assert!(c.floors(true, None, None).is_empty());
     }
@@ -3636,7 +4577,10 @@ mod tests {
         // A lease this coordinator's folder kept from a term its Mac led before, ended since under
         // another lead; the term taken up holds another.
         let old = c.hold("trees", &[("6/33/22".into(), "k".into())]).unwrap();
-        let p = PoolState { leases: serde_json::json!({ "next": old + 5, "leases": [{ "id": old + 3, "term": 3, "granted_at": 0, "worker": "m1", "work": { "Job": { "step": "terrain", "targets": [["6/33/22", "k2"]] } }, "progress": null }] }), ..Default::default() };
+        let p = PoolState {
+            leases: serde_json::json!({ "next": old + 5, "leases": [{ "id": old + 3, "term": 3, "granted_at": 0, "worker": "m1", "work": { "Job": { "step": "terrain", "targets": [["6/33/22", "k2"]] } }, "progress": null }] }),
+            ..Default::default()
+        };
         assert_eq!(c.load_pool_state(&p).unwrap(), 1);
         assert!(c.held("trees").is_empty(), "the old lease is gone");
         assert!(c.held("terrain").contains("6/33/22"));
@@ -3650,10 +4594,22 @@ mod tests {
         let f = |mb: u64| Floor { mb, alone: true, v: 0 };
         c.add_floors(&[(cost_key("peaks", "6/1/1"), f(9000)), (cost_key("peaks", "6/1/2"), f(9000))]);
         // The other lead measured 6/1/1 (its floor gone there), and saw a higher floor for 6/1/3.
-        let p = PoolState { costs: [(cost_key("peaks", "6/1/1"), Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() })].into(), floors: [(cost_key("peaks", "6/1/3"), f(7000))].into(), leases: serde_json::json!({ "next": 1, "leases": [] }), ..Default::default() };
+        let p = PoolState {
+            costs: [(
+                cost_key("peaks", "6/1/1"),
+                Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() },
+            )]
+            .into(),
+            floors: [(cost_key("peaks", "6/1/3"), f(7000))].into(),
+            leases: serde_json::json!({ "next": 1, "leases": [] }),
+            ..Default::default()
+        };
         c.load_pool_state(&p).unwrap();
         assert_eq!((c.floor("peaks", "6/1/1"), c.peak("peaks", "6/1/1")), (None, Some(3000)));
-        assert_eq!((c.floor("peaks", "6/1/2").map(|f| f.mb), c.floor("peaks", "6/1/3").map(|f| f.mb)), (Some(9000), Some(7000)));
+        assert_eq!(
+            (c.floor("peaks", "6/1/2").map(|f| f.mb), c.floor("peaks", "6/1/3").map(|f| f.mb)),
+            (Some(9000), Some(7000))
+        );
     }
 
     /// A resumable job offered to the worker whose Mac holds its progress (crate::agent::resume):
@@ -3664,8 +4620,18 @@ mod tests {
         let (_d, c, m1) = start();
         let port = m1.urls()[0].clone();
         let m2 = client::Client::at(vec![port], c.contact.token.clone(), "m2");
-        c.offer("2026-09-01", vec![Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 1 }]);
-        c.offer_resume(Some(("m1".into(), Offer { step: "osm-pass".into(), targets: vec![("2026-10-01".into(), "sources/osm/2026-10-01/planet.osm.pbf".into(), 0)], batch: 1 })));
+        c.offer(
+            "2026-09-01",
+            vec![Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 1 }],
+        );
+        c.offer_resume(Some((
+            "m1".into(),
+            Offer {
+                step: "osm-pass".into(),
+                targets: vec![("2026-10-01".into(), "sources/osm/2026-10-01/planet.osm.pbf".into(), 0)],
+                batch: 1,
+            },
+        )));
         let can = |steps: &[&str]| Ask { can: steps.iter().map(|s| s.to_string()).collect(), ..ask(4096) };
         // Another worker asking for it: not its (the plan's work instead, or nothing).
         assert!(w_step(&m2, &can(&["osm-pass"])).is_none());
@@ -3700,15 +4666,36 @@ mod tests {
         for (t, m) in ts {
             if let Some((mem, disk, secs)) = m {
                 // (Measured on m1: its own pace; another worker's run counts twice its time, job_secs.)
-                c.add_costs_by(&[(cost_key(step, t), Cost { peak_mb: *mem, secs: *secs, worker: None, v: cost_version(step), ..Default::default() })], "m1");
+                c.add_costs_by(
+                    &[(
+                        cost_key(step, t),
+                        Cost { peak_mb: *mem, secs: *secs, worker: None, v: cost_version(step), ..Default::default() },
+                    )],
+                    "m1",
+                );
                 c.add_disks(&[(cost_key(step, t), *disk)]);
             }
         }
-        c.offer("p", vec![Offer { step: step.into(), targets: ts.iter().map(|(t, _)| (t.to_string(), format!("k {t}"), 0)).collect(), batch: 1 }]);
+        c.offer(
+            "p",
+            vec![Offer {
+                step: step.into(),
+                targets: ts.iter().map(|(t, _)| (t.to_string(), format!("k {t}"), 0)).collect(),
+                batch: 1,
+            }],
+        );
     }
 
     fn every_ask(worker: &str, can: &str, mem_mb: u64, disk_mb: u64) -> Ask {
-        Ask { worker: worker.into(), kind: "native".into(), can: vec![can.into()], mem_mb, cores: 8, disk_mb: Some(disk_mb), ..Default::default() }
+        Ask {
+            worker: worker.into(),
+            kind: "native".into(),
+            can: vec![can.into()],
+            mem_mb,
+            cores: 8,
+            disk_mb: Some(disk_mb),
+            ..Default::default()
+        }
     }
 
     fn granted(w: &client::Client, a: &Ask) -> Vec<String> {
@@ -3725,7 +4712,11 @@ mod tests {
     fn every_step_a_member_takes_pack_in_runs_of_a_quarter_hour_by_measured_time() {
         let (_d, c, w, _clock) = every((0, 0));
         let m = Some((500, 100, 300));
-        measured_offer(&c, "pack", &[("6/1/1", m), ("6/1/2", m), ("6/1/3", m), ("6/1/4", m), ("6/1/5", Some((500, 100, 2000))), ("6/1/6", m)]);
+        measured_offer(
+            &c,
+            "pack",
+            &[("6/1/1", m), ("6/1/2", m), ("6/1/3", m), ("6/1/4", m), ("6/1/5", Some((500, 100, 2000))), ("6/1/6", m)],
+        );
         let a = every_ask("m1", "pack", 4096, 10_000);
         // Three of 300 s: 900 s, a quarter of an hour; a fourth would pass it.
         assert_eq!(granted(&w, &a), ["6/1/1", "6/1/2", "6/1/3"]);
@@ -3738,7 +4729,10 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         measured_offer(&c, "lo", &[("3/1/1", Some((500, 0, 0))), ("3/1/2", Some((500, 0, 0)))]);
         c.shared.lock().unwrap().costs.clear();
-        c.add_floors(&[(cost_key("lo", "3/1/1"), Floor { mb: 500, alone: true, v: 0 }), (cost_key("lo", "3/1/2"), Floor { mb: 500, alone: true, v: 0 })]);
+        c.add_floors(&[
+            (cost_key("lo", "3/1/1"), Floor { mb: 500, alone: true, v: 0 }),
+            (cost_key("lo", "3/1/2"), Floor { mb: 500, alone: true, v: 0 }),
+        ]);
         assert_eq!(granted(&w, &every_ask("m1", "lo", 4096, 10_000)), ["3/1/1"]);
     }
 
@@ -3766,7 +4760,10 @@ mod tests {
         let m2 = client::Client::at(m1.urls(), c.contact.token.clone(), "m2");
         measured_offer(&c, "lo", &[("3/1/1", None), ("3/1/2", None), ("3/1/3", None)]);
         let g = m2.ask(&every_ask("m2", "lo", 8192, 100_000)).unwrap().unwrap();
-        assert!(matches!(&g.work, Granted::Job { targets, .. } if targets.len() == 1 && targets[0].0 == "3/1/1"), "alone, the largest asking");
+        assert!(
+            matches!(&g.work, Granted::Job { targets, .. } if targets.len() == 1 && targets[0].0 == "3/1/1"),
+            "alone, the largest asking"
+        );
         // While a job of the step is under way (a member's, or the lead's own: its lease), no other
         // cold start of it.
         assert!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)).is_empty(), "one under way");
@@ -3781,7 +4778,10 @@ mod tests {
         c.set_every(Some(Every { own: Some((16_000, 200_000)) }));
         assert!(granted(&m2, &every_ask("m2", "lo", 8192, 100_000)).is_empty());
         // Once a target of the step has run, the others are offered by its measures, batched.
-        c.add_costs(&[(cost_key("lo", "3/1/1"), Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo"), ..Default::default() })]);
+        c.add_costs(&[(
+            cost_key("lo", "3/1/1"),
+            Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo"), ..Default::default() },
+        )]);
         assert_eq!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)), ["3/1/2", "3/1/3"]);
     }
 
@@ -3795,7 +4795,8 @@ mod tests {
         c.set_map_update(None);
         let a = every_ask("m1", "pack", 4096, 10_000);
         assert!(w.ask(&a).unwrap().is_none(), "no map update: none");
-        let units: BTreeMap<String, String> = [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into();
+        let units: BTreeMap<String, String> =
+            [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into();
         c.set_map_update(Some(AsOf { began: 7, units: units.clone() }));
         let g = w.ask(&a).unwrap().unwrap();
         assert_eq!(g.as_of, Some(AsOf { began: 7, units }));
@@ -3822,7 +4823,10 @@ mod tests {
     }
 
     fn placement(slack: &[(&str, u64)], speed: &[(&str, f64)]) -> crate::agent::placement::Placement {
-        crate::agent::placement::Placement { slack: slack.iter().map(|(s, v)| (s.to_string(), *v)).collect(), speed: speed.iter().map(|(w, v)| (w.to_string(), *v)).collect() }
+        crate::agent::placement::Placement {
+            slack: slack.iter().map(|(s, v)| (s.to_string(), *v)).collect(),
+            speed: speed.iter().map(|(w, v)| (w.to_string(), *v)).collect(),
+        }
     }
 
     /// Placement on (crate::agent::placement): a member's ask tried on the long poles' step first
@@ -3831,13 +4835,30 @@ mod tests {
     #[test]
     fn placement_the_long_poles_first() {
         let (_d, c, w, _clock) = every((0, 0));
-        for (step, ts) in [("pack", vec![("6/1/1", 60)]), ("slope", vec![("3/1/1", 600), ("3/1/2", 900), ("3/1/3", 300)])] {
+        for (step, ts) in
+            [("pack", vec![("6/1/1", 60)]), ("slope", vec![("3/1/1", 600), ("3/1/2", 900), ("3/1/3", 300)])]
+        {
             for (t, secs) in ts {
-                c.add_costs_by(&[(cost_key(step, t), Cost { peak_mb: 500, secs, worker: None, v: cost_version(step), ..Default::default() })], "m1");
+                c.add_costs_by(
+                    &[(
+                        cost_key(step, t),
+                        Cost { peak_mb: 500, secs, worker: None, v: cost_version(step), ..Default::default() },
+                    )],
+                    "m1",
+                );
                 c.add_disks(&[(cost_key(step, t), 10)]);
             }
         }
-        let offers = || vec![Offer { step: "pack".into(), targets: vec![("6/1/1".into(), "k".into(), 0)], batch: 1 }, Offer { step: "slope".into(), targets: ["3/1/1", "3/1/2", "3/1/3"].iter().map(|t| (t.to_string(), format!("k {t}"), 0)).collect(), batch: 1 }];
+        let offers = || {
+            vec![
+                Offer { step: "pack".into(), targets: vec![("6/1/1".into(), "k".into(), 0)], batch: 1 },
+                Offer {
+                    step: "slope".into(),
+                    targets: ["3/1/1", "3/1/2", "3/1/3"].iter().map(|t| (t.to_string(), format!("k {t}"), 0)).collect(),
+                    batch: 1,
+                },
+            ]
+        };
         let a = Ask { can: vec!["pack".into(), "slope".into()], ..every_ask("m1", "pack", 4096, 10_000) };
         // Off: the plan's first step, from its front.
         c.offer("p", offers());
@@ -3867,7 +4888,13 @@ mod tests {
         let w2 = client::Client::at(w1.urls(), c.contact.token.clone(), "m2");
         let ts: Vec<String> = (0..400).map(|i| format!("6/{}/{}", i % 20, i / 20)).collect();
         for t in &ts {
-            c.add_costs_by(&[(cost_key("pack", t), Cost { peak_mb: 500, secs: 900, worker: None, v: cost_version("pack"), ..Default::default() })], "m1");
+            c.add_costs_by(
+                &[(
+                    cost_key("pack", t),
+                    Cost { peak_mb: 500, secs: 900, worker: None, v: cost_version("pack"), ..Default::default() },
+                )],
+                "m1",
+            );
             c.add_disks(&[(cost_key("pack", t), 10)]);
         }
         // (Both asking lately: nothing offered yet.)
@@ -3877,7 +4904,9 @@ mod tests {
         let picks = |c: &Coordinator| -> Vec<(bool, bool)> {
             let s = c.shared.lock().unwrap();
             let now = s.now();
-            ts.iter().map(|t| (!s.pick_every(&one(t), &a1, now).is_empty(), !s.pick_every(&one(t), &a2, now).is_empty())).collect()
+            ts.iter()
+                .map(|t| (!s.pick_every(&one(t), &a1, now).is_empty(), !s.pick_every(&one(t), &a2, now).is_empty()))
+                .collect()
         };
         // Off: both may take every one.
         assert!(picks(&c).iter().all(|&(x, y)| x && y));
@@ -3931,13 +4960,32 @@ mod tests {
         let (d, c, page) = start();
         let clock = store::clock::Virtual::new();
         c.shared.lock().unwrap().clock = clock.clone();
-        let ask = Ask { worker: "m1".into(), kind: "page".into(), can: vec!["terrainsub".into()], mem_mb: 4096, ..Default::default() };
+        let ask = Ask {
+            worker: "m1".into(),
+            kind: "page".into(),
+            can: vec!["terrainsub".into()],
+            mem_mb: 4096,
+            ..Default::default()
+        };
         let root = d.path().join("job");
         std::fs::create_dir_all(&root).unwrap();
         let offer = |ahead: Option<f64>| {
             let mut s = c.shared.lock().unwrap();
             let now = s.now();
-            s.tasks.offer(task::Offer { owner: 42, kind: "terrainsub".into(), spec: serde_json::json!({}), root: root.clone(), inputs: Default::default(), mem_mb: 100, ahead }, now).unwrap()
+            s.tasks
+                .offer(
+                    task::Offer {
+                        owner: 42,
+                        kind: "terrainsub".into(),
+                        spec: serde_json::json!({}),
+                        root: root.clone(),
+                        inputs: Default::default(),
+                        mem_mb: 100,
+                        ahead,
+                    },
+                    now,
+                )
+                .unwrap()
         };
         {
             let mut s = c.shared.lock().unwrap();
@@ -3963,7 +5011,10 @@ mod tests {
         let late = offer(Some(6.0));
         clock.advance(Duration::from_secs(15));
         assert_eq!(took(&c), None);
-        assert!(c.shared.lock().unwrap().tasks.by_id.contains_key(&late) && c.shared.lock().unwrap().tasks.by_id.contains_key(&plain));
+        assert!(
+            c.shared.lock().unwrap().tasks.by_id.contains_key(&late)
+                && c.shared.lock().unwrap().tasks.by_id.contains_key(&plain)
+        );
         // Measured faster: any, as before.
         c.shared.lock().unwrap().tasks.paces.insert(("m1".into(), "terrainsub".into()), 0.5);
         assert_eq!(took(&c), Some(plain));
@@ -3987,7 +5038,10 @@ mod tests {
         c.finish(own, &[]);
         let _ = w.ask(&every_ask("m1", "lo", 4096, 10_000)).unwrap().unwrap();
         assert!(c.cold_under_way("lo"));
-        c.add_costs(&[(cost_key("lo", "3/1/9"), Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo"), ..Default::default() })]);
+        c.add_costs(&[(
+            cost_key("lo", "3/1/9"),
+            Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo"), ..Default::default() },
+        )]);
         assert!(!c.cold_under_way("lo"), "measured: not a cold start");
         // Switched off: a step not shared, offered before, isn't granted.
         c.set_every(None);
@@ -4023,10 +5077,22 @@ mod tests {
     #[test]
     fn a_helper_takes_the_earliest_shared_step_that_fits_it() {
         let (_d, c, w) = start();
-        let o = |step: &str, ts: &[(&str, u64)], batch: usize| Offer { step: step.into(), targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(), batch };
+        let o = |step: &str, ts: &[(&str, u64)], batch: usize| Offer {
+            step: step.into(),
+            targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(),
+            batch,
+        };
         // Terrain needing more than it spares, slope's fitting, units, and candidates of the same tile
         // as a unit (the steps don't mix).
-        c.offer("p", vec![o("terrain", &[("3/1/2", 6000)], 1), o("slope", &[("3/2/2", 3000), ("3/2/3", 3000), ("3/1/3", 3000)], 2), o("unit", &[("6/1/1", 1 << 20)], 0), o("pois", &[("6/1/1", 1500)], 12)]);
+        c.offer(
+            "p",
+            vec![
+                o("terrain", &[("3/1/2", 6000)], 1),
+                o("slope", &[("3/2/2", 3000), ("3/2/3", 3000), ("3/1/3", 3000)], 2),
+                o("unit", &[("6/1/1", 1 << 20)], 0),
+                o("pois", &[("6/1/1", 1500)], 12),
+            ],
+        );
         let can = |steps: &[&str]| Ask { can: steps.iter().map(|s| s.to_string()).collect(), ..ask(4096) };
         let g = w.ask(&can(&["terrain", "slope", "unit", "pois"])).unwrap().unwrap();
         let Granted::Job { step, targets, pass } = g.work else { panic!() };
@@ -4043,7 +5109,10 @@ mod tests {
         assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "pois 6/1/1");
         assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "none");
         // Terrain once a run said it fits.
-        c.add_costs(&[(cost_key("terrain", "3/1/2"), Cost { peak_mb: 3500, secs: 1, worker: None, v: 3, ..Default::default() })]);
+        c.add_costs(&[(
+            cost_key("terrain", "3/1/2"),
+            Cost { peak_mb: 3500, secs: 1, worker: None, v: 3, ..Default::default() },
+        )]);
         assert_eq!(next(&["terrain"]), "terrain 3/1/2");
         // A worker that can't do a step gets none of it.
         c.offer("p", vec![o("trees", &[("3/1/1", 1000)], 1)]);
@@ -4053,9 +5122,15 @@ mod tests {
     #[test]
     fn terrain_from_the_near_end_and_more_memory_while_the_owner_is_away_for_short_jobs() {
         let (_d, c, w) = start();
-        let o = |step: &str, ts: &[(&str, u64)], batch: usize| Offer { step: step.into(), targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(), batch };
+        let o = |step: &str, ts: &[(&str, u64)], batch: usize| Offer {
+            step: step.into(),
+            targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(),
+            batch,
+        };
         let next = |a: &Ask| match w.ask(a).unwrap().map(|g| g.work) {
-            Some(Granted::Job { step, targets, .. }) => format!("{step} {}", targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" ")),
+            Some(Granted::Job { step, targets, .. }) => {
+                format!("{step} {}", targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "))
+            }
             _ => "none".into(),
         };
         // Terrain: the plan's first, the lead's next units' (not the far end's).
@@ -4065,7 +5140,19 @@ mod tests {
         // Slope's three areas: one needs 5 GB, measured at 10 minutes for this helper; one 8 GB,
         // an hour; one 5 GB, never run the way slope runs now.
         c.offer("p", vec![o("slope", &[("3/1/1", 5000), ("3/1/2", 8000), ("3/1/3", 5000)], 3)]);
-        c.add_costs_by(&[(cost_key("slope", "3/1/1"), Cost { peak_mb: 5000, secs: 600, worker: None, v: 3, ..Default::default() }), (cost_key("slope", "3/1/2"), Cost { peak_mb: 8000, secs: 3600, worker: None, v: 3, ..Default::default() })], "m1");
+        c.add_costs_by(
+            &[
+                (
+                    cost_key("slope", "3/1/1"),
+                    Cost { peak_mb: 5000, secs: 600, worker: None, v: 3, ..Default::default() },
+                ),
+                (
+                    cost_key("slope", "3/1/2"),
+                    Cost { peak_mb: 8000, secs: 3600, worker: None, v: 3, ..Default::default() },
+                ),
+            ],
+            "m1",
+        );
         // At its desk: none fits its 4 GB.
         assert_eq!(next(&can(&["slope"], 4096)), "none");
         // Away, sparing 10 GB for twenty minutes: the short one alone (the hour-long one, and the
@@ -4078,7 +5165,10 @@ mod tests {
         // What fits its usual memory comes first, whatever its time and its step (the agent offers
         // slope before the candidates).
         c.offer("p", vec![o("slope", &[("3/2/1", 5000)], 3), o("pois", &[("6/1/1", 1500)], 12)]);
-        c.add_costs_by(&[(cost_key("slope", "3/2/1"), Cost { peak_mb: 5000, secs: 60, worker: None, v: 3, ..Default::default() })], "m1");
+        c.add_costs_by(
+            &[(cost_key("slope", "3/2/1"), Cost { peak_mb: 5000, secs: 60, worker: None, v: 3, ..Default::default() })],
+            "m1",
+        );
         let both = Ask { more_mb: Some(10240), max_secs: Some(1200), ..can(&["slope", "pois"], 4096) };
         assert_eq!(next(&both), "pois 6/1/1");
     }
@@ -4088,48 +5178,129 @@ mod tests {
         let ts = |t: &str| vec![(t.to_string(), "k".to_string())];
         let h = |step: &str, t: &str, files: &[&str], raw: &[(&str, &str)]| {
             let changes = files.iter().map(|l| (l.to_string(), Some(format!("{l}.0000000000000003.pack")))).collect();
-            let raw = raw.iter().map(|(a, n)| (a.to_string(), crate::rawpack::Pack { name: n.to_string(), bytes: 1 })).collect();
+            let raw = raw
+                .iter()
+                .map(|(a, n)| (a.to_string(), crate::rawpack::Pack { name: n.to_string(), bytes: 1 }))
+                .collect();
             Handoff { changes, done: Some((step.into(), ts(t))), raw, ..Default::default() }
         };
         // An area's lo pack and its z6 tiles' hi packs; not another area's.
-        assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/lo/3-2-2", "layers/slope/hi/6-16-16", "layers/slope/hi/6-23-23"], &[]), "slope", &ts("3/2/2")).is_ok());
+        assert!(check_handoff(
+            &h("slope", "3/2/2", &["layers/slope/lo/3-2-2", "layers/slope/hi/6-16-16", "layers/slope/hi/6-23-23"], &[]),
+            "slope",
+            &ts("3/2/2")
+        )
+        .is_ok());
         // Part of a lease's targets (a job paused at a safe point, or stopped): those it did, and
         // only their files.
         let two = vec![("3/2/2".to_string(), "k".to_string()), ("3/3/2".to_string(), "k".to_string())];
         assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/lo/3-2-2"], &[]), "slope", &two).is_ok());
-        assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/lo/3-2-2", "layers/slope/lo/3-3-2"], &[]), "slope", &two).is_err(), "a file of a target it didn't do");
+        assert!(
+            check_handoff(
+                &h("slope", "3/2/2", &["layers/slope/lo/3-2-2", "layers/slope/lo/3-3-2"], &[]),
+                "slope",
+                &two
+            )
+            .is_err(),
+            "a file of a target it didn't do"
+        );
         assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/hi/6-24-16"], &[]), "slope", &ts("3/2/2")).is_err());
-        assert!(check_handoff(&h("slope", "3/2/2", &["layers/terrain/hi/6-16-16"], &[]), "slope", &ts("3/2/2")).is_err());
-        assert!(check_handoff(&h("trees", "3/2/2", &["layers/trees-leaf/hi/6-17-17", "layers/trees-cover/lo/3-2-2"], &[]), "trees", &ts("3/2/2")).is_ok());
+        assert!(
+            check_handoff(&h("slope", "3/2/2", &["layers/terrain/hi/6-16-16"], &[]), "slope", &ts("3/2/2")).is_err()
+        );
+        assert!(check_handoff(
+            &h("trees", "3/2/2", &["layers/trees-leaf/hi/6-17-17", "layers/trees-cover/lo/3-2-2"], &[]),
+            "trees",
+            &ts("3/2/2")
+        )
+        .is_ok());
         // A tree cover piece: its own hi packs and its mid, never its z3 tile's lo pack or another
         // piece's; an assembly isn't a helper's.
-        assert!(check_handoff(&h("trees", "6/17/17", &["layers/trees-leaf/hi/6-17-17", "layers/trees-cover/hi/6-17-17", "work/trees-mid/6-17-17"], &[]), "trees", &ts("6/17/17")).is_ok());
-        assert!(check_handoff(&h("trees", "6/17/17", &["layers/trees-cover/lo/3-2-2"], &[]), "trees", &ts("6/17/17")).is_err());
-        assert!(check_handoff(&h("trees", "6/17/17", &["work/trees-mid/6-17-18"], &[]), "trees", &ts("6/17/17")).is_err());
-        assert!(check_handoff(&h("trees-lo", "3/2/2", &["layers/trees-cover/lo/3-2-2"], &[]), "trees-lo", &ts("3/2/2")).is_err());
-        assert!(saves("trees-lo", "3/2/2", "layers/trees-leaf/lo/3-2-2") && !saves("trees-lo", "3/2/2", "layers/trees-leaf/hi/6-16-16"));
+        assert!(check_handoff(
+            &h(
+                "trees",
+                "6/17/17",
+                &["layers/trees-leaf/hi/6-17-17", "layers/trees-cover/hi/6-17-17", "work/trees-mid/6-17-17"],
+                &[]
+            ),
+            "trees",
+            &ts("6/17/17")
+        )
+        .is_ok());
+        assert!(check_handoff(&h("trees", "6/17/17", &["layers/trees-cover/lo/3-2-2"], &[]), "trees", &ts("6/17/17"))
+            .is_err());
+        assert!(
+            check_handoff(&h("trees", "6/17/17", &["work/trees-mid/6-17-18"], &[]), "trees", &ts("6/17/17")).is_err()
+        );
+        assert!(check_handoff(
+            &h("trees-lo", "3/2/2", &["layers/trees-cover/lo/3-2-2"], &[]),
+            "trees-lo",
+            &ts("3/2/2")
+        )
+        .is_err());
+        assert!(
+            saves("trees-lo", "3/2/2", "layers/trees-leaf/lo/3-2-2")
+                && !saves("trees-lo", "3/2/2", "layers/trees-leaf/hi/6-16-16")
+        );
         // Terrain's and slope's pieces: their hi pack and mid; their assemblies: their lo pack.
-        assert!(saves("terrain", "6/16/16", "layers/terrain/hi/6-16-16") && saves("terrain", "6/16/16", "work/terrain-mid/6-16-16"));
-        assert!(!saves("terrain", "6/16/16", "layers/terrain/lo/3-2-2") && !saves("terrain", "6/16/16", "layers/terrain/hi/6-16-17") && !saves("terrain", "6/16/16", "work/slope-mid/6-16-16"));
-        assert!(saves("slope", "6/16/16", "layers/slope/hi/6-16-16") && saves("slope", "6/16/16", "work/slope-mid/6-16-16") && !saves("slope", "6/16/16", "layers/slope/lo/3-2-2"));
-        assert!(saves("terrain-lo", "3/2/2", "layers/terrain/lo/3-2-2") && !saves("terrain-lo", "3/2/2", "layers/slope/lo/3-2-2") && !saves("terrain-lo", "3/2/2", "layers/terrain/hi/6-16-16"));
-        assert!(saves("slope-lo", "3/2/2", "layers/slope/lo/3-2-2") && !saves("slope-lo", "3/2/2", "work/slope-mid/6-16-16"));
+        assert!(
+            saves("terrain", "6/16/16", "layers/terrain/hi/6-16-16")
+                && saves("terrain", "6/16/16", "work/terrain-mid/6-16-16")
+        );
+        assert!(
+            !saves("terrain", "6/16/16", "layers/terrain/lo/3-2-2")
+                && !saves("terrain", "6/16/16", "layers/terrain/hi/6-16-17")
+                && !saves("terrain", "6/16/16", "work/slope-mid/6-16-16")
+        );
+        assert!(
+            saves("slope", "6/16/16", "layers/slope/hi/6-16-16")
+                && saves("slope", "6/16/16", "work/slope-mid/6-16-16")
+                && !saves("slope", "6/16/16", "layers/slope/lo/3-2-2")
+        );
+        assert!(
+            saves("terrain-lo", "3/2/2", "layers/terrain/lo/3-2-2")
+                && !saves("terrain-lo", "3/2/2", "layers/slope/lo/3-2-2")
+                && !saves("terrain-lo", "3/2/2", "layers/terrain/hi/6-16-16")
+        );
+        assert!(
+            saves("slope-lo", "3/2/2", "layers/slope/lo/3-2-2")
+                && !saves("slope-lo", "3/2/2", "work/slope-mid/6-16-16")
+        );
         // (A z3 tile's whole run, a lease of the scheme before: as it was.)
-        assert!(saves("terrain", "3/2/2", "layers/terrain/lo/3-2-2") && saves("terrain", "3/2/2", "layers/terrain/hi/6-16-16"));
+        assert!(
+            saves("terrain", "3/2/2", "layers/terrain/lo/3-2-2")
+                && saves("terrain", "3/2/2", "layers/terrain/hi/6-16-16")
+        );
         assert!(check_handoff(&h("pois", "6/1/3", &["work/pois/6-1-3"], &[]), "pois", &ts("6/1/3")).is_ok());
         assert!(check_handoff(&h("pois", "6/1/3", &["work/peaks/6-1-3"], &[]), "pois", &ts("6/1/3")).is_err());
         // Raw tiles' archives: its own areas, named by their content.
-        let terrain = |raw: &[(&str, &str)]| check_handoff(&h("terrain", "3/2/2", &["layers/terrain/lo/3-2-2"], raw), "terrain", &ts("3/2/2"));
-        assert!(terrain(&[("6-20-21", "6-20-21.0123456789abcdef.tiles"), ("3-2-2", "3-2-2.0123456789abcdef.tiles")]).is_ok());
+        let terrain = |raw: &[(&str, &str)]| {
+            check_handoff(&h("terrain", "3/2/2", &["layers/terrain/lo/3-2-2"], raw), "terrain", &ts("3/2/2"))
+        };
+        assert!(terrain(&[("6-20-21", "6-20-21.0123456789abcdef.tiles"), ("3-2-2", "3-2-2.0123456789abcdef.tiles")])
+            .is_ok());
         // Another area's (an earlier job's tiles, packed with this one's) too, and the root's.
-        assert!(terrain(&[("6-30-21", "6-30-21.0123456789abcdef.tiles"), ("root", "root.0123456789abcdef.tiles")]).is_ok());
+        assert!(
+            terrain(&[("6-30-21", "6-30-21.0123456789abcdef.tiles"), ("root", "root.0123456789abcdef.tiles")]).is_ok()
+        );
         assert!(terrain(&[("6-64-21", "6-64-21.0123456789abcdef.tiles")]).is_err());
         assert!(terrain(&[("5-20-21", "5-20-21.0123456789abcdef.tiles")]).is_err());
         assert!(terrain(&[("6-020-21", "6-020-21.0123456789abcdef.tiles")]).is_err());
         assert!(terrain(&[("6-20-21", "6-20-22.0123456789abcdef.tiles")]).is_err());
         assert!(terrain(&[("6-20-21", "../6-20-21.0123456789abcdef.tiles")]).is_err());
-        let peaks = |a: &str| check_handoff(&h("peaks", "6/20/21", &["work/peaks/6-20-21"], &[(a, &format!("{a}.0123456789abcdef.tiles"))]), "peaks", &ts("6/20/21"));
-        assert!(peaks("6-21-22").is_ok() && peaks("3-2-2").is_ok() && peaks("6-25-21").is_ok() && peaks("../6-25-21").is_err());
+        let peaks = |a: &str| {
+            check_handoff(
+                &h("peaks", "6/20/21", &["work/peaks/6-20-21"], &[(a, &format!("{a}.0123456789abcdef.tiles"))]),
+                "peaks",
+                &ts("6/20/21"),
+            )
+        };
+        assert!(
+            peaks("6-21-22").is_ok()
+                && peaks("3-2-2").is_ok()
+                && peaks("6-25-21").is_ok()
+                && peaks("../6-25-21").is_err()
+        );
         // A step no worker does.
         assert!(check_handoff(&h("catalog", "catalog", &[], &[]), "catalog", &ts("catalog")).is_err());
     }
@@ -4137,7 +5308,12 @@ mod tests {
     #[test]
     fn a_helper_asks_beats_and_hands_back_once() {
         let (d, c, w) = start();
-        let units = vec![("6/1/1".to_string(), "k1".to_string(), 10u64 << 20), ("6/1/2".into(), "k2".into(), 500 << 20), ("6/1/3".into(), "k3".into(), 20 << 20), ("6/1/4".into(), "k4".into(), 30 << 20)];
+        let units = vec![
+            ("6/1/1".to_string(), "k1".to_string(), 10u64 << 20),
+            ("6/1/2".into(), "k2".into(), 500 << 20),
+            ("6/1/3".into(), "k3".into(), 20 << 20),
+            ("6/1/4".into(), "k4".into(), 30 << 20),
+        ];
         c.offer_units("2026-09-28", units.clone());
         // This Mac's own job holds 6/1/4.
         let own = c.hold("unit", &[("6/1/4".into(), "k4".into())]).unwrap();
@@ -4154,14 +5330,39 @@ mod tests {
         // named alone.)
         let mut bad = handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")]);
         bad.changes.insert("base/6-9-9".into(), None);
-        bad.raw = vec![("6-1-1".into(), crate::rawpack::Pack { name: "6-1-1.0123456789abcdef.tiles".into(), bytes: 9 }), ("6-1-1".into(), crate::rawpack::Pack { name: "../x.tiles".into(), bytes: 9 })];
-        assert!(matches!(w.done(&Done { lease: g.lease, handoff: Some(bad), ..Default::default() }).unwrap(), client::Handed::Refused(_)));
+        bad.raw = vec![
+            ("6-1-1".into(), crate::rawpack::Pack { name: "6-1-1.0123456789abcdef.tiles".into(), bytes: 9 }),
+            ("6-1-1".into(), crate::rawpack::Pack { name: "../x.tiles".into(), bytes: 9 }),
+        ];
+        assert!(matches!(
+            w.done(&Done { lease: g.lease, handoff: Some(bad), ..Default::default() }).unwrap(),
+            client::Handed::Refused(_)
+        ));
         let kept = crate::handoff::waiting_in(&c.journal()).unwrap();
         assert_eq!(kept.len(), 1);
-        assert!(kept[0].0.parent().unwrap().ends_with(crate::handoff::RAW_AGAIN) && kept[0].1.done.is_none() && kept[0].1.changes.is_empty());
-        assert_eq!(kept[0].1.raw.iter().map(|r| r.1.name.as_str()).collect::<Vec<_>>(), ["6-1-1.0123456789abcdef.tiles"]);
+        assert!(
+            kept[0].0.parent().unwrap().ends_with(crate::handoff::RAW_AGAIN)
+                && kept[0].1.done.is_none()
+                && kept[0].1.changes.is_empty()
+        );
+        assert_eq!(
+            kept[0].1.raw.iter().map(|r| r.1.name.as_str()).collect::<Vec<_>>(),
+            ["6-1-1.0123456789abcdef.tiles"]
+        );
         std::fs::remove_file(&kept[0].0).unwrap();
-        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), costs: vec![("6/1/3".into(), Cost { peak_mb: 2000, secs: 300, worker: None, v: 0, ..Default::default() })], ..Default::default() }).unwrap(), client::Handed::Taken);
+        assert_eq!(
+            w.done(&Done {
+                lease: g.lease,
+                handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])),
+                costs: vec![(
+                    "6/1/3".into(),
+                    Cost { peak_mb: 2000, secs: 300, worker: None, v: 0, ..Default::default() }
+                )],
+                ..Default::default()
+            })
+            .unwrap(),
+            client::Handed::Taken
+        );
         let waiting = crate::handoff::waiting_in(&c.journal()).unwrap();
         assert_eq!(waiting.len(), 1);
         assert!(waiting[0].1.done.is_some() && waiting[0].1.changes.contains_key("base/6-1-3"));
@@ -4172,7 +5373,15 @@ mod tests {
         c.offer_units("2026-09-28", units.clone());
         assert!(w.ask(&ask(4096)).unwrap().is_none());
         // A second hand-off for the ended lease: gone.
-        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), ..Default::default() }).unwrap(), client::Handed::Gone);
+        assert_eq!(
+            w.done(&Done {
+                lease: g.lease,
+                handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])),
+                ..Default::default()
+            })
+            .unwrap(),
+            client::Handed::Gone
+        );
         c.finish(own, &[("6/1/4".to_string(), "k4".to_string())]);
         let mut changed = units.clone();
         changed[0].1 = "k1b".into();
@@ -4274,12 +5483,24 @@ mod tests {
             b
         };
         let manifest = String::from_utf8(get("/work/manifest.webmanifest")).unwrap();
-        assert!(manifest.starts_with("HTTP/1.1 200") && manifest.contains("application/manifest+json") && manifest.contains("\"start_url\": \"/work/\""));
+        assert!(
+            manifest.starts_with("HTTP/1.1 200")
+                && manifest.contains("application/manifest+json")
+                && manifest.contains("\"start_url\": \"/work/\"")
+        );
         let sw = String::from_utf8(get("/work/sw.js")).unwrap();
-        assert!(sw.starts_with("HTTP/1.1 200") && !sw.contains("__VERSION__") && sw.contains(&format!("const VERSION = \"{}\"", http::page_version())));
+        assert!(
+            sw.starts_with("HTTP/1.1 200")
+                && !sw.contains("__VERSION__")
+                && sw.contains(&format!("const VERSION = \"{}\"", http::page_version()))
+        );
         // (Its list of the page's files, to keep as it installs: the page's own address among them,
         // not the worker's.)
-        assert!(!sw.contains("__PAGE__") && sw.contains(r#"const PAGE = ["/work/","/work/index.html","/work/worker.js""#) && !sw.contains(r#""/work/sw.js""#));
+        assert!(
+            !sw.contains("__PAGE__")
+                && sw.contains(r#"const PAGE = ["/work/","/work/index.html","/work/worker.js""#)
+                && !sw.contains(r#""/work/sw.js""#)
+        );
         let icon = get("/work/icons/icon-192.png");
         assert!(icon.starts_with(b"HTTP/1.1 200") && icon.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"));
         // A connection whose headers don't come is closed by the server once their time is up, not
@@ -4292,7 +5513,11 @@ mod tests {
         slow.set_read_timeout(Some(Duration::from_secs(600))).unwrap();
         let mut b = [0u8; 64];
         match slow.read(&mut b) {
-            Ok(n) => assert!(t.elapsed() >= http::HEADERS_MAX, "closed after {:?} with {n} bytes, before the headers' time was up", t.elapsed()),
+            Ok(n) => assert!(
+                t.elapsed() >= http::HEADERS_MAX,
+                "closed after {:?} with {n} bytes, before the headers' time was up",
+                t.elapsed()
+            ),
             Err(e) => panic!("the server never closed it: no answer in {:?} ({e})", t.elapsed()),
         }
         drop(held);
@@ -4312,16 +5537,32 @@ mod tests {
         let w2 = client::Client::at(vec![format!("http://127.0.0.1:{port}")], token, "m1");
         assert!(w2.beat(g.lease, None).unwrap(), "the helper's lease lives on");
         assert!(!c2.renew(own, None), "this Mac's own ended with its agent");
-        assert_eq!(w2.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/1", "k1")])), ..Default::default() }).unwrap(), client::Handed::Taken);
+        assert_eq!(
+            w2.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/1", "k1")])), ..Default::default() })
+                .unwrap(),
+            client::Handed::Taken
+        );
     }
 
     /// A request as a browser, a page or a proxy sends it, straight to `addr`: `headers` over the
     /// usual ones (Host x, JSON); the answer's status, where a redirect leads, and its JSON.
-    fn send(addr: &str, method: &str, path: &str, key: Option<&str>, headers: &[(&str, &str)], body: &serde_json::Value) -> (u16, String, serde_json::Value) {
+    fn send(
+        addr: &str,
+        method: &str,
+        path: &str,
+        key: Option<&str>,
+        headers: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> (u16, String, serde_json::Value) {
         use std::io::{Read, Write};
         let mut s = std::net::TcpStream::connect(addr).unwrap();
         let b = body.to_string();
-        let mut h: Vec<(String, String)> = [("Host", "x"), ("Content-Type", "application/json"), ("X-Worker", "a page")].iter().filter(|(k, _)| !headers.iter().any(|(o, _)| o.eq_ignore_ascii_case(k))).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let mut h: Vec<(String, String)> =
+            [("Host", "x"), ("Content-Type", "application/json"), ("X-Worker", "a page")]
+                .iter()
+                .filter(|(k, _)| !headers.iter().any(|(o, _)| o.eq_ignore_ascii_case(k)))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
         h.extend(headers.iter().map(|(k, v)| (k.to_string(), v.to_string())));
         if let Some(k) = key {
             h.push(("Authorization".into(), format!("Bearer {k}")));
@@ -4329,12 +5570,21 @@ mod tests {
         let head: String = h.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
         // (Written in one piece: a refusal answered once the head is in closes the connection, and
         // a body written after it, as on a loaded Mac, has the connection reset, the answer lost.)
-        s.write_all(format!("{method} {path} HTTP/1.1\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len()).as_bytes()).unwrap();
+        s.write_all(
+            format!("{method} {path} HTTP/1.1\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len())
+                .as_bytes(),
+        )
+        .unwrap();
         let mut r = Vec::new();
         s.read_to_end(&mut r).unwrap();
         let text = String::from_utf8_lossy(&r).to_string();
         let code = text.split(' ').nth(1).unwrap().parse().unwrap();
-        let location = text.lines().find_map(|l| l.strip_prefix("location: ").or_else(|| l.strip_prefix("Location: "))).unwrap_or("").trim().to_string();
+        let location = text
+            .lines()
+            .find_map(|l| l.strip_prefix("location: ").or_else(|| l.strip_prefix("Location: ")))
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let json = text.split("\r\n\r\n").nth(1).and_then(|b| serde_json::from_str(b.trim()).ok()).unwrap_or_default();
         (code, location, json)
     }
@@ -4369,7 +5619,9 @@ mod tests {
     fn only_a_request_naming_this_mac_from_its_own_page_and_the_owners_and_jobs_from_this_mac_itself() {
         let (_d, c, w) = start();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
-        let post = |path: &str, key: Option<&str>, headers: &[(&str, &str)]| send(&addr, "POST", path, key, headers, &serde_json::json!({ "kind": "tail" })).0;
+        let post = |path: &str, key: Option<&str>, headers: &[(&str, &str)]| {
+            send(&addr, "POST", path, key, headers, &serde_json::json!({ "kind": "tail" })).0
+        };
         // A name a web page elsewhere could point here (DNS rebinding), a page elsewhere, or a JSON
         // request sent as a form is: refused, with the key or not.
         assert_eq!(post("/work/swarm", None, &[("Host", "evil.example")]), 403);
@@ -4377,15 +5629,33 @@ mod tests {
         assert_eq!(post("/work/pause", Some(&c.contact.token), &[("Origin", "http://192.168.1.66:8000")]), 403);
         assert_eq!(post("/work/swarm", None, &[("Content-Type", "text/plain")]), 415);
         // The build page's own, at the address it asked for: straight, or through tailscale serve.
-        assert_eq!(post("/work/swarm", None, &[("Host", "100.70.85.80:8090"), ("Origin", "http://100.70.85.80:8090")]), 200);
-        assert_eq!(post("/work/swarm", None, &[("Host", "127.0.0.1:8090"), ("X-Forwarded-Host", "mac.tail1.ts.net"), ("X-Forwarded-For", "100.101.1.2"), ("Origin", "https://mac.tail1.ts.net")]), 200);
+        assert_eq!(
+            post("/work/swarm", None, &[("Host", "100.70.85.80:8090"), ("Origin", "http://100.70.85.80:8090")]),
+            200
+        );
+        assert_eq!(
+            post(
+                "/work/swarm",
+                None,
+                &[
+                    ("Host", "127.0.0.1:8090"),
+                    ("X-Forwarded-Host", "mac.tail1.ts.net"),
+                    ("X-Forwarded-For", "100.101.1.2"),
+                    ("Origin", "https://mac.tail1.ts.net")
+                ]
+            ),
+            200
+        );
         // A job's, from this Mac itself: not handed over by a proxy, whatever key.
         assert_eq!(post("/task/workers", Some(&c.job_token), &[]), 200);
         assert_eq!(post("/task/workers", Some(&c.job_token), &[("X-Forwarded-For", "100.101.1.2")]), 403);
         assert_eq!(post("/task/workers", Some(&c.contact.token), &[]), 401);
         // Through the proxy, from the internet (Tailscale Funnel), or an address that's none: never.
         assert_eq!(post("/work/swarm", None, &[("X-Forwarded-For", "8.8.8.8")]), 403);
-        assert_eq!(post("/work/swarm", None, &[("X-Forwarded-For", "100.101.1.2"), ("Tailscale-Funnel-Request", "?1")]), 403);
+        assert_eq!(
+            post("/work/swarm", None, &[("X-Forwarded-For", "100.101.1.2"), ("Tailscale-Funnel-Request", "?1")]),
+            403
+        );
         assert_eq!(post("/work/swarm", None, &[("X-Forwarded-For", "100.101.1.2, nonsense")]), 403);
     }
 
@@ -4415,14 +5685,50 @@ mod tests {
         assert_eq!(page(serde_json::json!({ "unit": "some-unit", "accept": ["not an id"] })) / 100, 4);
         assert_eq!(page(serde_json::json!({ "unit": "../state", "all": true })) / 100, 4);
         assert_eq!(page(serde_json::json!({ "unit": "some-unit" })) / 100, 4);
-        assert_eq!(send(&addr, "POST", "/work/inputs", None, &[("Origin", "https://evil.example")], &serde_json::json!({ "unit": "some-unit", "all": true })).0, 403);
+        assert_eq!(
+            send(
+                &addr,
+                "POST",
+                "/work/inputs",
+                None,
+                &[("Origin", "https://evil.example")],
+                &serde_json::json!({ "unit": "some-unit", "all": true })
+            )
+            .0,
+            403
+        );
         let asks = c.take_inputs_asks();
-        assert_eq!(asks.iter().map(|a| (a.accept.clone(), a.all)).collect::<Vec<_>>(), [(vec!["gt-neg.0123456789abcdef".to_string()], false), (vec![], true)]);
+        assert_eq!(
+            asks.iter().map(|a| (a.accept.clone(), a.all)).collect::<Vec<_>>(),
+            [(vec!["gt-neg.0123456789abcdef".to_string()], false), (vec![], true)]
+        );
         assert!(asks.iter().all(|a| a.unit == "some-unit" && a.by.starts_with("the build page")));
         // A member's agent's word to list now (with the build's key), and its owner's ask to forget
         // a unit's records: never a page's forget.
-        assert_eq!(send(&addr, "POST", "/work/inputs", Some(&c.contact.token), &[], &serde_json::json!({ "unit": "a/b", "check": true, "full": true })).0, 200);
-        assert_eq!(send(&addr, "POST", "/work/inputs", Some(&c.contact.token), &[], &serde_json::json!({ "unit": "a/b", "forget": true })).0, 200);
+        assert_eq!(
+            send(
+                &addr,
+                "POST",
+                "/work/inputs",
+                Some(&c.contact.token),
+                &[],
+                &serde_json::json!({ "unit": "a/b", "check": true, "full": true })
+            )
+            .0,
+            200
+        );
+        assert_eq!(
+            send(
+                &addr,
+                "POST",
+                "/work/inputs",
+                Some(&c.contact.token),
+                &[],
+                &serde_json::json!({ "unit": "a/b", "forget": true })
+            )
+            .0,
+            200
+        );
         assert_eq!(page(serde_json::json!({ "unit": "some-unit", "forget": true })) / 100, 4);
         let asks = c.take_inputs_asks();
         assert!(asks[0].check && asks[0].full && asks[1].forget && asks.len() == 2);
@@ -4440,13 +5746,41 @@ mod tests {
         // page (nor with the build's key).
         assert_eq!(page(serde_json::json!({ "take": true, "force": true })) / 100, 4);
         assert_eq!(page(serde_json::json!({ "take": true, "downgrade": false })) / 100, 4);
-        assert_eq!(send(&addr, "POST", "/work/lead", Some(&c.contact.token), &[], &serde_json::json!({ "take": true, "force": true })).0 / 100, 4);
+        assert_eq!(
+            send(
+                &addr,
+                "POST",
+                "/work/lead",
+                Some(&c.contact.token),
+                &[],
+                &serde_json::json!({ "take": true, "force": true })
+            )
+            .0 / 100,
+            4
+        );
         assert_eq!(page(serde_json::json!({ "to": "" })) / 100, 4);
         assert_eq!(page(serde_json::json!({})) / 100, 4);
         // From a site elsewhere: no.
-        assert_eq!(send(&addr, "POST", "/work/lead", None, &[("Origin", "https://evil.example")], &serde_json::json!({ "to": "MacBook-Air" })).0, 403);
+        assert_eq!(
+            send(
+                &addr,
+                "POST",
+                "/work/lead",
+                None,
+                &[("Origin", "https://evil.example")],
+                &serde_json::json!({ "to": "MacBook-Air" })
+            )
+            .0,
+            403
+        );
         let asks = c.take_lead_asks();
-        assert_eq!(asks.iter().map(|a| a.ask.clone()).collect::<Vec<_>>(), [crate::control::LeadAsk::Give { to: "MacBook-Air".into() }, crate::control::LeadAsk::Take { force: false, downgrade: false }]);
+        assert_eq!(
+            asks.iter().map(|a| a.ask.clone()).collect::<Vec<_>>(),
+            [
+                crate::control::LeadAsk::Give { to: "MacBook-Air".into() },
+                crate::control::LeadAsk::Take { force: false, downgrade: false }
+            ]
+        );
         assert!(asks.iter().all(|a| a.by.starts_with("the build page")));
         assert!(c.take_lead_asks().is_empty());
     }
@@ -4469,8 +5803,19 @@ mod tests {
         // Whatever name it gives, it works under a page's: another's leases and files aren't its own.
         assert_eq!(page("/work/ask", None, asks("m4", "web", &["tail"])).0 / 100, 2);
         let lease = c.hold("unit", &[("6/1/1".to_string(), "k".to_string())]).unwrap();
-        assert_eq!(page("/work/beat", None, serde_json::json!({ "worker": "m4", "lease": lease, "progress": "x".repeat(10_000) })).1["ok"], false);
-        assert_eq!(page("/work/fail", None, serde_json::json!({ "worker": "m4", "lease": lease, "error": "x" })).0, 410);
+        assert_eq!(
+            page(
+                "/work/beat",
+                None,
+                serde_json::json!({ "worker": "m4", "lease": lease, "progress": "x".repeat(10_000) })
+            )
+            .1["ok"],
+            false
+        );
+        assert_eq!(
+            page("/work/fail", None, serde_json::json!({ "worker": "m4", "lease": lease, "error": "x" })).0,
+            410
+        );
         assert!(c.renew(lease, None), "the lead's own lease, untouched");
         assert_eq!(send(&addr, "GET", "/work/in/1/a", None, &[("X-Worker", "m4")], &serde_json::json!({})).0, 404);
         {
@@ -4478,7 +5823,12 @@ mod tests {
             let names: Vec<&String> = s.workers.keys().collect();
             assert_eq!(names, ["page ipad01", "page m4"]);
             let w = &s.workers["page ipad01"];
-            assert!(w.label == "Safari on iPad" && w.what.chars().count() <= WHAT_MAX, "{:?} {}", w.label, w.what.len());
+            assert!(
+                w.label == "Safari on iPad" && w.what.chars().count() <= WHAT_MAX,
+                "{:?} {}",
+                w.label,
+                w.what.len()
+            );
         }
         // (An empty key is none: a page.)
         assert_eq!(send(&addr, "POST", "/work/ask", Some(""), &[], &asks("ipad01", "web", &["tail"])).0 / 100, 2);
@@ -4486,16 +5836,24 @@ mod tests {
         assert_eq!(page("/work/status", None, serde_json::json!({})).0, 403);
         assert_eq!(page("/task/workers", None, serde_json::json!({})).0, 401);
         // Its pause: made now by this Mac's clock, by the build page, whatever it says.
-        let forever = serde_json::json!({ "pause": { "mode": "drain", "by": "the owner", "at": u64::MAX }, "at": u64::MAX });
+        let forever =
+            serde_json::json!({ "pause": { "mode": "drain", "by": "the owner", "at": u64::MAX }, "at": u64::MAX });
         assert_eq!(page("/work/pause", None, forever.clone()).0, 200);
         let p = c.shared.lock().unwrap().paused.clone().unwrap();
-        assert!(p.by.starts_with("the build page") && p.at <= unix_now() && c.shared.lock().unwrap().pause_at <= unix_now(), "{}", p.by);
+        assert!(
+            p.by.starts_with("the build page") && p.at <= unix_now() && c.shared.lock().unwrap().pause_at <= unix_now(),
+            "{}",
+            p.by
+        );
         // (So the owner's resume goes through. An agent's time is its own, a minute ahead at most.)
         assert_eq!(page("/work/pause", Some(&token), serde_json::json!({ "pause": null })).0, 200);
         assert!(c.shared.lock().unwrap().paused.is_none());
         assert_eq!(page("/work/pause", Some(&token), forever).0, 200);
         assert!(c.shared.lock().unwrap().pause_at <= unix_now() + AHEAD_S);
-        assert_eq!(page("/work/pause", Some(&token), serde_json::json!({ "pause": null, "at": unix_now() + AHEAD_S })).0, 200);
+        assert_eq!(
+            page("/work/pause", Some(&token), serde_json::json!({ "pause": null, "at": unix_now() + AHEAD_S })).0,
+            200
+        );
         assert!(c.shared.lock().unwrap().paused.is_none());
         // Pages that name themselves anew at every ask: a day's few, then refused (as one already
         // known, still answered).
@@ -4519,10 +5877,28 @@ mod tests {
         std::fs::write(nas.join("sources/canopy/sq.tif"), &square).unwrap();
         std::fs::write(nas.join("state/build/manifest.json"), b"{}").unwrap();
         let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
-        let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root: job_root.clone(), inputs: [("u/in.bin".to_string(), 5)].into(), mem_mb: 100, ahead: None };
+        let offer = task::Offer {
+            owner: 42,
+            kind: "tail".into(),
+            spec: serde_json::json!({ "unit": "6/1/1" }),
+            root: job_root.clone(),
+            inputs: [("u/in.bin".to_string(), 5)].into(),
+            mem_mb: 100,
+            ahead: None,
+        };
         job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap();
         let ipad = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "ipad");
-        let g = ipad.ask(&Ask { worker: "ipad".into(), kind: "web".into(), can: vec!["tail".into()], mem_mb: 1000, cores: 4, ..Default::default() }).unwrap().unwrap();
+        let g = ipad
+            .ask(&Ask {
+                worker: "ipad".into(),
+                kind: "web".into(),
+                can: vec!["tail".into()],
+                mem_mb: 1000,
+                cores: 4,
+                ..Default::default()
+            })
+            .unwrap()
+            .unwrap();
         // (A request as the page makes it: its token, who it is, a range.)
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let get = |path: &str, who: &str, range: Option<&str>| -> (u16, Vec<u8>) {
@@ -4553,8 +5929,14 @@ mod tests {
         let json = |b: &[u8]| serde_json::from_slice::<serde_json::Value>(b).unwrap();
         let (code, b) = get(&format!("{base}/nas/sources/canopy/sq.tif?probe"), "ipad", None);
         assert_eq!((code, json(&b)), (200, serde_json::json!({ "kind": "file", "size": 3000 })));
-        assert_eq!(json(&get(&format!("{base}/nas/sources/canopy?probe"), "ipad", None).1), serde_json::json!({ "kind": "dir" }));
-        assert_eq!(json(&get(&format!("{base}/nas/sources/canopy?list"), "ipad", None).1)["entries"], serde_json::json!([["sq.tif", "file", 3000]]));
+        assert_eq!(
+            json(&get(&format!("{base}/nas/sources/canopy?probe"), "ipad", None).1),
+            serde_json::json!({ "kind": "dir" })
+        );
+        assert_eq!(
+            json(&get(&format!("{base}/nas/sources/canopy?list"), "ipad", None).1)["entries"],
+            serde_json::json!([["sq.tif", "file", 3000]])
+        );
         // A folder that can't be read (as the NAS not answering): an error, not an empty listing.
         let locked = nas.join("sources/canopy/locked");
         std::fs::create_dir_all(&locked).unwrap();
@@ -4581,10 +5963,26 @@ mod tests {
         std::fs::write(root.join("u/in.bin"), b"input").unwrap();
         // The job's side, from this Mac.
         let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
-        let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root: root.clone(), inputs: [("u/in.bin".to_string(), 5)].into(), mem_mb: 800, ahead: None };
-        let id = job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap().1["id"].as_u64().unwrap();
+        let offer = task::Offer {
+            owner: 42,
+            kind: "tail".into(),
+            spec: serde_json::json!({ "unit": "6/1/1" }),
+            root: root.clone(),
+            inputs: [("u/in.bin".to_string(), 5)].into(),
+            mem_mb: 800,
+            ahead: None,
+        };
+        let id =
+            job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap().1["id"].as_u64().unwrap();
         // A worker that spares too little gets nothing; one that spares enough, the task.
-        let web = |mem| Ask { worker: "ipad".into(), kind: "web".into(), can: vec!["tail".into()], mem_mb: mem, cores: 4, ..Default::default() };
+        let web = |mem| Ask {
+            worker: "ipad".into(),
+            kind: "web".into(),
+            can: vec!["tail".into()],
+            mem_mb: mem,
+            cores: 4,
+            ..Default::default()
+        };
         let ipad = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "ipad");
         assert!(ipad.ask(&web(500)).unwrap().is_none());
         let g = ipad.ask(&web(1000)).unwrap().unwrap();
@@ -4595,7 +5993,17 @@ mod tests {
         assert_eq!(ipad.get_bytes(&format!("/work/in/{}/u/in.bin", g.lease)).unwrap(), b"input");
         assert!(ipad.get_bytes(&format!("/work/in/{}/u/other.bin", g.lease)).is_err());
         ipad.put_bytes(&format!("/work/out/{}/u/out.bin", g.lease), b"output!").unwrap();
-        assert_eq!(ipad.done(&Done { lease: g.lease, outputs: vec![task::Output { path: "u/out.bin".into(), size: 7 }], secs: 2.0, peak_mb: 300, ..Default::default() }).unwrap(), client::Handed::Taken);
+        assert_eq!(
+            ipad.done(&Done {
+                lease: g.lease,
+                outputs: vec![task::Output { path: "u/out.bin".into(), size: 7 }],
+                secs: 2.0,
+                peak_mb: 300,
+                ..Default::default()
+            })
+            .unwrap(),
+            client::Handed::Taken
+        );
         let st = job.post_json(&format!("/task/{id}"), &serde_json::json!({})).unwrap().1;
         assert_eq!(st["state"], "done");
         assert_eq!(st["check"], true, "a worker's first results are checked");
@@ -4604,11 +6012,24 @@ mod tests {
         // The job's check found it different: the worker gets nothing more.
         job.post_json(&format!("/task/{id}/close"), &serde_json::json!({ "checked": false })).unwrap();
         assert!(!out.exists());
-        let id2 = job.post_json("/task/offer", &serde_json::to_value(&task::Offer { mem_mb: 100, ..offer.clone() }).unwrap()).unwrap().1["id"].as_u64().unwrap();
+        let id2 = job
+            .post_json("/task/offer", &serde_json::to_value(&task::Offer { mem_mb: 100, ..offer.clone() }).unwrap())
+            .unwrap()
+            .1["id"]
+            .as_u64()
+            .unwrap();
         assert!(ipad.ask(&web(1000)).unwrap().is_none());
-        assert_eq!(job.post_json(&format!("/task/{id2}/withdraw"), &serde_json::json!({})).unwrap().1["withdrawn"], true);
+        assert_eq!(
+            job.post_json(&format!("/task/{id2}/withdraw"), &serde_json::json!({})).unwrap().1["withdrawn"],
+            true
+        );
         // What a worker measured for the unit replaces the guess, more or less: 300 MB and a tenth.
-        let id3 = job.post_json("/task/offer", &serde_json::to_value(&task::Offer { mem_mb: 5000, ..offer }).unwrap()).unwrap().1["id"].as_u64().unwrap();
+        let id3 = job
+            .post_json("/task/offer", &serde_json::to_value(&task::Offer { mem_mb: 5000, ..offer }).unwrap())
+            .unwrap()
+            .1["id"]
+            .as_u64()
+            .unwrap();
         let phone = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "phone");
         let g = phone.ask(&Ask { worker: "phone".into(), ..web(500) }).unwrap().unwrap();
         let Granted::Task { id: tid, mem_mb, .. } = g.work else { panic!() };
@@ -4621,7 +6042,11 @@ mod tests {
         use std::io::{Read, Write};
         let mut s = std::net::TcpStream::connect(addr).unwrap();
         let head: String = headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
-        let mut req = format!("{method} {path} HTTP/1.1\r\nHost: x\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n", body.len()).into_bytes();
+        let mut req = format!(
+            "{method} {path} HTTP/1.1\r\nHost: x\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
         req.extend_from_slice(body);
         s.write_all(&req).unwrap();
         let mut r = Vec::new();
@@ -4634,7 +6059,11 @@ mod tests {
     }
 
     fn header_of<'a>(r: &'a str, name: &str) -> Option<&'a str> {
-        r.split("\r\n\r\n").next().unwrap().lines().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim()))
+        r.split("\r\n\r\n")
+            .next()
+            .unwrap()
+            .lines()
+            .find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.trim()))
     }
 
     /// Tasks brokered by every member (docs/pool.md §8): a page from another member's address takes
@@ -4647,27 +6076,67 @@ mod tests {
         let (d, c, w) = start();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let page = "http://100.93.150.29:8090";
-        let preflight = |method: &str, headers: &str| raw(&addr, "OPTIONS", "/work/ask", &[("Origin", page), ("Access-Control-Request-Method", method), ("Access-Control-Request-Headers", headers), ("Access-Control-Request-Private-Network", "true")], b"");
-        let ask = serde_json::json!({ "worker": "ipad", "kind": "web", "can": ["tail"], "mem_mb": 1000, "cores": 4 }).to_string();
-        let post = |path: &str, body: &str| raw(&addr, "POST", path, &[("Origin", page), ("Content-Type", "application/json"), ("X-Worker", "ipad")], body.as_bytes());
+        let preflight = |method: &str, headers: &str| {
+            raw(
+                &addr,
+                "OPTIONS",
+                "/work/ask",
+                &[
+                    ("Origin", page),
+                    ("Access-Control-Request-Method", method),
+                    ("Access-Control-Request-Headers", headers),
+                    ("Access-Control-Request-Private-Network", "true"),
+                ],
+                b"",
+            )
+        };
+        let ask = serde_json::json!({ "worker": "ipad", "kind": "web", "can": ["tail"], "mem_mb": 1000, "cores": 4 })
+            .to_string();
+        let post = |path: &str, body: &str| {
+            raw(
+                &addr,
+                "POST",
+                path,
+                &[("Origin", page), ("Content-Type", "application/json"), ("X-Worker", "ipad")],
+                body.as_bytes(),
+            )
+        };
         // Off: refused, the preflight not answered for it.
         assert_eq!(status(&post("/work/ask", &ask)), 403);
         assert_eq!(header_of(&preflight("POST", "content-type,x-worker"), "access-control-allow-origin"), None);
         assert_eq!(status(&post("/work/where", "{}")), 403);
         // On: the members' addresses told (this Mac's own among them).
         let own = brokers::Broker { urls: c.contact.urls.clone(), ..Default::default() };
-        let m1 = brokers::Peer { member: "m-1".into(), host: "m1".into(), lead: true, broker: Some(brokers::Broker { urls: vec![page.into()], ..Default::default() }) };
+        let m1 = brokers::Peer {
+            member: "m-1".into(),
+            host: "m1".into(),
+            lead: true,
+            broker: Some(brokers::Broker { urls: vec![page.into()], ..Default::default() }),
+        };
         c.set_brokers(Some(brokers::Brokers::new(vec![m1], &own)));
         let root = d.path().join("job");
         std::fs::create_dir_all(root.join("u")).unwrap();
         std::fs::write(root.join("u/in.bin"), b"input").unwrap();
         let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
-        let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root: root.clone(), inputs: [("u/in.bin".to_string(), 5)].into(), mem_mb: 800, ahead: None };
-        let id = job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap().1["id"].as_u64().unwrap();
+        let offer = task::Offer {
+            owner: 42,
+            kind: "tail".into(),
+            spec: serde_json::json!({ "unit": "6/1/1" }),
+            root: root.clone(),
+            inputs: [("u/in.bin".to_string(), 5)].into(),
+            mem_mb: 800,
+            ahead: None,
+        };
+        let id =
+            job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap().1["id"].as_u64().unwrap();
         // Its heartbeat's counts: one waiting, none out.
         let (waiting, out) = c.brokered();
         assert_eq!((waiting.get("tail").copied(), out), (Some(brokers::Waiting { n: 1, mb: 800 }), 0));
-        for (method, headers) in [("POST", "content-type,x-worker"), ("GET", "x-worker,range"), ("PUT", "authorization,x-worker,content-type")] {
+        for (method, headers) in [
+            ("POST", "content-type,x-worker"),
+            ("GET", "x-worker,range"),
+            ("PUT", "authorization,x-worker,content-type"),
+        ] {
             let r = preflight(method, headers);
             assert_eq!(status(&r), 204, "{r}");
             assert_eq!(header_of(&r, "access-control-allow-origin"), Some(page));
@@ -4676,9 +6145,24 @@ mod tests {
             assert_eq!(header_of(&r, "access-control-allow-private-network"), Some("true"));
         }
         // Another page elsewhere: as before.
-        let evil = raw(&addr, "OPTIONS", "/work/ask", &[("Origin", "https://evil.example"), ("Access-Control-Request-Method", "POST")], b"");
+        let evil = raw(
+            &addr,
+            "OPTIONS",
+            "/work/ask",
+            &[("Origin", "https://evil.example"), ("Access-Control-Request-Method", "POST")],
+            b"",
+        );
         assert_eq!(header_of(&evil, "access-control-allow-origin"), None);
-        assert_eq!(status(&raw(&addr, "POST", "/work/ask", &[("Origin", "https://evil.example"), ("Content-Type", "application/json")], ask.as_bytes())), 403);
+        assert_eq!(
+            status(&raw(
+                &addr,
+                "POST",
+                "/work/ask",
+                &[("Origin", "https://evil.example"), ("Content-Type", "application/json")],
+                ask.as_bytes()
+            )),
+            403
+        );
         // Where work waits: this Mac's broker, the one with work that fits.
         let r = post("/work/where", &serde_json::json!({ "can": ["tail"], "mem_mb": 1000 }).to_string());
         assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(page)));
@@ -4688,10 +6172,22 @@ mod tests {
         let g: serde_json::Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(g["id"].as_u64(), Some(id));
         let lease = g["lease"].as_u64().unwrap();
-        let r = raw(&addr, "GET", &format!("/work/in/{lease}/u/in.bin"), &[("Origin", page), ("X-Worker", "ipad"), ("Range", "bytes=0-4")], b"");
+        let r = raw(
+            &addr,
+            "GET",
+            &format!("/work/in/{lease}/u/in.bin"),
+            &[("Origin", page), ("X-Worker", "ipad"), ("Range", "bytes=0-4")],
+            b"",
+        );
         assert!(matches!(status(&r), 200 | 206) && r.ends_with("input"), "{r}");
         assert_eq!(header_of(&r, "access-control-allow-origin"), Some(page));
-        let r = raw(&addr, "PUT", &format!("/work/out/{lease}/u/out.bin"), &[("Origin", page), ("X-Worker", "ipad"), ("Content-Type", "application/octet-stream")], b"output!");
+        let r = raw(
+            &addr,
+            "PUT",
+            &format!("/work/out/{lease}/u/out.bin"),
+            &[("Origin", page), ("X-Worker", "ipad"), ("Content-Type", "application/octet-stream")],
+            b"output!",
+        );
         assert_eq!((status(&r), header_of(&r, "access-control-allow-origin")), (200, Some(page)), "{r}");
         assert_eq!(c.brokered().1, 1, "one out");
         let r = post("/work/done", &serde_json::json!({ "worker": "ipad", "lease": lease, "outputs": [{ "path": "u/out.bin", "size": 7 }], "secs": 2.0, "peak_mb": 300 }).to_string());
@@ -4721,14 +6217,36 @@ mod tests {
             let root = d.path().join("job");
             std::fs::create_dir_all(&root).unwrap();
             let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
-            let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root, inputs: Default::default(), mem_mb: 100, ahead: None };
+            let offer = task::Offer {
+                owner: 42,
+                kind: "tail".into(),
+                spec: serde_json::json!({ "unit": "6/1/1" }),
+                root,
+                inputs: Default::default(),
+                mem_mb: 100,
+                ahead: None,
+            };
             job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap();
             let page = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "ipad");
-            let g = page.ask(&Ask { worker: "ipad".into(), kind: "web".into(), can: vec!["tail".into()], mem_mb: 1000, cores: 4, ..Default::default() }).unwrap().unwrap();
+            let g = page
+                .ask(&Ask {
+                    worker: "ipad".into(),
+                    kind: "web".into(),
+                    can: vec!["tail".into()],
+                    mem_mb: 1000,
+                    cores: 4,
+                    ..Default::default()
+                })
+                .unwrap()
+                .unwrap();
             // Another lead's state: a job's lease.
             let other = {
                 let mut l = lease::Leases::new(TTL);
-                l.grant("m1", Work::Job { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into())] }, Instant::now());
+                l.grant(
+                    "m1",
+                    Work::Job { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into())] },
+                    Instant::now(),
+                );
                 PoolState { leases: l.snapshot(), ..Default::default() }
             };
             assert_eq!(c.load_pool_state(&other).unwrap(), 1);

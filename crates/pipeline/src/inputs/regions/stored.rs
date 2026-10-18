@@ -80,7 +80,11 @@ impl Geometry {
         for p in self.shapes.iter().flat_map(|s| s.rings.iter().flatten()) {
             b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
         }
-        if b[0] > b[2] { [0; 4] } else { b }
+        if b[0] > b[2] {
+            [0; 4]
+        } else {
+            b
+        }
     }
 
     /// The file's bytes.
@@ -89,7 +93,17 @@ impl Geometry {
             fmt: 1,
             id: self.id.clone(),
             osm: self.osm.clone(),
-            shapes: self.shapes.iter().map(|s| ShapeHead { from: s.from.clone(), country: s.country.clone(), tolerance_m: s.tolerance_m, rings: s.rings.len() as u64, points: s.rings.iter().map(|r| r.len() as u64).sum() }).collect(),
+            shapes: self
+                .shapes
+                .iter()
+                .map(|s| ShapeHead {
+                    from: s.from.clone(),
+                    country: s.country.clone(),
+                    tolerance_m: s.tolerance_m,
+                    rings: s.rings.len() as u64,
+                    points: s.rings.iter().map(|r| r.len() as u64).sum(),
+                })
+                .collect(),
             bbox: self.bbox(),
             names: Names { osm: self.relations.clone(), ways: self.ways.clone() },
         };
@@ -140,7 +154,10 @@ impl Geometry {
                 let mut prev = [0i64; 2];
                 for _ in 0..k {
                     let p = [prev[0] + unzig(read()?), prev[1] + unzig(read()?)];
-                    r.push([i32::try_from(p[0]).context("a longitude out of range")?, i32::try_from(p[1]).context("a latitude out of range")?]);
+                    r.push([
+                        i32::try_from(p[0]).context("a longitude out of range")?,
+                        i32::try_from(p[1]).context("a latitude out of range")?,
+                    ]);
                     prev = p;
                 }
                 rings.push(r);
@@ -167,7 +184,12 @@ pub struct Drawn {
 impl Drawn {
     /// As the catalog records a region (`coverage::DrawnRegion`).
     pub fn region(&self) -> crate::coverage::DrawnRegion {
-        crate::coverage::DrawnRegion { id: self.id.clone(), name: self.name.clone(), outline: self.outline.clone(), shapes: self.shapes.clone() }
+        crate::coverage::DrawnRegion {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            outline: self.outline.clone(),
+            shapes: self.shapes.clone(),
+        }
     }
 }
 
@@ -181,8 +203,22 @@ mod tests {
             id: "azores".into(),
             osm: "2026-09-28".into(),
             shapes: vec![
-                Shape { from: "osm:1629146".into(), country: "PT".into(), tolerance_m: 1000, rings: vec![vec![[-311_234_567, 378_123_456], [-311_000_000, 378_000_000], [-310_000_000, 379_000_000]]] },
-                Shape { from: "shape:x.geojson".into(), country: String::new(), tolerance_m: 0, rings: vec![vec![[1_799_999_999, -1], [-1_800_000_000, 0], [0, 900_000_000]], vec![]] },
+                Shape {
+                    from: "osm:1629146".into(),
+                    country: "PT".into(),
+                    tolerance_m: 1000,
+                    rings: vec![vec![
+                        [-311_234_567, 378_123_456],
+                        [-311_000_000, 378_000_000],
+                        [-310_000_000, 379_000_000],
+                    ]],
+                },
+                Shape {
+                    from: "shape:x.geojson".into(),
+                    country: String::new(),
+                    tolerance_m: 0,
+                    rings: vec![vec![[1_799_999_999, -1], [-1_800_000_000, 0], [0, 900_000_000]], vec![]],
+                },
             ],
             relations: vec![1629146],
             ways: vec![],

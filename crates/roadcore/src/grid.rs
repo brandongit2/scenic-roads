@@ -8,9 +8,9 @@
 //!
 //! Global cell coordinates are `tile * 256 + pixel` at zoom 11.
 
-use det::Det;
-use anyhow::{bail, Result};
 use crate::Mmap;
+use anyhow::{bail, Result};
+use det::Det;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -358,7 +358,10 @@ pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob
             let n0 = blobs.len();
             let before = hole.clone();
             let base: Vec<f32> = if stored { t.iter().map(|&v| v.max(0.0)).collect() } else { t.to_vec() };
-            if stored && !no_shortcut() && judged.as_ref().is_some_and(|j| j.iter().zip(&base).all(|(a, b)| a.to_bits() == b.to_bits())) {
+            if stored
+                && !no_shortcut()
+                && judged.as_ref().is_some_and(|j| j.iter().zip(&base).all(|(a, b)| a.to_bits() == b.to_bits()))
+            {
                 break;
             }
             let knew_none = !stored && !ringing.contains(&true);
@@ -369,7 +372,16 @@ pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob
             let mut known = if stored { vec![false; t.len()] } else { ringing.clone() };
             for (pit, v) in [(false, &base[..]), (true, &neg[..])] {
                 let n = blobs.len();
-                broken_blobs(v, if pit { -1.0 } else { 1.0 }, &before, px, &mut hole, &mut under, if pit { &mut rung } else { &mut known }, &mut blobs);
+                broken_blobs(
+                    v,
+                    if pit { -1.0 } else { 1.0 },
+                    &before,
+                    px,
+                    &mut hole,
+                    &mut under,
+                    if pit { &mut rung } else { &mut known },
+                    &mut blobs,
+                );
                 for b in &mut blobs[n..] {
                     b.pit = pit;
                     b.stage = stage as u8;
@@ -455,7 +467,16 @@ fn highest_first(v: &[f32]) -> Vec<u32> {
 /// joins a component, that component stood above the pixel's level until then, and is weighed
 /// (repair_terrain). Where two meet, the one with the higher top goes on and the other's chain
 /// ends: each component is weighed once, for its top.
-fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], under: &mut [bool], ringing: &mut [bool], blobs: &mut Vec<Blob>) {
+fn broken_blobs(
+    v: &[f32],
+    sign: f32,
+    held: &[bool],
+    px: f64,
+    out: &mut [bool],
+    under: &mut [bool],
+    ringing: &mut [bool],
+    blobs: &mut Vec<Blob>,
+) {
     const NONE: u32 = u32::MAX;
     let w = TS as i32;
     let order = highest_first(v);
@@ -695,7 +716,9 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
         // through it.)
         let steep = (shown(t0 as usize) - (sign * level).max(0.0) as f64).abs() / (reach as f64).max(1.0);
         let flat = if kind == BlobKind::Spike {
-            out_of > ROUGH_SPIKE * rough as f64 || (steep > NEEDLE && sign as f64 * (shown(t0 as usize) - g.plane as f64) > ROUGH_SPIKE * g.plane_rough as f64)
+            out_of > ROUGH_SPIKE * rough as f64
+                || (steep > NEEDLE
+                    && sign as f64 * (shown(t0 as usize) - g.plane as f64) > ROUGH_SPIKE * g.plane_rough as f64)
         } else {
             out_of > ROUGH * rough as f64
         };
@@ -772,7 +795,19 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
                 marked += 1;
             }
         }
-        blobs.push(Blob { kind, top: t0, pit: false, pixels: marked, rise, level, reach, edge, ground: median, rough, stage: 0 });
+        blobs.push(Blob {
+            kind,
+            top: t0,
+            pit: false,
+            pixels: marked,
+            rise,
+            level,
+            reach,
+            edge,
+            ground: median,
+            rough,
+            stage: 0,
+        });
     }
 }
 
@@ -940,7 +975,16 @@ struct Ground {
     plane_rough: f32,
 }
 
-fn ground(v: &[f32], sign: f32, pixels: &[u32], out: &[bool], held: &[bool], stamp: &mut [u32], b: u32, top: u32) -> Ground {
+fn ground(
+    v: &[f32],
+    sign: f32,
+    pixels: &[u32],
+    out: &[bool],
+    held: &[bool],
+    stamp: &mut [u32],
+    b: u32,
+    top: u32,
+) -> Ground {
     let w = TS as i32;
     let reach = ((2.0 * (pixels.len() as f64 / std::f64::consts::PI).sqrt()).ceil() as usize).max(4);
     // (Rings outward, one Chebyshev step at a time; their pixels stamped so as not to be counted
@@ -986,7 +1030,10 @@ fn ground(v: &[f32], sign: f32, pixels: &[u32], out: &[bool], held: &[bool], sta
             r[i] += f[i] * z as f64;
         }
     }
-    let det = |m: &[[f64; 3]; 3]| m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    let det = |m: &[[f64; 3]; 3]| {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    };
     let d = det(&m);
     let c = if d.abs() > 1e-9 {
         let mut c = [0f64; 3];
@@ -1001,7 +1048,13 @@ fn ground(v: &[f32], sign: f32, pixels: &[u32], out: &[bool], held: &[bool], sta
     } else {
         [r[0] / m[0][0].max(1.0), 0.0, 0.0]
     };
-    let mut res: Vec<f32> = at.iter().zip(&vals).map(|(&q, &z)| (z as f64 - c[0] - c[1] * ((q % TS as u32) as f64 - tx) - c[2] * ((q / TS as u32) as f64 - ty)) as f32).collect();
+    let mut res: Vec<f32> = at
+        .iter()
+        .zip(&vals)
+        .map(|(&q, &z)| {
+            (z as f64 - c[0] - c[1] * ((q % TS as u32) as f64 - tx) - c[2] * ((q / TS as u32) as f64 - ty)) as f32
+        })
+        .collect();
     let n = vals.len();
     let q1 = *vals.select_nth_unstable_by(n / 4, |a, b| a.total_cmp(b)).1;
     let median = *vals.select_nth_unstable_by(n / 2, |a, b| a.total_cmp(b)).1;
@@ -1188,28 +1241,40 @@ pub fn seam_spikes(t: &mut [f32], z: u8, lat: f64) -> usize {
         // Or a tower alone, SEAM_LONE out of the ground beside it (no ground is so steep), by the sea.
         // Or a needle: a tower NEEDLE_OUT pixel widths (and SEAM_TOWER) out of every pixel beside
         // it, towers too (Maryland's 880 m at z9 once its pit is made from the finer tiles).
-        let needle = members.len() <= SEAM_LONE_MAX && members.iter().any(|&p| {
-            if cand[p] <= 0 {
-                return false;
-            }
-            let (x, y) = ((p % TS) as i32, (p / TS) as i32);
-            let mut most = f32::MIN;
-            for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
-                let (a, b) = (x + dx, y + dy);
-                if a < 0 || b < 0 || a >= w || b >= w || !ok(orig[(b * w + a) as usize]) {
+        let needle = members.len() <= SEAM_LONE_MAX
+            && members.iter().any(|&p| {
+                if cand[p] <= 0 {
                     return false;
                 }
-                most = most.max(orig[(b * w + a) as usize]);
-            }
-            orig[p] - most > SEAM_TOWER.max(NEEDLE_OUT * px)
-        });
-        let lone = !ringing && (needle || members.len() <= SEAM_LONE_MAX && members.iter().any(|&p| cand[p] > 0 && out_of(p, 1).is_some_and(|d| d > SEAM_LONE)) && members.iter().any(|&p| {
-            let (x, y) = ((p % TS) as i32, (p / TS) as i32);
-            (-2..=2).any(|dy| (-2..=2).any(|dx| {
-                let (a, b) = (x + dx, y + dy);
-                a >= 0 && b >= 0 && a < w && b < w && cand[(b * w + a) as usize] == 0 && orig[(b * w + a) as usize] <= 1.0
-            }))
-        }));
+                let (x, y) = ((p % TS) as i32, (p / TS) as i32);
+                let mut most = f32::MIN;
+                for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                    let (a, b) = (x + dx, y + dy);
+                    if a < 0 || b < 0 || a >= w || b >= w || !ok(orig[(b * w + a) as usize]) {
+                        return false;
+                    }
+                    most = most.max(orig[(b * w + a) as usize]);
+                }
+                orig[p] - most > SEAM_TOWER.max(NEEDLE_OUT * px)
+            });
+        let lone = !ringing
+            && (needle
+                || members.len() <= SEAM_LONE_MAX
+                    && members.iter().any(|&p| cand[p] > 0 && out_of(p, 1).is_some_and(|d| d > SEAM_LONE))
+                    && members.iter().any(|&p| {
+                        let (x, y) = ((p % TS) as i32, (p / TS) as i32);
+                        (-2..=2).any(|dy| {
+                            (-2..=2).any(|dx| {
+                                let (a, b) = (x + dx, y + dy);
+                                a >= 0
+                                    && b >= 0
+                                    && a < w
+                                    && b < w
+                                    && cand[(b * w + a) as usize] == 0
+                                    && orig[(b * w + a) as usize] <= 1.0
+                            })
+                        })
+                    }));
         if !(ringing || lone) {
             continue;
         }
@@ -1301,7 +1366,11 @@ pub fn walled_patches(t: &mut [f32], z: u8, coarse: &[f32]) -> usize {
                 return 0.0;
             }
             let v = t[i as usize];
-            if ok(v) { (v - t[j]).abs() } else { 0.0 }
+            if ok(v) {
+                (v - t[j]).abs()
+            } else {
+                0.0
+            }
         };
         s >= WALL_SHARP * side(pb, p).max(side(qb, q)).max(0.5)
     };
@@ -1343,7 +1412,8 @@ pub fn walled_patches(t: &mut [f32], z: u8, coarse: &[f32]) -> usize {
     for &r in &root {
         size[r as usize] += 1;
     }
-    let largest = (0..t.len() as u32).filter(|&r| size[r as usize] > 0).max_by_key(|&r| (size[r as usize], std::cmp::Reverse(r)));
+    let largest =
+        (0..t.len() as u32).filter(|&r| size[r as usize] > 0).max_by_key(|&r| (size[r as usize], std::cmp::Reverse(r)));
     // Each region's edge: its steps (inside − outside) where walled, and its edges in all.
     let mut steps: HashMap<u32, Vec<f32>> = HashMap::new();
     let mut edges: HashMap<u32, usize> = HashMap::new();
@@ -1673,7 +1743,9 @@ mod repair_tests {
         let mut r = lcg(7);
         let mut v: Vec<f32> = (0..TS * TS).map(|_| ((r() * 4000.0 - 500.0) * 4.0).round() / 4.0).collect();
         // (Ties, both zeros, the extremes.)
-        for (i, x) in [0.0, -0.0, 0.0, -0.0, f32::MAX, f32::MIN, 1e-30, -1e-30, 8900.0, -11500.0].into_iter().enumerate() {
+        for (i, x) in
+            [0.0, -0.0, 0.0, -0.0, f32::MAX, f32::MIN, 1e-30, -1e-30, 8900.0, -11500.0].into_iter().enumerate()
+        {
             v[i * 977] = x;
         }
         for v in [v.clone(), vec![3.0; TS * TS], v.iter().map(|x| -x).collect()] {
@@ -1703,7 +1775,13 @@ mod repair_tests {
             let got = out_of_median(v, &win);
             let med = *win.select_nth_unstable_by(n / 2, |a, b| a.total_cmp(b)).1;
             let d = v - med;
-            let want = if d > SEAM_OUT { 1 } else if d < -SEAM_OUT { -1 } else { 0 };
+            let want = if d > SEAM_OUT {
+                1
+            } else if d < -SEAM_OUT {
+                -1
+            } else {
+                0
+            };
             assert_eq!(got, want, "{v} in {win:?}");
             seen[(got + 1) as usize] += 1;
         }
@@ -1783,7 +1861,8 @@ mod repair_tests {
         assert!(t.iter().all(|&v| (v - 3.0).abs() < 0.01));
         // a smooth bump with flanks, 2.3 km on coastal flats (z12, as on Mweelrea's shore): the
         // flanks too, down to the last few metres (cut where they stop rising faster than ground)
-        let mut b = tile(|x, y| 10.0 + 0.05 * x + 2300.0 * (-((x - 160.0).powi(2) / 1.5 + (y - 76.0).powi(2) / 2.5)).exp());
+        let mut b =
+            tile(|x, y| 10.0 + 0.05 * x + 2300.0 * (-((x - 160.0).powi(2) / 1.5 + (y - 76.0).powi(2) / 2.5)).exp());
         let flats = tile(|x, _| 10.0 + 0.05 * x);
         let r = repaired(&mut b, 12, 53.6);
         assert!(r.blob_pixels >= 9, "{r:?}");
@@ -1810,7 +1889,9 @@ mod repair_tests {
         // Soffeh, a ridge 700 m above the Isfahan plain, a pixel or two wide at z7 (~1 km pixels)
         let mut r = tile(|x, y| {
             let d = (x - 90.0 - 0.3 * (y - 120.0)).abs();
-            1580.0 + 4.0 * (x * 0.2).sin() + if (100.0..116.0).contains(&y) { (700.0 - 450.0 * d).max(0.0) } else { 0.0 }
+            1580.0
+                + 4.0 * (x * 0.2).sin()
+                + if (100.0..116.0).contains(&y) { (700.0 - 450.0 * d).max(0.0) } else { 0.0 }
         });
         let before = r.clone();
         repaired(&mut r, 7, 32.6);
@@ -1832,7 +1913,10 @@ mod repair_tests {
         repaired(&mut st, 12, 58.9);
         assert_eq!(st, before);
         // a mesa: 20 × 20 pixels, 300 m up, walls straight down (z12)
-        let mut m = tile(|x, y| if (100.0..120.0).contains(&x) && (50.0..70.0).contains(&y) { 1500.0 } else { 1200.0 + 0.1 * x });
+        let mut m =
+            tile(
+                |x, y| if (100.0..120.0).contains(&x) && (50.0..70.0).contains(&y) { 1500.0 } else { 1200.0 + 0.1 * x },
+            );
         let before = m.clone();
         repaired(&mut m, 12, 36.0);
         assert_eq!(m, before);
@@ -2289,7 +2373,8 @@ mod repair_tests {
         // Among rough mountains, where a summit drawn too sharp stays, a block of 5 × 5 pixels
         // 1,500 m tall (8 times steeper than terrain allows, too large for a spike) goes all the
         // same.
-        let rough = |x: f32, y: f32| 2100.0 + 250.0 * (x * 0.16).sin() * (y * 0.13).cos() + 100.0 * (x * 0.5 + y * 0.3).sin();
+        let rough =
+            |x: f32, y: f32| 2100.0 + 250.0 * (x * 0.16).sin() * (y * 0.13).cos() + 100.0 * (x * 0.5 + y * 0.3).sin();
         let mut h = tile(rough);
         let base = h.clone();
         let block = || (118..123).flat_map(|y| (118..123).map(move |x| (x, y)));
@@ -2387,8 +2472,11 @@ mod repair_tests {
         // As AWS has a 3,534 m peak of the St. Elias (12/447/1143): a cone of 1,200 m, ten pixels
         // across its base (81°: broken in shape), among mountains whose ground is rough: kept, as
         // its summit is there.
-        let base = |x: f32, y: f32| 2100.0 + 250.0 * (x * 0.16).sin() * (y * 0.13).cos() + 100.0 * (x * 0.5 + y * 0.3).sin();
-        let mut c = tile(|x, y| base(x, y) + 1200.0 * (1.0 - ((x - 120.0).powi(2) + (y - 130.0).powi(2)).sqrt() / 10.0).max(0.0));
+        let base =
+            |x: f32, y: f32| 2100.0 + 250.0 * (x * 0.16).sin() * (y * 0.13).cos() + 100.0 * (x * 0.5 + y * 0.3).sin();
+        let mut c = tile(|x, y| {
+            base(x, y) + 1200.0 * (1.0 - ((x - 120.0).powi(2) + (y - 130.0).powi(2)).sqrt() / 10.0).max(0.0)
+        });
         let before = c.clone();
         repaired(&mut c, 12, 61.96);
         assert_eq!(c, before);
@@ -2402,7 +2490,11 @@ mod repair_tests {
         let mut h = tile(|x, y| {
             let r = ((x - 128.0).powi(2) / 1.4 + (y - 128.0).powi(2)).sqrt();
             if r < 18.0 {
-                if x < 132.0 { 1.0 } else { -181.0 + 0.4 * (x - 132.0) }
+                if x < 132.0 {
+                    1.0
+                } else {
+                    -181.0 + 0.4 * (x - 132.0)
+                }
             } else if r < 24.0 {
                 51.0 - 6.8 * (r - 18.0)
             } else {
@@ -2592,7 +2684,9 @@ mod repair_tests {
 
     /// Rough ground, and AWS's z9 tile over it: the same ground, smoothed.
     fn ground_and_coarse() -> (Vec<f32>, Vec<f32>) {
-        let g = tile(|x, y| 300.0 + 40.0 * ((x * 0.05).sin() * (y * 0.04).cos()) + 6.0 * ((x * 0.7).sin() + (y * 0.9).cos()));
+        let g = tile(|x, y| {
+            300.0 + 40.0 * ((x * 0.05).sin() * (y * 0.04).cos()) + 6.0 * ((x * 0.7).sin() + (y * 0.9).cos())
+        });
         let c = tile(|x, y| 300.0 + 40.0 * ((x * 0.05).sin() * (y * 0.04).cos()));
         (g, c)
     }
@@ -2699,7 +2793,10 @@ mod repair_debug {
             let Some(stem) = name.strip_suffix(".raw.f32") else { continue };
             let k: Vec<u32> = stem.split('-').filter_map(|v| v.parse().ok()).collect();
             let b = std::fs::read(e.path()).unwrap();
-            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (k[2] as f64 + 0.5) / (1u64 << k[0]) as f64)).sinh().atan().to_degrees();
+            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (k[2] as f64 + 0.5) / (1u64 << k[0]) as f64))
+                .sinh()
+                .atan()
+                .to_degrees();
             tiles.push((k[0] as u8, lat, bytemuck::cast_slice::<u8, f32>(&b).to_vec()));
         }
         let t0 = std::time::Instant::now();
@@ -2726,7 +2823,10 @@ mod repair_debug {
             let Some(stem) = name.strip_suffix(".raw.f32") else { continue };
             let k: Vec<u32> = stem.split('-').filter_map(|v| v.parse().ok()).collect();
             let b = std::fs::read(e.path()).unwrap();
-            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (k[2] as f64 + 0.5) / (1u64 << k[0]) as f64)).sinh().atan().to_degrees();
+            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (k[2] as f64 + 0.5) / (1u64 << k[0]) as f64))
+                .sinh()
+                .atan()
+                .to_degrees();
             let mut t: Vec<f32> = bytemuck::cast_slice(&b).to_vec();
             let r = repair_terrain(&mut t, k[0] as u8, lat);
             for v in t.iter_mut() {
@@ -2756,14 +2856,40 @@ mod repair_debug {
         let (r, blobs) = repair_terrain_blobs(&mut t, z, lat);
         eprintln!("{r:?}");
         for b in &blobs {
-            eprintln!("  stage {} {:?}{} top {},{} px {} rise {:.0} level {:.0} reach {:.0} ground {:.0} rough {:.1}", b.stage, b.kind, if b.pit { " pit" } else { "" }, b.top % 256, b.top / 256, b.pixels, b.rise, b.level, b.reach, b.ground, b.rough);
+            eprintln!(
+                "  stage {} {:?}{} top {},{} px {} rise {:.0} level {:.0} reach {:.0} ground {:.0} rough {:.1}",
+                b.stage,
+                b.kind,
+                if b.pit { " pit" } else { "" },
+                b.top % 256,
+                b.top / 256,
+                b.pixels,
+                b.rise,
+                b.level,
+                b.reach,
+                b.ground,
+                b.rough
+            );
         }
         // (Again on the tile as stored: at sea level and over.)
         let mut again: Vec<f32> = t.iter().map(|v| v.max(0.0)).collect();
         let (r2, b2) = repair_terrain_blobs(&mut again, z, lat);
         eprintln!("again: {r2:?}");
         for b in &b2 {
-            eprintln!("  stage {} {:?}{} top {},{} px {} rise {:.0} level {:.0} reach {:.0} ground {:.0} rough {:.1}", b.stage, b.kind, if b.pit { " pit" } else { "" }, b.top % 256, b.top / 256, b.pixels, b.rise, b.level, b.reach, b.ground, b.rough);
+            eprintln!(
+                "  stage {} {:?}{} top {},{} px {} rise {:.0} level {:.0} reach {:.0} ground {:.0} rough {:.1}",
+                b.stage,
+                b.kind,
+                if b.pit { " pit" } else { "" },
+                b.top % 256,
+                b.top / 256,
+                b.pixels,
+                b.rise,
+                b.level,
+                b.reach,
+                b.ground,
+                b.rough
+            );
         }
     }
 
@@ -2776,7 +2902,8 @@ mod repair_debug {
         let a: Vec<&str> = spec.split_whitespace().collect();
         let b = std::fs::read(a[0]).unwrap();
         let mut t: Vec<f32> = bytemuck::cast_slice(&b).to_vec();
-        let (z, lat, x, y): (u8, f64, u32, u32) = (a[1].parse().unwrap(), a[2].parse().unwrap(), a[3].parse().unwrap(), a[4].parse().unwrap());
+        let (z, lat, x, y): (u8, f64, u32, u32) =
+            (a[1].parse().unwrap(), a[2].parse().unwrap(), a[3].parse().unwrap(), a[4].parse().unwrap());
         TRACE.store(y * 256 + x, std::sync::atomic::Ordering::Relaxed);
         let (r, _) = repair_terrain_blobs(&mut t, z, lat);
         eprintln!("{r:?}; ({x},{y}) now {}", t[(y * 256 + x) as usize]);

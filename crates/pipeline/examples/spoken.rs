@@ -59,14 +59,20 @@ fn main() -> anyhow::Result<()> {
     let t0 = Instant::now();
     let o = pipeline::outlines::Outlines::open(std::path::Path::new(path))?;
     eprintln!("{} outlines' records and names read in {:.1?}", o.recs.len(), t0.elapsed());
-    let areas = pipeline::outlines::spoken_areas(&table, &o.recs, |i| o.string(i).to_owned(), |r| o.simple_polygons(r))?;
+    let areas =
+        pipeline::outlines::spoken_areas(&table, &o.recs, |i| o.string(i).to_owned(), |r| o.simple_polygons(r))?;
     let points: usize = areas.iter().map(|a| a.polygons.iter().flatten().map(Vec::len).sum::<usize>()).sum();
     let read = t0.elapsed();
     let t1 = Instant::now();
     let s = names::Spoken::build(&table, areas);
     let bytes = s.to_bytes();
     eprintln!("content hash {}", store::naming::hash16(&bytes));
-    eprintln!("{} regions, {points} points read in {read:.1?}; raster in {:.1?}, {:.1} MB", s.regions().count(), t1.elapsed(), bytes.len() as f64 / 1e6);
+    eprintln!(
+        "{} regions, {points} points read in {read:.1?}; raster in {:.1?}, {:.1} MB",
+        s.regions().count(),
+        t1.elapsed(),
+        bytes.len() as f64 / 1e6
+    );
     println!("| Place | Region | Languages |\n|---|---|---|");
     for (name, lon, lat) in PLACES {
         let langs: Vec<&str> = s.langs_at(*lon, *lat).iter().map(|l| l.as_str()).collect();

@@ -57,7 +57,8 @@ pub fn sync(read: &dyn Fn(&str) -> Result<Vec<u8>>, unit: &str, local: &Path) ->
 /// `sync`, copying besides each accepted file the stored files its facts `facts` name (the regions'
 /// drawn files, `facts.drawn`: what the map's region layer draws).
 pub fn sync_with(read: &dyn Fn(&str) -> Result<Vec<u8>>, unit: &str, local: &Path, facts: &[&str]) -> Result<Synced> {
-    let records: BTreeMap<String, String> = serde_json::from_slice(&read(RECORDS)?).with_context(|| format!("parse {RECORDS}"))?;
+    let records: BTreeMap<String, String> =
+        serde_json::from_slice(&read(RECORDS)?).with_context(|| format!("parse {RECORDS}"))?;
     let Some(version) = records.get(&logical(unit)) else { return Ok(Synced::None) };
     if files(local).is_some_and(|(v, _)| &v == version) {
         return Ok(Synced::Kept(false));
@@ -65,7 +66,15 @@ pub fn sync_with(read: &dyn Fn(&str) -> Result<Vec<u8>>, unit: &str, local: &Pat
     let index: Index = serde_json::from_slice(&read(version)?).with_context(|| format!("parse {version}"))?;
     anyhow::ensure!(index.unit == unit, "{version} is {}'s index, not {unit}'s", index.unit);
     // (Each accepted file, and the stored files its facts `facts` name, by content name.)
-    let wanted: Vec<(String, Option<u64>)> = index.files.values().flat_map(|f| std::iter::once((f.file.clone(), Some(f.size))).chain(facts.iter().filter_map(|k| f.facts.get(*k).and_then(|v| v.as_str())).map(|n| (n.to_string(), None)))).collect();
+    let wanted: Vec<(String, Option<u64>)> = index
+        .files
+        .values()
+        .flat_map(|f| {
+            std::iter::once((f.file.clone(), Some(f.size))).chain(
+                facts.iter().filter_map(|k| f.facts.get(*k).and_then(|v| v.as_str())).map(|n| (n.to_string(), None)),
+            )
+        })
+        .collect();
     for (name, size) in &wanted {
         let p = local.join(name);
         if std::fs::metadata(&p).is_ok_and(|m| size.is_none_or(|s| m.len() == s)) {
@@ -73,14 +82,20 @@ pub fn sync_with(read: &dyn Fn(&str) -> Result<Vec<u8>>, unit: &str, local: &Pat
         }
         let bytes = read(name)?;
         let want = super::hash_of(name).with_context(|| format!("{name} isn't a content name"))?;
-        anyhow::ensure!(store::naming::hash16(&bytes) == want, "{name}: its bytes aren't its name's (copied while being written?)");
+        anyhow::ensure!(
+            store::naming::hash16(&bytes) == want,
+            "{name}: its bytes aren't its name's (copied while being written?)"
+        );
         if let Some(d) = p.parent() {
             std::fs::create_dir_all(d).with_context(|| format!("create {}", d.display()))?;
         }
         crate::whole::write(&p, &bytes)?;
     }
     std::fs::create_dir_all(local)?;
-    crate::whole::write(&local.join(LOCAL), &serde_json::to_vec(&Kept { version: version.clone(), index: index.clone() })?)?;
+    crate::whole::write(
+        &local.join(LOCAL),
+        &serde_json::to_vec(&Kept { version: version.clone(), index: index.clone() })?,
+    )?;
     // (The files the version kept no longer names go.)
     let named: BTreeSet<PathBuf> = wanted.iter().map(|(n, _)| local.join(n)).collect();
     let mut stack = vec![local.to_path_buf()];
@@ -112,11 +127,20 @@ mod tests {
             std::fs::write(nas.join(name), bytes).unwrap();
         };
         let accept = |files: &[(&str, &[u8])]| {
-            let mut index = Index { fmt: 1, unit: "translations".into(), checks: "translations 1".into(), ..Default::default() };
+            let mut index =
+                Index { fmt: 1, unit: "translations".into(), checks: "translations 1".into(), ..Default::default() };
             for (p, b) in files {
                 let file = crate::inputs::copy_name("translations", p, &store::naming::hash16(b)).unwrap();
                 put(&file, b);
-                index.files.insert(p.to_string(), crate::inputs::FileEntry { file, size: b.len() as u64, keyed: "-".into(), facts: Default::default() });
+                index.files.insert(
+                    p.to_string(),
+                    crate::inputs::FileEntry {
+                        file,
+                        size: b.len() as u64,
+                        keyed: "-".into(),
+                        facts: Default::default(),
+                    },
+                );
             }
             let ib = serde_json::to_vec(&index).unwrap();
             let name = format!("sources/inputs/translations/@index.{}.json", store::naming::hash16(&ib));

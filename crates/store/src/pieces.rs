@@ -131,7 +131,12 @@ fn directories(entries: &[DirEntry]) -> (Vec<u8>, Vec<u8>) {
         let mut top = Vec::new();
         for chunk in entries.chunks(per) {
             let leaf = gzip(&encode_directory(chunk));
-            top.push(DirEntry { tile_id: chunk[0].tile_id, offset: leaves.len() as u64, length: leaf.len() as u32, run_length: 0 });
+            top.push(DirEntry {
+                tile_id: chunk[0].tile_id,
+                offset: leaves.len() as u64,
+                length: leaf.len() as u32,
+                run_length: 0,
+            });
             leaves.extend_from_slice(&leaf);
         }
         let root = gzip(&encode_directory(&top));
@@ -145,7 +150,15 @@ fn directories(entries: &[DirEntry]) -> (Vec<u8>, Vec<u8>) {
 /// An archive of `entries` (tile ids ascending; offsets into `data`), the rest of its header from
 /// `like`, its metadata `meta` (JSON, gzipped here), and its zooms and bounds as given. Its bytes
 /// before the data, and the header.
-fn prefix(like: &Header, entries: &[DirEntry], contents: u64, data_len: u64, meta: &[u8], zooms: (u8, u8), bounds: [i32; 4]) -> Vec<u8> {
+fn prefix(
+    like: &Header,
+    entries: &[DirEntry],
+    contents: u64,
+    data_len: u64,
+    meta: &[u8],
+    zooms: (u8, u8),
+    bounds: [i32; 4],
+) -> Vec<u8> {
     let (root, leaves) = directories(entries);
     let meta = gzip(meta);
     let root_offset = HEADER_LEN as u64;
@@ -205,7 +218,10 @@ pub fn plan(pm: &PmTiles, piece: Piece) -> Result<Plan> {
     // each first appears), placed one after another.
     let mut at: BTreeMap<u64, (u32, u64)> = BTreeMap::new();
     for e in &entries {
-        ensure!(e.offset.checked_add(u64::from(e.length)).is_some_and(|end| end <= h.data_length), "a tile points outside the tile data");
+        ensure!(
+            e.offset.checked_add(u64::from(e.length)).is_some_and(|end| end <= h.data_length),
+            "a tile points outside the tile data"
+        );
         at.entry(e.offset).or_insert((e.length, 0));
     }
     let mut data_len = 0u64;
@@ -222,11 +238,20 @@ pub fn plan(pm: &PmTiles, piece: Piece) -> Result<Plan> {
     }
     let meta = serde_json::to_vec(&pm.metadata()?)?;
     let (zooms, bounds) = match piece {
-        Piece::Lo => ((h.min_zoom, h.max_zoom.min(LO_MAX_ZOOM)), [h.min_lon_e7, h.min_lat_e7, h.max_lon_e7, h.max_lat_e7]),
+        Piece::Lo => {
+            ((h.min_zoom, h.max_zoom.min(LO_MAX_ZOOM)), [h.min_lon_e7, h.min_lat_e7, h.max_lon_e7, h.max_lat_e7])
+        }
         Piece::Tile(x, y) => ((*HI_ZOOMS.start(), *HI_ZOOMS.end()), tile_bounds(x, y)),
     };
     let prefix = prefix(h, &entries, at.len() as u64, data_len, &meta, zooms, bounds);
-    Ok(Plan { size: prefix.len() as u64 + data_len, entries: entries.len() as u64, contents: at.len() as u64, prefix, reads, gzipped: h.tile_compression == Compression::Gzip })
+    Ok(Plan {
+        size: prefix.len() as u64 + data_len,
+        entries: entries.len() as u64,
+        contents: at.len() as u64,
+        prefix,
+        reads,
+        gzipped: h.tile_compression == Compression::Gzip,
+    })
 }
 
 /// How a `write` ended.
@@ -243,8 +268,20 @@ pub enum Wrote {
 /// in reads of up to 4 MB. `stop()` is asked before each read; `progress` told the bytes written
 /// after each. A gzipped tile whose checksum fails is an error (the NAS's copy is damaged, or the
 /// read was).
-pub fn write(plan: &Plan, part: &Path, read: &dyn Fn(u64, usize) -> Result<Vec<u8>, IoError>, stop: &dyn Fn() -> bool, progress: &mut dyn FnMut(u64)) -> Result<Wrote> {
-    let mut f = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(part).with_context(|| format!("open {}", part.display()))?;
+pub fn write(
+    plan: &Plan,
+    part: &Path,
+    read: &dyn Fn(u64, usize) -> Result<Vec<u8>, IoError>,
+    stop: &dyn Fn() -> bool,
+    progress: &mut dyn FnMut(u64),
+) -> Result<Wrote> {
+    let mut f = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(part)
+        .with_context(|| format!("open {}", part.display()))?;
     let len = f.metadata()?.len();
     let p = plan.prefix.len() as u64;
     let resumes = len >= p && len <= plan.size && {
@@ -291,7 +328,9 @@ pub fn write(plan: &Plan, part: &Path, read: &dyn Fn(u64, usize) -> Result<Vec<u
         for &(o, l) in &plan.reads[i..j] {
             let tile = &span[(o - first) as usize..(o - first) as usize + l as usize];
             if plan.gzipped {
-                check_gzip(tile).with_context(|| format!("the basemap's tile at byte {o} doesn't read: the NAS's copy is damaged"))?;
+                check_gzip(tile).with_context(|| {
+                    format!("the basemap's tile at byte {o} doesn't read: the NAS's copy is damaged")
+                })?;
             }
             // (Resuming inside a tile: its first bytes are here already.)
             let skip = have.saturating_sub(out).min(u64::from(l)) as usize;
@@ -322,7 +361,8 @@ fn check_gzip(b: &[u8]) -> Result<()> {
 /// A small archive of these tiles ((z, x, y, bytes as stored)), each stored once and in tile id
 /// order, its tiles compressed as `tile_compression` says: for tests, here and in the server.
 pub fn archive(tiles: &[(u8, u32, u32, Vec<u8>)], tile_compression: Compression) -> Vec<u8> {
-    let mut t: Vec<(u64, &Vec<u8>, u8)> = tiles.iter().map(|(z, x, y, b)| (zxy_to_tile_id(*z, *x, *y).expect("a tile"), b, *z)).collect();
+    let mut t: Vec<(u64, &Vec<u8>, u8)> =
+        tiles.iter().map(|(z, x, y, b)| (zxy_to_tile_id(*z, *x, *y).expect("a tile"), b, *z)).collect();
     t.sort_by_key(|t| t.0);
     let mut data = Vec::new();
     let mut seen: BTreeMap<&[u8], u64> = BTreeMap::new();
@@ -366,7 +406,15 @@ pub fn archive(tiles: &[(u8, u32, u32, Vec<u8>)], tile_compression: Compression)
         center_lon_e7: 0,
         center_lat_e7: 0,
     };
-    let mut out = prefix(&like, &entries, seen.len() as u64, data.len() as u64, br#"{"name":"test"}"#, zooms, [-1_800_000_000, -850_511_287, 1_800_000_000, 850_511_287]);
+    let mut out = prefix(
+        &like,
+        &entries,
+        seen.len() as u64,
+        data.len() as u64,
+        br#"{"name":"test"}"#,
+        zooms,
+        [-1_800_000_000, -850_511_287, 1_800_000_000, 850_511_287],
+    );
     out.extend_from_slice(&data);
     out
 }
@@ -480,7 +528,12 @@ mod tests {
             for y in 0..256u32 {
                 let h = blake3::hash(&[x as u8, y as u8]).as_bytes()[0];
                 if !h.is_multiple_of(3) {
-                    tiles.push((14, (32 << 8) + x, (21 << 8) + y, gz(&vec![h; usize::from(h) * 7 + (x as usize % 13)])));
+                    tiles.push((
+                        14,
+                        (32 << 8) + x,
+                        (21 << 8) + y,
+                        gz(&vec![h; usize::from(h) * 7 + (x as usize % 13)]),
+                    ));
                 }
             }
         }
@@ -508,7 +561,13 @@ mod tests {
         let cut = std::fs::metadata(&part).unwrap().len() + 7;
         std::fs::write(&part, &want[..cut as usize]).unwrap();
         let first = Cell::new(0);
-        assert_eq!(write(&plan, &part, &read, &|| false, &mut |h| if first.get() == 0 { first.set(h) }).unwrap(), Wrote::Done);
+        assert_eq!(
+            write(&plan, &part, &read, &|| false, &mut |h| if first.get() == 0 {
+                first.set(h)
+            })
+            .unwrap(),
+            Wrote::Done
+        );
         assert_eq!(first.get(), cut);
         assert_eq!(std::fs::read(&part).unwrap(), want);
         // Something else there (another plan's prefix): started again.
@@ -537,7 +596,13 @@ mod tests {
     #[ignore = "real data: reads the live basemap on the NAS (run with --ignored)"]
     fn the_live_basemaps_pieces() {
         let dir = Path::new("/Volumes/personal/projects/scenic-roads/layers/basemap");
-        let Some(path) = std::fs::read_dir(dir).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("world-")))) else { return };
+        let Some(path) = std::fs::read_dir(dir).ok().and_then(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("world-")))
+        }) else {
+            return;
+        };
         let src = crate::range::PlainFile::open(&path).unwrap();
         let pm = PmTiles::open(Box::new(crate::range::PlainFile::open(&path).unwrap())).unwrap();
         // Andorra's z6 tile (32/23): small.

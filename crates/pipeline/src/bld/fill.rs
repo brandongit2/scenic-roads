@@ -94,8 +94,23 @@ const SIZE_ALL: [f64; 5] = [8.8, 3.3, 6.0, 6.4, 9.1];
 const CHURCHES: [&str; 2] = ["cathedral", "church"];
 const SHEDS: [&str; 5] = ["carport", "garage", "garages", "hut", "shed"];
 const HOUSES: [&str; 17] = [
-    "allotment_house", "apartments", "bungalow", "cabin", "detached", "dormitory", "dwelling_house", "farm", "ger", "house", "houseboat", "residential", "semidetached_house", "static_caravan",
-    "stilt_house", "terrace", "trullo",
+    "allotment_house",
+    "apartments",
+    "bungalow",
+    "cabin",
+    "detached",
+    "dormitory",
+    "dwelling_house",
+    "farm",
+    "ger",
+    "house",
+    "houseboat",
+    "residential",
+    "semidetached_house",
+    "static_caravan",
+    "stilt_house",
+    "terrace",
+    "trullo",
 ];
 
 /// A country's storey height and roof allowance (rule 1), metres.
@@ -162,8 +177,15 @@ pub fn last_rules(ghsl: u16, area: f32, bin: usize, country: &str) -> (u16, u8) 
 /// (`m`), else `min_floor` (`mf`) storeys up; a top at or under its base raised a storey above it.
 pub fn part(h: u16, est: bool, f: u8, m: u16, mf: u8, area: f32, country: &str) -> (u16, u16, u8) {
     let fit = storey(country);
-    let (top, s) = first_rules(h, est, f, fit).unwrap_or_else(|| (dm(sizes(country)[size_bin("", "", area)]), src::SIZE));
-    let base = if (1..=H_MAX_DM).contains(&m) { m } else if mf >= 1 { dm(fit.0 * mf as f64) } else { 0 };
+    let (top, s) =
+        first_rules(h, est, f, fit).unwrap_or_else(|| (dm(sizes(country)[size_bin("", "", area)]), src::SIZE));
+    let base = if (1..=H_MAX_DM).contains(&m) {
+        m
+    } else if mf >= 1 {
+        dm(fit.0 * mf as f64)
+    } else {
+        0
+    };
     let top = if top <= base { base.saturating_add(dm(fit.0)) } else { top };
     (top, base, s)
 }
@@ -204,7 +226,9 @@ impl Near {
         }
         let nx = (((x1 - x0) / cell).floor() as usize + 1).min(1 << 16);
         let ny = (((y1 - y0) / cell).floor() as usize + 1).min(1 << 16);
-        let cell_of = |p: &Point| (((p.y - y0) / cell).floor() as usize).min(ny - 1) * nx + (((p.x - x0) / cell).floor() as usize).min(nx - 1);
+        let cell_of = |p: &Point| {
+            (((p.y - y0) / cell).floor() as usize).min(ny - 1) * nx + (((p.x - x0) / cell).floor() as usize).min(nx - 1)
+        };
         // (A stable sort by cell: the points' order within a cell is theirs.)
         pts.sort_by_key(cell_of);
         let mut start = vec![0u32; nx * ny + 1];
@@ -230,7 +254,15 @@ impl Near {
 
     /// Rule 3's two stages for a building, each's median height (dm) where it has enough
     /// buildings: (150 m and like footprints, 300 m), whatever the footprint's size.
-    pub fn stages(&self, x: f64, y: f64, cos: f64, area: f32, a: &mut Vec<u16>, b: &mut Vec<u16>) -> (Option<u16>, Option<u16>) {
+    pub fn stages(
+        &self,
+        x: f64,
+        y: f64,
+        cos: f64,
+        area: f32,
+        a: &mut Vec<u16>,
+        b: &mut Vec<u16>,
+    ) -> (Option<u16>, Option<u16>) {
         a.clear();
         b.clear();
         if self.pts.is_empty() {
@@ -311,7 +343,8 @@ mod tests {
     #[test]
     fn neighbours() {
         // Points every 50 m along x at y = 0 (at the equator: cos 1), heights 10..=19 m.
-        let pts: Vec<Point> = (0..10).map(|i| Point { x: i as f64 * 50.0, y: 0.0, area: 100.0, h: 100 + 10 * i as u16 }).collect();
+        let pts: Vec<Point> =
+            (0..10).map(|i| Point { x: i as f64 * 50.0, y: 0.0, area: 100.0, h: 100 + 10 * i as u16 }).collect();
         let n = Near::new(pts, 1.0);
         let (mut a, mut b) = (Vec::new(), Vec::new());
         // At x = 0: within 150 m, four points (0, 50, 100, 150): too few; within 300 m, seven: too
@@ -324,7 +357,10 @@ mod tests {
         // But not for a small footprint (none like it near): left to rules 4–5.
         assert_eq!(n.height(225.0, 0.0, 1.0, 20.0, &mut a, &mut b), None);
         // At 60° a Mercator metre is half a ground metre: x 0–450 lie within 150 m of 225.
-        let n = Near::new((0..10).map(|i| Point { x: i as f64 * 50.0, y: 0.0, area: 100.0, h: 100 + 10 * i as u16 }).collect(), 0.5);
+        let n = Near::new(
+            (0..10).map(|i| Point { x: i as f64 * 50.0, y: 0.0, area: 100.0, h: 100 + 10 * i as u16 }).collect(),
+            0.5,
+        );
         assert_eq!(n.height(225.0, 0.0, 0.5, 100.0, &mut a, &mut b), Some((140, 1)));
         // No points: none.
         assert_eq!(Near::new(Vec::new(), 1.0).height(0.0, 0.0, 1.0, 1.0, &mut a, &mut b), None);

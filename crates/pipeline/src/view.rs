@@ -9,9 +9,9 @@
 //! and roadside values are the same and no analysis-grid tile within the far field's reach (2
 //! tiles, more above ~67° where they're narrower) is new.
 
-use det::Det;
 use crate::count_bar;
 use anyhow::Result;
+use det::Det;
 use rayon::prelude::*;
 use roadcore::grid::{cell_m, cell_of, class as lc, GridIndex, Layer};
 use roadcore::scenic::{area_u8, ch, flag as sf, sflag, Sample, FAR_MAX_M, NEAR_AZ, NEAR_MAX_M};
@@ -99,23 +99,23 @@ pub fn run(dir: &Path) -> Result<()> {
     let near = near_a.get();
     let road_a = Array::<u8>::open(&dir.join("roadside.u8"))?;
     let roadside = road_a.get();
-    eprintln!(
-        "view: {} samples; canopy {} · land cover {}",
-        samples.len(),
-        g.canopy.is_some(),
-        g.class.is_some(),
-    );
+    eprintln!("view: {} samples; canopy {} · land cover {}", samples.len(), g.canopy.is_some(), g.class.is_some(),);
 
     // Previous metrics (still in the build) by sample key, unless new grid tiles are within reach.
     let cdir = crate::scache::dir(dir);
     let change = crate::scache::GridChange::load(&cdir, "view", &g.idx.tiles);
     let prev = crate::scache::Prev::load(&cdir, "view");
-    let old = Array::<u8>::open(&dir.join("samples.metrics.u8")).ok().filter(|a| a.get().len() == prev.len() * ch::NBASE && !prev.is_empty());
+    let old = Array::<u8>::open(&dir.join("samples.metrics.u8"))
+        .ok()
+        .filter(|a| a.get().len() == prev.len() * ch::NBASE && !prev.is_empty());
     let keys: Vec<u64> = samples
         .par_iter()
         .enumerate()
         .map(|(i, s)| {
-            let k = crate::scache::mix(crate::scache::sample_key(s), bytemuck::cast_slice(&near[i * NEAR_AZ..(i + 1) * NEAR_AZ]));
+            let k = crate::scache::mix(
+                crate::scache::sample_key(s),
+                bytemuck::cast_slice(&near[i * NEAR_AZ..(i + 1) * NEAR_AZ]),
+            );
             crate::scache::mix(k, &roadside[i * 2..i * 2 + 2])
         })
         .collect();
@@ -175,7 +175,10 @@ pub fn flags(dir: &Path) -> Result<()> {
     let samples_a = Array::<Sample>::open(&dir.join("samples.bin"))?;
     let samples = samples_a.get();
     let base = Array::<[u8; ch::NBASE]>::open(&dir.join("samples.metrics.u8"))?;
-    anyhow::ensure!(base.get().len() == samples.len(), "samples.metrics.u8 does not match samples.bin; rerun `scenic view`");
+    anyhow::ensure!(
+        base.get().len() == samples.len(),
+        "samples.metrics.u8 does not match samples.bin; rerun `scenic view`"
+    );
     // Roadside buildings (`scenic buildings`); none until it has run for these samples.
     let bld_a = Array::<u8>::open(&dir.join("samples.bld.u8")).ok().filter(|a| a.get().len() == samples.len());
     let bld = bld_a.as_ref().map(|a| a.get());
@@ -255,7 +258,8 @@ pub fn flags(dir: &Path) -> Result<()> {
     let per_vertex: Vec<[u8; ch::N]> = parts.into_iter().flatten().collect();
     std::fs::write(roadcore::tmp(dir, "scenic.u8"), bytemuck::cast_slice(&per_vertex))?;
     roadcore::commit(dir, &["samples.ch.u8", "scenic.u8"])?;
-    let share = |m: u8| chans.iter().filter(|c| c[ch::FLAGS] & m != 0).count() as f64 / chans.len().max(1) as f64 * 100.0;
+    let share =
+        |m: u8| chans.iter().filter(|c| c[ch::FLAGS] & m != 0).count() as f64 / chans.len().max(1) as f64 * 100.0;
     eprintln!(
         "flags: waterfront {:.1} %, viewpoint {:.1} %, heritage {:.1} %, park {:.1} %, special {:.1} %, indigenous {:.1} %",
         share(sf::WATERFRONT),
@@ -288,7 +292,8 @@ fn sample_metrics(g: &Grids, s: &Sample, near: &[i8], roadside: &[u8]) -> [u8; c
     let can = g.canopy.as_ref().map(|l| l.data());
     let cls = g.class.as_ref().map(|l| l.data());
     let at = |d: f64, ux: f64, uy: f64| g.idx.cell((gx + ux * d / cm) as i64, (gy + uy * d / cm) as i64);
-    let is_water = |i: usize| cls.is_some_and(|k| k[i] == lc::WATER) || (cls.is_some_and(|k| k[i] == lc::NONE) && terr[i] <= 1);
+    let is_water =
+        |i: usize| cls.is_some_and(|k| k[i] == lc::WATER) || (cls.is_some_and(|k| k[i] == lc::NONE) && terr[i] <= 1);
 
     let dth = std::f64::consts::TAU / NEAR_AZ as f64;
     let (mut area, mut water, mut vista_sum) = (0f64, 0f64, 0f64);
@@ -396,7 +401,8 @@ fn vertex_channels(w: &roadcore::WayRec, v: &[[i32; 2]], ss: &[Sample], cs: &[[u
     let mut d = vec![0f64; n];
     let mut head = vec![0f64; n];
     for j in 1..n {
-        let (x0, y0, x1, y1) = (v[j - 1][0] as f64 * E7, v[j - 1][1] as f64 * E7, v[j][0] as f64 * E7, v[j][1] as f64 * E7);
+        let (x0, y0, x1, y1) =
+            (v[j - 1][0] as f64 * E7, v[j - 1][1] as f64 * E7, v[j][0] as f64 * E7, v[j][1] as f64 * E7);
         d[j] = d[j - 1] + dist_m(x0, y0, x1, y1);
         head[j] = (y1 - y0).datan2((x1 - x0) * y0.to_radians().dcos()).to_degrees();
     }
@@ -424,8 +430,18 @@ fn vertex_channels(w: &roadcore::WayRec, v: &[[i32; 2]], ss: &[Sample], cs: &[[u
         let mut c = [0u8; ch::N];
         if !ss.is_empty() {
             let k = ss.partition_point(|s| (s.dist as f64) < d[j]);
-            let (a, b) = if k == 0 { (0, 0) } else if k >= ss.len() { (ss.len() - 1, ss.len() - 1) } else { (k - 1, k) };
-            let t = if a == b { 0.0 } else { ((d[j] - ss[a].dist as f64) / (ss[b].dist - ss[a].dist) as f64).clamp(0.0, 1.0) };
+            let (a, b) = if k == 0 {
+                (0, 0)
+            } else if k >= ss.len() {
+                (ss.len() - 1, ss.len() - 1)
+            } else {
+                (k - 1, k)
+            };
+            let t = if a == b {
+                0.0
+            } else {
+                ((d[j] - ss[a].dist as f64) / (ss[b].dist - ss[a].dist) as f64).clamp(0.0, 1.0)
+            };
             for q in 0..ch::N {
                 c[q] = (cs[a][q] as f64 * (1.0 - t) + cs[b][q] as f64 * t).round() as u8;
             }

@@ -366,7 +366,8 @@ pub fn publish(f: File, tmp: &Path, path: &Path) -> io::Result<()> {
     let r = (|| -> io::Result<()> {
         let f = match std::fs::metadata(tmp) {
             Ok(m) if id(&m) == id(&f.metadata()?) => f,
-            Ok(_) => open_shared(tmp)?.ok_or_else(|| io::Error::other(format!("{}: gone as it was written", tmp.display())))?,
+            Ok(_) => open_shared(tmp)?
+                .ok_or_else(|| io::Error::other(format!("{}: gone as it was written", tmp.display())))?,
             Err(e) => return Err(e),
         };
         match std::fs::hard_link(tmp, path) {
@@ -491,10 +492,15 @@ pub fn try_remove_all(paths: &[PathBuf]) -> Option<u64> {
         Some(n)
     });
     #[cfg(not(unix))]
-    Some(paths.iter().map(|p| match try_remove(p) {
-        Removed::Freed(n) => n,
-        _ => 0,
-    }).sum())
+    Some(
+        paths
+            .iter()
+            .map(|p| match try_remove(p) {
+                Removed::Freed(n) => n,
+                _ => 0,
+            })
+            .sum(),
+    )
 }
 
 /// Deletes a damaged cache file a job found (cut short: no use to anyone), so it's filled again:
@@ -506,7 +512,9 @@ pub fn discard(path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        let Ok(f) = File::options().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) else { return };
+        let Ok(f) = File::options().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) else {
+            return;
+        };
         let Ok(m) = f.metadata() else { return };
         let t = std::time::Instant::now();
         while lock(&f, libc::LOCK_EX | libc::LOCK_NB).is_err() && t.elapsed() < std::time::Duration::from_secs(3) {

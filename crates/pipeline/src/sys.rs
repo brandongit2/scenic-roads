@@ -57,7 +57,9 @@ pub fn process_start(pid: i32) -> Option<u64> {
         // SAFETY: proc_bsdinfo is plain old data; proc_pidinfo fills at most `size` bytes of it.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-        let n = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) };
+        let n = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size)
+        };
         (n == size).then_some(info.pbi_start_tvsec)
     }
     #[cfg(not(target_os = "macos"))]
@@ -74,7 +76,9 @@ pub fn group_members(pgid: i32) -> Vec<i32> {
         const PROC_PGRP_ONLY: u32 = 2;
         let mut buf = vec![0i32; 1024];
         // SAFETY: the buffer holds `len` pids and its size in bytes is passed.
-        let n = unsafe { libc::proc_listpids(PROC_PGRP_ONLY, pgid as u32, buf.as_mut_ptr().cast(), (buf.len() * 4) as libc::c_int) };
+        let n = unsafe {
+            libc::proc_listpids(PROC_PGRP_ONLY, pgid as u32, buf.as_mut_ptr().cast(), (buf.len() * 4) as libc::c_int)
+        };
         if n <= 0 {
             return Vec::new();
         }
@@ -96,7 +100,9 @@ pub fn children(pid: i32) -> Vec<i32> {
         const PROC_PPID_ONLY: u32 = 6;
         let mut buf = vec![0i32; 1024];
         // SAFETY: the buffer holds `len` pids and its size in bytes is passed.
-        let n = unsafe { libc::proc_listpids(PROC_PPID_ONLY, pid as u32, buf.as_mut_ptr().cast(), (buf.len() * 4) as libc::c_int) };
+        let n = unsafe {
+            libc::proc_listpids(PROC_PPID_ONLY, pid as u32, buf.as_mut_ptr().cast(), (buf.len() * 4) as libc::c_int)
+        };
         if n <= 0 {
             return Vec::new();
         }
@@ -307,7 +313,11 @@ pub fn peak_rss() -> u64 {
                 return 0;
             }
             let v = u.ru_maxrss.max(0) as u64;
-            if cfg!(target_os = "macos") { v } else { v * 1024 }
+            if cfg!(target_os = "macos") {
+                v
+            } else {
+                v * 1024
+            }
         };
         max(libc::RUSAGE_SELF).max(max(libc::RUSAGE_CHILDREN))
     }
@@ -379,7 +389,10 @@ pub fn footprint_of_group(pgid: i32) -> Option<u64> {
         for pid in group_members(pgid) {
             // SAFETY: rusage_info_v2 is plain old data; proc_pid_rusage fills it, the flavour asked.
             let mut ri: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
-            if unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, (&mut ri as *mut libc::rusage_info_v2).cast()) } == 0 {
+            if unsafe {
+                libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, (&mut ri as *mut libc::rusage_info_v2).cast())
+            } == 0
+            {
                 total = Some(total.unwrap_or(0) + ri.ri_phys_footprint);
             }
         }
@@ -407,7 +420,10 @@ pub fn cpu_of_group(pgid: i32) -> Option<u64> {
         for pid in group_members(pgid) {
             // SAFETY: rusage_info_v2 is plain old data; proc_pid_rusage fills it, the flavour asked.
             let mut ri: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
-            if unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, (&mut ri as *mut libc::rusage_info_v2).cast()) } == 0 {
+            if unsafe {
+                libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, (&mut ri as *mut libc::rusage_info_v2).cast())
+            } == 0
+            {
                 let t = (ri.ri_user_time as u128 + ri.ri_system_time as u128) * numer / denom;
                 total = Some(total.unwrap_or(0) + t as u64);
             }
@@ -489,7 +505,11 @@ mod tests {
             own_group(&mut c);
             let out = store::spawn::output(&mut c).unwrap();
             let said = String::from_utf8_lossy(&out.stdout);
-            assert!(out.status.success() && said.contains(" 1 passed"), "{said}{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             return;
         }
         // This test's process group: the test binary, running this test alone.
@@ -512,7 +532,8 @@ mod tests {
     #[test]
     fn a_tree_killed_whole() {
         // A shell with two sleeps (as uv with Python): the shell killed, its children too.
-        let mut c = store::spawn::spawn(store::spawn::command("/bin/sh").args(["-c", "sleep 3600 & sleep 3600; wait"])).unwrap();
+        let mut c = store::spawn::spawn(store::spawn::command("/bin/sh").args(["-c", "sleep 3600 & sleep 3600; wait"]))
+            .unwrap();
         let pid = c.id() as i32;
         // (Waited for as long as a busy Mac takes to start them: five minutes, a watchdog.)
         let watchdog = || std::time::Instant::now() + std::time::Duration::from_secs(300);

@@ -18,20 +18,21 @@
 //!
 //! `terrain --scan`: the repair over the coverage's tiles, from AWS's raw tiles (see `scan`).
 
-use det::Det;
 use anyhow::Result;
+use det::Det;
 use pipeline::count_bar;
 use pipeline::terrain_pack::{fetch, max_zoom_at, near_coverage, process, process_with, tile_lat, Repaired};
 use rayon::prelude::*;
 use roadcore::archive::{Archive, ArchiveWriter};
-use roadcore::grid::{decode_terrain_png, repair_terrain_with, steepest, weigh_top, Blob, GridIndex, Repair, BLOB_MAX, BLOB_RISE, CELLS};
+use roadcore::grid::{
+    decode_terrain_png, repair_terrain_with, steepest, weigh_top, Blob, GridIndex, Repair, BLOB_MAX, BLOB_RISE, CELLS,
+};
 use roadcore::{Ways, E7};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
-
 
 fn tile_of(lon: f64, lat: f64, z: u8) -> (i64, i64) {
     let n = (1u64 << z) as f64;
@@ -101,11 +102,18 @@ fn main() -> Result<()> {
     // Download (reusing a previous archive), by the terrain's declared base (`--root`: the project
     // folder whose records name it, crate::terrain_sources).
     let args: Vec<String> = std::env::args().collect();
-    let root = args.iter().position(|a| a == "--root").and_then(|i| args.get(i + 1)).map_or_else(|| PathBuf::from("/Volumes/personal/projects/scenic-roads"), PathBuf::from);
+    let root = args
+        .iter()
+        .position(|a| a == "--root")
+        .and_then(|i| args.get(i + 1))
+        .map_or_else(|| PathBuf::from("/Volumes/personal/projects/scenic-roads"), PathBuf::from);
     let base = pipeline::terrain_sources::read(&pipeline::out::Out::unbound(&root, &dir.join("scratch"))?)?.base;
     let archive_path = dir.join("terrain.tiles");
     let old = Archive::open(&archive_path).ok();
-    let aw = Mutex::new(ArchiveWriter::create(&roadcore::tmp(&dir, "terrain.tiles"), r#"{"format":"png","encoding":"terrarium"}"#)?);
+    let aw = Mutex::new(ArchiveWriter::create(
+        &roadcore::tmp(&dir, "terrain.tiles"),
+        r#"{"format":"png","encoding":"terrarium"}"#,
+    )?);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(60)))
         .user_agent("scenic-roads/0.1 (personal offline map)")
@@ -214,23 +222,35 @@ fn scan() -> Result<()> {
     let outd = PathBuf::from(opt("--out").unwrap_or_else(|| "data/scan".into()));
     std::fs::create_dir_all(outd.join("views"))?;
     let views: HashSet<(u8, u32, u32)> = match opt("--views") {
-        Some(f) => std::fs::read_to_string(f)?.lines().filter_map(|l| {
-            let v: Vec<u32> = l.trim().split('/').filter_map(|s| s.parse().ok()).collect();
-            (v.len() == 3).then(|| (v[0] as u8, v[1], v[2]))
-        }).collect(),
+        Some(f) => std::fs::read_to_string(f)?
+            .lines()
+            .filter_map(|l| {
+                let v: Vec<u32> = l.trim().split('/').filter_map(|s| s.parse().ok()).collect();
+                (v.len() == 3).then(|| (v[0] as u8, v[1], v[2]))
+            })
+            .collect(),
         None => HashSet::new(),
     };
-    let only: Option<HashSet<(u32, u32)>> = opt("--only").map(|s| s.split(',').filter_map(|q| {
-        let v: Vec<u32> = q.split('/').filter_map(|s| s.parse().ok()).collect();
-        (v.len() == 3 && v[0] == 3).then(|| (v[1], v[2]))
-    }).collect());
+    let only: Option<HashSet<(u32, u32)>> = opt("--only").map(|s| {
+        s.split(',')
+            .filter_map(|q| {
+                let v: Vec<u32> = q.split('/').filter_map(|s| s.parse().ok()).collect();
+                (v.len() == 3 && v[0] == 3).then(|| (v[1], v[2]))
+            })
+            .collect()
+    });
     // (`--z6 <file>`: only those z6 tiles made, `6/x/y` a line; the others' z9 tiles, for their z3
     // pack's coarser levels, read from `--fixed-out` where it has them made by an earlier run.)
     let z6: Option<HashSet<(u32, u32)>> = match opt("--z6") {
-        Some(f) => Some(std::fs::read_to_string(f)?.lines().filter_map(|l| {
-            let v: Vec<u32> = l.trim().split('/').filter_map(|s| s.parse().ok()).collect();
-            (v.len() == 3 && v[0] == 6).then(|| (v[1], v[2]))
-        }).collect()),
+        Some(f) => Some(
+            std::fs::read_to_string(f)?
+                .lines()
+                .filter_map(|l| {
+                    let v: Vec<u32> = l.trim().split('/').filter_map(|s| s.parse().ok()).collect();
+                    (v.len() == 3 && v[0] == 6).then(|| (v[1], v[2]))
+                })
+                .collect(),
+        ),
         None => None,
     };
     // (The sources, as the terrain job opens them, from the NAS read only: nothing fetched.)
@@ -260,19 +280,28 @@ fn scan() -> Result<()> {
     };
     writeln!(sc.tiles.lock().unwrap(), "z\tx\ty\tlon\tlat\tv1_px\tv1_max\tv1b_px\tv1b_max\tv1c_px\tv1c_max\tvoids\tblobs\tv2_px\tv2_max\tv2b_any\tv2b_voids\tv2b_blobs\tv2b_px\tv2b_max\tdiff_px\tdiff_max\tstages\tunseen\tleft1\tleft1_max\tleft2\tleft2_max\tseam\tpatches\tfixed_px\tfixed_max")?;
     writeln!(sc.changes.lock().unwrap(), "which,z,x,y,px,py,lon,lat,before,after")?;
-    writeln!(sc.peaks.lock().unwrap(), "z\tx\ty\tid\tele\traw\tv2\tratio\tarea\trise\tlevel\tsteep\tsteep_flat\tspike\tspike_wall\tspike_flat\tfixed")?;
+    writeln!(
+        sc.peaks.lock().unwrap(),
+        "z\tx\ty\tid\tele\traw\tv2\tratio\tarea\trise\tlevel\tsteep\tsteep_flat\tspike\tspike_wall\tspike_flat\tfixed"
+    )?;
     writeln!(sc.blobs.lock().unwrap(), "z\tx\ty\tpx\tpy\tlon\tlat\tpit\tpixels\trise\tlevel\treach\tedge\tpx_m\tislope\twall\tring_iqr\ttop\tkind\trough\tground\tstage")?;
-    writeln!(sc.holes.lock().unwrap(), "z\tx\ty\tlon\tlat\tarea\tfloor_min\tfloor_med\tfloor_max\tones\tneg\trim_min\trim_med\trim_max\twall_med")?;
+    writeln!(
+        sc.holes.lock().unwrap(),
+        "z\tx\ty\tlon\tlat\tarea\tfloor_min\tfloor_med\tfloor_max\tones\tneg\trim_min\trim_med\trim_max\twall_med"
+    )?;
     writeln!(sc.lefts.lock().unwrap(), "which\tz\tx\ty\tpx\tpy\tlon\tlat\tv\tground\tupper")?;
     let store = root.join("sources/aws-terrarium");
     let t0 = std::time::Instant::now();
     if let Some(f) = opt("--tiles") {
         // (Tiles alone, each from its raw tile only, with their views: for a look.)
         let raw = pipeline::terrain_pack::RawTiles::with_store(&cache, &store, &base);
-        let list: Vec<(u8, u32, u32)> = std::fs::read_to_string(f)?.lines().filter_map(|l| {
-            let v: Vec<u32> = l.trim().split('/').filter_map(|s| s.parse().ok()).collect();
-            (v.len() == 3).then(|| (v[0] as u8, v[1], v[2]))
-        }).collect();
+        let list: Vec<(u8, u32, u32)> = std::fs::read_to_string(f)?
+            .lines()
+            .filter_map(|l| {
+                let v: Vec<u32> = l.trim().split('/').filter_map(|s| s.parse().ok()).collect();
+                (v.len() == 3).then(|| (v[0] as u8, v[1], v[2]))
+            })
+            .collect();
         let sc = Scan { views: list.iter().copied().collect(), ..sc };
         list.par_iter().try_for_each(|&(z, x, y)| -> Result<()> {
             if let (Some(b), _) = raw.get(z, x, y)? {
@@ -307,7 +336,12 @@ fn scan() -> Result<()> {
         let recipes = pipeline::inputs::regions::read::recipes(&src)?;
         let cov = pipeline::coverage::Coverage::accepted(&root, &src, None)?;
         let by_q = pipeline::agent::build::coverage_tiles(&cov);
-        eprintln!("scan: {} regions, {} z3 packs, {} z6 tiles", recipes.len(), by_q.len(), by_q.values().map(Vec::len).sum::<usize>());
+        eprintln!(
+            "scan: {} regions, {} z3 packs, {} z6 tiles",
+            recipes.len(),
+            by_q.len(),
+            by_q.values().map(Vec::len).sum::<usize>()
+        );
         let mut z3: HashMap<(u32, u32), (Vec<f32>, Vec<f32>)> = HashMap::new();
         for (qi, (&q, ts)) in by_q.iter().enumerate() {
             if only.as_ref().is_some_and(|o| !o.contains(&q)) {
@@ -329,19 +363,35 @@ fn scan() -> Result<()> {
                     // (Made before: its z9 tiles as stored there, against AWS's.)
                     if let Some(out) = fixed.as_ref() {
                         let mt = pipeline::terrain_pack::ManifestTiles::new(out, "terrain");
-                        if mt.has(6, tx, ty).unwrap_or(false) || out.get(&format!("layers/terrain/hi/6-{tx}-{ty}")).is_some() {
+                        if mt.has(6, tx, ty).unwrap_or(false)
+                            || out.get(&format!("layers/terrain/hi/6-{tx}-{ty}")).is_some()
+                        {
                             let raw = fresh();
                             for x in tx * 8..(tx + 1) * 8 {
                                 for y in ty * 8..(ty + 1) * 8 {
-                                    let (Some(st), Some(rw)) = (mt.get(9, x, y)?, raw.get(9, x, y)?.0) else { continue };
-                                    let (Ok(e), Ok(before)) = (decode_terrain_png(&st), decode_terrain_png(&rw)) else { continue };
+                                    let (Some(st), Some(rw)) = (mt.get(9, x, y)?, raw.get(9, x, y)?.0) else {
+                                        continue;
+                                    };
+                                    let (Ok(e), Ok(before)) = (decode_terrain_png(&st), decode_terrain_png(&rw)) else {
+                                        continue;
+                                    };
                                     let mut q = vec![0f32; 128 * 128];
                                     for j in 0..128 {
                                         for i in 0..128 {
-                                            q[j * 128 + i] = (e[2 * j * 256 + 2 * i] + e[2 * j * 256 + 2 * i + 1] + e[(2 * j + 1) * 256 + 2 * i] + e[(2 * j + 1) * 256 + 2 * i + 1]) * 0.25;
+                                            q[j * 128 + i] = (e[2 * j * 256 + 2 * i]
+                                                + e[2 * j * 256 + 2 * i + 1]
+                                                + e[(2 * j + 1) * 256 + 2 * i]
+                                                + e[(2 * j + 1) * 256 + 2 * i + 1])
+                                                * 0.25;
                                         }
                                     }
-                                    let moved: Vec<u16> = e.iter().zip(&before).enumerate().filter(|(_, (a, b))| !((*a - *b).abs() <= 0.5)).map(|(i, _)| i as u16).collect();
+                                    let moved: Vec<u16> = e
+                                        .iter()
+                                        .zip(&before)
+                                        .enumerate()
+                                        .filter(|(_, (a, b))| !((*a - *b).abs() <= 0.5))
+                                        .map(|(i, _)| i as u16)
+                                        .collect();
                                     nine.3.insert((x, y), q);
                                     if !moved.is_empty() {
                                         nine.2.insert((x, y), Repaired { e, moved });
@@ -359,7 +409,10 @@ fn scan() -> Result<()> {
                 let mut hi: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
                 for z in (9..=12u8).rev() {
                     let s = 1u32 << (z - 6);
-                    let tiles: Vec<(u32, u32)> = (tx * s..(tx + 1) * s).flat_map(|x| (ty * s..(ty + 1) * s).map(move |y| (x, y))).filter(|&(x, y)| z <= max_zoom_at(tile_lat(z, y)) && near_coverage(&cov, z, x, y, 20.0)).collect();
+                    let tiles: Vec<(u32, u32)> = (tx * s..(tx + 1) * s)
+                        .flat_map(|x| (ty * s..(ty + 1) * s).map(move |y| (x, y)))
+                        .filter(|&(x, y)| z <= max_zoom_at(tile_lat(z, y)) && near_coverage(&cov, z, x, y, 20.0))
+                        .collect();
                     n += tiles.len();
                     b = sc.level(&raw, z, &tiles, &b, &mut lakes)?;
                     hi.append(&mut b.4);
@@ -388,7 +441,8 @@ fn scan() -> Result<()> {
             let mut lo: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
             for z in (3..=8u8).rev() {
                 let s = 1u32 << (z - 3);
-                let tiles: Vec<(u32, u32)> = (q.0 * s..(q.0 + 1) * s).flat_map(|x| (q.1 * s..(q.1 + 1) * s).map(move |y| (x, y))).collect();
+                let tiles: Vec<(u32, u32)> =
+                    (q.0 * s..(q.0 + 1) * s).flat_map(|x| (q.1 * s..(q.1 + 1) * s).map(move |y| (x, y))).collect();
                 n += tiles.len();
                 b = sc.level(&raw, z, &tiles, &b, &mut lakes_q)?;
                 lo.append(&mut b.4);
@@ -407,7 +461,16 @@ fn scan() -> Result<()> {
             if let (Some(a), Some(c)) = (b.1.remove(&q), b.3.remove(&q)) {
                 z3.insert(q, (a, c));
             }
-            eprintln!("scan: 3/{}/{} ({}/{}): {} tiles in {:.0?} ({:.0?} so far)", q.0, q.1, qi + 1, by_q.len(), n, tq.elapsed(), t0.elapsed());
+            eprintln!(
+                "scan: 3/{}/{} ({}/{}): {} tiles in {:.0?} ({:.0?} so far)",
+                q.0,
+                q.1,
+                qi + 1,
+                by_q.len(),
+                n,
+                tq.elapsed(),
+                t0.elapsed()
+            );
             sc.flush()?;
         }
         // The root (z0–2), from the z3 tiles made here, else AWS's.
@@ -479,7 +542,10 @@ fn scan() -> Result<()> {
     }
     txt += "lone towers left over low ground (> 100 m above a 7 x 7 median of 30 m or less, 3 or fewer of the 49 in their upper half), per zoom: tiles, towers, most above the median (first repair | new):\n";
     for (z, s) in &sums {
-        txt += &format!("  z{z}: {} {} {:.0} | {} {} {:.0}\n", s.left1.0, s.left1.1, s.left1.2, s.left2.0, s.left2.1, s.left2.2);
+        txt += &format!(
+            "  z{z}: {} {} {:.0} | {} {} {:.0}\n",
+            s.left1.0, s.left1.1, s.left1.2, s.left2.0, s.left2.1, s.left2.2
+        );
     }
     txt += &format!("({:.0?})\n", t0.elapsed());
     eprint!("{txt}");
@@ -489,7 +555,13 @@ fn scan() -> Result<()> {
 
 /// A level's repairs and quarters, each repair's (terrain_pack::process): v1's, then v2's.
 #[derive(Default)]
-struct Levels(HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>, HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>, Vec<(u8, u32, u32, Vec<u8>)>);
+struct Levels(
+    HashMap<(u32, u32), Repaired>,
+    HashMap<(u32, u32), Vec<f32>>,
+    HashMap<(u32, u32), Repaired>,
+    HashMap<(u32, u32), Vec<f32>>,
+    Vec<(u8, u32, u32, Vec<u8>)>,
+);
 type Made = (Option<Repaired>, Option<Vec<f32>>, Option<Repaired>, Option<Vec<f32>>);
 
 /// Tiles changed, pixels moved (> 0.5 m), the largest move (m).
@@ -606,7 +678,14 @@ impl Scan {
 
     /// A level's tiles, each made from its raw tile with what the level below made (`b`), the
     /// lakes' levels from all of them (those known, `lakes`, kept).
-    fn level(&self, raw: &pipeline::terrain_pack::RawTiles, z: u8, tiles: &[(u32, u32)], b: &Levels, lakes: &mut HashMap<u64, f32>) -> Result<Levels> {
+    fn level(
+        &self,
+        raw: &pipeline::terrain_pack::RawTiles,
+        z: u8,
+        tiles: &[(u32, u32)],
+        b: &Levels,
+        lakes: &mut HashMap<u64, f32>,
+    ) -> Result<Levels> {
         raw.prefetch(z, tiles, 64)?;
         let coarse = pipeline::terrain_pack::Coarse::new(raw);
         let src = self.sources(&coarse);
@@ -617,17 +696,21 @@ impl Scan {
                 Ok(Some(((x, y), self.tile_a(png, z, x, y, b, &src))))
             })
             .collect();
-        let mut halves: Vec<((u32, u32), Half)> = halves.into_iter().filter_map(|r| r.transpose()).collect::<Result<_>>()?;
+        let mut halves: Vec<((u32, u32), Half)> =
+            halves.into_iter().filter_map(|r| r.transpose()).collect::<Result<_>>()?;
         let mut all = HashMap::new();
         for (_, h) in &halves {
             pipeline::terrain_water::gather(&mut all, h.v2.lake_samples());
         }
         pipeline::terrain_water::add_levels(lakes, &all);
         let lakes: &HashMap<u64, f32> = lakes;
-        let made: Vec<((u32, u32), Made, Vec<u8>)> = halves.par_drain(..).map(|((x, y), h)| {
-            let (m, png2) = self.tile_b(h, z, x, y, lakes, &coarse);
-            ((x, y), m, png2)
-        }).collect();
+        let made: Vec<((u32, u32), Made, Vec<u8>)> = halves
+            .par_drain(..)
+            .map(|((x, y), h)| {
+                let (m, png2) = self.tile_b(h, z, x, y, lakes, &coarse);
+                ((x, y), m, png2)
+            })
+            .collect();
         let mut l = Levels::default();
         for ((x, y), (r1, q1, r2, q2), png2) in made {
             if let Some(r) = r1 {
@@ -648,7 +731,15 @@ impl Scan {
     }
 
     /// One tile alone (its lakes' levels from it alone).
-    fn tile(&self, png: Vec<u8>, z: u8, x: u32, y: u32, raw: &pipeline::terrain_pack::RawTiles, b: &Levels) -> (Made, Vec<u8>) {
+    fn tile(
+        &self,
+        png: Vec<u8>,
+        z: u8,
+        x: u32,
+        y: u32,
+        raw: &pipeline::terrain_pack::RawTiles,
+        b: &Levels,
+    ) -> (Made, Vec<u8>) {
         let coarse = pipeline::terrain_pack::Coarse::new(raw);
         let src = self.sources(&coarse);
         let h = self.tile_a(png, z, x, y, b, &src);
@@ -664,17 +755,18 @@ impl Scan {
             self.holes(&e, z, x, y);
         }
         let seen1: std::cell::RefCell<Option<(Vec<f32>, Vec<f32>)>> = Default::default();
-        let v1 = process_with(png.clone(), z, x, y, &b.0, &b.1, &Default::default(), &HashMap::new(), &|e, z, lat, _| {
-            // (The first repair took bathymetry to sea level before it.)
-            for v in e.iter_mut() {
-                if *v < 0.0 {
-                    *v = 0.0;
+        let v1 =
+            process_with(png.clone(), z, x, y, &b.0, &b.1, &Default::default(), &HashMap::new(), &|e, z, lat, _| {
+                // (The first repair took bathymetry to sea level before it.)
+                for v in e.iter_mut() {
+                    if *v < 0.0 {
+                        *v = 0.0;
+                    }
                 }
-            }
-            let b = e.to_vec();
-            v1::repair(e, z, lat);
-            *seen1.borrow_mut() = Some((b, e.to_vec()));
-        });
+                let b = e.to_vec();
+                v1::repair(e, z, lat);
+                *seen1.borrow_mut() = Some((b, e.to_vec()));
+            });
         let seen2: std::cell::RefCell<Option<(Vec<f32>, Vec<f32>, Repair)>> = Default::default();
         let found: std::cell::RefCell<Vec<Blob>> = Default::default();
         let v2 = pipeline::terrain_pack::prepare(png.clone(), z, x, y, &b.2, &b.3, src, &|e, z, lat, c| {
@@ -688,7 +780,15 @@ impl Scan {
 
     /// A tile's second half: the new terrain's water, and every count; its output (the new
     /// terrain's PNG) too.
-    fn tile_b(&self, h: Half, z: u8, x: u32, y: u32, lakes: &HashMap<u64, f32>, coarse: &pipeline::terrain_pack::Coarse) -> (Made, Vec<u8>) {
+    fn tile_b(
+        &self,
+        h: Half,
+        z: u8,
+        x: u32,
+        y: u32,
+        lakes: &HashMap<u64, f32>,
+        coarse: &pipeline::terrain_pack::Coarse,
+    ) -> (Made, Vec<u8>) {
         let lat = tile_lat(z, y);
         let Half { v1: (png1, r1, qd1), seen1, v2, seen2, found } = h;
         let (png2, r2, qd2) = pipeline::terrain_pack::finish(v2, lakes);
@@ -726,18 +826,27 @@ impl Scan {
         let n2 = (1u64 << z) as f64;
         let lonlat = |i: usize| {
             let (px, py) = ((i % 256) as f64 + 0.5, (i / 256) as f64 + 0.5);
-            ((x as f64 + px / 256.0) / n2 * 360.0 - 180.0, (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + py / 256.0) / n2)).dsinh().datan().to_degrees())
+            (
+                (x as f64 + px / 256.0) / n2 * 360.0 - 180.0,
+                (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + py / 256.0) / n2)).dsinh().datan().to_degrees(),
+            )
         };
         // (Lone towers left: three or fewer of the 49 pixels around in their upper half.)
         let (l1, l2) = (towers_left(&o1), towers_left(&o2));
-        let lone = |l: &[(u32, f32, f32, u32)]| l.iter().filter(|t| t.3 <= 3).fold((0u32, 0f32), |(n, big), t| (n + 1, big.max(t.1 - t.2)));
+        let lone = |l: &[(u32, f32, f32, u32)]| {
+            l.iter().filter(|t| t.3 <= 3).fold((0u32, 0f32), |(n, big), t| (n + 1, big.max(t.1 - t.2)))
+        };
         let (left1, left2) = (lone(&l1), lone(&l2));
         if !l1.is_empty() || !l2.is_empty() {
             let mut rows = String::new();
             for (which, l) in [("v1", &l1), ("v2", &l2)] {
                 for &(i, v, m, upper) in l.iter() {
                     let (lon, lat) = lonlat(i as usize);
-                    rows += &format!("{which}\t{z}\t{x}\t{y}\t{}\t{}\t{lon:.5}\t{lat:.5}\t{v:.0}\t{m:.0}\t{upper}\n", i % 256, i / 256);
+                    rows += &format!(
+                        "{which}\t{z}\t{x}\t{y}\t{}\t{}\t{lon:.5}\t{lat:.5}\t{v:.0}\t{m:.0}\t{upper}\n",
+                        i % 256,
+                        i / 256
+                    );
                 }
             }
             self.lefts.lock().unwrap().write_all(rows.as_bytes()).ok();
@@ -778,7 +887,9 @@ impl Scan {
             self.changes.lock().unwrap().write_all(ch.as_bytes()).ok();
         }
         if self.views.contains(&(z, x, y)) {
-            for (name, v) in [("raw", &b2v), ("v1", &o1), ("v2", &a2v.iter().map(|v| v.max(0.0)).collect()), ("fixed", &o2)] {
+            for (name, v) in
+                [("raw", &b2v), ("v1", &o1), ("v2", &a2v.iter().map(|v| v.max(0.0)).collect()), ("fixed", &o2)]
+            {
                 std::fs::write(self.outd.join(format!("views/{z}-{x}-{y}.{name}.f32")), bytemuck::cast_slice(v)).ok();
             }
         }
@@ -858,7 +969,10 @@ impl Scan {
             let iqr = if ring.is_empty() { 0.0 } else { ring[ring.len() * 3 / 4] - ring[ring.len() / 4] };
             let (tx, ty) = ((b.top % 256) as f64, (b.top / 256) as f64);
             let lon = (x as f64 + (tx + 0.5) / 256.0) / n2 * 360.0 - 180.0;
-            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + (ty + 0.5) / 256.0) / n2)).dsinh().datan().to_degrees();
+            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + (ty + 0.5) / 256.0) / n2))
+                .dsinh()
+                .datan()
+                .to_degrees();
             rows += &format!("{z}\t{x}\t{y}\t{}\t{}\t{lon:.5}\t{lat:.5}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\t{}\t{px:.1}\t{islope:.2}\t{wall:.2}\t{iqr:.1}\t{:.0}\t{:?}\t{:.1}\t{:.0}\t{}\n", b.top % 256, b.top / 256, b.pit as u8, b.pixels, b.rise, b.level, b.reach, b.edge as u8, e[b.top as usize], b.kind, b.rough, b.ground, b.stage);
         }
         self.blobs.lock().unwrap().write_all(rows.as_bytes()).ok();
@@ -961,9 +1075,15 @@ impl Scan {
             let ones = fl.iter().filter(|&&v| v == 1.0).count() as f64 / fl.len() as f64;
             let neg = fl.iter().filter(|&&v| v < 0.0).count() as f64 / fl.len() as f64;
             let (fmin, fmed, fmax) = med(&mut fl);
-            let (cx, cy) = (px.iter().map(|&p| (p % 256) as f64).sum::<f64>() / px.len() as f64, px.iter().map(|&p| (p / 256) as f64).sum::<f64>() / px.len() as f64);
+            let (cx, cy) = (
+                px.iter().map(|&p| (p % 256) as f64).sum::<f64>() / px.len() as f64,
+                px.iter().map(|&p| (p / 256) as f64).sum::<f64>() / px.len() as f64,
+            );
             let lon = (x as f64 + (cx + 0.5) / 256.0) / n2 * 360.0 - 180.0;
-            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + (cy + 0.5) / 256.0) / n2)).dsinh().datan().to_degrees();
+            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + (cy + 0.5) / 256.0) / n2))
+                .dsinh()
+                .datan()
+                .to_degrees();
             rows += &format!("{z}\t{x}\t{y}\t{lon:.5}\t{lat:.5}\t{}\t{fmin:.1}\t{fmed:.1}\t{fmax:.1}\t{ones:.2}\t{neg:.2}\t{rmin:.1}\t{rmed:.1}\t{rmax:.1}\t{wmed:.1}\n", px.len());
         }
         if !rows.is_empty() {
@@ -1182,7 +1302,9 @@ mod v1 {
                 ring.sort_unstable_by(|a, b| a.total_cmp(b));
                 let n = ring.len();
                 let (min, max, q1, q3) = (ring[0], ring[n - 1], ring[n / 4], ring[n * 3 / 4]);
-                if v > max + rise.max(2.0 * (max - min)) || (q3 - q1 <= 0.25 * rise && v > q3 + rise.max(2.0 * px_m as f32)) {
+                if v > max + rise.max(2.0 * (max - min))
+                    || (q3 - q1 <= 0.25 * rise && v > q3 + rise.max(2.0 * px_m as f32))
+                {
                     t[y * w + x] = ring[n / 2];
                     clamped += 1;
                 }

@@ -15,7 +15,6 @@
 //!   it, its ways' lines' records; each way with its whole length (`km`) and an id, so the app
 //!   merges blocks by id and measures what's in view on the geometry it has.
 
-use det::Det;
 use crate::hipack::{grow, meets, tile_bounds};
 use crate::layers::{pack_of, write_pack};
 use crate::legacy::Unit;
@@ -24,6 +23,7 @@ use crate::marks::{self, IdSource};
 use crate::out::Out;
 use crate::vtgen::{self, Feature, Geom};
 use anyhow::{bail, Context, Result};
+use det::Det;
 use names::mvt::Value as MvtValue;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -100,7 +100,13 @@ fn z3_of(lon: f64, lat: f64) -> String {
 
 /// The z6 tiles meeting the coverage (the base packs' units) grown by `HALO_KM`: where hi tiles go.
 fn hi_cover(out: &Out) -> HashSet<(u32, u32)> {
-    let grown: Vec<_> = out.manifest.keys().filter_map(|k| k.strip_prefix("base/")).filter_map(Unit::parse).map(|u| grow(tile_bounds(u.z, u.x, u.y), HALO_KM)).collect();
+    let grown: Vec<_> = out
+        .manifest
+        .keys()
+        .filter_map(|k| k.strip_prefix("base/"))
+        .filter_map(Unit::parse)
+        .map(|u| grow(tile_bounds(u.z, u.x, u.y), HALO_KM))
+        .collect();
     let mut s = HashSet::new();
     for x in 0..64u32 {
         for y in 0..64u32 {
@@ -157,7 +163,11 @@ impl Recs {
 /// from a pass's heritage outputs (`src`), the World Heritage outlines with the dots' ids the marks
 /// job gave them (`dots`); the overlays' packs and ovdata this run didn't write dropped; the
 /// summary and the sources list the map loads whole, as `global/heritage/…`.
-pub fn overlays(out: &mut Out, src: &str, dots: &HashMap<u64, (u64, f64, f64)>) -> Result<(usize, usize, usize, usize)> {
+pub fn overlays(
+    out: &mut Out,
+    src: &str,
+    dots: &HashMap<u64, (u64, f64, f64)>,
+) -> Result<(usize, usize, usize, usize)> {
     let t0 = std::time::Instant::now();
     let cover = hi_cover(out);
     let want = |z: u8, x: u32, y: u32| z < 9 || cover.contains(&(x >> (z - 6), y >> (z - 6)));
@@ -171,14 +181,22 @@ pub fn overlays(out: &mut Out, src: &str, dots: &HashMap<u64, (u64, f64, f64)>) 
     let stale: Vec<String> = out
         .manifest
         .keys()
-        .filter(|k| AREAS.iter().any(|a| k.starts_with(&format!("layers/{}/", a.layer))) || k.starts_with("ovdata/") || k.starts_with("global/heritage/"))
+        .filter(|k| {
+            AREAS.iter().any(|a| k.starts_with(&format!("layers/{}/", a.layer)))
+                || k.starts_with("ovdata/")
+                || k.starts_with("global/heritage/")
+        })
         .filter(|k| !wrote.contains(*k) && out.may_remove(k))
         .cloned()
         .collect();
     for k in &stale {
         out.remove(k);
     }
-    eprintln!("overlays: {areas} areas, {ntiles} tiles, {n_ov} ovdata, {parks} parks from {src}; {} stale dropped ({:.1?})", stale.len(), t0.elapsed());
+    eprintln!(
+        "overlays: {areas} areas, {ntiles} tiles, {n_ov} ovdata, {parks} parks from {src}; {} stale dropped ({:.1?})",
+        stale.len(),
+        t0.elapsed()
+    );
     Ok((areas, ntiles, n_ov, parks))
 }
 
@@ -226,12 +244,16 @@ fn areas_and_parks(
             let mut id = None;
             if a.details.is_none() {
                 // A World Heritage outline: its site's dot (id, place).
-                let (dot, lon, lat) = *i.and_then(|i| dots.get(&i)).with_context(|| format!("{} #{n}: no heritage dot for record {i:?}", a.file))?;
+                let (dot, lon, lat) = *i
+                    .and_then(|i| dots.get(&i))
+                    .with_context(|| format!("{} #{n}: no heritage dot for record {i:?}", a.file))?;
                 id = Some(dot);
                 props.insert("px".into(), serde_json::json!(lon));
                 props.insert("py".into(), serde_json::json!(lat));
             } else {
-                let osm = rec.and_then(|r| serde_json::from_str::<Value>(r).ok()).and_then(|v| v["osm"].as_str().and_then(marks::osm_id));
+                let osm = rec
+                    .and_then(|r| serde_json::from_str::<Value>(r).ok())
+                    .and_then(|v| v["osm"].as_str().and_then(marks::osm_id));
                 let name = props.get("name").and_then(Value::as_str).unwrap_or("");
                 let reference = format!("legacy:{}|{name}|{},{}", a.layer, marks::e7(cx), marks::e7(cy));
                 src.push(IdSource { osm, reference, canon: Value::Object(props.clone()).to_string() });
@@ -240,7 +262,8 @@ fn areas_and_parks(
             if a.details.is_some() {
                 props.insert("own".into(), serde_json::json!(own));
             }
-            let mvt: Vec<(String, MvtValue)> = props.iter().filter_map(|(k, v)| mvt_value(v).map(|m| (k.clone(), m))).collect();
+            let mvt: Vec<(String, MvtValue)> =
+                props.iter().filter_map(|(k, v)| mvt_value(v).map(|m| (k.clone(), m))).collect();
             made.push((Feature { id: 0, geom, props: mvt, minzoom: 0 }, id, rec.cloned().unwrap_or_default(), own));
         }
         // Ids for the overlays with details (their own group); outlines have their dots'.
@@ -266,7 +289,12 @@ fn areas_and_parks(
         drop(p);
         let feats: Vec<Feature> = made.into_iter().map(|m| m.0).collect();
         wrote.extend(write_tiles(out, a.layer, LAYER, &feats, want, ntiles)?);
-        eprintln!("overlays: {} {} features ({empty} without geometry), {ntiles} tiles so far ({:.1?})", a.layer, feats.len(), t0.elapsed());
+        eprintln!(
+            "overlays: {} {} features ({empty} without geometry), {ntiles} tiles so far ({:.1?})",
+            a.layer,
+            feats.len(),
+            t0.elapsed()
+        );
     }
     // Parks: owned by their box's centre.
     let pb = src_bytes(out, src, "details-park")?;
@@ -274,7 +302,9 @@ fn areas_and_parks(
     for line in pb.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
         let v: Value = serde_json::from_slice(line).context("details-park: a record")?;
         let b = &v["bbox"];
-        let (Some(w), Some(s), Some(e), Some(n)) = (b[0].as_f64(), b[1].as_f64(), b[2].as_f64(), b[3].as_f64()) else { continue };
+        let (Some(w), Some(s), Some(e), Some(n)) = (b[0].as_f64(), b[1].as_f64(), b[2].as_f64(), b[3].as_f64()) else {
+            continue;
+        };
         let own = z3_of((w + e) / 2.0, (s + n) / 2.0);
         let r = owned.entry(own).or_default().entry("parks").or_default();
         let k = r.rows.len() as u64;
@@ -289,7 +319,8 @@ fn areas_and_parks(
         let logical = format!("ovdata/{}", u.dash());
         let local = out.scratch_file(&format!("{logical}.sect"));
         let counts: BTreeMap<&str, usize> = keys.iter().map(|(k, r)| (*k, r.rows.len())).collect();
-        let mut w = store::sect::SectWriter::create(&local, serde_json::json!({"fmt": 1, "tile": tile, "records": counts}))?;
+        let mut w =
+            store::sect::SectWriter::create(&local, serde_json::json!({"fmt": 1, "tile": tile, "records": counts}))?;
         for (key, recs) in keys {
             let (ids, offs, bytes) = recs.sections();
             w.add_pod(&format!("{key}.ids"), &ids)?;
@@ -357,7 +388,12 @@ fn simplify_m(c: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
 /// zip's path on the NAS and its day: ferries.py counts them, dem/ferrygtfs.py) and the static
 /// timetables' accepted zips (`statics`, crate::inputs::gtfs: the timetables looked up by hand,
 /// dem/staticgtfs.py), and the blocks from what it writes.
-pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path, statics: &crate::inputs::Accepted) -> Result<usize> {
+pub fn ferries_job(
+    out: &mut Out,
+    date: &str,
+    dem: &std::path::Path,
+    statics: &crate::inputs::Accepted,
+) -> Result<usize> {
     use std::process::Command;
     let logical = crate::osmpass::set_name(date, "ferries");
     let set = out.path(out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?);
@@ -366,7 +402,11 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path, statics: &c
     std::fs::create_dir_all(&work)?;
     let run = |mut c: Command, what: &str| -> Result<()> {
         let o = store::spawn::output(&mut c).with_context(|| format!("run {what}"))?;
-        anyhow::ensure!(o.status.success(), "{what}: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or(""));
+        anyhow::ensure!(
+            o.status.success(),
+            "{what}: {}",
+            String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("")
+        );
         Ok(())
     };
     let osmium = |args: &[&str]| {
@@ -376,11 +416,47 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path, statics: &c
     };
     let set_s = set.to_string_lossy().into_owned();
     let p = crate::timings::phase("the ferries set filtered and exported (osmium)", crate::timings::Class::NasRead);
-    run(osmium(&["tags-filter", &set_s, "w/route=ferry", "r/route=ferry", "-o", "ferries.osm.pbf", "--overwrite"]), "osmium (ferry routes)")?;
-    run(osmium(&["export", "ferries.osm.pbf", "-f", "geojsonseq", "--geometry-types=linestring", "-a", "type,id", "-o", "ways.geojsonseq", "--overwrite"]), "osmium export (ways)")?;
-    run(osmium(&["cat", "ferries.osm.pbf", "-t", "relation", "-f", "opl", "-o", "relations.opl", "--overwrite"]), "osmium cat (relations)")?;
-    run(osmium(&["tags-filter", &set_s, "nw/amenity=ferry_terminal", "-o", "terminals.osm.pbf", "--overwrite"]), "osmium (terminals)")?;
-    run(osmium(&["export", "terminals.osm.pbf", "-f", "geojsonseq", "-a", "type,id", "-o", "terminals.geojsonseq", "--overwrite"]), "osmium export (terminals)")?;
+    run(
+        osmium(&["tags-filter", &set_s, "w/route=ferry", "r/route=ferry", "-o", "ferries.osm.pbf", "--overwrite"]),
+        "osmium (ferry routes)",
+    )?;
+    run(
+        osmium(&[
+            "export",
+            "ferries.osm.pbf",
+            "-f",
+            "geojsonseq",
+            "--geometry-types=linestring",
+            "-a",
+            "type,id",
+            "-o",
+            "ways.geojsonseq",
+            "--overwrite",
+        ]),
+        "osmium export (ways)",
+    )?;
+    run(
+        osmium(&["cat", "ferries.osm.pbf", "-t", "relation", "-f", "opl", "-o", "relations.opl", "--overwrite"]),
+        "osmium cat (relations)",
+    )?;
+    run(
+        osmium(&["tags-filter", &set_s, "nw/amenity=ferry_terminal", "-o", "terminals.osm.pbf", "--overwrite"]),
+        "osmium (terminals)",
+    )?;
+    run(
+        osmium(&[
+            "export",
+            "terminals.osm.pbf",
+            "-f",
+            "geojsonseq",
+            "-a",
+            "type,id",
+            "-o",
+            "terminals.geojsonseq",
+            "--overwrite",
+        ]),
+        "osmium export (terminals)",
+    )?;
     drop(p);
     let p = crate::timings::phase("the feeds and static files listed", crate::timings::Class::NasRead);
     let feeds = work.join("ferry-feeds.json");
@@ -391,13 +467,25 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path, statics: &c
     drop(p);
     let p = crate::timings::phase("ferries.py", crate::timings::Class::Mixed);
     let mut py = store::spawn::command("uv");
-    py.current_dir(dem).args(["run", "python", "ferries.py", "--src"]).arg(&work).arg("--out").arg(&work).arg("--feeds").arg(&feeds).arg("--static").arg(&static_list);
+    py.current_dir(dem)
+        .args(["run", "python", "ferries.py", "--src"])
+        .arg(&work)
+        .arg("--out")
+        .arg(&work)
+        .arg("--feeds")
+        .arg(&feeds)
+        .arg("--static")
+        .arg(&static_list);
     crate::timings::child(&mut py);
     run(py, "ferries.py")?;
     drop(p);
     let fc: Value = serde_json::from_slice(&std::fs::read(work.join("ferries.json"))?)?;
     let lines: serde_json::Map<String, Value> = serde_json::from_slice(&std::fs::read(work.join("ferry-lines.json"))?)?;
-    eprintln!("ferries: {} features, {} lines ({n_static} static files)", fc["features"].as_array().map_or(0, Vec::len), lines.len());
+    eprintln!(
+        "ferries: {} features, {} lines ({n_static} static files)",
+        fc["features"].as_array().map_or(0, Vec::len),
+        lines.len()
+    );
     // (The lines no timetable counts and the routes matching none, for the timetables' to-do list
     // and report: crate::timetables.)
     out.put_file(crate::timetables::FERRY_LINES, "json", &work.join("timetables.json"))?;
@@ -406,7 +494,12 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path, statics: &c
 }
 
 /// Ferries as blocks (see the module's docs), from ferries.json and ferry-lines.json as written.
-fn ferry_blocks(out: &mut Out, fc: &Value, lines: &serde_json::Map<String, Value>, ntiles: &mut usize) -> Result<usize> {
+fn ferry_blocks(
+    out: &mut Out,
+    fc: &Value,
+    lines: &serde_json::Map<String, Value>,
+    ntiles: &mut usize,
+) -> Result<usize> {
     // (Made, then written: their own phases below this one.)
     let _p = crate::timings::phase("the ferries' blocks made and written", crate::timings::Class::Mixed);
     let feats = fc["features"].as_array().context("ferries: no features")?;
@@ -427,16 +520,24 @@ fn ferry_blocks(out: &mut Out, fc: &Value, lines: &serde_json::Map<String, Value
         let mut props = f["properties"].as_object().cloned().unwrap_or_default();
         match g["type"].as_str() {
             Some("LineString") => {
-                let c: Vec<[f64; 2]> = g["coordinates"].as_array().context("a ferry way")?.iter().filter_map(pt).collect();
+                let c: Vec<[f64; 2]> =
+                    g["coordinates"].as_array().context("a ferry way")?.iter().filter_map(pt).collect();
                 let way = f["id"].as_u64().with_context(|| format!("ferries #{n}: a way without its id"))?;
-                let bbox = c.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]);
+                let bbox =
+                    c.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, p| {
+                        [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+                    });
                 props.insert("km".into(), serde_json::json!((length_km(&c) * 1000.0).round() / 1000.0));
                 fs.push(F { pt: c[0], line: Some(c), bbox, props, id: way * 4 + 1 });
             }
             Some("Point") => {
                 let p = pt(&g["coordinates"]).with_context(|| format!("ferries #{n}: a terminal without its place"))?;
                 let name = props.get("n").and_then(Value::as_str).unwrap_or("");
-                src.push(IdSource { osm: None, reference: format!("legacy:terminal|{name}|{},{}", marks::e7(p[0]), marks::e7(p[1])), canon: Value::Object(props.clone()).to_string() });
+                src.push(IdSource {
+                    osm: None,
+                    reference: format!("legacy:terminal|{name}|{},{}", marks::e7(p[0]), marks::e7(p[1])),
+                    canon: Value::Object(props.clone()).to_string(),
+                });
                 terminals.push(fs.len());
                 fs.push(F { line: None, pt: p, bbox: [p[0], p[1], p[0], p[1]], props, id: 0 });
             }
@@ -447,7 +548,9 @@ fn ferry_blocks(out: &mut Out, fc: &Value, lines: &serde_json::Map<String, Value
         fs[k].id = id;
     }
     // Blocks: (zoom, simplification); which features each holds.
-    let deg = |b: [i32; 4]| [b[0] as f64 * roadcore::E7, b[1] as f64 * roadcore::E7, b[2] as f64 * roadcore::E7, b[3] as f64 * roadcore::E7];
+    let deg = |b: [i32; 4]| {
+        [b[0] as f64 * roadcore::E7, b[1] as f64 * roadcore::E7, b[2] as f64 * roadcore::E7, b[3] as f64 * roadcore::E7]
+    };
     let meets_f = |a: [f64; 4], b: [f64; 4]| a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
     let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
     let mut blocks = 0;
@@ -468,17 +571,30 @@ fn ferry_blocks(out: &mut Out, fc: &Value, lines: &serde_json::Map<String, Value
                         None => serde_json::json!({"type": "Point", "coordinates": f.pt}),
                     };
                     if f.line.is_some() {
-                        ids.extend(f.props.get("lines").and_then(Value::as_str).unwrap_or("").split(',').filter(|s| !s.is_empty()).map(str::to_string));
+                        ids.extend(
+                            f.props
+                                .get("lines")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .split(',')
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string),
+                        );
                     }
-                    feats.push(serde_json::json!({"type": "Feature", "id": f.id, "geometry": geom, "properties": f.props}));
+                    feats.push(
+                        serde_json::json!({"type": "Feature", "id": f.id, "geometry": geom, "properties": f.props}),
+                    );
                 }
                 if feats.is_empty() {
                     continue;
                 }
                 ids.sort();
                 ids.dedup();
-                let recs: serde_json::Map<String, Value> = ids.iter().filter_map(|i| lines.get(i).map(|l| (i.clone(), l.clone()))).collect();
-                let raw = serde_json::to_vec(&serde_json::json!({"type": "FeatureCollection", "features": feats, "lines": recs}))?;
+                let recs: serde_json::Map<String, Value> =
+                    ids.iter().filter_map(|i| lines.get(i).map(|l| (i.clone(), l.clone()))).collect();
+                let raw = serde_json::to_vec(
+                    &serde_json::json!({"type": "FeatureCollection", "features": feats, "lines": recs}),
+                )?;
                 let gz = names::mvt::gzip(&raw)?;
                 packs.entry(pack_of(z, x, y)).or_default().push((z, x, y, gz, raw.len() as u32));
                 blocks += 1;
@@ -489,7 +605,9 @@ fn ferry_blocks(out: &mut Out, fc: &Value, lines: &serde_json::Map<String, Value
     for ((scope, rz, rx, ry), mut tiles) in packs {
         tiles.sort_by_key(|t| (t.0, t.1, t.2));
         *ntiles += tiles.len();
-        if let Some((l, _)) = write_pack(out, "ferries", "geojson-gz", true, scope, (rz, rx, ry), &mut tiles.into_iter())? {
+        if let Some((l, _)) =
+            write_pack(out, "ferries", "geojson-gz", true, scope, (rz, rx, ry), &mut tiles.into_iter())?
+        {
             wrote.push(l);
         }
     }
@@ -501,7 +619,12 @@ fn ferry_blocks(out: &mut Out, fc: &Value, lines: &serde_json::Map<String, Value
 /// time: a tile it has nothing for any more (a pass without that ferry, a region removed). How many.
 fn drop_stale(out: &mut Out, layer: &str, wrote: &[String]) -> usize {
     let prefix = format!("layers/{layer}/");
-    let stale: Vec<String> = out.manifest.keys().filter(|k| k.starts_with(&prefix) && !wrote.contains(*k) && out.may_remove(k)).cloned().collect();
+    let stale: Vec<String> = out
+        .manifest
+        .keys()
+        .filter(|k| k.starts_with(&prefix) && !wrote.contains(*k) && out.may_remove(k))
+        .cloned()
+        .collect();
     for k in &stale {
         out.remove(k);
     }
@@ -513,7 +636,14 @@ fn drop_stale(out: &mut Out, layer: &str, wrote: &[String]) -> usize {
 
 /// Writes a layer's tiles (gzipped, in packs by scope).
 /// The features as vector tiles in the layer's packs; the packs' logical names.
-fn write_tiles(out: &mut Out, layer: &str, mvt_layer: &str, feats: &[Feature], want: &(dyn Fn(u8, u32, u32) -> bool + Sync), ntiles: &mut usize) -> Result<Vec<String>> {
+fn write_tiles(
+    out: &mut Out,
+    layer: &str,
+    mvt_layer: &str,
+    feats: &[Feature],
+    want: &(dyn Fn(u8, u32, u32) -> bool + Sync),
+    ntiles: &mut usize,
+) -> Result<Vec<String>> {
     use crate::timings::{phase, Class};
     let p = phase("vector tiles cut", Class::Compute);
     let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
@@ -624,7 +754,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("root");
         let mut seed = Out::unbound(&root, &d.path().join("s0")).unwrap();
-        for l in ["layers/stations/hi/6-1-2", "layers/stations/hi/6-1-3", "layers/stations/hi/7-1-2", "layers/stations/old"] {
+        for l in
+            ["layers/stations/hi/6-1-2", "layers/stations/hi/6-1-3", "layers/stations/hi/7-1-2", "layers/stations/old"]
+        {
             seed.set(l, Some(format!("{l}.0123456789abcdef.pack")));
         }
         seed.save().unwrap();
@@ -632,6 +764,9 @@ mod tests {
         assert_eq!(drop_stale(&mut out, "stations", &["layers/stations/hi/6-1-2".to_string()]), 1);
         out.save().unwrap();
         let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
-        assert_eq!(m.keys().map(String::as_str).collect::<Vec<_>>(), ["layers/stations/hi/6-1-2", "layers/stations/hi/7-1-2", "layers/stations/old"]);
+        assert_eq!(
+            m.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["layers/stations/hi/6-1-2", "layers/stations/hi/7-1-2", "layers/stations/old"]
+        );
     }
 }

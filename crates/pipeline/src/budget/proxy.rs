@@ -91,7 +91,15 @@ impl Proxy {
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
         let counts = Arc::new(Counts::default());
-        let ctx = Arc::new(Ctx { budget: budget.clone(), counts: counts.clone(), resolve, limits, live: Default::default(), holding: AtomicBool::new(false), hold_thread: Default::default() });
+        let ctx = Arc::new(Ctx {
+            budget: budget.clone(),
+            counts: counts.clone(),
+            resolve,
+            limits,
+            live: Default::default(),
+            holding: AtomicBool::new(false),
+            hold_thread: Default::default(),
+        });
         let (s, c) = (stop.clone(), ctx.clone());
         let thread = std::thread::Builder::new().name("budgets-proxy".into()).spawn(move || serve(listener, c, s))?;
         Ok(Proxy { addr, budget, counts, stop, thread: Some(thread), ctx })
@@ -185,7 +193,8 @@ fn serve(listener: TcpListener, ctx: Arc<Ctx>, stop: Arc<AtomicBool>) {
                     ctx.counts.refused.fetch_add(1, Ordering::Relaxed);
                     // (Answered and closed at once: the listener's thread never waits on a client.)
                     let _ = s.set_nonblocking(true);
-                    let _ = answer(&mut s, "503 Service Unavailable", "too many connections through the proxy at once\n");
+                    let _ =
+                        answer(&mut s, "503 Service Unavailable", "too many connections through the proxy at once\n");
                     let _ = s.shutdown(Shutdown::Write);
                     continue;
                 }
@@ -234,12 +243,20 @@ fn read_head(s: &mut TcpStream) -> io::Result<Head> {
     let mut lines = text.split("\r\n");
     let first = lines.next().unwrap_or_default();
     let mut parts = first.split_whitespace();
-    let (method, target, version) = (parts.next().unwrap_or_default().to_string(), parts.next().unwrap_or_default().to_string(), parts.next().unwrap_or("HTTP/1.1").to_string());
+    let (method, target, version) = (
+        parts.next().unwrap_or_default().to_string(),
+        parts.next().unwrap_or_default().to_string(),
+        parts.next().unwrap_or("HTTP/1.1").to_string(),
+    );
     Ok(Head { method, target, version, headers: lines.map(str::to_string).collect(), rest: buf[end + 4..].to_vec() })
 }
 
 fn answer(s: &mut TcpStream, status: &str, body: &str) -> io::Result<()> {
-    write!(s, "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+    write!(
+        s,
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
 }
 
 /// `host:port` split, the port `default` when it's missing (an IPv6 address in brackets).
@@ -298,7 +315,9 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
     // (From here on a connection idle that long ends.)
     s.set_read_timeout(Some(ctx.limits.idle))?;
     if head.method.eq_ignore_ascii_case("CONNECT") {
-        let Some((host, port)) = host_port(&head.target, 443) else { return answer(&mut s, "400 Bad Request", "CONNECT host:port\n") };
+        let Some((host, port)) = host_port(&head.target, 443) else {
+            return answer(&mut s, "400 Bad Request", "CONNECT host:port\n");
+        };
         let class = meter(&host, budget, counts);
         let began = budget.now_ms();
         let up = match open(&host, port, resolve).and_then(|u| u.set_read_timeout(Some(ctx.limits.idle)).map(|()| u)) {
@@ -315,7 +334,12 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
     // (The proxy's own: a 429 told.)
     if head.target.starts_with('/') {
         if let Some(q) = head.target.strip_prefix("/hold") {
-            let secs = q.trim_start_matches('?').split('&').find_map(|kv| kv.strip_prefix("s=")).and_then(|v| v.parse::<f64>().ok()).map_or(super::HOLD_DEFAULT_S, |v| v.ceil().max(1.0) as u64);
+            let secs = q
+                .trim_start_matches('?')
+                .split('&')
+                .find_map(|kv| kv.strip_prefix("s="))
+                .and_then(|v| v.parse::<f64>().ok())
+                .map_or(super::HOLD_DEFAULT_S, |v| v.ceil().max(1.0) as u64);
             counts.holds.fetch_add(1, Ordering::Relaxed);
             // (Held here at once; on the NAS on a thread of its own, one at a time, so the teller
             // isn't kept waiting on the share: told is told.)
@@ -336,7 +360,9 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
         return answer(&mut s, "404 Not Found", "a proxy: CONNECT, an absolute URL, or /hold\n");
     }
     // A plain HTTP request by its absolute URL: passed on, its connection closed after it.
-    let Some(after) = head.target.strip_prefix("http://") else { return answer(&mut s, "400 Bad Request", "only http:// URLs, or CONNECT\n") };
+    let Some(after) = head.target.strip_prefix("http://") else {
+        return answer(&mut s, "400 Bad Request", "only http:// URLs, or CONNECT\n");
+    };
     let (hp, path) = match after.find('/') {
         Some(i) => (&after[..i], &after[i..]),
         None => (after, "/"),

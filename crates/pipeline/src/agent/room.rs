@@ -116,7 +116,8 @@ const RECENT: std::time::Duration = std::time::Duration::from_secs(3600);
 /// The caches' folders whose files may be deleted, under the agent's cache, each with the NAS's
 /// store of them, under its `sources/`; and `blobs/`, this Mac's copies of files the records name
 /// (store::blobs), which the NAS has by construction: they go without asking it.
-const CHEAP: [(&str, &str); 4] = [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium"), ("blobs", ""), (MONTHS, "pageviews")];
+const CHEAP: [(&str, &str); 4] =
+    [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium"), ("blobs", ""), (MONTHS, "pageviews")];
 
 /// The pageview months' indexes here (dem/pageviews.py's copies of the NAS's `sources/pageviews/`).
 pub const MONTHS: &str = "items/months";
@@ -144,7 +145,11 @@ fn cheap_file(cache: &Path, p: &Path) -> bool {
 fn months_bytes(cache: &Path, sources: &Path) -> u64 {
     let mut files = Vec::new();
     walk_cheap(cache, MONTHS, sources.parent(), &mut files);
-    let there = |p: &Path, len: u64| p.file_name().is_some_and(|n| std::fs::metadata(sources.join("pageviews").join(n)).is_ok_and(|m| m.is_file() && m.len() == len));
+    let there = |p: &Path, len: u64| {
+        p.file_name().is_some_and(|n| {
+            std::fs::metadata(sources.join("pageviews").join(n)).is_ok_and(|m| m.is_file() && m.len() == len)
+        })
+    };
     files.iter().filter(|f| cheap_file(cache, &f.2) && there(&f.2, f.1)).map(|f| f.1).sum()
 }
 
@@ -276,11 +281,15 @@ impl Freed {
 
     /// In words: "39.2 GB freed (raw terrain tiles 24.1 GB, …)", and what stays.
     pub fn say(&self) -> String {
-        let mut each: Vec<(u64, &str)> = self.freed.iter().filter(|(_, &b)| b > 0).map(|(k, &b)| (b, k.as_str())).collect();
+        let mut each: Vec<(u64, &str)> =
+            self.freed.iter().filter(|(_, &b)| b > 0).map(|(k, &b)| (b, k.as_str())).collect();
         each.sort_by_key(|e| std::cmp::Reverse(e.0));
         let mut s = format!("{} freed", size(self.bytes()));
         if !each.is_empty() {
-            s += &format!(" ({})", each.iter().map(|(b, k)| format!("{} {}", words(k), size(*b))).collect::<Vec<_>>().join(", "));
+            s += &format!(
+                " ({})",
+                each.iter().map(|(b, k)| format!("{} {}", words(k), size(*b))).collect::<Vec<_>>().join(", ")
+            );
         }
         if self.left > 0 {
             s += &format!("; {} kept (the NAS hasn't it yet)", size(self.left));
@@ -425,7 +434,12 @@ pub fn clear(cache: &Path, sources: &Path) -> Result<Freed> {
     let mut freed = free_cheap(cache, sources, u64::MAX, u64::MAX, &disk_free, &|_| false, &|_| false, None)?;
     let mut left = cheap_left(cache, sources.parent(), &|_| false);
     let seed_whole = seed_whole(sources);
-    let mut others: Vec<(PathBuf, &str)> = std::fs::read_dir(cache).into_iter().flatten().flatten().filter_map(|e| Some((e.path(), kind(&e.file_name().to_string_lossy()).filter(|k| !cheap(k))?))).collect();
+    let mut others: Vec<(PathBuf, &str)> = std::fs::read_dir(cache)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| Some((e.path(), kind(&e.file_name().to_string_lossy()).filter(|k| !cheap(k))?)))
+        .collect();
     others.sort();
     for (p, k) in others {
         if super::stopping() {
@@ -435,12 +449,18 @@ pub fn clear(cache: &Path, sources: &Path) -> Result<Freed> {
             continue;
         }
         let bytes = bytes_under(&p);
-        if (k == "dem" && !seed_whole && !crate::whole::is_tmp(&p)) || (k == "heritage" && !heritage_remade(sources.parent(), &p)) {
+        if (k == "dem" && !seed_whole && !crate::whole::is_tmp(&p))
+            || (k == "heritage" && !heritage_remade(sources.parent(), &p))
+        {
             left += bytes;
             continue;
         }
         // (File by file, none a job holds: store::cachefile. The DEM seed's files together.)
-        let t = if k == "dem" && !crate::whole::is_tmp(&p) { seed_gone(cache, &p) } else { store::cachefile::remove_tree(&p) };
+        let t = if k == "dem" && !crate::whole::is_tmp(&p) {
+            seed_gone(cache, &p)
+        } else {
+            store::cachefile::remove_tree(&p)
+        };
         *freed.entry(k.to_string()).or_default() += t.freed;
         left += t.left;
     }
@@ -451,7 +471,8 @@ pub fn clear(cache: &Path, sources: &Path) -> Result<Freed> {
 /// Whether the NAS's `sources` has the DEM seed whole, as unit::dem_seed takes it: its three files,
 /// of one count. (Then every local file of it may go, whole or cut short; else only a temporary one.)
 fn seed_whole(sources: &Path) -> bool {
-    let len = |n: &str| std::fs::metadata(sources.join("dem-cache").join(n)).ok().filter(|m| m.is_file()).map(|m| m.len());
+    let len =
+        |n: &str| std::fs::metadata(sources.join("dem-cache").join(n)).ok().filter(|m| m.is_file()).map(|m| m.len());
     matches!((len("dem-cache.keys.u64"), len("dem-cache.elev.f32"), len("dem-cache.src.u8")), (Some(k), Some(e), Some(s)) if k == 8 * s && e == 4 * s)
 }
 
@@ -459,7 +480,8 @@ fn seed_whole(sources: &Path) -> bool {
 /// while a job holds one (store::cachefile::try_remove_all). Once the first of the three is seen,
 /// the others are gone too: what they freed counts there.
 fn seed_gone(cache: &Path, p: &Path) -> store::cachefile::Tree {
-    let all: Vec<PathBuf> = ["keys.u64", "elev.f32", "src.u8"].iter().map(|n| cache.join(format!("dem-cache.{n}"))).collect();
+    let all: Vec<PathBuf> =
+        ["keys.u64", "elev.f32", "src.u8"].iter().map(|n| cache.join(format!("dem-cache.{n}"))).collect();
     if !all.iter().any(|a| a == p) {
         return store::cachefile::remove_tree(p);
     }
@@ -505,7 +527,11 @@ pub fn set_target(home: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Ta
 /// This Mac's disk room target, when one is set (one that doesn't parse, or of 0 bytes, is none;
 /// one past `MAX_TARGET` is that).
 pub fn target(home: &Path) -> Option<Target> {
-    std::fs::read(home.join(TARGET)).ok().and_then(|b| serde_json::from_slice::<Target>(&b).ok()).filter(|t| t.bytes > 0).map(|t| Target { bytes: t.bytes.min(MAX_TARGET), ..t })
+    std::fs::read(home.join(TARGET))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Target>(&b).ok())
+        .filter(|t| t.bytes > 0)
+        .map(|t| Target { bytes: t.bytes.min(MAX_TARGET), ..t })
 }
 
 /// The largest target (1 PB: a hand-edited file's past any disk), so sums with it can't overflow.
@@ -544,7 +570,10 @@ fn heritage_remade(root: Option<&Path>, p: &Path) -> bool {
     }
     let Some(date) = name.strip_prefix("heritage-merged-").and_then(|r| r.get(..10)) else { return false };
     let Some(root) = root else { return false };
-    let m: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let m: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
     m.get(&format!("sources/osm/{date}/filtered")).is_some_and(|c| root.join(c).is_file())
 }
 
@@ -557,11 +586,24 @@ fn heritage_remade(root: Option<&Path>, p: &Path) -> bool {
 /// together; the heritage clip only while the pass's filtered planet it's clipped from is there).
 /// Jobs running or not: what they hold stays (store::cachefile); what the queued ones read goes
 /// last (`hint`). What it freed, and when it falls short, what stays of what it may free.
-pub fn toward(cache: &Path, sources: &Path, goal: std::sync::Arc<std::sync::atomic::AtomicU64>, hint: &Hints) -> Result<Freed> {
-    toward_with(cache, sources, &|| goal.load(std::sync::atomic::Ordering::Relaxed), &disk_free, &|p| hint.has(cache, p))
+pub fn toward(
+    cache: &Path,
+    sources: &Path,
+    goal: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    hint: &Hints,
+) -> Result<Freed> {
+    toward_with(cache, sources, &|| goal.load(std::sync::atomic::Ordering::Relaxed), &disk_free, &|p| {
+        hint.has(cache, p)
+    })
 }
 
-fn toward_with(cache: &Path, sources: &Path, goal: &dyn Fn() -> u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>, hint: &dyn Fn(&Path) -> bool) -> Result<Freed> {
+fn toward_with(
+    cache: &Path,
+    sources: &Path,
+    goal: &dyn Fn() -> u64,
+    free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
+    hint: &dyn Fn(&Path) -> bool,
+) -> Result<Freed> {
     let first = goal();
     if !cache.is_dir() || free_space(cache)? >= first {
         return Ok(Freed::default());
@@ -576,7 +618,14 @@ fn toward_with(cache: &Path, sources: &Path, goal: &dyn Fn() -> u64, free_space:
         if !short || super::stopping() {
             break;
         }
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(cache).into_iter().flatten().flatten().filter(|e| kind(&e.file_name().to_string_lossy()) == Some(k)).map(|e| e.path()).filter(|p| ours(p, root)).collect();
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(cache)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| kind(&e.file_name().to_string_lossy()) == Some(k))
+            .map(|e| e.path())
+            .filter(|p| ours(p, root))
+            .collect();
         entries.sort();
         // The base packs a file at a time, the least recently used first (each file of the pack
         // cache is one a map update reads, or copies again); the free space measured again once what
@@ -646,7 +695,11 @@ fn toward_with(cache: &Path, sources: &Path, goal: &dyn Fn() -> u64, free_space:
                 continue;
             }
             // (File by file, none a job holds: store::cachefile. The DEM seed's files together.)
-            let t = if together && !crate::whole::is_tmp(&p) { seed_gone(cache, &p) } else { store::cachefile::remove_tree(&p) };
+            let t = if together && !crate::whole::is_tmp(&p) {
+                seed_gone(cache, &p)
+            } else {
+                store::cachefile::remove_tree(&p)
+            };
             *freed.entry(k.to_string()).or_default() += t.freed;
             left += t.left;
         }
@@ -793,7 +846,10 @@ fn given_back(home: &Path) -> Vec<(PathBuf, u64)> {
 }
 
 fn keep_given_back(home: &Path, list: &[(PathBuf, u64)]) {
-    if let Err(e) = serde_json::to_vec(list).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&home.join(GIVEN_BACK), &b)) {
+    if let Err(e) = serde_json::to_vec(list)
+        .map_err(anyhow::Error::from)
+        .and_then(|b| crate::whole::write(&home.join(GIVEN_BACK), &b))
+    {
         eprintln!("agent: keeping the given-back jobs' scratch folders: {e:#}");
     }
 }
@@ -829,7 +885,13 @@ pub fn free_given_back(home: &Path, need: u64, busy: &[PathBuf], free_space: &dy
     let start = free_space();
     // (Only a scratch folder of the agent's: `scratch/`, `scratch-2/`, …; any other the list names,
     // a hand-edited or damaged list's, is never deleted.)
-    let scratch = |d: &Path| d.strip_prefix(home).ok().and_then(|r| r.components().next()).is_some_and(|c| c.as_os_str().to_string_lossy().starts_with("scratch")) && !d.components().any(|c| c == std::path::Component::ParentDir);
+    let scratch = |d: &Path| {
+        d.strip_prefix(home)
+            .ok()
+            .and_then(|r| r.components().next())
+            .is_some_and(|c| c.as_os_str().to_string_lossy().starts_with("scratch"))
+            && !d.components().any(|c| c == std::path::Component::ParentDir)
+    };
     list.sort_by_key(|(d, at)| (*at, d.clone()));
     let mut freed = 0;
     let mut kept = Vec::new();
@@ -843,7 +905,11 @@ pub fn free_given_back(home: &Path, need: u64, busy: &[PathBuf], free_space: &dy
         match std::fs::remove_dir_all(&d) {
             Ok(()) => {
                 freed += n;
-                eprintln!("agent: a given-back job's scratch deleted for room ({}, given back at {at}): {}", d.display(), size(n));
+                eprintln!(
+                    "agent: a given-back job's scratch deleted for room ({}, given back at {at}): {}",
+                    d.display(),
+                    size(n)
+                );
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
@@ -985,7 +1051,14 @@ fn copy_there(p: &Path, dest: &Path, made: &mut HashSet<PathBuf>) -> bool {
 
 /// `make_room` with the disk's free space from `free_space`: nothing when it has `need`, else
 /// deleting until it has `target`.
-fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>, hint: &dyn Fn(&Path) -> bool) -> Result<u64> {
+fn make_room_with(
+    cache: &Path,
+    sources: &Path,
+    need: u64,
+    target: u64,
+    free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
+    hint: &dyn Fn(&Path) -> bool,
+) -> Result<u64> {
     Ok(free_cheap(cache, sources, need, target, free_space, &|_| false, hint, None)?.values().sum())
 }
 
@@ -993,7 +1066,16 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
 /// (a trim's rule); `hint` has it go last (`Hints`: what the queued jobs read).
 /// (`goal`: the target as it is now, when it may change midway: room::toward's, the owner's to lower.)
 #[allow(clippy::too_many_arguments)]
-fn free_cheap(cache: &Path, sources: &Path, need: u64, target: u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>, spare: &dyn Fn(&Path) -> bool, hint: &dyn Fn(&Path) -> bool, goal: Option<&dyn Fn() -> u64>) -> Result<BTreeMap<String, u64>> {
+fn free_cheap(
+    cache: &Path,
+    sources: &Path,
+    need: u64,
+    target: u64,
+    free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
+    spare: &dyn Fn(&Path) -> bool,
+    hint: &dyn Fn(&Path) -> bool,
+    goal: Option<&dyn Fn() -> u64>,
+) -> Result<BTreeMap<String, u64>> {
     // (No caches yet, a new home's: nothing to free.)
     if !cache.try_exists()? {
         return Ok(BTreeMap::new());
@@ -1030,7 +1112,11 @@ fn free_cheap(cache: &Path, sources: &Path, need: u64, target: u64, free_space: 
     let mut groups: BTreeMap<PathBuf, Vec<(SystemTime, u64, PathBuf)>> = BTreeMap::new();
     for f in files {
         // (An area's archive, each by its own use, as a canopy square.)
-        let key = if f.2.starts_with(&tiles) && !f.2.starts_with(&packs) { f.2.parent().map(Path::to_path_buf).unwrap_or_default() } else { f.2.clone() };
+        let key = if f.2.starts_with(&tiles) && !f.2.starts_with(&packs) {
+            f.2.parent().map(Path::to_path_buf).unwrap_or_default()
+        } else {
+            f.2.clone()
+        };
         groups.entry(key).or_default().push(f);
     }
     let mut groups: Vec<Vec<(SystemTime, u64, PathBuf)>> = groups.into_values().collect();
@@ -1040,7 +1126,8 @@ fn free_cheap(cache: &Path, sources: &Path, need: u64, target: u64, free_space: 
     // (What the queued jobs read, last of all: `Hints`.)
     groups.sort_by_cached_key(|g| {
         let newest = g.last().map(|f| f.0);
-        let idle_square = !g.first().is_some_and(|f| f.2.starts_with(&tiles) && !f.2.starts_with(&packs)) && newest.is_some_and(|t| t < lately);
+        let idle_square = !g.first().is_some_and(|f| f.2.starts_with(&tiles) && !f.2.starts_with(&packs))
+            && newest.is_some_and(|t| t < lately);
         (g.iter().any(|f| hint(&f.2)), !idle_square, newest)
     });
     let by = if packed > 0 { BTreeMap::from([("terrain".to_string(), packed)]) } else { BTreeMap::new() };
@@ -1052,10 +1139,17 @@ fn free_cheap(cache: &Path, sources: &Path, need: u64, target: u64, free_space: 
             break;
         }
         // Their NAS folders listed at once.
-        let folders: BTreeSet<PathBuf> = ahead.iter().filter_map(|g| nas_path(cache, sources, &g.first()?.2)?.parent().map(Path::to_path_buf)).filter(|f| !listed.contains_key(f)).collect();
+        let folders: BTreeSet<PathBuf> = ahead
+            .iter()
+            .filter_map(|g| nas_path(cache, sources, &g.first()?.2)?.parent().map(Path::to_path_buf))
+            .filter(|f| !listed.contains_key(f))
+            .collect();
         // (A thread that can't start, or fails, leaves its folder to be listed when it's reached.)
         std::thread::scope(|s| {
-            let lists: Vec<_> = folders.iter().filter_map(|f| std::thread::Builder::new().spawn_scoped(s, move || (f.clone(), list(f))).ok()).collect();
+            let lists: Vec<_> = folders
+                .iter()
+                .filter_map(|f| std::thread::Builder::new().spawn_scoped(s, move || (f.clone(), list(f))).ok())
+                .collect();
             listed.extend(lists.into_iter().filter_map(|h| h.join().ok()));
         });
         for (_, len, p) in ahead.iter().flatten() {
@@ -1113,7 +1207,11 @@ impl Room<'_> {
     /// Deletes `p` unless a job holds it (store::cachefile).
     fn delete(&mut self, p: &Path, len: u64) {
         if let store::cachefile::Removed::Freed(_) = store::cachefile::try_remove(p) {
-            let top = p.strip_prefix(self.cache).ok().and_then(|r| r.components().next()).map(|c| c.as_os_str().to_string_lossy().into_owned());
+            let top = p
+                .strip_prefix(self.cache)
+                .ok()
+                .and_then(|r| r.components().next())
+                .map(|c| c.as_os_str().to_string_lossy().into_owned());
             *self.by.entry(top.as_deref().and_then(kind).unwrap_or("other").to_string()).or_default() += len;
             self.since += len;
         }
@@ -1167,7 +1265,13 @@ thread_local! {
 mod tests {
     use super::*;
 
-    fn make_room_spared(cache: &Path, sources: &Path, need: u64, target: u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>) -> Result<u64> {
+    fn make_room_spared(
+        cache: &Path,
+        sources: &Path,
+        need: u64,
+        target: u64,
+        free_space: &dyn Fn(&Path) -> std::io::Result<u64>,
+    ) -> Result<u64> {
         make_room_with(cache, sources, need, target, free_space, &|_| false)
     }
     use std::cell::Cell;
@@ -1180,7 +1284,12 @@ mod tests {
     fn a_given_back_jobs_scratch_goes_only_when_room_is_short() {
         let d = tempfile::tempdir().unwrap();
         let home = d.path();
-        let (a, b, c, e) = (home.join("scratch/pass-sets"), home.join("scratch-2/terrain-z8"), home.join("scratch/buildings"), home.join("scratch/water"));
+        let (a, b, c, e) = (
+            home.join("scratch/pass-sets"),
+            home.join("scratch-2/terrain-z8"),
+            home.join("scratch/buildings"),
+            home.join("scratch/water"),
+        );
         for (dir, n) in [(&a, 1000), (&b, 2000), (&c, 4000), (&e, 8000)] {
             file(&dir.join("work.bin"), n, 0);
         }
@@ -1227,7 +1336,11 @@ mod tests {
 
     /// A whole file of `p`'s kind (crate::whole), `age_s` old; its length.
     fn whole(p: &Path, age_s: u64) -> u64 {
-        let b = if p.extension().is_some_and(|x| x == "png") { crate::whole::testfiles::png() } else { crate::whole::testfiles::tiff(false) };
+        let b = if p.extension().is_some_and(|x| x == "png") {
+            crate::whole::testfiles::png()
+        } else {
+            crate::whole::testfiles::tiff(false)
+        };
         bytes(p, &b, age_s);
         b.len() as u64
     }
@@ -1254,23 +1367,35 @@ mod tests {
         let hint = |p: &Path| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("6-1-1."));
         // Short of one archive: the other area's goes, though the job's own was idle longer.
         assert_eq!(make_room_with(c, nas, 1000 + own, 1000 + own, &disk(1000), &hint).unwrap(), other);
-        assert!(c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles").exists() && !c.join("aws-terrarium/packs/6-9-9.0000000000000002.tiles").exists());
+        assert!(
+            c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles").exists()
+                && !c.join("aws-terrarium/packs/6-9-9.0000000000000002.tiles").exists()
+        );
         // Far short: it goes too, last (a hint, not a rule: it costs a copy, never a failure).
         assert_eq!(make_room_with(c, nas, 1 << 40, 1 << 40, &disk(0), &hint).unwrap(), own);
         // As the agent hints a terrain run's own area's archives (`terrain_reads`).
         let mut h = Hints::default();
         h.add("terrain", &["3/0/0".to_string()]);
-        assert!(h.has(c, &c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles")) && !h.has(c, &c.join("aws-terrarium/packs/6-9-9.0000000000000002.tiles")));
+        assert!(
+            h.has(c, &c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles"))
+                && !h.has(c, &c.join("aws-terrarium/packs/6-9-9.0000000000000002.tiles"))
+        );
         // A unit's canopy squares and the copies of its packs; an items job's pageview months.
         h.add("unit", &["6/33/22".to_string()]);
         h.add("items", &[]);
-        assert!(h.has(c, &c.join("blobs/base/6-33-22.0123456789abcdef.base")) && !h.has(c, &c.join("blobs/base/6-33-23.0123456789abcdef.base")));
+        assert!(
+            h.has(c, &c.join("blobs/base/6-33-22.0123456789abcdef.base"))
+                && !h.has(c, &c.join("blobs/base/6-33-23.0123456789abcdef.base"))
+        );
         assert!(h.squares.iter().all(|n| n.starts_with("meta_chm_lat=")) && !h.squares.is_empty());
         assert!(h.has(c, &c.join(MONTHS).join("2026-08.tsv.zst")));
         // A map update's map tiles: the base packs copied here for them.
         assert!(!h.has(c, &c.join("base/base/6-1-1.0000000000000001.base")));
         h.add("pack", &["6/1/1".to_string()]);
-        assert!(h.has(c, &c.join("base/base/6-1-1.0000000000000001.base")) && h.has(c, &c.join("base/global/roads/6-2-2.0000000000000002.roads")));
+        assert!(
+            h.has(c, &c.join("base/base/6-1-1.0000000000000001.base"))
+                && h.has(c, &c.join("base/global/roads/6-2-2.0000000000000002.roads"))
+        );
     }
 
     #[test]
@@ -1316,8 +1441,13 @@ mod tests {
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
         // Short of the archive and all but a byte of the idle square: both go, the archive (idle
         // longer, and the NAS has it: nothing asked) first; the marker and the DEM seed stay.
-        assert_eq!(make_room_spared(c, nas, 850 + arch + idle - 1, 850 + arch + idle - 1, &disk(850)).unwrap(), arch + idle);
-        assert!(!c.join("chm10/idle.tif").exists() && !c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles").exists());
+        assert_eq!(
+            make_room_spared(c, nas, 850 + arch + idle - 1, 850 + arch + idle - 1, &disk(850)).unwrap(),
+            arch + idle
+        );
+        assert!(
+            !c.join("chm10/idle.tif").exists() && !c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles").exists()
+        );
         assert!(c.join("chm10/read.tif").exists() && c.join("chm10/none.tif").exists());
         // What went is on the NAS (the square copied there first: it wasn't).
         assert!(nas.join("canopy/idle.tif").exists());
@@ -1340,7 +1470,11 @@ mod tests {
         // time an hour on, so it's still new however long a busy Mac takes to get there).
         let a = whole(&c.join("aws-terrarium/12/2048/1365.png"), 9000);
         whole(&c.join("aws-terrarium/12/2048/1366.png"), 9000);
-        bytes_at(&c.join("aws-terrarium/12/2049/1365.png"), &crate::whole::testfiles::png(), SystemTime::now() + Duration::from_secs(3600));
+        bytes_at(
+            &c.join("aws-terrarium/12/2049/1365.png"),
+            &crate::whole::testfiles::png(),
+            SystemTime::now() + Duration::from_secs(3600),
+        );
         let all = used(c);
         let disk = move |p: &Path| Ok(all - used(p));
         make_room_spared(c, nas, a, a, &disk).unwrap();
@@ -1349,7 +1483,9 @@ mod tests {
         let name = &index.of("6-32-21")[0].name;
         assert!(nas.join("aws-terrarium/packs").join(name).exists());
         assert!(!c.join("aws-terrarium/packs").join(name).exists(), "the disk is short: not kept here");
-        assert!(!c.join("aws-terrarium/12/2048/1365.png").exists() && !c.join("aws-terrarium/12/2048/1366.png").exists());
+        assert!(
+            !c.join("aws-terrarium/12/2048/1365.png").exists() && !c.join("aws-terrarium/12/2048/1366.png").exists()
+        );
         // The newest waits here: the NAS hasn't it (packed later).
         assert!(c.join("aws-terrarium/12/2049/1365.png").exists());
         assert!(!nas.join("aws-terrarium/12/2049/1365.png").exists(), "never copied alone");
@@ -1366,7 +1502,10 @@ mod tests {
         let all = used(c);
         let disk = move |p: &Path| Ok(all - used(p));
         assert_eq!(make_room_spared(c, nas, 1000, 1000, &disk).unwrap(), 1000);
-        assert!(!c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack").exists() && c.join("chm10/read.tif").exists());
+        assert!(
+            !c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack").exists()
+                && c.join("chm10/read.tif").exists()
+        );
         assert!(!nas.exists(), "nothing was listed or copied there");
         assert_eq!(used(c), square);
     }
@@ -1415,7 +1554,9 @@ mod tests {
         let disk = move |p: &Path| Ok(all - used_with(p, &["items"]));
         assert_eq!(make_room_spared(c, nas, 1 << 40, 1 << 40, &disk).unwrap(), 1000);
         assert!(!months.join("2025-11.tsv.zst").exists());
-        for f in ["2026-02.tsv.zst", "2026-05.tsv.zst", "2026-08.json", "2026-08.counted.json", "2026-08.tsv.zst.123.tmp"] {
+        for f in
+            ["2026-02.tsv.zst", "2026-05.tsv.zst", "2026-08.json", "2026-08.counted.json", "2026-08.tsv.zst.123.tmp"]
+        {
             assert!(months.join(f).exists(), "{f} stays");
         }
         assert!(c.join("items/facts-2026-09-28.jsonl").exists());
@@ -1475,7 +1616,10 @@ mod tests {
                 whole(&c.join(format!("aws-terrarium/12/{t}.png")), age);
             }
         }
-        let (a, b) = (std::fs::metadata(c.join("aws-terrarium/12/2/1.png")).unwrap().len(), std::fs::metadata(c.join("aws-terrarium/12/2/2.png")).unwrap().len());
+        let (a, b) = (
+            std::fs::metadata(c.join("aws-terrarium/12/2/1.png")).unwrap().len(),
+            std::fs::metadata(c.join("aws-terrarium/12/2/2.png")).unwrap().len(),
+        );
         let all = used(c);
         let disk = move |p: &Path| Ok(all - used(p));
         // Short of column 2: it goes, column 1 stays.
@@ -1514,21 +1658,43 @@ mod tests {
         let has = whole(&c.join("aws-terrarium/12/2048/1366.png"), 9000);
         whole(&nas.join("aws-terrarium/12/2048/1366.png"), 0);
         let lacks = whole(&c.join("aws-terrarium/12/2048/1365.png"), 9000);
-        for f in ["base/base/6-1-1.0000000000000001.base", "dem-cache.keys.u64", "sources-terrain-z8-v1/terrain-z8-v1.0000000000000001.pack", "items/facts-2026-09-28.jsonl"] {
+        for f in [
+            "base/base/6-1-1.0000000000000001.base",
+            "dem-cache.keys.u64",
+            "sources-terrain-z8-v1/terrain-z8-v1.0000000000000001.pack",
+            "items/facts-2026-09-28.jsonl",
+        ] {
             file(&c.join(f), 100, 60);
         }
         let f = trim(c, nas, &|_| false).unwrap();
-        assert_eq!(f.freed, BTreeMap::from([("blobs".to_string(), 1000), ("canopy".to_string(), square), ("terrain".to_string(), arch + has)]));
+        assert_eq!(
+            f.freed,
+            BTreeMap::from([
+                ("blobs".to_string(), 1000),
+                ("canopy".to_string(), square),
+                ("terrain".to_string(), arch + has)
+            ])
+        );
         assert_eq!(f.left, lacks, "the raw tile the NAS lacks stays: only a job of this Mac's packs it");
         assert!(c.join("aws-terrarium/12/2048/1365.png").exists() && c.join("chm10/none.tif").exists());
         // The square copied onto the NAS before it went.
         assert_eq!(std::fs::metadata(nas.join("canopy/a.tif")).unwrap().len(), square);
         // The others stay: a trim empties the cheap caches alone.
-        for f in ["base/base/6-1-1.0000000000000001.base", "dem-cache.keys.u64", "sources-terrain-z8-v1/terrain-z8-v1.0000000000000001.pack", "items/facts-2026-09-28.jsonl"] {
+        for f in [
+            "base/base/6-1-1.0000000000000001.base",
+            "dem-cache.keys.u64",
+            "sources-terrain-z8-v1/terrain-z8-v1.0000000000000001.pack",
+            "items/facts-2026-09-28.jsonl",
+        ] {
             assert!(c.join(f).exists(), "{f}");
         }
         let said = f.say();
-        assert!(said.starts_with("0 MB freed (") && said.contains("canopy squares 0 MB") && said.ends_with("0 MB kept (the NAS hasn't it yet)"), "{said}");
+        assert!(
+            said.starts_with("0 MB freed (")
+                && said.contains("canopy squares 0 MB")
+                && said.ends_with("0 MB kept (the NAS hasn't it yet)"),
+            "{said}"
+        );
         assert_eq!((size(350 << 20), size((51 << 30) + (1 << 29))), ("350 MB".to_string(), "51.5 GB".to_string()));
     }
 
@@ -1543,14 +1709,19 @@ mod tests {
         let spare = |p: &Path| p.starts_with(&squares);
         whole(&c.join("chm10/a.tif"), 60);
         file(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), 1000, 60);
-        let tiles = whole(&c.join("aws-terrarium/12/2048/1365.png"), 9000) + whole(&c.join("aws-terrarium/12/2048/1366.png"), 9000);
+        let tiles = whole(&c.join("aws-terrarium/12/2048/1365.png"), 9000)
+            + whole(&c.join("aws-terrarium/12/2048/1366.png"), 9000);
         let f = trim(c, nas, &spare).unwrap();
         // The raw tiles packed onto the NAS (an archive for their area, named in the index), gone
         // here with the copy; the square kept, and not counted as left.
         let index = crate::rawpack::Index::load(&nas.join("aws-terrarium")).unwrap();
         assert!(nas.join("aws-terrarium/packs").join(&index.of("6-32-21")[0].name).exists());
-        assert!(!c.join("aws-terrarium/12/2048/1365.png").exists() && !c.join("aws-terrarium/12/2048/1366.png").exists());
-        assert!(!c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack").exists() && c.join("chm10/a.tif").exists());
+        assert!(
+            !c.join("aws-terrarium/12/2048/1365.png").exists() && !c.join("aws-terrarium/12/2048/1366.png").exists()
+        );
+        assert!(
+            !c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack").exists() && c.join("chm10/a.tif").exists()
+        );
         assert_eq!(f.freed, BTreeMap::from([("blobs".to_string(), 1000), ("terrain".to_string(), tiles)]));
         assert_eq!(f.left, 0);
         assert!(!nas.join("canopy").exists(), "the square wasn't asked about");
@@ -1575,7 +1746,13 @@ mod tests {
         assert_eq!((said.clear.get("months"), said.cheap), (Some(&600), 600));
         assert_eq!(sizes(c, false, None).clear.get("months"), None, "not without the NAS to ask");
         let g = gone(&said.clear, 60.0);
-        assert_eq!((g[0].what.as_str(), g[0].back.starts_with("copied back from the NAS when the items and heritage jobs next run")), ("pageview months", true));
+        assert_eq!(
+            (
+                g[0].what.as_str(),
+                g[0].back.starts_with("copied back from the NAS when the items and heritage jobs next run")
+            ),
+            ("pageview months", true)
+        );
         let f = clear(c, nas).unwrap();
         assert!(!c.join(MONTHS).join("2026-05.tsv.zst").exists());
         assert_eq!((f.freed.clone(), f.left), (BTreeMap::from([("months".to_string(), 600)]), 50));
@@ -1598,7 +1775,13 @@ mod tests {
         // what's there (the NAS has the DEM seed at its sizes here).
         let square = whole(&c.join("chm10/a.tif"), 60);
         file(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), 1000, 60);
-        let others = ["base/base/6-1-1.0000000000000001.base", "base/global/roads/6-1-1.0000000000000002.roads", "sources-terrain-z8-v1/terrain-z8-v1.0000000000000001.pack", "work-summits-2026-09-28/2026-09-28.0000000000000001.jsonl.zst", "heritage-merged-2026-09-28-0123456789ab.osm.pbf"];
+        let others = [
+            "base/base/6-1-1.0000000000000001.base",
+            "base/global/roads/6-1-1.0000000000000002.roads",
+            "sources-terrain-z8-v1/terrain-z8-v1.0000000000000001.pack",
+            "work-summits-2026-09-28/2026-09-28.0000000000000001.jsonl.zst",
+            "heritage-merged-2026-09-28-0123456789ab.osm.pbf",
+        ];
         for f in others {
             file(&c.join(f), 100, 60);
         }
@@ -1611,22 +1794,51 @@ mod tests {
         // nothing, the agent's own timings, what units kept that isn't on the NAS yet; and
         // everything outside the caches (the agent's state, logs, work and outbox, the map's
         // mirror).
-        let kept = ["items/facts-2026-09-28.jsonl", "items/months/2026-05.tsv.zst", "heritage-2026-09-28/.done", "rail/pairs-0123456789abcdef.bin", "unit-stages.json", "dem-units/6-1-1.dem", "scenic-units/6-1-1/canopy.keys"];
+        let kept = [
+            "items/facts-2026-09-28.jsonl",
+            "items/months/2026-05.tsv.zst",
+            "heritage-2026-09-28/.done",
+            "rail/pairs-0123456789abcdef.bin",
+            "unit-stages.json",
+            "dem-units/6-1-1.dem",
+            "scenic-units/6-1-1/canopy.keys",
+        ];
         for f in kept {
             file(&c.join(f), 100, 60);
         }
-        let outside = [home.join("state.json"), home.join("logs/unit-6-1-1.log"), home.join("scratch/unit/verts.bin"), home.join("outbox/7/result.json"), home.join("clear-request.json"), d.path().join("app/mirror/base/6-1-1.0000000000000001.base")];
+        let outside = [
+            home.join("state.json"),
+            home.join("logs/unit-6-1-1.log"),
+            home.join("scratch/unit/verts.bin"),
+            home.join("outbox/7/result.json"),
+            home.join("clear-request.json"),
+            d.path().join("app/mirror/base/6-1-1.0000000000000001.base"),
+        ];
         for p in &outside {
             file(p, 100, 60);
         }
         filtered_planet(&d.path().join("nas"));
         let f = clear(c, nas).unwrap();
-        assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 200), ("blobs".to_string(), 1000), ("canopy".to_string(), square), ("copies".to_string(), 200), ("dem".to_string(), 130), ("heritage".to_string(), 100)]));
+        assert_eq!(
+            f.freed,
+            BTreeMap::from([
+                ("base".to_string(), 200),
+                ("blobs".to_string(), 1000),
+                ("canopy".to_string(), square),
+                ("copies".to_string(), 200),
+                ("dem".to_string(), 130),
+                ("heritage".to_string(), 100)
+            ])
+        );
         assert_eq!(f.left, 100, "the month the NAS lacks");
         assert!(nas.join("canopy/a.tif").exists(), "the square the NAS lacked copied there first");
         for e in std::fs::read_dir(c).unwrap().flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
-            assert!(kept.iter().any(|k| k.starts_with(&format!("{n}/")) || *k == n) || ["chm10", "blobs", "aws-terrarium"].contains(&n.as_str()), "{n} left");
+            assert!(
+                kept.iter().any(|k| k.starts_with(&format!("{n}/")) || *k == n)
+                    || ["chm10", "blobs", "aws-terrarium"].contains(&n.as_str()),
+                "{n} left"
+            );
         }
         for k in kept {
             assert!(c.join(k).exists(), "{k} kept");
@@ -1687,18 +1899,32 @@ mod tests {
         // one.
         let disk = move |p: &Path| Ok(held - all(p));
         let f = toward_with(c, nas, &|| 3500, &disk, &|_| false).unwrap();
-        assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("blobs".to_string(), 1000), ("copies".to_string(), 500)]));
+        assert_eq!(
+            f.freed,
+            BTreeMap::from([("base".to_string(), 2000), ("blobs".to_string(), 1000), ("copies".to_string(), 500)])
+        );
         assert_eq!((f.target, f.left), (Some(3500), 0));
-        assert!(!c.join("base/base/6-1-1.0000000000000001.base").exists() && c.join("base/base/6-1-2.0000000000000001.base").exists());
-        assert!(c.join("dem-cache.keys.u64").exists() && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists());
+        assert!(
+            !c.join("base/base/6-1-1.0000000000000001.base").exists()
+                && c.join("base/base/6-1-2.0000000000000001.base").exists()
+        );
+        assert!(
+            c.join("dem-cache.keys.u64").exists() && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists()
+        );
         // A little more: the next base pack.
-        assert_eq!(toward_with(c, nas, &|| 4000, &disk, &|_| false).unwrap().freed, BTreeMap::from([("base".to_string(), 2000)]));
+        assert_eq!(
+            toward_with(c, nas, &|| 4000, &disk, &|_| false).unwrap().freed,
+            BTreeMap::from([("base".to_string(), 2000)])
+        );
         // Already there: nothing goes.
         assert_eq!(toward_with(c, nas, &|| 3500, &disk, &|_| false).unwrap(), Freed::default());
         // A target past everything: the DEM seed whole, then the heritage clip; short, and what
         // stays said (nothing here).
         let f = toward_with(c, nas, &|| u64::MAX, &disk, &|_| false).unwrap();
-        assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("dem".to_string(), 130), ("heritage".to_string(), 700)]));
+        assert_eq!(
+            f.freed,
+            BTreeMap::from([("base".to_string(), 2000), ("dem".to_string(), 130), ("heritage".to_string(), 700)])
+        );
         assert_eq!(f.left, 0);
         assert!(!c.join("dem-cache.src.u8").exists());
         // A seed the NAS hasn't whole stays, counted as left.
@@ -1714,7 +1940,11 @@ mod tests {
     fn filtered_planet(root: &Path) {
         file(&root.join("sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"), 10, 60);
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        std::fs::write(root.join("state/build/manifest.json"), br#"{"sources/osm/2026-09-28/filtered":"sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"}"#).unwrap();
+        std::fs::write(
+            root.join("state/build/manifest.json"),
+            br#"{"sources/osm/2026-09-28/filtered":"sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"}"#,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1737,7 +1967,11 @@ mod tests {
         assert_eq!((clear(c, nas).unwrap().bytes(), clip.exists()), (0, true));
         // Named, but not there: kept.
         std::fs::create_dir_all(d.path().join("nas/state/build")).unwrap();
-        std::fs::write(d.path().join("nas/state/build/manifest.json"), br#"{"sources/osm/2026-09-28/filtered":"sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"}"#).unwrap();
+        std::fs::write(
+            d.path().join("nas/state/build/manifest.json"),
+            br#"{"sources/osm/2026-09-28/filtered":"sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"}"#,
+        )
+        .unwrap();
         assert!(toward_with(c, nas, &|| u64::MAX, &disk, &|_| false).unwrap().freed.is_empty() && clip.exists());
         // There: it goes.
         filtered_planet(&d.path().join("nas"));
@@ -1768,7 +2002,10 @@ mod tests {
         let disk = move |p: &Path| Ok(held - all(p));
         let f = toward_with(c, nas, &goal, &disk, &|_| false).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("copies".to_string(), 500)]));
-        assert!(c.join("base/base/6-1-2.0000000000000001.base").exists() && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists());
+        assert!(
+            c.join("base/base/6-1-2.0000000000000001.base").exists()
+                && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists()
+        );
     }
 
     #[test]
@@ -1789,7 +2026,11 @@ mod tests {
         let disk = move |p: &Path| Ok(held - all(p));
         let f = toward_with(c, nas, &|| 400, &disk, &|_| false).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("copies".to_string(), 500)]));
-        assert!(!c.join("sources-a").exists() && c.join("sources-b/x.pack").exists() && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists());
+        assert!(
+            !c.join("sources-a").exists()
+                && c.join("sources-b/x.pack").exists()
+                && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists()
+        );
     }
 
     #[test]
@@ -1800,7 +2041,8 @@ mod tests {
         let t = set_target(home, Some(100 << 30), "scenic room on m4").unwrap().unwrap();
         assert_eq!(target(home), Some(t));
         // The menu bar's, as it writes it.
-        std::fs::write(home.join(TARGET), br#"{"bytes":53687091200,"by":"the menu bar on m4","at":1791300000}"#).unwrap();
+        std::fs::write(home.join(TARGET), br#"{"bytes":53687091200,"by":"the menu bar on m4","at":1791300000}"#)
+            .unwrap();
         assert_eq!(target(home).map(|t| (t.bytes, t.by)), Some((50 << 30, "the menu bar on m4".to_string())));
         // None of 0 bytes, nor a damaged one; off, it goes (twice, no error).
         std::fs::write(home.join(TARGET), br#"{"bytes":0,"by":"x","at":1}"#).unwrap();
@@ -1855,7 +2097,10 @@ mod tests {
         let g = clear(c, &nas).unwrap();
         assert!(nas.join("canopy/a.tif").exists(), "the NAS's copy deleted through the link");
         assert_eq!((f.bytes(), f.left, g.bytes(), cheap_bytes(c, Some(&nas))), (0, 0, 0, 0));
-        assert_eq!((sizes(c, false, Some(root.as_path())), sizes(c, true, Some(root.as_path()))), (Sizes::default(), Sizes::default()));
+        assert_eq!(
+            (sizes(c, false, Some(root.as_path())), sizes(c, true, Some(root.as_path()))),
+            (Sizes::default(), Sizes::default())
+        );
     }
 
     #[test]
@@ -1871,7 +2116,10 @@ mod tests {
         let f = trim(c, &nas, &|_| false).unwrap();
         assert!(nas.join("canopy/a.tif").exists() && c.join("chm10/a.tif").exists());
         // Its own square, copied there first, gone here.
-        assert_eq!((f.freed.get("canopy"), std::fs::metadata(nas.join("canopy/b.tif")).unwrap().len()), (Some(&own), own));
+        assert_eq!(
+            (f.freed.get("canopy"), std::fs::metadata(nas.join("canopy/b.tif")).unwrap().len()),
+            (Some(&own), own)
+        );
     }
 
     #[test]
@@ -1886,7 +2134,11 @@ mod tests {
         let c = &d.path().join("cache");
         std::os::unix::fs::symlink(&there, c).unwrap();
         assert_eq!((trim(c, &nas, &|_| false).unwrap().bytes(), clear(c, &nas).unwrap().bytes()), (0, 0));
-        assert!(there.join("chm10/a.tif").exists() && there.join("blobs/layers/x.0000000000000001.pack").exists() && there.join("base/base/6-1-1.0000000000000001.base").exists());
+        assert!(
+            there.join("chm10/a.tif").exists()
+                && there.join("blobs/layers/x.0000000000000001.pack").exists()
+                && there.join("base/base/6-1-1.0000000000000001.base").exists()
+        );
     }
 
     #[test]
@@ -1910,7 +2162,13 @@ mod tests {
         // (At least the own tile: an archive's local copy another test's forked child held a lock on
         // as it was put up may be walked and counted again; not what this test is about.)
         assert!(f.freed.get("terrain").is_some_and(|&n| n >= own), "{:?}", f.freed);
-        let left: Vec<_> = std::fs::read_dir(c.join("aws-terrarium/packs")).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".tiles")).map(|e| e.path()).collect();
+        let left: Vec<_> = std::fs::read_dir(c.join("aws-terrarium/packs"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tiles"))
+            .map(|e| e.path())
+            .collect();
         assert!(left.is_empty(), "an archive's local copy left: {left:?}");
     }
 

@@ -92,7 +92,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         assert_eq!(Switches::read(d.path(), Switches::default()), Switches::default());
         std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
-        for (f, s) in [(UPDATE_PER_REGION, "on"), (LOW_ZOOM_LATER, ""), (UPDATE_SHARE, "off\n"), (DELTA_CATALOG, "on\n")] {
+        for (f, s) in
+            [(UPDATE_PER_REGION, "on"), (LOW_ZOOM_LATER, ""), (UPDATE_SHARE, "off\n"), (DELTA_CATALOG, "on\n")]
+        {
             std::fs::write(d.path().join(f), s).unwrap();
         }
         let s = Switches::read(d.path(), Switches::default());

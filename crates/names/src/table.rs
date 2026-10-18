@@ -253,7 +253,8 @@ impl Table {
 
     fn grow(&mut self) {
         let slots = (self.ctrl.len() * 2).max(1024);
-        let (old_ctrl, old_offs) = (std::mem::replace(&mut self.ctrl, vec![0; slots]), std::mem::replace(&mut self.offs, vec![0; slots]));
+        let (old_ctrl, old_offs) =
+            (std::mem::replace(&mut self.ctrl, vec![0; slots]), std::mem::replace(&mut self.offs, vec![0; slots]));
         let mask = slots - 1;
         for (c, off) in old_ctrl.into_iter().zip(old_offs) {
             if c == 0 {
@@ -618,34 +619,66 @@ mod tests {
 
     fn entry(text: &str) -> Option<Owned> {
         match parse_line(text.as_bytes()) {
-            Parsed::Entry(e) => Some((e.n.into_owned(), e.kinds, e.langs.iter().map(|x| x.as_str().to_owned()).collect(), e.main.into_owned(), e.sub.map(Cow::into_owned))),
+            Parsed::Entry(e) => Some((
+                e.n.into_owned(),
+                e.kinds,
+                e.langs.iter().map(|x| x.as_str().to_owned()).collect(),
+                e.main.into_owned(),
+                e.sub.map(Cow::into_owned),
+            )),
             _ => None,
         }
     }
 
     fn owned(n: &str, kinds: u8, langs: &[&str], main: &str, sub: Option<&str>) -> Option<Owned> {
-        Some((n.to_owned(), kinds, langs.iter().map(|x| x.to_string()).collect(), main.to_owned(), sub.map(str::to_owned)))
+        Some((
+            n.to_owned(),
+            kinds,
+            langs.iter().map(|x| x.to_string()).collect(),
+            main.to_owned(),
+            sub.map(str::to_owned),
+        ))
     }
 
     #[test]
     fn lines() {
         assert_eq!(
-            entry(r#"{"n": "Lac Bleu", "kind": "other", "langs": ["fr"], "main": "Lac Bleu", "sub": "Blue Lake", "via": "agent:haiku"}"#),
+            entry(
+                r#"{"n": "Lac Bleu", "kind": "other", "langs": ["fr"], "main": "Lac Bleu", "sub": "Blue Lake", "via": "agent:haiku"}"#
+            ),
             owned("Lac Bleu", 4, &["fr"], "Lac Bleu", Some("Blue Lake"))
         );
         assert_eq!(
             entry(r#"{"n": "Château", "kind": ["settlement", "other"], "langs": "fr", "main": "Castle", "sub": null}"#),
             owned("Château", 6, &["fr"], "Castle", None)
         );
-        assert_eq!(entry(r#"{"n": "中山", "kind": "road", "langs": ["zh_Hant", "zh", "nan"], "sub": "Zhongshan"}"#), owned("中山", 1, &["zh", "nan"], "中山", Some("Zhongshan")));
+        assert_eq!(
+            entry(r#"{"n": "中山", "kind": "road", "langs": ["zh_Hant", "zh", "nan"], "sub": "Zhongshan"}"#),
+            owned("中山", 1, &["zh", "nan"], "中山", Some("Zhongshan"))
+        );
         // A missing or empty main is the name; an empty sub is none; escapes are read.
-        assert_eq!(entry(r#"{"n": "A", "kind": "other", "langs": "fr", "main": "", "sub": ""}"#), owned("A", 4, &["fr"], "A", None));
-        assert_eq!(entry(r#"{"n": "L’Anse", "kind": "other", "langs": "fr", "main": null, "sub": "Cove \"x\""}"#), owned("L’Anse", 4, &["fr"], "L’Anse", Some("Cove \"x\"")));
+        assert_eq!(
+            entry(r#"{"n": "A", "kind": "other", "langs": "fr", "main": "", "sub": ""}"#),
+            owned("A", 4, &["fr"], "A", None)
+        );
+        assert_eq!(
+            entry(r#"{"n": "L’Anse", "kind": "other", "langs": "fr", "main": null, "sub": "Cove \"x\""}"#),
+            owned("L’Anse", 4, &["fr"], "L’Anse", Some("Cove \"x\""))
+        );
         // Extra fields of any type, in any order.
-        assert_eq!(entry(r#"{"x": [1, {"y": null}], "sub": "S", "langs": ["fr"], "n": "N", "z": 3.5, "kind": "road"}"#), owned("N", 1, &["fr"], "N", Some("S")));
+        assert_eq!(
+            entry(r#"{"x": [1, {"y": null}], "sub": "S", "langs": ["fr"], "n": "N", "z": 3.5, "kind": "road"}"#),
+            owned("N", 1, &["fr"], "N", Some("S"))
+        );
         // The old `en` is the sub, unless there's a sub.
-        assert_eq!(entry(r#"{"n": "Lac", "kind": "other", "langs": "fr", "en": "Lake"}"#), owned("Lac", 4, &["fr"], "Lac", Some("Lake")));
-        assert_eq!(entry(r#"{"n": "Lac", "kind": "other", "langs": "fr", "en": "Lake", "sub": null}"#), owned("Lac", 4, &["fr"], "Lac", None));
+        assert_eq!(
+            entry(r#"{"n": "Lac", "kind": "other", "langs": "fr", "en": "Lake"}"#),
+            owned("Lac", 4, &["fr"], "Lac", Some("Lake"))
+        );
+        assert_eq!(
+            entry(r#"{"n": "Lac", "kind": "other", "langs": "fr", "en": "Lake", "sub": null}"#),
+            owned("Lac", 4, &["fr"], "Lac", None)
+        );
         // The area tables' lines: told apart, left out.
         assert_eq!(parse_line(br#"{"n": "Lac Blanc", "en": "White Lake"}"#), Parsed::Old);
         assert_eq!(parse_line(br#"{"n": "A", "main": "A", "sub": "B", "via": "native"}"#), Parsed::Old);
@@ -668,11 +701,18 @@ mod tests {
         ] {
             assert_eq!(parse_line(bad.as_bytes()), Parsed::Bad, "{bad}");
         }
-        assert_eq!(parse_line(br#"{"n": "A", "kind": "other", "langs": "fr", "sub": null, "via": "todo"}"#), Parsed::NotYet);
-        assert_eq!(parse_line(br#"{"n": "A", "kind": "other", "langs": "fr", "sub": null, "via": "skipped"}"#), Parsed::NotYet);
+        assert_eq!(
+            parse_line(br#"{"n": "A", "kind": "other", "langs": "fr", "sub": null, "via": "todo"}"#),
+            Parsed::NotYet
+        );
+        assert_eq!(
+            parse_line(br#"{"n": "A", "kind": "other", "langs": "fr", "sub": null, "via": "skipped"}"#),
+            Parsed::NotYet
+        );
         assert!(entry(r#"{"n": "A", "kind": "other", "langs": "fr", "sub": "a", "via": "osm"}"#).is_some());
         for odd in [r#"5"#, r#"null"#, r#"true"#, r#"["todo"]"#, r#"{"x": "todo"}"#] {
-            let text = format!("{{\"n\": \"A\", \"kind\": \"other\", \"langs\": \"fr\", \"sub\": \"a\", \"via\": {odd}}}");
+            let text =
+                format!("{{\"n\": \"A\", \"kind\": \"other\", \"langs\": \"fr\", \"sub\": \"a\", \"via\": {odd}}}");
             assert!(entry(&text).is_some(), "{text}");
         }
     }
@@ -720,7 +760,10 @@ mod tests {
             let n = format!("name {i}");
             let sub = format!("{long}{i}");
             let main = format!("main {i}");
-            assert_eq!(t.get(hash(n.as_bytes()), n.as_bytes(), Kind::Road, l("ca")), Some(Rec { main: Some(&main), sub: Some(&sub) }));
+            assert_eq!(
+                t.get(hash(n.as_bytes()), n.as_bytes(), Kind::Road, l("ca")),
+                Some(Rec { main: Some(&main), sub: Some(&sub) })
+            );
         }
         assert_eq!(t.get(hash(b"name 20000"), b"name 20000", Kind::Road, l("ca")), None);
         assert!(t.len() as f64 <= t.ctrl.len() as f64 * MAX_LOAD);

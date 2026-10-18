@@ -82,7 +82,8 @@ impl Kind {
     /// locality) is other.
     pub fn of_place(class: &str) -> Kind {
         match class {
-            "city" | "town" | "village" | "hamlet" | "suburb" | "quarter" | "neighbourhood" | "isolated_dwelling" | "borough" | "farm" => Kind::Settlement,
+            "city" | "town" | "village" | "hamlet" | "suburb" | "quarter" | "neighbourhood" | "isolated_dwelling"
+            | "borough" | "farm" => Kind::Settlement,
             _ => Kind::Other,
         }
     }
@@ -220,7 +221,11 @@ pub struct Names {
 
 impl fmt::Debug for Names {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Names").field("dir", &self.dir).field("summary", &self.summary()).field("pending", &self.pending()).finish()
+        f.debug_struct("Names")
+            .field("dir", &self.dir)
+            .field("summary", &self.summary())
+            .field("pending", &self.pending())
+            .finish()
     }
 }
 
@@ -237,7 +242,15 @@ impl Names {
     /// Lines for `dir` with nothing read yet: the first [`refresh`](Self::refresh) reads what is
     /// there as [`load`](Self::load) would. For starting while the NAS is away.
     pub fn new(dir: &Path) -> Names {
-        Names { dir: dir.to_owned(), stable: STABLE, scanned: false, files: BTreeMap::new(), tables: Vec::new(), versions: BTreeMap::new(), warnings: Vec::new() }
+        Names {
+            dir: dir.to_owned(),
+            stable: STABLE,
+            scanned: false,
+            files: BTreeMap::new(),
+            tables: Vec::new(),
+            versions: BTreeMap::new(),
+            warnings: Vec::new(),
+        }
     }
 
     /// Reads every `*.jsonl` file under `dir`, skipping hidden files and folders and `todo/`.
@@ -284,12 +297,21 @@ impl Names {
         });
         let jobs: Vec<(String, PathBuf, String)> = files
             .iter()
-            .filter(|(rel, (_, id))| self.files.get(*rel).is_none_or(|t| t.id.as_ref() != Some(id) || t.loaded.is_none()))
+            .filter(|(rel, (_, id))| {
+                self.files.get(*rel).is_none_or(|t| t.id.as_ref() != Some(id) || t.loaded.is_none())
+            })
             .map(|(rel, (p, id))| (rel.clone(), p.clone(), id.clone()))
             .collect();
         let outcomes = read_many(&jobs, |(_, p, _)| read_fixed(p));
         for ((rel, _, id), outcome) in jobs.into_iter().zip(outcomes) {
-            let t = self.files.entry(rel.clone()).or_insert_with(|| Tracked { seen: Stat { size: 0, mtime: 0 }, since: Instant::now(), aged: true, failed: false, loaded: None, id: None });
+            let t = self.files.entry(rel.clone()).or_insert_with(|| Tracked {
+                seen: Stat { size: 0, mtime: 0 },
+                since: Instant::now(),
+                aged: true,
+                failed: false,
+                loaded: None,
+                id: None,
+            });
             match outcome {
                 Outcome::Read(table, report) => {
                     let stat = Stat { size: report.bytes, mtime: 0 };
@@ -333,7 +355,10 @@ impl Names {
                 Some(t) => (t.seen, t.since, t.aged, t.failed) = (stat, now, false, false),
                 None => {
                     let aged = first && stat.age(wall) >= self.stable;
-                    self.files.insert(rel.clone(), Tracked { seen: stat, since: now, aged, failed: false, loaded: None, id: None });
+                    self.files.insert(
+                        rel.clone(),
+                        Tracked { seen: stat, since: now, aged, failed: false, loaded: None, id: None },
+                    );
                 }
             }
             let Some(t) = self.files.get(&rel) else { continue };
@@ -353,7 +378,8 @@ impl Names {
                 Outcome::Read(table, report) => {
                     if report.malformed > 0 {
                         let first = report.first_malformed.unwrap_or(0);
-                        self.warnings.push(format!("{rel}: {} malformed lines skipped (first: line {first})", report.malformed));
+                        self.warnings
+                            .push(format!("{rel}: {} malformed lines skipped (first: line {first})", report.malformed));
                     }
                     if report.unfinished {
                         self.warnings.push(format!("{rel}: unfinished last line ignored"));
@@ -391,7 +417,11 @@ impl Names {
         if !old_files.is_empty() {
             let shown: Vec<&str> = old_files.iter().take(3).map(String::as_str).collect();
             let more = if old_files.len() > 3 { format!(" and {} more", old_files.len() - 3) } else { String::new() };
-            self.warnings.push(format!("{old_lines} lines of the area tables' format (no kind or languages) left out, in {} files ({}{more})", old_files.len(), shown.join(", ")));
+            self.warnings.push(format!(
+                "{old_lines} lines of the area tables' format (no kind or languages) left out, in {} files ({}{more})",
+                old_files.len(),
+                shown.join(", ")
+            ));
         }
         if changed {
             self.rebuild();
@@ -488,7 +518,13 @@ impl Names {
         self.files
             .values()
             .filter(|t| !t.failed && !t.loaded.as_ref().is_some_and(|l| l.0 == t.seen))
-            .map(|t| if t.aged { Duration::ZERO } else { self.stable.saturating_sub(now.saturating_duration_since(t.since)) })
+            .map(|t| {
+                if t.aged {
+                    Duration::ZERO
+                } else {
+                    self.stable.saturating_sub(now.saturating_duration_since(t.since))
+                }
+            })
             .min()
     }
 
@@ -523,7 +559,14 @@ impl Names {
     /// How a `kind` of name shows: `own_en` is the thing's own English (step 1), `osm` the
     /// languages OSM gives its name, `here` the languages spoken where it is. An own English that
     /// is the name itself ([`same_name`]: OpenMapTiles' `name_en` falls back to the name) is none.
-    pub fn display<'a>(&'a self, kind: Kind, name: &'a str, own_en: Option<&'a str>, osm: &[Lang], here: &[Lang]) -> DisplayRef<'a> {
+    pub fn display<'a>(
+        &'a self,
+        kind: Kind,
+        name: &'a str,
+        own_en: Option<&'a str>,
+        osm: &[Lang],
+        here: &[Lang],
+    ) -> DisplayRef<'a> {
         if let Some(en) = own_en.filter(|e| !e.trim().is_empty() && !same_name(e, name)) {
             return DisplayRef::new(name, Some(en));
         }
@@ -550,7 +593,15 @@ impl Namer {
     }
 
     /// How a `kind` of name shows at `lon`, `lat` ([`Names::display`]).
-    pub fn display_at<'a>(&'a self, kind: Kind, name: &'a str, own_en: Option<&'a str>, osm: &[Lang], lon: f64, lat: f64) -> DisplayRef<'a> {
+    pub fn display_at<'a>(
+        &'a self,
+        kind: Kind,
+        name: &'a str,
+        own_en: Option<&'a str>,
+        osm: &[Lang],
+        lon: f64,
+        lat: f64,
+    ) -> DisplayRef<'a> {
         self.names.display(kind, name, own_en, osm, self.here(lon, lat))
     }
 
@@ -606,7 +657,12 @@ impl Stat {
 /// The `.jsonl` files under `dir` by relative path ('/'-separated), with where they are and their
 /// stat. Hidden entries, `todo` folders and symbolic links to folders are passed over.
 fn list(dir: &Path, warnings: &mut Vec<String>) -> Result<BTreeMap<String, (PathBuf, Stat)>> {
-    fn walk(dir: &Path, prefix: &str, out: &mut BTreeMap<String, (PathBuf, Stat)>, warnings: &mut Vec<String>) -> Result<()> {
+    fn walk(
+        dir: &Path,
+        prefix: &str,
+        out: &mut BTreeMap<String, (PathBuf, Stat)>,
+        warnings: &mut Vec<String>,
+    ) -> Result<()> {
         let entries = fs::read_dir(dir).with_context(|| format!("listing {}", dir.display()))?;
         for entry in entries {
             let entry = entry.with_context(|| format!("listing {}", dir.display()))?;
@@ -739,7 +795,26 @@ mod tests {
     // (names makes no socket and depends on no crate that does: store::spawn is no need here.)
     #[allow(clippy::disallowed_methods)]
     fn norm_matches_node() {
-        const TRICKY: &[&str] = &["ΟΔΟΣ", "ΣΑΣ", "Σ", "ΑΣ.", "ΑΣ Α", "Α.Σ", "ΑΣ\u{301}", "İSTANBUL", "Ǆemal", "ǅ", "Ⅻ ⅻ", "ﬀ ﬃ ẞ", "Ｔｏｋｙｏ", "①②", "がっこう", "Ꭰꭰ", "𝔄𝔟𝔠", "🅰🅱🄰"];
+        const TRICKY: &[&str] = &[
+            "ΟΔΟΣ",
+            "ΣΑΣ",
+            "Σ",
+            "ΑΣ.",
+            "ΑΣ Α",
+            "Α.Σ",
+            "ΑΣ\u{301}",
+            "İSTANBUL",
+            "Ǆemal",
+            "ǅ",
+            "Ⅻ ⅻ",
+            "ﬀ ﬃ ẞ",
+            "Ｔｏｋｙｏ",
+            "①②",
+            "がっこう",
+            "Ꭰꭰ",
+            "𝔄𝔟𝔠",
+            "🅰🅱🄰",
+        ];
         let script = r#"
             const norm = (s) => s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
             const hex = (s) => [...s].map((c) => c.codePointAt(0).toString(16)).join(' ');
@@ -761,7 +836,12 @@ mod tests {
         assert!(out.status.success(), "node: {}", String::from_utf8_lossy(&out.stderr));
         let text = String::from_utf8(out.stdout).expect("utf-8");
         let hex = |s: &str| s.chars().map(|c| format!("{:x}", c as u32)).collect::<Vec<_>>().join(" ");
-        let unhex = |h: &str| h.split(' ').filter(|x| !x.is_empty()).map(|x| char::from_u32(u32::from_str_radix(x, 16).expect("hex")).expect("char")).collect::<String>();
+        let unhex = |h: &str| {
+            h.split(' ')
+                .filter(|x| !x.is_empty())
+                .map(|x| char::from_u32(u32::from_str_radix(x, 16).expect("hex")).expect("char"))
+                .collect::<String>()
+        };
         let mut nonempty = std::collections::HashMap::new();
         let mut mismatches = Vec::new();
         let mut node_unicode = String::new();
@@ -793,9 +873,17 @@ mod tests {
         if node_unicode != format!("{ma}.{mi}") {
             let before = mismatches.len();
             mismatches.retain(|m| !m.ends_with(", rust \"\""));
-            eprintln!("Unicode {node_unicode} in Node, {ma}.{mi} in Rust: {} code points new to Node", before - mismatches.len());
+            eprintln!(
+                "Unicode {node_unicode} in Node, {ma}.{mi} in Rust: {} code points new to Node",
+                before - mismatches.len()
+            );
         }
-        assert!(mismatches.is_empty(), "{} mismatches: {:?}", mismatches.len(), &mismatches[..mismatches.len().min(40)]);
+        assert!(
+            mismatches.is_empty(),
+            "{} mismatches: {:?}",
+            mismatches.len(),
+            &mismatches[..mismatches.len().min(40)]
+        );
     }
 
     #[test]
@@ -827,7 +915,14 @@ mod tests {
         v.iter().map(|s| l(s)).collect()
     }
 
-    fn show(names: &Names, kind: Kind, name: &str, own: Option<&str>, osm: &[&str], here: &[&str]) -> (String, Option<String>) {
+    fn show(
+        names: &Names,
+        kind: Kind,
+        name: &str,
+        own: Option<&str>,
+        osm: &[&str],
+        here: &[&str],
+    ) -> (String, Option<String>) {
         let d = names.display(kind, name, own, &ls(osm), &ls(here));
         (d.main.to_owned(), d.sub.map(str::to_owned))
     }
@@ -882,9 +977,15 @@ mod tests {
         assert_eq!(show(&names, Kind::Settlement, "Moulin", None, &[], FR), ds("Moulin", None));
         assert_eq!(show(&names, Kind::Other, "Moulin", None, &[], FR), ds("Mill", None));
         // Brittany: Breton after French.
-        assert_eq!(show(&names, Kind::Settlement, "Kêr Vraz", None, &[], &["fr", "br"]), ds("Kêr Vraz", Some("Big Village")));
+        assert_eq!(
+            show(&names, Kind::Settlement, "Kêr Vraz", None, &[], &["fr", "br"]),
+            ds("Kêr Vraz", Some("Big Village"))
+        );
         // The thing's own English wins, even over a line and even when wrong; the sub rule holds.
-        assert_eq!(show(&names, Kind::Other, "Église", Some("Leclerc tank"), &[], FR), ds("Église", Some("Leclerc tank")));
+        assert_eq!(
+            show(&names, Kind::Other, "Église", Some("Leclerc tank"), &[], FR),
+            ds("Église", Some("Leclerc tank"))
+        );
         assert_eq!(show(&names, Kind::Other, "Église", Some(" "), &[], FR), ds("Church", None));
         assert_eq!(show(&names, Kind::Settlement, "Montréal", Some("Montreal"), &[], QC), ds("Montréal", None));
         // An "own English" that is the name itself (OpenMapTiles' name_en without name:en) is none:
@@ -902,7 +1003,11 @@ mod tests {
     #[test]
     fn later_files_win_and_versions_are_per_language() {
         let d = Dir::new();
-        d.write("0-converted/french.jsonl", &(line("Lac Noir", "\"other\"", "[\"fr\"]", None, Some("Lake Noir")) + &line("Rue Haute", "\"road\"", "[\"fr\"]", None, None)));
+        d.write(
+            "0-converted/french.jsonl",
+            &(line("Lac Noir", "\"other\"", "[\"fr\"]", None, Some("Lake Noir"))
+                + &line("Rue Haute", "\"road\"", "[\"fr\"]", None, None)),
+        );
         d.write("0-converted/japanese.jsonl", &line("松島", "\"other\"", "[\"ja\"]", None, Some("Matsu-shima")));
         let names = Names::load(&d.0).expect("load");
         let (fr1, ja1) = (names.version(l("fr")), names.version(l("ja")));
@@ -934,7 +1039,9 @@ mod tests {
         d.write("c/fr-1.jsonl", &line("Lac Noir", "\"other\"", "[\"fr\"]", None, Some("Lake Noir")));
         d.write("c/fr-2.jsonl", &line("Lac Noir", "\"other\"", "[\"fr\"]", None, Some("Black Lake")));
         d.write("c/ja.jsonl", &line("松島", "\"other\"", "[\"ja\"]", None, Some("Matsushima")));
-        let set = |fs: &[(&str, &str, &str)]| -> BTreeMap<String, (PathBuf, String)> { fs.iter().map(|(p, f, id)| (p.to_string(), (d.0.join(f), id.to_string()))).collect() };
+        let set = |fs: &[(&str, &str, &str)]| -> BTreeMap<String, (PathBuf, String)> {
+            fs.iter().map(|(p, f, id)| (p.to_string(), (d.0.join(f), id.to_string()))).collect()
+        };
         let one = set(&[("a.jsonl", "c/fr-1.jsonl", "a.1111"), ("j.jsonl", "c/ja.jsonl", "j.1111")]);
         let mut names = Names::from_files(&one);
         assert_eq!(show(&names, Kind::Other, "Lac Noir", None, &[], FR), ds("Lac Noir", Some("Lake Noir")));
@@ -944,14 +1051,21 @@ mod tests {
         assert!(!names.set_files(&one));
         assert_eq!(Names::from_files(&one).version(l("fr")), fr);
         // A later path wins; a new content name in French changes French's version alone.
-        let two = set(&[("a.jsonl", "c/fr-1.jsonl", "a.1111"), ("b.jsonl", "c/fr-2.jsonl", "b.2222"), ("j.jsonl", "c/ja.jsonl", "j.1111")]);
+        let two = set(&[
+            ("a.jsonl", "c/fr-1.jsonl", "a.1111"),
+            ("b.jsonl", "c/fr-2.jsonl", "b.2222"),
+            ("j.jsonl", "c/ja.jsonl", "j.1111"),
+        ]);
         assert!(names.set_files(&two));
         assert_eq!(show(&names, Kind::Other, "Lac Noir", None, &[], FR), ds("Lac Noir", Some("Black Lake")));
         assert_ne!(names.version(l("fr")), fr);
         assert_eq!(names.version(l("ja")), ja);
         // A file gone: its lines go; the set back as it was: the version too.
         assert!(names.set_files(&one));
-        assert_eq!((names.version(l("fr")), show(&names, Kind::Other, "Lac Noir", None, &[], FR)), (fr, ds("Lac Noir", Some("Lake Noir"))));
+        assert_eq!(
+            (names.version(l("fr")), show(&names, Kind::Other, "Lac Noir", None, &[], FR)),
+            (fr, ds("Lac Noir", Some("Lake Noir")))
+        );
         // A copy that can't be read: said once, its previous table kept.
         let gone = set(&[("a.jsonl", "c/none.jsonl", "a.3333"), ("j.jsonl", "c/ja.jsonl", "j.1111")]);
         assert!(!names.set_files(&gone));
@@ -973,7 +1087,10 @@ mod tests {
         assert_eq!((s.files, s.lines, s.old), (0, 0, 2));
         assert!(s.only_old());
         let w = names.take_warnings();
-        assert_eq!(w, ["2 lines of the area tables' format (no kind or languages) left out, in 1 files (fr/places-fr.jsonl)"]);
+        assert_eq!(
+            w,
+            ["2 lines of the area tables' format (no kind or languages) left out, in 1 files (fr/places-fr.jsonl)"]
+        );
         assert!(names.tables.is_empty());
         assert_eq!(show(&names, Kind::Other, "Château", None, &[], FR), ds("Château", None));
         d.write("0-converted/french.jsonl", &line("Château", "\"other\"", "[\"fr\"]", Some("Castle"), None));
@@ -999,10 +1116,22 @@ mod tests {
     fn warnings_for_bad_lines() {
         let d = Dir::new();
         let a = line("A", "\"other\"", "\"fr\"", None, Some("a"));
-        d.write("x.jsonl", &format!("{a}nope\n{{\"n\": \"B\", \"kind\": \"other\", \"langs\": \"fr\"}}\n{}{{\"n\": \"D\", \"sub", line("C", "\"other\"", "\"fr\"", None, Some("c"))));
+        d.write(
+            "x.jsonl",
+            &format!(
+                "{a}nope\n{{\"n\": \"B\", \"kind\": \"other\", \"langs\": \"fr\"}}\n{}{{\"n\": \"D\", \"sub",
+                line("C", "\"other\"", "\"fr\"", None, Some("c"))
+            ),
+        );
         let mut names = Names::load(&d.0).expect("load");
         let w = names.take_warnings();
-        assert_eq!(w, vec!["x.jsonl: 2 malformed lines skipped (first: line 2)".to_owned(), "x.jsonl: unfinished last line ignored".to_owned()]);
+        assert_eq!(
+            w,
+            vec![
+                "x.jsonl: 2 malformed lines skipped (first: line 2)".to_owned(),
+                "x.jsonl: unfinished last line ignored".to_owned()
+            ]
+        );
         assert_eq!(names.entries(), 2);
         assert!(names.take_warnings().is_empty());
     }
@@ -1020,7 +1149,11 @@ mod tests {
         assert_eq!(names.version(l("zh")), Names::new(&d.0).version(l("zh")));
 
         // A new file, just written: not read until it has held for ten seconds.
-        d.write_aged("jp/b.jsonl", "{\"n\": \"松島\", \"kind\": \"other\", \"langs\": \"ja\", \"sub\": \"Matsu-shima\"}\n", Duration::ZERO);
+        d.write_aged(
+            "jp/b.jsonl",
+            "{\"n\": \"松島\", \"kind\": \"other\", \"langs\": \"ja\", \"sub\": \"Matsu-shima\"}\n",
+            Duration::ZERO,
+        );
         assert!(!names.scan(t0 + Duration::from_secs(1), wall).expect("scan"));
         assert!(names.pending().is_some());
         assert_eq!(names.translation(Kind::Other, "松島", &[l("ja")]).and_then(|t| t.sub), Some("Matsushima"));
@@ -1069,8 +1202,16 @@ mod tests {
         // a busy Mac takes between writing them and scanning.)
         let d = Dir::new();
         let wall = SystemTime::now();
-        d.write_at("jp/old.jsonl", "{\"n\": \"A\", \"kind\": \"other\", \"langs\": \"ja\", \"sub\": \"a\"}\n", wall - Duration::from_secs(3600));
-        d.write_at("jp/new.jsonl", "{\"n\": \"B\", \"kind\": \"other\", \"langs\": \"ja\", \"sub\": \"b\"}\n", wall - Duration::from_secs(2));
+        d.write_at(
+            "jp/old.jsonl",
+            "{\"n\": \"A\", \"kind\": \"other\", \"langs\": \"ja\", \"sub\": \"a\"}\n",
+            wall - Duration::from_secs(3600),
+        );
+        d.write_at(
+            "jp/new.jsonl",
+            "{\"n\": \"B\", \"kind\": \"other\", \"langs\": \"ja\", \"sub\": \"b\"}\n",
+            wall - Duration::from_secs(2),
+        );
         let t0 = Instant::now();
         let mut names = Names::new(&d.0);
         assert!(names.scan(t0, wall).expect("scan"));

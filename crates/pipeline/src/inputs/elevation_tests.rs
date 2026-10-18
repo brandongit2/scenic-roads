@@ -10,7 +10,16 @@ const PX: f64 = 1.0 / 3600.0;
 /// 100″ for speed (so 100″, about 3 km).
 fn tile(lon: f64, lat: f64) -> Vec<u8> {
     let data = vec![12.5f32; 36 * 36];
-    crate::geotiff::write_f32(36, 36, &data, 16, [lon, 100.0 * PX, 0.0, lat + 1.0, 0.0, -100.0 * PX], 4326, Some(-9999.0)).unwrap()
+    crate::geotiff::write_f32(
+        36,
+        36,
+        &data,
+        16,
+        [lon, 100.0 * PX, 0.0, lat + 1.0, 0.0, -100.0 * PX],
+        4326,
+        Some(-9999.0),
+    )
+    .unwrap()
 }
 
 /// A `w` × `h` terrarium PNG of 0 m.
@@ -45,25 +54,39 @@ struct Fixture {
 /// The data the fixtures' declarations name, served by URL.
 fn fetch() -> MapFetch {
     let mut f = MapFetch::default();
-        f.0.insert("https://e.org/a.tif".into(), Some(tile(2.0, 48.0)));
-        f.0.insert("https://e.org/t/N48E002.tif".into(), Some(tile(2.0, 48.0)));
-        f.0.insert("https://e.org/t/N49E002.tif".into(), Some(tile(2.0, 49.0)));
-        f.0.insert("https://e.org/gone.tif".into(), None);
-        // (A pyramid's tile at the middle of the world, read for its size; another's of 512.)
-        f.0.insert("https://e.org/12/2048/2048.png".into(), Some(png(256, 256)));
-        f.0.insert("https://e.org/big/12/2048/2048.png".into(), Some(png(512, 512)));
-        // Twelve 1° files without an index, along a row; one half without data (its west).
-        for k in 0..12 {
-            f.0.insert(format!("https://e.org/row/{k}.tif"), Some(tile(10.0 + k as f64, 20.0)));
+    f.0.insert("https://e.org/a.tif".into(), Some(tile(2.0, 48.0)));
+    f.0.insert("https://e.org/t/N48E002.tif".into(), Some(tile(2.0, 48.0)));
+    f.0.insert("https://e.org/t/N49E002.tif".into(), Some(tile(2.0, 49.0)));
+    f.0.insert("https://e.org/gone.tif".into(), None);
+    // (A pyramid's tile at the middle of the world, read for its size; another's of 512.)
+    f.0.insert("https://e.org/12/2048/2048.png".into(), Some(png(256, 256)));
+    f.0.insert("https://e.org/big/12/2048/2048.png".into(), Some(png(512, 512)));
+    // Twelve 1° files without an index, along a row; one half without data (its west).
+    for k in 0..12 {
+        f.0.insert(format!("https://e.org/row/{k}.tif"), Some(tile(10.0 + k as f64, 20.0)));
+    }
+    let mut half = vec![12.5f32; 72 * 36];
+    for r in 0..36 {
+        for c in 0..36 {
+            half[r * 72 + c] = -9999.0;
         }
-        let mut half = vec![12.5f32; 72 * 36];
-        for r in 0..36 {
-            for c in 0..36 {
-                half[r * 72 + c] = -9999.0;
-            }
-        }
-        f.0.insert("https://e.org/half.tif".into(), Some(crate::geotiff::write_f32(72, 36, &half, 16, [30.0, 100.0 * PX, 0.0, 41.0, 0.0, -100.0 * PX], 4326, Some(-9999.0)).unwrap()));
-        f
+    }
+    f.0.insert(
+        "https://e.org/half.tif".into(),
+        Some(
+            crate::geotiff::write_f32(
+                72,
+                36,
+                &half,
+                16,
+                [30.0, 100.0 * PX, 0.0, 41.0, 0.0, -100.0 * PX],
+                4326,
+                Some(-9999.0),
+            )
+            .unwrap(),
+        ),
+    );
+    f
 }
 
 impl Fixture {
@@ -84,7 +107,9 @@ impl Fixture {
 
     fn derive(&self) -> Derived {
         let rd = |p: &str| self.files.get(p).cloned().ok_or_else(|| anyhow::anyhow!("{p}: none"));
-        self.checks.derive(&Version { paths: self.files.keys().cloned().collect(), read: &rd }, &BTreeSet::new()).unwrap()
+        self.checks
+            .derive(&Version { paths: self.files.keys().cloned().collect(), read: &rd }, &BTreeSet::new())
+            .unwrap()
     }
 
     fn checks(&self) -> Vec<String> {
@@ -102,8 +127,20 @@ fn good_declarations_are_measured_from_their_data() {
     let f = Fixture::new(vec![
         ("single.toml", decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"")),
         ("tiled.toml", decl("rank = 1", "format = \"geotiff\"\nindex = \"tiled.geojson\"\nstore = true")),
-        ("tiled.geojson", index(&[("https://e.org/t/N48E002.tif", [2.0, 48.0, 3.0, 49.0]), ("https://e.org/t/N49E002.tif", [2.0, 49.0, 3.0, 50.0])])),
-        ("pyramid.toml", decl("territory = \"world\"\nrank = 2", "format = \"tiles\"\nurl = \"https://e.org/{z}/{x}/{y}.png\"\nzoom = 12\nencoding = \"terrarium\"")),
+        (
+            "tiled.geojson",
+            index(&[
+                ("https://e.org/t/N48E002.tif", [2.0, 48.0, 3.0, 49.0]),
+                ("https://e.org/t/N49E002.tif", [2.0, 49.0, 3.0, 50.0]),
+            ]),
+        ),
+        (
+            "pyramid.toml",
+            decl(
+                "territory = \"world\"\nrank = 2",
+                "format = \"tiles\"\nurl = \"https://e.org/{z}/{x}/{y}.png\"\nzoom = 12\nencoding = \"terrarium\"",
+            ),
+        ),
     ]);
     assert!(f.checks().is_empty(), "{:?}", f.whole());
     let d = f.derive();
@@ -125,12 +162,28 @@ fn good_declarations_are_measured_from_their_data() {
         let copy = format!("sources/inputs/elevation/{p}");
         std::fs::create_dir_all(d2.path().join(&copy).parent().unwrap()).unwrap();
         std::fs::write(d2.path().join(&copy), &**b).unwrap();
-        files.insert(p.clone(), super::super::FileEntry { file: copy, size: b.len() as u64, keyed: c.keyed.unwrap_or_else(|| "-".into()), facts });
+        files.insert(
+            p.clone(),
+            super::super::FileEntry {
+                file: copy,
+                size: b.len() as u64,
+                keyed: c.keyed.unwrap_or_else(|| "-".into()),
+                facts,
+            },
+        );
     }
-    let ix = super::super::Index { fmt: 1, unit: UNIT.into(), checks: "elevation 1".into(), files, accepted: BTreeMap::new() };
+    let ix = super::super::Index {
+        fmt: 1,
+        unit: UNIT.into(),
+        checks: "elevation 1".into(),
+        files,
+        accepted: BTreeMap::new(),
+    };
     let name = "sources/inputs/elevation/@index.0000000000000000.json";
     std::fs::write(d2.path().join(name), serde_json::to_vec(&ix).unwrap()).unwrap();
-    let a = super::super::open(d2.path(), &BTreeMap::from([(super::super::logical(UNIT), name.to_string())]), UNIT).unwrap().unwrap();
+    let a = super::super::open(d2.path(), &BTreeMap::from([(super::super::logical(UNIT), name.to_string())]), UNIT)
+        .unwrap()
+        .unwrap();
     let plan = declared::plan(&a, [2.3, 48.8, 2.4, 48.9]).unwrap();
     let ids: Vec<&str> = plan.datasets.iter().map(|d| d.id.as_str()).collect();
     assert_eq!(ids, vec!["single", "tiled", "pyramid"]);
@@ -155,7 +208,13 @@ fn what_the_checks_refuse_and_warn_of() {
         ("stray/x.tif", b"II*\0".to_vec()),
         ("spare.geojson", index(&[("https://e.org/a.tif", [2.0, 48.0, 3.0, 49.0])])),
         ("notes.txt", b"hello".to_vec()),
-        ("ngvd.toml", String::from_utf8(decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"")).unwrap().replace("EGM2008", "NGVD29").into_bytes()),
+        (
+            "ngvd.toml",
+            String::from_utf8(decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\""))
+                .unwrap()
+                .replace("EGM2008", "NGVD29")
+                .into_bytes(),
+        ),
     ]);
     let got = f.checks();
     assert_eq!(got, vec![DATA, DECL, MISSING, ORPHAN, ORPHAN, SHAPE, TIE], "{:?}", f.whole());
@@ -171,13 +230,20 @@ fn what_the_checks_refuse_and_warn_of() {
 #[test]
 fn a_stored_dataset_is_measured_from_the_store_alone() {
     let decl_ = decl("", "format = \"geotiff\"\nindex = \"tiled.geojson\"\nstore = true");
-    let ix = index(&[("https://gone.example/z.zip#N48E002.tif", [2.0, 48.0, 3.0, 49.0]), ("https://gone.example/z.zip#N49E002.tif", [2.0, 49.0, 3.0, 50.0])]);
+    let ix = index(&[
+        ("https://gone.example/z.zip#N48E002.tif", [2.0, 48.0, 3.0, 49.0]),
+        ("https://gone.example/z.zip#N49E002.tif", [2.0, 49.0, 3.0, 50.0]),
+    ]);
     let f = Fixture::new(vec![("tiled.toml", decl_.clone()), ("tiled.geojson", ix.clone())]);
     assert!(f.checks().is_empty(), "{:?}", f.whole());
     let m: Measured = serde_json::from_value(f.derive().facts["tiled.toml"].0["measured"].clone()).unwrap();
     assert_eq!(m.crs, Some(4326));
     std::fs::remove_file(f.store.path().join("tiled/N49E002.tif")).unwrap();
-    let g = Fixture { files: f.files.clone(), checks: Elevation { store: Some(f.store.path().to_path_buf()), ..Elevation::new(Arc::new(fetch()), None) }, store: tempfile::tempdir().unwrap() };
+    let g = Fixture {
+        files: f.files.clone(),
+        checks: Elevation { store: Some(f.store.path().to_path_buf()), ..Elevation::new(Arc::new(fetch()), None) },
+        store: tempfile::tempdir().unwrap(),
+    };
     let why: Vec<String> = g.whole().iter().map(|x| format!("{x:?}")).collect();
     assert!(why.iter().any(|w| w.contains("tile N49E002.tif isn't in the store")), "{why:?}");
 }
@@ -207,7 +273,9 @@ format = "geotiff"
 index = "fabdem-tiles.geojson"
 store = true
 "#;
-    let (Some(_), _, dk) = super::super::credits::parse_description("fabdem.toml", FABDEM_TOML.as_bytes()) else { panic!("its description") };
+    let (Some(_), _, dk) = super::super::credits::parse_description("fabdem.toml", FABDEM_TOML.as_bytes()) else {
+        panic!("its description")
+    };
     let d = declared::parse(FABDEM_TOML.as_bytes()).unwrap();
     let data = store::naming::hash16(b"index 2b71fb6f44a2ccff");
     assert_eq!(keyed_with_data(&keyed(&dk, &d), &data), "9cd774557ca47aa0");
@@ -217,14 +285,26 @@ store = true
 fn a_datasets_keyed_digest_names_its_index_and_dropped_files() {
     let ix = |files: &[(&str, [f64; 4])]| index(files);
     let one = [("https://e.org/t/N48E002.tif", [2.0, 48.0, 3.0, 49.0])];
-    let two = [("https://e.org/t/N48E002.tif", [2.0, 48.0, 3.0, 49.0]), ("https://e.org/t/N49E002.tif", [2.0, 49.0, 3.0, 50.0])];
+    let two = [
+        ("https://e.org/t/N48E002.tif", [2.0, 48.0, 3.0, 49.0]),
+        ("https://e.org/t/N49E002.tif", [2.0, 49.0, 3.0, 50.0]),
+    ];
     let keyed_of = |f: &Fixture, p: &str| f.derive().facts[p].1.clone().unwrap();
-    let a = Fixture::new(vec![("tiled.toml", decl("", "format = \"geotiff\"\nindex = \"tiled.geojson\"")), ("tiled.geojson", ix(&one))]);
-    let b = Fixture::new(vec![("tiled.toml", decl("", "format = \"geotiff\"\nindex = \"tiled.geojson\"")), ("tiled.geojson", ix(&two))]);
+    let a = Fixture::new(vec![
+        ("tiled.toml", decl("", "format = \"geotiff\"\nindex = \"tiled.geojson\"")),
+        ("tiled.geojson", ix(&one)),
+    ]);
+    let b = Fixture::new(vec![
+        ("tiled.toml", decl("", "format = \"geotiff\"\nindex = \"tiled.geojson\"")),
+        ("tiled.geojson", ix(&two)),
+    ]);
     assert!(a.checks().is_empty() && b.checks().is_empty(), "{:?}", b.whole());
     // The declaration the same, a tile added to its index: another digest (its units rerun).
     assert_ne!(keyed_of(&a, "tiled.toml"), keyed_of(&b, "tiled.toml"));
-    assert_eq!(a.checks.file("tiled.toml", &a.files["tiled.toml"]).keyed, b.checks.file("tiled.toml", &b.files["tiled.toml"]).keyed);
+    assert_eq!(
+        a.checks.file("tiled.toml", &a.files["tiled.toml"]).keyed,
+        b.checks.file("tiled.toml", &b.files["tiled.toml"]).keyed
+    );
     // Dropped files: one added, or one changed, likewise.
     let d = |files: Vec<(&str, Vec<u8>)>| {
         let mut v = vec![("local.toml", decl("", "format = \"geotiff\"\nfiles = [\"*.tif\"]"))];
@@ -238,7 +318,13 @@ fn a_datasets_keyed_digest_names_its_index_and_dropped_files() {
     let (k1, k2, k3) = (keyed_of(&d1, "local.toml"), keyed_of(&d2, "local.toml"), keyed_of(&d3, "local.toml"));
     assert!(k1 != k2 && k1 != k3 && k2 != k3);
     // A pyramid has no data beyond its declaration: its file check's digest.
-    let p = Fixture::new(vec![("pyramid.toml", decl("territory = \"world\"", "format = \"tiles\"\nurl = \"https://e.org/{z}/{x}/{y}.png\"\nzoom = 12\nencoding = \"terrarium\""))]);
+    let p = Fixture::new(vec![(
+        "pyramid.toml",
+        decl(
+            "territory = \"world\"",
+            "format = \"tiles\"\nurl = \"https://e.org/{z}/{x}/{y}.png\"\nzoom = 12\nencoding = \"terrarium\"",
+        ),
+    )]);
     assert_eq!(Some(keyed_of(&p, "pyramid.toml")), p.checks.file("pyramid.toml", &p.files["pyramid.toml"]).keyed);
 }
 
@@ -259,7 +345,13 @@ fn every_file_without_an_index_is_measured_and_only_its_valid_data_covers() {
 
 #[test]
 fn a_pyramid_of_tiles_not_256_pixels_is_refused() {
-    let f = Fixture::new(vec![("big.toml", decl("territory = \"world\"", "format = \"tiles\"\nurl = \"https://e.org/big/{z}/{x}/{y}.png\"\nzoom = 12\nencoding = \"terrarium\""))]);
+    let f = Fixture::new(vec![(
+        "big.toml",
+        decl(
+            "territory = \"world\"",
+            "format = \"tiles\"\nurl = \"https://e.org/big/{z}/{x}/{y}.png\"\nzoom = 12\nencoding = \"terrarium\"",
+        ),
+    )]);
     let w = f.whole();
     assert_eq!(w.iter().map(|x| x.check()).collect::<Vec<_>>(), vec![DATA]);
     assert!(w[0].message.contains("512 × 512"), "{}", w[0].message);
@@ -271,12 +363,20 @@ const APP: &str = "20261016-1200-abcdef0";
 fn the_switch_names_the_accepted_index_and_a_published_app_only() {
     let mut f = Fixture::new(vec![]);
     f.checks.app = Some(APP.into());
-    let b = f.checks.switch(Path::new("/nonexistent"), "sources/inputs/elevation/@index.0123456789abcdef.json").unwrap().expect("switched at once");
+    let b = f
+        .checks
+        .switch(Path::new("/nonexistent"), "sources/inputs/elevation/@index.0123456789abcdef.json")
+        .unwrap()
+        .expect("switched at once");
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(v, serde_json::json!({ "index": "sources/inputs/elevation/@index.0123456789abcdef.json", "app": APP }));
     // A development build records none: it would bar no app, for good.
     f.checks.app = Some("development".into());
-    assert!(f.checks.switch(Path::new("/nonexistent"), "sources/inputs/elevation/@index.0123456789abcdef.json").unwrap().is_none());
+    assert!(f
+        .checks
+        .switch(Path::new("/nonexistent"), "sources/inputs/elevation/@index.0123456789abcdef.json")
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -293,7 +393,8 @@ fn the_check_job_records_the_switch_once_with_the_first_accepted_index() {
         std::fs::write(dir.join(p), b).unwrap();
         std::fs::File::options().write(true).open(dir.join(p)).unwrap().set_modified(old).unwrap();
     };
-    let manifest = || -> BTreeMap<String, String> { crate::out::read_record(&root.join("state/build/manifest.json")).unwrap() };
+    let manifest =
+        || -> BTreeMap<String, String> { crate::out::read_record(&root.join("state/build/manifest.json")).unwrap() };
     let run = || {
         let mut out = crate::out::Out::unbound(root, &root.join("scratch")).unwrap();
         crate::inputs::gate::run(&mut out, UNIT, false, None).unwrap()

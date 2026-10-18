@@ -107,18 +107,114 @@ fn is_kana(c: char) -> bool {
 /// articles of the coverage's languages (tools/names/check.py's, and the roads' own).
 const OTHER_WORDS: &[&str] = &[
     // French
-    "lac", "lacs", "rivière", "riviere", "fleuve", "ruisseau", "étang", "etang", "baie", "anse", "cap", "pointe", "île", "ile", "îles", "iles", "mont", "monts", "montagne", "col", "pic", "forêt", "foret", "parc", "réserve", "chute", "chutes", "vallée", "vallee", "plage", "marais", "château", "chateau", "église", "eglise", "chapelle", "pont", "gare", "musée", "musee", "moulin", "rue", "chemin", "rang", "côte", "cote", "allée", "allee", "impasse", "de", "du", "des", "la", "le", "les", "aux", "et", "saint", "sainte",
+    "lac", "lacs", "rivière", "riviere", "fleuve", "ruisseau", "étang", "etang", "baie", "anse", "cap", "pointe", "île",
+    "ile", "îles", "iles", "mont", "monts", "montagne", "col", "pic", "forêt", "foret", "parc", "réserve", "chute",
+    "chutes", "vallée", "vallee", "plage", "marais", "château", "chateau", "église", "eglise", "chapelle", "pont",
+    "gare", "musée", "musee", "moulin", "rue", "chemin", "rang", "côte", "cote", "allée", "allee", "impasse", "de",
+    "du", "des", "la", "le", "les", "aux", "et", "saint", "sainte",
     // Spanish, Portuguese, Catalan, Galician
-    "río", "rio", "lago", "laguna", "embalse", "sierra", "monte", "isla", "playa", "parque", "pico", "puerto", "castillo", "iglesia", "puente", "calle", "carrera", "camino", "avenida", "plaza", "del", "el", "los", "las", "y", "lagoa", "serra", "ilha", "praia", "castelo", "igreja", "rua", "estrada", "praça", "da", "do", "dos", "das", "carrer", "riu", "camí", "plaça", "dels", "rúa", "san", "santa", "santo", "são",
+    "río", "rio", "lago", "laguna", "embalse", "sierra", "monte", "isla", "playa", "parque", "pico", "puerto",
+    "castillo", "iglesia", "puente", "calle", "carrera", "camino", "avenida", "plaza", "del", "el", "los", "las", "y",
+    "lagoa", "serra", "ilha", "praia", "castelo", "igreja", "rua", "estrada", "praça", "da", "do", "dos", "das",
+    "carrer", "riu", "camí", "plaça", "dels", "rúa", "san", "santa", "santo", "são",
     // Welsh, Irish, Scottish Gaelic
-    "afon", "llyn", "mynydd", "coed", "eglwys", "ffordd", "heol", "stryd", "lôn", "nant", "pen", "bryn", "cwm", "sliabh", "abhainn", "inis", "oileán", "bóthar", "sráid", "baile", "cnoc", "rathad", "sràid", "beinn", "gleann", "allt", "eilean",
+    "afon", "llyn", "mynydd", "coed", "eglwys", "ffordd", "heol", "stryd", "lôn", "nant", "pen", "bryn", "cwm",
+    "sliabh", "abhainn", "inis", "oileán", "bóthar", "sráid", "baile", "cnoc", "rathad", "sràid", "beinn", "gleann",
+    "allt", "eilean",
 ];
 
 /// Words that mark a Latin-script name as English where English isn't spoken: its articles and
 /// joining words, and the generic words of the names English-language registers and maps give
 /// ("Temples, Gardens and Archaeological Sites", "a Historic International Settlement").
 const ENGLISH_WORDS: &[&str] = &[
-    "the", "of", "and", "in", "on", "at", "lake", "river", "mount", "mountain", "mountains", "island", "islands", "bay", "park", "national", "historic", "historical", "site", "sites", "temple", "temples", "shrine", "garden", "gardens", "castle", "church", "cathedral", "museum", "bridge", "station", "line", "street", "road", "avenue", "tower", "house", "hall", "palace", "ruins", "settlement", "monument", "memorial", "district", "town", "city", "village", "world", "heritage", "international", "archaeological", "falls", "beach", "harbour", "harbor", "port", "trail", "valley", "forest", "reserve", "observatory", "school", "university", "airport", "market", "square", "centre", "center", "building", "estate", "farm", "mill", "lighthouse", "viewpoint", "peak", "hill", "point", "cape", "north", "south", "east", "west", "old", "new", "upper", "lower", "great", "little",
+    "the",
+    "of",
+    "and",
+    "in",
+    "on",
+    "at",
+    "lake",
+    "river",
+    "mount",
+    "mountain",
+    "mountains",
+    "island",
+    "islands",
+    "bay",
+    "park",
+    "national",
+    "historic",
+    "historical",
+    "site",
+    "sites",
+    "temple",
+    "temples",
+    "shrine",
+    "garden",
+    "gardens",
+    "castle",
+    "church",
+    "cathedral",
+    "museum",
+    "bridge",
+    "station",
+    "line",
+    "street",
+    "road",
+    "avenue",
+    "tower",
+    "house",
+    "hall",
+    "palace",
+    "ruins",
+    "settlement",
+    "monument",
+    "memorial",
+    "district",
+    "town",
+    "city",
+    "village",
+    "world",
+    "heritage",
+    "international",
+    "archaeological",
+    "falls",
+    "beach",
+    "harbour",
+    "harbor",
+    "port",
+    "trail",
+    "valley",
+    "forest",
+    "reserve",
+    "observatory",
+    "school",
+    "university",
+    "airport",
+    "market",
+    "square",
+    "centre",
+    "center",
+    "building",
+    "estate",
+    "farm",
+    "mill",
+    "lighthouse",
+    "viewpoint",
+    "peak",
+    "hill",
+    "point",
+    "cape",
+    "north",
+    "south",
+    "east",
+    "west",
+    "old",
+    "new",
+    "upper",
+    "lower",
+    "great",
+    "little",
 ];
 
 /// Whether a name reads as English: Latin letters without accents, and more English words than
@@ -138,7 +234,8 @@ fn reads_english(name: &str, english_spoken: bool) -> bool {
     if latin.chars().any(|c| c.is_alphabetic() && !c.is_ascii()) {
         return false;
     }
-    let words: Vec<String> = latin.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
+    let words: Vec<String> =
+        latin.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
     let other = words.iter().filter(|w| OTHER_WORDS.contains(&w.as_str())).count();
     let english = words.iter().filter(|w| ENGLISH_WORDS.contains(&w.as_str())).count();
     // More English words than another language's ("The Architectural Work of Le Corbusier…");
@@ -188,7 +285,12 @@ impl Lists<'_> {
         }
         // A settlement in Latin script keeps its own name (a well-known English one would be its
         // own English): nothing to ask.
-        if t.kind == Kind::Settlement && !t.name.chars().any(is_cjk) && t.name.chars().all(|c| !c.is_alphabetic() || c.is_ascii() || c.to_lowercase().all(|l| (l as u32) < 0x250)) {
+        if t.kind == Kind::Settlement
+            && !t.name.chars().any(is_cjk)
+            && t.name
+                .chars()
+                .all(|c| !c.is_alphabetic() || c.is_ascii() || c.to_lowercase().all(|l| (l as u32) < 0x250))
+        {
             self.report.settlements += 1;
             return;
         }
@@ -221,24 +323,31 @@ fn path_of(root: &Path, cat: &store::catalog::Catalog, logical: &str) -> Option<
 }
 
 fn sect(path: &Path) -> Result<SectReader<PlainFile>> {
-    SectReader::open(PlainFile::open(path).with_context(|| format!("open {}", path.display()))?).with_context(|| format!("read {}", path.display()))
+    SectReader::open(PlainFile::open(path).with_context(|| format!("open {}", path.display()))?)
+        .with_context(|| format!("read {}", path.display()))
 }
 
 /// The spoken languages the catalog was made with: its `global/spoken` (the `spoken` job's, from
 /// the languages input's accepted version).
 pub fn spoken_for(root: &Path, cat: &store::catalog::Catalog) -> Result<Spoken> {
-    let f = cat.global.get("spoken").and_then(|l| cat.file(l)).context("the catalog has no global/spoken (the spoken job makes it from the languages' accepted version)")?;
+    let f =
+        cat.global.get("spoken").and_then(|l| cat.file(l)).context(
+            "the catalog has no global/spoken (the spoken job makes it from the languages' accepted version)",
+        )?;
     let b = std::fs::read(root.join(&f.file)).with_context(|| format!("read {}", f.file))?;
     Spoken::from_bytes(&b).with_context(|| format!("read {}", f.file))
 }
 
 /// The units' z6 tiles.
 fn unit_tiles(cat: &store::catalog::Catalog) -> HashSet<(u32, u32)> {
-    cat.units.iter().filter_map(|u| {
-        let mut p = u.split('/');
-        (p.next()? == "6").then_some(())?;
-        Some((p.next()?.parse().ok()?, p.next()?.parse().ok()?))
-    }).collect()
+    cat.units
+        .iter()
+        .filter_map(|u| {
+            let mut p = u.split('/');
+            (p.next()? == "6").then_some(())?;
+            Some((p.next()?.parse().ok()?, p.next()?.parse().ok()?))
+        })
+        .collect()
 }
 
 fn tile_of(key: &str) -> Option<(u32, u32)> {
@@ -249,21 +358,36 @@ fn tile_of(key: &str) -> Option<(u32, u32)> {
 
 /// The coverage the catalog records, as shapes for point tests (none: a catalog that records none).
 fn coverage(cat: &store::catalog::Catalog) -> Vec<crate::coverage::Shape> {
-    let regions: Vec<crate::coverage::DrawnRegion> = cat.coverage.get("regions").and_then(|r| serde_json::from_value(r.clone()).ok()).unwrap_or_default();
+    let regions: Vec<crate::coverage::DrawnRegion> =
+        cat.coverage.get("regions").and_then(|r| serde_json::from_value(r.clone()).ok()).unwrap_or_default();
     let e7 = |p: &[f64; 2]| [(p[0] * 1e7).round() as i32, (p[1] * 1e7).round() as i32];
     regions
         .iter()
         .flat_map(|r| r.shapes.iter().map(move |(entry, polys)| (format!("{}: {entry}", r.id), polys)))
         .filter(|(_, polys)| !polys.is_empty())
-        .map(|(source, polys)| crate::coverage::Shape::new(source, polys.iter().flatten().map(|ring| ring.iter().map(e7).collect()).collect(), 0.0))
+        .map(|(source, polys)| {
+            crate::coverage::Shape::new(
+                source,
+                polys.iter().flatten().map(|ring| ring.iter().map(e7).collect()).collect(),
+                0.0,
+            )
+        })
         .collect()
 }
 
 /// Labels: the zoom-12 tiles of the labels layer's hi packs in the units' tiles, the labels inside
 /// the coverage (`cov`; empty: all).
-fn labels(root: &Path, cat: &store::catalog::Catalog, units: &HashSet<(u32, u32)>, cov: &[crate::coverage::Shape], lists: &mut Lists, progress: &dyn Fn(&str, u64, u64)) -> Result<()> {
+fn labels(
+    root: &Path,
+    cat: &store::catalog::Catalog,
+    units: &HashSet<(u32, u32)>,
+    cov: &[crate::coverage::Shape],
+    lists: &mut Lists,
+    progress: &dyn Fn(&str, u64, u64),
+) -> Result<()> {
     let Some(layer) = cat.layers.get("labels") else { return Ok(()) };
-    let packs: Vec<&String> = layer.hi.iter().filter(|(k, _)| tile_of(k).is_some_and(|t| units.contains(&t))).map(|(_, v)| v).collect();
+    let packs: Vec<&String> =
+        layer.hi.iter().filter(|(k, _)| tile_of(k).is_some_and(|t| units.contains(&t))).map(|(_, v)| v).collect();
     let mut seen: HashSet<(u64, u64)> = HashSet::new();
     for (i, logical) in packs.iter().enumerate() {
         progress("label packs read", i as u64, packs.len() as u64);
@@ -277,15 +401,26 @@ fn labels(root: &Path, cat: &store::catalog::Catalog, units: &HashSet<(u32, u32)
             let tile = names::mvt::Tile::decode(&raw)?;
             for l in tile.layers.iter().filter(|l| l.name == "l" && l.extent > 0) {
                 for f in &l.features {
-                    let tags: Vec<(&str, &str)> = f.tags.chunks_exact(2).filter_map(|p| Some((l.keys.get(p[0] as usize)?.as_str(), l.values.get(p[1] as usize)?.as_str()?))).collect();
-                    let num = |k: &str| f.tags.chunks_exact(2).find(|p| l.keys.get(p[0] as usize).is_some_and(|x| x == k)).and_then(|p| match l.values.get(p[1] as usize)? {
-                        names::mvt::Value::Double(v) => Some(*v),
-                        names::mvt::Value::Float(v) => Some(f64::from(*v)),
-                        names::mvt::Value::Int(v) | names::mvt::Value::Sint(v) => Some(*v as f64),
-                        names::mvt::Value::Uint(v) => Some(*v as f64),
-                        _ => None,
-                    });
-                    let get = |k: &str| tags.iter().find(|(key, _)| *key == k).map(|(_, v)| *v).filter(|v| !v.is_empty());
+                    let tags: Vec<(&str, &str)> = f
+                        .tags
+                        .chunks_exact(2)
+                        .filter_map(|p| {
+                            Some((l.keys.get(p[0] as usize)?.as_str(), l.values.get(p[1] as usize)?.as_str()?))
+                        })
+                        .collect();
+                    let num = |k: &str| {
+                        f.tags.chunks_exact(2).find(|p| l.keys.get(p[0] as usize).is_some_and(|x| x == k)).and_then(
+                            |p| match l.values.get(p[1] as usize)? {
+                                names::mvt::Value::Double(v) => Some(*v),
+                                names::mvt::Value::Float(v) => Some(f64::from(*v)),
+                                names::mvt::Value::Int(v) | names::mvt::Value::Sint(v) => Some(*v as f64),
+                                names::mvt::Value::Uint(v) => Some(*v as f64),
+                                _ => None,
+                            },
+                        )
+                    };
+                    let get =
+                        |k: &str| tags.iter().find(|(key, _)| *key == k).map(|(_, v)| *v).filter(|v| !v.is_empty());
                     let (Some(name), Some((px, py))) = (get("n"), f.first_point()) else { continue };
                     let h = {
                         use std::hash::{Hash, Hasher};
@@ -296,7 +431,8 @@ fn labels(root: &Path, cat: &store::catalog::Catalog, units: &HashSet<(u32, u32)
                     if !seen.insert((f.id.unwrap_or(u64::MAX), h)) {
                         continue;
                     }
-                    let (lon, lat) = names::mvt::tile_to_lonlat(u32::from(z), x, y, l.extent, f64::from(px), f64::from(py));
+                    let (lon, lat) =
+                        names::mvt::tile_to_lonlat(u32::from(z), x, y, l.extent, f64::from(px), f64::from(py));
                     let p = [(lon * 1e7).round() as i32, (lat * 1e7).round() as i32];
                     if !cov.is_empty() && !cov.iter().any(|s| s.inside(p)) {
                         continue;
@@ -312,7 +448,16 @@ fn labels(root: &Path, cat: &store::catalog::Catalog, units: &HashSet<(u32, u32)
                         _ => 30.0 + s,
                     };
                     let id = get("o").map_or_else(|| format!("label {}", f.id.unwrap_or(0)), str::to_owned);
-                    lists.add(Thing { name, kind, own, osm: names::own::osm_langs(name, &tags), lon, lat, id, priority });
+                    lists.add(Thing {
+                        name,
+                        kind,
+                        own,
+                        osm: names::own::osm_langs(name, &tags),
+                        lon,
+                        lat,
+                        id,
+                        priority,
+                    });
                 }
             }
         }
@@ -336,7 +481,12 @@ fn road_priority(c: u8) -> f64 {
 
 /// Roads and rail lines: each unit's named ways, then placed by their boxes in the hidata's
 /// ways-here index (each way once: its first tile's record).
-fn roads(root: &Path, cat: &store::catalog::Catalog, lists: &mut Lists, progress: &dyn Fn(&str, u64, u64)) -> Result<()> {
+fn roads(
+    root: &Path,
+    cat: &store::catalog::Catalog,
+    lists: &mut Lists,
+    progress: &dyn Fn(&str, u64, u64),
+) -> Result<()> {
     /// One unit's ways, by index: their names (into `strings`), classes, ids, own English, and
     /// whether placed yet.
     struct UnitWays {
@@ -352,7 +502,8 @@ fn roads(root: &Path, cat: &store::catalog::Catalog, lists: &mut Lists, progress
         let (Some(path), Some(u)) = (path_of(root, cat, logical), crate::legacy::Unit::parse(unit)) else { continue };
         let s = sect(&path)?;
         let ways: Vec<WayRec> = s.read_pod("ways")?;
-        let strings: Vec<String> = String::from_utf8_lossy(&s.read("strings")?).split('\n').map(str::to_owned).collect();
+        let strings: Vec<String> =
+            String::from_utf8_lossy(&s.read("strings")?).split('\n').map(str::to_owned).collect();
         let roaden: HashMap<String, String> = path_of(root, cat, &format!("global/roaden/{}", unit.replace('/', "-")))
             .and_then(|p| std::fs::read(p).ok())
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -433,20 +584,36 @@ fn described(accepted: &crate::inputs::Accepted) -> Result<HashSet<String>> {
 /// The translations' accepted files as the tables read them: by drop-box path, the copy and its
 /// content name.
 pub fn translation_files(accepted: &crate::inputs::Accepted) -> BTreeMap<String, (PathBuf, String)> {
-    accepted.files().filter(|(p, _)| p.ends_with(".jsonl")).map(|(p, path)| (p.clone(), (path, accepted.index.files[p].file.clone()))).collect()
+    accepted
+        .files()
+        .filter(|(p, _)| p.ends_with(".jsonl"))
+        .map(|(p, path)| (p.clone(), (path, accepted.index.files[p].file.clone())))
+        .collect()
 }
 
 /// An English Wikipedia article's title, from a record's tags (`wikipedia` "en:…", Wikidata's
 /// `w_en`, the popup's `wiki`).
 fn enwiki(info: &Value) -> Option<String> {
     let s = |v: Option<&Value>| v.and_then(Value::as_str).filter(|x| !x.is_empty()).map(str::to_owned);
-    s(info.get("wikipedia")).and_then(|w| w.strip_prefix("en:").map(str::to_owned))
+    s(info.get("wikipedia"))
+        .and_then(|w| w.strip_prefix("en:").map(str::to_owned))
         .or_else(|| s(info.pointer("/wd/w_en")))
-        .or_else(|| (info.pointer("/wiki/lang").and_then(Value::as_str) == Some("en")).then(|| s(info.pointer("/wiki/title"))).flatten())
+        .or_else(|| {
+            (info.pointer("/wiki/lang").and_then(Value::as_str) == Some("en"))
+                .then(|| s(info.pointer("/wiki/title")))
+                .flatten()
+        })
 }
 
 /// The landmarks: names on the lists, and the descriptions wanted.
-fn landmarks(root: &Path, cat: &store::catalog::Catalog, lists: &mut Lists, done: &HashSet<String>, want: &mut Vec<Wanted>, progress: &dyn Fn(&str, u64, u64)) -> Result<()> {
+fn landmarks(
+    root: &Path,
+    cat: &store::catalog::Catalog,
+    lists: &mut Lists,
+    done: &HashSet<String>,
+    want: &mut Vec<Wanted>,
+    progress: &dyn Fn(&str, u64, u64),
+) -> Result<()> {
     let n = cat.markdata.len() as u64;
     for (i, logical) in cat.markdata.values().enumerate() {
         progress("landmark tiles read", i as u64, n);
@@ -456,13 +623,28 @@ fn landmarks(root: &Path, cat: &store::catalog::Catalog, lists: &mut Lists, done
         let blocks = |name: &str, idx: &str| -> Result<Vec<Vec<u8>>> {
             let data = s.read(name)?;
             let idx: Vec<[u64; 2]> = s.read_pod(idx)?;
-            idx.iter().map(|[o, l]| Ok(zstd::bulk::decompress(data.get(*o as usize..(*o + *l) as usize).context("a block past the end")?, 64 << 20)?)).collect()
+            idx.iter()
+                .map(|[o, l]| {
+                    Ok(zstd::bulk::decompress(
+                        data.get(*o as usize..(*o + *l) as usize).context("a block past the end")?,
+                        64 << 20,
+                    )?)
+                })
+                .collect()
         };
         let (props, info) = (blocks("props", "props_idx")?, blocks("info", "info_idx")?);
         for (k, p) in pts.iter().enumerate() {
             let (b, j) = (k / crate::marks::BLOCK, k % crate::marks::BLOCK);
-            let pr: Value = props.get(b).and_then(|b| crate::marks::object(b, j).ok()).and_then(|o| serde_json::from_slice(o).ok()).unwrap_or(Value::Null);
-            let inf: Value = info.get(b).and_then(|b| crate::marks::object(b, j).ok()).and_then(|o| serde_json::from_slice(o).ok()).unwrap_or(Value::Null);
+            let pr: Value = props
+                .get(b)
+                .and_then(|b| crate::marks::object(b, j).ok())
+                .and_then(|o| serde_json::from_slice(o).ok())
+                .unwrap_or(Value::Null);
+            let inf: Value = info
+                .get(b)
+                .and_then(|b| crate::marks::object(b, j).ok())
+                .and_then(|o| serde_json::from_slice(o).ok())
+                .unwrap_or(Value::Null);
             let name = pr.get("name").and_then(Value::as_str).unwrap_or("");
             if name.is_empty() {
                 continue;
@@ -524,7 +706,10 @@ fn areas(root: &Path, cat: &store::catalog::Catalog, done: &HashSet<String>, wan
         }
         let recs = s.read("parks.recs")?;
         for v in serde_json::Deserializer::from_slice(&recs).into_iter::<Value>().flatten() {
-            let (Some(name), Some(osm)) = (v.get("name").and_then(Value::as_str), v.get("osm").and_then(Value::as_str)) else { continue };
+            let (Some(name), Some(osm)) = (v.get("name").and_then(Value::as_str), v.get("osm").and_then(Value::as_str))
+            else {
+                continue;
+            };
             if !seen.insert(osm.to_owned()) {
                 continue;
             }
@@ -572,7 +757,13 @@ fn put(path: &Path, bytes: &[u8]) -> Result<()> {
 /// Makes the lists from the newest catalog under `root` into `out` (the translations' and the
 /// descriptions' `todo/` under it: the root itself for the job, a scratch folder to look first),
 /// with the accepted versions of the translations and the descriptions the agent names.
-pub fn run(root: &Path, out: &Path, translations: &crate::inputs::Accepted, descriptions: &crate::inputs::Accepted, progress: &dyn Fn(&str, u64, u64)) -> Result<Report> {
+pub fn run(
+    root: &Path,
+    out: &Path,
+    translations: &crate::inputs::Accepted,
+    descriptions: &crate::inputs::Accepted,
+    progress: &dyn Fn(&str, u64, u64),
+) -> Result<Report> {
     use crate::timings::{phase, Class};
     let p = phase("the catalog, the languages spoken and the translations read", Class::NasRead);
     let cat = store::catalog::latest(&root.join("catalog"))?.context("no catalog")?;
@@ -613,7 +804,13 @@ pub fn run(root: &Path, out: &Path, translations: &crate::inputs::Accepted, desc
     let mut written = HashSet::new();
     for (lang, mut es) in by_lang {
         let pri = |e: &Entry| e.best + (e.things as f64).log10();
-        es.sort_by(|a, b| pri(&b.2).total_cmp(&pri(&a.2)).then(b.2.things.cmp(&a.2.things)).then_with(|| a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
+        es.sort_by(|a, b| {
+            pri(&b.2)
+                .total_cmp(&pri(&a.2))
+                .then(b.2.things.cmp(&a.2.things))
+                .then_with(|| a.0.cmp(&b.0))
+                .then(a.1.cmp(&b.1))
+        });
         let mut text = String::new();
         for (n, k, e) in &es {
             let line = json!({
@@ -692,22 +889,47 @@ mod tests {
 
     fn spoken() -> Spoken {
         let p = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
-        let rect = |code: &str, w: f64, s: f64, e: f64, n: f64| names::spoken::Area { code: code.into(), area_km2: (e - w) * (n - s), polygons: vec![vec![vec![p(w, s), p(e, s), p(e, n), p(w, n)]]] };
+        let rect = |code: &str, w: f64, s: f64, e: f64, n: f64| names::spoken::Area {
+            code: code.into(),
+            area_km2: (e - w) * (n - s),
+            polygons: vec![vec![vec![p(w, s), p(e, s), p(e, n), p(w, n)]]],
+        };
         let table = names::Table::parse("JP\tja\nFR\tfr\nCA\ten,fr\nCA-QC\tfr,en\n");
-        Spoken::build(&table, [rect("JP", 128.0, 30.0, 146.0, 46.0), rect("FR", -5.0, 42.0, 8.0, 51.0), rect("CA", -80.0, 42.0, -60.0, 60.0), rect("CA-QC", -75.0, 45.0, -65.0, 55.0)])
+        Spoken::build(
+            &table,
+            [
+                rect("JP", 128.0, 30.0, 146.0, 46.0),
+                rect("FR", -5.0, 42.0, 8.0, 51.0),
+                rect("CA", -80.0, 42.0, -60.0, 60.0),
+                rect("CA-QC", -75.0, 45.0, -65.0, 55.0),
+            ],
+        )
     }
 
     #[test]
     fn what_goes_on_the_lists() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("0-converted")).unwrap();
-        std::fs::write(dir.path().join("0-converted/x.jsonl"), "{\"n\": \"Lac Bleu\", \"kind\": \"other\", \"langs\": \"fr\", \"sub\": \"Blue Lake\"}\n").unwrap();
+        std::fs::write(
+            dir.path().join("0-converted/x.jsonl"),
+            "{\"n\": \"Lac Bleu\", \"kind\": \"other\", \"langs\": \"fr\", \"sub\": \"Blue Lake\"}\n",
+        )
+        .unwrap();
         let f = std::fs::File::options().write(true).open(dir.path().join("0-converted/x.jsonl")).unwrap();
         f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60)).unwrap();
         let names = Names::load(dir.path()).unwrap();
         let sp = spoken();
         let mut l = Lists { names: &names, spoken: &sp, entries: HashMap::new(), report: Report::default() };
-        let t = |name: &'static str, kind, own, osm: &[&str], lon, lat, pr| Thing { name, kind, own, osm: osm.iter().filter_map(|x| Lang::parse(x)).collect(), lon, lat, id: format!("n{}", name.len()), priority: pr };
+        let t = |name: &'static str, kind, own, osm: &[&str], lon, lat, pr| Thing {
+            name,
+            kind,
+            own,
+            osm: osm.iter().filter_map(|x| Lang::parse(x)).collect(),
+            lon,
+            lat,
+            id: format!("n{}", name.len()),
+            priority: pr,
+        };
         l.add(t("Lac Bleu", Kind::Other, false, &[], 2.0, 46.0, 30.0)); // a line
         l.add(t("Lac Noir", Kind::Other, true, &[], 2.0, 46.0, 30.0)); // its own English
         l.add(t("Lac Noir", Kind::Other, false, &[], 2.0, 46.0, 31.0));

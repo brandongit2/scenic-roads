@@ -30,7 +30,12 @@ pub const MOST: usize = 3;
 /// Blocks named `8/x/y,…`.
 pub fn parse_blocks(s: &str) -> Result<Vec<(u32, u32)>> {
     s.split(',')
-        .map(|b| crate::legacy::Unit::parse(b.trim()).filter(|u| u.z == ZBLOCK).map(|u| (u.x, u.y)).with_context(|| format!("not a zoom-8 block: {b}")))
+        .map(|b| {
+            crate::legacy::Unit::parse(b.trim())
+                .filter(|u| u.z == ZBLOCK)
+                .map(|u| (u.x, u.y))
+                .with_context(|| format!("not a zoom-8 block: {b}"))
+        })
         .collect()
 }
 
@@ -82,7 +87,11 @@ fn row_box(row: &[(u32, u32)]) -> [f64; 4] {
 
 /// The canopy squares of `there` that a row's blocks meet.
 pub fn row_squares(row: &[(u32, u32)], there: &[(i32, i32)]) -> Vec<(i32, i32)> {
-    let mut v: Vec<(i32, i32)> = row.iter().flat_map(|&(x, y)| super::squares_of(super::tile_bounds(ZBLOCK, x, y))).filter(|s| there.contains(s)).collect();
+    let mut v: Vec<(i32, i32)> = row
+        .iter()
+        .flat_map(|&(x, y)| super::squares_of(super::tile_bounds(ZBLOCK, x, y)))
+        .filter(|s| there.contains(s))
+        .collect();
     v.sort_unstable();
     v.dedup();
     v
@@ -103,7 +112,11 @@ pub fn cut_coverage(json: &str, b: [f64; 4]) -> Result<String> {
         }
         w <= b[2] + MARGIN && e >= b[0] - MARGIN && s <= b[3] + MARGIN && n >= b[1] - MARGIN
     };
-    let kept: Vec<Vec<&serde_json::Value>> = shapes.iter().map(|rings| rings.as_array().into_iter().flatten().filter(|r| meets(r)).collect()).filter(|r: &Vec<_>| !r.is_empty()).collect();
+    let kept: Vec<Vec<&serde_json::Value>> = shapes
+        .iter()
+        .map(|rings| rings.as_array().into_iter().flatten().filter(|r| meets(r)).collect())
+        .filter(|r: &Vec<_>| !r.is_empty())
+        .collect();
     Ok(serde_json::to_string(&serde_json::json!({ "shapes": kept }))?)
 }
 
@@ -120,9 +133,33 @@ pub fn cut(coverage: &str, row: &[(u32, u32)], root: &Path) -> Result<BTreeMap<S
 /// A row's task spec (the shape of a tail's, crate::offload): the program `trees --blocks` over its
 /// folder, the squares where they lie; `unit` its first block (what its cost is kept under), and
 /// its blocks.
-pub fn spec(row: &[(u32, u32)], squares: &[(i32, i32)], version: &str, inputs: &BTreeMap<String, u64>) -> serde_json::Value {
-    let args = ["--blocks", &blocks_arg(row), "--coverage", &format!("{{dir}}/{COVERAGE}"), "--chm", "{chm}", "--leaf", "{sources}/trees/leaf", "--squares", &squares_arg(squares), "--out", "{dir}"];
-    let run = crate::unit::Run { what: KIND.into(), prog: "trees".into(), args: args.iter().map(|a| a.to_string()).collect(), env: vec![], reads: vec![format!("{{dir}}/{COVERAGE}")] };
+pub fn spec(
+    row: &[(u32, u32)],
+    squares: &[(i32, i32)],
+    version: &str,
+    inputs: &BTreeMap<String, u64>,
+) -> serde_json::Value {
+    let args = [
+        "--blocks",
+        &blocks_arg(row),
+        "--coverage",
+        &format!("{{dir}}/{COVERAGE}"),
+        "--chm",
+        "{chm}",
+        "--leaf",
+        "{sources}/trees/leaf",
+        "--squares",
+        &squares_arg(squares),
+        "--out",
+        "{dir}",
+    ];
+    let run = crate::unit::Run {
+        what: KIND.into(),
+        prog: "trees".into(),
+        args: args.iter().map(|a| a.to_string()).collect(),
+        env: vec![],
+        reads: vec![format!("{{dir}}/{COVERAGE}")],
+    };
     let list: Vec<serde_json::Value> = inputs.iter().map(|(p, n)| serde_json::json!([p, n])).collect();
     let first = row.first().map(|(x, y)| format!("{ZBLOCK}/{x}/{y}")).unwrap_or_default();
     serde_json::json!({ "unit": first, "blocks": blocks_arg(row), "version": version, "runs": [run], "inputs": list, "places": crate::offload::places() })
@@ -148,8 +185,12 @@ pub fn read_block(dir: &Path, (bx, by): (u32, u32)) -> Result<(Vec<Tile>, Vec<u8
         let mut e = a.entries().to_vec();
         e.sort_unstable_by_key(|e| e.offset);
         for e in e {
-            let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
-            ensure!((ZBLOCK..=ZMAX).contains(&z) && (x >> (z - ZBLOCK), y >> (z - ZBLOCK)) == (bx, by), "block 8/{bx}/{by}'s {l} tiles hold {z}/{x}/{y}");
+            let (z, x, y) =
+                ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+            ensure!(
+                (ZBLOCK..=ZMAX).contains(&z) && (x >> (z - ZBLOCK), y >> (z - ZBLOCK)) == (bx, by),
+                "block 8/{bx}/{by}'s {l} tiles hold {z}/{x}/{y}"
+            );
             tiles.push(Tile { layer: i as u8, z, x, y, webp: a.get_entry(&e).to_vec() });
         }
     }
@@ -199,9 +240,24 @@ impl<'a> Offers<'a> {
     /// Offers some of piece `piece`'s rows (its blocks `blocks`, the canopy squares there `there`,
     /// its coverage's JSON `coverage`), results under `dir`, while workers that take them are
     /// around: none without `offload`.
-    pub fn offer(offload: Option<&'a Offload>, piece: (u32, u32), coverage: &str, blocks: &[(u32, u32)], there: &[(i32, i32)], dir: &Path) -> Offers<'a> {
+    pub fn offer(
+        offload: Option<&'a Offload>,
+        piece: (u32, u32),
+        coverage: &str,
+        blocks: &[(u32, u32)],
+        there: &[(i32, i32)],
+        dir: &Path,
+    ) -> Offers<'a> {
         let threads = rayon::current_num_threads().max(1);
-        let mut o = Offers { offload, piece, dir: dir.to_path_buf(), out: Default::default(), of: BTreeMap::new(), here: Default::default(), threads };
+        let mut o = Offers {
+            offload,
+            piece,
+            dir: dir.to_path_buf(),
+            out: Default::default(),
+            of: BTreeMap::new(),
+            here: Default::default(),
+            threads,
+        };
         let Some(off) = offload else { return o };
         std::fs::remove_dir_all(dir).ok();
         let rows = rows_of(blocks);
@@ -215,7 +271,14 @@ impl<'a> Offers<'a> {
                 // row, as many at once as there are threads, over the row's own run here.)
                 let at = blocks.iter().position(|b| *b == row[0]).unwrap_or(0) as f64;
                 let ahead = (at / threads as f64) / (row.len() as f64 / row.len().min(threads).max(1) as f64);
-                off.offer_spec_ahead(KIND, spec(row, &sq, off.version(), &inputs), &root, inputs, mem_mb(row.len()), Some(ahead))
+                off.offer_spec_ahead(
+                    KIND,
+                    spec(row, &sq, off.version(), &inputs),
+                    &root,
+                    inputs,
+                    mem_mb(row.len()),
+                    Some(ahead),
+                )
             })();
             match offered {
                 Ok(t) => {
@@ -225,7 +288,12 @@ impl<'a> Offers<'a> {
                     o.out.get_mut().unwrap().insert(row[0], (t, row.clone()));
                 }
                 Err(e) => {
-                    eprintln!("trees 6/{}/{}: row {} not offered ({e:#}); made here", piece.0, piece.1, blocks_arg(row));
+                    eprintln!(
+                        "trees 6/{}/{}: row {} not offered ({e:#}); made here",
+                        piece.0,
+                        piece.1,
+                        blocks_arg(row)
+                    );
                     break;
                 }
             }
@@ -332,7 +400,10 @@ impl<'a> Offers<'a> {
 
 /// The inputs a piece's run reads its rows with here: `inp`'s (the canopy squares in this Mac's
 /// cache) with the squares found there.
-pub fn here_run<'a>(shapes: &'a mask::Shapes, inp: &'a Inputs<'a>) -> impl Fn(&[(u32, u32)], &Path) -> Result<()> + Sync + 'a {
+pub fn here_run<'a>(
+    shapes: &'a mask::Shapes,
+    inp: &'a Inputs<'a>,
+) -> impl Fn(&[(u32, u32)], &Path) -> Result<()> + Sync + 'a {
     move |row: &[(u32, u32)], out: &Path| super::blocks_files(shapes, inp, row, out).map(|_| ())
 }
 
@@ -340,8 +411,8 @@ pub fn here_run<'a>(shapes: &'a mask::Shapes, inp: &'a Inputs<'a>) -> impl Fn(&[
 mod tests {
     use super::*;
     use crate::coord::client::Client;
+    use crate::trees::{block_files as one_block, blocks_files, mask::Shapes, tests::squares_dir, Run, Source, MID};
     use std::sync::{Arc, Mutex};
-    use crate::trees::{blocks_files, block_files as one_block, mask::Shapes, tests::squares_dir, Run, Source, MID};
 
     /// Over blocks 8/132–133, rows 88 and 89: two rows of two in piece 6/33/22, the squares'
     /// data in 8/132/88.
@@ -353,7 +424,13 @@ mod tests {
         let o = tempfile::tempdir().unwrap();
         let shapes = Shapes::parse(COV).unwrap();
         let fetch = crate::fetch::MapFetch::default();
-        let inp = Inputs { chm: Source::Dir(d.path().into()), leaf: Source::Dir(d.path().into()), fetch: &fetch, record: None, there: Some(vec![(50, 0)]) };
+        let inp = Inputs {
+            chm: Source::Dir(d.path().into()),
+            leaf: Source::Dir(d.path().into()),
+            fetch: &fetch,
+            record: None,
+            there: Some(vec![(50, 0)]),
+        };
         let row = [(132, 88), (133, 88)];
         let pool = |n: usize| rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
         pool(1).install(|| blocks_files(&shapes, &inp, &row, &o.path().join("one"))).unwrap();
@@ -363,7 +440,13 @@ mod tests {
             let alone = o.path().join(format!("alone-{}", b.0));
             one_block(&shapes, &inp, b.0, b.1, &alone).unwrap();
             for f in block_files() {
-                assert_eq!(std::fs::read(block_dir(&o.path().join("one"), b).join(&f)).unwrap(), std::fs::read(alone.join(&f)).unwrap(), "{f} of 8/{}/{}", b.0, b.1);
+                assert_eq!(
+                    std::fs::read(block_dir(&o.path().join("one"), b).join(&f)).unwrap(),
+                    std::fs::read(alone.join(&f)).unwrap(),
+                    "{f} of 8/{}/{}",
+                    b.0,
+                    b.1
+                );
             }
             assert!(!read_block(&alone, b).unwrap().0.is_empty() || b != (132, 88));
             assert!(read_block(&alone, (b.0 + 1, b.1)).is_err(), "another block's");
@@ -372,7 +455,10 @@ mod tests {
         let gone = Inputs { there: Some(vec![(50, 0), (50, 10)]), chm: Source::Dir(o.path().join("none")), ..inp };
         assert!(blocks_files(&shapes, &gone, &row, &o.path().join("x")).is_err());
         // The rows, the coverage cut to one, its squares, the program's arguments read back.
-        assert_eq!(rows_of(&[(132, 88), (132, 89), (133, 88), (133, 89)]), [vec![(132, 88), (133, 88)], vec![(132, 89), (133, 89)]]);
+        assert_eq!(
+            rows_of(&[(132, 88), (132, 89), (133, 88), (133, 89)]),
+            [vec![(132, 88), (133, 88)], vec![(132, 89), (133, 89)]]
+        );
         let cut = cut_coverage(COV, row_box(&row)).unwrap();
         assert_eq!(Shapes::parse(&cut).unwrap().shapes.len(), 1, "the far shape goes");
         assert_eq!(row_squares(&row, &[(50, 0), (50, 10), (60, 0)]), [(50, 0)]);
@@ -384,13 +470,31 @@ mod tests {
     /// Piece 6/33/22's run in `dir/out`, with `offload`.
     fn piece(d: &Path, sq: &Path, out: &str, offload: Option<&Offload>) {
         std::fs::write(d.join("cov.json"), COV).unwrap();
-        let a = Run { tile: (6, 33, 22), coverage: d.join("cov.json"), chm: sq.into(), chm_store: d.join("store"), sources: crate::trees::tests::sources_file(d), leaf: sq.into(), out: d.join(out), dem: d.into() };
-        rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap().install(|| super::super::z6_with(&a, offload)).unwrap();
+        let a = Run {
+            tile: (6, 33, 22),
+            coverage: d.join("cov.json"),
+            chm: sq.into(),
+            chm_store: d.join("store"),
+            sources: crate::trees::tests::sources_file(d),
+            leaf: sq.into(),
+            out: d.join(out),
+            dem: d.into(),
+        };
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(|| super::super::z6_with(&a, offload))
+            .unwrap();
     }
 
     /// Whether two pieces' runs wrote the same bytes.
     fn same_piece(a: &Path, b: &Path) -> bool {
-        LAYERS.iter().map(|l| format!("trees-{l}.tiles")).chain([MID.to_string()]).all(|f| std::fs::read(a.join(&f)).unwrap() == std::fs::read(b.join(&f)).unwrap())
+        LAYERS
+            .iter()
+            .map(|l| format!("trees-{l}.tiles"))
+            .chain([MID.to_string()])
+            .all(|f| std::fs::read(a.join(&f)).unwrap() == std::fs::read(b.join(&f)).unwrap())
     }
 
     /// A coordinator on a virtual clock, and the clock: the job's waits are counted in it, and a
@@ -406,12 +510,22 @@ mod tests {
     /// row and, given one, runs the program's code over it as `trees --blocks` does (its squares in
     /// `sq`), sends what it wrote (`spoil`: a tile spoilt first), done; or, `hold`, holds it and
     /// never says. The task it was given, once it was.
-    fn worker(clock: &store::clock::Virtual, url: &str, token: &str, name: &str, sq: PathBuf, home: PathBuf, spoil: bool, hold: bool) -> Arc<Mutex<Option<serde_json::Value>>> {
+    fn worker(
+        clock: &store::clock::Virtual,
+        url: &str,
+        token: &str,
+        name: &str,
+        sq: PathBuf,
+        home: PathBuf,
+        spoil: bool,
+        hold: bool,
+    ) -> Arc<Mutex<Option<serde_json::Value>>> {
         let m = Client::at(vec![url.to_string()], token.to_string(), name);
         let given = Arc::new(Mutex::new(None));
         let slot = given.clone();
         clock.after(std::time::Duration::from_secs(1), move || {
-            let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
+            let ask =
+                crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
             let Some(g) = m.ask(&ask).unwrap() else { return };
             let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
             *slot.lock().unwrap() = Some(task.clone());
@@ -424,11 +538,28 @@ mod tests {
                 let p = i[0].as_str().unwrap();
                 std::fs::write(home.join(p), m.get_bytes(&format!("/work/in/{}/{p}", g.lease)).unwrap()).unwrap();
             }
-            let args: Vec<String> = task["runs"][0]["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().replace("{dir}", &u.to_string_lossy()).replace("{sources}/trees/leaf", &sq.to_string_lossy()).replace("{chm}", &sq.to_string_lossy())).collect();
+            let args: Vec<String> = task["runs"][0]["args"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| {
+                    a.as_str()
+                        .unwrap()
+                        .replace("{dir}", &u.to_string_lossy())
+                        .replace("{sources}/trees/leaf", &sq.to_string_lossy())
+                        .replace("{chm}", &sq.to_string_lossy())
+                })
+                .collect();
             let arg = |k: &str| args[args.iter().position(|a| a == k).unwrap() + 1].clone();
             let shapes = Shapes::parse(&std::fs::read_to_string(arg("--coverage")).unwrap()).unwrap();
             let fetch = crate::fetch::MapFetch::default();
-            let inp = Inputs { chm: Source::Dir(arg("--chm").into()), leaf: Source::Dir(arg("--leaf").into()), fetch: &fetch, record: None, there: Some(parse_squares(&arg("--squares")).unwrap()) };
+            let inp = Inputs {
+                chm: Source::Dir(arg("--chm").into()),
+                leaf: Source::Dir(arg("--leaf").into()),
+                fetch: &fetch,
+                record: None,
+                there: Some(parse_squares(&arg("--squares")).unwrap()),
+            };
             let row = parse_blocks(&arg("--blocks")).unwrap();
             blocks_files(&shapes, &inp, &row, Path::new(&arg("--out"))).unwrap();
             let mut outputs = Vec::new();
@@ -459,7 +590,8 @@ mod tests {
         let (c, url, clock) = coordinator(p);
         let o = Offload::at(url.clone(), c.job_token.clone(), &p.join("job")).clock(clock.clone());
         let tok = c.contact.token.clone();
-        let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
+        let ask =
+            crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
         // No worker around: nothing offered, the same piece.
         piece(p, sq.path(), "none", Some(&o));
         assert!(same_piece(&p.join("alone"), &p.join("none")));
@@ -475,7 +607,9 @@ mod tests {
             s.workers.get_mut("m1").unwrap().checked = 3;
         }
         // (Waited on until it's back, here and below: this is the exchange, not the waiting rule.)
-        let patient = Offload::at(url.clone(), c.job_token.clone(), &p.join("job-patient")).waiting(crate::offload::Waiting::UntilDone).clock(clock.clone());
+        let patient = Offload::at(url.clone(), c.job_token.clone(), &p.join("job-patient"))
+            .waiting(crate::offload::Waiting::UntilDone)
+            .clock(clock.clone());
         let w = worker(&clock, &url, &tok, "m1", sq.path().into(), p.join("m1"), false, false);
         piece(p, sq.path(), "taken", Some(&patient));
         let task = w.lock().unwrap().take().expect("it was given the row");
@@ -514,7 +648,8 @@ mod tests {
         let (c, url, clock) = coordinator(p);
         let o = Offload::at(url.clone(), c.job_token.clone(), &p.join("job")).clock(clock.clone());
         let tok = c.contact.token.clone();
-        let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
+        let ask =
+            crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
         // A page measured slower than this Mac, asking: never given the row, never waited for.
         let slow = Client::at(vec![url.clone()], tok.clone(), "slow");
         assert!(slow.ask(&ask).unwrap().is_none());
@@ -532,7 +667,11 @@ mod tests {
         let w = worker(&clock, &url, &tok, "new", sq.path().into(), p.join("new"), false, true);
         piece(p, sq.path(), "held", Some(&o));
         assert!(w.lock().unwrap().is_some(), "it took the row");
-        assert_eq!(clock.slept(), (1, std::time::Duration::from_secs(1)), "a moment for it to take it, then raced at once");
+        assert_eq!(
+            clock.slept(),
+            (1, std::time::Duration::from_secs(1)),
+            "a moment for it to take it, then raced at once"
+        );
         assert!(same_piece(&p.join("alone"), &p.join("held")));
         let s = c.shared.lock().unwrap();
         assert!(s.tasks.by_id.values().all(|t| t.measuring.is_some()), "kept only to measure it");

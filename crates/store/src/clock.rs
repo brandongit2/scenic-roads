@@ -160,8 +160,14 @@ mod tests {
         }
         assert_eq!(c.now(), t0);
         c.sleep(Duration::from_secs(5));
-        assert_eq!((c.now() - t0, c.wall().duration_since(w0).unwrap()), (Duration::from_secs(5), Duration::from_secs(5)));
-        assert_eq!(*seen.lock().unwrap(), [("a", Duration::from_secs(1)), ("b", Duration::from_secs(1)), ("c", Duration::from_secs(3))]);
+        assert_eq!(
+            (c.now() - t0, c.wall().duration_since(w0).unwrap()),
+            (Duration::from_secs(5), Duration::from_secs(5))
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [("a", Duration::from_secs(1)), ("b", Duration::from_secs(1)), ("c", Duration::from_secs(3))]
+        );
         // An event may set another, which runs in its turn.
         let c2 = c.clone();
         let s = seen.clone();

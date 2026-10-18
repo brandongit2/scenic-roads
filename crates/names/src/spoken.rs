@@ -129,7 +129,11 @@ pub fn lookup_order(osm: &[Lang], here: &[Lang]) -> Vec<Lang> {
         .map(|&l| {
             READ_AS
                 .iter()
-                .find(|(from, to)| Lang::parse(from) == Some(l) && Lang::parse(to).is_some_and(|t| here.contains(&t)) && !here.contains(&l))
+                .find(|(from, to)| {
+                    Lang::parse(from) == Some(l)
+                        && Lang::parse(to).is_some_and(|t| here.contains(&t))
+                        && !here.contains(&l)
+                })
                 .and_then(|(_, to)| Lang::parse(to))
                 .unwrap_or(l)
         })
@@ -172,7 +176,11 @@ pub struct Spoken {
 
 impl fmt::Debug for Spoken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Spoken").field("regions", &self.regions.len()).field("runs", &self.runs.len()).field("version", &format_args!("{:016x}", self.version)).finish()
+        f.debug_struct("Spoken")
+            .field("regions", &self.regions.len())
+            .field("runs", &self.runs.len())
+            .field("version", &format_args!("{:016x}", self.version))
+            .finish()
     }
 }
 
@@ -180,7 +188,10 @@ impl Spoken {
     /// The raster of `areas` with `table`'s languages (those [`Table::wanted`] with languages there;
     /// others are passed over). Where outlines overlap the smaller wins.
     pub fn build(table: &Table, areas: impl IntoIterator<Item = Area>) -> Spoken {
-        let mut areas: Vec<Area> = areas.into_iter().filter(|a| table.wanted(&a.code) && table.get(&a.code).is_some_and(|l| !l.is_empty())).collect();
+        let mut areas: Vec<Area> = areas
+            .into_iter()
+            .filter(|a| table.wanted(&a.code) && table.get(&a.code).is_some_and(|l| !l.is_empty()))
+            .collect();
         areas.sort_by(|a, b| a.area_km2.total_cmp(&b.area_km2).then_with(|| a.code.cmp(&b.code)));
         let mut regions: Vec<(String, Vec<Lang>)> = vec![(String::new(), Vec::new())];
         let mut region_of: HashMap<String, u16> = HashMap::new();
@@ -328,7 +339,14 @@ impl Spoken {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(16 + self.runs.len() * 6 + self.row_start.len() * 4);
         out.extend_from_slice(b"SPOKEN01");
-        let head = format!("{RULES}\n{}\n", self.regions.iter().map(|(c, l)| format!("{c}\t{}", l.iter().map(Lang::as_str).collect::<Vec<_>>().join(","))).collect::<Vec<_>>().join("\n"));
+        let head = format!(
+            "{RULES}\n{}\n",
+            self.regions
+                .iter()
+                .map(|(c, l)| format!("{c}\t{}", l.iter().map(Lang::as_str).collect::<Vec<_>>().join(",")))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
         out.extend_from_slice(&(head.len() as u32).to_le_bytes());
         out.extend_from_slice(head.as_bytes());
         out.extend_from_slice(&(self.runs.len() as u32).to_le_bytes());
@@ -345,19 +363,27 @@ impl Spoken {
     /// The raster [`Spoken::to_bytes`] wrote, checked (made under other rules: an error).
     pub fn from_bytes(b: &[u8]) -> Result<Spoken> {
         ensure!(b.starts_with(b"SPOKEN01") && b.len() >= 12, "not a spoken-languages raster");
-        let u32_at = |p: usize| -> Result<u32> { Ok(u32::from_le_bytes(b.get(p..p + 4).ok_or_else(|| anyhow::anyhow!("cut short"))?.try_into()?)) };
+        let u32_at = |p: usize| -> Result<u32> {
+            Ok(u32::from_le_bytes(b.get(p..p + 4).ok_or_else(|| anyhow::anyhow!("cut short"))?.try_into()?))
+        };
         let hl = u32_at(8)? as usize;
         let head = std::str::from_utf8(b.get(12..12 + hl).ok_or_else(|| anyhow::anyhow!("cut short"))?)?;
         let mut lines = head.lines();
         if lines.next() != Some(RULES) {
             bail!("made under other rules");
         }
-        let regions: Vec<(String, Vec<Lang>)> = lines.map(|l| {
-            let (c, ls) = l.split_once('\t').unwrap_or((l, ""));
-            (c.to_owned(), ls.split(',').filter_map(Lang::parse).collect())
-        }).collect();
+        let regions: Vec<(String, Vec<Lang>)> = lines
+            .map(|l| {
+                let (c, ls) = l.split_once('\t').unwrap_or((l, ""));
+                (c.to_owned(), ls.split(',').filter_map(Lang::parse).collect())
+            })
+            .collect();
         // Region 0's line is empty and `lines` skips no empty line but the last: put it back.
-        let regions = if regions.first().is_some_and(|r| r.0.is_empty()) { regions } else { std::iter::once((String::new(), Vec::new())).chain(regions).collect() };
+        let regions = if regions.first().is_some_and(|r| r.0.is_empty()) {
+            regions
+        } else {
+            std::iter::once((String::new(), Vec::new())).chain(regions).collect()
+        };
         let mut p = 12 + hl;
         let nruns = u32_at(p)? as usize;
         p += 4;
@@ -372,7 +398,10 @@ impl Spoken {
             let q = p + i * 6;
             runs.push((u32_at(q)?, u16::from_le_bytes([b[q + 4], b[q + 5]])));
         }
-        ensure!(row_start.windows(2).all(|w| w[0] <= w[1]) && row_start.last() == Some(&(nruns as u32)), "rows out of order");
+        ensure!(
+            row_start.windows(2).all(|w| w[0] <= w[1]) && row_start.last() == Some(&(nruns as u32)),
+            "rows out of order"
+        );
         ensure!(runs.iter().all(|(_, id)| (*id as usize) < regions.len()), "a run names no region");
         let mut s = Spoken { regions, row_start, runs, version: 0 };
         s.version = crate::table::hash(&s.to_bytes());
@@ -394,7 +423,11 @@ mod tests {
 
     fn rect(code: &str, w: f64, s: f64, e: f64, n: f64) -> Area {
         let p = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
-        Area { code: code.into(), area_km2: (e - w) * (n - s) * 10_000.0, polygons: vec![vec![vec![p(w, s), p(e, s), p(e, n), p(w, n)]]] }
+        Area {
+            code: code.into(),
+            area_km2: (e - w) * (n - s) * 10_000.0,
+            polygons: vec![vec![vec![p(w, s), p(e, s), p(e, n), p(w, n)]]],
+        }
     }
 
     #[test]
@@ -447,7 +480,15 @@ mod tests {
 
     #[test]
     fn raster_smaller_wins_and_round_trips() {
-        let s = Spoken::build(&table(), [rect("CA", -80.0, 42.0, -60.0, 60.0), rect("CA-QC", -75.0, 45.0, -65.0, 55.0), rect("FR-IDF", 1.0, 48.0, 3.0, 49.0), rect("FR", -5.0, 42.0, 8.0, 51.0)]);
+        let s = Spoken::build(
+            &table(),
+            [
+                rect("CA", -80.0, 42.0, -60.0, 60.0),
+                rect("CA-QC", -75.0, 45.0, -65.0, 55.0),
+                rect("FR-IDF", 1.0, 48.0, 3.0, 49.0),
+                rect("FR", -5.0, 42.0, 8.0, 51.0),
+            ],
+        );
         assert_eq!(s.code_at(-73.57, 45.5), "CA-QC");
         assert_eq!(strs(s.langs_at(-73.57, 45.5)), ["fr", "en"]);
         assert_eq!(s.code_at(-79.4, 43.7), "CA");
@@ -477,10 +518,17 @@ mod tests {
         let outer = vec![p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 10.0), p(0.0, 0.0)];
         let hole = vec![p(4.0, 4.0), p(6.0, 4.0), p(6.0, 6.0), p(4.0, 6.0)];
         let island = vec![p(20.0, 0.0), p(21.0, 0.0), p(21.0, 1.0)];
-        let s = Spoken::build(&table(), [
-            Area { code: "IT".into(), area_km2: 1e6, polygons: vec![vec![outer, hole], vec![island]] },
-            Area { code: "SM".into(), area_km2: 1e4, polygons: vec![vec![vec![p(4.5, 4.5), p(5.5, 4.5), p(5.5, 5.5), p(4.5, 5.5)]]] },
-        ]);
+        let s = Spoken::build(
+            &table(),
+            [
+                Area { code: "IT".into(), area_km2: 1e6, polygons: vec![vec![outer, hole], vec![island]] },
+                Area {
+                    code: "SM".into(),
+                    area_km2: 1e4,
+                    polygons: vec![vec![vec![p(4.5, 4.5), p(5.5, 4.5), p(5.5, 5.5), p(4.5, 5.5)]]],
+                },
+            ],
+        );
         assert_eq!(s.code_at(1.0, 1.0), "IT");
         assert_eq!(s.code_at(4.2, 4.2), "");
         assert_eq!(s.code_at(5.0, 5.0), "SM");

@@ -263,7 +263,8 @@ pub struct Controls {
 impl Controls {
     /// What it kept in the agent's pool folder `dir`.
     pub fn open(dir: &Path) -> Controls {
-        let kept: Kept = std::fs::read(dir.join(KEPT)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let kept: Kept =
+            std::fs::read(dir.join(KEPT)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         Controls { kept_written: Some(kept.clone()), kept, ..Default::default() }
     }
 
@@ -271,7 +272,9 @@ impl Controls {
         if self.kept_written.as_ref() == Some(&self.kept) {
             return;
         }
-        let r = serde_json::to_vec(&self.kept).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&dir.join(KEPT), &b));
+        let r = serde_json::to_vec(&self.kept)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| crate::whole::write(&dir.join(KEPT), &b));
         match r {
             Ok(()) => self.kept_written = Some(self.kept.clone()),
             Err(e) => eprintln!("pool: keeping the lead asks' state: {e:#}"),
@@ -284,9 +287,23 @@ fn resolve(run: &Run, name: &str) -> Result<String, String> {
     if crate::pool::is_member_id(name) {
         return Ok(name.to_string());
     }
-    let found: Vec<String> = match run.controls.view.as_ref().map(|v| v.members.iter().filter(|m| m.host.eq_ignore_ascii_case(name)).map(|m| m.member.clone()).collect::<Vec<_>>()).filter(|f| !f.is_empty()) {
+    let found: Vec<String> = match run
+        .controls
+        .view
+        .as_ref()
+        .map(|v| {
+            v.members.iter().filter(|m| m.host.eq_ignore_ascii_case(name)).map(|m| m.member.clone()).collect::<Vec<_>>()
+        })
+        .filter(|f| !f.is_empty())
+    {
         Some(f) => f,
-        None => run.side.members().iter().filter(|id| run.side.heartbeat(id).is_some_and(|h| h.pool.host.eq_ignore_ascii_case(name))).cloned().collect(),
+        None => run
+            .side
+            .members()
+            .iter()
+            .filter(|id| run.side.heartbeat(id).is_some_and(|h| h.pool.host.eq_ignore_ascii_case(name)))
+            .cloned()
+            .collect(),
     };
     match found.as_slice() {
         [one] => Ok(one.clone()),
@@ -296,7 +313,13 @@ fn resolve(run: &Run, name: &str) -> Result<String, String> {
 }
 
 fn host_of(run: &Run, id: &str) -> String {
-    run.controls.view.as_ref().and_then(|v| v.members.iter().find(|m| m.member == id).map(|m| m.host.clone())).or_else(|| run.side.heartbeat(id).map(|h| h.pool.host)).filter(|h| !h.is_empty()).unwrap_or_else(|| id.to_string())
+    run.controls
+        .view
+        .as_ref()
+        .and_then(|v| v.members.iter().find(|m| m.member == id).map(|m| m.host.clone()))
+        .or_else(|| run.side.heartbeat(id).map(|h| h.pool.host))
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| id.to_string())
 }
 
 /// The owner's asks waiting (this Mac's folder `home`'s, and the build page's), checked as the
@@ -316,9 +339,25 @@ pub fn take(run: &mut Run, home: &Path) {
                 Ok(id) => {
                     let host = host_of(run, &id);
                     match run.side.hand_to(&id) {
-                        Err(why) => (State::Refused, format!("the lead can't be handed to {host}: {why}"), Some(id), None),
-                        Ok(()) if leads => (State::Going, format!("handing the lead to {host}"), Some(id.clone()), Some(Ask::HandTo(id))),
-                        Ok(()) => (State::Passed, format!("asked {} to hand the lead to {}", lead_host.unwrap_or_else(|| "the lead".into()), if id == me { "this Mac".to_string() } else { host }), Some(id.clone()), Some(Ask::HandTo(id))),
+                        Err(why) => {
+                            (State::Refused, format!("the lead can't be handed to {host}: {why}"), Some(id), None)
+                        }
+                        Ok(()) if leads => (
+                            State::Going,
+                            format!("handing the lead to {host}"),
+                            Some(id.clone()),
+                            Some(Ask::HandTo(id)),
+                        ),
+                        Ok(()) => (
+                            State::Passed,
+                            format!(
+                                "asked {} to hand the lead to {}",
+                                lead_host.unwrap_or_else(|| "the lead".into()),
+                                if id == me { "this Mac".to_string() } else { host }
+                            ),
+                            Some(id.clone()),
+                            Some(Ask::HandTo(id)),
+                        ),
                     }
                 }
             },
@@ -335,7 +374,8 @@ pub fn take(run: &mut Run, home: &Path) {
         };
         eprintln!("pool: {} asked: {said}", r.by);
         run.asks.extend(ask);
-        run.controls.kept.asked = Some(Asked { ask: r.ask, by: r.by, at: r.at.min(now).max(1), since: now, state, said, to });
+        run.controls.kept.asked =
+            Some(Asked { ask: r.ask, by: r.by, at: r.at.min(now).max(1), since: now, state, said, to });
         run.controls.stale = true;
     }
 }
@@ -358,13 +398,25 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
     for e in &out.events {
         if let Event::SteppedDown { term, why } = e {
             // (Members by their host names, not their ids.)
-            let why = run.side.members().iter().fold(why.clone(), |w, id| if w.contains(id.as_str()) { w.replace(id.as_str(), &host_of(run, id)) } else { w });
-            let next = cur.as_ref().filter(|t| t.term > *term).map(|t| format!("; term {} is {}'s ({})", t.term, t.host, t.how)).unwrap_or_default();
-            run.controls.kept.change = Some(Change { at: now, said: format!("No longer leading term {term}: {why}{next}") });
+            let why = run.side.members().iter().fold(why.clone(), |w, id| {
+                if w.contains(id.as_str()) {
+                    w.replace(id.as_str(), &host_of(run, id))
+                } else {
+                    w
+                }
+            });
+            let next = cur
+                .as_ref()
+                .filter(|t| t.term > *term)
+                .map(|t| format!("; term {} is {}'s ({})", t.term, t.host, t.how))
+                .unwrap_or_default();
+            run.controls.kept.change =
+                Some(Change { at: now, said: format!("No longer leading term {term}: {why}{next}") });
         }
         if let Event::Made { term, how } = e {
             if cur.as_ref().is_some_and(|t| t.term == *term && t.member == me) {
-                run.controls.kept.change = Some(Change { at: now, said: format!("This Mac leads term {term} ({how})") });
+                run.controls.kept.change =
+                    Some(Change { at: now, said: format!("This Mac leads term {term} ({how})") });
             }
         }
     }
@@ -372,7 +424,13 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
     // (A term naming the member asked for: whether it leads it, as this Mac or its heartbeat says.)
     let to = run.controls.kept.asked.as_ref().and_then(|a| a.to.clone());
     let to_leads = match (&to, &cur) {
-        (Some(to), Some(t)) if t.member == *to => if *to == me { out.leads == Some(t.term) } else { run.side.heartbeat(to).is_some_and(|h| h.pool.leads == Some(t.term)) },
+        (Some(to), Some(t)) if t.member == *to => {
+            if *to == me {
+                out.leads == Some(t.term)
+            } else {
+                run.side.heartbeat(to).is_some_and(|h| h.pool.leads == Some(t.term))
+            }
+        }
         _ => false,
     };
     if let Some(a) = run.controls.kept.asked.as_mut() {
@@ -380,13 +438,19 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
         follow(a, out, cur.as_ref(), to_leads, &me, now);
         if a.state != was {
             a.since = now;
-            eprintln!("pool: the ask {}: {}", serde_json::to_value(a.state).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), a.said);
+            eprintln!(
+                "pool: the ask {}: {}",
+                serde_json::to_value(a.state).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                a.said
+            );
         }
         if matches!(a.state, State::Refused | State::Done | State::Failed) && now.saturating_sub(a.since) > SHOWN_S {
             run.controls.kept.asked = None;
         }
     }
-    if out.events.iter().any(|e| matches!(e, Event::Made { .. } | Event::SteppedDown { .. } | Event::Handover { .. } | Event::TookUp { .. })) {
+    if out.events.iter().any(|e| {
+        matches!(e, Event::Made { .. } | Event::SteppedDown { .. } | Event::Handover { .. } | Event::TookUp { .. })
+    }) {
         run.controls.stale = true;
     }
     // The view.
@@ -401,14 +465,26 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
     // Leading while members can't reach this Mac: the lead to one they reach (§6.8).
     if let Some(v) = run.controls.view.as_ref().filter(|v| v.leading) {
         let ids: Vec<String> = v.members.iter().map(|m| m.member.clone()).collect();
-        let beats: Vec<crate::pool::Beat> = ids.iter().filter_map(|id| run.side.heartbeat(id)).filter(|h| !h.shadow).map(|h| h.pool).collect();
-        let going = run.controls.kept.asked.as_ref().is_some_and(|a| matches!(a.state, State::Going | State::Passed)) || v.handing.is_some();
-        let unreached = Unreached { for_s: reachable::unreachable_for(&beats, &me, now), by: reachable::unreached(&beats, &me, now).len(), of: beats.iter().filter(|b| b.member != me && b.beat > 0 && !b.out_of_touch(now)).count() };
+        let beats: Vec<crate::pool::Beat> =
+            ids.iter().filter_map(|id| run.side.heartbeat(id)).filter(|h| !h.shadow).map(|h| h.pool).collect();
+        let going = run.controls.kept.asked.as_ref().is_some_and(|a| matches!(a.state, State::Going | State::Passed))
+            || v.handing.is_some();
+        let unreached = Unreached {
+            for_s: reachable::unreachable_for(&beats, &me, now),
+            by: reachable::unreached(&beats, &me, now).len(),
+            of: beats.iter().filter(|b| b.member != me && b.beat > 0 && !b.out_of_touch(now)).count(),
+        };
         let last_change = v.lead.as_ref().map_or(0, |l| l.since);
-        if let Some(to) = away(v, unreached, &mut run.controls.kept, now, last_change, going, &|id| reachable::reached(&beats, id, now)) {
+        if let Some(to) = away(v, unreached, &mut run.controls.kept, now, last_change, going, &|id| {
+            reachable::reached(&beats, id, now)
+        }) {
             let host = host_of(run, &to);
             let why = v.members.iter().find(|m| m.me).and_then(|m| m.unreached.clone()).unwrap_or_default();
-            run.controls.page.push(LeadRequest { ask: LeadAsk::Give { to: to.clone() }, by: format!("the pool by itself (this Mac is {why})"), at: now });
+            run.controls.page.push(LeadRequest {
+                ask: LeadAsk::Give { to: to.clone() },
+                by: format!("the pool by itself (this Mac is {why})"),
+                at: now,
+            });
             eprintln!("pool: members can't reach this Mac's coordinator ({why}): handing the lead to {host}, which they reach");
         }
     }
@@ -417,7 +493,9 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
         let going = run.controls.kept.asked.as_ref().is_some_and(|a| matches!(a.state, State::Going | State::Passed));
         let last_change = v.lead.as_ref().map_or(0, |l| l.since);
         if v.leading {
-            if let Some(to) = auto(v.offer.as_ref(), v.auto, &mut run.controls.kept, now, last_change, going || v.handing.is_some()) {
+            if let Some(to) =
+                auto(v.offer.as_ref(), v.auto, &mut run.controls.kept, now, last_change, going || v.handing.is_some())
+            {
                 let host = host_of(run, &to);
                 let by = format!("the pool by itself ({})", v.offer.as_ref().map_or(String::new(), |o| o.why.clone()));
                 run.controls.page.push(LeadRequest { ask: LeadAsk::Give { to: to.clone() }, by: by.clone(), at: now });
@@ -454,7 +532,14 @@ fn follow(a: &mut Asked, out: &Out, cur: Option<&term::Term>, to_leads: bool, me
             }
             // (Done once the member asked for leads the current term, wherever this Mac heard it.)
             if matches!(a.state, State::Going | State::Passed) && to_leads {
-                (a.state, a.said) = (State::Done, format!("{} leads term {}", cur.map(|t| t.host.clone()).unwrap_or_default(), cur.map_or(0, |t| t.term)));
+                (a.state, a.said) = (
+                    State::Done,
+                    format!(
+                        "{} leads term {}",
+                        cur.map(|t| t.host.clone()).unwrap_or_default(),
+                        cur.map_or(0, |t| t.term)
+                    ),
+                );
             } else if a.state == State::Passed && now.saturating_sub(a.at) > UNHEARD_S {
                 (a.state, a.said) = (State::Failed, "nothing came of it in ten minutes: the lead didn't hear it, or didn't hand over (its status says why)".to_string());
             }
@@ -502,7 +587,9 @@ pub fn state_of(h: &Heartbeat, now: u64, app: Option<&str>) -> String {
 /// while its coordinator answered this Mac lately (`lead_answered`).
 fn late(run: &Run, now: u64) -> bool {
     let Some(t) = run.side.driver().current().lead.clone() else { return false };
-    lead_answered(run, now).is_some() && t.member != run.side.member().id && run.side.heartbeat(&t.member).is_some_and(|h| h.pool.out_of_touch(now) && h.pool.stood_down != Some(t.term))
+    lead_answered(run, now).is_some()
+        && t.member != run.side.member().id
+        && run.side.heartbeat(&t.member).is_some_and(|h| h.pool.out_of_touch(now) && h.pool.stood_down != Some(t.term))
 }
 
 /// When the lead's coordinator last answered this Mac, if within `ANSWERED_S` of `now`.
@@ -517,21 +604,32 @@ fn view(run: &Run, auto: bool) -> View {
     let me = side.member().id.clone();
     let cur = side.driver().current().clone();
     let leading = side.driver().leads().is_some();
-    let lead = cur.lead.as_ref().map(|t| LeadOf { term: t.term, member: t.member.clone(), host: t.host.clone(), app: t.app.clone(), since: t.since, how: t.how.clone() });
+    let lead = cur.lead.as_ref().map(|t| LeadOf {
+        term: t.term,
+        member: t.member.clone(),
+        host: t.host.clone(),
+        app: t.app.clone(),
+        since: t.since,
+        how: t.how.clone(),
+    });
     let mut ids: Vec<String> = side.members().iter().cloned().collect();
     if let Some(t) = &cur.lead {
         if !ids.contains(&t.member) {
             ids.push(t.member.clone());
         }
     }
-    let pool_beats: Vec<crate::pool::Beat> = ids.iter().filter_map(|id| side.heartbeat(id)).filter(|h| !h.shadow).map(|h| h.pool).collect();
+    let pool_beats: Vec<crate::pool::Beat> =
+        ids.iter().filter_map(|id| side.heartbeat(id)).filter(|h| !h.shadow).map(|h| h.pool).collect();
     let mut beats: Vec<(String, Heartbeat)> = Vec::new();
     let mut members: Vec<Member> = Vec::new();
     // (The app a member needs: the term's, and once a readers' switch is recorded, the one it was
     // recorded on, whichever is newer: an older one is "app too old".)
     // (Read once for the view: every member's handover and state is judged by it.)
     let regions = side.regions_app();
-    let need = crate::inputs::regions::read::needed_app(cur.lead.as_ref().map(|t| t.app.as_str()), regions.as_ref().ok().and_then(|r| r.as_deref()));
+    let need = crate::inputs::regions::read::needed_app(
+        cur.lead.as_ref().map(|t| t.app.as_str()),
+        regions.as_ref().ok().and_then(|r| r.as_deref()),
+    );
     for id in ids {
         let h = side.heartbeat(&id).unwrap_or_default();
         // (Not a shadow run's heartbeat, nor one of another time's member that never beat.)
@@ -547,7 +645,15 @@ fn view(run: &Run, auto: bool) -> View {
                 Err(w) => (false, Some(w)),
             }
         };
-        let host = if h.pool.host.is_empty() { if id == me { side.member().host.clone() } else { id.clone() } } else { h.pool.host.clone() };
+        let host = if h.pool.host.is_empty() {
+            if id == me {
+                side.member().host.clone()
+            } else {
+                id.clone()
+            }
+        } else {
+            h.pool.host.clone()
+        };
         let unreached = reachable::why_unreachable(&pool_beats, &id, &host, now);
         members.push(Member {
             member: id.clone(),
@@ -570,11 +676,25 @@ fn view(run: &Run, auto: bool) -> View {
         beats.push((id, h));
     }
     members.sort_by(|a, b| b.me.cmp(&a.me).then(b.leads.cmp(&a.leads)).then(a.host.cmp(&b.host)));
-    let lead_beat = cur.lead.as_ref().and_then(|t| beats.iter().find(|(id, _)| *id == t.member)).map(|(_, h)| h.clone());
+    let lead_beat =
+        cur.lead.as_ref().and_then(|t| beats.iter().find(|(id, _)| *id == t.member)).map(|(_, h)| h.clone());
     // (Its coordinator answered lately: there, its heartbeat late.)
     let answered = lead_answered(run, now);
     let quiet = match (&cur.lead, &lead_beat, answered) {
-        (Some(t), Some(h), Some(a)) if !leading && t.member != me && h.pool.beat > 0 && h.pool.out_of_touch(now) && h.pool.stood_down != Some(t.term) => Some(format!("{}'s heartbeat is late (last {}), but its coordinator answered this Mac {}: it's there", t.host, ago(now, h.pool.beat), ago(now, a))),
+        (Some(t), Some(h), Some(a))
+            if !leading
+                && t.member != me
+                && h.pool.beat > 0
+                && h.pool.out_of_touch(now)
+                && h.pool.stood_down != Some(t.term) =>
+        {
+            Some(format!(
+                "{}'s heartbeat is late (last {}), but its coordinator answered this Mac {}: it's there",
+                t.host,
+                ago(now, h.pool.beat),
+                ago(now, a)
+            ))
+        }
         _ => None,
     };
     let no_lead = match (&cur.lead, &lead_beat) {
@@ -583,23 +703,63 @@ fn view(run: &Run, auto: bool) -> View {
         (Some(t), _) if leading || t.member == me => None,
         (Some(t), None) => Some(format!("no heartbeat from {}", t.host)),
         (Some(t), Some(h)) if h.pool.beat == 0 => Some(format!("no heartbeat from {}", t.host)),
-        (Some(t), Some(h)) if h.pool.out_of_touch(now) && quiet.is_none() => Some(format!("{} is out of touch: last heard from {}", t.host, ago(now, h.pool.beat))),
-        (Some(t), Some(h)) if h.pool.stood_down == Some(t.term) => Some(format!("{} stood down from term {} (its app is older than the term's)", t.host, t.term)),
+        (Some(t), Some(h)) if h.pool.out_of_touch(now) && quiet.is_none() => {
+            Some(format!("{} is out of touch: last heard from {}", t.host, ago(now, h.pool.beat)))
+        }
+        (Some(t), Some(h)) if h.pool.stood_down == Some(t.term) => {
+            Some(format!("{} stood down from term {} (its app is older than the term's)", t.host, t.term))
+        }
         _ => None,
     };
-    let handing = lead_beat.as_ref().and_then(|h| h.pool.handing_to.as_ref()).map(|ht| Handing { to: ht.to.clone(), host: members.iter().find(|m| m.member == ht.to).map_or(ht.to.clone(), |m| m.host.clone()), term: ht.term, stage: ht.stage, since: ht.since });
+    let handing = lead_beat.as_ref().and_then(|h| h.pool.handing_to.as_ref()).map(|ht| Handing {
+        to: ht.to.clone(),
+        host: members.iter().find(|m| m.member == ht.to).map_or(ht.to.clone(), |m| m.host.clone()),
+        term: ht.term,
+        stage: ht.stage,
+        since: ht.since,
+    });
     let takeover = (!leading).then(|| {
         let t = side.takeover();
         Takeover { refused: t.refused, force: t.force, downgrade: t.downgrade }
     });
     let offer = offer(lead_beat.as_ref(), &members);
-    let unreached = members.iter().flat_map(|m| reachable::unreached(&pool_beats, &m.member, now).into_iter().map(move |(b, r)| (m, b, r))).map(|(m, b, r)| {
-        let by = if b.host.is_empty() { b.member.clone() } else { b.host.clone() };
-        let what = if r.what == "coordinator" { "coordinator" } else { "broker" };
-        let lost = if m.leads && r.what == "coordinator" { format!(": {by} gets no work while {} leads", m.host) } else { String::new() };
-        format!("{}'s {what} is unreachable from {by} for {}: {}{lost}", m.host, span(b.beat.saturating_sub(r.since)), reachable::words(r, &m.host))
-    }).collect();
-    View { at: now, term: cur.term, lead, leading, members, takeover, no_lead, quiet, alert: None, short: side.driver().unread_since().is_some(), handing, unreached, offer, auto, asked: run.controls.kept.asked.clone(), change: run.controls.kept.change.clone() }
+    let unreached = members
+        .iter()
+        .flat_map(|m| reachable::unreached(&pool_beats, &m.member, now).into_iter().map(move |(b, r)| (m, b, r)))
+        .map(|(m, b, r)| {
+            let by = if b.host.is_empty() { b.member.clone() } else { b.host.clone() };
+            let what = if r.what == "coordinator" { "coordinator" } else { "broker" };
+            let lost = if m.leads && r.what == "coordinator" {
+                format!(": {by} gets no work while {} leads", m.host)
+            } else {
+                String::new()
+            };
+            format!(
+                "{}'s {what} is unreachable from {by} for {}: {}{lost}",
+                m.host,
+                span(b.beat.saturating_sub(r.since)),
+                reachable::words(r, &m.host)
+            )
+        })
+        .collect();
+    View {
+        at: now,
+        term: cur.term,
+        lead,
+        leading,
+        members,
+        takeover,
+        no_lead,
+        quiet,
+        alert: None,
+        short: side.driver().unread_since().is_some(),
+        handing,
+        unreached,
+        offer,
+        auto,
+        asked: run.controls.kept.asked.clone(),
+        change: run.controls.kept.change.clone(),
+    }
 }
 
 /// The alert (`View::alert`): no lead for `ALERT_S` or more, since the lead was last heard from or
@@ -610,7 +770,12 @@ pub fn alert(v: &mut View, kept: &mut Kept, now: u64) {
     // (A lead late, its coordinator answering: counted all the same, its takeover the owner's
     // forced one.)
     let late = v.no_lead.is_none() && v.quiet.is_some();
-    let why = v.no_lead.clone().or_else(|| v.lead.as_ref().filter(|_| late).map(|l| format!("{}'s heartbeat is out of touch, though its coordinator still answers", l.host)));
+    let why = v.no_lead.clone().or_else(|| {
+        v.lead
+            .as_ref()
+            .filter(|_| late)
+            .map(|l| format!("{}'s heartbeat is out of touch, though its coordinator still answers", l.host))
+    });
     let Some(why) = why else {
         kept.no_lead = None;
         v.alert = None;
@@ -623,7 +788,12 @@ pub fn alert(v: &mut View, kept: &mut Kept, now: u64) {
             now
         }
     };
-    let heard = v.lead.as_ref().and_then(|l| v.members.iter().find(|m| m.member == l.member)).map(|m| m.beat).filter(|&b| b > 0);
+    let heard = v
+        .lead
+        .as_ref()
+        .and_then(|l| v.members.iter().find(|m| m.member == l.member))
+        .map(|m| m.beat)
+        .filter(|&b| b > 0);
     let since = heard.map_or(seen, |b| b.min(seen));
     if now.saturating_sub(since) < ALERT_S {
         v.alert = None;
@@ -638,8 +808,15 @@ pub fn alert(v: &mut View, kept: &mut Kept, now: u64) {
         Some(Takeover { refused: Some(w), .. }) => format!("this Mac can't take it over ({w}): run `scenic lead take --force` on another Mac in the pool"),
         None => "run `scenic lead take --force` on a Mac in the pool".to_string(),
     };
-    let auto = if v.lead.is_none() && v.short { "; no Mac took it past by itself (none can lead now, or the app rule refuses)" } else { "" };
-    v.alert = Some(format!("No lead for {}: {why}{auto}. Nothing builds until a Mac leads: {what}.", span(now.saturating_sub(since))));
+    let auto = if v.lead.is_none() && v.short {
+        "; no Mac took it past by itself (none can lead now, or the app rule refuses)"
+    } else {
+        ""
+    };
+    v.alert = Some(format!(
+        "No lead for {}: {why}{auto}. Nothing builds until a Mac leads: {what}.",
+        span(now.saturating_sub(since))
+    ));
 }
 
 /// How the members in touch report this Mac's coordinator: the longest any has failed to reach it
@@ -657,14 +834,26 @@ pub struct Unreached {
 /// and its last such ask `CALM_S` ago or more (`kept.away_at`). To the member that can lead
 /// (`Member::can_lead`: which no member reports unreachable), that another member reached lately
 /// (`reached`), home on power first, then by host; none: nothing. The ask's time is kept.
-pub fn away(v: &View, u: Unreached, kept: &mut Kept, now: u64, last_change: u64, busy: bool, reached: &dyn Fn(&str) -> bool) -> Option<String> {
+pub fn away(
+    v: &View,
+    u: Unreached,
+    kept: &mut Kept,
+    now: u64,
+    last_change: u64,
+    busy: bool,
+    reached: &dyn Fn(&str) -> bool,
+) -> Option<String> {
     let long = u.for_s.is_some_and(|s| s >= reachable::AWAY_S);
     let enough = u.by >= 1 && u.by * 2 >= u.of;
     let calm = now.saturating_sub(last_change) >= reachable::AWAY_S && now.saturating_sub(kept.away_at) >= CALM_S;
     if !v.leading || !long || !enough || busy || !calm {
         return None;
     }
-    let to = v.members.iter().filter(|m| !m.me && !m.leads && m.can_lead && reached(&m.member)).min_by_key(|m| (!m.conds.is_some_and(|c| c.home && c.ac), m.host.clone()))?;
+    let to = v
+        .members
+        .iter()
+        .filter(|m| !m.me && !m.leads && m.can_lead && reached(&m.member))
+        .min_by_key(|m| (!m.conds.is_some_and(|c| c.home && c.ac), m.host.clone()))?;
     kept.away_at = now;
     Some(to.member.clone())
 }
@@ -690,15 +879,27 @@ pub fn offer(lead: Option<&Heartbeat>, members: &[Member]) -> Option<Offer> {
     if (c.home && c.ac) || l.pool.handing_to.is_some() || l.pool.leads.is_none() {
         return None;
     }
-    let why = if !c.home { format!("{} is away from home", l.pool.host) } else { format!("{} is on battery", l.pool.host) };
-    members.iter().filter(|m| !m.leads && m.can_lead && m.conds.is_some_and(|c| c.home && c.ac && c.able)).min_by(|a, b| a.host.cmp(&b.host)).map(|m| Offer { to: m.member.clone(), host: m.host.clone(), why })
+    let why =
+        if !c.home { format!("{} is away from home", l.pool.host) } else { format!("{} is on battery", l.pool.host) };
+    members
+        .iter()
+        .filter(|m| !m.leads && m.can_lead && m.conds.is_some_and(|c| c.home && c.ac && c.able))
+        .min_by(|a, b| a.host.cmp(&b.host))
+        .map(|m| Offer { to: m.member.clone(), host: m.host.clone(), why })
 }
 
 /// The offer taken by itself (the owner's switch, `on`): its target once the same offer has stood
 /// `AUTO_AFTER_S` (`kept.offered`: since when), nothing under way (`busy`: a handover, an ask), the
 /// last change of lead (`last_change`: the current term's start) and the last automatic ask
 /// `CALM_S` ago or more. The ask's time is kept.
-pub fn auto(offer: Option<&Offer>, on: bool, kept: &mut Kept, now: u64, last_change: u64, busy: bool) -> Option<String> {
+pub fn auto(
+    offer: Option<&Offer>,
+    on: bool,
+    kept: &mut Kept,
+    now: u64,
+    last_change: u64,
+    busy: bool,
+) -> Option<String> {
     let Some(o) = offer else {
         kept.offered = None;
         return None;
@@ -728,10 +929,18 @@ pub fn notes(events: &[Event], me: &str, host: impl Fn(&str) -> String, now: u64
                 Some(to) => format!("stepped down from term {term}: handed over to {}", host(to)),
                 None => format!("stepped down from term {term}: {why}"),
             },
-            Event::Handover { term, to, what } if matches!(*what, "offered" | "over" | "given up" | "dropped") => format!("its handover of term {term} to {}: {what}", host(to)),
+            Event::Handover { term, to, what } if matches!(*what, "offered" | "over" | "given up" | "dropped") => {
+                format!("its handover of term {term} to {}: {what}", host(to))
+            }
             _ => continue,
         };
-        out.push(history::Event { t: now, kind: "term".into(), worker: Some(me.to_string()), note, ..Default::default() });
+        out.push(history::Event {
+            t: now,
+            kind: "term".into(),
+            worker: Some(me.to_string()),
+            note,
+            ..Default::default()
+        });
     }
     out
 }
@@ -756,7 +965,9 @@ fn note(events: &[history::Event], coord: Option<&crate::coord::Coordinator>, ro
         b.push(b'\n');
     }
     use std::io::Write;
-    let r = std::fs::create_dir_all(dir).and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(dir.join(NOTES))).and_then(|mut f| f.write_all(&b));
+    let r = std::fs::create_dir_all(dir)
+        .and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(dir.join(NOTES)))
+        .and_then(|mut f| f.write_all(&b));
     if let Err(e) = r {
         eprintln!("pool: keeping the terms' events: {e}");
     }
@@ -794,11 +1005,19 @@ pub fn own_status(home: &Path) -> Option<super::Status> {
 pub fn own_pool(home: &Path, now: u64, fresh_s: u64) -> Option<(super::PoolView, u64)> {
     let from_status = own_status_plain(home).and_then(|s| Some((s.pool?, s.beat)));
     let from_view = super::pool::read_view(home).map(|v| (v.pool, v.beat));
-    [from_status, from_view].into_iter().flatten().max_by_key(|(_, at)| *at).filter(|(_, at)| now.saturating_sub(*at) < fresh_s)
+    [from_status, from_view]
+        .into_iter()
+        .flatten()
+        .max_by_key(|(_, at)| *at)
+        .filter(|(_, at)| now.saturating_sub(*at) < fresh_s)
 }
 
 fn own_status_plain(home: &Path) -> Option<super::Status> {
-    ["status.json", "helper.json"].iter().filter_map(|f| std::fs::read(home.join(f)).ok()).filter_map(|b| serde_json::from_slice::<super::Status>(&b).ok()).max_by_key(|s| s.beat)
+    ["status.json", "helper.json"]
+        .iter()
+        .filter_map(|f| std::fs::read(home.join(f)).ok())
+        .filter_map(|b| serde_json::from_slice::<super::Status>(&b).ok())
+        .max_by_key(|s| s.beat)
 }
 
 /// How long ago `t` was, at `now`, in words.
@@ -815,8 +1034,17 @@ fn ago(now: u64, t: u64) -> String {
 pub fn said(v: &View, now: u64) -> Vec<String> {
     let mut out = Vec::new();
     match (&v.lead, &v.no_lead) {
-        (_, Some(why)) => out.push(v.alert.clone().unwrap_or_else(|| format!("No lead: {why} (`scenic lead take` takes it over)"))),
-        (Some(l), None) => out.push(format!("The lead: {}{} — term {}, since {} ({})", l.host, if v.leading { " (this Mac)" } else { "" }, l.term, ago(now, l.since), l.how)),
+        (_, Some(why)) => {
+            out.push(v.alert.clone().unwrap_or_else(|| format!("No lead: {why} (`scenic lead take` takes it over)")))
+        }
+        (Some(l), None) => out.push(format!(
+            "The lead: {}{} — term {}, since {} ({})",
+            l.host,
+            if v.leading { " (this Mac)" } else { "" },
+            l.term,
+            ago(now, l.since),
+            l.how
+        )),
         (None, None) => out.push("No terms yet".into()),
     }
     if let Some(q) = &v.quiet {
@@ -835,13 +1063,22 @@ pub fn said(v: &View, now: u64) -> Vec<String> {
             tags.push("leads");
         }
         let tags = if tags.is_empty() { String::new() } else { format!(" ({})", tags.join(", ")) };
-        let heard = if m.out_of_touch && m.beat > 0 { format!(", last heard from {}", ago(now, m.beat)) } else { String::new() };
+        let heard = if m.out_of_touch && m.beat > 0 {
+            format!(", last heard from {}", ago(now, m.beat))
+        } else {
+            String::new()
+        };
         let can = match (&m.why_not, m.leads) {
             (_, true) => String::new(),
             (None, _) => " — can lead".to_string(),
             (Some(w), _) => format!(" — can't lead: {w}"),
         };
-        out.push(format!("  {}{tags}: {}{heard}, app {}{can}", m.host, m.state, if m.app.is_empty() { "?" } else { &m.app }));
+        out.push(format!(
+            "  {}{tags}: {}{heard}, app {}{can}",
+            m.host,
+            m.state,
+            if m.app.is_empty() { "?" } else { &m.app }
+        ));
     }
     for u in &v.unreached {
         out.push(u.clone());
@@ -850,11 +1087,22 @@ pub fn said(v: &View, now: u64) -> Vec<String> {
         out.push(OWNER_STEPS.to_string());
     }
     if let Some(o) = &v.offer {
-        out.push(format!("Offer: hand the build to {} ({}){}", o.host, o.why, if v.auto { "; taken by itself after five minutes (auto on)" } else { "" }));
+        out.push(format!(
+            "Offer: hand the build to {} ({}){}",
+            o.host,
+            o.why,
+            if v.auto { "; taken by itself after five minutes (auto on)" } else { "" }
+        ));
     }
     if let Some(t) = &v.takeover {
         if v.no_lead.is_some() || t.refused.is_none() {
-            let needs: Vec<String> = [t.force.as_ref().map(|w| format!("--force ({w})")), t.downgrade.as_ref().map(|w| format!("--downgrade ({w})"))].into_iter().flatten().collect();
+            let needs: Vec<String> = [
+                t.force.as_ref().map(|w| format!("--force ({w})")),
+                t.downgrade.as_ref().map(|w| format!("--downgrade ({w})")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
             out.push(match (&t.refused, needs.is_empty()) {
                 (Some(w), _) => format!("Taking over from this Mac: not now ({w})"),
                 (None, true) => "Taking over from this Mac: `scenic lead take`".into(),
@@ -878,7 +1126,18 @@ mod tests {
     use crate::pool::beat::Beat;
 
     fn hb(host: &str, beat: u64, conds: Option<Conds>) -> Heartbeat {
-        Heartbeat { pool: Beat { member: format!("m-{host}"), host: host.into(), app: "development".into(), beat, leads: None, ..Default::default() }, conds, ..Default::default() }
+        Heartbeat {
+            pool: Beat {
+                member: format!("m-{host}"),
+                host: host.into(),
+                app: "development".into(),
+                beat,
+                leads: None,
+                ..Default::default()
+            },
+            conds,
+            ..Default::default()
+        }
     }
 
     const HOME: Conds = Conds { home: true, ac: true, battery: Some(90), able: true };
@@ -888,7 +1147,13 @@ mod tests {
         let mut kept = Kept::default();
         // Term 55 unreadable (the 12 Oct case): seen at 1000, an alert from an hour on, saying
         // to force.
-        let mut v = View { term: 55, short: true, no_lead: Some("term 55 can't be read whole".into()), takeover: Some(Takeover { force: Some("term 55 can't be read whole".into()), ..Default::default() }), ..Default::default() };
+        let mut v = View {
+            term: 55,
+            short: true,
+            no_lead: Some("term 55 can't be read whole".into()),
+            takeover: Some(Takeover { force: Some("term 55 can't be read whole".into()), ..Default::default() }),
+            ..Default::default()
+        };
         alert(&mut v, &mut kept, 1000);
         assert_eq!((v.alert.as_deref(), kept.no_lead), (None, Some((55, 1000))));
         alert(&mut v, &mut kept, 1000 + ALERT_S - 1);
@@ -896,17 +1161,40 @@ mod tests {
         alert(&mut v, &mut kept, 1000 + 3 * 3600);
         assert_eq!(v.alert.as_deref(), Some("No lead for 3 h: term 55 can't be read whole; no Mac took it past by itself (none can lead now, or the app rule refuses). Nothing builds until a Mac leads: run `scenic lead take --force` on this Mac (or \"Take Over the Build…\" in its menu) to lead from the records on the NAS; nothing built is lost."));
         // A later term with no lead counts again from its first sight; this Mac unable, another's.
-        let mut v = View { term: 56, no_lead: Some("term 56 can't be read whole".into()), takeover: Some(Takeover { refused: Some("term 56, which this Mac made, isn't written whole yet".into()), ..Default::default() }), ..Default::default() };
+        let mut v = View {
+            term: 56,
+            no_lead: Some("term 56 can't be read whole".into()),
+            takeover: Some(Takeover {
+                refused: Some("term 56, which this Mac made, isn't written whole yet".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
         alert(&mut v, &mut kept, 20_000);
         assert_eq!((v.alert.as_deref(), kept.no_lead), (None, Some((56, 20_000))));
         alert(&mut v, &mut kept, 20_000 + ALERT_S);
-        assert!(v.alert.as_deref().is_some_and(|w| w.contains("this Mac can't take it over (term 56, which this Mac made") && w.contains("`scenic lead take --force` on another Mac")), "{v:?}");
+        assert!(
+            v.alert.as_deref().is_some_and(|w| w.contains("this Mac can't take it over (term 56, which this Mac made")
+                && w.contains("`scenic lead take --force` on another Mac")),
+            "{v:?}"
+        );
         // The lead out of touch: from its last beat, though first seen just now.
         let lead = LeadOf { term: 56, member: "m-a".into(), host: "Mac-mini".into(), ..Default::default() };
-        let mut v = View { term: 56, lead: Some(lead), members: vec![Member { member: "m-a".into(), beat: 30_000, ..Default::default() }], no_lead: Some("Mac-mini is out of touch".into()), takeover: Some(Takeover::default()), ..Default::default() };
+        let mut v = View {
+            term: 56,
+            lead: Some(lead),
+            members: vec![Member { member: "m-a".into(), beat: 30_000, ..Default::default() }],
+            no_lead: Some("Mac-mini is out of touch".into()),
+            takeover: Some(Takeover::default()),
+            ..Default::default()
+        };
         kept.no_lead = None;
         alert(&mut v, &mut kept, 30_000 + ALERT_S + 120);
-        assert!(v.alert.as_deref().is_some_and(|w| w.starts_with("No lead for 62 min: Mac-mini is out of touch. ") && w.contains("`scenic lead take` on this Mac")), "{v:?}");
+        assert!(
+            v.alert.as_deref().is_some_and(|w| w.starts_with("No lead for 62 min: Mac-mini is out of touch. ")
+                && w.contains("`scenic lead take` on this Mac")),
+            "{v:?}"
+        );
         // A lead again: none, and forgotten.
         let mut v = View { term: 57, ..Default::default() };
         alert(&mut v, &mut kept, 40_000);
@@ -917,7 +1205,10 @@ mod tests {
     fn a_members_state_in_words() {
         let now = 10_000;
         assert_eq!(state_of(&hb("a", now - 5, Some(HOME)), now, Some("development")), "home on power");
-        assert_eq!(state_of(&hb("a", now - 5, Some(Conds { ac: false, battery: Some(54), ..HOME })), now, None), "on battery (54 %)");
+        assert_eq!(
+            state_of(&hb("a", now - 5, Some(Conds { ac: false, battery: Some(54), ..HOME })), now, None),
+            "on battery (54 %)"
+        );
         assert_eq!(state_of(&hb("a", now - 5, Some(Conds { home: false, ..HOME })), now, None), "away");
         assert_eq!(state_of(&hb("a", now - 601, Some(HOME)), now, None), "out of touch");
         assert_eq!(state_of(&hb("a", now + 61, Some(HOME)), now, None), "clock wrong");
@@ -927,22 +1218,39 @@ mod tests {
     }
 
     fn member(host: &str, conds: Conds, can: bool) -> Member {
-        Member { member: format!("m-{host}"), host: host.into(), can_lead: can, conds: Some(conds), state: String::new(), ..Default::default() }
+        Member {
+            member: format!("m-{host}"),
+            host: host.into(),
+            can_lead: can,
+            conds: Some(conds),
+            state: String::new(),
+            ..Default::default()
+        }
     }
 
     #[test]
     fn the_offer_when_the_lead_is_away_or_on_battery() {
         let mut lead = hb("mini", 100, Some(HOME));
         lead.pool.leads = Some(3);
-        let ms = [member("air", HOME, true), member("pro", Conds { ac: false, ..HOME }, true), member("zed", HOME, false)];
+        let ms =
+            [member("air", HOME, true), member("pro", Conds { ac: false, ..HOME }, true), member("zed", HOME, false)];
         assert_eq!(offer(Some(&lead), &ms), None, "the lead home on power: none");
         lead.conds = Some(Conds { ac: false, ..HOME });
-        assert_eq!(offer(Some(&lead), &ms), Some(Offer { to: "m-air".into(), host: "air".into(), why: "mini is on battery".into() }));
+        assert_eq!(
+            offer(Some(&lead), &ms),
+            Some(Offer { to: "m-air".into(), host: "air".into(), why: "mini is on battery".into() })
+        );
         lead.conds = Some(Conds { home: false, ..HOME });
         assert!(offer(Some(&lead), &ms).is_some_and(|o| o.why.contains("away")));
         // None to take it: on battery, or the lead can't be handed to it; a handover already under way.
         assert_eq!(offer(Some(&lead), &ms[1..]), None);
-        lead.pool.handing_to = Some(crate::pool::beat::HandingTo { to: "m-air".into(), term: 3, offer: 1, since: 1, stage: Stage::Offered });
+        lead.pool.handing_to = Some(crate::pool::beat::HandingTo {
+            to: "m-air".into(),
+            term: 3,
+            offer: 1,
+            since: 1,
+            stage: Stage::Offered,
+        });
         assert_eq!(offer(Some(&lead), &ms), None);
         // A lead whose app says nothing of its conditions offers nothing.
         assert_eq!(offer(Some(&hb("mini", 100, None)), &ms), None);
@@ -988,10 +1296,27 @@ mod tests {
     #[test]
     fn a_lead_hands_itself_away_only_reported_long_by_half_calm_and_to_a_member_reached() {
         use crate::pool::reachable::AWAY_S;
-        let m = |host: &str, me: bool, can: bool, conds: Conds| Member { member: format!("m-{host}"), host: host.into(), me, leads: me, can_lead: can, conds: Some(conds), ..Default::default() };
+        let m = |host: &str, me: bool, can: bool, conds: Conds| Member {
+            member: format!("m-{host}"),
+            host: host.into(),
+            me,
+            leads: me,
+            can_lead: can,
+            conds: Some(conds),
+            ..Default::default()
+        };
         let home = Conds { home: true, ac: true, battery: None, able: true };
         let batt = Conds { ac: false, battery: Some(80), ..home };
-        let v = View { leading: true, members: vec![m("m1", true, false, home), m("air", false, true, batt), m("mini", false, true, home), m("old", false, false, home)], ..Default::default() };
+        let v = View {
+            leading: true,
+            members: vec![
+                m("m1", true, false, home),
+                m("air", false, true, batt),
+                m("mini", false, true, home),
+                m("old", false, false, home),
+            ],
+            ..Default::default()
+        };
         let t0 = 1_000_000;
         let u = |for_s, by, of| Unreached { for_s: Some(for_s), by, of };
         let all = |_: &str| true;
@@ -1024,7 +1349,14 @@ mod tests {
         ];
         let n = notes(&events, "mini", |id| id.trim_start_matches("m-").to_string(), 5);
         let said: Vec<&str> = n.iter().map(|e| e.note.as_str()).collect();
-        assert_eq!(said, ["term 4: handed over by mini", "its handover of term 3 to air: over", "stepped down from term 3: handed over to air"]);
+        assert_eq!(
+            said,
+            [
+                "term 4: handed over by mini",
+                "its handover of term 3 to air: over",
+                "stepped down from term 3: handed over to air"
+            ]
+        );
         assert!(n.iter().all(|e| e.kind == "term" && e.worker.as_deref() == Some("mini") && e.t == 5));
     }
 
@@ -1054,7 +1386,8 @@ mod tests {
             let mac = |n: &str| {
                 let home = d.join(n).join("agent");
                 let nas: SharedNas = Arc::new(Share::new(&r));
-                let mut side = Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas).unwrap().unwrap();
+                let mut side =
+                    Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas).unwrap().unwrap();
                 // (Its clocks virtual: time passes as the test says, `pass`, however slowly a busy
                 // Mac steps it.)
                 side.set_clock(store::clock::Virtual::new());
@@ -1083,7 +1416,9 @@ mod tests {
                 self.run.tend_reach();
                 let out = self.run.step(true);
                 if out.settle {
-                    self.run.settled = Some(serde_json::json!({ "leases": { "next": 1, "leases": [] }, "costs": {}, "failed": [], "pause": null, "pause_at": 0 }));
+                    self.run.settled = Some(
+                        serde_json::json!({ "leases": { "next": 1, "leases": [] }, "costs": {}, "failed": [], "pause": null, "pause_at": 0 }),
+                    );
                 }
                 after(&mut self.run, &out, &self.root, &self.home, None);
                 out
@@ -1142,7 +1477,11 @@ mod tests {
                 if done(macs) {
                     return;
                 }
-                assert!(std::time::Instant::now() < end, "not done in five minutes: {:?}", macs.iter().map(|m| m.run.controls.kept.asked.clone()).collect::<Vec<_>>());
+                assert!(
+                    std::time::Instant::now() < end,
+                    "not done in five minutes: {:?}",
+                    macs.iter().map(|m| m.run.controls.kept.asked.clone()).collect::<Vec<_>>()
+                );
                 std::thread::sleep(std::time::Duration::from_millis(30));
             }
         }
@@ -1158,7 +1497,11 @@ mod tests {
             let mb = v.members.iter().find(|m| m.me).unwrap();
             assert!(mb.can_lead && mb.state == "home on power", "{mb:?}");
             assert!(v.members.iter().any(|m| m.leads && !m.can_lead && m.why_not.as_deref() == Some("it leads")));
-            assert_eq!(v.takeover.as_ref().and_then(|t| t.force.clone()).map(|f| f.contains("in touch")), Some(true), "the lead in touch: a takeover needs force");
+            assert_eq!(
+                v.takeover.as_ref().and_then(|t| t.force.clone()).map(|f| f.contains("in touch")),
+                Some(true),
+                "the lead in touch: a takeover needs force"
+            );
             // "Make This Mac Lead" on B: passed on to A by mail; A hands over; B leads term 2.
             b.ask(LeadAsk::Give { to: ib.clone() });
             b.go();
@@ -1167,14 +1510,23 @@ mod tests {
             until(&mut [&mut a, &mut b], |m| m[1].asked().state == State::Done);
             assert!(b.asked().said.contains("leads term 2"), "{:?}", b.asked());
             assert_eq!(a.run.side.driver().leads(), None);
-            let term2: crate::pool::term::Term = serde_json::from_slice(&std::fs::read(a.root.join("state/build/terms/2.json")).unwrap()).unwrap();
+            let term2: crate::pool::term::Term =
+                serde_json::from_slice(&std::fs::read(a.root.join("state/build/terms/2.json")).unwrap()).unwrap();
             assert!(term2.how.starts_with("handed over by") && term2.member == ib, "{term2:?}");
-            assert!(a.run.controls.kept.change.as_ref().is_some_and(|c| c.said.starts_with(&format!("No longer leading term 1: handed over to {}", b.run.side.member().host)) && !c.said.contains(&ib)), "{:?}", a.run.controls.kept.change);
+            assert!(
+                a.run.controls.kept.change.as_ref().is_some_and(|c| c
+                    .said
+                    .starts_with(&format!("No longer leading term 1: handed over to {}", b.run.side.member().host))
+                    && !c.said.contains(&ib)),
+                "{:?}",
+                a.run.controls.kept.change
+            );
             // The history: A noted the handover (no coordinator here: on the NAS, kept for its next).
             let notes = std::fs::read_to_string(a.home.join("pool").join(NOTES)).unwrap();
             assert!(notes.contains("term 2: handed over by") && notes.contains("stepped down from term 1"), "{notes}");
             let day = crate::pool::journal::day(a.run.side.now()).unwrap();
-            let nas = std::fs::read_to_string(a.root.join("state/coord/history").join(day).join(format!("{ia}.jsonl"))).unwrap();
+            let nas = std::fs::read_to_string(a.root.join("state/coord/history").join(day).join(format!("{ia}.jsonl")))
+                .unwrap();
             assert!(nas.contains("term 2: handed over by") && nas.contains("stepped down from term 1"), "{nas}");
             // And back: "Hand the Build To ▸ A" on the lead, B.
             until(&mut [&mut a, &mut b], |m| m[1].view().members.iter().any(|x| x.member == ia && x.can_lead));
@@ -1199,7 +1551,13 @@ mod tests {
             a.run.side.broker = Some(broker("http://mac-a:8090"));
             b.run.side.broker = Some(broker("http://mac-b:8090"));
             b.run.cx.lead_urls = vec!["http://mac-a:8090".into()];
-            b.run.prober.probe = Arc::new(|u: &[String]| if u.iter().any(|u| u.contains("mac-a")) { Err((Cause::TimedOut, "timeout: connect".into())) } else { Ok(()) });
+            b.run.prober.probe = Arc::new(|u: &[String]| {
+                if u.iter().any(|u| u.contains("mac-a")) {
+                    Err((Cause::TimedOut, "timeout: connect".into()))
+                } else {
+                    Ok(())
+                }
+            });
             // Less than REPORT_S of failures: nothing said yet.
             pass_all(&mut [&mut a, &mut b], 60);
             assert!(a.view().unreached.is_empty() && b.view().unreached.is_empty());
@@ -1209,27 +1567,48 @@ mod tests {
             pass_all(&mut [&mut a, &mut b], 40);
             (a.go(), b.go());
             for v in [a.view(), b.view()] {
-                assert!(v.unreached.len() == 1 && v.unreached[0].contains("coordinator is unreachable from") && v.unreached[0].contains("connection timed out (") && v.unreached[0].contains("asleep, off the network, or its firewall blocking Scenic") && v.unreached[0].contains("gets no work while"), "{:?}", v.unreached);
+                assert!(
+                    v.unreached.len() == 1
+                        && v.unreached[0].contains("coordinator is unreachable from")
+                        && v.unreached[0].contains("connection timed out (")
+                        && v.unreached[0].contains("asleep, off the network, or its firewall blocking Scenic")
+                        && v.unreached[0].contains("gets no work while"),
+                    "{:?}",
+                    v.unreached
+                );
                 let ma = v.members.iter().find(|m| m.member == ia).unwrap();
                 assert!(ma.unreached.as_deref().is_some_and(|w| w.starts_with("unreachable from")), "{ma:?}");
                 assert!(v.members.iter().find(|m| m.member == ib).is_some_and(|m| m.unreached.is_none() && m.can_lead));
             }
-            assert!(said(&b.view(), b.run.side.now()).iter().any(|l| l.contains("System Settings › Network › Firewall")));
+            assert!(said(&b.view(), b.run.side.now())
+                .iter()
+                .any(|l| l.contains("System Settings › Network › Firewall")));
             assert_eq!(a.run.side.driver().leads(), Some(1), "not yet: reported for less than AWAY_S");
             // Reported AWAY_S: A hands the lead to B by itself.
             pass_all(&mut [&mut a, &mut b], AWAY_S);
             until(&mut [&mut a, &mut b], |m| m[1].run.side.driver().leads() == Some(2));
-            let term2: crate::pool::term::Term = serde_json::from_slice(&std::fs::read(a.root.join("state/build/terms/2.json")).unwrap()).unwrap();
+            let term2: crate::pool::term::Term =
+                serde_json::from_slice(&std::fs::read(a.root.join("state/build/terms/2.json")).unwrap()).unwrap();
             assert!(term2.member == ib && term2.how.starts_with("handed over by"), "{term2:?}");
             assert!(a.run.controls.kept.away_at > 0);
             // B leads; A, a member whose broker B can't reach, can't be handed the lead: not by the
             // views, the asks, nor the driver.
-            until(&mut [&mut a, &mut b], |m| m[1].view().members.iter().any(|x| x.member == ia && !x.can_lead && x.why_not.as_deref().is_some_and(|w| w.starts_with("unreachable from"))));
+            until(&mut [&mut a, &mut b], |m| {
+                m[1].view().members.iter().any(|x| {
+                    x.member == ia
+                        && !x.can_lead
+                        && x.why_not.as_deref().is_some_and(|w| w.starts_with("unreachable from"))
+                })
+            });
             let why = b.run.side.hand_to(&ia).unwrap_err();
             assert!(why.contains("connection timed out"), "{why}");
             b.ask(LeadAsk::Give { to: ia.clone() });
             b.go();
-            assert!(b.asked().state == State::Refused && b.asked().said.contains("unreachable from"), "{:?}", b.asked());
+            assert!(
+                b.asked().state == State::Refused && b.asked().said.contains("unreachable from"),
+                "{:?}",
+                b.asked()
+            );
             a.ask(LeadAsk::Give { to: ia.clone() });
             a.go();
             assert_eq!(a.asked().state, State::Refused, "{:?}", a.asked());
@@ -1254,12 +1633,19 @@ mod tests {
             let (mut a, mut b) = pool(d.path());
             let ia = a.id();
             // B has no broker: A tries nothing of it, so nobody reached it lately.
-            a.run.side.broker = Some(crate::coord::brokers::Broker { urls: vec!["http://mac-a:8090".into()], ..Default::default() });
+            a.run.side.broker =
+                Some(crate::coord::brokers::Broker { urls: vec!["http://mac-a:8090".into()], ..Default::default() });
             b.run.cx.lead_urls = vec!["http://mac-a:8090".into()];
             b.run.prober.probe = Arc::new(|_: &[String]| Err((Cause::Refused, "connection refused".into())));
             pass_all(&mut [&mut a, &mut b], REPORT_S + AWAY_S + 3600);
             let v = a.view();
-            assert!(v.unreached.len() == 1 && v.unreached[0].contains("connection refused (") && v.unreached[0].contains("firewall refusing Scenic"), "{:?}", v.unreached);
+            assert!(
+                v.unreached.len() == 1
+                    && v.unreached[0].contains("connection refused (")
+                    && v.unreached[0].contains("firewall refusing Scenic"),
+                "{:?}",
+                v.unreached
+            );
             assert_eq!(a.run.side.driver().leads(), Some(1));
             assert_eq!(a.run.controls.kept.away_at, 0);
             assert!(v.members.iter().any(|m| m.member == ia && m.leads));
@@ -1277,7 +1663,11 @@ mod tests {
             // (Both of this test's members have this Mac's host name: named by it, neither.)
             a.ask(LeadAsk::Give { to: a.run.side.member().host.to_lowercase() });
             a.go();
-            assert!(a.asked().state == State::Refused && a.asked().said.contains("2 members are called"), "{:?}", a.asked());
+            assert!(
+                a.asked().state == State::Refused && a.asked().said.contains("2 members are called"),
+                "{:?}",
+                a.asked()
+            );
             // To the lead itself.
             a.ask(LeadAsk::Give { to: a.id() });
             let o = a.go();
@@ -1289,11 +1679,17 @@ mod tests {
             let o = a.go();
             assert!(a.asked().state == State::Refused && a.asked().said.contains("out of touch"), "{:?}", a.asked());
             assert!(a.view().members.iter().any(|m| m.member == ib && !m.can_lead && m.state == "out of touch"));
-            assert!(!o.events.iter().any(|e| matches!(e, Event::Handover { .. })) && a.run.side.driver().leads() == Some(1));
+            assert!(
+                !o.events.iter().any(|e| matches!(e, Event::Handover { .. })) && a.run.side.driver().leads() == Some(1)
+            );
             // B's ask to take over, unforced, the lead in touch: refused, saying force is needed.
             b.ask(LeadAsk::Take { force: false, downgrade: false });
             b.go();
-            assert!(b.asked().state == State::Refused && b.asked().said.contains("needs the owner's force"), "{:?}", b.asked());
+            assert!(
+                b.asked().state == State::Refused && b.asked().said.contains("needs the owner's force"),
+                "{:?}",
+                b.asked()
+            );
             assert_eq!(b.run.side.driver().leads(), None);
         }
 
@@ -1310,17 +1706,28 @@ mod tests {
             a.pass(31);
             a.go();
             let mb = a.view().members.into_iter().find(|m| m.member == ib).unwrap();
-            assert!(!mb.can_lead && mb.state == "away" && mb.why_not.as_deref().is_some_and(|w| w.contains("away from home")), "{mb:?}");
+            assert!(
+                !mb.can_lead
+                    && mb.state == "away"
+                    && mb.why_not.as_deref().is_some_and(|w| w.contains("away from home")),
+                "{mb:?}"
+            );
             a.ask(LeadAsk::Give { to: ib.clone() });
             let o = a.go();
             assert!(a.asked().state == State::Refused && a.asked().said.contains("away from home"), "{:?}", a.asked());
-            assert!(!o.events.iter().any(|e| matches!(e, Event::Handover { .. })) && a.run.side.driver().leads() == Some(1));
+            assert!(
+                !o.events.iter().any(|e| matches!(e, Event::Handover { .. })) && a.run.side.driver().leads() == Some(1)
+            );
             // On battery below the least a lead runs on, the same.
             b.conds = Conds { home: true, ac: false, battery: Some(12), able: false };
             b.go();
             a.ask(LeadAsk::Give { to: ib.clone() });
             a.go();
-            assert!(a.asked().state == State::Refused && a.asked().said.contains("on battery at 12%"), "{:?}", a.asked());
+            assert!(
+                a.asked().state == State::Refused && a.asked().said.contains("on battery at 12%"),
+                "{:?}",
+                a.asked()
+            );
             // Home on power again: handed over.
             b.conds = HOME;
             b.go();
@@ -1337,7 +1744,11 @@ mod tests {
             let o = a.go();
             assert!(o.events.iter().any(|e| matches!(e, Event::Handover { what: "offered", .. })), "{:?}", o.events);
             assert_eq!(a.asked().state, State::Going);
-            assert!(a.view().handing.as_ref().is_some_and(|h| h.stage == Stage::Offered && h.to == b.id()), "{:?}", a.view().handing);
+            assert!(
+                a.view().handing.as_ref().is_some_and(|h| h.stage == Stage::Offered && h.to == b.id()),
+                "{:?}",
+                a.view().handing
+            );
             // B never answers: the offer's time on, it's given up; A leads term 1 still.
             a.pass(crate::pool::handover::OFFER_S + 1);
             a.go();
@@ -1377,7 +1788,8 @@ mod tests {
             b.go();
             until(&mut [&mut b], |m| m[0].asked().state == State::Done);
             assert_eq!(b.run.side.driver().leads(), Some(2));
-            let term2: crate::pool::term::Term = serde_json::from_slice(&std::fs::read(b.root.join("state/build/terms/2.json")).unwrap()).unwrap();
+            let term2: crate::pool::term::Term =
+                serde_json::from_slice(&std::fs::read(b.root.join("state/build/terms/2.json")).unwrap()).unwrap();
             assert!(term2.how.starts_with("taken over by"), "{term2:?}");
             assert!(b.run.controls.kept.change.as_ref().is_some_and(|c| c.said.contains("This Mac leads term 2")));
             drop(a);
@@ -1396,12 +1808,21 @@ mod tests {
             b.go();
             let v = b.view();
             assert_eq!(v.no_lead, None, "{v:?}");
-            assert!(v.quiet.as_ref().is_some_and(|q| q.contains("heartbeat is late") && q.contains("its coordinator answered this Mac 20 s ago")), "{v:?}");
+            assert!(
+                v.quiet.as_ref().is_some_and(
+                    |q| q.contains("heartbeat is late") && q.contains("its coordinator answered this Mac 20 s ago")
+                ),
+                "{v:?}"
+            );
             assert!(said(&v, now).iter().any(|l| Some(l) == v.quiet.as_ref()));
             // Taking over unforced: refused, saying so; forced, the owner's call.
             b.ask(LeadAsk::Take { force: false, downgrade: false });
             b.go();
-            assert!(b.asked().state == State::Refused && b.asked().said.contains("coordinator answered this Mac"), "{:?}", b.asked());
+            assert!(
+                b.asked().state == State::Refused && b.asked().said.contains("coordinator answered this Mac"),
+                "{:?}",
+                b.asked()
+            );
             assert_eq!(b.run.side.driver().leads(), None);
             // Late for an hour: the alert all the same, its takeover forced.
             b.pass(ALERT_S);
@@ -1415,7 +1836,11 @@ mod tests {
             b.run.cx.lead_answered = Some(now - ANSWERED_S);
             b.run.controls.stale = true;
             b.go();
-            assert!(b.view().no_lead.as_ref().is_some_and(|w| w.contains("out of touch")) && b.view().quiet.is_none(), "{:?}", b.view());
+            assert!(
+                b.view().no_lead.as_ref().is_some_and(|w| w.contains("out of touch")) && b.view().quiet.is_none(),
+                "{:?}",
+                b.view()
+            );
             drop(a);
         }
 
@@ -1431,7 +1856,12 @@ mod tests {
             b.pass(ALERT_S - 660 + VIEW_S);
             b.go();
             let w = b.view().alert.expect("an alert");
-            assert!(w.starts_with("No lead for 60 min: ") && w.contains("out of touch") && w.contains("`scenic lead take` on this Mac"), "{w}");
+            assert!(
+                w.starts_with("No lead for 60 min: ")
+                    && w.contains("out of touch")
+                    && w.contains("`scenic lead take` on this Mac"),
+                "{w}"
+            );
             assert!(said(&b.view(), b.run.side.now())[0] == w, "`scenic lead` and `scenic status` say it first");
             drop(a);
         }
@@ -1496,7 +1926,8 @@ mod tests {
             let root = a.root.clone();
             let switch_to = |file: &str| {
                 let p = root.join("state/build/manifest.json");
-                let mut m: std::collections::BTreeMap<String, String> = std::fs::read(&p).ok().and_then(|x| serde_json::from_slice(&x).ok()).unwrap_or_default();
+                let mut m: std::collections::BTreeMap<String, String> =
+                    std::fs::read(&p).ok().and_then(|x| serde_json::from_slice(&x).ok()).unwrap_or_default();
                 m.insert(crate::inputs::switched_logical(crate::inputs::regions::UNIT), file.to_string());
                 std::fs::create_dir_all(p.parent().unwrap()).unwrap();
                 std::fs::write(&p, serde_json::to_vec(&m).unwrap()).unwrap();
@@ -1504,7 +1935,9 @@ mod tests {
             // Proved on an app newer than theirs: B can't be handed the lead, and the view says why.
             std::fs::write(a.root.join("sw.json"), br#"{"same": true, "app": "29991231-0000-aaaaaaa"}"#).unwrap();
             switch_to("sw.json");
-            assert!(a.run.side.hand_to(&ib).unwrap_err().contains("older than the one the newer readers' switch (the regions', the elevation datasets') was recorded on"));
+            assert!(a.run.side.hand_to(&ib).unwrap_err().contains(
+                "older than the one the newer readers' switch (the regions', the elevation datasets') was recorded on"
+            ));
             a.run.controls.stale = true;
             a.go();
             let v = a.view();
@@ -1516,7 +1949,11 @@ mod tests {
             a.run.controls.stale = true;
             a.go();
             let v = a.view();
-            assert!(v.members.iter().all(|m| m.state.starts_with("the readers' switches' app unknown")), "{:?}", v.members);
+            assert!(
+                v.members.iter().all(|m| m.state.starts_with("the readers' switches' app unknown")),
+                "{:?}",
+                v.members
+            );
         }
     }
 }

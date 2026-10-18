@@ -155,7 +155,8 @@ impl TerrainTiles {
         if self.elevation.as_ref().is_some_and(|(c, _)| c == want) {
             return;
         }
-        let got = crate::inputs::open(root, m, elevation::UNIT).and_then(|a| crate::dem::declared::accepted(&a.ok_or_else(|| anyhow::anyhow!("no accepted version"))?));
+        let got = crate::inputs::open(root, m, elevation::UNIT)
+            .and_then(|a| crate::dem::declared::accepted(&a.ok_or_else(|| anyhow::anyhow!("no accepted version"))?));
         match got {
             Ok(ds) => {
                 self.unread.remove(want);
@@ -210,9 +211,15 @@ impl TerrainTiles {
         }
         let r = (|| -> anyhow::Result<KeyedSources> {
             let s = crate::inputs::sources::read(root, m)?;
-            Ok(KeyedSources { release: crate::buildtiles::release_of(root, m)?, unit: crate::inputs::sources::unit_extra(&s)?, trees: crate::inputs::sources::trees_extra(&s)? })
+            Ok(KeyedSources {
+                release: crate::buildtiles::release_of(root, m)?,
+                unit: crate::inputs::sources::unit_extra(&s)?,
+                trees: crate::inputs::sources::trees_extra(&s)?,
+            })
         })()
-        .map_err(|e| eprintln!("agent: the units and tree cover wait: the declared sources in {want} can't be read ({e:#})"))
+        .map_err(|e| {
+            eprintln!("agent: the units and tree cover wait: the declared sources in {want} can't be read ({e:#})")
+        })
         .ok();
         self.buildings = Some((want.clone(), r));
     }
@@ -225,14 +232,21 @@ impl TerrainTiles {
         if self.depth.as_ref().is_some_and(|(c, r)| c == want && r.is_some()) {
             return;
         }
-        let r = crate::depth::grids::declared(root, m).map_err(|e| eprintln!("agent: the depth waits: the declared depth sources in {want} can't be read ({e:#})")).ok().map(std::sync::Arc::new);
+        let r = crate::depth::grids::declared(root, m)
+            .map_err(|e| {
+                eprintln!("agent: the depth waits: the declared depth sources in {want} can't be read ({e:#})")
+            })
+            .ok()
+            .map(std::sync::Arc::new);
         self.depth = Some((want.clone(), r));
     }
 
     /// The declared depth sources of the accepted sources `m` names: none declared, an empty list;
     /// None while they can't be read now (the depth's work waits).
     pub fn depth(&self, m: &BTreeMap<String, String>) -> Option<std::sync::Arc<Vec<crate::depth::grids::Source>>> {
-        let Some(want) = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) else { return Some(Default::default()) };
+        let Some(want) = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT)) else {
+            return Some(Default::default());
+        };
         match &self.depth {
             Some((c, Some(d))) if c == want => Some(d.clone()),
             #[cfg(test)]
@@ -260,7 +274,11 @@ impl TerrainTiles {
         #[cfg(test)]
         if self.buildings.is_none() {
             static TEST: std::sync::OnceLock<KeyedSources> = std::sync::OnceLock::new();
-            return Some(TEST.get_or_init(|| KeyedSources { release: crate::buildtiles::TEST_RELEASE.into(), unit: None, trees: None }));
+            return Some(TEST.get_or_init(|| KeyedSources {
+                release: crate::buildtiles::TEST_RELEASE.into(),
+                unit: None,
+                trees: None,
+            }));
         }
         let want = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT))?;
         match &self.buildings {
@@ -304,30 +322,46 @@ impl TerrainTiles {
         if !elevation::switched(m) {
             return Ok(None);
         }
-        let want = m.get(&crate::inputs::logical(elevation::UNIT)).ok_or_else(|| Unread("the build reads the declared elevation datasets, but the records name no accepted version".into()))?;
+        let want = m.get(&crate::inputs::logical(elevation::UNIT)).ok_or_else(|| {
+            Unread("the build reads the declared elevation datasets, but the records name no accepted version".into())
+        })?;
         match &self.elevation {
             Some((c, e)) if c == want => Ok(Some(e.clone())),
-            _ => Err(Unread(format!("the elevation datasets' index {want} isn't read{}", self.unread.get(want).map(|w| format!(": {w}")).unwrap_or_default()))),
+            _ => Err(Unread(format!(
+                "the elevation datasets' index {want} isn't read{}",
+                self.unread.get(want).map(|w| format!(": {w}")).unwrap_or_default()
+            ))),
         }
     }
 
     /// Holds the water digests `m` names, and only those (one that can't be read now: tried again
     /// with the next load, its targets' keys unknown meanwhile).
     fn load_water(&mut self, root: &Path, m: &BTreeMap<String, String>) {
-        let want: BTreeSet<&str> = m.range(crate::terrain_water::IDX_PREFIX.to_string()..).take_while(|(l, _)| l.starts_with(crate::terrain_water::IDX_PREFIX)).map(|(_, c)| c.as_str()).collect();
+        let want: BTreeSet<&str> = m
+            .range(crate::terrain_water::IDX_PREFIX.to_string()..)
+            .take_while(|(l, _)| l.starts_with(crate::terrain_water::IDX_PREFIX))
+            .map(|(_, c)| c.as_str())
+            .collect();
         self.water.retain(|c, _| want.contains(c.as_str()));
         for c in want {
             if self.water.contains_key(c) {
                 continue;
             }
-            let kept = store::naming::parse_content_name(c).and_then(|n| Some(self.dir.as_deref()?.join(format!("{}.water", n.hash16))));
-            let local = kept.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| crate::terrain_water::WaterIdx::from_bytes(&b).ok());
+            let kept = store::naming::parse_content_name(c)
+                .and_then(|n| Some(self.dir.as_deref()?.join(format!("{}.water", n.hash16))));
+            let local = kept
+                .as_ref()
+                .and_then(|p| std::fs::read(p).ok())
+                .and_then(|b| crate::terrain_water::WaterIdx::from_bytes(&b).ok());
             let got = match local {
                 Some(w) => Ok(w),
                 None => std::fs::read(root.join(c)).map_err(anyhow::Error::from).and_then(|b| {
                     let w = crate::terrain_water::WaterIdx::from_bytes(&b)?;
                     if let Some(p) = &kept {
-                        if let Err(e) = std::fs::create_dir_all(p.parent().unwrap()).map_err(anyhow::Error::from).and_then(|()| crate::whole::write(p, &b)) {
+                        if let Err(e) = std::fs::create_dir_all(p.parent().unwrap())
+                            .map_err(anyhow::Error::from)
+                            .and_then(|()| crate::whole::write(p, &b))
+                        {
                             eprintln!("tiles: {c} not kept: {e:#}");
                         }
                     }
@@ -353,7 +387,12 @@ impl TerrainTiles {
 
     /// The pins of the water sources whose digests `m` names and are held, sorted.
     pub fn water_pins(&self, m: &BTreeMap<String, String>) -> Vec<String> {
-        let mut v: Vec<String> = m.range(crate::terrain_water::IDX_PREFIX.to_string()..).take_while(|(l, _)| l.starts_with(crate::terrain_water::IDX_PREFIX)).filter_map(|(_, c)| self.water.get(c)).map(|w| w.pin.clone()).collect();
+        let mut v: Vec<String> = m
+            .range(crate::terrain_water::IDX_PREFIX.to_string()..)
+            .take_while(|(l, _)| l.starts_with(crate::terrain_water::IDX_PREFIX))
+            .filter_map(|(_, c)| self.water.get(c))
+            .map(|w| w.pin.clone())
+            .collect();
         v.sort();
         v.dedup();
         v
@@ -380,7 +419,8 @@ impl TerrainTiles {
     fn tidy(&self, want: &BTreeSet<&str>) {
         let Some(dir) = &self.dir else { return };
         let Ok(rd) = std::fs::read_dir(dir) else { return };
-        let named: BTreeSet<&str> = want.iter().filter_map(|c| store::naming::parse_content_name(c)).map(|c| c.hash16).collect();
+        let named: BTreeSet<&str> =
+            want.iter().filter_map(|c| store::naming::parse_content_name(c)).map(|c| c.hash16).collect();
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             let age = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).unwrap_or_default();
@@ -426,7 +466,8 @@ impl TerrainTiles {
     /// Holds a pack's tiles as given (tests: no pack to read).
     #[cfg(test)]
     pub fn hold(&mut self, content: &str, tiles: impl IntoIterator<Item = Tile>) {
-        let mut t: Vec<(u64, u64)> = tiles.into_iter().map(|(z, x, y, h)| (store::pack::tile_key(z, x, y), h)).collect();
+        let mut t: Vec<(u64, u64)> =
+            tiles.into_iter().map(|(z, x, y, h)| (store::pack::tile_key(z, x, y), h)).collect();
         t.sort_unstable();
         self.unread.remove(content);
         self.held.insert(content.to_string(), t);
@@ -461,7 +502,10 @@ fn read(dir: Option<&Path>, root: &Path, content: &str) -> Result<Held, String> 
     let ix = PackIndex::read_from(&f).map_err(|e| format!("{content}: {e:#}"))?;
     if let Some(p) = &kept {
         // (Not kept: read from the NAS again next time, which is only slower.)
-        if let Err(e) = std::fs::create_dir_all(p.parent().unwrap()).map_err(anyhow::Error::from).and_then(|()| crate::whole::write(p, &ix.to_bytes())) {
+        if let Err(e) = std::fs::create_dir_all(p.parent().unwrap())
+            .map_err(anyhow::Error::from)
+            .and_then(|()| crate::whole::write(p, &ix.to_bytes()))
+        {
             eprintln!("tiles: {content}'s index not kept: {e:#}");
         }
     }
@@ -489,7 +533,10 @@ impl<'a> Reader<'a> {
                 let Some(c) = m.get(&format!("layers/terrain/{scope}/{pz}-{px}-{py}")) else { return Ok(None) };
                 match tiles.held.get(c) {
                     Some(t) => Ok(Some(&t[..])),
-                    None => Err(Unread(format!("{c}: {}", tiles.unread.get(c).map_or("its index isn't read yet", String::as_str)))),
+                    None => Err(Unread(format!(
+                        "{c}: {}",
+                        tiles.unread.get(c).map_or("its index isn't read yet", String::as_str)
+                    ))),
                 }
             })
             .clone()
@@ -525,7 +572,14 @@ mod tests {
 
     /// A terrain pack of `tiles` (each tile's bytes: its z/x/y and `salt`) at its content name under
     /// `root`, as the manifest names it.
-    fn pack(root: &Path, m: &mut BTreeMap<String, String>, logical: &str, hash16: &str, tiles: &[(u8, u32, u32)], salt: &str) -> BTreeMap<(u8, u32, u32), u64> {
+    fn pack(
+        root: &Path,
+        m: &mut BTreeMap<String, String>,
+        logical: &str,
+        hash16: &str,
+        tiles: &[(u8, u32, u32)],
+        salt: &str,
+    ) -> BTreeMap<(u8, u32, u32), u64> {
         let content = format!("{logical}.{hash16}.pack");
         let p = root.join(&content);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -546,8 +600,22 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, dir) = (d.path().join("nas"), d.path().join("pack-idx"));
         let mut m = BTreeMap::new();
-        let hi = pack(&root, &mut m, "layers/terrain/hi/6-28-16", "1111111111111111", &[(9, 224, 128), (12, 1792, 1024)], "a");
-        let lo = pack(&root, &mut m, "layers/terrain/lo/3-3-2", "2222222222222222", &[(3, 3, 2), (6, 28, 16), (8, 112, 64)], "a");
+        let hi = pack(
+            &root,
+            &mut m,
+            "layers/terrain/hi/6-28-16",
+            "1111111111111111",
+            &[(9, 224, 128), (12, 1792, 1024)],
+            "a",
+        );
+        let lo = pack(
+            &root,
+            &mut m,
+            "layers/terrain/lo/3-3-2",
+            "2222222222222222",
+            &[(3, 3, 2), (6, 28, 16), (8, 112, 64)],
+            "a",
+        );
         // Another layer's pack: not the terrain's.
         m.insert("layers/slope/hi/6-28-16".into(), "layers/slope/hi/6-28-16.3333333333333333.pack".into());
         let mut t = TerrainTiles::new(Some(dir.clone()));
@@ -590,7 +658,10 @@ mod tests {
         // pack the manifest doesn't name has none, and the next load tries it again.
         m.insert("layers/terrain/hi/6-29-16".into(), "layers/terrain/hi/6-29-16.4444444444444444.pack".into());
         assert_eq!(t.load(&root, &m), 0);
-        assert_eq!(t.unread().map(|(c, _)| c.as_str()).collect::<Vec<_>>(), ["layers/terrain/hi/6-29-16.4444444444444444.pack"]);
+        assert_eq!(
+            t.unread().map(|(c, _)| c.as_str()).collect::<Vec<_>>(),
+            ["layers/terrain/hi/6-29-16.4444444444444444.pack"]
+        );
         let e = t.hash(&m, 12, 1856, 1024).unwrap_err();
         assert!(e.0.starts_with("layers/terrain/hi/6-29-16.4444444444444444.pack: "), "{e}");
         assert_eq!(t.hash(&m, 12, 1920, 1024).unwrap(), None);

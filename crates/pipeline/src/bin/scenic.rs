@@ -103,7 +103,8 @@ fn timings(args: &[String]) -> Result<()> {
     } else {
         let asked = (|| -> Result<Vec<RunRec>> {
             let root = root(args, false)?;
-            let c = pipeline::coord::client::Client::from_nas(&root, &agent::cond::host_name())?.context("no coordinator to ask")?;
+            let c = pipeline::coord::client::Client::from_nas(&root, &agent::cond::host_name())?
+                .context("no coordinator to ask")?;
             let (code, v) = c.post_json("/work/timings", &serde_json::json!({ "kind": kind, "last": last }))?;
             anyhow::ensure!(code == 200, "the coordinator answered {code} (an older app?)");
             Ok(serde_json::from_value(v["runs"].clone())?)
@@ -143,11 +144,15 @@ fn timings_publish(args: &[String]) -> Result<()> {
         Some(f) => pubtimes::load_history(None, Some(Path::new(&f)), days),
         None => pubtimes::load_history(root.as_deref(), Some(&home.join("coord/history.jsonl")), days),
     };
-    let servers = root.as_deref().map(|r| pubtimes::read_servers(r, now_s().saturating_sub(days * 86400))).unwrap_or_default();
+    let servers =
+        root.as_deref().map(|r| pubtimes::read_servers(r, now_s().saturating_sub(days * 86400))).unwrap_or_default();
     let (cats, units) = pubtimes::chains(&events, &servers);
     if flag(args, "--json") {
         let from = cats.len().saturating_sub(last);
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "catalogs": &cats[from..], "units": units }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "catalogs": &cats[from..], "units": units }))?
+        );
         return Ok(());
     }
     if cats.is_empty() {
@@ -204,9 +209,12 @@ fn lead(args: &[String]) -> Result<()> {
             return Ok(());
         }
         Some("give") => {
-            let to = pos.get(1).map(|s| s.to_string()).context("scenic lead give <member: its host name or member id>")?;
+            let to =
+                pos.get(1).map(|s| s.to_string()).context("scenic lead give <member: its host name or member id>")?;
             // (What the agent would say, said at once when it says so already.)
-            if let Some(m) = view().and_then(|v| v.members.into_iter().find(|m| m.member == to || m.host.eq_ignore_ascii_case(&to))) {
+            if let Some(m) =
+                view().and_then(|v| v.members.into_iter().find(|m| m.member == to || m.host.eq_ignore_ascii_case(&to)))
+            {
                 if !m.can_lead {
                     bail!("the lead can't be handed to {}: {}", m.host, m.why_not.unwrap_or_default());
                 }
@@ -237,7 +245,9 @@ fn lead(args: &[String]) -> Result<()> {
     let mut last = String::new();
     while start.elapsed() < std::time::Duration::from_secs(150) {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        let Some(a) = view().and_then(|v| v.asked).filter(|a| a.ask == r.ask && a.at >= r.at.saturating_sub(1)) else { continue };
+        let Some(a) = view().and_then(|v| v.asked).filter(|a| a.ask == r.ask && a.at >= r.at.saturating_sub(1)) else {
+            continue;
+        };
         let now = format!("{:?}: {}", a.state, a.said);
         if now != last {
             println!("{}", a.said);
@@ -268,15 +278,21 @@ fn inputs(args: &[String]) -> Result<()> {
             pos.push(a);
         }
     }
-    let manifest: std::collections::BTreeMap<String, String> = pipeline::out::read_record(&r.join("state/build/manifest.json"))?;
+    let manifest: std::collections::BTreeMap<String, String> =
+        pipeline::out::read_record(&r.join("state/build/manifest.json"))?;
     let units = gi::units(&r);
     // (Checking, as the lead's status says.)
-    let checking: std::collections::BTreeSet<String> = agent::read_status(Some(&r), &home).map(|s| s.inputs.into_iter().filter(|v| v.state == view::State::Checking).map(|v| v.unit).collect()).unwrap_or_default();
+    let checking: std::collections::BTreeSet<String> = agent::read_status(Some(&r), &home)
+        .map(|s| s.inputs.into_iter().filter(|v| v.state == view::State::Checking).map(|v| v.unit).collect())
+        .unwrap_or_default();
     let views = view::of(&r, &manifest, &units, &checking, &Default::default(), &mut view::Cache::default());
     let by = format!("scenic inputs on {}", agent::cond::host_name());
     let unit_arg = |i: usize| -> Result<String> {
         let u = pos.get(i).map(|s| s.to_string()).context("which unit?")?;
-        anyhow::ensure!(gi::checks(&u).is_some() || views.iter().any(|v| v.unit == u), "{u} isn't a gate unit (scenic inputs lists them)");
+        anyhow::ensure!(
+            gi::checks(&u).is_some() || views.iter().any(|v| v.unit == u),
+            "{u} isn't a gate unit (scenic inputs lists them)"
+        );
         Ok(u)
     };
     match pos.first().copied() {
@@ -403,19 +419,40 @@ fn inputs(args: &[String]) -> Result<()> {
 fn capacity_line(c: &pipeline::coord::Capacity) -> String {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
     let mut v = vec![
-        format!("memory {} free of the {} limit ({} held{})", gb(c.mem_mb), gb(c.limit_mb), gb(c.held_mb), if c.guard { "" } else { ", not guarded" }),
+        format!(
+            "memory {} free of the {} limit ({} held{})",
+            gb(c.mem_mb),
+            gb(c.limit_mb),
+            gb(c.held_mb),
+            if c.guard { "" } else { ", not guarded" }
+        ),
         format!("{} of {} cores free", c.cores_free, c.cores),
-        format!("disk {} free{}", gb(c.disk_mb), if c.reserved_mb > 0 { format!(" ({} reserved)", gb(c.reserved_mb)) } else { String::new() }),
+        format!(
+            "disk {} free{}",
+            gb(c.disk_mb),
+            if c.reserved_mb > 0 { format!(" ({} reserved)", gb(c.reserved_mb)) } else { String::new() }
+        ),
         match (c.ac, c.battery) {
             (true, _) => "on power".to_string(),
             (false, Some(b)) => format!("on battery ({b} %)"),
             (false, None) => "on battery".to_string(),
         },
         (if c.in_use { "in use" } else { "idle" }).to_string(),
-        (if !c.nas { "NAS not reachable" } else if c.home { "NAS reachable" } else { "NAS through Tailscale" }).to_string(),
+        (if !c.nas {
+            "NAS not reachable"
+        } else if c.home {
+            "NAS reachable"
+        } else {
+            "NAS through Tailscale"
+        })
+        .to_string(),
     ];
     if !c.leases.is_empty() {
-        v.push(format!("lease{} {}", if c.leases.len() == 1 { "" } else { "s" }, c.leases.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")));
+        v.push(format!(
+            "lease{} {}",
+            if c.leases.len() == 1 { "" } else { "s" },
+            c.leases.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")
+        ));
     }
     v.push(ago(c.at));
     v.join(" · ")
@@ -426,7 +463,9 @@ fn status(args: &[String]) -> Result<()> {
     // (This Mac's own agent's folder, for what its own status adds (its memory, its view of the
     // pool): `--home`'s; with a `--root` of another build (a scratch one) and no `--home`, none:
     // that build's status alone, never this Mac's real agent's.)
-    let own_home = opt(args, "--home").map(PathBuf::from).or_else(|| opt(args, "--root").is_none().then(|| app_home().join("agent")));
+    let own_home = opt(args, "--home")
+        .map(PathBuf::from)
+        .or_else(|| opt(args, "--root").is_none().then(|| app_home().join("agent")));
     let Some(st) = agent::read_status(root.as_deref(), own_home.as_deref().unwrap_or(Path::new("/nonexistent"))) else {
         bail!("no status yet: the build agent hasn't run (or the NAS isn't mounted)");
     };
@@ -435,7 +474,13 @@ fn status(args: &[String]) -> Result<()> {
     println!(
         "  {} · {} · {}",
         if c.ac { "on power" } else { "on battery" },
-        if !c.nas { "NAS not reachable" } else if c.home { "NAS reachable" } else { "NAS reachable through Tailscale (away from home)" },
+        if !c.nas {
+            "NAS not reachable"
+        } else if c.home {
+            "NAS reachable"
+        } else {
+            "NAS reachable through Tailscale (away from home)"
+        },
         if c.user_active() { "in use" } else { "idle" }
     );
     if now_s().saturating_sub(st.beat) > 600 {
@@ -445,11 +490,22 @@ fn status(args: &[String]) -> Result<()> {
     if let Some(m) = own_home.as_deref().and_then(agent::memguard::live).filter(|m| now_s().saturating_sub(m.at) < 60) {
         let held: u64 = m.held_mb.iter().flatten().sum();
         let frozen = if m.frozen.iter().any(|f| *f) { ", a job frozen past it" } else { "" };
-        println!("  memory: the jobs hold {:.1} GB of this Mac's limit of {:.1} GB ({}{frozen}, {})", held as f64 / 1024.0, m.limit_mb as f64 / 1024.0, if m.on { "guarded" } else { "not guarded" }, ago(m.at));
+        println!(
+            "  memory: the jobs hold {:.1} GB of this Mac's limit of {:.1} GB ({}{frozen}, {})",
+            held as f64 / 1024.0,
+            m.limit_mb as f64 / 1024.0,
+            if m.on { "guarded" } else { "not guarded" },
+            ago(m.at)
+        );
     }
     match &st.job {
         Some(j) => {
-            println!("Running: {} (since {}){}", j.what, ago(j.started), j.paused.as_ref().map(|p| format!(", paused: {p}")).unwrap_or_default());
+            println!(
+                "Running: {} (since {}){}",
+                j.what,
+                ago(j.started),
+                j.paused.as_ref().map(|p| format!(", paused: {p}")).unwrap_or_default()
+            );
             if let Some(w) = &j.waiting {
                 println!("  {w}");
             }
@@ -469,7 +525,12 @@ fn status(args: &[String]) -> Result<()> {
         None => println!("Running: nothing"),
     }
     if let Some(j) = &st.beside {
-        println!("Beside it: {} (since {}){}", j.what, ago(j.started), j.paused.as_ref().map(|p| format!(", paused: {p}")).unwrap_or_default());
+        println!(
+            "Beside it: {} (since {}){}",
+            j.what,
+            ago(j.started),
+            j.paused.as_ref().map(|p| format!(", paused: {p}")).unwrap_or_default()
+        );
         if let Some(w) = &j.waiting {
             println!("  {w}");
         }
@@ -480,7 +541,12 @@ fn status(args: &[String]) -> Result<()> {
     // The lead's decision on the next map update, and why (agent::build::UpdateDecision).
     if let Some(u) = &st.map_update {
         println!("Map update: {} — {}", if u.due { "due" } else { "not due" }, u.why);
-        println!("  gap {} min ({}){}", u.gap_s.div_ceil(60), u.gap_basis, u.since_last_s.map(|s| format!(", the last began {} min ago", s / 60)).unwrap_or_default());
+        println!(
+            "  gap {} min ({}){}",
+            u.gap_s.div_ceil(60),
+            u.gap_basis,
+            u.since_last_s.map(|s| format!(", the last began {} min ago", s / 60)).unwrap_or_default()
+        );
         for r in &u.regions {
             println!("  new work: {} ({})", r.id, r.kinds.join(", "));
         }
@@ -498,13 +564,25 @@ fn status(args: &[String]) -> Result<()> {
     // line per stage, done, under way or to come, and under it a line per step, each the same:
     // its title, its targets done of all (or left) in its noun, and where it runs.
     if !st.checklist.is_empty() {
-        let now: Vec<String> = [&st.job, &st.beside].iter().filter_map(|j| j.as_ref().and_then(|j| agent::step_of(&j.id))).collect();
+        let now: Vec<String> =
+            [&st.job, &st.beside].iter().filter_map(|j| j.as_ref().and_then(|j| agent::step_of(&j.id))).collect();
         let finished = st.checklist.iter().filter(|l| l.finished()).count();
         println!("To the end: {finished} of {} stages done (⇄: any Mac may take it)", st.checklist.len());
         for l in &st.checklist {
             let running = now.iter().any(|n| l.steps.contains(n));
-            let mark = if l.finished() { "✓" } else if running { "▸" } else { "○" };
-            println!("  {mark} {}: {}{}", l.what, l.counts().join(" · "), l.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default());
+            let mark = if l.finished() {
+                "✓"
+            } else if running {
+                "▸"
+            } else {
+                "○"
+            };
+            println!(
+                "  {mark} {}: {}{}",
+                l.what,
+                l.counts().join(" · "),
+                l.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default()
+            );
             if l.finished() {
                 continue;
             }
@@ -512,10 +590,30 @@ fn status(args: &[String]) -> Result<()> {
                 let noun = format!("{}s", agent::steps::noun(&i.step));
                 let here = now.iter().any(|n| n == &i.step);
                 let place = if agent::steps::place(&i.step) == agent::steps::Place::Any { " ⇄" } else { "" };
-                println!("      {} {}: {}{place}", if i.finished() { "✓" } else if here { "▸" } else { "○" }, agent::steps::title(&i.step), count_line(i.done, i.total, i.left, &noun));
+                println!(
+                    "      {} {}: {}{place}",
+                    if i.finished() {
+                        "✓"
+                    } else if here {
+                        "▸"
+                    } else {
+                        "○"
+                    },
+                    agent::steps::title(&i.step),
+                    count_line(i.done, i.total, i.left, &noun)
+                );
             }
             for (k, j) in l.next.iter().take(4).enumerate() {
-                println!("      {}: {j}", if k > 0 { "then" } else if running { "now" } else { "next" });
+                println!(
+                    "      {}: {j}",
+                    if k > 0 {
+                        "then"
+                    } else if running {
+                        "now"
+                    } else {
+                        "next"
+                    }
+                );
             }
         }
     }
@@ -529,9 +627,20 @@ fn status(args: &[String]) -> Result<()> {
     }
     // The gate (docs/inputs.md §4.7): a line per unit held or checking.
     for v in st.inputs.iter().filter(|v| v.state != pipeline::inputs::view::State::Ok) {
-        println!("Inputs: {}{}", v.line(), if v.state == pipeline::inputs::view::State::Held { " (`scenic inputs` says what holds it)" } else { "" });
+        println!(
+            "Inputs: {}{}",
+            v.line(),
+            if v.state == pipeline::inputs::view::State::Held { " (`scenic inputs` says what holds it)" } else { "" }
+        );
     }
-    println!("Regions: {}", if st.regions.is_empty() { "none yet".to_string() } else { st.regions.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ") });
+    println!(
+        "Regions: {}",
+        if st.regions.is_empty() {
+            "none yet".to_string()
+        } else {
+            st.regions.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
+        }
+    );
     for (f, e) in &st.bad_recipes {
         println!("  {f} isn't a valid region: {e}");
     }
@@ -561,11 +670,24 @@ fn status(args: &[String]) -> Result<()> {
     }
     // Other workers, and where a device's browser joins in (docs/workers.md §7).
     for w in &st.workers {
-        println!("Worker: {} — {}{}{}", w.label, w.what, if w.done > 0 { format!(", {} done", w.done) } else { String::new() }, if w.bad { ", stopped: a result differed" } else { "" });
+        println!(
+            "Worker: {} — {}{}{}",
+            w.label,
+            w.what,
+            if w.done > 0 { format!(", {} done", w.done) } else { String::new() },
+            if w.bad { ", stopped: a result differed" } else { "" }
+        );
     }
     // (The lead's own record of it is over HTTPS once `tailscale serve` proxies the coordinator.)
-    let page = own_home.as_ref().and_then(|h| std::fs::read_to_string(h.join("coord/page")).ok()).map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
-    let contact = root.as_ref().and_then(|r| std::fs::read(pipeline::coord::contact_path(r)).ok()).and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(&b).ok());
+    let page = own_home
+        .as_ref()
+        .and_then(|h| std::fs::read_to_string(h.join("coord/page")).ok())
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    let contact = root
+        .as_ref()
+        .and_then(|r| std::fs::read(pipeline::coord::contact_path(r)).ok())
+        .and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(&b).ok());
     let page = match (page, contact) {
         (Some(p), _) => Some(p),
         (None, Some(c)) => c.urls.first().map(|u| format!("{u}/work/")),
@@ -577,7 +699,11 @@ fn status(args: &[String]) -> Result<()> {
     }
     // The map on an iPhone or an iPad (docs/plan.md §4, Devices): its address, which this Mac's
     // server writes.
-    if let Some(m) = std::fs::read_to_string(app_home().join("map-page")).ok().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+    if let Some(m) = std::fs::read_to_string(app_home().join("map-page"))
+        .ok()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+    {
         println!("Map on a device: {m} (open it once on an iPhone or an iPad on the tailnet)");
     }
     Ok(())
@@ -607,7 +733,15 @@ fn steps(args: &[String]) -> Result<()> {
     for st in steps::STAGES {
         println!("{}: {}", st.title, st.does);
         for r in rows.iter().filter(|r| r.stage == st.id) {
-            println!("  {:<26} {:<8} {:<22} {:<8} {:<16} {}", r.title, kind(r.kind), each(r), if r.place == Place::Any { "any Mac" } else { "the lead" }, format!("id {}", r.id), r.does);
+            println!(
+                "  {:<26} {:<8} {:<22} {:<8} {:<16} {}",
+                r.title,
+                kind(r.kind),
+                each(r),
+                if r.place == Place::Any { "any Mac" } else { "the lead" },
+                format!("id {}", r.id),
+                r.does
+            );
         }
     }
     Ok(())
@@ -626,7 +760,8 @@ fn count_line(done: usize, total: Option<usize>, left: Option<usize>, noun: &str
 /// A Mac's build caches in a line: what a clear would free (`scenic clean` there) or why not now,
 /// and the last trim after the build and the last clear.
 fn caches_line(c: &agent::room::Caches) -> String {
-    let mut s = c.clearable.map_or_else(|| "not counted yet".to_string(), |n| format!("{} to clear", agent::room::size(n)));
+    let mut s =
+        c.clearable.map_or_else(|| "not counted yet".to_string(), |n| format!("{} to clear", agent::room::size(n)));
     s += &match &c.why_not {
         Some(w) => format!(" (not now: {w})"),
         None => " (`scenic clean` there)".to_string(),
@@ -642,7 +777,12 @@ fn caches_line(c: &agent::room::Caches) -> String {
     }
     if let Some(r) = &c.room {
         if let Some(t) = &r.target {
-            s += &format!("; disk room target {} ({} free{})", agent::room::size(t.bytes), agent::room::size(r.free), if r.short.is_some() { ", short of it" } else { "" });
+            s += &format!(
+                "; disk room target {} ({} free{})",
+                agent::room::size(t.bytes),
+                agent::room::size(r.free),
+                if r.short.is_some() { ", short of it" } else { "" }
+            );
         }
     }
     s
@@ -671,7 +811,13 @@ fn room(args: &[String]) -> Result<()> {
             println!("the disk room target is off: this Mac's agent fills its caches again as its jobs need");
         }
         Some(gb) => {
-            let gb: f64 = gb.trim_end_matches("GB").trim_end_matches("gb").parse().ok().filter(|g: &f64| g.is_finite() && *g >= 1.0).with_context(|| format!("scenic room <GB> | off, not {gb}: a target of 1 GB or more"))?;
+            let gb: f64 = gb
+                .trim_end_matches("GB")
+                .trim_end_matches("gb")
+                .parse()
+                .ok()
+                .filter(|g: &f64| g.is_finite() && *g >= 1.0)
+                .with_context(|| format!("scenic room <GB> | off, not {gb}: a target of 1 GB or more"))?;
             let bytes = (gb * (1u64 << 30) as f64) as u64;
             anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
             if let Some(n) = disk_size(&home) {
@@ -699,8 +845,17 @@ fn room(args: &[String]) -> Result<()> {
             let st = own_status(&home).filter(|s| now_s().saturating_sub(s.beat) < 6 * 60);
             match st.as_ref().and_then(|s| s.caches.as_ref()).and_then(|c| c.room.as_ref()) {
                 Some(r) => {
-                    if let Some(f) = r.toward.as_ref().filter(|f| t.as_ref().is_some_and(|t| f.target == Some(t.bytes))) {
-                        let past = f.goal.map(|g| format!(" (and the {} a job waiting for it needs past it)", size(g.saturating_sub(f.target.unwrap_or(0))))).unwrap_or_default();
+                    if let Some(f) = r.toward.as_ref().filter(|f| t.as_ref().is_some_and(|t| f.target == Some(t.bytes)))
+                    {
+                        let past = f
+                            .goal
+                            .map(|g| {
+                                format!(
+                                    " (and the {} a job waiting for it needs past it)",
+                                    size(g.saturating_sub(f.target.unwrap_or(0)))
+                                )
+                            })
+                            .unwrap_or_default();
                         println!("Freed toward it{past} {}: {}", ago(f.at), f.say());
                     }
                     if let Some(why) = &r.short {
@@ -710,7 +865,9 @@ fn room(args: &[String]) -> Result<()> {
                         println!("Waiting: {} — {}", w.what, w.why);
                     }
                 }
-                None if t.is_some() => println!("(this Mac's agent isn't running, or runs an older app: it keeps the target once it runs this one)"),
+                None if t.is_some() => println!(
+                    "(this Mac's agent isn't running, or runs an older app: it keeps the target once it runs this one)"
+                ),
                 None => {}
             }
         }
@@ -728,7 +885,10 @@ fn disk_size(p: &Path) -> Option<u64> {
 /// This Mac's own agent's status, as it writes it in its folder `home`: the lead's `status.json`
 /// or a member's `helper.json`, whichever is fresher.
 fn own_status(home: &Path) -> Option<agent::Status> {
-    ["status.json", "helper.json"].iter().filter_map(|f| serde_json::from_slice::<agent::Status>(&std::fs::read(home.join(f)).ok()?).ok()).max_by_key(|s| s.beat)
+    ["status.json", "helper.json"]
+        .iter()
+        .filter_map(|f| serde_json::from_slice::<agent::Status>(&std::fs::read(home.join(f)).ok()?).ok())
+        .max_by_key(|s| s.beat)
 }
 
 /// `scenic clean`: an ask to this Mac's agent to clear its build caches (agent::room::clear), and
@@ -737,8 +897,13 @@ fn clean(args: &[String]) -> Result<()> {
     let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
     let st = own_status(&home).context("this Mac's agent has no status: is it installed here?")?;
     // (Not written while it makes room for a job, minutes at most.)
-    anyhow::ensure!(now_s().saturating_sub(st.beat) < 6 * 60, "this Mac's agent hasn't written its status since {}: is it running?", ago(st.beat));
-    let caches = st.caches.as_ref().context("this Mac's agent runs an older app, which doesn't clear its caches on an ask")?;
+    anyhow::ensure!(
+        now_s().saturating_sub(st.beat) < 6 * 60,
+        "this Mac's agent hasn't written its status since {}: is it running?",
+        ago(st.beat)
+    );
+    let caches =
+        st.caches.as_ref().context("this Mac's agent runs an older app, which doesn't clear its caches on an ask")?;
     if let Some(why) = &caches.why_not {
         bail!("not now: {why}");
     }
@@ -765,7 +930,9 @@ fn clean(args: &[String]) -> Result<()> {
     let t = std::time::Instant::now();
     loop {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        let answered = own_status(&home).and_then(|s| s.caches).and_then(|c| [c.cleared, c.declined].into_iter().flatten().find(|f| f.asked == Some(r.at)));
+        let answered = own_status(&home)
+            .and_then(|s| s.caches)
+            .and_then(|c| [c.cleared, c.declined].into_iter().flatten().find(|f| f.asked == Some(r.at)));
         match answered {
             Some(f) => {
                 if let Some(why) = f.why_not {
@@ -774,7 +941,9 @@ fn clean(args: &[String]) -> Result<()> {
                 println!("{}", f.say());
                 return Ok(());
             }
-            None if t.elapsed() > std::time::Duration::from_secs(3 * 3600) => bail!("no word from the agent in three hours; it has the ask still (`scenic status` says when it's done)"),
+            None if t.elapsed() > std::time::Duration::from_secs(3 * 3600) => bail!(
+                "no word from the agent in three hours; it has the ask still (`scenic status` says when it's done)"
+            ),
             None => {}
         }
     }
@@ -790,8 +959,19 @@ fn main() -> Result<()> {
         "agent" => {
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             let home = opt(&args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
-            let o = Options { root: opt(&args, "--root").map(PathBuf::from), home, bin, dry_run: flag(&args, "--dry-run"), once: flag(&args, "--once"), helper: false };
-            eprintln!("agent: started (app {}, root {})", o.bin.display(), o.root.as_ref().map(|r| r.display().to_string()).unwrap_or_else(|| "the NAS share".into()));
+            let o = Options {
+                root: opt(&args, "--root").map(PathBuf::from),
+                home,
+                bin,
+                dry_run: flag(&args, "--dry-run"),
+                once: flag(&args, "--once"),
+                helper: false,
+            };
+            eprintln!(
+                "agent: started (app {}, root {})",
+                o.bin.display(),
+                o.root.as_ref().map(|r| r.display().to_string()).unwrap_or_else(|| "the NAS share".into())
+            );
             let extra = agent::cond::test_disk_extra_mb();
             if extra > 0 {
                 eprintln!("agent: WARNING: SCENIC_TEST_DISK_EXTRA_MB: this agent counts {extra} MB more free on its disk than there is (the two-Mac test's alone, never a real agent's)");
@@ -807,7 +987,9 @@ fn main() -> Result<()> {
                 Some("release") => {
                     // A job's progress on a member's Mac given up (crate::agent::resume): the lead
                     // runs it wherever it fits from then.
-                    let (Some(m), Some(job)) = (args.get(3), args.get(4)) else { anyhow::bail!("scenic pool release <member> \"<job>\" (e.g. \"osm-pass 2026-10-01\")") };
+                    let (Some(m), Some(job)) = (args.get(3), args.get(4)) else {
+                        anyhow::bail!("scenic pool release <member> \"<job>\" (e.g. \"osm-pass 2026-10-01\")")
+                    };
                     println!("{}", agent::resume::release(&r, m, job)?);
                 }
                 Some("needs") => {
@@ -815,10 +997,19 @@ fn main() -> Result<()> {
                     // fits' errors on held-out runs and the steps that don't fit. Read only: the
                     // coordinator's costs (`--costs <costs.json | costs.jsonl>`, else this Mac's
                     // agent's), its disk floors beside them.
-                    anyhow::ensure!(flag(&args, "--fit"), "scenic pool needs --fit [--costs <costs.json | costs.jsonl>]");
-                    let p = opt(&args, "--costs").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent/coord/costs.json"));
-                    let (costs, mut disks) = pipeline::needs::read_costs(&p).with_context(|| format!("reading {}", p.display()))?;
-                    let kept: std::collections::BTreeMap<String, u64> = std::fs::read(p.with_file_name("disks.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+                    anyhow::ensure!(
+                        flag(&args, "--fit"),
+                        "scenic pool needs --fit [--costs <costs.json | costs.jsonl>]"
+                    );
+                    let p = opt(&args, "--costs")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| app_home().join("agent/coord/costs.json"));
+                    let (costs, mut disks) =
+                        pipeline::needs::read_costs(&p).with_context(|| format!("reading {}", p.display()))?;
+                    let kept: std::collections::BTreeMap<String, u64> = std::fs::read(p.with_file_name("disks.json"))
+                        .ok()
+                        .and_then(|b| serde_json::from_slice(&b).ok())
+                        .unwrap_or_default();
                     disks.extend(kept);
                     println!("{} ({} costs, {} disk measures)\n", p.display(), costs.len(), disks.len());
                     print!("{}", pipeline::needs::fit_table(&pipeline::needs::Book::with(&costs, None, Some(&disks))));
@@ -828,40 +1019,72 @@ fn main() -> Result<()> {
                     // `--clear` clears them all, `--clear <step>` a step's, `--clear <step> <target>`
                     // one target's (a step fixed, or a floor learned wrong).
                     let clear = flag(&args, "--clear");
-                    let rest: Vec<&String> = args.iter().skip(3).filter(|a| !a.starts_with("--") && Some(*a) != opt(&args, "--root").as_ref()).collect();
-                    let c = pipeline::coord::client::Client::from_nas(&r, &agent::cond::host_name())?.context("no lead's coordinator to ask")?;
-                    let (code, v) = c.post_json("/work/floors", &serde_json::json!({ "clear": clear, "step": rest.first(), "target": rest.get(1) }))?;
+                    let rest: Vec<&String> = args
+                        .iter()
+                        .skip(3)
+                        .filter(|a| !a.starts_with("--") && Some(*a) != opt(&args, "--root").as_ref())
+                        .collect();
+                    let c = pipeline::coord::client::Client::from_nas(&r, &agent::cond::host_name())?
+                        .context("no lead's coordinator to ask")?;
+                    let (code, v) = c.post_json(
+                        "/work/floors",
+                        &serde_json::json!({ "clear": clear, "step": rest.first(), "target": rest.get(1) }),
+                    )?;
                     anyhow::ensure!(code == 200, "the lead's coordinator answered {code} (an older app?)");
-                    let floors: std::collections::BTreeMap<String, pipeline::agent::memguard::Floor> = serde_json::from_value(v["floors"].clone())?;
+                    let floors: std::collections::BTreeMap<String, pipeline::agent::memguard::Floor> =
+                        serde_json::from_value(v["floors"].clone())?;
                     if floors.is_empty() {
                         println!("no floors");
                     }
                     for (k, f) in floors {
-                        println!("{k}: {:.1} GB{}{}", f.mb as f64 / 1024.0, if f.alone { ", held alone" } else { ", in a batch" }, if f.v > 0 { format!(", v{}", f.v) } else { String::new() });
+                        println!(
+                            "{k}: {:.1} GB{}{}",
+                            f.mb as f64 / 1024.0,
+                            if f.alone { ", held alone" } else { ", in a batch" },
+                            if f.v > 0 { format!(", v{}", f.v) } else { String::new() }
+                        );
                     }
                     // (The disk floors: what each target was seen to take on the disk at least.)
-                    let disks: std::collections::BTreeMap<String, u64> = serde_json::from_value(v["disks"].clone()).unwrap_or_default();
+                    let disks: std::collections::BTreeMap<String, u64> =
+                        serde_json::from_value(v["disks"].clone()).unwrap_or_default();
                     for (k, mb) in disks {
                         println!("{k}: disk {:.1} GB", mb as f64 / 1024.0);
                     }
                 }
-                Some(x) => bail!("scenic pool status | release <member> \"<job>\" | floors [--clear [<step> [<target>]]], not {x}"),
+                Some(x) => bail!(
+                    "scenic pool status | release <member> \"<job>\" | floors [--clear [<step> [<target>]]], not {x}"
+                ),
             }
             Ok(())
         }
         "run-task" => {
             // A task a member's agent leased (pipeline::offload::run_task), run here; its result
             // written for the agent to hand back.
-            let spec: serde_json::Value = serde_json::from_slice(&std::fs::read(opt(&args, "--spec").context("--spec <file>")?)?)?;
+            let spec: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(opt(&args, "--spec").context("--spec <file>")?)?)?;
             let lease: u64 = opt(&args, "--lease").context("--lease <id>")?.parse()?;
-            let (dir, result) = (PathBuf::from(opt(&args, "--dir").context("--dir <folder>")?), PathBuf::from(opt(&args, "--result").context("--result <file>")?));
-            let urls: Vec<String> = std::env::var("SCENIC_COORD_URLS").unwrap_or_default().split(',').filter(|u| !u.is_empty()).map(str::to_string).collect();
-            let client = pipeline::coord::client::Client::at(urls, std::env::var("SCENIC_COORD_TOKEN").unwrap_or_default(), &std::env::var("SCENIC_WORKER").unwrap_or_default());
+            let (dir, result) = (
+                PathBuf::from(opt(&args, "--dir").context("--dir <folder>")?),
+                PathBuf::from(opt(&args, "--result").context("--result <file>")?),
+            );
+            let urls: Vec<String> = std::env::var("SCENIC_COORD_URLS")
+                .unwrap_or_default()
+                .split(',')
+                .filter(|u| !u.is_empty())
+                .map(str::to_string)
+                .collect();
+            let client = pipeline::coord::client::Client::at(
+                urls,
+                std::env::var("SCENIC_COORD_TOKEN").unwrap_or_default(),
+                &std::env::var("SCENIC_WORKER").unwrap_or_default(),
+            );
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             let root = opt(&args, "--root").map(PathBuf::from);
             // (Timed as a task of its kind: a tail's, a 3D buildings' area's, tree cover's blocks'.)
             let kind = format!("task {}", pipeline::offload::task_kind(&spec));
-            let r = pipeline::timings::job(&kind, || pipeline::offload::run_task(&client, lease, &spec, &dir, &bin, root.as_deref()));
+            let r = pipeline::timings::job(&kind, || {
+                pipeline::offload::run_task(&client, lease, &spec, &dir, &bin, root.as_deref())
+            });
             std::fs::remove_dir_all(&dir).ok();
             let v = match &r {
                 Ok(t) => serde_json::json!({ "ok": true, "task": t }),
@@ -875,7 +1098,12 @@ fn main() -> Result<()> {
             use pipeline::control::{Mode, Pause};
             let home = opt(&args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
             let host = pipeline::agent::cond::host_name();
-            let pause = (cmd == "pause").then(|| Pause::new(if flag(&args, "--now") { Mode::Freeze } else { Mode::Drain }, &format!("scenic pause on {host}")));
+            let pause = (cmd == "pause").then(|| {
+                Pause::new(
+                    if flag(&args, "--now") { Mode::Freeze } else { Mode::Drain },
+                    &format!("scenic pause on {host}"),
+                )
+            });
             pipeline::control::request(&home, pause)?;
             println!(
                 "{}",
@@ -898,7 +1126,8 @@ fn main() -> Result<()> {
         "backup" => {
             let local = opt(&args, "--local").map(PathBuf::from);
             let today = backup::format_day(std::time::SystemTime::now());
-            let r = pipeline::timings::job("backup", || backup::run(&root(&args, true)?, local.as_deref(), &today, 30))?;
+            let r =
+                pipeline::timings::job("backup", || backup::run(&root(&args, true)?, local.as_deref(), &today, 30))?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }

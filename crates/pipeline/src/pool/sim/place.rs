@@ -26,9 +26,7 @@
 use crate::agent::every;
 use crate::agent::memguard::{self, Floor};
 use crate::agent::room;
-use crate::coord::{
-    self, client, cost_key, cost_version, Ask, Capacity, Cost, Every, Granted, Offer,
-};
+use crate::coord::{self, client, cost_key, cost_version, Ask, Capacity, Cost, Every, Granted, Offer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -107,22 +105,14 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
     let (c, port) = coord::start_for_test(&d.path().join("coord"), lead_name, "");
     let clock = store::clock::Virtual::new();
     c.shared.lock().unwrap().clock = clock.clone();
-    c.set_map_update(Some(coord::AsOf {
-        began: 1,
-        units: BTreeMap::new(),
-    }));
+    c.set_map_update(Some(coord::AsOf { began: 1, units: BTreeMap::new() }));
     let clients: Vec<Option<client::Client>> = cfg
         .macs
         .iter()
         .enumerate()
         .map(|(k, m)| {
-            (k > 0).then(|| {
-                client::Client::at(
-                    vec![format!("http://127.0.0.1:{port}")],
-                    c.contact.token.clone(),
-                    m.name,
-                )
-            })
+            (k > 0)
+                .then(|| client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), m.name))
         })
         .collect();
     let steps: BTreeMap<&str, &Step> = cfg.steps.iter().map(|s| (s.name, s)).collect();
@@ -133,20 +123,12 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
             cfg.member_slots
         }
     };
-    let offered_steps: Vec<String> = cfg
-        .steps
-        .iter()
-        .filter(|s| every::offered(s.name))
-        .map(|s| s.name.to_string())
-        .collect();
+    let offered_steps: Vec<String> =
+        cfg.steps.iter().filter(|s| every::offered(s.name)).map(|s| s.name.to_string()).collect();
     let mut done: BTreeSet<(String, String)> = BTreeSet::new();
     let total: usize = cfg.steps.iter().map(|s| s.targets).sum();
     let mut running: Vec<Vec<Job>> = cfg.macs.iter().map(|_| Vec::new()).collect();
-    let mut out = Run {
-        most: vec![0; cfg.macs.len()],
-        ran: vec![0; cfg.macs.len()],
-        ..Default::default()
-    };
+    let mut out = Run { most: vec![0; cfg.macs.len()], ran: vec![0; cfg.macs.len()], ..Default::default() };
     let limit = |k: usize| memguard::limit_mb(cfg.macs[k].total_mb);
     let reserve_mb = room::RESERVE >> 20;
     let mut t = 0u64;
@@ -157,19 +139,15 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 done.len(),
                 running
                     .iter()
-                    .map(|r| r
-                        .iter()
-                        .map(|j| format!("{} {:?}", j.step, j.targets))
-                        .collect::<Vec<_>>())
+                    .map(|r| r.iter().map(|j| format!("{} {:?}", j.step, j.targets)).collect::<Vec<_>>())
                     .collect::<Vec<_>>()
             ));
         }
         // Jobs ending: their measures in, then their leases ended (the lead's own finished, a
         // member's given back once its hand-off is merged: the plan no longer has its targets).
         for k in 0..cfg.macs.len() {
-            let (ended, left): (Vec<Job>, Vec<Job>) = std::mem::take(&mut running[k])
-                .into_iter()
-                .partition(|j| j.end <= t);
+            let (ended, left): (Vec<Job>, Vec<Job>) =
+                std::mem::take(&mut running[k]).into_iter().partition(|j| j.end <= t);
             running[k] = left;
             for j in ended {
                 let s = steps[j.step.as_str()];
@@ -190,24 +168,11 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                     })
                     .collect();
                 c.add_costs_by(&costs, cfg.macs[k].name);
-                c.add_disks(
-                    &j.targets
-                        .iter()
-                        .map(|tg| (cost_key(&j.step, tg), s.disk_mb))
-                        .collect::<Vec<_>>(),
-                );
+                c.add_disks(&j.targets.iter().map(|tg| (cost_key(&j.step, tg), s.disk_mb)).collect::<Vec<_>>());
                 done.extend(j.targets.iter().map(|tg| (j.step.clone(), tg.clone())));
                 match &clients[k] {
-                    None => c.finish(
-                        j.lease,
-                        &j.targets
-                            .iter()
-                            .map(|tg| (tg.clone(), key_of(tg)))
-                            .collect::<Vec<_>>(),
-                    ),
-                    Some(w) => w
-                        .give_back(j.lease, "done")
-                        .map_err(|e| format!("give back: {e:#}"))?,
+                    None => c.finish(j.lease, &j.targets.iter().map(|tg| (tg.clone(), key_of(tg))).collect::<Vec<_>>()),
+                    Some(w) => w.give_back(j.lease, "done").map_err(|e| format!("give back: {e:#}"))?,
                 }
                 out.ran[k] += 1;
             }
@@ -226,10 +191,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 .filter(|s| every::offered(s.name))
                 .map(|s| Offer {
                     step: s.name.into(),
-                    targets: open(s)
-                        .into_iter()
-                        .map(|tg| (tg.clone(), key_of(&tg), 0))
-                        .collect(),
+                    targets: open(s).into_iter().map(|tg| (tg.clone(), key_of(&tg), 0)).collect(),
                     batch: 1,
                 })
                 .collect(),
@@ -267,10 +229,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 return Err(format!("{} past its {} slots", cfg.macs[k].name, slots(k)));
             }
             if k > 0 && (!every::offered(step) || every::LEAD_ONLY.contains(&step)) {
-                return Err(format!(
-                    "{} (a member) placed {step}, kept to the lead",
-                    cfg.macs[k].name
-                ));
+                return Err(format!("{} (a member) placed {step}, kept to the lead", cfg.macs[k].name));
             }
             if cold && !running[k].is_empty() {
                 return Err(format!(
@@ -280,10 +239,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 ));
             }
             if running[k].iter().any(|j| j.cold) {
-                return Err(format!(
-                    "{} placed {step} beside a cold start",
-                    cfg.macs[k].name
-                ));
+                return Err(format!("{} placed {step} beside a cold start", cfg.macs[k].name));
             }
             if cold && running.iter().flatten().any(|j| j.step == step) {
                 return Err(format!(
@@ -294,7 +250,13 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
             let (mem, disk, threads) = used(&running[k]);
             if mem + job.mem_mb > limit(k) {
                 if !cold {
-                    return Err(format!("{} placed {step} {targets:?} (measured) past its memory limit: {} + {} > {} MB", cfg.macs[k].name, mem, job.mem_mb, limit(k)));
+                    return Err(format!(
+                        "{} placed {step} {targets:?} (measured) past its memory limit: {} + {} > {} MB",
+                        cfg.macs[k].name,
+                        mem,
+                        job.mem_mb,
+                        limit(k)
+                    ));
                 }
                 // (The memory guard stops it: its floor learned alone, its lease back.)
                 out.guard_stops += 1;
@@ -303,11 +265,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                     .map(|tg| {
                         (
                             cost_key(step, tg),
-                            Floor {
-                                mb: job.mem_mb,
-                                alone: running[k].is_empty(),
-                                v: cost_version(step),
-                            },
+                            Floor { mb: job.mem_mb, alone: running[k].is_empty(), v: cost_version(step) },
                         )
                     })
                     .collect();
@@ -323,7 +281,10 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 return Ok(false);
             }
             if disk + job.disk_mb + reserve_mb > cfg.macs[k].disk_mb {
-                return Err(format!("{} placed {step} {targets:?} past its disk: {} + {} + reserve {reserve_mb} > {} MB", cfg.macs[k].name, disk, job.disk_mb, cfg.macs[k].disk_mb));
+                return Err(format!(
+                    "{} placed {step} {targets:?} past its disk: {} + {} + reserve {reserve_mb} > {} MB",
+                    cfg.macs[k].name, disk, job.disk_mb, cfg.macs[k].disk_mb
+                ));
             }
             if threads + job.threads > cfg.macs[k].cores {
                 return Err(format!("{} placed {step} past its cores", cfg.macs[k].name));
@@ -341,10 +302,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
             .filter(|s| !(every::offered(s.name) && c.cold_under_way(s.name)))
             .flat_map(|s| {
                 let held = c.held(s.name);
-                open(s)
-                    .into_iter()
-                    .filter(move |tg| !held.contains(tg))
-                    .map(move |tg| (s.name.to_string(), tg))
+                open(s).into_iter().filter(move |tg| !held.contains(tg)).map(move |tg| (s.name.to_string(), tg))
             })
             .collect();
         let lead_limit = limit(0);
@@ -380,21 +338,13 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
             // (The second: nothing beside a cold start, nor with one next; else the plan's first
             // that can run beside the first.)
             if running[0].len() == 1 && slots(0) > 1 && !running[0][0].cold {
-                let head = plan.iter().find(|s| {
-                    !running[0]
-                        .iter()
-                        .any(|j| j.step == s.0 && j.targets.contains(&s.1))
-                });
-                let head_cold =
-                    head.is_some_and(|h| measured(&h.0, std::slice::from_ref(&h.1)).is_none());
+                let head = plan.iter().find(|s| !running[0].iter().any(|j| j.step == s.0 && j.targets.contains(&s.1)));
+                let head_cold = head.is_some_and(|h| measured(&h.0, std::slice::from_ref(&h.1)).is_none());
                 if !head_cold {
                     let pick = plan
                         .iter()
                         .filter(|s| {
-                            !tried.contains(*s)
-                                && !running[0]
-                                    .iter()
-                                    .any(|j| j.step == s.0 && j.targets.contains(&s.1))
+                            !tried.contains(*s) && !running[0].iter().any(|j| j.step == s.0 && j.targets.contains(&s.1))
                         })
                         .find(|s| beside(s, &running[0][0], &running[0]).is_none())
                         .cloned();
@@ -412,9 +362,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
         } else {
             (
                 lead_limit.saturating_sub(used(&running[0]).0),
-                cfg.macs[0]
-                    .disk_mb
-                    .saturating_sub(used(&running[0]).1 + reserve_mb),
+                cfg.macs[0].disk_mb.saturating_sub(used(&running[0]).1 + reserve_mb),
             )
         };
         c.set_every(Some(Every { own: Some(own) }));
@@ -464,14 +412,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 let Granted::Job { step, targets, .. } = g.work else {
                     return Err("a task granted".into());
                 };
-                if !start(
-                    k,
-                    &step,
-                    targets.into_iter().map(|t| t.0).collect(),
-                    g.lease,
-                    &mut running,
-                    &mut out,
-                )? {
+                if !start(k, &step, targets.into_iter().map(|t| t.0).collect(), g.lease, &mut running, &mut out)? {
                     break;
                 }
             }
@@ -491,72 +432,20 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
 /// Mac (terrain).
 pub fn plan() -> Vec<Step> {
     vec![
-        Step {
-            name: "bld-fetch",
-            targets: 1,
-            mem_mb: 800,
-            disk_mb: 2_000,
-            secs: 300,
-            threads: 2,
-        },
-        Step {
-            name: "terrain",
-            targets: 6,
-            mem_mb: 13_000,
-            disk_mb: 3_000,
-            secs: 600,
-            threads: 4,
-        },
-        Step {
-            name: "slope",
-            targets: 10,
-            mem_mb: 3_000,
-            disk_mb: 500,
-            secs: 200,
-            threads: 4,
-        },
-        Step {
-            name: "pack",
-            targets: 24,
-            mem_mb: 1_500,
-            disk_mb: 200,
-            secs: 120,
-            threads: 4,
-        },
-        Step {
-            name: "lo",
-            targets: 12,
-            mem_mb: 1_000,
-            disk_mb: 100,
-            secs: 90,
-            threads: 4,
-        },
-        Step {
-            name: "catalog",
-            targets: 1,
-            mem_mb: 2_000,
-            disk_mb: 100,
-            secs: 60,
-            threads: 2,
-        },
+        Step { name: "bld-fetch", targets: 1, mem_mb: 800, disk_mb: 2_000, secs: 300, threads: 2 },
+        Step { name: "terrain", targets: 6, mem_mb: 13_000, disk_mb: 3_000, secs: 600, threads: 4 },
+        Step { name: "slope", targets: 10, mem_mb: 3_000, disk_mb: 500, secs: 200, threads: 4 },
+        Step { name: "pack", targets: 24, mem_mb: 1_500, disk_mb: 200, secs: 120, threads: 4 },
+        Step { name: "lo", targets: 12, mem_mb: 1_000, disk_mb: 100, secs: 90, threads: 4 },
+        Step { name: "catalog", targets: 1, mem_mb: 2_000, disk_mb: 100, secs: 60, threads: 2 },
     ]
 }
 
 /// The M4 (the lead: 24 GB, 10 cores) and the M1 (16 GB, 8 cores).
 pub fn m4_m1() -> Vec<Mac> {
     vec![
-        Mac {
-            name: "m4",
-            total_mb: 24_576,
-            cores: 10,
-            disk_mb: 300_000,
-        },
-        Mac {
-            name: "m1",
-            total_mb: 16_384,
-            cores: 8,
-            disk_mb: 60_000,
-        },
+        Mac { name: "m4", total_mb: 24_576, cores: 10, disk_mb: 300_000 },
+        Mac { name: "m1", total_mb: 16_384, cores: 8, disk_mb: 60_000 },
     ]
 }
 
@@ -568,12 +457,7 @@ mod tests {
     /// cores or disk; cold starts alone; the lead's steps on the lead; the plan done.
     #[test]
     fn the_m4_and_the_m1_finish_two_slots_and_one() {
-        let r = run(&Cfg {
-            macs: m4_m1(),
-            steps: plan(),
-            member_slots: 1,
-        })
-        .unwrap();
+        let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1 }).unwrap();
         assert_eq!(r.most, [2, 1], "{r:?}");
         assert!(r.ran.iter().all(|&n| n > 0), "{r:?}");
     }
@@ -581,41 +465,13 @@ mod tests {
     /// Four Macs (one with little disk) finish the same plan, sooner than two.
     #[test]
     fn four_macs_finish() {
-        let two = run(&Cfg {
-            macs: m4_m1(),
-            steps: plan(),
-            member_slots: 1,
-        })
-        .unwrap();
+        let two = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1 }).unwrap();
         let mut macs = m4_m1();
-        macs.push(Mac {
-            name: "mini",
-            total_mb: 16_384,
-            cores: 8,
-            disk_mb: 40_000,
-        });
-        macs.push(Mac {
-            name: "air",
-            total_mb: 8_192,
-            cores: 8,
-            disk_mb: 35_000,
-        });
-        let r = run(&Cfg {
-            macs,
-            steps: plan(),
-            member_slots: 1,
-        })
-        .unwrap();
-        assert!(
-            r.ran.iter().skip(1).filter(|&&n| n > 0).count() >= 2,
-            "{r:?}"
-        );
-        assert!(
-            r.secs < two.secs,
-            "{} s with four, {} s with two",
-            r.secs,
-            two.secs
-        );
+        macs.push(Mac { name: "mini", total_mb: 16_384, cores: 8, disk_mb: 40_000 });
+        macs.push(Mac { name: "air", total_mb: 8_192, cores: 8, disk_mb: 35_000 });
+        let r = run(&Cfg { macs, steps: plan(), member_slots: 1 }).unwrap();
+        assert!(r.ran.iter().skip(1).filter(|&&n| n > 0).count() >= 2, "{r:?}");
+        assert!(r.secs < two.secs, "{} s with four, {} s with two", r.secs, two.secs);
     }
 
     /// Members switched to two jobs each (task #239's multi-lease asks): today's coordinator gives a
@@ -623,15 +479,7 @@ mod tests {
     /// idle), which the simulator finds. #239 flips this to `.unwrap()` with `most == [2, 2]`.
     #[test]
     fn members_with_two_slots_get_a_cold_start_beside_a_job_today() {
-        let e = run(&Cfg {
-            macs: m4_m1(),
-            steps: plan(),
-            member_slots: 2,
-        })
-        .unwrap_err();
-        assert!(
-            e.contains("placed a cold start of") && e.contains("beside"),
-            "{e}"
-        );
+        let e = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 2 }).unwrap_err();
+        assert!(e.contains("placed a cold start of") && e.contains("beside"), "{e}");
     }
 }

@@ -390,7 +390,10 @@ impl Mirror {
         let h = hash_of(archive)?;
         let name = piece.name();
         let st = self.state();
-        st.pieces.get(&(h.to_string(), name.clone())).copied().or_else(|| st.sizes.get(h).and_then(|m| m.get(&name)).copied())
+        st.pieces
+            .get(&(h.to_string(), name.clone()))
+            .copied()
+            .or_else(|| st.sizes.get(h).and_then(|m| m.get(&name)).copied())
     }
 
     /// Whether a piece is here whole.
@@ -410,7 +413,9 @@ impl Mirror {
             }
             Item::Piece { archive, piece } => match self.has_piece(archive, *piece) {
                 true => self.piece_size(archive, *piece).unwrap_or(0),
-                false => fs::metadata(self.piece_part(archive, *piece)).map_or(0, |m| m.len()).min(self.piece_size(archive, *piece).unwrap_or(0)),
+                false => fs::metadata(self.piece_part(archive, *piece))
+                    .map_or(0, |m| m.len())
+                    .min(self.piece_size(archive, *piece).unwrap_or(0)),
             },
         }
     }
@@ -441,7 +446,8 @@ impl Mirror {
 
     /// Whether pack `content_name`'s index is cached on this Mac.
     pub fn has_index(&self, content_name: &str) -> bool {
-        parse_content_name(content_name).is_some_and(|c| self.root.join("idx").join(format!("{}.idx", c.hash16)).exists())
+        parse_content_name(content_name)
+            .is_some_and(|c| self.root.join("idx").join(format!("{}.idx", c.hash16)).exists())
     }
 
     /// Pack `content_name`'s index from the local cache, else from `loader` (which reads the
@@ -511,7 +517,9 @@ impl Mirror {
             None => return,
         };
         let dir = self.pieces_dir(hash);
-        if let Err(e) = fs::create_dir_all(&dir).and_then(|_| replace_file(&dir.join(SIZES), &body, None).map_err(io::Error::other)) {
+        if let Err(e) =
+            fs::create_dir_all(&dir).and_then(|_| replace_file(&dir.join(SIZES), &body, None).map_err(io::Error::other))
+        {
             eprintln!("mirror: can't keep the pieces' sizes in {}: {e:#}", dir.display());
         }
     }
@@ -539,7 +547,13 @@ impl Mirror {
     pub fn let_go(&self, cat: &Catalog, wanted: &Wanted) -> Result<SyncStats> {
         let mut stats = SyncStats::default();
         let files = wanted.files();
-        let gone: Vec<(String, u64)> = self.state().files.iter().filter(|(n, _)| !files.contains(n.as_str())).map(|(n, &s)| (n.clone(), s)).collect();
+        let gone: Vec<(String, u64)> = self
+            .state()
+            .files
+            .iter()
+            .filter(|(n, _)| !files.contains(n.as_str()))
+            .map(|(n, &s)| (n.clone(), s))
+            .collect();
         for (name, size) in gone {
             let p = self.path(&name);
             // (Not one a job reads now: crate::cachefile.)
@@ -567,7 +581,8 @@ impl Mirror {
         }
         // Pieces: those of archives the catalog no longer has go with their folder.
         let pieces = wanted.pieces();
-        let current: HashSet<String> = cat.basemap.iter().filter_map(|l| cat.content(l)).filter_map(hash_of).map(str::to_string).collect();
+        let current: HashSet<String> =
+            cat.basemap.iter().filter_map(|l| cat.content(l)).filter_map(hash_of).map(str::to_string).collect();
         let base = self.root.join("mirror").join(BASEMAP);
         for e in fs::read_dir(&base).into_iter().flatten().flatten() {
             let Ok(hash) = e.file_name().into_string() else { continue };
@@ -612,7 +627,14 @@ impl Mirror {
     /// isn't here yet from `nas_root`, through `pool`, in its order, until done, `ctl.stop()` says
     /// stop, or the NAS goes offline. What doesn't fit waits (module doc). Run it on a background
     /// thread; it never holds the mirror's lock while it waits on the NAS.
-    pub fn sync(&self, cat: &Catalog, wanted: &Wanted, nas_root: &Path, pool: &Arc<IoPool>, ctl: &Control) -> Result<SyncStats> {
+    pub fn sync(
+        &self,
+        cat: &Catalog,
+        wanted: &Wanted,
+        nas_root: &Path,
+        pool: &Arc<IoPool>,
+        ctl: &Control,
+    ) -> Result<SyncStats> {
         self.drop_mismatched(cat);
         let mut stats = self.let_go(cat, wanted)?;
         let mut pace = Pace { slow: ctl.slow, since: Instant::now(), bytes: 0 };
@@ -632,7 +654,9 @@ impl Mirror {
             }
             let got = match item {
                 Item::File { name, size } => self.copy_file(name, *size, nas_root, pool, ctl, &mut pace, &mut stats)?,
-                Item::Piece { archive, piece } => self.copy_piece(archive, *piece, nas_root, pool, ctl, &mut pace, &mut archives, &mut stats)?,
+                Item::Piece { archive, piece } => {
+                    self.copy_piece(archive, *piece, nas_root, pool, ctl, &mut pace, &mut archives, &mut stats)?
+                }
             };
             match got {
                 Some(Copy::Done(bytes)) => {
@@ -694,7 +718,10 @@ impl Mirror {
     fn drop_mismatched(&self, cat: &Catalog) {
         let bad: Vec<(String, u64, u64)> = {
             let st = self.state();
-            cat.files.values().filter_map(|f| st.files.get(&f.file).filter(|&&s| s != f.size).map(|&s| (f.file.clone(), s, f.size))).collect()
+            cat.files
+                .values()
+                .filter_map(|f| st.files.get(&f.file).filter(|&&s| s != f.size).map(|&s| (f.file.clone(), s, f.size)))
+                .collect()
         };
         for (name, have, want) in bad {
             eprintln!("mirror: {name} is {have} bytes here but {want} in the catalog; copying it again");
@@ -719,7 +746,16 @@ impl Mirror {
 
     /// Copies a file of the catalog (None: it waits for room).
     #[allow(clippy::too_many_arguments)]
-    fn copy_file(&self, name: &str, size: u64, nas_root: &Path, pool: &Arc<IoPool>, ctl: &Control, pace: &mut Pace, stats: &mut SyncStats) -> Result<Option<Copy>> {
+    fn copy_file(
+        &self,
+        name: &str,
+        size: u64,
+        nas_root: &Path,
+        pool: &Arc<IoPool>,
+        ctl: &Control,
+        pace: &mut Pace,
+        stats: &mut SyncStats,
+    ) -> Result<Option<Copy>> {
         let Some(c) = parse_content_name(name) else { return Ok(Some(Copy::Failed("not a content name".into()))) };
         let part = self.partial_path(name);
         let have = fs::metadata(&part).map_or(0, |m| m.len()).min(size);
@@ -737,7 +773,11 @@ impl Mirror {
         if let Some(dir) = part.parent() {
             fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         }
-        let mut out = OpenOptions::new().create(true).append(true).open(&part).with_context(|| format!("open {}", part.display()))?;
+        let mut out = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&part)
+            .with_context(|| format!("open {}", part.display()))?;
         let mut have = out.metadata()?.len();
         let mut hasher = blake3::Hasher::new();
         if have > size {
@@ -802,7 +842,13 @@ impl Mirror {
     }
 
     /// The archive `name` on the NAS, opened (once a sync).
-    fn archive(&self, name: &str, nas_root: &Path, pool: &Arc<IoPool>, open: &mut HashMap<String, Arc<PmTiles>>) -> Result<Arc<PmTiles>> {
+    fn archive(
+        &self,
+        name: &str,
+        nas_root: &Path,
+        pool: &Arc<IoPool>,
+        open: &mut HashMap<String, Arc<PmTiles>>,
+    ) -> Result<Arc<PmTiles>> {
         if let Some(a) = open.get(name) {
             return Ok(a.clone());
         }
@@ -826,7 +872,9 @@ impl Mirror {
         open: &mut HashMap<String, Arc<PmTiles>>,
         stats: &mut SyncStats,
     ) -> Result<Option<Copy>> {
-        let Some(hash) = hash_of(archive).map(str::to_string) else { return Ok(Some(Copy::Failed("not a content name".into()))) };
+        let Some(hash) = hash_of(archive).map(str::to_string) else {
+            return Ok(Some(Copy::Failed("not a content name".into())));
+        };
         let fail = |e: anyhow::Error| if unreachable(&e) { Copy::Offline } else { Copy::Failed(format!("{e:#}")) };
         let pm = match self.archive(archive, nas_root, pool, open) {
             Ok(a) => a,
@@ -873,7 +921,8 @@ impl Mirror {
                 return Ok(Some(Copy::Failed(format!("{e:#}"))));
             }
         }
-        fs::rename(&part, self.piece_path(archive, piece)).with_context(|| format!("move {} into place", part.display()))?;
+        fs::rename(&part, self.piece_path(archive, piece))
+            .with_context(|| format!("move {} into place", part.display()))?;
         self.state().pieces.insert((hash, piece.name()), plan.size);
         Ok(Some(Copy::Done(plan.size)))
     }
@@ -881,11 +930,14 @@ impl Mirror {
     /// After a sync: drops pack indexes no recent catalog needs (and temporary files an
     /// interrupted write left in `idx/`).
     fn tidy(&self, cat: &Catalog) {
-        let mut recent: HashSet<String> = cat.files.values().filter_map(|f| parse_content_name(&f.file).map(|c| c.hash16.to_string())).collect();
+        let mut recent: HashSet<String> =
+            cat.files.values().filter_map(|f| parse_content_name(&f.file).map(|c| c.hash16.to_string())).collect();
         let dir = self.root.join("catalog");
         if let Ok(ns) = catalog::list(&dir) {
             if let Some(prev) = ns.into_iter().filter(|&n| n < cat.n).find_map(|n| catalog::read_n(&dir, n).ok()) {
-                recent.extend(prev.files.values().filter_map(|f| parse_content_name(&f.file).map(|c| c.hash16.to_string())));
+                recent.extend(
+                    prev.files.values().filter_map(|f| parse_content_name(&f.file).map(|c| c.hash16.to_string())),
+                );
             }
         }
         if let Ok(rd) = fs::read_dir(self.root.join("idx")) {
@@ -895,7 +947,12 @@ impl Mirror {
                 let stale = match name.strip_suffix(".idx") {
                     Some(h) => !recent.contains(h),
                     // A temporary file an hour old belongs to no write in progress.
-                    None => name.ends_with(".tmp") && e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|a| a > STALE_TMP)),
+                    None => {
+                        name.ends_with(".tmp")
+                            && e.metadata()
+                                .and_then(|m| m.modified())
+                                .is_ok_and(|t| t.elapsed().is_ok_and(|a| a > STALE_TMP))
+                    }
                 };
                 if stale {
                     let _ = fs::remove_file(e.path());
@@ -937,7 +994,12 @@ fn label(i: &Item) -> String {
 /// file under `sources/`, read only to make new regions), nor the basemap (its pieces:
 /// crate::pieces).
 fn essential_logicals(cat: &Catalog) -> std::collections::HashSet<&str> {
-    let mut e: HashSet<&str> = cat.global.values().map(String::as_str).filter(|l| l.starts_with("global/") || l.starts_with("work/lakefill/")).collect();
+    let mut e: HashSet<&str> = cat
+        .global
+        .values()
+        .map(String::as_str)
+        .filter(|l| l.starts_with("global/") || l.starts_with("work/lakefill/"))
+        .collect();
     for l in cat.layers.values() {
         e.extend(l.root.iter().map(String::as_str));
         e.extend(l.lo.values().map(String::as_str));
@@ -960,7 +1022,9 @@ pub fn essentials(cat: &Catalog) -> Vec<String> {
 /// else; by name within each. (The field's lo packs are lo packs: in the World download.)
 pub fn copy_order(cat: &Catalog, logicals: &mut [&str]) {
     let g = groups(cat);
-    logicals.sort_by(|a, b| g.get(a).copied().unwrap_or(LAST_GROUP).cmp(&g.get(b).copied().unwrap_or(LAST_GROUP)).then(a.cmp(b)));
+    logicals.sort_by(|a, b| {
+        g.get(a).copied().unwrap_or(LAST_GROUP).cmp(&g.get(b).copied().unwrap_or(LAST_GROUP)).then(a.cmp(b))
+    });
 }
 
 /// The 3D buildings' layers in the catalog (pipeline::bld::LAYER, pipeline::bld::field::LAYER).

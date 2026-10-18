@@ -125,13 +125,26 @@ mod tests {
 
     #[test]
     fn a_heartbeat_reads_back_with_its_fields_defaulted() {
-        let b: Beat = serde_json::from_str(r#"{"member": "m-000000000000000a", "beat": 1000, "slots": [1, 2]}"#).unwrap();
+        let b: Beat =
+            serde_json::from_str(r#"{"member": "m-000000000000000a", "beat": 1000, "slots": [1, 2]}"#).unwrap();
         assert_eq!((b.member.as_str(), b.beat, b.leads, b.ready_for), ("m-000000000000000a", 1000, None, None));
         assert!(!serde_json::to_string(&b).unwrap().contains("leads"), "what isn't so isn't written");
         let nas = Mem::default();
-        let h = Beat { leads: Some(4), handing_to: Some(HandingTo { to: "m-000000000000000b".into(), term: 4, offer: 990, since: 990, stage: Stage::Offered }), ..b.clone() };
+        let h = Beat {
+            leads: Some(4),
+            handing_to: Some(HandingTo {
+                to: "m-000000000000000b".into(),
+                term: 4,
+                offer: 990,
+                since: 990,
+                stage: Stage::Offered,
+            }),
+            ..b.clone()
+        };
         h.write(&nas).unwrap();
-        assert!(String::from_utf8(nas.read(&path("m-000000000000000a")).unwrap().unwrap()).unwrap().contains("\"stage\":\"offered\""));
+        assert!(String::from_utf8(nas.read(&path("m-000000000000000a")).unwrap().unwrap())
+            .unwrap()
+            .contains("\"stage\":\"offered\""));
         assert_eq!(Beat::read(&nas, "m-000000000000000a").unwrap(), Some(h));
         assert_eq!(Beat::read(&nas, "m-000000000000000b").unwrap(), None);
         // Out of touch after ten minutes by the reader's clock; a clock over a minute ahead, wrong.

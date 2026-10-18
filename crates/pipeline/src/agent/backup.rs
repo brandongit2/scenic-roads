@@ -89,7 +89,17 @@ fn latest(dir: &Path) -> Option<(String, Manifest)> {
 /// The days kept in `dir`, oldest first.
 fn days(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = std::fs::read_dir(dir)
-        .map(|rd| rd.flatten().filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).filter(|d| d.len() == 10 && d.as_bytes()[4] == b'-').map(str::to_string)).collect())
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| {
+                    e.file_name()
+                        .to_str()
+                        .and_then(|n| n.strip_suffix(".json"))
+                        .filter(|d| d.len() == 10 && d.as_bytes()[4] == b'-')
+                        .map(str::to_string)
+                })
+                .collect()
+        })
         .unwrap_or_default();
     v.sort();
     v
@@ -249,7 +259,11 @@ fn day_before(day: &str, n: u64) -> String {
 }
 
 fn parse_day(day: &str) -> Option<u64> {
-    let (y, m, d) = (day.get(0..4)?.parse::<i64>().ok()?, day.get(5..7)?.parse::<i64>().ok()?, day.get(8..10)?.parse::<i64>().ok()?);
+    let (y, m, d) = (
+        day.get(0..4)?.parse::<i64>().ok()?,
+        day.get(5..7)?.parse::<i64>().ok()?,
+        day.get(8..10)?.parse::<i64>().ok()?,
+    );
     // Days from the civil date (Howard Hinnant's algorithm).
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;

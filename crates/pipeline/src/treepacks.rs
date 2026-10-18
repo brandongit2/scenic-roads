@@ -102,11 +102,19 @@ pub fn targets_with(cov: &Coverage, m: &BTreeMap<String, String>, sources: Optio
     let mut had: BTreeSet<(u32, u32, u32, u32)> = BTreeSet::new();
     let mut lo_had: BTreeSet<(u32, u32)> = BTreeSet::new();
     for l in m.keys() {
-        let hi = LAYERS.iter().find_map(|layer| l.strip_prefix(&format!("layers/{layer}/hi/"))).or_else(|| l.strip_prefix("work/trees-mid/"));
+        let hi = LAYERS
+            .iter()
+            .find_map(|layer| l.strip_prefix(&format!("layers/{layer}/hi/")))
+            .or_else(|| l.strip_prefix("work/trees-mid/"));
         if let Some(u) = hi.and_then(Unit::parse).filter(|u| u.z == 6) {
             had.insert((u.x >> 3, u.y >> 3, u.x, u.y));
         }
-        if let Some(q) = LAYERS.iter().find_map(|layer| l.strip_prefix(&format!("layers/{layer}/lo/"))).and_then(Unit::parse).filter(|u| u.z == 3) {
+        if let Some(q) = LAYERS
+            .iter()
+            .find_map(|layer| l.strip_prefix(&format!("layers/{layer}/lo/")))
+            .and_then(Unit::parse)
+            .filter(|u| u.z == 3)
+        {
             lo_had.insert((q.x, q.y));
         }
     }
@@ -116,8 +124,15 @@ pub fn targets_with(cov: &Coverage, m: &BTreeMap<String, String>, sources: Optio
         let none = !met.contains(&(qx, qy, x, y));
         let k = match (none, sources) {
             (true, _) => key(&[&format!("trees {TREES_V}"), &t, "none"]),
-            (false, None) => key(&[&format!("trees {TREES_V}"), &t, &cov.fingerprint(crate::hipack::tile_bounds(6, x, y))]),
-            (false, Some(s)) => key(&[&format!("trees {TREES_V}"), &t, &cov.fingerprint(crate::hipack::tile_bounds(6, x, y)), &format!("sources {s}")]),
+            (false, None) => {
+                key(&[&format!("trees {TREES_V}"), &t, &cov.fingerprint(crate::hipack::tile_bounds(6, x, y))])
+            }
+            (false, Some(s)) => key(&[
+                &format!("trees {TREES_V}"),
+                &t,
+                &cov.fingerprint(crate::hipack::tile_bounds(6, x, y)),
+                &format!("sources {s}"),
+            ]),
         };
         out.pieces.push((t, k, none));
     }
@@ -126,7 +141,12 @@ pub fn targets_with(cov: &Coverage, m: &BTreeMap<String, String>, sources: Optio
         let q = format!("3/{qx}/{qy}");
         let head = [format!("trees-lo {TREES_LO_V}"), format!("trees {TREES_V}"), q.clone()];
         let k = if areas.contains(&(qx, qy)) {
-            let mids: Vec<String> = met.range((qx, qy, 0, 0)..=(qx, qy, u32::MAX, u32::MAX)).map(|&(_, _, x, y)| format!("6/{x}/{y}={}", m.get(&mid_logical(x, y)).map(String::as_str).unwrap_or("-"))).collect();
+            let mids: Vec<String> = met
+                .range((qx, qy, 0, 0)..=(qx, qy, u32::MAX, u32::MAX))
+                .map(|&(_, _, x, y)| {
+                    format!("6/{x}/{y}={}", m.get(&mid_logical(x, y)).map(String::as_str).unwrap_or("-"))
+                })
+                .collect();
             key(&[&head[0], &head[1], &head[2], &mids.join(",")])
         } else {
             key(&[&head[0], &head[1], &head[2], "none"])
@@ -194,7 +214,10 @@ fn run_trees(dem: &Path, python: bool, args: &[std::ffi::OsString]) -> Result<()
         c.args(["run", "python", "trees.py"]);
         (c, "trees.py")
     } else {
-        (store::spawn::command(std::env::current_exe()?.parent().context("the programs' folder")?.join("trees")), "the trees program")
+        (
+            store::spawn::command(std::env::current_exe()?.parent().context("the programs' folder")?.join("trees")),
+            "the trees program",
+        )
     };
     // (Its phase, its own under it: crate::timings.)
     let _p = crate::timings::phase(if python { "trees.py" } else { "the trees program" }, crate::timings::Class::Mixed);
@@ -211,9 +234,24 @@ fn run_trees(dem: &Path, python: bool, args: &[std::ffi::OsString]) -> Result<()
 /// leaf types), its archives into `dir`.
 fn run_args(out: &Out, t: Unit, dir: &Path, chm: &Path, workers: usize) -> Result<Vec<std::ffi::OsString>> {
     let sources = dir.join("sources.json");
-    std::fs::write(&sources, serde_json::to_vec(&crate::trees::RunSources::of(&crate::inputs::sources::read(out.root(), &out.manifest)?)?)?)?;
-    let mut a: Vec<std::ffi::OsString> = vec![format!("--z{}", t.z).into(), format!("{},{}", t.x, t.y).into(), "--coverage".into(), dir.join("coverage.json").into(), "--sources".into(), sources.into()];
-    for (k, v) in [("--chm", chm.to_path_buf()), ("--chm-store", out.root().join("sources/canopy")), ("--leaf", leaf_dir(out.root())), ("--out", dir.to_path_buf())] {
+    std::fs::write(
+        &sources,
+        serde_json::to_vec(&crate::trees::RunSources::of(&crate::inputs::sources::read(out.root(), &out.manifest)?)?)?,
+    )?;
+    let mut a: Vec<std::ffi::OsString> = vec![
+        format!("--z{}", t.z).into(),
+        format!("{},{}", t.x, t.y).into(),
+        "--coverage".into(),
+        dir.join("coverage.json").into(),
+        "--sources".into(),
+        sources.into(),
+    ];
+    for (k, v) in [
+        ("--chm", chm.to_path_buf()),
+        ("--chm-store", out.root().join("sources/canopy")),
+        ("--leaf", leaf_dir(out.root())),
+        ("--out", dir.to_path_buf()),
+    ] {
         a.push(k.into());
         a.push(v.into());
     }
@@ -223,19 +261,37 @@ fn run_args(out: &Out, t: Unit, dir: &Path, chm: &Path, workers: usize) -> Resul
 
 /// Makes z3 tile `q`'s tree layers in one run and uploads them, dropping its packs it no longer makes
 /// (all of them when the coverage has left it): by hand, and for a lease of the old scheme.
-pub fn build(out: &mut Out, cov: &Coverage, q: Unit, dem: &Path, chm: &Path, scratch: &Path, workers: usize) -> Result<()> {
+pub fn build(
+    out: &mut Out,
+    cov: &Coverage,
+    q: Unit,
+    dem: &Path,
+    chm: &Path,
+    scratch: &Path,
+    workers: usize,
+) -> Result<()> {
     build_with(out, cov, q, dem, chm, scratch, workers, &|| {})
 }
 
 /// `build`, telling `writing` when it begins writing the packs (after the trees program), whose
 /// progress it says as `layers' packs written`.
 #[allow(clippy::too_many_arguments)]
-pub fn build_with(out: &mut Out, cov: &Coverage, q: Unit, dem: &Path, chm: &Path, scratch: &Path, workers: usize, writing: &dyn Fn()) -> Result<()> {
+pub fn build_with(
+    out: &mut Out,
+    cov: &Coverage,
+    q: Unit,
+    dem: &Path,
+    chm: &Path,
+    scratch: &Path,
+    workers: usize,
+    writing: &dyn Fn(),
+) -> Result<()> {
     let Some(dir) = fresh(cov, q, scratch, false)? else {
         drop_packs(out, q, &crate::layers::LayerOut::default())?;
         return Ok(());
     };
-    run_trees(dem, by_python(), &run_args(out, q, &dir, chm, workers)?).with_context(|| format!("z3 tile {}", q.slash()))?;
+    run_trees(dem, by_python(), &run_args(out, q, &dir, chm, workers)?)
+        .with_context(|| format!("z3 tile {}", q.slash()))?;
     writing();
     put_area(out, q, &dir)?;
     std::fs::remove_dir_all(&dir).ok();
@@ -249,7 +305,9 @@ pub fn put_area(out: &mut Out, q: Unit, dir: &Path) -> Result<()> {
     for (i, layer) in LAYERS.iter().enumerate() {
         let arc = roadcore::archive::Archive::open(&dir.join(format!("{layer}.tiles")))?;
         let n = LAYERS.len() as u64;
-        let made = crate::layers::split_archive_with(out, &arc, layer, "terrarium-webp", false, 12, &|k, t| crate::agent::jobs::report_f(i as f64 + k as f64 / t.max(1) as f64, n, "layers' packs written"))?;
+        let made = crate::layers::split_archive_with(out, &arc, layer, "terrarium-webp", false, 12, &|k, t| {
+            crate::agent::jobs::report_f(i as f64 + k as f64 / t.max(1) as f64, n, "layers' packs written")
+        })?;
         let gone = drop_layer_packs(out, q, layer, &made)?;
         eprintln!("trees {}: {layer}: {} lo and {} hi packs, {gone} dropped", q.slash(), made.lo.len(), made.hi.len());
     }
@@ -293,7 +351,17 @@ fn drop_layer_packs(out: &mut Out, q: Unit, layer: &str, made: &crate::layers::L
 /// piece made again as it is (its mid backfilled), whose packs must come out as the manifest has
 /// them (`put_piece`). `writing` is told when it begins writing.
 #[allow(clippy::too_many_arguments)]
-pub fn build_piece(out: &mut Out, cov: &Coverage, t: Unit, dem: &Path, chm: &Path, scratch: &Path, workers: usize, expect_same: bool, writing: &dyn Fn()) -> Result<()> {
+pub fn build_piece(
+    out: &mut Out,
+    cov: &Coverage,
+    t: Unit,
+    dem: &Path,
+    chm: &Path,
+    scratch: &Path,
+    workers: usize,
+    expect_same: bool,
+    writing: &dyn Fn(),
+) -> Result<()> {
     anyhow::ensure!(t.z == 6, "a piece is a z6 tile, not {}", t.slash());
     // (A piece of the coverage, as `targets` has it, has a mid, made with no block if no ring's box
     // meets one; one the coverage has left, none.)
@@ -321,7 +389,8 @@ fn archive_tiles(p: &Path) -> Result<Vec<PackTile>> {
         .entries()
         .iter()
         .map(|e| {
-            let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+            let (z, x, y) =
+                ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
             (z, x, y, arc.get_entry(e).to_vec(), e.raw_len)
         })
         .collect())
@@ -341,9 +410,15 @@ fn check_same(out: &Out, made: &[(String, Option<String>)], what: &str) -> Resul
             (Some(_), None) => !l.starts_with("work/trees-mid/"),
             (c, have) => c.as_deref() != have,
         })
-        .map(|(l, c)| format!("{l}: made {}, the manifest has {}", c.as_deref().unwrap_or("none"), out.get(l).unwrap_or("none")))
+        .map(|(l, c)| {
+            format!("{l}: made {}, the manifest has {}", c.as_deref().unwrap_or("none"), out.get(l).unwrap_or("none"))
+        })
         .collect();
-    anyhow::ensure!(differ.is_empty(), "{what} was expected the same as the manifest has it, and isn't (nothing uploaded): {}", differ.join("; "));
+    anyhow::ensure!(
+        differ.is_empty(),
+        "{what} was expected the same as the manifest has it, and isn't (nothing uploaded): {}",
+        differ.join("; ")
+    );
     Ok(())
 }
 
@@ -356,8 +431,21 @@ pub fn put_piece(out: &mut Out, t: Unit, dir: &Path, expect_same: bool) -> Resul
     let mut made: Made = Vec::new();
     for layer in LAYERS {
         let tiles = archive_tiles(&dir.join(format!("{layer}.tiles")))?;
-        anyhow::ensure!(tiles.iter().all(|&(z, x, y, _, _)| z >= 9 && (x >> (z - 6), y >> (z - 6)) == (t.x, t.y)), "{layer}: a piece's run made tiles outside 6/{}/{}'s zoom 9 to 12", t.x, t.y);
-        let p = crate::layers::write_pack_local(out, layer, "terrarium-webp", false, "hi", (6, t.x, t.y), &mut tiles.into_iter())?;
+        anyhow::ensure!(
+            tiles.iter().all(|&(z, x, y, _, _)| z >= 9 && (x >> (z - 6), y >> (z - 6)) == (t.x, t.y)),
+            "{layer}: a piece's run made tiles outside 6/{}/{}'s zoom 9 to 12",
+            t.x,
+            t.y
+        );
+        let p = crate::layers::write_pack_local(
+            out,
+            layer,
+            "terrarium-webp",
+            false,
+            "hi",
+            (6, t.x, t.y),
+            &mut tiles.into_iter(),
+        )?;
         made.push((format!("layers/{layer}/hi/{}", t.dash()), p.map(|p| p.local)));
     }
     let mid = out.scratch_file(&format!("{}.sect", mid_logical(t.x, t.y)));
@@ -366,7 +454,11 @@ pub fn put_piece(out: &mut Out, t: Unit, dir: &Path, expect_same: bool) -> Resul
     let what = format!("piece {}", t.slash());
     drop(p);
     put_made(out, made, expect_same.then_some(what.as_str()))?;
-    eprintln!("trees {}: {} hi packs and its mid", t.slash(), LAYERS.iter().filter(|l| out.get(&format!("layers/{l}/hi/{}", t.dash())).is_some()).count());
+    eprintln!(
+        "trees {}: {} hi packs and its mid",
+        t.slash(),
+        LAYERS.iter().filter(|l| out.get(&format!("layers/{l}/hi/{}", t.dash())).is_some()).count()
+    );
     Ok(())
 }
 
@@ -379,7 +471,12 @@ fn put_made(out: &mut Out, made: Made, same: Option<&str>) -> Result<()> {
             .iter()
             .map(|(l, p)| {
                 let ext = if l.starts_with("work/") { "sect" } else { "pack" };
-                Ok((l.clone(), p.as_ref().map(|p| store::naming::hash16_file(p).map(|h| store::naming::content_name(l, &h, ext))).transpose()?))
+                Ok((
+                    l.clone(),
+                    p.as_ref()
+                        .map(|p| store::naming::hash16_file(p).map(|h| store::naming::content_name(l, &h, ext)))
+                        .transpose()?,
+                ))
             })
             .collect::<Result<_>>()?;
         if let Err(e) = check_same(out, &names, what) {
@@ -407,7 +504,8 @@ fn put_made(out: &mut Out, made: Made, same: Option<&str>) -> Result<()> {
 
 /// Drops z6 tile `t`'s hi packs and mid; how many.
 fn drop_piece(out: &mut Out, t: Unit) -> Result<usize> {
-    let all: Vec<String> = LAYERS.iter().map(|l| format!("layers/{l}/hi/{}", t.dash())).chain([mid_logical(t.x, t.y)]).collect();
+    let all: Vec<String> =
+        LAYERS.iter().map(|l| format!("layers/{l}/hi/{}", t.dash())).chain([mid_logical(t.x, t.y)]).collect();
     let gone: Vec<&String> = all.iter().filter(|l| out.get(l).is_some()).collect();
     for l in &gone {
         out.remove(l);
@@ -426,7 +524,8 @@ pub fn build_lo(out: &mut Out, cov: &Coverage, q: Unit, scratch: &Path, workers:
     let area = q.slash();
     let pieces: Vec<&(String, String, bool)> = tt.pieces_of(&area).collect();
     if pieces.is_empty() {
-        let gone: Vec<String> = LAYERS.iter().map(|l| format!("layers/{l}/lo/{}", q.dash())).filter(|l| out.get(l).is_some()).collect();
+        let gone: Vec<String> =
+            LAYERS.iter().map(|l| format!("layers/{l}/lo/{}", q.dash())).filter(|l| out.get(l).is_some()).collect();
         for l in &gone {
             out.remove(l);
         }
@@ -437,14 +536,22 @@ pub fn build_lo(out: &mut Out, cov: &Coverage, q: Unit, scratch: &Path, workers:
     let mut args: Vec<std::ffi::OsString> = Vec::new();
     for (t, _, _) in &pieces {
         let u = Unit::parse(t).context("a piece")?;
-        let c = out.get(&mid_logical(u.x, u.y)).with_context(|| format!("{t} has no mid yet: its z3 tile can't be assembled"))?;
+        let c = out
+            .get(&mid_logical(u.x, u.y))
+            .with_context(|| format!("{t} has no mid yet: its z3 tile can't be assembled"))?;
         args.push(out.path(c).into());
     }
     let dir = scratch.join(format!("trees-lo-{}", q.dash()));
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }
-    let mut a: Vec<std::ffi::OsString> = vec!["--assemble-lo".into(), "--out".into(), dir.clone().into(), "--workers".into(), workers.to_string().into()];
+    let mut a: Vec<std::ffi::OsString> = vec![
+        "--assemble-lo".into(),
+        "--out".into(),
+        dir.clone().into(),
+        "--workers".into(),
+        workers.to_string().into(),
+    ];
     a.extend(args);
     run_trees(Path::new("."), false, &a).with_context(|| format!("z3 tile {}'s assembly", q.slash()))?;
     put_lo(out, q, &dir, false)?;
@@ -460,14 +567,31 @@ pub fn put_lo(out: &mut Out, q: Unit, dir: &Path, expect_same: bool) -> Result<(
     let mut made: Made = Vec::new();
     for layer in LAYERS {
         let tiles = archive_tiles(&dir.join(format!("{layer}.tiles")))?;
-        anyhow::ensure!(tiles.iter().all(|&(z, x, y, _, _)| (4..=8).contains(&z) && (x >> (z - 3), y >> (z - 3)) == (q.x, q.y)), "{layer}: an assembly made tiles outside 3/{}/{}'s zoom 4 to 8", q.x, q.y);
-        let p = crate::layers::write_pack_local(out, layer, "terrarium-webp", false, "lo", (3, q.x, q.y), &mut tiles.into_iter())?;
+        anyhow::ensure!(
+            tiles.iter().all(|&(z, x, y, _, _)| (4..=8).contains(&z) && (x >> (z - 3), y >> (z - 3)) == (q.x, q.y)),
+            "{layer}: an assembly made tiles outside 3/{}/{}'s zoom 4 to 8",
+            q.x,
+            q.y
+        );
+        let p = crate::layers::write_pack_local(
+            out,
+            layer,
+            "terrarium-webp",
+            false,
+            "lo",
+            (3, q.x, q.y),
+            &mut tiles.into_iter(),
+        )?;
         made.push((format!("layers/{layer}/lo/{}", q.dash()), p.map(|p| p.local)));
     }
     let what = format!("assembly {}", q.slash());
     drop(p);
     put_made(out, made, expect_same.then_some(what.as_str()))?;
-    eprintln!("trees-lo {}: {} lo packs", q.slash(), LAYERS.iter().filter(|l| out.get(&format!("layers/{l}/lo/{}", q.dash())).is_some()).count());
+    eprintln!(
+        "trees-lo {}: {} lo packs",
+        q.slash(),
+        LAYERS.iter().filter(|l| out.get(&format!("layers/{l}/lo/{}", q.dash())).is_some()).count()
+    );
     Ok(())
 }
 
@@ -478,7 +602,8 @@ mod tests {
 
     fn cov(outline: &str) -> Coverage {
         let d = tempfile::tempdir().unwrap();
-        Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![outline.into()] }], None, d.path()).unwrap()
+        Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![outline.into()] }], None, d.path())
+            .unwrap()
     }
 
     #[test]
@@ -487,8 +612,13 @@ mod tests {
         let c = cov("place:-21.9,64.13,20");
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let t = targets(&c, &m);
-        let names = |v: &[(String, String, bool)]| v.iter().map(|p| format!("{}{}", p.0, if p.2 { " none" } else { "" })).collect::<Vec<_>>();
-        assert_eq!((names(&t.pieces), names(&t.lo)), (vec!["6/28/16".to_string(), "6/28/17".into()], vec!["3/3/2".to_string()]));
+        let names = |v: &[(String, String, bool)]| {
+            v.iter().map(|p| format!("{}{}", p.0, if p.2 { " none" } else { "" })).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            (names(&t.pieces), names(&t.lo)),
+            (vec!["6/28/16".to_string(), "6/28/17".into()], vec!["3/3/2".to_string()])
+        );
         assert_eq!(t.pieces_of("3/3/2").count(), 2);
         // A piece's key is the coverage in it: grown where it reaches one of them, the other's stays.
         let wider = targets(&cov("place:-21.9,64.13,21"), &m);
@@ -535,12 +665,27 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         // Over z8 blocks 131–134, rows 87 and 88: z6 tiles 6/32/21, 6/32/22, 6/33/21 and 6/33/22 of
         // z3 tile 3/4/2, the squares' data in each.
-        std::fs::write(d.path().join("t.poly"), "t\n1\n 5.5 48.85\n 9.5 48.85\n 9.5 48.95\n 5.5 48.95\nEND\nEND\n").unwrap();
-        let c = Coverage::fixture(&[Recipe { id: "t".into(), name: "T".into(), outline: vec!["poly:t.poly".into()] }], None, d.path()).unwrap();
+        std::fs::write(d.path().join("t.poly"), "t\n1\n 5.5 48.85\n 9.5 48.85\n 9.5 48.95\n 5.5 48.95\nEND\nEND\n")
+            .unwrap();
+        let c = Coverage::fixture(
+            &[Recipe { id: "t".into(), name: "T".into(), outline: vec!["poly:t.poly".into()] }],
+            None,
+            d.path(),
+        )
+        .unwrap();
         let run = |t: Unit, dir: &Path| {
             std::fs::create_dir_all(dir).unwrap();
             std::fs::write(dir.join("coverage.json"), serde_json::to_vec(&coverage_json(&c, t)).unwrap()).unwrap();
-            let r = crate::trees::Run { tile: (t.z, t.x, t.y), coverage: dir.join("coverage.json"), chm: sq.path().into(), chm_store: d.path().join("store"), sources: crate::trees::tests::sources_file(dir), leaf: sq.path().into(), out: dir.into(), dem: d.path().into() };
+            let r = crate::trees::Run {
+                tile: (t.z, t.x, t.y),
+                coverage: dir.join("coverage.json"),
+                chm: sq.path().into(),
+                chm_store: d.path().join("store"),
+                sources: crate::trees::tests::sources_file(dir),
+                leaf: sq.path().into(),
+                out: dir.into(),
+                dem: d.path().into(),
+            };
             (if t.z == 3 { crate::trees::z3(&r) } else { crate::trees::z6(&r) }).unwrap();
         };
         let out = |name: &str| Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
@@ -559,10 +704,17 @@ mod tests {
             run(t, &dir);
             put_piece(&mut parts, t, &dir, false).unwrap();
         }
-        let mids: Vec<PathBuf> = pieces.iter().map(|t| parts.path(parts.get(&mid_logical(t.x, t.y)).unwrap())).collect();
+        let mids: Vec<PathBuf> =
+            pieces.iter().map(|t| parts.path(parts.get(&mid_logical(t.x, t.y)).unwrap())).collect();
         crate::trees::assemble_lo(&mids, &d.path().join("lo"), &|_, _| {}).unwrap();
         put_lo(&mut parts, q, &d.path().join("lo"), false).unwrap();
-        let trees = |o: &Out| o.manifest.iter().filter(|(l, _)| l.starts_with("layers/trees-")).map(|(l, c)| (l.clone(), c.clone())).collect::<BTreeMap<_, _>>();
+        let trees = |o: &Out| {
+            o.manifest
+                .iter()
+                .filter(|(l, _)| l.starts_with("layers/trees-"))
+                .map(|(l, c)| (l.clone(), c.clone()))
+                .collect::<BTreeMap<_, _>>()
+        };
         assert_eq!(trees(&whole).len(), 15, "a lo pack and four hi packs a layer: {:?}", trees(&whole).keys());
         assert_eq!(trees(&parts), trees(&whole), "the same packs, by content");
         // Each piece's mid, uploaded beside them.
@@ -589,10 +741,21 @@ mod tests {
         put_piece(&mut parts, t, &dir, false).unwrap();
         assert_eq!(parts.get(&hi), before.get(&hi).map(String::as_str));
         // The coverage gone from a piece: its packs and mid dropped.
-        let gone = Coverage::fixture(&[Recipe { id: "f".into(), name: "F".into(), outline: vec!["place:-21.9,64.13,20".into()] }], None, d.path()).unwrap();
+        let gone = Coverage::fixture(
+            &[Recipe { id: "f".into(), name: "F".into(), outline: vec!["place:-21.9,64.13,20".into()] }],
+            None,
+            d.path(),
+        )
+        .unwrap();
         build_piece(&mut parts, &gone, t, d.path(), sq.path(), &d.path().join("s"), 1, false, &|| {}).unwrap();
-        assert!(LAYERS.iter().all(|l| parts.get(&format!("layers/{l}/hi/6-33-22")).is_none()) && parts.get(&mid).is_none());
-        assert!(build_piece(&mut parts, &gone, pieces[0], d.path(), sq.path(), &d.path().join("s"), 1, true, &|| {}).is_err(), "not as it is: it's gone");
+        assert!(
+            LAYERS.iter().all(|l| parts.get(&format!("layers/{l}/hi/6-33-22")).is_none()) && parts.get(&mid).is_none()
+        );
+        assert!(
+            build_piece(&mut parts, &gone, pieces[0], d.path(), sq.path(), &d.path().join("s"), 1, true, &|| {})
+                .is_err(),
+            "not as it is: it's gone"
+        );
     }
 
     /// The packs a run's archives in `dir` make (as layers::split_archive_with groups and writes them),
@@ -605,7 +768,17 @@ mod tests {
                 groups.entry(crate::layers::pack_of(t.0, t.1, t.2)).or_default().push(t);
             }
             for ((scope, z, x, y), tiles) in groups {
-                let p = crate::layers::write_pack_local(out, layer, "terrarium-webp", false, scope, (z, x, y), &mut tiles.into_iter()).unwrap().unwrap();
+                let p = crate::layers::write_pack_local(
+                    out,
+                    layer,
+                    "terrarium-webp",
+                    false,
+                    scope,
+                    (z, x, y),
+                    &mut tiles.into_iter(),
+                )
+                .unwrap()
+                .unwrap();
                 names.insert(p.logical.clone(), p.content_name().unwrap());
                 std::fs::remove_file(&p.local).unwrap();
             }
@@ -636,8 +809,10 @@ mod tests {
     #[ignore]
     fn p5_trees_real() {
         let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} isn't set"));
-        let (root, data, cache) = (PathBuf::from(env("P5T_ROOT")), PathBuf::from(env("P5T_DATA")), PathBuf::from(env("P5T_CHM")));
-        let areas: Vec<Unit> = env("P5T_AREAS").split(',').map(|a| Unit::parse(a).filter(|u| u.z == 3).unwrap()).collect();
+        let (root, data, cache) =
+            (PathBuf::from(env("P5T_ROOT")), PathBuf::from(env("P5T_DATA")), PathBuf::from(env("P5T_CHM")));
+        let areas: Vec<Unit> =
+            env("P5T_AREAS").split(',').map(|a| Unit::parse(a).filter(|u| u.z == 3).unwrap()).collect();
         let t0 = std::time::Instant::now();
         let m: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).unwrap();
         let date = crate::osmpass::latest_pass(&root).unwrap();
@@ -645,14 +820,40 @@ mod tests {
         let recipes = crate::inputs::regions::read::recipes(&a).unwrap();
         let cov = Coverage::accepted(&root, &a, None).unwrap();
         let tt = targets(&cov, &m);
-        eprintln!("pass {date}, {} regions, {} pieces, {} assemblies ({:.0} s)", recipes.len(), tt.pieces.len(), tt.lo.len(), t0.elapsed().as_secs_f64());
+        eprintln!(
+            "pass {date}, {} regions, {} pieces, {} assemblies ({:.0} s)",
+            recipes.len(),
+            tt.pieces.len(),
+            tt.lo.len(),
+            t0.elapsed().as_secs_f64()
+        );
         let out = Out::unbound(&data.join("no-root"), &data.join("scratch")).unwrap();
         let chm = data.join("chm");
         std::fs::create_dir_all(&chm).unwrap();
         let run = |t: Unit, dir: &Path| {
             std::fs::create_dir_all(dir).unwrap();
             std::fs::write(dir.join("coverage.json"), serde_json::to_vec(&coverage_json(&cov, t)).unwrap()).unwrap();
-            let r = crate::trees::Run { tile: (t.z, t.x, t.y), coverage: dir.join("coverage.json"), chm: chm.clone(), chm_store: data.join("store"), sources: { let p = dir.join("sources.json"); std::fs::write(&p, serde_json::to_vec(&crate::trees::RunSources::of(&crate::inputs::sources::read(&root, &m).unwrap()).unwrap()).unwrap()).unwrap(); p }, leaf: leaf_dir(&root), out: dir.into(), dem: data.clone() };
+            let r = crate::trees::Run {
+                tile: (t.z, t.x, t.y),
+                coverage: dir.join("coverage.json"),
+                chm: chm.clone(),
+                chm_store: data.join("store"),
+                sources: {
+                    let p = dir.join("sources.json");
+                    std::fs::write(
+                        &p,
+                        serde_json::to_vec(
+                            &crate::trees::RunSources::of(&crate::inputs::sources::read(&root, &m).unwrap()).unwrap(),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    p
+                },
+                leaf: leaf_dir(&root),
+                out: dir.into(),
+                dem: data.clone(),
+            };
             (if t.z == 3 { crate::trees::z3(&r) } else { crate::trees::z6(&r) }).unwrap();
         };
         for q in areas {
@@ -660,13 +861,20 @@ mod tests {
             // The canopy squares its blocks read, linked into a cache of its own: the agent's copies
             // read in place, else the NAS's.
             let shapes = crate::trees::mask::Shapes::parse(&coverage_json(&cov, q).to_string()).unwrap();
-            let mut sqs: Vec<(i32, i32)> = crate::trees::z3_blocks(&shapes, q.x, q.y).iter().flat_map(|&(bx, by)| crate::trees::squares_of(crate::trees::tile_bounds(8, bx, by))).collect();
+            let mut sqs: Vec<(i32, i32)> = crate::trees::z3_blocks(&shapes, q.x, q.y)
+                .iter()
+                .flat_map(|&(bx, by)| crate::trees::squares_of(crate::trees::tile_bounds(8, bx, by)))
+                .collect();
             sqs.sort_unstable();
             sqs.dedup();
             for &(top, left) in &sqs {
                 for kind in ["cover5m", "p95"] {
                     let name = crate::trees::chm_name(top, left, kind);
-                    let src = if cache.join(&name).exists() { cache.join(&name) } else { root.join("sources/canopy").join(&name) };
+                    let src = if cache.join(&name).exists() {
+                        cache.join(&name)
+                    } else {
+                        root.join("sources/canopy").join(&name)
+                    };
                     if !chm.join(&name).exists() {
                         std::os::unix::fs::symlink(&src, chm.join(&name)).unwrap();
                     }
@@ -677,7 +885,17 @@ mod tests {
             run(q, &base_dir);
             let base = pack_names(&out, &base_dir);
             // The live packs against it: their bytes, and their tiles' pixels.
-            let live: BTreeMap<&String, &String> = m.iter().filter(|(l, _)| LAYERS.iter().any(|layer| l.starts_with(&format!("layers/{layer}/"))) && (l.ends_with(&format!("/lo/{}", q.dash())) || l.rsplit('/').next().and_then(Unit::parse).is_some_and(|u| u.z == 6 && (u.x >> 3, u.y >> 3) == (q.x, q.y)))).collect();
+            let live: BTreeMap<&String, &String> = m
+                .iter()
+                .filter(|(l, _)| {
+                    LAYERS.iter().any(|layer| l.starts_with(&format!("layers/{layer}/")))
+                        && (l.ends_with(&format!("/lo/{}", q.dash()))
+                            || l.rsplit('/')
+                                .next()
+                                .and_then(Unit::parse)
+                                .is_some_and(|u| u.z == 6 && (u.x >> 3, u.y >> 3) == (q.x, q.y)))
+                })
+                .collect();
             let same_bytes = live.iter().filter(|(l, c)| base.get(**l) == Some(**c)).count();
             let (mut tiles, mut same_px) = (0usize, 0usize);
             for (l, c) in &live {
@@ -694,7 +912,12 @@ mod tests {
                     }
                 }
             }
-            let ours_tiles: usize = LAYERS.iter().map(|l| roadcore::archive::Archive::open(&base_dir.join(format!("{l}.tiles"))).unwrap().entries().len()).sum();
+            let ours_tiles: usize = LAYERS
+                .iter()
+                .map(|l| {
+                    roadcore::archive::Archive::open(&base_dir.join(format!("{l}.tiles"))).unwrap().entries().len()
+                })
+                .sum();
             std::fs::remove_dir_all(&base_dir).unwrap();
             // The pieces, then their assembly from their mids.
             let mut made: BTreeMap<String, String> = BTreeMap::new();
@@ -717,7 +940,8 @@ mod tests {
             for p in &mids {
                 std::fs::remove_file(p).unwrap();
             }
-            let differ: Vec<&String> = base.keys().chain(made.keys()).filter(|l| base.get(*l) != made.get(*l)).collect();
+            let differ: Vec<&String> =
+                base.keys().chain(made.keys()).filter(|l| base.get(*l) != made.get(*l)).collect();
             eprintln!(
                 "{}: {} pieces, {} canopy squares; the whole run's {} packs, the pieces' and assembly's {}: {} differ{}; mids {:.1} MB; the live {} packs: {same_bytes} with the same bytes; their {tiles} tiles (the run's {ours_tiles}): {same_px} with the same pixels ({:.0} s)",
                 q.slash(),

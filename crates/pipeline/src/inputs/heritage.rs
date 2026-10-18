@@ -27,7 +27,7 @@
 //! (crate::inputs::credits).
 
 use super::{Checks, Derived, FileCheck, FileEntry, Finding, Level, Version};
-use crate::outlines::{Outlines, OutlineRec};
+use crate::outlines::{OutlineRec, Outlines};
 use anyhow::Result;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -42,7 +42,10 @@ pub const CLASSES: [&str; 3] = ["heritage", "world-heritage", "special"];
 
 /// The kinds of designation the map's Heritage sites toggles group by (web/src/basemap.ts
 /// HERITAGE_TIERS), an entry's `tier`.
-pub const TIERS: [&str; 16] = ["w.c", "w.n", "n.top", "n.second", "n.lower", "n.mon", "n.land", "n.hist", "n.fed", "p.des", "p.reg", "p.area", "m.des", "m.reg", "m.area", "m.agr"];
+pub const TIERS: [&str; 16] = [
+    "w.c", "w.n", "n.top", "n.second", "n.lower", "n.mon", "n.land", "n.hist", "n.fed", "p.des", "p.reg", "p.area",
+    "m.des", "m.reg", "m.area", "m.agr",
+];
 
 /// The kinds of special place the map knows (web/src/overlays.ts SPECIAL_LABEL).
 pub const KINDS: [&str; 3] = ["biosphere", "geopark", "dark_sky"];
@@ -79,7 +82,8 @@ pub struct Heritage {
 
 /// Whether `s` is a register id: lower-case letters, digits and `-`, a letter or digit first.
 pub fn valid_id(s: &str) -> bool {
-    s.bytes().next().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    s.bytes().next().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 /// A register's id and which of its files `path` is (`toml` or `geojson`), when it's one.
@@ -184,11 +188,14 @@ fn property(k: &str, v: &Value) -> Option<String> {
     let s = || v.as_str().is_some();
     let ok = match k {
         "id" => v.as_str().is_some_and(|s| !s.is_empty()),
-        "name" | "name_en" | "designation" | "date" | "municipality" | "type" | "authority" | "url" | "ref" | "site" | "osm_name" => s(),
+        "name" | "name_en" | "designation" | "date" | "municipality" | "type" | "authority" | "url" | "ref"
+        | "site" | "osm_name" => s(),
         "level" => v.as_i64().is_some_and(|l| (1..=5).contains(&l)),
         "kind" => v.as_str().is_some_and(|x| KINDS.contains(&x)),
         "tier" => v.as_str().is_some_and(|x| TIERS.contains(&x)),
-        "wikidata" => v.as_str().is_some_and(|q| q.len() > 1 && q.starts_with('Q') && q[1..].bytes().all(|b| b.is_ascii_digit()) && !q[1..].starts_with('0')),
+        "wikidata" => v.as_str().is_some_and(|q| {
+            q.len() > 1 && q.starts_with('Q') && q[1..].bytes().all(|b| b.is_ascii_digit()) && !q[1..].starts_with('0')
+        }),
         "approx" | "dot" => v.is_boolean(),
         "area_km2" | "site_area_km2" => v.is_number(),
         // (Anything else is the register's own, shown in the popup as it is.)
@@ -214,7 +221,11 @@ pub fn summary_of(bytes: &[u8]) -> Summary {
             return s;
         }
     };
-    let Some(feats) = v.get("features").and_then(Value::as_array).filter(|_| v.get("type").and_then(Value::as_str) == Some("FeatureCollection")) else {
+    let Some(feats) = v
+        .get("features")
+        .and_then(Value::as_array)
+        .filter(|_| v.get("type").and_then(Value::as_str) == Some("FeatureCollection"))
+    else {
         s.broken = Some("not a GeoJSON FeatureCollection".into());
         return s;
     };
@@ -278,27 +289,41 @@ pub struct Declared {
 
 /// A description's own fields, or what's wrong with them.
 pub fn declared(bytes: &[u8]) -> std::result::Result<Declared, Vec<String>> {
-    let Ok(t) = std::str::from_utf8(bytes).map_err(|_| ()).and_then(|t| toml::from_str::<toml::Table>(t).map_err(|_| ())) else { return Err(vec!["not TOML".into()]) };
+    let Ok(t) =
+        std::str::from_utf8(bytes).map_err(|_| ()).and_then(|t| toml::from_str::<toml::Table>(t).map_err(|_| ()))
+    else {
+        return Err(vec!["not TOML".into()]);
+    };
     let mut bad = Vec::new();
     let class = t.get("class").and_then(|v| v.as_str()).unwrap_or("").to_string();
     if !CLASSES.contains(&class.as_str()) {
-        bad.push(format!("`class` is {}, not one of {}", if class.is_empty() { "missing".into() } else { format!("{class:?}") }, CLASSES.join(", ")));
+        bad.push(format!(
+            "`class` is {}, not one of {}",
+            if class.is_empty() { "missing".into() } else { format!("{class:?}") },
+            CLASSES.join(", ")
+        ));
     }
     let territory: Vec<String> = match t.get("territory") {
         Some(v) if v.as_str() == Some("world") => vec!["world".into()],
-        Some(v) => v.as_array().map(|a| a.iter().filter_map(|c| c.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+        Some(v) => {
+            v.as_array().map(|a| a.iter().filter_map(|c| c.as_str().map(str::to_string)).collect()).unwrap_or_default()
+        }
         None => Vec::new(),
     };
     if territory.is_empty() {
         bad.push("`territory` is required: ISO 3166 codes, or \"world\"".into());
     }
     let wikidata_property = t.get("wikidata_property").map(|v| v.as_str().unwrap_or("").to_string());
-    if wikidata_property.as_deref().is_some_and(|p| !(p.len() > 1 && p.starts_with('P') && p[1..].bytes().all(|b| b.is_ascii_digit()) && !p[1..].starts_with('0'))) {
+    if wikidata_property.as_deref().is_some_and(|p| {
+        !(p.len() > 1 && p.starts_with('P') && p[1..].bytes().all(|b| b.is_ascii_digit()) && !p[1..].starts_with('0'))
+    }) {
         bad.push("`wikidata_property` isn't P<digits>".into());
     }
     let osm_ref_tags = match t.get("osm_ref_tags") {
         None => Vec::new(),
-        Some(v) => match v.as_array().and_then(|a| a.iter().map(|x| x.as_str().filter(|s| !s.is_empty()).map(str::to_string)).collect::<Option<Vec<_>>>()) {
+        Some(v) => match v.as_array().and_then(|a| {
+            a.iter().map(|x| x.as_str().filter(|s| !s.is_empty()).map(str::to_string)).collect::<Option<Vec<_>>>()
+        }) {
             Some(tags) => tags,
             None => {
                 bad.push("`osm_ref_tags` isn't a list of OSM keys".into());
@@ -322,7 +347,8 @@ fn about_entries(check: &str, level: Level, path: &str, ls: &[(usize, String, St
     let raw: Vec<String> = ls.iter().map(|(_, id, why)| format!("{id} {why}")).collect();
     let refs: Vec<&str> = raw.iter().map(String::as_str).collect();
     let mut f = Finding::new(check, level, &[path], &refs, vec![path.to_string()], message);
-    f.lines = ls.iter().map(|(n, id, why)| (*n, if id.is_empty() { why.clone() } else { format!("{id}: {why}") })).collect();
+    f.lines =
+        ls.iter().map(|(n, id, why)| (*n, if id.is_empty() { why.clone() } else { format!("{id}: {why}") })).collect();
     f
 }
 
@@ -344,10 +370,14 @@ impl Heritage {
     /// The outlines drawn under `codes`.
     fn shapes(&self, o: &Outlines, codes: &[String]) -> Result<Shapes> {
         let mut out = Vec::new();
-        let recs: Vec<&OutlineRec> = o.recs.iter().filter(|r| o.code_of(r).is_some_and(|c| codes.contains(&c))).collect();
+        let recs: Vec<&OutlineRec> =
+            o.recs.iter().filter(|r| o.code_of(r).is_some_and(|c| codes.contains(&c))).collect();
         for r in recs {
             for poly in o.simple_polygons(r)? {
-                let rings: Vec<Vec<[f64; 2]>> = poly.iter().map(|ring| ring.iter().map(|p| [p[0] as f64 * 1e-7, p[1] as f64 * 1e-7]).collect()).collect();
+                let rings: Vec<Vec<[f64; 2]>> = poly
+                    .iter()
+                    .map(|ring| ring.iter().map(|p| [p[0] as f64 * 1e-7, p[1] as f64 * 1e-7]).collect())
+                    .collect();
                 let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
                 for p in rings.iter().flatten() {
                     b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
@@ -371,7 +401,11 @@ impl Heritage {
                 };
                 let pe7 = [(p[0] * 1e7) as i32, (p[1] * 1e7) as i32];
                 let within = shapes.iter().filter(|(b, ..)| near(b)).any(|(b, rings, e7)| {
-                    let inside = p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3] && crate::outlines::inside(&e7.iter().map(Vec::as_slice).collect::<Vec<_>>(), pe7);
+                    let inside = p[0] >= b[0]
+                        && p[0] <= b[2]
+                        && p[1] >= b[1]
+                        && p[1] <= b[3]
+                        && crate::outlines::inside(&e7.iter().map(Vec::as_slice).collect::<Vec<_>>(), pe7);
                     inside || rings.iter().any(|r| r.windows(2).any(|w| segment_km(p, w[0], w[1]) <= FAR_KM))
                 });
                 !within
@@ -416,46 +450,114 @@ impl Checks for Heritage {
                         c.facts.insert("class".into(), own.class.clone().into());
                         // (What enters builds: the class, territory and how its ids are known; its
                         // credit reaches the catalog through the credits' digest.)
-                        let k = format!("{keyed}\nclass {}\nterritory {}\nwikidata {}\nosm {}", own.class, own.territory.join(","), own.wikidata_property.as_deref().unwrap_or("-"), own.osm_ref_tags.join(","));
+                        let k = format!(
+                            "{keyed}\nclass {}\nterritory {}\nwikidata {}\nosm {}",
+                            own.class,
+                            own.territory.join(","),
+                            own.wikidata_property.as_deref().unwrap_or("-"),
+                            own.osm_ref_tags.join(",")
+                        );
                         c.keyed = Some(store::naming::hash16(k.as_bytes()));
                     }
                 }
                 Err(why) => {
                     let check = if why.iter().any(|w| w.starts_with("`class`")) { CLASS } else { DESC };
                     let refs: Vec<&str> = why.iter().map(String::as_str).collect();
-                    c.findings.push(Finding::new(check, Level::Error, &[path], &refs, vec![path.into()], format!("{path}: {}", why.join("; "))));
+                    c.findings.push(Finding::new(
+                        check,
+                        Level::Error,
+                        &[path],
+                        &refs,
+                        vec![path.into()],
+                        format!("{path}: {}", why.join("; ")),
+                    ));
                 }
             }
             return c;
         }
         let s = summary(bytes);
         if let Some(why) = &s.broken {
-            c.findings.push(Finding::new(JSON, Level::Error, &[path], &[why], vec![path.into()], format!("{path}: {why}")));
+            c.findings.push(Finding::new(
+                JSON,
+                Level::Error,
+                &[path],
+                &[why],
+                vec![path.into()],
+                format!("{path}: {why}"),
+            ));
             return c;
         }
         if !s.faults.is_empty() {
-            c.findings.push(about_entries(ENTRY, Level::Error, path, &s.faults, format!("{path}: {} not in the shape (docs/inputs.md §6.5)", plural(s.faults.len(), "entry", "entries"))));
+            c.findings.push(about_entries(
+                ENTRY,
+                Level::Error,
+                path,
+                &s.faults,
+                format!(
+                    "{path}: {} not in the shape (docs/inputs.md §6.5)",
+                    plural(s.faults.len(), "entry", "entries")
+                ),
+            ));
         }
         if !s.twice.is_empty() {
-            let ls: Vec<(usize, String, String)> = s.twice.iter().map(|(n, id)| (*n, id.clone(), "an id an earlier entry has".into())).collect();
-            c.findings.push(about_entries(TWICE, Level::Error, path, &ls, format!("{path}: {} an earlier entry's id (one entry an id)", plural(ls.len(), "entry has", "entries have"))));
+            let ls: Vec<(usize, String, String)> =
+                s.twice.iter().map(|(n, id)| (*n, id.clone(), "an id an earlier entry has".into())).collect();
+            c.findings.push(about_entries(
+                TWICE,
+                Level::Error,
+                path,
+                &ls,
+                format!(
+                    "{path}: {} an earlier entry's id (one entry an id)",
+                    plural(ls.len(), "entry has", "entries have")
+                ),
+            ));
         }
         let n = s.entries.len();
-        let unnamed: Vec<(usize, String, String)> = s.entries.iter().enumerate().filter(|(_, e)| !e.named).map(|(i, e)| (i + 1, e.id.clone(), "no name".into())).collect();
+        let unnamed: Vec<(usize, String, String)> = s
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !e.named)
+            .map(|(i, e)| (i + 1, e.id.clone(), "no name".into()))
+            .collect();
         if !unnamed.is_empty() {
-            c.findings.push(about_entries(UNNAMED, Level::Warning, path, &unnamed, format!("{rid}: {} of {n} entries without a name (they show as their designation alone)", unnamed.len())));
+            c.findings.push(about_entries(
+                UNNAMED,
+                Level::Warning,
+                path,
+                &unnamed,
+                format!(
+                    "{rid}: {} of {n} entries without a name (they show as their designation alone)",
+                    unnamed.len()
+                ),
+            ));
         }
         let approx = s.entries.iter().filter(|e| e.approx).count();
         if n > 0 && approx * 2 > n {
             let counts = format!("{approx} of {n}");
-            c.findings.push(Finding::new(APPROX, Level::Warning, &[path], &[&counts], vec![path.into()], format!("{rid}: {approx} of its {n} entries located loosely (approx)")));
+            c.findings.push(Finding::new(
+                APPROX,
+                Level::Warning,
+                &[path],
+                &[&counts],
+                vec![path.into()],
+                format!("{rid}: {approx} of its {n} entries located loosely (approx)"),
+            ));
         }
         if let Some((was, copy)) = self.prev.get(path) {
             if (n as f64) < (*was as f64) * (1.0 - LOSS) {
                 let found = [format!("{was} → {n}"), copy.clone(), store::naming::hash16(bytes)];
                 let refs: Vec<&str> = found.iter().map(String::as_str).collect();
                 let pct = 100.0 * (*was as f64 - n as f64) / *was as f64;
-                c.findings.push(Finding::new(LOST, Level::Warning, &[path], &refs, vec![path.into()], format!("{rid}: {was} → {n} entries (a loss of {pct:.0} %)")));
+                c.findings.push(Finding::new(
+                    LOST,
+                    Level::Warning,
+                    &[path],
+                    &refs,
+                    vec![path.into()],
+                    format!("{rid}: {was} → {n} entries (a loss of {pct:.0} %)"),
+                ));
             }
         }
         c.facts.insert("entries".into(), n.into());
@@ -471,7 +573,14 @@ impl Checks for Heritage {
     fn removed(&self, path: &str, was: &FileEntry) -> Vec<Finding> {
         let Some((rid, "geojson")) = split(path) else { return Vec::new() };
         let n = was.facts.get("entries").and_then(Value::as_u64).unwrap_or(0);
-        vec![Finding::new(GONE, Level::Warning, &[path], &[&was.file], vec![path.into()], format!("{rid} removed: its {n} entries go from the map"))]
+        vec![Finding::new(
+            GONE,
+            Level::Warning,
+            &[path],
+            &[&was.file],
+            vec![path.into()],
+            format!("{rid} removed: its {n} entries go from the map"),
+        )]
     }
 
     fn whole(&self, v: &Version) -> Result<Vec<Finding>> {
@@ -483,7 +592,14 @@ impl Checks for Heritage {
             let (has_t, has_g) = (v.paths.contains(&t), v.paths.contains(&g));
             if !(has_t && has_g) {
                 let (have, lacks) = if has_t { (&t, &g) } else { (&g, &t) };
-                out.push(Finding::new(PAIR, Level::Error, &[rid], &[lacks], vec![have.clone()], format!("{have} without {lacks}: a register is its entries and its description, dropped together")));
+                out.push(Finding::new(
+                    PAIR,
+                    Level::Error,
+                    &[rid],
+                    &[lacks],
+                    vec![have.clone()],
+                    format!("{have} without {lacks}: a register is its entries and its description, dropped together"),
+                ));
                 continue;
             }
             let Ok(own) = declared(&(v.read)(&t)?) else { continue };
@@ -491,7 +607,9 @@ impl Checks for Heritage {
             let mut need: Vec<(usize, String, String)> = Vec::new();
             for (i, e) in s.entries.iter().enumerate() {
                 let why = match own.class.as_str() {
-                    "heritage" if e.level.is_none() || !e.designation => "no level or designation (a heritage register's entries need both)",
+                    "heritage" if e.level.is_none() || !e.designation => {
+                        "no level or designation (a heritage register's entries need both)"
+                    }
                     "world-heritage" if e.level.is_none() => "no level",
                     "special" if !e.kind => "no kind (a special place is a biosphere, geopark or dark_sky)",
                     _ => continue,
@@ -499,7 +617,17 @@ impl Checks for Heritage {
                 need.push((i + 1, e.id.clone(), why.into()));
             }
             if !need.is_empty() {
-                out.push(about_entries(NEEDS, Level::Error, &g, &need, format!("{g}: {} without what a {} register's entries need", plural(need.len(), "entry", "entries"), own.class)));
+                out.push(about_entries(
+                    NEEDS,
+                    Level::Error,
+                    &g,
+                    &need,
+                    format!(
+                        "{g}: {} without what a {} register's entries need",
+                        plural(need.len(), "entry", "entries"),
+                        own.class
+                    ),
+                ));
             }
             // Entries far outside its territory (the newest pass's outlines, when they're known).
             if let (Some(o), false) = (&self.outlines, own.territory == ["world"]) {
@@ -512,8 +640,19 @@ impl Checks for Heritage {
                 }
                 let far = Self::far(sh, &s.entries);
                 if !far.is_empty() {
-                    let ls: Vec<(usize, String, String)> = far.iter().map(|e| (0, e.id.clone(), format!("{:.4}, {:.4}", e.at[1], e.at[0]))).collect();
-                    let mut f = about_entries(FAR, Level::Warning, &g, &ls, format!("{rid}: {} more than {FAR_KM} km outside {} (its territory)", plural(far.len(), "entry", "entries"), own.territory.join(", ")));
+                    let ls: Vec<(usize, String, String)> =
+                        far.iter().map(|e| (0, e.id.clone(), format!("{:.4}, {:.4}", e.at[1], e.at[0]))).collect();
+                    let mut f = about_entries(
+                        FAR,
+                        Level::Warning,
+                        &g,
+                        &ls,
+                        format!(
+                            "{rid}: {} more than {FAR_KM} km outside {} (its territory)",
+                            plural(far.len(), "entry", "entries"),
+                            own.territory.join(", ")
+                        ),
+                    );
                     f.lines = far.iter().map(|e| (0, format!("{}: {:.4}, {:.4}", e.id, e.at[1], e.at[0]))).collect();
                     f.at = Some(far[0].at);
                     out.push(f);
@@ -567,7 +706,9 @@ impl Checks for Heritage {
         if let Some(o) = outlines_of(manifest) {
             match Outlines::open(&root.join(o)) {
                 Ok(x) => h.outlines = Some(x),
-                Err(e) => eprintln!("inputs: {UNIT}: the pass's outlines, {o}, can't be read ({e:#}): checked without the territories"),
+                Err(e) => eprintln!(
+                    "inputs: {UNIT}: the pass's outlines, {o}, can't be read ({e:#}): checked without the territories"
+                ),
             }
         }
         Ok(Some(Box::new(h)))
@@ -592,7 +733,13 @@ pub fn registers(a: &super::Accepted) -> Vec<Register> {
         let Some((rid, "geojson")) = split(p) else { continue };
         let Some(t) = a.index.files.get(&format!("{rid}.toml")) else { continue };
         let bbox = f.facts.get("box").and_then(|b| serde_json::from_value::<[f64; 4]>(b.clone()).ok());
-        out.push(Register { id: rid.to_string(), geojson: f.file.clone(), toml: t.file.clone(), keyed: format!("{} {}", f.keyed, t.keyed), bbox });
+        out.push(Register {
+            id: rid.to_string(),
+            geojson: f.file.clone(),
+            toml: t.file.clone(),
+            keyed: format!("{} {}", f.keyed, t.keyed),
+            bbox,
+        });
     }
     out
 }
@@ -602,11 +749,18 @@ pub fn registers(a: &super::Accepted) -> Vec<Register> {
 #[cfg(test)]
 pub fn accept_fixture(root: &Path, m: &mut BTreeMap<String, String>) {
     let mut files = BTreeMap::new();
-    for (p, facts) in [("fixture.geojson", serde_json::json!({"box": [-180.0, -85.0, 180.0, 85.0], "entries": 1})), ("fixture.toml", serde_json::json!({}))] {
+    for (p, facts) in [
+        ("fixture.geojson", serde_json::json!({"box": [-180.0, -85.0, 180.0, 85.0], "entries": 1})),
+        ("fixture.toml", serde_json::json!({})),
+    ] {
         let file = format!("{}/{}", super::store_dir(UNIT), p.replace('.', ".0000000000000000."));
-        files.insert(p.to_string(), FileEntry { file, size: 1, keyed: format!("k {p}"), facts: facts.as_object().cloned().unwrap_or_default() });
+        files.insert(
+            p.to_string(),
+            FileEntry { file, size: 1, keyed: format!("k {p}"), facts: facts.as_object().cloned().unwrap_or_default() },
+        );
     }
-    let index = super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
+    let index =
+        super::Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), files, accepted: BTreeMap::new() };
     let body = serde_json::to_vec(&index).unwrap();
     let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&body));
     std::fs::create_dir_all(root.join(super::store_dir(UNIT))).unwrap();

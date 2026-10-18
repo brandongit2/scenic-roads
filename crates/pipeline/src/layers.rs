@@ -49,7 +49,15 @@ impl LayerOut {
 }
 
 /// Write one pack of tiles (key, blob, raw_len) and upload it; returns its logical name.
-pub fn write_pack(out: &mut Out, layer: &str, encoding: &str, gzip: bool, scope: &str, root: (u8, u32, u32), tiles: &mut dyn Iterator<Item = (u8, u32, u32, Vec<u8>, u32)>) -> Result<Option<(String, (u8, u8))>> {
+pub fn write_pack(
+    out: &mut Out,
+    layer: &str,
+    encoding: &str,
+    gzip: bool,
+    scope: &str,
+    root: (u8, u32, u32),
+    tiles: &mut dyn Iterator<Item = (u8, u32, u32, Vec<u8>, u32)>,
+) -> Result<Option<(String, (u8, u8))>> {
     let Some(p) = write_pack_local(out, layer, encoding, gzip, scope, root, tiles)? else { return Ok(None) };
     out.put_file(&p.logical, "pack", &p.local)?;
     Ok(Some((p.logical, p.zooms)))
@@ -70,7 +78,15 @@ impl LocalPack {
 }
 
 /// `write_pack`'s pack, written in the scratch folder and not uploaded; None when it has no tiles.
-pub fn write_pack_local(out: &Out, layer: &str, encoding: &str, gzip: bool, scope: &str, root: (u8, u32, u32), tiles: &mut dyn Iterator<Item = (u8, u32, u32, Vec<u8>, u32)>) -> Result<Option<LocalPack>> {
+pub fn write_pack_local(
+    out: &Out,
+    layer: &str,
+    encoding: &str,
+    gzip: bool,
+    scope: &str,
+    root: (u8, u32, u32),
+    tiles: &mut dyn Iterator<Item = (u8, u32, u32, Vec<u8>, u32)>,
+) -> Result<Option<LocalPack>> {
     let logical = format!("layers/{layer}/{scope}/{}-{}-{}", root.0, root.1, root.2);
     let local = out.scratch_file(&format!("{logical}.pack"));
     let meta = serde_json::json!({"layer": layer, "scope": scope, "root": format!("{}/{}/{}", root.0, root.1, root.2), "encoding": encoding});
@@ -92,16 +108,34 @@ pub fn write_pack_local(out: &Out, layer: &str, encoding: &str, gzip: bool, scop
 
 /// Split a tile archive into packs, keeping zooms up to `max_z`, saying how far it is as
 /// `packs written` (crate::agent::jobs::report).
-pub fn split_archive(out: &mut Out, arc: &Archive, layer: &str, encoding: &str, gzip: bool, max_z: u8) -> Result<LayerOut> {
-    split_archive_with(out, arc, layer, encoding, gzip, max_z, &|k, n| crate::agent::jobs::report(k, n, "packs written"))
+pub fn split_archive(
+    out: &mut Out,
+    arc: &Archive,
+    layer: &str,
+    encoding: &str,
+    gzip: bool,
+    max_z: u8,
+) -> Result<LayerOut> {
+    split_archive_with(out, arc, layer, encoding, gzip, max_z, &|k, n| {
+        crate::agent::jobs::report(k, n, "packs written")
+    })
 }
 
 /// `split_archive`, telling `on` the packs written and how many there are, at most once a second.
-pub fn split_archive_with(out: &mut Out, arc: &Archive, layer: &str, encoding: &str, gzip: bool, max_z: u8, on: &dyn Fn(u64, u64)) -> Result<LayerOut> {
+pub fn split_archive_with(
+    out: &mut Out,
+    arc: &Archive,
+    layer: &str,
+    encoding: &str,
+    gzip: bool,
+    max_z: u8,
+    on: &dyn Fn(u64, u64),
+) -> Result<LayerOut> {
     let mut groups: BTreeMap<(&'static str, u8, u32, u32), Vec<usize>> = BTreeMap::new();
     let entries = arc.entries();
     for (i, e) in entries.iter().enumerate() {
-        let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+        let (z, x, y) =
+            ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
         if z > max_z {
             continue;
         }
@@ -119,7 +153,8 @@ pub fn split_archive_with(out: &mut Out, arc: &Archive, layer: &str, encoding: &
         }
         let mut it = idx.into_iter().map(|i| {
             let e = entries[i];
-            let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+            let (z, x, y) =
+                ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
             let blob = arc.get(z, x, y).map(<[u8]>::to_vec).unwrap_or_default();
             (z, x, y, blob, e.raw_len)
         });

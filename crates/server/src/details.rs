@@ -17,7 +17,8 @@ pub(crate) fn norm(s: &str) -> String {
 
 /// Details change with the user's descriptions: cached a minute.
 pub(crate) fn json(body: &str) -> Response {
-    ([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "public, max-age=60")], body.to_string()).into_response()
+    ([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "public, max-age=60")], body.to_string())
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -37,7 +38,12 @@ pub async fn park(State(s): State<S>, Query(q): Query<ParkQ>) -> Response {
         let pad = 0.002;
         let inside = named
             .iter()
-            .filter(|p| q.lon >= p.bbox[0] - pad && q.lon <= p.bbox[2] + pad && q.lat >= p.bbox[1] - pad && q.lat <= p.bbox[3] + pad)
+            .filter(|p| {
+                q.lon >= p.bbox[0] - pad
+                    && q.lon <= p.bbox[2] + pad
+                    && q.lat >= p.bbox[1] - pad
+                    && q.lat <= p.bbox[3] + pad
+            })
             .min_by(|a, b| a.area.total_cmp(&b.area));
         let pick = inside.or_else(|| {
             named

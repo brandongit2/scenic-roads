@@ -26,7 +26,15 @@ pub struct Summary {
 
 impl Default for Summary {
     fn default() -> Self {
-        Summary { extent: [i32::MAX, i32::MAX, i32::MIN, i32::MIN], ways: 0, vertices: 0, elev_min: f32::MAX, elev_max: f32::MIN, hist: vec![0.0; BANDS], rail_km: [0.0; 5] }
+        Summary {
+            extent: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
+            ways: 0,
+            vertices: 0,
+            elev_min: f32::MAX,
+            elev_max: f32::MIN,
+            hist: vec![0.0; BANDS],
+            rail_km: [0.0; 5],
+        }
     }
 }
 
@@ -40,7 +48,9 @@ impl Summary {
         for w in ways {
             let r = w.vstart as usize..(w.vstart + w.vcount as u64) as usize;
             let (v, e) = (&verts[r.clone()], elev_dm.slice(r));
-            let seg = |k: usize| dist_m(v[k - 1][0] as f64 * E7, v[k - 1][1] as f64 * E7, v[k][0] as f64 * E7, v[k][1] as f64 * E7);
+            let seg = |k: usize| {
+                dist_m(v[k - 1][0] as f64 * E7, v[k - 1][1] as f64 * E7, v[k][0] as f64 * E7, v[k][1] as f64 * E7)
+            };
             if class::is_rail(w.class) {
                 let l: f64 = (1..v.len()).map(seg).sum();
                 for (k, km) in s.rail_km.iter_mut().enumerate() {
@@ -63,7 +73,12 @@ impl Summary {
     }
 
     pub fn add(&mut self, o: &Summary) {
-        self.extent = [self.extent[0].min(o.extent[0]), self.extent[1].min(o.extent[1]), self.extent[2].max(o.extent[2]), self.extent[3].max(o.extent[3])];
+        self.extent = [
+            self.extent[0].min(o.extent[0]),
+            self.extent[1].min(o.extent[1]),
+            self.extent[2].max(o.extent[2]),
+            self.extent[3].max(o.extent[3]),
+        ];
         self.ways += o.ways;
         self.vertices += o.vertices;
         self.elev_min = self.elev_min.min(o.elev_min);
@@ -80,8 +95,13 @@ impl Summary {
     pub fn meta(&self) -> serde_json::Value {
         let deg = |v: i32| (v as f64 * E7 * 1e4).round() / 1e4;
         let r1 = |v: f64| (v * 10.0).round() / 10.0;
-        let bounds = if self.vertices == 0 { [0.0; 4] } else { [deg(self.extent[0]), deg(self.extent[1]), deg(self.extent[2]), deg(self.extent[3])] };
-        let finite = |v: f32| if v.is_finite() && v != f32::MAX && v != f32::MIN { (v * 10.0).round() / 10.0 } else { 0.0 };
+        let bounds = if self.vertices == 0 {
+            [0.0; 4]
+        } else {
+            [deg(self.extent[0]), deg(self.extent[1]), deg(self.extent[2]), deg(self.extent[3])]
+        };
+        let finite =
+            |v: f32| if v.is_finite() && v != f32::MAX && v != f32::MIN { (v * 10.0).round() / 10.0 } else { 0.0 };
         serde_json::json!({
             "minzoom": 4,
             "maxzoom": 14,
@@ -113,7 +133,10 @@ mod tests {
         let ways = [way(0, 3, class::PRIMARY, 0), way(3, 2, class::INTERCITY, 0b10)];
         let s = Summary::of(&ways, &verts, Elevs::I16(&elev));
         let su: Vec<u16> = elev.iter().map(|&d| roadcore::elev::to_u16(d as i32)).collect();
-        assert_eq!(serde_json::to_string(&Summary::of(&ways, &verts, Elevs::U16(&su))).unwrap(), serde_json::to_string(&s).unwrap());
+        assert_eq!(
+            serde_json::to_string(&Summary::of(&ways, &verts, Elevs::U16(&su))).unwrap(),
+            serde_json::to_string(&s).unwrap()
+        );
         let seg = dist_m(0.0, 0.0, 0.0, 0.009);
         // Midpoints at 10 m and 20 m: bands 1 and 2.
         assert!((s.hist[1] - seg / 1000.0).abs() < 1e-9 && (s.hist[2] - seg / 1000.0).abs() < 1e-9);

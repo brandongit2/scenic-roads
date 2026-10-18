@@ -74,7 +74,8 @@ pub fn mark_beyond(pairs: &[u8], cov: &Coverage) -> (Vec<u8>, usize) {
             continue;
         }
         beyond += (out_a || out_b) as usize;
-        let mode = (r[16] & !(BEYOND_A | BEYOND_B)) | if out_a { BEYOND_A } else { 0 } | if out_b { BEYOND_B } else { 0 };
+        let mode =
+            (r[16] & !(BEYOND_A | BEYOND_B)) | if out_a { BEYOND_A } else { 0 } | if out_b { BEYOND_B } else { 0 };
         out.extend_from_slice(&r[..16]);
         out.push(mode);
         out.extend_from_slice(&r[17..PAIR]);
@@ -123,7 +124,14 @@ const LATTICE: i64 = 128;
 fn lattice(b: [i32; 4]) -> impl Iterator<Item = [i32; 2]> {
     let (w, h) = (b[2] as i64 - b[0] as i64, b[3] as i64 - b[1] as i64);
     let n = if w < 0 || h < 0 { 0 } else { LATTICE };
-    (0..n).flat_map(move |j| (0..n).map(move |i| [(b[0] as i64 + (2 * i + 1) * w / (2 * LATTICE)) as i32, (b[1] as i64 + (2 * j + 1) * h / (2 * LATTICE)) as i32]))
+    (0..n).flat_map(move |j| {
+        (0..n).map(move |i| {
+            [
+                (b[0] as i64 + (2 * i + 1) * w / (2 * LATTICE)) as i32,
+                (b[1] as i64 + (2 * j + 1) * h / (2 * LATTICE)) as i32,
+            ]
+        })
+    })
 }
 
 /// A territory's ISO 3166-1 code. An outline keeps its ISO 3166-2 code when it has both (Hong
@@ -149,7 +157,8 @@ fn territory_codes(iso: &str, own_code: &OwnCode) -> Vec<String> {
     };
     let mut codes: Vec<String> = own.into_iter().collect();
     if let Some((country, _)) = iso.split_once('-') {
-        if country.len() == 2 && country.bytes().all(|b| b.is_ascii_uppercase()) && !codes.iter().any(|c| c == country) {
+        if country.len() == 2 && country.bytes().all(|b| b.is_ascii_uppercase()) && !codes.iter().any(|c| c == country)
+        {
             codes.push(country.to_string());
         }
     }
@@ -244,7 +253,10 @@ pub fn cache_index(out: &Out, fetched: &Fetched) -> Value {
     let mut idx = serde_json::Map::new();
     let prefix = "sources/rail/gtfs/";
     for (l, c) in out.manifest.range(prefix.to_string()..).take_while(|(l, _)| l.starts_with(prefix)) {
-        let day = fetched.get(c).cloned().or_else(|| std::fs::metadata(out.path(c)).and_then(|m| m.modified()).ok().map(day_of));
+        let day = fetched
+            .get(c)
+            .cloned()
+            .or_else(|| std::fs::metadata(out.path(c)).and_then(|m| m.modified()).ok().map(day_of));
         let Some(day) = day else { continue };
         idx.insert(l[prefix.len()..].to_string(), serde_json::json!({"path": out.path(c), "fetched": day}));
     }
@@ -290,7 +302,13 @@ pub fn put_feeds(out: &mut Out, found: &Path, gtfs: &Path, logical: &str) -> Res
 }
 
 /// put_feeds' uploads, and each feed's zip and day; the days set go to `days` too.
-fn name_zips(out: &mut Out, feeds: &mut [Value], gtfs: &Path, fetched: &mut Fetched, days: &mut Fetched) -> Result<usize> {
+fn name_zips(
+    out: &mut Out,
+    feeds: &mut [Value],
+    gtfs: &Path,
+    fetched: &mut Fetched,
+    days: &mut Fetched,
+) -> Result<usize> {
     let mut new = 0;
     for f in feeds {
         let id = f["id"].as_str().context("a feed without its id")?.to_string();
@@ -337,7 +355,10 @@ pub fn keep_downloads(out: &mut Out, gtfs: &Path) -> Result<usize> {
 pub fn pin_seeds(out: &mut Out, decls: &[Value], dir: &Path) -> Result<usize> {
     let mut by_day: BTreeMap<String, Vec<(String, PathBuf)>> = BTreeMap::new();
     for d in decls {
-        let (Some(id), Some(zip), Some(day)) = (d["id"].as_str(), d["pin"]["zip"].as_str(), d["pin"]["day"].as_str()) else { continue };
+        let (Some(id), Some(zip), Some(day)) = (d["id"].as_str(), d["pin"]["zip"].as_str(), d["pin"]["day"].as_str())
+        else {
+            continue;
+        };
         if out.get(&zip_logical(id)).is_none() {
             by_day.entry(day.to_string()).or_default().push((id.to_string(), out.root().join(zip)));
         }
@@ -348,7 +369,8 @@ pub fn pin_seeds(out: &mut Out, decls: &[Value], dir: &Path) -> Result<usize> {
         std::fs::remove_dir_all(&at).ok();
         std::fs::create_dir_all(&at)?;
         for (id, src) in zips {
-            store::sys::copy_data(&src, at.join(format!("{id}.zip"))).with_context(|| format!("{id}: its pin, {}", src.display()))?;
+            store::sys::copy_data(&src, at.join(format!("{id}.zip")))
+                .with_context(|| format!("{id}: its pin, {}", src.display()))?;
         }
         n += put_zips(out, &at, Some(&day))?;
     }
@@ -361,7 +383,8 @@ fn put_zips(out: &mut Out, gtfs: &Path, day: Option<&str>) -> Result<usize> {
     let mut n = 0;
     let kept = (|| -> Result<()> {
         let Ok(rd) = std::fs::read_dir(gtfs) else { return Ok(()) };
-        let mut files: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "zip")).collect();
+        let mut files: Vec<PathBuf> =
+            rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "zip")).collect();
         files.sort();
         for p in files {
             let id = p.file_stem().context("zip")?.to_string_lossy().into_owned();
@@ -402,7 +425,23 @@ mod tests {
     /// The catalogue declaration's `own_code` as it was written when it moved out of the code (#140).
     fn own_code() -> OwnCode {
         let one = |c: &str, own: Option<&str>| (c.to_string(), own.map(str::to_string));
-        [one("FI-01", Some("AX")), one("FR-971", Some("GP")), one("FR-972", Some("MQ")), one("FR-973", Some("GF")), one("FR-974", Some("RE")), one("FR-976", Some("YT")), one("NL-BQ1", Some("BQ")), one("NL-BQ2", Some("BQ")), one("NL-BQ3", Some("BQ")), one("NO-21", Some("SJ")), one("NO-22", Some("SJ")), one("RS-KM", Some("XK")), one("ES-CE", None), one("ES-ML", None)].into()
+        [
+            one("FI-01", Some("AX")),
+            one("FR-971", Some("GP")),
+            one("FR-972", Some("MQ")),
+            one("FR-973", Some("GF")),
+            one("FR-974", Some("RE")),
+            one("FR-976", Some("YT")),
+            one("NL-BQ1", Some("BQ")),
+            one("NL-BQ2", Some("BQ")),
+            one("NL-BQ3", Some("BQ")),
+            one("NO-21", Some("SJ")),
+            one("NO-22", Some("SJ")),
+            one("RS-KM", Some("XK")),
+            one("ES-CE", None),
+            one("ES-ML", None),
+        ]
+        .into()
     }
 
     #[test]
@@ -431,14 +470,21 @@ mod tests {
 
     fn square_cov(d: &Path) -> Coverage {
         std::fs::write(d.join("sq.poly"), "sq\n1\n 0 0\n 1 0\n 1 1\n 0 1\nEND\nEND\n").unwrap();
-        Coverage::fixture(&[Recipe { id: "s".into(), name: "S".into(), outline: vec!["poly:sq.poly".into()] }], None, d).unwrap()
+        Coverage::fixture(&[Recipe { id: "s".into(), name: "S".into(), outline: vec!["poly:sq.poly".into()] }], None, d)
+            .unwrap()
     }
 
     #[test]
     fn stops_beyond_the_coverage() {
         let d = tempfile::tempdir().unwrap();
         let cov = square_cov(d.path());
-        let pairs = [pair((0.5, 0.5), (0.6, 0.6), 2, 10.0), pair((0.5, 0.5), (1.5, 0.5), 0x80 | 1, 4.0), pair((1.5, 0.5), (0.5, 0.5), 2, 3.0), pair((2.0, 2.0), (3.0, 3.0), 2, 7.0)].concat();
+        let pairs = [
+            pair((0.5, 0.5), (0.6, 0.6), 2, 10.0),
+            pair((0.5, 0.5), (1.5, 0.5), 0x80 | 1, 4.0),
+            pair((1.5, 0.5), (0.5, 0.5), 2, 3.0),
+            pair((2.0, 2.0), (3.0, 3.0), 2, 7.0),
+        ]
+        .concat();
         let (kept, beyond) = mark_beyond(&pairs, &cov);
         assert_eq!((kept.len() / PAIR, beyond), (3, 2), "both beyond: left out");
         let modes: Vec<u8> = kept.chunks_exact(PAIR).map(|r| r[16]).collect();
@@ -456,7 +502,10 @@ mod tests {
         let rec = |i: u32, f: f32| i.to_le_bytes().into_iter().chain(f.to_le_bytes()).collect::<Vec<u8>>();
         let freq = [rec(0, 5.0), rec(1, -2.5), rec(2, 1.0), rec(7, 9.0)].concat();
         let out = by_way_id(&ways, &freq);
-        let got: Vec<(u32, f32)> = out.chunks_exact(8).map(|c| (u32::from_le_bytes(c[..4].try_into().unwrap()), f32::from_le_bytes(c[4..].try_into().unwrap()))).collect();
+        let got: Vec<(u32, f32)> = out
+            .chunks_exact(8)
+            .map(|c| (u32::from_le_bytes(c[..4].try_into().unwrap()), f32::from_le_bytes(c[4..].try_into().unwrap())))
+            .collect();
         assert_eq!(got, vec![(10, -2.5), (20, 1.0), (30, 5.0)], "sorted by way id; an index past the ways dropped");
     }
 
@@ -491,13 +540,25 @@ mod tests {
     /// code, and E inside B with an ISO 3166-2 code under B's ("BB-EE", as Hong Kong's "CN-HK").
     fn outlines(d: &Path) -> Outlines {
         let feat = |id: u64, iso: &str, w: f64, s: f64, e: f64, n: f64| {
-            let (iso1, iso2) = iso.split_once('-').map_or((iso, String::new()), |(_, c)| (c, format!(",\"ISO3166-2\":\"{iso}\"")));
+            let (iso1, iso2) =
+                iso.split_once('-').map_or((iso, String::new()), |(_, c)| (c, format!(",\"ISO3166-2\":\"{iso}\"")));
             format!(
                 "\u{1e}{{\"type\":\"Feature\",\"geometry\":{{\"type\":\"Polygon\",\"coordinates\":[[[{w},{s}],[{e},{s}],[{e},{n}],[{w},{n}],[{w},{s}]]]}},\"properties\":{{\"@type\":\"relation\",\"@id\":{id},\"boundary\":\"administrative\",\"admin_level\":\"2\",\"name\":\"{iso1}\",\"ISO3166-1\":\"{iso1}\"{iso2}}}}}\n"
             )
         };
         let geo = d.join("o.geojsonseq");
-        std::fs::write(&geo, [feat(1, "AA", 0.0, 0.0, 10.0, 10.0), feat(2, "BB", 10.0, 0.0, 20.0, 10.0), feat(3, "CC", 4.0, 4.0, 5.0, 5.0), feat(4, "DD", 9.0, 9.0, 9.2, 9.2), feat(5, "BB-EE", 15.0, 1.0, 16.0, 2.0)].concat()).unwrap();
+        std::fs::write(
+            &geo,
+            [
+                feat(1, "AA", 0.0, 0.0, 10.0, 10.0),
+                feat(2, "BB", 10.0, 0.0, 20.0, 10.0),
+                feat(3, "CC", 4.0, 4.0, 5.0, 5.0),
+                feat(4, "DD", 9.0, 9.0, 9.2, 9.2),
+                feat(5, "BB-EE", 15.0, 1.0, 16.0, 2.0),
+            ]
+            .concat(),
+        )
+        .unwrap();
         crate::outlines::assemble_geojsonseq(&geo, &d.join("o.sect")).unwrap();
         Outlines::open(&d.join("o.sect")).unwrap()
     }
@@ -507,10 +568,13 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let o = outlines(d.path());
         let poly = |name: &str, w: f64, s: f64, e: f64, n: f64| {
-            std::fs::write(d.path().join(name), format!("p\n1\n {w} {s}\n {e} {s}\n {e} {n}\n {w} {n}\nEND\nEND\n")).unwrap();
+            std::fs::write(d.path().join(name), format!("p\n1\n {w} {s}\n {e} {s}\n {e} {n}\n {w} {n}\nEND\nEND\n"))
+                .unwrap();
             format!("poly:{name}")
         };
-        let cov = |outline: Vec<String>| Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline }], None, d.path()).unwrap();
+        let cov = |outline: Vec<String>| {
+            Coverage::fixture(&[Recipe { id: "r".into(), name: "R".into(), outline }], None, d.path()).unwrap()
+        };
         let countries = |c: &Coverage, o: &Outlines| countries(c, o, &own_code());
         // Most of A, running 0.2° into B: A's, and C's and D's (each all inside, though a small part
         // of the outline); not B's (a margin).
@@ -518,7 +582,11 @@ mod tests {
         // An outline of C alone: C's, not A's, though A's outline holds it too.
         assert_eq!(countries(&cov(vec![poly("c.poly", 4.1, 4.1, 4.9, 4.9)]), &o).unwrap(), vec!["CC"]);
         // Two outlines, one in each: both.
-        assert_eq!(countries(&cov(vec![poly("a2.poly", 1.0, 1.0, 2.0, 2.0), poly("b.poly", 15.0, 5.0, 16.0, 6.0)]), &o).unwrap(), vec!["AA", "BB"]);
+        assert_eq!(
+            countries(&cov(vec![poly("a2.poly", 1.0, 1.0, 2.0, 2.0), poly("b.poly", 15.0, 5.0, 16.0, 6.0)]), &o)
+                .unwrap(),
+            vec!["AA", "BB"]
+        );
         // Out at sea: none.
         assert!(countries(&cov(vec![poly("sea.poly", 30.0, 30.0, 31.0, 31.0)]), &o).unwrap().is_empty());
         // An outline of E alone: E's, and B's, whose code E's has (its feeds may be filed under it).
@@ -585,9 +653,14 @@ mod tests {
         assert!(root.join("old/gtfs/mbta.zip").exists(), "the pin's zip is copied, not moved");
         // (Its hand-offs: the folder's files.)
         fn files(d: &Path) -> Vec<PathBuf> {
-            std::fs::read_dir(d).unwrap().flatten().flat_map(|e| if e.path().is_dir() { files(&e.path()) } else { vec![e.path()] }).collect()
+            std::fs::read_dir(d)
+                .unwrap()
+                .flatten()
+                .flat_map(|e| if e.path().is_dir() { files(&e.path()) } else { vec![e.path()] })
+                .collect()
         }
-        let named: String = files(&handoff).iter().map(|f| String::from_utf8_lossy(&std::fs::read(f).unwrap()).into_owned()).collect();
+        let named: String =
+            files(&handoff).iter().map(|f| String::from_utf8_lossy(&std::fs::read(f).unwrap()).into_owned()).collect();
         let zip = out.get(&zip_logical("mbta")).unwrap().to_string();
         assert!(named.contains(&zip) && named.contains(FETCHED), "{named}");
         assert_eq!(read_fetched(&out).unwrap()[&zip], "2026-09-28");

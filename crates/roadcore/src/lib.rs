@@ -15,8 +15,8 @@ use det::Det;
 pub mod archive;
 pub mod elev;
 pub mod grid;
-pub mod packs;
 pub mod lsum;
+pub mod packs;
 pub mod scenic;
 pub mod slope;
 pub mod tile;
@@ -71,9 +71,21 @@ pub mod class {
     /// Road classes (and ferries) come first.
     pub const NROAD: usize = 10;
     pub const NAMES: [&str; COUNT] = [
-        "service", "living_street", "residential", "unclassified", "tertiary",
-        "secondary", "primary", "trunk", "motorway", "ferry",
-        "tram", "metro", "commuter", "intercity", "heritage",
+        "service",
+        "living_street",
+        "residential",
+        "unclassified",
+        "tertiary",
+        "secondary",
+        "primary",
+        "trunk",
+        "motorway",
+        "ferry",
+        "tram",
+        "metro",
+        "commuter",
+        "intercity",
+        "heritage",
     ];
     pub fn is_rail(c: u8) -> bool {
         c >= TRAM
@@ -223,7 +235,8 @@ pub fn mmap(path: &Path) -> Result<Mmap> {
         use std::io::Read;
         let len = usize::try_from(f.metadata()?.len())?;
         let mut words = vec![0u64; len.div_ceil(8)];
-        (&f).read_exact(&mut bytemuck::cast_slice_mut(&mut words)[..len]).with_context(|| format!("read {}", path.display()))?;
+        (&f).read_exact(&mut bytemuck::cast_slice_mut(&mut words)[..len])
+            .with_context(|| format!("read {}", path.display()))?;
         Ok(Mmap { words, len })
     }
     // SAFETY: build outputs are written once and never modified while mapped.

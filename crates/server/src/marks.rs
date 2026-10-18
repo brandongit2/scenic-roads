@@ -79,11 +79,13 @@ pub struct FilterHists {
 
 impl FilterHists {
     pub fn new(ov: &str, set: &BTreeMap<String, Setting>, keep_unknown: bool) -> FilterHists {
-        let defs: Vec<&'static FilterDef> = FILTERS.iter().filter(|d| d.ov == ov && matches!(d.kind, Kind::Range { .. })).collect();
+        let defs: Vec<&'static FilterDef> =
+            FILTERS.iter().filter(|d| d.ov == ov && matches!(d.kind, Kind::Range { .. })).collect();
         let others = defs
             .iter()
             .map(|d| {
-                let rest: BTreeMap<String, Setting> = set.iter().filter(|(k, _)| k.as_str() != d.key).map(|(k, v)| (k.clone(), *v)).collect();
+                let rest: BTreeMap<String, Setting> =
+                    set.iter().filter(|(k, _)| k.as_str() != d.key).map(|(k, v)| (k.clone(), *v)).collect();
                 pass_fn(ov, &rest, keep_unknown).map(|f| Box::new(f) as Box<dyn Fn(&dyn Props) -> bool + Send + Sync>)
             })
             .collect();
@@ -197,6 +199,7 @@ mod tests {
 use crate::markview::MarkView;
 use crate::pages::Lru;
 use crate::S;
+use anyhow::Context;
 use axum::{
     extract::{Path, Query, RawQuery, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
@@ -204,7 +207,6 @@ use axum::{
     Json,
 };
 use pipeline::marks::{self as pm, flag, Cell, MarkPt, MarkTile, KINDS};
-use anyhow::Context;
 use rayon::prelude::*;
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -307,7 +309,8 @@ impl Region {
         if !(s <= n) || !w.is_finite() || !e.is_finite() {
             return Vec::new();
         }
-        let lons: Vec<(f64, f64)> = if self.poly.len() < 3 && w > e { vec![(w, 180.0), (-180.0, e)] } else { vec![(w, e)] };
+        let lons: Vec<(f64, f64)> =
+            if self.poly.len() < 3 && w > e { vec![(w, 180.0), (-180.0, e)] } else { vec![(w, e)] };
         let (lat_n, lat_s) = (n.clamp(-85.06, 85.06), s.clamp(-85.06, 85.06));
         let mut out = Vec::new();
         for (a, b) in lons {
@@ -352,7 +355,8 @@ struct KindPlan {
 impl KindPlan {
     fn new(q: &KindQ) -> Option<KindPlan> {
         let k = pm::kind_index(&q.k)?;
-        let pass = pass_fn(&q.k, &q.filters, q.keep_unknown).map(|f| Box::new(f) as Box<dyn Fn(&dyn Props) -> bool + Send + Sync>);
+        let pass = pass_fn(&q.k, &q.filters, q.keep_unknown)
+            .map(|f| Box::new(f) as Box<dyn Fn(&dyn Props) -> bool + Send + Sync>);
         let off = q.off.iter().filter_map(|t| pm::tier_index(t)).collect();
         Some(KindPlan { k, pass, off })
     }
@@ -396,8 +400,13 @@ fn spread_range(lo: f64, hi: f64) -> [f64; 2] {
 /// Heritage component's own name), as the layer files get them.
 fn named_props(s: &crate::AppState, raw: &[u8], lon: f64, lat: f64) -> Map<String, Value> {
     let mut props: Map<String, Value> = serde_json::from_slice(raw).unwrap_or_default();
-    if let Some(key) = crate::cache::NAME_KEYS.iter().find(|k| props.get(**k).and_then(|x| x.as_str()).is_some_and(|x| !x.is_empty())) {
-        let own = crate::cache::EN_KEYS.iter().find_map(|k| props.get(*k).and_then(|x| x.as_str()).filter(|x| !x.is_empty())).map(str::to_owned);
+    if let Some(key) =
+        crate::cache::NAME_KEYS.iter().find(|k| props.get(**k).and_then(|x| x.as_str()).is_some_and(|x| !x.is_empty()))
+    {
+        let own = crate::cache::EN_KEYS
+            .iter()
+            .find_map(|k| props.get(*k).and_then(|x| x.as_str()).filter(|x| !x.is_empty()))
+            .map(str::to_owned);
         crate::cache::put_names(s, &mut props, key, own.as_deref(), [lon, lat], "");
         crate::cache::put_names(s, &mut props, "cn", None, [lon, lat], "c");
     }
@@ -407,12 +416,24 @@ fn named_props(s: &crate::AppState, raw: &[u8], lon: f64, lat: f64) -> Map<Strin
 /// The markdata tiles a region can need.
 fn views_for(s: &S, region: &Region) -> anyhow::Result<Vec<Arc<MarkView>>> {
     let cat = s.data.catalog();
-    let want: Vec<String> = region.tiles().into_iter().map(|(x, y)| format!("6/{x}/{y}")).filter(|t| cat.markdata.contains_key(t)).collect();
+    let want: Vec<String> = region
+        .tiles()
+        .into_iter()
+        .map(|(x, y)| format!("6/{x}/{y}"))
+        .filter(|t| cat.markdata.contains_key(t))
+        .collect();
     want.par_iter().filter_map(|t| s.data.markdata(t).transpose()).collect()
 }
 
 /// One tile's part of a view.
-fn scan(v: &MarkView, region: &Region, plans: &[KindPlan], hists: &[bool], balance: f64, view: u32) -> anyhow::Result<Part> {
+fn scan(
+    v: &MarkView,
+    region: &Region,
+    plans: &[KindPlan],
+    hists: &[bool],
+    balance: f64,
+    view: u32,
+) -> anyhow::Result<Part> {
     let (_, pts, fvals) = v.scan()?;
     let (pts, fvals) = (pts.cast::<MarkPt>(), fvals.cast::<f64>());
     let mut part = Part::default();
@@ -423,7 +444,10 @@ fn scan(v: &MarkView, region: &Region, plans: &[KindPlan], hists: &[bool], balan
         let mut vals = vec![0.0; fields.len()];
         for (j, row) in r.clone().enumerate() {
             let pt = pts[row];
-            if pt.flags & flag::COMPONENT != 0 || !region.test(pm::deg(pt.lon), pm::deg(pt.lat)) || p.off.contains(&pt.tier) {
+            if pt.flags & flag::COMPONENT != 0
+                || !region.test(pm::deg(pt.lon), pm::deg(pt.lat))
+                || p.off.contains(&pt.tier)
+            {
                 continue;
             }
             for (f, c) in cols.iter().enumerate() {
@@ -436,7 +460,14 @@ fn scan(v: &MarkView, region: &Region, plans: &[KindPlan], hists: &[bool], balan
             if p.pass.as_ref().is_some_and(|f| !f(&props)) {
                 continue;
             }
-            part.cands.push(Cand { score: score(pt.fa as f64, pt.ia as f64, balance), qi: qi as u16, rank: pt.rank, view, row: row as u32, pt });
+            part.cands.push(Cand {
+                score: score(pt.fa as f64, pt.ia as f64, balance),
+                qi: qi as u16,
+                rank: pt.rank,
+                view,
+                row: row as u32,
+                pt,
+            });
         }
     }
     Ok(part)
@@ -446,10 +477,15 @@ fn scan(v: &MarkView, region: &Region, plans: &[KindPlan], hists: &[bool], balan
 pub fn view_json(s: &S, q: &ViewQ) -> anyhow::Result<Value> {
     let region = Region::new(q.outline.clone(), q.bounds);
     let views = views_for(s, &region)?;
-    let plans: Vec<(usize, KindPlan)> = q.kinds.iter().enumerate().filter_map(|(i, k)| KindPlan::new(k).map(|p| (i, p))).collect();
+    let plans: Vec<(usize, KindPlan)> =
+        q.kinds.iter().enumerate().filter_map(|(i, k)| KindPlan::new(k).map(|p| (i, p))).collect();
     let (qidx, plans): (Vec<usize>, Vec<KindPlan>) = plans.into_iter().unzip();
     let hists: Vec<bool> = qidx.iter().map(|&i| q.kinds[i].hists).collect();
-    let parts: Vec<Part> = views.par_iter().enumerate().map(|(vi, v)| scan(v, &region, &plans, &hists, q.balance, vi as u32)).collect::<anyhow::Result<_>>()?;
+    let parts: Vec<Part> = views
+        .par_iter()
+        .enumerate()
+        .map(|(vi, v)| scan(v, &region, &plans, &hists, q.balance, vi as u32))
+        .collect::<anyhow::Result<_>>()?;
     let mut cands: Vec<Cand> = parts.iter().flat_map(|p| p.cands.iter().copied()).collect();
 
     // The histogram and the scores at the ranks (from the scores as f32, as the worker sorts them).
@@ -472,7 +508,9 @@ pub fn view_json(s: &S, q: &ViewQ) -> anyhow::Result<Value> {
         let (lon, lat) = (pm::deg(c.pt.lon), pm::deg(c.pt.lat));
         let props = named_props(s, &v.props(c.row as usize)?, lon, lat);
         let kq = &q.kinds[qidx[c.qi as usize]];
-        Ok(json!({ "k": kq.k, "layer": kq.layer, "score": c.score, "props": props, "lngLat": [lon, lat], "id": v.ids.get(c.row as usize)? }))
+        Ok(
+            json!({ "k": kq.k, "layer": kq.layer, "score": c.score, "props": props, "lngLat": [lon, lat], "id": v.ids.get(c.row as usize)? }),
+        )
     };
     // Per kind: its count and best-known named point (the highest fame, the first in rank order).
     let mut by_kind = Vec::new();
@@ -480,7 +518,9 @@ pub fn view_json(s: &S, q: &ViewQ) -> anyhow::Result<Value> {
         let kq = &q.kinds[i];
         let mine = cands.iter().filter(|c| c.qi as usize == qi);
         let n = mine.clone().count();
-        let best = mine.filter(|c| c.pt.flags & flag::NAMED != 0).min_by(|a, b| (b.pt.fa as f64).total_cmp(&(a.pt.fa as f64)).then(a.rank.cmp(&b.rank)));
+        let best = mine
+            .filter(|c| c.pt.flags & flag::NAMED != 0)
+            .min_by(|a, b| (b.pt.fa as f64).total_cmp(&(a.pt.fa as f64)).then(a.rank.cmp(&b.rank)));
         let best = match best {
             Some(c) => {
                 let v = &views[c.view as usize];
@@ -496,7 +536,8 @@ pub fn view_json(s: &S, q: &ViewQ) -> anyhow::Result<Value> {
     let top: Vec<Value> = cands.iter().take(q.top).map(item).collect::<anyhow::Result<_>>()?;
     let mut top_by_kind = Map::new();
     for (qi, &i) in qidx.iter().enumerate() {
-        let list: Vec<Value> = cands.iter().filter(|c| c.qi as usize == qi).take(q.top).map(item).collect::<anyhow::Result<_>>()?;
+        let list: Vec<Value> =
+            cands.iter().filter(|c| c.qi as usize == qi).take(q.top).map(item).collect::<anyhow::Result<_>>()?;
         top_by_kind.insert(q.kinds[i].k.clone(), Value::Array(list));
     }
     // The open filters' histograms.
@@ -575,8 +616,20 @@ pub fn view_json(s: &S, q: &ViewQ) -> anyhow::Result<Value> {
 /// Points as columns (the marks tile format's fields, NaN as null), for `extra`.
 fn extra_json(s: &S, views: &[Arc<MarkView>], list: &[&Cand]) -> anyhow::Result<Value> {
     let num = |v: f64| if v.is_nan() { Value::Null } else { json!(v) };
-    let (mut ids, mut lon, mut lat, mut fa, mut ia, mut mz, mut rank, mut kz, mut class, mut tier, mut flags, mut props) =
-        (vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![]);
+    let (
+        mut ids,
+        mut lon,
+        mut lat,
+        mut fa,
+        mut ia,
+        mut mz,
+        mut rank,
+        mut kz,
+        mut class,
+        mut tier,
+        mut flags,
+        mut props,
+    ) = (vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![], vec![]);
     let mut fvals: Vec<Vec<Value>> = Vec::new();
     for c in list {
         let v = &views[c.view as usize];
@@ -602,7 +655,9 @@ fn extra_json(s: &S, views: &[Arc<MarkView>], list: &[&Cand]) -> anyhow::Result<
         }
         props.push(Value::Object(named_props(s, &v.props(row)?, pm::deg(p.lon), pm::deg(p.lat))));
     }
-    Ok(json!({ "ids": ids, "lon": lon, "lat": lat, "fa": fa, "ia": ia, "mz": mz, "rank": rank, "kz": kz, "class": class, "tier": tier, "flags": flags, "fvals": fvals, "props": props }))
+    Ok(
+        json!({ "ids": ids, "lon": lon, "lat": lat, "fa": fa, "ia": ia, "mz": mz, "rank": rank, "kz": kz, "class": class, "tier": tier, "flags": flags, "fvals": fvals, "props": props }),
+    )
 }
 
 /// The points' version: their files' content names and the translations their names come from. It
@@ -684,13 +739,27 @@ fn respond_tile(body: Arc<Vec<u8>>, etag: &str, versioned: bool) -> Response {
 
 /// A tile with names attached to its points' properties.
 fn with_names(s: &S, mut t: MarkTile) -> MarkTile {
-    let props: Vec<Vec<u8>> = t.props.iter().zip(&t.pts).map(|(p, pt)| serde_json::to_vec(&named_props(s, p, pm::deg(pt.lon), pm::deg(pt.lat))).unwrap_or_else(|_| p.clone())).collect();
+    let props: Vec<Vec<u8>> = t
+        .props
+        .iter()
+        .zip(&t.pts)
+        .map(|(p, pt)| {
+            serde_json::to_vec(&named_props(s, p, pm::deg(pt.lon), pm::deg(pt.lat))).unwrap_or_else(|_| p.clone())
+        })
+        .collect();
     t.props = props;
     t
 }
 
 /// Serves a made tile: a 304 for its ETag, from memory, or made now.
-async fn serve_made(s: S, key: String, etag: String, headers: HeaderMap, q: Option<String>, make: impl FnOnce(&S) -> anyhow::Result<Option<Vec<u8>>> + Send + 'static) -> Response {
+async fn serve_made(
+    s: S,
+    key: String,
+    etag: String,
+    headers: HeaderMap,
+    q: Option<String>,
+    make: impl FnOnce(&S) -> anyhow::Result<Option<Vec<u8>>> + Send + 'static,
+) -> Response {
     let versioned = crate::cache::versioned(q.as_deref());
     if crate::tiles::etag_match(&headers, &etag) {
         return crate::tiles::not_modified(&etag, versioned);
@@ -720,7 +789,12 @@ fn v_of(q: Option<&str>) -> Option<&str> {
 }
 
 /// `GET /api/marks/tile/{kind}/{z}/{x}/{y}` (z ≤ 5): a thinned tile.
-pub async fn tile(State(s): State<S>, Path((kind, z, x, y)): Path<(String, u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+pub async fn tile(
+    State(s): State<S>,
+    Path((kind, z, x, y)): Path<(String, u8, u32, u32)>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
     if pm::kind_index(&kind).is_none() || z > pm::THIN_MAX_Z || x >> z != 0 || y >> z != 0 {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -754,13 +828,20 @@ fn block_tile(v: &MarkView, k: usize) -> anyhow::Result<MarkTile> {
     let r = v.range(k);
     let ids = v.ids.range(r.clone())?.into_owned();
     let pts = v.pts.range(r.clone())?.into_owned();
-    let fvals = (0..v.fields[k].len()).map(|f| v.fvals.range(v.fval_range(k, f)).map(|c| c.into_owned())).collect::<anyhow::Result<_>>()?;
+    let fvals = (0..v.fields[k].len())
+        .map(|f| v.fvals.range(v.fval_range(k, f)).map(|c| c.into_owned()))
+        .collect::<anyhow::Result<_>>()?;
     let props = r.map(|i| v.props(i)).collect::<anyhow::Result<_>>()?;
     Ok(MarkTile { ids, fvals, pts, cells: Vec::new(), props })
 }
 
 /// `GET /api/marks/block/{kind}/6/{x}/{y}`: every point of the kind in the z6 tile.
-pub async fn block(State(s): State<S>, Path((kind, z, x, y)): Path<(String, u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+pub async fn block(
+    State(s): State<S>,
+    Path((kind, z, x, y)): Path<(String, u8, u32, u32)>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
     let Some(k) = pm::kind_index(&kind) else { return StatusCode::NOT_FOUND.into_response() };
     if z != 6 || x >> 6 != 0 || y >> 6 != 0 {
         return StatusCode::NOT_FOUND.into_response();
@@ -769,7 +850,9 @@ pub async fn block(State(s): State<S>, Path((kind, z, x, y)): Path<(String, u8, 
         return StatusCode::CONFLICT.into_response();
     }
     let tile = format!("6/{x}/{y}");
-    let Some(content) = s.data.catalog().markdata.get(&tile).and_then(|l| s.data.content(l)) else { return StatusCode::NO_CONTENT.into_response() };
+    let Some(content) = s.data.catalog().markdata.get(&tile).and_then(|l| s.data.content(l)) else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
     let nv = s.names.version_for_tile(6, x, y, 0.0);
     let h = xxhash_rust::xxh3::xxh3_64(format!("{content}|{kind}").as_bytes());
     let etag = format!("\"{h:016x}-{nv:x}\"");
@@ -819,7 +902,13 @@ fn z6_under(s: &S, z: u8, x: u32, y: u32) -> Vec<String> {
 
 /// `GET /api/marks/specks/{kind}/{z}/{x}/{y}?q=…` (z ≤ 5): the speck cells of the points passing
 /// the kind's filters that the thinned tile doesn't keep.
-pub async fn specks(State(s): State<S>, Path((kind, z, x, y)): Path<(String, u8, u32, u32)>, Query(p): Query<QParam>, RawQuery(raw): RawQuery, headers: HeaderMap) -> Response {
+pub async fn specks(
+    State(s): State<S>,
+    Path((kind, z, x, y)): Path<(String, u8, u32, u32)>,
+    Query(p): Query<QParam>,
+    RawQuery(raw): RawQuery,
+    headers: HeaderMap,
+) -> Response {
     let Some(k) = pm::kind_index(&kind) else { return StatusCode::NOT_FOUND.into_response() };
     if z > pm::THIN_MAX_Z || x >> z != 0 || y >> z != 0 {
         return StatusCode::NOT_FOUND.into_response();
@@ -828,9 +917,12 @@ pub async fn specks(State(s): State<S>, Path((kind, z, x, y)): Path<(String, u8,
         return StatusCode::CONFLICT.into_response();
     }
     let qs = p.q.unwrap_or_default();
-    let Ok(sq) = (if qs.is_empty() { Ok(SpeckQ::default()) } else { serde_json::from_str::<SpeckQ>(&qs) }) else { return StatusCode::BAD_REQUEST.into_response() };
+    let Ok(sq) = (if qs.is_empty() { Ok(SpeckQ::default()) } else { serde_json::from_str::<SpeckQ>(&qs) }) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
     let tiles = z6_under(&s, z, x, y);
-    let contents: Vec<String> = tiles.iter().filter_map(|t| s.data.catalog().markdata.get(t).and_then(|l| s.data.content(l))).collect();
+    let contents: Vec<String> =
+        tiles.iter().filter_map(|t| s.data.catalog().markdata.get(t).and_then(|l| s.data.content(l))).collect();
     let h = xxhash_rust::xxh3::xxh3_64(format!("{}|{kind}|{z}/{x}/{y}|{qs}", contents.join(",")).as_bytes());
     let etag = format!("\"{h:016x}\"");
     let key = format!("s|{h:x}");
@@ -890,7 +982,9 @@ pub async fn count(State(s): State<S>, Query(c): Query<CountQ>) -> Response {
         return StatusCode::CONFLICT.into_response();
     }
     let qs = c.q.unwrap_or_default();
-    let Ok(sq) = (if qs.is_empty() { Ok(SpeckQ::default()) } else { serde_json::from_str::<SpeckQ>(&qs) }) else { return StatusCode::BAD_REQUEST.into_response() };
+    let Ok(sq) = (if qs.is_empty() { Ok(SpeckQ::default()) } else { serde_json::from_str::<SpeckQ>(&qs) }) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
     let n_cat = s.data.catalog().n;
     let key = (n_cat, c.kind.clone(), qs);
     if let Some((n, of)) = COUNTS.lock().unwrap().get(&key).copied() {
@@ -989,7 +1083,8 @@ pub async fn detail(State(s): State<S>, Path((kind, id)): Path<(String, u64)>, Q
     match got {
         Ok(Ok(Some(info))) if !info.is_empty() => {
             let body = s.descriptions.apply(std::str::from_utf8(&info).unwrap_or("{}")).into_owned();
-            ([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "public, max-age=60")], body).into_response()
+            ([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "public, max-age=60")], body)
+                .into_response()
         }
         Ok(Ok(_)) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(e)) => {

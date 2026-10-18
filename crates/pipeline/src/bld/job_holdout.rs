@@ -42,7 +42,9 @@ fn files_of(dir: &Path, t: Unit) -> Vec<Option<WorkFile>> {
         for dx in -1i64..=1 {
             let (x, y) = (t.x as i64 + dx, t.y as i64 + dy);
             let pre = format!("6-{x}-{y}.");
-            let f = std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with(&pre) && p.extension().is_some_and(|e| e == "sect"));
+            let f = std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
+                p.file_name().unwrap().to_string_lossy().starts_with(&pre) && p.extension().is_some_and(|e| e == "sect")
+            });
             out.push(f.map(|p| WorkFile::open(&p).unwrap()));
         }
     }
@@ -53,16 +55,21 @@ fn files_of(dir: &Path, t: Unit) -> Vec<Option<WorkFile>> {
 #[allow(clippy::needless_range_loop)]
 fn tile(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, qs: &mut Vec<Q>, ms: &mut Vec<M>, own_n: &mut u64) {
     let own = files[4].as_ref().unwrap();
-    let mut areas: Vec<(u32, u32)> = own.index.iter().map(|e| {
-        let (_, x, y) = key_zxy(e.key);
-        (x >> 6, y >> 6)
-    }).collect();
+    let mut areas: Vec<(u32, u32)> = own
+        .index
+        .iter()
+        .map(|e| {
+            let (_, x, y) = key_zxy(e.key);
+            (x >> 6, y >> 6)
+        })
+        .collect();
     areas.sort_unstable();
     areas.dedup();
     let codes: Vec<Option<Codes>> = files.iter().map(|f| f.as_ref().map(|f| Codes::of(&f.meta))).collect();
     for &a in &areas {
         let (list, n_own) = area_blocks(files, t, a);
-        let blocks: Vec<Block> = list.par_iter().map(|(fi, e)| files[*fi].as_ref().unwrap().block(e)).collect::<Result<_>>().unwrap();
+        let blocks: Vec<Block> =
+            list.par_iter().map(|(fi, e)| files[*fi].as_ref().unwrap().block(e)).collect::<Result<_>>().unwrap();
         let shapes: Vec<Vec<Option<usize>>> = blocks[..n_own]
             .par_iter()
             .zip(&list[..n_own])
@@ -89,7 +96,15 @@ fn tile(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, qs: &mut Vec<Q>, ms
                     let s = if bi < n_own { shapes[bi][i] } else { shape_of(cov, b, i) };
                     fill::floors_dm(f, fill::storey(country(cov, s)))
                 };
-                let first = if taken && !is_est { Some(h) } else if floors { Some(fl()) } else if taken { Some(h) } else { None };
+                let first = if taken && !is_est {
+                    Some(h)
+                } else if floors {
+                    Some(fl())
+                } else if taken {
+                    Some(h)
+                } else {
+                    None
+                };
                 let (wx, wy) = world7(b.cen[i]);
                 let p = |h| Point { x: wx * EQ, y: wy * EQ, area: b.area[i], h };
                 if let Some(h) = first {
@@ -158,7 +173,14 @@ fn stats(errs: &mut [f64], over: usize) -> String {
     }
     errs.sort_by(f64::total_cmp);
     let q = |p: f64| errs[((errs.len() - 1) as f64 * p).round() as usize];
-    format!("{:.2} / {:.2} m, {:.2} %, mean {:.3} ({})", q(0.5), q(0.9), 100.0 * over as f64 / errs.len() as f64, errs.iter().sum::<f64>() / errs.len() as f64, errs.len())
+    format!(
+        "{:.2} / {:.2} m, {:.2} %, mean {:.3} ({})",
+        q(0.5),
+        q(0.9),
+        100.0 * over as f64 / errs.len() as f64,
+        errs.iter().sum::<f64>() / errs.len() as f64,
+        errs.len()
+    )
 }
 
 #[test]
@@ -180,8 +202,25 @@ fn holdout() {
     // Each held-out building under a bound: stage 1, else stage 2 if its footprint is the bound or
     // more, else rules 4–5.
     let est = |q: &Q, bound: f32| q.s1.or(if q.area >= bound { q.s2 } else { None }).unwrap_or(q.r45);
-    let classes: [(f32, f32, &str); 4] = [(0.0, 30.0, "under 30"), (30.0, 60.0, "30–60"), (60.0, 150.0, "60–150"), (150.0, f32::INFINITY, "150 and over")];
-    let fine: [(f32, f32); 11] = [(0.0, 10.0), (10.0, 20.0), (20.0, 30.0), (30.0, 40.0), (40.0, 50.0), (50.0, 60.0), (60.0, 80.0), (80.0, 100.0), (100.0, 150.0), (150.0, 300.0), (300.0, f32::INFINITY)];
+    let classes: [(f32, f32, &str); 4] = [
+        (0.0, 30.0, "under 30"),
+        (30.0, 60.0, "30–60"),
+        (60.0, 150.0, "60–150"),
+        (150.0, f32::INFINITY, "150 and over"),
+    ];
+    let fine: [(f32, f32); 11] = [
+        (0.0, 10.0),
+        (10.0, 20.0),
+        (20.0, 30.0),
+        (30.0, 40.0),
+        (40.0, 50.0),
+        (50.0, 60.0),
+        (60.0, 80.0),
+        (80.0, 100.0),
+        (100.0, 150.0),
+        (150.0, 300.0),
+        (300.0, f32::INFINITY),
+    ];
     let score = |sel: &dyn Fn(&Q) -> bool, f: &dyn Fn(&Q) -> u16| {
         let mut e = Vec::new();
         let mut over = 0;
@@ -221,6 +260,12 @@ fn holdout() {
     for &b in &bounds {
         let moved: Vec<&M> = ms.iter().filter(|m| m.area < b).collect();
         let to4 = moved.iter().filter(|m| m.s45 == fill::src::GHSL).count();
-        println!("bound {b}: {} ({:.1} % of the {n} buildings): {} to rule 5, {} to rule 4", moved.len(), 100.0 * moved.len() as f64 / n as f64, moved.len() - to4, to4);
+        println!(
+            "bound {b}: {} ({:.1} % of the {n} buildings): {} to rule 5, {} to rule 4",
+            moved.len(),
+            100.0 * moved.len() as f64 / n as f64,
+            moved.len() - to4,
+            to4
+        );
     }
 }

@@ -141,7 +141,10 @@ pub fn unmerged(root: &Path, now: u64) -> Result<Unmerged> {
                 };
                 let day = key.split('/').next().unwrap_or_default();
                 if !led && !cutoff.is_empty() && day < cutoff.as_str() {
-                    u.warnings.push(format!("journal entry {key} {what}, no term led to refuse it, for over {} days: passed over", PASS_OVER_S / 86400));
+                    u.warnings.push(format!(
+                        "journal entry {key} {what}, no term led to refuse it, for over {} days: passed over",
+                        PASS_OVER_S / 86400
+                    ));
                     continue;
                 }
                 anyhow::bail!("journal entry {key} {what} (not refused yet: nothing removed)");
@@ -162,16 +165,29 @@ pub fn unmerged(root: &Path, now: u64) -> Result<Unmerged> {
 /// stays restorable for `within` and a step reading the version it planned with finds its files.
 /// Units' names may be nested (`timetables/gtfs`): every folder under `sources/inputs/` is walked.
 /// An error when any of them can't be read now: nothing there is swept then.
-pub fn inputs_kept(root: &Path, manifest: &std::collections::BTreeMap<String, String>, um: &Unmerged, within: Duration, now: SystemTime) -> Result<BTreeSet<String>> {
+pub fn inputs_kept(
+    root: &Path,
+    manifest: &std::collections::BTreeMap<String, String>,
+    um: &Unmerged,
+    within: Duration,
+    now: SystemTime,
+) -> Result<BTreeSet<String>> {
     let mut keep: BTreeSet<String> = BTreeSet::new();
     let ours = |(l, c): &(String, String)| c.starts_with("sources/inputs/").then(|| (l.clone(), c.clone()));
     // Today's manifest, the newest records' and the journal's entries not merged yet (with the
     // pool on: `unmerged`, read once for the whole sweep).
-    let mut named: Vec<(String, String)> = manifest.iter().map(|(l, c)| (l.clone(), c.clone())).filter_map(|p| ours(&p)).collect();
+    let mut named: Vec<(String, String)> =
+        manifest.iter().map(|(l, c)| (l.clone(), c.clone())).filter_map(|p| ours(&p)).collect();
     named.extend(um.records.iter().filter_map(ours));
     named.extend(um.changes.iter().filter_map(ours));
     let index_files = |c: &str, keep: &mut BTreeSet<String>| -> Result<()> {
-        keep.extend(crate::inputs::read_index(root, c)?.files.values().flat_map(|f| f.stored().map(str::to_string)).collect::<Vec<_>>());
+        keep.extend(
+            crate::inputs::read_index(root, c)?
+                .files
+                .values()
+                .flat_map(|f| f.stored().map(str::to_string))
+                .collect::<Vec<_>>(),
+        );
         keep.insert(c.to_string());
         Ok(())
     };
@@ -197,8 +213,15 @@ pub fn inputs_kept(root: &Path, manifest: &std::collections::BTreeMap<String, St
                 continue;
             }
             let rel = e.path().strip_prefix(root).unwrap_or(&e.path()).to_string_lossy().replace('\\', "/");
-            let Some(record) = store::naming::parse_content_name(&rel).filter(|n| n.ext == "json").and_then(|n| crate::inputs::record_of(n.logical)).map(|(_, r)| r) else { continue };
-            let young = e.metadata()?.modified().ok().is_some_and(|t| now.duration_since(t).map_or(true, |d| d <= within));
+            let Some(record) = store::naming::parse_content_name(&rel)
+                .filter(|n| n.ext == "json")
+                .and_then(|n| crate::inputs::record_of(n.logical))
+                .map(|(_, r)| r)
+            else {
+                continue;
+            };
+            let young =
+                e.metadata()?.modified().ok().is_some_and(|t| now.duration_since(t).map_or(true, |d| d <= within));
             if !young {
                 continue;
             }
@@ -237,7 +260,8 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     let mut in_window: BTreeSet<u64> = BTreeSet::new();
     for &n in &ns {
         let p = store::catalog::path_n(&cat_dir, n).with_context(|| format!("catalog {n} gone meanwhile"))?;
-        let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).with_context(|| format!("stat {}", p.display()))?;
+        let mtime =
+            std::fs::metadata(&p).and_then(|m| m.modified()).with_context(|| format!("stat {}", p.display()))?;
         if n == latest || !old(mtime) {
             in_window.insert(n);
         }
@@ -247,7 +271,9 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     // stops the sweep.
     let mut kept_cats = in_window.clone();
     for &n in &in_window {
-        kept_cats.extend(store::catalog::chain(&cat_dir, n).with_context(|| format!("the catalogs catalog {n} is read through"))?);
+        kept_cats.extend(
+            store::catalog::chain(&cat_dir, n).with_context(|| format!("the catalogs catalog {n} is read through"))?,
+        );
     }
     for &n in ns.iter().filter(|n| !kept_cats.contains(n)) {
         drop_cats.extend(store::catalog::path_n(&cat_dir, n));
@@ -259,7 +285,9 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         crate::agent::jobs::within(k as f64 / in_window.len() as f64);
         let p = store::catalog::path_n(&cat_dir, n).with_context(|| format!("catalog {n} gone meanwhile"))?;
         // A catalog in the window that can't be read stops the sweep: its files might be in use.
-        let delta = (p.file_name() == Some(std::ffi::OsStr::new(&store::catalog::delta_file_name(n)))).then(|| std::fs::read(&p).ok().and_then(|b| store::catalog::Delta::decode(&b).ok())).flatten();
+        let delta = (p.file_name() == Some(std::ffi::OsStr::new(&store::catalog::delta_file_name(n))))
+            .then(|| std::fs::read(&p).ok().and_then(|b| store::catalog::Delta::decode(&b).ok()))
+            .flatten();
         let cat = match (delta, &prev) {
             (Some(d), Some(c)) if c.n == d.of => d.apply(c).with_context(|| format!("read {}", p.display()))?,
             _ => store::catalog::read_n(&cat_dir, n).with_context(|| format!("read {}", p.display()))?,
@@ -301,7 +329,12 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     referenced.extend(m.into_values());
     referenced.extend(um.files);
     rep.referenced = referenced.len();
-    let tops: BTreeSet<String> = referenced.iter().filter_map(|f| f.split('/').next()).filter(|t| !NEVER.contains(t)).map(str::to_string).collect();
+    let tops: BTreeSet<String> = referenced
+        .iter()
+        .filter_map(|f| f.split('/').next())
+        .filter(|t| !NEVER.contains(t))
+        .map(str::to_string)
+        .collect();
 
     crate::agent::jobs::stage(1, 2, "steps (sweeping the folders)");
     // (Listing the folders and removing what's due, file by file: one phase, the removals counted.)
@@ -384,7 +417,8 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                     }
                     continue;
                 }
-                if store::naming::parse_content_name(&rel).is_none() || keep.contains(&rel) || referenced.contains(&rel) {
+                if store::naming::parse_content_name(&rel).is_none() || keep.contains(&rel) || referenced.contains(&rel)
+                {
                     continue;
                 }
                 if !old(mtime) || !remove_unless_touched(&p, &old, dry_run)? {
@@ -405,12 +439,19 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         // planet download) go once that's `keep_days` ago, so a fresh pass can still be compared.
         let done_at = std::fs::read_dir(root.join("sources/osm").join(&latest))
             .ok()
-            .and_then(|rd| rd.flatten().find(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("pass.") && n.ends_with(".json"))))
+            .and_then(|rd| {
+                rd.flatten()
+                    .find(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("pass.") && n.ends_with(".json")))
+            })
             .and_then(|e| e.metadata().ok()?.modified().ok());
         let plain_due = done_at.is_some_and(old);
         for kind in ["osm", "items"] {
             let Ok(rd) = std::fs::read_dir(root.join("sources").join(kind)) else { continue };
-            let mut dates: Vec<String> = rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|d| crate::osmpass::is_date(d) && *d < latest).collect();
+            let mut dates: Vec<String> = rd
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|d| crate::osmpass::is_date(d) && *d < latest)
+                .collect();
             dates.sort();
             for d in dates {
                 let dir = root.join("sources").join(kind).join(&d);
@@ -428,7 +469,15 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
 
 /// One retired pass's folder: content-named files no catalog or manifest names, once old; any other
 /// file once `plain_due`; then the folders left empty.
-fn sweep_retired(root: &Path, dir: &Path, referenced: &BTreeSet<String>, old: &dyn Fn(SystemTime) -> bool, plain_due: bool, dry_run: bool, rep: &mut Report) -> Result<()> {
+fn sweep_retired(
+    root: &Path,
+    dir: &Path,
+    referenced: &BTreeSet<String>,
+    old: &dyn Fn(SystemTime) -> bool,
+    plain_due: bool,
+    dry_run: bool,
+    rep: &mut Report,
+) -> Result<()> {
     let mut dirs = vec![dir.to_path_buf()];
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -451,7 +500,11 @@ fn sweep_retired(root: &Path, dir: &Path, referenced: &BTreeSet<String>, old: &d
             }
             let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
             let named = store::naming::parse_content_name(&rel).is_some();
-            let due = if named { !referenced.contains(&rel) && old(md.modified().unwrap_or(SystemTime::now())) && remove_unless_touched(&p, old, dry_run)? } else if plain_due {
+            let due = if named {
+                !referenced.contains(&rel)
+                    && old(md.modified().unwrap_or(SystemTime::now()))
+                    && remove_unless_touched(&p, old, dry_run)?
+            } else if plain_due {
                 remove(&p, dry_run)?;
                 true
             } else {
@@ -558,7 +611,6 @@ fn remove_unless_touched(p: &Path, old: &dyn Fn(SystemTime) -> bool, dry_run: bo
     Ok(false)
 }
 
-
 fn remove(p: &Path, dry_run: bool) -> Result<()> {
     if dry_run {
         eprintln!("gc: would remove {}", p.display());
@@ -595,7 +647,10 @@ mod tests {
         put("sources/osm/x.3333333333333333.osm.pbf", 300); // never swept
         put("layers/roads/README", 300); // not content-named: kept
         let mut cat = store::catalog::Catalog::new(1);
-        cat.files.insert("layers/roads/hi/6-1-2".into(), store::catalog::FileRef { file: kept.into(), ..Default::default() });
+        cat.files.insert(
+            "layers/roads/hi/6-1-2".into(),
+            store::catalog::FileRef { file: kept.into(), ..Default::default() },
+        );
         store::catalog::write(&root.join("catalog"), &cat).unwrap();
         let r = run(root, 14, false).unwrap();
         assert_eq!((r.removed, r.tmp_removed, r.young), (1, 1, 1));
@@ -677,7 +732,10 @@ mod tests {
         // Not in the catalog, old, but the build uploaded it: kept. (A catalog file elsewhere so
         // `base/` is swept at all.)
         let mut cat2 = store::catalog::Catalog::new(2);
-        cat2.files.insert("base/6-1-2".into(), store::catalog::FileRef { file: "base/6-1-2.5555555555555555.sect".into(), ..Default::default() });
+        cat2.files.insert(
+            "base/6-1-2".into(),
+            store::catalog::FileRef { file: "base/6-1-2.5555555555555555.sect".into(), ..Default::default() },
+        );
         store::catalog::write(&root.join("catalog"), &cat2).unwrap();
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), format!("{{\"base/6-1-1\": \"{f}\"}}")).unwrap();
@@ -709,8 +767,16 @@ mod tests {
         store::catalog::write(&root.join("catalog"), &store::catalog::Catalog::new(1)).unwrap();
         let r = run(root, 14, false).unwrap();
         assert_eq!(r.retired_removed, 3, "{r:?}");
-        assert!(!root.join("sources/osm/2026-03-01").exists() && !root.join("sources/items/2026-03-01").exists(), "the retired pass's folders, emptied, go too");
-        for kept in ["sources/osm/2026-09-28/planet.osm.pbf", "sources/osm/2026-09-28/pieces/6-1-1.4444444444444444.osm.pbf", "sources/osm/2027-03-01/planet.osm.pbf", "sources/registers/legacy.5555555555555555.tar.zst"] {
+        assert!(
+            !root.join("sources/osm/2026-03-01").exists() && !root.join("sources/items/2026-03-01").exists(),
+            "the retired pass's folders, emptied, go too"
+        );
+        for kept in [
+            "sources/osm/2026-09-28/planet.osm.pbf",
+            "sources/osm/2026-09-28/pieces/6-1-1.4444444444444444.osm.pbf",
+            "sources/osm/2027-03-01/planet.osm.pbf",
+            "sources/registers/legacy.5555555555555555.tar.zst",
+        ] {
             assert!(root.join(kept).exists(), "{kept}");
         }
         // A newer pass completed only days ago: the old planet waits (its content-named files don't).
@@ -738,7 +804,11 @@ mod tests {
         let u = "sources/inputs/_gate-test";
         let kept = format!("{u}/a.1111111111111111.jsonl");
         let index = |unit: &str, files: &[&str]| {
-            let files: serde_json::Map<String, serde_json::Value> = files.iter().enumerate().map(|(i, f)| (format!("f{i}.jsonl"), serde_json::json!({"file": f, "size": 1, "keyed": "-"}))).collect();
+            let files: serde_json::Map<String, serde_json::Value> = files
+                .iter()
+                .enumerate()
+                .map(|(i, f)| (format!("f{i}.jsonl"), serde_json::json!({"file": f, "size": 1, "keyed": "-"})))
+                .collect();
             serde_json::json!({"fmt": 1, "unit": unit, "checks": format!("{unit} 1"), "files": files}).to_string()
         };
         put(&kept, "x", 60);
@@ -746,7 +816,11 @@ mod tests {
         put(&format!("{u}/a.3333333333333333.jsonl"), "x", 3); // young: stays
         put(&format!("{u}/b.4444444444444444.jsonl"), "x", 60); // an unmerged entry's index lists it
         put(&format!("{u}/@index.5555555555555555.json"), &index("_gate-test", &[&kept]), 60);
-        put(&format!("{u}/@index.6666666666666666.json"), &index("_gate-test", &[&format!("{u}/b.4444444444444444.jsonl")]), 60);
+        put(
+            &format!("{u}/@index.6666666666666666.json"),
+            &index("_gate-test", &[&format!("{u}/b.4444444444444444.jsonl")]),
+            60,
+        );
         put(&format!("{u}/@held.7777777777777777.json"), "{}", 60);
         put(&format!("{u}/@held.8888888888888888.json"), "{}", 60); // an old report: goes
         put("inputs/_gate-test/a.jsonl", "x", 300); // the drop box: never
@@ -758,22 +832,53 @@ mod tests {
         let n = "sources/inputs/_gate-nest/inner";
         put(&format!("{n}/c.aaaaaaaaaaaaaaab.zip"), "x", 60);
         put(&format!("{n}/c.aaaaaaaaaaaaaaac.zip"), "x", 60); // an old version: goes
-        put(&format!("{n}/@index.aaaaaaaaaaaaaaad.json"), &index("_gate-nest/inner", &[&format!("{n}/c.aaaaaaaaaaaaaaab.zip")]), 60);
+        put(
+            &format!("{n}/@index.aaaaaaaaaaaaaaad.json"),
+            &index("_gate-nest/inner", &[&format!("{n}/c.aaaaaaaaaaaaaaab.zip")]),
+            60,
+        );
         fs::write(root.join("state/build/manifest.json"), serde_json::json!({format!("{u}/@index"): format!("{u}/@index.5555555555555555.json"), format!("{u}/@held"): format!("{u}/@held.7777777777777777.json"), format!("{n}/@index"): format!("{n}/@index.aaaaaaaaaaaaaaad.json")}).to_string()).unwrap();
         // A journal entry the records don't reflect, naming the newer index.
-        let entry = crate::pool::journal::Entry { member: "m-0000000000000001".into(), lease: crate::pool::journal::LeaseId { term: 1, n: 7 }, step: "inputs".into(), handoff: crate::handoff::Handoff { changes: [(format!("{u}/@index"), Some(format!("{u}/@index.6666666666666666.json")))].into(), ..Default::default() }, at: 1_791_500_000 };
+        let entry = crate::pool::journal::Entry {
+            member: "m-0000000000000001".into(),
+            lease: crate::pool::journal::LeaseId { term: 1, n: 7 },
+            step: "inputs".into(),
+            handoff: crate::handoff::Handoff {
+                changes: [(format!("{u}/@index"), Some(format!("{u}/@index.6666666666666666.json")))].into(),
+                ..Default::default()
+            },
+            at: 1_791_500_000,
+        };
         crate::pool::journal::write(&crate::pool::nas::Share::new(root), &entry).unwrap();
         let r = run(root, 14, false).unwrap();
         assert_eq!(r.inputs_skipped, None);
         assert_eq!(r.inputs_removed, 3, "{r:?}");
-        assert!(!root.join(format!("{u}/a.2222222222222222.jsonl")).exists() && !root.join(format!("{u}/@held.8888888888888888.json")).exists() && !root.join(format!("{n}/c.aaaaaaaaaaaaaaac.zip")).exists());
-        for k in [kept.clone(), format!("{u}/a.3333333333333333.jsonl"), format!("{u}/b.4444444444444444.jsonl"), format!("{u}/@index.5555555555555555.json"), format!("{u}/@index.6666666666666666.json"), format!("{u}/@held.7777777777777777.json"), format!("{n}/c.aaaaaaaaaaaaaaab.zip"), "inputs/_gate-test/a.jsonl".into(), "sources/registers/legacy.9999999999999999.tar.zst".into()] {
+        assert!(
+            !root.join(format!("{u}/a.2222222222222222.jsonl")).exists()
+                && !root.join(format!("{u}/@held.8888888888888888.json")).exists()
+                && !root.join(format!("{n}/c.aaaaaaaaaaaaaaac.zip")).exists()
+        );
+        for k in [
+            kept.clone(),
+            format!("{u}/a.3333333333333333.jsonl"),
+            format!("{u}/b.4444444444444444.jsonl"),
+            format!("{u}/@index.5555555555555555.json"),
+            format!("{u}/@index.6666666666666666.json"),
+            format!("{u}/@held.7777777777777777.json"),
+            format!("{n}/c.aaaaaaaaaaaaaaab.zip"),
+            "inputs/_gate-test/a.jsonl".into(),
+            "sources/registers/legacy.9999999999999999.tar.zst".into(),
+        ] {
             assert!(root.join(&k).exists(), "{k}");
         }
         // A version replaced: its index touched as the check replaced it (yesterday), the copy it
         // lists accepted 30 days ago and named by no record any more: kept, restorable.
         put(&format!("{u}/a.cccccccccccccccc.jsonl"), "x", 30);
-        put(&format!("{u}/@index.dddddddddddddddd.json"), &index("_gate-test", &[&format!("{u}/a.cccccccccccccccc.jsonl")]), 1);
+        put(
+            &format!("{u}/@index.dddddddddddddddd.json"),
+            &index("_gate-test", &[&format!("{u}/a.cccccccccccccccc.jsonl")]),
+            1,
+        );
         let r = run(root, 14, false).unwrap();
         assert_eq!(r.inputs_removed, 0, "{r:?}");
         assert!(root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists());
@@ -782,11 +887,18 @@ mod tests {
         age(&root.join(format!("{u}/@index.dddddddddddddddd.json")), 30);
         put(&format!("{u}/@listed.eeeeeeeeeeeeeeee.json"), &serde_json::json!({"fmt": 1, "unit": "_gate-test", "listed": {}, "replaced": format!("{u}/@index.dddddddddddddddd.json")}).to_string(), 1);
         put(&format!("{n}/c.aaaaaaaaaaaaaaae.zip"), "x", 40);
-        put(&format!("{n}/@index.aaaaaaaaaaaaaaaf.json"), &index("_gate-nest/inner", &[&format!("{n}/c.aaaaaaaaaaaaaaae.zip")]), 40);
+        put(
+            &format!("{n}/@index.aaaaaaaaaaaaaaaf.json"),
+            &index("_gate-nest/inner", &[&format!("{n}/c.aaaaaaaaaaaaaaae.zip")]),
+            40,
+        );
         put(&format!("{n}/@listed.bbbbbbbbbbbbbbbb.json"), &serde_json::json!({"fmt": 1, "unit": "_gate-nest/inner", "listed": {}, "replaced": format!("{n}/@index.aaaaaaaaaaaaaaaf.json")}).to_string(), 2);
         let r = run(root, 14, false).unwrap();
         assert_eq!(r.inputs_removed, 0, "{r:?}");
-        assert!(root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists() && root.join(format!("{n}/c.aaaaaaaaaaaaaaae.zip")).exists());
+        assert!(
+            root.join(format!("{u}/a.cccccccccccccccc.jsonl")).exists()
+                && root.join(format!("{n}/c.aaaaaaaaaaaaaaae.zip")).exists()
+        );
         // 15 days after it was replaced (the state that named it that old too): gone, with its index.
         age(&root.join(format!("{u}/@listed.eeeeeeeeeeeeeeee.json")), 15);
         let r = run(root, 14, false).unwrap();
@@ -815,12 +927,22 @@ mod tests {
             fs::write(&p, b"x").unwrap();
             age(&p, days);
         };
-        let (a, b, c) = ("layers/roads/hi/6-1-2.1111111111111111.pack", "layers/roads/hi/6-1-3.2222222222222222.pack", "layers/roads/hi/6-1-4.3333333333333333.pack");
+        let (a, b, c) = (
+            "layers/roads/hi/6-1-2.1111111111111111.pack",
+            "layers/roads/hi/6-1-3.2222222222222222.pack",
+            "layers/roads/hi/6-1-4.3333333333333333.pack",
+        );
         for f in [a, b, c] {
             put(f, 60);
         }
         let mut cat = store::catalog::Catalog::new(1);
-        cat.files.insert("layers/roads/hi/6-9-9".into(), store::catalog::FileRef { file: "layers/roads/hi/6-9-9.9999999999999999.pack".into(), ..Default::default() });
+        cat.files.insert(
+            "layers/roads/hi/6-9-9".into(),
+            store::catalog::FileRef {
+                file: "layers/roads/hi/6-9-9.9999999999999999.pack".into(),
+                ..Default::default()
+            },
+        );
         store::catalog::write(&root.join("catalog"), &cat).unwrap();
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
@@ -829,7 +951,13 @@ mod tests {
         let mut h = crate::handoff::Handoff::default();
         h.changes.insert("layers/roads/hi/6-1-2".into(), Some(a.into()));
         h.pending.insert(b.into(), "0".repeat(64));
-        let e = Entry { member: "m-0000000000000002".into(), lease: LeaseId { term: 1, n: 4 }, step: "pack".into(), handoff: h, at: 1_791_500_000 };
+        let e = Entry {
+            member: "m-0000000000000002".into(),
+            lease: LeaseId { term: 1, n: 4 },
+            step: "pack".into(),
+            handoff: h,
+            at: 1_791_500_000,
+        };
         journal::write(&nas, &e).unwrap();
         let r = run(root, 14, false).unwrap();
         assert_eq!((r.unmerged, r.removed), (1, 1), "{r:?}");
@@ -884,7 +1012,13 @@ mod tests {
         fs::remove_file(&young).unwrap();
         entry_at(&format!("{}/1-7", journal::day(now - 10 * 86400).unwrap()), b"{\"member\": ");
         let r = run(root, 14, false).unwrap();
-        assert!(r.removed == 1 && r.warnings.len() == 1 && r.warnings[0].contains("1-7") && r.warnings[0].contains("passed over"), "{r:?}");
+        assert!(
+            r.removed == 1
+                && r.warnings.len() == 1
+                && r.warnings[0].contains("1-7")
+                && r.warnings[0].contains("passed over"),
+            "{r:?}"
+        );
         assert!(!root.join(c).exists());
     }
 
@@ -903,7 +1037,10 @@ mod tests {
         age(&p, 30);
         fs::File::options().write(true).open(&p).unwrap().set_modified(SystemTime::now()).unwrap();
         assert!(!remove_unless_touched(&p, &old, false).unwrap());
-        assert!(p.exists() && fs::read_dir(p.parent().unwrap()).unwrap().count() == 1, "back under its name, no tombstone left");
+        assert!(
+            p.exists() && fs::read_dir(p.parent().unwrap()).unwrap().count() == 1,
+            "back under its name, no tombstone left"
+        );
         // Not touched: gone, no tombstone left.
         age(&p, 30);
         assert!(remove_unless_touched(&p, &old, false).unwrap());
@@ -921,7 +1058,13 @@ mod tests {
         age(&tomb, 30);
         assert!(store::naming::parse_content_name(&tomb.strip_prefix(root).unwrap().to_string_lossy()).is_none());
         let mut cat = store::catalog::Catalog::new(1);
-        cat.files.insert("layers/roads/hi/6-9-9".into(), store::catalog::FileRef { file: "layers/roads/hi/6-9-9.9999999999999999.pack".into(), ..Default::default() });
+        cat.files.insert(
+            "layers/roads/hi/6-9-9".into(),
+            store::catalog::FileRef {
+                file: "layers/roads/hi/6-9-9.9999999999999999.pack".into(),
+                ..Default::default()
+            },
+        );
         store::catalog::write(&root.join("catalog"), &cat).unwrap();
         fs::create_dir_all(root.join("state/build")).unwrap();
         fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
@@ -933,7 +1076,10 @@ mod tests {
         let r = run(root, 14, false).unwrap();
         assert!(r.tombs == 1 && !tomb.exists() && p.exists(), "its name taken: the tombstone's copy goes: {r:?}");
         // (The upload's time kept, not the tombstone's: never replaced by it.)
-        assert!(fs::metadata(&p).unwrap().modified().unwrap().elapsed().unwrap() < Duration::from_secs(86400), "the new upload kept");
+        assert!(
+            fs::metadata(&p).unwrap().modified().unwrap().elapsed().unwrap() < Duration::from_secs(86400),
+            "the new upload kept"
+        );
     }
 
     #[test]

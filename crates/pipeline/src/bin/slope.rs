@@ -26,16 +26,16 @@
 //! Built depth first (build), so memory stays at a few hundred megabytes: level by level, every
 //! tile's quarters waited for the level above (some 28 GB at z11, swapped out until the disk filled).
 
-use det::Det;
 use anyhow::Result;
+use det::Det;
 use pipeline::count_bar;
 use rayon::prelude::*;
 use roadcore::archive::{Archive, ArchiveWriter};
 use roadcore::grid::tile_with_fallback;
 use roadcore::slope::{decode_slope4, encode_slope4, merge4, Quarters};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const TS: usize = 256;
 const MAXZ: u8 = 12;
@@ -93,7 +93,8 @@ fn quadrant(v: &[Quarters]) -> Vec<[u16; 4]> {
     for j in 0..128 {
         for i in 0..128 {
             let (a, b) = ((2 * j) * TS + 2 * i, (2 * j + 1) * TS + 2 * i);
-            q[j * 128 + i] = merge4([&v[a], &v[a + 1], &v[b], &v[b + 1]]).map(|s| (s * 100.0).round().clamp(0.0, 65535.0) as u16);
+            q[j * 128 + i] =
+                merge4([&v[a], &v[a + 1], &v[b], &v[b + 1]]).map(|s| (s * 100.0).round().clamp(0.0, 65535.0) as u16);
         }
     }
     q
@@ -138,7 +139,11 @@ fn build(b: &Build, z: u8, x: u32, y: u32) -> Result<Built> {
     };
     b.pb.inc(1);
     let prev = b.old.and_then(|o| o.get(z, x, y));
-    let dirty = b.old.is_none() || (b.coarse && z < MAXZ) || kids.iter().any(|k| k.1.dirty) || prev.is_none() || (b.terrain_changed)(z, x, y);
+    let dirty = b.old.is_none()
+        || (b.coarse && z < MAXZ)
+        || kids.iter().any(|k| k.1.dirty)
+        || prev.is_none()
+        || (b.terrain_changed)(z, x, y);
     if !dirty {
         let blob = prev.unwrap();
         b.aw.lock().unwrap().add(z, x, y, blob, TS * TS * 4)?;
@@ -201,7 +206,8 @@ fn main() -> Result<()> {
         .filter(|b| b.len() % 8 == 0 && !b.is_empty())
         .map(|b| bytemuck::cast_slice::<u8, u64>(&b).iter().copied().collect());
     // (Tiles of another encoding than the quarters are all made again.)
-    let old = Archive::open(&dir.join("slope.tiles")).ok().filter(|a| prev_keys.is_some() && a.meta_json.contains("slope4"));
+    let old =
+        Archive::open(&dir.join("slope.tiles")).ok().filter(|a| prev_keys.is_some() && a.meta_json.contains("slope4"));
     let mut new_terrain: std::collections::HashSet<u64> = match &prev_keys {
         Some(p) => arc.entries().iter().map(|e| e.key).filter(|k| !p.contains(k)).collect(),
         None => std::collections::HashSet::new(),
@@ -212,7 +218,9 @@ fn main() -> Result<()> {
         eprintln!("slope: {} terrain tiles repaired since the last run", repaired.len());
     }
     new_terrain.extend(repaired);
-    let key = |z: u8, x: i64, y: i64| roadcore::archive::tile_key(z, x.rem_euclid(1 << z) as u32, y.clamp(0, (1 << z) - 1) as u32);
+    let key = |z: u8, x: i64, y: i64| {
+        roadcore::archive::tile_key(z, x.rem_euclid(1 << z) as u32, y.clamp(0, (1 << z) - 1) as u32)
+    };
     // A tile whose terrain (itself, a neighbour, or an ancestor of those) is new.
     let terrain_changed = |z: u8, x: u32, y: u32| -> bool {
         if old.is_none() {
@@ -229,14 +237,18 @@ fn main() -> Result<()> {
         }
         false
     };
-    let aw = std::sync::Mutex::new(ArchiveWriter::create(&roadcore::tmp(&dir, "slope.tiles"), r#"{"format":"png","encoding":"slope4","value":"slope percent, quarter means"}"#)?);
+    let aw = std::sync::Mutex::new(ArchiveWriter::create(
+        &roadcore::tmp(&dir, "slope.tiles"),
+        r#"{"format":"png","encoding":"slope4","value":"slope percent, quarter means"}"#,
+    )?);
     // --coarse: every level below z12 again (z12 copied).
     let coarse = std::env::args().any(|a| a == "--coarse");
     // Every slope tile: the terrain's and their ancestors (a parent of finer tiles exists even where
     // the terrain archive has none).
     let mut tiles: HashSet<u64> = HashSet::new();
     for e in arc.entries() {
-        let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+        let (z, x, y) =
+            ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
         if z > MAXZ {
             continue;
         }

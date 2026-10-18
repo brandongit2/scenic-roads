@@ -70,7 +70,10 @@ impl Cell {
     pub fn at(&self, r: usize, c: usize) -> usize {
         let (r0, c0, ww) = self.win;
         let (i, j) = (r.wrapping_sub(r0), c.wrapping_sub(c0));
-        assert!(j < ww && i < self.e.len() / ww.max(1), "GLO-30 pixel ({r}, {c}) outside the part held ({r0}, {c0}, {ww} columns)");
+        assert!(
+            j < ww && i < self.e.len() / ww.max(1),
+            "GLO-30 pixel ({r}, {c}) outside the part held ({r0}, {c0}, {ww} columns)"
+        );
         i * ww + j
     }
 }
@@ -112,7 +115,13 @@ fn file_name(url: &str) -> &str {
 
 impl GloStore {
     pub fn open(dir: &Path, north: &crate::terrain_sources::North, fetch: bool) -> GloStore {
-        GloStore { dir: dir.to_path_buf(), listed: north.cells.clone(), fetch, keep: 48, cells: Mutex::new((0, HashMap::new())) }
+        GloStore {
+            dir: dir.to_path_buf(),
+            listed: north.cells.clone(),
+            fetch,
+            keep: 48,
+            cells: Mutex::new((0, HashMap::new())),
+        }
     }
 
     fn load(&self, la: i32, lo: i32) -> Got {
@@ -153,7 +162,9 @@ impl Cells for GloStore {
             } else {
                 if g.1.len() >= self.keep {
                     // (The least recently wanted, of those decoded.)
-                    if let Some(old) = g.1.iter().filter(|(_, (_, s))| s.get().is_some()).min_by_key(|(_, (t, _))| *t).map(|(k, _)| *k) {
+                    if let Some(old) =
+                        g.1.iter().filter(|(_, (_, s))| s.get().is_some()).min_by_key(|(_, (t, _))| *t).map(|(k, _)| *k)
+                    {
                         g.1.remove(&old);
                     }
                 }
@@ -181,7 +192,9 @@ fn download(url: &str, to: &Path) -> Result<()> {
 /// A tile's heights and its fill mask (values 3 and up: filled from another source), decoded whole;
 /// without a mask, none filled.
 pub fn read_cell(dem: &Path, flm: Option<&Path>) -> Result<Cell> {
-    let open = |p: &Path| -> Result<crate::geotiff::Tiff> { crate::geotiff::Tiff::open(Arc::new(store::range::PlainFile::open(p).with_context(|| p.display().to_string())?)) };
+    let open = |p: &Path| -> Result<crate::geotiff::Tiff> {
+        crate::geotiff::Tiff::open(Arc::new(store::range::PlainFile::open(p).with_context(|| p.display().to_string())?))
+    };
     let t = open(dem)?;
     let img = t.level(0)?;
     let (w, h) = (img.width as usize, img.height as usize);
@@ -296,7 +309,10 @@ fn near_range(z: u8, x: u32, y: u32) -> Option<([f64; 4], i32, i32, i32, i32)> {
 /// −180–179), and the box its samples lie in (west, south, east, north); None when it asks none.
 pub fn cells_of(z: u8, x: u32, y: u32) -> Option<(Vec<(i32, i32)>, [f64; 4])> {
     let (b, lat0, lat1, lon0, nlon) = near_range(z, x, y)?;
-    let v = (lat0..=lat1).filter(|&la| la >= SOUTH as i32 - 1).flat_map(|la| (0..nlon).map(move |k| (la, (lon0 + k + 180).rem_euclid(360) - 180))).collect();
+    let v = (lat0..=lat1)
+        .filter(|&la| la >= SOUTH as i32 - 1)
+        .flat_map(|la| (0..nlon).map(move |k| (la, (lon0 + k + 180).rem_euclid(360) - 180)))
+        .collect();
     Some((v, b))
 }
 
@@ -322,7 +338,8 @@ pub fn north_tile(cells: &dyn Cells, z: u8, x: u32, y: u32) -> Option<North> {
         }
         let px_m = 40_075_016.7 * lat_c.to_radians().dcos() / (n * 256.0);
         let k = ((px_m / SPACING_M).ceil() as usize).clamp(1, MAX_K);
-        let lats: Vec<f64> = (0..k).map(|b| lat_of((y as f64 + (j as f64 + (b as f64 + 0.5) / k as f64) / 256.0) / n)).collect();
+        let lats: Vec<f64> =
+            (0..k).map(|b| lat_of((y as f64 + (j as f64 + (b as f64 + 0.5) / k as f64) / 256.0) / n)).collect();
         for i in 0..256usize {
             let (mut s, mut f, mut m) = (0f32, 0f32, 0u32);
             for a in 0..k {
@@ -352,7 +369,16 @@ pub fn north_tile(cells: &dyn Cells, z: u8, x: u32, y: u32) -> Option<North> {
 /// onto GLO-30's datum (the median difference over the tile's unfilled pixels; none: AWS's as it
 /// is); where GLO-30 has none, AWS's. Returns the pixels changed.
 pub fn blend(e: &mut [f32], nt: &North, keep: Option<&[bool]>) -> usize {
-    let mut d: Vec<f32> = (0..e.len()).filter(|&p| nt.w[p] > 0.0 && nt.g[p].is_finite() && nt.filled[p] == 0.0 && e[p].is_finite() && keep.is_none_or(|k| !k[p])).map(|p| e[p] - nt.g[p]).collect();
+    let mut d: Vec<f32> = (0..e.len())
+        .filter(|&p| {
+            nt.w[p] > 0.0
+                && nt.g[p].is_finite()
+                && nt.filled[p] == 0.0
+                && e[p].is_finite()
+                && keep.is_none_or(|k| !k[p])
+        })
+        .map(|p| e[p] - nt.g[p])
+        .collect();
     let off = if d.len() >= 64 {
         let m = d.len() / 2;
         *d.select_nth_unstable_by(m, |a, b| a.total_cmp(b)).1
@@ -391,7 +417,13 @@ pub mod tests {
 
     impl FnCells {
         pub fn new(h: fn(f64, f64) -> f32) -> Self {
-            FnCells { h, filled: |_, _| false, sea: |_, _| false, missing: |_, _| false, made: Mutex::new(HashMap::new()) }
+            FnCells {
+                h,
+                filled: |_, _| false,
+                sea: |_, _| false,
+                missing: |_, _| false,
+                made: Mutex::new(HashMap::new()),
+            }
         }
     }
 
@@ -468,8 +500,13 @@ pub mod tests {
                 let p = j * 256 + i;
                 // (The pixel's mean over its samples: the plane at its centre in longitude, and the
                 // mean of its samples' latitudes.)
-                let k = ((40_075_016.7 * lat.to_radians().cos() / (n * 256.0)) / SPACING_M).ceil().clamp(1.0, MAX_K as f64) as usize;
-                let lat_m: f64 = (0..k).map(|b| lat_of((y as f64 + (j as f64 + (b as f64 + 0.5) / k as f64) / 256.0) / n)).sum::<f64>() / k as f64;
+                let k = ((40_075_016.7 * lat.to_radians().cos() / (n * 256.0)) / SPACING_M)
+                    .ceil()
+                    .clamp(1.0, MAX_K as f64) as usize;
+                let lat_m: f64 = (0..k)
+                    .map(|b| lat_of((y as f64 + (j as f64 + (b as f64 + 0.5) / k as f64) / 256.0) / n))
+                    .sum::<f64>()
+                    / k as f64;
                 let lon_c = (x as f64 + (i as f64 + 0.5) / 256.0) / n * 360.0 - 180.0;
                 let want = 100.0 + (lat_m - 60.0) * 50.0 + (lon_c + 150.0) * 20.0;
                 assert!((nt.g[p] as f64 - want).abs() < 0.01, "{z}/{x}/{y} ({i},{j}): {} vs {want}", nt.g[p]);
@@ -508,10 +545,17 @@ pub mod tests {
         c.filled = |_, lon| lon < -148.5;
         let (x, y) = tile_of(64.5, -148.5, 10);
         let nt = north_tile(&c, 10, x, y).unwrap();
-        let mut e: Vec<f32> = (0..65536).map(|p| if (nt.filled[p] - 1.0).abs() < 1e-6 { 377.0 } else { 347.0 }).collect();
+        let mut e: Vec<f32> =
+            (0..65536).map(|p| if (nt.filled[p] - 1.0).abs() < 1e-6 { 377.0 } else { 347.0 }).collect();
         blend(&mut e, &nt, None);
         for p in 0..65536 {
-            let want = if nt.filled[p] == 1.0 { 330.0 } else if nt.filled[p] == 0.0 { 300.0 } else { continue };
+            let want = if nt.filled[p] == 1.0 {
+                330.0
+            } else if nt.filled[p] == 0.0 {
+                300.0
+            } else {
+                continue;
+            };
             assert!((e[p] - want).abs() < 0.01, "{p}: {} vs {want}", e[p]);
         }
         // A cell the store hasn't: AWS's as it is; the open sea: 0.

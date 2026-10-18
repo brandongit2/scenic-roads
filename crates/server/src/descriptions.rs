@@ -26,13 +26,22 @@ pub struct Descriptions {
 impl Descriptions {
     pub fn new(home: &Path) -> Arc<Descriptions> {
         let unit = pipeline::inputs::descriptions::UNIT;
-        Arc::new(Descriptions { accepted: crate::accepted::local_dir(home, unit), old: home.join(unit), table: RwLock::new(Arc::new(HashMap::new())) })
+        Arc::new(Descriptions {
+            accepted: crate::accepted::local_dir(home, unit),
+            old: home.join(unit),
+            table: RwLock::new(Arc::new(HashMap::new())),
+        })
     }
 
     /// The accepted version's `.jsonl` files, in their drop-box paths' order (by component; later
     /// ones win).
     fn files(&self) -> Vec<PathBuf> {
-        let mut fs: Vec<(String, PathBuf)> = crate::accepted::files(&self.accepted).unwrap_or_default().into_iter().filter(|(p, _)| p.ends_with(".jsonl")).map(|(p, (local, _))| (p, local)).collect();
+        let mut fs: Vec<(String, PathBuf)> = crate::accepted::files(&self.accepted)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(p, _)| p.ends_with(".jsonl"))
+            .map(|(p, (local, _))| (p, local))
+            .collect();
         fs.sort_by(|a, b| Path::new(&a.0).cmp(Path::new(&b.0)));
         fs.into_iter().map(|(_, l)| l).collect()
     }
@@ -45,7 +54,10 @@ impl Descriptions {
             let Ok(text) = std::fs::read_to_string(f) else { continue };
             for line in text.lines() {
                 let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-                let Some(key) = v.get("qid").or_else(|| v.get("id")).and_then(|k| k.as_str()).map(str::to_string) else { continue };
+                let Some(key) = v.get("qid").or_else(|| v.get("id")).and_then(|k| k.as_str()).map(str::to_string)
+                else {
+                    continue;
+                };
                 if v.get("drop").and_then(|d| d.as_bool()) == Some(true) {
                     t.insert(key, None);
                 } else if v.get("long").and_then(|l| l.as_str()).is_some_and(|l| !l.trim().is_empty()) {
@@ -97,9 +109,15 @@ impl Descriptions {
             return record.into();
         }
         let Ok(mut v) = serde_json::from_str::<Value>(record) else { return record.into() };
-        let qid = v.get("qid").and_then(Value::as_str).or_else(|| v.get("wikidata").and_then(Value::as_str).and_then(|w| w.split(';').next()).map(str::trim)).filter(|q| !q.is_empty());
+        let qid = v
+            .get("qid")
+            .and_then(Value::as_str)
+            .or_else(|| v.get("wikidata").and_then(Value::as_str).and_then(|w| w.split(';').next()).map(str::trim))
+            .filter(|q| !q.is_empty());
         let osm = v.get("osm").and_then(Value::as_str);
-        let Some(entry) = qid.and_then(|q| t.get(q)).or_else(|| osm.and_then(|o| t.get(o))).cloned() else { return record.into() };
+        let Some(entry) = qid.and_then(|q| t.get(q)).or_else(|| osm.and_then(|o| t.get(o))).cloned() else {
+            return record.into();
+        };
         let Some(o) = v.as_object_mut() else { return record.into() };
         match entry {
             None => {
@@ -125,11 +143,15 @@ fn credit(record: &serde_json::Map<String, Value>, d: &Value) -> Option<Value> {
     if let Some(src) = d.get("src").filter(|s| s.as_array().is_some_and(|a| !a.is_empty())) {
         return Some(serde_json::json!({ "refs": src }));
     }
-    if let Some(own) = record.get("long_src").filter(|c| c.get("title").and_then(Value::as_str).is_some_and(|t| !t.is_empty())) {
+    if let Some(own) =
+        record.get("long_src").filter(|c| c.get("title").and_then(Value::as_str).is_some_and(|t| !t.is_empty()))
+    {
         return Some(own.clone());
     }
     if let Some(w) = record.get("wiki").filter(|w| w.get("title").and_then(Value::as_str).is_some()) {
-        return Some(serde_json::json!({ "lang": w.get("lang").cloned().unwrap_or_else(|| "en".into()), "title": w["title"] }));
+        return Some(
+            serde_json::json!({ "lang": w.get("lang").cloned().unwrap_or_else(|| "en".into()), "title": w["title"] }),
+        );
     }
     let (lang, title) = record.get("wikipedia").and_then(Value::as_str)?.split_once(':')?;
     Some(serde_json::json!({ "lang": lang.trim(), "title": title.trim() }))
@@ -140,7 +162,11 @@ mod tests {
     use super::*;
 
     fn with(entries: &[(&str, Option<Value>)]) -> Descriptions {
-        let d = Descriptions { accepted: PathBuf::new(), old: PathBuf::new(), table: RwLock::new(Arc::new(HashMap::new())) };
+        let d = Descriptions {
+            accepted: PathBuf::new(),
+            old: PathBuf::new(),
+            table: RwLock::new(Arc::new(HashMap::new())),
+        };
         *d.table.write().unwrap() = Arc::new(entries.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
         d
     }
@@ -158,8 +184,12 @@ mod tests {
             ("n5", Some(serde_json::json!({"long": "by osm id"}))),
         ]);
         // Heritage: the built Wikipedia credit stays.
-        let r = applied(&d, serde_json::json!({"qid": "Q1", "long": "old", "long_src": {"lang": "fr", "title": "Tour"}}));
-        assert_eq!((r["long"].as_str(), r["long_src"].clone()), (Some("new text"), serde_json::json!({"lang": "fr", "title": "Tour"})));
+        let r =
+            applied(&d, serde_json::json!({"qid": "Q1", "long": "old", "long_src": {"lang": "fr", "title": "Tour"}}));
+        assert_eq!(
+            (r["long"].as_str(), r["long_src"].clone()),
+            (Some("new text"), serde_json::json!({"lang": "fr", "title": "Tour"}))
+        );
         // Researched: its sources as refs, whatever was built.
         let r = applied(&d, serde_json::json!({"qid": "Q2", "long_src": {"lang": "en", "title": "T"}}));
         assert_eq!(r["long_src"], serde_json::json!({"refs": [{"t": "Book", "u": "https://x"}]}));
@@ -168,7 +198,10 @@ mod tests {
         assert_eq!(r["long_src"], serde_json::json!({"lang": "de", "title": "Turm"}));
         // Sights: Wikidata in `wikidata` (first of several), the article in `wikipedia`.
         let r = applied(&d, serde_json::json!({"wikidata": "Q1; Q9", "osm": "n7", "wikipedia": "en:Ben Nevis"}));
-        assert_eq!((r["long"].as_str(), r["long_src"].clone()), (Some("new text"), serde_json::json!({"lang": "en", "title": "Ben Nevis"})));
+        assert_eq!(
+            (r["long"].as_str(), r["long_src"].clone()),
+            (Some("new text"), serde_json::json!({"lang": "en", "title": "Ben Nevis"}))
+        );
         // A researched credit isn't kept for a later plain description; no article, no credit.
         let r = applied(&d, serde_json::json!({"qid": "Q1", "long_src": {"refs": [{"t": "Old"}]}}));
         assert!(r.get("long_src").is_none());

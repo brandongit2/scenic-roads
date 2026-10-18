@@ -27,11 +27,17 @@ pub fn online(url: &str) -> Result<()> {
     // (This Mac itself isn't the internet: a coordinator's or a test server's.)
     let host = url.split("://").nth(1).unwrap_or(url).split(['/', '?']).next().unwrap_or("");
     let host = host.rsplit_once('@').map_or(host, |h| h.1);
-    let host = if host.starts_with('[') { host.split(']').next().map(|h| &h[1..]).unwrap_or("") } else { host.split(':').next().unwrap_or("") };
+    let host = if host.starts_with('[') {
+        host.split(']').next().map(|h| &h[1..]).unwrap_or("")
+    } else {
+        host.split(':').next().unwrap_or("")
+    };
     if matches!(host, "127.0.0.1" | "localhost" | "::1") {
         return Ok(());
     }
-    if OFFLINE.load(std::sync::atomic::Ordering::Relaxed) || std::env::var("SCENIC_FETCH_OFFLINE").is_ok_and(|v| !v.is_empty() && v != "0") {
+    if OFFLINE.load(std::sync::atomic::Ordering::Relaxed)
+        || std::env::var("SCENIC_FETCH_OFFLINE").is_ok_and(|v| !v.is_empty() && v != "0")
+    {
         bail!("{url}: no network here (SCENIC_FETCH_OFFLINE)");
     }
     Ok(())
@@ -177,7 +183,10 @@ impl RangeRead for Remote {
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         if off.checked_add(len as u64).is_none_or(|e| e > self.len) {
-            return Err(IoError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, format!("{}: bytes {off}..+{len} are past the end ({} bytes)", self.url, self.len))));
+            return Err(IoError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("{}: bytes {off}..+{len} are past the end ({} bytes)", self.url, self.len),
+            )));
         }
         if len == 0 {
             return Ok(Vec::new());
@@ -193,7 +202,10 @@ impl RangeRead for Remote {
         if let Some(o) = &self.online {
             return o.read(&self.url, self.len, off, len);
         }
-        Err(IoError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{}: bytes {off}..+{len} weren't supplied (no network here)", self.url))))
+        Err(IoError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{}: bytes {off}..+{len} weren't supplied (no network here)", self.url),
+        )))
     }
 }
 
@@ -304,7 +316,12 @@ impl Noted {
         let mut all = std::fs::read_to_string(beside(&p, ".ranges")).map(|t| Ranges::parse(&t)).unwrap_or_default();
         std::fs::create_dir_all(p.parent().context("a mirror path without a folder")?)?;
         let len = self.inner.len()?;
-        let f = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(&p).with_context(|| p.display().to_string())?;
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&p)
+            .with_context(|| p.display().to_string())?;
         if f.metadata()?.len() != len {
             f.set_len(len)?;
         }
@@ -521,7 +538,8 @@ mod net {
             }
             for &(a, b) in &runs {
                 let (s, e) = (a * BLOCK, ((b + 1) * BLOCK).min(size));
-                let bytes = self.net.range(url, s, e).map_err(|e| IoError::Io(std::io::Error::other(format!("{e:#}"))))?;
+                let bytes =
+                    self.net.range(url, s, e).map_err(|e| IoError::Io(std::io::Error::other(format!("{e:#}"))))?;
                 if let Some(r) = &self.record {
                     if let Err(e) = r.range(s, &bytes) {
                         eprintln!("fetch: {url}: not recorded: {e:#}");
@@ -539,7 +557,9 @@ mod net {
             }
             let mut out = Vec::with_capacity(len);
             for i in first..=last {
-                let b = have.get(&i).ok_or_else(|| IoError::Io(std::io::Error::other(format!("{url}: block {i} missing"))))?;
+                let b = have
+                    .get(&i)
+                    .ok_or_else(|| IoError::Io(std::io::Error::other(format!("{url}: block {i} missing"))))?;
                 let s = if i == first { (off - i * BLOCK) as usize } else { 0 };
                 let e = if i == last { (off + len as u64 - i * BLOCK) as usize } else { b.len() };
                 out.extend_from_slice(&b[s..e]);
@@ -602,7 +622,12 @@ mod net {
 
         /// `url`'s file: from the mirror's part of it (`local`) where that has the bytes, else
         /// fetched, and recorded in `record`; None when the server has no such file.
-        pub fn open(&self, url: &str, local: Option<Local>, record: Option<&Path>) -> Result<Option<Arc<dyn RangeRead>>> {
+        pub fn open(
+            &self,
+            url: &str,
+            local: Option<Local>,
+            record: Option<&Path>,
+        ) -> Result<Option<Arc<dyn RangeRead>>> {
             let (len, first) = match &local {
                 Some(l) => (l.len, Vec::new()),
                 None => match self.head(url)? {
@@ -628,7 +653,12 @@ mod net {
                     blocks.put(i as u64, Arc::from(chunk));
                 }
             }
-            Ok(Some(Arc::new(Remote { url: url.to_string(), len, local, online: Some(Online { net: self.clone(), record, blocks: Mutex::new(blocks) }) })))
+            Ok(Some(Arc::new(Remote {
+                url: url.to_string(),
+                len,
+                local,
+                online: Some(Online { net: self.clone(), record, blocks: Mutex::new(blocks) }),
+            })))
         }
 
         /// `url`'s small file whole (`get`), recorded in `record`.
@@ -672,7 +702,9 @@ mod net {
                 };
                 match r.status().as_u16() {
                     206 => {
-                        let Some((Some((0, _)), Some(total))) = header(&r, "content-range").as_deref().and_then(content_range) else {
+                        let Some((Some((0, _)), Some(total))) =
+                            header(&r, "content-range").as_deref().and_then(content_range)
+                        else {
                             bail!("{url}: a range answer without its length");
                         };
                         match r.body_mut().with_config().limit(READ_AHEAD + 1).read_to_vec() {
@@ -739,12 +771,18 @@ mod net {
                     match r.status().as_u16() {
                         206 => {
                             let cr = header(&r, "content-range").as_deref().and_then(content_range);
-                            ensure!(matches!(cr, Some((Some((a, b)), _)) if a == from && b == e - 1), "{url}: asked for bytes {from}-{}, answered {cr:?}", e - 1);
+                            ensure!(
+                                matches!(cr, Some((Some((a, b)), _)) if a == from && b == e - 1),
+                                "{url}: asked for bytes {from}-{}, answered {cr:?}",
+                                e - 1
+                            );
                             let total = cr.and_then(|(_, t)| t);
                             let validator = header(&r, "etag").or_else(|| header(&r, "last-modified"));
                             match &first {
                                 None => first = Some((validator, total)),
-                                Some((v, t)) if *v != validator || *t != total => return Ok(Err("the file changed while it was read".into())),
+                                Some((v, t)) if *v != validator || *t != total => {
+                                    return Ok(Err("the file changed while it was read".into()))
+                                }
                                 Some(_) => {}
                             }
                             let mut rd = r.body_mut().with_config().limit(e - from + 1).reader();
@@ -910,7 +948,10 @@ mod tests {
             let body = &data[a..=b];
             let send = if n < drops { body.len().min(cut) } else { body.len() };
             let head = if whole {
-                format!("HTTP/1.1 200 OK\r\nETag: {etag}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
+                format!(
+                    "HTTP/1.1 200 OK\r\nETag: {etag}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
             } else {
                 format!("HTTP/1.1 206 Partial Content\r\nETag: {etag}\r\nContent-Range: bytes {a}-{b}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.len(), body.len())
             };
@@ -960,7 +1001,11 @@ mod tests {
         });
         let got = net::Net::new().range(&url, 1000, 251_000).unwrap();
         assert_eq!(got, v2[1000..251_000]);
-        assert_eq!(file.lock().unwrap().2, [(1000, 250_999), (101_000, 250_999), (1000, 250_999)], "resumed, answered whole, started again");
+        assert_eq!(
+            file.lock().unwrap().2,
+            [(1000, 250_999), (101_000, 250_999), (1000, 250_999)],
+            "resumed, answered whole, started again"
+        );
         // The validator the same but the length changed: fetched again from the start too.
         let file = served(v1.clone(), "\"same\"");
         let url = dropping_server(file.clone(), 100_000, 1);

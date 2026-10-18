@@ -84,10 +84,13 @@ fn zz(v: i64) -> u32 {
 /// None when fewer than three are left or it has no area.
 fn grid_ring(r: &[[i32; 2]], z: u8, tx: u32, ty: u32) -> Option<Vec<[i64; 2]>> {
     let scale = (1u64 << z) as f64 * EXTENT as f64;
-    let pts: Vec<[f64; 2]> = r.iter().map(|&p| {
-        let (wx, wy) = world7(p);
-        [wx * scale, wy * scale]
-    }).collect();
+    let pts: Vec<[f64; 2]> = r
+        .iter()
+        .map(|&p| {
+            let (wx, wy) = world7(p);
+            [wx * scale, wy * scale]
+        })
+        .collect();
     let (ox, oy) = (tx as i64 * EXTENT as i64, ty as i64 * EXTENT as i64);
     let mut out: Vec<[i64; 2]> = Vec::with_capacity(pts.len());
     for p in pts {
@@ -171,7 +174,11 @@ fn edge_points(a: [i64; 2], b: [i64; 2], wind: i64, outward: bool) -> Option<Vec
     let mut pts = Vec::new();
     // The subdivision lines strictly between its ends, in order from a.
     let mut at: Vec<i64> = Vec::new();
-    let mut l = if dir > 0 { s.div_euclid(SUBDIVISION) * SUBDIVISION + SUBDIVISION } else { (s - 1).div_euclid(SUBDIVISION) * SUBDIVISION };
+    let mut l = if dir > 0 {
+        s.div_euclid(SUBDIVISION) * SUBDIVISION + SUBDIVISION
+    } else {
+        (s - 1).div_euclid(SUBDIVISION) * SUBDIVISION
+    };
     while (t - l) * dir > 0 {
         at.push(l);
         l += dir * SUBDIVISION;
@@ -207,7 +214,8 @@ fn edge_points(a: [i64; 2], b: [i64; 2], wind: i64, outward: bool) -> Option<Vec
             let mut stops = vec![s];
             stops.extend(&at);
             stops.push(t);
-            let k = (0..stops.len() - 1).max_by_key(|&k| ((stops[k + 1] - stops[k]).abs(), std::cmp::Reverse(k))).unwrap();
+            let k =
+                (0..stops.len() - 1).max_by_key(|&k| ((stops[k + 1] - stops[k]).abs(), std::cmp::Reverse(k))).unwrap();
             at.insert(k, stops[k] + (stops[k + 1] - stops[k]) / 2);
         }
         for (j, &v) in at.iter().enumerate() {
@@ -229,13 +237,21 @@ fn orient(a: [i64; 2], b: [i64; 2], c: [i64; 2]) -> i64 {
 
 /// Whether c is on segment a–b.
 fn on_segment(a: [i64; 2], b: [i64; 2], c: [i64; 2]) -> bool {
-    orient(a, b, c) == 0 && a[0].min(b[0]) <= c[0] && c[0] <= a[0].max(b[0]) && a[1].min(b[1]) <= c[1] && c[1] <= a[1].max(b[1])
+    orient(a, b, c) == 0
+        && a[0].min(b[0]) <= c[0]
+        && c[0] <= a[0].max(b[0])
+        && a[1].min(b[1]) <= c[1]
+        && c[1] <= a[1].max(b[1])
 }
 
 /// Whether segments p–q and c–d have a point in common.
 fn meet(p: [i64; 2], q: [i64; 2], c: [i64; 2], d: [i64; 2]) -> bool {
     let (d1, d2, d3, d4) = (orient(c, d, p), orient(c, d, q), orient(p, q, c), orient(p, q, d));
-    (d1 * d2 < 0 && d3 * d4 < 0) || on_segment(c, d, p) || on_segment(c, d, q) || on_segment(p, q, c) || on_segment(p, q, d)
+    (d1 * d2 < 0 && d3 * d4 < 0)
+        || on_segment(c, d, p)
+        || on_segment(c, d, q)
+        || on_segment(p, q, c)
+        || on_segment(p, q, d)
 }
 
 /// Whether x→y then y→z turns back over itself.
@@ -264,7 +280,11 @@ fn fits(r: &[[i64; 2]], ins: &[Vec<[i64; 2]>], i: usize, pts: &[[i64; 2]], other
     // Its own pieces.
     for x in 0..m {
         for y in x + 1..m {
-            let bad = if y == x + 1 { fold(mine[x], mine[y], mine[y + 1]) } else { meet(mine[x], mine[x + 1], mine[y], mine[y + 1]) };
+            let bad = if y == x + 1 {
+                fold(mine[x], mine[y], mine[y + 1])
+            } else {
+                meet(mine[x], mine[x + 1], mine[y], mine[y + 1])
+            };
             if bad {
                 return false;
             }
@@ -343,7 +363,8 @@ fn geometry(f: &Feat, z: u8, tx: u32, ty: u32) -> Option<Vec<u32>> {
             rings.push(r);
         }
         for k in 0..rings.len() {
-            let others: Vec<&[[i64; 2]]> = rings.iter().enumerate().filter(|&(j, _)| j != k).map(|(_, o)| o.as_slice()).collect();
+            let others: Vec<&[[i64; 2]]> =
+                rings.iter().enumerate().filter(|&(j, _)| j != k).map(|(_, o)| o.as_slice()).collect();
             let u = unclip(&rings[k], &others);
             rings[k] = u;
         }
@@ -414,7 +435,8 @@ pub fn feature_id(order: (u64, u32)) -> Result<u64> {
 /// Tile z/x/y of `feats` (each in it by its centroid): the gzip'd tile, its raw length and its
 /// features, or None when no feature is left.
 pub fn encode(z: u8, x: u32, y: u32, feats: &[Feat]) -> Result<Option<(Vec<u8>, u32, u32)>> {
-    let mut order: Vec<(u64, (u64, u32), usize)> = feats.iter().enumerate().map(|(i, f)| (morton_in(f.cen, z, x, y), f.order, i)).collect();
+    let mut order: Vec<(u64, (u64, u32), usize)> =
+        feats.iter().enumerate().map(|(i, f)| (morton_in(f.cen, z, x, y), f.order, i)).collect();
     order.sort_unstable();
     let mut values: Vec<Value> = Vec::new();
     let mut by_value: HashMap<u64, u32> = HashMap::new();
@@ -443,15 +465,30 @@ pub fn encode(z: u8, x: u32, y: u32, feats: &[Feat]) -> Result<Option<(Vec<u8>, 
         if f.copy {
             tags.extend([6, vi(1)]);
         }
-        features.push(Feature { id: Some(feature_id(f.order)?), tags, geom_type: Some(3), geometry, unknown: Vec::new() });
+        features.push(Feature {
+            id: Some(feature_id(f.order)?),
+            tags,
+            geom_type: Some(3),
+            geometry,
+            unknown: Vec::new(),
+        });
     }
     if features.is_empty() {
         return Ok(None);
     }
     let n = features.len() as u32;
-    let layer = Layer { name: LAYER.into(), version: 2, extent: EXTENT, keys: KEYS.iter().map(|k| k.to_string()).collect(), values, features, unknown: Vec::new() };
+    let layer = Layer {
+        name: LAYER.into(),
+        version: 2,
+        extent: EXTENT,
+        keys: KEYS.iter().map(|k| k.to_string()).collect(),
+        values,
+        features,
+        unknown: Vec::new(),
+    };
     let raw = Tile { layers: vec![layer], unknown: Vec::new() }.encode();
-    let mut e = flate2::write::GzEncoder::new(Vec::with_capacity(raw.len() / 3 + 64), flate2::Compression::new(GZIP_LEVEL));
+    let mut e =
+        flate2::write::GzEncoder::new(Vec::with_capacity(raw.len() / 3 + 64), flate2::Compression::new(GZIP_LEVEL));
     e.write_all(&raw)?;
     Ok(Some((e.finish()?, raw.len() as u32, n)))
 }
@@ -462,7 +499,8 @@ mod tests {
     use crate::bld::e7;
 
     fn sq(lon: f64, lat: f64, d: f64, cw: bool) -> Vec<[i32; 2]> {
-        let mut v = vec![[e7(lon), e7(lat)], [e7(lon + d), e7(lat)], [e7(lon + d), e7(lat + d)], [e7(lon), e7(lat + d)]];
+        let mut v =
+            vec![[e7(lon), e7(lat)], [e7(lon + d), e7(lat)], [e7(lon + d), e7(lat + d)], [e7(lon), e7(lat + d)]];
         if cw {
             v.reverse();
         }
@@ -479,12 +517,46 @@ mod tests {
         let hole = sq(lon + 0.0002, lat + 0.0002, 0.0001, false);
         let other = sq(lon + 0.003, lat + 0.003, 0.0003, true);
         // A sliver that rounds to a line: dropped.
-        let sliver = [[e7(lon + 0.006), e7(lat)], [e7(lon + 0.006000001), e7(lat)], [e7(lon + 0.006), e7(lat + 0.0003)]];
+        let sliver =
+            [[e7(lon + 0.006), e7(lat)], [e7(lon + 0.006000001), e7(lat)], [e7(lon + 0.006), e7(lat + 0.0003)]];
         let key = roadcore::archive::tile_key(z, x, y);
         let feats = vec![
-            Feat { polys: vec![vec![&outer[..], &hole[..]]], cen: [e7(lon + 0.00025), e7(lat + 0.00025)], order: (key, 0), h: 215, m: 0, s: 0, f: 0, c: 1, k: 0, copy: false },
-            Feat { polys: vec![vec![&other[..]]], cen: [e7(lon + 0.00315), e7(lat + 0.00315)], order: (key, 1), h: 64, m: 30, s: 1, f: 2, c: 3, k: 1, copy: false },
-            Feat { polys: vec![vec![&sliver[..]]], cen: [e7(lon + 0.006), e7(lat + 0.0001)], order: (key, 2), h: 40, m: 0, s: 5, f: 0, c: 0, k: 0, copy: true },
+            Feat {
+                polys: vec![vec![&outer[..], &hole[..]]],
+                cen: [e7(lon + 0.00025), e7(lat + 0.00025)],
+                order: (key, 0),
+                h: 215,
+                m: 0,
+                s: 0,
+                f: 0,
+                c: 1,
+                k: 0,
+                copy: false,
+            },
+            Feat {
+                polys: vec![vec![&other[..]]],
+                cen: [e7(lon + 0.00315), e7(lat + 0.00315)],
+                order: (key, 1),
+                h: 64,
+                m: 30,
+                s: 1,
+                f: 2,
+                c: 3,
+                k: 1,
+                copy: false,
+            },
+            Feat {
+                polys: vec![vec![&sliver[..]]],
+                cen: [e7(lon + 0.006), e7(lat + 0.0001)],
+                order: (key, 2),
+                h: 40,
+                m: 0,
+                s: 5,
+                f: 0,
+                c: 0,
+                k: 0,
+                copy: true,
+            },
         ];
         let (gz, raw, n) = encode(z, x, y, &feats).unwrap().unwrap();
         assert_eq!(n, 2);
@@ -494,11 +566,32 @@ mod tests {
         assert_eq!((l.name.as_str(), l.extent, l.version), ("b", 4096, 2));
         assert_eq!(l.features.len(), 2, "the sliver dropped");
         let props = |f: &Feature| -> Vec<(String, u64)> {
-            f.tags.chunks(2).map(|kv| (l.keys[kv[0] as usize].clone(), match l.values[kv[1] as usize] { Value::Uint(v) => v, _ => panic!() })).collect()
+            f.tags
+                .chunks(2)
+                .map(|kv| {
+                    (
+                        l.keys[kv[0] as usize].clone(),
+                        match l.values[kv[1] as usize] {
+                            Value::Uint(v) => v,
+                            _ => panic!(),
+                        },
+                    )
+                })
+                .collect()
         };
         // Sorted by Morton code (y's bit first at each level): the part, further north, first.
         assert_eq!(props(&l.features[1]), vec![("h".into(), 215), ("s".into(), 0), ("c".into(), 1)]);
-        assert_eq!(props(&l.features[0]), vec![("h".into(), 64), ("m".into(), 30), ("s".into(), 1), ("f".into(), 2), ("c".into(), 3), ("k".into(), 1)]);
+        assert_eq!(
+            props(&l.features[0]),
+            vec![
+                ("h".into(), 64),
+                ("m".into(), 30),
+                ("s".into(), 1),
+                ("f".into(), 2),
+                ("c".into(), 3),
+                ("k".into(), 1)
+            ]
+        );
         // Ids: the z14 tile and the index there, the part's 1.
         let base = (8298u64 << 34) | (5634u64 << 20);
         assert_eq!((l.features[0].id, l.features[1].id), (Some(base + 1), Some(base)));
@@ -562,7 +655,10 @@ mod tests {
                 if (ex <= adx || dx == 0.0) && (ey <= ady || dy == 0.0) {
                     break;
                 }
-                let (rx, ry) = (if dx != 0.0 { adx / dx.abs() } else { f64::INFINITY }, if dy != 0.0 { ady / dy.abs() } else { f64::INFINITY });
+                let (rx, ry) = (
+                    if dx != 0.0 { adx / dx.abs() } else { f64::INFINITY },
+                    if dy != 0.0 { ady / dy.abs() } else { f64::INFINITY },
+                );
                 let p = if (rx < ry && dx != 0.0) || dy == 0.0 {
                     ly += dy * rx;
                     lx = nbx;
@@ -668,7 +764,10 @@ mod tests {
         let ext = vec![[-20, 100], [-10, 100], [-10, 110], [-20, 110]];
         let hole = vec![[-19, 101], [-19, 109], [-11, 109], [-11, 101]];
         let u = unclip(&hole, &[&ext]);
-        assert!((0..u.len()).all(|i| (0..4).all(|j| !meet(u[i], u[(i + 1) % u.len()], ext[j], ext[(j + 1) % 4]))), "{u:?}");
+        assert!(
+            (0..u.len()).all(|i| (0..4).all(|j| !meet(u[i], u[(i + 1) % u.len()], ext[j], ext[(j + 1) % 4]))),
+            "{u:?}"
+        );
         // Every triangle and quadrilateral on small grids out past an edge, across a subdivision
         // line, and in a corner, both ways round: still simple, wound as it was. Walls left out
         // where no points fit: 647 of 40,440, each a unit-long edge in a notch a unit wide.
@@ -709,5 +808,4 @@ mod tests {
         assert!(checked > 10_000, "{checked}");
         assert!(left * 50 < checked, "{left} of {checked}");
     }
-
 }

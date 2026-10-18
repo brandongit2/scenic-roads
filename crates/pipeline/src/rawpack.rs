@@ -98,11 +98,18 @@ impl Index {
         if let Err(e) = std::fs::metadata(store.join(INDEX)) {
             if e.kind() == std::io::ErrorKind::NotFound {
                 let others = match std::fs::read_dir(store.join("packs")) {
-                    Ok(rd) => rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).any(|n| n.ends_with(".tiles") && !naming.contains(&n.as_str())),
+                    Ok(rd) => rd
+                        .flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .any(|n| n.ends_with(".tiles") && !naming.contains(&n.as_str())),
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
                     Err(e) => return Err(e).with_context(|| format!("list {}", store.join("packs").display())),
                 };
-                ensure!(!others, "{} is missing, but its archives are there: put it back (nothing is changed until then)", store.join(INDEX).display());
+                ensure!(
+                    !others,
+                    "{} is missing, but its archives are there: put it back (nothing is changed until then)",
+                    store.join(INDEX).display()
+                );
             }
         }
         Index::load(store)
@@ -198,11 +205,19 @@ pub fn entries_of(p: &Path) -> Result<(std::fs::File, Vec<Entry>)> {
     let n = u64::from_le_bytes(h[16..24].try_into()?);
     let size = std::mem::size_of::<Entry>() as u64;
     let end = n.checked_mul(size).and_then(|b| b.checked_add(off));
-    ensure!(end.is_some_and(|e| e <= f.metadata().map_or(0, |m| m.len())), "{}: its entries run past its end", p.display());
+    ensure!(
+        end.is_some_and(|e| e <= f.metadata().map_or(0, |m| m.len())),
+        "{}: its entries run past its end",
+        p.display()
+    );
     let mut b = vec![0u8; (n * size) as usize];
     f.read_exact_at(&mut b, off).with_context(|| format!("read {}", p.display()))?;
     let entries: Vec<Entry> = b.chunks_exact(size as usize).map(bytemuck::pod_read_unaligned::<Entry>).collect();
-    ensure!(entries.iter().all(|e| e.offset >= 28 && e.offset.checked_add(e.len as u64).is_some_and(|end| end <= off)), "{}: a tile outside it", p.display());
+    ensure!(
+        entries.iter().all(|e| e.offset >= 28 && e.offset.checked_add(e.len as u64).is_some_and(|end| end <= off)),
+        "{}: a tile outside it",
+        p.display()
+    );
     Ok((f, entries))
 }
 
@@ -290,10 +305,32 @@ impl Packer {
         let index = Index::load(store)?;
         std::fs::create_dir_all(dir.join("packs"))?;
         let spool_path = dir.join("packs").join(own("packing", "spool"));
-        let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&spool_path).with_context(|| format!("open {}", spool_path.display()))?;
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&spool_path)
+            .with_context(|| format!("open {}", spool_path.display()))?;
         // (Held while it's written: room-making leaves it.)
         store::cachefile::lock_shared(&f)?;
-        Ok(Packer { dir: dir.to_path_buf(), store: store.to_path_buf(), root: root.to_path_buf(), index, spool: BufWriter::with_capacity(1 << 20, f), spool_path, pos: 0, areas: BTreeMap::new(), last: None, touched: Default::default(), missing: Vec::new(), added: 0, keep: true, handoff, handed: Vec::new() })
+        Ok(Packer {
+            dir: dir.to_path_buf(),
+            store: store.to_path_buf(),
+            root: root.to_path_buf(),
+            index,
+            spool: BufWriter::with_capacity(1 << 20, f),
+            spool_path,
+            pos: 0,
+            areas: BTreeMap::new(),
+            last: None,
+            touched: Default::default(),
+            missing: Vec::new(),
+            added: 0,
+            keep: true,
+            handoff,
+            handed: Vec::new(),
+        })
     }
 
     /// Adds a tile (None: AWS doesn't have it); whether it's new to its area's archives. Past an
@@ -350,7 +387,10 @@ impl Packer {
             match entries_of(&at) {
                 Ok((_, e)) => have.extend(e.iter().map(|e| e.key)),
                 Err(e) if pass && not_found(&e) => {
-                    eprintln!("rawpack: {} is named but not on the NAS: passed over, and taken out of the index", p.name);
+                    eprintln!(
+                        "rawpack: {} is named but not on the NAS: passed over, and taken out of the index",
+                        p.name
+                    );
                     self.missing.push((area.to_string(), p.name.clone()));
                 }
                 Err(e) => return Err(e),
@@ -409,7 +449,10 @@ impl Packer {
         // those areas next).
         if let Some(dir) = self.handoff.clone() {
             if !self.handed.is_empty() {
-                crate::handoff::write(&dir, &crate::handoff::Handoff { raw: std::mem::take(&mut self.handed), ..Default::default() })?;
+                crate::handoff::write(
+                    &dir,
+                    &crate::handoff::Handoff { raw: std::mem::take(&mut self.handed), ..Default::default() },
+                )?;
             }
             progress("areas", touched.len() as u64, touched.len() as u64);
             return Ok(touched);
@@ -482,7 +525,8 @@ impl Packer {
         let nas = self.store.join("packs").join(&p.name);
         if std::fs::metadata(&nas).map(|m| m.len()).ok() != Some(p.bytes) {
             std::fs::create_dir_all(nas.parent().unwrap())?;
-            crate::whole::copy(&self.dir.join("packs").join(&p.name), &nas).with_context(|| format!("put {} on the NAS", p.name))?;
+            crate::whole::copy(&self.dir.join("packs").join(&p.name), &nas)
+                .with_context(|| format!("put {} on the NAS", p.name))?;
         }
         Ok(())
     }
@@ -589,7 +633,10 @@ impl Packer {
 
     /// One archive here of the tiles of `run`'s archives (copied here whole first).
     fn merge(&self, area: &str, run: &[Pack]) -> Result<Pack> {
-        let archives = run.iter().map(|p| Archive::open(&local_copy(&self.dir, &self.store, &p.name)?)).collect::<Result<Vec<_>>>()?;
+        let archives = run
+            .iter()
+            .map(|p| Archive::open(&local_copy(&self.dir, &self.store, &p.name)?))
+            .collect::<Result<Vec<_>>>()?;
         // (A tile in two: the newer's, the same bytes.)
         let mut tiles: BTreeMap<u64, (usize, Entry)> = BTreeMap::new();
         for (i, a) in archives.iter().enumerate() {
@@ -616,7 +663,9 @@ impl Packer {
         f(&mut ix);
         // (Archives found missing, still so.)
         for (area, name) in missing {
-            if std::fs::metadata(self.store.join("packs").join(&name)).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+            if std::fs::metadata(self.store.join("packs").join(&name))
+                .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+            {
                 if let Some(l) = ix.areas.get_mut(&area) {
                     l.retain(|p| p.name != name);
                 }
@@ -652,7 +701,11 @@ impl Packer {
             let old = std::time::SystemTime::now() - std::time::Duration::from_secs(GRACE);
             for e in rd.flatten() {
                 let n = e.file_name().to_string_lossy().into_owned();
-                if n.ends_with(".tiles") && !named.contains(&n) && !gone.contains_key(&n) && e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < old) {
+                if n.ends_with(".tiles")
+                    && !named.contains(&n)
+                    && !gone.contains_key(&n)
+                    && e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < old)
+                {
                     gone.insert(n, now);
                 }
             }
@@ -735,7 +788,10 @@ pub fn is_area(a: &str) -> bool {
 
 /// Whether `name` is an archive of `area` as packing names one: `<area>.<16 hex>.tiles`.
 pub fn named_for(name: &str, area: &str) -> bool {
-    name.strip_prefix(area).and_then(|r| r.strip_prefix('.')).and_then(|r| r.strip_suffix(".tiles")).is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+    name.strip_prefix(area)
+        .and_then(|r| r.strip_prefix('.'))
+        .and_then(|r| r.strip_suffix(".tiles"))
+        .is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
 }
 
 /// Whether archive `p` is on the NAS whole (its size).
@@ -782,7 +838,14 @@ pub fn pack_local_with(dir: &Path, store: &Path, root: &Path, keep: bool, progre
 }
 
 /// `pack_local_with`, for a member's job's outbox `handoff` or (None) the lead.
-fn pack_local_to(dir: &Path, store: &Path, root: &Path, keep: bool, handoff: Option<PathBuf>, progress: Progress) -> Result<usize> {
+fn pack_local_to(
+    dir: &Path,
+    store: &Path,
+    root: &Path,
+    keep: bool,
+    handoff: Option<PathBuf>,
+    progress: Progress,
+) -> Result<usize> {
     let mut loose: Vec<(PathBuf, u8, u32, u32, bool)> = Vec::new();
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
     // (Not through a link, at any level: a tile packed is deleted where it lies.)
@@ -845,7 +908,11 @@ fn pack_local_to(dir: &Path, store: &Path, root: &Path, keep: bool, handoff: Opt
         store::cachefile::try_remove(path);
     }
     if !areas.is_empty() {
-        eprintln!("rawpack: {added} tiles packed onto the NAS ({} area{})", areas.len(), if areas.len() == 1 { "" } else { "s" });
+        eprintln!(
+            "rawpack: {added} tiles packed onto the NAS ({} area{})",
+            areas.len(),
+            if areas.len() == 1 { "" } else { "s" }
+        );
     }
     Ok(packed.len())
 }
@@ -888,9 +955,20 @@ pub fn pack_tar(input: impl Read, dir: &Path, store: &Path, root: &Path, expect:
     }
     r.added = p.added;
     let areas = p.finish()?;
-    eprintln!("rawpack: {} tiles, {} new to their archives ({} areas), {} left out, {} other files", r.tiles, r.added, areas.len(), r.broken, r.other);
+    eprintln!(
+        "rawpack: {} tiles, {} new to their archives ({} areas), {} left out, {} other files",
+        r.tiles,
+        r.added,
+        areas.len(),
+        r.broken,
+        r.other
+    );
     if let Some(n) = expect {
-        ensure!(r.files == n, "the stream held {} of the {n} files listed: those packed are named; run it again for the rest", r.files);
+        ensure!(
+            r.files == n,
+            "the stream held {} of the {n} files listed: those packed are named; run it again for the rest",
+            r.files
+        );
     }
     ensure!(r.other == 0, "{} files in the stream weren't tiles (a name misread?)", r.other);
     Ok(r)
@@ -925,7 +1003,9 @@ pub fn packed(store: &Path) -> Result<std::collections::HashMap<String, HashSet<
             match entries_of(&store.join("packs").join(&p.name)) {
                 Ok((_, e)) => keys.extend(e.iter().map(|e| e.key)),
                 // (Named but gone: its tiles are streamed again, as a packer passes it over.)
-                Err(e) if not_found(&e) => eprintln!("rawpack: {} is named but not on the NAS: its tiles count as not packed", p.name),
+                Err(e) if not_found(&e) => {
+                    eprintln!("rawpack: {} is named but not on the NAS: its tiles count as not packed", p.name)
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -967,8 +1047,12 @@ impl<R: Read> Iterator for Tar<R> {
                 return None;
             }
             let field = |a: usize, b: usize| String::from_utf8_lossy(&h[a..b]).trim_end_matches('\0').to_string();
-            let sum: u64 = h.iter().enumerate().map(|(i, &b)| if (148..156).contains(&i) { 32 } else { b as u64 }).sum();
-            let size = match (u64::from_str_radix(field(124, 136).trim(), 8), u64::from_str_radix(field(148, 156).trim_matches(|c| c == ' ' || c == '\0'), 8)) {
+            let sum: u64 =
+                h.iter().enumerate().map(|(i, &b)| if (148..156).contains(&i) { 32 } else { b as u64 }).sum();
+            let size = match (
+                u64::from_str_radix(field(124, 136).trim(), 8),
+                u64::from_str_radix(field(148, 156).trim_matches(|c| c == ' ' || c == '\0'), 8),
+            ) {
                 (Ok(s), Ok(c)) if c == sum && s <= 1 << 30 => s,
                 _ => {
                     self.done = true;
@@ -994,7 +1078,13 @@ impl<R: Read> Iterator for Tar<R> {
                 b'x' => {
                     let mut rest = &data[..];
                     while let Some(sp) = rest.iter().position(|&b| b == b' ') {
-                        let Some(len) = std::str::from_utf8(&rest[..sp]).ok().and_then(|l| l.parse::<usize>().ok()).filter(|&l| l > sp && l <= rest.len()) else { break };
+                        let Some(len) = std::str::from_utf8(&rest[..sp])
+                            .ok()
+                            .and_then(|l| l.parse::<usize>().ok())
+                            .filter(|&l| l > sp && l <= rest.len())
+                        else {
+                            break;
+                        };
                         if let Some(path) = rest[sp + 1..len].strip_prefix(b"path=") {
                             self.long = Some(String::from_utf8_lossy(path).trim_end_matches('\n').to_string());
                         }
@@ -1005,7 +1095,11 @@ impl<R: Read> Iterator for Tar<R> {
                 b'0' | 0 => {
                     let name = self.long.take().unwrap_or_else(|| {
                         let (prefix, name) = (field(345, 500), field(0, 100));
-                        if &h[257..263] == b"ustar\0" && !prefix.is_empty() { format!("{prefix}/{name}") } else { name }
+                        if &h[257..263] == b"ustar\0" && !prefix.is_empty() {
+                            format!("{prefix}/{name}")
+                        } else {
+                            name
+                        }
                     });
                     return Some(Ok((name, data)));
                 }
@@ -1042,10 +1136,15 @@ pub fn check(store: &Path, every: usize) -> Result<Checked> {
             Ok((true, (f, entries))) => {
                 c.tiles += entries.len();
                 for e in entries.iter().step_by(every.max(1)).take(if every == 0 { 0 } else { usize::MAX }) {
-                    let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & 0x1fff_ffff) as u32, (e.key & 0x1fff_ffff) as u32);
+                    let (z, x, y) =
+                        ((e.key >> 58) as u8, ((e.key >> 29) & 0x1fff_ffff) as u32, (e.key & 0x1fff_ffff) as u32);
                     let mut b = vec![0u8; e.len as usize];
                     f.read_exact_at(&mut b, e.offset)?;
-                    let loose = if b.is_empty() { store.join(format!("{z}/{x}/{y}.none")) } else { store.join(format!("{z}/{x}/{y}.png")) };
+                    let loose = if b.is_empty() {
+                        store.join(format!("{z}/{x}/{y}.none"))
+                    } else {
+                        store.join(format!("{z}/{x}/{y}.png"))
+                    };
                     match std::fs::read(&loose) {
                         Ok(l) => {
                             c.sampled += 1;
@@ -1103,7 +1202,11 @@ mod tests {
     }
 
     fn names(store: &Path) -> Vec<String> {
-        let mut v: Vec<String> = std::fs::read_dir(store.join("packs")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".tiles")).collect();
+        let mut v: Vec<String> = std::fs::read_dir(store.join("packs"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tiles"))
+            .collect();
         v.sort();
         v
     }
@@ -1128,7 +1231,10 @@ mod tests {
             assert!(store.join("packs").join(&p.name).exists() && dir.join("packs").join(&p.name).exists());
             assert_eq!(std::fs::metadata(store.join("packs").join(&p.name)).unwrap().len(), p.bytes);
         }
-        assert!(!dir.join("12/2048/1365.png").exists() && dir.join("12/2050/1366.png").exists(), "packed tiles go; the newest waits");
+        assert!(
+            !dir.join("12/2048/1365.png").exists() && dir.join("12/2050/1366.png").exists(),
+            "packed tiles go; the newest waits"
+        );
         let a = Archive::open(&dir.join("packs").join(&index.of("6-32-21")[0].name)).unwrap();
         assert_eq!(a.get(12, 2048, 1365), Some(&png()[..]));
         assert_eq!(a.get(12, 2049, 1365), Some(&[][..]), "AWS hasn't it: an empty entry");
@@ -1184,8 +1290,14 @@ mod tests {
         assert_eq!(ix.of("6-32-21").len(), 2);
         assert!(ix.of("6-1-1").is_empty());
         let a = Archive::open(&store.join("packs").join(&ix.of("6-32-21")[1].name)).unwrap();
-        assert_eq!((a.get(12, 2048, 1366), a.get(12, 2049, 1365), a.get(12, 2048, 1365)), (Some(&png()[..]), Some(&png()[..]), None));
-        assert!(!named_for("6-32-21.0123456789ABCDEF.tiles", "6-32-21") && !named_for("6-32-2.0123456789abcdef.tiles", "6-32-21"));
+        assert_eq!(
+            (a.get(12, 2048, 1366), a.get(12, 2049, 1365), a.get(12, 2048, 1365)),
+            (Some(&png()[..]), Some(&png()[..]), None)
+        );
+        assert!(
+            !named_for("6-32-21.0123456789ABCDEF.tiles", "6-32-21")
+                && !named_for("6-32-2.0123456789abcdef.tiles", "6-32-21")
+        );
     }
 
     #[test]
@@ -1198,9 +1310,17 @@ mod tests {
         // Its file gone (moved aside, say), the archives there: nothing packed, named or swept.
         std::fs::rename(store.join(INDEX), d.path().join("index.json.aside")).unwrap();
         put(&dir, "12/2050/1365.png", &png(), 120);
-        assert!(pack_local(&dir, &store, &root, true).unwrap_err().to_string().contains("is missing, but its archives are there"));
+        assert!(pack_local(&dir, &store, &root, true)
+            .unwrap_err()
+            .to_string()
+            .contains("is missing, but its archives are there"));
         let lock = crate::out::BuildLock::take(&root).unwrap();
-        assert!(name_handed(&store, &[("6-32-21".into(), Pack { name: "6-32-21.0123456789abcdef.tiles".into(), bytes: 1 })], &lock).is_err());
+        assert!(name_handed(
+            &store,
+            &[("6-32-21".into(), Pack { name: "6-32-21.0123456789abcdef.tiles".into(), bytes: 1 })],
+            &lock
+        )
+        .is_err());
         drop(lock);
         assert!(!store.join(INDEX).exists() && store.join("packs").join(&named).exists());
         // Put back: packing goes on (the area's archives merged as they grow).
@@ -1220,7 +1340,8 @@ mod tests {
         put(&dir, "12/2048/1365.png", &png(), 120);
         pack_local_to(&dir, &store, &root, true, Some(outbox.clone()), &|_, _, _| {}).unwrap();
         assert!(!store.join(INDEX).exists());
-        let raw: Vec<(String, Pack)> = crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
+        let raw: Vec<(String, Pack)> =
+            crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
         let lock = crate::out::BuildLock::take(&root).unwrap();
         assert_eq!(name_handed(&store, &raw, &lock).unwrap().new, 1);
         drop(lock);
@@ -1238,7 +1359,8 @@ mod tests {
         pack_local(&dir, &store, &root, true).unwrap();
         put(&dir, "12/2048/1365.png", &png(), 120);
         pack_local_to(&dir, &store, &root, true, Some(outbox.clone()), &|_, _, _| {}).unwrap();
-        let raw: Vec<(String, Pack)> = crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
+        let raw: Vec<(String, Pack)> =
+            crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
         // The same archive said to be another area's (renamed to match): not named; as its own, named.
         let (area, p) = raw[0].clone();
         let other = Pack { name: p.name.replacen(&area, "6-33-21", 1), bytes: p.bytes };
@@ -1257,10 +1379,16 @@ mod tests {
         put(&dir, "12/2048/1365.png", &png(), 120);
         pack_local(&dir, &store, &root, true).unwrap();
         // A helper's archive whose hand-off never came: a day old, and a fresh one.
-        let (stale, fresh) = (store.join("packs/6-1-1.0123456789abcdef.tiles"), store.join("packs/6-1-2.0123456789abcdef.tiles"));
+        let (stale, fresh) =
+            (store.join("packs/6-1-1.0123456789abcdef.tiles"), store.join("packs/6-1-2.0123456789abcdef.tiles"));
         std::fs::write(&stale, b"x").unwrap();
         std::fs::write(&fresh, b"y").unwrap();
-        std::fs::File::options().append(true).open(&stale).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(GRACE + 60)).unwrap();
+        std::fs::File::options()
+            .append(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(GRACE + 60))
+            .unwrap();
         // The next packing lists the old one to go, not the new one, nor the named.
         put(&dir, "12/2050/1366.png", &png(), 120);
         pack_local(&dir, &store, &root, true).unwrap();
@@ -1278,7 +1406,11 @@ mod tests {
         put(&dir, "12/2049/1365.none", b"", 120);
         put(&dir, "8/128/85.png", &png(), 120);
         let said = std::sync::Mutex::new(Vec::new());
-        assert_eq!(pack_local_with(&dir, &store, &root, true, &|w, d, t| said.lock().unwrap().push((w.to_string(), d, t))).unwrap(), 3);
+        assert_eq!(
+            pack_local_with(&dir, &store, &root, true, &|w, d, t| said.lock().unwrap().push((w.to_string(), d, t)))
+                .unwrap(),
+            3
+        );
         let said = said.into_inner().unwrap();
         // The tiles from none to all, then the two areas' merging, done.
         assert_eq!(said.first(), Some(&("raw tiles".to_string(), 0, 3)));
@@ -1319,7 +1451,11 @@ mod tests {
         // The merged archives stay on the NAS a day (listed as gone), not here.
         assert_eq!(index.gone.len(), 3);
         for p in two.iter() {
-            assert!(index.gone.contains_key(&p.name) && store.join("packs").join(&p.name).exists() && !dir.join("packs").join(&p.name).exists());
+            assert!(
+                index.gone.contains_key(&p.name)
+                    && store.join("packs").join(&p.name).exists()
+                    && !dir.join("packs").join(&p.name).exists()
+            );
         }
         assert_eq!(names(&store).len(), 4);
     }
@@ -1418,7 +1554,8 @@ mod tests {
         assert!(p.add(12, 2048, 1367, Some(&png())).unwrap());
         p.finish().unwrap();
         let l = Index::load(&store).unwrap().of("6-32-21").to_vec();
-        let tiles: usize = l.iter().map(|p| Archive::open(&store.join("packs").join(&p.name)).unwrap().entries().len()).sum();
+        let tiles: usize =
+            l.iter().map(|p| Archive::open(&store.join("packs").join(&p.name)).unwrap().entries().len()).sum();
         assert_eq!(tiles, 3);
     }
 
@@ -1430,14 +1567,37 @@ mod tests {
         // with an odd file among them).
         let src = d.path().join("src");
         let half = png()[..png().len() / 2].to_vec();
-        for (rel, b) in [("12/2048/1365.png", png()), ("12/2049/1365.none", Vec::new()), ("9/256/170.png", png()), ("9/256/171.png", half), ("notes.txt", b"x".to_vec())] {
+        for (rel, b) in [
+            ("12/2048/1365.png", png()),
+            ("12/2049/1365.none", Vec::new()),
+            ("9/256/170.png", png()),
+            ("9/256/171.png", half),
+            ("notes.txt", b"x".to_vec()),
+        ] {
             std::fs::create_dir_all(src.join(rel).parent().unwrap()).unwrap();
             std::fs::write(src.join(rel), b).unwrap();
         }
-        let tar = store::spawn::output(store::spawn::command("tar").env("COPYFILE_DISABLE", "1").args(["--no-mac-metadata", "--no-xattrs", "-cf", "-", "-C"]).arg(&src).args(["./12/2048/1365.png", "./12/2049/1365.none", "./9/256/170.png", "./9/256/171.png"])).unwrap();
+        let tar = store::spawn::output(
+            store::spawn::command("tar")
+                .env("COPYFILE_DISABLE", "1")
+                .args(["--no-mac-metadata", "--no-xattrs", "-cf", "-", "-C"])
+                .arg(&src)
+                .args(["./12/2048/1365.png", "./12/2049/1365.none", "./9/256/170.png", "./9/256/171.png"]),
+        )
+        .unwrap();
         assert!(tar.status.success());
-        let odd = store::spawn::output(store::spawn::command("tar").env("COPYFILE_DISABLE", "1").args(["--no-mac-metadata", "--no-xattrs", "-cf", "-", "-C"]).arg(&src).args(["./notes.txt"])).unwrap();
-        assert!(pack_tar(&odd.stdout[..], &dir, &store, &root, Some(1)).is_err(), "a file that isn't a tile: a name misread");
+        let odd = store::spawn::output(
+            store::spawn::command("tar")
+                .env("COPYFILE_DISABLE", "1")
+                .args(["--no-mac-metadata", "--no-xattrs", "-cf", "-", "-C"])
+                .arg(&src)
+                .args(["./notes.txt"]),
+        )
+        .unwrap();
+        assert!(
+            pack_tar(&odd.stdout[..], &dir, &store, &root, Some(1)).is_err(),
+            "a file that isn't a tile: a name misread"
+        );
         // Cut short (in a header, in a tile): an error, nothing named.
         for cut in [512 * 3 + 100, 700] {
             assert!(pack_tar(&tar.stdout[..cut], &dir, &store, &root, None).is_err());
@@ -1447,7 +1607,10 @@ mod tests {
         let mut bad = tar.stdout.clone();
         bad[0] ^= 1;
         assert!(pack_tar(&bad[..], &dir, &store, &root, None).is_err());
-        assert_eq!(pack_tar(&tar.stdout[..], &dir, &store, &root, Some(4)).unwrap(), Packed { files: 4, tiles: 3, added: 3, broken: 1, other: 0 });
+        assert_eq!(
+            pack_tar(&tar.stdout[..], &dir, &store, &root, Some(4)).unwrap(),
+            Packed { files: 4, tiles: 3, added: 3, broken: 1, other: 0 }
+        );
         let index = Index::load(&store).unwrap();
         assert_eq!(index.areas.keys().collect::<Vec<_>>(), ["6-32-21"]);
         let a = Archive::open(&store.join("packs").join(&index.of("6-32-21")[0].name)).unwrap();
@@ -1455,7 +1618,10 @@ mod tests {
         assert_eq!(a.get(12, 2049, 1365), Some(&[][..]));
         assert_eq!(std::fs::read_dir(dir.join("packs")).unwrap().count(), 0, "nothing kept here");
         // Again: nothing new, the same archive; fewer files than listed: an error.
-        assert_eq!(pack_tar(&tar.stdout[..], &dir, &store, &root, None).unwrap(), Packed { files: 4, tiles: 3, added: 0, broken: 1, other: 0 });
+        assert_eq!(
+            pack_tar(&tar.stdout[..], &dir, &store, &root, None).unwrap(),
+            Packed { files: 4, tiles: 3, added: 0, broken: 1, other: 0 }
+        );
         assert!(pack_tar(&tar.stdout[..], &dir, &store, &root, Some(5)).is_err());
         assert_eq!(Index::load(&store).unwrap(), index);
         // The archives match the loose tiles (here, the source folder as the store).
@@ -1549,7 +1715,14 @@ mod tests {
         let name = format!("12/2048/{:0>120}.png", 1365);
         std::fs::create_dir_all(src.join("12/2048")).unwrap();
         std::fs::write(src.join(&name), png()).unwrap();
-        let tar = store::spawn::output(store::spawn::command("tar").env("COPYFILE_DISABLE", "1").args(["--no-mac-metadata", "--no-xattrs", "--format", "pax", "-cf", "-", "-C"]).arg(&src).arg(format!("./{name}"))).unwrap();
+        let tar = store::spawn::output(
+            store::spawn::command("tar")
+                .env("COPYFILE_DISABLE", "1")
+                .args(["--no-mac-metadata", "--no-xattrs", "--format", "pax", "-cf", "-", "-C"])
+                .arg(&src)
+                .arg(format!("./{name}")),
+        )
+        .unwrap();
         assert!(tar.status.success());
         let r = pack_tar(&tar.stdout[..], &dir, &store, &root, Some(1)).unwrap();
         assert_eq!((r.tiles, r.other), (1, 0));
@@ -1570,9 +1743,15 @@ mod tests {
     #[test]
     fn a_stream_in_area_order() {
         let list = "./12/2049/1365.png\n./notes.txt\n./8/128/85.png\n./12/2048/1365.png\n./2/1/1.png\n";
-        assert_eq!(order(list, |_, _| false), "./8/128/85.png\n./12/2048/1365.png\n./12/2049/1365.png\n./2/1/1.png\n./notes.txt\n");
+        assert_eq!(
+            order(list, |_, _| false),
+            "./8/128/85.png\n./12/2048/1365.png\n./12/2049/1365.png\n./2/1/1.png\n./notes.txt\n"
+        );
         // What's packed already is left out.
-        assert_eq!(order(list, |a, k| a == "6-32-21" && k == tile_key(12, 2048, 1365)), "./8/128/85.png\n./12/2049/1365.png\n./2/1/1.png\n./notes.txt\n");
+        assert_eq!(
+            order(list, |a, k| a == "6-32-21" && k == tile_key(12, 2048, 1365)),
+            "./8/128/85.png\n./12/2049/1365.png\n./2/1/1.png\n./notes.txt\n"
+        );
     }
 
     #[test]
@@ -1582,7 +1761,8 @@ mod tests {
         put(&dir, "12/2048/1365.png", &png(), 120);
         pack_local(&dir, &store, &root, true).unwrap();
         let have = packed(&store).unwrap();
-        let left = order("./12/2048/1365.png\n./12/2048/1366.png\n", |a, k| have.get(a).is_some_and(|s| s.contains(&k)));
+        let left =
+            order("./12/2048/1365.png\n./12/2048/1366.png\n", |a, k| have.get(a).is_some_and(|s| s.contains(&k)));
         assert_eq!(left, "./12/2048/1366.png\n");
     }
 

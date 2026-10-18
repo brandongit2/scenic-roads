@@ -51,7 +51,21 @@ const REQUIRED: [(&str, &[&str]); 7] = [
     ("routes.txt", &["route_id", "route_type", "route_url"]),
     ("trips.txt", &["route_id", "service_id", "trip_id"]),
     ("stop_times.txt", &["trip_id", "stop_id", "stop_sequence"]),
-    ("calendar.txt", &["service_id", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "start_date", "end_date"]),
+    (
+        "calendar.txt",
+        &[
+            "service_id",
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+            "start_date",
+            "end_date",
+        ],
+    ),
     ("feed_info.txt", &["feed_publisher_name"]),
 ];
 
@@ -64,7 +78,10 @@ pub struct Gtfs;
 /// A name the drop box takes: letters, digits, `-` and `_`, then `.zip` or `.toml`.
 fn stem_of(path: &str) -> Option<(&str, &str)> {
     let (stem, ext) = path.rsplit_once('.')?;
-    (!stem.is_empty() && stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') && (ext == "zip" || ext == "toml")).then_some((stem, ext))
+    (!stem.is_empty()
+        && stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        && (ext == "zip" || ext == "toml"))
+        .then_some((stem, ext))
 }
 
 // ---- Reading a zip -------------------------------------------------------------------------------
@@ -72,11 +89,16 @@ fn stem_of(path: &str) -> Option<(&str, &str)> {
 /// A zip's files (by their names without folders), read whole: stored or deflated entries, no
 /// Zip64 (a hand-compiled file is small).
 pub fn unzip(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
-    let u16_at = |i: usize| -> Result<u16> { Ok(u16::from_le_bytes(bytes.get(i..i + 2).context("cut short")?.try_into()?)) };
-    let u32_at = |i: usize| -> Result<u32> { Ok(u32::from_le_bytes(bytes.get(i..i + 4).context("cut short")?.try_into()?)) };
+    let u16_at =
+        |i: usize| -> Result<u16> { Ok(u16::from_le_bytes(bytes.get(i..i + 2).context("cut short")?.try_into()?)) };
+    let u32_at =
+        |i: usize| -> Result<u32> { Ok(u32::from_le_bytes(bytes.get(i..i + 4).context("cut short")?.try_into()?)) };
     // The end of the central directory: its signature within the last 64 KiB and 22 bytes.
     let from = bytes.len().saturating_sub(22 + 0xffff);
-    let end = (from..bytes.len().saturating_sub(21)).rev().find(|&i| bytes[i..i + 4] == [0x50, 0x4b, 0x05, 0x06]).context("no zip directory (not a zip)")?;
+    let end = (from..bytes.len().saturating_sub(21))
+        .rev()
+        .find(|&i| bytes[i..i + 4] == [0x50, 0x4b, 0x05, 0x06])
+        .context("no zip directory (not a zip)")?;
     let n = u16_at(end + 10)? as usize;
     let mut at = u32_at(end + 16)? as usize;
     anyhow::ensure!(at != 0xffff_ffff, "a Zip64 file (not read here)");
@@ -100,12 +122,18 @@ pub fn unzip(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
             0 => raw.to_vec(),
             8 => {
                 let mut v = Vec::with_capacity(usize_ as usize);
-                Read::take(flate2::read::DeflateDecoder::new(raw), MAX_TABLE + 1).read_to_end(&mut v).with_context(|| format!("{name}: can't be inflated"))?;
+                Read::take(flate2::read::DeflateDecoder::new(raw), MAX_TABLE + 1)
+                    .read_to_end(&mut v)
+                    .with_context(|| format!("{name}: can't be inflated"))?;
                 v
             }
             m => bail!("{name}: compression method {m} (only stored and deflated are read)"),
         };
-        anyhow::ensure!(data.len() as u64 == usize_, "{name}: {} bytes, not the {usize_} its directory says", data.len());
+        anyhow::ensure!(
+            data.len() as u64 == usize_,
+            "{name}: {} bytes, not the {usize_} its directory says",
+            data.len()
+        );
         let base = name.rsplit('/').next().unwrap_or(&name).to_string();
         out.insert(base, data);
     }
@@ -171,7 +199,10 @@ struct Table {
 impl Table {
     fn parse(bytes: &[u8]) -> Result<(Table, Vec<String>)> {
         let (head, rows) = csv(bytes)?;
-        let rows = rows.into_iter().map(|r| head.iter().cloned().zip(r.into_iter().chain(std::iter::repeat(String::new()))).collect()).collect();
+        let rows = rows
+            .into_iter()
+            .map(|r| head.iter().cloned().zip(r.into_iter().chain(std::iter::repeat(String::new()))).collect())
+            .collect();
         Ok((Table { rows }, head))
     }
 }
@@ -183,7 +214,14 @@ fn cell<'a>(r: &'a BTreeMap<String, String>, k: &str) -> &'a str {
 /// A GTFS time, `H:MM:SS` (hours past 24 allowed).
 fn valid_time(s: &str) -> bool {
     let p: Vec<&str> = s.split(':').collect();
-    p.len() == 3 && !p[0].is_empty() && p[0].len() <= 3 && p.iter().all(|x| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit())) && p[1].len() == 2 && p[2].len() == 2 && p[1] < "60" && p[2] < "60"
+    p.len() == 3
+        && !p[0].is_empty()
+        && p[0].len() <= 3
+        && p.iter().all(|x| !x.is_empty() && x.bytes().all(|b| b.is_ascii_digit()))
+        && p[1].len() == 2
+        && p[2].len() == 2
+        && p[1] < "60"
+        && p[2] < "60"
 }
 
 /// A calendar date read as month and day: `YYYYMMDD`, the month and day a valid pair (29 February
@@ -231,7 +269,16 @@ struct Zipped {
 
 fn check_zip(path: &str, bytes: &[u8]) -> Zipped {
     let mut r = Zipped { findings: Vec::new(), routes: Vec::new(), facts: serde_json::Map::new() };
-    let mut err = |check: &str, what: &[&str], msg: String| r.findings.push(Finding::new(check, Level::Error, &[path], what, vec![path.into()], format!("{path}: {msg} (docs/inputs.md §6.7.2)")));
+    let mut err = |check: &str, what: &[&str], msg: String| {
+        r.findings.push(Finding::new(
+            check,
+            Level::Error,
+            &[path],
+            what,
+            vec![path.into()],
+            format!("{path}: {msg} (docs/inputs.md §6.7.2)"),
+        ))
+    };
     let files = match unzip(bytes) {
         Ok(f) => f,
         Err(e) => {
@@ -241,7 +288,10 @@ fn check_zip(path: &str, bytes: &[u8]) -> Zipped {
     };
     let mut tables: BTreeMap<&str, Table> = BTreeMap::new();
     let mut missing = false;
-    for (name, cols) in REQUIRED.iter().copied().chain([("frequencies.txt", &["trip_id", "start_time", "end_time", "headway_secs"][..]), ("counts.txt", &["route_id"][..])]) {
+    for (name, cols) in REQUIRED.iter().copied().chain([
+        ("frequencies.txt", &["trip_id", "start_time", "end_time", "headway_secs"][..]),
+        ("counts.txt", &["route_id"][..]),
+    ]) {
         let Some(b) = files.get(name) else {
             if !matches!(name, "frequencies.txt" | "counts.txt") {
                 err(TABLE, &[name, "missing"], format!("no {name} (a required file)"));
@@ -285,7 +335,14 @@ fn check_zip(path: &str, bytes: &[u8]) -> Zipped {
         services.insert(id.to_string());
         for k in ["start_date", "end_date"] {
             if !valid_month_day(cell(c, k)) {
-                err(VALUE, &["calendar", id, k], format!("service {id:?}: {k} {:?} isn't a valid month and day (YYYYMMDD, the year ignored)", cell(c, k)));
+                err(
+                    VALUE,
+                    &["calendar", id, k],
+                    format!(
+                        "service {id:?}: {k} {:?} isn't a valid month and day (YYYYMMDD, the year ignored)",
+                        cell(c, k)
+                    ),
+                );
             }
         }
     }
@@ -298,7 +355,11 @@ fn check_zip(path: &str, bytes: &[u8]) -> Zipped {
             err(VALUE, &["route_type", id, ty], format!("route {id:?}: route_type {ty:?} isn't one GTFS defines"));
         }
         if cell(x, "route_url").is_empty() {
-            err(ROUTE, &["route_url", id], format!("route {id:?} has no route_url (each route's source page is required)"));
+            err(
+                ROUTE,
+                &["route_url", id],
+                format!("route {id:?} has no route_url (each route's source page is required)"),
+            );
         }
         let pin = cell(x, "osm");
         if !pin.is_empty() && !valid_pin(pin) {
@@ -319,22 +380,38 @@ fn check_zip(path: &str, bytes: &[u8]) -> Zipped {
             timed.insert(route.to_string());
         }
         if !services.contains(svc) {
-            err(REF, &["trip service", id, svc], format!("trip {id:?} names service {svc:?}, which calendar.txt hasn't"));
+            err(
+                REF,
+                &["trip service", id, svc],
+                format!("trip {id:?} names service {svc:?}, which calendar.txt hasn't"),
+            );
         }
     }
     for (i, x) in t("stop_times.txt").iter().enumerate() {
         let (trip, stop) = (cell(x, "trip_id"), cell(x, "stop_id"));
         if !trips.contains(trip) || !stops.contains(stop) {
-            err(REF, &["stop time", trip, stop], format!("stop_times.txt row {}: trip {trip:?} or stop {stop:?} isn't there", i + 2));
+            err(
+                REF,
+                &["stop time", trip, stop],
+                format!("stop_times.txt row {}: trip {trip:?} or stop {stop:?} isn't there", i + 2),
+            );
         }
         for k in ["arrival_time", "departure_time"] {
             let v = cell(x, k);
             if !v.is_empty() && !valid_time(v) {
-                err(VALUE, &["time", trip, k, v], format!("stop_times.txt row {}: {k} {v:?} isn't a time (H:MM:SS)", i + 2));
+                err(
+                    VALUE,
+                    &["time", trip, k, v],
+                    format!("stop_times.txt row {}: {k} {v:?} isn't a time (H:MM:SS)", i + 2),
+                );
             }
         }
         if cell(x, "stop_sequence").parse::<u32>().is_err() {
-            err(VALUE, &["stop_sequence", trip, cell(x, "stop_sequence")], format!("stop_times.txt row {}: stop_sequence isn't a whole number", i + 2));
+            err(
+                VALUE,
+                &["stop_sequence", trip, cell(x, "stop_sequence")],
+                format!("stop_times.txt row {}: stop_sequence isn't a whole number", i + 2),
+            );
         }
     }
     for x in tables.get("frequencies.txt").map(|t| &t.rows[..]).unwrap_or_default() {
@@ -344,7 +421,11 @@ fn check_zip(path: &str, bytes: &[u8]) -> Zipped {
         }
         for k in ["start_time", "end_time"] {
             if !valid_time(cell(x, k)) {
-                err(VALUE, &["frequency time", trip, k], format!("frequencies.txt, trip {trip:?}: {k} {:?} isn't a time", cell(x, k)));
+                err(
+                    VALUE,
+                    &["frequency time", trip, k],
+                    format!("frequencies.txt, trip {trip:?}: {k} {:?} isn't a time", cell(x, k)),
+                );
             }
         }
         if !cell(x, "headway_secs").parse::<f64>().is_ok_and(|h| h > 0.0) {
@@ -385,17 +466,34 @@ fn check_zip(path: &str, bytes: &[u8]) -> Zipped {
             }
         }
         if is_ferry(ty) && pin.is_empty() {
-            err(ROUTE, &["count pin", route], format!("ferry route {route:?} is counted in counts.txt but has no osm pin (it has no stops to match by)"));
+            err(
+                ROUTE,
+                &["count pin", route],
+                format!(
+                    "ferry route {route:?} is counted in counts.txt but has no osm pin (it has no stops to match by)"
+                ),
+            );
         }
     }
     let both: Vec<&String> = counted.intersection(&timed).collect();
     for route in &both {
-        err(ROUTE, &["trips and counts", route], format!("route {route:?} has both trips and count rows (a service is counted one way)"));
+        err(
+            ROUTE,
+            &["trips and counts", route],
+            format!("route {route:?} has both trips and count rows (a service is counted one way)"),
+        );
     }
     let idle: Vec<&String> = routes.keys().filter(|k| !counted.contains(*k) && !timed.contains(*k)).collect();
     if !idle.is_empty() {
         let refs: Vec<&str> = idle.iter().map(|s| s.as_str()).collect();
-        r.findings.push(Finding::new(EMPTY, Level::Warning, &[path], &refs, vec![path.into()], format!("{path}: routes with no trips and no count rows: {} (docs/inputs.md §6.7.2)", refs.join(", "))));
+        r.findings.push(Finding::new(
+            EMPTY,
+            Level::Warning,
+            &[path],
+            &refs,
+            vec![path.into()],
+            format!("{path}: routes with no trips and no count rows: {} (docs/inputs.md §6.7.2)", refs.join(", ")),
+        ));
     }
     r.facts.insert("routes".into(), routes.len().into());
     r.facts.insert("trips".into(), trips.len().into());
@@ -450,7 +548,17 @@ impl Checks for Gtfs {
             ps.dedup();
             if ps.len() > 1 {
                 let refs: Vec<&str> = ps.iter().map(String::as_str).collect();
-                out.push(Finding::new(SAME_ROUTE, Level::Warning, &refs, &[&route, &agency], ps.clone(), format!("{} each have route {route:?} of agency {agency:?}: one service in two files counts twice", ps.join(", "))));
+                out.push(Finding::new(
+                    SAME_ROUTE,
+                    Level::Warning,
+                    &refs,
+                    &[&route, &agency],
+                    ps.clone(),
+                    format!(
+                        "{} each have route {route:?} of agency {agency:?}: one service in two files counts twice",
+                        ps.join(", ")
+                    ),
+                ));
             }
         }
         Ok(out)

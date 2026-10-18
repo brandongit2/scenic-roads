@@ -31,9 +31,8 @@ fn concat<T>(mut a: Vec<T>, mut b: Vec<T>) -> Vec<T> {
 /// The ends of the routes in `pbf`, by relation then node.
 pub fn ends(pbf: &Path) -> Result<Vec<End>> {
     // Pass 1: the routes and their member ways (as listed, repeats included).
-    let mut hikes: Vec<(i64, String, Vec<i64>)> = ElementReader::from_path(pbf)
-        .with_context(|| format!("open {}", pbf.display()))?
-        .par_map_reduce(
+    let mut hikes: Vec<(i64, String, Vec<i64>)> =
+        ElementReader::from_path(pbf).with_context(|| format!("open {}", pbf.display()))?.par_map_reduce(
             |el| match el {
                 Element::Relation(r) => {
                     let mut route = None;
@@ -49,7 +48,11 @@ pub fn ends(pbf: &Path) -> Result<Vec<End>> {
                     if !matches!(route, Some("hiking" | "foot")) {
                         return Vec::new();
                     }
-                    let ids: Vec<i64> = r.members().filter(|m| m.member_type == osmpbf::RelMemberType::Way).map(|m| m.member_id).collect();
+                    let ids: Vec<i64> = r
+                        .members()
+                        .filter(|m| m.member_type == osmpbf::RelMemberType::Way)
+                        .map(|m| m.member_id)
+                        .collect();
                     if ids.is_empty() {
                         return Vec::new();
                     }
@@ -102,8 +105,12 @@ pub fn ends(pbf: &Path) -> Result<Vec<End>> {
     nodes.dedup();
     let mut pos: Vec<(i64, i32, i32)> = ElementReader::from_path(pbf)?.par_map_reduce(
         |el| match el {
-            Element::DenseNode(n) if nodes.binary_search(&n.id()).is_ok() => vec![(n.id(), n.decimicro_lon(), n.decimicro_lat())],
-            Element::Node(n) if nodes.binary_search(&n.id()).is_ok() => vec![(n.id(), n.decimicro_lon(), n.decimicro_lat())],
+            Element::DenseNode(n) if nodes.binary_search(&n.id()).is_ok() => {
+                vec![(n.id(), n.decimicro_lon(), n.decimicro_lat())]
+            }
+            Element::Node(n) if nodes.binary_search(&n.id()).is_ok() => {
+                vec![(n.id(), n.decimicro_lon(), n.decimicro_lat())]
+            }
             _ => Vec::new(),
         },
         Vec::new,
@@ -137,7 +144,9 @@ pub fn write(path: &Path, ends: &[End]) -> Result<()> {
 }
 
 pub fn read(path: &Path) -> Result<Vec<End>> {
-    let r = std::io::BufReader::new(zstd::Decoder::new(std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?)?);
+    let r = std::io::BufReader::new(zstd::Decoder::new(
+        std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?,
+    )?);
     r.lines().map(|l| Ok(serde_json::from_str(&l?)?)).collect()
 }
 
@@ -149,7 +158,10 @@ mod tests {
     fn written_and_read_alike() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("ends.jsonl.zst");
-        let es = vec![End { rel: 5, node: 7, lon: -12_345_678, lat: 456_789_012, name: "Sentier \"des\" crêtes".into() }, End { rel: 5, node: 9, lon: 1, lat: 2, name: String::new() }];
+        let es = vec![
+            End { rel: 5, node: 7, lon: -12_345_678, lat: 456_789_012, name: "Sentier \"des\" crêtes".into() },
+            End { rel: 5, node: 9, lon: 1, lat: 2, name: String::new() },
+        ];
         write(&p, &es).unwrap();
         assert_eq!(read(&p).unwrap(), es);
     }

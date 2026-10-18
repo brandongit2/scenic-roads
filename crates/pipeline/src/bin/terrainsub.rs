@@ -39,9 +39,20 @@ fn run() -> Result<()> {
         let piece = inp.piece()?;
         let (hi, mid) = inp.make()?;
         std::fs::create_dir_all(&out)?;
-        pipeline::terrain_task::write_hi(&out.join(pipeline::terrain_task::HI), &inp.meta.piece, &inp.meta.subtrees, &hi)?;
+        pipeline::terrain_task::write_hi(
+            &out.join(pipeline::terrain_task::HI),
+            &inp.meta.piece,
+            &inp.meta.subtrees,
+            &hi,
+        )?;
         pipeline::terrain_pack::write_mid(&out.join(pipeline::terrain_task::MID), piece, &mid)?;
-        eprintln!("terrainsub {} {}: {} tiles in {:.1} s", inp.meta.piece, inp.meta.subtrees, hi.len(), t0.elapsed().as_secs_f64());
+        eprintln!(
+            "terrainsub {} {}: {} tiles in {:.1} s",
+            inp.meta.piece,
+            inp.meta.subtrees,
+            hi.len(),
+            t0.elapsed().as_secs_f64()
+        );
         Ok(())
     })
 }

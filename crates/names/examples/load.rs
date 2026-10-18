@@ -12,7 +12,10 @@ use std::time::Instant;
 #[allow(clippy::disallowed_methods)]
 fn rss_mb() -> f64 {
     let out = std::process::Command::new("ps").args(["-o", "rss=", "-p", &std::process::id().to_string()]).output();
-    out.ok().and_then(|o| String::from_utf8(o.stdout).ok()).and_then(|s| s.trim().parse::<f64>().ok()).map_or(f64::NAN, |kb| kb / 1024.0)
+    out.ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .map_or(f64::NAN, |kb| kb / 1024.0)
 }
 
 fn files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -34,19 +37,38 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let dir = PathBuf::from(args.get(1).expect("usage: load <a folder of translation files> [<labels.tiles>]"));
-    let labels = args.get(2).map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/build/labels.tiles"));
+    let labels = args
+        .get(2)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/build/labels.tiles"));
 
     let before = rss_mb();
     let t0 = Instant::now();
     let mut names = Names::load(&dir)?;
     let load = t0.elapsed();
     let after = rss_mb();
-    println!("load: {} names in {load:.2?} (heap {:.0} MB; process RSS {before:.0} → {after:.0} MB)", names.entries(), names.heap_bytes() as f64 / 1048576.0);
+    println!(
+        "load: {} names in {load:.2?} (heap {:.0} MB; process RSS {before:.0} → {after:.0} MB)",
+        names.entries(),
+        names.heap_bytes() as f64 / 1048576.0
+    );
     println!("  {:?}", names.summary());
     let l = |s: &str| names::Lang::parse(s).into_iter().collect::<Vec<_>>();
-    for (lang, name) in [("fr", "Château"), ("fr", "Pont Vieux"), ("es", "Castillo"), ("es", "Iglesia"), ("ja", "中山道"), ("zh", "中山橋")] {
+    for (lang, name) in [
+        ("fr", "Château"),
+        ("fr", "Pont Vieux"),
+        ("es", "Castillo"),
+        ("es", "Iglesia"),
+        ("ja", "中山道"),
+        ("zh", "中山橋"),
+    ] {
         let show = |k| names.translation(k, name, &l(lang)).map(|t| format!("{} / {}", t.main, t.sub.unwrap_or("-")));
-        println!("  {lang} {name}: as a settlement {:?}, as another thing {:?}, as a road {:?}", show(Kind::Settlement), show(Kind::Other), show(Kind::Road));
+        println!(
+            "  {lang} {name}: as a settlement {:?}, as another thing {:?}, as a road {:?}",
+            show(Kind::Settlement),
+            show(Kind::Other),
+            show(Kind::Road)
+        );
     }
     for w in names.take_warnings() {
         println!("  warning: {w}");
@@ -61,7 +83,11 @@ fn main() -> anyhow::Result<()> {
         bytes += std::fs::read(p)?.len();
     }
     let read = t0.elapsed();
-    println!("read alone: {:.0} MB in {read:.2?} ({:.0} MB/s)", bytes as f64 / 1e6, bytes as f64 / 1e6 / read.as_secs_f64());
+    println!(
+        "read alone: {:.0} MB in {read:.2?} ({:.0} MB/s)",
+        bytes as f64 / 1e6,
+        bytes as f64 / 1e6 / read.as_secs_f64()
+    );
     let t0 = Instant::now();
     let again = Names::load(&dir)?;
     println!("load again: {} names in {:.2?}", again.entries(), t0.elapsed());
@@ -81,7 +107,8 @@ fn main() -> anyhow::Result<()> {
         let mut slowest = (std::time::Duration::ZERO, String::new());
         let t0 = Instant::now();
         for e in entries.iter().step_by(step) {
-            let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+            let (z, x, y) =
+                ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
             let Some(gz) = a.get(z, x, y) else { continue };
             let t = Instant::now();
             let raw = mvt::gunzip_if_gzip(gz)?;

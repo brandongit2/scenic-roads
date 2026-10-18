@@ -8,9 +8,9 @@
 //!   blobs …
 //!   index: `Entry` × count, sorted by key
 
+use crate::Mmap;
 use anyhow::{bail, Result};
 use bytemuck::{Pod, Zeroable};
-use crate::Mmap;
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -25,7 +25,10 @@ pub const TERRAIN_REPAIRED: &str = "terrain.repaired";
 /// The keys in a TERRAIN_REPAIRED list newer than `since` (a step's record of its last run), if any.
 pub fn terrain_repaired_since(steps_dir: &Path, since: &Path) -> Vec<u64> {
     let list = steps_dir.join(TERRAIN_REPAIRED);
-    let newer = match (std::fs::metadata(&list).and_then(|m| m.modified()), std::fs::metadata(since).and_then(|m| m.modified())) {
+    let newer = match (
+        std::fs::metadata(&list).and_then(|m| m.modified()),
+        std::fs::metadata(since).and_then(|m| m.modified()),
+    ) {
         (Ok(a), Ok(b)) => a > b,
         (Ok(_), Err(_)) => true,
         _ => false,
@@ -33,7 +36,11 @@ pub fn terrain_repaired_since(steps_dir: &Path, since: &Path) -> Vec<u64> {
     if !newer {
         return Vec::new();
     }
-    std::fs::read(list).ok().filter(|b| b.len() % 8 == 0).map(|b| bytemuck::cast_slice::<u8, u64>(&b).to_vec()).unwrap_or_default()
+    std::fs::read(list)
+        .ok()
+        .filter(|b| b.len() % 8 == 0)
+        .map(|b| bytemuck::cast_slice::<u8, u64>(&b).to_vec())
+        .unwrap_or_default()
 }
 
 #[inline]
@@ -120,7 +127,10 @@ impl Archive {
         }
         let meta_json = String::from_utf8(map[28..28 + mlen].to_vec())?;
         let a = Self { map, index_off, count, meta_json };
-        if a.entries().iter().any(|e| e.offset.checked_add(e.len as u64).is_none_or(|end| e.offset < 28 || end > index_off as u64)) {
+        if a.entries()
+            .iter()
+            .any(|e| e.offset.checked_add(e.len as u64).is_none_or(|end| e.offset < 28 || end > index_off as u64))
+        {
             bail!("{}: a tile archive with a tile outside it", path.display());
         }
         Ok(a)

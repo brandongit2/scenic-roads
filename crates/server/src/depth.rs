@@ -97,11 +97,21 @@ async fn tile(s: S, layer: &'static str, z: u8, x: u32, y: u32, q: Option<String
     }
 }
 
-pub async fn depth_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+pub async fn depth_tile(
+    State(s): State<S>,
+    Path((z, x, y)): Path<(u8, u32, u32)>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
     tile(s, pipeline::depth::LAYER, z, x, y, q, headers).await
 }
 
-pub async fn class_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+pub async fn class_tile(
+    State(s): State<S>,
+    Path((z, x, y)): Path<(u8, u32, u32)>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
     tile(s, pipeline::depth::CLASS_LAYER, z, x, y, q, headers).await
 }
 
@@ -118,7 +128,9 @@ pub fn floor(e: &mut [f32], depth: &[f32], class: &[u8]) {
 /// The terrain tile z/x/y with the floor (`floor`), PNG; None outside the terrain.
 pub fn terrain_floor_png(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(mut e) = crate::terrain::terrain_f32(s, z, x, y)? else { return Ok(None) };
-    if let (Some(Grid::F(d)), Some(Grid::C(c))) = (served(s, pipeline::depth::LAYER, z, x, y)?, served(s, pipeline::depth::CLASS_LAYER, z, x, y)?) {
+    if let (Some(Grid::F(d)), Some(Grid::C(c))) =
+        (served(s, pipeline::depth::LAYER, z, x, y)?, served(s, pipeline::depth::CLASS_LAYER, z, x, y)?)
+    {
         floor(&mut e, &d, &c);
     }
     Ok(roadcore::grid::encode_terrain_png(&e, 256, 256).ok())
@@ -134,7 +146,12 @@ mod tests {
         // the depth's band reaches it.
         let mut e = vec![120.0, 120.0, 135.0, 140.0];
         let d = vec![-8.0, pipeline::depth::NODATA, 0.5, -3.0];
-        let c = vec![pipeline::depth::C_MEASURED | (9 << 4), pipeline::depth::C_MEASURED, pipeline::depth::C_NONE, pipeline::depth::C_NONE];
+        let c = vec![
+            pipeline::depth::C_MEASURED | (9 << 4),
+            pipeline::depth::C_MEASURED,
+            pipeline::depth::C_NONE,
+            pipeline::depth::C_NONE,
+        ];
         floor(&mut e, &d, &c);
         assert_eq!(e, vec![112.0, 120.0, 135.0, 140.0]);
     }

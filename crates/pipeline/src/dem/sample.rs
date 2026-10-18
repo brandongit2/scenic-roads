@@ -79,12 +79,25 @@ pub fn block_key(w: i64, c: i64, r: i64) -> i64 {
 
 /// Image `level` of `t` sampled at points (`px`, `py`, in the raster's CRS): each point's value,
 /// NaN where it's outside the raster or there's no data.
-pub fn sample_raster(t: &Tiff, level: usize, px: &[f64], py: &[f64], pool: Option<&rayon::ThreadPool>) -> Result<Vec<f32>> {
+pub fn sample_raster(
+    t: &Tiff,
+    level: usize,
+    px: &[f64],
+    py: &[f64],
+    pool: Option<&rayon::ThreadPool>,
+) -> Result<Vec<f32>> {
     sample_raster_noting(t, level, px, py, pool, None)
 }
 
 /// `sample_raster`, each block read noted in `clean` (whether every pixel of it holds data).
-pub fn sample_raster_noting(t: &Tiff, level: usize, px: &[f64], py: &[f64], pool: Option<&rayon::ThreadPool>, clean: Option<&Clean>) -> Result<Vec<f32>> {
+pub fn sample_raster_noting(
+    t: &Tiff,
+    level: usize,
+    px: &[f64],
+    py: &[f64],
+    pool: Option<&rayon::ThreadPool>,
+    clean: Option<&Clean>,
+) -> Result<Vec<f32>> {
     let img = t.level(level)?;
     let gt = t.transform(level)?;
     let (w, h) = (img.width as i64, img.height as i64);
@@ -97,7 +110,12 @@ pub fn sample_raster_noting(t: &Tiff, level: usize, px: &[f64], py: &[f64], pool
         if !(cf > -0.5 && rf > -0.5 && cf < w as f64 - 0.5 && rf < h as f64 - 0.5) {
             continue;
         }
-        pts.push((block_key(w, (cf.floor() as i64).clamp(0, w - 1), (rf.floor() as i64).clamp(0, h - 1)), i as u32, cf, rf));
+        pts.push((
+            block_key(w, (cf.floor() as i64).clamp(0, w - 1), (rf.floor() as i64).clamp(0, h - 1)),
+            i as u32,
+            cf,
+            rf,
+        ));
     }
     pts.sort_by_key(|p| p.0);
     let mut groups: Vec<&[(i64, u32, f64, f64)]> = Vec::new();
@@ -125,7 +143,9 @@ pub fn sample_raster_noting(t: &Tiff, level: usize, px: &[f64], py: &[f64], pool
                         *v = -1e9;
                     }
                 }
-                Ok(g.iter().map(|&(_, i, cf, rf)| (i, bilinear(&a, bw as usize, bh as usize, cf - x0 as f64, rf - y0 as f64))).collect())
+                Ok(g.iter()
+                    .map(|&(_, i, cf, rf)| (i, bilinear(&a, bw as usize, bh as usize, cf - x0 as f64, rf - y0 as f64)))
+                    .collect())
             })
             .collect::<Result<_>>()
     })?;

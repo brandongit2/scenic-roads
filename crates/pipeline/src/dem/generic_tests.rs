@@ -43,8 +43,22 @@ impl Fetch for NoneElse {
 fn tiles_blend_across_their_edges() {
     use super::super::declared::{Dataset, Plan, Source};
     let z = 10;
-    let tiles = |id: &str, code: u8, url: &str| Dataset { id: id.into(), code, resolution: tile_resolution(z, 0.0), cover: None, source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into() } };
-    let plan = Plan { fmt: 1, version: "t".into(), tag: "1".into(), datasets: vec![tiles("fine", 1, "https://a.org/{z}/{x}/{y}.png"), tiles("coarse", 2, "https://b.org/{z}/{x}/{y}.png")] };
+    let tiles = |id: &str, code: u8, url: &str| Dataset {
+        id: id.into(),
+        code,
+        resolution: tile_resolution(z, 0.0),
+        cover: None,
+        source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into() },
+    };
+    let plan = Plan {
+        fmt: 1,
+        version: "t".into(),
+        tag: "1".into(),
+        datasets: vec![
+            tiles("fine", 1, "https://a.org/{z}/{x}/{y}.png"),
+            tiles("coarse", 2, "https://b.org/{z}/{x}/{y}.png"),
+        ],
+    };
     // The fine dataset has tile 512/511 alone (lon 0 to 0.35°, just north of the equator); the
     // coarse one has it and its neighbour east.
     let mut f = crate::fetch::MapFetch::default();
@@ -88,7 +102,13 @@ fn a_pyramids_tile_not_256_pixels_is_refused() {
     f.0.insert("https://e.org/3/1/1.png".into(), Some(png(256)));
     f.0.insert("https://e.org/3/2/1.png".into(), Some(png(512)));
     let o = Opts { fetch: &f, store: None, pool: None };
-    let t = TileSet { url: "https://e.org/{z}/{x}/{y}.png", zoom: 3, encoding: "terrarium", o: &o, clean: Mutex::new(HashMap::new()) };
+    let t = TileSet {
+        url: "https://e.org/{z}/{x}/{y}.png",
+        zoom: 3,
+        encoding: "terrarium",
+        o: &o,
+        clean: Mutex::new(HashMap::new()),
+    };
     assert_eq!(t.tile(1, 1).unwrap().unwrap().0, 256);
     assert!(t.tile(2, 1).unwrap_err().to_string().contains("512 × 512"));
 }
@@ -104,7 +124,8 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
     let (w, h) = (1200usize, 1100usize);
     let gt = [10.0, PX, 0.0, 50.0, 0.0, -PX];
     let nd = -9999.0f32;
-    let mut data: Vec<f32> = (0..h).flat_map(|y| (0..w).map(move |x| 100.0 + 0.01 * x as f32 + 0.02 * y as f32)).collect();
+    let mut data: Vec<f32> =
+        (0..h).flat_map(|y| (0..w).map(move |x| 100.0 + 0.01 * x as f32 + 0.02 * y as f32)).collect();
     // A hole in block (0, 0), a strip of no data down blocks (1, *), and one past the nodata floor.
     for y in 100..103 {
         for x in 100..103 {
@@ -125,7 +146,13 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
     f.0.insert("https://b.org/coarse.tif".into(), Some(coarse));
     let o = Opts { fetch: &f, store: None, pool: None };
     let fine_box = [10.0, 50.0 - h as f64 * PX, 10.0 + w as f64 * PX, 50.0];
-    let geo = |id: &str, code: u8, res: f64, url: &str, b: [f64; 4]| Dataset { id: id.into(), code, resolution: res, cover: None, source: Source::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![(url.into(), Some(b))] } };
+    let geo = |id: &str, code: u8, res: f64, url: &str, b: [f64; 4]| Dataset {
+        id: id.into(),
+        code,
+        resolution: res,
+        cover: None,
+        source: Source::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![(url.into(), Some(b))] },
+    };
     let (rf, rc) = (PX * M_PER_DEG, 3.0 * PX * M_PER_DEG);
     let ds_fine = geo("fine", 1, rf, "https://a.org/fine.tif", fine_box);
     let ds_coarse = geo("coarse", 2, rc, "https://b.org/coarse.tif", [9.0, 45.0, 15.0, 51.0]);
@@ -166,7 +193,8 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
         let mut best = band;
         for r in r0 - ry..=r0 + 1 + ry {
             for c in c0 - rx..=c0 + 1 + rx {
-                let d = (((c as f64 - cf).abs() - 0.5).max(0.0) * mx).hypot(((r as f64 - rfl).abs() - 0.5).max(0.0) * my);
+                let d =
+                    (((c as f64 - cf).abs() - 0.5).max(0.0) * mx).hypot(((r as f64 - rfl).abs() - 0.5).max(0.0) * my);
                 if d >= best {
                     continue;
                 }
@@ -177,7 +205,11 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
             }
         }
         let want = if best < band { blend(a.elev[i], b.elev[i], best, band) } else { a.elev[i] };
-        assert_eq!((both.elev[i].to_bits(), both.blended[i]), (want.to_bits(), best < band), "point {i} at pixel ({cf:.1}, {rfl:.1}): distance {best}");
+        assert_eq!(
+            (both.elev[i].to_bits(), both.blended[i]),
+            (want.to_bits(), best < band),
+            "point {i} at pixel ({cf:.1}, {rfl:.1}): distance {best}"
+        );
         blends += (best < band) as usize;
     }
     assert!(blends > 100 && blends < lon.len() / 2, "{blends} blends of {}", lon.len());

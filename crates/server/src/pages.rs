@@ -85,7 +85,8 @@ impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
 /// waits for the first read instead of making its own.
 static PAGES: LazyLock<Mutex<Lru<(u64, u64), Arc<Vec<u8>>>>> = LazyLock::new(|| Mutex::new(Lru::new(PAGES_BYTES)));
 static WHOLES: LazyLock<Mutex<Lru<(u64, u64, u64), Blob>>> = LazyLock::new(|| Mutex::new(Lru::new(WHOLES_BYTES)));
-static READING: LazyLock<(Mutex<std::collections::HashSet<(u64, u64, u64)>>, std::sync::Condvar)> = LazyLock::new(Default::default);
+static READING: LazyLock<(Mutex<std::collections::HashSet<(u64, u64, u64)>>, std::sync::Condvar)> =
+    LazyLock::new(Default::default);
 
 /// The page numbers bytes [off, off + len) span (len > 0).
 fn span(off: u64, len: u64) -> std::ops::RangeInclusive<u64> {
@@ -110,7 +111,11 @@ pub fn read(f: &RemoteFile, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         return Ok(Vec::new());
     }
     let idx: Vec<u64> = span(off, len as u64).collect();
-    let pages: Vec<Arc<Vec<u8>>> = if idx.len() > 1 { idx.par_iter().map(|&i| page(f, i)).collect::<Result<_, _>>()? } else { vec![page(f, idx[0])?] };
+    let pages: Vec<Arc<Vec<u8>>> = if idx.len() > 1 {
+        idx.par_iter().map(|&i| page(f, i)).collect::<Result<_, _>>()?
+    } else {
+        vec![page(f, idx[0])?]
+    };
     let end = off + len as u64;
     let mut out = Vec::with_capacity(len);
     for (&i, p) in idx.iter().zip(&pages) {
@@ -121,7 +126,10 @@ pub fn read(f: &RemoteFile, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         }
     }
     if out.len() != len {
-        return Err(IoError::Io(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "read past the end of the file")));
+        return Err(IoError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "read past the end of the file",
+        )));
     }
     Ok(out)
 }
@@ -229,7 +237,9 @@ mod tests {
         std::fs::write(&p, &data).unwrap();
         let pool = store::iopool::IoPool::new(2, std::time::Duration::from_secs(60), dir.path().to_owned());
         let f = RemoteFile::new(p, pool);
-        for (off, len) in [(0u64, 10usize), (PAGE - 3, 6), (5, PAGE as usize * 2 + 50), (PAGE * 3, 100), (PAGE * 3 + 99, 1)] {
+        for (off, len) in
+            [(0u64, 10usize), (PAGE - 3, 6), (5, PAGE as usize * 2 + 50), (PAGE * 3, 100), (PAGE * 3 + 99, 1)]
+        {
             assert_eq!(read(&f, off, len).unwrap(), data[off as usize..off as usize + len], "{off}+{len}");
         }
         assert!(read(&f, PAGE * 3 + 50, 51).is_err());

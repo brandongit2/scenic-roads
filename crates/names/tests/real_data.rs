@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 fn converted() -> PathBuf {
-    std::env::var_os("NAMES_CONVERTED").map_or_else(|| PathBuf::from("/nonexistent: set NAMES_CONVERTED"), PathBuf::from)
+    std::env::var_os("NAMES_CONVERTED")
+        .map_or_else(|| PathBuf::from("/nonexistent: set NAMES_CONVERTED"), PathBuf::from)
 }
 
 fn build(file: &str) -> Option<PathBuf> {
@@ -35,7 +36,11 @@ fn tile_at(z: u32, lon: f64, lat: f64) -> (u32, u32) {
 /// Feature `i`'s string property `key`.
 fn prop(t: &Tile, layer: usize, i: usize, key: &str) -> Option<String> {
     let l = &t.layers[layer];
-    l.features[i].tags.chunks_exact(2).find(|p| l.keys[p[0] as usize] == key).and_then(|p| l.values[p[1] as usize].as_str().map(str::to_owned))
+    l.features[i]
+        .tags
+        .chunks_exact(2)
+        .find(|p| l.keys[p[0] as usize] == key)
+        .and_then(|p| l.values[p[1] as usize].as_str().map(str::to_owned))
 }
 
 /// A decode, encode, decode cycle keeps every tile's content; returns whether the bytes came back
@@ -60,7 +65,8 @@ fn label_tiles_round_trip() {
     let step = (entries.len() / 400).max(1);
     let (mut n, mut same, mut features) = (0, 0, 0);
     for e in entries.iter().step_by(step) {
-        let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+        let (z, x, y) =
+            ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
         let gz = a.get(z, x, y).expect("tile");
         let raw = gunzip_if_gzip(gz).expect("gunzip");
         same += usize::from(round_trip(&raw));
@@ -269,7 +275,13 @@ fn tables() -> Option<Names> {
     let t0 = Instant::now();
     let mut names = Names::load(&dir).expect("load");
     let w = names.take_warnings();
-    eprintln!("{}: {:?} in {:.1?}, {} MB, warnings {w:?}", dir.display(), names.summary(), t0.elapsed(), names.heap_bytes() >> 20);
+    eprintln!(
+        "{}: {:?} in {:.1?}, {} MB, warnings {w:?}",
+        dir.display(),
+        names.summary(),
+        t0.elapsed(),
+        names.heap_bytes() >> 20
+    );
     Some(names)
 }
 
@@ -289,7 +301,12 @@ fn converted_lines() {
     let s = |main: &str, sub: Option<&str>| (main.to_owned(), sub.map(str::to_owned));
     // Well-known names have a line with a sub, shown where their language is spoken; the thing's
     // own English wins over it.
-    let known = [(Kind::Other, &["ja"][..], "松島"), (Kind::Other, &["ja"], "富士山"), (Kind::Road, &["zh"], "10號橋"), (Kind::Other, &["zh"], "中山橋")];
+    let known = [
+        (Kind::Other, &["ja"][..], "松島"),
+        (Kind::Other, &["ja"], "富士山"),
+        (Kind::Road, &["zh"], "10號橋"),
+        (Kind::Other, &["zh"], "中山橋"),
+    ];
     for (kind, here, name) in known {
         let line = n.translation(kind, name, &ls(here)).unwrap_or_else(|| panic!("no line for {name}"));
         let sub = line.sub.unwrap_or_else(|| panic!("no sub for {name}"));
@@ -298,11 +315,17 @@ fn converted_lines() {
         assert_eq!(d(kind, name, Some("Own English"), here), s(name, Some("Own English")));
     }
     // Read in Taiwan, a Japanese reading doesn't apply; nowhere, nothing.
-    assert_ne!(d(Kind::Other, "松島", None, &["zh"]).1.as_deref(), n.translation(Kind::Other, "松島", &ls(&["ja"])).and_then(|t| t.sub));
+    assert_ne!(
+        d(Kind::Other, "松島", None, &["zh"]).1.as_deref(),
+        n.translation(Kind::Other, "松島", &ls(&["ja"])).and_then(|t| t.sub)
+    );
     assert_eq!(d(Kind::Other, "松島", None, &[]), s("松島", None));
     // Places' lines and roads' apart.
     // A name with no roads line: its places line holds for roads too (the old lookup's fallback).
-    assert_eq!(n.translation(Kind::Road, "中山橋", &ls(&["zh"])).map(|t| t.sub), n.translation(Kind::Other, "中山橋", &ls(&["zh"])).map(|t| t.sub));
+    assert_eq!(
+        n.translation(Kind::Road, "中山橋", &ls(&["zh"])).map(|t| t.sub),
+        n.translation(Kind::Other, "中山橋", &ls(&["zh"])).map(|t| t.sub)
+    );
     // Names the old boxes read in another area's table: northern Spain's in France's.
     assert_eq!(n.translation(Kind::Other, "Playa de Cueva", &ls(&["es"])).map(|t| t.main), Some("Cave Beach"));
     assert_eq!(n.translation(Kind::Road, "Château", &ls(&["fr"])).map(|t| (t.main, t.sub)), Some(("Château", None)));
@@ -332,7 +355,11 @@ fn check_attached(names: &Names, before: &Tile, after: &Tile, rule: &LayerRule) 
             let strip = |t: &Tile| -> Vec<(String, Value)> {
                 let l = &t.layers[li];
                 let f = &l.features[i];
-                f.tags.chunks_exact(2).map(|p| (l.keys[p[0] as usize].clone(), l.values[p[1] as usize].clone())).filter(|(k, _)| k != MAIN && k != SUB).collect()
+                f.tags
+                    .chunks_exact(2)
+                    .map(|p| (l.keys[p[0] as usize].clone(), l.values[p[1] as usize].clone()))
+                    .filter(|(k, _)| k != MAIN && k != SUB)
+                    .collect()
             };
             assert_eq!(strip(before), strip(after));
             assert_eq!((&lb.features[i].geometry, lb.features[i].id), (&la.features[i].geometry, la.features[i].id));
@@ -357,25 +384,38 @@ fn attach_to_real_tiles() {
     let Some(names) = tables() else { return };
     let names = &names;
     let Some(path) = basemap() else { return };
-    let spoken = std::env::var_os("NAMES_SPOKEN").map(|p| names::Spoken::from_bytes(&std::fs::read(p).expect("spoken")).expect("spoken"));
+    let spoken = std::env::var_os("NAMES_SPOKEN")
+        .map(|p| names::Spoken::from_bytes(&std::fs::read(p).expect("spoken")).expect("spoken"));
     let pm = PmTiles::open(&path);
     let (mut named, mut with_sub, mut copied_en, mut copied_en_lined) = (0, 0, 0, 0);
     // Montréal, Paris, Quimper, Barcelona, Bilbao, Seville, Lisbon.
-    let places = [("Montréal", -73.6, 45.55), ("Paris", 2.3522, 48.8566), ("Quimper", -4.10, 48.0), ("Barcelona", 2.17, 41.39), ("Bilbao", -2.93, 43.26), ("Seville", -5.98, 37.39), ("Lisbon", -9.14, 38.72)];
+    let places = [
+        ("Montréal", -73.6, 45.55),
+        ("Paris", 2.3522, 48.8566),
+        ("Quimper", -4.10, 48.0),
+        ("Barcelona", 2.17, 41.39),
+        ("Bilbao", -2.93, 43.26),
+        ("Seville", -5.98, 37.39),
+        ("Lisbon", -9.14, 38.72),
+    ];
     for (place, lon, lat) in places {
         for z in [8, 10, 12, 13] {
             let (x, y) = tile_at(z, lon, lat);
             let Some(raw) = pm.tile(z, x, y) else { continue };
             let before = Tile::decode(&raw).expect("decode");
             let t0 = Instant::now();
-            let Some(out) = mvt::attach(&raw, z, x, y, names, spoken.as_ref(), &[OPENMAPTILES]).expect("attach") else { continue };
+            let Some(out) = mvt::attach(&raw, z, x, y, names, spoken.as_ref(), &[OPENMAPTILES]).expect("attach") else {
+                continue;
+            };
             let took = t0.elapsed();
             let after = Tile::decode(&out).expect("decode attached");
             let (n, s) = check_attached(names, &before, &after, &OPENMAPTILES);
             // Features whose name_en is the name itself (no name:en): never their "own English".
             for (li, l) in before.layers.iter().enumerate() {
                 for i in 0..l.features.len() {
-                    let (Some(name), Some(en)) = (prop(&before, li, i, "name"), prop(&before, li, i, "name_en")) else { continue };
+                    let (Some(name), Some(en)) = (prop(&before, li, i, "name"), prop(&before, li, i, "name_en")) else {
+                        continue;
+                    };
                     if en != name || prop(&before, li, i, "name:en").is_some() {
                         continue;
                     }
@@ -386,7 +426,11 @@ fn attach_to_real_tiles() {
                     copied_en_lined += usize::from(sub.is_some() || main.as_deref() != Some(name.as_str()));
                 }
             }
-            eprintln!("basemap {place} {z}/{x}/{y}: {n} named, {s} with a sub, {} → {} bytes, {took:.1?}", raw.len(), out.len());
+            eprintln!(
+                "basemap {place} {z}/{x}/{y}: {n} named, {s} with a sub, {} → {} bytes, {took:.1?}",
+                raw.len(),
+                out.len()
+            );
             assert_eq!(mvt::attach(&out, z, x, y, names, spoken.as_ref(), &[OPENMAPTILES]).expect("attach"), None);
             named += n;
             with_sub += s;
@@ -398,8 +442,16 @@ fn attach_to_real_tiles() {
         // Montréal's Rivière des Prairies: its line, not its name_en.
         let (x, y) = (302, 366);
         let raw = pm.tile(10, x, y).expect("10/302/366");
-        let after = Tile::decode(&mvt::attach(&raw, 10, x, y, names, spoken.as_ref(), &[OPENMAPTILES]).expect("attach").expect("changed")).expect("decode");
-        let found = after.layers.iter().enumerate().flat_map(|(li, l)| (0..l.features.len()).map(move |i| (li, i))).find(|&(li, i)| prop(&after, li, i, "name").as_deref() == Some("Rivière des Prairies"));
+        let after = Tile::decode(
+            &mvt::attach(&raw, 10, x, y, names, spoken.as_ref(), &[OPENMAPTILES]).expect("attach").expect("changed"),
+        )
+        .expect("decode");
+        let found = after
+            .layers
+            .iter()
+            .enumerate()
+            .flat_map(|(li, l)| (0..l.features.len()).map(move |i| (li, i)))
+            .find(|&(li, i)| prop(&after, li, i, "name").as_deref() == Some("Rivière des Prairies"));
         if let Some((li, i)) = found {
             let shown = (prop(&after, li, i, MAIN), prop(&after, li, i, SUB));
             eprintln!("Rivière des Prairies: {shown:?}");

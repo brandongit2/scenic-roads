@@ -58,7 +58,14 @@ fn folder(files: &[(&str, &str)]) -> resolve::Folder {
 
 fn run(f: &Fx, files: &[(&str, &str)]) -> resolve::Outcome {
     let others = BTreeMap::new();
-    let ctx = resolve::Context { pass: Some(PASS), outlines: Some(&f.o), extract: None, others: &others, memo: None, names: String::new() };
+    let ctx = resolve::Context {
+        pass: Some(PASS),
+        outlines: Some(&f.o),
+        extract: None,
+        others: &others,
+        memo: None,
+        names: String::new(),
+    };
     resolve::resolve(&folder(files), &ctx)
 }
 
@@ -75,7 +82,10 @@ fn a_plain_region_is_today_s_coverage_exactly() {
     let out = run(&f, &[PINS, ("a.toml", &a)]);
     assert!(out.problems.is_empty(), "{:?}", out.problems);
     let g = &out.resolved["a"].geometry;
-    assert_eq!(g.shapes.iter().map(|s| (s.from.as_str(), s.tolerance_m, s.country.as_str())).collect::<Vec<_>>(), vec![("osm:1", 1000, "AA"), ("osm:2", 1000, "BB")]);
+    assert_eq!(
+        g.shapes.iter().map(|s| (s.from.as_str(), s.tolerance_m, s.country.as_str())).collect::<Vec<_>>(),
+        vec![("osm:1", 1000, "AA"), ("osm:2", 1000, "BB")]
+    );
     let new = read::coverage_of(std::slice::from_ref(g));
     // (As the recipes' coverage was made: each `osm:` part its relation's rings, the coast's 1 km,
     // its country.)
@@ -84,14 +94,22 @@ fn a_plain_region_is_today_s_coverage_exactly() {
             .iter()
             .map(|id| {
                 let rec = f.o.by_id(*id).unwrap();
-                let mut s = crate::coverage::Shape::new(format!("a: osm:{id}"), f.o.rings(rec).unwrap(), crate::coverage::OSM_BUFFER_M);
+                let mut s = crate::coverage::Shape::new(
+                    format!("a: osm:{id}"),
+                    f.o.rings(rec).unwrap(),
+                    crate::coverage::OSM_BUFFER_M,
+                );
                 s.country = f.o.country_code(rec);
                 s
             })
             .collect(),
     };
     let _: &[Recipe] = &[];
-    for b in [[0, 0, 5_000_000, 5_000_000], [9_000_000, -1_000_000, 11_000_000, 1_000_000], [-10_000_000, -10_000_000, 30_000_000, 30_000_000]] {
+    for b in [
+        [0, 0, 5_000_000, 5_000_000],
+        [9_000_000, -1_000_000, 11_000_000, 1_000_000],
+        [-10_000_000, -10_000_000, 30_000_000, 30_000_000],
+    ] {
         assert_eq!(new.fingerprint(b), old.fingerprint(b));
         assert_eq!(new.shapes_key(b), old.shapes_key(b));
     }
@@ -126,7 +144,16 @@ fn operations_minus_intersect_and_region_refs() {
 fn loops_refs_dups_and_pins_are_problems() {
     let f = fx();
     let l = |id: &str, to: &str| region(id, &format!("outline = [\"region:{to}\"]\n"));
-    let out = run(&f, &[PINS, ("a.toml", &l("a", "b")), ("b.toml", &l("b", "c")), ("c.toml", &l("c", "a")), ("d.toml", &l("d", "nobody"))]);
+    let out = run(
+        &f,
+        &[
+            PINS,
+            ("a.toml", &l("a", "b")),
+            ("b.toml", &l("b", "c")),
+            ("c.toml", &l("c", "a")),
+            ("d.toml", &l("d", "nobody")),
+        ],
+    );
     let lp = out.problems.iter().find(|p| p.check == "rg-loop").unwrap();
     assert_eq!(lp.about, vec!["a", "b", "c"]);
     assert!(out.problems.iter().any(|p| p.check == "rg-ref" && p.about[0] == "d"));
@@ -177,7 +204,8 @@ fn the_antimeridian_island_buffered_is_two_shapes_within_180() {
 #[test]
 fn a_shape_drawn_across_the_line_is_the_shape_split_at_it() {
     let f = fx();
-    let across = r#"{"type": "Polygon", "coordinates": [[[179.5, 1], [-179.5, 1], [-179.5, 2], [179.5, 2], [179.5, 1]]]}"#;
+    let across =
+        r#"{"type": "Polygon", "coordinates": [[[179.5, 1], [-179.5, 1], [-179.5, 2], [179.5, 2], [179.5, 1]]]}"#;
     let split = r#"{"type": "MultiPolygon", "coordinates": [[[[179.5, 1], [180, 1], [180, 2], [179.5, 2], [179.5, 1]]], [[[-180, 1], [-179.5, 1], [-179.5, 2], [-180, 2], [-180, 1]]]]}"#;
     // Computed (a minus of nothing near), so each is put in one frame and stored canonical.
     let r = region("k", "outline = [\"shape:k.geojson\"]\nminus = [\"osm:4\"]\n");
@@ -198,15 +226,34 @@ fn a_shape_drawn_across_the_line_is_the_shape_split_at_it() {
 #[test]
 fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
     let f = fx();
-    let checks = Regions::new(Some(Prepared { pass: Some(PASS.into()), outlines: Some(Outlines::open(&f._d.path().join("outlines.sect")).unwrap()), ..Default::default() }));
+    let checks = Regions::new(Some(Prepared {
+        pass: Some(PASS.into()),
+        outlines: Some(Outlines::open(&f._d.path().join("outlines.sect")).unwrap()),
+        ..Default::default()
+    }));
     let a = region("a", "outline = [\"osm:1\"]\n");
-    let drop: BTreeMap<String, Vec<u8>> = [("pins.toml", PINS.1), ("eu/a.toml", a.as_str())].iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
-    let listing = Listing { files: drop.keys().map(|p| (p.clone(), (drop[p].len() as u64, 1))).collect(), ..Default::default() };
+    let drop: BTreeMap<String, Vec<u8>> = [("pins.toml", PINS.1), ("eu/a.toml", a.as_str())]
+        .iter()
+        .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
+        .collect();
+    let listing =
+        Listing { files: drop.keys().map(|p| (p.clone(), (drop[p].len() as u64, 1))).collect(), ..Default::default() };
     let accepted = Default::default();
     let unsettled = Default::default();
     let rn = |p: &str| Ok(drop[p].clone());
     let ro = |_: &FileEntry| -> Result<Vec<u8>> { unreachable!() };
-    let d = decide(&Given { checks: &checks, prev: None, prev_listed: &BTreeMap::new(), listing: &listing, unsettled: &unsettled, accepted: &accepted, full: false, read_new: &rn, read_old: &ro }).unwrap();
+    let d = decide(&Given {
+        checks: &checks,
+        prev: None,
+        prev_listed: &BTreeMap::new(),
+        listing: &listing,
+        unsettled: &unsettled,
+        accepted: &accepted,
+        full: false,
+        read_new: &rn,
+        read_old: &ro,
+    })
+    .unwrap();
     assert!(d.report.is_none(), "{:?}", d.report);
     let e = &d.index.files["eu/a.toml"];
     assert!(e.facts["geometry"].as_str().unwrap().starts_with("sources/inputs/regions/@geometry/a."));
@@ -215,15 +262,35 @@ fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
     // A new pass: nothing changed, but the region held, its accepted geometry kept.
     let store: BTreeMap<String, Arc<Vec<u8>>> = d.store.clone();
     let prev = d.index.clone();
-    let checks2 = Regions::new(Some(Prepared { pass: Some("2026-12-28".into()), outlines: Some(Outlines::open(&f._d.path().join("outlines.sect")).unwrap()), ..Default::default() }));
+    let checks2 = Regions::new(Some(Prepared {
+        pass: Some("2026-12-28".into()),
+        outlines: Some(Outlines::open(&f._d.path().join("outlines.sect")).unwrap()),
+        ..Default::default()
+    }));
     let ro2 = |e: &FileEntry| -> Result<Vec<u8>> { Ok(store[&e.file].to_vec()) };
-    let d2 = decide(&Given { checks: &checks2, prev: Some(&prev), prev_listed: &d.listed, listing: &listing, unsettled: &unsettled, accepted: &accepted, full: false, read_new: &rn, read_old: &ro2 }).unwrap();
+    let d2 = decide(&Given {
+        checks: &checks2,
+        prev: Some(&prev),
+        prev_listed: &d.listed,
+        listing: &listing,
+        unsettled: &unsettled,
+        accepted: &accepted,
+        full: false,
+        read_new: &rn,
+        read_old: &ro2,
+    })
+    .unwrap();
     assert!(!d2.changed);
     let r = d2.report.unwrap();
     assert_eq!(r.held, vec!["eu/a.toml"]);
     assert_eq!(r.findings[0].check(), "rg-pin-mismatch");
     // A file the regions don't take: ignored.
-    assert!(!checks.takes("notes.txt") && !checks.takes("old.poly") && !checks.takes("eu/old.toml.removed") && checks.takes("x/y.geojson"));
+    assert!(
+        !checks.takes("notes.txt")
+            && !checks.takes("old.poly")
+            && !checks.takes("eu/old.toml.removed")
+            && checks.takes("x/y.geojson")
+    );
     let _: &Index = &prev;
 }
 
@@ -237,7 +304,14 @@ fn a_line_from_ways_buffered_and_ways_that_dont_join() {
     e.ways.insert("12".into(), way([3, 2], vec![[52_000_000, 50_000_000], [51_000_000, 50_000_000]]));
     e.ways.insert("13".into(), way([8, 9], vec![[60_000_000, 50_000_000], [61_000_000, 50_000_000]]));
     let others = BTreeMap::new();
-    let ctx = resolve::Context { pass: Some(PASS), outlines: Some(&f.o), extract: Some(&e), others: &others, memo: None, names: String::new() };
+    let ctx = resolve::Context {
+        pass: Some(PASS),
+        outlines: Some(&f.o),
+        extract: Some(&e),
+        others: &others,
+        memo: None,
+        names: String::new(),
+    };
     let r = region("river", "outline = [{ buffer = \"line:r\", by = \"3 km\" }]\n[lines.r]\nways = [11, 12]\n");
     let out = resolve::resolve(&folder(&[PINS, ("river.toml", &r)]), &ctx);
     assert!(out.problems.is_empty(), "{:?}", out.problems);
@@ -246,7 +320,11 @@ fn a_line_from_ways_buffered_and_ways_that_dont_join() {
     assert!(!cov.contains([51_500_000, 50_400_000]), "4.5 km off: out");
     let bad = region("bad", "outline = [{ buffer = \"line:r\", by = \"3 km\" }]\n[lines.r]\nways = [11, 13]\n");
     let out = resolve::resolve(&folder(&[PINS, ("bad.toml", &bad)]), &ctx);
-    assert!(out.problems.iter().any(|p| p.check == "rg-line" && p.message.contains("ways 11 and 13 don't join")), "{:?}", out.problems);
+    assert!(
+        out.problems.iter().any(|p| p.check == "rg-line" && p.message.contains("ways 11 and 13 don't join")),
+        "{:?}",
+        out.problems
+    );
     // A way the extract lacks: waited for, named in the needs.
     let more = region("more", "outline = [{ buffer = \"line:r\", by = \"3 km\" }]\n[lines.r]\nways = [11, 14]\n");
     let out = resolve::resolve(&folder(&[PINS, ("more.toml", &more)]), &ctx);
@@ -256,21 +334,54 @@ fn a_line_from_ways_buffered_and_ways_that_dont_join() {
 #[test]
 fn folders_make_the_tree_and_moving_a_region_changes_no_key() {
     let f = fx();
-    let checks = Regions::new(Some(Prepared { pass: Some(PASS.into()), outlines: Some(Outlines::open(&f._d.path().join("outlines.sect")).unwrap()), ..Default::default() }));
+    let checks = Regions::new(Some(Prepared {
+        pass: Some(PASS.into()),
+        outlines: Some(Outlines::open(&f._d.path().join("outlines.sect")).unwrap()),
+        ..Default::default()
+    }));
     let take = |files: &[(&str, &str)]| {
-        let drop: BTreeMap<String, Vec<u8>> = files.iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
-        let listing = Listing { files: drop.keys().map(|p| (p.clone(), (drop[p].len() as u64, 1))).collect(), ..Default::default() };
+        let drop: BTreeMap<String, Vec<u8>> =
+            files.iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
+        let listing = Listing {
+            files: drop.keys().map(|p| (p.clone(), (drop[p].len() as u64, 1))).collect(),
+            ..Default::default()
+        };
         let rn = |p: &str| Ok(drop[p].clone());
         let ro = |_: &FileEntry| -> Result<Vec<u8>> { unreachable!() };
-        decide(&Given { checks: &checks, prev: None, prev_listed: &BTreeMap::new(), listing: &listing, unsettled: &Default::default(), accepted: &Default::default(), full: false, read_new: &rn, read_old: &ro }).unwrap()
+        decide(&Given {
+            checks: &checks,
+            prev: None,
+            prev_listed: &BTreeMap::new(),
+            listing: &listing,
+            unsettled: &Default::default(),
+            accepted: &Default::default(),
+            full: false,
+            read_new: &rn,
+            read_old: &ro,
+        })
+        .unwrap()
     };
-    let (a, b, c) = (region("a", "outline = [\"osm:1\"]\n"), region("b", "outline = [\"osm:2\"]\n"), region("c", "outline = [\"osm:4\"]\n"));
-    let d = take(&[PINS, ("a.toml", &a), ("eu/pt/b.toml", &b), ("eu/_group.toml", "name = \"Europe / EU\"\norder = 2\n"), ("am/c.toml", &c), ("empty/_group.toml", "name = \"Nothing\"\n")]);
+    let (a, b, c) = (
+        region("a", "outline = [\"osm:1\"]\n"),
+        region("b", "outline = [\"osm:2\"]\n"),
+        region("c", "outline = [\"osm:4\"]\n"),
+    );
+    let d = take(&[
+        PINS,
+        ("a.toml", &a),
+        ("eu/pt/b.toml", &b),
+        ("eu/_group.toml", "name = \"Europe / EU\"\norder = 2\n"),
+        ("am/c.toml", &c),
+        ("empty/_group.toml", "name = \"Nothing\"\n"),
+    ]);
     assert!(d.report.is_none(), "{:?}", d.report);
     let t = read::tree(&d.index);
     assert_eq!(t.regions, vec!["a"]);
     // Ordered: the one with an order first; an empty folder isn't in the tree.
-    assert_eq!(t.folders.iter().map(|f| (f.path.as_str(), f.name.as_str())).collect::<Vec<_>>(), vec![("eu", "Europe / EU"), ("am", "am")]);
+    assert_eq!(
+        t.folders.iter().map(|f| (f.path.as_str(), f.name.as_str())).collect::<Vec<_>>(),
+        vec![("eu", "Europe / EU"), ("am", "am")]
+    );
     assert_eq!(t.folders[0].folders[0].path, "eu/pt");
     assert_eq!(t.folders[0].folders[0].regions, vec!["b"]);
     // Moved to another folder: the same geometry, so the same keys.
@@ -348,9 +459,17 @@ fn a_region_missing_a_fact_is_an_error() {
 fn pieces_past_two_bands_have_names_of_their_own() {
     let names: Vec<String> = (0..3).map(|k| resolve::piece_name("x", k, 3)).collect();
     assert_eq!(names, ["x (part 1 of 3)", "x (part 2 of 3)", "x (part 3 of 3)"]);
-    assert_eq!((resolve::piece_name("x", 0, 2), resolve::piece_name("x", 1, 2), resolve::piece_name("x", 0, 1)), ("x (to 180°)".into(), "x (from -180°)".into(), "x".into()));
+    assert_eq!(
+        (resolve::piece_name("x", 0, 2), resolve::piece_name("x", 1, 2), resolve::piece_name("x", 0, 1)),
+        ("x (to 180°)".into(), "x (from -180°)".into(), "x".into())
+    );
     // An area over more than a turn of longitude splits into three bands.
-    let wide = geom::Area::from_rings(&[vec![[-1_900_000_000, 0], [4_500_000_000, 0], [4_500_000_000, 10], [-1_900_000_000, 10]]]);
+    let wide = geom::Area::from_rings(&[vec![
+        [-1_900_000_000, 0],
+        [4_500_000_000, 0],
+        [4_500_000_000, 10],
+        [-1_900_000_000, 10],
+    ]]);
     let parts = geom::Frame::split(&wide);
     assert_eq!(parts.len(), 3);
 }
@@ -374,11 +493,21 @@ fn the_switch_s_app_fails_closed() {
     assert!(read::switch_app(&BTreeMap::from([(sw.clone(), "bad.json".to_string())]), &rd).is_err());
     // Who may lead: not an older app, not while unknown; and the app needed, the newer.
     let ok: std::result::Result<Option<String>, String> = Ok(Some("20261015-1200-aaaaaaa".into()));
-    assert!(read::may_lead("20261015-1200-aaaaaaa", &ok).is_ok() && read::may_lead("20261016-0000-bbbbbbb", &ok).is_ok());
+    assert!(
+        read::may_lead("20261015-1200-aaaaaaa", &ok).is_ok() && read::may_lead("20261016-0000-bbbbbbb", &ok).is_ok()
+    );
     assert!(read::may_lead("20261014-0000-ccccccc", &ok).unwrap_err().contains("older"));
-    assert!(read::may_lead("20261016-0000-bbbbbbb", &Err("the NAS away".into())).unwrap_err().contains("can't be read"));
+    assert!(read::may_lead("20261016-0000-bbbbbbb", &Err("the NAS away".into()))
+        .unwrap_err()
+        .contains("can't be read"));
     assert!(read::may_lead("20261014-0000-ccccccc", &Ok(None)).is_ok());
-    assert_eq!(read::needed_app(Some("20261014-0000-ccccccc"), Some("20261015-1200-aaaaaaa")).as_deref(), Some("20261015-1200-aaaaaaa"));
-    assert_eq!(read::needed_app(Some("20261016-0000-bbbbbbb"), Some("20261015-1200-aaaaaaa")).as_deref(), Some("20261016-0000-bbbbbbb"));
+    assert_eq!(
+        read::needed_app(Some("20261014-0000-ccccccc"), Some("20261015-1200-aaaaaaa")).as_deref(),
+        Some("20261015-1200-aaaaaaa")
+    );
+    assert_eq!(
+        read::needed_app(Some("20261016-0000-bbbbbbb"), Some("20261015-1200-aaaaaaa")).as_deref(),
+        Some("20261016-0000-bbbbbbb")
+    );
     assert_eq!(read::needed_app(None, Some("20261015-1200-aaaaaaa")).as_deref(), Some("20261015-1200-aaaaaaa"));
 }

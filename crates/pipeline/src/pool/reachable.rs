@@ -121,13 +121,31 @@ impl Tracker {
         let mut out = Vec::new();
         for (m, s) in &self.by {
             match &s.fail {
-                Some((since, last, cause, why)) if last.saturating_sub(*since) >= REPORT_S && now.saturating_sub(*last) <= REACHED_S => {
-                    out.push(Reach { member: m.clone(), what: s.what.clone(), ok: false, at: *last, since: *since, cause: Some(*cause), why: why.clone() });
+                Some((since, last, cause, why))
+                    if last.saturating_sub(*since) >= REPORT_S && now.saturating_sub(*last) <= REACHED_S =>
+                {
+                    out.push(Reach {
+                        member: m.clone(),
+                        what: s.what.clone(),
+                        ok: false,
+                        at: *last,
+                        since: *since,
+                        cause: Some(*cause),
+                        why: why.clone(),
+                    });
                 }
                 Some(_) => {}
                 None => {
                     if let Some(at) = s.ok_at.filter(|a| now.saturating_sub(*a) <= REACHED_S) {
-                        out.push(Reach { member: m.clone(), what: s.what.clone(), ok: true, at, since: 0, cause: None, why: String::new() });
+                        out.push(Reach {
+                            member: m.clone(),
+                            what: s.what.clone(),
+                            ok: true,
+                            at,
+                            since: 0,
+                            cause: None,
+                            why: String::new(),
+                        });
                     }
                 }
             }
@@ -165,7 +183,11 @@ pub fn words(r: &Reach, host: &str) -> String {
 /// can't be reached: each with its reporter's heartbeat.
 /// (Shadow runs' heartbeats are left out by the callers, which read the agent's whole heartbeat.)
 pub fn unreached<'a>(beats: &'a [Beat], to: &str, now: u64) -> Vec<(&'a Beat, &'a Reach)> {
-    beats.iter().filter(|b| b.member != to && b.beat > 0 && !b.out_of_touch(now)).flat_map(|b| b.reach.iter().filter(|r| r.member == to && !r.ok).map(move |r| (b, r))).collect()
+    beats
+        .iter()
+        .filter(|b| b.member != to && b.beat > 0 && !b.out_of_touch(now))
+        .flat_map(|b| b.reach.iter().filter(|r| r.member == to && !r.ok).map(move |r| (b, r)))
+        .collect()
 }
 
 /// Why `to` can't be handed the lead for being unreachable, in words ("unreachable from m4:
@@ -185,7 +207,10 @@ pub fn unreachable_for(beats: &[Beat], to: &str, now: u64) -> Option<u64> {
 
 /// Whether a member in touch other than `to` reached it within `REACHED_S` of its heartbeat.
 pub fn reached(beats: &[Beat], to: &str, now: u64) -> bool {
-    beats.iter().filter(|b| b.member != to && b.beat > 0 && !b.out_of_touch(now)).any(|b| b.reach.iter().any(|r| r.member == to && r.ok && b.beat.saturating_sub(r.at) <= REACHED_S))
+    beats
+        .iter()
+        .filter(|b| b.member != to && b.beat > 0 && !b.out_of_touch(now))
+        .any(|b| b.reach.iter().any(|r| r.member == to && r.ok && b.beat.saturating_sub(r.at) <= REACHED_S))
 }
 
 #[cfg(test)]
@@ -226,18 +251,48 @@ mod tests {
 
     #[test]
     fn readers_go_by_the_reports_of_members_in_touch() {
-        let rep = |member: &str, host: &str, beat: u64, reach: Vec<Reach>| Beat { member: member.into(), host: host.into(), beat, reach, ..Default::default() };
-        let bad = Reach { member: A.into(), what: "coordinator".into(), ok: false, at: 5000, since: 4000, cause: Some(Cause::TimedOut), why: "timed out".into() };
-        let good = Reach { member: C.into(), what: "broker".into(), ok: true, at: 5000, since: 0, cause: None, why: String::new() };
-        let beats = vec![rep(B, "m4", 5010, vec![bad.clone(), good.clone()]), rep(A, "m1", 5010, vec![Reach { member: A.into(), ..good.clone() }])];
-        assert!(why_unreachable(&beats, A, "m1", 5020).is_some_and(|w| w.starts_with("unreachable from m4: connection timed out (m1 asleep, off the network, or its firewall blocking Scenic")));
+        let rep = |member: &str, host: &str, beat: u64, reach: Vec<Reach>| Beat {
+            member: member.into(),
+            host: host.into(),
+            beat,
+            reach,
+            ..Default::default()
+        };
+        let bad = Reach {
+            member: A.into(),
+            what: "coordinator".into(),
+            ok: false,
+            at: 5000,
+            since: 4000,
+            cause: Some(Cause::TimedOut),
+            why: "timed out".into(),
+        };
+        let good = Reach {
+            member: C.into(),
+            what: "broker".into(),
+            ok: true,
+            at: 5000,
+            since: 0,
+            cause: None,
+            why: String::new(),
+        };
+        let beats = vec![
+            rep(B, "m4", 5010, vec![bad.clone(), good.clone()]),
+            rep(A, "m1", 5010, vec![Reach { member: A.into(), ..good.clone() }]),
+        ];
+        assert!(why_unreachable(&beats, A, "m1", 5020).is_some_and(|w| w.starts_with(
+            "unreachable from m4: connection timed out (m1 asleep, off the network, or its firewall blocking Scenic"
+        )));
         assert_eq!(unreachable_for(&beats, A, 5020), Some(1010));
         assert_eq!(why_unreachable(&beats, B, "m4", 5020), None);
         assert!(reached(&beats, C, 5020) && !reached(&beats, A, 5020), "its own report of itself doesn't count");
         // Out of touch, its reports count for nothing.
         assert_eq!(why_unreachable(&beats, A, "m1", 5010 + OUT_OF_TOUCH_S + 1), None);
         assert!(!reached(&beats, C, 5010 + OUT_OF_TOUCH_S + 1));
-        assert_eq!(cause_of("reach the coordinator at http://m1:8090: io: Connection refused (os error 61)"), Cause::Refused);
+        assert_eq!(
+            cause_of("reach the coordinator at http://m1:8090: io: Connection refused (os error 61)"),
+            Cause::Refused
+        );
         assert_eq!(cause_of("timeout: connect"), Cause::TimedOut);
     }
 }

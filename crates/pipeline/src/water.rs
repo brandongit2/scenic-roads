@@ -118,7 +118,11 @@ pub fn some_drawn(sea: f32, inland: f32) -> u8 {
 impl Cov {
     /// One value throughout (its bytes: what else it holds is theirs).
     pub fn uniform(s: u8, i: u8) -> Cov {
-        Cov { sea: vec![f32::from(s) / 255.0; SIZE * SIZE], inland: vec![f32::from(i) / 255.0; SIZE * SIZE], some: vec![some_of(s, i); SIZE * SIZE] }
+        Cov {
+            sea: vec![f32::from(s) / 255.0; SIZE * SIZE],
+            inland: vec![f32::from(i) / 255.0; SIZE * SIZE],
+            some: vec![some_of(s, i); SIZE * SIZE],
+        }
     }
 
     /// Drawn shares, what else each pixel holds read from them.
@@ -198,10 +202,21 @@ impl Cov {
         let mut d = png::Decoder::new(std::io::Cursor::new(b)).read_info().context("a water tile")?;
         let mut px = vec![0u8; d.output_buffer_size().context("a water tile's size")?];
         let info = d.next_frame(&mut px).context("a water tile")?;
-        if info.width as usize != SIZE || info.height as usize != SIZE || info.color_type != png::ColorType::GrayscaleAlpha || info.bit_depth != png::BitDepth::Eight {
-            bail!("a water tile of another kind ({}×{} {:?} {:?})", info.width, info.height, info.color_type, info.bit_depth);
+        if info.width as usize != SIZE
+            || info.height as usize != SIZE
+            || info.color_type != png::ColorType::GrayscaleAlpha
+            || info.bit_depth != png::BitDepth::Eight
+        {
+            bail!(
+                "a water tile of another kind ({}×{} {:?} {:?})",
+                info.width,
+                info.height,
+                info.color_type,
+                info.bit_depth
+            );
         }
-        let (mut sea, mut inland, mut some) = (Vec::with_capacity(SIZE * SIZE), Vec::with_capacity(SIZE * SIZE), Vec::with_capacity(SIZE * SIZE));
+        let (mut sea, mut inland, mut some) =
+            (Vec::with_capacity(SIZE * SIZE), Vec::with_capacity(SIZE * SIZE), Vec::with_capacity(SIZE * SIZE));
         for p in px[..SIZE * SIZE * 2].as_chunks::<2>().0 {
             sea.push(f32::from(p[0]) / 255.0);
             inland.push(f32::from(p[1]) / 255.0);
@@ -280,9 +295,14 @@ pub fn tile_water(stored: &[u8]) -> Result<TileWater> {
         let l = names::mvt::Layer::decode(layer)?;
         let key = |name: &str| l.keys.iter().position(|k| k == name).map(|k| k as u32);
         let (class, brunnel) = (key("class"), key("brunnel"));
-        let value_is = |f: &names::mvt::Feature, k: Option<u32>, v: &str| {
-            k.is_some_and(|k| f.tags.as_chunks::<2>().0.iter().any(|kv| kv[0] == k && l.values.get(kv[1] as usize).and_then(names::mvt::Value::as_str) == Some(v)))
-        };
+        let value_is =
+            |f: &names::mvt::Feature, k: Option<u32>, v: &str| {
+                k.is_some_and(|k| {
+                    f.tags.as_chunks::<2>().0.iter().any(|kv| {
+                        kv[0] == k && l.values.get(kv[1] as usize).and_then(names::mvt::Value::as_str) == Some(v)
+                    })
+                })
+            };
         let mut out = TileWater { extent: f64::from(l.extent), rings: Vec::new() };
         for f in &l.features {
             // (Water in a tunnel the map doesn't draw.)
@@ -401,7 +421,13 @@ impl Blocks {
 
 /// Tile z/x/y's coverage (z ≥ 5), from the z14 tiles under it or the one over it: `get(x, y)`, the
 /// z14 tile's water in each of the basemap's archives that has it (summed, as abutting water).
-pub fn cover(z: u8, x: u32, y: u32, get: &(dyn Fn(u32, u32) -> Result<Vec<Stored>> + Sync), blocks: &Blocks) -> Result<Cov> {
+pub fn cover(
+    z: u8,
+    x: u32,
+    y: u32,
+    get: &(dyn Fn(u32, u32) -> Result<Vec<Stored>> + Sync),
+    blocks: &Blocks,
+) -> Result<Cov> {
     if !(5..=24).contains(&z) {
         bail!("water tiles are drawn at z5–24, not z{z}");
     }
@@ -458,7 +484,12 @@ pub fn cover(z: u8, x: u32, y: u32, get: &(dyn Fn(u32, u32) -> Result<Vec<Stored
 
 /// A tile not stored, from its nearest stored ancestor (`stored(z, x, y)`): one value throughout,
 /// the ancestor's over it.
-pub fn uniform_from_ancestor(z: u8, x: u32, y: u32, stored: &dyn Fn(u8, u32, u32) -> Result<Option<Cov>>) -> Result<Option<(u8, u8)>> {
+pub fn uniform_from_ancestor(
+    z: u8,
+    x: u32,
+    y: u32,
+    stored: &dyn Fn(u8, u32, u32) -> Result<Option<Cov>>,
+) -> Result<Option<(u8, u8)>> {
     for a in (0..z).rev() {
         let d = z - a;
         if let Some(c) = stored(a, x >> d, y >> d)? {
@@ -533,7 +564,13 @@ pub struct Made {
 /// PNG) in key order, and what was made. Reads each z7 tile's z14 tiles in a few long reads (the
 /// archive is on the NAS), and draws z5 tiles in parallel.
 /// `extra`, when given, is drawn beside the basemap (`Extra`).
-pub fn build(pm: &store::pmtiles::PmTiles, z14: &Z14, extra: Option<&dyn Extra>, only: Option<&[(u32, u32)]>, said: &(dyn Fn(u64, u64) + Sync)) -> Result<(Vec<TileOut>, Made)> {
+pub fn build(
+    pm: &store::pmtiles::PmTiles,
+    z14: &Z14,
+    extra: Option<&dyn Extra>,
+    only: Option<&[(u32, u32)]>,
+    said: &(dyn Fn(u64, u64) + Sync),
+) -> Result<(Vec<TileOut>, Made)> {
     let fives: Vec<(u32, u32)> = match only {
         Some(o) => o.to_vec(),
         None => (0..32u32).flat_map(|y| (0..32u32).map(move |x| (x, y))).collect(),
@@ -567,7 +604,8 @@ pub fn build(pm: &store::pmtiles::PmTiles, z14: &Z14, extra: Option<&dyn Extra>,
             let n = 1u32 << z;
             for y in 0..n {
                 for x in 0..n {
-                    let kid = |dx: u32, dy: u32| level.get(&(2 * x + dx, 2 * y + dy)).cloned().unwrap_or(Node::Uniform(0, 0));
+                    let kid =
+                        |dx: u32, dy: u32| level.get(&(2 * x + dx, 2 * y + dy)).cloned().unwrap_or(Node::Uniform(0, 0));
                     let kids = [kid(0, 0), kid(1, 0), kid(0, 1), kid(1, 1)];
                     let node = combine(&kids);
                     if let Node::Cov(c) = &node {
@@ -580,7 +618,11 @@ pub fn build(pm: &store::pmtiles::PmTiles, z14: &Z14, extra: Option<&dyn Extra>,
         }
     }
     tiles.sort_by_key(|t| (t.0, t.2, t.1));
-    let mut made = Made { tiles: vec![0; usize::from(STORED_MAXZ) + 1], bytes: vec![0; usize::from(STORED_MAXZ) + 1], ..Default::default() };
+    let mut made = Made {
+        tiles: vec![0; usize::from(STORED_MAXZ) + 1],
+        bytes: vec![0; usize::from(STORED_MAXZ) + 1],
+        ..Default::default()
+    };
     for t in &tiles {
         made.tiles[usize::from(t.0)] += 1;
         made.bytes[usize::from(t.0)] += t.3.len() as u64;
@@ -605,7 +647,18 @@ fn combine(kids: &[Node; 4]) -> Node {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn subtree(pm: &store::pmtiles::PmTiles, z14: &Z14, extra: Option<&dyn Extra>, blocks: &Blocks, z: u8, x: u32, y: u32, out: &mut Vec<TileOut>, drawn: &std::sync::atomic::AtomicU64, read: &std::sync::atomic::AtomicU64) -> Result<Node> {
+fn subtree(
+    pm: &store::pmtiles::PmTiles,
+    z14: &Z14,
+    extra: Option<&dyn Extra>,
+    blocks: &Blocks,
+    z: u8,
+    x: u32,
+    y: u32,
+    out: &mut Vec<TileOut>,
+    drawn: &std::sync::atomic::AtomicU64,
+    read: &std::sync::atomic::AtomicU64,
+) -> Result<Node> {
     use std::sync::atomic::Ordering::Relaxed;
     let d = 2 * u32::from(BASE_Z - z);
     let first = Z14_BASE + (hilbert(z, x, y) << d);
@@ -622,7 +675,9 @@ fn subtree(pm: &store::pmtiles::PmTiles, z14: &Z14, extra: Option<&dyn Extra>, b
         offs.dedup();
         for (o, l) in offs {
             match spans.last_mut() {
-                Some(s) if o <= s.1 + (1 << 20) && o + u64::from(l) - s.0 <= 256 << 20 => s.1 = s.1.max(o + u64::from(l)),
+                Some(s) if o <= s.1 + (1 << 20) && o + u64::from(l) - s.0 <= 256 << 20 => {
+                    s.1 = s.1.max(o + u64::from(l))
+                }
                 _ => spans.push((o, o + u64::from(l))),
             }
         }
@@ -631,14 +686,20 @@ fn subtree(pm: &store::pmtiles::PmTiles, z14: &Z14, extra: Option<&dyn Extra>, b
             let buf = pm.source().read_at(a, usize::try_from(b - a)?)?;
             for e in entries {
                 if e.2 >= a && e.2 + u64::from(e.3) <= b {
-                    bytes.entry(e.2).or_insert_with(|| Arc::new(buf[(e.2 - a) as usize..(e.2 - a) as usize + e.3 as usize].to_vec()));
+                    bytes.entry(e.2).or_insert_with(|| {
+                        Arc::new(buf[(e.2 - a) as usize..(e.2 - a) as usize + e.3 as usize].to_vec())
+                    });
                 }
             }
         }
         read.fetch_add(bytes.len() as u64, Relaxed);
         let get = |cx: u32, cy: u32| -> Result<Vec<Stored>> {
             let id = store::pmtiles::zxy_to_tile_id(BASE_Z, cx, cy)?;
-            let mut v: Vec<Stored> = z14.find(id).and_then(|(o, _)| bytes.get(&o).map(|b| Stored { key: o, bytes: b.clone() })).into_iter().collect();
+            let mut v: Vec<Stored> = z14
+                .find(id)
+                .and_then(|(o, _)| bytes.get(&o).map(|b| Stored { key: o, bytes: b.clone() }))
+                .into_iter()
+                .collect();
             v.extend(extra.and_then(|e| e.z14(cx, cy)));
             Ok(v)
         };
@@ -658,7 +719,15 @@ fn subtree(pm: &store::pmtiles::PmTiles, z14: &Z14, extra: Option<&dyn Extra>, b
 }
 
 /// Below z7, with the z14 tiles at hand: down to `DRAW_Z`, drawn there, averaged back up.
-fn walk(z: u8, x: u32, y: u32, get: &(dyn Fn(u32, u32) -> Result<Vec<Stored>> + Sync), blocks: &Blocks, out: &mut Vec<TileOut>, drawn: &std::sync::atomic::AtomicU64) -> Result<Node> {
+fn walk(
+    z: u8,
+    x: u32,
+    y: u32,
+    get: &(dyn Fn(u32, u32) -> Result<Vec<Stored>> + Sync),
+    blocks: &Blocks,
+    out: &mut Vec<TileOut>,
+    drawn: &std::sync::atomic::AtomicU64,
+) -> Result<Node> {
     let node = if z == DRAW_Z {
         // No basemap tile under it: land. (The open sea's tiles, all one, are drawn once: Blocks.)
         let d = BASE_Z - z;
@@ -671,7 +740,11 @@ fn walk(z: u8, x: u32, y: u32, get: &(dyn Fn(u32, u32) -> Result<Vec<Stored>> + 
                 break;
             }
         }
-        if any { node_of(cover(z, x, y, get, blocks)?) } else { Node::Uniform(0, 0) }
+        if any {
+            node_of(cover(z, x, y, get, blocks)?)
+        } else {
+            Node::Uniform(0, 0)
+        }
     } else {
         let mut kids = Vec::with_capacity(4);
         for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
@@ -730,8 +803,24 @@ mod tests {
                 Feature { id: None, tags, geom_type: Some(3), geometry: g, unknown: Vec::new() }
             })
             .collect();
-        let l = Layer { name: "water".into(), version: 2, extent: 4096, keys: vec!["class".into(), "brunnel".into()], values, features, unknown: Vec::new() };
-        let other = Layer { name: "roads".into(), version: 2, extent: 4096, keys: vec![], values: vec![], features: vec![], unknown: Vec::new() };
+        let l = Layer {
+            name: "water".into(),
+            version: 2,
+            extent: 4096,
+            keys: vec!["class".into(), "brunnel".into()],
+            values,
+            features,
+            unknown: Vec::new(),
+        };
+        let other = Layer {
+            name: "roads".into(),
+            version: 2,
+            extent: 4096,
+            keys: vec![],
+            values: vec![],
+            features: vec![],
+            unknown: Vec::new(),
+        };
         names::mvt::gzip(&Tile { layers: vec![other, l], unknown: Vec::new() }.encode()).unwrap()
     }
 
@@ -742,7 +831,11 @@ mod tests {
 
     #[test]
     fn a_tile_s_water_sea_and_inland_apart_tunnels_left_out() {
-        let t = mvt(&[("ocean", vec![sq(0, 0, 4096, 2048)]), ("lake", vec![sq(1024, 3072, 2048, 4096)]), ("tunnel", vec![sq(3072, 3072, 4096, 4096)])]);
+        let t = mvt(&[
+            ("ocean", vec![sq(0, 0, 4096, 2048)]),
+            ("lake", vec![sq(1024, 3072, 2048, 4096)]),
+            ("tunnel", vec![sq(3072, 3072, 4096, 4096)]),
+        ]);
         let w = tile_water(&t).unwrap();
         assert_eq!(w.rings.len(), 2);
         assert!(w.rings[0].0 && !w.rings[1].0);
@@ -750,7 +843,12 @@ mod tests {
         // z14 itself: the sea the top half, the lake a sixteenth in the bottom row.
         let c = cover(14, 100, 200, &get, &Blocks::default()).unwrap();
         let sum = |v: &[f32]| v.iter().map(|&a| f64::from(a)).sum::<f64>() / (SIZE * SIZE) as f64;
-        assert!((sum(&c.sea) - 0.5).abs() < 1e-6 && (sum(&c.inland) - 1.0 / 16.0).abs() < 1e-6, "{} {}", sum(&c.sea), sum(&c.inland));
+        assert!(
+            (sum(&c.sea) - 0.5).abs() < 1e-6 && (sum(&c.inland) - 1.0 / 16.0).abs() < 1e-6,
+            "{} {}",
+            sum(&c.sea),
+            sum(&c.inland)
+        );
         // z16: a quarter of it, the top left: all sea.
         let c = cover(16, 400, 800, &get, &Blocks::default()).unwrap();
         assert!(c.sea.iter().all(|&v| v == 1.0) && c.inland.iter().all(|&v| v == 0.0));
@@ -779,7 +877,10 @@ mod tests {
         let back = Cov::from_png(&p.png()).unwrap();
         assert!(back.sea.iter().zip(&p.sea).all(|(a, b)| byte(*a) == byte(*b)));
         assert_eq!(p.png(), p.png());
-        assert_eq!(combine(&[Node::Uniform(3, 4), Node::Uniform(3, 4), Node::Uniform(3, 4), Node::Uniform(3, 4)]), Node::Uniform(3, 4));
+        assert_eq!(
+            combine(&[Node::Uniform(3, 4), Node::Uniform(3, 4), Node::Uniform(3, 4), Node::Uniform(3, 4)]),
+            Node::Uniform(3, 4)
+        );
     }
 
     #[test]
@@ -803,7 +904,8 @@ mod tests {
             }
         }
         let c = Cov::drawn(c.sea, c.inland);
-        let stored = |z: u8, x: u32, y: u32| -> Result<Option<Cov>> { Ok((z == 3 && x == 0 && y == 0).then(|| c.clone())) };
+        let stored =
+            |z: u8, x: u32, y: u32| -> Result<Option<Cov>> { Ok((z == 3 && x == 0 && y == 0).then(|| c.clone())) };
         assert_eq!(uniform_from_ancestor(5, 1, 1, &stored).unwrap(), Some((255, 0)));
         assert_eq!(uniform_from_ancestor(5, 3, 3, &stored).unwrap(), Some((0, 0)));
         assert_eq!(uniform_from_ancestor(2, 0, 0, &stored).unwrap(), None);
@@ -839,7 +941,8 @@ mod tests {
             node = combine(&[node, sea.clone(), sea.clone(), sea]);
         }
         let Node::Cov(c) = node else { panic!("one value throughout: the rock lost") };
-        let land: Vec<usize> = (0..SIZE * SIZE).filter(|&k| some_of(c.bytes_at(k).0, c.bytes_at(k).1) & SOME_LAND != 0).collect();
+        let land: Vec<usize> =
+            (0..SIZE * SIZE).filter(|&k| some_of(c.bytes_at(k).0, c.bytes_at(k).1) & SOME_LAND != 0).collect();
         assert_eq!(land, vec![(100 >> 5) * SIZE + (200 >> 5)]);
         assert_eq!(c.bytes_at(land[0]), (254, 0));
         // Stored and read back, the same.

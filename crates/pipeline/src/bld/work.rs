@@ -136,7 +136,10 @@ impl Block {
 
     /// Record `i`'s polygons, each as its rings' vertices (indexed: [`Block::index`]).
     pub fn polygons(&self, i: usize) -> impl Iterator<Item = impl Iterator<Item = &[[i32; 2]]> + '_> + '_ {
-        (self.poly0[i]..self.poly0[i + 1]).map(move |p| (self.ring0[p as usize]..self.ring0[p as usize + 1]).map(move |r| &self.verts[self.vert0[r as usize] as usize..self.vert0[r as usize + 1] as usize]))
+        (self.poly0[i]..self.poly0[i + 1]).map(move |p| {
+            (self.ring0[p as usize]..self.ring0[p as usize + 1])
+                .map(move |r| &self.verts[self.vert0[r as usize] as usize..self.vert0[r as usize + 1] as usize])
+        })
     }
 
     /// Record `i`'s vertices, every ring's.
@@ -187,10 +190,20 @@ impl Block {
     pub fn decode(b: &[u8]) -> Result<Block> {
         let mut c = Cur { b, at: 0 };
         let (n, np, nr, nv) = (c.u32()? as usize, c.u32()? as usize, c.u32()? as usize, c.u32()? as usize);
-        let mut k = Block { cen: c.vec(n)?, area: c.vec(n)?, npolys: c.vec(n)?, nrings: c.vec(np)?, ring_len: c.vec(nr)?, ..Default::default() };
+        let mut k = Block {
+            cen: c.vec(n)?,
+            area: c.vec(n)?,
+            npolys: c.vec(n)?,
+            nrings: c.vec(np)?,
+            ring_len: c.vec(nr)?,
+            ..Default::default()
+        };
         ensure!(k.npolys.iter().map(|&x| x as usize).sum::<usize>() == np, "a building block's polygons don't add up");
         ensure!(k.nrings.iter().map(|&x| x as usize).sum::<usize>() == nr, "a building block's rings don't add up");
-        ensure!(k.ring_len.iter().map(|&x| x as usize).sum::<usize>() == nv, "a building block's vertices don't add up");
+        ensure!(
+            k.ring_len.iter().map(|&x| x as usize).sum::<usize>() == nv,
+            "a building block's vertices don't add up"
+        );
         let raw: Vec<[i32; 2]> = c.vec(nv)?;
         k.verts = Vec::with_capacity(nv);
         let mut at = 0usize;
@@ -260,7 +273,8 @@ impl WorkFile {
     pub fn open(path: &Path) -> Result<WorkFile> {
         let f = PlainFile::open(path).with_context(|| format!("open {}", path.display()))?;
         let r = SectReader::open(f).with_context(|| format!("read {}", path.display()))?;
-        let meta: Meta = serde_json::from_value(r.meta().clone()).with_context(|| format!("{}: its meta", path.display()))?;
+        let meta: Meta =
+            serde_json::from_value(r.meta().clone()).with_context(|| format!("{}: its meta", path.display()))?;
         ensure!(meta.fmt == 1, "{}: normalized buildings fmt {} (this reads 1)", path.display(), meta.fmt);
         let index: Vec<IndexEntry> = r.read_pod("index")?;
         ensure!(index.windows(2).all(|w| w[0].key < w[1].key), "{}: its index isn't sorted", path.display());
@@ -300,7 +314,12 @@ pub fn write(path: &Path, meta: &Meta, blocks: &mut dyn Iterator<Item = Result<(
             let (key, z, count) = b?;
             ensure!(index.last().is_none_or(|e| e.key < key), "building blocks out of order");
             std::io::Write::write_all(s, &z)?;
-            index.push(IndexEntry { key, offset: at, len: u32::try_from(z.len()).context("a building block over 4 GiB")?, count });
+            index.push(IndexEntry {
+                key,
+                offset: at,
+                len: u32::try_from(z.len()).context("a building block over 4 GiB")?,
+                count,
+            });
             at += z.len() as u64;
         }
         Ok(())
@@ -322,10 +341,20 @@ mod tests {
             nrings: vec![2, 1, 1],
             ring_len: vec![4, 3, 3, 4],
             verts: vec![
-                [0, 0], [100, 0], [100, 100], [0, 100],
-                [10, 10], [20, 10], [20, 20],
-                [-50, -50], [-40, -50], [-40, -40],
-                [i32::MAX - 1, i32::MIN + 1], [i32::MIN + 2, i32::MAX - 3], [0, 0], [5, -5],
+                [0, 0],
+                [100, 0],
+                [100, 100],
+                [0, 100],
+                [10, 10],
+                [20, 10],
+                [20, 20],
+                [-50, -50],
+                [-40, -50],
+                [-40, -40],
+                [i32::MAX - 1, i32::MIN + 1],
+                [i32::MIN + 2, i32::MAX - 3],
+                [0, 0],
+                [5, -5],
             ],
             h: vec![120, 0],
             m: vec![0, 30],

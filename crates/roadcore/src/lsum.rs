@@ -60,7 +60,8 @@ pub fn build(parts: &[Part], ps: &[PSample], pch: &[[u8; ch::N]], here: &[Here],
         if smp.is_empty() {
             continue;
         }
-        let (lparts, lbins) = if rail { (&mut out.lrparts, &mut out.lrbins) } else { (&mut out.lparts, &mut out.lbins) };
+        let (lparts, lbins) =
+            if rail { (&mut out.lrparts, &mut out.lrbins) } else { (&mut out.lparts, &mut out.lbins) };
         let first_bin = lbins.len();
         // What closes a bin besides its length: a rail bin's way, a road bin's attributes.
         let key = |k: usize| -> (u32, u8, u8) {
@@ -80,13 +81,27 @@ pub fn build(parts: &[Part], ps: &[PSample], pch: &[[u8; ch::N]], here: &[Here],
             lbins.push(bin(rail, i0, k, smp, chs, here, railinfo));
             i0 = k;
         }
-        lparts.push(LPart { road: p.road, first: first_bin as u32, count: (lbins.len() - first_bin) as u32, road_len: p.road_len, _pad: 0 });
+        lparts.push(LPart {
+            road: p.road,
+            first: first_bin as u32,
+            count: (lbins.len() - first_bin) as u32,
+            road_len: p.road_len,
+            _pad: 0,
+        });
     }
     out
 }
 
 /// The bin of samples `i0..k` of a part.
-fn bin(rail: bool, i0: usize, k: usize, smp: &[PSample], chs: &[[u8; ch::N]], here: &[Here], railinfo: &[RailInfo]) -> LBin {
+fn bin(
+    rail: bool,
+    i0: usize,
+    k: usize,
+    smp: &[PSample],
+    chs: &[[u8; ch::N]],
+    here: &[Here],
+    railinfo: &[RailInfo],
+) -> LBin {
     let n = k - i0;
     let mid = i0 + n / 2;
     let mut sum = [0f64; 12];
@@ -150,20 +165,54 @@ mod tests {
     #[test]
     fn bins_close_at_500_m_attributes_and_rail_ways() {
         // A 2.5 km road, 100 m samples, toll from 1,200 m.
-        let hs = vec![here(10, class::SECONDARY, 0), here(11, class::SECONDARY, flag::TOLL), here(20, class::TRAM, 0), here(21, class::TRAM, 0)];
+        let hs = vec![
+            here(10, class::SECONDARY, 0),
+            here(11, class::SECONDARY, flag::TOLL),
+            here(20, class::TRAM, 0),
+            here(21, class::TRAM, 0),
+        ];
         let mut ps: Vec<PSample> = (0..26).map(|i| smp(if i < 12 { 0 } else { 1 }, i as f32 * 100.0)).collect();
         // A rail part: two ways.
         ps.extend((0..6).map(|i| smp(if i < 4 { 2 } else { 3 }, i as f32 * 100.0)));
         let pch = vec![[0u8; ch::N]; ps.len()];
         let parts = vec![
-            Part { road: 1, offset: 0.0, first: 0, count: 26, road_len: 2500.0, class: class::SECONDARY, flags: 0, _pad: [0; 6] },
-            Part { road: 2, offset: 0.0, first: 26, count: 6, road_len: 500.0, class: class::TRAM, flags: 0, _pad: [0; 6] },
+            Part {
+                road: 1,
+                offset: 0.0,
+                first: 0,
+                count: 26,
+                road_len: 2500.0,
+                class: class::SECONDARY,
+                flags: 0,
+                _pad: [0; 6],
+            },
+            Part {
+                road: 2,
+                offset: 0.0,
+                first: 26,
+                count: 6,
+                road_len: 500.0,
+                class: class::TRAM,
+                flags: 0,
+                _pad: [0; 6],
+            },
         ];
-        let ri = vec![RailInfo { here: 3, colour: 0, rel: 7, name: 0, route: 0, rail: 1, class: class::TRAM, _pad: [0; 6] }];
+        let ri =
+            vec![RailInfo { here: 3, colour: 0, rel: 7, name: 0, route: 0, rail: 1, class: class::TRAM, _pad: [0; 6] }];
         let s = build(&parts, &ps, &pch, &hs, &ri);
         // Road: 0–400, 500–900, 1000–1100 (toll from 1200), 1200–1600, 1700–2100, 2200–2500.
         let spans: Vec<(f32, f32, u16)> = s.lbins.iter().map(|b| (b.off0, b.off0 + b.len, b.n)).collect();
-        assert_eq!(spans, vec![(0.0, 400.0, 5), (500.0, 900.0, 5), (1000.0, 1100.0, 2), (1200.0, 1600.0, 5), (1700.0, 2100.0, 5), (2200.0, 2500.0, 4)]);
+        assert_eq!(
+            spans,
+            vec![
+                (0.0, 400.0, 5),
+                (500.0, 900.0, 5),
+                (1000.0, 1100.0, 2),
+                (1200.0, 1600.0, 5),
+                (1700.0, 2100.0, 5),
+                (2200.0, 2500.0, 4)
+            ]
+        );
         assert_eq!(s.lbins[2].flags, 0);
         assert_eq!(s.lbins[3].flags, 2);
         assert_eq!(s.lparts.len(), 1);
@@ -182,8 +231,26 @@ mod tests {
         let ps: Vec<PSample> = (0..4).map(|i| smp(if i < 2 { 0 } else { 1 }, (i % 2) as f32 * 100.0)).collect();
         let pch = vec![[0u8; ch::N]; 4];
         let parts = vec![
-            Part { road: 1, offset: 0.0, first: 0, count: 2, road_len: 1999.0, class: class::RESIDENTIAL, flags: 0, _pad: [0; 6] },
-            Part { road: 2, offset: 0.0, first: 2, count: 2, road_len: 150.0, class: class::INTERCITY, flags: 0, _pad: [0; 6] },
+            Part {
+                road: 1,
+                offset: 0.0,
+                first: 0,
+                count: 2,
+                road_len: 1999.0,
+                class: class::RESIDENTIAL,
+                flags: 0,
+                _pad: [0; 6],
+            },
+            Part {
+                road: 2,
+                offset: 0.0,
+                first: 2,
+                count: 2,
+                road_len: 150.0,
+                class: class::INTERCITY,
+                flags: 0,
+                _pad: [0; 6],
+            },
         ];
         let s = build(&parts, &ps, &pch, &hs, &[]);
         assert!(s.lparts.is_empty() && s.lbins.is_empty());

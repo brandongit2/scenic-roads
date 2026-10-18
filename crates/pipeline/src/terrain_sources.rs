@@ -45,7 +45,11 @@ pub fn of(a: &crate::inputs::Accepted) -> Result<Declared> {
     for d in &ds {
         match &d.declaration.data {
             Data::Tiles { url, encoding, .. } => {
-                ensure!(encoding == "terrarium", "{}: the terrain's tile pyramid is read as Terrarium PNGs, not {encoding}", d.path);
+                ensure!(
+                    encoding == "terrarium",
+                    "{}: the terrain's tile pyramid is read as Terrarium PNGs, not {encoding}",
+                    d.path
+                );
                 ensure!(base.is_none(), "{}: the terrain has one tile pyramid declared already", d.path);
                 base = Some(url.clone());
             }
@@ -63,7 +67,11 @@ pub fn of(a: &crate::inputs::Accepted) -> Result<Declared> {
             Data::Geotiff { .. } => bail!("{}: the terrain's GeoTIFF dataset names its 1° tiles by an index", d.path),
         }
     }
-    Ok(Declared { base: base.context("no tile pyramid is declared for the terrain (`terrain = true`, docs/inputs.md §6.8)")?, north, pin: pin(&ds) })
+    Ok(Declared {
+        base: base.context("no tile pyramid is declared for the terrain (`terrain = true`, docs/inputs.md §6.8)")?,
+        north,
+        pin: pin(&ds),
+    })
 }
 
 /// The terrain's sources in the accepted version `out`'s records name.
@@ -97,7 +105,10 @@ mod tests {
         let n = t.north.unwrap();
         assert_eq!(n.id, "glo30");
         assert_eq!(n.cells.keys().copied().collect::<std::collections::BTreeSet<_>>(), [(64, -148), (65, -148)].into());
-        assert!(n.cells[&(64, -148)].0.ends_with("N64_W148_DEM.tif") && n.cells[&(64, -148)].1.as_deref().unwrap().ends_with("N64_W148_FLM.tif"));
+        assert!(
+            n.cells[&(64, -148)].0.ends_with("N64_W148_DEM.tif")
+                && n.cells[&(64, -148)].1.as_deref().unwrap().ends_with("N64_W148_FLM.tif")
+        );
         // The pin: the terrain's declarations alone (the roads' left out), by id and `keyed`.
         let ds = declared::accepted_terrain(&a).unwrap();
         assert_eq!(ds.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["glo30", "terrarium"]);
@@ -109,7 +120,10 @@ mod tests {
     /// of the drop box's shape, and declare the terrain's base and its northern dataset.
     #[test]
     fn the_staged_declarations_parse() {
-        for (path, b) in [("terrarium.toml", &include_bytes!("../../../producers/elevation/terrain/terrarium.toml")[..]), ("glo30.toml", &include_bytes!("../../../producers/elevation/terrain/glo30.toml")[..])] {
+        for (path, b) in [
+            ("terrarium.toml", &include_bytes!("../../../producers/elevation/terrain/terrarium.toml")[..]),
+            ("glo30.toml", &include_bytes!("../../../producers/elevation/terrain/glo30.toml")[..]),
+        ] {
             let (desc, findings, _) = crate::inputs::credits::parse_description(path, b);
             assert!(desc.is_some() && findings.is_empty(), "{path}: {findings:?}");
             let c = crate::inputs::Checks::file(&crate::inputs::elevation::Elevation::default(), path, b);
@@ -117,7 +131,9 @@ mod tests {
             let d = declared::parse(b).unwrap_or_else(|e| panic!("{path}: {e:?}"));
             assert!(d.terrain && d.code == 0, "{path}");
             match path {
-                "terrarium.toml" => assert!(matches!(&d.data, Data::Tiles { encoding, zoom: 12, .. } if encoding == "terrarium")),
+                "terrarium.toml" => {
+                    assert!(matches!(&d.data, Data::Tiles { encoding, zoom: 12, .. } if encoding == "terrarium"))
+                }
                 _ => assert!(matches!(&d.data, Data::Geotiff { index: Some(i), .. } if i == "glo30-tiles.geojson")),
             }
         }

@@ -66,15 +66,24 @@ pub fn from_pois(pois_json: &[u8], u: Unit, cov: &Coverage) -> Result<Vec<Cand>>
             continue;
         }
         let p = &f["properties"];
-        let nodes: Vec<[i32; 2]> = p["nodes"].as_array().map(|a| a.iter().filter_map(|n| Some([n[0].as_i64()? as i32, n[1].as_i64()? as i32])).collect()).unwrap_or_default();
+        let nodes: Vec<[i32; 2]> = p["nodes"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|n| Some([n[0].as_i64()? as i32, n[1].as_i64()? as i32])).collect())
+            .unwrap_or_default();
         let inside = if nodes.is_empty() { cov.contains([lon, lat]) } else { nodes.iter().any(|&n| cov.contains(n)) };
         if !inside {
             continue;
         }
         let kind = p["kind"].as_str().unwrap_or("").to_string();
         let osm = p["osm"].as_str().map(str::to_string);
-        let id = osm.clone().or_else(|| p["key"].as_str().map(str::to_string)).context("a point without an OSM id or key")?;
-        let tags: BTreeMap<String, String> = p["tags"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()).unwrap_or_default();
+        let id = osm
+            .clone()
+            .or_else(|| p["key"].as_str().map(str::to_string))
+            .context("a point without an OSM id or key")?;
+        let tags: BTreeMap<String, String> = p["tags"]
+            .as_object()
+            .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+            .unwrap_or_default();
         let tag = |k: &str| tags.get(k).filter(|v| !v.is_empty()).cloned();
         out.push(Cand {
             key: format!("{id}:{kind}"),
@@ -109,7 +118,9 @@ pub fn write(path: &Path, cands: &[Cand]) -> Result<()> {
 }
 
 pub fn read(path: &Path) -> Result<Vec<Cand>> {
-    let r = std::io::BufReader::new(zstd::Decoder::new(std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?)?);
+    let r = std::io::BufReader::new(zstd::Decoder::new(
+        std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?,
+    )?);
     r.lines().map(|l| Ok(serde_json::from_str(&l?)?)).collect()
 }
 
@@ -121,7 +132,16 @@ mod tests {
     fn clipped_to_the_unit_and_the_coverage() {
         let d = tempfile::tempdir().unwrap();
         // Iceland around Reykjavik: unit 6/28/17 holds -21.9, 64.13.
-        let cov = Coverage::fixture(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,20".into()] }], None, d.path()).unwrap();
+        let cov = Coverage::fixture(
+            &[crate::agent::recipes::Recipe {
+                id: "r".into(),
+                name: "R".into(),
+                outline: vec!["place:-21.9,64.13,20".into()],
+            }],
+            None,
+            d.path(),
+        )
+        .unwrap();
         let u = Unit { z: 6, x: 28, y: 17 };
         let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
         assert!(crate::unit::owns(tb, [-219_000_000, 641_300_000]), "{tb:?}");
@@ -133,7 +153,10 @@ mod tests {
         let c = from_pois(pois, u, &cov).unwrap();
         let keys: Vec<&str> = c.iter().map(|c| c.key.as_str()).collect();
         assert_eq!(keys, ["n2:peak", "trail:9:8:trailhead", "w4:covered_bridge"]);
-        assert_eq!((c[0].en.as_deref(), c[0].qid.as_deref(), c[0].viewpoint, c[0].ele), (Some("a"), Some("Q5"), true, Some(512.0)));
+        assert_eq!(
+            (c[0].en.as_deref(), c[0].qid.as_deref(), c[0].viewpoint, c[0].ele),
+            (Some("a"), Some("Q5"), true, Some(512.0))
+        );
         assert_eq!(c[2].length_m, Some(61));
         let p = d.path().join("c.jsonl.zst");
         write(&p, &c).unwrap();

@@ -68,7 +68,14 @@ impl Cut {
 
 /// Writes area `a`'s task files (of T, `files` its and its neighbours' work files as
 /// `job::work_files` has them) into `dir`.
-pub fn cut(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, u32), sites: &[[i32; 2]], dir: &Path) -> Result<Cut> {
+pub fn cut(
+    files: &[Option<WorkFile>],
+    cov: &Coverage,
+    t: Unit,
+    a: (u32, u32),
+    sites: &[[i32; 2]],
+    dir: &Path,
+) -> Result<Cut> {
     ensure!(files.len() == 9, "T and its 8 neighbours");
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join(SITES), sites_bytes(sites))?;
@@ -98,7 +105,11 @@ pub fn cut(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, u32), s
         bytes += std::fs::metadata(&path)?.len();
     }
     let path = dir.join(COVERAGE);
-    let kept: Vec<&Shape> = cov.shapes.iter().filter(|s| s.bbox[0] <= ext[2] && s.bbox[2] >= ext[0] && s.bbox[1] <= ext[3] && s.bbox[3] >= ext[1]).collect();
+    let kept: Vec<&Shape> = cov
+        .shapes
+        .iter()
+        .filter(|s| s.bbox[0] <= ext[2] && s.bbox[2] >= ext[0] && s.bbox[1] <= ext[3] && s.bbox[3] >= ext[1])
+        .collect();
     write_coverage(&path, &kept)?;
     bytes += std::fs::metadata(&path)?.len();
     Ok(Cut { bytes, records })
@@ -116,7 +127,9 @@ fn read_sites(path: &Path) -> Result<Vec<[i32; 2]>> {
         Err(e) => return Err(e.into()),
     };
     ensure!(b.len() % 8 == 0, "{}: not E7 pairs", path.display());
-    Ok(b.chunks_exact(8).map(|c| [i32::from_le_bytes(c[0..4].try_into().unwrap()), i32::from_le_bytes(c[4..8].try_into().unwrap())]).collect())
+    Ok(b.chunks_exact(8)
+        .map(|c| [i32::from_le_bytes(c[0..4].try_into().unwrap()), i32::from_le_bytes(c[4..8].try_into().unwrap())])
+        .collect())
 }
 
 /// Writes shapes as a task's coverage (RDSECT: meta `{"fmt": 1, "shapes": [{source, country,
@@ -149,14 +162,21 @@ pub fn read_coverage(path: &Path) -> Result<Coverage> {
     let m: M = serde_json::from_value(r.meta().clone()).context("a task's coverage's meta")?;
     ensure!(m.fmt == 1, "a task's coverage fmt {} (this reads 1)", m.fmt);
     let verts: Vec<[i32; 2]> = r.read_pod("verts")?;
-    ensure!(m.shapes.iter().flat_map(|s| &s.rings).sum::<usize>() == verts.len(), "a task's coverage's vertices don't add up");
+    ensure!(
+        m.shapes.iter().flat_map(|s| &s.rings).sum::<usize>() == verts.len(),
+        "a task's coverage's vertices don't add up"
+    );
     let mut at = 0usize;
     let mut shapes = Vec::with_capacity(m.shapes.len());
     for s in m.shapes {
-        let rings = s.rings.iter().map(|&n| {
-            at += n;
-            verts[at - n..at].to_vec()
-        }).collect();
+        let rings = s
+            .rings
+            .iter()
+            .map(|&n| {
+                at += n;
+                verts[at - n..at].to_vec()
+            })
+            .collect();
         let mut sh = Shape::new(s.source, rings, s.buffer_m);
         sh.country = s.country;
         shapes.push(sh);
@@ -184,12 +204,20 @@ pub fn tile_of(a: Unit) -> Unit {
 
 /// Area `a`'s tiles and summary written into `dir` (`TILES`, `SUMMARY`), from `files` and `cov`
 /// (the whole work files and coverage, or a task's): the program's run and the job's own.
-pub fn write_area(files: &[Option<WorkFile>], cov: &Coverage, a: Unit, sites: &[[i32; 2]], dir: &Path) -> Result<Summary> {
+pub fn write_area(
+    files: &[Option<WorkFile>],
+    cov: &Coverage,
+    a: Unit,
+    sites: &[[i32; 2]],
+    dir: &Path,
+) -> Result<Summary> {
     ensure!(a.z == 8, "an area is a z8 tile ({} isn't one)", a.slash());
     std::fs::create_dir_all(dir)?;
     let meta = serde_json::json!({ "layer": super::LAYER, "area": a.slash(), "encoding": "mvt" }).to_string();
     let mut w = ArchiveWriter::create(&dir.join(TILES), &meta)?;
-    let (sum, f) = job::area_tiles(files, cov, tile_of(a), (a.x, a.y), sites, &mut |z, x, y, gz, raw| w.add(z, x, y, gz, raw as usize))?;
+    let (sum, f) = job::area_tiles(files, cov, tile_of(a), (a.x, a.y), sites, &mut |z, x, y, gz, raw| {
+        w.add(z, x, y, gz, raw as usize)
+    })?;
     w.finish()?;
     let meta = serde_json::json!({ "layer": field::LAYER, "area": a.slash(), "encoding": field::ENCODING }).to_string();
     let mut w = ArchiveWriter::create(&dir.join(FIELD), &meta)?;
@@ -220,14 +248,22 @@ pub fn take_area(dir: &Path, a: Unit, add: &mut AddTile) -> Result<(Summary, fie
     let ar = Archive::open(&dir.join(TILES))?;
     for e in ar.entries() {
         let (z, x, y) = super::key_zxy(e.key);
-        ensure!(z == super::ZOOM && (x >> (z - 8), y >> (z - 8)) == (a.x, a.y), "area {}'s tiles hold {z}/{x}/{y}", a.slash());
+        ensure!(
+            z == super::ZOOM && (x >> (z - 8), y >> (z - 8)) == (a.x, a.y),
+            "area {}'s tiles hold {z}/{x}/{y}",
+            a.slash()
+        );
         add(z, x, y, ar.get_entry(e), e.raw_len)?;
     }
     let mut f = field::AreaField::default();
     let ar = Archive::open(&dir.join(FIELD))?;
     for e in ar.entries() {
         let (z, x, y) = super::key_zxy(e.key);
-        ensure!((field::LEVEL_HI_MIN..=field::LEVEL_MAX).contains(&z) && (x >> (z - 8), y >> (z - 8)) == (a.x, a.y), "area {}'s field holds {z}/{x}/{y}", a.slash());
+        ensure!(
+            (field::LEVEL_HI_MIN..=field::LEVEL_MAX).contains(&z) && (x >> (z - 8), y >> (z - 8)) == (a.x, a.y),
+            "area {}'s field holds {z}/{x}/{y}",
+            a.slash()
+        );
         f.tiles.push((z, x, y, ar.get_entry(e).to_vec()));
     }
     // (In the field's order: the finest level first.)
@@ -247,7 +283,13 @@ pub fn take_area(dir: &Path, a: Unit, add: &mut AddTile) -> Result<(Summary, fie
 /// A task's spec (the shape of a tail's: crate::offload) for area `a`: the program `bldtile` over
 /// its folder.
 pub fn spec(a: Unit, version: &str, inputs: &BTreeMap<String, u64>) -> serde_json::Value {
-    let run = crate::unit::Run { what: KIND.into(), prog: KIND.into(), args: vec!["{dir}".into(), a.slash()], env: vec![], reads: vec!["{dir}/*".into()] };
+    let run = crate::unit::Run {
+        what: KIND.into(),
+        prog: KIND.into(),
+        args: vec!["{dir}".into(), a.slash()],
+        env: vec![],
+        reads: vec!["{dir}/*".into()],
+    };
     let list: Vec<serde_json::Value> = inputs.iter().map(|(p, n)| serde_json::json!([p, n])).collect();
     serde_json::json!({ "unit": a.slash(), "version": version, "runs": [run], "inputs": list, "places": crate::offload::places() })
 }
@@ -265,7 +307,9 @@ pub fn inputs_of(root: &Path) -> Result<BTreeMap<String, u64>> {
 pub fn same_files(a: &Path, b: &Path) -> bool {
     OUTPUTS.iter().all(|f| match (std::fs::read(a.join(f)), std::fs::read(b.join(f))) {
         (Ok(x), Ok(y)) => x == y,
-        (Err(x), Err(y)) => *f == MID && x.kind() == std::io::ErrorKind::NotFound && y.kind() == std::io::ErrorKind::NotFound,
+        (Err(x), Err(y)) => {
+            *f == MID && x.kind() == std::io::ErrorKind::NotFound && y.kind() == std::io::ErrorKind::NotFound
+        }
         _ => false,
     })
 }
@@ -304,10 +348,27 @@ pub struct Offers<'a> {
 }
 
 impl<'a> Offers<'a> {
-    pub fn new(offload: Option<&'a crate::offload::Offload>, scratch: &Path, t: Unit, areas: usize, sites: &[[i32; 2]]) -> Offers<'a> {
+    pub fn new(
+        offload: Option<&'a crate::offload::Offload>,
+        scratch: &Path,
+        t: Unit,
+        areas: usize,
+        sites: &[[i32; 2]],
+    ) -> Offers<'a> {
         let scratch = scratch.to_path_buf();
         std::fs::remove_dir_all(scratch.join("bldtile-results")).ok();
-        Offers { offload, t, scratch, out: BTreeMap::new(), ready: BTreeMap::new(), far: areas, most: 3, records: BTreeMap::new(), here: (0.0, 0), sites: sites.to_vec() }
+        Offers {
+            offload,
+            t,
+            scratch,
+            out: BTreeMap::new(),
+            ready: BTreeMap::new(),
+            far: areas,
+            most: 3,
+            records: BTreeMap::new(),
+            here: (0.0, 0),
+            sites: sites.to_vec(),
+        }
     }
 
     /// An area made here took `secs` for its `records` buildings (and parts, and those outside).
@@ -363,7 +424,13 @@ impl<'a> Offers<'a> {
 
     /// Area `k`'s results, if it was offered: settled now (waiting for no one), in a folder to take
     /// into the pack (`take_area`) and remove. None: it's to run here.
-    pub fn result(&mut self, files: &[Option<WorkFile>], cov: &Coverage, areas: &[(u32, u32)], k: usize) -> Result<Option<PathBuf>> {
+    pub fn result(
+        &mut self,
+        files: &[Option<WorkFile>],
+        cov: &Coverage,
+        areas: &[(u32, u32)],
+        k: usize,
+    ) -> Result<Option<PathBuf>> {
         if self.out.contains_key(&k) {
             self.settle(files, cov, areas, k, true)?;
         }
@@ -372,7 +439,14 @@ impl<'a> Offers<'a> {
 
     /// Settles area `i`'s task (with `wait` false, only when a worker finished or failed it; else
     /// with the patience its time here allows): its results put in its folder.
-    fn settle(&mut self, files: &[Option<WorkFile>], cov: &Coverage, areas: &[(u32, u32)], i: usize, wait: bool) -> Result<()> {
+    fn settle(
+        &mut self,
+        files: &[Option<WorkFile>],
+        cov: &Coverage,
+        areas: &[(u32, u32)],
+        i: usize,
+        wait: bool,
+    ) -> Result<()> {
         let (Some(o), Some(task)) = (self.offload, self.out.get(&i)) else { return Ok(()) };
         let a = self.area(areas, i);
         let mine = results_dir(&self.scratch, a);
@@ -398,7 +472,11 @@ impl<'a> Offers<'a> {
                 take_area(&mine, a, &mut |_, _, _, _, _| Ok(())).map(|_| ())
             })();
             if let Err(e) = ok {
-                eprintln!("bldtiles {}: area {}: a worker's result doesn't read ({e:#}); run here", self.t.slash(), a.slash());
+                eprintln!(
+                    "bldtiles {}: area {}: a worker's result doesn't read ({e:#}); run here",
+                    self.t.slash(),
+                    a.slash()
+                );
                 here()?;
             }
             Ok(())
@@ -410,12 +488,24 @@ impl<'a> Offers<'a> {
             }
             Ok(same)
         };
-        let Some(how) = o.settle_with(task, wait, crate::offload::Patience { here_s: self.here_s(i) }, &mut || here(), &mut take, &mut same)? else { return Ok(()) };
+        let Some(how) = o.settle_with(
+            task,
+            wait,
+            crate::offload::Patience { here_s: self.here_s(i) },
+            &mut || here(),
+            &mut take,
+            &mut same,
+        )?
+        else {
+            return Ok(());
+        };
         let how = match how {
             crate::offload::Settled::Remote(w) => format!("by {w}"),
             crate::offload::Settled::Here(None) => "here".into(),
             crate::offload::Settled::Here(Some((w, true))) => format!("here, and by {w} the same"),
-            crate::offload::Settled::Here(Some((w, false))) => format!("here: {w}'s differed, and it gets no more work"),
+            crate::offload::Settled::Here(Some((w, false))) => {
+                format!("here: {w}'s differed, and it gets no more work")
+            }
         };
         eprintln!("bldtiles {}: area {} made {how}", self.t.slash(), a.slash());
         self.out.remove(&i);
@@ -429,7 +519,10 @@ impl<'a> Offers<'a> {
 mod tests {
     use super::*;
     use crate::agent::recipes::Recipe;
-    use crate::bld::prep::{self, tests::{end, frame, square, B}};
+    use crate::bld::prep::{
+        self,
+        tests::{end, frame, square, B},
+    };
 
     /// Tile `t`'s work file in `dir`, from buildings and parts.
     fn work(dir: &Path, t: Unit, bs: &[B], parts: &[B]) -> WorkFile {
@@ -451,7 +544,12 @@ mod tests {
     fn coverage() -> Coverage {
         let d = tempfile::tempdir().unwrap();
         let r = |id: &str, o: &str| Recipe { id: id.into(), name: id.into(), outline: vec![o.into()] };
-        let mut c = Coverage::fixture(&[r("far", "place:2.35,48.85,2"), r("fr", "place:5.615,48.80,3"), r("es", "place:5.66,48.80,3")], None, d.path()).unwrap();
+        let mut c = Coverage::fixture(
+            &[r("far", "place:2.35,48.85,2"), r("fr", "place:5.615,48.80,3"), r("es", "place:5.66,48.80,3")],
+            None,
+            d.path(),
+        )
+        .unwrap();
         for (s, cc) in c.shapes.iter_mut().zip(["GB", "FR", "ES"]) {
             s.country = cc.into();
         }
@@ -469,7 +567,12 @@ mod tests {
             B { id: 1, rings: vec![square(5.6235, lat, 0.0004)], height: 45.0, ..Default::default() },
             // In the circles' overlap, with floors.
             B { id: 2, rings: vec![square(5.6243, lat + 0.001, 0.0002)], floors: 5, ..Default::default() },
-            B { id: 3, rings: vec![square(5.6400 - 0.0200, lat - 0.004, 0.0002)], class: "house", ..Default::default() },
+            B {
+                id: 3,
+                rings: vec![square(5.6400 - 0.0200, lat - 0.004, 0.0002)],
+                class: "house",
+                ..Default::default()
+            },
             B { id: 4, rings: vec![square(5.6246, lat - 0.002, 0.0002)], ..Default::default() },
             B { id: 5, rings: vec![square(5.6200, lat + 0.003, 0.0006)], has_parts: true, ..Default::default() },
             // Paris: 8/129/88.
@@ -477,9 +580,20 @@ mod tests {
             B { id: 7, rings: vec![square(2.3490, 48.858, 0.0002)], ..Default::default() },
         ];
         for k in 0..8 {
-            mine.push(B { id: 20 + k, rings: vec![square(5.6230 + 0.0003 * (k % 4) as f64, lat - 0.0015 - 0.0003 * (k / 4) as f64, 0.0002)], height: 11.0, ..Default::default() });
+            mine.push(B {
+                id: 20 + k,
+                rings: vec![square(5.6230 + 0.0003 * (k % 4) as f64, lat - 0.0015 - 0.0003 * (k / 4) as f64, 0.0002)],
+                height: 11.0,
+                ..Default::default()
+            });
         }
-        let parts = [B { id: 50, parent: 5, rings: vec![square(5.6201, lat + 0.0031, 0.0003)], height: 30.0, ..Default::default() }];
+        let parts = [B {
+            id: 50,
+            parent: 5,
+            rings: vec![square(5.6201, lat + 0.0031, 0.0003)],
+            height: 30.0,
+            ..Default::default()
+        }];
         let mut theirs = vec![
             // Its centroid in the neighbour's tile, reaching west into T's area: copied there.
             B { id: 100, rings: vec![square(5.6240, lat, 0.0025)], height: 18.0, ..Default::default() },
@@ -490,7 +604,12 @@ mod tests {
             B { id: 103, rings: vec![square(5.6255, lat - 0.0017, 0.0002)], ..Default::default() },
         ];
         for k in 0..6 {
-            theirs.push(B { id: 120 + k, rings: vec![square(5.6262 + 0.0003 * k as f64, lat - 0.001, 0.0002)], height: 14.0, ..Default::default() });
+            theirs.push(B {
+                id: 120 + k,
+                rings: vec![square(5.6262 + 0.0003 * k as f64, lat - 0.001, 0.0002)],
+                height: 14.0,
+                ..Default::default()
+            });
         }
         let mut files: Vec<Option<WorkFile>> = (0..9).map(|_| None).collect();
         files[4] = Some(work(d, t, &mine, &parts));
@@ -587,7 +706,14 @@ mod tests {
         l.features
             .iter()
             .map(|f| {
-                let get = |k: &str| f.tags.chunks(2).find(|kv| l.keys[kv[0] as usize] == k).map_or(0, |kv| match l.values[kv[1] as usize] { names::mvt::Value::Uint(v) => v, _ => 0 });
+                let get = |k: &str| {
+                    f.tags.chunks(2).find(|kv| l.keys[kv[0] as usize] == k).map_or(0, |kv| {
+                        match l.values[kv[1] as usize] {
+                            names::mvt::Value::Uint(v) => v,
+                            _ => 0,
+                        }
+                    })
+                };
                 (get("h"), get("s"), get("o"))
             })
             .collect()
@@ -596,7 +722,8 @@ mod tests {
     /// A worker in this process: asks, fetches the task's files, runs the program's code over them,
     /// sends back what it wrote (`spoil`: its tiles spoilt first), done.
     fn worker_runs(m1: &crate::coord::client::Client, spoil: bool, dir: &Path) -> Option<serde_json::Value> {
-        let ask = crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
+        let ask =
+            crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
         let g = m1.ask(&ask).unwrap()?;
         let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
         assert_eq!(task["runs"][0]["prog"], KIND);
@@ -637,7 +764,8 @@ mod tests {
         let clock = store::clock::Virtual::new();
         c.shared.lock().unwrap().clock = clock.clone();
         let url = format!("http://127.0.0.1:{port}");
-        let o = crate::offload::Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job")).clock(clock.clone());
+        let o =
+            crate::offload::Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job")).clock(clock.clone());
         let scratch = d.path().join("job");
         // No worker around: nothing offered, every area run here.
         let mut offers = Offers::new(Some(&o), &scratch, t, areas.len(), &[]);
@@ -685,8 +813,10 @@ mod tests {
         assert!(c.shared.lock().unwrap().workers["m1"].bad);
         // A task no one took (a worker asking, sparing too little for it): taken back and run here
         // at once. (What it would take here: its buildings at the pace of those made here.)
-        let m2 = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m2");
-        m2.ask(&crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 10, ..Default::default() }).unwrap();
+        let m2 =
+            crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m2");
+        m2.ask(&crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 10, ..Default::default() })
+            .unwrap();
         let mut offers = Offers::new(Some(&o), &scratch, t, areas.len(), &[]);
         offers.top_up(&files, &cov, &areas, 0).unwrap();
         assert_eq!(offers.out.len(), 1);

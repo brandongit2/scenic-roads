@@ -143,7 +143,13 @@ struct Tiles<'a> {
 
 impl<'a> Tiles<'a> {
     fn new(out: &'a Out, reads_lo: bool) -> Self {
-        Tiles { out, made: BTreeMap::new(), lo: RefCell::new(HashMap::new()), reads_lo, decoded: RefCell::new(HashMap::new()) }
+        Tiles {
+            out,
+            made: BTreeMap::new(),
+            lo: RefCell::new(HashMap::new()),
+            reads_lo,
+            decoded: RefCell::new(HashMap::new()),
+        }
     }
 
     fn png(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
@@ -158,7 +164,8 @@ impl<'a> Tiles<'a> {
         if !lo.contains_key(&q) {
             let p = match self.out.get(&lo_logical(LAYER, q.0, q.1)) {
                 Some(c) => {
-                    let f = store::range::PlainFile::open(&self.out.path(c)).with_context(|| format!("the depth lo pack {c}"))?;
+                    let f = store::range::PlainFile::open(&self.out.path(c))
+                        .with_context(|| format!("the depth lo pack {c}"))?;
                     Some((store::pack::PackIndex::read_from(&f)?, f))
                 }
                 None => None,
@@ -245,7 +252,18 @@ impl<'a> Tiles<'a> {
 }
 
 /// Composes zoom `z`'s tiles `x0..x0 + n` by `y0..y0 + n` into `t`, block by block.
-fn level(t: &mut Tiles, sources: &[Source], rd: &Reader, water: &dyn WaterSource, wc: &mut WaterCache, z: u8, x0: u32, y0: u32, n: u32, zmin: u8) -> Result<usize> {
+fn level(
+    t: &mut Tiles,
+    sources: &[Source],
+    rd: &Reader,
+    water: &dyn WaterSource,
+    wc: &mut WaterCache,
+    z: u8,
+    x0: u32,
+    y0: u32,
+    n: u32,
+    zmin: u8,
+) -> Result<usize> {
     let mut kept = 0;
     for by in (y0..y0 + n).step_by(BLOCK as usize) {
         for bx in (x0..x0 + n).step_by(BLOCK as usize) {
@@ -274,7 +292,12 @@ fn level(t: &mut Tiles, sources: &[Source], rd: &Reader, water: &dyn WaterSource
 
 /// Writes the layers' packs of `scope` under `root` from the tiles made, replacing or dropping
 /// what the manifest named; how many tiles.
-fn put_packs(out: &mut Out, made: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>, scope: &str, root: (u8, u32, u32)) -> Result<usize> {
+fn put_packs(
+    out: &mut Out,
+    made: &BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
+    scope: &str,
+    root: (u8, u32, u32),
+) -> Result<usize> {
     for (layer, enc, which) in [(LAYER, ENCODING, 0usize), (CLASS_LAYER, CLASS_ENCODING, 1)] {
         let mut it = made.iter().map(|(&(z, x, y), p)| {
             let b = if which == 0 { &p.0 } else { &p.1 };
@@ -350,7 +373,11 @@ pub fn build_lo(out: &mut Out, sources: &[Source], water: &dyn WaterSource, q: (
         for z in LO_COMPOSED.0..=LO_COMPOSED.1 {
             let n = 1u32 << (z - 3);
             let k = level(&mut t, sources, &rd, water, &mut wc, z, q.0 * n, q.1 * n, n, 3)?;
-            crate::agent::jobs::report(u64::from(z - LO_COMPOSED.0 + 1), u64::from(LO_COMPOSED.1 - LO_COMPOSED.0 + 1), "zooms");
+            crate::agent::jobs::report(
+                u64::from(z - LO_COMPOSED.0 + 1),
+                u64::from(LO_COMPOSED.1 - LO_COMPOSED.0 + 1),
+                "zooms",
+            );
             eprintln!("depth-lo 3/{}/{}: z{z}, {k} tiles", q.0, q.1);
         }
         for z in (3..LO_COMPOSED.0).rev() {
@@ -390,4 +417,3 @@ pub fn build_hi(out: &mut Out, sources: &[Source], water: &dyn WaterSource, t: (
 pub fn square(kind: crate::terrain_water::Kind, id: u64, x0: f64, y0: f64, x1: f64, y1: f64) -> Poly {
     Poly { kind, id, rings: vec![vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]] }
 }
-

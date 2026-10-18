@@ -33,8 +33,15 @@ fn the_docs_commands_pass_the_tables() {
                     continue;
                 }
                 let Some(t) = ALL.iter().find(|t| span.starts_with(&format!("{} ", t.prog))) else { continue };
-                let words: Vec<&str> = span[t.prog.len()..].split(|c: char| c.is_whitespace() || "[]|".contains(c)).filter(|w| !w.is_empty()).collect();
-                let names: Vec<&str> = words.iter().take_while(|w| w.chars().next().is_some_and(|c| c.is_ascii_lowercase())).copied().collect();
+                let words: Vec<&str> = span[t.prog.len()..]
+                    .split(|c: char| c.is_whitespace() || "[]|".contains(c))
+                    .filter(|w| !w.is_empty())
+                    .collect();
+                let names: Vec<&str> = words
+                    .iter()
+                    .take_while(|w| w.chars().next().is_some_and(|c| c.is_ascii_lowercase()))
+                    .copied()
+                    .collect();
                 if names.is_empty() {
                     continue;
                 }
@@ -49,7 +56,11 @@ fn the_docs_commands_pass_the_tables() {
                 for w in &words {
                     let w = w.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
                     let w = w.split('=').next().unwrap_or(w);
-                    if w.starts_with("--") && w.len() > 2 && w != "--help" && !(c.flags.contains(&w) || c.opts.contains(&w) || t.common.contains(&w)) {
+                    if w.starts_with("--")
+                        && w.len() > 2
+                        && w != "--help"
+                        && !(c.flags.contains(&w) || c.opts.contains(&w) || t.common.contains(&w))
+                    {
                         bad.push(format!("{}:{}: {} {} doesn't take {w}", f.display(), n + 1, t.prog, c.name));
                     }
                 }
@@ -57,7 +68,11 @@ fn the_docs_commands_pass_the_tables() {
             }
         }
     }
-    assert!(bad.is_empty(), "the docs name commands or flags the programs don't have (fix the docs):\n{}", bad.join("\n"));
+    assert!(
+        bad.is_empty(),
+        "the docs name commands or flags the programs don't have (fix the docs):\n{}",
+        bad.join("\n")
+    );
     assert!(checked >= 20, "{checked}");
 }
 
@@ -89,17 +104,29 @@ fn the_tools_calls_pass_the_tables() {
                     // The program's name alone (not `scenic` in `scenic-build`, nor a folder).
                     let after = &l[i + t.prog.len()..];
                     let before = l[..i].chars().last();
-                    if after.starts_with(|c: char| c.is_alphanumeric() || "-_/.".contains(c)) || before.is_some_and(|c| c.is_alphanumeric() || "-_".contains(c)) {
+                    if after.starts_with(|c: char| c.is_alphanumeric() || "-_/.".contains(c))
+                        || before.is_some_and(|c| c.is_alphanumeric() || "-_".contains(c))
+                    {
                         continue;
                     }
                     // (A call quoted in prose ends at its closing backquote.)
                     let after = if before == Some('`') { after.split('`').next().unwrap_or("") } else { after };
-                    let words: Vec<&str> = after.split(|c: char| c.is_whitespace() || "\"'`,[()".contains(c)).filter(|w| !w.is_empty()).collect();
+                    let words: Vec<&str> = after
+                        .split(|c: char| c.is_whitespace() || "\"'`,[()".contains(c))
+                        .filter(|w| !w.is_empty())
+                        .collect();
                     let Some(c) = words.first().and_then(|w| t.get(w)) else { continue };
                     for w in &words[1..] {
                         let w = w.trim_end_matches([']', ';', '`', ')', '.', ':']);
                         if w.starts_with("--") && w.len() > 2 && !w.contains('=') && w != "--help" {
-                            assert!(c.flags.contains(&w) || c.opts.contains(&w) || t.common.contains(&w), "{}:{}: {} {} doesn't take {w}: {l}", f.display(), n + 1, t.prog, c.name);
+                            assert!(
+                                c.flags.contains(&w) || c.opts.contains(&w) || t.common.contains(&w),
+                                "{}:{}: {} {} doesn't take {w}: {l}",
+                                f.display(),
+                                n + 1,
+                                t.prog,
+                                c.name
+                            );
                         }
                     }
                     checked += 1;
@@ -135,11 +162,19 @@ fn line(t: &Table, c: &Cmd, rest: &[&str]) -> Vec<String> {
 fn run(prog: &str, args: &[String]) -> (i32, String, String) {
     let home = tempfile::tempdir().unwrap();
     let mut cmd = store::spawn::command(exe(prog));
-    cmd.args(args).current_dir(home.path()).env("HOME", home.path()).env_remove("SCENIC_COORD_URLS").env_remove("SCENIC_COORD_TOKEN");
+    cmd.args(args)
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env_remove("SCENIC_COORD_URLS")
+        .env_remove("SCENIC_COORD_TOKEN");
     let o = store::spawn::output(&mut cmd).unwrap();
     let left: Vec<_> = std::fs::read_dir(home.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
     assert!(left.is_empty(), "{prog} {args:?} wrote {left:?}");
-    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
+    (
+        o.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&o.stdout).into_owned(),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+    )
 }
 
 #[test]
@@ -156,7 +191,11 @@ fn every_command_helps_and_refuses_without_acting() {
             let a = line(t, c, &["--nwo"]);
             let (code, out, err) = run(t.prog, &a);
             assert_eq!(code, 2, "{} {a:?}: {out}{err}", t.prog);
-            assert!(err.contains("unknown flag --nwo") && err.contains(&format!("usage: {} {}", t.prog, c.name)), "{} {a:?}: {err}", t.prog);
+            assert!(
+                err.contains("unknown flag --nwo") && err.contains(&format!("usage: {} {}", t.prog, c.name)),
+                "{} {a:?}: {err}",
+                t.prog
+            );
             assert!(out.is_empty(), "{} {a:?}: {out}", t.prog);
             if c.pos != ANY {
                 let stray = vec!["stray"; c.pos + 1];

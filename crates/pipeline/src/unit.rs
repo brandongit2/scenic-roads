@@ -72,7 +72,10 @@ impl DemValidity {
     pub fn of(p: &crate::dem::declared::Plan) -> DemValidity {
         let t = u64::from_str_radix(&p.tag, 16).unwrap_or(0);
         let made = [u32::MAX, 0, t as u32, (t >> 32) as u32];
-        DemValidity { made, codes: p.datasets.iter().map(|d| (d.code, crate::dem::declared::Cover::of(d.cover.as_deref()))).collect() }
+        DemValidity {
+            made,
+            codes: p.datasets.iter().map(|d| (d.code, crate::dem::declared::Cover::of(d.cover.as_deref()))).collect(),
+        }
     }
 
     /// What a file made now records.
@@ -107,7 +110,13 @@ pub fn dem_samples_keep(dir: &Path, u: Unit, from: &Path, v: &DemValidity) -> Re
 
 /// `dem_samples_keep`, a copy of the file kept in `copies` too (`keep_dem_copy`), which its
 /// neighbours' slices on this Mac read instead of the NAS's.
-pub fn dem_samples_keep_with(dir: &Path, u: Unit, from: &Path, copies: Option<&Path>, v: &DemValidity) -> Result<usize> {
+pub fn dem_samples_keep_with(
+    dir: &Path,
+    u: Unit,
+    from: &Path,
+    copies: Option<&Path>,
+    v: &DemValidity,
+) -> Result<usize> {
     let read = |n: &str| std::fs::read(from.join(format!("dem-cache.{n}")));
     let (Ok(kb), Ok(eb), Ok(sb)) = (read("keys.u64"), read("elev.f32"), read("src.u8")) else { return Ok(0) };
     let keys: Vec<u64> = bytemuck::pod_collect_to_vec(&kb);
@@ -238,7 +247,9 @@ fn dem_head(m: &[u8]) -> Option<(usize, [i32; 4], [u32; 4])> {
     let n = u64::from_le_bytes(m[8..16].try_into().ok()?) as usize;
     let i32_at = |i: usize| i32::from_le_bytes(m[i..i + 4].try_into().unwrap());
     let u32_at = |i: usize| u32::from_le_bytes(m[i..i + 4].try_into().unwrap());
-    (m.len() == DEM_HEAD + 13 * n).then(|| (n, [i32_at(16), i32_at(20), i32_at(24), i32_at(28)], [u32_at(32), u32_at(36), u32_at(40), u32_at(44)]))
+    (m.len() == DEM_HEAD + 13 * n).then(|| {
+        (n, [i32_at(16), i32_at(20), i32_at(24), i32_at(28)], [u32_at(32), u32_at(36), u32_at(40), u32_at(44)])
+    })
 }
 
 /// The part of a units' DEM samples file (`dem_samples_keep`) whose longitudes are within box `b`'s:
@@ -298,7 +309,9 @@ fn keep_dem_copy(p: &Path, copies: &Path, bytes: &[u8]) {
     if store::cachefile::create_bytes(&at, bytes).is_ok() {
         store::cachefile::release(&at);
     }
-    let Some(unit) = p.file_name().map(|n| n.to_string_lossy().split('.').next().unwrap_or("").to_string()) else { return };
+    let Some(unit) = p.file_name().map(|n| n.to_string_lossy().split('.').next().unwrap_or("").to_string()) else {
+        return;
+    };
     for e in std::fs::read_dir(copies).into_iter().flatten().flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
         if n.split('.').next() == Some(unit.as_str()) && e.path() != at {
@@ -399,7 +412,15 @@ pub fn dem_samples_files(dir: &Path) -> Vec<(String, Option<[i32; 4]>, PathBuf)>
 
 /// The entries of sorted DEM cache arrays inside `b` still valid, judged by `v`, of a file made
 /// under `made`; the rest are left out, so elev samples them again.
-fn dem_valid_in_box(keys: &[u64], elev: &[f32], srcs: &[u8], b: [i32; 4], made: [u32; 4], out: &mut Vec<(u64, f32, u8)>, v: &DemValidity) {
+fn dem_valid_in_box(
+    keys: &[u64],
+    elev: &[f32],
+    srcs: &[u8],
+    b: [i32; 4],
+    made: [u32; 4],
+    out: &mut Vec<(u64, f32, u8)>,
+    v: &DemValidity,
+) {
     if made == v.made {
         dem_in_box(keys, elev, srcs, b, out);
         return;
@@ -431,7 +452,14 @@ pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path, 
 /// `dem_cache_slice`, the files read whole kept in `copies` and read from there while they're as
 /// they are on the NAS (`keep_dem_copy`): a unit's own file and its neighbours' above and below it
 /// are read whole by each of them.
-pub fn dem_cache_slice_with(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path, copies: Option<&Path>, v: &DemValidity) -> Result<usize> {
+pub fn dem_cache_slice_with(
+    cache: &Path,
+    units_dir: &Path,
+    b: [i32; 4],
+    dst: &Path,
+    copies: Option<&Path>,
+    v: &DemValidity,
+) -> Result<usize> {
     std::fs::create_dir_all(dst)?;
     for n in ["keys.u64", "elev.f32", "src.u8"] {
         std::fs::remove_file(dst.join(format!("dem-cache.{n}"))).ok();
@@ -471,7 +499,8 @@ pub fn dem_cache_slice_with(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &P
         // (Read, not mapped: they're on the NAS, where a mapped page lost with the share would end
         // the job. Only the box's longitudes: `dem_range`.)
         // (This Mac's copy of it as it is, when there's one: `keep_dem_copy`.)
-        let copy = copies.and_then(|c| dem_copy_name(p, c)).and_then(|c| store::cachefile::hold_existing(&c).ok().flatten());
+        let copy =
+            copies.and_then(|c| dem_copy_name(p, c)).and_then(|c| store::cachefile::hold_existing(&c).ok().flatten());
         let got = match &copy {
             Some(c) => dem_range(c, b),
             None => dem_range(p, b),
@@ -502,8 +531,13 @@ pub fn dem_cache_slice_with(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &P
     if newer.is_empty() {
         return Ok(0);
     }
-    let (ok, oe, os): (Vec<u64>, Vec<f32>, Vec<u8>) = (newer.iter().map(|e| e.0).collect(), newer.iter().map(|e| e.1).collect(), newer.iter().map(|e| e.2).collect());
-    for (n, bytes) in [("keys.u64", bytemuck::cast_slice::<u64, u8>(&ok)), ("elev.f32", bytemuck::cast_slice(&oe)), ("src.u8", &os[..])] {
+    let (ok, oe, os): (Vec<u64>, Vec<f32>, Vec<u8>) =
+        (newer.iter().map(|e| e.0).collect(), newer.iter().map(|e| e.1).collect(), newer.iter().map(|e| e.2).collect());
+    for (n, bytes) in [
+        ("keys.u64", bytemuck::cast_slice::<u64, u8>(&ok)),
+        ("elev.f32", bytemuck::cast_slice(&oe)),
+        ("src.u8", &os[..]),
+    ] {
         let tmp = dst.join(format!("dem-cache.{n}.tmp"));
         std::fs::write(&tmp, bytes)?;
         std::fs::rename(&tmp, dst.join(format!("dem-cache.{n}")))?;
@@ -524,7 +558,8 @@ pub fn dem_seed(root: &Path, cache: &Path) -> Result<()> {
     let whole = |l: &[Option<u64>]| matches!(l, [Some(k), Some(e), Some(s)] if *k == 8 * *s && *e == 4 * *s);
     let local = |n: &str| cache.join(format!("dem-cache.{n}"));
     // (This Mac's, whole: held as it is.)
-    let held: Vec<Option<PathBuf>> = names.iter().map(|n| store::cachefile::hold_existing(&local(n)).ok().flatten()).collect();
+    let held: Vec<Option<PathBuf>> =
+        names.iter().map(|n| store::cachefile::hold_existing(&local(n)).ok().flatten()).collect();
     if whole(&names.map(|n| len(local(n)))) && held.iter().all(Option::is_some) {
         return Ok(());
     }
@@ -547,7 +582,14 @@ pub fn dem_seed(root: &Path, cache: &Path) -> Result<()> {
             let (from, to) = (src.join(format!("dem-cache.{n}")), local(n));
             store::cachefile::hold(&to, &mut |tmp| {
                 copied = true;
-                crate::osmpass::copy_resume_with(&from, tmp, &mut |d, _| crate::agent::jobs::report((before + d) >> 20, total >> 20, "MB of the DEM cache copied here (once a Mac)")).map_err(std::io::Error::other)
+                crate::osmpass::copy_resume_with(&from, tmp, &mut |d, _| {
+                    crate::agent::jobs::report(
+                        (before + d) >> 20,
+                        total >> 20,
+                        "MB of the DEM cache copied here (once a Mac)",
+                    )
+                })
+                .map_err(std::io::Error::other)
             })
             .with_context(|| format!("copy {}", from.display()))?;
             before += want.unwrap_or(0);
@@ -617,13 +659,20 @@ impl UnitSources {
     /// What the unit's programs read of `s`.
     pub fn of(s: &crate::inputs::sources::Sources) -> Result<UnitSources> {
         use crate::inputs::sources::{CANOPY, LAND_COVER};
-        Ok(UnitSources { land_cover: Some(crate::landcover::Cover::of(s.role(LAND_COVER)?)?), canopy: crate::trees::canopy_urls(s.role(CANOPY)?)? })
+        Ok(UnitSources {
+            land_cover: Some(crate::landcover::Cover::of(s.role(LAND_COVER)?)?),
+            canopy: crate::trees::canopy_urls(s.role(CANOPY)?)?,
+        })
     }
 
     /// Folder `dir`'s.
     pub fn read(dir: &Path) -> Result<UnitSources> {
         let p = dir.join(Self::FILE);
-        serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("{} (the unit job writes it from the declared sources)", p.display()))?).with_context(|| p.display().to_string())
+        serde_json::from_slice(
+            &std::fs::read(&p)
+                .with_context(|| format!("{} (the unit job writes it from the declared sources)", p.display()))?,
+        )
+        .with_context(|| p.display().to_string())
     }
 }
 
@@ -773,13 +822,28 @@ impl Areas {
     pub fn new(n: usize, file: Option<PathBuf>) -> Areas {
         let mut secs: BTreeMap<String, f64> = STAGES.iter().map(|(s, t)| (s.to_string(), *t)).collect();
         let mut learned = std::collections::BTreeSet::new();
-        if let Some(kept) = file.as_ref().and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice::<BTreeMap<String, f64>>(&b).ok()) {
-            for (s, t) in kept.into_iter().filter(|(s, t)| STAGES.iter().any(|x| x.0 == s) && t.is_finite() && *t >= 0.0) {
+        if let Some(kept) = file
+            .as_ref()
+            .and_then(|f| std::fs::read(f).ok())
+            .and_then(|b| serde_json::from_slice::<BTreeMap<String, f64>>(&b).ok())
+        {
+            for (s, t) in
+                kept.into_iter().filter(|(s, t)| STAGES.iter().any(|x| x.0 == s) && t.is_finite() && *t >= 0.0)
+            {
                 learned.insert(s.clone());
                 secs.insert(s, t);
             }
         }
-        Areas { n, finished: Default::default(), under_way: BTreeMap::new(), current: None, secs, learned, file, said_at: None }
+        Areas {
+            n,
+            finished: Default::default(),
+            under_way: BTreeMap::new(),
+            current: None,
+            secs,
+            learned,
+            file,
+            said_at: None,
+        }
     }
 
     /// About how long `stages` take here together (seconds), when this Mac has timed each.
@@ -904,7 +968,11 @@ fn snapshot(snap: &Path, n: usize, c: &Command, dir: &Path, what: &str, when: &s
         cmd.push_str(&format!("arg {}\n", a.to_string_lossy()));
     }
     for (k, v) in c.get_envs() {
-        cmd.push_str(&format!("env {}={}\n", k.to_string_lossy(), v.map(|v| v.to_string_lossy().into_owned()).unwrap_or_default()));
+        cmd.push_str(&format!(
+            "env {}={}\n",
+            k.to_string_lossy(),
+            v.map(|v| v.to_string_lossy().into_owned()).unwrap_or_default()
+        ));
     }
     std::fs::write(snap.join(format!("{n:02} {what} {when}.cmd")), cmd)?;
     Ok(())
@@ -939,7 +1007,8 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     std::fs::remove_file(&reads).ok();
     c.env(crate::costin::READS_ENV, &reads);
     let t = std::time::Instant::now();
-    let mut child = store::spawn::spawn(c.stdout(f.try_clone()?).stderr(std::process::Stdio::piped())).with_context(|| format!("start {what}"))?;
+    let mut child = store::spawn::spawn(c.stdout(f.try_clone()?).stderr(std::process::Stdio::piped()))
+        .with_context(|| format!("start {what}"))?;
     // Its errors into its log as they come, and how far it says it is passed on as its stage's
     // (a bar's redraws only that).
     let err = child.stderr.take();
@@ -1012,7 +1081,16 @@ pub type HeritageInputs<'a> = &'a dyn Fn([f64; 4], &Path) -> Result<(usize, usiz
 /// layers on the NAS (`src`), and its scenic results from its last run (`carry`): `prepare_folder`,
 /// then its `tail`. Leaves the unit folder ready for its base pack.
 #[allow(clippy::too_many_arguments)]
-pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &crate::stage::Source, tools: &Tools, heritage: HeritageInputs, carry: Option<&crate::scache::Carry>) -> Result<Report> {
+pub fn build_folder(
+    u: Unit,
+    piece: &Path,
+    dir: &Path,
+    cov: &Coverage,
+    src: &crate::stage::Source,
+    tools: &Tools,
+    heritage: HeritageInputs,
+    carry: Option<&crate::scache::Carry>,
+) -> Result<Report> {
     let rep = prepare_folder(u, piece, dir, cov, src, tools, heritage, carry)?;
     if rep.kept_ways > 0 {
         run_tail(&tail(u, tools.buildings.is_some(), tools.sources.is_some()), dir, tools)?;
@@ -1036,7 +1114,9 @@ pub fn keep_dem_samples(u: Unit, dir: &Path, tools: &Tools) {
             return;
         }
     };
-    if let Err(e) = dem_samples_keep_with(&tools.dem_units(), u, &dir.join("dem-cache"), tools.dem_copies().as_deref(), &v) {
+    if let Err(e) =
+        dem_samples_keep_with(&tools.dem_units(), u, &dir.join("dem-cache"), tools.dem_copies().as_deref(), &v)
+    {
         eprintln!("unit {}: its DEM samples not kept: {e:#}", u.slash());
     }
 }
@@ -1047,7 +1127,16 @@ pub fn keep_dem_samples(u: Unit, dir: &Path, tools: &Tools) {
 /// last run restored (`carry`), as the tail's canopy and view steps read them. (Its elevations are
 /// the tail's first step: they read the DEM servers' files where they lie, so any worker may.)
 #[allow(clippy::too_many_arguments)]
-pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &crate::stage::Source, tools: &Tools, heritage: HeritageInputs, carry: Option<&crate::scache::Carry>) -> Result<Report> {
+pub fn prepare_folder(
+    u: Unit,
+    piece: &Path,
+    dir: &Path,
+    cov: &Coverage,
+    src: &crate::stage::Source,
+    tools: &Tools,
+    heritage: HeritageInputs,
+    carry: Option<&crate::scache::Carry>,
+) -> Result<Report> {
     std::fs::create_dir_all(dir)?;
     let log = dir.join("steps.log");
     let mut rep = Report { unit: u.slash(), ..Default::default() };
@@ -1074,7 +1163,9 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     // 3. Elevations: the DEM cache's slice over every vertex the folder kept (its long ways too).
     let slice = {
         let w = roadcore::Ways::open(dir)?;
-        w.verts().iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
+        w.verts().iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| {
+            [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+        })
     };
     s.end();
     let s = stage("DEM cache slice", Class::NasRead);
@@ -1091,14 +1182,27 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
             let _p = crate::timings::sub("DEM cache seeded here (once a Mac)", Class::NasRead);
             dem_seed(root, &tools.cache)?;
         } else {
-            eprintln!("unit {}: the DEM cache's seed has nothing for it (two datasets or more cover every point); not copied", u.slash());
+            eprintln!(
+                "unit {}: the DEM cache's seed has nothing for it (two datasets or more cover every point); not copied",
+                u.slash()
+            );
         }
     }
     // (And what its programs read of the other declared sources.)
-    let declared = tools.declared.as_ref().context("the unit's sources: the declared sources' accepted version isn't given (docs/inputs.md §6.9)")?;
+    let declared = tools
+        .declared
+        .as_ref()
+        .context("the unit's sources: the declared sources' accepted version isn't given (docs/inputs.md §6.9)")?;
     std::fs::write(dir.join(UnitSources::FILE), serde_json::to_vec(&UnitSources::of(declared)?)?)?;
     std::fs::write(dir.join(crate::dem::declared::PLAN_FILE), serde_json::to_vec_pretty(&plan)?)?;
-    rep.dem_cache = dem_cache_slice_with(&tools.cache, &tools.dem_units(), slice, &dir.join("dem-cache"), tools.dem_copies().as_deref(), &validity)?;
+    rep.dem_cache = dem_cache_slice_with(
+        &tools.cache,
+        &tools.dem_units(),
+        slice,
+        &dir.join("dem-cache"),
+        tools.dem_copies().as_deref(),
+        &validity,
+    )?;
     s.end();
     // 4. The global-source layers the steps read, from the packs.
     let s = stage("layers staged from the packs", Class::NasRead);
@@ -1171,7 +1275,8 @@ pub struct Run {
 /// values, roads' English and the grids its packs lacked (scenic-build's `commit_unit`). All a
 /// helper's hand-off may change (crate::coord).
 pub fn saved_files(dash: &str) -> [String; 6] {
-    ["base", "global/roads", "global/roaden", "layers/grid-class/hi", "layers/grid-canopy/hi", "layers/grid-cover/hi"].map(|p| format!("{p}/{dash}"))
+    ["base", "global/roads", "global/roaden", "layers/grid-class/hi", "layers/grid-canopy/hi", "layers/grid-cover/hi"]
+        .map(|p| format!("{p}/{dash}"))
 }
 
 /// A tail split: the runs that stay here, then those any worker may run (what they read of the
@@ -1216,7 +1321,9 @@ pub fn canopy_square_files((top, left): (i32, i32)) -> [String; 3] {
 /// can't download one.
 pub fn canopy_stored(dir: &Path, sources: &Path) -> bool {
     let Ok(idx) = roadcore::grid::GridIndex::load(dir) else { return false };
-    canopy_squares(&idx.tiles).into_iter().all(|sq| canopy_square_files(sq).iter().all(|n| sources.join("canopy").join(n).exists()))
+    canopy_squares(&idx.tiles)
+        .into_iter()
+        .all(|sq| canopy_square_files(sq).iter().all(|n| sources.join("canopy").join(n).exists()))
 }
 
 /// The tail of unit `u`'s build: its elevations, its clean-up and grade, then its road samples,
@@ -1228,7 +1335,12 @@ pub fn canopy_stored(dir: &Path, sources: &Path) -> bool {
 pub fn tail(u: Unit, buildings: bool, store: bool) -> Vec<Run> {
     // What each step reads of the unit's folder, earlier steps' outputs too: a task sends what's
     // there when it starts (traced in WebAssembly, the outputs compared: tools/check/tail.mjs).
-    let mine = |names: &[&str]| names.iter().map(|n| if n.starts_with('{') { n.to_string() } else { format!("{{dir}}/{n}") }).collect::<Vec<_>>();
+    let mine = |names: &[&str]| {
+        names
+            .iter()
+            .map(|n| if n.starts_with('{') { n.to_string() } else { format!("{{dir}}/{n}") })
+            .collect::<Vec<_>>()
+    };
     let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
     let own = format!("{},{},{},{}", tb[0], tb[1], tb[2], tb[3]);
     let scenic = |step: &str, with_own: bool| {
@@ -1252,10 +1364,47 @@ pub fn tail(u: Unit, buildings: bool, store: bool) -> Vec<Run> {
         let reads = match step {
             "prep" => mine(&["ways.bin", "verts.bin", "final.u16", "terrain.tiles"]),
             // (Its last run's results, restored: scache::Carry.)
-            "canopy" => mine(&["grid.idx", "grid.terrain.i16", "samples.bin", "scache/canopy*", "scache/changed.tiles", "near.i8", "roadside.u8", "grid.canopy.u8", "grid.cover.u8"]),
-            "view" => mine(&["grid.idx", "grid.terrain.i16", "grid.canopy.u8", "grid.class.u8", "grid.areas.u8", "samples.bin", "near.i8", "roadside.u8", "pois.json", "heritage.json", "ways.bin", "verts.bin", "scache/view*", "scache/changed.tiles", "samples.metrics.u8"]),
+            "canopy" => mine(&[
+                "grid.idx",
+                "grid.terrain.i16",
+                "samples.bin",
+                "scache/canopy*",
+                "scache/changed.tiles",
+                "near.i8",
+                "roadside.u8",
+                "grid.canopy.u8",
+                "grid.cover.u8",
+            ]),
+            "view" => mine(&[
+                "grid.idx",
+                "grid.terrain.i16",
+                "grid.canopy.u8",
+                "grid.class.u8",
+                "grid.areas.u8",
+                "samples.bin",
+                "near.i8",
+                "roadside.u8",
+                "pois.json",
+                "heritage.json",
+                "ways.bin",
+                "verts.bin",
+                "scache/view*",
+                "scache/changed.tiles",
+                "samples.metrics.u8",
+            ]),
             "buildings" => mine(&["samples.bin", "ways.bin", "verts.bin", "{buildings}/*"]),
-            "flags" => mine(&["grid.idx", "grid.terrain.i16", "grid.areas.u8", "samples.bin", "samples.metrics.u8", "samples.bld.u8", "pois.json", "heritage.json", "ways.bin", "verts.bin"]),
+            "flags" => mine(&[
+                "grid.idx",
+                "grid.terrain.i16",
+                "grid.areas.u8",
+                "samples.bin",
+                "samples.metrics.u8",
+                "samples.bld.u8",
+                "pois.json",
+                "heritage.json",
+                "ways.bin",
+                "verts.bin",
+            ]),
             _ => Vec::new(),
         };
         Run { what: format!("scenic {step}"), prog: "scenic-metrics".into(), args, env: e, reads }
@@ -1268,7 +1417,13 @@ pub fn tail(u: Unit, buildings: bool, store: bool) -> Vec<Run> {
         env: env(&[("SCENIC_STORE", "{sources}/fetched"), ("SCENIC_FETCH_MIRROR", "{net}")]),
         reads: mine(&["verts.bin", "dem-cache/*", "elevation.json"]),
     };
-    let grade = Run { what: "clean-up and grade (tile elev)".into(), prog: "tile".into(), args: vec!["{dir}".into(), "elev".into()], env: Vec::new(), reads: mine(&["ways.bin", "verts.bin", "elev.f32", "strings.txt"]) };
+    let grade = Run {
+        what: "clean-up and grade (tile elev)".into(),
+        prog: "tile".into(),
+        args: vec!["{dir}".into(), "elev".into()],
+        env: Vec::new(),
+        reads: mine(&["ways.bin", "verts.bin", "elev.f32", "strings.txt"]),
+    };
     let mut runs = vec![elev, grade];
     for step in ["prep", "canopy", "view"] {
         runs.push(scenic(step, true));
@@ -1288,7 +1443,13 @@ pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
     let store = tools.sources.as_ref().filter(|_| !tools.stores_read_only).map(|s| s.join("canopy"));
     // (A place this worker hasn't, or that no worker here fills, `{net}`: its variable left out.)
     let fill = |v: &str| -> Option<String> {
-        let put = |s: &str, k: &str, p: Option<&Path>| -> Option<String> { if s.contains(k) { Some(s.replace(k, &p?.to_string_lossy())) } else { Some(s.to_string()) } };
+        let put = |s: &str, k: &str, p: Option<&Path>| -> Option<String> {
+            if s.contains(k) {
+                Some(s.replace(k, &p?.to_string_lossy()))
+            } else {
+                Some(s.to_string())
+            }
+        };
         let v = put(v, "{dir}", Some(dir))?;
         let v = put(&v, "{cache}", Some(&tools.cache))?;
         let v = put(&v, "{scache}", Some(&scache))?;
@@ -1351,7 +1512,21 @@ mod tests {
     fn the_seed_serves_only_where_one_dataset_covers_alone() {
         use crate::dem::declared::{Dataset, Plan, Source};
         let plan = |covers: &[Option<[f64; 4]>]| {
-            let ds = covers.iter().enumerate().map(|(k, c)| Dataset { id: format!("d{k}"), code: k as u8 + 1, resolution: 10.0, cover: c.map(|b| vec![b]), source: Source::Tiles { url: "https://e.org/{z}/{x}/{y}.png".into(), zoom: 10, encoding: "terrarium".into() } }).collect();
+            let ds = covers
+                .iter()
+                .enumerate()
+                .map(|(k, c)| Dataset {
+                    id: format!("d{k}"),
+                    code: k as u8 + 1,
+                    resolution: 10.0,
+                    cover: c.map(|b| vec![b]),
+                    source: Source::Tiles {
+                        url: "https://e.org/{z}/{x}/{y}.png".into(),
+                        zoom: 10,
+                        encoding: "terrarium".into(),
+                    },
+                })
+                .collect();
             Plan { fmt: 1, version: "t".into(), tag: "0000000000000001".into(), datasets: ds }
         };
         let e7 = |lon: f64, lat: f64| [(lon * 1e7).round() as i32, (lat * 1e7).round() as i32];
@@ -1436,8 +1611,21 @@ mod tests {
         let mut runs = tail(u, true, true);
         let (here, anywhere) = split(&runs);
         assert!(here.is_empty());
-        assert_eq!(what(anywhere), ["elevations (elev)", "clean-up and grade (tile elev)", "scenic prep", "scenic canopy", "scenic view", "scenic buildings", "scenic flags"]);
-        assert!(anywhere.iter().all(|r| r.reads.iter().all(|p| p.starts_with("{dir}/") || p.starts_with("{buildings}/"))));
+        assert_eq!(
+            what(anywhere),
+            [
+                "elevations (elev)",
+                "clean-up and grade (tile elev)",
+                "scenic prep",
+                "scenic canopy",
+                "scenic view",
+                "scenic buildings",
+                "scenic flags"
+            ]
+        );
+        assert!(anywhere
+            .iter()
+            .all(|r| r.reads.iter().all(|p| p.starts_with("{dir}/") || p.starts_with("{buildings}/"))));
         // A canopy square the NAS's store lacks: the steps through the canopy stay here.
         keep_here(&mut runs, "scenic canopy");
         let (here, anywhere) = split(&runs);
@@ -1457,7 +1645,14 @@ mod tests {
             [(gx / 256.0) as u32, (gy / 256.0) as u32]
         };
         let tiles = vec![z11(7.0, 50.05), z11(7.0, 49.95), z11(-179.99, 0.5)];
-        assert_eq!(canopy_squares(&tiles).into_iter().collect::<Vec<_>>(), [(10, -180), (60, 0), (50, 0)].into_iter().collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>());
+        assert_eq!(
+            canopy_squares(&tiles).into_iter().collect::<Vec<_>>(),
+            [(10, -180), (60, 0), (50, 0)]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
         roadcore::grid::GridIndex::new(tiles).save(&d.path().join("grid.idx")).unwrap();
         let sources = d.path().join("sources");
         std::fs::create_dir_all(sources.join("canopy")).unwrap();
@@ -1475,7 +1670,8 @@ mod tests {
     #[test]
     fn kept_dem_samples_named_by_their_box() {
         let d = tempfile::tempdir().unwrap();
-        let k = |lon: i32, lat: i32| (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64);
+        let k =
+            |lon: i32, lat: i32| (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64);
         let run = d.path().join("run");
         let units = d.path().join("shared").join(DEM_UNITS);
         let keep = |pts: &[(i32, i32)]| {
@@ -1487,7 +1683,11 @@ mod tests {
             dem_samples_keep(&units, Unit { z: 6, x: 1, y: 2 }, &run, &rules()).unwrap()
         };
         let names = || {
-            let mut v: Vec<String> = std::fs::read_dir(&units).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            let mut v: Vec<String> = std::fs::read_dir(&units)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
             v.sort();
             v
         };
@@ -1497,7 +1697,8 @@ mod tests {
         // Kept again with another box: the earlier file goes.
         keep(&[(5, 5), (6, 6)]);
         assert_eq!(names(), vec![format!("6-1-2.{}.dem", box_tag([5, 5, 6, 6]))]);
-        let slice = |b: [i32; 4]| dem_cache_slice(&d.path().join("no-seed"), &units, b, &d.path().join("s"), &rules()).unwrap();
+        let slice =
+            |b: [i32; 4]| dem_cache_slice(&d.path().join("no-seed"), &units, b, &d.path().join("s"), &rules()).unwrap();
         assert_eq!(slice([0, 0, 10, 10]), 2);
         assert_eq!(slice([-10, -10, 0, 0]), 0, "a box away from it");
         // A file that isn't whole is passed over, not an error.
@@ -1507,7 +1708,11 @@ mod tests {
         // box; its scenic results too.
         let local = d.path().join("local");
         std::fs::create_dir_all(local.join(DEM_UNITS)).unwrap();
-        store::sys::copy_data(units.join(format!("6-1-2.{}.dem", box_tag([5, 5, 6, 6]))), local.join(DEM_UNITS).join("6-9-9.dem")).unwrap();
+        store::sys::copy_data(
+            units.join(format!("6-1-2.{}.dem", box_tag([5, 5, 6, 6]))),
+            local.join(DEM_UNITS).join("6-9-9.dem"),
+        )
+        .unwrap();
         std::fs::create_dir_all(local.join("scenic-units/6-9-9")).unwrap();
         std::fs::write(local.join("scenic-units/6-9-9/basis.json"), b"{}").unwrap();
         assert_eq!(move_kept_to_shared(&local, &d.path().join("shared")).unwrap(), 2);
@@ -1527,14 +1732,16 @@ mod tests {
         let (root, cache) = (d.path().join("nas"), d.path().join("cache"));
         let src = root.join("sources/dem-cache");
         std::fs::create_dir_all(&src).unwrap();
-        let k = |lon: i32, lat: i32| (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64);
+        let k =
+            |lon: i32, lat: i32| (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64);
         let mut keys: Vec<u64> = (-40..40).flat_map(|a| (-40..40).map(move |b| k(a * 3, b * 3))).collect();
         keys.sort_unstable();
         let elev: Vec<f32> = (0..keys.len()).map(|i| i as f32 * 0.5).collect();
         std::fs::write(src.join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
         std::fs::write(src.join("dem-cache.elev.f32"), bytemuck::cast_slice(&elev)).unwrap();
         std::fs::write(src.join("dem-cache.src.u8"), vec![4u8; keys.len()]).unwrap();
-        let seed: Vec<PathBuf> = ["keys.u64", "elev.f32", "src.u8"].iter().map(|n| cache.join(format!("dem-cache.{n}"))).collect();
+        let seed: Vec<PathBuf> =
+            ["keys.u64", "elev.f32", "src.u8"].iter().map(|n| cache.join(format!("dem-cache.{n}"))).collect();
         let boxes: Vec<[i32; 4]> = (0..60).map(|i| [-100 + i, -90 + i, 10 + i, 20 + i]).collect();
         let job = |name: &str| -> Vec<Vec<u8>> {
             let mut v = Vec::new();
@@ -1542,7 +1749,12 @@ mod tests {
                 dem_seed(&root, &cache).unwrap();
                 let dst = d.path().join(format!("{name}/{i}"));
                 dem_cache_slice(&cache, &d.path().join(DEM_UNITS), *b, &dst, &rules()).unwrap();
-                v.push(["keys.u64", "elev.f32", "src.u8"].iter().flat_map(|n| std::fs::read(dst.join(format!("dem-cache.{n}"))).unwrap()).collect());
+                v.push(
+                    ["keys.u64", "elev.f32", "src.u8"]
+                        .iter()
+                        .flat_map(|n| std::fs::read(dst.join(format!("dem-cache.{n}"))).unwrap())
+                        .collect(),
+                );
                 // (The unit done: its hold let go, as the job's loop does.)
                 seed.iter().for_each(|p| store::cachefile::release(p));
             }
@@ -1554,7 +1766,8 @@ mod tests {
             let deleter = s.spawn(|| {
                 let mut n = 0;
                 while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    n += store::cachefile::try_remove_all(&seed).unwrap_or(0) + store::cachefile::remove_tree(&cache).freed;
+                    n += store::cachefile::try_remove_all(&seed).unwrap_or(0)
+                        + store::cachefile::remove_tree(&cache).freed;
                 }
                 n
             });
@@ -1570,7 +1783,8 @@ mod tests {
     #[test]
     fn dem_slice_by_box() {
         let d = tempfile::tempdir().unwrap();
-        let k = |lon: i32, lat: i32| (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64);
+        let k =
+            |lon: i32, lat: i32| (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64);
         let mut pts = vec![(-10, -10), (-10, 5), (0, 0), (0, 20), (3, 3), (5, -1), (20, 0)];
         pts.sort_by_key(|&(a, b)| k(a, b));
         let keys: Vec<u64> = pts.iter().map(|&(a, b)| k(a, b)).collect();
@@ -1578,13 +1792,25 @@ mod tests {
         std::fs::write(d.path().join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
         std::fs::write(d.path().join("dem-cache.elev.f32"), bytemuck::cast_slice(&elev)).unwrap();
         std::fs::write(d.path().join("dem-cache.src.u8"), vec![4u8; pts.len()]).unwrap();
-        let n = dem_cache_slice(d.path(), &d.path().join(DEM_UNITS), [-5, -5, 10, 10], &d.path().join("s"), &rules()).unwrap();
+        let n = dem_cache_slice(d.path(), &d.path().join(DEM_UNITS), [-5, -5, 10, 10], &d.path().join("s"), &rules())
+            .unwrap();
         // (0,0), (3,3), (5,-1)
         assert_eq!(n, 3);
-        let got: Vec<u64> = bytemuck::pod_collect_to_vec(&std::fs::read(d.path().join("s/dem-cache.keys.u64")).unwrap());
+        let got: Vec<u64> =
+            bytemuck::pod_collect_to_vec(&std::fs::read(d.path().join("s/dem-cache.keys.u64")).unwrap());
         assert_eq!(got, vec![k(0, 0), k(3, 3), k(5, -1)]);
         // No cache: an empty slice, and no files (elev can't map an empty one).
-        assert_eq!(dem_cache_slice(&d.path().join("none"), &d.path().join("none").join(DEM_UNITS), [0, 0, 1, 1], &d.path().join("t"), &rules()).unwrap(), 0);
+        assert_eq!(
+            dem_cache_slice(
+                &d.path().join("none"),
+                &d.path().join("none").join(DEM_UNITS),
+                [0, 0, 1, 1],
+                &d.path().join("t"),
+                &rules()
+            )
+            .unwrap(),
+            0
+        );
         assert!(!d.path().join("t/dem-cache.keys.u64").exists());
         // A unit's kept samples: in the slices of boxes meeting them, over the seed's.
         let run = d.path().join("run");
@@ -1594,13 +1820,22 @@ mod tests {
         std::fs::write(run.join("dem-cache.elev.f32"), bytemuck::cast_slice(&[30.0f32, 40.0])).unwrap();
         std::fs::write(run.join("dem-cache.src.u8"), [1u8, 1]).unwrap();
         assert_eq!(dem_samples_keep(&d.path().join(DEM_UNITS), Unit { z: 6, x: 1, y: 2 }, &run, &rules()).unwrap(), 2);
-        assert_eq!(dem_cache_slice(d.path(), &d.path().join(DEM_UNITS), [-5, -5, 10, 10], &d.path().join("u"), &rules()).unwrap(), 4);
-        let got: Vec<u64> = bytemuck::pod_collect_to_vec(&std::fs::read(d.path().join("u/dem-cache.keys.u64")).unwrap());
+        assert_eq!(
+            dem_cache_slice(d.path(), &d.path().join(DEM_UNITS), [-5, -5, 10, 10], &d.path().join("u"), &rules())
+                .unwrap(),
+            4
+        );
+        let got: Vec<u64> =
+            bytemuck::pod_collect_to_vec(&std::fs::read(d.path().join("u/dem-cache.keys.u64")).unwrap());
         let el: Vec<f32> = bytemuck::pod_collect_to_vec(&std::fs::read(d.path().join("u/dem-cache.elev.f32")).unwrap());
         assert_eq!(got, vec![k(0, 0), k(3, 3), k(4, 4), k(5, -1)]);
         assert_eq!(el[1], 30.0, "the unit's sample, not the seed's");
         // A box away from them: the seed's only.
-        assert_eq!(dem_cache_slice(d.path(), &d.path().join(DEM_UNITS), [-15, -15, -5, 10], &d.path().join("v"), &rules()).unwrap(), 2);
+        assert_eq!(
+            dem_cache_slice(d.path(), &d.path().join(DEM_UNITS), [-15, -15, -5, 10], &d.path().join("v"), &rules())
+                .unwrap(),
+            2
+        );
     }
 
     #[test]
@@ -1615,12 +1850,17 @@ mod tests {
             ((s >> 33) as i64 % m) as i32
         };
         for n in [0usize, 1, 5, 8191, 8192, 8193, 40_000] {
-            let mut keys: Vec<u64> = (0..n).map(|_| dem_key(r(2000) - 1000 + if r(3) == 0 { 0 } else { r(50) }, r(2000) - 1000)).collect();
+            let mut keys: Vec<u64> =
+                (0..n).map(|_| dem_key(r(2000) - 1000 + if r(3) == 0 { 0 } else { r(50) }, r(2000) - 1000)).collect();
             keys.sort_unstable();
             keys.dedup();
             let m = keys.len();
             std::fs::write(run.join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
-            std::fs::write(run.join("dem-cache.elev.f32"), bytemuck::cast_slice(&(0..m).map(|i| i as f32 * 0.5).collect::<Vec<_>>())).unwrap();
+            std::fs::write(
+                run.join("dem-cache.elev.f32"),
+                bytemuck::cast_slice(&(0..m).map(|i| i as f32 * 0.5).collect::<Vec<_>>()),
+            )
+            .unwrap();
             std::fs::write(run.join("dem-cache.src.u8"), (0..m).map(|i| (i % 7) as u8).collect::<Vec<_>>()).unwrap();
             let units = d.path().join(format!("u{n}"));
             dem_samples_keep(&units, Unit { z: 6, x: 1, y: 2 }, &run, &rules()).unwrap();
@@ -1658,7 +1898,11 @@ mod tests {
     #[test]
     fn kept_samples_read_whole_are_copied_here_and_read_from_the_copy_while_it_is_the_file() {
         let d = tempfile::tempdir().unwrap();
-        let (run, units, copies) = (d.path().join("run"), d.path().join("shared").join(DEM_UNITS), d.path().join("cache/blobs").join(DEM_UNITS));
+        let (run, units, copies) = (
+            d.path().join("run"),
+            d.path().join("shared").join(DEM_UNITS),
+            d.path().join("cache/blobs").join(DEM_UNITS),
+        );
         std::fs::create_dir_all(&run).unwrap();
         let keep = |pts: &[(i32, i32)], elev: f32, copies: Option<&Path>| {
             let keys: Vec<u64> = pts.iter().map(|&(a, b)| dem_key(a, b)).collect();
@@ -1668,8 +1912,11 @@ mod tests {
             dem_samples_keep_with(&units, Unit { z: 6, x: 1, y: 2 }, &run, copies, &rules()).unwrap()
         };
         let slice = |b: [i32; 4], to: &str, copies: Option<&Path>| {
-            let n = dem_cache_slice_with(&d.path().join("no-seed"), &units, b, &d.path().join(to), copies, &rules()).unwrap();
-            let el: Vec<f32> = std::fs::read(d.path().join(to).join("dem-cache.elev.f32")).map(|b| bytemuck::pod_collect_to_vec(&b)).unwrap_or_default();
+            let n = dem_cache_slice_with(&d.path().join("no-seed"), &units, b, &d.path().join(to), copies, &rules())
+                .unwrap();
+            let el: Vec<f32> = std::fs::read(d.path().join(to).join("dem-cache.elev.f32"))
+                .map(|b| bytemuck::pod_collect_to_vec(&b))
+                .unwrap_or_default();
             (n, el)
         };
         let copied = || std::fs::read_dir(&copies).map(|r| r.count()).unwrap_or(0);
@@ -1708,12 +1955,25 @@ mod tests {
         let e7 = |x: f64| (x * 1e7) as i32;
         // Québec from a finer dataset (1), Québec from the world's (4, where the finer has none),
         // Paris from the world's (4), Paris from another code (9).
-        let pts = [(e7(-71.2), e7(46.8), 1u8), (e7(-71.3), e7(46.9), 4), (e7(2.35), e7(48.85), 4), (e7(2.36), e7(48.86), 9)];
+        let pts =
+            [(e7(-71.2), e7(46.8), 1u8), (e7(-71.3), e7(46.9), 4), (e7(2.35), e7(48.85), 4), (e7(2.36), e7(48.86), 9)];
         let mut v: Vec<(u64, f32, u8)> = pts.iter().map(|&(x, y, s)| (k(x, y), 1.0, s)).collect();
         v.sort_by_key(|e| e.0);
-        let (keys, elev, srcs): (Vec<u64>, Vec<f32>, Vec<u8>) = (v.iter().map(|e| e.0).collect(), v.iter().map(|e| e.1).collect(), v.iter().map(|e| e.2).collect());
-        let ds = |code: u8, cover: Option<Vec<[f64; 4]>>| Dataset { id: format!("d{code}"), code, resolution: 10.0, cover, source: Source::Tiles { url: String::new(), zoom: 1, encoding: "terrarium".into() } };
-        let plan = Plan { fmt: 1, version: "v".into(), tag: "00000000000000ab".into(), datasets: vec![ds(1, Some(vec![[-75.0, 45.0, -70.0, 48.0]])), ds(4, None)] };
+        let (keys, elev, srcs): (Vec<u64>, Vec<f32>, Vec<u8>) =
+            (v.iter().map(|e| e.0).collect(), v.iter().map(|e| e.1).collect(), v.iter().map(|e| e.2).collect());
+        let ds = |code: u8, cover: Option<Vec<[f64; 4]>>| Dataset {
+            id: format!("d{code}"),
+            code,
+            resolution: 10.0,
+            cover,
+            source: Source::Tiles { url: String::new(), zoom: 1, encoding: "terrarium".into() },
+        };
+        let plan = Plan {
+            fmt: 1,
+            version: "v".into(),
+            tag: "00000000000000ab".into(),
+            datasets: vec![ds(1, Some(vec![[-75.0, 45.0, -70.0, 48.0]])), ds(4, None)],
+        };
         let v = DemValidity::of(&plan);
         let world = [i32::MIN, i32::MIN, i32::MAX, i32::MAX];
         let kept = |made: [u32; 4]| {

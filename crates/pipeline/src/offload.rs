@@ -152,10 +152,31 @@ impl Offload {
     /// `scratch` (emptied).
     pub fn at(url: String, token: String, scratch: &Path) -> Offload {
         let owner = owner();
-        let version = std::env::current_exe().and_then(std::fs::metadata).map(|m| format!("{:x}-{:x}", m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs()))).unwrap_or_default();
+        let version = std::env::current_exe()
+            .and_then(std::fs::metadata)
+            .map(|m| {
+                format!(
+                    "{:x}-{:x}",
+                    m.len(),
+                    m.modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map_or(0, |d| d.as_secs())
+                )
+            })
+            .unwrap_or_default();
         let dir = scratch.join("tasks");
         std::fs::remove_dir_all(&dir).ok();
-        Offload { client: Client::at(vec![url], token, &format!("job {owner}")), owner, version, dir, lease_wait: LEASE_WAIT, waiting: Waiting::ByPace, clock: store::clock::real(), note: std::env::var_os(WAITING_ENV).map(PathBuf::from) }
+        Offload {
+            client: Client::at(vec![url], token, &format!("job {owner}")),
+            owner,
+            version,
+            dir,
+            lease_wait: LEASE_WAIT,
+            waiting: Waiting::ByPace,
+            clock: store::clock::real(),
+            note: std::env::var_os(WAITING_ENV).map(PathBuf::from),
+        }
     }
 
     /// The same, waiting on a worker holding a task as `w` says.
@@ -207,16 +228,39 @@ impl Offload {
 
     /// Offers a task of `kind` (`spec` what a worker is given, `inputs` its files in `root`, its
     /// predicted memory `mem_mb`: the coordinator's measure of its last run replaces it).
-    pub fn offer_spec(&self, kind: &str, spec: serde_json::Value, root: &Path, inputs: BTreeMap<String, u64>, mem_mb: u64) -> Result<Offered> {
+    pub fn offer_spec(
+        &self,
+        kind: &str,
+        spec: serde_json::Value,
+        root: &Path,
+        inputs: BTreeMap<String, u64>,
+        mem_mb: u64,
+    ) -> Result<Offered> {
         self.offer_spec_ahead(kind, spec, root, inputs, mem_mb, None)
     }
 
     /// `offer_spec`, saying how much of the job's own work comes before it needs the task (`ahead`,
     /// in tasks' worth of this Mac's time at its kind: crate::coord::task::Task::ahead), when its
     /// agent tells it to offer ahead (crate::agent::placement::ahead_on); else as `offer_spec`.
-    pub fn offer_spec_ahead(&self, kind: &str, spec: serde_json::Value, root: &Path, inputs: BTreeMap<String, u64>, mem_mb: u64, ahead: Option<f64>) -> Result<Offered> {
+    pub fn offer_spec_ahead(
+        &self,
+        kind: &str,
+        spec: serde_json::Value,
+        root: &Path,
+        inputs: BTreeMap<String, u64>,
+        mem_mb: u64,
+        ahead: Option<f64>,
+    ) -> Result<Offered> {
         let ahead = ahead.filter(|a| a.is_finite() && *a > 0.0 && crate::agent::placement::ahead_on());
-        let offer = crate::coord::task::Offer { owner: self.owner, kind: kind.into(), spec, root: root.to_path_buf(), inputs, mem_mb, ahead };
+        let offer = crate::coord::task::Offer {
+            owner: self.owner,
+            kind: kind.into(),
+            spec,
+            root: root.to_path_buf(),
+            inputs,
+            mem_mb,
+            ahead,
+        };
         let (_, v) = self.client.post_json("/task/offer", &serde_json::to_value(&offer)?)?;
         Ok(Offered { id: v["id"].as_u64().context("the coordinator gave no task id")?, root: root.to_path_buf() })
     }
@@ -251,7 +295,14 @@ impl Offload {
 
     /// Settles task `t` of the unit in `dir`; with `wait` false only when a worker finished or
     /// failed it (None otherwise). `here` runs its steps in `dir`.
-    pub fn settle(&self, t: &Offered, dir: &Path, wait: bool, p: Patience, here: &mut dyn FnMut() -> Result<()>) -> Result<Option<Settled>> {
+    pub fn settle(
+        &self,
+        t: &Offered,
+        dir: &Path,
+        wait: bool,
+        p: Patience,
+        here: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<Option<Settled>> {
         use crate::timings::{phase, Class};
         let root = t.root.clone();
         self.settle_with(
@@ -315,29 +366,55 @@ impl Offload {
                         let takers = st["takers"].as_array().cloned().unwrap_or_default();
                         let fast = takers.iter().any(|w| w["pace"].as_f64().is_some_and(crate::coord::task::beats));
                         // (Else one not measured, once an hour: told, so the hour starts now.)
-                        fast || (takers.iter().any(|w| w["explore"] == true) && self.client.post_json(&format!("/task/{}/explore", t.id), &serde_json::json!({})).is_ok())
+                        fast || (takers.iter().any(|w| w["explore"] == true)
+                            && self
+                                .client
+                                .post_json(&format!("/task/{}/explore", t.id), &serde_json::json!({}))
+                                .is_ok())
                     });
                     if !wait {
                         return Ok(st);
                     }
                 }
                 Some("leased") => {
-                    let from = held.get_or_insert_with(|| (clock.now(), st["worker"].as_str().unwrap_or("").to_string())).0;
-                    if self.waiting == Waiting::ByPace && !p.wait_on(since(from).as_secs_f64(), st["age_s"].as_f64().unwrap_or(0.0), st["pace"].as_f64()) {
-                        let pace = st["pace"].as_f64().map_or("not measured".to_string(), |p| format!("{p:.2}× this Mac's time"));
+                    let from =
+                        held.get_or_insert_with(|| (clock.now(), st["worker"].as_str().unwrap_or("").to_string())).0;
+                    if self.waiting == Waiting::ByPace
+                        && !p.wait_on(
+                            since(from).as_secs_f64(),
+                            st["age_s"].as_f64().unwrap_or(0.0),
+                            st["pace"].as_f64(),
+                        )
+                    {
+                        let pace = st["pace"]
+                            .as_f64()
+                            .map_or("not measured".to_string(), |p| format!("{p:.2}× this Mac's time"));
                         eprintln!("offload: task {}: {} has it (its pace {pace}), not back before this Mac's run would be: run here too", t.id, st["worker"].as_str().unwrap_or(""));
                         return Ok(st);
                     }
                     if _told.is_none() {
                         if let Some(path) = &self.note {
-                            let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-                            _told = WaitNote { pid: std::process::id(), worker: held.as_ref().map(|h| h.1.clone()).unwrap_or_default(), task: t.id, since }.keep(path);
+                            let since = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map_or(0, |d| d.as_secs());
+                            _told = WaitNote {
+                                pid: std::process::id(),
+                                worker: held.as_ref().map(|h| h.1.clone()).unwrap_or_default(),
+                                task: t.id,
+                                since,
+                            }
+                            .keep(path);
                         }
                     }
                 }
                 _ => {
                     if let Some((from, w)) = &held {
-                        eprintln!("offload: task {}: waited {:.0} s on {w} ({})", t.id, since(*from).as_secs_f64(), st["state"].as_str().unwrap_or("gone"));
+                        eprintln!(
+                            "offload: task {}: waited {:.0} s on {w} ({})",
+                            t.id,
+                            since(*from).as_secs_f64(),
+                            st["state"].as_str().unwrap_or("gone")
+                        );
                     }
                     return Ok(st);
                 }
@@ -352,7 +429,15 @@ impl Offload {
     /// taken (`take`, with the task's status: its outputs in `out`); else it's run here (`here`),
     /// and a worker's result that came in too compared with this Mac's run (`same`, with the status
     /// and when that run began). Its folder goes.
-    pub fn settle_with(&self, t: &Offered, wait: bool, p: Patience, here: &mut dyn FnMut() -> Result<()>, take: &mut dyn FnMut(&serde_json::Value) -> Result<()>, same: &mut dyn FnMut(&serde_json::Value, std::time::SystemTime) -> Result<bool>) -> Result<Option<Settled>> {
+    pub fn settle_with(
+        &self,
+        t: &Offered,
+        wait: bool,
+        p: Patience,
+        here: &mut dyn FnMut() -> Result<()>,
+        take: &mut dyn FnMut(&serde_json::Value) -> Result<()>,
+        same: &mut dyn FnMut(&serde_json::Value, std::time::SystemTime) -> Result<bool>,
+    ) -> Result<Option<Settled>> {
         let mut st = self.status(t);
         if wait {
             st = self.wait_on(t, st, p)?;
@@ -388,10 +473,17 @@ impl Offload {
             _ => {
                 // Taken back if no one has it; raced if someone does.
                 // (A coordinator that can't answer: as withdrawn, run here, no worker's to compare.)
-                let withdrawn = self.client.post_json(&format!("/task/{}/withdraw", t.id), &serde_json::json!({})).map_or(true, |r| r.0 != 200 || r.1["withdrawn"].as_bool() == Some(true));
+                let withdrawn = self
+                    .client
+                    .post_json(&format!("/task/{}/withdraw", t.id), &serde_json::json!({}))
+                    .map_or(true, |r| r.0 != 200 || r.1["withdrawn"].as_bool() == Some(true));
                 let since = std::time::SystemTime::now();
                 here()?;
-                let late = if withdrawn { None } else { self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).ok().map(|r| r.1) };
+                let late = if withdrawn {
+                    None
+                } else {
+                    self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).ok().map(|r| r.1)
+                };
                 match late.filter(|s| s["state"] == "done") {
                     Some(s) => {
                         let same = same(&s, since)?;
@@ -405,7 +497,9 @@ impl Offload {
         // (A run the clock saw take no time, a test's virtual clock, is no measure: the estimate
         // stands.)
         let here_s = ran.filter(|&s| s > 0.0).or(p.here_s);
-        let r = self.client.post_json(&format!("/task/{}/close", t.id), &serde_json::json!({ "checked": checked, "here_s": here_s }));
+        let r = self
+            .client
+            .post_json(&format!("/task/{}/close", t.id), &serde_json::json!({ "checked": checked, "here_s": here_s }));
         if r.is_ok_and(|r| r.1["measuring"] == true) {
             eprintln!("offload: task {}: kept for its worker to finish, to measure its pace", t.id);
         }
@@ -461,7 +555,14 @@ pub fn task_kind(spec: &serde_json::Value) -> String {
 /// What a page reads through the coordinator (`/net`), it reads where it lies: the NAS's data in
 /// `root`, the DEM servers' files over the network. (Without `root`, a task whose steps read the
 /// NAS fails here.)
-pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Path, bin: &Path, root: Option<&Path>) -> Result<serde_json::Value> {
+pub fn run_task(
+    client: &Client,
+    lease: u64,
+    spec: &serde_json::Value,
+    dir: &Path,
+    bin: &Path,
+    root: Option<&Path>,
+) -> Result<serde_json::Value> {
     std::fs::remove_dir_all(dir).ok();
     std::fs::create_dir_all(dir.join("u"))?;
     let inputs: Vec<(String, u64)> = serde_json::from_value(spec["inputs"].clone()).context("the task's inputs")?;
@@ -484,7 +585,12 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
         let t = std::time::Instant::now();
         let b = client.get_bytes(&format!("/work/in/{lease}/{p}"))?;
         let secs = t.elapsed().as_secs_f64();
-        eprintln!("fetched {p}: {} in {} ({}/s)", crate::timings::bytes(b.len() as u64), crate::timings::secs(secs), crate::timings::bytes((b.len() as f64 / secs.max(1e-3)) as u64));
+        eprintln!(
+            "fetched {p}: {} in {} ({}/s)",
+            crate::timings::bytes(b.len() as u64),
+            crate::timings::secs(secs),
+            crate::timings::bytes((b.len() as f64 / secs.max(1e-3)) as u64)
+        );
         anyhow::ensure!(b.len() as u64 == *n, "{p}: {} bytes, not {n}", b.len());
         sent.insert(p.clone(), store::naming::hash16(&b));
         let f = dir.join(rel);
@@ -506,7 +612,20 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
             _ => Ok(None),
         }
     };
-    let tools = crate::unit::Tools { bin: bin.to_path_buf(), dem: PathBuf::new(), cache: dir.join("cache"), buildings: Some(dir.join("b")), sources: nas("{sources}")?, shared: None, chm: nas("{chm}")?, stores_read_only: true, spacing_m: 8, snap: None, elevation: None, declared: None };
+    let tools = crate::unit::Tools {
+        bin: bin.to_path_buf(),
+        dem: PathBuf::new(),
+        cache: dir.join("cache"),
+        buildings: Some(dir.join("b")),
+        sources: nas("{sources}")?,
+        shared: None,
+        chm: nas("{chm}")?,
+        stores_read_only: true,
+        spacing_m: 8,
+        snap: None,
+        elevation: None,
+        declared: None,
+    };
     crate::unit::take_peak();
     let t = std::time::Instant::now();
     crate::unit::run_tail(&runs, &dir.join("u"), &tools)?;
@@ -568,7 +687,10 @@ fn matching(pat: &str, dir: &Path, bdir: Option<&Path>) -> Result<Vec<(String, P
                 for e in rd.flatten() {
                     let name = e.file_name().to_string_lossy().into_owned();
                     // (A file, or a link to one: the roadside buildings are links to the NAS's.)
-                    if name.starts_with(start) && std::fs::metadata(e.path()).is_ok_and(|m| m.is_file()) && !name.ends_with(".tmp") {
+                    if name.starts_with(start)
+                        && std::fs::metadata(e.path()).is_ok_and(|m| m.is_file())
+                        && !name.ends_with(".tmp")
+                    {
                         let r = if sub.is_empty() { name.clone() } else { format!("{sub}/{name}") };
                         out.push((format!("{prefix}/{r}"), folder.join(&name)));
                     }
@@ -598,7 +720,8 @@ fn clone(src: &Path, dst: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::ffi::OsStrExt;
-        let (s, d) = (std::ffi::CString::new(src.as_os_str().as_bytes())?, std::ffi::CString::new(dst.as_os_str().as_bytes())?);
+        let (s, d) =
+            (std::ffi::CString::new(src.as_os_str().as_bytes())?, std::ffi::CString::new(dst.as_os_str().as_bytes())?);
         if unsafe { libc::clonefile(s.as_ptr(), d.as_ptr(), 0) } == 0 {
             return Ok(());
         }
@@ -674,7 +797,11 @@ fn same(st: &serde_json::Value, dir: &Path, sent: &Path, since: std::time::Syste
             return Ok(false);
         }
     }
-    Ok(st["removed"].as_array().into_iter().flatten().all(|r| r.as_str().and_then(|p| place(dir, p)).is_none_or(|p| !p.exists())))
+    Ok(st["removed"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .all(|r| r.as_str().and_then(|p| place(dir, p)).is_none_or(|p| !p.exists())))
 }
 
 #[cfg(test)]
@@ -698,18 +825,43 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join("step"), "#!/bin/sh\ncat \"$1/in.bin\" > \"$1/out.bin\"; echo more >> \"$1/out.bin\"; rm \"$1/gone.bin\"; cp \"$1/kept.bin\" \"$1/k.tmp\"; mv \"$1/k.tmp\" \"$1/kept.bin\"\n").unwrap();
         std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into(), "{dir}/gone.bin".into(), "{dir}/kept.bin".into()] }];
+        let runs = vec![Run {
+            what: "a step".into(),
+            prog: "step".into(),
+            args: vec!["{dir}".into()],
+            env: vec![],
+            reads: vec!["{dir}/in.bin".into(), "{dir}/gone.bin".into(), "{dir}/kept.bin".into()],
+        }];
         let url = format!("http://127.0.0.1:{port}");
-        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.path().join("tasks"), lease_wait: LEASE_WAIT, waiting: Waiting::ByPace, clock: store::clock::real(), note: None };
+        let o = Offload {
+            client: Client::at(vec![url.clone()], c.job_token.clone(), "job"),
+            owner: 1,
+            version: "v".into(),
+            dir: d.path().join("tasks"),
+            lease_wait: LEASE_WAIT,
+            waiting: Waiting::ByPace,
+            clock: store::clock::real(),
+            note: None,
+        };
         let u = Unit::parse("6/1/1").unwrap();
         let t = o.offer(u, &dir, None, &runs).unwrap();
         // The M1: asks, runs it natively, hands it back.
         let m1 = Client::at(vec![url], c.contact.token.clone(), "m1");
-        let ask = crate::coord::Ask { kind: "native".into(), can: vec!["unit".into(), "tail".into()], mem_mb: 4096, ..Default::default() };
+        let ask = crate::coord::Ask {
+            kind: "native".into(),
+            can: vec!["unit".into(), "tail".into()],
+            mem_mb: 4096,
+            ..Default::default()
+        };
         let g = m1.ask(&ask).unwrap().unwrap();
         let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
         let r = run_task(&m1, g.lease, &task, &d.path().join("m1"), &bin, None).unwrap();
-        let done = crate::coord::Done { lease: g.lease, outputs: serde_json::from_value(r["outputs"].clone()).unwrap(), removed: serde_json::from_value(r["removed"].clone()).unwrap(), ..Default::default() };
+        let done = crate::coord::Done {
+            lease: g.lease,
+            outputs: serde_json::from_value(r["outputs"].clone()).unwrap(),
+            removed: serde_json::from_value(r["removed"].clone()).unwrap(),
+            ..Default::default()
+        };
         assert_eq!(done.removed, ["u/gone.bin"]);
         // (What it wrote as it was isn't sent.)
         assert_eq!(done.outputs.iter().map(|o| o.path.as_str()).collect::<Vec<_>>(), ["u/out.bin"]);
@@ -718,7 +870,24 @@ mod tests {
         let mut ran = false;
         let mut here = || {
             ran = true;
-            crate::unit::run_tail(&runs, &dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None, elevation: None, declared: None })
+            crate::unit::run_tail(
+                &runs,
+                &dir,
+                &crate::unit::Tools {
+                    bin: bin.clone(),
+                    dem: PathBuf::new(),
+                    cache: d.path().join("cache"),
+                    buildings: None,
+                    sources: None,
+                    shared: None,
+                    chm: None,
+                    stores_read_only: false,
+                    spacing_m: 8,
+                    snap: None,
+                    elevation: None,
+                    declared: None,
+                },
+            )
         };
         let s = o.settle(&t, &dir, false, Patience { here_s: None }, &mut here).unwrap().unwrap();
         assert!(ran && matches!(s, Settled::Here(Some((ref w, true))) if w == "m1"));
@@ -744,7 +913,8 @@ mod tests {
             let root = o.task_root(name);
             std::fs::create_dir_all(root.join("u")).unwrap();
             std::fs::write(root.join("u/x"), b"x").unwrap();
-            o.offer_spec("tail", serde_json::json!({ "unit": "6/1/1" }), &root, [("u/x".to_string(), 1)].into(), 100).unwrap();
+            o.offer_spec("tail", serde_json::json!({ "unit": "6/1/1" }), &root, [("u/x".to_string(), 1)].into(), 100)
+                .unwrap();
         }
         assert_eq!(c.shared.lock().unwrap().tasks.by_id.len(), 2);
         // The agent ends a job's tasks by its process group (a job it starts leads one, so its
@@ -764,14 +934,22 @@ mod tests {
             let root = o.task_root(name);
             std::fs::create_dir_all(root.join("u")).unwrap();
             std::fs::write(root.join("u/x"), b"x").unwrap();
-            o.offer_spec("tail", serde_json::json!({ "unit": "6/1/1" }), &root, [("u/x".to_string(), 1)].into(), 100).unwrap()
+            o.offer_spec("tail", serde_json::json!({ "unit": "6/1/1" }), &root, [("u/x".to_string(), 1)].into(), 100)
+                .unwrap()
         };
         let settle = |o: &Offload, t: &Offered, wait: bool| {
             let mut ran = false;
-            let s = o.settle_with(t, wait, Patience { here_s: Some(1.0) }, &mut || {
-                ran = true;
-                Ok(())
-            }, &mut |_| panic!("no worker's result"), &mut |_, _| panic!("no worker's result"));
+            let s = o.settle_with(
+                t,
+                wait,
+                Patience { here_s: Some(1.0) },
+                &mut || {
+                    ran = true;
+                    Ok(())
+                },
+                &mut |_| panic!("no worker's result"),
+                &mut |_, _| panic!("no worker's result"),
+            );
             (s.unwrap(), ran)
         };
         // A key the coordinator doesn't know (401): run here, waiting or not.
@@ -806,7 +984,9 @@ mod tests {
     /// A coordinator, a job's Offload and a unit's folder with a stand-in step (it writes one file),
     /// in `d`, both on a virtual clock: (the clock, the coordinator, its address, the job's Offload,
     /// the folder, the step's programs, its runs).
-    fn setup(d: &Path) -> (Arc<store::clock::Virtual>, crate::coord::Coordinator, String, Offload, PathBuf, PathBuf, Vec<Run>) {
+    fn setup(
+        d: &Path,
+    ) -> (Arc<store::clock::Virtual>, crate::coord::Coordinator, String, Offload, PathBuf, PathBuf, Vec<Run>) {
         use std::os::unix::fs::PermissionsExt;
         let (c, port) = crate::coord::start_for_test(&d.join("coord"), "m4", "");
         let clock = store::clock::Virtual::new();
@@ -818,25 +998,59 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join("step"), "#!/bin/sh\ncat \"$1/in.bin\" > \"$1/out.bin\"\n").unwrap();
         std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into()] }];
+        let runs = vec![Run {
+            what: "a step".into(),
+            prog: "step".into(),
+            args: vec!["{dir}".into()],
+            env: vec![],
+            reads: vec!["{dir}/in.bin".into()],
+        }];
         let url = format!("http://127.0.0.1:{port}");
-        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.join("tasks"), lease_wait: std::time::Duration::from_secs(3), waiting: Waiting::ByPace, clock: clock.clone(), note: None };
+        let o = Offload {
+            client: Client::at(vec![url.clone()], c.job_token.clone(), "job"),
+            owner: 1,
+            version: "v".into(),
+            dir: d.join("tasks"),
+            lease_wait: std::time::Duration::from_secs(3),
+            waiting: Waiting::ByPace,
+            clock: clock.clone(),
+            note: None,
+        };
         (clock, c, url, o, dir, bin, runs)
     }
 
     /// A worker on the clock: `after` seconds from now it asks and runs the task it's given, and
     /// `took` seconds later hands it back (how that went, once it has).
-    fn worker(clock: &Arc<store::clock::Virtual>, url: &str, token: &str, name: &str, bin: &Path, home: PathBuf, after: f64, took: f64) -> Arc<Mutex<Option<crate::coord::client::Handed>>> {
+    fn worker(
+        clock: &Arc<store::clock::Virtual>,
+        url: &str,
+        token: &str,
+        name: &str,
+        bin: &Path,
+        home: PathBuf,
+        after: f64,
+        took: f64,
+    ) -> Arc<Mutex<Option<crate::coord::client::Handed>>> {
         let (m, bin) = (Client::at(vec![url.to_string()], token.to_string(), name), bin.to_path_buf());
         let handed = Arc::new(Mutex::new(None));
         let (h, c) = (handed.clone(), clock.clone());
         clock.after(std::time::Duration::from_secs_f64(after), move || {
-            let ask = crate::coord::Ask { kind: "native".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
+            let ask = crate::coord::Ask {
+                kind: "native".into(),
+                can: vec!["tail".into()],
+                mem_mb: 4096,
+                ..Default::default()
+            };
             let g = m.ask(&ask).unwrap().expect("given the task");
             let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
             let r = run_task(&m, g.lease, &task, &home, &bin, None).unwrap();
             c.after(std::time::Duration::from_secs_f64(took), move || {
-                let done = crate::coord::Done { lease: g.lease, outputs: serde_json::from_value(r["outputs"].clone()).unwrap(), secs: took, ..Default::default() };
+                let done = crate::coord::Done {
+                    lease: g.lease,
+                    outputs: serde_json::from_value(r["outputs"].clone()).unwrap(),
+                    secs: took,
+                    ..Default::default()
+                };
                 *h.lock().unwrap() = Some(m.done(&done).unwrap());
             });
         });
@@ -853,10 +1067,28 @@ mod tests {
         // (Its agent told while it waits on a worker: `WAITING_ENV`.)
         let note = d.path().join("waiting");
         o.note = Some(note.clone());
-        let ask = crate::coord::Ask { kind: "native".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
+        let ask =
+            crate::coord::Ask { kind: "native".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
         let here = |dir: &Path| {
             clock.advance(Duration::from_millis(100));
-            crate::unit::run_tail(&runs, dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None, elevation: None, declared: None })
+            crate::unit::run_tail(
+                &runs,
+                dir,
+                &crate::unit::Tools {
+                    bin: bin.clone(),
+                    dem: PathBuf::new(),
+                    cache: d.path().join("cache"),
+                    buildings: None,
+                    sources: None,
+                    shared: None,
+                    chm: None,
+                    stores_read_only: false,
+                    spacing_m: 8,
+                    snap: None,
+                    elevation: None,
+                    declared: None,
+                },
+            )
         };
         let p = Patience { here_s: Some(30.0) };
         let status = |t: &Offered| o.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).unwrap().1;
@@ -956,7 +1188,9 @@ mod tests {
         let (dir, bdir) = (d.path().join("u"), d.path().join("b"));
         std::fs::create_dir_all(dir.join("scache")).unwrap();
         std::fs::create_dir_all(&bdir).unwrap();
-        for f in ["grid.idx", "samples.bin", "terrain.tiles", "scache/view.keys", "scache/view.tmp", "scache/canopy.keys"] {
+        for f in
+            ["grid.idx", "samples.bin", "terrain.tiles", "scache/view.keys", "scache/view.tmp", "scache/canopy.keys"]
+        {
             std::fs::write(dir.join(f), f).unwrap();
         }
         std::fs::write(bdir.join("8-1-1.f32"), b"x").unwrap();

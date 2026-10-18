@@ -49,13 +49,22 @@ pub struct Files {
 impl Default for Files {
     fn default() -> Self {
         let t0 = std::time::Instant::now();
-        Files { connect: Duration::from_secs(5), idle: Duration::from_secs(60), tick: Duration::from_secs(1), clock: std::sync::Arc::new(move || t0.elapsed()) }
+        Files {
+            connect: Duration::from_secs(5),
+            idle: Duration::from_secs(60),
+            tick: Duration::from_secs(1),
+            clock: std::sync::Arc::new(move || t0.elapsed()),
+        }
     }
 }
 
 impl std::fmt::Debug for Files {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Files").field("connect", &self.connect).field("idle", &self.idle).field("tick", &self.tick).finish()
+        f.debug_struct("Files")
+            .field("connect", &self.connect)
+            .field("idle", &self.idle)
+            .field("tick", &self.tick)
+            .finish()
     }
 }
 
@@ -66,7 +75,11 @@ struct IdleConnector(Files);
 impl ureq::unversioned::transport::Connector<Box<dyn ureq::unversioned::transport::Transport>> for IdleConnector {
     type Out = IdleTransport;
 
-    fn connect(&self, _: &ureq::unversioned::transport::ConnectionDetails, chained: Option<Box<dyn ureq::unversioned::transport::Transport>>) -> std::result::Result<Option<IdleTransport>, ureq::Error> {
+    fn connect(
+        &self,
+        _: &ureq::unversioned::transport::ConnectionDetails,
+        chained: Option<Box<dyn ureq::unversioned::transport::Transport>>,
+    ) -> std::result::Result<Option<IdleTransport>, ureq::Error> {
         Ok(chained.map(|inner| IdleTransport { last: (self.0.clock)(), inner, files: self.0.clone() }))
     }
 }
@@ -97,7 +110,11 @@ impl ureq::unversioned::transport::Transport for IdleTransport {
         self.inner.buffers()
     }
 
-    fn transmit_output(&mut self, amount: usize, timeout: ureq::unversioned::transport::NextTimeout) -> std::result::Result<(), ureq::Error> {
+    fn transmit_output(
+        &mut self,
+        amount: usize,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> std::result::Result<(), ureq::Error> {
         // (A request starts with a write: a pooled connection's idle time before it isn't counted.
         // A write is at most ureq's output buffer, its progress counted when it's all written:
         // `idle` on it is a stall's limit.)
@@ -107,7 +124,10 @@ impl ureq::unversioned::transport::Transport for IdleTransport {
         Ok(())
     }
 
-    fn await_input(&mut self, timeout: ureq::unversioned::transport::NextTimeout) -> std::result::Result<bool, ureq::Error> {
+    fn await_input(
+        &mut self,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> std::result::Result<bool, ureq::Error> {
         loop {
             // (ureq's own limit, when it's sooner than a tick: as it says.)
             let own = !timeout.after.is_not_happening() && *timeout.after <= self.files.tick;
@@ -166,7 +186,10 @@ fn connect_phase(e: &ureq::Error) -> bool {
     match e {
         ureq::Error::Timeout(t) => matches!(t, ureq::Timeout::Resolve | ureq::Timeout::Connect),
         ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => true,
-        ureq::Error::Io(io) => matches!(io.kind(), K::ConnectionRefused | K::TimedOut | K::HostUnreachable | K::NetworkUnreachable | K::AddrNotAvailable),
+        ureq::Error::Io(io) => matches!(
+            io.kind(),
+            K::ConnectionRefused | K::TimedOut | K::HostUnreachable | K::NetworkUnreachable | K::AddrNotAvailable
+        ),
         _ => false,
     }
 }
@@ -177,7 +200,12 @@ fn connect_phase(e: &ureq::Error) -> bool {
 pub fn probe(urls: &[String]) -> std::result::Result<(), (crate::pool::reachable::Cause, String)> {
     use crate::pool::reachable::{cause_of, Cause, PROBE_TIMEOUT_S};
     let t = Duration::from_secs(PROBE_TIMEOUT_S);
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_connect(Some(t)).timeout_global(Some(t)).http_status_as_error(false).build().into();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(t))
+        .timeout_global(Some(t))
+        .http_status_as_error(false)
+        .build()
+        .into();
     let mut last = (Cause::Other, "no address".to_string());
     for url in urls {
         match agent.get(&format!("{url}/")).call() {
@@ -211,12 +239,28 @@ impl Client {
     /// the file can't be read now (an SMB hiccup: not the same as none).
     pub fn from_nas(root: &Path, worker: &str) -> Result<Option<Client>> {
         let Some(c) = read_contact(root)? else { return Ok(None) };
-        Ok(Some(Client { root: Some(root.to_path_buf()), contact: Mutex::new(c), worker: worker.to_string(), answered: Mutex::new(None), failed: Mutex::new(None), round: Mutex::new(None), files: Files::default() }))
+        Ok(Some(Client {
+            root: Some(root.to_path_buf()),
+            contact: Mutex::new(c),
+            worker: worker.to_string(),
+            answered: Mutex::new(None),
+            failed: Mutex::new(None),
+            round: Mutex::new(None),
+            files: Files::default(),
+        }))
     }
 
     /// A coordinator at fixed addresses.
     pub fn at(urls: Vec<String>, token: String, worker: &str) -> Client {
-        Client { root: None, contact: Mutex::new(Contact { urls, token, page: None }), worker: worker.to_string(), answered: Mutex::new(None), failed: Mutex::new(None), round: Mutex::new(None), files: Files::default() }
+        Client {
+            root: None,
+            contact: Mutex::new(Contact { urls, token, page: None }),
+            worker: worker.to_string(),
+            answered: Mutex::new(None),
+            failed: Mutex::new(None),
+            round: Mutex::new(None),
+            files: Files::default(),
+        }
     }
 
     /// Begins a round (an agent's loop): from now on, once a request gets no answer from the
@@ -267,11 +311,21 @@ impl Client {
     fn agent(&self, path: &str) -> ureq::Agent {
         if Self::is_file(path) {
             let f = &self.files;
-            let config = ureq::Agent::config_builder().timeout_connect(Some(f.connect)).http_status_as_error(false).build();
+            let config =
+                ureq::Agent::config_builder().timeout_connect(Some(f.connect)).http_status_as_error(false).build();
             use ureq::unversioned::transport::Connector;
-            return ureq::Agent::with_parts(config, ureq::unversioned::transport::DefaultConnector::new().chain(IdleConnector(f.clone())), ureq::unversioned::resolver::DefaultResolver::default());
+            return ureq::Agent::with_parts(
+                config,
+                ureq::unversioned::transport::DefaultConnector::new().chain(IdleConnector(f.clone())),
+                ureq::unversioned::resolver::DefaultResolver::default(),
+            );
         }
-        ureq::Agent::config_builder().timeout_connect(Some(Duration::from_secs(5))).timeout_global(Some(Duration::from_secs(15))).http_status_as_error(false).build().into()
+        ureq::Agent::config_builder()
+            .timeout_connect(Some(Duration::from_secs(5)))
+            .timeout_global(Some(Duration::from_secs(15)))
+            .http_status_as_error(false)
+            .build()
+            .into()
     }
 
     /// One request, at each address in turn until one answers; once more after reading the contact
@@ -294,7 +348,13 @@ impl Client {
         r
     }
 
-    fn request_now(&self, method: &str, path: &str, body: Option<&[u8]>, unanswered: &mut bool) -> Result<(u16, Vec<u8>)> {
+    fn request_now(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        unanswered: &mut bool,
+    ) -> Result<(u16, Vec<u8>)> {
         let mut last = None;
         // (Whether every address failed while connecting: only that says it can't be reached, not
         // a long request that ran past its time.)
@@ -316,9 +376,25 @@ impl Client {
                 let full = format!("{url}{path}");
                 let auth = format!("Bearer {}", c.token);
                 let r = match (method, body) {
-                    ("GET", _) => self.agent(path).get(&full).header("Authorization", &auth).header("X-Worker", &self.worker).call(),
-                    ("PUT", Some(b)) => self.agent(path).put(&full).header("Authorization", &auth).header("X-Worker", &self.worker).send(b),
-                    (_, b) => self.agent(path).post(&full).header("Authorization", &auth).header("X-Worker", &self.worker).header("Content-Type", "application/json").send(b.unwrap_or(b"{}")),
+                    ("GET", _) => self
+                        .agent(path)
+                        .get(&full)
+                        .header("Authorization", &auth)
+                        .header("X-Worker", &self.worker)
+                        .call(),
+                    ("PUT", Some(b)) => self
+                        .agent(path)
+                        .put(&full)
+                        .header("Authorization", &auth)
+                        .header("X-Worker", &self.worker)
+                        .send(b),
+                    (_, b) => self
+                        .agent(path)
+                        .post(&full)
+                        .header("Authorization", &auth)
+                        .header("X-Worker", &self.worker)
+                        .header("Content-Type", "application/json")
+                        .send(b.unwrap_or(b"{}")),
                 };
                 match r {
                     Ok(mut resp) => {
@@ -328,7 +404,9 @@ impl Client {
                             Err(e) => {
                                 // (Broken off, not run past its time.)
                                 *unanswered = !matches!(e, ureq::Error::Timeout(_));
-                                return Err(self.stalled(path, anyhow::Error::from(e).context("the coordinator's answer")));
+                                return Err(
+                                    self.stalled(path, anyhow::Error::from(e).context("the coordinator's answer"))
+                                );
                             }
                         };
                         if code == 401 {
@@ -337,7 +415,8 @@ impl Client {
                         }
                         let h = |n: &str| resp.headers().get(n).and_then(|v| v.to_str().ok()).map(str::to_string);
                         let term = h(super::POOL_TERM).and_then(|t| t.parse().ok());
-                        *self.answered.lock().unwrap() = Some(Answered { at: crate::agent::jobs::now_s(), term, member: h(super::POOL_MEMBER) });
+                        *self.answered.lock().unwrap() =
+                            Some(Answered { at: crate::agent::jobs::now_s(), term, member: h(super::POOL_MEMBER) });
                         // The working address first from now on.
                         let mut cur = self.contact.lock().unwrap();
                         if let Some(i) = cur.urls.iter().position(|u| u == url) {
@@ -348,7 +427,9 @@ impl Client {
                     }
                     Err(e) => {
                         connecting = Some(connecting.unwrap_or(true) && connect_phase(&e));
-                        silent = Some(silent.unwrap_or(true) && (connect_phase(&e) || !matches!(e, ureq::Error::Timeout(_))));
+                        silent = Some(
+                            silent.unwrap_or(true) && (connect_phase(&e) || !matches!(e, ureq::Error::Timeout(_))),
+                        );
                         let stalled = !connect_phase(&e) && matches!(e, ureq::Error::Timeout(_));
                         let e = anyhow::Error::from(e).context(format!("reach the coordinator at {url}"));
                         last = Some(if stalled { self.stalled(path, e) } else { e });
@@ -368,7 +449,9 @@ impl Client {
 
     /// A file transfer's timeout said as what it is: nothing moved for `Files::idle`.
     fn stalled(&self, path: &str, e: anyhow::Error) -> anyhow::Error {
-        if Self::is_file(path) && e.chain().any(|c| matches!(c.downcast_ref::<ureq::Error>(), Some(ureq::Error::Timeout(_)))) {
+        if Self::is_file(path)
+            && e.chain().any(|c| matches!(c.downcast_ref::<ureq::Error>(), Some(ureq::Error::Timeout(_))))
+        {
             e.context(format!("{path}: no byte moved for {} s", self.files.idle.as_secs()))
         } else {
             e
@@ -378,7 +461,11 @@ impl Client {
     /// A JSON request: the status and the answer's JSON.
     pub fn post_json(&self, path: &str, body: &serde_json::Value) -> Result<Reply> {
         let (code, b) = self.request("POST", path, Some(&serde_json::to_vec(body)?))?;
-        let v = if b.is_empty() { serde_json::Value::Null } else { serde_json::from_slice(&b).with_context(|| format!("the coordinator's answer to {path}"))? };
+        let v = if b.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&b).with_context(|| format!("the coordinator's answer to {path}"))?
+        };
         // (404, 409 and 410 say something to the caller: no such thing; refused as it is; gone.)
         if code >= 400 && ![404, 409, 410].contains(&code) {
             bail!("the coordinator answered {code} to {path}: {}", v["error"].as_str().unwrap_or(""));
@@ -392,7 +479,11 @@ impl Client {
         let a = Ask { worker: self.worker.clone(), ..a.clone() };
         match self.post_json("/work/ask", &serde_json::to_value(&a)?)? {
             (200, v) => Ok(Some(serde_json::from_value(v)?)),
-            (409, v) => Err(Refused { why: v["error"].as_str().unwrap_or("the lead gives this Mac no work as it is").to_string(), pause: serde_json::from_value(v["pause"].clone()).ok().flatten() }.into()),
+            (409, v) => Err(Refused {
+                why: v["error"].as_str().unwrap_or("the lead gives this Mac no work as it is").to_string(),
+                pause: serde_json::from_value(v["pause"].clone()).ok().flatten(),
+            }
+            .into()),
             _ => Ok(None),
         }
     }
@@ -424,7 +515,12 @@ impl Client {
         let mut v = serde_json::to_value(d)?;
         v["worker"] = self.worker.clone().into();
         let (code, b) = self.request("POST", "/work/done", Some(&serde_json::to_vec(&v)?))?;
-        let why = || serde_json::from_slice::<serde_json::Value>(&b).ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or_default();
+        let why = || {
+            serde_json::from_slice::<serde_json::Value>(&b)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(str::to_string))
+                .unwrap_or_default()
+        };
         match code {
             200 => Ok(Handed::Taken),
             410 => Ok(Handed::Gone),
@@ -440,8 +536,23 @@ impl Client {
 
     /// `fail`, with what the job saw its targets hold at least (crate::agent::memguard: cost key,
     /// MB), for the lease's floors.
-    pub fn fail_with(&self, lease: u64, error: &str, oom_mb: Option<u64>, floors: &[(String, crate::agent::memguard::Floor)]) -> Result<()> {
-        let f = Fail { worker: self.worker.clone(), lease, error: error.chars().take(4000).collect(), oom_mb, interrupted: false, floors: floors.to_vec(), disks: Vec::new(), job_disk_mb: 0 };
+    pub fn fail_with(
+        &self,
+        lease: u64,
+        error: &str,
+        oom_mb: Option<u64>,
+        floors: &[(String, crate::agent::memguard::Floor)],
+    ) -> Result<()> {
+        let f = Fail {
+            worker: self.worker.clone(),
+            lease,
+            error: error.chars().take(4000).collect(),
+            oom_mb,
+            interrupted: false,
+            floors: floors.to_vec(),
+            disks: Vec::new(),
+            job_disk_mb: 0,
+        };
         self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
         Ok(())
     }
@@ -454,16 +565,47 @@ impl Client {
 
     /// `give_back`, with what the job saw its targets hold at least (crate::agent::memguard: cost
     /// key, MB), for the lease's floors.
-    pub fn give_back_with(&self, lease: u64, why: &str, floors: &[(String, crate::agent::memguard::Floor)]) -> Result<()> {
-        let f = Fail { worker: self.worker.clone(), lease, error: why.chars().take(4000).collect(), oom_mb: None, interrupted: true, floors: floors.to_vec(), disks: Vec::new(), job_disk_mb: 0 };
+    pub fn give_back_with(
+        &self,
+        lease: u64,
+        why: &str,
+        floors: &[(String, crate::agent::memguard::Floor)],
+    ) -> Result<()> {
+        let f = Fail {
+            worker: self.worker.clone(),
+            lease,
+            error: why.chars().take(4000).collect(),
+            oom_mb: None,
+            interrupted: true,
+            floors: floors.to_vec(),
+            disks: Vec::new(),
+            job_disk_mb: 0,
+        };
         self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
         Ok(())
     }
 
     /// Ends lease `lease` unfinished: given back (`interrupted`) or failed, with what the job saw its
     /// targets take at least, in memory (`floors`) and on the disk (`disks`: cost key, MB).
-    pub fn end_with(&self, lease: u64, why: &str, interrupted: bool, floors: &[(String, crate::agent::memguard::Floor)], disks: &[(String, u64)], job_disk_mb: u64) -> Result<()> {
-        let f = Fail { worker: self.worker.clone(), lease, error: why.chars().take(4000).collect(), oom_mb: None, interrupted, floors: floors.to_vec(), disks: disks.to_vec(), job_disk_mb };
+    pub fn end_with(
+        &self,
+        lease: u64,
+        why: &str,
+        interrupted: bool,
+        floors: &[(String, crate::agent::memguard::Floor)],
+        disks: &[(String, u64)],
+        job_disk_mb: u64,
+    ) -> Result<()> {
+        let f = Fail {
+            worker: self.worker.clone(),
+            lease,
+            error: why.chars().take(4000).collect(),
+            oom_mb: None,
+            interrupted,
+            floors: floors.to_vec(),
+            disks: disks.to_vec(),
+            job_disk_mb,
+        };
         self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
         Ok(())
     }
@@ -512,7 +654,9 @@ pub(crate) mod tests {
                     s.set_nonblocking(false).ok();
                     each(s);
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(std::time::Duration::from_millis(2)),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(2))
+                }
                 Err(_) => {}
             }
         });
@@ -537,23 +681,21 @@ pub(crate) mod tests {
         let n = Arc::new(AtomicUsize::new(0));
         let seen = n.clone();
         let url = serve(move |mut s| {
-            {
-                let mut r = BufReader::new(s.try_clone().unwrap());
-                let mut len = 0usize;
-                loop {
-                    let mut line = String::new();
-                    if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                        break;
-                    }
-                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                        len = v.trim().parse().unwrap_or(0);
-                    }
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut len = 0usize;
+            loop {
+                let mut line = String::new();
+                if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
                 }
-                let mut body = vec![0; len];
-                r.read_exact(&mut body).ok();
-                seen.fetch_add(1, Ordering::SeqCst);
-                write!(s, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").ok();
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
             }
+            let mut body = vec![0; len];
+            r.read_exact(&mut body).ok();
+            seen.fetch_add(1, Ordering::SeqCst);
+            write!(s, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").ok();
         });
         (url, n)
     }
@@ -644,7 +786,13 @@ pub(crate) mod tests {
     /// File limits on a simulated clock (ms, as `clock` holds it): the real ones (5 s, 60 s), a
     /// blocked read waking every 5 ms; `auto`: each look at the clock moves it on 1 s.
     fn sim(clock: Arc<std::sync::atomic::AtomicU64>, auto: bool) -> Files {
-        let clock = move || Duration::from_millis(if auto { clock.fetch_add(1000, Ordering::SeqCst) } else { clock.load(Ordering::SeqCst) });
+        let clock = move || {
+            Duration::from_millis(if auto {
+                clock.fetch_add(1000, Ordering::SeqCst)
+            } else {
+                clock.load(Ordering::SeqCst)
+            })
+        };
         Files { tick: Duration::from_millis(5), clock: Arc::new(clock), ..Files::default() }
     }
 

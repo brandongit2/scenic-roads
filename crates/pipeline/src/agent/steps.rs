@@ -163,8 +163,30 @@ pub struct Step {
 
 /// A row with what most steps have: 1.5 GB until measured, none of the sets, every target in one
 /// job.
-const fn step(stage: &'static str, kind: Kind, scope: Scope, name: &'static str, title: &'static str, does: &'static str, writes: fn(&str, bool) -> bool) -> Step {
-    Step { name, title, does, kind, scope, stage, mem_mb: 1500, shared: None, beside: None, alone: false, answered: false, batch: usize::MAX, writes }
+const fn step(
+    stage: &'static str,
+    kind: Kind,
+    scope: Scope,
+    name: &'static str,
+    title: &'static str,
+    does: &'static str,
+    writes: fn(&str, bool) -> bool,
+) -> Step {
+    Step {
+        name,
+        title,
+        does,
+        kind,
+        scope,
+        stage,
+        mem_mb: 1500,
+        shared: None,
+        beside: None,
+        alone: false,
+        answered: false,
+        batch: usize::MAX,
+        writes,
+    }
 }
 
 use Kind::{Derive, Fetch, Keep, Pack, Publish};
@@ -173,85 +195,563 @@ use Scope::{Area, Input, Tile, World};
 /// The table, by stage (the ranks order what's ranked).
 pub const TABLE: [Step; 51] = [
     // The OSM pass: the planet filtered, its sets, pieces and road values; then its worldwide steps.
-    Step { alone: true, ..step("pass", Derive, World, "osm-pass", "Planet", "Filters the newest planet, cuts its sets and z6 pieces, makes the basemap and the road values.", w_osm_pass) },
-    Step { alone: true, ..step("pass", Derive, World, "pass-sets", "Pass sets", "Cuts the sets a finished pass lacks in their current filters.", w_pass_sets) },
+    Step {
+        alone: true,
+        ..step(
+            "pass",
+            Derive,
+            World,
+            "osm-pass",
+            "Planet",
+            "Filters the newest planet, cuts its sets and z6 pieces, makes the basemap and the road values.",
+            w_osm_pass,
+        )
+    },
+    Step {
+        alone: true,
+        ..step(
+            "pass",
+            Derive,
+            World,
+            "pass-sets",
+            "Pass sets",
+            "Cuts the sets a finished pass lacks in their current filters.",
+            w_pass_sets,
+        )
+    },
     // (osmium's export of the outline set and the assembly: 8.3 GB at most measured, the
     // 2026-09-28 set, 5 min 20 s on the M4, 2026-10-15.)
-    Step { mem_mb: 9216, alone: true, ..step("pass", Derive, World, "outlines", "Outlines", "Assembles the countries' and regions' outlines from the pass's outline set.", w_outlines) },
-    Step { alone: true, ..step("pass", Derive, World, "trailends", "Route ends", "Finds the ends of the world's hiking routes.", w_trailends) },
-    Step { alone: true, ..step("pass", Derive, World, "reach", "Road reach", "Works out how far each tile's roads reach.", w_reach) },
-    Step { alone: true, ..step("pass", Derive, World, "terrain-z8", "World terrain, z8", "Repairs every z8 terrain tile of the world, once.", w_terrain_z8) },
-    Step { alone: true, ..step("pass", Fetch, World, "buildings", "Roadside buildings", "Collects the world's roadside building boxes from the declared buildings release.", w_buildings) },
+    Step {
+        mem_mb: 9216,
+        alone: true,
+        ..step(
+            "pass",
+            Derive,
+            World,
+            "outlines",
+            "Outlines",
+            "Assembles the countries' and regions' outlines from the pass's outline set.",
+            w_outlines,
+        )
+    },
+    Step {
+        alone: true,
+        ..step(
+            "pass",
+            Derive,
+            World,
+            "trailends",
+            "Route ends",
+            "Finds the ends of the world's hiking routes.",
+            w_trailends,
+        )
+    },
+    Step {
+        alone: true,
+        ..step("pass", Derive, World, "reach", "Road reach", "Works out how far each tile's roads reach.", w_reach)
+    },
+    Step {
+        alone: true,
+        ..step(
+            "pass",
+            Derive,
+            World,
+            "terrain-z8",
+            "World terrain, z8",
+            "Repairs every z8 terrain tile of the world, once.",
+            w_terrain_z8,
+        )
+    },
+    Step {
+        alone: true,
+        ..step(
+            "pass",
+            Fetch,
+            World,
+            "buildings",
+            "Roadside buildings",
+            "Collects the world's roadside building boxes from the declared buildings release.",
+            w_buildings,
+        )
+    },
     Step { alone: true, ..step("pass", Derive, World, "summits", "Summits", "Finds the world's summits.", w_summits) },
-    Step { alone: true, ..step("pass", Pack, World, "labels", "Place labels", "Ranks the world's place labels and packs them.", w_labels) },
+    Step {
+        alone: true,
+        ..step(
+            "pass",
+            Pack,
+            World,
+            "labels",
+            "Place labels",
+            "Ranks the world's place labels and packs them.",
+            w_labels,
+        )
+    },
     // (The lakes filled from Canada's own data: a band's lakes and their pieces held, and the
     // merged fill's, 10.4 GB at most measured, 2026-10-15.)
-    Step { mem_mb: 12288, alone: true, ..step("pass", Derive, World, "lakefill", "Lake fill", "Fills in Canada's lakes missing from OpenStreetMap.", w_lakefill) },
+    Step {
+        mem_mb: 12288,
+        alone: true,
+        ..step(
+            "pass",
+            Derive,
+            World,
+            "lakefill",
+            "Lake fill",
+            "Fills in Canada's lakes missing from OpenStreetMap.",
+            w_lakefill,
+        )
+    },
     // (The worldwide water: its z14 directory and stored tiles held, 7.7 GB at most measured,
     // 2026-10-08.)
-    Step { mem_mb: 8192, alone: true, ..step("pass", Pack, World, "water", "Water", "Draws the world's water at every zoom.", w_water) },
-    Step { ..step("pass", Derive, World, "spoken", "Spoken languages", "Maps the languages spoken where, for names.", w_spoken) },
+    Step {
+        mem_mb: 8192,
+        alone: true,
+        ..step("pass", Pack, World, "water", "Water", "Draws the world's water at every zoom.", w_water)
+    },
+    Step {
+        ..step(
+            "pass",
+            Derive,
+            World,
+            "spoken",
+            "Spoken languages",
+            "Maps the languages spoken where, for names.",
+            w_spoken,
+        )
+    },
     // The regions' extract (crate::inputs::regions::extract): the pass's planet read three times,
     // a heavy NAS reader.
-    Step { alone: true, ..step("pass", Derive, World, "regions-extract", "Regions' extract", "Extracts the regions' OSM relations and ways.", w_regions_extract) },
-    Step { alone: true, answered: true, ..step("sites", Derive, World, "heritage-sites", "Heritage sites", "Finds the regions' heritage sites and designated areas.", w_heritage_sites) },
+    Step {
+        alone: true,
+        ..step(
+            "pass",
+            Derive,
+            World,
+            "regions-extract",
+            "Regions' extract",
+            "Extracts the regions' OSM relations and ways.",
+            w_regions_extract,
+        )
+    },
+    Step {
+        alone: true,
+        answered: true,
+        ..step(
+            "sites",
+            Derive,
+            World,
+            "heritage-sites",
+            "Heritage sites",
+            "Finds the regions' heritage sites and designated areas.",
+            w_heritage_sites,
+        )
+    },
     // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is an area's whole run, the scheme
     // before pieces).
-    Step { ..step("terrain", Derive, World, "terrain-water", "Terrain water", "Reads the water the terrain flattens, for the terrain's keys.", w_terrain_water) },
-    Step { shared: Some(0), batch: 8, ..step("terrain", Pack, Tile, "terrain", "Terrain", "Builds a tile's terrain packs, repaired and its water flattened.", w_terrain) },
+    Step {
+        ..step(
+            "terrain",
+            Derive,
+            World,
+            "terrain-water",
+            "Terrain water",
+            "Reads the water the terrain flattens, for the terrain's keys.",
+            w_terrain_water,
+        )
+    },
+    Step {
+        shared: Some(0),
+        batch: 8,
+        ..step(
+            "terrain",
+            Pack,
+            Tile,
+            "terrain",
+            "Terrain",
+            "Builds a tile's terrain packs, repaired and its water flattened.",
+            w_terrain,
+        )
+    },
     // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its pieces' z9 means, up to 4 MB a
     // piece, and half a GB besides.)
-    Step { mem_mb: 1200, batch: 4, ..step("terrain", Pack, Area, "terrain-lo", "Terrain, zoomed out", "Assembles an area's zoomed-out terrain from its tiles.", w_terrain_lo) },
+    Step {
+        mem_mb: 1200,
+        batch: 4,
+        ..step(
+            "terrain",
+            Pack,
+            Area,
+            "terrain-lo",
+            "Terrain, zoomed out",
+            "Assembles an area's zoomed-out terrain from its tiles.",
+            w_terrain_lo,
+        )
+    },
     // (Slope holds a z6 tile's tiles at a time, under a GB; its assembly the area's lo tiles.)
-    Step { mem_mb: 1500, shared: Some(1), beside: Some(11), batch: 8, ..step("slope", Pack, Tile, "slope", "Slope", "Works out a tile's slope from its terrain.", w_slope) },
-    Step { mem_mb: 1000, batch: 4, ..step("slope", Pack, Area, "slope-lo", "Slope, zoomed out", "Assembles an area's zoomed-out slope from its tiles.", w_slope_lo) },
+    Step {
+        mem_mb: 1500,
+        shared: Some(1),
+        beside: Some(11),
+        batch: 8,
+        ..step("slope", Pack, Tile, "slope", "Slope", "Works out a tile's slope from its terrain.", w_slope)
+    },
+    Step {
+        mem_mb: 1000,
+        batch: 4,
+        ..step(
+            "slope",
+            Pack,
+            Area,
+            "slope-lo",
+            "Slope, zoomed out",
+            "Assembles an area's zoomed-out slope from its tiles.",
+            w_slope_lo,
+        )
+    },
     // (Tree cover's program holds a band of a block's rows on each thread and the blocks made but
     // not yet written: 1.05 GB on 14 threads for 3/2/2's 792 blocks, 2026-10-05; a piece has 16
     // blocks at most. Its assembly its z3 tile's blocks' zoom-8 values, compressed.)
-    Step { mem_mb: 1000, shared: Some(2), batch: 4, ..step("trees", Pack, Tile, "trees", "Tree cover", "Maps a tile's tree cover, height and leaf type.", w_trees) },
-    Step { mem_mb: 500, batch: 4, ..step("trees", Pack, Area, "trees-lo", "Tree cover, zoomed out", "Assembles an area's zoomed-out tree cover from its tiles.", w_trees_lo) },
+    Step {
+        mem_mb: 1000,
+        shared: Some(2),
+        batch: 4,
+        ..step("trees", Pack, Tile, "trees", "Tree cover", "Maps a tile's tree cover, height and leaf type.", w_trees)
+    },
+    Step {
+        mem_mb: 500,
+        batch: 4,
+        ..step(
+            "trees",
+            Pack,
+            Area,
+            "trees-lo",
+            "Tree cover, zoomed out",
+            "Assembles an area's zoomed-out tree cover from its tiles.",
+            w_trees_lo,
+        )
+    },
     // (Depth: a block's arrays and distance fields, ~0.3 GB; the sources' blocks read, 0.5 GB at
     // most; the tiles made, kept as PNG; the water of a level's tiles, 0.13 GB at most. Until a
     // target's own run says.)
-    Step { mem_mb: 2000, batch: 4, ..step("depth", Pack, Area, "depth-lo", "Depth, zoomed out", "Composes an area's zoomed-out depth from the depth sources on the basemap's water.", w_depth_lo) },
-    Step { mem_mb: 2500, shared: Some(8), batch: 4, ..step("depth", Pack, Tile, "depth", "Depth", "Composes a tile's depth where a source has detail finer than the zoomed-out levels.", w_depth) },
+    Step {
+        mem_mb: 2000,
+        batch: 4,
+        ..step(
+            "depth",
+            Pack,
+            Area,
+            "depth-lo",
+            "Depth, zoomed out",
+            "Composes an area's zoomed-out depth from the depth sources on the basemap's water.",
+            w_depth_lo,
+        )
+    },
+    Step {
+        mem_mb: 2500,
+        shared: Some(8),
+        batch: 4,
+        ..step(
+            "depth",
+            Pack,
+            Tile,
+            "depth",
+            "Depth",
+            "Composes a tile's depth where a source has detail finer than the zoomed-out levels.",
+            w_depth,
+        )
+    },
     // (A unit's most its batches took here, 8.4 GB, 2026-10-05; offered by its piece's size.)
-    Step { mem_mb: 8600, shared: Some(3), beside: Some(10), batch: 6, ..step("roads", Pack, Tile, "unit", "Roads", "Builds a tile's roads, their elevations and scenery: its base pack and road values.", w_unit) },
-    Step { batch: 16, ..step("tiles", Pack, Tile, "pack", "Map tiles", "Draws a tile's road and rail map tiles and its data.", w_pack) },
-    Step { batch: 2, ..step("tiles", Pack, Area, "lo", "Map tiles, zoomed out", "Draws an area's zoomed-out road and rail map tiles.", w_lo) },
+    Step {
+        mem_mb: 8600,
+        shared: Some(3),
+        beside: Some(10),
+        batch: 6,
+        ..step(
+            "roads",
+            Pack,
+            Tile,
+            "unit",
+            "Roads",
+            "Builds a tile's roads, their elevations and scenery: its base pack and road values.",
+            w_unit,
+        )
+    },
+    Step {
+        batch: 16,
+        ..step("tiles", Pack, Tile, "pack", "Map tiles", "Draws a tile's road and rail map tiles and its data.", w_pack)
+    },
+    Step {
+        batch: 2,
+        ..step(
+            "tiles",
+            Pack,
+            Area,
+            "lo",
+            "Map tiles, zoomed out",
+            "Draws an area's zoomed-out road and rail map tiles.",
+            w_lo,
+        )
+    },
     Step { ..step("finish", Keep, World, "prune", "Prune", "Removes what the regions no longer cover.", w_prune) },
-    Step { ..step("finish", Derive, World, "roadunits", "Road index", "Works out which tiles each road crosses.", w_roadunits) },
-    Step { ..step("finish", Pack, World, "stations", "Rail stops", "Places the rail stops near the regions.", w_stations) },
+    Step {
+        ..step(
+            "finish",
+            Derive,
+            World,
+            "roadunits",
+            "Road index",
+            "Works out which tiles each road crosses.",
+            w_roadunits,
+        )
+    },
+    Step {
+        ..step("finish", Pack, World, "stations", "Rail stops", "Places the rail stops near the regions.", w_stations)
+    },
     Step { ..step("finish", Pack, World, "ferries", "Ferries", "Maps the world's ferries.", w_ferries) },
-    Step { ..step("finish", Pack, World, "terrain-root", "Terrain, world level", "Builds the world-level terrain from the areas' zoomed-out packs.", w_terrain_root) },
-    Step { ..step("finish", Pack, World, "slope-root", "Slope, world level", "Builds the world-level slope from the areas' zoomed-out packs.", w_slope_root) },
-    Step { mem_mb: 1024, beside: Some(3), ..step("trains", Fetch, World, "rail-feeds", "Rail timetables", "Fetches the regions' rail and ferry timetables.", w_rail_feeds) },
-    Step { mem_mb: 6144, beside: Some(4), ..step("trains", Derive, World, "rail", "Trains a day", "Counts trains a day on the regions' rail.", w_rail) },
-    Step { mem_mb: 2048, shared: Some(4), beside: Some(8), batch: 24, ..step("landmarks", Derive, Tile, "pois", "Landmark candidates", "Finds a tile's landmark candidates.", w_pois) },
-    Step { mem_mb: 2500, shared: Some(5), beside: Some(9), batch: 12, ..step("landmarks", Derive, Tile, "peaks", "Peaks", "Measures a tile's peaks' prominence and isolation.", w_peaks) },
-    Step { mem_mb: 3072, beside: Some(2), answered: true, ..step("landmarks", Fetch, World, "items", "Wikidata facts", "Fetches the landmarks' Wikidata facts and Wikipedia pageviews.", w_items) },
-    Step { mem_mb: 6144, beside: Some(1), answered: true, ..step("landmarks", Derive, World, "heritage", "Heritage details", "Adds details, fame and outlines to the heritage sites.", w_heritage) },
-    Step { mem_mb: 4096, beside: Some(6), ..step("landmarks", Pack, World, "marks", "Landmarks", "Ranks the landmarks and draws them on the map.", w_marks) },
-    Step { mem_mb: 4096, beside: Some(7), ..step("landmarks", Pack, World, "overlays", "Area overlays", "Draws the area overlays.", w_overlays) },
-    Step { mem_mb: 1024, beside: Some(5), ..step("buildings", Fetch, World, "bld-fetch", "Buildings' sources", "Fetches the 3D buildings' sources.", w_none) },
+    Step {
+        ..step(
+            "finish",
+            Pack,
+            World,
+            "terrain-root",
+            "Terrain, world level",
+            "Builds the world-level terrain from the areas' zoomed-out packs.",
+            w_terrain_root,
+        )
+    },
+    Step {
+        ..step(
+            "finish",
+            Pack,
+            World,
+            "slope-root",
+            "Slope, world level",
+            "Builds the world-level slope from the areas' zoomed-out packs.",
+            w_slope_root,
+        )
+    },
+    Step {
+        mem_mb: 1024,
+        beside: Some(3),
+        ..step(
+            "trains",
+            Fetch,
+            World,
+            "rail-feeds",
+            "Rail timetables",
+            "Fetches the regions' rail and ferry timetables.",
+            w_rail_feeds,
+        )
+    },
+    Step {
+        mem_mb: 6144,
+        beside: Some(4),
+        ..step("trains", Derive, World, "rail", "Trains a day", "Counts trains a day on the regions' rail.", w_rail)
+    },
+    Step {
+        mem_mb: 2048,
+        shared: Some(4),
+        beside: Some(8),
+        batch: 24,
+        ..step("landmarks", Derive, Tile, "pois", "Landmark candidates", "Finds a tile's landmark candidates.", w_pois)
+    },
+    Step {
+        mem_mb: 2500,
+        shared: Some(5),
+        beside: Some(9),
+        batch: 12,
+        ..step(
+            "landmarks",
+            Derive,
+            Tile,
+            "peaks",
+            "Peaks",
+            "Measures a tile's peaks' prominence and isolation.",
+            w_peaks,
+        )
+    },
+    Step {
+        mem_mb: 3072,
+        beside: Some(2),
+        answered: true,
+        ..step(
+            "landmarks",
+            Fetch,
+            World,
+            "items",
+            "Wikidata facts",
+            "Fetches the landmarks' Wikidata facts and Wikipedia pageviews.",
+            w_items,
+        )
+    },
+    Step {
+        mem_mb: 6144,
+        beside: Some(1),
+        answered: true,
+        ..step(
+            "landmarks",
+            Derive,
+            World,
+            "heritage",
+            "Heritage details",
+            "Adds details, fame and outlines to the heritage sites.",
+            w_heritage,
+        )
+    },
+    Step {
+        mem_mb: 4096,
+        beside: Some(6),
+        ..step(
+            "landmarks",
+            Pack,
+            World,
+            "marks",
+            "Landmarks",
+            "Ranks the landmarks and draws them on the map.",
+            w_marks,
+        )
+    },
+    Step {
+        mem_mb: 4096,
+        beside: Some(7),
+        ..step("landmarks", Pack, World, "overlays", "Area overlays", "Draws the area overlays.", w_overlays)
+    },
+    Step {
+        mem_mb: 1024,
+        beside: Some(5),
+        ..step(
+            "buildings",
+            Fetch,
+            World,
+            "bld-fetch",
+            "Buildings' sources",
+            "Fetches the 3D buildings' sources.",
+            w_none,
+        )
+    },
     // (The 3D buildings, until a target's own run says: the densest tile's, B1's Kantō 6/56/25:
     // 5.1 GB to read its 30.3 M rows; to raise its tiles and field, the model of B5's pilot for those
     // rows. Offered by the rows they read.)
-    Step { mem_mb: 5200, shared: Some(6), beside: Some(12), batch: 8, ..step("buildings", Derive, Tile, "bldprep", "Buildings read", "Reads a tile's buildings from the sources into normalized files.", w_bldprep) },
-    Step { mem_mb: super::bldtiles_peak(30_300_000), shared: Some(7), beside: Some(13), batch: 16, ..step("buildings", Pack, Tile, "bldtiles", "3D buildings", "Raises a tile's 3D buildings and its far buildings' field.", w_bldtiles) },
+    Step {
+        mem_mb: 5200,
+        shared: Some(6),
+        beside: Some(12),
+        batch: 8,
+        ..step(
+            "buildings",
+            Derive,
+            Tile,
+            "bldprep",
+            "Buildings read",
+            "Reads a tile's buildings from the sources into normalized files.",
+            w_bldprep,
+        )
+    },
+    Step {
+        mem_mb: super::bldtiles_peak(30_300_000),
+        shared: Some(7),
+        beside: Some(13),
+        batch: 16,
+        ..step(
+            "buildings",
+            Pack,
+            Tile,
+            "bldtiles",
+            "3D buildings",
+            "Raises a tile's 3D buildings and its far buildings' field.",
+            w_bldtiles,
+        )
+    },
     // (Its field's lo levels a z3 tile: what crate::bld::field's lo holds, from its sizes.)
-    Step { mem_mb: crate::bld::field::LO_PEAK_MB, batch: 4, ..step("buildings", Pack, Area, "bldfield-lo", "3D buildings, zoomed out", "Assembles an area's zoomed-out buildings' field from its tiles.", w_bldfield_lo) },
-    Step { ..step("publish", Publish, World, "catalog", "Catalog", "Makes the catalog the map serves: the new data goes out.", w_none) },
-    Step { ..step("publish", Publish, World, "catalog-held", "Catalog, held", "Makes a catalog held for review (inputs/hold-catalog).", w_none) },
+    Step {
+        mem_mb: crate::bld::field::LO_PEAK_MB,
+        batch: 4,
+        ..step(
+            "buildings",
+            Pack,
+            Area,
+            "bldfield-lo",
+            "3D buildings, zoomed out",
+            "Assembles an area's zoomed-out buildings' field from its tiles.",
+            w_bldfield_lo,
+        )
+    },
+    Step {
+        ..step(
+            "publish",
+            Publish,
+            World,
+            "catalog",
+            "Catalog",
+            "Makes the catalog the map serves: the new data goes out.",
+            w_none,
+        )
+    },
+    Step {
+        ..step(
+            "publish",
+            Publish,
+            World,
+            "catalog-held",
+            "Catalog, held",
+            "Makes a catalog held for review (inputs/hold-catalog).",
+            w_none,
+        )
+    },
     // The gate's checks (crate::inputs::gate): one per gate unit, ordered before the rest, and the
     // second job's first choice (so one doesn't wait behind a long first job, a step running alone
     // aside); reading the drop boxes and the accepted copies on the NAS, never beside another of
     // the heavy NAS readers.
-    Step { beside: Some(0), ..step("upkeep", Keep, Input, "inputs", "Input check", "Checks an input's dropped files and takes them in.", w_inputs) },
-    Step { ..step("upkeep", Keep, World, "names-todo", "Names to do", "Lists the names to translate and the descriptions to write.", w_none) },
-    Step { ..step("upkeep", Keep, World, "timetables-todo", "Timetables to do", "Lists the lines with no timetable.", w_timetables_todo) },
-    Step { alone: true, ..step("upkeep", Keep, World, "gc", "Clean-up", "Removes replaced files from the NAS.", w_none) },
-    Step { ..step("upkeep", Keep, World, "backup", "Backup", "Backs up translations, descriptions, inputs and the acceptances.", w_none) },
+    Step {
+        beside: Some(0),
+        ..step(
+            "upkeep",
+            Keep,
+            Input,
+            "inputs",
+            "Input check",
+            "Checks an input's dropped files and takes them in.",
+            w_inputs,
+        )
+    },
+    Step {
+        ..step(
+            "upkeep",
+            Keep,
+            World,
+            "names-todo",
+            "Names to do",
+            "Lists the names to translate and the descriptions to write.",
+            w_none,
+        )
+    },
+    Step {
+        ..step(
+            "upkeep",
+            Keep,
+            World,
+            "timetables-todo",
+            "Timetables to do",
+            "Lists the lines with no timetable.",
+            w_timetables_todo,
+        )
+    },
+    Step {
+        alone: true,
+        ..step("upkeep", Keep, World, "gc", "Clean-up", "Removes replaced files from the NAS.", w_none)
+    },
+    Step {
+        ..step(
+            "upkeep",
+            Keep,
+            World,
+            "backup",
+            "Backup",
+            "Backs up translations, descriptions, inputs and the acceptances.",
+            w_none,
+        )
+    },
 ];
 
 /// A task a running job offers to any worker (docs/workers.md §3), described as a step is.
@@ -266,10 +766,30 @@ pub struct Task {
 }
 
 pub const TASKS: [Task; 4] = [
-    Task { name: "tail", title: "Roads' last steps", does: "A tile's last steps (its scenic metrics), offered as the lead builds its roads.", step: "unit" },
-    Task { name: crate::terrain_task::KIND, title: "Terrain's subtrees", does: "A group of a terrain tile's z8 subtrees.", step: "terrain" },
-    Task { name: crate::trees::task::KIND, title: "Tree cover's blocks", does: "A row of a tree cover tile's blocks.", step: "trees" },
-    Task { name: crate::bld::task::KIND, title: "3D buildings' areas", does: "A z8 area of a 3D buildings tile.", step: "bldtiles" },
+    Task {
+        name: "tail",
+        title: "Roads' last steps",
+        does: "A tile's last steps (its scenic metrics), offered as the lead builds its roads.",
+        step: "unit",
+    },
+    Task {
+        name: crate::terrain_task::KIND,
+        title: "Terrain's subtrees",
+        does: "A group of a terrain tile's z8 subtrees.",
+        step: "terrain",
+    },
+    Task {
+        name: crate::trees::task::KIND,
+        title: "Tree cover's blocks",
+        does: "A row of a tree cover tile's blocks.",
+        step: "trees",
+    },
+    Task {
+        name: crate::bld::task::KIND,
+        title: "3D buildings' areas",
+        does: "A z8 area of a 3D buildings tile.",
+        step: "bldtiles",
+    },
 ];
 
 /// The forecast's lane for a map update as a whole (crate::agent::forecast::Lane): not a step.
@@ -381,10 +901,34 @@ pub struct Info {
 
 /// Every step's row, in the table's order, then every task's (`of` its step).
 pub fn table() -> Vec<Info> {
-    let steps = TABLE.iter().map(|s| Info { id: s.name.into(), title: s.title.into(), does: s.does.into(), kind: s.kind, scope: s.scope, noun: s.scope.noun().into(), stage: s.stage.into(), place: place(s.name), batch: (s.batch != usize::MAX).then_some(s.batch), mem_mb: s.mem_mb, of: None });
+    let steps = TABLE.iter().map(|s| Info {
+        id: s.name.into(),
+        title: s.title.into(),
+        does: s.does.into(),
+        kind: s.kind,
+        scope: s.scope,
+        noun: s.scope.noun().into(),
+        stage: s.stage.into(),
+        place: place(s.name),
+        batch: (s.batch != usize::MAX).then_some(s.batch),
+        mem_mb: s.mem_mb,
+        of: None,
+    });
     let tasks = TASKS.iter().map(|t| {
         let s = row(t.step).expect("a task's step has a row");
-        Info { id: t.name.into(), title: t.title.into(), does: t.does.into(), kind: s.kind, scope: Scope::Task, noun: Scope::Task.noun().into(), stage: s.stage.into(), place: Place::Any, batch: None, mem_mb: 0, of: Some(t.step.into()) }
+        Info {
+            id: t.name.into(),
+            title: t.title.into(),
+            does: t.does.into(),
+            kind: s.kind,
+            scope: Scope::Task,
+            noun: Scope::Task.noun().into(),
+            stage: s.stage.into(),
+            place: Place::Any,
+            batch: None,
+            mem_mb: 0,
+            of: Some(t.step.into()),
+        }
     });
     steps.chain(tasks).collect()
 }
@@ -510,13 +1054,30 @@ pub fn outside(e: &crate::pool::journal::Entry) -> Option<String> {
 /// `outside`, by outputs function `writes` (None: the step isn't known): the simulator's steps have
 /// a function of their own (crate::pool::sim).
 pub fn outside_by(e: &crate::pool::journal::Entry, writes: &dyn Fn(&str, bool) -> Option<bool>) -> Option<String> {
-    let out: Vec<&String> = match e.handoff.changes.iter().map(|(l, v)| writes(l, v.is_none()).map(|ok| (l, ok))).collect::<Option<Vec<_>>>() {
+    let out: Vec<&String> = match e
+        .handoff
+        .changes
+        .iter()
+        .map(|(l, v)| writes(l, v.is_none()).map(|ok| (l, ok)))
+        .collect::<Option<Vec<_>>>()
+    {
         Some(v) => v.into_iter().filter(|(_, ok)| !ok).map(|(l, _)| l).collect(),
-        None => return Some(format!("{} isn't a step the steps table knows ({} change{})", e.step, e.handoff.changes.len(), if e.handoff.changes.len() == 1 { "" } else { "s" })),
+        None => {
+            return Some(format!(
+                "{} isn't a step the steps table knows ({} change{})",
+                e.step,
+                e.handoff.changes.len(),
+                if e.handoff.changes.len() == 1 { "" } else { "s" }
+            ))
+        }
     };
     let first = out.first()?;
     let what = if e.handoff.changes[*first].is_none() { "removes" } else { "writes" };
-    Some(format!("{what} {first}, outside {}'s write-set{}", e.step, if out.len() > 1 { format!(" (and {} more)", out.len() - 1) } else { String::new() }))
+    Some(format!(
+        "{what} {first}, outside {}'s write-set{}",
+        e.step,
+        if out.len() > 1 { format!(" (and {} more)", out.len() - 1) } else { String::new() }
+    ))
 }
 
 /// Whether `l` is a file a job of `step` saves for `target` (what a shared step's hand-off may
@@ -536,16 +1097,42 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
         "pois" | "peaks" => l == format!("work/{step}/{dash}"),
         // (A z6 tile's normalized buildings, and its 3D buildings' hi pack.)
         "bldprep" => tile.is_some_and(|t| t.z == 6 && l == crate::bld::work_logical(t.x, t.y)),
-        "bldtiles" => tile.is_some_and(|t| t.z == 6 && (l == crate::bld::pack_logical(t.x, t.y) || l == crate::bld::field::hi_logical(t.x, t.y) || l == crate::bld::field::mid_logical(t.x, t.y))),
+        "bldtiles" => tile.is_some_and(|t| {
+            t.z == 6
+                && (l == crate::bld::pack_logical(t.x, t.y)
+                    || l == crate::bld::field::hi_logical(t.x, t.y)
+                    || l == crate::bld::field::mid_logical(t.x, t.y))
+        }),
         "bldfield-lo" => tile.is_some_and(|t| t.z == 3 && l == crate::bld::field::lo_logical(t.x, t.y)),
         // (A z6 tile's depth hi packs, a z3 tile's lo packs.)
-        "depth" => tile.is_some_and(|t| t.z == 6 && [crate::depth::LAYER, crate::depth::CLASS_LAYER].iter().any(|ly| l == crate::depth::build::hi_logical(ly, t.x, t.y))),
-        "depth-lo" => tile.is_some_and(|t| t.z == 3 && [crate::depth::LAYER, crate::depth::CLASS_LAYER].iter().any(|ly| l == crate::depth::build::lo_logical(ly, t.x, t.y))),
-        "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::treepacks::mid_logical(t.x, t.y) || crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))),
-        "trees-lo" => tile.is_some_and(|u| u.z == 3) && crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}")),
-        "terrain" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::terrain_pack::mid_logical(t.x, t.y) || l == format!("layers/terrain/hi/{dash}")),
-        "slope" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
-        "terrain-lo" | "slope-lo" => tile.is_some_and(|u| u.z == 3) && l == format!("layers/{}/lo/{dash}", step.trim_end_matches("-lo")),
+        "depth" => tile.is_some_and(|t| {
+            t.z == 6
+                && [crate::depth::LAYER, crate::depth::CLASS_LAYER]
+                    .iter()
+                    .any(|ly| l == crate::depth::build::hi_logical(ly, t.x, t.y))
+        }),
+        "depth-lo" => tile.is_some_and(|t| {
+            t.z == 3
+                && [crate::depth::LAYER, crate::depth::CLASS_LAYER]
+                    .iter()
+                    .any(|ly| l == crate::depth::build::lo_logical(ly, t.x, t.y))
+        }),
+        "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
+            l == crate::treepacks::mid_logical(t.x, t.y)
+                || crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))
+        }),
+        "trees-lo" => {
+            tile.is_some_and(|u| u.z == 3)
+                && crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}"))
+        }
+        "terrain" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
+            l == crate::terrain_pack::mid_logical(t.x, t.y) || l == format!("layers/terrain/hi/{dash}")
+        }),
+        "slope" if tile.is_some_and(|u| u.z == 6) => tile
+            .is_some_and(|t| l == crate::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
+        "terrain-lo" | "slope-lo" => {
+            tile.is_some_and(|u| u.z == 3) && l == format!("layers/{}/lo/{dash}", step.trim_end_matches("-lo"))
+        }
         "terrain" | "slope" | "trees" => {
             let Some(q) = tile.filter(|u| u.z == 3) else { return false };
             let layers: &[&str] = match step {
@@ -555,7 +1142,10 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
             };
             layers.iter().any(|layer| {
                 l == format!("layers/{layer}/lo/{dash}")
-                    || l.strip_prefix(&format!("layers/{layer}/hi/6-")).and_then(|r| r.split_once('-')).and_then(|(x, y)| Some((x.parse::<u32>().ok()?, y.parse::<u32>().ok()?))).is_some_and(|(x, y)| (x >> 3, y >> 3) == (q.x, q.y))
+                    || l.strip_prefix(&format!("layers/{layer}/hi/6-"))
+                        .and_then(|r| r.split_once('-'))
+                        .and_then(|(x, y)| Some((x.parse::<u32>().ok()?, y.parse::<u32>().ok()?)))
+                        .is_some_and(|(x, y)| (x >> 3, y >> 3) == (q.x, q.y))
             })
         }
         _ => false,
@@ -568,7 +1158,10 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
 /// Whether `s` is tile `z-x-y` of zoom `z` (x and y within it, no leading zeros but "0").
 fn tile(s: &str, z: u32) -> bool {
     let mut p = s.split('-');
-    let num = |t: Option<&str>| t.filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) && (t.len() == 1 || !t.starts_with('0'))).and_then(|t| t.parse::<u32>().ok());
+    let num = |t: Option<&str>| {
+        t.filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) && (t.len() == 1 || !t.starts_with('0')))
+            .and_then(|t| t.parse::<u32>().ok())
+    };
     match (num(p.next()), num(p.next()), num(p.next()), p.next()) {
         (Some(tz), Some(x), Some(y), None) => tz == z && (x as u64) < (1u64 << z) && (y as u64) < (1u64 << z),
         _ => false,
@@ -578,7 +1171,10 @@ fn tile(s: &str, z: u32) -> bool {
 /// Whether `s` is a day, `YYYY-MM-DD`.
 fn date(s: &str) -> bool {
     let b = s.as_bytes();
-    b.len() == 10 && b[4] == b'-' && b[7] == b'-' && b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
 /// Whether `l` is a pack of layer `layer` (or of a layer `layer` accepts) at one of `scopes` ("root",
@@ -739,7 +1335,8 @@ fn w_slope_root(l: &str, _: bool) -> bool {
 /// The tree layers' hi packs and a piece's mid (a z6 tile); a z3 tile's whole run their lo packs
 /// too.
 fn w_trees(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| crate::treepacks::LAYERS.contains(&ly), &["lo", "hi"]) || matches!(parts(l).as_slice(), ["work", "trees-mid", t] if tile(t, 6))
+    pack_of(l, &|ly| crate::treepacks::LAYERS.contains(&ly), &["lo", "hi"])
+        || matches!(parts(l).as_slice(), ["work", "trees-mid", t] if tile(t, 6))
 }
 
 fn w_trees_lo(l: &str, _: bool) -> bool {
@@ -791,7 +1388,9 @@ fn w_marks(l: &str, _: bool) -> bool {
 /// The area overlays' packs, every zoom, their data by z3 tile, and the heritage summaries (what it
 /// didn't write removed).
 fn w_overlays(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| ["ov-heritage-areas", "ov-indigenous", "ov-special", "ov-whs"].contains(&ly), &ALL) || matches!(parts(l).as_slice(), ["ovdata", t] if tile(t, 3)) || matches!(parts(l).as_slice(), ["global", "heritage", s] if !s.is_empty())
+    pack_of(l, &|ly| ["ov-heritage-areas", "ov-indigenous", "ov-special", "ov-whs"].contains(&ly), &ALL)
+        || matches!(parts(l).as_slice(), ["ovdata", t] if tile(t, 3))
+        || matches!(parts(l).as_slice(), ["global", "heritage", s] if !s.is_empty())
 }
 
 fn w_roadunits(l: &str, _: bool) -> bool {
@@ -809,7 +1408,8 @@ fn w_ferries(l: &str, _: bool) -> bool {
 /// The timetable feeds: each feed's zip, the lists of those checked, fetched and kept (the rail
 /// feeds' and the ferry feeds'), and the catalogue when it was fetched.
 fn w_rail_feeds(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["sources", "rail", "checked" | "fetched" | "feeds" | "ferry-feeds" | "catalogue"]) || matches!(parts(l).as_slice(), ["sources", "rail", "gtfs", id] if !id.is_empty())
+    matches!(parts(l).as_slice(), ["sources", "rail", "checked" | "fetched" | "feeds" | "ferry-feeds" | "catalogue"])
+        || matches!(parts(l).as_slice(), ["sources", "rail", "gtfs", id] if !id.is_empty())
 }
 
 fn w_rail(l: &str, _: bool) -> bool {
@@ -828,7 +1428,9 @@ fn w_bldprep(l: &str, _: bool) -> bool {
 
 /// The 3D buildings' hi packs, their field's and its mids.
 fn w_bldtiles(l: &str, _: bool) -> bool {
-    pack(l, crate::bld::LAYER, &["hi"]) || pack(l, crate::bld::field::LAYER, &["hi"]) || matches!(parts(l).as_slice(), ["work", "bldfield-mid", t] if tile(t, 6))
+    pack(l, crate::bld::LAYER, &["hi"])
+        || pack(l, crate::bld::field::LAYER, &["hi"])
+        || matches!(parts(l).as_slice(), ["work", "bldfield-mid", t] if tile(t, 6))
 }
 
 fn w_bldfield_lo(l: &str, _: bool) -> bool {
@@ -838,7 +1440,15 @@ fn w_bldfield_lo(l: &str, _: bool) -> bool {
 /// What the regions no longer cover, removed: a unit's files, candidates and peaks, map tiles, the
 /// 3D buildings'. Nothing written.
 fn w_prune(l: &str, removal: bool) -> bool {
-    removal && (w_unit(l, false) || w_pois(l, false) || w_peaks(l, false) || w_pack(l, false) || w_lo(l, false) || w_bldprep(l, false) || w_bldtiles(l, false) || w_bldfield_lo(l, false))
+    removal
+        && (w_unit(l, false)
+            || w_pois(l, false)
+            || w_peaks(l, false)
+            || w_pack(l, false)
+            || w_lo(l, false)
+            || w_bldprep(l, false)
+            || w_bldtiles(l, false)
+            || w_bldfield_lo(l, false))
 }
 
 #[cfg(test)]
@@ -851,7 +1461,25 @@ mod tests {
     fn the_sets_are_todays() {
         // (As they were before the table: the agent's and the coordinator's rules unchanged.)
         assert_eq!(SHARED, ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "depth"]);
-        assert_eq!(SECOND, ["inputs", "heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays", "pois", "peaks", "unit", "slope", "bldprep", "bldtiles"]);
+        assert_eq!(
+            SECOND,
+            [
+                "inputs",
+                "heritage",
+                "items",
+                "rail-feeds",
+                "rail",
+                "bld-fetch",
+                "marks",
+                "overlays",
+                "pois",
+                "peaks",
+                "unit",
+                "slope",
+                "bldprep",
+                "bldtiles"
+            ]
+        );
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
         assert_eq!(set(&ANSWERED), set(&["items", "heritage-sites", "heritage"]));
     }
@@ -861,13 +1489,49 @@ mod tests {
         // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
         // where they differed: the network steps', a unit's and candidates', which nothing offered
         // by the former), the batches.
-        let mem: [(&str, u64); 21] = [("lakefill", 12288), ("outlines", 9216), ("heritage", 6144), ("rail", 6144), ("items", 3072), ("rail-feeds", 1024), ("bld-fetch", 1024), ("marks", 4096), ("overlays", 4096), ("unit", 8600), ("pois", 2048), ("trees", 1000), ("trees-lo", 500), ("terrain-lo", 1200), ("slope", 1500), ("slope-lo", 1000), ("peaks", 2500), ("water", 8192), ("bldprep", 5200), ("bldtiles", super::super::bldtiles_peak(30_300_000)), ("terrain", 1500)];
+        let mem: [(&str, u64); 21] = [
+            ("lakefill", 12288),
+            ("outlines", 9216),
+            ("heritage", 6144),
+            ("rail", 6144),
+            ("items", 3072),
+            ("rail-feeds", 1024),
+            ("bld-fetch", 1024),
+            ("marks", 4096),
+            ("overlays", 4096),
+            ("unit", 8600),
+            ("pois", 2048),
+            ("trees", 1000),
+            ("trees-lo", 500),
+            ("terrain-lo", 1200),
+            ("slope", 1500),
+            ("slope-lo", 1000),
+            ("peaks", 2500),
+            ("water", 8192),
+            ("bldprep", 5200),
+            ("bldtiles", super::super::bldtiles_peak(30_300_000)),
+            ("terrain", 1500),
+        ];
         for (s, mb) in mem {
             assert_eq!(mem_mb(s), mb, "{s}");
         }
         assert_eq!(mem_mb("labels"), 1500);
         assert_eq!(mem_mb("not a step"), 1500);
-        let batches: [(&str, usize); 13] = [("terrain", 8), ("slope", 8), ("terrain-lo", 4), ("slope-lo", 4), ("trees", 4), ("trees-lo", 4), ("bldprep", 8), ("bldtiles", 16), ("lo", 2), ("unit", 6), ("peaks", 12), ("pack", 16), ("pois", 24)];
+        let batches: [(&str, usize); 13] = [
+            ("terrain", 8),
+            ("slope", 8),
+            ("terrain-lo", 4),
+            ("slope-lo", 4),
+            ("trees", 4),
+            ("trees-lo", 4),
+            ("bldprep", 8),
+            ("bldtiles", 16),
+            ("lo", 2),
+            ("unit", 6),
+            ("peaks", 12),
+            ("pack", 16),
+            ("pois", 24),
+        ];
         for (s, n) in batches {
             assert_eq!(batch(s), n, "{s}");
         }
@@ -880,10 +1544,45 @@ mod tests {
 
     #[test]
     fn a_shared_steps_saves_are_in_its_write_set() {
-        for (step, t) in [("unit", "6/3/4"), ("pois", "6/3/4"), ("peaks", "6/3/4"), ("bldprep", "6/3/4"), ("bldtiles", "6/3/4"), ("trees", "6/3/4"), ("trees", "3/1/1"), ("trees-lo", "3/1/1"), ("terrain", "6/3/4"), ("terrain", "3/1/1"), ("slope", "6/3/4"), ("slope", "3/1/1"), ("terrain-lo", "3/1/1"), ("slope-lo", "3/1/1")] {
+        for (step, t) in [
+            ("unit", "6/3/4"),
+            ("pois", "6/3/4"),
+            ("peaks", "6/3/4"),
+            ("bldprep", "6/3/4"),
+            ("bldtiles", "6/3/4"),
+            ("trees", "6/3/4"),
+            ("trees", "3/1/1"),
+            ("trees-lo", "3/1/1"),
+            ("terrain", "6/3/4"),
+            ("terrain", "3/1/1"),
+            ("slope", "6/3/4"),
+            ("slope", "3/1/1"),
+            ("terrain-lo", "3/1/1"),
+            ("slope-lo", "3/1/1"),
+        ] {
             let dash = t.replace('/', "-");
             let mut names: Vec<String> = Vec::new();
-            for l in ["base", "global/roads", "global/roaden", "layers/grid-class/hi", "layers/grid-canopy/hi", "layers/grid-cover/hi", "work/pois", "work/peaks", "work/bld", "layers/buildings/hi", "work/trees-mid", "work/terrain-mid", "work/slope-mid", "layers/terrain/hi", "layers/terrain/lo", "layers/slope/hi", "layers/slope/lo", "layers/trees-cover/hi", "layers/trees-leaf/lo"] {
+            for l in [
+                "base",
+                "global/roads",
+                "global/roaden",
+                "layers/grid-class/hi",
+                "layers/grid-canopy/hi",
+                "layers/grid-cover/hi",
+                "work/pois",
+                "work/peaks",
+                "work/bld",
+                "layers/buildings/hi",
+                "work/trees-mid",
+                "work/terrain-mid",
+                "work/slope-mid",
+                "layers/terrain/hi",
+                "layers/terrain/lo",
+                "layers/slope/hi",
+                "layers/slope/lo",
+                "layers/trees-cover/hi",
+                "layers/trees-leaf/lo",
+            ] {
                 names.push(format!("{l}/{dash}"));
                 names.push(format!("{l}/6-8-9"));
             }
@@ -905,7 +1604,10 @@ mod tests {
         let mut named = std::collections::BTreeSet::<String>::new();
         let mut take = |src: &str, pat: &str| {
             for (i, _) in src.match_indices(pat) {
-                let name: String = src[i + pat.len()..].chars().take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-').collect();
+                let name: String = src[i + pat.len()..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+                    .collect();
                 if name.len() > 1 {
                     named.insert(name);
                 }
@@ -917,7 +1619,21 @@ mod tests {
         take(agent, "id: \"");
         take(agent, "id: format!(\"");
         named.extend(super::super::build::COUNTED.iter().map(|s| s.to_string()));
-        named.extend(["stations", "ferries", "terrain-lo", "slope-lo", "terrain-root", "slope-root", "unit", "terrain-z8", "osm-pass", "regions-extract"].map(String::from));
+        named.extend(
+            [
+                "stations",
+                "ferries",
+                "terrain-lo",
+                "slope-lo",
+                "terrain-root",
+                "slope-root",
+                "unit",
+                "terrain-z8",
+                "osm-pass",
+                "regions-extract",
+            ]
+            .map(String::from),
+        );
         // (Not steps: a task's lease.)
         named.remove("task");
         assert!(named.len() >= 40, "{named:?}");
@@ -949,12 +1665,18 @@ mod tests {
             assert!(row(t.step).is_some(), "{}: step {}", t.name, t.step);
             assert_eq!(stage_of(t.name).map(|g| g.id), Some(row(t.step).unwrap().stage));
         }
-        assert_eq!((noun("unit"), noun("terrain-lo"), noun("outlines"), noun("inputs"), noun("tail"), noun("a newer step")), ("tile", "area", "run", "input", "task", "target"));
+        assert_eq!(
+            (noun("unit"), noun("terrain-lo"), noun("outlines"), noun("inputs"), noun("tail"), noun("a newer step")),
+            ("tile", "area", "run", "input", "task", "target")
+        );
         assert_eq!(said("terrain", 8, Some(480)), "Terrain: 8 of 480 tiles");
         assert_eq!(said("terrain", 8, Some(8)), "Terrain: 8 tiles");
         assert_eq!(said("terrain-lo", 1, None), "Terrain, zoomed out: 1 area");
         assert_eq!(said("outlines", 1, None), "Outlines");
-        assert_eq!([title("map-update"), title("tail"), title("a-newer-step")], ["Map update", "Roads' last steps", "a-newer-step"]);
+        assert_eq!(
+            [title("map-update"), title("tail"), title("a-newer-step")],
+            ["Map update", "Roads' last steps", "a-newer-step"]
+        );
         assert!(matches!(title("a-newer-step"), Cow::Owned(_)) && matches!(title("unit"), Cow::Borrowed(_)));
         assert_eq!(stage_of("map-update").map(|g| g.id), Some("publish"));
         assert_eq!([stage_title("trains"), stage_title("x")], ["Trains", "x"]);
@@ -983,7 +1705,62 @@ mod tests {
         // §3): a change here would call every target stale, so none is made. The table's, in its
         // order, and the tasks'.
         let ids: Vec<&str> = TABLE.iter().map(|s| s.name).collect();
-        assert_eq!(ids, ["osm-pass", "pass-sets", "outlines", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "lakefill", "water", "spoken", "regions-extract", "heritage-sites", "terrain-water", "terrain", "terrain-lo", "slope", "slope-lo", "trees", "trees-lo", "depth-lo", "depth", "unit", "pack", "lo", "prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "rail-feeds", "rail", "pois", "peaks", "items", "heritage", "marks", "overlays", "bld-fetch", "bldprep", "bldtiles", "bldfield-lo", "catalog", "catalog-held", "inputs", "names-todo", "timetables-todo", "gc", "backup"]);
+        assert_eq!(
+            ids,
+            [
+                "osm-pass",
+                "pass-sets",
+                "outlines",
+                "trailends",
+                "reach",
+                "terrain-z8",
+                "buildings",
+                "summits",
+                "labels",
+                "lakefill",
+                "water",
+                "spoken",
+                "regions-extract",
+                "heritage-sites",
+                "terrain-water",
+                "terrain",
+                "terrain-lo",
+                "slope",
+                "slope-lo",
+                "trees",
+                "trees-lo",
+                "depth-lo",
+                "depth",
+                "unit",
+                "pack",
+                "lo",
+                "prune",
+                "roadunits",
+                "stations",
+                "ferries",
+                "terrain-root",
+                "slope-root",
+                "rail-feeds",
+                "rail",
+                "pois",
+                "peaks",
+                "items",
+                "heritage",
+                "marks",
+                "overlays",
+                "bld-fetch",
+                "bldprep",
+                "bldtiles",
+                "bldfield-lo",
+                "catalog",
+                "catalog-held",
+                "inputs",
+                "names-todo",
+                "timetables-todo",
+                "gc",
+                "backup"
+            ]
+        );
         assert_eq!(TASKS.map(|t| t.name), ["tail", "terrainsub", "treeblock", "bldtile"]);
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&'static str>>();
         assert_eq!(set(&TASKS.map(|t| t.name)), set(&crate::coord::PAGE_TASKS), "the page's tasks are the tasks");
@@ -994,23 +1771,70 @@ mod tests {
         for (l, removed) in changes {
             h.changes.insert(l.to_string(), (!removed).then(|| format!("{l}.0123456789abcdef.bin")));
         }
-        Entry { member: "m-0000000000000001".into(), lease: LeaseId { term: 1, n: 1 }, step: step.into(), handoff: h, at: 1_791_500_000 }
+        Entry {
+            member: "m-0000000000000001".into(),
+            lease: LeaseId { term: 1, n: 1 },
+            step: step.into(),
+            handoff: h,
+            at: 1_791_500_000,
+        }
     }
 
     #[test]
     fn entries_within_their_write_sets() {
         let ok: [(&str, &[(&str, bool)]); 28] = [
             ("lakefill", &[("work/lakefill/2026-09-28", false), ("work/lakefill/2026-03-01", true)]),
-            ("inputs", &[("sources/inputs/_gate-test/@index", false), ("sources/inputs/_gate-test/@held", true), ("sources/inputs/_gate-test/@listed", false), ("sources/inputs/_gate-nest/inner/@index", false), ("sources/inputs/_gate-nest/inner/@listed", false)]),
-            ("osm-pass", &[("sources/osm/2026-09-28/pieces/6-1-2", false), ("sources/osm/2026-09-28/pass", false), ("layers/basemap/world-2026-09-28", false), ("sources/osm/2026-08-01/sets/water", true), ("work/heritage/2026-08-01/base/heritage", true), ("work/summits/2026-08-01", true)]),
+            (
+                "inputs",
+                &[
+                    ("sources/inputs/_gate-test/@index", false),
+                    ("sources/inputs/_gate-test/@held", true),
+                    ("sources/inputs/_gate-test/@listed", false),
+                    ("sources/inputs/_gate-nest/inner/@index", false),
+                    ("sources/inputs/_gate-nest/inner/@listed", false),
+                ],
+            ),
+            (
+                "osm-pass",
+                &[
+                    ("sources/osm/2026-09-28/pieces/6-1-2", false),
+                    ("sources/osm/2026-09-28/pass", false),
+                    ("layers/basemap/world-2026-09-28", false),
+                    ("sources/osm/2026-08-01/sets/water", true),
+                    ("work/heritage/2026-08-01/base/heritage", true),
+                    ("work/summits/2026-08-01", true),
+                ],
+            ),
             ("pass-sets", &[("sources/osm/2026-09-28/sets/water-v2", false)]),
             ("outlines", &[("sources/osm/2026-09-28/outlines", false)]),
-            ("water", &[("layers/water/root/0-0-0", false), ("layers/water/lo/3-1-2", false), ("layers/water/hi/6-1-2", false), ("layers/smallwater/hi/6-1-2", true)]),
+            (
+                "water",
+                &[
+                    ("layers/water/root/0-0-0", false),
+                    ("layers/water/lo/3-1-2", false),
+                    ("layers/water/hi/6-1-2", false),
+                    ("layers/smallwater/hi/6-1-2", true),
+                ],
+            ),
             ("labels", &[("layers/labels/hi/6-1-2", false), ("layers/labels/root/0-0-0", true)]),
             ("spoken", &[("global/spoken", false)]),
             ("regions-extract", &[("sources/osm/2026-09-28/regions-extract", false)]),
-            ("heritage-sites", &[("work/heritage/2026-09-28/pos/6-1-2", false), ("work/heritage/2026-09-28/base/area-shapes", false), ("work/heritage/2026-09-28/areas/6-3-3", true)]),
-            ("terrain", &[("layers/terrain/hi/6-10-20", false), ("work/terrain-mid/6-10-20", false), ("layers/terrain/lo/3-1-2", false)]),
+            (
+                "heritage-sites",
+                &[
+                    ("work/heritage/2026-09-28/pos/6-1-2", false),
+                    ("work/heritage/2026-09-28/base/area-shapes", false),
+                    ("work/heritage/2026-09-28/areas/6-3-3", true),
+                ],
+            ),
+            (
+                "terrain",
+                &[
+                    ("layers/terrain/hi/6-10-20", false),
+                    ("work/terrain-mid/6-10-20", false),
+                    ("layers/terrain/lo/3-1-2", false),
+                ],
+            ),
             ("terrain-lo", &[("layers/terrain/lo/3-1-2", false)]),
             ("terrain-water", &[("work/water-idx/0f1a2b3c4d5e6f70", false)]),
             ("slope-root", &[("layers/slope/root/0-0-0", false)]),
@@ -1019,10 +1843,32 @@ mod tests {
             ("pack", &[("hidata/6-1-2", false), ("layers/roads/hi/6-1-2", false), ("layers/rails/hi/6-1-2", true)]),
             ("lo", &[("layers/roads/lo/3-1-2", false)]),
             ("items", &[("sources/items/2026-09-28/facts", false)]),
-            ("heritage", &[("work/heritage/2026-09-28/details-harea", false), ("work/heritage/2026-09-28/layer-whs", true)]),
-            ("marks", &[("layers/marks-peak/lo/3-1-2", false), ("markdata/6-1-2", true), ("global/marks/summary", false), ("work/marks/heritage-dots", false)]),
-            ("overlays", &[("layers/ov-whs/hi/6-1-2", false), ("ovdata/3-1-2", false), ("global/heritage/layer-summary", false)]),
-            ("rail-feeds", &[("sources/rail/gtfs/de-db", false), ("sources/rail/feeds", false), ("sources/rail/ferry-feeds", false), ("sources/rail/catalogue", false)]),
+            (
+                "heritage",
+                &[("work/heritage/2026-09-28/details-harea", false), ("work/heritage/2026-09-28/layer-whs", true)],
+            ),
+            (
+                "marks",
+                &[
+                    ("layers/marks-peak/lo/3-1-2", false),
+                    ("markdata/6-1-2", true),
+                    ("global/marks/summary", false),
+                    ("work/marks/heritage-dots", false),
+                ],
+            ),
+            (
+                "overlays",
+                &[("layers/ov-whs/hi/6-1-2", false), ("ovdata/3-1-2", false), ("global/heritage/layer-summary", false)],
+            ),
+            (
+                "rail-feeds",
+                &[
+                    ("sources/rail/gtfs/de-db", false),
+                    ("sources/rail/feeds", false),
+                    ("sources/rail/ferry-feeds", false),
+                    ("sources/rail/catalogue", false),
+                ],
+            ),
             ("rail", &[("global/railfreq", false)]),
             ("bldprep", &[("work/bld/6-56-25", true)]),
             ("bldtiles", &[("layers/buildings/hi/6-56-25", false)]),
@@ -1040,14 +1886,28 @@ mod tests {
         // doesn't make.
         let bad: [(&str, &[(&str, bool)]); 12] = [
             ("lakefill", &[("work/lakefill", false), ("work/lakefill/x", false)]),
-            ("inputs", &[("sources/inputs/_gate-test/a", false), ("sources/inputs/_gate-test/index", false), ("sources/inputs/x/y/@other", false)]),
+            (
+                "inputs",
+                &[
+                    ("sources/inputs/_gate-test/a", false),
+                    ("sources/inputs/_gate-test/index", false),
+                    ("sources/inputs/x/y/@other", false),
+                ],
+            ),
             ("pack", &[("hidata/6-1-2", false), ("layers/terrain/hi/6-1-2", false)]),
             ("terrain", &[("work/terrain-mid/3-1-2", false)]),
             ("lo", &[("layers/roads/lo/6-1-2", false)]),
             ("labels", &[("layers/stations/hi/6-1-2", false)]),
             ("items", &[("sources/items/2026-08-01/facts", false), ("work/summits/2026-08-01", true)]),
             ("prune", &[("base/6-1-2", false)]),
-            ("outlines", &[("sources/osm/2026-09-28/sets/outlines", false), ("sources/osm/2026-09-28/pieces/6-1-2", false), ("sources/osm/2026-08-01/outlines", true)]),
+            (
+                "outlines",
+                &[
+                    ("sources/osm/2026-09-28/sets/outlines", false),
+                    ("sources/osm/2026-09-28/pieces/6-1-2", false),
+                    ("sources/osm/2026-08-01/outlines", true),
+                ],
+            ),
             ("water", &[("layers/smallwater/hi/6-1-2", false)]),
             ("catalog", &[("catalog/1", false)]),
             ("unit", &[("base/6-64-2", false)]),
@@ -1055,7 +1915,9 @@ mod tests {
         for (step, ch) in bad {
             assert!(outside(&entry(step, ch)).is_some(), "{step}: {ch:?}");
         }
-        let why = outside(&entry("pack", &[("hidata/6-1-2", false), ("layers/terrain/hi/6-1-2", false), ("work/x", true)])).unwrap();
+        let why =
+            outside(&entry("pack", &[("hidata/6-1-2", false), ("layers/terrain/hi/6-1-2", false), ("work/x", true)]))
+                .unwrap();
         assert!(why.contains("layers/terrain/hi/6-1-2") && why.contains("and 1 more"), "{why}");
         // A step the table doesn't know: outside, if it changes anything.
         assert!(outside(&entry("newer-step", &[("x/y", false)])).unwrap().contains("isn't a step"));

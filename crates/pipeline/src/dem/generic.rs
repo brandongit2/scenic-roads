@@ -131,7 +131,11 @@ pub fn stored(id: &str, dir: &std::path::Path, url: &str) -> Result<Option<Arc<d
         }
         bail!("{id}: tile {name} isn't in the store ({}): area builds don't download it; fetch it into the store first (scenic-build fabdem-fetch, docs/inputs.md §6.8)", dir.display());
     }
-    ensure!(crate::whole::tiff_file_whole(&f), "{id}: tile {name} in the store ({}) isn't whole: remove it and fetch it again (scenic-build fabdem-fetch)", dir.display());
+    ensure!(
+        crate::whole::tiff_file_whole(&f),
+        "{id}: tile {name} in the store ({}) isn't whole: remove it and fetch it again (scenic-build fabdem-fetch)",
+        dir.display()
+    );
     Ok(Some(Arc::new(PlainFile::open(&f)?)))
 }
 
@@ -201,7 +205,8 @@ impl GeoSet<'_> {
             }
             let (xs, ys): (Vec<f64>, Vec<f64>) = mine.iter().map(|&j| (x[sel[j] as usize], y[sel[j] as usize])).unzip();
             let Some((t, level)) = self.open(k)? else { continue };
-            let v = sample_raster_noting(&t, level, &xs, &ys, self.o.pool, Some(&self.clean[k])).with_context(|| self.files[k].0.clone())?;
+            let v = sample_raster_noting(&t, level, &xs, &ys, self.o.pool, Some(&self.clean[k]))
+                .with_context(|| self.files[k].0.clone())?;
             for (&j, v) in mine.iter().zip(v) {
                 if v.is_finite() {
                     out[j] = (v, k as u32);
@@ -234,7 +239,15 @@ impl GeoSet<'_> {
 
     /// The distance (m) from each point (native `x`, `y`, latitude `lat`; its file `file`) to the
     /// nearest pixel where the dataset has no data, up to `radius` (m): `radius` when none is nearer.
-    fn distance(&self, sel: &[u32], x: &[f64], y: &[f64], lat: &[f64], file: &[u32], radius: &[f64]) -> Result<Vec<f64>> {
+    fn distance(
+        &self,
+        sel: &[u32],
+        x: &[f64],
+        y: &[f64],
+        lat: &[f64],
+        file: &[u32],
+        radius: &[f64],
+    ) -> Result<Vec<f64>> {
         let one = |j: usize| -> Result<f64> {
             let i = sel[j] as usize;
             let k = file[j] as usize;
@@ -255,7 +268,11 @@ impl GeoSet<'_> {
                 return Ok(radius[j]);
             }
             let (ics, ice, irs, ire) = (cs.max(0), ce.min(w - 1), rs.max(0), re.min(h - 1));
-            let inside = if ics <= ice && irs <= ire { Some(t.read_window(level, ics as u32, irs as u32, (ice - ics + 1) as u32, (ire - irs + 1) as u32)?) } else { None };
+            let inside = if ics <= ice && irs <= ire {
+                Some(t.read_window(level, ics as u32, irs as u32, (ice - ics + 1) as u32, (ire - irs + 1) as u32)?)
+            } else {
+                None
+            };
             let iw = (ice - ics + 1).max(0) as usize;
             let nodata = t.nodata();
             let mut best = radius[j];
@@ -310,7 +327,11 @@ struct TileSet<'a> {
 
 impl TileSet<'_> {
     fn tile(&self, tx: i64, ty: i64) -> Result<Option<(usize, usize, Vec<f32>)>> {
-        let u = self.url.replace("{z}", &self.zoom.to_string()).replace("{x}", &tx.to_string()).replace("{y}", &ty.to_string());
+        let u = self
+            .url
+            .replace("{z}", &self.zoom.to_string())
+            .replace("{x}", &tx.to_string())
+            .replace("{y}", &ty.to_string());
         let Some(png) = self.o.fetch.get(&u)? else { return Ok(None) };
         let (w, h, a) = super::encoding::decode(self.encoding, &png).with_context(|| u.clone())?;
         if w * h == 0 {
@@ -357,7 +378,11 @@ impl TileSet<'_> {
                 .map(|g| -> Result<Vec<(usize, f32)>> {
                     let (tx, ty) = (g[0].0.div_euclid(n), g[0].0.rem_euclid(n));
                     let Some((w, h, a)) = self.tile_noted(tx, ty)? else { return Ok(Vec::new()) };
-                    Ok(g.iter().map(|&(_, j, fx, fy)| (j, bilinear(&a, w, h, (fx - tx as f64) * 256.0 - 0.5, (fy - ty as f64) * 256.0 - 0.5))).collect())
+                    Ok(g.iter()
+                        .map(|&(_, j, fx, fy)| {
+                            (j, bilinear(&a, w, h, (fx - tx as f64) * 256.0 - 0.5, (fy - ty as f64) * 256.0 - 0.5))
+                        })
+                        .collect())
                 })
                 .collect::<Result<_>>()
         })?;
@@ -390,14 +415,20 @@ impl TileSet<'_> {
                         // pixels is looked at, nor is it fetched again.)
                         let (cs, ce, rs, re) = (c0 - rp, c0 + 1 + rp, r0 - rp, r0 + 1 + rp);
                         let clean_tile = |tx: i64, ty: i64| self.clean.lock().unwrap().get(&(tx, ty)).copied();
-                        let all_clean = (rs.div_euclid(256)..=re.div_euclid(256)).all(|ty| (cs.div_euclid(256)..=ce.div_euclid(256)).all(|tx| tx >= 0 && ty >= 0 && tx < n && ty < n && clean_tile(tx, ty) == Some(true)));
+                        let all_clean = (rs.div_euclid(256)..=re.div_euclid(256)).all(|ty| {
+                            (cs.div_euclid(256)..=ce.div_euclid(256))
+                                .all(|tx| tx >= 0 && ty >= 0 && tx < n && ty < n && clean_tile(tx, ty) == Some(true))
+                        });
                         if all_clean {
                             out.push((j, best));
                             continue;
                         }
                         for r in rs..=re {
                             for c in cs..=ce {
-                                let d = ((c as f64 - gx).abs() - 0.5).max(0.0).hypot(((r as f64 - gy).abs() - 0.5).max(0.0)) * pm;
+                                let d = ((c as f64 - gx).abs() - 0.5)
+                                    .max(0.0)
+                                    .hypot(((r as f64 - gy).abs() - 0.5).max(0.0))
+                                    * pm;
                                 if d >= best {
                                     continue;
                                 }
@@ -446,22 +477,55 @@ enum Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    fn new(ds: &'a Dataset, o: &'a Opts<'a>, lon: &[f64], lat: &[f64], cover: &Cover, cache: &Arc<Mutex<BlockCache>>) -> Result<Reader<'a>> {
+    fn new(
+        ds: &'a Dataset,
+        o: &'a Opts<'a>,
+        lon: &[f64],
+        lat: &[f64],
+        cover: &Cover,
+        cache: &Arc<Mutex<BlockCache>>,
+    ) -> Result<Reader<'a>> {
         Ok(match &ds.source {
-            Source::Tiles { url, zoom, encoding } => Reader::Tiles(TileSet { url, zoom: *zoom, encoding, o, clean: Mutex::new(HashMap::new()) }),
+            Source::Tiles { url, zoom, encoding } => {
+                Reader::Tiles(TileSet { url, zoom: *zoom, encoding, o, clean: Mutex::new(HashMap::new()) })
+            }
             Source::Geotiff { crs, read_resolution, store, files } => {
                 let store = match (*store, &o.store) {
                     (false, _) => None,
                     (true, Some(s)) => Some(s.join(&ds.id)),
-                    (true, None) => bail!("{}: its files are read from the store, and no store is given (SCENIC_STORE)", ds.id),
+                    (true, None) => {
+                        bail!("{}: its files are read from the store, and no store is given (SCENIC_STORE)", ds.id)
+                    }
                 };
-                let set = GeoSet { id: &ds.id, crs: *crs, files, read_resolution: *read_resolution, store, o, opened: Mutex::new(HashMap::new()), clean: (0..files.len()).map(|_| Clean::default()).collect(), cache: cache.clone() };
+                let set = GeoSet {
+                    id: &ds.id,
+                    crs: *crs,
+                    files,
+                    read_resolution: *read_resolution,
+                    store,
+                    o,
+                    opened: Mutex::new(HashMap::new()),
+                    clean: (0..files.len()).map(|_| Clean::default()).collect(),
+                    cache: cache.clone(),
+                };
                 // (Native coordinates of the points it covers; NaN for the others.)
                 let (x, y) = match crs {
                     4326 | 4269 => (lon.to_vec(), lat.to_vec()),
                     3979 => {
                         let atlas = Atlas::new();
-                        let xy: Vec<(f64, f64)> = within(o.pool, || lon.par_iter().zip(lat.par_iter()).map(|(&lo, &la)| if cover.contains(lo, la) { atlas.project(lo, la) } else { (f64::NAN, f64::NAN) }).collect());
+                        let xy: Vec<(f64, f64)> =
+                            within(o.pool, || {
+                                lon.par_iter()
+                                    .zip(lat.par_iter())
+                                    .map(|(&lo, &la)| {
+                                        if cover.contains(lo, la) {
+                                            atlas.project(lo, la)
+                                        } else {
+                                            (f64::NAN, f64::NAN)
+                                        }
+                                    })
+                                    .collect()
+                            });
                         xy.into_iter().unzip()
                     }
                     c => bail!("{}: EPSG:{c} isn't a CRS the app knows", ds.id),
@@ -514,12 +578,15 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(usi
     let mut got = 0;
     let cache = Arc::new(Mutex::new(BlockCache::new(CACHE_BYTES)));
     // (What each phase fetches over the network: its count.)
-    let fetched = |p: &crate::timings::Phase, since: u64| p.count(crate::fetch::fetched_bytes().saturating_sub(since), 0);
+    let fetched =
+        |p: &crate::timings::Phase, since: u64| p.count(crate::fetch::fetched_bytes().saturating_sub(since), 0);
     for (k, ds) in plan.datasets.iter().enumerate() {
         let p = phase(&format!("{} sampled", ds.id), Class::Net);
         let since = crate::fetch::fetched_bytes();
         let r = Reader::new(ds, o, lon, lat, &covers[k], &cache)?;
-        let sel: Vec<u32> = (0..n as u32).filter(|&i| first[i as usize] == u16::MAX && covers[k].contains(lon[i as usize], lat[i as usize])).collect();
+        let sel: Vec<u32> = (0..n as u32)
+            .filter(|&i| first[i as usize] == u16::MAX && covers[k].contains(lon[i as usize], lat[i as usize]))
+            .collect();
         if !sel.is_empty() {
             let v = r.sample(&sel, lon, lat)?;
             let mut here = 0;
@@ -550,7 +617,10 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(usi
             if first[i] as usize != k {
                 continue;
             }
-            let coarsest = (k + 1..plan.datasets.len()).filter(|&m| covers[m].contains(lon[i], lat[i])).map(|m| res[m]).fold(0.0f64, f64::max);
+            let coarsest = (k + 1..plan.datasets.len())
+                .filter(|&m| covers[m].contains(lon[i], lat[i]))
+                .map(|m| res[m])
+                .fold(0.0f64, f64::max);
             if coarsest > 0.0 {
                 sel.push(i as u32);
                 radius.push(4.0 * coarsest.max(res[k]));
@@ -570,7 +640,14 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(usi
     let mut b = vec![f32::NAN; n];
     let mut second = vec![u16::MAX; n];
     for (k, r) in readers.iter().enumerate() {
-        let sel: Vec<u32> = (0..n as u32).filter(|&i| dist[i as usize].is_finite() && second[i as usize] == u16::MAX && (first[i as usize] as usize) < k && covers[k].contains(lon[i as usize], lat[i as usize])).collect();
+        let sel: Vec<u32> = (0..n as u32)
+            .filter(|&i| {
+                dist[i as usize].is_finite()
+                    && second[i as usize] == u16::MAX
+                    && (first[i as usize] as usize) < k
+                    && covers[k].contains(lon[i as usize], lat[i as usize])
+            })
+            .collect();
         if sel.is_empty() {
             continue;
         }
@@ -651,7 +728,14 @@ pub fn run(cfg: &super::Config, plan: &Plan, fetch: &dyn Fetch) -> Result<Stats>
             _ => missing += 1,
         }
     }
-    let stats = Stats { vertices: n, datasets: by, blended: s.blended.iter().filter(|b| **b).count(), missing, sampled_this_run: miss.len(), seconds: (t_start.elapsed().as_secs_f64() * 10.0).round() / 10.0 };
+    let stats = Stats {
+        vertices: n,
+        datasets: by,
+        blended: s.blended.iter().filter(|b| **b).count(),
+        missing,
+        sampled_this_run: miss.len(),
+        seconds: (t_start.elapsed().as_secs_f64() * 10.0).round() / 10.0,
+    };
     let (elev, src) = prog.finish()?;
     std::fs::write(b.join("dem-stats.json"), serde_json::to_string_pretty(&stats)?)?;
     std::fs::remove_file(b.join("dem-progress.json")).ok();

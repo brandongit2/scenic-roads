@@ -9,9 +9,9 @@
 //! street of joined houses scores near 1, a farm by the road a little, open country 0. Sheds (under
 //! 15 m²) are ignored; rail and ferries get 0.
 
-use det::Det;
 use crate::count_bar;
 use anyhow::{Context, Result};
+use det::Det;
 use rayon::prelude::*;
 use roadcore::scenic::{sflag, Sample};
 use roadcore::{class, dist_m, Array, Ways, E7};
@@ -40,7 +40,8 @@ struct Index {
 impl Index {
     fn load(bdir: &Path, near_road: &(dyn Fn(i64, i64) -> bool + Sync)) -> Result<Index> {
         let mut boxes: Vec<[f32; 4]> = Vec::new();
-        let mut files: Vec<_> = std::fs::read_dir(bdir).with_context(|| format!("{bdir:?}"))?
+        let mut files: Vec<_> = std::fs::read_dir(bdir)
+            .with_context(|| format!("{bdir:?}"))?
             .filter_map(|e| e.ok().map(|e| e.path()))
             .filter(|p| p.extension().is_some_and(|x| x == "f32"))
             .collect();
@@ -61,7 +62,11 @@ impl Index {
                 let (y0, y1) = ((b[1] as f64 / CELL).floor() as i64, (b[3] as f64 / CELL).floor() as i64);
                 (x0..=x1).any(|x| (y0..=y1).any(|y| near_road(x, y)))
             }));
-            eprintln!("buildings: {} near roads from {}", boxes.len() - before, f.file_name().unwrap().to_string_lossy());
+            eprintln!(
+                "buildings: {} near roads from {}",
+                boxes.len() - before,
+                f.file_name().unwrap().to_string_lossy()
+            );
         }
         anyhow::ensure!(boxes.len() < 1 << IDX_BITS, "too many buildings for the index");
         // Each building in every cell its box overlaps.
@@ -263,7 +268,11 @@ pub fn run(dir: &Path, bdir: &Path) -> Result<()> {
                         acc += (left + right) * 0.5;
                         n += 1;
                     }
-                    if n == 0 { 0 } else { ((acc / n as f64) * 255.0).round().clamp(0.0, 255.0) as u8 }
+                    if n == 0 {
+                        0
+                    } else {
+                        ((acc / n as f64) * 255.0).round().clamp(0.0, 255.0) as u8
+                    }
                 })
                 .collect();
             (a, out)

@@ -19,23 +19,56 @@ use std::process::Command;
 /// What the pipeline reads from OSM: the union of every step's tags, generous (a tag left out costs a
 /// new planet download). Referenced nodes and members come along.
 pub const FILTER_A: &[&str] = &[
-    "nwr/highway", "nwr/railway", "r/route", "w/route=ferry", "nwr/public_transport", "nwr/amenity", "nwr/tourism", "nwr/historic",
-    "nwr/heritage", "nwr/natural", "nwr/waterway", "nwr/water", "nwr/man_made", "nwr/leisure", "nwr/boundary",
-    "nwr/building=train_station,church,cathedral,temple,shrine,mosque,synagogue,castle", "nwr/landuse=forest,reservoir,basin,salt_pond",
-    "nwr/military", "nwr/place", "n/barrier", "nwr/aerialway", "nwr/mountain_pass", "nwr/wikidata",
+    "nwr/highway",
+    "nwr/railway",
+    "r/route",
+    "w/route=ferry",
+    "nwr/public_transport",
+    "nwr/amenity",
+    "nwr/tourism",
+    "nwr/historic",
+    "nwr/heritage",
+    "nwr/natural",
+    "nwr/waterway",
+    "nwr/water",
+    "nwr/man_made",
+    "nwr/leisure",
+    "nwr/boundary",
+    "nwr/building=train_station,church,cathedral,temple,shrine,mosque,synagogue,castle",
+    "nwr/landuse=forest,reservoir,basin,salt_pond",
+    "nwr/military",
+    "nwr/place",
+    "n/barrier",
+    "nwr/aerialway",
+    "nwr/mountain_pass",
+    "nwr/wikidata",
 ];
 
 /// The worldwide sets, each a filter of the filtered planet, with its filter's version: a changed
 /// filter gets a new version, and so a new logical name (`set_name`), which the latest pass makes
 /// from its kept filtered planet (`scenic-build pass-sets`); readers ask for the current one.
 pub const SETS: &[(&str, u32, &[&str])] = &[
-    ("rail", 1, &["nwr/railway", "nwr/public_transport", "r/route=train,subway,tram,light_rail,monorail,funicular,railway"]),
+    (
+        "rail",
+        1,
+        &["nwr/railway", "nwr/public_transport", "r/route=train,subway,tram,light_rail,monorail,funicular,railway"],
+    ),
     ("ferries", 1, &["w/route=ferry", "r/route=ferry", "nwr/amenity=ferry_terminal"]),
     ("areas", 1, &["wr/boundary=national_park,protected_area,aboriginal_lands", "wr/leisure=nature_reserve"]),
     ("places", 1, &["n/place"]),
     ("outlines", 1, &["r/boundary=administrative", "r/ISO3166-1", "r/ISO3166-2"]),
     // The labels by importance (dem/labels.py): places, seas, bays and straits, water and parks.
-    ("labels", 1, &["n/place", "n/natural=bay,strait", "wr/natural=water,bay,strait", "wr/boundary=national_park,protected_area", "wr/leisure=nature_reserve"]),
+    (
+        "labels",
+        1,
+        &[
+            "n/place",
+            "n/natural=bay,strait",
+            "wr/natural=water,bay,strait",
+            "wr/boundary=national_park,protected_area",
+            "wr/leisure=nature_reserve",
+        ],
+    ),
     // (The landmark candidates come from the units' pieces, extract `--candidates`, not a set.)
     // Summits, worldwide, for prominence and isolation: peaks and volcanoes, nodes and ways (2: ways
     // too, as the peaks among the candidates are).
@@ -48,11 +81,24 @@ pub const SETS: &[(&str, u32, &[&str])] = &[
     ("water", 1, crate::watercov::SET_FILTER),
     // The heritage chain's named objects (heritage, museums, lighthouses, stations, protected areas
     // and parks), and World Heritage objects, for locating register records.
-    ("named", 1, &[
-        "nwr/historic", "nwr/heritage", "nwr/tourism=museum,attraction,viewpoint", "nwr/man_made=lighthouse", "nwr/railway=station",
-        "nwr/building=train_station,church,cathedral", "nwr/amenity=place_of_worship", "nwr/boundary=protected_area,national_park",
-        "nwr/leisure=park", "nwr/military", "nwr/ref:whc", "nwr/heritage:operator=whc",
-    ]),
+    (
+        "named",
+        1,
+        &[
+            "nwr/historic",
+            "nwr/heritage",
+            "nwr/tourism=museum,attraction,viewpoint",
+            "nwr/man_made=lighthouse",
+            "nwr/railway=station",
+            "nwr/building=train_station,church,cathedral",
+            "nwr/amenity=place_of_worship",
+            "nwr/boundary=protected_area,national_park",
+            "nwr/leisure=park",
+            "nwr/military",
+            "nwr/ref:whc",
+            "nwr/heritage:operator=whc",
+        ],
+    ),
 ];
 
 /// A set's logical name in its current version (version 1 is the plain name).
@@ -92,8 +138,13 @@ pub fn make_missing_sets(out: &mut Out, date: &str, src: &Path, scratch: &Path) 
 /// The basemap's input (Planetiler's OpenMapTiles layers water, waterway, boundary, place,
 /// water_name, park).
 pub const FILTER_BASEMAP: &[&str] = &[
-    "nwr/natural=water,bay,strait,wetland,glacier", "nwr/water", "nwr/waterway", "nwr/landuse=reservoir,basin,salt_pond",
-    "nwr/leisure=nature_reserve,park", "nwr/boundary=administrative,national_park,protected_area,disputed", "nwr/place",
+    "nwr/natural=water,bay,strait,wetland,glacier",
+    "nwr/water",
+    "nwr/waterway",
+    "nwr/landuse=reservoir,basin,salt_pond",
+    "nwr/leisure=nature_reserve,park",
+    "nwr/boundary=administrative,national_park,protected_area,disputed",
+    "nwr/place",
 ];
 
 /// Room needed to copy the planet before filtering it: the copy, the filtered file it's deleted
@@ -139,7 +190,8 @@ fn run(mut c: Command, what: &str) -> Result<()> {
 fn run_osmium(mut c: Command, what: &str) -> Result<()> {
     eprintln!("$ {what}");
     c.arg("--progress");
-    let st = crate::agent::jobs::run_watched(&mut c, crate::agent::jobs::within).with_context(|| format!("run {what}"))?;
+    let st =
+        crate::agent::jobs::run_watched(&mut c, crate::agent::jobs::within).with_context(|| format!("run {what}"))?;
     ensure!(st.success(), "{what} failed: {st}");
     Ok(())
 }
@@ -152,7 +204,8 @@ pub const BASEMAP_LANGUAGES: &str = "en,fr,es,pt,ca,eu,gl,cy,ga,gd,br,co,oc,de,i
 /// goes on to this job's) said as the part's.
 fn run_planetiler(mut c: Command, what: &str) -> Result<()> {
     eprintln!("$ {what}");
-    let mut child = store::spawn::spawn(&mut c.stdout(std::process::Stdio::piped())).with_context(|| format!("run {what}"))?;
+    let mut child =
+        store::spawn::spawn(&mut c.stdout(std::process::Stdio::piped())).with_context(|| format!("run {what}"))?;
     let mut far = 0.0f64;
     if let Some(o) = child.stdout.take() {
         crate::agent::jobs::each_line(o, |l| {
@@ -187,7 +240,10 @@ pub fn planetiler_fraction(line: &str) -> Option<f64> {
     let phase = l.split("INF [").nth(1)?.split([']', ':']).next()?;
     let pct = |of: &str| -> Option<f64> {
         let inner = l.split(of).nth(1)?.split(']').next()?;
-        inner.split_whitespace().find_map(|w| w.strip_suffix('%')?.parse::<f64>().ok()).map(|p| (p / 100.0).clamp(0.0, 1.0))
+        inner
+            .split_whitespace()
+            .find_map(|w| w.strip_suffix('%')?.parse::<f64>().ok())
+            .map(|p| (p / 100.0).clamp(0.0, 1.0))
     };
     let (from, to, within) = match phase {
         "lake_centerlines" | "water_polygons" | "natural_earth" | "ne_lakes" => (0.0, 0.1, None),
@@ -244,7 +300,13 @@ pub fn copy_resume_with(src: &Path, dst: &Path, progress: &mut dyn FnMut(u64, u6
         }
         done += n as u64;
         if done % (2 << 30) < n as u64 {
-            eprintln!("copy {}: {:.1}/{:.1} GB ({:.0} MB/s)", src.display(), done as f64 / 1e9, total as f64 / 1e9, (done - have) as f64 / 1e6 / t0.elapsed().as_secs_f64());
+            eprintln!(
+                "copy {}: {:.1}/{:.1} GB ({:.0} MB/s)",
+                src.display(),
+                done as f64 / 1e9,
+                total as f64 / 1e9,
+                (done - have) as f64 / 1e6 / t0.elapsed().as_secs_f64()
+            );
         }
     }
     d.sync_all()?;
@@ -265,8 +327,15 @@ fn filtered_nas(out: &Out, date: &str) -> Result<PathBuf> {
 /// up to about one copy of the input (plus the buffers' overlap), however uneven the data.
 /// Resumable: `<tile>.cut` marks a tile whose quarters were cut, `<tile>.done` one whose whole
 /// subtree is done.
-fn cut_tree(input: &Path, t: Unit, consume: bool, work: &Path, each: &mut dyn FnMut(Unit, &Path) -> Result<()>) -> Result<()> {
-    let kids: Vec<Unit> = (0..2u32).flat_map(|i| (0..2u32).map(move |j| Unit { z: t.z + 1, x: t.x * 2 + i, y: t.y * 2 + j })).collect();
+fn cut_tree(
+    input: &Path,
+    t: Unit,
+    consume: bool,
+    work: &Path,
+    each: &mut dyn FnMut(Unit, &Path) -> Result<()>,
+) -> Result<()> {
+    let kids: Vec<Unit> =
+        (0..2u32).flat_map(|i| (0..2u32).map(move |j| Unit { z: t.z + 1, x: t.x * 2 + i, y: t.y * 2 + j })).collect();
     let dir = work.join(format!("z{}", t.z + 1));
     let marker = work.join(format!("{}.cut", t.dash()));
     if !marker.exists() {
@@ -320,7 +389,9 @@ fn cut(input: &Path, tiles: &[Unit], dir: &Path, batch: usize) -> Result<()> {
         let cfg = dir.join(format!("extract-{i}.json"));
         std::fs::write(&cfg, serde_json::to_vec_pretty(&extract_config(chunk, dir))?)?;
         let mut c = osmium();
-        c.args(["extract", "--strategy", "smart", "-S", "types=multipolygon", "--overwrite", "-c"]).arg(&cfg).arg(input);
+        c.args(["extract", "--strategy", "smart", "-S", "types=multipolygon", "--overwrite", "-c"])
+            .arg(&cfg)
+            .arg(input);
         run(c, &format!("osmium extract {} tiles of {}", chunk.len(), input.display()))?;
         std::fs::remove_file(&cfg).ok();
     }
@@ -416,12 +487,27 @@ pub fn unit_links(extract: &Path, piece: &Path, unit: Unit, work: &Path) -> Resu
             chain::KIND_ROAD
         };
         let (name, (refs_at, refs_len)) = if kind == chain::KIND_RAIL {
-            let raw = if w.name != 0 { strings[w.name as usize].as_str() } else { strings[w.route as usize].split(" · ").next().unwrap_or("") };
+            let raw = if w.name != 0 {
+                strings[w.name as usize].as_str()
+            } else {
+                strings[w.route as usize].split(" · ").next().unwrap_or("")
+            };
             (names.id(raw.split(':').next().unwrap_or("").trim()), (pool.len() as u32, 0))
         } else {
             (names.id(&strings[w.name as usize]), chain::intern_refs(&strings[w.ref_ as usize], &mut refs, &mut pool))
         };
-        links.push(Link { id: w.id as u64, kind, class: w.class, oneway: w.flags & flag::ONEWAY != 0, name, refs_at, refs_len, ends, heading, len });
+        links.push(Link {
+            id: w.id as u64,
+            kind,
+            class: w.class,
+            oneway: w.flags & flag::ONEWAY != 0,
+            name,
+            refs_at,
+            refs_len,
+            ends,
+            heading,
+            len,
+        });
     }
     // Pairs at this unit's nodes only: the piece holds every way through them.
     let partner = chain::pair(&links, &pool, &inside);
@@ -510,7 +596,10 @@ fn end_part() {
 }
 
 /// The newest pass before `date`'s with outlines in `manifest`: its date and their content name.
-pub fn previous_outlines<'a>(manifest: &'a std::collections::BTreeMap<String, String>, date: &str) -> Option<(&'a str, &'a str)> {
+pub fn previous_outlines<'a>(
+    manifest: &'a std::collections::BTreeMap<String, String>,
+    date: &str,
+) -> Option<(&'a str, &'a str)> {
     manifest
         .iter()
         .filter_map(|(k, v)| match k.split('/').collect::<Vec<_>>()[..] {
@@ -536,10 +625,18 @@ pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<crate:
     let file = scratch.join("outlines.sect");
     let previous = previous_outlines(&out.manifest, date).map(|(d, c)| (out.path(c), d.to_string()));
     let p = phase("assembled", Class::Compute);
-    let s = crate::outlines::assemble(&set, &scratch.join("outlines-work"), &file, previous.as_ref().map(|(p, d)| (p.as_path(), d.as_str())))?;
+    let s = crate::outlines::assemble(
+        &set,
+        &scratch.join("outlines-work"),
+        &file,
+        previous.as_ref().map(|(p, d)| (p.as_path(), d.as_str())),
+    )?;
     drop(p);
     std::fs::remove_file(&set).ok();
-    eprintln!("outlines: {} ({} points, {} simplified); by level {:?}", s.outlines, s.points, s.simplified_points, s.by_level);
+    eprintln!(
+        "outlines: {} ({} points, {} simplified); by level {:?}",
+        s.outlines, s.points, s.simplified_points, s.by_level
+    );
     for (id, iso, gap) in &s.repaired {
         eprintln!("outlines: relation {id} ({iso}) left out by osmium's export, assembled here (widest gap closed {gap:.0} m)");
     }
@@ -547,7 +644,11 @@ pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<crate:
         eprintln!("outlines: WARNING: relation {id} ({iso}) can't be assembled from this planet ({why}): kept as the {from} pass's outline (stale)");
     }
     if !s.unassembled.is_empty() {
-        eprintln!("outlines: warning: {} relations below country level left out (their rings don't close in OSM): {:?}", s.unassembled.len(), s.unassembled);
+        eprintln!(
+            "outlines: warning: {} relations below country level left out (their rings don't close in OSM): {:?}",
+            s.unassembled.len(),
+            s.unassembled
+        );
     }
     let p = phase("uploaded", Class::NasWrite);
     out.put_file(&format!("sources/osm/{date}/outlines"), "sect", &file)?;
@@ -558,7 +659,14 @@ pub fn make_outlines(out: &mut Out, date: &str, scratch: &Path) -> Result<crate:
 }
 
 /// Run (or resume) the pass for `date` from `planet` (on the NAS).
-pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extract_bin: &Path, planetiler: &Path) -> Result<()> {
+pub fn run_pass(
+    out: &mut Out,
+    planet: &Path,
+    date: &str,
+    scratch: &Path,
+    extract_bin: &Path,
+    planetiler: &Path,
+) -> Result<()> {
     use crate::agent::jobs::{report, stage};
     std::fs::create_dir_all(scratch)?;
     let local_planet = scratch.join("planet.osm.pbf");
@@ -580,7 +688,12 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         c.args(["tags-filter", "--overwrite", "-o"]).arg(&filtered).arg(&src).args(FILTER_A);
         run_osmium(c, "osmium tags-filter (the pipeline's tags)")?;
         part(2, "the filtered planet uploaded");
-        out.put_file_with(&format!("sources/osm/{date}/filtered"), "osm.pbf", &copy_keep(&filtered, scratch)?, &|d, t| report(d >> 20, t >> 20, "MB of the filtered planet moved (read, sent, checked)"))?;
+        out.put_file_with(
+            &format!("sources/osm/{date}/filtered"),
+            "osm.pbf",
+            &copy_keep(&filtered, scratch)?,
+            &|d, t| report(d >> 20, t >> 20, "MB of the filtered planet moved (read, sent, checked)"),
+        )?;
         out.save()?;
         std::fs::remove_file(&local_planet).ok();
         mark(scratch, "filter")?;
@@ -638,12 +751,21 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         // Planetiler's room: the local filtered file goes first (the cut reads the NAS's copy then).
         let need = planetiler_room(std::fs::metadata(&b)?.len());
         if free(scratch) < need && filtered.exists() {
-            eprintln!("basemap: {} GB free, Planetiler needs ~{} GB; the cut will read the filtered planet from the NAS", free(scratch) >> 30, need >> 30);
+            eprintln!(
+                "basemap: {} GB free, Planetiler needs ~{} GB; the cut will read the filtered planet from the NAS",
+                free(scratch) >> 30,
+                need >> 30
+            );
             std::fs::remove_file(&filtered)?;
         }
         // (A run that failed may have left its temporary files.)
         std::fs::remove_dir_all(scratch.join("planetiler-tmp")).ok();
-        ensure!(free(scratch) >= need, "basemap: Planetiler needs ~{} GB free on this Mac, {} GB are", need >> 30, free(scratch) >> 30);
+        ensure!(
+            free(scratch) >= need,
+            "basemap: Planetiler needs ~{} GB free on this Mac, {} GB are",
+            need >> 30,
+            free(scratch) >> 30
+        );
         let pm = scratch.join("basemap.pmtiles");
         let downloads = out.root().join("sources/basemap");
         std::fs::create_dir_all(&downloads)?;
@@ -683,7 +805,9 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         // The first cut writes about the filtered file again (its four quarters); below it each
         // piece goes as soon as it's cut, so the tree stays near that size. The local filtered
         // file is kept for the first cut only when there's room for both, and goes after it.
-        let flen = std::fs::metadata(&filtered).or_else(|_| std::fs::metadata(filtered_nas(out, date)?).map_err(anyhow::Error::from))?.len();
+        let flen = std::fs::metadata(&filtered)
+            .or_else(|_| std::fs::metadata(filtered_nas(out, date)?).map_err(anyhow::Error::from))?
+            .len();
         if filtered.exists() && !tree.join("0-0-0.cut").exists() && free(scratch) < flen / 8 * 10 + (20 << 30) {
             eprintln!("cut: {} GB free; reading the filtered planet from the NAS", free(scratch) >> 30);
             std::fs::remove_file(&filtered)?;
@@ -695,7 +819,13 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         // little, so it's capped just short of the end), the pieces uploaded before a restart too.
         let total_mb = std::fs::metadata(&src)?.len() >> 20;
         let prefix = format!("sources/osm/{date}/pieces/");
-        let mut done_mb: u64 = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).filter_map(|(_, c)| std::fs::metadata(out.path(c)).ok()).map(|m| m.len() >> 20).sum();
+        let mut done_mb: u64 = out
+            .manifest
+            .range(prefix.clone()..)
+            .take_while(|(l, _)| l.starts_with(&prefix))
+            .filter_map(|(_, c)| std::fs::metadata(out.path(c)).ok())
+            .map(|m| m.len() >> 20)
+            .sum();
         part(6, "the planet cut into areas");
         let cut_report = |mb: u64| report(mb.min(total_mb.saturating_sub(1)), total_mb, "MB cut into areas");
         cut_report(done_mb);
@@ -748,7 +878,8 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
             let ul = match UnitLinks::load(&lf) {
                 Ok(ul) => ul,
                 Err(_) => {
-                    let src = out.path(out.get(&format!("sources/osm/{date}/pieces/{}", unit.dash())).context("piece")?);
+                    let src =
+                        out.path(out.get(&format!("sources/osm/{date}/pieces/{}", unit.dash())).context("piece")?);
                     unit_links(extract_bin, &src, unit, &scratch.join("extract-work"))?
                 }
             };
@@ -772,7 +903,13 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
                 let v = vals[k];
                 // (u64 way id, then the RoadRec layout)
                 recs.extend_from_slice(&id.to_le_bytes());
-                recs.extend_from_slice(bytemuck::bytes_of(&roadcore::packs::RoadRec { road: v.road, len: v.len, offset: v.offset, dir: v.dir, _pad: [0; 7] }));
+                recs.extend_from_slice(bytemuck::bytes_of(&roadcore::packs::RoadRec {
+                    road: v.road,
+                    len: v.len,
+                    offset: v.offset,
+                    dir: v.dir,
+                    _pad: [0; 7],
+                }));
             }
             out.put_bytes(&format!("sources/osm/{date}/roads/{}", unit.dash()), "bin", &recs)?;
         }
@@ -819,7 +956,11 @@ pub fn retire_older(out: &mut Out, date: &str) -> usize {
         .filter(|l| {
             let s: Vec<&str> = l.split('/').collect();
             match s.as_slice() {
-                ["sources", "osm", d, _, ..] | ["sources", "items", d, ..] | ["work", "heritage", d, ..] | ["work", "summits", d] | ["work", "trailends", d] => is_date(d) && *d < date,
+                ["sources", "osm", d, _, ..]
+                | ["sources", "items", d, ..]
+                | ["work", "heritage", d, ..]
+                | ["work", "summits", d]
+                | ["work", "trailends", d] => is_date(d) && *d < date,
                 _ => false,
             }
         })
@@ -834,7 +975,9 @@ pub fn retire_older(out: &mut Out, date: &str) -> usize {
 /// Whether the pass from the planet of `date` is complete on the NAS (its `pass.<hash>.json`).
 pub fn pass_done(root: &Path, date: &str) -> bool {
     std::fs::read_dir(root.join("sources/osm").join(date))
-        .map(|rd| rd.flatten().any(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("pass.") && n.ends_with(".json"))))
+        .map(|rd| {
+            rd.flatten().any(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("pass.") && n.ends_with(".json")))
+        })
         .unwrap_or(false)
 }
 
@@ -941,7 +1084,11 @@ pub fn patch_ferries(out: &mut Out, date: &str, scratch: &Path, only: &dyn Fn(Un
         let b = grow(tile_bounds(u.z, u.x, u.y), BUFFER_KM);
         let d = |v: i32| v as f64 * 1e-7;
         let mut c = osmium();
-        c.args(["extract", "--no-progress", "--strategy", "smart", "-S", "types=multipolygon", "--overwrite", "-b"]).arg(format!("{},{},{},{}", d(b[0]), d(b[1]), d(b[2]), d(b[3]))).arg(&local_set).arg("-o").arg(&near);
+        c.args(["extract", "--no-progress", "--strategy", "smart", "-S", "types=multipolygon", "--overwrite", "-b"])
+            .arg(format!("{},{},{},{}", d(b[0]), d(b[1]), d(b[2]), d(b[3])))
+            .arg(&local_set)
+            .arg("-o")
+            .arg(&near);
         quiet(c, "osmium extract (the ferries near a piece)")?;
         let ids = way_ids(&near, None)?;
         if ids.is_empty() {
@@ -956,7 +1103,10 @@ pub fn patch_ferries(out: &mut Out, date: &str, scratch: &Path, only: &dyn Fn(Un
         store::sys::copy_data(out.path(content), &piece)?;
         let merged = work.join(format!("{}.osm.pbf", u.dash()));
         let mut c = osmium();
-        c.args(["merge", "--no-progress", "--overwrite", "--output-header", "sorting=Type_then_ID", "-o"]).arg(&merged).arg(&piece).arg(&near);
+        c.args(["merge", "--no-progress", "--overwrite", "--output-header", "sorting=Type_then_ID", "-o"])
+            .arg(&merged)
+            .arg(&piece)
+            .arg(&near);
         quiet(c, "osmium merge (a piece and its ferries)")?;
         out.put_file(logical, "osm.pbf", &merged)?;
         eprintln!("ferries: {} lacked {lacks} of the {} ferry ways it meets", u.slash(), ids.len());
@@ -988,8 +1138,17 @@ fn way_ids(file: &Path, among: Option<&std::collections::BTreeSet<i64>>) -> Resu
     // (getid exits 1, saying nothing, when some of the ids aren't there: the answer, not a failure;
     // a file it can't read says why.)
     let quiet_miss = among.is_some() && o.status.code() == Some(1) && o.stderr.iter().all(u8::is_ascii_whitespace);
-    ensure!(o.status.success() || quiet_miss, "osmium on {} failed: {}: {}", file.display(), o.status, String::from_utf8_lossy(&o.stderr).trim());
-    Ok(String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.strip_prefix('w')?.split(' ').next()?.parse().ok()).collect())
+    ensure!(
+        o.status.success() || quiet_miss,
+        "osmium on {} failed: {}: {}",
+        file.display(),
+        o.status,
+        String::from_utf8_lossy(&o.stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&o.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix('w')?.split(' ').next()?.parse().ok())
+        .collect())
 }
 
 /// Runs a command whose output isn't wanted, failing with its name.
@@ -1008,10 +1167,13 @@ fn buildinfo_version(props: &str) -> Option<&str> {
 /// (pipeline::water::PLANETILER_VERSION: its own `buildinfo.properties` says which it is), so a
 /// new one's basemap isn't drawn until its z14 water is checked again as full detail.
 pub fn check_planetiler(jar: &Path) -> Result<()> {
-    let o = store::spawn::output(store::spawn::command("/usr/bin/unzip").arg("-p").arg(jar).arg("buildinfo.properties")).with_context(|| format!("read {}", jar.display()))?;
+    let o =
+        store::spawn::output(store::spawn::command("/usr/bin/unzip").arg("-p").arg(jar).arg("buildinfo.properties"))
+            .with_context(|| format!("read {}", jar.display()))?;
     ensure!(o.status.success(), "no buildinfo.properties in {}", jar.display());
     let props = String::from_utf8_lossy(&o.stdout);
-    let v = buildinfo_version(&props).with_context(|| format!("no version in {}'s buildinfo.properties", jar.display()))?;
+    let v =
+        buildinfo_version(&props).with_context(|| format!("no version in {}'s buildinfo.properties", jar.display()))?;
     let pinned = crate::water::PLANETILER_VERSION;
     ensure!(v == pinned, "{} is Planetiler {v}, but the water layer was checked against Planetiler {pinned}'s z14 water (pipeline::water, docs/plan.md §6): check {v}'s with tools/coastcheck, then pin it", jar.display());
     Ok(())
@@ -1066,7 +1228,11 @@ mod tests {
         assert_eq!(latest_pass_by(r, true).as_deref(), Some("2026-09-01"));
         assert_eq!(latest_pass_in(&BTreeMap::new()), None);
         // When the records say what the files do, the same.
-        std::fs::write(r.join("state/build/manifest.json"), r#"{"sources/osm/2026-09-01/pass": "a", "sources/osm/2026-10-01/pass": "b"}"#).unwrap();
+        std::fs::write(
+            r.join("state/build/manifest.json"),
+            r#"{"sources/osm/2026-09-01/pass": "a", "sources/osm/2026-10-01/pass": "b"}"#,
+        )
+        .unwrap();
         assert_eq!(latest_pass_by(r, true), latest_pass_by(r, false));
     }
 
@@ -1082,14 +1248,24 @@ mod tests {
         std::fs::write(root.join("state/build/manifest.json"), "{}").unwrap();
         mark(&scratch, "filter").unwrap();
         let date = "2026-10-01";
-        let earlier = crate::handoff::Handoff { changes: [(format!("sources/osm/{date}/filtered"), Some(format!("sources/osm/{date}/filtered.2222222222222222.osm.pbf")))].into(), ..Default::default() };
+        let earlier = crate::handoff::Handoff {
+            changes: [(
+                format!("sources/osm/{date}/filtered"),
+                Some(format!("sources/osm/{date}/filtered.2222222222222222.osm.pbf")),
+            )]
+            .into(),
+            ..Default::default()
+        };
         let f = d.path().join("unmerged.json");
         std::fs::write(&f, serde_json::to_vec(&earlier).unwrap()).unwrap();
         let fresh = Out::open_with(&root, &scratch, None, None).unwrap();
         assert!(filtered_nas(&fresh, date).is_err(), "without them, the stage's output isn't there to read");
         let resumed = Out::open_with(&root, &scratch, None, Some(&f)).unwrap();
         assert!(done(&scratch, "filter").exists() && !done(&scratch, "sets").exists());
-        assert_eq!(filtered_nas(&resumed, date).unwrap(), root.join(format!("sources/osm/{date}/filtered.2222222222222222.osm.pbf")));
+        assert_eq!(
+            filtered_nas(&resumed, date).unwrap(),
+            root.join(format!("sources/osm/{date}/filtered.2222222222222222.osm.pbf"))
+        );
     }
 
     #[test]
@@ -1115,7 +1291,9 @@ mod tests {
     fn osm(dir: &Path, name: &str, opl: &str) -> PathBuf {
         let (src, dest) = (dir.join(format!("{name}.opl")), dir.join(format!("{name}.osm.pbf")));
         std::fs::write(&src, opl).unwrap();
-        let st = store::spawn::status(osmium().args(["cat", "--no-progress", "--overwrite", "-o"]).arg(&dest).arg(&src)).unwrap();
+        let st =
+            store::spawn::status(osmium().args(["cat", "--no-progress", "--overwrite", "-o"]).arg(&dest).arg(&src))
+                .unwrap();
         assert!(st.success());
         dest
     }
@@ -1127,20 +1305,30 @@ mod tests {
         // Unit 6/32/21 (lon 0 to 5.6, lat 48.9 to 52.5): a road and a ferry the filter kept (a route
         // relation's member) in its piece; unit 6/40/20's piece has a road only.
         let shared = "n1 v1 x1.0 y50.0\nn2 v1 x1.1 y50.0\nn3 v1 x1.2 y50.1\nn4 v1 x1.5 y50.5\n";
-        let piece = osm(d.path(), "piece", &format!("{shared}w10 v1 Thighway=primary Nn1,n2\nw20 v1 Troute=ferry,motor_vehicle=yes Nn2,n3\n"));
+        let piece = osm(
+            d.path(),
+            "piece",
+            &format!("{shared}w10 v1 Thighway=primary Nn1,n2\nw20 v1 Troute=ferry,motor_vehicle=yes Nn2,n3\n"),
+        );
         let other = osm(d.path(), "other", "n9 v1 x45.0 y45.0\nn8 v1 x45.1 y45.0\nw90 v1 Thighway=primary Nn9,n8\n");
         // The ferries set: that ferry, and a standalone one from the piece's coast far out to sea.
         let set = osm(d.path(), "set", &format!("{shared}n5 v1 x-3.0 y52.0\nw20 v1 Troute=ferry,motor_vehicle=yes Nn2,n3\nw30 v1 Troute=ferry,motor_vehicle=yes Nn3,n4,n5\n"));
         out.put_file("sources/osm/2026-09-28/pieces/6-32-21", "osm.pbf", &piece).unwrap();
         out.put_file("sources/osm/2026-09-28/pieces/6-40-20", "osm.pbf", &other).unwrap();
         out.put_file("sources/osm/2026-09-28/sets/ferries", "osm.pbf", &set).unwrap();
-        let (before, untouched) = (out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap().to_string(), out.get("sources/osm/2026-09-28/pieces/6-40-20").unwrap().to_string());
+        let (before, untouched) = (
+            out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap().to_string(),
+            out.get("sources/osm/2026-09-28/pieces/6-40-20").unwrap().to_string(),
+        );
         assert_eq!(patch_ferries(&mut out, "2026-09-28", &d.path().join("scratch"), &|_| true).unwrap(), (1, 1));
         // The piece gained the standalone ferry, whole (its node at sea too), and kept the rest once.
         let after = out.path(out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap());
         assert_ne!(out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap(), before);
         assert_eq!(way_ids(&after, None).unwrap().into_iter().collect::<Vec<_>>(), [10, 20, 30]);
-        let opl = String::from_utf8(store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(&after)).unwrap().stdout).unwrap();
+        let opl = String::from_utf8(
+            store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(&after)).unwrap().stdout,
+        )
+        .unwrap();
         assert_eq!(opl.lines().filter(|l| l.starts_with('n')).count(), 5);
         // A piece with no ferries near it stays as it was; a second run changes nothing.
         assert_eq!(out.get("sources/osm/2026-09-28/pieces/6-40-20").unwrap(), untouched);
@@ -1174,7 +1362,18 @@ mod tests {
         assert_eq!(retire_older(&mut out, "2026-09-28"), 7);
         let left: Vec<&str> = out.manifest.keys().map(String::as_str).collect();
         // (The newest older pass's outlines stay, for the outlines step: the older ones go.)
-        assert_eq!(left, ["base/6-1-2", "global/roads/6-1-2", "sources/osm/2026-03-28/outlines", "sources/osm/2026-09-28/outlines", "sources/osm/2026-09-28/pieces/6-1-2", "work/pois/6-1-2", "work/summits/2026-09-28"]);
+        assert_eq!(
+            left,
+            [
+                "base/6-1-2",
+                "global/roads/6-1-2",
+                "sources/osm/2026-03-28/outlines",
+                "sources/osm/2026-09-28/outlines",
+                "sources/osm/2026-09-28/pieces/6-1-2",
+                "work/pois/6-1-2",
+                "work/summits/2026-09-28"
+            ]
+        );
         assert!(is_date("2026-09-28") && !is_date("2026-9-28") && !is_date("6-1-2"));
     }
 

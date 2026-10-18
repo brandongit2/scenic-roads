@@ -70,7 +70,12 @@ impl Rows {
     /// Half the size: each pixel the mean of its four (trees.py's `down`), the leaf counts summed.
     fn down(&self) -> Rows {
         let (w, h) = (self.width / 2, self.rows() / 2);
-        let mut out = Rows { width: w, cover: Vec::with_capacity(w * h), height: Vec::with_capacity(w * h), leaf: Default::default() };
+        let mut out = Rows {
+            width: w,
+            cover: Vec::with_capacity(w * h),
+            height: Vec::with_capacity(w * h),
+            leaf: Default::default(),
+        };
         let mean = |a: &[f32], i: usize, j: usize| {
             let (r0, r1) = (2 * i * self.width, (2 * i + 1) * self.width);
             ((a[r0 + 2 * j] + a[r0 + 2 * j + 1]) + (a[r1 + 2 * j] + a[r1 + 2 * j + 1])) / 4.0
@@ -231,8 +236,10 @@ impl Pyramid {
             return;
         }
         let ins = |i: usize| inside[i / 64] >> (i % 64) & 1 == 1;
-        let c: Vec<f32> = (0..n).map(|i| if ins(i) && cover[i] <= 1000 { (cover[i] as f64 / 10.0) as f32 } else { 0.0 }).collect();
-        let h: Vec<f32> = (0..n).map(|i| if ins(i) && c[i] >= 5.0 { (height[i] as f64 / 100.0) as f32 } else { 0.0 }).collect();
+        let c: Vec<f32> =
+            (0..n).map(|i| if ins(i) && cover[i] <= 1000 { (cover[i] as f64 / 10.0) as f32 } else { 0.0 }).collect();
+        let h: Vec<f32> =
+            (0..n).map(|i| if ins(i) && c[i] >= 5.0 { (height[i] as f64 / 100.0) as f32 } else { 0.0 }).collect();
         // Leaf type only where there are trees.
         let lft: Vec<u8> = (0..n)
             .map(|i| {
@@ -250,7 +257,12 @@ impl Pyramid {
         self.bands += 1;
         // Zoom 11: each class's pixels counted.
         let w = BS / 2;
-        let mut r = Rows { width: w, cover: Vec::with_capacity(w * TS / 2), height: Vec::with_capacity(w * TS / 2), leaf: Default::default() };
+        let mut r = Rows {
+            width: w,
+            cover: Vec::with_capacity(w * TS / 2),
+            height: Vec::with_capacity(w * TS / 2),
+            leaf: Default::default(),
+        };
         for l in r.leaf.iter_mut() {
             *l = vec![0; w * TS / 2];
         }
@@ -343,7 +355,14 @@ impl Tops {
         let n = TS * TS;
         let raw = zstd::bulk::decompress(&b[16..], n * 18)?;
         ensure!(raw.len() == n * 18, "zoom-8 values cut short");
-        let f = |k: usize| raw[k * n * 4..(k + 1) * n * 4].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect::<Vec<f32>>();
+        let f = |k: usize| {
+            raw[k * n * 4..(k + 1) * n * 4]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
+                .collect::<Vec<f32>>()
+        };
         let mut leaf: [Vec<u32>; 5] = Default::default();
         for (k, l) in leaf.iter_mut().enumerate() {
             let at = 8 * n + k * n * 2;
@@ -393,9 +412,19 @@ pub fn lower(tops: &BTreeMap<(u32, u32), Vec<u8>>, said: &(dyn Fn(u64, u64) + Sy
 
 /// Tile (`z`, `x`, `y`)'s values, its tiles and its descendants' added to `tiles` (zoom 7 to 4);
 /// None when no block is under it.
-fn node(tops: &BTreeMap<(u32, u32), Vec<u8>>, z: u8, x: u32, y: u32, tiles: &mut Vec<Tile>, tick: &(dyn Fn() + Sync)) -> Result<Option<Rows>> {
+fn node(
+    tops: &BTreeMap<(u32, u32), Vec<u8>>,
+    z: u8,
+    x: u32,
+    y: u32,
+    tiles: &mut Vec<Tile>,
+    tick: &(dyn Fn() + Sync),
+) -> Result<Option<Rows>> {
     if z == ZBLOCK {
-        return tops.get(&(x, y)).map(|b| Tops::from_bytes(b).map(|t| t.rows).with_context(|| format!("block 8/{x}/{y}'s zoom-8 values"))).transpose();
+        return tops
+            .get(&(x, y))
+            .map(|b| Tops::from_bytes(b).map(|t| t.rows).with_context(|| format!("block 8/{x}/{y}'s zoom-8 values")))
+            .transpose();
     }
     let kids: Vec<(Option<Rows>, Vec<Tile>)> = [(0, 0), (1, 0), (0, 1), (1, 1)]
         .par_iter()

@@ -136,10 +136,16 @@ pub struct Part {
 impl Part {
     /// The files (`names`, content names; put in copy order) and the pieces of each of `archives`.
     fn new(cat: &Catalog, files: Files, archives: &[String], pieces: &[Piece]) -> Part {
-        let by_content: std::collections::HashMap<&str, &str> = cat.files.iter().map(|(l, f)| (f.file.as_str(), l.as_str())).collect();
-        let mut logicals: Vec<&str> = files.names.iter().filter_map(|(n, _)| by_content.get(n.as_str()).copied()).collect();
+        let by_content: std::collections::HashMap<&str, &str> =
+            cat.files.iter().map(|(l, f)| (f.file.as_str(), l.as_str())).collect();
+        let mut logicals: Vec<&str> =
+            files.names.iter().filter_map(|(n, _)| by_content.get(n.as_str()).copied()).collect();
         store::mirror::copy_order(cat, &mut logicals);
-        let mut items: Vec<Item> = logicals.iter().filter_map(|l| cat.files.get(*l)).map(|f| Item::File { name: f.file.clone(), size: f.size }).collect();
+        let mut items: Vec<Item> = logicals
+            .iter()
+            .filter_map(|l| cat.files.get(*l))
+            .map(|f| Item::File { name: f.file.clone(), size: f.size })
+            .collect();
         for a in archives {
             items.extend(pieces.iter().map(|&p| Item::Piece { archive: a.clone(), piece: p }));
         }
@@ -219,12 +225,23 @@ impl Downloads {
                 Asked::default()
             }
         };
-        let d = Arc::new(Downloads { path, asked: Mutex::new(asked.clone()), version: AtomicU64::new(1), plan: Mutex::new(None), regions: Mutex::new(None), wake: (Mutex::new(false), Condvar::new()) });
+        let d = Arc::new(Downloads {
+            path,
+            asked: Mutex::new(asked.clone()),
+            version: AtomicU64::new(1),
+            plan: Mutex::new(None),
+            regions: Mutex::new(None),
+            wake: (Mutex::new(false), Condvar::new()),
+        });
         if asked != Asked::default() && !d.path.exists() {
             match d.edit(|_| Ok(())) {
                 Ok(()) => {
                     let _ = std::fs::remove_file(home.join(OLD_FILE));
-                    eprintln!("downloads: what this Mac kept is downloaded now ({} regions, {} views, and the World)", asked.regions.len(), asked.views.len());
+                    eprintln!(
+                        "downloads: what this Mac kept is downloaded now ({} regions, {} views, and the World)",
+                        asked.regions.len(),
+                        asked.views.len()
+                    );
                 }
                 Err(e) => eprintln!("downloads: {e:#}"),
             }
@@ -287,7 +304,12 @@ impl Downloads {
             match g.as_ref() {
                 Some((gen, r)) if *gen == generation => r.clone(),
                 _ => {
-                    let r: Regions = Arc::new(crate::regions::recorded(&cat).iter().map(|r| (r.id.clone(), area_part(&cat, &outer_rings(r)))).collect());
+                    let r: Regions = Arc::new(
+                        crate::regions::recorded(&cat)
+                            .iter()
+                            .map(|r| (r.id.clone(), area_part(&cat, &outer_rings(r))))
+                            .collect(),
+                    );
                     *g = Some((generation, r.clone()));
                     r
                 }
@@ -305,7 +327,13 @@ fn make_plan(cat: &Catalog, generation: u64, version: u64, asked: Asked, regions
     let views: Vec<Part> = asked.views.iter().map(|v| area_part(cat, std::slice::from_ref(&v.outline))).collect();
     let mut wanted = Wanted::default();
     let mut seen = HashSet::new();
-    let parts = asked.world.is_some().then_some(&world).into_iter().chain(asked.regions.iter().filter_map(|r| regions.get(&r.id))).chain(&views);
+    let parts = asked
+        .world
+        .is_some()
+        .then_some(&world)
+        .into_iter()
+        .chain(asked.regions.iter().filter_map(|r| regions.get(&r.id)))
+        .chain(&views);
     for p in parts {
         for i in &p.items {
             wanted.push(i.clone(), &mut seen);
@@ -509,13 +537,15 @@ pub fn spawn_mirror(s: S) {
 }
 
 /// The mirror's syncs said in publishing's log, per process.
-static MIRROR_MARKS: std::sync::Mutex<pipeline::pubtimes::MirrorMarks> = std::sync::Mutex::new(pipeline::pubtimes::MirrorMarks::new());
+static MIRROR_MARKS: std::sync::Mutex<pipeline::pubtimes::MirrorMarks> =
+    std::sync::Mutex::new(pipeline::pubtimes::MirrorMarks::new());
 
 /// One round of the mirror; whether to go again at once (the catalog or the downloads changed
 /// meanwhile).
 fn once(s: &crate::AppState, m: &Mirror) -> bool {
     let plan = s.downloads.plan(&s.data);
-    let changed = || s.data.generation.load(Ordering::SeqCst) != plan.generation || s.downloads.version() != plan.version;
+    let changed =
+        || s.data.generation.load(Ordering::SeqCst) != plan.generation || s.downloads.version() != plan.version;
     let cat = s.data.catalog();
     // (Nothing known of the map yet: what's here can't be told from what isn't wanted.)
     if cat.n == 0 {
@@ -538,7 +568,8 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
             }
             match m.sync(&cat, &plan.wanted, &root, &pool, &Control { stop: &changed, slow: &slow }) {
                 Ok(st) => {
-                    let through = st.end == store::mirror::SyncEnd::Done && st.waiting == 0 && st.failed == 0 && st.pending == 0;
+                    let through =
+                        st.end == store::mirror::SyncEnd::Done && st.waiting == 0 && st.failed == 0 && st.pending == 0;
                     if let Some(secs) = MIRROR_MARKS.lock().unwrap().end(cat.n, now(), through) {
                         crate::data::publish_event(&root, "mirror-end", cat.n, Some(secs));
                     }
@@ -554,7 +585,11 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
             if changed() {
                 return true;
             }
-            let all = plan.world.pieces().chain(plan.regions.values().flat_map(Part::pieces)).chain(plan.views.iter().flat_map(Part::pieces));
+            let all = plan
+                .world
+                .pieces()
+                .chain(plan.regions.values().flat_map(Part::pieces))
+                .chain(plan.views.iter().flat_map(Part::pieces));
             if let Err(e) = size_pieces(m, all, &root, &pool, &changed) {
                 eprintln!("mirror: sizing the basemap's pieces: {e:#}");
             }
@@ -571,7 +606,13 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
 
 /// Works out the sizes of these pieces not known yet, from their archives on the NAS (their
 /// directories alone), until `stop()`.
-fn size_pieces<'a>(m: &Mirror, pieces: impl Iterator<Item = (&'a str, Piece)>, root: &std::path::Path, pool: &Arc<store::IoPool>, stop: &dyn Fn() -> bool) -> Result<()> {
+fn size_pieces<'a>(
+    m: &Mirror,
+    pieces: impl Iterator<Item = (&'a str, Piece)>,
+    root: &std::path::Path,
+    pool: &Arc<store::IoPool>,
+    stop: &dyn Fn() -> bool,
+) -> Result<()> {
     let mut by: BTreeMap<&str, BTreeSet<Piece>> = BTreeMap::new();
     for (a, p) in pieces.filter(|(a, p)| m.piece_size(a, *p).is_none()) {
         by.entry(a).or_default().insert(p);
@@ -632,7 +673,10 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
     };
     let state = |p: &Part| part_state(p, m, cname, room.more, online);
     let on: HashSet<&str> = plan.asked.regions.iter().map(|r| r.id.as_str()).collect();
-    let names: BTreeMap<String, String> = crate::regions::recorded_list(&s.data.catalog()).iter().filter_map(|r| Some((r["id"].as_str()?.to_string(), r["name"].as_str().unwrap_or_default().to_string()))).collect();
+    let names: BTreeMap<String, String> = crate::regions::recorded_list(&s.data.catalog())
+        .iter()
+        .filter_map(|r| Some((r["id"].as_str()?.to_string(), r["name"].as_str().unwrap_or_default().to_string())))
+        .collect();
     let mut regions = serde_json::Map::new();
     for (id, p) in plan.regions.iter() {
         let mut v = tally(p);
@@ -644,7 +688,9 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
     }
     // Downloaded regions the catalog doesn't have (not built yet, or removed since).
     for r in &plan.asked.regions {
-        regions.entry(r.id.clone()).or_insert_with(|| json!({ "name": r.name, "bytes": 0, "here": 0, "unknown": 0, "on": true, "state": "missing" }));
+        regions.entry(r.id.clone()).or_insert_with(
+            || json!({ "name": r.name, "bytes": 0, "here": 0, "unknown": 0, "on": true, "state": "missing" }),
+        );
     }
     let views: Vec<Value> = plan
         .asked
@@ -653,7 +699,13 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
         .zip(&plan.views)
         .map(|(v, p)| {
             let mut o = tally(p);
-            for (k, x) in [("id", json!(v.id)), ("name", json!(v.name)), ("outline", json!(v.outline)), ("at", json!(v.at)), ("state", json!(state(p)))] {
+            for (k, x) in [
+                ("id", json!(v.id)),
+                ("name", json!(v.name)),
+                ("outline", json!(v.outline)),
+                ("at", json!(v.at)),
+                ("state", json!(state(p))),
+            ] {
                 o[k] = x;
             }
             o
@@ -673,7 +725,14 @@ pub fn status(s: &crate::AppState) -> Result<Value> {
     });
     let what = |c: &store::mirror::Copying| -> String {
         if let Some(rest) = c.name.strip_prefix("basemap ") {
-            return format!("the basemap's {}", rest.split(' ').nth(1).map_or("piece".into(), |p| if p == "lo" { "zooms 0–10".to_string() } else { format!("zooms 11–14 of {}", p.replacen('-', "/", 2)) }));
+            return format!(
+                "the basemap's {}",
+                rest.split(' ').nth(1).map_or("piece".into(), |p| if p == "lo" {
+                    "zooms 0–10".to_string()
+                } else {
+                    format!("zooms 11–14 of {}", p.replacen('-', "/", 2))
+                })
+            );
         }
         store::naming::parse_content_name(&c.name).map(|c| c.logical.to_string()).unwrap_or_default()
     };
@@ -757,7 +816,9 @@ fn need(s: &crate::AppState, m: &Mirror, next: &Asked) -> Result<(u64, u64)> {
     let plan = make_plan(&cat, cur.generation, cur.version, next.clone(), cur.regions.clone());
     let unknown = plan.wanted.items.iter().any(|i| m.item_size(i).is_none());
     if unknown {
-        let (Some(root), Some(pool)) = (s.data.nas_root(), s.data.pool().filter(|p| p.is_online())) else { bail!("The NAS isn't reachable, so this Mac can't download from it now") };
+        let (Some(root), Some(pool)) = (s.data.nas_root(), s.data.pool().filter(|p| p.is_online())) else {
+            bail!("The NAS isn't reachable, so this Mac can't download from it now")
+        };
         let pieces = plan.wanted.items.iter().filter_map(|i| match i {
             Item::Piece { archive, piece } => Some((archive.as_str(), *piece)),
             Item::File { .. } => None,
@@ -827,7 +888,10 @@ pub async fn put_world(State(s): State<S>, Json(q): Json<On>) -> Response {
                 check_fits(s, &next, "the World, zoomed out")?;
             }
         } else {
-            ensure!(!next.any_area(), "Remove the downloaded regions and views first: away from the NAS they need the World, zoomed out");
+            ensure!(
+                !next.any_area(),
+                "Remove the downloaded regions and views first: away from the NAS they need the World, zoomed out"
+            );
             next.world = None;
         }
         s.downloads.edit(|a| {
@@ -846,7 +910,11 @@ pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Jso
         ensure!(pipeline::agent::recipes::valid_id(&id), "{id:?} isn't a region id");
         ensure!(s.data.mirror.is_some(), "this server keeps no copy of the map (--no-mirror)");
         let cat = s.data.catalog();
-        let name = crate::regions::recorded_list(&cat).iter().find(|r| r["id"] == id.as_str()).and_then(|r| r["name"].as_str().map(str::to_string)).unwrap_or_else(|| id.clone());
+        let name = crate::regions::recorded_list(&cat)
+            .iter()
+            .find(|r| r["id"] == id.as_str())
+            .and_then(|r| r["name"].as_str().map(str::to_string))
+            .unwrap_or_else(|| id.clone());
         let mut next = s.downloads.asked();
         let was = next.regions.iter().any(|r| r.id == id);
         next.regions.retain(|r| r.id != id);
@@ -881,7 +949,10 @@ fn clean_name(n: &str) -> Result<String> {
 
 fn check_outline(outline: &[[f64; 2]]) -> Result<()> {
     ensure!((3..=MAX_POINTS).contains(&outline.len()), "an outline of 3 to {MAX_POINTS} points");
-    ensure!(outline.iter().all(|p| p[0].is_finite() && p[1].is_finite() && p[0].abs() <= 540.0 && p[1].abs() <= 90.0), "points are [lon, lat] degrees");
+    ensure!(
+        outline.iter().all(|p| p[0].is_finite() && p[1].is_finite() && p[0].abs() <= 540.0 && p[1].abs() <= 90.0),
+        "points are [lon, lat] degrees"
+    );
     Ok(())
 }
 
@@ -971,7 +1042,13 @@ fn name_of(s: &crate::AppState, ring: &[[f64; 2]]) -> String {
         }
     }
     let lon = (c.0 + 180.0).rem_euclid(360.0) - 180.0;
-    format!("{:.2}° {}, {:.2}° {}", c.1.abs(), if c.1 >= 0.0 { "N" } else { "S" }, lon.abs(), if lon >= 0.0 { "E" } else { "W" })
+    format!(
+        "{:.2}° {}, {:.2}° {}",
+        c.1.abs(),
+        if c.1 >= 0.0 { "N" } else { "S" },
+        lon.abs(),
+        if lon >= 0.0 { "E" } else { "W" }
+    )
 }
 
 #[derive(Deserialize)]

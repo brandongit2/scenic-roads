@@ -56,7 +56,13 @@ fn drawing() -> Arc<tokio::sync::Semaphore> {
 
 fn pool() -> &'static rayon::ThreadPool {
     static P: OnceLock<rayon::ThreadPool> = OnceLock::new();
-    P.get_or_init(|| rayon::ThreadPoolBuilder::new().num_threads(THREADS).thread_name(|i| format!("water-{i}")).build().expect("the water's threads"))
+    P.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(THREADS)
+            .thread_name(|i| format!("water-{i}"))
+            .build()
+            .expect("the water's threads")
+    })
 }
 
 /// A drawn tile kept, the least recently used let go past `KEPT`.
@@ -169,7 +175,8 @@ fn from_store(s: &S, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
             if let Some(c) = stored(s, z, x, y)? {
                 return Ok(Some(shares(&c)));
             }
-            Ok(wt::uniform_from_ancestor(z, x, y, &|a, ax, ay| stored(s, a, ax, ay))?.map(|(se, i)| [se, i].repeat(wt::SIZE * wt::SIZE)))
+            Ok(wt::uniform_from_ancestor(z, x, y, &|a, ax, ay| stored(s, a, ax, ay))?
+                .map(|(se, i)| [se, i].repeat(wt::SIZE * wt::SIZE)))
         })();
         match from_packs {
             Ok(Some(b)) => return Ok(Some(b)),
@@ -245,11 +252,19 @@ fn hex(c: &str) -> Option<[f32; 3]> {
 }
 
 fn to_linear(v: f32) -> f32 {
-    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 fn to_srgb(v: f32) -> f32 {
-    if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+    if v <= 0.003_130_8 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// A colour's luminance (linear light), from 0–255 sRGB.
@@ -290,7 +305,9 @@ fn encode(sh: &[u8], colours: Option<Colours>) -> Result<Vec<u8>> {
         }
         Some((sea, lake, land)) => {
             // The alpha for each share, sea and lake (a pixel of both: mixed by their shares).
-            let lut = |w: [f32; 3]| -> Vec<u8> { (0..=255).map(|t| land.map_or(t as u8, |l| alpha_for(t as f32 / 255.0, w, l).round() as u8)).collect() };
+            let lut = |w: [f32; 3]| -> Vec<u8> {
+                (0..=255).map(|t| land.map_or(t as u8, |l| alpha_for(t as f32 / 255.0, w, l).round() as u8)).collect()
+            };
             let (sea_a, lake_a) = (lut(sea), lut(lake));
             let mut px = Vec::with_capacity(n * 4);
             for p in sh.chunks_exact(2) {
@@ -298,9 +315,14 @@ fn encode(sh: &[u8], colours: Option<Colours>) -> Result<Vec<u8>> {
                 let t = s + i;
                 // (Where there's none, the sea's colour: a pixel sampled between it and water then
                 // blends no black in.)
-                let rgb = if t > 0.0 { [0, 1, 2].map(|k| ((sea[k] * s + lake[k] * i) / t).round() as u8) } else { sea.map(|v| v as u8) };
+                let rgb = if t > 0.0 {
+                    [0, 1, 2].map(|k| ((sea[k] * s + lake[k] * i) / t).round() as u8)
+                } else {
+                    sea.map(|v| v as u8)
+                };
                 let k = t.min(255.0) as usize;
-                let a = if t > 0.0 { ((f32::from(sea_a[k]) * s + f32::from(lake_a[k]) * i) / t).round() as u8 } else { 0 };
+                let a =
+                    if t > 0.0 { ((f32::from(sea_a[k]) * s + f32::from(lake_a[k]) * i) / t).round() as u8 } else { 0 };
                 px.extend_from_slice(&[rgb[0], rgb[1], rgb[2], a]);
             }
             png(&px, wt::SIZE, png::ColorType::Rgba)
@@ -308,7 +330,12 @@ fn encode(sh: &[u8], colours: Option<Colours>) -> Result<Vec<u8>> {
     }
 }
 
-pub async fn water_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+pub async fn water_tile(
+    State(s): State<S>,
+    Path((z, x, y)): Path<(u8, u32, u32)>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
     if z > wt::MAXZ || x >= 1 << z || y >= 1 << z {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -359,7 +386,9 @@ pub async fn water_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)
                     Ok(sh)
                 }
                 Ok(None) => {
-                    let Ok(permit) = drawing().acquire_owned().await else { return StatusCode::SERVICE_UNAVAILABLE.into_response() };
+                    let Ok(permit) = drawing().acquire_owned().await else {
+                        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    };
                     let s2 = s.clone();
                     match tokio::task::spawn_blocking(move || {
                         let _permit = permit;
@@ -415,10 +444,13 @@ pub async fn water_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)
 
 /// A query's pairs (no percent-decoding needed: hex colours and flags).
 fn url_pairs(q: &str) -> std::collections::HashMap<String, String> {
-    q.split('&').filter(|p| !p.is_empty()).map(|p| match p.split_once('=') {
-        Some((k, v)) => (k.to_string(), v.to_string()),
-        None => (p.to_string(), String::new()),
-    }).collect()
+    q.split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| match p.split_once('=') {
+            Some((k, v)) => (k.to_string(), v.to_string()),
+            None => (p.to_string(), String::new()),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -445,19 +477,49 @@ mod tests {
         let content = "layers/water/root/0-0-0.0123456789abcdef.pack";
         let path = nas.path().join(content);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mut w = store::pack::PackWriter::create(&path, serde_json::json!({"layer": "water", "scope": "root", "root": "0/0/0", "encoding": "water-png"}), false).unwrap();
+        let mut w = store::pack::PackWriter::create(
+            &path,
+            serde_json::json!({"layer": "water", "scope": "root", "root": "0/0/0", "encoding": "water-png"}),
+            false,
+        )
+        .unwrap();
         w.add(0, 0, 0, &png0, png0.len() as u32).unwrap();
         w.finish().unwrap();
         let mut cat = store::catalog::Catalog::new(1);
-        cat.files.insert("layers/water/root/0-0-0".into(), store::catalog::FileRef { file: content.into(), size: std::fs::metadata(&path).unwrap().len(), ..Default::default() });
-        cat.layers.insert("water".into(), store::catalog::Layer { encoding: "water-png".into(), minzoom: 0, maxzoom: 9, root: Some("layers/water/root/0-0-0".into()), ..Default::default() });
+        cat.files.insert(
+            "layers/water/root/0-0-0".into(),
+            store::catalog::FileRef {
+                file: content.into(),
+                size: std::fs::metadata(&path).unwrap().len(),
+                ..Default::default()
+            },
+        );
+        cat.layers.insert(
+            "water".into(),
+            store::catalog::Layer {
+                encoding: "water-png".into(),
+                minzoom: 0,
+                maxzoom: 9,
+                root: Some("layers/water/root/0-0-0".into()),
+                ..Default::default()
+            },
+        );
         // A basemap the catalog names but the NAS hasn't (away, not mirrored).
         cat.basemap = vec!["layers/basemap/world-gone".into()];
-        cat.files.insert("layers/basemap/world-gone".into(), store::catalog::FileRef { file: "layers/basemap/world-gone.0123456789abcdef.pmtiles".into(), size: 1, ..Default::default() });
+        cat.files.insert(
+            "layers/basemap/world-gone".into(),
+            store::catalog::FileRef {
+                file: "layers/basemap/world-gone.0123456789abcdef.pmtiles".into(),
+                size: 1,
+                ..Default::default()
+            },
+        );
         store::catalog::write_copy(&nas.path().join("catalog"), &cat).unwrap();
         let home = tempfile::tempdir().unwrap();
         let s = crate::test_state(home.path(), nas.path());
-        let get = |z, x, y, q: &str| water_tile(State(s.clone()), Path((z, x, y)), RawQuery(Some(q.to_string())), HeaderMap::new());
+        let get = |z, x, y, q: &str| {
+            water_tile(State(s.clone()), Path((z, x, y)), RawQuery(Some(q.to_string())), HeaderMap::new())
+        };
         let pixels = |b: &[u8]| {
             let mut d = png::Decoder::new(std::io::Cursor::new(b.to_vec())).read_info().unwrap();
             let mut px = vec![0u8; d.output_buffer_size().unwrap()];

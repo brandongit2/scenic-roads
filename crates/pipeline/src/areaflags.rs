@@ -154,7 +154,8 @@ pub fn read_shapes(text: &str, b: [f64; 4]) -> Result<(Vec<Shape>, usize)> {
             continue;
         }
         let bit = &v["properties"]["bit"];
-        let bit = bit.as_i64().or_else(|| bit.as_f64().map(|f| f as i64)).with_context(|| format!("{}: no bit", at()))?;
+        let bit =
+            bit.as_i64().or_else(|| bit.as_f64().map(|f| f as i64)).with_context(|| format!("{}: no bit", at()))?;
         read += 1;
         let Some(&bit) = BITS.iter().find(|&&f| f as i64 == bit) else { continue };
         let polys: Vec<Poly> = parts
@@ -230,7 +231,9 @@ pub(crate) fn is_clockwise(p: &[[f64; 2]]) -> bool {
 /// The grid's area flags, CELLS bytes per tile in `tiles`' order.
 pub fn rasterise(tiles: &[[u32; 2]], shapes: &[Shape]) -> Vec<u8> {
     let mut out = vec![0u8; tiles.len() * CELLS];
-    out.par_chunks_mut(CELLS).zip(tiles.par_iter()).for_each_init(Scratch::default, |s, (cells, t)| tile(t[0], t[1], shapes, cells, s));
+    out.par_chunks_mut(CELLS)
+        .zip(tiles.par_iter())
+        .for_each_init(Scratch::default, |s, (cells, t)| tile(t[0], t[1], shapes, cells, s));
     out
 }
 
@@ -360,7 +363,13 @@ fn fill_polygon(s: &mut Scratch, burn: &mut impl FnMut(i32, i32, i32)) {
             }
             if dy < dy2 && dy >= dy1 {
                 let x = (dy - dy1) * (dx2 - dx1) / (dy2 - dy1) + dx1;
-                let x = if x < i32::MIN as f64 { i32::MIN as f64 } else if x > i32::MAX as f64 { i32::MAX as f64 } else { x };
+                let x = if x < i32::MIN as f64 {
+                    i32::MIN as f64
+                } else if x > i32::MAX as f64 {
+                    i32::MAX as f64
+                } else {
+                    x
+                };
                 s.ints.push((x + 0.5).floor() as i32);
             }
         }
@@ -470,7 +479,11 @@ fn line_all_touched(ring: &[[f64; 2]], burn: &mut impl FnMut(i32, i32, i32)) {
                 x += sx;
                 y += sy;
             } else {
-                let sy = if slope < 0.0 { (iy as f64 - y).min(-0.000000001) } else { ((iy + 1) as f64 - y).max(0.000000001) };
+                let sy = if slope < 0.0 {
+                    (iy as f64 - y).min(-0.000000001)
+                } else {
+                    ((iy + 1) as f64 - y).max(0.000000001)
+                };
                 x += sy / slope;
                 y += sy;
             }
@@ -491,9 +504,18 @@ mod tests {
     }
 
     fn feature(bit: u8, polys: &[Vec<Vec<[f64; 2]>>]) -> String {
-        let c = |r: &Vec<[f64; 2]>| format!("[{}]", r.iter().map(|p| format!("[{},{}]", p[0], p[1])).collect::<Vec<_>>().join(","));
+        let c = |r: &Vec<[f64; 2]>| {
+            format!("[{}]", r.iter().map(|p| format!("[{},{}]", p[0], p[1])).collect::<Vec<_>>().join(","))
+        };
         let p = |p: &Vec<Vec<[f64; 2]>>| format!("[{}]", p.iter().map(c).collect::<Vec<_>>().join(","));
-        let g = if polys.len() == 1 { format!(r#"{{"type":"Polygon","coordinates":{}}}"#, p(&polys[0])) } else { format!(r#"{{"type":"MultiPolygon","coordinates":[{}]}}"#, polys.iter().map(p).collect::<Vec<_>>().join(",")) };
+        let g = if polys.len() == 1 {
+            format!(r#"{{"type":"Polygon","coordinates":{}}}"#, p(&polys[0]))
+        } else {
+            format!(
+                r#"{{"type":"MultiPolygon","coordinates":[{}]}}"#,
+                polys.iter().map(p).collect::<Vec<_>>().join(",")
+            )
+        };
         format!(r#"{{"type":"Feature","geometry":{g},"properties":{{"bit":{bit}}}}}"#)
     }
 
@@ -508,9 +530,23 @@ mod tests {
         // A park with a hole; a multipolygon whose parts overlap (each drawn on its own, so the
         // overlap stays burnt); a heritage area burning every pixel it touches.
         let park = vec![rect(tx, ty, 10.2, 10.2, 60.7, 60.7), rect(tx, ty, 20.2, 20.2, 30.7, 30.7)];
-        let parts = vec![vec![rect(tx, ty, 100.2, 100.2, 140.7, 140.7)], vec![vec![deg(tx, ty, 120.2, 120.2), deg(tx, ty, 160.7, 120.2), deg(tx, ty, 160.7, 160.7), deg(tx, ty, 120.2, 120.2)]]];
+        let parts = vec![
+            vec![rect(tx, ty, 100.2, 100.2, 140.7, 140.7)],
+            vec![vec![
+                deg(tx, ty, 120.2, 120.2),
+                deg(tx, ty, 160.7, 120.2),
+                deg(tx, ty, 160.7, 160.7),
+                deg(tx, ty, 120.2, 120.2),
+            ]],
+        ];
         let her = vec![rect(tx, ty, 200.2, 10.2, 210.7, 20.7)];
-        let text = [feature(PARK, &[park]), feature(INDIGENOUS, &parts), feature(HERITAGE, &[her]), feature(PARK, &[vec![rect(tx + 9, ty, 0.0, 0.0, 9.0, 9.0)]])].join("\n");
+        let text = [
+            feature(PARK, &[park]),
+            feature(INDIGENOUS, &parts),
+            feature(HERITAGE, &[her]),
+            feature(PARK, &[vec![rect(tx + 9, ty, 0.0, 0.0, 9.0, 9.0)]]),
+        ]
+        .join("\n");
         let (shapes, read) = read_shapes(&text, grid_box(&tiles)).unwrap();
         assert_eq!((shapes.len(), read), (3, 3), "the polygon away from the grid isn't read");
         let out = rasterise(&tiles, &shapes);

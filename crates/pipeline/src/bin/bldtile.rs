@@ -24,7 +24,9 @@ fn main() -> Result<()> {
         }
     }
     let [dir, area] = &rest[..] else { bail!("{USAGE}") };
-    let a = pipeline::legacy::Unit::parse(area).filter(|u| u.z == 8).with_context(|| format!("not a z8 area: {area}\n{USAGE}"))?;
+    let a = pipeline::legacy::Unit::parse(area)
+        .filter(|u| u.z == 8)
+        .with_context(|| format!("not a z8 area: {area}\n{USAGE}"))?;
     let dir = PathBuf::from(dir);
     // (Threads as many as said, else rayon's; in WebAssembly, none can be made: this one.)
     let mut pool = rayon::ThreadPoolBuilder::new();
@@ -35,7 +37,14 @@ fn main() -> Result<()> {
     let t0 = std::time::Instant::now();
     pipeline::dem::sample::within(pool.as_ref(), &|| {
         let s = pipeline::bld::task::run(&dir, a)?;
-        eprintln!("bldtile {}: {} buildings and {} parts in {} tiles ({:.1} s)", a.slash(), s.buildings, s.parts, s.tiles, t0.elapsed().as_secs_f64());
+        eprintln!(
+            "bldtile {}: {} buildings and {} parts in {} tiles ({:.1} s)",
+            a.slash(),
+            s.buildings,
+            s.parts,
+            s.tiles,
+            t0.elapsed().as_secs_f64()
+        );
         Ok(())
     })
 }

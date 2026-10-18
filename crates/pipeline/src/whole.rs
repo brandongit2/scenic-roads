@@ -47,7 +47,15 @@ pub fn rename_over(from: &Path, to: &Path) -> std::io::Result<()> {
 /// newer file): `to` is missing until the next write. Some(the aside) when the fallback was used.
 pub fn rename_or_aside(from: &Path, to: &Path) -> std::io::Result<Option<PathBuf>> {
     static ASIDES: std::sync::Mutex<Asides> = std::sync::Mutex::new(Asides { held: Vec::new(), listed: None });
-    aside_with(from, to, &rename_over, &|a, b| std::fs::rename(a, b), &|p| std::fs::remove_file(p), &ASIDES, std::time::Instant::now())
+    aside_with(
+        from,
+        to,
+        &rename_over,
+        &|a, b| std::fs::rename(a, b),
+        &|p| std::fs::remove_file(p),
+        &ASIDES,
+        std::time::Instant::now(),
+    )
 }
 
 /// The asides not removed yet, at most this many remembered (the oldest forgotten; a listing finds
@@ -68,7 +76,13 @@ pub struct Asides {
 impl Asides {
     /// Takes in `aside` (just made) and, at most every `ASIDES_LISTED`, the folder's other asides of
     /// `to`; then removes up to `ASIDES_REMOVED` of them, the oldest first, keeping those that fail.
-    fn sweep(&mut self, to: &Path, aside: &Path, remove: &dyn Fn(&Path) -> std::io::Result<()>, now: std::time::Instant) {
+    fn sweep(
+        &mut self,
+        to: &Path,
+        aside: &Path,
+        remove: &dyn Fn(&Path) -> std::io::Result<()>,
+        now: std::time::Instant,
+    ) {
         if self.listed.is_none_or(|t| now.saturating_duration_since(t) >= ASIDES_LISTED) {
             self.listed = Some(now);
             let prefix = format!("{}.", to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
@@ -110,7 +124,15 @@ type Rename<'a> = &'a dyn Fn(&Path, &Path) -> std::io::Result<()>;
 
 /// `rename_or_aside` with its renames (`over`: the one tried again; `raw`: once), removal, asides
 /// and clock given.
-fn aside_with(from: &Path, to: &Path, over: Rename, raw: Rename, remove: &dyn Fn(&Path) -> std::io::Result<()>, asides: &std::sync::Mutex<Asides>, now: std::time::Instant) -> std::io::Result<Option<PathBuf>> {
+fn aside_with(
+    from: &Path,
+    to: &Path,
+    over: Rename,
+    raw: Rename,
+    remove: &dyn Fn(&Path) -> std::io::Result<()>,
+    asides: &std::sync::Mutex<Asides>,
+    now: std::time::Instant,
+) -> std::io::Result<Option<PathBuf>> {
     match over(from, to) {
         Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy => {}
         r => return r.map(|()| None),
@@ -120,7 +142,12 @@ fn aside_with(from: &Path, to: &Path, over: Rename, raw: Rename, remove: &dyn Fn
     let r = over(from, to);
     let mut a = asides.lock().unwrap();
     a.sweep(to, &aside, remove, now);
-    eprintln!("whole: rename over {} busy: the old file renamed aside{} ({} aside(s) not removed yet)", to.display(), if r.is_ok() { ", the new one put in its place" } else { "; the new one's rename failed too" }, a.held.len());
+    eprintln!(
+        "whole: rename over {} busy: the old file renamed aside{} ({} aside(s) not removed yet)",
+        to.display(),
+        if r.is_ok() { ", the new one put in its place" } else { "; the new one's rename failed too" },
+        a.held.len()
+    );
     r.map(|()| Some(aside))
 }
 
@@ -241,7 +268,11 @@ fn tiff_whole_with(len: u64, at: &dyn Fn(u64, usize) -> Option<Vec<u8>>) -> bool
             };
             let count = if big { num(&e[4..12]) } else { num(&e[4..8]) } as usize;
             let bytes = count.checked_mul(sz)?;
-            let raw = if bytes <= off_sz { e[ent_sz - off_sz..ent_sz - off_sz + bytes].to_vec() } else { at(num(&e[ent_sz - off_sz..]), bytes)? };
+            let raw = if bytes <= off_sz {
+                e[ent_sz - off_sz..ent_sz - off_sz + bytes].to_vec()
+            } else {
+                at(num(&e[ent_sz - off_sz..]), bytes)?
+            };
             Some(raw.chunks_exact(sz).map(num).collect())
         };
         let (mut offs, mut lens) = (None, None);
@@ -253,7 +284,9 @@ fn tiff_whole_with(len: u64, at: &dyn Fn(u64, usize) -> Option<Vec<u8>>) -> bool
             }
         }
         let (Some(offs), Some(lens)) = (offs, lens) else { return false };
-        if offs.len() != lens.len() || offs.iter().zip(&lens).any(|(&o, &l)| o.checked_add(l).is_none_or(|end| end > len)) {
+        if offs.len() != lens.len()
+            || offs.iter().zip(&lens).any(|(&o, &l)| o.checked_add(l).is_none_or(|end| end > len))
+        {
             return false;
         }
         ifd = num(&ents[n * ent_sz..]);
@@ -356,7 +389,8 @@ mod tests {
         std::fs::write(&to, b"old").unwrap();
         let held: RefCell<Vec<PathBuf>> = RefCell::new(vec![to.clone()]);
         let busy = || std::io::Error::from(std::io::ErrorKind::ResourceBusy);
-        let over = |f: &Path, t: &Path| if held.borrow().iter().any(|p| p == t) { Err(busy()) } else { std::fs::rename(f, t) };
+        let over =
+            |f: &Path, t: &Path| if held.borrow().iter().any(|p| p == t) { Err(busy()) } else { std::fs::rename(f, t) };
         let raw = |f: &Path, t: &Path| {
             let mut h = held.borrow_mut();
             if let Some(i) = h.iter().position(|p| p == f) {
@@ -364,7 +398,8 @@ mod tests {
             }
             std::fs::rename(f, t)
         };
-        let remove = |p: &Path| if held.borrow().iter().any(|h| h == p) { Err(busy()) } else { std::fs::remove_file(p) };
+        let remove =
+            |p: &Path| if held.borrow().iter().any(|h| h == p) { Err(busy()) } else { std::fs::remove_file(p) };
         let asides = std::sync::Mutex::new(Asides { held: Vec::new(), listed: None });
         let t0 = std::time::Instant::now();
         let tmp = d.path().join("a.tmp");
@@ -387,7 +422,8 @@ mod tests {
         assert_eq!(std::fs::read(&to).unwrap(), b"third");
         // Another error isn't busy: no fallback.
         let gone = d.path().join("nope.tmp");
-        assert!(aside_with(&gone, &d.path().join("x.json"), &|f, t| std::fs::rename(f, t), &raw, &remove, &asides, t0).is_err());
+        assert!(aside_with(&gone, &d.path().join("x.json"), &|f, t| std::fs::rename(f, t), &raw, &remove, &asides, t0)
+            .is_err());
         assert!(!d.path().join("x.json").exists());
     }
 
@@ -401,7 +437,11 @@ mod tests {
         let tries = std::cell::Cell::new(0);
         let over = |_: &Path, _: &Path| {
             tries.set(tries.get() + 1);
-            Err(std::io::Error::from(if tries.get() == 1 { std::io::ErrorKind::ResourceBusy } else { std::io::ErrorKind::PermissionDenied }))
+            Err(std::io::Error::from(if tries.get() == 1 {
+                std::io::ErrorKind::ResourceBusy
+            } else {
+                std::io::ErrorKind::PermissionDenied
+            }))
         };
         let raw = |f: &Path, t: &Path| {
             std::fs::rename(f, t)?;
@@ -424,7 +464,12 @@ mod tests {
             std::fs::write(d.path().join(format!("m.json.mac.{i}.0.aside.tmp")), b"x").unwrap();
         }
         std::fs::write(d.path().join("n.json.mac.1.0.aside.tmp"), b"x").unwrap();
-        let count = || std::fs::read_dir(d.path()).unwrap().filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("m.json.")).count();
+        let count = || {
+            std::fs::read_dir(d.path())
+                .unwrap()
+                .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().starts_with("m.json."))
+                .count()
+        };
         let mut a = Asides { held: Vec::new(), listed: None };
         let t0 = std::time::Instant::now();
         let mine = d.path().join("m.json.me.1.0.aside.tmp");

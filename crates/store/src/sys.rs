@@ -203,7 +203,10 @@ fn clone(src: &Path, dst: &Path) -> Option<u64> {
     if dst.symlink_metadata().is_ok() {
         return None;
     }
-    let (s, d) = (std::ffi::CString::new(src.as_os_str().as_bytes()).ok()?, std::ffi::CString::new(dst.as_os_str().as_bytes()).ok()?);
+    let (s, d) = (
+        std::ffi::CString::new(src.as_os_str().as_bytes()).ok()?,
+        std::ffi::CString::new(dst.as_os_str().as_bytes()).ok()?,
+    );
     // SAFETY: clonefile with two NUL-terminated paths we own.
     if unsafe { libc::clonefile(s.as_ptr(), d.as_ptr(), 0) } != 0 {
         std::fs::remove_file(dst).ok();
@@ -234,7 +237,13 @@ pub fn is_disconnect(e: &io::Error) -> bool {
         )
     }
     #[cfg(not(unix))]
-    matches!(e.kind(), io::ErrorKind::TimedOut | io::ErrorKind::NotConnected | io::ErrorKind::ConnectionAborted | io::ErrorKind::ConnectionReset)
+    matches!(
+        e.kind(),
+        io::ErrorKind::TimedOut
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+    )
 }
 
 #[cfg(test)]

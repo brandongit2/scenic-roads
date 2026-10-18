@@ -22,7 +22,15 @@ fn a_python_programs_phases_come_in_under_the_phase_that_ran_it() {
     let p = &r.phases[0];
     let subs: Vec<(&str, Class, u64)> = p.sub.iter().map(|s| (s.name.as_str(), s.class, s.n)).collect();
     // Top-level phases alone (theirs folded into them), in the order they began.
-    assert_eq!(subs, [("loop stage", Class::Compute, 3), ("parent", Class::Mixed, 1), ("main work", Class::Compute, 1), ("beside", Class::NasRead, 1)]);
+    assert_eq!(
+        subs,
+        [
+            ("loop stage", Class::Compute, 3),
+            ("parent", Class::Mixed, 1),
+            ("main work", Class::Compute, 1),
+            ("beside", Class::NasRead, 1)
+        ]
+    );
     let l = &p.sub[0];
     assert_eq!((l.bytes, l.files), (30, 3));
     assert!(l.wall_s >= 0.03 && l.cpu_s.is_some());

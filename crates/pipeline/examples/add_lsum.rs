@@ -17,7 +17,11 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let (src, dst) = (Path::new(args.get(1).context("hidata dir")?), Path::new(args.get(2).context("out dir")?));
     std::fs::create_dir_all(dst)?;
-    let mut files: Vec<_> = std::fs::read_dir(src)?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "sect")).collect();
+    let mut files: Vec<_> = std::fs::read_dir(src)?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "sect"))
+        .collect();
     files.sort();
     for p in files {
         let name = p.file_name().unwrap().to_string_lossy().into_owned();

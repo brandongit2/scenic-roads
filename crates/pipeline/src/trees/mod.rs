@@ -80,7 +80,12 @@ fn lat_of(py: f64, z: u8) -> f64 {
 /// Tile (`z`, `x`, `y`)'s box in degrees: west, south, east, north (trees.py's `tile_bounds`).
 pub fn tile_bounds(z: u8, x: u32, y: u32) -> [f64; 4] {
     let (x, y) = (x as usize, y as usize);
-    [lon_of((x * TS) as f64, z), lat_of(((y + 1) * TS) as f64, z), lon_of(((x + 1) * TS) as f64, z), lat_of((y * TS) as f64, z)]
+    [
+        lon_of((x * TS) as f64, z),
+        lat_of(((y + 1) * TS) as f64, z),
+        lon_of(((x + 1) * TS) as f64, z),
+        lat_of((y * TS) as f64, z),
+    ]
 }
 
 /// Degrees to Web Mercator metres (trees.py's `merc`).
@@ -119,9 +124,18 @@ pub fn chm_name(top: i32, left: i32, kind: &str) -> String {
 pub fn canopy_urls(s: &crate::inputs::sources::Source) -> Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
     for f in &s.index {
-        let kind = f.props.get("kind").and_then(|k| k.as_str()).with_context(|| format!("{}: {} has no `kind`", s.id, f.url))?;
+        let kind = f
+            .props
+            .get("kind")
+            .and_then(|k| k.as_str())
+            .with_context(|| format!("{}: {} has no `kind`", s.id, f.url))?;
         let [w, south, e, n] = f.bbox;
-        ensure!((e - w - 10.0).abs() < 1e-9 && (n - south - 10.0).abs() < 1e-9 && w.fract() == 0.0 && n.fract() == 0.0, "{}: {}'s footprint isn't a 10° square on whole degrees", s.id, f.url);
+        ensure!(
+            (e - w - 10.0).abs() < 1e-9 && (n - south - 10.0).abs() < 1e-9 && w.fract() == 0.0 && n.fract() == 0.0,
+            "{}: {}'s footprint isn't a 10° square on whole degrees",
+            s.id,
+            f.url
+        );
         out.insert(chm_name(n as i32, w as i32, kind), f.url.clone());
     }
     Ok(out)
@@ -144,11 +158,19 @@ impl LeafSources {
     pub fn of(s: &crate::inputs::sources::Sources) -> Result<LeafSources> {
         use crate::inputs::sources::{LEAF_EUROPE, LEAF_NORTH_AMERICA};
         let bx = |src: &crate::inputs::sources::Source| -> Result<[f64; 4]> {
-            let v: Vec<f64> = src.param("box")?.as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).collect()).unwrap_or_default();
-            <[f64; 4]>::try_from(v).map_err(|_| anyhow::anyhow!("{}: `params.box` isn't four numbers (w, s, e, n)", src.id))
+            let v: Vec<f64> =
+                src.param("box")?.as_array().map(|a| a.iter().filter_map(|x| x.as_f64()).collect()).unwrap_or_default();
+            <[f64; 4]>::try_from(v)
+                .map_err(|_| anyhow::anyhow!("{}: `params.box` isn't four numbers (w, s, e, n)", src.id))
         };
         let (eu, na) = (s.role(LEAF_EUROPE)?, s.role(LEAF_NORTH_AMERICA)?);
-        Ok(LeafSources { europe: eu.url()?.into(), europe_box: bx(eu)?, north_america: na.url()?.into(), north_america_member: [na.param_u64("member_offset")?, na.param_u64("member_size")?], north_america_box: bx(na)? })
+        Ok(LeafSources {
+            europe: eu.url()?.into(),
+            europe_box: bx(eu)?,
+            north_america: na.url()?.into(),
+            north_america_member: [na.param_u64("member_offset")?, na.param_u64("member_size")?],
+            north_america_box: bx(na)?,
+        })
     }
 }
 
@@ -192,7 +214,9 @@ impl Source {
     fn url(&self, name: &str) -> String {
         match self {
             Source::Url(u) => format!("{u}/{name}"),
-            Source::Dir(d) => format!("file://{}", std::path::absolute(d.join(name)).unwrap_or_else(|_| d.join(name)).display()),
+            Source::Dir(d) => {
+                format!("file://{}", std::path::absolute(d.join(name)).unwrap_or_else(|_| d.join(name)).display())
+            }
         }
     }
 }
@@ -276,7 +300,11 @@ fn indices(top: i32, left: i32, res: f64, lon: &[f64], lat: &[f64]) -> Pixels {
         let i = v.floor();
         (i >= 0.0 && i < n).then_some(i as u32)
     };
-    Pixels { n: n as u32, rows: lat.iter().map(|&l| at((top as f64 - l) / res)).collect(), cols: lon.iter().map(|&l| at((l - left as f64) / res)).collect() }
+    Pixels {
+        n: n as u32,
+        rows: lat.iter().map(|&l| at((top as f64 - l) / res)).collect(),
+        cols: lon.iter().map(|&l| at((l - left as f64) / res)).collect(),
+    }
 }
 
 /// The squares' files a run of blocks opens, each once: one block's, or a row's (`blocks`), whose
@@ -294,7 +322,8 @@ struct Files<'a> {
 
 impl<'a> Files<'a> {
     fn new(inp: &'a Inputs<'a>, blocks: usize) -> Files<'a> {
-        let (chm_cache, leaf_cache) = if blocks > 1 { (CHM_ROW_CACHE, LEAF_ROW_CACHE) } else { (CHM_CACHE, LEAF_CACHE) };
+        let (chm_cache, leaf_cache) =
+            if blocks > 1 { (CHM_ROW_CACHE, LEAF_ROW_CACHE) } else { (CHM_CACHE, LEAF_CACHE) };
         Files { inp, raw: BTreeMap::new(), tiffs: BTreeMap::new(), opened: Vec::new(), chm_cache, leaf_cache }
     }
 
@@ -332,7 +361,14 @@ impl<'a> Files<'a> {
 impl Layer {
     /// Block rows `r0..r0 + out.len() / BS` from this square, into `out` (BS a row) where it's still
     /// `fill`, a decoded block's samples as `get` gives them.
-    fn sample<T: Copy + PartialEq>(&self, r0: usize, out: &mut [T], fill: T, get: impl Fn(&crate::geotiff::Block) -> Option<&[T]>, what: &str) -> Result<()> {
+    fn sample<T: Copy + PartialEq>(
+        &self,
+        r0: usize,
+        out: &mut [T],
+        fill: T,
+        get: impl Fn(&crate::geotiff::Block) -> Option<&[T]>,
+        what: &str,
+    ) -> Result<()> {
         let img = self.tiff.level(0)?;
         let (bw, bh) = (img.block_w as usize, img.block_h as usize);
         // The block columns in the square, by the source blocks across holding them.
@@ -447,7 +483,8 @@ pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Resul
     for band in 0..BS / BAND {
         let r0 = band * BAND;
         doing.par_iter_mut().try_for_each(|d| -> Result<()> {
-            let (mut cover, mut height, mut leaf) = (vec![0u16; BAND * BS], vec![0u16; BAND * BS], vec![255u8; BAND * BS]);
+            let (mut cover, mut height, mut leaf) =
+                (vec![0u16; BAND * BS], vec![0u16; BAND * BS], vec![255u8; BAND * BS]);
             for (c, h, l) in &d.src.squares {
                 c.sample(r0, &mut cover, 0, |b| b.u16s(), "canopy cover")?;
                 h.sample(r0, &mut height, 0, |b| b.u16s(), "canopy height")?;
@@ -560,7 +597,8 @@ pub fn assemble(blocks: &[PathBuf], out: &Path, said: &(dyn Fn(u64, u64) + Sync)
             let mut e = a.entries().to_vec();
             e.sort_unstable_by_key(|e| e.offset);
             for e in e {
-                let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+                let (z, x, y) =
+                    ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
                 w.add(&Tile { layer: i as u8, z, x, y, webp: a.get_entry(&e).to_vec() })?;
             }
         }
@@ -580,7 +618,12 @@ pub fn assemble(blocks: &[PathBuf], out: &Path, said: &(dyn Fn(u64, u64) + Sync)
 /// while it waits for the next, runs the pool's other work; it never blocks on a lock while it has
 /// any (a thread of the pool's waiting with work of an item's beneath it would hang the run). An
 /// item that panics fails the run as one that errs.
-fn in_order<T: Send>(n: usize, f: impl Fn(usize) -> Result<T> + Sync, done: impl Fn(usize) + Sync, mut sink: impl FnMut(usize, T) -> Result<()>) -> Result<()> {
+fn in_order<T: Send>(
+    n: usize,
+    f: impl Fn(usize) -> Result<T> + Sync,
+    done: impl Fn(usize) + Sync,
+    mut sink: impl FnMut(usize, T) -> Result<()>,
+) -> Result<()> {
     let threads = rayon::current_num_threads();
     if threads <= 1 {
         for i in 0..n {
@@ -619,7 +662,11 @@ fn in_order<T: Send>(n: usize, f: impl Fn(usize) -> Result<T> + Sync, done: impl
                         }
                         // (A panic as an error: the loop below would wait for its result for ever.)
                         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(k))).unwrap_or_else(|p| {
-                            let why = p.downcast_ref::<String>().map(String::as_str).or_else(|| p.downcast_ref::<&str>().copied()).unwrap_or("a panic");
+                            let why = p
+                                .downcast_ref::<String>()
+                                .map(String::as_str)
+                                .or_else(|| p.downcast_ref::<&str>().copied())
+                                .unwrap_or("a panic");
                             Err(anyhow::anyhow!("item {k} panicked: {why}"))
                         });
                         if r.is_ok() {
@@ -700,14 +747,17 @@ fn begin(a: &Run) -> Result<Begun> {
     for d in [&a.chm, &a.leaf, &a.out] {
         std::fs::create_dir_all(d).with_context(|| d.display().to_string())?;
     }
-    let sources: RunSources = serde_json::from_slice(&std::fs::read(&a.sources).with_context(|| a.sources.display().to_string())?).with_context(|| a.sources.display().to_string())?;
+    let sources: RunSources =
+        serde_json::from_slice(&std::fs::read(&a.sources).with_context(|| a.sources.display().to_string())?)
+            .with_context(|| a.sources.display().to_string())?;
     let text = std::fs::read_to_string(&a.coverage).with_context(|| a.coverage.display().to_string())?;
     let shapes = mask::Shapes::parse(&text).with_context(|| a.coverage.display().to_string())?;
     let (z, x, y) = a.tile;
     ensure!(z == 3 || z == 6, "a run is of a z3 or a z6 tile, not zoom {z}");
     let blocks = blocks_of(&shapes, z, x, y);
     // The canopy squares they touch, fetched when missing, and their leaf types.
-    let mut want: Vec<(i32, i32)> = blocks.iter().flat_map(|&(bx, by)| squares_of(tile_bounds(ZBLOCK, bx, by))).collect();
+    let mut want: Vec<(i32, i32)> =
+        blocks.iter().flat_map(|&(bx, by)| squares_of(tile_bounds(ZBLOCK, bx, by))).collect();
     want.sort_unstable();
     want.dedup();
     let mut sqs = Vec::new();
@@ -725,15 +775,32 @@ fn begin(a: &Run) -> Result<Begun> {
     let p = phase("leaf-type squares made", Class::Mixed);
     squares::leaf_types(&sqs, &a.leaf, &a.dem, &sources.leaf, &a.sources)?;
     drop(p);
-    eprintln!("trees z{z} {x},{y}: {} zoom-8 blocks, {} canopy squares ({:.0} s)", blocks.len(), sqs.len(), t0.elapsed().as_secs_f64());
+    eprintln!(
+        "trees z{z} {x},{y}: {} zoom-8 blocks, {} canopy squares ({:.0} s)",
+        blocks.len(),
+        sqs.len(),
+        t0.elapsed().as_secs_f64()
+    );
     Ok((shapes, blocks, sqs))
 }
 
 /// Every one of `blocks` (on rayon's threads), its squares in `a`'s folders (`sqs` there), given to
 /// `sink` in order as it's made, how many are made said.
-fn each_block(a: &Run, shapes: &mask::Shapes, blocks: &[(u32, u32)], sqs: Vec<(i32, i32)>, mut sink: impl FnMut((u32, u32), BlockOut) -> Result<()>) -> Result<()> {
+fn each_block(
+    a: &Run,
+    shapes: &mask::Shapes,
+    blocks: &[(u32, u32)],
+    sqs: Vec<(i32, i32)>,
+    mut sink: impl FnMut((u32, u32), BlockOut) -> Result<()>,
+) -> Result<()> {
     let fetch = crate::fetch::MapFetch::default();
-    let inp = Inputs { chm: Source::Dir(a.chm.clone()), leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
+    let inp = Inputs {
+        chm: Source::Dir(a.chm.clone()),
+        leaf: Source::Dir(a.leaf.clone()),
+        fetch: &fetch,
+        record: None,
+        there: Some(sqs),
+    };
     // (Said before the first block is back, so the stage before's last line isn't shown meanwhile.)
     crate::agent::jobs::report(0, blocks.len() as u64, "zoom-8 blocks");
     let finished = std::sync::atomic::AtomicUsize::new(0);
@@ -805,17 +872,37 @@ pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[us
 
 /// `z6_with`'s blocks once begun (`begin`: the coverage's `shapes`, the `blocks` they meet, the
 /// canopy squares there `sqs`), its run begun at `t0`.
-pub fn z6_blocks(a: &Run, shapes: &mask::Shapes, blocks: &[(u32, u32)], sqs: Vec<(i32, i32)>, offload: Option<&crate::offload::Offload>, t0: std::time::Instant) -> Result<[usize; 3]> {
+pub fn z6_blocks(
+    a: &Run,
+    shapes: &mask::Shapes,
+    blocks: &[(u32, u32)],
+    sqs: Vec<(i32, i32)>,
+    offload: Option<&crate::offload::Offload>,
+    t0: std::time::Instant,
+) -> Result<[usize; 3]> {
     use crate::timings::{phase, Class};
     let coverage = std::fs::read_to_string(&a.coverage).with_context(|| a.coverage.display().to_string())?;
     let p = phase("rows of blocks offered to other workers", Class::Net);
-    let offers = task::Offers::offer(offload, (a.tile.1, a.tile.2), &coverage, blocks, &sqs, &a.out.join("offload").join("results"));
+    let offers = task::Offers::offer(
+        offload,
+        (a.tile.1, a.tile.2),
+        &coverage,
+        blocks,
+        &sqs,
+        &a.out.join("offload").join("results"),
+    );
     drop(p);
     // (Made here on rayon's threads, others' taken in their turn, and written as they come: one
     // phase.)
     let p = phase("zoom-8 blocks made (some by other workers)", Class::Compute);
     let fetch = crate::fetch::MapFetch::default();
-    let inp = Inputs { chm: Source::Dir(a.chm.clone()), leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
+    let inp = Inputs {
+        chm: Source::Dir(a.chm.clone()),
+        leaf: Source::Dir(a.leaf.clone()),
+        fetch: &fetch,
+        record: None,
+        there: Some(sqs),
+    };
     let here = task::here_run(shapes, &inp);
     let mut w = Writers::create(&a.out)?;
     let mut mid: MidBlocks = BTreeMap::new();
@@ -886,11 +973,22 @@ pub fn write_mid(path: &Path, tile: (u32, u32), blocks: &MidBlocks) -> Result<()
     let tmp = path.with_extension("sect.tmp");
     let mut w = store::sect::SectWriter::create(&tmp, meta)?;
     for (&(x, y), (z8, tops)) in blocks {
-        ensure!((x >> (ZBLOCK - 6), y >> (ZBLOCK - 6)) == tile, "block 8/{x}/{y} isn't in z6 tile 6/{}/{}", tile.0, tile.1);
+        ensure!(
+            (x >> (ZBLOCK - 6), y >> (ZBLOCK - 6)) == tile,
+            "block 8/{x}/{y} isn't in z6 tile 6/{}/{}",
+            tile.0,
+            tile.1
+        );
         let mut z8: Vec<&Tile> = z8.iter().collect();
         z8.sort_by_key(|t| t.layer);
         for t in z8 {
-            ensure!((t.z, t.x, t.y) == (ZBLOCK, x, y), "a zoom-8 tile of block 8/{x}/{y} that's {}/{}/{}", t.z, t.x, t.y);
+            ensure!(
+                (t.z, t.x, t.y) == (ZBLOCK, x, y),
+                "a zoom-8 tile of block 8/{x}/{y} that's {}/{}/{}",
+                t.z,
+                t.x,
+                t.y
+            );
             w.add(&format!("{}-8-{x}-{y}", LAYERS[t.layer as usize]), &t.webp)?;
         }
         ensure!(Tops::block_of(tops)? == (x, y), "block 8/{x}/{y}'s zoom-8 values are another block's");
@@ -907,8 +1005,18 @@ pub fn read_mid(path: &Path) -> Result<Mid> {
     let r = store::sect::SectReader::open(PlainFile::open(path).with_context(what)?).with_context(what)?;
     let m = r.meta();
     ensure!(m["fmt"].as_u64() == Some(MID_FMT) && m["step"] == "trees", "{}: not a tree cover mid", what());
-    ensure!(m["v"].as_u64() == Some(crate::treepacks::TREES_V as u64), "{}: a mid of tree cover version {}, not {}", what(), m["v"], crate::treepacks::TREES_V);
-    let tile = m["tile"].as_str().and_then(crate::legacy::Unit::parse).filter(|u| u.z == 6).with_context(|| format!("{}: no z6 tile", what()))?;
+    ensure!(
+        m["v"].as_u64() == Some(crate::treepacks::TREES_V as u64),
+        "{}: a mid of tree cover version {}, not {}",
+        what(),
+        m["v"],
+        crate::treepacks::TREES_V
+    );
+    let tile = m["tile"]
+        .as_str()
+        .and_then(crate::legacy::Unit::parse)
+        .filter(|u| u.z == 6)
+        .with_context(|| format!("{}: no z6 tile", what()))?;
     let mut out = Mid { tile: (tile.x, tile.y), z8: Vec::new(), tops: BTreeMap::new() };
     for s in r.sections() {
         let parts: Vec<&str> = s.name.split('-').collect();
@@ -923,7 +1031,10 @@ pub fn read_mid(path: &Path) -> Result<Mid> {
             ensure!(Tops::block_of(&bytes)? == (x, y), "{}: {}'s values are another block's", what(), s.name);
             out.tops.insert((x, y), bytes);
         } else {
-            let layer = LAYERS.iter().position(|l| *l == kind).with_context(|| format!("{}: a section {:?}", what(), s.name))?;
+            let layer = LAYERS
+                .iter()
+                .position(|l| *l == kind)
+                .with_context(|| format!("{}: a section {:?}", what(), s.name))?;
             out.z8.push(Tile { layer: layer as u8, z: ZBLOCK, x, y, webp: bytes });
         }
     }
@@ -948,7 +1059,14 @@ pub fn assemble_lo(mids: &[PathBuf], out: &Path, said: &(dyn Fn(u64, u64) + Sync
         }
         let q = |t: (u32, u32)| (t.0 >> 3, t.1 >> 3);
         if let Some((first, _)) = tiles.first_key_value() {
-            ensure!(q(*first) == q(m.tile), "mids of z3 tiles 3/{}/{} and 3/{}/{}", q(*first).0, q(*first).1, q(m.tile).0, q(m.tile).1);
+            ensure!(
+                q(*first) == q(m.tile),
+                "mids of z3 tiles 3/{}/{} and 3/{}/{}",
+                q(*first).0,
+                q(*first).1,
+                q(m.tile).0,
+                q(m.tile).1
+            );
         }
         z8.extend(m.z8);
         tops.extend(m.tops);

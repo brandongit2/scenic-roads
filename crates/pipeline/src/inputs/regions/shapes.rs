@@ -21,7 +21,10 @@ fn ring_of(v: &Value, at: &str) -> Result<Ring> {
     let pts = v.as_array().with_context(|| format!("{at}: a ring is a list of positions"))?;
     let mut r: Ring = Vec::with_capacity(pts.len());
     for (i, p) in pts.iter().enumerate() {
-        let a = p.as_array().filter(|a| a.len() >= 2).with_context(|| format!("{at}, position {i}: [longitude, latitude]"))?;
+        let a = p
+            .as_array()
+            .filter(|a| a.len() >= 2)
+            .with_context(|| format!("{at}, position {i}: [longitude, latitude]"))?;
         let (Some(x), Some(y)) = (e7(&a[0]), e7(&a[1])) else { bail!("{at}, position {i}: not numbers") };
         if !(-1_800_000_000..=1_800_000_000).contains(&x) || !(-900_000_000..=900_000_000).contains(&y) {
             bail!("{at}, position {i}: outside longitude −180…180, latitude −90…90 (longitude first)");
@@ -56,7 +59,9 @@ fn geometry_of(g: &Value, at: &str, out: &mut Polys) -> Result<()> {
     match kind {
         "Polygon" => out.push(polygon_of(coords.with_context(|| format!("{at}: no coordinates"))?, at)?),
         "MultiPolygon" => {
-            let ps = coords.and_then(Value::as_array).with_context(|| format!("{at}: a MultiPolygon's coordinates are a list of polygons"))?;
+            let ps = coords
+                .and_then(Value::as_array)
+                .with_context(|| format!("{at}: a MultiPolygon's coordinates are a list of polygons"))?;
             for (k, p) in ps.iter().enumerate() {
                 out.push(polygon_of(p, &format!("{at}, polygon {k}"))?);
             }
@@ -74,11 +79,16 @@ pub fn read(bytes: &[u8]) -> Result<Polys> {
         Some("FeatureCollection") => {
             let fs = v.get("features").and_then(Value::as_array).context("a FeatureCollection without features")?;
             for (i, f) in fs.iter().enumerate() {
-                let g = f.get("geometry").filter(|g| !g.is_null()).with_context(|| format!("feature {i}: no geometry"))?;
+                let g =
+                    f.get("geometry").filter(|g| !g.is_null()).with_context(|| format!("feature {i}: no geometry"))?;
                 geometry_of(g, &format!("feature {i}"), &mut out)?;
             }
         }
-        Some("Feature") => geometry_of(v.get("geometry").filter(|g| !g.is_null()).context("a Feature without geometry")?, "the feature", &mut out)?,
+        Some("Feature") => geometry_of(
+            v.get("geometry").filter(|g| !g.is_null()).context("a Feature without geometry")?,
+            "the feature",
+            &mut out,
+        )?,
         Some(_) => geometry_of(&v, "the geometry", &mut out)?,
         None => bail!("not GeoJSON (no type)"),
     }
@@ -100,7 +110,11 @@ pub fn degrees(v: i64) -> String {
     let (int, frac) = (a / 10_000_000, a % 10_000_000);
     let f = format!("{frac:07}");
     let f = f.trim_end_matches('0');
-    if f.is_empty() { format!("{sign}{int}") } else { format!("{sign}{int}.{f}") }
+    if f.is_empty() {
+        format!("{sign}{int}")
+    } else {
+        format!("{sign}{int}.{f}")
+    }
 }
 
 /// A `.poly` file's rings (Osmosis's polygon format): each section a ring, `!`-prefixed sections
@@ -115,25 +129,33 @@ pub fn read_poly(text: &str) -> Result<Vec<Vec<[i32; 2]>>> {
 pub fn from_poly(rings: &[Vec<[i32; 2]>], properties: &serde_json::Map<String, Value>) -> String {
     let mut polys = Vec::new();
     for r in rings {
-        let mut pts: Vec<String> = r.iter().map(|p| format!("[{},{}]", degrees(p[0] as i64), degrees(p[1] as i64))).collect();
+        let mut pts: Vec<String> =
+            r.iter().map(|p| format!("[{},{}]", degrees(p[0] as i64), degrees(p[1] as i64))).collect();
         if r.first() != r.last() {
             pts.push(pts[0].clone());
         }
         polys.push(format!("[[{}]]", pts.join(",")));
     }
-    format!("{{\"type\":\"Feature\",\"properties\":{},\"geometry\":{{\"type\":\"MultiPolygon\",\"coordinates\":[{}]}}}}\n", Value::Object(properties.clone()), polys.join(","))
+    format!(
+        "{{\"type\":\"Feature\",\"properties\":{},\"geometry\":{{\"type\":\"MultiPolygon\",\"coordinates\":[{}]}}}}\n",
+        Value::Object(properties.clone()),
+        polys.join(",")
+    )
 }
 
 /// A `.poly`'s rings as a plain `shape:` part stores them: unclosed (a ring's closing point, when
 /// the `.poly` repeats it, dropped), E7.
 pub fn poly_rings_unclosed(rings: &[Vec<[i32; 2]>]) -> Vec<Ring> {
-    rings.iter().map(|r| {
-        let mut v: Ring = r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect();
-        if v.len() > 1 && v.first() == v.last() {
-            v.pop();
-        }
-        v
-    }).collect()
+    rings
+        .iter()
+        .map(|r| {
+            let mut v: Ring = r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect();
+            if v.len() > 1 && v.first() == v.last() {
+                v.pop();
+            }
+            v
+        })
+        .collect()
 }
 
 /// The E7 rings as `i32` (every shape file's point is within ±180°, ±90°).
@@ -150,12 +172,18 @@ mod tests {
         let f = br#"{"type": "Feature", "properties": {"source": "drawn"},
             "geometry": {"type": "Polygon", "coordinates": [[[-8.2, 41.1], [-8.0, 41.1], [-8.0, 41.3], [-8.2, 41.1]]]}}"#;
         let p = read(f).unwrap();
-        assert_eq!(p, vec![vec![vec![[-82_000_000, 411_000_000], [-80_000_000, 411_000_000], [-80_000_000, 413_000_000]]]]);
+        assert_eq!(
+            p,
+            vec![vec![vec![[-82_000_000, 411_000_000], [-80_000_000, 411_000_000], [-80_000_000, 413_000_000]]]]
+        );
         let bad = |s: &str| read(s.as_bytes()).unwrap_err().to_string();
         assert!(bad(r#"{"type": "Point", "coordinates": [1, 2]}"#).contains("not a Polygon"));
-        assert!(bad(r#"{"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1]]]}"#).contains("isn't closed"));
+        assert!(
+            bad(r#"{"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1]]]}"#).contains("isn't closed")
+        );
         assert!(bad(r#"{"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [0, 0]]]}"#).contains("at least four"));
-        assert!(bad(r#"{"type": "Polygon", "coordinates": [[[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]]}"#).contains("crosses itself"));
+        assert!(bad(r#"{"type": "Polygon", "coordinates": [[[0, 0], [1, 1], [1, 0], [0, 1], [0, 0]]]}"#)
+            .contains("crosses itself"));
         assert!(bad("[1, 2").contains("not JSON"));
         // A collection's polygons, each of its features'.
         let c = br#"{"type": "FeatureCollection", "features": [
@@ -163,7 +191,10 @@ mod tests {
             {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[5, 0], [6, 0], [6, 1], [5, 0]]]}}]}"#;
         assert_eq!(read(c).unwrap().len(), 3);
         // Across the antimeridian, drawn the short way: not crossing itself.
-        assert!(read(br#"{"type": "Polygon", "coordinates": [[[179, -17], [-179, -17], [-179, -16], [179, -16], [179, -17]]]}"#).is_ok());
+        assert!(read(
+            br#"{"type": "Polygon", "coordinates": [[[179, -17], [-179, -17], [-179, -16], [179, -16], [179, -17]]]}"#
+        )
+        .is_ok());
     }
 
     #[test]

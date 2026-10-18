@@ -79,7 +79,10 @@ pub const TEST_PROXY_TO: &str = "SCENIC_TEST_PROXY_TO";
 pub fn start_proxy(root: &Path, me: &str) -> anyhow::Result<Proxy> {
     #[cfg(not(target_os = "wasi"))]
     {
-        let to: Option<std::net::SocketAddr> = std::env::var(TEST_PROXY_TO).ok().and_then(|a| a.parse().ok()).filter(|a: &std::net::SocketAddr| a.ip().is_loopback());
+        let to: Option<std::net::SocketAddr> = std::env::var(TEST_PROXY_TO)
+            .ok()
+            .and_then(|a| a.parse().ok())
+            .filter(|a: &std::net::SocketAddr| a.ip().is_loopback());
         let resolve: Option<proxy::Resolve> = to.map(|a| Arc::new(move |_: &str, _: u16| Some(a)) as proxy::Resolve);
         Proxy::start(Arc::new(Budget::new(root, me, Arc::new(SysClock))), resolve)
     }
@@ -175,7 +178,21 @@ pub const QUERY_HOSTS: [&str; 3] = ["query.wikidata.org", "query-main.wikidata.o
 pub const QUERY_DOMAINS: [&str; 2] = ["qlever.dev", "qlever.cs.uni-freiburg.de"];
 /// Wikimedia's sites' domains, with their subdomains (`Class::Wiki`). dem/budget.py keeps the same
 /// lists (tests/budgets.rs checks that they're the same).
-pub const WIKIMEDIA: [&str; 13] = ["wikipedia.org", "wikidata.org", "wikimedia.org", "wikimediafoundation.org", "mediawiki.org", "wiktionary.org", "wikibooks.org", "wikinews.org", "wikiquote.org", "wikisource.org", "wikiversity.org", "wikivoyage.org", "wmflabs.org"];
+pub const WIKIMEDIA: [&str; 13] = [
+    "wikipedia.org",
+    "wikidata.org",
+    "wikimedia.org",
+    "wikimediafoundation.org",
+    "mediawiki.org",
+    "wiktionary.org",
+    "wikibooks.org",
+    "wikinews.org",
+    "wikiquote.org",
+    "wikisource.org",
+    "wikiversity.org",
+    "wikivoyage.org",
+    "wmflabs.org",
+];
 
 /// The class a host's connections are metered by (None: not metered).
 pub fn class_of(host: &str) -> Option<Class> {
@@ -304,7 +321,14 @@ pub struct Budget {
 
 impl Budget {
     pub fn new(root: &Path, me: &str, clock: Arc<dyn Clock>) -> Budget {
-        Budget { root: root.to_path_buf(), me: me.to_string(), clock, members: Arc::new(AtomicUsize::new(1)), st: Mutex::new(State::default()), leasing: Mutex::new(()) }
+        Budget {
+            root: root.to_path_buf(),
+            me: me.to_string(),
+            clock,
+            members: Arc::new(AtomicUsize::new(1)),
+            st: Mutex::new(State::default()),
+            leasing: Mutex::new(()),
+        }
     }
 
     /// One that keeps what it gives (`ledger`): the tests'.
@@ -362,7 +386,9 @@ impl Budget {
             // (Another thread may have leased while this one waited: its batch first.)
             {
                 let st = self.state();
-                if self.clock.now_ms() < st.hold_until || st.held.get(&class).is_some_and(|h| h.window == w && h.left > 0) {
+                if self.clock.now_ms() < st.hold_until
+                    || st.held.get(&class).is_some_and(|h| h.window == w && h.left > 0)
+                {
                     continue;
                 }
             }

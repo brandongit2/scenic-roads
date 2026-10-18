@@ -29,18 +29,29 @@ pub struct Cover {
 }
 
 /// The grid's classes by the names a legend gives them (`roadcore::grid::class`).
-const GRID_CLASSES: [(&str, u8); 7] = [("trees", 1), ("shrub", 2), ("open", 3), ("built", 4), ("water", 5), ("wetland", 6), ("snow", 7)];
+const GRID_CLASSES: [(&str, u8); 7] =
+    [("trees", 1), ("shrub", 2), ("open", 3), ("built", 4), ("water", 5), ("wetland", 6), ("snow", 7)];
 
 impl Cover {
     /// The declared land-cover source's (crate::inputs::sources: its `url`, and `params.legend`,
     /// each grid class's source classes).
     pub fn of(s: &crate::inputs::sources::Source) -> Result<Cover> {
-        let legend = s.param("legend")?.as_object().with_context(|| format!("{}: `params.legend` isn't a table", s.id))?;
+        let legend =
+            s.param("legend")?.as_object().with_context(|| format!("{}: `params.legend` isn't a table", s.id))?;
         let mut classes = vec![0u8; 256];
         for (name, codes) in legend {
-            let &(_, c) = GRID_CLASSES.iter().find(|g| g.0 == name).with_context(|| format!("{}: `params.legend.{name}` isn't a grid class ({})", s.id, GRID_CLASSES.map(|g| g.0).join(", ")))?;
+            let &(_, c) = GRID_CLASSES.iter().find(|g| g.0 == name).with_context(|| {
+                format!(
+                    "{}: `params.legend.{name}` isn't a grid class ({})",
+                    s.id,
+                    GRID_CLASSES.map(|g| g.0).join(", ")
+                )
+            })?;
             for v in codes.as_array().with_context(|| format!("{}: `params.legend.{name}` isn't a list", s.id))? {
-                let v = v.as_u64().filter(|v| *v < 256).with_context(|| format!("{}: `params.legend.{name}` holds {v}, not a class of 0–255", s.id))?;
+                let v = v
+                    .as_u64()
+                    .filter(|v| *v < 256)
+                    .with_context(|| format!("{}: `params.legend.{name}` holds {v}, not a class of 0–255", s.id))?;
                 classes[v as usize] = c;
             }
         }
@@ -55,7 +66,13 @@ impl Cover {
 
 /// A 3° tile's name (by its south-west corner): what the template's `{tile}` takes.
 pub fn tile_name(lat0: i64, lon0: i64) -> String {
-    format!("{}{:02}{}{:03}", if lat0 >= 0 { 'N' } else { 'S' }, lat0.abs(), if lon0 >= 0 { 'E' } else { 'W' }, lon0.abs())
+    format!(
+        "{}{:02}{}{:03}",
+        if lat0 >= 0 { 'N' } else { 'S' },
+        lat0.abs(),
+        if lon0 >= 0 { 'E' } else { 'W' },
+        lon0.abs()
+    )
 }
 
 /// The source's tiles, opened as they're needed (None: the open sea, where there's none).
@@ -93,7 +110,14 @@ impl<'a> WorldCover<'a> {
     pub fn classes(&self, tx: u32, ty: u32) -> Result<Vec<u8>> {
         let g = |i: usize| i as f64 + 0.5;
         let lon: Vec<f64> = (0..TS).map(|j| ((tx as u64 * TS as u64) as f64 + g(j)) / WORLD * 360.0 - 180.0).collect();
-        let lat: Vec<f64> = (0..TS).map(|i| (std::f64::consts::PI * (1.0 - 2.0 * ((ty as u64 * TS as u64) as f64 + g(i)) / WORLD)).dsinh().datan().to_degrees()).collect();
+        let lat: Vec<f64> = (0..TS)
+            .map(|i| {
+                (std::f64::consts::PI * (1.0 - 2.0 * ((ty as u64 * TS as u64) as f64 + g(i)) / WORLD))
+                    .dsinh()
+                    .datan()
+                    .to_degrees()
+            })
+            .collect();
         let lat0: Vec<i64> = lat.iter().map(|&v| (v / 3.0).floor() as i64 * 3).collect();
         let lon0: Vec<i64> = lon.iter().map(|&v| (v / 3.0).floor() as i64 * 3).collect();
         let uniq = |v: &[i64]| -> Vec<i64> {
@@ -150,7 +174,8 @@ fn count(cells: &[u8], counts: &mut Counts) {
 pub fn report(counts: &Counts) {
     let names = ["none", "trees", "shrub", "open", "built", "water", "wetland", "snow"];
     let tot = counts.iter().sum::<u64>().max(1);
-    let parts: Vec<String> = names.iter().zip(counts).map(|(n, &c)| format!("'{n}': '{:.1} %'", c as f64 / tot as f64 * 100.0)).collect();
+    let parts: Vec<String> =
+        names.iter().zip(counts).map(|(n, &c)| format!("'{n}': '{:.1} %'", c as f64 / tot as f64 * 100.0)).collect();
     println!("classes: {{{}}}", parts.join(", "));
 }
 
@@ -172,7 +197,12 @@ pub fn only(b: &Path, slots: &[u32], cover: &Cover, fetch: &dyn Fetch, workers: 
             bail!("slot {m} beyond the {} grid tiles", tiles.len());
         }
     }
-    println!("land cover: {} grid tiles, {} from the packs, {} to classify", tiles.len(), tiles.len() as i64 - slots.len() as i64, slots.len());
+    println!(
+        "land cover: {} grid tiles, {} from the packs, {} to classify",
+        tiles.len(),
+        tiles.len() as i64 - slots.len() as i64,
+        slots.len()
+    );
     classify(&WorldCover::new(fetch, cover), &tiles, slots, &mut out, workers)?;
     let tmp = b.join("grid.class.u8.tmp");
     std::fs::write(&tmp, &out)?;
@@ -206,7 +236,12 @@ pub fn full(b: &Path, cover: &Cover, fetch: &dyn Fetch, workers: usize) -> Resul
             }
         }
     }
-    println!("land cover: {} grid tiles, {} from the last run, {} to classify", tiles.len(), tiles.len() - todo.len(), todo.len());
+    println!(
+        "land cover: {} grid tiles, {} from the last run, {} to classify",
+        tiles.len(),
+        tiles.len() - todo.len(),
+        todo.len()
+    );
     classify(&WorldCover::new(fetch, cover), &tiles, &todo, &mut out, workers)?;
     let tmp = b.join("grid.class.u8.tmp");
     std::fs::write(&tmp, &out)?;
@@ -223,10 +258,12 @@ fn classify(wc: &WorldCover, tiles: &[[u32; 2]], slots: &[u32], out: &mut [u8], 
     let want: std::collections::BTreeSet<u32> = slots.iter().copied().collect();
     let pool = rayon::ThreadPoolBuilder::new().num_threads(workers.max(1)).build().ok();
     crate::dem::sample::within(pool.as_ref(), || {
-        out.par_chunks_mut(CELLS).enumerate().filter(|(s, _)| want.contains(&(*s as u32))).try_for_each(|(s, cells)| -> Result<()> {
-            cells.copy_from_slice(&wc.classes(tiles[s][0], tiles[s][1])?);
-            Ok(())
-        })
+        out.par_chunks_mut(CELLS).enumerate().filter(|(s, _)| want.contains(&(*s as u32))).try_for_each(
+            |(s, cells)| -> Result<()> {
+                cells.copy_from_slice(&wc.classes(tiles[s][0], tiles[s][1])?);
+                Ok(())
+            },
+        )
     })
 }
 
@@ -251,7 +288,9 @@ mod tests {
             assert_eq!(c.url(&t), format!("https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_{t}_Map.tif"));
         }
         let mut lut = [0u8; 256];
-        for (v, g) in [(10, 1), (95, 1), (20, 2), (30, 3), (40, 3), (60, 3), (100, 3), (50, 4), (80, 5), (90, 6), (70, 7)] {
+        for (v, g) in
+            [(10, 1), (95, 1), (20, 2), (30, 3), (40, 3), (60, 3), (100, 3), (50, 4), (80, 5), (90, 6), (70, 7)]
+        {
             lut[v] = g;
         }
         assert_eq!(c.classes, lut);
@@ -268,7 +307,11 @@ mod tests {
         let o = Opts { tile: Some(128), compression: 8, kind: (1, 8), ..Opts::default() };
         let (b, _) = make_images(&sizes, o, gt, Some("0"), &|k, x, _y, _| {
             let lon = -69.0 + (x as f64 + 0.5) * 0.0025 * (1u32 << k) as f64;
-            if lon < -67.6 { 10.0 } else { 80.0 }
+            if lon < -67.6 {
+                10.0
+            } else {
+                80.0
+            }
         });
         let mut m = MapFetch::default();
         m.0.insert(url("N45W069"), Some(b));

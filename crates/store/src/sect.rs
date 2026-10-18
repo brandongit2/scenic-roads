@@ -5,13 +5,13 @@
 
 use crate::naming::xxh3;
 use crate::range::{Mapped, RangeRead};
+use crate::sys::PosIo;
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use bytemuck::{Pod, Zeroable};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
-use crate::sys::PosIo;
 use std::path::Path;
 use xxhash_rust::xxh3::Xxh3Default;
 
@@ -52,7 +52,10 @@ pub struct Section {
 }
 
 fn check_name(name: &str) -> Result<()> {
-    ensure!(!name.is_empty() && name.len() <= NAME_LEN && !name.contains('\0'), "bad section name {name:?} (1–{NAME_LEN} bytes, no NUL)");
+    ensure!(
+        !name.is_empty() && name.len() <= NAME_LEN && !name.contains('\0'),
+        "bad section name {name:?} (1–{NAME_LEN} bytes, no NUL)"
+    );
     Ok(())
 }
 
@@ -99,7 +102,13 @@ impl SectWriter {
         w.write_all(&0u64.to_le_bytes())?; // table offset, set by finish
         w.write_all(&mlen.to_le_bytes())?;
         w.write_all(&meta)?;
-        Ok(Self { w, pos: (HEADER_LEN + meta.len()) as u64, sections: Vec::new(), names: HashSet::new(), failed: false })
+        Ok(Self {
+            w,
+            pos: (HEADER_LEN + meta.len()) as u64,
+            sections: Vec::new(),
+            names: HashSet::new(),
+            failed: false,
+        })
     }
 
     /// Adds a section holding `bytes`.
@@ -176,7 +185,11 @@ pub struct SectReader<R> {
 
 impl<R> std::fmt::Debug for SectReader<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SectReader").field("version", &self.version).field("meta", &self.meta).field("sections", &self.sections).finish_non_exhaustive()
+        f.debug_struct("SectReader")
+            .field("version", &self.version)
+            .field("meta", &self.meta)
+            .field("sections", &self.sections)
+            .finish_non_exhaustive()
     }
 }
 
@@ -188,7 +201,10 @@ impl<R: RangeRead> SectReader<R> {
         let first = src.read_at(0, file_len.min(FIRST_READ) as usize)?;
         ensure!(&first[..8] == MAGIC, "not a sectioned file");
         let version = u32::from_le_bytes(first[8..12].try_into()?);
-        ensure!((MIN_VERSION..=VERSION).contains(&version), "sectioned file version {version} isn't supported (this app reads {MIN_VERSION}–{VERSION})");
+        ensure!(
+            (MIN_VERSION..=VERSION).contains(&version),
+            "sectioned file version {version} isn't supported (this app reads {MIN_VERSION}–{VERSION})"
+        );
         let count = u32::from_le_bytes(first[12..16].try_into()?) as u64;
         let table = u64::from_le_bytes(first[16..24].try_into()?);
         let data_start = (HEADER_LEN + u32::from_le_bytes(first[24..28].try_into()?) as usize) as u64;
@@ -222,7 +238,9 @@ impl<R: RangeRead> SectReader<R> {
             check_name(&name)?;
             ensure!(names.insert(name.clone()), "section {name:?} appears twice");
             ensure!(
-                r.offset.is_multiple_of(ALIGN) && r.offset >= data_start && r.offset.checked_add(r.len).is_some_and(|e| e <= table),
+                r.offset.is_multiple_of(ALIGN)
+                    && r.offset >= data_start
+                    && r.offset.checked_add(r.len).is_some_and(|e| e <= table),
                 "section {name:?} is out of place"
             );
             sections.push(Section { name, offset: r.offset, len: r.len, hash: r.hash });
@@ -267,14 +285,22 @@ impl<R: RangeRead> SectReader<R> {
     /// A whole section as records, checked.
     pub fn read_pod<T: Pod>(&self, name: &str) -> Result<Vec<T>> {
         let b = self.read(name)?;
-        ensure!(b.len() % std::mem::size_of::<T>().max(1) == 0, "section {name:?} isn't a whole number of {}-byte records", std::mem::size_of::<T>());
+        ensure!(
+            b.len() % std::mem::size_of::<T>().max(1) == 0,
+            "section {name:?} isn't a whole number of {}-byte records",
+            std::mem::size_of::<T>()
+        );
         Ok(bytemuck::pod_collect_to_vec(&b))
     }
 
     /// `len` bytes from `start` within a section (not checksummed: only whole sections can be).
     pub fn read_part(&self, name: &str, start: u64, len: usize) -> Result<Vec<u8>> {
         let s = self.need(name)?;
-        ensure!(start.checked_add(len as u64).is_some_and(|e| e <= s.len), "bytes {start}..+{len} are outside section {name:?} ({} bytes)", s.len);
+        ensure!(
+            start.checked_add(len as u64).is_some_and(|e| e <= s.len),
+            "bytes {start}..+{len} are outside section {name:?} ({} bytes)",
+            s.len
+        );
         Ok(self.src.read_at(s.offset + start, len)?)
     }
 
@@ -298,7 +324,8 @@ impl<R: RangeRead + Mapped> SectReader<R> {
     /// A section as records, in place (not checksummed; see `verify`).
     pub fn cast<T: Pod>(&self, name: &str) -> Result<&[T]> {
         let b = self.slice(name).ok_or_else(|| anyhow!("no section {name:?}"))?;
-        bytemuck::try_cast_slice(b).map_err(|e| anyhow!("section {name:?} as {}-byte records: {e:?}", std::mem::size_of::<T>()))
+        bytemuck::try_cast_slice(b)
+            .map_err(|e| anyhow!("section {name:?} as {}-byte records: {e:?}", std::mem::size_of::<T>()))
     }
 
     /// Checks every section against its XXH3.

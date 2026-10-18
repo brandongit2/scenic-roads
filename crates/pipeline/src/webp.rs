@@ -26,7 +26,12 @@ pub fn encode_rgb_regions(rgb: &[u8], w: u32, h: u32, rbits: u32) -> Vec<u8> {
     assert!((2..=9).contains(&rbits));
     // (16383 a side at most: libwebp's limit, and Safari's decoder fails on more.)
     assert!((1..=16383).contains(&w) && (1..=16383).contains(&h) && rgb.len() == w as usize * h as usize * 3);
-    let px: Vec<u32> = rgb.as_chunks::<3>().0.iter().map(|p| 0xff00_0000 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32).collect();
+    let px: Vec<u32> = rgb
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|p| 0xff00_0000 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32)
+        .collect();
     let mut b = Bits::default();
     b.put(0x2f, 8);
     b.put(w - 1, 14);
@@ -115,7 +120,8 @@ fn indexed(b: &mut Bits, px: &[u32], w: usize, h: usize, pal: &[u32]) -> Image {
     b.put(1, 1);
     b.put(3, 2);
     b.put(pal.len() as u32 - 1, 8);
-    let deltas: Vec<u32> = pal.iter().enumerate().map(|(i, &c)| if i == 0 { c } else { sub_pixels(c, pal[i - 1]) }).collect();
+    let deltas: Vec<u32> =
+        pal.iter().enumerate().map(|(i, &c)| if i == 0 { c } else { sub_pixels(c, pal[i - 1]) }).collect();
     entropy_coded(b, &Image { px: deltas, w: pal.len(), h: 1 }, None);
     let xbits = match pal.len() {
         0..=2 => 3,
@@ -146,7 +152,8 @@ fn sub_pixels(a: u32, b: u32) -> u32 {
 /// n · log2(n), from a table up to 2^16.
 fn nlog2(n: u64) -> f64 {
     static TABLE: std::sync::OnceLock<Vec<f64>> = std::sync::OnceLock::new();
-    let t = TABLE.get_or_init(|| (0..=1u64 << 16).map(|v| if v < 2 { 0.0 } else { v as f64 * (v as f64).dlog2() }).collect());
+    let t = TABLE
+        .get_or_init(|| (0..=1u64 << 16).map(|v| if v < 2 { 0.0 } else { v as f64 * (v as f64).dlog2() }).collect());
     match t.get(n as usize) {
         Some(&v) => v,
         None => n as f64 * (n as f64).dlog2(),
@@ -239,10 +246,12 @@ fn lz77(px: &[u32], w: usize, cost: Option<&Costs>) -> Vec<Sym> {
     };
     // (The bits of the pixels before each as literals.)
     let lit: Vec<u32> = match cost {
-        Some(c) => std::iter::once(0).chain(px.iter().scan(0u32, |a, &p| {
-            *a += c.lit(p);
-            Some(*a)
-        })).collect(),
+        Some(c) => std::iter::once(0)
+            .chain(px.iter().scan(0u32, |a, &p| {
+                *a += c.lit(p);
+                Some(*a)
+            }))
+            .collect(),
         None => Vec::new(),
     };
     let worth = |i: usize, l: usize, d: usize| match cost {
@@ -455,7 +464,8 @@ fn entropy_coded(b: &mut Bits, img: &Image, meta: Option<u32>) {
     }
     let mut i = 0;
     for &s in &syms {
-        let g = if groups.len() > 1 { of_region[((i / img.w) >> rbits) * rw + ((i % img.w) >> rbits)] as usize } else { 0 };
+        let g =
+            if groups.len() > 1 { of_region[((i / img.w) >> rbits) * rw + ((i % img.w) >> rbits)] as usize } else { 0 };
         let c = &codes[g];
         match s {
             Sym::Lit(p) => {
@@ -601,7 +611,9 @@ impl Code {
             b.put(cl.lens[k] as u32, 3);
         }
         // Trailing zero lengths left out (`max_symbol`: the tokens written), where that's shorter.
-        let bits = |ts: &[(u8, u32)]| -> u32 { ts.iter().map(|t| if cl.n > 1 { cl.lens[t.0 as usize] as u32 } else { 0 } + [2, 3, 7].get((t.0 as usize).wrapping_sub(16)).copied().unwrap_or(0)).sum() };
+        let bits = |ts: &[(u8, u32)]| -> u32 {
+            ts.iter().map(|t| if cl.n > 1 { cl.lens[t.0 as usize] as u32 } else { 0 } + [2, 3, 7].get((t.0 as usize).wrapping_sub(16)).copied().unwrap_or(0)).sum()
+        };
         let last = tokens.iter().rposition(|t| !matches!(t.0, 0 | 17 | 18)).map_or(0, |p| p + 1);
         let pairs = if last >= 2 { (32 - ((last - 2) as u32).leading_zeros()).div_ceil(2).max(1) } else { 0 };
         let toks = if last >= 2 && 3 + 2 * pairs + bits(&tokens[..last]) < bits(&tokens) {
@@ -763,7 +775,8 @@ mod tests {
         let mut out = vec![0u8; d.output_buffer_size().unwrap()];
         d.read_image(&mut out).unwrap();
         let (w, h) = d.dimensions();
-        let rgb = if d.has_alpha() { out.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect() } else { out };
+        let rgb =
+            if d.has_alpha() { out.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect() } else { out };
         (w, h, rgb)
     }
 

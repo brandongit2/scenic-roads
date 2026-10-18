@@ -132,7 +132,14 @@ pub(crate) fn stored(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u32, he
 }
 
 /// A tile made here, cached per catalog generation; failures aren't kept.
-fn made(cache: &'static OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>>, g: u64, z: u8, x: u32, y: u32, make: impl FnOnce() -> anyhow::Result<Vec<u8>>) -> Got {
+fn made(
+    cache: &'static OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>>,
+    g: u64,
+    z: u8,
+    x: u32,
+    y: u32,
+    make: impl FnOnce() -> anyhow::Result<Vec<u8>>,
+) -> Got {
     let cache = cache.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(b) = cache.lock().unwrap().get(&(z, x, y, g)) {
         return Got::Made(b.clone());
@@ -155,17 +162,26 @@ fn made(cache: &'static OnceLock<Mutex<HashMap<(u8, u32, u32, u64), Vec<u8>>>>, 
 
 /// A terrain tile; `?floor=1`: with the floor under the water (crate::depth::terrain_floor_png),
 /// where the catalog has depth (else the terrain as it is).
-pub async fn terrain_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+pub async fn terrain_tile(
+    State(s): State<S>,
+    Path((z, x, y)): Path<(u8, u32, u32)>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
     let v = versioned(q.as_deref());
     let floor = q.as_deref().is_some_and(|q| q.split('&').any(|kv| kv == "floor=1"));
     let got = tokio::task::spawn_blocking(move || {
         if floor && s.data.catalog().layers.contains_key(pipeline::depth::LAYER) {
-            return made(&FLOOR, gen(&s), z, x, y, || Ok(crate::depth::terrain_floor_png(&s, z, x, y)?.unwrap_or_else(flat)));
+            return made(&FLOOR, gen(&s), z, x, y, || {
+                Ok(crate::depth::terrain_floor_png(&s, z, x, y)?.unwrap_or_else(flat))
+            });
         }
         if let Some(g) = stored(&s, "terrain", z, x, y, &headers) {
             return g;
         }
-        made(&SYNTH, gen(&s), z, x, y, || Ok(terrain_f32(&s, z, x, y)?.and_then(|e| encode_terrain_png(&e, 256, 256).ok()).unwrap_or_else(flat)))
+        made(&SYNTH, gen(&s), z, x, y, || {
+            Ok(terrain_f32(&s, z, x, y)?.and_then(|e| encode_terrain_png(&e, 256, 256).ok()).unwrap_or_else(flat))
+        })
     })
     .await
     .unwrap_or(Got::Failed);
@@ -221,9 +237,15 @@ pub fn slope_png(s: &crate::AppState, z: u8, x: u32, y: u32) -> anyhow::Result<O
     Ok(roadcore::slope::encode_slope4(&q, 256, 256).ok())
 }
 
-pub async fn slope_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+pub async fn slope_tile(
+    State(s): State<S>,
+    Path((z, x, y)): Path<(u8, u32, u32)>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
     let v = versioned(q.as_deref());
-    let flat = || FLAT_SLOPE.get_or_init(|| roadcore::slope::encode_slope4(&vec![[0.0; 4]; 65536], 256, 256).unwrap()).clone();
+    let flat =
+        || FLAT_SLOPE.get_or_init(|| roadcore::slope::encode_slope4(&vec![[0.0; 4]; 65536], 256, 256).unwrap()).clone();
     let got = tokio::task::spawn_blocking(move || {
         if let Some(g) = stored(&s, "slope", z, x, y, &headers) {
             return g;

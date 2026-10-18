@@ -1,0 +1,10 @@
+# The workspace's rustfmt style (task #268); run it before committing. Stable options only, so it
+# works on the pinned toolchain (rust-toolchain.toml).
+
+# 120 columns keeps code fairly dense while fitting a side-by-side diff (measured on the first
+# reformat: 100 columns added ~20k more lines, and the defaults ~40k more).
+max_width = 120
+
+# "Max" lets calls, struct literals, arrays and chains stay on one line up to max_width instead of
+# breaking at the narrower default sub-widths: the biggest cut in added lines.
+use_small_heuristics = "Max"

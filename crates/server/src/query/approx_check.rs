@@ -46,7 +46,9 @@ struct Tiles {
 }
 
 fn load() -> Tiles {
-    let dir = std::env::var("SCENIC_HIDATA").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap()).join("Library/Application Support/scenic/mirror/hidata"));
+    let dir = std::env::var("SCENIC_HIDATA").map(PathBuf::from).unwrap_or_else(|_| {
+        PathBuf::from(std::env::var("HOME").unwrap()).join("Library/Application Support/scenic/mirror/hidata")
+    });
     // The newest file of each tile ("6-x-y.<hash>.sect").
     let mut newest: BTreeMap<(u32, u32), (std::time::SystemTime, PathBuf)> = BTreeMap::new();
     for e in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())).flatten() {
@@ -61,7 +63,8 @@ fn load() -> Tiles {
             newest.insert((x, y), (t, e.path()));
         }
     }
-    let mut out = Tiles { exact: BTreeMap::new(), roads: BTreeMap::new(), rail: BTreeMap::new(), q_bytes: 0, l_bytes: (0, 0) };
+    let mut out =
+        Tiles { exact: BTreeMap::new(), roads: BTreeMap::new(), rail: BTreeMap::new(), q_bytes: 0, l_bytes: (0, 0) };
     for ((x, y), (_, path)) in newest {
         let f = std::fs::File::open(&path).unwrap();
         // SAFETY: the mirror's files aren't changed while mapped (content-named, replaced whole).
@@ -72,7 +75,10 @@ fn load() -> Tiles {
         let ri: &[RailInfo] = ri.cast();
         let ls = lsum::build(q.parts(), q.psamples(), q.pch(), q.here(), ri);
         let names = if ri.is_empty() { Vec::new() } else { hv.rail_names().unwrap().as_ref().clone() };
-        out.q_bytes += std::mem::size_of_val(q.here()) + std::mem::size_of_val(q.parts()) + std::mem::size_of_val(q.psamples()) + std::mem::size_of_val(q.pch());
+        out.q_bytes += std::mem::size_of_val(q.here())
+            + std::mem::size_of_val(q.parts())
+            + std::mem::size_of_val(q.psamples())
+            + std::mem::size_of_val(q.pch());
         out.l_bytes.0 += std::mem::size_of_val(&ls.lparts[..]) + std::mem::size_of_val(&ls.lbins[..]);
         out.l_bytes.1 += std::mem::size_of_val(&ls.lrparts[..]) + std::mem::size_of_val(&ls.lrbins[..]);
         out.roads.insert((x, y), LTile::from_records(&ls.lparts, &ls.lbins, &[], Vec::new()));
@@ -186,7 +192,16 @@ fn approx_vs_exact() {
     let freqs: Vec<(u32, f32)> = std::env::var("RAILFREQ")
         .ok()
         .and_then(|p| std::fs::read(p).ok())
-        .map(|b| b.chunks_exact(8).map(|c| (u32::from_le_bytes(c[..4].try_into().unwrap()), f32::from_le_bytes(c[4..].try_into().unwrap()).abs())).collect())
+        .map(|b| {
+            b.chunks_exact(8)
+                .map(|c| {
+                    (
+                        u32::from_le_bytes(c[..4].try_into().unwrap()),
+                        f32::from_le_bytes(c[4..].try_into().unwrap()).abs(),
+                    )
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let rail = TestRail { freqs };
     let cancel = Cancel::default();
@@ -199,9 +214,21 @@ fn approx_vs_exact() {
         for len_km in LENS {
             let len = len_km * 1000.0;
             let margin = len as f64 / 2000.0;
-            let (qt, lt, lr) = (pick(&tiles.exact, &reg, margin), pick(&tiles.roads, &reg, margin), pick(&tiles.rail, &reg, margin));
+            let (qt, lt, lr) =
+                (pick(&tiles.exact, &reg, margin), pick(&tiles.roads, &reg, margin), pick(&tiles.rail, &reg, margin));
             for w in drive_presets() {
-                let p = DriveParams { len, w, wsum: w.iter().map(|x| x.max(0.0)).sum::<f32>().max(1e-6), classes: u32::MAX, surface: 3, toll: 3, unnamed: 0, lmin: None, lmax: None, limit: 30 };
+                let p = DriveParams {
+                    len,
+                    w,
+                    wsum: w.iter().map(|x| x.max(0.0)).sum::<f32>().max(1e-6),
+                    classes: u32::MAX,
+                    surface: 3,
+                    toll: 3,
+                    unnamed: 0,
+                    lmin: None,
+                    lmax: None,
+                    limit: 30,
+                };
                 let t1 = Instant::now();
                 let (te, e) = drives_exact(&qt, &reg, &p, &cancel).unwrap();
                 let t2 = Instant::now();
@@ -215,7 +242,12 @@ fn approx_vs_exact() {
                 acc.ms_approx += (t3 - t2).as_secs_f32() * 1000.0;
                 // Every answer is well formed: real positions, the length asked or more.
                 for h in &a {
-                    assert!(h.geom.len() >= 2 && h.length_m >= len - 1.0, "{name} {len_km}: {} m, {} points", h.length_m, h.geom.len());
+                    assert!(
+                        h.geom.len() >= 2 && h.length_m >= len - 1.0,
+                        "{name} {len_km}: {} m, {} points",
+                        h.length_m,
+                        h.geom.len()
+                    );
                 }
             }
             for w in ride_presets() {
@@ -266,7 +298,12 @@ fn approx_vs_exact() {
             es.sort_by(|x, y| (y.sc / y.len).total_cmp(&(x.sc / x.len)));
             as_.sort_by(|x, y| (y.sc / y.len).total_cmp(&(x.sc / x.len)));
             let k = 40.min(es.len()).min(as_.len());
-            let ov = if k == 0 { 1.0 } else { es[..k].iter().filter(|x| as_[..k].iter().any(|y| y.info.ident == x.info.ident)).count() as f32 / k as f32 };
+            let ov = if k == 0 {
+                1.0
+            } else {
+                es[..k].iter().filter(|x| as_[..k].iter().any(|y| y.info.ident == x.info.ident)).count() as f32
+                    / k as f32
+            };
             eprintln!("lines {name}: km {:.0} vs {:.0} ({:+.3} %), worst line length {:.2} % ({worst_name}, {:.1} km), worst score {:.2}, top-40 overlap {:.2}", ke / 1e3, ka / 1e3, (ka - ke) / ke.max(1.0) * 100.0, worst_len * 100.0, worst_km, worst_sc, ov);
             assert!((ka - ke).abs() <= ke * 0.005, "{name}: rail km in view");
             assert!(ov >= 0.9, "{name}: top-40 overlap {ov}");
@@ -277,7 +314,17 @@ fn approx_vs_exact() {
     eprintln!("len  what    cases  min-ov20  at-90%  max|d|20  max|d|30  totals  exact-ms  approx-ms");
     for (what, m) in [("drives", &drives), ("rides", &rides)] {
         for (len, a) in m {
-            eprintln!("{len:>3}  {what:<6}  {:>5}  {:>8.2}  {:>6}  {:>8.2}  {:>8.2}  {:>5.2}%  {:>8.0}  {:>9.0}", a.cases, a.min_ov, a.at90, a.max20, a.max30, a.tot * 100.0, a.ms_exact / a.cases as f32, a.ms_approx / a.cases as f32);
+            eprintln!(
+                "{len:>3}  {what:<6}  {:>5}  {:>8.2}  {:>6}  {:>8.2}  {:>8.2}  {:>5.2}%  {:>8.0}  {:>9.0}",
+                a.cases,
+                a.min_ov,
+                a.at90,
+                a.max20,
+                a.max30,
+                a.tot * 100.0,
+                a.ms_exact / a.cases as f32,
+                a.ms_approx / a.cases as f32
+            );
         }
     }
     // The design's figures (docs/phase5.md), with a little room.
@@ -301,4 +348,3 @@ fn approx_vs_exact() {
         assert!(a.min_ov >= ov && a.max20 <= err && a.tot <= 0.01, "rides {len} km: {a:?}");
     }
 }
-

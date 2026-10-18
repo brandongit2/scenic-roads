@@ -5,7 +5,7 @@ use anyhow::{ensure, Result};
 use rayon::prelude::*;
 use roadcore::elev::{self, Elevs};
 use roadcore::scenic::{ch, Sample};
-use roadcore::{class, merc, Array, Ways, WayRec};
+use roadcore::{class, merc, Array, WayRec, Ways};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -74,11 +74,23 @@ impl Legacy {
             samples: Array::open(&dir.join("samples.bin"))?,
             samplech: Array::open(&dir.join("samples.ch.u8"))?,
             rail_rels: std::fs::read(dir.join("rail-rels.bin"))
-                .map(|b| b.chunks_exact(16).map(|c| (i64::from_le_bytes(c[..8].try_into().unwrap()), i64::from_le_bytes(c[8..].try_into().unwrap()))).collect())
+                .map(|b| {
+                    b.chunks_exact(16)
+                        .map(|c| {
+                            (
+                                i64::from_le_bytes(c[..8].try_into().unwrap()),
+                                i64::from_le_bytes(c[8..].try_into().unwrap()),
+                            )
+                        })
+                        .collect()
+                })
                 .unwrap_or_default(),
             ways,
         };
-        ensure!(s.elev.get().len() == nv && s.raw.get().len() == nv && s.grade.get().len() == nv && s.src.get().len() == nv, "per-vertex arrays out of step with verts.bin");
+        ensure!(
+            s.elev.get().len() == nv && s.raw.get().len() == nv && s.grade.get().len() == nv && s.src.get().len() == nv,
+            "per-vertex arrays out of step with verts.bin"
+        );
         ensure!(s.samples.get().len() == s.samplech.get().len(), "samples.ch.u8 out of step with samples.bin");
         Ok(s)
     }
@@ -149,7 +161,13 @@ pub fn base_sections(lg: &Legacy, unit: Unit, idx: &[u32], built: &str) -> BaseS
     };
     let nv: usize = idx.iter().map(|&i| all[i as usize].vcount as usize).sum();
     let mut ways: Vec<WayRec> = Vec::with_capacity(idx.len());
-    let (mut v, mut el, mut raw, mut gr, mut src) = (Vec::with_capacity(nv), Vec::with_capacity(nv), Vec::with_capacity(nv), Vec::with_capacity(nv), Vec::with_capacity(nv));
+    let (mut v, mut el, mut raw, mut gr, mut src) = (
+        Vec::with_capacity(nv),
+        Vec::with_capacity(nv),
+        Vec::with_capacity(nv),
+        Vec::with_capacity(nv),
+        Vec::with_capacity(nv),
+    );
     let mut sc: Vec<[u8; ch::N]> = Vec::with_capacity(if lg.scenic.is_some() { nv } else { 0 });
     let mut dr: Vec<i16> = Vec::with_capacity(if lg.drape.is_some() { nv } else { 0 });
     let mut ext = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
@@ -158,7 +176,8 @@ pub fn base_sections(lg: &Legacy, unit: Unit, idx: &[u32], built: &str) -> BaseS
     // Samples: grouped by way in the folder's way order.
     let samples = lg.samples.get();
     let schan = lg.samplech.get();
-    let mut srange: std::collections::HashMap<u32, (usize, usize)> = std::collections::HashMap::with_capacity(idx.len());
+    let mut srange: std::collections::HashMap<u32, (usize, usize)> =
+        std::collections::HashMap::with_capacity(idx.len());
     {
         // Binary search each way's sample run.
         for &i in idx {

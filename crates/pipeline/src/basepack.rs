@@ -2,10 +2,10 @@
 //! Mac's cache), memory-mapped, as typed slices.
 
 use crate::legacy::Unit;
-use roadcore::packs::{RoadRec, Sub9};
 use anyhow::{bail, ensure, Context, Result};
 use memmap2::Mmap;
 use roadcore::elev::Elevs;
+use roadcore::packs::{RoadRec, Sub9};
 use roadcore::scenic::{ch, Sample};
 use roadcore::WayRec;
 use std::collections::HashMap;
@@ -73,12 +73,25 @@ impl BasePack {
     pub fn open(base: &Path, roads: &Path) -> Result<BasePack> {
         let sect = Sect::open(base)?;
         let roads = Sect::open(roads)?;
-        let unit = sect.meta.get("unit").and_then(|v| v.as_str()).and_then(Unit::parse).context("base pack without a unit")?;
+        let unit =
+            sect.meta.get("unit").and_then(|v| v.as_str()).and_then(Unit::parse).context("base pack without a unit")?;
         let extent: Vec<i32> = serde_json::from_value(sect.meta.get("extent").cloned().unwrap_or_default())?;
         ensure!(extent.len() == 4, "base pack extent");
-        let strings = String::from_utf8_lossy(sect.bytes("strings").unwrap_or(b"")).split('\n').map(str::to_owned).collect();
-        let bp = BasePack { unit, sect, roads, strings, extent: [extent[0], extent[1], extent[2], extent[3]], bboxes: std::sync::OnceLock::new() };
-        ensure!(bp.road_vals()?.len() == bp.ways()?.len(), "road values out of step with the base pack of {}", unit.slash());
+        let strings =
+            String::from_utf8_lossy(sect.bytes("strings").unwrap_or(b"")).split('\n').map(str::to_owned).collect();
+        let bp = BasePack {
+            unit,
+            sect,
+            roads,
+            strings,
+            extent: [extent[0], extent[1], extent[2], extent[3]],
+            bboxes: std::sync::OnceLock::new(),
+        };
+        ensure!(
+            bp.road_vals()?.len() == bp.ways()?.len(),
+            "road values out of step with the base pack of {}",
+            unit.slash()
+        );
         Ok(bp)
     }
 
@@ -144,7 +157,9 @@ impl BasePack {
         let b: Vec<[i32; 4]> = ways
             .iter()
             .map(|w| {
-                verts[self.range(w)].iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |bb, p| [bb[0].min(p[0]), bb[1].min(p[1]), bb[2].max(p[0]), bb[3].max(p[1])])
+                verts[self.range(w)].iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |bb, p| {
+                    [bb[0].min(p[0]), bb[1].min(p[1]), bb[2].max(p[0]), bb[3].max(p[1])]
+                })
             })
             .collect();
         Ok(self.bboxes.get_or_init(|| b))

@@ -57,9 +57,19 @@ pub fn peers(beats: &[(String, Heartbeat)], lead: Option<&str>, now: u64, own: (
     let mut out: Vec<Peer> = beats
         .iter()
         .filter(|(id, h)| id != own.0 && !h.shadow && h.pool.beat > 0 && !h.pool.out_of_touch(now))
-        .map(|(id, h)| Peer { member: id.clone(), host: if h.pool.host.is_empty() { id.clone() } else { h.pool.host.clone() }, lead: lead == Some(id.as_str()), broker: h.broker.clone() })
+        .map(|(id, h)| Peer {
+            member: id.clone(),
+            host: if h.pool.host.is_empty() { id.clone() } else { h.pool.host.clone() },
+            lead: lead == Some(id.as_str()),
+            broker: h.broker.clone(),
+        })
         .collect();
-    out.push(Peer { member: own.0.to_string(), host: own.1.to_string(), lead: lead == Some(own.0), broker: Some(own.2.clone()) });
+    out.push(Peer {
+        member: own.0.to_string(),
+        host: own.1.to_string(),
+        lead: lead == Some(own.0),
+        broker: Some(own.2.clone()),
+    });
     out.sort_by(|a, b| a.host.cmp(&b.host).then(a.member.cmp(&b.member)));
     out
 }
@@ -100,13 +110,39 @@ mod tests {
     }
 
     fn b(urls: &[&str], waiting: u32) -> Broker {
-        Broker { urls: urls.iter().map(|u| u.to_string()).collect(), https: None, waiting: if waiting > 0 { [("tail".to_string(), Waiting { n: waiting, mb: 500 })].into() } else { Default::default() }, out: 0 }
+        Broker {
+            urls: urls.iter().map(|u| u.to_string()).collect(),
+            https: None,
+            waiting: if waiting > 0 {
+                [("tail".to_string(), Waiting { n: waiting, mb: 500 })].into()
+            } else {
+                Default::default()
+            },
+            out: 0,
+        }
     }
 
     #[test]
     fn the_peers_are_the_members_in_touch_this_macs_own_as_it_is_now() {
-        let hb = |id: &str, beat: u64, broker: Option<Broker>, shadow: bool| (id.to_string(), Heartbeat { pool: Beat { member: id.into(), host: format!("h{id}"), beat, ..Default::default() }, broker, shadow, ..Default::default() });
-        let beats = vec![hb("a", 1000, Some(b(&["http://100.1.1.1:8090"], 2)), false), hb("b", 1000, None, false), hb("c", 300, Some(b(&[], 1)), false), hb("d", 1000, None, true), hb("e", 0, None, false), hb("me", 1000, Some(b(&["old"], 0)), false)];
+        let hb = |id: &str, beat: u64, broker: Option<Broker>, shadow: bool| {
+            (
+                id.to_string(),
+                Heartbeat {
+                    pool: Beat { member: id.into(), host: format!("h{id}"), beat, ..Default::default() },
+                    broker,
+                    shadow,
+                    ..Default::default()
+                },
+            )
+        };
+        let beats = vec![
+            hb("a", 1000, Some(b(&["http://100.1.1.1:8090"], 2)), false),
+            hb("b", 1000, None, false),
+            hb("c", 300, Some(b(&[], 1)), false),
+            hb("d", 1000, None, true),
+            hb("e", 0, None, false),
+            hb("me", 1000, Some(b(&["old"], 0)), false),
+        ];
         let own = b(&["http://100.1.1.9:8090"], 1);
         let p = peers(&beats, Some("a"), 1000, ("me", "hme", &own));
         let ids: Vec<&str> = p.iter().map(|p| p.member.as_str()).collect();

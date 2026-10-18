@@ -77,7 +77,13 @@ impl InputView {
 
     /// The unit in a line ("Regions: 1 warning held, 1 error").
     pub fn line(&self) -> String {
-        let (e, w) = self.findings.iter().fold((0, 0), |(e, w), s| if s.finding.level == super::Level::Error { (e + 1, w) } else { (e, w + 1) });
+        let (e, w) = self.findings.iter().fold((0, 0), |(e, w), s| {
+            if s.finding.level == super::Level::Error {
+                (e + 1, w)
+            } else {
+                (e, w + 1)
+            }
+        });
         let n = |k: usize, one: &str| format!("{k} {one}{}", if k == 1 { "" } else { "s" });
         match self.state {
             State::Held => {
@@ -88,7 +94,13 @@ impl InputView {
                 if e > 0 {
                     parts.push(n(e, "error"));
                 }
-                format!("{}: {} ({}){}", self.unit, if parts.is_empty() { "held".to_string() } else { parts.join(", ") }, self.held.join(", "), if self.checking { ", checking again" } else { "" })
+                format!(
+                    "{}: {} ({}){}",
+                    self.unit,
+                    if parts.is_empty() { "held".to_string() } else { parts.join(", ") },
+                    self.held.join(", "),
+                    if self.checking { ", checking again" } else { "" }
+                )
             }
             State::Checking => format!("{}: checking", self.unit),
             State::Ok => format!("{}: taken in", self.unit),
@@ -127,7 +139,13 @@ impl Cache {
         if let Some(&t) = self.times.get(name) {
             return Some(t);
         }
-        let t = std::fs::metadata(root.join(name)).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+        let t = std::fs::metadata(root.join(name))
+            .ok()?
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs();
         self.times.insert(name.to_string(), t);
         Some(t)
     }
@@ -136,14 +154,32 @@ impl Cache {
 /// The units on the gate (`units`) and any other the records name, each as the records `manifest`
 /// have it; `checking`, those with a check planned or running; `accepted`, each unit's
 /// acceptances (listed here for one missing).
-pub fn of(root: &Path, manifest: &BTreeMap<String, String>, units: &[&str], checking: &BTreeSet<String>, accepted: &BTreeMap<String, BTreeSet<String>>, cache: &mut Cache) -> Vec<InputView> {
+pub fn of(
+    root: &Path,
+    manifest: &BTreeMap<String, String>,
+    units: &[&str],
+    checking: &BTreeSet<String>,
+    accepted: &BTreeMap<String, BTreeSet<String>>,
+    cache: &mut Cache,
+) -> Vec<InputView> {
     let mut all: BTreeSet<String> = units.iter().map(|u| u.to_string()).collect();
     // (The records' other units too, an older app's say; but a test unit only while it's on the
     // gate.)
-    all.extend(manifest.range("sources/inputs/".to_string()..).take_while(|(l, _)| l.starts_with("sources/inputs/")).filter_map(|(l, _)| super::unit_of(l)).filter(|u| !super::is_test(u)).map(str::to_string));
+    all.extend(
+        manifest
+            .range("sources/inputs/".to_string()..)
+            .take_while(|(l, _)| l.starts_with("sources/inputs/"))
+            .filter_map(|(l, _)| super::unit_of(l))
+            .filter(|u| !super::is_test(u))
+            .map(str::to_string),
+    );
     let mut out = Vec::new();
     for unit in all {
-        let mut v = InputView { unit: unit.clone(), version: manifest.get(&super::logical(&unit)).cloned(), ..Default::default() };
+        let mut v = InputView {
+            unit: unit.clone(),
+            version: manifest.get(&super::logical(&unit)).cloned(),
+            ..Default::default()
+        };
         let acc = match accepted.get(&unit) {
             Some(a) => a.clone(),
             None => super::acceptances(root, &unit).unwrap_or_default(),
@@ -191,7 +227,12 @@ pub fn of(root: &Path, manifest: &BTreeMap<String, String>, units: &[&str], chec
             v.stale = acc.iter().filter(|id| !raised.contains(*id)).cloned().collect();
         }
         // (A unit with nothing dropped yet, never checked, held nor accepted: not shown.)
-        if v.version.is_none() && v.state == State::Ok && v.unread.is_none() && v.accepted.is_empty() && !super::is_test(&unit) {
+        if v.version.is_none()
+            && v.state == State::Ok
+            && v.unread.is_none()
+            && v.accepted.is_empty()
+            && !super::is_test(&unit)
+        {
             continue;
         }
         out.push(v);

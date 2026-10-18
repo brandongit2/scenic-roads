@@ -5,8 +5,8 @@
 //! Used by `scenic-build pack`/`lo` (the ways of one area, gathered from base packs), which
 //! describes each way with a `WayIn` and chooses which tiles to keep.
 
-use det::Det;
 use crate::count_bar;
+use det::Det;
 use flate2::{write::GzEncoder, Compression};
 use rayon::prelude::*;
 use roadcore::elev::{self, Elevs};
@@ -20,7 +20,11 @@ use std::io::Write;
 const DP_TOL_PX: f64 = 0.35;
 
 pub fn extent_log2(z: u8) -> u8 {
-    if z >= 14 { 13 } else { 12 }
+    if z >= 14 {
+        13
+    } else {
+        12
+    }
 }
 
 /// Elevation tolerance (m) for simplification at zoom z: 1 m at z14, doubling every 2 zooms out.
@@ -107,7 +111,15 @@ fn lerp(a: &P, b: &P, t: f64) -> P {
         sc: {
             let mut o = [0f32; NCH];
             for (k, v) in o.iter_mut().enumerate() {
-                *v = if k == ch::FLAGS { if t < 0.5 { a.sc[k] } else { b.sc[k] } } else { a.sc[k] + (b.sc[k] - a.sc[k]) * tf };
+                *v = if k == ch::FLAGS {
+                    if t < 0.5 {
+                        a.sc[k]
+                    } else {
+                        b.sc[k]
+                    }
+                } else {
+                    a.sc[k] + (b.sc[k] - a.sc[k]) * tf
+                };
             }
             o
         },
@@ -454,7 +466,10 @@ pub fn encode_zoom(z: u8, maxz: u8, pieces: &[(u64, TileLine)]) -> Vec<Encoded> 
             dots.sort_unstable_by_key(|(k, _)| *k);
             for ((cell, style, lflags, _), d) in dots {
                 let pt = if collapse {
-                    [((cell[0] as f64 + 0.5) * half_px).round() as i32, ((cell[1] as f64 + 0.5) * half_px).round() as i32]
+                    [
+                        ((cell[0] as f64 + 0.5) * half_px).round() as i32,
+                        ((cell[1] as f64 + 0.5) * half_px).round() as i32,
+                    ]
                 } else {
                     cell
                 };
@@ -492,7 +507,6 @@ pub fn encode_zoom(z: u8, maxz: u8, pieces: &[(u64, TileLine)]) -> Vec<Encoded> 
         .collect();
     encoded
 }
-
 
 #[cfg(test)]
 mod order_tests {

@@ -230,9 +230,16 @@ impl Conds {
         if !self.home {
             "away from home: it can't lead until it's back".into()
         } else if !self.ac && self.battery.is_some_and(|b| b < crate::agent::cond::BATTERY_MIN) {
-            format!("on battery at {}%: it can't lead below {}%", self.battery.unwrap_or(0), crate::agent::cond::BATTERY_MIN)
+            format!(
+                "on battery at {}%: it can't lead below {}%",
+                self.battery.unwrap_or(0),
+                crate::agent::cond::BATTERY_MIN
+            )
         } else {
-            format!("short of room on its disk: it can't lead with less than {} GB free", crate::agent::room::RESERVE >> 30)
+            format!(
+                "short of room on its disk: it can't lead with less than {} GB free",
+                crate::agent::room::RESERVE >> 30
+            )
         }
     }
 }
@@ -339,13 +346,49 @@ impl Side {
             std::fs::rename(dir.join("saved.json"), dir.join("saved.earlier.json")).ok();
             saved = Saved { mine: saved.mine.unwritten_only(), ..Default::default() };
         }
-        let mail: Mail = std::fs::read(dir.join("mail.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let known: Vec<String> = std::fs::read(dir.join("members.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let forgotten: BTreeSet<String> = std::fs::read(dir.join(FORGOTTEN)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let mut members: BTreeSet<String> = known.into_iter().filter(|m| crate::pool::is_member_id(m) && !forgotten.contains(m)).collect();
+        let mail: Mail =
+            std::fs::read(dir.join("mail.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let known: Vec<String> = std::fs::read(dir.join("members.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let forgotten: BTreeSet<String> =
+            std::fs::read(dir.join(FORGOTTEN)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut members: BTreeSet<String> =
+            known.into_iter().filter(|m| crate::pool::is_member_id(m) && !forgotten.contains(m)).collect();
         members.insert(id);
         let driver = Driver::new(me.clone(), saved, lock);
-        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, missed: BTreeMap::new(), forgotten, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, broker: None, reach: Vec::new(), beats: Vec::new(), beats_at: None, ahead: 0, clock: store::clock::real() }))
+        Ok(Some(Side {
+            me,
+            driver: Some(driver),
+            nas,
+            start: Instant::now(),
+            dir: dir.to_path_buf(),
+            written,
+            folders: Vec::new(),
+            mail,
+            mail_written: Vec::new(),
+            mail_dirty: BTreeSet::new(),
+            told: BTreeMap::new(),
+            members,
+            members_listed: None,
+            members_queued: false,
+            missed: BTreeMap::new(),
+            forgotten,
+            asked: VecDeque::new(),
+            making: None,
+            made: VecDeque::new(),
+            failed_at: None,
+            beat: None,
+            stopped: None,
+            conds: None,
+            broker: None,
+            reach: Vec::new(),
+            beats: Vec::new(),
+            beats_at: None,
+            ahead: 0,
+            clock: store::clock::real(),
+        }))
     }
 
     /// Its member.
@@ -387,7 +430,8 @@ impl Side {
     /// this one among them: what the budgets divide by.
     pub fn heard_lately(&self) -> usize {
         let at = self.beats_at.unwrap_or(0);
-        let mut ids: BTreeSet<&str> = self.beats.iter().filter(|b| b.beat > 0 && !b.out_of_touch(at)).map(|b| b.member.as_str()).collect();
+        let mut ids: BTreeSet<&str> =
+            self.beats.iter().filter(|b| b.beat > 0 && !b.out_of_touch(at)).map(|b| b.member.as_str()).collect();
         ids.insert(&self.me.id);
         ids.len()
     }
@@ -395,12 +439,21 @@ impl Side {
     /// A listing of the heartbeats taken in at `now` (`names` the files found): the members found
     /// known, those missed `FORGET_AFTER` forgotten; members.json written.
     fn take_members(&mut self, names: &[String], now: Instant) {
-        let found: BTreeSet<String> = names.iter().filter_map(|n| n.strip_suffix(".json")).filter(|m| crate::pool::is_member_id(m)).map(str::to_string).collect();
-        let gone = forget(&mut self.members, &mut self.missed, &found, &self.me.id, self.beat.is_some(), now, FORGET_AFTER);
+        let found: BTreeSet<String> = names
+            .iter()
+            .filter_map(|n| n.strip_suffix(".json"))
+            .filter(|m| crate::pool::is_member_id(m))
+            .map(str::to_string)
+            .collect();
+        let gone =
+            forget(&mut self.members, &mut self.missed, &found, &self.me.id, self.beat.is_some(), now, FORGET_AFTER);
         let before = self.forgotten.clone();
         self.forgotten.retain(|m| !found.contains(m));
         for m in gone {
-            eprintln!("pool: member {m} forgotten: its heartbeat not on the NAS for {} min", FORGET_AFTER.as_secs() / 60);
+            eprintln!(
+                "pool: member {m} forgotten: its heartbeat not on the NAS for {} min",
+                FORGET_AFTER.as_secs() / 60
+            );
             // (Its mail not sent: nobody reads it.)
             self.mail.sent.remove(&m);
             self.mail_dirty.remove(&m);
@@ -427,7 +480,11 @@ impl Side {
     }
 
     /// `hand_to`, the readers' switches' app (`regions_app`) read already: a view reads it once.
-    pub fn hand_to_with(&self, to: &str, regions: &std::result::Result<Option<String>, String>) -> std::result::Result<(), String> {
+    pub fn hand_to_with(
+        &self,
+        to: &str,
+        regions: &std::result::Result<Option<String>, String>,
+    ) -> std::result::Result<(), String> {
         self.driver().hand_to(&self.io(), to)?;
         let app = self.heartbeat(to).map(|h| h.pool.app).unwrap_or_default();
         crate::inputs::regions::read::may_lead(&app, regions)?;
@@ -440,8 +497,11 @@ impl Side {
     /// The app the newer readers' switch (the regions', the elevation datasets') was recorded on, when the records have it
     /// (crate::inputs::regions::read::switch_app): no member on an older one leads.
     pub fn regions_app(&self) -> std::result::Result<Option<String>, String> {
-        let read = |n: &str| -> anyhow::Result<Vec<u8>> { self.nas.read(n)?.with_context(|| format!("{n} isn't there")) };
-        let m: BTreeMap<String, String> = serde_json::from_slice(&read("state/build/manifest.json").map_err(|e| format!("{e:#}"))?).map_err(|e| format!("the records: {e}"))?;
+        let read =
+            |n: &str| -> anyhow::Result<Vec<u8>> { self.nas.read(n)?.with_context(|| format!("{n} isn't there")) };
+        let m: BTreeMap<String, String> =
+            serde_json::from_slice(&read("state/build/manifest.json").map_err(|e| format!("{e:#}"))?)
+                .map_err(|e| format!("the records: {e}"))?;
         crate::inputs::regions::read::switch_app(&m, &read).map_err(|e| format!("{e:#}"))
     }
 
@@ -527,10 +587,22 @@ impl Side {
         let msgs = self.take_mail();
         let (entries, folders): (Vec<Entry>, Vec<Option<PathBuf>>) = give.entries.into_iter().unzip();
         self.folders.extend(folders.into_iter().flatten());
-        let heard = Heard { msgs, asks: give.asks, entries, listed: self.made.pop_front(), settled: give.settled, able: give.able, reassert: give.reassert, members: self.members.iter().cloned().collect(), reports: self.beats.clone() };
+        let heard = Heard {
+            msgs,
+            asks: give.asks,
+            entries,
+            listed: self.made.pop_front(),
+            settled: give.settled,
+            able: give.able,
+            reassert: give.reassert,
+            members: self.members.iter().cloned().collect(),
+            reports: self.beats.clone(),
+        };
         self.conds = give.conds;
         let io = Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead };
-        let Some(driver) = self.driver.as_mut() else { return Out { stop: self.stopped.clone(), ..Default::default() } };
+        let Some(driver) = self.driver.as_mut() else {
+            return Out { stop: self.stopped.clone(), ..Default::default() };
+        };
         let mut out = driver.step(&io, heard, check);
         let kept = self.keep();
         if let Some(why) = &out.stop {
@@ -641,7 +713,10 @@ impl Side {
     fn send_mail(&mut self) {
         for to in std::mem::take(&mut self.mail_dirty) {
             let mb = Mailbox { msgs: self.mail.sent.get(&to).cloned().unwrap_or_default() };
-            match serde_json::to_vec(&mb).map_err(anyhow::Error::from).and_then(|b| self.nas.write_whole(&mail_path(&to, &self.me.id), &b)) {
+            match serde_json::to_vec(&mb)
+                .map_err(anyhow::Error::from)
+                .and_then(|b| self.nas.write_whole(&mail_path(&to, &self.me.id), &b))
+            {
                 Ok(()) => {}
                 Err(e) => {
                     eprintln!("pool: mail to {to}: {e:#} (sent with the next)");
@@ -663,7 +738,13 @@ impl Side {
 
     /// Its heartbeat, when it changed or every two minutes: stamped as it's written.
     fn write_beat(&mut self, out: &Out) {
-        let mut hb = Heartbeat { pool: Beat { beat: 0, ..out.beat.clone() }, members: self.members.iter().cloned().collect(), shadow: false, conds: self.conds, broker: self.broker.clone() };
+        let mut hb = Heartbeat {
+            pool: Beat { beat: 0, ..out.beat.clone() },
+            members: self.members.iter().cloned().collect(),
+            shadow: false,
+            conds: self.conds,
+            broker: self.broker.clone(),
+        };
         if hb.pool.member.is_empty() {
             return;
         }
@@ -671,13 +752,18 @@ impl Side {
         let reach = self.reach.clone();
         hb.pool.reach = reach.iter().map(|r| crate::pool::reachable::Reach { at: 0, ..r.clone() }).collect();
         let now = self.clock.now();
-        if self.beat.as_ref().is_some_and(|(b, at, ahead)| *b == hb && now.saturating_duration_since(*at) + Duration::from_secs(self.ahead - ahead) < BEAT_EVERY) {
+        if self.beat.as_ref().is_some_and(|(b, at, ahead)| {
+            *b == hb && now.saturating_duration_since(*at) + Duration::from_secs(self.ahead - ahead) < BEAT_EVERY
+        }) {
             return;
         }
         let mut stamped = hb.clone();
         stamped.pool.beat = self.now();
         stamped.pool.reach = reach;
-        match serde_json::to_vec(&stamped).map_err(anyhow::Error::from).and_then(|b| self.nas.write_aside(&crate::pool::beat::path(&self.me.id), &b)) {
+        match serde_json::to_vec(&stamped)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| self.nas.write_aside(&crate::pool::beat::path(&self.me.id), &b))
+        {
             Ok(()) => self.beat = Some((hb, now, self.ahead)),
             Err(e) => eprintln!("pool: heartbeat: {e:#}"),
         }
@@ -739,7 +825,15 @@ impl Side {
 /// found known (and no longer missed); those not found missed from now, and forgotten (taken out,
 /// and returned) once missed `after`. A listing without member `me`'s own heartbeat, once it has
 /// written one (`written`), forgets nothing and starts no miss: the folder isn't all there.
-fn forget(members: &mut BTreeSet<String>, missed: &mut BTreeMap<String, Instant>, found: &BTreeSet<String>, me: &str, written: bool, now: Instant, after: Duration) -> Vec<String> {
+fn forget(
+    members: &mut BTreeSet<String>,
+    missed: &mut BTreeMap<String, Instant>,
+    found: &BTreeSet<String>,
+    me: &str,
+    written: bool,
+    now: Instant,
+    after: Duration,
+) -> Vec<String> {
     members.extend(found.iter().cloned());
     missed.retain(|m, _| !found.contains(m) && members.contains(m));
     if !written || !found.contains(me) {
@@ -839,11 +933,19 @@ pub fn check(e: &Entry, _r: &Records) -> std::result::Result<(), String> {
 /// member's lease rather than hold its failure against its targets (crate::coord). An entry whose
 /// member's app can't be read now is held too (that says nothing of it); one from a member on the
 /// lead's app, or an older one, is refused.
-pub fn check_from(e: &Entry, r: &Records, lead_app: &str, app_of: &dyn Fn(&str) -> Option<String>) -> std::result::Result<(), String> {
+pub fn check_from(
+    e: &Entry,
+    r: &Records,
+    lead_app: &str,
+    app_of: &dyn Fn(&str) -> Option<String>,
+) -> std::result::Result<(), String> {
     match check(e, r) {
         Err(why) if crate::agent::steps::outside(e).as_deref() == Some(why.as_str()) => match app_of(&e.member) {
             Some(app) if app == lead_app || crate::pool::term::app_at_least(lead_app, &app) => Err(why),
-            Some(app) => Err(format!("{}{why}; its member runs app {app}, newer than this lead's ({lead_app}): held until the lead runs it", crate::pool::records::HOLD)),
+            Some(app) => Err(format!(
+                "{}{why}; its member runs app {app}, newer than this lead's ({lead_app}): held until the lead runs it",
+                crate::pool::records::HOLD
+            )),
             None => Err(format!("{}{why}; its member's app can't be read now", crate::pool::records::HOLD)),
         },
         other => other,
@@ -854,10 +956,18 @@ pub fn check_from(e: &Entry, r: &Records, lead_app: &str, app_of: &dyn Fn(&str) 
 pub fn said(e: &Event) -> String {
     match e {
         Event::Made { term, how } => format!("made term {term} ({how})"),
-        Event::TookUp { term, how, handed } => format!("took up term {term} ({how}){}", if handed.is_some() { ", the coordinator's state handed over" } else { "" }),
+        Event::TookUp { term, how, handed } => format!(
+            "took up term {term} ({how}){}",
+            if handed.is_some() { ", the coordinator's state handed over" } else { "" }
+        ),
         Event::SteppedDown { term, why } => format!("no longer leads term {term}: {why}"),
         Event::Handover { term, to, what } => format!("its handover of term {term} to {to}: {what}"),
-        Event::Merged { applied, overtaken, refused, listed, .. } => format!("merged {} entr{} ({overtaken} passed over, {refused} refused){}", applied.len(), if applied.len() == 1 { "y" } else { "ies" }, if *listed { ", a listing's" } else { "" }),
+        Event::Merged { applied, overtaken, refused, listed, .. } => format!(
+            "merged {} entr{} ({overtaken} passed over, {refused} refused){}",
+            applied.len(),
+            if applied.len() == 1 { "y" } else { "ies" },
+            if *listed { ", a listing's" } else { "" }
+        ),
         Event::Waits { what, why } => format!("waits to {what}: {why}"),
         Event::Failed { what, why } => format!("couldn't {what}: {why}"),
     }
@@ -903,7 +1013,16 @@ pub struct Gates {
 
 impl Gates {
     fn of(o: &Out) -> Gates {
-        Gates { term: o.term, leads: o.leads, duties: o.duties, settle: o.settle, caught_up: o.caught_up, fresh: o.fresh, listed_at: o.listed_at, held: o.held.clone() }
+        Gates {
+            term: o.term,
+            leads: o.leads,
+            duties: o.duties,
+            settle: o.settle,
+            caught_up: o.caught_up,
+            fresh: o.fresh,
+            listed_at: o.listed_at,
+            held: o.held.clone(),
+        }
     }
 
     /// A catalog may be published now.
@@ -1072,7 +1191,8 @@ pub struct Cx {
 
 /// How a member tries another's coordinator: at its addresses, reached or not and why
 /// (crate::coord::client::probe; a test's own).
-pub type ProbeFn = Arc<dyn Fn(&[String]) -> std::result::Result<(), (crate::pool::reachable::Cause, String)> + Send + Sync>;
+pub type ProbeFn =
+    Arc<dyn Fn(&[String]) -> std::result::Result<(), (crate::pool::reachable::Cause, String)> + Send + Sync>;
 
 /// A round of tries' outcomes: (member, what, reached or not and why).
 type Tries = Vec<(String, String, std::result::Result<(), (crate::pool::reachable::Cause, String)>)>;
@@ -1187,7 +1307,10 @@ impl Drop for Ticker {
 /// When the current term's lead's coordinator last answered this Mac (`answered`, its client's): only
 /// an answer saying it's that term's, from that member (crate::coord::POOL_TERM, POOL_MEMBER); one
 /// from another coordinator (an earlier lead's not yet stopped, an older app's) says nothing of it.
-pub fn lead_answered(answered: Option<&crate::coord::client::Answered>, cur: Option<&crate::pool::term::Term>) -> Option<u64> {
+pub fn lead_answered(
+    answered: Option<&crate::coord::client::Answered>,
+    cur: Option<&crate::pool::term::Term>,
+) -> Option<u64> {
     let (a, t) = (answered?, cur?);
     (a.term == Some(t.term) && a.member.as_deref() == Some(t.member.as_str())).then_some(a.at)
 }
@@ -1208,7 +1331,39 @@ pub fn moving(g: &Gates, pending: bool) -> Option<String> {
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
         let controls = super::lead::Controls::open(&side.dir);
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls, in_process: false, cx: Cx::default(), in_step: false, last_step: None, last_full: None, pending_took_up: Vec::new(), ticking: Ticking::default(), brokers_read: None, broker_told: None, prober: Prober::default(), term_seen: None }
+        Run {
+            side,
+            role,
+            gates,
+            entries: Vec::new(),
+            settled: None,
+            reassert: false,
+            restart: None,
+            drained: BTreeSet::new(),
+            drain_n: 0,
+            left_taken: false,
+            today: None,
+            named_raw: BTreeSet::new(),
+            outbox_drained: false,
+            marks: Vec::new(),
+            state_written: None,
+            history_seq: 0,
+            led: BTreeSet::new(),
+            asks: Vec::new(),
+            conds: None,
+            controls,
+            in_process: false,
+            cx: Cx::default(),
+            in_step: false,
+            last_step: None,
+            last_full: None,
+            pending_took_up: Vec::new(),
+            ticking: Ticking::default(),
+            brokers_read: None,
+            broker_told: None,
+            prober: Prober::default(),
+            term_seen: None,
+        }
     }
 
     /// Whether the pool's own thread steps it now: the agent's loop isn't, no step has run for
@@ -1216,7 +1371,11 @@ impl Run {
     pub fn tick_due(&self) -> bool {
         let now = self.side.io().awake();
         let since = |t: Option<u64>, s: u64| t.is_none_or(|t| now.saturating_sub(t) >= s);
-        !self.in_step && self.side.stopped.is_none() && self.cx.root.is_some() && since(self.last_step, TICK_S) && since(self.last_full, QUIET_S)
+        !self.in_step
+            && self.side.stopped.is_none()
+            && self.cx.root.is_some()
+            && since(self.last_step, TICK_S)
+            && since(self.last_full, QUIET_S)
     }
 
     /// The agent's loop's step is done (its after-effects too): the view written, ticks again.
@@ -1287,7 +1446,12 @@ impl Run {
         };
         let now = Instant::now();
         let (waiting, out) = c.brokered();
-        let own = crate::coord::brokers::Broker { urls: c.contact.urls.clone(), https: self.cx.broker_https.clone(), waiting, out };
+        let own = crate::coord::brokers::Broker {
+            urls: c.contact.urls.clone(),
+            https: self.cx.broker_https.clone(),
+            waiting,
+            out,
+        };
         if brokers::due(self.side.broker.as_ref(), &own, self.broker_told.map(|t| now.saturating_duration_since(t))) {
             self.side.broker = Some(own.clone());
             self.broker_told = Some(now);
@@ -1300,7 +1464,11 @@ impl Run {
             if let Some(l) = lead.as_ref().filter(|l| !ids.contains(l)) {
                 ids.push(l.clone());
             }
-            let beats: Vec<(String, Heartbeat)> = ids.into_iter().filter(|id| *id != me.id).filter_map(|id| side.heartbeat(&id).map(|h| (id, h))).collect();
+            let beats: Vec<(String, Heartbeat)> = ids
+                .into_iter()
+                .filter(|id| *id != me.id)
+                .filter_map(|id| side.heartbeat(&id).map(|h| (id, h)))
+                .collect();
             let peers = brokers::peers(&beats, lead.as_deref(), side.now(), (&me.id, &me.host, &own));
             c.set_brokers(Some(crate::coord::brokers::Brokers::new(peers, &own)));
             self.brokers_read = Some(now);
@@ -1354,7 +1522,13 @@ impl Run {
                 self.side.beats_at = Some(now);
             }
             if let Some(l) = &lead {
-                let urls = self.side.heartbeat(l).and_then(|h| h.broker).map(|b| b.urls).filter(|u| !u.is_empty()).unwrap_or_else(|| self.cx.lead_urls.clone());
+                let urls = self
+                    .side
+                    .heartbeat(l)
+                    .and_then(|h| h.broker)
+                    .map(|b| b.urls)
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or_else(|| self.cx.lead_urls.clone());
                 if !urls.is_empty() {
                     targets.push((l.clone(), "coordinator".into(), urls));
                 }
@@ -1372,7 +1546,15 @@ impl Run {
             self.prober.tracker.retain(|m| keep.contains(m));
             self.prober.last = Some(now);
             let probe = self.prober.probe.clone();
-            let run = move || -> Tries { targets.into_iter().map(|(m, what, urls)| { let r = probe(&urls); (m, what, r) }).collect() };
+            let run = move || -> Tries {
+                targets
+                    .into_iter()
+                    .map(|(m, what, urls)| {
+                        let r = probe(&urls);
+                        (m, what, r)
+                    })
+                    .collect()
+            };
             if self.prober.inline {
                 for (m, what, r) in run() {
                     self.prober.tracker.seen(&m, &what, r, now);
@@ -1398,7 +1580,8 @@ impl Run {
         if self.gates.leads.is_none() {
             return false;
         }
-        let behind = self.side.driver().records().is_some_and(|rec| rec.term >= 2 && self.today != Some((rec.term, rec.seq)));
+        let behind =
+            self.side.driver().records().is_some_and(|rec| rec.term >= 2 && self.today != Some((rec.term, rec.seq)));
         if behind {
             (self.gates.caught_up, self.gates.fresh) = (false, false);
         }
@@ -1407,14 +1590,25 @@ impl Run {
 
     /// This member as the status shows it (crate::agent::PoolView).
     pub fn pool_view(&self) -> super::PoolView {
-        super::PoolView { member: self.side.member().id.clone(), role: self.role, gates: self.gates.clone(), members: self.side.members().iter().cloned().collect(), heard: self.side.heard_lately(), unacked: self.side.driver().mine().to_tell(self.gates.term).len(), restart: self.restart.clone(), lead: self.controls.view.clone() }
+        super::PoolView {
+            member: self.side.member().id.clone(),
+            role: self.role,
+            gates: self.gates.clone(),
+            members: self.side.members().iter().cloned().collect(),
+            heard: self.side.heard_lately(),
+            unacked: self.side.driver().mine().to_tell(self.gates.term).len(),
+            restart: self.restart.clone(),
+            lead: self.controls.view.clone(),
+        }
     }
 
     /// The view (`pool_view`) with when it was written (this Mac's clock), to the agent's pool
     /// folder (`VIEW`): what the controls read while the agent's status waits for its loop.
     pub fn write_view(&self) {
         let v = PoolFile { beat: self.side.now(), pool: self.pool_view() };
-        let r = serde_json::to_vec(&v).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&self.side.dir.join(VIEW), &b));
+        let r = serde_json::to_vec(&v)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| crate::whole::write(&self.side.dir.join(VIEW), &b));
         if let Err(e) = r {
             eprintln!("pool: writing its view: {e:#}");
         }
@@ -1433,18 +1627,36 @@ impl Run {
     /// One step: what the agent gathered handed over, the gates kept; the role's change noted (it
     /// restarts into its new part).
     pub fn step(&mut self, able: bool) -> Out {
-        let give = Give { entries: std::mem::take(&mut self.entries), settled: self.settled.take(), able, reassert: self.reassert, asks: std::mem::take(&mut self.asks), conds: self.conds };
+        let give = Give {
+            entries: std::mem::take(&mut self.entries),
+            settled: self.settled.take(),
+            able,
+            reassert: self.reassert,
+            asks: std::mem::take(&mut self.asks),
+            conds: self.conds,
+        };
         let marks = std::mem::take(&mut self.marks);
         // (The merge's checks, an entry outside its step's write-set from a member on a newer app
         // held: `check_from`. Its member's app read from its heartbeat, only for such an entry.)
-        let (nas, lead_app, me) = (self.side.nas.clone(), self.side.member().app.clone(), self.side.member().id.clone());
-        let app_of = |m: &str| -> Option<String> { if m == me { return Some(lead_app.clone()) } nas.read(&crate::pool::beat::path(m)).ok().flatten().and_then(|b| serde_json::from_slice::<Heartbeat>(&b).ok()).map(|h| h.pool.app) };
+        let (nas, lead_app, me) =
+            (self.side.nas.clone(), self.side.member().app.clone(), self.side.member().id.clone());
+        let app_of = |m: &str| -> Option<String> {
+            if m == me {
+                return Some(lead_app.clone());
+            }
+            nas.read(&crate::pool::beat::path(m))
+                .ok()
+                .flatten()
+                .and_then(|b| serde_json::from_slice::<Heartbeat>(&b).ok())
+                .map(|h| h.pool.app)
+        };
         let checked = |e: &Entry, r: &Records| check_from(e, r, &lead_app, &app_of);
         let out = self.side.step(give, &checked);
         self.last_step = Some(self.side.io().awake());
         // (Drained hand-offs held by the state just saved: their folders marked merged, so one whose
         // removal failed isn't drained again by a later process.)
-        let kept = out.stop.is_none() && !out.events.iter().any(|e| matches!(e, Event::Failed { what: "save the member's state", .. }));
+        let kept = out.stop.is_none()
+            && !out.events.iter().any(|e| matches!(e, Event::Failed { what: "save the member's state", .. }));
         if kept {
             for (dir, name) in marks {
                 let marker = dir.with_extension("merged");
@@ -1531,7 +1743,10 @@ impl Run {
             if let (Some(d), Some(n)) = (p.parent(), p.file_name().and_then(|n| n.to_str())) {
                 self.marks.push((d.to_path_buf(), n.to_string()));
             }
-            self.entries.push((Entry { member: me.clone(), lease, step, handoff: h, at: crate::agent::jobs::now_s() }, Some(p)));
+            self.entries.push((
+                Entry { member: me.clone(), lease, step, handoff: h, at: crate::agent::jobs::now_s() },
+                Some(p),
+            ));
         }
         // (A helper's outbox from before the pool: once a process. Its tasks' folders stay with the
         // agent's sending.)
@@ -1553,7 +1768,14 @@ impl Run {
 ///
 /// `events`: a step's, with those a tick left it (`Run::pending_took_up`); `leads`: the term the
 /// last step says this member leads.
-pub fn took_up(run: &mut Run, coord: Option<&crate::coord::Coordinator>, events: &[Event], leads: Option<u64>, host: &str, keep: &[u64]) {
+pub fn took_up(
+    run: &mut Run,
+    coord: Option<&crate::coord::Coordinator>,
+    events: &[Event],
+    leads: Option<u64>,
+    host: &str,
+    keep: &[u64],
+) {
     let Some(c) = coord else { return };
     for e in events {
         let Event::TookUp { term, handed, .. } = e else { continue };
@@ -1566,11 +1788,17 @@ pub fn took_up(run: &mut Run, coord: Option<&crate::coord::Coordinator>, events:
         // over before restarting into its lead, wrote none.)
         let state: Option<crate::coord::PoolState> = match handed {
             Some(v) => serde_json::from_value(v.clone()).ok(),
-            None => (1..*term).rev().find_map(|e| run.side.nas().read(&state_path(e)).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok())),
+            None => (1..*term).rev().find_map(|e| {
+                run.side.nas().read(&state_path(e)).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok())
+            }),
         };
         if let Some(st) = state {
             match c.load_pool_state(&st) {
-                Ok(n) => eprintln!("pool: term {term}'s coordinator took up {n} lease{} {}", if n == 1 { "" } else { "s" }, if handed.is_some() { "handed over" } else { "from the term before" }),
+                Ok(n) => eprintln!(
+                    "pool: term {term}'s coordinator took up {n} lease{} {}",
+                    if n == 1 { "" } else { "s" },
+                    if handed.is_some() { "handed over" } else { "from the term before" }
+                ),
                 Err(e) => eprintln!("pool: the coordinator's state for term {term}: {e:#}"),
             }
             for l in c.drop_workers(&[host.to_string(), crate::agent::second_worker(host)], keep) {
@@ -1594,7 +1822,14 @@ pub fn job_dir(home: &Path, lease: journal::LeaseId) -> PathBuf {
 /// the files of the targets it finished (one it was on when it stopped may have saved part of its
 /// own); another step's (the OSM pass's stages) all of them. None when it hands off nothing; an
 /// error when one of its saves is damaged.
-pub fn entry_of(dir: &Path, member: &str, lease: journal::LeaseId, step: &str, done: &[(String, String)], at: u64) -> Result<Option<Entry>> {
+pub fn entry_of(
+    dir: &Path,
+    member: &str,
+    lease: journal::LeaseId,
+    step: &str,
+    done: &[(String, String)],
+    at: u64,
+) -> Result<Option<Entry>> {
     let saves = crate::handoff::written_in(dir)?.context("one of its saves is damaged")?;
     let mut h = Handoff::default();
     for x in saves {
@@ -1629,7 +1864,8 @@ pub fn left_jobs(home: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
     let Ok(rd) = std::fs::read_dir(home.join("pool/jobs")) else { return Vec::new() };
     let mut out = Vec::new();
     for d in rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
-        let kept: Option<JobKept> = std::fs::read(d.join("work.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let kept: Option<JobKept> =
+            std::fs::read(d.join("work.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let Some(k) = kept else {
             std::fs::remove_dir_all(&d).ok();
             continue;
@@ -1660,17 +1896,28 @@ fn outbox_entries(outbox: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
     let mut out = Vec::new();
     for d in rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
         let Some(lease) = d.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok()) else { continue };
-        let Some(w) = std::fs::read(d.join("work.json")).ok().and_then(|b| serde_json::from_slice::<crate::agent::build::Work>(&b).ok()) else { continue };
-        let result: Option<serde_json::Value> = std::fs::read(d.join("result.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let Some(w) = std::fs::read(d.join("work.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<crate::agent::build::Work>(&b).ok())
+        else {
+            continue;
+        };
+        let result: Option<serde_json::Value> =
+            std::fs::read(d.join("result.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         // (Still running here: not yet. A job the agent of before the pool ran ends with it.)
         let done: Vec<(String, String)> = match result.as_ref().filter(|r| r["ok"].as_bool() == Some(true)) {
-            Some(r) => serde_json::from_value::<Option<(String, Vec<(String, String)>)>>(r["done"].clone()).ok().flatten().map(|d| d.1).unwrap_or_default(),
+            Some(r) => serde_json::from_value::<Option<(String, Vec<(String, String)>)>>(r["done"].clone())
+                .ok()
+                .flatten()
+                .map(|d| d.1)
+                .unwrap_or_default(),
             None => {
                 let names = crate::control::read_done(&d.join("done.txt"), &w.step);
                 w.targets.iter().filter(|(t, _)| names.contains(t)).cloned().collect()
             }
         };
-        match entry_of(&d, member, journal::LeaseId { term: 0, n: lease }, &w.step, &done, crate::agent::jobs::now_s()) {
+        match entry_of(&d, member, journal::LeaseId { term: 0, n: lease }, &w.step, &done, crate::agent::jobs::now_s())
+        {
             Ok(Some(e)) => out.push((e, d)),
             // (Nothing to hand off, or its saves damaged: its work is done again; the folder goes,
             // or this member would never ask for work.)
@@ -1740,7 +1987,12 @@ pub fn append_history(root: &Path, member: &str, events: &[crate::coord::history
         let p = root.join("state/coord/history").join(day).join(format!("{member}.jsonl"));
         std::fs::create_dir_all(p.parent().unwrap())?;
         use std::io::Write;
-        std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| f.write_all(&b)).with_context(|| format!("append to {}", p.display()))?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&p)
+            .and_then(|mut f| f.write_all(&b))
+            .with_context(|| format!("append to {}", p.display()))?;
     }
     Ok(())
 }
@@ -1754,7 +2006,8 @@ fn statuses(root: &Path) -> Vec<(String, super::Status)> {
         out.push(("state/status.json".to_string(), s));
     }
     if let Ok(rd) = std::fs::read_dir(root.join("state/helpers")) {
-        let mut ps: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+        let mut ps: Vec<PathBuf> =
+            rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
         ps.sort();
         for p in ps {
             if let Some(s) = read(&p) {
@@ -1771,7 +2024,9 @@ pub fn status(root: &Path) -> String {
     let nas = Share::new(root);
     match crate::pool::term::current(&nas) {
         Ok(c) if c.term > 0 => out.push(match &c.lead {
-            Some(t) => format!("term {}: {} ({}), app {}, since {} ({})", t.term, t.host, t.member, t.app, t.since, t.how),
+            Some(t) => {
+                format!("term {}: {} ({}), app {}, since {} ({})", t.term, t.host, t.member, t.app, t.since, t.how)
+            }
             None => format!("term {}: can't be read whole", c.term),
         }),
         Ok(_) => out.push("no terms".to_string()),
@@ -1779,8 +2034,35 @@ pub fn status(root: &Path) -> String {
     }
     let now = crate::agent::jobs::now_s();
     for (f, st) in statuses(root) {
-        let p = st.pool.as_ref().map_or("not in the pool".to_string(), |p| format!("{} {}, term {}, leads {:?}, duties {}, caught up {}, unacked {}{}{}", serde_json::to_value(p.role).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), p.member, p.gates.term, p.gates.leads, p.gates.duties, p.gates.caught_up, p.unacked, p.gates.held.first().map(|(k, why)| format!(", {} entr{} held until it runs a newer app (the first: {k}: {why})", p.gates.held.len(), if p.gates.held.len() == 1 { "y" } else { "ies" })).unwrap_or_default(), p.restart.as_ref().map(|r| format!(", restarting: {r}")).unwrap_or_default()));
-        out.push(format!("{} ({f}, app {}, beat {} s ago, job {}): {p}", st.host, st.app, now.saturating_sub(st.beat), st.job.as_ref().map_or("none", |j| j.id.as_str())));
+        let p = st.pool.as_ref().map_or("not in the pool".to_string(), |p| {
+            format!(
+                "{} {}, term {}, leads {:?}, duties {}, caught up {}, unacked {}{}{}",
+                serde_json::to_value(p.role).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
+                p.member,
+                p.gates.term,
+                p.gates.leads,
+                p.gates.duties,
+                p.gates.caught_up,
+                p.unacked,
+                p.gates
+                    .held
+                    .first()
+                    .map(|(k, why)| format!(
+                        ", {} entr{} held until it runs a newer app (the first: {k}: {why})",
+                        p.gates.held.len(),
+                        if p.gates.held.len() == 1 { "y" } else { "ies" }
+                    ))
+                    .unwrap_or_default(),
+                p.restart.as_ref().map(|r| format!(", restarting: {r}")).unwrap_or_default()
+            )
+        });
+        out.push(format!(
+            "{} ({f}, app {}, beat {} s ago, job {}): {p}",
+            st.host,
+            st.app,
+            now.saturating_sub(st.beat),
+            st.job.as_ref().map_or("none", |j| j.id.as_str())
+        ));
     }
     out.join("\n")
 }
@@ -1796,7 +2078,8 @@ mod tests {
         let r = d.join("nas");
         std::fs::create_dir_all(r.join("state/build")).unwrap();
         std::fs::create_dir_all(r.join("catalog")).unwrap();
-        std::fs::write(r.join("state/build/manifest.json"), r#"{"base/6-1-1": "base/6-1-1.1111111111111111.base"}"#).unwrap();
+        std::fs::write(r.join("state/build/manifest.json"), r#"{"base/6-1-1": "base/6-1-1.1111111111111111.base"}"#)
+            .unwrap();
         std::fs::write(r.join("state/build/jobs.json"), r#"{"unit": {"6/1/1": "k1"}}"#).unwrap();
         std::fs::write(r.join("state/build/pending.json"), "{}").unwrap();
         r
@@ -1806,7 +2089,9 @@ mod tests {
         let nas: SharedNas = Arc::new(Share::new(root));
         // (Its clocks virtual: time passes as the test says, `ahead`, however slowly a busy Mac
         // steps it.)
-        let mut s = Side::open(home, &home.join("pool"), home.parent().unwrap(), "development", nas).unwrap().expect("its lock");
+        let mut s = Side::open(home, &home.join("pool"), home.parent().unwrap(), "development", nas)
+            .unwrap()
+            .expect("its lock");
         s.set_clock(store::clock::Virtual::new());
         s
     }
@@ -1846,9 +2131,21 @@ mod tests {
         let (mut members, mut missed) = (set(&[ME, B, PH]), BTreeMap::new());
         // (Its file gone: missed from the first listing, kept until the grace has passed.)
         assert!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0, after).is_empty());
-        assert!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0 + after - Duration::from_secs(1), after).is_empty());
+        assert!(forget(
+            &mut members,
+            &mut missed,
+            &set(&[ME, B]),
+            ME,
+            true,
+            t0 + after - Duration::from_secs(1),
+            after
+        )
+        .is_empty());
         assert!(members.contains(PH));
-        assert_eq!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0 + after, after), vec![PH.to_string()]);
+        assert_eq!(
+            forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0 + after, after),
+            vec![PH.to_string()]
+        );
         assert_eq!(members, set(&[ME, B]));
         assert!(missed.is_empty());
     }
@@ -1861,12 +2158,22 @@ mod tests {
         forget(&mut members, &mut missed, &set(&[ME]), ME, true, t0, after);
         // (Its file back, as a member restarting rewrites it: the miss starts over.)
         forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0 + after / 2, after);
-        assert!(forget(&mut members, &mut missed, &set(&[ME]), ME, true, t0 + after + Duration::from_secs(1), after).is_empty());
+        assert!(forget(&mut members, &mut missed, &set(&[ME]), ME, true, t0 + after + Duration::from_secs(1), after)
+            .is_empty());
         assert!(members.contains(B));
         // (A Mac asleep for hours, its file still there: never missed.)
         let (mut members, mut missed) = (set(&[ME, B]), BTreeMap::new());
         for h in 0..24 {
-            assert!(forget(&mut members, &mut missed, &set(&[ME, B]), ME, true, t0 + Duration::from_secs(3600 * h), after).is_empty());
+            assert!(forget(
+                &mut members,
+                &mut missed,
+                &set(&[ME, B]),
+                ME,
+                true,
+                t0 + Duration::from_secs(3600 * h),
+                after
+            )
+            .is_empty());
         }
         assert!(missed.is_empty());
     }
@@ -1878,10 +2185,12 @@ mod tests {
         let (mut members, mut missed) = (set(&[ME, B]), BTreeMap::new());
         // (The folder not there, the NAS away: an empty listing, hours of it.)
         for h in 0..10 {
-            assert!(forget(&mut members, &mut missed, &set(&[]), ME, true, t0 + Duration::from_secs(3600 * h), after).is_empty());
+            assert!(forget(&mut members, &mut missed, &set(&[]), ME, true, t0 + Duration::from_secs(3600 * h), after)
+                .is_empty());
         }
         // (Before it has written its own heartbeat, likewise.)
-        assert!(forget(&mut members, &mut missed, &set(&[ME]), ME, false, t0 + Duration::from_secs(36000), after).is_empty());
+        assert!(forget(&mut members, &mut missed, &set(&[ME]), ME, false, t0 + Duration::from_secs(36000), after)
+            .is_empty());
         assert_eq!(members, set(&[ME, B]));
         assert!(missed.is_empty());
     }
@@ -1905,7 +2214,8 @@ mod tests {
         // (Another Mac's message or term naming it, an older app re-advertising it: not again.)
         s.heard_of(PH);
         assert!(!s.members().contains(PH));
-        let saved: BTreeSet<String> = serde_json::from_slice(&std::fs::read(home.join("pool/members.json")).unwrap()).unwrap();
+        let saved: BTreeSet<String> =
+            serde_json::from_slice(&std::fs::read(home.join("pool/members.json")).unwrap()).unwrap();
         assert!(!saved.contains(PH));
         // (Its queued mail dropped, nothing posted to it, and so after a restart.)
         assert!(!s.mail.sent.contains_key(PH));
@@ -1920,7 +2230,8 @@ mod tests {
         s.beat = Some((Heartbeat::default(), s.clock.now(), 0));
         s.take_members(&files(&[&me, PH]), t0 + FORGET_AFTER * 2);
         assert!(s.members().contains(PH));
-        let gone: BTreeSet<String> = serde_json::from_slice(&std::fs::read(home.join("pool/forgotten.json")).unwrap()).unwrap();
+        let gone: BTreeSet<String> =
+            serde_json::from_slice(&std::fs::read(home.join("pool/forgotten.json")).unwrap()).unwrap();
         assert!(gone.is_empty());
     }
 
@@ -1939,14 +2250,27 @@ mod tests {
         s.beats_at = Some(now);
         assert_eq!(s.heard_lately(), 2);
         // (The run busy: the view's count, not its members.)
-        let v = super::super::PoolView { member: s.member().id.clone(), role: Role::Member, gates: Gates::default(), members: vec![s.member().id.clone(), B.into(), PH.into()], heard: s.heard_lately(), unacked: 0, restart: None, lead: None };
+        let v = super::super::PoolView {
+            member: s.member().id.clone(),
+            role: Role::Member,
+            gates: Gates::default(),
+            members: vec![s.member().id.clone(), B.into(), PH.into()],
+            heard: s.heard_lately(),
+            unacked: 0,
+            restart: None,
+            lead: None,
+        };
         assert_eq!(super::super::PoolView::heard_of(Some(&v)), 2);
         assert_eq!(super::super::PoolView::heard_of(None), 1);
     }
 
     fn unit_entry(member: &str, lease: LeaseId, target: &str, key: &str) -> Entry {
         let l = format!("base/{}", target.replace('/', "-"));
-        let h = Handoff { changes: [(l.clone(), Some(format!("{l}.2222222222222222.base")))].into(), done: Some(("unit".into(), vec![(target.into(), key.into())])), ..Default::default() };
+        let h = Handoff {
+            changes: [(l.clone(), Some(format!("{l}.2222222222222222.base")))].into(),
+            done: Some(("unit".into(), vec![(target.into(), key.into())])),
+            ..Default::default()
+        };
         Entry { member: member.into(), lease, step: "unit".into(), handoff: h, at: crate::agent::jobs::now_s() }
     }
 
@@ -1969,13 +2293,37 @@ mod tests {
             #[serde(default, skip_serializing_if = "std::ops::Not::not")]
             shadow: bool,
         }
-        let pool = Beat { member: "m-000000000000000a".into(), host: "Mac-mini".into(), app: "20261008-1500-1fa03d8".into(), beat: 1000, leads: Some(3), ..Default::default() };
-        let new = Heartbeat { pool: pool.clone(), members: vec!["m-000000000000000b".into()], shadow: false, conds: Some(Conds { home: true, ac: false, battery: Some(54), able: false }), broker: None };
+        let pool = Beat {
+            member: "m-000000000000000a".into(),
+            host: "Mac-mini".into(),
+            app: "20261008-1500-1fa03d8".into(),
+            beat: 1000,
+            leads: Some(3),
+            ..Default::default()
+        };
+        let new = Heartbeat {
+            pool: pool.clone(),
+            members: vec!["m-000000000000000b".into()],
+            shadow: false,
+            conds: Some(Conds { home: true, ac: false, battery: Some(54), able: false }),
+            broker: None,
+        };
         let b = serde_json::to_vec(&new).unwrap();
         // An older app reads the newer's: its fields, the conditions passed over.
         let old: Before = serde_json::from_slice(&b).unwrap();
         assert_eq!((old.pool.clone(), old.members.clone()), (pool.clone(), new.members.clone()));
-        assert_eq!(Beat::read(&{ let m = crate::pool::nas::Mem::default(); m.write_whole(&crate::pool::beat::path(&pool.member), &b).unwrap(); m }, &pool.member).unwrap(), Some(pool.clone()));
+        assert_eq!(
+            Beat::read(
+                &{
+                    let m = crate::pool::nas::Mem::default();
+                    m.write_whole(&crate::pool::beat::path(&pool.member), &b).unwrap();
+                    m
+                },
+                &pool.member
+            )
+            .unwrap(),
+            Some(pool.clone())
+        );
         // A newer app reads the older's: no conditions ("conditions unknown" in the views).
         let back: Heartbeat = serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
         assert_eq!(back, Heartbeat { conds: None, ..new.clone() });
@@ -1999,7 +2347,8 @@ mod tests {
         let saved: Saved = serde_json::from_slice(&std::fs::read(home.join("pool/saved.json")).unwrap()).unwrap();
         assert_eq!((saved.member.as_str(), saved.led), (id.as_str(), 1));
         // Its heartbeat: the driver's fields and the members it knows.
-        let hb: Heartbeat = serde_json::from_slice(&std::fs::read(r.join(crate::pool::beat::path(&id))).unwrap()).unwrap();
+        let hb: Heartbeat =
+            serde_json::from_slice(&std::fs::read(r.join(crate::pool::beat::path(&id))).unwrap()).unwrap();
         assert_eq!((hb.pool.leads, hb.members.clone()), (Some(1), vec![id.clone()]));
         assert!(hb.pool.beat > 0 && !hb.shadow);
         // The listing is made on a thread of its own and handed back: caught up.
@@ -2014,7 +2363,10 @@ mod tests {
         let home = d.path().join("a/agent");
         let mut a = side(&r, &home);
         let nas: SharedNas = Arc::new(Share::new(&r));
-        assert!(Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas).unwrap().is_none(), "a second process of the member runs none");
+        assert!(
+            Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas).unwrap().is_none(),
+            "a second process of the member runs none"
+        );
         a.step(Give { able: true, ..Default::default() }, &any);
         // Its lock file removed and taken by another process: it stops, its state saved, its
         // hand-offs kept in it, no heartbeat written.
@@ -2084,7 +2436,8 @@ mod tests {
         let r = root(d.path());
         let home = d.path().join("a/agent");
         let nas = Arc::new(Flaky(Share::new(&r), Default::default()));
-        let mut a = Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas.clone()).unwrap().unwrap();
+        let mut a =
+            Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas.clone()).unwrap().unwrap();
         a.set_clock(store::clock::Virtual::new());
         a.step(Give { able: true, ..Default::default() }, &any);
         // (Stepped until the failed listing, made off the loop, is back.)
@@ -2120,12 +2473,20 @@ mod tests {
         let key = e.key().unwrap();
         let out = b.step(Give { entries: vec![(e, Some(folder.clone()))], able: true, ..Default::default() }, &any);
         assert_eq!(out.leads, None);
-        assert!(out.send.iter().any(|(to, m)| *to == ia && matches!(m, Msg::Tell(k) if k.contains(&key))), "{:?}", out.send);
+        assert!(
+            out.send.iter().any(|(to, m)| *to == ia && matches!(m, Msg::Tell(k) if k.contains(&key))),
+            "{:?}",
+            out.send
+        );
         assert!(!folder.exists() && r.join(journal::path(&key)).exists());
         assert!(r.join(mail_path(&ia, &ib)).exists());
         // A knows B (its heartbeats listed, or here: told), reads its mail, merges, acknowledges.
         a.know(&ib);
-        let out = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.events.iter().any(|e| matches!(e, Event::Merged { applied, .. } if applied.contains(&key))));
+        let out = until(
+            &mut a,
+            || Give { able: true, ..Default::default() },
+            |o| o.events.iter().any(|e| matches!(e, Event::Merged { applied, .. } if applied.contains(&key))),
+        );
         assert!(out.send.iter().any(|(to, m)| *to == ib && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))));
         assert_eq!(a.driver().records().unwrap().keys.recorded("unit", "6/1/2"), Some("k2"));
         b.step(Give { able: true, ..Default::default() }, &any);
@@ -2138,15 +2499,26 @@ mod tests {
         let out = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.settle);
         assert!(!out.duties, "settling, it grants nothing");
         let state = serde_json::json!({ "leases": { "next": 9, "leases": [] }, "costs": {}, "failed": [], "pause": null, "pause_at": 0 });
-        let out = until(&mut a, || Give { settled: Some(state.clone()), able: true, ..Default::default() }, |o| o.events.iter().any(|e| matches!(e, Event::Handover { what: "passed", .. })));
-        assert!(out.leads.is_none() && out.send.iter().any(|(to, m)| *to == ib && matches!(m, Msg::Passed(t) if t.term == 2)));
+        let out = until(
+            &mut a,
+            || Give { settled: Some(state.clone()), able: true, ..Default::default() },
+            |o| o.events.iter().any(|e| matches!(e, Event::Handover { what: "passed", .. })),
+        );
+        assert!(
+            out.leads.is_none()
+                && out.send.iter().any(|(to, m)| *to == ib && matches!(m, Msg::Passed(t) if t.term == 2))
+        );
         let out = until(&mut b, || Give { able: true, ..Default::default() }, |o| o.leads == Some(2));
         let handed = out.events.iter().find_map(|e| match e {
             Event::TookUp { term: 2, handed, .. } => Some(handed.clone()),
             _ => None,
         });
         assert_eq!(handed, Some(Some(state)), "{:?}", out.events);
-        let out = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.events.iter().any(|e| matches!(e, Event::Handover { what: "over", .. })));
+        let out = until(
+            &mut a,
+            || Give { able: true, ..Default::default() },
+            |o| o.events.iter().any(|e| matches!(e, Event::Handover { what: "over", .. })),
+        );
         assert_eq!(out.term, 2);
     }
 
@@ -2154,12 +2526,25 @@ mod tests {
     fn a_jobs_entry_is_its_saves_and_the_targets_it_finished() {
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().join("1-3");
-        let save = |l: &str, c: &str| Handoff { changes: [(l.to_string(), Some(c.to_string()))].into(), pending: [(c.to_string(), "aa".to_string())].into(), ..Default::default() };
+        let save = |l: &str, c: &str| Handoff {
+            changes: [(l.to_string(), Some(c.to_string()))].into(),
+            pending: [(c.to_string(), "aa".to_string())].into(),
+            ..Default::default()
+        };
         crate::handoff::write(&dir, &save("base/6-1-1", "base/6-1-1.1111111111111111.base")).unwrap();
         crate::handoff::write(&dir, &save("base/6-1-2", "base/6-1-2.2222222222222222.base")).unwrap();
         let lease = LeaseId { term: 1, n: 3 };
         // A shared step's: only the files of the targets it finished.
-        let e = entry_of(&dir, "m-000000000000000a", lease, "unit", &[("6/1/1".into(), "k")].map(|(a, b): (String, &str)| (a, b.to_string())), 100_000).unwrap().unwrap();
+        let e = entry_of(
+            &dir,
+            "m-000000000000000a",
+            lease,
+            "unit",
+            &[("6/1/1".into(), "k")].map(|(a, b): (String, &str)| (a, b.to_string())),
+            100_000,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(e.handoff.changes.keys().collect::<Vec<_>>(), ["base/6-1-1"]);
         assert_eq!(e.handoff.pending.len(), 1);
         assert_eq!(e.handoff.done, Some(("unit".into(), vec![("6/1/1".into(), "k".into())])));
@@ -2179,22 +2564,52 @@ mod tests {
         let r = root(d.path());
         let home = d.path().join("a/agent");
         let mut run = Run::new(side(&r, &home), Role::Lead, Gates::default());
-        let done = |u: &str, k: &str| Handoff { done: Some(("unit".into(), vec![(u.into(), k.into())])), ..Default::default() };
+        let done = |u: &str, k: &str| Handoff {
+            done: Some(("unit".into(), vec![(u.into(), k.into())])),
+            ..Default::default()
+        };
         // The coordinator's journal here, a helper's outbox.
         let journal = home.join("coord/journal");
         crate::handoff::write(&journal.join("m1"), &done("6/2/1", "k21")).unwrap();
         crate::handoff::write(&journal.join("m1"), &done("6/2/2", "k22")).unwrap();
         let ob = home.join("outbox/1791328399374");
         std::fs::create_dir_all(&ob).unwrap();
-        std::fs::write(ob.join("work.json"), serde_json::to_vec(&crate::agent::build::Work { step: "unit".into(), targets: vec![("6/2/3".into(), "k23".into())] }).unwrap()).unwrap();
-        crate::handoff::write(&ob, &Handoff { changes: [("base/6-2-3".to_string(), Some("base/6-2-3.3333333333333333.base".to_string()))].into(), ..Default::default() }).unwrap();
-        std::fs::write(ob.join("result.json"), serde_json::json!({ "ok": true, "done": ["unit", [["6/2/3", "k23"]]] }).to_string()).unwrap();
+        std::fs::write(
+            ob.join("work.json"),
+            serde_json::to_vec(&crate::agent::build::Work {
+                step: "unit".into(),
+                targets: vec![("6/2/3".into(), "k23".into())],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        crate::handoff::write(
+            &ob,
+            &Handoff {
+                changes: [("base/6-2-3".to_string(), Some("base/6-2-3.3333333333333333.base".to_string()))].into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        std::fs::write(
+            ob.join("result.json"),
+            serde_json::json!({ "ok": true, "done": ["unit", [["6/2/3", "k23"]]] }).to_string(),
+        )
+        .unwrap();
         // (A task's folder: left to its broker. A failed job's with nothing to hand off: gone, or
         // the member would never ask for work again.)
         std::fs::create_dir_all(home.join("outbox/1791328399375")).unwrap();
         let failed = home.join("outbox/1791328399376");
         std::fs::create_dir_all(&failed).unwrap();
-        std::fs::write(failed.join("work.json"), serde_json::to_vec(&crate::agent::build::Work { step: "unit".into(), targets: vec![("6/2/4".into(), "k24".into())] }).unwrap()).unwrap();
+        std::fs::write(
+            failed.join("work.json"),
+            serde_json::to_vec(&crate::agent::build::Work {
+                step: "unit".into(),
+                targets: vec![("6/2/4".into(), "k24".into())],
+            })
+            .unwrap(),
+        )
+        .unwrap();
         std::fs::write(failed.join("result.json"), r#"{"ok": false, "done": null, "error": "it failed"}"#).unwrap();
         run.drain(Some(&journal), &home.join("outbox"));
         let leases: Vec<LeaseId> = run.entries.iter().map(|(e, _)| e.lease).collect();
@@ -2209,7 +2624,14 @@ mod tests {
         let out = run.step(true);
         assert_eq!(out.leads, Some(1));
         let rec = run.side.driver().records().unwrap();
-        assert_eq!((rec.keys.recorded("unit", "6/2/1"), rec.keys.recorded("unit", "6/2/2"), rec.keys.recorded("unit", "6/2/3")), (Some("k21"), Some("k22"), Some("k23")));
+        assert_eq!(
+            (
+                rec.keys.recorded("unit", "6/2/1"),
+                rec.keys.recorded("unit", "6/2/2"),
+                rec.keys.recorded("unit", "6/2/3")
+            ),
+            (Some("k21"), Some("k22"), Some("k23"))
+        );
         assert_eq!(rec.manifest.get("base/6-2-3").map(String::as_str), Some("base/6-2-3.3333333333333333.base"));
         assert!(crate::handoff::waiting_in(&journal).unwrap().is_empty() && !ob.exists());
         // (Marked merged: a file whose removal had failed isn't drained again.)
@@ -2228,8 +2650,19 @@ mod tests {
         let me = run.side.member().id.clone();
         let pack = |n: u64, t: &str, names: &[&str]| {
             let dash = t.replace('/', "-");
-            let changes = names.iter().map(|l| (format!("{l}/{dash}"), Some(format!("{l}/{dash}.{n:016x}.pack")))).collect();
-            Entry { member: me.clone(), lease: LeaseId { term: 1, n }, step: "pack".into(), handoff: Handoff { changes, done: Some(("pack".into(), vec![(t.into(), format!("k{n}"))])), ..Default::default() }, at: crate::agent::jobs::now_s() }
+            let changes =
+                names.iter().map(|l| (format!("{l}/{dash}"), Some(format!("{l}/{dash}.{n:016x}.pack")))).collect();
+            Entry {
+                member: me.clone(),
+                lease: LeaseId { term: 1, n },
+                step: "pack".into(),
+                handoff: Handoff {
+                    changes,
+                    done: Some(("pack".into(), vec![(t.into(), format!("k{n}"))])),
+                    ..Default::default()
+                },
+                at: crate::agent::jobs::now_s(),
+            }
         };
         // A map tile's own files, and one that also writes a terrain pack (another step's).
         let within = pack(1, "6/1/2", &["hidata", "layers/roads/hi"]);
@@ -2261,8 +2694,28 @@ mod tests {
         let lease = LeaseId { term: 3, n: 11 };
         let dir = job_dir(&home, lease);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("work.json"), serde_json::to_vec(&JobKept { step: "unit".into(), targets: vec![("6/1/1".into(), "k1".into()), ("6/1/2".into(), "k2".into())], lease }).unwrap()).unwrap();
-        crate::handoff::write(&dir, &Handoff { changes: [("base/6-1-1".to_string(), Some("base/6-1-1.1111111111111111.base".to_string())), ("base/6-1-2".to_string(), Some("base/6-1-2.2222222222222222.base".to_string()))].into(), ..Default::default() }).unwrap();
+        std::fs::write(
+            dir.join("work.json"),
+            serde_json::to_vec(&JobKept {
+                step: "unit".into(),
+                targets: vec![("6/1/1".into(), "k1".into()), ("6/1/2".into(), "k2".into())],
+                lease,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        crate::handoff::write(
+            &dir,
+            &Handoff {
+                changes: [
+                    ("base/6-1-1".to_string(), Some("base/6-1-1.1111111111111111.base".to_string())),
+                    ("base/6-1-2".to_string(), Some("base/6-1-2.2222222222222222.base".to_string())),
+                ]
+                .into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         std::fs::write(dir.join("done.txt"), "unit 6/1/1\n").unwrap();
         // (A folder of no job: gone.)
         std::fs::create_dir_all(home.join("pool/jobs/junk")).unwrap();
@@ -2308,7 +2761,9 @@ mod tests {
         bad.handoff.changes.insert("base/6-1-3".into(), Some("base/6-1-4.3333333333333333.base".into()));
         assert!(check(&bad, &r).unwrap_err().contains("isn't a content name of base/6-1-3"));
         let mut raw = e.clone();
-        raw.handoff.raw.push(("3-1-2".into(), crate::rawpack::Pack { name: "3-1-3.0123456789abcdef.tiles".into(), bytes: 1 }));
+        raw.handoff
+            .raw
+            .push(("3-1-2".into(), crate::rawpack::Pack { name: "3-1-3.0123456789abcdef.tiles".into(), bytes: 1 }));
         assert!(check(&raw, &r).is_err());
         let mut none = e.clone();
         none.handoff.done = Some(("unit".into(), Vec::new()));
@@ -2325,7 +2780,10 @@ mod tests {
         let mut pass = e;
         pass.step = "osm-pass".into();
         pass.handoff.done = None;
-        pass.handoff.changes.insert("sources/osm/2026-10-01/pass".into(), Some("sources/osm/2026-10-01/pass.4444444444444444.json".into()));
+        pass.handoff.changes.insert(
+            "sources/osm/2026-10-01/pass".into(),
+            Some("sources/osm/2026-10-01/pass.4444444444444444.json".into()),
+        );
         assert!(check(&pass, &r).unwrap_err().contains("writes base/6-1-2, outside osm-pass's write-set"));
         pass.handoff.changes.remove("base/6-1-2");
         pass.handoff.pending.clear();
@@ -2343,17 +2801,35 @@ mod tests {
         e.handoff.changes.insert("work/new-output".into(), Some("work/new-output.0123456789abcdef.json".into()));
         let on = |app: Option<&'static str>| move |_: &str| app.map(str::to_string);
         let held = check_from(&e, &r, lead, &on(Some("20261010-0000-ccccccc"))).unwrap_err();
-        assert!(held.starts_with(crate::pool::records::HOLD) && held.contains("work/new-output") && held.contains("20261010-0000-ccccccc"), "{held}");
+        assert!(
+            held.starts_with(crate::pool::records::HOLD)
+                && held.contains("work/new-output")
+                && held.contains("20261010-0000-ccccccc"),
+            "{held}"
+        );
         assert!(check_from(&e, &r, lead, &on(None)).unwrap_err().starts_with(crate::pool::records::HOLD));
         for app in [lead, "20261008-0000-aaaaaaa"] {
             let why = check_from(&e, &r, lead, &on(Some(app))).unwrap_err();
-            assert!(!why.starts_with(crate::pool::records::HOLD) && why.contains("outside unit's write-set"), "{app}: {why}");
+            assert!(
+                !why.starts_with(crate::pool::records::HOLD) && why.contains("outside unit's write-set"),
+                "{app}: {why}"
+            );
         }
         // Another check's refusal (a content name not of its logical name): refused, newer or not.
         let mut bad = unit_entry("m-000000000000000b", LeaseId { term: 1, n: 2 }, "6/1/2", "k2");
         bad.handoff.changes.insert("base/6-1-2".into(), Some("base/6-1-3.3333333333333333.base".into()));
-        assert!(!check_from(&bad, &r, lead, &on(Some("20261010-0000-ccccccc"))).unwrap_err().starts_with(crate::pool::records::HOLD));
-        assert_eq!(check_from(&unit_entry("m-000000000000000b", LeaseId { term: 1, n: 3 }, "6/1/2", "k2"), &r, lead, &on(None)), Ok(()));
+        assert!(!check_from(&bad, &r, lead, &on(Some("20261010-0000-ccccccc")))
+            .unwrap_err()
+            .starts_with(crate::pool::records::HOLD));
+        assert_eq!(
+            check_from(
+                &unit_entry("m-000000000000000b", LeaseId { term: 1, n: 3 }, "6/1/2", "k2"),
+                &r,
+                lead,
+                &on(None)
+            ),
+            Ok(())
+        );
     }
 
     #[test]
@@ -2367,11 +2843,15 @@ mod tests {
         assert_eq!(crate::agent::build::Keys::load(r).recorded("unit", "6/1/1"), Some("k1"));
         let m: BTreeMap<String, String> = crate::out::read_record(&r.join("state/build/manifest.json")).unwrap();
         assert_eq!(m, rec.manifest);
-        let ev = |seq: u64, t: u64| crate::coord::history::Event { seq, t, ..crate::coord::history::Event::new("start") };
+        let ev =
+            |seq: u64, t: u64| crate::coord::history::Event { seq, t, ..crate::coord::history::Event::new("start") };
         append_history(r, "m-000000000000000a", &[ev(1, 1_791_400_000), ev(2, 1_791_400_001)]).unwrap();
         append_history(r, "m-000000000000000a", &[ev(3, 1_791_500_000)]).unwrap();
         let day = |t| journal::day(t).unwrap();
-        let f = |t| std::fs::read_to_string(r.join("state/coord/history").join(day(t)).join("m-000000000000000a.jsonl")).unwrap();
+        let f = |t| {
+            std::fs::read_to_string(r.join("state/coord/history").join(day(t)).join("m-000000000000000a.jsonl"))
+                .unwrap()
+        };
         assert_eq!(f(1_791_400_000).lines().count(), 2);
         assert_eq!(f(1_791_500_000).lines().count(), 1);
     }
@@ -2406,8 +2886,10 @@ mod tests {
         // from the current term's lead.
         let d = tempfile::tempdir().unwrap();
         let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "a", "development");
-        let client = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "b");
-        let ask = crate::coord::Ask { kind: "native".into(), can: vec!["x".into()], mem_mb: 1024, ..Default::default() };
+        let client =
+            crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "b");
+        let ask =
+            crate::coord::Ask { kind: "native".into(), can: vec!["x".into()], mem_mb: 1024, ..Default::default() };
         client.ask(&ask).ok();
         let first = client.answered().expect("answered");
         assert_eq!((first.term, first.member.as_deref()), (None, None), "not a pool's lead yet: it says nothing");
@@ -2416,7 +2898,16 @@ mod tests {
         client.ask(&ask).ok();
         let a = client.answered().unwrap();
         assert_eq!((a.term, a.member.as_deref()), (Some(3), Some("m-000000000000000a")));
-        let term = |t: u64, m: &str| crate::pool::term::Term { term: t, member: m.into(), host: "A".into(), app: "development".into(), since: 1, how: String::new(), from: t - 1, seq: None };
+        let term = |t: u64, m: &str| crate::pool::term::Term {
+            term: t,
+            member: m.into(),
+            host: "A".into(),
+            app: "development".into(),
+            since: 1,
+            how: String::new(),
+            from: t - 1,
+            seq: None,
+        };
         assert_eq!(lead_answered(Some(&a), Some(&term(3, "m-000000000000000a"))), Some(a.at));
         assert_eq!(lead_answered(Some(&a), Some(&term(4, "m-000000000000000a"))), None, "an earlier term's lead");
         assert_eq!(lead_answered(Some(&a), Some(&term(3, "m-000000000000000c"))), None, "another member's");
@@ -2523,7 +3014,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(30));
         }
         assert_eq!(a.gates.leads, Some(1));
-        a.cx = Cx { root: Some(r.clone()), home: ha.clone(), coord: Some(coord.clone()), able: true, ..Default::default() };
+        a.cx = Cx {
+            root: Some(r.clone()),
+            home: ha.clone(),
+            coord: Some(coord.clone()),
+            able: true,
+            ..Default::default()
+        };
         b.cx = Cx { root: Some(r.clone()), home: hb.clone(), able: true, ..Default::default() };
         tick_until(&mut [&mut a], |r| r[0].gates.caught_up);
         assert_eq!(coord.shared.lock().unwrap().moving, None, "it grants");
@@ -2542,14 +3039,20 @@ mod tests {
         a.cx.duty = false;
         tick_until(&mut [&mut a, &mut b], |r| r[1].side.driver().leads() == Some(2));
         assert_eq!(a.side.driver().leads(), None);
-        assert_eq!(coord.shared.lock().unwrap().moving.as_deref(), Some("no longer leads"), "its coordinator grants nothing; the loop stops it");
+        assert_eq!(
+            coord.shared.lock().unwrap().moving.as_deref(),
+            Some("no longer leads"),
+            "its coordinator grants nothing; the loop stops it"
+        );
         // B's coordinator's part (the state handed over) is its loop's next step's.
         let handed = b.pending_took_up.iter().find_map(|e| match e {
             Event::TookUp { term: 2, handed, .. } => Some(handed.clone()),
             _ => None,
         });
         assert!(handed.is_some_and(|h| h.is_some_and(|h| h["leases"].is_object())), "{:?}", b.pending_took_up);
-        tick_until(&mut [&mut a, &mut b], |r| r[0].controls.kept.asked.as_ref().is_some_and(|k| k.state == super::super::lead::State::Done));
+        tick_until(&mut [&mut a, &mut b], |r| {
+            r[0].controls.kept.asked.as_ref().is_some_and(|k| k.state == super::super::lead::State::Done)
+        });
         // The views, fresh on both Macs without their loops.
         assert_eq!(read_view(&hb).and_then(|v| v.pool.lead).map(|v| (v.term, v.leading)), Some((2, true)));
         assert_eq!(read_view(&ha).and_then(|v| v.pool.gates.leads), None);

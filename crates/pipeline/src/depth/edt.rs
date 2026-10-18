@@ -108,7 +108,10 @@ mod tests {
         let (d, i) = nearest(&seed, w, h);
         for r in 0..h {
             for c in 0..w {
-                let best = (0..w * h).filter(|&k| seed[k]).map(|k| (((k / w) as f64 - r as f64).powi(2) + ((k % w) as f64 - c as f64).powi(2)).sqrt()).fold(f64::INFINITY, f64::min);
+                let best = (0..w * h)
+                    .filter(|&k| seed[k])
+                    .map(|k| (((k / w) as f64 - r as f64).powi(2) + ((k % w) as f64 - c as f64).powi(2)).sqrt())
+                    .fold(f64::INFINITY, f64::min);
                 assert!((d[r * w + c] as f64 - best).abs() < 1e-4, "{r},{c}: {} vs {best}", d[r * w + c]);
                 let k = i[r * w + c] as usize;
                 assert!(seed[k]);
