@@ -3434,14 +3434,22 @@ impl Agent {
                         // (Later than the setting there, whatever the two Macs' clocks say: a
                         // member's own ask since, not yet written there, may still lose to it.)
                         let path = r.join(crate::control::hold_path(&id));
-                        let there = nasread::read_switch(&path)
-                            .ok()
-                            .and_then(|t| serde_json::from_str::<HoldState>(&t).ok())
-                            .map_or(0, |h| h.at);
-                        let st = HoldState { held: req.held.clone(), at: req.at.max(there + 1) };
-                        match write_hold(&path, &st) {
-                            Ok(()) => (true, format!("{name} is {what} (it takes it up within a minute)")),
-                            Err(e) => (false, format!("{name}'s pause on the NAS: {e:#}")),
+                        // (Only a missing file counts as none set; one that can't be read or
+                        // parsed now could hide a later setting: asked again, never a false ok.)
+                        let there = match nasread::read_switch(&path) {
+                            Ok(t) => serde_json::from_str::<HoldState>(&t).map(|h| h.at).ok(),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(0),
+                            Err(_) => None,
+                        };
+                        match there {
+                            None => (false, format!("{name}'s pause on the NAS can't be read now: ask again")),
+                            Some(there) => {
+                                let st = HoldState { held: req.held.clone(), at: req.at.max(there + 1) };
+                                match write_hold(&path, &st) {
+                                    Ok(()) => (true, format!("{name} is {what} (it takes it up within a minute)")),
+                                    Err(e) => (false, format!("{name}'s pause on the NAS: {e:#}")),
+                                }
+                            }
                         }
                     }
                 },
@@ -15570,6 +15578,16 @@ mod pool_tests {
             assert!(Instant::now() < end, "the member never could lead: {:?}", lead.pooled().unwrap().controls.view);
             std::thread::sleep(Duration::from_millis(250));
         }
+        // The lead's file on the NAS unreadable (damaged): refused, ask again, nothing written.
+        let lead_file = r.join(crate::control::hold_path(&il));
+        std::fs::create_dir_all(lead_file.parent().unwrap()).unwrap();
+        std::fs::write(&lead_file, b"{").unwrap();
+        let ask = crate::control::request_hold(&m.o.home, Some(&il), None).unwrap();
+        m.step().unwrap();
+        let a = crate::control::hold_answer(&m.o.home, &ask).unwrap();
+        assert!(!a.ok && a.said.contains("can't be read now"), "{a:?}");
+        assert_eq!(std::fs::read(&lead_file).unwrap(), b"{");
+        std::fs::remove_file(&lead_file).unwrap();
         // The member's owner pauses the lead: written to the lead's file on the NAS, answered.
         let ask =
             crate::control::request_hold(&m.o.home, Some(&il), Some(crate::control::Hold::new("scenic pause on m")))
