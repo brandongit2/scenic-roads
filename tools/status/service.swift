@@ -345,6 +345,8 @@ struct RunningJob {
     let what: String
     let step: String
     let left: Int?
+    /// Its one target, when its id names one (`<step> <target>`): what a cancel names.
+    var target: String? = nil
 }
 
 /// The fresh status file's jobs (its beat within the last six minutes; none from an agent stopped).
@@ -360,7 +362,8 @@ func runningJobs(serviceRunning: Bool) -> [RunningJob] {
     let files = ["status.json", "helper.json"].compactMap { (try? Data(contentsOf: dir.appendingPathComponent($0))).flatMap { try? JSONDecoder().decode(File.self, from: $0) } }
     guard let f = files.max(by: { $0.beat < $1.beat }), Int(Date().timeIntervalSince1970) - f.beat < 6 * 60 else { return [] }
     return ([f.job, f.beside].compactMap { $0 } + (f.more ?? [])).map {
-        RunningJob(what: $0.what, step: String($0.id.split(separator: " ").first ?? ""), left: $0.progress?.eta_s)
+        let words = $0.id.split(separator: " ")
+        return RunningJob(what: $0.what, step: String(words.first ?? ""), left: $0.progress?.eta_s, target: words.count == 2 ? String(words[1]) : nil)
     }
 }
 

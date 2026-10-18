@@ -1794,6 +1794,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             now.toolTip = "Every Mac's running job frozen where it is at once; it goes on from there when you resume"
             m.addItem(now)
         }
+        // A running job of this Mac's cancelled (`scenic job cancel`, crates/pipeline/src/control.rs
+        // Cancel): stopped and given back, not failed, its work under way dropped. Option: held
+        // until the lead runs a newer app.
+        for j in runningJobs(serviceRunning: build.state.running) {
+            guard let t = j.target else { continue }
+            let it = NSMenuItem(title: "Cancel \(j.what)", action: #selector(cancelJob), keyEquivalent: "")
+            it.target = self
+            it.representedObject = [j.step, t, "rerun"]
+            it.toolTip = "Stopped now and given back to the build (not a failure), its work under way dropped; it runs again from the start"
+            m.addItem(it)
+            let alt = NSMenuItem(title: "Cancel \(j.what), Rerun on a Newer App", action: #selector(cancelJob), keyEquivalent: "")
+            alt.target = self
+            alt.representedObject = [j.step, t, "update"]
+            alt.isAlternate = true
+            alt.keyEquivalentModifierMask = [.option]
+            alt.toolTip = "Stopped and given back as with Cancel, and held until the lead runs a newer app than this one"
+            m.addItem(alt)
+        }
         // The pool's lead (docs/pool.md §11): handed over, asked for, taken over; asks to this
         // Mac's agent (crates/pipeline/src/agent/lead.rs), which checks each as its driver would.
         if let p = own?.pool, let v = p.lead {
@@ -1992,6 +2010,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
             post("Couldn't accept \(unit)'s warnings", "\(error.localizedDescription)")
+            return
+        }
+        poll()
+    }
+
+    /// Asks this Mac's agent to cancel a running job (its step, target, and "update" to hold it
+    /// until a newer app): an ask added to its cancel asks' file (control.rs CANCEL_REQUEST), written
+    /// whole, which the agent takes up within seconds.
+    @objc func cancelJob(_ sender: NSMenuItem) {
+        guard let a = sender.representedObject as? [String], a.count == 3 else { return }
+        let name = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
+        let ask: [String: Any] = ["step": a[0], "target": a[1], "rerun_after_update": a[2] == "update", "by": "the menu bar on \(name)", "at": Int(Date().timeIntervalSince1970)]
+        let dir = home.appendingPathComponent("agent")
+        let (tmp, dst) = (dir.appendingPathComponent("cancel-request.json.menu.tmp"), dir.appendingPathComponent("cancel-request.json"))
+        var asks = ((try? Data(contentsOf: dst)).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [Any]) ?? []
+        asks.append(ask)
+        do {
+            try JSONSerialization.data(withJSONObject: asks).write(to: tmp)
+            guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        } catch {
+            post("Couldn't cancel the job", "\(error.localizedDescription)")
             return
         }
         poll()

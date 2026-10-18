@@ -581,7 +581,8 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   [--downgrade]`, `scenic lead auto on|off`. `scenic status` shows the pool too.
 - **Forcing stays on the Mac:** `/work/lead` refuses forced takeovers.
 - **Cancelling a job** (`crate::control::Cancel`): `scenic job cancel <target> [--step <step>]
-  [--rerun-after-update]` writes an ask to this Mac's agent (`cancel-request.json`). The agent
+  [--rerun-after-update]`, or the menu bar's "Cancel <job>" on the Mac running it (Option: "…,
+  Rerun on a Newer App"), writes an ask to that Mac's agent (`cancel-request.json`). The agent
   stops a slot of its own running the target, and tells the lead's coordinator (in process, or
   `/work/cancel` from a member), which marks every live lease of the target; a member's job hears
   it in its beat's answer (within a minute) and stops. A cancelled job ends as given back, not
