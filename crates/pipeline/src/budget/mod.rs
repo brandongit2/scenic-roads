@@ -76,8 +76,10 @@ impl Proxy {
 /// metered by the real budget and reach no one.
 pub const TEST_PROXY_TO: &str = "SCENIC_TEST_PROXY_TO";
 
-/// The agent's proxy, taking from the pool's budget on the NAS's project folder `root` as `me`.
-pub fn start_proxy(root: &Path, me: &str) -> anyhow::Result<Proxy> {
+/// The agent's proxy, taking from the pool's budget on the NAS's project folder `root` as `me`: on
+/// `port` while it's free (the one the jobs an agent took over were told), else (or 0) one of its
+/// own.
+pub fn start_proxy_at(root: &Path, me: &str, port: u16) -> anyhow::Result<Proxy> {
     #[cfg(not(target_os = "wasi"))]
     {
         let to: Option<std::net::SocketAddr> = std::env::var(TEST_PROXY_TO)
@@ -85,11 +87,11 @@ pub fn start_proxy(root: &Path, me: &str) -> anyhow::Result<Proxy> {
             .and_then(|a| a.parse().ok())
             .filter(|a: &std::net::SocketAddr| a.ip().is_loopback());
         let resolve: Option<proxy::Resolve> = to.map(|a| Arc::new(move |_: &str, _: u16| Some(a)) as proxy::Resolve);
-        Proxy::start(Arc::new(Budget::new(root, me, Arc::new(SysClock))), resolve)
+        Proxy::start_at(Arc::new(Budget::new(root, me, Arc::new(SysClock))), resolve, port)
     }
     #[cfg(target_os = "wasi")]
     {
-        let _ = (root, me);
+        let _ = (root, me, port);
         anyhow::bail!("no proxy in WebAssembly")
     }
 }

@@ -1793,13 +1793,14 @@ impl Run {
     }
 
     /// The jobs an earlier process left in the agent's folder `home` (`left_jobs`), handed to the
-    /// next step: once a process, after the agent stopped those still running.
-    pub fn take_left(&mut self, home: &Path) {
+    /// next step: once a process, after the agent stopped those still running; but those it took
+    /// over (`running`: their folders), which hand off as they end.
+    pub fn take_left(&mut self, home: &Path, running: &[PathBuf]) {
         if std::mem::replace(&mut self.left_taken, true) {
             return;
         }
         let me = self.side.member().id.clone();
-        self.entries.extend(left_jobs(home, &me).into_iter().map(|(e, d)| (e, Some(d))));
+        self.entries.extend(left_jobs(home, &me, running).into_iter().map(|(e, d)| (e, Some(d))));
     }
 
     /// The next number for a hand-off drained from before the pool (`DRAINED` on, by the clock).
@@ -1949,11 +1950,13 @@ pub struct JobKept {
 
 /// The jobs an earlier process of this agent left in `<home>/pool/jobs/` (it stopped or crashed
 /// while they ran): each one's hand-off, what it noted done (`done.txt`) as finished, with its
-/// folder; a folder of no job, or whose saves are damaged, removed.
-pub fn left_jobs(home: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
+/// folder; a folder of no job, or whose saves are damaged, removed. Those in `running` (the jobs
+/// this agent took over from the one before, still running: crate::agent::jobs::adopt) are left as
+/// they are.
+pub fn left_jobs(home: &Path, member: &str, running: &[PathBuf]) -> Vec<(Entry, PathBuf)> {
     let Ok(rd) = std::fs::read_dir(home.join("pool/jobs")) else { return Vec::new() };
     let mut out = Vec::new();
-    for d in rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+    for d in rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && !running.contains(p)) {
         let kept: Option<JobKept> =
             std::fs::read(d.join("work.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let Some(k) = kept else {
@@ -2845,7 +2848,7 @@ mod tests {
         std::fs::write(dir.join("done.txt"), "unit 6/1/1\n").unwrap();
         // (A folder of no job: gone.)
         std::fs::create_dir_all(home.join("pool/jobs/junk")).unwrap();
-        let left = left_jobs(&home, "m-000000000000000a");
+        let left = left_jobs(&home, "m-000000000000000a", &[]);
         assert_eq!(left.len(), 1);
         let (e, d0) = &left[0];
         assert_eq!((e.lease, d0), (lease, &dir));

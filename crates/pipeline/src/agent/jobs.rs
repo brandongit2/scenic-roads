@@ -3,6 +3,13 @@
 //! -w`: no idle sleep, on battery too, and no sleep on mains power) but not while it's paused
 //! (`SIGSTOP` to the group while a condition it needs lapses; `SIGCONT` when it holds again), and
 //! stopped as a group.
+//!
+//! A job outlives its agent (docs/plan.md §8, Restarts): its record on disk names all an agent
+//! needs to tend it (its spec, threads, log, and the slot's lease as the agent last saved it,
+//! `save_hand`), and a shell at the head of its group writes its exit status to a file beside the
+//! record (`status_path`), so the agent after it, not its parent, still learns how it ended. An
+//! agent that restarts (a newer app, its launcher restarted, a crash) leaves its jobs running, and
+//! the next one takes them over (`adopt`).
 
 use crate::sys::Signal;
 use anyhow::{Context, Result};
@@ -47,7 +54,15 @@ pub fn now_s() -> u64 {
 /// A job running (or paused) under the agent.
 pub struct Running {
     pub spec: JobSpec,
-    child: Child,
+    /// Its group's head, this process's child; None when an agent before this one started it
+    /// (`adopt`): its end is then read from its status file (`status`).
+    child: Option<Child>,
+    /// Where its group's head writes its exit status as it ends (`status_path`).
+    status: PathBuf,
+    /// An agent before this one started it (`adopt`).
+    pub adopted: bool,
+    /// An adopted job's group ended without a status (killed while no agent tended it).
+    pub vanished: bool,
     caffeinate: Option<Child>,
     pub pgid: i32,
     pub started: u64,
@@ -89,7 +104,32 @@ struct Record {
     work: Option<super::build::Work>,
     #[serde(default)]
     done_file: Option<PathBuf>,
+    /// What an agent after this one needs to take it over (`adopt`): its spec, threads and log
+    /// (none in a record an older app wrote: such a job is stopped, `stop_orphan`).
+    #[serde(default)]
+    spec: Option<JobSpec>,
+    #[serde(default)]
+    threads: usize,
+    #[serde(default)]
+    log: Option<PathBuf>,
+    /// Why it was frozen when the record was last saved (`save_hand`).
+    #[serde(default)]
+    paused: Option<String>,
+    /// Its agent's slot as last saved (the lease, its grant): the agent's to read (`save_hand`).
+    #[serde(default)]
+    hand: Option<serde_json::Value>,
 }
+
+/// Where the job of record `record` has its exit status written as it ends: beside it
+/// (`job.json`: `job.status`).
+pub fn status_path(record: &Path) -> PathBuf {
+    record.with_extension("status")
+}
+
+/// The shell at the head of a job's group: runs the job's command (its arguments after the status
+/// file's), then writes its exit status to that file (whole: by a temporary name, renamed), and
+/// ends as the command did (a signal's end raised again, so its parent sees it as before).
+const HEAD: &str = r#"s=$1; shift; "$@"; c=$?; printf '%s\n' "$c" > "$s.tmp" && mv -f "$s.tmp" "$s"; if [ "$c" -gt 128 ]; then kill -"$((c - 128))" $$; fi; exit "$c""#;
 
 use crate::sys::{group_members, process_start};
 
@@ -123,8 +163,13 @@ impl Running {
             panic!("{e}");
         }
         let (prog, args) = spec.cmd.split_first().context("empty command")?;
-        let mut c = store::spawn::command("/usr/sbin/taskpolicy");
-        c.args(["-c", "utility"]);
+        // (Its status written by the shell at its group's head, `HEAD`: read by an agent that
+        // adopts it, the parent then not this process.)
+        let status = status_path(record);
+        std::fs::remove_file(&status).ok();
+        let mut c = store::spawn::command("/bin/sh");
+        c.args(["-c", HEAD, "sh"]).arg(&status);
+        c.args(["/usr/sbin/taskpolicy", "-c", "utility"]);
         if let Some(profile) = sandbox {
             c.args(["/usr/bin/sandbox-exec", "-p", profile]);
         }
@@ -150,11 +195,19 @@ impl Running {
             leader_start: process_start(pgid).unwrap_or(0),
             work: spec.record.clone(),
             done_file: done_file.map(Path::to_path_buf),
+            spec: Some(spec.clone()),
+            threads,
+            log: Some(log.clone()),
+            paused: None,
+            hand: None,
         };
         std::fs::write(record, serde_json::to_vec(&rec)?)?;
         Ok(Running {
             spec,
-            child,
+            child: Some(child),
+            status,
+            adopted: false,
+            vanished: false,
             caffeinate,
             pgid,
             started,
@@ -185,19 +238,41 @@ impl Running {
     pub fn resume(&mut self) {
         if self.paused.take().is_some() {
             crate::sys::signal_group(self.pgid, Signal::Cont);
-            self.caffeinate = keep_awake(self.child.id());
+            self.caffeinate = keep_awake(self.pgid as u32);
         }
     }
 
-    /// Its exit status once it has finished.
+    /// Its exit status once it has finished: its child's; an adopted job's from its status file,
+    /// or, its group gone without one (killed while no agent tended it: `vanished`), as killed.
     pub fn poll(&mut self) -> Result<Option<ExitStatus>> {
-        Ok(self.child.try_wait()?)
+        if let Some(c) = self.child.as_mut() {
+            return Ok(c.try_wait()?);
+        }
+        if let Some(st) = read_status(&self.status) {
+            return Ok(Some(st));
+        }
+        if !group_members(self.pgid).is_empty() {
+            return Ok(None);
+        }
+        // (Its status may have been written as the group emptied.)
+        Ok(Some(read_status(&self.status).unwrap_or_else(|| {
+            self.vanished = true;
+            killed()
+        })))
     }
 
     /// Waits for it to finish (the tests': a job that ends by itself), its exit status.
     #[cfg(test)]
     pub fn wait(&mut self) -> Result<ExitStatus> {
-        Ok(self.child.wait()?)
+        if let Some(c) = self.child.as_mut() {
+            return Ok(c.wait()?);
+        }
+        loop {
+            if let Some(st) = self.poll()? {
+                return Ok(st);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// Stops the whole group: SIGTERM (after SIGCONT, so a paused job can handle it), then SIGKILL
@@ -205,13 +280,30 @@ impl Running {
     pub fn stop(&mut self, grace: Duration) {
         let child = &mut self.child;
         stop_group(self.pgid, grace, || {
-            let _ = child.try_wait();
+            if let Some(c) = child.as_mut() {
+                let _ = c.try_wait();
+            }
         });
-        let _ = self.child.wait();
+        if let Some(c) = self.child.as_mut() {
+            let _ = c.wait();
+        }
         if let Some(c) = self.caffeinate.as_mut() {
             let _ = c.kill();
             let _ = c.wait();
         }
+    }
+
+    /// Left running for the agent after this one (`adopt`): its record kept with `hand`, the
+    /// agent's slot (`save_hand`); this agent's hold on the Mac's sleep let go (the next keeps it
+    /// awake again).
+    pub fn hand_over(mut self, record: &Path, hand: serde_json::Value) {
+        save_hand(record, &self, hand);
+        if let Some(mut c) = self.caffeinate.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        // (Its child dropped unwaited: it goes on, reaped by launchd once this process has ended.)
+        self.child.take();
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -230,6 +322,88 @@ fn keep_awake(pid: u32) -> Option<Child> {
             .stderr(Stdio::null()),
     )
     .ok()
+}
+
+/// An exit status read from a job's status file (`HEAD`), when there's one that reads: a code past
+/// 128 as the signal it says.
+fn read_status(p: &Path) -> Option<ExitStatus> {
+    let code: i32 = std::fs::read_to_string(p).ok()?.trim().parse().ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        Some(if code > 128 { ExitStatus::from_raw(code - 128) } else { ExitStatus::from_raw((code & 0xff) << 8) })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = code;
+        None
+    }
+}
+
+/// The status of a job killed (SIGKILL) with no word of its end.
+fn killed() -> ExitStatus {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        ExitStatus::from_raw(9)
+    }
+    #[cfg(not(unix))]
+    {
+        unreachable!("jobs run on macOS")
+    }
+}
+
+/// Saves slot state `hand` (the agent's: its lease, its grant) and whether `r` is frozen into its
+/// record, for an agent after this one to take it over (`adopt`). Written whole.
+pub fn save_hand(record: &Path, r: &Running, hand: serde_json::Value) {
+    let Ok(b) = std::fs::read(record) else { return };
+    let Ok(mut rec) = serde_json::from_slice::<Record>(&b) else { return };
+    rec.hand = Some(hand);
+    rec.paused = r.paused.clone();
+    if let Ok(b) = serde_json::to_vec(&rec) {
+        if let Err(e) = crate::whole::write(record, &b) {
+            eprintln!("agent: saving {}'s record: {e:#}", r.spec.id);
+        }
+    }
+}
+
+/// A job an agent before this one left running, taken over from its record `record`: its group
+/// still the job's, or ended with its status written (its end then seen at the agent's next look);
+/// with the slot state that agent saved (`save_hand`). None when the record names no such job (none
+/// there, one an older app wrote, no slot state saved), its group gone without a status, or not the
+/// job's: `stop_orphan` then. The record stays.
+pub fn adopt(record: &Path) -> Option<(Running, serde_json::Value)> {
+    let rec: Record = serde_json::from_slice(&std::fs::read(record).ok()?).ok()?;
+    let (spec, hand, log) = (rec.spec?, rec.hand?, rec.log?);
+    let status = status_path(record);
+    let g = Group { pgid: rec.pgid, leader_start: rec.leader_start, started: rec.started, id: rec.id };
+    if !g.is_the_jobs() && read_status(&status).is_none() {
+        return None;
+    }
+    let ran = Duration::from_secs(now_s().saturating_sub(rec.started));
+    let caffeinate = if rec.paused.is_none() { keep_awake(rec.pgid as u32) } else { None };
+    Some((
+        Running {
+            spec,
+            child: None,
+            status,
+            adopted: true,
+            vanished: false,
+            caffeinate,
+            pgid: rec.pgid,
+            started: rec.started,
+            log,
+            paused: rec.paused,
+            pausing: None,
+            started_at: Instant::now().checked_sub(ran).unwrap_or_else(Instant::now),
+            progress_base: None,
+            parts: None,
+            said: None,
+            moved: None,
+            threads: rec.threads.max(1),
+        },
+        hand,
+    ))
 }
 
 impl Drop for Running {
@@ -798,6 +972,45 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         };
         assert_eq!(st.code(), Some(3));
+    }
+
+    /// Task #393: a job handed over is taken over from its record by the next agent, which reads
+    /// its end from its status file (not its child): its code, a pause's 75, and a kill while no
+    /// agent tended it (`vanished`); one with no saved slot isn't.
+    #[test]
+    fn a_job_handed_over_is_taken_over_and_its_end_read() {
+        let d = tempfile::tempdir().unwrap();
+        for (code, want) in [("0", Some(0)), ("75", Some(75)), ("kill", None)] {
+            let rec = d.path().join(format!("job-{code}.json"));
+            let go = d.path().join(format!("go-{code}"));
+            let script = format!(
+                "while [ ! -e '{}' ]; do sleep 0.05; done; exit {}",
+                go.display(),
+                if code == "kill" { "0" } else { code }
+            );
+            let r = Running::start(spec(&["/bin/sh", "-c", &script]), 2, &[], d.path().join("log"), &rec, None, None)
+                .unwrap();
+            let pgid = r.pgid;
+            assert!(adopt(&rec).is_none(), "no slot saved yet");
+            r.hand_over(&rec, serde_json::json!({"lease": null}));
+            let (mut a, hand) = adopt(&rec).expect("taken over");
+            assert_eq!(hand, serde_json::json!({"lease": null}));
+            assert!(a.adopted && a.pgid == pgid && a.threads == 2 && a.spec.cmd[2] == script);
+            assert!(a.poll().unwrap().is_none());
+            if code == "kill" {
+                // (Its status file not written: killed with its head. The head is still this
+                // test's child, as it isn't once its agent has ended: reaped here, as launchd would.)
+                crate::sys::signal_group(pgid, Signal::Kill);
+                unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
+            } else {
+                std::fs::write(&go, "").unwrap();
+            }
+            let st = wait_for(&mut a, "its end", |a| a.poll().unwrap());
+            assert_eq!(st.code(), want);
+            assert_eq!(a.vanished, code == "kill");
+            unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
+            assert!(wait_for(&mut a, "the group empty", |a| group_members(a.pgid).is_empty().then_some(true)));
+        }
     }
 
     #[test]

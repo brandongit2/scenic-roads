@@ -176,16 +176,22 @@ impl Updater {
     }
 
     /// Removes app versions nothing needs: keeps the current one, this server's, the build
-    /// agent's (its jobs run programs from its folder; `agent/status.json` says which), and the
+    /// agent's (its jobs run programs from its folder; `agent/status.json` says which, and its
+    /// `job_apps` those of jobs it took over from an older app's agent), and the
     /// newest other one (to roll back to). Versions are named from their UTC publish time, so they
     /// sort by age. Unfinished copies (`.tmp`) an hour old go too.
     fn prune(&self, current: &str, running: &str) {
         let dir = self.home.join("app");
         remove_stale_copies(&dir, STALE_COPY);
-        let agent: Option<String> = std::fs::read(self.home.join("agent/status.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-            .and_then(|v| v["app"].as_str().map(str::to_string));
+        let status: Option<serde_json::Value> =
+            std::fs::read(self.home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let agent: Option<String> = status.as_ref().and_then(|v| v["app"].as_str().map(str::to_string));
+        // (And those its running jobs run from: jobs an older app's agent started, taken over.)
+        let job_apps: Vec<String> = status
+            .as_ref()
+            .and_then(|v| v["job_apps"].as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
         let Ok(rd) = std::fs::read_dir(&dir) else { return };
         let mut versions: Vec<String> = rd
             .flatten()
@@ -196,6 +202,7 @@ impl Updater {
         versions.sort();
         let mut keep: Vec<&str> = vec![current, running];
         keep.extend(agent.as_deref());
+        keep.extend(job_apps.iter().map(String::as_str));
         if let Some(v) = versions.iter().rev().find(|v| !keep.contains(&v.as_str())) {
             keep.push(v);
         }

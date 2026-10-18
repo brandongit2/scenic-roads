@@ -84,9 +84,21 @@ impl Proxy {
         Self::start_with(budget, resolve, Limits::default())
     }
 
+    /// `start`, on `port` while it's free (0, or taken: a port of its own).
+    pub fn start_at(budget: Arc<Budget>, resolve: Option<Resolve>, port: u16) -> Result<Proxy> {
+        Self::start_on(budget, resolve, Limits::default(), port)
+    }
+
     /// `start`, within `limits`.
     pub fn start_with(budget: Arc<Budget>, resolve: Option<Resolve>, limits: Limits) -> Result<Proxy> {
-        let listener = store::spawn::listen("127.0.0.1:0").context("the budgets' proxy: listen")?;
+        Self::start_on(budget, resolve, limits, 0)
+    }
+
+    fn start_on(budget: Arc<Budget>, resolve: Option<Resolve>, limits: Limits, port: u16) -> Result<Proxy> {
+        let listener = match (port != 0).then(|| store::spawn::listen(("127.0.0.1", port))) {
+            Some(Ok(l)) => l,
+            _ => store::spawn::listen("127.0.0.1:0").context("the budgets' proxy: listen")?,
+        };
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -563,6 +575,25 @@ mod tests {
         assert!(t.window >= (T0 + 40_000) / 10_000, "{t:?}");
         assert_eq!(t.source, Source::Nas);
         assert!(request(&a.addr, "GET /other HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 404"));
+    }
+
+    /// Task #393: a proxy started for jobs an agent took over listens on the port they were told,
+    /// while it's free; taken, on one of its own.
+    #[test]
+    fn a_proxy_listens_again_on_the_port_its_jobs_were_told() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(StepClock::at(T0));
+        let b = || Arc::new(Budget::new(dir.path(), "m-a", clock.clone()));
+        let first = Proxy::start_at(b(), None, 0).unwrap();
+        let port = first.addr.port();
+        // (Taken by the first: one of its own.)
+        let beside = Proxy::start_at(b(), None, port).unwrap();
+        assert_ne!(beside.addr.port(), port);
+        first.stop();
+        let again = Proxy::start_at(b(), None, port).unwrap();
+        assert_eq!(again.addr.port(), port);
+        again.stop();
+        beside.stop();
     }
 
     fn proxy_within(root: &Path, clock: &Arc<StepClock>, up: &Upstream, limits: Limits) -> Proxy {

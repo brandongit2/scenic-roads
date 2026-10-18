@@ -380,6 +380,9 @@ struct Slot {
     /// The owner's cancel of its job (crate::control::Cancel), asked here or told by the lead:
     /// stopped and given back at the loop's next turn (`Agent::cancel_slot`).
     cancel: Option<crate::control::Cancel>,
+    /// What was last saved of it with its job's record (`Agent::save_hands`), not saved again
+    /// while it's the same.
+    hand_saved: Option<(Hand, Option<String>)>,
 }
 
 /// How long the memory guard keeps a job frozen for the Mac's pressure before it stops it, the Mac
@@ -589,8 +592,27 @@ fn mac_cores() -> u32 {
     std::thread::available_parallelism().map_or(4, |n| n.get() as u32)
 }
 
+/// What an agent saves of a slot with its job's record (jobs::save_hand), for the agent after it to
+/// take the job over (`Agent::adopt_jobs`): its lease, and what its grant said.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Hand {
+    lease: Option<Held>,
+    #[serde(default)]
+    reserve_mb: Option<u64>,
+    #[serde(default)]
+    spare_mb: Option<u64>,
+    /// The budgets' proxy's port its job was told (the next agent's proxy listens there again).
+    #[serde(default)]
+    proxy_port: Option<u16>,
+}
+
+/// The port of a proxy's address (`http://127.0.0.1:<port>`).
+fn proxy_port(url: &str) -> Option<u16> {
+    url.trim_end_matches('/').rsplit(':').next()?.parse().ok()
+}
+
 /// The running job's lease.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum Held {
     /// The lead's own job's, in its coordinator.
     Own(u64),
@@ -656,6 +678,10 @@ pub struct Status {
     pub pid: u32,
     /// The app version the agent runs (its folder under app/), or "development".
     pub app: String,
+    /// Other app versions its running jobs run programs from (jobs an agent of an older app
+    /// started, taken over: `Agent::adopt_jobs`); the map server's updater keeps their folders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub job_apps: Vec<String>,
     /// Seconds since the epoch.
     pub beat: u64,
     pub started: u64,
@@ -1220,6 +1246,9 @@ pub struct Agent {
     /// another only if both jobs' measured memory and disk fit what the Mac has left, a cold start
     /// alone; the disk guard on.)
     proxy: Option<crate::budget::Proxy>,
+    /// The port the proxy listened on for the jobs this agent took over (`adopt_jobs`): its own
+    /// listens there again, so they reach it (their sandbox lets them out only through it).
+    proxy_port: Option<u16>,
     /// Resuming, and planning from the records alone (docs/pool.md §7.2, §7.4; crate::agent::resume,
     /// `state/pool/resume`), in the pool: a resumable job's progress named on the NAS and offered to
     /// its Mac alone, its job given this member's unmerged hand-offs, a pass complete by the records.
@@ -1591,7 +1620,7 @@ impl Agent {
             catalogs = take_map_update(&o.home, catalogs);
         }
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent {
+        let mut a = Agent {
             host: test_worker().unwrap_or_else(cond::host_name),
             app,
             started: now_s(),
@@ -1615,6 +1644,7 @@ impl Agent {
             ask_spare_mb: None,
             slots_on: false,
             proxy: None,
+            proxy_port: None,
             resume: false,
             placement: false,
             offered: Default::default(),
@@ -1700,7 +1730,11 @@ impl Agent {
             restart_for: None,
             inputs: Gate::default(),
             start_soon: Default::default(),
-        })
+        };
+        // (The jobs the agent before this one left running, taken over before anything is
+        // planned or offered.)
+        a.adopt_jobs();
+        Ok(a)
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -3185,13 +3219,20 @@ impl Agent {
         if self._lock.is_some() {
             // (What they finished went to the journal with their hand-offs, as they saved.)
             // (A member's packed jobs' slots too: every record an earlier agent may have left.)
+            // (But those this agent took over, `adopt_jobs`.)
             for k in 0..MAX_SLOTS {
+                if self.slots.get(k).is_some_and(|s| s.running.is_some()) {
+                    continue;
+                }
                 let orphan = jobs::stop_orphan(&self.record_path(k));
                 self.orphans.extend(orphan.left);
             }
         }
         loop {
             let quick = self.step()?;
+            // (Each job's slot with its record as it changes: a restart or a crash leaves what the
+            // next agent takes it over by.)
+            self.save_hands();
             nasread::ROUND_AT.store(now_s(), Ordering::SeqCst);
             if self.o.once || STOP.load(Ordering::SeqCst) {
                 break;
@@ -3210,10 +3251,9 @@ impl Agent {
             } else {
                 self.quit_lead = None;
             }
-            // A newer app is in place and the first job's slot is free (its job stopped at a safe
-            // point, `tend`, or past the grace still draining): exit (a job still running stops
-            // here, its finished targets kept, and goes on under the new one), and the launcher
-            // starts the new one.
+            // A newer app is in place and every slot is free (its job stopped at a safe point,
+            // `tend`) or its drain's wait is over: exit (a job still running is left running, and
+            // the new agent takes it over, `hand_over_jobs`), and the launcher starts the new one.
             if self.update_due() {
                 eprintln!("agent: a newer app is installed; restarting into it");
                 break;
@@ -3235,6 +3275,12 @@ impl Agent {
             }
         }
         nasread::WATCH_DONE.store(true, Ordering::SeqCst);
+        // The jobs running left running for the next agent, first (launchd may kill this process
+        // within seconds of the SIGTERM that ended the loop): it takes them over (`adopt_jobs`).
+        // Not when the app quits (its jobs stopped or ended first, `quit_due`), nor a single loop's.
+        if !self.quit_done && !self.o.once {
+            self.hand_over_jobs();
+        }
         // The pool's thread stopped first: nothing steps the driver after this loop (its tick under
         // way finished, waited for a minute at most: a NAS that hangs may not return).
         if let Some(t) = self.ticker.take() {
@@ -3292,6 +3338,170 @@ impl Agent {
                 std::fs::remove_file(self.record_path(k)).ok();
             }
         }
+    }
+
+    /// The app versions (`<apps>/<version>/`) the running jobs' programs are in, other than this
+    /// agent's: those of jobs taken over from an older app's agent (`Status::job_apps`).
+    fn job_apps(&self) -> Vec<String> {
+        let bin = self.o.bin.canonicalize().unwrap_or_else(|_| self.o.bin.clone());
+        let Some(apps) = bin.parent() else { return Vec::new() };
+        let mut out: Vec<String> = self
+            .slots
+            .iter()
+            .filter_map(|s| s.running.as_ref())
+            .filter_map(|r| Path::new(r.spec.cmd.first()?).strip_prefix(apps).ok()?.components().next())
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .filter(|v| *v != self.app && v != "current")
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Slot `k`'s state an agent after this one needs to take its job over (`Hand`).
+    fn hand_of(&self, k: usize) -> Hand {
+        let s = &self.slots[k];
+        Hand {
+            lease: s.lease.clone(),
+            reserve_mb: s.reserve_mb,
+            spare_mb: s.spare_mb,
+            proxy_port: self.proxy.as_ref().and_then(|p| proxy_port(&p.url())),
+        }
+    }
+
+    /// Each running job's slot saved with its record (jobs::save_hand) when it changed since it
+    /// was last: a restart, or a crash, at any moment leaves what the next agent needs to take the
+    /// job over (`adopt_jobs`). Not a helper's leased job's (its outbox is sent by its agent,
+    /// `send_outbox`): stopped at a restart, as before.
+    fn save_hands(&mut self) {
+        if self._lock.is_none() || self.o.dry_run {
+            return;
+        }
+        for k in 0..self.slots.len() {
+            let Some(r) = self.slots[k].running.as_ref() else {
+                self.slots[k].hand_saved = None;
+                continue;
+            };
+            if matches!(self.slots[k].lease, Some(Held::Leased { .. })) {
+                continue;
+            }
+            let now = (self.hand_of(k), r.paused.clone());
+            if self.slots[k].hand_saved.as_ref() == Some(&now) {
+                continue;
+            }
+            if let Ok(v) = serde_json::to_value(&now.0) {
+                jobs::save_hand(&self.record_path(k), r, v);
+                self.slots[k].hand_saved = Some(now);
+            }
+        }
+    }
+
+    /// The jobs running here left running as this agent ends (a newer app, its launcher restarted,
+    /// SIGTERM): each one's slot saved with its record, its lease kept, for the next agent to take
+    /// it over (`adopt_jobs`). A helper's leased job, which can't be, stopped (`stop_jobs`).
+    fn hand_over_jobs(&mut self) {
+        self.save_hands();
+        for k in 0..self.slots.len() {
+            if self.slots[k].running.is_none() || matches!(self.slots[k].lease, Some(Held::Leased { .. })) {
+                continue;
+            }
+            let hand = serde_json::to_value(self.hand_of(k)).unwrap_or_default();
+            if let Some(r) = self.slots[k].running.take() {
+                eprintln!("agent: leaving {} running for the next agent", r.spec.id);
+                r.hand_over(&self.record_path(k), hand);
+            }
+            self.slots[k].lease = None;
+        }
+        self.stop_jobs("the agent stopped");
+    }
+
+    /// The jobs the agent before this one left running (`hand_over_jobs`, or a crash after their
+    /// slots were saved, `save_hands`), taken over into their slots (jobs::adopt): their leases
+    /// (the lead's own held again in its coordinator, under a new id if the one it had ended with
+    /// that agent, as a beat does; a member's kept with its lead), their grants, their channels
+    /// set to run (the drain that agent asked for is this one's to ask again), and watched by the
+    /// memory guard. Those that can't be are stopped as before (`run`, jobs::stop_orphan).
+    fn adopt_jobs(&mut self) {
+        if self._lock.is_none() || self.o.dry_run {
+            return;
+        }
+        for k in 0..MAX_SLOTS {
+            let Some((r, v)) = jobs::adopt(&self.record_path(k)) else { continue };
+            let Ok(hand) = serde_json::from_value::<Hand>(v) else { continue };
+            while self.slots.len() <= k {
+                self.slots.push(Slot::default());
+            }
+            let id = r.spec.id.clone();
+            let w = r
+                .spec
+                .record
+                .clone()
+                .unwrap_or_else(|| build::Work { step: step_of(&id).unwrap_or_default(), targets: Vec::new() });
+            let lease = match (hand.lease, &self.coord) {
+                (Some(Held::Own(n)), Some(c)) => {
+                    Some(Held::Own(if c.renew(n, None) { n } else { c.hold(&w.step, &w.targets).unwrap_or(n) }))
+                }
+                (Some(Held::Pooled { id: n, term, dir, own: true }), Some(c)) => {
+                    let n = if c.renew(n, None) { n } else { c.hold(&w.step, &w.targets).unwrap_or(n) };
+                    Some(Held::Pooled { id: n, term, dir, own: true })
+                }
+                (l, _) => l,
+            };
+            eprintln!(
+                "agent: took over {} (group {}), left running by the agent before this one{}",
+                id,
+                r.pgid,
+                if k > 0 { format!(", in slot {}", k + 1) } else { String::new() }
+            );
+            std::fs::write(self.control_path(k), b"run").ok();
+            if let Some(p) = hand.proxy_port {
+                self.proxy_port = Some(p);
+            }
+            let pgid = r.pgid;
+            let s = &mut self.slots[k];
+            s.lease = lease;
+            s.reserve_mb = hand.reserve_mb;
+            s.spare_mb = hand.spare_mb;
+            s.running = Some(r);
+            self.watch_job(k, pgid);
+            self.note(crate::coord::history::Event {
+                worker: Some(self.worker_of(k)),
+                step: Some(w.step.clone()).filter(|s| !s.is_empty()),
+                targets: w.targets.iter().map(|t| t.0.clone()).collect(),
+                note: "taken over from the agent before".into(),
+                ..crate::coord::history::Event::new("adopt")
+            });
+        }
+    }
+
+    /// The memory guard's sampler told of slot `k`'s job (its group `pgid`), as it starts or is
+    /// taken over.
+    fn watch_job(&mut self, k: usize, pgid: i32) {
+        let Some(spec) = self.slots[k].running.as_ref().map(|r| r.spec.clone()) else { return };
+        let (step, targets) =
+            spec.record.as_ref().map_or((spec.id.split(' ').next().map(str::to_string), Vec::new()), |w| {
+                (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect())
+            });
+        let own_key = match spec.record.as_ref() {
+            None => Some(own_cost_key(&spec.id)),
+            _ => None,
+        };
+        let scratch =
+            spec.cmd.iter().position(|a| a == "--scratch").and_then(|i| spec.cmd.get(i + 1)).map(PathBuf::from);
+        self.sampler.watch(
+            k,
+            memguard::Watch {
+                pgid,
+                costs: self.slot_costs(k),
+                done: self.done_path(k),
+                step: step.unwrap_or_default(),
+                targets,
+                own_key,
+                written: self.written_path(k),
+                scratch,
+                ..Default::default()
+            },
+        );
     }
 
     /// The app's ask to quit, if one waits (only the agent holding the lock acts on it).
@@ -3933,6 +4143,7 @@ impl Agent {
             host: self.host.clone(),
             pid: std::process::id(),
             app: self.app.clone(),
+            job_apps: self.job_apps(),
             beat: now_s(),
             started: self.started,
             conditions: c,
@@ -4070,7 +4281,10 @@ impl Agent {
             let ok = st.success();
             // Stopped at a safe point, the build pausing (crate::control): not a failure. (Only
             // when it was asked to: a job's own exit 75 for anything else is a failure.)
-            let paused = st.code() == Some(crate::control::PAUSED_EXIT) && draining;
+            // (An adopted job may have been asked by the agent before this one.)
+            let paused = st.code() == Some(crate::control::PAUSED_EXIT) && (draining || r.adopted);
+            // (An adopted job killed while no agent tended it: interrupted, not failed.)
+            let vanished = r.vanished;
             let of = r.spec.record.as_ref().map_or(0, |w| w.targets.len());
             let step = r.spec.record.as_ref().map(|w| w.step.clone()).unwrap_or_default();
             // The targets it finished: every one when it succeeded, else those it noted done as
@@ -4148,6 +4362,8 @@ impl Agent {
                 Outcome::Done
             } else if paused {
                 Outcome::Paused
+            } else if vanished {
+                Outcome::Interrupted
             } else {
                 Outcome::Failed
             };
@@ -4253,7 +4469,7 @@ impl Agent {
                 if for_update && slot.update_wait.is_none() {
                     let (g, words) = wait.unwrap_or((None, String::new()));
                     eprintln!(
-                        "agent: {} has {} min to reach a safe point before the update stops it: {words}",
+                        "agent: {} has {} min to reach a safe point before the agent restarts into the update, leaving it running: {words}",
                         r.spec.id,
                         g.unwrap_or(grace).as_secs().div_ceil(60)
                     );
@@ -4266,8 +4482,8 @@ impl Agent {
                     }
                     Instant::now()
                 });
-                // (For the update, not frozen past the grace: the loop stops it then, its finished
-                // targets kept, and restarts, `Agent::update_due`.)
+                // (For the update, not frozen past the grace: the loop restarts then, leaving it
+                // running for the new agent to take over, `Agent::update_due`, `hand_over_jobs`.)
                 if r.paused.is_none() && since.elapsed() >= grace && !for_update {
                     eprintln!(
                         "agent: {} reached no safe point in {} min; frozen where it is",
@@ -5936,8 +6152,6 @@ impl Agent {
             }
             None => None,
         };
-        let scratch =
-            spec.cmd.iter().position(|a| a == "--scratch").and_then(|i| spec.cmd.get(i + 1)).map(PathBuf::from);
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let (step, targets) =
             spec.record.as_ref().map_or((spec.id.split(' ').next().map(str::to_string), Vec::new()), |w| {
@@ -5946,33 +6160,15 @@ impl Agent {
         let what = spec.what.clone();
         // (Its costs file afresh: a line an earlier job left, a target begun and never ended, would
         // name a target under way that isn't, crate::agent::memguard.)
-        let costs = self.slot_costs(k);
-        std::fs::remove_file(&costs).ok();
-        // (A job of no targets of its own, the OSM pass, GC, a catalog: measured by its id, so it's
-        // placed by measure as any, docs/pool.md §7.7.)
-        let own_key = match spec.record.as_ref() {
-            None => Some(own_cost_key(&spec.id)),
-            _ => None,
-        };
-        let (w_step, w_targets) = (step.clone().unwrap_or_default(), targets.clone());
+        std::fs::remove_file(self.slot_costs(k)).ok();
         self.slots[k].running =
             Some(Running::start(spec, threads, &env, log, &self.record_path(k), Some(&done), sandbox)?);
         self.slots[k].beaten = None;
+        self.slots[k].hand_saved = None;
+        // (A job of no targets of its own, the OSM pass, GC, a catalog: measured by its id, so it's
+        // placed by measure as any, docs/pool.md §7.7: `watch_job`.)
         if let Some(pgid) = self.slots[k].running.as_ref().map(|r| r.pgid) {
-            self.sampler.watch(
-                k,
-                memguard::Watch {
-                    pgid,
-                    costs,
-                    done: done.clone(),
-                    step: w_step,
-                    targets: w_targets,
-                    own_key,
-                    written,
-                    scratch,
-                    ..Default::default()
-                },
-            );
+            self.watch_job(k, pgid);
         }
         self.note(crate::coord::history::Event {
             worker: Some(self.worker_of(k)),
@@ -8212,7 +8408,8 @@ impl Agent {
     fn tend_proxy(&mut self, root: &Path) {
         if self.proxy.is_none() {
             let me = self.member_id.clone().unwrap_or_else(|| self.me.clone());
-            match crate::budget::start_proxy(root, &me) {
+            // (On the port the jobs taken over were told, while it's free: `proxy_port`.)
+            match crate::budget::start_proxy_at(root, &me, self.proxy_port.unwrap_or(0)) {
                 Ok(p) => {
                     eprintln!("agent: the budgets' proxy listens on {}", p.url());
                     self.proxy = Some(p);
@@ -8857,8 +9054,18 @@ impl Agent {
             lead_urls,
             lead_failed,
         };
-        // (The jobs an earlier process left, once `run` stopped any still running.)
-        run.take_left(&home);
+        // (The jobs an earlier process left, once `run` stopped any still running; those this one
+        // took over, `adopt_jobs`, hand off as they end.)
+        let running: Vec<PathBuf> = self
+            .slots
+            .iter()
+            .filter(|s| s.running.is_some())
+            .filter_map(|s| match &s.lease {
+                Some(Held::Pooled { dir, .. }) => Some(dir.clone()),
+                _ => None,
+            })
+            .collect();
+        run.take_left(&home, &running);
         run.drain(lead.then(|| home.join("coord/journal")).as_deref(), &home.join("outbox"));
         // The owner's lead asks (crate::agent::lead): this Mac's, and the build page's.
         run.conds =
@@ -9456,9 +9663,10 @@ impl Agent {
         })
     }
 
-    /// Whether the loop restarts into a newer app now: one is installed and the first job's slot
-    /// is free, or its job, asked to stop at its next safe point for the update, has had the time a
-    /// pause gives (`DRAIN_GRACE`) and reached none (a long job may have none for hours).
+    /// Whether the loop restarts into a newer app now: one is installed and every slot is free, or
+    /// its job, asked to stop at its next safe point for the update, has had its wait
+    /// (`update_wait`) and reached none (a long job may have none for hours): left running then,
+    /// for the new agent to take over (`hand_over_jobs`).
     fn update_due(&self) -> bool {
         let Some(app) = self.pending_app() else { return false };
         let why = update_why(&app);
@@ -13294,6 +13502,137 @@ mod tests {
         a.slots[1].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.slots[1].running = None;
         assert!(a.update_due());
+    }
+
+    /// Task #393: a job outlives its agent's restart (a newer app, its launcher restarted): the
+    /// agent ending leaves it running with its slot saved, the next agent takes it over, its lease
+    /// held once (re-held under the restarted coordinator, never granted twice), and tends it to
+    /// its end, its lease finished and its record gone; nothing of it left running.
+    #[test]
+    fn a_job_survives_its_agents_restart_taken_over_by_the_next() {
+        let (old, new) = ("20261018-0100-aaaaaaa", "20261018-0300-bbbbbbb");
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let apps = d.path().join("app");
+        std::fs::create_dir_all(apps.join(old)).unwrap();
+        std::fs::create_dir_all(apps.join(new)).unwrap();
+        std::os::unix::fs::symlink(old, apps.join("current")).unwrap();
+        let opts = |bin: &str| Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: apps.join(bin),
+            dry_run: false,
+            once: true,
+            helper: false,
+        };
+        let mut a = test_agent(opts(old)).unwrap();
+        a.free_set = Some(40 << 30);
+        let coord = d.path().join("coord");
+        let co = std::sync::Arc::new(crate::coord::start_for_test(&coord, &a.me, old).0);
+        a.coord = Some(co.clone());
+        let go = d.path().join("go");
+        let job = JobSpec {
+            id: "terrain 6/55/25".into(),
+            what: "terrain 6/55/25".into(),
+            cmd: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!("while [ ! -e '{}' ]; do sleep 0.1; done; echo done", go.display()),
+            ],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "terrain".into(), targets: vec![("6/55/25".into(), "k".into())] }),
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        assert!(a.try_start(0, job.clone(), &cond, Some(&root), &mut Vec::new()));
+        let pgid = a.slots[0].running.as_ref().unwrap().pgid;
+        struct Kill(i32);
+        impl Drop for Kill {
+            fn drop(&mut self) {
+                unsafe { libc::kill(-self.0, libc::SIGKILL) };
+            }
+        }
+        let _kill = Kill(pgid);
+        assert!(co.held("terrain").contains("6/55/25"));
+        // The agent ends (a newer app, a SIGTERM): the job left running, its record kept with its
+        // slot, its lease not ended.
+        a.hand_over_jobs();
+        assert!(a.slots[0].running.is_none() && a.slots[0].lease.is_none());
+        assert!(crate::sys::signal_group(pgid, crate::sys::Signal::Probe), "the job runs on");
+        assert!(a.record_path(0).exists());
+        assert!(co.held("terrain").contains("6/55/25"), "its lease kept for the next agent");
+        let me = a.me.clone();
+        drop(a);
+        // The coordinator restarts with it, the own leases of the agent before ended with it.
+        co.stop();
+        drop(co);
+        std::fs::remove_file(apps.join("current")).unwrap();
+        std::os::unix::fs::symlink(new, apps.join("current")).unwrap();
+        let co = std::sync::Arc::new(crate::coord::start_for_test(&coord, &me, new).0);
+        // The next agent takes it over: its slot, its lease (held again here once its coordinator
+        // is there: `beat`, as at any lease lost), the group the job's.
+        let mut b = test_agent(opts(new)).unwrap();
+        b.coord = Some(co.clone());
+        let r = b.slots[0].running.as_ref().expect("taken over");
+        assert!(r.adopted && r.pgid == pgid && r.spec == job);
+        assert!(matches!(b.slots[0].lease, Some(Held::Own(_))));
+        assert!(b.beat(0, Some(&root)));
+        assert!(co.held("terrain").contains("6/55/25"));
+        assert_eq!(co.hold("terrain", &job.record.as_ref().unwrap().targets), None, "never held twice");
+        // Its app's folder kept for it while it runs (the map server's updater reads it).
+        assert_eq!(b.job_apps(), Vec::<String>::new(), "its programs aren't in an app's folder here");
+        // Tended to its end: its status read from its file (not this process's child), its lease
+        // finished, its record gone, nothing of it left.
+        assert_eq!(b.tend(0, &cond, Some(&root), 0).unwrap(), false);
+        std::fs::write(&go, "").unwrap();
+        let t = Instant::now();
+        while !b.tend(0, &cond, Some(&root), 0).unwrap() {
+            assert!(t.elapsed() < Duration::from_secs(120), "the job ends");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(b.slots[0].running.is_none() && b.slots[0].lease.is_none());
+        assert!(!co.held("terrain").contains("6/55/25"));
+        assert!(!b.record_path(0).exists());
+        // (Its head, still this test's child as it isn't once its agent has ended, reaped here as
+        // launchd would.)
+        unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
+        assert!(!crate::sys::signal_group(pgid, crate::sys::Signal::Probe), "no process of it left");
+    }
+
+    /// Task #393: a record an older app wrote (no spec, no slot saved) isn't taken over: its job is
+    /// stopped as before (jobs::stop_orphan), and so is a helper's leased job at the agent's end.
+    #[test]
+    fn a_job_with_no_saved_slot_is_stopped_not_taken_over() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let mut c = store::spawn::command("/bin/sleep");
+        c.arg("3600");
+        crate::sys::own_group(&mut c);
+        let mut child = store::spawn::spawn(&mut c).unwrap();
+        let pgid = child.id() as i32;
+        let rec = serde_json::json!({
+            "id": "unit 6/1/2", "pgid": pgid, "started": now_s(),
+            "leader_start": crate::sys::process_start(pgid).unwrap(),
+        });
+        std::fs::write(home.join("job.json"), rec.to_string()).unwrap();
+        let o = Options {
+            root: Some(root),
+            home: home.clone(),
+            bin: d.path().join("bin"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        };
+        let b = test_agent(o).unwrap();
+        assert!(b.slots[0].running.is_none(), "not taken over");
+        assert!(home.join("job.json").exists(), "left to `run`'s stop of orphans");
+        assert!(jobs::adopt(&home.join("job.json")).is_none());
+        jobs::stop_orphan(&home.join("job.json"));
+        let _ = child.wait();
+        assert!(!crate::sys::signal_group(pgid, crate::sys::Signal::Probe));
     }
 
     #[test]

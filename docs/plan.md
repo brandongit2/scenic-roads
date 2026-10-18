@@ -38,7 +38,9 @@ coverage, or once for the whole world, so region size, count and borders never s
   network-volume permission is granted to /Applications/Scenic.app, not to the old copy an update
   leaves aside, `.Scenic.app.old-<pid>`); a launcher whose executable can't be read counts as
   elsewhere. If not, it restarts the job (`launchctl kickstart -k`, at most once a minute;
-  registering it again, once per launch, if that isn't enough), and it deletes the old copies
+  registering it again, once per launch, if that isn't enough): the agent's jobs, in process groups
+  of their own, run on through it, and the agent it starts takes them over (§8, Restarts). It
+  deletes the old copies
   nothing runs from (the swap itself leaves them). When the agent's log shows
   "Operation not permitted" on the NAS since it started, the menu and window say the build service
   can't reach the NAS (allow Scenic in Files and Folders).
@@ -970,7 +972,8 @@ from the first (`edit_held`).
   Mixed versions).
 - **A newly installed app:** nothing new starts and every running job is asked to stop at its next
   safe point (what it finished kept); once every slot is free the agent exits and the launcher
-  starts the new one. A job reaching no safe point in time is stopped then (`Agent::update_wait`):
+  starts the new one. A job reaching no safe point in time is left running then, and the new agent
+  takes it over (Restarts, below), its time spent kept (`Agent::update_wait`):
   the time its target under way is expected to need, by its progress's pace, else its expected time
   (its own measured run, its step's fit or prior, `needs::Book::secs`, from the coordinator's costs;
   else its step's time on this Mac lately) less the time since the job last noted a target done (or
@@ -978,7 +981,7 @@ from the first (`edit_held`).
   15 minutes; 15 minutes for a target with no estimate. A member, without the coordinator's costs,
   goes by its pace, else its step's time there, else 15 minutes. Once 15 minutes have passed, a job
   whose processes used less than a core-minute of CPU over the last 30 minutes (the memory guard's
-  sampler) is stopped: by its CPU, since a long step may print no progress for hours. The log and the status's Waiting line say how long and
+  sampler) holds the restart no longer: by its CPU, since a long step may print no progress for hours. The log and the status's Waiting line say how long and
   why. Pauses, the memory guard and the disk guard keep their own rules. The lead
   grants nothing to an agent on another app, and an agent with a newer app waiting asks for
   nothing.
@@ -1035,8 +1038,28 @@ from the first (`edit_held`).
   - A trim, clear or freeing runs on its own thread; jobs run meanwhile. Nothing goes through a link.
     Each ends early when the agent is asked to stop.
 - **Units run in map order** (by 10° square, then tile), so what one fetches serves the next.
-- **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. A crashed agent's
-  orphans are stopped at start when provably ours.
+- **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours.
+- **Restarts** (task #393): a job outlives its agent. Its record (`job[-k].json` in the agent's
+  folder) holds its spec, threads and log from its start, and the agent saves its slot there (its
+  lease, its grant's disk and memory, the budgets' proxy's port) whenever that changes
+  (`Agent::save_hands`); a shell at the head of its process group writes its exit status beside
+  the record (`job[-k].status`). An agent that ends for anything but a quit (a newer app's
+  restart, its launcher restarted, a SIGTERM) leaves its jobs running, its leases not ended
+  (`hand_over_jobs`); so does a crash after the first save. The next agent, as it starts and
+  before it plans, takes each over (`adopt_jobs`, `jobs::adopt`): its group still the job's (its
+  head's start time), or ended with its status written. The lead's own lease is renewed, or held
+  again under a new id if its coordinator's restart ended it (never if another holds its targets:
+  then the job is stopped, as at any lapse); a member's stays the lead's. Its channel is set to
+  "run" (a drain the agent before asked for is this one's to ask again), the memory guard watches
+  it, the pool doesn't hand its folder off as left (`take_left`), the proxy listens again on the
+  port the job was told while it's free, and the map server's updater keeps its app's folder
+  (`job_apps` in the status). Its end is read from the status file: a pause's 75 counts as paused;
+  a group gone with no status (killed while no agent tended it) is interrupted, not failed. A
+  record an older app wrote, or one with no slot saved, isn't taken over: its job is stopped at
+  start when provably ours, as before. A helper's leased job (before the pool) is stopped at the
+  agent's end. The app's quit stops its jobs as before (control::Quit). An adopted job's tasks
+  offered after the restart run on its own Mac (the coordinator's job token is new: its offers are
+  refused, and it runs them itself).
 - **The heartbeat:** written locally each loop (~20 s) and to the NAS (`state/status.json`) when it
   changes or every two minutes. It holds the job, its progress (from the job's `progress:` lines)
   with the time left, and a checklist of the build to the end: a line per stage with an item per
