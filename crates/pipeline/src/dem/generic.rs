@@ -370,7 +370,7 @@ struct MemoIn {
 }
 
 /// What a run's tile memo keeps at most.
-pub const TILE_MEMO_BYTES: usize = 1 << 30;
+pub const TILE_MEMO_BYTES: usize = 512 << 20;
 
 /// How many tiles are fetched at once ahead of their sampling (natively, with a pool).
 pub const TILE_FETCHES: usize = 64;
@@ -390,7 +390,19 @@ impl TileMemo {
         if let Some(v) = &*got {
             return Ok(v.clone());
         }
-        let v: Option<Arc<[u8]>> = fetch.get(url)?.map(Into::into);
+        let v: Option<Arc<[u8]>> = match fetch.get(url) {
+            Ok(v) => v.map(Into::into),
+            Err(e) => {
+                // (Its empty slot dropped, unless another took its place, or another thread is
+                // fetching into it now: try_lock, never waiting on a slot under the memo's lock.)
+                drop(got);
+                let mut m = self.inner.lock().unwrap();
+                if m.map.get(url).is_some_and(|k| Arc::ptr_eq(k, &slot) && k.try_lock().is_ok_and(|g| g.is_none())) {
+                    m.map.remove(url);
+                }
+                return Err(e);
+            }
+        };
         *got = Some(v.clone());
         drop(got);
         let size = v.as_ref().map_or(0, |b| b.len()) + url.len() + 64;

@@ -474,3 +474,23 @@ fn the_tile_memo_lets_its_oldest_go() {
     assert_eq!(asked["https://m.org/0"], 2);
     assert_eq!((asked["https://m.org/1"], asked["https://m.org/2"], asked["https://m.org/3"]), (1, 1, 1));
 }
+
+/// A failed fetch leaves nothing in the memo: the next ask fetches again.
+#[test]
+fn a_failed_fetch_leaves_no_slot() {
+    struct Fails;
+    impl Fetch for Fails {
+        fn open(&self, _: &str) -> Result<Option<Arc<dyn RangeRead>>> {
+            anyhow::bail!("no")
+        }
+        fn get(&self, _: &str) -> Result<Option<Vec<u8>>> {
+            anyhow::bail!("no")
+        }
+    }
+    let memo = TileMemo::new(2500);
+    assert!(memo.get("https://m.org/x", &Fails).is_err());
+    assert!(memo.inner.lock().unwrap().map.is_empty());
+    let mut f = crate::fetch::MapFetch::default();
+    f.0.insert("https://m.org/x".into(), Some(vec![7]));
+    assert_eq!(memo.get("https://m.org/x", &NoneElse(f)).unwrap().unwrap()[0], 7);
+}
