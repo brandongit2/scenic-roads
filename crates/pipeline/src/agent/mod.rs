@@ -1460,7 +1460,9 @@ impl Agent {
         if lock.is_some() && !o.dry_run {
             if let Some(r) = o.root.clone().or_else(|| find_root(false)).filter(|r| probe(r)) {
                 {
-                    let nas: pool::SharedNas = std::sync::Arc::new(nasread::Deadlined::new(std::sync::Arc::new(crate::pool::nas::Share::new(&r))));
+                    let nas: pool::SharedNas = std::sync::Arc::new(nasread::Deadlined::new(std::sync::Arc::new(
+                        crate::pool::nas::Share::new(&r),
+                    )));
                     let locks = o.home.parent().unwrap_or(&o.home).to_path_buf();
                     match pool::Side::open(&o.home, &o.home.join("pool"), &locks, &app, nas)? {
                         Some(side) => {

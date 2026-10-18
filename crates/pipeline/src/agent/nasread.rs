@@ -527,7 +527,8 @@ pub(crate) mod tests {
         let t = watch(&AT, &DONE, d.path().into(), Duration::from_secs(1), Duration::from_millis(50));
         std::thread::sleep(Duration::from_millis(2300));
         assert!(stall(d.path()).is_some(), "stalled");
-        AT.store(crate::agent::now_s(), Ordering::SeqCst);
+        // (A round just now, a little ahead so a second ticking over meanwhile doesn't count.)
+        AT.store(crate::agent::now_s() + 60, Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(300));
         assert!(stall(d.path()).is_none(), "going on");
         DONE.store(true, Ordering::SeqCst);
