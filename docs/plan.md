@@ -1034,8 +1034,8 @@ from the first (`edit_held`).
   NAS, each Mac's map server appends to `state/publish/<host>.jsonl` its adoption of each catalog
   and its mirror's sync of it (begun, and through everything wanted). The Mac writing a catalog
   tells its own server at once (`/api/catalog/refresh`); the others look every 10 s while a build
-  runs (§4). `scenic timings publish [--last N]` joins them: a unit is in the first catalog begun once it was merged and its stale
-  tiles packed; per catalog and per unit, the hand-off, planned, leased, packed, catalog, servers
+  runs (§4). `scenic timings publish [--last N]` joins them: a unit is in the first catalog begun
+  once it was merged and its stale tiles packed; per catalog and per unit, the hand-off, planned, leased, packed, catalog, servers
   and mirrors, the tiles each unit restaled, which of ferries, stations, roadunits, marks and
   names-todo ran, and the medians (the catalogs' phases split delta and whole).
 
