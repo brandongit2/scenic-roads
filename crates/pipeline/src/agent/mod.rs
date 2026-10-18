@@ -13635,8 +13635,6 @@ mod tests {
         assert!(!crate::sys::signal_group(pgid, crate::sys::Signal::Probe), "no process of it left");
     }
 
-    /// Task #393: a record an older app wrote (no spec, no slot saved) isn't taken over: its job is
-    /// stopped as before (jobs::stop_orphan), and so is a helper's leased job at the agent's end.
     /// Task #393 review: a job taken over while this Mac's build is paused is told "drain" at once,
     /// never "run", so it passes no safe point.
     #[test]
@@ -13676,6 +13674,8 @@ mod tests {
         unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
     }
 
+    /// Task #393: a record an older app wrote (no spec, no slot saved) isn't taken over: its job is
+    /// stopped as before (jobs::stop_orphan), and so is a helper's leased job at the agent's end.
     #[test]
     fn a_job_with_no_saved_slot_is_stopped_not_taken_over() {
         let d = tempfile::tempdir().unwrap();
