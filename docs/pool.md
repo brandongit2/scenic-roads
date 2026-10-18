@@ -328,7 +328,9 @@ on the M4), the warm runs after it their output alone (0.3 and 0.5 GB at the 90t
 So a target of such a step counts its own output (its disk floor at most its step's 90th
 percentile, `needs::Book::disk`), and the cache is reserved once per Mac: the first job granted
 there reading it carries the cache's reservation (the most of its steps' last jobs' 90th
-percentiles, `coord::Shared::cache_mb`) beside its output, the jobs beside it their output alone;
+percentiles, `coord::Shared::cache_mb`) beside its output in its `Grant::disk_mb`, so its agent
+counts it in `reserved_mb` with that job's (as `disk_words` and the build page's disk bar show
+it), the jobs beside it their output alone;
 a fill bigger than the runs measured lately (a Mac whose cache was emptied) has the disk guard
 as its backstop. Its cache files are on the disk, outside the free space an ask says; the
 room-target freeing and the disk guard (`room::toward`) can delete those no job holds, but
