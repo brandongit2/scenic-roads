@@ -17,7 +17,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
 const [, , unit, snap, bdir, wasmDir, nas, mirror, first = "elevations (elev)"] = process.argv;
-const spec = JSON.parse(execFileSync("target/release/scenic-build", ["tail-spec", unit], { encoding: "utf8" }));
+const spec = JSON.parse(execFileSync("target/release/scenic-build", ["tail-spec", unit, "--root", nas], { encoding: "utf8" }));
 // What crate::coord's `net` serves: the NAS's paths a task reads, and the data servers.
 const NAS_PATHS = ["sources/"];
 const WEB_HOSTS = spec.web_hosts;

@@ -27,6 +27,7 @@
 pub mod brokers;
 pub mod client;
 pub mod history;
+pub mod hosts;
 pub mod lease;
 pub mod task;
 
@@ -1171,15 +1172,9 @@ impl Drop for Coordinator {
     }
 }
 
-/// The data servers whose files a task may read through the coordinator (`/work/net/…/web/…`): the
-/// elevations' (crate::dem; FABDEM is read from the store, never fetched) and land cover's
-/// (crate::landcover). Nothing else is fetched for a worker.
-pub const WEB_HOSTS: [&str; 4] = [
-    "cyberjapandata.gsi.go.jp",
-    "canelevation-dem.s3.ca-central-1.amazonaws.com",
-    "prd-tnm.s3.amazonaws.com",
-    "esa-worldcover.s3.eu-central-1.amazonaws.com",
-];
+/// (The data servers a task may read through the coordinator, `/work/net/…/web/…`: crate::coord::hosts,
+/// derived from the accepted declarations.)
+
 
 /// What of the NAS a task may read through the coordinator (`/work/net/…/nas/…`): the sources the
 /// steps read (canopy squares, FABDEM, the tree cover's rasters, raw terrain).
@@ -3690,7 +3685,7 @@ mod http {
     /// The data servers' files opened for tasks, kept (the most recent `REMOTE_FILES`), each with
     /// the block cache crate::fetch keeps for it (16 MB at most): a task reads a file a block at a
     /// time. Fetched over HTTPS only, following no redirect: a task names only the servers
-    /// `WEB_HOSTS` allows, and a redirect would take the fetch elsewhere.
+    /// the declarations' hosts allow (hosts), and a redirect would take the fetch elsewhere.
     #[derive(Default)]
     pub struct Remote {
         files: Mutex<std::collections::VecDeque<(String, Option<Arc<dyn store::range::RangeRead>>)>>,
@@ -4209,7 +4204,7 @@ mod http {
 
     /// What a task reads where it lies (docs/workers.md §3, Read where they lie), for the worker
     /// holding its lease: `nas/<path>` the build's data on the NAS (under `NAS_PATHS`), `web/<host>/
-    /// <path>` a data server's file (one of `WEB_HOSTS`, over HTTPS). `?probe`: what's there
+    /// <path>` a data server's file (one the accepted declarations name: hosts, over HTTPS). `?probe`: what's there
     /// ({kind, size}; 404 when nothing is); `?list`: a NAS folder's entries; else its bytes, a range
     /// at a time.
     async fn net(
@@ -4284,7 +4279,15 @@ mod http {
         let Some((host, rest)) = path.strip_prefix("web/").and_then(|r| r.split_once('/')) else {
             return error(StatusCode::NOT_FOUND, "nas/… or web/<host>/…");
         };
-        if !WEB_HOSTS.contains(&host) {
+        let Some(root) = c.root.lock().unwrap().clone() else {
+            return error(StatusCode::SERVICE_UNAVAILABLE, "the NAS isn't here now (the declarations name the servers)");
+        };
+        let hosts = match tokio::task::spawn_blocking(move || hosts::now(&root)).await {
+            Ok(Ok(h)) => h,
+            Ok(Err(e)) => return error(StatusCode::SERVICE_UNAVAILABLE, format!("the declarations' hosts: {e:#}")),
+            Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")),
+        };
+        if !hosts.contains(host) {
             return error(StatusCode::FORBIDDEN, "not a data server a task reads");
         }
         let url = format!("https://{host}/{rest}");

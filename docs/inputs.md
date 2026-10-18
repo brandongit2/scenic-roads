@@ -303,12 +303,14 @@ A declaration adds, under `[data]`:
 Fetch methods are protocols, generic code used by any declaration, through `pipeline::fetch`, which
 asks before any internet request. A range read (a GeoTIFF's tiles) is streamed, and one that breaks
 off goes on from the bytes received with a new range request (`fetch::net`: only a request that
-moves nothing counts against the retries). A dataset kept in a store (`[data] store`, §6.8) is
+moves nothing counts against the retries). The data servers a worker's task may read through the coordinator
+(docs/workers.md §3) are derived from the accepted declarations (`coord::hosts`): the hosts of the
+roads' elevation datasets' web files (their `urls`, their index's URLs, their tile template; not a
+dataset kept in the store, nor the terrain's) and of the land-cover source's. A dataset kept in a store (`[data] store`, §6.8) is
 filled once by its own tool and only read by builds. Fetched data is content-named
 and pinned in the records by the job that fetched it; a refresh is a new pin. Planned: an `s3-list` method; `range` sources (cloud
 GeoTIFFs read in place, never whole) pinned by the server's ETag (else Last-Modified and length),
-checked with `If-Match` on every read so a file changed mid-build fails rather than mixing versions;
-the worker pages' proxy allow-list (`coord::WEB_HOSTS`) derived from the declarations' hosts.
+checked with `If-Match` on every read so a file changed mid-build fails rather than mixing versions.
 
 ### 5.3 Formats
 
@@ -1321,7 +1323,6 @@ declarations are made and staged there.
 | `dem/leaftype.py`'s `fetch_nalcms` | the reader of NALCMS's zip, made for its layout; its messages name what they read |
 | `dem/bldprep.py`'s `read_rg`, `dem/bldfetch.py`'s `overture_jobs` | readers of Overture's schema and release folders, made for their layout; their messages name what they read |
 | timing phases (`scenic-build`'s lake fill, `dem/leaftype.py`'s NALCMS squares) | a phase's name is its key in the timings kept |
-| `coord::WEB_HOSTS` | the coordinator's allowlist of the data servers a worker's task may read through it (docs/workers.md §3); derived from the declarations' hosts is planned (§5.2) |
 | `budget::QUERY_HOSTS`, `QUERY_DOMAINS`; `dem/budget.py`'s | the polite-use budget is by host (docs/pool.md §7.7): the query services' limits hold for any request to them |
 | `dem/bldfetch.py`'s S3 listing namespace | the protocol's |
 | `web/src/main.ts`'s Google Maps link | opens the place elsewhere |
@@ -1385,8 +1386,7 @@ agent) stay.
   buildings' credit itself comes from the catalog (`setBuildingsCredit`).
 - **Terrain:** the raw tiles' store path (`sources/aws-terrarium/`, named for its source) and the
   credit in `rules::CREDITS` the base's declaration takes over once accepted.
-- **Trees and land cover:** the canopy and leaf-type squares' resolutions (D, read from data);
-  `coord::WEB_HOSTS`' land-cover host (derived from the declarations, §5.2).
+- **Trees and land cover:** the canopy and leaf-type squares' resolutions (D, read from data).
 - **Buildings:** `bld/prep.rs`'s `ghsl` meta (D); `dem/bldmeasure.py`'s own Overture and GHSL
   folders and estimates (P: a measuring tool run by hand, not a build step). `rules::CREDITS`'
   Overture and GHSL entries, which their declarations' credits replace once accepted (§4.8). `bld/fill.rs`'s `ESTIMATES` stays

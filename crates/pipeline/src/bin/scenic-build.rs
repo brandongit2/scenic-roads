@@ -17,7 +17,7 @@
 //!   unit-snap U --out d --cache c [--carry]  unit U's folder built from the records into d, nothing
 //!                                written to the NAS, snapshotted around each step's program (for
 //!                                tools/check/same.py and tail.mjs)
-//!   tail-spec U                  unit U's tail as a task gives it a worker (tools/check/tail.mjs)
+//!   tail-spec U                  unit U's tail as a task gives it a worker, its data servers by --root's declarations (tools/check/tail.mjs)
 //!   roadunits                    the road → units index from the units' road ids
 //!   terrain [T …] [--regions dir] [--pass d] [--raw dir] [--expect-same T,…]  the terrain from AWS's
 //!                                raw tiles (cached in --raw), GLO-30 and the basemap's water: of z6
@@ -235,11 +235,13 @@ fn inputs_step(out: &mut Out, args: &[String]) -> Result<()> {
 fn step_main(args: &[String], step: &str) -> Result<()> {
     let args: Vec<String> = args.to_vec();
     let step = step.to_string();
-    // tail-spec U: unit U's tail as a task gives it a worker (its steps, where its places lie, the
-    // data servers it may read), for tools/check/tail.mjs; nothing read or written.
+    // tail-spec U --root R: unit U's tail as a task gives it a worker (its steps, where its places lie, the
+    // data servers it may read), for tools/check/tail.mjs; nothing written.
     if step == "tail-spec" {
         let u = positional(&args).first().and_then(|s| Unit::parse(s)).context("tail-spec U")?;
-        let spec = serde_json::json!({ "runs": pipeline::unit::tail(u, true, true), "places": pipeline::offload::places(), "web_hosts": pipeline::coord::WEB_HOSTS });
+        // (The data servers as the accepted declarations under --root name them: crate::coord::hosts.)
+        let root = PathBuf::from(opt(&args, "--root").context("tail-spec U --root <nas project folder>")?);
+        let spec = serde_json::json!({ "runs": pipeline::unit::tail(u, true, true), "places": pipeline::offload::places(), "web_hosts": pipeline::coord::hosts::now(&root)? });
         println!("{spec}");
         return Ok(());
     }
