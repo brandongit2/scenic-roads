@@ -39,8 +39,37 @@ pub trait Source {
     /// Its time last changed.
     fn mtime(&self, path: &str) -> Option<SystemTime>;
     /// What it holds from byte `offset` on, and where that is: from the start (0) when it's now
-    /// shorter than `offset` (made again).
-    fn read_from(&self, path: &str, offset: u64) -> Option<(u64, Vec<u8>)>;
+    /// shorter than `offset` (made again); and which file it is (`FileId`).
+    fn read_from(&self, path: &str, offset: u64) -> Option<Chunk>;
+}
+
+/// A file as told apart from one made again in its place: its inode and its first line (512 bytes
+/// at most).
+pub type FileId = (u64, Vec<u8>);
+
+/// What `Source::read_from` read.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Chunk {
+    pub from: u64,
+    pub bytes: Vec<u8>,
+    pub id: FileId,
+}
+
+/// A file's inode (0 where there's none to tell: WebAssembly).
+fn ino(m: &std::fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    return std::os::unix::fs::MetadataExt::ino(m);
+    #[cfg(not(unix))]
+    {
+        let _ = m;
+        0
+    }
+}
+
+/// A file's first line, 512 bytes at most.
+fn head_of(b: &[u8]) -> Vec<u8> {
+    let b = &b[..b.len().min(512)];
+    b[..b.iter().position(|&c| c == b'\n').unwrap_or(b.len())].to_vec()
 }
 
 /// The NAS's files, each read on the records' readers under their deadline (crate::agent::nasread).
@@ -54,16 +83,20 @@ impl Source for NasFiles {
         let p = self.0.join(path);
         super::nasread::with(&p.clone(), move || std::fs::metadata(&p)?.modified()).ok()
     }
-    fn read_from(&self, path: &str, offset: u64) -> Option<(u64, Vec<u8>)> {
+    fn read_from(&self, path: &str, offset: u64) -> Option<Chunk> {
         let p = self.0.join(path);
         super::nasread::with(&p.clone(), move || {
             use std::io::{Read, Seek};
             let mut f = std::fs::File::open(&p)?;
-            let from = if f.metadata()?.len() < offset { 0 } else { offset };
+            let m = f.metadata()?;
+            let from = if m.len() < offset { 0 } else { offset };
+            let mut head = vec![0u8; 512];
+            let n = f.read(&mut head)?;
+            head.truncate(n);
             f.seek(std::io::SeekFrom::Start(from))?;
             let mut b = Vec::new();
             f.read_to_end(&mut b)?;
-            Ok((from, b))
+            Ok(Chunk { from, bytes: b, id: (ino(&m), head_of(&head)) })
         })
         .ok()
     }
@@ -103,8 +136,11 @@ struct State {
     snap: Option<Snap>,
     /// The forecast's input as last read, by its file's time.
     record: Option<(SystemTime, Arc<Record<'static>>)>,
-    /// Each history file read up to (bytes: the end of its last whole line).
-    offsets: BTreeMap<String, u64>,
+    /// Each history file read up to (bytes: the end of its last whole line), and which file it was.
+    offsets: BTreeMap<String, (u64, FileId)>,
+    /// The events taken in (writer, time, number, kind): one read again (its file made again) isn't
+    /// taken twice. A week's kept, as the history keeps.
+    taken: std::collections::BTreeSet<(String, u64, u64, String)>,
     history: Option<History>,
     /// The history's numbering: made with the first snapshot (a new one each process).
     epoch: String,
@@ -219,7 +255,7 @@ impl PageView {
         let forecast = record.as_ref().map(|(_, r)| local_forecast(r, now, &inp.own));
         // The history: what each member's files of the two newest days gained.
         let mut new: Vec<(u64, String, u64, Event)> = Vec::new();
-        let mut read_to: BTreeMap<String, u64> = BTreeMap::new();
+        let mut read_to: BTreeMap<String, (u64, FileId)> = BTreeMap::new();
         let days: Vec<String> = [now.saturating_sub(86_400), now]
             .iter()
             .filter_map(|&t| crate::pool::journal::day(t))
@@ -229,16 +265,25 @@ impl PageView {
         for day in &days {
             for m in &inp.members {
                 let p = format!("state/coord/history/{day}/{m}.jsonl");
-                let at = offsets.get(&p).copied().unwrap_or(0);
-                let Some((from, b)) = src.read_from(&p, at) else {
-                    if let Some(&o) = offsets.get(&p) {
-                        read_to.insert(p, o);
+                let kept = offsets.get(&p);
+                let Some(mut c) = src.read_from(&p, kept.map_or(0, |k| k.0)) else {
+                    if let Some(k) = kept {
+                        read_to.insert(p, k.clone());
                     }
                     continue;
                 };
+                // (Another file in its place, written again whole: read from its start, what was
+                // taken in already passed over.)
+                if c.from > 0 && kept.is_some_and(|k| k.1 != c.id) {
+                    match src.read_from(&p, 0) {
+                        Some(again) => c = again,
+                        None => continue,
+                    }
+                }
+                let (from, b) = (c.from, &c.bytes);
                 // (Whole lines alone: one being written is read next time.)
                 let Some(end) = b.iter().rposition(|&c| c == b'\n') else {
-                    read_to.insert(p, from);
+                    read_to.insert(p, (from, c.id));
                     continue;
                 };
                 for l in b[..end].split(|&c| c == b'\n') {
@@ -246,7 +291,7 @@ impl PageView {
                         new.push((e.t, m.clone(), e.seq, e));
                     }
                 }
-                read_to.insert(p, from + end as u64 + 1);
+                read_to.insert(p, (from + end as u64 + 1, c.id));
             }
         }
         new.sort_by(|a, b| (a.0, &a.1, a.2).cmp(&(b.0, &b.1, b.2)));
@@ -258,8 +303,15 @@ impl PageView {
         if st.history.is_none() {
             st.epoch = format!("view {} {}", std::process::id(), now);
         }
+        let week = now.saturating_sub(8 * 86_400);
+        st.taken.retain(|k| k.1 >= week);
+        let fresh: Vec<Event> = new
+            .into_iter()
+            .filter(|(t, m, seq, e)| st.taken.insert((m.clone(), *t, *seq, e.kind.clone())))
+            .map(|n| n.3)
+            .collect();
         let h = st.history.get_or_insert_with(|| History::load(None));
-        for (_, _, _, e) in new {
+        for e in fresh {
             // (Numbered here: the page's cursor, rising as events arrive.)
             h.add(e);
         }
@@ -391,11 +443,12 @@ mod tests {
             self.1.fetch_add(1, Ordering::Relaxed);
             std::fs::metadata(self.0.join(p)).and_then(|m| m.modified()).ok()
         }
-        fn read_from(&self, p: &str, offset: u64) -> Option<(u64, Vec<u8>)> {
+        fn read_from(&self, p: &str, offset: u64) -> Option<Chunk> {
             self.1.fetch_add(1, Ordering::Relaxed);
             let b = local(&self.0, p)?;
+            let ino = ino(&std::fs::metadata(self.0.join(p)).ok()?);
             let from = if (b.len() as u64) < offset { 0 } else { offset };
-            Some((from, b[from as usize..].to_vec()))
+            Some(Chunk { from, bytes: b[from as usize..].to_vec(), id: (ino, head_of(&b)) })
         }
     }
 
@@ -617,7 +670,7 @@ mod tests {
         fn mtime(&self, p: &str) -> Option<SystemTime> {
             self.0.mtime(p)
         }
-        fn read_from(&self, p: &str, offset: u64) -> Option<(u64, Vec<u8>)> {
+        fn read_from(&self, p: &str, offset: u64) -> Option<Chunk> {
             self.0.read_from(p, offset)
         }
     }
@@ -663,5 +716,36 @@ mod tests {
         pv.tick(&src, now);
         let h = pv.history(3, 10).unwrap();
         assert_eq!(h["events"][0]["kind"], "catalog");
+    }
+
+    #[test]
+    fn a_history_file_written_again_whole_is_read_again_without_twice_the_events() {
+        // (Task #409 review) made again in its place (renamed over it), longer than before: read
+        // from its start, the events taken already passed over.
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        fixture(d.path(), now);
+        let src = Dir(d.path().into(), AtomicUsize::new(0));
+        let pv = PageView::default();
+        pv.set_inputs(inputs(""));
+        pv.touch();
+        pv.tick(&src, now);
+        let day = crate::pool::journal::day(now).unwrap();
+        let p = d.path().join(format!("state/coord/history/{day}/m-a.jsonl"));
+        let ev =
+            |seq: u64, t: u64, kind: &str| serde_json::to_string(&Event { seq, t, ..Event::new(kind) }).unwrap() + "\n";
+        // (Its first event dropped as it's rewritten, one new before the old second, one after.)
+        let text = ev(5, now - 25, "catalog")
+            + &ev(2, now - 20, "done")
+            + &ev(6, now - 10, "pause")
+            + &ev(7, now - 9, "resume");
+        let tmp = p.with_extension("tmp");
+        std::fs::write(&tmp, text).unwrap();
+        std::fs::rename(&tmp, &p).unwrap();
+        pv.state.lock().unwrap().last = None;
+        pv.tick(&src, now);
+        let h = pv.history(3, 10).unwrap();
+        let kinds: Vec<&str> = h["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["catalog", "pause", "resume"], "the old second not again");
     }
 }

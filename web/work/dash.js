@@ -844,7 +844,7 @@ function feed(m, events, seen) {
     const d = new Date(r.e.t * 1000).toDateString();
     if (d !== day) { out.append(h("div", "day", d === new Date().toDateString() ? "Today" : d)); day = d; }
     const [text, cls] = eventText(m, r.e, r.k);
-    out.append(h("div", { class: seen != null && r.e.seq > seen ? "new" : "" }, h("span", "t", new Date(r.e.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })), h("span", cls, r.e.step ? [swatch(S.colour(r.e.step)), text] : text)));
+    out.append(h("div", { class: isNew(r.e, seen) ? "new" : "" }, h("span", "t", new Date(r.e.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })), h("span", cls, r.e.step ? [swatch(S.colour(r.e.step)), text] : text)));
   }
   if (!rows.length) out.append(h("div", "dim", events.length ? "Nothing of that kind lately." : "Nothing yet."));
   return out;
@@ -853,7 +853,7 @@ function feed(m, events, seen) {
 // What happened since this page last showed it: a sentence.
 function sinceLine(m, events, seen) {
   if (seen == null) return null;
-  const fresh = events.filter((e) => e.seq > seen);
+  const fresh = events.filter((e) => isNew(e, seen));
   if (!fresh.length) return h("div", "since dim", "Nothing new since you last looked.");
   const tiles = {};
   let failures = 0, updates = [];
@@ -912,11 +912,20 @@ function details(m) {
 let ctx = null;
 let last = null;
 let events = [];
-let seenSeq = undefined;
+// What this browser last showed: its last event's time (unix s; null: a first visit). By time, not
+// by number: an event's number is the answering Mac's (`epoch`), new when its agent restarts.
+let seenAt = undefined;
 // The numbering the events are in (the answer's `epoch`: a Mac's agent restarted, another Mac
-// answering); "since you last looked" is kept per numbering.
+// answering).
 let epoch = undefined;
-const seenKey = () => `seenSeq:${epoch ?? ""}`;
+const SEEN_KEY = "seenAt";
+// An event shown since (later than the last second shown).
+function isNew(e, seen) {
+  return seen != null && e.t > seen;
+}
+// Whether the last answer was the build's (a 503 after it: what's shown is stale).
+let answered = false;
+let retry = null;
 
 function section(cls, id, title, sub, ...body) {
   return h("section", { class: cls, id }, title ? h("h2", null, title, sub ? h("span", null, sub) : null) : null, ...body);
@@ -949,7 +958,7 @@ function render() {
   const activity = section("d-activity", "activity", "Activity", "the last day",
     h("div", "box", hours(m),
       h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Publishing"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
-      sinceLine(m, events, seenSeq), feed(m, events, seenSeq)));
+      sinceLine(m, events, seenAt), feed(m, events, seenAt)));
   const scrollY = window.scrollY;
   const feedTop = root.querySelector(".feed")?.scrollTop || 0;
   const pool = poolSection(last.agent, m.now, (body) => ctx.call("/work/lead", body).then(poll, (e) => ctx.onError?.(`couldn't ask about the lead: ${e.message}`))) || section("d-pool", "pool", null, null);
@@ -991,18 +1000,29 @@ async function loadTable() {
   } catch { /* (Asked again with the next poll.) */ }
 }
 
+// (Told when the numbering changes: the page's own record of what it showed starts again too.)
+let onEpoch = null;
+
 async function pollOnce() {
   if (!ctx) return;
   try {
     await loadTable();
     const [code, sw] = await ctx.call("/work/swarm", {});
+    // (This Mac's agent hasn't read the build's state yet: asked again in a second.)
+    if (code === 503) {
+      ctx.onState?.(answered ? "reading the build's state again… (what's shown may be stale)" : "reading the build's state…");
+      clearTimeout(retry);
+      retry = setTimeout(poll, 1000);
+      return;
+    }
     if (code !== 200 || !sw) return;
+    answered = true;
     last = sw;
     // (Another numbering, or this one gone back past the last event this page has: started again.)
     if (sw.epoch !== epoch || (sw.seq != null && events.length && sw.seq < events[events.length - 1].seq)) {
       epoch = sw.epoch;
       events = [];
-      seenSeq = undefined;
+      onEpoch?.();
     }
     // What happened since the last event this page has (a few hundred at first).
     if (sw.seq != null) {
@@ -1015,7 +1035,7 @@ async function pollOnce() {
         }
       }
       // (What this browser last showed: none on a first visit, then nothing's highlighted.)
-      if (seenSeq === undefined) seenSeq = ctx.store.get(seenKey(), null);
+      if (seenAt === undefined) seenAt = ctx.store.get(SEEN_KEY, null);
     }
     render();
   } catch (e) {
@@ -1039,10 +1059,11 @@ export function dashboard(opts) {
   // What this page has shown, kept as it's left: when it's back (or the next visit), what came
   // since is highlighted ("since you last looked").
   let left = null;
-  const keep = () => { if (events.length) { left = events[events.length - 1].seq; ctx.store.set(seenKey(), left); } };
+  onEpoch = () => { left = null; };
+  const keep = () => { if (events.length) { left = events[events.length - 1].t; ctx.store.set(SEEN_KEY, left); } };
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") keep();
-    else { if (left != null) seenSeq = left; poll(); }
+    else { if (left != null) seenAt = left; poll(); }
   });
   window.addEventListener("pagehide", keep);
   setInterval(() => document.visibilityState === "visible" && poll(), POLL_MS);

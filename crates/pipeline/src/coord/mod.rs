@@ -1680,6 +1680,17 @@ impl Coordinator {
             listener.local_addr()?.port()
         ));
         std::fs::remove_dir_all(&dir).ok();
+        // (Those of viewers whose process is gone: removed.)
+        if let Ok(rd) = std::fs::read_dir(std::env::temp_dir()) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let pid = name.strip_prefix("scenic-viewer-").and_then(|r| r.split('-').next()?.parse::<i32>().ok());
+                // (Gone: no such process, as kill 0 tells; one of another user's is alive.)
+                if pid.is_some_and(|p| unsafe { libc::kill(p, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)) {
+                    std::fs::remove_dir_all(e.path()).ok();
+                }
+            }
+        }
         Coordinator::start_with(&dir, None, listener, me, app, true)
     }
 
@@ -1886,6 +1897,11 @@ impl Coordinator {
         if let Some(rx) = self.closed.lock().unwrap().take() {
             // (Its thread gone already, its listener with it: the sender dropped.)
             rx.recv().ok();
+        }
+        // (A viewer's scratch folder goes with it.)
+        let s = self.shared.lock().unwrap();
+        if s.viewer {
+            std::fs::remove_dir_all(&s.dir).ok();
         }
     }
 
@@ -7315,13 +7331,20 @@ mod tests {
         assert_eq!(ask("/work/history", None), 503);
         assert_eq!(v.shared.lock().unwrap().history.seq(), 0, "no history of its own");
         let dir = v.shared.lock().unwrap().dir.clone();
-        v.stop();
         let mut kept: Vec<String> =
             std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         kept.sort();
         assert_eq!(kept, ["workers-token"]);
         assert!(dir.starts_with(std::env::temp_dir()));
-        std::fs::remove_dir_all(dir).ok();
+        // Its scratch goes as it stops; a dead process's goes as the next starts.
+        v.stop();
+        assert!(!dir.exists());
+        let stale = std::env::temp_dir().join(format!("scenic-viewer-{}-1", i32::MAX - 7));
+        std::fs::create_dir_all(&stale).unwrap();
+        let (listener, _) = test_listener();
+        let next = Coordinator::viewer(listener, "m1", "1.2.3").unwrap();
+        assert!(!stale.exists());
+        next.stop();
     }
 
     #[test]

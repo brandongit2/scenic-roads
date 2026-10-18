@@ -109,6 +109,8 @@ const store = { get(k, d) { try { const v = localStorage.getItem(k); return v ==
 if (!viewer && store.get("helping", null) === null) store.set("helping", !!(store.get("secret", "") || store.get("token", "")) && store.get("ceiling", null) !== null);
 let helping = !viewer && store.get("helping", false);
 for (const k of ["secret", "token", "asking"]) { try { localStorage.removeItem(k); } catch {} }
+// (What the dashboard showed, once kept per numbering: "seenSeq:<epoch>"; now one "seenAt".)
+try { for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k && (k === "seenSeq" || k.startsWith("seenSeq:"))) localStorage.removeItem(k); } } catch {}
 if (location.hash.includes("k=")) history.replaceState(null, "", location.pathname + location.search);
 // (This browser's id, in its name among the build's workers.)
 const newId = () => { const v = Math.random().toString(36).slice(2, 8); store.set("id", v); return v; };
