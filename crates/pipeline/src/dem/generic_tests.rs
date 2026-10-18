@@ -254,3 +254,105 @@ fn sampling_says_increasing_fractions_to_one_per_chunk() {
     assert_eq!(said.last(), Some(&1.0), "it reaches 1: {said:?}");
     assert!(said.iter().filter(|&&f| f > 0.0 && f < 1.0).count() >= 3, "moves within the sampling: {said:?}");
 }
+
+/// A 256 × 256 Terrarium tile of height 10 with no data (−32768) where `hole` says.
+fn holed(hole: impl Fn(usize, usize) -> bool) -> Vec<u8> {
+    let v = 10.0 + 32768.0;
+    let data = [(v / 256.0) as u8, (v as i64 % 256) as u8, 0];
+    let mut px = Vec::with_capacity(256 * 256 * 3);
+    for r in 0..256 {
+        for c in 0..256 {
+            px.extend_from_slice(if hole(c, r) { &[0, 0, 0] } else { &data });
+        }
+    }
+    let mut out = Vec::new();
+    let mut e = png::Encoder::new(&mut out, 256, 256);
+    e.set_color(png::ColorType::Rgb);
+    e.set_depth(png::BitDepth::Eight);
+    e.write_header().unwrap().write_image_data(&px).unwrap();
+    out
+}
+
+/// A pyramid's distances are what a scan of each point's whole band finds, to the bit: across
+/// tiles with holes, a tile the server hasn't, a clean tile, and the world's west edge.
+#[test]
+fn a_pyramids_distance_is_the_whole_bands_scan() {
+    let z = 6;
+    let n = 1i64 << z;
+    let mut seed = 7u64;
+    let mut rnd = move || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut f = crate::fetch::MapFetch::default();
+    let url = |x: i64, y: i64| format!("https://e.org/{z}/{x}/{y}.png");
+    // (Tiles 0–2 × 30–32: holes of each shape; 1/31 missing; 2/30 clean.)
+    for ty in 30..=32i64 {
+        for tx in 0..=2i64 {
+            let png = match (tx, ty) {
+                (1, 31) => None,
+                (2, 30) => Some(flat(10.0)),
+                _ => {
+                    let (a, b) = ((tx * 37 + ty * 11) as usize % 200, (tx * 5 + ty * 29) as usize % 200);
+                    Some(holed(move |c, r| {
+                        (c.abs_diff(a) < 6 && r.abs_diff(b) < 9) || (c * 7 + r * 13) % 97 == 0 || r == (a + 40) % 256
+                    }))
+                }
+            };
+            f.0.insert(url(tx, ty), png);
+        }
+    }
+    let fetch = NoneElse(f);
+    let o = Opts { fetch: &fetch, store: None, pool: None };
+    let t = TileSet {
+        url: "https://e.org/{z}/{x}/{y}.png",
+        zoom: z,
+        encoding: "terrarium",
+        o: &o,
+        clean: Mutex::new(HashMap::new()),
+    };
+    // Points across those tiles, bands up to ~60 pixels.
+    let (mut lon, mut lat, mut radius) = (Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..3000 {
+        let (fx, fy) = (rnd() * 3.0, 30.0 + rnd() * 3.0);
+        lon.push(fx / n as f64 * 360.0 - 180.0);
+        let m = std::f64::consts::PI * (1.0 - 2.0 * fy / n as f64);
+        lat.push(m.sinh().atan().to_degrees());
+        radius.push(tile_resolution(z, 0.0) * (1.0 + rnd() * 60.0));
+    }
+    let sel: Vec<u32> = (0..lon.len() as u32).collect();
+    let said = Mutex::new(Vec::new());
+    let got = t.distance(&sel, &lon, &lat, &radius, &|f| said.lock().unwrap().push(f)).unwrap();
+    let said = said.into_inner().unwrap();
+    assert!(said.len() >= 5 && said.contains(&1.0), "a share per tile's points: {said:?}");
+    // The scan: every pixel of the band.
+    let mut tiles: HashMap<(i64, i64), Option<Vec<f32>>> = HashMap::new();
+    let mut ok = |c: i64, r: i64| -> bool {
+        let (tx, ty) = (c.div_euclid(256), r.div_euclid(256));
+        if tx < 0 || ty < 0 || tx >= n || ty >= n {
+            return false;
+        }
+        let tile = tiles.entry((tx, ty)).or_insert_with(|| t.tile(tx, ty).unwrap().map(|(_, _, a)| a));
+        tile.as_ref().is_some_and(|a| valid(a[r.rem_euclid(256) as usize * 256 + c.rem_euclid(256) as usize], None))
+    };
+    let mut near = 0;
+    for j in 0..lon.len() {
+        let (fx, fy) = mercator_tile(lon[j], lat[j], z);
+        let pm = tile_resolution(z, lat[j]);
+        let (gx, gy) = (fx * 256.0 - 0.5, fy * 256.0 - 0.5);
+        let rp = (radius[j] / pm).ceil() as i64 + 1;
+        let (c0, r0) = (gx.floor() as i64, gy.floor() as i64);
+        let mut best = radius[j];
+        for r in r0 - rp..=r0 + 1 + rp {
+            for c in c0 - rp..=c0 + 1 + rp {
+                let d = ((c as f64 - gx).abs() - 0.5).max(0.0).hypot(((r as f64 - gy).abs() - 0.5).max(0.0)) * pm;
+                if d < best && !ok(c, r) {
+                    best = d;
+                }
+            }
+        }
+        near += (best < radius[j]) as usize;
+        assert_eq!(got[j].to_bits(), best.to_bits(), "point {j}: {} against the scan's {best}", got[j]);
+    }
+    assert!(near > 1000 && near < 2900, "{near} of 3000 points near the invalid area");
+}

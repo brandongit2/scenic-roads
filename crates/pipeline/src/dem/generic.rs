@@ -247,7 +247,9 @@ impl GeoSet<'_> {
         lat: &[f64],
         file: &[u32],
         radius: &[f64],
+        step: Said,
     ) -> Result<Vec<f64>> {
+        let tally = Tally::new(sel.len(), step);
         let one = |j: usize| -> Result<f64> {
             let i = sel[j] as usize;
             let k = file[j] as usize;
@@ -306,12 +308,43 @@ impl GeoSet<'_> {
             let i = sel[j] as usize;
             (file[j], (y[i] / q).floor() as i64, (x[i] / q).floor() as i64)
         });
-        let got: Vec<f64> = within(self.o.pool, || order.par_iter().map(|&j| one(j)).collect::<Result<_>>())?;
+        let got: Vec<f64> = within(self.o.pool, || {
+            order
+                .par_iter()
+                .map(|&j| {
+                    let d = one(j);
+                    tally.add(1);
+                    d
+                })
+                .collect::<Result<_>>()
+        })?;
         let mut out = vec![0.0; sel.len()];
         for (&j, d) in order.iter().zip(got) {
             out[j] = d;
         }
         Ok(out)
+    }
+}
+
+/// A distance measure's points done, told to its `step` as a share each time another 1 % is
+/// done (an atomic count: no lock a point).
+struct Tally<'a> {
+    done: std::sync::atomic::AtomicUsize,
+    total: usize,
+    every: usize,
+    step: Said<'a>,
+}
+
+impl<'a> Tally<'a> {
+    fn new(total: usize, step: Said<'a>) -> Tally<'a> {
+        Tally { done: Default::default(), total, every: (total / 100).max(1), step }
+    }
+
+    fn add(&self, k: usize) {
+        let before = self.done.fetch_add(k, std::sync::atomic::Ordering::Relaxed);
+        if (before + k) / self.every > before / self.every {
+            (self.step)((before + k) as f64 / self.total as f64);
+        }
     }
 }
 
@@ -395,69 +428,123 @@ impl TileSet<'_> {
 
     /// As GeoSet::distance, on the pyramid's pixels (each tile's neighbours read where a band
     /// crosses into them).
-    fn distance(&self, sel: &[u32], lon: &[f64], lat: &[f64], radius: &[f64]) -> Result<Vec<f64>> {
+    ///
+    /// A tile's points share one map of the invalid pixels around it: by row, each pixel's nearest
+    /// invalid one at or left of it and at or right of it. The nearest invalid pixel of a row to a
+    /// point is one of those two (the distance grows with the column's offset), so a point looks at
+    /// two pixels a row of its band, not every one: what a scan of the whole band finds, to the bit.
+    fn distance(&self, sel: &[u32], lon: &[f64], lat: &[f64], radius: &[f64], step: Said) -> Result<Vec<f64>> {
         let n = 1i64 << self.zoom;
         let groups = self.groups(sel, lon, lat);
+        let tally = Tally::new(sel.len(), step);
         let got: Vec<Vec<(usize, f64)>> = within(self.o.pool, || {
             groups
                 .par_iter()
                 .map(|g| -> Result<Vec<(usize, f64)>> {
-                    let mut tiles: HashMap<(i64, i64), Option<Arc<(usize, usize, Vec<f32>)>>> = HashMap::new();
+                    let clean_tile = |tx: i64, ty: i64| self.clean.lock().unwrap().get(&(tx, ty)).copied();
                     let mut out = Vec::with_capacity(g.len());
+                    // (Each point's band in the pyramid's pixels: (j, gx, gy, metres a pixel, c0,
+                    // [cs, ce] × [rs, re]), for those whose band isn't all in clean tiles.)
+                    let mut bands = Vec::new();
                     for &(_, j, fx, fy) in g {
                         let i = sel[j] as usize;
                         let pm = tile_resolution(self.zoom, lat[i]);
                         let (gx, gy) = (fx * 256.0 - 0.5, fy * 256.0 - 0.5);
                         let rp = (radius[j] / pm).ceil() as i64 + 1;
                         let (c0, r0) = (gx.floor() as i64, gy.floor() as i64);
-                        let mut best = radius[j];
                         // (The band's tiles: one known clean has no invalid pixel, so none of its
                         // pixels is looked at, nor is it fetched again.)
                         let (cs, ce, rs, re) = (c0 - rp, c0 + 1 + rp, r0 - rp, r0 + 1 + rp);
-                        let clean_tile = |tx: i64, ty: i64| self.clean.lock().unwrap().get(&(tx, ty)).copied();
                         let all_clean = (rs.div_euclid(256)..=re.div_euclid(256)).all(|ty| {
                             (cs.div_euclid(256)..=ce.div_euclid(256))
                                 .all(|tx| tx >= 0 && ty >= 0 && tx < n && ty < n && clean_tile(tx, ty) == Some(true))
                         });
                         if all_clean {
-                            out.push((j, best));
-                            continue;
+                            out.push((j, radius[j]));
+                        } else {
+                            bands.push((j, gx, gy, pm, c0, [cs, ce, rs, re]));
                         }
+                    }
+                    if bands.is_empty() {
+                        tally.add(g.len());
+                        return Ok(out);
+                    }
+                    // The pixels the bands cover, [x0, x1] × [y0, y1]: which hold data.
+                    let x0 = bands.iter().map(|b| b.5[0]).min().unwrap();
+                    let x1 = bands.iter().map(|b| b.5[1]).max().unwrap();
+                    let y0 = bands.iter().map(|b| b.5[2]).min().unwrap();
+                    let y1 = bands.iter().map(|b| b.5[3]).max().unwrap();
+                    let (w, h) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
+                    let mut ok = vec![false; w * h];
+                    for ty in y0.div_euclid(256)..=y1.div_euclid(256) {
+                        for tx in x0.div_euclid(256)..=x1.div_euclid(256) {
+                            // (Outside the world: no data. A tile no band reaches isn't fetched.)
+                            if tx < 0 || ty < 0 || tx >= n || ty >= n {
+                                continue;
+                            }
+                            let (px0, px1, py0, py1) = (tx * 256, tx * 256 + 255, ty * 256, ty * 256 + 255);
+                            if !bands.iter().any(|b| b.5[0] <= px1 && b.5[1] >= px0 && b.5[2] <= py1 && b.5[3] >= py0) {
+                                continue;
+                            }
+                            let tile =
+                                if clean_tile(tx, ty) == Some(true) { None } else { Some(self.tile_noted(tx, ty)?) };
+                            for r in py0.max(y0)..=py1.min(y1) {
+                                let row = (r - y0) as usize * w;
+                                for c in px0.max(x0)..=px1.min(x1) {
+                                    ok[row + (c - x0) as usize] = match &tile {
+                                        None => true,
+                                        Some(None) => false,
+                                        Some(Some((_, _, a))) => {
+                                            valid(a[(r - py0) as usize * TILE_PX + (c - px0) as usize], None)
+                                        }
+                                    };
+                                }
+                            }
+                        }
+                    }
+                    // By pixel: the column of its row's nearest invalid pixel at or left of it
+                    // (i32::MIN: none), and at or right of it (i32::MAX: none).
+                    let mut left = vec![i32::MIN; w * h];
+                    let mut right = vec![i32::MAX; w * h];
+                    for row in 0..h {
+                        let (o, mut last) = (row * w, i32::MIN);
+                        for c in 0..w {
+                            if !ok[o + c] {
+                                last = c as i32;
+                            }
+                            left[o + c] = last;
+                        }
+                        last = i32::MAX;
+                        for c in (0..w).rev() {
+                            if !ok[o + c] {
+                                last = c as i32;
+                            }
+                            right[o + c] = last;
+                        }
+                    }
+                    for (j, gx, gy, pm, c0, [cs, ce, rs, re]) in bands {
+                        let mut best = radius[j];
+                        let at = (c0 - x0) as usize;
                         for r in rs..=re {
-                            for c in cs..=ce {
-                                let d = ((c as f64 - gx).abs() - 0.5)
-                                    .max(0.0)
-                                    .hypot(((r as f64 - gy).abs() - 0.5).max(0.0))
-                                    * pm;
-                                if d >= best {
+                            let o = (r - y0) as usize * w;
+                            let dy = ((r as f64 - gy).abs() - 0.5).max(0.0);
+                            let (l, rt) = (left[o + at], right[o + at + 1]);
+                            for c in [(l != i32::MIN).then(|| x0 + l as i64), (rt != i32::MAX).then(|| x0 + rt as i64)]
+                                .into_iter()
+                                .flatten()
+                            {
+                                if c < cs || c > ce {
                                     continue;
                                 }
-                                let (tx, ty) = (c.div_euclid(256), r.div_euclid(256));
-                                let ok = if tx < 0 || ty < 0 || tx >= n || ty >= n {
-                                    false
-                                } else if clean_tile(tx, ty) == Some(true) {
-                                    true
-                                } else {
-                                    if !tiles.contains_key(&(tx, ty)) {
-                                        let t = self.tile_noted(tx, ty)?.map(Arc::new);
-                                        tiles.insert((tx, ty), t);
-                                    }
-                                    match &tiles[&(tx, ty)] {
-                                        None => false,
-                                        Some(t) => {
-                                            let (w, h, a) = &**t;
-                                            let (lc, lr) = (c.rem_euclid(256) as usize, r.rem_euclid(256) as usize);
-                                            lc < *w && lr < *h && valid(a[lr * w + lc], None)
-                                        }
-                                    }
-                                };
-                                if !ok {
+                                let d = ((c as f64 - gx).abs() - 0.5).max(0.0).hypot(dy) * pm;
+                                if d < best {
                                     best = d;
                                 }
                             }
                         }
                         out.push((j, best));
                     }
+                    tally.add(g.len());
                     Ok(out)
                 })
                 .collect::<Result<_>>()
@@ -573,10 +660,19 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn distance(&self, sel: &[u32], lon: &[f64], lat: &[f64], file: &[u32], radius: &[f64]) -> Result<Vec<f64>> {
+    /// As GeoSet::distance; `step` told the share of the points done, about every 1 %.
+    fn distance(
+        &self,
+        sel: &[u32],
+        lon: &[f64],
+        lat: &[f64],
+        file: &[u32],
+        radius: &[f64],
+        step: Said,
+    ) -> Result<Vec<f64>> {
         match self {
-            Reader::Geo(g, x, y) => g.distance(sel, x, y, lat, file, radius),
-            Reader::Tiles(t) => t.distance(sel, lon, lat, radius),
+            Reader::Geo(g, x, y) => g.distance(sel, x, y, lat, file, radius, step),
+            Reader::Tiles(t) => t.distance(sel, lon, lat, radius, step),
         }
     }
 }
@@ -716,7 +812,7 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
         let files: Vec<u32> = sel.iter().map(|&i| file[i as usize]).collect();
         // (What a distance measure calls with the share of its points done.)
         let step = |f: f64| mono.say((to_sample as f64 + blended as f64 + f * sel.len() as f64) / total);
-        let d = readers[k].distance(&sel, lon, lat, &files, &radius)?;
+        let d = readers[k].distance(&sel, lon, lat, &files, &radius, &step)?;
         for ((&i, d), r) in sel.iter().zip(d).zip(radius) {
             if d < r {
                 dist[i as usize] = d;
