@@ -317,7 +317,9 @@ build) or a member waiting for its update.
 (`Grant::disk_mb`: its targets' disks summed, or the most a job of its step took, the larger;
 0 for a cold start; a halo step's, `needs::HALO_STEPS`: `pack`, the most of its targets' rather
 than their sum, its targets all reading one cache of base packs that each one's measure counts
-whole), and its agent reserves it while it holds the lease: the whole of it until
+whole. Each tile's own outputs add up on top of that cache, and the measure doesn't yet split them
+from it: a halo larger than the jobs measured so far can need more than it's granted, the disk
+guard its backstop), and its agent reserves it while it holds the lease: the whole of it until
 the job starts, then that less what the job has written so far (the disk guard's count). The
 lead's own running jobs reserve what their measures say they have still to take (`disk_left`).
 A reservation ends with its lease, at hand-off or give-back. The free disk an ask and its

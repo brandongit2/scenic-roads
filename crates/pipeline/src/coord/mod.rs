@@ -389,7 +389,7 @@ impl Shared {
         }
         let r = serde_json::to_vec(&self.job_disks)
             .map_err(anyhow::Error::from)
-            .and_then(|b| crate::whole::write(&self.dir.join("job-disks.json"), &b));
+            .and_then(|b| crate::whole::write(&self.dir.join(JOB_DISKS), &b));
         if let Err(e) = r {
             eprintln!("coordinator: saving the jobs' disk: {e:#}");
         }
@@ -1547,10 +1547,7 @@ impl Coordinator {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        let job_disks = std::fs::read(dir.join("job-disks.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+        let job_disks = job_disks_load(dir);
         // The build's pause, as it was when the agent before this one stopped (`{pause, at}`; an older
         // agent's, the pause alone).
         let kept: serde_json::Value = std::fs::read(dir.join("pause.json"))
@@ -2162,9 +2159,9 @@ impl Coordinator {
     }
 
     /// What a job of `step` over `targets` is measured to take (docs/pool.md §7.7): the most of
-    /// their memory, and on the disk the larger of their disks summed (a batch's cache writes add
-    /// up) and the most a job of the step took over its run (`job_disks`); None when any is a cold
-    /// start.
+    /// their memory, and on the disk the larger of their disks together (`needs::batch_disk`: summed,
+    /// a batch's cache writes adding up; a halo step's the most of them, one cache shared) and the
+    /// most a job of the step took over its run (`job_disks`); None when any is a cold start.
     pub fn measured_batch(&self, step: &str, targets: &[String]) -> Option<Measured> {
         let each: Vec<Measured> = targets.iter().map(|t| self.measured(step, t)).collect::<Option<_>>()?;
         let job = self.job_disk(step);
@@ -2727,6 +2724,23 @@ fn check_pooled(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result
     Ok(())
 }
 
+/// Where the most each step's job took on the disk is kept (`Shared::job_disks`): its v2, task #260.
+const JOB_DISKS: &str = "job-disks-v2.json";
+
+/// The most each step's job took on the disk, as kept in `dir`: `JOB_DISKS`, else the file before
+/// it (`job-disks.json`) without its halo steps' (crate::needs::HALO_STEPS: a job of them spanned
+/// many halos then, its peak no measure of a halo's job now), dropped so once.
+fn job_disks_load(dir: &std::path::Path) -> BTreeMap<String, u64> {
+    let read = |f: &str| -> Option<BTreeMap<String, u64>> {
+        std::fs::read(dir.join(f)).ok().and_then(|b| serde_json::from_slice(&b).ok())
+    };
+    read(JOB_DISKS).unwrap_or_else(|| {
+        let mut m = read("job-disks.json").unwrap_or_default();
+        m.retain(|step, _| !crate::needs::HALO_STEPS.contains(&step.as_str()));
+        m
+    })
+}
+
 /// The floors `s` keeps, after clearing those of `step` (all, with no step), or of its `target`,
 /// when `clear` (`scenic pool floors --clear`).
 fn floors_cleared(s: &mut Shared, clear: bool, step: Option<&str>, target: Option<&str>) -> BTreeMap<String, Floor> {
@@ -2742,7 +2756,12 @@ fn floors_cleared(s: &mut Shared, clear: bool, step: Option<&str>, target: Optio
         // (Their disk floors with them.)
         let d = s.disks.len();
         s.disks.retain(|k, _| keep(k));
-        if s.disks.len() != d && s.floors.len() == n {
+        // (And the most its jobs took, a step's whole: cleared with its floors.)
+        let j = s.job_disks.len();
+        if target.is_none() {
+            s.job_disks.retain(|st, _| step.is_some_and(|x| x != st));
+        }
+        if (s.disks.len() != d || s.job_disks.len() != j) && s.floors.len() == n {
             s.save_costs();
         }
         if s.floors.len() != n {
@@ -3449,7 +3468,11 @@ fn route(
                 .map(|(n, w)| (n, serde_json::json!({ "worker": w, "seen_s": now.duration_since(w.seen).as_secs() })))
                 .collect();
             let tasks: Vec<serde_json::Value> = s.tasks.by_id.values().map(|t| serde_json::json!({ "id": t.id, "kind": t.kind, "mem_mb": t.mem_mb, "state": format!("{:?}", t.state).split([' ', '{']).next().unwrap_or("") })).collect();
-            let offered: BTreeMap<&str, usize> = s.offers.iter().map(|o| (o.step.as_str(), o.targets.len())).collect();
+            let mut offered: BTreeMap<&str, usize> = BTreeMap::new();
+            // (A step's offers summed: a halo step's are one a halo.)
+            for o in &s.offers {
+                *offered.entry(o.step.as_str()).or_default() += o.targets.len();
+            }
             Ok((
                 200,
                 serde_json::json!({ "pass": s.pass, "paused": s.paused, "offered": offered, "done": s.done.len(), "leases": leases, "workers": workers, "tasks": tasks }),
@@ -5150,6 +5173,21 @@ mod tests {
             Cost { peak_mb: 1000, secs: 30, worker: None, v: 0, ..Default::default() },
         )]);
         assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
+        // A stale job's peak (a job of many halos before, 143.5 GB) holds it until cleared with
+        // the step's floors; a file before v2 loses it as it's read.
+        c.add_job_disk("pack", 146_944);
+        assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(146_944));
+        c.floors(true, Some("pack"), Some(&halo[1]));
+        assert_eq!(c.job_disk("pack"), 146_944, "a target's clearing leaves the step's");
+        c.floors(true, Some("pack"), None);
+        c.add_disks(&halo.iter().map(|t| (cost_key("pack", t), 1300)).collect::<Vec<_>>());
+        assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
+        assert_eq!(c.job_disk("peaks"), 20_000);
+        let old = tempfile::tempdir().unwrap();
+        std::fs::write(old.path().join("job-disks.json"), r#"{"pack":146944,"peaks":20000}"#).unwrap();
+        assert_eq!(job_disks_load(old.path()), [("peaks".to_string(), 20_000)].into());
+        std::fs::write(old.path().join(JOB_DISKS), r#"{"pack":1300}"#).unwrap();
+        assert_eq!(job_disks_load(old.path()), [("pack".to_string(), 1300)].into());
         // Cleared with the floors.
         c.floors(true, Some("peaks"), None);
         c.floors(true, Some("pack"), None);
