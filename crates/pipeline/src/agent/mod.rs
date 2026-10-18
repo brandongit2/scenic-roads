@@ -4579,8 +4579,9 @@ impl Agent {
         }
         let held = root.join("inputs/hold-catalog").exists();
         // The base packs' extents (crate::extents), kept by the lead alone, against its manifest:
-        // the headers of packs new since read once, timed. (A failure costs only spills not yet
-        // seen: the jobs read what the file lacks.)
+        // the headers of packs new since read once, timed. (A pack whose header can't be read is
+        // left out and looked at again next plan, the rest kept; the file not written costs only
+        // spills not yet seen: the jobs read what it lacks.)
         if self.pooled().is_none_or(|p| p.role == pool::Role::Lead) {
             let t = std::time::Instant::now();
             match crate::extents::keep(root, &manifest) {

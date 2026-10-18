@@ -645,9 +645,9 @@ index, so a new release rebuilds every unit.
   owned extent from the pass's reach; without one, its tile + 20 km), grown by the base pack's own
   extent where that lies further (a pack built by other reaches; each pack's header extent kept
   in `state/build/extents.json`, which the lead keeps as it plans, reading each new pack's header
-  once; jobs only read it, and read the headers of packs it lacks without writing). A job opens only its tiles'
-  owners (`build::owners_of`, the rule their keys read); one given no tiles, or whose reaches
-  don't list every unit, opens every unit.
+  once; jobs only read it, and read the headers of packs it lacks without writing). A job opens
+  only its tiles' owners (`build::owners_of`, the rule their keys read); one given no tiles, or
+  whose reaches don't list every unit, opens every unit.
 - **Writes:** road and rail hi tiles (z9–14) and T's hidata: the ways-here index; query parts (each
   road's 100 m samples and channels with offsets, for drives and rides); rail lines; the zoomed-out
   summaries (`docs/phase5.md`).
