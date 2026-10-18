@@ -224,6 +224,30 @@ fn what_the_checks_refuse_and_warn_of() {
     assert_eq!(tie.id, f.whole().into_iter().find(|x| x.check() == TIE).unwrap().id);
 }
 
+/// One label per code: two datasets of one code labelled apart are an error naming both; labelled
+/// alike (or by the same `name`), none. A code past where the server counts (roadcore::NDEM) is
+/// refused.
+#[test]
+fn one_label_per_code_and_codes_the_server_counts() {
+    let url = "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"";
+    let f = Fixture::new(vec![
+        ("a.toml", decl("label = \"A (30 m)\"", url)),
+        ("b.toml", decl("label = \"B (30 m)\"\nrank = 1", url)),
+    ]);
+    let apart: Vec<_> = f.whole().into_iter().filter(|x| x.check() == DECL).collect();
+    assert_eq!(apart.len(), 1, "{:?}", f.whole());
+    assert_eq!(apart[0].files, vec!["a.toml".to_string(), "b.toml".to_string()]);
+    let f = Fixture::new(vec![
+        ("a.toml", decl("label = \"A (30 m)\"", url)),
+        ("b.toml", decl("label = \"A (30 m)\"\nrank = 1", url)),
+    ]);
+    assert!(!f.checks().iter().any(|c| c == DECL), "{:?}", f.whole());
+    let over = String::from_utf8(decl("", url)).unwrap().replace("code = 4", &format!("code = {}", roadcore::NDEM));
+    assert!(crate::dem::declared::parse(over.as_bytes()).is_err());
+    let top = String::from_utf8(decl("", url)).unwrap().replace("code = 4", &format!("code = {}", roadcore::NDEM - 1));
+    assert!(crate::dem::declared::parse(top.as_bytes()).is_ok());
+}
+
 /// A dataset declared `store` is measured from its stored files, its index's URLs only naming them:
 /// nothing fetched (the URLs aren't served here), and a sampled file the store lacks is an error
 /// naming it.

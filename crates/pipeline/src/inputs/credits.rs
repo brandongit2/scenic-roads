@@ -152,7 +152,7 @@ pub struct Described {
     pub description: Description,
     /// None: its extent isn't known (no data read yet): listed nowhere.
     pub extent: Option<Extent>,
-    /// An elevation dataset's source byte (§6.8 `code`, 1–255), which its label names on the map.
+    /// An elevation dataset's source byte (§6.8 `code`, 1–8), which its label names on the map.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<u8>,
 }

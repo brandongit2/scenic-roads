@@ -940,7 +940,7 @@ and 3 are planned.
 | `surface` | `ground` or `surface` | a DTM, or a DSM with trees and buildings |
 | `heights` | `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` | the height reference (recorded; conversion planned); `mixed` allowed for the terrain's alone |
 | `rank` | integer, default 0 | overrides the order by resolution (lower first), where datasets of one resolution differ in quality |
-| `code` | 1–255 | the source byte in the units' outputs (`src.u8`), named on the map by `label`; none for the terrain's |
+| `code` | 1–8 | the source byte (at most `roadcore::NDEM` − 1, where the server counts a way's sources) in the units' outputs (`src.u8`), named on the map by `label`; none for the terrain's |
 | `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the catalog's `dem_labels` (formats.md, Catalog), as a credit edit does (§4.8) |
 | `terrain` | bool, default false | read by the 3D terrain, never by the roads' elevations (below) |
 | `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world (FABDEM) |
@@ -1357,8 +1357,16 @@ agent) stay.
 
 - **Credits:** `pipeline::rules::CREDITS` and its area boxes (D: each source's description, extents
   derived), and the server's `credits_of` fallback; the tree tiles' meta source string (D); source lines in web/src's layer help and popups
-  (trees.ts, buildings.ts, ui/buildings.ts, ferries.ts, overlays.ts, details.ts: D, from the
-  catalog's credits).
+  (trees.ts, ferries.ts, overlays.ts, details.ts: D, from the catalog's credits). The World
+  Heritage outlines' popup (overlays.ts, "site: UNESCO World Heritage Centre"): planned, the
+  outlines carrying their register's id (`register`) so the popup reads its credit from the catalog
+  (`sourceOf`); the overlays step can't add it alone (`ovconv`'s outlines know their dot's id and
+  place, not its register), so it waits for the heritage job's next change to its outlines'
+  file (`layer-whs-shapes`).
+- **Kept by design, credits:** the 3D buildings' height-source legend and hover help
+  (buildings.ts `SOURCES`, ui/buildings.ts: "Microsoft", "GHSL", "Esri"): they name the method
+  that found a building's height (its `s`, docs/buildings3d.md §2.3), not a credit; the
+  buildings' credit itself comes from the catalog (`setBuildingsCredit`).
 - **Terrain:** the raw tiles' store path (`sources/aws-terrarium/`, named for its source) and the
   credit in `rules::CREDITS` the base's declaration takes over once accepted; the densification
   boxes in `bin/extract.rs` and `reach.rs` (derived, §6.8 step 2).

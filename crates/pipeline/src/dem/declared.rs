@@ -42,7 +42,7 @@ pub struct Declaration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank: Option<i64>,
     /// The source byte its heights carry in the units' outputs (`src.u8`, which the map's server
-    /// names by its description's `label`, through the catalog's `dem_labels`), 1–255; 0 for the terrain's (`terrain`).
+    /// names by its description's `label`, through the catalog's `dem_labels`), 1–8 (roadcore::NDEM − 1); 0 for the terrain's (`terrain`).
     pub code: u8,
     /// Read by the 3D terrain (crate::terrain_sources), never by the roads' elevations.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -149,9 +149,13 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
             }
             0
         }
-        Some(c) if (1..=255).contains(&c) => c as u8,
+        // (Capped where the map's server counts a way's sources: roadcore::NDEM.)
+        Some(c) if (1..=(roadcore::NDEM as i64 - 1)).contains(&c) => c as u8,
         _ => {
-            why.push("`code` is required, an integer 1–255: the source byte its heights carry".into());
+            why.push(format!(
+                "`code` is required, an integer 1–{}: the source byte its heights carry",
+                roadcore::NDEM - 1
+            ));
             0
         }
     };
