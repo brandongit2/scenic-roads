@@ -113,9 +113,10 @@ fi
 zsh tools/app/guards.sh || exit 1
 cargo build --release -p server -p pipeline 2>&1 | tail -2
 # Room for the files the tests open at once: a session over SSH starts with 256, which the tests
-# run in parallel go past (8 Oct: 15 failed so on the M4, all passing at 8192). Their whole
-# output is kept (~/Library/Logs/scenic/publish-tests-<time>.log); shown: the summaries, and each
-# failed test's own output.
+# run in parallel go past (8 Oct: 15 failed so on the M4, all passing at 8192). They run under
+# cargo-nextest (mise.toml), each test its own process: pipeline's whole suite took 13.8 min against
+# cargo test's 20.3 (M1, 18 Oct, #269). Their whole output is kept
+# (~/Library/Logs/scenic/publish-tests-<time>.log); shown: the summaries, and each failed test's own output.
 ulimit -n 8192 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null || true
 mkdir -p ~/Library/Logs/scenic
 tests_log=~/Library/Logs/scenic/publish-tests-$(date +%Y%m%d-%H%M%S).log
@@ -123,17 +124,17 @@ tests_ok=0
 # (Tests that pass over what a Mac lacks fail instead when they're run for a publish: uv for the
 # translations' checker.)
 export SCENIC_PUBLISH=1
-cargo test -q -p store -p names -p pipeline --lib > $tests_log 2>&1 || tests_ok=$?
+cargo nextest run --no-fail-fast --hide-progress-bar -p store -p names -p pipeline --lib > $tests_log 2>&1 || tests_ok=$?
 # (And the pipeline's whole-crate checks: every cache read through the accessor, the records written
 # only through Out (docs/pool.md §7.3), every Wikimedia request through the budgets' proxy (§7.7),
 # the Python steps' timer. The drop boxes' and the sources' guards ran first.)
-cargo test -q -p pipeline --test cache_accessor --test write_sets --test budgets --test timings_python >> $tests_log 2>&1 || tests_ok=$?
+cargo nextest run --no-fail-fast --hide-progress-bar -p pipeline --test cache_accessor --test write_sets --test budgets --test timings_python >> $tests_log 2>&1 || tests_ok=$?
 # (And every child, listener and taken connection by store::spawn: clippy's disallowed-methods,
 # clippy.toml, docs/pool.md §7.5. A hit fails the publish.)
 cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
-grep -E '^test result' $tests_log
+grep -E '^ *Summary ' $tests_log
 if (( tests_ok != 0 )); then
-  sed -n '/^---- /,/^failures:$/p' $tests_log | grep -v '^progress: '
+  sed -n '/^ *FAIL \[/,/^ *\(PASS\|SLOW\|FAIL\|Summary\) /p' $tests_log | grep -v '^progress: '
   echo "tests failed; their whole output: $tests_log"
   exit $tests_ok
 fi

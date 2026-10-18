@@ -7,12 +7,13 @@
 #
 # Python has no version here either: dem/.python-version declares it, which uv honours (the agent's
 # Python steps run `uv run` in the app's copy of dem/, wherever they run) and mise reads (below).
-# uv runs the Python steps and publish.sh's checks of them.
+# uv runs the Python steps and publish.sh's checks of them. cargo-nextest runs publish.sh's tests.
 [tools]
 node = "24.20.0"
 pnpm = "11.21.0"
 uv = "0.12.9"
 "github:WebAssembly/wasi-sdk" = "wasi-sdk-33"
+"aqua:nextest-rs/nextest/cargo-nextest" = "0.9.146"
 
 [settings]
 idiomatic_version_file_enable_tools = ["rust", "python"]
