@@ -11,7 +11,12 @@ use pipeline::fetch::Fetcher;
 use pipeline::landcover;
 use std::path::PathBuf;
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
+    // (A server that gave no answer: its own exit status, pipeline::fetch::UNREACHABLE_EXIT.)
+    pipeline::fetch::exit_with(run())
+}
+
+fn run() -> Result<()> {
     // (What it reads, for its unit\'s sizes: pipeline::costin.)
     pipeline::costin::report_on_exit();
     let mut build: Option<PathBuf> = None;

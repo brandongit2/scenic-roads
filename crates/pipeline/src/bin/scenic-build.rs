@@ -2785,7 +2785,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         .get(&format!("work/trailends/{date}"))
         .map(|c| out.path(c))
         .context("no hiking-route ends for the pass (the trailends step)")?;
-    let extract = std::env::current_exe()?.parent().context("bin")?.join("extract");
+    let extract = own_bin()?.join("extract");
     std::fs::create_dir_all(scratch)?;
     // (Spaced as the units' extract spaces them: pipeline::dem::spacing.)
     let spacing = scratch.join(pipeline::dem::spacing::FILE);
@@ -3839,7 +3839,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     let n = pipeline::buildtiles::stage(out.root(), &index, u, reach.get(u), &bdir, None)?;
     eprintln!("unit-snap {}: buildings from {n} tiles", u.slash());
     let tools = Tools {
-        bin: std::env::current_exe()?.parent().context("bin")?.to_path_buf(),
+        bin: own_bin()?,
         dem: PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into())),
         cache: PathBuf::from(opt(args, "--cache").context("--cache <dir>")?),
         buildings: Some(bdir),
@@ -3918,7 +3918,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         None => None,
     };
-    let bin = std::env::current_exe()?.parent().context("bin")?.to_path_buf();
+    let bin = own_bin()?;
     let tools = Tools {
         bin,
         dem: PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into())),
@@ -3933,6 +3933,12 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         declared: Some(pipeline::inputs::sources::read(out.root(), &out.manifest)?),
     };
     drop(setup);
+    // The hosts that gave no answer lately, noted for this job's steps and the jobs after it on
+    // this Mac (both slots: the cache is theirs), so each step doesn't wait out its retries on a
+    // server that's down (pipeline::fetch::DOWN_ENV).
+    if std::env::var_os(pipeline::fetch::DOWN_ENV).is_none() {
+        std::env::set_var(pipeline::fetch::DOWN_ENV, std::path::absolute(tools.cache.join("fetch-down"))?);
+    }
     // (The DEM cache's seed, where the units' elevations start from, is copied here once a Mac by
     // the first unit that it can serve: unit::prepare_folder.)
     // What units kept in this Mac's own cache: moved to the shared one (both Macs' units read it).
@@ -4009,6 +4015,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let offload = pipeline::offload::Offload::from_env(scratch);
     let mut out_now: std::collections::VecDeque<(Built, pipeline::offload::Offered)> = Default::default();
     let mut paused = false;
+    // The areas set aside: a server a step reads gave no answer (pipeline::unit::source_down). The
+    // job goes on with its other areas, and fails at its end with these left for its next run.
+    let mut aside: Vec<(Unit, String)> = Vec::new();
     // The cache files held for the units (store::cachefile): each unit's let go once the unit after
     // it is under way (what this unit and the next's copying ahead hold stays), so room-making may
     // take them meanwhile, and a job of hundreds of units doesn't hold them all.
@@ -4178,19 +4187,25 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 s.end();
                 tools.buildings = Some(bdir.clone());
             }
-            (
-                prepare_folder(
-                    u,
-                    &local_piece,
-                    &dir,
-                    &cov,
-                    &layers_source(o, &pilot, Some(&blobs)),
-                    &tools,
-                    &heritage,
-                    Some(&carry),
-                )?,
-                tools,
-            )
+            match prepare_folder(
+                u,
+                &local_piece,
+                &dir,
+                &cov,
+                &layers_source(o, &pilot, Some(&blobs)),
+                &tools,
+                &heritage,
+                Some(&carry),
+            ) {
+                Ok(rep) => (rep, tools),
+                Err(e) => {
+                    set_aside(&mut aside, u, e)?;
+                    std::fs::remove_file(&local_piece).ok();
+                    clean();
+                    areas(|a| a.finished(&u.slash()));
+                    continue;
+                }
+            }
         };
         std::fs::remove_file(&local_piece).ok();
         // Its tail: offered to another worker while this Mac prepares the next unit (when one's
@@ -4203,7 +4218,12 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         let (here, anywhere) = pipeline::unit::split(&runs);
         if rep.kept_ways > 0 {
-            run_tail(here, &dir, &tools)?;
+            if let Err(e) = run_tail(here, &dir, &tools) {
+                set_aside(&mut aside, u, e)?;
+                clean();
+                areas(|a| a.finished(&u.slash()));
+                continue;
+            }
         }
         // (Its inputs' measures: the piece's bytes beside what the store's readers read, its ways
         // and vertices kept, its elevation tiles and area.)
@@ -4252,7 +4272,12 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 let mut b = b;
                 if b.rep.kept_ways > 0 {
                     let (r, bytes, tiffs) = pipeline::costin::measured(|| run_tail(&b.anywhere, &b.dir, &b.tools));
-                    r?;
+                    if let Err(e) = r {
+                        set_aside(&mut aside, u, e)?;
+                        clean();
+                        areas(|a| a.finished(&u.slash()));
+                        continue;
+                    }
                     pipeline::costin::add_to(&mut b.sizes, bytes, tiffs);
                     b.peak = b.peak.max(pipeline::unit::take_peak());
                 }
@@ -4260,20 +4285,57 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             }
         }
         // Units whose last steps came back from other workers: committed before the next.
-        settle_tails(out, &date, offload.as_ref(), &mut out_now, false)?;
+        settle_tails(out, &date, offload.as_ref(), &mut out_now, false, &mut aside)?;
     }
     // The rest: given a moment to be taken by a worker whose pace beats this Mac's (or isn't
     // measured, once an hour), and waited on while a worker holding one will be back with it
     // before this Mac's run would end; then taken back and run here where no one took them, raced
     // here where someone did.
-    settle_tails(out, &date, offload.as_ref(), &mut out_now, true)?;
+    settle_tails(out, &date, offload.as_ref(), &mut out_now, true, &mut aside)?;
     if paused {
         if let Some(h) = ahead.take() {
             h.join().ok();
         }
         pipeline::control::stop_paused("unit");
     }
+    aside_end(&aside, units.len())
+}
+
+/// The folder of this program's app, its links followed: the agent starts jobs by `app/current`,
+/// which an app installed while a job runs points at the newer one, and a step's program of another
+/// version reads what this one didn't write (a unit's `sources.json`, before task #145's app). The
+/// job's app folder is kept while it runs (agent::Status::job_apps).
+fn own_bin() -> Result<PathBuf> {
+    app_folder(&std::env::current_exe()?)
+}
+
+/// Program `exe`'s folder, its links followed (`own_bin`).
+fn app_folder(exe: &Path) -> Result<PathBuf> {
+    let exe = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
+    Ok(exe.parent().context("bin")?.to_path_buf())
+}
+
+/// Sets area `u` aside when `e` is a server that gave no answer (pipeline::unit::source_down):
+/// noted, for the job's end (`aside_end`); else `e`, which ends the job.
+fn set_aside(aside: &mut Vec<(Unit, String)>, u: Unit, e: anyhow::Error) -> Result<()> {
+    if !pipeline::unit::source_down(&e) {
+        return Err(e);
+    }
+    eprintln!("unit {}: set aside, the job goes on with its other areas: {e:#}", u.slash());
+    aside.push((u, format!("{e:#}")));
     Ok(())
+}
+
+/// The job's end with areas set aside (of `of`): a failure naming them, so they're built again
+/// later (the agent's retry); the areas it built are kept as each was saved.
+fn aside_end(aside: &[(Unit, String)], of: usize) -> Result<()> {
+    let Some((_, first)) = aside.first() else { return Ok(()) };
+    let names: Vec<String> = aside.iter().map(|(u, _)| u.slash()).collect();
+    bail!(
+        "{} of {of} areas set aside, a server they read giving no answer ({}); the others built. The first: {first}",
+        aside.len(),
+        names.join(" ")
+    )
 }
 
 /// A unit prepared (and its tail's first steps run), waiting to be finished and committed.
@@ -4311,6 +4373,7 @@ fn settle_tails(
     offload: Option<&pipeline::offload::Offload>,
     waiting: &mut std::collections::VecDeque<(Built, pipeline::offload::Offered)>,
     wait: bool,
+    aside: &mut Vec<(Unit, String)>,
 ) -> Result<()> {
     let Some(o) = offload else { return Ok(()) };
     let mut i = 0;
@@ -4332,7 +4395,20 @@ fn settle_tails(
         let mut here_s = None;
         areas(|a| here_s = a.here_s(&anywhere.iter().map(|r| r.what.as_str()).collect::<Vec<_>>()));
         let patience = pipeline::offload::Patience { here_s: Some(here_s.unwrap_or(TAIL_GUESS_S)) };
-        match o.settle(task, &b.dir, wait, patience, &mut here)? {
+        let settled = o.settle(task, &b.dir, wait, patience, &mut here);
+        // (Its steps run here, a server they read giving no answer: set aside as the job's own are.)
+        let settled = match settled {
+            Err(e) => {
+                let (b, _) = waiting.remove(i).unwrap();
+                set_aside(aside, b.u, e)?;
+                std::fs::remove_dir_all(&b.dir).ok();
+                std::fs::remove_dir_all(&b.bdir).ok();
+                areas(|a| a.finished(&b.u.slash()));
+                continue;
+            }
+            Ok(s) => s,
+        };
+        match settled {
             None => i += 1,
             Some(how) => {
                 let (mut b, _) = waiting.remove(i).unwrap();
@@ -5506,7 +5582,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let cache =
         PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()))
             .join("rail");
-    let bin = std::env::current_exe()?.parent().context("bin")?.to_path_buf();
+    let bin = own_bin()?;
     let feeds = out.get(rail::FEEDS).context("no rail feeds yet (the rail-feeds step)")?.to_string();
     let statics = static_timetables(out, args)?;
     let set = out.path(out.get(&pipeline::osmpass::set_name(&date, "rail")).context("the pass has no rail set")?);
@@ -5925,6 +6001,36 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// A job's steps' programs are its own app's: `app/current` followed to the version it names
+    /// as the job starts, not read again as a newer app is installed.
+    #[test]
+    fn a_jobs_programs_are_its_own_apps_not_currents() {
+        let d = tempfile::tempdir().unwrap();
+        let apps = d.path().canonicalize().unwrap();
+        std::fs::create_dir_all(apps.join("v1")).unwrap();
+        std::fs::write(apps.join("v1/scenic-build"), b"").unwrap();
+        std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
+        assert_eq!(super::app_folder(&apps.join("current/scenic-build")).unwrap(), apps.join("v1"));
+    }
+
+    /// An area whose step's server gave no answer is set aside, the job going on with its others
+    /// and failing at its end naming it; any other failure ends the job at once.
+    #[test]
+    fn an_area_whose_server_gave_no_answer_is_set_aside() {
+        use super::{aside_end, set_aside, Unit};
+        let (a, b) = (Unit::parse("6/13/26").unwrap(), Unit::parse("6/11/26").unwrap());
+        let mut aside = Vec::new();
+        let down = anyhow::Error::new(pipeline::unit::SourceDown(
+            "elevations (elev): a server it reads gave no answer".into(),
+        ));
+        set_aside(&mut aside, a, down.context("unit 6/13/26")).unwrap();
+        assert!(set_aside(&mut aside, b, anyhow::anyhow!("elevations (elev) failed (exit status: 1)")).is_err());
+        assert_eq!(aside.len(), 1);
+        let e = aside_end(&aside, 3).unwrap_err().to_string();
+        assert!(e.starts_with("1 of 3 areas set aside") && e.contains("6/13/26"), "{e}");
+        assert!(aside_end(&[], 3).is_ok());
+    }
+
     /// A pack job opens its tiles' owners and no other unit (`owners_of`, as their keys read
     /// them): from the mirror where it has them (held, nothing copied), else copied into the cache
     /// from the NAS; another unit's file is neither copied nor opened.

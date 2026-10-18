@@ -1004,6 +1004,26 @@ fn run_in(c: Command, what: &str, log: &Path, dir: &Path, tools: &Tools) -> Resu
     snapshot(snap, n, &shown, dir, what, "after")
 }
 
+/// A unit's step ended by a server it reads giving no answer (its program's exit status
+/// crate::fetch::UNREACHABLE_EXIT): the network's or the server's, not the unit's. The unit job sets
+/// the area aside and goes on with its others (scenic-build's `unit` step).
+#[derive(Debug)]
+pub struct SourceDown(pub String);
+
+impl std::fmt::Display for SourceDown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SourceDown {}
+
+/// Whether `e` is a server that gave no answer: a step's (`SourceDown`), or a request of this
+/// process's (crate::fetch::is_unreachable).
+pub fn source_down(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.is::<SourceDown>()) || crate::fetch::is_unreachable(e)
+}
+
 fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     let f = std::fs::File::options().create(true).append(true).open(log)?;
     // (Its phase, the program's own phases under it where it says them.)
@@ -1044,6 +1064,11 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
         // The end of its log into the job's: the unit's folder, its log with it, goes when the next
         // job starts.
         eprintln!("{what}, the end of its log:\n{}", log_tail(log, 40));
+        if st.code() == Some(crate::fetch::UNREACHABLE_EXIT as i32) {
+            return Err(
+                SourceDown(format!("{what}: a server it reads gave no answer ({st}); see {}", log.display())).into()
+            );
+        }
         bail!("{what} failed ({st}); see {}", log.display());
     }
     eprintln!("  {what}: {:.0?}, {} MB at most", t.elapsed(), peak >> 20);
@@ -1650,6 +1675,27 @@ mod tests {
         c.args(["-c", "echo why it failed; exit 3"]);
         let e = run(c, "a step", &log).unwrap_err().to_string();
         assert!(e.contains("a step failed") && log_tail(&log, 1) == "why it failed");
+    }
+
+    #[test]
+    fn a_step_whose_server_gave_no_answer_is_told_from_a_failed_one() {
+        let d = tempfile::tempdir().unwrap();
+        let log = d.path().join("steps.log");
+        // (Its program's own status for a server that gave no answer: crate::fetch::exit_with.)
+        let mut c = store::spawn::command("sh");
+        c.args(["-c", &format!("echo no answer; exit {}", crate::fetch::UNREACHABLE_EXIT)]);
+        let e = run(c, "elevations (elev)", &log).unwrap_err();
+        assert!(e.is::<SourceDown>() && source_down(&e), "{e:#}");
+        // (Wrapped in context, too.)
+        assert!(source_down(&e.context("unit 6/1/1")));
+        // Any other failure is the job's.
+        let mut c = store::spawn::command("sh");
+        c.args(["-c", "exit 1"]);
+        let e = run(c, "elevations (elev)", &log).unwrap_err();
+        assert!(!source_down(&e), "{e:#}");
+        // A request of the job's own process that gave no answer, as the fetcher says it.
+        let e = anyhow::anyhow!("https://example.org/a.zip: no answer (connection reset); tried 11 times");
+        assert!(source_down(&e));
     }
 
     #[test]

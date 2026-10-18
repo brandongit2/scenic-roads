@@ -303,7 +303,11 @@ A declaration adds, under `[data]`:
 Fetch methods are protocols, generic code used by any declaration, through `pipeline::fetch`, which
 asks before any internet request. A range read (a GeoTIFF's tiles) is streamed, and one that breaks
 off goes on from the bytes received with a new range request (`fetch::net`: only a request that
-moves nothing counts against the retries). The data servers a worker's task may read through the coordinator
+moves nothing counts against the retries). A server that gives no answer after its retries is noted
+for its host in the unit job's cache (`fetch-down/<host>`, `SCENIC_FETCH_DOWN`): requests to that host
+fail at once for the next 30 minutes instead of each waiting out its retries, and a step that ends so
+exits 69, which the unit job reads as the area's server being down: it sets that area aside, builds
+its other areas, and fails at its end naming the areas set aside, which the agent's retry builds later. The data servers a worker's task may read through the coordinator
 (docs/workers.md §3) are derived from the accepted declarations (`coord::hosts`): the hosts of the
 roads' elevation datasets' web files (their `urls`, their index's URLs, their tile template; not a
 dataset kept in the store, nor the terrain's) and of the land-cover source's. A dataset kept in a store (`[data] store`, §6.8) is

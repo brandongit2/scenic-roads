@@ -25,13 +25,7 @@ use store::IoError;
 /// first (tests/cache_accessor.rs checks each one does).
 pub fn online(url: &str) -> Result<()> {
     // (This Mac itself isn't the internet: a coordinator's or a test server's.)
-    let host = url.split("://").nth(1).unwrap_or(url).split(['/', '?']).next().unwrap_or("");
-    let host = host.rsplit_once('@').map_or(host, |h| h.1);
-    let host = if host.starts_with('[') {
-        host.split(']').next().map(|h| &h[1..]).unwrap_or("")
-    } else {
-        host.split(':').next().unwrap_or("")
-    };
+    let host = host_of(url);
     if matches!(host, "127.0.0.1" | "localhost" | "::1") {
         return Ok(());
     }
@@ -41,6 +35,118 @@ pub fn online(url: &str) -> Result<()> {
         bail!("{url}: no network here (SCENIC_FETCH_OFFLINE)");
     }
     Ok(())
+}
+
+/// `url`'s host (without its port, user or IPv6 brackets).
+fn host_of(url: &str) -> &str {
+    let host = url.split("://").nth(1).unwrap_or(url).split(['/', '?']).next().unwrap_or("");
+    let host = host.rsplit_once('@').map_or(host, |h| h.1);
+    if host.starts_with('[') {
+        host.split(']').next().map(|h| &h[1..]).unwrap_or("")
+    } else {
+        host.split(':').next().unwrap_or("")
+    }
+}
+
+/// What every error of a server that gave no answer says after its URL, however many retries it
+/// took: the network or the server, not the build (`is_unreachable`).
+const NO_ANSWER: &str = ": no answer (";
+
+/// Whether `e` is a server that gave no answer (after its retries), anywhere in its chain or its
+/// text (a range read's error reaches its reader as text): worth trying again later, not a bug.
+pub fn is_unreachable(e: &anyhow::Error) -> bool {
+    format!("{e:#}").contains(NO_ANSWER)
+}
+
+/// A program's exit status when a server it needs gave no answer (EX_UNAVAILABLE): the unit job
+/// sets that area aside and goes on with its others (crate::unit::SourceDown).
+pub const UNREACHABLE_EXIT: u8 = 69;
+
+/// A program's end: its error printed as `main`'s would be, its status `UNREACHABLE_EXIT` when a
+/// server gave no answer, else 1.
+pub fn exit_with(r: Result<()>) -> std::process::ExitCode {
+    match r {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            std::process::ExitCode::from(if is_unreachable(&e) { UNREACHABLE_EXIT } else { 1 })
+        }
+    }
+}
+
+/// The folder of hosts that gave no answer lately (SCENIC_FETCH_DOWN; the unit job sets it for its
+/// programs): a file per host, written as a request gives up on it, so the requests after it (the
+/// job's next areas' programs) don't each wait out their retries, minutes, on a server that's
+/// down. The host is asked again once its note is `DOWN_S` old.
+pub const DOWN_ENV: &str = "SCENIC_FETCH_DOWN";
+pub const DOWN_S: u64 = 30 * 60;
+
+// (WebAssembly has no network: crate::fetch::net is native only, and so these.)
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
+fn down_dir() -> Option<PathBuf> {
+    std::env::var_os(DOWN_ENV).filter(|d| !d.is_empty()).map(PathBuf::from)
+}
+
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
+fn down_note(dir: Option<&Path>, url: &str) -> Option<PathBuf> {
+    let host = host_of(url);
+    let plain = !host.is_empty() && !host.contains(['/', '\\']) && !host.starts_with('.');
+    plain.then(|| dir.map(|d| d.join(host))).flatten()
+}
+
+/// An error at once when `url`'s host gave no answer less than `DOWN_S` ago (its note in `dir`).
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
+fn down_check(dir: Option<&Path>, url: &str) -> Result<()> {
+    let Some(p) = down_note(dir, url) else { return Ok(()) };
+    let Ok(age) = std::fs::metadata(&p).and_then(|m| m.modified()).map(|t| t.elapsed().unwrap_or_default()) else {
+        return Ok(());
+    };
+    if age.as_secs() < DOWN_S {
+        let why = std::fs::read_to_string(&p).unwrap_or_default();
+        bail!(
+            "{url}{NO_ANSWER}its host gave none {} min ago: {why}; asked again {} min after that)",
+            age.as_secs() / 60,
+            DOWN_S / 60
+        );
+    }
+    Ok(())
+}
+
+/// Notes in `dir` that `url`'s host gave no answer (`why`), for `down_check`.
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
+fn note_down(dir: Option<&Path>, url: &str, why: &str) {
+    if let Some(p) = down_note(dir, url) {
+        if let Some(d) = p.parent() {
+            std::fs::create_dir_all(d).ok();
+        }
+        std::fs::write(&p, why).ok();
+    }
+}
+
+#[cfg(all(test, not(target_os = "wasi")))]
+#[test]
+fn a_host_that_gave_no_answer_is_not_asked_again_for_a_while() {
+    let d = tempfile::tempdir().unwrap();
+    let url = "https://data.example.org/datasets/a.zip";
+    let net = net::Net::new().with_down(Some(d.path().to_path_buf()));
+    // Not noted: asked (and here, offline, refused as such: not a server's lack of answer).
+    let e = net.open(url, None, None).err().unwrap();
+    assert!(!is_unreachable(&e), "{e:#}");
+    // Noted: an error at once, a server's lack of answer, naming why.
+    note_down(Some(d.path()), url, "connection reset by peer");
+    assert!(d.path().join("data.example.org").is_file());
+    let e = net.open("https://data.example.org/other.zip", None, None).err().unwrap();
+    assert!(is_unreachable(&e) && format!("{e:#}").contains("connection reset by peer"), "{e:#}");
+    // Another host: asked.
+    assert!(down_check(Some(d.path()), "https://other.example.org/a.zip").is_ok());
+    // An old note: asked again.
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(DOWN_S + 60);
+    std::fs::File::options().write(true).open(d.path().join("data.example.org")).unwrap().set_modified(old).unwrap();
+    assert!(down_check(Some(d.path()), url).is_ok());
+    // No folder: nothing noted, nothing refused; nor a host that would name another file.
+    note_down(None, url, "x");
+    assert!(down_check(None, url).is_ok());
+    assert!(down_note(Some(d.path()), "https://../x").is_none());
 }
 
 #[cfg(test)]
@@ -571,6 +677,8 @@ mod net {
     #[derive(Clone)]
     pub struct Net {
         agent: ureq::Agent,
+        /// The notes of hosts that gave no answer lately (SCENIC_FETCH_DOWN: super::down_check).
+        down: Option<PathBuf>,
     }
 
     /// An answer that's worth asking again: too many requests, a server's error, or no answer.
@@ -600,13 +708,19 @@ mod net {
 
     impl Net {
         pub fn new() -> Net {
-            Net { agent: Self::config().build().into() }
+            Net { agent: Self::config().build().into(), down: down_dir() }
+        }
+
+        /// With the notes of hosts that gave no answer in `dir` (super::down_check) in place of
+        /// SCENIC_FETCH_DOWN's.
+        pub fn with_down(self, dir: Option<PathBuf>) -> Net {
+            Net { down: dir, ..self }
         }
 
         /// HTTPS only, and no redirect followed (one comes back as an answer, which isn't a file:
         /// an error).
         pub fn strict() -> Net {
-            Net { agent: Self::config().https_only(true).max_redirects(0).build().into() }
+            Net { agent: Self::config().https_only(true).max_redirects(0).build().into(), down: down_dir() }
         }
 
         fn config() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
@@ -677,8 +791,9 @@ mod net {
         }
 
         /// Asks again after a transient failure: 10 times, waiting 2 s, then twice as long each
-        /// time (at most a minute).
+        /// time (at most a minute); not at all while its host's note says it gave no answer lately.
         fn retrying<T>(&self, url: &str, mut f: impl FnMut() -> Result<std::result::Result<T, String>>) -> Result<T> {
+            down_check(self.down.as_deref(), url)?;
             let mut last = String::new();
             for attempt in 0..=10u32 {
                 if attempt > 0 {
@@ -689,7 +804,8 @@ mod net {
                     Err(e) => last = e,
                 }
             }
-            bail!("{url}: no answer ({last}); tried 11 times")
+            note_down(self.down.as_deref(), url, &last);
+            bail!("{url}{NO_ANSWER}{last}); tried 11 times")
         }
 
         /// The file's length and first bytes; None when the server has no such file.
@@ -751,6 +867,7 @@ mod net {
             let mut last = String::new();
             // (The first answer's validator and the file's length, which every later one must match.)
             let mut first: Option<(Option<String>, Option<u64>)> = None;
+            down_check(self.down.as_deref(), url)?;
             loop {
                 if requests > 0 {
                     std::thread::sleep(Duration::from_secs(if idle == 0 { 2 } else { (2u64 << (idle - 1)).min(60) }));
@@ -827,7 +944,8 @@ mod net {
                     idle += 1;
                 }
                 if idle > 10 {
-                    bail!("{url}: no answer ({last}); tried 11 times");
+                    note_down(self.down.as_deref(), url, &last);
+                    bail!("{url}{NO_ANSWER}{last}); tried 11 times");
                 }
                 if requests >= 100 {
                     bail!("{url}: {} of {want} bytes after {requests} requests ({last})", out.len());
@@ -838,6 +956,7 @@ mod net {
         /// The whole (small) file; None for 404. Other answers are asked again: 8 tries, waiting 2,
         /// 4, 6 … s.
         fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
+            down_check(self.down.as_deref(), url)?;
             let mut last = String::new();
             for attempt in 0..8u64 {
                 crate::fetch::online(url)?;
@@ -857,7 +976,8 @@ mod net {
                 }
                 std::thread::sleep(Duration::from_secs(2 * (attempt + 1)));
             }
-            bail!("{url}: no answer ({last})")
+            note_down(self.down.as_deref(), url, &last);
+            bail!("{url}{NO_ANSWER}{last})")
         }
     }
 }

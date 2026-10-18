@@ -1057,7 +1057,8 @@ from the first (`edit_held`).
   Mac's build is paused (the pool's or its own), the memory guard watches it, the pool doesn't hand its folder off as left (`take_left`), the proxy listens again on the
   port the job was told while it's free (taken, the jobs taken over are stopped as interrupted,
   their targets given back), and the map server's updater keeps its app's folder
-  (`job_apps` in the status). Its end is read from the status file: a pause's 75 counts as paused;
+  (`job_apps` in the status). (scenic-build runs its steps' programs from that folder, `app/current`
+  followed as it starts, so an app installed while it runs changes none of them.) Its end is read from the status file: a pause's 75 counts as paused;
   a group gone with no status (killed while no agent tended it) is interrupted, not failed. A
   record an older app wrote, or one with no slot saved, isn't taken over: its job is stopped at
   start when provably ours, as before. A helper's leased job (before the pool) is stopped at the

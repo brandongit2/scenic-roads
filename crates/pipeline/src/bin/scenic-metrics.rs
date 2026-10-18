@@ -32,7 +32,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI8, AtomicU8, Ordering::Relaxed};
 use std::sync::LazyLock;
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
+    // (A server that gave no answer: its own exit status, pipeline::fetch::UNREACHABLE_EXIT.)
+    pipeline::fetch::exit_with(run())
+}
+
+fn run() -> Result<()> {
     // (What it reads, for its unit\'s sizes: pipeline::costin.)
     pipeline::costin::report_on_exit();
     let args: Vec<String> = std::env::args().collect();
