@@ -4003,6 +4003,7 @@ mod http {
         // The build at a glance, both pages': its script and styles.
         ("dash.js", "text/javascript", include_bytes!("../../../../web/work/dash.js")),
         ("pool.js", "text/javascript", include_bytes!("../../../../web/work/pool.js")),
+        ("sums.js", "text/javascript", include_bytes!("../../../../web/work/sums.js")),
         ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/work/dash.css")),
         ("sw.js", "text/javascript", include_bytes!("../../../../web/work/sw.js")),
         (

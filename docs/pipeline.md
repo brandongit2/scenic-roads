@@ -144,8 +144,10 @@ kind's others, with templated words.
 
 - **Verdict:** one sentence (state, done ≈, next on the map), the alerts as chips, the pause
   controls.
-- **Overview:** how far (the roads' tiles built, the bulk of the work), how long, the stages as a
-  coloured strip; three numbers that aren't a step's (regions on the map, the map's last update,
+- **Overview:** how far: the whole build's work done, every stage's (`sums.js` wholeProgress:
+  each step's targets done at the forecast's time for a target of it, `each_s`, measured or
+  estimated, of that plus the forecast's work left; 100% only when every stage is done), how long
+  (the same work left), the stages as a coloured strip; three numbers that aren't a step's (regions on the map, the map's last update,
   machines working).
 - **Stages:** a card per stage: mark, title, count, bar; a row per step: mark, title, ⇄ when any
   Mac may take it, count, bar, its forecast (work, done ≈); the stage's jobs to come and note.

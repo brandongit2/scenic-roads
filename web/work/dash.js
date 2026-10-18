@@ -15,6 +15,7 @@
 // happened).
 
 import { poolSection, termText } from "./pool.js";
+import { finished, wholeProgress } from "./sums.js";
 
 const POLL_MS = 10000;
 const STALE_S = 360;
@@ -72,7 +73,6 @@ function countOf(x, noun) {
   if (x.left != null) return `${plural(x.left, noun.replace(/s$/, ""))} left`;
   return "to come";
 }
-const finished = (x) => (x.left != null ? x.left === 0 : x.total != null && x.done >= x.total && x.total > 0);
 // A stage's counts, a noun at a time in its items' order (build::Line::counts): "398 of 398 tiles ·
 // 18 of 18 areas", "2 runs left"; "done" or "to come" with no item to count (an older lead's line:
 // its own count).
@@ -167,8 +167,6 @@ function macSaid(a, host) {
   return { cap, why, nas };
 }
 // The checklist's line (a stage's) that counts `step`, and its item for it.
-const lineOf = (m, step) => m.lines.find((l) => (l.steps || []).includes(step) || (l.items || []).some((i) => i.step === step));
-const itemOf = (m, step) => lineOf(m, step)?.items?.find((i) => i.step === step);
 
 // ---- The verdict --------------------------------------------------------------------------------
 function machineState(st, fresh, paused) {
@@ -284,15 +282,14 @@ function nextOnMap(m) {
 }
 
 // ---- The overview -------------------------------------------------------------------------------
-// How far (the roads' tiles: the bulk of the work, a share that means the same at any moment), how
-// long, and the numbers that aren't a step's: the regions, the map, the machines.
+// How far (the whole build's work, every stage's: sums.js wholeProgress), how long (the same work
+// left), and the numbers that aren't a step's: the regions, the map, the machines.
 function overview(m) {
   const { a, fc, now, lines } = m;
-  const roads = itemOf(m, "unit") || lineOf(m, "unit");
-  const big = roads?.total ? `${Math.floor((roads.done / roads.total) * 100)}%` : "–";
+  const whole = wholeProgress(lines, fc);
   const workLeft = fc ? fc.steps.reduce((t, s) => t + s.work_s, 0) : 0;
   const left = h("div", null,
-    h("div", "big", big, h("small", null, roads?.total ? ` of the roads' tiles built (${n(roads.done)} of ${n(roads.total)})` : "")),
+    h("div", "big", whole ? `${whole.pct}%` : "–", h("small", null, whole ? ` of the whole build's work done (${dur(whole.done_s)} of ${dur(whole.done_s + whole.left_s)}, every stage's)` : "")),
     h("div", "small dim", !fc ? "No forecast yet (the lead makes one with each plan)" : fc.done_at ? `${dur(workLeft)} of work left at the lead's pace; with every machine, done ≈ ${clock(fc.done_at)}, if the Macs keep going (awake, on mains or above 30%, reaching the NAS)` : `No finish to forecast: ${fc.why || "unknown"}`),
     fc?.done_at ? h("div", "small dim", `${Math.round((fc.measured || 0) * 100)}% of that time measured, the rest estimated · forecast ${ago(now, fc.at)}`) : null,
   );

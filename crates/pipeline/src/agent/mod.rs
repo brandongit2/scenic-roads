@@ -7561,6 +7561,8 @@ impl Agent {
             old_app: self.coord.as_ref().is_some_and(|c| !c.all_new()),
         };
         let mut f = forecast::forecast(&inp);
+        // (Each step's time a target, for the page to weigh the targets done: the headline.)
+        f.each_s = steps::TABLE.iter().map(|r| (r.name.to_string(), (per(r.name) * 10.0).round() / 10.0)).collect();
         // (A slot's job waiting on a worker holding its unit's tail: said beside its machine.)
         f.waiting = (0..self.slots.len()).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();
         // In the pool, the forecast for equal machines beside it (docs/pool.md §12 4.12), reported

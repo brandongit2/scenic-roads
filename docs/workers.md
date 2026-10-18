@@ -142,7 +142,7 @@ Common rules:
   on "Help with this tab"; any page may also pause the build and ask about the lead (`/work/lead`,
   docs/pool.md §11). `/work/?view` only watches. Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
-- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`; docs/pipeline.md §5): the
+- **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `sums.js`; docs/pipeline.md §5): the
   verdict (going, done when, what needs a look, pause controls); the overview; the stages (a card
   per stage, a row per step); a card per machine; the pool (who leads, "Make lead", "Take it"); the
   road to done (each machine's forecast lane); publishing; the regions; the activity (last day by

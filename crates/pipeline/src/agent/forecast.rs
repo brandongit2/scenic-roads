@@ -176,6 +176,11 @@ pub struct Forecast {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guessed: Vec<String>,
     pub steps: Vec<StepFc>,
+    /// Each step's time for a target at the lead's pace (seconds), as the forecast takes it: its
+    /// targets' measured mean, else what its jobs here took a target, else a first guess. The
+    /// build page weighs the targets done by it (its headline: the work done of the whole).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub each_s: BTreeMap<String, f64>,
     pub regions: Vec<RegionFc>,
     /// When each cadenced publish may next go out: the low zooms ("low"), the landmark points
     /// ("marks"), the area overlays ("overlays").
