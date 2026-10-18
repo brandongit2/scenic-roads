@@ -3024,13 +3024,13 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     let facts: HashMap<String, Value> = serde_json::from_value(read_json(facts_file)?)?;
     let views: HashMap<String, f64> = serde_json::from_value(read_json(views_file)?)?;
     drop(p);
-    let units = pipeline::agent::build::pois_keys(&cov, &date, &out.manifest);
+    let units = pipeline::agent::build::pois_units(&cov, &date, &out.manifest);
     let parts = Parts(&["Reading every area's candidates and peaks", "Ranking the landmarks", "Writing their tiles"]);
     parts.start(0);
     let p = phase("every area's candidates and peaks read", Class::NasRead);
     let mut cands: Vec<(String, pipeline::marksjob::Candidate)> = Vec::new();
     let (mut with_peaks, mut missing_peaks) = (0, 0);
-    for (u, _) in &units {
+    for (u, _, _) in &units {
         let Some(pc) = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)) else { continue };
         let mut peaks: HashMap<String, Value> = HashMap::new();
         if let Some(pk) = out.get(&format!("work/peaks/{}", u.dash())).map(|c| out.path(c)) {
@@ -3108,7 +3108,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let parts = Parts(PARTS);
     parts.start(0);
     let p = phase("the candidates' items gathered", Class::NasRead);
-    for (u, _) in pipeline::agent::build::pois_keys(&cov, &date, &out.manifest) {
+    for (u, _, _) in pipeline::agent::build::pois_units(&cov, &date, &out.manifest) {
         let Some(pc) = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)) else { continue };
         for c in pipeline::candidates::read(&pc)? {
             let Some(q) = c.qid.as_deref() else { continue };

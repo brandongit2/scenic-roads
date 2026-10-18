@@ -6316,6 +6316,12 @@ impl Agent {
                 crate::inputs::feeds::index_key_names(root, ix).map(|k| k.join(",")).unwrap_or_else(|_| "?".into()),
             );
         }
+        // (The declared elevation datasets' spacing, which the rail and candidates keys name: "?"
+        // while it can't be read, and they wait: crate::dem::spacing.)
+        inputs.insert(
+            crate::dem::spacing::INPUT.into(),
+            crate::dem::spacing::digest_read(root, &manifest).unwrap_or_else(|_| "?".into()),
+        );
         let held = root.join("inputs/hold-catalog").exists();
         // The base packs' extents (crate::extents), kept by the lead alone, against its manifest:
         // the headers of packs new since read once, timed. (A pack whose header can't be read is

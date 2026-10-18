@@ -181,7 +181,6 @@ impl TerrainTiles {
                         (d, c)
                     })
                     .collect();
-                crate::dem::spacing::note(want, &crate::dem::spacing::Fine::of(&e));
                 self.elevation = Some((want.clone(), std::sync::Arc::new(e)));
             }
             Err(e) => {
@@ -417,7 +416,6 @@ impl TerrainTiles {
     /// `scenic-build water-key-check`: no file).
     /// Holds the declared elevation datasets of accepted index `content` (as `load` reads them).
     pub fn hold_elevation(&mut self, content: &str, e: Elevation) {
-        crate::dem::spacing::note(content, &crate::dem::spacing::Fine::of(&e));
         self.elevation = Some((content.to_string(), std::sync::Arc::new(e)));
     }
 

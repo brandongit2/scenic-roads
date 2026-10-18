@@ -93,9 +93,7 @@ impl Fine {
         );
         let a = crate::inputs::open(root, m, elevation::UNIT)?
             .context("the records name no accepted version of the declared elevation datasets")?;
-        let f = Fine::of_accepted(&super::declared::accepted(&a)?);
-        note(&a.version, &f);
-        Ok(f)
+        Ok(Fine::of_accepted(&super::declared::accepted(&a)?))
     }
 
     /// The whole of it as one digest: what the steps that read a spacing file over areas they
@@ -115,41 +113,35 @@ impl Fine {
     }
 }
 
-/// The digests (`Fine::digest`) of the accepted elevation versions read in this process, by their
-/// index's content name: noted by whatever reads them (agent::tiles::TerrainTiles::load,
-/// `Fine::of_records`), so a key from the manifest alone can name them (`digest_of`).
-/// (A test's own, by its thread: tests hold datasets under the same version names at once.)
-#[cfg(not(test))]
-static NOTED: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+/// The digests (`Fine::digest`) of the accepted elevation versions read, by their index's
+/// content name (a version's never changes: read once a process).
+static READ: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
-#[cfg(test)]
-thread_local! {
-    static NOTED: std::cell::RefCell<std::collections::BTreeMap<String, String>> = Default::default();
+
+/// The planner's input (agent: `inputs`) naming the spacing the steps reading a spacing file
+/// key on: `Fine::digest` of the accepted elevation version, "?" while it can't be read.
+pub const INPUT: &str = "spacing";
+
+/// `Fine::digest` of the accepted elevation version the records `m` name, read from its index
+/// (`Fine::of_records`), cached by that version.
+pub fn digest_read(root: &Path, m: &std::collections::BTreeMap<String, String>) -> Result<String> {
+    let v = m
+        .get(&crate::inputs::logical(crate::inputs::elevation::UNIT))
+        .context("the records name no accepted version of the declared elevation datasets")?;
+    if let Some(d) = READ.lock().ok().and_then(|r| r.get(v).cloned()) {
+        return Ok(d);
+    }
+    let d = Fine::of_records(root, m)?.digest();
+    if let Ok(mut r) = READ.lock() {
+        r.insert(v.clone(), d.clone());
+    }
+    Ok(d)
 }
 
-fn noted<R>(f: impl FnOnce(&mut std::collections::BTreeMap<String, String>) -> R) -> Option<R> {
-    #[cfg(not(test))]
-    return NOTED.lock().ok().map(|mut n| f(&mut n));
-    #[cfg(test)]
-    return Some(NOTED.with(|n| f(&mut n.borrow_mut())));
-}
-
-/// Notes accepted elevation version `version`'s spacing (`digest_of`).
-pub fn note(version: &str, f: &Fine) {
-    let d = f.digest();
-    noted(|n| n.insert(version.to_string(), d));
-}
-
-/// The spacing's line for the keys of the steps reading a spacing file (`Fine::digest` of the
-/// accepted elevation version `m` names, as noted): "spacing -" before the switch or while that
-/// version isn't read in this process (made again once it is).
-pub fn digest_of(m: &std::collections::BTreeMap<String, String>) -> String {
-    use crate::inputs::elevation;
-    let d = elevation::switched(m)
-        .then(|| m.get(&crate::inputs::logical(elevation::UNIT)))
-        .flatten()
-        .and_then(|v| noted(|n| n.get(v).cloned()).flatten());
-    format!("spacing {}", d.as_deref().unwrap_or("-"))
+/// The spacing's line for a key, from the planner's inputs (`INPUT`): None while it isn't known
+/// (the step waits).
+pub fn key_line(inputs: &std::collections::BTreeMap<String, String>) -> Option<String> {
+    inputs.get(INPUT).filter(|d| d.as_str() != "?").map(|d| format!("spacing {d}"))
 }
 
 impl Spacing for Fine {

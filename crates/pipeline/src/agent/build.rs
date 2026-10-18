@@ -961,7 +961,7 @@ fn peaks_keys_at(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, terra
     ]
     .join(",");
     let mut out = Vec::new();
-    for (u, _) in pois_keys(cov, date, m) {
+    for (u, _, _) in pois_units(cov, date, m) {
         let Some(c) = m.get(&format!("work/pois/{}", u.dash())) else { continue };
         let mut inputs = vec![format!("peaks {PEAKS_V}"), format!("terrain {terrain_v}"), c.clone(), common.clone()];
         for (x, y) in tiles_in_wrapped(6, crate::stage::tile_box_grown(u.z, u.x, u.y, 30.0)) {
@@ -1007,31 +1007,44 @@ pub const RAIL_V: u32 = 4;
 
 /// The current units' candidates (their content names), for the worldwide jobs' keys.
 fn current_pois<'a>(cov: &Coverage, date: &str, m: &'a BTreeMap<String, String>) -> Vec<&'a str> {
-    pois_keys(cov, date, m)
+    pois_units(cov, date, m)
         .into_iter()
-        .filter_map(|(u, _)| m.get(&format!("work/pois/{}", u.dash())).map(String::as_str))
+        .filter_map(|(u, _, _)| m.get(&format!("work/pois/{}", u.dash())).map(String::as_str))
         .collect()
 }
 
-/// The units whose piece meets the coverage, each with its candidates' key: its piece, the
-/// coverage over it (the clip) and the pass's hiking-route ends.
-pub fn pois_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let ends = get(&format!("work/trailends/{date}"));
-    // (The spacing its extract reads: crate::dem::spacing.)
-    let spacing = crate::dem::spacing::digest_of(m);
+/// The units with candidates: those whose piece meets the coverage (the tile and 10 km around it:
+/// the clip tests the candidates' points, which are the tile's, and their ways' nodes, which reach
+/// a little past it), each with that box.
+pub fn pois_units(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, [i32; 4], String)> {
     let mut units = Vec::new();
     for (l, c) in m.range(format!("sources/osm/{date}/pieces/")..) {
         let Some(u) = l.strip_prefix(&format!("sources/osm/{date}/pieces/")).and_then(Unit::parse) else { break };
-        // (The coverage over the tile and 10 km around it: the clip tests the candidates' points,
-        // which are the tile's, and their ways' nodes, which reach a little past it.)
         let near = grown_e7(u.z, u.x, u.y, 10.0);
-        if !cov.meets_rect(near) {
-            continue;
+        if cov.meets_rect(near) {
+            units.push((u, near, c.clone()));
         }
-        units.push((u, h(&[&format!("pois {POIS_V}"), c, &cov.fingerprint(near), ends, &spacing])));
     }
     units
+}
+
+/// `pois_units`, each with its candidates' key: its piece, the coverage over it (the clip), the
+/// pass's hiking-route ends and the spacing its extract reads (crate::dem::spacing, from the
+/// planner's `inputs`). None while the spacing isn't known: the candidates wait.
+pub fn pois_keys(
+    cov: &Coverage,
+    date: &str,
+    m: &BTreeMap<String, String>,
+    inputs: &BTreeMap<String, String>,
+) -> Option<Vec<(Unit, String)>> {
+    let spacing = crate::dem::spacing::key_line(inputs)?;
+    let ends = m.get(&format!("work/trailends/{date}")).map(String::as_str).unwrap_or("-");
+    Some(
+        pois_units(cov, date, m)
+            .into_iter()
+            .map(|(u, near, c)| (u, h(&[&format!("pois {POIS_V}"), &c, &cov.fingerprint(near), ends, &spacing])))
+            .collect(),
+    )
 }
 
 /// How far each region is built: of the units its outlines meet, how many are built as the whole
@@ -2624,7 +2637,9 @@ fn rail_next(
     let feeds = m.get(crate::rail::FEEDS)?;
     let set = m.get(&crate::osmpass::set_name(date, "rail"))?;
     let statics = m.get(&crate::inputs::logical(crate::inputs::gtfs::UNIT))?;
-    let k = h(&[&format!("rail {RAIL_V}"), feeds, statics, set, &cover, &crate::dem::spacing::digest_of(m)]);
+    // (The spacing its extract reads: crate::dem::spacing; not known, it waits.)
+    let spacing = crate::dem::spacing::key_line(inputs)?;
+    let k = h(&[&format!("rail {RAIL_V}"), feeds, statics, set, &cover, &spacing]);
     Some(
         (done.lo.get("rail").map(String::as_str) != Some(k.as_str()))
             .then(|| Work { step: "rail".into(), targets: vec![("rail".into(), k)] }),
@@ -2720,7 +2735,7 @@ fn prune_units(
     units: &[(Unit, Option<String>)],
 ) -> Option<Work> {
     let built: BTreeSet<String> = units.iter().map(|(u, _)| u.dash()).collect();
-    let cands: BTreeSet<String> = pois_keys(cov, date, m).iter().map(|(u, _)| u.dash()).collect();
+    let cands: BTreeSet<String> = pois_units(cov, date, m).iter().map(|(u, _, _)| u.dash()).collect();
     let mut t: BTreeSet<String> = BTreeSet::new();
     for l in m.keys() {
         for (prefix, set, kind) in [
@@ -2946,7 +2961,7 @@ fn heritage_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Opt
 /// The landmark points' key: every current unit's candidates and peaks (`units`: pois_keys), the
 /// items' facts and pageviews, the heritage sites (the files markconv reads: the pass's heritage
 /// job's).
-fn marks_key(date: &str, m: &BTreeMap<String, String>, units: &[(Unit, String)]) -> String {
+fn marks_key(date: &str, m: &BTreeMap<String, String>, units: &[Unit]) -> String {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let src = crate::markconv::heritage_source(date);
     let mut ins = vec![
@@ -2957,7 +2972,7 @@ fn marks_key(date: &str, m: &BTreeMap<String, String>, units: &[(Unit, String)])
     for stem in ["layer-heritage", "details-heritage", "props-heritage"] {
         ins.push(get(&format!("{src}/{stem}")).to_string());
     }
-    for (u, _) in units {
+    for u in units {
         for p in ["work/pois", "work/peaks"] {
             ins.push(get(&format!("{p}/{}", u.dash())).to_string());
         }
@@ -3014,7 +3029,8 @@ fn landmarks_chain(
     inputs: &BTreeMap<String, String>,
 ) -> Option<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
-    let units: Vec<(Unit, String)> = pois_keys(cov, date, m);
+    // (Not while the spacing their extract reads isn't known.)
+    let units: Vec<(Unit, String)> = pois_keys(cov, date, m, inputs)?;
     // The candidates (once the pass's hiking-route ends exist).
     if !m.contains_key(&format!("work/trailends/{date}")) {
         return None;
@@ -3052,7 +3068,7 @@ fn landmarks_chain(
     if done.lo.get("heritage") != Some(&k) {
         return Some(Work { step: "heritage".into(), targets: vec![("heritage".into(), k)] });
     }
-    let k = marks_key(date, m, &units);
+    let k = marks_key(date, m, &units.iter().map(|(u, _)| *u).collect::<Vec<_>>());
     if done.lo.get("marks").map(String::as_str) != Some(k.as_str()) {
         return Some(Work { step: "marks".into(), targets: vec![("marks".into(), k)] });
     }
@@ -3086,8 +3102,12 @@ fn landmarks_work(
 ) -> Vec<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     let mut out = Vec::new();
-    let units: Vec<(Unit, String)> = pois_keys(cov, date, m);
-    let ends = m.contains_key(&format!("work/trailends/{date}")) && trailends_work(date, m, done).is_none();
+    // (None while the spacing their extract reads isn't known: the candidates wait, and what reads
+    // them.)
+    let keyed = pois_keys(cov, date, m, inputs);
+    let units: Vec<(Unit, String)> = keyed.clone().unwrap_or_default();
+    let ends =
+        keyed.is_some() && m.contains_key(&format!("work/trailends/{date}")) && trailends_work(date, m, done).is_none();
     let stale_pois: Vec<(String, String)> = if ends {
         units.iter().filter(|(u, k)| stale(&done.pois, &u.slash(), k)).map(|(u, k)| (u.slash(), k.clone())).collect()
     } else {
@@ -3135,7 +3155,7 @@ fn landmarks_work(
         Some(_) => true,
     };
     if peaks_built && items_built && heritage_built {
-        let k = marks_key(date, m, &units);
+        let k = marks_key(date, m, &units.iter().map(|(u, _)| *u).collect::<Vec<_>>());
         if done.lo.get("marks").map(String::as_str) != Some(k.as_str())
             && gate_open(last, way.since_marks, MARKS_EVERY_S)
         {
@@ -4074,6 +4094,14 @@ pub(crate) mod tests {
         r
     }
 
+    /// The planner's inputs `inputs`, with the declared datasets' spacing read (the agent's: crate::dem::spacing)
+    /// where they don't say.
+    pub(crate) fn spaced(inputs: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+        let mut i = inputs.clone();
+        i.entry(crate::dem::spacing::INPUT.into()).or_insert_with(|| "5858585858585858".into());
+        i
+    }
+
     // The planner with the tests' reaches, nothing on the map yet: its work.
     fn plan(
         c: &Coverage,
@@ -4099,7 +4127,7 @@ pub(crate) mod tests {
             date,
             m,
             done,
-            inputs,
+            &spaced(inputs),
             Some(&reach()),
             &tiles_for(m),
             Publish {
@@ -4136,6 +4164,7 @@ pub(crate) mod tests {
         inputs: &BTreeMap<String, String>,
         held: bool,
     ) -> Vec<Line> {
+        let inputs = &spaced(inputs);
         let ready = plan_with(c, date, m, done, inputs, &BTreeMap::new(), None).ready;
         let (items, next) = super::checklist(c, date, m, done, inputs, held, Some(&reach()), &ready, &tiles_for(m));
         fold(&items, &next, &BTreeMap::new())
@@ -4172,9 +4201,19 @@ pub(crate) mod tests {
     }
 
     /// The declared elevation datasets switched to, as the units need them (crate::inputs::elevation).
+    pub(crate) fn elevation_inputs(m: &mut BTreeMap<String, String>) {
+        m.insert(
+            crate::inputs::logical(crate::inputs::elevation::UNIT),
+            "sources/inputs/elevation/@index.5656565656565656.json".into(),
+        );
+        m.insert(
+            crate::inputs::switched_logical(crate::inputs::elevation::UNIT),
+            "sources/inputs/elevation/@switched.5757575757575757.json".into(),
+        );
+    }
+
     #[test]
     fn the_steps_reading_a_spacing_file_key_on_its_digest() {
-        use crate::dem::spacing::{note, Fine};
         let d = tempfile::tempdir().unwrap();
         let c = Coverage::fixture(
             &[crate::agent::recipes::Recipe {
@@ -4189,28 +4228,19 @@ pub(crate) mod tests {
         let mut m = BTreeMap::new();
         m.insert("sources/osm/d/pieces/6-28-16".to_string(), "p1".to_string());
         elevation_inputs(&mut m);
-        let v = m[&crate::inputs::logical(crate::inputs::elevation::UNIT)].clone();
-        let fine = |cells: &[[i32; 2]]| Fine { world: false, cells: cells.iter().copied().collect() };
-        note(&v, &fine(&[[-22, 64]]));
-        let (pois, digest) = (pois_keys(&c, "d", &m), crate::dem::spacing::digest_of(&m));
+        let with =
+            |d: &str| -> BTreeMap<String, String> { [(crate::dem::spacing::INPUT.to_string(), d.to_string())].into() };
+        let pois = pois_keys(&c, "d", &m, &with("aaaa")).unwrap();
         assert_eq!(pois.len(), 1);
-        note(&v, &fine(&[[-22, 64]]));
-        assert_eq!(pois_keys(&c, "d", &m), pois, "the same spacing: the same keys");
-        note(&v, &fine(&[[-22, 64], [10, 50]]));
-        assert_ne!(pois_keys(&c, "d", &m)[0].1, pois[0].1);
-        // (Rail's key names the same line.)
-        assert_ne!(crate::dem::spacing::digest_of(&m), digest);
-    }
-
-    pub(crate) fn elevation_inputs(m: &mut BTreeMap<String, String>) {
-        m.insert(
-            crate::inputs::logical(crate::inputs::elevation::UNIT),
-            "sources/inputs/elevation/@index.5656565656565656.json".into(),
-        );
-        m.insert(
-            crate::inputs::switched_logical(crate::inputs::elevation::UNIT),
-            "sources/inputs/elevation/@switched.5757575757575757.json".into(),
-        );
+        assert_eq!(pois_keys(&c, "d", &m, &with("aaaa")).unwrap(), pois, "the same spacing: the same keys");
+        assert_ne!(pois_keys(&c, "d", &m, &with("bbbb")).unwrap()[0].1, pois[0].1);
+        // The accepted index unreadable (here: not on disk): "?", and the candidates wait.
+        assert!(crate::dem::spacing::digest_read(d.path(), &m).is_err());
+        assert!(pois_keys(&c, "d", &m, &with("?")).is_none());
+        assert!(pois_keys(&c, "d", &m, &BTreeMap::new()).is_none());
+        m.insert("work/trailends/d".into(), "work/trailends/d.1111111111111111.zst".into());
+        assert!(landmarks_chain(&c, "d", &m, &Keys::default(), &with("?")).is_none(), "nothing scheduled");
+        assert_eq!(landmarks_chain(&c, "d", &m, &Keys::default(), &with("aaaa")).unwrap().step, "pois");
     }
 
     /// `unit_keys` with `tiles_for(m)` (every unit's key known; the declared elevation datasets
@@ -4492,7 +4522,7 @@ pub(crate) mod tests {
                 "d",
                 m,
                 done,
-                &BTreeMap::new(),
+                &spaced(&BTreeMap::new()),
                 Some(reach),
                 &tiles_for(m),
                 Publish {
@@ -4577,7 +4607,7 @@ pub(crate) mod tests {
             "d",
             &m,
             &done,
-            &BTreeMap::new(),
+            &spaced(&BTreeMap::new()),
             Some(&reach),
             &tiles_for(&m),
             Publish {
@@ -4965,7 +4995,7 @@ pub(crate) mod tests {
             "d",
             m,
             done,
-            &BTreeMap::new(),
+            &spaced(&BTreeMap::new()),
             Some(reach),
             &tiles_for(m),
             Publish { each: &each, on_map, served: &BTreeMap::new(), since_catalog: since, held_for: None, held, way },
@@ -6110,7 +6140,11 @@ pub(crate) mod tests {
             (
                 terrain_slope_targets(c, &m, &tiles_for(&m)),
                 unit_keys(c, "d", &m).into_iter().map(|(u, k)| (u.slash(), k)).collect::<Vec<_>>(),
-                pois_keys(c, "d", &m).into_iter().map(|(_, k)| k).collect::<Vec<_>>(),
+                pois_keys(c, "d", &m, &[(crate::dem::spacing::INPUT.to_string(), "aaaa".to_string())].into())
+                    .unwrap()
+                    .into_iter()
+                    .map(|(_, k)| k)
+                    .collect::<Vec<_>>(),
             )
         };
         let one = keys(&cov_of(&[("r", place)]));
@@ -6412,6 +6446,7 @@ pub(crate) mod tests {
         let lta: BTreeMap<String, String> = [
             ("keys".to_string(), "LTA_ACCOUNT_KEY".to_string()),
             ("feed-keys".to_string(), "LTA_ACCOUNT_KEY".to_string()),
+            (crate::dem::spacing::INPUT.to_string(), "aaaa".to_string()),
         ]
         .into();
         // No accepted declarations: nothing.
@@ -6436,20 +6471,16 @@ pub(crate) mod tests {
         assert_eq!(w.step, "rail");
         done.record(&w.step, &w.targets);
         assert!(rail_chain(&c, "d", &m, &done, &lta).is_none());
-        // The declared elevation datasets' spacing (its extract reads it) changed: the trains again.
+        // The declared elevation datasets' spacing (its extract reads it) changed: the trains again;
+        // not known (its index unread): they wait.
         {
-            let mut m = m.clone();
-            elevation_inputs(&mut m);
-            let v = m[&crate::inputs::logical(crate::inputs::elevation::UNIT)].clone();
-            let fine = crate::dem::spacing::Fine { world: false, cells: [[0, 0]].into_iter().collect() };
-            crate::dem::spacing::note(&v, &fine);
-            let w = rail_chain(&c, "d", &m, &done, &lta).unwrap();
-            assert_eq!(w.step, "rail");
-            let mut done = done.clone();
-            done.record(&w.step, &w.targets);
-            assert!(rail_chain(&c, "d", &m, &done, &lta).is_none());
-            crate::dem::spacing::note(&v, &crate::dem::spacing::Fine::default());
-            assert_eq!(rail_chain(&c, "d", &m, &done, &lta).unwrap().step, "rail");
+            let mut other = lta.clone();
+            other.insert(crate::dem::spacing::INPUT.into(), "bbbb".into());
+            assert_eq!(rail_chain(&c, "d", &m, &done, &other).unwrap().step, "rail");
+            other.insert(crate::dem::spacing::INPUT.into(), "?".into());
+            let mut fresh = done.clone();
+            fresh.lo.remove("rail");
+            assert!(rail_next(&c, "d", &m, &fresh, &other).is_none(), "nothing scheduled");
         }
         // What rail-feeds writes besides the list (the checks, the zips) isn't what anything reads:
         // no rerun for its own sake.
@@ -6563,7 +6594,7 @@ pub(crate) mod tests {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let mut done = Keys::default();
-        let lta: BTreeMap<String, String> = [("keys".to_string(), "LTA_ACCOUNT_KEY".to_string())].into();
+        let lta = spaced(&[("keys".to_string(), "LTA_ACCOUNT_KEY".to_string())].into());
         let line = |m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>| {
             checklist(&c, "d", m, done, inputs, false).into_iter().find(|s| s.id == "trains").unwrap()
         };
@@ -6831,7 +6862,7 @@ pub(crate) mod tests {
                 "d",
                 m,
                 done,
-                &BTreeMap::new(),
+                &spaced(&BTreeMap::new()),
                 Some(&reach),
                 &tiles_for(m),
                 Publish {
@@ -7559,7 +7590,7 @@ pub(crate) mod tests {
             crate::agent::rekey::as_read(&mut k, &cov, &date, &m, reach.as_ref(), &inputs, &tiles, &times);
             lap(&format!("[{round}] rekey::as_read"), &mut t);
             let dg = |v: String| store::naming::hash16(v.as_bytes());
-            let n = dg(format!("{:?}", pois_keys(&cov, &date, &m)));
+            let n = dg(format!("{:?}", pois_units(&cov, &date, &m)));
             lap(&format!("[{round}] pois_keys ({n})"), &mut t);
             let n = dg(format!("{:?}", super::unit_keys(&cov, &date, &m, reach.as_ref(), &tiles)));
             lap(&format!("[{round}] unit_keys ({n})"), &mut t);

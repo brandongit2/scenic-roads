@@ -559,6 +559,28 @@ fn rekey_spacing(
 ) {
     let Ok(Some(ds)) = tiles.elevation(m) else { return };
     let fine = crate::dem::spacing::Fine::of(&ds);
+    // (What every unit's key before reads beyond its own: for the memo below.)
+    let ctx = {
+        let mut d = blake3::Hasher::new();
+        for (l, c) in m {
+            d.update(l.as_bytes());
+            d.update(b"=");
+            d.update(c.as_bytes());
+            d.update(b"\n");
+        }
+        let world = [-1_800_000_000, -900_000_000, 1_800_000_000, 900_000_000];
+        let tags: Vec<String> = ds.iter().map(|(d, _)| format!("{} {}", d.id, d.keyed)).collect();
+        store::naming::hash16(
+            format!(
+                "{}|{}|{date}|{buildings}|{}|{}",
+                d.finalize().to_hex(),
+                cov.fingerprint(world),
+                sources.unwrap_or("-"),
+                tags.join(",")
+            )
+            .as_bytes(),
+        )
+    };
     let units: Vec<(String, String)> = keys.unit.iter().map(|(t, k)| (t.clone(), k.clone())).collect();
     for (t, k) in units {
         let Some(u) = Unit::parse(&t) else { continue };
@@ -572,20 +594,17 @@ fn rekey_spacing(
             continue;
         }
         let Ok(terrain) = build::unit_terrain(u, r, m, tiles) else { continue };
-        // (Whether its key is of the scheme before, kept by the record's key and what the old key
-        // reads beyond it: a record under its key now, with the spacing's line, is told once, not on
-        // every read.)
-        let from = [
-            k.as_str(),
-            &terrain,
-            piece,
-            &format!("{:?}", m.get(&crate::inputs::logical(crate::inputs::elevation::UNIT))),
-        ]
-        .join("|");
-        let before = tiles.memo(&format!("unspaced {t}"), &from, || {
-            Ok((unspaced_unit_key(cov, date, m, u, piece, r, &terrain, &ds, buildings, sources) == k).to_string())
-        });
-        if before.as_deref() != Ok("true") {
+        // (Its key under the scheme before, kept by everything that key reads: the whole manifest,
+        // the coverage, the pass, the declared datasets and sources, its piece, reach and terrain.
+        // Made again when any of them changes; compared with its record here, so a record already
+        // under its key now costs a lookup on later reads.)
+        let from = [ctx.as_str(), piece, &terrain, &serde_json::to_string(r).unwrap_or_default()].join("|");
+        let Ok(before) = tiles.memo(&format!("unspaced {t}"), &from, || {
+            Ok(unspaced_unit_key(cov, date, m, u, piece, r, &terrain, &ds, buildings, sources))
+        }) else {
+            continue;
+        };
+        if before != k {
             continue;
         }
         keys.unit
@@ -1567,8 +1586,17 @@ mod tests {
             done.record("unit", &[(u.to_string(), k)]);
         }
         assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)).len(), 3);
+        let saved = done.clone();
         let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
         assert_eq!(r.spacing_moved, ["6/28/17", "6/29/16"]);
+        // The records as saved (a read's re-keying is never saved), read again once the roadside
+        // buildings' index changed since that comparison: stale, not re-keyed.
+        let mut m2 = m.clone();
+        m2.insert(crate::buildtiles::index_logical(release), "buildings/index.9898989898989898.json".into());
+        let mut again = saved.clone();
+        let r2 = rekey(&mut again, &c, "d", &m2, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        assert!(r2.spacing_moved.is_empty(), "{r2:?}");
+        assert_eq!(again.unit, saved.unit);
         assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)), ["6/28/16"], "the one respaced, built again");
         // Again: nothing.
         assert!(!rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).changed());
