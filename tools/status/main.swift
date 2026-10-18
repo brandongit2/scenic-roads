@@ -1157,10 +1157,10 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         root.needsDisplay = true
     }
 
-    /// The tallest the panel's content may be: 600 pt, or the screen's room under the menu bar if
+    /// The tallest the panel's content may be: 900 pt, or the screen's room under the menu bar if
     /// less; a taller page scrolls inside it.
     var maxHeight: CGFloat {
-        min(600, ((anchor?.window?.screen ?? NSScreen.main)?.visibleFrame.height ?? 800) - 40)
+        min(900, ((anchor?.window?.screen ?? NSScreen.main)?.visibleFrame.height ?? 800) - 40)
     }
 
     /// Asks each address in turn, briefly, and shows the first that answers.
