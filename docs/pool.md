@@ -603,7 +603,8 @@ path answers again. The stuck thread is left to its call and stays busy; while e
 pool is busy, a call to it fails at once, so stuck threads never pile up. Three pools, so one kind
 stuck can't starve another:
 
-- **Switches** (two threads): `state/pool/resume`, `placement`, `brokers`, the memory guard's and
+- **Switches** (two threads): `state/pool/resume`, `placement`, `brokers`, this member's hold
+  (`state/pool/holds/<member>.json`), the memory guard's and
   publishing's switches. A switch that can't be read keeps its last value.
 - **Records** (four threads): the members' progress files; the loop's reads of `state/status.json`,
   the manifest (where planning reads it through `nasread`) and the regions' extract (unreadable for
@@ -612,7 +613,7 @@ stuck can't starve another:
   members, and the terms' listing as the member opens, tried three times, 10 s and 30 s apart,
   then gone on without).
 - **Writes** (four threads): the heartbeat (`state/status.json`, or a helper's file) and the pool's
-  writes, creates and removes (the members' heartbeats, mail, terms). A write to a path is refused
+  writes, creates and removes (the members' heartbeats, mail, terms), and the members' holds. A write to a path is refused
   at once (a timeout) while an earlier write to it is still in flight, its thread stuck: two writes
   never share one temporary name. The path is free again once that write ends.
 
@@ -735,6 +736,20 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   an update waiting on it (plan.md §8) restarts at once. The cancel is a `cancel` event in the
   history; `scenic status` shows it among the recent jobs ("Cancelled:") and each held target
   under Waiting.
+- **Pausing one Mac** (`crate::control::Hold`, task #224): `scenic pause --here` / `scenic resume
+  --here`, `scenic pause <member>` / `scenic resume <member>` (host name or member id) from another
+  Mac, or the menu bar's "Pause This Mac" / "Resume This Mac". The ask goes to this Mac's agent (a
+  file in its folder, `hold-request.json`; `scenic pause` prints the agent's answer). A Mac's hold
+  is kept in its agent's folder (`hold.json`, so a restart keeps it) and on the NAS
+  (`state/pool/holds/<member>.json`), where another Mac's ask writes it; each member reads its own
+  every 30 s on the switches' readers, the later setting winning. A paused Mac's running jobs stop
+  at their next safe point and are given back (as the build's pause stops them, frozen past the
+  grace), it asks for no work and starts none, it can't lead (`Conds::held`, `able` false), and a
+  lead paused hands the lead to a member that can take it (asked again every ten minutes while it
+  still leads; with none it keeps leading, granting the others' work, and runs none of its own).
+  It keeps beating. `scenic status`, the build page's machine card and the menu bar show it
+  paused (`Status::held`; the pool's view says "paused"); the forecast gives it no lanes. The
+  rest of the pool goes on. `--now` stays the whole build's.
 - Every control asks the driver (`Driver::hand_to`, `Driver::takeover`) rather than re-checking.
 
 ## 12. Getting there from today

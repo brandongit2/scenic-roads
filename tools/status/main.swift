@@ -65,6 +65,16 @@ struct Reply: Decodable {
     let offline: Offline?
     /// The build page's addresses, in the order to try (servers from 2026-10-08 on).
     let pages: [String]?
+    /// This Mac paused alone (crates/pipeline/src/control.rs Hold, task #224), and its ask while
+    /// the agent hasn't taken it up (servers from #224 on).
+    let held_here: HeldInfo?
+    let hold_asked: Bool?
+}
+
+/// One Mac paused alone (crates/pipeline/src/control.rs Hold): who asked, since when.
+struct HeldInfo: Decodable {
+    let by: String
+    let at: Int
 }
 
 /// This Mac's downloads (crates/server/src/downloads.rs `summary`).
@@ -1937,6 +1947,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             now.toolTip = "Every Mac's running job frozen where it is at once; it goes on from there when you resume"
             m.addItem(now)
         }
+        // This Mac alone paused, or going on (`scenic pause --here`, task #224): its jobs stop at
+        // their next safe point and are given back, it takes no new work and hands the lead away;
+        // the rest of the pool goes on.
+        if reply?.hold_asked == true {
+            let it = NSMenuItem(title: "Asked… (this Mac's agent takes it up within seconds)", action: nil, keyEquivalent: "")
+            it.isEnabled = false
+            m.addItem(it)
+        }
+        if let h = reply?.held_here {
+            let info = NSMenuItem(title: "This Mac is paused since \(clock(h.at)) (from \(clip(h.by, 40)))", action: nil, keyEquivalent: "")
+            info.isEnabled = false
+            m.addItem(info)
+            let it = NSMenuItem(title: "Resume This Mac", action: #selector(resumeHere), keyEquivalent: "")
+            it.target = self
+            m.addItem(it)
+        } else {
+            let it = NSMenuItem(title: "Pause This Mac", action: #selector(pauseHere), keyEquivalent: "")
+            it.target = self
+            it.toolTip = "Only this Mac: its jobs stop at their next safe point and are given back, it takes no new work and hands the lead away if it leads; the other Macs go on building"
+            m.addItem(it)
+        }
         // A running job of this Mac's cancelled (`scenic job cancel`, crates/pipeline/src/control.rs
         // Cancel): stopped and given back, not failed, its work under way dropped. Option: held
         // until the lead runs a newer app.
@@ -2207,6 +2238,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc func pauseBuild(_ sender: NSMenuItem) { ask("drain") }
     @objc func pauseBuildNow(_ sender: NSMenuItem) { ask("freeze") }
     @objc func resumeBuild(_ sender: NSMenuItem) { ask(nil) }
+    @objc func pauseHere(_ sender: NSMenuItem) { askHold(true) }
+    @objc func resumeHere(_ sender: NSMenuItem) { askHold(false) }
+
+    /// Asks this Mac's agent to pause this Mac alone, or let it go on: its ask file
+    /// (crates/pipeline/src/control.rs HoldRequest), written whole, taken up within seconds.
+    func askHold(_ held: Bool) {
+        let now = Int(Date().timeIntervalSince1970)
+        let name = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
+        let h: Any = held ? ["by": "the menu bar on \(name)", "at": now] as [String: Any] : NSNull()
+        let dir = home.appendingPathComponent("agent")
+        let (tmp, dst) = (dir.appendingPathComponent("hold-request.json.menu.tmp"), dir.appendingPathComponent("hold-request.json"))
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: ["held": h, "at": now]).write(to: tmp)
+            guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        } catch {
+            post("Couldn't ask this Mac to \(held ? "pause" : "go on")", "\(error.localizedDescription)")
+            return
+        }
+        poll()
+    }
 
     /// Asks this Mac's agent to pause the build (`mode`: "drain" or "freeze") or let it go on (nil):
     /// its ask file (crates/pipeline/src/control.rs Request), written whole, which the agent takes up

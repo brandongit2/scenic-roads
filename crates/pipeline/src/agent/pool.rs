@@ -221,13 +221,19 @@ pub struct Conds {
     pub battery: Option<u8>,
     /// It can lead now (its disk, home and power: `Heard::able`).
     pub able: bool,
+    /// Paused alone (crate::control::Hold, task #224): it takes no work and can't lead until
+    /// resumed. Left out by apps before it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
 }
 
 impl Conds {
     /// Why a member with these conditions can't lead now (`able` false), as the agent decides it
     /// (crate::agent's `pool_step`: home, on power or charged past `BATTERY_MIN`, the reserve free).
     pub fn why_unable(&self) -> String {
-        if !self.home {
+        if self.held {
+            "paused: it can't lead until it's resumed (`scenic resume`)".into()
+        } else if !self.home {
             "away from home: it can't lead until it's back".into()
         } else if !self.ac && self.battery.is_some_and(|b| b < crate::agent::cond::BATTERY_MIN) {
             format!(
@@ -2425,7 +2431,7 @@ mod tests {
             pool: pool.clone(),
             members: vec!["m-000000000000000b".into()],
             shadow: false,
-            conds: Some(Conds { home: true, ac: false, battery: Some(54), able: false }),
+            conds: Some(Conds { home: true, ac: false, battery: Some(54), able: false, held: false }),
             broker: None,
         };
         let b = serde_json::to_vec(&new).unwrap();

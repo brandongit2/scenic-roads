@@ -307,7 +307,7 @@ impl AppState {
             let mut list: Vec<serde_json::Value> =
                 obj.get("helpers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             list.retain(|x| x["host"] != host);
-            list.push(serde_json::json!({"host": host, "beat": h["beat"], "job": h["job"], "pause": h["pause"], "here": true}));
+            list.push(serde_json::json!({"host": host, "beat": h["beat"], "job": h["job"], "pause": h["pause"], "held": h["held"], "here": true}));
             obj.insert("helpers".into(), serde_json::Value::Array(list));
         }
         let log = if local {
@@ -329,9 +329,14 @@ impl AppState {
             .map_or(serde_json::Value::Null, |(p, _)| serde_json::to_value(p).unwrap_or_default());
         let lead_asked =
             pipeline::control::peek_lead(&self.home.join("agent")).map(|r| serde_json::to_value(r).unwrap_or_default());
+        // This Mac paused alone (pipeline::control::Hold, task #224), as its agent keeps it, and its
+        // ask while the agent hasn't taken it up.
+        let agent_home = self.home.join("agent");
+        let held_here = pipeline::control::read_hold(&agent_home).held;
+        let hold_asked = agent_home.join(pipeline::control::HOLD_REQUEST).exists();
         // Where the menu bar's panel finds the build page.
         let pages = self.build_pages(local && !helping);
-        serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "offline": offline, "pool": pool, "lead_asked": lead_asked, "pages": pages})
+        serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "offline": offline, "pool": pool, "lead_asked": lead_asked, "pages": pages, "held_here": held_here, "hold_asked": hold_asked})
     }
 
     /// Lets go of everything mapped from what the mirror has just deleted (`names`: content

@@ -17,6 +17,10 @@
 //!                                       battery five minutes, another Mac home on power)
 //!   scenic pause [--now] | resume       pause the whole build (every Mac's jobs stop at their next
 //!                                       safe point; --now: frozen at once), or let it go on
+//!   scenic pause --here | <member>      pause one Mac alone (this one, or a member by host name or
+//!   scenic resume --here | <member>     id): its jobs stop at their next safe point and are given
+//!                                       back, it takes no new work and hands the lead away; the
+//!                                       rest of the pool goes on; kept over restarts until resumed
 //!   scenic job cancel <target> [--step <step>] [--rerun-after-update]
 //!                                       stop the running job building <target> (here, or through
 //!                                       the lead on another Mac) and give it back, not failed, its
@@ -553,7 +557,11 @@ fn macs_lines(st: &agent::Status) -> Vec<String> {
     }
     let mut out = Vec::new();
     for (host, head, s) in macs {
-        out.push(head);
+        // (Paused alone, task #224: its jobs given back at their next safe point, nothing new.)
+        match s.and_then(|s| s.held.as_ref()) {
+            Some(h) => out.push(format!("{head} · paused (from {})", h.by)),
+            None => out.push(head),
+        }
         let cap = st.capacity.iter().find(|(n, _)| agent::is_slot_of(n, host)).map(|(_, c)| c);
         let nas: u32 = st.nas_share.iter().filter(|(n, _)| agent::is_slot_of(n, host)).map(|(_, w)| *w).sum();
         let nas =
@@ -1464,6 +1472,46 @@ fn main() -> Result<()> {
             use pipeline::control::{Mode, Pause};
             let home = opt(&args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
             let host = pipeline::agent::cond::host_name();
+            // One Mac alone (task #224): this one (`--here`) or a member named.
+            let named: Option<&String> = {
+                let mut it = args.iter().skip_while(|a| **a != cmd).skip(1);
+                let mut found = None;
+                while let Some(a) = it.next() {
+                    if a == "--home" {
+                        it.next();
+                    } else if !a.starts_with("--") {
+                        found = Some(a);
+                        break;
+                    }
+                }
+                found
+            };
+            if flag(&args, "--here") || named.is_some() {
+                anyhow::ensure!(
+                    !flag(&args, "--now"),
+                    "--now pauses the whole build: one Mac alone stops at its next safe point"
+                );
+                let held = (cmd == "pause").then(|| pipeline::control::Hold::new(&format!("scenic pause on {host}")));
+                let r = pipeline::control::request_hold(&home, named.map(String::as_str), held)?;
+                let waited = std::time::Instant::now();
+                while waited.elapsed() < std::time::Duration::from_secs(60) {
+                    if let Some(a) = pipeline::control::hold_answer(&home, &r) {
+                        anyhow::ensure!(a.ok, "{}", a.said);
+                        println!(
+                            "{}{}",
+                            a.said,
+                            if cmd == "pause" {
+                                ": its running jobs stop at their next safe point and are given back, it takes no new work and hands the lead away if it leads, until `scenic resume`; the rest of the pool goes on"
+                            } else {
+                                ""
+                            }
+                        );
+                        return Ok(());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                bail!("this Mac's agent hasn't taken the ask up in a minute (is it running?); it stays asked");
+            }
             let pause = (cmd == "pause").then(|| {
                 Pause::new(
                     if flag(&args, "--now") { Mode::Freeze } else { Mode::Drain },

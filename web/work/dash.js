@@ -176,6 +176,8 @@ function machineState(st, fresh, paused) {
   // (Its jobs, every slot's: building while any is.)
   const jobs = jobsOf(st);
   if (jobs.some((j) => !j.paused && !j.pausing)) return ["building", "run"];
+  // (This Mac paused alone, task #224: its jobs stopping, then nothing new.)
+  if (st.held) return [jobs.length ? "pausing" : "paused", "warn"];
   if (jobs.some((j) => j.pausing)) return ["stopping", "warn"];
   if (jobs.some((j) => j.paused)) return ["frozen", "warn"];
   if (paused) return ["paused", "warn"];
@@ -516,7 +518,7 @@ function machineCard(m, x) {
   if (!jobs.length) {
     // Why it isn't building.
     const why = (st.waiting || []).filter((w) => !w.step || x.role !== "lead").slice(0, 2);
-    card.append(h("div", "job", h("div", "what dim", m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
+    card.append(h("div", "job", h("div", "what dim", st.held ? `This Mac is paused (from ${st.held.by}); the rest of the pool goes on` : m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
     for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${w.what}: ${w.why}` : w.why));
     card.append(...[nextBlock(m, x.name)].filter(Boolean));
   }

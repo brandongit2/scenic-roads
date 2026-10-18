@@ -385,6 +385,112 @@ pub fn read_done(path: &Path, step: &str) -> Vec<String> {
     out
 }
 
+/// One Mac paused alone (task #224; docs/pool.md §11): its jobs stop at their next safe point and
+/// are given back, it takes no new work, hands the lead away if it leads, and keeps beating; the
+/// rest of the pool goes on. Who asked, in words, and when (unix seconds).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hold {
+    pub by: String,
+    pub at: u64,
+}
+
+impl Hold {
+    pub fn new(by: &str) -> Hold {
+        Hold { by: by.to_string(), at: now() }
+    }
+
+    /// Why this Mac's work waits, for the status.
+    pub fn why(&self) -> String {
+        format!("this Mac is paused (from {}); the rest of the pool goes on", self.by)
+    }
+
+    /// The hold as a pause of this Mac's own jobs: at their next safe point.
+    pub fn as_pause(&self) -> Pause {
+        Pause { mode: Mode::Drain, by: self.by.clone(), at: self.at }
+    }
+}
+
+/// A Mac's hold as last set (`held`: paused, else going on) and when (`at`, unix seconds): the
+/// later of two settings wins. Kept in its agent's folder (`HOLD`) so a restart keeps it, and on
+/// the NAS (`hold_path`), where another Mac's `scenic pause <member>` sets it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HoldState {
+    #[serde(default)]
+    pub held: Option<Hold>,
+    #[serde(default)]
+    pub at: u64,
+}
+
+/// The hold's file in the agent's folder.
+pub const HOLD: &str = "hold.json";
+
+/// A member's hold on the NAS, by member id.
+pub fn hold_path(member: &str) -> String {
+    format!("state/pool/holds/{member}.json")
+}
+
+/// This Mac's hold as its agent keeps it (none, or a file that doesn't parse: going on).
+pub fn read_hold(home: &Path) -> HoldState {
+    std::fs::read(home.join(HOLD)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// An ask to pause one Mac or let it go on (`held`), from `scenic pause --here|<member>` or the
+/// menu bar: this Mac (`member` None) or another member (its id or host name). Kept in the agent's
+/// folder (`HOLD_REQUEST`, replaced by a later ask) until the agent takes it up.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HoldRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<String>,
+    #[serde(default)]
+    pub held: Option<Hold>,
+    #[serde(default)]
+    pub at: u64,
+}
+
+/// The hold ask's file, and the agent's answer to the last one it took (`HoldAnswer`).
+pub const HOLD_REQUEST: &str = "hold-request.json";
+pub const HOLD_ANSWER: &str = "hold-answer.json";
+
+/// What the agent did with a hold ask, in words, and whether it was done.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HoldAnswer {
+    pub ask: HoldRequest,
+    pub said: String,
+    pub ok: bool,
+}
+
+/// Asks this Mac's agent (its folder `home`) to pause a Mac alone, or let it go on.
+pub fn request_hold(home: &Path, member: Option<&str>, held: Option<Hold>) -> anyhow::Result<HoldRequest> {
+    std::fs::create_dir_all(home)?;
+    let r = HoldRequest { member: member.map(str::to_string), held, at: now() };
+    crate::whole::write(&home.join(HOLD_REQUEST), &serde_json::to_vec(&r)?)?;
+    Ok(r)
+}
+
+/// The hold ask waiting in `home`, taken (its file removed; one that doesn't parse: none).
+pub fn take_hold_request(home: &Path) -> Option<HoldRequest> {
+    let p = home.join(HOLD_REQUEST);
+    let b = std::fs::read(&p).ok()?;
+    std::fs::remove_file(&p).ok();
+    serde_json::from_slice(&b).ok()
+}
+
+/// The agent's answer to a hold ask, kept for `scenic pause` to print.
+pub fn answer_hold(home: &Path, a: &HoldAnswer) {
+    let w = serde_json::to_vec(a)
+        .map_err(anyhow::Error::from)
+        .and_then(|b| crate::whole::write(&home.join(HOLD_ANSWER), &b));
+    if let Err(e) = w {
+        eprintln!("agent: writing the hold's answer: {e:#}");
+    }
+}
+
+/// The agent's answer to hold ask `r`, once it has taken it up.
+pub fn hold_answer(home: &Path, r: &HoldRequest) -> Option<HoldAnswer> {
+    let a: HoldAnswer = serde_json::from_slice(&std::fs::read(home.join(HOLD_ANSWER)).ok()?).ok()?;
+    (a.ask == *r).then_some(a)
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -437,6 +543,20 @@ mod tests {
         assert_eq!(peek_quit(d.path()).map(|q| q.mode), Some(QuitMode::Now));
         clear_quit(d.path());
         assert!(peek_quit(d.path()).is_none());
+    }
+
+    /// Hold asks (task #224): taken once, answered by the ask they answer.
+    #[test]
+    fn hold_asks_and_answers() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(read_hold(d.path()), HoldState::default());
+        let r = request_hold(d.path(), Some("m4"), Some(Hold::new("scenic pause on m1"))).unwrap();
+        assert_eq!(take_hold_request(d.path()), Some(r.clone()));
+        assert!(take_hold_request(d.path()).is_none());
+        assert!(hold_answer(d.path(), &r).is_none());
+        answer_hold(d.path(), &HoldAnswer { ask: r.clone(), said: "m4 is paused".into(), ok: true });
+        assert!(hold_answer(d.path(), &r).is_some_and(|a| a.ok));
+        assert_eq!(Hold::new("x").as_pause().mode, Mode::Drain);
     }
 
     /// Cancel asks (task #373): a file each, taken once in order; one older than CANCEL_STALE_S
