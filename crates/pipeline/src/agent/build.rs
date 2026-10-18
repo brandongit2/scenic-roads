@@ -2022,14 +2022,21 @@ pub fn plan(
         })
         .collect();
     // The regions a catalog made now records as built: every unit of theirs built as the coverage
-    // wants it, and their areas' slope and tree cover.
+    // wants it and merged (one whose hand-off waits counts as built, but its files aren't in the
+    // manifest: its tiles wait for it, so the region isn't recorded built until then), and their
+    // areas' slope and tree cover.
     // (The near way: its slope and tree cover pieces near it, their assemblies later.)
     let near = updates.way.near;
     let slope_done = |r: &Region| if near { r.slope_near.is_empty() } else { r.areas.is_disjoint(&slope_left) };
+    let unmerged = |i: &usize| {
+        let d = units[*i].0.dash();
+        crate::out::UNIT_OUTPUTS.iter().any(|p| done.handed.contains(&format!("{p}{d}")))
+    };
     let ready: Vec<String> = regions
         .iter()
         .filter(|r| {
-            r.stale.is_empty()
+            !r.all.iter().any(unmerged)
+                && r.stale.is_empty()
                 && r.terrain.is_empty()
                 && slope_done(r)
                 && r.tree_pieces.is_disjoint(&trees_left)
@@ -4742,6 +4749,39 @@ pub(crate) mod tests {
         let p = plan(&m, &done, CATALOG_CAP_S);
         assert_eq!((p.work[0].step.as_str(), p.work[1].step.as_str()), ("catalog", "pack"));
         assert!(p.publishing.why.contains("with what's drawn"), "{}", p.publishing.why);
+    }
+
+    #[test]
+    fn a_region_whose_last_units_hand_off_waits_to_be_merged_isnt_recorded_built() {
+        let (c, reach, mut m, mut done) = three();
+        let none = BTreeMap::new();
+        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
+        // a's slope and tree cover made: a ready.
+        loop {
+            let p = pplan(&c, &reach, &m, &done, &none, Some(120), Default::default(), false);
+            if p.ready.contains(&"a".to_string()) {
+                break;
+            }
+            let w = p.work.iter().find(|w| w.step != "catalog" && !CHAIN.contains(&w.step.as_str())).unwrap().clone();
+            if w.step.starts_with("slope") {
+                terrain_did(&mut m, &mut done, &w);
+            } else {
+                did(&mut m, &mut done, &w);
+            }
+        }
+        // Its unit's hand-off not yet merged (counted as built, its base pack not in the manifest):
+        // a isn't recorded built; a catalog still goes out, without it.
+        let mut handed = done.clone();
+        handed.handed.insert("base/6-28-16".into());
+        handed.handed.insert("global/roads/6-28-16".into());
+        let mut m2 = m.clone();
+        m2.remove("base/6-28-16");
+        m2.remove("global/roads/6-28-16");
+        let p = pplan(&c, &reach, &m2, &handed, &none, Some(120), Default::default(), false);
+        assert!(!p.ready.contains(&"a".to_string()), "{:?}", p.ready);
+        // Merged: it is.
+        let p = pplan(&c, &reach, &m, &done, &none, Some(120), Default::default(), false);
+        assert!(p.ready.contains(&"a".to_string()));
     }
 
     #[test]

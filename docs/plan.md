@@ -1182,7 +1182,7 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
    regions or which of them are done change (`build::catalog_key`), at most one each
    `build::CATALOG_EVERY_S` (a minute) since the last began; map tiles still to draw postpone it at
    most `build::CATALOG_CAP_S` (ten minutes), then one goes out with what's drawn. It records as built the regions done, their slope and tree cover
-   made (`--ready <id>=<outline digest>,…`), and the others as the last catalog had them. It waits
+   made and no unit of theirs waiting to be merged (`--ready <id>=<outline digest>,…`), and the others as the last catalog had them. It waits
    while a hand-off of the map tiles or the road index waits to be merged (a unit's goes out with a
    later catalog). While `inputs/hold-catalog` exists, catalogs go to
    `catalog-held/`.
