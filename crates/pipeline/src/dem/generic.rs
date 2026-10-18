@@ -12,7 +12,9 @@
 //!   holds it (min x ≤ x < max x, min y < y ≤ max y, in the files' CRS), sampled where they lie (a
 //!   range at a time: crate::dem::sample) at the overview `read_resolution` picks; a tile pyramid's
 //!   tiles are fetched and decoded by their encoding (crate::dem::encoding), each sampled on its own
-//!   (its edges clamping).
+//!   (its edges clamping). A run fetches each tile once (`TileMemo`, whatever stage reads it), up
+//!   to `TILE_FETCHES` at once ahead of the sampling, so a stage reading few points a tile (the
+//!   blends) waits on the network no longer than it must.
 //! - **The distance to the invalid area** is looked for pixel by pixel only where it can be found:
 //!   each block (or tile) read for sampling is noted as clean when every pixel of it holds data
 //!   (crate::dem::sample::Clean), and a point whose band lies inside clean blocks of its file is at
@@ -348,6 +350,64 @@ impl<'a> Tally<'a> {
     }
 }
 
+/// The tile pyramids' files fetched in a run (their bytes as fetched, or that the server has none),
+/// kept up to a size, the oldest let go first: each is fetched once, however many stages read it
+/// (its sampling, the distances of its own and its neighbours' points, the blends' second
+/// heights). A tile asked for while it's being fetched waits for that fetch, not another.
+pub(crate) struct TileMemo {
+    cap: usize,
+    inner: Mutex<MemoIn>,
+}
+
+/// A memo's entry: None while it's being fetched (or its fetch failed), then the file or None.
+type Slot = Arc<Mutex<Option<Option<Arc<[u8]>>>>>;
+
+#[derive(Default)]
+struct MemoIn {
+    map: HashMap<String, Slot>,
+    order: std::collections::VecDeque<(String, Slot, usize)>,
+    bytes: usize,
+}
+
+/// What a run's tile memo keeps at most.
+pub const TILE_MEMO_BYTES: usize = 1 << 30;
+
+/// How many tiles are fetched at once ahead of their sampling (natively, with a pool).
+pub const TILE_FETCHES: usize = 64;
+
+/// How many tiles a batch prefetches, then samples, before the next.
+const PREFETCH_BATCH: usize = 1024;
+
+impl TileMemo {
+    pub(crate) fn new(cap: usize) -> TileMemo {
+        TileMemo { cap, inner: Mutex::new(MemoIn::default()) }
+    }
+
+    /// `url`'s file, fetched by `fetch` unless kept.
+    fn get(&self, url: &str, fetch: &dyn Fetch) -> Result<Option<Arc<[u8]>>> {
+        let slot = self.inner.lock().unwrap().map.entry(url.to_string()).or_default().clone();
+        let mut got = slot.lock().unwrap();
+        if let Some(v) = &*got {
+            return Ok(v.clone());
+        }
+        let v: Option<Arc<[u8]>> = fetch.get(url)?.map(Into::into);
+        *got = Some(v.clone());
+        drop(got);
+        let size = v.as_ref().map_or(0, |b| b.len()) + url.len() + 64;
+        let mut m = self.inner.lock().unwrap();
+        m.order.push_back((url.to_string(), slot, size));
+        m.bytes += size;
+        while m.bytes > self.cap {
+            let Some((u, s, b)) = m.order.pop_front() else { break };
+            m.bytes -= b;
+            if m.map.get(&u).is_some_and(|k| Arc::ptr_eq(k, &s)) {
+                m.map.remove(&u);
+            }
+        }
+        Ok(v)
+    }
+}
+
 /// One tile pyramid as it's read.
 struct TileSet<'a> {
     url: &'a str,
@@ -356,16 +416,48 @@ struct TileSet<'a> {
     o: &'a Opts<'a>,
     /// By tile: whether every pixel holds data (false too for a tile the server hasn't).
     clean: Mutex<HashMap<(i64, i64), bool>>,
+    /// The run's fetched tiles (every pyramid's).
+    memo: Arc<TileMemo>,
 }
 
 impl TileSet<'_> {
+    fn tile_url(&self, tx: i64, ty: i64) -> String {
+        self.url.replace("{z}", &self.zoom.to_string()).replace("{x}", &tx.to_string()).replace("{y}", &ty.to_string())
+    }
+
+    /// Tiles `keys` fetched into the memo, `TILE_FETCHES` at a time, ahead of their sampling: the
+    /// network's waits overlap, however few points a tile has. (WebAssembly, or no pool: none
+    /// ahead; the sampling fetches them.)
+    fn prefetch(&self, keys: &[(i64, i64)]) -> Result<()> {
+        if keys.len() < 2 || self.o.pool.is_none() || cfg!(target_arch = "wasm32") {
+            return Ok(());
+        }
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failed: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+        std::thread::scope(|s| {
+            for _ in 0..TILE_FETCHES.min(keys.len()) {
+                s.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= keys.len() || failed.lock().unwrap().is_some() {
+                        return;
+                    }
+                    let (tx, ty) = keys[i];
+                    if let Err(e) = self.memo.get(&self.tile_url(tx, ty), self.o.fetch) {
+                        failed.lock().unwrap().get_or_insert(e);
+                        return;
+                    }
+                });
+            }
+        });
+        match failed.into_inner().unwrap() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
     fn tile(&self, tx: i64, ty: i64) -> Result<Option<(usize, usize, Vec<f32>)>> {
-        let u = self
-            .url
-            .replace("{z}", &self.zoom.to_string())
-            .replace("{x}", &tx.to_string())
-            .replace("{y}", &ty.to_string());
-        let Some(png) = self.o.fetch.get(&u)? else { return Ok(None) };
+        let u = self.tile_url(tx, ty);
+        let Some(png) = self.memo.get(&u, self.o.fetch)? else { return Ok(None) };
         let (w, h, a) = super::encoding::decode(self.encoding, &png).with_context(|| u.clone())?;
         if w * h == 0 {
             bail!("{u}: an empty tile");
@@ -405,25 +497,70 @@ impl TileSet<'_> {
     fn sample(&self, sel: &[u32], lon: &[f64], lat: &[f64]) -> Result<Vec<f32>> {
         let n = 1i64 << self.zoom;
         let groups = self.groups(sel, lon, lat);
-        let sampled: Vec<Vec<(usize, f32)>> = within(self.o.pool, || {
-            groups
-                .par_iter()
-                .map(|g| -> Result<Vec<(usize, f32)>> {
-                    let (tx, ty) = (g[0].0.div_euclid(n), g[0].0.rem_euclid(n));
-                    let Some((w, h, a)) = self.tile_noted(tx, ty)? else { return Ok(Vec::new()) };
-                    Ok(g.iter()
-                        .map(|&(_, j, fx, fy)| {
-                            (j, bilinear(&a, w, h, (fx - tx as f64) * 256.0 - 0.5, (fy - ty as f64) * 256.0 - 0.5))
-                        })
-                        .collect())
-                })
-                .collect::<Result<_>>()
-        })?;
         let mut out = vec![f32::NAN; sel.len()];
-        for (j, v) in sampled.into_iter().flatten() {
-            out[j] = v;
+        // (A batch's tiles fetched together, then sampled.)
+        for batch in groups.chunks(PREFETCH_BATCH) {
+            let keys: Vec<(i64, i64)> = batch.iter().map(|g| (g[0].0.div_euclid(n), g[0].0.rem_euclid(n))).collect();
+            self.prefetch(&keys)?;
+            let sampled: Vec<Vec<(usize, f32)>> = within(self.o.pool, || {
+                batch
+                    .par_iter()
+                    .map(|g| -> Result<Vec<(usize, f32)>> {
+                        let (tx, ty) = (g[0].0.div_euclid(n), g[0].0.rem_euclid(n));
+                        let Some((w, h, a)) = self.tile_noted(tx, ty)? else { return Ok(Vec::new()) };
+                        Ok(g.iter()
+                            .map(|&(_, j, fx, fy)| {
+                                (j, bilinear(&a, w, h, (fx - tx as f64) * 256.0 - 0.5, (fy - ty as f64) * 256.0 - 0.5))
+                            })
+                            .collect())
+                    })
+                    .collect::<Result<_>>()
+            })?;
+            for (j, v) in sampled.into_iter().flatten() {
+                out[j] = v;
+            }
         }
         Ok(out)
+    }
+
+    /// The tiles `distance` reads for `groups`' points: each band's that isn't all in tiles known
+    /// clean, within the world, those not known clean (what its loop fetches, or more: a tile
+    /// another group finds clean meanwhile).
+    fn band_tiles(
+        &self,
+        groups: &[Vec<(i64, usize, f64, f64)>],
+        sel: &[u32],
+        lat: &[f64],
+        radius: &[f64],
+    ) -> Vec<(i64, i64)> {
+        let n = 1i64 << self.zoom;
+        let clean = self.clean.lock().unwrap();
+        let mut keys = std::collections::BTreeSet::new();
+        for g in groups {
+            for &(_, j, fx, fy) in g {
+                let pm = tile_resolution(self.zoom, lat[sel[j] as usize]);
+                let (gx, gy) = (fx * 256.0 - 0.5, fy * 256.0 - 0.5);
+                let rp = (radius[j] / pm).ceil() as i64 + 1;
+                let (c0, r0) = (gx.floor() as i64, gy.floor() as i64);
+                let (cs, ce, rs, re) = (c0 - rp, c0 + 1 + rp, r0 - rp, r0 + 1 + rp);
+                let mut here = Vec::new();
+                let mut all_clean = true;
+                for ty in rs.div_euclid(256)..=re.div_euclid(256) {
+                    for tx in cs.div_euclid(256)..=ce.div_euclid(256) {
+                        if tx < 0 || ty < 0 || tx >= n || ty >= n {
+                            all_clean = false;
+                        } else if clean.get(&(tx, ty)) != Some(&true) {
+                            all_clean = false;
+                            here.push((tx, ty));
+                        }
+                    }
+                }
+                if !all_clean {
+                    keys.extend(here);
+                }
+            }
+        }
+        keys.into_iter().collect()
     }
 
     /// As GeoSet::distance, on the pyramid's pixels (each tile's neighbours read where a band
@@ -437,118 +574,131 @@ impl TileSet<'_> {
         let n = 1i64 << self.zoom;
         let groups = self.groups(sel, lon, lat);
         let tally = Tally::new(sel.len(), step);
-        let got: Vec<Vec<(usize, f64)>> = within(self.o.pool, || {
-            groups
-                .par_iter()
-                .map(|g| -> Result<Vec<(usize, f64)>> {
-                    let clean_tile = |tx: i64, ty: i64| self.clean.lock().unwrap().get(&(tx, ty)).copied();
-                    let mut out = Vec::with_capacity(g.len());
-                    // (Each point's band in the pyramid's pixels: (j, gx, gy, metres a pixel, c0,
-                    // [cs, ce] × [rs, re]), for those whose band isn't all in clean tiles.)
-                    let mut bands = Vec::new();
-                    for &(_, j, fx, fy) in g {
-                        let i = sel[j] as usize;
-                        let pm = tile_resolution(self.zoom, lat[i]);
-                        let (gx, gy) = (fx * 256.0 - 0.5, fy * 256.0 - 0.5);
-                        let rp = (radius[j] / pm).ceil() as i64 + 1;
-                        let (c0, r0) = (gx.floor() as i64, gy.floor() as i64);
-                        // (The band's tiles: one known clean has no invalid pixel, so none of its
-                        // pixels is looked at, nor is it fetched again.)
-                        let (cs, ce, rs, re) = (c0 - rp, c0 + 1 + rp, r0 - rp, r0 + 1 + rp);
-                        let all_clean = (rs.div_euclid(256)..=re.div_euclid(256)).all(|ty| {
-                            (cs.div_euclid(256)..=ce.div_euclid(256))
-                                .all(|tx| tx >= 0 && ty >= 0 && tx < n && ty < n && clean_tile(tx, ty) == Some(true))
-                        });
-                        if all_clean {
-                            out.push((j, radius[j]));
-                        } else {
-                            bands.push((j, gx, gy, pm, c0, [cs, ce, rs, re]));
-                        }
-                    }
-                    if bands.is_empty() {
-                        tally.add(g.len());
-                        return Ok(out);
-                    }
-                    // The pixels the bands cover, [x0, x1] × [y0, y1]: which hold data.
-                    let x0 = bands.iter().map(|b| b.5[0]).min().unwrap();
-                    let x1 = bands.iter().map(|b| b.5[1]).max().unwrap();
-                    let y0 = bands.iter().map(|b| b.5[2]).min().unwrap();
-                    let y1 = bands.iter().map(|b| b.5[3]).max().unwrap();
-                    let (w, h) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
-                    let mut ok = vec![false; w * h];
-                    for ty in y0.div_euclid(256)..=y1.div_euclid(256) {
-                        for tx in x0.div_euclid(256)..=x1.div_euclid(256) {
-                            // (Outside the world: no data. A tile no band reaches isn't fetched.)
-                            if tx < 0 || ty < 0 || tx >= n || ty >= n {
-                                continue;
-                            }
-                            let (px0, px1, py0, py1) = (tx * 256, tx * 256 + 255, ty * 256, ty * 256 + 255);
-                            if !bands.iter().any(|b| b.5[0] <= px1 && b.5[1] >= px0 && b.5[2] <= py1 && b.5[3] >= py0) {
-                                continue;
-                            }
-                            let tile =
-                                if clean_tile(tx, ty) == Some(true) { None } else { Some(self.tile_noted(tx, ty)?) };
-                            for r in py0.max(y0)..=py1.min(y1) {
-                                let row = (r - y0) as usize * w;
-                                for c in px0.max(x0)..=px1.min(x1) {
-                                    ok[row + (c - x0) as usize] = match &tile {
-                                        None => true,
-                                        Some(None) => false,
-                                        Some(Some((_, _, a))) => {
-                                            valid(a[(r - py0) as usize * TILE_PX + (c - px0) as usize], None)
-                                        }
-                                    };
-                                }
+        let mut got: Vec<Vec<(usize, f64)>> = Vec::with_capacity(groups.len());
+        // (A batch's tiles its bands reach fetched together, then measured.)
+        for batch in groups.chunks(PREFETCH_BATCH) {
+            self.prefetch(&self.band_tiles(batch, sel, lat, radius))?;
+            got.extend(within(self.o.pool, || {
+                batch
+                    .par_iter()
+                    .map(|g| -> Result<Vec<(usize, f64)>> {
+                        let clean_tile = |tx: i64, ty: i64| self.clean.lock().unwrap().get(&(tx, ty)).copied();
+                        let mut out = Vec::with_capacity(g.len());
+                        // (Each point's band in the pyramid's pixels: (j, gx, gy, metres a pixel, c0,
+                        // [cs, ce] × [rs, re]), for those whose band isn't all in clean tiles.)
+                        let mut bands = Vec::new();
+                        for &(_, j, fx, fy) in g {
+                            let i = sel[j] as usize;
+                            let pm = tile_resolution(self.zoom, lat[i]);
+                            let (gx, gy) = (fx * 256.0 - 0.5, fy * 256.0 - 0.5);
+                            let rp = (radius[j] / pm).ceil() as i64 + 1;
+                            let (c0, r0) = (gx.floor() as i64, gy.floor() as i64);
+                            // (The band's tiles: one known clean has no invalid pixel, so none of its
+                            // pixels is looked at, nor is it fetched again.)
+                            let (cs, ce, rs, re) = (c0 - rp, c0 + 1 + rp, r0 - rp, r0 + 1 + rp);
+                            let all_clean = (rs.div_euclid(256)..=re.div_euclid(256)).all(|ty| {
+                                (cs.div_euclid(256)..=ce.div_euclid(256)).all(|tx| {
+                                    tx >= 0 && ty >= 0 && tx < n && ty < n && clean_tile(tx, ty) == Some(true)
+                                })
+                            });
+                            if all_clean {
+                                out.push((j, radius[j]));
+                            } else {
+                                bands.push((j, gx, gy, pm, c0, [cs, ce, rs, re]));
                             }
                         }
-                    }
-                    // By pixel: the column of its row's nearest invalid pixel at or left of it
-                    // (i32::MIN: none), and at or right of it (i32::MAX: none).
-                    let mut left = vec![i32::MIN; w * h];
-                    let mut right = vec![i32::MAX; w * h];
-                    for row in 0..h {
-                        let (o, mut last) = (row * w, i32::MIN);
-                        for c in 0..w {
-                            if !ok[o + c] {
-                                last = c as i32;
-                            }
-                            left[o + c] = last;
+                        if bands.is_empty() {
+                            tally.add(g.len());
+                            return Ok(out);
                         }
-                        last = i32::MAX;
-                        for c in (0..w).rev() {
-                            if !ok[o + c] {
-                                last = c as i32;
-                            }
-                            right[o + c] = last;
-                        }
-                    }
-                    for (j, gx, gy, pm, c0, [cs, ce, rs, re]) in bands {
-                        let mut best = radius[j];
-                        let at = (c0 - x0) as usize;
-                        for r in rs..=re {
-                            let o = (r - y0) as usize * w;
-                            let dy = ((r as f64 - gy).abs() - 0.5).max(0.0);
-                            let (l, rt) = (left[o + at], right[o + at + 1]);
-                            for c in [(l != i32::MIN).then(|| x0 + l as i64), (rt != i32::MAX).then(|| x0 + rt as i64)]
-                                .into_iter()
-                                .flatten()
-                            {
-                                if c < cs || c > ce {
+                        // The pixels the bands cover, [x0, x1] × [y0, y1]: which hold data.
+                        let x0 = bands.iter().map(|b| b.5[0]).min().unwrap();
+                        let x1 = bands.iter().map(|b| b.5[1]).max().unwrap();
+                        let y0 = bands.iter().map(|b| b.5[2]).min().unwrap();
+                        let y1 = bands.iter().map(|b| b.5[3]).max().unwrap();
+                        let (w, h) = ((x1 - x0 + 1) as usize, (y1 - y0 + 1) as usize);
+                        let mut ok = vec![false; w * h];
+                        for ty in y0.div_euclid(256)..=y1.div_euclid(256) {
+                            for tx in x0.div_euclid(256)..=x1.div_euclid(256) {
+                                // (Outside the world: no data. A tile no band reaches isn't fetched.)
+                                if tx < 0 || ty < 0 || tx >= n || ty >= n {
                                     continue;
                                 }
-                                let d = ((c as f64 - gx).abs() - 0.5).max(0.0).hypot(dy) * pm;
-                                if d < best {
-                                    best = d;
+                                let (px0, px1, py0, py1) = (tx * 256, tx * 256 + 255, ty * 256, ty * 256 + 255);
+                                if !bands
+                                    .iter()
+                                    .any(|b| b.5[0] <= px1 && b.5[1] >= px0 && b.5[2] <= py1 && b.5[3] >= py0)
+                                {
+                                    continue;
+                                }
+                                let tile = if clean_tile(tx, ty) == Some(true) {
+                                    None
+                                } else {
+                                    Some(self.tile_noted(tx, ty)?)
+                                };
+                                for r in py0.max(y0)..=py1.min(y1) {
+                                    let row = (r - y0) as usize * w;
+                                    for c in px0.max(x0)..=px1.min(x1) {
+                                        ok[row + (c - x0) as usize] = match &tile {
+                                            None => true,
+                                            Some(None) => false,
+                                            Some(Some((_, _, a))) => {
+                                                valid(a[(r - py0) as usize * TILE_PX + (c - px0) as usize], None)
+                                            }
+                                        };
+                                    }
                                 }
                             }
                         }
-                        out.push((j, best));
-                    }
-                    tally.add(g.len());
-                    Ok(out)
-                })
-                .collect::<Result<_>>()
-        })?;
+                        // By pixel: the column of its row's nearest invalid pixel at or left of it
+                        // (i32::MIN: none), and at or right of it (i32::MAX: none).
+                        let mut left = vec![i32::MIN; w * h];
+                        let mut right = vec![i32::MAX; w * h];
+                        for row in 0..h {
+                            let (o, mut last) = (row * w, i32::MIN);
+                            for c in 0..w {
+                                if !ok[o + c] {
+                                    last = c as i32;
+                                }
+                                left[o + c] = last;
+                            }
+                            last = i32::MAX;
+                            for c in (0..w).rev() {
+                                if !ok[o + c] {
+                                    last = c as i32;
+                                }
+                                right[o + c] = last;
+                            }
+                        }
+                        for (j, gx, gy, pm, c0, [cs, ce, rs, re]) in bands {
+                            let mut best = radius[j];
+                            let at = (c0 - x0) as usize;
+                            for r in rs..=re {
+                                let o = (r - y0) as usize * w;
+                                let dy = ((r as f64 - gy).abs() - 0.5).max(0.0);
+                                let (l, rt) = (left[o + at], right[o + at + 1]);
+                                for c in
+                                    [(l != i32::MIN).then(|| x0 + l as i64), (rt != i32::MAX).then(|| x0 + rt as i64)]
+                                        .into_iter()
+                                        .flatten()
+                                {
+                                    if c < cs || c > ce {
+                                        continue;
+                                    }
+                                    let d = ((c as f64 - gx).abs() - 0.5).max(0.0).hypot(dy) * pm;
+                                    if d < best {
+                                        best = d;
+                                    }
+                                }
+                            }
+                            out.push((j, best));
+                        }
+                        tally.add(g.len());
+                        Ok(out)
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?);
+        }
         let mut out = vec![0.0; sel.len()];
         for (j, d) in got.into_iter().flatten() {
             out[j] = d;
@@ -571,11 +721,17 @@ impl<'a> Reader<'a> {
         lat: &[f64],
         cover: &Cover,
         cache: &Arc<Mutex<BlockCache>>,
+        memo: &Arc<TileMemo>,
     ) -> Result<Reader<'a>> {
         Ok(match &ds.source {
-            Source::Tiles { url, zoom, encoding } => {
-                Reader::Tiles(TileSet { url, zoom: *zoom, encoding, o, clean: Mutex::new(HashMap::new()) })
-            }
+            Source::Tiles { url, zoom, encoding } => Reader::Tiles(TileSet {
+                url,
+                zoom: *zoom,
+                encoding,
+                o,
+                clean: Mutex::new(HashMap::new()),
+                memo: memo.clone(),
+            }),
             Source::Geotiff { crs, read_resolution, store, files } => {
                 let store = match (*store, &o.store) {
                     (false, _) => None,
@@ -741,19 +897,21 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
             })
             .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
     });
-    let total = ((to_sample + to_blend) as f64).max(1.0);
+    // (The blends' points counted twice: their distances measured, then their second heights.)
+    let total = ((to_sample + 2 * to_blend) as f64).max(1.0);
     let mut a = vec![f32::NAN; n];
     let mut first = vec![u16::MAX; n];
     let mut file = vec![u32::MAX; n];
     let mut readers = Vec::new();
     let cache = Arc::new(Mutex::new(BlockCache::new(CACHE_BYTES)));
+    let memo = Arc::new(TileMemo::new(TILE_MEMO_BYTES));
     // (What each phase fetches over the network: its count.)
     let fetched =
         |p: &crate::timings::Phase, since: u64| p.count(crate::fetch::fetched_bytes().saturating_sub(since), 0);
     for (k, ds) in plan.datasets.iter().enumerate() {
         let p = phase(&format!("{} sampled", ds.id), Class::Net);
         let since = crate::fetch::fetched_bytes();
-        let r = Reader::new(ds, o, lon, lat, &covers[k], &cache)?;
+        let r = Reader::new(ds, o, lon, lat, &covers[k], &cache, &memo)?;
         let sel: Vec<u32> = (0..n as u32)
             .filter(|&i| first[i as usize] == u16::MAX && covers[k].contains(lon[i as usize], lat[i as usize]))
             .collect();
@@ -835,10 +993,20 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
         if sel.is_empty() {
             continue;
         }
-        for (&i, (v, _)) in sel.iter().zip(r.sample(&sel, lon, lat)?) {
-            if v.is_finite() {
-                (b[i as usize], second[i as usize]) = (v, k as u16);
+        // (In reading order and in chunks, a progress line after each: the datasets share the
+        // last part equally.)
+        let sel = r.in_reading_order(sel, lon, lat);
+        let chunk = (sel.len() / 100).clamp(CHUNK_MIN, CHUNK_MAX);
+        let mut done = 0;
+        for part in sel.chunks(chunk) {
+            for (&i, (v, _)) in part.iter().zip(r.sample(part, lon, lat)?) {
+                if v.is_finite() {
+                    (b[i as usize], second[i as usize]) = (v, k as u16);
+                }
             }
+            done += part.len();
+            let share = (k as f64 + done as f64 / sel.len() as f64) / readers.len() as f64;
+            mono.say((to_sample as f64 + to_blend as f64 * (1.0 + share)) / total);
         }
     }
     fetched(&p, since);

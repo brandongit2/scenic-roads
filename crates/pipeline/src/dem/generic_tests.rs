@@ -108,6 +108,7 @@ fn a_pyramids_tile_not_256_pixels_is_refused() {
         encoding: "terrarium",
         o: &o,
         clean: Mutex::new(HashMap::new()),
+        memo: Arc::new(TileMemo::new(TILE_MEMO_BYTES)),
     };
     assert_eq!(t.tile(1, 1).unwrap().unwrap().0, 256);
     assert!(t.tile(2, 1).unwrap_err().to_string().contains("512 × 512"));
@@ -310,6 +311,7 @@ fn a_pyramids_distance_is_the_whole_bands_scan() {
         encoding: "terrarium",
         o: &o,
         clean: Mutex::new(HashMap::new()),
+        memo: Arc::new(TileMemo::new(TILE_MEMO_BYTES)),
     };
     // Points across those tiles, bands up to ~60 pixels.
     let (mut lon, mut lat, mut radius) = (Vec::new(), Vec::new(), Vec::new());
@@ -355,4 +357,120 @@ fn a_pyramids_distance_is_the_whole_bands_scan() {
         assert_eq!(got[j].to_bits(), best.to_bits(), "point {j}: {} against the scan's {best}", got[j]);
     }
     assert!(near > 1000 && near < 2900, "{near} of 3000 points near the invalid area");
+}
+
+/// A fetch that counts each URL's requests and the most at once, each taking a while.
+struct Counting {
+    inner: NoneElse,
+    asked: Mutex<HashMap<String, usize>>,
+    now: std::sync::atomic::AtomicUsize,
+    most: std::sync::atomic::AtomicUsize,
+}
+
+impl Counting {
+    fn new(f: crate::fetch::MapFetch) -> Counting {
+        Counting { inner: NoneElse(f), asked: Default::default(), now: Default::default(), most: Default::default() }
+    }
+}
+
+impl Fetch for Counting {
+    fn open(&self, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
+        self.inner.open(url)
+    }
+
+    fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
+        use std::sync::atomic::Ordering::SeqCst;
+        *self.asked.lock().unwrap().entry(url.to_string()).or_default() += 1;
+        let at = self.now.fetch_add(1, SeqCst) + 1;
+        self.most.fetch_max(at, SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        self.now.fetch_sub(1, SeqCst);
+        self.inner.get(url)
+    }
+}
+
+/// Task #379: a run fetches each tile once (its sampling, the distances and the blends' second
+/// heights share them), many at once ahead of the sampling (more than the pool's threads), and the
+/// heights are those of a run on one thread, to the bit.
+#[test]
+fn a_runs_tiles_are_fetched_once_and_together_and_the_heights_are_the_same() {
+    use super::super::declared::{Dataset, Plan, Source};
+    let z = 6;
+    let n = 1i64 << z;
+    let ds = |id: &str, code: u8, host: &str| Dataset {
+        id: id.into(),
+        code,
+        resolution: tile_resolution(z, 0.0),
+        cover: None,
+        source: Source::Tiles {
+            url: format!("https://{host}/{{z}}/{{x}}/{{y}}.png"),
+            zoom: z,
+            encoding: "terrarium".into(),
+        },
+    };
+    let plan = Plan {
+        fmt: 1,
+        version: "t".into(),
+        tag: "1".into(),
+        datasets: vec![ds("a", 1, "a.org"), ds("b", 2, "b.org"), ds("c", 3, "c.org")],
+    };
+    // (Tiles 0–7 × 24–31: a's with holes, some missing; b's with other holes; c's whole.)
+    let mut f = crate::fetch::MapFetch::default();
+    for ty in 24..32i64 {
+        for tx in 0..8i64 {
+            let (p, q) = ((tx * 37 + ty * 11) as usize % 200, (tx * 5 + ty * 29) as usize % 200);
+            if (tx + ty) % 5 != 0 {
+                let a = holed(move |c, r| c.abs_diff(p) < 30 && r.abs_diff(q) < 40);
+                f.0.insert(format!("https://a.org/{z}/{tx}/{ty}.png"), Some(a));
+            }
+            f.0.insert(format!("https://b.org/{z}/{tx}/{ty}.png"), Some(holed(move |c, r| (c + r) % 61 == 0)));
+            f.0.insert(format!("https://c.org/{z}/{tx}/{ty}.png"), Some(flat(5.0)));
+        }
+    }
+    let mut seed = 11u64;
+    let mut rnd = move || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let (mut lon, mut lat) = (Vec::new(), Vec::new());
+    for _ in 0..20_000 {
+        let (fx, fy) = (0.2 + rnd() * 7.6, 24.2 + rnd() * 7.6);
+        lon.push(fx / n as f64 * 360.0 - 180.0);
+        lat.push((std::f64::consts::PI * (1.0 - 2.0 * fy / n as f64)).sinh().atan().to_degrees());
+    }
+    let one = NoneElse(crate::fetch::MapFetch(f.0.clone()));
+    let want = sample(&plan, &lon, &lat, &Opts { fetch: &one, store: None, pool: None }, &|_| {}).unwrap();
+    let counting = Counting::new(f);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    let got = sample(&plan, &lon, &lat, &Opts { fetch: &counting, store: None, pool: Some(&pool) }, &|_| {}).unwrap();
+    let bits = |s: &Sampled| s.elev.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&got), bits(&want));
+    assert_eq!((&got.src, &got.blended), (&want.src, &want.blended));
+    let blends = want.blended.iter().filter(|b| **b).count();
+    assert!(blends > 100 && want.src.contains(&2) && want.src.contains(&3), "{blends} blends");
+    let asked = counting.asked.into_inner().unwrap();
+    assert!(asked.keys().any(|u| u.starts_with("https://c.org")), "the blends' second heights read c's tiles");
+    let again: Vec<_> = asked.iter().filter(|(_, &k)| k > 1).collect();
+    assert!(again.is_empty(), "fetched more than once: {again:?}");
+    let most = counting.most.into_inner();
+    assert!(most > 2, "at most {most} tiles fetched at once, no more than the pool's threads");
+}
+
+/// The memo lets its oldest tiles go past its size, and fetches one again when asked after.
+#[test]
+fn the_tile_memo_lets_its_oldest_go() {
+    let mut f = crate::fetch::MapFetch::default();
+    for i in 0..4 {
+        f.0.insert(format!("https://m.org/{i}"), Some(vec![i as u8; 1000]));
+    }
+    let counting = Counting::new(f);
+    // (Room for two: 0 and 1 kept, 0 read again from the memo; 2 lets 0 go, so it's fetched
+    // again, letting 1 go; 3 lets 2 go.)
+    let memo = TileMemo::new(2500);
+    for i in [0, 1, 0, 2, 0, 3] {
+        assert_eq!(memo.get(&format!("https://m.org/{i}"), &counting).unwrap().unwrap()[0], i as u8);
+    }
+    let asked = counting.asked.into_inner().unwrap();
+    assert_eq!(asked["https://m.org/0"], 2);
+    assert_eq!((asked["https://m.org/1"], asked["https://m.org/2"], asked["https://m.org/3"]), (1, 1, 1));
 }
