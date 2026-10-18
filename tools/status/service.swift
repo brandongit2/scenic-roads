@@ -206,7 +206,7 @@ final class BuildService {
         let uv = run("/bin/zsh", ["-lc", "command -v uv"]).1.trimmingCharacters(in: .whitespacesAndNewlines)
         guard uv.hasPrefix("/") else {
             // (The file as it was, if any: the build service runs on it.)
-            NSLog("scenic: uv not found: the agent's unit builds need it (https://docs.astral.sh/uv/)")
+            NSLog("scenic: uv not found: the agent's unit builds need it (install it with mise: see README)")
             return
         }
         let dir = (uv as NSString).deletingLastPathComponent
