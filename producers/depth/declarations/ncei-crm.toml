@@ -1,0 +1,22 @@
+name = "NOAA NCEI Coastal Relief Model, 1 arc-second (volumes 1–5, 7–10)"
+what = "Depth of the US coasts"
+credit = "NOAA National Centers for Environmental Information, U.S. Coastal Relief Model"
+licence = "Public domain (US Government work)"
+licence_url = "https://www.ncei.noaa.gov/products/coastal-relief-model"
+source = "https://www.ncei.noaa.gov/products/coastal-relief-model"
+territory = ["US"]
+notes = "The owner's hand download, kept in sources/ncei-crm/ (volume 6 absent). producers/depth/ncei.py crm (raster.py over each volume, z12, cut by z7 tile; land left out; the files' own nodata). Volumes 1–5, 7, 8 are heights above EGM2008, taken as mean sea level (the difference between them, the mean dynamic topography, isn't corrected); 9 and 10 are above local MSL. Not for navigation."
+
+[data]
+role = "depth"
+format = "depth-grid"
+index = "ncei-crm-grids.geojson"
+version = "2023-2025"
+refresh = "pinned"
+
+[data.params]
+code = 12
+water = "sea"
+label = "NCEI Coastal Relief Model, 1″"
+datum = "mean sea level (EGM2008 taken as MSL for volumes 1–5, 7, 8)"
+band_m = 300

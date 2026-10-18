@@ -806,7 +806,7 @@ mod tests {
     /// each; a depth index's grids need a file and a zoom.
     #[test]
     fn the_depth_declarations_pass_the_check() {
-        let staged: [(&str, &[u8]); 11] = [
+        let staged: [(&str, &[u8]); 13] = [
         ("bluetopo.toml", include_bytes!("../../../../producers/depth/declarations/bluetopo.toml")),
         ("emodnet-dtm.toml", include_bytes!("../../../../producers/depth/declarations/emodnet-dtm.toml")),
         ("gblq.toml", include_bytes!("../../../../producers/depth/declarations/gblq.toml")),
@@ -814,6 +814,8 @@ mod tests {
         ("gttm.toml", include_bytes!("../../../../producers/depth/declarations/gttm.toml")),
         ("masswildlife-ponds.toml", include_bytes!("../../../../producers/depth/declarations/masswildlife-ponds.toml")),
         ("mn-dnr-lakes.toml", include_bytes!("../../../../producers/depth/declarations/mn-dnr-lakes.toml")),
+        ("ncei-crm.toml", include_bytes!("../../../../producers/depth/declarations/ncei-crm.toml")),
+        ("ncei-greatlakes.toml", include_bytes!("../../../../producers/depth/declarations/ncei-greatlakes.toml")),
         ("nonna-10.toml", include_bytes!("../../../../producers/depth/declarations/nonna-10.toml")),
         ("nonna-100.toml", include_bytes!("../../../../producers/depth/declarations/nonna-100.toml")),
         ("shom-homonim-100.toml", include_bytes!("../../../../producers/depth/declarations/shom-homonim-100.toml")),

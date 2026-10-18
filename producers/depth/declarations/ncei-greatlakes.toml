@@ -1,0 +1,21 @@
+name = "NOAA NCEI Great Lakes bathymetry, 3 arc-second"
+what = "Depth of the five Great Lakes"
+credit = "NOAA National Centers for Environmental Information, Great Lakes Bathymetry"
+licence = "Public domain (US Government work)"
+licence_url = "https://www.ncei.noaa.gov/products/great-lakes-bathymetry"
+source = "https://www.ncei.noaa.gov/products/great-lakes-bathymetry"
+territory = ["US", "CA"]
+notes = "The owner's hand download, kept in sources/ncei-greatlakes/ (<lake>_lld.geotiff.tar.gz, extracted locally). producers/depth/ncei.py greatlakes: heights relative to each lake's low water datum (IGLD 85, from NOAA CO-OPS' station datums) brought to its long-term mean level (the mean of NOAA GLERL's coordinated lake-wide monthly means, 1918 to the last complete year), both fetched as it runs; cells above the low water datum left out. Not for navigation."
+
+[data]
+role = "depth"
+format = "depth-grid"
+index = "ncei-greatlakes-grids.geojson"
+version = "2012"
+refresh = "pinned"
+
+[data.params]
+code = 13
+water = "lake"
+label = "NCEI Great Lakes, 3″"
+datum = "the lake's long-term mean level (from its low water datum, IGLD 85)"

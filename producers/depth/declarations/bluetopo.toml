@@ -5,7 +5,7 @@ licence = "CC0-1.0"
 licence_url = "https://nauticalcharts.noaa.gov/data/bluetopo.html"
 source = "https://nauticalcharts.noaa.gov/data/bluetopo.html"
 territory = ["US"]
-notes = "producers/depth/bluetopo.py fetches the tiles meeting each US region's 200 nm from the public bucket by the tile scheme (checksums checked), brings NAVD88 to MSL by NOAA's tide stations (stations.py noaa) and keeps MLLW as the low water; cells its attribute tables call interpolated are capped at z12. Not for navigation."
+notes = "producers/depth/bluetopo.py's steps over every tile in the tile scheme of 2026-10-16 (checksums checked), a chunk of tiles at a time (producers/depth/chunked.py bluetopo). Heights above NAVD88 brought to MSL, and MLLW kept as the low water, by NOAA VDatum (producers/depth/vdatum.py: a point per 0.25° cell holding a tile, NAVD88 to LMSL and LMSL to MLLW; GEOID18, and GEOID12B in Southeast Alaska); the Puerto Rico and Virgin Islands tiles are on MSL already. Cells its attribute tables call interpolated are capped at z12. Not for navigation."
 
 [data]
 role = "depth"
@@ -18,6 +18,6 @@ refresh = "pinned"
 code = 2
 water = "sea"
 label = "BlueTopo, 4–16 m"
-datum = "mean sea level (from NAVD88 by NOAA's tide stations)"
+datum = "mean sea level (from NAVD88 by NOAA VDatum)"
 band_m = 120
 intertidal = true
