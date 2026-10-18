@@ -9,10 +9,11 @@
 //! peaks, then units and slope) that fits beside it, each helper the far end of the first shared
 //! step with work it can do that fits its memory (terrain's near end: the next region's; slope once
 //! its area's terrain is built, a unit once its region's terrain is). The trains' and the
-//! landmarks' chains run from the start, each step once what it reads is built. A region not on
-//! the map is published as soon as it's done (its map tiles, the road index, rail stops, ferries, a
-//! catalog: the plan's publishing comes before the regions' work), then its slope and tree cover
-//! made; after the last unit and terrain area, the slope and tree cover left, the last publishing,
+//! landmarks' chains run from the start, each step once what it reads is built. A region's units'
+//! map tiles go out as they're built (the plan's publishing comes before the regions' work: their
+//! tiles and the road index, then a catalog, the low zooms and rail stops with a later one): the
+//! region reaches the map once its last unit's do, a publishing's time (`update_s`) after it's done,
+//! then its slope and tree cover are made (recorded built by the catalog after); after the last unit and terrain area, the slope and tree cover left, the last publishing,
 //! then the overlays and a catalog with what the chains made since. (The catalogs that go out
 //! meanwhile with the chains' work, at most one a minute, take seconds: not counted.) Each target
 //! takes its last run's time (else its step's mean, else a first
@@ -543,9 +544,9 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             };
             continue;
         }
-        // The lead. A region done that the map hasn't as it is: published at once (its map tiles,
-        // the road index, …, a catalog: the plan's publishing comes before the regions' work), with
-        // the rebuilt ones done by then.
+        // The lead. A region done that the map hasn't as it is: on the map a publishing's time after
+        // (its last unit's map tiles, the road index, a catalog: the plan's publishing comes before
+        // the regions' work), with the rebuilt ones done by then.
         let regional_left = regionals.iter().any(|&i| !done_by(&items, i, t));
         let ready: Vec<usize> = (0..inp.regions.len())
             .filter(|k| !published.contains(k))

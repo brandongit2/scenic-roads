@@ -1027,9 +1027,10 @@ from the first (`edit_held`).
   through in the order the agent runs it. The lead takes the pass's worldwide jobs, then a region at
   a time (terrain, then units), else the chains' work; its second job the first step that fits
   beside it; each other member the far end of the first shared step it can do (terrain's near end).
-  Units reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. A region is
-  published as soon as it's done, taking the measured publishing time (`forecast::update_secs`: the
-  publishing chain's jobs and catalog, summed per catalog). Each target takes its last run's time at the
+  Units reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. A region's
+  units' map tiles go out as they're built; it reaches the map once its last unit's do, the measured
+  publishing time after it's done (`forecast::update_secs`: the publishing chain's jobs and catalog,
+  summed per catalog). Each target takes its last run's time at the
   lead's pace, else its step's mean, else a first guess; each machine at its measured speed (half
   the lead's until measured). Run three times for a range. It says when each step, region and
   everything will be done, when each region reaches the map, and each machine's schedule, or why
@@ -1137,8 +1138,10 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
      coverage no longer builds (§5, Shrinking), then the publishing chain (4, Roads), its map tiles
      whose owners changed a unit's together (`build::by_unit`: the units whose base pack or road
      values differ from the served catalog's, in build order), shared with the members asking (the
-     lead's own job takes an even share, `publish::lead_share`); once none of it is left and no
-     member's hand-offs wait to be merged, a catalog (5). Nothing is published before a unit is
+     lead's own job takes an even share, `publish::lead_share`); once the map tiles and the road
+     index are drawn (`build::CATALOG_GATE`) and none of their hand-offs waits to be merged, a
+     catalog (5), listed before the chain's rest (the low zooms, rail stops, ferries, roots), which
+     goes out with a later one. Nothing is published before a unit is
      built, while the regions have work left. The lead keeps `publishing.json` in its agent's folder
      (`build::LastCatalog`: when its last catalog went out, and the last with the low zooms made),
      and records what publishing does and why (`build::PublishLine`), shown in the build status
@@ -1175,11 +1178,13 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
    The trains', landmarks' and buildings' work is listed after the regions'. Last, in idle time: the
    mids of pieces current without one, each made again with `--expect-same` (`scenic-build
    trees|terrain|slope --expect-same`: a pack differing from the manifest fails the job).
-5. **A catalog** once the publishing chain is done, whenever the served files, the regions or which
-   of them are done change (`build::catalog_key`), at most one each `build::CATALOG_EVERY_S` (a
-   minute) since the last began. It records as built the regions done, their slope and tree cover
+5. **A catalog** once the map tiles and the road index are drawn, whenever the served files, the
+   regions or which of them are done change (`build::catalog_key`), at most one each
+   `build::CATALOG_EVERY_S` (a minute) since the last began; map tiles still to draw postpone it at
+   most `build::CATALOG_CAP_S` (ten minutes), then one goes out with what's drawn. It records as built the regions done, their slope and tree cover
    made (`--ready <id>=<outline digest>,…`), and the others as the last catalog had them. It waits
-   while a member's hand-offs wait to be merged. While `inputs/hold-catalog` exists, catalogs go to
+   while a hand-off of the map tiles or the road index waits to be merged (a unit's goes out with a
+   later catalog). While `inputs/hold-catalog` exists, catalogs go to
    `catalog-held/`.
 6. **Daily:** backup and GC.
 

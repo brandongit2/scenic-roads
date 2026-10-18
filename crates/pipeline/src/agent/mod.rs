@@ -179,6 +179,35 @@ fn read_published(home: &Path) -> build::LastCatalog {
     std::fs::read(home.join(PUBLISHED_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
+/// The map updates' file before task #254 (`map-update.json` in `home`) taken into the record `r`:
+/// when the low zooms were last made (its `low_at`, else its `began` if it made them), when `r` has
+/// none, kept (`PUBLISHED_FILE`); then the file goes. A file that doesn't read is just removed.
+fn take_map_update(home: &Path, mut r: build::LastCatalog) -> build::LastCatalog {
+    #[derive(Deserialize)]
+    struct Old {
+        #[serde(default)]
+        began: u64,
+        #[serde(default)]
+        low: Option<bool>,
+        #[serde(default)]
+        low_at: Option<u64>,
+    }
+    let p = home.join("map-update.json");
+    let Ok(b) = std::fs::read(&p) else { return r };
+    if let Ok(old) = serde_json::from_slice::<Old>(&b) {
+        let low_at = old.low_at.or((old.began > 0 && old.low != Some(false)).then_some(old.began));
+        if r.low_at.is_none() && low_at.is_some() {
+            r.low_at = low_at;
+            if let Err(e) = write_published(home, &r) {
+                eprintln!("agent: keeping the low zooms' time from map-update.json: {e:#}");
+                return r;
+            }
+        }
+    }
+    std::fs::remove_file(&p).ok();
+    r
+}
+
 /// Keeps the lead's record of its catalogs in `home` (`PUBLISHED_FILE`).
 fn write_published(home: &Path, r: &build::LastCatalog) -> Result<()> {
     crate::whole::write(&home.join(PUBLISHED_FILE), &serde_json::to_vec(r)?)
@@ -1404,9 +1433,9 @@ impl Agent {
             std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         // (A record that doesn't read: none, the low zooms made with the next catalog. The map
         // updates' file, before task #254, goes.)
-        let catalogs = read_published(&o.home);
+        let mut catalogs = read_published(&o.home);
         if !o.dry_run {
-            std::fs::remove_file(o.home.join("map-update.json")).ok();
+            catalogs = take_map_update(&o.home, catalogs);
         }
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
         Ok(Agent {
@@ -6233,12 +6262,16 @@ impl Agent {
             waiting.push(Waiting { step: Some("unit".into()), what: steps::stage_title("roads").into(), why });
         }
         let edit_hold = edit_held(self.edited_at.get(), std::time::SystemTime::now());
-        // (Hand-offs of work done not yet merged: counted as built, their files not yet in the
-        // manifest.)
-        let unmerged = self
-            .handoff_bases(root)
-            .iter()
-            .any(|b| crate::handoff::waiting_in(b).map(|w| w.iter().any(|(_, h)| h.done.is_some())).unwrap_or(false));
+        // (Hand-offs of a step a catalog waits for (build::CATALOG_GATE: the map tiles, the road
+        // index) not yet merged: counted as done, their files not yet in the manifest. A unit's
+        // waiting goes out with a later catalog.)
+        let unmerged = self.handoff_bases(root).iter().any(|b| {
+            crate::handoff::waiting_in(b)
+                .map(|w| {
+                    w.iter().any(|(_, h)| h.done.as_ref().is_some_and(|d| build::CATALOG_GATE.contains(&d.0.as_str())))
+                })
+                .unwrap_or(false)
+        });
         let ready = planned.ready;
         *self.ready.borrow_mut() = ready.clone();
         // (As the catalog's `--ready`: each with the outline it was built with.)
@@ -6291,8 +6324,8 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building the regions".into(), why: format!("a region's recipe or outline changed {} min ago: their work starts in {left} min, after any more edits", age.as_secs() / 60) });
             plan.clear();
         }
-        // A catalog waits while a helper's hand-offs wait to be merged (its work counted as built,
-        // its files not yet in the manifest).
+        // A catalog waits while a helper's hand-offs of its map tiles or road index wait to be
+        // merged (counted as done, their files not yet in the manifest).
         let every_on = self.every_on();
         if unmerged && plan.iter().any(|w| w.step == "catalog") {
             waiting.push(Waiting {
@@ -11208,8 +11241,9 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::create_dir_all(&home).unwrap();
-        // (The map updates' file from before: gone as the agent starts.)
-        std::fs::write(home.join("map-update.json"), "{}").unwrap();
+        // (The map updates' file from before: its low zooms' time kept, the file gone as the agent
+        // starts.)
+        std::fs::write(home.join("map-update.json"), r#"{"began":90,"regions":[],"low":false,"low_at":50}"#).unwrap();
         let a = test_agent(Options {
             root: Some(root.clone()),
             home: home.clone(),
@@ -11220,6 +11254,7 @@ mod tests {
         })
         .unwrap();
         assert!(!home.join("map-update.json").exists());
+        assert_eq!(*a.catalogs.borrow(), build::LastCatalog { at: 0, low_at: Some(50) });
         let file = || -> build::LastCatalog {
             serde_json::from_slice(&std::fs::read(home.join(PUBLISHED_FILE)).unwrap()).unwrap()
         };
