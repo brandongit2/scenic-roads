@@ -469,6 +469,118 @@ fn capacity_line(c: &pipeline::coord::Capacity) -> String {
     v.join(" · ")
 }
 
+/// A Mac's jobs, every slot's in order (`Status::job`, `beside`, `more`).
+fn jobs_of(st: &agent::Status) -> Vec<&agent::JobView> {
+    st.job.iter().chain(st.beside.iter()).chain(st.more.iter()).collect()
+}
+
+/// The ramp in words: "3 of 6 slots (reached 3) · clean since 2 h ago, grows ≈ in 4.0 h", or
+/// "· held: …" (its slots held at the start), "· not clean: …" (growth stopped alone).
+fn ramp_words(r: &agent::RampView) -> String {
+    let mut s = if r.most > 0 {
+        format!("{} of {} slots (ramp reached {})", r.slots, r.most, r.reached)
+    } else {
+        format!("{} slots (ramp reached {})", r.slots, r.reached)
+    };
+    if let Some(h) = &r.held {
+        s += &format!(" · held: {h}");
+    } else if let Some(n) = &r.not_clean {
+        s += &format!(" · not clean: {n}");
+    } else if r.clean_since > 0 {
+        s += &format!(" · clean since {}", ago(r.clean_since));
+        if let Some(g) = r.grows_at {
+            let left = g.saturating_sub(now_s());
+            s += &format!(", grows in {:.1} h if it keeps its slots busy", left as f64 / 3600.0);
+        }
+    }
+    s
+}
+
+/// A job in a line: "slot 2: Terrain: 4 tiles · 40% · about 12 min left · since 20 min ago".
+fn job_line(k: usize, j: &agent::JobView) -> String {
+    let mut v = vec![format!("slot {}: {}", k + 1, j.what)];
+    if let Some(p) = j.progress.as_ref().filter(|p| p.total > 0.0) {
+        v.push(format!("{}%", (p.done / p.total * 100.0).floor()));
+        if let Some(e) = p.eta_s {
+            v.push(format!("about {} min left", e.div_ceil(60)));
+        }
+    }
+    if let Some(t) = j.threads {
+        v.push(format!("{t} threads"));
+    }
+    if let Some(m) = j.mem_mb {
+        v.push(format!("{:.1} GB", m as f64 / 1024.0));
+    }
+    v.push(format!("since {}", ago(j.started)));
+    if let Some(p) = &j.paused {
+        v.push(format!("paused: {p}"));
+    } else if j.pausing.is_some() {
+        v.push("stopping at its next safe point".into());
+    }
+    v.join(" · ")
+}
+
+/// Each Mac's lines (`scenic status`): the lead's first, marked coordinator, with its ramp; then
+/// each member building (`Status::helpers`); then any other the coordinator holds a capacity of.
+/// Under each: its capacity (coord::Capacity) and NAS share, a line per running job, and why
+/// nothing more fits (the packing's refusal, `Status::packing`).
+fn macs_lines(st: &agent::Status) -> Vec<String> {
+    let ramp = st.ramp.as_ref().map(|r| format!(" · {}", ramp_words(r))).unwrap_or_default();
+    let mut macs: Vec<(&str, String, Option<&agent::Status>)> = vec![(
+        &st.host,
+        format!("{} · lead, coordinator · {} running{ramp}", st.host, plural(jobs_of(st).len(), "job")),
+        Some(st),
+    )];
+    for h in &st.helpers {
+        let head = format!("{} · member · {} running · seen {}", h.host, plural(jobs_of(h).len(), "job"), ago(h.beat));
+        macs.push((&h.host, head, Some(h)));
+    }
+    for (name, _) in &st.capacity {
+        if !macs.iter().any(|(h, _, _)| agent::is_slot_of(name, h)) {
+            macs.push((name, format!("{name} · member · its status not on the NAS lately"), None));
+        }
+    }
+    let mut out = Vec::new();
+    for (host, head, s) in macs {
+        out.push(head);
+        let cap = st.capacity.iter().find(|(n, _)| agent::is_slot_of(n, host)).map(|(_, c)| c);
+        let nas: u32 = st.nas_share.iter().filter(|(n, _)| agent::is_slot_of(n, host)).map(|(_, w)| *w).sum();
+        let nas =
+            if st.nas_share.is_empty() { String::new() } else { format!(" · NAS share {:.0} %", nas as f64 / 10.0) };
+        match cap {
+            Some(c) => out.push(format!("    capacity: {}{nas}", capacity_line(c))),
+            None if !nas.is_empty() => out.push(format!("    capacity: not said lately{nas}")),
+            None => {}
+        }
+        let jobs = s.map(jobs_of).unwrap_or_default();
+        for (k, j) in jobs.iter().enumerate() {
+            out.push(format!("    {}", job_line(k, j)));
+            if let Some(w) = &j.waiting {
+                out.push(format!("      {w}"));
+            }
+            for (i, p) in j.parts.iter().enumerate() {
+                let mark = match j.part {
+                    Some(c) if i < c => "✓",
+                    Some(c) if i == c => "▸",
+                    _ => "○",
+                };
+                out.push(format!("      {mark} {p}"));
+            }
+        }
+        if jobs.is_empty() {
+            out.push("    running nothing".into());
+        }
+        for (_, why) in st.packing.iter().filter(|(n, _)| agent::is_slot_of(n, host)) {
+            out.push(format!("    nothing more fits: {why}"));
+        }
+    }
+    out
+}
+
+fn plural(n: usize, one: &str) -> String {
+    format!("{n} {one}{}", if n == 1 { "" } else { "s" })
+}
+
 fn status(args: &[String]) -> Result<()> {
     let root = root(args, false).ok();
     // (This Mac's own agent's folder, for what its own status adds (its memory, its view of the
@@ -509,47 +621,10 @@ fn status(args: &[String]) -> Result<()> {
             ago(m.at)
         );
     }
-    match &st.job {
-        Some(j) => {
-            println!(
-                "Running: {} (since {}){}",
-                j.what,
-                ago(j.started),
-                j.paused.as_ref().map(|p| format!(", paused: {p}")).unwrap_or_default()
-            );
-            if let Some(w) = &j.waiting {
-                println!("  {w}");
-            }
-            // Its parts, done, under way and to come.
-            for (i, p) in j.parts.iter().enumerate() {
-                let mark = match j.part {
-                    Some(c) if i < c => "✓",
-                    Some(c) if i == c => "▸",
-                    _ => "○",
-                };
-                println!("  {mark} {p}");
-            }
-            for l in j.tail.lines() {
-                println!("    {l}");
-            }
-        }
-        None => println!("Running: nothing"),
-    }
-    if let Some(r) = &st.ramp {
-        let since = if r.clean_since > 0 { format!(", clean since {}", ago(r.clean_since)) } else { String::new() };
-        let held = r.held.as_ref().map(|h| format!(", held: {h}")).unwrap_or_default();
-        println!("Slots: {} (ramp reached {}){held}{since}", r.slots, r.reached);
-    }
-    if let Some(j) = &st.beside {
-        println!(
-            "Beside it: {} (since {}){}",
-            j.what,
-            ago(j.started),
-            j.paused.as_ref().map(|p| format!(", paused: {p}")).unwrap_or_default()
-        );
-        if let Some(w) = &j.waiting {
-            println!("  {w}");
-        }
+    // Each Mac, the lead (the coordinator) first: its slots, its capacity, its jobs, and why
+    // nothing more fits (the same layout as the build page's machines).
+    for l in macs_lines(&st) {
+        println!("{l}");
     }
     for w in &st.waiting {
         println!("Waiting: {} — {}", w.what, w.why);
@@ -574,8 +649,7 @@ fn status(args: &[String]) -> Result<()> {
     // line per stage, done, under way or to come, and under it a line per step, each the same:
     // its title, its targets done of all (or left) in its noun, and where it runs.
     if !st.checklist.is_empty() {
-        let now: Vec<String> =
-            [&st.job, &st.beside].iter().filter_map(|j| j.as_ref().and_then(|j| agent::step_of(&j.id))).collect();
+        let now: Vec<String> = jobs_of(&st).iter().filter_map(|j| agent::step_of(&j.id)).collect();
         let finished = st.checklist.iter().filter(|l| l.finished()).count();
         println!("To the end: {finished} of {} stages done (⇄: any Mac may take it)", st.checklist.len());
         for l in &st.checklist {
@@ -669,10 +743,6 @@ fn status(args: &[String]) -> Result<()> {
         for l in agent::lead::said(&v, now_s()) {
             println!("  {l}");
         }
-    }
-    // Each member's capacity, as the lead's coordinator last heard it (coord::Capacity).
-    for (name, c) in &st.capacity {
-        println!("Capacity of {name}: {}", capacity_line(c));
     }
     // Each Mac's build caches (agent::room): what a clear would free, the last trim and clear.
     for (host, c) in std::iter::once((&st.host, &st.caches)).chain(st.helpers.iter().map(|h| (&h.host, &h.caches))) {
@@ -1295,5 +1365,58 @@ mod tests {
         assert!(capacity_line(&c).contains("disk 12.0 GB free (8.0 GB reserved)"), "{}", capacity_line(&c));
         let c = pipeline::coord::Capacity { disk_mb: 12 << 10, ..Default::default() };
         assert!(!capacity_line(&c).contains("reserved"));
+    }
+
+    /// `scenic status` shows each Mac as the build page does (task #246): the lead marked
+    /// coordinator with its ramp, each Mac's capacity, NAS share, a line per job (0 to 4 of them)
+    /// and why nothing more fits.
+    #[test]
+    fn status_shows_each_mac_its_jobs_and_why_nothing_more_fits() {
+        let job = |k: usize| agent::JobView {
+            id: format!("unit 6/{k}/1"),
+            what: format!("job {k}"),
+            started: now_s(),
+            paused: None,
+            pausing: None,
+            tail: String::new(),
+            parts: Vec::new(),
+            part: None,
+            progress: None,
+            mem_mb: Some(2048),
+            threads: Some(3),
+            waiting: None,
+        };
+        let with = |host: &str, n: usize| {
+            let mut js: Vec<agent::JobView> = (0..n).map(job).collect();
+            let more = js.split_off(n.min(2));
+            let mut it = js.into_iter();
+            agent::Status { host: host.into(), job: it.next(), beside: it.next(), more, ..Default::default() }
+        };
+        for n in 0..=4 {
+            let mut st = with("m4", n);
+            st.helpers = vec![with("m1", 4 - n)];
+            st.capacity = vec![("m4".into(), pipeline::coord::Capacity { limit_mb: 20 << 10, ..Default::default() })];
+            st.packing = [("m1".to_string(), "cores: 0 of 8 left".to_string())].into();
+            st.nas_share = [("m4".to_string(), 250), ("m1 #2".to_string(), 100)].into();
+            st.ramp = Some(agent::RampView {
+                slots: 2,
+                reached: 2,
+                most: 12,
+                not_clean: Some("a stall".into()),
+                ..Default::default()
+            });
+            let l = macs_lines(&st).join("\n");
+            assert!(l.starts_with(&format!("m4 · lead, coordinator · {n} job")), "{l}");
+            assert!(l.contains("2 of 12 slots (ramp reached 2) · not clean: a stall"), "{l}");
+            assert!(!l.contains("held:"), "{l}");
+            assert!(
+                l.contains("capacity: memory") && l.contains("NAS share 25 %") && l.contains("NAS share 10 %"),
+                "{l}"
+            );
+            assert_eq!(l.matches("    slot ").count(), 4, "{l}");
+            assert_eq!(l.contains("slot 4: job 3"), n == 4 || n == 0, "{l}");
+            assert_eq!(l.matches("running nothing").count(), usize::from(n == 0 || n == 4), "{l}");
+            assert!(l.contains("m1 · member") && l.contains("nothing more fits: cores: 0 of 8 left"), "{l}");
+        }
     }
 }

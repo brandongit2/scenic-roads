@@ -124,15 +124,24 @@ pub(crate) const RAMP_CLEAN_S: u64 = 6 * 3600;
 /// The lead's slots' ramp as the status shows it (`Status::ramp`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RampView {
-    /// The slots it may run now, and those its ramp reached.
+    /// The slots it may run now, those its ramp reached, and the most its cores allow (`job_slots`).
     pub slots: usize,
     pub reached: usize,
-    /// Why its stretch isn't clean now (its slots held at the start while the NAS's limits aren't
-    /// known).
+    #[serde(default)]
+    pub most: usize,
+    /// Why its slots are held at the start now (the NAS's limits not known): only this holds them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
+    /// Why its stretch isn't clean now while its slots aren't held (a NAS budget overrun, a stall):
+    /// it stops their growth alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_clean: Option<String>,
     /// Since when its stretch has been clean (unix s; 0: not yet).
     pub clean_since: u64,
+    /// When it grows next if its stretch stays clean and it runs its slots at once (unix s): none
+    /// at the most, or not clean now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grows_at: Option<u64>,
 }
 
 /// The lead's slots' ramp, kept in its state (`Memory::ramp`).
@@ -699,6 +708,14 @@ pub struct Status {
     /// the lead's own first, then each member whose ask carried one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capacity: Vec<(String, crate::coord::Capacity)>,
+    /// Why nothing more fits each member, as the lead's coordinator last packed its ask
+    /// (crate::coord::Coordinator::refusals): by its worker's name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub packing: BTreeMap<String, String>,
+    /// Each member's share of the NAS budget now, its leased jobs' weights in thousandths of the
+    /// whole (crate::coord::Coordinator::nas_shares): by its worker's name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub nas_share: BTreeMap<String, u32>,
     /// Helpers on other Macs building now (`state/helpers/<host>.json`, fresh within ten minutes):
     /// their own status, with their job.
     #[serde(default)]
@@ -3572,6 +3589,8 @@ impl Agent {
             checklist,
             helpers,
             capacity: self.coord.as_ref().map(|c| c.capacities()).unwrap_or_default(),
+            packing: self.coord.as_ref().map(|c| c.refusals()).unwrap_or_default(),
+            nas_share: self.coord.as_ref().map(|c| c.nas_shares()).unwrap_or_default(),
             workers: self
                 .coord
                 .as_ref()
@@ -3603,11 +3622,21 @@ impl Agent {
                 _ => self.pool_seen.clone(),
             },
             memory: Some(self.guard_view()),
-            ramp: (!self.o.helper).then(|| RampView {
-                slots: self.job_slots(),
-                reached: self.mem.ramp.slots.max(RAMP_START),
-                held: self.ramp_trouble.clone(),
-                clean_since: self.mem.ramp.clean_since,
+            ramp: (!self.o.helper).then(|| {
+                let most = job_slots(mac_cores() as usize);
+                let reached = self.mem.ramp.slots.max(RAMP_START);
+                let trouble = self.ramp_trouble.clone();
+                let clean_since = self.mem.ramp.clean_since;
+                RampView {
+                    slots: self.job_slots(),
+                    reached,
+                    most,
+                    held: trouble.clone().filter(|_| self.ramp_held),
+                    not_clean: trouble.clone().filter(|_| !self.ramp_held),
+                    clean_since,
+                    grows_at: (trouble.is_none() && reached < most && clean_since > 0)
+                        .then_some(clean_since + RAMP_CLEAN_S),
+                }
             }),
             budgets: self.proxy.as_ref().map(|p| p.view()),
             inputs: if self.o.helper { Vec::new() } else { self.inputs.view.borrow().clone() },
@@ -6754,14 +6783,16 @@ impl Agent {
         names.extend(
             events.iter().filter(|e| matches!(e.kind.as_str(), "done" | "lease")).filter_map(|e| e.worker.clone()),
         );
-        names.remove(&self.host);
-        // (Its other slots, as one lane under its second's name: their jobs beside the first's, at
-        // about four fifths of its pace until measured.)
+        // (Its other slots, a lane each under its slot's name (`slot_worker`): their jobs beside the
+        // first's, at about four fifths of its pace until measured.)
+        names.retain(|n| !is_slot_of(n, &self.host));
         let others = self.worker_of(1);
-        names.remove(&others);
+        let own_lanes =
+            forecast::packed_lanes(mac_cores(), self.job_slots().max(self.running_jobs())).max(self.running_jobs());
+        let own_names: Vec<String> = (1..own_lanes.max(2)).map(|k| self.worker_of(k)).collect();
         let names: Vec<String> = names.into_iter().collect();
         let mut speeds = forecast::speeds(&events, &self.host, &names, 0.5);
-        speeds.extend(forecast::speeds(&events, &self.host, std::slice::from_ref(&others), 0.8));
+        speeds.extend(forecast::speeds(&events, &self.host, &own_names, 0.8));
         // (A time measured on a member, at the lead's pace; one measured here or by a page, as it is.)
         let pace = |worker: Option<&String>| worker.and_then(|w| speeds.get(w)).map_or(1.0, |s| s.0);
         // Each shared step's mean of the targets measured (a unit's are kept by its target alone);
@@ -6891,53 +6922,73 @@ impl Agent {
         } else {
             0.0
         };
-        // Its other slots: any work of the plan that fits beside the first (a quarter of its memory,
-        // say).
-        let (speed, measured) = speeds.get(&others).copied().unwrap_or((0.8, false));
-        let mem_mb = (self.mac.resources(&self.o.home, None, None, None).mem_gb * 256.0) as u64;
-        let mut machines = vec![
-            Machine {
-                name: self.host.clone(),
-                speed: 1.0,
-                measured: true,
-                helper: false,
-                equal: false,
-                mem_mb: u64::MAX,
-                busy_s: busy(0, 1.0),
-                unit_extra_s,
-            },
-            Machine {
-                name: others.clone(),
+        // Its other slots: a lane each, as many as its capacity packs (`forecast::packed_lanes`,
+        // within its ramp's slots), each any work of the plan that fits its share of the memory.
+        let mac_mb = (self.mac.resources(&self.o.home, None, None, None).mem_gb * 1024.0) as u64;
+        let mut machines = vec![Machine {
+            name: self.host.clone(),
+            speed: 1.0,
+            measured: true,
+            helper: false,
+            equal: false,
+            mem_mb: u64::MAX,
+            busy_s: busy(0, 1.0),
+            unit_extra_s,
+        }];
+        for k in 1..own_lanes {
+            let name = self.worker_of(k);
+            let (speed, measured) = speeds.get(&name).or_else(|| speeds.get(&others)).copied().unwrap_or((0.8, false));
+            machines.push(Machine {
+                name,
                 speed,
                 measured,
                 helper: false,
                 equal: true,
-                mem_mb,
-                busy_s: busy(1, speed),
+                mem_mb: mac_mb / own_lanes as u64,
+                busy_s: if k < self.slots.len() { busy(k, speed) } else { 0.0 },
                 unit_extra_s,
-            },
-        ];
-        for h in &helpers {
-            let (speed, measured) = speeds.get(&h.host).copied().unwrap_or((0.5, false));
-            // (Its lease's targets at its pace, less the time since it took them, if longer than its
-            // part's.)
-            let lease_left = leased
-                .iter()
-                .filter(|l| l.0 == h.host)
-                .map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64)
-                .fold(0.0, f64::max);
-            let eta = h.job.as_ref().map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
-            let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
-            machines.push(Machine {
-                name: h.host.clone(),
-                speed,
-                measured,
-                helper: true,
-                equal: false,
-                mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144),
-                busy_s,
-                unit_extra_s: 0.0,
             });
+        }
+        // Each member's slots, a lane each, as many as its capacity packs (its cores as the lead's
+        // coordinator last heard them, else one per job it runs), its memory shared among them.
+        let caps: BTreeMap<String, crate::coord::Capacity> =
+            self.coord.as_ref().map(|c| c.capacities().into_iter().collect()).unwrap_or_default();
+        for h in &helpers {
+            let jobs: Vec<&JobView> = h.job.iter().chain(h.beside.iter()).chain(h.more.iter()).collect();
+            let cap = caps.get(&h.host);
+            let n = match cap {
+                Some(c) => forecast::packed_lanes(c.cores, job_slots(c.cores as usize)).max(jobs.len()),
+                None => jobs.len().max(1),
+            };
+            let mem_all = cap.map(|c| c.limit_mb).filter(|&m| m > 0).or(mem
+                .get(&h.host)
+                .copied()
+                .filter(|&m| m > 0)
+                .map(|m| m * n as u64));
+            for k in 0..n {
+                let name = slot_worker(&h.host, k);
+                let (speed, measured) =
+                    speeds.get(&name).or_else(|| speeds.get(&h.host)).copied().unwrap_or((0.5, false));
+                // (Its lease's targets at its pace, less the time since it took them, if longer
+                // than its job's own estimate.)
+                let lease_left = leased
+                    .iter()
+                    .filter(|l| l.0 == name)
+                    .map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64)
+                    .fold(0.0, f64::max);
+                let eta = jobs.get(k).map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
+                let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
+                machines.push(Machine {
+                    name,
+                    speed,
+                    measured,
+                    helper: true,
+                    equal: false,
+                    mem_mb: mem_all.map_or(6144, |m| m / n as u64),
+                    busy_s,
+                    unit_extra_s: 0.0,
+                });
+            }
         }
         // What's being built now, and by which.
         let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -6979,8 +7030,8 @@ impl Agent {
         // (A slot's job waiting on a worker holding its unit's tail: said beside its machine.)
         f.waiting = (0..self.slots.len()).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();
         // In the pool, the forecast for equal machines beside it (docs/pool.md §12 4.12), reported
-        // alone: each member's slots as lanes (this Mac's first: its publishing; its other slots'
-        // memory a quarter of the Mac's, as above), the pages as one (forecast::pool_lanes), each at
+        // alone: each member's slots as lanes (this Mac's first: its publishing; its other slots a
+        // lane each, as above), the pages as one (forecast::pool_lanes), each at
         // its speed measured against this Mac (placement::measured_speeds; one not measured, this
         // Mac's), busy with its leases' targets left.
         if let (Some(c), true) = (&self.coord, self.pool.is_some()) {
@@ -6998,18 +7049,23 @@ impl Agent {
                 busy_s: busy(0, 1.0),
                 unit_extra_s,
             };
-            let sp = measured.get(&others).copied().unwrap_or(1.0);
-            let slots = Machine {
-                name: others.clone(),
-                speed: sp,
-                measured: measured.contains_key(&others),
-                helper: false,
-                equal: false,
-                mem_mb,
-                busy_s: busy(1, sp),
-                unit_extra_s: 0.0,
-            };
-            let (lanes, mut running) = forecast::pool_lanes(lead, Some(slots), &workers, &measured, &leased, &cost);
+            let slots: Vec<Machine> = (1..own_lanes)
+                .map(|k| {
+                    let name = self.worker_of(k);
+                    let sp = measured.get(&name).or_else(|| measured.get(&others)).copied().unwrap_or(1.0);
+                    Machine {
+                        measured: measured.contains_key(&name),
+                        name,
+                        speed: sp,
+                        helper: false,
+                        equal: false,
+                        mem_mb: mac_mb / own_lanes as u64,
+                        busy_s: if k < self.slots.len() { busy(k, sp) } else { 0.0 },
+                        unit_extra_s: 0.0,
+                    }
+                })
+                .collect();
+            let (lanes, mut running) = forecast::pool_lanes(lead, slots, &workers, &measured, &leased, &cost);
             for k in 0..self.slots.len() {
                 let Some(m) = lanes.iter().position(|m| m.name == self.worker_of(k)) else { continue };
                 let Some(r) = self.slots[k].running.as_ref() else { continue };

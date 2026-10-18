@@ -770,17 +770,25 @@ pub fn equal_machines(inp: &Input, lanes: Vec<Machine>, running: BTreeMap<(Strin
 /// memory it spares (MB: 0, not said).
 pub type PoolWorker = (String, bool, u64);
 
+/// The lanes a Mac's jobs are forecast in: as many as its cores pack at the packed share each
+/// (crate::coord::packed_share: a quarter of them, at least two), within its `slots` (the lead's:
+/// its ramp's; a member's: crate::agent::job_slots), one at least.
+pub fn packed_lanes(cores: u32, slots: usize) -> usize {
+    let share = crate::coord::packed_share(cores.max(1));
+    ((cores.max(1) / share) as usize).min(slots).max(1)
+}
+
 /// The memory a lane is taken to have when its worker says none (MB), as a helper's.
 pub const LANE_MEM_MB: u64 = 6144;
 
 /// The lanes of the forecast for equal machines (`equal_machines`): the lead's slots (`lead`, then
-/// `others`, its other slots' lane), each other native worker a lane, the pages one lane (their measured speeds summed,
+/// `others`, its other slots' lanes), each other native worker a lane, the pages one lane (their measured speeds summed,
 /// the largest memory one said), each at its speed in `speeds` (one not in it: the lead's, 1) and
 /// busy with its leases' targets left (`leased`: worker, step, targets, seconds since granted; a
 /// page's, the pages' lane's); and the leased targets as running on their lanes.
 pub fn pool_lanes(
     lead: Machine,
-    others: Option<Machine>,
+    others: Vec<Machine>,
     workers: &[PoolWorker],
     speeds: &BTreeMap<String, f64>,
     leased: &[(String, String, Vec<String>, u64)],
@@ -804,7 +812,7 @@ pub fn pool_lanes(
         busy_s,
         unit_extra_s: 0.0,
     };
-    let own: Vec<String> = std::iter::once(lead.name.clone()).chain(others.as_ref().map(|m| m.name.clone())).collect();
+    let own: Vec<String> = std::iter::once(lead.name.clone()).chain(others.iter().map(|m| m.name.clone())).collect();
     let mut lanes: Vec<Machine> = std::iter::once(lead).chain(others).collect();
     let (mut speed, mut measured, mut mem, mut pages): (f64, bool, u64, Vec<&str>) = (0.0, true, 0, Vec::new());
     for (n, web, mem_mb) in workers {
@@ -1012,7 +1020,7 @@ mod tests {
         let speeds: BTreeMap<String, f64> = [("page a".to_string(), 0.5)].into();
         let leased =
             vec![("page b".to_string(), "trees".to_string(), vec!["6/1/1".to_string(), "6/1/2".to_string()], 50)];
-        let (lanes, running) = pool_lanes(mac("m4", 1.0, false), None, &workers, &speeds, &leased, &cost);
+        let (lanes, running) = pool_lanes(mac("m4", 1.0, false), Vec::new(), &workers, &speeds, &leased, &cost);
         assert_eq!(lanes.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["m4", "m1", "pages"]);
         let pages = &lanes[2];
         // (Speeds summed: one measured, one the lead's; no memory said, a helper's.)
@@ -1023,7 +1031,7 @@ mod tests {
         assert_eq!(running.get(&("trees".to_string(), "6/1/2".to_string())), Some(&2));
         // A page saying its memory: the largest said.
         let workers: Vec<PoolWorker> = vec![("page a".into(), true, 2048), ("page b".into(), true, 4096)];
-        assert_eq!(pool_lanes(mac("m4", 1.0, false), None, &workers, &speeds, &[], &cost).0[1].mem_mb, 4096);
+        assert_eq!(pool_lanes(mac("m4", 1.0, false), Vec::new(), &workers, &speeds, &[], &cost).0[1].mem_mb, 4096);
     }
 
     #[test]

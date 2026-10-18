@@ -265,8 +265,11 @@ probes failing: `Coordinator::nas_known`), its slots are held at 2 whatever it r
 up to its cores' `job_slots`. The count reached, the stretch's start and its peak are kept in the
 lead's state (`agent/state.json`, `ramp`), saved when trouble begins (the stretch starts again
 then, said once in the log), when it ends (the stretch starting then) and at each step up; while
-trouble lasts nothing is rewritten. `scenic status` shows the ramp: the slots now, those reached,
-why it's held and since when it's clean. There's no switch.
+trouble lasts nothing is rewritten. `scenic status` and the build page show the ramp
+(`agent::RampView`): the slots now of the most its cores allow, those reached, then either
+`held: …` (only the NAS's limits not known holds the slots), `not clean: …` (an overrun or a stall:
+growth stops, the slots stay), or since when it's clean and when it grows if its slots keep busy.
+There's no switch.
 
  While a slot is free and
 nothing holds more back (the build's pause, a job stopping at a safe point, the memory guard's
@@ -287,7 +290,7 @@ in-use share keeps (`kept_cores`, below), mains or battery,
 the NAS's reach, the guard's switch and its running leases. The lead's own asks carry it too, and
 it sets it each loop. The coordinator keeps the last per member (`Coordinator::capacities`, leaving out one older than
 two minutes, `CAP_FRESH_S`: a busy member asks nothing, so its figures go stale):
-`scenic status` prints a line per member, and the worker page's details a table. Placement reads
+`scenic status` and the build page show it per Mac (§10, Each Mac's jobs). Placement reads
 only its `cores`, and `kept_cores` while `in_use` (the threads granted, below). It rides the ask, not the heartbeat: the coordinator places at ask time, and the
 ask's measures are taken then, where a heartbeat on the NAS is up to two minutes old and the
 coordinator doesn't read heartbeats. Every field has a serde default: an older coordinator ignores
@@ -596,6 +599,18 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   checklist (a line per stage with an item per step: docs/pipeline.md §4), forecast, regions,
   waits, what publishing does, recent jobs, pause, last catalog, the lead.
   A member writes `helper.json` instead.
+- **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
+  the lead's first, marked coordinator with its ramp (§7.1); its capacity as the coordinator last
+  heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and
+  free, on the page as bars), its jobs' share of the NAS budget (`Coordinator::nas_shares`, the
+  status's `nas_share`: their leased jobs' NAS weights in thousandths of the whole); a block per
+  running job by slot, with its lane's next work; and why nothing more fits: the packing's refusal
+  as its last ask was packed (`Coordinator::refusals`, the status's `packing`: a cold start
+  running or waiting, cores short for the next job open, or nothing offered fitting the room
+  left), shown while that Mac's capacity is fresh. The forecast's lanes are per slot
+  (`<host>`, `<host> #2`, …): the lead's as many as its cores pack at the packed share
+  (`forecast::packed_lanes`) within its ramp's slots, each member's likewise by the cores of its
+  capacity (else a lane per job it runs), each lane its share of the Mac's memory.
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
   (`lead::own_status`): each member's state and whether the lead can be handed to it

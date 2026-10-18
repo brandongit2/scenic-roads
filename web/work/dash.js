@@ -143,14 +143,26 @@ function model(sw) {
   // it, when it last asked.)
   const gone = (sw.workers || []).filter((w) => w.kind === "native" && w.name !== a.host && !helpers.some((x) => x.host === w.name));
   // The steps under way, on any machine: the lead's jobs, its helpers', the leases.
-  const running = new Set([...macs.flatMap((x) => [x.status.job, x.status.beside, ...(x.status.more || [])]).filter(Boolean).map((j) => stepOf(j.id)), ...(sw.leases || []).map((l) => l.step)]);
+  const running = new Set([...macs.flatMap((x) => jobsOf(x.status)).map((j) => stepOf(j.id)), ...(sw.leases || []).map((l) => l.step)]);
   return { sw, a, now, fresh, fc, regionName, helpers, pages, macs, gone, leasesOf, colourOf, tasks, running, lines: a.checklist || [] };
 }
 
 const stepOf = (id) => String(id || "").split(" ")[0];
-// A Mac's second slot as a worker (crate::agent::slot_worker): its lane, history and pace (the
-// forecast's lane of the lead's slots past the first).
-const secondOf = (host) => `${host} #2`;
+// A Mac's jobs, every slot's in order (the status's job, beside, more: crate::agent::Status).
+const jobsOf = (st) => [st.job, st.beside, ...(st.more || [])].filter(Boolean);
+// Whether worker `name` is one of `host`'s slots (crate::agent::is_slot_of: "m4", "m4 #2", …).
+const isSlotOf = (name, host) => name === host || (name.startsWith(`${host} #`) && /^\d+$/.test(name.slice(host.length + 2)) && +name.slice(host.length + 2) >= 2);
+// Slot k's worker name (crate::agent::slot_worker).
+const slotName = (host, k) => (k ? `${host} #${k + 1}` : host);
+// What the lead's coordinator says of a Mac, by its slots' names: its capacity (coord::Capacity),
+// why nothing more fits it (the packing's refusal) and its share of the NAS budget (thousandths).
+function macSaid(a, host) {
+  const cap = (a.capacity || []).find(([nm]) => isSlotOf(nm, host))?.[1];
+  const why = Object.entries(a.packing || {}).filter(([nm]) => isSlotOf(nm, host)).map(([, w]) => w);
+  const shares = Object.entries(a.nas_share || {}).filter(([nm]) => isSlotOf(nm, host));
+  const nas = a.nas_share && Object.keys(a.nas_share).length ? shares.reduce((t, [, w]) => t + w, 0) : null;
+  return { cap, why, nas };
+}
 // The checklist's line (a stage's) that counts `step`, and its item for it.
 const lineOf = (m, step) => m.lines.find((l) => (l.steps || []).includes(step) || (l.items || []).some((i) => i.step === step));
 const itemOf = (m, step) => lineOf(m, step)?.items?.find((i) => i.step === step);
@@ -159,7 +171,7 @@ const itemOf = (m, step) => lineOf(m, step)?.items?.find((i) => i.step === step)
 function machineState(st, fresh, paused) {
   if (!fresh) return ["out of touch", "bad"];
   // (Its jobs, every slot's: building while any is.)
-  const jobs = [st.job, st.beside, ...(st.more || [])].filter(Boolean);
+  const jobs = jobsOf(st);
   if (jobs.some((j) => !j.paused && !j.pausing)) return ["building", "run"];
   if (jobs.some((j) => j.pausing)) return ["stopping", "warn"];
   if (jobs.some((j) => j.paused)) return ["frozen", "warn"];
@@ -178,8 +190,8 @@ function alerts(m) {
     const st = x.status, r = st.resources || {}, c = st.conditions || {};
     const short = x.role === "lead" ? "Lead" : x.name;
     if (x.role !== "lead" && !x.fresh) out.push({ cls: "warn", text: `${short} out of touch for ${dur(now - st.beat)}`, to: "machines" });
-    for (const [j, which] of [[st.job, "job"], [st.beside, "job in slot 2"]]) {
-      const p = j?.progress;
+    for (const [k, j] of jobsOf(st).entries()) {
+      const p = j.progress, which = k ? `job in slot ${k + 1}` : "job";
       if (p?.moved_at && !j.paused && now - p.moved_at >= STUCK_S) out.push({ cls: "warn", text: `${short}'s ${which} hasn't moved on for ${dur(now - p.moved_at)}`, to: "machines" });
     }
     if (c.ac === false) out.push({ cls: c.battery != null && c.battery < 40 ? "warn" : "info", text: `${short} on battery${c.battery != null ? ` (${c.battery}%)` : ""}`, to: "machines" });
@@ -417,28 +429,71 @@ function fitText(w) {
   return parts.length ? h("div", "sub", `Offered: ${parts.join("; ")}`) : null;
 }
 
-// A machine's card, each the same: who and how it is; its job (or why none); beside it, its
-// second; what's next; its facts; its day.
+// A capacity bar: its label, the bar (a part `used` of `whole`, and a second part `also` after
+// it, lighter), its words.
+function capBar(label, used, whole, words, also = 0, cls = "") {
+  const pc = (v) => `${Math.round(Math.max(0, Math.min(1, whole ? v / whole : 0)) * 100)}%`;
+  const bar = h("div", `cbar ${cls}`, h("i", { style: { width: pc(used) } }), also ? h("b", { style: { width: pc(also) } }) : null);
+  return h("div", "cap", h("span", "k", label), bar, h("span", "v", words));
+}
+const gb = (mb) => `${(mb / 1024).toFixed(1)} GB`;
+
+// A Mac's capacity as the lead's coordinator last heard it (coord::Capacity): memory held of the
+// guard's limit, cores busy, disk reserved and free, its share of the NAS budget.
+function capacityBlock(said) {
+  const c = said.cap;
+  if (!c && said.nas == null) return null;
+  const rows = [];
+  if (c) {
+    rows.push(capBar("memory", c.held_mb, c.limit_mb, `${gb(c.held_mb)} of ${gb(c.limit_mb)} · ${gb(c.mem_mb)} free${c.guard ? "" : " · unguarded"}`, 0, c.limit_mb && c.held_mb / c.limit_mb > 0.9 ? "warn" : ""));
+    const busy = Math.max(0, c.cores - c.cores_free);
+    rows.push(capBar("cores", busy, c.cores, `${busy} of ${c.cores} busy${c.in_use && c.kept_cores ? ` · ${c.kept_cores} kept for its owner` : ""}`));
+    const disk = c.disk_mb + c.reserved_mb;
+    rows.push(capBar("disk", c.reserved_mb, disk, `${gb(c.reserved_mb)} reserved · ${gb(c.disk_mb)} free`, 0, c.disk_mb < 10240 ? "warn" : ""));
+  }
+  if (said.nas != null) rows.push(capBar("NAS", said.nas, 1000, `${Math.round(said.nas / 10)}% of the budget`, 0, said.nas > 1000 ? "warn" : ""));
+  return h("div", { class: "caps", title: "As the lead's coordinator last heard it: memory its jobs hold of the guard's limit (and free for more, less what they're predicted to need); cores busy by the last minute's load; disk its jobs reserved, and free less the reserve and the owner's room target; its jobs' share of the NAS budget" }, rows);
+}
+
+// The lead's ramp (crate::agent::RampView): its slots now of the most; held (its slots kept at the
+// start) or not clean (growth stopped), else clean since when and when it grows.
+function rampText(r, now) {
+  const bits = [`${r.slots}${r.most ? ` of ${r.most}` : ""} slots (ramp reached ${r.reached})`];
+  if (r.held) bits.push(`held: ${r.held}`);
+  else if (r.not_clean) bits.push(`not clean: ${r.not_clean}`);
+  else if (r.clean_since) bits.push(`clean ${dur(now - r.clean_since)}${r.grows_at ? `, grows ≈ ${clock(r.grows_at)} if its slots keep busy` : ""}`);
+  return bits.join(" · ");
+}
+
+// A machine's card, each the same: who and how it is (the lead marked coordinator, its ramp); its
+// capacity; a block per running job, by slot, with what's next there; why nothing more fits (or
+// why none runs); its facts; its day.
 function machineCard(m, x) {
   const st = x.status, now = m.now;
   const [state, cls] = machineState(st, x.fresh, m.sw.pause);
+  const jobs = jobsOf(st);
+  const said = macSaid(m.a, x.name);
+  const role = x.role === "lead" ? "lead · coordinator" : "member";
   const card = h("div", { class: `mc ${x.fresh ? "" : "off"}`, style: { borderLeft: `3px solid ${x.colour}` } },
-    h("div", "top", h("span", "name", x.name), h("span", "role", x.role), chip(state, cls), h("span", "right", `heard from ${ago(now, st.beat)}`)));
-  if (st.job) card.append(jobBlock(st.job, now));
-  else {
+    h("div", "top", h("span", "name", x.name), h("span", "role", role), chip(state, cls), jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
+  if (x.role === "lead" && st.ramp) card.append(h("div", `sub ramp ${st.ramp.held ? "held" : st.ramp.not_clean ? "notclean" : ""}`, rampText(st.ramp, now)));
+  card.append(...[capacityBlock(said)].filter(Boolean));
+  jobs.forEach((j, k) => {
+    const b = jobBlock(j, now);
+    b.querySelector(".what").prepend(h("span", "slot", `${k + 1}`));
+    card.append(b);
+    card.append(...[nextBlock(m, slotName(x.name, k))].filter(Boolean));
+  });
+  if (!jobs.length) {
     // Why it isn't building.
     const why = (st.waiting || []).filter((w) => !w.step || x.role !== "lead").slice(0, 2);
     card.append(h("div", "job", h("div", "what dim", m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
     for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${w.what}: ${w.why}` : w.why));
+    card.append(...[nextBlock(m, x.name)].filter(Boolean));
   }
-  card.append(...[nextBlock(m, x.name)].filter(Boolean));
-  // The lead's second slot's job, beside the first.
-  if (x.role === "lead" && st.beside) {
-    card.append(h("div", "beside-h", "Beside it"));
-    card.append(jobBlock(st.beside, now));
-    card.append(...[nextBlock(m, secondOf(x.name))].filter(Boolean));
-  }
-  const more = [x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, x.role === "lead" ? [x.name, secondOf(x.name)] : x.name) || [])];
+  for (const w of said.why) card.append(h("div", "fits", h("b", null, "Nothing more fits: "), w));
+  const names = Object.keys(m.fc?.lanes || {}).filter((nm) => isSlotOf(nm, x.name));
+  const more = [x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, names.length ? names : [x.name]) || [])];
   card.append(...more.filter(Boolean));
   return card;
 }
@@ -491,9 +546,10 @@ function schedule(m) {
   const t1 = Math.max(fc.done_at || 0, ...Object.values(fc.lanes).flat().map((l) => l.until), t0 + 3600);
   const span = t1 - t0;
   const x = (t) => `${(((Math.max(t0, Math.min(t1, t)) - t0) / span) * 100).toFixed(3)}%`;
-  // Each machine's lane, the lead's other slots' under its own; then any other the forecast has.
-  const ordered = m.macs.flatMap((mm) => [mm.name, secondOf(mm.name)]);
-  const names = ordered.filter((nm) => fc.lanes[nm]).concat(Object.keys(fc.lanes).filter((nm) => !ordered.includes(nm)));
+  // Each Mac's lanes, a slot each in order, the lead's first; then any other the forecast has.
+  const slotNo = (nm) => +(nm.match(/ #(\d+)$/)?.[1] || 1);
+  const ordered = m.macs.flatMap((mm) => Object.keys(fc.lanes).filter((nm) => isSlotOf(nm, mm.name)).sort((p, q) => slotNo(p) - slotNo(q)));
+  const names = ordered.concat(Object.keys(fc.lanes).filter((nm) => !ordered.includes(nm)));
   const lanes = h("div", "lanes");
   const stagesSeen = new Set();
   const segment = (track, l, say) => {
@@ -513,7 +569,7 @@ function schedule(m) {
   }
   // The pages: a job's tasks (crate::agent::steps::TASKS) as the lead runs the job, when a page is
   // measured faster than the lead at that kind (crate::offload) and spares what one takes.
-  const own = [...(fc.lanes[m.a.host] || []), ...(fc.lanes[secondOf(m.a.host)] || [])].sort((p, q) => p.from - q.from);
+  const own = Object.keys(fc.lanes).filter((nm) => isSlotOf(nm, m.a.host)).flatMap((nm) => fc.lanes[nm]).sort((p, q) => p.from - q.from);
   const pace = (p, kind) => (p.paces ? p.paces[kind] : kind === "tail" ? p.tail_pace : null);
   const fast = (kind) => m.pages.some((p) => (p.mem_mb || 0) >= (m.sw.task_mb?.[kind] || 0) && pace(p, kind) != null && pace(p, kind) * 1.25 < 1);
   const helps = Object.values(table.steps).filter((t) => t.of && fast(t.id) && own.some((l) => l.step === t.of && l.until > t0));

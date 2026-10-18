@@ -311,6 +311,10 @@ pub struct Shared {
     /// Targets passed over for the NAS budget alone ((step, target) → (first, last time)), for the
     /// status (`Coordinator::nas_waits`); a target granted is let go.
     pub nas_waits: Mutex<BTreeMap<(String, String), (Instant, Instant)>>,
+    /// Why each worker's last ask was granted fewer jobs than it wanted (`pack`: the packing's
+    /// refusal, in words), and when (unix s); none once an ask got all it wanted. The status's
+    /// (`Coordinator::refusals`): why nothing more fits a Mac.
+    pub refused: BTreeMap<String, (u64, String)>,
     /// Each worker's last target granted of a step ((worker, step) → target): its next run starts
     /// just after it in plan order when it can (`pick_every`).
     pub last: BTreeMap<(String, String), String>,
@@ -657,6 +661,16 @@ impl Shared {
     /// start only to a worker holding nothing (`most_room`), alone. Nothing while it runs a cold
     /// start. None: no job.
     fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, now: Instant) -> Option<Grant> {
+        let (g, why) = self.pack_why(a, offers, lead, now);
+        match why {
+            Some(w) => self.refused.insert(a.worker.clone(), (unix_now(), w)),
+            None => self.refused.remove(&a.worker),
+        };
+        g
+    }
+
+    /// `pack`, and why it granted fewer jobs than the ask wanted (None: as many as it wanted).
+    fn pack_why(&mut self, a: &Ask, offers: &[Offer], lead: bool, now: Instant) -> (Option<Grant>, Option<String>) {
         let mine = self.job_leases(&a.worker, now);
         // (A cold job of the lead's own waiting to start, `own_cold_waits`: nothing more while the
         // lead holds jobs, until they end; then it alone, before any other work.)
@@ -666,7 +680,7 @@ impl Shared {
             Vec::new()
         };
         if !cold_own.is_empty() && !mine.is_empty() {
-            return None;
+            return (None, Some("a cold job of the lead's own waits for its jobs to end, to start alone".into()));
         }
         let offers = if cold_own.is_empty() { offers } else { &cold_own[..] };
         let need = |s: &Shared, l: &Lease| match &l.work {
@@ -683,7 +697,7 @@ impl Shared {
             .collect();
         // (Nothing beside a cold start.)
         if needs.iter().any(Option::is_none) {
-            return None;
+            return (None, Some("a cold start runs: nothing goes beside it until it's measured".into()));
         }
         let total = ask_cores(a);
         let share = packed_share(total);
@@ -711,7 +725,11 @@ impl Shared {
         }
         let mut held = mine.len();
         let mut grants: Vec<Grant> = Vec::new();
+        // (Why the last round granted nothing: a job open but short of cores, or nothing open in
+        // the room left; a cold start granted, alone.)
+        let mut why: Option<String> = None;
         while grants.len() < a.want.max(1) {
+            let mut short: Option<(String, u32)> = None;
             let beside = held > 0;
             let mut got = None;
             for o in offers {
@@ -725,12 +743,28 @@ impl Shared {
                 let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
                 let n = self.job_need(&o.step, &ts);
                 if beside && !matches!(n, Some((_, Some(c))) if self.packed_cores(&o.step, &ts, c, share) <= cores) {
+                    if short.is_none() {
+                        let need = n.and_then(|(_, c)| c).map_or(0, |c| self.packed_cores(&o.step, &ts, c, share));
+                        short = Some((o.step.clone(), need));
+                    }
                     continue;
                 }
                 got = Some((o, pick, n));
                 break;
             }
-            let Some((o, pick, n)) = got else { break };
+            let Some((o, pick, n)) = got else {
+                let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+                why = Some(match short {
+                    Some((st, 0)) => format!("{st} isn't measured: a cold start goes only to a Mac running nothing"),
+                    Some((st, c)) => format!("cores: {cores} of {total} left, a job of {st} takes {c}"),
+                    None => format!(
+                        "nothing offered fits the room left ({} memory{}) or is free to take",
+                        gb(room.mem_mb),
+                        room.disk_mb.map(|d| format!(", {} disk", gb(d))).unwrap_or_default()
+                    ),
+                });
+                break;
+            };
             // (Its threads: its packed cores (`packed_cores`), else the share; within the cores
             // left, one at least.)
             let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
@@ -742,15 +776,19 @@ impl Shared {
             grants.push(self.grant_job(a, o, pick, threads, now));
             held += 1;
             // (A cold start alone.)
-            let Some((m, c)) = n else { break };
+            let Some((m, c)) = n else {
+                why = Some(format!("a cold start of {} runs alone until it's measured", o.step));
+                break;
+            };
             room.mem_mb = room.mem_mb.saturating_sub(m.mem_mb);
             room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb));
             cores = c.map_or(0, |_| cores.saturating_sub(threads));
         }
+        let why = why.filter(|_| grants.len() < a.want.max(1));
         let mut it = grants.into_iter();
-        let mut first = it.next()?;
+        let Some(mut first) = it.next() else { return (None, why) };
         first.more = it.collect();
-        Some(first)
+        (Some(first), why)
     }
 
     /// Whether the lead's own planned job of offer `o` (`Offer::job`) is open to `a`'s worker: its
@@ -1536,6 +1574,7 @@ impl Coordinator {
             nas_own: None,
             lead_name: me.to_string(),
             nas_waits: Default::default(),
+            refused: BTreeMap::new(),
             last: BTreeMap::new(),
             brokers: None,
             own_cap: None,
@@ -1827,6 +1866,34 @@ impl Coordinator {
             .filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND)
             .filter_map(|(n, w)| Some((n.clone(), w.cap.clone().filter(fresh)?)));
         own.into_iter().chain(others).collect()
+    }
+
+    /// Why nothing more fits each worker, as its last ask was packed (`Shared::refused`), its
+    /// capacity fresh (`CAP_FRESH_S`): the status's, per Mac.
+    pub fn refusals(&self) -> BTreeMap<String, String> {
+        let s = self.shared.lock().unwrap();
+        s.refused
+            .iter()
+            .filter(|(_, (at, _))| unix_now().saturating_sub(*at) < CAP_FRESH_S)
+            .map(|(w, (_, why))| (w.clone(), why.clone()))
+            .collect()
+    }
+
+    /// Each worker's share of the NAS budget now: its leased jobs' NAS weights summed, in
+    /// thousandths of the whole (crate::budget::nas::WHOLE). Empty before the NAS is probed.
+    pub fn nas_shares(&self) -> BTreeMap<String, u32> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        let Some((nw, _, _, _)) = s.nas_room(now, true) else { return BTreeMap::new() };
+        let mut out: BTreeMap<String, u32> = BTreeMap::new();
+        for lease in s.leases.all(now) {
+            if let Work::Job { step, targets } = &lease.work {
+                let (w, _) = Shared::job_nas(&nw, step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
+                let e = out.entry(lease.worker.clone()).or_default();
+                *e = e.saturating_add(w);
+            }
+        }
+        out
     }
 
     /// Each worker's last capacity, whatever its age (this Mac's own first): the lead's choice of
@@ -5540,10 +5607,14 @@ mod tests {
         // The lead holding a measured job: nothing more while the cold catalog waits.
         let held = c.hold("slope", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
         assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "drained for the catalog");
+        // (Why nothing more fits, for the status: task #246.)
+        let why = |c: &Coordinator| c.refusals().into_values().collect::<Vec<_>>().join("; ");
+        assert!(why(&c).contains("a cold job of the lead's own waits"), "{}", why(&c));
         c.finish(held, &[]);
         let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
         assert_eq!(g.job.as_deref(), Some("catalog catalog"));
         assert!(g.more.is_empty(), "a cold start alone");
+        assert!(why(&c).contains("a cold start of catalog runs alone"), "{}", why(&c));
     }
 
     /// A failed job of the lead's own (`finish_failed`) is kept from it as a member's failed work is:
