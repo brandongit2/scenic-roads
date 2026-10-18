@@ -500,10 +500,54 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
     (out, region_items)
 }
 
+/// The items ready to take (their deps done, not yet taken), each phase's in order: the measured
+/// apart from the cold starts (by step: a cold start's room is its step's alone), and the shared
+/// steps' by step for the pages' lane. Each pick's scan then skips what its Mac can't take as a
+/// whole.
+#[derive(Default)]
+struct Ready {
+    known: [std::collections::BTreeSet<usize>; 6],
+    cold: [BTreeMap<String, std::collections::BTreeSet<usize>>; 6],
+    shared: BTreeMap<String, std::collections::BTreeSet<usize>>,
+}
+
+impl Ready {
+    fn insert(&mut self, i: usize, it: &Item, p: usize) {
+        if it.cost.known {
+            self.known[p].insert(i);
+        } else {
+            self.cold[p].entry(it.step.clone()).or_default().insert(i);
+        }
+        if it.shared {
+            self.shared.entry(it.step.clone()).or_default().insert(i);
+        }
+    }
+
+    fn remove(&mut self, i: usize, it: &Item, p: usize) {
+        let drop = |m: &mut BTreeMap<String, std::collections::BTreeSet<usize>>| {
+            if let Some(s) = m.get_mut(&it.step) {
+                s.remove(&i);
+                if s.is_empty() {
+                    m.remove(&it.step);
+                }
+            }
+        };
+        if it.cost.known {
+            self.known[p].remove(&i);
+        } else {
+            drop(&mut self.cold[p]);
+        }
+        if it.shared {
+            drop(&mut self.shared);
+        }
+    }
+}
+
 /// One run through the work, each item's time `scale`d. Kept to about O(items × lanes): the items
 /// under way (`inflight`) held apart, each item's deps not yet done counted down as they end, each
-/// phase's items whose deps are done (`ready`) scanned in order, at most `SCAN` that its Mac's room
-/// refuses looked at a pick, the regions' counts kept as items are taken.
+/// phase's items whose deps are done (`ready`) scanned in order (none at all while its Mac's room
+/// takes nothing more: a cold start under way, the older app's gap, no core left), the regions'
+/// counts kept as items are taken.
 fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
     let (mut items, region_items) = items(inp);
     for it in &mut items {
@@ -543,10 +587,10 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             }
         }
     }
-    let mut ready: [std::collections::BTreeSet<usize>; 6] = Default::default();
+    let mut ready = Ready::default();
     for (i, it) in items.iter().enumerate() {
         if it.by.is_none() && pending[i] == 0 {
-            ready[pi(it.phase)].insert(i);
+            ready.insert(i, it, pi(it.phase));
         }
     }
     // The regions' terrain, units and map tiles: how many not yet taken, and when the last taken
@@ -573,9 +617,6 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
     // Each Mac's last start (a job an ask while a member runs an older app).
     let mut last_start: BTreeMap<String, f64> = BTreeMap::new();
     let runnable = |items: &[Item], pending: &[usize], i: usize| items[i].by.is_none() && pending[i] == 0;
-    // At most this many items its Mac's room refuses are looked at a pick (the room is the same for
-    // the next; a smaller one further on waits for the next pick).
-    const SCAN: usize = 64;
     let mut guard = 0usize;
     loop {
         guard += 1;
@@ -604,7 +645,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             for &w in &waiting_on[d] {
                 pending[w] -= 1;
                 if pending[w] == 0 && items[w].by.is_none() {
-                    ready[pi(items[w].phase)].insert(w);
+                    ready.insert(w, &items[w], pi(items[w].phase));
                 }
             }
         }
@@ -678,38 +719,41 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             Some(sn) if inp.old_app && sn.last_start + OLD_APP_GAP_S > t + 1e-9 => sn.last_start + OLD_APP_GAP_S,
             _ => f64::INFINITY,
         };
-        // The first of phase `p` it may take (`ok`), from the first not yet taken; at most `SCAN`
-        // its room refuses.
+        // (Its Mac takes nothing more now, whatever the item: a cold start under way, the older
+        // app's gap, or no core left beside its jobs.)
+        let shut = sn.as_ref().is_some_and(|sn| {
+            sn.cold
+                || (inp.old_app && t < sn.last_start + OLD_APP_GAP_S - 1e-9)
+                || (sn.jobs > 0 && sn.cores >= sn.room.cores.max(1))
+        });
+        // The first of phase `p` it may take (`ok`), in order among those ready.
         let scan = |items: &[Item], p: Phase, ok: &dyn Fn(usize) -> bool| -> Option<usize> {
-            let mut refused = 0;
-            for &i in &ready[pi(p)] {
-                if !ok(i) {
-                    continue;
-                }
-                if room_ok(items, i) {
-                    return Some(i);
-                }
-                refused += 1;
-                if refused >= SCAN {
-                    return None;
-                }
+            if shut {
+                return None;
             }
-            None
+            let known = ready.known[pi(p)].iter().copied().find(|&i| ok(i) && room_ok(items, i));
+            // (A cold start: only on a Mac running nothing, none of its step under way anywhere;
+            // each step's first it may take.)
+            let cold = ready.cold[pi(p)]
+                .iter()
+                .filter(|(step, _)| sn.as_ref().is_none_or(|sn| sn.jobs == 0 && !sn.steps.contains(*step)))
+                .filter_map(|(_, set)| set.iter().copied().find(|&i| ok(i) && room_ok(items, i)))
+                .min();
+            match (known, cold) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            }
         };
         let pick = if mac.helper {
             // The far end of the first shared step it can do (terrain's near end: the lead's
             // next units wait on it, as crate::coord picks).
             SHARED.iter().find_map(|s| {
-                let fits = |&i: &usize| {
-                    items[i].shared
-                        && items[i].step == *s
-                        && items[i].cost.peak_mb <= mac.mem_mb
-                        && runnable(&items, &pending, i)
-                };
+                let set = ready.shared.get(*s)?;
+                let fits = |&i: &usize| items[i].cost.peak_mb <= mac.mem_mb;
                 if *s == "terrain" {
-                    (0..items.len()).find(fits)
+                    set.iter().copied().find(fits)
                 } else {
-                    (0..items.len()).rev().find(fits)
+                    set.iter().rev().copied().find(fits)
                 }
             })
         } else if mac.equal {
@@ -747,7 +791,8 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             }
         };
         let Some(i) = pick else {
-            free[m] = next_end(&items, &free).min(ask_wake);
+            // (A Mac's lane waits for the older app's gap too; the pages' lane for the next end.)
+            free[m] = if mac.helper { next_end(&items, &free) } else { next_end(&items, &free).min(ask_wake) };
             continue;
         };
         // Taken: its end at the machine's pace; the counts kept.
@@ -774,7 +819,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
                 rp_end[k] = rp_end[k].max(end);
             }
         }
-        ready[pi(items[i].phase)].remove(&i);
+        ready.remove(i, &items[i], pi(items[i].phase));
     }
     let done = items.iter().all(|i| i.by.is_some());
     Sim { items, region_items, done }
@@ -1682,6 +1727,290 @@ mod tests {
         eprintln!("the forecast took {ms} ms (3,000 units, 3,000 map tiles, 8 lanes)");
         assert!(f.done_at.is_some() && f.regions.iter().all(|r| r.map_at.is_some()));
         assert!(ms < 1000, "{ms} ms");
+    }
+
+    /// The run as first written (task #384): every pick scans every item, each candidate's room
+    /// worked out from all the items. The reference `run` must match item for item.
+    fn run_reference(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
+        let (mut items, region_items) = items(inp);
+        for it in &mut items {
+            it.cost.secs = scale(&it.cost).max(1.0);
+        }
+        let n = inp.machines.len();
+        let mut free: Vec<f64> = inp.machines.iter().map(|m| m.busy_s.max(m.from_s).max(0.0)).collect();
+        let held_until: Vec<f64> = inp.machines.iter().map(|m| m.busy_s.max(0.0)).collect();
+        for ((step, target), &m) in &inp.running {
+            if let Some(it) = items.iter_mut().find(|i| &i.step == step && &i.target == target) {
+                (it.by, it.from, it.end, it.running) = (Some(m), 0.0, free.get(m).copied().unwrap_or(0.0), true);
+            }
+        }
+        let regionals: Vec<usize> = (0..items.len()).filter(|&i| items[i].phase == Phase::Region).collect();
+        let next_end = |items: &[Item], free: &[f64], m: usize, t: f64| {
+            let others = free.iter().enumerate().filter(|&(k, &f)| k != m && f > t + 1e-9).map(|(_, &f)| f);
+            items
+                .iter()
+                .filter(|i| i.by.is_some() && i.end > t + 1e-9)
+                .map(|i| i.end)
+                .chain(others)
+                .fold(f64::INFINITY, f64::min)
+        };
+        let done_by = |items: &[Item], i: usize, t: f64| items[i].by.is_some() && items[i].end <= t + 1e-9;
+        let runnable = |items: &[Item], i: usize, t: f64| {
+            items[i].by.is_none() && items[i].deps.iter().all(|&d| done_by(items, d, t))
+        };
+        let last_of = |items: &[Item], g: &str, t: f64| {
+            items
+                .iter()
+                .filter(|it| {
+                    it.by.is_some_and(|k| inp.machines[k].mac.as_deref() == Some(g))
+                        && !it.running
+                        && it.from <= t + 1e-9
+                })
+                .map(|it| it.from)
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        let room_ok = |items: &[Item], m: usize, i: usize, t: f64| -> bool {
+            let Some(g) = inp.machines[m].mac.as_deref() else { return true };
+            let room = inp.macs.get(g).copied().unwrap_or_default();
+            let share = crate::coord::packed_share(room.cores.max(1));
+            let on_mac = |k: usize| inp.machines[k].mac.as_deref() == Some(g);
+            let now_on = |it: &Item| it.by.is_some_and(on_mac) && it.from <= t + 1e-9 && it.end > t + 1e-9;
+            let on: Vec<&Item> = items.iter().filter(|it| now_on(it)).collect();
+            let busy: Vec<usize> = (0..n)
+                .filter(|&k| {
+                    k != m
+                        && on_mac(k)
+                        && held_until[k] > t + 1e-9
+                        && !items.iter().any(|it| it.by == Some(k) && it.running && it.end > t + 1e-9)
+                })
+                .collect();
+            let jobs = on.len() + busy.len();
+            if on.iter().any(|it| !it.cost.known) {
+                return false;
+            }
+            if !items[i].cost.known {
+                let step_on = items
+                    .iter()
+                    .any(|it| it.step == items[i].step && it.by.is_some() && it.from <= t + 1e-9 && it.end > t + 1e-9);
+                return jobs == 0 && !step_on;
+            }
+            let mem: u64 = on.iter().map(|it| it.cost.peak_mb).sum::<u64>()
+                + busy.iter().map(|&k| inp.machines[k].running_mb).sum::<u64>();
+            if room.mem_mb > 0 && mem + items[i].cost.peak_mb > room.mem_mb {
+                return false;
+            }
+            let cores: u32 =
+                on.iter().map(|it| crate::coord::packed_cores_of(&it.step, it.cost.cores, share)).sum::<u32>()
+                    + busy
+                        .iter()
+                        .map(|&k| {
+                            inp.machines[k]
+                                .running
+                                .as_ref()
+                                .map_or(share, |(st, _)| crate::coord::packed_cores_of(st, None, share))
+                        })
+                        .sum::<u32>();
+            if jobs > 0
+                && cores + crate::coord::packed_cores_of(&items[i].step, items[i].cost.cores, share) > room.cores.max(1)
+            {
+                return false;
+            }
+            !(inp.old_app && t < last_of(items, g, t) + OLD_APP_GAP_S - 1e-9)
+        };
+        let ask_wake = |items: &[Item], m: usize, t: f64| -> f64 {
+            let Some(g) = inp.machines[m].mac.as_deref().filter(|_| inp.old_app) else { return f64::INFINITY };
+            let last = last_of(items, g, t);
+            if last + OLD_APP_GAP_S > t + 1e-9 {
+                last + OLD_APP_GAP_S
+            } else {
+                f64::INFINITY
+            }
+        };
+        let first = |items: &[Item], m: usize, p: Phase, t: f64| {
+            (0..items.len()).find(|&i| items[i].phase == p && runnable(items, i, t) && room_ok(items, m, i, t))
+        };
+        let mut guard = 0usize;
+        loop {
+            guard += 1;
+            if guard > 20 * (items.len() + 10) * n.max(1) || items.iter().all(|i| i.by.is_some()) {
+                break;
+            }
+            let (m, t) =
+                free.iter()
+                    .copied()
+                    .enumerate()
+                    .fold((0, f64::INFINITY), |a, (i, f)| if f < a.1 - 1e-9 { (i, f) } else { a });
+            if !t.is_finite() {
+                break;
+            }
+            let mac = &inp.machines[m];
+            let pick = if mac.helper {
+                SHARED.iter().find_map(|s| {
+                    let fits = |&i: &usize| {
+                        items[i].shared
+                            && items[i].step == *s
+                            && items[i].cost.peak_mb <= mac.mem_mb
+                            && runnable(&items, i, t)
+                    };
+                    if *s == "terrain" {
+                        (0..items.len()).find(fits)
+                    } else {
+                        (0..items.len()).rev().find(fits)
+                    }
+                })
+            } else if mac.equal {
+                let may =
+                    |step: &str| mac.lead_steps || super::super::steps::place(step) == super::super::steps::Place::Any;
+                let fits = |i: usize| {
+                    items[i].cost.peak_mb <= mac.mem_mb
+                        && may(&items[i].step)
+                        && runnable(&items, i, t)
+                        && room_ok(&items, m, i, t)
+                };
+                [Phase::Before, Phase::Publish, Phase::Region, Phase::Late, Phase::Chain, Phase::After]
+                    .iter()
+                    .find_map(|&p| (0..items.len()).find(|&i| items[i].phase == p && fits(i)))
+            } else {
+                let regional_left = regionals.iter().any(|&i| !done_by(&items, i, t));
+                if regional_left || items.iter().any(|i| i.phase == Phase::Before && i.by.is_none()) {
+                    let prep = || {
+                        (0..inp.regions.len())
+                            .filter(|&k| inp.regions[k].on_map != Some(true))
+                            .filter(|&k| {
+                                region_items[k]
+                                    .iter()
+                                    .filter(|&&i| matches!(items[i].phase, Phase::Region | Phase::Publish))
+                                    .all(|&i| done_by(&items, i, t))
+                            })
+                            .flat_map(|k| region_items[k].iter().copied())
+                            .find(|&i| {
+                                items[i].phase == Phase::Late && runnable(&items, i, t) && room_ok(&items, m, i, t)
+                            })
+                    };
+                    first(&items, m, Phase::Before, t)
+                        .or_else(|| first(&items, m, Phase::Publish, t))
+                        .or_else(prep)
+                        .or_else(|| first(&items, m, Phase::Region, t))
+                        .or_else(|| first(&items, m, Phase::Chain, t))
+                } else {
+                    [Phase::Publish, Phase::Late, Phase::Chain, Phase::After]
+                        .iter()
+                        .find_map(|&p| first(&items, m, p, t))
+                }
+            };
+            free[m] = match pick {
+                Some(i) => {
+                    let extra = if items[i].step == "unit" { mac.unit_extra_s } else { 0.0 };
+                    let end = t + items[i].cost.secs / mac.speed.max(0.01) + extra;
+                    (items[i].by, items[i].from, items[i].end) = (Some(m), t, end);
+                    end
+                }
+                None if mac.helper => next_end(&items, &free, m, t),
+                None => next_end(&items, &free, m, t).min(ask_wake(&items, m, t)),
+            };
+        }
+        let done = items.iter().all(|i| i.by.is_some());
+        Sim { items, region_items, done }
+    }
+
+    /// Inputs for the run's tests at scale: `units` units in regions of 100, each its map tile, two
+    /// Macs of four slots packed by room; each unit's cost by `cost_of(k)`.
+    fn many(units: usize) -> Vec<RegionLeft> {
+        (0..units.div_ceil(100))
+            .map(|r| {
+                let us: Vec<String> = (0..100.min(units - r * 100)).map(|i| format!("6/{r}/{i}")).collect();
+                let refs: Vec<&str> = us.iter().map(String::as_str).collect();
+                RegionLeft {
+                    packs: us.iter().map(|u| (u.clone(), vec![u.clone()])).collect(),
+                    ..region(&format!("r{r}"), &[], &refs, &[])
+                }
+            })
+            .collect()
+    }
+
+    fn two_macs<'a>(regions: &'a [RegionLeft], c: &'a dyn Fn(&str, &str) -> Cost, old: bool) -> Input<'a> {
+        let slot = |host: &str, k: usize, lead: bool| Machine {
+            equal: k > 0 || !lead,
+            lead_steps: lead,
+            mac: Some(host.into()),
+            mem_mb: 16_000,
+            ..mac(&super::super::slot_worker(host, k), 1.0, false)
+        };
+        let mut machines: Vec<Machine> =
+            (0..4).map(|k| slot("m4", k, true)).chain((0..4).map(|k| slot("m1", k, false))).collect();
+        // (A member slot busy with a job no item is, holding 2 GB for 20 min.)
+        machines[5].busy_s = 1200.0;
+        machines[5].running = Some(("depth".into(), 1));
+        machines[5].running_mb = 2000;
+        machines.push(Machine { mem_mb: 4000, ..mac("pages", 1.0, true) });
+        let mut inp = input(regions, machines, c);
+        inp.macs = [
+            ("m4".to_string(), MacRoom { mem_mb: 16_000, cores: 14 }),
+            ("m1".to_string(), MacRoom { mem_mb: 8_000, cores: 8 }),
+        ]
+        .into();
+        inp.old_app = old;
+        inp
+    }
+
+    /// Unit `t`'s kind for the tests at scale: every third cold, every fifth big (6 GB), the rest
+    /// measured and small; `all_cold`: every one cold.
+    fn mixed(all_cold: bool) -> impl Fn(&str, &str) -> Cost {
+        move |step: &str, t: &str| {
+            let k: usize = t.rsplit('/').next().and_then(|x| x.parse().ok()).unwrap_or(0);
+            let c = cost(step, t);
+            if step != "unit" {
+                return c;
+            }
+            Cost {
+                known: !(all_cold || k % 3 == 0),
+                peak_mb: if k % 5 == 0 { 6000 } else { 1500 },
+                cores: Some(if k % 2 == 0 { 2 } else { 1 }),
+                ..c
+            }
+        }
+    }
+
+    #[test]
+    fn the_run_matches_a_full_scan_item_for_item() {
+        // (Task #384 review) cold, big and older-app inputs: the run's picks the same as scanning
+        // every item each pick, each item's machine, start and end.
+        let regions = many(150);
+        for (all_cold, old) in [(false, false), (true, false), (false, true), (true, true)] {
+            let c = mixed(all_cold);
+            let inp = two_macs(&regions, &c, old);
+            let (a, b) = (run(&inp, &|c| c.secs), run_reference(&inp, &|c| c.secs));
+            assert_eq!(a.done, b.done);
+            for (x, y) in a.items.iter().zip(&b.items) {
+                assert_eq!(
+                    (x.by, x.from, x.end),
+                    (y.by, y.from, y.end),
+                    "{} {} (cold {all_cold}, old {old})",
+                    x.step,
+                    x.target
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn three_thousand_cold_or_big_units_forecast_in_well_under_a_second() {
+        // (Task #384 review) the worst cases: every unit cold (each alone on its Mac), and cold and
+        // big mixed.
+        let regions = many(3000);
+        for all_cold in [true, false] {
+            let c = mixed(all_cold);
+            let inp = two_macs(&regions, &c, false);
+            let took = std::time::Instant::now();
+            let f = forecast(&inp);
+            let ms = took.elapsed().as_millis();
+            eprintln!(
+                "the forecast took {ms} ms (3,000 units, {})",
+                if all_cold { "all cold" } else { "cold and big mixed" }
+            );
+            assert!(f.done_at.is_some());
+            assert!(ms < 1000, "{ms} ms");
+        }
     }
 
     /// The trains' and the landmarks' chains, as the plan lists them.
