@@ -3,10 +3,11 @@
 stations.py noaa's shape, one row a VDatum point (the centre of each `--cell`° cell holding a
 BlueTopo tile's centre), with `msl_minus_navd88_m` (NAVD88 0 → LMSL, negated) and `msl_minus_mllw_m`
 (LMSL 0 → MLLW). Regions: Puerto Rico and the Virgin Islands (`prvi`), Southeast Alaska (`seak`,
-everything north of 50°), the Pacific coast (`westcoast`, west of 116° W), the rest `contiguous`.
+everything north of 50°), the Pacific coast (`westcoast`, 130°–116° W north of 30° N; Hawaii and other islands have no
+region here), the rest `contiguous`.
 VDatum answers its errors with HTTP 200 and `{"errorCode": 412, "message": …}`. `westcoast` wants the
 target horizontal frame IGS14 for tidal datums (asked as `contiguous`, a Pacific point answers 412
-"Uncaught error"). Points VDatum can't convert (land, outside its tidal models, Alaska beyond its
+"Uncaught error"). Points VDatum can't convert (it answers 412 "Uncaught error" or −999999 for those too: land, outside its tidal models, Alaska beyond its
 southeast) are left out, each logged with VDatum's reason; the datum surface (datums.py) spans them.
 
 usage: vdatum.py --scheme <gpkg> --out <csv> [--cell 0.25] [--bbox <w,s,e,n>]
@@ -32,7 +33,7 @@ def region(lon, lat):
         return {"region": "prvi"}
     if lat > 50:
         return {"region": "seak", "t_h_frame": "IGS08", "s_v_geoid": "geoid12b", "t_v_geoid": "geoid12b"}
-    if lon < -116:
+    if -130 < lon < -116 and lat > 30:
         return {"region": "westcoast", "t_h_frame": "IGS14"}
     return {"region": "contiguous"}
 
