@@ -463,6 +463,38 @@ fn pause_and_resume() {
     assert!(!part.exists());
 }
 
+/// A copy stopped by a new catalog (Control::stop: the server's catalog changed) resumes under that
+/// catalog where it stopped, when the file is still in it: copies are kept by content name, not by
+/// catalog.
+#[test]
+fn a_copy_stopped_by_a_new_catalog_resumes_under_it() {
+    let nas = nas();
+    let home = tempfile::tempdir().unwrap();
+    let m = big(home.path());
+    let mut cat = two_areas(&nas, 1, 0, 1);
+    let name = nas.put(&mut cat, "base/6-32-21", "sect", &bytes(3, 9 << 20));
+    let item = vec![Item::File { name: name.clone(), size: 9 << 20 }];
+    let part = m.partial_path(&name);
+    let stop = || fs::metadata(&part).is_ok_and(|md| md.len() >= CHUNK);
+    let s = m.sync(&cat, &wanted(&[item.clone()]), nas.root(), &nas.pool, &Control { stop: &stop, ..Control::FREE });
+    assert_eq!(s.unwrap().end, SyncEnd::Paused);
+    // The next catalog: other files changed, this one not.
+    let mut cat2 = two_areas(&nas, 2, 7, 1);
+    assert_eq!(nas.put(&mut cat2, "base/6-32-21", "sect", &bytes(3, 9 << 20)), name);
+    let w2 = wanted(&[item, world(&cat2)]);
+    let first: Mutex<Option<u64>> = Default::default();
+    let stop = || {
+        if let Some(c) = m.copying().filter(|c| c.name == name) {
+            first.lock().unwrap().get_or_insert(c.have);
+        }
+        false
+    };
+    let s = m.sync(&cat2, &w2, nas.root(), &nas.pool, &Control { stop: &stop, ..Control::FREE }).unwrap();
+    assert_eq!((s.end, s.pending), (SyncEnd::Done, 0));
+    assert_eq!(*first.lock().unwrap(), Some(CHUNK), "resumed, not begun again");
+    assert_eq!(fs::read(m.local(&name).unwrap()).unwrap(), fs::read(nas.root().join(&name)).unwrap());
+}
+
 #[test]
 fn offline_stops_the_sync() {
     let nas = nas();

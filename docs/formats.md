@@ -613,6 +613,9 @@ Where they're kept:
 - Drives, rides and rail lines take `approx=1` (zoomed out): answered from hidata's summaries when
   every hidata of the view plus margin has them (drives and rides: windows of at least 2 km); the
   answer says `approx`.
+- `POST /api/catalog/refresh` (this Mac's own requests alone, else 403): follow a newer catalog on
+  the NAS now; answers `read` (whether the NAS was read) and `n` (the catalog served after). The
+  build agent's, after writing a catalog.
 - `/api/catalog`: `n`, `created`, `units` (a count), `layers` (encoding, zooms, version), `coverage`
   (without outlines), `credits`, `online`, `nas`, `held`, `app`, `agent`, `names` (`langs`, `spoken`,
   `warning`, `waiting`), `v`, `marks` (tiles with points, kinds with tiles, totals), `depth` (the

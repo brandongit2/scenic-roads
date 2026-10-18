@@ -104,6 +104,8 @@ pub struct Data {
     busy: Mutex<Option<(std::time::Instant, bool)>>,
     /// A mount by the bare name has been reported (once).
     warned_tunnel: std::sync::atomic::AtomicBool,
+    /// Held while a catalog is followed (the background poll and /api/catalog/refresh: one at a time).
+    refreshing: Mutex<()>,
 }
 
 /// A data development override: serve a local folder laid out like the NAS project folder.
@@ -141,6 +143,7 @@ impl Data {
             last_mount: Mutex::new(None),
             busy: Mutex::new(None),
             warned_tunnel: Default::default(),
+            refreshing: Mutex::new(()),
         });
         match o.nas_root {
             Some(root) => d.set_nas(Some(root)),
@@ -221,6 +224,7 @@ impl Data {
     /// From the one served now: unchanged, nothing read but the folder's listing; newer as deltas
     /// (docs/formats.md, Delta catalogs), only those read and applied to it.
     pub fn refresh_catalog(&self) -> bool {
+        let _one = self.refreshing.lock().unwrap_or_else(|e| e.into_inner());
         let (Some(root), Some(pool)) = (self.nas_root(), self.pool()) else { return false };
         let have = self.catalog();
         match store::catalog::latest_nas_from(
@@ -653,8 +657,7 @@ impl Data {
             .spawn(move || {
                 let mut last = std::time::Instant::now();
                 loop {
-                    // While the map is in use: every 30 s. Idle: every 10 minutes, so the NAS rests.
-                    let every = if crate::updater::in_use(600) { 30 } else { 600 };
+                    let every = poll_every(crate::updater::in_use(600), d.agent_busy());
                     if last.elapsed() >= Duration::from_secs(every) {
                         if d.nas_root().is_none() || !d.online() {
                             d.find_nas();
@@ -694,6 +697,40 @@ pub fn publish_event(root: &std::path::Path, kind: &str, n: u64, secs: Option<f6
 pub fn default_home() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     home.join("Library/Application Support/scenic")
+}
+
+/// POST /api/catalog/refresh: follow a new catalog on the NAS now. The build agent's word after
+/// writing one (pipeline::net::catalog_written), so this Mac adopts it at once instead of at the
+/// next poll. This Mac's own requests alone (loopback, not through a proxy). Answers whether the
+/// NAS was read and the catalog served after.
+pub async fn refresh_h(
+    axum::extract::State(s): axum::extract::State<crate::S>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    h: axum::http::HeaderMap,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !pipeline::net::own(peer.ip(), &h) {
+        return (axum::http::StatusCode::FORBIDDEN, "this Mac's own requests alone").into_response();
+    }
+    let s2 = s.clone();
+    let read = tokio::task::spawn_blocking(move || s2.data.refresh_catalog()).await.unwrap_or(false);
+    let body = serde_json::json!({ "read": read, "n": s.data.catalog().n });
+    ([(axum::http::header::CACHE_CONTROL, "no-store")], axum::Json(body)).into_response()
+}
+
+/// How often (seconds) the background thread looks for a new catalog: every 10 s while the lead's
+/// heartbeat says a build runs (catalogs come often then); else every 30 s while the map is in use,
+/// and every 10 minutes idle, so the NAS rests. Each look is one listing of catalog/ (an unchanged
+/// catalog reads nothing more: refresh_catalog). The lead's own server is told at once
+/// (/api/catalog/refresh).
+pub fn poll_every(in_use: bool, building: bool) -> u64 {
+    if building {
+        10
+    } else if in_use {
+        30
+    } else {
+        600
+    }
 }
 
 fn unix_now() -> u64 {
@@ -736,6 +773,65 @@ mod tests {
         // minutes.
         assert!(runs_at(&json!({"beat": now - 300, "job": {"id": "pack 6/52/27"}}), 600, &["job"], now));
         assert!(!runs_at(&json!({"beat": now - 300, "job": null, "beside": {"id": "lo"}}), 600, &["job"], now));
+    }
+
+    /// The agent's word after a catalog: adopted at once, from this Mac alone (not the LAN, the
+    /// tailnet, or a device through a proxy on this Mac).
+    #[tokio::test]
+    async fn a_refresh_from_this_mac_adopts_the_new_catalog_at_once() {
+        use axum::http::StatusCode;
+        use tower::ServiceExt;
+        let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let dir = nas.path().join("catalog");
+        store::catalog::write_copy(&dir, &Catalog::new(1)).unwrap();
+        let s = crate::test_state(home.path(), nas.path());
+        assert_eq!(s.data.catalog().n, 1);
+        store::catalog::write_copy(&dir, &Catalog::new(2)).unwrap();
+        let ask = |peer: &str, proxied: bool| {
+            let app =
+                axum::Router::new().route("/api/catalog/refresh", axum::routing::post(refresh_h)).with_state(s.clone());
+            let mut b = axum::http::Request::builder().method("POST").uri("/api/catalog/refresh");
+            if proxied {
+                b = b.header("x-forwarded-for", "100.101.102.103");
+            }
+            let mut req = b.body(axum::body::Body::empty()).unwrap();
+            req.extensions_mut()
+                .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(peer.parse().unwrap(), 50000)));
+            async move { app.oneshot(req).await.unwrap().status() }
+        };
+        for (peer, proxied) in [("192.168.1.66", false), ("100.101.102.103", false), ("127.0.0.1", true)] {
+            assert_eq!(ask(peer, proxied).await, StatusCode::FORBIDDEN, "{peer}");
+        }
+        assert_eq!(s.data.catalog().n, 1, "refused: nothing read");
+        let t = std::time::Instant::now();
+        assert_eq!(ask("127.0.0.1", false).await, StatusCode::OK);
+        assert_eq!(s.data.catalog().n, 2);
+        assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+        assert_eq!(ask("::1", false).await, StatusCode::OK);
+    }
+
+    /// A build running (the lead's heartbeat): a look every 10 s, in use or not; else 30 s / 10 min.
+    #[test]
+    fn catalogs_are_looked_for_every_ten_seconds_while_a_build_runs() {
+        assert_eq!((poll_every(true, true), poll_every(false, true)), (10, 10));
+        assert_eq!((poll_every(true, false), poll_every(false, false)), (30, 600));
+        // As the background thread asks it: the lead's heartbeat on the NAS, a fresh one with a job.
+        let beat = |job: serde_json::Value| {
+            let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+            std::fs::create_dir_all(nas.path().join("state")).unwrap();
+            std::fs::write(nas.path().join("state/status.json"), json!({"beat": unix_now(), "job": job}).to_string())
+                .unwrap();
+            let d = Data::open(Options {
+                home: home.path().to_owned(),
+                nas_root: Some(nas.path().to_owned()),
+                mirror: false,
+                reserve: 0,
+            })
+            .unwrap();
+            poll_every(false, d.agent_busy())
+        };
+        assert_eq!(beat(json!({"id": "catalog"})), 10);
+        assert_eq!(beat(serde_json::Value::Null), 600);
     }
 
     /// Delta catalogs (docs/formats.md): the server follows them from the catalog it serves, as the

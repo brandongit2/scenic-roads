@@ -594,6 +594,7 @@ async fn main() -> Result<()> {
         .route("/api/marks/detail/{kind}/{id}", get(marks::detail))
         .route("/api/meta", get(meta_h))
         .route("/api/catalog", get(catalog_h))
+        .route("/api/catalog/refresh", axum::routing::post(data::refresh_h))
         .route("/api/way/{id}", get(ways::way_h))
         .route("/api/profile/{id}", get(ways::profile_h))
         .route("/api/road/{id}", get(ways::road_h))

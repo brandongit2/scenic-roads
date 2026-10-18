@@ -3007,6 +3007,8 @@ impl Agent {
                 *e = 0.7 * *e + 0.3 * each;
             }
             if ok && step == "catalog" {
+                // (This Mac's map server adopts it now.)
+                crate::net::catalog_written();
                 let ready = self.ready.borrow().clone();
                 let (n, data) = (cat_stats.as_ref().map(|c| c.n), cat_stats.and_then(|c| serde_json::to_value(c).ok()));
                 self.note(crate::coord::history::Event {

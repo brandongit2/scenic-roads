@@ -269,7 +269,11 @@ floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, th
 - **Offline start:** the last catalog and the pack indexes read so far stay local.
 - **In use** means any request in the last ten minutes except the status polls (`/api/catalog`,
   `/api/ping`, `/api/build`, `/api/downloads`) and the search's `poll=1`. It checks for a newer
-  catalog every 30 s in use, every 10 minutes otherwise.
+  catalog every 10 s while the lead's heartbeat (`state/status.json`, read at most every 30 s)
+  says a build runs, else every 30 s in use and every 10 minutes otherwise; each check is one
+  listing of `catalog/`. On the lead's Mac the agent also POSTs `/api/catalog/refresh` (this Mac's
+  own requests alone) after writing a catalog, so it is adopted at once. A mirror's copy stopped by a
+  new catalog resumes under it (copies are kept by content name).
 - **URLs and ETags:** data URLs carry a content version (`?v=`): a tile's is its pack's (meta
   `packs`), so a new catalog re-fetches only the changed packs' tiles; a versioned response is
   `immutable` while current. ETags are content hashes, for named tiles combined with the versions of
@@ -1028,8 +1032,9 @@ from the first (`edit_held`).
   done; and catalog n written (`catalog`: its `n`, its job's time, delta or whole, the files listed
   and stat'ed, its phases once written, from the catalog's own `catalog-stats:` log line). On the
   NAS, each Mac's map server appends to `state/publish/<host>.jsonl` its adoption of each catalog
-  and its mirror's sync of it (begun, and through everything wanted). `scenic timings publish
-  [--last N]` joins them: a unit is in the first catalog begun once it was merged and its stale
+  and its mirror's sync of it (begun, and through everything wanted). The Mac writing a catalog
+  tells its own server at once (`/api/catalog/refresh`); the others look every 10 s while a build
+  runs (§4). `scenic timings publish [--last N]` joins them: a unit is in the first catalog begun once it was merged and its stale
   tiles packed; per catalog and per unit, the hand-off, planned, leased, packed, catalog, servers
   and mirrors, the tiles each unit restaled, which of ferries, stations, roadunits, marks and
   names-todo ran, and the medians (the catalogs' phases split delta and whole).
