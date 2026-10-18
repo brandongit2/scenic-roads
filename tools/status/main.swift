@@ -408,17 +408,18 @@ struct Recipe: Decodable {
     let name: String
 }
 
-/// The forecast's part the menu shows: when it'll all be done (and the range), and the map updates
-/// to come, each with the regions it adds.
+/// The forecast's part the menu shows: when it'll all be done (and the range), and when regions go
+/// on the map, each time with the regions it adds (the forecast's `updates`).
 struct Forecast: Decodable {
     let done_at: Int?
     let range: [Int]?
-    let updates: [MapUpdate]?
+    let updates: [RegionsOut]?
     /// Why there's no finish to forecast (nothing left; a new pass first; the units waiting).
     let why: String?
 }
 
-struct MapUpdate: Decodable {
+/// Regions going on the map: when, which, whether the last.
+struct RegionsOut: Decodable {
     let at: Int
     let regions: [String]
     let last: Bool
@@ -724,7 +725,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         if let next = (f.updates ?? []).first(where: { !$0.regions.isEmpty }) {
             let names = Dictionary((s.regions ?? []).map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
             let which = next.regions.prefix(3).map { names[$0] ?? $0 }.joined(separator: ", ") + (next.regions.count > 3 ? " and \(next.regions.count - 3) more" : "")
-            out.append(Line(text: "Next map update ≈ \(soon(next.at)): \(which)", style: .small))
+            out.append(Line(text: "Next on the map ≈ \(soon(next.at)): \(which)", style: .small))
         }
     }
     if let p = s.pause {

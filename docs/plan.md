@@ -1139,7 +1139,8 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
      whose owners changed a unit's together (`build::by_unit`: the units whose base pack or road
      values differ from the served catalog's, in build order), shared with the members asking (the
      lead's own job takes an even share, `publish::lead_share`); once the map tiles and the road
-     index are drawn (`build::CATALOG_GATE`) and none of their hand-offs waits to be merged, a
+     index are drawn (`build::CATALOG_GATE`) and none of their hand-offs waits to be merged (or ten
+     minutes after it was first held back), a
      catalog (5), listed before the chain's rest (the low zooms, rail stops, ferries, roots), which
      goes out with a later one. Nothing is published before a unit is
      built, while the regions have work left. The lead keeps `publishing.json` in its agent's folder
@@ -1178,14 +1179,18 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
    The trains', landmarks' and buildings' work is listed after the regions'. Last, in idle time: the
    mids of pieces current without one, each made again with `--expect-same` (`scenic-build
    trees|terrain|slope --expect-same`: a pack differing from the manifest fails the job).
-5. **A catalog** once the map tiles and the road index are drawn, whenever the served files, the
-   regions or which of them are done change (`build::catalog_key`), at most one each
-   `build::CATALOG_EVERY_S` (a minute) since the last began; map tiles still to draw postpone it at
-   most `build::CATALOG_CAP_S` (ten minutes), then one goes out with what's drawn. It records as built the regions done, their slope and tree cover
-   made and no unit of theirs waiting to be merged (`--ready <id>=<outline digest>,…`), and the others as the last catalog had them. It waits
-   while a hand-off of the map tiles or the road index waits to be merged (a unit's goes out with a
-   later catalog). While `inputs/hold-catalog` exists, catalogs go to
-   `catalog-held/`.
+5. **A catalog** whenever the served files, the regions or which of them are done change
+   (`build::catalog_key`), at most one each `build::CATALOG_EVERY_S` (a minute) since the last
+   began. It waits while the map tiles or the road index are left to draw (`build::CATALOG_GATE`)
+   or a hand-off of theirs waits to be merged. That wait is counted from when a catalog due was
+   first held back, whether or not one was made before (`Publish::held_for`, the lead's agent
+   counting, reset by each catalog made): past `build::CATALOG_CAP_S` (ten minutes) one goes out
+   with what's drawn and merged, its minute allowing. It records as built (`--ready <id>=<outline
+   digest>,…`) the regions done whose units are merged, whose map tiles are drawn and merged and
+   whose slope and tree cover are made, and the others as the last catalog had them; the status
+   says why a done region isn't yet ("waiting to be merged", "map tiles to draw", "slope and tree
+   cover to make"). A unit's hand-off waiting holds no catalog: it goes out with a later one.
+   While `inputs/hold-catalog` exists, catalogs go to `catalog-held/`.
 6. **Daily:** backup and GC.
 
 **Planned:** stale work after step-version bumps done oldest first in idle time; registers, Overture

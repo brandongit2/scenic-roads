@@ -1207,6 +1207,7 @@ mod tests {
                 on_map: &BTreeMap::new(),
                 served: &BTreeMap::new(),
                 since_catalog: None,
+                held_for: None,
                 held: false,
                 way: Default::default(),
             },

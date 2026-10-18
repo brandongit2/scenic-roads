@@ -59,6 +59,13 @@ pub fn lead_share(total: usize, batch: usize, members: usize) -> usize {
     total.div_ceil(members + 1).clamp(1, batch.max(1))
 }
 
+/// Whether hand-offs of the map tiles or the road index waiting to be merged (`unmerged`) hold the
+/// catalog back, a catalog held back `held_for` seconds so far: until build::CATALOG_CAP_S, then it
+/// goes (the regions they touch not recorded built: build::plan's `ready`).
+pub fn unmerged_holds(unmerged: bool, held_for: Option<u64>) -> bool {
+    unmerged && held_for.is_none_or(|s| s < super::build::CATALOG_CAP_S)
+}
+
 /// The steps the lead shares with the members (`lead_share`).
 pub const SHARED_MAP_TILES: [&str; 2] = ["pack", "lo"];
 
@@ -81,6 +88,13 @@ mod tests {
         std::fs::create_dir_all(d.path().join(NEAR_SLOPE)).unwrap();
         let was = Switches { near: true, ..Default::default() };
         assert!(Switches::read(d.path(), was).near);
+    }
+
+    #[test]
+    fn unmerged_hand_offs_hold_the_catalog_up_to_the_cap() {
+        let cap = super::super::build::CATALOG_CAP_S;
+        assert!(unmerged_holds(true, None) && unmerged_holds(true, Some(cap - 1)));
+        assert!(!unmerged_holds(true, Some(cap)) && !unmerged_holds(false, None));
     }
 
     #[test]

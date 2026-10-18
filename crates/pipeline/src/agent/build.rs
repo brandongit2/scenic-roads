@@ -1646,8 +1646,9 @@ pub const CATALOG_EVERY_S: u64 = 60;
 /// stops, ferries, roots) go out with a later catalog.
 pub const CATALOG_GATE: [&str; 3] = ["prune", "pack", "roadunits"];
 
-/// How long (seconds) a catalog may be postponed by the map tiles still to draw (units landing one
-/// after another): past it, one goes out with what's drawn.
+/// How long (seconds) a catalog may be held back by the map tiles or the road index still to draw,
+/// or their hand-offs waiting to be merged (units landing one after another), counted from when it
+/// was first held (`Publish::held_for`): past it, one goes out with what's drawn and merged.
 pub const CATALOG_CAP_S: u64 = 600;
 
 /// With the low zooms later (`Publishing::low_later`): how long after they were last made they're
@@ -1712,8 +1713,9 @@ pub struct PublishLine {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PublishRegion {
     pub id: String,
-    /// "new region" or "rebuilt" (its outline or units changed), and "slope and tree cover to make"
-    /// while those wait.
+    /// "new region" or "rebuilt" (its outline or units changed), and while it isn't recorded built,
+    /// why: "waiting to be merged" (a unit's or a map tile's hand-off), "map tiles to draw", or
+    /// "slope and tree cover to make".
     pub kinds: Vec<String>,
 }
 
@@ -1762,6 +1764,10 @@ pub struct Publish<'a> {
     pub served: &'a BTreeMap<String, String>,
     /// Seconds since the last catalog went out (or one last started); None when none has.
     pub since_catalog: Option<u64>,
+    /// Seconds since a catalog was first held back by the map tiles or the road index to draw
+    /// (`Plan::catalog_held`), or by their hand-offs waiting to be merged (the agent's), since the
+    /// last catalog; None while none is. Past `CATALOG_CAP_S`, one goes out with what's drawn.
+    pub held_for: Option<u64>,
     /// Catalogs are held for review (`inputs/hold-catalog`): what's new is weighed against the last
     /// held one's.
     pub held: bool,
@@ -1783,6 +1789,9 @@ pub struct Plan {
     /// due, and nothing's left of the publishing chain, or no lo pack is stale), noted so once made
     /// (`LastCatalog::low_at`). Without a catalog planned: the low zooms are made now.
     pub low: bool,
+    /// A catalog is due but held back by the map tiles or the road index to draw (`CATALOG_GATE`),
+    /// short of `CATALOG_CAP_S`: the agent counts how long (`Publish::held_for`).
+    pub catalog_held: bool,
     /// The units whose key can't be worked out now (a terrain pack's index unread: `unit_keys`):
     /// neither built nor counted as built until it can.
     pub unknown: Vec<String>,
@@ -1840,7 +1849,7 @@ pub struct RegionLeft {
 /// - publishing, as soon as the records change (`publish_chain`): what the coverage no longer
 ///   builds pruned, the map tiles whose owners changed (a unit's together: `by_unit`), the road
 ///   index, the low zooms (`Publishing::low_later`), rail stops and ferries, the world-level terrain
-///   and slope; once the map tiles and road index are drawn (`CATALOG_GATE`; or postponed
+///   and slope; once the map tiles and road index are drawn (`CATALOG_GATE`; or held back
 ///   `CATALOG_CAP_S`), a catalog when what it would list changed
 ///   (`catalog_key`), at most one each `CATALOG_EVERY_S`;
 /// - the slope and tree cover of the regions done that the map hasn't as they are now;
@@ -2023,8 +2032,8 @@ pub fn plan(
         .collect();
     // The regions a catalog made now records as built: every unit of theirs built as the coverage
     // wants it and merged (one whose hand-off waits counts as built, but its files aren't in the
-    // manifest: its tiles wait for it, so the region isn't recorded built until then), and their
-    // areas' slope and tree cover.
+    // manifest), their map tiles drawn and merged (a catalog postponed past `CATALOG_CAP_S` goes
+    // out while some are left), and their areas' slope and tree cover.
     // (The near way: its slope and tree cover pieces near it, their assemblies later.)
     let near = updates.way.near;
     let slope_done = |r: &Region| if near { r.slope_near.is_empty() } else { r.areas.is_disjoint(&slope_left) };
@@ -2032,16 +2041,47 @@ pub fn plan(
         let d = units[*i].0.dash();
         crate::out::UNIT_OUTPUTS.iter().any(|p| done.handed.contains(&format!("{p}{d}")))
     };
+    // (A unit's map tiles: those its ways meet; stale, or drawn by a hand-off not yet merged.)
+    let stale_tiles: BTreeSet<String> = pack_lo_targets(m, Some(reach))
+        .0
+        .into_iter()
+        .filter(|(t, k)| stale(&done.pack, t, k))
+        .map(|(t, _)| t)
+        .collect();
+    let deg = |b: [i32; 4]| [b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7];
+    let tiles_of = |i: usize| -> Vec<(u32, u32)> {
+        let ext = unit_reach(Some(reach), m, units[i].0);
+        crate::stage::tiles_in(6, deg(ext))
+            .into_iter()
+            .filter(|&(x, y)| owns(ext, crate::hipack::tile_bounds(6, x, y)))
+            .collect()
+    };
+    let tiles_unmerged = |i: &usize| {
+        tiles_of(*i).into_iter().any(|(x, y)| {
+            ["hidata/", "layers/roads/hi/", "layers/rails/hi/"]
+                .iter()
+                .any(|p| done.handed.contains(&format!("{p}6-{x}-{y}")))
+        })
+    };
+    let tiles_stale = |i: &usize| tiles_of(*i).into_iter().any(|(x, y)| stale_tiles.contains(&format!("6/{x}/{y}")));
+    // Why a region done isn't recorded built yet (None: it is).
+    let held = |r: &Region| -> Option<&'static str> {
+        if r.all.iter().any(unmerged) || r.all.iter().any(tiles_unmerged) {
+            Some("waiting to be merged")
+        } else if r.all.iter().any(tiles_stale) {
+            Some("map tiles to draw")
+        } else if !(slope_done(r)
+            && r.tree_pieces.is_disjoint(&trees_left)
+            && (near || r.tree_areas.is_disjoint(&trees_lo_left)))
+        {
+            Some("slope and tree cover to make")
+        } else {
+            None
+        }
+    };
     let ready: Vec<String> = regions
         .iter()
-        .filter(|r| {
-            !r.all.iter().any(unmerged)
-                && r.stale.is_empty()
-                && r.terrain.is_empty()
-                && slope_done(r)
-                && r.tree_pieces.is_disjoint(&trees_left)
-                && (near || r.tree_areas.is_disjoint(&trees_lo_left))
-        })
+        .filter(|r| r.stale.is_empty() && r.terrain.is_empty() && held(r).is_none())
         .map(|r| r.id.to_string())
         .collect();
 
@@ -2154,7 +2194,7 @@ pub fn plan(
     // work, what goes out with the units: what the coverage no longer builds pruned, then the
     // publishing chain (`publish_chain`: the map tiles whose owners changed, a unit's together, the
     // road index, the low zooms, rail stops and ferries, the world-level terrain and slope); once
-    // the map tiles and road index are drawn (or postponed `CATALOG_CAP_S`), a catalog when what it
+    // the map tiles and road index are drawn (or held back `CATALOG_CAP_S`), a catalog when what it
     // would list changed, at most one a minute
     // (`CATALOG_EVERY_S`; with the trains', the landmarks' and the 3D buildings' work made by then).
     let done_now = |r: &Region| r.stale.is_empty() && r.terrain.is_empty();
@@ -2189,6 +2229,7 @@ pub fn plan(
         [true, true]
     };
     let mut plan_low = low;
+    let mut catalog_held = false;
     let mut publishing = PublishLine {
         low,
         regions: to_publish
@@ -2199,9 +2240,7 @@ pub fn plan(
                 } else {
                     "new region".to_string()
                 }];
-                if !ready.iter().any(|x| x == r.id) {
-                    kinds.push("slope and tree cover to make".into());
-                }
+                kinds.extend(held(r).map(String::from));
                 PublishRegion { id: r.id.to_string(), kinds }
             })
             .collect(),
@@ -2226,10 +2265,17 @@ pub fn plan(
             // `CATALOG_CAP_S` by map tiles still to draw (units landing one after another), it goes
             // with what's drawn.
             let gated = chain.as_ref().is_some_and(|w| CATALOG_GATE.contains(&w.step.as_str()));
-            let capped = gated && updates.since_catalog.is_some_and(|s| s >= CATALOG_CAP_S);
+            let capped = gated && updates.held_for.is_some_and(|s| s >= CATALOG_CAP_S);
             let mut catalog = None;
+            let due = catalog_work(m, done, inputs, &ready, updates.held);
+            // (A catalog the gate holds back: the agent counts how long, `Publish::held_for`.)
+            catalog_held = gated && !capped && due.is_some();
+            if gated && !capped && due.is_some() {
+                let left = CATALOG_CAP_S.saturating_sub(updates.held_for.unwrap_or(0));
+                publishing.wait_s = left;
+            }
             if !gated || capped {
-                match catalog_work(m, done, inputs, &ready, updates.held) {
+                match due {
                     Some(w) => {
                         // (With the low zooms due and the chain done, it made them; else they're
                         // made if no lo pack is stale.)
@@ -2239,7 +2285,10 @@ pub fn plan(
                         publishing.wait_s = wait;
                         if wait == 0 {
                             publishing.why = if capped {
-                                format!("a catalog now with what's drawn: none for {} min", CATALOG_CAP_S / 60)
+                                format!(
+                                    "a catalog now with what's drawn: held {} min by map tiles to draw",
+                                    CATALOG_CAP_S / 60
+                                )
                             } else {
                                 "a catalog now: what it would list changed".into()
                             };
@@ -2312,7 +2361,7 @@ pub fn plan(
     work.extend(depth);
     // Last of all, in idle time: the mids of current pieces that have none (expected the same).
     work.extend(backfill.iter().cloned());
-    Plan { work, ready, regions: lefts, low: plan_low, unknown, backfill, publishing }
+    Plan { work, ready, regions: lefts, low: plan_low, catalog_held, unknown, backfill, publishing }
 }
 
 /// The map tiles `targets` to draw, a unit's together: grouped by the unit whose change made each
@@ -3862,6 +3911,7 @@ pub(crate) mod tests {
                 on_map,
                 served: &BTreeMap::new(),
                 since_catalog: since_publish,
+                held_for: None,
                 held: false,
                 way: Default::default(),
             },
@@ -4224,6 +4274,7 @@ pub(crate) mod tests {
                     on_map: &BTreeMap::new(),
                     served: &BTreeMap::new(),
                     since_catalog: None,
+                    held_for: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -4305,6 +4356,7 @@ pub(crate) mod tests {
                 on_map: &BTreeMap::new(),
                 served: &BTreeMap::new(),
                 since_catalog: None,
+                held_for: None,
                 held: false,
                 way: Default::default(),
             },
@@ -4364,6 +4416,7 @@ pub(crate) mod tests {
                     on_map: &BTreeMap::new(),
                     served: &BTreeMap::new(),
                     since_catalog: None,
+                    held_for: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -4616,6 +4669,7 @@ pub(crate) mod tests {
                     on_map: &BTreeMap::new(),
                     served: &BTreeMap::new(),
                     since_catalog: None,
+                    held_for: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -4631,6 +4685,35 @@ pub(crate) mod tests {
         (c, reach, m, done)
     }
 
+    /// `pplan` with a catalog held back `held_for` seconds (`Publish::held_for`), nothing on the map.
+    fn hplan(
+        c: &Coverage,
+        reach: &Reaches,
+        m: &BTreeMap<String, String>,
+        done: &Keys,
+        since: Option<u64>,
+        held_for: Option<u64>,
+    ) -> Plan {
+        let each = c.by_region();
+        super::plan(
+            c,
+            "d",
+            m,
+            done,
+            &BTreeMap::new(),
+            Some(reach),
+            &tiles_for(m),
+            Publish {
+                each: &each,
+                on_map: &BTreeMap::new(),
+                served: &BTreeMap::new(),
+                since_catalog: since,
+                held_for,
+                held: false,
+                way: Default::default(),
+            },
+        )
+    }
     /// The tests' plan for `three`'s regions: those `on_map`, the last catalog `since` seconds ago,
     /// the switches' `way`, catalogs `held` or not, nothing served.
     #[allow(clippy::too_many_arguments)]
@@ -4653,7 +4736,7 @@ pub(crate) mod tests {
             &BTreeMap::new(),
             Some(reach),
             &tiles_for(m),
-            Publish { each: &each, on_map, served: &BTreeMap::new(), since_catalog: since, held, way },
+            Publish { each: &each, on_map, served: &BTreeMap::new(), since_catalog: since, held_for: None, held, way },
         )
     }
     /// A unit of theirs built (as `content`).
@@ -4742,13 +4825,34 @@ pub(crate) mod tests {
             assert_eq!(p.work[0].step, "catalog");
             done.record("catalog", &p.work[0].targets);
         }
-        // Map tiles to draw again and again (units landing faster than they're drawn): past the cap,
-        // a catalog goes out with what's drawn, before them.
+        // Map tiles to draw again and again (units landing faster than they're drawn): the catalog
+        // held back, said so, counted from when it first was (not from the last catalog); past the
+        // cap, it goes out with what's drawn, before them, recording built no region whose map
+        // tiles are left.
         rbuild(&c, &reach, &mut m, &mut done, "6/30/16", "aaaaaaaaaaaaaaaa");
-        assert!(!plan(&m, &done, CATALOG_CAP_S - 1).work.iter().any(|w| w.step == "catalog"));
-        let p = plan(&m, &done, CATALOG_CAP_S);
+        let p = hplan(&c, &reach, &m, &done, Some(30), None);
+        assert!(p.catalog_held && !p.work.iter().any(|w| w.step == "catalog"));
+        assert_eq!(p.publishing.wait_s, CATALOG_CAP_S);
+        let p = hplan(&c, &reach, &m, &done, Some(4000), Some(CATALOG_CAP_S - 1));
+        assert!(p.catalog_held && !p.work.iter().any(|w| w.step == "catalog"), "the last catalog long ago: still held");
+        let p = hplan(&c, &reach, &m, &done, Some(CATALOG_EVERY_S), Some(CATALOG_CAP_S));
         assert_eq!((p.work[0].step.as_str(), p.work[1].step.as_str()), ("catalog", "pack"));
-        assert!(p.publishing.why.contains("with what's drawn"), "{}", p.publishing.why);
+        assert!(!p.catalog_held && p.publishing.why.contains("with what's drawn"), "{}", p.publishing.why);
+        assert!(!p.ready.contains(&"b".to_string()), "{:?}", p.ready);
+        let b = p.publishing.regions.iter().find(|r| r.id == "b").unwrap();
+        assert!(b.kinds.contains(&"map tiles to draw".to_string()), "{:?}", b.kinds);
+    }
+
+    #[test]
+    fn the_cap_holds_before_any_catalog() {
+        // No catalog made yet, a unit's tiles to draw: held, then out past the cap.
+        let (c, reach, mut m, mut done) = three();
+        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
+        let p = hplan(&c, &reach, &m, &done, None, None);
+        assert!(p.catalog_held && p.work[0].step == "pack");
+        let p = hplan(&c, &reach, &m, &done, None, Some(CATALOG_CAP_S));
+        assert_eq!((p.work[0].step.as_str(), p.work[1].step.as_str()), ("catalog", "pack"));
+        assert!(p.ready.is_empty());
     }
 
     #[test]
@@ -4762,22 +4866,35 @@ pub(crate) mod tests {
             if p.ready.contains(&"a".to_string()) {
                 break;
             }
-            let w = p.work.iter().find(|w| w.step != "catalog" && !CHAIN.contains(&w.step.as_str())).unwrap().clone();
+            let w = p.work.iter().find(|w| w.step != "catalog").unwrap().clone();
             if w.step.starts_with("slope") {
                 terrain_did(&mut m, &mut done, &w);
             } else {
                 did(&mut m, &mut done, &w);
             }
         }
-        // Its unit's hand-off not yet merged (counted as built, its base pack not in the manifest):
-        // a isn't recorded built; a catalog still goes out, without it.
+        // Its unit's hand-off not yet merged (counted as built, its outputs not in the manifest):
+        // a isn't recorded built, and says so; a catalog still goes out, without it.
         let mut handed = done.clone();
-        handed.handed.insert("base/6-28-16".into());
-        handed.handed.insert("global/roads/6-28-16".into());
         let mut m2 = m.clone();
-        m2.remove("base/6-28-16");
-        m2.remove("global/roads/6-28-16");
+        for l in ["base/6-28-16", "global/roads/6-28-16", "global/roaden/6-28-16"] {
+            handed.handed.insert(l.into());
+            m2.remove(l);
+        }
         let p = pplan(&c, &reach, &m2, &handed, &none, Some(120), Default::default(), false);
+        assert!(!p.ready.contains(&"a".to_string()), "{:?}", p.ready);
+        let a = p.publishing.regions.iter().find(|r| r.id == "a").unwrap();
+        assert_eq!(a.kinds, ["new region", "waiting to be merged"]);
+        // (Its English alone waiting: the same.)
+        let mut handed = done.clone();
+        handed.handed.insert("global/roaden/6-28-16".into());
+        let p = pplan(&c, &reach, &m, &handed, &none, Some(120), Default::default(), false);
+        assert!(!p.ready.contains(&"a".to_string()), "{:?}", p.ready);
+        // A map tile of its, drawn by a hand-off waiting to be merged: the same.
+        let tile = pack_lo_targets(&m, Some(&reach)).0[0].0.replace('/', "-");
+        let mut handed = done.clone();
+        handed.handed.insert(format!("layers/roads/hi/{tile}"));
+        let p = pplan(&c, &reach, &m, &handed, &none, Some(120), Default::default(), false);
         assert!(!p.ready.contains(&"a".to_string()), "{:?}", p.ready);
         // Merged: it is.
         let p = pplan(&c, &reach, &m, &done, &none, Some(120), Default::default(), false);
@@ -4822,7 +4939,7 @@ pub(crate) mod tests {
         assert!(p.publishing.why.starts_with("drawing the map tiles"), "{}", p.publishing.why);
         assert_eq!(
             p.publishing.regions,
-            [PublishRegion { id: "a".into(), kinds: vec!["new region".into(), "slope and tree cover to make".into()] }]
+            [PublishRegion { id: "a".into(), kinds: vec!["new region".into(), "map tiles to draw".into()] }]
         );
         // Through the chain (no units fixed as of a time: the records as they are), then a catalog
         // with the units still to build after it; a isn't recorded built yet (its slope and tree cover).
@@ -4910,6 +5027,7 @@ pub(crate) mod tests {
                 on_map: &BTreeMap::new(),
                 served: &served,
                 since_catalog: None,
+                held_for: None,
                 held: false,
                 way: Default::default(),
             },
@@ -5043,6 +5161,9 @@ pub(crate) mod tests {
                 did(&mut m, &mut done, &w);
             }
         }
+        // (Its map tiles drawn too.)
+        let pk = pplan(&c, &reach, &m, &done, &on, Some(120), near, false).work.into_iter().find(|w| w.step == "pack");
+        did(&mut m, &mut done, &pk.unwrap());
         let p = pplan(&c, &reach, &m, &done, &on, Some(120), near, false);
         assert_eq!(p.ready, ["a"]);
         assert!(p.work.iter().any(|w| w.step == "slope" && w.targets.iter().any(|t| !now.contains(&t.0))));
@@ -5093,6 +5214,7 @@ pub(crate) mod tests {
                     on_map: &BTreeMap::new(),
                     served: &BTreeMap::new(),
                     since_catalog: None,
+                    held_for: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -5445,6 +5567,7 @@ pub(crate) mod tests {
                     on_map: &BTreeMap::new(),
                     served: &BTreeMap::new(),
                     since_catalog: None,
+                    held_for: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -5588,7 +5711,8 @@ pub(crate) mod tests {
         );
         assert_eq!(line(&l, "publish").left, Some(1));
         // Held for review: publishing is the held catalog.
-        let k = catalog_key(&m, &BTreeMap::new(), &["r".to_string()]);
+        let ready = plan_with(&c, "d", &m, &done, &BTreeMap::new(), &BTreeMap::new(), None).ready;
+        let k = catalog_key(&m, &BTreeMap::new(), &ready);
         // The descriptions' credits in it once there are any: an edit gets a new catalog.
         let with = |d: &str| catalog_key(&m, &[("credits".to_string(), d.to_string())].into(), &["r".to_string()]);
         assert!(with("a") != k && with("a") != with("b"));
@@ -5615,6 +5739,7 @@ pub(crate) mod tests {
                     on_map: &BTreeMap::new(),
                     served: &BTreeMap::new(),
                     since_catalog: None,
+                    held_for: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -6420,6 +6545,7 @@ pub(crate) mod tests {
                     on_map: &BTreeMap::new(),
                     served: &BTreeMap::new(),
                     since_catalog: None,
+                    held_for: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -6858,6 +6984,7 @@ pub(crate) mod tests {
                     on_map,
                     served: &BTreeMap::new(),
                     since_catalog: Some(120),
+                    held_for: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -7043,6 +7170,7 @@ pub(crate) mod tests {
                     on_map: &on_map,
                     served: &BTreeMap::new(),
                     since_catalog: Some(0),
+                    held_for: None,
                     held: false,
                     way: Default::default(),
                 },

@@ -1243,6 +1243,10 @@ pub struct Agent {
     /// Whether the catalog last planned had the low zooms made (build::Plan::low, nothing left of
     /// the publishing chain): its catalog, once made, is noted so (`LastCatalog::low_at`).
     catalog_low: std::cell::Cell<bool>,
+    /// When a catalog due was first held back since the last (by the map tiles or the road index to
+    /// draw, build::Plan::catalog_held, or their hand-offs waiting to be merged): past
+    /// build::CATALOG_CAP_S, one goes out with what's drawn and merged.
+    catalog_held_at: std::cell::Cell<Option<u64>>,
     /// Publishing's switches as last read (crate::agent::publish).
     publishing: std::cell::Cell<publish::Switches>,
     /// The map tiles noted planned in the history (crate::pubtimes), since the last catalog.
@@ -1521,6 +1525,7 @@ impl Agent {
             catalog_seen: Default::default(),
             catalogs: std::cell::RefCell::new(catalogs),
             catalog_low: Default::default(),
+            catalog_held_at: Default::default(),
             publishing: Default::default(),
             planned_tiles: Default::default(),
             member_id: run.as_ref().map(|r| r.side.member().id.clone()),
@@ -5573,6 +5578,7 @@ impl Agent {
     /// A catalog made at `at`: noted in the lead's record (build::LastCatalog), with the low zooms
     /// made if its plan had them (`catalog_low`).
     fn catalog_made(&self, at: u64) {
+        self.catalog_held_at.set(None);
         let mut r = self.catalogs.borrow_mut();
         r.at = at;
         if self.catalog_low.get() {
@@ -6234,6 +6240,7 @@ impl Agent {
                     on_map: &on_map,
                     served: &served,
                     since_catalog: since_publish,
+                    held_for: self.catalog_held_at.get().map(|t| now_s().saturating_sub(t)),
                     held,
                     way,
                 },
@@ -6327,7 +6334,12 @@ impl Agent {
         // A catalog waits while a helper's hand-offs of its map tiles or road index wait to be
         // merged (counted as done, their files not yet in the manifest).
         let every_on = self.every_on();
-        if unmerged && plan.iter().any(|w| w.step == "catalog") {
+        // (Held so since the gate first held past build::CATALOG_CAP_S: it goes, the regions those
+        // hand-offs touch left out of `--ready`, build::plan's.)
+        let held_for = self.catalog_held_at.get().map(|t| now_s().saturating_sub(t));
+        let mut held_back = planned.catalog_held;
+        if publish::unmerged_holds(unmerged, held_for) && plan.iter().any(|w| w.step == "catalog") {
+            held_back = true;
             waiting.push(Waiting {
                 step: Some("catalog".into()),
                 what: steps::stage_title("publish").into(),
@@ -6335,6 +6347,14 @@ impl Agent {
             });
             planned.publishing.why = "the catalog waits for a helper's work to be merged".into();
             plan.retain(|w| w.step != "catalog");
+        }
+        // (When a catalog was first held back; none held, and none to make: the count starts again.)
+        if held_back {
+            if self.catalog_held_at.get().is_none() {
+                self.catalog_held_at.set(Some(now_s()));
+            }
+        } else if !plan.iter().any(|w| w.step == "catalog") {
+            self.catalog_held_at.set(None);
         }
         // (Its catalog, once made, went out with the low zooms made, or not.)
         if plan.iter().any(|w| w.step == "catalog") {
@@ -11876,6 +11896,7 @@ mod tests {
                 on_map: &BTreeMap::new(),
                 served: &BTreeMap::new(),
                 since_catalog: None,
+                held_for: None,
                 held: false,
                 way: Default::default(),
             },
@@ -11923,6 +11944,7 @@ mod tests {
                 on_map: &BTreeMap::new(),
                 served: &BTreeMap::new(),
                 since_catalog: None,
+                held_for: None,
                 held: false,
                 way: Default::default(),
             },
