@@ -11,7 +11,10 @@
 //   .plist): the app shows whether it runs and starts or stops it when asked, never by itself.
 // - An update: the server installs each published version under app/<version>; the app, installed
 //   at /Applications/Scenic.app, copies the version's Scenic.app over itself and opens again (the
-//   build service goes on, restarting into the new version by its own update drain).
+//   build service's agent goes on, restarting into the new version by its own update drain). The
+//   launcher launchd started would go on from the old bundle, renamed aside, without the app's
+//   NAS permission (task #389): the app opened again finds it running from outside itself and
+//   restarts it (`followApp`), then deletes the old bundle; each poll checks again.
 //
 // Info.plist names what the app manages, so a sandboxed copy (tools/status/sandbox.sh) manages its
 // own and never the live services: ScenicBuildService (the job's label), ScenicServerLabel,
@@ -122,6 +125,7 @@ final class BuildService {
         default: break
         }
         switch state {
+        case .running(let pid) where refused && quitting == nil: return "Build service: running (pid \(pid)), but it can't reach the NAS: allow Scenic in Files and Folders"
         case .running(let pid): return quitting != nil ? "Build service: quitting (pid \(pid))" : "Build service: running (pid \(pid))"
         case .stopped, .unloaded: return "Build service: stopped"
         }
@@ -150,9 +154,76 @@ final class BuildService {
         }
         refresh()
         if !state.running { kick() }
+        followApp()
     }
 
     func refresh() { state = jobState(buildLabel) }
+
+    /// The running launcher's executable when it isn't this app's (nil: it is, or nothing runs).
+    /// After an update swapped the app, the launcher launchd started goes on from the old bundle,
+    /// renamed aside (.Scenic.app.old-<pid>); macOS's network-volume permission is the app's at its
+    /// own path, so the agent it runs is refused the NAS (EPERM, task #389).
+    func launcherElsewhere() -> String? {
+        guard case .running(let pid) = state, let path = executablePath(Int32(pid)) else { return nil }
+        let mine = Bundle.main.bundleURL.resolvingSymlinksInPath().path + "/"
+        return path.hasPrefix(mine) ? nil : path
+    }
+
+    /// The launcher restarted from this app when it runs from elsewhere (`launcherElsewhere`): at
+    /// launch and each poll, at most once a minute. `launchctl kickstart -k` ends it (its agent
+    /// stopped by the SIGTERM it passes on) and launchd starts the job's program again from the
+    /// registered bundle, this one at the same path; still elsewhere after that, the job registered
+    /// afresh (unregistered and registered) and started. The copies an update left aside deleted
+    /// once nothing runs from them. True when it restarted it.
+    @discardableResult
+    func followApp() -> Bool {
+        defer { removeOldCopies() }
+        guard blocked == nil, quitting == nil, let path = launcherElsewhere(), Date().timeIntervalSince(lastFollow) > 60 else { return false }
+        lastFollow = Date()
+        NSLog("scenic: the build service's launcher runs from \(path), not this app: restarting it")
+        run("/bin/launchctl", ["kickstart", "-k", "\(domain)/\(buildLabel)"])
+        refresh()
+        if let still = launcherElsewhere() {
+            NSLog("scenic: the launcher still runs from \(still): registering the build service again")
+            try? service.unregister()
+            do { try service.register() } catch { NSLog("scenic: registering the build service: \(error)") }
+            refresh()
+            if !state.running { kick() }
+        }
+        return true
+    }
+    var lastFollow = Date.distantPast
+
+    /// The app's copies left aside by updates (.<name>.old-<pid> beside it), deleted once no process
+    /// runs from them.
+    func removeOldCopies() {
+        let me = Bundle.main.bundleURL
+        let dir = me.deletingLastPathComponent()
+        let prefix = ".\(me.lastPathComponent).old-"
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
+        let olds = names.filter { $0.hasPrefix(prefix) }.map { dir.appendingPathComponent($0).path + "/" }
+        if olds.isEmpty { return }
+        let used = runningExecutables()
+        for o in olds where !used.contains(where: { $0.hasPrefix(o) }) {
+            do { try FileManager.default.removeItem(atPath: o) } catch { NSLog("scenic: removing \(o): \(error)") }
+        }
+    }
+
+    /// The agent refused the NAS since it last started: in its log (~/Library/Logs/scenic/agent.log),
+    /// "Operation not permitted" on a /Volumes/ path after the last "agent: started".
+    func nasRefused() -> Bool {
+        guard state.running, let h = FileHandle(forReadingAtPath: agentLog) else { return false }
+        defer { try? h.close() }
+        let end = (try? h.seekToEnd()) ?? 0
+        try? h.seek(toOffset: end > 262_144 ? end - 262_144 : 0)
+        let text = String(decoding: (try? h.readToEnd()) ?? Data(), as: UTF8.self)
+        let since = text.range(of: "agent: started", options: .backwards).map { text[$0.upperBound...] } ?? text[...]
+        return since.split(separator: "\n").contains { $0.contains("Operation not permitted") && $0.contains("/Volumes/") }
+    }
+    let agentLog = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/scenic/agent.log").path
+    /// The agent refused the NAS (`nasRefused`), as the last poll found.
+    var refused = false
+    static let refusedLine = "This Mac's build service can't reach the NAS: allow Scenic in System Settings → Privacy & Security → Files and Folders"
 
     /// Left alone, asked again (each poll, and as the menu opens): once the switch-over is done
     /// (the old login items removed after the app opened), started as at launch. True when it was
@@ -178,6 +249,8 @@ final class BuildService {
         if quitting == nil, service.status == .enabled, !state.running, Date().timeIntervalSince(lastKick) > 60 {
             kick()
         }
+        followApp()
+        refused = nasRefused()
     }
 
     /// Asks the agent to quit (control.rs Quit): `finish` lets its jobs end first.
@@ -429,6 +502,21 @@ func replaceSelf(with new: URL) -> Bool {
     p.arguments = ["-c", "while kill -0 \(getpid()) 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open \"$0\" --args --no-window", me.path]
     try? p.run()
     return true
+}
+
+/// A process's executable path (proc_pidpath), nil if it can't be read.
+func executablePath(_ pid: Int32) -> String? {
+    var buf = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+    let n = proc_pidpath(pid, &buf, UInt32(buf.count))
+    return n > 0 ? String(cString: buf) : nil
+}
+
+/// The executables of the processes whose path can be read (this user's).
+func runningExecutables() -> [String] {
+    var pids = [Int32](repeating: 0, count: 8192)
+    let n = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
+    guard n > 0 else { return [] }
+    return pids.prefix(Int(n)).compactMap { executablePath($0) }
 }
 
 /// Why the system quits the app, if it's for a logout, restart or shutdown.

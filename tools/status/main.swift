@@ -1786,6 +1786,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         var info = [Line(text: line, style: .title)]
         if let o = reply?.offline { info.append(Line(text: offlineText(o), style: .small)) }
         if let c = own?.caches { info.append(Line(text: cachesLine(c), style: .small)) }
+        if managing && build.refused { info.append(Line(text: BuildService.refusedLine, style: .small)) }
         for l in info {
             let (font, color) = fontFor(l.style)
             // A line of information, not a button: it wraps rather than being cut short, and

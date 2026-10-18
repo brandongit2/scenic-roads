@@ -33,7 +33,13 @@ coverage, or once for the whole world, so region size, count and borders never s
   take it (waiting up to three minutes for the handover), else the build waits for it
   (`control::Quit`). The map server stays a service of its own: Scenic's window and menu show it
   and start or stop it when asked, never on opening or quitting. On an update Scenic copies the
-  installed version's Scenic.app over itself and opens again (without its window).
+  installed version's Scenic.app over itself and opens again (without its window). Opened, and
+  each poll, it checks that the build service's launcher runs from its own bundle (macOS's
+  network-volume permission is granted to /Applications/Scenic.app, not to the old copy an update
+  leaves aside): if not, it restarts the job (`launchctl kickstart -k`, registering it again if
+  that isn't enough) and deletes the old copies nothing runs from. When the agent's log shows
+  "Operation not permitted" on the NAS since it started, the menu and window say the build service
+  can't reach the NAS (allow Scenic in Files and Folders).
 - **Switching a Mac over** from the login items Scenic replaces (`local.scenic.agent`,
   `local.scenic.status`): until then the menu bar item runs from `app/current` as before, and a
   copy of Scenic run from inside an installed version, or while `local.scenic.agent` is loaded or
