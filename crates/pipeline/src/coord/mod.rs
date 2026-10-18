@@ -460,15 +460,12 @@ impl Shared {
         self.fills.get(cache).copied().unwrap_or(0)
     }
 
-    /// What of shared cache `cache` the Mac asking `a` lacks (MB): none where its capacity says
-    /// it has the cache whole (the base packs: of the pass now), what it says was freed of it since,
-    /// else (not there, of another pass, an ask saying nothing of its caches) the whole fill.
+    /// What of shared cache `cache` the Mac asking `a` lacks (MB): its fill less what its capacity
+    /// says its cache folder holds of it; the whole fill when its ask says nothing of its caches
+    /// (an older agent's).
     fn missing(&self, cache: &str, a: &Ask) -> u64 {
-        let fill = self.fill_mb(cache);
-        match a.cap.as_ref().and_then(|c| c.caches.get(cache)) {
-            Some(h) if cache != "base packs" || self.pass.is_empty() || h.pass == self.pass => fill.min(h.short_mb),
-            _ => fill,
-        }
+        let have = a.cap.as_ref().and_then(|c| c.caches.get(cache)).map_or(0, |h| h.have_mb);
+        self.fill_mb(cache).saturating_sub(have)
     }
 
     /// A job of `step` over `targets` took `mb` on the disk over its run: when that's past its
@@ -1505,19 +1502,17 @@ pub struct Capacity {
     pub guard: bool,
     /// The leases of its running jobs.
     pub leases: Vec<u64>,
-    /// The shared caches it has (crate::needs::CACHES, by name; task #392): one it lacks isn't
-    /// named, and is reserved whole with the first job reading it.
+    /// What it holds of each shared cache (crate::needs::CACHES, by name; task #392), measured on
+    /// its disk as it asks: the first job reading one is reserved its fill less that.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub caches: BTreeMap<String, CacheHere>,
 }
 
-/// A shared cache a Mac has (`Capacity::caches`): filled by a job of the pass `pass` (the base
-/// packs'; the DEM cache's: any), less what was freed of it since (`short_mb`).
+/// What a Mac holds of a shared cache (`Capacity::caches`): its files' bytes on its disk (MB).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CacheHere {
-    pub pass: String,
-    pub short_mb: u64,
+    pub have_mb: u64,
 }
 
 /// How long a job offered runs, at most, by its targets' measured
@@ -3587,8 +3582,11 @@ fn route(
                         .collect();
                     s.add_disks(&disks);
                     s.add_job_disk(step, d.job_disk_mb);
-                    let ts: Vec<String> = lease_targets.iter().map(|t| t.0.clone()).collect();
-                    s.note_fill(step, &ts, d.job_disk_mb);
+                    // (A fill only of a job that did all its targets: a paused one's run isn't its fill.)
+                    if lease_targets.iter().all(|t| targets.contains(t)) {
+                        let ts: Vec<String> = lease_targets.iter().map(|t| t.0.clone()).collect();
+                        s.note_fill(step, &ts, d.job_disk_mb);
+                    }
                     s.save_leases();
                     s.save_costs();
                     let secs = now.duration_since(l.granted).as_secs_f64();
@@ -3688,12 +3686,7 @@ fn route(
                         })
                         .cloned()
                         .collect();
-                    let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
-                    if s.add_floors(&floors)
-                        | s.add_disks(&disks)
-                        | s.add_job_disk(step, f.job_disk_mb)
-                        | s.note_fill(step, &ts, f.job_disk_mb)
-                    {
+                    if s.add_floors(&floors) | s.add_disks(&disks) | s.add_job_disk(step, f.job_disk_mb) {
                         s.save_costs();
                     }
                     s.save_leases();
@@ -6403,27 +6396,24 @@ mod tests {
         packable(&c, "pack", 6, Some(1));
         c.add_job_run("pack", &["6/1/1".to_string()], 10_100);
         assert!(w.ask(&ask(10_050)).unwrap().is_none(), "no room for the cache");
-        // What its Mac has of the cache (task #392 review: `Capacity::caches`): warm, nothing past
-        // its output; partly freed since, what was freed; of another pass, or not there, the fill.
-        let here = |pass: &str, short_mb: u64| {
-            let h = CacheHere { pass: pass.into(), short_mb };
-            Ask {
-                cap: Some(Capacity {
-                    cores: 8,
-                    disk_mb: 20_000,
-                    caches: [("base packs".to_string(), h)].into(),
-                    ..Default::default()
-                }),
-                want: 1,
-                ..ask(20_000)
-            }
+        // What its Mac holds of the cache (task #392 review: `Capacity::caches`, read off its disk):
+        // whole, nothing past its output; part of it, the rest; none, or not said, the whole fill.
+        let here = |have: Option<u64>| Ask {
+            cap: Some(Capacity {
+                cores: 8,
+                disk_mb: 20_000,
+                caches: have.map(|h| ("base packs".to_string(), CacheHere { have_mb: h })).into_iter().collect(),
+                ..Default::default()
+            }),
+            want: 1,
+            ..ask(20_000)
         };
-        for (pass, short, want) in [("p", 0, 100), ("p", 4_000, 4_100), ("p", 50_000, 10_100), ("o", 0, 10_100)] {
+        for (have, want) in [(Some(10_000), 100), (Some(6_000), 4_100), (Some(0), 10_100), (None, 10_100)] {
             let (_d, c, w, _clock) = every((0, 0));
             packable(&c, "pack", 6, Some(1));
             c.add_job_run("pack", &["6/1/1".to_string()], 10_100);
-            let g = w.ask(&here(pass, short)).unwrap().unwrap();
-            assert_eq!(g.disk_mb, want, "{pass} {short}");
+            let g = w.ask(&here(have)).unwrap().unwrap();
+            assert_eq!(g.disk_mb, want, "{have:?}");
         }
     }
 

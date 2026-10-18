@@ -96,8 +96,14 @@ pub struct Cfg {
     /// The steps measured before the run (a lead with history): one target of each, and one job
     /// of each that filled its shared cache (its disk and its cache's: `Step::cache_mb`).
     pub known: Vec<&'static str>,
-    /// The shared caches every Mac has already (on its disk, outside the free space it starts with).
+    /// The shared caches every Mac has whole already (on its disk, counted out of its free space).
     pub warm: Vec<&'static str>,
+    /// The parts a cache's fill comes in: a job copies one (its halo's owners' base packs, a
+    /// member without the mirror), the rest left for the jobs after it; 0 or 1: the whole.
+    pub fill_parts: u64,
+    /// A Mac's cache emptied at a time, the pass the same (its index, simulated s, the cache), as
+    /// room-making, the OSM pass's clear or a hand would.
+    pub clear: Option<(usize, u64, &'static str)>,
 }
 
 /// What a run did.
@@ -131,6 +137,10 @@ pub struct Run {
     /// Jobs granted their shared cache's reservation (more than their own disk) on a Mac where a
     /// job reading that cache ran already: the cache reserved twice.
     pub cache_twice: usize,
+    /// Jobs granted on a Mac where none reading their cache ran, short of what it truly lacked of it.
+    pub rest_unreserved: usize,
+    /// Jobs granted a cache's reservation (more than their own disk), by Mac.
+    pub fills_granted: BTreeMap<&'static str, usize>,
 }
 
 /// A loop of an agent (s).
@@ -254,11 +264,13 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
     let mut done: BTreeSet<(String, String)> = BTreeSet::new();
     let total: usize = cfg.steps.iter().map(|s| s.targets).sum();
     let mut running: Vec<Vec<Job>> = cfg.macs.iter().map(|_| Vec::new()).collect();
-    // (Each Mac's shared caches filled, and the disk they keep: what its free space lost to them.)
-    let all_caches: BTreeSet<&'static str> = crate::needs::CACHES.iter().map(|(c, _)| *c).collect();
-    let mut filled: Vec<BTreeSet<&'static str>> =
-        cfg.macs.iter().map(|_| all_caches.iter().copied().filter(|c| cfg.warm.contains(c)).collect()).collect();
-    let mut cached: Vec<u64> = cfg.macs.iter().map(|_| 0).collect();
+    // (What each Mac holds of each shared cache (MB): its whole fill where warm.)
+    let whole = |c: &str| {
+        cfg.steps.iter().filter(|s| crate::needs::cache_of(s.name) == Some(c)).map(|s| s.cache_mb).max().unwrap_or(0)
+    };
+    let mut have: Vec<BTreeMap<&'static str, u64>> =
+        cfg.macs.iter().map(|_| cfg.warm.iter().map(|c| (*c, whole(c))).collect()).collect();
+    let mut cleared = false;
     let mut out = Run { most: vec![0; cfg.macs.len()], ran: vec![0; cfg.macs.len()], ..Default::default() };
     let limit = |k: usize| memguard::limit_mb(cfg.macs[k].total_mb);
     let reserve_mb = room::RESERVE >> 20;
@@ -292,8 +304,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 );
                 c.add_job_run(&j.step, &j.targets, j.disk_mb);
                 if let Some(cache) = crate::needs::cache_of(&j.step).filter(|_| j.fill > 0) {
-                    filled[k].insert(cache);
-                    cached[k] += j.fill;
+                    *have[k].entry(cache).or_default() += j.fill;
                 }
                 done.extend(j.targets.iter().map(|tg| (j.step.clone(), tg.clone())));
                 match &clients[k] {
@@ -353,16 +364,19 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             )
         };
         let measured = |step: &str, ts: &[String]| c.measured_batch(step, ts);
-        // (A Mac's disk free with no job running: less the caches it filled.)
-        let disk_of = |k: usize| cfg.macs[k].disk_mb.saturating_sub(cached[k]);
-        // (The shared caches a Mac has, as its capacity says them: the base packs of the plan's pass.)
+        // (A cache emptied, `Cfg::clear`.)
+        if let Some((k, at, c)) = cfg.clear.filter(|x| !cleared && t >= x.1) {
+            let _ = at;
+            have[k].remove(c);
+            cleared = true;
+        }
+        // (A Mac's disk free with no job running: less the caches it holds.)
+        let disk_of = |k: usize| cfg.macs[k].disk_mb.saturating_sub(have[k].values().sum());
+        // (What a Mac holds of its caches, as its capacity says it: read off its disk.)
         let here = |k: usize| -> BTreeMap<String, coord::CacheHere> {
-            filled[k]
+            crate::needs::CACHES
                 .iter()
-                .map(|c| {
-                    let pass = if *c == "base packs" { "p" } else { "" };
-                    (c.to_string(), coord::CacheHere { pass: pass.into(), short_mb: 0 })
-                })
+                .map(|(c, _)| (c.to_string(), coord::CacheHere { have_mb: have[k].get(c).copied().unwrap_or(0) }))
                 .collect()
         };
         // A job starting on Mac `k`: the guard's stop of one past the limit, else the invariants.
@@ -378,21 +392,29 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             let s = steps[step];
             let own = measured(step, &targets);
             let cold = own.is_none();
-            // (Its shared cache: filled by it when its Mac hasn't it and no job there fills it.)
+            // (Its shared cache: what its Mac lacks of it and no job there copies already, a part of
+            // the fill at most, `Cfg::fill_parts`.)
             let cache = crate::needs::cache_of(step);
             let fill = match cache {
-                Some(ch) if !filled[k].contains(ch) => {
-                    if running[k].iter().any(|j| crate::needs::cache_of(&j.step) == Some(ch) && j.fill > 0) {
-                        0
-                    } else {
-                        s.cache_mb
-                    }
+                Some(ch) => {
+                    let copying: u64 =
+                        running[k].iter().filter(|j| crate::needs::cache_of(&j.step) == Some(ch)).map(|j| j.fill).sum();
+                    let lacks = s.cache_mb.saturating_sub(have[k].get(ch).copied().unwrap_or(0) + copying);
+                    lacks.min(s.cache_mb.div_ceil(cfg.fill_parts.max(1)))
                 }
-                _ => 0,
+                None => 0,
             };
             if let (Some(ch), Some(m)) = (cache, own) {
-                if granted_mb > m.disk_mb && running[k].iter().any(|j| crate::needs::cache_of(&j.step) == Some(ch)) {
-                    out.cache_twice += 1;
+                let beside = running[k].iter().any(|j| crate::needs::cache_of(&j.step) == Some(ch));
+                if granted_mb > m.disk_mb {
+                    *out.fills_granted.entry(cfg.macs[k].name).or_default() += 1;
+                    if beside {
+                        out.cache_twice += 1;
+                    }
+                }
+                let lacks = s.cache_mb.saturating_sub(have[k].get(ch).copied().unwrap_or(0));
+                if !beside && granted_mb.saturating_sub(m.disk_mb) < lacks {
+                    out.rest_unreserved += 1;
                 }
             }
             let job = Job {
@@ -751,7 +773,18 @@ mod tests {
     use super::*;
 
     fn cfg(macs: Vec<Mac>, member_slots: usize) -> Cfg {
-        Cfg { macs, steps: plan(), member_slots, nas: None, in_use: None, halo: 6, known: Vec::new(), warm: Vec::new() }
+        Cfg {
+            macs,
+            steps: plan(),
+            member_slots,
+            nas: None,
+            in_use: None,
+            halo: 6,
+            known: Vec::new(),
+            warm: Vec::new(),
+            fill_parts: 1,
+            clear: None,
+        }
     }
 
     /// The lead's jobs by grant (task #244): it packs several at once by its measures like any
@@ -927,7 +960,7 @@ mod tests {
         let g = r.granted_disk["pack"];
         // (Its output at most a fill's 1.3 GB while fills are its targets' 90th percentile, early.)
         assert!((1_300..=2_600).contains(&g), "its output and the cache once: {r:?}");
-        assert_eq!(r.cache_twice, 0, "{r:?}");
+        assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
         assert!(r.most_nas <= crate::budget::nas::WHOLE, "{r:?}");
     }
 
@@ -953,7 +986,7 @@ mod tests {
         let r = run(&c).unwrap();
         assert_eq!(r.granted_disk.get("lo"), Some(&45_500), "its output and the fill once: {r:?}");
         assert_eq!(r.most_of.get(&("m4", "lo".to_string())), Some(&2), "{r:?}");
-        assert_eq!(r.cache_twice, 0, "{r:?}");
+        assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
         assert!(r.most_nas <= crate::budget::nas::WHOLE, "{r:?}");
     }
 
@@ -966,7 +999,8 @@ mod tests {
     /// map tiles and low zooms beside them.
     #[test]
     fn the_m4_runs_several_units_at_once_by_todays_measures() {
-        let m4 = Mac { name: "m4", total_mb: 49_152, cores: 14, disk_mb: 85_000 };
+        // (85 GB free with its DEM cache's 12.6 GB there.)
+        let m4 = Mac { name: "m4", total_mb: 49_152, cores: 14, disk_mb: 85_000 + 12_600 };
         let unit = Step {
             cache_mb: 12_600,
             name: "unit",
@@ -1011,7 +1045,7 @@ mod tests {
         let units = r.most_of[&("m4", "unit".to_string())];
         assert!((3..=4).contains(&units), "units at once: {r:?}");
         assert!(r.beside.contains(&("m4", "lo".to_string(), "pack".to_string())), "{r:?}");
-        assert_eq!(r.cache_twice, 0, "{r:?}");
+        assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
         assert_eq!(r.granted_disk["unit"], 6_000, "its output, its cache there: {r:?}");
     }
 
@@ -1022,7 +1056,7 @@ mod tests {
     /// the units still several at once, and the plan finishes.
     #[test]
     fn a_cold_66_gb_fill_beside_units_doesnt_over_commit() {
-        let m4 = Mac { name: "m4", total_mb: 49_152, cores: 14, disk_mb: 85_000 + 66_000 };
+        let m4 = Mac { name: "m4", total_mb: 49_152, cores: 14, disk_mb: 85_000 + 66_000 + 12_600 };
         let unit = Step {
             cache_mb: 12_600,
             name: "unit",
@@ -1065,8 +1099,37 @@ mod tests {
         };
         let r = run(&c).unwrap();
         assert!(r.granted_disk["pack"].max(r.granted_disk["lo"]) >= 66_000, "the fill reserved: {r:?}");
-        assert_eq!(r.cache_twice, 0, "{r:?}");
+        assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
         assert!(r.most_of[&("m4", "unit".to_string())] >= 3, "{r:?}");
+    }
+
+    /// Task #392 re-review: a member without the mirror whose map tiles' jobs each copy their
+    /// halo's owners' base packs, a quarter of the 40 GB fill: each job that's the first there
+    /// reading them is still reserved what the Mac truly lacks (checked at each start), several
+    /// such grants, no start over-committing its disk; and its cache emptied midway, the pass the
+    /// same, the next job is reserved the fill again.
+    #[test]
+    fn a_cache_filled_in_parts_or_emptied_is_reserved_what_it_lacks() {
+        let pack = Step {
+            cache_mb: 40_000,
+            name: "pack",
+            targets: 12 * 20,
+            mem_mb: 1_000,
+            disk_mb: 300,
+            secs: 120,
+            threads: 2,
+            nas_mb: 60,
+            creates: 30,
+        };
+        let mut macs = m4_m1();
+        macs[1].disk_mb = 100_000;
+        let base = Cfg { steps: vec![pack], halo: 20, known: vec!["pack"], fill_parts: 4, ..cfg(macs, 1) };
+        let r = run(&base).unwrap();
+        assert!(r.fills_granted.get("m1").is_some_and(|&n| n >= 2), "{r:?}");
+        assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
+        let r = run(&Cfg { fill_parts: 1, clear: Some((1, 1_200, "base packs")), ..base }).unwrap();
+        assert!(r.fills_granted.get("m1").is_some_and(|&n| n >= 2), "filled, emptied, filled again: {r:?}");
+        assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
     }
 
     /// The members' owners at them (task #241): each one's in-use share keeps its cores (here 4 of

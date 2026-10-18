@@ -327,19 +327,20 @@ caches** (task #392, `needs::CACHES`): `pack` and `lo` read one cache of base pa
 on the M4), the warm runs after it their output alone (0.3 and 0.5 GB at the 90th percentile).
 So a target of such a step counts its own output (its disk floor at most its step's 90th
 percentile, `needs::Book::disk`), and the cache is reserved apart. What's reserved and when:
-- *The fill* (`coord::Shared::fills`, `cache-fills.json`): a run whose disk passes its targets'
-  output by 512 MB or more, and by at least half the fill kept, filled the cache; that excess
-  (its run less its own output, so a unit's output isn't counted in the DEM cache's) is the fill.
-  Warm runs, and a part refilled after an eviction, leave it.
-- *What a Mac has* (`Capacity::caches`, its agent's `caches_here`): a cache is named once a job
-  reading it ended there (done, or stopped at a safe point; the base packs with that job's
-  pass), with what room-making, the room-target freeing or the disk guard freed of it since
-  (`short_mb`); the DEM cache only while its copy is in the cache folder.
+- *The fill* (`coord::Shared::fills`, `cache-fills.json`): a job that did all its targets (not
+  a paused or stopped one) and whose disk passed its targets' output by 512 MB or more, and by
+  at least half the fill kept, filled the cache; that excess (its run less its own output, so a
+  unit's output isn't counted in the DEM cache's) is the fill. Warm runs, and a part copied
+  (one halo's owners' base packs, a part refilled after an eviction), leave it.
+- *What a Mac holds* (`Capacity::caches`, `have_mb`): read off its disk as its agent asks
+  (`caches_here`: the bytes of its cache folder's `base/`, and of its `dem-cache.*` files), so
+  whatever emptied them (room-making, the OSM pass's clear, a hand) counts.
 - *The reservation*: the first job granted on a Mac reading a cache (a cold start too) carries
-  in its `Grant::disk_mb`, beside its output, what that Mac lacks of it: nothing when it has the
-  cache whole; what was freed of it since, when part was (at most the fill); the whole fill when
-  it hasn't it, has the base packs of another pass, or its ask names no caches (an older
-  agent). The jobs beside it on that Mac carry their output alone. Its agent counts the grant in
+  in its `Grant::disk_mb`, beside its output, the fill less what that Mac holds of it: nothing
+  when it holds the fill, the rest when part (a job copies only its own tiles' owners' packs), the
+  whole fill when it holds none or its ask says nothing of its caches (an older agent). The jobs
+  beside it on that Mac carry their output alone. Files of an earlier pass count as held until
+  the next job reading them prunes them. Its agent counts the grant in
   `reserved_mb` (as `disk_words` and the build page's disk bar show it).
 The cache files a Mac has are on its disk, outside the free space an ask says; the
 room-target freeing and the disk guard (`room::toward`) can delete those no job holds, but
@@ -833,9 +834,11 @@ tiles (`pack_raw_with`) stays inside the piece's job.
   its Mac's cores (less a member's in-use share's, with the owners at their Macs), a serial step
   granted 1–2 and packed beside its kind, and the plan finishes. A halo step's job (`pack`; `lo`, a pass's z3 tiles its halo) takes
   one halo's targets (offered a halo an offer, checked at every start), its disk the halo's output
-  once; a job of a step reading a shared cache fills it on a Mac without it (kept on its disk
-  after), and no job is granted a cache's reservation beside another reading it there (§7.1,
-  Disk reservations); with units in the plan, a halo's map tiles are offered once its unit is
+  once; a job of a step reading a shared cache copies what its Mac lacks of it (a part of the
+  fill at most, a setting), kept on its disk after, and no job is granted a cache's reservation
+  beside another reading it there (§7.1, Disk reservations): a member copying the base packs a
+  halo at a time is reserved what it truly lacks at each first job, and again in full after its
+  cache is emptied, the pass the same; with units in the plan, a halo's map tiles are offered once its unit is
   built, before the units left: on the M4 and the M1, the NAS budget on and both steps measured
   before, each Mac runs map tiles beside units, and the plan finishes. The M4 as measured on 18
   Oct (48 GB, 14 cores, 85 GB free, its caches on its disk so none of them reserved; units of 6.6
