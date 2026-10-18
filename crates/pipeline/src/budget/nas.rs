@@ -2,7 +2,8 @@
 //! `state/pool/nas-budget` (`SWITCH`; off while missing or `off` in it). Packing lets more jobs run
 //! at once, and the share takes 20 to 55 small-file creates a second: the lead's coordinator keeps
 //! the pool's running jobs' NAS weights together within what the NAS was measured to give
-//! (crate::coord's `pack` and `pick_every`), as the Wikimedia budget keeps the pool's requests.
+//! (crate::coord's `pack`, `pick_every` and `pick_own`: the lead's own jobs too), as the Wikimedia
+//! budget keeps the pool's requests.
 //!
 //! - **A job's NAS weight** is the share of the NAS it takes, in thousandths: its targets' measured
 //!   rate (crate::needs::Book::nas: bytes read and written a second, files made a second, from
@@ -110,6 +111,13 @@ impl Limits {
     /// that fits only beside nothing would never go).
     pub fn fits(members: u32, running: u32, w: u32) -> bool {
         w == 0 || members == 0 || running.saturating_add(w) <= WHOLE
+    }
+
+    /// Whether a job of the lead's own of weight `w` may start beside leased jobs weighing
+    /// `running` together: within the whole, or beside nothing that weighs anything (a job past
+    /// the whole alone).
+    pub fn fits_own(running: u32, w: u32) -> bool {
+        w == 0 || running == 0 || running.saturating_add(w) <= WHOLE
     }
 }
 
@@ -235,6 +243,8 @@ mod tests {
         assert!(Limits::fits(0, 900, 1000), "the lead's own alone: a member's job goes");
         assert!(!Limits::fits(1, 900, 1000));
         assert!(Limits::fits(999, 999, 0));
+        assert!(Limits::fits_own(600, 400) && !Limits::fits_own(601, 400));
+        assert!(Limits::fits_own(0, 1000) && !Limits::fits_own(1, 1000), "the lead's own: within the whole, or alone");
     }
 
     /// The limits are the best of the last day's probes.

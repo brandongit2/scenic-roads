@@ -161,8 +161,8 @@ Common rules:
 
 - **Every Mac's agent** (the lead's slots too: docs/pool.md §7.6) asks for jobs and tasks over HTTP.
   A job runs its step's one command; a task runs as `scenic run-task`.
-- **A Mac's second job** (plan §8, Two jobs at once) appears as its own worker ("<host> (second
-  job)").
+- **A Mac's slots past the first** (plan §8, Jobs at once) each appear as a worker of their own
+  ("<host> #<k>").
 - **Planned:** the jobs' own work as tasks too.
 
 ## 9. Security

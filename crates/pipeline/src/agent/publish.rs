@@ -11,10 +11,6 @@
 //!   and the sizes of the files the last one lists taken from it, not looked at again.
 //! - **Slope and tree cover near** (`near-slope`): a done region's slope and tree cover the pieces
 //!   near it (crate::agent::build::Publishing::near), their assemblies with the low zooms.
-//!
-//! The lead's own job of the map tiles (`pack`, `lo`) takes its share of them (`lead_share`), the
-//! rest left to the members asking (every step to every member: crate::agent::every), not the
-//! step's whole batch.
 
 use std::path::Path;
 
@@ -49,16 +45,6 @@ impl Switches {
     }
 }
 
-/// How many of `total` targets of a map tiles' step (`pack`, `lo`) the lead's own job takes, with
-/// `members` other members asking for work: an even share (`total / (members + 1)`, rounded up),
-/// at most the step's batch; the step's batch with none.
-pub fn lead_share(total: usize, batch: usize, members: usize) -> usize {
-    if members == 0 {
-        return batch;
-    }
-    total.div_ceil(members + 1).clamp(1, batch.max(1))
-}
-
 /// Whether hand-offs of the map tiles or the road index waiting to be merged (`unmerged`) hold the
 /// catalog back, a catalog held back `held_for` seconds so far: until build::CATALOG_CAP_S, then it
 /// goes (the regions they touch not recorded built: build::plan's `ready`).
@@ -79,9 +65,6 @@ pub fn held_at(was: Option<u64>, held: bool, due: bool, now: u64) -> Option<u64>
         None
     }
 }
-
-/// The steps the lead shares with the members (`lead_share`).
-pub const SHARED_MAP_TILES: [&str; 2] = ["pack", "lo"];
 
 #[cfg(test)]
 mod tests {
@@ -119,15 +102,5 @@ mod tests {
         assert_eq!(held_at(Some(100), false, true, 720), Some(100));
         // None held and none due: the count starts again.
         assert_eq!(held_at(Some(100), false, false, 800), None);
-    }
-
-    #[test]
-    fn the_lead_takes_its_share() {
-        assert_eq!(lead_share(10, 16, 0), 16);
-        assert_eq!(lead_share(10, 16, 1), 5);
-        assert_eq!(lead_share(11, 16, 1), 6);
-        assert_eq!(lead_share(40, 16, 1), 16);
-        assert_eq!(lead_share(1, 16, 3), 1);
-        assert_eq!(lead_share(3, 2, 1), 2);
     }
 }

@@ -91,7 +91,7 @@ struct Status: Decodable {
     let beat: Int
     let conditions: Conditions
     let job: Job?
-    /// Its second job, beside the first (agents from 2026-10-06 on).
+    /// Its second slot's job, beside the first.
     let beside: Job?
     let waiting: [Waiting]
     let recent: [Done]
@@ -760,7 +760,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
             out.append(Line(text: tildes(String(l).trimmingCharacters(in: .whitespaces)), style: .mono))
         }
     }
-    // The lead's second job, beside the first.
+    // The lead's second slot's job, beside the first.
     if let j = s.beside {
         out.append(Line(text: "Beside it: \(j.what)", style: .plain))
         if let p = j.progress {

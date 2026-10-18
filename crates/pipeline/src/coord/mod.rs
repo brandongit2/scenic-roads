@@ -176,13 +176,14 @@ pub fn first_guess(costs: &BTreeMap<String, Cost>, step: &str, target: &str, siz
 }
 
 /// A step's work offered to the workers that mount the NAS: its targets in plan order (target, key,
-/// size: a unit's or candidates' piece bytes, another step's predicted peak memory in MB) and how
-/// many go in a job.
+/// size: a unit's or candidates' piece bytes, another step's predicted peak memory in MB). A job
+/// takes as many as fit `JOB_S` by their measured times (`pick_every`), but the lead's own planned
+/// job (`job`: its id), granted whole and to the lead alone (crate::agent::every::grants).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Offer {
     pub step: String,
     pub targets: Vec<(String, String, u64)>,
-    pub batch: usize,
+    pub job: Option<String>,
 }
 
 /// A worker, as its requests describe it.
@@ -289,11 +290,6 @@ pub struct Shared {
     /// The build page's acceptances of the gate's warnings (`/work/inputs`), for the agent to write
     /// (crate::inputs::apply_ask).
     pub inputs_asks: Vec<crate::inputs::Ask>,
-    /// Every step to every member (docs/pool.md §12, phase 4's ninth batch: crate::agent::every),
-    /// while the lead's switch has it on: each worker's targets by the measures (`pick_every`), and
-    /// a cold start only to the one with the most room (this Mac's own room, `Every::own`, counted
-    /// as a member's). None: as before (`pick`).
-    pub every: Option<Every>,
     /// The lead's own Mac's capacity (`Coordinator::set_capacity`), as its members' asks carry theirs.
     pub own_cap: Option<Capacity>,
     /// Placement by how crucial a job is (docs/pool.md §12, phase 4's eleventh batch:
@@ -302,15 +298,10 @@ pub struct Shared {
     /// targets and the tasks drawn among those asking by measured speed, a task offered ahead given
     /// to a slower worker its head start covers. None: as before.
     pub placement: Option<(crate::agent::placement::Placement, Instant)>,
-    /// Packing (docs/pool.md §7.2, behind `state/pool/packing`: crate::agent::packing), while every
-    /// step to every member is on too: a member may hold several leases, an ask granted as many jobs
-    /// as it wants that fit its room together (`pack`). None: one job an ask, as before.
-    pub packing: Option<Packing>,
     /// The NAS budget's limits (docs/pool.md §7.7, crate::budget::nas): the NAS's as probed, and the
-    /// downloads' cap. Read by `pick_every` (so `pack` too), with every step to every member on.
-    /// None: the switch off, or no probe yet.
+    /// downloads' cap. Read by `pick_every` (so `pack` too). None: the switch off, or no probe yet.
     pub nas: Option<crate::budget::nas::Limits>,
-    /// This Mac's member name, its own jobs' leases held under it (`Coordinator::hold`): the NAS
+    /// This Mac's member name, its own jobs' leases held under it (`Coordinator::ask_own`): the NAS
     /// budget lets a member's job go past the whole while the lead's own alone hold weight.
     pub lead_name: String,
     /// Targets passed over for the NAS budget alone ((step, target) → (first, last time)), for the
@@ -484,67 +475,6 @@ impl Shared {
             .map_or(0, |t| first_guess(&self.costs, step, target, t.2))
     }
 
-    /// The targets of offer `o` that `a`'s worker may do now, as many as a job of it takes (units: as
-    /// many as the worker asks), from the far end of the plan: none held, done, failed by it lately,
-    /// or needing more memory than it spares; `away`, those that fit the more it spares while its
-    /// owner's away, and end in the time it gives (none when it gives none: the ask's caller tries
-    /// every step's usual pick first).
-    fn pick(&self, o: &Offer, a: &Ask, now: Instant, away: bool) -> Vec<(String, String)> {
-        let held = self.leases.held(&o.step, now);
-        let backoff = |t: &str| match self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))) {
-            Some((at, n)) => {
-                now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
-            }
-            None => false,
-        };
-        let n = if o.step == "unit" { a.max.max(1) } else { o.batch.max(1) };
-        // Terrain from the near end: the lead's next units wait on it, so a member builds the
-        // next region's while the lead builds this one's units. The rest from the far end,
-        // away from the lead's own (and near each other, for the caches).
-        let open: Vec<&(String, String, u64)> = {
-            let order: Box<dyn Iterator<Item = &(String, String, u64)>> =
-                if o.step == "terrain" { Box::new(o.targets.iter()) } else { Box::new(o.targets.iter().rev()) };
-            order
-                .filter(|(t, k, _)| {
-                    !held.contains(t) && self.done.get(&(o.step.clone(), t.clone())) != Some(k) && !backoff(t)
-                })
-                .collect()
-        };
-        let take =
-            |v: Vec<&(String, String, u64)>| v.into_iter().map(|(t, k, _)| (t.clone(), k.clone())).collect::<Vec<_>>();
-        if !away {
-            // (A floor past a worker's limit keeps the target from it: its predicted memory is never
-            // below it. The lead tries a target whose floor past its own limit was a batch's in a job
-            // of its own, crate::agent's `guard_holds`; one under a worker's runs batched.)
-            return take(
-                open.iter()
-                    .copied()
-                    .filter(|(t, _, size)| self.peak_of(&o.step, t, *size, a.cores) <= a.mem_mb)
-                    .take(n)
-                    .collect(),
-            );
-        }
-        let (Some(more), Some(max)) = (a.more_mb, a.max_secs) else { return Vec::new() };
-        // Its owner away: a job that fits the more it spares then, as long as it ends in time.
-        let mut left = max;
-        take(
-            open.into_iter()
-                .filter(|(t, _, size)| {
-                    self.peak_of(&o.step, t, *size, a.cores) <= more
-                        && job_secs(&self.costs, &o.step, t, &a.worker).is_some_and(|s| s <= max)
-                })
-                .take_while(|(t, _, _)| match job_secs(&self.costs, &o.step, t, &a.worker) {
-                    Some(s) if s <= left => {
-                        left -= s;
-                        true
-                    }
-                    _ => false,
-                })
-                .take(n)
-                .collect(),
-        )
-    }
-
     /// `Coordinator::measured`, under its lock: its step's model's (crate::needs) memory and disk (a
     /// unit's or candidates' piece-size guess first while their fit isn't good, by the size it was
     /// offered with); None while nothing of its step was measured. Floors of an older way of the
@@ -567,9 +497,8 @@ impl Shared {
     }
 
     /// The worker that takes a cold start of `step` now (docs/pool.md §7.7): of the agents around
-    /// asking lately for it (packing on: holding no job's lease), the one with the most room
-    /// (memory, then disk; by name between equals), when it has more than this Mac's own
-    /// (`Every::own`); None when this Mac has the most, or none asks.
+    /// asking lately for it holding no job's lease (the lead's own asks among them), the one with
+    /// the most room (memory, then disk; by name between equals); None when none asks.
     fn most_room(&self, step: &str, now: Instant) -> Option<String> {
         let room = |w: &Worker| (w.mem_mb, w.ask.as_ref().and_then(|a| a.disk_mb).unwrap_or(0));
         let best = self
@@ -581,14 +510,11 @@ impl Shared {
                     && now.duration_since(w.seen) < AROUND
                     && w.asked.is_some_and(|a| now.duration_since(a) < ASKING)
                     && w.can.iter().any(|c| c == step)
-                    // (Packing on: a member running a job isn't idle, whatever its room.)
-                    && (self.packing.is_none() || self.job_leases(n, now).is_empty())
+                    // (A worker running a job isn't idle, whatever its room.)
+                    && self.job_leases(n, now).is_empty()
             })
             .max_by(|(n1, w1), (n2, w2)| room(w1).cmp(&room(w2)).then(n2.cmp(n1)))?;
-        match self.every.and_then(|e| e.own) {
-            Some(own) if own >= room(best.1) => None,
-            _ => Some(best.0.clone()),
-        }
+        Some(best.0.clone())
     }
 
     /// `worker`'s live jobs' leases.
@@ -628,12 +554,6 @@ impl Shared {
     fn nas_wait(&self, step: &str, target: &str, now: Instant) {
         let mut g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
         g.entry((step.to_string(), target.to_string())).and_modify(|e| e.1 = now).or_insert((now, now));
-    }
-
-    /// The threads a job of `step` over `pick` is granted, one job an ask (packing off): all the
-    /// cores `a`'s Mac has for its jobs (`ask_cores`), as before; measured cores size packing alone.
-    fn job_threads(&self, a: &Ask, _step: &str, _pick: &[(String, String)]) -> u32 {
-        ask_cores(a)
     }
 
     /// Whether a job of `step` over `targets` reads the NAS enough that its threads overlap waiting
@@ -716,18 +636,19 @@ impl Shared {
             more: Vec::new(),
             threads,
             disk_mb,
+            job: o.job.clone(),
         }
     }
 
-    /// Packing on (docs/pool.md §7.2): the jobs `a`'s worker is granted, packed into its room in
-    /// plan order (`offers`' order, each by `pick_every`): up to the jobs it wants (`Ask::want`, at
-    /// least one) and its cap (`Packing::cap_of`, counting the leases it holds). Each after the
-    /// first it holds goes beside the others: measured (memory, disk, cores, crate::needs), within
-    /// the room left (the ask's memory and disk, and its Mac's cores, less every job it holds and
-    /// those granted in this answer: a lease held counts until it ends or lapses); a cold start only to a worker holding nothing (`most_room`), alone.
-    /// Nothing while it runs a cold start. None: no job.
-    fn pack(&mut self, a: &Ask, offers: &[Offer], now: Instant) -> Option<Grant> {
-        let cap = self.packing.as_ref()?.cap_of(&a.worker);
+    /// The jobs `a`'s worker is granted (docs/pool.md §7.2), packed into its room in `offers`' order
+    /// (each by `pick_every`, the lead's own planned jobs by `pick_own`, those to `lead` alone:
+    /// crate::agent::every::grants), up to the jobs it wants (`Ask::want`, at least one). Each after
+    /// the first it holds goes beside the others: measured (memory, disk, cores, crate::needs),
+    /// within the room left (the ask's memory and disk, and its Mac's cores, less every job it
+    /// holds and those granted in this answer: a lease held counts until it ends or lapses); a cold
+    /// start only to a worker holding nothing (`most_room`), alone. Nothing while it runs a cold
+    /// start. None: no job.
+    fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, now: Instant) -> Option<Grant> {
         let mine = self.job_leases(&a.worker, now);
         let need = |s: &Shared, l: &Lease| match &l.work {
             Work::Job { step, targets } => s.job_need(step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>()),
@@ -771,11 +692,14 @@ impl Shared {
         }
         let mut held = mine.len();
         let mut grants: Vec<Grant> = Vec::new();
-        while grants.len() < a.want.max(1) && cap.is_none_or(|c| held < c) {
+        while grants.len() < a.want.max(1) {
             let beside = held > 0;
             let mut got = None;
             for o in offers {
-                let pick = self.pick_every(o, &room, now);
+                if !crate::agent::every::grants(&o.step, o.job.is_some(), lead) {
+                    continue;
+                }
+                let pick = if o.job.is_some() { self.pick_own(o, &room, now) } else { self.pick_every(o, &room, now) };
                 if pick.is_empty() {
                     continue;
                 }
@@ -793,6 +717,9 @@ impl Shared {
             let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
             let threads =
                 n.and_then(|(_, c)| c).map_or(share, |c| self.packed_cores(&o.step, &ts, c, share)).min(cores).max(1);
+            // (A planned job of no targets of its own is offered under its id's, keyless, to be
+            // measured by it: its lease holds none, as its hand-off names none.)
+            let pick = if o.job.is_some() { pick.into_iter().filter(|t| !t.1.is_empty()).collect() } else { pick };
             grants.push(self.grant_job(a, o, pick, threads, now));
             held += 1;
             // (A cold start alone.)
@@ -805,6 +732,40 @@ impl Shared {
         let mut first = it.next()?;
         first.more = it.collect();
         Some(first)
+    }
+
+    /// The lead's own planned job of offer `o` (`Offer::job`), whole: all its targets, when none is
+    /// held, done under its key or kept from `a`'s worker after it failed, no other job of its step
+    /// runs anywhere (one job of a step kept to the lead at a time), the NAS budget has room for it
+    /// (its weight, and a download under the cap), and its measures (memory, disk) fit what the ask spares; a cold start (one not measured) only
+    /// to the worker with the most room (`most_room`). Empty: not now.
+    fn pick_own(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
+        if self.leases.all(now).iter().any(|l| matches!(&l.work, Work::Job { step, .. } if *step == o.step)) {
+            return Vec::new();
+        }
+        let open = o.targets.iter().all(|(t, k, _)| {
+            let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
+                now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
+            });
+            self.done.get(&(o.step.clone(), t.clone())) != Some(k) && !backoff
+        });
+        let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
+        // (The NAS budget's room for its weight, and a download under the cap.)
+        let nas_fits = self.nas_room(now).is_none_or(|(nw, running, _, dl)| {
+            let (w, fetch) = Self::job_nas(&nw, &o.step, &ts);
+            crate::budget::nas::Limits::fits_own(running, w) && !(fetch && nw.limits.downloads.is_some_and(|c| dl >= c))
+        });
+        if o.targets.is_empty() || !open || !nas_fits {
+            return Vec::new();
+        }
+        let fits = match self.job_need(&o.step, &ts) {
+            Some((m, _)) => m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d),
+            None => self.most_room(&o.step, now).as_deref() == Some(a.worker.as_str()),
+        };
+        if !fits {
+            return Vec::new();
+        }
+        o.targets.iter().map(|(t, k, _)| (t.clone(), k.clone())).collect()
     }
 
     /// Every step to every member (docs/pool.md §12, phase 4's ninth batch): the targets of offer
@@ -836,9 +797,17 @@ impl Shared {
         if downloads_full {
             return Vec::new();
         }
+        // (The lead's own asks held within the whole, or alone; a member's past it beside the
+        // lead's own alone: crate::budget::nas::Limits.)
+        let lead = a.worker == self.lead_name;
         let nas_fits = |t: &str| {
             nas.as_ref().is_none_or(|(nw, running, members, _)| {
-                crate::budget::nas::Limits::fits(*members, *running, nw.weight(&o.step, t))
+                let w = nw.weight(&o.step, t);
+                if lead {
+                    crate::budget::nas::Limits::fits_own(*running, w)
+                } else {
+                    crate::budget::nas::Limits::fits(*members, *running, w)
+                }
             })
         };
         let cold_here = std::cell::OnceCell::new();
@@ -1019,17 +988,16 @@ impl Shared {
             .map(|t| t.id)
     }
 
-    /// Why a worker gets the shared steps' work it does, or doesn't: for each step it does that's
-    /// offered, the targets offered, then those held by another, done, kept from it after it failed
-    /// them, too large for the memory it spares, and those left that it may take (`pick`'s rules,
-    /// counted).
+    /// Why a worker gets the plan's work it does, or doesn't: for each step it does that's offered
+    /// to it, the targets offered, then those held by another, done, kept from it after it failed
+    /// them, too large for the memory it spares, and those left that it may take, counted.
     fn fit(&self, a: &Ask, now: Instant) -> Vec<serde_json::Value> {
         self.offers
             .iter()
-            .filter(|o| a.can.contains(&o.step))
+            .filter(|o| a.can.contains(&o.step) && o.job.is_none())
             .map(|o| {
                 let held = self.leases.held(&o.step, now);
-                let (mut h, mut d, mut b, mut big, mut long, mut fits) = (0, 0, 0, 0, 0, 0);
+                let (mut h, mut d, mut b, mut big, mut fits) = (0, 0, 0, 0, 0);
                 for (t, k, size) in &o.targets {
                     let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5)));
                     match () {
@@ -1037,12 +1005,10 @@ impl Shared {
                         _ if self.done.get(&(o.step.clone(), t.clone())) == Some(k) => d += 1,
                         _ if backoff => b += 1,
                         _ if self.peak_of(&o.step, t, *size, a.cores) <= a.mem_mb => fits += 1,
-                        _ if a.more_mb.is_none_or(|m| self.peak_of(&o.step, t, *size, a.cores) > m) => big += 1,
-                        _ if !job_secs(&self.costs, &o.step, t, &a.worker).is_some_and(|s| Some(s) <= a.max_secs) => long += 1,
-                        _ => fits += 1,
+                        _ => big += 1,
                     }
                 }
-                serde_json::json!({ "step": o.step, "offered": o.targets.len(), "held": h, "done": d, "kept_from": b, "too_big": big, "too_long": long, "fits": fits })
+                serde_json::json!({ "step": o.step, "offered": o.targets.len(), "held": h, "done": d, "kept_from": b, "too_big": big, "fits": fits })
             })
             .collect()
     }
@@ -1184,60 +1150,33 @@ pub struct Ask {
     pub mem_mb: u64,
     #[serde(default)]
     pub cores: u32,
-    /// At most this many targets in a job.
-    #[serde(default)]
-    pub max: usize,
     /// The app it runs (an agent's, crate::agent::app_version; a page's is the coordinator's own).
     #[serde(default)]
     pub app: Option<String>,
     /// A page: whether it's in front (an iPhone or iPad stops one that isn't).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
-    /// While its owner is away: the more memory it spares (MB) for a job predicted (from its
-    /// targets' last runs) to end within `max_secs`, before they're likely back.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub more_mb: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_secs: Option<u64>,
     /// The most memory its Mac's jobs may hold together (MB: crate::agent::memguard::limit_mb), for
     /// the lead's reckoning of the most any Mac in the pool has (an older worker says none).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit_mb: Option<u64>,
     /// The disk it has room for a job on (MB: its free space and what its caches can free, less
-    /// its reserve and the owner's room target), measured as it asks: every step to every member
-    /// offers it only targets whose measured disk fits (`pick_every`). An older worker says none.
+    /// its reserve and the owner's room target), measured as it asks: it's offered only targets
+    /// whose measured disk fits (`pick_every`). An older worker says none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_mb: Option<u64>,
     /// Its whole Mac's capacity now (Ask v2, `Capacity`); the fields above still filled for an
     /// older coordinator, which ignores this. None: an older agent, or a page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap: Option<Capacity>,
-    /// The jobs it would start now (its free slots: 0 or 1, one). With packing on the lead grants
-    /// up to that many at once (`Grant::more`); off, or an older agent's ask (none), one.
+    /// The jobs it would start now (its free slots). The lead grants up to that many at once
+    /// (`Grant::more`); an older agent's ask (none), one.
     #[serde(default, skip_serializing_if = "is_zero_usize")]
     pub want: usize,
 }
 
 fn is_zero_usize(n: &usize) -> bool {
     *n == 0
-}
-
-/// Packing (crate::agent::packing): the most jobs a member holds at once, when capped. No cap by
-/// default: what fits its room.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Packing {
-    /// Every member's cap (None: none).
-    pub cap: Option<usize>,
-    /// A member's own cap, by the name it asks with, in place of `cap` (by name: a Mac asking under
-    /// two names gets two).
-    pub caps: BTreeMap<String, usize>,
-}
-
-impl Packing {
-    /// The most jobs `worker` may hold at once (None: no cap).
-    pub fn cap_of(&self, worker: &str) -> Option<usize> {
-        self.caps.get(worker).copied().or(self.cap)
-    }
 }
 
 /// The cores `a`'s Mac has for its jobs together: its capacity's (else the ask's), less the in-use
@@ -1248,7 +1187,7 @@ pub fn ask_cores(a: &Ask) -> u32 {
     total.saturating_sub(cap.filter(|c| c.in_use).map_or(0, |c| c.kept_cores)).max(1)
 }
 
-/// The most threads a packed job is granted (packing on), of the `cores` its Mac has for its jobs:
+/// The most threads a packed job is granted, of the `cores` its Mac has for its jobs:
 /// a quarter of them, at least two where they allow (the M1's 8: 2; the M4's 14: 3). The same alone or
 /// beside others: a run's threads bound what it's measured to use (crate::needs::Book::cores), so a
 /// job given them all while alone could be measured to leave no room beside it.
@@ -1307,15 +1246,7 @@ pub struct Capacity {
     pub leases: Vec<u64>,
 }
 
-/// Every step to every member, as the lead has it on (`Shared::every`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Every {
-    /// The lead's own room now (memory, disk: MB), a member's as any: a cold start goes to a worker
-    /// only when it has more. None: not known (the workers' alone compared).
-    pub own: Option<(u64, u64)>,
-}
-
-/// How long a job offered with every step to every member runs, at most, by its targets' measured
+/// How long a job offered runs, at most, by its targets' measured
 /// times (s): a quarter of an hour (docs/pool.md §7.7, batch). Its first target is taken whatever
 /// its time.
 pub const JOB_S: u64 = 15 * 60;
@@ -1332,8 +1263,8 @@ pub struct Grant {
     pub ttl_s: u64,
     #[serde(flatten)]
     pub work: Granted,
-    /// More jobs granted with this one, packing on and the ask wanting more than one (`Ask::want`):
-    /// each its own lease, packed into the ask's room beside the others.
+    /// More jobs granted with this one, the ask wanting more than one (`Ask::want`): each its own
+    /// lease, packed into the ask's room beside the others.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub more: Vec<Grant>,
     /// The worker threads its job runs with (RAYON_NUM_THREADS): its measured cores within those
@@ -1345,6 +1276,9 @@ pub struct Grant {
     /// a task, or an older lead's.
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub disk_mb: u64,
+    /// The lead's own planned job granted (`Offer::job`: its id), to the lead's own agent alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1552,9 +1486,7 @@ impl Coordinator {
             pool_member: None,
             lead_asks: Vec::new(),
             inputs_asks: Vec::new(),
-            every: None,
             placement: None,
-            packing: None,
             nas: None,
             lead_name: me.to_string(),
             nas_waits: Default::default(),
@@ -1721,21 +1653,61 @@ impl Coordinator {
     /// Ends this Mac's job's lease; `done`: the targets it recorded (not offered again until the plan
     /// shows them; the rest are free again).
     pub fn finish(&self, id: u64, done: &[(String, String)]) {
+        self.end_own(id, done, false);
+    }
+
+    /// `finish`, its job failed: its targets not `done` are kept from this Mac as a member's failed
+    /// ones are from it (an hour, doubling each time).
+    pub fn finish_failed(&self, id: u64, done: &[(String, String)]) {
+        self.end_own(id, done, true);
+    }
+
+    fn end_own(&self, id: u64, done: &[(String, String)], failed: bool) {
         let mut s = self.shared.lock().unwrap();
         let now = s.now();
         if let Some(l) = s.leases.finish(id, &self.me, now) {
-            if let Work::Job { step, .. } = &l.work {
+            if let Work::Job { step, targets } = &l.work {
                 for (t, k) in done {
                     s.done.insert((step.clone(), t.clone()), k.clone());
+                }
+                if failed {
+                    for (t, _) in targets.iter().filter(|t| !done.iter().any(|d| d.0 == t.0)) {
+                        let e = s.failed.entry((self.me.clone(), cost_key(step, t))).or_insert((now, 0));
+                        *e = (now, e.1 + 1);
+                    }
                 }
             }
             s.save_leases();
         }
     }
 
-    /// The plan's work for workers that mount the NAS, every shared step's (a step not offered: none
-    /// of it), and their pass. The plan's keys include what's journaled, so work done under the key
-    /// the plan has now is no longer kept out by hand.
+    /// This Mac's own agent asking for work as any member does (docs/pool.md §7.2): granted by the
+    /// same packing (`pack`) and under this Mac's name, the plan's offers in plan order, the lead's
+    /// own planned jobs among them (`Offer::job`, granted to it alone: crate::agent::every::grants)
+    /// but those named in `skip` (they can't start now, for a reason of the agent's own). Nothing
+    /// while the build is paused or the lead is moving. Its leases are renewed and ended as this
+    /// Mac's own (`renew`, `finish`).
+    pub fn ask_own(&self, a: &Ask, skip: &BTreeSet<String>) -> Option<Grant> {
+        let mut s = self.shared.lock().unwrap();
+        let now = s.now();
+        if s.paused.is_some() || s.moving.is_some() {
+            return None;
+        }
+        let mut a = a.clone();
+        a.worker = self.me.clone();
+        s.seen(&self.me, format!("asked for {} steps", a.can.len()), Some(&a), now);
+        let offers: Vec<Offer> = s
+            .offers
+            .iter()
+            .filter(|o| a.can.contains(&o.step) && o.job.as_ref().is_none_or(|j| !skip.contains(j)))
+            .cloned()
+            .collect();
+        s.pack(&a, &offers, true, now)
+    }
+
+    /// The plan's work, in plan order, and its pass: the steps offered to every member, and the
+    /// lead's own planned jobs (`Offer::job`). The plan's keys include what's journaled, so work done
+    /// under the key the plan has now is no longer kept out by hand.
     pub fn offer(&self, pass: &str, offers: Vec<Offer>) {
         let mut s = self.shared.lock().unwrap();
         let planned: BTreeMap<(&str, &str), &str> = offers
@@ -1751,17 +1723,6 @@ impl Coordinator {
         s.offers = offers.into_iter().filter(|o| !o.targets.is_empty()).collect();
         let steps: BTreeSet<String> = s.offers.iter().map(|o| o.step.clone()).collect();
         s.last.retain(|(_, st), _| steps.contains(st));
-    }
-
-    /// Every step to every member on (`Some`: the lead's own room in it) or off (docs/pool.md §12,
-    /// phase 4's ninth batch; crate::agent::every).
-    pub fn set_every(&self, every: Option<Every>) {
-        self.shared.lock().unwrap().every = every;
-    }
-
-    /// Packing on (`Some`: its caps) or off (crate::agent::packing).
-    pub fn set_packing(&self, packing: Option<Packing>) {
-        self.shared.lock().unwrap().packing = packing;
     }
 
     /// The NAS budget's limits (crate::budget::nas; None: off). Its probes set them while the
@@ -1796,10 +1757,11 @@ impl Coordinator {
         // (A capacity is refreshed only by an ask: a busy member's, older than `CAP_FRESH_S`, left out.)
         let fresh = |c: &Capacity| unix_now().saturating_sub(c.at) < CAP_FRESH_S;
         let own = s.own_cap.clone().filter(fresh).map(|c| (self.me.clone(), c));
+        // (This Mac's own asks' are its own's: said once.)
         let others = s
             .workers
             .iter()
-            .filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND)
+            .filter(|(n, w)| **n != self.me && now.saturating_duration_since(w.seen) < AROUND)
             .filter_map(|(n, w)| Some((n.clone(), w.cap.clone().filter(fresh)?)));
         own.into_iter().chain(others).collect()
     }
@@ -1811,7 +1773,8 @@ impl Coordinator {
     pub fn last_capacities(&self) -> Vec<(String, Capacity)> {
         let s = self.shared.lock().unwrap();
         let own = s.own_cap.clone().map(|c| (self.me.clone(), c));
-        let others = s.workers.iter().filter_map(|(n, w)| Some((n.clone(), w.cap.clone()?)));
+        let others =
+            s.workers.iter().filter(|(n, _)| **n != self.me).filter_map(|(n, w)| Some((n.clone(), w.cap.clone()?)));
         own.into_iter().chain(others).collect()
     }
 
@@ -1837,7 +1800,7 @@ impl Coordinator {
 
     /// `offer` with units alone (target, key, piece bytes).
     pub fn offer_units(&self, pass: &str, units: Vec<(String, String, u64)>) {
-        self.offer(pass, vec![Offer { step: "unit".into(), targets: units, batch: 0 }]);
+        self.offer(pass, vec![Offer { step: "unit".into(), targets: units, job: None }]);
     }
 
     /// The build paused (how, by whom), or going on, as asked at `at` (unix seconds; an ask older
@@ -1892,23 +1855,6 @@ impl Coordinator {
     /// another meanwhile (`pick_every`), so a cold start runs alone in the pool.
     pub fn cold_under_way(&self, step: &str) -> bool {
         self.shared.lock().unwrap().measured(step, "").is_none() && !self.held_by_others(step).is_empty()
-    }
-
-    /// How many other agents asked for work in the last half minute and can take `step` (the lead's
-    /// share of the map tiles: crate::agent::publish::lead_share).
-    pub fn members_asking(&self, step: &str) -> usize {
-        let s = self.shared.lock().unwrap();
-        let now = s.now();
-        s.workers
-            .iter()
-            .filter(|(n, w)| {
-                **n != self.me
-                    && !w.bad
-                    && w.kind == "native"
-                    && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)
-                    && w.can.iter().any(|c| c == step)
-            })
-            .count()
     }
 
     /// The targets of `step` leases of other workers than this Mac hold (its own jobs' aside).
@@ -1983,7 +1929,7 @@ impl Coordinator {
         self.add_costs_by(costs, &self.me.clone());
     }
 
-    /// `add_costs`, measured by `worker` (this Mac's second job: crate::agent::second_worker).
+    /// `add_costs`, measured by `worker` (one of this Mac's slots: crate::agent::slot_worker).
     pub fn add_costs_by(&self, costs: &[(String, Cost)], worker: &str) {
         if costs.is_empty() {
             return;
@@ -2080,14 +2026,16 @@ impl Coordinator {
     }
 
     /// The agent among the workers heard from in the last ten minutes with the largest memory
-    /// limit: its worker name (an agent's host name, which `scenic lead give` matches; not its
+    /// limit (this Mac's own aside): its worker name (an agent's host name, which `scenic lead give` matches; not its
     /// label, "<host> (helper)") and that limit (MB). A page can't lead: agents only.
     pub fn roomiest_agent(&self) -> Option<(String, u64)> {
         let s = self.shared.lock().unwrap();
         let now = s.now();
         s.workers
             .iter()
-            .filter(|(_, w)| w.kind == "native" && now.duration_since(w.seen) < Duration::from_secs(600))
+            .filter(|(n, w)| {
+                **n != self.me && w.kind == "native" && now.duration_since(w.seen) < Duration::from_secs(600)
+            })
             .filter_map(|(n, w)| w.ask.as_ref().and_then(|a| a.limit_mb).map(|l| (n.clone(), l)))
             .max_by_key(|(_, l)| *l)
     }
@@ -2316,7 +2264,6 @@ impl Coordinator {
         s.pass.clear();
         s.offers.clear();
         s.resume = None;
-        s.every = None;
         s.moving = None;
         s.lead_asks.clear();
         s.inputs_asks.clear();
@@ -2845,8 +2792,6 @@ fn route(
             // The work only it can do first: a worker that mounts the NAS does a job of the plan (the
             // most work for what it fetches), the earliest step it can (what later steps wait on),
             // then a task; any other, a task.
-            // (What fits its usual memory first, of any step; then, its owner away, what fits the
-            // more it spares then.)
             // A resumable job, to the worker whose Mac holds its progress alone, first: nothing
             // else would run there (crate::agent::resume).
             if let Some((_, o)) = s.resume.clone().filter(|(w, o)| *w == a.worker && a.can.contains(&o.step)) {
@@ -2875,51 +2820,32 @@ fn route(
                         lease,
                         term: s.leases.term,
                         ttl_s: TTL.as_secs(),
-                        threads: s.job_threads(&a, &o.step, &pick),
+                        threads: ask_cores(&a),
                         disk_mb: s
                             .job_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
                             .map_or(0, |(m, _)| m.disk_mb),
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
                         more: Vec::new(),
+                        job: None,
                     };
                     return Ok((200, serde_json::to_value(g)?));
                 }
             }
             if !s.pass.is_empty() {
-                let offers = s.offers.clone();
-                let passes: &[bool] =
-                    if a.more_mb.is_some() && a.max_secs.is_some() { &[false, true] } else { &[false] };
-                // (Every step to every member: by the measures alone, its owner away or not.)
-                let every = s.every.is_some();
-                let passes = if every { &[false][..] } else { passes };
+                // (The shared steps by their rank, then the others in plan order; the lead's own
+                // planned jobs never: crate::agent::every::grants.)
+                let mut offers: Vec<Offer> = s.offers.iter().filter(|o| a.can.contains(&o.step)).cloned().collect();
+                offers.sort_by_key(|o| {
+                    crate::agent::steps::SHARED.iter().position(|st| *st == o.step).unwrap_or(usize::MAX)
+                });
                 // (Placement on: the long poles' steps first, by their slack in the forecast; plan
                 // order between equals.)
-                let mut offers = offers;
-                if let (true, Some((p, _))) = (every, &s.placement) {
+                if let Some((p, _)) = &s.placement {
                     offers.sort_by_key(|o| p.slack_of(&o.step));
                 }
-                // (Packing on: as many jobs as the ask wants that fit its room together.)
-                if every && s.packing.is_some() {
-                    let mine: Vec<Offer> = offers.iter().filter(|o| a.can.contains(&o.step)).cloned().collect();
-                    if let Some(g) = s.pack(&a, &mine, now) {
-                        return Ok((200, serde_json::to_value(g)?));
-                    }
-                } else {
-                    for &away in passes {
-                        for o in offers.iter().filter(|o| a.can.contains(&o.step)) {
-                            // (Switched off: the shared steps alone, whatever was offered before.)
-                            if !every && !crate::agent::steps::SHARED.contains(&o.step.as_str()) {
-                                continue;
-                            }
-                            let pick = if every { s.pick_every(o, &a, now) } else { s.pick(o, &a, now, away) };
-                            if pick.is_empty() {
-                                continue;
-                            }
-                            let threads = s.job_threads(&a, &o.step, &pick);
-                            let g = s.grant_job(&a, o, pick, threads, now);
-                            return Ok((200, serde_json::to_value(g)?));
-                        }
-                    }
+                // (As many jobs as the ask wants that fit its room together.)
+                if let Some(g) = s.pack(&a, &offers, false, now) {
+                    return Ok((200, serde_json::to_value(g)?));
                 }
             }
             let picked = match &s.placement {
@@ -2941,6 +2867,7 @@ fn route(
                     more: Vec::new(),
                     threads: 0,
                     disk_mb: 0,
+                    job: None,
                 };
                 eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
                 return Ok((200, serde_json::to_value(g)?));
@@ -4546,6 +4473,16 @@ mod tests {
         (d, c, w)
     }
 
+    /// Units 6/1/1 to 6/1/`n` measured: 3 GB, a minute, a thread each.
+    fn measure_units(c: &Coordinator, n: usize) {
+        for i in 1..=n {
+            let sizes = [("threads".to_string(), 1)].into();
+            let cost =
+                Cost { peak_mb: 3000, secs: 60, worker: None, v: cost_version("unit"), sizes, ..Default::default() };
+            c.add_costs(&[(format!("6/1/{i}"), cost)]);
+        }
+    }
+
     fn ask(mem_mb: u64) -> Ask {
         Ask {
             worker: "m1".into(),
@@ -4553,7 +4490,6 @@ mod tests {
             can: vec!["unit".into()],
             mem_mb,
             cores: 8,
-            max: 6,
             ..Default::default()
         }
     }
@@ -4675,11 +4611,10 @@ mod tests {
             "6/1/1".into(),
             Cost { peak_mb: 14_000, secs: 600, worker: None, v: cost_version("unit"), ..Default::default() },
         )]);
-        let g = w.ask(&Ask { max: 3, ..ask(12 << 10) }).unwrap().unwrap();
+        let g = w.ask(&Ask { ..ask(12 << 10) }).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!("a job") };
-        let mut ts: Vec<&str> = targets.iter().map(|(t, _)| t.as_str()).collect();
-        ts.sort();
-        assert_eq!(ts, ["6/1/2", "6/1/3"]);
+        // (Its first: a job a target while none has a time measured.)
+        assert_eq!(targets.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), ["6/1/2"]);
     }
 
     #[test]
@@ -4696,7 +4631,7 @@ mod tests {
                 Cost { peak_mb: mb, secs: 60, worker: None, v: cost_version("unit"), ..Default::default() },
             );
         }
-        let g = w.ask(&Ask { max: 2, ..ask(4096) }).unwrap().unwrap();
+        let g = w.ask(&Ask { ..ask(4096) }).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!("a job") };
         let one: Vec<(&str, &str)> = targets.iter().take(1).map(|(t, k)| (t.as_str(), k.as_str())).collect();
         w.done(&Done { worker: "m1".into(), lease: g.lease, handoff: Some(handoff(&one)), ..Default::default() })
@@ -4851,6 +4786,7 @@ mod tests {
         let (d, c, w) = start();
         let units: Vec<(String, String, u64)> =
             (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
+        measure_units(&c, 3);
         c.offer_units("2026-09-28", units.clone());
         let g = w.ask(&ask(4096)).unwrap().unwrap();
         // Paused (from a helper's menu, passed on by its agent): no work; an agent's told why and the
@@ -4890,7 +4826,7 @@ mod tests {
         );
         let g = w.ask(&ask(4096)).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!() };
-        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/1/2", "6/1/1"]);
+        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/1/1", "6/1/2"]);
         w.give_back(g.lease, "the build paused before it finished an area").unwrap();
         let g = w.ask(&ask(4096)).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!() };
@@ -4975,7 +4911,7 @@ mod tests {
         let (_d, c, w) = start();
         c.offer(
             "p",
-            vec![Offer { step: "peaks".into(), targets: vec![("6/1/1".into(), "k 6/1/1".into(), 2500)], batch: 1 }],
+            vec![Offer { step: "peaks".into(), targets: vec![("6/1/1".into(), "k 6/1/1".into(), 2500)], job: None }],
         );
         let g = w.ask(&Ask { can: vec!["peaks".into()], ..ask(8192) }).unwrap().unwrap();
         // A cold start: no target of its step measured.
@@ -5025,10 +4961,10 @@ mod tests {
     #[test]
     fn a_floor_keeps_a_target_from_a_worker_too_small_and_a_measure_takes_its_place() {
         let (_d, c, w) = start();
-        let o = |ts: &[(&str, u64)], batch: usize| Offer {
+        let o = |ts: &[(&str, u64)], _: usize| Offer {
             step: "peaks".into(),
             targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(),
-            batch,
+            job: None,
         };
         c.offer("p", vec![o(&[("6/1/1", 2500)], 1)]);
         let can = |mem: u64| Ask { can: vec!["peaks".into()], limit_mb: Some(12 << 10), ..ask(mem) };
@@ -5089,12 +5025,12 @@ mod tests {
             (c.floor("osm-pass", "2026-08-01"), c.floor("osm-pass", "2026-09-28").map(|f| f.mb)),
             (None, Some(31_000))
         );
-        // A target whose floor is a batch's, under what a worker spares, goes batched as any.
+        // A target whose floor is a batch's, under what a worker spares, goes in a run as any.
         c.offer("p", vec![o(&[("6/4/1", 100), ("6/4/2", 100), ("6/4/3", 100)], 3)]);
         c.add_floors(&[(cost_key("peaks", "6/4/2"), f(2000, false))]);
         let g = w.ask(&can(8 << 10)).unwrap().unwrap();
         let Granted::Job { targets, .. } = g.work else { panic!() };
-        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/4/3", "6/4/2", "6/4/1"]);
+        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/4/1", "6/4/2", "6/4/3"]);
         // Kept across a restart of the coordinator; cleared as the owner asks (`scenic pool floors`).
         let kept: BTreeMap<String, Floor> =
             serde_json::from_slice(&std::fs::read(c.shared.lock().unwrap().dir.join("floors.json")).unwrap()).unwrap();
@@ -5163,14 +5099,14 @@ mod tests {
         let m2 = client::Client::at(vec![port], c.contact.token.clone(), "m2");
         c.offer(
             "2026-09-01",
-            vec![Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 1 }],
+            vec![Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], job: None }],
         );
         c.offer_resume(Some((
             "m1".into(),
             Offer {
                 step: "osm-pass".into(),
                 targets: vec![("2026-10-01".into(), "sources/osm/2026-10-01/planet.osm.pbf".into(), 0)],
-                batch: 1,
+                job: None,
             },
         )));
         let can = |steps: &[&str]| Ask { can: steps.iter().map(|s| s.to_string()).collect(), ..ask(4096) };
@@ -5190,25 +5126,53 @@ mod tests {
         assert!(w_step(&m1, &can(&["osm-pass"])).is_none());
     }
 
+    /// This Mac's own agent asking lately with `own` room (memory, disk: MB), as the lead's agent
+    /// asks (crate::agent's `lead_grants`).
+    fn lead_asks(c: &Coordinator, own: (u64, u64)) {
+        let mut s = c.shared.lock().unwrap();
+        let now = s.now();
+        let a = Ask {
+            worker: "m4".into(),
+            kind: "native".into(),
+            can: crate::agent::steps::TABLE.iter().map(|r| r.name.to_string()).collect(),
+            mem_mb: own.0,
+            disk_mb: Some(own.1),
+            ..Default::default()
+        };
+        s.seen("m4", "asked".into(), Some(&a), now);
+    }
+
     /// Every step to every member (docs/pool.md §12, phase 4's ninth batch): a coordinator on a
-    /// clock of the test's (none moves it but the test), with every step on, this Mac's own room
-    /// `own`; a step's offer of `ts` (target, its measures: memory, disk, seconds; None: never run).
+    /// clock of the test's (none moves it but the test), this Mac's own agent asking with room
+    /// `own` (none asking with (0, 0)); a step's offer of `ts` (target, its measures: memory, disk,
+    /// seconds; None: never run).
     fn every(own: (u64, u64)) -> (tempfile::TempDir, Coordinator, client::Client, Arc<store::clock::Virtual>) {
         let (d, c, w) = start();
         let clock = store::clock::Virtual::new();
         c.shared.lock().unwrap().clock = clock.clone();
-        c.set_every(Some(Every { own: Some(own) }));
+        if own != (0, 0) {
+            lead_asks(&c, own);
+        }
         (d, c, w, clock)
     }
 
     fn measured_offer(c: &Coordinator, step: &str, ts: &[(&str, Option<(u64, u64, u64)>)]) {
         for (t, m) in ts {
             if let Some((mem, disk, secs)) = m {
-                // (Measured on m1: its own pace; another worker's run counts twice its time, job_secs.)
+                // (Measured on m1: its own pace; another worker's run counts twice its time, job_secs.
+                // Its run's threads said: a serial step's.)
+                let sizes = [("threads".to_string(), 1)].into();
                 c.add_costs_by(
                     &[(
                         cost_key(step, t),
-                        Cost { peak_mb: *mem, secs: *secs, worker: None, v: cost_version(step), ..Default::default() },
+                        Cost {
+                            peak_mb: *mem,
+                            secs: *secs,
+                            worker: None,
+                            v: cost_version(step),
+                            sizes,
+                            ..Default::default()
+                        },
                     )],
                     "m1",
                 );
@@ -5220,7 +5184,7 @@ mod tests {
             vec![Offer {
                 step: step.into(),
                 targets: ts.iter().map(|(t, _)| (t.to_string(), format!("k {t}"), 0)).collect(),
-                batch: 1,
+                job: None,
             }],
         );
     }
@@ -5312,9 +5276,14 @@ mod tests {
         c.finish(own, &[]);
         assert!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)).is_empty(), "the larger asked lately");
         clock.advance(ASKING);
-        assert_eq!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)), ["3/1/1"], "the larger no longer asking");
-        // The lead with more room than any: it starts them itself.
-        c.set_every(Some(Every { own: Some((16_000, 200_000)) }));
+        let g = m1.ask(&every_ask("m1", "lo", 4096, 100_000)).unwrap().unwrap();
+        assert!(
+            matches!(&g.work, Granted::Job { targets, .. } if targets.len() == 1 && targets[0].0 == "3/1/1"),
+            "the larger no longer asking"
+        );
+        m1.give_back(g.lease, "the test").unwrap();
+        // The lead's own agent asking with more room than any: it starts them itself.
+        lead_asks(&c, (16_000, 200_000));
         assert!(granted(&m2, &every_ask("m2", "lo", 8192, 100_000)).is_empty());
         // Once a target of the step has run, the others are offered by its measures, batched.
         c.add_costs(&[(
@@ -5340,7 +5309,7 @@ mod tests {
             vec![Offer {
                 step: step.into(),
                 targets: ts.iter().map(|t| (t.clone(), format!("k {t}"), 0)).collect(),
-                batch: 1,
+                job: None,
             }],
         );
     }
@@ -5386,7 +5355,6 @@ mod tests {
         let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
         let a = Ask { want: 6, ..every_ask("m1", "slope", 64_000, 100_000) };
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         heavy(&c, "slope");
         assert_eq!(
             all_granted(&w, &a).len(),
@@ -5394,25 +5362,35 @@ mod tests {
             "off: by its room and cores alone (a NAS reader: the packed share, 2 of 8, each)"
         );
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         c.set_nas(Some(limits));
         heavy(&c, "slope");
         assert_eq!(all_granted(&w, &a), [["6/1/1"], ["6/1/2"]], "on: two halves of the NAS");
         assert!(all_granted(&w, &a).is_empty(), "the NAS full: queued");
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         c.set_nas(Some(limits));
         heavy(&c, "slope");
         assert!(c.hold("slope", &[("6/1/6".into(), "k 6/1/6".into())]).is_some());
         assert_eq!(all_granted(&w, &a).len(), 1, "the lead's own job counts");
-        // Downloads: a fetching step's jobs under the cap.
-        let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
+        // Downloads: a fetching step's jobs under the cap (the lead's own: no fetching step is
+        // offered to every member).
+        let (_d, c, _w, _clock) = every((0, 0));
         c.set_nas(Some(crate::budget::nas::Limits { downloads: Some(1), ..limits }));
-        packable(&c, "rail-feeds", 3, Some(1));
-        let a = Ask { want: 3, ..every_ask("m1", "rail-feeds", 64_000, 100_000) };
-        assert_eq!(all_granted(&w, &a).len(), 1, "one download at a time");
-        assert!(all_granted(&w, &a).is_empty());
+        packable(&c, "rail-feeds", 1, Some(1));
+        packable(&c, "bld-fetch", 1, Some(1));
+        let own = |step: &str| Offer {
+            step: step.into(),
+            targets: vec![("6/1/1".into(), "k 6/1/1".into(), 0)],
+            job: Some(format!("{step} 6/1/1")),
+        };
+        c.offer("p", vec![own("rail-feeds"), own("bld-fetch")]);
+        let a = Ask {
+            want: 3,
+            can: vec!["rail-feeds".into(), "bld-fetch".into()],
+            ..every_ask("m4", "rail-feeds", 64_000, 100_000)
+        };
+        let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
+        assert!(g.more.is_empty(), "one download at a time");
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_none());
     }
 
     /// A job heavier than the whole (its weight capped at the whole) goes while the lead's own jobs
@@ -5421,7 +5399,6 @@ mod tests {
     #[test]
     fn a_job_past_the_whole_goes_beside_the_leads_own_and_a_long_wait_is_said() {
         let (_d, c, w, clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         // (Each target 200 MB/s of a 100 MB/s NAS: weighs the whole, capped.)
         packable(&c, "slope", 4, Some(1));
         for i in 1..=4 {
@@ -5461,40 +5438,35 @@ mod tests {
         assert!(waits.iter().any(|(s, t, m)| s == "slope" && t == "6/1/2" && *m >= 30), "{waits:?}");
     }
 
-    /// Packing (crate::agent::packing): off, an ask gets one job whatever it wants; on, as many as
-    /// it wants that fit its room together (memory, disk, cores), each its own lease, in plan order;
-    /// its next ask gets what fits the room left; a cap holds it to that many leases.
+    /// Packing (docs/pool.md §7.2): an ask gets as many jobs as it wants that fit its room together
+    /// (memory, disk, cores), each its own lease, in plan order; its next ask what fits the room
+    /// left; one wanted (or an older agent's ask, none), one.
     #[test]
     fn packing_grants_as_many_jobs_as_fit_the_asks_room() {
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope", 6, Some(2));
         let a = Ask { want: 5, ..every_ask("m1", "slope", 7000, 100_000) };
-        assert_eq!(all_granted(&w, &a), [["6/1/1"]], "off: one");
-        c.set_packing(Some(Packing::default()));
-        assert_eq!(all_granted(&w, &a), [["6/1/2"], ["6/1/3"]], "on: two more fit its memory beside the one held");
+        assert_eq!(all_granted(&w, &a), [["6/1/1"], ["6/1/2"], ["6/1/3"]], "three fit its memory");
         assert!(all_granted(&w, &a).is_empty(), "its room taken");
         // By cores: 2 of 8 each, four at once whatever the memory.
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         packable(&c, "slope", 6, Some(2));
         let a = Ask { want: 6, ..every_ask("m1", "slope", 64_000, 100_000) };
         assert_eq!(all_granted(&w, &a).len(), 4);
-        // A cap.
+        // One wanted, or none said: one.
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing { caps: [("m1".to_string(), 2)].into(), ..Default::default() }));
         packable(&c, "slope", 6, Some(2));
-        assert_eq!(all_granted(&w, &a).len(), 2);
-        assert!(all_granted(&w, &a).is_empty(), "at its cap");
+        assert_eq!(all_granted(&w, &Ask { want: 1, ..a.clone() }).len(), 1);
+        assert_eq!(all_granted(&w, &Ask { want: 0, ..a.clone() }).len(), 1);
         // Cores not said: nothing beside the first.
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         packable(&c, "slope", 6, None);
         assert_eq!(all_granted(&w, &a).len(), 1);
     }
 
-    /// Threads granted (task #241): packing off, all the ask's cores whatever was measured (less the
-    /// in-use share's while its owner uses it); on, each its measured cores within the packed share
-    /// (a quarter of 8: 2), a serial one 1; a NAS-reading step never fewer than the share.
+    /// Threads granted (task #241): each job its measured cores within the packed share (a quarter
+    /// of 8: 2), a serial one 1; a NAS-reading step never fewer than the share. The cores an ask's
+    /// jobs have together leave out the in-use share's while its owner uses its Mac.
     #[test]
     fn grants_carry_their_threads() {
         let threads = |w: &client::Client, a: &Ask| -> Vec<u32> {
@@ -5505,21 +5477,19 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope", 6, Some(2));
         let a = every_ask("m1", "slope", 64_000, 100_000);
-        assert_eq!(threads(&w, &a), [8], "off: every core");
+        assert_eq!(threads(&w, &a), [2], "its measured 2, the share");
         let cap = Capacity { cores: 8, in_use: true, kept_cores: 2, ..Default::default() };
         let used = Ask { cap: Some(cap), ..a.clone() };
-        assert_eq!(c.shared.lock().unwrap().job_threads(&used, "slope", &[]), 6, "the owner at it");
+        assert_eq!(ask_cores(&used), 6, "the owner at it");
         assert_eq!(packed_share(8), 2);
         assert_eq!((packed_share(14), packed_share(2), packed_share(1)), (3, 2, 1));
-        // On: a serial step's 1 each; a step measured at 2, the share's 2.
+        // A serial step's 1 each.
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         packable(&c, "slope", 6, Some(1));
         let a = Ask { want: 6, ..every_ask("m1", "slope", 64_000, 100_000) };
         assert_eq!(threads(&w, &a), [1; 6]);
         // A step reading the NAS (30 MB/s), measured at 1: the share, never fewer.
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         packable(&c, "slope", 6, Some(1));
         for i in 1..=6 {
             let sizes = [("threads".to_string(), 1), ("bytes".to_string(), 18_000_000_000)];
@@ -5537,20 +5507,18 @@ mod tests {
         assert!(c.shared.lock().unwrap().reads_nas("unit", &[]));
     }
 
-    /// Packing on, a member holding jobs asks again as the agent does (the same share of its Mac
-    /// each time, one job at a time): the jobs it holds are taken off it, so together they never
+    /// A member holding jobs asks again as the agent does (the same share of its Mac each time, one
+    /// job at a time): the jobs it holds are taken off it, so together they never
     /// pass its memory, nor its disk.
     #[test]
     fn packing_counts_the_jobs_a_member_holds_against_its_ask() {
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         packable(&c, "slope", 6, Some(1));
         let a = every_ask("m1", "slope", 5000, 100_000);
         assert_eq!(all_granted(&w, &a).len(), 1);
         assert_eq!(all_granted(&w, &a).len(), 1);
         assert!(all_granted(&w, &a).is_empty(), "a third would pass its memory");
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         packable(&c, "slope", 6, Some(1));
         let a = every_ask("m1", "slope", 64_000, 250);
         assert_eq!(all_granted(&w, &a).len(), 1);
@@ -5564,7 +5532,6 @@ mod tests {
     #[test]
     fn grants_carry_their_disk_and_a_members_reservations_count_once() {
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         packable(&c, "slope", 6, Some(1));
         let ask = |disk: u64, leases: Vec<u64>| Ask {
             cap: Some(Capacity { cores: 8, disk_mb: disk, leases, ..Default::default() }),
@@ -5581,14 +5548,13 @@ mod tests {
         assert!(w.ask(&ask(150, vec![g1.lease])).unwrap().is_none());
     }
 
-    /// Packing on: a cold start goes only to a member running nothing, alone, and nothing goes
-    /// beside it while it runs.
+    /// A cold start goes only to a member running nothing, alone, and nothing goes beside it while
+    /// it runs.
     #[test]
     fn packing_keeps_a_cold_start_alone() {
-        let cold = Offer { step: "lo".into(), targets: vec![("3/1/1".into(), "k 3/1/1".into(), 0)], batch: 1 };
+        let cold = Offer { step: "lo".into(), targets: vec![("3/1/1".into(), "k 3/1/1".into(), 0)], job: None };
         let a = Ask { want: 3, can: vec!["slope".into(), "lo".into()], ..every_ask("m1", "slope", 64_000, 100_000) };
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         packable(&c, "slope", 2, Some(2));
         let mut offers = c.shared.lock().unwrap().offers.clone();
         offers.push(cold.clone());
@@ -5596,7 +5562,6 @@ mod tests {
         assert_eq!(all_granted(&w, &a), [["6/1/1"], ["6/1/2"]], "measured ones packed; no cold start beside them");
         // Nothing held: the cold start, alone; then nothing beside it.
         let (_d, c, w, _clock) = every((0, 0));
-        c.set_packing(Some(Packing::default()));
         c.offer("p", vec![cold.clone()]);
         assert_eq!(all_granted(&w, &a), [["3/1/1"]]);
         packable(&c, "slope", 2, Some(2));
@@ -5604,19 +5569,6 @@ mod tests {
         offers.push(cold);
         c.offer("p", offers);
         assert!(all_granted(&w, &a).is_empty(), "beside a cold start: nothing");
-    }
-
-    /// The lead's share of the map tiles (crate::agent::publish::lead_share): the other members asking
-    /// lately that can take the step, counted.
-    #[test]
-    fn the_members_asking_for_a_step_are_counted() {
-        let (_d, c, w, clock) = every((0, 0));
-        assert_eq!(c.members_asking("pack"), 0);
-        measured_offer(&c, "slope", &[("3/1/1", Some((500, 10, 60)))]);
-        let _ = w.ask(&every_ask("m1", "pack", 4096, 10_000)).unwrap();
-        assert_eq!((c.members_asking("pack"), c.members_asking("lo")), (1, 0));
-        clock.advance(ASKING);
-        assert_eq!(c.members_asking("pack"), 0);
     }
 
     fn placement(slack: &[(&str, u64)], speed: &[(&str, f64)]) -> crate::agent::placement::Placement {
@@ -5628,7 +5580,7 @@ mod tests {
 
     /// Placement on (crate::agent::placement): a member's ask tried on the long poles' step first
     /// (no slack in the forecast), and within it from the target measured to take longest; off, the
-    /// plan's order as before.
+    /// shared steps by their rank, from the plan's front.
     #[test]
     fn placement_the_long_poles_first() {
         let (_d, c, w, _clock) = every((0, 0));
@@ -5636,10 +5588,11 @@ mod tests {
             [("pack", vec![("6/1/1", 60)]), ("slope", vec![("3/1/1", 600), ("3/1/2", 900), ("3/1/3", 300)])]
         {
             for (t, secs) in ts {
+                let sizes = [("threads".to_string(), 1)].into();
                 c.add_costs_by(
                     &[(
                         cost_key(step, t),
-                        Cost { peak_mb: 500, secs, worker: None, v: cost_version(step), ..Default::default() },
+                        Cost { peak_mb: 500, secs, worker: None, v: cost_version(step), sizes, ..Default::default() },
                     )],
                     "m1",
                 );
@@ -5648,19 +5601,19 @@ mod tests {
         }
         let offers = || {
             vec![
-                Offer { step: "pack".into(), targets: vec![("6/1/1".into(), "k".into(), 0)], batch: 1 },
+                Offer { step: "pack".into(), targets: vec![("6/1/1".into(), "k".into(), 0)], job: None },
                 Offer {
                     step: "slope".into(),
                     targets: ["3/1/1", "3/1/2", "3/1/3"].iter().map(|t| (t.to_string(), format!("k {t}"), 0)).collect(),
-                    batch: 1,
+                    job: None,
                 },
             ]
         };
         let a = Ask { can: vec!["pack".into(), "slope".into()], ..every_ask("m1", "pack", 4096, 10_000) };
-        // Off: the plan's first step, from its front.
+        // Off: the shared step (slope) first, from its front.
         c.offer("p", offers());
         let g = w.ask(&a).unwrap().unwrap();
-        assert!(matches!(&g.work, Granted::Job { step, .. } if step == "pack"));
+        assert!(matches!(&g.work, Granted::Job { step, targets, .. } if step == "slope" && targets[0].0 == "3/1/1"));
         w.give_back(g.lease, "the test").unwrap();
         // On: slope has no slack (it ends with the build), pack ten minutes': slope first, from its
         // longest, then the next longest.
@@ -5697,7 +5650,7 @@ mod tests {
         // (Both asking lately: nothing offered yet.)
         let (a1, a2) = (every_ask("m1", "pack", 4096, 10_000), every_ask("m2", "pack", 4096, 10_000));
         assert!(w1.ask(&a1).unwrap().is_none() && w2.ask(&a2).unwrap().is_none());
-        let one = |t: &str| Offer { step: "pack".into(), targets: vec![(t.to_string(), "k".into(), 0)], batch: 1 };
+        let one = |t: &str| Offer { step: "pack".into(), targets: vec![(t.to_string(), "k".into(), 0)], job: None };
         let picks = |c: &Coordinator| -> Vec<(bool, bool)> {
             let s = c.shared.lock().unwrap();
             let now = s.now();
@@ -5737,9 +5690,6 @@ mod tests {
         let small = every_ask("m2", "pack", 100, 10_000);
         assert!(w2.ask(&small).unwrap().is_none());
         assert!(picks(&c).iter().all(|&(x, _)| x), "past m2's room: m1's");
-        // (The lead isn't drawn: its own jobs take the plan as they did, its room whatever it is.)
-        c.set_every(Some(Every { own: Some((1 << 20, 1 << 30)) }));
-        assert!(picks(&c).iter().all(|&(x, _)| x));
         // The other no longer asking: the one asking takes any.
         clock.advance(ASKING);
         assert!(w1.ask(&a1).unwrap().is_none());
@@ -5823,10 +5773,11 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         measured_offer(&c, "pack", &[("6/1/1", Some((500, 10, 60)))]);
         let own = c.hold("pack", &[("6/1/2".into(), "k".into())]).unwrap();
-        let _ = w.ask(&every_ask("m1", "pack", 4096, 10_000)).unwrap().unwrap();
+        let g = w.ask(&every_ask("m1", "pack", 4096, 10_000)).unwrap().unwrap();
         assert_eq!(c.held("pack").len(), 2);
         assert_eq!(c.held_by_others("pack"), ["6/1/1".to_string()].into());
         c.finish(own, &[]);
+        w.give_back(g.lease, "the test").unwrap();
         // A cold start of it under way on m1: none of the lead's own meanwhile; once measured, any.
         measured_offer(&c, "lo", &[("3/1/1", None), ("3/1/2", None)]);
         assert!(!c.cold_under_way("lo"), "none under way");
@@ -5840,10 +5791,6 @@ mod tests {
             Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo"), ..Default::default() },
         )]);
         assert!(!c.cold_under_way("lo"), "measured: not a cold start");
-        // Switched off: a step not shared, offered before, isn't granted.
-        c.set_every(None);
-        measured_offer(&c, "pack", &[("6/2/2", Some((500, 10, 60)))]);
-        assert!(w.ask(&every_ask("m1", "pack", 4096, 10_000)).unwrap().is_none());
     }
 
     /// Runs are contiguous in plan order: a target held (by the lead's own job, or another worker's)
@@ -5857,11 +5804,6 @@ mod tests {
         let a = every_ask("m1", "pack", 4096, 10_000);
         assert_eq!(granted(&w, &a), ["6/1/1"]);
         assert_eq!(granted(&w, &a), ["6/1/3", "6/1/4"]);
-        // Off: as before (the far end, the offer's batch).
-        let (_d, c, w, _clock) = every((0, 0));
-        measured_offer(&c, "slope", &[("3/1/1", m), ("3/1/2", m)]);
-        c.set_every(None);
-        assert_eq!(granted(&w, &every_ask("m1", "slope", 4096, 10_000)), ["3/1/2"]);
     }
 
     fn w_step(w: &client::Client, a: &Ask) -> Option<String> {
@@ -5869,105 +5811,6 @@ mod tests {
             Some(Granted::Job { step, targets, .. }) => Some(format!("{step} {}", targets[0].0)),
             _ => None,
         }
-    }
-
-    #[test]
-    fn a_helper_takes_the_earliest_shared_step_that_fits_it() {
-        let (_d, c, w) = start();
-        let o = |step: &str, ts: &[(&str, u64)], batch: usize| Offer {
-            step: step.into(),
-            targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(),
-            batch,
-        };
-        // Terrain needing more than it spares, slope's fitting, units, and candidates of the same tile
-        // as a unit (the steps don't mix).
-        c.offer(
-            "p",
-            vec![
-                o("terrain", &[("3/1/2", 6000)], 1),
-                o("slope", &[("3/2/2", 3000), ("3/2/3", 3000), ("3/1/3", 3000)], 2),
-                o("unit", &[("6/1/1", 1 << 20)], 0),
-                o("pois", &[("6/1/1", 1500)], 12),
-            ],
-        );
-        let can = |steps: &[&str]| Ask { can: steps.iter().map(|s| s.to_string()).collect(), ..ask(4096) };
-        let g = w.ask(&can(&["terrain", "slope", "unit", "pois"])).unwrap().unwrap();
-        let Granted::Job { step, targets, pass } = g.work else { panic!() };
-        // Slope's, from the far end, as many as a job of it takes.
-        assert_eq!((step.as_str(), pass.as_str()), ("slope", "p"));
-        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["3/1/3", "3/2/3"]);
-        // The rest of slope's next, then the unit, then the candidates of the same tile.
-        let next = |c: &[&str]| match w.ask(&can(c)).unwrap().map(|g| g.work) {
-            Some(Granted::Job { step, targets, .. }) => format!("{step} {}", targets[0].0),
-            _ => "none".into(),
-        };
-        assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "slope 3/2/2");
-        assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "unit 6/1/1");
-        assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "pois 6/1/1");
-        assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "none");
-        // Terrain once a run said it fits.
-        c.add_costs(&[(
-            cost_key("terrain", "3/1/2"),
-            Cost { peak_mb: 3500, secs: 1, worker: None, v: 3, ..Default::default() },
-        )]);
-        assert_eq!(next(&["terrain"]), "terrain 3/1/2");
-        // A worker that can't do a step gets none of it.
-        c.offer("p", vec![o("trees", &[("3/1/1", 1000)], 1)]);
-        assert_eq!(next(&["unit"]), "none");
-    }
-
-    #[test]
-    fn terrain_from_the_near_end_and_more_memory_while_the_owner_is_away_for_short_jobs() {
-        let (_d, c, w) = start();
-        let o = |step: &str, ts: &[(&str, u64)], batch: usize| Offer {
-            step: step.into(),
-            targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(),
-            batch,
-        };
-        let next = |a: &Ask| match w.ask(a).unwrap().map(|g| g.work) {
-            Some(Granted::Job { step, targets, .. }) => {
-                format!("{step} {}", targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "))
-            }
-            _ => "none".into(),
-        };
-        // Terrain: the plan's first, the lead's next units' (not the far end's).
-        c.offer("p", vec![o("terrain", &[("3/1/2", 3000), ("3/2/2", 3000)], 1)]);
-        let can = |steps: &[&str], mem: u64| Ask { can: steps.iter().map(|s| s.to_string()).collect(), ..ask(mem) };
-        assert_eq!(next(&can(&["terrain"], 4096)), "terrain 3/1/2");
-        // Slope's three areas: one needs 5 GB, measured at 10 minutes for this helper; one 8 GB,
-        // an hour; one 5 GB, never run the way slope runs now.
-        c.offer("p", vec![o("slope", &[("3/1/1", 5000), ("3/1/2", 8000), ("3/1/3", 5000)], 3)]);
-        c.add_costs_by(
-            &[
-                (
-                    cost_key("slope", "3/1/1"),
-                    Cost { peak_mb: 5000, secs: 600, worker: None, v: 3, ..Default::default() },
-                ),
-                (
-                    cost_key("slope", "3/1/2"),
-                    Cost { peak_mb: 8000, secs: 3600, worker: None, v: 3, ..Default::default() },
-                ),
-            ],
-            "m1",
-        );
-        // At its desk: none fits its 4 GB.
-        assert_eq!(next(&can(&["slope"], 4096)), "none");
-        // Away, sparing 10 GB for twenty minutes: the short one alone (the hour-long one, and the
-        // one never measured, wait).
-        let away = Ask { more_mb: Some(10240), max_secs: Some(1200), ..can(&["slope"], 4096) };
-        assert_eq!(next(&away), "slope 3/1/1");
-        assert_eq!(next(&away), "none");
-        let fit = c.shared.lock().unwrap().fit(&away, Instant::now());
-        assert_eq!((fit[0]["too_long"].as_u64(), fit[0]["held"].as_u64()), (Some(2), Some(1)));
-        // What fits its usual memory comes first, whatever its time and its step (the agent offers
-        // slope before the candidates).
-        c.offer("p", vec![o("slope", &[("3/2/1", 5000)], 3), o("pois", &[("6/1/1", 1500)], 12)]);
-        c.add_costs_by(
-            &[(cost_key("slope", "3/2/1"), Cost { peak_mb: 5000, secs: 60, worker: None, v: 3, ..Default::default() })],
-            "m1",
-        );
-        let both = Ask { more_mb: Some(10240), max_secs: Some(1200), ..can(&["slope", "pois"], 4096) };
-        assert_eq!(next(&both), "pois 6/1/1");
     }
 
     #[test]
@@ -6106,16 +5949,21 @@ mod tests {
     fn a_helper_asks_beats_and_hands_back_once() {
         let (d, c, w) = start();
         let units = vec![
-            ("6/1/1".to_string(), "k1".to_string(), 10u64 << 20),
+            ("6/1/3".to_string(), "k3".to_string(), 20u64 << 20),
+            ("6/1/1".into(), "k1".into(), 10 << 20),
             ("6/1/2".into(), "k2".into(), 500 << 20),
-            ("6/1/3".into(), "k3".into(), 20 << 20),
             ("6/1/4".into(), "k4".into(), 30 << 20),
         ];
+        measure_units(&c, 4);
+        c.add_costs(&[(
+            "6/1/2".into(),
+            Cost { peak_mb: 5000, secs: 60, worker: None, v: cost_version("unit"), ..Default::default() },
+        )]);
         c.offer_units("2026-09-28", units.clone());
         // This Mac's own job holds 6/1/4.
         let own = c.hold("unit", &[("6/1/4".into(), "k4".into())]).unwrap();
-        // From the far end, not what this Mac builds, nothing needing more than it spares (6/1/2
-        // needs ~5 GB); the pass comes with it.
+        // A run from the front, not what this Mac builds, ended by one needing more than it spares
+        // (6/1/2, 5 GB); the pass comes with it.
         let g = w.ask(&ask(4096)).unwrap().unwrap();
         let Granted::Job { targets, pass, .. } = &g.work else { panic!() };
         assert_eq!(targets, &vec![("6/1/3".to_string(), "k3".to_string()), ("6/1/1".into(), "k1".into())]);
@@ -6181,7 +6029,7 @@ mod tests {
         );
         c.finish(own, &[("6/1/4".to_string(), "k4".to_string())]);
         let mut changed = units.clone();
-        changed[0].1 = "k1b".into();
+        changed[1].1 = "k1b".into();
         c.offer_units("2026-09-28", changed);
         let g2 = w.ask(&ask(4096)).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g2.work else { panic!() };
@@ -6323,9 +6171,10 @@ mod tests {
     #[test]
     fn leases_and_the_token_outlive_a_restart() {
         let (d, c, w) = start();
+        measure_units(&c, 2);
         c.offer_units("p", vec![("6/1/1".into(), "k1".into(), 1 << 20), ("6/1/2".into(), "k2".into(), 1 << 20)]);
         let own = c.hold("unit", &[("6/1/2".into(), "k2".into())]).unwrap();
-        let g = w.ask(&Ask { max: 1, ..ask(4096) }).unwrap().unwrap();
+        let g = w.ask(&Ask { ..ask(4096) }).unwrap().unwrap();
         let token = c.contact.token.clone();
         drop(c);
         // (A new port: the old listener's threads live on in this process.)

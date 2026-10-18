@@ -525,7 +525,7 @@ pool-<id>.lock          the lock of this Mac's member `<id>` (crate::pool::Membe
 The agent's folder, `agent/`:
 
 ```
-timings.jsonl, timings-run.json, timings-run-2.json   jobs' timings (below)
+timings.jsonl, timings-run.json, timings-run-<k>.json   jobs' timings (below)
 status.json             the lead's status; a member not leading writes helper.json
 state.json, job.json, agent.lock, logs/
 publishing.json         the lead's record of its catalogs {at, low_at, held_at}: when the last
@@ -583,7 +583,8 @@ phase: {name, class, wall_s, cpu_s, n, bytes, files, overlapped, background, sub
 
 Where they're kept:
 - A job writes its record once where `SCENIC_TIMINGS` says (`agent/timings-run.json`,
-  `timings-run-2.json` for the second job, or a member's leased task's `outbox/<lease>/timings.json`);
+  `timings-run-<k>.json` for slot k's job past the first, or a member's leased task's
+  `outbox/<lease>/timings.json`);
   a child program writes its phases where `SCENIC_PHASES_TO` says (removed once read).
 - `agent/timings.jsonl`: every job this Mac's agent ran.
 - `agent/coord/timings.jsonl` (the lead's coordinator): every worker's, sent with `/work/done`;

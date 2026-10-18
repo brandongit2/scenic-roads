@@ -31,7 +31,7 @@ Every row has the same fields; nothing about a step is kept anywhere else.
 | `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), `area` (a z3 tile), `tile` (a z6 tile), `input` (a drop box); a task's `task` |
 | `stage` | its stage | `pass`, `sites`, `terrain`, `slope`, `trees`, `depth`, `roads`, `tiles`, `finish`, `trains`, `landmarks`, `buildings`, `publish`, `upkeep` |
 | `place` | which Mac runs it: derived from the pool's rules (`agent::every::offered`), not kept | `any` (any member whose measured room fits), `lead` |
-| resources | its first guess of memory until measured, whether members take it and at what rank (`shared`), the second slot's rank (`beside`), a whole-build run alone (`alone`), whether it keeps the pass's answers (`answered`), targets per job of the lead's own (`batch`), its write-set (`writes`) | pool.md §7.2, §7.7 |
+| resources | its first guess of memory until measured, whether members take it and at what rank (`shared`), a whole-build run alone (`alone`), whether it keeps the pass's answers (`answered`), its write-set (`writes`); targets per job are measured, not kept (`coord::JOB_S`) | pool.md §7.2, §7.7 |
 
 The naming of titles: the thing a step makes (**Terrain**, **Roads**, **Map tiles**); its zoomed-out
 assembly by area "…, zoomed out"; its world level "…, world level"; a fetch "…'s sources" or what it
@@ -41,7 +41,7 @@ Every text about a step is templated from its row (`steps::title`, `said`, `coun
 
 | Text | Template | Example |
 |---|---|---|
-| a job's name | `{title}: {n} {noun}s`; a batch `{title}: {n} of {total} {noun}s`; a worldwide step `{title}` | "Terrain: 8 of 480 tiles", "Outlines" |
+| a job's name | `{title}: {n} {noun}s`; a worldwide step `{title}` | "Terrain: 8 tiles", "Outlines" |
 | a checklist count | `{done} of {total} {noun}s`, `{left} {noun}s left`, "done", "to come" (not sized yet) | "156 of 284 tiles" |
 | a step waiting | `{title}: {why}` | "Lake fill: failed 3 times in a row: …" |
 | an event | `{who} finished {job's name} in {time}` | "m4 finished Roads: 6 tiles in 10 min" |

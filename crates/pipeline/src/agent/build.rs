@@ -1953,7 +1953,7 @@ pub struct RegionLeft {
 /// - slope (each area once its terrain is built) and tree cover after them (its pieces, then each
 ///   area's assembly once its pieces are built: `tree_work`);
 /// - the trains' and the landmarks' chains from the start, each step once what it reads is built,
-///   after all that in the order (a second job beside the regions' takes them: crate::agent), the
+///   after all that in the order (a slot beside the regions' work takes them: crate::agent), the
 ///   overlays after the last unit; what they make goes out with the next catalog;
 /// - the 3D buildings' chain from the start too (`bld_work`: the sources' fetch, each z6 tile's
 ///   normalized file, then its tiles once it and its neighbours are prepared), listed after the
@@ -2017,8 +2017,8 @@ pub fn plan(
         || tiles.buildings_release(m).is_none_or(|b| !m.contains_key(&crate::buildtiles::index_logical(b)));
     // The trains' and the landmarks' chains: from the start, each step once what it reads is built
     // (`landmarks_work`: none waits for the units but the overlays), listed after the regions'
-    // work. A second job beside the regions' takes them first (crate::agent, Two jobs at once), a
-    // helper the candidates and peaks, the lead's own job once the regions' work is done.
+    // work. A slot beside the regions' work takes them (crate::agent: every job by grant, packed by
+    // its measures), a helper the candidates and peaks.
     let chains = |last: bool| -> Vec<Work> {
         rail_chain(cov, date, m, done, inputs)
             .into_iter()
@@ -3743,7 +3743,7 @@ fn next_of(works: &[Work]) -> Vec<String> {
             _ => runs.push((&w.step, w.targets.len())),
         }
     }
-    runs.into_iter().map(|(s, n)| super::steps::said(s, n, None)).collect()
+    runs.into_iter().map(|(s, n)| super::steps::said(s, n)).collect()
 }
 
 /// Marks each line whose steps a helper may do: all of them, or which (by their targets' noun, a

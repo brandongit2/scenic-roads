@@ -191,9 +191,9 @@ member of the pool (§8, The pool): it leads while its Mac holds the term, else 
 lead's coordinator. Below, the M4 (48 GB) unless said.
 - It runs under the launcher as a LaunchAgent with `ProcessType Interactive` (else launchd throttles
   it).
-- **Two jobs at once at most** (§8, Two jobs at once). Each job is a child process group at utility
-  priority (`taskpolicy -c utility`; `-b` would confine it to the efficiency cores). The first job's
-  Rust steps take all cores (on the M1 all but two), the second's half.
+- **Several jobs at once** (§8, Jobs at once). Each job is a child process group at utility
+  priority (`taskpolicy -c utility`; `-b` would confine it to the efficiency cores), its Rust steps
+  on the threads its grant gives it.
 - **Power:** jobs run at any charge. Each holds `caffeinate -i -s -w <pid>` (no idle sleep; no system
   sleep on mains), dropped while paused. A Mac that runs down mid-job loses only the target under
   way.
@@ -931,26 +931,27 @@ from the first (`edit_held`).
   kept for late records. `scenic-build rekey-check`, `scenic-build p5-check terrain`, `scenic-build p5-check trees` and `scenic-build water-key-check`
   say what they'd do, reading only. Pieces current only by derivation have no mid: it's made in idle
   time, expected the same (Order).
-- **A job** is one step over a batch of stale targets (terrain and slope pieces 8, their assemblies
-  4, lo 2, tree cover 4, unit 6, bldprep 8, bldtiles 16, peaks 12, pack 16, pois 24, worldwide steps
-  all), so a failure or a new app costs one batch.
-- **Order:** the agent starts the first job that can run, in plan order. It plans again when what
+- **A job** is one step over a run of stale targets: as many as fit a quarter of an hour by their
+  measured times (`coord::JOB_S`), a step kept to the lead in one job, so a failure or a new app
+  costs one run.
+- **Order:** the lead offers its plan in its order through its coordinator, and every Mac's agent,
+  the lead's included, asks it for work (docs/pool.md §7.2). It plans again when what
   the plan depends on changes (`plan_seen`: the manifest, records, hand-offs, the gate, the pool,
   the pause, a newer app, switch files, catalogs, leases), at the earliest end of its timed waits
   (`replan_at`), and otherwise every five minutes (`plan_due`). Planning reads the terrain packs'
   indexes once each by content name, kept in the agent's `pack-idx/`. On the lead, the journal is
   merged each loop.
-- **Two jobs at once** (the steps table's `beside`: docs/pool.md §7.2, §7.7): beside the first job,
-  each Mac runs the plan's next job whose measured memory and disk fit beside it
-  (`Coordinator::measured`). Never beside a cold start (a step none of whose targets has run), nor
-  beside a job of the same step unless it's shared. When the two hold more than the Mac's limit, the
-  memory guard stops the job beside at its next safe point, or the larger at once
-  (`agent::memguard`). Room is made only while no other job runs. When the first's next job can't
-  start beside the second's, the first waits rather than starting later work. The second has its own
-  scratch (`scratch-2/`), record and half the cores, and is a worker of its own in the history
-  ("<host> (second job)"); the status has it as `beside`, or why not (`beside_why`).
+- **Jobs at once** (docs/pool.md §7.2, §7.7): every job starts by a grant of the lead's
+  coordinator, the lead's own too, packed by their measures: a job beside others only when their
+  measured memory, disk and cores fit the Mac's room. Never beside a cold start (a step none of
+  whose targets has run), and one job at a time of a step kept to the lead. When the jobs hold more
+  than the Mac's limit, the memory guard stops one beside the largest at its next safe point, or
+  the larger at once (`agent::memguard`). Room is made only while no other job runs. Each slot past
+  the first has its own scratch (`scratch-<k>/`), record and threads, and is a worker of its own in
+  the history ("<host> #<k>"); the status has the second slot's job as `beside`, the rest as
+  `more`.
 - **A newly installed app:** nothing new starts and every running job is asked to stop at its next
-  safe point (what it finished kept); once the first slot is free the agent exits and the launcher
+  safe point (what it finished kept); once every slot is free the agent exits and the launcher
   starts the new one. A job reaching no safe point in time is stopped then (`Agent::update_wait`):
   the time its target under way is expected to need, by its progress's pace, else its expected time
   (its own measured run, its step's fit or prior, `needs::Book::secs`, from the coordinator's costs;
@@ -1030,8 +1031,8 @@ from the first (`edit_held`).
   NAS latency and free space; its build caches (`caches`) and room target (`caches.room`).
 - **The forecast** (`agent::forecast`), made with each plan and in the heartbeat: the work left run
   through in the order the agent runs it. The lead takes the pass's worldwide jobs, then a region at
-  a time (terrain, then units), else the chains' work; its second job the first step that fits
-  beside it; each other member the far end of the first shared step it can do (terrain's near end).
+  a time (terrain, then units), else the chains' work; its other slots any work in its order that
+  fits beside it; each other member the far end of the first shared step it can do (terrain's near end).
   Units reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. A region's
   units' map tiles go out as they're built; it reaches the map once its last unit's do, the measured
   publishing time after it's done (`forecast::update_secs`: the publishing chain's jobs and catalog,
@@ -1142,8 +1143,8 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
      change, from the records as they are (nothing is fixed as of a time): a prune of what the
      coverage no longer builds (§5, Shrinking), then the publishing chain (4, Roads), its map tiles
      whose owners changed a unit's together (`build::by_unit`: the units whose base pack or road
-     values differ from the served catalog's, in build order), shared with the members asking (the
-     lead's own job takes an even share, `publish::lead_share`); once the map tiles and the road
+     values differ from the served catalog's, in build order), offered in the plan's order to every
+     Mac asking, the lead's agent among them (docs/pool.md §7.2); once the map tiles and the road
      index are drawn (`build::CATALOG_GATE`) and none of their hand-offs waits to be merged (or ten
      minutes after it was first held back), a
      catalog (5), listed before the chain's rest (the low zooms, rail stops, ferries, roots), which

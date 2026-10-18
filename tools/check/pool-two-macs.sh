@@ -46,8 +46,6 @@
 #                                                   beside the lead on one Mac), its coordinator on
 #                                                   <port> (18091 else), counting its Mac's memory
 #                                                   as <MB> (SCENIC_TEST_MEM_MB: its limit squeezed)
-#   pool-two-macs.sh packing <folder> [off]         state/pool/packing in the scratch folder: a
-#                                                   member asks for and runs several jobs at once
 #   pool-two-macs.sh extra <dir> <MB>             the agent, from its next start, counts <MB>
 #                                                   more free on its disk than there is
 #                                                   (SCENIC_TEST_DISK_EXTRA_MB; 0: none): with <dir>
@@ -335,12 +333,6 @@ EOF
     print -n ${3:?a worker name} > $d/worker
     print -n ${4:?a port} > $d/coord-port
     if [[ -n ${5:-} ]]; then print -n $5 > $d/mem-mb; else rm -f $d/mem-mb; fi
-    ;;
-  packing)
-    r=${2:?the scratch folder}
-    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
-    mkdir -p $r/state/pool
-    if [[ ${3:-} == off ]]; then print off > $r/state/pool/packing; else print on > $r/state/pool/packing; fi
     ;;
   brokers)
     r=${2:?the scratch folder}

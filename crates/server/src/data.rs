@@ -738,7 +738,7 @@ fn unix_now() -> u64 {
 }
 
 /// Whether heartbeat `v` beat in the last `fresh_s` seconds with a job in one of `slots` ("job";
-/// the lead's second, "beside") that isn't paused.
+/// the second slot's, "beside") that isn't paused.
 fn runs(v: &serde_json::Value, fresh_s: u64, slots: &[&str]) -> bool {
     runs_at(v, fresh_s, slots, unix_now())
 }

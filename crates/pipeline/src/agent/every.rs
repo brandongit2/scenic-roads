@@ -16,6 +16,10 @@
 //!   targets as many as fit a quarter of an hour by their measured times (crate::coord::JOB_S); a
 //!   contiguous run of the plan, from its front or just after the member's last.
 //! - What another member builds is the lead's coordinator's leases alone.
+//! - **Every job by grant** (`grants`): the lead's own agent asks its coordinator for work as any
+//!   member does (crate::coord::Coordinator::ask_own), its jobs packed by the same measures. The
+//!   steps kept to the lead (`LEAD_ONLY`, the answer-keeping steps, the worldwide steps: those not
+//!   `offered`) and the lead's own planned jobs are granted to the current lead's member alone.
 
 /// The steps kept to the lead: the catalogs and prune (their gates:
 /// crate::agent's catalog and sweep), the 3D buildings' sources' fetch (written outside the records,
@@ -47,6 +51,13 @@ pub fn offered(step: &str) -> bool {
         && names_target(step)
         && !super::steps::alone(step)
         && step != "spoken"
+}
+
+/// The authority rule: whether work of `step` may be granted to the asker, `lead` when it's the
+/// current lead's member (its own agent's ask, in process). The lead's own planned job (`own`) and a
+/// step not `offered` to every member go to the lead alone; an offered step to any member.
+pub fn grants(step: &str, own: bool, lead: bool) -> bool {
+    lead || (!own && offered(step))
 }
 
 /// Whether a job's command names target `t` (a step's worldwide target, its own name or a world
@@ -111,6 +122,18 @@ mod tests {
             "a step of a newer app",
         ] {
             assert!(!offered(s), "{s}");
+        }
+    }
+
+    #[test]
+    fn the_leads_steps_and_own_jobs_are_granted_to_the_lead_alone() {
+        for s in ["catalog", "bld-fetch", "osm-pass", "gc", "items", "heritage", "roadunits", "terrain-root"] {
+            assert!(grants(s, true, true) && grants(s, false, true), "{s}");
+            assert!(!grants(s, false, false) && !grants(s, true, false), "{s}");
+        }
+        for s in ["pack", "lo", "slope", "unit"] {
+            assert!(grants(s, false, true) && grants(s, false, false), "{s}");
+            assert!(!grants(s, true, false), "{s}");
         }
     }
 

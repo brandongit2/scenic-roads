@@ -246,13 +246,10 @@ impl Conds {
 
 /// `Run::scores`, given this Mac, the members' heartbeats, the capacities by worker and the time.
 fn scores_of(me: &Member, beats: &[Beat], caps: Vec<(String, crate::coord::Capacity)>, now: u64) -> Vec<(String, u64)> {
-    // (A worker's host: its slot's number, or an earlier agent's second job, taken off.)
-    let host_of = |w: &str| {
-        let w = crate::agent::worker_now(w);
-        match w.rsplit_once(" #") {
-            Some((h, n)) if n.parse::<usize>().is_ok() => h.to_string(),
-            _ => w,
-        }
+    // (A worker's host: its slot's number taken off.)
+    let host_of = |w: &str| match w.rsplit_once(" #") {
+        Some((h, n)) if n.parse::<usize>().is_ok() => h.to_string(),
+        _ => w.to_string(),
     };
     let mut newest: BTreeMap<String, crate::coord::Capacity> = BTreeMap::new();
     for (w, cap) in caps {

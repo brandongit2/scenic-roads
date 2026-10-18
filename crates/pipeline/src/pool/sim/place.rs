@@ -5,17 +5,15 @@
 //! - **The members** ask the coordinator over HTTP, as their agents do (`client::Client::ask`), with
 //!   what their Mac spares (its memory guard's limit less what its jobs hold, its disk's free space
 //!   now less the reserve and its jobs' reservations, its capacity); what they're granted is
-//!   `pick_every`'s, untouched. Each
-//!   runs `Cfg::member_slots` jobs (today's agent: one), asking again while a slot is free (packing
-//!   on, `Cfg::packing`: for as many jobs as it has slots free, running every one granted); a job
+//!   `pack`'s, untouched. Each runs `Cfg::member_slots` jobs (0: the agent's, by its cores), asking
+//!   while a slot is free for as many jobs as it has slots free, running every one granted; a job
 //!   ends by giving its lease back, its costs (with its threads) and disk measured into the
 //!   coordinator first.
-//! - **The lead** runs `agent::SLOTS` jobs (two), its own leases held (`Coordinator::hold`): its plan
-//!   leaves out what others hold and a step whose cold start runs elsewhere (`cold_under_way`), as
-//!   the agent's does; the first slot takes the plan's first unless it waits for the second job, the
-//!   second the plan's first that can run beside the first, by the agent's own rules (`clash`,
-//!   `beside_why`), nothing beside a cold start or with one next. Its room is the coordinator's
-//!   `Every::own`, as the agent's `own_room` says it.
+//! - **The lead** asks its own coordinator in process as its agent does (`Coordinator::ask_own`,
+//!   the agent's `lead_grants`): the plan offered in its order, the steps kept to it (not offered to
+//!   every member) as its own planned jobs (`Offer::job`, a job a target), granted to it alone; its
+//!   slots the agent's (`job_slots` of its cores); with no job running, for one job, its disk not
+//!   bounded, else for its slots free with its disk room; each job run with the threads granted.
 //! - **Each job** takes its step's true memory and cores from its start to its end, and its disk
 //!   as it goes (written evenly over its run, as a real job fills its scratch): until it ends, the
 //!   rest is its reservation (task #242), which its member's ask takes off its free space. A job
@@ -27,15 +25,14 @@
 //! lead (crate::agent::every::LEAD_ONLY, or not offered) only on the lead; a cold start alone on its
 //! Mac and in the pool, and nothing beside one. Then what it takes: past its Mac's memory limit only
 //! a cold start, stopped by the guard; never past its disk (every job on it counted whole: no Mac's
-//! disk over-committed, however little its jobs have written yet); its threads (a member's, those granted
-//! it, crate::coord::Grant::threads, at least one; the lead's own, its step's) and those of the jobs
-//! beside it never past its Mac's cores (less those its in-use share keeps, `Cfg::in_use`). And that
-//! the plan finishes.
+//! disk over-committed, however little its jobs have written yet); its threads (those granted it,
+//! crate::coord::Grant::threads, at least one) and those of the jobs beside it never past its Mac's
+//! cores (less those a member's in-use share keeps, `Cfg::in_use`). And that the plan finishes.
 
 use crate::agent::every;
 use crate::agent::memguard::{self, Floor};
 use crate::agent::room;
-use crate::coord::{self, client, cost_key, cost_version, Ask, Capacity, Cost, Every, Granted, Offer};
+use crate::coord::{self, client, cost_key, cost_version, Ask, Capacity, Cost, Granted, Offer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -70,12 +67,9 @@ pub struct Cfg {
     /// The Macs, the lead first.
     pub macs: Vec<Mac>,
     pub steps: Vec<Step>,
-    /// The jobs a member runs at once (the agent's, packing off: one); 0: as the agent has them
-    /// with packing on, by its Mac's cores (crate::agent::member_slots).
+    /// The jobs a member runs at once; 0: as the agent has them, by its Mac's cores
+    /// (crate::agent::job_slots).
     pub member_slots: usize,
-    /// Packing (crate::agent::packing) on, with its caps: a member asks for as many jobs as it has
-    /// slots free (`Ask::want`) and runs every one granted. None: one job an ask, as today.
-    pub packing: Option<coord::Packing>,
     /// The NAS budget on (crate::budget::nas), with the NAS's limits as a probe would measure them.
     /// None: off.
     pub nas: Option<crate::budget::nas::Limits>,
@@ -103,6 +97,8 @@ pub struct Run {
     pub turned_away: usize,
     /// The threads the members' jobs were granted, by step (the fewest and the most).
     pub granted: BTreeMap<String, (u32, u32)>,
+    /// The steps the lead ran a job of.
+    pub lead_steps: BTreeSet<String>,
 }
 
 /// A loop of an agent (s).
@@ -152,7 +148,6 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
     let (c, port) = coord::start_for_test(&d.path().join("coord"), lead_name, "");
     let clock = store::clock::Virtual::new();
     c.shared.lock().unwrap().clock = clock.clone();
-    c.set_packing(cfg.packing.clone());
     c.set_nas(cfg.nas);
     let limits = cfg.nas.unwrap_or(crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None });
     let weight = |s: &Step| {
@@ -172,11 +167,9 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
         .collect();
     let steps: BTreeMap<&str, &Step> = cfg.steps.iter().map(|s| (s.name, s)).collect();
     let slots = |k: usize| {
-        if k == 0 {
-            crate::agent::SLOTS
-        } else if cfg.member_slots == 0 {
-            // (As the agent has them: by its Mac's cores, crate::agent::member_slots.)
-            crate::agent::member_slots(cfg.macs[k].cores as usize)
+        if k == 0 || cfg.member_slots == 0 {
+            // (As the agent has them: by its Mac's cores, crate::agent::job_slots.)
+            crate::agent::job_slots(cfg.macs[k].cores as usize)
         } else {
             cfg.member_slots
         }
@@ -246,7 +239,9 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 out.ran[k] += 1;
             }
         }
-        // The plan's work left, offered (every step to every member: the lead's own kept back).
+        // The plan's work left, offered in its order: an offered step's targets, the lead's own steps
+        // a job a target (its planned jobs, granted to it alone), as the agent's `offer_plan` offers
+        // them.
         let open = |s: &Step| {
             (0..s.targets)
                 .map(|i| target_name(s.name, i))
@@ -257,11 +252,19 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             "p",
             cfg.steps
                 .iter()
-                .filter(|s| every::offered(s.name))
-                .map(|s| Offer {
-                    step: s.name.into(),
-                    targets: open(s).into_iter().map(|tg| (tg.clone(), key_of(&tg), 0)).collect(),
-                    batch: 1,
+                .flat_map(|s| {
+                    let targets = open(s).into_iter().map(|tg| (tg.clone(), key_of(&tg), 0));
+                    if every::offered(s.name) {
+                        vec![Offer { step: s.name.into(), targets: targets.collect(), job: None }]
+                    } else {
+                        targets
+                            .map(|t| Offer {
+                                step: s.name.into(),
+                                job: Some(format!("{} {}", s.name, t.0)),
+                                targets: vec![t],
+                            })
+                            .collect()
+                    }
                 })
                 .collect(),
         );
@@ -358,7 +361,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     cfg.macs[k].name, disk, job.disk_mb, cfg.macs[k].disk_mb
                 ));
             }
-            // (A member's: the threads granted it, within the cores its in-use share leaves.)
+            // (The threads granted it, within the cores a member's in-use share leaves.)
             let kept = if k > 0 { cfg.in_use.unwrap_or(0) } else { 0 };
             if job.threads == 0 || threads + job.threads + kept > cfg.macs[k].cores {
                 return Err(format!(
@@ -366,13 +369,17 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     cfg.macs[k].name, job.threads, cfg.macs[k].cores
                 ));
             }
-            // (The NAS budget on: a member's measured job only within the pool's room left, or with
-            // no other member's job weighing anything. The lead's own aren't placed by the
-            // coordinator: they count, but aren't held to it.)
+            // (The NAS budget on: a measured job only within the pool's room left; a member's also
+            // with no other member's job weighing anything (the lead's own never hold it back), the
+            // lead's own with nothing weighing anything.)
             let pool_nas: u32 = running.iter().flatten().map(|j| j.nas).sum();
             let members_nas: u32 = running.iter().skip(1).flatten().map(|j| j.nas).sum();
-            if k > 0 && cfg.nas.is_some() && !cold && !crate::budget::nas::Limits::fits(members_nas, pool_nas, job.nas)
-            {
+            let fits = if k == 0 {
+                crate::budget::nas::Limits::fits_own(pool_nas, job.nas)
+            } else {
+                crate::budget::nas::Limits::fits(members_nas, pool_nas, job.nas)
+            };
+            if cfg.nas.is_some() && !cold && !fits {
                 return Err(format!(
                     "{} placed {step} {targets:?} past the NAS budget: {pool_nas} + {} > {}",
                     cfg.macs[k].name,
@@ -386,94 +393,58 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             Ok(true)
         };
 
-        // The lead: its plan (its own and offered steps alike, in order) less what others hold
-        // and a step whose cold start runs elsewhere; a job a target.
-        let plan: Vec<(String, String)> = cfg
-            .steps
-            .iter()
-            .filter(|s| !(every::offered(s.name) && c.cold_under_way(s.name)))
-            .flat_map(|s| {
-                let held = c.held(s.name);
-                open(s).into_iter().filter(move |tg| !held.contains(tg)).map(move |tg| (s.name.to_string(), tg))
-            })
-            .collect();
-        let lead_limit = limit(0);
-        let lead_free = |r: &[Job]| (cfg.macs[0].disk_mb.saturating_sub(used(r).1)) << 20;
-        let beside = |spec: &(String, String), other: &Job, r: &[Job]| -> Option<String> {
-            if crate::agent::clash(&spec.0, &other.step) {
-                return Some("they don't run together".into());
-            }
-            crate::agent::beside_why(
-                measured(&spec.0, std::slice::from_ref(&spec.1)),
-                measured(&other.step, &other.targets),
-                false,
-                Some(other.mem_mb),
-                lead_limit,
-                // (No job of the simulation waits on a tail (`waiting` false), and a running job's
-                // disk is taken whole as it starts, so none of it is left to come.)
-                || (0, lead_free(r)),
-                &other.step,
-            )
-        };
-        let mut tried: BTreeSet<(String, String)> = BTreeSet::new();
-        // (Slot one free: the plan's first, unless it waits for the job beside it.)
-        if running[0].is_empty() || (running[0].len() == 1 && slots(0) > 1 && !running[0][0].cold) {
-            let first_free = running[0].is_empty();
-            if first_free {
-                if let Some(spec) = plan.first() {
-                    tried.insert(spec.clone());
-                    if let Some(l) = c.hold(&spec.0, &[(spec.1.clone(), key_of(&spec.1))]) {
-                        start(
-                            0,
-                            &spec.0,
-                            vec![spec.1.clone()],
-                            l,
-                            steps[spec.0.as_str()].threads,
-                            &mut running,
-                            &mut out,
-                        )?;
-                    }
+        // The lead: each slot free asks its own coordinator, as its agent does (`lead_grants`).
+        while running[0].len() < slots(0) {
+            let (mem, disk, threads) = used(&running[0]);
+            let m = &cfg.macs[0];
+            let alone = running[0].is_empty();
+            let wrote: u64 = running[0].iter().map(|j| written(j, t)).sum();
+            let reserved_mb = disk - wrote;
+            let cap = Capacity {
+                limit_mb: limit(0),
+                held_mb: mem,
+                mem_mb: limit(0).saturating_sub(mem),
+                cores: m.cores,
+                cores_free: m.cores - threads,
+                disk_mb: m.disk_mb.saturating_sub(wrote + reserve_mb + reserved_mb),
+                reserved_mb,
+                ac: true,
+                nas: true,
+                home: true,
+                guard: true,
+                leases: running[0].iter().map(|j| j.lease).collect(),
+                ..Default::default()
+            };
+            let a = Ask {
+                kind: "native".into(),
+                can: cfg.steps.iter().map(|s| s.name.to_string()).collect(),
+                mem_mb: limit(0),
+                cores: m.cores,
+                limit_mb: Some(limit(0)),
+                // (As the agent asks: alone, for one job, its disk not bounded; else its disk room.)
+                disk_mb: (!alone).then_some(cap.disk_mb),
+                cap: Some(cap),
+                want: if alone { 1 } else { crate::agent::want(slots(0), running[0].len()) },
+                ..Default::default()
+            };
+            let Some(mut g) = c.ask_own(&a, &BTreeSet::new()) else { break };
+            let more = std::mem::take(&mut g.more);
+            let mut all = true;
+            for g in std::iter::once(g).chain(more) {
+                let Granted::Job { step, targets, .. } = g.work else {
+                    return Err("a task granted to the lead".into());
+                };
+                if g.job.is_some() == every::offered(&step) {
+                    return Err(format!("the lead granted {step} as {:?}", g.job));
                 }
+                out.lead_steps.insert(step.clone());
+                let ts = targets.into_iter().map(|t| t.0).collect();
+                all &= start(0, &step, ts, g.lease, g.threads, &mut running, &mut out)?;
             }
-            // (The second: nothing beside a cold start, nor with one next; else the plan's first
-            // that can run beside the first.)
-            if running[0].len() == 1 && slots(0) > 1 && !running[0][0].cold {
-                let head = plan.iter().find(|s| !running[0].iter().any(|j| j.step == s.0 && j.targets.contains(&s.1)));
-                let head_cold = head.is_some_and(|h| measured(&h.0, std::slice::from_ref(&h.1)).is_none());
-                if !head_cold {
-                    let pick = plan
-                        .iter()
-                        .filter(|s| {
-                            !tried.contains(*s) && !running[0].iter().any(|j| j.step == s.0 && j.targets.contains(&s.1))
-                        })
-                        .find(|s| beside(s, &running[0][0], &running[0]).is_none())
-                        .cloned();
-                    if let Some(spec) = pick {
-                        if let Some(l) = c.hold(&spec.0, &[(spec.1.clone(), key_of(&spec.1))]) {
-                            start(
-                                0,
-                                &spec.0,
-                                vec![spec.1.clone()],
-                                l,
-                                steps[spec.0.as_str()].threads,
-                                &mut running,
-                                &mut out,
-                            )?;
-                        }
-                    }
-                }
+            if !all {
+                break;
             }
         }
-        // The lead's room for a cold start (the agent's `own_room`): none while it can start none.
-        let own = if running[0].len() >= slots(0) || running[0].iter().any(|j| j.cold) {
-            (0, 0)
-        } else {
-            (
-                lead_limit.saturating_sub(used(&running[0]).0),
-                cfg.macs[0].disk_mb.saturating_sub(used(&running[0]).1 + reserve_mb),
-            )
-        };
-        c.set_every(Some(Every { own: Some(own) }));
 
         // The members: each slot free asks.
         for k in 1..cfg.macs.len() {
@@ -517,12 +488,11 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     // cores, its free disk now; what its jobs leave free in `cap`.)
                     mem_mb: limit(k),
                     cores: m.cores,
-                    max: 6,
                     limit_mb: Some(limit(k)),
                     disk_mb: Some(disk_mb),
                     cap: Some(cap),
-                    // (As the agent asks: its slots free, packing on.)
-                    want: crate::agent::member_want(cfg.packing.is_some(), slots(k), running[k].len()),
+                    // (As the agent asks: its slots free.)
+                    want: crate::agent::want(slots(k), running[k].len()),
                     ..Default::default()
                 };
                 let Some(mut g) = w.ask(&a).map_err(|e| format!("ask: {e:#}"))? else {
@@ -537,9 +507,6 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     break;
                 };
                 let more = std::mem::take(&mut g.more);
-                if cfg.packing.is_none() && !more.is_empty() {
-                    return Err("several jobs granted with packing off".into());
-                }
                 let mut all = true;
                 for g in std::iter::once(g).chain(more) {
                     let Granted::Job { step, targets, .. } = g.work else {
@@ -638,101 +605,67 @@ pub fn m4_m1() -> Vec<Mac> {
 mod tests {
     use super::*;
 
-    /// Today's pool: the lead runs two jobs at once, the member one; nothing past a Mac's memory,
-    /// cores or disk; cold starts alone; the lead's steps on the lead; the plan done.
-    #[test]
-    fn the_m4_and_the_m1_finish_two_slots_and_one() {
-        let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None })
-            .unwrap();
-        assert_eq!(r.most, [2, 1], "{r:?}");
-        assert!(r.ran.iter().all(|&n| n > 0), "{r:?}");
+    fn cfg(macs: Vec<Mac>, member_slots: usize) -> Cfg {
+        Cfg { macs, steps: plan(), member_slots, nas: None, in_use: None }
     }
 
-    /// Four Macs (one with little disk) finish the same plan, sooner than two.
+    /// The lead's jobs by grant (task #244): it packs several at once by its measures like any
+    /// member, its own steps (`bld-fetch`, `catalog`) on it alone; the member one at a time; nothing
+    /// past a Mac's memory, cores or disk; cold starts alone; the plan done.
+    #[test]
+    fn the_lead_packs_its_jobs_by_grant_and_runs_its_own_steps() {
+        let r = run(&cfg(m4_m1(), 1)).unwrap();
+        assert!(r.most[0] >= 2 && r.most[1] == 1, "{r:?}");
+        assert!(r.ran.iter().all(|&n| n > 0), "{r:?}");
+        assert!(r.lead_steps.contains("bld-fetch") && r.lead_steps.contains("catalog"), "{r:?}");
+    }
+
+    /// Four Macs (one with little disk) finish the same plan, no later than two (the lead packing
+    /// several jobs, the plan's cold starts and lead-only steps bound it), the members sharing it.
     #[test]
     fn four_macs_finish() {
-        let two = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None })
-            .unwrap();
+        let two = run(&cfg(m4_m1(), 1)).unwrap();
         let mut macs = m4_m1();
         macs.push(Mac { name: "mini", total_mb: 16_384, cores: 8, disk_mb: 40_000 });
         macs.push(Mac { name: "air", total_mb: 8_192, cores: 8, disk_mb: 35_000 });
-        let r = run(&Cfg { macs, steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None }).unwrap();
+        let r = run(&cfg(macs, 1)).unwrap();
         assert!(r.ran.iter().skip(1).filter(|&&n| n > 0).count() >= 2, "{r:?}");
-        assert!(r.secs < two.secs, "{} s with four, {} s with two", r.secs, two.secs);
+        assert!(r.secs <= two.secs, "{} s with four, {} s with two", r.secs, two.secs);
     }
 
-    /// Packing on, members with two slots: a cold start goes only to a Mac running nothing
-    /// (`most_room`), so the M1 reaches two measured jobs at once and every invariant holds.
+    /// Members with two slots: a cold start goes only to a Mac running nothing (`most_room`), so the
+    /// M1 reaches two measured jobs at once and every invariant holds.
     #[test]
     fn members_with_two_slots_pack_two_jobs_and_no_cold_start_beside_one() {
-        let r = run(&Cfg {
-            macs: m4_m1(),
-            steps: plan(),
-            member_slots: 2,
-            packing: Some(Default::default()),
-            nas: None,
-            in_use: None,
-        })
-        .unwrap();
-        assert_eq!(r.most, [2, 2], "{r:?}");
+        let r = run(&cfg(m4_m1(), 2)).unwrap();
+        assert_eq!(r.most[1], 2, "{r:?}");
     }
 
-    /// Packing on, a 48 GB member with room for several: it holds several small jobs at once (its
-    /// cores the bound: four 4-thread jobs on 16), every invariant holding, sooner than one a time.
+    /// A 48 GB member with room for several holds several small jobs at once (its cores the bound:
+    /// four 4-thread jobs on 16), every invariant holding, sooner than one a time.
     #[test]
     fn a_48_gb_member_holds_several_small_jobs_at_once() {
         let mut macs = m4_m1();
         macs[1] = Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 };
-        let one =
-            run(&Cfg { macs: macs.clone(), steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None })
-                .unwrap();
-        let r = run(&Cfg {
-            macs,
-            steps: plan(),
-            member_slots: 8,
-            packing: Some(Default::default()),
-            nas: None,
-            in_use: None,
-        })
-        .unwrap();
+        let one = run(&cfg(macs.clone(), 1)).unwrap();
+        let r = run(&cfg(macs, 8)).unwrap();
         assert!(r.most[1] >= 3, "{r:?}");
         assert!(r.most[1] <= 4, "past its cores: {r:?}");
         assert!(r.secs < one.secs, "{} s packed, {} s one a time", r.secs, one.secs);
     }
 
-    /// Packing on, the members' slots as the agent has them (task #240: by their cores, asking for
-    /// those free): the M1 and a 48 GB member each hold several jobs at once, every invariant
-    /// holding, the plan done sooner than one a time.
+    /// The members' slots as the agent has them (task #240: by their cores, asking for those free):
+    /// the M1 and a 48 GB member each hold several jobs at once, every invariant holding, the plan
+    /// done sooner than one a time.
     #[test]
     fn members_with_the_agents_slots_pack_by_their_room() {
         let mut macs = m4_m1();
         macs.push(Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 });
-        let one =
-            run(&Cfg { macs: macs.clone(), steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None })
-                .unwrap();
-        let r = run(&Cfg {
-            macs,
-            steps: plan(),
-            member_slots: 0,
-            packing: Some(Default::default()),
-            nas: None,
-            in_use: None,
-        })
-        .unwrap();
+        let one = run(&cfg(macs.clone(), 1)).unwrap();
+        let r = run(&cfg(macs, 0)).unwrap();
         assert!(r.most[1] >= 2 && r.most[2] >= 3, "{r:?}");
         assert!(r.most[2] <= 4, "past its cores: {r:?}");
         assert!(r.secs < one.secs, "{} s packed, {} s one a time", r.secs, one.secs);
-    }
-
-    /// Packing on with a cap: the member holds no more jobs than it, whatever its room.
-    #[test]
-    fn a_cap_holds_a_member_to_it() {
-        let mut macs = m4_m1();
-        macs[1] = Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 };
-        let packing = coord::Packing { caps: [("studio".to_string(), 2)].into(), ..Default::default() };
-        let r = run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(packing), nas: None, in_use: None })
-            .unwrap();
-        assert_eq!(r.most[1], 2, "{r:?}");
     }
 
     /// The NAS budget on (100 MB/s, 40 creates/s): a 48 GB member that packs `pack` jobs by its
@@ -744,24 +677,8 @@ mod tests {
         let mut macs = m4_m1();
         macs[1] = Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 };
         let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
-        let off = run(&Cfg {
-            macs: macs.clone(),
-            steps: plan(),
-            member_slots: 8,
-            packing: Some(Default::default()),
-            nas: None,
-            in_use: None,
-        })
-        .unwrap();
-        let on = run(&Cfg {
-            macs,
-            steps: plan(),
-            member_slots: 8,
-            packing: Some(Default::default()),
-            nas: Some(limits),
-            in_use: None,
-        })
-        .unwrap();
+        let off = run(&cfg(macs.clone(), 8)).unwrap();
+        let on = run(&Cfg { nas: Some(limits), ..cfg(macs, 8) }).unwrap();
         assert!(off.most_nas > crate::budget::nas::WHOLE, "off: past the NAS: {off:?}");
         assert!(on.most_nas < off.most_nas, "on: less of the NAS at once: {on:?} against {off:?}");
         assert!(on.turned_away > off.turned_away, "on: asks queued: {on:?} against {off:?}");
@@ -769,8 +686,8 @@ mod tests {
 
     /// Threads granted (task #241): a serial step (one thread busy) is measured to take 1–2 cores and
     /// granted those, its later jobs packing more beside each other; a parallel one at most the
-    /// packed share (the M1's 8: 2), whatever its first, cold run was given; the members' threads
-    /// never past their cores, checked at every start.
+    /// packed share (the M1's 8: 2), whatever its first, cold run was given; every Mac's threads
+    /// never past its cores, checked at every start.
     #[test]
     fn jobs_are_granted_their_measured_threads_within_the_cores() {
         let mut steps = plan();
@@ -784,23 +701,11 @@ mod tests {
             nas_mb: 100,
             creates: 5,
         });
-        let r = run(&Cfg {
-            macs: m4_m1(),
-            steps,
-            member_slots: 0,
-            packing: Some(Default::default()),
-            nas: None,
-            in_use: None,
-        })
-        .unwrap();
+        let r = run(&Cfg { steps, ..cfg(m4_m1(), 0) }).unwrap();
         let (lo, hi) = r.granted["pois"];
         assert!(lo >= 1 && hi <= 2, "{r:?}");
         assert!(r.granted.values().all(|&(lo, hi)| lo >= 1 && hi <= 2), "the M1's packed share: 2: {r:?}");
         assert!(r.most[1] >= 3, "serial jobs pack beside each other: {r:?}");
-        // One job an ask (packing off): every core, whatever was measured.
-        let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None })
-            .unwrap();
-        assert!(r.granted.values().all(|&g| g == (8, 8)), "{r:?}");
     }
 
     /// Disk reservations (task #242): an M1 with 8 GB past the reserve, its jobs 5 GB each written
@@ -816,10 +721,10 @@ mod tests {
         for s in steps.iter_mut().filter(|s| s.name == "slope") {
             (s.disk_mb, s.secs, s.targets) = (5_000, 1_200, 16);
         }
-        let cfg = Cfg { macs, steps, member_slots: 0, packing: Some(Default::default()), nas: None, in_use: None };
-        let r = run(&cfg).unwrap();
+        let c = Cfg { steps, ..cfg(macs, 0) };
+        let r = run(&c).unwrap();
         assert!(r.ran[1] > 0, "{r:?}");
-        let e = run_with(&cfg, false).unwrap_err();
+        let e = run_with(&c, false).unwrap_err();
         assert!(e.contains("m1 placed") && e.contains("over-committed"), "{e}");
     }
 
@@ -827,15 +732,7 @@ mod tests {
     /// the M1's 8) free of its jobs, checked at every start, and the plan still finishes.
     #[test]
     fn the_in_use_share_keeps_its_cores_free() {
-        let r = run(&Cfg {
-            macs: m4_m1(),
-            steps: plan(),
-            member_slots: 0,
-            packing: Some(Default::default()),
-            nas: None,
-            in_use: Some(4),
-        })
-        .unwrap();
+        let r = run(&Cfg { in_use: Some(4), ..cfg(m4_m1(), 0) }).unwrap();
         assert!(r.ran[1] > 0 && r.most[1] <= 2, "{r:?}");
     }
 }

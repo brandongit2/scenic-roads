@@ -177,7 +177,7 @@ fn dem_file(name: &str) -> Option<(String, Option<[i32; 4]>)> {
 
 /// Moves what units kept in this Mac's own cache (`dem-units/`, `scenic-units/`) to the shared one
 /// (`Tools::shared`), once: both Macs' units read them there. Two unit jobs on one Mac may do this
-/// at once (crate::agent, Two jobs at once): what the other moved first is passed over.
+/// at once (crate::agent: a Mac's jobs at once): what the other moved first is passed over.
 pub fn move_kept_to_shared(cache: &Path, shared: &Path) -> Result<usize> {
     let gone = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
     let mut moved = 0;

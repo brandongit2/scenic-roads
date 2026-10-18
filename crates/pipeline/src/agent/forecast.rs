@@ -4,9 +4,8 @@
 //!
 //! The work left is run through in the order the agent runs it: the lead takes the first it
 //! can (the pass's worldwide jobs, then a region at a time: its terrain, then its units; with none
-//! it can do now, the slope, tree cover and the chains' work), its second job the first of its
-//! steps (crate::agent::SECOND: the trains' and the landmarks' network steps, the candidates and
-//! peaks, then units and slope) that fits beside it, each helper the far end of the first shared
+//! it can do now, the slope, tree cover and the chains' work), its other slots (one lane, `equal`)
+//! any work in the lead's order that fits their memory, each helper the far end of the first shared
 //! step with work it can do that fits its memory (terrain's near end: the next region's; slope once
 //! its area's terrain is built, a unit once its region's terrain is). The trains' and the
 //! landmarks' chains run from the start, each step once what it reads is built. A region's units'
@@ -27,10 +26,6 @@ use std::collections::{BTreeMap, BTreeSet};
 // The shared steps a helper takes, in its order of preference.
 use super::steps::SHARED;
 
-// The steps the lead's second job takes, in its order of preference, and those it takes while
-// the Mac is in use: the agent's.
-use super::SECOND;
-
 /// A machine the work is shared among.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Machine {
@@ -40,10 +35,9 @@ pub struct Machine {
     pub measured: bool,
     /// A helper: the shared steps alone, what fits its memory.
     pub helper: bool,
-    /// The lead's second job: its steps alone (`SECOND`), what fits its memory.
-    pub second: bool,
-    /// A lane of the forecast for equal machines (`equal_machines`): any work in the lead's
-    /// order that fits its memory, the publishing the first lane's alone.
+    /// A lane of any work in the lead's order that fits its memory, the publishing the first lane's
+    /// alone: the lead's other slots, and every lane but the first of the forecast for equal machines
+    /// (`equal_machines`).
     pub equal: bool,
     pub mem_mb: u64,
     /// Seconds from now until it's free (its job under way's time left).
@@ -528,22 +522,6 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             };
             continue;
         }
-        if mac.second {
-            // The first of its steps it can do, in their order (a step's in the plan's).
-            let pick = SECOND.iter().find_map(|s| {
-                (0..items.len()).find(|&i| {
-                    items[i].phase != Phase::Before
-                        && items[i].step == *s
-                        && items[i].cost.peak_mb <= mac.mem_mb
-                        && runnable(&items, i, t)
-                })
-            });
-            free[m] = match pick {
-                Some(i) => take(&mut items, i, t),
-                None => next_end(&items, &free, m, t),
-            };
-            continue;
-        }
         // The lead. A region done that the map hasn't as it is: on the map a publishing's time after
         // (its last unit's map tiles, the road index, a catalog: the plan's publishing comes before
         // the regions' work), with the rebuilt ones done by then.
@@ -771,7 +749,7 @@ pub fn forecast(inp: &Input) -> Forecast {
 /// now `running`. Reports only: nothing is placed or decided by it.
 pub fn equal_machines(inp: &Input, lanes: Vec<Machine>, running: BTreeMap<(String, String), usize>) -> Forecast {
     let lanes: Vec<Machine> =
-        lanes.into_iter().enumerate().map(|(k, m)| Machine { equal: k > 0 && !m.helper, second: false, ..m }).collect();
+        lanes.into_iter().enumerate().map(|(k, m)| Machine { equal: k > 0 && !m.helper, ..m }).collect();
     forecast(&Input {
         now: inp.now,
         before: inp.before.clone(),
@@ -796,13 +774,13 @@ pub type PoolWorker = (String, bool, u64);
 pub const LANE_MEM_MB: u64 = 6144;
 
 /// The lanes of the forecast for equal machines (`equal_machines`): the lead's slots (`lead`, then
-/// `second`), each other native worker a lane, the pages one lane (their measured speeds summed,
+/// `others`, its other slots' lane), each other native worker a lane, the pages one lane (their measured speeds summed,
 /// the largest memory one said), each at its speed in `speeds` (one not in it: the lead's, 1) and
 /// busy with its leases' targets left (`leased`: worker, step, targets, seconds since granted; a
 /// page's, the pages' lane's); and the leased targets as running on their lanes.
 pub fn pool_lanes(
     lead: Machine,
-    second: Option<Machine>,
+    others: Option<Machine>,
     workers: &[PoolWorker],
     speeds: &BTreeMap<String, f64>,
     leased: &[(String, String, Vec<String>, u64)],
@@ -821,14 +799,13 @@ pub fn pool_lanes(
         speed,
         measured,
         helper,
-        second: false,
         equal: false,
         mem_mb,
         busy_s,
         unit_extra_s: 0.0,
     };
-    let own: Vec<String> = std::iter::once(lead.name.clone()).chain(second.as_ref().map(|m| m.name.clone())).collect();
-    let mut lanes: Vec<Machine> = std::iter::once(lead).chain(second).collect();
+    let own: Vec<String> = std::iter::once(lead.name.clone()).chain(others.as_ref().map(|m| m.name.clone())).collect();
+    let mut lanes: Vec<Machine> = std::iter::once(lead).chain(others).collect();
     let (mut speed, mut measured, mut mem, mut pages): (f64, bool, u64, Vec<&str>) = (0.0, true, 0, Vec::new());
     for (n, web, mem_mb) in workers {
         if own.contains(n) {
@@ -944,7 +921,6 @@ mod tests {
             speed,
             measured: true,
             helper,
-            second: false,
             equal: false,
             mem_mb: 6000,
             busy_s: 0.0,
@@ -1361,46 +1337,20 @@ mod tests {
     }
 
     #[test]
-    fn the_chains_go_on_beside_the_regions_on_the_second_job() {
-        let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])];
-        // The lead alone: terrain 600, the units 600, the slope 200 and the last publishing 600;
-        // then the chains, one after another (3,200 s).
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
-        (inp.chains, inp.after) = (chains(), Vec::new());
-        let alone = forecast(&inp);
-        assert_eq!(alone.done_at, Some(1_000_000 + 2000 + 5200));
-        // With its second job: the heritage chain from the start, beside the regions' work; the
-        // rest after the last publishing, the landmark points once the heritage chain is done too.
-        let second = Machine { second: true, equal: false, mem_mb: 12_000, ..mac("m4 (second job)", 1.0, false) };
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false), second], &cost);
-        (inp.chains, inp.after) = (chains(), Vec::new());
-        let f = forecast(&inp);
-        let lane = &f.lanes["m4 (second job)"];
-        assert_eq!((lane[0].step.as_str(), lane[0].from, lane[0].until), ("heritage", 1_000_000, 1_003_000));
-        assert_eq!(f.done_at, Some(1_000_000 + 4200));
-        assert_eq!(f.updates.len(), 1);
-        assert_eq!(f.updates[0].at, 1_000_000 + 2000, "the chains don't hold up the last publishing");
-    }
-
-    #[test]
-    fn the_second_job_builds_units_beside_the_first() {
+    fn the_leads_other_slots_build_units_beside_the_first() {
         let units: Vec<String> = (0..8).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
-        let second = Machine { second: true, equal: false, mem_mb: 12_000, ..mac("m4 (second job)", 1.0, false) };
+        let others = Machine { equal: true, mem_mb: 12_000, ..mac("m4 #2", 1.0, false) };
         // Half the units, whoever's at the Mac (the owner's choice: no rule for a Mac in use).
-        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), second.clone()], &cost));
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), others.clone()], &cost));
         assert_eq!(
-            f.lanes.get("m4 (second job)").map_or(0, |l| l
-                .iter()
-                .filter(|x| x.step == "unit")
-                .map(|x| x.n)
-                .sum::<usize>()),
+            f.lanes.get("m4 #2").map_or(0, |l| l.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()),
             4
         );
-        // The lead's first job two hours from done: the second job takes the units from now.
-        let f = forecast(&input(&regions, vec![Machine { busy_s: 7200.0, ..mac("m4", 1.0, false) }, second], &cost));
-        let lane = &f.lanes["m4 (second job)"];
+        // The lead's first job two hours from done: its other slots take the units from now.
+        let f = forecast(&input(&regions, vec![Machine { busy_s: 7200.0, ..mac("m4", 1.0, false) }, others], &cost));
+        let lane = &f.lanes["m4 #2"];
         assert_eq!(
             (lane[0].step.as_str(), lane[0].from, lane.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()),
             ("unit", 1_000_000, 8)

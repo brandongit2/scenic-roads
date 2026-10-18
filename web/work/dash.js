@@ -148,10 +148,9 @@ function model(sw) {
 }
 
 const stepOf = (id) => String(id || "").split(" ")[0];
-// The lead's second job as a worker (crate::agent::second_worker): its lane, history and pace; and
-// the name earlier agents gave it, still in the history they wrote.
+// A Mac's second slot as a worker (crate::agent::slot_worker): its lane, history and pace (the
+// forecast's lane of the lead's slots past the first).
 const secondOf = (host) => `${host} #2`;
-const oldSecondOf = (host) => `${host} (second job)`;
 // The checklist's line (a stage's) that counts `step`, and its item for it.
 const lineOf = (m, step) => m.lines.find((l) => (l.steps || []).includes(step) || (l.items || []).some((i) => i.step === step));
 const itemOf = (m, step) => lineOf(m, step)?.items?.find((i) => i.step === step);
@@ -159,8 +158,8 @@ const itemOf = (m, step) => lineOf(m, step)?.items?.find((i) => i.step === step)
 // ---- The verdict --------------------------------------------------------------------------------
 function machineState(st, fresh, paused) {
   if (!fresh) return ["out of touch", "bad"];
-  // (The lead's jobs, its second's beside its first: building while either is.)
-  const jobs = [st.job, st.beside].filter(Boolean);
+  // (Its jobs, every slot's: building while any is.)
+  const jobs = [st.job, st.beside, ...(st.more || [])].filter(Boolean);
   if (jobs.some((j) => !j.paused && !j.pausing)) return ["building", "run"];
   if (jobs.some((j) => j.pausing)) return ["stopping", "warn"];
   if (jobs.some((j) => j.paused)) return ["frozen", "warn"];
@@ -179,7 +178,7 @@ function alerts(m) {
     const st = x.status, r = st.resources || {}, c = st.conditions || {};
     const short = x.role === "lead" ? "Lead" : x.name;
     if (x.role !== "lead" && !x.fresh) out.push({ cls: "warn", text: `${short} out of touch for ${dur(now - st.beat)}`, to: "machines" });
-    for (const [j, which] of [[st.job, "job"], [st.beside, "second job"]]) {
+    for (const [j, which] of [[st.job, "job"], [st.beside, "job in slot 2"]]) {
       const p = j?.progress;
       if (p?.moved_at && !j.paused && now - p.moved_at >= STUCK_S) out.push({ cls: "warn", text: `${short}'s ${which} hasn't moved on for ${dur(now - p.moved_at)}`, to: "machines" });
     }
@@ -412,7 +411,6 @@ function fitText(w) {
     const bits = [`${S.title(f.step)}: ${n(f.fits)} of ${n(f.offered)} ${S.noun(f.step)}s it can take`];
     if (f.held) bits.push(`${n(f.held)} with others`);
     if (f.too_big) bits.push(`${n(f.too_big)} too big for its ${n(Math.round(w.mem_mb / 102.4) / 10)} GB`);
-    if (f.too_long) bits.push(`${n(f.too_long)} too long to start while its owner is away`);
     if (f.kept_from) bits.push(`${n(f.kept_from)} kept from it after failing`);
     return bits.join(", ");
   });
@@ -434,14 +432,13 @@ function machineCard(m, x) {
     for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${w.what}: ${w.why}` : w.why));
   }
   card.append(...[nextBlock(m, x.name)].filter(Boolean));
-  // The lead's second job, beside the first: what it runs, else why it has nothing.
-  if (x.role === "lead" && (st.beside || st.beside_why)) {
+  // The lead's second slot's job, beside the first.
+  if (x.role === "lead" && st.beside) {
     card.append(h("div", "beside-h", "Beside it"));
-    if (st.beside) card.append(jobBlock(st.beside, now));
-    else card.append(h("div", "sub", st.beside_why));
+    card.append(jobBlock(st.beside, now));
     card.append(...[nextBlock(m, secondOf(x.name))].filter(Boolean));
   }
-  const more = [x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, x.role === "lead" ? [x.name, secondOf(x.name), oldSecondOf(x.name)] : x.name) || [])];
+  const more = [x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, x.role === "lead" ? [x.name, secondOf(x.name)] : x.name) || [])];
   card.append(...more.filter(Boolean));
   return card;
 }
@@ -494,7 +491,7 @@ function schedule(m) {
   const t1 = Math.max(fc.done_at || 0, ...Object.values(fc.lanes).flat().map((l) => l.until), t0 + 3600);
   const span = t1 - t0;
   const x = (t) => `${(((Math.max(t0, Math.min(t1, t)) - t0) / span) * 100).toFixed(3)}%`;
-  // Each machine's lane, the lead's second job's under its own; then any other the forecast has.
+  // Each machine's lane, the lead's other slots' under its own; then any other the forecast has.
   const ordered = m.macs.flatMap((mm) => [mm.name, secondOf(mm.name)]);
   const names = ordered.filter((nm) => fc.lanes[nm]).concat(Object.keys(fc.lanes).filter((nm) => !ordered.includes(nm)));
   const lanes = h("div", "lanes");
@@ -792,7 +789,7 @@ function details(m) {
   if (workers.length) box.append(h("h3", null, "Workers heard from"), tbl(["Name", "Kind", "Doing", "Spares", "Done", "Failed", "Seen"], workers.map((w) => [w.label || w.name, w.kind, (w.what || "").slice(0, 80), w.mem_mb ? `${n(w.mem_mb)} MB` : "", n(w.done), n(w.failed), `${dur(w.seen_s)} ago`])));
   // The steps table itself: every step the same row (docs/pipeline.md).
   const rows = Object.values(table.steps);
-  if (rows.length) box.append(h("h3", null, "The steps", h("span", null, "every step's row of the table: what it makes, of what, where it runs")), tbl(["Stage", "Step", "Does", "Kind", "Each target", "Runs on", "A job"], rows.map((s) => [S.stageTitle(s.stage), s.title, s.does, s.kind, s.of ? `a task of ${S.title(s.of)}` : s.scope === "world" ? "the world" : `${/^[aeiou]/.test(s.noun) ? "an" : "a"} ${s.noun}`, s.place === "any" ? "any Mac" : "the lead", s.batch ? `${s.batch} ${s.noun}s` : s.of ? "" : "all"])));
+  if (rows.length) box.append(h("h3", null, "The steps", h("span", null, "every step's row of the table: what it makes, of what, where it runs")), tbl(["Stage", "Step", "Does", "Kind", "Each target", "Runs on", "A job"], rows.map((s) => [S.stageTitle(s.stage), s.title, s.does, s.kind, s.of ? `a task of ${S.title(s.of)}` : s.scope === "world" ? "the world" : `${/^[aeiou]/.test(s.noun) ? "an" : "a"} ${s.noun}`, s.place === "any" ? "any Mac" : "the lead", s.of ? "" : s.place === "any" ? "a quarter hour's" : "all"])));
   box.append(h("div", "fresh", `Updated ${clock(now)} · the lead's heartbeat ${a.beat ? ago(now, a.beat) : "–"}${a.started ? `, its agent running since ${clock(a.started)} (app ${a.app})` : ""}${m.fc ? ` · forecast ${ago(now, m.fc.at)}` : ""} · history #${sw.seq ?? "–"}`));
   return h("details", { class: "more-box", open: ui.detailsOpen || null, ontoggle: (e) => (ui.detailsOpen = e.target.open) }, h("summary", null, "Details"), box);
 }

@@ -14,24 +14,24 @@
 //!   rules (crate::agent::every), never kept by hand.
 //! - **resources**: the memory a job of it is first guessed to take until a target's own run says,
 //!   whether members take it and at what rank (the shared steps), whether it's the lead's alone (a
-//!   run alone of the whole build, or one that keeps the pass's answers: crate::agent::every), the
-//!   second slot's rank in the forecast, how many targets go in a job of the lead's own, and what
-//!   it may write (its write-set: the logical names its jobs may add, change or remove in the
-//!   build's manifest).
+//!   run alone of the whole build, or one that keeps the pass's answers: crate::agent::every), and
+//!   what it may write (its write-set: the logical names its jobs may add, change or remove in the
+//!   build's manifest). How many targets go in a job is measured, not kept here: as many as fit a
+//!   quarter of an hour (crate::coord::JOB_S), a step kept to the lead's in one job.
 //!
 //! Every human text about a step is templated from its row (`title`, `said`, `counted`): the jobs'
 //! names, the checklist, the build page, `scenic status`. The tasks a job offers (`TASKS`) are
 //! described alike.
 //!
-//! What it held besides went (docs/pool.md §7.7, §12 phase 4's thirteenth batch): the disk a job
-//! starts with (the reserve and the job's measured disk instead, the disk guard behind it), the
-//! groups of steps never run at once on one Mac (the raw tiles' accessor, the budgets' proxy and
-//! the answers' lease where the resources are used), the run-alone and second-job lists as rules
-//! of a Mac's slots (a job starts beside another by both jobs' measures; a cold start alone).
+//! Not in it: the disk a job starts with (the reserve and the job's measured disk, the disk guard
+//! behind it), groups of steps never run at once on one Mac (the raw tiles' accessor, the budgets'
+//! proxy and the answers' lease guard what they share where it's used), and which jobs run beside
+//! which (the coordinator packs a Mac's jobs by their measures; a cold start alone: docs/pool.md
+//! §7.2).
 //!
-//! The step sets (`SHARED`, `SECOND`, `ANSWERED`) are made from the table at compile time (a set
-//! whose size isn't what the table gives fails the build), and a step's first guess of memory and
-//! batch are read from its row (`row`).
+//! The step sets (`SHARED`, `ANSWERED`) are made from the table at compile time (a set whose size
+//! isn't what the table gives fails the build), and a step's first guess of memory is read from its
+//! row (`row`).
 //!
 //! The write-sets: one outputs function per step (`writes`, its row's), which both ends use, so
 //! they can't disagree (docs/pool.md §7.3, §12 phase 4's sixth batch): a job's `Out`, bound to its
@@ -147,22 +147,17 @@ pub struct Step {
     /// Other members take its jobs (the shared steps), at this rank of preference (what later steps
     /// wait on first).
     pub shared: Option<u8>,
-    /// The rank of preference a Mac's second job of it has in the forecast (crate::agent::forecast).
-    pub beside: Option<u8>,
     /// A run of the whole build's, the lead's alone (not offered to members: crate::agent::every).
     pub alone: bool,
     /// It keeps the pass's Wikidata and Wikipedia answers (crate::answers): none starts while the
     /// agent sends them as it starts.
     pub answered: bool,
-    /// Targets a job takes (`usize::MAX`: all of them).
-    pub batch: usize,
     /// Its write-set: whether a job of it may write `logical` (`removal`: removes it), for some
     /// target of its own.
     pub writes: fn(&str, bool) -> bool,
 }
 
-/// A row with what most steps have: 1.5 GB until measured, none of the sets, every target in one
-/// job.
+/// A row with what most steps have: 1.5 GB until measured, none of the sets.
 const fn step(
     stage: &'static str,
     kind: Kind,
@@ -172,21 +167,7 @@ const fn step(
     does: &'static str,
     writes: fn(&str, bool) -> bool,
 ) -> Step {
-    Step {
-        name,
-        title,
-        does,
-        kind,
-        scope,
-        stage,
-        mem_mb: 1500,
-        shared: None,
-        beside: None,
-        alone: false,
-        answered: false,
-        batch: usize::MAX,
-        writes,
-    }
+    Step { name, title, does, kind, scope, stage, mem_mb: 1500, shared: None, alone: false, answered: false, writes }
 }
 
 use Kind::{Derive, Fetch, Keep, Pack, Publish};
@@ -362,7 +343,6 @@ pub const TABLE: [Step; 51] = [
     },
     Step {
         shared: Some(0),
-        batch: 8,
         ..step(
             "terrain",
             Pack,
@@ -377,7 +357,6 @@ pub const TABLE: [Step; 51] = [
     // piece, and half a GB besides.)
     Step {
         mem_mb: 1200,
-        batch: 4,
         ..step(
             "terrain",
             Pack,
@@ -392,13 +371,10 @@ pub const TABLE: [Step; 51] = [
     Step {
         mem_mb: 1500,
         shared: Some(1),
-        beside: Some(11),
-        batch: 8,
         ..step("slope", Pack, Tile, "slope", "Slope", "Works out a tile's slope from its terrain.", w_slope)
     },
     Step {
         mem_mb: 1000,
-        batch: 4,
         ..step(
             "slope",
             Pack,
@@ -415,12 +391,10 @@ pub const TABLE: [Step; 51] = [
     Step {
         mem_mb: 1000,
         shared: Some(2),
-        batch: 4,
         ..step("trees", Pack, Tile, "trees", "Tree cover", "Maps a tile's tree cover, height and leaf type.", w_trees)
     },
     Step {
         mem_mb: 500,
-        batch: 4,
         ..step(
             "trees",
             Pack,
@@ -436,7 +410,6 @@ pub const TABLE: [Step; 51] = [
     // target's own run says.)
     Step {
         mem_mb: 2000,
-        batch: 4,
         ..step(
             "depth",
             Pack,
@@ -450,7 +423,6 @@ pub const TABLE: [Step; 51] = [
     Step {
         mem_mb: 2500,
         shared: Some(8),
-        batch: 4,
         ..step(
             "depth",
             Pack,
@@ -461,12 +433,10 @@ pub const TABLE: [Step; 51] = [
             w_depth,
         )
     },
-    // (A unit's most its batches took here, 8.4 GB, 2026-10-05; offered by its piece's size.)
+    // (A unit's most its jobs took here, 8.4 GB, 2026-10-05; offered by its piece's size.)
     Step {
         mem_mb: 8600,
         shared: Some(3),
-        beside: Some(10),
-        batch: 6,
         ..step(
             "roads",
             Pack,
@@ -478,11 +448,9 @@ pub const TABLE: [Step; 51] = [
         )
     },
     Step {
-        batch: 16,
         ..step("tiles", Pack, Tile, "pack", "Map tiles", "Draws a tile's road and rail map tiles and its data.", w_pack)
     },
     Step {
-        batch: 2,
         ..step(
             "tiles",
             Pack,
@@ -533,7 +501,6 @@ pub const TABLE: [Step; 51] = [
     },
     Step {
         mem_mb: 1024,
-        beside: Some(3),
         ..step(
             "trains",
             Fetch,
@@ -546,21 +513,16 @@ pub const TABLE: [Step; 51] = [
     },
     Step {
         mem_mb: 6144,
-        beside: Some(4),
         ..step("trains", Derive, World, "rail", "Trains a day", "Counts trains a day on the regions' rail.", w_rail)
     },
     Step {
         mem_mb: 2048,
         shared: Some(4),
-        beside: Some(8),
-        batch: 24,
         ..step("landmarks", Derive, Tile, "pois", "Landmark candidates", "Finds a tile's landmark candidates.", w_pois)
     },
     Step {
         mem_mb: 2500,
         shared: Some(5),
-        beside: Some(9),
-        batch: 12,
         ..step(
             "landmarks",
             Derive,
@@ -573,7 +535,6 @@ pub const TABLE: [Step; 51] = [
     },
     Step {
         mem_mb: 3072,
-        beside: Some(2),
         answered: true,
         ..step(
             "landmarks",
@@ -587,7 +548,6 @@ pub const TABLE: [Step; 51] = [
     },
     Step {
         mem_mb: 6144,
-        beside: Some(1),
         answered: true,
         ..step(
             "landmarks",
@@ -601,7 +561,6 @@ pub const TABLE: [Step; 51] = [
     },
     Step {
         mem_mb: 4096,
-        beside: Some(6),
         ..step(
             "landmarks",
             Pack,
@@ -614,12 +573,10 @@ pub const TABLE: [Step; 51] = [
     },
     Step {
         mem_mb: 4096,
-        beside: Some(7),
         ..step("landmarks", Pack, World, "overlays", "Area overlays", "Draws the area overlays.", w_overlays)
     },
     Step {
         mem_mb: 1024,
-        beside: Some(5),
         ..step(
             "buildings",
             Fetch,
@@ -636,8 +593,6 @@ pub const TABLE: [Step; 51] = [
     Step {
         mem_mb: 5200,
         shared: Some(6),
-        beside: Some(12),
-        batch: 8,
         ..step(
             "buildings",
             Derive,
@@ -651,8 +606,6 @@ pub const TABLE: [Step; 51] = [
     Step {
         mem_mb: super::bldtiles_peak(30_300_000),
         shared: Some(7),
-        beside: Some(13),
-        batch: 16,
         ..step(
             "buildings",
             Pack,
@@ -666,7 +619,6 @@ pub const TABLE: [Step; 51] = [
     // (Its field's lo levels a z3 tile: what crate::bld::field's lo holds, from its sizes.)
     Step {
         mem_mb: crate::bld::field::LO_PEAK_MB,
-        batch: 4,
         ..step(
             "buildings",
             Pack,
@@ -699,12 +651,9 @@ pub const TABLE: [Step; 51] = [
             w_none,
         )
     },
-    // The gate's checks (crate::inputs::gate): one per gate unit, ordered before the rest, and the
-    // second job's first choice (so one doesn't wait behind a long first job, a step running alone
-    // aside); reading the drop boxes and the accepted copies on the NAS, never beside another of
-    // the heavy NAS readers.
+    // The gate's checks (crate::inputs::gate): one per gate unit, ordered before the rest; reading
+    // the drop boxes and the accepted copies on the NAS.
     Step {
-        beside: Some(0),
         ..step(
             "upkeep",
             Keep,
@@ -856,17 +805,14 @@ pub fn counted(step: &str, n: usize) -> String {
     format!("{n} {}{}", noun(step), if n == 1 { "" } else { "s" })
 }
 
-/// A job of `step` over `n` targets, said: "Terrain: 8 tiles", "Terrain: 8 of 480 tiles" (`of`,
-/// the batch's whole), "Outlines" (a worldwide step's one run).
-pub fn said(step: &str, n: usize, of: Option<usize>) -> String {
+/// A job of `step` over `n` targets, said: "Terrain: 8 tiles", "Outlines" (a worldwide step's one
+/// run).
+pub fn said(step: &str, n: usize) -> String {
     let t = title(step);
     if row(step).is_some_and(|s| s.scope == World) || n == 0 {
         return t.to_string();
     }
-    match of {
-        Some(total) if total != n => format!("{t}: {n} of {total} {}s", noun(step)),
-        _ => format!("{t}: {}", counted(step, n)),
-    }
+    format!("{t}: {}", counted(step, n))
 }
 
 /// Which Mac runs `step`: any member the lead offers it to (crate::agent::every), else the lead.
@@ -890,8 +836,6 @@ pub struct Info {
     pub noun: String,
     pub stage: String,
     pub place: Place,
-    /// Its targets per job of the lead's own (None: all of them).
-    pub batch: Option<usize>,
     /// The memory a job of it is first guessed to take (MB).
     pub mem_mb: u64,
     /// A task's: the step whose jobs offer it.
@@ -910,7 +854,6 @@ pub fn table() -> Vec<Info> {
         noun: s.scope.noun().into(),
         stage: s.stage.into(),
         place: place(s.name),
-        batch: (s.batch != usize::MAX).then_some(s.batch),
         mem_mb: s.mem_mb,
         of: None,
     });
@@ -925,7 +868,6 @@ pub fn table() -> Vec<Info> {
             noun: Scope::Task.noun().into(),
             stage: s.stage.into(),
             place: Place::Any,
-            batch: None,
             mem_mb: 0,
             of: Some(t.step.into()),
         }
@@ -939,11 +881,6 @@ pub fn mem_mb(step: &str) -> u64 {
     row(step).map_or(1500, |s| s.mem_mb)
 }
 
-/// Targets per job of `step` (all of them for a step the table doesn't know).
-pub fn batch(step: &str) -> usize {
-    row(step).map_or(usize::MAX, |s| s.batch)
-}
-
 /// Whether `step` is a run of the whole build's, the lead's alone.
 pub fn alone(step: &str) -> bool {
     row(step).is_some_and(|s| s.alone)
@@ -953,19 +890,14 @@ pub fn alone(step: &str) -> bool {
 #[derive(Clone, Copy)]
 enum Set {
     Shared,
-    Beside,
     Answered,
 }
 
-/// Whether row `s` is in `set`, and its rank there (the shared and second job's steps by their
-/// ranks, the others in the table's order).
+/// Whether row `s` is in `set`, and its rank there (the shared steps by their ranks, the others in
+/// the table's order).
 const fn rank_in(s: &Step, set: Set, i: usize) -> Option<usize> {
     match set {
         Set::Shared => match s.shared {
-            Some(r) => Some(r as usize),
-            None => None,
-        },
-        Set::Beside => match s.beside {
             Some(r) => Some(r as usize),
             None => None,
         },
@@ -974,10 +906,10 @@ const fn rank_in(s: &Step, set: Set, i: usize) -> Option<usize> {
     }
 }
 
-/// Whether `set`'s ranks are its own, 0 to N-1 (the shared and second job's steps), not an order
-/// taken from the table's order.
+/// Whether `set`'s ranks are its own, 0 to N-1 (the shared steps), not an order taken from the
+/// table's order.
 const fn dense(set: Set) -> bool {
-    matches!(set, Set::Shared | Set::Beside)
+    matches!(set, Set::Shared)
 }
 
 /// The steps of `set`, by rank: N of them, or the build fails: two steps of one rank, a rank
@@ -1034,8 +966,6 @@ const fn set_of<const N: usize>(set: Set) -> [&'static str; N] {
 /// The shared steps: other members take their jobs (crate::coord leases them), in this order of
 /// preference: what later steps wait on first.
 pub const SHARED: [&str; 9] = set_of(Set::Shared);
-/// The steps a Mac's second job takes in the forecast, in its order of preference.
-pub const SECOND: [&str; 14] = set_of(Set::Beside);
 /// The steps that keep the pass's Wikidata and Wikipedia answers.
 pub const ANSWERED: [&str; 3] = set_of(Set::Answered);
 
@@ -1461,25 +1391,6 @@ mod tests {
     fn the_sets_are_todays() {
         // (As they were before the table: the agent's and the coordinator's rules unchanged.)
         assert_eq!(SHARED, ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "depth"]);
-        assert_eq!(
-            SECOND,
-            [
-                "inputs",
-                "heritage",
-                "items",
-                "rail-feeds",
-                "rail",
-                "bld-fetch",
-                "marks",
-                "overlays",
-                "pois",
-                "peaks",
-                "unit",
-                "slope",
-                "bldprep",
-                "bldtiles"
-            ]
-        );
         let set = |v: &[&'static str]| v.iter().copied().collect::<std::collections::BTreeSet<&str>>();
         assert_eq!(set(&ANSWERED), set(&["items", "heritage-sites", "heritage"]));
     }
@@ -1488,7 +1399,7 @@ mod tests {
     fn the_rows_are_todays() {
         // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
         // where they differed: the network steps', a unit's and candidates', which nothing offered
-        // by the former), the batches.
+        // by the former).
         let mem: [(&str, u64); 21] = [
             ("lakefill", 12288),
             ("outlines", 9216),
@@ -1517,25 +1428,6 @@ mod tests {
         }
         assert_eq!(mem_mb("labels"), 1500);
         assert_eq!(mem_mb("not a step"), 1500);
-        let batches: [(&str, usize); 13] = [
-            ("terrain", 8),
-            ("slope", 8),
-            ("terrain-lo", 4),
-            ("slope-lo", 4),
-            ("trees", 4),
-            ("trees-lo", 4),
-            ("bldprep", 8),
-            ("bldtiles", 16),
-            ("lo", 2),
-            ("unit", 6),
-            ("peaks", 12),
-            ("pack", 16),
-            ("pois", 24),
-        ];
-        for (s, n) in batches {
-            assert_eq!(batch(s), n, "{s}");
-        }
-        assert_eq!(batch("catalog"), usize::MAX);
         // No row twice.
         for s in TABLE.iter().map(|s| s.name) {
             assert_eq!(TABLE.iter().filter(|r| r.name == s).count(), 1, "{s}");
@@ -1672,10 +1564,9 @@ mod tests {
             (noun("unit"), noun("terrain-lo"), noun("outlines"), noun("inputs"), noun("tail"), noun("a newer step")),
             ("tile", "area", "run", "input", "task", "target")
         );
-        assert_eq!(said("terrain", 8, Some(480)), "Terrain: 8 of 480 tiles");
-        assert_eq!(said("terrain", 8, Some(8)), "Terrain: 8 tiles");
-        assert_eq!(said("terrain-lo", 1, None), "Terrain, zoomed out: 1 area");
-        assert_eq!(said("outlines", 1, None), "Outlines");
+        assert_eq!(said("terrain", 8), "Terrain: 8 tiles");
+        assert_eq!(said("terrain-lo", 1), "Terrain, zoomed out: 1 area");
+        assert_eq!(said("outlines", 1), "Outlines");
         assert_eq!(
             [title("publishing"), title("tail"), title("a-newer-step")],
             ["Publishing", "Roads' last steps", "a-newer-step"]
