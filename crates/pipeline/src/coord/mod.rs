@@ -249,6 +249,10 @@ pub struct Shared {
     /// batch is reckoned by the larger of this and its targets' disk summed. Only rises. Kept in
     /// `job-disks.json`.
     pub job_disks: BTreeMap<String, u64>,
+    /// The steps' models of their needs (crate::needs), kept while `needs_rev` stands: it moves with
+    /// each cost, floor or disk floor taken or cleared.
+    pub needs: crate::needs::Cache,
+    pub needs_rev: u64,
     /// The app this Mac's agent runs: an agent on another builds with other code than the keys it
     /// would record say, so it gets no work ("" in tests: any).
     pub app: String,
@@ -342,6 +346,7 @@ impl Shared {
     /// Disk floors seen (by cost key, MB): each kept where it's more than the one kept. One of the
     /// OSM pass (`osm-pass <date>`) puts the earlier passes' away. True when any changed.
     fn add_disks(&mut self, disks: &[(String, u64)]) -> bool {
+        self.needs_rev += 1;
         let mut any = false;
         for (u, mb) in disks {
             // (A target measured at 0 MB keeps its 0: its own measure, not its step's prior.)
@@ -368,6 +373,7 @@ impl Shared {
 
     /// Costs measured (by `worker`): each in place of what was kept, and of its target's floor.
     fn add_costs(&mut self, costs: impl IntoIterator<Item = (String, Cost)>, worker: &str) {
+        self.needs_rev += 1;
         for (u, c) in costs {
             self.floors.remove(&u);
             self.costs.insert(u, Cost { worker: Some(worker.to_string()), ..c });
@@ -379,6 +385,7 @@ impl Shared {
     /// may be its earlier targets' caches). A floor of the OSM pass (`osm-pass <date>`) puts the
     /// earlier passes' away. True when any changed.
     fn add_floors(&mut self, floors: &[(String, Floor)]) -> bool {
+        self.needs_rev += 1;
         let mut any = false;
         for (u, f) in floors {
             let take = match self.floors.get(u) {
@@ -407,12 +414,20 @@ impl Shared {
     /// its costs and `size`, and never below its floor (one of an older way of its step too: the best
     /// estimate there is until it runs again).
     fn peak_of(&self, step: &str, target: &str, size: u64, threads: u32) -> u64 {
-        self.book().need(step, target, threads, first_guess(&self.costs, step, target, size)).mem_mb
+        self.book().mem(step, target, threads, first_guess(&self.costs, step, target, size)).0
     }
 
-    /// The measures crate::needs reads: the costs, the floors and the disk floors.
+    /// The measures crate::needs reads (the costs, the floors and the disk floors), its models kept
+    /// in `needs` until they change (`needs_rev`; their counts too, for a change made in place).
     fn book(&self) -> crate::needs::Book<'_> {
-        crate::needs::Book { costs: &self.costs, floors: Some(&self.floors), disks: Some(&self.disks) }
+        let rev = self.needs_rev.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((self.costs.len() as u64) << 40 | (self.floors.len() as u64) << 20 | self.disks.len() as u64);
+        crate::needs::Book::kept(&self.costs, &self.floors, &self.disks, &self.needs, rev)
+    }
+
+    /// The first guess of offered `target` of `step` (`first_guess` by the size it was offered
+    /// with), 0 when it isn't offered.
+    fn offered_guess(&self, step: &str, target: &str) -> u64 {
+        self.offers.iter().find(|o| o.step == step).and_then(|o| o.targets.iter().find(|t| t.0 == target)).map_or(0, |t| first_guess(&self.costs, step, target, t.2))
     }
 
     /// The targets of offer `o` that `a`'s worker may do now, as many as a job of it takes (units: as
@@ -459,18 +474,21 @@ impl Shared {
         )
     }
 
-    /// `Coordinator::measured`, under its lock: its step's model's (crate::needs) memory and disk;
-    /// None while nothing of its step was measured (its memory would be the table's guess).
+    /// `Coordinator::measured`, under its lock: its step's model's (crate::needs) memory and disk (a
+    /// unit's or candidates' piece-size guess first while their fit isn't good, by the size it was
+    /// offered with); None while nothing of its step was measured. Floors of an older way of the
+    /// step count for nothing (crate::needs).
     fn measured(&self, step: &str, target: &str) -> Option<Measured> {
-        let n = self.book().need(step, target, 0, 0);
-        (n.mem_from != crate::needs::From::Table).then_some(Measured { mem_mb: n.mem_mb, disk_mb: n.disk_mb.unwrap_or(0), own: n.mem_from == crate::needs::From::Measured })
+        let b = self.book();
+        let (mem_mb, from) = b.mem(step, target, 0, self.offered_guess(step, target));
+        (from != crate::needs::From::Table).then(|| Measured { mem_mb, disk_mb: b.disk(step, target, 0).unwrap_or(0), own: from == crate::needs::From::Measured })
     }
 
     /// How long `target` of `step` is measured to take `worker` (s): its own run's (`job_secs`), else
-    /// its step's model's (crate::needs: its fit, else the most a target of its step took); None when
+    /// its step's model's (crate::needs: its fit, else its step's 90th percentile); None when
     /// none of its step's has run the way it runs now.
     fn secs_of(&self, step: &str, target: &str, worker: &str) -> Option<u64> {
-        job_secs(&self.costs, step, target, worker).or_else(|| self.book().need(step, target, 0, 0).secs)
+        job_secs(&self.costs, step, target, worker).or_else(|| self.book().secs(step, target, 0))
     }
 
     /// The worker that takes a cold start of `step` now (docs/pool.md §7.7): of the agents around
@@ -1004,7 +1022,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, app: app.to_string(), paused, pause_at, history, moving: None, min_app: None, pool_member: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, placement: None, map_update: None, last: BTreeMap::new(), brokers: None, own_cap: None, dir: dir.to_path_buf(), clock: store::clock::real() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), resume: None, done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, floors, disks, job_disks, needs: Default::default(), needs_rev: 0, app: app.to_string(), paused, pause_at, history, moving: None, min_app: None, pool_member: None, lead_asks: Vec::new(), inputs_asks: Vec::new(), every: None, placement: None, map_update: None, last: BTreeMap::new(), brokers: None, own_cap: None, dir: dir.to_path_buf(), clock: store::clock::real() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -1421,8 +1439,8 @@ impl Coordinator {
         match s.offers.iter().find(|o| o.step == step).and_then(|o| o.targets.iter().find(|t| t.0 == target)) {
             Some(t) => Some(s.peak_of(step, target, t.2, 0)),
             None => {
-                let n = s.book().need(step, target, 0, 0);
-                (n.mem_from != crate::needs::From::Table || n.mem_mb > 0).then_some(n.mem_mb)
+                let (mb, from) = s.book().mem(step, target, 0, 0);
+                (from != crate::needs::From::Table).then_some(mb)
             }
         }
     }
@@ -1543,6 +1561,7 @@ impl Coordinator {
             }
         }
         s.costs.extend(p.costs.clone());
+        s.needs_rev += 1;
         let floors: Vec<(String, Floor)> = p.floors.iter().map(|(k, v)| (k.clone(), *v)).collect();
         s.add_floors(&floors);
         let disks: Vec<(String, u64)> = p.disks.iter().map(|(k, v)| (k.clone(), *v)).collect();
@@ -1771,6 +1790,7 @@ fn check_pooled(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result
 /// when `clear` (`scenic pool floors --clear`).
 fn floors_cleared(s: &mut Shared, clear: bool, step: Option<&str>, target: Option<&str>) -> BTreeMap<String, Floor> {
     if clear {
+        s.needs_rev += 1;
         let n = s.floors.len();
         let keep = |k: &String| match (step, target) {
             (None, _) => false,
@@ -2208,6 +2228,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     // What its unit's task takes, for the next time it's offered.
                     if let Some(u) = &unit {
                         s.costs.insert(task_cost_key(&kind, u), Cost { peak_mb: d.peak_mb, secs: d.secs as u64, worker: Some(d.worker.clone()), v: 0, ..Default::default() });
+                        s.needs_rev += 1;
                         s.save_costs();
                     }
                     s.leases.finish(d.lease, &d.worker, now);
@@ -3339,6 +3360,21 @@ mod tests {
         assert_eq!(job_peak(&costs, "peaks", "6/1/1", 2500), 5000);
     }
 
+    /// One dense unit measured the way units run now doesn't keep the others, not yet measured, off
+    /// a 12 GB worker: they go by their pieces' guess (crate::needs::GUESS_FIRST), it by its own.
+    #[test]
+    fn a_dense_unit_leaves_the_small_ones_to_a_12_gb_worker() {
+        let (_d, c, w) = start();
+        let units: Vec<(String, String, u64)> = (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
+        c.offer_units("2026-09-28", units);
+        c.add_costs(&[("6/1/1".into(), Cost { peak_mb: 14_000, secs: 600, worker: None, v: cost_version("unit"), ..Default::default() })]);
+        let g = w.ask(&Ask { max: 3, ..ask(12 << 10) }).unwrap().unwrap();
+        let Granted::Job { targets, .. } = &g.work else { panic!("a job") };
+        let mut ts: Vec<&str> = targets.iter().map(|(t, _)| t.as_str()).collect();
+        ts.sort();
+        assert_eq!(ts, ["6/1/2", "6/1/3"]);
+    }
+
     #[test]
     fn the_history_and_the_swarm_say_what_happened_and_why() {
         let (_d, c, w) = start();
@@ -3519,14 +3555,14 @@ mod tests {
         assert_eq!(c.measured("peaks", "6/1/1"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: true }));
         assert_eq!(c.measured("peaks", "6/2/2"), Some(Measured { mem_mb: 3000, disk_mb: 7000, own: false }));
         assert_eq!(c.measured("pois", "6/2/2"), None);
-        // A target measured at 0 keeps its 0, not its step's prior; the prior is the step's most
-        // (crate::needs: no fit over these, they have no sizes).
+        // A target measured at 0 keeps its 0, not its step's prior; one outlier doesn't make the
+        // step's prior (its 90th percentile, not its most: crate::needs).
         c.add_disks(&[(cost_key("peaks", "6/3/3"), 0)]);
         assert_eq!(c.measured("peaks", "6/3/3").map(|m| m.disk_mb), Some(0));
         let many: Vec<(String, u64)> = (10..30).map(|i| (cost_key("peaks", &format!("6/{i}/1")), 1000)).collect();
         c.add_disks(&many);
         c.add_disks(&[(cost_key("peaks", "6/30/1"), 50_000)]);
-        assert_eq!(c.measured("peaks", "6/99/1").map(|m| m.disk_mb), Some(50_000));
+        assert_eq!(c.measured("peaks", "6/99/1").map(|m| m.disk_mb), Some(1000));
         // A batch: its targets' disks summed, or the most a job of the step took, the larger.
         assert_eq!(c.measured_batch("peaks", &["6/1/1".into(), "6/10/1".into()]).map(|m| m.disk_mb), Some(8000));
         c.add_job_disk("peaks", 20_000);
@@ -3567,12 +3603,13 @@ mod tests {
         w.done(&Done { lease: g.lease, handoff: Some(h), floors: vec![(cost_key("peaks", "6/1/1"), f(3500, true)), (cost_key("peaks", "6/7/7"), f(9, true))], ..Default::default() }).unwrap();
         assert_eq!((c.floor("peaks", "6/1/1").map(|f| f.mb), c.floor("peaks", "6/7/7")), (Some(3500), None));
         // A batch's floor gives way to one learned alone, even lower; a floor of an older way of its
-        // step doesn't hold the target, though it's an estimate.
+        // step neither holds the target nor sizes it (crate::needs: a unit's v1 floors held malloc's
+        // cached blocks).
         c.add_floors(&[(cost_key("peaks", "6/2/2"), f(20_000, false))]);
         c.add_floors(&[(cost_key("peaks", "6/2/2"), f(4000, true))]);
         assert_eq!(c.floor("peaks", "6/2/2"), Some(f(4000, true)));
         c.add_floors(&[(cost_key("terrain", "6/3/3"), Floor { mb: 20_000, alone: true, v: 1 })]);
-        assert_eq!((c.holding_floor("terrain", "6/3/3"), c.peak("terrain", "6/3/3")), (None, Some(20_000)));
+        assert_eq!((c.holding_floor("terrain", "6/3/3"), c.peak("terrain", "6/3/3")), (None, None));
         // The OSM pass's floor puts an earlier pass's away.
         c.add_floors(&[(cost_key("osm-pass", "2026-08-01"), f(30_000, true))]);
         c.add_floors(&[(cost_key("osm-pass", "2026-09-28"), f(31_000, true))]);

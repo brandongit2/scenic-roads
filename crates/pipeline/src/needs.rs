@@ -1,20 +1,30 @@
 //! What a job of a step needs (task #236): one model per step, read by every placement path (the
 //! coordinator's picks, its floors, the forecast). Nothing here is a figure kept by hand: a need is
 //! measured (the target's own run, its floor), fitted over the step's measured runs, the step's
-//! measured largest, or the caller's first guess (the steps table's, or the size its plan offered).
+//! prior from its measured runs, or the caller's first guess (the steps table's, the size its plan
+//! offered, a unit's piece-size guess).
 //!
-//! - **Measured**: the target's own run the way its step runs now (crate::coord::cost_version), never
-//!   below its floor (crate::agent::memguard::Floor); a floor learned the way the step runs now
-//!   counts as its own measure.
+//! Only what was measured the way the step runs now counts (crate::coord::cost_version): a run or a
+//! floor of an older way of it (a unit's before its v2, whose measures held malloc's cached freed
+//! blocks) is neither a measure, nor a fit's run, nor part of a prior.
+//!
+//! - **Measured**: the target's own run, never below its floor (crate::agent::memguard::Floor); a
+//!   floor alone counts as its measure.
 //! - **Fit**: base + k × size (+ c × threads when the runs differ in threads), fitted per step over
 //!   its measured runs by least squares and raised to cover every one of them (an upper envelope),
-//!   times `MARGIN`, never below the target's floor. A size is one of the run's input measures
-//!   (`sizes`, crate::costin) or the target tile's area (km², from its key). Each size is tried and
-//!   judged on runs held out of its fit (`FOLDS`-fold): one that misses more than `MAX_MISS` of
-//!   them, or is off by more than `MAX_ERR` on the median one, is poor and not used. The best of
-//!   the good ones is used, when the target has that size (its own earlier run's, or its area).
-//! - **Step max**: the most any of the step's targets measured (memory: their floors too).
-//! - **Table**: the caller's guess.
+//!   times `MARGIN`, capped at the most a run it was made from measured (a target past the sizes it
+//!   saw isn't extrapolated past what's known: its floor, learned when it runs, holds it after), never
+//!   below the target's floor. A size is one of the run's input measures (`sizes`, crate::costin) or
+//!   the target tile's area (km², from its key). Each size is tried and judged on runs held out of
+//!   its fit (`FOLDS`-fold): one that misses more than `MAX_MISS` of them, or is off by more than
+//!   `MAX_ERR` on the median one, is poor and not used. The best of the good ones is used, when the
+//!   target has that size (its own earlier run's, or its area).
+//! - **Guess first** (units and landmark candidates, `GUESS_FIRST`): with no good fit, the caller's
+//!   guess scaled by the target's piece comes before the step's prior, so one dense unit doesn't set
+//!   every other's need.
+//! - **Prior**: the step's targets' measures' 90th percentile (memory: their floors among them), so
+//!   one outlier doesn't hold every other target to its figure; a heavy target's own floor holds it.
+//! - **Table**: the caller's guess, when nothing of the step was measured.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -32,13 +42,19 @@ pub const FOLDS: usize = 5;
 pub const MAX_MISS: f64 = 0.05;
 /// The median held-out error (|predicted − measured| / measured) past which a fit is poor.
 pub const MAX_ERR: f64 = 0.5;
+/// The steps whose caller's guess scales with the target (a unit's piece; candidates read the
+/// same piece) and so comes before the step's prior while no fit is good.
+pub const GUESS_FIRST: [&str; 2] = ["unit", "pois"];
 
 /// Where a need came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum From {
     Measured,
     Fit,
-    StepMax,
+    /// The caller's guess for a `GUESS_FIRST` step that has measures (so not a cold start).
+    Guess,
+    Prior,
+    /// The caller's guess, nothing of the step measured: a cold start.
     Table,
 }
 
@@ -94,6 +110,8 @@ pub struct Fit {
     pub k: f64,
     /// Per thread, when the runs differed in threads.
     pub per_thread: Option<f64>,
+    /// The most a run it was made from measured: its cap.
+    pub top: f64,
     /// The runs it's made from, and on those held out: the share predicted under, the median error.
     pub runs: usize,
     pub miss: f64,
@@ -106,17 +124,37 @@ impl Fit {
     }
 
     fn at(&self, x: f64, threads: Option<f64>) -> f64 {
-        ((self.base + self.k * x + self.per_thread.zip(threads).map_or(0.0, |(c, t)| c * t)) * MARGIN).max(0.0)
+        ((self.base + self.k * x + self.per_thread.zip(threads).map_or(0.0, |(c, t)| c * t)) * MARGIN).clamp(0.0, self.top)
     }
 }
 
+/// A step's model of one measure, as made from its runs: its fits (best first) and its prior.
+#[derive(Clone, Debug, Default)]
+struct Model {
+    fits: Vec<Fit>,
+    prior: Option<u64>,
+}
+
+/// The models made, kept until the measures they're made from change: the change count they were
+/// made at (the owner's: the coordinator bumps its count with each cost, floor or disk floor it
+/// takes), by (step, measure).
+#[derive(Debug, Default)]
+pub struct Cache(Mutex<(u64, BTreeMap<(String, Measure), Model>)>);
+
 /// The measures needs are read from: what each target cost (crate::coord::Cost), and, where kept,
-/// the floors (crate::agent::memguard) and disk floors (MB, by cost key).
-#[derive(Clone, Copy)]
+/// the floors (crate::agent::memguard) and disk floors (MB, by cost key); the models made from them
+/// kept in `cache` as of change `rev` (a Book of its own, `new`, keeps its own).
 pub struct Book<'a> {
     pub costs: &'a BTreeMap<String, Cost>,
     pub floors: Option<&'a BTreeMap<String, Floor>>,
     pub disks: Option<&'a BTreeMap<String, u64>>,
+    cache: CacheRef<'a>,
+    rev: u64,
+}
+
+enum CacheRef<'a> {
+    Own(Cache),
+    Kept(&'a Cache),
 }
 
 /// A run a fit is made from: its sizes (km² always, for a tile target), threads, and the measure.
@@ -196,12 +234,13 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
     if have.len() < MIN_RUNS.min(runs.len()).max(2) {
         return None;
     }
+    let top = |rs: &[&Run]| rs.iter().map(|r| r.y).fold(0.0, f64::max);
     let (base, k, per_thread) = fit_on(&have, size)?;
     let (mut errs, mut miss) = (Vec::new(), 0usize);
     for f in 0..FOLDS {
         let train: Vec<&Run> = have.iter().enumerate().filter(|(i, _)| i % FOLDS != f).map(|(_, r)| *r).collect();
         let Some((b, k, c)) = fit_on(&train, size) else { continue };
-        let fit = Fit { size: size.into(), base: b, k, per_thread: c, runs: 0, miss: 0.0, err: 0.0 };
+        let fit = Fit { size: size.into(), base: b, k, per_thread: c, top: top(&train), runs: 0, miss: 0.0, err: 0.0 };
         for (_, r) in have.iter().enumerate().filter(|(i, _)| i % FOLDS == f) {
             let p = fit.at(r.sizes[size], r.threads);
             if p < r.y {
@@ -214,20 +253,41 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
         return None;
     }
     errs.sort_by(f64::total_cmp);
-    Some(Fit { size: size.into(), base, k, per_thread, runs: have.len(), miss: miss as f64 / errs.len() as f64, err: errs[errs.len() / 2] })
+    Some(Fit { size: size.into(), base, k, per_thread, top: top(&have), runs: have.len(), miss: miss as f64 / errs.len() as f64, err: errs[errs.len() / 2] })
 }
 
-/// The fits kept, by (step, measure), with what they were made from (its runs' count and sum).
-type Kept = BTreeMap<(String, Measure), ((usize, u64), Vec<Fit>)>;
-static KEPT: Mutex<Kept> = Mutex::new(BTreeMap::new());
+/// The 90th percentile (nearest rank); None with none.
+pub fn p90(mut v: Vec<u64>) -> Option<u64> {
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_unstable();
+    Some(v[(v.len() * 9).div_ceil(10).saturating_sub(1)])
+}
 
 impl<'a> Book<'a> {
+    /// A Book over `costs` alone, keeping its own models.
     pub fn new(costs: &'a BTreeMap<String, Cost>) -> Self {
-        Book { costs, floors: None, disks: None }
+        Book { costs, floors: None, disks: None, cache: CacheRef::Own(Cache::default()), rev: 0 }
+    }
+
+    /// A Book over all three, keeping its own models.
+    pub fn with(costs: &'a BTreeMap<String, Cost>, floors: Option<&'a BTreeMap<String, Floor>>, disks: Option<&'a BTreeMap<String, u64>>) -> Self {
+        Book { costs, floors, disks, cache: CacheRef::Own(Cache::default()), rev: 0 }
+    }
+
+    /// A Book whose models are kept in `cache` while its owner's change count is `rev`.
+    pub fn kept(costs: &'a BTreeMap<String, Cost>, floors: &'a BTreeMap<String, Floor>, disks: &'a BTreeMap<String, u64>, cache: &'a Cache, rev: u64) -> Self {
+        Book { costs, floors: Some(floors), disks: Some(disks), cache: CacheRef::Kept(cache), rev }
     }
 
     fn floor(&self, key: &str) -> Option<&Floor> {
         self.floors.and_then(|f| f.get(key))
+    }
+
+    /// The floor of `key` learned the way its step runs now (MB).
+    fn current_floor(&self, step: &str, key: &str) -> Option<u64> {
+        self.floor(key).filter(|f| f.v >= cost_version(step)).map(|f| f.mb)
     }
 
     /// The step's runs measured the way it runs now, of `m`.
@@ -251,76 +311,136 @@ impl<'a> Book<'a> {
         out
     }
 
-    /// The step's fits of `m`, best first (the good ones, then the poor), one per size its runs have.
-    pub fn fits(&self, step: &str, m: Measure) -> Vec<Fit> {
-        let runs = self.runs(step, m);
-        let mark = (runs.len(), runs.iter().map(|r| r.y as u64 ^ r.sizes.values().map(|&x| x as u64).sum::<u64>().rotate_left(17)).fold(0u64, |a, h| a.wrapping_mul(31).wrapping_add(h)));
+    /// The step's model of `m`: made, or as kept since the measures last changed.
+    fn model(&self, step: &str, m: Measure) -> Model {
+        let cache = match &self.cache {
+            CacheRef::Own(c) => c,
+            CacheRef::Kept(c) => *c,
+        };
         let key = (step.to_string(), m);
-        if let Some((_, f)) = KEPT.lock().unwrap_or_else(|e| e.into_inner()).get(&key).filter(|(at, _)| *at == mark) {
-            return f.clone();
+        {
+            let mut g = cache.0.lock().unwrap_or_else(|e| e.into_inner());
+            if g.0 != self.rev {
+                *g = (self.rev, BTreeMap::new());
+            }
+            if let Some(md) = g.1.get(&key) {
+                return md.clone();
+            }
         }
+        let runs = self.runs(step, m);
         let mut names: Vec<&String> = runs.iter().flat_map(|r| r.sizes.keys()).collect();
         names.sort();
         names.dedup();
         let mut fits: Vec<Fit> = names.into_iter().filter_map(|s| judge(&runs, s)).collect();
         fits.sort_by(|a, b| b.good().cmp(&a.good()).then(a.err.total_cmp(&b.err)).then(a.size.cmp(&b.size)));
-        KEPT.lock().unwrap_or_else(|e| e.into_inner()).insert(key, (mark, fits.clone()));
-        fits
+        let md = Model { fits, prior: self.prior_of(step, m) };
+        cache.0.lock().unwrap_or_else(|e| e.into_inner()).1.insert(key, md.clone());
+        md
     }
 
-    /// The most the step's targets measured of `m` (memory: their floors the way it runs now too).
-    pub fn step_max(&self, step: &str, m: Measure) -> Option<u64> {
+    /// The step's fits of `m`, best first (the good ones, then the poor), one per size its runs have.
+    pub fn fits(&self, step: &str, m: Measure) -> Vec<Fit> {
+        self.model(step, m).fits
+    }
+
+    /// The step's prior of `m` (`p90` of its targets' measures the way it runs now; memory: their
+    /// floors among them; disk: its disk floors).
+    pub fn prior(&self, step: &str, m: Measure) -> Option<u64> {
+        self.model(step, m).prior
+    }
+
+    fn prior_of(&self, step: &str, m: Measure) -> Option<u64> {
         let v = cost_version(step);
-        let floors = self.floors.into_iter().flatten().filter(|(k, f)| m == Measure::Mem && step_of_key(k) == step && f.v >= v).map(|(_, f)| f.mb);
-        let disks = self.disks.into_iter().flatten().filter(|(k, _)| m == Measure::Disk && step_of_key(k) == step).map(|(_, d)| *d);
-        let costs = self.costs.iter().filter(|(k, c)| m != Measure::Disk && step_of_key(k) == step && c.v >= v).map(|(_, c)| if m == Measure::Mem { c.peak_mb } else { c.secs });
-        costs.chain(floors).chain(disks).max()
+        let of = |k: &String| step_of_key(k) == step;
+        let vals: Vec<u64> = match m {
+            Measure::Mem => {
+                // (A target's own: its measure and floor, the larger.)
+                let mut by: BTreeMap<&String, u64> = self.costs.iter().filter(|(k, c)| of(k) && c.v >= v).map(|(k, c)| (k, c.peak_mb)).collect();
+                for (k, f) in self.floors.into_iter().flatten().filter(|(k, f)| of(k) && f.v >= v) {
+                    let e = by.entry(k).or_default();
+                    *e = (*e).max(f.mb);
+                }
+                by.into_values().collect()
+            }
+            Measure::Secs => self.costs.iter().filter(|(k, c)| of(k) && c.v >= v).map(|(_, c)| c.secs).collect(),
+            Measure::Disk => self.disks.into_iter().flatten().filter(|(k, _)| of(k)).map(|(_, d)| *d).collect(),
+        };
+        p90(vals)
     }
 
     /// The fitted `m` of `target` of `step` (None: no good fit over a size it has).
-    fn fitted(&self, step: &str, target: &str, m: Measure, threads: u32) -> Option<u64> {
-        let key = cost_key(step, target);
+    fn fitted(&self, md: &Model, key: &str, threads: u32) -> Option<u64> {
+        if !md.fits.iter().any(Fit::good) {
+            return None;
+        }
         // (Its sizes: as its own earlier run measured them, else its area.)
-        let sizes = sizes_of(&key, self.costs.get(&key));
+        let sizes = sizes_of(key, self.costs.get(key));
         let t = (threads > 0).then_some(threads as f64);
-        self.fits(step, m).into_iter().filter(Fit::good).find_map(|f| sizes.get(&f.size).map(|&x| f.at(x, t).ceil() as u64))
+        md.fits.iter().filter(|f| f.good()).find_map(|f| sizes.get(&f.size).map(|&x| f.at(x, t).ceil() as u64))
+    }
+
+    /// The memory (MB) a job of `step` for `target` needs, and where it came from: `need`'s, alone
+    /// (what the picks read).
+    pub fn mem(&self, step: &str, target: &str, threads: u32, guess: u64) -> (u64, From) {
+        let key = cost_key(step, target);
+        let floor = self.current_floor(step, &key);
+        if let Some(c) = self.costs.get(&key).filter(|c| c.v >= cost_version(step)) {
+            return (c.peak_mb.max(floor.unwrap_or(0)), From::Measured);
+        }
+        if let Some(f) = floor {
+            return (f, From::Measured);
+        }
+        let md = self.model(step, Measure::Mem);
+        match (self.fitted(&md, &key, threads), md.prior) {
+            (Some(p), _) => (p, From::Fit),
+            (None, Some(_)) if guess > 0 && GUESS_FIRST.contains(&step) => (guess, From::Guess),
+            (None, Some(p)) => (p, From::Prior),
+            (None, None) => (guess, From::Table),
+        }
+    }
+
+    /// The disk (MB) a job of `step` for `target` needs: its disk floor, else fitted, else its
+    /// step's prior; None when none of its step was measured.
+    pub fn disk(&self, step: &str, target: &str, threads: u32) -> Option<u64> {
+        let key = cost_key(step, target);
+        if let Some(&d) = self.disks.and_then(|d| d.get(&key)) {
+            return Some(d);
+        }
+        let md = self.model(step, Measure::Disk);
+        self.fitted(&md, &key, threads).or(md.prior)
+    }
+
+    /// The wall time (s) a job of `step` for `target` takes: its own run's, else fitted, else its
+    /// step's prior; None when none of its step ran the way it runs now.
+    pub fn secs(&self, step: &str, target: &str, threads: u32) -> Option<u64> {
+        let key = cost_key(step, target);
+        if let Some(c) = self.costs.get(&key).filter(|c| c.v >= cost_version(step)) {
+            return Some(c.secs);
+        }
+        let md = self.model(step, Measure::Secs);
+        self.fitted(&md, &key, threads).or(md.prior)
     }
 
     /// What a job of `step` for `target` needs, given `threads` (0: not said) and `guess`, the memory
-    /// (MB) to take when nothing of its step was measured (the steps table's first guess, or what
-    /// its plan offered it with).
+    /// (MB) its caller would take without a measure (the steps table's first guess, what its plan
+    /// offered it with, a unit's piece-size guess).
     pub fn need(&self, step: &str, target: &str, threads: u32, guess: u64) -> Need {
-        let key = cost_key(step, target);
-        let v = cost_version(step);
-        let floor_any = self.floor(&key).map_or(0, |f| f.mb);
-        let own = self.costs.get(&key).filter(|c| c.v >= v);
-        let own_floor = self.floor(&key).filter(|f| f.v >= v).map(|f| f.mb);
-        let (mem, mem_from) = match (own.map(|c| c.peak_mb), own_floor) {
-            (Some(p), _) => (p, From::Measured),
-            (None, Some(f)) => (f, From::Measured),
-            (None, None) => match (self.fitted(step, target, Measure::Mem, threads), self.step_max(step, Measure::Mem)) {
-                (Some(p), _) => (p, From::Fit),
-                (None, Some(p)) => (p, From::StepMax),
-                (None, None) => (guess, From::Table),
-            },
-        };
-        let disk = self.disks.and_then(|d| d.get(&key)).copied().or_else(|| self.fitted(step, target, Measure::Disk, threads)).or_else(|| self.step_max(step, Measure::Disk));
-        let secs = own.map(|c| c.secs).or_else(|| self.fitted(step, target, Measure::Secs, threads)).or_else(|| self.step_max(step, Measure::Secs));
+        let (mem_mb, mem_from) = self.mem(step, target, threads, guess);
         let io = match crate::agent::steps::row(step).map(|r| r.kind) {
             Some(crate::agent::steps::Kind::Fetch) => Io::Net,
             _ => Io::Nas,
         };
-        Need { mem_mb: mem.max(floor_any), mem_from, disk_mb: disk, secs, cores: threads, io }
+        Need { mem_mb, mem_from, disk_mb: self.disk(step, target, threads), secs: self.secs(step, target, threads), cores: threads, io }
     }
 }
 
 /// `scenic pool needs --fit`: per step and measure, its fits' held-out errors, and the steps that
-/// don't fit (they take their measured largest).
+/// don't fit (they take their prior, a unit or candidates their piece's guess first).
 pub fn fit_table(book: &Book) -> String {
     let mut steps: Vec<&str> = book.costs.keys().map(|k| step_of_key(k)).collect();
     steps.sort();
     steps.dedup();
-    let mut out = format!("{:<14} {:<7} {:>5}  {:<10} {:>7} {:>7} {:>8}  fit\n", "step", "measure", "runs", "size", "miss", "error", "max err");
+    let mut out = format!("{:<14} {:<7} {:>5}  {:<10} {:>7} {:>7} {:>8}  fit\n", "step", "measure", "runs", "size", "miss", "error", "p90 err");
     let mut poor: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for s in &steps {
         for m in Measure::ALL {
@@ -328,9 +448,10 @@ pub fn fit_table(book: &Book) -> String {
             if runs.is_empty() {
                 continue;
             }
-            // (The step's largest as each run's prediction: what a poor fit falls back to.)
-            let top = runs.iter().map(|r| r.y).fold(0.0, f64::max);
-            let mut e: Vec<f64> = runs.iter().map(|r| (top - r.y) / r.y.max(1.0)).collect();
+            // (The step's prior as each run's prediction: what a poor fit falls back to; its
+            // misses are what the targets' floors hold.)
+            let prior = book.prior(s, m).unwrap_or(0) as f64;
+            let mut e: Vec<f64> = runs.iter().map(|r| (prior - r.y).abs() / r.y.max(1.0)).collect();
             e.sort_by(f64::total_cmp);
             let max_err = format!("{:.1}%", e[e.len() / 2] * 100.0);
             let fits = book.fits(s, m);
@@ -347,8 +468,8 @@ pub fn fit_table(book: &Book) -> String {
             }
         }
     }
-    out += &format!("\nheld out: {FOLDS} folds; poor past {:.0}% missed or {:.0}% median error, or under {MIN_RUNS} runs; a fit's prediction is its envelope × {MARGIN}; max err: the step's largest taken as each run's (median)\n", MAX_MISS * 100.0, MAX_ERR * 100.0);
-    out += "steps that don't fit (they take their measured largest):\n";
+    out += &format!("\nheld out: {FOLDS} folds; poor past {:.0}% missed or {:.0}% median error, or under {MIN_RUNS} runs; a fit's prediction is its envelope × {MARGIN}; capped at its runs' most; p90 err: the step's prior (its runs' 90th percentile) taken as each run's (median)\n", MAX_MISS * 100.0, MAX_ERR * 100.0);
+    out += "steps that don't fit (they take their prior; units and candidates their piece's guess first):\n";
     for (s, ms) in &poor {
         out += &format!("  {s}: {}\n", ms.join(", "));
     }
@@ -375,6 +496,7 @@ pub fn read_costs(p: &std::path::Path) -> anyhow::Result<(BTreeMap<String, Cost>
     Ok((costs, disks))
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,38 +505,65 @@ mod tests {
         Cost { peak_mb: peak, secs, worker: None, v: 0, sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect() }
     }
 
-    /// Memory that goes with a size fits, and a target never run is predicted over its own size.
+    /// Memory that goes with a tile's area fits; a target never run is predicted by the fit over its
+    /// own area, capped at the most a run measured.
     #[test]
     fn a_linear_step_fits_and_predicts_over_a_targets_size() {
         let mut costs = BTreeMap::new();
-        for i in 1..=30u64 {
-            costs.insert(format!("bldprep 6/{i}/1"), cost(500 + 2 * i * 100, 10 * i, &[("buildings", i * 100)]));
+        // (z6 tiles from the equator northward: their areas fall.)
+        for y in 0..20u32 {
+            let t = format!("6/1/{}", 2 + y);
+            let km2 = crate::costin::tile_km2(6, 1, 2 + y);
+            costs.insert(format!("bldprep {t}"), cost(100 + km2 / 100, 60, &[]));
         }
         let b = Book::new(&costs);
-        let fits = b.fits("bldprep", Measure::Mem);
-        let f = &fits[0];
-        assert_eq!(f.size, "buildings");
-        assert!(f.good() && f.miss == 0.0, "{f:?}");
-        // Measured: its own.
-        assert_eq!(b.need("bldprep", "6/3/1", 0, 1).mem_from, From::Measured);
+        let f = &b.fits("bldprep", Measure::Mem)[0];
+        assert_eq!(f.size, "km2");
+        // (Held out past its training's sizes, a run is capped at their most: a miss or two.)
+        assert!(f.good(), "{f:?}");
+        let (mb, from) = b.mem("bldprep", "6/1/20", 0, 1);
+        assert_eq!(from, From::Measured);
+        assert_eq!(mb, 100 + crate::costin::tile_km2(6, 1, 20) / 100);
+        // Between the sizes seen: the fit, within its margin.
+        let want = (100 + crate::costin::tile_km2(6, 2, 10) / 100) as f64;
+        let (mb, from) = b.mem("bldprep", "6/2/10", 0, 1);
+        assert_eq!(from, From::Fit);
+        assert!((mb as f64) >= want && (mb as f64) <= want * MARGIN + 2.0, "{mb} for {want}");
+        // Past them (a tile at the equator's edge is larger than any seen): no more than the most.
+        let most = costs.values().map(|c| c.peak_mb).max().unwrap();
+        assert_eq!(b.mem("bldprep", "6/1/31", 0, 1), (most, From::Fit));
     }
 
-    /// A step whose memory has nothing to do with its sizes is poor and takes its largest; one never
-    /// measured takes the guess; a floor is never gone under.
+    /// A poor fit takes the step's prior (its 90th percentile, not one outlier); one never measured
+    /// takes the guess; a floor the way it runs now holds its target; an old floor is no measure.
     #[test]
-    fn a_poor_fit_takes_the_step_max_and_none_the_guess() {
+    fn a_poor_fit_takes_the_prior_and_none_the_guess() {
         let mut costs = BTreeMap::new();
         for i in 1..=30u64 {
-            costs.insert(format!("peaks 6/{i}/1"), cost(if i % 3 == 0 { 9000 } else { 300 }, 5, &[("bytes", 1000)]));
+            costs.insert(format!("peaks 6/{i}/1"), cost(if i % 7 == 0 { 9000 } else { 300 + (i * 37) % 200 }, 5, &[]));
         }
-        let floors = BTreeMap::from([("peaks 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 })]);
-        let b = Book { costs: &costs, floors: Some(&floors), disks: None };
+        costs.insert("peaks 6/31/1".into(), cost(40_000, 5, &[]));
+        let floors = BTreeMap::from([("peaks 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 }), ("terrain 6/50/1".to_string(), Floor { mb: 12_000, alone: true, v: 0 })]);
+        let b = Book::with(&costs, Some(&floors), None);
         assert!(!b.fits("peaks", Measure::Mem).iter().any(Fit::good));
-        let n = b.need("peaks", "6/40/1", 0, 1);
-        assert_eq!((n.mem_mb, n.mem_from), (12_000, From::StepMax), "a floor of the way it runs now is a measure too");
-        let n = b.need("pois", "6/40/1", 0, 777);
-        assert_eq!((n.mem_mb, n.mem_from, n.secs), (777, From::Table, None));
-        assert_eq!(b.need("peaks", "6/50/1", 0, 1).mem_mb, 12_000);
+        assert_eq!(b.mem("peaks", "6/40/1", 0, 1), (9000, From::Prior), "the 90th percentile: neither the outlier nor the floor");
+        assert_eq!(b.mem("peaks", "6/50/1", 0, 1), (12_000, From::Measured));
+        assert_eq!(b.mem("pois", "6/40/1", 0, 777), (777, From::Table));
+        assert_eq!(b.need("pois", "6/40/1", 0, 777).secs, None);
+        // (Terrain runs at v3: a v0 floor says nothing of it.)
+        assert_eq!(b.mem("terrain", "6/50/1", 0, 1500), (1500, From::Table));
+    }
+
+    /// One dense unit measured doesn't set the others': with no good fit, a unit's piece-size guess
+    /// comes before its step's prior.
+    #[test]
+    fn a_dense_unit_leaves_the_others_their_piece_guess() {
+        let costs = BTreeMap::from([("6/1/1".to_string(), Cost { v: cost_version("unit"), ..cost(14_000, 600, &[]) })]);
+        let b = Book::new(&costs);
+        assert_eq!(b.mem("unit", "6/1/2", 0, 3700), (3700, From::Guess));
+        assert_eq!(b.mem("peaks", "6/1/2", 0, 3700).1, From::Table);
+        // With no guess (a caller that has none), the prior.
+        assert_eq!(b.mem("unit", "6/1/2", 0, 0), (14_000, From::Prior));
     }
 
     /// Threads are an input when the runs differ in them.
@@ -429,6 +578,18 @@ mod tests {
         let f = b.fits("terrain-lo", Measure::Mem).into_iter().find(|f| f.size == "tiffs").unwrap();
         assert!(f.per_thread.is_some_and(|c| (c - 100.0).abs() < 1.0), "{f:?}");
         assert!(f.good());
+    }
+
+    /// A kept model is made again once its owner's change count moves, not before.
+    #[test]
+    fn a_kept_model_lasts_until_the_measures_change() {
+        let cache = Cache::default();
+        let (f, d) = (BTreeMap::new(), BTreeMap::new());
+        let mut costs = BTreeMap::from([("peaks 6/1/1".to_string(), cost(1000, 5, &[]))]);
+        assert_eq!(Book::kept(&costs, &f, &d, &cache, 1).prior("peaks", Measure::Mem), Some(1000));
+        costs.insert("peaks 6/1/2".into(), cost(5000, 5, &[]));
+        assert_eq!(Book::kept(&costs, &f, &d, &cache, 1).prior("peaks", Measure::Mem), Some(1000), "kept");
+        assert_eq!(Book::kept(&costs, &f, &d, &cache, 2).prior("peaks", Measure::Mem), Some(5000));
     }
 
     #[test]

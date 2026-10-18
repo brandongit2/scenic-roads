@@ -391,17 +391,23 @@ never correctness, politeness or work.
 | write-set | `agent::steps::writes`, enforced by `Out` and the merge (§7.3). Raw archives, answers and `bld-fetch`'s sources are outside the manifest, each written whole under its module's names |
 | batch | a member's: as many targets as fit a quarter hour of measured time; the lead's own: the table's |
 
-**One model per step** (`pipeline::needs::Book::need(step, target, threads, guess)`): a target's
-memory, disk and time are its own run's when measured the way its step runs now
-(`coord::cost_version`; memory never below its floor); else base + k × size fitted over the step's
-measured runs (least squares raised to cover every run, × 1.1; threads a term when the runs differ in
-them), on whichever size fits best (a `sizes` measure the target has from an earlier run, or its
-tile's area); else the step's measured largest; else the caller's first guess (the steps table's,
-or the size the plan offered). A fit is judged on runs held out of it (5 folds) and not used when it
-predicts under on more than 5% of them, is off by more than 50% on the median one, or has fewer than
-10 runs. The coordinator's picks (`pick`, `pick_every`, `measured`, `secs_of`, `peak`), its floors
+**One model per step** (`pipeline::needs::Book`: `need(step, target, threads, guess)`, and `mem`
+alone for the picks): only what was measured the way the step runs now counts
+(`coord::cost_version`); a run or floor of an older way of it (a unit's before v2) is neither a
+target's measure, nor a fit's run, nor part of a prior. A target's memory, disk and time are its own
+run's (memory never below its floor; a floor alone counts as its measure); else base + k × size
+fitted over the step's measured runs (least squares raised to cover every run, × 1.1, capped at the
+most a run it was made from measured; threads a term when the runs differ in them), on whichever size
+fits best (a `sizes` measure the target has from an earlier run, or its tile's area); else, for units
+and landmark candidates, their piece-size first guess (`coord::unit_peak`), so one dense unit doesn't
+set every other's; else the step's prior, the 90th percentile of its targets' measures (memory:
+their floors among them), a heavy target held by its own floor; else the caller's first guess (the
+steps table's, or the size the plan offered): a cold start. A fit is judged on runs held out of it
+(5 folds) and not used when it predicts under on more than 5% of them, is off by more than 50% on
+the median one, or has fewer than 10 runs. The models are kept until a cost, floor or disk floor
+changes. The coordinator's picks (`pick`, `pick_every`, `measured`, `secs_of`, `peak`), its floors
 and the forecast all read it. `scenic pool needs --fit` prints each step's fits and their held-out
-errors (memory, wall time, disk) beside the step's largest's, and lists the steps that don't fit.
+errors (memory, wall time, disk) beside the prior's, and lists the steps that don't fit.
 
 **A cold start** (no target of its step measured) runs alone on the Mac with the most room; after
 one run, the step's other targets are offered by its model (above). A floor never stalls the build: the first slot starts once

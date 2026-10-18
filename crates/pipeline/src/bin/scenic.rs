@@ -821,7 +821,7 @@ fn main() -> Result<()> {
                     let kept: std::collections::BTreeMap<String, u64> = std::fs::read(p.with_file_name("disks.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
                     disks.extend(kept);
                     println!("{} ({} costs, {} disk measures)\n", p.display(), costs.len(), disks.len());
-                    print!("{}", pipeline::needs::fit_table(&pipeline::needs::Book { costs: &costs, floors: None, disks: Some(&disks) }));
+                    print!("{}", pipeline::needs::fit_table(&pipeline::needs::Book::with(&costs, None, Some(&disks))));
                 }
                 Some("floors") => {
                     // The targets' floors the lead's coordinator keeps (crate::agent::memguard):
