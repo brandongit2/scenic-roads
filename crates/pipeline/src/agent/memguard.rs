@@ -46,7 +46,7 @@ pub const SWAP_WINDOW: Duration = Duration::from_secs(300);
 /// The guard as the switch at `root` says: on or off; None when it can't be read now (the share not
 /// answering: the caller keeps what it had).
 pub fn on(root: &Path) -> Option<bool> {
-    match std::fs::read_to_string(root.join(SWITCH)) {
+    match super::nasread::read_to_string(&root.join(SWITCH)) {
         Ok(s) => Some(match s.trim() {
             "off" => false,
             "on" => true,

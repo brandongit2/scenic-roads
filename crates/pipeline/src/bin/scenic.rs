@@ -613,6 +613,10 @@ fn status(args: &[String]) -> Result<()> {
     if now_s().saturating_sub(st.beat) > 600 {
         println!("  (not seen for a while: asleep, away or off; work waits for it)");
     }
+    // This Mac's agent's loop stalled, as its watchdog says (agent::nasread::watch).
+    if let Some(s) = own_home.as_deref().and_then(agent::nasread::stall) {
+        println!("  this Mac's agent loop is stalled: no round finished since {}", ago(s.round_at));
+    }
     // The memory guard as its thread last sampled (every 5 s, whatever the agent's loop waits on).
     if let Some(m) = own_home.as_deref().and_then(agent::memguard::live).filter(|m| now_s().saturating_sub(m.at) < 60) {
         let held: u64 = m.held_mb.iter().flatten().sum();

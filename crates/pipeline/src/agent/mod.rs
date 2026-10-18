@@ -30,6 +30,7 @@ pub mod gc;
 pub mod jobs;
 pub mod lead;
 pub mod memguard;
+pub mod nasread;
 pub mod placement;
 pub mod pool;
 pub mod publish;
@@ -3087,8 +3088,22 @@ impl Agent {
                 self.orphans.extend(orphan.left);
             }
         }
+        // The loop's watchdog (nasread::watch): a round not finished in STALL_AFTER logged and kept
+        // in the agent's folder for `scenic status`.
+        let round_at = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_s()));
+        let watch_done = std::sync::Arc::new(AtomicBool::new(false));
+        let watchdog = (!self.o.once).then(|| {
+            nasread::watch(
+                round_at.clone(),
+                watch_done.clone(),
+                self.o.home.clone(),
+                nasread::STALL_AFTER,
+                Duration::from_secs(15),
+            )
+        });
         loop {
             let quick = self.step()?;
+            round_at.store(now_s(), Ordering::SeqCst);
             if self.o.once || STOP.load(Ordering::SeqCst) {
                 break;
             }
@@ -3130,6 +3145,8 @@ impl Agent {
                 std::thread::sleep(Duration::from_secs(1));
             }
         }
+        watch_done.store(true, Ordering::SeqCst);
+        drop(watchdog);
         // The pool's thread stopped first: nothing steps the driver after this loop (its tick under
         // way finished, waited for a minute at most: a NAS that hangs may not return).
         if let Some(t) = self.ticker.take() {
@@ -4970,7 +4987,7 @@ impl Agent {
         let stale = self.lead_all_new.is_none_or(|(at, _)| at.elapsed() >= Duration::from_secs(60));
         if let (Some(root), true) = (root, stale) {
             let st: Option<Status> =
-                std::fs::read(root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+                nasread::read(&root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
             self.lead_all_new = Some((Instant::now(), st.is_some_and(|s| s.all_new)));
         }
         self.lead_all_new.is_some_and(|(_, n)| n)
@@ -5401,7 +5418,7 @@ impl Agent {
         }
         if self.heard.as_ref().is_none_or(|h| h.read.elapsed() >= Duration::from_secs(60)) {
             let st: Option<Status> =
-                std::fs::read(root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+                nasread::read(&root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
             let left = st.as_ref().map(|s| match s.jobs().first() {
                 Some(j) => Some(format!("the lead runs a job ({})", j.what)),
                 None => work_left(s.forecast.as_ref(), since),
@@ -5809,7 +5826,7 @@ impl Agent {
             return;
         }
         if let Some(v) =
-            std::fs::read(root.join(c)).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            nasread::read(&root.join(c)).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
         {
             *self.timetables.borrow_mut() = Some((c.clone(), crate::timetables::View::of(&v)));
         }
@@ -7199,7 +7216,7 @@ impl Agent {
             items.extend(build::checklist_to_come());
             return build::fold(&items, &next, &notes);
         };
-        let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json"))
+        let manifest: BTreeMap<String, String> = nasread::read(&root.join("state/build/manifest.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
@@ -7284,7 +7301,7 @@ impl Agent {
     /// Per region, how many of its areas are built (none before the first pass makes the outlines).
     fn region_progress(&self, root: &Path, regions: &[recipes::Recipe]) -> BTreeMap<String, build::RegionState> {
         let Some(date) = self.latest_pass(root) else { return BTreeMap::new() };
-        let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json"))
+        let manifest: BTreeMap<String, String> = nasread::read(&root.join("state/build/manifest.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
@@ -8975,7 +8992,7 @@ impl Agent {
         }
         if let Some(e) = manifest
             .get(&extract::logical(&date))
-            .and_then(|n| std::fs::read(root.join(n)).ok())
+            .and_then(|n| nasread::read(&root.join(n)).ok())
             .and_then(|b| extract::Extract::read(&b).ok())
         {
             ids.extend(e.ids());

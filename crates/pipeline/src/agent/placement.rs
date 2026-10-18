@@ -41,7 +41,7 @@ pub const DRAW_S: u64 = 60;
 
 /// Whether placement is on, as the switch at `root` says; None when it can't be read now.
 pub fn on(root: &Path) -> Option<bool> {
-    match std::fs::read_to_string(root.join(SWITCH)) {
+    match super::nasread::read_to_string(&root.join(SWITCH)) {
         Ok(s) => Some(s.trim() != "off"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
         Err(_) => None,

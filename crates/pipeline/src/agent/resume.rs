@@ -40,7 +40,7 @@ pub const SWITCH: &str = "state/pool/resume";
 
 /// Whether resuming is on, as the switch at `root` says; None when it can't be read now.
 pub fn on(root: &Path) -> Option<bool> {
-    match std::fs::read_to_string(root.join(SWITCH)) {
+    match super::nasread::read_to_string(&root.join(SWITCH)) {
         Ok(s) => Some(s.trim() != "off"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
         Err(_) => None,
@@ -135,7 +135,7 @@ pub fn release_path(member: &str, job: &str, at: u64) -> String {
 /// read now, or isn't one.
 pub fn read(root: &Path, member: &str) -> Result<Option<Progress>> {
     let p = root.join(path(member));
-    match std::fs::read(&p) {
+    match super::nasread::read(&p) {
         Ok(b) => Ok(Some(serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display()))?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e).with_context(|| format!("read {}", p.display())),

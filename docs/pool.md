@@ -578,6 +578,23 @@ room-making has done what it can, the disk guard as backstop.
 Planned: `cost_version` derived from the step's key version (`crate::agent::build`'s `*_V`) rather
 than kept by hand; progress of steps other than the OSM pass resumable on its Mac.
 
+### 7.8 The agent loop never waits on one NAS read
+
+An open on the SMB share can stay stuck in the kernel for many minutes while the same file reads at
+once from a shell. The agent loop's small NAS reads (the switches `state/pool/resume`,
+`placement`, `brokers`, the memory guard's and publishing's switches, the members' progress files,
+and the per-loop reads of `state/status.json` and the manifest) go through
+`crate::agent::nasread`: each runs on one of four reader threads and is waited for 20 s at most.
+Past that, the caller gets a timeout and takes it as any file it can't read now (a switch keeps its
+last value; a missing record reads as none), logged once per path until that path reads again. The
+stuck thread is left to its read and stays busy; while all four are busy, a read fails at once, so
+stuck threads never pile up. A healthy share's reads are unchanged.
+
+A watchdog thread looks at when the loop last finished a round: past five minutes it logs the stall
+and keeps `loop-stall.json` in the agent's folder (this Mac's disk), which `scenic status` shows as
+"this Mac's agent loop is stalled"; it's removed when the loop goes on. Other NAS calls in the loop
+(heartbeat writes, listings, the build's records) aren't under a deadline: planned.
+
 ## 8. Tasks, and the pages as workers
 
 A job is a step's run over targets on a Mac with the NAS. A **task** is a pure piece a running job
