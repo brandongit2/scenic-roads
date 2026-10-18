@@ -33,7 +33,18 @@ coverage, or once for the whole world, so region size, count and borders never s
   take it (waiting up to three minutes for the handover), else the build waits for it
   (`control::Quit`). The map server stays a service of its own: Scenic's window and menu show it
   and start or stop it when asked, never on opening or quitting. On an update Scenic copies the
-  installed version's Scenic.app over itself and opens again.
+  installed version's Scenic.app over itself and opens again (without its window).
+- **Switching a Mac over** from the login items Scenic replaces (`local.scenic.agent`,
+  `local.scenic.status`): until then the menu bar item runs from `app/current` as before, and a
+  copy of Scenic run from inside an installed version, or while `local.scenic.agent` is loaded or
+  its plist is in `~/Library/LaunchAgents`, manages nothing (it says "Switch over with
+  tools/app/install.sh"). On each Mac once the version is installed, the lead's Mac last (or hand
+  the lead away first, `scenic lead give <the other Mac>`): run `tools/app/install.sh` (it removes
+  the two login items, the old agent's job given back, copies Scenic.app to /Applications and
+  opens it), allow Scenic in Login Items if macOS asks, and check its window says "Build service:
+  running". The way back, until both Macs have switched: `tools/app/install.sh --legacy` (Scenic
+  unregistered and removed, the two login items as before), then `tools/app/publish.sh --rollback`
+  if the version itself is to go.
 - `scenic status` and the menu bar item (Scenic's) show the build's state. A click
   opens the build page in a popover; the menu pauses and resumes the build, hands over the lead,
   sets the disk room and clears the Mac's build caches (`scenic clean`). It notifies on every change.

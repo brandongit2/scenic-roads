@@ -14577,6 +14577,77 @@ mod pool_tests {
     }
 
     #[test]
+    fn a_lead_quitting_hands_the_lead_to_a_member_or_quits_after_the_wait() {
+        // (Task #194: Scenic quit on the lead's Mac.)
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        TEST_ABLE.with(|c| c.set(Some(true)));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::SLOTS);
+        let made = app(d.path());
+        let v = d.path().join("v/app/20261010-0100-aaaaaaa");
+        std::fs::create_dir_all(&v).unwrap();
+        for p in ["scenic", "scenic-build"] {
+            std::fs::copy(made.join(p), v.join(p)).unwrap();
+        }
+        let opts = |h: &str| Options {
+            root: Some(r.clone()),
+            home: d.path().join(h),
+            bin: v.clone(),
+            dry_run: false,
+            once: true,
+            helper: false,
+        };
+        let mut lead = test_agent(opts("l/agent")).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.step().unwrap();
+        // Alone: no member can take the lead, so it quits at once, the build waiting for it.
+        crate::control::request_quit(&lead.o.home, crate::control::QuitMode::Now, "Scenic on l").unwrap();
+        lead.step().unwrap();
+        assert_eq!(lead.quit_lead.map(|q| q.1), Some(false));
+        assert!(lead.quit_due());
+        crate::control::clear_quit(&lead.o.home);
+        lead.quit_lead = None;
+        // A member that can lead: asked to take it (the owner's Give), the quit due once it has.
+        let mut m = test_agent(opts("m/agent")).unwrap();
+        let im = m.pooled().unwrap().side.member().id.clone();
+        lead.pooled().unwrap().side.know(&im);
+        // (Once the lead's view has it, able to lead.)
+        let end = Instant::now() + WATCHDOG;
+        let able = |a: &Agent| {
+            a.pooled().unwrap().controls.view.as_ref().is_some_and(|v| v.members.iter().any(|x| !x.me && x.can_lead))
+        };
+        while !able(&lead) {
+            m.step().unwrap();
+            lead.step().unwrap();
+            assert!(Instant::now() < end, "the member never could lead: {:?}", lead.pooled().unwrap().controls.view);
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        crate::control::request_quit(&lead.o.home, crate::control::QuitMode::Now, "Scenic on l").unwrap();
+        while m.pooled().unwrap().side.driver().leads() != Some(2) {
+            lead.step().unwrap();
+            m.step().unwrap();
+            assert!(Instant::now() < end, "not handed over: {:?}", lead.pooled().unwrap().controls.kept.asked);
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        assert_eq!(lead.quit_lead.map(|q| q.1), Some(true));
+        assert!(
+            lead.pooled().unwrap().controls.kept.asked.as_ref().is_some_and(|a| a.by == "Scenic on l, quitting"),
+            "{:?}",
+            lead.pooled().unwrap().controls.kept.asked
+        );
+        // Past the wait, a lead quits whatever became of its ask.
+        let t = Instant::now().checked_sub(QUIT_HAND_WAIT).unwrap();
+        lead.quit_lead = Some((t, true));
+        assert!(lead.quit_due());
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+        TEST_ABLE.with(|c| c.set(None));
+    }
+
+    #[test]
     fn the_leads_gates_hold_a_catalog_and_a_sweep() {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());

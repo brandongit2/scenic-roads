@@ -22,6 +22,7 @@
 //
 //   tools/status/bundle.sh <folder> [sandbox options]   builds Scenic.app (both files, its launcher
 //                                                        and its build service's launchd plist)
+//   scenic-status --plan                    whether opening it would manage the build service, or why not
 //   scenic-status --services                the build service's and the map server's state
 //   scenic-status --unregister              the build service and the app off the login items
 //   scenic-status --print                   the icon, the status's lines and the menu's items now, as text
@@ -1506,6 +1507,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// The app opened: its menu, its build service started, the window (unless opened at login),
     /// and the app among the login items.
     func openApp() {
+        // (Run from inside an installed version, as the old menu bar login item runs it before the
+        // switch-over: the menu bar item alone, managing nothing, quitting for a newer version.)
+        if insideInstalledVersion() {
+            every(60) { quitIfReplaced() }
+            return
+        }
         let menu = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
@@ -1526,11 +1533,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         managing = true
         build.start()
         mapServer.refresh()
-        if openAtLogin, SMAppService.mainApp.status != .enabled {
+        if build.blocked == nil, openAtLogin, SMAppService.mainApp.status != .enabled {
             do { try SMAppService.mainApp.register() } catch { NSLog("scenic: adding the app to the login items: \(error)") }
         }
         updateWindow()
-        if !launchedAtLogin() { window.show() }
+        // (Not at login, nor reopened after an update.)
+        if !launchedAtLogin() && !CommandLine.arguments.contains("--no-window") { window.show() }
         updateIfReplaced()
     }
 
@@ -1600,7 +1608,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// app quits once the service has stopped) or "Stop Now". A logout, restart or shutdown: "Stop
     /// Now" without asking. The agent hands the lead away itself as it quits (control.rs Quit).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if mayQuit || !managing { return .terminateNow }
+        if mayQuit || !managing || build.blocked != nil { return .terminateNow }
         build.refresh()
         if !build.state.running { return .terminateNow }
         if quitForLogout() {
@@ -1852,6 +1860,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // and quitting.
         if managing {
             m.addItem(.separator())
+            if build.blocked != nil {
+                let it = NSMenuItem(title: build.said, action: nil, keyEquivalent: "")
+                it.isEnabled = false
+                m.addItem(it)
+            }
             if mapServer.installed {
                 let it = mapServer.state.running
                     ? NSMenuItem(title: "Stop the Map Server…", action: #selector(stopServerItem), keyEquivalent: "")
@@ -2193,6 +2206,10 @@ if args.contains("--unregister") {
             print("\(what): \(error.localizedDescription)")
         }
     }
+} else if args.contains("--plan") {
+    // What opening this copy would manage: nothing from inside an installed version or before the
+    // switch-over (a check of the transition guard).
+    print(notManaging().map { "manages nothing: \($0)" } ?? "manages the build service (\(buildLabel)) and the login items")
 } else if args.contains("--services") {
     // The build service's and the map server's state, as the app sees them.
     let b = BuildService()
@@ -2303,6 +2320,6 @@ if args.contains("--unregister") {
     if let i = args.firstIndex(of: "--show"), i + 1 < args.count { delegate.showAtStart = args[i + 1] }
     app.delegate = delegate
     // (A normal app, in the Dock; --show's and --menu-proof's runs the menu bar item alone.)
-    app.setActivationPolicy(delegate.proof || delegate.showAtStart != nil ? .accessory : .regular)
+    app.setActivationPolicy(delegate.proof || delegate.showAtStart != nil || insideInstalledVersion() ? .accessory : .regular)
     app.run()
 }

@@ -86,6 +86,20 @@ EOF
   launchctl bootstrap gui/$(id -u) $server_plist
   echo "open \"$dir/Applications/Scenic Sandbox.app\""
   ;;
+check)
+  # The transition guard: a copy inside an installed version manages nothing; the installed copy
+  # manages nothing while the old agent's login item is there (a stand-in plist, never loaded).
+  inside="$home/app/v1/Scenic Sandbox.app/Contents/MacOS/scenic-status"
+  installed="$dir/Applications/Scenic Sandbox.app/Contents/MacOS/scenic-status"
+  legacy=~/Library/LaunchAgents/local.scenic-sandbox.agent.plist
+  fail=0
+  "$inside" --plan | tee /dev/stderr | grep -q "manages nothing: run from inside" || fail=1
+  "$installed" --plan | tee /dev/stderr | grep -q "manages the build service" || fail=1
+  plutil -create xml1 $legacy
+  "$installed" --plan | tee /dev/stderr | grep -q "manages nothing: Switch over" || fail=1
+  rm -f $legacy
+  (( fail == 0 )) && echo "check: ok" || { echo "check: FAILED"; exit 1; }
+  ;;
 update)
   ln -sfh v2 $home/app/current
   echo "current: v2"

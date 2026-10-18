@@ -38,6 +38,7 @@ if [[ -n $sandbox ]]; then
   plutil -replace ScenicServerLabel -string local.scenic-sandbox.server "$info"
   plutil -replace ScenicUpdateFrom -string "$name.app" "$info"
   plutil -replace ScenicOpenAtLogin -bool false "$info"
+  plutil -insert ScenicLegacyAgent -string local.scenic-sandbox.agent "$info"
   plutil -insert ScenicHome -string "$sandbox" "$info"
   plutil -insert ScenicRunDir -string "$sandbox/run" "$info"
   plutil -insert ScenicServer -string http://127.0.0.1:17399 "$info"
