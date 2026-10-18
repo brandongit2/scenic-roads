@@ -448,6 +448,19 @@ impl<'a> Book<'a> {
         self.fitted(&md, &key, threads).or(md.prior)
     }
 
+    /// The cores a job of `step` for `target` takes, as measured (the threads its run was given,
+    /// `sizes`' `threads`, crate::costin): its own run's, else the most of its step's runs the way
+    /// it runs now; None when none of them says (what packs jobs beside each other, crate::coord's
+    /// packing, then packs none beside it).
+    pub fn cores(&self, step: &str, target: &str) -> Option<u32> {
+        let v = cost_version(step);
+        let threads = |c: &Cost| c.sizes.get("threads").filter(|_| c.v >= v).map(|&t| t as u32);
+        if let Some(t) = self.costs.get(&cost_key(step, target)).and_then(threads) {
+            return Some(t);
+        }
+        self.costs.iter().filter(|(k, _)| step_of_key(k) == step).filter_map(|(_, c)| threads(c)).max()
+    }
+
     /// What a job of `step` for `target` needs, given `threads` (0: not said) and `guess`, the memory
     /// (MB) its caller would take without a measure (the steps table's first guess, what its plan
     /// offered it with, a unit's piece-size guess).
@@ -581,6 +594,21 @@ mod tests {
             v: 0,
             sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
         }
+    }
+
+    /// A job's cores: its target's run's threads, else the most of its step's; None when no run says.
+    #[test]
+    fn cores_are_the_targets_run_else_the_most_of_its_steps() {
+        let now = |step: &str, c: Cost| Cost { v: cost_version(step), ..c };
+        let mut costs = BTreeMap::new();
+        costs.insert(cost_key("slope", "6/1/1"), now("slope", cost(100, 5, &[("threads", 4)])));
+        costs.insert(cost_key("slope", "6/1/2"), now("slope", cost(100, 5, &[("threads", 2)])));
+        costs.insert(cost_key("slope", "6/1/3"), cost(100, 5, &[("threads", 8)]));
+        costs.insert(cost_key("lo", "3/1/1"), now("lo", cost(100, 5, &[])));
+        let b = Book::new(&costs);
+        assert_eq!(b.cores("slope", "6/1/2"), Some(2));
+        assert_eq!(b.cores("slope", "6/1/9"), Some(4), "an older way's run counts for nothing");
+        assert_eq!(b.cores("lo", "3/1/1"), None);
     }
 
     /// Memory that goes with a tile's area fits; a target never run is predicted by the fit over its

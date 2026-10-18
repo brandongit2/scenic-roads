@@ -30,6 +30,7 @@ pub mod gc;
 pub mod jobs;
 pub mod lead;
 pub mod memguard;
+pub mod packing;
 pub mod placement;
 pub mod pool;
 pub mod publish;
@@ -945,6 +946,8 @@ pub struct Agent {
     /// `state/pool/placement`), as the switch was last read: it acts only in the pool
     /// (`placement_on`).
     placement: bool,
+    /// Packing (crate::agent::packing), as its switch last said.
+    packing: Option<crate::coord::Packing>,
     /// Tasks brokered by every member (crate::agent::brokers, `state/pool/brokers`), as the switch
     /// was last read: it acts only in the pool (`brokers_on`).
     brokers: bool,
@@ -1275,6 +1278,7 @@ impl Agent {
             proxy: None,
             resume: false,
             placement: false,
+            packing: None,
             brokers: false,
             broker: None,
             broker_failed: None,
@@ -7270,6 +7274,12 @@ impl Agent {
             }
             self.placement = on;
         }
+        if let Some(p) = packing::read(r) {
+            if p != self.packing {
+                eprintln!("agent: packing several jobs a member is {}", if p.is_some() { "on" } else { "off" });
+            }
+            self.packing = p;
+        }
         if let Some(on) = brokers::on(r) {
             if on != self.brokers {
                 eprintln!(
@@ -7290,6 +7300,7 @@ impl Agent {
         let placed = self.placement_now();
         if let Some(c) = &self.coord {
             c.set_every(self.every_on().then(|| crate::coord::Every { own: Some(self.own_room()) }));
+            c.set_packing(self.packing.clone().filter(|_| self.every_on()));
             c.set_capacity(self.last_cond.map(|cond| self.capacity(&cond)));
             c.set_placement(placed.clone());
             if !self.every_on() {

@@ -302,6 +302,10 @@ pub struct Shared {
     /// targets and the tasks drawn among those asking by measured speed, a task offered ahead given
     /// to a slower worker its head start covers. None: as before.
     pub placement: Option<(crate::agent::placement::Placement, Instant)>,
+    /// Packing (docs/pool.md §7.2, behind `state/pool/packing`: crate::agent::packing), while every
+    /// step to every member is on too: a member may hold several leases, an ask granted as many jobs
+    /// as it wants that fit its room together (`pack`). None: one job an ask, as before.
+    pub packing: Option<Packing>,
     /// The lead's map update under way, while every step to every member is on: granted with a map update's
     /// step (`Grant::as_of`).
     pub map_update: Option<AsOf>,
@@ -534,26 +538,149 @@ impl Shared {
     }
 
     /// The worker that takes a cold start of `step` now (docs/pool.md §7.7): of the agents around
-    /// asking lately for it, the one with the most room (memory, then disk; by name between equals),
-    /// when it has more than this Mac's own (`Every::own`); None when this Mac has the most, or none
-    /// asks.
+    /// asking lately for it (packing on: holding no job's lease), the one with the most room
+    /// (memory, then disk; by name between equals), when it has more than this Mac's own
+    /// (`Every::own`); None when this Mac has the most, or none asks.
     fn most_room(&self, step: &str, now: Instant) -> Option<String> {
         let room = |w: &Worker| (w.mem_mb, w.ask.as_ref().and_then(|a| a.disk_mb).unwrap_or(0));
         let best = self
             .workers
             .iter()
-            .filter(|(_, w)| {
+            .filter(|(n, w)| {
                 !w.bad
                     && w.kind == "native"
                     && now.duration_since(w.seen) < AROUND
                     && w.asked.is_some_and(|a| now.duration_since(a) < ASKING)
                     && w.can.iter().any(|c| c == step)
+                    // (Packing on: a member running a job isn't idle, whatever its room.)
+                    && (self.packing.is_none() || self.job_leases(n, now).is_empty())
             })
             .max_by(|(n1, w1), (n2, w2)| room(w1).cmp(&room(w2)).then(n2.cmp(n1)))?;
         match self.every.and_then(|e| e.own) {
             Some(own) if own >= room(best.1) => None,
             _ => Some(best.0.clone()),
         }
+    }
+
+    /// `worker`'s live jobs' leases.
+    fn job_leases(&self, worker: &str, now: Instant) -> Vec<Lease> {
+        self.leases.all(now).into_iter().filter(|l| l.worker == worker && matches!(l.work, Work::Job { .. })).collect()
+    }
+
+    /// What a job of `step` over `targets` is measured to take (as `Coordinator::measured_batch`:
+    /// the most of their memory, their disks summed or the most a job of the step took), and its
+    /// cores (crate::needs::Book::cores: the most of its targets'; None when one's aren't said);
+    /// None when any is a cold start.
+    fn job_need(&self, step: &str, targets: &[String]) -> Option<(Measured, Option<u32>)> {
+        let each: Vec<Measured> = targets.iter().map(|t| self.measured(step, t)).collect::<Option<_>>()?;
+        let job = self.job_disks.get(step).copied().unwrap_or(0);
+        let b = self.book();
+        let cores = targets
+            .iter()
+            .map(|t| b.cores(step, t))
+            .collect::<Option<Vec<u32>>>()
+            .map(|v| v.into_iter().max().unwrap_or(0));
+        Some((
+            Measured {
+                mem_mb: each.iter().map(|m| m.mem_mb).max().unwrap_or(0),
+                disk_mb: each.iter().map(|m| m.disk_mb).sum::<u64>().max(job),
+                own: each.iter().all(|m| m.own),
+            },
+            cores,
+        ))
+    }
+
+    /// A job of offer `o`'s step over `pick` granted to `a`'s worker: its lease, the worker's last
+    /// target of the step, the history's event.
+    fn grant_job(&mut self, a: &Ask, o: &Offer, pick: Vec<(String, String)>, every: bool, now: Instant) -> Grant {
+        if let Some(l) = pick.last() {
+            self.last.insert((a.worker.clone(), o.step.clone()), l.0.clone());
+        }
+        let lease = self.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
+        self.save_leases();
+        eprintln!(
+            "coordinator: {} took {} {}",
+            a.worker,
+            o.step,
+            pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" ")
+        );
+        self.history.add(history::Event {
+            worker: Some(a.worker.clone()),
+            lease: Some(lease),
+            step: Some(o.step.clone()),
+            targets: pick.iter().map(|t| t.0.clone()).collect(),
+            ..history::Event::new("lease")
+        });
+        let as_of = if every && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str()) {
+            self.map_update.clone()
+        } else {
+            None
+        };
+        Grant {
+            lease,
+            term: self.leases.term,
+            ttl_s: TTL.as_secs(),
+            work: Granted::Job { step: o.step.clone(), targets: pick, pass: self.pass.clone() },
+            as_of,
+            more: Vec::new(),
+        }
+    }
+
+    /// Packing on (docs/pool.md §7.2): the jobs `a`'s worker is granted, packed into its room in
+    /// plan order (`offers`' order, each by `pick_every`): up to the jobs it wants (`Ask::want`, at
+    /// least one) and its cap (`Packing::cap_of`, counting the leases it holds). Each after the
+    /// first it holds goes beside the others: measured (memory, disk, cores, crate::needs), within
+    /// the room left (the ask's memory and disk less the jobs granted in this answer; its Mac's cores
+    /// less every job it holds); a cold start only to a worker holding nothing (`most_room`), alone.
+    /// Nothing while it runs a cold start. None: no job.
+    fn pack(&mut self, a: &Ask, offers: &[Offer], now: Instant) -> Option<Grant> {
+        let cap = self.packing.as_ref()?.cap_of(&a.worker);
+        let mine = self.job_leases(&a.worker, now);
+        let need = |s: &Shared, l: &Lease| match &l.work {
+            Work::Job { step, targets } => s.job_need(step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>()),
+            Work::Task { .. } => None,
+        };
+        let needs: Vec<Option<(Measured, Option<u32>)>> = mine.iter().map(|l| need(self, l)).collect();
+        // (Nothing beside a cold start.)
+        if needs.iter().any(Option::is_none) {
+            return None;
+        }
+        let total = a.cap.as_ref().map(|c| c.cores).filter(|&c| c > 0).unwrap_or(a.cores);
+        // (Cores left: none when a job held doesn't say its own.)
+        let mut cores =
+            needs.iter().try_fold(total, |left, n| n.and_then(|(_, c)| c).map(|c| left.saturating_sub(c))).unwrap_or(0);
+        let mut room = a.clone();
+        let mut held = mine.len();
+        let mut grants: Vec<Grant> = Vec::new();
+        while grants.len() < a.want.max(1) && cap.is_none_or(|c| held < c) {
+            let beside = held > 0;
+            let mut got = None;
+            for o in offers {
+                let pick = self.pick_every(o, &room, now);
+                if pick.is_empty() {
+                    continue;
+                }
+                let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
+                let n = self.job_need(&o.step, &ts);
+                if beside && !matches!(n, Some((_, Some(c))) if c <= cores) {
+                    continue;
+                }
+                got = Some((o, pick, n));
+                break;
+            }
+            let Some((o, pick, n)) = got else { break };
+            grants.push(self.grant_job(a, o, pick, true, now));
+            held += 1;
+            // (A cold start alone.)
+            let Some((m, c)) = n else { break };
+            room.mem_mb = room.mem_mb.saturating_sub(m.mem_mb);
+            room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb));
+            cores = c.map_or(0, |c| cores.saturating_sub(c));
+        }
+        let mut it = grants.into_iter();
+        let mut first = it.next()?;
+        first.more = it.collect();
+        Some(first)
     }
 
     /// Every step to every member (docs/pool.md §12, phase 4's ninth batch): the targets of offer
@@ -942,6 +1069,31 @@ pub struct Ask {
     /// older coordinator, which ignores this. None: an older agent, or a page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap: Option<Capacity>,
+    /// The jobs it would start now (its free slots: 0 or 1, one). With packing on the lead grants
+    /// up to that many at once (`Grant::more`); off, or an older agent's ask (none), one.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub want: usize,
+}
+
+fn is_zero_usize(n: &usize) -> bool {
+    *n == 0
+}
+
+/// Packing (crate::agent::packing): the most jobs a member holds at once, when capped. No cap by
+/// default: what fits its room.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Packing {
+    /// Every member's cap (None: none).
+    pub cap: Option<usize>,
+    /// A member's own cap, by the name it asks with, in place of `cap`.
+    pub caps: BTreeMap<String, usize>,
+}
+
+impl Packing {
+    /// The most jobs `worker` may hold at once (None: no cap).
+    pub fn cap_of(&self, worker: &str) -> Option<usize> {
+        self.caps.get(worker).copied().or(self.cap)
+    }
 }
 
 /// How long a capacity stands (s): older, `Coordinator::capacities` leaves it out.
@@ -1017,6 +1169,10 @@ pub struct Grant {
     /// (crate::out::UNITS_AS_OF_ENV) as the lead's own would.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub as_of: Option<AsOf>,
+    /// More jobs granted with this one, packing on and the ask wanting more than one (`Ask::want`):
+    /// each its own lease, packed into the ask's room beside the others.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<Grant>,
 }
 
 /// A map update's units as they were when it began (crate::agent::build::MapUpdate's `began` and `units`).
@@ -1231,6 +1387,7 @@ impl Coordinator {
             inputs_asks: Vec::new(),
             every: None,
             placement: None,
+            packing: None,
             map_update: None,
             last: BTreeMap::new(),
             brokers: None,
@@ -1430,6 +1587,11 @@ impl Coordinator {
     /// phase 4's ninth batch; crate::agent::every).
     pub fn set_every(&self, every: Option<Every>) {
         self.shared.lock().unwrap().every = every;
+    }
+
+    /// Packing on (`Some`: its caps) or off (crate::agent::packing).
+    pub fn set_packing(&self, packing: Option<Packing>) {
+        self.shared.lock().unwrap().packing = packing;
     }
 
     /// The lead's own Mac's capacity, measured each loop (its jobs ask nothing).
@@ -2395,6 +2557,7 @@ fn route(
                         ttl_s: TTL.as_secs(),
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
                         as_of: None,
+                        more: Vec::new(),
                     };
                     return Ok((200, serde_json::to_value(g)?));
                 }
@@ -2412,55 +2575,41 @@ fn route(
                 if let (true, Some((p, _))) = (every, &s.placement) {
                     offers.sort_by_key(|o| p.slack_of(&o.step));
                 }
-                for &away in passes {
-                    for o in offers.iter().filter(|o| a.can.contains(&o.step)) {
-                        // (Switched off: the shared steps alone, whatever was offered before.)
-                        if !every && !crate::agent::steps::SHARED.contains(&o.step.as_str()) {
-                            continue;
-                        }
-                        // (A map update's step only with the map update's units to grant it with.)
-                        if every
-                            && s.map_update.is_none()
-                            && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str())
-                        {
-                            continue;
-                        }
-                        let pick = if every { s.pick_every(o, &a, now) } else { s.pick(o, &a, now, away) };
-                        if pick.is_empty() {
-                            continue;
-                        }
-                        if let Some(l) = pick.last() {
-                            s.last.insert((a.worker.clone(), o.step.clone()), l.0.clone());
-                        }
-                        let lease =
-                            s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
-                        s.save_leases();
-                        eprintln!(
-                            "coordinator: {} took {} {}",
-                            a.worker,
-                            o.step,
-                            pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" ")
-                        );
-                        s.history.add(history::Event {
-                            worker: Some(a.worker.clone()),
-                            lease: Some(lease),
-                            step: Some(o.step.clone()),
-                            targets: pick.iter().map(|t| t.0.clone()).collect(),
-                            ..history::Event::new("lease")
-                        });
-                        let as_of = if every && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str()) {
-                            s.map_update.clone()
-                        } else {
-                            None
-                        };
-                        let g = Grant {
-                            lease,
-                            term: s.leases.term,
-                            ttl_s: TTL.as_secs(),
-                            work: Granted::Job { step: o.step.clone(), targets: pick, pass: s.pass.clone() },
-                            as_of,
-                        };
+                // (Packing on: as many jobs as the ask wants that fit its room together.)
+                if every && s.packing.is_some() {
+                    let mine: Vec<Offer> = offers
+                        .iter()
+                        .filter(|o| {
+                            a.can.contains(&o.step)
+                                && (s.map_update.is_some()
+                                    || !crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str()))
+                        })
+                        .cloned()
+                        .collect();
+                    if let Some(g) = s.pack(&a, &mine, now) {
                         return Ok((200, serde_json::to_value(g)?));
+                    }
+                } else {
+                    for &away in passes {
+                        for o in offers.iter().filter(|o| a.can.contains(&o.step)) {
+                            // (Switched off: the shared steps alone, whatever was offered before.)
+                            if !every && !crate::agent::steps::SHARED.contains(&o.step.as_str()) {
+                                continue;
+                            }
+                            // (A map update's step only with the map update's units to grant it with.)
+                            if every
+                                && s.map_update.is_none()
+                                && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str())
+                            {
+                                continue;
+                            }
+                            let pick = if every { s.pick_every(o, &a, now) } else { s.pick(o, &a, now, away) };
+                            if pick.is_empty() {
+                                continue;
+                            }
+                            let g = s.grant_job(&a, o, pick, every, now);
+                            return Ok((200, serde_json::to_value(g)?));
+                        }
                     }
                 }
             }
@@ -2481,6 +2630,7 @@ fn route(
                     ttl_s: TTL.as_secs(),
                     work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb },
                     as_of: None,
+                    more: Vec::new(),
                 };
                 eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
                 return Ok((200, serde_json::to_value(g)?));
@@ -4783,6 +4933,96 @@ mod tests {
             Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo"), ..Default::default() },
         )]);
         assert_eq!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)), ["3/1/2", "3/1/3"]);
+    }
+
+    /// `n` targets of `step` measured (2 GB, 100 MB of disk, ten minutes: a job each), their runs'
+    /// threads said when `threads` is.
+    fn packable(c: &Coordinator, step: &str, n: usize, threads: Option<u64>) {
+        let ts: Vec<String> = (1..=n).map(|i| format!("6/1/{i}")).collect();
+        for t in &ts {
+            let sizes = threads.map(|t| [("threads".to_string(), t)].into()).unwrap_or_default();
+            let cost =
+                Cost { peak_mb: 2000, secs: 600, worker: None, v: cost_version(step), sizes, ..Default::default() };
+            c.add_costs_by(&[(cost_key(step, t), cost)], "m1");
+            c.add_disks(&[(cost_key(step, t), 100)]);
+        }
+        c.offer(
+            "p",
+            vec![Offer {
+                step: step.into(),
+                targets: ts.iter().map(|t| (t.clone(), format!("k {t}"), 0)).collect(),
+                batch: 1,
+            }],
+        );
+    }
+
+    fn all_granted(w: &client::Client, a: &Ask) -> Vec<Vec<String>> {
+        let Some(mut g) = w.ask(a).unwrap() else { return Vec::new() };
+        let more = std::mem::take(&mut g.more);
+        std::iter::once(g)
+            .chain(more)
+            .map(|g| match g.work {
+                Granted::Job { targets, .. } => targets.into_iter().map(|t| t.0).collect(),
+                Granted::Task { .. } => Vec::new(),
+            })
+            .collect()
+    }
+
+    /// Packing (crate::agent::packing): off, an ask gets one job whatever it wants; on, as many as
+    /// it wants that fit its room together (memory, disk, cores), each its own lease, in plan order;
+    /// its next ask gets what fits the room left; a cap holds it to that many leases.
+    #[test]
+    fn packing_grants_as_many_jobs_as_fit_the_asks_room() {
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "slope", 6, Some(2));
+        let a = Ask { want: 5, ..every_ask("m1", "slope", 7000, 100_000) };
+        assert_eq!(all_granted(&w, &a), [["6/1/1"]], "off: one");
+        c.set_packing(Some(Packing::default()));
+        assert_eq!(all_granted(&w, &a), [["6/1/2"], ["6/1/3"], ["6/1/4"]], "on: three fit its memory");
+        let a = Ask { mem_mb: 1000, ..a };
+        assert!(all_granted(&w, &a).is_empty(), "its room taken");
+        // By cores: 2 of 8 each, four at once whatever the memory.
+        let (_d, c, w, _clock) = every((0, 0));
+        c.set_packing(Some(Packing::default()));
+        packable(&c, "slope", 6, Some(2));
+        let a = Ask { want: 6, ..every_ask("m1", "slope", 64_000, 100_000) };
+        assert_eq!(all_granted(&w, &a).len(), 4);
+        // A cap.
+        let (_d, c, w, _clock) = every((0, 0));
+        c.set_packing(Some(Packing { caps: [("m1".to_string(), 2)].into(), ..Default::default() }));
+        packable(&c, "slope", 6, Some(2));
+        assert_eq!(all_granted(&w, &a).len(), 2);
+        assert!(all_granted(&w, &a).is_empty(), "at its cap");
+        // Cores not said: nothing beside the first.
+        let (_d, c, w, _clock) = every((0, 0));
+        c.set_packing(Some(Packing::default()));
+        packable(&c, "slope", 6, None);
+        assert_eq!(all_granted(&w, &a).len(), 1);
+    }
+
+    /// Packing on: a cold start goes only to a member running nothing, alone, and nothing goes
+    /// beside it while it runs.
+    #[test]
+    fn packing_keeps_a_cold_start_alone() {
+        let cold = Offer { step: "lo".into(), targets: vec![("3/1/1".into(), "k 3/1/1".into(), 0)], batch: 1 };
+        let a = Ask { want: 3, can: vec!["slope".into(), "lo".into()], ..every_ask("m1", "slope", 64_000, 100_000) };
+        let (_d, c, w, _clock) = every((0, 0));
+        c.set_packing(Some(Packing::default()));
+        packable(&c, "slope", 2, Some(2));
+        let mut offers = c.shared.lock().unwrap().offers.clone();
+        offers.push(cold.clone());
+        c.offer("p", offers);
+        assert_eq!(all_granted(&w, &a), [["6/1/1"], ["6/1/2"]], "measured ones packed; no cold start beside them");
+        // Nothing held: the cold start, alone; then nothing beside it.
+        let (_d, c, w, _clock) = every((0, 0));
+        c.set_packing(Some(Packing::default()));
+        c.offer("p", vec![cold.clone()]);
+        assert_eq!(all_granted(&w, &a), [["3/1/1"]]);
+        packable(&c, "slope", 2, Some(2));
+        let mut offers = c.shared.lock().unwrap().offers.clone();
+        offers.push(cold);
+        c.offer("p", offers);
+        assert!(all_granted(&w, &a).is_empty(), "beside a cold start: nothing");
     }
 
     /// A map update's step (`pack`) is granted only with the map update's units, as the lead last told them;

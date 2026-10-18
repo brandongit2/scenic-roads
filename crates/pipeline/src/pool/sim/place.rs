@@ -5,8 +5,10 @@
 //! - **The members** ask the coordinator over HTTP, as their agents do (`client::Client::ask`), with
 //!   what their Mac spares (its memory guard's limit less what its jobs hold, its disk less the
 //!   reserve and its jobs', its capacity); what they're granted is `pick_every`'s, untouched. Each
-//!   runs `Cfg::member_slots` jobs (today's agent: one), asking again while a slot is free; a job
-//!   ends by giving its lease back, its costs and disk measured into the coordinator first.
+//!   runs `Cfg::member_slots` jobs (today's agent: one), asking again while a slot is free (packing
+//!   on, `Cfg::packing`: for as many jobs as it has slots free, running every one granted); a job
+//!   ends by giving its lease back, its costs (with its threads) and disk measured into the
+//!   coordinator first.
 //! - **The lead** runs `agent::SLOTS` jobs (two), its own leases held (`Coordinator::hold`): its plan
 //!   leaves out what others hold and a step whose cold start runs elsewhere (`cold_under_way`), as
 //!   the agent's does; the first slot takes the plan's first unless it waits for the second job, the
@@ -57,8 +59,11 @@ pub struct Cfg {
     /// The Macs, the lead first.
     pub macs: Vec<Mac>,
     pub steps: Vec<Step>,
-    /// The jobs a member runs at once (today's agent: one). More is for multi-lease asks (task #239).
+    /// The jobs a member runs at once (today's agent: one).
     pub member_slots: usize,
+    /// Packing (crate::agent::packing) on, with its caps: a member asks for as many jobs as it has
+    /// slots free (`Ask::want`) and runs every one granted. None: one job an ask, as today.
+    pub packing: Option<coord::Packing>,
 }
 
 /// What a run did.
@@ -106,6 +111,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
     let clock = store::clock::Virtual::new();
     c.shared.lock().unwrap().clock = clock.clone();
     c.set_map_update(Some(coord::AsOf { began: 1, units: BTreeMap::new() }));
+    c.set_packing(cfg.packing.clone());
     let clients: Vec<Option<client::Client>> = cfg
         .macs
         .iter()
@@ -162,6 +168,8 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                                 secs: s.secs,
                                 worker: None,
                                 v: cost_version(&j.step),
+                                // (The threads its run was given, as crate::costin records them.)
+                                sizes: [("threads".to_string(), s.threads as u64)].into(),
                                 ..Default::default()
                             },
                         )
@@ -404,15 +412,25 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                     limit_mb: Some(limit(k)),
                     disk_mb: Some(disk_mb),
                     cap: Some(cap),
+                    want: if cfg.packing.is_some() { slots(k) - running[k].len() } else { 0 },
                     ..Default::default()
                 };
-                let Some(g) = w.ask(&a).map_err(|e| format!("ask: {e:#}"))? else {
+                let Some(mut g) = w.ask(&a).map_err(|e| format!("ask: {e:#}"))? else {
                     break;
                 };
-                let Granted::Job { step, targets, .. } = g.work else {
-                    return Err("a task granted".into());
-                };
-                if !start(k, &step, targets.into_iter().map(|t| t.0).collect(), g.lease, &mut running, &mut out)? {
+                let more = std::mem::take(&mut g.more);
+                if cfg.packing.is_none() && !more.is_empty() {
+                    return Err("several jobs granted with packing off".into());
+                }
+                let mut all = true;
+                for g in std::iter::once(g).chain(more) {
+                    let Granted::Job { step, targets, .. } = g.work else {
+                        return Err("a task granted".into());
+                    };
+                    all &=
+                        start(k, &step, targets.into_iter().map(|t| t.0).collect(), g.lease, &mut running, &mut out)?;
+                }
+                if !all {
                     break;
                 }
             }
@@ -457,7 +475,7 @@ mod tests {
     /// cores or disk; cold starts alone; the lead's steps on the lead; the plan done.
     #[test]
     fn the_m4_and_the_m1_finish_two_slots_and_one() {
-        let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1 }).unwrap();
+        let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None }).unwrap();
         assert_eq!(r.most, [2, 1], "{r:?}");
         assert!(r.ran.iter().all(|&n| n > 0), "{r:?}");
     }
@@ -465,21 +483,43 @@ mod tests {
     /// Four Macs (one with little disk) finish the same plan, sooner than two.
     #[test]
     fn four_macs_finish() {
-        let two = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1 }).unwrap();
+        let two = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None }).unwrap();
         let mut macs = m4_m1();
         macs.push(Mac { name: "mini", total_mb: 16_384, cores: 8, disk_mb: 40_000 });
         macs.push(Mac { name: "air", total_mb: 8_192, cores: 8, disk_mb: 35_000 });
-        let r = run(&Cfg { macs, steps: plan(), member_slots: 1 }).unwrap();
+        let r = run(&Cfg { macs, steps: plan(), member_slots: 1, packing: None }).unwrap();
         assert!(r.ran.iter().skip(1).filter(|&&n| n > 0).count() >= 2, "{r:?}");
         assert!(r.secs < two.secs, "{} s with four, {} s with two", r.secs, two.secs);
     }
 
-    /// Members switched to two jobs each (task #239's multi-lease asks): today's coordinator gives a
-    /// cold start to a member already running a job (`most_room` weighs room, not that the Mac is
-    /// idle), which the simulator finds. #239 flips this to `.unwrap()` with `most == [2, 2]`.
+    /// Packing on, members with two slots: a cold start goes only to a Mac running nothing
+    /// (`most_room`), so the M1 reaches two measured jobs at once and every invariant holds.
     #[test]
-    fn members_with_two_slots_get_a_cold_start_beside_a_job_today() {
-        let e = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 2 }).unwrap_err();
-        assert!(e.contains("placed a cold start of") && e.contains("beside"), "{e}");
+    fn members_with_two_slots_pack_two_jobs_and_no_cold_start_beside_one() {
+        let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 2, packing: Some(Default::default()) }).unwrap();
+        assert_eq!(r.most, [2, 2], "{r:?}");
+    }
+
+    /// Packing on, a 48 GB member with room for several: it holds several small jobs at once (its
+    /// cores the bound: four 4-thread jobs on 16), every invariant holding, sooner than one a time.
+    #[test]
+    fn a_48_gb_member_holds_several_small_jobs_at_once() {
+        let mut macs = m4_m1();
+        macs[1] = Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 };
+        let one = run(&Cfg { macs: macs.clone(), steps: plan(), member_slots: 1, packing: None }).unwrap();
+        let r = run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(Default::default()) }).unwrap();
+        assert!(r.most[1] >= 3, "{r:?}");
+        assert!(r.most[1] <= 4, "past its cores: {r:?}");
+        assert!(r.secs < one.secs, "{} s packed, {} s one a time", r.secs, one.secs);
+    }
+
+    /// Packing on with a cap: the member holds no more jobs than it, whatever its room.
+    #[test]
+    fn a_cap_holds_a_member_to_it() {
+        let mut macs = m4_m1();
+        macs[1] = Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 };
+        let packing = coord::Packing { caps: [("studio".to_string(), 2)].into(), ..Default::default() };
+        let r = run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(packing) }).unwrap();
+        assert_eq!(r.most[1], 2, "{r:?}");
     }
 }

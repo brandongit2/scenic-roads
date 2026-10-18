@@ -246,8 +246,8 @@ room target (`reserved_mb`, for reservations, is 0: none are made yet), in use, 
 the NAS's reach, the guard's switch and its running leases. The lead sets its own each loop
 (its jobs ask nothing). The coordinator keeps the last per member (`Coordinator::capacities`, leaving out one older than
 two minutes, `CAP_FRESH_S`: a busy member asks nothing, so its figures go stale):
-`scenic status` prints a line per member, and the worker page's details a table. Placement doesn't
-read it yet. It rides the ask, not the heartbeat: the coordinator places at ask time, and the
+`scenic status` prints a line per member, and the worker page's details a table. Placement reads
+only its `cores` (packing, §7.2). It rides the ask, not the heartbeat: the coordinator places at ask time, and the
 ask's measures are taken then, where a heartbeat on the NAS is up to two minutes old and the
 coordinator doesn't read heartbeats. Every field has a serde default: an older coordinator ignores
 `cap`, and a newer one takes an ask without it (an older agent's) as before.
@@ -276,6 +276,16 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
   worldwide steps) go to any member whose measured room fits. `pack` and `lo` only with a map
   update's units (`as_of`). A cold start (§7.7) goes to the member with the most room
   (`most_room`), alone, while no job of its step runs.
+- **Packing** (`crate::agent::packing`, behind `state/pool/packing`, with every step to every
+  member): a member may hold several leases. An ask says how many jobs it would start (`want`);
+  the lead grants up to that many in one answer (`Grant::more`, each its own lease), packed in
+  plan order into the ask's room: each after the first the member holds must be measured
+  (memory, disk, and cores, the threads its runs were given: `needs::Book::cores`) and fit what's
+  left (the ask's memory and disk less the jobs granted with it; its Mac's cores less every job
+  it holds). A cold start goes only to a member holding no lease, alone, and nothing goes beside
+  one. Each job is still a quarter hour (`JOB_S`). The switch's file may cap the jobs a member
+  holds (`cap <n>`, or `cap <worker> <n>` for one); no cap by default. Off, an ask gets one job.
+  Today's agent still runs one job a member and asks with no `want` (its N slots are planned).
 - **Order and locality:** a member gets a contiguous run of plan targets, from the front or just
   after its last target, as many as fit `coord::JOB_S` (a quarter hour) of measured time.
 - **A map update shared** (`crate::agent::publish`, behind `state/pool/update-share`): the lead's own
@@ -384,7 +394,7 @@ never correctness, politeness or work.
 | memory | measured per target (`peak_mb`, the guard's floors, §7.2) |
 | input size | measured per target beside its cost (`sizes` in `costs.jsonl`, `pipeline::costin`: bytes read, threads, area, GeoTIFFs opened, and the counts a step has: ways and vertices, buildings, peaks); read by the step's model (below) |
 | disk | measured per target: bytes written through `store::cachefile` and the scratch writers (`SCENIC_WRITTEN`), plus a look each minute at the largest files in a slot's scratch folder; kept as the target's disk floor (`disks.json`). **Disk guard:** when free space falls below the reserve (30 GB), the fastest-growing job is frozen, room is made from caches no job holds (`room::toward`), and it goes on or is given back. Given-back jobs' scratch folders are deleted oldest first when room is short (`room::free_given_back`) |
-| two jobs on one Mac | a job starts beside another only if both jobs' measured memory and disk fit; a cold start runs alone |
+| two jobs on one Mac | a job starts beside another only if both jobs' measured memory and disk fit (packing, §7.2: and their measured cores); a cold start runs alone |
 | raw tiles | `store::cachefile`'s locks; packing deletes only tiles no job holds; a job reopens its area's archives when the index changed (`RawTiles::get`, `refresh_area`) |
 | Wikimedia budget | `crate::budget`: one budget for the pool, enforced at egress. Every job's connections go through its agent's proxy (`crate::budget::proxy`, `HTTPS_PROXY`), the job sandboxed (`sandbox-exec`) to deny any other way out. A metered connection takes a token first: leases are create-new files per slot of a ten-second window (`state/pool/wiki/<class>/<window>-<slot>`). `wiki` four requests a second; `query` (WDQS, QLever) one query per two seconds of query time. A 429 told to the proxy (`POST /hold`, dem/budget.py) holds every Mac. The NAS away, each Mac takes the rate divided by known members. Lint: `tests/budgets.rs` |
 | a pass's answers | `crate::answers`: a lease on the NAS (`state/pool/answers.lease`, renewed every 150 s, lapsing after 10 min) around each sync; on a Mac a reader/writer lock (`answers::Local`) |
@@ -488,7 +498,7 @@ run, claims, the named writer (`SCENIC_BUILD_MAC`), the NAS's hand-off folders, 
 writes.
 
 Still behind switches under `state/pool/` (a file; off while missing unless noted):
-`slots` (§7.6), `resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2), `update-share` (§7.2),
+`slots` (§7.6), `resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2), `packing` (§7.2), `update-share` (§7.2),
 `auto-handover` (§6.5), `memory-guard` (on while missing). A new switch is made only once every
 member's heartbeat shows the app that has it. The old files `state/pool/enabled` and
 `state/pool/shadow` stay on the NAS while an older app may read them.
@@ -508,7 +518,7 @@ tiles (`pack_raw_with`) stays inside the piece's job.
   written. 2,000 seeds by default; longer runs are opt-in.
 - **Not modelled:** torn reads, other I/O errors, the member lock, a wall clock set while awake, GC,
   the coordinator (the driver's and modules' own tests cover these).
-- **The placement simulator** (`sim::place`, in the crate's tests, about two seconds a run): N
+- **The placement simulator** (`sim::place`, in the crate's tests, a few seconds a run): N
   Macs, each with its memory, cores and disk, work a plan through the lead's real coordinator on a
   simulated clock. Members ask over HTTP with their capacity and take what `pick_every` grants; the
   lead runs two slots by the agent's own rules (`clash`, `beside_why`, its plan leaving out what
@@ -517,12 +527,12 @@ tiles (`pack_raw_with`) stays inside the piece's job.
   first where a job may go (no Mac past its slots; lead-only steps on the lead; a cold start alone
   on its Mac and in the pool, nothing beside one), then what it takes (past a Mac's memory limit
   only a cold start, stopped by the guard; never past its disk or cores); and the plan finishes.
-  Runs: the M4 and the M1 (the lead reaches two jobs, the member one) and four Macs. Members'
-  slots are a setting (today one); at two, a member is given a cold start beside its running job
-  (`most_room` weighs room, not idleness), which a test pins until multi-lease asks fix it. Not
-  modelled: the lead's batching of its own jobs, step dependencies, owner use, failures. Cores
-  feed the memory prediction (`peak_of`'s threads) but nothing checks a job's cores against a
-  Mac's yet: their check holds by the steps' threads chosen.
+  Runs: the M4 and the M1 (the lead reaches two jobs, the member one) and four Macs; with packing
+  on, members' slots a setting: the M1 with two reaches two, a 48 GB member with 16 cores holds
+  three or four small jobs at once (its cores the bound), and a cap holds it to its cap. Not
+  modelled: the lead's batching of its own jobs, step dependencies, owner use, failures. With
+  packing off nothing on the coordinator checks a job's cores against a Mac's: the simulator's
+  check holds by the steps' threads chosen.
 - **The agent's tests** (`crate::agent::pool`, `crate::agent::lead`, the agent's `pool_tests`): two
   agents in one process, a lead and a member, through handover, takeover, controls, hand-offs and
   every switch on and off.
