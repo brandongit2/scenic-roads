@@ -154,6 +154,15 @@ final class BuildService {
 
     func refresh() { state = jobState(buildLabel) }
 
+    /// Left alone, asked again (each poll, and as the menu opens): once the switch-over is done
+    /// (the old login items removed after the app opened), started as at launch. True when it was
+    /// started now.
+    func recheck() -> Bool {
+        guard blocked != nil, notManaging() == nil else { return false }
+        start()
+        return blocked == nil
+    }
+
     /// Started now (loaded by the registration: kickstart runs it).
     func kick() {
         lastKick = Date()

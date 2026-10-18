@@ -1569,13 +1569,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         managing = true
         build.start()
         mapServer.refresh()
-        if build.blocked == nil, openAtLogin, SMAppService.mainApp.status != .enabled {
-            do { try SMAppService.mainApp.register() } catch { NSLog("scenic: adding the app to the login items: \(error)") }
-        }
+        addLoginItem()
         updateWindow()
         // (Not at login, nor reopened after an update.)
         if !launchedAtLogin() && !CommandLine.arguments.contains("--no-window") { window.show() }
         updateIfReplaced()
+    }
+
+    /// The app made a login item (when it manages the build service and opens at login).
+    func addLoginItem() {
+        if build.blocked == nil, openAtLogin, SMAppService.mainApp.status != .enabled {
+            do { try SMAppService.mainApp.register() } catch { NSLog("scenic: adding the app to the login items: \(error)") }
+        }
+    }
+
+    /// Left alone at launch (the old login items still there), asked again each poll and as the
+    /// menu opens: once they're gone, the build service registered and started and the app made a
+    /// login item, as a fresh launch would.
+    func recheckSwitchOver() {
+        guard managing, build.recheck() else { return }
+        addLoginItem()
+        updateWindow()
     }
 
     /// Each poll: the build service kept running (or, quitting after its job, the app quits once
@@ -1583,6 +1597,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func tendServices() {
         // (Not in --show and --menu-proof's runs: the services left alone.)
         guard managing else { return }
+        recheckSwitchOver()
         build.tend()
         mapServer.refresh()
         if build.quitting == "finish" && !build.state.running {
@@ -1750,6 +1765,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func currentMenu() -> NSMenu {
+        recheckSwitchOver()
         let (kind, line) = state(reply, own: own)
         return menu(kind, line)
     }

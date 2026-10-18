@@ -38,7 +38,9 @@ coverage, or once for the whole world, so region size, count and borders never s
   `local.scenic.status`): until then the menu bar item runs from `app/current` as before, and a
   copy of Scenic run from inside an installed version, or while `local.scenic.agent` is loaded or
   its plist is in `~/Library/LaunchAgents`, manages nothing (it says "Switch over with
-  tools/app/install.sh"). On each Mac once the version is installed, the lead's Mac last (or hand
+  tools/app/install.sh"); it asks again at each poll and as its menu opens, and once the old
+  agent's job and plist are gone it registers and starts its build service as a fresh launch
+  would. On each Mac once the version is installed, the lead's Mac last (or hand
   the lead away first, `scenic lead give <the other Mac>`): run `tools/app/install.sh` (it removes
   the two login items, the old agent's job given back, copies Scenic.app to /Applications and
   opens it), allow Scenic in Login Items if macOS asks, and check its window says "Build service:
