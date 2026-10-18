@@ -2467,14 +2467,20 @@ pub fn plan(
                 }
             }
             if let Some(mut w) = chain {
+                // (The map tiles a halo a job (task #260): each group of `by_unit`'s its own work,
+                // offered so, its base packs opened once; the first here, the rest after it.)
+                let mut halos = Vec::new();
                 if w.step == "pack" {
-                    let (targets, n) = by_unit(std::mem::take(&mut w.targets), m, Some(reach), updates.served);
-                    w.targets = targets;
-                    (publishing.tiles, publishing.units) = (w.targets.len(), n);
+                    let (groups, n) = by_unit(std::mem::take(&mut w.targets), m, Some(reach), updates.served);
+                    let mut groups = groups.into_iter();
+                    w.targets = groups.next().unwrap_or_default();
+                    halos = groups.map(|targets| Work { step: "pack".into(), targets }).collect();
+                    publishing.tiles = w.targets.len() + halos.iter().map(|h| h.targets.len()).sum::<usize>();
+                    publishing.units = n;
                     if catalog.is_none() {
                         publishing.why = format!(
                             "drawing the map tiles whose owners changed ({} for {n} unit{})",
-                            w.targets.len(),
+                            publishing.tiles,
                             if n == 1 { "" } else { "s" }
                         );
                     }
@@ -2484,6 +2490,7 @@ pub fn plan(
                 // (The catalog first: what it waits for is done.)
                 work.extend(catalog.take());
                 work.push(w);
+                work.extend(halos);
             }
             work.extend(catalog);
         }
@@ -2539,17 +2546,19 @@ pub fn plan(
     }
 }
 
-/// The map tiles `targets` to draw, a unit's together: grouped by the unit whose change made each
-/// stale (its base pack or road values in `m` not what the served catalog `served` has: the
-/// owners as crate::pubtimes::restaled_by takes them), the units in the order they're built
-/// (`spatial_order`), a tile two units made stale with the first; those no unit's change explains
-/// (a version's change, a reach's) last, in their order. And how many units.
+/// The map tiles `targets` to draw, a unit's together, a group a halo (task #260: a job of the map
+/// tiles takes one group, its base packs opened once, crate::needs::HALO_STEPS): grouped by the unit
+/// whose change made each stale (its base pack or road values in `m` not what the served catalog
+/// `served` has: the owners as crate::pubtimes::restaled_by takes them), the units in the order
+/// they're built (`spatial_order`), a tile two units made stale with the first; those no unit's
+/// change explains (a version's change, a reach's) last, in their order, grouped by their z3 tile
+/// (the base packs near it). And how many units.
 fn by_unit(
     targets: Vec<(String, String)>,
     m: &BTreeMap<String, String>,
     reach: Option<&Reaches>,
     served: &BTreeMap<String, String>,
-) -> (Vec<(String, String)>, usize) {
+) -> (Vec<Vec<(String, String)>>, usize) {
     let at: BTreeMap<&str, usize> = targets.iter().enumerate().map(|(i, t)| (t.0.as_str(), i)).collect();
     let mut changed: Vec<Unit> = m
         .keys()
@@ -2563,7 +2572,7 @@ fn by_unit(
     changed.sort_by_key(|&u| spatial_order(u));
     let deg = |b: [i32; 4]| [b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7];
     let mut taken = vec![false; targets.len()];
-    let mut order: Vec<usize> = Vec::new();
+    let mut groups: Vec<Vec<usize>> = Vec::new();
     let mut units = 0;
     for u in changed {
         let ext = unit_reach(reach, m, u);
@@ -2581,11 +2590,21 @@ fn by_unit(
         for &i in &mine {
             taken[i] = true;
         }
-        order.extend(mine);
+        groups.push(mine);
     }
-    order.extend((0..targets.len()).filter(|&i| !taken[i]));
+    // (The rest by z3 tile, in the order the first of each comes.)
+    let z3 = |t: &str| Unit::parse(t).map(|u| (u.x >> 3, u.y >> 3));
+    let mut rest: Vec<(Option<(u32, u32)>, Vec<usize>)> = Vec::new();
+    for i in (0..targets.len()).filter(|&i| !taken[i]) {
+        let q = z3(&targets[i].0);
+        match rest.iter_mut().find(|(r, _)| *r == q) {
+            Some((_, g)) => g.push(i),
+            None => rest.push((q, vec![i])),
+        }
+    }
+    groups.extend(rest.into_iter().map(|(_, g)| g));
     let mut slots: Vec<Option<(String, String)>> = targets.into_iter().map(Some).collect();
-    (order.into_iter().filter_map(|i| slots[i].take()).collect(), units)
+    (groups.into_iter().map(|g| g.into_iter().filter_map(|i| slots[i].take()).collect()).collect(), units)
 }
 
 /// Where a unit comes in a run of units: by the 10° square its tile's centre is in (column, then
@@ -5279,18 +5298,25 @@ pub(crate) mod tests {
             v.sort();
             v
         };
-        // Nothing served: both units changed; a's (west of c) first, then c's.
-        let (t, n) = by_unit(packs.clone(), &m, Some(&reach), &BTreeMap::new());
+        // Nothing served: both units changed; a's (west of c) first, then c's, each a group (a job:
+        // its halo opened once, task #260).
+        let (g, n) = by_unit(packs.clone(), &m, Some(&reach), &BTreeMap::new());
+        let t: Vec<(String, String)> = g.concat();
         assert_eq!((n, sorted(t.clone())), (2, sorted(packs.clone())));
-        let first_c = t.iter().position(|x| !owned("6/28/16", &x.0)).unwrap();
-        assert!(first_c > 0 && t[first_c..].iter().all(|x| owned("6/31/16", &x.0)), "{t:?}");
+        assert_eq!(g.len(), 2, "{g:?}");
+        assert!(g[0].iter().all(|x| owned("6/28/16", &x.0)), "{g:?}");
+        assert!(g[1].iter().all(|x| owned("6/31/16", &x.0) && !g[0].contains(x)), "{g:?}");
         // a served as it is: c's change alone; its tiles first, a's (no change explains them) after.
         let served: BTreeMap<String, String> =
             ["base/6-28-16", "global/roads/6-28-16"].into_iter().map(|l| (l.to_string(), m[l].clone())).collect();
-        let (t, n) = by_unit(packs.clone(), &m, Some(&reach), &served);
+        let (g, n) = by_unit(packs.clone(), &m, Some(&reach), &served);
         assert_eq!(n, 1);
-        let k = t.iter().take_while(|x| owned("6/31/16", &x.0)).count();
-        assert!(k > 0 && t[k..].iter().all(|x| !owned("6/31/16", &x.0)), "{t:?}");
+        assert!(g[0].iter().all(|x| owned("6/31/16", &x.0)), "{g:?}");
+        // (The rest a group a z3 tile.)
+        assert!(g[1..].iter().all(|r| r.iter().all(|x| !owned("6/31/16", &x.0))), "{g:?}");
+        let z3 = |t: &str| Unit::parse(t).map(|u| (u.x >> 3, u.y >> 3));
+        assert!(g[1..].iter().all(|r| r.iter().all(|x| z3(&x.0) == z3(&r[0].0))), "{g:?}");
+        let t: Vec<(String, String)> = g.concat();
         // The plan's pack work so ordered, its targets all there.
         let each = c.by_region();
         let p = super::plan(
@@ -5311,7 +5337,8 @@ pub(crate) mod tests {
                 way: Default::default(),
             },
         );
-        assert_eq!((p.work[0].step.as_str(), &p.work[0].targets), ("pack", &t));
+        let packs: Vec<&Work> = p.work.iter().take_while(|w| w.step == "pack").collect();
+        assert_eq!(packs.iter().map(|w| w.targets.clone()).collect::<Vec<_>>(), g);
         assert_eq!((p.publishing.tiles, p.publishing.units), (t.len(), 1));
     }
 

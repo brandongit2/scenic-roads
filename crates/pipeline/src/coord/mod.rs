@@ -482,8 +482,8 @@ impl Shared {
     fn offered_guess(&self, step: &str, target: &str) -> u64 {
         self.offers
             .iter()
-            .find(|o| o.step == step)
-            .and_then(|o| o.targets.iter().find(|t| t.0 == target))
+            .filter(|o| o.step == step)
+            .find_map(|o| o.targets.iter().find(|t| t.0 == target))
             .map_or(0, |t| first_guess(&self.costs, step, target, t.2))
     }
 
@@ -608,7 +608,7 @@ impl Shared {
         Some((
             Measured {
                 mem_mb: each.iter().map(|m| m.mem_mb).max().unwrap_or(0),
-                disk_mb: each.iter().map(|m| m.disk_mb).sum::<u64>().max(job),
+                disk_mb: crate::needs::batch_disk(step, each.iter().map(|m| m.disk_mb)).max(job),
                 own: each.iter().all(|m| m.own),
             },
             cores,
@@ -967,12 +967,12 @@ impl Shared {
                 || !fits(&m)
                 || !nas_fits(t)
                 || s + more > JOB_S
-                || a.disk_mb.is_some_and(|d| (disk + m.disk_mb).max(job_disk) > d)
+                || a.disk_mb.is_some_and(|d| crate::needs::batch_disk(&o.step, [disk, m.disk_mb]).max(job_disk) > d)
             {
                 break;
             }
             pick.push((t.clone(), k.clone()));
-            (secs, disk) = (Some(s + more), disk + m.disk_mb);
+            (secs, disk) = (Some(s + more), crate::needs::batch_disk(&o.step, [disk, m.disk_mb]));
         }
         pick
     }
@@ -2170,7 +2170,7 @@ impl Coordinator {
         let job = self.job_disk(step);
         Some(Measured {
             mem_mb: each.iter().map(|m| m.mem_mb).max().unwrap_or(0),
-            disk_mb: each.iter().map(|m| m.disk_mb).sum::<u64>().max(job),
+            disk_mb: crate::needs::batch_disk(step, each.iter().map(|m| m.disk_mb)).max(job),
             own: each.iter().all(|m| m.own),
         })
     }
@@ -2220,7 +2220,7 @@ impl Coordinator {
     /// another step's guess); None when nothing of its step was measured and it isn't offered.
     pub fn peak(&self, step: &str, target: &str) -> Option<u64> {
         let s = self.shared.lock().unwrap();
-        match s.offers.iter().find(|o| o.step == step).and_then(|o| o.targets.iter().find(|t| t.0 == target)) {
+        match s.offers.iter().filter(|o| o.step == step).find_map(|o| o.targets.iter().find(|t| t.0 == target)) {
             Some(t) => Some(s.peak_of(step, target, t.2, 0)),
             None => {
                 let (mb, from) = s.book().mem(step, target, 0, 0);
@@ -5141,6 +5141,11 @@ mod tests {
         c.add_job_disk("peaks", 20_000);
         assert_eq!(c.measured_batch("peaks", &["6/1/1".into(), "6/10/1".into()]).map(|m| m.disk_mb), Some(20_000));
         assert_eq!(c.pool_state().job_disks.get("peaks"), Some(&20_000));
+        // A halo step's batch (task #260: `pack`, its targets reading one cache of base packs, each
+        // target's measure that cache): the most of its targets', not their sum.
+        let halo: Vec<String> = (0..110).map(|i| format!("6/{i}/2")).collect();
+        c.add_disks(&halo.iter().map(|t| (cost_key("pack", t), 1300)).collect::<Vec<_>>());
+        assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
         // Cleared with the floors.
         c.floors(true, Some("peaks"), None);
         assert!(c.disks().is_empty());

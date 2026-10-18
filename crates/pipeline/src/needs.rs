@@ -46,6 +46,24 @@ pub const MAX_ERR: f64 = 0.5;
 /// same piece) and so comes before the step's prior while no fit is good.
 pub const GUESS_FIRST: [&str; 2] = ["unit", "pois"];
 
+/// The steps whose job opens one halo of base packs for all its targets (task #260: `pack`, a
+/// unit's map tiles together): the base packs are copied into the job's cache once (scenic-build's
+/// `open_for_tiles`) and every target reads them there. So a target's disk measure is the job's
+/// cache, shared, not its own: a job of several takes the most of theirs, not their sum
+/// (`batch_disk`); and a target's `bytes` (the halo's base-pack bytes, its input size for the fits)
+/// are read from that cache, not the NAS: its NAS weight is what it writes (`wrote`, `creates`).
+pub const HALO_STEPS: [&str; 1] = ["pack"];
+
+/// The disk (MB) a job of `step` takes over targets each measured to take `each`: a `HALO_STEPS`
+/// step's the most of them (one cache, shared), another's their sum (each its own).
+pub fn batch_disk(step: &str, each: impl IntoIterator<Item = u64>) -> u64 {
+    if HALO_STEPS.contains(&step) {
+        each.into_iter().max().unwrap_or(0)
+    } else {
+        each.into_iter().sum()
+    }
+}
+
 /// Where a need came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum From {
@@ -274,13 +292,15 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
     })
 }
 
-/// A run's NAS rate (`bytes` plus `wrote`, and `creates`, over its time), when it was measured the
-/// way its step runs now and says its `bytes`.
+/// A run's NAS rate (`bytes` plus `wrote`, and `creates`, over its time; a `HALO_STEPS` step's
+/// `wrote` alone, its `bytes` read from its job's cache), when it was measured the way its step runs
+/// now and says its `bytes`.
 fn nas_rate(step: &str, c: &Cost) -> Option<crate::budget::nas::Rate> {
     let secs = c.secs.max(1) as f64;
     let g = |k: &str| c.sizes.get(k).copied().unwrap_or(0) as f64;
+    let read = if HALO_STEPS.contains(&step) { 0.0 } else { g("bytes") };
     (c.v >= cost_version(step) && c.sizes.contains_key("bytes"))
-        .then(|| crate::budget::nas::Rate { bytes_s: (g("bytes") + g("wrote")) / secs, creates_s: g("creates") / secs })
+        .then(|| crate::budget::nas::Rate { bytes_s: (read + g("wrote")) / secs, creates_s: g("creates") / secs })
 }
 
 /// The 90th percentile (nearest rank); None with none.
@@ -685,6 +705,20 @@ mod tests {
         // (Rates 20..110, and 100 the first's: the 90th percentile of 11 the 10th, 100.)
         assert_eq!(b.nas("slope", "6/9/9").map(|r| r.bytes_s), Some(100.0));
         assert_eq!(b.nas("lo", "3/1/1"), None);
+    }
+
+    /// A halo step's NAS rate (task #260: `pack`): what it writes and creates alone, its `bytes` (the
+    /// halo's base packs) read from its job's cache; a halo step's batch's disk the most of its
+    /// targets', another's their sum.
+    #[test]
+    fn a_halo_steps_nas_rate_is_what_it_writes() {
+        let mut costs = BTreeMap::new();
+        let c = cost(100, 10, &[("bytes", 1300 << 20), ("wrote", 400), ("creates", 5)]);
+        costs.insert(cost_key("pack", "6/1/1"), Cost { v: cost_version("pack"), ..c });
+        let b = Book::new(&costs);
+        assert_eq!(b.nas("pack", "6/1/1"), Some(crate::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5 }));
+        assert_eq!(batch_disk("pack", [1300, 1300, 1200]), 1300);
+        assert_eq!(batch_disk("slope", [1300, 1300, 1200]), 3800);
     }
 
     /// Memory that goes with a tile's area fits; a target never run is predicted by the fit over its

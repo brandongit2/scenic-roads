@@ -2178,8 +2178,9 @@ impl Agent {
         for spec in plan {
             match spec.record.as_ref().filter(|w| every::offered(&w.step)) {
                 Some(w) => {
+                    // (Every offer of its step: a halo step's are one a halo, crate::needs::HALO_STEPS.)
                     if seen.insert(w.step.clone()) {
-                        offers.extend(offered.iter().find(|o| o.step == w.step).cloned());
+                        offers.extend(offered.iter().filter(|o| o.step == w.step).cloned());
                     }
                 }
                 None => {
@@ -4893,7 +4894,13 @@ impl Agent {
                 (step, vec![target])
             }
         };
-        let targets: u64 = left.iter().filter_map(|t| c.measured(&step, t)).map(|m| m.disk_mb << 20).sum();
+        // (A halo step's targets share its cache, already counted in what it took so far.)
+        let each = left.iter().filter_map(|t| c.measured(&step, t)).map(|m| m.disk_mb << 20);
+        let targets = if crate::needs::HALO_STEPS.contains(&step.as_str()) {
+            each.max().unwrap_or(0).saturating_sub(now)
+        } else {
+            each.sum()
+        };
         targets.max((c.job_disk(&step) << 20).saturating_sub(now))
     }
 
@@ -6704,9 +6711,12 @@ impl Agent {
         }
         // A step's targets offered together, in plan order (the plan lists a step's work by region:
         // a helper takes from the far end of all of it). (A step with nothing left: none offered.)
+        // (A halo step's work, one a halo (`build::by_unit`), offered so: a job of it takes one
+        // halo's targets, its base packs opened once, crate::needs::HALO_STEPS.)
         let mut merged: Vec<crate::coord::Offer> = Vec::new();
         for o in offers {
-            match merged.iter_mut().find(|m| m.step == o.step) {
+            let halo = crate::needs::HALO_STEPS.contains(&o.step.as_str());
+            match merged.iter_mut().find(|m| m.step == o.step && !halo) {
                 Some(m) => m.targets.extend(o.targets),
                 None => merged.push(o),
             }
@@ -11233,7 +11243,7 @@ mod tests {
         a.mem_set = Some((64 << 10, 56 << 10));
         let g: u64 = 1 << 30;
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        // 40 map tiles of 1 GB each on the disk, one of 3 GB; a unit of 10 GB.
+        // 40 slope pieces of 1 GB each on the disk, one of 3 GB; a unit of 10 GB.
         let tiles: Vec<String> = (0..40).map(|i| format!("6/{i}/0")).collect();
         let c = a.coord.as_ref().unwrap();
         let cost = |step: &str, mb: u64| crate::coord::Cost {
@@ -11244,21 +11254,21 @@ mod tests {
             ..Default::default()
         };
         c.add_costs(&[
-            (crate::coord::cost_key("pack", "6/0/0"), cost("pack", 1000)),
+            (crate::coord::cost_key("slope", "6/0/0"), cost("slope", 1000)),
             (crate::coord::cost_key("unit", "6/9/9"), cost("unit", 4000)),
         ]);
-        let mut disks: Vec<(String, u64)> = tiles.iter().map(|t| (crate::coord::cost_key("pack", t), 1024)).collect();
+        let mut disks: Vec<(String, u64)> = tiles.iter().map(|t| (crate::coord::cost_key("slope", t), 1024)).collect();
         disks[39].1 = 3072;
         disks.push((crate::coord::cost_key("unit", "6/9/9"), 10 << 10));
         c.add_disks(&disks);
         let batch = JobSpec {
-            id: "pack 6/0/0".into(),
-            what: "map tiles".into(),
+            id: "slope 6/0/0".into(),
+            what: "slope pieces".into(),
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
             record: Some(build::Work {
-                step: "pack".into(),
+                step: "slope".into(),
                 targets: tiles.iter().map(|t| (t.clone(), "k".into())).collect(),
             }),
         };
@@ -11266,7 +11276,7 @@ mod tests {
         a.free_set = Some(100 * g);
         assert!(a.try_start(0, batch, &cond, Some(&root), &mut Vec::new()));
         // Five done, 5 GB taken so far: 34 of 1 GB and one of 3 GB still to come.
-        std::fs::write(a.done_path(0), (0..5).map(|i| format!("pack 6/{i}/0\n")).collect::<String>()).unwrap();
+        std::fs::write(a.done_path(0), (0..5).map(|i| format!("slope 6/{i}/0\n")).collect::<String>()).unwrap();
         a.sampler.set_test(Some(vec![None, None]), Some(false));
         a.sampler.set_test_disk(Some(60 * g), Some(vec![Some(5 * g), None]));
         a.sampler.tick();

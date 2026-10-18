@@ -1154,7 +1154,10 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
      change, from the records as they are (nothing is fixed as of a time): a prune of what the
      coverage no longer builds (§5, Shrinking), then the publishing chain (4, Roads), its map tiles
      whose owners changed a unit's together (`build::by_unit`: the units whose base pack or road
-     values differ from the served catalog's, in build order), offered in the plan's order to every
+     values differ from the served catalog's, in build order; the tiles no unit's change explains
+     by their z3 tile), each group its own work and offer, so a job of them opens one halo of base
+     packs (crate::needs::HALO_STEPS: its disk the halo's cache, not its tiles' summed, its NAS
+     weight what it writes; docs/pool.md §7.1, §7.7), offered in the plan's order to every
      Mac asking, the lead's agent among them (docs/pool.md §7.2); once the map tiles and the road
      index are drawn (`build::CATALOG_GATE`) and none of their hand-offs waits to be merged (or ten
      minutes after it was first held back), a
