@@ -4,7 +4,10 @@ level and a chart's datum, a survey's datum and MSL), from tide stations, over t
 The surface is harmonic between the stations (each water cell the mean of its water neighbours,
 the stations fixed; land a barrier, so a narrow bay's tide doesn't leak across a peninsula: the
 Atlantic coast of Nova Scotia, about 1 m, stays out of the Minas Basin, 7.5 m), solved on a
-lon/lat grid over the water bodies that hold a station, and the nearest solved value beyond. A
+lon/lat grid over the water bodies that hold a station (a station counts for the water nearest it,
+within 25 km; none within 25 km of any water stops the run, saying how far the nearest is), and the
+nearest solved value beyond, for a water body with no station only if it is within 25 km of a solved
+cell (each such body is logged; one farther stops the run: the table needs rows for it). A
 station table is a CSV with `lon`, `lat` and the value's column.
 """
 from __future__ import annotations
@@ -30,8 +33,42 @@ def stations(path: Path, column: str, skip=frozenset(), id_column: str | None = 
     return out
 
 
-# A station farther than this from the water grid says nothing about it.
-REACH_DEG = 1.0
+# A station farther than this (km) from its water, or water farther than this from every solved
+# cell, isn't used: datum offsets change by decimetres over tens of km.
+REACH_KM = 25.0
+KM_DEG = 111.32
+
+
+def nearest_water(water: np.ndarray, lon: float, lat: float, west: float, north: float, res: float):
+    """The (row, col) of the water cell nearest the point, within REACH_KM, or None."""
+    H, W = water.shape
+    fr, fc = (north - lat) / res - 0.5, (lon - west) / res - 0.5
+    ky = KM_DEG * res
+    kx = ky * max(np.cos(np.radians(lat)), 0.05)
+    ry, rx = int(np.ceil(REACH_KM / ky)) + 1, int(np.ceil(REACH_KM / kx)) + 1
+    r0, r1 = max(0, int(np.floor(fr)) - ry), min(H, int(np.ceil(fr)) + ry + 1)
+    c0, c1 = max(0, int(np.floor(fc)) - rx), min(W, int(np.ceil(fc)) + rx + 1)
+    if r1 <= r0 or c1 <= c0:
+        return None
+    rr, cc = np.nonzero(water[r0:r1, c0:c1])
+    if not len(rr):
+        return None
+    d = np.hypot((rr + r0 - fr) * ky, (cc + c0 - fc) * kx)
+    k = int(np.argmin(d))
+    return (int(rr[k]) + r0, int(cc[k]) + c0) if d[k] <= REACH_KM else None
+
+
+def nearest_station(water: np.ndarray, pts, west: float, north: float, res: float):
+    """(km, (lon, lat)) of the station nearest any water cell (for the message of a table without one)."""
+    from scipy.spatial import cKDTree
+
+    rr, cc = np.nonzero(water)
+    lat0 = north - (rr.mean() + 0.5) * res
+    kx = np.cos(np.radians(lat0))
+    tree = cKDTree(np.column_stack([(west + (cc + 0.5) * res) * kx, north - (rr + 0.5) * res]))
+    d, _ = tree.query([[p[0] * kx, p[1]] for p in pts])
+    k = int(np.argmin(d))
+    return float(d[k]) * KM_DEG, (pts[k][0], pts[k][1])
 
 
 class Surface:
@@ -54,24 +91,29 @@ class Surface:
         H, W = water.shape
         if not water.any() or not pts:
             raise SystemExit("a datum surface needs water and stations")
-        _, (iy, ix) = distance_transform_edt(~water, return_indices=True)
         fixed: dict = {}
-        reach = REACH_DEG / res
         for lon, lat, v in pts:
-            c, r = int(np.floor((lon - west) / res)), int(np.floor((north - lat) / res))
-            # a station just off the grid's edge counts (its nearest water cell is taken from the edge cell)
-            if -reach <= r < H + reach and -reach <= c < W + reach:
-                r, c = min(max(r, 0), H - 1), min(max(c, 0), W - 1)
-                fixed.setdefault((int(iy[r, c]), int(ix[r, c])), []).append(v)
+            hit = nearest_water(water, lon, lat, west, north, res)
+            if hit:
+                fixed.setdefault(hit, []).append(v)
         if not fixed:
-            cx, cy = west + W * res / 2, north - H * res / 2
-            d = min(float(np.hypot((lon - cx) * np.cos(np.radians(cy)), lat - cy)) * 111.0 for lon, lat, _ in pts)
+            d, at = nearest_station(water, pts, west, north, res)
             raise SystemExit(
-                f"a datum surface needs a station within {REACH_DEG:g} degrees of the water: none is, over "
-                f"{west:.2f}..{west + W * res:.2f} E, {north - H * res:.2f}..{north:.2f} N (the nearest is {d:.0f} km from its centre); "
-                "a far station's offset would be a wrong depth, so the table needs rows for this area")
+                f"a datum surface needs a station within {REACH_KM:g} km of the water: none is, over "
+                f"{west:.2f}..{west + W * res:.2f} E, {north - H * res:.2f}..{north:.2f} N (the nearest is {d:.0f} km from its nearest water cell, "
+                f"at {at[0]:.2f}, {at[1]:.2f}); a far station's offset would be a wrong depth, so the table needs rows for this area")
         lab, _ = label(water)
         solve = water & np.isin(lab, list({lab[k] for k in fixed}))
+        # a water body without a station takes the nearest solved value, if one is within reach
+        lat0 = north - H * res / 2
+        _, (iy2, ix2) = distance_transform_edt(~solve, return_indices=True, sampling=(KM_DEG * res, KM_DEG * res * np.cos(np.radians(lat0))))
+        dist = np.hypot((np.arange(H)[:, None] - iy2) * KM_DEG * res, (np.arange(W)[None, :] - ix2) * KM_DEG * res * np.cos(np.radians(lat0)))
+        for body in np.unique(lab[water & ~solve]):
+            m = lab == body
+            d = float(dist[m].min())
+            log(f"datum surface: a water body of {int(m.sum())} cells has no station; the nearest solved value is {d:.1f} km away")
+            if d > REACH_KM:
+                raise SystemExit(f"a water body of {int(m.sum())} cells has no station within {REACH_KM:g} km, the nearest solved value is {d:.0f} km away: the table needs rows for it")
         idx = -np.ones((H, W), np.int64)
         cells = np.argwhere(solve)
         idx[solve] = np.arange(len(cells))
@@ -90,7 +132,6 @@ class Surface:
         x = spsolve(A, b)
         out = np.full((H, W), np.nan, "float32")
         out[solve] = x
-        _, (iy2, ix2) = distance_transform_edt(~solve, return_indices=True)
         log(f"datum surface: {len(pts)} stations on {len(fixed)} cells, {len(cells)} water cells, {x.min():.2f}–{x.max():.2f} m")
         out = out[iy2, ix2]
         return cls(out, west, north, res)
