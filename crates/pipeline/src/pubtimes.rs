@@ -221,6 +221,90 @@ pub fn note_planned(noted: &mut BTreeSet<(String, String)>, new: &[(String, Stri
     noted.extend(new.iter().map(|(t, k)| (t.clone(), cut(k))));
 }
 
+/// A map update begun this long ago (seconds) or less has nothing noted by another lead to read.
+pub const JUST_BEGUN_S: u64 = 120;
+
+/// What the lead noted planned in the map update under way (`planned_event`), by tile and key, and
+/// the served catalog's units as last read (`served_units`, once a catalog). What it noted before
+/// a restart comes back from its coordinator's history (`begin`); before a change of lead, from
+/// the NAS's, read on a thread of its own (`seed_from_nas`) so a slow share never holds the plan.
+#[derive(Debug, Default)]
+pub struct PlannedNotes {
+    began: u64,
+    noted: BTreeSet<(String, String)>,
+    served: Option<(u64, BTreeMap<String, String>)>,
+    /// The served catalogs read (for the tests).
+    pub served_reads: u32,
+    seed: std::sync::Arc<std::sync::Mutex<Option<(u64, BTreeSet<(String, String)>)>>>,
+}
+
+impl PlannedNotes {
+    /// When the map update its notes are of began.
+    pub fn began(&self) -> u64 {
+        self.began
+    }
+
+    /// The map update under way began at `b`; `own`: this coordinator's history. On a new one, what
+    /// `own` says was noted since; true when the NAS's must be read too (`seed_from_nas`): `own`
+    /// doesn't reach back to `b`, and it didn't just begin (at `now`).
+    pub fn begin(&mut self, b: u64, own: &[Event], now: u64) -> bool {
+        if self.began == b {
+            return false;
+        }
+        self.began = b;
+        self.noted = planned_since(own, b);
+        let covered = own.first().is_some_and(|e| e.t <= b);
+        !covered && now.saturating_sub(b) > JUST_BEGUN_S
+    }
+
+    /// The NAS's history since the map update began (`root`), read on a thread; taken up by the
+    /// next `new_tiles`.
+    pub fn seed_from_nas(&self, root: std::path::PathBuf) {
+        let (b, seed) = (self.began, self.seed.clone());
+        let spawned = std::thread::Builder::new().name("planned-seed".into()).spawn(move || {
+            let s = Self::nas_noted(&root, b);
+            *seed.lock().unwrap_or_else(|e| e.into_inner()) = Some((b, s));
+        });
+        if let Err(e) = spawned {
+            eprintln!("agent: reading what was planned from the NAS: {e}");
+        }
+    }
+
+    /// What the NAS's history (`root`) says was noted planned since `b`.
+    pub fn nas_noted(root: &Path, b: u64) -> BTreeSet<(String, String)> {
+        let days = now_s().saturating_sub(b) / 86400 + 1;
+        planned_since(&load_history(Some(root), None, days), b)
+    }
+
+    /// Of `tiles` (tile, key), those not noted yet (the NAS's seed taken up first, if it came).
+    pub fn new_tiles(&mut self, tiles: &[(String, String)]) -> Vec<(String, String)> {
+        if let Some((b, s)) = self.seed.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            if b == self.began {
+                self.noted.extend(s);
+            }
+        }
+        not_noted(tiles, &self.noted)
+    }
+
+    /// `new` noted.
+    pub fn note(&mut self, new: &[(String, String)]) {
+        note_planned(&mut self.noted, new);
+    }
+
+    /// The served catalog's units (in `dir`), read again only when a newer catalog is there.
+    pub fn served(&mut self, dir: &Path) -> BTreeMap<String, String> {
+        let latest = store::catalog::list(dir).ok().and_then(|ns| ns.into_iter().max());
+        if latest.is_some() && self.served.as_ref().map(|s| s.0) != latest {
+            self.served_reads += 1;
+            match served_units(dir) {
+                Ok(s) => self.served = s,
+                Err(e) => eprintln!("agent: the served catalog's units, for publishing's times: {e:#}"),
+            }
+        }
+        self.served.as_ref().map(|s| s.1.clone()).unwrap_or_default()
+    }
+}
+
 /// A "merged" event: the hand-offs merged's jobs (crate::pool::records::Merged::done).
 pub fn merged_event(done: &[crate::pool::records::MergedJob]) -> Event {
     Event { targets: done.iter().map(|d| d.0.clone()).collect(), data: Some(serde_json::json!({ "done": done })), ..Event::new("merged") }
@@ -696,6 +780,60 @@ mod tests {
         assert!(not_noted(&now, &noted).is_empty());
         // (The event stays small: keys cut short.)
         assert_eq!(e.data.as_ref().unwrap()["k"][0], "aaaaaaaaaaaa");
+    }
+
+    /// The agent's notes: a restart's from its coordinator's history (no NAS read), a new lead's
+    /// from the NAS's (none for a map update just begun), and the served catalog read once a catalog.
+    #[test]
+    fn the_planned_notes_across_a_restart_a_new_lead_and_catalogs() {
+        let pair = |t: &str, k: &str| (t.to_string(), k.to_string());
+        let (t0, now) = (1_791_500_000, 1_791_500_600);
+        let noted = Event { t: t0 + 10, ..planned_event(&[pair("6/1/1", "aaaaaaaaaaaaaaaa")], BTreeMap::new()) };
+        // Restarted: its own history reaches back to the beginning.
+        let own = vec![ev("agent", t0 - 5), noted.clone()];
+        let mut n = PlannedNotes::default();
+        assert!(!n.begin(t0, &own, now));
+        assert!(!n.begin(t0, &own, now));
+        assert!(n.new_tiles(&[pair("6/1/1", "aaaaaaaaaaaaaaaa")]).is_empty());
+        let new = n.new_tiles(&[pair("6/1/2", "bbbbbbbbbbbbbbbb")]);
+        assert_eq!(new.len(), 1);
+        n.note(&new);
+        assert!(n.new_tiles(&[pair("6/1/2", "bbbbbbbbbbbbbbbb")]).is_empty());
+        // A new lead: its history begins after; the NAS's says what was noted.
+        let d = tempfile::tempdir().unwrap();
+        let t = now_s() - 300;
+        let dir = d.path().join("state/coord/history").join(crate::pool::journal::day(t).unwrap());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("m-a.jsonl"), serde_json::to_string(&Event { t: t + 10, ..noted.clone() }).unwrap() + "\n").unwrap();
+        let mut m = PlannedNotes::default();
+        assert!(m.begin(t, &[ev("agent", t + 100)], t + 300));
+        m.seed_from_nas(d.path().to_path_buf());
+        for _ in 0..200 {
+            if m.seed.lock().unwrap().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(m.new_tiles(&[pair("6/1/1", "aaaaaaaaaaaaaaaa")]).is_empty());
+        // Just begun: no NAS read.
+        assert!(!PlannedNotes::default().begin(t, &[], t + 30));
+        // The served catalog: read once, and again for a newer one.
+        let cats = d.path().join("catalog");
+        std::fs::create_dir_all(&cats).unwrap();
+        let cat = |n: u64, base: &str| {
+            let mut c = store::catalog::Catalog { fmt: 1, n, ..Default::default() };
+            c.files.insert("base/6-1-1".into(), serde_json::from_value(serde_json::json!({"file": base, "size": 1})).unwrap());
+            c.files.insert("layers/roads/hi/6-1-1".into(), serde_json::from_value(serde_json::json!({"file": "x", "size": 1})).unwrap());
+            store::catalog::write_copy(&cats, &c).unwrap();
+        };
+        assert!(m.served(&cats).is_empty());
+        cat(1, "b1");
+        assert_eq!(m.served(&cats), [("base/6-1-1".to_string(), "b1".to_string())].into());
+        m.served(&cats);
+        assert_eq!(m.served_reads, 1);
+        cat(2, "b2");
+        assert_eq!(m.served(&cats)["base/6-1-1"], "b2");
+        assert_eq!(m.served_reads, 2);
     }
 
     #[test]

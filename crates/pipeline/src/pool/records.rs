@@ -291,7 +291,8 @@ pub struct Merged {
     /// merge later.
     pub failed: Vec<String>,
     /// Read, and held by the check (`HOLD`), with why: neither applied nor refused; to merge later.
-    pub held: Vec<(String, String)>,    /// Of those applied, each one's job done (its key, member, step and targets), for publishing's
+    pub held: Vec<(String, String)>,
+    /// Of those applied, each one's job done (its key, member, step and targets), for publishing's
     /// times (crate::pubtimes).
     pub done: Vec<MergedJob>,
 }

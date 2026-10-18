@@ -954,10 +954,7 @@ pub struct Agent {
     update_measured: std::cell::Cell<Option<f64>>,
     /// The map update under way's map tiles noted planned in the history (crate::pubtimes), by its
     /// beginning.
-    /// (Its beginning, the (tile, key) pairs noted, and the served catalog's units as last read:
-    /// crate::pubtimes::served_units.)
-    #[allow(clippy::type_complexity)]
-    planned_tiles: std::cell::RefCell<(u64, BTreeSet<(String, String)>, Option<(u64, BTreeMap<String, String>)>)>,
+    planned_tiles: std::cell::RefCell<crate::pubtimes::PlannedNotes>,
     /// The pool (docs/pool.md, crate::agent::pool), always on: this Mac's part in it (None while this
     /// process isn't in it: the NAS not reached as it started, or its member's lock held by another
     /// process; it starts nothing then, and restarts into the pool once it can), and why this
@@ -4648,34 +4645,25 @@ impl Agent {
         }).collect::<Vec<_>>().join(",");
         let mut plan = planned.work;
         // (The map update's map tiles as first planned at their keys, for publishing's times:
-        // crate::pubtimes. What it noted already, after a restart or a change of lead, from the
-        // history: this coordinator's, and the NAS's of the days since it began.)
+        // crate::pubtimes::PlannedNotes, what was noted known again after a restart or a change of
+        // lead.)
         let began = self.map_update.borrow().as_ref().filter(|r| !r.over).map(|r| r.began);
         if let Some(b) = began.filter(|_| self.keeps_map_updates()) {
             let mut notes = self.planned_tiles.borrow_mut();
-            if notes.0 != b {
-                let mut seen = self.coord.as_ref().map(|c| crate::pubtimes::planned_since(&c.history_since(0), b)).unwrap_or_default();
-                let days = now_s().saturating_sub(b) / 86400 + 1;
-                seen.extend(crate::pubtimes::planned_since(&crate::pubtimes::load_history(Some(root), None, days), b));
-                notes.0 = b;
-                notes.1 = seen;
+            // (This coordinator's history read once a map update.)
+            if notes.began() != b {
+                let own = self.coord.as_ref().map(|c| c.history_since(0)).unwrap_or_default();
+                if notes.begin(b, &own, now_s()) {
+                    notes.seed_from_nas(root.to_path_buf());
+                }
             }
             let tiles: Vec<(String, String)> = plan.iter().chain(update_left.iter()).filter(|w| w.step == "pack").flat_map(|w| w.targets.iter().cloned()).collect();
-            let new = crate::pubtimes::not_noted(&tiles, &notes.1);
+            let new = notes.new_tiles(&tiles);
             if !new.is_empty() {
-                // (The served catalog's units, read once a catalog.)
-                let dir = root.join("catalog");
-                let latest = store::catalog::list(&dir).ok().and_then(|ns| ns.into_iter().max());
-                if latest.is_some() && notes.2.as_ref().map(|s| s.0) != latest {
-                    match crate::pubtimes::served_units(&dir) {
-                        Ok(s) => notes.2 = s,
-                        Err(e) => eprintln!("agent: the served catalog's units, for publishing's times: {e:#}"),
-                    }
-                }
-                let served = notes.2.as_ref().map(|s| s.1.clone()).unwrap_or_default();
+                let served = notes.served(&root.join("catalog"));
                 let names: Vec<String> = new.iter().map(|t| t.0.clone()).collect();
                 let by_unit = crate::pubtimes::restaled_by(&manifest, reach.as_deref(), &served, &names);
-                crate::pubtimes::note_planned(&mut notes.1, &new);
+                notes.note(&new);
                 self.note(crate::pubtimes::planned_event(&new, by_unit));
             }
         }
