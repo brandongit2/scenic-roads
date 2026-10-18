@@ -1172,9 +1172,8 @@ impl Drop for Coordinator {
     }
 }
 
-/// (The data servers a task may read through the coordinator, `/work/net/…/web/…`: crate::coord::hosts,
-/// derived from the accepted declarations.)
-
+// (The data servers a task may read through the coordinator, `/work/net/…/web/…`: crate::coord::hosts,
+// derived from the accepted declarations.)
 
 /// What of the NAS a task may read through the coordinator (`/work/net/…/nas/…`): the sources the
 /// steps read (canopy squares, FABDEM, the tree cover's rasters, raw terrain).
@@ -4280,7 +4279,10 @@ mod http {
             return error(StatusCode::NOT_FOUND, "nas/… or web/<host>/…");
         };
         let Some(root) = c.root.lock().unwrap().clone() else {
-            return error(StatusCode::SERVICE_UNAVAILABLE, "the NAS isn't here now (the declarations name the servers)");
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the NAS isn't here now (the declarations name the servers)",
+            );
         };
         let hosts = match tokio::task::spawn_blocking(move || hosts::now(&root)).await {
             Ok(Ok(h)) => h,

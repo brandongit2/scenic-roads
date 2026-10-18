@@ -97,9 +97,6 @@ mod tests {
         crate::inputs::sources::accept_fixture(d.path(), &mut m);
         crate::inputs::elevation::accept_fixture(d.path(), &mut m);
         let h = of(d.path(), &m).unwrap();
-        assert_eq!(
-            h.into_iter().collect::<Vec<_>>(),
-            ["e.org", "esa-worldcover.s3.eu-central-1.amazonaws.com"]
-        );
+        assert_eq!(h.into_iter().collect::<Vec<_>>(), ["e.org", "esa-worldcover.s3.eu-central-1.amazonaws.com"]);
     }
 }
