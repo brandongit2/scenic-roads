@@ -5550,6 +5550,7 @@ pub(crate) mod tests {
         let measured = crate::dem::declared::Measured { crs: None, resolution: 30.0, cover: cover.clone() };
         (
             crate::dem::declared::Accepted {
+                convert: None,
                 id: id.into(),
                 path: format!("{id}.toml"),
                 declaration,

@@ -59,12 +59,14 @@ const SEED_MADE: [u32; 4] = [1, 1, 1, 1];
 /// then the digest's two halves, where the DEM rules' four versions were before them), and its
 /// samples are valid while it's the same; any other sample (made under the DEM rules, the seed's
 /// among them, or from other declarations) is valid only where a single dataset covers its vertex
-/// and it's that dataset's (no blend could apply, nothing finer covers it), and those made from
-/// other declarations not at all.
+/// and it's that dataset's (no blend could apply, nothing finer covers it) and its heights aren't
+/// converted to EGM2008 (crate::dem::geoid: the rules' samples weren't), and those made from other
+/// declarations not at all.
 #[derive(Clone, Debug)]
 pub struct DemValidity {
     made: [u32; 4],
-    codes: Vec<(u8, crate::dem::declared::Cover)>,
+    /// Each dataset's code, coverage, and whether its heights are taken as sampled (no conversion).
+    codes: Vec<(u8, crate::dem::declared::Cover, bool)>,
 }
 
 impl DemValidity {
@@ -74,7 +76,11 @@ impl DemValidity {
         let made = [u32::MAX, 0, t as u32, (t >> 32) as u32];
         DemValidity {
             made,
-            codes: p.datasets.iter().map(|d| (d.code, crate::dem::declared::Cover::of(d.cover.as_deref()))).collect(),
+            codes: p
+                .datasets
+                .iter()
+                .map(|d| (d.code, crate::dem::declared::Cover::of(d.cover.as_deref()), d.convert.is_none()))
+                .collect(),
         }
     }
 
@@ -84,7 +90,7 @@ impl DemValidity {
     }
 
     /// Whether a sample made under the DEM rules (the seed's) could be valid anywhere in box `b`
-    /// (w, s, e, n, E7): only where a single dataset covers a point. A dataset's cover is by 1°
+    /// (w, s, e, n, E7): only where a single dataset covers a point, its heights not converted. A dataset's cover is by 1°
     /// cell, and a point on a cell's edge is covered by the datasets of every cell it touches, so
     /// when every cell the box meets is covered by two datasets or more, no point of the box is
     /// covered by one alone, and the seed has nothing for the unit: neither copied nor read.
@@ -93,8 +99,11 @@ impl DemValidity {
         for x in cell(b[0])..=cell(b[2]) {
             for y in cell(b[1])..=cell(b[3]) {
                 let (lon, lat) = (x as f64 + 0.5, y as f64 + 0.5);
-                if self.codes.iter().filter(|(_, c)| c.contains(lon, lat)).count() < 2 {
-                    return true;
+                let mut covering = self.codes.iter().filter(|(_, c, _)| c.contains(lon, lat));
+                match (covering.next(), covering.next()) {
+                    (None, _) => return true,
+                    (Some((_, _, as_sampled)), None) if *as_sampled => return true,
+                    _ => {}
                 }
             }
         }
@@ -434,8 +443,8 @@ fn dem_valid_in_box(
     out.extend(all.into_iter().filter(|&(k, _, src)| {
         let (lon, lat) = dem_lon_lat(k);
         let (x, y) = (lon as f64 * 1e-7, lat as f64 * 1e-7);
-        let mut covering = v.codes.iter().filter(|(_, c)| c.contains(x, y));
-        matches!((covering.next(), covering.next()), (Some((code, _)), None) if *code == src)
+        let mut covering = v.codes.iter().filter(|(_, c, _)| c.contains(x, y));
+        matches!((covering.next(), covering.next()), (Some((code, _, true)), None) if *code == src)
     }));
 }
 
@@ -1173,7 +1182,10 @@ pub fn prepare_folder(
     // (From the declared elevation datasets: their plan for this unit, which elev reads, and by which
     // the kept samples are judged.)
     let e7 = |v: i32| v as f64 * 1e-7;
-    let plan = crate::dem::declared::plan(a, [e7(slice[0]), e7(slice[1]), e7(slice[2]), e7(slice[3])])?;
+    // (Each dataset's heights brought to EGM2008 by the declared geoid sources: crate::dem::geoid.)
+    let geoid = tools.declared.as_ref().map_or(&[][..], |s| s.many(crate::inputs::sources::GEOID));
+    let plan =
+        crate::dem::declared::plan_converted(a, [e7(slice[0]), e7(slice[1]), e7(slice[2]), e7(slice[3])], geoid)?;
     let validity = DemValidity::of(&plan);
     // (The seed held for this unit, copied again if room-making took it: store::cachefile. Not
     // where two datasets cover every point of the unit: no sample of it is valid there.)
@@ -1524,6 +1536,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(k, c)| Dataset {
+                    convert: None,
                     id: format!("d{k}"),
                     code: k as u8 + 1,
                     resolution: 10.0,
@@ -1555,6 +1568,27 @@ mod tests {
         assert!(DemValidity::of(&plan(&[None])).seed_serves(b(0.1, 0.1, 0.2, 0.2)));
         assert!(DemValidity::of(&plan(&[])).seed_serves(b(0.1, 0.1, 0.2, 0.2)));
         assert!(rules().seed_serves(b(0.1, 0.1, 0.2, 0.2)));
+        // One dataset whose heights are converted (crate::dem::geoid): the rules' samples weren't,
+        // so the seed serves nothing there, and no old sample of it is valid.
+        let mut p = plan(&[None]);
+        p.datasets[0].convert =
+            Some(crate::dem::geoid::Conversion { hops: Vec::new(), digest: "0000000000000002".into() });
+        let v = DemValidity::of(&p);
+        assert!(!v.seed_serves(b(0.1, 0.1, 0.2, 0.2)));
+        let key = dem_key(e7(0.15, 0.15)[0], e7(0.15, 0.15)[1]);
+        let mut out = Vec::new();
+        dem_valid_in_box(&[key], &[5.0], &[1], b(0.1, 0.1, 0.2, 0.2), SEED_MADE, &mut out, &v);
+        assert!(out.is_empty());
+        dem_valid_in_box(
+            &[key],
+            &[5.0],
+            &[1],
+            b(0.1, 0.1, 0.2, 0.2),
+            SEED_MADE,
+            &mut out,
+            &DemValidity::of(&plan(&[None])),
+        );
+        assert_eq!(out.len(), 1);
     }
 
     #[test]
@@ -1970,6 +2004,7 @@ mod tests {
         let (keys, elev, srcs): (Vec<u64>, Vec<f32>, Vec<u8>) =
             (v.iter().map(|e| e.0).collect(), v.iter().map(|e| e.1).collect(), v.iter().map(|e| e.2).collect());
         let ds = |code: u8, cover: Option<Vec<[f64; 4]>>| Dataset {
+            convert: None,
             id: format!("d{code}"),
             code,
             resolution: 10.0,

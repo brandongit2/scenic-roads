@@ -332,6 +332,7 @@ fn declared_plan() -> declared::Plan {
                read_resolution: Option<f64>,
                store: bool,
                files: Vec<(String, Option<[f64; 4]>)>| Dataset {
+        convert: None,
         id: id.into(),
         code,
         resolution,
@@ -339,6 +340,7 @@ fn declared_plan() -> declared::Plan {
         source: Source::Geotiff { crs, read_resolution, store, files },
     };
     let tiles = |id: &str, layer: &str, zoom: u32, code: u8| Dataset {
+        convert: None,
         id: id.into(),
         code,
         resolution: generic::tile_resolution(zoom, 35.0),

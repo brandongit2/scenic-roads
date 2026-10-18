@@ -44,6 +44,7 @@ fn tiles_blend_across_their_edges() {
     use super::super::declared::{Dataset, Plan, Source};
     let z = 10;
     let tiles = |id: &str, code: u8, url: &str| Dataset {
+        convert: None,
         id: id.into(),
         code,
         resolution: tile_resolution(z, 0.0),
@@ -148,6 +149,7 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
     let o = Opts { fetch: &f, store: None, pool: None };
     let fine_box = [10.0, 50.0 - h as f64 * PX, 10.0 + w as f64 * PX, 50.0];
     let geo = |id: &str, code: u8, res: f64, url: &str, b: [f64; 4]| Dataset {
+        convert: None,
         id: id.into(),
         code,
         resolution: res,
@@ -221,6 +223,7 @@ fn sampling_says_increasing_fractions_to_one_per_chunk() {
     use super::super::declared::{Dataset, Plan, Source};
     let z = 10;
     let ds = |id: &str, code: u8, url: &str| Dataset {
+        convert: None,
         id: id.into(),
         code,
         resolution: tile_resolution(z, 0.0),
@@ -398,6 +401,7 @@ fn a_runs_tiles_are_fetched_once_and_together_and_the_heights_are_the_same() {
     let z = 6;
     let n = 1i64 << z;
     let ds = |id: &str, code: u8, host: &str| Dataset {
+        convert: None,
         id: id.into(),
         code,
         resolution: tile_resolution(z, 0.0),
@@ -493,4 +497,60 @@ fn a_failed_fetch_leaves_no_slot() {
     let mut f = crate::fetch::MapFetch::default();
     f.0.insert("https://m.org/x".into(), Some(vec![7]));
     assert_eq!(memo.get("https://m.org/x", &NoneElse(f)).unwrap().unwrap()[0], 7);
+}
+
+/// Each dataset's heights are brought to EGM2008 before the blend: the first's and the second's
+/// by their own conversions, so a seam blends converted heights.
+#[test]
+fn heights_are_converted_before_the_blend() {
+    use super::super::declared::{Dataset, Plan, Source};
+    use super::super::geoid::conversion;
+    let z = 10;
+    // (A grid of one value over 4° around the tiles.)
+    let grid =
+        |v: f32| crate::geotiff::write_f32(4, 4, &[v; 16], 16, [-2.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap();
+    let decl = |id: &str, from: &str| {
+        let t = format!(
+            "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\n\
+             format = \"geoid-grid\"\nurl = \"https://g.org/{id}.tif\"\n[data.params]\nfrom = \"{from}\"\nto = \"EGM2008\""
+        );
+        let d = crate::inputs::sources::parse(t.as_bytes()).unwrap();
+        crate::inputs::sources::Source { id: id.into(), data: d.data, keyed: id.into(), index: Vec::new() }
+    };
+    let geoid = vec![decl("up", "R"), decl("down", "S")];
+    let tiles = |id: &str, code: u8, url: &str, from: &str| Dataset {
+        convert: conversion(from, &geoid).unwrap(),
+        id: id.into(),
+        code,
+        resolution: tile_resolution(z, 0.0),
+        cover: None,
+        source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into() },
+    };
+    let plan = Plan {
+        fmt: 1,
+        version: "t".into(),
+        tag: "1".into(),
+        datasets: vec![
+            tiles("fine", 1, "https://a.org/{z}/{x}/{y}.png", "R"),
+            tiles("coarse", 2, "https://b.org/{z}/{x}/{y}.png", "S"),
+        ],
+    };
+    let mut f = crate::fetch::MapFetch::default();
+    f.0.insert("https://a.org/10/512/511.png".into(), Some(flat(100.0)));
+    f.0.insert("https://b.org/10/512/511.png".into(), Some(flat(50.0)));
+    f.0.insert("https://b.org/10/513/511.png".into(), Some(flat(50.0)));
+    f.0.insert("https://b.org/10/526/511.png".into(), Some(flat(50.0)));
+    f.0.insert("https://g.org/up.tif".into(), Some(grid(2.0)));
+    f.0.insert("https://g.org/down.tif".into(), Some(grid(-3.0)));
+    let fetch = NoneElse(f);
+    let o = Opts { fetch: &fetch, store: None, pool: None };
+    let w = 360.0 / 1024.0;
+    let lon = [w / 2.0, w - 100.0 / M_PER_DEG, w + 0.01, 5.0];
+    let lat = [0.1; 4];
+    let s = sample(&plan, &lon, &lat, &o, &|_| {}).unwrap();
+    assert_eq!(s.elev[0], 102.0);
+    assert_eq!(s.elev[2], 47.0);
+    assert!(s.blended[1] && s.elev[1] > 47.0 && s.elev[1] < 102.0, "{:?}", s.elev);
+    // Where no grid has a value: the height as sampled, counted.
+    assert_eq!((s.elev[3], s.unconverted), (50.0, 1));
 }

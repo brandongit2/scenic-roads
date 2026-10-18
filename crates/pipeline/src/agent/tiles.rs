@@ -56,6 +56,9 @@ pub struct TerrainTiles {
     /// (crate::inputs::elevation): the accepted index's content name, and each dataset with where
     /// it has data.
     elevation: Option<(String, std::sync::Arc<Elevation>)>,
+    /// The accepted sources' index whose geoid sources converted the held datasets' heights
+    /// (crate::dem::geoid; None: no sources accepted, nothing converted).
+    elevation_geoid: Option<String>,
     /// The terrain's declared sources (crate::terrain_sources) as its keys name them: the accepted
     /// elevation index's content name, and their pin or why they can't be read.
     terrain: Option<(String, Result<TerrainPin, String>)>,
@@ -152,11 +155,22 @@ impl TerrainTiles {
             self.elevation = None;
             return;
         };
-        if self.elevation.as_ref().is_some_and(|(c, _)| c == want) {
+        // (Their heights' conversions by the accepted geoid sources: crate::dem::geoid.)
+        let sources = m.get(&crate::inputs::logical(crate::inputs::sources::UNIT));
+        if self.elevation.as_ref().is_some_and(|(c, _)| c == want) && self.elevation_geoid.as_ref() == sources {
             return;
         }
-        let got = crate::inputs::open(root, m, elevation::UNIT)
-            .and_then(|a| crate::dem::declared::accepted(&a.ok_or_else(|| anyhow::anyhow!("no accepted version"))?));
+        let got = crate::inputs::open(root, m, elevation::UNIT).and_then(|a| {
+            let mut ds = crate::dem::declared::accepted(&a.ok_or_else(|| anyhow::anyhow!("no accepted version"))?)?;
+            if sources.is_some() {
+                let s = crate::inputs::sources::read(root, m)?;
+                for w in crate::dem::declared::convert(&mut ds, s.many(crate::inputs::sources::GEOID)) {
+                    eprintln!("agent: elevation: {w}");
+                }
+            }
+            Ok(ds)
+        });
+        self.elevation_geoid = sources.cloned();
         match got {
             Ok(ds) => {
                 self.unread.remove(want);

@@ -1,0 +1,19 @@
+name = "NGS GEOID18, conterminous United States"
+what = "Height reference: NAVD88 to the NAD83(2011) ellipsoid"
+credit = "NOAA National Geodetic Survey; grid as packaged by PROJ-data"
+licence = "public domain"
+licence_url = "https://geodesy.noaa.gov/GEOID/GEOID18/"
+source = "https://cdn.proj.org/"
+retrieved = "2026-10-18"
+territory = ["US"]
+notes = "PROJ-data's us_noaa_g2018u0.tif (16,742,155 bytes), kept in sources/fetched/geoid18-conus/ (producers/geoid/fetch.sh). NAD83(2011) and NAD83(CSRS) are taken as one frame, ellipsoid-NAD83 (they agree to centimetres)."
+
+[data]
+role = "geoid"
+format = "geoid-grid"
+url = "https://cdn.proj.org/us_noaa_g2018u0.tif"
+
+[data.params]
+from = "NAVD88"
+to = "ellipsoid-NAD83"
+store = true

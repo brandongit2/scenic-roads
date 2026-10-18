@@ -284,6 +284,9 @@ pub struct Tiff {
     keys: GeoKeys,
     /// GDAL's metadata items for the dataset (its default domain): name, value.
     metadata: Vec<(String, String)>,
+    /// The first band's scale and offset (GDAL's `role="scale"`, `role="offset"` items of sample 0):
+    /// a value is raw × scale + offset (PROJ's integer geoid grids).
+    band0: (f64, f64),
     /// This file's id in the cache, and the cache (its own, or one shared).
     cache: Option<(u64, Arc<Mutex<BlockCache>>)>,
 }
@@ -374,6 +377,7 @@ impl Tiff {
             nodata: None,
             keys: GeoKeys::default(),
             metadata: Vec::new(),
+            band0: (1.0, 0.0),
             cache: None,
         };
         let main = t.image(&dirs[0]).context("TIFF image")?;
@@ -440,6 +444,12 @@ impl Tiff {
 
     pub fn geo_keys(&self) -> &GeoKeys {
         &self.keys
+    }
+
+    /// The first band's scale and offset (GDAL's metadata; 1 and 0 when it names none): its real
+    /// value is the sample × scale + offset.
+    pub fn scale_offset(&self) -> (f64, f64) {
+        self.band0
     }
 
     /// GDAL's metadata item `name` for the dataset (as rasterio's `tags()` gives it), if any.
@@ -587,6 +597,7 @@ impl Tiff {
         }
         if let Some(x) = self.ascii(d, GDAL_METADATA)? {
             self.metadata = metadata_items(&x);
+            self.band0 = band0_scale_offset(&x);
         }
         if let Some(s) = self.ascii(d, GDAL_NODATA)?.filter(|s| !s.is_empty()) {
             let mut v = atof(&s);
@@ -743,6 +754,24 @@ fn metadata_items(xml: &str) -> Vec<(String, String)> {
         }
         if let Some(name) = attr("name") {
             out.push((unescape(name), unescape(body)));
+        }
+    }
+    out
+}
+
+/// The scale and offset GDAL's metadata XML gives band 0 (`<Item … sample="0" role="scale">`).
+fn band0_scale_offset(xml: &str) -> (f64, f64) {
+    let mut out = (1.0, 0.0);
+    for item in xml.split("<Item ").skip(1) {
+        let Some((attrs, rest)) = item.split_once('>') else { continue };
+        let body = rest.split("</Item>").next().unwrap_or("").trim();
+        if !attrs.contains("sample=\"0\"") {
+            continue;
+        }
+        match body.parse::<f64>() {
+            Ok(v) if attrs.contains("role=\"scale\"") => out.0 = v,
+            Ok(v) if attrs.contains("role=\"offset\"") => out.1 = v,
+            _ => {}
         }
     }
     out

@@ -38,7 +38,7 @@ const ORPHAN: &str = "src-orphan";
 
 /// The roles a source is read in, each with the formats it may be in and the placeholders its URL
 /// template may hold: the app's slots, each read by one step's generic code.
-pub const ROLES: [(&str, &[&str], &[&str]); 12] = [
+pub const ROLES: [(&str, &[&str], &[&str]); 13] = [
     // (Land cover on the analysis grid: crate::landcover. 3° tiles by their south-west corner.)
     (LAND_COVER, &["geotiff"], &["{tile}"]),
     // (Canopy height and cover: crate::trees, scenic-metrics' canopy step. By an index of 10° squares.)
@@ -64,10 +64,14 @@ pub const ROLES: [(&str, &[&str], &[&str]); 12] = [
     // (Depth under the water: crate::depth. Many sources, each a set of depth grids by an index,
     // made by a producer (producers/depth/) and kept in `sources/fetched/<id>/`: `MANY`.)
     (DEPTH, &["depth-grid"], &[]),
+    // (Height references converted: crate::dem::geoid. Many sources, each a separation grid (a
+    // GeoTIFF) or a Helmert transformation between two references, chained by the elevation step
+    // to bring each roads' dataset's heights to EGM2008: `MANY`.)
+    (GEOID, &["geoid-grid", "helmert"], &[]),
 ];
 
 /// The roles any number of sources take (each read with the others, by its own `params.code`).
-pub const MANY: [&str; 1] = [DEPTH];
+pub const MANY: [&str; 2] = [DEPTH, GEOID];
 
 pub const LAND_COVER: &str = "land-cover";
 pub const CANOPY: &str = "canopy";
@@ -81,6 +85,7 @@ pub const WIKIPEDIA: &str = "wikipedia";
 pub const PAGEVIEWS: &str = "pageviews";
 pub const LAKE_FILL: &str = "lake-fill";
 pub const DEPTH: &str = "depth";
+pub const GEOID: &str = "geoid";
 
 /// A source's `[data]`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -191,6 +196,9 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
             }
             if data.role == DEPTH {
                 why.extend(depth_params(&data));
+            }
+            if data.role == GEOID {
+                why.extend(crate::dem::geoid::params_problems(&data));
             }
         }
     }
@@ -941,6 +949,31 @@ mod tests {
 
     /// The depth's declarations staged in producers/depth/declarations/ pass the file check, one code
     /// each; a depth index's grids need a file and a zoom.
+    #[test]
+    fn the_geoid_declarations_pass_the_check_and_reach_egm2008() {
+        let staged: [(&str, &[u8]); 6] = [
+            ("cgg2013a.toml", include_bytes!("../../../../producers/geoid/declarations/cgg2013a.toml")),
+            ("egm2008.toml", include_bytes!("../../../../producers/geoid/declarations/egm2008.toml")),
+            ("geoid12b-alaska.toml", include_bytes!("../../../../producers/geoid/declarations/geoid12b-alaska.toml")),
+            ("geoid18-conus.toml", include_bytes!("../../../../producers/geoid/declarations/geoid18-conus.toml")),
+            ("gsigeo2011.toml", include_bytes!("../../../../producers/geoid/declarations/gsigeo2011.toml")),
+            ("nad83-itrf2008.toml", include_bytes!("../../../../producers/geoid/declarations/nad83-itrf2008.toml")),
+        ];
+        let mut all = Vec::new();
+        for (p, b) in staged {
+            let c = SourcesCheck::default().file(p, b);
+            assert!(c.findings.is_empty(), "{p}: {:?}", c.findings);
+            let id = p.trim_end_matches(".toml").to_string();
+            all.push(Source { id, data: parse(b).unwrap().data, keyed: store::naming::hash16(b), index: Vec::new() });
+        }
+        // Every reference the live roads' declarations state reaches EGM2008 (§6.8).
+        for (from, hops) in [("NAVD88", 3), ("CGVD2013", 3), ("JGD2011", 2)] {
+            let c = crate::dem::geoid::conversion(from, &all).unwrap().unwrap();
+            assert_eq!(c.hops.len(), hops, "{from}: {:?}", c.hops);
+        }
+        assert!(crate::dem::geoid::conversion("EGM2008", &all).unwrap().is_none());
+    }
+
     #[test]
     fn the_depth_declarations_pass_the_check() {
         let staged: [(&str, &[u8]); 13] = [

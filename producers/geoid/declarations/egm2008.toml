@@ -1,0 +1,19 @@
+name = "EGM2008 geoid undulations, 2.5′ grid"
+what = "Height reference: EGM2008 to the WGS 84 ellipsoid"
+credit = "U.S. National Geospatial-Intelligence Agency (NGA); grid as packaged by PROJ-data"
+licence = "public domain"
+licence_url = "https://earth-info.nga.mil/"
+source = "https://cdn.proj.org/"
+retrieved = "2026-10-18"
+territory = "world"
+notes = "PROJ-data's us_nga_egm08_25.tif (80,585,622 bytes), kept in sources/fetched/egm2008/ (producers/geoid/fetch.sh). Its value N: ellipsoidal height = EGM2008 height + N."
+
+[data]
+role = "geoid"
+format = "geoid-grid"
+url = "https://cdn.proj.org/us_nga_egm08_25.tif"
+
+[data.params]
+from = "EGM2008"
+to = "ellipsoid-WGS84"
+store = true

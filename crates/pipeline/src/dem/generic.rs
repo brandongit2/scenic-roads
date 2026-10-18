@@ -51,6 +51,8 @@ pub struct Sampled {
     pub src: Vec<u8>,
     /// Whether the height is a blend (within a band of the first dataset's invalid area).
     pub blended: Vec<bool>,
+    /// Heights left in their dataset's reference: no declared geoid source has a value there.
+    pub unconverted: usize,
 }
 
 /// Metres per degree, as the resolutions and distances of geographic files are reckoned.
@@ -1023,8 +1025,37 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
     }
     fetched(&p, since);
     drop(p);
+    // Each dataset's heights brought to EGM2008 (crate::dem::geoid) before the blend: the first's
+    // and the second's alike.
+    let p = phase("the heights brought to EGM2008", Class::Net);
+    let since = crate::fetch::fetched_bytes();
+    let grids = super::geoid::Grids::new(o);
+    let mut unconverted = 0usize;
+    for (k, ds) in plan.datasets.iter().enumerate() {
+        let Some(c) = &ds.convert else { continue };
+        for (vals, from, firsts) in [(&mut a, &first, true), (&mut b, &second, false)] {
+            let sel: Vec<usize> = (0..n).filter(|&i| from[i] as usize == k && vals[i].is_finite()).collect();
+            if sel.is_empty() {
+                continue;
+            }
+            let (lo, la): (Vec<f64>, Vec<f64>) = sel.iter().map(|&i| (lon[i], lat[i])).unzip();
+            let off = grids.offsets(c, &lo, &la)?;
+            for (&i, d) in sel.iter().zip(off) {
+                if d.is_finite() {
+                    vals[i] = (vals[i] as f64 + d) as f32;
+                } else if firsts {
+                    unconverted += 1;
+                }
+            }
+        }
+    }
+    if unconverted > 0 {
+        println!("  {unconverted} vertices' heights not converted: no declared geoid source has a value there");
+    }
+    fetched(&p, since);
+    drop(p);
     mono.say(1.0);
-    let mut out = Sampled { elev: a, src: vec![0; n], blended: vec![false; n] };
+    let mut out = Sampled { elev: a, src: vec![0; n], blended: vec![false; n], unconverted };
     for i in 0..n {
         if first[i] == u16::MAX {
             continue;
@@ -1041,6 +1072,10 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
     Ok(out)
 }
 
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 /// dem-stats.json of a run from declarations: vertices by dataset.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct Stats {
@@ -1048,6 +1083,9 @@ pub struct Stats {
     pub datasets: std::collections::BTreeMap<String, usize>,
     pub blended: usize,
     pub missing: usize,
+    /// Of the vertices sampled this run, those whose heights stay in their dataset's reference.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unconverted: usize,
     pub sampled_this_run: usize,
     pub seconds: f64,
 }
@@ -1098,6 +1136,7 @@ pub fn run(cfg: &super::Config, plan: &Plan, fetch: &dyn Fetch) -> Result<Stats>
         datasets: by,
         blended: s.blended.iter().filter(|b| **b).count(),
         missing,
+        unconverted: s.unconverted,
         sampled_this_run: miss.len(),
         seconds: (t_start.elapsed().as_secs_f64() * 10.0).round() / 10.0,
     };

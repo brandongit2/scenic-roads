@@ -245,6 +245,54 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         println!("{spec}");
         return Ok(());
     }
+    if step == "geoid-offsets" {
+        // geoid-offsets --sources <folder of geoid declarations> --from <reference> --at <lon,lat>[;…]
+        // [--store <sources/fetched/>]: the offsets the elevation step adds to heights in the
+        // reference to bring them to EGM2008 (pipeline::dem::geoid), each hop's too, read from the
+        // declarations' grids (by range; a grid declared `store` from the store). Writes nothing.
+        use pipeline::dem::geoid;
+        use pipeline::inputs::sources;
+        let dir = PathBuf::from(opt(&args, "--sources").context("--sources <folder of geoid declarations>")?);
+        let from = opt(&args, "--from").context("--from <height reference>")?;
+        let at: Vec<(f64, f64)> = opt(&args, "--at")
+            .context("--at <lon,lat>[;<lon,lat>…]")?
+            .split(';')
+            .map(|p| {
+                let (x, y) = p.split_once(',').context("--at: lon,lat")?;
+                Ok((x.trim().parse()?, y.trim().parse()?))
+            })
+            .collect::<Result<_>>()?;
+        let mut srcs = Vec::new();
+        let mut names: Vec<PathBuf> =
+            std::fs::read_dir(&dir)?.map(|e| e.map(|e| e.path())).collect::<Result<_, _>>()?;
+        names.sort();
+        for p in names.into_iter().filter(|p| p.extension().is_some_and(|e| e == "toml")) {
+            let b = std::fs::read(&p)?;
+            let d = sources::parse(&b).map_err(|w| anyhow::anyhow!("{}: {}", p.display(), w.join("; ")))?;
+            if d.data.role != sources::GEOID {
+                continue;
+            }
+            let id = p.file_stem().unwrap().to_string_lossy().into_owned();
+            srcs.push(sources::Source { id, data: d.data, keyed: store::naming::hash16(&b), index: Vec::new() });
+        }
+        let c = geoid::conversion(&from, &srcs)?.context("heights in EGM2008 already: no offset")?;
+        let fetch = pipeline::fetch::Fetcher::from_env();
+        let o =
+            pipeline::dem::generic::Opts { fetch: &fetch, store: opt(&args, "--store").map(PathBuf::from), pool: None };
+        let grids = geoid::Grids::new(&o);
+        let (lon, lat): (Vec<f64>, Vec<f64>) = at.iter().copied().unzip();
+        let mut hops = Vec::new();
+        for h in &c.hops {
+            let one = geoid::Conversion { hops: vec![h.clone()], digest: String::new() };
+            hops.push((format!("{}→{}", h.from, h.to), grids.offsets(&one, &lon, &lat)?));
+        }
+        let total = grids.offsets(&c, &lon, &lat)?;
+        for (i, (x, y)) in at.iter().enumerate() {
+            let parts: Vec<String> = hops.iter().map(|(n, v)| format!("{n} {:+.3}", v[i])).collect();
+            println!("{x:.4},{y:.4}  {from}→{} {:+.3} m  ({})", geoid::TARGET, total[i], parts.join(", "));
+        }
+        return Ok(());
+    }
     let root = PathBuf::from(opt(&args, "--root").context("--root <nas project folder>")?);
     // (Before the scratch folder: it writes nothing.)
     if step == "rekey-check" {

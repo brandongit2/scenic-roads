@@ -15,8 +15,9 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-/// The height references the app knows (docs/inputs.md §6.8). Heights aren't converted yet
-/// (#143's third step): the reference is recorded, and one the app doesn't know is refused.
+/// The height references the app knows (docs/inputs.md §6.8). A roads' dataset's heights are
+/// brought to EGM2008 by the declared geoid sources (crate::dem::geoid); one the app doesn't know
+/// is refused.
 pub const HEIGHTS: [&str; 7] = ["EGM2008", "EGM96", "CGVD2013", "NAVD88", "JGD2011", "TWVD2001", "ellipsoid-WGS84"];
 
 /// The tile encodings (formats, decoded by generic code).
@@ -566,6 +567,10 @@ pub struct Dataset {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<Vec<[f64; 4]>>,
     pub source: Source,
+    /// Its heights' conversion to EGM2008 (crate::dem::geoid), applied before the blend; None: in
+    /// EGM2008 already, or no declared geoid source reaches it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub convert: Option<super::geoid::Conversion>,
 }
 
 /// How a dataset's data is read.
@@ -604,6 +609,8 @@ pub struct Accepted {
     pub declaration: Declaration,
     pub measured: Measured,
     pub keyed: String,
+    /// Its heights' conversion to EGM2008 (`convert`); None until then, or none needed.
+    pub convert: Option<super::geoid::Conversion>,
 }
 
 /// The roads' declarations of an accepted version (`<id>.toml` entries with their facts, the
@@ -630,22 +637,54 @@ fn accepted_all(a: &crate::inputs::Accepted) -> Result<Vec<Accepted>> {
             f.facts.get("measured").cloned().with_context(|| format!("{p}: nothing measured in the index"))?,
         )
         .with_context(|| format!("{p}: what was measured"))?;
-        out.push(Accepted { id: id.to_string(), path: p.clone(), declaration, measured, keyed: f.keyed.clone() });
+        out.push(Accepted {
+            id: id.to_string(),
+            path: p.clone(),
+            declaration,
+            measured,
+            keyed: f.keyed.clone(),
+            convert: None,
+        });
     }
     out.sort_by_key(|d| order_key(d.declaration.rank, d.measured.resolution, &d.declaration.surface, &d.id));
     Ok(out)
 }
 
-/// The digest of the datasets' `keyed` digests, in their order.
+/// The roads' datasets' heights given their conversions to EGM2008 by the declared geoid sources
+/// (`geoid`: the role's, crate::dem::geoid); for each dataset no chain of them reaches, why (its
+/// heights are then left as they are, and its key names no conversion).
+pub fn convert(ds: &mut [Accepted], geoid: &[crate::inputs::sources::Source]) -> Vec<String> {
+    let mut why = Vec::new();
+    for d in ds.iter_mut() {
+        match super::geoid::conversion(&d.declaration.heights, geoid) {
+            Ok(c) => d.convert = c,
+            Err(e) => {
+                d.convert = None;
+                why.push(format!("{}: its heights ({}) left as they are: {e:#}", d.id, d.declaration.heights));
+            }
+        }
+    }
+    why
+}
+
+/// A dataset as the keys and the plan's tag name it: `id keyed`, and its conversion's digest.
+fn line(d: &Accepted) -> String {
+    match &d.convert {
+        None => format!("{} {}", d.id, d.keyed),
+        Some(c) => format!("{} {} to {} {}", d.id, d.keyed, super::geoid::TARGET, c.digest),
+    }
+}
+
+/// The digest of the datasets' `keyed` digests (and conversions), in their order.
 pub fn tag(ds: &[Accepted]) -> String {
-    let lines: Vec<String> = ds.iter().map(|d| format!("{} {}", d.id, d.keyed)).collect();
+    let lines: Vec<String> = ds.iter().map(line).collect();
     store::naming::hash16(lines.join("\n").as_bytes())
 }
 
 /// The datasets whose coverage meets box `b` (w, s, e, n, degrees), as a key names them: `id keyed`
-/// each, in their order.
+/// each (and its conversion's digest, where its heights are converted), in their order.
 pub fn meeting(ds: &[(Accepted, Cover)], b: [f64; 4]) -> Vec<String> {
-    ds.iter().filter(|(_, c)| c.meets(b)).map(|(d, _)| format!("{} {}", d.id, d.keyed)).collect()
+    ds.iter().filter(|(_, c)| c.meets(b)).map(|(d, _)| line(d)).collect()
 }
 
 /// A box (w, s, e, n, degrees) in projected CRS `crs`: its edges sampled and projected, grown by
@@ -670,7 +709,20 @@ fn native_box(crs: u16, b: [f64; 4], grow_m: f64) -> Result<[f64; 4]> {
 /// past any blend band), the index read from its accepted copy (`a`). A dropped file is named by its
 /// accepted copy's path.
 pub fn plan(a: &crate::inputs::Accepted, near: [f64; 4]) -> Result<Plan> {
-    let ds = accepted(a)?;
+    plan_converted(a, near, &[])
+}
+
+/// `plan`, each dataset's heights converted to EGM2008 by the declared geoid sources `geoid`
+/// (`convert`; one no chain reaches said on stderr and left as it is).
+pub fn plan_converted(
+    a: &crate::inputs::Accepted,
+    near: [f64; 4],
+    geoid: &[crate::inputs::sources::Source],
+) -> Result<Plan> {
+    let mut ds = accepted(a)?;
+    for w in convert(&mut ds, geoid) {
+        eprintln!("elevation: {w}");
+    }
     let tagged = tag(&ds);
     let g = 0.05;
     let near = [near[0] - g, near[1] - g, near[2] + g, near[3] + g];
@@ -718,6 +770,7 @@ pub fn plan(a: &crate::inputs::Accepted, near: [f64; 4]) -> Result<Plan> {
             resolution: d.measured.resolution,
             cover: d.measured.cover.clone(),
             source,
+            convert: d.convert.clone(),
         });
     }
     Ok(Plan { fmt: 1, version: a.version.clone(), tag: tagged, datasets: out })
@@ -819,6 +872,44 @@ encoding = "terrarium"
         assert!(parse(coded.as_bytes()).unwrap_err()[0].contains("source byte"));
         // A roads' declaration's `keyed` fields are what they were (no `terrain` among them).
         assert!(!serde_json::to_string(&parse(ok).unwrap()).unwrap().contains("terrain"));
+    }
+
+    #[test]
+    fn a_converted_datasets_line_names_its_conversion() {
+        let decl = |heights: &str| {
+            parse(
+                format!("surface = \"ground\"\nheights = \"{heights}\"\ncode = 2\n[data]\nformat = \"geotiff\"\nurl = \"https://e.org/a.tif\"")
+                    .as_bytes(),
+            )
+            .unwrap()
+        };
+        let acc = |id: &str, heights: &str| Accepted {
+            id: id.into(),
+            path: format!("{id}.toml"),
+            declaration: decl(heights),
+            measured: Measured { crs: Some(4326), resolution: 10.0, cover: None },
+            keyed: "k".into(),
+            convert: None,
+        };
+        let g = |id: &str, from: &str| {
+            let t = format!(
+                "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"geoid\"\n\
+                 format = \"geoid-grid\"\nurl = \"https://g.org/{id}.tif\"\n[data.params]\nfrom = \"{from}\"\nto = \"EGM2008\""
+            );
+            let d = crate::inputs::sources::parse(t.as_bytes()).unwrap();
+            crate::inputs::sources::Source { id: id.into(), data: d.data, keyed: "g".into(), index: Vec::new() }
+        };
+        let mut ds = vec![acc("navd", "NAVD88"), acc("egm", "EGM2008"), acc("tw", "TWVD2001")];
+        let before: Vec<String> =
+            meeting(&ds.iter().map(|d| (d.clone(), Cover::of(None))).collect::<Vec<_>>(), [0.0, 0.0, 1.0, 1.0]);
+        let t0 = tag(&ds);
+        let why = convert(&mut ds, &[g("g18", "NAVD88")]);
+        // One no declared grid reaches: said, left as it is.
+        assert!(why.len() == 1 && why[0].starts_with("tw:"), "{why:?}");
+        let after = meeting(&ds.iter().map(|d| (d.clone(), Cover::of(None))).collect::<Vec<_>>(), [0.0, 0.0, 1.0, 1.0]);
+        assert!(after[0].starts_with("navd k to EGM2008 ") && after[0] != before[0]);
+        assert_eq!(after[1..], before[1..]);
+        assert_ne!(tag(&ds), t0);
     }
 
     #[test]

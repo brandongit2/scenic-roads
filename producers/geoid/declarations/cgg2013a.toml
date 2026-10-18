@@ -1,0 +1,19 @@
+name = "NRCan CGG2013a geoid model"
+what = "Height reference: CGVD2013 to the NAD83(CSRS) ellipsoid"
+credit = "Natural Resources Canada, Canadian Geodetic Survey; grid as packaged by PROJ-data"
+licence = "OGL-Canada-2.0"
+licence_url = "https://open.canada.ca/en/open-government-licence-canada"
+source = "https://cdn.proj.org/"
+retrieved = "2026-10-18"
+territory = ["CA"]
+notes = "PROJ-data's ca_nrc_CGG2013an83.tif (11,031,336 bytes; CGG2013a on NAD83(CSRS)), kept in sources/fetched/cgg2013a/ (producers/geoid/fetch.sh)."
+
+[data]
+role = "geoid"
+format = "geoid-grid"
+url = "https://cdn.proj.org/ca_nrc_CGG2013an83.tif"
+
+[data.params]
+from = "CGVD2013"
+to = "ellipsoid-NAD83"
+store = true

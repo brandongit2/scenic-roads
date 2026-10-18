@@ -110,6 +110,7 @@ mod tests {
 
     fn ds(id: &str, resolution: f64, cover: Option<Vec<[f64; 4]>>, terrain: bool) -> (Accepted, Cover) {
         let d = Accepted {
+            convert: None,
             id: id.into(),
             path: format!("{id}.toml"),
             declaration: Declaration {

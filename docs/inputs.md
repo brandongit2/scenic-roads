@@ -932,15 +932,16 @@ reported).
 box:** `inputs/elevation/`: `<dataset>.toml`, tile indexes (`<name>.geojson`) and `<dataset>/` for
 local files. Code: crate::inputs::elevation (the check), crate::dem::generic and crate::dem::declared
 (the sampler and blend), crate::dem::encoding, crate::dem::kept and crate::dem::fabdem_fetch (the store), crate::terrain_sources
-(the terrain's), crate::dem::spacing (the densification). Built for the roads' elevations (#143
-step 1), the densification (step 2) and the 3D terrain (#144); step 3 is planned.
+(the terrain's), crate::dem::spacing (the densification), crate::dem::geoid (the heights brought
+to EGM2008). Built for the roads' elevations (#143 step 1), the densification (step 2), the
+heights' conversion (step 3) and the 3D terrain (#144).
 
 **Shape:** a description (§5.1) and:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `surface` | `ground` or `surface` | a DTM, or a DSM with trees and buildings |
-| `heights` | `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` | the height reference (recorded; conversion planned); `mixed` allowed for the terrain's alone |
+| `heights` | `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` | the height reference, brought to EGM2008 before the blend (below); `mixed` allowed for the terrain's alone |
 | `rank` | integer, default 0 | overrides the order by resolution (lower first), where datasets of one resolution differ in quality |
 | `code` | 1–8 | the source byte (at most `roadcore::NDEM` − 1, where the server counts a way's sources) in the units' outputs (`src.u8`), named on the map by `label`; none for the terrain's |
 | `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the catalog's `dem_labels` (formats.md, Catalog), as a credit edit does (§4.8) |
@@ -997,6 +998,40 @@ territory.
   point whose band lies in clean blocks inside its file is at the band's full distance, no pixel
   read again. The decoded blocks of every file share one cache (`generic::CACHE_BYTES`, 512 MB),
   so a unit opening tens of files holds that much, not a cache's worth per file.
+- **Heights brought to EGM2008** (step 3, crate::dem::geoid), each dataset's before the blend (A's
+  and B's alike): the conversions are declared sources (§6.9, role `geoid`, any number), each
+  linking two references by `params.from` and `to`: a separation grid (`geoid-grid`: one GeoTIFF in
+  degrees, its value added to a height in `from` to make it one in `to`, an integer grid scaled by
+  its GDAL metadata; `params.store`: read from `sources/fetched/<id>/` by its URL's last part) or a
+  Helmert between two frames (`helmert`: `translation_m`, `rotation_mas`, `scale_ppb`,
+  `convention`, optionally `rates`, `epoch` and `at`; the change of a point's ellipsoidal height on
+  GRS 80). A dataset's chain is the shortest from its `heights` to EGM2008 (a link walked from `to`
+  to `from` subtracts; references by name where chains tie); a link declared by several sources (a
+  grid a region) takes, at a point, the first by id with a value there. Grids are read bilinearly
+  between pixel centres in f64 (no data where a neighbour has none). A point no source of a link
+  covers keeps its height as sampled, counted (`dem-stats.json`'s `unconverted`); a dataset no chain
+  reaches is left as it is, said by the agent and the unit job (`elevation: <id>: its heights … left
+  as they are`). Only EGM2008 is named in code. `scenic-build geoid-offsets --sources <folder>
+  --from <reference> --at <lon,lat>[;…]` prints a chain's offsets, hop by hop.
+  - **The grids** (staged in `producers/geoid/declarations/`, fetched by `producers/geoid/fetch.sh
+    <root>` into the store; PROJ-data's GeoTIFFs on cdn.proj.org): NAVD88 → NAD83 by GEOID18
+    (`geoid18-conus`, 16.7 MB, public domain) and GEOID12B over Alaska (`geoid12b-alaska`, 11.3 MB,
+    public domain); CGVD2013 → NAD83(CSRS) by CGG2013a (`cgg2013a`, 11.0 MB, OGL-Canada-2.0); NAD83 →
+    WGS 84 by NGS's ITRF2008 → NAD83(2011) Helmert at 2010.0 (`nad83-itrf2008`, no file; NAD83(2011)
+    and NAD83(CSRS) taken as one frame, WGS 84 as ITRF2008); JGD2011 → WGS 84 by GSIGEO2011
+    (`gsigeo2011`, 0.4 MB, CC-BY-4.0); EGM2008 → WGS 84 by its 2.5′ grid (`egm2008`, 80.6 MB,
+    public domain). Sampled (18 Oct): NAVD88 → EGM2008 −0.42 m at Washington, −0.71 m at Denver,
+    −1.22 m at Seattle, −1.08 m at Anchorage; CGVD2013 → EGM2008 −0.01 to −0.05 m across Canada;
+    JGD2011 → EGM2008 +0.13 m at Sapporo to +0.33 m at Fukuoka (+0.95 m on Okinawa). 3DEP's tiles
+    off the conterminous US and Alaska (Hawaii, Puerto Rico, the islands) aren't on NAVD88 and no
+    grid covers them: their heights stay as sampled, counted.
+  - **Keys:** a converted dataset's line in a unit's key (and the plan's `tag`, by which kept DEM
+    samples are judged) names its chain's digest (the sources' ids and `keyed`, `Conversion::digest`):
+    `<id> <keyed> to EGM2008 <digest>`, so declaring or editing a grid rebuilds just the units
+    meeting a dataset it converts. A sample made under the DEM rules (the seed's) is never valid
+    for a converted dataset (`DemValidity`: those weren't converted). With the six declarations
+    accepted, the units meeting 3DEP, HRDEM, MRDEM or GSI's datasets are built again: 241 of the 285
+    keyed units (by their z6 tiles, 18 Oct); FABDEM's alone keep their keys.
 - **FABDEM** is declared with `territory = "world"` and the coarsest rank: the worldwide fallback.
   It's `store = true`: all of FABDEM V1-2 (19,011 tiles, about 297 GiB) is kept once in
   `sources/fetched/fabdem/`, and area builds only read it. Its index still names each tile by its
@@ -1079,11 +1114,6 @@ source) are the terrain's code. The declarations themselves are kept in
   they're accepted the terrain waits.
 
 **Planned:**
-- **Step 3, heights converted** to EGM2008 through each reference's geoid grid (declared like any
-  source, `format = "geoid-grid"`) and frame step (beside `pipeline::dem::proj`): H₂₀₀₈ = H + N_ref
-  (moved to WGS 84's frame where it differs) − N₂₀₀₈. CGVD2013 uses CGG2013a (NAD83(CSRS) → WGS 84),
-  NAVD88 GEOID18 (NAD83(2011) → WGS 84), JGD2011 GSIGEO2011, EGM96 EGM96's grid. A reference without
-  a declared grid is an error. Proof: each vertex moves by its grids' difference, to a centimetre.
 - **A finer cache validity:** each cached height recording the datasets at or above its rank that
   meet the vertex, so a finer dataset added restales only those vertices; the source byte becoming
   the dataset's position in that list.
@@ -1101,8 +1131,8 @@ their indexes.
 
 | Field | Meaning |
 |---|---|
-| `role` | the slot the app reads it in, one source a role: `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikidata-live`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights`; and `depth`, which any number of sources take (§6.10) |
-| `format` | one of its role's: `geotiff`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet`, `depth-grid` |
+| `role` | the slot the app reads it in, one source a role: `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikidata-live`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights`; and `depth` (§6.10) and `geoid` (§6.8, step 3), which any number of sources take |
+| `format` | one of its role's: `geotiff`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet`, `depth-grid`, `geoid-grid`, `helmert` |
 | `url` / `urls` / `index` | exactly one; a template's placeholders only its role's (`{tile}` for land cover, `{y}` `{m}` for the pageviews); an index is a GeoJSON beside it, a feature per file with its `url` and footprint |
 | `version` | the pinned release |
 | `refresh` | `pinned` (default: a new release is the owner's edit) or `live` (a query service asked each run) |
@@ -1158,7 +1188,7 @@ URL one the code asked for; the leaf sources, boxes and zip member the same),
 | GHSL building heights | built: `ghsl-built-h.toml`, the `building-heights` role, its index `ghsl-tiles.geojson` (`producers/sources/ghsl.py`, from the tiles folder's listing: the tiles' grid read there) | `zip-geotiff` by an index of its tiles, its version naming its folder |
 | Wikidata, Wikipedia's API | built: `wikidata-qlever.toml`, `wikidata-query-service.toml`, `wikipedia-api.toml`, the `wikidata`, `wikidata-live` and `wikipedia` roles | endpoints (`sparql`, `mediawiki-api`, `refresh = "live"`) |
 | Wikipedia pageviews | built: `wikipedia-pageviews.toml`, the `pageviews` role | URL template (`{y}`, `{m}`); the months stay the items job's rule |
-| Geoid grids | none yet: no step reads them (§6.8 step 3) | `geoid-grid`, pinned |
+| Geoid grids | staged, not yet dropped: `producers/geoid/declarations/` (the `geoid` role, any number; the grids by `producers/geoid/fetch.sh`), read by the elevation step (§6.8, step 3) | `geoid-grid` (a URL, its two references, `store`) and `helmert` (its parameters), pinned |
 | Canada's lake fill (CanVec) | built: `canvec-lakes.toml`, the `lake-fill` role; its zips kept by hand in `sources/fetched/canvec-lakes/` | `zip-shapefile`: where they come from, its layer, field, values kept, the intermittent ones and the confirming share (`params`) |
 
 Also kept: fonts (`scripts/fonts.sh`, the app's own assets). The depth's sources are §6.10's, NCEI's
@@ -1331,8 +1361,8 @@ declarations are made and staged there.
 | `scripts/fonts.sh` | the app's own assets (§6.9, also kept) |
 | `tools/app/install.sh`'s uv link | documentation, in a message |
 
-Of what §6.9 keeps in code, Planetiler (a version, `water::PLANETILER_VERSION`), the geoid grids
-(nothing reads them), `bld::fill::ESTIMATES` (Overture's dataset name the fill's rule matches) and
+Of what §6.9 keeps in code, Planetiler (a version, `water::PLANETILER_VERSION`),
+`bld::fill::ESTIMATES` (Overture's dataset name the fill's rule matches) and
 `dem/bldmeasure.py`'s store folders name no marker, so none needs an exemption. The 3D buildings'
 details name their source from the catalog's credits (`web/src/buildings.ts`, `setBuildingsCredit`).
 Short names other than the ids (`Terrarium`, an encoding; `GHSL`, `EEA`) and store folders

@@ -1,0 +1,25 @@
+name = "ITRF2008 to NAD83(2011), NGS 14-parameter Helmert"
+what = "Height reference: the WGS 84 (ITRF) ellipsoid to the NAD83 ellipsoid"
+credit = "NOAA National Geodetic Survey (Pearson and Snay 2013, HTDP)"
+licence = "public domain"
+licence_url = "https://geodesy.noaa.gov/TOOLS/Htdp/Htdp.shtml"
+source = "https://geodesy.noaa.gov/TOOLS/Htdp/Htdp.shtml"
+retrieved = "2026-10-18"
+territory = ["US", "CA"]
+notes = "ITRF2008 to NAD83(2011) at reference epoch 1997.0 with its rates, applied at 2010.0 (NAD83(2011)'s and CGG2013a's epoch). WGS 84 taken as ITRF2008 (centimetres). No file: parameters only."
+
+[data]
+role = "geoid"
+format = "helmert"
+url = "https://geodesy.noaa.gov/TOOLS/Htdp/Htdp.shtml"
+
+[data.params]
+from = "ellipsoid-WGS84"
+to = "ellipsoid-NAD83"
+convention = "coordinate-frame"
+translation_m = [0.99343, -1.90331, -0.52655]
+rotation_mas = [25.91467, 9.42645, 11.59935]
+scale_ppb = 1.71504
+rates = [0.00079, -0.00060, -0.00134, 0.06667, -0.75744, -0.05133, -0.10201]
+epoch = 1997.0
+at = 2010.0

@@ -1,0 +1,19 @@
+name = "GSI GSIGEO2011 geoid model"
+what = "Height reference: JGD2011 (Tokyo Bay mean sea level) to the JGD2011 ellipsoid"
+credit = "Geospatial Information Authority of Japan (GSIGEO2011); grid as packaged by PROJ-data"
+licence = "CC-BY-4.0"
+licence_url = "https://github.com/OSGeo/PROJ-data/blob/master/jp_gsi/README.txt"
+source = "https://cdn.proj.org/"
+retrieved = "2026-10-18"
+territory = ["JP"]
+notes = "PROJ-data's jp_gsi_gsigeo2011.tif (428,043 bytes), kept in sources/fetched/gsigeo2011/ (producers/geoid/fetch.sh). JGD2011's frame is ITRF2008: taken as WGS 84's ellipsoid (they agree to centimetres)."
+
+[data]
+role = "geoid"
+format = "geoid-grid"
+url = "https://cdn.proj.org/jp_gsi_gsigeo2011.tif"
+
+[data.params]
+from = "JGD2011"
+to = "ellipsoid-WGS84"
+store = true

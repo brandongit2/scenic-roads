@@ -1,0 +1,19 @@
+name = "NGS GEOID12B, Alaska"
+what = "Height reference: NAVD88 to the NAD83(2011) ellipsoid, Alaska"
+credit = "NOAA National Geodetic Survey; grid as packaged by PROJ-data"
+licence = "public domain"
+licence_url = "https://geodesy.noaa.gov/GEOID/GEOID12B/"
+source = "https://cdn.proj.org/"
+retrieved = "2026-10-18"
+territory = ["US"]
+notes = "PROJ-data's us_noaa_g2012ba0.tif (11,342,483 bytes), kept in sources/fetched/geoid12b-alaska/ (producers/geoid/fetch.sh). Alaska's NAVD88, where GEOID18 has no grid: read after geoid18-conus, by id."
+
+[data]
+role = "geoid"
+format = "geoid-grid"
+url = "https://cdn.proj.org/us_noaa_g2012ba0.tif"
+
+[data.params]
+from = "NAVD88"
+to = "ellipsoid-NAD83"
+store = true
