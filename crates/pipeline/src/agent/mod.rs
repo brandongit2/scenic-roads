@@ -154,9 +154,10 @@ pub(crate) fn clash(a: &str, b: &str) -> bool {
 /// (None: it can). A cold start (no measure) runs alone, as does a job beside one; their memory past
 /// `limit` (MB; the other's as measured, or as it holds now, `held`, if more; as it holds now alone
 /// while it waits on a worker holding its unit's tail, `waiting`); their disk (mine, the other's
-/// still to come `left` and the reserve: bytes) past `free`.
+/// still to come and the reserve: bytes) past the disk's free space, `disk` saying both (the other's
+/// left, the free: bytes), called only once the rest fits.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn beside_why(mine: Option<crate::coord::Measured>, theirs: Option<crate::coord::Measured>, waiting: bool, held: Option<u64>, limit: u64, left: u64, free: u64, beside: &str) -> Option<String> {
+pub(crate) fn beside_why(mine: Option<crate::coord::Measured>, theirs: Option<crate::coord::Measured>, waiting: bool, held: Option<u64>, limit: u64, disk: impl FnOnce() -> (u64, u64), beside: &str) -> Option<String> {
     let Some(mine) = mine else { return Some(format!("a cold start (no run of its step measured yet): it runs alone, once {beside} ends")) };
     let Some(theirs) = theirs else { return Some(format!("{beside} beside it is a cold start, which runs alone")) };
     if limit == 0 {
@@ -173,6 +174,7 @@ pub(crate) fn beside_why(mine: Option<crate::coord::Measured>, theirs: Option<cr
     if mine.mem_mb + theirs_mb > limit {
         return Some(format!("measured at {:.1} GB, with {beside}'s {:.1} GB past this Mac's limit of {:.1} GB", gb(mine.mem_mb), gb(theirs_mb), gb(limit)));
     }
+    let (left, free) = disk();
     let need = (mine.disk_mb << 20) + left + room::RESERVE;
     if need > free {
         return Some(format!("measured at {:.1} GB on the disk, with {beside}'s {:.1} GB still to come and the {} GB kept free, past the disk's {} free", gb(mine.disk_mb), left as f64 / (1u64 << 30) as f64, room::RESERVE >> 30, room::size(free)));
@@ -3403,9 +3405,8 @@ impl Agent {
     fn fits_beside(&self, spec: &JobSpec, other: usize) -> Option<String> {
         let r = self.slots[other].running.as_ref()?;
         let beside = steps::title(&step_of(&r.spec.id).unwrap_or_default()).to_string();
-        let theirs = self.measured_job(&r.spec);
-        let left = if theirs.is_some() { self.disk_left(other) } else { 0 };
-        beside_why(self.measured_job(spec), theirs, self.waiting_on(other).is_some(), self.held_mb(other), memguard::limit_mb(self.total_mb()), left, self.disk_free(), &beside)
+        // (The disk's reads only once the memory fits: `disk` is called last.)
+        beside_why(self.measured_job(spec), self.measured_job(&r.spec), self.waiting_on(other).is_some(), self.held_mb(other), memguard::limit_mb(self.total_mb()), || (self.disk_left(other), self.disk_free()), &beside)
     }
 
     /// The job in slot `k` the memory guard drained the one beside, while it runs: nothing starts

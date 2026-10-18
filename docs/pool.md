@@ -513,14 +513,16 @@ tiles (`pack_raw_with`) stays inside the piece's job.
   simulated clock. Members ask over HTTP with their capacity and take what `pick_every` grants; the
   lead runs two slots by the agent's own rules (`clash`, `beside_why`, its plan leaving out what
   others hold and a step cold elsewhere); each job takes its step's true memory, disk and cores,
-  and its measures go back into the coordinator (crate::needs reads them). Checked at every start:
-  no Mac past its memory limit (only a cold start may meet the memory guard), cores, disk or slots;
-  a cold start alone on its Mac and in the pool; lead-only steps on the lead; the plan finishes.
+  and its measures go back into the coordinator (crate::needs reads them). Checked at every start,
+  first where a job may go (no Mac past its slots; lead-only steps on the lead; a cold start alone
+  on its Mac and in the pool, nothing beside one), then what it takes (past a Mac's memory limit
+  only a cold start, stopped by the guard; never past its disk or cores); and the plan finishes.
   Runs: the M4 and the M1 (the lead reaches two jobs, the member one) and four Macs. Members'
   slots are a setting (today one); at two, a member is given a cold start beside its running job
   (`most_room` weighs room, not idleness), which a test pins until multi-lease asks fix it. Not
   modelled: the lead's batching of its own jobs, step dependencies, owner use, failures. Cores
-  aren't a placement input yet: their check holds by the steps' threads chosen.
+  feed the memory prediction (`peak_of`'s threads) but nothing checks a job's cores against a
+  Mac's yet: their check holds by the steps' threads chosen.
 - **The agent's tests** (`crate::agent::pool`, `crate::agent::lead`, the agent's `pool_tests`): two
   agents in one process, a lead and a member, through handover, takeover, controls, hand-offs and
   every switch on and off.

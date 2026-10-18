@@ -18,9 +18,10 @@
 //!   it starts (its floor learned, its lease given back): allowed only of a cold start, the
 //!   placement's one guess.
 //!
-//! Checked at every start: no Mac past its memory limit, its cores or its disk; a cold start alone
-//! on its Mac and in the pool; a step kept to the lead (crate::agent::every::LEAD_ONLY, or not
-//! offered) only on the lead; no Mac past its slots. And that the plan finishes.
+//! Checked at every start, first where a job may go at all: no Mac past its slots; a step kept to the
+//! lead (crate::agent::every::LEAD_ONLY, or not offered) only on the lead; a cold start alone on its
+//! Mac and in the pool, and nothing beside one. Then what it takes: past its Mac's memory limit only
+//! a cold start, stopped by the guard; never past its disk or cores. And that the plan finishes.
 
 use crate::agent::every;
 use crate::agent::memguard::{self, Floor};
@@ -261,6 +262,35 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 threads: s.threads,
                 cold,
             };
+            // (Where it may go at all, before whether it fits: a guard's stop excuses none of these.)
+            if running[k].len() + 1 > slots(k) {
+                return Err(format!("{} past its {} slots", cfg.macs[k].name, slots(k)));
+            }
+            if k > 0 && (!every::offered(step) || every::LEAD_ONLY.contains(&step)) {
+                return Err(format!(
+                    "{} (a member) placed {step}, kept to the lead",
+                    cfg.macs[k].name
+                ));
+            }
+            if cold && !running[k].is_empty() {
+                return Err(format!(
+                    "{} placed a cold start of {step} beside {:?}",
+                    cfg.macs[k].name,
+                    running[k].iter().map(|j| &j.step).collect::<Vec<_>>()
+                ));
+            }
+            if running[k].iter().any(|j| j.cold) {
+                return Err(format!(
+                    "{} placed {step} beside a cold start",
+                    cfg.macs[k].name
+                ));
+            }
+            if cold && running.iter().flatten().any(|j| j.step == step) {
+                return Err(format!(
+                    "{} placed a cold start of {step} while another of its jobs runs",
+                    cfg.macs[k].name
+                ));
+            }
             let (mem, disk, threads) = used(&running[k]);
             if mem + job.mem_mb > limit(k) {
                 if !cold {
@@ -298,34 +328,6 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
             if threads + job.threads > cfg.macs[k].cores {
                 return Err(format!("{} placed {step} past its cores", cfg.macs[k].name));
             }
-            if running[k].len() + 1 > slots(k) {
-                return Err(format!("{} past its {} slots", cfg.macs[k].name, slots(k)));
-            }
-            if k > 0 && (!every::offered(step) || every::LEAD_ONLY.contains(&step)) {
-                return Err(format!(
-                    "{} (a member) placed {step}, kept to the lead",
-                    cfg.macs[k].name
-                ));
-            }
-            if cold && !running[k].is_empty() {
-                return Err(format!(
-                    "{} placed a cold start of {step} beside {:?}",
-                    cfg.macs[k].name,
-                    running[k].iter().map(|j| &j.step).collect::<Vec<_>>()
-                ));
-            }
-            if running[k].iter().any(|j| j.cold) {
-                return Err(format!(
-                    "{} placed {step} beside a cold start",
-                    cfg.macs[k].name
-                ));
-            }
-            if cold && running.iter().flatten().any(|j| j.step == step) {
-                return Err(format!(
-                    "{} placed a cold start of {step} while another of its jobs runs",
-                    cfg.macs[k].name
-                ));
-            }
             running[k].push(job);
             out.most[k] = out.most[k].max(running[k].len());
             Ok(true)
@@ -357,8 +359,9 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 false,
                 Some(other.mem_mb),
                 lead_limit,
-                0,
-                lead_free(r),
+                // (No job of the simulation waits on a tail (`waiting` false), and a running job's
+                // disk is taken whole as it starts, so none of it is left to come.)
+                || (0, lead_free(r)),
                 &other.step,
             )
         };
@@ -420,7 +423,9 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
         for k in 1..cfg.macs.len() {
             let w = clients[k].as_ref().unwrap();
             for j in &running[k] {
-                let _ = w.beat(j.lease, None);
+                if !w.beat(j.lease, None).map_err(|e| format!("beat: {e:#}"))? {
+                    return Err(format!("{}'s lease {} lapsed", cfg.macs[k].name, j.lease));
+                }
             }
             while running[k].len() < slots(k) {
                 let (mem, disk, threads) = used(&running[k]);
@@ -615,7 +620,7 @@ mod tests {
 
     /// Members switched to two jobs each (task #239's multi-lease asks): today's coordinator gives a
     /// cold start to a member already running a job (`most_room` weighs room, not that the Mac is
-    /// idle), which the simulator finds. #239 makes this run pass.
+    /// idle), which the simulator finds. #239 flips this to `.unwrap()` with `most == [2, 2]`.
     #[test]
     fn members_with_two_slots_get_a_cold_start_beside_a_job_today() {
         let e = run(&Cfg {
