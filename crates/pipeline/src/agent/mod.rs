@@ -3084,9 +3084,16 @@ impl Agent {
         // (The jobs started: their leases are in the coordinator's state, so a tick may settle a
         // handover from here; a duty that started runs, so it may not until this loop stops it.)
         let duty = self.slots.iter().any(|s| s.running.as_ref().is_some_and(|j| is_duty(&j.spec.id)));
+        // (A lead-only job running: the lead isn't offered by capacity meanwhile, crate::pool::handover.)
+        let lead_only = self.slots.iter().any(|s| {
+            s.running
+                .as_ref()
+                .is_some_and(|j| step_of(&j.spec.id).is_some_and(|st| every::LEAD_ONLY.contains(&st.as_str())))
+        });
         if let Some(Some(mut run)) = self.try_pooled() {
             run.cx.starting = false;
             run.cx.duty = duty;
+            run.cx.lead_only = lead_only;
         }
         // A member's packed jobs (packing on), each in its slot, as the first slot's starts: its
         // conditions, its room on the disk; one beside a job waiting on a worker yields to it
@@ -7938,6 +7945,8 @@ impl Agent {
             coord: self.coord.clone(),
             able,
             duty,
+            // (Set where the jobs start, below.)
+            lead_only: run.cx.lead_only,
             starting: false,
             lead_answered,
             broker: self.brokering(),

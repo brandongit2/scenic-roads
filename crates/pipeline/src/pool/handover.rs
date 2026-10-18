@@ -21,6 +21,12 @@
 //!
 //! B answers `ready_for` (`ready_for`) while A's heartbeat offers it the lead and it can take it;
 //! whatever it answered, it takes up any term that names it.
+//!
+//! The lead also offers the lead by itself (§6.4, The strongest Mac leads): each Mac's capacity
+//! (crate::coord::Capacity, #237's: its own measured each loop, a member's carried by its asks) is
+//! a score (`score`); a member whose score beats the lead's by `PREFER_PCT` and `PREFER_MIN`
+//! points, seen so for `PREFER_S` (`Prefer`), is asked as the owner's ask would be, never while a
+//! lead-only job runs on the lead.
 
 use super::beat::{Beat, HandingTo, Ready, Stage};
 use serde::{Deserialize, Serialize};
@@ -34,6 +40,86 @@ pub const OFFER_S: u64 = 120;
 pub const SETTLE_S: u64 = 60;
 /// How long the target has to lead once the term naming it is made (s).
 pub const TAKE_UP_S: u64 = 120;
+
+/// How far a member's score must beat the lead's to be offered the lead: by this share of the
+/// lead's (%), and by at least `PREFER_MIN` points; seen so for `PREFER_S` (s), each time anew
+/// after an offer made by it. Both ways: the Mac handed to sees the one before it below its own by
+/// as much, so a score moving less than that doesn't hand the lead back.
+pub const PREFER_PCT: u64 = 25;
+pub const PREFER_MIN: u64 = 16;
+pub const PREFER_S: u64 = 300;
+/// The free disk past which more counts for nothing (GB): below it a Mac's score falls with its
+/// room, to nothing with none.
+pub const DISK_FULL_GB: u64 = 50;
+
+/// A Mac's score as a lead, from its capacity: the memory guard's limit (4 points a GB) and its
+/// cores (8 each), scaled down by its free disk below `DISK_FULL_GB`, halved while its owner uses
+/// it (the owner's share), and on battery scaled by half its charge (none known: nothing). Away
+/// from home or the NAS not answering: nothing. Its jobs' load isn't counted: a lead's own jobs
+/// would hand the lead away.
+pub fn score(c: &crate::coord::Capacity) -> u64 {
+    if !c.home || !c.nas {
+        return 0;
+    }
+    let base = (c.limit_mb / 1024) * 4 + c.cores as u64 * 8;
+    let mut s = base * (c.disk_mb / 1024).min(DISK_FULL_GB) / DISK_FULL_GB;
+    if c.in_use {
+        s /= 2;
+    }
+    if !c.ac {
+        s = s * c.battery.unwrap_or(0) as u64 / 200;
+    }
+    s
+}
+
+/// Whether score `theirs` beats the lead's `own` enough to be offered the lead.
+pub fn beats(theirs: u64, own: u64) -> bool {
+    theirs >= own + PREFER_MIN && theirs * 100 >= own * (100 + PREFER_PCT)
+}
+
+/// The member a lead prefers to itself by capacity, and since when (its clock) it has.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Prefer {
+    pub to: Option<(String, u64)>,
+    /// The offers made to it so far: each next waits twice as long (`PREFER_S`, then 10, 20, 40
+    /// minutes), a handover that comes to nothing (its lead can't settle) not tried every few.
+    pub tries: u32,
+}
+
+impl Prefer {
+    /// This step's look at the scores: the lead's own (None: not measured lately), and the
+    /// members' it could hand to (fresh, and `Driver::hand_to` lets it). The member to offer the
+    /// lead to now, if any: the best (the highest score, then the lowest id), beating the lead's
+    /// (`beats`) at every look for `PREFER_S` (after an offer, twice as long each time: `tries`).
+    /// `hold` (a lead-only job runs, a handover is under way, entries wait to be read whole): none
+    /// now, the time kept. A look with nothing measured keeps it too; one where none
+    /// beats the lead's, or another is best, starts it over.
+    pub fn step(&mut self, now: u64, own: Option<u64>, others: &[(String, u64)], hold: bool) -> Option<String> {
+        let (Some(own), Some(best)) = (own, others.iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0))))
+        else {
+            return None;
+        };
+        if !beats(best.1, own) {
+            *self = Prefer::default();
+            return None;
+        }
+        match &mut self.to {
+            Some((to, since)) if *to == best.0 => {
+                if hold || !past(*since, now, PREFER_S << self.tries.min(3)) {
+                    return None;
+                }
+                // (Offered: asked again only after longer, should the handover come to nothing.)
+                *since = now;
+                self.tries += 1;
+                Some(to.clone())
+            }
+            _ => {
+                *self = Prefer { to: Some((best.0.clone(), now)), tries: 0 };
+                None
+            }
+        }
+    }
+}
 
 /// Where a lead's handover of its term stands.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,6 +408,62 @@ mod tests {
         assert_eq!(h.step(7, &Seen { now: 101, target: Some(&b), ..Default::default() }), Do::Settle);
         let d = h.step(7, &Seen { now: 101 + 2400, target: Some(&b), settled: Some(5), ..Default::default() });
         assert_eq!((d, h), (Do::Nothing, Handover::Leading));
+    }
+
+    fn cap(limit_gb: u64, cores: u32, disk_gb: u64) -> crate::coord::Capacity {
+        crate::coord::Capacity {
+            limit_mb: limit_gb << 10,
+            cores,
+            disk_mb: disk_gb << 10,
+            ac: true,
+            home: true,
+            nas: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_score_counts_memory_cores_and_disk_less_the_owners_use_and_battery() {
+        let m4 = cap(24, 10, 300);
+        assert_eq!(score(&m4), 24 * 4 + 80);
+        assert_eq!(score(&cap(24, 10, 25)), (24 * 4 + 80) / 2, "half the disk it wants");
+        assert_eq!(score(&cap(24, 10, 0)), 0, "no room: nothing");
+        assert_eq!(score(&crate::coord::Capacity { in_use: true, ..m4.clone() }), 88);
+        let battery = crate::coord::Capacity { ac: false, battery: Some(50), ..m4.clone() };
+        assert_eq!(score(&battery), 176 / 4);
+        assert_eq!(score(&crate::coord::Capacity { home: false, ..m4.clone() }), 0);
+        // An M1 of 16 GB (its limit 10 GB) and 8 cores, short of room: the M4 beats it.
+        let m1 = cap(10, 8, 20);
+        assert!(beats(score(&m4), score(&m1)) && !beats(score(&m1), score(&m4)));
+        // A little more isn't enough, either way.
+        assert!(!beats(110, 100) && !beats(100, 110) && !beats(20, 10) && beats(126, 100));
+    }
+
+    #[test]
+    fn a_stronger_member_is_preferred_once_it_has_been_for_minutes() {
+        let mut p = Prefer::default();
+        let them = vec![(B.to_string(), 176), ("m-000000000000000c".to_string(), 120)];
+        assert_eq!(p.step(100, Some(100), &them, false), None, "first seen");
+        assert_eq!(p.step(100 + PREFER_S - 1, Some(100), &them, false), None);
+        assert_eq!(p.step(100 + PREFER_S, Some(100), &[], false), None, "nothing measured: no offer");
+        assert_eq!(p.step(100 + PREFER_S, Some(100), &them, true), None, "a lead-only job runs");
+        assert_eq!(p.step(100 + PREFER_S, Some(100), &them, false), Some(B.into()));
+        assert_eq!(p.step(99 + 3 * PREFER_S, Some(100), &them, false), None, "offered: twice as long again");
+        assert_eq!(p.step(100 + 3 * PREFER_S, Some(100), &them, false), Some(B.into()));
+        assert_eq!(p.step(99 + 7 * PREFER_S, Some(100), &them, false), None);
+        assert_eq!(p.step(100 + 7 * PREFER_S, Some(100), &them, false), Some(B.into()));
+        // A look where it no longer beats the lead's starts it over.
+        let mut q = Prefer::default();
+        q.step(0, Some(100), &them, false);
+        q.step(200, Some(150), &them, false);
+        assert_eq!(q, Prefer::default());
+        assert_eq!(q.step(PREFER_S, Some(100), &them, false), None);
+        // Another best starts it over too; equal scores, the lowest id.
+        let tie = vec![("m-000000000000000c".to_string(), 176), (B.to_string(), 176)];
+        q.step(0, Some(100), &tie, false);
+        assert_eq!(q.to.as_ref().map(|t| t.0.as_str()), Some(B));
+        // The lead's own unknown: none.
+        assert_eq!(Prefer::default().step(0, None, &them, false), None);
     }
 
     #[test]

@@ -271,6 +271,10 @@ pub struct Give {
     pub asks: Vec<driver::Ask>,
     /// Its Mac's conditions, for its heartbeat (None: left out).
     pub conds: Option<Conds>,
+    /// Leading: each Mac's score as a lead by member id (`Heard::scores`), and whether a lead-only
+    /// job runs here (`Heard::lead_only`).
+    pub scores: Vec<(String, u64)>,
+    pub lead_only: bool,
 }
 
 /// One member's part in the pool, in this process.
@@ -597,6 +601,8 @@ impl Side {
             reassert: give.reassert,
             members: self.members.iter().cloned().collect(),
             reports: self.beats.clone(),
+            scores: give.scores,
+            lead_only: give.lead_only,
         };
         self.conds = give.conds;
         let io = Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead };
@@ -962,6 +968,9 @@ pub fn said(e: &Event) -> String {
         ),
         Event::SteppedDown { term, why } => format!("no longer leads term {term}: {why}"),
         Event::Handover { term, to, what } => format!("its handover of term {term} to {to}: {what}"),
+        Event::Prefers { to, theirs, own } => {
+            format!("offers the lead to {to} by capacity: its score {theirs}, this Mac's {own}")
+        }
         Event::Merged { applied, overtaken, refused, listed, .. } => format!(
             "merged {} entr{} ({overtaken} passed over, {refused} refused){}",
             applied.len(),
@@ -1171,6 +1180,9 @@ pub struct Cx {
     /// A duty (a catalog, a sweep) runs here, or passed its gate to start: a tick doesn't settle a
     /// handover (the agent's step stops the duty first).
     pub duty: bool,
+    /// A lead-only job (crate::agent::every::LEAD_ONLY, or a duty) runs here: the lead isn't
+    /// offered by capacity meanwhile (`Heard::lead_only`).
+    pub lead_only: bool,
     /// The agent's loop is starting a job (its lease from this coordinator): a tick doesn't settle
     /// until it's done.
     pub starting: bool,
@@ -1624,6 +1636,24 @@ impl Run {
         (r, out)
     }
 
+    /// Each Mac's score as a lead (crate::pool::handover::score), by member id, from the
+    /// capacities this process's coordinator (the lead's) has fresh, keyed by host: this Mac's, and
+    /// each member's whose heartbeat names that host. None without a coordinator.
+    fn scores(&self) -> Vec<(String, u64)> {
+        let Some(c) = &self.cx.coord else { return Vec::new() };
+        let me = self.side.member();
+        let id_of = |host: &str| {
+            if host.eq_ignore_ascii_case(&me.host) {
+                return Some(me.id.clone());
+            }
+            self.side.beats.iter().find(|b| b.host.eq_ignore_ascii_case(host)).map(|b| b.member.clone())
+        };
+        c.capacities()
+            .into_iter()
+            .filter_map(|(host, cap)| Some((id_of(&host)?, crate::pool::handover::score(&cap))))
+            .collect()
+    }
+
     /// One step: what the agent gathered handed over, the gates kept; the role's change noted (it
     /// restarts into its new part).
     pub fn step(&mut self, able: bool) -> Out {
@@ -1634,6 +1664,8 @@ impl Run {
             reassert: self.reassert,
             asks: std::mem::take(&mut self.asks),
             conds: self.conds,
+            scores: self.scores(),
+            lead_only: self.cx.lead_only || self.cx.duty,
         };
         let marks = std::mem::take(&mut self.marks);
         // (The merge's checks, an entry outside its step's write-set from a member on a newer app

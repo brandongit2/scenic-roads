@@ -234,6 +234,13 @@ pub struct Heard {
     /// The members' heartbeats as the agent last read them (shadow runs' left out): whom they
     /// report they can't reach (crate::pool::reachable), for `hand_to`.
     pub reports: Vec<Beat>,
+    /// Leading: each Mac's score as a lead (crate::pool::handover::score), by member id, its own
+    /// among them, from the capacities its coordinator has fresh: the lead offers the lead to a
+    /// member that beats its own for minutes (`handover::Prefer`). None measured: none offered.
+    pub scores: Vec<(String, u64)>,
+    /// Leading: a lead-only job (a duty, crate::agent::every::LEAD_ONLY) runs here: the lead isn't
+    /// offered by capacity meanwhile.
+    pub lead_only: bool,
 }
 
 /// A listing of the journal to make, off the loop (crate::pool::journal::list).
@@ -313,6 +320,8 @@ pub enum Event {
     /// Its handover of term `term` to `to`: offered, settling, passed, over, taken back, given up,
     /// or dropped (the take-back refused by the app rule, or the owner's takeover in its place).
     Handover { term: u64, to: String, what: &'static str },
+    /// Offering the lead to `to` by capacity: its score, and the lead's own.
+    Prefers { to: String, theirs: u64, own: u64 },
     /// Journal entries merged: applied, passed over (an older lease's), refused; and whether they
     /// came from a listing.
     /// (`done`: the applied entries' jobs done, crate::pool::records::Merged::done.)
@@ -383,6 +392,8 @@ struct Lead {
     term: Term,
     records: Records,
     hand: Handover,
+    /// The member it prefers to itself by capacity, and since when.
+    prefer: handover::Prefer,
     /// The entries members told it of and it hasn't acknowledged, by who told it.
     told: BTreeMap<String, String>,
     /// Entries told or listed not read whole yet (not readable yet, or past the step's time for
@@ -696,7 +707,19 @@ impl Driver {
         }
         self.restarted = false;
         if self.lead.is_some() {
-            self.lead_step(io, &mut out, tells, hand_asks, heard.listed, heard.settled, check, busy, learnt.is_ok());
+            let strength = (heard.scores, heard.lead_only);
+            self.lead_step(
+                io,
+                &mut out,
+                tells,
+                hand_asks,
+                heard.listed,
+                heard.settled,
+                check,
+                busy,
+                learnt.is_ok(),
+                strength,
+            );
         } else if let Some(t) = self.cur.lead.as_ref().filter(|t| t.member != self.me.id) {
             out.send.extend(hand_asks.into_iter().map(|to| (t.member.clone(), Msg::HandTo(to))));
         }
@@ -1016,6 +1039,7 @@ impl Driver {
             term: t.clone(),
             records: r,
             hand: Handover::Leading,
+            prefer: Default::default(),
             told: BTreeMap::new(),
             waiting: BTreeSet::new(),
             unreadable: BTreeMap::new(),
@@ -1053,16 +1077,42 @@ impl Driver {
         check: Check,
         busy: u64,
         learnt: bool,
+        (scores, lead_only): (Vec<(String, u64)>, bool),
     ) {
         let me = self.me.id.clone();
         // An ask, checked (§6.3): as `hand_to` answers the controls.
-        let ask = asks.last().cloned().and_then(|to| match self.hand_to(io, &to) {
+        let mut ask = asks.last().cloned().and_then(|to| match self.hand_to(io, &to) {
             Ok(()) => Some(to),
             Err(why) => {
                 out.events.push(Event::Waits { what: "hand the lead over", why: format!("to {to}: {why}") });
                 None
             }
         });
+        // Else, the strongest Mac that can take it, by capacity (§6.4): the members `hand_to` lets
+        // it hand to, not while a handover is under way, a lead-only job runs, or entries wait to
+        // be read whole.
+        if ask.is_none() {
+            let own = scores.iter().find(|(m, _)| *m == me).map(|s| s.1);
+            // (Entries waiting to be read whole: it couldn't settle.)
+            let hold =
+                lead_only || self.lead.as_ref().is_some_and(|l| l.hand != Handover::Leading || !l.waiting.is_empty());
+            // (A member that beats it but can't be handed to now is left out; one that doesn't
+            // beat it counts, to start the time over.)
+            let others: Vec<(String, u64)> = scores
+                .iter()
+                .filter(|(m, s)| {
+                    *m != me && (hold || !own.is_some_and(|o| handover::beats(*s, o)) || self.hand_to(io, m).is_ok())
+                })
+                .cloned()
+                .collect();
+            let now = io.now();
+            let l = self.lead.as_mut().expect("leading");
+            if let Some(to) = l.prefer.step(now, own, &others, hold) {
+                let theirs = others.iter().find(|(m, _)| *m == to).map_or(0, |s| s.1);
+                out.events.push(Event::Prefers { to: to.clone(), theirs, own: own.unwrap_or(0) });
+                ask = Some(to);
+            }
+        }
         let own: Vec<String> = self.saved.mine.to_tell(self.cur.term);
         let now = io.now();
         let l = self.lead.as_mut().expect("leading");

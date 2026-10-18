@@ -168,6 +168,22 @@ Leases keep their ids (`<term>-<n>`) and wall-clock deadlines across the handove
 the old lead's included, renews with B (§7.6). A lead with journal entries left to read gives up a
 handover (to be asked again).
 
+**The strongest Mac leads.** Besides the owner's asks, the lead asks itself to hand over, through
+the same stages, to the member with the highest capacity score (`handover::score`, from #237's
+`crate::coord::Capacity`: its own measured each loop, a member's carried by its asks, fresh within
+`CAP_FRESH_S`). The score is the memory guard's limit (4 points a GB) plus its cores (8 each), scaled
+down by free disk below 50 GB (none: 0), halved while its owner uses it, and on battery scaled by
+half its charge; away from home or without the NAS, 0. No Mac is named: a member is offered the
+lead when its score beats the lead's by 25 % and at least 16 points (`handover::beats`) at every
+look for 5 minutes (`PREFER_S`), and `Driver::hand_to` lets it. The margin holds both ways, so a
+score moving less than that doesn't hand the lead back; an offer that comes to nothing is made
+again only after twice as long each time (10, 20, then 40 minutes). Never while a lead-only job
+(`agent::every::LEAD_ONLY`, or a duty) runs on the lead, a handover is under way, or entries wait to
+be read whole (it couldn't settle). The lead's log says each such offer, with both scores. So a
+weaker Mac that got the lead (the owner's ask, a takeover, or a lead whose update waited on its job
+handing to a member already on the new app, §7.6) offers it back to the stronger within minutes of
+that one running the same app.
+
 ### 6.5 Taking over (the lead is gone)
 
 - **By the owner:** when the lead's heartbeat is more than ten minutes old, or it stood down, "Take
