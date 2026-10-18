@@ -630,8 +630,9 @@ mod tests {
     fn members_with_the_agents_slots_pack_by_their_room() {
         let mut macs = m4_m1();
         macs.push(Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 });
-        let one = run(&Cfg { macs: macs.clone(), steps: plan(), member_slots: 1, packing: None }).unwrap();
-        let r = run(&Cfg { macs, steps: plan(), member_slots: 0, packing: Some(Default::default()) }).unwrap();
+        let one = run(&Cfg { macs: macs.clone(), steps: plan(), member_slots: 1, packing: None, nas: None }).unwrap();
+        let r =
+            run(&Cfg { macs, steps: plan(), member_slots: 0, packing: Some(Default::default()), nas: None }).unwrap();
         assert!(r.most[1] >= 2 && r.most[2] >= 3, "{r:?}");
         assert!(r.most[2] <= 4, "past its cores: {r:?}");
         assert!(r.secs < one.secs, "{} s packed, {} s one a time", r.secs, one.secs);

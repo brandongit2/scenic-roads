@@ -547,6 +547,20 @@ impl Sampler {
             .unwrap_or(false)
     }
 
+    /// Freezes slot `k`'s job (SIGSTOP to its group; a test's figures: marked alone), as the thread
+    /// freezes one past the limit alone: the agent's loop, the Mac short of memory with the jobs
+    /// together past the limit. True when it froze it now.
+    pub fn freeze(&self, k: usize) -> bool {
+        let Ok(mut g) = self.inner.lock() else { return false };
+        let real = g.held_set.is_none();
+        let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut).filter(|w| !w.frozen) else { return false };
+        if real {
+            crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
+        }
+        w.frozen = true;
+        true
+    }
+
     /// Lets slot `k`'s job go on, if the thread froze it (the guard turned off since).
     pub fn thaw(&self, k: usize) -> bool {
         let Ok(mut g) = self.inner.lock() else { return false };

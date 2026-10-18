@@ -339,9 +339,11 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   newest (by its start's minute), then the least progressed, never the largest; one at a time, and none more while the
   jobs not draining fit the limit. Nothing new starts beside the largest meanwhile (a member asks
   for nothing). While the Mac is short of memory (pressure warning, or swap growing a GB), no
-  safe point is waited for: the job that would drain stops at once, then the next while the rest
-  still pass the limit, and the largest alone past the limit stops at once; else that one too
-  stops at a safe point. A drain that finds no safe
+  safe point is waited for: the job that would drain is frozen at once (SIGSTOP), then the next
+  while the rest still pass the limit. A frozen one goes on once the Mac is no longer short or the
+  largest job ended, and is stopped (given back) after a minute frozen with the Mac still short,
+  or the 15 minutes a drain gets. The largest alone past the limit stops at once; else that one
+  too stops at a safe point. This holds on the lead's two slots and a member's packed ones. A drain that finds no safe
   point in 15 minutes is stopped. A stopped job is given back and kept from that Mac for an hour.
 - **An update's drain** (a newer app installed): every job stops at its next safe point; the agent
   restarts once the lead's first slot is free, or a member's every slot, each job given its own
