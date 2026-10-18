@@ -59,6 +59,8 @@ pub struct TerrainTiles {
     /// The accepted sources' index whose geoid sources converted the held datasets' heights
     /// (crate::dem::geoid; None: no sources accepted, nothing converted).
     elevation_geoid: Option<String>,
+    /// The held datasets no chain of declared geoid sources brings to EGM2008: why, each.
+    elevation_unconverted: Vec<String>,
     /// The terrain's declared sources (crate::terrain_sources) as its keys name them: the accepted
     /// elevation index's content name, and their pin or why they can't be read.
     terrain: Option<(String, Result<TerrainPin, String>)>,
@@ -160,16 +162,19 @@ impl TerrainTiles {
         if self.elevation.as_ref().is_some_and(|(c, _)| c == want) && self.elevation_geoid.as_ref() == sources {
             return;
         }
+        let mut unconverted = Vec::new();
         let got = crate::inputs::open(root, m, elevation::UNIT).and_then(|a| {
             let mut ds = crate::dem::declared::accepted(&a.ok_or_else(|| anyhow::anyhow!("no accepted version"))?)?;
             if sources.is_some() {
                 let s = crate::inputs::sources::read(root, m)?;
-                for w in crate::dem::declared::convert(&mut ds, s.many(crate::inputs::sources::GEOID)) {
+                unconverted = crate::dem::declared::convert(&mut ds, s.many(crate::inputs::sources::GEOID));
+                for w in &unconverted {
                     eprintln!("agent: elevation: {w}");
                 }
             }
             Ok(ds)
         });
+        self.elevation_unconverted = unconverted;
         self.elevation_geoid = sources.cloned();
         match got {
             Ok(ds) => {
@@ -424,6 +429,12 @@ impl TerrainTiles {
     }
 
     /// The packs whose index the last load couldn't read: (content name, why).
+    /// The held elevation datasets whose heights stay in their reference (no declared geoid
+    /// chain reaches EGM2008): why, each, for the build page and scenic status.
+    pub fn elevation_unconverted(&self) -> &[String] {
+        &self.elevation_unconverted
+    }
+
     pub fn unread(&self) -> impl Iterator<Item = (&String, &String)> {
         self.unread.iter()
     }

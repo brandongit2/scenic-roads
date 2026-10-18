@@ -1183,6 +1183,12 @@ pub fn prepare_folder(
     // the kept samples are judged.)
     let e7 = |v: i32| v as f64 * 1e-7;
     // (Each dataset's heights brought to EGM2008 by the declared geoid sources: crate::dem::geoid.)
+    if tools.declared.is_none() {
+        eprintln!(
+            "unit {}: no accepted version of the declared sources is given: heights not converted to EGM2008",
+            u.slash()
+        );
+    }
     let geoid = tools.declared.as_ref().map_or(&[][..], |s| s.many(crate::inputs::sources::GEOID));
     let plan =
         crate::dem::declared::plan_converted(a, [e7(slice[0]), e7(slice[1]), e7(slice[2]), e7(slice[3])], geoid)?;

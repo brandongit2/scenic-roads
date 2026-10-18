@@ -6466,6 +6466,15 @@ impl Agent {
             };
             waiting.push(Waiting { step: Some("unit".into()), what: steps::stage_title("roads").into(), why });
         }
+        // Declared elevation datasets whose heights no geoid chain brings to EGM2008: said beside
+        // the waits (they're built, in their own reference: docs/inputs.md §6.8, step 3).
+        for why in self.tiles.borrow().elevation_unconverted() {
+            waiting.push(Waiting {
+                step: Some("unit".into()),
+                what: steps::stage_title("roads").into(),
+                why: format!("elevation not converted to EGM2008: {why}"),
+            });
+        }
         let edit_hold = edit_held(self.edited_at.get(), std::time::SystemTime::now());
         // (Hand-offs of a step a catalog waits for (build::CATALOG_GATE: the map tiles, the road
         // index) not yet merged: counted as done, their files not yet in the manifest. A unit's

@@ -553,4 +553,21 @@ fn heights_are_converted_before_the_blend() {
     assert!(s.blended[1] && s.elev[1] > 47.0 && s.elev[1] < 102.0, "{:?}", s.elev);
     // Where no grid has a value: the height as sampled, counted.
     assert_eq!((s.elev[3], s.unconverted), (50.0, 1));
+    assert_eq!(s.unconverted_seam, 0);
+    // The dataset beneath without a grid value in the band: the seam mixing references, counted.
+    let mut plan = plan;
+    plan.datasets[1].convert = conversion("T", &[decl("far", "T")]).unwrap();
+    let mut f = crate::fetch::MapFetch::default();
+    for (u, h) in [("a.org/10/512/511", 100.0), ("b.org/10/512/511", 50.0), ("b.org/10/513/511", 50.0)] {
+        f.0.insert(format!("https://{u}.png"), Some(flat(h)));
+    }
+    f.0.insert("https://g.org/up.tif".into(), Some(grid(2.0)));
+    f.0.insert(
+        "https://g.org/far.tif".into(),
+        Some(crate::geotiff::write_f32(4, 4, &[1.0; 16], 16, [40.0, 1.0, 0.0, 2.0, 0.0, -1.0], 4326, None).unwrap()),
+    );
+    let fetch = NoneElse(f);
+    let o = Opts { fetch: &fetch, store: None, pool: None };
+    let s = sample(&plan, &lon[..2], &lat[..2], &o, &|_| {}).unwrap();
+    assert!(s.blended[1] && s.unconverted_seam == 1 && s.unconverted == 0, "{s:?}");
 }
