@@ -10,8 +10,9 @@
 //!   **floor** (`Floor`: crate::coord's floors), the same kind of figure as a run's own measure (a
 //!   job's processes together, sampled), which takes its place.
 //! - **Guarded, the switch on** (`on`, `SWITCH`): while the jobs on a Mac hold more together than its
-//!   limit (`limit_mb`), by measure alone (`decide`): the job beside the largest stops at its next
-//!   safe point when the largest fits alone; the largest, past the limit by itself, stops at once
+//!   limit (`limit_mb`), by measure alone (`decide_by`): when the largest fits alone, another stops
+//!   at its next safe point (the newest, then the least progressed, one at a time while those left
+//!   still pass the limit); the largest, past the limit by itself, stops at once
 //!   only while the Mac is in trouble (`trouble`: the kernel's memory pressure at warning or worse,
 //!   or a GB more swap since the job began; the thread freezes it then, at once, the agent's loop
 //!   stopping it), else at its next safe point too. A Mac whose memory can't be read guards nothing.
@@ -75,12 +76,21 @@ pub enum Act {
     Over(usize),
 }
 
-/// The guard's decision (`Act`), by measure alone: nothing while the jobs together fit `limit`;
-/// else the largest when it alone passes it, or the others drained (each in turn: the first not
-/// draining yet, `draining`) when it fits alone. A job that `yields` (started beside one that waited
-/// on a worker, which then went on) is the one drained, larger or not, and while it drains no other
-/// is: the job it was started beside isn't stopped for it.
+/// The guard's decision (`Act`) for jobs in slot order, the first slot's drained first among the
+/// others (`decide_by` with each slot's rank its order): two jobs, the one beside the largest.
 pub fn decide(held: &[Option<u64>], limit: u64, draining: &[bool], yields: &[bool]) -> Act {
+    let rank: Vec<u64> = (0..held.len()).map(|k| u64::MAX - k as u64).collect();
+    decide_by(held, limit, draining, yields, &rank)
+}
+
+/// The guard's decision (`Act`), by measure alone, for any number of jobs: nothing while the jobs
+/// together fit `limit`; else the largest when it alone passes it; else, it fitting alone, one other
+/// drained at a time: the one ranked highest (`rank`: the agent ranks the newest job highest, then
+/// the least progressed), not draining yet, and only while the jobs not draining (what's left once
+/// those draining reach their safe points) still pass the limit. A job that `yields` (started beside
+/// one that waited on a worker, which then went on) is the one drained, larger or not, and while it
+/// drains no other is: the job it was started beside isn't stopped for it.
+pub fn decide_by(held: &[Option<u64>], limit: u64, draining: &[bool], yields: &[bool], rank: &[u64]) -> Act {
     let total: u64 = held.iter().flatten().sum();
     if limit == 0 || total <= limit {
         return Act::Nothing;
@@ -97,7 +107,17 @@ pub fn decide(held: &[Option<u64>], limit: u64, draining: &[bool], yields: &[boo
     if let Some(k) = (0..held.len()).find(|&k| yielding(k)) {
         return if draining.get(k).copied().unwrap_or(false) { Act::Nothing } else { Act::Drain(k) };
     }
-    match held.iter().enumerate().find(|&(k, m)| k != big && m.is_some() && !draining.get(k).copied().unwrap_or(false))
+    let drains = |k: usize| draining.get(k).copied().unwrap_or(false);
+    // (What stays once the jobs draining stop: within the limit, nothing more drains.)
+    let staying: u64 = held.iter().enumerate().filter(|&(k, _)| !drains(k)).filter_map(|(_, m)| *m).sum();
+    if staying <= limit {
+        return Act::Nothing;
+    }
+    match held
+        .iter()
+        .enumerate()
+        .filter(|&(k, m)| k != big && m.is_some() && !drains(k))
+        .max_by_key(|&(k, _)| (rank.get(k).copied().unwrap_or(0), std::cmp::Reverse(k)))
     {
         Some((k, _)) => Act::Drain(k),
         None => Act::Nothing,
@@ -420,9 +440,11 @@ impl Sampler {
                 .free_set
                 .or_else(|| g.disk_at.as_ref().and_then(|d| crate::agent::room::disk_free(d).ok()))
                 .or(w.free_start);
-            if let Some(s) = g.watches.get_mut(k) {
-                *s = Some(w);
+            // (A slot past those watched so far, a member's packed jobs: watched from now.)
+            if g.watches.len() <= k {
+                g.watches.resize(k + 1, None);
             }
+            g.watches[k] = Some(w);
         }
     }
 
@@ -846,6 +868,47 @@ mod tests {
         assert_eq!(decide(&[Some(10 << 10), Some(35 << 10)], l, &[false, true], y), Act::Nothing);
         assert_eq!(decide(&[Some(30 << 10), Some(10 << 10)], l, &[false, false], y), Act::Nothing);
         assert_eq!(decide(&[Some(43 << 10), Some(1 << 10)], l, &[false, false], y), Act::Over(0));
+    }
+
+    /// Several jobs (a member's packed ones, task #240): past the limit together, the largest fitting
+    /// alone, the one ranked highest (the newest, then the least progressed) drains, never the
+    /// largest; one at a time, and none more while what stays once those draining stop fits.
+    #[test]
+    fn several_jobs_the_newest_drains_one_at_a_time() {
+        let l = 12 << 10;
+        let no = &[false; 4];
+        // (4 + 3 + 3 + 3 = 13 GB, past 12: the newest, slot 2 (rank 30), not the largest, slot 0.)
+        let held = [Some(4 << 10), Some(3 << 10), Some(3 << 10), Some(3 << 10)];
+        let rank = [10, 20, 30, 25];
+        assert_eq!(decide_by(&held, l, no, no, &rank), Act::Drain(2));
+        // (It drains: the 10 GB that stay fit, so nothing more.)
+        assert_eq!(decide_by(&held, l, &[false, false, true, false], no, &rank), Act::Nothing);
+        // (Grown to 16 GB: what stays past it with slot 2 draining, so the next newest, slot 3.)
+        let grown = [Some(7 << 10), Some(3 << 10), Some(3 << 10), Some(3 << 10)];
+        assert_eq!(decide_by(&grown, l, &[false, false, true, false], no, &rank), Act::Drain(3));
+        // (Every other draining: nothing left to drain, the largest fits alone.)
+        assert_eq!(decide_by(&grown, l, &[false, true, true, true], no, &rank), Act::Nothing);
+        // (The largest by itself past the limit: it, whoever is newest.)
+        let over = [Some(1 << 10), Some(13 << 10), Some(1 << 10), None];
+        assert_eq!(decide_by(&over, l, no, no, &rank), Act::Over(1));
+        // (A job that yields drains first, ranked low or not.)
+        assert_eq!(decide_by(&held, l, no, &[false, true, false, false], &rank), Act::Drain(1));
+        // (Equal ranks: the first slot of them.)
+        assert_eq!(decide_by(&held, l, no, no, &[0, 5, 5, 5]), Act::Drain(1));
+        // (A slot with no job is never drained, however it ranks.)
+        let gap = [Some(8 << 10), None, Some(5 << 10), Some(1 << 10)];
+        assert_eq!(decide_by(&gap, l, no, no, &[0, 99, 1, 2]), Act::Drain(3));
+    }
+
+    /// A slot past those watched (a member's packed jobs) is watched, sampled and let go.
+    #[test]
+    fn a_sampler_watches_slots_past_its_first() {
+        let s = Sampler::new(2);
+        s.set_test(Some(vec![Some(1), None, None, None, Some(7)]), Some(false));
+        s.watch(4, Watch { pgid: 999_999, ..Default::default() });
+        s.tick();
+        assert_eq!(s.held(4), Some(7));
+        assert!(s.unwatch(4).is_some() && s.held(4).is_none());
     }
 
     #[test]

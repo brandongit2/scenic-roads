@@ -63,7 +63,8 @@ pub struct Cfg {
     /// The Macs, the lead first.
     pub macs: Vec<Mac>,
     pub steps: Vec<Step>,
-    /// The jobs a member runs at once (today's agent: one).
+    /// The jobs a member runs at once (the agent's, packing off: one); 0: as the agent has them
+    /// with packing on, by its Mac's cores (crate::agent::member_slots).
     pub member_slots: usize,
     /// Packing (crate::agent::packing) on, with its caps: a member asks for as many jobs as it has
     /// slots free (`Ask::want`) and runs every one granted. None: one job an ask, as today.
@@ -148,6 +149,9 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
     let slots = |k: usize| {
         if k == 0 {
             crate::agent::SLOTS
+        } else if cfg.member_slots == 0 {
+            // (As the agent has them: by its Mac's cores, crate::agent::member_slots.)
+            crate::agent::member_slots(cfg.macs[k].cores as usize)
         } else {
             cfg.member_slots
         }
@@ -460,7 +464,8 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                     limit_mb: Some(limit(k)),
                     disk_mb: Some(disk_mb),
                     cap: Some(cap),
-                    want: if cfg.packing.is_some() { slots(k) - running[k].len() } else { 0 },
+                    // (As the agent asks: its slots free, packing on.)
+                    want: crate::agent::member_want(cfg.packing.is_some(), slots(k), running[k].len()),
                     ..Default::default()
                 };
                 let Some(mut g) = w.ask(&a).map_err(|e| format!("ask: {e:#}"))? else {
@@ -615,6 +620,20 @@ mod tests {
             run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(Default::default()), nas: None }).unwrap();
         assert!(r.most[1] >= 3, "{r:?}");
         assert!(r.most[1] <= 4, "past its cores: {r:?}");
+        assert!(r.secs < one.secs, "{} s packed, {} s one a time", r.secs, one.secs);
+    }
+
+    /// Packing on, the members' slots as the agent has them (task #240: by their cores, asking for
+    /// those free): the M1 and a 48 GB member each hold several jobs at once, every invariant
+    /// holding, the plan done sooner than one a time.
+    #[test]
+    fn members_with_the_agents_slots_pack_by_their_room() {
+        let mut macs = m4_m1();
+        macs.push(Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 });
+        let one = run(&Cfg { macs: macs.clone(), steps: plan(), member_slots: 1, packing: None }).unwrap();
+        let r = run(&Cfg { macs, steps: plan(), member_slots: 0, packing: Some(Default::default()) }).unwrap();
+        assert!(r.most[1] >= 2 && r.most[2] >= 3, "{r:?}");
+        assert!(r.most[2] <= 4, "past its cores: {r:?}");
         assert!(r.secs < one.secs, "{} s packed, {} s one a time", r.secs, one.secs);
     }
 

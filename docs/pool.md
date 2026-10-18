@@ -290,7 +290,17 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
   one. Each job is still a quarter hour (`JOB_S`). The switch's file may cap the jobs a member
   holds (`cap <n>`, or `cap <worker> <n>` for one, by the name it asks with: a Mac asking under two names
   gets two); no cap by default. Off, an ask gets one job.
-  Today's agent still runs one job a member and asks with no `want` (its N slots are planned).
+  The member's agent (`crate::agent`, task #240) reads the same switch: on, it asks while it has a
+  slot free (`member_slots`: its cores less the two kept for its owner, at most `MAX_SLOTS`) with
+  `want` its slots free (`member_want`), and starts every job granted, each in a slot of its own;
+  with a job running it asks only while nothing holds more back (the build's pause, a job stopping
+  at a safe point, the memory guard's hold, a frozen job: `may_pack`). The slots past the first two
+  are made as jobs are granted and dropped once empty. Each slot has its own files in the agent's
+  folder (`job-<k>.json`, `control-<k>`, `costs-<k>.jsonl`, `done-<k>.txt`, …, the first slot's
+  without a number) and scratch folder (`scratch-<k>/`), and its own name as a worker
+  (`<host> #<k>`; an earlier agent's `<host> (second job)` is still read as `#2`). A packed job's
+  threads are the member's cores less two, shared among its jobs. Off, it asks with no `want`
+  for one job at a time, as before.
 - **Order and locality:** a member gets a contiguous run of plan targets, from the front or just
   after its last target, as many as fit `coord::JOB_S` (a quarter hour) of measured time.
 - **A map update shared** (`crate::agent::publish`, behind `state/pool/update-share`): the lead's own
@@ -308,11 +318,11 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
 - **The forecast for equal machines** (`crate::agent::forecast::equal_machines`): a second forecast,
   `equal`, with each member's slots and the pages as lanes at their measured speeds. Reports only.
 
-**A job waiting on a worker** (the lead's slots; `crate::offload`'s `WAITING_ENV`): a unit job
-waiting on a faster worker for its tail writes `SCENIC_WAITING`; while it exists a second job may
-start beside it counting the waiting job's current memory and none of its cores. That second job
-**yields** (stopped at once, given back, not counted as a failure) when the first resumes and both
-no longer fit.
+**A job waiting on a worker** (`crate::offload`'s `WAITING_ENV`): a unit job waiting on a faster
+worker for its tail writes `SCENIC_WAITING`; while it exists a second job may start beside it
+counting the waiting job's current memory and none of its cores. A job started beside a waiting
+one (the lead's second, or a member's packed job) **yields** to it (stopped at once, given back,
+not counted as a failure, no floor learned) when it resumes and the jobs no longer fit together.
 
 **The memory guard** (`crate::agent::memguard`; `state/pool/memory-guard`, on unless it says `off`):
 
@@ -323,11 +333,16 @@ no longer fit.
   setting, `store::spawn::NO_LARGE_CACHE`; their children inherit it; the agent and server, started
   by launchd, keep it): with it, freed blocks stay in a
   process's footprint, and a dense unit's scenic-build held 6–7 GB of them while its programs ran.
-- **Limit:** the Mac's memory less an eighth, 4 GB at least. Over it, the job beside the largest
-  stops at its next safe point; the largest alone past the limit stops at once only while the Mac
-  is short of memory (pressure warning, or swap growing a GB), else at a safe point. A drain that
-  finds no safe point in 15 minutes is stopped. A stopped job is given back and kept from that Mac
-  for an hour.
+- **Limit:** the Mac's memory less an eighth, 4 GB at least. Over it, the largest fitting alone,
+  another job stops at its next safe point (`memguard::decide_by`): one that yields first, else the
+  newest, then the least progressed, never the largest; one at a time, and none more while the
+  jobs not draining fit the limit. Nothing new starts beside the largest meanwhile (a member asks
+  for nothing). The largest alone past the limit stops at once only while the Mac is short of
+  memory (pressure warning, or swap growing a GB), else at a safe point. A drain that finds no safe
+  point in 15 minutes is stopped. A stopped job is given back and kept from that Mac for an hour.
+- **An update's drain** (a newer app installed): every job stops at its next safe point; the agent
+  restarts once the lead's first slot is free, or a member's every slot, each job given its own
+  wait (its target under way's expected time ×1.5, at most 3 h, at least 15 minutes).
 - **Floors**, learned whatever the switch: the most a target held is its floor
   (`floors.json`, and the pool's state), rising only, tagged with whether it ran alone and the
   step's `cost_version`. A target's predicted memory is never below its floor. A target whose
@@ -538,7 +553,9 @@ tiles (`pack_raw_with`) stays inside the piece's job.
   only a cold start, stopped by the guard; never past its disk or cores); and the plan finishes.
   Runs: the M4 and the M1 (the lead reaches two jobs, the member one) and four Macs; with packing
   on, members' slots a setting: the M1 with two reaches two, a 48 GB member with 16 cores holds
-  three or four small jobs at once (its cores the bound), and a cap holds it to its cap. With
+  three or four small jobs at once (its cores the bound), and a cap holds it to its cap; or the
+  agent's own (`member_slots` by cores, `member_want`), the M1 and a 48 GB member each holding
+  several at once. With
   the NAS budget on (§7.7; each step's NAS bytes and creates a setting, measured into the
   coordinator with its costs), that member's NAS-heavy jobs past the NAS are queued: every
   member's start is checked within the budget, the pool's most at once stays under it where it

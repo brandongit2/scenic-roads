@@ -143,13 +143,15 @@ function model(sw) {
   // it, when it last asked.)
   const gone = (sw.workers || []).filter((w) => w.kind === "native" && w.name !== a.host && !helpers.some((x) => x.host === w.name));
   // The steps under way, on any machine: the lead's jobs, its helpers', the leases.
-  const running = new Set([...macs.flatMap((x) => [x.status.job, x.status.beside]).filter(Boolean).map((j) => stepOf(j.id)), ...(sw.leases || []).map((l) => l.step)]);
+  const running = new Set([...macs.flatMap((x) => [x.status.job, x.status.beside, ...(x.status.more || [])]).filter(Boolean).map((j) => stepOf(j.id)), ...(sw.leases || []).map((l) => l.step)]);
   return { sw, a, now, fresh, fc, regionName, helpers, pages, macs, gone, leasesOf, colourOf, tasks, running, lines: a.checklist || [] };
 }
 
 const stepOf = (id) => String(id || "").split(" ")[0];
-// The lead's second job as a worker (crate::agent::second_worker): its lane, history and pace.
-const secondOf = (host) => `${host} (second job)`;
+// The lead's second job as a worker (crate::agent::second_worker): its lane, history and pace; and
+// the name earlier agents gave it, still in the history they wrote.
+const secondOf = (host) => `${host} #2`;
+const oldSecondOf = (host) => `${host} (second job)`;
 // The checklist's line (a stage's) that counts `step`, and its item for it.
 const lineOf = (m, step) => m.lines.find((l) => (l.steps || []).includes(step) || (l.items || []).some((i) => i.step === step));
 const itemOf = (m, step) => lineOf(m, step)?.items?.find((i) => i.step === step);
@@ -439,7 +441,7 @@ function machineCard(m, x) {
     else card.append(h("div", "sub", st.beside_why));
     card.append(...[nextBlock(m, secondOf(x.name))].filter(Boolean));
   }
-  const more = [x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, x.role === "lead" ? [x.name, secondOf(x.name)] : x.name) || [])];
+  const more = [x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, x.role === "lead" ? [x.name, secondOf(x.name), oldSecondOf(x.name)] : x.name) || [])];
   card.append(...more.filter(Boolean));
   return card;
 }

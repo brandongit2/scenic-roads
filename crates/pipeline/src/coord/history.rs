@@ -193,9 +193,12 @@ impl History {
                     started.insert(w.clone(), e.t);
                 }
                 // (An agent started: its worker's jobs ended with the agent before, whenever that was
-                // (its second job's too: crate::agent::second_worker); they count to here at most.)
+                // (its other slots' too, by any name they went by: crate::agent::is_slot_of); they
+                // count to here at most.)
                 "agent" => {
-                    for k in [w.clone(), crate::agent::second_worker(&w)] {
+                    let mine: Vec<String> =
+                        started.keys().filter(|k| crate::agent::is_slot_of(k, &w)).cloned().collect();
+                    for k in mine {
                         if let Some(t0) = started.remove(&k) {
                             spans.push((k, t0, e.t));
                         }

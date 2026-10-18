@@ -113,8 +113,53 @@ const UPDATE_CAP: Duration = Duration::from_secs(3 * 3600);
 const UPDATE_STALL: Duration = Duration::from_secs(30 * 60);
 
 /// How many jobs the lead runs at once (docs/plan.md §8, Two jobs at once): the plan's first it
-/// can run, and a second beside it (`SECOND`). A member runs one, as the lead leases them.
+/// can run, and a second beside it (`SECOND`). A member runs one, as the lead leases them; with
+/// packing on (crate::agent::packing), as many as its lead grants, each in a slot of its own, the
+/// slots grown and shrunk with its leases (`Agent::slots`, `member_slots`). The agent keeps this
+/// many slots at least.
 pub(crate) const SLOTS: usize = 2;
+
+/// The most slots an agent holds (a bound on a member's packed jobs, whatever its cores; the
+/// names of its slots' files and workers by number below it).
+pub(crate) const MAX_SLOTS: usize = 64;
+
+/// The jobs a member runs at once with packing on: one a core past the two kept for its owner, as
+/// a helper's first job leaves them (`Agent::start`), at least one and at most `MAX_SLOTS`. Its
+/// lead grants fewer when its room (memory, disk, the cores its jobs measured) holds fewer.
+pub(crate) fn member_slots(cores: usize) -> usize {
+    cores.saturating_sub(2).clamp(1, MAX_SLOTS)
+}
+
+/// What a member asks for (crate::coord::Ask::want): with packing on, its slots free (`slots` its
+/// most, `running` its jobs now); off, 0 (one job an ask, as before).
+pub(crate) fn member_want(packing: bool, slots: usize, running: usize) -> usize {
+    if packing {
+        slots.saturating_sub(running)
+    } else {
+        0
+    }
+}
+
+/// `SCENIC_TEST_WORKER` when set: the name the agent works and reports under in place of its Mac's
+/// (the two-Mac test's alone, tools/check/pool-two-macs.sh: a member beside the lead on one Mac,
+/// asking under a name of its own). Never a real agent's.
+fn test_worker() -> Option<String> {
+    let w = std::env::var("SCENIC_TEST_WORKER").ok().filter(|w| !w.trim().is_empty())?;
+    eprintln!(
+        "agent: WARNING: SCENIC_TEST_WORKER: this agent works as {w} (the two-Mac test's alone, never a real agent's)"
+    );
+    Some(w)
+}
+
+/// A slot's files' suffix in the agent's folder: none for the first, `-2`, `-3`, … after
+/// (`job.json`, `job-2.json`, …; `scratch/`, `scratch-2/`, …).
+fn slot_suffix(k: usize) -> String {
+    if k == 0 {
+        String::new()
+    } else {
+        format!("-{}", k + 1)
+    }
+}
 
 /// The steps the second job takes, in its order of preference (the steps table's: crate::agent::
 /// steps; by measure, any: `Agent::start_second`); those that keep the pass's Wikidata and Wikipedia answers here
@@ -226,10 +271,46 @@ fn own_cost_key(id: &str) -> String {
     crate::coord::cost_key(s, t)
 }
 
-/// The lead's second job as a worker (the build's history, the forecast's machines, the worker
-/// page): the Mac's name, marked.
+/// Slot `k`'s job as a worker (the build's history, the forecast's machines, the worker page): the
+/// Mac's name, and past the first slot its number (`<host> #2`, `#3`, …).
+pub fn slot_worker(host: &str, k: usize) -> String {
+    if k == 0 {
+        host.to_string()
+    } else {
+        format!("{host} #{}", k + 1)
+    }
+}
+
+/// The lead's second job as a worker: `slot_worker`'s second.
 pub fn second_worker(host: &str) -> String {
-    format!("{host} (second job)")
+    slot_worker(host, 1)
+}
+
+/// A worker's name as this agent names it: an earlier agent's second job (`<host> (second job)`,
+/// still in the history and costs it wrote) as `second_worker`; any other as it is.
+pub fn worker_now(name: &str) -> String {
+    match name.strip_suffix(" (second job)") {
+        Some(host) => second_worker(host),
+        None => name.to_string(),
+    }
+}
+
+/// Whether worker `name` is one of `host`'s slots' (`slot_worker`, or an earlier agent's second
+/// job: `worker_now`).
+pub fn is_slot_of(name: &str, host: &str) -> bool {
+    match worker_now(name).strip_prefix(host) {
+        Some("") => true,
+        Some(rest) => rest.strip_prefix(" #").is_some_and(|n| n.parse::<usize>().is_ok_and(|n| n >= 2)),
+        None => false,
+    }
+}
+
+/// Every name `host`'s slots go by (`slot_worker` up to `MAX_SLOTS`, and an earlier agent's second
+/// job's), for what drops a process's leases by its workers.
+pub fn slot_workers(host: &str) -> Vec<String> {
+    let mut v: Vec<String> = (0..MAX_SLOTS).map(|k| slot_worker(host, k)).collect();
+    v.push(format!("{host} (second job)"));
+    v
 }
 
 /// A job slot's running job and what goes with it: its lease (the coordinator's, or a helper's
@@ -264,6 +345,29 @@ struct Slot {
     yields: Option<String>,
     /// Its job is being stopped for yielding (`yield_stop`): given back, nothing learned of it.
     yield_stopped: bool,
+}
+
+/// An agent's slots (`Agent::slots`): `SLOTS` of them fresh, more as a member's packed jobs take
+/// them.
+struct Slots(Vec<Slot>);
+
+impl Default for Slots {
+    fn default() -> Slots {
+        Slots((0..SLOTS).map(|_| Slot::default()).collect())
+    }
+}
+
+impl std::ops::Deref for Slots {
+    type Target = Vec<Slot>;
+    fn deref(&self) -> &Vec<Slot> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Slots {
+    fn deref_mut(&mut self) -> &mut Vec<Slot> {
+        &mut self.0
+    }
 }
 
 /// How long the first slot may pass over a job that can't share the Mac with the second's (it then
@@ -537,6 +641,9 @@ pub struct Status {
     pub beside: Option<JobView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beside_why: Option<String>,
+    /// A member's packed jobs past those two (packing on: crate::agent::packing), by slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<JobView>,
     /// SCENIC_TEST_DISK_EXTRA_MB when set (MB counted free past what the disk has): a test's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_disk_extra_mb: Option<u64>,
@@ -890,8 +997,10 @@ pub struct Agent {
     app: String,
     started: u64,
     mem: Memory,
-    /// The jobs running: the first slot's, and on the lead a second's beside it (`SLOTS`).
-    slots: [Slot; SLOTS],
+    /// The jobs running, a slot each: the first slot's, and on the lead a second's beside it
+    /// (`SLOTS`, always there); a member with packing on, one a lease it holds, the slots past
+    /// `SLOTS` grown as its jobs are granted (`free_slot`) and dropped once empty (`trim_slots`).
+    slots: Slots,
     /// Why the second slot has nothing, when it hasn't, for the status.
     beside_why: Option<String>,
     /// The disk's free bytes as a test sets them (`disk_free`).
@@ -1260,11 +1369,11 @@ impl Agent {
         let map_update = read_map_update(&o.home);
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
         Ok(Agent {
-            host: cond::host_name(),
+            host: test_worker().unwrap_or_else(cond::host_name),
             app,
             started: now_s(),
             mem,
-            slots: Default::default(),
+            slots: Slots::default(),
             beside_why: None,
             free_set: None,
             grace: DRAIN_GRACE,
@@ -1431,15 +1540,20 @@ impl Agent {
     /// is given back. (A job's work goes through the journal: crate::agent::pool.)
     fn send_outbox(&mut self, root: &Path, waiting: &mut Vec<Waiting>) {
         let Ok(rd) = std::fs::read_dir(self.outbox()) else { return };
-        let running = match &self.slots[0].lease {
-            Some(Held::Leased { dir, .. }) => Some(dir.clone()),
-            _ => None,
-        };
+        // (Every slot's: a member's packed jobs' too.)
+        let running: Vec<PathBuf> = self
+            .slots
+            .iter()
+            .filter_map(|s| match &s.lease {
+                Some(Held::Leased { dir, .. }) => Some(dir.clone()),
+                _ => None,
+            })
+            .collect();
         // (A job's folder from before the pool, drained into the journal: tasks' alone here.)
         let dirs: Vec<PathBuf> = rd
             .flatten()
             .map(|e| e.path())
-            .filter(|p| p.is_dir() && Some(p) != running.as_ref() && !p.join("work.json").exists())
+            .filter(|p| p.is_dir() && !running.contains(p) && !p.join("work.json").exists())
             .collect();
         if dirs.is_empty() {
             return;
@@ -1560,8 +1674,17 @@ impl Agent {
 
     /// A member's next job: work of the plan the lead's coordinator leases it (a job's worth of
     /// a shared step's targets, none needing more memory than it spares), built from the pass it
-    /// says, saving into the lease's outbox folder. Asked only when it could start now.
+    /// says, saving into the lease's outbox folder. Asked only when it could start now. (Its jobs
+    /// alone: `helper_grants`.)
+    #[cfg(test)]
     fn helper_job(&mut self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+        self.helper_grants(root, c, waiting).into_iter().map(|(_, spec)| spec).collect()
+    }
+
+    /// A member's next jobs (`helper_job`), each with the slot it goes in: packing off, one in the
+    /// first; on (crate::agent::packing), as many as it has slots free (`member_want`), each granted
+    /// put in a slot of its own (`take_grant`).
+    fn helper_grants(&mut self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<(usize, JobSpec)> {
         let needs = Needs { nas: true };
         if let Some(why) = lapsed(&needs, c) {
             waiting.push(Waiting { step: None, what: "Building".into(), why });
@@ -1656,27 +1779,88 @@ impl Agent {
             // own: `own_room`. What its caches could free isn't counted: nothing frees it first.)
             disk_mb: every.then(|| self.disk_free().saturating_sub(room::RESERVE + self.floor()) >> 20),
             cap: Some(self.capacity(c)),
+            want: member_want(self.packing.is_some(), self.member_slots(), self.running_jobs()),
             ..Default::default()
         };
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
         let asked = client.ask(&ask);
-        let fail = |a: &Self, lease: u64, why: &str| {
-            if let Some(c) = &a.client {
-                c.fail(lease, why, None).ok();
-            }
-        };
         // (Work given: the build isn't paused.)
         if matches!(asked, Ok(Some(_))) {
             self.know_pause(None);
         }
         match asked {
-            Ok(Some(crate::coord::Grant {
+            Ok(Some(mut g)) => {
+                // (Several granted at once only with packing on: each in a slot of its own.)
+                let more = std::mem::take(&mut g.more);
+                let mut got = Vec::new();
+                for g in std::iter::once(g).chain(more) {
+                    got.extend(self.take_grant(g, root, every, waiting));
+                }
+                got
+            }
+            Ok(None) => {
+                self.know_pause(None);
+                waiting.push(Waiting {
+                    step: None,
+                    what: "Building".into(),
+                    why: "the lead has nothing for this Mac now".into(),
+                });
+                Vec::new()
+            }
+            Err(e) => {
+                let why = match e.downcast_ref::<crate::coord::client::Refused>() {
+                    Some(r) => {
+                        // (The build paused: this Mac too, until an answer says it goes on; refused
+                        // for anything else, it isn't paused.)
+                        if !self.pause_local {
+                            self.know_pause(r.pause.clone());
+                        }
+                        r.why.clone()
+                    }
+                    None => self.unreached_why(&e),
+                };
+                // (Paused: the start loop says so.)
+                if self.pause.is_none() {
+                    waiting.push(Waiting { step: None, what: "Building".into(), why });
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    /// A job granted to this member (`helper_job`), put in its slot: the first slot packing off;
+    /// on, the first free, or a new one (`free_slot`). Its lease in the slot, and its job to start
+    /// there; None when it can't be (given back, or failed, as before).
+    fn take_grant(
+        &mut self,
+        grant: crate::coord::Grant,
+        root: &Path,
+        every: bool,
+        waiting: &mut Vec<Waiting>,
+    ) -> Option<(usize, JobSpec)> {
+        let needs = Needs { nas: true };
+        let fail = |a: &Self, lease: u64, why: &str| {
+            if let Some(c) = &a.client {
+                c.fail(lease, why, None).ok();
+            }
+        };
+        let slot = if self.packing.is_some() { self.free_slot() } else { Some(0) };
+        let Some(k) = slot else {
+            if let Some(c) = &self.client {
+                if let Err(e) = c.give_back(grant.lease, "no slot free on this Mac") {
+                    eprintln!("agent: giving lease {} back: {e:#} (it lapses)", grant.lease);
+                }
+            }
+            return None;
+        };
+        match grant {
+            crate::coord::Grant {
                 lease,
                 term,
                 work: crate::coord::Granted::Job { step, targets, pass },
                 as_of,
                 ..
-            })) if steps::SHARED.contains(&step.as_str())
+            } if steps::SHARED.contains(&step.as_str())
                 || (every && every::offered(&step))
                 || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) =>
             {
@@ -1705,7 +1889,7 @@ impl Agent {
                 if let Err(e) = kept {
                     waiting.push(Waiting { step: None, what: "Building".into(), why: format!("{e}") });
                     fail(self, lease, &format!("its outbox: {e}"));
-                    return Vec::new();
+                    return None;
                 }
                 let s = |p: &Path| p.to_string_lossy().into_owned();
                 // The lead's own command for it, its saves handed off (SCENIC_HANDOFF).
@@ -1723,17 +1907,20 @@ impl Agent {
                         Some(l) => Held::Pooled { id: lease, term: l.term, dir, own: false },
                         None => Held::Leased { lease, dir },
                     };
-                    self.slots[0].lease = Some(lease_kept);
+                    self.slots[k].lease = Some(lease_kept);
                     let what =
                         format!("Reading the OpenStreetMap planet of {date} (resumed here, its progress on this Mac)");
-                    return vec![JobSpec {
-                        id: format!("{step} {date}"),
-                        what,
-                        cmd,
-                        needs,
-                        restart_after_sleep: true,
-                        record: None,
-                    }];
+                    return Some((
+                        k,
+                        JobSpec {
+                            id: format!("{step} {date}"),
+                            what,
+                            cmd,
+                            needs,
+                            restart_after_sleep: true,
+                            record: None,
+                        },
+                    ));
                 }
                 // (A map update's step: the map update's units, as the lead granted them, read from its folder
                 // as the lead's own job reads its map update's file.)
@@ -1749,7 +1936,7 @@ impl Agent {
                             why: format!("the map update's units: {e:#}"),
                         });
                         fail(self, lease, &format!("the map update's units: {e:#}"));
-                        return Vec::new();
+                        return None;
                     }
                     cmd.push(format!("{}={}#{}", crate::out::UNITS_AS_OF_ENV, f.display(), a.began));
                 }
@@ -1781,20 +1968,23 @@ impl Agent {
                 let n = targets.len();
                 let id = format!("{step} {}", targets.first().map(|t| t.0.as_str()).unwrap_or(""));
                 let what = format!("{}, for the lead", steps::said(&step, n, None));
-                self.slots[0].lease = Some(match pooled {
+                self.slots[k].lease = Some(match pooled {
                     Some(l) => Held::Pooled { id: lease, term: l.term, dir, own: false },
                     None => Held::Leased { lease, dir },
                 });
-                vec![JobSpec {
-                    id,
-                    what,
-                    cmd,
-                    needs,
-                    restart_after_sleep: true,
-                    record: Some(build::Work { step, targets }),
-                }]
+                Some((
+                    k,
+                    JobSpec {
+                        id,
+                        what,
+                        cmd,
+                        needs,
+                        restart_after_sleep: true,
+                        record: Some(build::Work { step, targets }),
+                    },
+                ))
             }
-            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Task { id, task, .. }, .. })) => {
+            crate::coord::Grant { lease, work: crate::coord::Granted::Task { id, task, .. }, .. } => {
                 // A task (a unit's tail, or a 3D buildings' z8 area, for the lead's job), run here
                 // by `scenic run-task` over its files fetched from the coordinator, reading the NAS's
                 // data where it lies (only reading it: crate::unit::Tools::stores_read_only).
@@ -1803,7 +1993,7 @@ impl Agent {
                 if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&spec, task.to_string())) {
                     waiting.push(Waiting { step: None, what: "Building".into(), why: format!("{e}") });
                     fail(self, lease, &format!("its outbox: {e}"));
-                    return Vec::new();
+                    return None;
                 }
                 let s = |p: &Path| p.to_string_lossy().into_owned();
                 let contact = self.client.as_ref().map(|c| (c.urls().join(","), c.token())).unwrap_or_default();
@@ -1820,7 +2010,7 @@ impl Agent {
                     "--lease".into(),
                     lease.to_string(),
                     "--dir".into(),
-                    s(&self.o.home.join("scratch/task")),
+                    s(&self.slot_scratch(k).join("task")),
                     "--result".into(),
                     s(&dir.join("task.json")),
                     // (What a page reads through the coordinator, read on the NAS here.)
@@ -1828,7 +2018,7 @@ impl Agent {
                     s(root),
                 ];
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
-                self.slots[0].lease = Some(Held::Leased { lease, dir });
+                self.slots[k].lease = Some(Held::Leased { lease, dir });
                 let what = if task["runs"][0]["prog"] == crate::bld::task::KIND {
                     format!("3D buildings of the lead's area {unit}")
                 } else if task["runs"][0]["what"] == crate::trees::task::KIND {
@@ -1838,17 +2028,20 @@ impl Agent {
                 } else {
                     format!("Scenery for the lead's area {unit}")
                 };
-                vec![JobSpec {
-                    id: format!("task {id}"),
-                    what,
-                    cmd,
-                    needs: Needs { nas: true },
-                    restart_after_sleep: false,
-                    record: None,
-                }]
+                Some((
+                    k,
+                    JobSpec {
+                        id: format!("task {id}"),
+                        what,
+                        cmd,
+                        needs: Needs { nas: true },
+                        restart_after_sleep: false,
+                        record: None,
+                    },
+                ))
             }
             // (A resumable job granted as resuming was switched off here: given back, not failed.)
-            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, .. }, .. }))
+            crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, .. }, .. }
                 if resume::RESUMABLE.contains(&step.as_str()) =>
             {
                 if let Some(c) = &self.client {
@@ -1856,11 +2049,11 @@ impl Agent {
                         eprintln!("agent: giving lease {lease} of {step} back: {e:#} (it lapses)");
                     }
                 }
-                Vec::new()
+                None
             }
             // (A step of the plan granted as every step to every member was switched off here: given
             // back, not failed.)
-            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, .. }, .. }))
+            crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, .. }, .. }
                 if every::offered(&step) =>
             {
                 if let Some(c) = &self.client {
@@ -1868,38 +2061,11 @@ impl Agent {
                         eprintln!("agent: giving lease {lease} of {step} back: {e:#} (it lapses)");
                     }
                 }
-                Vec::new()
+                None
             }
-            Ok(Some(g)) => {
+            g => {
                 fail(self, g.lease, "this helper can't do that work");
-                Vec::new()
-            }
-            Ok(None) => {
-                self.know_pause(None);
-                waiting.push(Waiting {
-                    step: None,
-                    what: "Building".into(),
-                    why: "the lead has nothing for this Mac now".into(),
-                });
-                Vec::new()
-            }
-            Err(e) => {
-                let why = match e.downcast_ref::<crate::coord::client::Refused>() {
-                    Some(r) => {
-                        // (The build paused: this Mac too, until an answer says it goes on; refused
-                        // for anything else, it isn't paused.)
-                        if !self.pause_local {
-                            self.know_pause(r.pause.clone());
-                        }
-                        r.why.clone()
-                    }
-                    None => self.unreached_why(&e),
-                };
-                // (Paused: the start loop says so.)
-                if self.pause.is_none() {
-                    waiting.push(Waiting { step: None, what: "Building".into(), why });
-                }
-                Vec::new()
+                None
             }
         }
     }
@@ -2196,7 +2362,7 @@ impl Agent {
     }
 
     fn record_path(&self, k: usize) -> PathBuf {
-        self.o.home.join(if k == 0 { "job.json" } else { "job-2.json" })
+        self.o.home.join(format!("job{}.json", slot_suffix(k)))
     }
 
     /// Where slot `k`'s job leaves its timings' record (`SCENIC_TIMINGS`).
@@ -2213,7 +2379,7 @@ impl Agent {
     }
 
     fn timings_path(&self, k: usize) -> PathBuf {
-        self.o.home.join(if k == 0 { "timings-run.json" } else { "timings-run-2.json" })
+        self.o.home.join(format!("timings-run{}.json", slot_suffix(k)))
     }
 
     /// Slot `k`'s ended job's timings (crate::timings): kept in this Mac's log (`timings.jsonl`),
@@ -2250,19 +2416,19 @@ impl Agent {
 
     /// Where slot `k`'s job notes what its units cost (`SCENIC_COSTS`).
     fn costs_path(&self, k: usize) -> PathBuf {
-        self.o.home.join(if k == 0 { "costs.jsonl" } else { "costs-2.jsonl" })
+        self.o.home.join(format!("costs{}.jsonl", slot_suffix(k)))
     }
 
     /// Where slot `k`'s job's accessors keep the bytes they've added to the caches
     /// (store::cachefile::WRITTEN_ENV), for the disk guard's sampler.
     fn written_path(&self, k: usize) -> PathBuf {
-        self.o.home.join(if k == 0 { "written" } else { "written-2" })
+        self.o.home.join(format!("written{}", slot_suffix(k)))
     }
 
     /// Where slot `k`'s job keeps the file that says it waits on a worker (crate::offload's
     /// WAITING_ENV), while it does.
     fn waiting_path(&self, k: usize) -> PathBuf {
-        self.o.home.join(if k == 0 { "waiting" } else { "waiting-2" })
+        self.o.home.join(format!("waiting{}", slot_suffix(k)))
     }
 
     /// What slot `k`'s job waits on, when it waits on a worker holding its unit's tail and nothing
@@ -2285,13 +2451,87 @@ impl Agent {
         ))
     }
 
-    /// Slot `k`'s worker in the build's history and the forecast: this Mac, or its second job.
+    /// Slot `k`'s worker in the build's history and the forecast: this Mac, or its job's slot
+    /// (`slot_worker`).
     fn worker_of(&self, k: usize) -> String {
-        if k == 0 {
-            self.host.clone()
-        } else {
-            second_worker(&self.host)
+        slot_worker(&self.host, k)
+    }
+
+    /// The folder slot `k`'s jobs keep their scratch in: `scratch/` the first's, `scratch-<k+1>/`
+    /// another's (`start` moves a job's `--scratch` there).
+    fn slot_scratch(&self, k: usize) -> PathBuf {
+        self.o.home.join(format!("scratch{}", slot_suffix(k)))
+    }
+
+    /// The slot a member's next granted job goes in: the first free (no job, no lease), else a new
+    /// one past the last (up to `MAX_SLOTS`; None past it).
+    fn free_slot(&mut self) -> Option<usize> {
+        if let Some(k) = self.slots.iter().position(|s| s.running.is_none() && s.lease.is_none()) {
+            return Some(k);
         }
+        (self.slots.len() < MAX_SLOTS).then(|| {
+            self.slots.push(Slot::default());
+            self.slots.len() - 1
+        })
+    }
+
+    /// The slots past `SLOTS` that hold nothing (no job, no lease), dropped from the end: a member's
+    /// packed jobs' slots, once they ended.
+    fn trim_slots(&mut self) {
+        while self.slots.len() > SLOTS && self.slots.last().is_some_and(|s| s.running.is_none() && s.lease.is_none()) {
+            let k = self.slots.len() - 1;
+            self.sampler.unwatch(k);
+            self.slots.pop();
+        }
+    }
+
+    /// The most jobs this member runs at once with packing on (`member_slots` of its cores).
+    fn member_slots(&self) -> usize {
+        member_slots(std::thread::available_parallelism().map_or(4, |n| n.get()))
+    }
+
+    /// Whether a member with packing on asks for more work now: a slot free (`member_slots`), and,
+    /// with a job running, nothing holding more back: the build not paused, no job stopping at its
+    /// safe point (a pause, an update, the memory guard: `drain_since`, `mem_drain`), none the
+    /// memory guard drained another for (`guard_held`) or a guard froze. With none running, as a
+    /// member asks packing off.
+    fn may_pack(&self) -> bool {
+        let running = self.running_jobs();
+        if running >= self.member_slots() {
+            return false;
+        }
+        running == 0
+            || (self.pause.is_none()
+                && (0..self.slots.len()).all(|k| {
+                    let s = &self.slots[k];
+                    s.running.is_none()
+                        || (s.drain_since.is_none()
+                            && s.mem_drain.is_none()
+                            && self.guard_held(k).is_none()
+                            && !self.sampler.frozen(k)
+                            && !self.sampler.disk_frozen(k))
+                }))
+    }
+
+    /// The jobs running in this agent's slots.
+    fn running_jobs(&self) -> usize {
+        self.slots.iter().filter(|s| s.running.is_some()).count()
+    }
+
+    /// Each slot's rank for the memory guard (memguard::decide_by: the highest drains first): the
+    /// newest job highest, then the least progressed (by its progress's fraction as last said).
+    fn guard_ranks(&self) -> Vec<u64> {
+        self.slots
+            .iter()
+            .map(|s| {
+                s.running.as_ref().map_or(0, |r| {
+                    let frac =
+                        r.said.as_ref().map_or(0.0, |p| if p.1 > 0.0 { (p.0 / p.1).clamp(0.0, 1.0) } else { 0.0 });
+                    // (Its start's second, then a thousandth of its progress left.)
+                    r.started.saturating_mul(1000) + ((1.0 - frac) * 999.0) as u64
+                })
+            })
+            .collect()
     }
 
     /// Whether this agent runs a second job: the lead's (a member's are leased one at a time),
@@ -2427,7 +2667,8 @@ impl Agent {
         self.ticker = self.pool.clone().map(pool::Ticker::start);
         if self._lock.is_some() {
             // (What they finished went to the journal with their hand-offs, as they saved.)
-            for k in 0..SLOTS {
+            // (A member's packed jobs' slots too: every record an earlier agent may have left.)
+            for k in 0..MAX_SLOTS {
                 let orphan = jobs::stop_orphan(&self.record_path(k));
                 self.orphans.extend(orphan.left);
             }
@@ -2485,7 +2726,7 @@ impl Agent {
             }
         }
         let root = self.o.root.clone().or_else(|| self.root());
-        for k in 0..SLOTS {
+        for k in 0..self.slots.len() {
             if let Some(r) = self.slots[k].running.as_mut() {
                 eprintln!("agent: stopping {}", r.spec.id);
                 r.stop(Duration::from_secs(30));
@@ -2568,7 +2809,7 @@ impl Agent {
             self.guard_on = Some(on);
         }
         self.total = self.mac_total_mb();
-        for k in 0..SLOTS {
+        for k in 0..self.slots.len() {
             ended |= self.tend(k, &c, root.as_deref(), slept)?;
         }
         ended |= self.guard();
@@ -2671,15 +2912,38 @@ impl Agent {
             at: p.replan_at,
         });
         let plan_due = plan_due(idle && !self.o.helper, ended, last, seen, now_s(), every);
+        // (A member's packed jobs, each with the slot it was granted into.)
+        let mut member_more: Vec<(usize, JobSpec)> = Vec::new();
         let plan = match &root {
             Some(root) if self.o.helper => {
                 // A member plans nothing: it asks the lead for work, once its last is handed back.
-                let unsent = std::fs::read_dir(self.outbox()).map(|mut d| d.next().is_some()).unwrap_or(false);
-                // (Not while a trim or a clear runs here: `caches_busy`.)
-                let plan = if idle && !unsent && self.caches_task.is_none() {
-                    self.helper_job(root, &c, &mut waiting)
+                // (A folder of a job running here isn't one: a member's packed jobs run beside it.)
+                let held: Vec<PathBuf> = self
+                    .slots
+                    .iter()
+                    .filter_map(|s| match &s.lease {
+                        Some(Held::Leased { dir, .. }) => Some(dir.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                let unsent = std::fs::read_dir(self.outbox())
+                    .map(|d| d.flatten().any(|e| !held.contains(&e.path())))
+                    .unwrap_or(false);
+                // (Not while a trim or a clear runs here: `caches_busy`. Packing on, while a slot is
+                // free and nothing holds more back: `may_pack`.)
+                let asks = if self.packing.is_some() { self.may_pack() } else { idle };
+                let got = if asks && !unsent && self.caches_task.is_none() {
+                    self.helper_grants(root, &c, &mut waiting)
                 } else {
                     Vec::new()
+                };
+                // (Packing off, its one job in the first slot, started as the plan's first; on, each
+                // in the slot it was granted into, started below.)
+                let plan = if self.packing.is_some() {
+                    member_more = got;
+                    Vec::new()
+                } else {
+                    got.into_iter().map(|(_, spec)| spec).collect()
                 };
                 let regions = match &self.planned {
                     Some(p) if !plan_due => p.regions.clone(),
@@ -2791,7 +3055,7 @@ impl Agent {
             } else if let Some(p) = &self.pause {
                 self.beside_why = Some(p.why());
             } else if pool_holds.is_some() {
-                self.beside_why = pool_holds;
+                self.beside_why = pool_holds.clone();
             } else {
                 self.start_second(&plan, &c, root.as_deref());
             }
@@ -2807,10 +3071,28 @@ impl Agent {
             run.cx.starting = false;
             run.cx.duty = duty;
         }
-        // A helper's lease for a job that didn't start (room on the disk, say): given back.
-        if self.slots[0].running.is_none() && self.slots[0].lease.is_some() {
-            self.end_lease(0, Outcome::Interrupted, &[], "it couldn't start on the helper");
+        // A member's packed jobs (packing on), each in its slot, as the first slot's starts: its
+        // conditions, its room on the disk; one beside a job waiting on a worker yields to it
+        // (`yields`), as the lead's second job does.
+        for (k, spec) in member_more {
+            if newer || self.pause.is_some() || pool_holds.is_some() {
+                break;
+            }
+            let beside_waiting = (0..self.slots.len())
+                .find(|&j| j != k && self.waiting_on(j).is_some())
+                .and_then(|j| self.slots[j].running.as_ref().map(|r| r.spec.id.clone()));
+            if self.try_start_said(k, spec, &c, root.as_deref(), &mut waiting) {
+                self.slots[k].yields = beside_waiting;
+            }
         }
+        // A helper's lease for a job that didn't start (room on the disk, say): given back. (A
+        // member's packed jobs' too, in whichever slot.)
+        for k in 0..self.slots.len() {
+            if (k == 0 || self.o.helper) && self.slots[k].running.is_none() && self.slots[k].lease.is_some() {
+                self.end_lease(k, Outcome::Interrupted, &[], "it couldn't start on the helper");
+            }
+        }
+        self.trim_slots();
         // This Mac's caches, between jobs: the owner's ask to clear them, else a trim once the build
         // is done (room::clear, room::trim).
         let caches_why = self.tend_caches(root.as_deref(), c.home);
@@ -2844,7 +3126,9 @@ impl Agent {
         annotate(&mut checklist, &now_steps, &helpers, &waiting);
         let job = self.job_view(0);
         let beside = self.job_view(1);
+        let more: Vec<JobView> = (SLOTS..self.slots.len()).filter_map(|k| self.job_view(k)).collect();
         let status = Status {
+            more,
             host: self.host.clone(),
             pid: std::process::id(),
             app: self.app.clone(),
@@ -2946,6 +3230,7 @@ impl Agent {
     /// pause say. True when it ended.
     fn tend(&mut self, k: usize, c: &Conditions, root: Option<&Path>, slept: u64) -> Result<bool> {
         let run_time = self.run_time(k);
+        let draining = self.slots[k].drain_since.is_some();
         let Some(r) = self.slots[k].running.as_mut() else { return Ok(false) };
         if let Some(st) = r.poll()? {
             // (Its own run's time as it says, else as seen here: an ended job is seen at the next
@@ -2956,7 +3241,7 @@ impl Agent {
             let ok = st.success();
             // Stopped at a safe point, the build pausing (crate::control): not a failure. (Only
             // when it was asked to: a job's own exit 75 for anything else is a failure.)
-            let paused = st.code() == Some(crate::control::PAUSED_EXIT) && self.slots[k].drain_since.is_some();
+            let paused = st.code() == Some(crate::control::PAUSED_EXIT) && draining;
             let of = r.spec.record.as_ref().map_or(0, |w| w.targets.len());
             let step = r.spec.record.as_ref().map(|w| w.step.clone()).unwrap_or_default();
             // The targets it finished: every one when it succeeded, else those it noted done as
@@ -3756,7 +4041,7 @@ impl Agent {
         if running.len() >= SLOTS || running.iter().any(|j| self.runs_alone(j)) {
             return (0, 0);
         }
-        let held: u64 = (0..SLOTS).filter_map(|k| self.held_mb(k)).sum();
+        let held: u64 = (0..self.slots.len()).filter_map(|k| self.held_mb(k)).sum();
         // (Before the loop's first read of the Mac's memory, as the Mac says it now.)
         let total = match self.total_mb() {
             0 => self.mac_total_mb(),
@@ -3776,7 +4061,8 @@ impl Agent {
     /// This Mac's memory (MB) as the Mac says it now (0: unknown).
     fn mac_total_mb(&self) -> u64 {
         match self.mac {
-            cond::Mac::Real => crate::sys::memsize().map_or(0, |b| b >> 20),
+            // (`SCENIC_TEST_MEM_MB`: the two-Mac test's Mac of that memory, its limit squeezed.)
+            cond::Mac::Real => cond::test_mem_mb().unwrap_or_else(|| crate::sys::memsize().map_or(0, |b| b >> 20)),
             _ => (self.mac.resources(&self.o.home, None, None, None).mem_gb * 1024.0) as u64,
         }
     }
@@ -3803,9 +4089,10 @@ impl Agent {
     }
 
     /// The memory guard (crate::agent::memguard), once a loop after the jobs are tended, by what its
-    /// sampler saw: while the jobs here hold more together than this Mac's limit, the job beside the
-    /// largest stops at its next safe point when the largest fits alone (and nothing starts beside
-    /// it until it ends); the largest, past the limit alone, stops at once while the Mac is in
+    /// sampler saw: while the jobs here hold more together than this Mac's limit, another job than
+    /// the largest stops at its next safe point when the largest fits alone (the newest, then the
+    /// least progressed, one at a time: memguard::decide_by, `guard_ranks`; and nothing starts
+    /// beside the largest until it ends); the largest, past the limit alone, stops at once while the Mac is in
     /// trouble (the sampler froze it, or the pressure or the swap says so now), else at its next
     /// safe point too; a job drained that reached no safe point in the time a pause gives one stops
     /// at once. One it stops is given back, not failed, kept from this Mac for an hour (a member's
@@ -3820,19 +4107,19 @@ impl Agent {
             self.guard_last = Some(last);
         }
         if !on {
-            for k in 0..SLOTS {
+            for k in 0..self.slots.len() {
                 if self.sampler.thaw(k) {
                     eprintln!("agent: memory guard: slot {k}'s job goes on (the guard is off)");
                 }
             }
             return false;
         }
-        let held: Vec<Option<u64>> = (0..SLOTS).map(|k| self.held_mb(k)).collect();
+        let held: Vec<Option<u64>> = (0..self.slots.len()).map(|k| self.held_mb(k)).collect();
         let total: u64 = held.iter().flatten().sum();
         // (A job started beside one waiting on a worker, that one gone on: stopped at once, not at
         // a safe point, once the two hold more than the limit or the Mac is short of memory; it was
         // placed by what the other held while it waited, so it did nothing wrong: `yield_stop`.)
-        if let Some(k) = (0..SLOTS).find(|&k| self.yielding(k)) {
+        if let Some(k) = (0..self.slots.len()).find(|&k| self.yielding(k)) {
             let trouble = self.sampler.in_trouble();
             if total > limit || trouble {
                 let gb = |mb: u64| mb as f64 / 1024.0;
@@ -3845,14 +4132,8 @@ impl Agent {
                         gb(limit)
                     )
                 };
-                let beside = self
-                    .slots
-                    .iter()
-                    .enumerate()
-                    .find(|(b, _)| *b != k)
-                    .and_then(|(_, s)| s.running.as_ref())
-                    .map(|r| r.spec.id.clone())
-                    .unwrap_or_default();
+                // (The job it yields to: the one it started beside, in whichever slot.)
+                let beside = self.slots[k].yields.clone().unwrap_or_default();
                 return self.yield_stop(k, &format!("given back by the memory guard: started beside {beside} while it waited on a worker, it yields now that {beside} goes on, {why}"));
             }
         }
@@ -3860,19 +4141,25 @@ impl Agent {
             return false;
         }
         let draining: Vec<bool> = self.slots.iter().map(|s| s.mem_drain.is_some()).collect();
-        let late = (0..SLOTS).find(|&k| {
+        let late = (0..self.slots.len()).find(|&k| {
             draining[k]
                 && !self.slots[k].mem_drain_alone
                 && self.slots[k].drain_since.is_some_and(|t| t.elapsed() >= self.grace)
         });
         let gb = |mb: u64| mb as f64 / 1024.0;
         let id_of = |a: &Self, k: usize| a.slots[k].running.as_ref().map(|r| r.spec.id.clone()).unwrap_or_default();
-        let yields: Vec<bool> = (0..SLOTS).map(|k| self.yielding(k)).collect();
-        let stop = match (late, memguard::decide(&held, limit, &draining, &yields)) {
+        let yields: Vec<bool> = (0..self.slots.len()).map(|k| self.yielding(k)).collect();
+        // (Of several, the newest drains first, then the least progressed: `guard_ranks`.)
+        let ranks = self.guard_ranks();
+        let stop = match (late, memguard::decide_by(&held, limit, &draining, &yields, &ranks)) {
             (Some(k), _) => Some((k, format!("stopped by the memory guard: it reached no safe point in {} min while the jobs here held {:.1} GB together, past this Mac's limit of {:.1} GB", DRAIN_GRACE.as_secs() / 60, gb(total), gb(limit)))),
             (None, memguard::Act::Nothing) => None,
             (None, memguard::Act::Drain(k)) => {
-                let big = (0..SLOTS).find(|&b| b != k && held[b].is_some()).unwrap_or(0);
+                // (The largest job: the one it makes room for.)
+                let big = (0..self.slots.len())
+                    .filter(|&b| b != k && held[b].is_some())
+                    .max_by_key(|&b| (held[b], std::cmp::Reverse(b)))
+                    .unwrap_or(0);
                 let beside = id_of(self, big);
                 let why = format!("the jobs here hold {:.1} GB together, past this Mac's limit of {:.1} GB: it makes room for {beside} ({:.1} GB)", gb(total), gb(limit), gb(held[big].unwrap_or(0)));
                 let id = id_of(self, k);
@@ -3978,7 +4265,7 @@ impl Agent {
     fn disk_guard(&mut self, root: Option<&Path>) -> bool {
         self.sampler.set_disk(true, room::RESERVE, &self.o.home);
         let frozen: Vec<usize> =
-            (0..SLOTS).filter(|&k| self.slots[k].running.is_some() && self.sampler.disk_frozen(k)).collect();
+            (0..self.slots.len()).filter(|&k| self.slots[k].running.is_some() && self.sampler.disk_frozen(k)).collect();
         if frozen.is_empty() {
             self.disk_room = None;
             return false;
@@ -4131,7 +4418,9 @@ impl Agent {
     /// in the other slot until it ends.
     fn guard_held(&self, k: usize) -> Option<String> {
         let (slot, id) = self.guard_hold.clone()?;
-        (slot == k && self.slots[slot].running.as_ref().map(|r| &r.spec.id) == Some(&id)).then_some(id)
+        // (A slot dropped since, `trim_slots`: its job ended.)
+        let running = self.slots.get(slot).and_then(|s| s.running.as_ref()).map(|r| &r.spec.id);
+        (slot == k && running == Some(&id)).then_some(id)
     }
 
     /// The memory guard for the status.
@@ -4145,7 +4434,7 @@ impl Agent {
         memguard::View {
             on: why_off.is_none(),
             limit_mb: limit,
-            held_mb: (0..SLOTS).filter_map(|k| self.held_mb(k)).sum(),
+            held_mb: (0..self.slots.len()).filter_map(|k| self.held_mb(k)).sum(),
             why_off,
             last: self.guard_last.clone(),
         }
@@ -4705,7 +4994,11 @@ impl Agent {
         // All the cores, whoever is at the Mac (the owner's choice; a helper, two fewer: its Mac has
         // less memory). The second job: half (the two jobs' threads share the cores).
         // (Beside a job that waits on a worker, its cores idle: all of them.)
+        // (A member's packed jobs, packing on: the cores its first leaves shared among them all.)
+        let packed = self.o.helper && self.packing.is_some();
+        let others = (0..self.slots.len()).filter(|&j| j != k && self.slots[j].running.is_some()).count();
         let threads = match (k, self.o.helper) {
+            _ if packed => (cores.saturating_sub(2) / (others + 1)).max(1),
             (1.., _) if self.waiting_on(0).is_some() => cores,
             (1.., _) => (cores / 2).max(1),
             (_, true) => cores.saturating_sub(2).max(1),
@@ -6152,10 +6445,18 @@ impl Agent {
         peak: &dyn Fn(&str, &str) -> u64,
     ) -> forecast::Forecast {
         use forecast::{Cost, Machine};
-        let (costs, leased, events, mem) = match &self.coord {
+        let (mut costs, leased, mut events, mem) = match &self.coord {
             Some(c) => c.for_forecast(),
             None => Default::default(),
         };
+        // (Workers as this agent names them: an earlier agent's second job's history and costs read
+        // as its slot's, `worker_now`.)
+        for e in events.iter_mut() {
+            e.worker = e.worker.as_deref().map(worker_now);
+        }
+        for c in costs.values_mut() {
+            c.worker = c.worker.as_deref().map(worker_now);
+        }
         // Each worker's speed against the lead's, from the history (half until it's measured):
         // every one that measured a cost or did shared work, asleep or not (its costs are put at the
         // lead's pace by it); the members heard from lately are the machines.
@@ -6358,7 +6659,7 @@ impl Agent {
         }
         // What's being built now, and by which.
         let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
-        for k in 0..SLOTS {
+        for k in 0..self.slots.len() {
             let Some(m) = machines.iter().position(|m| m.name == self.worker_of(k)) else { continue };
             let Some(r) = self.slots[k].running.as_ref() else { continue };
             if let Some(b) = before.iter().find(|b| b.0 == step_of(&r.spec.id)) {
@@ -6405,7 +6706,7 @@ impl Agent {
         };
         let mut f = forecast::forecast(&inp);
         // (A slot's job waiting on a worker holding its unit's tail: said beside its machine.)
-        f.waiting = (0..SLOTS).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();
+        f.waiting = (0..self.slots.len()).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();
         // In the pool, the forecast for equal machines beside it (docs/pool.md §12 4.12), reported
         // alone: each member's slots as lanes (this Mac's first: its map updates; its second job's
         // memory a quarter of the Mac's, as above), the pages as one (forecast::pool_lanes), each at
@@ -6443,7 +6744,7 @@ impl Agent {
                 }
             });
             let (lanes, mut running) = forecast::pool_lanes(lead, second, &workers, &measured, &leased, &cost);
-            for k in 0..SLOTS {
+            for k in 0..self.slots.len() {
                 let Some(m) = lanes.iter().position(|m| m.name == self.worker_of(k)) else { continue };
                 let Some(r) = self.slots[k].running.as_ref() else { continue };
                 if let Some(b) = inp.before.iter().find(|b| b.0 == step_of(&r.spec.id)) {
@@ -6841,7 +7142,7 @@ impl Agent {
 
     /// Slot `k`'s job's channel (crate::control: "run" or "drain").
     fn control_path(&self, k: usize) -> PathBuf {
-        self.o.home.join(if k == 0 { "control" } else { "control-2" })
+        self.o.home.join(format!("control{}", slot_suffix(k)))
     }
 
     /// Where slot `k`'s job notes the targets it finishes: a helper's leased job's in its lease's
@@ -6849,7 +7150,7 @@ impl Agent {
     fn done_path(&self, k: usize) -> PathBuf {
         match &self.slots[k].lease {
             Some(Held::Leased { dir, .. } | Held::Pooled { dir, .. }) => dir.join("done.txt"),
-            _ => self.o.home.join(if k == 0 { "done.txt" } else { "done-2.txt" }),
+            _ => self.o.home.join(format!("done{}.txt", slot_suffix(k))),
         }
     }
 
@@ -7506,7 +7807,7 @@ impl Agent {
         let settling = self.pooled().is_some_and(|p| p.gates.settle && p.settled.is_none());
         let lost = lead && self.pooled().is_some_and(|p| p.gates.leads.is_none());
         if settling || lost {
-            for k in 0..SLOTS {
+            for k in 0..self.slots.len() {
                 if self.slots[k].running.as_ref().is_some_and(|j| is_duty(&j.spec.id)) {
                     let j = self.slots[k].running.as_mut().unwrap();
                     let why = if settling { "the lead hands the build over" } else { "this Mac no longer leads" };
@@ -7686,7 +7987,7 @@ impl Agent {
                 self.o.helper = true;
                 self.client = None;
                 // (Its duties in flight stopped, a catalog or a sweep: the lead's alone.)
-                for k in 0..SLOTS {
+                for k in 0..self.slots.len() {
                     if self.slots[k].running.as_ref().is_some_and(|j| is_duty(&j.spec.id)) {
                         let j = self.slots[k].running.as_mut().unwrap();
                         eprintln!("agent: {} stopped: this Mac no longer leads", j.spec.id);
@@ -8155,18 +8456,27 @@ impl Agent {
     fn update_due(&self) -> bool {
         let Some(app) = self.pending_app() else { return false };
         let why = update_why(&app);
-        match &self.slots[0].running {
+        // (A member's every slot, each by its own drain: its packed jobs each reach their safe
+        // point, or have had their time; the lead's first slot alone, as before.)
+        let slots = if self.o.helper { self.slots.len() } else { 1 };
+        (0..slots).all(|k| self.slot_update_due(k, &why))
+    }
+
+    /// Whether slot `k` lets the loop restart into a newer app (`update_due`, `why` the update's
+    /// drain): no job there, or its job, asked to stop for it, reached no safe point in its wait.
+    fn slot_update_due(&self, k: usize, why: &str) -> bool {
+        match &self.slots[k].running {
             None => true,
             Some(r) => {
-                if r.pausing.as_deref() != Some(why.as_str()) {
+                if r.pausing.as_deref() != Some(why) {
                     return false;
                 }
-                let Some(since) = self.slots[0].drain_since else { return false };
-                let wait = self.slots[0].update_wait.as_ref().and_then(|w| w.0).unwrap_or(self.grace);
+                let Some(since) = self.slots[k].drain_since else { return false };
+                let wait = self.slots[k].update_wait.as_ref().and_then(|w| w.0).unwrap_or(self.grace);
                 // (Past the time a pause gives, a job whose processes have done next to nothing
                 // for UPDATE_STALL holds it no longer: it may be stuck. By its CPU, not its progress
                 // lines, which a long step may not print.)
-                let stalled = self.sampler.busy_at(0).is_some_and(|t| t.elapsed() >= UPDATE_STALL);
+                let stalled = self.sampler.busy_at(k).is_some_and(|t| t.elapsed() >= UPDATE_STALL);
                 since.elapsed() >= wait || (stalled && since.elapsed() >= self.grace)
             }
         }
@@ -9537,6 +9847,180 @@ mod tests {
         assert!(j.cmd.contains(&"3/2/2".to_string()));
         assert_eq!(j.record.as_ref().map(|r| r.step.as_str()), Some("slope"));
         assert!(j.what.contains("for the lead"), "{}", j.what);
+    }
+
+    /// A member's slots, names and asks (task #240): a slot's files and worker by its number, the
+    /// first's as before; an earlier agent's second job read as the second slot's; packing on, it
+    /// asks for its slots free, off for none (one job an ask).
+    #[test]
+    fn slots_are_named_by_number_and_a_member_asks_for_its_free_ones() {
+        assert_eq!((slot_suffix(0), slot_suffix(1), slot_suffix(4)), (String::new(), "-2".into(), "-5".into()));
+        assert_eq!((slot_worker("m1", 0), slot_worker("m1", 2)), ("m1".into(), "m1 #3".into()));
+        assert_eq!(second_worker("m4"), "m4 #2");
+        assert_eq!(worker_now("m4 (second job)"), "m4 #2");
+        assert_eq!(worker_now("m1"), "m1");
+        assert!(is_slot_of("m4 (second job)", "m4") && is_slot_of("m4 #7", "m4") && is_slot_of("m4", "m4"));
+        assert!(!is_slot_of("m40", "m4") && !is_slot_of("m4 #1", "m4") && !is_slot_of("m1 #2", "m4"));
+        assert!(slot_workers("m4").contains(&"m4 (second job)".to_string()));
+        assert_eq!((member_slots(8), member_slots(2), member_slots(1000)), (6, 1, MAX_SLOTS));
+        assert_eq!((member_want(true, 6, 2), member_want(true, 6, 7), member_want(false, 6, 0)), (4, 0, 0));
+    }
+
+    /// Packing on (task #240): a member asks for its slots free and runs every job granted, each in
+    /// a slot of its own (its scratch, channel and costs its slot's); an update's drain waits for
+    /// every slot; the memory guard, the jobs together past this Mac's limit (12 GB of 16: the M1),
+    /// drains the newest, never the largest, one at a time and none more while what stays fits;
+    /// one past the limit alone, the Mac short of memory, stopped; the slots shrink as jobs end.
+    #[test]
+    fn a_member_with_packing_runs_several_jobs_and_the_guard_drains_the_newest() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let apps = d.path().join("app");
+        std::fs::create_dir_all(apps.join("v1")).unwrap();
+        std::fs::create_dir_all(apps.join("v2")).unwrap();
+        std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
+        // The lead's coordinator, packing on, offers six slope targets measured at 2 GB, 100 MB of
+        // disk and two threads each.
+        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        c.set_every(Some(crate::coord::Every { own: Some((0, 0)) }));
+        c.set_packing(Some(Default::default()));
+        let ts: Vec<String> = (1..=6).map(|i| format!("6/1/{i}")).collect();
+        for t in &ts {
+            let cost = crate::coord::Cost {
+                peak_mb: 2000,
+                secs: 600,
+                v: crate::coord::cost_version("slope"),
+                sizes: [("threads".to_string(), 2)].into(),
+                ..Default::default()
+            };
+            c.add_costs_by(&[(crate::coord::cost_key("slope", t), cost)], "m1");
+            c.add_disks(&[(crate::coord::cost_key("slope", t), 100)]);
+        }
+        c.offer(
+            "2026-09-28",
+            vec![crate::coord::Offer {
+                step: "slope".into(),
+                targets: ts.iter().map(|t| (t.clone(), format!("k {t}"), 0)).collect(),
+                batch: 1,
+            }],
+        );
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: apps.join("v1"),
+            dry_run: false,
+            once: true,
+            helper: true,
+        })
+        .unwrap();
+        a.client = Some(crate::coord::client::Client::at(
+            vec![format!("http://127.0.0.1:{port}")],
+            c.contact.token.clone(),
+            "m1",
+        ));
+        a.packing = Some(Default::default());
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let mut w = Vec::new();
+        assert!(a.may_pack());
+        // (Its ask's memory a job's share of its 16 GB, 6 GB: three of 2 GB fit.)
+        let got = a.helper_grants(&root, &cond, &mut w);
+        assert_eq!(got.iter().map(|(k, _)| *k).collect::<Vec<_>>(), [0, 1, 2], "{w:?}");
+        assert_eq!(a.slots.len(), 3);
+        // Each started in its slot (a job that sleeps, its scratch argument kept).
+        for (k, mut spec) in got {
+            let scratch = scratch_of(&spec).unwrap();
+            spec.cmd = vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "x".into(), "--scratch".into()];
+            spec.cmd.push(scratch.to_string_lossy().into_owned());
+            assert!(a.try_start_said(k, spec, &cond, Some(&root), &mut w), "{w:?}");
+        }
+        let scratches: Vec<PathBuf> =
+            a.slots.iter().map(|s| scratch_of(&s.running.as_ref().unwrap().spec).unwrap()).collect();
+        assert_eq!(scratches[0], home.join("scratch/slope"));
+        assert_eq!(
+            (scratches[1].clone(), scratches[2].clone()),
+            (home.join("scratch-2/slope"), home.join("scratch-3/slope"))
+        );
+        assert_eq!(a.control_path(2), home.join("control-3"));
+        assert!(matches!(a.slots[2].lease, Some(Held::Leased { .. })));
+        assert_eq!(a.capacity(&cond).leases.len(), 3);
+        // (Its slots full by what the lead grants: asked again, nothing more fits.)
+        assert!(a.helper_grants(&root, &cond, &mut w).is_empty());
+        assert_eq!(a.slots.len(), 3, "no slot made for nothing");
+        let tend_all = |a: &mut Agent| {
+            for k in 0..a.slots.len() {
+                a.tend(k, &cond, Some(&root), 0).unwrap();
+            }
+        };
+        // An update: every slot drains for it, and the loop restarts only once each has its safe
+        // point or has had its time.
+        std::fs::remove_file(apps.join("current")).unwrap();
+        std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
+        tend_all(&mut a);
+        assert!((0..3).all(|k| std::fs::read_to_string(a.control_path(k)).unwrap() == "drain"));
+        assert!(!a.update_due() && !a.may_pack());
+        let long_ago = Instant::now().checked_sub(DRAIN_GRACE + Duration::from_secs(60)).unwrap();
+        a.slots[0].drain_since = Some(long_ago);
+        a.slots[1].drain_since = Some(long_ago);
+        assert!(!a.update_due(), "the third slot's job still has time");
+        a.slots[2].drain_since = Some(long_ago);
+        assert!(a.update_due());
+        // (The update gone again: every job goes on.)
+        std::fs::remove_file(apps.join("current")).unwrap();
+        std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
+        tend_all(&mut a);
+        assert!((0..3).all(|k| std::fs::read_to_string(a.control_path(k)).unwrap() == "run"));
+        assert!(a.slots.iter().all(|s| s.drain_since.is_none()));
+        // The memory guard on a Mac of 16 GB (its limit 12 GB): slot 1's job the newest, slot 2's
+        // next, slot 0's the oldest.
+        a.mem_set = Some((16 << 10, 12 << 10));
+        let now = now_s();
+        for (k, ago) in [(0, 300), (1, 100), (2, 200)] {
+            a.slots[k].running.as_mut().unwrap().started = now - ago;
+        }
+        let tick = |a: &mut Agent, held: Vec<Option<u64>>, trouble: bool| {
+            a.sampler.set_test(Some(held), Some(trouble));
+            a.sampler.tick();
+            tend_all(a);
+        };
+        // Within the limit together: nothing.
+        tick(&mut a, vec![Some(5 << 10), Some(3 << 10), Some(3 << 10)], false);
+        assert!(!a.guard() && a.slots.iter().all(|s| s.mem_drain.is_none()));
+        // Past it (13 GB), the largest fitting alone: the newest drains, not the largest, and the
+        // member asks for nothing more meanwhile.
+        tick(&mut a, vec![Some(5 << 10), Some(4 << 10), Some(4 << 10)], false);
+        assert!(!a.guard());
+        assert!(
+            a.slots[1].mem_drain.is_some() && a.slots[0].mem_drain.is_none() && a.slots[2].mem_drain.is_none(),
+            "{:?}",
+            a.slots.iter().map(|s| s.mem_drain.clone()).collect::<Vec<_>>()
+        );
+        assert!(!a.may_pack());
+        // (What stays once it stops, 9 GB, fits: none more drains.)
+        tick(&mut a, vec![Some(5 << 10), Some(4 << 10), Some(4 << 10)], false);
+        assert!(!a.guard() && a.slots[2].mem_drain.is_none());
+        assert_eq!(std::fs::read_to_string(a.control_path(1)).unwrap(), "drain");
+        // (The largest grown, what stays past the limit: the next newest drains too.)
+        tick(&mut a, vec![Some(9 << 10), Some(4 << 10), Some(4 << 10)], false);
+        assert!(!a.guard() && a.slots[2].mem_drain.is_some() && a.slots[0].mem_drain.is_none());
+        // The newest reaching no safe point in the time a pause gives: stopped at once, its slot free.
+        a.grace = Duration::ZERO;
+        tick(&mut a, vec![Some(9 << 10), Some(4 << 10), Some(4 << 10)], false);
+        assert!(a.guard() && a.slots[1].running.is_none() && a.slots[2].running.is_some());
+        a.grace = DRAIN_GRACE;
+        // The largest past the limit by itself, the Mac short of memory: stopped (the sampler froze
+        // it), the job beside it untouched.
+        tick(&mut a, vec![Some(13 << 10), None, Some(1 << 10)], true);
+        assert!(a.sampler.frozen(0));
+        assert!(a.guard() && a.slots[0].running.is_none() && a.slots[2].running.is_some());
+        // The last ends: the slots past the two kept dropped.
+        a.slots[2].running.as_mut().unwrap().stop(Duration::from_secs(5));
+        a.stopped(2, "the test");
+        a.slots[2].running = None;
+        a.trim_slots();
+        assert_eq!(a.slots.len(), SLOTS);
+        assert!(a.slots.iter().all(|s| s.running.is_none() && s.lease.is_none()));
     }
 
     #[test]

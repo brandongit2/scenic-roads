@@ -33,7 +33,20 @@
 #                                                   it's measured to take; size it against the
 #                                                   Mac's free space less 30 GB to have the disk
 #                                                   guard freeze one
-#   pool-two-macs.sh extra <dir> <MB>               the agent, from its next start, counts <MB>
+#   pool-two-macs.sh mem <dir> <MB> [<noted MB>]    each fake job holds <MB> of memory while it
+#                                                   runs (every page touched; 0: none), and notes
+#                                                   <noted MB> as its targets' peak (50 else): noted
+#                                                   below what it holds, its Mac packs more of them
+#                                                   than fit, for the memory guard to stop
+#   pool-two-macs.sh as <dir> <worker> <port> [<MB>]
+#                                                   the agent, from its next start, works under the
+#                                                   name <worker> (SCENIC_TEST_WORKER: a member
+#                                                   beside the lead on one Mac), its coordinator on
+#                                                   <port> (18091 else), counting its Mac's memory
+#                                                   as <MB> (SCENIC_TEST_MEM_MB: its limit squeezed)
+#   pool-two-macs.sh packing <folder> [off]         state/pool/packing in the scratch folder: a
+#                                                   member asks for and runs several jobs at once
+#   pool-two-macs.sh extra <dir> <MB>             the agent, from its next start, counts <MB>
 #                                                   more free on its disk than there is
 #                                                   (SCENIC_TEST_DISK_EXTRA_MB; 0: none): with <dir>
 #                                                   on a small disk image (hdiutil, never the Mac's
@@ -198,7 +211,13 @@ if [ -e "$d/../job-task" ] && [ -n "$SCENIC_COORD" ]; then
   echo "offered $tid at $SCENIC_COORD $(date +%s)" >> "$d/task-$step-$$"
 fi
 secs=$(cat "$d/../job-seconds" 2>/dev/null || echo 5)
-sleep "$secs"
+# (The memory it holds while it runs, every page touched (`mem`), else none.)
+mem=$(cat "$d/../job-mem-mb" 2>/dev/null || echo 0)
+if [ "$mem" -gt 0 ]; then
+  /usr/bin/python3 -c "import time; b = bytearray(b'\x01') * ($mem << 20); time.sleep($secs)"
+else
+  sleep "$secs"
+fi
 if [ -n "$tid" ]; then
   echo "ended $(/usr/bin/curl -sS -X POST -H "Authorization: Bearer $SCENIC_COORD_TOKEN" -H 'Content-Type: application/json' -d '{}' "$SCENIC_COORD/task/$tid") $(date +%s)" >> "$d/task-$step-$$"
 fi
@@ -215,7 +234,9 @@ if [ -n "$SCENIC_COSTS" ]; then
   case "$step" in terrain|slope) v=3 ;; trees) v=2 ;; unit|trees-lo|terrain-lo|slope-lo) v=1 ;; *) v=0 ;; esac
   for t in $ts; do
     if [ "$step" = unit ]; then k="$t"; else k="$step $t"; fi
-    echo "{\"unit\":\"$k\",\"peak_mb\":50,\"secs\":$((secs / n)),\"v\":$v,\"disk_mb\":1}" >> "$SCENIC_COSTS"
+    # (Its peak as `mem` notes it, 50 MB else; the threads it was given, for packing's cores.)
+    peak=$(cat "$d/../job-noted-mb" 2>/dev/null || echo 50)
+    echo "{\"unit\":\"$k\",\"peak_mb\":$peak,\"secs\":$((secs / n)),\"v\":$v,\"disk_mb\":1,\"sizes\":{\"threads\":${RAYON_NUM_THREADS:-1}}}" >> "$SCENIC_COSTS"
   done
 fi
 [ -n "$scratch" ] && rm -f "$scratch/fill-$$.bin"
@@ -266,7 +287,7 @@ EOF
     rm -f $d/v/app/stop
     while [[ ! -e $d/v/app/stop ]]; do
       print "launcher: $(date '+%H:%M:%S') starting $(readlink $d/v/app/current)" >> $d/agent.log
-      SCENIC_TEST_PROXY_TO=$(cat $d/proxy-to 2>/dev/null) SCENIC_TEST_DISK_EXTRA_MB=$(cat $d/disk-extra-mb 2>/dev/null || echo 0) SCENIC_COORD_PORT=18091 nice -n 19 $d/v/app/current/scenic agent --root $r --home $d/agent >> $d/agent.log 2>&1 < /dev/null &
+      SCENIC_TEST_PROXY_TO=$(cat $d/proxy-to 2>/dev/null) SCENIC_TEST_DISK_EXTRA_MB=$(cat $d/disk-extra-mb 2>/dev/null || echo 0) SCENIC_TEST_WORKER=$(cat $d/worker 2>/dev/null) SCENIC_TEST_MEM_MB=$(cat $d/mem-mb 2>/dev/null) SCENIC_COORD_PORT=$(cat $d/coord-port 2>/dev/null || echo 18091) nice -n 19 $d/v/app/current/scenic agent --root $r --home $d/agent >> $d/agent.log 2>&1 < /dev/null &
       print $! > $d/agent.pid
       print "launcher: $(date '+%H:%M:%S') agent pid $!" >> $d/agent.log
       wait $! || true
@@ -295,6 +316,23 @@ EOF
     cd $d/upstream && exec /usr/bin/python3 -m http.server --bind 127.0.0.1 $port
     ;;
   fill) print -n ${3:?MB} > ${2:?its folder}/v/app/job-fill-mb ;;
+  mem)
+    d=${2:?its folder}
+    print -n ${3:?MB} > $d/v/app/job-mem-mb
+    if [[ -n ${4:-} ]]; then print -n $4 > $d/v/app/job-noted-mb; else rm -f $d/v/app/job-noted-mb; fi
+    ;;
+  as)
+    d=${2:?its folder}
+    print -n ${3:?a worker name} > $d/worker
+    print -n ${4:?a port} > $d/coord-port
+    if [[ -n ${5:-} ]]; then print -n $5 > $d/mem-mb; else rm -f $d/mem-mb; fi
+    ;;
+  packing)
+    r=${2:?the scratch folder}
+    [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
+    mkdir -p $r/state/pool
+    if [[ ${3:-} == off ]]; then print off > $r/state/pool/packing; else print on > $r/state/pool/packing; fi
+    ;;
   brokers)
     r=${2:?the scratch folder}
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }

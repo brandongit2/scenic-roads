@@ -1801,7 +1801,7 @@ pub fn took_up(
                 ),
                 Err(e) => eprintln!("pool: the coordinator's state for term {term}: {e:#}"),
             }
-            for l in c.drop_workers(&[host.to_string(), crate::agent::second_worker(host)], keep) {
+            for l in c.drop_workers(&crate::agent::slot_workers(host), keep) {
                 eprintln!("pool: {}'s lease ended with the process before this one", l.what());
             }
         }

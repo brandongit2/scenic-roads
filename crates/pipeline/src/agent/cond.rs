@@ -199,6 +199,20 @@ pub fn test_disk_extra_mb() -> u64 {
     })
 }
 
+/// `SCENIC_TEST_MEM_MB` when set: the memory (MB) the agent counts its Mac to have, for its memory
+/// guard's limit and its asks (the two-Mac test's alone, tools/check/pool-two-macs.sh: a limit
+/// squeezed so small jobs pass it). Said at its first read, never silent.
+pub fn test_mem_mb() -> Option<u64> {
+    static MEM: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *MEM.get_or_init(|| {
+        let m = std::env::var("SCENIC_TEST_MEM_MB").ok().and_then(|v| v.parse::<u64>().ok()).filter(|&m| m > 0);
+        if let Some(m) = m {
+            eprintln!("agent: WARNING: SCENIC_TEST_MEM_MB: this agent counts its Mac's memory as {m} MB (the two-Mac test's alone, never a real agent's)");
+        }
+        m
+    })
+}
+
 /// This Mac's resources, for the status (the worker page's machines): its memory and the share of
 /// it free now, its cores and load, its disk's free space and the caches it may drop to make room,
 /// how long the NAS took to answer and the NAS's free space.
