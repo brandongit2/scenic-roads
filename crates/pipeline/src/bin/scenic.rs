@@ -469,9 +469,10 @@ fn capacity_line(c: &pipeline::coord::Capacity) -> String {
     v.join(" · ")
 }
 
-/// A Mac's jobs, every slot's in order (`Status::job`, `beside`, `more`).
-fn jobs_of(st: &agent::Status) -> Vec<&agent::JobView> {
-    st.job.iter().chain(st.beside.iter()).chain(st.more.iter()).collect()
+/// A Mac's jobs, every slot's in order, each with its slot (`Status::jobs`: an older agent's by
+/// their place).
+fn jobs_of(st: &agent::Status) -> Vec<agent::JobView> {
+    st.jobs()
 }
 
 /// The ramp in words: "3 of 6 slots (reached 3) · clean since 2 h ago, grows ≈ in 4.0 h", or
@@ -498,7 +499,7 @@ fn ramp_words(r: &agent::RampView) -> String {
 
 /// A job in a line: "slot 2: Terrain: 4 tiles · 40% · about 12 min left · since 20 min ago".
 fn job_line(j: &agent::JobView) -> String {
-    let mut v = vec![format!("slot {}: {}", j.slot + 1, j.what)];
+    let mut v = vec![format!("slot {}: {}", j.slot.unwrap_or(0) + 1, j.what)];
     if let Some(p) = j.progress.as_ref().filter(|p| p.total > 0.0) {
         v.push(format!("{}%", (p.done / p.total * 100.0).floor()));
         if let Some(e) = p.eta_s {
@@ -1388,17 +1389,24 @@ mod tests {
             mem_mb: Some(2048),
             threads: Some(3),
             waiting: None,
-            slot: k,
+            slot: Some(k),
         };
-        let with = |host: &str, n: usize| {
-            let mut js: Vec<agent::JobView> = (0..n).map(job).collect();
-            let more = js.split_off(n.min(2));
-            let mut it = js.into_iter();
-            agent::Status { host: host.into(), job: it.next(), beside: it.next(), more, ..Default::default() }
+        // (The lead on the new wire; its member on the old one, its jobs not saying their slots.)
+        let with = |host: &str, n: usize, all_new: bool| {
+            let mut st = agent::Status { host: host.into(), ..Default::default() };
+            st.set_jobs((0..n).map(job).collect(), all_new);
+            if !all_new {
+                st.jobs.clear();
+                for j in st.job.iter_mut().chain(st.beside.iter_mut()).chain(st.more.iter_mut()) {
+                    j.slot = None;
+                }
+            }
+            st
         };
         for n in 0..=4 {
-            let mut st = with("m4", n);
-            st.helpers = vec![with("m1", 4 - n)];
+            let mut st = with("m4", n, true);
+            assert!(st.job.is_none() && st.beside.is_none() && st.more.is_empty(), "the old fields not written");
+            st.helpers = vec![with("m1", 4 - n, false)];
             st.capacity = vec![("m4".into(), pipeline::coord::Capacity { limit_mb: 20 << 10, ..Default::default() })];
             st.packing = [("m1".to_string(), "cores: 0 of 8 left".to_string())].into();
             st.nas_share = [("m4".to_string(), 250), ("m1 #2".to_string(), 100)].into();
@@ -1426,7 +1434,8 @@ mod tests {
         // lines under it.
         let mut fourth = job(3);
         fourth.tail = "tail line".into();
-        let st = agent::Status { host: "m4".into(), job: Some(job(0)), more: vec![fourth], ..Default::default() };
+        let mut st = agent::Status { host: "m4".into(), ..Default::default() };
+        st.set_jobs(vec![job(0), fourth], true);
         let l = macs_lines(&st).join("\n");
         assert!(l.contains("slot 1: job 0") && l.contains("slot 4: job 3") && !l.contains("slot 2:"), "{l}");
         assert!(l.contains("        tail line"), "{l}");

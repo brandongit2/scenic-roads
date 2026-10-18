@@ -31,7 +31,7 @@ Every row has the same fields; nothing about a step is kept anywhere else.
 | `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), `area` (a z3 tile), `tile` (a z6 tile), `input` (a drop box); a task's `task` |
 | `stage` | its stage | `pass`, `sites`, `terrain`, `slope`, `trees`, `depth`, `roads`, `tiles`, `finish`, `trains`, `landmarks`, `buildings`, `publish`, `upkeep` |
 | `place` | which Mac runs it: derived from the pool's rules (`agent::every::offered`), not kept | `any` (any member whose measured room fits), `lead` |
-| resources | its first guess of memory until measured, whether members take it and at what rank (`shared`), a whole-build run alone (`alone`), whether it keeps the pass's answers (`answered`), its write-set (`writes`); targets per job are measured, not kept (`coord::JOB_S`) | pool.md §7.2, §7.7 |
+| resources | its first guess of memory until measured, whether members take it and at what rank (`shared`), a whole-build run alone (`alone`), whether it keeps the pass's answers (`answered`), its write-set (`writes`). The rest is measured, not kept: each target's memory, disk, cores, time and NAS rate by the step's model (`needs::Book`), targets per job (`coord::JOB_S`), and whether a job runs with others on a Mac (packing, by those measures) | pool.md §7.2, §7.7 |
 
 The naming of titles: the thing a step makes (**Terrain**, **Roads**, **Map tiles**); its zoomed-out
 assembly by area "…, zoomed out"; its world level "…, world level"; a fetch "…'s sources" or what it
@@ -149,9 +149,9 @@ kind's others, with templated words.
   machines working).
 - **Stages:** a card per stage: mark, title, count, bar; a row per step: mark, title, ⇄ when any
   Mac may take it, count, bar, its forecast (work, done ≈); the stage's jobs to come and note.
-- **Machines:** a card per Mac: name, role, state, heard from; its job (name, parts, progress,
-  running since, memory; frozen or stuck), beside it its second; what's next; facts as chips; its
-  day as a spark line. Pages one card.
+- **Machines:** a card per Mac: name, role, state, heard from; its capacity; a block per running
+  job by its slot (name, parts, progress, running since, memory; frozen or stuck) with that slot's
+  next work; why nothing more fits; facts as chips; its day as a spark line. Pages one card.
 - **The pool:** `pool.js`.
 - **Road to done:** each machine's lane (segments in the stages' colours, publishing hatched, the
   regions out marked), and what publishing does now and why.

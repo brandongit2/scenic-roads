@@ -678,11 +678,22 @@ pub struct Status {
     pub beat: u64,
     pub started: u64,
     pub conditions: Conditions,
+    /// Its running jobs, every slot's in slot order (each says its slot: `JobView::slot`). Read
+    /// them through `Status::jobs`, which takes an older agent's from the fields below.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<JobView>,
+    /// Every member of the pool reports the new app (its asks carry `Ask::cap`), as its lead's
+    /// coordinator last said (`Coordinator::all_new`): packing several jobs per member is on, and
+    /// the old fields below are no longer written. False from an older agent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all_new: bool,
+    /// The old wire's jobs (an older reader's): the first slot's, the second's beside it and the
+    /// rest. Written only while the pool isn't all on the new app (`all_new`); read through
+    /// `Status::jobs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<JobView>,
-    /// Its second slot's job, beside the first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beside: Option<JobView>,
-    /// Its jobs past those two, by slot.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub more: Vec<JobView>,
     /// SCENIC_TEST_DISK_EXTRA_MB when set (MB counted free past what the disk has): a test's.
@@ -833,8 +844,35 @@ pub struct JobView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<String>,
     /// Its slot (0: the first; `slot_worker`): slots may be sparse, so not its place in the list.
-    #[serde(default)]
-    pub slot: usize,
+    /// None from an older agent: its place in the list (`Status::jobs`' order) stands for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<usize>,
+}
+
+impl Status {
+    /// Its running jobs, each with its slot: `jobs`, else an older agent's old fields (`job`,
+    /// `beside`, `more`) in order; a job not saying its slot (an older agent's) has its place.
+    pub fn jobs(&self) -> Vec<JobView> {
+        let all: Vec<&JobView> = if self.jobs.is_empty() {
+            self.job.iter().chain(self.beside.iter()).chain(self.more.iter()).collect()
+        } else {
+            self.jobs.iter().collect()
+        };
+        all.into_iter().enumerate().map(|(i, j)| JobView { slot: Some(j.slot.unwrap_or(i)), ..j.clone() }).collect()
+    }
+
+    /// Sets its jobs (`views`, each with its slot), and the old fields too unless `all_new`.
+    pub fn set_jobs(&mut self, views: Vec<JobView>, all_new: bool) {
+        self.all_new = all_new;
+        (self.job, self.beside, self.more) = (None, None, Vec::new());
+        if !all_new {
+            let at = |k: usize| views.iter().find(|j| j.slot == Some(k)).cloned();
+            self.job = at(0);
+            self.beside = at(1);
+            self.more = views.iter().filter(|j| j.slot.is_some_and(|k| k >= SLOTS)).cloned().collect();
+        }
+        self.jobs = views;
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1214,6 +1252,8 @@ pub struct Agent {
     cache_size: std::sync::Arc<std::sync::Mutex<CacheCount>>,
     /// A member's view of the build: the lead's heartbeat as last read, at most each minute.
     heard: Option<Heard>,
+    /// The lead's heartbeat's `Status::all_new` as a member last read it, and when (`all_new`).
+    lead_all_new: Option<(Instant, bool)>,
     /// A trim or a clear under way, and when one last failed (it's tried again ten minutes later).
     caches_task: Option<CachesTask>,
     trim_failed: Option<Instant>,
@@ -1515,6 +1555,7 @@ impl Agent {
             pause_pushed: false,
             cache_size: Default::default(),
             heard: None,
+            lead_all_new: None,
             caches_task: None,
             trim_failed: None,
             answers_seed: None,
@@ -1850,6 +1891,8 @@ impl Agent {
             });
             return Vec::new();
         }
+        // (The old field for the limit only while a member of the pool is on an older app: its capacity says it.)
+        let all_new = self.all_new(Some(root));
         let ask = crate::coord::Ask {
             kind: "native".into(),
             label: Some(format!("{} (helper)", self.host)),
@@ -1858,7 +1901,7 @@ impl Agent {
             mem_mb: helper_memory(self.mac_total_mb(), helper_away(c), self.in_use_share.as_ref()),
             cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32),
             app: Some(self.app.clone()),
-            limit_mb: Some(memguard::limit_mb(self.total_mb())).filter(|&l| l > 0),
+            limit_mb: Some(memguard::limit_mb(self.total_mb())).filter(|&l| l > 0 && !all_new),
             // (Its free space now, less the reserve, the owner's target and its jobs' reservations.
             // What its caches could free isn't counted: nothing frees it first.)
             disk_mb: Some(self.disk_room() >> 20),
@@ -2201,7 +2244,7 @@ impl Agent {
             mem_mb: if limit > 0 { limit + mem_back } else { u64::MAX >> 1 },
             cores: mac_cores() + cores_back,
             app: Some(self.app.clone()),
-            limit_mb: Some(limit).filter(|&l| l > 0),
+            limit_mb: Some(limit).filter(|&l| l > 0 && !co.all_new()),
             disk_mb: (!alone).then(|| self.disk_room() >> 20),
             cap: Some(cap),
             want: if alone { 1 } else { want(self.job_slots(), self.running_jobs()) },
@@ -3570,19 +3613,15 @@ impl Agent {
         let now_steps: Vec<String> =
             self.slots.iter().filter_map(|s| s.running.as_ref().and_then(|r| step_of(&r.spec.id))).collect();
         annotate(&mut checklist, &now_steps, &helpers, &waiting);
-        let job = self.job_view(0);
-        let beside = self.job_view(1);
-        let more: Vec<JobView> = (SLOTS..self.slots.len()).filter_map(|k| self.job_view(k)).collect();
-        let status = Status {
-            more,
+        let views: Vec<JobView> = (0..self.slots.len()).filter_map(|k| self.job_view(k)).collect();
+        let all_new = self.all_new(root.as_deref());
+        let mut status = Status {
             host: self.host.clone(),
             pid: std::process::id(),
             app: self.app.clone(),
             beat: now_s(),
             started: self.started,
             conditions: c,
-            job,
-            beside,
             test_disk_extra_mb: Some(cond::test_disk_extra_mb()).filter(|&m| m > 0),
             waiting,
             recent: self.mem.recent.clone(),
@@ -3643,7 +3682,9 @@ impl Agent {
             }),
             budgets: self.proxy.as_ref().map(|p| p.view()),
             inputs: if self.o.helper { Vec::new() } else { self.inputs.view.borrow().clone() },
+            ..Default::default()
         };
+        status.set_jobs(views, all_new);
         let body = serde_json::to_vec_pretty(&status)?;
         if self._lock.is_none() {
             // Another agent writes the heartbeat; this one only reports.
@@ -4898,6 +4939,25 @@ impl Agent {
 
     /// Slot `k`'s job for the status: its parts (the last it said), its progress, and from its pace
     /// the time it has left (kept for the forecast).
+    /// Whether every member of the pool reports the new app (`Status::all_new`): the lead's
+    /// coordinator's word (`Coordinator::all_new`); a member's, its lead's heartbeat's as last
+    /// read (once a minute: `lead_all_new`; an older lead's says no). No coordinator and no pool: true.
+    fn all_new(&mut self, root: Option<&Path>) -> bool {
+        if let Some(c) = self.coord.as_ref() {
+            return c.all_new();
+        }
+        if !self.o.helper {
+            return true;
+        }
+        let stale = self.lead_all_new.is_none_or(|(at, _)| at.elapsed() >= Duration::from_secs(60));
+        if let (Some(root), true) = (root, stale) {
+            let st: Option<Status> =
+                std::fs::read(root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            self.lead_all_new = Some((Instant::now(), st.is_some_and(|s| s.all_new)));
+        }
+        self.lead_all_new.is_some_and(|(_, n)| n)
+    }
+
     fn job_view(&mut self, k: usize) -> Option<JobView> {
         let waiting = self.waiting_words(k);
         let slot = &mut self.slots[k];
@@ -4943,7 +5003,7 @@ impl Agent {
             mem_mb: crate::sys::footprint_of_group(r.pgid).map(|b| b >> 20),
             threads: Some(r.threads),
             waiting,
-            slot: k,
+            slot: Some(k),
         })
     }
 
@@ -5322,7 +5382,7 @@ impl Agent {
         if self.heard.as_ref().is_none_or(|h| h.read.elapsed() >= Duration::from_secs(60)) {
             let st: Option<Status> =
                 std::fs::read(root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-            let left = st.as_ref().map(|s| match s.job.as_ref().or(s.beside.as_ref()) {
+            let left = st.as_ref().map(|s| match s.jobs().first() {
                 Some(j) => Some(format!("the lead runs a job ({})", j.what)),
                 None => work_left(s.forecast.as_ref(), since),
             });
@@ -6959,10 +7019,11 @@ impl Agent {
         let caps: BTreeMap<String, crate::coord::Capacity> =
             self.coord.as_ref().map(|c| c.capacities().into_iter().collect()).unwrap_or_default();
         for h in &helpers {
-            let jobs: Vec<&JobView> = h.job.iter().chain(h.beside.iter()).chain(h.more.iter()).collect();
+            // (Each with its slot: an older agent's, its place in the list.)
+            let jobs = h.jobs();
             let cap = caps.get(&h.host);
             // (Never fewer lanes than its last running slot's number: slots may be sparse.)
-            let running: Vec<usize> = jobs.iter().map(|j| j.slot).collect();
+            let running: Vec<usize> = jobs.iter().filter_map(|j| j.slot).collect();
             let n = match cap {
                 Some(c) => forecast::slot_lanes(c.cores, job_slots(c.cores as usize), &running),
                 None => running.iter().map(|k| k + 1).max().unwrap_or(1),
@@ -6985,7 +7046,7 @@ impl Agent {
                     .fold(0.0, f64::max);
                 let eta = jobs
                     .iter()
-                    .find(|j| j.slot == k)
+                    .find(|j| j.slot == Some(k))
                     .map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
                 let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
                 machines.push(Machine {
@@ -9281,7 +9342,7 @@ fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waitin
             continue;
         }
         let ours = |step: &Option<String>| step.as_ref().is_some_and(|st| s.steps.contains(st));
-        if let Some(h) = helpers.iter().find(|h| ours(&h.job.as_ref().and_then(|j| step_of(&j.id)))) {
+        if let Some(h) = helpers.iter().find(|h| h.jobs().iter().any(|j| ours(&step_of(&j.id)))) {
             s.note = Some(format!("on {}", h.host));
         } else if let Some(w) = waiting.iter().find(|w| ours(&w.step)) {
             s.note = Some(w.why.clone());
@@ -11900,7 +11961,7 @@ mod tests {
                 mem_mb: None,
                 threads: None,
                 waiting: None,
-                slot: 0,
+                slot: Some(0),
             });
             let st = Status {
                 host: "the-lead".into(),
@@ -13146,7 +13207,7 @@ mod tests {
                 mem_mb: None,
                 threads: None,
                 waiting: None,
-                slot: 0,
+                slot: Some(0),
             }),
             ..Default::default()
         };

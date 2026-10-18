@@ -2118,7 +2118,7 @@ pub fn status(root: &Path) -> String {
             st.host,
             st.app,
             now.saturating_sub(st.beat),
-            st.job.as_ref().map_or("none", |j| j.id.as_str())
+            st.jobs().first().map_or("none".to_string(), |j| j.id.clone())
         ));
     }
     out.join("\n")

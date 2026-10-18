@@ -296,6 +296,23 @@ ask's measures are taken then, where a heartbeat on the NAS is up to two minutes
 coordinator doesn't read heartbeats. Every field has a serde default: an older coordinator ignores
 `cap`, and a newer one takes an ask without it (an older agent's) as before.
 
+**Mixed versions** (task #247). An ask without a capacity is an older app's, which runs one job at
+a time: the coordinator grants it one job, whatever it wants. A member whose last ask said no
+capacity (`Coordinator::old_member`; the lead's own agent never counts) turns packing off for the
+whole pool: while one is around (heard within two minutes), every ask is granted one job, its
+refusal saying `one job at a time: <member> runs an older app …`. Once every member around reports
+the new app (`Coordinator::all_new`), packing is on: there's no switch. The old wire is written
+only while it isn't: the heartbeat's jobs are `jobs` (every slot's, each with its `slot`), and the
+old fields an older reader takes (`job`, the first slot's; `beside`, the second's; `more`, the
+rest) are written beside them only while the lead's coordinator says a member runs an older app
+(the heartbeat's `all_new` false; a member takes it from its lead's heartbeat, read once a minute,
+an older lead's saying none); likewise an ask's `limit_mb`, which its capacity's limit replaces
+(`coord::ask_limit` reads either). Readers (`Status::jobs`, the build page, the menu bar app) take
+`jobs`, else the old fields; a job not saying its slot (an older agent's) has its place in the
+list. An agent on another app than the lead's still gets nothing (409) until they match (plan.md
+§8, The same app): so a mixed pool is one whose coordinator doesn't check apps (a development
+build) or a member waiting for its update.
+
 **Disk reservations** (task #242). Each job granted carries the disk it's measured to take
 (`Grant::disk_mb`: its targets' disks summed, or the most a job of its step took, the larger;
 0 for a cold start), and its agent reserves it while it holds the lease: the whole of it until
@@ -379,7 +396,8 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
   stops) ends its lease failed (`finish_failed`): its targets are kept from the lead an hour,
   doubling each time, as a member's failed work is.
 - **Packing** (`coord`'s `pack`): a Mac may hold several leases. An ask says how many jobs it would
-  start (`want`); the coordinator grants up to that many in one answer (`Grant::more`, each its own
+  start (`want`); while every member reports the new app (§7.1, Mixed versions; else one each) the
+  coordinator grants up to that many in one answer (`Grant::more`, each its own
   lease), packed in plan order into the ask's room: each after the first the Mac holds must be
   measured (memory, disk, and cores: `needs::Book::cores`, within the packed share, §7.1) and fit
   what's left: the ask's memory and disk (a member's job's whole share of its Mac, `helper_memory`;
@@ -512,7 +530,9 @@ answers nothing and the job runs the task itself. With `state/pool/slots`, a mem
 term starts its coordinator in process, and a lead losing it stops its coordinator and duties,
 keeping its jobs running; without it, the agent restarts into its new part once its first slot is
 free. A lead whose update waits on its jobs hands the lead to a member already on the new app
-(plan.md §8, A newly installed app).
+(plan.md §8, A newly installed app). The lead's own asks always carry its capacity, so the lead never
+holds packing off for the pool (§7.1, Mixed versions); its heartbeat says whether the pool is all on
+the new app (`all_new`) for its members' heartbeats.
 
 ### 7.7 What a step needs, by structure
 
@@ -525,7 +545,7 @@ never correctness, politeness or work.
 | memory | measured per target (`peak_mb`, the guard's floors, §7.2) |
 | input size | measured per target beside its cost (`sizes` in `costs.jsonl`, `pipeline::costin`: bytes read, threads, area, GeoTIFFs opened, the bytes and files its `Out` made on the NAS (`wrote`, `creates`), and the counts a step has: ways and vertices, buildings, peaks); read by the step's model (below) |
 | disk | measured per target: bytes written through `store::cachefile` and the scratch writers (`SCENIC_WRITTEN`), plus a look each minute at the largest files in a slot's scratch folder; kept as the target's disk floor (`disks.json`). **Disk guard:** when free space falls below the reserve (30 GB), the fastest-growing job is frozen, room is made from caches no job holds (`room::toward`), and it goes on or is given back. Given-back jobs' scratch folders are deleted oldest first when room is short (`room::free_given_back`) |
-| jobs on one Mac | a job is granted beside others only if their measured memory, disk and cores fit (packing, §7.2); a cold start runs alone |
+| jobs on one Mac | a job is granted beside others only if their measured memory, disk and cores fit (packing, §7.2), and only while every member reports the new app (§7.1, Mixed versions); a cold start runs alone |
 | raw tiles | `store::cachefile`'s locks; packing deletes only tiles no job holds; a job reopens its area's archives when the index changed (`RawTiles::get`, `refresh_area`) |
 | Wikimedia budget | `crate::budget`: one budget for the pool, enforced at egress. Every job's connections go through its agent's proxy (`crate::budget::proxy`, `HTTPS_PROXY`), the job sandboxed (`sandbox-exec`) to deny any other way out. A metered connection takes a token first: leases are create-new files per slot of a ten-second window (`state/pool/wiki/<class>/<window>-<slot>`). `wiki` four requests a second; `query` (WDQS, QLever) one query per two seconds of query time. A 429 told to the proxy (`POST /hold`, dem/budget.py) holds every Mac. The NAS away, each Mac takes the rate divided by known members. Lint: `tests/budgets.rs` |
 | NAS and network budget | `crate::budget::nas`: the lead's own jobs always; the members' behind `state/pool/nas-budget` (off while missing or `off`). A job's **NAS weight** is its share of the NAS in thousandths: its targets' measured rate (`needs::Book::nas`: `bytes` read plus `wrote`, and `creates`, each over its wall time; its own run's, else its step's 90th percentile of each; none measured, 0), each over the NAS's limit, added: one combined weight, at most the whole (1000); a job its heaviest target's. **The limits** are measured: the lead's coordinator probes the NAS every 30 minutes, whatever the switch says (`probe`: 12 files of 4 KB made, one of 16 MB written, synced and read back past the cache, in a folder of its own under `state/pool/nas-probe/<host>-<pid>`, all removed after; as it starts, the coordinator removes its host's folders a stopped process left, never another host's) and takes the best of the last day's probes (a probe under the build's load measures what's left). `scenic pool nas-probe [--dir <folder>]` runs one. **Enforced at grant** (`coord`'s `pick_every` and `pick_own`, so `pack` too, the lead's own jobs among them): a member's target is granted only while the weights of every job leased in the pool (the lead's own among them) leave room for its own within the whole (1000), or while no other member's job weighs anything (the lead's own alone never hold it back); the lead's own only within the whole, or while nothing leased weighs anything (`Limits::fits_own`); a cold job of its own waits for the lead's jobs to end (§7.2) only when it would fit with the members' jobs alone. **The lead's own jobs are always held to it**, whatever the switch says (the limits probed: `nas_own`); the switch turns it on for the members' (`nas`). The rest wait for a job to end; a target held back for over 30 minutes is a waiting line in the lead's status (`Coordinator::nas_waits`). **Downloads:** a job of a fetching step (steps table kind `Fetch`) counts one, capped pool-wide by the switch's `downloads <n>` (no cap without it): the lead's own fetching steps (`bld-fetch`, `rail-feeds`; none is offered to members). Not held to it: tasks |
@@ -612,7 +632,8 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   (`CAP_FRESH_S`), older ones dropped. The forecast's lanes are per slot
   (`<host>`, `<host> #2`, …): the lead's as many as its cores pack at the packed share
   (`forecast::packed_lanes`) within its ramp's slots, each member's likewise by the cores of its
-  capacity (else a lane per job it runs), never fewer than its last running slot's number, each lane its
+  capacity (else a lane per job it runs: an older agent's jobs, not saying their slots, by their
+  place), never fewer than its last running slot's number, each lane its
   share of the Mac's memory. Each lane runs at its slot's measured speed (else the lead's other
   slots' guess, four fifths of its pace, or a member's): slots on one Mac share its cores, so the
   forecast is optimistic until each slot's speed is measured under that sharing.

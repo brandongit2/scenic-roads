@@ -90,9 +90,13 @@ struct Status: Decodable {
     let app: String?
     let beat: Int
     let conditions: Conditions
+    /// Its running jobs in slot order (agents from 2026-10-18 on); an older agent's, the old
+    /// fields below (its first slot's, its second's beside it, the rest), which a newer one writes
+    /// only while a Mac of the pool runs an older app. Read through `allJobs`.
+    let jobs: [Job]?
     let job: Job?
-    /// Its second slot's job, beside the first.
     let beside: Job?
+    let more: [Job]?
     let waiting: [Waiting]
     let recent: [Done]
     let built: [String: Built]?
@@ -108,6 +112,12 @@ struct Status: Decodable {
     /// forecast: crates/pipeline/src/agent/forecast.rs; agents from 2026-10-05 on).
     let regions: [Recipe]?
     let forecast: Forecast?
+
+    /// Its running jobs, every slot's in order (`jobs`, else the old fields).
+    var allJobs: [Job] { jobs ?? ([job, beside].compactMap { $0 } + (more ?? [])) }
+    /// Its first running job, and its second.
+    var firstJob: Job? { allJobs.first }
+    var secondJob: Job? { allJobs.dropFirst().first }
     /// The gate's units (docs/inputs.md §4.7; agents from #134 on): a held one badges the icon.
     let inputs: [InputUnit]?
 }
@@ -447,7 +457,10 @@ struct Worker: Decodable {
 struct Helper: Decodable {
     let host: String
     let beat: Int
+    /// Its running jobs (a newer agent's), else its first slot's (`job`): `firstJob`.
+    let jobs: [Job]?
     let job: Job?
+    var firstJob: Job? { jobs?.first ?? job }
     let pause: PauseInfo?
     let here: Bool?
 }
@@ -638,19 +651,19 @@ func classify(_ r: Reply?) -> (Kind, String) {
     guard let r = r else { return (.unknown, "The map's server on this Mac isn't answering") }
     guard let s = r.status else { return (.unknown, "No word from the lead (is the NAS reachable?)") }
     // A helper building counts as building, whatever the lead is doing.
-    let helping = freshHelpers(r).filter { $0.job != nil && $0.job?.paused == nil }
+    let helping = freshHelpers(r).filter { $0.firstJob != nil && $0.firstJob?.paused == nil }
     if r.now - s.beat > outOfTouch {
         if let h = helping.first { return (.building, clip("Building on \(h.host); lead out of touch since \(clock(s.beat))")) }
         return (.outOfTouch, "Lead out of touch since \(clock(s.beat))")
     }
     // Paused: stopping (a job finishing what it's on, here or on a helper), else paused.
     if let p = s.pause {
-        let stopping = (s.job.map { $0.paused == nil } ?? false) || (s.beside.map { $0.paused == nil } ?? false) || helping.contains { $0.job?.pausing != nil }
+        let stopping = (s.firstJob.map { $0.paused == nil } ?? false) || (s.secondJob.map { $0.paused == nil } ?? false) || helping.contains { $0.firstJob?.pausing != nil }
         return (.paused, stopping ? "Pausing: finishing what it's on" : "Paused since \(clock(p.at))")
     }
     // (The lead's jobs: its second's beside its first.)
-    if let j = s.job ?? s.beside {
-        if j.paused != nil && (s.beside.map { $0.paused != nil } ?? true) {
+    if let j = s.firstJob {
+        if j.paused != nil && (s.secondJob.map { $0.paused != nil } ?? true) {
             if let h = helping.first { return (.building, clip("Building on \(h.host); the lead's job paused")) }
             return (.paused, "Paused")
         }
@@ -732,7 +745,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         let how = p.mode == "freeze" ? "every Mac's job frozen where it was" : "every Mac's job stops at its next safe point"
         out.append(Line(text: "From \(p.by), \(clock(p.at)): \(how); nothing new starts until it's resumed", style: .small))
     }
-    if let j = s.job {
+    if let j = s.firstJob {
         out.append(Line(text: j.what, style: .plain))
         // How far the job says it is, and the time it has left at its pace.
         var bar: Line? = nil
@@ -761,7 +774,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         }
     }
     // The lead's second slot's job, beside the first.
-    if let j = s.beside {
+    if let j = s.secondJob {
         out.append(Line(text: "Beside it: \(j.what)", style: .plain))
         if let p = j.progress {
             out.append(Line(text: progressText(p, paused: j.paused != nil, now: r.now), style: .bar, fraction: p.total > 0 ? min(1, p.done / p.total) : 0))
@@ -772,7 +785,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     }
     // The other Macs helping (units only), each with its job.
     for h in freshHelpers(r) {
-        guard let j = h.job else {
+        guard let j = h.firstJob else {
             out.append(Line(text: "\(h.host) is helping; nothing for it to build now", style: .small))
             continue
         }
@@ -797,7 +810,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     if let v = own?.pool?.lead { out += poolLines(v, now: r.now) }
     // The build to the end: each step done, under way, or to come.
     if let steps = s.checklist, !steps.isEmpty {
-        let now = [s.job, s.beside].compactMap { $0.map { String($0.id.split(separator: " ").first ?? "") } }
+        let now = [s.firstJob, s.secondJob].compactMap { $0.map { String($0.id.split(separator: " ").first ?? "") } }
         let finished = steps.filter(\.finished).count
         out.append(Line(text: "", style: .separator))
         let legend = steps.contains { !$0.finished && $0.shared != nil } ? "  ·  ⇄ any Mac can take part" : ""
@@ -2150,7 +2163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // (A unit held stays so for the notifications while it's checked again, its report gone
         // but the check not over: taken in only once its state is ok.)
         let rechecking = Set((s.inputs ?? []).filter { $0.state == "checking" }.map(\.unit)).intersection(seen?.held ?? [])
-        let now = Seen(job: s.job?.id, paused: s.job?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil, held: Set(held.map(\.unit)).union(rechecking))
+        let now = Seen(job: s.firstJob?.id, paused: s.firstJob?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil, held: Set(held.map(\.unit)).union(rechecking))
         defer { seen = now }
         // The first answer only sets what changes are measured from.
         guard let was = seen else { return }
@@ -2177,7 +2190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 post("Failed: \(d.what)", why.isEmpty ? "after \(duration(d.secs))" : clip(why, 160))
             }
         }
-        if let j = s.job {
+        if let j = s.firstJob {
             if j.id != was.job {
                 post("Building", j.what)
             } else if now.paused && !was.paused {

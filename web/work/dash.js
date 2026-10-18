@@ -148,8 +148,9 @@ function model(sw) {
 }
 
 const stepOf = (id) => String(id || "").split(" ")[0];
-// A Mac's jobs, every slot's in order (the status's job, beside, more: crate::agent::Status).
-const jobsOf = (st) => [st.job, st.beside, ...(st.more || [])].filter(Boolean);
+// A Mac's jobs, every slot's in order (crate::agent::Status::jobs: its `jobs`, else an older
+// agent's job, beside, more), each with its slot (an older agent's says none: its place).
+const jobsOf = (st) => (st.jobs?.length ? st.jobs : [st.job, st.beside, ...(st.more || [])].filter(Boolean)).map((j, i) => ({ ...j, slot: j.slot ?? i }));
 // Whether worker `name` is one of `host`'s slots (crate::agent::is_slot_of: "m4", "m4 #2", …).
 // (A slot's number from its name: 1 for the bare host's, N for "<host> #N"; null for none.)
 const slotNo = (name, host) => (name === host ? 1 : name.startsWith(`${host} #`) && /^\d+$/.test(name.slice(host.length + 2)) && +name.slice(host.length + 2) >= 2 ? +name.slice(host.length + 2) : null);
@@ -192,8 +193,8 @@ function alerts(m) {
     const st = x.status, r = st.resources || {}, c = st.conditions || {};
     const short = x.role === "lead" ? "Lead" : x.name;
     if (x.role !== "lead" && !x.fresh) out.push({ cls: "warn", text: `${short} out of touch for ${dur(now - st.beat)}`, to: "machines" });
-    for (const [k, j] of jobsOf(st).entries()) {
-      const p = j.progress, which = k ? `job in slot ${k + 1}` : "job";
+    for (const j of jobsOf(st)) {
+      const k = j.slot, p = j.progress, which = k ? `job in slot ${k + 1}` : "job";
       if (p?.moved_at && !j.paused && now - p.moved_at >= STUCK_S) out.push({ cls: "warn", text: `${short}'s ${which} hasn't moved on for ${dur(now - p.moved_at)}`, to: "machines" });
     }
     if (c.ac === false) out.push({ cls: c.battery != null && c.battery < 40 ? "warn" : "info", text: `${short} on battery${c.battery != null ? ` (${c.battery}%)` : ""}`, to: "machines" });
@@ -248,13 +249,13 @@ function verdictText(m) {
   const parts = [];
   if (!a.host) return [h("b", null, "No word from the lead yet.")];
   if (sw.pause) {
-    const stopping = m.macs.filter((x) => x.status.job?.pausing).length;
+    const stopping = m.macs.filter((x) => jobsOf(x.status).some((j) => j.pausing)).length;
     parts.push(h("b", null, "Paused"), ` by ${sw.pause.by}${sw.pause.at ? `, ${ago(now, sw.pause.at)}` : ""}`);
     parts.push(sw.pause.mode === "freeze" ? " · every job frozen where it was" : stopping ? ` · ${plural(stopping, "job")} finishing what ${stopping === 1 ? "it's" : "they're"} on` : " · nothing running");
   } else if (!m.fresh(a.beat)) {
     parts.push(h("b", null, "Out of touch"), ` · the lead last said something ${ago(now, a.beat)} (asleep, off, or its agent stopped)`);
   } else {
-    const working = m.macs.filter((x) => x.fresh && x.status.job).length + m.pages.filter((p) => (sw.leases || []).some((l) => l.worker === p.name)).length;
+    const working = m.macs.filter((x) => x.fresh && jobsOf(x.status).length).length + m.pages.filter((p) => (sw.leases || []).some((l) => l.worker === p.name)).length;
     parts.push(h("b", null, working ? "Building" : "Idle"), working ? ` on ${plural(working, "machine")}` : "");
   }
   if (fc?.done_at) {
@@ -299,7 +300,7 @@ function overview(m) {
   const readyNow = regs.filter((r) => !Object.keys(r.left).length && r.on_map !== true).length;
   const lastAt = lastUpdate(m);
   const nextUpdate = fc?.updates?.[0];
-  const busy = m.macs.filter((x) => x.fresh && x.status.job).length;
+  const busy = m.macs.filter((x) => x.fresh && jobsOf(x.status).length).length;
   const kpis = h("div", "kpis",
     kpi("Regions on the map", regs.length ? `${onMap} of ${regs.length}` : "–", [asWas ? `${asWas} more as they were` : "", readyNow ? `${readyNow} done, recorded built by the next catalog` : ""].filter(Boolean).join(" · ") || null),
     kpi("Map last updated", lastAt ? ago(now, lastAt) : "–", nextUpdate ? `next ≈ ${clock(nextUpdate.at)}` : null),
@@ -480,9 +481,9 @@ function machineCard(m, x) {
     h("div", "top", h("span", "name", x.name), h("span", "role", role), chip(state, cls), jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
   if (x.role === "lead" && st.ramp) card.append(h("div", `sub ramp ${st.ramp.held ? "held" : st.ramp.not_clean ? "notclean" : ""}`, rampText(st.ramp, now)));
   card.append(...[capacityBlock(said)].filter(Boolean));
-  jobs.forEach((j, i) => {
-    // (Its real slot, slots may be sparse; an older agent's says none: its place.)
-    const k = j.slot ?? i;
+  jobs.forEach((j) => {
+    // (Its real slot, slots may be sparse: jobsOf.)
+    const k = j.slot;
     const b = jobBlock(j, now);
     b.querySelector(".what").prepend(h("span", "slot", `${k + 1}`));
     card.append(b);
@@ -839,7 +840,8 @@ function details(m) {
   const recent = a.recent || [];
   box.append(h("h3", null, "The lead's last jobs"), recent.length ? tbl(["", "Job", "Took", "Ended", "Note"], recent.slice(0, 20).map((d) => [d.ok ? "✓" : "✗", d.what, dur(d.secs), clock(d.ended), (d.note || "").split("\n").slice(-2).join(" ").slice(0, 160)])) : h("div", "small dim", "None yet."));
   if ((a.bad_recipes || []).length) box.append(h("h3", null, "Region recipes that don't read"), tbl(["File", "Problem"], a.bad_recipes));
-  if (a.job?.tail) box.append(h("h3", null, "The lead's job's last lines"), h("pre", { class: "small dim", style: { whiteSpace: "pre-wrap", margin: 0 } }, a.job.tail));
+  const lj = jobsOf(a)[0];
+  if (lj?.tail) box.append(h("h3", null, "The lead's job's last lines"), h("pre", { class: "small dim", style: { whiteSpace: "pre-wrap", margin: 0 } }, lj.tail));
   // Each member's capacity as the lead's coordinator last heard it (coord::Capacity: the lead's own first).
   const caps = a.capacity || [];
   const gb = (mb) => `${n(Math.round(mb / 102.4) / 10)} GB`;
@@ -908,7 +910,7 @@ function render() {
   const feedEl = root.querySelector(".feed");
   if (feedEl) feedEl.scrollTop = feedTop;
   window.scrollTo(0, scrollY);
-  ctx.onState?.(m.sw.pause ? "paused" : !m.a.host ? "no word from the lead" : m.fresh(m.a.beat) ? (m.a.job ? "building" : "idle") : "lead out of touch");
+  ctx.onState?.(m.sw.pause ? "paused" : !m.a.host ? "no word from the lead" : m.fresh(m.a.beat) ? (jobsOf(m.a).length ? "building" : "idle") : "lead out of touch");
 }
 
 let polling = null;
