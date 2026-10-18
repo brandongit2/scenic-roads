@@ -5,7 +5,7 @@
 //!   verts.bin    [i32; 2] per vertex: lon, lat in 1e-7 degrees (densified geometry)
 //!   strings.txt  newline-separated string table; line 0 is the empty string
 //!   elev.f32     raw DEM sample per vertex (NaN = no data)          — dem stage
-//!   src.u8       DEM source per vertex (see `DemSource`)             — dem stage
+//!   src.u8       DEM source per vertex (its declared `code`, §6.8)    — dem stage
 //!   final.u16    processed elevation per vertex, decimetres + 5000   — tile stage (`elev`; older
 //!                folders: final.i16, signed)
 //!   grade.u8     |grade| per vertex, 0.5 % units                     — tile stage
@@ -150,40 +150,9 @@ pub mod flag {
     pub const COVERED: u8 = 1 << 7;
 }
 
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DemSource {
-    None = 0,
-    Hrdem = 1,
-    Usgs3dep = 2,
-    Mrdem = 3,
-    /// FABDEM 30 m (Copernicus DEM with forests and buildings removed), elsewhere.
-    Fabdem = 4,
-    /// GSI 5 m, airborne lidar (Japan).
-    Gsi5a = 5,
-    /// GSI 5 m, photogrammetry (Japan).
-    Gsi5 = 6,
-    /// GSI 10 m (Japan).
-    Gsi10 = 7,
-}
-
-/// Number of DEM source codes, `None` included.
+/// Number of DEM source codes counted per way, 0 (none) included: a vertex's `src.u8` is its
+/// elevation dataset's declared `code` (docs/inputs.md §6.8), named by the catalog's `dem_labels`.
 pub const NDEM: usize = 9;
-
-impl DemSource {
-    pub fn label(v: u8) -> &'static str {
-        match v {
-            1 => "NRCan HRDEM lidar (8 m)",
-            2 => "USGS 3DEP (10 m)",
-            3 => "NRCan MRDEM (30 m)",
-            4 => "FABDEM (30 m)",
-            5 => "GSI lidar (5 m)",
-            6 => "GSI (5 m)",
-            7 => "GSI (10 m)",
-            _ => "none",
-        }
-    }
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]

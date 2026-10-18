@@ -40,6 +40,10 @@ pub struct Description {
     pub redistribute: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub notes: String,
+    /// The short name a list on the map gives it (an elevation dataset's, by its `code`: §6.8);
+    /// none: its `name`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
 }
 
 fn yes() -> bool {
@@ -84,7 +88,7 @@ pub fn parse_description(path: &str, bytes: &[u8]) -> (Option<Description>, Vec<
     }
     for (k, x) in &v {
         let ok = match k.as_str() {
-            "name" | "what" | "credit" | "licence" | "licence_url" | "source" | "notes" => x.is_str(),
+            "name" | "what" | "credit" | "licence" | "licence_url" | "source" | "notes" | "label" => x.is_str(),
             "retrieved" => x.is_str() || x.is_datetime(),
             "redistribute" => x.is_bool(),
             "territory" => {
@@ -123,6 +127,7 @@ pub fn parse_description(path: &str, bytes: &[u8]) -> (Option<Description>, Vec<
         territory: territory.clone(),
         redistribute,
         notes: s("notes"),
+        label: s("label"),
     };
     let keyed =
         store::naming::hash16(format!("territory {}\nredistribute {redistribute}", territory.join(",")).as_bytes());
@@ -147,6 +152,9 @@ pub struct Described {
     pub description: Description,
     /// None: its extent isn't known (no data read yet): listed nowhere.
     pub extent: Option<Extent>,
+    /// An elevation dataset's source byte (§6.8 `code`, 1–255), which its label names on the map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<u8>,
 }
 
 impl Described {
@@ -188,7 +196,12 @@ pub fn of_index(i: &super::Index) -> Vec<Described> {
         .filter_map(|(p, f)| {
             let d: Description = serde_json::from_value(f.facts.get("description")?.clone()).ok()?;
             let extent = f.facts.get("extent").and_then(|e| serde_json::from_value(e.clone()).ok());
-            Some(Described { unit: i.unit.clone(), path: p.clone(), description: d, extent })
+            let code = (i.unit == super::elevation::UNIT)
+                .then(|| f.facts.get("declaration")?.get("code")?.as_u64())
+                .flatten()
+                .and_then(|c| u8::try_from(c).ok())
+                .filter(|&c| c > 0);
+            Some(Described { unit: i.unit.clone(), path: p.clone(), description: d, extent, code })
         })
         .collect()
 }
@@ -225,9 +238,40 @@ pub fn digest(described: &[Described]) -> Option<String> {
     }
     let lines: Vec<String> = described
         .iter()
-        .map(|d| format!("{} {}\n{}", d.unit, d.path, serde_json::to_string(&d.credit()).unwrap_or_default()))
+        .map(|d| {
+            let mut l = format!("{} {}\n{}", d.unit, d.path, serde_json::to_string(&d.credit()).unwrap_or_default());
+            // (An elevation dataset's label too: the catalog's `dem_labels`.)
+            if let Some(c) = d.code {
+                l.push_str(&format!("\nlabel {c} {}", d.label()));
+            }
+            l
+        })
         .collect();
     Some(store::naming::hash16(lines.join("\n").as_bytes()))
+}
+
+impl Described {
+    /// Its label on the map: its description's `label`, else its `name`.
+    pub fn label(&self) -> &str {
+        let d = &self.description;
+        if d.label.is_empty() {
+            &d.name
+        } else {
+            &d.label
+        }
+    }
+}
+
+/// The elevation datasets' labels by source byte (the catalog's `dem_labels`, which the map's
+/// server names a road's elevation sources by): each code's first in unit and path order.
+pub fn dem_labels(described: &[Described]) -> BTreeMap<u8, String> {
+    let mut out = BTreeMap::new();
+    for d in described {
+        if let Some(c) = d.code {
+            out.entry(c).or_insert_with(|| d.label().to_string());
+        }
+    }
+    out
 }
 
 /// The credits a catalog lists (`rules::catalog_credits`' rule): `rules::CREDITS`' in its order, a

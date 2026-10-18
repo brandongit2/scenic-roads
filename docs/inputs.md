@@ -940,7 +940,8 @@ and 3 are planned.
 | `surface` | `ground` or `surface` | a DTM, or a DSM with trees and buildings |
 | `heights` | `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` | the height reference (recorded; conversion planned); `mixed` allowed for the terrain's alone |
 | `rank` | integer, default 0 | overrides the order by resolution (lower first), where datasets of one resolution differ in quality |
-| `code` | 1–255 | the source byte in the units' outputs (`src.u8`), labelled by the server (`roadcore::DemSource`); none for the terrain's |
+| `code` | 1–255 | the source byte in the units' outputs (`src.u8`), named on the map by `label`; none for the terrain's |
+| `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the catalog's `dem_labels` (formats.md, Catalog), as a credit edit does (§4.8) |
 | `terrain` | bool, default false | read by the 3D terrain, never by the roads' elevations (below) |
 | `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world (FABDEM) |
 | `[data] format` | `geotiff` or `tiles` | |
@@ -1355,8 +1356,7 @@ rules, storey heights per country, OSM name heuristics, the Wikidata properties 
 agent) stay.
 
 - **Credits:** `pipeline::rules::CREDITS` and its area boxes (D: each source's description, extents
-  derived), and the server's `credits_of` fallback; `roadcore::DemSource`'s labels (D, the datasets'
-  names); the tree tiles' meta source string (D); source lines in web/src's layer help and popups
+  derived), and the server's `credits_of` fallback; the tree tiles' meta source string (D); source lines in web/src's layer help and popups
   (trees.ts, buildings.ts, ui/buildings.ts, ferries.ts, overlays.ts, details.ts: D, from the
   catalog's credits).
 - **Terrain:** the raw tiles' store path (`sources/aws-terrarium/`, named for its source) and the

@@ -42,7 +42,7 @@ pub struct Declaration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rank: Option<i64>,
     /// The source byte its heights carry in the units' outputs (`src.u8`, which the map's server
-    /// labels: roadcore::DemSource), 1–255; 0 for the terrain's (`terrain`).
+    /// names by its description's `label`, through the catalog's `dem_labels`), 1–255; 0 for the terrain's (`terrain`).
     pub code: u8,
     /// Read by the 3D terrain (crate::terrain_sources), never by the roads' elevations.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -88,8 +88,9 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
     let text = std::str::from_utf8(bytes).map_err(|_| vec!["isn't UTF-8 text".to_string()])?;
     let v: toml::Table = toml::from_str(text).map_err(|e| vec![format!("isn't TOML: {}", e.message())])?;
     let mut why = Vec::new();
-    const DESCRIPTION: [&str; 10] = [
+    const DESCRIPTION: [&str; 11] = [
         "name",
+        "label",
         "what",
         "credit",
         "licence",

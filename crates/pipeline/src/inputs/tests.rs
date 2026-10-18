@@ -744,6 +744,7 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
         path: "qc.toml".into(),
         description: credits::Description { credit: credit.into(), ..d.clone() },
         extent,
+        code: None,
     };
     let qc = credits::Extent::Box([-79.8, 45.0, -57.1, 62.6]);
     let a = credits::digest(&[mk("A", Some(qc.clone()))]);
@@ -772,6 +773,7 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
         path: "about.toml".into(),
         description: credits::Description { what: "Land cover".into(), ..d.clone() },
         extent: Some(credits::Extent::World("world".into())),
+        code: None,
     };
     let mtl = credits::catalog_credits(&[region(-73.7, 45.4, -73.5, 45.6)], &[], &[lc]);
     assert_eq!(mtl.len(), table);
@@ -808,6 +810,41 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     )
     .iter()
     .any(|c| c["what"] == "Unknown"));
+}
+
+/// The elevation datasets' labels (the catalog's `dem_labels`, §6.8): each code's label, else its
+/// name, the first of a code's; a label edit changes the catalog's key.
+#[test]
+fn elevation_labels_come_from_the_declarations() {
+    let el = |path: &str, name: &str, label: &str, code: Option<u8>| credits::Described {
+        unit: super::elevation::UNIT.into(),
+        path: path.into(),
+        description: credits::Description {
+            name: name.into(),
+            label: label.into(),
+            credit: "c".into(),
+            licence: "l".into(),
+            ..Default::default()
+        },
+        extent: None,
+        code,
+    };
+    let ds = [
+        el("gsi-1a.toml", "GSI 1A", "GSI lidar (5 m)", Some(5)),
+        el("gsi-5a.toml", "GSI 5A", "GSI lidar (5 m)", Some(5)),
+        el("mrdem.toml", "NRCan MRDEM, 30 m", "", Some(3)),
+        el("terrarium.toml", "Terrain", "", None),
+    ];
+    let l = credits::dem_labels(&ds);
+    assert_eq!(l.len(), 2);
+    assert_eq!(l[&5], "GSI lidar (5 m)");
+    assert_eq!(l[&3], "NRCan MRDEM, 30 m");
+    let mut edited = ds.clone();
+    edited[0].description.label = "GSI (lidar)".into();
+    assert_ne!(credits::digest(&ds), credits::digest(&edited));
+    let (d, f, _) = credits::parse_description("x.toml", b"credit = \"c\"\nlicence = \"l\"\nlabel = \"Short\"\n");
+    assert!(f.is_empty());
+    assert_eq!(d.unwrap().label, "Short");
 }
 
 // ---- The translations and the descriptions (docs/inputs.md §6.3, §6.4) -------------------------

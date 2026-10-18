@@ -451,6 +451,35 @@ impl Checks for Elevation {
                 }
             }
         }
+        // Datasets of one code labelled apart: the map's list would name them by whichever comes first.
+        let mut labels: BTreeMap<u8, (String, String)> = BTreeMap::new();
+        for p in &v.paths {
+            let Kind::Declaration(_) = kind(p) else { continue };
+            let Ok(b) = (v.read)(p) else { continue };
+            let (Some(desc), _, _) = super::credits::parse_description(p, &b) else { continue };
+            let Ok(d) = declared::parse(&b) else { continue };
+            if d.code == 0 {
+                continue;
+            }
+            let label = if desc.label.is_empty() { desc.name } else { desc.label };
+            match labels.get(&d.code) {
+                Some((q, l)) if *l != label => out.push(Finding::new(
+                    DECL,
+                    Level::Error,
+                    &[p],
+                    &["label"],
+                    vec![q.clone(), p.clone()],
+                    format!(
+                        "{p} and {q} share code {} but are labelled apart (\"{label}\", \"{l}\"): one label per code",
+                        d.code
+                    ),
+                )),
+                Some(_) => {}
+                None => {
+                    labels.insert(d.code, (p.clone(), label));
+                }
+            }
+        }
         for p in &v.paths {
             let orphan = match kind(p) {
                 Kind::Data(id) => {

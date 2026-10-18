@@ -15,7 +15,7 @@ use axum::{
     Json,
 };
 use roadcore::packs::Here;
-use roadcore::{class, dist_m, flag, DemSource, WayRec, E7, NDEM};
+use roadcore::{class, dist_m, flag, WayRec, E7, NDEM};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -166,10 +166,7 @@ pub fn way_info(s: &AppState, f: &Found) -> anyhow::Result<WayInfo> {
         counts[(c as usize).min(NDEM - 1)] += 1;
     }
     let n = w.vcount.max(1) as f32;
-    let sources = (1..NDEM)
-        .filter(|&k| counts[k] > 0)
-        .map(|k| (DemSource::label(k as u8).to_string(), counts[k] as f32 / n))
-        .collect();
+    let sources = (1..NDEM).filter(|&k| counts[k] > 0).map(|k| (dem_label(s, k), counts[k] as f32 / n)).collect();
     let name = bp.string(w.name).to_string();
     let name_en = s.road_en(w.id as u64);
     let mid = v[v.len() / 2];
@@ -485,13 +482,19 @@ fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<P
         descent_m: descent,
         max_grade: gmax as f32 / 2.0,
         avg_grade: ((climb + descent) / total * 100.0) as f32,
-        sources: (1..NDEM)
-            .filter(|&k| src_len[k] > 0.0)
-            .map(|k| (DemSource::label(k as u8).to_string(), src_len[k] / total))
-            .collect(),
+        sources: (1..NDEM).filter(|&k| src_len[k] > 0.0).map(|k| (dem_label(s, k), src_len[k] / total)).collect(),
         truncated,
         ch: if has_ch { keep.iter().map(|&k| chs[vs[k]]).collect() } else { Vec::new() },
     }))
+}
+
+/// Elevation source byte `k`'s name: its declaration's label, as the catalog carries it
+/// (`dem_labels`, docs/inputs.md §6.8); a catalog made before it did names the byte alone.
+fn dem_label(s: &AppState, k: usize) -> String {
+    u8::try_from(k)
+        .ok()
+        .and_then(|c| s.data.catalog().dem_labels.get(&c).cloned())
+        .unwrap_or_else(|| format!("source {k}"))
 }
 
 /// The road-length filter: [lmin, lmax] metres, 0 = no limit (tiles carry whole metres).

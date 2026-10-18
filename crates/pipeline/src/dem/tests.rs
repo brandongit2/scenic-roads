@@ -9,7 +9,6 @@ use crate::geotiff::key;
 use crate::geotiff::testtiff::{make_images, Opts};
 use crate::geotiff::write_f32;
 use anyhow::bail;
-use roadcore::DemSource;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -21,6 +20,18 @@ impl Field {
     fn at(&self, x: f64, y: f64) -> f64 {
         self.0 + self.1 * x + self.2 * y
     }
+}
+
+/// The synthetic datasets' source bytes (their declarations' `code`, as today's declare them).
+#[derive(Clone, Copy, PartialEq)]
+enum DemSource {
+    Hrdem = 1,
+    Usgs3dep = 2,
+    Mrdem = 3,
+    Fabdem = 4,
+    Gsi5a = 5,
+    Gsi5 = 6,
+    Gsi10 = 7,
 }
 
 const PX: f64 = 1.0 / 3600.0;

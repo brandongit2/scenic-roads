@@ -75,7 +75,7 @@ catalog works it out from the sections where missing.
 | `elevu` | `u16` | elevation, decimetres + 5,000 (`final.u16`); older packs: `elev`, `i16` dm clamped at ±3,200 m. Readers take either (`roadcore::elev`) |
 | `raw` | `f32` | raw DEM sample, NaN = none |
 | `grade` | `u8` | \|grade\|, 0.5 % units |
-| `src` | `u8` | DEM source (`DemSource`) |
+| `src` | `u8` | DEM source: the dataset's declared `code` (docs/inputs.md §6.8), named by the catalog's `dem_labels` |
 | `scenic` | `[u8; 13]` | per-vertex channels (`roadcore::scenic::ch`) |
 | `drape` | `i16` | drape height, metres |
 | `strings` | UTF-8 lines | line 0 is "" |
@@ -433,6 +433,7 @@ that decodes and parses, else the next.
              "heritage/<stem>": "…", "outlines": "sources/osm/<date>/outlines"},
   "meta": {"…": "minzoom, maxzoom, bounds, ways, vertices, elev_min, elev_max, elev_hist_10m_km, rail_km, classes, built"},
   "credits": [{"what": "Road elevation, Japan", "source": "…", "terms": "…", "areas": [[122.5, 20.0, 154.0, 46.5]]}],
+  "dem_labels": {"5": "GSI lidar (5 m)"},
   "coverage": {"recorded": true, "regions": [{"id": "monaco", "name": "Monaco", "outline": ["geofabrik:europe/monaco"],
                "shapes": {"geofabrik:europe/monaco": [[[[7.4, 43.72], …]]]}}]}
 }
@@ -444,6 +445,10 @@ that decodes and parses, else the next.
   `what`), those whose areas meet the coverage + 20 km or a built unit's extent. `areas` are w, s, e,
   n boxes in degrees, left out for credits that hold everywhere. A heritage register's credit has
   `register`, which popups name their source by (docs/inputs.md §6.5).
+- `dem_labels`: the elevation datasets' labels by source byte (`src.u8`), from their accepted
+  declarations (`label`, else `name`; `pipeline::inputs::credits::dem_labels`, docs/inputs.md
+  §6.8): how a road's details name its elevation sources. Left out when none; a catalog without
+  it gets "source <n>".
 - `coverage`: the regions built for: those done at publish time as their recipes then were
   (`--ready <id>=<outline digest>,…`), and those not done yet as the last catalog had them, in the
   recipes' order. Outlines are GeoJSON MultiPolygon coordinates in degrees to 5 decimals, rings

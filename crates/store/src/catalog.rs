@@ -76,6 +76,11 @@ pub struct Catalog {
     /// as `coverage` is, so a part the app can't read never makes the catalog unreadable.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub credits: Value,
+    /// The elevation datasets' labels by source byte (`src.u8`), from their declarations
+    /// (pipeline::inputs::credits::dem_labels): how the map names a road's elevation sources. None
+    /// in catalogs made before they were recorded.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub dem_labels: BTreeMap<u8, String>,
     /// The coverage it was built for: `{"regions": [{"id", "name", "outline", "shapes"}]}`, each
     /// outline entry's polygons simplified for drawing (pipeline::coverage::DrawnRegion). No
     /// regions in catalogs made before they were recorded.

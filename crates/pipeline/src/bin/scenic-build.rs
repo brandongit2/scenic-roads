@@ -1730,6 +1730,7 @@ fn catalog(
         "global": global,
         "meta": meta,
         "credits": credits,
+        "dem_labels": pipeline::inputs::credits::dem_labels(&described),
         // (`recorded`: this catalog says which regions it's built for, even none of them yet; one
         // made before catalogs did has none, and the server draws the recipes for it.)
         "coverage": {"regions": regions, "recorded": true},
