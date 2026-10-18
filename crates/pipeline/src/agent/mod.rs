@@ -7566,29 +7566,8 @@ impl Agent {
         }
         // Each slot's job's time left: its pace says only its part's; its targets not yet done, as
         // they took last time, less what it spent on the one under way, if longer.
-        let busy = |k: usize, speed: f64| {
-            self.slots[k].running.as_ref().map_or(0.0, |r| {
-                let left = match r.spec.record.as_ref() {
-                    Some(w) => {
-                        let done = crate::control::read_done(&self.done_path(k), &w.step);
-                        let (mut todo, mut did) = (0.0, 0.0);
-                        for (t, _) in &w.targets {
-                            let c = cost(&w.step, t).secs;
-                            if done.contains(t) {
-                                did += c
-                            } else {
-                                todo += c
-                            }
-                        }
-                        todo - (r.elapsed().as_secs_f64() - did).max(0.0)
-                    }
-                    // (One with no record, the pass's or a worldwide one: its step's time here.)
-                    None => mine(&step_of(&r.spec.id), 1).secs - r.elapsed().as_secs_f64(),
-                };
-                // (At its own pace.)
-                self.slots[k].job_eta.map(|e| e as f64).into_iter().chain([left / speed.max(0.1)]).fold(60.0, f64::max)
-            })
-        };
+        let busy =
+            |k: usize, speed: f64| self.slot_job(k).map_or(0.0, |j| j.busy_s(&|step, t| cost(step, t).secs, speed));
         // (A worker that takes tails around: each of this Mac's units the moment its job gives it to
         // take its tail, crate::offload.)
         let unit_extra_s = if self.coord.as_ref().is_some_and(|c| c.tail_takers()) {
@@ -7723,7 +7702,7 @@ impl Agent {
                         .and_then(|p| p.eta_s)
                         .map_or_else(|| per(&step_of(&j.id)) / speed.max(0.1), |e| e as f64)
                 });
-                let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
+                let busy_s = eta.map_or(0.0, |e| forecast::busy_s(e, lease_left));
                 let targets = leased.iter().find(|l| l.0 == name).map_or(1, |l| l.2.len().max(1));
                 // (Its job's memory: its step's first target's peak.)
                 let running_mb = job.map_or(0, |j| {
@@ -7849,6 +7828,32 @@ impl Agent {
             Err(e) => eprintln!("agent: the forecast's input as data: {e:#}"),
         }
         f
+    }
+
+    /// Slot `k`'s job under way, as its lane's time left is worked out (forecast::SlotJob): its
+    /// targets and which are done, or with none listed (the pass's, a worldwide one) its step's
+    /// time here (`step_secs`, else a first guess); how long it has run; its own estimate.
+    fn slot_job(&self, k: usize) -> Option<forecast::SlotJob> {
+        let r = self.slots.get(k)?.running.as_ref()?;
+        let step = r.spec.id.split(' ').next().unwrap_or("").to_string();
+        let (targets, alone_s) = match r.spec.record.as_ref() {
+            Some(w) => {
+                let done = crate::control::read_done(&self.done_path(k), &w.step);
+                (w.targets.iter().map(|(t, _)| (t.clone(), done.contains(t))).collect(), None)
+            }
+            None => (
+                Vec::new(),
+                Some(self.mem.step_secs.get(&secs_key(&step)).copied().unwrap_or_else(|| first_secs(&step))),
+            ),
+        };
+        let step = r.spec.record.as_ref().map_or(step, |w| w.step.clone());
+        Some(forecast::SlotJob {
+            step,
+            targets,
+            alone_s,
+            elapsed_s: r.elapsed().as_secs_f64(),
+            eta: self.slots[k].job_eta.map(|e| e as f64),
+        })
     }
 
     /// The build to the end (the status's checklist): a line per stage (crate::agent::steps::STAGES)
@@ -8593,12 +8598,11 @@ impl Agent {
             && brokers::stale(self.viewer_failed, now, brokers::HTTPS_EVERY)
         {
             let made = match self.try_pooled() {
-                Some(Some(run)) => Some(make_coordinator_on(&self.o, Some(&run), &self.app, &self.host, coord_port())),
+                Some(Some(_)) => Some(make_viewer(&self.app, &self.host)),
                 _ => None,
             };
             match made {
                 Some(Some(v)) => {
-                    v.become_viewer();
                     eprintln!("agent: this Mac shows the build page at {}", v.contact.urls.join(", "));
                     self.viewer = Some(std::sync::Arc::new(v));
                 }
@@ -8611,22 +8615,24 @@ impl Agent {
                 c.set_pageview(self.pageview.clone());
             }
         }
+        // (The members' ids and the term, as the run holds them: no NAS read here. Their hosts are
+        // the pageview's to read, as it reads, while a page asks.)
         let Some(Some(run)) = self.try_pooled() else { return };
         let members: Vec<String> = run.side.members().iter().cloned().collect();
-        let hosts: Vec<String> = members.iter().filter_map(|m| run.side.heartbeat(m)).map(|h| h.pool.host).collect();
         let term = run.side.driver().current().term;
         drop(run);
-        let own = (0..self.slots.len())
-            .map(|k| pageview::OwnLane {
-                name: self.worker_of(k),
-                busy_s: if self.slots[k].running.is_some() { self.slots[k].job_eta.unwrap_or(0) as f64 } else { 0.0 },
-            })
-            .collect();
+        // (This Mac's lanes, only while a page asks: each slot's done targets are a read.)
+        let own = if self.pageview.wanted(now_s()) {
+            (0..self.slots.len())
+                .map(|k| pageview::OwnLane { name: self.worker_of(k), job: self.slot_job(k) })
+                .collect()
+        } else {
+            Vec::new()
+        };
         self.pageview.set_inputs(pageview::Inputs {
             root: Some(root.to_path_buf()),
             term,
             members,
-            hosts,
             app: self.app.clone(),
             own,
         });
@@ -10253,6 +10259,27 @@ fn make_coordinator_on(
         }
         Err(e) => {
             eprintln!("agent: no coordinator ({e:#})");
+            None
+        }
+    }
+}
+
+/// A viewer alone on this Mac's coordinator port (crate::coord::Coordinator::viewer): the page and
+/// its views, nothing kept; None when it can't listen.
+fn make_viewer(app: &str, host: &str) -> Option<crate::coord::Coordinator> {
+    let port = coord_port();
+    #[cfg(test)]
+    let held = crate::coord::take_test_listener(port);
+    #[cfg(not(test))]
+    let held: Option<std::net::TcpListener> = None;
+    let l = match held {
+        Some(l) => Ok(l),
+        None => store::spawn::listen(("0.0.0.0", port)),
+    };
+    match l.map_err(anyhow::Error::from).and_then(|l| crate::coord::Coordinator::viewer(l, host, app)) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!("agent: no viewer on port {port} ({e:#})");
             None
         }
     }

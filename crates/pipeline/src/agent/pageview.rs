@@ -1,19 +1,22 @@
-//! The build page's data as this Mac reads it from the NAS (docs/pool.md §10, task #409): every
-//! Mac's port 8090 answers `/work/swarm` and `/work/history` the same way, from a few whole files
-//! the lead writes, read by known name (never a folder listing) while a page asks.
+//! The build page's data as this Mac reads it from the NAS (docs/pool.md §10, task #409): in the
+//! pool, every Mac's port 8090 answers `/work/swarm` and `/work/history` the same way, from a few
+//! whole files the lead writes, read by known name (never a folder listing) while a page asks.
 //!
 //! A thread of the agent (`spawn`) reads them only while a page has asked in the last
 //! `ASKED_FOR_S`, every `EVERY` at most: the lead's status (`state/status.json`), its
 //! coordinator's view (`state/coord/term/<E>/view.json`), its forecast's input
 //! (`state/build/term/<E>/forecast-input.json`, read again only when its time changes), the
-//! pause (`state/build/pause.json`), each member's own status (`state/helpers/<host>.json`, the
-//! members as the pool's driver knows them), and what the members' history files of the two
-//! newest days (`state/coord/history/<day>/<member>.jsonl`) gained since the last read (from the
-//! offset read up to). It keeps one snapshot: those, the history merged, and the forecast run
-//! here (`forecast::Record::forecast`) with its time brought to now, this Mac's own lanes as its
-//! slots are now (`Inputs::own`).
+//! pause (`state/build/pause.json`), each member's heartbeat (`state/pool/members/<id>.json`, the
+//! members as the pool's driver knows them: its host) and own status
+//! (`state/helpers/<host>.json`), and what the members' history files of the two newest days
+//! (`state/coord/history/<day>/<member>.jsonl`) gained since the last read (from the offset read
+//! up to; from the start again when a file is now shorter). Every read is done before its state's
+//! lock is taken, so a slow NAS never holds up an answer. It keeps one snapshot: those, the history
+//! merged and numbered here (`epoch` names the numbering), and the forecast run here
+//! (`forecast::Record::forecast`) with its time brought to now, this Mac's own lanes as its slots
+//! are now (`Inputs::own`, worked out as the lead works out its own: forecast::SlotJob).
 
-use super::forecast::{Forecast, Record};
+use super::forecast::{Forecast, Record, SlotJob};
 use crate::coord::history::{Event, History};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -35,8 +38,9 @@ pub trait Source {
     fn read(&self, path: &str) -> Option<Vec<u8>>;
     /// Its time last changed.
     fn mtime(&self, path: &str) -> Option<SystemTime>;
-    /// What it holds from byte `offset` on.
-    fn read_from(&self, path: &str, offset: u64) -> Option<Vec<u8>>;
+    /// What it holds from byte `offset` on, and where that is: from the start (0) when it's now
+    /// shorter than `offset` (made again).
+    fn read_from(&self, path: &str, offset: u64) -> Option<(u64, Vec<u8>)>;
 }
 
 /// The NAS's files, each read on the records' readers under their deadline (crate::agent::nasread).
@@ -50,38 +54,38 @@ impl Source for NasFiles {
         let p = self.0.join(path);
         super::nasread::with(&p.clone(), move || std::fs::metadata(&p)?.modified()).ok()
     }
-    fn read_from(&self, path: &str, offset: u64) -> Option<Vec<u8>> {
+    fn read_from(&self, path: &str, offset: u64) -> Option<(u64, Vec<u8>)> {
         let p = self.0.join(path);
         super::nasread::with(&p.clone(), move || {
             use std::io::{Read, Seek};
             let mut f = std::fs::File::open(&p)?;
-            f.seek(std::io::SeekFrom::Start(offset))?;
+            let from = if f.metadata()?.len() < offset { 0 } else { offset };
+            f.seek(std::io::SeekFrom::Start(from))?;
             let mut b = Vec::new();
             f.read_to_end(&mut b)?;
-            Ok(b)
+            Ok((from, b))
         })
         .ok()
     }
 }
 
-/// What the agent tells it, each loop: the project's root, the current term, the members (by id,
-/// as the pool's driver knows them, and their hosts), this Mac's app and its own lanes now.
+/// What the agent tells it, each loop, from what it holds (no NAS read): the project's root, the
+/// current term, the members' ids as the pool's driver knows them, this Mac's app, and its own
+/// lanes now (only while a page asks: `PageView::wanted`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Inputs {
     pub root: Option<PathBuf>,
     pub term: u64,
     pub members: Vec<String>,
-    pub hosts: Vec<String>,
     pub app: String,
     pub own: Vec<OwnLane>,
 }
 
-/// One of this Mac's lanes (a slot: the agent's `worker_of`) as it is now: its job's time left (s;
-/// 0, free).
+/// One of this Mac's lanes (a slot: the agent's `worker_of`) and its job under way, if any.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct OwnLane {
     pub name: String,
-    pub busy_s: f64,
+    pub job: Option<SlotJob>,
 }
 
 /// The files as last read.
@@ -98,10 +102,12 @@ struct Snap {
 struct State {
     snap: Option<Snap>,
     /// The forecast's input as last read, by its file's time.
-    record: Option<(SystemTime, Record<'static>)>,
+    record: Option<(SystemTime, Arc<Record<'static>>)>,
     /// Each history file read up to (bytes: the end of its last whole line).
     offsets: BTreeMap<String, u64>,
     history: Option<History>,
+    /// The history's numbering: made with the first snapshot (a new one each process).
+    epoch: String,
     last: Option<Instant>,
 }
 
@@ -138,6 +144,12 @@ impl PageView {
         now.saturating_sub(self.asked.load(Ordering::Relaxed)) < ASKED_FOR_S
     }
 
+    /// Whether it serves the page (the agent told it a root: in the pool). Not: the coordinator
+    /// answers from its memory, as out of the pool.
+    pub fn active(&self) -> bool {
+        self.inputs.lock().unwrap().root.is_some()
+    }
+
     /// What the agent tells it (`Inputs`).
     pub fn set_inputs(&self, i: Inputs) {
         let mut cur = self.inputs.lock().unwrap();
@@ -159,16 +171,24 @@ impl PageView {
         true
     }
 
-    /// Reads the files and makes the snapshot.
+    /// Reads the files (without the state's lock: what it needs of it taken first) and makes the
+    /// snapshot (under it, briefly).
     fn refresh(&self, src: &dyn Source, now: u64) {
         let inp = self.inputs.lock().unwrap().clone();
+        let (offsets, had) = {
+            let st = self.state.lock().unwrap();
+            (st.offsets.clone(), st.record.clone())
+        };
         let json = |p: &str| src.read(p).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
         let status = json("state/status.json").unwrap_or(Value::Null);
         let view = json(&super::pool::view_path(inp.term)).map_or(Value::Null, |v| v["view"].clone());
         let pause = json("state/build/pause.json").unwrap_or(Value::Null);
+        // (Each member's host, from its heartbeat; then its own status.)
         let helpers: Vec<Value> = inp
-            .hosts
+            .members
             .iter()
+            .filter_map(|m| json(&format!("state/pool/members/{m}.json")))
+            .filter_map(|b| b["host"].as_str().map(str::to_string))
             .filter_map(|h| json(&format!("state/helpers/{h}.json")))
             .filter(|h| now.saturating_sub(h["beat"].as_u64().unwrap_or(0)) < HELPER_FRESH_S)
             .map(|mut h| {
@@ -180,23 +200,26 @@ impl PageView {
                 h
             })
             .collect();
-        let mut st = self.state.lock().unwrap();
         // The forecast's input, again only when its file changed.
         let fpath = super::pool::forecast_input_path(inp.term);
-        match src.mtime(&fpath) {
-            Some(t) if st.record.as_ref().is_none_or(|r| r.0 != t) => {
+        let record = match src.mtime(&fpath) {
+            Some(t) if had.as_ref().is_none_or(|r| r.0 != t) => {
                 match src.read(&fpath).map(|b| Record::from_bytes(&b)) {
-                    Some(Ok(r)) => st.record = Some((t, r)),
-                    Some(Err(e)) => eprintln!("pageview: the forecast's input: {e:#}"),
-                    None => {}
+                    Some(Ok(r)) => Some((t, Arc::new(r))),
+                    Some(Err(e)) => {
+                        eprintln!("pageview: the forecast's input: {e:#}");
+                        had
+                    }
+                    None => had,
                 }
             }
-            Some(_) => {}
-            None => st.record = None,
-        }
-        let forecast = st.record.as_ref().map(|(_, r)| local_forecast(r, now, &inp.own));
+            Some(_) => had,
+            None => None,
+        };
+        let forecast = record.as_ref().map(|(_, r)| local_forecast(r, now, &inp.own));
         // The history: what each member's files of the two newest days gained.
         let mut new: Vec<(u64, String, u64, Event)> = Vec::new();
+        let mut read_to: BTreeMap<String, u64> = BTreeMap::new();
         let days: Vec<String> = [now.saturating_sub(86_400), now]
             .iter()
             .filter_map(|&t| crate::pool::journal::day(t))
@@ -206,21 +229,35 @@ impl PageView {
         for day in &days {
             for m in &inp.members {
                 let p = format!("state/coord/history/{day}/{m}.jsonl");
-                let from = st.offsets.get(&p).copied().unwrap_or(0);
-                let Some(b) = src.read_from(&p, from) else { continue };
+                let at = offsets.get(&p).copied().unwrap_or(0);
+                let Some((from, b)) = src.read_from(&p, at) else {
+                    if let Some(&o) = offsets.get(&p) {
+                        read_to.insert(p, o);
+                    }
+                    continue;
+                };
                 // (Whole lines alone: one being written is read next time.)
-                let Some(end) = b.iter().rposition(|&c| c == b'\n') else { continue };
+                let Some(end) = b.iter().rposition(|&c| c == b'\n') else {
+                    read_to.insert(p, from);
+                    continue;
+                };
                 for l in b[..end].split(|&c| c == b'\n') {
                     if let Ok(e) = serde_json::from_slice::<Event>(l) {
                         new.push((e.t, m.clone(), e.seq, e));
                     }
                 }
-                st.offsets.insert(p, from + end as u64 + 1);
+                read_to.insert(p, from + end as u64 + 1);
             }
         }
-        // (Days gone from the two: their offsets forgotten.)
-        st.offsets.retain(|p, _| days.iter().any(|d| p.starts_with(&format!("state/coord/history/{d}/"))));
         new.sort_by(|a, b| (a.0, &a.1, a.2).cmp(&(b.0, &b.1, b.2)));
+        // Swapped in.
+        let mut st = self.state.lock().unwrap();
+        // (Days gone from the two: their offsets forgotten.)
+        st.offsets = read_to;
+        st.record = record;
+        if st.history.is_none() {
+            st.epoch = format!("view {} {}", std::process::id(), now);
+        }
         let h = st.history.get_or_insert_with(|| History::load(None));
         for (_, _, _, e) in new {
             // (Numbered here: the page's cursor, rising as events arrive.)
@@ -237,22 +274,22 @@ impl PageView {
         let app = self.inputs.lock().unwrap().app.clone();
         let st = self.state.lock().unwrap();
         let s = st.snap.as_ref()?;
-        Some(answer(s, st.history.as_ref(), &app, now_s()))
+        Some(answer(s, st.history.as_ref(), &st.epoch, &app, now_s()))
     }
 
-    /// `/work/history`'s answer: the events after number `since` (this Mac's numbering), at most
-    /// `max`. None before the first read. A page asked.
+    /// `/work/history`'s answer: the events after number `since` (this Mac's numbering, `epoch`),
+    /// at most `max`. None before the first read. A page asked.
     pub fn history(&self, since: u64, max: usize) -> Option<Value> {
         self.touch();
         let st = self.state.lock().unwrap();
         st.snap.as_ref()?;
         let h = st.history.as_ref()?;
-        Some(serde_json::json!({ "seq": h.seq(), "events": h.since(since, max) }))
+        Some(serde_json::json!({ "seq": h.seq(), "epoch": st.epoch, "events": h.since(since, max) }))
     }
 }
 
 /// The swarm's answer at `now` from snapshot `s`.
-fn answer(s: &Snap, h: Option<&History>, app: &str, now: u64) -> Value {
+fn answer(s: &Snap, h: Option<&History>, epoch: &str, app: &str, now: u64) -> Value {
     let mut agent = s.status.clone();
     if agent.is_object() {
         if let Some(f) = &s.forecast {
@@ -260,6 +297,8 @@ fn answer(s: &Snap, h: Option<&History>, app: &str, now: u64) -> Value {
         }
         agent["helpers"] = Value::Array(s.helpers.clone());
     }
+    // (A lead on an app before view.json: no leases, workers nor tasks; its status's own forecast
+    // when it writes no input either.)
     let (leases, workers) = crate::coord::ages(&s.view, now);
     // (The pause as the lead mirrors it, at once; else as its view said.)
     let pause = if s.pause.is_null() { s.view["pause"].clone() } else { s.pause.clone() };
@@ -272,24 +311,31 @@ fn answer(s: &Snap, h: Option<&History>, app: &str, now: u64) -> Value {
         "tasks": s.view["tasks"],
         "task_mb": s.view["task_mb"],
         "seq": h.map_or(0, History::seq),
+        "epoch": epoch,
         "rates": h.map(|h| h.rates(now, 24)),
         "app": app,
     })
 }
 
 /// The lead's forecast run here at `now`: each lane's time left and each cadence's time since
-/// moved on by the time since it was made, this Mac's own lanes as `own` says.
+/// moved on by the time since it was made; this Mac's own lanes (`own`) as their slots are now,
+/// their time left worked out as the lead works out its own (forecast::SlotJob, each target's cost
+/// from the input's table, else its step's time a target: `each_s`).
 pub fn local_forecast(r: &Record, now: u64, own: &[OwnLane]) -> Forecast {
     let mut r = r.clone();
     let dt = now.saturating_sub(r.input.now) as f64;
-    let age = |m: &mut super::forecast::Machine| match own.iter().find(|o| o.name == m.name) {
-        Some(o) => {
-            m.busy_s = o.busy_s;
-            m.from_s = (m.from_s - dt).max(0.0);
-        }
-        None => {
-            m.busy_s = (m.busy_s - dt).max(0.0);
-            m.from_s = (m.from_s - dt).max(0.0);
+    let (costs, each) = (r.input.costs.clone(), r.each_s.clone());
+    let cost = move |step: &str, t: &str| {
+        costs.get(step).and_then(|m| m.get(t)).map(|c| c.secs).or_else(|| each.get(step).copied()).unwrap_or(0.0)
+    };
+    let age = |m: &mut super::forecast::Machine| {
+        m.from_s = (m.from_s - dt).max(0.0);
+        match own.iter().find(|o| o.name == m.name) {
+            Some(o) => {
+                m.busy_s = o.job.as_ref().map_or(0.0, |j| j.busy_s(&cost, m.speed));
+                m.running = o.job.as_ref().map(SlotJob::running);
+            }
+            None => m.busy_s = (m.busy_s - dt).max(0.0),
         }
     };
     r.input.machines.iter_mut().for_each(age);
@@ -345,9 +391,11 @@ mod tests {
             self.1.fetch_add(1, Ordering::Relaxed);
             std::fs::metadata(self.0.join(p)).and_then(|m| m.modified()).ok()
         }
-        fn read_from(&self, p: &str, offset: u64) -> Option<Vec<u8>> {
+        fn read_from(&self, p: &str, offset: u64) -> Option<(u64, Vec<u8>)> {
             self.1.fetch_add(1, Ordering::Relaxed);
-            local(&self.0, p).map(|b| b[(offset as usize).min(b.len())..].to_vec())
+            let b = local(&self.0, p)?;
+            let from = if (b.len() as u64) < offset { 0 } else { offset };
+            Some((from, b[from as usize..].to_vec()))
         }
     }
 
@@ -406,18 +454,13 @@ mod tests {
             (ev(1, now - 50, "start") + &ev(2, now - 20, "done")).as_bytes(),
         );
         put(root, &format!("state/coord/history/{day}/m-b.jsonl"), ev(9, now - 30, "lease").as_bytes());
+        put(root, "state/pool/members/m-a.json", br#"{"member":"m-a","host":"m1"}"#);
+        put(root, "state/pool/members/m-b.json", br#"{"member":"m-b","host":"gone"}"#);
         put(root, "state/helpers/m1.json", format!(r#"{{"host":"m1","beat":{now},"regions":[1]}}"#).as_bytes());
     }
 
     fn inputs(app: &str) -> Inputs {
-        Inputs {
-            root: None,
-            term: 7,
-            members: vec!["m-a".into(), "m-b".into()],
-            hosts: vec!["m1".into(), "gone".into()],
-            app: app.into(),
-            own: Vec::new(),
-        }
+        Inputs { root: None, term: 7, members: vec!["m-a".into(), "m-b".into()], app: app.into(), own: Vec::new() }
     }
 
     #[test]
@@ -491,14 +534,25 @@ mod tests {
         }
         let strip = |mut a: Value| {
             a["now"] = Value::Null;
+            a["epoch"] = Value::Null;
             a["agent"]["forecast"]["at"] = Value::Null;
             a
         };
         assert_eq!(strip(lead.swarm().unwrap()), strip(member.swarm().unwrap()));
-        // This Mac's own lane as its slot is now: its machine's work moves, the others' don't.
+        // This Mac's own lane as its slot is now (as the lead works its own out): its machine's
+        // lane's work moves (and what the others take with it).
         let rec = record(now);
         let theirs = local_forecast(&rec, now, &[]);
-        let mine = local_forecast(&rec, now, &[OwnLane { name: "m1".into(), busy_s: 5000.0 }]);
+        let job = SlotJob {
+            step: "depth".into(),
+            targets: vec![("6/9/9".into(), false), ("6/9/8".into(), true)],
+            alone_s: None,
+            elapsed_s: 100.0,
+            eta: None,
+        };
+        assert_eq!(job.busy_s(&|_, _| 3000.0, 1.0), 3000.0, "one left, its time spent within the one done");
+        let own = [OwnLane { name: "m1".into(), job: Some(job) }];
+        let mine = local_forecast(&rec, now, &own);
         assert_ne!(theirs.lanes.get("m1"), mine.lanes.get("m1"));
         assert_eq!(theirs, forecast::forecast(&rec.input), "nothing moved at the time it was made");
     }
@@ -524,5 +578,90 @@ mod tests {
         pv.touch();
         assert!(pv.tick(&src, now));
         assert_eq!(src.1.load(Ordering::Relaxed) - n, n - 1, "all but the forecast's input");
+    }
+
+    #[test]
+    fn a_new_numbering_has_a_new_epoch() {
+        // (Task #409 review) the page starts its cursor again when the epoch changes: a new
+        // process's view (its agent restarted) numbers from 1 again, under another epoch.
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        fixture(d.path(), now);
+        let first = PageView::default();
+        first.set_inputs(inputs(""));
+        assert!(first.swarm().is_none() && first.history(0, 10).is_none(), "nothing before the first read");
+        first.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now);
+        let a = first.swarm().unwrap();
+        let again = PageView::default();
+        again.set_inputs(inputs(""));
+        again.touch();
+        again.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now + 1);
+        let b = again.swarm().unwrap();
+        assert!(a["epoch"].as_str().is_some_and(|e| !e.is_empty()));
+        assert_ne!(a["epoch"], b["epoch"]);
+        assert_eq!(first.history(0, 10).unwrap()["epoch"], a["epoch"]);
+        // (Its own numbering stays its own across reads.)
+        first.state.lock().unwrap().last = None;
+        first.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now);
+        assert_eq!(first.swarm().unwrap()["epoch"], a["epoch"]);
+    }
+
+    /// A source whose reads wait until they're let go.
+    struct Slow(Dir, Mutex<std::sync::mpsc::Receiver<()>>);
+
+    impl Source for Slow {
+        fn read(&self, p: &str) -> Option<Vec<u8>> {
+            self.1.lock().unwrap().recv().ok();
+            self.0.read(p)
+        }
+        fn mtime(&self, p: &str) -> Option<SystemTime> {
+            self.0.mtime(p)
+        }
+        fn read_from(&self, p: &str, offset: u64) -> Option<(u64, Vec<u8>)> {
+            self.0.read_from(p, offset)
+        }
+    }
+
+    #[test]
+    fn a_slow_read_never_holds_up_an_answer() {
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        fixture(d.path(), now);
+        let pv = Arc::new(PageView::default());
+        pv.set_inputs(inputs(""));
+        pv.touch();
+        pv.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now);
+        // A second read, stuck on its first file: the answers go on from the snapshot meanwhile.
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        pv.state.lock().unwrap().last = None;
+        let reader = {
+            let (pv, root) = (pv.clone(), d.path().to_path_buf());
+            std::thread::spawn(move || pv.tick(&Slow(Dir(root, AtomicUsize::new(0)), Mutex::new(wait)), now))
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        let t = Instant::now();
+        assert!(pv.swarm().is_some() && pv.history(0, 10).is_some());
+        assert!(t.elapsed() < Duration::from_millis(50), "{:?}", t.elapsed());
+        drop(go);
+        assert!(reader.join().unwrap());
+    }
+
+    #[test]
+    fn a_history_file_made_again_shorter_is_read_from_its_start() {
+        let d = tempfile::tempdir().unwrap();
+        let now = now_s();
+        fixture(d.path(), now);
+        let src = Dir(d.path().into(), AtomicUsize::new(0));
+        let pv = PageView::default();
+        pv.set_inputs(inputs(""));
+        pv.touch();
+        pv.tick(&src, now);
+        let day = crate::pool::journal::day(now).unwrap();
+        let line = serde_json::to_string(&Event { seq: 1, t: now - 5, ..Event::new("catalog") }).unwrap() + "\n";
+        std::fs::write(d.path().join(format!("state/coord/history/{day}/m-a.jsonl")), line).unwrap();
+        pv.state.lock().unwrap().last = None;
+        pv.tick(&src, now);
+        let h = pv.history(3, 10).unwrap();
+        assert_eq!(h["events"][0]["kind"], "catalog");
     }
 }

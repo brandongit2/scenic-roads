@@ -913,6 +913,10 @@ let ctx = null;
 let last = null;
 let events = [];
 let seenSeq = undefined;
+// The numbering the events are in (the answer's `epoch`: a Mac's agent restarted, another Mac
+// answering); "since you last looked" is kept per numbering.
+let epoch = undefined;
+const seenKey = () => `seenSeq:${epoch ?? ""}`;
 
 function section(cls, id, title, sub, ...body) {
   return h("section", { class: cls, id }, title ? h("h2", null, title, sub ? h("span", null, sub) : null) : null, ...body);
@@ -994,6 +998,12 @@ async function pollOnce() {
     const [code, sw] = await ctx.call("/work/swarm", {});
     if (code !== 200 || !sw) return;
     last = sw;
+    // (Another numbering, or this one gone back past the last event this page has: started again.)
+    if (sw.epoch !== epoch || (sw.seq != null && events.length && sw.seq < events[events.length - 1].seq)) {
+      epoch = sw.epoch;
+      events = [];
+      seenSeq = undefined;
+    }
     // What happened since the last event this page has (a few hundred at first).
     if (sw.seq != null) {
       const from = events.length ? events[events.length - 1].seq : Math.max(0, sw.seq - 600);
@@ -1005,7 +1015,7 @@ async function pollOnce() {
         }
       }
       // (What this browser last showed: none on a first visit, then nothing's highlighted.)
-      if (seenSeq === undefined) seenSeq = ctx.store.get("seenSeq", null);
+      if (seenSeq === undefined) seenSeq = ctx.store.get(seenKey(), null);
     }
     render();
   } catch (e) {
@@ -1029,7 +1039,7 @@ export function dashboard(opts) {
   // What this page has shown, kept as it's left: when it's back (or the next visit), what came
   // since is highlighted ("since you last looked").
   let left = null;
-  const keep = () => { if (events.length) { left = events[events.length - 1].seq; ctx.store.set("seenSeq", left); } };
+  const keep = () => { if (events.length) { left = events[events.length - 1].seq; ctx.store.set(seenKey(), left); } };
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") keep();
     else { if (left != null) seenSeq = left; poll(); }

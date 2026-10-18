@@ -149,6 +149,56 @@ pub struct Input<'a> {
     pub old_app: bool,
 }
 
+/// A slot's job under way, as its lane's time left is worked out (`SlotJob::busy_s`): the lead's
+/// forecast (crate::agent's `forecast_now`) and each Mac's page data (crate::agent::pageview, its
+/// own lanes) alike.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SlotJob {
+    pub step: String,
+    /// Its targets, each whether it's done.
+    pub targets: Vec<(String, bool)>,
+    /// A job with no targets listed (the pass's, a worldwide one): its step's time here.
+    pub alone_s: Option<f64>,
+    /// How long it has run (s), and its own estimate of its time left (s), when it said one.
+    pub elapsed_s: f64,
+    pub eta: Option<f64>,
+}
+
+impl SlotJob {
+    /// Its time left (s) at `speed`: its targets not done (`cost` each, at the lead's pace) less
+    /// what it spent on the one under way beyond those done, its own estimate if longer, a minute
+    /// at least (`busy_s`).
+    pub fn busy_s(&self, cost: &dyn Fn(&str, &str) -> f64, speed: f64) -> f64 {
+        let left = match self.alone_s {
+            Some(a) => a - self.elapsed_s,
+            None => {
+                let (mut todo, mut did) = (0.0, 0.0);
+                for (t, done) in &self.targets {
+                    let c = cost(&self.step, t);
+                    if *done {
+                        did += c
+                    } else {
+                        todo += c
+                    }
+                }
+                todo - (self.elapsed_s - did).max(0.0)
+            }
+        };
+        busy_s(self.eta.unwrap_or(0.0), left / speed.max(0.1))
+    }
+
+    /// What its lane runs (`Machine::running`): its step and targets.
+    pub fn running(&self) -> (String, usize) {
+        (self.step.clone(), self.targets.len().max(1))
+    }
+}
+
+/// A lane's time left (s): a job's own estimate (`eta`) or the time its work left takes
+/// (`left`), whichever's longer, a minute at least.
+pub fn busy_s(eta: f64, left: f64) -> f64 {
+    eta.max(left).max(60.0)
+}
+
 /// What each target of the regions takes, by step, then target.
 pub type CostTable = BTreeMap<String, BTreeMap<String, Cost>>;
 

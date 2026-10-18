@@ -717,22 +717,33 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   reader tells by zstd's magic number). About 70 KB with today's work left (88 regions, ~500
   targets, 24 lanes); about 2 MB for a whole rebuild's. Every time and speed in it is made
   finite before it's written (`Record::clamp`). Read by each Mac's page data (below).
-- **The page's data on every Mac** (`agent::pageview`, task #409): each Mac's port 8090 answers
-  `/work/swarm` and `/work/history` from its own read of the NAS, the same JSON on every Mac
-  (`/work/steps` is the steps table, the same everywhere). A thread of the agent reads only while
-  a page has asked in the last 60 s, every 12 s at most, by known name (no listing): the lead's
+- **The page's data on every Mac** (`agent::pageview`, task #409): in the pool, each Mac's port
+  8090 answers `/work/swarm` and `/work/history` from its own read of the NAS, the same JSON on
+  every Mac (`/work/steps` is the steps table, the same everywhere); out of the pool the
+  coordinator answers from its memory, as before. A thread of the agent reads only while a page
+  has asked in the last 60 s, every 12 s at most, by known name (no listing): the lead's
   `state/status.json`, the term's `view.json`, its `forecast-input.json` (again only when its
-  time changes), `state/build/pause.json`, each member's `state/helpers/<host>.json` (the members
-  and their hosts as the pool's driver knows them), and what each member's history file of the
-  two newest days gained since the offset it last read to (whole lines). The history is merged
-  by time, writer and number, and numbered by this Mac as it arrives, so the page's cursor
-  (`seq`) only rises. The forecast is run here from the input, its time brought to now and this
-  Mac's own lanes' time left as its slots are now; a target missing from the cost table is a bug,
-  logged once. Times are given the page as ages (`coord::ages`). The answer carries the app
-  serving it (`app`). A Mac with neither a coordinator nor a broker serves the page from a viewer
-  alone (`Coordinator::become_viewer`): the page and its views, every other call refused; the
-  usual Origin and token rules hold. Until the first read, the coordinator answers from its
-  memory as before.
+  time changes), `state/build/pause.json`, each member's heartbeat (`state/pool/members/<id>.json`,
+  for its host) and own status (`state/helpers/<host>.json`), and what each member's history
+  file of the two newest days gained since the offset it last read to (whole lines; from the
+  start again when the file is now shorter than that). The agent's loop hands it only what it
+  holds already (the term and the members' ids from the pool's driver, this Mac's app): no NAS
+  read on the loop, and this Mac's lanes worked out only while a page asks. Every read is done
+  before the pageview's state is locked, and the results swapped in after, so a slow NAS never
+  holds up an answer. The history is merged by time, writer and number, and numbered by this Mac
+  as it arrives; the answers carry the numbering's `epoch` (new with each process's first read),
+  and the page starts its cursor again, and keeps "since you last looked" apart, when the epoch
+  changes or `seq` falls below its last event. Until its first read a Mac answers 503 (never its
+  memory's views: another numbering). The forecast is run here from the input, its time brought
+  to now and this Mac's own lanes as its slots are now, worked out as the lead works out its own
+  (`forecast::SlotJob`: its own estimate, or its targets left at its speed, a minute at least; its
+  running job too); a target missing from the cost table is a bug, logged once. Times are given
+  the page as ages (`coord::ages`). The answer carries the app serving it (`app`). With a lead on
+  an app from before these records (no `view.json`, no `forecast-input.json`), the answer has no
+  leases, workers nor tasks, and the forecast is the one in the lead's status. A Mac with neither
+  a coordinator nor a broker serves the page from a viewer (`Coordinator::viewer`): the page and
+  its views, every other call refused (its key's too); no state folder of the agent's (its token
+  alone, in a scratch folder), no history, no background loop. The usual Origin rules hold.
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
   the lead's first, marked coordinator with its ramp (§7.1); its capacity as the coordinator last
   heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and

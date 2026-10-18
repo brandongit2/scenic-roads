@@ -341,7 +341,7 @@ pub struct Shared {
     /// The page's data as this Mac reads it from the NAS (crate::agent::pageview): `/work/swarm`
     /// and `/work/history` answered from it once it has a snapshot.
     pub pageview: Option<Arc<crate::agent::pageview::PageView>>,
-    /// A viewer alone (`Coordinator::become_viewer`): the page and its views, nothing else.
+    /// A viewer alone (`Coordinator::viewer`): the page and its views, nothing else.
     pub viewer: bool,
 }
 
@@ -1662,6 +1662,27 @@ impl Coordinator {
         anyhow::bail!("no coordinator in WebAssembly")
     }
 
+    #[cfg(target_os = "wasi")]
+    pub fn viewer(_listener: std::net::TcpListener, _me: &str, _app: &str) -> Result<Coordinator> {
+        anyhow::bail!("no coordinator in WebAssembly")
+    }
+
+    /// A viewer alone, from birth, answering on `listener` (docs/pool.md §10): the page and its
+    /// views (`/work/swarm`, `/work/history`, `/work/steps`, from a pageview once it's given one),
+    /// every other call refused. No state of a coordinator's: nothing loaded nor kept (its token,
+    /// the one thing it makes, in a scratch folder of its own, emptied as it starts), no history,
+    /// no background loop, no page address written.
+    #[cfg(not(target_os = "wasi"))]
+    pub fn viewer(listener: std::net::TcpListener, me: &str, app: &str) -> Result<Coordinator> {
+        let dir = std::env::temp_dir().join(format!(
+            "scenic-viewer-{}-{}",
+            std::process::id(),
+            listener.local_addr()?.port()
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+        Coordinator::start_with(&dir, None, listener, me, app, true)
+    }
+
     #[cfg(not(target_os = "wasi"))]
     pub fn start(dir: &Path, wasm: Option<PathBuf>, port: u16, me: &str, app: &str) -> Result<Coordinator> {
         // (Listening first: a port in use writes nothing of its state. A coordinator this process
@@ -1683,10 +1704,28 @@ impl Coordinator {
         me: &str,
         app: &str,
     ) -> Result<Coordinator> {
+        Coordinator::start_with(dir, wasm, listener, me, app, false)
+    }
+
+    /// `start_on`, or a viewer alone (`viewer`).
+    #[cfg(not(target_os = "wasi"))]
+    fn start_with(
+        dir: &Path,
+        wasm: Option<PathBuf>,
+        listener: std::net::TcpListener,
+        me: &str,
+        app: &str,
+        viewer: bool,
+    ) -> Result<Coordinator> {
         let port = listener.local_addr()?.port();
-        std::fs::create_dir_all(dir.join("journal"))?;
+        if viewer {
+            std::fs::create_dir_all(dir)?;
+        } else {
+            std::fs::create_dir_all(dir.join("journal"))?;
+        }
         let token = http::token(dir)?;
         let now = Instant::now();
+        // (A viewer's folder is its own scratch, emptied as it starts: no leases.)
         let mut leases = Leases::load(&dir.join("leases.json"), TTL, now);
         // (What releases a target held for a newer app: this one, `Hold`.)
         leases.app = app.to_string();
@@ -1731,12 +1770,14 @@ impl Coordinator {
         };
         // (No later than a minute from now: an ask's time past that is passed over, `AHEAD_S`.)
         let pause_at = pause_at.min(unix_now() + AHEAD_S);
-        let mut history = history::History::load(Some(&dir.join("history.jsonl")));
-        history.add(history::Event {
-            worker: Some(me.to_string()),
-            note: format!("app {app}"),
-            ..history::Event::new("agent")
-        });
+        let mut history = history::History::load((!viewer).then(|| dir.join("history.jsonl")).as_deref());
+        if !viewer {
+            history.add(history::Event {
+                worker: Some(me.to_string()),
+                note: format!("app {app}"),
+                ..history::Event::new("agent")
+            });
+        }
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
         let shared = Shared {
@@ -1773,12 +1814,14 @@ impl Coordinator {
             last: BTreeMap::new(),
             brokers: None,
             pageview: None,
-            viewer: false,
+            viewer,
             own_cap: None,
             dir: dir.to_path_buf(),
             clock: store::clock::real(),
         };
-        shared.save_leases();
+        if !viewer {
+            shared.save_leases();
+        }
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
         let job_token = http::random()?;
@@ -1800,7 +1843,9 @@ impl Coordinator {
             cors: cors.clone(),
         };
         let urls = http::serve(listener, port, ctx, stopped.clone(), wake.clone(), closed_tx)?;
-        nas_prober(shared.clone(), root.clone(), stopped.clone(), me.to_string());
+        if !viewer {
+            nas_prober(shared.clone(), root.clone(), stopped.clone(), me.to_string());
+        }
         let c = Coordinator {
             shared,
             contact: Contact { urls, token, page: None },
@@ -1814,7 +1859,9 @@ impl Coordinator {
             routes,
             cors,
         };
-        c.write_page();
+        if !viewer {
+            c.write_page();
+        }
         Ok(c)
     }
 
@@ -2539,12 +2586,6 @@ impl Coordinator {
         self.shared.lock().unwrap().pageview.is_some()
     }
 
-    /// A viewer alone: the page and its views (`/work/swarm`, `/work/history`, `/work/steps`), every
-    /// other call refused (a Mac with no coordinator nor broker serves the page so).
-    pub fn become_viewer(&self) {
-        self.shared.lock().unwrap().viewer = true;
-    }
-
     /// Its state as the pool keeps it per term (docs/pool.md §6.2, §7.5): the jobs' leases (each
     /// with its term and when it was granted), what each target cost, the workers' failures (when,
     /// by this Mac's wall clock), the pause. Taken under the lock, written by the caller without it.
@@ -3149,8 +3190,11 @@ fn raw_again(journal: &Path, h: Option<&Handoff>) {
     }
 }
 
-/// Seconds since the epoch.
-#[cfg_attr(target_os = "wasi", allow(dead_code))]
+/// The page's views before this Mac's first read of the NAS (crate::agent::pageview): not ready.
+fn not_ready() -> (u16, serde_json::Value) {
+    (503, serde_json::json!({ "error": "this Mac hasn't read the build's state yet; ask again in a few seconds" }))
+}
+
 /// What the page takes from a coordinator's memory (`Coordinator::view`): the pause, each lease and
 /// worker, the tasks by state and `task_mb`, its times as unix seconds (`unix_of`).
 fn view_of(s: &Shared) -> serde_json::Value {
@@ -3239,6 +3283,8 @@ fn unix_of(t: Instant) -> u64 {
     on(a.unwrap(), t)
 }
 
+/// Seconds since the epoch.
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -3883,10 +3929,11 @@ fn route(
             ))
         }
         "/work/swarm" => {
-            // (From this Mac's read of the NAS, once it has one: the same on every Mac.)
-            let pv = shared.lock().unwrap().pageview.clone();
-            if let Some(a) = pv.and_then(|p| p.swarm()) {
-                return Ok((200, a));
+            // (In the pool, from this Mac's read of the NAS: the same on every Mac; none yet, not
+            // ready. Never the memory's meanwhile: its numbering isn't the read's.)
+            let pv = shared.lock().unwrap().pageview.clone().filter(|p| p.active());
+            if let Some(p) = pv {
+                return Ok(p.swarm().map_or_else(not_ready, |a| (200, a)));
             }
             // The whole build at a glance, for the worker page: the lead's heartbeat (its
             // agent's status, written each loop beside this folder: its job, the checklist to the
@@ -3911,7 +3958,7 @@ fn route(
             let (leases, workers) = ages(&view, unix);
             Ok((
                 200,
-                serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": view["tasks"], "task_mb": view["task_mb"], "seq": s.history.seq(), "rates": s.history.rates(unix, 24), "app": s.app }),
+                serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": view["tasks"], "task_mb": view["task_mb"], "seq": s.history.seq(), "rates": s.history.rates(unix, 24), "app": s.app, "epoch": format!("coordinator {}", s.lead_name) }),
             ))
         }
         "/work/history" => {
@@ -3919,9 +3966,9 @@ fn route(
             let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
             let since = b["since"].as_u64().unwrap_or(0);
             let max = b["max"].as_u64().map_or(500, |m| m.min(5000)) as usize;
-            let pv = shared.lock().unwrap().pageview.clone();
-            if let Some(a) = pv.and_then(|p| p.history(since, max)) {
-                return Ok((200, a));
+            let pv = shared.lock().unwrap().pageview.clone().filter(|p| p.active());
+            if let Some(p) = pv {
+                return Ok(p.history(since, max).map_or_else(not_ready, |a| (200, a)));
             }
             let s = shared.lock().unwrap();
             Ok((200, serde_json::json!({ "seq": s.history.seq(), "events": s.history.since(since, max) })))
@@ -7244,6 +7291,37 @@ mod tests {
         assert_eq!(ask("POST", "/work/pause", Some(&c.contact.token)).0, 200);
         // (A wrong key is refused, so an agent with an old one reads the new one.)
         assert_eq!(ask("POST", "/work/pause", Some("0123456789abcdef0123456789abcdef")).0, 401);
+    }
+
+    #[test]
+    fn a_viewer_shows_the_page_does_nothing_else_and_keeps_nothing() {
+        // (Task #409 review) a Mac with neither a coordinator nor a broker: the page and its views,
+        // every other call refused, its key's or not; nothing written but its token, in its scratch.
+        let (listener, port) = test_listener();
+        let v = Coordinator::viewer(listener, "m1", "1.2.3").unwrap();
+        let addr = format!("127.0.0.1:{port}");
+        let ask = |path: &str, key: Option<&str>| send(&addr, "POST", path, key, &[], &serde_json::json!({})).0;
+        assert_eq!(send(&addr, "GET", "/work/", None, &[], &serde_json::json!({})).0, 200);
+        assert_eq!(ask("/work/steps", None), 200);
+        for p in ["/work/pause", "/work/ask", "/work/beat", "/work/lead", "/work/status"] {
+            assert_eq!(ask(p, None), 403, "{p}");
+            assert_eq!(ask(p, Some(&v.contact.token)), 403, "{p} with its key");
+        }
+        // In the pool (a pageview told a root), never the memory's views: not ready until it read.
+        let pv = crate::agent::pageview::PageView::new();
+        pv.set_inputs(crate::agent::pageview::Inputs { root: Some("/nonexistent".into()), ..Default::default() });
+        v.set_pageview(pv);
+        assert_eq!(ask("/work/swarm", None), 503);
+        assert_eq!(ask("/work/history", None), 503);
+        assert_eq!(v.shared.lock().unwrap().history.seq(), 0, "no history of its own");
+        let dir = v.shared.lock().unwrap().dir.clone();
+        v.stop();
+        let mut kept: Vec<String> =
+            std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        kept.sort();
+        assert_eq!(kept, ["workers-token"]);
+        assert!(dir.starts_with(std::env::temp_dir()));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

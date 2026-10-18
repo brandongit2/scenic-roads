@@ -54,12 +54,12 @@ impl Lease {
         }
     }
 
-    /// How long until it lapses (its worker beating renews it).
     /// When it lapses unless beaten again.
     pub fn deadline(&self) -> Instant {
         self.deadline
     }
 
+    /// How long until it lapses (its worker beating renews it).
     pub fn left(&self, now: Instant) -> Duration {
         self.deadline.saturating_duration_since(now)
     }
