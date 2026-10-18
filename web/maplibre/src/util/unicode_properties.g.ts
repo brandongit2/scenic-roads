@@ -1,4 +1,4 @@
-// This file is generated. Edit build/generate-unicode-data.ts, then run `npm run generate-unicode-data`.
+// This file is generated. Edit build/generate-unicode-data.ts, then run `pnpm run generate-unicode-data`.
 
 /**
  * Returns whether the given codepoint belongs to a script that is written cursively, whose letters

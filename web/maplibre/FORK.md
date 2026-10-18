@@ -17,21 +17,21 @@ The app compiles this source with its own code; there is no separate build or `d
   `tools/app/publish.sh`.
 - Shaders are made from the `.glsl` files on import (`build/shaders_plugin.ts`).
 - Other generated files (`src/data/array_types.g.ts`, `src/style/**/*_properties.g.ts`,
-  `src/util/unicode_properties.g.ts`) are committed: run `npm run codegen` here after changing the
-  style spec's properties or the struct arrays. The stylesheet is committed too: `npm run
+  `src/util/unicode_properties.g.ts`) are committed: run `pnpm run codegen` here after changing the
+  style spec's properties or the struct arrays. The stylesheet is committed too: `pnpm run
   build-app-css` after changing `src/css/`.
 - Runtime dependencies are the app's (`web/package.json`), pinned at this package's lockfile's
   versions, checked by `vite.config.ts` and resolved from `web/node_modules` only. Publishing needs
-  only `npm ci` in `web/`.
-- Types: `npm run typecheck` in `web/` writes this package's declarations into `types/` (under
+  only `pnpm install --frozen-lockfile` in `web/`.
+- Types: `pnpm run typecheck` in `web/` writes this package's declarations into `types/` (under
   upstream's looser settings), then checks the app against them.
 
 ## Testing it
 
-`npm ci` here first (then `npx puppeteer browsers install chrome` if needed).
+`pnpm install --frozen-lockfile` here first (then `pnpm exec puppeteer browsers install chrome` if needed). `pnpm-workspace.yaml` here lets pnpm run only canvas's install script (puppeteer's would download Chrome, hence the command above).
 
-- Unit tests: `npx vitest run --config vitest.config.unit.ts <paths>` (all: `npm run test-unit`).
-- Render tests: `tools/fetch-upstream-tests.sh`, `npm run build-dev`, then `npx vitest run
+- Unit tests: `pnpm exec vitest run --config vitest.config.unit.ts <paths>` (all: `pnpm run test-unit`).
+- Render tests: `tools/fetch-upstream-tests.sh`, `pnpm run build-dev`, then `pnpm exec vitest run
   test/integration/render/render.test.ts -t <filter>`. Our cases are in
   `test/integration/render/tests/scenic/` (lifted lines across tile seams, a see-through sea
   surface, the globe's pole, `sea`-anchored labels, the `drape` hook and `sceneDepth`).

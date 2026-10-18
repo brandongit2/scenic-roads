@@ -14,14 +14,18 @@ const fork = fileURLToPath(new URL('./maplibre/', import.meta.url));
 const forkDeps = Object.keys(JSON.parse(readFileSync(`${fork}package.json`, 'utf8')).dependencies as Record<string, string>)
   .filter((d) => !d.startsWith('@types/'));
 {
-  const lock = JSON.parse(readFileSync(`${fork}package-lock.json`, 'utf8')).packages as Record<string, { version: string }>;
+  // pnpm-lock.yaml's importer "." lists each runtime dependency as `name:` / `specifier:` / `version:`
+  // (a version may carry a `(peer)` suffix), before its devDependencies.
+  const lockText = readFileSync(`${fork}pnpm-lock.yaml`, 'utf8');
+  const deps = lockText.slice(lockText.indexOf('\n    dependencies:\n'), lockText.indexOf('\n    devDependencies:\n'));
   for (const d of forkDeps) {
-    const want = lock[`node_modules/${d}`]?.version;
+    const name = d.replace(/[/.]/g, '\\$&');
+    const want = deps.match(new RegExp(`\\n      '?${name}'?:\\n        specifier: [^\\n]*\\n        version: ([^\\n(]+)`))?.[1];
     let have = '(missing)';
     try {
       have = JSON.parse(readFileSync(new URL(`./node_modules/${d}/package.json`, import.meta.url), 'utf8')).version;
     } catch {}
-    if (have !== want) throw new Error(`MapLibre's dependency ${d} is ${have} in web/node_modules, its lockfile has ${want}: set package.json to it and npm install`);
+    if (have !== want) throw new Error(`MapLibre's dependency ${d} is ${have} in web/node_modules, its lockfile has ${want}: set package.json to it and pnpm install`);
   }
 }
 

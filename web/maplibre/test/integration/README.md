@@ -31,19 +31,19 @@ The "Actual" image of a failed test can be saved and used as the new "Expected" 
 To run the render tests:
 
 ```sh
-npm run test-render
+pnpm run test-render
 ```
 
 By default the render tests run one at a time, but if you have multiple cores you can add concurrency with:
 
 ```sh
-RENDER_TEST_CONCURRENCY=4 npm run test-render
+RENDER_TEST_CONCURRENCY=4 pnpm run test-render
 ```
 
 To run the integration tests (except the render tests):
 
 ```sh
-npm run test-integration
+pnpm run test-integration
 ```
 
 This includes the browser tests.
@@ -51,13 +51,13 @@ This includes the browser tests.
 To run the build tests
 
 ```
-npm run test-build
+pnpm run test-build
 ```
 
 For running a subset of tests, you may use vitest filters e.g.
 
 ```
-npm run test-integration -- browser
+pnpm run test-integration -- browser
 ```
 
 Additionally, it may be helpful to use a visual frontend ([Vitest UI](https://vitest.dev/guide/ui.html)). The UI can be started by replacing `run` with `--ui` in package.json:
@@ -78,7 +78,7 @@ During a render test run, the test harness will use puppeteer to drive real brow
 
 By default render tests generate reports in <code>./test/integration/render/</code> directory:
 ```
-npm run test-render
+pnpm run test-render
 ...
 Results logged to './test/integration/render/results.html'
 ```
@@ -95,20 +95,20 @@ Note that the CI is running the render tests. If they fail, the `report.html` is
 To run this manually you can use the following commands
 On Linux:
 ```
-xvfb-run -a UPDATE=true npm run test-render
+xvfb-run -a UPDATE=true pnpm run test-render
 ```
 On Mac:
 ```
-UPDATE=true npm run test-render
+UPDATE=true pnpm run test-render
 ```
 Or on Windows with PowerShell:
 ```
-$env:UPDATE=$true; npm run test-render
+$env:UPDATE=$true; pnpm run test-render
 ```
 
 #### Notes on the query integration tests
 
-In test/integration/browser/browser.test.ts a web server is automatically started to expose static assets from the integration folder. In order to start a similar server manually with `npm run start`.
+In test/integration/browser/browser.test.ts a web server is automatically started to expose static assets from the integration folder. In order to start a similar server manually with `pnpm run start`.
 
 We currently run each test in a new tab. Alternatively we might gain some speed by clearing the webgl context instead, and running everything in one tab.
 
@@ -126,7 +126,7 @@ generateDiffLog(fixture.expected, actual);
 
 Query tests can be run in the browser, the server for serving up the test page and test fixtures starts when you run
 ```
-npm run start
+pnpm run start
 ```
 
 ### Running specific tests
@@ -157,10 +157,10 @@ To add a new render test:
 
 3. Generate an `expected.png` image from the given style by running the new test with the `UPDATE` flag enabled:
    ```
-   UPDATE=1 npm run test-render -- -t "<property-name>/<new-test-name>"
+   UPDATE=1 pnpm run test-render -- -t "<property-name>/<new-test-name>"
    ```
 
-4. Manually inspect `expected.png` to verify it looks as expected, and optionally run the test again without the update flag (`npm run test-render -t "<property-name>/<new-test-name>"`) to watch it pass (enjoy that dopamine kick!)
+4. Manually inspect `expected.png` to verify it looks as expected, and optionally run the test again without the update flag (`pnpm run test-render -t "<property-name>/<new-test-name>"`) to watch it pass (enjoy that dopamine kick!)
 
 5. Commit the new `style.json` and `expected.png` :rocket:
 
@@ -168,7 +168,7 @@ To add a new render test:
 
 You can update the expected results of query-tests by running them with with the `UPDATE` flag enabled, for example on Linux:
 ```
-UPDATE=true npm run test-integration
+UPDATE=true pnpm run test-integration
 ```
 Check carefully if all changes are intended.
 
@@ -177,11 +177,11 @@ Check carefully if all changes are intended.
 Read the contents of an entire vector tile
 
 ```
-npx vt2geojson -z 14 -y 8803 -x 5374 test/integration/assets/tiles/14-8803-5374.mvt
+pnpm dlx vt2geojson -z 14 -y 8803 -x 5374 test/integration/assets/tiles/14-8803-5374.mvt
 ```
 
 Read the contents of a particular layer in a vector tile
 
 ```
-npx vt2geojson --layer poi_label -z 14 -y 8803 -x 5374 test/integration/assets/tiles/14-8803-5374.mvt
+pnpm dlx vt2geojson --layer poi_label -z 14 -y 8803 -x 5374 test/integration/assets/tiles/14-8803-5374.mvt
 ```

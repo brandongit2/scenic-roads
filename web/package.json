@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run typecheck && vite build",
+    "build": "pnpm run typecheck && vite build",
     "typecheck": "tsc -p maplibre/tsconfig.app.json && tsc --noEmit && tsc -p tsconfig.node.json"
   },
   "//": "The map is drawn by our own MapLibre, web/maplibre/ (FORK.md): vite.config.ts aliases maplibre-gl to its source, and its runtime dependencies are listed here at the versions its lockfile names (vite.config.ts checks). The app reaches into its internals (src/buildings.ts's keepWhole, which keeps z14's buildings whole above z14; the tile managers read in covers, contours, maptasks, namefade and terrainstats).",

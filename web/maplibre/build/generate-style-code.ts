@@ -264,7 +264,7 @@ function specProperties(specKey: string, tag: Pick<SpecProperty, 'layerType'> | 
 
 /** The imports every generated file opens with. */
 function emitHeader(propertiesPath: string): string {
-    return `// This file is generated. Edit build/generate-style-code.ts, then run 'npm run codegen'.
+    return `// This file is generated. Edit build/generate-style-code.ts, then run 'pnpm run codegen'.
 /* eslint-disable */
 
 import {styleSpec} from '${propertiesPath.replace('properties.ts', 'style_spec_extensions.ts')}';

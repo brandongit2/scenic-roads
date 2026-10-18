@@ -10,7 +10,7 @@
     "isolatedModules": true,
     "resolveJsonModule": true,
     "types": ["vite/client", "geojson"],
-    // Our own MapLibre (maplibre/, FORK.md), typed by its declarations: `npm run typecheck` writes
+    // Our own MapLibre (maplibre/, FORK.md), typed by its declarations: `pnpm run typecheck` writes
     // them (maplibre/tsconfig.app.json), checking its source under its own, looser settings.
     "paths": {
       "maplibre-gl": ["./maplibre/types/index.d.ts"]

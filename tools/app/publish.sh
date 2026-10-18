@@ -89,10 +89,10 @@ cd $snap
 mise trust -q 2>/dev/null || true
 # Rust (rust-toolchain.toml's) and the wasi-sdk (mise.toml's), installed by `mise install` once.
 eval "$(mise env -s zsh)"
-lockhash=$(shasum -a 256 web/package-lock.json | cut -c1-64)
-if [[ ! -d web/node_modules || $(cat target/.publish-npm-lock 2>/dev/null) != $lockhash ]]; then
-  (cd web && npm ci --no-audit --no-fund >/dev/null) || { echo "npm ci failed"; exit 1; }
-  mkdir -p target && print -r -- $lockhash > target/.publish-npm-lock
+lockhash=$(shasum -a 256 web/pnpm-lock.yaml | cut -c1-64)
+if [[ ! -d web/node_modules || $(cat target/.publish-pnpm-lock 2>/dev/null) != $lockhash ]]; then
+  rm -rf web/node_modules; (cd web && pnpm install --frozen-lockfile --reporter=silent) || { echo "pnpm install failed"; exit 1; }
+  mkdir -p target && print -r -- $lockhash > target/.publish-pnpm-lock
 fi
 # The certificate the listening programs are signed with (below), tried now on a scratch file so a
 # keychain that won't let codesign use its key (locked, or no GUI to answer its prompt) stops the
@@ -140,7 +140,7 @@ zsh tools/app/wasm.sh >/dev/null || { echo "WebAssembly build failed"; exit 1; }
 # Built into its own folder: web/dist may be what a development server is serving. (The type check
 # writes and checks our MapLibre's declarations, then the app's; the build compiles its source with
 # the app: web/maplibre/FORK.md.)
-(cd web && npm run typecheck && npx vite build --outDir dist-publish --emptyOutDir >/dev/null) || { echo "web build failed"; exit 1; }
+(cd web && pnpm run typecheck && pnpm exec vite build --outDir dist-publish --emptyOutDir >/dev/null) || { echo "web build failed"; exit 1; }
 fonts=$repo/data/fonts
 [[ -d $fonts ]] || fonts=$NAS/app/fonts
 [[ -d $fonts ]] || { echo "no fonts folder (data/fonts or the NAS's app/fonts)"; exit 1; }

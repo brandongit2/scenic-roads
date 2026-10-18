@@ -3,7 +3,7 @@ import path from 'path';
 
 /**
  * The shaders, made from the .glsl files as they're imported (this fork's change: upstream wrote
- * them out as `src/shaders/glsl/*.glsl.g.ts` with `npm run generate-shaders`, which went stale
+ * them out as `src/shaders/glsl/*.glsl.g.ts` with `pnpm run generate-shaders`, which went stale
  * whenever a shader was edited without it). `src/shaders/shaders.ts` imports `./glsl/<name>.glsl.g.ts`;
  * this plugin resolves each such import to its .glsl file's text, minified a little, as the module's
  * default export. It is a Rollup-style plugin, used alike by the app's Vite build and dev server

@@ -309,4 +309,4 @@ await generateExamplesFolder();
 await generatePluginsPage();
 updateMapLibreVersionForUNPKG();
 fs.rmSync(path.join(typedocConfig.out, '_media'), {recursive: true, force: true}); // this folder is redundant
-console.log('Docs generation completed, to see it in action run\n npm run start-docs');
+console.log('Docs generation completed, to see it in action run\n pnpm run start-docs');

@@ -136,7 +136,7 @@
     "generate-typings": "cross-env BUILD=types rolldown -c rolldown.config.ts",
     "generate-docs": "typedoc && node build/generate-docs.ts",
     "generate-images": "node build/generate-doc-images.ts",
-    "build-dist": "npm run build-css && npm run generate-unicode-data && npm run build-dev && npm run build-prod",
+    "build-dist": "pnpm run build-css && pnpm run generate-unicode-data && pnpm run build-dev && pnpm run build-prod",
     "build-dev": "cross-env BUILD=dev rolldown -c rolldown.config.ts",
     "watch-dev": "cross-env BUILD=dev rolldown -c rolldown.config.ts --watch",
     "build-prod": "cross-env BUILD=production rolldown -c rolldown.config.ts",
@@ -144,7 +144,7 @@
     "build-app-css": "postcss -o built/maplibre-gl.css src/css/maplibre-gl.css",
     "watch-css": "postcss --watch -o dist/maplibre-gl.css src/css/maplibre-gl.css",
     "spellcheck": "cspell",
-    "docs": "npm run generate-docs && docker compose run --rm docs",
+    "docs": "pnpm run generate-docs && docker compose run --rm docs",
     "start-server": "st --no-cache -H localhost --port 9966 .",
     "start-docs": "docker compose run --rm -it --service-ports docs-serve",
     "start": "run-p watch-css watch-dev start-server",
@@ -159,10 +159,10 @@
     "test-build-ci": "vitest run --config vitest.config.build.ts --coverage",
     "test-watch-roots": "vitest --config vitest.config.unit.ts --watch",
     "test-render": "vitest test/integration/render/render.test.ts",
-    "codegen": "run-p --print-label generate-style-code generate-unicode-data generate-struct-arrays && npm run generate-typings",
+    "codegen": "run-p --print-label generate-style-code generate-unicode-data generate-struct-arrays && pnpm run generate-typings",
     "bench": "vitest bench --run --config vitest.config.bench.ts --reporter=verbose",
     "bench-e2e": "node test/bench/e2e/run.ts",
-    "prepare": "npm run codegen",
+    "prepare": "pnpm run codegen",
     "typecheck": "tsgo --noEmit && tsgo --project tsconfig.dist.json"
   },
   "files": [
@@ -171,7 +171,7 @@
     "src/"
   ],
   "engines": {
-    "npm": ">=8.1.0",
+    "pnpm": ">=11",
     "node": ">=16.14.0"
   }
 }
