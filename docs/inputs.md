@@ -482,7 +482,8 @@ lacks.
 
 #### 6.1.8 Checks
 
-All errors; ids `rg-<check>.<hash16>`.
+All errors but `rg-gap`, a warning (held until the owner accepts it, as any unit's warning: §4.7);
+ids `rg-<check>.<hash16>`.
 
 | Check | Raised when |
 |---|---|
@@ -502,6 +503,20 @@ All errors; ids `rg-<check>.<hash16>`.
 | `rg-pin-mismatch` | a pin naming another pass than the current one (§6.1.5) |
 | `rg-group` | a `_group.toml` that doesn't parse, has a field other than `name`/`order`, or an empty name |
 | `rg-extract` | ids the extract lacks: held while it's made (§6.1.6) |
+| `rg-gap` | a warning: two shapes (of two regions, or two parts of one) leave a strip under 1 km wide between them, at least 3 km long, that the coverage leaves out; one finding per gap, with a point in it, its mean width and length, holding both regions' files |
+
+**`rg-gap`** (crate::inputs::regions::gaps): the coverage closed (grown by 500 m and shrunk back,
+`geom::dilate`), less the coverage, in pieces. Why 1 km: a strip that narrow between two regions is
+left out of the build, nobody leaves one out on purpose, and hand-drawn edges miss a neighbour by
+tens to hundreds of metres; it's also the coast tolerance, so a shape with it (a plain `osm:` part)
+already takes in anything that narrow beside it and is never in a gap. A piece counts only when it
+meets two shapes without the tolerance (a narrow inlet of one shape is a coast), is at least 3 km
+long (a close also rounds the corner where two touching shapes meet a coast bending inward) and at
+least 1 m wide on average (shared borders whose vertices don't quite agree). Only quarter-degree tiles
+where two such shapes' unshared edges come within about 1 km are closed, so it costs nothing on a set
+of plain `osm:` regions (7 ms on the 88 in use) and grows with the drawn shapes. The finding's id is
+the regions and the place to 0.01°, so an edit elsewhere doesn't ask for it to be accepted again.
+Gaps across ±180° aren't looked for.
 
 A held region keeps its last geometry; a new held region isn't in the coverage yet. Deleting a
 region file takes it out with the next version.
