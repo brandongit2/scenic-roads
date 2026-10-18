@@ -25,6 +25,7 @@ usage: chunked.py bluetopo <gpkg> <vdatum.csv> <work dir> --nas <host>:<dir> [--
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import shlex
 import shutil
@@ -43,8 +44,8 @@ N10_ORIGIN, N10_BLOCK = (-142.0, 41.0), (0.5, 0.3)
 
 
 def fetch_retry(url: str, dest: Path, pause: float, tries: int = 5) -> Path:
-    """grid.fetch, again (30 s, 60 s, …) after a dropped or refused connection, a timeout, 429 or a
-    5xx; any other HTTP answer, or the last try's failure, stops the run (SystemExit), so no chunk's
+    """grid.fetch, again (30 s, 60 s, …) after a dropped or refused connection, a timeout, a body cut
+    short (http.client's IncompleteRead), 429 or a 5xx; any other HTTP answer, or the last try's failure, stops the run (SystemExit), so no chunk's
     part is written with a file missing."""
     for k in range(tries):
         try:
@@ -53,8 +54,8 @@ def fetch_retry(url: str, dest: Path, pause: float, tries: int = 5) -> Path:
             if e.code != 429 and e.code < 500:
                 raise SystemExit(f"{url}: HTTP {e.code}")
             log(f"{url}: HTTP {e.code} (try {k + 1})")
-        except OSError as e:
-            log(f"{url}: {e} (try {k + 1})")
+        except (OSError, http.client.HTTPException) as e:
+            log(f"{url}: {e!r} (try {k + 1})")
         time.sleep(30 * (k + 1))
     raise SystemExit(f"{url}: failed {tries} times")
 
