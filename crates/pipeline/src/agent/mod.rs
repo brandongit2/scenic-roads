@@ -386,6 +386,10 @@ struct Slot {
     /// The disk its lead measured the job given it to take (MB: crate::coord::Grant::disk_mb),
     /// reserved while it holds the lease (`Agent::reservation`).
     reserve_mb: Option<u64>,
+    /// The memory this member spared its jobs when it asked for the job given it (MB: the ask's
+    /// `more_mb` when its owner was away, else its `mem_mb`): a member's job far past it is given
+    /// back (`Agent::over_grant`). None: the lead's own job.
+    spare_mb: Option<u64>,
     /// The owner's cancel of its job (crate::control::Cancel), asked here or told by the lead:
     /// stopped and given back at the loop's next turn (`Agent::cancel_slot`).
     cancel: Option<crate::control::Cancel>,
@@ -609,6 +613,12 @@ fn helper_memory(total_mb: u64, away: bool, kept: Option<&share::Share>) -> u64 
             }
         }
     }
+}
+
+/// Past what memory (MB) a member's jobs are far over the `spare` it gave them (`Agent::over_grant`):
+/// half as much again, 4 GB more at least.
+fn far_over(spare: u64) -> u64 {
+    spare + (spare / 2).max(4096)
 }
 
 /// This Mac's cores.
@@ -1104,6 +1114,8 @@ pub struct Agent {
     sampler: memguard::Sampler,
     total: u64,
     guard_backoff: BTreeMap<String, (u64, String)>,
+    /// The memory this member spared its jobs in its last ask (MB: `Slot::spare_mb`).
+    ask_spare_mb: Option<u64>,
     /// The pool's switch for a part changing in this process (`pool::SLOTS`), as last read; the
     /// idle-sleep assertion it holds while it leads with leases out; the app it last handed the lead
     /// on for (a newer one installed, its update waiting on its own job: `hand_for_update`).
@@ -1466,6 +1478,7 @@ impl Agent {
             sampler: memguard::Sampler::new(SLOTS),
             total: 0,
             guard_backoff: BTreeMap::new(),
+            ask_spare_mb: None,
             slots_on: false,
             proxy: None,
             resume: false,
@@ -1671,10 +1684,13 @@ impl Agent {
                 // (Stopped, not failed: the build paused, the Mac slept, its agent stopped: given
                 // back, not held against its targets.)
                 let interrupted = result.as_ref().is_none_or(|r| r["interrupted"].as_bool() == Some(true));
+                // (What its targets held at least, its job's end said: the lead's floors.)
+                let floors: Vec<(String, memguard::Floor)> =
+                    result.as_ref().and_then(|r| serde_json::from_value(r["floors"].clone()).ok()).unwrap_or_default();
                 if interrupted {
-                    client.give_back(lease, &why).map(|()| crate::coord::client::Handed::Taken)
+                    client.give_back_with(lease, &why, &floors).map(|()| crate::coord::client::Handed::Taken)
                 } else {
-                    client.fail(lease, &why, None).map(|()| crate::coord::client::Handed::Taken)
+                    client.fail_with(lease, &why, None, &floors).map(|()| crate::coord::client::Handed::Taken)
                 }
             })();
             match sent {
@@ -1867,6 +1883,7 @@ impl Agent {
             want: member_want(self.packing.is_some(), self.member_slots(), self.running_jobs()),
             ..Default::default()
         };
+        self.ask_spare_mb = Some(ask.more_mb.unwrap_or(ask.mem_mb));
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
         let asked = client.ask(&ask);
         // (Work given: the build isn't paused.)
@@ -1940,6 +1957,7 @@ impl Agent {
         };
         self.slots[k].granted = Some(grant.threads).filter(|&t| t > 0);
         self.slots[k].reserve_mb = Some(grant.disk_mb).filter(|&d| d > 0);
+        self.slots[k].spare_mb = self.ask_spare_mb;
         match grant {
             crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. }
                 if steps::SHARED.contains(&step.as_str())
@@ -2180,6 +2198,7 @@ impl Agent {
         }
         // (Its reservation released with its lease: handed off or given back.)
         self.slots[k].reserve_mb = None;
+        self.slots[k].spare_mb = None;
         match self.slots[k].lease.take() {
             Some(Held::Own(id)) => {
                 if let Some(c) = &self.coord {
@@ -2315,7 +2334,9 @@ impl Agent {
                 };
                 // (One the memory guard stopped isn't interrupted: kept from this Mac for a while.)
                 let interrupted = !ok && matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped;
-                let r = serde_json::json!({ "ok": ok, "done": done, "failed": failed, "interrupted": interrupted, "task": task.and_then(|t| t.get("task").cloned()), "error": note.chars().take(3000).collect::<String>() });
+                // (What its targets held at least, for the lead's floors when it isn't done.)
+                let floors = if ok { Vec::new() } else { floors_of(&read_costs(&dir.join("costs.jsonl"))) };
+                let r = serde_json::json!({ "ok": ok, "done": done, "failed": failed, "interrupted": interrupted, "task": task.and_then(|t| t.get("task").cloned()), "error": note.chars().take(3000).collect::<String>(), "floors": floors });
                 if let Err(e) = crate::whole::write(&dir.join("result.json"), r.to_string().as_bytes()) {
                     eprintln!("agent: writing a job's result for the coordinator: {e:#}");
                 }
@@ -4345,6 +4366,10 @@ impl Agent {
                 return self.yield_stop(k, &format!("given back by the memory guard: started beside {beside} while it waited on a worker, it yields now that {beside} goes on, {why}"));
             }
         }
+        // (A member's jobs far past what it spared them: one given back at once, `over_grant`.)
+        if let Some(stopped) = self.over_grant(&held) {
+            return stopped;
+        }
         // (The Mac short of memory: frozen, not drained: `pressure`.)
         if let Some(stopped) = self.pressure(&held, limit) {
             return stopped;
@@ -4401,6 +4426,32 @@ impl Agent {
         };
         let Some((k, why)) = stop else { return false };
         self.guard_stop(k, "memory guard", &why)
+    }
+
+    /// A member's jobs far past the memory it spared them when it asked (`Slot::spare_mb`, the most
+    /// of its jobs': `far_over`), the Mac short of memory or not: one stopped at once (the largest
+    /// when it alone passes, else another as memguard::decide_by picks) and given back, not failed
+    /// (its prediction was wrong, not the Mac), what it held learned as its targets' floors, so the
+    /// lead offers them only to a Mac that spares that much. None when none is so far over; else
+    /// whether it stopped one.
+    fn over_grant(&mut self, held: &[Option<u64>]) -> Option<bool> {
+        let spare = self.slots.iter().filter(|s| s.running.is_some()).filter_map(|s| s.spare_mb).max()?;
+        let far = far_over(spare);
+        let mine: Vec<Option<u64>> =
+            held.iter().enumerate().map(|(k, h)| h.filter(|_| self.slots[k].spare_mb.is_some())).collect();
+        let total: u64 = mine.iter().flatten().sum();
+        if total <= far {
+            return None;
+        }
+        let none = vec![false; mine.len()];
+        let yields: Vec<bool> = (0..self.slots.len()).map(|k| self.yielding(k)).collect();
+        let k = match memguard::decide_by(&mine, far, &none, &yields, &self.guard_ranks()) {
+            memguard::Act::Over(k) | memguard::Act::Drain(k) => k,
+            memguard::Act::Nothing => return None,
+        };
+        let gb = |mb: u64| mb as f64 / 1024.0;
+        let why = format!("given back by the memory guard: this Mac's jobs held {:.1} GB together ({:.1} GB this one), far past the {:.1} GB it spared them (stopped past {:.1} GB); what it held is kept as the least its target takes, so it goes to a Mac with room", gb(total), gb(mine[k].unwrap_or(0)), gb(spare), gb(far));
+        Some(self.guard_stop_as(k, "memory guard", &why, false))
     }
 
     /// The memory guard while the Mac is short of memory (`memguard::Sampler::in_trouble`), the
@@ -4509,6 +4560,12 @@ impl Agent {
     /// not failed, kept from this Mac an hour (a member's lease ends as failed, so its lead keeps it
     /// from this Mac as long), what it took learned as its target's floors. True when it stopped one.
     fn guard_stop(&mut self, k: usize, what: &str, why: &str) -> bool {
+        self.guard_stop_as(k, what, why, true)
+    }
+
+    /// `guard_stop`, `fail` false: given back as an interrupted job is (not failed, not kept from
+    /// this Mac), what it took still learned as its targets' floors.
+    fn guard_stop_as(&mut self, k: usize, what: &str, why: &str, fail: bool) -> bool {
         let why = why.to_string();
         // (Frozen by the sampler: let go on first, so it can take its termination.)
         self.sampler.thaw(k);
@@ -4519,8 +4576,10 @@ impl Agent {
         eprintln!("agent: {what}: {id} {why}");
         r.stop(Duration::from_secs(30));
         self.guard_last = Some((now_s(), format!("{id} {why}")));
-        self.guard_backoff.insert(id, (now_s() + GUARD_BACKOFF_S, why.clone()));
-        self.slots[k].guard_stopped = true;
+        if fail {
+            self.guard_backoff.insert(id, (now_s() + GUARD_BACKOFF_S, why.clone()));
+        }
+        self.slots[k].guard_stopped = fail;
         self.stopped(k, &why);
         // (Its lease ended, given back: its scratch kept, its work with it, until room-making is
         // short of the reserve, `room::free_given_back`.)
@@ -10416,6 +10475,11 @@ mod tests {
         // The memory guard on a Mac of 16 GB (its limit 12 GB): slot 1's job the newest, slot 2's
         // next, slot 0's the oldest.
         a.mem_set = Some((16 << 10, 12 << 10));
+        // (Each asked for sparing 6 GB: none far over it till the end, the limit's guard seen first.)
+        assert!(a.slots.iter().all(|s| s.spare_mb == Some(6 << 10)));
+        for s in a.slots.iter_mut() {
+            s.spare_mb = Some(16 << 10);
+        }
         let now = now_s();
         for (k, ago) in [(0, 300), (1, 100), (2, 200)] {
             a.slots[k].running.as_mut().unwrap().started = now - ago;
@@ -10468,10 +10532,23 @@ mod tests {
         tick(&mut a, vec![Some(13 << 10), None, Some(1 << 10)], true);
         assert!(a.sampler.frozen(0) && !a.sampler.frozen(2));
         assert!(a.guard() && a.slots[0].running.is_none() && a.slots[2].running.is_some());
+        // The last far past the 6 GB this member spared it (10 GB and more), within the Mac's limit
+        // and the Mac not short of memory: given back at once, not failed (interrupted, its lease's
+        // result says, with its floors for the lead).
+        a.slots[2].spare_mb = Some(6 << 10);
+        let dir = match &a.slots[2].lease {
+            Some(Held::Leased { dir, .. }) => dir.clone(),
+            l => panic!("{l:?}"),
+        };
+        tick(&mut a, vec![None, None, Some(9 << 10)], false);
+        assert!(!a.guard() && a.slots[2].running.is_some(), "9 GB: over, not far over");
+        tick(&mut a, vec![None, None, Some(11 << 10)], false);
+        assert!(a.guard() && a.slots[2].running.is_none());
+        let r: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("result.json")).unwrap()).unwrap();
+        assert_eq!((r["interrupted"].as_bool(), r["failed"].as_bool()), (Some(true), Some(false)), "{r}");
+        assert!(r["floors"].is_array() && r["error"].as_str().unwrap().contains("far past the 6.0 GB"), "{r}");
+        assert!(!a.guard_backoff.contains_key("slope 6/1/3") && a.slots[2].spare_mb.is_none());
         // The last ends: the slots past the two kept dropped.
-        a.slots[2].running.as_mut().unwrap().stop(Duration::from_secs(5));
-        a.stopped(2, "the test");
-        a.slots[2].running = None;
         a.trim_slots();
         assert_eq!(a.slots.len(), SLOTS);
         assert!(a.slots.iter().all(|s| s.running.is_none() && s.lease.is_none()));
