@@ -36,8 +36,10 @@ coverage, or once for the whole world, so region size, count and borders never s
   installed version's Scenic.app over itself and opens again (without its window). Opened, and
   each poll, it checks that the build service's launcher runs from its own bundle (macOS's
   network-volume permission is granted to /Applications/Scenic.app, not to the old copy an update
-  leaves aside): if not, it restarts the job (`launchctl kickstart -k`, registering it again if
-  that isn't enough) and deletes the old copies nothing runs from. When the agent's log shows
+  leaves aside, `.Scenic.app.old-<pid>`); a launcher whose executable can't be read counts as
+  elsewhere. If not, it restarts the job (`launchctl kickstart -k`, at most once a minute;
+  registering it again, once per launch, if that isn't enough), and it deletes the old copies
+  nothing runs from (the swap itself leaves them). When the agent's log shows
   "Operation not permitted" on the NAS since it started, the menu and window say the build service
   can't reach the NAS (allow Scenic in Files and Folders).
 - **Switching a Mac over** from the login items Scenic replaces (`local.scenic.agent`,

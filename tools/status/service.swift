@@ -164,9 +164,11 @@ final class BuildService {
     /// renamed aside (.Scenic.app.old-<pid>); macOS's network-volume permission is the app's at its
     /// own path, so the agent it runs is refused the NAS (EPERM, task #389).
     func launcherElsewhere() -> String? {
-        guard case .running(let pid) = state, let path = executablePath(Int32(pid)) else { return nil }
-        let mine = Bundle.main.bundleURL.resolvingSymlinksInPath().path + "/"
-        return path.hasPrefix(mine) ? nil : path
+        guard case .running(let pid) = state else { return nil }
+        // (Unreadable: its executable deleted, as an older app's update did: elsewhere too.)
+        guard let path = executablePath(Int32(pid)) else { return "pid \(pid), its executable unreadable" }
+        guard let mine = realPath(Bundle.main.bundleURL.path) else { return nil }
+        return (realPath(path) ?? path).hasPrefix(mine + "/") ? nil : path
     }
 
     /// The launcher restarted from this app when it runs from elsewhere (`launcherElsewhere`): at
@@ -183,7 +185,8 @@ final class BuildService {
         NSLog("scenic: the build service's launcher runs from \(path), not this app: restarting it")
         run("/bin/launchctl", ["kickstart", "-k", "\(domain)/\(buildLabel)"])
         refresh()
-        if let still = launcherElsewhere() {
+        if !reregistered, let still = launcherElsewhere() {
+            reregistered = true
             NSLog("scenic: the launcher still runs from \(still): registering the build service again")
             try? service.unregister()
             do { try service.register() } catch { NSLog("scenic: registering the build service: \(error)") }
@@ -193,6 +196,8 @@ final class BuildService {
         return true
     }
     var lastFollow = Date.distantPast
+    /// The fallback (registered again) taken this launch: once at most.
+    var reregistered = false
 
     /// The app's copies left aside by updates (.<name>.old-<pid> beside it), deleted once no process
     /// runs from them.
@@ -201,25 +206,33 @@ final class BuildService {
         let dir = me.deletingLastPathComponent()
         let prefix = ".\(me.lastPathComponent).old-"
         guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
-        let olds = names.filter { $0.hasPrefix(prefix) }.map { dir.appendingPathComponent($0).path + "/" }
+        let real = realPath(dir.path) ?? dir.path
+        let olds = names.filter { $0.hasPrefix(prefix) }.map { real + "/" + $0 + "/" }
         if olds.isEmpty { return }
-        let used = runningExecutables()
+        let used = runningExecutables().map { realPath($0) ?? $0 }
         for o in olds where !used.contains(where: { $0.hasPrefix(o) }) {
             do { try FileManager.default.removeItem(atPath: o) } catch { NSLog("scenic: removing \(o): \(error)") }
         }
     }
 
     /// The agent refused the NAS since it last started: in its log (~/Library/Logs/scenic/agent.log),
-    /// "Operation not permitted" on a /Volumes/ path after the last "agent: started".
+    /// "Operation not permitted" on a /Volumes/ path after the last "agent: started" in its last
+    /// 256 KB (no such line there: false). Read again only when the log's size or mtime changed.
     func nasRefused() -> Bool {
-        guard state.running, let h = FileHandle(forReadingAtPath: agentLog) else { return false }
+        guard state.running else { return false }
+        guard let a = try? FileManager.default.attributesOfItem(atPath: agentLog) else { return false }
+        let stamp = "\((a[.size] as? NSNumber)?.int64Value ?? -1) \((a[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1)"
+        if stamp == logStamp { return refused }
+        logStamp = stamp
+        guard let h = FileHandle(forReadingAtPath: agentLog) else { return false }
         defer { try? h.close() }
         let end = (try? h.seekToEnd()) ?? 0
         try? h.seek(toOffset: end > 262_144 ? end - 262_144 : 0)
         let text = String(decoding: (try? h.readToEnd()) ?? Data(), as: UTF8.self)
-        let since = text.range(of: "agent: started", options: .backwards).map { text[$0.upperBound...] } ?? text[...]
-        return since.split(separator: "\n").contains { $0.contains("Operation not permitted") && $0.contains("/Volumes/") }
+        guard let r = text.range(of: "agent: started", options: .backwards) else { return false }
+        return text[r.upperBound...].split(separator: "\n").contains { $0.contains("Operation not permitted") && $0.contains("/Volumes/") }
     }
+    var logStamp = ""
     let agentLog = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/scenic/agent.log").path
     /// The agent refused the NAS (`nasRefused`), as the last poll found.
     var refused = false
@@ -495,7 +508,8 @@ func replaceSelf(with new: URL) -> Bool {
         try? FileManager.default.removeItem(at: tmp)
         return false
     }
-    try? FileManager.default.removeItem(at: old)
+    // (The old copy stays: the build service's launcher may run from it; the app opened again
+    // restarts it from here and deletes the copy once nothing runs from it, removeOldCopies.)
     // (Opened again once this process is gone, `open` would bring this one forward; without its window.)
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -509,6 +523,13 @@ func executablePath(_ pid: Int32) -> String? {
     var buf = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
     let n = proc_pidpath(pid, &buf, UInt32(buf.count))
     return n > 0 ? String(cString: buf) : nil
+}
+
+/// A path with its symlinks resolved (realpath: /tmp → /private/tmp), nil if it doesn't exist.
+func realPath(_ p: String) -> String? {
+    guard let r = realpath(p, nil) else { return nil }
+    defer { free(r) }
+    return String(cString: r)
 }
 
 /// The executables of the processes whose path can be read (this user's).
