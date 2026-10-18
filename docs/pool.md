@@ -673,11 +673,15 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   `packing`: a cold start running or waiting, cores short for the next job open, or nothing
   offered fitting the room left), shown while the refusal itself is younger than two minutes
   (`CAP_FRESH_S`), older ones dropped. The forecast's lanes are per slot
-  (`<host>`, `<host> #2`, …): the lead's as many as its cores pack at the packed share
-  (`forecast::packed_lanes`) within its ramp's slots, each member's likewise by the cores of its
-  capacity (else a lane per job it runs: an older agent's jobs, not saying their slots, by their
-  place), never fewer than its last running slot's number, each lane its
-  share of the Mac's memory. Each lane runs at its slot's measured speed (else the lead's other
+  (`<host>`, `<host> #2`, …), as many as the slots each Mac may run now (`forecast::slot_lanes`):
+  the lead's its ramp's, each member's `agent::job_slots` of the cores of its capacity (else a
+  lane per job it runs: an older agent's jobs, not saying their slots, by their place), never
+  fewer than its last running slot's number, each lane its share of the Mac's memory. A member's
+  lanes take any work of the plan any Mac may run that fits them, as the coordinator packs its
+  asks (the lead's own steps, `steps::Place::Lead`, stay on the lead's lanes); each lane starts
+  with its slot's running job and its time left; a lane beside the regions' work takes the
+  chains' while no other lane is on one. The page names a lane by its Mac's chip and slot
+  ("M4 Pro 2"; `cond::Resources::chip`). Each lane runs at its slot's measured speed (else the lead's other
   slots' guess, four fifths of its pace, or a member's): slots on one Mac share its cores, so the
   forecast is optimistic until each slot's speed is measured under that sharing.
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the

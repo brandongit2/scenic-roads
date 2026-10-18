@@ -108,6 +108,7 @@ impl Mac {
                 cache_gb,
                 nas_ms,
                 nas_free_tb: None,
+                chip: None,
             },
         }
     }
@@ -233,6 +234,10 @@ pub struct Resources {
     pub nas_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nas_free_tb: Option<f64>,
+    /// Its chip, short ("M4 Pro", "M1": `machdep.cpu.brand_string` less "Apple "): the build page's
+    /// short name for the Mac in its lanes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chip: Option<String>,
 }
 
 impl Resources {
@@ -274,6 +279,16 @@ pub fn resources(
             let s = String::from_utf8_lossy(&o.stdout).into_owned();
             s.split("free percentage:").nth(1)?.trim().trim_end_matches('%').trim().parse::<u8>().ok()
         });
+    static CHIP: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let chip = CHIP
+        .get_or_init(|| {
+            let o = store::spawn::output(
+                store::spawn::command("/usr/sbin/sysctl").args(["-n", "machdep.cpu.brand_string"]),
+            )
+            .ok()?;
+            chip_short(&String::from_utf8_lossy(&o.stdout))
+        })
+        .clone();
     let load1 = load1();
     let gb = |b: u64| (b as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0;
     Resources {
@@ -285,7 +300,15 @@ pub fn resources(
         cache_gb,
         nas_ms,
         nas_free_tb: root.and_then(free_bytes).map(|b| (b as f64 / (1u64 << 40) as f64 * 100.0).round() / 100.0),
+        chip,
     }
+}
+
+/// A chip's brand string, short: "Apple M4 Pro" → "M4 Pro"; None for none.
+pub fn chip_short(brand: &str) -> Option<String> {
+    let b = brand.trim();
+    let b = b.strip_prefix("Apple ").unwrap_or(b).trim();
+    (!b.is_empty()).then(|| b.to_string())
 }
 
 /// This Mac's name, read once per process (temporary files' names: crate::whole).

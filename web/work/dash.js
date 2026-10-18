@@ -553,8 +553,20 @@ function showTip(ev, text) {
 }
 const hideTip = () => tip && (tip.style.display = "none");
 
+// A Mac's short name for its lanes: its chip ("M4 Pro": cond::Resources::chip), else its name's
+// first part; the full name when two Macs would read alike.
+function shortNames(m) {
+  const first = (nm) => nm.split(/[-.\s]/)[0] || nm;
+  const short = Object.fromEntries(m.macs.map((x) => [x.name, x.status.resources?.chip || first(x.name)]));
+  const seen = {};
+  for (const v of Object.values(short)) seen[v] = (seen[v] || 0) + 1;
+  for (const [k, v] of Object.entries(short)) if (seen[v] > 1) short[k] = k;
+  return short;
+}
+
 // Each machine's lane: a run of a step's targets is a segment in its stage's colour (the map
-// tiles' as any step's).
+// tiles' as any step's), each lane named by its Mac's short name and slot; under them, each region
+// marked where it's all on the map (its `map_at`).
 function schedule(m) {
   const fc = m.fc;
   if (!fc?.lanes || !Object.keys(fc.lanes).length) return h("div", "small dim", "No schedule yet (the forecast comes with the lead's next plan).");
@@ -571,16 +583,21 @@ function schedule(m) {
     const seg = h("i", { onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) });
     Object.assign(seg.style, { left: x(l.from), width: `calc(${x(l.until)} - ${x(l.from)})`, background: S.colour(l.step) });
     track.append(seg);
-    stagesSeen.add(S.stage(l.step));
+    if (S.stage(l.step)) stagesSeen.add(S.stage(l.step));
+  };
+  const short = shortNames(m);
+  const laneName = (nm) => {
+    const mac = m.macs.find((mm) => isSlotOf(nm, mm.name));
+    return mac ? `${short[mac.name]} ${slotNo(nm, mac.name)}` : nm;
   };
   for (const nm of names) {
     const track = h("div", "track");
     for (const l of fc.lanes[nm]) {
       if (l.until < t0) continue;
-      const say = `${nm}: ${S.said(l.step, l.n)}, ${clock(l.from)}–${clock(l.until)}`;
+      const say = `${laneName(nm)}: ${S.said(l.step, l.n)}, ${clock(l.from)}–${clock(l.until)}`;
       segment(track, l, say);
     }
-    lanes.append(h("div", { class: "ln", title: nm }, nm), track);
+    lanes.append(h("div", { class: "ln", title: nm }, laneName(nm)), track);
   }
   // The pages: a job's tasks (crate::agent::steps::TASKS) as the lead runs the job, when a page is
   // measured faster than the lead at that kind (crate::offload) and spares what one takes.
@@ -606,10 +623,23 @@ function schedule(m) {
     const label = d.getHours() === 0 ? DAYS[d.getDay()] : `${String(d.getHours()).padStart(2, "0")}:00`;
     axis.append(h("span", { style: { left: x(d.getTime() / 1000) } }, label));
   }
+  // Each region all on the map as it's built now: a mark at its `map_at` (several at one time, one).
+  const outs = {};
+  for (const r of fc.regions || []) if (r.map_at && r.map_at >= t0 && r.map_at <= t1) (outs[r.map_at] ||= []).push(m.regionName[r.id] || r.id);
+  if (Object.keys(outs).length) {
+    const track = h("div", "track outs");
+    for (const [at, names] of Object.entries(outs)) {
+      const say = `All on the map ≈ ${clock(+at)}: ${names.slice(0, 6).join(", ")}${names.length > 6 ? ` and ${names.length - 6} more` : ""}`;
+      track.append(h("b", { style: { left: x(+at) }, onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) }));
+    }
+    lanes.append(h("div", { class: "ln" }, "On the map"), track);
+  }
   lanes.append(h("div"), axis);
-  // The legend: the stages seen, in the build's order.
+  // The legend: the stages seen, in the build's order, each once (by its title); the regions' mark.
   const order = table.stages.map((g) => g.id);
-  const legend = h("div", "legend", [...stagesSeen].sort((p, q) => order.indexOf(p) - order.indexOf(q)).map((g) => h("span", null, h("i", { style: { background: STAGE_COLOURS[g] || "#7b8590" } }), S.stageTitle(g))));
+  const titles = new Set();
+  const stages = [...stagesSeen].sort((p, q) => order.indexOf(p) - order.indexOf(q)).filter((g) => !titles.has(S.stageTitle(g)) && titles.add(S.stageTitle(g)));
+  const legend = h("div", "legend", stages.map((g) => h("span", null, h("i", { style: { background: STAGE_COLOURS[g] || "#7b8590" } }), S.stageTitle(g))), Object.keys(outs).length ? h("span", null, h("i", { class: "rmark" }), "a region all on the map") : null);
   return h("div", "sched", h("div", "lanewrap", lanes), legend);
 }
 
@@ -693,6 +723,7 @@ const PUBLISH_NAMES = { low: "the low zooms", marks: "the landmarks", overlays: 
 function publishing(m) {
   const { a, fc, now } = m;
   const u = a.publishing, p = a.published || {};
+  const short = shortNames(m), nm = (host) => short[host] || host;
   const rows = [];
   const row = (k, ...v) => rows.push(h("div", "pubrow", h("span", "k", k), h("span", "v", ...v)));
   if (u) rows.push(h("div", "pubwhy", u.why));
@@ -700,13 +731,13 @@ function publishing(m) {
   row("Last catalog", last ? [h("b", null, `${last.n}`), ` · ${clock(last.at)} (${ago(now, last.at)})`, h("span", "dim", p.last ? ` · ${p.low ? "with the low zooms" : "map tiles only"}` : "")] : "none yet");
   if (u) {
     const by = Object.entries(p.drawing || {});
-    row("Map tiles to draw", h("b", null, n(u.tiles || 0)), by.length ? h("span", "dim", " · being drawn: ") : null, ...by.map(([host, k]) => h("span", "by", swatch(m.colourOf(host)), `${host} ${n(k)}`)));
+    row("Map tiles to draw", h("b", null, n(u.tiles || 0)), by.length ? h("span", "dim", " · being drawn: ") : null, ...by.map(([host, k]) => h("span", { class: "by", title: host }, swatch(m.colourOf(host)), `${nm(host)} ${n(k)}`)));
   }
   if (fc?.publishes?.length) {
     row("Next", fc.publishes.map((x, i) => [i ? " · " : "", `${PUBLISH_NAMES[x.what] || x.what} `, h("b", null, x.what === "low" && u?.low ? "now" : x.at <= now + 59 ? "now" : `≈ ${clock(x.at)}`)]).flat());
   }
   const ad = Object.entries(p.adopted || {});
-  if (ad.length) row("Each Mac's map", ...ad.map(([host, c], i) => h("span", { class: `by ${last && c.n < last.n ? "behind" : ""}`, title: `${host}'s map server adopted catalog ${c.n} ${ago(now, c.at)}` }, i ? " " : "", swatch(m.colourOf(host)), `${host} ${c.n}`)));
+  if (ad.length) row("Each Mac's map", ...ad.map(([host, c], i) => h("span", { class: `by ${last && c.n < last.n ? "behind" : ""}`, title: `${host}'s map server adopted catalog ${c.n} ${ago(now, c.at)}` }, i ? " " : "", swatch(m.colourOf(host)), `${nm(host)} ${c.n}`)));
   const waits = (a.waiting || []).filter((w) => w.step === "catalog" || /publish/i.test(w.what));
   for (const w of waits) rows.push(h("div", "small warn", w.why));
   if (u?.regions?.length) rows.push(h("div", "small", `Done, not on the map as they are: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));

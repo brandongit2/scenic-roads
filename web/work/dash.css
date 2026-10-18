@@ -119,6 +119,10 @@ button:disabled { opacity: .5; }
 .sched .ln { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sched .track { position: relative; height: 16px; background: var(--bg); border-radius: 3px; overflow: hidden; }
 .sched .track > i { position: absolute; top: 2px; bottom: 2px; border-radius: 2px; min-width: 2px; }
+.sched .track.outs { background: none; overflow: visible; }
+.sched .track.outs > b { position: absolute; top: 2px; bottom: 2px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--mark); opacity: .75; cursor: help; }
+.sched .track.outs > b:hover { opacity: 1; }
+.legend i.rmark { width: 2px; height: 11px; background: var(--mark); opacity: .75; border-radius: 1px; }
 .sched .axis { position: relative; height: 16px; font-size: 10px; color: var(--dim); }
 .sched .axis > span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 /* The Publishing card: a key and its value a row, hairlines between. */
