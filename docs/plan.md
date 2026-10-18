@@ -910,7 +910,13 @@ from the first (`edit_held`).
   ("<host> (second job)"); the status has it as `beside`, or why not (`beside_why`).
 - **A newly installed app:** nothing new starts and every running job is asked to stop at its next
   safe point (what it finished kept); once the first slot is free the agent exits and the launcher
-  starts the new one. A job reaching no safe point within 15 minutes is stopped then. The lead
+  starts the new one. A job reaching no safe point in time is stopped then (`Agent::update_wait`):
+  the time its target under way is expected to need, by its progress's pace, else its expected time
+  (its own measured run, its step's fit or prior, `needs::Book::secs`) less what it has spent, ×1.5
+  (a target's time varies by about a third between runs), at most 3 hours, never under 15 minutes;
+  15 minutes for a target with no estimate, and once 15 minutes have passed, a job whose progress
+  hasn't moved for 30 minutes is stopped. The log and the status's Waiting line say how long and
+  why. Pauses, the memory guard and the disk guard keep their own rules. The lead
   grants nothing to an agent on another app, and an agent with a newer app waiting asks for
   nothing.
 - **Pausing** (`pipeline::control`): one pause for the whole build, every Mac's jobs and the pages'

@@ -100,6 +100,16 @@ pub struct Options {
 /// before it's frozen where it is instead: a unit takes up to ~11 min, a map tile ~10.
 const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
 
+/// An update's drain (`Agent::update_wait`): the time the target under way is expected to need,
+/// times UPDATE_MARGIN, at most UPDATE_CAP, never less than DRAIN_GRACE. ×1.5 because a target's
+/// measured time varies by about a third between runs (another job beside it, the NAS's load), and
+/// a pace read early in a part runs ahead of its slower end; 3 h because a later app's fixes (often
+/// the reason for the update) shouldn't wait longer than a night's long target, an area's terrain,
+/// takes at most. A job whose progress hasn't moved for UPDATE_STALL holds it no longer.
+const UPDATE_MARGIN: f64 = 1.5;
+const UPDATE_CAP: Duration = Duration::from_secs(3 * 3600);
+const UPDATE_STALL: Duration = Duration::from_secs(30 * 60);
+
 /// How many jobs the lead runs at once (docs/plan.md §8, Two jobs at once): the plan's first it
 /// can run, and a second beside it (`SECOND`). A member runs one, as the lead leases them.
 pub(crate) const SLOTS: usize = 2;
@@ -205,6 +215,10 @@ struct Slot {
     beaten: Option<Instant>,
     drain_since: Option<Instant>,
     job_eta: Option<u64>,
+    /// An update's drain under way: how long it waits for its job's safe point, and why
+    /// (`Agent::update_wait`), worked out once when it began.
+    /// (None: the time a pause gives, `Agent::grace`.)
+    update_wait: Option<(Option<Duration>, String)>,
     /// Why its job stops at its next safe point for the memory guard (crate::agent::memguard):
     /// kept until it ends.
     mem_drain: Option<String>,
@@ -2300,8 +2314,13 @@ impl Agent {
         // free and the launcher starts the new one (with work queued back to back, it would
         // otherwise never get a turn).
         let newer = self.newer_app();
-        if newer && idle {
-            waiting.push(Waiting { step: None, what: "Building".into(), why: "restarting into the newly installed app".into() });
+        if newer && (idle || self.slots[0].update_wait.is_some()) {
+            // (Its job under way given time to reach its safe point: how long, and why.)
+            let why = match (&self.slots[0].update_wait, self.slots[0].drain_since) {
+                (Some((g, words)), Some(t)) if self.slots[0].running.is_some() => { let g = g.unwrap_or(self.grace); format!("restarting into the newly installed app once its job reaches a safe point, at most {} min more ({} min in all: {words})", g.saturating_sub(t.elapsed()).as_secs().div_ceil(60), g.as_secs().div_ceil(60)) }
+                _ => "restarting into the newly installed app".into(),
+            };
+            waiting.push(Waiting { step: None, what: "Building".into(), why });
         }
         // The build paused: nothing new starts (the running jobs stop above), and on the lead
         // its coordinator gives its workers nothing and has their jobs stop too.
@@ -2559,6 +2578,11 @@ impl Agent {
         // plays, lead, member, broker or helper, and the loop restarts into it once the first job's
         // slot is free, `Agent::update_due`.)
         let update = self.pending_app().map(|a| update_why(&a));
+        // (The update's wait, worked out as its drain begins: the target under way's time left.)
+        let wait = match (&update, &self.slots[k].update_wait) {
+            (Some(_), None) => Some(self.update_wait(k)),
+            _ => None,
+        };
         let slot = &mut self.slots[k];
         let r = slot.running.as_mut().unwrap();
         // (The memory guard's drain holds whatever else stops it: asked through its channel, timed
@@ -2586,6 +2610,12 @@ impl Agent {
                 let for_update = update.as_deref() == Some(why.as_str());
                 if for_update && r.pausing.as_deref() != Some(why.as_str()) {
                     slot.drain_since = None;
+                    slot.update_wait = None;
+                }
+                if for_update && slot.update_wait.is_none() {
+                    let (g, words) = wait.unwrap_or((None, String::new()));
+                    eprintln!("agent: {} has {} min to reach a safe point before the update stops it: {words}", r.spec.id, g.unwrap_or(grace).as_secs().div_ceil(60));
+                    slot.update_wait = Some((g, words));
                 }
                 let since = *slot.drain_since.get_or_insert_with(|| {
                     eprintln!("agent: {} stops at its next safe point: {why}", r.spec.id);
@@ -2606,6 +2636,7 @@ impl Agent {
                 r.pausing = Some(why);
             }
             None => {
+                slot.update_wait = None;
                 if slot.mem_drain.is_none() && slot.drain_since.take().is_some() {
                     std::fs::write(&control, b"run").ok();
                 }
@@ -6444,8 +6475,53 @@ impl Agent {
         let why = update_why(&app);
         match &self.slots[0].running {
             None => true,
-            Some(r) => r.pausing.as_deref() == Some(why.as_str()) && self.slots[0].drain_since.is_some_and(|t| t.elapsed() >= self.grace),
+            Some(r) => {
+                if r.pausing.as_deref() != Some(why.as_str()) {
+                    return false;
+                }
+                let Some(since) = self.slots[0].drain_since else { return false };
+                let wait = self.slots[0].update_wait.as_ref().and_then(|w| w.0).unwrap_or(self.grace);
+                // (Past the time a pause gives, a job whose progress stopped moving holds it no
+                // longer: it may be stuck.)
+                let stalled = r.moved.is_some_and(|m| now_s().saturating_sub(m.1) >= UPDATE_STALL.as_secs());
+                since.elapsed() >= wait || (stalled && since.elapsed() >= self.grace)
+            }
         }
+    }
+
+    /// How long an update's drain waits for slot `k`'s job to reach its safe point, and why: the
+    /// time the target under way is expected to need, from its progress's pace (the status's time
+    /// left, `job_view`) else its expected time (its own measured run, its step's fit or prior,
+    /// crate::needs::Book::secs; a step of the lead's own, its time here lately) less what it has
+    /// spent on it, times UPDATE_MARGIN, at most UPDATE_CAP; with no estimate, or one already
+    /// spent, the time a pause gives (`self.grace`).
+    fn update_wait(&self, k: usize) -> (Option<Duration>, String) {
+        let base = self.grace;
+        let Some(r) = self.slots[k].running.as_ref() else { return (None, String::new()) };
+        let none = |why: &str| (None, format!("{why}, so the time a pause gives"));
+        let (left, from) = if let Some(eta) = self.slots[k].job_eta {
+            (eta as f64, "by its progress's pace")
+        } else {
+            let costs = self.coord.as_ref().map(|c| c.for_forecast().0).unwrap_or_default();
+            let book = crate::needs::Book::new(&costs);
+            let own = |step: &str| self.mem.step_secs.get(&secs_key(step)).copied();
+            let secs = |step: &str, t: &str| book.secs(step, t, r.threads as u32).map(|s| s as f64).or_else(|| own(step));
+            let expected = match r.spec.record.as_ref() {
+                Some(w) => {
+                    let done = crate::control::read_done(&self.done_path(k), &w.step);
+                    let did: f64 = w.targets.iter().filter(|t| done.contains(&t.0)).filter_map(|t| secs(&w.step, &t.0)).sum();
+                    w.targets.iter().find(|t| !done.contains(&t.0)).and_then(|t| secs(&w.step, &t.0)).map(|s| s - (r.elapsed().as_secs_f64() - did).max(0.0))
+                }
+                None => own(r.spec.id.split(' ').next().unwrap_or("")).map(|s| s - r.elapsed().as_secs_f64()),
+            };
+            match expected {
+                None => return none("its target has no estimate"),
+                Some(s) if s <= 0.0 => return none("its target is past its expected time"),
+                Some(s) => (s, "by its expected time less what it has spent"),
+            }
+        };
+        let wait = Duration::from_secs_f64(left * UPDATE_MARGIN).min(UPDATE_CAP).max(base);
+        (Some(wait), format!("its target under way needs about {} min more {from} (×{UPDATE_MARGIN}, at most {} h)", (left / 60.0).ceil() as u64, UPDATE_CAP.as_secs() / 3600))
     }
 
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).
@@ -8821,6 +8897,108 @@ mod tests {
         a.slots[0].running = None;
         assert!(a.update_due());
         a.slots[1].running.as_mut().unwrap().stop(Duration::from_secs(5));
+    }
+
+    #[test]
+    fn an_update_waits_for_a_long_target_by_its_measured_time() {
+        // (Task #266: an area's elevation step 81 min in was stopped 15 min into an update's drain,
+        // the area lost. The drain waits for the target under way by its measured time; the clock
+        // here moved by setting when the drain began and when the progress last moved.)
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let apps = d.path().join("app");
+        std::fs::create_dir_all(apps.join("v1")).unwrap();
+        std::fs::create_dir_all(apps.join("v2")).unwrap();
+        std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: apps.join("v1"), dry_run: false, once: true, helper: false }).unwrap();
+        a.free_set = Some(40 << 30);
+        let job = |id: &str, step: &str, t: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: step.into(), targets: vec![(t.into(), "k".into())] }) };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        struct Kill(i32);
+        impl Drop for Kill {
+            fn drop(&mut self) {
+                unsafe { libc::kill(-self.0, libc::SIGKILL) };
+            }
+        }
+        let ago = |s: u64| Instant::now().checked_sub(Duration::from_secs(s)).unwrap();
+        let update = |a: &mut Agent, to: &str| {
+            std::fs::remove_file(apps.join("current")).unwrap();
+            std::os::unix::fs::symlink(to, apps.join("current")).unwrap();
+            a.tend(0, &cond, Some(&root), 0).unwrap();
+        };
+        assert!(a.try_start(0, job("elev 6/55/25", "elev", "6/55/25"), &cond, Some(&root), &mut Vec::new()));
+        let _kill = Kill(a.slots[0].running.as_ref().unwrap().pgid);
+        // Its progress's pace says an hour left: the update waits 90 min (×1.5).
+        a.slots[0].job_eta = Some(3600);
+        a.slots[0].running.as_mut().unwrap().moved = Some((0.5, now_s()));
+        update(&mut a, "v2");
+        let (wait, words) = a.slots[0].update_wait.clone().unwrap();
+        assert_eq!(wait, Some(Duration::from_secs(5400)), "{words}");
+        assert!(words.contains("60 min more by its progress's pace"), "{words}");
+        // 20 min, then 80 in, still progressing: no restart (the old rule restarted at 15).
+        a.slots[0].drain_since = Some(ago(20 * 60));
+        assert!(!a.update_due());
+        a.slots[0].drain_since = Some(ago(80 * 60));
+        assert!(!a.update_due());
+        // Its progress stopped 31 min ago: it may be stuck, and holds the update no longer.
+        a.slots[0].running.as_mut().unwrap().moved = Some((0.5, now_s() - 31 * 60));
+        assert!(a.update_due());
+        // Moving again: past its wait, due.
+        a.slots[0].running.as_mut().unwrap().moved = Some((0.6, now_s()));
+        assert!(!a.update_due());
+        a.slots[0].drain_since = Some(ago(91 * 60));
+        assert!(a.update_due());
+        // The install undone: the wait forgotten; a new update works it out again, from the
+        // target's expected time (no pace yet), capped at 3 h.
+        update(&mut a, "v1");
+        assert!(a.slots[0].update_wait.is_none() && !a.update_due());
+        a.slots[0].job_eta = None;
+        a.mem.step_secs.insert(secs_key("elev"), 5.0 * 3600.0);
+        update(&mut a, "v2");
+        let (wait, words) = a.slots[0].update_wait.clone().unwrap();
+        assert_eq!(wait, Some(UPDATE_CAP), "{words}");
+        assert!(words.contains("by its expected time"), "{words}");
+        // A short target: never less than the time a pause gives.
+        update(&mut a, "v1");
+        a.mem.step_secs.insert(secs_key("elev"), 60.0);
+        update(&mut a, "v2");
+        let (wait, words) = a.slots[0].update_wait.clone().unwrap();
+        assert_eq!(wait, Some(DRAIN_GRACE), "{words}");
+        a.slots[0].drain_since = Some(ago(16 * 60));
+        assert!(a.update_due());
+        // No job: due at once.
+        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
+        a.slots[0].running = None;
+        assert!(a.update_due());
+    }
+
+    #[test]
+    fn an_update_keeps_the_pause_grace_for_a_target_with_no_estimate() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let apps = d.path().join("app");
+        std::fs::create_dir_all(apps.join("v1")).unwrap();
+        std::fs::create_dir_all(apps.join("v2")).unwrap();
+        std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
+        let mut a = test_agent(Options { root: Some(root.clone()), home: home.clone(), bin: apps.join("v1"), dry_run: false, once: true, helper: false }).unwrap();
+        a.free_set = Some(40 << 30);
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        let spec = JobSpec { id: "trees 6/1/1".into(), what: "x".into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()], needs: Needs { nas: false }, restart_after_sleep: false, record: Some(build::Work { step: "trees".into(), targets: vec![("6/1/1".into(), "k".into())] }) };
+        assert!(a.try_start(0, spec, &cond, Some(&root), &mut Vec::new()));
+        let pgid = a.slots[0].running.as_ref().unwrap().pgid;
+        std::fs::remove_file(apps.join("current")).unwrap();
+        std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
+        a.tend(0, &cond, Some(&root), 0).unwrap();
+        let (wait, words) = a.slots[0].update_wait.clone().unwrap();
+        assert_eq!(wait, None);
+        assert!(words.contains("no estimate"), "{words}");
+        a.slots[0].drain_since = Some(Instant::now().checked_sub(Duration::from_secs(14 * 60)).unwrap());
+        assert!(!a.update_due());
+        a.slots[0].drain_since = Some(Instant::now().checked_sub(DRAIN_GRACE).unwrap());
+        assert!(a.update_due());
+        unsafe { libc::kill(-pgid, libc::SIGKILL) };
     }
 
     #[test]
