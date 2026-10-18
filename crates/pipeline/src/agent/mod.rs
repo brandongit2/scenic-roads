@@ -10201,7 +10201,6 @@ fn served_https(_port: u16) -> Option<String> {
     None
 }
 
-/// The app version of the programs in `bin` (`…/app/<version>/`), or "development".
 /// The app versions the programs `cmds` start are in (`<apps>/<version>/<program>`), the apps'
 /// folder that of an agent whose programs are in `bin`, other than its own `app` (Agent::job_apps).
 /// Both sides compared resolved: a job's command names its agent's resolved folder (Agent::new_with),
@@ -10228,6 +10227,7 @@ fn job_apps_of<'a>(cmds: impl Iterator<Item = &'a str>, bin: &Path, app: &str) -
     out
 }
 
+/// The app version of the programs in `bin` (`…/app/<version>/`), or "development".
 pub fn app_version(bin: &Path) -> String {
     let canon = bin.canonicalize().unwrap_or_else(|_| bin.to_path_buf());
     match (canon.parent().and_then(|p| p.file_name()), canon.file_name()) {
