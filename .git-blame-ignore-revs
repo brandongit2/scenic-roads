@@ -1,0 +1,2 @@
+# The commit that reformatted the whole workspace with rustfmt (task #268); `git blame` skips it.
+9f1ce871b9ff78cb5a89b0fe376c060fc173dde8

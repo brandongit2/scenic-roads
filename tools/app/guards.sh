@@ -10,6 +10,11 @@ set -euo pipefail
 cd ${0:A:h}/../..
 mkdir -p ~/Library/Logs/scenic
 log=~/Library/Logs/scenic/guards-$(date +%Y%m%d-%H%M%S).log
+cargo fmt --check > $log 2>&1 || {
+  head -40 $log
+  echo "the Rust isn't formatted; run cargo fmt (rustfmt.toml)"
+  exit 1
+}
 cargo test -q -p pipeline --test inputs_accessor --test source_names > $log 2>&1 || {
   sed -n '/^---- /,/^failures:$/p' $log
   echo "a guard failed; the tests' whole output: $log"
