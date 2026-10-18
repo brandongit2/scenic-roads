@@ -453,8 +453,8 @@ function capBar(label, used, whole, words, also = 0, cls = "") {
 const gb = (mb) => `${(mb / 1024).toFixed(1)} GB`;
 
 // A Mac's capacity as the lead's coordinator last heard it (coord::Capacity): memory held of the
-// build's (scenic memory, within the guard's limit), cores busy, disk reserved and free, its share
-// of the NAS budget.
+// build's (scenic memory, within the guard's limit), cores busy, the disk free and what's left of it
+// for jobs (diskWords), its share of the NAS budget.
 function capacityBlock(said) {
   const c = said.cap;
   if (!c && said.nas == null) return null;
@@ -466,12 +466,21 @@ function capacityBlock(said) {
     const busy = Math.max(0, c.cores - c.cores_free);
     rows.push(capBar("cores", busy, c.cores, `${busy} of ${c.cores} busy${c.in_use && c.kept_cores ? ` · ${c.kept_cores} kept for its owner` : ""}`));
     const disk = c.disk_mb + c.reserved_mb;
-    rows.push(capBar("disk", c.reserved_mb, disk, `${gb(c.reserved_mb)} reserved · ${gb(c.disk_mb)} free`, 0, c.disk_mb < 10240 ? "warn" : ""));
+    rows.push(capBar("disk", c.reserved_mb, disk, c.free_mb ? diskWords(c) : `${gb(c.reserved_mb)} reserved · ${gb(c.disk_mb)} free`, 0, c.disk_mb < 10240 ? "warn" : ""));
   }
   if (said.nas != null) rows.push(capBar("NAS", said.nas, 1000, `${Math.round(said.nas / 10)}% of the budget`, 0, said.nas > 1000 ? "warn" : ""));
-  return h("div", { class: "caps", title: "As the lead's coordinator last heard it: memory its jobs hold of what the build gets on this Mac (scenic memory, within the memory guard's limit; and free for more, less what they're predicted to need); cores busy by the last minute's load; disk its jobs reserved, and free less the reserve and the owner's room target; its jobs' share of the NAS budget" }, rows);
+  return h("div", { class: "caps", title: "As the lead's coordinator last heard it: memory its jobs hold of what the build gets on this Mac (scenic memory, within the memory guard's limit; and free for more, less what they're predicted to need); cores busy by the last minute's load; the disk's free space, and what's left of it for jobs past the reserve, the owner's room target and its jobs' reservations; its jobs' share of the NAS budget" }, rows);
 }
 
+// A Mac's disk in words (coord::disk_words, task #391): "38 GB free · 0 GB for jobs (30 GB reserve,
+// 20 GB room target)".
+function diskWords(c) {
+  const g = (mb) => `${Math.round(mb / 1024)} GB`;
+  const kept = [`${g(c.reserve_mb)} reserve`];
+  if (c.target_mb) kept.push(`${g(c.target_mb)} room target`);
+  if (c.reserved_mb) kept.push(`${g(c.reserved_mb)} reserved by its jobs`);
+  return `${g(c.free_mb)} free · ${g(c.disk_mb)} for jobs (${kept.join(", ")})`;
+}
 
 // The lead's ramp (crate::agent::RampView): its slots now of the most; held (its slots kept at the
 // start) or not clean (growth stopped), else clean since when and when it grows.

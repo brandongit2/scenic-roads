@@ -10,7 +10,8 @@
 // from its file, says what its build caches hold, whether they can be cleared now,
 // and the last trim and clear (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
 // that agent to clear them. Disk Room shows the disk's free space and the owner's room target, and
-// sets it (a few presets, or Off): the free space that agent keeps, freeing its caches to it. Memory shows and
+// sets it (a few presets, or Off): the free space that agent keeps, freeing its caches to it; its
+// title says the free space, what's left of it for jobs and what keeps the rest. Memory shows and
 // sets the memory the build's jobs get here together (crates/pipeline/src/agent/buildmem.rs: a few
 // presets, or the memory guard's limit alone). With
 // the pool on (docs/pool.md §11), its agent's view of the pool: who leads, each Mac and its state,
@@ -1411,8 +1412,7 @@ let roomPresets = [10, 20, 50, 100, 150, 200, 300]
 /// as `scenic room` refuses them.
 func roomItem(_ own: Own?, target: Int?, free: Int?, disk: Int?) -> (title: String, tip: String, choices: [(title: String, gb: Int, on: Bool)])? {
     guard own?.caches != nil else { return nil }
-    var title = "Disk Room: \(free.map(gb) ?? "?") free"
-    title += target.map { " · target \(gb($0))" } ?? " · no target"
+    let title = "Disk Room: " + diskWords(free: free, target: target)
     let r = own?.caches?.room
     var tip = "The free space this Mac's agent keeps: it frees its build caches to it, as far as needed, jobs running or not (what they use stays), and starts no job that would cross it, until it's lowered or off."
     if let t = target, r?.target?.size == t, let why = r?.short { tip = "Short of it: \(why)" }
@@ -1421,6 +1421,20 @@ func roomItem(_ own: Own?, target: Int?, free: Int?, disk: Int?) -> (title: Stri
     if let t = target, !choices.contains(where: \.on) { choices.append((title: "Keep \(gb(t)) Free", gb: -1, on: true)) }
     choices.append((title: "Off", gb: 0, on: target == nil))
     return (title, tip, choices)
+}
+
+/// The reserve the agent keeps free of its jobs (room.rs RESERVE).
+let diskReserve = 30 << 30
+
+/// The disk in words (task #391, as coord::disk_words): "38 GB free · 0 GB for jobs (30 GB
+/// reserve, 20 GB room target)": what's left for jobs, the free space less the reserve and the
+/// owner's room target.
+func diskWords(free: Int?, target: Int?) -> String {
+    let g = { (b: Int) in "\(Int((Double(b) / Double(1 << 30)).rounded()))\u{00A0}GB" }
+    guard let f = free else { return "? free" }
+    var kept = ["\(g(diskReserve)) reserve"]
+    if let t = target { kept.append("\(g(t)) room target") }
+    return "\(g(f)) free · \(g(max(0, f - diskReserve - (target ?? 0)))) for jobs (\(kept.joined(separator: ", ")))"
 }
 
 /// The memory this Mac gives the build's jobs together (crates/pipeline/src/agent/buildmem.rs,

@@ -285,7 +285,10 @@ memory guard's limit and what the running jobs hold, the build's memory (`build_
 build's memory) and what's free of it less each running job's predicted need (the larger of what it holds and its predicted peak: its targets' measured peak on the
 lead, the step's first guess on a member), its
 cores and those the last minute's load leaves free, the disk free less the reserve, the owner's
-room target and its jobs' reservations (`reserved_mb`, below), in use and the cores its
+room target and its jobs' reservations (`reserved_mb`, below), and the disk's free space, the
+reserve and the target themselves (`free_mb`, `reserve_mb`, `target_mb`: the build page, `scenic
+status` and a refusal say the disk as "38 GB free · 0 GB for jobs (30 GB reserve, 20 GB room
+target)", `coord::disk_words`), in use and the cores its
 in-use share keeps (`kept_cores`, below), mains or battery,
 the NAS's reach, the guard's switch and its running leases. The lead's own asks carry it too, and
 it sets it each loop. The coordinator keeps the last per member (`Coordinator::capacities`, leaving out one older than

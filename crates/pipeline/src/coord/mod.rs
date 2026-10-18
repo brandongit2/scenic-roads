@@ -768,7 +768,12 @@ impl Shared {
                     None => format!(
                         "nothing offered fits the room left ({} memory{}) or is free to take",
                         gb(room.mem_mb),
-                        room.disk_mb.map(|d| format!(", {} disk", gb(d))).unwrap_or_default()
+                        room.disk_mb
+                            .map(|d| match a.cap.as_ref().filter(|c| c.free_mb > 0) {
+                                Some(c) => format!("; disk: {}", disk_words(c, d)),
+                                None => format!(", {} disk", gb(d)),
+                            })
+                            .unwrap_or_default()
                     ),
                 });
                 break;
@@ -1325,6 +1330,21 @@ pub fn packed_cores_of(step: &str, c: Option<u32>, share: u32) -> u32 {
 /// than the packed share.
 pub const NAS_STEPS: &[&str] = &["unit", "elev", "pack", "lo"];
 
+/// A Mac's disk in words (task #391): its free space, what's left of it for jobs (`for_jobs_mb`:
+/// the free space less the reserve, the owner's room target and its jobs' reservations), and what
+/// keeps the rest: "38 GB free · 0 GB for jobs (30 GB reserve, 20 GB room target)".
+pub fn disk_words(c: &Capacity, for_jobs_mb: u64) -> String {
+    let gb = |mb: u64| format!("{} GB", (mb as f64 / 1024.0).round() as u64);
+    let mut kept = vec![format!("{} reserve", gb(c.reserve_mb))];
+    if c.target_mb > 0 {
+        kept.push(format!("{} room target", gb(c.target_mb)));
+    }
+    if c.reserved_mb > 0 {
+        kept.push(format!("{} reserved by its jobs", gb(c.reserved_mb)));
+    }
+    format!("{} free · {} for jobs ({})", gb(c.free_mb), gb(for_jobs_mb), kept.join(", "))
+}
+
 /// How long a capacity stands (s): older, `Coordinator::capacities` leaves it out.
 pub const CAP_FRESH_S: u64 = 120;
 
@@ -1354,6 +1374,11 @@ pub struct Capacity {
     /// The disk's free space less the reserve (room::RESERVE), the owner's room target and the
     /// running jobs' reservations (MB).
     pub disk_mb: u64,
+    /// The disk's free space (MB), the reserve kept free of jobs (room::RESERVE) and the owner's
+    /// room target (0: none): what `disk_mb` is taken from (`disk_words`). 0 all: an older app's.
+    pub free_mb: u64,
+    pub reserve_mb: u64,
+    pub target_mb: u64,
     /// The disk its jobs have reserved and not taken yet (MB): each granted or running job's
     /// measured disk less what it has written so far (docs/pool.md §7.1).
     pub reserved_mb: u64,
@@ -6017,6 +6042,27 @@ mod tests {
         assert!(w.ask(&ask(50, vec![g1.lease, g2.lease])).unwrap().is_none());
         // A lease its agent doesn't name yet (granted since it asked) is taken off here.
         assert!(w.ask(&ask(150, vec![g1.lease])).unwrap().is_none());
+    }
+
+    /// The disk in words (task #391): the free space, what's left of it for jobs, and what keeps
+    /// the rest (the reserve, the owner's room target, the jobs' reservations), on the refusal too.
+    #[test]
+    fn the_disk_is_said_plainly() {
+        let c = Capacity { free_mb: 39_014, reserve_mb: 30 << 10, target_mb: 20 << 10, ..Default::default() };
+        assert_eq!(disk_words(&c, 0), "38 GB free · 0 GB for jobs (30 GB reserve, 20 GB room target)");
+        let c = Capacity { free_mb: 100 << 10, reserve_mb: 30 << 10, reserved_mb: 5 << 10, ..Default::default() };
+        assert_eq!(disk_words(&c, 65 << 10), "100 GB free · 65 GB for jobs (30 GB reserve, 5 GB reserved by its jobs)");
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "slope", 6, Some(1));
+        let cap =
+            Capacity { cores: 8, free_mb: 39_014, reserve_mb: 30 << 10, target_mb: 20 << 10, ..Default::default() };
+        let a = Ask { cap: Some(cap), ..every_ask("m1", "slope", 6144, 0) };
+        assert!(w.ask(&a).unwrap().is_none());
+        let why = c.refusals().get("m1").cloned().unwrap_or_default();
+        assert!(
+            why.contains("(6.0 GB memory; disk: 38 GB free · 0 GB for jobs (30 GB reserve, 20 GB room target))"),
+            "{why}"
+        );
     }
 
     /// A cold start goes only to a member running nothing, alone, and nothing goes beside it while

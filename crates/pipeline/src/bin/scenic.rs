@@ -426,7 +426,7 @@ fn inputs(args: &[String]) -> Result<()> {
 }
 
 /// A member's capacity in a line: "memory 8.8 GB free of the build's 10.0 GB (1.2 GB held, the
-/// limit 12.0 GB) · 6 of 8 cores free · disk 90.0 GB free · on
+/// limit 12.0 GB) · 6 of 8 cores free · disk 120 GB free · 90 GB for jobs (30 GB reserve) · on
 /// power · in use · NAS reachable · leases 12, 14 · 20 s ago".
 fn capacity_line(c: &pipeline::coord::Capacity) -> String {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
@@ -444,11 +444,15 @@ fn capacity_line(c: &pipeline::coord::Capacity) -> String {
             if c.guard { "" } else { ", not guarded" }
         ),
         format!("{} of {} cores free", c.cores_free, c.cores),
-        format!(
-            "disk {} free{}",
-            gb(c.disk_mb),
-            if c.reserved_mb > 0 { format!(" ({} reserved)", gb(c.reserved_mb)) } else { String::new() }
-        ),
+        if c.free_mb > 0 {
+            format!("disk {}", pipeline::coord::disk_words(c, c.disk_mb))
+        } else {
+            format!(
+                "disk {} free{}",
+                gb(c.disk_mb),
+                if c.reserved_mb > 0 { format!(" ({} reserved)", gb(c.reserved_mb)) } else { String::new() }
+            )
+        },
         match (c.ac, c.battery) {
             (true, _) => "on power".to_string(),
             (false, Some(b)) => format!("on battery ({b} %)"),
@@ -1636,7 +1640,8 @@ mod tests {
         assert!(l.contains("        tail line"), "{l}");
     }
 
-    /// The build's memory in words (task #390), and a Mac's capacity with it.
+    /// The build's memory in words (task #390), and a Mac's capacity with it and its disk said
+    /// plainly (task #391).
     #[test]
     fn the_build_memory_and_the_disk_are_said_plainly() {
         let m = agent::buildmem::Memory { mb: 10 << 10, by: "scenic memory on m1".into(), at: 1 };
@@ -1651,12 +1656,20 @@ mod tests {
         );
         assert!(memory_line(None, 12 << 10, ago)
             .starts_with("Build memory: 12.0 GB for the build's jobs together, the memory guard's limit"));
-        let c =
-            pipeline::coord::Capacity { limit_mb: 12 << 10, build_mb: 10 << 10, mem_mb: 6 << 10, ..Default::default() };
+        let c = pipeline::coord::Capacity {
+            limit_mb: 12 << 10,
+            build_mb: 10 << 10,
+            mem_mb: 6 << 10,
+            free_mb: 39_014,
+            reserve_mb: 30 << 10,
+            target_mb: 20 << 10,
+            ..Default::default()
+        };
         let l = capacity_line(&c);
         assert!(
             l.starts_with("memory 6.0 GB free of the build's 10.0 GB (0.0 GB held, the limit 12.0 GB, not guarded)"),
             "{l}"
         );
+        assert!(l.contains("disk 38 GB free · 0 GB for jobs (30 GB reserve, 20 GB room target)"), "{l}");
     }
 }
