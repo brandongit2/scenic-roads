@@ -7022,17 +7022,20 @@ impl Agent {
         let need_mb = |step: &str, t: &str| book.need(step, t, 0, peak(step, t)).mem_mb;
         let cost = |step: &str, t: &str| -> Cost {
             match costs.get(&crate::coord::cost_key(step, t)) {
-                Some(c) => {
-                    Cost { secs: c.secs as f64 * pace(c.worker.as_ref()), known: true, peak_mb: need_mb(step, t) }
-                }
-                None => Cost { secs: per(step), known: false, peak_mb: need_mb(step, t) },
+                Some(c) => Cost {
+                    secs: c.secs as f64 * pace(c.worker.as_ref()),
+                    known: true,
+                    peak_mb: need_mb(step, t),
+                    cores: book.cores(step, t),
+                },
+                None => Cost { secs: per(step), known: false, peak_mb: need_mb(step, t), cores: book.cores(step, t) },
             }
         };
         // The lead's own steps: what a target took here lately (measured), else a first guess.
         let mine = |step: &str, n: usize| -> Cost {
             let (each, known) =
                 self.mem.step_secs.get(&secs_key(step)).map_or((first_secs(step), false), |&t| (t, true));
-            Cost { secs: each * n.max(1) as f64, known, peak_mb: 0 }
+            Cost { secs: each * n.max(1) as f64, known, peak_mb: 0, cores: None }
         };
         let step_of = |id: &str| id.split(' ').next().unwrap_or("").to_string();
         // (Each job before the regions' is a step of its own; one running now is its slot's
@@ -7117,13 +7120,30 @@ impl Agent {
                 .and_then(|s| s.running.as_ref())
                 .map(|r| (step_of(&r.spec.id), r.spec.record.as_ref().map_or(1, |w| w.targets.len().max(1))))
         };
+        // (Its memory: its step's first target's peak.)
+        let running_mb_of = |k: usize| {
+            self.slots.get(k).and_then(|s| s.running.as_ref()).map_or(0, |r| {
+                let step = step_of(&r.spec.id);
+                let t = r.spec.record.as_ref().and_then(|w| w.targets.first()).map_or(String::new(), |t| t.0.clone());
+                need_mb(&step, &t)
+            })
+        };
         // Its other slots: a lane each, as many as it may run now (its ramp's: `forecast::slot_lanes`),
         // and those its ramp grows to over the forecast, one each clean stretch from when it next
         // grows (`RAMP_CLEAN_S`; within two days); each any work of the plan that fits its Mac's room
         // beside the others (`forecast::MacRoom`).
         let mac_mb = (self.mac.resources(&self.o.home, None, None, None).mem_gb * 1024.0) as u64;
         let mut rooms: BTreeMap<String, forecast::MacRoom> = BTreeMap::new();
-        rooms.insert(self.host.clone(), forecast::MacRoom { mem_mb: mac_mb, cores: mac_cores() });
+        // (A Mac's room is what its asks spare for its jobs together, as `pack_why` takes an ask's
+        // memory: a member's `Ask::mem_mb` is its Mac's whole spare memory for jobs (`helper_memory`),
+        // not a slot's; the coordinator's worker record keeps it (`mem`). Not heard: the Mac's.)
+        rooms.insert(
+            self.host.clone(),
+            forecast::MacRoom {
+                mem_mb: mem.get(&self.host).copied().filter(|&m| m > 0).unwrap_or(mac_mb),
+                cores: mac_cores(),
+            },
+        );
         let mut machines = vec![Machine {
             name: self.host.clone(),
             speed: 1.0,
@@ -7135,6 +7155,7 @@ impl Agent {
             unit_extra_s,
             lead_steps: true,
             running: running_of(0),
+            running_mb: running_mb_of(0),
             mac: Some(self.host.clone()),
             from_s: 0.0,
         }];
@@ -7165,6 +7186,7 @@ impl Agent {
                 unit_extra_s,
                 lead_steps: true,
                 running: running_of(k),
+                running_mb: running_mb_of(k),
                 mac: Some(self.host.clone()),
                 from_s: if k < own_lanes { 0.0 } else { grows[k - own_lanes] },
             });
@@ -7185,11 +7207,9 @@ impl Agent {
                 Some(c) => forecast::slot_lanes(job_slots(c.cores as usize), &running),
                 None => running.iter().map(|k| k + 1).max().unwrap_or(1),
             };
-            let mem_all = cap.map(|c| c.limit_mb).filter(|&m| m > 0).or(mem
-                .get(&h.host)
-                .copied()
-                .filter(|&m| m > 0)
-                .map(|m| m * n as u64));
+            // (Its room: what its asks spare for its jobs together (`Ask::mem_mb`, the whole Mac's,
+            // as `pack_why` counts it), else its memory guard's limit.)
+            let mem_all = mem.get(&h.host).copied().filter(|&m| m > 0).or(cap.map(|c| c.limit_mb).filter(|&m| m > 0));
             rooms.insert(
                 h.host.clone(),
                 forecast::MacRoom {
@@ -7218,6 +7238,11 @@ impl Agent {
                 });
                 let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
                 let targets = leased.iter().find(|l| l.0 == name).map_or(1, |l| l.2.len().max(1));
+                // (Its job's memory: its step's first target's peak.)
+                let running_mb = job.map_or(0, |j| {
+                    let t = leased.iter().find(|l| l.0 == name).and_then(|l| l.2.first().cloned()).unwrap_or_default();
+                    need_mb(&step_of(&j.id), &t)
+                });
                 machines.push(Machine {
                     name,
                     speed,
@@ -7229,6 +7254,7 @@ impl Agent {
                     unit_extra_s: 0.0,
                     lead_steps: false,
                     running: job.map(|j| (step_of(&j.id), targets)),
+                    running_mb,
                     mac: Some(h.host.clone()),
                     from_s: 0.0,
                 });

@@ -1310,6 +1310,17 @@ pub fn packed_share(cores: u32) -> u32 {
     (cores / 4).max(2).min(cores.max(1))
 }
 
+/// The cores a packed job of `step` is counted for, measured to take `c` (None: not said): as
+/// `Coordinator::packed_cores`, by the step alone (a NAS step, `NAS_STEPS`, the share; else `c`
+/// within it, the share when not said). For the forecast (crate::agent::forecast), which hasn't the
+/// costs' NAS rates.
+pub fn packed_cores_of(step: &str, c: Option<u32>, share: u32) -> u32 {
+    match c {
+        Some(c) if !NAS_STEPS.contains(&step) => c.min(share).max(1),
+        _ => share,
+    }
+}
+
 /// The steps that read the NAS as they go (their threads overlap the waits): never granted fewer
 /// than the packed share.
 pub const NAS_STEPS: &[&str] = &["unit", "elev", "pack", "lo"];

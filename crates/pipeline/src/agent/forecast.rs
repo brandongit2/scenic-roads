@@ -57,6 +57,8 @@ pub struct Machine {
     /// The job its slot runs now, when no item of the work left is it (a step's job the plan lists
     /// no target of, a daily one): its step and targets, until `busy_s`. On its lane first.
     pub running: Option<(String, usize)>,
+    /// That job's memory (MB: its step's first target's peak), held on its Mac until `busy_s`.
+    pub running_mb: u64,
     /// The Mac whose room (`Input::macs`) its slot shares with that Mac's other slots, as the
     /// coordinator packs an ask (crate::coord's `pack`); None: its own `mem_mb` alone.
     pub mac: Option<String>,
@@ -85,6 +87,24 @@ pub struct Cost {
     pub secs: f64,
     pub known: bool,
     pub peak_mb: u64,
+    /// The cores it's measured to take (crate::needs::Book::cores; None: not said, the packed
+    /// share).
+    pub cores: Option<u32>,
+}
+
+/// What a Mac runs at a moment of the run (`run`'s `snap`): its room, jobs and their memory and
+/// packed cores, whether one is a cold start, when its last job started, and the steps under way
+/// anywhere.
+#[derive(Default)]
+struct Snap {
+    room: MacRoom,
+    share: u32,
+    jobs: usize,
+    mem_mb: u64,
+    cores: u32,
+    cold: bool,
+    last_start: f64,
+    steps: std::collections::BTreeSet<String>,
 }
 
 /// A job of the lead's alone, or one of the chains': (step, target, cost).
@@ -480,7 +500,10 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
     (out, region_items)
 }
 
-/// One run through the work, each item's time `scale`d.
+/// One run through the work, each item's time `scale`d. Kept to about O(items × lanes): the items
+/// under way (`inflight`) held apart, each item's deps not yet done counted down as they end, each
+/// phase's items whose deps are done (`ready`) scanned in order, at most `SCAN` that its Mac's room
+/// refuses looked at a pick, the regions' counts kept as items are taken.
 fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
     let (mut items, region_items) = items(inp);
     for it in &mut items {
@@ -488,99 +511,75 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
     }
     let n = inp.machines.len();
     let mut free: Vec<f64> = inp.machines.iter().map(|m| m.busy_s.max(m.from_s).max(0.0)).collect();
-    // (A slot busy with a job no item is, until when: it holds a share of its Mac meanwhile.)
+    // (A slot busy with a job no item is, until when: it holds its Mac's room meanwhile.)
     let held_until: Vec<f64> = inp.machines.iter().map(|m| m.busy_s.max(0.0)).collect();
     // What's being built now: done when its machine is free.
-    for ((step, target), &m) in &inp.running {
-        if let Some(it) = items.iter_mut().find(|i| &i.step == step && &i.target == target) {
-            (it.by, it.from, it.end, it.running) = (Some(m), 0.0, free.get(m).copied().unwrap_or(0.0), true);
-        }
+    let at: BTreeMap<(&str, &str), usize> =
+        items.iter().enumerate().map(|(i, it)| ((it.step.as_str(), it.target.as_str()), i)).collect();
+    let running: Vec<(usize, usize)> = inp
+        .running
+        .iter()
+        .filter_map(|((step, target), &m)| at.get(&(step.as_str(), target.as_str())).map(|&i| (i, m)))
+        .collect();
+    drop(at);
+    for &(i, m) in &running {
+        (items[i].by, items[i].from, items[i].end, items[i].running) =
+            (Some(m), 0.0, free.get(m).copied().unwrap_or(0.0), true);
     }
-    let regionals: Vec<usize> = (0..items.len()).filter(|&i| matches!(items[i].phase, Phase::Region)).collect();
-    // (A machine with nothing it can do waits for the next item to end, or another machine to be
-    // free: a job that's no item may free work.)
-    let next_end = |items: &[Item], free: &[f64], m: usize, t: f64| {
-        let others = free.iter().enumerate().filter(|&(k, &f)| k != m && f > t + 1e-9).map(|(_, &f)| f);
-        items
-            .iter()
-            .filter(|i| i.by.is_some() && i.end > t + 1e-9)
-            .map(|i| i.end)
-            .chain(others)
-            .fold(f64::INFINITY, f64::min)
-    };
-    let done_by = |items: &[Item], i: usize, t: f64| items[i].by.is_some() && items[i].end <= t + 1e-9;
-    let runnable =
-        |items: &[Item], i: usize, t: f64| items[i].by.is_none() && items[i].deps.iter().all(|&d| done_by(items, d, t));
-    // Whether machine `m` may start item `i` at `t` beside what its Mac runs, as the coordinator packs
-    // (crate::coord's `pack`): within the Mac's memory and its cores at the packed share each; a
-    // cold start (its time not measured) alone on its Mac, none of its step under way anywhere, and
-    // nothing beside one; while a member runs an older app, a job an ask (`OLD_APP_GAP_S`).
-    let room_ok = |items: &[Item], m: usize, i: usize, t: f64| -> bool {
-        let Some(g) = inp.machines[m].mac.as_deref() else { return true };
-        let room = inp.macs.get(g).copied().unwrap_or_default();
-        let on_mac = |k: usize| inp.machines[k].mac.as_deref() == Some(g);
-        let now_on = |it: &Item| it.by.is_some_and(on_mac) && it.from <= t + 1e-9 && it.end > t + 1e-9;
-        let on: Vec<&Item> = items.iter().filter(|it| now_on(it)).collect();
-        let others = (0..inp.machines.len())
-            .filter(|&k| {
-                k != m
-                    && on_mac(k)
-                    && held_until[k] > t + 1e-9
-                    && !items.iter().any(|it| it.by == Some(k) && it.running)
-            })
-            .count();
-        let jobs = on.len() + others;
-        if on.iter().any(|it| !it.cost.known) {
-            return false;
-        }
-        if !items[i].cost.known {
-            let step_on = items
-                .iter()
-                .any(|it| it.step == items[i].step && it.by.is_some() && it.from <= t + 1e-9 && it.end > t + 1e-9);
-            return jobs == 0 && !step_on;
-        }
-        if room.mem_mb > 0 && on.iter().map(|it| it.cost.peak_mb).sum::<u64>() + items[i].cost.peak_mb > room.mem_mb {
-            return false;
-        }
-        let share = crate::coord::packed_share(room.cores.max(1));
-        if jobs > 0 && (jobs as u32 + 1) * share > room.cores.max(1) {
-            return false;
-        }
-        if inp.old_app {
-            let last = items
-                .iter()
-                .filter(|it| it.by.is_some_and(on_mac) && !it.running && it.from <= t + 1e-9)
-                .map(|it| it.from)
-                .fold(f64::NEG_INFINITY, f64::max);
-            if t < last + OLD_APP_GAP_S - 1e-9 {
-                return false;
+    let mut inflight: Vec<usize> = running.iter().map(|r| r.0).collect();
+    let mut unassigned = items.iter().filter(|i| i.by.is_none()).count();
+    // Each phase's items in order, and the first not yet taken.
+    const PHASES: [Phase; 6] = [Phase::Before, Phase::Publish, Phase::Region, Phase::Late, Phase::Chain, Phase::After];
+    let pi = |p: Phase| PHASES.iter().position(|&q| q == p).unwrap_or(0);
+    // Each item's deps not yet done, the items waiting on each, and each phase's items ready (their
+    // deps done, not yet taken), in order.
+    let mut waiting_on: Vec<Vec<usize>> = vec![Vec::new(); items.len()];
+    let mut pending: Vec<usize> = vec![0; items.len()];
+    for (i, it) in items.iter().enumerate() {
+        for &d in &it.deps {
+            if !(items[d].by.is_some() && items[d].end <= 1e-9) {
+                pending[i] += 1;
+                waiting_on[d].push(i);
             }
         }
-        true
-    };
-    // (When a Mac's next job may start a job an ask, `OLD_APP_GAP_S` after its last: a wake.)
-    let ask_wake = |items: &[Item], m: usize, t: f64| -> f64 {
-        let Some(g) = inp.machines[m].mac.as_deref().filter(|_| inp.old_app) else { return f64::INFINITY };
-        let last = items
-            .iter()
-            .filter(|it| {
-                it.by.is_some_and(|k| inp.machines[k].mac.as_deref() == Some(g)) && !it.running && it.from <= t + 1e-9
-            })
-            .map(|it| it.from)
-            .fold(f64::NEG_INFINITY, f64::max);
-        if last + OLD_APP_GAP_S > t + 1e-9 {
-            last + OLD_APP_GAP_S
-        } else {
-            f64::INFINITY
+    }
+    let mut ready: [std::collections::BTreeSet<usize>; 6] = Default::default();
+    for (i, it) in items.iter().enumerate() {
+        if it.by.is_none() && pending[i] == 0 {
+            ready[pi(it.phase)].insert(i);
         }
-    };
-    let first = |items: &[Item], m: usize, p: Phase, t: f64| {
-        (0..items.len()).find(|&i| items[i].phase == p && runnable(items, i, t) && room_ok(items, m, i, t))
-    };
+    }
+    // The regions' terrain, units and map tiles: how many not yet taken, and when the last taken
+    // ends; each region's slope and tree cover; each item's regions.
+    let mut rp_left = vec![0usize; region_items.len()];
+    let mut rp_end = vec![0.0f64; region_items.len()];
+    let mut late_of: Vec<Vec<usize>> = vec![Vec::new(); region_items.len()];
+    let mut regions_of: Vec<Vec<usize>> = vec![Vec::new(); items.len()];
+    for (k, mine) in region_items.iter().enumerate() {
+        for &i in mine {
+            regions_of[i].push(k);
+            match items[i].phase {
+                Phase::Region | Phase::Publish if items[i].by.is_none() => rp_left[k] += 1,
+                Phase::Region | Phase::Publish => rp_end[k] = rp_end[k].max(items[i].end),
+                Phase::Late => late_of[k].push(i),
+                _ => {}
+            }
+        }
+    }
+    let mut region_left = items.iter().filter(|i| i.phase == Phase::Region && i.by.is_none()).count();
+    let mut region_end =
+        items.iter().filter(|i| i.phase == Phase::Region && i.by.is_some()).map(|i| i.end).fold(0.0, f64::max);
+    let mut before_left = items.iter().filter(|i| i.phase == Phase::Before && i.by.is_none()).count();
+    // Each Mac's last start (a job an ask while a member runs an older app).
+    let mut last_start: BTreeMap<String, f64> = BTreeMap::new();
+    let runnable = |items: &[Item], pending: &[usize], i: usize| items[i].by.is_none() && pending[i] == 0;
+    // At most this many items its Mac's room refuses are looked at a pick (the room is the same for
+    // the next; a smaller one further on waits for the next pick).
+    const SCAN: usize = 64;
     let mut guard = 0usize;
     loop {
         guard += 1;
-        if guard > 20 * (items.len() + 10) * n.max(1) || items.iter().all(|i| i.by.is_some()) {
+        if guard > 20 * (items.len() + 10) * n.max(1) || unassigned == 0 {
             break;
         }
         // The machine free first (the lead on a tie).
@@ -592,87 +591,190 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         if !t.is_finite() {
             break;
         }
+        // (Those ended by now: what waits on them counted down, ready once nothing else is left.)
+        let mut ended: Vec<usize> = Vec::new();
+        inflight.retain(|&i| {
+            let on = items[i].end > t + 1e-9;
+            if !on {
+                ended.push(i);
+            }
+            on
+        });
+        for d in ended {
+            for &w in &waiting_on[d] {
+                pending[w] -= 1;
+                if pending[w] == 0 && items[w].by.is_none() {
+                    ready[pi(items[w].phase)].insert(w);
+                }
+            }
+        }
         let mac = &inp.machines[m];
-        let take = |items: &mut Vec<Item>, i: usize, from: f64| -> f64 {
-            let extra = if items[i].step == "unit" { mac.unit_extra_s } else { 0.0 };
-            let end = from + items[i].cost.secs / mac.speed.max(0.01) + extra;
-            (items[i].by, items[i].from, items[i].end) = (Some(m), from, end);
-            end
+        // (A machine with nothing it can do waits for the next item to end, or another machine to
+        // be free: a job that's no item may free work.)
+        let next_end = |items: &[Item], free: &[f64]| {
+            let others = free.iter().enumerate().filter(|&(k, &f)| k != m && f > t + 1e-9).map(|(_, &f)| f);
+            inflight.iter().map(|&i| items[i].end).chain(others).fold(f64::INFINITY, f64::min)
         };
-        if mac.helper {
+        // What its Mac runs now (`Snap`), once a pick: each candidate's check then O(1).
+        let sn: Option<Snap> = mac.mac.as_deref().map(|g| {
+            let room = inp.macs.get(g).copied().unwrap_or_default();
+            let share = crate::coord::packed_share(room.cores.max(1));
+            let on_mac = |k: usize| inp.machines[k].mac.as_deref() == Some(g);
+            let mut sn = Snap {
+                room,
+                share,
+                last_start: last_start.get(g).copied().unwrap_or(f64::NEG_INFINITY),
+                ..Default::default()
+            };
+            let mut running_on = vec![false; n];
+            for &i in &inflight {
+                let it = &items[i];
+                sn.steps.insert(it.step.clone());
+                let Some(k) = it.by.filter(|&k| on_mac(k)) else { continue };
+                running_on[k] |= it.running;
+                sn.jobs += 1;
+                sn.mem_mb += it.cost.peak_mb;
+                sn.cores += crate::coord::packed_cores_of(&it.step, it.cost.cores, share);
+                sn.cold |= !it.cost.known;
+            }
+            // (A slot busy with a job no item is: its memory (its step's first target's peak), cores.)
+            for k in 0..n {
+                let mk = &inp.machines[k];
+                if k != m && on_mac(k) && held_until[k] > t + 1e-9 && !running_on[k] {
+                    sn.jobs += 1;
+                    sn.mem_mb += mk.running_mb;
+                    sn.cores +=
+                        mk.running.as_ref().map_or(share, |(st, _)| crate::coord::packed_cores_of(st, None, share));
+                }
+            }
+            sn
+        });
+        // Whether item `i` may start beside what the Mac runs, as the coordinator packs
+        // (crate::coord's `pack_why`): within its memory and its cores (each job its packed cores,
+        // crate::coord::packed_cores_of); a cold start (its time not measured) alone on its Mac,
+        // none of its step under way anywhere, and nothing beside one; while a member runs an older
+        // app, a job an ask (`OLD_APP_GAP_S`).
+        let room_ok = |items: &[Item], i: usize| -> bool {
+            let Some(sn) = &sn else { return true };
+            let it = &items[i];
+            if sn.cold {
+                return false;
+            }
+            if !it.cost.known {
+                return sn.jobs == 0 && !sn.steps.contains(&it.step);
+            }
+            if sn.room.mem_mb > 0 && sn.mem_mb + it.cost.peak_mb > sn.room.mem_mb {
+                return false;
+            }
+            if sn.jobs > 0
+                && sn.cores + crate::coord::packed_cores_of(&it.step, it.cost.cores, sn.share) > sn.room.cores.max(1)
+            {
+                return false;
+            }
+            !(inp.old_app && t < sn.last_start + OLD_APP_GAP_S - 1e-9)
+        };
+        // (When the Mac's next job may start, a job an ask, `OLD_APP_GAP_S` after its last.)
+        let ask_wake = match &sn {
+            Some(sn) if inp.old_app && sn.last_start + OLD_APP_GAP_S > t + 1e-9 => sn.last_start + OLD_APP_GAP_S,
+            _ => f64::INFINITY,
+        };
+        // The first of phase `p` it may take (`ok`), from the first not yet taken; at most `SCAN`
+        // its room refuses.
+        let scan = |items: &[Item], p: Phase, ok: &dyn Fn(usize) -> bool| -> Option<usize> {
+            let mut refused = 0;
+            for &i in &ready[pi(p)] {
+                if !ok(i) {
+                    continue;
+                }
+                if room_ok(items, i) {
+                    return Some(i);
+                }
+                refused += 1;
+                if refused >= SCAN {
+                    return None;
+                }
+            }
+            None
+        };
+        let pick = if mac.helper {
             // The far end of the first shared step it can do (terrain's near end: the lead's
             // next units wait on it, as crate::coord picks).
-            let pick = SHARED.iter().find_map(|s| {
+            SHARED.iter().find_map(|s| {
                 let fits = |&i: &usize| {
                     items[i].shared
                         && items[i].step == *s
                         && items[i].cost.peak_mb <= mac.mem_mb
-                        && runnable(&items, i, t)
+                        && runnable(&items, &pending, i)
                 };
                 if *s == "terrain" {
                     (0..items.len()).find(fits)
                 } else {
                     (0..items.len()).rev().find(fits)
                 }
-            });
-            free[m] = match pick {
-                Some(i) => take(&mut items, i, t),
-                None => next_end(&items, &free, m, t),
-            };
-            continue;
-        }
-        if mac.equal {
-            // Any work it can do that fits its Mac's room (`room_ok`) and that it may run, from the
-            // front of the plan's order, as the coordinator offers it (crate::coord's `pick_every`):
-            // the pass's, the map tiles, the regions' (in order), slope and tree cover, the chains',
-            // then what comes after.
-            let may = |step: &str| mac.lead_steps || super::steps::place(step) == super::steps::Place::Any;
-            let fits = |items: &[Item], i: usize| {
+            })
+        } else if mac.equal {
+            // Any work it can do that fits its Mac's room and that it may run, from the front of the
+            // plan's order, as the coordinator offers it (crate::coord's `pick_every`): the pass's,
+            // the map tiles, the regions' (in order), slope and tree cover, the chains', then what
+            // comes after.
+            let may = |i: usize| {
                 items[i].cost.peak_mb <= mac.mem_mb
-                    && may(&items[i].step)
-                    && runnable(items, i, t)
-                    && room_ok(items, m, i, t)
+                    && (mac.lead_steps || super::steps::place(&items[i].step) == super::steps::Place::Any)
             };
-            let order = [Phase::Before, Phase::Publish, Phase::Region, Phase::Late, Phase::Chain, Phase::After];
-            let pick = order.iter().find_map(|&p| (0..items.len()).find(|&i| items[i].phase == p && fits(&items, i)));
-            free[m] = match pick {
-                Some(i) => take(&mut items, i, t),
-                None => next_end(&items, &free, m, t).min(ask_wake(&items, m, t)),
-            };
-            continue;
-        }
-        // The lead. While the regions have work left: the first it can do of the pass's; then the
-        // map tiles of the units built (publishing comes before the regions' work); then the slope
-        // and tree cover of a region on the map whose catalog doesn't record it built yet; then the
-        // regions' (in order); with none it can do now, the chains' (listed after them).
-        let regional_left = regionals.iter().any(|&i| !done_by(&items, i, t));
-        let pick = if regional_left || items.iter().any(|i| i.phase == Phase::Before && i.by.is_none()) {
-            let prep = || {
-                (0..inp.regions.len())
-                    .filter(|&k| inp.regions[k].on_map != Some(true))
-                    .filter(|&k| {
-                        region_items[k]
-                            .iter()
-                            .filter(|&&i| matches!(items[i].phase, Phase::Region | Phase::Publish))
-                            .all(|&i| done_by(&items, i, t))
-                    })
-                    .flat_map(|k| region_items[k].iter().copied())
-                    .find(|&i| items[i].phase == Phase::Late && runnable(&items, i, t) && room_ok(&items, m, i, t))
-            };
-            first(&items, m, Phase::Before, t)
-                .or_else(|| first(&items, m, Phase::Publish, t))
-                .or_else(prep)
-                .or_else(|| first(&items, m, Phase::Region, t))
-                .or_else(|| first(&items, m, Phase::Chain, t))
+            PHASES.iter().find_map(|&p| scan(&items, p, &may))
         } else {
-            // After the last unit and terrain: the map tiles left, the slope and tree cover, the
-            // chains' work, then what comes after.
-            [Phase::Publish, Phase::Late, Phase::Chain, Phase::After].iter().find_map(|&p| first(&items, m, p, t))
+            // The lead. While the regions have work left: the first it can do of the pass's; then the
+            // map tiles of the units built (publishing comes before the regions' work); then the slope
+            // and tree cover of a region on the map whose catalog doesn't record it built yet; then the
+            // regions' (in order); with none it can do now, the chains' (listed after them).
+            let any = |_: usize| true;
+            if region_left > 0 || region_end > t + 1e-9 || before_left > 0 {
+                let prep = || {
+                    (0..inp.regions.len())
+                        .filter(|&k| inp.regions[k].on_map != Some(true) && rp_left[k] == 0 && rp_end[k] <= t + 1e-9)
+                        .flat_map(|k| late_of[k].iter().copied())
+                        .find(|&i| runnable(&items, &pending, i) && room_ok(&items, i))
+                };
+                scan(&items, Phase::Before, &any)
+                    .or_else(|| scan(&items, Phase::Publish, &any))
+                    .or_else(prep)
+                    .or_else(|| scan(&items, Phase::Region, &any))
+                    .or_else(|| scan(&items, Phase::Chain, &any))
+            } else {
+                // After the last unit and terrain: the map tiles left, the slope and tree cover, the
+                // chains' work, then what comes after.
+                [Phase::Publish, Phase::Late, Phase::Chain, Phase::After].iter().find_map(|&p| scan(&items, p, &any))
+            }
         };
-        free[m] = match pick {
-            Some(i) => take(&mut items, i, t),
-            None => next_end(&items, &free, m, t).min(ask_wake(&items, m, t)),
+        let Some(i) = pick else {
+            free[m] = next_end(&items, &free).min(ask_wake);
+            continue;
         };
+        // Taken: its end at the machine's pace; the counts kept.
+        let extra = if items[i].step == "unit" { mac.unit_extra_s } else { 0.0 };
+        let end = t + items[i].cost.secs / mac.speed.max(0.01) + extra;
+        (items[i].by, items[i].from, items[i].end) = (Some(m), t, end);
+        free[m] = end;
+        inflight.push(i);
+        unassigned -= 1;
+        if let Some(g) = &mac.mac {
+            last_start.insert(g.clone(), t);
+        }
+        match items[i].phase {
+            Phase::Region => {
+                region_left -= 1;
+                region_end = region_end.max(end);
+            }
+            Phase::Before => before_left -= 1,
+            _ => {}
+        }
+        if matches!(items[i].phase, Phase::Region | Phase::Publish) {
+            for &k in &regions_of[i] {
+                rp_left[k] -= 1;
+                rp_end[k] = rp_end[k].max(end);
+            }
+        }
+        ready[pi(items[i].phase)].remove(&i);
     }
     let done = items.iter().all(|i| i.by.is_some());
     Sim { items, region_items, done }
@@ -1009,7 +1111,7 @@ mod tests {
             "slope" => 200.0,
             _ => 100.0,
         };
-        Cost { secs, known: step != "slope", peak_mb: 1000 }
+        Cost { secs, known: step != "slope", peak_mb: 1000, cores: None }
     }
 
     fn input<'a>(regions: &'a [RegionLeft], machines: Vec<Machine>, c: &'a dyn Fn(&str, &str) -> Cost) -> Input<'a> {
@@ -1021,7 +1123,7 @@ mod tests {
             cadence: Cadence::default(),
             blind: None,
             chains: Vec::new(),
-            after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, known: true, peak_mb: 0 })],
+            after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, known: true, peak_mb: 0, cores: None })],
             idle: Vec::new(),
             machines,
             running: BTreeMap::new(),
@@ -1038,8 +1140,12 @@ mod tests {
             [region("a", &["6/1/1", "6/1/2"], &["u1", "u2"], &["6/1/1"]), region("b", &["6/2/1"], &["u3", "u4"], &[])];
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
         inp.before = vec![
-            ("reach".into(), "reach".into(), Cost { secs: 900.0, known: true, peak_mb: 0 }),
-            ("heritage-sites".into(), "heritage-sites".into(), Cost { secs: 900.0, known: true, peak_mb: 0 }),
+            ("reach".into(), "reach".into(), Cost { secs: 900.0, known: true, peak_mb: 0, cores: None }),
+            (
+                "heritage-sites".into(),
+                "heritage-sites".into(),
+                Cost { secs: 900.0, known: true, peak_mb: 0, cores: None },
+            ),
         ];
         let lanes =
             vec![mac("m4", 1.0, false), mac("m1", 1.0, false), Machine { mem_mb: 4096, ..mac("pages", 2.0, true) }];
@@ -1138,7 +1244,8 @@ mod tests {
         a.trees_lo = vec!["3/3/2".into()];
         let regions = [a];
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
-        inp.idle = vec![("trees".into(), "6/40/20".into(), Cost { secs: 100.0, known: false, peak_mb: 1000 })];
+        inp.idle =
+            vec![("trees".into(), "6/40/20".into(), Cost { secs: 100.0, known: false, peak_mb: 1000, cores: None })];
         let sim = run(&inp, &|c| c.secs);
         let item = |step: &str, t: &str| sim.items.iter().find(|i| i.step == step && i.target == t).unwrap();
         // The assembly once its pieces are made (the member takes some), by the lead alone.
@@ -1173,8 +1280,11 @@ mod tests {
         // As the agent has it now, a running item of its own: on the schedule, and its step's.
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
         busy(&mut inp);
-        inp.before =
-            vec![("labels".into(), "labels 2026-09-28".into(), Cost { secs: 2200.0, known: true, peak_mb: 0 })];
+        inp.before = vec![(
+            "labels".into(),
+            "labels 2026-09-28".into(),
+            Cost { secs: 2200.0, known: true, peak_mb: 0, cores: None },
+        )];
         inp.running.insert(("labels".into(), "labels 2026-09-28".into()), 0);
         let f = forecast(&inp);
         assert_eq!((f.why.as_deref(), f.done_at), (None, Some(1_000_000 + 3600)));
@@ -1383,7 +1493,8 @@ mod tests {
         let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &[])];
         let mut inp =
             input(&regions, vec![Machine { busy_s: 0.0, ..mac("m4", 1.0, false) }, mac("m1", 1.0, true)], &cost);
-        inp.before = vec![("reach".into(), "reach".into(), Cost { secs: 3600.0, known: true, peak_mb: 0 })];
+        inp.before =
+            vec![("reach".into(), "reach".into(), Cost { secs: 3600.0, known: true, peak_mb: 0, cores: None })];
         let f = forecast(&inp);
         assert_eq!(f.next["m1"][0].step, "terrain");
         assert_eq!(f.next["m1"][0].from, 1_000_000);
@@ -1473,7 +1584,8 @@ mod tests {
             ..mac("m4 #2", 1.0, false)
         };
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), lead2, member("m1")], &cost);
-        inp.chains = vec![("pois".into(), "6/8/0".into(), Cost { secs: 100.0, known: true, peak_mb: 1000 })];
+        inp.chains =
+            vec![("pois".into(), "6/8/0".into(), Cost { secs: 100.0, known: true, peak_mb: 1000, cores: None })];
         let f = forecast(&inp);
         let first = &f.lanes["m4 #2"][0];
         assert_eq!((first.step.as_str(), first.from, first.until, first.n), ("depth", 1_000_000, 1_002_400, 3));
@@ -1535,9 +1647,46 @@ mod tests {
         assert_eq!(f.lanes["m4 #3"].first().map(|l| l.from), Some(1_000_000 + 3600), "{:?}", f.lanes);
     }
 
+    #[test]
+    fn three_thousand_units_forecast_in_well_under_a_second() {
+        // (Task #384 review) 3,000 units in 30 regions, each unit's map tile, two Macs of four
+        // slots packed by room (`MacRoom`): the whole forecast (three runs) well under a second.
+        let regions: Vec<RegionLeft> = (0..30)
+            .map(|r| {
+                let units: Vec<String> = (0..100).map(|i| format!("6/{r}/{i}")).collect();
+                let refs: Vec<&str> = units.iter().map(String::as_str).collect();
+                RegionLeft {
+                    packs: units.iter().map(|u| (u.clone(), vec![u.clone()])).collect(),
+                    ..region(&format!("r{r}"), &[], &refs, &[])
+                }
+            })
+            .collect();
+        let slot = |host: &str, k: usize, lead: bool| Machine {
+            equal: k > 0 || !lead,
+            lead_steps: lead,
+            mac: Some(host.into()),
+            mem_mb: 16_000,
+            ..mac(&super::super::slot_worker(host, k), 1.0, false)
+        };
+        let machines: Vec<Machine> =
+            (0..4).map(|k| slot("m4", k, true)).chain((0..4).map(|k| slot("m1", k, false))).collect();
+        let mut inp = input(&regions, machines, &cost);
+        inp.macs = [
+            ("m4".to_string(), MacRoom { mem_mb: 16_000, cores: 14 }),
+            ("m1".to_string(), MacRoom { mem_mb: 8_000, cores: 8 }),
+        ]
+        .into();
+        let took = std::time::Instant::now();
+        let f = forecast(&inp);
+        let ms = took.elapsed().as_millis();
+        eprintln!("the forecast took {ms} ms (3,000 units, 3,000 map tiles, 8 lanes)");
+        assert!(f.done_at.is_some() && f.regions.iter().all(|r| r.map_at.is_some()));
+        assert!(ms < 1000, "{ms} ms");
+    }
+
     /// The trains' and the landmarks' chains, as the plan lists them.
     fn chains() -> Vec<Job> {
-        let c = |secs: f64| Cost { secs, known: true, peak_mb: 1000 };
+        let c = |secs: f64| Cost { secs, known: true, peak_mb: 1000, cores: None };
         vec![
             ("rail-feeds".into(), "rail-feeds".into(), c(200.0)),
             ("rail".into(), "rail".into(), c(500.0)),
