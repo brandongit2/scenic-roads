@@ -1126,8 +1126,12 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         // (A click in another app closes it too: the cooperative `activate()` can be declined for
         // a menu bar app, and then the transient popover never sees that click.)
         outside = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in self?.close() }
-        // (The page kept from the last opening keeps its size; nothing yet, a blank of 400.)
+        // (A kept page from an address that's no longer the first, an old lead's: never shown.)
+        if web != nil, shown != pages.first { dropWeb() }
+        // (The page kept from the last opening keeps its size, within maxHeight; nothing yet, a
+        // blank of 400.)
         if web == nil { popover.contentSize = NSSize(width: Panel.pageWidth, height: 400) }
+        else if popover.contentSize.height > maxHeight { popover.contentSize.height = maxHeight }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         applyAppearance()
         popover.contentViewController?.view.window?.makeKey()
@@ -1250,6 +1254,8 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         w.navigationDelegate = self
         w.uiDelegate = self
         root.addSubview(w)
+        // (Behind the timeout's fallback, if it shows, until it loads.)
+        w.isHidden = fallback != nil
         web = w
         shown = page
         loaded = url
@@ -1356,6 +1362,12 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         // The page kept (not dropped) for the next opening, which shows it while it loads again;
         // a page that had failed goes, so the next opening starts blank rather than stale.
         if fallback != nil { dropWeb() }
+        // The kept page polls no more while closed: its loading stopped and its timers cleared
+        // (each opening loads it again, so nothing is lost; it stays drawn meanwhile).
+        if let w = web {
+            w.stopLoading()
+            w.evaluateJavaScript("for (let i = setTimeout(() => {}, 0); i > 0; i--) { clearTimeout(i); clearInterval(i); }")
+        }
         fallback?.removeFromSuperview()
         fallback = nil
         why = nil
@@ -1399,7 +1411,8 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     }
 
     func webView(_ w: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) {
-        if w === web { showFallback("The build page didn't load: \(e.localizedDescription)") }
+        // (A load cancelled by the next one, the reopening's or Reload's, isn't a failure.)
+        if w === web, (e as NSError).code != NSURLErrorCancelled { showFallback("The build page didn't load: \(e.localizedDescription)") }
     }
 
     func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) {
