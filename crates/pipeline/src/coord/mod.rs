@@ -630,8 +630,8 @@ impl Shared {
     /// plan order (`offers`' order, each by `pick_every`): up to the jobs it wants (`Ask::want`, at
     /// least one) and its cap (`Packing::cap_of`, counting the leases it holds). Each after the
     /// first it holds goes beside the others: measured (memory, disk, cores, crate::needs), within
-    /// the room left (the ask's memory and disk less the jobs granted in this answer; its Mac's cores
-    /// less every job it holds); a cold start only to a worker holding nothing (`most_room`), alone.
+    /// the room left (the ask's memory and disk, and its Mac's cores, less every job it holds and
+    /// those granted in this answer: a lease held counts until it ends or lapses); a cold start only to a worker holding nothing (`most_room`), alone.
     /// Nothing while it runs a cold start. None: no job.
     fn pack(&mut self, a: &Ask, offers: &[Offer], now: Instant) -> Option<Grant> {
         let cap = self.packing.as_ref()?.cap_of(&a.worker);
@@ -649,7 +649,13 @@ impl Shared {
         // (Cores left: none when a job held doesn't say its own.)
         let mut cores =
             needs.iter().try_fold(total, |left, n| n.and_then(|(_, c)| c).map(|c| left.saturating_sub(c))).unwrap_or(0);
+        // (The ask's memory and disk are a job's whole share of its Mac, whatever it runs (the
+        // agent's `helper_memory`, its free disk): every job it holds is taken off them here.)
         let mut room = a.clone();
+        for (m, _) in needs.iter().flatten() {
+            room.mem_mb = room.mem_mb.saturating_sub(m.mem_mb);
+            room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb));
+        }
         let mut held = mine.len();
         let mut grants: Vec<Grant> = Vec::new();
         while grants.len() < a.want.max(1) && cap.is_none_or(|c| held < c) {
@@ -1085,7 +1091,8 @@ fn is_zero_usize(n: &usize) -> bool {
 pub struct Packing {
     /// Every member's cap (None: none).
     pub cap: Option<usize>,
-    /// A member's own cap, by the name it asks with, in place of `cap`.
+    /// A member's own cap, by the name it asks with, in place of `cap` (by name: a Mac asking under
+    /// two names gets two).
     pub caps: BTreeMap<String, usize>,
 }
 
@@ -4978,8 +4985,7 @@ mod tests {
         let a = Ask { want: 5, ..every_ask("m1", "slope", 7000, 100_000) };
         assert_eq!(all_granted(&w, &a), [["6/1/1"]], "off: one");
         c.set_packing(Some(Packing::default()));
-        assert_eq!(all_granted(&w, &a), [["6/1/2"], ["6/1/3"], ["6/1/4"]], "on: three fit its memory");
-        let a = Ask { mem_mb: 1000, ..a };
+        assert_eq!(all_granted(&w, &a), [["6/1/2"], ["6/1/3"]], "on: two more fit its memory beside the one held");
         assert!(all_granted(&w, &a).is_empty(), "its room taken");
         // By cores: 2 of 8 each, four at once whatever the memory.
         let (_d, c, w, _clock) = every((0, 0));
@@ -4998,6 +5004,27 @@ mod tests {
         c.set_packing(Some(Packing::default()));
         packable(&c, "slope", 6, None);
         assert_eq!(all_granted(&w, &a).len(), 1);
+    }
+
+    /// Packing on, a member holding jobs asks again as the agent does (the same share of its Mac
+    /// each time, one job at a time): the jobs it holds are taken off it, so together they never
+    /// pass its memory, nor its disk.
+    #[test]
+    fn packing_counts_the_jobs_a_member_holds_against_its_ask() {
+        let (_d, c, w, _clock) = every((0, 0));
+        c.set_packing(Some(Packing::default()));
+        packable(&c, "slope", 6, Some(1));
+        let a = every_ask("m1", "slope", 5000, 100_000);
+        assert_eq!(all_granted(&w, &a).len(), 1);
+        assert_eq!(all_granted(&w, &a).len(), 1);
+        assert!(all_granted(&w, &a).is_empty(), "a third would pass its memory");
+        let (_d, c, w, _clock) = every((0, 0));
+        c.set_packing(Some(Packing::default()));
+        packable(&c, "slope", 6, Some(1));
+        let a = every_ask("m1", "slope", 64_000, 250);
+        assert_eq!(all_granted(&w, &a).len(), 1);
+        assert_eq!(all_granted(&w, &a).len(), 1);
+        assert!(all_granted(&w, &a).is_empty(), "a third would pass its disk");
     }
 
     /// Packing on: a cold start goes only to a member running nothing, alone, and nothing goes

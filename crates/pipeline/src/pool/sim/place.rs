@@ -406,8 +406,10 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                     worker: m.name.into(),
                     kind: "native".into(),
                     can: offered_steps.clone(),
-                    mem_mb,
-                    cores: m.cores - threads,
+                    // (As the agent asks: a job's fixed share of its Mac (`helper_memory`), all its
+                    // cores, its free disk now; what its jobs leave free in `cap`.)
+                    mem_mb: limit(k),
+                    cores: m.cores,
                     max: 6,
                     limit_mb: Some(limit(k)),
                     disk_mb: Some(disk_mb),

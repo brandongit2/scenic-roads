@@ -281,10 +281,13 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
   the lead grants up to that many in one answer (`Grant::more`, each its own lease), packed in
   plan order into the ask's room: each after the first the member holds must be measured
   (memory, disk, and cores, the threads its runs were given: `needs::Book::cores`) and fit what's
-  left (the ask's memory and disk less the jobs granted with it; its Mac's cores less every job
-  it holds). A cold start goes only to a member holding no lease, alone, and nothing goes beside
+  left: the ask's memory and disk (a job's whole share of its Mac, `helper_memory`, and its free
+  disk) and its Mac's cores, less the measured needs of every job it holds and of those granted
+  with it. A lease counts until it ends or lapses: a restarted member's old leases hold its room
+  until their TTL runs out. A cold start goes only to a member holding no lease, alone, and nothing goes beside
   one. Each job is still a quarter hour (`JOB_S`). The switch's file may cap the jobs a member
-  holds (`cap <n>`, or `cap <worker> <n>` for one); no cap by default. Off, an ask gets one job.
+  holds (`cap <n>`, or `cap <worker> <n>` for one, by the name it asks with: a Mac asking under two names
+  gets two); no cap by default. Off, an ask gets one job.
   Today's agent still runs one job a member and asks with no `want` (its N slots are planned).
 - **Order and locality:** a member gets a contiguous run of plan targets, from the front or just
   after its last target, as many as fit `coord::JOB_S` (a quarter hour) of measured time.
