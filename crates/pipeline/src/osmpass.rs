@@ -460,10 +460,11 @@ impl UnitLinks {
 }
 
 /// Run `extract` on a piece and work out its unit's chaining inputs.
-pub fn unit_links(extract: &Path, piece: &Path, unit: Unit, work: &Path) -> Result<UnitLinks> {
+/// `spacing`: the declared datasets' spacing file (crate::dem::spacing), as the units' extract has it.
+pub fn unit_links(extract: &Path, spacing: &Path, piece: &Path, unit: Unit, work: &Path) -> Result<UnitLinks> {
     std::fs::create_dir_all(work)?;
     let mut c = store::spawn::command(extract);
-    c.arg(work).arg("8").arg(piece);
+    c.arg(work).arg(spacing).arg(piece);
     c.stderr(std::process::Stdio::null());
     run(c, &format!("extract {}", piece.display()))?;
     let wv = Ways::open(work)?;
@@ -801,6 +802,9 @@ pub fn run_pass(
     }
     let tree = scratch.join("cut");
     let links = scratch.join("links");
+    // (The road links spaced as the units' extract spaces them: crate::dem::spacing.)
+    let spacing = scratch.join(crate::dem::spacing::FILE);
+    crate::dem::spacing::Fine::of_records(out.root(), &out.manifest)?.write(&spacing)?;
     if !done(scratch, "cut").exists() {
         // The first cut writes about the filtered file again (its four quarters); below it each
         // piece goes as soon as it's cut, so the tree stays near that size. The local filtered
@@ -842,7 +846,7 @@ pub fn run_pass(
             let lf = links.join(format!("{}.bin", u.dash()));
             if !lf.exists() {
                 let _p = crate::timings::sub("their road links worked out (extract)", crate::timings::Class::Compute);
-                let ul = unit_links(extract_bin, f, u, &work)?;
+                let ul = unit_links(extract_bin, &spacing, f, u, &work)?;
                 eprintln!("roads: {} {} ways, {} pairs", u.slash(), ul.ways.len(), ul.pairs.len());
                 ul.save(&lf)?;
             }
@@ -880,7 +884,7 @@ pub fn run_pass(
                 Err(_) => {
                     let src =
                         out.path(out.get(&format!("sources/osm/{date}/pieces/{}", unit.dash())).context("piece")?);
-                    unit_links(extract_bin, &src, unit, &scratch.join("extract-work"))?
+                    unit_links(extract_bin, &spacing, &src, unit, &scratch.join("extract-work"))?
                 }
             };
             all.push((unit, ul));

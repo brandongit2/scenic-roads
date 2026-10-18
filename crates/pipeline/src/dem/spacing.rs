@@ -83,6 +83,19 @@ impl Fine {
         format!("spacing {}", store::naming::hash16(fine.join(" ").as_bytes()))
     }
 
+    /// From the declared datasets' accepted version the records name (`m`): an error before the
+    /// build reads them (their switch, docs/inputs.md §6.8).
+    pub fn of_records(root: &Path, m: &std::collections::BTreeMap<String, String>) -> Result<Fine> {
+        use crate::inputs::elevation;
+        anyhow::ensure!(
+            elevation::switched(m),
+            "the records don't say the build reads the declared elevation datasets yet (docs/inputs.md §6.8)"
+        );
+        let a = crate::inputs::open(root, m, elevation::UNIT)?
+            .context("the records name no accepted version of the declared elevation datasets")?;
+        Ok(Fine::of_accepted(&super::declared::accepted(&a)?))
+    }
+
     pub fn write(&self, path: &Path) -> Result<()> {
         std::fs::write(path, serde_json::to_vec(self)?).with_context(|| format!("write {}", path.display()))
     }

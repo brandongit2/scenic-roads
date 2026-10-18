@@ -572,7 +572,20 @@ fn rekey_spacing(
             continue;
         }
         let Ok(terrain) = build::unit_terrain(u, r, m, tiles) else { continue };
-        if unspaced_unit_key(cov, date, m, u, piece, r, &terrain, &ds, buildings, sources) != k {
+        // (Whether its key is of the scheme before, kept by the record's key and what the old key
+        // reads beyond it: a record under its key now, with the spacing's line, is told once, not on
+        // every read.)
+        let from = [
+            k.as_str(),
+            &terrain,
+            piece,
+            &format!("{:?}", m.get(&crate::inputs::logical(crate::inputs::elevation::UNIT))),
+        ]
+        .join("|");
+        let before = tiles.memo(&format!("unspaced {t}"), &from, || {
+            Ok((unspaced_unit_key(cov, date, m, u, piece, r, &terrain, &ds, buildings, sources) == k).to_string())
+        });
+        if before.as_deref() != Ok("true") {
             continue;
         }
         keys.unit

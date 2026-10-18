@@ -2751,6 +2751,9 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         .context("no hiking-route ends for the pass (the trailends step)")?;
     let extract = std::env::current_exe()?.parent().context("bin")?.join("extract");
     std::fs::create_dir_all(scratch)?;
+    // (Spaced as the units' extract spaces them: pipeline::dem::spacing.)
+    let spacing = scratch.join(pipeline::dem::spacing::FILE);
+    pipeline::dem::spacing::Fine::of_records(out.root(), &out.manifest)?.write(&spacing)?;
     let units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
     drop(setup);
     for (k, &u) in units.iter().enumerate() {
@@ -2771,7 +2774,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let dir = scratch.join(format!("pois-{}", u.dash()));
         let p = phase("candidates extracted (extract)", Class::Compute);
         let mut c = store::spawn::command(&extract);
-        c.arg(&dir).arg("8").arg("--candidates").arg("--trailends").arg(&trailends).arg(&local);
+        c.arg(&dir).arg(&spacing).arg("--candidates").arg("--trailends").arg(&trailends).arg(&local);
         let o = store::spawn::output(&mut c).with_context(|| format!("run {}", extract.display()))?;
         anyhow::ensure!(
             o.status.success(),
@@ -5587,8 +5590,11 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     parts.start(3);
     let p = phase("its ways extracted and those in the coverage kept (extract)", Class::Compute);
     let dir = scratch.join("ways");
+    // (Spaced as the units' extract spaces them: pipeline::dem::spacing.)
+    let spacing = scratch.join(pipeline::dem::spacing::FILE);
+    pipeline::dem::spacing::Fine::of_records(out.root(), &out.manifest)?.write(&spacing)?;
     std::fs::remove_dir_all(&dir).ok();
-    let st = store::spawn::status(store::spawn::command(bin.join("extract")).arg(&dir).arg("8").arg(&clip))
+    let st = store::spawn::status(store::spawn::command(bin.join("extract")).arg(&dir).arg(&spacing).arg(&clip))
         .context("run extract")?;
     anyhow::ensure!(st.success(), "extract failed: {st}");
     std::fs::remove_file(&clip).ok();

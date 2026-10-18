@@ -1000,8 +1000,8 @@ pub const OVERLAYS_V: u32 = 1;
 /// The rail service (crate::rail): the feeds for the coverage, fetched once (dem/railfeeds.py), and
 /// trains a day on its rail ways (dem/railgtfs.py, railfreq: global/railfreq). (Rail 2: the static
 /// files counted with the feeds, the MTR's among them, docs/inputs.md §6.7.2. 3: the lines in the
-/// coverage and the routes matching nothing, `work/rail/lines`, §6.7.3. 4: its ways at 8 m
-/// everywhere, `extract` given a number, docs/inputs.md §6.8.)
+/// coverage and the routes matching nothing, `work/rail/lines`, §6.7.3. 4: its ways spaced by the
+/// declared datasets, docs/inputs.md §6.8.)
 pub const RAIL_FEEDS_V: u32 = 1;
 pub const RAIL_V: u32 = 4;
 
