@@ -298,9 +298,10 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
   are made as jobs are granted and dropped once empty. Each slot has its own files in the agent's
   folder (`job-<k>.json`, `control-<k>`, `costs-<k>.jsonl`, `done-<k>.txt`, …, the first slot's
   without a number) and scratch folder (`scratch-<k>/`), and its own name as a worker
-  (`<host> #<k>`; an earlier agent's `<host> (second job)` is still read as `#2`). A packed job's
-  threads are the member's cores less two, shared among its jobs. Off, it asks with no `want`
-  for one job at a time, as before.
+  (`<host> #<k>`; an earlier agent's `<host> (second job)` is still read as `#2`). Each job is
+  given a quarter of the member's cores less two, at least two (`packed_threads`), alone or not: a
+  run's threads are what packing counts, so a job given every core while alone would be measured
+  to leave no room beside it. Off, it asks with no `want` for one job at a time, as before.
 - **Order and locality:** a member gets a contiguous run of plan targets, from the front or just
   after its last target, as many as fit `coord::JOB_S` (a quarter hour) of measured time.
 - **A map update shared** (`crate::agent::publish`, behind `state/pool/update-share`): the lead's own

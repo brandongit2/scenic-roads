@@ -38,6 +38,8 @@
 #                                                   <noted MB> as its targets' peak (50 else): noted
 #                                                   below what it holds, its Mac packs more of them
 #                                                   than fit, for the memory guard to stop
+#   pool-two-macs.sh noted-secs <dir> [<s>]         each fake job notes <s> as each target's time
+#                                                   (none: its own time shared among its targets)
 #   pool-two-macs.sh as <dir> <worker> <port> [<MB>]
 #                                                   the agent, from its next start, works under the
 #                                                   name <worker> (SCENIC_TEST_WORKER: a member
@@ -149,7 +151,7 @@ case $cmd in
     r=${2:?the scratch folder}
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
     [[ -e $r ]] && { print -u2 "$r exists"; exit 1; }
-    mkdir -p $r/catalog $r/inputs/regions $r/state/pool
+    mkdir -p $r/catalog $r/inputs/regions $r/state/pool $r/state/build
     print -n '{"base/6-1-1": "base/6-1-1.1111111111111111.base"}' > $r/state/build/manifest.json
     print -n '{"unit": {"6/1/1": "k1"}}' > $r/state/build/jobs.json
     print -n '{}' > $r/state/build/pending.json
@@ -236,7 +238,8 @@ if [ -n "$SCENIC_COSTS" ]; then
     if [ "$step" = unit ]; then k="$t"; else k="$step $t"; fi
     # (Its peak as `mem` notes it, 50 MB else; the threads it was given, for packing's cores.)
     peak=$(cat "$d/../job-noted-mb" 2>/dev/null || echo 50)
-    echo "{\"unit\":\"$k\",\"peak_mb\":$peak,\"secs\":$((secs / n)),\"v\":$v,\"disk_mb\":1,\"sizes\":{\"threads\":${RAYON_NUM_THREADS:-1}}}" >> "$SCENIC_COSTS"
+    each=$(cat "$d/../job-noted-secs" 2>/dev/null || echo $((secs / n)))
+    echo "{\"unit\":\"$k\",\"peak_mb\":$peak,\"secs\":$each,\"v\":$v,\"disk_mb\":1,\"sizes\":{\"threads\":${RAYON_NUM_THREADS:-1}}}" >> "$SCENIC_COSTS"
   done
 fi
 [ -n "$scratch" ] && rm -f "$scratch/fill-$$.bin"
@@ -320,6 +323,12 @@ EOF
     d=${2:?its folder}
     print -n ${3:?MB} > $d/v/app/job-mem-mb
     if [[ -n ${4:-} ]]; then print -n $4 > $d/v/app/job-noted-mb; else rm -f $d/v/app/job-noted-mb; fi
+    ;;
+  noted-secs)
+    # (Each target's time as the fake jobs note it, whatever they ran: a job's worth, so the lead
+    # offers a target a job and a member packs several.)
+    d=${2:?its folder}
+    if [[ -n ${3:-} ]]; then print -n $3 > $d/v/app/job-noted-secs; else rm -f $d/v/app/job-noted-secs; fi
     ;;
   as)
     d=${2:?its folder}

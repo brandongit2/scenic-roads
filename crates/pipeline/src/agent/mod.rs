@@ -130,6 +130,15 @@ pub(crate) fn member_slots(cores: usize) -> usize {
     cores.saturating_sub(2).clamp(1, MAX_SLOTS)
 }
 
+/// The threads each of a member's jobs is given with packing on: a quarter of its cores less the
+/// two kept for its owner, at least two (at most those cores). The same alone or beside others: a
+/// run's threads are what its lead's packing counts against the Mac's cores (crate::needs::Book::
+/// cores), so a job given them all while alone would be measured to leave no room beside it.
+pub(crate) fn packed_threads(cores: usize) -> usize {
+    let own = cores.saturating_sub(2).max(1);
+    (own / 4).max(2).min(own)
+}
+
 /// What a member asks for (crate::coord::Ask::want): with packing on, its slots free (`slots` its
 /// most, `running` its jobs now); off, 0 (one job an ask, as before).
 pub(crate) fn member_want(packing: bool, slots: usize, running: usize) -> usize {
@@ -4994,11 +5003,10 @@ impl Agent {
         // All the cores, whoever is at the Mac (the owner's choice; a helper, two fewer: its Mac has
         // less memory). The second job: half (the two jobs' threads share the cores).
         // (Beside a job that waits on a worker, its cores idle: all of them.)
-        // (A member's packed jobs, packing on: the cores its first leaves shared among them all.)
+        // (A member's jobs, packing on: `packed_threads`, whatever runs beside them.)
         let packed = self.o.helper && self.packing.is_some();
-        let others = (0..self.slots.len()).filter(|&j| j != k && self.slots[j].running.is_some()).count();
         let threads = match (k, self.o.helper) {
-            _ if packed => (cores.saturating_sub(2) / (others + 1)).max(1),
+            _ if packed => packed_threads(cores),
             (1.., _) if self.waiting_on(0).is_some() => cores,
             (1.., _) => (cores / 2).max(1),
             (_, true) => cores.saturating_sub(2).max(1),
@@ -9864,6 +9872,8 @@ mod tests {
         assert!(slot_workers("m4").contains(&"m4 (second job)".to_string()));
         assert_eq!((member_slots(8), member_slots(2), member_slots(1000)), (6, 1, MAX_SLOTS));
         assert_eq!((member_want(true, 6, 2), member_want(true, 6, 7), member_want(false, 6, 0)), (4, 0, 0));
+        // (The M1's 8 cores: 2 threads a job; the M4's 14: 3; a Mac of 2: its 1.)
+        assert_eq!((packed_threads(8), packed_threads(14), packed_threads(2), packed_threads(66)), (2, 3, 1, 16));
     }
 
     /// Packing on (task #240): a member asks for its slots free and runs every job granted, each in
