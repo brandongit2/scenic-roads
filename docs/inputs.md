@@ -1010,11 +1010,15 @@ territory.
   grid a region) takes, at a point, the first by id with a value there. Grids are read bilinearly
   between pixel centres in f64 (no data where a neighbour has none). A point no source of a link
   covers keeps its height as sampled, counted (`dem-stats.json`'s `unconverted`; a blended one whose
-  dataset beneath had none, `unconverted_seam`: plan.md §10); a dataset no chain reaches is left as
-  it is, said by the agent (on the build page and in scenic status, among the waits: "elevation not
-  converted to EGM2008") and the unit job (`elevation: <id>: its heights … left as they are`); a unit
-  job given no accepted sources says it converts nothing. `producers/geoid/fetch.sh` reads each
-  host's robots.txt first, alone (unreadable counts as allow). Only EGM2008 is named in code. `scenic-build geoid-offsets --sources <folder>
+  first dataset was converted and whose dataset beneath had no value, `unconverted_seam`: plan.md
+  §10); a dataset no chain reaches is left as it is, said by the agent (the status's `notices`,
+  apart from the waits: an info line on the build page and "note: elevation heights — not
+  converted to EGM2008: …" in scenic status) and by the unit job (`elevation: <id>: its heights …
+  left as they are`); a unit job given no accepted sources says it converts nothing.
+  `producers/geoid/fetch.sh` reads each host's robots.txt first, alone, judged by
+  `producers/geoid/robots.py` (RFC 9309 groups, our token's group over `*`'s, Allow and Disallow by
+  longest match with `*` and `$`; a file it can't parse stops); unreadable counts as allow. Only
+  EGM2008 is named in code. `scenic-build geoid-offsets --sources <folder>
   --from <reference> --at <lon,lat>[;…]` prints a chain's offsets, hop by hop.
   - **The grids** (staged in `producers/geoid/declarations/`, fetched by `producers/geoid/fetch.sh
     <root>` into the store; PROJ-data's GeoTIFFs on cdn.proj.org): NAVD88 → NAD83 by GEOID18

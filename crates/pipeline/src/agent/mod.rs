@@ -701,6 +701,10 @@ pub struct Status {
     pub test_disk_extra_mb: Option<u64>,
     /// Work that can't run yet, and why, in plain words.
     pub waiting: Vec<Waiting>,
+    /// Things to know that hold nothing back (the build page's info lines, scenic status's
+    /// "note:"): declared elevation datasets left in their own height reference.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<Notice>,
     /// The last jobs to finish, newest first.
     pub recent: Vec<Done>,
     /// Region recipes, and the ones that don't parse.
@@ -884,6 +888,13 @@ pub struct JobProgress {
     /// When it last moved on (seconds since the epoch): long ago, the job may be stuck.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_at: Option<u64>,
+}
+
+/// A thing to know that holds nothing back: what it's about, and why, in plain words.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Notice {
+    pub what: String,
+    pub why: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -3624,6 +3635,15 @@ impl Agent {
             conditions: c,
             test_disk_extra_mb: Some(cond::test_disk_extra_mb()).filter(|&m| m > 0),
             waiting,
+            // (Declared elevation datasets no geoid chain brings to EGM2008: built in their own
+            // reference, docs/inputs.md §6.8, step 3.)
+            notices: self
+                .tiles
+                .borrow()
+                .elevation_unconverted()
+                .iter()
+                .map(|why| Notice { what: "elevation heights".into(), why: format!("not converted to EGM2008: {why}") })
+                .collect(),
             recent: self.mem.recent.clone(),
             regions,
             bad_recipes: bad,
@@ -6465,15 +6485,6 @@ impl Agent {
                 }
             };
             waiting.push(Waiting { step: Some("unit".into()), what: steps::stage_title("roads").into(), why });
-        }
-        // Declared elevation datasets whose heights no geoid chain brings to EGM2008: said beside
-        // the waits (they're built, in their own reference: docs/inputs.md §6.8, step 3).
-        for why in self.tiles.borrow().elevation_unconverted() {
-            waiting.push(Waiting {
-                step: Some("unit".into()),
-                what: steps::stage_title("roads").into(),
-                why: format!("elevation not converted to EGM2008: {why}"),
-            });
         }
         let edit_hold = edit_held(self.edited_at.get(), std::time::SystemTime::now());
         // (Hand-offs of a step a catalog waits for (build::CATALOG_GATE: the map tiles, the road

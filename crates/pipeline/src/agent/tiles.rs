@@ -428,13 +428,13 @@ impl TerrainTiles {
         self.water.insert(content.to_string(), w);
     }
 
-    /// The packs whose index the last load couldn't read: (content name, why).
     /// The held elevation datasets whose heights stay in their reference (no declared geoid
     /// chain reaches EGM2008): why, each, for the build page and scenic status.
     pub fn elevation_unconverted(&self) -> &[String] {
         &self.elevation_unconverted
     }
 
+    /// The packs whose index the last load couldn't read: (content name, why).
     pub fn unread(&self) -> impl Iterator<Item = (&String, &String)> {
         self.unread.iter()
     }

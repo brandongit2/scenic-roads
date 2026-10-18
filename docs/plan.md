@@ -1422,7 +1422,7 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
     prune yet); the map's click popup for depth isn't built (the readout is).
 14. **Heights to EGM2008** (inputs.md §6.8, step 3): where no declared geoid source has a value
     (3DEP off the conterminous US and Alaska), a dataset's heights stay in its reference; in a blend
-    band whose dataset beneath has none, the seam mixes references (counted, dem-stats'
+    band whose first dataset was converted and whose dataset beneath has no value, the seam mixes references (counted, dem-stats'
     `unconverted_seam`, not corrected). NAD83(2011) and NAD83(CSRS) are taken as one frame, WGS 84 as
     ITRF2008.
 

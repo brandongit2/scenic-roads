@@ -53,8 +53,8 @@ pub struct Sampled {
     pub blended: Vec<bool>,
     /// Heights left in their dataset's reference: no declared geoid source has a value there.
     pub unconverted: usize,
-    /// Blended heights whose second dataset's height stayed in its reference (no geoid source has
-    /// a value there), though the first's was converted or needed none: a seam mixing references.
+    /// Blended heights whose first dataset's height was converted and whose second's stayed in its
+    /// reference (no geoid source has a value there): a seam mixing references.
     pub unconverted_seam: usize,
 }
 
@@ -1035,6 +1035,7 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
     let grids = super::geoid::Grids::new(o);
     let mut unconverted = 0usize;
     let mut b_kept = vec![false; n];
+    let mut a_converted = vec![false; n];
     for (k, ds) in plan.datasets.iter().enumerate() {
         let Some(c) = &ds.convert else { continue };
         for (vals, from, firsts) in [(&mut a, &first, true), (&mut b, &second, false)] {
@@ -1047,6 +1048,9 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
             for (&i, d) in sel.iter().zip(off) {
                 if d.is_finite() {
                     vals[i] = (vals[i] as f64 + d) as f32;
+                    if firsts {
+                        a_converted[i] = true;
+                    }
                 } else if firsts {
                     unconverted += 1;
                 } else {
@@ -1072,13 +1076,13 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
             if dist[i] < band {
                 out.elev[i] = blend(out.elev[i], b[i], dist[i], band);
                 out.blended[i] = true;
-                out.unconverted_seam += b_kept[i] as usize;
+                out.unconverted_seam += (a_converted[i] && b_kept[i]) as usize;
             }
         }
     }
     if out.unconverted_seam > 0 {
         println!(
-            "  {} blended vertices mix references: the dataset beneath had no geoid value there",
+            "  {} blended vertices mix references: the first converted, the one beneath without a geoid value there",
             out.unconverted_seam
         );
     }
@@ -1099,7 +1103,8 @@ pub struct Stats {
     /// Of the vertices sampled this run, those whose heights stay in their dataset's reference.
     #[serde(skip_serializing_if = "is_zero")]
     pub unconverted: usize,
-    /// Of those, blended ones whose second dataset's height stayed in its reference.
+    /// Blended vertices whose first dataset's height was converted and whose second's stayed in
+    /// its reference (no geoid value there).
     #[serde(skip_serializing_if = "is_zero")]
     pub unconverted_seam: usize,
     pub sampled_this_run: usize,

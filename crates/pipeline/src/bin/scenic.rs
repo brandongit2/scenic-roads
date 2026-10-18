@@ -633,6 +633,9 @@ fn status(args: &[String]) -> Result<()> {
     for w in &st.waiting {
         println!("Waiting: {} — {}", w.what, w.why);
     }
+    for n in &st.notices {
+        println!("note: {} — {}", n.what, n.why);
+    }
     // Publishing as the lead last planned it, and why (agent::build::PublishLine).
     if let Some(u) = &st.publishing {
         println!("Publishing: {}", u.why);

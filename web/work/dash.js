@@ -210,6 +210,8 @@ function alerts(m) {
     if (/held for review/.test(w.why)) out.push({ cls: "warn", text: "Publishing held for review", to: "road" });
     else if (/failed \d+ times?/.test(w.why)) out.push({ cls: "warn", text: `${w.what}: waiting out a failure`, to: "details" });
   }
+  // Things to know that hold nothing back (agent::Notice): an info line each, apart from the waits.
+  for (const x of a.notices || []) out.push({ cls: "info", text: `${x.what}: ${x.why}`, to: "details" });
   for (const p of m.pages) {
     if (p.bad) out.push({ cls: "bad", text: `${p.label}: a result differed; it gets no more work`, to: "machines" });
     else if (p.visible === false && p.seen_s < 300) out.push({ cls: "warn", text: `${p.label} is in the background (iPhones and iPads stop it)`, to: "machines" });
