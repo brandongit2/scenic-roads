@@ -786,7 +786,7 @@ fn keep_for_packs(cache: &Path, logical: &str, local: &Path) {
 /// holds at most one copy of what the mirror lacks.
 /// The units of the manifest owning tiles `only` (z`z`: `build::owners_of`, the owners their keys
 /// read), by the reaches of pass `pass` (else the latest) and every base pack's extent
-/// (crate::extents: read from the headers of those not kept yet, then kept): None (every unit)
+/// (crate::extents: the lead's, those it lacks read from their headers): None (every unit)
 /// when no tiles are named, the reaches or extents can't be read, or a unit isn't in the reaches
 /// (said).
 fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[Unit]) -> Option<BTreeSet<Unit>> {
@@ -811,10 +811,12 @@ fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[Unit]) -> Option<
         return None;
     }
     let p = phase("the base packs' extents", Class::NasRead);
-    reach.extents = match pipeline::extents::ensure(out.root(), &out.manifest) {
+    // (The lead's kept extents, those it lacks read here from this job's packs' headers: in memory
+    // only, the lead keeps the file.)
+    reach.extents = match pipeline::extents::fill(out.root(), &out.manifest, std::mem::take(&mut reach.extents)) {
         Ok((e, read)) => {
             if read > 0 {
-                eprintln!("extents: {read} base packs' headers read and kept");
+                eprintln!("extents: {read} base packs' headers read (not kept yet by the lead)");
             }
             e
         }
@@ -4779,21 +4781,28 @@ mod tests {
         // The mirror's files it opened are held: the mirror's delete leaves them.
         let held = mirror.join(&m["base/6-32-21"]);
         assert_eq!(store::cachefile::try_remove(&held), store::cachefile::Removed::InUse);
-        // The packs' extents, read from their headers once and kept (crate::extents): the far unit
+        // The packs' extents (crate::extents), read by a job from their headers when the lead
+        // hasn't kept them, in memory only; once the lead has, read from its file: the far unit
         // whose pack spills into the tile is caught, and is an owner.
-        let (e, read) = pipeline::extents::ensure(&root, &m).unwrap();
+        let (e, read) = pipeline::extents::fill(&root, &m, Default::default()).unwrap();
         assert_eq!(read, units.len());
-        assert_eq!(pipeline::extents::ensure(&root, &m).unwrap(), (e.clone(), 0), "kept: no header read again");
+        assert!(!root.join(pipeline::extents::FILE).exists(), "a job writes nothing");
+        assert_eq!(pipeline::extents::keep(&root, &m).unwrap(), units.len());
         assert_eq!(pipeline::extents::load(&root), e);
+        assert_eq!(pipeline::extents::fill(&root, &m, pipeline::extents::load(&root)).unwrap(), (e.clone(), 0), "kept: no header read again");
         reach.extents = e;
         assert_eq!(super::outside_their_ways(&m, &reach).iter().map(|u| u.dash()).collect::<Vec<_>>(), ["6-40-30"]);
         let owners = pipeline::agent::build::owners_of(Some(&reach), &m, &tile);
         assert_eq!(owners.iter().map(|u| u.dash()).collect::<Vec<_>>(), ["6-31-22", "6-32-21", "6-33-21", "6-40-30"]);
         assert_eq!(super::open_units(&out, &cache, Some(&mirror), Some(&owners)).unwrap().len(), 4);
-        // A pack no longer listed: its extent goes from the file.
+        // A job whose manifest lists fewer packs: its own view drops one, the lead's file keeps every
+        // entry; the lead's own manifest listing fewer drops it from the file.
         let mut fewer = m.clone();
         fewer.remove("base/6-33-21");
-        assert_eq!(pipeline::extents::ensure(&root, &fewer).unwrap().0.len(), 3);
+        assert_eq!(pipeline::extents::fill(&root, &fewer, pipeline::extents::load(&root)).unwrap().0.len(), 3);
+        assert_eq!(pipeline::extents::load(&root).len(), 4);
+        pipeline::extents::keep(&root, &fewer).unwrap();
+        assert_eq!(pipeline::extents::load(&root).len(), 3);
         // No tiles named: every unit.
         assert_eq!(super::open_units(&out, &cache, Some(&mirror), None).unwrap().len(), units.len());
         for name in names.keys() {

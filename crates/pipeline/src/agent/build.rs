@@ -4800,6 +4800,46 @@ pub(crate) mod tests {
 
     /// A base pack whose extent (kept: crate::extents) lies past where the reaches put its ways (a
     /// pack built by other reaches): the tiles it spills into are targets, keyed on it too.
+    /// The extents file is the lead's (crate::extents::keep, against its manifest): a job with
+    /// another manifest reads what it lacks in memory and writes nothing, so the lead's entries all
+    /// stay and the map tiles' keys don't move while the job runs.
+    #[test]
+    fn a_jobs_extents_leave_the_leads_file_and_the_keys_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let put = |m: &mut BTreeMap<String, String>, u: &str, ext: [i32; 4]| {
+            let tmp = root.join("tmp.sect");
+            let mut w = store::sect::SectWriter::create(&tmp, serde_json::json!({"unit": u.replace('-', "/"), "extent": ext})).unwrap();
+            w.add("ways", &[]).unwrap();
+            w.finish().unwrap();
+            let name = store::naming::content_name(&format!("base/{u}"), &store::naming::hash16_file(&tmp).unwrap(), "sect");
+            std::fs::create_dir_all(root.join(&name).parent().unwrap()).unwrap();
+            std::fs::rename(&tmp, root.join(&name)).unwrap();
+            m.insert(format!("base/{u}"), name);
+            m.insert(format!("global/roads/{u}"), format!("global/roads/{u}.1111111111111111.sect"));
+        };
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let mut lead = BTreeMap::new();
+        put(&mut lead, "6-28-16", crate::hipack::tile_bounds(6, 28, 16));
+        // (Spilling far east: the extent matters to the keys.)
+        put(&mut lead, "6-30-16", [crate::hipack::tile_bounds(6, 30, 16)[0], 600_000_000, 50_000_000, 641_000_000]);
+        let mut job = lead.clone();
+        job.remove("base/6-28-16");
+        put(&mut job, "6-31-16", crate::hipack::tile_bounds(6, 31, 16));
+        assert_eq!(crate::extents::keep(root, &lead).unwrap(), 2);
+        let mut r = reach();
+        r.extents = crate::extents::load(root);
+        let before = pack_lo_targets(&lead, Some(&r));
+        let file = std::fs::read(root.join(crate::extents::FILE)).unwrap();
+        // The job's run: its own view, nothing written.
+        let (mine, read) = crate::extents::fill(root, &job, crate::extents::load(root)).unwrap();
+        assert_eq!((read, mine.len()), (1, 2));
+        assert_eq!(std::fs::read(root.join(crate::extents::FILE)).unwrap(), file, "the lead's file as it was");
+        r.extents = crate::extents::load(root);
+        assert_eq!(r.extents.len(), 2, "no entry of the lead's lost");
+        assert_eq!(pack_lo_targets(&lead, Some(&r)), before, "the keys as they were");
+    }
+
     #[test]
     fn a_pack_spilling_past_its_reach_keys_the_tiles_it_reaches() {
         let mut m: BTreeMap<String, String> = BTreeMap::new();

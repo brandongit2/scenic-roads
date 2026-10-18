@@ -644,7 +644,8 @@ index, so a new release rebuilds every unit.
 - **Reads:** the base packs and road values of T's owners, every unit whose ways come into T (its
   owned extent from the pass's reach; without one, its tile + 20 km), grown by the base pack's own
   extent where that lies further (a pack built by other reaches; each pack's header extent kept
-  in `state/build/extents.json`, read once by the pack and lo jobs). A job opens only its tiles'
+  in `state/build/extents.json`, which the lead keeps as it plans, reading each new pack's header
+  once; jobs only read it, and read the headers of packs it lacks without writing). A job opens only its tiles'
   owners (`build::owners_of`, the rule their keys read); one given no tiles, or whose reaches
   don't list every unit, opens every unit.
 - **Writes:** road and rail hi tiles (z9–14) and T's hidata: the ways-here index; query parts (each
@@ -1263,7 +1264,7 @@ the jobs' wall time, and where a run's time went):
 | bldtiles | 22 % | 14 min | 4.0 | the areas' tiles made (compute) 88 % |
 | terrain | 10 % | 5 min | 1.5 | tiles prepared 58 %, uploaded 15 % |
 | names-todo | 6 % | 11 min | 0.1 | every base pack's names read from the NAS, after each catalog |
-| pack | see `scenic timings` | see `scenic timings` | — | what a tile reads: its `units` and `bytes` sizes (crate::costin) |
+| pack | see `scenic timings pack` | see `scenic timings pack` | — | what a tile reads: its `units` and `bytes` sizes (crate::costin) |
 | slope | 5 % | 2 min | 0.4 | its terrain pack copied 29 %, uploaded 45 % |
 | heritage | 4 % | 81 min | 1.0 | the filtered planet clipped (osmium, once a pass) 86 % |
 | peaks | 3 % | 3 min | 1.1 | z12 tiles read one by one from the packs on the NAS (25,000 files a run) 75 % |

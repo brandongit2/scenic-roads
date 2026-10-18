@@ -4578,6 +4578,17 @@ impl Agent {
             inputs.insert("feed-keys".into(), crate::inputs::feeds::index_key_names(root, ix).map(|k| k.join(",")).unwrap_or_else(|_| "?".into()));
         }
         let held = root.join("inputs/hold-catalog").exists();
+        // The base packs' extents (crate::extents), kept by the lead alone, against its manifest:
+        // the headers of packs new since read once, timed. (A failure costs only spills not yet
+        // seen: the jobs read what the file lacks.)
+        if self.pooled().is_none_or(|p| p.role == pool::Role::Lead) {
+            let t = std::time::Instant::now();
+            match crate::extents::keep(root, &manifest) {
+                Ok(0) => {}
+                Ok(n) => eprintln!("extents: {n} base packs' headers read and kept in {:.1} s", t.elapsed().as_secs_f64()),
+                Err(e) => eprintln!("extents: not kept now: {e:#}"),
+            }
+        }
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
         if !manifest.contains_key(&crate::inputs::logical(crate::inputs::feeds::UNIT)) {
             waiting.push(Waiting { step: None, what: steps::stage_title("trains").into(), why: "the timetable feeds' declarations' first accepted version (inputs/timetables/feeds/: the input check takes them in)".into() });
