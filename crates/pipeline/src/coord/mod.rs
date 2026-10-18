@@ -779,17 +779,19 @@ impl Shared {
         let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
         o.job.is_some()
             && self.own_open(o, a, now)
-            && self.own_nas_fits(o, now)
+            && self.own_nas_fits(o, now, true)
             && self.job_need(&o.step, &ts).is_none()
     }
 
     /// Whether the NAS budget has room for the lead's own planned job of offer `o`: its weight
     /// within the whole or beside nothing weighing anything, a download under the cap (the lead's
-    /// own always held to it, `nas_room`).
-    fn own_nas_fits(&self, o: &Offer, now: Instant) -> bool {
+    /// own always held to it, `nas_room`); `alone`: as if the lead held nothing (the members' jobs
+    /// alone counted: what its cold job would meet once its own jobs end, `own_cold_waits`).
+    fn own_nas_fits(&self, o: &Offer, now: Instant, alone: bool) -> bool {
         let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
-        self.nas_room(now, true).is_none_or(|(nw, running, _, dl)| {
+        self.nas_room(now, true).is_none_or(|(nw, running, members, dl)| {
             let (w, fetch) = Self::job_nas(&nw, &o.step, &ts);
+            let running = if alone { members } else { running };
             crate::budget::nas::Limits::fits_own(running, w) && !(fetch && nw.limits.downloads.is_some_and(|c| dl >= c))
         })
     }
@@ -803,7 +805,7 @@ impl Shared {
         if !self.own_open(o, a, now) {
             return Vec::new();
         }
-        if !self.own_nas_fits(o, now) {
+        if !self.own_nas_fits(o, now, false) {
             return Vec::new();
         }
         let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
@@ -1782,6 +1784,12 @@ impl Coordinator {
     pub fn set_nas(&self, limits: Option<crate::budget::nas::Limits>) {
         let mut s = self.shared.lock().unwrap();
         (s.nas, s.nas_own) = (limits, limits);
+    }
+
+    /// Whether the NAS's limits are known (`nas_own`: probed, the probes not failing): the lead's
+    /// slots' ramp holds at its start until they are (crate::agent's `tend_ramp`).
+    pub fn nas_known(&self) -> bool {
+        self.shared.lock().unwrap().nas_own.is_some()
     }
 
     /// Whether the pool's leased jobs' NAS weights together pass the whole (crate::budget::nas::WHOLE)
@@ -5500,9 +5508,6 @@ mod tests {
         assert!(waits.iter().any(|(s, t, m)| s == "slope" && t == "6/1/2" && *m >= 30), "{waits:?}");
     }
 
-    /// Packing (docs/pool.md §7.2): an ask gets as many jobs as it wants that fit its room together
-    /// (memory, disk, cores), each its own lease, in plan order; its next ask what fits the room
-    /// left; one wanted (or an older agent's ask, none), one.
     /// A cold job of the lead's own (a catalog never measured) isn't starved: while the lead holds
     /// measured jobs, its asks get nothing more; once they end, the catalog alone, before any offered
     /// work. A member with more room, asking for the step it may never be granted, isn't its asker.
@@ -5616,6 +5621,9 @@ mod tests {
         assert!(c.ask_own(&a, &BTreeSet::new()).is_some());
     }
 
+    /// Packing (docs/pool.md §7.2): an ask gets as many jobs as it wants that fit its room together
+    /// (memory, disk, cores), each its own lease, in plan order; its next ask what fits the room
+    /// left; one wanted (or an older agent's ask, none), one.
     #[test]
     fn packing_grants_as_many_jobs_as_fit_the_asks_room() {
         let (_d, c, w, _clock) = every((0, 0));

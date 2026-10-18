@@ -130,6 +130,9 @@ struct Ramp {
     /// Since when its stretch has been clean (unix s; 0: not yet).
     #[serde(default)]
     clean_since: u64,
+    /// The most jobs it ran at once in the stretch: it grows only once it ran `slots` at once.
+    #[serde(default)]
+    peak: usize,
 }
 
 /// The slots an agent keeps at least: a Mac runs as many jobs as its lead grants it, each in a slot
@@ -1235,6 +1238,8 @@ pub struct Agent {
     unpublishing: Option<std::thread::JoinHandle<()>>,
     pool_skips: u32,
     pool_hung: Option<u64>,
+    /// The lead's slots held at `RAMP_START` while the NAS's limits aren't known (`tend_ramp`).
+    ramp_held: bool,
     restart_for: Option<String>,
     /// The gate (crate::inputs): the drop boxes' listing thread, the status's entries as the last
     /// plan made them, what they read, and the units a full check was asked of.
@@ -1492,6 +1497,7 @@ impl Agent {
             unpublishing: None,
             pool_skips: 0,
             pool_hung: None,
+            ramp_held: true,
             pool_seen: run.as_ref().map(|r| r.pool_view()),
             held_entries: Vec::new(),
             in_process_owed: None,
@@ -2741,8 +2747,11 @@ impl Agent {
     fn job_slots(&self) -> usize {
         let n = job_slots(mac_cores() as usize);
         // (Leading: no more than its ramp has reached, `tend_ramp`.)
+        // (Held at its start until the NAS's limits are known, `ramp_held`.)
         if self.o.helper {
             n
+        } else if self.ramp_held {
+            n.min(RAMP_START)
         } else {
             n.min(self.mem.ramp.slots.max(RAMP_START))
         }
@@ -2760,29 +2769,36 @@ impl Agent {
         let Some(c) = self.coord.as_ref() else { return };
         let now = now_s();
         let most = job_slots(mac_cores() as usize);
-        let trouble = if c.nas_over() {
+        let trouble = if !c.nas_known() {
+            Some("no NAS limits yet (the probe missing or failing)")
+        } else if c.nas_over() {
             Some("the pool's jobs past the NAS budget")
         } else if self.pool_hung.is_some() {
             Some("the pool's step stalled")
         } else {
             None
         };
+        self.ramp_held = !c.nas_known();
+        let running = self.running_jobs();
         let r = &mut self.mem.ramp;
-        let was = (r.slots, r.clean_since);
+        let was = *r;
         r.slots = r.slots.max(RAMP_START);
+        // (The most jobs it ran at once in the stretch: idle time doesn't count toward the next.)
+        r.peak = r.peak.max(running);
         if let Some(why) = trouble {
             if r.clean_since != now {
                 eprintln!("agent: the lead's slots stay at {} ({why}: its clean stretch starts again)", r.slots);
             }
-            r.clean_since = now;
+            (r.clean_since, r.peak) = (now, running);
         } else if r.clean_since == 0 {
-            r.clean_since = now;
-        } else if r.slots < most && now.saturating_sub(r.clean_since) >= RAMP_CLEAN_S {
+            (r.clean_since, r.peak) = (now, running);
+        } else if r.slots < most && r.peak >= r.slots && now.saturating_sub(r.clean_since) >= RAMP_CLEAN_S {
             r.slots += 1;
-            r.clean_since = now;
+            (r.clean_since, r.peak) = (now, running);
             eprintln!("agent: the lead's slots grow to {} after {} h clean", r.slots, RAMP_CLEAN_S / 3600);
         }
-        if (r.slots, r.clean_since) != was && (trouble.is_none() || was.0 != r.slots) {
+        // (Every reset of the stretch, and every step up, kept; the peak alone as it changes.)
+        if *r != was {
             self.save();
         }
     }
@@ -4550,8 +4566,9 @@ impl Agent {
             self.guard_backoff.insert(id, (now_s() + GUARD_BACKOFF_S, why.clone()));
         }
         self.slots[k].guard_stopped = fail;
-        // (The lead's ramp's clean stretch starts again, `tend_ramp`.)
-        self.mem.ramp.clean_since = now_s();
+        // (The lead's ramp's clean stretch starts again, `tend_ramp`, kept.)
+        (self.mem.ramp.clean_since, self.mem.ramp.peak) = (now_s(), 0);
+        self.save();
         self.stopped(k, &why);
         // (Its lease ended, given back: its scratch kept, its work with it, until room-making is
         // short of the reserve, `room::free_given_back`.)
@@ -10480,10 +10497,12 @@ mod tests {
         assert!(lead_start(&mut a, std::slice::from_ref(&job), &cond, &root, &mut w).is_empty());
     }
 
-    /// The lead's slots' ramp (`tend_ramp`): two at first, one more after a clean stretch of
-    /// `RAMP_CLEAN_S`, kept in its state; a stall or a memory guard stop starts the stretch again.
+    /// The lead's slots' ramp (`tend_ramp`): held at two while the NAS's limits aren't known (D1);
+    /// one more after a clean stretch of `RAMP_CLEAN_S` in which it ran its slots at once (D2),
+    /// kept in its state; a stall or a memory guard stop starts the stretch again, kept too (D4).
     #[test]
     fn the_leads_slots_ramp_up_after_a_clean_stretch() {
+        room::TEST_FREE.with(|c| c.set(Some(100 << 30)));
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
@@ -10497,24 +10516,56 @@ mod tests {
         })
         .unwrap();
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
+        a.free_set = Some(100 << 30);
         let most = job_slots(mac_cores() as usize);
+        let kept = |home: &Path| -> Ramp {
+            serde_json::from_slice::<Memory>(&std::fs::read(home.join("state.json")).unwrap()).unwrap().ramp
+        };
+        // D1: no NAS limits yet: held at two whatever it reached, the stretch never clean.
+        a.mem.ramp = Ramp { slots: RAMP_START + 1, clean_since: now_s() - RAMP_CLEAN_S, peak: RAMP_START + 1 };
         a.tend_ramp();
         assert_eq!(a.job_slots(), RAMP_START.min(most));
-        // Clean long enough: one more, kept.
+        assert_eq!((a.mem.ramp.slots, a.mem.ramp.clean_since), (RAMP_START + 1, now_s()));
+        assert_eq!(kept(&home).clean_since, now_s(), "the reset kept");
+        // The NAS probed: its slots as reached.
+        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        a.coord.as_ref().unwrap().set_nas(Some(limits));
+        a.mem.ramp = Ramp::default();
+        a.tend_ramp();
+        assert_eq!(a.job_slots(), RAMP_START.min(most));
+        // D2: clean long enough but idle (never two jobs at once): no more.
         a.mem.ramp.clean_since = now_s() - RAMP_CLEAN_S;
+        a.tend_ramp();
+        assert_eq!(a.mem.ramp.slots, RAMP_START, "idle time doesn't count");
+        // Having run two at once: one more, kept.
+        a.mem.ramp.peak = RAMP_START;
         a.tend_ramp();
         assert_eq!(a.mem.ramp.slots, RAMP_START + 1);
         assert_eq!(a.job_slots(), (RAMP_START + 1).min(most));
-        let kept: Memory = serde_json::from_slice(&std::fs::read(home.join("state.json")).unwrap()).unwrap();
-        assert_eq!(kept.ramp.slots, RAMP_START + 1);
-        // A stall: the stretch starts again, the slots kept.
+        assert_eq!(kept(&home).slots, RAMP_START + 1);
+        // A stall: the stretch starts again, the slots kept, saved.
         a.mem.ramp.clean_since = now_s() - RAMP_CLEAN_S;
+        a.mem.ramp.peak = RAMP_START + 1;
         a.pool_hung = Some(now_s());
         a.tend_ramp();
         assert_eq!((a.mem.ramp.slots, a.mem.ramp.clean_since), (RAMP_START + 1, now_s()));
+        assert_eq!(kept(&home).clean_since, now_s());
         a.pool_hung = None;
-        a.tend_ramp();
-        assert_eq!(a.mem.ramp.slots, RAMP_START + 1, "not yet clean long enough");
+        // D4: a memory guard stop starts it again, saved at once.
+        a.mem.ramp.clean_since = 5;
+        a.save();
+        let job = JobSpec {
+            id: "rail rail".into(),
+            what: "rail".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "rail".into(), targets: vec![("rail".into(), "k".into())] }),
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        assert!(a.try_start(0, job, &cond, Some(&root), &mut Vec::new()));
+        assert!(a.guard_stop_as(0, "memory guard", "past the limit (a test)", false));
+        assert_eq!((kept(&home).clean_since, kept(&home).peak), (now_s(), 0));
         // A member's slots: by its cores alone.
         a.o.helper = true;
         assert_eq!(a.job_slots(), most);
