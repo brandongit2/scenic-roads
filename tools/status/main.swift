@@ -1063,6 +1063,11 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     init(menu: @escaping () -> NSMenu) {
         self.menu = menu
         super.init()
+        // The system's light or dark switched (open or not): the popover, its glass and the page
+        // follow at once.
+        appearanceWatch = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.applyAppearance() }
+        }
         popover.behavior = .transient
         popover.animates = false
         popover.delegate = self
@@ -1106,23 +1111,40 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         // a menu bar app, and then the transient popover never sees that click.)
         outside = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in self?.close() }
         popover.contentSize = NSSize(width: Panel.pageWidth, height: 400)
-        // (The system's light or dark, not the menu bar's, which follows the wallpaper.)
-        popover.appearance = NSApp.effectiveAppearance
-        root.appearance = NSApp.effectiveAppearance
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        // The popover's own glass (one NSGlassEffectView under the arrow and the body alike) in its
-        // clear style (the regular one is near opaque over a window), tinted with the window's
-        // colour so the dim text stays readable over a bright window behind.
-        for case let g as NSGlassEffectView in popover.contentViewController?.view.window?.contentView?.superview?.subviews ?? [] {
-            g.style = .clear
-            g.tintColor = NSColor.windowBackgroundColor.withAlphaComponent(0.6)
-        }
+        applyAppearance()
         popover.contentViewController?.view.window?.makeKey()
         find()
     }
 
     func close() {
         if popover.isShown { popover.performClose(nil) }
+    }
+
+    /// Watches the app's appearance (the system's, or SCENIC_STATUS_APPEARANCE's).
+    var appearanceWatch: NSKeyValueObservation?
+
+    /// The panel in the system's light or dark, not the menu bar's (which follows the wallpaper),
+    /// set on each opening and again on each switch: the popover's and the content's appearance
+    /// (the web view's prefers-color-scheme follows the content's, so the page re-styles itself
+    /// live), and the popover's own glass (one NSGlassEffectView under the arrow and the body
+    /// alike) in its clear style (the regular one is near opaque over a window), tinted with the
+    /// window's colour of that appearance, resolved now, so the dim text stays readable over a
+    /// bright window behind. (Before, both were set at opening only: a switch while open, or the
+    /// glass's tint kept from the other appearance, left a grey veil over a light page.)
+    func applyAppearance() {
+        let a = NSApp.effectiveAppearance
+        popover.appearance = a
+        root.appearance = a
+        web?.appearance = a
+        var tint = NSColor.windowBackgroundColor
+        a.performAsCurrentDrawingAppearance { tint = NSColor(cgColor: NSColor.windowBackgroundColor.cgColor) ?? tint }
+        for case let g as NSGlassEffectView in popover.contentViewController?.view.window?.contentView?.superview?.subviews ?? [] {
+            g.appearance = a
+            g.style = .clear
+            g.tintColor = tint.withAlphaComponent(0.6)
+        }
+        root.needsDisplay = true
     }
 
     /// The tallest the panel's content may be: 600 pt, or the screen's room under the menu bar if
