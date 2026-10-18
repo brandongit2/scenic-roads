@@ -523,8 +523,9 @@ The agent's folder, `agent/`:
 timings.jsonl, timings-run.json, timings-run-2.json   jobs' timings (below)
 status.json             the lead's status; a member not leading writes helper.json
 state.json, job.json, agent.lock, logs/
-publishing.json         the lead's record of its catalogs {at, low_at}: when the last went out,
-                        and the last with the low zooms made (agent::build::LastCatalog)
+publishing.json         the lead's record of its catalogs {at, low_at, held_at}: when the last
+                        went out, the last with the low zooms made, and when a catalog due was
+                        first held back since (none: none is) (agent::build::LastCatalog)
 clear-request.json      the owner's ask to clear build caches ({by, at}, agent::room::ClearRequest;
                         renamed .taken when taken up)
 room-target.json        the owner's free-disk target {bytes, by, at} (agent::room::Target; none: off)

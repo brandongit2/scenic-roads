@@ -1683,6 +1683,11 @@ pub struct LastCatalog {
     /// When the last catalog made with nothing left of the low zooms (`Plan::low`) was made.
     #[serde(default)]
     pub low_at: Option<u64>,
+    /// When a catalog due was first held back since the last (by the map tiles or the road index
+    /// to draw, `Plan::catalog_held`, or their hand-offs waiting to be merged), kept across a
+    /// restart or a change of lead: `Publish::held_for` counts from it, toward `CATALOG_CAP_S`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_at: Option<u64>,
 }
 
 /// Publishing as the plan has it now, for the agent's log and the build status (`publishing`;
@@ -1792,6 +1797,9 @@ pub struct Plan {
     /// A catalog is due but held back by the map tiles or the road index to draw (`CATALOG_GATE`),
     /// short of `CATALOG_CAP_S`: the agent counts how long (`Publish::held_for`).
     pub catalog_held: bool,
+    /// A catalog is due, not held back, but waits out its minute (`CATALOG_EVERY_S`): the hold's
+    /// count (`LastCatalog::held_at`) is kept till it goes.
+    pub catalog_due: bool,
     /// The units whose key can't be worked out now (a terrain pack's index unread: `unit_keys`):
     /// neither built nor counted as built until it can.
     pub unknown: Vec<String>,
@@ -2042,28 +2050,30 @@ pub fn plan(
         crate::out::UNIT_OUTPUTS.iter().any(|p| done.handed.contains(&format!("{p}{d}")))
     };
     // (A unit's map tiles: those its ways meet; stale, or drawn by a hand-off not yet merged.)
-    let stale_tiles: BTreeSet<String> = pack_lo_targets(m, Some(reach))
-        .0
-        .into_iter()
-        .filter(|(t, k)| stale(&done.pack, t, k))
-        .map(|(t, _)| t)
-        .collect();
+    // (pack(T)'s and lo's targets, once for the plan.)
+    let pl = pack_lo_targets(m, Some(reach));
+    let stale_tiles: BTreeSet<&str> =
+        pl.0.iter().filter(|(t, k)| stale(&done.pack, t, k)).map(|(t, _)| t.as_str()).collect();
     let deg = |b: [i32; 4]| [b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7];
-    let tiles_of = |i: usize| -> Vec<(u32, u32)> {
-        let ext = unit_reach(Some(reach), m, units[i].0);
-        crate::stage::tiles_in(6, deg(ext))
-            .into_iter()
-            .filter(|&(x, y)| owns(ext, crate::hipack::tile_bounds(6, x, y)))
-            .collect()
+    // (Each unit's tiles worked out once, as asked for.)
+    let unit_tiles: Vec<std::cell::OnceCell<Vec<(u32, u32)>>> = units.iter().map(|_| Default::default()).collect();
+    let tiles_of = |i: usize| -> &Vec<(u32, u32)> {
+        unit_tiles[i].get_or_init(|| {
+            let ext = unit_reach(Some(reach), m, units[i].0);
+            crate::stage::tiles_in(6, deg(ext))
+                .into_iter()
+                .filter(|&(x, y)| owns(ext, crate::hipack::tile_bounds(6, x, y)))
+                .collect()
+        })
     };
     let tiles_unmerged = |i: &usize| {
-        tiles_of(*i).into_iter().any(|(x, y)| {
+        tiles_of(*i).iter().any(|&(x, y)| {
             ["hidata/", "layers/roads/hi/", "layers/rails/hi/"]
                 .iter()
                 .any(|p| done.handed.contains(&format!("{p}6-{x}-{y}")))
         })
     };
-    let tiles_stale = |i: &usize| tiles_of(*i).into_iter().any(|(x, y)| stale_tiles.contains(&format!("6/{x}/{y}")));
+    let tiles_stale = |i: &usize| tiles_of(*i).iter().any(|(x, y)| stale_tiles.contains(format!("6/{x}/{y}").as_str()));
     // Why a region done isn't recorded built yet (None: it is).
     let held = |r: &Region| -> Option<&'static str> {
         if r.all.iter().any(unmerged) || r.all.iter().any(tiles_unmerged) {
@@ -2219,7 +2229,7 @@ pub fn plan(
     let low = last_now
         || !updates.way.low_later
         || updates.way.since_low.is_none_or(|s| s >= LOW_EVERY_S)
-        || low_due(m, done, Some(reach));
+        || low_due_of(&pl.1, done);
     // The terrain's and slope's roots wait for what makes the lo packs they read: terrain's for the
     // terrain left (its pieces' mids, its assemblies), slope's for that and the slope left, so a
     // root isn't made while an assembly runs (or waits to be merged) and again after it.
@@ -2230,6 +2240,7 @@ pub fn plan(
     };
     let mut plan_low = low;
     let mut catalog_held = false;
+    let mut catalog_due = false;
     let mut publishing = PublishLine {
         low,
         regions: to_publish
@@ -2259,7 +2270,7 @@ pub fn plan(
             publishing.why = "nothing to publish until a unit is built".into();
         }
         None => {
-            let chain = publish_chain(date, m, done, Some(reach), roots_held, low);
+            let chain = publish_chain(date, m, done, &pl, roots_held, low);
             // A catalog once the units' map tiles and the road index are drawn (`CATALOG_GATE`): the
             // low zooms, rail stops, ferries and roots go out with a later one. Postponed past
             // `CATALOG_CAP_S` by map tiles still to draw (units landing one after another), it goes
@@ -2279,14 +2290,13 @@ pub fn plan(
                     Some(w) => {
                         // (With the low zooms due and the chain done, it made them; else they're
                         // made if no lo pack is stale.)
-                        plan_low = (low && chain.is_none())
-                            || pack_lo_targets(m, Some(reach)).1.iter().all(|(t, k)| done.lo.get(t) == Some(k));
+                        plan_low = (low && chain.is_none()) || pl.1.iter().all(|(t, k)| done.lo.get(t) == Some(k));
                         let wait = updates.since_catalog.map_or(0, |s| CATALOG_EVERY_S.saturating_sub(s));
                         publishing.wait_s = wait;
                         if wait == 0 {
                             publishing.why = if capped {
                                 format!(
-                                    "a catalog now with what's drawn: held {} min by map tiles to draw",
+                                    "a catalog now with what's drawn: held {} min by the map tiles or the road index to draw",
                                     CATALOG_CAP_S / 60
                                 )
                             } else {
@@ -2294,6 +2304,7 @@ pub fn plan(
                             };
                             catalog = Some(w);
                         } else {
+                            catalog_due = true;
                             publishing.why = format!("a catalog once a minute has passed since the last (in {wait} s)");
                         }
                     }
@@ -2361,7 +2372,7 @@ pub fn plan(
     work.extend(depth);
     // Last of all, in idle time: the mids of current pieces that have none (expected the same).
     work.extend(backfill.iter().cloned());
-    Plan { work, ready, regions: lefts, low: plan_low, catalog_held, unknown, backfill, publishing }
+    Plan { work, ready, regions: lefts, low: plan_low, catalog_held, catalog_due, unknown, backfill, publishing }
 }
 
 /// The map tiles `targets` to draw, a unit's together: grouped by the unit whose change made each
@@ -2592,12 +2603,15 @@ fn prune_units(
     (!t.is_empty()).then(|| Work { step: "prune".into(), targets: t.into_iter().map(|x| (x, String::new())).collect() })
 }
 
+/// pack(T)'s and lo's targets with their keys (`pack_lo_targets`), worked out once per plan.
+type PackLo = (Vec<(String, String)>, Vec<(String, String)>);
+
 /// Map tiles no unit's ways reach any more: pack(T)'s outputs (hidata, road and rail hi packs) of
-/// tiles that aren't pack targets, and lo packs of z3 tiles that aren't lo targets, as prune targets
-/// ("pack 6/x/y", "lo 3/x/y").
-fn prune_tiles(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<Work> {
-    let (packs, lo) = pack_lo_targets(m, reach);
-    let packs: BTreeSet<String> = packs.into_iter().map(|(t, _)| t.replace('/', "-")).collect();
+/// tiles that aren't pack targets (`pl`, `pack_lo_targets`), and lo packs of z3 tiles that aren't
+/// lo targets, as prune targets ("pack 6/x/y", "lo 3/x/y").
+fn prune_tiles(m: &BTreeMap<String, String>, pl: &PackLo) -> Option<Work> {
+    let (packs, lo) = pl;
+    let packs: BTreeSet<String> = packs.iter().map(|(t, _)| t.replace('/', "-")).collect();
     let lo: BTreeSet<String> = lo.into_iter().map(|(t, _)| t.replace('/', "-")).collect();
     let mut t: BTreeSet<String> = BTreeSet::new();
     for l in m.keys() {
@@ -2618,37 +2632,42 @@ fn prune_tiles(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<
 
 /// The publishing chain, every step drawn (the forecast's and the checklist's: `publish_chain`).
 fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches>) -> Option<Work> {
-    publish_chain(date, m, done, reach, [false, false], true)
+    publish_chain(date, m, done, &pack_lo_targets(m, reach), [false, false], true)
 }
 
 /// Whether so much of the low zooms is stale that they're made however long since they last were
 /// (`Publishing::low_later`): half the roads' lo packs or more (a z3 tile's, by its key: what the
 /// units near it are now).
 pub fn low_due(m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches>) -> bool {
-    let (_, lo) = pack_lo_targets(m, reach);
+    low_due_of(&pack_lo_targets(m, reach).1, done)
+}
+
+/// `low_due` with the lo targets worked out (`pack_lo_targets`).
+fn low_due_of(lo: &[(String, String)], done: &Keys) -> bool {
     let stale = lo.iter().filter(|(t, k)| done.lo.get(t) != Some(k)).count();
     !lo.is_empty() && stale * 2 >= lo.len()
 }
 
 /// The publishing chain after the units, its first stale step: map tiles no unit reaches pruned,
 /// the map tiles whose owners changed (pack(T)), the road → units index, the roads' and rails' lo
-/// packs, rail stops and ferries, the terrain and slope roots. `low` false: the low zooms later
-/// (`Publishing::low_later`): no lo packs (the roots are held by `roots_held`).
+/// packs, rail stops and ferries, the terrain and slope roots (`pl`: pack(T)'s and lo's targets,
+/// `pack_lo_targets`). `low` false: the low zooms later (`Publishing::low_later`): no lo packs (the
+/// roots are held by `roots_held`).
 fn publish_chain(
     date: &str,
     m: &BTreeMap<String, String>,
     done: &Keys,
-    reach: Option<&Reaches>,
+    pl: &PackLo,
     roots_held: [bool; 2],
     low: bool,
 ) -> Option<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     // Map tiles no unit's ways reach any more (a region removed) leave the manifest.
-    if let Some(w) = prune_tiles(m, reach) {
+    if let Some(w) = prune_tiles(m, pl) {
         return Some(w);
     }
-    let (packs, lo) = pack_lo_targets(m, reach);
-    let packs: Vec<(String, String)> = packs.into_iter().filter(|(t, k)| stale(&done.pack, t, k)).collect();
+    let (packs, lo) = pl;
+    let packs: Vec<(String, String)> = packs.iter().filter(|(t, k)| stale(&done.pack, t, k)).cloned().collect();
     if !packs.is_empty() {
         return Some(Work { step: "pack".into(), targets: packs });
     }
@@ -2667,7 +2686,7 @@ fn publish_chain(
             return Some(Work { step: "roadunits".into(), targets: vec![("roadunits".into(), k)] });
         }
     }
-    let lo: Vec<(String, String)> = lo.into_iter().filter(|(t, k)| low && stale(&done.lo, t, k)).collect();
+    let lo: Vec<(String, String)> = lo.iter().filter(|(t, k)| low && stale(&done.lo, t, k)).cloned().collect();
     if !lo.is_empty() {
         return Some(Work { step: "lo".into(), targets: lo });
     }

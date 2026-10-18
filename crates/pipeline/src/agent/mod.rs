@@ -1249,10 +1249,6 @@ pub struct Agent {
     /// Whether the catalog last planned had the low zooms made (build::Plan::low, nothing left of
     /// the publishing chain): its catalog, once made, is noted so (`LastCatalog::low_at`).
     catalog_low: std::cell::Cell<bool>,
-    /// When a catalog due was first held back since the last (by the map tiles or the road index to
-    /// draw, build::Plan::catalog_held, or their hand-offs waiting to be merged): past
-    /// build::CATALOG_CAP_S, one goes out with what's drawn and merged.
-    catalog_held_at: std::cell::Cell<Option<u64>>,
     /// Publishing's switches as last read (crate::agent::publish).
     publishing: std::cell::Cell<publish::Switches>,
     /// The map tiles noted planned in the history (crate::pubtimes), since the last catalog.
@@ -1531,7 +1527,6 @@ impl Agent {
             catalog_seen: Default::default(),
             catalogs: std::cell::RefCell::new(catalogs),
             catalog_low: Default::default(),
-            catalog_held_at: Default::default(),
             publishing: Default::default(),
             planned_tiles: Default::default(),
             member_id: run.as_ref().map(|r| r.side.member().id.clone()),
@@ -5594,15 +5589,30 @@ impl Agent {
     /// A catalog made at `at`: noted in the lead's record (build::LastCatalog), with the low zooms
     /// made if its plan had them (`catalog_low`).
     fn catalog_made(&self, at: u64) {
-        self.catalog_held_at.set(None);
         let mut r = self.catalogs.borrow_mut();
         r.at = at;
+        r.held_at = None;
         if self.catalog_low.get() {
             r.low_at = Some(at);
         }
         if self.keeps_publishing() {
             if let Err(e) = write_published(&self.o.home, &r) {
                 eprintln!("agent: noting the catalog made: {e:#}");
+            }
+        }
+    }
+
+    /// When a catalog due was first held back (build::LastCatalog::held_at), kept in the lead's
+    /// record when it changes.
+    fn note_held(&self, held_at: Option<u64>) {
+        let mut r = self.catalogs.borrow_mut();
+        if r.held_at == held_at {
+            return;
+        }
+        r.held_at = held_at;
+        if self.keeps_publishing() {
+            if let Err(e) = write_published(&self.o.home, &r) {
+                eprintln!("agent: noting the catalog held back: {e:#}");
             }
         }
     }
@@ -6256,7 +6266,7 @@ impl Agent {
                     on_map: &on_map,
                     served: &served,
                     since_catalog: since_publish,
-                    held_for: self.catalog_held_at.get().map(|t| now_s().saturating_sub(t)),
+                    held_for: self.catalogs.borrow().held_at.map(|t| now_s().saturating_sub(t)),
                     held,
                     way,
                 },
@@ -6352,8 +6362,14 @@ impl Agent {
         let every_on = self.every_on();
         // (Held so since the gate first held past build::CATALOG_CAP_S: it goes, the regions those
         // hand-offs touch left out of `--ready`, build::plan's.)
-        let held_for = self.catalog_held_at.get().map(|t| now_s().saturating_sub(t));
+        let held_for = self.catalogs.borrow().held_at.map(|t| now_s().saturating_sub(t));
         let mut held_back = planned.catalog_held;
+        if unmerged && !publish::unmerged_holds(unmerged, held_for) && plan.iter().any(|w| w.step == "catalog") {
+            planned.publishing.why = format!(
+                "a catalog now with what's merged: held {} min by hand-offs waiting to be merged",
+                build::CATALOG_CAP_S / 60
+            );
+        }
         if publish::unmerged_holds(unmerged, held_for) && plan.iter().any(|w| w.step == "catalog") {
             held_back = true;
             waiting.push(Waiting {
@@ -6364,14 +6380,11 @@ impl Agent {
             planned.publishing.why = "the catalog waits for a helper's work to be merged".into();
             plan.retain(|w| w.step != "catalog");
         }
-        // (When a catalog was first held back; none held, and none to make: the count starts again.)
-        if held_back {
-            if self.catalog_held_at.get().is_none() {
-                self.catalog_held_at.set(Some(now_s()));
-            }
-        } else if !plan.iter().any(|w| w.step == "catalog") {
-            self.catalog_held_at.set(None);
-        }
+        // (When a catalog was first held back, kept in the lead's record; none held, none to make
+        // and none waiting out its minute: the count starts again.)
+        let catalog_planned = plan.iter().any(|w| w.step == "catalog");
+        let was = self.catalogs.borrow().held_at;
+        self.note_held(publish::held_at(was, held_back, catalog_planned || planned.catalog_due, now_s()));
         // (Its catalog, once made, went out with the low zooms made, or not.)
         if plan.iter().any(|w| w.step == "catalog") {
             self.catalog_low.set(planned.low);
@@ -11475,18 +11488,25 @@ mod tests {
         })
         .unwrap();
         assert!(!home.join("map-update.json").exists());
-        assert_eq!(*a.catalogs.borrow(), build::LastCatalog { at: 0, low_at: Some(50) });
+        assert_eq!(*a.catalogs.borrow(), build::LastCatalog { at: 0, low_at: Some(50), ..Default::default() });
         let file = || -> build::LastCatalog {
             serde_json::from_slice(&std::fs::read(home.join(PUBLISHED_FILE)).unwrap()).unwrap()
         };
         // A catalog planned with the low zooms made: noted so.
         a.catalog_low.set(true);
         a.catalog_made(100);
-        assert_eq!(file(), build::LastCatalog { at: 100, low_at: Some(100) });
+        assert_eq!(file(), build::LastCatalog { at: 100, low_at: Some(100), ..Default::default() });
         // One without them (the low zooms later): when they were last made carried.
         a.catalog_low.set(false);
         a.catalog_made(200);
-        assert_eq!(file(), build::LastCatalog { at: 200, low_at: Some(100) });
+        assert_eq!(file(), build::LastCatalog { at: 200, low_at: Some(100), ..Default::default() });
+        // A catalog held back: when, kept in the file (a restart reads it), until the next is made.
+        a.note_held(Some(250));
+        assert_eq!(file().held_at, Some(250));
+        assert_eq!(read_published(&home).held_at, Some(250));
+        a.catalog_made(900);
+        a.catalog_made(200);
+        assert_eq!(file(), build::LastCatalog { at: 200, low_at: Some(100), ..Default::default() });
         // A dry run beside it (a second agent on this Mac, planning only): its record its own,
         // never the file.
         let dry = test_agent(Options {
@@ -11501,7 +11521,7 @@ mod tests {
         assert_eq!(*dry.catalogs.borrow(), file());
         dry.catalog_low.set(true);
         dry.catalog_made(300);
-        assert_eq!(file(), build::LastCatalog { at: 200, low_at: Some(100) });
+        assert_eq!(file(), build::LastCatalog { at: 200, low_at: Some(100), ..Default::default() });
         // (A record that doesn't read: none.)
         std::fs::write(home.join(PUBLISHED_FILE), "?").unwrap();
         assert_eq!(read_published(&home), build::LastCatalog::default());

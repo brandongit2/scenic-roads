@@ -66,6 +66,20 @@ pub fn unmerged_holds(unmerged: bool, held_for: Option<u64>) -> bool {
     unmerged && held_for.is_none_or(|s| s < super::build::CATALOG_CAP_S)
 }
 
+/// When a catalog due was first held back (build::LastCatalog::held_at), now `now`, it last `was`:
+/// held back now (`held`), kept (or now if none); else kept while a catalog is planned or due and
+/// waiting out its minute (`due`: build::Plan::catalog_due), so the cap reached isn't lost; else
+/// none, the count starting again.
+pub fn held_at(was: Option<u64>, held: bool, due: bool, now: u64) -> Option<u64> {
+    if held {
+        was.or(Some(now))
+    } else if due {
+        was
+    } else {
+        None
+    }
+}
+
 /// The steps the lead shares with the members (`lead_share`).
 pub const SHARED_MAP_TILES: [&str; 2] = ["pack", "lo"];
 
@@ -95,6 +109,16 @@ mod tests {
         let cap = super::super::build::CATALOG_CAP_S;
         assert!(unmerged_holds(true, None) && unmerged_holds(true, Some(cap - 1)));
         assert!(!unmerged_holds(true, Some(cap)) && !unmerged_holds(false, None));
+    }
+
+    #[test]
+    fn the_cap_counts_from_the_first_hold_and_outlasts_the_minutes_wait() {
+        assert_eq!(held_at(None, true, false, 100), Some(100));
+        assert_eq!(held_at(Some(100), true, false, 700), Some(100));
+        // Past the cap, a catalog due waiting out its minute: still counted.
+        assert_eq!(held_at(Some(100), false, true, 720), Some(100));
+        // None held and none due: the count starts again.
+        assert_eq!(held_at(Some(100), false, false, 800), None);
     }
 
     #[test]

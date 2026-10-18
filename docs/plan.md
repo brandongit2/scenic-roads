@@ -1144,7 +1144,8 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
      catalog (5), listed before the chain's rest (the low zooms, rail stops, ferries, roots), which
      goes out with a later one. Nothing is published before a unit is
      built, while the regions have work left. The lead keeps `publishing.json` in its agent's folder
-     (`build::LastCatalog`: when its last catalog went out, and the last with the low zooms made),
+     (`build::LastCatalog`: when its last catalog went out, the last with the low zooms made, and
+     when a catalog due was first held back since),
      and records what publishing does and why (`build::PublishLine`), shown in the build status
      (`publishing`), the worker page and `scenic status`, and logged when it changes.
    - **Publishing's switches** (crate::agent::publish), under `state/pool/`, each off while missing
@@ -1183,9 +1184,13 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
    (`build::catalog_key`), at most one each `build::CATALOG_EVERY_S` (a minute) since the last
    began. It waits while the map tiles or the road index are left to draw (`build::CATALOG_GATE`)
    or a hand-off of theirs waits to be merged. That wait is counted from when a catalog due was
-   first held back, whether or not one was made before (`Publish::held_for`, the lead's agent
-   counting, reset by each catalog made): past `build::CATALOG_CAP_S` (ten minutes) one goes out
-   with what's drawn and merged, its minute allowing. It records as built (`--ready <id>=<outline
+   first held back, whether or not one was made before (`Publish::held_for`: the lead's agent keeps
+   that time in `publishing.json`, `LastCatalog::held_at`, so a restart doesn't reset it; a new
+   lead's agent, with a record of its own, starts the count afresh). It's reset by each catalog
+   made, and when none is held back, none is due and none waits out its minute: past
+   `build::CATALOG_CAP_S` (ten minutes) one goes out with what's drawn and merged, its minute
+   allowing, the status saying which held it (the map tiles or the road index to draw, or their
+   hand-offs waiting to be merged). It records as built (`--ready <id>=<outline
    digest>,…`) the regions done whose units are merged, whose map tiles are drawn and merged and
    whose slope and tree cover are made, and the others as the last catalog had them; the status
    says why a done region isn't yet ("waiting to be merged", "map tiles to draw", "slope and tree
