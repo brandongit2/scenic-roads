@@ -1051,7 +1051,9 @@ from the first (`edit_held`).
 - **The forecast** (`agent::forecast`), made with each plan and in the heartbeat: the work left run
   through in the order the agent runs it. The lead takes the pass's worldwide jobs, then a region at
   a time (terrain, then units), else the chains' work; its other slots any work in its order that
-  fits beside it, a lane per slot its capacity packs (docs/pool.md §10, Each Mac's jobs); each other member the far end of the first shared step it can do (terrain's near end).
+  fits beside it, and each member's slots any work any Mac may run that fits them, as the
+  coordinator packs its asks: a lane per slot each Mac may run now (docs/pool.md §10, Each Mac's
+  jobs), each starting with its slot's running job.
   Units reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. Publishing
   goes per unit: a region's map tiles (`RegionLeft::packs`: its units' z6 tiles stale now or to be
   once its units left are built) are drawn once its units are, ahead of the regions' work, each at

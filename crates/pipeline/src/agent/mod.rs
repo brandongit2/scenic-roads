@@ -6984,7 +6984,7 @@ impl Agent {
         let others = self.worker_of(1);
         // (Never fewer lanes than its last running slot's number: slots may be sparse.)
         let running: Vec<usize> = (0..self.slots.len()).filter(|&k| self.slots[k].running.is_some()).collect();
-        let own_lanes = forecast::slot_lanes(mac_cores(), self.job_slots(), &running);
+        let own_lanes = forecast::slot_lanes(self.job_slots(), &running);
         let own_names: Vec<String> = (1..own_lanes.max(2)).map(|k| self.worker_of(k)).collect();
         let names: Vec<String> = names.into_iter().collect();
         let mut speeds = forecast::speeds(&events, &self.host, &names, 0.5);
@@ -7105,8 +7105,15 @@ impl Agent {
         } else {
             0.0
         };
-        // Its other slots: a lane each, as many as its capacity packs (`forecast::packed_lanes`,
-        // within its ramp's slots), each any work of the plan that fits its share of the memory.
+        // (A slot's job no item of the work left is: its step and targets, on its lane first.)
+        let running_of = |k: usize| {
+            self.slots
+                .get(k)
+                .and_then(|s| s.running.as_ref())
+                .map(|r| (step_of(&r.spec.id), r.spec.record.as_ref().map_or(1, |w| w.targets.len().max(1))))
+        };
+        // Its other slots: a lane each, as many as it may run now (its ramp's: `forecast::slot_lanes`),
+        // each any work of the plan that fits its share of the memory.
         let mac_mb = (self.mac.resources(&self.o.home, None, None, None).mem_gb * 1024.0) as u64;
         let mut machines = vec![Machine {
             name: self.host.clone(),
@@ -7117,6 +7124,8 @@ impl Agent {
             mem_mb: u64::MAX,
             busy_s: busy(0, 1.0),
             unit_extra_s,
+            lead_steps: true,
+            running: running_of(0),
         }];
         for k in 1..own_lanes {
             let name = self.worker_of(k);
@@ -7130,10 +7139,14 @@ impl Agent {
                 mem_mb: mac_mb / own_lanes as u64,
                 busy_s: if k < self.slots.len() { busy(k, speed) } else { 0.0 },
                 unit_extra_s,
+                lead_steps: true,
+                running: running_of(k),
             });
         }
-        // Each member's slots, a lane each, as many as its capacity packs (its cores as the lead's
-        // coordinator last heard them, else one per job it runs), its memory shared among them.
+        // Each member's slots, a lane each, as many as it may run (crate::agent::job_slots of its
+        // cores as the lead's coordinator last heard them, else one per job it runs), its memory
+        // shared among them; each any work of the plan any Mac may run that fits it, as the
+        // coordinator packs its asks (task #383).
         let caps: BTreeMap<String, crate::coord::Capacity> =
             self.coord.as_ref().map(|c| c.capacities().into_iter().collect()).unwrap_or_default();
         for h in &helpers {
@@ -7143,7 +7156,7 @@ impl Agent {
             // (Never fewer lanes than its last running slot's number: slots may be sparse.)
             let running: Vec<usize> = jobs.iter().filter_map(|j| j.slot).collect();
             let n = match cap {
-                Some(c) => forecast::slot_lanes(c.cores, job_slots(c.cores as usize), &running),
+                Some(c) => forecast::slot_lanes(job_slots(c.cores as usize), &running),
                 None => running.iter().map(|k| k + 1).max().unwrap_or(1),
             };
             let mem_all = cap.map(|c| c.limit_mb).filter(|&m| m > 0).or(mem
@@ -7162,20 +7175,21 @@ impl Agent {
                     .filter(|l| l.0 == name)
                     .map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64)
                     .fold(0.0, f64::max);
-                let eta = jobs
-                    .iter()
-                    .find(|j| j.slot == Some(k))
-                    .map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
+                let job = jobs.iter().find(|j| j.slot == Some(k));
+                let eta = job.map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
                 let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
+                let targets = leased.iter().find(|l| l.0 == name).map_or(1, |l| l.2.len().max(1));
                 machines.push(Machine {
                     name,
                     speed,
                     measured,
-                    helper: true,
-                    equal: false,
+                    helper: false,
+                    equal: true,
                     mem_mb: mem_all.map_or(6144, |m| m / n as u64),
                     busy_s,
                     unit_extra_s: 0.0,
+                    lead_steps: false,
+                    running: job.map(|j| (step_of(&j.id), targets)),
                 });
             }
         }
@@ -7192,7 +7206,7 @@ impl Agent {
             }
         }
         for (worker, step, targets, _) in leased.iter().cloned() {
-            if let Some(m) = machines.iter().position(|m| m.name == worker && m.helper) {
+            if let Some(m) = machines.iter().position(|m| m.name == worker) {
                 running.extend(targets.into_iter().map(|t| ((step.clone(), t), m)));
             }
         }
@@ -7236,6 +7250,7 @@ impl Agent {
                 mem_mb: u64::MAX,
                 busy_s: busy(0, 1.0),
                 unit_extra_s,
+                ..Default::default()
             };
             let slots: Vec<Machine> = (1..own_lanes)
                 .map(|k| {
@@ -7250,6 +7265,7 @@ impl Agent {
                         mem_mb: mac_mb / own_lanes as u64,
                         busy_s: if k < self.slots.len() { busy(k, sp) } else { 0.0 },
                         unit_extra_s: 0.0,
+                        ..Default::default()
                     }
                 })
                 .collect();

@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use super::steps::SHARED;
 
 /// A machine the work is shared among.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Machine {
     pub name: String,
     /// Its speed against the lead's (1), and whether that's measured.
@@ -33,8 +33,10 @@ pub struct Machine {
     pub measured: bool,
     /// A helper: the shared steps alone, what fits its memory.
     pub helper: bool,
-    /// A lane of any work in the lead's order that fits its memory: the lead's other slots, and
-    /// every lane but the first of the forecast for equal machines (`equal_machines`).
+    /// A lane of any work in the lead's order that fits its memory (and that it may run:
+    /// `lead_steps`): the lead's other slots, each member's slots (as the coordinator packs them:
+    /// any step offered that fits), and every lane but the first of the forecast for equal machines
+    /// (`equal_machines`).
     pub equal: bool,
     pub mem_mb: u64,
     /// Seconds from now until it's free (its job under way's time left).
@@ -45,6 +47,12 @@ pub struct Machine {
     /// the piece begins and waited for only after its own run, by then taken or not, and its
     /// measured time, the job's, has those waits in it.)
     pub unit_extra_s: f64,
+    /// It may run the lead's own steps (`steps::Place::Lead`): the lead's slots; a member's take
+    /// only those any Mac may (crate::agent::every::grants).
+    pub lead_steps: bool,
+    /// The job its slot runs now, when no item of the work left is it (a step's job the plan lists
+    /// no target of, a daily one): its step and targets, until `busy_s`. On its lane first.
+    pub running: Option<(String, usize)>,
 }
 
 /// What a target takes: its time at the lead's pace (seconds), whether that time was measured,
@@ -522,13 +530,23 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             continue;
         }
         if mac.equal {
-            // Any work it can do that fits its memory, in the lead's order: the pass's, the map
-            // tiles, the regions' (in order), slope and tree cover, the chains', then what comes
-            // after.
-            let fits = |items: &[Item], i: usize| items[i].cost.peak_mb <= mac.mem_mb && runnable(items, i, t);
-            let pick = [Phase::Before, Phase::Publish, Phase::Region, Phase::Late, Phase::Chain, Phase::After]
+            // Any work it can do that fits its memory and that it may run, in the plan's order: the
+            // pass's, the map tiles, the regions' (in order), slope and tree cover, the chains',
+            // then what comes after; but a chain's work first while no other lane is on one (a slot
+            // beside the regions' work takes the chains: crate::agent::build::plan).
+            let may = |step: &str| mac.lead_steps || super::steps::place(step) == super::steps::Place::Any;
+            let fits = |items: &[Item], i: usize| {
+                items[i].cost.peak_mb <= mac.mem_mb && may(&items[i].step) && runnable(items, i, t)
+            };
+            let on_chain = items
                 .iter()
-                .find_map(|&p| (0..items.len()).find(|&i| items[i].phase == p && fits(&items, i)));
+                .any(|i| i.phase == Phase::Chain && i.by.is_some() && i.from <= t + 1e-9 && i.end > t + 1e-9);
+            let order: &[Phase] = if on_chain {
+                &[Phase::Before, Phase::Publish, Phase::Region, Phase::Late, Phase::Chain, Phase::After]
+            } else {
+                &[Phase::Before, Phase::Publish, Phase::Chain, Phase::Region, Phase::Late, Phase::After]
+            };
+            let pick = order.iter().find_map(|&p| (0..items.len()).find(|&i| items[i].phase == p && fits(&items, i)));
             free[m] = match pick {
                 Some(i) => take(&mut items, i, t),
                 None => next_end(&items, &free, m, t),
@@ -694,18 +712,24 @@ pub fn forecast(inp: &Input) -> Forecast {
             }
         }
         f.next.insert(mac.name.clone(), next);
-        // Its schedule: its runs of a step.
-        let mut runs: Vec<(String, f64, f64)> =
-            expected.items.iter().filter(|i| i.by == Some(m)).map(|i| (i.step.clone(), i.from, i.end)).collect();
+        // Its schedule: the job its slot runs now that no item is (its time left), then its runs
+        // of a step.
+        let mut runs: Vec<(String, f64, f64, usize)> =
+            expected.items.iter().filter(|i| i.by == Some(m)).map(|i| (i.step.clone(), i.from, i.end, 1)).collect();
+        if let Some((step, n)) =
+            mac.running.as_ref().filter(|_| !expected.items.iter().any(|i| i.running && i.by == Some(m)))
+        {
+            runs.push((step.clone(), 0.0, mac.busy_s.max(0.0), *n));
+        }
         runs.sort_by(|a, b| a.1.total_cmp(&b.1));
         let mut lane: Vec<Lane> = Vec::new();
-        for (step, from, until) in runs {
+        for (step, from, until, n) in runs {
             match lane.last_mut() {
                 Some(l) if l.step == step && from <= l.until as f64 - now + 120.0 => {
                     l.until = at(until);
-                    l.n += 1;
+                    l.n += n;
                 }
-                _ => lane.push(Lane { step, from: at(from), until: at(until), n: 1 }),
+                _ => lane.push(Lane { step, from: at(from), until: at(until), n }),
             }
         }
         f.lanes.insert(mac.name.clone(), lane);
@@ -718,8 +742,11 @@ pub fn forecast(inp: &Input) -> Forecast {
 /// the pages as one lane, a helper's: the shared steps alone), what each lane builds
 /// now `running`. Reports only: nothing is placed or decided by it.
 pub fn equal_machines(inp: &Input, lanes: Vec<Machine>, running: BTreeMap<(String, String), usize>) -> Forecast {
-    let lanes: Vec<Machine> =
-        lanes.into_iter().enumerate().map(|(k, m)| Machine { equal: k > 0 && !m.helper, ..m }).collect();
+    let lanes: Vec<Machine> = lanes
+        .into_iter()
+        .enumerate()
+        .map(|(k, m)| Machine { equal: k > 0 && !m.helper, lead_steps: true, ..m })
+        .collect();
     forecast(&Input {
         now: inp.now,
         before: inp.before.clone(),
@@ -739,19 +766,12 @@ pub fn equal_machines(inp: &Input, lanes: Vec<Machine>, running: BTreeMap<(Strin
 /// memory it spares (MB: 0, not said).
 pub type PoolWorker = (String, bool, u64);
 
-/// The lanes a Mac's jobs are forecast in: as many as its cores pack at the packed share each
-/// (crate::coord::packed_share: a quarter of them, at least two), within its `slots` (the lead's:
-/// its ramp's; a member's: crate::agent::job_slots), one at least.
-pub fn packed_lanes(cores: u32, slots: usize) -> usize {
-    let share = crate::coord::packed_share(cores.max(1));
-    ((cores.max(1) / share) as usize).min(slots).max(1)
-}
-
-/// A Mac's lanes: `packed_lanes` within its `slots`, never fewer than its last running slot's
-/// number (`running`: the slots running a job, 0 the first; they may be sparse).
-pub fn slot_lanes(cores: u32, slots: usize, running: &[usize]) -> usize {
+/// A Mac's lanes: the slots it may run now (`slots`: the lead's ramp's, a member's
+/// crate::agent::job_slots), never fewer than its last running slot's number (`running`: the slots
+/// running a job, 0 the first; they may be sparse).
+pub fn slot_lanes(slots: usize, running: &[usize]) -> usize {
     let top = running.iter().map(|k| k + 1).max().unwrap_or(0);
-    packed_lanes(cores, slots.max(top)).max(top)
+    slots.max(top).max(1)
 }
 
 /// The memory a lane is taken to have when its worker says none (MB), as a helper's.
@@ -787,6 +807,7 @@ pub fn pool_lanes(
         mem_mb,
         busy_s,
         unit_extra_s: 0.0,
+        ..Default::default()
     };
     let own: Vec<String> = std::iter::once(lead.name.clone()).chain(others.iter().map(|m| m.name.clone())).collect();
     let mut lanes: Vec<Machine> = std::iter::once(lead).chain(others).collect();
@@ -882,6 +903,7 @@ mod tests {
             mem_mb: 6000,
             busy_s: 0.0,
             unit_extra_s: 0.0,
+            ..Default::default()
         }
     }
 
@@ -959,10 +981,12 @@ mod tests {
     fn sparse_running_slots_keep_their_lanes() {
         // (Task #246: the first and the fourth slots running, two slots packed: four lanes, so the
         // fourth's job has its lane.)
-        assert_eq!(slot_lanes(8, 2, &[0, 3]), 4);
-        assert_eq!(slot_lanes(8, 2, &[3]), 4);
-        assert_eq!(slot_lanes(8, 2, &[0]), 2);
-        assert_eq!(slot_lanes(14, 12, &[]), 4, "14 cores at 3 each");
+        assert_eq!(slot_lanes(2, &[0, 3]), 4);
+        assert_eq!(slot_lanes(2, &[3]), 4);
+        assert_eq!(slot_lanes(2, &[0]), 2);
+        // (Task #382) the slots it may run now, not as many as its cores would pack.
+        assert_eq!(slot_lanes(2, &[]), 2, "the lead at ramp 2");
+        assert_eq!(slot_lanes(4, &[0, 1]), 4, "a member's job_slots");
     }
 
     #[test]
@@ -1277,6 +1301,68 @@ mod tests {
         inp.blind = Some("the areas wait for the pass's reaches".into());
         let f = forecast(&inp);
         assert_eq!((f.done_at, f.why.as_deref()), (None, Some("the areas wait for the pass's reaches")));
+    }
+
+    /// A member's slot as the coordinator packs it: any step any Mac may run that fits it.
+    fn member(name: &str) -> Machine {
+        Machine { equal: true, lead_steps: false, ..mac(name, 1.0, false) }
+    }
+
+    #[test]
+    fn a_members_slots_take_any_work_offered_to_it_but_the_leads_own() {
+        // (Task #383) the lead's two slots and a member's two: the member's take units (no helper's
+        // far-end rule), never the landmark points (the lead's own step).
+        let units: Vec<String> = (0..8).map(|i| format!("6/8/{i}")).collect();
+        let refs: Vec<&str> = units.iter().map(String::as_str).collect();
+        let regions = [region("a", &[], &refs, &[])];
+        let lead2 = Machine { equal: true, lead_steps: true, ..mac("m4 #2", 1.0, false) };
+        let inp = input(&regions, vec![mac("m4", 1.0, false), lead2, member("m1"), member("m1 #2")], &cost);
+        let f = forecast(&inp);
+        let n = |lane: &str, step: &str| f.lanes[lane].iter().filter(|l| l.step == step).map(|l| l.n).sum::<usize>();
+        assert_eq!(n("m1", "unit") + n("m1 #2", "unit"), 4, "{:?}", f.lanes);
+        assert_eq!(n("m1", "marks") + n("m1 #2", "marks"), 0);
+        assert_eq!(n("m4", "marks") + n("m4 #2", "marks"), 1);
+    }
+
+    #[test]
+    fn two_macs_finish_in_about_half_the_time_of_one() {
+        // (Task #384) forty units: one Mac's two slots, then two Macs' two each, all as fast.
+        let units: Vec<String> = (0..40).map(|i| format!("6/8/{i}")).collect();
+        let refs: Vec<&str> = units.iter().map(String::as_str).collect();
+        let regions = [region("a", &[], &refs, &[])];
+        let lead2 = || Machine { equal: true, lead_steps: true, ..mac("m4 #2", 1.0, false) };
+        let mut one = input(&regions, vec![mac("m4", 1.0, false), lead2()], &cost);
+        one.after = Vec::new();
+        let mut two = input(&regions, vec![mac("m4", 1.0, false), lead2(), member("m1"), member("m1 #2")], &cost);
+        two.after = Vec::new();
+        let left = |i: &Input| (forecast(i).done_at.unwrap() - 1_000_000) as f64;
+        let (a, b) = (left(&one), left(&two));
+        assert_eq!(a, 20.0 * 300.0);
+        assert!((b / a - 0.5).abs() < 0.05, "{b} of {a}");
+    }
+
+    #[test]
+    fn a_lane_starts_with_its_slots_running_job_then_the_plans_work_of_every_kind() {
+        // (Task #385) the lead's second slot runs a depth job no item is (40 min left). Its lane
+        // says the depth job first; a chain's step (the candidates) is taken beside the regions'
+        // work, not left to the end.
+        let units: Vec<String> = (0..6).map(|i| format!("6/8/{i}")).collect();
+        let refs: Vec<&str> = units.iter().map(String::as_str).collect();
+        let regions = [region("a", &[], &refs, &[])];
+        let lead2 = Machine {
+            equal: true,
+            lead_steps: true,
+            busy_s: 2400.0,
+            running: Some(("depth".into(), 3)),
+            ..mac("m4 #2", 1.0, false)
+        };
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false), lead2, member("m1")], &cost);
+        inp.chains = vec![("pois".into(), "6/8/0".into(), Cost { secs: 100.0, known: true, peak_mb: 1000 })];
+        let f = forecast(&inp);
+        let first = &f.lanes["m4 #2"][0];
+        assert_eq!((first.step.as_str(), first.from, first.until, first.n), ("depth", 1_000_000, 1_002_400, 3));
+        let pois = f.lanes.values().flatten().find(|l| l.step == "pois").unwrap();
+        assert_eq!(pois.from, 1_000_000, "{:?}", f.lanes);
     }
 
     /// The trains' and the landmarks' chains, as the plan lists them.
