@@ -8,8 +8,7 @@
 //! extract) into its stored geometry (crate::inputs::regions::resolve, ::stored, ::geom), which it
 //! stores with the accepted version: per region a `.rgeo` the coverage reads and a drawn `.json` the
 //! catalog and the map's region layer draw, named in the index's `facts.geometry` and `facts.drawn`.
-//! Every finding is an error (`rg-*`, §6.1.8) but `rg-gap`, a warning: two shapes leaving a strip
-//! under 1 km between them (crate::inputs::regions::gaps), held until the owner accepts it. A region whose pin names another pass than the
+//! Every finding is an error (`rg-*`, §6.1.8). A region whose pin names another pass than the
 //! build's is held with its file unchanged (`Checks::holds_unchanged`), keeping its accepted
 //! geometry.
 //!
@@ -18,7 +17,6 @@
 
 pub mod extract;
 pub mod file;
-pub mod gaps;
 pub mod geom;
 pub mod read;
 pub mod resolve;
@@ -41,9 +39,6 @@ pub const UNIT: &str = "regions";
 pub struct Regions {
     pub ctx: Option<Prepared>,
     memo: resolve::Memo,
-    /// The last gaps found (`gaps::key` of the geometry, the gaps): `whole` runs up to three times a
-    /// check on mostly the same regions.
-    gaps: Mutex<Option<(String, Vec<gaps::Gap>)>>,
     needs: Mutex<Vec<String>>,
 }
 
@@ -82,37 +77,6 @@ impl Regions {
         };
         let out = resolve::resolve(&folder, &ctx);
         Ok((folder, out))
-    }
-}
-
-impl Regions {
-    /// The thin gaps between the regions resolved (§6.1.8 `rg-gap`), as warnings about their files.
-    fn gap_findings(&self, folder: &resolve::Folder, out: &resolve::Outcome) -> Vec<Finding> {
-        let geoms: Vec<&stored::Geometry> = out.resolved.values().map(|r| &r.geometry).collect();
-        let key = gaps::key(&geoms);
-        let found = {
-            let mut m = self.gaps.lock().unwrap();
-            match m.as_ref().filter(|(k, _)| *k == key) {
-                Some((_, g)) => g.clone(),
-                None => {
-                    let g = gaps::gaps(&geoms);
-                    *m = Some((key, g.clone()));
-                    g
-                }
-            }
-        };
-        found
-            .iter()
-            .map(|g| {
-                let (regions, place, message) = gaps::describe(g);
-                let about: Vec<&str> = regions.iter().map(String::as_str).collect();
-                let files: Vec<String> =
-                    regions.iter().filter_map(|id| folder.regions.get(id)).map(|(p, _)| p.clone()).collect();
-                let mut f = Finding::new("rg-gap", Level::Warning, &about, &[&place], files, message);
-                f.at = Some([g.at[0] as f64 * 1e-7, g.at[1] as f64 * 1e-7]);
-                f
-            })
-            .collect()
     }
 }
 
@@ -209,11 +173,9 @@ impl Checks for Regions {
     }
 
     fn whole(&self, v: &Version) -> Result<Vec<Finding>> {
-        let (folder, out) = self.resolve(v)?;
+        let (_, out) = self.resolve(v)?;
         *self.needs.lock().unwrap() = out.needs.iter().map(|i| i.to_string()).collect();
-        let mut found: Vec<Finding> = out.problems.iter().map(problem_finding).collect();
-        found.extend(self.gap_findings(&folder, &out));
-        Ok(found)
+        Ok(out.problems.iter().map(problem_finding).collect())
     }
 
     fn needs(&self) -> Vec<String> {
