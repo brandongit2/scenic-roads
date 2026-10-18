@@ -215,10 +215,10 @@ fn mtime_ns(p: &Path) -> Result<u128> {
 }
 
 /// How far the sampling is, for the unit job's progress (crate::agent::jobs::report: a line on
-/// stderr): the vertices to sample that have a height.
-fn said(got: usize, of: usize) {
+/// stderr): `frac` (0 to 1) of the `of` vertices to sample done, to three decimals of a vertex.
+fn said(frac: f64, of: usize) {
     if of > 0 {
-        eprintln!("progress: {}/{of} vertices", got.min(of));
+        crate::agent::jobs::report_f(frac.clamp(0.0, 1.0) * of as f64, of as u64, "vertices");
     }
 }
 

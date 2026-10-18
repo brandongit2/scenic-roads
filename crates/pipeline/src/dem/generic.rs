@@ -566,8 +566,15 @@ pub fn blend(a: f32, b: f32, d: f64, band: f64) -> f32 {
     (b as f64 + (a as f64 - b as f64) * s) as f32
 }
 
-/// Points `lon`, `lat` (degrees) sampled from `plan`. `said`: how many have a height so far.
-pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(usize)) -> Result<Sampled> {
+/// The share of `sample`'s progress the datasets' own sampling takes; the blends take the rest.
+const SAMPLING_SHARE: f64 = 0.9;
+/// Points one chunk of a dataset's sampling holds at most (a progress line each), and at least.
+const CHUNK_MAX: usize = 1 << 20;
+const CHUNK_MIN: usize = 1 << 14;
+
+/// Points `lon`, `lat` (degrees) sampled from `plan`. `said`: how far it is, 0 to 1, never
+/// backwards: said once per chunk of a dataset's points and per blend step, not per point.
+pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(f64)) -> Result<Sampled> {
     use crate::timings::{phase, Class};
     let n = lon.len();
     let covers: Vec<Cover> = plan.datasets.iter().map(|d| Cover::of(d.cover.as_deref())).collect();
@@ -575,7 +582,6 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(usi
     let mut first = vec![u16::MAX; n];
     let mut file = vec![u32::MAX; n];
     let mut readers = Vec::new();
-    let mut got = 0;
     let cache = Arc::new(Mutex::new(BlockCache::new(CACHE_BYTES)));
     // (What each phase fetches over the network: its count.)
     let fetched =
@@ -588,16 +594,21 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(usi
             .filter(|&i| first[i as usize] == u16::MAX && covers[k].contains(lon[i as usize], lat[i as usize]))
             .collect();
         if !sel.is_empty() {
-            let v = r.sample(&sel, lon, lat)?;
+            // (In chunks, a progress line after each: the datasets share the first part equally.)
+            let chunk = (sel.len() / 100).clamp(CHUNK_MIN, CHUNK_MAX);
             let mut here = 0;
-            for (&i, (v, f)) in sel.iter().zip(v) {
-                if v.is_finite() {
-                    (a[i as usize], first[i as usize], file[i as usize]) = (v, k as u16, f);
-                    here += 1;
+            let mut done = 0;
+            for part in sel.chunks(chunk) {
+                let v = r.sample(part, lon, lat)?;
+                for (&i, (v, f)) in part.iter().zip(v) {
+                    if v.is_finite() {
+                        (a[i as usize], first[i as usize], file[i as usize]) = (v, k as u16, f);
+                        here += 1;
+                    }
                 }
+                done += part.len();
+                said(SAMPLING_SHARE * (k as f64 + done as f64 / sel.len() as f64) / plan.datasets.len() as f64);
             }
-            got += here;
-            said(got);
             println!("  {}: {here} of {} vertices", ds.id, sel.len());
         }
         readers.push(r);
@@ -636,6 +647,7 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(usi
                 dist[i as usize] = d;
             }
         }
+        said(SAMPLING_SHARE + (1.0 - SAMPLING_SHARE) * 0.5 * (k + 1) as f64 / plan.datasets.len() as f64);
     }
     let mut b = vec![f32::NAN; n];
     let mut second = vec![u16::MAX; n];
@@ -656,6 +668,7 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(usi
                 (b[i as usize], second[i as usize]) = (v, k as u16);
             }
         }
+        said(SAMPLING_SHARE + (1.0 - SAMPLING_SHARE) * (0.5 + 0.5 * (k + 1) as f64 / plan.datasets.len() as f64));
     }
     fetched(&p, since);
     drop(p);
@@ -709,15 +722,15 @@ pub fn run(cfg: &super::Config, plan: &Plan, fetch: &dyn Fetch) -> Result<Stats>
     drop(p);
     let miss: Vec<u32> = (0..n as u32).filter(|&i| prog.elev[i as usize].is_nan()).collect();
     println!("{} vertices need DEM sampling", super::th(miss.len()));
-    super::said(0, miss.len());
+    super::said(0.0, miss.len());
     let lon: Vec<f64> = miss.iter().map(|&i| verts[i as usize][0] as f64 * 1e-7).collect();
     let lat: Vec<f64> = miss.iter().map(|&i| verts[i as usize][1] as f64 * 1e-7).collect();
     let pool = super::pool(cfg.workers);
     let o = Opts { fetch, store: cfg.store.clone(), pool: pool.as_ref() };
-    let s = sample(plan, &lon, &lat, &o, &|k| super::said(k, miss.len()))?;
+    let s = sample(plan, &lon, &lat, &o, &|f| super::said(f, miss.len()))?;
     drop(o);
     drop(pool);
-    super::said(miss.len(), miss.len());
+    super::said(1.0, miss.len());
     prog.scatter(&miss, &s.elev, &s.src);
     let _p = phase("heights and the cache written", Class::Disk);
     let mut by: std::collections::BTreeMap<String, usize> = plan.datasets.iter().map(|d| (d.id.clone(), 0)).collect();

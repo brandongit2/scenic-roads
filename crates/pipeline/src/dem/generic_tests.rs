@@ -214,3 +214,45 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
     }
     assert!(blends > 100 && blends < lon.len() / 2, "{blends} blends of {}", lon.len());
 }
+
+#[test]
+fn sampling_says_increasing_fractions_to_one_per_chunk() {
+    use super::super::declared::{Dataset, Plan, Source};
+    let z = 10;
+    let ds = |id: &str, code: u8, url: &str| Dataset {
+        id: id.into(),
+        code,
+        resolution: tile_resolution(z, 0.0),
+        cover: None,
+        source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into() },
+    };
+    let plan = Plan {
+        fmt: 1,
+        version: "t".into(),
+        tag: "1".into(),
+        datasets: vec![
+            ds("fine", 1, "https://a.org/{z}/{x}/{y}.png"),
+            ds("coarse", 2, "https://b.org/{z}/{x}/{y}.png"),
+        ],
+    };
+    let mut f = crate::fetch::MapFetch::default();
+    f.0.insert("https://a.org/10/512/511.png".into(), Some(flat(100.0)));
+    f.0.insert("https://b.org/10/512/511.png".into(), Some(flat(50.0)));
+    let fetch = NoneElse(f);
+    let o = Opts { fetch: &fetch, store: None, pool: None };
+    let n = 100_000;
+    let w = 360.0 / 1024.0;
+    let lon: Vec<f64> = (0..n).map(|i| w * (0.1 + 0.8 * i as f64 / n as f64)).collect();
+    let lat = vec![0.1; n];
+    let said = Mutex::new(Vec::new());
+    let s = sample(&plan, &lon, &lat, &o, &|f| said.lock().unwrap().push(f)).unwrap();
+    assert!(s.src.iter().all(|&c| c == 1) && s.elev.iter().all(|e| e.is_finite()));
+    let said = said.into_inner().unwrap();
+    assert!(said.len() >= 6, "a line per chunk and per blend step: {said:?}");
+    assert!(said.windows(2).all(|w| w[0] <= w[1]), "never backwards: {said:?}");
+    assert!(said.iter().all(|f| (0.0..=1.0).contains(f)));
+    assert!(
+        said.iter().filter(|&&f| f > 0.0 && f < SAMPLING_SHARE).count() >= 3,
+        "moves within the sampling: {said:?}"
+    );
+}
