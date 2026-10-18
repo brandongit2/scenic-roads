@@ -177,9 +177,17 @@ pub fn cost_table(regions: &[RegionLeft], cost: &dyn Fn(&str, &str) -> Cost) -> 
 }
 
 impl Input<'_> {
-    /// What a region's target takes (`costs`; one not in it, nothing: `cost_table` lists them all).
+    /// What a region's target takes (`costs`). One not in it is a bug (`cost_table` lists them
+    /// all): logged once a process, taken as nothing.
     pub fn cost(&self, step: &str, target: &str) -> Cost {
-        self.costs.get(step).and_then(|m| m.get(target)).copied().unwrap_or_default()
+        if let Some(c) = self.costs.get(step).and_then(|m| m.get(target)) {
+            return *c;
+        }
+        static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("forecast: no cost for {step} {target} in its input (a bug: cost_table lists every target)");
+        }
+        Cost::default()
     }
 }
 
@@ -227,9 +235,38 @@ impl Record<'_> {
         f
     }
 
-    /// As written: JSON, zstd-compressed when it's over `ZSTD_OVER` bytes.
+    /// Every time and speed in it made finite (JSON has no NaN nor infinity: one would read back
+    /// as null and fail): NaN as 0, an infinity as the largest finite number of its sign.
+    pub fn clamp(&mut self) {
+        fn f(x: &mut f64) {
+            if x.is_nan() {
+                *x = 0.0
+            } else if x.is_infinite() {
+                *x = x.signum() * f64::MAX
+            }
+        }
+        let m = |m: &mut Machine| {
+            for x in [&mut m.speed, &mut m.busy_s, &mut m.unit_extra_s, &mut m.from_s] {
+                f(x)
+            }
+        };
+        let inp = &mut self.input;
+        inp.machines.iter_mut().for_each(m);
+        if let Some(e) = &mut self.equal {
+            e.lanes.iter_mut().for_each(m);
+        }
+        for j in inp.before.iter_mut().chain(&mut inp.chains).chain(&mut inp.after).chain(&mut inp.idle) {
+            f(&mut j.2.secs)
+        }
+        inp.costs.values_mut().flat_map(|t| t.values_mut()).for_each(|c| f(&mut c.secs));
+        self.each_s.values_mut().for_each(f);
+    }
+
+    /// As written (finite: `clamp`): JSON, zstd-compressed when it's over `ZSTD_OVER` bytes.
     pub fn bytes(&self) -> anyhow::Result<Vec<u8>> {
-        let b = serde_json::to_vec(self)?;
+        let mut r = self.clone();
+        r.clamp();
+        let b = serde_json::to_vec(&r)?;
         if b.len() <= ZSTD_OVER {
             return Ok(b);
         }
@@ -1368,6 +1405,14 @@ mod tests {
         assert_eq!(Record::from_bytes(&b).unwrap().forecast(), lead);
         let z = zstd::encode_all(&b[..], 3).unwrap();
         assert_eq!(Record::from_bytes(&z).unwrap(), rec);
+        // (Task #409 review) a time not finite is written finite: it reads back.
+        let mut bad = rec.clone();
+        bad.input.machines[1].busy_s = f64::INFINITY;
+        bad.input.machines[0].speed = f64::NAN;
+        bad.each_s.insert("pack".into(), f64::NEG_INFINITY);
+        let back = Record::from_bytes(&bad.bytes().unwrap()).unwrap();
+        assert_eq!((back.input.machines[1].busy_s, back.input.machines[0].speed), (f64::MAX, 0.0));
+        assert_eq!(back.each_s["pack"], -f64::MAX);
     }
 
     #[test]

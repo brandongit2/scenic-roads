@@ -32,6 +32,7 @@ pub mod jobs;
 pub mod lead;
 pub mod memguard;
 pub mod nasread;
+pub mod pageview;
 pub mod placement;
 pub mod pool;
 pub mod publish;
@@ -1262,6 +1263,13 @@ pub struct Agent {
     /// A member's broker: its coordinator for its own jobs' tasks alone (the lead's are its
     /// coordinator's, `coord`), and when one last failed to start.
     broker: Option<std::sync::Arc<crate::coord::Coordinator>>,
+    /// The page's data read from the NAS (crate::agent::pageview), served on this Mac's port by its
+    /// coordinator, its broker, or with neither a viewer alone (`viewer`; tried again five minutes
+    /// after it failed).
+    pageview: std::sync::Arc<pageview::PageView>,
+    pageview_reading: bool,
+    viewer: Option<std::sync::Arc<crate::coord::Coordinator>>,
+    viewer_failed: Option<Instant>,
     broker_failed: Option<Instant>,
     /// Its address over HTTPS last looked for, and what it was.
     broker_https: Option<(Instant, Option<String>)>,
@@ -1653,6 +1661,10 @@ impl Agent {
             offered: Default::default(),
             brokers: false,
             broker: None,
+            pageview: pageview::PageView::new(),
+            pageview_reading: false,
+            viewer: None,
+            viewer_failed: None,
             broker_failed: None,
             broker_https: None,
             held_progress: None,
@@ -8527,6 +8539,7 @@ impl Agent {
             && self._lock.is_some()
             && brokers::stale(self.broker_failed, now, brokers::HTTPS_EVERY)
         {
+            self.stop_viewer();
             let tried = match self.try_pooled() {
                 Some(Some(run)) => Some(make_coordinator_on(&self.o, Some(&run), &self.app, &self.host, broker_port())),
                 _ => None,
@@ -8562,6 +8575,71 @@ impl Agent {
         }
         if brokers::stale(self.broker_https.as_ref().map(|h| h.0), now, brokers::HTTPS_EVERY) {
             self.broker_https = Some((now, served_https(c.port())));
+        }
+    }
+
+    /// The page on this Mac's port (crate::agent::pageview), each loop: a viewer alone started when
+    /// neither a coordinator nor a broker answers there; each serving it from this Mac's read of the
+    /// NAS; that read told the term, the members, this app and this Mac's lanes now. In the pool
+    /// alone (out of it, the coordinator answers from its memory, as before).
+    fn tend_pageview(&mut self, root: &Path) {
+        if self._lock.is_none() || self.o.dry_run {
+            return;
+        }
+        let now = Instant::now();
+        if self.coord.is_none()
+            && self.broker.is_none()
+            && self.viewer.is_none()
+            && brokers::stale(self.viewer_failed, now, brokers::HTTPS_EVERY)
+        {
+            let made = match self.try_pooled() {
+                Some(Some(run)) => Some(make_coordinator_on(&self.o, Some(&run), &self.app, &self.host, coord_port())),
+                _ => None,
+            };
+            match made {
+                Some(Some(v)) => {
+                    v.become_viewer();
+                    eprintln!("agent: this Mac shows the build page at {}", v.contact.urls.join(", "));
+                    self.viewer = Some(std::sync::Arc::new(v));
+                }
+                Some(None) => self.viewer_failed = Some(now),
+                None => {}
+            }
+        }
+        for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
+            if !c.has_pageview() {
+                c.set_pageview(self.pageview.clone());
+            }
+        }
+        let Some(Some(run)) = self.try_pooled() else { return };
+        let members: Vec<String> = run.side.members().iter().cloned().collect();
+        let hosts: Vec<String> = members.iter().filter_map(|m| run.side.heartbeat(m)).map(|h| h.pool.host).collect();
+        let term = run.side.driver().current().term;
+        drop(run);
+        let own = (0..self.slots.len())
+            .map(|k| pageview::OwnLane {
+                name: self.worker_of(k),
+                busy_s: if self.slots[k].running.is_some() { self.slots[k].job_eta.unwrap_or(0) as f64 } else { 0.0 },
+            })
+            .collect();
+        self.pageview.set_inputs(pageview::Inputs {
+            root: Some(root.to_path_buf()),
+            term,
+            members,
+            hosts,
+            app: self.app.clone(),
+            own,
+        });
+        if !self.pageview_reading {
+            pageview::spawn(self.pageview.clone());
+            self.pageview_reading = true;
+        }
+    }
+
+    /// This Mac's viewer alone stopped (its port then free for a coordinator or a broker).
+    fn stop_viewer(&mut self) {
+        if let Some(v) = self.viewer.take() {
+            v.stop();
         }
     }
 
@@ -8874,6 +8952,7 @@ impl Agent {
             self.brokers = on;
         }
         self.tend_brokers();
+        self.tend_pageview(r);
         // (The lead's coordinator told this Mac's capacity each loop.)
         // (Placement worked out once a loop: the history read once.)
         let placed = self.placement_now();
@@ -9176,6 +9255,7 @@ impl Agent {
         let Some(role) = self.pooled().map(|r| r.role) else { return };
         match (role, out.leads) {
             (pool::Role::Member, Some(term)) => {
+                self.stop_viewer();
                 let made = self.broker.take().or_else(|| {
                     make_coordinator(&self.o, self.pooled().as_deref(), &self.app, &self.host).map(std::sync::Arc::new)
                 });

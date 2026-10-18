@@ -338,6 +338,11 @@ pub struct Shared {
     /// The time its leases, workers' paces and their being around are reckoned in (a test's
     /// virtual one).
     pub clock: std::sync::Arc<dyn store::clock::Clock>,
+    /// The page's data as this Mac reads it from the NAS (crate::agent::pageview): `/work/swarm`
+    /// and `/work/history` answered from it once it has a snapshot.
+    pub pageview: Option<Arc<crate::agent::pageview::PageView>>,
+    /// A viewer alone (`Coordinator::become_viewer`): the page and its views, nothing else.
+    pub viewer: bool,
 }
 
 /// The NAS budget's weights for one placement (`Shared::nas_room`): the limits, one Book, and each
@@ -1767,6 +1772,8 @@ impl Coordinator {
             refused: BTreeMap::new(),
             last: BTreeMap::new(),
             brokers: None,
+            pageview: None,
+            viewer: false,
             own_cap: None,
             dir: dir.to_path_buf(),
             clock: store::clock::real(),
@@ -2519,42 +2526,23 @@ impl Coordinator {
     /// (docs/pool.md §10): its times as unix seconds (a lease's `granted` and last `beat`, a
     /// worker's `seen`), so it's the same until something changes. Taken under the lock.
     pub fn view(&self) -> serde_json::Value {
-        let s = self.shared.lock().unwrap();
-        let (now, unix) = (s.now(), unix_now());
-        let at = |t: Instant| unix.saturating_sub(now.saturating_duration_since(t).as_secs());
-        let leases: Vec<serde_json::Value> = s
-            .leases
-            .all(now)
-            .iter()
-            .map(|l| {
-                let (step, n) = match &l.work {
-                    Work::Job { step, targets } => (step.clone(), targets.len()),
-                    Work::Task { id } => (s.tasks.kind_of(*id), 1),
-                };
-                let beat = unix.saturating_sub(TTL.as_secs().saturating_sub(l.left(now).as_secs()));
-                serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "granted": at(l.granted), "progress": l.progress, "frac": l.frac, "beat": beat, "lapses": beat + TTL.as_secs() })
-            })
-            .collect();
-        let workers: Vec<serde_json::Value> = s
-            .workers
-            .iter()
-            .map(|(n, w)| {
-                let fit = w.ask.as_ref().filter(|a| a.kind == "native").map(|a| s.fit(a, now)).unwrap_or_default();
-                serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "checked": w.checked, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "cap": w.cap, "fit": fit, "seen": at(w.seen), "tail_pace": s.tasks.pace(n, "tail"), "paces": PAGE_TASKS.iter().map(|k| (k.to_string(), s.tasks.pace(n, k))).collect::<BTreeMap<String, Option<f64>>>() })
-            })
-            .collect();
-        let mut tasks: BTreeMap<&str, usize> = BTreeMap::new();
-        for t in s.tasks.by_id.values() {
-            let st = match t.state {
-                task::State::Offered => "offered",
-                task::State::Leased { .. } => "leased",
-                task::State::Done { .. } => "done",
-                task::State::Failed { .. } => "failed",
-            };
-            *tasks.entry(st).or_default() += 1;
-        }
-        let task_mb: BTreeMap<&str, Option<u64>> = PAGE_TASKS.iter().map(|k| (*k, s.tasks.typical_mb(k))).collect();
-        serde_json::json!({ "pause": s.paused, "leases": leases, "workers": workers, "tasks": tasks, "task_mb": task_mb })
+        view_of(&self.shared.lock().unwrap())
+    }
+
+    /// The page's data served from `pv` (crate::agent::pageview) from here on.
+    pub fn set_pageview(&self, pv: Arc<crate::agent::pageview::PageView>) {
+        self.shared.lock().unwrap().pageview = Some(pv);
+    }
+
+    /// Whether it serves the page's data from a pageview.
+    pub fn has_pageview(&self) -> bool {
+        self.shared.lock().unwrap().pageview.is_some()
+    }
+
+    /// A viewer alone: the page and its views (`/work/swarm`, `/work/history`, `/work/steps`), every
+    /// other call refused (a Mac with no coordinator nor broker serves the page so).
+    pub fn become_viewer(&self) {
+        self.shared.lock().unwrap().viewer = true;
     }
 
     /// Its state as the pool keeps it per term (docs/pool.md §6.2, §7.5): the jobs' leases (each
@@ -3163,6 +3151,94 @@ fn raw_again(journal: &Path, h: Option<&Handoff>) {
 
 /// Seconds since the epoch.
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
+/// What the page takes from a coordinator's memory (`Coordinator::view`): the pause, each lease and
+/// worker, the tasks by state and `task_mb`, its times as unix seconds (`unix_of`).
+fn view_of(s: &Shared) -> serde_json::Value {
+    let now = s.now();
+    let leases: Vec<serde_json::Value> = s
+        .leases
+        .all(now)
+        .iter()
+        .map(|l| {
+            let (step, n) = match &l.work {
+                Work::Job { step, targets } => (step.clone(), targets.len()),
+                Work::Task { id } => (s.tasks.kind_of(*id), 1),
+            };
+            let lapses = unix_of(l.deadline());
+            serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "granted": unix_of(l.granted), "progress": l.progress, "frac": l.frac, "beat": lapses.saturating_sub(TTL.as_secs()), "lapses": lapses })
+        })
+        .collect();
+    let workers: Vec<serde_json::Value> = s
+        .workers
+        .iter()
+        .map(|(n, w)| {
+            let fit = w.ask.as_ref().filter(|a| a.kind == "native").map(|a| s.fit(a, now)).unwrap_or_default();
+            serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "checked": w.checked, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "cap": w.cap, "fit": fit, "seen": unix_of(w.seen), "tail_pace": s.tasks.pace(n, "tail"), "paces": PAGE_TASKS.iter().map(|k| (k.to_string(), s.tasks.pace(n, k))).collect::<BTreeMap<String, Option<f64>>>() })
+        })
+        .collect();
+    let mut tasks: BTreeMap<&str, usize> = BTreeMap::new();
+    for t in s.tasks.by_id.values() {
+        let st = match t.state {
+            task::State::Offered => "offered",
+            task::State::Leased { .. } => "leased",
+            task::State::Done { .. } => "done",
+            task::State::Failed { .. } => "failed",
+        };
+        *tasks.entry(st).or_default() += 1;
+    }
+    let task_mb: BTreeMap<&str, Option<u64>> = PAGE_TASKS.iter().map(|k| (*k, s.tasks.typical_mb(k))).collect();
+    serde_json::json!({ "pause": s.paused, "leases": leases, "workers": workers, "tasks": tasks, "task_mb": task_mb })
+}
+
+/// A view's leases and workers (`view_of`, or the lead's `view.json` read on another Mac) as the
+/// page takes them at unix time `unix`: each time an age (a lease's `for_s`, `beat_s` and
+/// `lapses_in_s`, a worker's `seen_s`) in place of its unix seconds.
+pub fn ages(view: &serde_json::Value, unix: u64) -> (serde_json::Value, serde_json::Value) {
+    let take = |o: &mut serde_json::Map<String, serde_json::Value>, k: &str| o.remove(k).and_then(|v| v.as_u64());
+    let leases: Vec<serde_json::Value> = view["leases"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|l| {
+            let mut o = l.as_object().cloned().unwrap_or_default();
+            let (granted, beat, lapses) = (take(&mut o, "granted"), take(&mut o, "beat"), take(&mut o, "lapses"));
+            o.insert("for_s".into(), unix.saturating_sub(granted.unwrap_or(unix)).into());
+            o.insert("beat_s".into(), unix.saturating_sub(beat.unwrap_or(unix)).into());
+            o.insert("lapses_in_s".into(), lapses.unwrap_or(unix).saturating_sub(unix).into());
+            serde_json::Value::Object(o)
+        })
+        .collect();
+    let workers: Vec<serde_json::Value> = view["workers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|w| {
+            let mut o = w.as_object().cloned().unwrap_or_default();
+            let seen = take(&mut o, "seen");
+            o.insert("seen_s".into(), unix.saturating_sub(seen.unwrap_or(unix)).into());
+            serde_json::Value::Object(o)
+        })
+        .collect();
+    (leases.into(), workers.into())
+}
+
+/// An `Instant`'s unix second, from one anchor (an `Instant` and the wall clock read together),
+/// so a time already past says the same second each time it's asked; the anchor taken again only
+/// when the wall clock has moved off it (a Mac asleep: its `Instant`s stop) by more than 2 s.
+fn unix_of(t: Instant) -> u64 {
+    static ANCHOR: Mutex<Option<(Instant, u64)>> = Mutex::new(None);
+    let mut a = ANCHOR.lock().unwrap_or_else(|e| e.into_inner());
+    let (i, u) = (Instant::now(), unix_now());
+    let on = |a: (Instant, u64), t: Instant| match t.checked_duration_since(a.0) {
+        Some(d) => a.1 + d.as_secs(),
+        None => a.1.saturating_sub(a.0.duration_since(t).as_secs()),
+    };
+    if a.is_none_or(|a| on(a, i).abs_diff(u) > 2) {
+        *a = Some((i, u));
+    }
+    on(a.unwrap(), t)
+}
+
 fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -3807,6 +3883,11 @@ fn route(
             ))
         }
         "/work/swarm" => {
+            // (From this Mac's read of the NAS, once it has one: the same on every Mac.)
+            let pv = shared.lock().unwrap().pageview.clone();
+            if let Some(a) = pv.and_then(|p| p.swarm()) {
+                return Ok((200, a));
+            }
             // The whole build at a glance, for the worker page: the lead's heartbeat (its
             // agent's status, written each loop beside this folder: its job, the checklist to the
             // end, the forecast, the regions, its helpers), the leases, the workers, the tasks and
@@ -3818,50 +3899,19 @@ fn route(
                 .and_then(|h| std::fs::read(h.join("status.json")).ok())
                 .and_then(|b| serde_json::from_slice(&b).ok())
                 .unwrap_or(serde_json::Value::Null);
-            // Each lease: whose, what (its step and targets), for how long, what it last said and how
-            // far, since its last beat and until it lapses.
-            let leases: Vec<serde_json::Value> = s
-                .leases
-                .all(now)
-                .iter()
-                .map(|l| {
-                    let (step, n) = match &l.work {
-                        Work::Job { step, targets } => (step.clone(), targets.len()),
-                        Work::Task { id } => (s.tasks.kind_of(*id), 1),
-                    };
-                    let left = l.left(now).as_secs();
-                    serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "for_s": now.duration_since(l.granted).as_secs(), "progress": l.progress, "frac": l.frac, "beat_s": TTL.as_secs().saturating_sub(left), "lapses_in_s": left })
-                })
-                .collect();
-            // Each worker, and for one that does the shared steps, how the work offered fits it.
-            let workers: Vec<serde_json::Value> = s
-                .workers
-                .iter()
-                .map(|(n, w)| {
-                    let fit = w.ask.as_ref().filter(|a| a.kind == "native").map(|a| s.fit(a, now)).unwrap_or_default();
-                    serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "checked": w.checked, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "cap": w.cap, "fit": fit, "seen_s": now.duration_since(w.seen).as_secs(), "tail_pace": s.tasks.pace(n, "tail"), "paces": PAGE_TASKS.iter().map(|k| (k.to_string(), s.tasks.pace(n, k))).collect::<BTreeMap<String, Option<f64>>>() })
-                })
-                .collect();
-            // The tasks, by state.
-            let mut tasks: BTreeMap<&str, usize> = BTreeMap::new();
-            for t in s.tasks.by_id.values() {
-                let st = match t.state {
-                    task::State::Offered => "offered",
-                    task::State::Leased { .. } => "leased",
-                    task::State::Done { .. } => "done",
-                    task::State::Failed { .. } => "failed",
-                };
-                *tasks.entry(st).or_default() += 1;
-            }
+            // Each lease (whose, what, for how long, what it last said and how far, since its last
+            // beat and until it lapses), each worker (and for one that does the shared steps, how
+            // the work offered fits it), the tasks by state: `view_of`, its times as ages.
+            let view = view_of(&s);
             let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             // The history's last number (the page asks `/work/history` for what's after the one it
             // has) and the last day by the hour.
             // (What a task of each kind takes, typically: whether a page can take the tails the
             // schedule shows it.)
-            let task_mb: BTreeMap<&str, Option<u64>> = PAGE_TASKS.iter().map(|k| (*k, s.tasks.typical_mb(k))).collect();
+            let (leases, workers) = ages(&view, unix);
             Ok((
                 200,
-                serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": tasks, "task_mb": task_mb, "seq": s.history.seq(), "rates": s.history.rates(unix, 24) }),
+                serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": view["tasks"], "task_mb": view["task_mb"], "seq": s.history.seq(), "rates": s.history.rates(unix, 24), "app": s.app }),
             ))
         }
         "/work/history" => {
@@ -3869,6 +3919,10 @@ fn route(
             let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
             let since = b["since"].as_u64().unwrap_or(0);
             let max = b["max"].as_u64().map_or(500, |m| m.min(5000)) as usize;
+            let pv = shared.lock().unwrap().pageview.clone();
+            if let Some(a) = pv.and_then(|p| p.history(since, max)) {
+                return Ok((200, a));
+            }
             let s = shared.lock().unwrap();
             Ok((200, serde_json::json!({ "seq": s.history.seq(), "events": s.history.since(since, max) })))
         }
@@ -4447,6 +4501,9 @@ mod http {
             req.method() == Method::POST && matches!(path.as_str(), "/work/swarm" | "/work/history" | "/work/steps");
         if is_page || is_view {
             return next.run(req).await;
+        }
+        if c.shared.lock().unwrap().viewer {
+            return error(StatusCode::FORBIDDEN, "this Mac shows the build; it coordinates nothing");
         }
         // A job's: with its key, from this Mac itself.
         if path.starts_with("/task/") {
