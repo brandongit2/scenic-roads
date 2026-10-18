@@ -1118,7 +1118,8 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
   slope piece 1.5, peaks 2.5; the 3D buildings' by the rows they read, `agent::bld_peak`). Measures
   of older `coord::cost_version`s count for nothing. A member asks only for steps its disk has room
   for, never while a newer app waits, and takes the earliest step with a fitting target, from the
-  far end of the plan (terrain from the near end).
+  front of the plan (the coordinator's `pick_every`; after its own last target of the step when
+  that's open).
 - **The same app** (docs/pool.md §6.1): a member on another app than the lead's gets nothing (409,
   why in words), since its work would be recorded under keys another app's code made. Its jobs under
   way go on. A page's tasks run the coordinator's own WebAssembly; their results are checked (the
@@ -1163,8 +1164,8 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
      left first. For each: the stale terrain areas it reads (pieces, then each assembly once its
      pieces are current with mids), then its units whose terrain is built, then slope and tree
      cover; but first, the slope and tree cover of the regions done that the map hasn't as they are
-     now. Other members take the earliest shared step with work that fits, from the far end
-     (terrain from the near end).
+     now. Other members take the earliest step offered them with work that fits, from the front of
+     the plan (the coordinator's `pick_every`).
    - **Publishing**, before all of the regions' work (after heritage-sites), as soon as the records
      change, from the records as they are (nothing is fixed as of a time): a prune of what the
      coverage no longer builds (§5, Shrinking), then the publishing chain (4, Roads), its map tiles

@@ -625,7 +625,7 @@ fn publishing_lines(st: &agent::Status) -> Vec<String> {
         out.push(format!("  last catalog: {}, {}, {kind}", c.n, ago(c.at)));
     }
     if u.tiles > 0 || !p.drawing.is_empty() {
-        let by: Vec<String> = p.drawing.iter().map(|(h, k)| format!("{h} {k}")).collect();
+        let by: Vec<String> = p.drawing.iter().map(|(h, k)| format!("{h}: {}", plural(*k, "tile"))).collect();
         let by = if by.is_empty() { String::new() } else { format!(" (being drawn: {})", by.join(", ")) };
         out.push(format!("  map tiles to draw: {}{by}", u.tiles));
     }
@@ -642,7 +642,7 @@ fn publishing_lines(st: &agent::Status) -> Vec<String> {
         out.push(format!("  next: {}", next.join(", ")));
     }
     if !p.adopted.is_empty() {
-        let a: Vec<String> = p.adopted.iter().map(|(h, c)| format!("{h} catalog {} ({})", c.n, ago(c.at))).collect();
+        let a: Vec<String> = p.adopted.iter().map(|(h, c)| format!("{h}: catalog {} ({})", c.n, ago(c.at))).collect();
         out.push(format!("  adopted: {}", a.join(", ")));
     }
     for r in &u.regions {
@@ -1498,9 +1498,9 @@ mod tests {
             [
                 "Publishing: drawing the map tiles of the units built",
                 "  last catalog: 812, 2 min ago, map tiles only",
-                "  map tiles to draw: 18 (being drawn: m1 6, m4 12)",
+                "  map tiles to draw: 18 (being drawn: m1: 6 tiles, m4: 12 tiles)",
                 "  next: the low zooms in 2.0 h, the landmarks in 50 min, the area overlays now",
-                "  adopted: m1 catalog 811 (3 min ago), m4 catalog 812 (1 min ago)",
+                "  adopted: m1: catalog 811 (3 min ago), m4: catalog 812 (1 min ago)",
             ]
         );
     }

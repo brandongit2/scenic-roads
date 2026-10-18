@@ -353,3 +353,14 @@ mod tests {
         assert!(w.slept() < 2);
     }
 }
+
+#[cfg(test)]
+mod chip_tests {
+    #[test]
+    fn a_chips_short_name() {
+        assert_eq!(super::chip_short("Apple M4 Pro\n").as_deref(), Some("M4 Pro"));
+        assert_eq!(super::chip_short("Apple M1").as_deref(), Some("M1"));
+        assert_eq!(super::chip_short("Intel(R) Core(TM) i7").as_deref(), Some("Intel(R) Core(TM) i7"));
+        assert_eq!(super::chip_short("  "), None);
+    }
+}

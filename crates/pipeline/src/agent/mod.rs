@@ -6813,9 +6813,12 @@ impl Agent {
             );
             let chains = build::chains_left(cov, date, &manifest, &done, &inputs, &self.terrain_tiles(root, &manifest));
             // (A fault in it costs the status its forecast, never the agent.)
+            let took = std::time::Instant::now();
             let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.forecast_now(root, &before, &planned.regions, &planned.backfill, chains, blind, &peak)
             }));
+            // (Its time, in the log: it runs with each plan.)
+            eprintln!("agent: the forecast took {} ms", took.elapsed().as_millis());
             match made {
                 Ok(f) => *self.forecast.borrow_mut() = Some(f),
                 Err(_) => {
@@ -6937,13 +6940,15 @@ impl Agent {
             let mut a = self.adopted.borrow_mut();
             let n = last.map(|l| l.n);
             if a.1 != n || now_s().saturating_sub(a.0) >= 300 {
-                // (Past the deadline: the last read kept, tried again next time.)
-                if let Ok(read) = adopted(root) {
-                    *a = (now_s(), n, read);
-                }
+                // (Past the deadline: the last read kept, tried again five minutes on.)
+                let read = adopted(root).unwrap_or_else(|_| a.2.clone());
+                *a = (now_s(), n, read);
             }
         }
-        Published { last, low: c.at > 0 && c.low_at == Some(c.at), drawing, adopted: self.adopted.borrow().2.clone() }
+        // (The low zooms' flag of the same catalog as `last`: the one this record noted, not a
+        // newer one served since.)
+        let low = c.at > 0 && c.low_at == Some(c.at) && last.is_some_and(|l| l.at <= c.at);
+        Published { last, low, drawing, adopted: self.adopted.borrow().2.clone() }
     }
 
     /// The forecast (crate::agent::forecast) of the work left: `before`, the lead's jobs before
@@ -7113,8 +7118,12 @@ impl Agent {
                 .map(|r| (step_of(&r.spec.id), r.spec.record.as_ref().map_or(1, |w| w.targets.len().max(1))))
         };
         // Its other slots: a lane each, as many as it may run now (its ramp's: `forecast::slot_lanes`),
-        // each any work of the plan that fits its share of the memory.
+        // and those its ramp grows to over the forecast, one each clean stretch from when it next
+        // grows (`RAMP_CLEAN_S`; within two days); each any work of the plan that fits its Mac's room
+        // beside the others (`forecast::MacRoom`).
         let mac_mb = (self.mac.resources(&self.o.home, None, None, None).mem_gb * 1024.0) as u64;
+        let mut rooms: BTreeMap<String, forecast::MacRoom> = BTreeMap::new();
+        rooms.insert(self.host.clone(), forecast::MacRoom { mem_mb: mac_mb, cores: mac_cores() });
         let mut machines = vec![Machine {
             name: self.host.clone(),
             speed: 1.0,
@@ -7126,8 +7135,23 @@ impl Agent {
             unit_extra_s,
             lead_steps: true,
             running: running_of(0),
+            mac: Some(self.host.clone()),
+            from_s: 0.0,
         }];
-        for k in 1..own_lanes {
+        let grows = {
+            let reached = self.mem.ramp.slots.max(RAMP_START);
+            let clean = self.mem.ramp.clean_since;
+            let most = job_slots(mac_cores() as usize);
+            (!self.ramp_held && self.ramp_trouble.is_none() && clean > 0 && reached < most).then(|| {
+                let first = (clean + RAMP_CLEAN_S).saturating_sub(now_s()) as f64;
+                (0..most - own_lanes.min(most))
+                    .map(|j| first + (j as u64 * RAMP_CLEAN_S) as f64)
+                    .take_while(|&s| s < 2.0 * 86_400.0)
+                    .collect::<Vec<f64>>()
+            })
+        }
+        .unwrap_or_default();
+        for k in 1..own_lanes + grows.len() {
             let name = self.worker_of(k);
             let (speed, measured) = speeds.get(&name).or_else(|| speeds.get(&others)).copied().unwrap_or((0.8, false));
             machines.push(Machine {
@@ -7136,17 +7160,19 @@ impl Agent {
                 measured,
                 helper: false,
                 equal: true,
-                mem_mb: mac_mb / own_lanes as u64,
+                mem_mb: mac_mb,
                 busy_s: if k < self.slots.len() { busy(k, speed) } else { 0.0 },
                 unit_extra_s,
                 lead_steps: true,
                 running: running_of(k),
+                mac: Some(self.host.clone()),
+                from_s: if k < own_lanes { 0.0 } else { grows[k - own_lanes] },
             });
         }
         // Each member's slots, a lane each, as many as it may run (crate::agent::job_slots of its
-        // cores as the lead's coordinator last heard them, else one per job it runs), its memory
-        // shared among them; each any work of the plan any Mac may run that fits it, as the
-        // coordinator packs its asks (task #383).
+        // cores as the lead's coordinator last heard them, else one per job it runs), drawing on its
+        // whole memory and cores together (`forecast::MacRoom`); each any work of the plan any Mac
+        // may run that fits, as the coordinator packs its asks (task #383).
         let caps: BTreeMap<String, crate::coord::Capacity> =
             self.coord.as_ref().map(|c| c.capacities().into_iter().collect()).unwrap_or_default();
         for h in &helpers {
@@ -7164,6 +7190,13 @@ impl Agent {
                 .copied()
                 .filter(|&m| m > 0)
                 .map(|m| m * n as u64));
+            rooms.insert(
+                h.host.clone(),
+                forecast::MacRoom {
+                    mem_mb: mem_all.unwrap_or(0),
+                    cores: cap.map_or(h.resources.as_ref().map_or(8, |r| r.cores as u32), |c| c.cores),
+                },
+            );
             for k in 0..n {
                 let name = slot_worker(&h.host, k);
                 let (speed, measured) =
@@ -7176,7 +7209,13 @@ impl Agent {
                     .map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64)
                     .fold(0.0, f64::max);
                 let job = jobs.iter().find(|j| j.slot == Some(k));
-                let eta = job.map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
+                // (No progress said: its step's measured time a target, at its pace.)
+                let eta = job.map(|j| {
+                    j.progress
+                        .as_ref()
+                        .and_then(|p| p.eta_s)
+                        .map_or_else(|| per(&step_of(&j.id)) / speed.max(0.1), |e| e as f64)
+                });
                 let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
                 let targets = leased.iter().find(|l| l.0 == name).map_or(1, |l| l.2.len().max(1));
                 machines.push(Machine {
@@ -7185,11 +7224,13 @@ impl Agent {
                     measured,
                     helper: false,
                     equal: true,
-                    mem_mb: mem_all.map_or(6144, |m| m / n as u64),
+                    mem_mb: mem_all.unwrap_or(6144 * n as u64),
                     busy_s,
                     unit_extra_s: 0.0,
                     lead_steps: false,
                     running: job.map(|j| (step_of(&j.id), targets)),
+                    mac: Some(h.host.clone()),
+                    from_s: 0.0,
                 });
             }
         }
@@ -7227,6 +7268,8 @@ impl Agent {
             idle,
             machines,
             running,
+            macs: rooms,
+            old_app: self.coord.as_ref().is_some_and(|c| !c.all_new()),
         };
         let mut f = forecast::forecast(&inp);
         // (A slot's job waiting on a worker holding its unit's tail: said beside its machine.)

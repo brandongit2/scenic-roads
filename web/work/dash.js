@@ -731,13 +731,13 @@ function publishing(m) {
   row("Last catalog", last ? [h("b", null, `${last.n}`), ` · ${clock(last.at)} (${ago(now, last.at)})`, h("span", "dim", p.last ? ` · ${p.low ? "with the low zooms" : "map tiles only"}` : "")] : "none yet");
   if (u) {
     const by = Object.entries(p.drawing || {});
-    row("Map tiles to draw", h("b", null, n(u.tiles || 0)), by.length ? h("span", "dim", " · being drawn: ") : null, ...by.map(([host, k]) => h("span", { class: "by", title: host }, swatch(m.colourOf(host)), `${nm(host)} ${n(k)}`)));
+    row("Map tiles to draw", h("b", null, n(u.tiles || 0)), by.length ? h("span", "dim", " · being drawn: ") : null, ...by.map(([host, k]) => h("span", { class: "by", title: host }, swatch(m.colourOf(host)), `${nm(host)}: ${plural(k, "tile")}`)));
   }
   if (fc?.publishes?.length) {
     row("Next", fc.publishes.map((x, i) => [i ? " · " : "", `${PUBLISH_NAMES[x.what] || x.what} `, h("b", null, x.what === "low" && u?.low ? "now" : x.at <= now + 59 ? "now" : `≈ ${clock(x.at)}`)]).flat());
   }
   const ad = Object.entries(p.adopted || {});
-  if (ad.length) row("Each Mac's map", ...ad.map(([host, c], i) => h("span", { class: `by ${last && c.n < last.n ? "behind" : ""}`, title: `${host}'s map server adopted catalog ${c.n} ${ago(now, c.at)}` }, i ? " " : "", swatch(m.colourOf(host)), `${nm(host)} ${c.n}`)));
+  if (ad.length) row("Each Mac's map", ...ad.map(([host, c], i) => h("span", { class: `by ${last && c.n < last.n ? "behind" : ""}`, title: `${host}'s map server adopted catalog ${c.n} ${ago(now, c.at)}` }, i ? " " : "", swatch(m.colourOf(host)), `${nm(host)}: ${c.n}`)));
   const waits = (a.waiting || []).filter((w) => w.step === "catalog" || /publish/i.test(w.what));
   for (const w of waits) rows.push(h("div", "small warn", w.why));
   if (u?.regions?.length) rows.push(h("div", "small", `Done, not on the map as they are: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));

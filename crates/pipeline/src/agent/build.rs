@@ -1992,9 +1992,10 @@ pub struct RegionLeft {
     #[serde(default)]
     pub expected: Vec<String>,
     /// The map tiles (pack(T)'s targets, "6/x/y") its units draw that are stale now or will be once
-    /// its units left are built: what's drawn before it's on the map as it's built now.
+    /// its units left are built, each with its units that draw it (a tile waits for those alone):
+    /// what's drawn before it's on the map as it's built now.
     #[serde(default)]
-    pub packs: Vec<String>,
+    pub packs: Vec<(String, Vec<String>)>,
 }
 
 /// The plan for the coverage `cov`, the pass of `date`, the build manifest `m` (logical → content)
@@ -2334,16 +2335,19 @@ pub fn plan(
                 .map(|i| units[i].0.slash())
                 .collect(),
             packs: {
-                // (Its units left's tiles, and its built units' tiles stale now.)
-                let mut p: BTreeSet<String> =
-                    r.stale.iter().flat_map(|&i| tiles_of(i).iter().map(|(x, y)| format!("6/{x}/{y}"))).collect();
-                if !stale_tiles.is_empty() {
-                    p.extend(
-                        r.all
-                            .iter()
-                            .flat_map(|&i| tiles_of(i).iter().map(|(x, y)| format!("6/{x}/{y}")))
-                            .filter(|t| stale_tiles.contains(t.as_str())),
-                    );
+                // (Its units left's tiles, and its built units' tiles stale now; each with the units
+                // of its that draw it: what it waits for.)
+                let mut p: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                for &i in &r.all {
+                    if !unit_stale[i] && stale_tiles.is_empty() {
+                        continue;
+                    }
+                    for (x, y) in tiles_of(i) {
+                        let t = format!("6/{x}/{y}");
+                        if unit_stale[i] || stale_tiles.contains(t.as_str()) {
+                            p.entry(t).or_default().push(units[i].0.slash());
+                        }
+                    }
                 }
                 p.into_iter().collect()
             },
@@ -5170,11 +5174,13 @@ pub(crate) mod tests {
         // (Task #259) each region's map tiles to draw before it's on the map as it's built now,
         // for the forecast: the tiles stale now among its, and its units left's.
         assert!(
-            p.work[0].targets.iter().all(|t| p.regions.iter().any(|r| r.packs.contains(&t.0))),
+            p.work[0].targets.iter().all(|t| p.regions.iter().any(|r| r.packs.iter().any(|(x, _)| *x == t.0))),
             "{:?}",
             p.regions.iter().map(|r| (&r.id, &r.packs)).collect::<Vec<_>>()
         );
         assert!(p.regions.iter().filter(|r| !r.units.is_empty()).all(|r| !r.packs.is_empty()));
+        // Each tile with the units of its region that draw it, one at least.
+        assert!(p.regions.iter().flat_map(|r| &r.packs).all(|(_, us)| !us.is_empty()));
         let p = hplan(&c, &reach, &m, &done, None, Some(CATALOG_CAP_S));
         assert_eq!((p.work[0].step.as_str(), p.work[1].step.as_str()), ("catalog", "pack"));
         assert!(p.ready.is_empty());

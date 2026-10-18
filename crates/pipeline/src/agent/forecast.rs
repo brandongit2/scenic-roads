@@ -2,17 +2,21 @@
 //! step, each region and the whole build will be done, when each region reaches the map, when the
 //! cadenced publishes may next go out, and what each machine does next.
 //!
-//! The work left is run through in the order the agent runs it: the lead takes the first it can
-//! (the pass's worldwide jobs, then the map tiles of the units built, then a region at a time: its
-//! terrain, then its units; with none it can do now, the slope, tree cover and the chains' work),
-//! its other slots (one lane, `equal`) any work in the lead's order that fits their memory, each
-//! helper the far end of the first shared step with work it can do that fits its memory (terrain's
-//! near end: the next region's; slope once its area's terrain is built, a unit once its region's
-//! terrain is). The trains' and the landmarks' chains run from the start, each step once what it
-//! reads is built. Publishing goes per unit (docs/plan.md §8, Publishing): a region's map tiles
-//! (`RegionLeft::packs`, each at its own measured time) are drawn once its units are built, ahead
-//! of the regions' work, and a catalog follows within the minute (build::CATALOG_EVERY_S): the
-//! region is on the map then. The whole-map steps go by their cadence (`Forecast::publishes`:
+//! The work left is run through in the order the agent runs it: the lead's first slot takes the
+//! first it can (the pass's worldwide jobs, then the map tiles of the units built, then a region at
+//! a time: its terrain, then its units; with none it can do now, the slope, tree cover and the
+//! chains' work). Every other slot, the lead's and each member's (a lane each, `equal`; as many as
+//! each Mac may run now, and the slots the lead's ramp grows to later, `Machine::from_s`), takes
+//! from the front of the plan's order the first work that it may run (a member never the lead's own
+//! steps) and that fits its Mac's room beside what the Mac runs, as the coordinator packs an ask
+//! (`MacRoom`: its whole memory and its cores at the packed share each; a step not measured alone;
+//! a job an ask while a member runs an older app); the pages' lane (`helper`) the far end of the
+//! first shared step it can do (terrain's near end). Each lane starts with its slot's job under
+//! way. The trains' and the landmarks' chains run from the start, each step once what it reads is
+//! built. Publishing goes per unit (docs/plan.md §8, Publishing): each map tile of a region
+//! (`RegionLeft::packs`, at its own measured time) is drawn once the units that draw it are built,
+//! ahead of the regions' work, and a catalog follows within the minute (build::CATALOG_EVERY_S):
+//! the region is all on the map then (none said once only slope and tree cover are left). The whole-map steps go by their cadence (`Forecast::publishes`:
 //! build::low_gate, build::gate_open). Each target takes its last run's time (else its step's mean,
 //! else a first guess), at the speed measured for the machine doing it. It's run three times: as
 //! estimated, and for a range, the times measured a little off and those guessed much more.
@@ -53,7 +57,26 @@ pub struct Machine {
     /// The job its slot runs now, when no item of the work left is it (a step's job the plan lists
     /// no target of, a daily one): its step and targets, until `busy_s`. On its lane first.
     pub running: Option<(String, usize)>,
+    /// The Mac whose room (`Input::macs`) its slot shares with that Mac's other slots, as the
+    /// coordinator packs an ask (crate::coord's `pack`); None: its own `mem_mb` alone.
+    pub mac: Option<String>,
+    /// Seconds from now until its slot opens: a slot the lead's ramp grows to later (one each
+    /// clean stretch, crate::agent's RAMP_CLEAN_S); 0, open now.
+    pub from_s: f64,
 }
+
+/// A Mac's room, as the coordinator packs its asks: its memory (MB; 0, not known) and cores, its
+/// jobs packed at the packed share each (crate::coord::packed_share).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MacRoom {
+    pub mem_mb: u64,
+    pub cores: u32,
+}
+
+/// While a member runs an older app the coordinator grants one job an ask (crate::coord's
+/// `old_member`): a Mac's jobs then start this far apart at least (its asks', the coordinator's
+/// `ASKING`).
+pub const OLD_APP_GAP_S: f64 = 30.0;
 
 /// What a target takes: its time at the lead's pace (seconds), whether that time was measured,
 /// and its memory (MB).
@@ -94,6 +117,10 @@ pub struct Input<'a> {
     pub machines: Vec<Machine>,
     /// Targets being built now: (step, target) → the machine building it.
     pub running: BTreeMap<(String, String), usize>,
+    /// Each Mac's room, by the name its lanes give (`Machine::mac`).
+    pub macs: BTreeMap<String, MacRoom>,
+    /// A member runs an older app: one job an ask (`OLD_APP_GAP_S`).
+    pub old_app: bool,
 }
 
 /// Seconds since each cadenced publish last went out (None: not known, so due now): the low zooms
@@ -361,14 +388,13 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         for u in r.expected.iter().take(n) {
             add(&mut out, &mut by_target, "unit", u, (inp.cost)("unit", u), Phase::Region, deps.clone());
         }
-        // Its map tiles, once its units are built (a tile two regions draw, with the first).
-        let mut built: Vec<usize> =
-            r.units.iter().chain(&r.expected).filter_map(|u| item_of(&by_target, "unit", u)).collect();
-        built.extend(&deps);
-        built.sort_unstable();
-        built.dedup();
-        for t in &r.packs {
-            add(&mut out, &mut by_target, "pack", t, (inp.cost)("pack", t), Phase::Publish, built.clone());
+        // Its map tiles, each once the units that draw it are built (a tile two regions draw, with
+        // the first).
+        for (t, us) in &r.packs {
+            let mut built: Vec<usize> = us.iter().filter_map(|u| item_of(&by_target, "unit", u)).collect();
+            built.sort_unstable();
+            built.dedup();
+            add(&mut out, &mut by_target, "pack", t, (inp.cost)("pack", t), Phase::Publish, built);
         }
     }
     for r in inp.regions {
@@ -417,7 +443,6 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
             ("terrain-lo", &r.terrain_lo),
             ("unit", &r.units),
             ("unit", &r.expected),
-            ("pack", &r.packs),
             ("slope", &r.slope),
             ("slope-lo", &r.slope_lo),
             ("trees", &r.trees),
@@ -425,6 +450,7 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         ] {
             mine.extend(list.iter().filter_map(|t| by_target.get(&(step.to_string(), t.clone())).copied()));
         }
+        mine.extend(r.packs.iter().filter_map(|(t, _)| by_target.get(&("pack".to_string(), t.clone())).copied()));
         region_items[k] = mine;
     }
     // The chains: from the start, each step once what it reads is built.
@@ -461,7 +487,9 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         it.cost.secs = scale(&it.cost).max(1.0);
     }
     let n = inp.machines.len();
-    let mut free: Vec<f64> = inp.machines.iter().map(|m| m.busy_s.max(0.0)).collect();
+    let mut free: Vec<f64> = inp.machines.iter().map(|m| m.busy_s.max(m.from_s).max(0.0)).collect();
+    // (A slot busy with a job no item is, until when: it holds a share of its Mac meanwhile.)
+    let held_until: Vec<f64> = inp.machines.iter().map(|m| m.busy_s.max(0.0)).collect();
     // What's being built now: done when its machine is free.
     for ((step, target), &m) in &inp.running {
         if let Some(it) = items.iter_mut().find(|i| &i.step == step && &i.target == target) {
@@ -483,8 +511,72 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
     let done_by = |items: &[Item], i: usize, t: f64| items[i].by.is_some() && items[i].end <= t + 1e-9;
     let runnable =
         |items: &[Item], i: usize, t: f64| items[i].by.is_none() && items[i].deps.iter().all(|&d| done_by(items, d, t));
-    let first =
-        |items: &[Item], p: Phase, t: f64| (0..items.len()).find(|&i| items[i].phase == p && runnable(items, i, t));
+    // Whether machine `m` may start item `i` at `t` beside what its Mac runs, as the coordinator packs
+    // (crate::coord's `pack`): within the Mac's memory and its cores at the packed share each; a
+    // cold start (its time not measured) alone on its Mac, none of its step under way anywhere, and
+    // nothing beside one; while a member runs an older app, a job an ask (`OLD_APP_GAP_S`).
+    let room_ok = |items: &[Item], m: usize, i: usize, t: f64| -> bool {
+        let Some(g) = inp.machines[m].mac.as_deref() else { return true };
+        let room = inp.macs.get(g).copied().unwrap_or_default();
+        let on_mac = |k: usize| inp.machines[k].mac.as_deref() == Some(g);
+        let now_on = |it: &Item| it.by.is_some_and(on_mac) && it.from <= t + 1e-9 && it.end > t + 1e-9;
+        let on: Vec<&Item> = items.iter().filter(|it| now_on(it)).collect();
+        let others = (0..inp.machines.len())
+            .filter(|&k| {
+                k != m
+                    && on_mac(k)
+                    && held_until[k] > t + 1e-9
+                    && !items.iter().any(|it| it.by == Some(k) && it.running)
+            })
+            .count();
+        let jobs = on.len() + others;
+        if on.iter().any(|it| !it.cost.known) {
+            return false;
+        }
+        if !items[i].cost.known {
+            let step_on = items
+                .iter()
+                .any(|it| it.step == items[i].step && it.by.is_some() && it.from <= t + 1e-9 && it.end > t + 1e-9);
+            return jobs == 0 && !step_on;
+        }
+        if room.mem_mb > 0 && on.iter().map(|it| it.cost.peak_mb).sum::<u64>() + items[i].cost.peak_mb > room.mem_mb {
+            return false;
+        }
+        let share = crate::coord::packed_share(room.cores.max(1));
+        if jobs > 0 && (jobs as u32 + 1) * share > room.cores.max(1) {
+            return false;
+        }
+        if inp.old_app {
+            let last = items
+                .iter()
+                .filter(|it| it.by.is_some_and(on_mac) && !it.running && it.from <= t + 1e-9)
+                .map(|it| it.from)
+                .fold(f64::NEG_INFINITY, f64::max);
+            if t < last + OLD_APP_GAP_S - 1e-9 {
+                return false;
+            }
+        }
+        true
+    };
+    // (When a Mac's next job may start a job an ask, `OLD_APP_GAP_S` after its last: a wake.)
+    let ask_wake = |items: &[Item], m: usize, t: f64| -> f64 {
+        let Some(g) = inp.machines[m].mac.as_deref().filter(|_| inp.old_app) else { return f64::INFINITY };
+        let last = items
+            .iter()
+            .filter(|it| {
+                it.by.is_some_and(|k| inp.machines[k].mac.as_deref() == Some(g)) && !it.running && it.from <= t + 1e-9
+            })
+            .map(|it| it.from)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if last + OLD_APP_GAP_S > t + 1e-9 {
+            last + OLD_APP_GAP_S
+        } else {
+            f64::INFINITY
+        }
+    };
+    let first = |items: &[Item], m: usize, p: Phase, t: f64| {
+        (0..items.len()).find(|&i| items[i].phase == p && runnable(items, i, t) && room_ok(items, m, i, t))
+    };
     let mut guard = 0usize;
     loop {
         guard += 1;
@@ -530,26 +622,22 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             continue;
         }
         if mac.equal {
-            // Any work it can do that fits its memory and that it may run, in the plan's order: the
-            // pass's, the map tiles, the regions' (in order), slope and tree cover, the chains',
-            // then what comes after; but a chain's work first while no other lane is on one (a slot
-            // beside the regions' work takes the chains: crate::agent::build::plan).
+            // Any work it can do that fits its Mac's room (`room_ok`) and that it may run, from the
+            // front of the plan's order, as the coordinator offers it (crate::coord's `pick_every`):
+            // the pass's, the map tiles, the regions' (in order), slope and tree cover, the chains',
+            // then what comes after.
             let may = |step: &str| mac.lead_steps || super::steps::place(step) == super::steps::Place::Any;
             let fits = |items: &[Item], i: usize| {
-                items[i].cost.peak_mb <= mac.mem_mb && may(&items[i].step) && runnable(items, i, t)
+                items[i].cost.peak_mb <= mac.mem_mb
+                    && may(&items[i].step)
+                    && runnable(items, i, t)
+                    && room_ok(items, m, i, t)
             };
-            let on_chain = items
-                .iter()
-                .any(|i| i.phase == Phase::Chain && i.by.is_some() && i.from <= t + 1e-9 && i.end > t + 1e-9);
-            let order: &[Phase] = if on_chain {
-                &[Phase::Before, Phase::Publish, Phase::Region, Phase::Late, Phase::Chain, Phase::After]
-            } else {
-                &[Phase::Before, Phase::Publish, Phase::Chain, Phase::Region, Phase::Late, Phase::After]
-            };
+            let order = [Phase::Before, Phase::Publish, Phase::Region, Phase::Late, Phase::Chain, Phase::After];
             let pick = order.iter().find_map(|&p| (0..items.len()).find(|&i| items[i].phase == p && fits(&items, i)));
             free[m] = match pick {
                 Some(i) => take(&mut items, i, t),
-                None => next_end(&items, &free, m, t),
+                None => next_end(&items, &free, m, t).min(ask_wake(&items, m, t)),
             };
             continue;
         }
@@ -569,21 +657,21 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
                             .all(|&i| done_by(&items, i, t))
                     })
                     .flat_map(|k| region_items[k].iter().copied())
-                    .find(|&i| items[i].phase == Phase::Late && runnable(&items, i, t))
+                    .find(|&i| items[i].phase == Phase::Late && runnable(&items, i, t) && room_ok(&items, m, i, t))
             };
-            first(&items, Phase::Before, t)
-                .or_else(|| first(&items, Phase::Publish, t))
+            first(&items, m, Phase::Before, t)
+                .or_else(|| first(&items, m, Phase::Publish, t))
                 .or_else(prep)
-                .or_else(|| first(&items, Phase::Region, t))
-                .or_else(|| first(&items, Phase::Chain, t))
+                .or_else(|| first(&items, m, Phase::Region, t))
+                .or_else(|| first(&items, m, Phase::Chain, t))
         } else {
             // After the last unit and terrain: the map tiles left, the slope and tree cover, the
             // chains' work, then what comes after.
-            [Phase::Publish, Phase::Late, Phase::Chain, Phase::After].iter().find_map(|&p| first(&items, p, t))
+            [Phase::Publish, Phase::Late, Phase::Chain, Phase::After].iter().find_map(|&p| first(&items, m, p, t))
         };
         free[m] = match pick {
             Some(i) => take(&mut items, i, t),
-            None => next_end(&items, &free, m, t),
+            None => next_end(&items, &free, m, t).min(ask_wake(&items, m, t)),
         };
     }
     let done = items.iter().all(|i| i.by.is_some());
@@ -651,8 +739,7 @@ pub fn forecast(inp: &Input) -> Forecast {
             .map(|&i| &expected.items[i])
             .filter(|i| matches!(i.phase, Phase::Region | Phase::Publish))
             .collect();
-        its.iter()
-            .all(|i| i.by.is_some())
+        (!its.is_empty() && its.iter().all(|i| i.by.is_some()))
             .then(|| its.iter().map(|i| i.end).fold(0.0, f64::max) + CATALOG_EVERY_S as f64)
     };
     for (k, r) in inp.regions.iter().enumerate() {
@@ -671,7 +758,8 @@ pub fn forecast(inp: &Input) -> Forecast {
             on_map: r.on_map,
             left,
             ready_at: ready.map(at),
-            map_at: if mine.is_empty() { None } else { on_map_at(mine).map(at) },
+            // (None with no terrain, unit or map tile of its left, or on the map as it is.)
+            map_at: if r.on_map == Some(true) { None } else { on_map_at(mine).map(at) },
         });
     }
     // The cadenced publishes: each once its cadence has passed since it last went, or once no unit
@@ -759,6 +847,8 @@ pub fn equal_machines(inp: &Input, lanes: Vec<Machine>, running: BTreeMap<(Strin
         idle: inp.idle.clone(),
         machines: lanes,
         running,
+        macs: inp.macs.clone(),
+        old_app: inp.old_app,
     })
 }
 
@@ -893,6 +983,11 @@ mod tests {
         }
     }
 
+    /// A map tile and the units that draw it.
+    fn tile(t: &str, units: &[&str]) -> (String, Vec<String>) {
+        (t.into(), units.iter().map(|u| u.to_string()).collect())
+    }
+
     fn mac(name: &str, speed: f64, helper: bool) -> Machine {
         Machine {
             name: name.into(),
@@ -930,6 +1025,8 @@ mod tests {
             idle: Vec::new(),
             machines,
             running: BTreeMap::new(),
+            macs: BTreeMap::new(),
+            old_app: false,
         }
     }
 
@@ -1107,13 +1204,13 @@ mod tests {
     #[test]
     fn one_mac_runs_a_region_and_its_map_tiles_then_it_is_on_the_map() {
         let regions = [RegionLeft {
-            packs: vec!["6/8/8".into(), "6/8/9".into()],
+            packs: vec![tile("6/8/8", &["6/8/8"]), tile("6/8/9", &["6/8/9"])],
             ..region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])
         }];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
-        // Terrain 600, two units 600: its last unit's end; its two map tiles (100 s each, measured
-        // per tile) and a catalog within the minute: on the map. Then its slope (200), then the
-        // landmarks (300).
+        // Terrain 600, two units 600, each unit's map tile (100 s, measured per tile) drawn once
+        // that unit is built, before the next unit (each tile waits for its own units alone): on
+        // the map a catalog's minute after the last. Then its slope (200), then the landmarks (300).
         assert_eq!(f.regions[0].map_at, Some(1_000_000 + 1200 + 200 + 60));
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 1600));
         assert_eq!(f.done_at, Some(1_000_000 + 1900));
@@ -1129,7 +1226,7 @@ mod tests {
         assert!(r[0] < f.done_at.unwrap() && f.done_at.unwrap() < r[1]);
         assert_eq!(
             f.next["m4"].iter().map(|n| (n.step.as_str(), n.targets.len())).collect::<Vec<_>>(),
-            [("terrain", 1), ("unit", 2), ("pack", 2)]
+            [("terrain", 1), ("unit", 1), ("pack", 1)]
         );
         // No lane of publishing's own: the map tiles are a step's run like any other.
         let lane: Vec<(&str, u64, u64, usize)> =
@@ -1138,8 +1235,10 @@ mod tests {
             lane,
             [
                 ("terrain", 0, 600, 1),
-                ("unit", 600, 1200, 2),
-                ("pack", 1200, 1400, 2),
+                ("unit", 600, 900, 1),
+                ("pack", 900, 1000, 1),
+                ("unit", 1000, 1300, 1),
+                ("pack", 1300, 1400, 1),
                 ("slope", 1400, 1600, 1),
                 ("marks", 1600, 1900, 1)
             ]
@@ -1165,7 +1264,7 @@ mod tests {
     #[test]
     fn a_helper_takes_the_far_end_then_what_it_frees() {
         let a = RegionLeft {
-            packs: vec!["6/8/8".into(), "6/8/7".into()],
+            packs: vec![tile("6/8/8", &["6/8/8"]), tile("6/8/7", &["6/8/8"])],
             ..region("a", &["3/1/1"], &["6/8/8"], &["3/1/1"])
         };
         let regions = [a, region("b", &["3/2/2"], &["6/16/16"], &[])];
@@ -1198,7 +1297,10 @@ mod tests {
     fn a_regions_map_tiles_come_before_the_next_regions_work() {
         // a, b and c (a unit of 300 s and a map tile of 100 s each): each region's tile drawn once
         // its unit is built, before the next region's unit; each on the map a minute after.
-        let packs = |r: RegionLeft, t: &str| RegionLeft { packs: vec![t.into()], ..r };
+        let packs = |r: RegionLeft, t: &str| {
+            let us: Vec<&str> = r.units.iter().map(String::as_str).collect();
+            RegionLeft { packs: vec![tile(t, &us)], ..r }
+        };
         let regions = [
             packs(region("a", &[], &["6/1/1"], &[]), "6/1/1"),
             packs(region("b", &[], &["6/2/2"], &[]), "6/2/2"),
@@ -1217,6 +1319,17 @@ mod tests {
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
         assert_eq!(f.steps.iter().find(|s| s.step == "pack").map(|s| s.left), Some(1));
         assert_eq!(f.regions[1].map_at, Some(1_000_000 + 700 + 60));
+    }
+
+    #[test]
+    fn a_region_with_only_slope_or_tree_cover_left_has_no_time_to_the_map() {
+        // (Task #259 review) its units and map tiles done: on the map as it's built now already,
+        // not "in a minute" each time the forecast is made; nor one on the map as it is.
+        let regions =
+            [region("a", &[], &[], &["3/1/1"]), RegionLeft { on_map: Some(true), ..region("b", &[], &["6/2/2"], &[]) }];
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
+        assert_eq!((f.regions[0].map_at, f.regions[1].map_at), (None, None));
+        assert!(f.regions[0].ready_at.is_some());
     }
 
     #[test]
@@ -1288,14 +1401,16 @@ mod tests {
         let f = forecast(&inp);
         assert_eq!((f.done_at, f.why.as_deref()), (None, Some("nothing left to build")));
         assert!(f.regions.is_empty());
-        // A region on the map as it was, rebuilt (a new pass): on the map as it is a minute after
-        // its unit; one with nothing left, no time.
+        // A region on the map as it was (its outline changed): on the map as it is a minute after
+        // its unit; one the map has as it is, rebuilt units or none left, no time.
         let regions = [
-            RegionLeft { on_map: Some(true), ..region("a", &[], &["6/8/8"], &[]) },
-            RegionLeft { id: "b".into(), on_map: Some(true), ..Default::default() },
+            RegionLeft { on_map: Some(false), ..region("a", &[], &["6/8/8"], &[]) },
+            RegionLeft { on_map: Some(true), ..region("b", &[], &["6/9/8"], &[]) },
+            RegionLeft { id: "c".into(), on_map: Some(true), ..Default::default() },
         ];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
-        assert_eq!((f.regions[0].map_at, f.regions[1].map_at), (Some(1_000_000 + 300 + 60), None));
+        let at = |k: usize| f.regions[k].map_at;
+        assert_eq!((at(0), at(1), at(2)), (Some(1_000_000 + 300 + 60), None, None));
         // Work that can't all be listed: no finish, and why.
         let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
         inp.blind = Some("the areas wait for the pass's reaches".into());
@@ -1344,8 +1459,9 @@ mod tests {
     #[test]
     fn a_lane_starts_with_its_slots_running_job_then_the_plans_work_of_every_kind() {
         // (Task #385) the lead's second slot runs a depth job no item is (40 min left). Its lane
-        // says the depth job first; a chain's step (the candidates) is taken beside the regions'
-        // work, not left to the end.
+        // says the depth job first; a chain's step (the candidates) comes in the plan's order,
+        // from the front, as the coordinator offers it (pick_every), once the units ahead of it are
+        // taken.
         let units: Vec<String> = (0..6).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
@@ -1362,7 +1478,61 @@ mod tests {
         let first = &f.lanes["m4 #2"][0];
         assert_eq!((first.step.as_str(), first.from, first.until, first.n), ("depth", 1_000_000, 1_002_400, 3));
         let pois = f.lanes.values().flatten().find(|l| l.step == "pois").unwrap();
-        assert_eq!(pois.from, 1_000_000, "{:?}", f.lanes);
+        assert_eq!(pois.from, 1_000_900, "after the three units each lane took first: {:?}", f.lanes);
+    }
+
+    #[test]
+    fn a_macs_slots_share_its_room_as_the_coordinator_packs() {
+        // (Task #383 review) a member of 8 cores (jobs packed at 2 each) and 8 GB, four slots;
+        // units of 3 GB: two at once by memory, not four.
+        let units: Vec<String> = (0..8).map(|i| format!("6/8/{i}")).collect();
+        let refs: Vec<&str> = units.iter().map(String::as_str).collect();
+        let regions = [region("a", &[], &refs, &[])];
+        let big = |step: &str, t: &str| Cost { peak_mb: 3000, ..cost(step, t) };
+        let slot =
+            |k: usize| Machine { mac: Some("m1".into()), mem_mb: 8000, ..member(&super::super::slot_worker("m1", k)) };
+        let lead = Machine { busy_s: 1e6, ..mac("m4", 1.0, false) };
+        let mut inp = input(&regions, vec![lead, slot(0), slot(1), slot(2), slot(3)], &big);
+        inp.after = Vec::new();
+        inp.macs.insert("m1".into(), MacRoom { mem_mb: 8000, cores: 8 });
+        let sim = run(&inp, &|c| c.secs);
+        let most = |sim: &Sim| {
+            (0..40)
+                .map(|k| k as f64 * 100.0 + 1.0)
+                .map(|t| sim.items.iter().filter(|i| i.by.is_some_and(|m| m > 0) && i.from <= t && i.end > t).count())
+                .max()
+                .unwrap()
+        };
+        assert_eq!(most(&sim), 2, "8 GB of 3 GB jobs");
+        // By cores: 1 GB jobs on 8 cores at 2 each, four at once; on 4 cores, two.
+        let small = |step: &str, t: &str| Cost { peak_mb: 1000, ..cost(step, t) };
+        inp.cost = &small;
+        assert_eq!(most(&run(&inp, &|c| c.secs)), 4);
+        inp.macs.insert("m1".into(), MacRoom { mem_mb: 8000, cores: 4 });
+        assert_eq!(most(&run(&inp, &|c| c.secs)), 2);
+        // A step not measured runs alone on its Mac, none of it elsewhere.
+        let cold = |step: &str, t: &str| Cost { known: false, ..small(step, t) };
+        inp.cost = &cold;
+        assert_eq!(most(&run(&inp, &|c| c.secs)), 1);
+        // A member on an older app: a job an ask, the Mac's starts 30 s apart at least.
+        inp.cost = &small;
+        inp.old_app = true;
+        let sim = run(&inp, &|c| c.secs);
+        let mut starts: Vec<f64> = sim.items.iter().filter(|i| i.by.is_some_and(|m| m > 0)).map(|i| i.from).collect();
+        starts.sort_by(f64::total_cmp);
+        assert!(starts.windows(2).all(|w| w[1] - w[0] >= OLD_APP_GAP_S - 1e-9), "{starts:?}");
+    }
+
+    #[test]
+    fn a_slot_the_ramp_grows_to_opens_later() {
+        // (Task #383 review) the lead's third slot opens in an hour: nothing on it before.
+        let units: Vec<String> = (0..40).map(|i| format!("6/8/{i}")).collect();
+        let refs: Vec<&str> = units.iter().map(String::as_str).collect();
+        let regions = [region("a", &[], &refs, &[])];
+        let lead2 = Machine { equal: true, lead_steps: true, ..mac("m4 #2", 1.0, false) };
+        let lead3 = Machine { equal: true, lead_steps: true, from_s: 3600.0, ..mac("m4 #3", 1.0, false) };
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), lead2, lead3], &cost));
+        assert_eq!(f.lanes["m4 #3"].first().map(|l| l.from), Some(1_000_000 + 3600), "{:?}", f.lanes);
     }
 
     /// The trains' and the landmarks' chains, as the plan lists them.
