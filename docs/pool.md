@@ -604,13 +604,18 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and
   free, on the page as bars), its jobs' share of the NAS budget (`Coordinator::nas_shares`, the
   status's `nas_share`: their leased jobs' NAS weights in thousandths of the whole); a block per
-  running job by slot, with its lane's next work; and why nothing more fits: the packing's refusal
-  as its last ask was packed (`Coordinator::refusals`, the status's `packing`: a cold start
-  running or waiting, cores short for the next job open, or nothing offered fitting the room
-  left), shown while that Mac's capacity is fresh. The forecast's lanes are per slot
+  running job numbered by its real slot (`JobView::slot`: slots may be sparse, so a Mac running
+  only its fourth slot shows slot 4), with that slot's lane's next work; and why nothing more
+  fits: the packing's refusal as its last ask was packed (`Coordinator::refusals`, the status's
+  `packing`: a cold start running or waiting, cores short for the next job open, or nothing
+  offered fitting the room left), shown while the refusal itself is younger than two minutes
+  (`CAP_FRESH_S`), older ones dropped. The forecast's lanes are per slot
   (`<host>`, `<host> #2`, …): the lead's as many as its cores pack at the packed share
   (`forecast::packed_lanes`) within its ramp's slots, each member's likewise by the cores of its
-  capacity (else a lane per job it runs), each lane its share of the Mac's memory.
+  capacity (else a lane per job it runs), never fewer than its last running slot's number, each lane its
+  share of the Mac's memory. Each lane runs at its slot's measured speed (else the lead's other
+  slots' guess, four fifths of its pace, or a member's): slots on one Mac share its cores, so the
+  forecast is optimistic until each slot's speed is measured under that sharing.
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
   (`lead::own_status`): each member's state and whether the lead can be handed to it

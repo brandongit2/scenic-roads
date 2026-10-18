@@ -778,6 +778,13 @@ pub fn packed_lanes(cores: u32, slots: usize) -> usize {
     ((cores.max(1) / share) as usize).min(slots).max(1)
 }
 
+/// A Mac's lanes: `packed_lanes` within its `slots`, never fewer than its last running slot's
+/// number (`running`: the slots running a job, 0 the first; they may be sparse).
+pub fn slot_lanes(cores: u32, slots: usize, running: &[usize]) -> usize {
+    let top = running.iter().map(|k| k + 1).max().unwrap_or(0);
+    packed_lanes(cores, slots.max(top)).max(top)
+}
+
 /// The memory a lane is taken to have when its worker says none (MB), as a helper's.
 pub const LANE_MEM_MB: u64 = 6144;
 
@@ -1007,6 +1014,16 @@ mod tests {
         // More lanes finish no later than the lead's slot alone.
         let alone = equal_machines(&inp, vec![mac("m4", 1.0, false)], BTreeMap::new());
         assert!(f.done_at.unwrap() <= alone.done_at.unwrap());
+    }
+
+    #[test]
+    fn sparse_running_slots_keep_their_lanes() {
+        // (Task #246: the first and the fourth slots running, two slots packed: four lanes, so the
+        // fourth's job has its lane.)
+        assert_eq!(slot_lanes(8, 2, &[0, 3]), 4);
+        assert_eq!(slot_lanes(8, 2, &[3]), 4);
+        assert_eq!(slot_lanes(8, 2, &[0]), 2);
+        assert_eq!(slot_lanes(14, 12, &[]), 4, "14 cores at 3 each");
     }
 
     #[test]

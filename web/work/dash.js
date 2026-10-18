@@ -151,7 +151,9 @@ const stepOf = (id) => String(id || "").split(" ")[0];
 // A Mac's jobs, every slot's in order (the status's job, beside, more: crate::agent::Status).
 const jobsOf = (st) => [st.job, st.beside, ...(st.more || [])].filter(Boolean);
 // Whether worker `name` is one of `host`'s slots (crate::agent::is_slot_of: "m4", "m4 #2", …).
-const isSlotOf = (name, host) => name === host || (name.startsWith(`${host} #`) && /^\d+$/.test(name.slice(host.length + 2)) && +name.slice(host.length + 2) >= 2);
+// (A slot's number from its name: 1 for the bare host's, N for "<host> #N"; null for none.)
+const slotNo = (name, host) => (name === host ? 1 : name.startsWith(`${host} #`) && /^\d+$/.test(name.slice(host.length + 2)) && +name.slice(host.length + 2) >= 2 ? +name.slice(host.length + 2) : null);
+const isSlotOf = (name, host) => slotNo(name, host) != null;
 // Slot k's worker name (crate::agent::slot_worker).
 const slotName = (host, k) => (k ? `${host} #${k + 1}` : host);
 // What the lead's coordinator says of a Mac, by its slots' names: its capacity (coord::Capacity),
@@ -478,7 +480,9 @@ function machineCard(m, x) {
     h("div", "top", h("span", "name", x.name), h("span", "role", role), chip(state, cls), jobs.length ? chip(plural(jobs.length, "job")) : null, h("span", "right", `heard from ${ago(now, st.beat)}`)));
   if (x.role === "lead" && st.ramp) card.append(h("div", `sub ramp ${st.ramp.held ? "held" : st.ramp.not_clean ? "notclean" : ""}`, rampText(st.ramp, now)));
   card.append(...[capacityBlock(said)].filter(Boolean));
-  jobs.forEach((j, k) => {
+  jobs.forEach((j, i) => {
+    // (Its real slot, slots may be sparse; an older agent's says none: its place.)
+    const k = j.slot ?? i;
     const b = jobBlock(j, now);
     b.querySelector(".what").prepend(h("span", "slot", `${k + 1}`));
     card.append(b);
@@ -547,8 +551,7 @@ function schedule(m) {
   const span = t1 - t0;
   const x = (t) => `${(((Math.max(t0, Math.min(t1, t)) - t0) / span) * 100).toFixed(3)}%`;
   // Each Mac's lanes, a slot each in order, the lead's first; then any other the forecast has.
-  const slotNo = (nm) => +(nm.match(/ #(\d+)$/)?.[1] || 1);
-  const ordered = m.macs.flatMap((mm) => Object.keys(fc.lanes).filter((nm) => isSlotOf(nm, mm.name)).sort((p, q) => slotNo(p) - slotNo(q)));
+  const ordered = m.macs.flatMap((mm) => Object.keys(fc.lanes).filter((nm) => isSlotOf(nm, mm.name)).sort((p, q) => slotNo(p, mm.name) - slotNo(q, mm.name)));
   const names = ordered.concat(Object.keys(fc.lanes).filter((nm) => !ordered.includes(nm)));
   const lanes = h("div", "lanes");
   const stagesSeen = new Set();

@@ -497,8 +497,8 @@ fn ramp_words(r: &agent::RampView) -> String {
 }
 
 /// A job in a line: "slot 2: Terrain: 4 tiles · 40% · about 12 min left · since 20 min ago".
-fn job_line(k: usize, j: &agent::JobView) -> String {
-    let mut v = vec![format!("slot {}: {}", k + 1, j.what)];
+fn job_line(j: &agent::JobView) -> String {
+    let mut v = vec![format!("slot {}: {}", j.slot + 1, j.what)];
     if let Some(p) = j.progress.as_ref().filter(|p| p.total > 0.0) {
         v.push(format!("{}%", (p.done / p.total * 100.0).floor()));
         if let Some(e) = p.eta_s {
@@ -553,8 +553,8 @@ fn macs_lines(st: &agent::Status) -> Vec<String> {
             None => {}
         }
         let jobs = s.map(jobs_of).unwrap_or_default();
-        for (k, j) in jobs.iter().enumerate() {
-            out.push(format!("    {}", job_line(k, j)));
+        for j in &jobs {
+            out.push(format!("    {}", job_line(j)));
             if let Some(w) = &j.waiting {
                 out.push(format!("      {w}"));
             }
@@ -565,6 +565,9 @@ fn macs_lines(st: &agent::Status) -> Vec<String> {
                     _ => "○",
                 };
                 out.push(format!("      {mark} {p}"));
+            }
+            for l in j.tail.lines() {
+                out.push(format!("        {l}"));
             }
         }
         if jobs.is_empty() {
@@ -1385,6 +1388,7 @@ mod tests {
             mem_mb: Some(2048),
             threads: Some(3),
             waiting: None,
+            slot: k,
         };
         let with = |host: &str, n: usize| {
             let mut js: Vec<agent::JobView> = (0..n).map(job).collect();
@@ -1418,5 +1422,13 @@ mod tests {
             assert_eq!(l.matches("running nothing").count(), usize::from(n == 0 || n == 4), "{l}");
             assert!(l.contains("m1 · member") && l.contains("nothing more fits: cores: 0 of 8 left"), "{l}");
         }
+        // Sparse slots: the first and the fourth running, numbered by their slots, a job's tail
+        // lines under it.
+        let mut fourth = job(3);
+        fourth.tail = "tail line".into();
+        let st = agent::Status { host: "m4".into(), job: Some(job(0)), more: vec![fourth], ..Default::default() };
+        let l = macs_lines(&st).join("\n");
+        assert!(l.contains("slot 1: job 0") && l.contains("slot 4: job 3") && !l.contains("slot 2:"), "{l}");
+        assert!(l.contains("        tail line"), "{l}");
     }
 }

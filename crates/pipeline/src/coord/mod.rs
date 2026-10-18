@@ -1868,10 +1868,12 @@ impl Coordinator {
         own.into_iter().chain(others).collect()
     }
 
-    /// Why nothing more fits each worker, as its last ask was packed (`Shared::refused`), its
-    /// capacity fresh (`CAP_FRESH_S`): the status's, per Mac.
+    /// Why nothing more fits each worker, as its last ask was packed (`Shared::refused`), the
+    /// refusal itself younger than `CAP_FRESH_S` (older ones dropped here): the status's, per Mac.
     pub fn refusals(&self) -> BTreeMap<String, String> {
-        let s = self.shared.lock().unwrap();
+        let mut s = self.shared.lock().unwrap();
+        // (Old ones let go: a worker gone asks no more.)
+        s.refused.retain(|_, (at, _)| unix_now().saturating_sub(*at) < CAP_FRESH_S);
         s.refused
             .iter()
             .filter(|(_, (at, _))| unix_now().saturating_sub(*at) < CAP_FRESH_S)

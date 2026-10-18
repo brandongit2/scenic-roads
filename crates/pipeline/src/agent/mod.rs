@@ -832,6 +832,9 @@ pub struct JobView {
     /// slot's room then counted as free beside it: docs/pool.md §7.7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<String>,
+    /// Its slot (0: the first; `slot_worker`): slots may be sparse, so not its place in the list.
+    #[serde(default)]
+    pub slot: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -4940,6 +4943,7 @@ impl Agent {
             mem_mb: crate::sys::footprint_of_group(r.pgid).map(|b| b >> 20),
             threads: Some(r.threads),
             waiting,
+            slot: k,
         })
     }
 
@@ -6787,8 +6791,9 @@ impl Agent {
         // first's, at about four fifths of its pace until measured.)
         names.retain(|n| !is_slot_of(n, &self.host));
         let others = self.worker_of(1);
-        let own_lanes =
-            forecast::packed_lanes(mac_cores(), self.job_slots().max(self.running_jobs())).max(self.running_jobs());
+        // (Never fewer lanes than its last running slot's number: slots may be sparse.)
+        let running: Vec<usize> = (0..self.slots.len()).filter(|&k| self.slots[k].running.is_some()).collect();
+        let own_lanes = forecast::slot_lanes(mac_cores(), self.job_slots(), &running);
         let own_names: Vec<String> = (1..own_lanes.max(2)).map(|k| self.worker_of(k)).collect();
         let names: Vec<String> = names.into_iter().collect();
         let mut speeds = forecast::speeds(&events, &self.host, &names, 0.5);
@@ -6956,9 +6961,11 @@ impl Agent {
         for h in &helpers {
             let jobs: Vec<&JobView> = h.job.iter().chain(h.beside.iter()).chain(h.more.iter()).collect();
             let cap = caps.get(&h.host);
+            // (Never fewer lanes than its last running slot's number: slots may be sparse.)
+            let running: Vec<usize> = jobs.iter().map(|j| j.slot).collect();
             let n = match cap {
-                Some(c) => forecast::packed_lanes(c.cores, job_slots(c.cores as usize)).max(jobs.len()),
-                None => jobs.len().max(1),
+                Some(c) => forecast::slot_lanes(c.cores, job_slots(c.cores as usize), &running),
+                None => running.iter().map(|k| k + 1).max().unwrap_or(1),
             };
             let mem_all = cap.map(|c| c.limit_mb).filter(|&m| m > 0).or(mem
                 .get(&h.host)
@@ -6976,7 +6983,10 @@ impl Agent {
                     .filter(|l| l.0 == name)
                     .map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64)
                     .fold(0.0, f64::max);
-                let eta = jobs.get(k).map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
+                let eta = jobs
+                    .iter()
+                    .find(|j| j.slot == k)
+                    .map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
                 let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
                 machines.push(Machine {
                     name,
@@ -11890,6 +11900,7 @@ mod tests {
                 mem_mb: None,
                 threads: None,
                 waiting: None,
+                slot: 0,
             });
             let st = Status {
                 host: "the-lead".into(),
@@ -13135,6 +13146,7 @@ mod tests {
                 mem_mb: None,
                 threads: None,
                 waiting: None,
+                slot: 0,
             }),
             ..Default::default()
         };
