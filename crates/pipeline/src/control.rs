@@ -475,6 +475,11 @@ pub fn take_hold_request(home: &Path) -> Option<HoldRequest> {
     serde_json::from_slice(&b).ok()
 }
 
+/// The hold ask waiting in `home`, read only.
+pub fn peek_hold_request(home: &Path) -> Option<HoldRequest> {
+    serde_json::from_slice(&std::fs::read(home.join(HOLD_REQUEST)).ok()?).ok()
+}
+
 /// The agent's answer to a hold ask, kept for `scenic pause` to print.
 pub fn answer_hold(home: &Path, a: &HoldAnswer) {
     let w = serde_json::to_vec(a)

@@ -742,7 +742,10 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   file in its folder, `hold-request.json`; `scenic pause` prints the agent's answer). A Mac's hold
   is kept in its agent's folder (`hold.json`, so a restart keeps it) and on the NAS
   (`state/pool/holds/<member>.json`), where another Mac's ask writes it; each member reads its own
-  every 30 s on the switches' readers, the later setting winning. A paused Mac's running jobs stop
+  every 30 s on the switches' readers, the later setting winning: a Mac's own ask is always later
+  than its setting so far, and another Mac's later than the file it replaces, so the Macs' clocks
+  don't matter, except that a remote ask may lose to a Mac's own ask not yet written there (within
+  a loop). A member whose app is older than the asking Mac's is refused ("too old to pause alone"). A paused Mac's running jobs stop
   at their next safe point and are given back (as the build's pause stops them, frozen past the
   grace), it asks for no work and starts none, it can't lead (`Conds::held`, `able` false), and a
   lead paused hands the lead to a member that can take it (asked again every ten minutes while it

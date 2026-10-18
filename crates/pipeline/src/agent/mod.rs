@@ -1298,6 +1298,9 @@ pub struct Agent {
     hold_read: Option<Instant>,
     hold_handed: Option<(Instant, bool)>,
     hold_me: Option<String>,
+    /// When the hold ask the loop last saw was written (its file's time), so a wait is cut short
+    /// only by a newer one, not by one left for a later loop.
+    hold_seen: Option<std::time::SystemTime>,
     /// The bytes the caches hold, for the status: what room-making can free and what a clear would
     /// (room::sizes), counted on a thread of its own every ten minutes (a walk of many files), and
     /// again after a trim or a clear; and when.
@@ -1631,6 +1634,7 @@ impl Agent {
             hold_read: None,
             hold_handed: None,
             hold_me: None,
+            hold_seen: None,
             cache_size: Default::default(),
             heard: None,
             lead_all_new: None,
@@ -3195,10 +3199,7 @@ impl Agent {
             let quitting = self.quit_ask().is_some();
             let wait = if quick || quitting { 2 } else { 20 };
             for _ in 0..wait {
-                if STOP.load(Ordering::SeqCst)
-                    || (!quitting && self.quit_ask().is_some())
-                    || self.o.home.join(crate::control::HOLD_REQUEST).exists()
-                {
+                if STOP.load(Ordering::SeqCst) || (!quitting && self.quit_ask().is_some()) || self.hold_asked_anew() {
                     break;
                 }
                 std::thread::sleep(Duration::from_secs(1));
@@ -3340,10 +3341,21 @@ impl Agent {
         self.hold.held.as_ref().map(|h| h.why())
     }
 
-    /// This Mac's hold set (`held`, as of `at`): kept in its folder unless a later one is.
-    fn set_hold(&mut self, held: Option<crate::control::Hold>, at: u64) {
+    /// The hold ask's file's time, if one waits.
+    fn hold_ask_time(&self) -> Option<std::time::SystemTime> {
+        std::fs::metadata(self.o.home.join(crate::control::HOLD_REQUEST)).and_then(|m| m.modified()).ok()
+    }
+
+    /// Whether a hold ask waits that the loop hasn't seen yet (the loop's wait cut short for it).
+    fn hold_asked_anew(&self) -> bool {
+        self.hold_ask_time().is_some_and(|t| self.hold_seen != Some(t))
+    }
+
+    /// This Mac's hold set (`held`, as of `at`): kept in its folder unless a later one is; whether
+    /// it was.
+    fn set_hold(&mut self, held: Option<crate::control::Hold>, at: u64) -> bool {
         if at < self.hold.at {
-            return;
+            return false;
         }
         if held.is_some() != self.hold.held.is_some() {
             eprintln!("agent: {}", held.as_ref().map_or("this Mac goes on building".to_string(), |h| h.why()));
@@ -3357,6 +3369,7 @@ impl Agent {
         if let Err(e) = kept {
             eprintln!("agent: keeping this Mac's pause: {e:#}");
         }
+        true
     }
 
     /// This Mac paused alone, or going on (task #224, docs/pool.md §11): the owner's ask taken up
@@ -3365,6 +3378,7 @@ impl Agent {
     /// another Mac's ask, taken), and its own written there once it changed.
     fn sync_hold(&mut self, root: Option<&Path>) {
         use crate::control::{HoldAnswer, HoldState};
+        self.hold_seen = self.hold_ask_time();
         if self._lock.is_none() || self.o.dry_run {
             return;
         }
@@ -3376,27 +3390,56 @@ impl Agent {
             None => (None, false),
         };
         self.hold_me = me.clone();
-        if let Some(req) = (!busy).then(|| crate::control::take_hold_request(&self.o.home)).flatten() {
+        // (This Mac's own ask needs no pool: taken while its step is busy too.)
+        let here = crate::control::peek_hold_request(&self.o.home).is_some_and(|r| r.member.is_none());
+        if let Some(req) = (!busy || here).then(|| crate::control::take_hold_request(&self.o.home)).flatten() {
             let what = if req.held.is_some() { "paused" } else { "going on" };
             let target: Result<Option<(String, String)>, String> = match req.member.as_deref() {
                 None => Ok(None),
                 Some(name) => match self.try_pooled() {
-                    Some(Some(run)) => lead::resolve(&run, name)
-                        .map(|id| (me.as_deref() != Some(id.as_str())).then(|| (id, name.to_string()))),
+                    Some(Some(run)) => lead::resolve(&run, name).and_then(|id| {
+                        if me.as_deref() == Some(id.as_str()) {
+                            return Ok(None);
+                        }
+                        // (An app from before this Mac's may not know a pause of its own: refused,
+                        // not said done.)
+                        match run.side.heartbeat(&id) {
+                            Some(h) if crate::pool::term::app_at_least(&h.pool.app, &self.app) => {
+                                Ok(Some((id, name.to_string())))
+                            }
+                            Some(_) => Err(format!(
+                                "{name}'s app is too old to pause alone (older than this Mac's): update it, or pause the whole build"
+                            )),
+                            None => Err(format!("{name}'s heartbeat can't be read now: ask again")),
+                        }
+                    }),
                     Some(None) => Err("this Mac's pool step is busy (the NAS slow?): ask again".to_string()),
                     None => Err("this Mac isn't in the pool: it can pause only itself".to_string()),
                 },
             };
             let (ok, said) = match target {
                 Ok(None) => {
-                    self.set_hold(req.held.clone(), req.at);
-                    (true, format!("this Mac is {what}"))
+                    // (This Mac's own ask wins over any earlier setting, whatever another Mac's
+                    // clock put on it.)
+                    let at = req.at.max(self.hold.at + 1);
+                    if self.set_hold(req.held.clone(), at) {
+                        (true, format!("this Mac is {what}"))
+                    } else {
+                        (false, "a later setting of this Mac's pause stands".to_string())
+                    }
                 }
                 Ok(Some((id, name))) => match root {
                     None => (false, "the NAS isn't reachable from this Mac".to_string()),
                     Some(r) => {
-                        let st = HoldState { held: req.held.clone(), at: req.at };
-                        match write_hold(&r.join(crate::control::hold_path(&id)), &st) {
+                        // (Later than the setting there, whatever the two Macs' clocks say: a
+                        // member's own ask since, not yet written there, may still lose to it.)
+                        let path = r.join(crate::control::hold_path(&id));
+                        let there = nasread::read_switch(&path)
+                            .ok()
+                            .and_then(|t| serde_json::from_str::<HoldState>(&t).ok())
+                            .map_or(0, |h| h.at);
+                        let st = HoldState { held: req.held.clone(), at: req.at.max(there + 1) };
+                        match write_hold(&path, &st) {
                             Ok(()) => (true, format!("{name} is {what} (it takes it up within a minute)")),
                             Err(e) => (false, format!("{name}'s pause on the NAS: {e:#}")),
                         }
@@ -3418,7 +3461,8 @@ impl Agent {
                         self.hold_mirrored = true;
                     }
                     Ok(h) if h == self.hold => self.hold_mirrored = true,
-                    _ => {}
+                    // (Older there, and not this: this Mac's written back.)
+                    _ => self.hold_mirrored = false,
                 }
             }
         }
@@ -15586,6 +15630,68 @@ mod pool_tests {
             fc.next.keys().collect::<Vec<_>>()
         );
         assert!(!named("held-mac"));
+    }
+
+    #[test]
+    fn a_local_resume_wins_over_a_future_dated_pause_and_a_busy_pool_step_never_spins_the_loop() {
+        // (Task #224 review.)
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let bin = app(d.path());
+        let mut a = test_agent(Options {
+            root: Some(r.clone()),
+            home: d.path().join("app-folder/agent"),
+            bin,
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        a.mem.last_ok.insert("backup".into(), now_s());
+        a.mem.last_ok.insert("gc".into(), now_s());
+        a.step().unwrap();
+        let home = a.o.home.clone();
+        // Paused from a Mac whose clock runs an hour ahead; resumed here: this Mac's ask wins.
+        let me = a.pooled().unwrap().side.member().id.clone();
+        let ahead = crate::control::HoldState {
+            held: Some(crate::control::Hold::new("scenic pause on ahead")),
+            at: now_s() + 3600,
+        };
+        write_hold(&r.join(crate::control::hold_path(&me)), &ahead).unwrap();
+        a.hold_read = None;
+        a.sync_hold(Some(&r));
+        assert!(a.hold.held.is_some());
+        let ask = crate::control::request_hold(&home, None, None).unwrap();
+        a.sync_hold(Some(&r));
+        assert!(crate::control::hold_answer(&home, &ask).is_some_and(|x| x.ok));
+        assert!(a.hold.held.is_none() && a.hold.at > ahead.at);
+        // Written back over the NAS's older setting.
+        a.hold_read = None;
+        a.sync_hold(Some(&r));
+        let there: crate::control::HoldState =
+            serde_json::from_slice(&std::fs::read(r.join(crate::control::hold_path(&me))).unwrap()).unwrap();
+        assert_eq!(there, a.hold);
+        // The pool's step busy: an ask naming another Mac waits, and doesn't cut the loop's wait
+        // again and again; this Mac's own is taken all the same.
+        let shared = a.pool.clone().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let t = std::thread::spawn(move || {
+            let _g = pool::lock(&shared);
+            held_tx.send(()).unwrap();
+            rx.recv().ok();
+        });
+        held_rx.recv().unwrap();
+        crate::control::request_hold(&home, Some("other-mac"), Some(crate::control::Hold::new("x"))).unwrap();
+        assert!(a.hold_asked_anew());
+        a.sync_hold(Some(&r));
+        assert!(home.join(crate::control::HOLD_REQUEST).exists() && !a.hold_asked_anew());
+        let ask = crate::control::request_hold(&home, None, Some(crate::control::Hold::new("here"))).unwrap();
+        a.sync_hold(Some(&r));
+        assert!(crate::control::hold_answer(&home, &ask).is_some_and(|x| x.ok) && a.hold.held.is_some());
+        tx.send(()).unwrap();
+        t.join().unwrap();
     }
 
     #[test]
