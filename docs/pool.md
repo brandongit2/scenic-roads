@@ -299,9 +299,9 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
   folder (`job-<k>.json`, `control-<k>`, `costs-<k>.jsonl`, `done-<k>.txt`, …, the first slot's
   without a number) and scratch folder (`scratch-<k>/`), and its own name as a worker
   (`<host> #<k>`; an earlier agent's `<host> (second job)` is still read as `#2`). Each job is
-  given a quarter of the member's cores less two, at least two (`packed_threads`), alone or not: a
+  given a quarter of the member's cores less two, at least two where those cores allow (one on a Mac of three or fewer: `packed_threads`), alone or not: a
   run's threads are what packing counts, so a job given every core while alone would be measured
-  to leave no room beside it. Off, it asks with no `want` for one job at a time, as before.
+  to leave no room beside it. Off, it asks with no `want` for one job at a time, as before; the jobs it holds as packing goes off run to their end.
 - **Order and locality:** a member gets a contiguous run of plan targets, from the front or just
   after its last target, as many as fit `coord::JOB_S` (a quarter hour) of measured time.
 - **A map update shared** (`crate::agent::publish`, behind `state/pool/update-share`): the lead's own
@@ -336,10 +336,12 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   process's footprint, and a dense unit's scenic-build held 6–7 GB of them while its programs ran.
 - **Limit:** the Mac's memory less an eighth, 4 GB at least. Over it, the largest fitting alone,
   another job stops at its next safe point (`memguard::decide_by`): one that yields first, else the
-  newest, then the least progressed, never the largest; one at a time, and none more while the
+  newest (by its start's minute), then the least progressed, never the largest; one at a time, and none more while the
   jobs not draining fit the limit. Nothing new starts beside the largest meanwhile (a member asks
-  for nothing). The largest alone past the limit stops at once only while the Mac is short of
-  memory (pressure warning, or swap growing a GB), else at a safe point. A drain that finds no safe
+  for nothing). While the Mac is short of memory (pressure warning, or swap growing a GB), no
+  safe point is waited for: the job that would drain stops at once, then the next while the rest
+  still pass the limit, and the largest alone past the limit stops at once; else that one too
+  stops at a safe point. A drain that finds no safe
   point in 15 minutes is stopped. A stopped job is given back and kept from that Mac for an hour.
 - **An update's drain** (a newer app installed): every job stops at its next safe point; the agent
   restarts once the lead's first slot is free, or a member's every slot, each job given its own

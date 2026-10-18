@@ -131,7 +131,7 @@ pub(crate) fn member_slots(cores: usize) -> usize {
 }
 
 /// The threads each of a member's jobs is given with packing on: a quarter of its cores less the
-/// two kept for its owner, at least two (at most those cores). The same alone or beside others: a
+/// two kept for its owner, at least two where those cores allow (one on a Mac of three or fewer). The same alone or beside others: a
 /// run's threads are what its lead's packing counts against the Mac's cores (crate::needs::Book::
 /// cores), so a job given them all while alone would be measured to leave no room beside it.
 pub(crate) fn packed_threads(cores: usize) -> usize {
@@ -2536,8 +2536,9 @@ impl Agent {
                 s.running.as_ref().map_or(0, |r| {
                     let frac =
                         r.said.as_ref().map_or(0.0, |p| if p.1 > 0.0 { (p.0 / p.1).clamp(0.0, 1.0) } else { 0.0 });
-                    // (Its start's second, then a thousandth of its progress left.)
-                    r.started.saturating_mul(1000) + ((1.0 - frac) * 999.0) as u64
+                    // (Its start's minute, so jobs started within one count as equally new; then
+                    // its progress left, in thousandths.)
+                    (r.started / 60).saturating_mul(1000) + ((1.0 - frac) * 999.0) as u64
                 })
             })
             .collect()
@@ -4101,7 +4102,8 @@ impl Agent {
     /// sampler saw: while the jobs here hold more together than this Mac's limit, another job than
     /// the largest stops at its next safe point when the largest fits alone (the newest, then the
     /// least progressed, one at a time: memguard::decide_by, `guard_ranks`; and nothing starts
-    /// beside the largest until it ends); the largest, past the limit alone, stops at once while the Mac is in
+    /// beside the largest until it ends), or, the Mac in trouble, stops at once, then the next while
+    /// what's left still passes the limit; the largest, past the limit alone, stops at once while the Mac is in
     /// trouble (the sampler froze it, or the pressure or the swap says so now), else at its next
     /// safe point too; a job drained that reached no safe point in the time a pause gives one stops
     /// at once. One it stops is given back, not failed, kept from this Mac for an hour (a member's
@@ -4160,6 +4162,32 @@ impl Agent {
         let yields: Vec<bool> = (0..self.slots.len()).map(|k| self.yielding(k)).collect();
         // (Of several, the newest drains first, then the least progressed: `guard_ranks`.)
         let ranks = self.guard_ranks();
+        // (The Mac short of memory, the jobs together past the limit: no waiting on a safe point.
+        // The top-ranked stopped at once (the largest only when it alone passes the limit), then
+        // the next while what's left still passes it.)
+        if self.sampler.in_trouble() {
+            let mut left = held.clone();
+            let mut stopped = false;
+            let none = vec![false; left.len()];
+            loop {
+                let now: u64 = left.iter().flatten().sum();
+                let k = match memguard::decide_by(&left, limit, &none, &yields, &ranks) {
+                    memguard::Act::Drain(k) => k,
+                    memguard::Act::Over(k) => {
+                        let why = format!("stopped by the memory guard: it held {:.1} GB, past this Mac's limit of {:.1} GB, the Mac short of memory (what it held is kept as the least its target takes, so it goes to a Mac with room)", gb(left[k].unwrap_or(0)), gb(limit));
+                        stopped |= self.guard_stop(k, "memory guard", &why);
+                        break;
+                    }
+                    memguard::Act::Nothing => break,
+                };
+                let why = format!("stopped by the memory guard: the jobs here held {:.1} GB together, past this Mac's limit of {:.1} GB, the Mac short of memory (it held {:.1} GB)", gb(now), gb(limit), gb(left[k].unwrap_or(0)));
+                stopped |= self.guard_stop(k, "memory guard", &why);
+                left[k] = None;
+            }
+            if stopped {
+                return true;
+            }
+        }
         let stop = match (late, memguard::decide_by(&held, limit, &draining, &yields, &ranks)) {
             (Some(k), _) => Some((k, format!("stopped by the memory guard: it reached no safe point in {} min while the jobs here held {:.1} GB together, past this Mac's limit of {:.1} GB", DRAIN_GRACE.as_secs() / 60, gb(total), gb(limit)))),
             (None, memguard::Act::Nothing) => None,
@@ -10014,20 +10042,18 @@ mod tests {
         // (The largest grown, what stays past the limit: the next newest drains too.)
         tick(&mut a, vec![Some(9 << 10), Some(4 << 10), Some(4 << 10)], false);
         assert!(!a.guard() && a.slots[2].mem_drain.is_some() && a.slots[0].mem_drain.is_none());
-        // The newest reaching no safe point in the time a pause gives: stopped at once, its slot free.
-        a.grace = Duration::ZERO;
-        tick(&mut a, vec![Some(9 << 10), Some(4 << 10), Some(4 << 10)], false);
-        assert!(a.guard() && a.slots[1].running.is_none() && a.slots[2].running.is_some());
-        a.grace = DRAIN_GRACE;
+        // The Mac short of memory, each job under the limit but together past it (17 GB): no safe
+        // point waited for. The newest stopped at once, then the next while what's left (13 GB)
+        // still passes; the largest, fitting alone, goes on.
+        tick(&mut a, vec![Some(9 << 10), Some(4 << 10), Some(4 << 10)], true);
+        assert!(a.guard());
+        assert!(a.slots[0].running.is_some() && a.slots[1].running.is_none() && a.slots[2].running.is_none());
         // The largest past the limit by itself, the Mac short of memory: stopped (the sampler froze
-        // it), the job beside it untouched.
-        tick(&mut a, vec![Some(13 << 10), None, Some(1 << 10)], true);
+        // it).
+        tick(&mut a, vec![Some(13 << 10), None, None], true);
         assert!(a.sampler.frozen(0));
-        assert!(a.guard() && a.slots[0].running.is_none() && a.slots[2].running.is_some());
-        // The last ends: the slots past the two kept dropped.
-        a.slots[2].running.as_mut().unwrap().stop(Duration::from_secs(5));
-        a.stopped(2, "the test");
-        a.slots[2].running = None;
+        assert!(a.guard() && a.slots[0].running.is_none());
+        // The slots past the two kept dropped.
         a.trim_slots();
         assert_eq!(a.slots.len(), SLOTS);
         assert!(a.slots.iter().all(|s| s.running.is_none() && s.lease.is_none()));
