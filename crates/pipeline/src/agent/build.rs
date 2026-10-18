@@ -1991,6 +1991,10 @@ pub struct RegionLeft {
     /// (`forecast::EXPECTED_STALE`).
     #[serde(default)]
     pub expected: Vec<String>,
+    /// The map tiles (pack(T)'s targets, "6/x/y") its units draw that are stale now or will be once
+    /// its units left are built: what's drawn before it's on the map as it's built now.
+    #[serde(default)]
+    pub packs: Vec<String>,
 }
 
 /// The plan for the coverage `cov`, the pass of `date`, the build manifest `m` (logical → content)
@@ -2329,6 +2333,20 @@ pub fn plan(
                 .filter(|&i| !unit_stale[i] && !reads[i].is_disjoint(&terrain_left))
                 .map(|i| units[i].0.slash())
                 .collect(),
+            packs: {
+                // (Its units left's tiles, and its built units' tiles stale now.)
+                let mut p: BTreeSet<String> =
+                    r.stale.iter().flat_map(|&i| tiles_of(i).iter().map(|(x, y)| format!("6/{x}/{y}"))).collect();
+                if !stale_tiles.is_empty() {
+                    p.extend(
+                        r.all
+                            .iter()
+                            .flat_map(|&i| tiles_of(i).iter().map(|(x, y)| format!("6/{x}/{y}")))
+                            .filter(|t| stale_tiles.contains(t.as_str())),
+                    );
+                }
+                p.into_iter().collect()
+            },
         });
     }
 
@@ -3912,20 +3930,19 @@ fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
     out
 }
 
-/// The chains' work still to run, as if each step succeeded (`remaining`): the roads' (the map
-/// tiles, the road index, rail stops and ferries, the world-level terrain and slope), the trains',
-/// the landmarks' and the 3D buildings', for the forecast (crate::agent::forecast).
+/// The chains' work still to run, as if each step succeeded (`remaining`): the trains', the
+/// landmarks', the 3D buildings' and the depths', for the forecast (crate::agent::forecast; the
+/// regions' map tiles are each region's, `RegionLeft::packs`, and the whole-map steps go by their
+/// cadence).
 pub fn chains_left(
     cov: &Coverage,
     date: &str,
     m: &BTreeMap<String, String>,
     done: &Keys,
     inputs: &BTreeMap<String, String>,
-    reach: Option<&Reaches>,
     tiles: &TerrainTiles,
-) -> [Vec<Work>; 5] {
+) -> [Vec<Work>; 4] {
     [
-        remaining(done, |d| roads_chain(date, m, d, reach)),
         remaining(done, |d| rail_chain(cov, date, m, d, inputs)),
         remaining(done, |d| landmarks_chain(cov, date, m, d, inputs)),
         remaining(done, |d| bld_next(cov, m, d, inputs)),
@@ -5150,6 +5167,14 @@ pub(crate) mod tests {
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
         let p = hplan(&c, &reach, &m, &done, None, None);
         assert!(p.catalog_held && p.work[0].step == "pack");
+        // (Task #259) each region's map tiles to draw before it's on the map as it's built now,
+        // for the forecast: the tiles stale now among its, and its units left's.
+        assert!(
+            p.work[0].targets.iter().all(|t| p.regions.iter().any(|r| r.packs.contains(&t.0))),
+            "{:?}",
+            p.regions.iter().map(|r| (&r.id, &r.packs)).collect::<Vec<_>>()
+        );
+        assert!(p.regions.iter().filter(|r| !r.units.is_empty()).all(|r| !r.packs.is_empty()));
         let p = hplan(&c, &reach, &m, &done, None, Some(CATALOG_CAP_S));
         assert_eq!((p.work[0].step.as_str(), p.work[1].step.as_str()), ("catalog", "pack"));
         assert!(p.ready.is_empty());
@@ -6845,8 +6870,8 @@ pub(crate) mod tests {
             let held = ["heritage-sites", "heritage", "marks", "overlays"];
             let w = plan(&c, "d", &m0, &done, &BTreeMap::new());
             assert!(!steps(&w).iter().any(|s| held.contains(&s.as_str())), "{:?}", steps(&w));
-            let left = chains_left(&c, "d", &m0, &done, &BTreeMap::new(), None, &TerrainTiles::new(None));
-            assert!(!left[2].iter().any(|x| held.contains(&x.step.as_str())), "{:?}", left[2]);
+            let left = chains_left(&c, "d", &m0, &done, &BTreeMap::new(), &TerrainTiles::new(None));
+            assert!(!left[1].iter().any(|x| held.contains(&x.step.as_str())), "{:?}", left[2]);
             let mut d0 = done.clone();
             d0.record("heritage", &[("heritage".to_string(), heritage_key(&c, "d", &m0).unwrap())]);
             let w = plan(&c, "d", &m0, &d0, &BTreeMap::new());

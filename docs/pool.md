@@ -658,7 +658,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   minutes; a member missing from listings for twenty minutes is forgotten.
 - **Build status**, written by the lead per term (`state/build/term/<E>/status.json`): the
   checklist (a line per stage with an item per step: docs/pipeline.md §4), forecast, regions,
-  waits, what publishing does, recent jobs, pause, last catalog, the lead.
+  waits, what publishing does, publishing as it stands (`published`: the last catalog and its
+  kind, the map tiles being drawn by Mac, each Mac's adopted catalog), recent jobs, pause, last
+  catalog, the lead.
   A member writes `helper.json` instead.
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
   the lead's first, marked coordinator with its ramp (§7.1); its capacity as the coordinator last

@@ -581,14 +581,74 @@ fn macs_lines(st: &agent::Status) -> Vec<String> {
     out
 }
 
-/// A region still building, as the Regions panel and the menu bar say it: every unit built but not
-/// yet recorded built, finishing.
-fn building_line(built: usize, total: usize) -> String {
+/// A region still building, as the Regions panel and the menu bar say it: and when all of it is
+/// on the map, as the forecast has it (`map_at`); every unit built but not yet recorded built,
+/// finishing.
+fn building_line(built: usize, total: usize, map_at: Option<u64>) -> String {
     if built >= total {
-        format!("finishing: {built} of {total} tiles, the last map tiles and layers being made")
-    } else {
-        format!("{built} of {total} tiles, on the map as they come")
+        return format!("finishing: {built} of {total} tiles, the last map tiles and layers being made");
     }
+    let all = map_at.map(|t| format!("; all ≈ {}", when(t))).unwrap_or_default();
+    format!("{built} of {total} tiles, on the map as they come{all}")
+}
+
+/// A time to come, from now: "now", "in 40 min", "in 2.5 h".
+fn when(t: u64) -> String {
+    let s = t.saturating_sub(now_s());
+    match s {
+        0..=59 => "now".into(),
+        60..=5399 => format!("in {} min", s.div_ceil(60)),
+        _ => format!("in {:.1} h", s as f64 / 3600.0),
+    }
+}
+
+/// The cadenced publishes' names (agent::forecast::PublishFc), as the build page says them.
+fn publish_name(what: &str) -> &str {
+    match what {
+        "low" => "the low zooms",
+        "marks" => "the landmarks",
+        "overlays" => "the area overlays",
+        x => x,
+    }
+}
+
+/// Publishing as it stands (the build page's Publishing card, in the same words): what it does and
+/// why (agent::build::PublishLine), the last catalog, the map tiles to draw and by which Mac, the
+/// cadenced publishes next (agent::forecast), each Mac's catalog adopted (agent::Published).
+fn publishing_lines(st: &agent::Status) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(u) = &st.publishing else { return out };
+    out.push(format!("Publishing: {}", u.why));
+    let p = st.published.clone().unwrap_or_default();
+    if let Some(c) = p.last {
+        let kind = if p.low { "with the low zooms" } else { "map tiles only" };
+        out.push(format!("  last catalog: {}, {}, {kind}", c.n, ago(c.at)));
+    }
+    if u.tiles > 0 || !p.drawing.is_empty() {
+        let by: Vec<String> = p.drawing.iter().map(|(h, k)| format!("{h} {k}")).collect();
+        let by = if by.is_empty() { String::new() } else { format!(" (being drawn: {})", by.join(", ")) };
+        out.push(format!("  map tiles to draw: {}{by}", u.tiles));
+    }
+    let next: Vec<String> = st
+        .forecast
+        .iter()
+        .flat_map(|f| &f.publishes)
+        .map(|x| {
+            let t = if x.what == "low" && u.low { "now".to_string() } else { when(x.at) };
+            format!("{} {t}", publish_name(&x.what))
+        })
+        .collect();
+    if !next.is_empty() {
+        out.push(format!("  next: {}", next.join(", ")));
+    }
+    if !p.adopted.is_empty() {
+        let a: Vec<String> = p.adopted.iter().map(|(h, c)| format!("{h} catalog {} ({})", c.n, ago(c.at))).collect();
+        out.push(format!("  adopted: {}", a.join(", ")));
+    }
+    for r in &u.regions {
+        out.push(format!("  done, not on the map as it is: {} ({})", r.id, r.kinds.join(", ")));
+    }
+    out
 }
 
 fn plural(n: usize, one: &str) -> String {
@@ -650,15 +710,9 @@ fn status(args: &[String]) -> Result<()> {
     for n in &st.notices {
         println!("note: {} — {}", n.what, n.why);
     }
-    // Publishing as the lead last planned it, and why (agent::build::PublishLine).
-    if let Some(u) = &st.publishing {
-        println!("Publishing: {}", u.why);
-        if !u.low {
-            println!("  the low zooms wait for their turn (every 3 h, or once nothing else is queued)");
-        }
-        for r in &u.regions {
-            println!("  done, not on the map as it is: {} ({})", r.id, r.kinds.join(", "));
-        }
+    // Publishing as it stands (the build page's Publishing card).
+    for l in publishing_lines(&st) {
+        println!("{l}");
     }
     // The timetables' to-do list and the routes matching nothing on the map (docs/inputs.md §6.7.3).
     if let Some(t) = &st.timetables {
@@ -753,16 +807,18 @@ fn status(args: &[String]) -> Result<()> {
             st.regions.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
         }
     );
-    // (Those still building: their units built of their total, on the map as they come; and those
-    // with every unit built but not yet recorded built (publishing's held regions): finishing.)
+    // (Those still building: their units built of their total, on the map as they come, and when
+    // all of it is, as the forecast has it; and those with every unit built but not yet recorded
+    // built (publishing's held regions): finishing.)
     let held = |id: &str| {
         st.publishing.as_ref().is_some_and(|p| {
             p.regions.iter().any(|r| r.id == id && r.kinds.iter().any(|k| k != "new region" && k != "rebuilt"))
         })
     };
+    let map_at = |id: &str| st.forecast.as_ref()?.regions.iter().find(|r| r.id == id)?.map_at;
     for r in &st.regions {
         if let Some(b) = st.built.get(&r.id).filter(|b| b.built < b.total || held(&r.id)) {
-            println!("  {}: {}", r.name, building_line(b.built, b.total));
+            println!("  {}: {}", r.name, building_line(b.built, b.total, map_at(&r.id)));
         }
     }
     for (f, e) in &st.bad_recipes {
@@ -1403,8 +1459,50 @@ mod tests {
     /// A region still building in words, as the Regions panel and the menu bar have it (task #258).
     #[test]
     fn a_region_still_building_says_its_tiles() {
-        assert_eq!(building_line(3, 8), "3 of 8 tiles, on the map as they come");
-        assert_eq!(building_line(8, 8), "finishing: 8 of 8 tiles, the last map tiles and layers being made");
+        assert_eq!(building_line(3, 8, None), "3 of 8 tiles, on the map as they come");
+        assert_eq!(building_line(8, 8, None), "finishing: 8 of 8 tiles, the last map tiles and layers being made");
+        assert_eq!(
+            building_line(3, 8, Some(now_s() + 40 * 60)),
+            "3 of 8 tiles, on the map as they come; all ≈ in 40 min"
+        );
+    }
+
+    /// Publishing in `scenic status` as the build page's card says it (task #259): what it does,
+    /// the last catalog and its kind, the map tiles to draw by Mac, the cadenced publishes next,
+    /// each Mac's catalog adopted.
+    #[test]
+    fn publishing_says_the_last_catalog_the_tiles_by_mac_the_next_and_each_macs_catalog() {
+        let now = now_s();
+        let seen = |n: u64, ago: u64| agent::CatalogSeen { n, at: now - ago };
+        let fc = |what: &str, at: u64| agent::forecast::PublishFc { what: what.into(), at };
+        let st = agent::Status {
+            publishing: Some(agent::build::PublishLine {
+                why: "drawing the map tiles of the units built".into(),
+                tiles: 18,
+                ..Default::default()
+            }),
+            published: Some(agent::Published {
+                last: Some(seen(812, 120)),
+                low: false,
+                drawing: [("m1".to_string(), 6), ("m4".to_string(), 12)].into(),
+                adopted: [("m1".to_string(), seen(811, 200)), ("m4".to_string(), seen(812, 100))].into(),
+            }),
+            forecast: Some(agent::forecast::Forecast {
+                publishes: vec![fc("low", now + 7200), fc("marks", now + 3000), fc("overlays", now)],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            publishing_lines(&st),
+            [
+                "Publishing: drawing the map tiles of the units built",
+                "  last catalog: 812, 2 min ago, map tiles only",
+                "  map tiles to draw: 18 (being drawn: m1 6, m4 12)",
+                "  next: the low zooms in 2.0 h, the landmarks in 50 min, the area overlays now",
+                "  adopted: m1 catalog 811 (3 min ago), m4 catalog 812 (1 min ago)",
+            ]
+        );
     }
 
     /// `scenic status` shows each Mac as the build page does (task #246): the lead marked

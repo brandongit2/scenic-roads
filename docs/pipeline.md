@@ -153,9 +153,13 @@ kind's others, with templated words.
   job by its slot (name, parts, progress, running since, memory; frozen or stuck) with that slot's
   next work; why nothing more fits; facts as chips; its day as a spark line. Pages one card.
 - **The pool:** `pool.js`.
-- **Road to done:** each machine's lane (segments in the stages' colours, publishing hatched, the
-  regions out marked), and what publishing does now and why.
-- **Regions:** a row per region: name, state, when, tiles built, what's left by step.
+- **Road to done:** each machine's lane (segments in the stages' colours, the map tiles' among
+  them).
+- **Publishing:** what publishing does now and why; the last catalog (number, when, with the low
+  zooms or map tiles only); the map tiles to draw, by the Mac drawing them; when the low zooms, the
+  landmarks and the area overlays may next go out; each Mac's map server's catalog.
+- **Regions:** a row per region: name, state, when it's done and all on the map, its tiles
+  built (on the map as they come), what's left by step.
 - **Activity:** the hours, and a sentence per event.
 - **Details:** tables, among them the steps table itself.
 

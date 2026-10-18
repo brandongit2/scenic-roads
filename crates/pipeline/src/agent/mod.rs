@@ -757,6 +757,10 @@ pub struct Status {
     /// The last catalog the plan read: its number and when it went out (seconds since the epoch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<CatalogSeen>,
+    /// Publishing as it stands (`Published`; the lead's): the build page's Publishing card and
+    /// `scenic status`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published: Option<Published>,
     /// This Mac's build caches (room::Caches): what a clear would free, why they can't be cleared
     /// now, and the last trim after the build and the last clear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -816,6 +820,42 @@ impl PoolView {
 pub struct CatalogSeen {
     pub n: u64,
     pub at: u64,
+}
+
+/// Publishing as it stands, for the build page's Publishing card and `scenic status` (the
+/// lead's; docs/plan.md §8, Publishing): the last catalog, whether it went with the low zooms
+/// (build::LastCatalog::low_at), the map tiles being drawn by Mac (pack's targets leased), and the
+/// catalog each Mac's map server last adopted (crate::pubtimes, the servers' log on the NAS).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Published {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<CatalogSeen>,
+    #[serde(default)]
+    pub low: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub drawing: BTreeMap<String, usize>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub adopted: BTreeMap<String, CatalogSeen>,
+}
+
+/// The Mac a worker is (`slot_worker`: its slots' names folded to the host's; a page's its own).
+pub fn host_of(worker: &str) -> &str {
+    match worker.rsplit_once(" #") {
+        Some((host, n)) if n.parse::<usize>().is_ok_and(|n| n >= 2) => host,
+        _ => worker,
+    }
+}
+
+/// The catalog each Mac's map server last adopted, from the servers' log under `root`
+/// (crate::pubtimes::SERVERS; the last two days').
+fn adopted(root: &Path) -> BTreeMap<String, CatalogSeen> {
+    let mut out: BTreeMap<String, CatalogSeen> = BTreeMap::new();
+    for e in crate::pubtimes::read_servers(root, now_s().saturating_sub(2 * 86_400)) {
+        if e.kind == "adopt" && out.get(&e.host).is_none_or(|c| e.n >= c.n) {
+            out.insert(e.host.clone(), CatalogSeen { n: e.n, at: e.t });
+        }
+    }
+    out
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1291,6 +1331,9 @@ pub struct Agent {
     timetables: std::cell::RefCell<Option<(String, crate::timetables::View)>>,
     publish_logged: std::cell::RefCell<String>,
     catalog_seen: std::cell::Cell<Option<CatalogSeen>>,
+    /// The catalog each Mac's map server last adopted (`adopted`), and when it was read: read
+    /// again when a newer catalog is seen, else every five minutes.
+    adopted: std::cell::RefCell<(u64, Option<u64>, BTreeMap<String, CatalogSeen>)>,
     /// The lead's record of its catalogs (build::LastCatalog, its folder's `publishing.json`): when
     /// the last went out with the low zooms made.
     catalogs: std::cell::RefCell<build::LastCatalog>,
@@ -1596,6 +1639,7 @@ impl Agent {
             timetables: Default::default(),
             publish_logged: Default::default(),
             catalog_seen: Default::default(),
+            adopted: Default::default(),
             catalogs: std::cell::RefCell::new(catalogs),
             catalog_low: Default::default(),
             publishing: Default::default(),
@@ -3698,6 +3742,7 @@ impl Agent {
             publishing: if self.o.helper { None } else { self.publish_line.borrow().clone() },
             timetables: if self.o.helper { None } else { self.timetables.borrow().as_ref().map(|t| t.1.clone()) },
             catalog: self.catalog_seen.get(),
+            published: if self.o.helper { None } else { Some(self.published(root.as_deref())) },
             caches: Some(self.caches_view(caches_why, c.home, c.nas)),
             pool: match self.try_pooled() {
                 Some(Some(p)) => Some(p.pool_view()),
@@ -6761,15 +6806,7 @@ impl Agent {
                     .filter(|w| w.step == "heritage-sites")
                     .map(|w| job(format!("heritage-sites {date}"), "heritage-sites", Vec::new(), Some(w.clone()))),
             );
-            let chains = build::chains_left(
-                cov,
-                date,
-                &manifest,
-                &done,
-                &inputs,
-                reach.as_deref(),
-                &self.terrain_tiles(root, &manifest),
-            );
+            let chains = build::chains_left(cov, date, &manifest, &done, &inputs, &self.terrain_tiles(root, &manifest));
             // (A fault in it costs the status its forecast, never the agent.)
             let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.forecast_now(root, &before, &planned.regions, &planned.backfill, chains, blind, &peak)
@@ -6881,9 +6918,28 @@ impl Agent {
         jobs
     }
 
+    /// Publishing as it stands (`Published`), the servers' log under `root` read again when a newer
+    /// catalog is seen or five minutes have passed.
+    fn published(&self, root: Option<&Path>) -> Published {
+        let last = self.catalog_seen.get();
+        let c = self.catalogs.borrow();
+        let mut drawing: BTreeMap<String, usize> = BTreeMap::new();
+        for (w, k) in self.coord.as_ref().map(|c| c.leased_of("pack")).unwrap_or_default() {
+            *drawing.entry(host_of(&w).to_string()).or_default() += k;
+        }
+        if let Some(root) = root {
+            let mut a = self.adopted.borrow_mut();
+            let n = last.map(|l| l.n);
+            if a.1 != n || now_s().saturating_sub(a.0) >= 300 {
+                *a = (now_s(), n, adopted(root));
+            }
+        }
+        Published { last, low: c.at > 0 && c.low_at == Some(c.at), drawing, adopted: self.adopted.borrow().2.clone() }
+    }
+
     /// The forecast (crate::agent::forecast) of the work left: `before`, the lead's jobs before
     /// the regions'; `regions`, the plan's; `backfill`, the pieces whose mids it makes in
-    /// idle time (build::Plan::backfill); `chains`, the roads', trains' and landmarks' work to come
+    /// idle time (build::Plan::backfill); `chains`, the trains', landmarks', 3D buildings' and depths' work to come
     /// (build::chains_left); `blind`, why the work can't all be listed now. Each target's time (at
     /// the lead's pace: a time measured on a member over its speed) and memory as last measured,
     /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
@@ -6895,7 +6951,7 @@ impl Agent {
         before: &[JobSpec],
         regions: &[build::RegionLeft],
         backfill: &[build::Work],
-        chains: [Vec<build::Work>; 5],
+        chains: [Vec<build::Work>; 4],
         blind: Option<String>,
         peak: &dyn Fn(&str, &str) -> u64,
     ) -> forecast::Forecast {
@@ -6973,34 +7029,21 @@ impl Agent {
                 (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))
             })
             .collect();
-        // Publishing a region: as the last ones took (forecast::update_secs), else the chain's
-        // steps' times; the last publishing, the publishing chain as it stands now, if more (none
-        // when it's done).
-        let [roads, rail, landmarks, buildings, depth] = chains;
-        let chain_s = |works: &[build::Work]| -> f64 {
-            works
-                .iter()
-                .map(|w| {
-                    if steps::SHARED.contains(&w.step.as_str()) {
-                        w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum()
-                    } else {
-                        mine(&w.step, w.targets.len()).secs
-                    }
-                })
-                .sum()
+        // (A region's map tiles each at its measured time, `cost`; the whole-map steps by their
+        // cadence, as last run.)
+        let [rail, landmarks, buildings, depth] = chains;
+        let cadence = {
+            let c = self.catalogs.borrow();
+            let now = now_s();
+            forecast::Cadence {
+                since_low: c.low_at.map(|t| now.saturating_sub(t)),
+                since_marks: c.since("marks", now),
+                since_overlays: c.since("overlays", now),
+            }
         };
-        let update_s = forecast::update_secs(&events).unwrap_or_else(|| {
-            ["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"]
-                .iter()
-                .map(|s| mine(s, 1).secs)
-                .sum::<f64>()
-                + mine("pack", 8).secs
-                + mine("lo", 2).secs
-        });
-        let last_update_s = if roads.is_empty() { 0.0 } else { update_s.max(chain_s(&roads)) };
         // The trains' and the landmarks' chains from the start (their steps once what they read is
-        // built: forecast::chain_deps), but the overlays (they read the built units) after the last
-        // publishing; and a catalog after it with what the chains made since.
+        // built: forecast::chain_deps), but the overlays (they read the built units) after everything
+        // else; and a catalog after them with what the chains made since.
         let (mut chain_jobs, mut after): (Vec<forecast::Job>, Vec<forecast::Job>) = (Vec::new(), Vec::new());
         for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()).chain(depth.iter()) {
             let jobs: Vec<forecast::Job> = if steps::SHARED.contains(&w.step.as_str()) {
@@ -7154,8 +7197,7 @@ impl Agent {
             before,
             regions,
             cost: &cost,
-            update_s,
-            last_update_s,
+            cadence,
             blind,
             chains: chain_jobs,
             after,

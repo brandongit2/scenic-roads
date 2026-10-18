@@ -10,7 +10,8 @@
 // sentence. The parts: the verdict (going or not, done when, next on the map, what needs a look,
 // the pause), the overview (how far, how long), the stages (each step to the end), the machines
 // (what each does now and next, why one waits, its power, disk, memory and pace), the road to
-// done (each machine's schedule, publishing), the regions, and the activity (the hours, what
+// done (each machine's schedule), publishing (the last catalog, the map tiles to draw by Mac, the
+// cadenced publishes next, each Mac's catalog), the regions, and the activity (the hours, what
 // happened).
 
 import { poolSection, termText } from "./pool.js";
@@ -48,14 +49,13 @@ const plural = (k, one, many = `${one}s`) => `${n(k)} ${k === 1 ? one : many}`;
 // stage (its colour) and where it runs. Before the table has loaded (or from a lead without it) a
 // step goes by its id.
 const STAGE_COLOURS = { pass: "#8fa2b5", sites: "#c47fb5", terrain: "#c98b4a", slope: "#d9c35a", trees: "#5fae6b", roads: "#5b8fd8", tiles: "#4fb3c6", finish: "#7fb3a8", trains: "#a9a0d6", landmarks: "#9b7be0", buildings: "#a39a8c", publish: "var(--mark)", upkeep: "#7b8590" };
-const UPDATE = "publishing";
 const table = { steps: {}, stages: [] };
 const S = {
   row: (id) => table.steps[id],
-  title: (id) => table.steps[id]?.title || (id === UPDATE ? "Publishing" : id || ""),
+  title: (id) => table.steps[id]?.title || id || "",
   noun: (id) => table.steps[id]?.noun || "target",
   world: (id) => table.steps[id]?.scope === "world",
-  stage: (id) => table.steps[id]?.stage || (id === UPDATE ? "publish" : ""),
+  stage: (id) => table.steps[id]?.stage || "",
   stageTitle: (id) => table.stages.find((g) => g.id === id)?.title || id,
   colour: (id) => STAGE_COLOURS[S.stage(id)] || "#7b8590",
   any: (id) => table.steps[id]?.place === "any",
@@ -127,7 +127,7 @@ function model(sw) {
   const a = sw.agent || {};
   const now = sw.now;
   const fresh = (beat) => beat && now - beat < STALE_S;
-  const fc = a.forecast && { ...a.forecast, updates: a.forecast.updates ?? [] };
+  const fc = a.forecast && { ...a.forecast, publishes: a.forecast.publishes ?? [] };
   const regionName = Object.fromEntries((a.regions || []).map((r) => [r.id, r.name]));
   // (Not the lead's own helper file, from while it was a member: it leads now.)
   const helpers = (a.helpers || []).filter((x) => x.beat && now - x.beat < 600 && x.host !== a.host);
@@ -264,12 +264,21 @@ function verdictText(m) {
     const r = fc.range;
     parts.push(" · done ≈ ", h("b", null, clock(fc.done_at)), r ? ` (${clock(r[0])}–${clock(r[1])})` : "");
   } else if (fc?.why) parts.push(` · ${fc.why}`);
-  const next = fc?.updates?.find((r) => r.regions.length);
+  const next = nextOnMap(m);
   if (next) {
-    const names = next.regions.slice(0, 2).map((id) => m.regionName[id] || id).join(", ");
+    const names = next.regions.slice(0, 2).map((r) => m.regionName[r.id] || r.id).join(", ");
     parts.push(" · next on the map ≈ ", h("b", null, clock(next.at)), `: ${names}${next.regions.length > 2 ? ` +${next.regions.length - 2}` : ""}`);
   }
   return parts;
+}
+
+// The next region (or regions, at the same time) to reach the map as it's built now: the forecast's
+// earliest `map_at` (its last unit's end, its map tiles drawn, a catalog within the minute).
+function nextOnMap(m) {
+  const regs = (m.fc?.regions || []).filter((r) => r.map_at);
+  if (!regs.length) return null;
+  const at = Math.min(...regs.map((r) => r.map_at));
+  return { at, regions: regs.filter((r) => r.map_at === at) };
 }
 
 // ---- The overview -------------------------------------------------------------------------------
@@ -301,7 +310,7 @@ function overview(m) {
   const asWas = regs.filter((r) => r.on_map === false || (r.on_map === true && Object.keys(r.left).length)).length;
   const readyNow = regs.filter((r) => !Object.keys(r.left).length && r.on_map !== true).length;
   const lastAt = lastUpdate(m);
-  const nextUpdate = fc?.updates?.[0];
+  const nextUpdate = nextOnMap(m);
   const busy = m.macs.filter((x) => x.fresh && jobsOf(x.status).length).length;
   const kpis = h("div", "kpis",
     kpi("Regions on the map", regs.length ? `${onMap} of ${regs.length}` : "–", [asWas ? `${asWas} more as they were` : "", readyNow ? `${readyNow} done, recorded built by the next catalog` : ""].filter(Boolean).join(" · ") || null),
@@ -544,8 +553,8 @@ function showTip(ev, text) {
 }
 const hideTip = () => tip && (tip.style.display = "none");
 
-// Each machine's lane: a run of a step's targets is a segment in its stage's colour; publishing
-// hatched; the regions out as marks across the lanes.
+// Each machine's lane: a run of a step's targets is a segment in its stage's colour (the map
+// tiles' as any step's).
 function schedule(m) {
   const fc = m.fc;
   if (!fc?.lanes || !Object.keys(fc.lanes).length) return h("div", "small dim", "No schedule yet (the forecast comes with the lead's next plan).");
@@ -559,16 +568,16 @@ function schedule(m) {
   const lanes = h("div", "lanes");
   const stagesSeen = new Set();
   const segment = (track, l, say) => {
-    const seg = h("i", { class: l.step === UPDATE ? "update" : "", onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) });
+    const seg = h("i", { onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) });
     Object.assign(seg.style, { left: x(l.from), width: `calc(${x(l.until)} - ${x(l.from)})`, background: S.colour(l.step) });
     track.append(seg);
-    if (l.step !== UPDATE) stagesSeen.add(S.stage(l.step));
+    stagesSeen.add(S.stage(l.step));
   };
   for (const nm of names) {
     const track = h("div", "track");
     for (const l of fc.lanes[nm]) {
       if (l.until < t0) continue;
-      const say = l.step === UPDATE ? `${nm}: Publishing (${plural(l.n, "region")}) ${clock(l.from)}–${clock(l.until)}` : `${nm}: ${S.said(l.step, l.n)}, ${clock(l.from)}–${clock(l.until)}`;
+      const say = `${nm}: ${S.said(l.step, l.n)}, ${clock(l.from)}–${clock(l.until)}`;
       segment(track, l, say);
     }
     lanes.append(h("div", { class: "ln", title: nm }, nm), track);
@@ -598,21 +607,14 @@ function schedule(m) {
     axis.append(h("span", { style: { left: x(d.getTime() / 1000) } }, label));
   }
   lanes.append(h("div"), axis);
-  // Each publishing, a mark across the lanes, the regions it adds when pointed at.
-  const marks = h("div", "updates");
-  for (const r of fc.updates || []) {
-    if (r.at < t0 || r.at > t1) continue;
-    const say = `${r.last ? "Last on the map" : "On the map"} ≈ ${clock(r.at)}: ${r.regions.length ? r.regions.slice(0, 6).map((id) => m.regionName[id] || id).join(", ") + (r.regions.length > 6 ? ` and ${r.regions.length - 6} more` : "") : "the rest"}`;
-    marks.append(h("i", { style: { left: x(r.at) }, onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) }));
-  }
-  // The legend: the stages seen, in the build's order; publishing (hatched), out (a mark).
+  // The legend: the stages seen, in the build's order.
   const order = table.stages.map((g) => g.id);
-  const legend = h("div", "legend", [...stagesSeen].sort((p, q) => order.indexOf(p) - order.indexOf(q)).map((g) => h("span", null, h("i", { style: { background: STAGE_COLOURS[g] || "#7b8590" } }), S.stageTitle(g))), h("span", null, h("i", { class: "rhatch" }), "publishing"), h("span", null, h("i", { class: "rmark" }), "regions out on the map"));
-  return h("div", "sched", h("div", "lanewrap", lanes, marks), legend);
+  const legend = h("div", "legend", [...stagesSeen].sort((p, q) => order.indexOf(p) - order.indexOf(q)).map((g) => h("span", null, h("i", { style: { background: STAGE_COLOURS[g] || "#7b8590" } }), S.stageTitle(g))));
+  return h("div", "sched", h("div", "lanewrap", lanes), legend);
 }
 
-// The regions: their order to the map with their publishing between, or by name, or by what's left; each
-// its state, what it has left, when it's done and when it's on the map.
+// The regions: their order to the map, or by name, or by what's left; each its state, what it has
+// left, when it's done and when all of it is on the map (its tiles go on as they're built).
 const ui = { order: "map", filter: "", all: false, feed: "all" };
 function regionsList(m, rerender) {
   // (Typing redraws the rows alone: the box keeps its keyboard.)
@@ -644,16 +646,12 @@ function regionRows(m, rerender) {
   const total = list.length;
   if (!ui.all && !q) list = list.slice(0, 30);
   const out = h("div", "regs");
-  let lastUpdate = null;
+  let heading = null;
   for (const r of list) {
     const lft = leftOf(r);
-    if (ui.order === "map" && r.map_at && r.map_at !== lastUpdate) {
-      const update = fc.updates.find((x) => x.at === r.map_at);
-      out.append(h("div", "update", `${update?.last ? "Last on the map" : "On the map"} ≈ ${clock(r.map_at)}${update ? ` · ${plural(update.regions.length, "region")}` : ""}`));
-      lastUpdate = r.map_at;
-    } else if (ui.order === "map" && !r.map_at && lastUpdate !== "on") {
-      out.append(h("div", "update", "On the map"));
-      lastUpdate = "on";
+    if (ui.order === "map" && heading !== (r.map_at ? "to" : "on")) {
+      heading = r.map_at ? "to" : "on";
+      out.append(h("div", "update", r.map_at ? "On the map as their tiles are drawn" : "On the map"));
     }
     let state, cls = "";
     if (!lft && r.on_map === true) [state, cls] = ["on the map", "ok"];
@@ -661,7 +659,7 @@ function regionRows(m, rerender) {
     else if (r.rank === 0) [state, cls] = ["building now", "run"];
     else [state, cls] = [`#${r.rank + 1} in line`, ""];
     if (r.on_map === false) state += " · on the map as it was";
-    const when = lft ? `done ≈ ${clock(r.ready_at)} · on the map ≈ ${clock(r.map_at)}` : r.map_at ? `on the map ≈ ${clock(r.map_at)}` : "";
+    const when = lft ? `done ≈ ${clock(r.ready_at)}${r.map_at ? ` · all on the map ≈ ${clock(r.map_at)}` : ""}` : "";
     // What's left, a step at a time in the table's order, each counted in its noun.
     const order = Object.keys(table.steps);
     const leftWords = Object.entries(r.left).filter(([, k]) => k).sort(([p], [q]) => order.indexOf(p) - order.indexOf(q)).map(([s, k]) => S.said(s, k)).join(" · ");
@@ -673,7 +671,7 @@ function regionRows(m, rerender) {
     }
     out.append(h("div", { class: `rg ${!lft && r.on_map === true ? "done" : ""}` },
       h("span", "nm", r.name, " ", chip(state, cls)), h("span", "when", when),
-      h("div", "left", tot ? stack : null, [tot ? `${r.built.built} of ${tot} tiles built` : "", leftWords ? `left: ${leftWords}` : ""].filter(Boolean).join(" · "))));
+      h("div", "left", tot ? stack : null, [tot ? (r.built.built < tot ? `${r.built.built} of ${tot} tiles, on the map as they come` : `${tot} tiles built`) : "", leftWords ? `left: ${leftWords}` : ""].filter(Boolean).join(" · "))));
   }
   const more = !q && total > list.length ? h("button", { class: "quiet more", onclick: () => { ui.all = true; rerender(); } }, `Show all ${total}`) : null;
   return [out, more].filter(Boolean);
@@ -685,26 +683,35 @@ function lastUpdate(m) {
   return m.a.catalog?.at || (m.a.recent || []).find((d) => stepOf(d.id) === "catalog" && d.ok)?.ended || null;
 }
 
+// The cadenced publishes (agent::forecast::PublishFc) in words, as `scenic status` says them.
+const PUBLISH_NAMES = { low: "the low zooms", marks: "the landmarks", overlays: "the area overlays" };
+
+// The Publishing card (agent::Published, agent::build::PublishLine, the forecast's `publishes`):
+// what publishing does and why; the last catalog, its number, when and its kind; the map tiles to
+// draw, by the Mac drawing them; when each cadenced publish may next go out; the catalog each Mac's
+// map server adopted.
 function publishing(m) {
   const { a, fc, now } = m;
-  const at = lastUpdate(m);
-  const lines = [];
-  lines.push(h("div", null, "Last update: ", at ? h("b", null, `${clock(at)} (${ago(now, at)})`) : "none yet", a.catalog ? h("span", "dim", ` · catalog ${a.catalog.n}`) : null));
-  const next = fc?.updates?.[0];
-  if (next) lines.push(h("div", null, "Next: ", h("b", null, `≈ ${clock(next.at)}`), next.regions.length ? ` with ${next.regions.slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}${next.regions.length > 4 ? ` and ${next.regions.length - 4} more` : ""}` : ""));
-  const waits = (a.waiting || []).filter((w) => w.step === "catalog" || /publish/i.test(w.what));
-  for (const w of waits) lines.push(h("div", "small warn", w.why));
-  // Publishing as the lead last planned it, and why (agent::build::PublishLine).
-  const u = a.publishing;
+  const u = a.publishing, p = a.published || {};
+  const rows = [];
+  const row = (k, ...v) => rows.push(h("div", "pubrow", h("span", "k", k), h("span", "v", ...v)));
+  if (u) rows.push(h("div", "pubwhy", u.why));
+  const last = p.last || a.catalog;
+  row("Last catalog", last ? [h("b", null, `${last.n}`), ` · ${clock(last.at)} (${ago(now, last.at)})`, h("span", "dim", p.last ? ` · ${p.low ? "with the low zooms" : "map tiles only"}` : "")] : "none yet");
   if (u) {
-    lines.push(h("div", null, h("b", null, "Publishing"), `: ${u.why}`));
-    if (!u.low) lines.push(h("div", "small dim", "The low zooms wait for their turn (state/pool/low-zoom-later)."));
-    if (u.regions?.length) lines.push(h("div", "small", `Done, not on the map as they are: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));
-  } else {
-    lines.push(h("div", "small dim", "A unit's map tiles are drawn as soon as it's built, and a catalog goes out at most each minute."));
+    const by = Object.entries(p.drawing || {});
+    row("Map tiles to draw", h("b", null, n(u.tiles || 0)), by.length ? h("span", "dim", " · being drawn: ") : null, ...by.map(([host, k]) => h("span", "by", swatch(m.colourOf(host)), `${host} ${n(k)}`)));
   }
-  if (fc?.updates?.length > 1) lines.push(h("div", "small dim", `Regions go on the map ${plural(fc.updates.length, "time")} more; the last ≈ ${clock(fc.updates[fc.updates.length - 1].at)}`));
-  return h("div", null, lines);
+  if (fc?.publishes?.length) {
+    row("Next", fc.publishes.map((x, i) => [i ? " · " : "", `${PUBLISH_NAMES[x.what] || x.what} `, h("b", null, x.what === "low" && u?.low ? "now" : x.at <= now + 59 ? "now" : `≈ ${clock(x.at)}`)]).flat());
+  }
+  const ad = Object.entries(p.adopted || {});
+  if (ad.length) row("Each Mac's map", ...ad.map(([host, c], i) => h("span", { class: `by ${last && c.n < last.n ? "behind" : ""}`, title: `${host}'s map server adopted catalog ${c.n} ${ago(now, c.at)}` }, i ? " " : "", swatch(m.colourOf(host)), `${host} ${c.n}`)));
+  const waits = (a.waiting || []).filter((w) => w.step === "catalog" || /publish/i.test(w.what));
+  for (const w of waits) rows.push(h("div", "small warn", w.why));
+  if (u?.regions?.length) rows.push(h("div", "small", `Done, not on the map as they are: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));
+  if (!u) rows.push(h("div", "small dim", "A unit's map tiles are drawn as soon as it's built, and a catalog goes out at most each minute."));
+  return h("div", "pub", rows);
 }
 
 // ---- Activity -----------------------------------------------------------------------------------

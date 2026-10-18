@@ -421,21 +421,30 @@ struct Recipe: Decodable {
     let name: String
 }
 
-/// The forecast's part the menu shows: when it'll all be done (and the range), and when regions go
-/// on the map, each time with the regions it adds (the forecast's `updates`).
+/// The forecast's part the menu shows: when it'll all be done (and the range), and when each region
+/// is all on the map as it's built now (its `map_at`: its last unit, its map tiles drawn, a catalog
+/// within the minute).
 struct Forecast: Decodable {
     let done_at: Int?
     let range: [Int]?
-    let updates: [RegionsOut]?
+    let regions: [RegionFc]?
     /// Why there's no finish to forecast (nothing left; a new pass first; the units waiting).
     let why: String?
+
+    /// The region (or regions, at the same time) next all on the map, and when.
+    var nextOnMap: (at: Int, ids: [String])? {
+        let timed = (regions ?? []).compactMap { r in r.map_at.map { (r.id, $0) } }
+        guard let at = timed.map({ $0.1 }).min() else { return nil }
+        return (at, timed.filter { $0.1 == at }.map { $0.0 })
+    }
+
+    func mapAt(_ id: String) -> Int? { regions?.first { $0.id == id }?.map_at }
 }
 
-/// Regions going on the map: when, which, whether the last.
-struct RegionsOut: Decodable {
-    let at: Int
-    let regions: [String]
-    let last: Bool
+/// A region's forecast: when all of it is on the map as it's built now.
+struct RegionFc: Decodable {
+    let id: String
+    let map_at: Int?
 }
 
 /// The build's pause (crates/pipeline/src/control.rs Pause): at the next safe point ("drain") or
@@ -747,9 +756,9 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         var t = f.done_at.map { "Done ≈ \(soon($0))" } ?? "No finish to forecast: \(f.why ?? "unknown")"
         if let rg = f.range, rg.count == 2, f.done_at != nil { t += " (\(soon(rg[0]))–\(soon(rg[1])))" }
         out.append(Line(text: t, style: .small))
-        if let next = (f.updates ?? []).first(where: { !$0.regions.isEmpty }) {
+        if let next = f.nextOnMap {
             let names = Dictionary((s.regions ?? []).map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
-            let which = next.regions.prefix(3).map { names[$0] ?? $0 }.joined(separator: ", ") + (next.regions.count > 3 ? " and \(next.regions.count - 3) more" : "")
+            let which = next.ids.prefix(3).map { names[$0] ?? $0 }.joined(separator: ", ") + (next.ids.count > 3 ? " and \(next.ids.count - 3) more" : "")
             out.append(Line(text: "Next on the map ≈ \(soon(next.at)): \(which)", style: .small))
         }
     }
@@ -882,12 +891,14 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         let done = built.values.filter { $0.total > 0 && $0.built >= $0.total }.count
         out.append(Line(text: "", style: .separator))
         out.append(Line(text: "Regions built: \(done) of \(built.count)", style: .small))
-        // Those still building, as the Regions panel says them: on the map as their tiles come.
+        // Those still building, as the Regions panel says them: on the map as their tiles come, and
+        // when all of it is (the forecast's).
         // Every unit built but not yet recorded built (publishing's held regions): finishing.
         let held = Set((s.publishing?.regions ?? []).filter { r in r.kinds.contains { k in k != "new region" && k != "rebuilt" } }.map(\.id))
         for r in s.regions ?? [] {
             if let b = built[r.id], b.built < b.total {
-                out.append(Line(text: "\(r.name): \(b.built) of \(b.total) tiles, on the map as they come", style: .small))
+                let all = s.forecast?.mapAt(r.id).map { "; all ≈ \(soon($0))" } ?? ""
+                out.append(Line(text: "\(r.name): \(b.built) of \(b.total) tiles, on the map as they come\(all)", style: .small))
             } else if let b = built[r.id], held.contains(r.id) {
                 out.append(Line(text: "\(r.name): finishing: \(b.built) of \(b.total) tiles, the last map tiles and layers being made", style: .small))
             }

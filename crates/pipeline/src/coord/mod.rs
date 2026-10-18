@@ -2258,6 +2258,22 @@ impl Coordinator {
         (s.costs.clone(), leased, s.history.since(0, usize::MAX), mem)
     }
 
+    /// The targets of `step` leased now, by worker (a job's, every Mac's: the lead's own are by
+    /// grant too).
+    pub fn leased_of(&self, step: &str) -> BTreeMap<String, usize> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        let mut out: BTreeMap<String, usize> = BTreeMap::new();
+        for l in s.leases.all(now) {
+            if let Work::Job { step: st, targets } = &l.work {
+                if st == step {
+                    *out.entry(l.worker.clone()).or_default() += targets.len();
+                }
+            }
+        }
+        out
+    }
+
     /// Whether a worker around (not found wrong) takes tails, spares what one takes typically (any,
     /// before one was offered) and is measured faster than this Mac at them (task::beats): this
     /// Mac's unit jobs then give it a moment to take theirs (crate::offload::LEASE_WAIT), the

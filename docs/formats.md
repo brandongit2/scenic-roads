@@ -845,7 +845,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     `/work/fail` carry `floors`, `disks` (`[[cost key, MB], …]`) and `job_disk_mb`.
 - **State:** `state/status.json` (the agent's heartbeat, at least every two minutes): conditions,
   the job, `parts`/`part`, progress, `paused`/`pausing`, what waits, `pause`, `publishing`
-  (agent::build::PublishLine: `why`, `tiles`, `units`, `regions`, `low`, `wait_s`), the checklist (a line per stage: `id`, `what`, `steps`, `done`/`total`/`left`,
+  (agent::build::PublishLine: `why`, `tiles`, `units`, `regions`, `low`, `wait_s`), `published`
+  (agent::Published: `last` `{n, at}`, `low`, `drawing` by Mac, `adopted` by Mac `{n, at}`), the
+  forecast (`regions` with `map_at`; `publishes`: `{what: low | marks | overlays, at}`), the checklist (a line per stage: `id`, `what`, `steps`, `done`/`total`/`left`,
   `unit`, `items` (per step: `step`, `title`, `noun`, `done`, `total`, `left`), `next`, `note`,
   `shared`: docs/pipeline.md §4), `caches`
   (agent::room::Caches: `clearable`, `each`, `why_not`, `trimmed`, `cleared`, `declined`, `room`),

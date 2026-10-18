@@ -741,9 +741,6 @@ pub const TASKS: [Task; 4] = [
     },
 ];
 
-/// The forecast's lane for publishing a region as a whole (crate::agent::forecast::Lane): not a step.
-pub const PUBLISHING: &str = "publishing";
-
 /// The row of `step`; None for one the table doesn't know (a task's kind, or a step of a newer
 /// app's).
 pub fn row(step: &str) -> Option<&'static Step> {
@@ -765,26 +762,22 @@ pub fn stage_title(id: &str) -> Cow<'static, str> {
     stage(id).map_or_else(|| Cow::Owned(id.to_string()), |s| Cow::Borrowed(s.title))
 }
 
-/// The stage of `step` (a task's its step's; publishing's lane publishing).
+/// The stage of `step` (a task's its step's).
 pub fn stage_of(step: &str) -> Option<&'static Stage> {
     let id = match row(step) {
         Some(s) => s.stage,
-        None if step == PUBLISHING => "publish",
         None => task(step).and_then(|t| row(t.step)).map(|s| s.stage)?,
     };
     stage(id)
 }
 
-/// The name people see for `step` (a step's, a task's, publishing's lane; an unknown's its id).
+/// The name people see for `step` (a step's, a task's; an unknown's its id).
 pub fn title(step: &str) -> Cow<'static, str> {
     if let Some(s) = row(step) {
         return Cow::Borrowed(s.title);
     }
     if let Some(t) = task(step) {
         return Cow::Borrowed(t.title);
-    }
-    if step == PUBLISHING {
-        return Cow::Borrowed("Publishing");
     }
     // (A step of a newer app's: its id.)
     Cow::Owned(step.to_string())
@@ -1567,12 +1560,9 @@ mod tests {
         assert_eq!(said("terrain", 8), "Terrain: 8 tiles");
         assert_eq!(said("terrain-lo", 1), "Terrain, zoomed out: 1 area");
         assert_eq!(said("outlines", 1), "Outlines");
-        assert_eq!(
-            [title("publishing"), title("tail"), title("a-newer-step")],
-            ["Publishing", "Roads' last steps", "a-newer-step"]
-        );
+        assert_eq!([title("tail"), title("a-newer-step")], ["Roads' last steps", "a-newer-step"]);
         assert!(matches!(title("a-newer-step"), Cow::Owned(_)) && matches!(title("unit"), Cow::Borrowed(_)));
-        assert_eq!(stage_of("publishing").map(|g| g.id), Some("publish"));
+        assert_eq!(stage_of("publishing"), None, "no lane of its own: publishing goes per unit");
         assert_eq!([stage_title("trains"), stage_title("x")], ["Trains", "x"]);
         // The place, from the pool's rules: the shared steps and the map tiles any member's, the
         // lead's own and the worldwide steps the lead's.

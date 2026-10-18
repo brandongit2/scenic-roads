@@ -1052,14 +1052,19 @@ from the first (`edit_held`).
   through in the order the agent runs it. The lead takes the pass's worldwide jobs, then a region at
   a time (terrain, then units), else the chains' work; its other slots any work in its order that
   fits beside it, a lane per slot its capacity packs (docs/pool.md §10, Each Mac's jobs); each other member the far end of the first shared step it can do (terrain's near end).
-  Units reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. A region's
-  units' map tiles go out as they're built; it reaches the map once its last unit's do, the measured
-  publishing time after it's done (`forecast::update_secs`: the publishing chain's jobs and catalog,
-  summed per catalog). Each target takes its last run's time at the
-  lead's pace, else its step's mean, else a first guess; each machine at its measured speed (half
-  the lead's until measured). Run three times for a range. It says when each step, region and
-  everything will be done, when each region reaches the map, and each machine's schedule, or why
-  there's no finish.
+  Units reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. Publishing
+  goes per unit: a region's map tiles (`RegionLeft::packs`: its units' z6 tiles stale now or to be
+  once its units left are built) are drawn once its units are, ahead of the regions' work, each at
+  its own measured time; a region is all on the map as it's built now (`map_at`) at its last
+  unit's end, plus its map tiles, plus at most a minute for the catalog (`CATALOG_EVERY_S`). The
+  whole-map steps go by their cadence (`publishes`): the low zooms, the landmarks and the area
+  overlays each once its cadence has passed since it last went (`LastCatalog`), or once no unit or
+  terrain is left, whichever comes first (the low zooms may go sooner, half their packs stale).
+  Each target takes its last run's time at the lead's pace, else its step's mean, else a first
+  guess; each machine at its measured speed (half the lead's until measured). Run three times for
+  a range. It says when each step, region and everything will be done, when each region is all on
+  the map, when each cadenced publish may next go, and each machine's schedule, or why there's no
+  finish.
 - **The history** (`coord::history`): the last week's events (50,000 at most) on the lead's disk
   (`coord/history.jsonl`): jobs, leases, tasks, map tiles planned, catalogs, pauses, workers,
   agents, conditions, cache trims and clears. Summed by the hour for the worker page, and the
@@ -1175,7 +1180,13 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
      (`build::LastCatalog`: when its last catalog went out, the last with the low zooms made, and
      when a catalog due was first held back since),
      and records what publishing does and why (`build::PublishLine`), shown in the build status
-     (`publishing`), the worker page and `scenic status`, and logged when it changes.
+     (`publishing`), the worker page and `scenic status`, and logged when it changes. Beside it the
+     status's `published` (`agent::Published`): the last catalog (number, when, with the low zooms
+     or map tiles only), the map tiles being drawn by Mac (pack's targets leased), and the catalog
+     each Mac's map server last adopted (`pubtimes`' servers' log). The worker page's Publishing
+     card and `scenic status` say these in the same words, with the cadenced publishes next (the
+     forecast's `publishes`); the Regions panel, `scenic status` and the menu bar say a region
+     still building as "x of y tiles, on the map as they come", and when all of it is.
    - **The low zooms' cadence** (`build::low_gate`): the low zooms (roads' and rails' lo packs,
      terrain's and slope's roots, and with `near-slope` the slope and tree cover assemblies) are
      planned when nothing else is queued (no unit, terrain, slope or tree piece, 3D buildings or
