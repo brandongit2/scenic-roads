@@ -1045,7 +1045,14 @@ fn main() -> Result<()> {
                 eprintln!("agent: WARNING: SCENIC_TEST_DISK_EXTRA_MB: this agent counts {extra} MB more free on its disk than there is (the two-Mac test's alone, never a real agent's)");
             }
             pipeline::sys::raise_open_files();
-            agent::Agent::new(o)?.run()
+            let mut a = agent::Agent::new(o)?;
+            a.run()?;
+            // (Quit as Scenic asked: the launcher ends with it rather than starting it again.)
+            if a.quit_done() {
+                drop(a);
+                std::process::exit(pipeline::control::QUIT_EXIT);
+            }
+            Ok(())
         }
         "pool" => {
             // The pool (docs/pool.md): how it stands, and the owner's asks of its lead.

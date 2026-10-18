@@ -18,7 +18,15 @@
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
-	<key>LSUIElement</key>
+	<!-- What the app manages (tools/status/service.swift); tools/status/bundle.sh's sandbox build
+	     names its own, and adds ScenicHome, ScenicRunDir and ScenicServer. -->
+	<key>ScenicBuildService</key>
+	<string>local.scenic.build</string>
+	<key>ScenicServerLabel</key>
+	<string>local.scenic.server</string>
+	<key>ScenicUpdateFrom</key>
+	<string>Scenic.app</string>
+	<key>ScenicOpenAtLogin</key>
 	<true/>
 	<!-- The build page in the panel: the lead's coordinator over plain HTTP, at its Tailscale and
 	     LAN addresses. -->

@@ -101,6 +101,10 @@ pub struct Options {
 /// before it's frozen where it is instead: a unit takes up to ~11 min, a map tile ~10.
 const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
 
+/// How long a lead quitting waits for the member it handed the lead to (`Agent::hand_for_quit`)
+/// before it stops anyway (the handover's stages take a few of the pool's steps, ~20 s each).
+const QUIT_HAND_WAIT: Duration = Duration::from_secs(3 * 60);
+
 /// An update's drain (`Agent::update_wait`): the time the target under way is expected to need,
 /// times UPDATE_MARGIN, at most UPDATE_CAP, never less than DRAIN_GRACE. ×1.5 because a target's
 /// measured time varies by about a third between runs (another job beside it, the NAS's load), and
@@ -1105,6 +1109,11 @@ pub struct Agent {
     /// lead through a client made from it).
     last_root: Option<PathBuf>,
     update_handed: Option<String>,
+    /// Quitting as the app asked (crate::control::Quit): this Mac's lead handed away then
+    /// (`hand_for_quit`; true: asked of a member, false: none could take it), and whether the loop
+    /// ended for it (the process then exits with `QUIT_EXIT`).
+    quit_lead: Option<(Instant, bool)>,
+    quit_done: bool,
     /// The Mac it reads its conditions and resources from (a test's fixed one: cond::Mac::TEST).
     pub(crate) mac: cond::Mac,
     sleep: SleepWatch,
@@ -1431,6 +1440,8 @@ impl Agent {
             lead_awake: None,
             last_root: None,
             update_handed: None,
+            quit_lead: None,
+            quit_done: false,
             mac: cond::Mac::Real,
             sleep: SleepWatch::default(),
             last_mount_try: None,
@@ -1729,6 +1740,11 @@ impl Agent {
                 what: "Building".into(),
                 why: "restarting into the newly installed app".into(),
             });
+            return Vec::new();
+        }
+        // (Nor while Scenic quits: no new work taken.)
+        if let Some(why) = self.quit_why() {
+            waiting.push(Waiting { step: None, what: "Building".into(), why });
             return Vec::new();
         }
         // The work its disk has room for (what its caches can free counted at most every ten
@@ -2707,6 +2723,20 @@ impl Agent {
             if self.o.once || STOP.load(Ordering::SeqCst) {
                 break;
             }
+            // The app quits (crate::control::Quit): "now", its jobs stopped and given back at once;
+            // the loop ends once none runs and the lead is handed away (`quit_due`).
+            if let Some(q) = self.quit_ask() {
+                if q.mode == crate::control::QuitMode::Now {
+                    self.stop_jobs(&format!("stopped: Scenic quit ({})", q.by));
+                }
+                if self.quit_due() {
+                    eprintln!("agent: Scenic quit ({}); stopping", q.by);
+                    self.quit_done = true;
+                    break;
+                }
+            } else {
+                self.quit_lead = None;
+            }
             // A newer app is in place and the first job's slot is free (its job stopped at a safe
             // point, `tend`, or past the grace still draining): exit (a job still running stops
             // here, its finished targets kept, and goes on under the new one), and the launcher
@@ -2720,9 +2750,12 @@ impl Agent {
                 eprintln!("agent: {why}; restarting");
                 break;
             }
-            let wait = if quick { 2 } else { 20 };
+            // (A quit asked meanwhile taken up within seconds; while quitting, the loop looks again
+            // soon.)
+            let quitting = self.quit_ask().is_some();
+            let wait = if quick || quitting { 2 } else { 20 };
             for _ in 0..wait {
-                if STOP.load(Ordering::SeqCst) {
+                if STOP.load(Ordering::SeqCst) || (!quitting && self.quit_ask().is_some()) {
                     break;
                 }
                 std::thread::sleep(Duration::from_secs(1));
@@ -2755,20 +2788,101 @@ impl Agent {
             }
         }
         let root = self.o.root.clone().or_else(|| self.root());
-        for k in 0..self.slots.len() {
-            if let Some(r) = self.slots[k].running.as_mut() {
-                eprintln!("agent: stopping {}", r.spec.id);
-                r.stop(Duration::from_secs(30));
-                self.stopped(k, "the agent stopped");
-                self.slots[k].running = None;
-                std::fs::remove_file(self.record_path(k)).ok();
-            }
-        }
+        self.stop_jobs("the agent stopped");
         // The coordinator's contact off the NAS: workers wait for the next agent.
         if let (Some(c), Some(root)) = (&self.coord, &root) {
             c.unpublish(root);
         }
+        // (Quit as the app asked: the ask done, so the next start, the app opened again, builds.)
+        if self.quit_done {
+            crate::control::clear_quit(&self.o.home);
+        }
         Ok(())
+    }
+
+    /// Whether the loop ended because the app quit (crate::control::Quit): the process exits with
+    /// `QUIT_EXIT`, which its launcher takes as the end.
+    pub fn quit_done(&self) -> bool {
+        self.quit_done
+    }
+
+    /// Every job running here stopped (`why`): what it finished handed off, its lease given back,
+    /// its scratch left on the disk.
+    fn stop_jobs(&mut self, why: &str) {
+        for k in 0..self.slots.len() {
+            if let Some(r) = self.slots[k].running.as_mut() {
+                eprintln!("agent: stopping {}", r.spec.id);
+                r.stop(Duration::from_secs(30));
+                self.stopped(k, why);
+                self.slots[k].running = None;
+                std::fs::remove_file(self.record_path(k)).ok();
+            }
+        }
+    }
+
+    /// The app's ask to quit, if one waits (only the agent holding the lock acts on it).
+    fn quit_ask(&self) -> Option<crate::control::Quit> {
+        self._lock.as_ref()?;
+        crate::control::peek_quit(&self.o.home)
+    }
+
+    /// Why nothing new starts here: the app quits (`quit_ask`).
+    fn quit_why(&self) -> Option<String> {
+        let q = self.quit_ask()?;
+        Some(match q.mode {
+            crate::control::QuitMode::Finish => format!("Scenic quits once the job under way ends ({})", q.by),
+            crate::control::QuitMode::Now => format!("Scenic quits ({})", q.by),
+        })
+    }
+
+    /// Whether the quit can end the loop: no job runs here, and this Mac doesn't lead, or its lead
+    /// was handed away (`hand_for_quit`: asked of a member QUIT_HAND_WAIT ago at most; none could
+    /// take it, and the build waits for this Mac).
+    fn quit_due(&self) -> bool {
+        if self.slots.iter().any(|s| s.running.is_some()) {
+            return false;
+        }
+        let leads = match self.try_pooled() {
+            None => false,
+            Some(None) => return false,
+            Some(Some(p)) => p.role == pool::Role::Lead,
+        };
+        match (leads, self.quit_lead) {
+            (false, _) => true,
+            (true, None) => false,
+            (true, Some((_, false))) => true,
+            (true, Some((at, true))) => at.elapsed() >= QUIT_HAND_WAIT,
+        }
+    }
+
+    /// A lead quitting, its jobs ended (`quit_due`), hands the lead to a member that can take it now,
+    /// as the owner's ask would (docs/pool.md §6.3), once; with none, the build waits until Scenic is
+    /// opened again here (no takeover wait: the lead is simply gone).
+    fn hand_for_quit(&mut self) {
+        let Some(q) = self.quit_ask() else { return };
+        if self.quit_lead.is_some() || self.slots.iter().any(|s| s.running.is_some()) {
+            return;
+        }
+        let handed = {
+            let Some(mut run) = self.pooled().filter(|p| p.role == pool::Role::Lead) else { return };
+            let to = run.controls.view.as_ref().and_then(|v| v.members.iter().find(|m| !m.me && m.can_lead).cloned());
+            match to {
+                Some(m) => {
+                    eprintln!("agent: Scenic quits ({}); handing the lead to {}", q.by, m.host);
+                    run.controls.page.push(crate::control::LeadRequest {
+                        ask: crate::control::LeadAsk::Give { to: m.member.clone() },
+                        by: format!("{}, quitting", q.by),
+                        at: now_s(),
+                    });
+                    true
+                }
+                None => {
+                    eprintln!("agent: Scenic quits ({}); no other Mac can take the lead now, so the build waits", q.by);
+                    false
+                }
+            }
+        };
+        self.quit_lead = Some((Instant::now(), handed));
     }
 
     /// This member's run in the pool, locked (`pool::lock`): held only for what reads or changes it,
@@ -3670,7 +3784,8 @@ impl Agent {
         root: Option<&Path>,
         waiting: &mut Vec<Waiting>,
     ) -> bool {
-        if let Some(why) = self.wait_reason(&spec, c) {
+        // (Scenic quitting: no new work taken.)
+        if let Some(why) = self.quit_why().or_else(|| self.wait_reason(&spec, c)) {
             waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
             return false;
         }
@@ -7974,6 +8089,8 @@ impl Agent {
         let home = self.o.home.clone();
         // (Its update waiting on its own job: the lead to a member on the newer app.)
         self.hand_for_update();
+        // (Quitting, its jobs ended: the lead to a member that can take it.)
+        self.hand_for_quit();
         let duty = self.slots.iter().any(|s| s.running.as_ref().is_some_and(|j| is_duty(&j.spec.id)));
         let answered = self.client.as_ref().and_then(|c| c.answered());
         let (lead_urls, lead_failed) = self.client.as_ref().map(|c| (c.urls(), c.failed())).unwrap_or_default();
@@ -12169,6 +12286,60 @@ mod tests {
         a.step().unwrap();
         let st = read_status(Some(&root), &home).unwrap();
         assert!(st.waiting.iter().any(|w| w.why.contains("would start")), "{:?}", st.waiting);
+    }
+
+    #[test]
+    fn quitting_takes_no_new_work_and_ends_once_no_job_runs() {
+        // (Task #194: Scenic quit, "Finish this job first" or "Stop now".)
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/nonexistent/bin"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        a.free_set = Some(40 << 30);
+        let job = |id: &str| JobSpec {
+            id: id.into(),
+            what: id.into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "bldtiles".into(), targets: vec![("6/1/1".into(), "k".into())] }),
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        assert!(a.quit_ask().is_none() && a.quit_due());
+        assert!(a.try_start(0, job("bldtiles 6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        let pgid = a.slots[0].running.as_ref().unwrap().pgid;
+        struct Kill(i32);
+        impl Drop for Kill {
+            fn drop(&mut self) {
+                unsafe { libc::kill(-self.0, libc::SIGKILL) };
+            }
+        }
+        let _kill = Kill(pgid);
+        // "Finish this job first": the job goes on, nothing new starts (and the status says why),
+        // the loop not ended while it runs.
+        crate::control::request_quit(&home, crate::control::QuitMode::Finish, "Scenic on m1").unwrap();
+        let mut waiting = Vec::new();
+        assert!(!a.try_start(1, job("bldtiles 6/2/2"), &cond, Some(&root), &mut waiting));
+        assert!(a.beside_why.as_deref().is_some_and(|w| w.contains("Scenic quits once the job under way ends")));
+        a.tend(0, &cond, Some(&root), 0).unwrap();
+        assert!(a.slots[0].running.as_ref().is_some_and(|r| r.pausing.is_none() && r.paused.is_none()));
+        assert!(!a.quit_due());
+        // Its job over ("Stop now" stops it so: given back, not a failure): the quit is due (this
+        // Mac leads no pool), and the ask goes as the loop ends.
+        a.stop_jobs("stopped: Scenic quit");
+        assert!(a.slots.iter().all(|s| s.running.is_none()) && a.quit_due());
+        a.quit_done = true;
+        a.o.once = true;
+        a.run().unwrap();
+        assert!(a.quit_done() && crate::control::peek_quit(&home).is_none());
     }
 
     #[test]

@@ -488,7 +488,9 @@ number is used once, whole or as a delta:
 
 ```
 bin/scenic-launcher     the launcher (never rebuilt)
-run/<name>              what the launcher runs, one argument per line: server, agent, status
+run/<name>              what the launcher runs, one argument per line: server, agent (written by
+                        Scenic.app when it opens)
+agent/quit-request.json Scenic's ask to quit (control::Quit: finish or now), until the agent exits
 app/<version>/          server, scenic, scenic-build, extract, tile, scenic-metrics, dem/, Scenic.app,
                         web/, fonts/ (app/current → the one in use); dem/.venv made by uv from
                         dem/uv.lock on first use

@@ -185,16 +185,13 @@ mkdir -p $dest.tmp/wasm
 cp -X target/wasm32-wasip1/release/{extract,tile,scenic-metrics,areaflags,elev,landcover,trees,bldtile,terrainsub}.wasm $dest.tmp/wasm/
 mkdir -p $dest.tmp/dem
 git ls-files dem | while read f; do cp -X "$f" "$dest.tmp/$f"; done
-# The menu bar item (tools/status): an app bundle, built and signed ad hoc on this Mac (codesign
-# refuses a bundle on the NAS, whose SMB share adds Finder info), then copied without extended
-# attributes (none to keep as AppleDouble files).
-sb=$(mktemp -d)/Scenic.app
-mkdir -p "$sb/Contents/MacOS"
-swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o "$sb/Contents/MacOS/scenic-status" tools/status/main.swift
-cp -X tools/status/Info.plist "$sb/Contents/Info.plist"
-xattr -cr "$sb"
-codesign -s "$sign_id" -i local.scenic.status --force "$sb"
-cp -RX "$sb" "$dest.tmp/"
+# Scenic.app (tools/status: the menu bar item, the build service, the map server's controls), built
+# and signed on this Mac (codesign refuses a bundle on the NAS, whose SMB share adds Finder info),
+# then copied without extended attributes (none to keep as AppleDouble files). Each Mac's copy in
+# /Applications replaces itself with it.
+sb=$(mktemp -d)
+zsh tools/status/bundle.sh $sb $version "$sign_id" >/dev/null
+cp -RX "$sb/Scenic.app" "$dest.tmp/"
 rsync -a web/dist-publish/ $dest.tmp/web/
 rsync -a $fonts/ $dest.tmp/fonts/
 mv $dest.tmp $dest

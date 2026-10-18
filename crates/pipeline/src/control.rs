@@ -146,6 +146,57 @@ pub fn peek_lead(home: &Path) -> Option<LeadRequest> {
     serde_json::from_slice(&std::fs::read(home.join(LEAD_REQUEST)).ok()?).ok()
 }
 
+/// How the owner quits Scenic (the app, tools/status) on this Mac with its build service: the jobs
+/// under way finish first (`Finish`: nothing new taken meanwhile), or stop now (`Now`: each given
+/// back, what it finished handed off, its scratch kept on this Mac's disk). Either way a leading
+/// Mac then hands the lead to a member that can take it, and the agent exits with `QUIT_EXIT`,
+/// which its launcher passes on as a clean exit, so launchd leaves it stopped until the app is
+/// opened again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QuitMode {
+    Finish,
+    Now,
+}
+
+/// The app's ask to quit (`QUIT_REQUEST`): kept in the agent's folder while the agent quits (an
+/// agent restarted meanwhile goes on quitting), removed by the agent as it exits, and by the app
+/// when it's opened again (which cancels it).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Quit {
+    pub mode: QuitMode,
+    /// Who asked, in words: "Scenic on m4", "Scenic on m4, logging out".
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub at: u64,
+}
+
+/// The quit ask's file, in the agent's folder.
+pub const QUIT_REQUEST: &str = "quit-request.json";
+
+/// How the agent exits once it has quit as asked: its launcher then exits cleanly, not starting it
+/// again (tools/launcher/launcher.c).
+pub const QUIT_EXIT: i32 = 76;
+
+/// Asks this Mac's agent (its folder `home`) to quit.
+pub fn request_quit(home: &Path, mode: QuitMode, by: &str) -> anyhow::Result<Quit> {
+    std::fs::create_dir_all(home)?;
+    let q = Quit { mode, by: by.to_string(), at: now() };
+    crate::whole::write(&home.join(QUIT_REQUEST), &serde_json::to_vec(&q)?)?;
+    Ok(q)
+}
+
+/// The quit ask waiting in `home`, if any (one that doesn't parse: none, left as it is).
+pub fn peek_quit(home: &Path) -> Option<Quit> {
+    serde_json::from_slice(&std::fs::read(home.join(QUIT_REQUEST)).ok()?).ok()
+}
+
+/// The quit ask done: it goes.
+pub fn clear_quit(home: &Path) {
+    std::fs::remove_file(home.join(QUIT_REQUEST)).ok();
+}
+
 /// The running job's channel: a file the agent writes ("run" or "drain"), named by this variable.
 pub const CONTROL_ENV: &str = "SCENIC_CONTROL";
 
@@ -250,5 +301,13 @@ mod tests {
         std::fs::write(&p, "unit 6/1/1\nunit 6/1/2\npack 6/1/1\nunit 6/1/1\nbroken\n").unwrap();
         assert_eq!(read_done(&p, "unit"), ["6/1/1", "6/1/2"]);
         assert!(read_done(&d.path().join("none"), "unit").is_empty());
+        // A quit ask: the app's JSON as it writes it, read until it's cleared.
+        assert!(peek_quit(d.path()).is_none());
+        std::fs::write(d.path().join(QUIT_REQUEST), r#"{"mode": "finish", "by": "Scenic on m1", "at": 7}"#).unwrap();
+        assert_eq!(peek_quit(d.path()).map(|q| (q.mode, q.at)), Some((QuitMode::Finish, 7)));
+        request_quit(d.path(), QuitMode::Now, "scenic on m4").unwrap();
+        assert_eq!(peek_quit(d.path()).map(|q| q.mode), Some(QuitMode::Now));
+        clear_quit(d.path());
+        assert!(peek_quit(d.path()).is_none());
     }
 }

@@ -16,10 +16,14 @@
 // Build… (confirming) on another Mac, the proactive offer; each an ask to that agent
 // (`lead-request.json`), which checks it as its driver would.
 //
-// The launcher runs it (`scenic-launcher status`, from ~/Library/LaunchAgents/local.scenic.status.plist)
-// from the installed app; it quits when a newer app is installed, and the launcher starts that one.
+// It's the menu bar item of Scenic.app, the app opened from the Dock, Launchpad or /Applications
+// (and at login): opening it starts this Mac's build service, quitting it stops that service, and
+// its window starts and stops the map server, a service of its own (service.swift).
 //
-//   swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o Scenic.app/Contents/MacOS/scenic-status tools/status/main.swift
+//   tools/status/bundle.sh <folder> [sandbox options]   builds Scenic.app (both files, its launcher
+//                                                        and its build service's launchd plist)
+//   scenic-status --services                the build service's and the map server's state
+//   scenic-status --unregister              the build service and the app off the login items
 //   scenic-status --print                   the icon, the status's lines and the menu's items now, as text
 //   scenic-status --replay a.json b.json …  the notifications a sequence of answers would send (each
 //                                           file /api/build's answer, with this Mac's agent's
@@ -30,18 +34,19 @@
 //   scenic-status --show panel|menu         runs, and opens the panel (closed 20 s later) or the menu
 //   scenic-status --menu-proof              runs, its polls and notifications printed with the time,
 //                                           a menu held open 25 s between: they go on while it's open
-//   scenic-status --wait-replaced           waits, without a window, until a newer app is installed
-// SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:7311), SCENIC_HOME the app folder,
-// SCENIC_STATUS_APPEARANCE (light, dark) the system's appearance.
+// SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:7311; else Info.plist's ScenicServer),
+// SCENIC_HOME the app folder (else Info.plist's ScenicHome), SCENIC_STATUS_APPEARANCE (light,
+// dark) the system's appearance.
 
 import AppKit
 import CoreServices
 import SystemConfiguration
 import UserNotifications
+import ServiceManagement
 import WebKit
 
-let server = URL(string: ProcessInfo.processInfo.environment["SCENIC_STATUS_SERVER"] ?? "http://127.0.0.1:7311")!
-let home = ProcessInfo.processInfo.environment["SCENIC_HOME"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/scenic")
+let server = URL(string: ProcessInfo.processInfo.environment["SCENIC_STATUS_SERVER"] ?? info["ScenicServer"] as? String ?? "http://127.0.0.1:7311")!
+let home = (ProcessInfo.processInfo.environment["SCENIC_HOME"] ?? info["ScenicHome"] as? String).map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/scenic")
 /// Without a heartbeat for this long, the lead counts as out of touch (asleep, off, away, or
 /// its agent stuck): its agent writes one at least every two minutes.
 let outOfTouch = 6 * 60
@@ -1405,6 +1410,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var own: Own?
     var seenCaches: (trimmed: Int, cleared: Int, declined: Int)?
     var polling = false
+    /// The app's build service, the map server, and the window (service.swift).
+    let build = BuildService()
+    let mapServer = MapServer()
+    lazy var window: StatusWindow = {
+        let w = StatusWindow()
+        w.onStart = { [weak self] in self?.startServer() }
+        w.onStop = { [weak self] in self?.stopServer() }
+        return w
+    }()
+    /// Quitting goes ahead without asking: the build service stopped as asked, or the app replaced
+    /// by an update (the build service left running).
+    var mayQuit = false
+    /// Whether this run manages the services (the app opened, not a --show or --menu-proof run).
+    var managing = false
     /// `--menu-proof`: its polls and notifications printed with the time, a menu held open between.
     var proof = false
     /// `--show panel|menu`: opened once the first answer is in, the panel closed 20 s later (for
@@ -1422,10 +1441,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        // Known to Launch Services by its bundle (notifications need it): the launcher starts the
-        // executable inside it directly.
+        // Known to Launch Services by its bundle (notifications need it), also when its executable
+        // is started directly (--show, --menu-proof).
         LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
-        _ = launchedFrom
+        if !proof && showAtStart == nil { openApp() }
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         // (A device's asks to help, from before pages helped with no key: taken away.)
@@ -1449,7 +1468,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         show()
         poll()
         every(5) { [weak self] in self?.poll() }
-        every(60) { quitIfReplaced() }
+        every(60) { [weak self] in self?.updateIfReplaced() }
         if proof { menuProof() }
         if let what = showAtStart {
             after(2) {
@@ -1482,7 +1501,159 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    // MARK: the app: its build service, the map server, quitting, updates (service.swift)
+
+    /// The app opened: its menu, its build service started, the window (unless opened at login),
+    /// and the app among the login items.
+    func openApp() {
+        let menu = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Scenic"
+        appMenu.addItem(withTitle: "Show the \(name) Window", action: #selector(showWindow), keyEquivalent: "0").target = self
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide \(name)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Quit \(name)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        menu.addItem(appItem)
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowItem.submenu = windowMenu
+        menu.addItem(windowItem)
+        NSApp.mainMenu = menu
+        managing = true
+        build.start()
+        mapServer.refresh()
+        if openAtLogin, SMAppService.mainApp.status != .enabled {
+            do { try SMAppService.mainApp.register() } catch { NSLog("scenic: adding the app to the login items: \(error)") }
+        }
+        updateWindow()
+        if !launchedAtLogin() { window.show() }
+        updateIfReplaced()
+    }
+
+    /// Each poll: the build service kept running (or, quitting after its job, the app quits once
+    /// it has stopped), the map server's state, the window.
+    func tendServices() {
+        // (Not in --show and --menu-proof's runs: the services left alone.)
+        guard managing else { return }
+        build.tend()
+        mapServer.refresh()
+        if build.quitting == "finish" && !build.state.running {
+            mayQuit = true
+            NSApp.terminate(nil)
+            return
+        }
+        updateWindow()
+    }
+
+    func updateWindow() {
+        let jobs = runningJobs(serviceRunning: build.state.running)
+        var line: String? = jobs.isEmpty ? nil : jobsText(jobs)
+        if build.quitting == "finish" { line = "Quitting once this job ends:\n" + (line ?? "") }
+        window.update(build: build, map: mapServer, job: line)
+    }
+
+    @objc func showWindow() {
+        updateWindow()
+        window.show()
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !hasVisibleWindows { showWindow() }
+        return true
+    }
+
+    @objc func startServer() {
+        mapServer.start()
+        updateWindow()
+        poll()
+    }
+
+    @objc func stopServer() {
+        let a = NSAlert()
+        a.messageText = "Stop the map server?"
+        a.informativeText = "The map stops loading on this Mac and on devices that use it (an iPad) until it's started again here, or at the next login. The build service goes on."
+        a.addButton(withTitle: "Stop the Map Server")
+        a.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        mapServer.stop()
+        updateWindow()
+    }
+
+    /// A newer version installed (the server put it under app/): this app replaced by it and opened
+    /// again; the build service left running (its own update drain restarts it into that version).
+    func updateIfReplaced() {
+        guard build.quitting == nil, let new = newerApp() else { return }
+        print("replacing this app with \(new.path)")
+        if replaceSelf(with: new) {
+            mayQuit = true
+            NSApp.terminate(nil)
+        }
+    }
+
+    /// Quitting (the app's menu, the menu bar's, the Dock; a logout, restart or shutdown): the build
+    /// service stopped. No job running: at once. A job running: asked, "Finish This Job First" (the
+    /// app quits once the service has stopped) or "Stop Now". A logout, restart or shutdown: "Stop
+    /// Now" without asking. The agent hands the lead away itself as it quits (control.rs Quit).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if mayQuit || !managing { return .terminateNow }
+        build.refresh()
+        if !build.state.running { return .terminateNow }
+        if quitForLogout() {
+            build.askQuit(finish: false, why: ", logging out")
+            return .terminateNow
+        }
+        let jobs = runningJobs(serviceRunning: true)
+        if jobs.isEmpty {
+            build.askQuit(finish: false)
+            return .terminateNow
+        }
+        let a = NSAlert()
+        a.messageText = jobs.count == 1 ? "A build job is running on this Mac" : "\(jobs.count) build jobs are running on this Mac"
+        a.informativeText = jobsText(jobs) + "\n\nFinish this job first: nothing new is taken, and Scenic quits once it ends. Stop now: it's given back to the build, its work kept on this Mac's disk."
+        a.addButton(withTitle: "Finish This Job First")
+        a.addButton(withTitle: "Stop Now")
+        a.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        switch a.runModal() {
+        case .alertFirstButtonReturn:
+            build.askQuit(finish: true)
+            updateWindow()
+            show()
+            return .terminateCancel
+        case .alertSecondButtonReturn:
+            build.askQuit(finish: false)
+            return .terminateNow
+        default:
+            return .terminateCancel
+        }
+    }
+
+    @objc func cancelQuit(_ sender: NSMenuItem) {
+        build.cancelQuit()
+        updateWindow()
+        show()
+    }
+
+    @objc func stopNowAndQuit(_ sender: NSMenuItem) {
+        build.askQuit(finish: false)
+        mayQuit = true
+        NSApp.terminate(nil)
+    }
+
+    @objc func quitApp(_ sender: NSMenuItem) {
+        NSApp.terminate(nil)
+    }
+
+    @objc func startServerItem(_ sender: NSMenuItem) { startServer() }
+    @objc func stopServerItem(_ sender: NSMenuItem) { stopServer() }
+
     func poll() {
+        tendServices()
         if polling { return }
         polling = true
         var req = URLRequest(url: server.appendingPathComponent("api/build"))
@@ -1676,6 +1847,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             it.target = self
             it.representedObject = page
             m.addItem(it)
+        }
+        // The map server (a service of its own: started and stopped only from here or the window),
+        // and quitting.
+        if managing {
+            m.addItem(.separator())
+            if mapServer.installed {
+                let it = mapServer.state.running
+                    ? NSMenuItem(title: "Stop the Map Server…", action: #selector(stopServerItem), keyEquivalent: "")
+                    : NSMenuItem(title: "Start the Map Server", action: #selector(startServerItem), keyEquivalent: "")
+                it.target = self
+                it.toolTip = mapServer.said
+                m.addItem(it)
+            }
+            let win = NSMenuItem(title: "Show the Scenic Window", action: #selector(showWindow), keyEquivalent: "")
+            win.target = self
+            m.addItem(win)
+            if build.quitting == "finish" {
+                let jobs = runningJobs(serviceRunning: build.state.running)
+                let info = NSMenuItem(title: "Quitting once this job ends" + (jobs.first?.left.map { ", about \(duration($0)) left" } ?? ""), action: nil, keyEquivalent: "")
+                info.isEnabled = false
+                m.addItem(info)
+                let cancel = NSMenuItem(title: "Don't Quit", action: #selector(cancelQuit), keyEquivalent: "")
+                cancel.target = self
+                m.addItem(cancel)
+                let now = NSMenuItem(title: "Stop Now and Quit", action: #selector(stopNowAndQuit), keyEquivalent: "")
+                now.target = self
+                m.addItem(now)
+            } else {
+                let quit = NSMenuItem(title: "Quit Scenic", action: #selector(quitApp), keyEquivalent: "")
+                quit.target = self
+                m.addItem(quit)
+            }
         }
         return m
     }
@@ -1978,24 +2181,27 @@ func stamp() -> String {
     return f.string(from: Date())
 }
 
-/// The app version folder this process was started from, resolved when it starts (it's run through
-/// the `current` link, which later points elsewhere).
-let launchedFrom = Bundle.main.bundleURL.resolvingSymlinksInPath().deletingLastPathComponent().path
-
-/// Quits when the installed app's `current` link points at another version than the one this
-/// process started from: the launcher then starts the new one.
-func quitIfReplaced() {
-    let apps = home.appendingPathComponent("app").resolvingSymlinksInPath().path
-    guard launchedFrom.hasPrefix(apps + "/") else { return }
-    let current = home.appendingPathComponent("app/current").resolvingSymlinksInPath().path
-    if current != launchedFrom {
-        print("replaced by \(current)")
-        exit(0)
-    }
-}
-
 let args = CommandLine.arguments
-if args.contains("--print") {
+if args.contains("--unregister") {
+    // The build service and the app taken off the login items (the service stopped and unloaded):
+    // a sandbox's cleanup, or before the app is removed.
+    for (what, s) in [("the build service", SMAppService.agent(plistName: "\(buildLabel).plist")), ("the app", SMAppService.mainApp)] {
+        do {
+            try s.unregister()
+            print("unregistered \(what)")
+        } catch {
+            print("\(what): \(error.localizedDescription)")
+        }
+    }
+} else if args.contains("--services") {
+    // The build service's and the map server's state, as the app sees them.
+    let b = BuildService()
+    b.refresh()
+    let m = MapServer()
+    m.refresh()
+    print("\(b.said) [\(b.service.status.rawValue)]")
+    print(m.said)
+} else if args.contains("--print") {
     // The status now, as the icon and menu would show it.
     let done = DispatchSemaphore(value: 0)
     var r: Reply?
@@ -2060,14 +2266,6 @@ if args.contains("--print") {
     NSAppearance(named: .darkAqua)!.performAsCurrentDrawingAppearance { canvas.cacheDisplay(in: canvas.bounds, to: rep) }
     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: args[i + 1]))
     print("drew \(views.count) lines, \(Int(height)) pt high")
-} else if args.contains("--wait-replaced") {
-    // What the menu bar item does every minute, every second: quits once replaced.
-    _ = launchedFrom
-    print("started from \(launchedFrom)")
-    while true {
-        quitIfReplaced()
-        Thread.sleep(forTimeInterval: 1)
-    }
 } else if let i = args.firstIndex(of: "--replay") {
     // The notifications a sequence of answers would send.
     let d = AppDelegate()
@@ -2104,6 +2302,7 @@ if args.contains("--print") {
     delegate.proof = args.contains("--menu-proof")
     if let i = args.firstIndex(of: "--show"), i + 1 < args.count { delegate.showAtStart = args[i + 1] }
     app.delegate = delegate
-    app.setActivationPolicy(.accessory)
+    // (A normal app, in the Dock; --show's and --menu-proof's runs the menu bar item alone.)
+    app.setActivationPolicy(delegate.proof || delegate.showAtStart != nil ? .accessory : .regular)
     app.run()
 }

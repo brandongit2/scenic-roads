@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Scenic's build service (this Mac's agent): the app's own launchd job, registered with
+     SMAppService (tools/status/service.swift). tools/status/bundle.sh copies it into the app as
+     Contents/Library/LaunchAgents/<label>.plist, with its label and the app's bundle id (a
+     sandbox's, its run folder and log too). launchd keeps it running (after a crash: started again)
+     until it exits cleanly: the agent quit as the app asked (tools/launcher/launcher.c). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>LABEL</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/scenic-launcher</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>scenic-launcher</string>
+		<string>agent</string>
+	</array>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>BUNDLE_ID</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Standard</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>SCENIC_LAUNCHER_LOG</key>
+		<string>~/Library/Logs/scenic/agent.log</string>
+	</dict>
+</dict>
+</plist>

@@ -13,7 +13,17 @@
 // NAS) and remembers the answer for this exact binary. The programs it runs inherit that
 // permission because they are its children (posix_spawn), never replacements (exec).
 // SIGTERM, SIGINT and SIGHUP are passed on to the child; SIGTERM and SIGINT then end the launcher.
+//
+// Scenic.app carries a copy of its own (Contents/MacOS/scenic-launcher, built and signed with the
+// app in every publish), which runs the build service as the app's launchd job: there a child that
+// exits with 76 (the agent quit as the app asked, pipeline::control::QUIT_EXIT) ends the launcher
+// too, cleanly, so launchd leaves it stopped until the app starts it again. Two variables serve the
+// app's copy: SCENIC_RUN_DIR, the folder of run files in place of ~/Library/Application
+// Support/scenic/run (a sandboxed test app's own), and SCENIC_LAUNCHER_LOG, a file (a leading "~/"
+// the home folder) its output and its child's are appended to (launchd's own log paths can't name
+// the home folder).
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
@@ -24,6 +34,8 @@
 #include <unistd.h>
 
 extern char **environ;
+// pipeline::control::QUIT_EXIT.
+#define QUIT_EXIT 76
 static volatile pid_t child = 0;
 static volatile sig_atomic_t stopping = 0;
 
@@ -67,7 +79,27 @@ int main(int argc, char **argv) {
     }
     const char *home = getenv("HOME");
     char path[2048];
-    snprintf(path, sizeof path, "%s/Library/Application Support/scenic/run/%s", home ? home : "", argv[1]);
+    const char *run_dir = getenv("SCENIC_RUN_DIR");
+    if (run_dir && *run_dir) {
+        snprintf(path, sizeof path, "%s/%s", run_dir, argv[1]);
+    } else {
+        snprintf(path, sizeof path, "%s/Library/Application Support/scenic/run/%s", home ? home : "", argv[1]);
+    }
+    const char *log = getenv("SCENIC_LAUNCHER_LOG");
+    if (log && *log) {
+        char lp[2048];
+        if (log[0] == '~' && log[1] == '/') {
+            snprintf(lp, sizeof lp, "%s%s", home ? home : "", log + 1);
+        } else {
+            snprintf(lp, sizeof lp, "%s", log);
+        }
+        int fd = open(lp, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) {
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+    }
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_signal;
@@ -91,6 +123,11 @@ int main(int argc, char **argv) {
                 while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {
                 }
                 child = 0;
+                // (Quit as the app asked: the end, not a crash to start again after.)
+                if (WIFEXITED(st) && WEXITSTATUS(st) == QUIT_EXIT) {
+                    fprintf(stderr, "scenic-launcher: %s quit as asked\n", argv[1]);
+                    break;
+                }
             } else {
                 fprintf(stderr, "scenic-launcher: can't start %s: %s\n", cargv[0], strerror(rc));
             }

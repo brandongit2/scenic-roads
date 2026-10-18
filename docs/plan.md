@@ -23,7 +23,18 @@ coverage, or once for the whole world, so region size, count and borders never s
 - Zoomed out, every road is drawn at every zoom. The water zoomed out looks as full detail rendered
   and shrunk would: an island or lake smaller than a pixel is as faint as its share of the pixel,
   never exaggerated nor dropped, with the coastal shading full detail gives it (§6, Water).
-- `scenic status` and the menu bar item (Scenic.app, `tools/status`) show the build's state. A click
+- **Scenic** (`/Applications/Scenic.app`, `tools/status`) is an app opened from the Dock, Launchpad
+  or /Applications, and at login. Opening it starts this Mac's build service (the agent: the app's
+  own launchd job, registered with SMAppService and listed under Scenic in Login Items; launchd
+  restarts it after a crash, and it restarts itself into an update). Quitting stops it: at once with
+  no job running; with one, the app asks "Finish This Job First" (nothing new taken, the app quits
+  when it ends) or "Stop Now" (the job given back, its work kept on disk); a logout, restart or
+  shutdown takes Stop Now without asking. A leading Mac quitting hands the lead to a member that can
+  take it (waiting up to three minutes for the handover), else the build waits for it
+  (`control::Quit`). The map server stays a service of its own: Scenic's window and menu show it
+  and start or stop it when asked, never on opening or quitting. On an update Scenic copies the
+  installed version's Scenic.app over itself and opens again.
+- `scenic status` and the menu bar item (Scenic's) show the build's state. A click
   opens the build page in a popover; the menu pauses and resumes the build, hands over the lead,
   sets the disk room and clears the Mac's build caches (`scenic clean`). It notifies on every change.
 - `scenic`, `scenic-build`, `scenic-metrics`, `lakefill` and `coastcheck` check their command line
@@ -238,7 +249,9 @@ floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, th
 
 **App Macs (both laptops).**
 - **The launcher** (`tools/launcher/launcher.c`) runs the command in `~/Library/Application
-  Support/scenic/run/<name>` (server, agent, status) and restarts it when it exits. A server started
+  Support/scenic/run/<name>` and restarts it when it exits: `bin/scenic-launcher server` (the map
+  server's LaunchAgent), and Scenic.app's own copy running `agent` (the build service; there an
+  agent exiting with `QUIT_EXIT` ends it cleanly, so launchd leaves it stopped). A server started
   any other way (such as the desktop app's preview) waits on macOS's network-volume prompt; test
   servers run from the shell.
 - **The updater** checks the NAS's `app/current.json` every five minutes, copies a newer app locally

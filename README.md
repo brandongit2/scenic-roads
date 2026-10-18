@@ -9,7 +9,7 @@ A personal, offline-capable dark map of every car-accessible public road and eve
 
 ## Using it
 
-The map runs on each Mac at http://localhost:7311, installed by `tools/app/install.sh` and kept running by launchd. Its data lives on the NAS; nothing is copied to a Mac unless downloaded there (Settings → Regions → Downloads: the World zoomed out, a region, or the view).
+The map runs on each Mac at http://localhost:7311, installed by `tools/app/install.sh` and kept running by launchd. The build runs while Scenic (/Applications/Scenic.app, installed by the same script) is open. Its data lives on the NAS; nothing is copied to a Mac unless downloaded there (Settings → Regions → Downloads: the World zoomed out, a region, or the view).
 
 - **Navigation:** trackpad pan and pinch anchored to the ground; ⌥ + two-finger drag (or right-drag) rotates and tilts; double-click zooms. **I** hides the interface, **B** toggles buildings. Over a road, list entry or profile: **G** Street View, **M** Google Maps, **O** OpenStreetMap.
 - **Settings panel** (left): a section per layer: Roads, Passenger rail, Ferries, Stops & sights, Terrain, Trees, Buildings, Map, Labels, Tools, Regions. Each colour scale has a histogram of what's in view, auto-fit (by screen widths of road or percentiles), Lock / Full / Equalise, a colour map, a low-end fade and a threshold highlight.
