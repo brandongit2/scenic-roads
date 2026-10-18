@@ -96,7 +96,13 @@ fn respond(got: Got, v: bool) -> Response {
     match got {
         Got::Stored(b, e) => png(b, v, Some(e)),
         Got::Same(e) => not_modified(&e, v),
-        Got::Made(b) => png(b, v, None),
+        // Made from other tiles (an ancestor, neighbours, possibly in other packs than the one whose
+        // version the URL carries): never cached for good (cache::NotForGood).
+        Got::Made(b) => {
+            let mut r = png(b, false, None);
+            r.extensions_mut().insert(crate::cache::NotForGood);
+            r
+        }
         Got::Failed => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }

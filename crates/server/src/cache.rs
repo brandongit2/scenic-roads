@@ -27,6 +27,11 @@ pub fn cache_control(versioned: bool, fallback: &'static str) -> HeaderValue {
     HeaderValue::from_static(if versioned { "public, max-age=31536000, immutable" } else { fallback })
 }
 
+/// On a response: not cached for good even under a current version (`versioned_caching`): what
+/// the server made from other tiles, which a catalog changing only those can leave stale.
+#[derive(Clone, Copy)]
+pub struct NotForGood;
+
 /// A layer file prepared for serving.
 pub struct Packed {
     pub gz: bytes::Bytes,

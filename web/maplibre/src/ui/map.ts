@@ -3153,17 +3153,6 @@ export class Map extends Evented<MapEventType> {
      * map.refreshTiles('satellite', [{x:1024, y: 1023, z: 11}, {x:1023, y: 1023, z: 11}]);
      * ```
      */
-    /**
-     * Scenic Roads: fetches again only the tiles of a source whose data changed (`changed`, by their
-     * z/x/y), in place: with a request transform giving each tile's URL its version, a new version
-     * of part of the data re-requests only that part's tiles.
-     */
-    refreshTilesWhere(sourceId: string, changed: (z: number, x: number, y: number) => boolean): this {
-        this.style.tileManagers[sourceId]?.refreshTilesWhere((id) => changed(id.z, id.x, id.y));
-        this.triggerRepaint();
-        return this;
-    }
-
     refreshTiles(sourceId: string, tileIds?: Array<{x: number; y: number; z: number}>): void {
         const tileManager = this.style.tileManagers[sourceId];
         if(!tileManager) {
@@ -3174,6 +3163,17 @@ export class Map extends Evented<MapEventType> {
         } else {
             tileManager.refreshTiles(tileIds.map((tileId) => {return new CanonicalTileID(tileId.z, tileId.x, tileId.y);}));
         }
+    }
+
+    /**
+     * Scenic Roads: fetches again only the tiles of a source whose data changed (`changed`, by their
+     * z/x/y), in place: with a request transform giving each tile's URL its version, a new version
+     * of part of the data re-requests only that part's tiles.
+     */
+    refreshTilesWhere(sourceId: string, changed: (z: number, x: number, y: number) => boolean): this {
+        this.style.tileManagers[sourceId]?.refreshTilesWhere((id) => changed(id.z, id.x, id.y));
+        this.triggerRepaint();
+        return this;
     }
 
     /**

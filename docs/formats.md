@@ -585,7 +585,8 @@ Where they're kept:
   `/tiles/base`'s a hash of the basemap archives' content names, the tile's z/x/y and the names
   version; tiles the server makes (missing terrain and slope, slope z12) carry none. With `?v=` (the
   app's URLs): `public, max-age=31536000, immutable` while that version is current, else
-  `no-cache`. `/api/meta` versions each layer (`buildings.tiles`, `water`: the drawing's, its packs'
+  `no-cache`; the tiles the server makes (terrain and slope from ancestors or neighbours, flat
+  tiles, the floor under the water) always `no-cache`, as their sources can lie in other packs. `/api/meta` versions each layer (`buildings.tiles`, `water`: the drawing's, its packs'
   and the basemap's) and, under `packs`, each pack of a tiled layer (`{layer: {root, lo: {"3/x/y"},
   hi: {"6/x/y"}}}`: its content name's hash, 12 hex digits, plus the names version for layers with
   names). The map's tiles carry their pack's token (root z0–2, lo z3–8 by z3 tile, hi z9–14 by z6

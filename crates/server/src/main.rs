@@ -691,7 +691,7 @@ async fn versioned_caching(State(s): State<S>, req: axum::extract::Request, next
     let mut res = next.run(req).await;
     if let Some(v) = v {
         if res.status().is_success() {
-            let current = s.current_tokens().contains(&v);
+            let current = res.extensions().get::<cache::NotForGood>().is_none() && s.current_tokens().contains(&v);
             res.headers_mut().insert(header::CACHE_CONTROL, cache::cache_control(current, "no-cache"));
         }
     }
@@ -1215,5 +1215,10 @@ mod tests {
             assert_eq!(cache(&s, v).await, GOOD);
         }
         assert_eq!(cache(&s, "000000000000".into()).await, "no-cache");
+        // A tile the server makes (terrain the catalog hasn't: from ancestors, here flat) isn't
+        // cached for good under a current token: a catalog changing only its sources would leave it stale.
+        let app = Router::new().route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile)).layer(axum::middleware::from_fn_with_state(s.clone(), versioned_caching)).with_state(s.clone());
+        let r = app.oneshot(axum::http::Request::builder().uri(format!("/tiles/terrain/9/130/260?v={}", p2["hi"]["6/8/16"].as_str().unwrap())).body(axum::body::Body::empty()).unwrap()).await.unwrap();
+        assert_eq!((r.status(), r.headers()[header::CACHE_CONTROL].to_str().unwrap()), (axum::http::StatusCode::OK, "no-cache"));
     }
 }
