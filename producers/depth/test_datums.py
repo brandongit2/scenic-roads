@@ -64,6 +64,26 @@ class OpenSea(unittest.TestCase):
             datums.Surface.harmonic([(10.5, 49.0, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([lake]))
         self.assertIn("missing area", str(r.exception))
 
+    def test_every_body_a_sea_only_chart_extrapolates_tiny_far_bodies_but_not_lakes(self):
+        from shapely.geometry import box
+
+        res = 0.005
+        water = np.zeros((400, 800), bool)
+        water[10:60, 10:60] = True  # 2500 cells with the station
+        for k in range(30):  # 30 tiny survey-track pieces, 6 cells each, 1-2 degrees off: 6.7% of the water
+            water[100 + 8 * k:102 + 8 * k, 400 + 10 * k:403 + 10 * k] = True
+        water[200:220, 500:520] = True  # 400 cells: Natural Earth has a lake on it, 13% of the water
+        lake = box(10 + 505 * res, 50 - 215 * res, 10 + 510 * res, 50 - 205 * res)
+        sea = datums.OpenSea([lake], every_body=True)
+        with self.assertRaises(SystemExit):  # the lake stays nodata and counts toward the stop
+            datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, sea)
+        water[200:220, 500:520] = False
+        s = datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, sea)
+        self.assertAlmostEqual(float(s.a[100, 400]), 0.7, places=4)
+        self.assertAlmostEqual(float(s.a[100 + 8 * 29, 400 + 10 * 29]), 0.7, places=4)
+        with self.assertRaises(SystemExit):  # without every_body the same pieces are lagoons, over 5%: stops
+            datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([]))
+
     def test_no_station_within_reach_extrapolates_open_sea_from_the_nearest_station(self):
         water = np.ones((20, 40), bool)
         s = datums.Surface.harmonic([(5.0, 49.0, 0.4), (30.0, 49.0, 2.0)], water, 10.0, 50.0, 0.1, self.none)

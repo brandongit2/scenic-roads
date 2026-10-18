@@ -9,8 +9,9 @@ within 25 km), and the nearest solved value beyond. A water body with no station
 a solved cell gets no depth (NaN: nodata, an inland lake or lagoon), logged in one line; more than
 5% of the water left so, or one body over 2%, stops the run (a missing area of the table), as does no
 station within 25 km of any water. A caller may opt in to open-sea extrapolation (OpenSea; only
-NONNA-10's chunked run does): such a body that is open sea (reaching within 6 cells of the grid's
-edge or over 100 km², and on no Natural Earth inland lake) takes the nearest solved cell's value,
+NONNA-10's chunked run does): such a body that is open sea (on no Natural Earth inland lake, and
+reaching within 6 cells of the grid's edge or over 100 km²; for a sea-only chart, `every_body`,
+NONNA's, any size or place) takes the nearest solved cell's value,
 or with no station near any water the nearest station's, however far (the cells and the farthest
 km logged), and the stop counts only the water still without a value. Extrapolated cells are not
 flagged in the output (one band). A
@@ -109,11 +110,14 @@ EDGE_CELLS = 6
 class OpenSea:
     """The inland lakes open-sea extrapolation keeps out of (shapely geometries, lon/lat)."""
 
-    def __init__(self, lakes):
-        self.lakes = list(lakes)
+    def __init__(self, lakes, every_body: bool = False):
+        """`every_body`: every body beyond the reach off the lakes is sea, whatever its size or
+        place (a sea-only chart such as NONNA: its tiny disconnected bodies are sparse survey
+        tracks, not lakes); otherwise only those at the edge or over OPEN_KM2."""
+        self.lakes, self.every_body = list(lakes), every_body
 
     @classmethod
-    def natural_earth(cls, sqlite: Path) -> "OpenSea":
+    def natural_earth(cls, sqlite: Path, every_body: bool = False) -> "OpenSea":
         """Natural Earth's ne_10m_lakes (every row: lakes, reservoirs, alkaline lakes) from its
         SQLite package (sources/basemap/natural_earth_vector.sqlite.zip, unzipped)."""
         import sqlite3
@@ -126,7 +130,7 @@ class OpenSea:
             rows = db.execute("select GEOMETRY from ne_10m_lakes where GEOMETRY is not null").fetchall()
         if not rows:
             raise SystemExit(f"{sqlite}: ne_10m_lakes is empty")
-        return cls(wkb.loads(bytes(r[0])) for r in rows)
+        return cls((wkb.loads(bytes(r[0])) for r in rows), every_body)
 
     def mask(self, shape, west: float, north: float, res: float) -> np.ndarray:
         """Cells any lake touches."""
@@ -162,9 +166,12 @@ def over_area(lab: np.ndarray, bodies: np.ndarray, north: float, res: float) -> 
     return np.atleast_1d(nsum(area, lab, bodies)) > OPEN_KM2
 
 
-def open_sea(lab: np.ndarray, bodies: np.ndarray, north: float, res: float, lake: np.ndarray) -> np.ndarray:
-    """Which of `bodies` are open sea: at the edge or over OPEN_KM2, and on no inland lake (`lake`)."""
+def open_sea(lab: np.ndarray, bodies: np.ndarray, north: float, res: float, lake: np.ndarray, every_body: bool = False) -> np.ndarray:
+    """Which of `bodies` are open sea: on no inland lake (`lake`), and (unless `every_body`) at the
+    edge or over OPEN_KM2."""
     inland = np.isin(bodies, np.unique(lab[lake]))
+    if every_body:
+        return ~inland
     return (at_edge(lab, bodies) | over_area(lab, bodies, north, res)) & ~inland
 
 
@@ -211,11 +218,11 @@ class Surface:
         total = int(water.sum())
         lake = sea.mask(water.shape, west, north, res) if sea else None
         bodies = np.unique(lab[water])
-        if not fixed and sea is not None and open_sea(lab, bodies, north, res, lake).any():
+        if not fixed and sea is not None and open_sea(lab, bodies, north, res, lake, sea.every_body).any():
             # no station within reach of any water: open sea takes the nearest station's value
             from scipy.spatial import cKDTree
 
-            ext = np.isin(lab, bodies[open_sea(lab, bodies, north, res, lake)])
+            ext = np.isin(lab, bodies[open_sea(lab, bodies, north, res, lake, sea.every_body)])
             check_far(lab, water & ~ext, None, total)
             rr, cc = np.nonzero(ext)
             d, k = cKDTree(xyz([p[0] for p in pts], [p[1] for p in pts])).query(xyz(west + (cc + 0.5) * res, north - (rr + 0.5) * res))
@@ -244,7 +251,7 @@ class Surface:
             if len(gone):
                 ext = np.zeros((H, W), bool)
                 if sea is not None:
-                    opn = gone[open_sea(lab, gone, north, res, lake)]
+                    opn = gone[open_sea(lab, gone, north, res, lake, sea.every_body)]
                     ext = np.isin(lab, opn)
                     if ext.any():
                         log(f"datum surface: {len(opn)} open-sea water bodies, {int(ext.sum())} cells, beyond {REACH_KM:g} km extrapolated from the nearest solved cell "

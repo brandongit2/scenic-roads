@@ -1274,10 +1274,11 @@ block with no data comes as a TIFF of nodata, making no grid). Free disk is logg
 its own. A datum surface (`datums.py`) is solved between the stations over the water bodies holding
 one (a station counts within 25 km of its water); a body with no station within 25 km of a solved
 cell gets nodata, and over 5% of the water so, or one body over 2%, stops the run. NONNA-10's run
-alone (BlueTopo, `raster.py` and the VDatum surfaces keep the rule above) extrapolates open sea: such
-a body reaching within 6 cells of the grid's edge or over 100 km², and on none of Natural Earth's
+alone (BlueTopo, `raster.py` and the VDatum surfaces keep the rule above) extrapolates open sea: NONNA
+charts the sea only, so every such body, of any size or place (sparse Arctic survey tracks leave
+thousands of tiny disconnected ones), is sea when it lies on none of Natural Earth's
 10 m lakes (`--lakes`: `sources/basemap/natural_earth_vector.sqlite.zip`, unzipped; Great Slave,
-Great Bear, Winnipeg and the Great Lakes among them), takes the nearest solved cell's value, or with
+Great Bear, Winnipeg and the Great Lakes among them), and takes the nearest solved cell's value, or with
 no station within 25 km of any water the nearest station's, however far (the log gives the cells and
 the farthest km); the stop counts the water still without a value. Extrapolated cells carry no flag
 in the output (one band). (`producers/depth/test_chunked.py`: `uv run --project .. python -m unittest test_chunked`.)

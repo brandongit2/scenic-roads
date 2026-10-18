@@ -345,7 +345,7 @@ def main():
     if a.which == "nonna10":
         if not a.lakes:
             raise SystemExit("nonna10 needs --lakes (Natural Earth's SQLite): its datum surfaces extrapolate open sea, never into an inland lake")
-        sea = OpenSea.natural_earth(a.lakes)
+        sea = OpenSea.natural_earth(a.lakes, every_body=True)  # NONNA charts the sea only: any body off the lakes is sea
     parts, cache = a.work / "parts", a.work / "cache"
     parts.mkdir(parents=True, exist_ok=True)
     for ci, chunk in enumerate(chunks):
