@@ -306,12 +306,16 @@ pub struct Shared {
     /// step to every member is on too: a member may hold several leases, an ask granted as many jobs
     /// as it wants that fit its room together (`pack`). None: one job an ask, as before.
     pub packing: Option<Packing>,
-    /// The pool's NAS and network limits (docs/pool.md §7.7, behind `state/pool/nas-budget`:
-    /// crate::budget::nas), while every step to every member is on: a member is granted a job only
-    /// while the NAS weights of every job leased in the pool (the lead's own among them) leave room
-    /// for its own, and a fetching step's only under the downloads' cap (`nas_room`). None: off, or
-    /// no probe has measured the NAS yet.
+    /// The NAS budget's limits (docs/pool.md §7.7, crate::budget::nas): the NAS's as probed, and the
+    /// downloads' cap. Read by `pick_every` (so `pack` too), with every step to every member on.
+    /// None: the switch off, or no probe yet.
     pub nas: Option<crate::budget::nas::Limits>,
+    /// This Mac's member name, its own jobs' leases held under it (`Coordinator::hold`): the NAS
+    /// budget lets a member's job go past the whole while the lead's own alone hold weight.
+    pub lead_name: String,
+    /// Targets passed over for the NAS budget alone ((step, target) → (first, last time)), for the
+    /// status (`Coordinator::nas_waits`); a target granted is let go.
+    pub nas_waits: Mutex<BTreeMap<(String, String), (Instant, Instant)>>,
     /// The lead's map update under way, while every step to every member is on: granted with a map update's
     /// step (`Grant::as_of`).
     pub map_update: Option<AsOf>,
@@ -329,6 +333,28 @@ pub struct Shared {
     /// virtual one).
     pub clock: std::sync::Arc<dyn store::clock::Clock>,
 }
+
+/// The NAS budget's weights for one placement (`Shared::nas_room`): the limits, one Book, and each
+/// step's 90th percentile kept once worked out (crate::needs::Book::nas_prior).
+struct NasWeigher<'a> {
+    limits: crate::budget::nas::Limits,
+    book: crate::needs::Book<'a>,
+    priors: std::cell::RefCell<BTreeMap<String, Option<crate::budget::nas::Rate>>>,
+}
+
+impl NasWeigher<'_> {
+    /// The weight of `target` of `step` (0: none of its step measured).
+    fn weight(&self, step: &str, target: &str) -> u32 {
+        let r = self
+            .book
+            .nas_own(step, target)
+            .or_else(|| *self.priors.borrow_mut().entry(step.to_string()).or_insert_with(|| self.book.nas_prior(step)));
+        r.map_or(0, |r| self.limits.weight(r))
+    }
+}
+
+/// How long a target waits on the NAS budget before the status says so (s).
+pub const NAS_WAIT_SAY_S: u64 = 30 * 60;
 
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
 impl Shared {
@@ -576,25 +602,35 @@ impl Shared {
     /// A job of `step` over `targets`: its NAS weight under `l` (its heaviest target's,
     /// crate::budget::nas; 0 for a target none of whose step's runs measured it), and whether it
     /// downloads (its step's kind a fetch, crate::agent::steps::Kind::Fetch).
-    fn job_nas(&self, l: &crate::budget::nas::Limits, step: &str, targets: &[String]) -> (u32, bool) {
-        let b = self.book();
-        let w = targets.iter().filter_map(|t| b.nas(step, t)).map(|r| l.weight(r)).max().unwrap_or(0);
+    /// (`nw` keeps the Book and the steps' percentiles for one placement: `NasWeigher`.)
+    fn job_nas(nw: &NasWeigher, step: &str, targets: &[String]) -> (u32, bool) {
+        let w = targets.iter().map(|t| nw.weight(step, t)).max().unwrap_or(0);
         (w, crate::agent::steps::row(step).is_some_and(|r| r.kind == crate::agent::steps::Kind::Fetch))
     }
 
-    /// The NAS budget now (docs/pool.md §7.7): its limits, the NAS weight of every job leased in the
-    /// pool together and the downloading ones among them; None while it's off.
-    fn nas_room(&self, now: Instant) -> Option<(crate::budget::nas::Limits, u32, usize)> {
-        let l = self.nas?;
-        let (mut w, mut dl) = (0u32, 0usize);
+    /// The NAS budget now (docs/pool.md §7.7): its weigher, the NAS weight of every job leased in
+    /// the pool together, of the members' among them (all but the lead's own), and the downloading
+    /// jobs; None while it's off.
+    fn nas_room(&self, now: Instant) -> Option<(NasWeigher<'_>, u32, u32, usize)> {
+        let nw = NasWeigher { limits: self.nas?, book: self.book(), priors: Default::default() };
+        let (mut w, mut members, mut dl) = (0u32, 0u32, 0usize);
         for lease in self.leases.all(now) {
             if let Work::Job { step, targets } = &lease.work {
-                let (jw, d) = self.job_nas(&l, step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
+                let (jw, d) = Self::job_nas(&nw, step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
                 w = w.saturating_add(jw);
+                if lease.worker != self.lead_name {
+                    members = members.saturating_add(jw);
+                }
                 dl += usize::from(d);
             }
         }
-        Some((l, w, dl))
+        Some((nw, w, members, dl))
+    }
+
+    /// Notes `target` of `step` passed over for the NAS budget alone now.
+    fn nas_wait(&self, step: &str, target: &str, now: Instant) {
+        let mut g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+        g.entry((step.to_string(), target.to_string())).and_modify(|e| e.1 = now).or_insert((now, now));
     }
 
     /// What a job of `step` over `targets` is measured to take (as `Coordinator::measured_batch`:
@@ -627,6 +663,12 @@ impl Shared {
             self.last.insert((a.worker.clone(), o.step.clone()), l.0.clone());
         }
         let lease = self.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
+        {
+            let mut g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+            for t in &pick {
+                g.remove(&(o.step.clone(), t.0.clone()));
+            }
+        }
         self.save_leases();
         eprintln!(
             "coordinator: {} took {} {}",
@@ -742,21 +784,25 @@ impl Shared {
         // (The NAS budget on: a target whose weight the pool's leased jobs leave no room for, or a
         // download past the cap, is left for later.)
         let nas = self.nas_room(now);
-        let downloads_full =
-            nas.is_some_and(|(l, _, dl)| l.downloads.is_some_and(|c| dl >= c) && self.job_nas(&l, &o.step, &[]).1);
+        let downloads_full = nas.as_ref().is_some_and(|(nw, _, _, dl)| {
+            nw.limits.downloads.is_some_and(|c| *dl >= c) && Self::job_nas(nw, &o.step, &[]).1
+        });
         if downloads_full {
             return Vec::new();
         }
         let nas_fits = |t: &str| {
-            nas.is_none_or(|(l, running, _)| {
-                crate::budget::nas::Limits::fits(running, self.job_nas(&l, &o.step, &[t.to_string()]).0)
+            nas.as_ref().is_none_or(|(nw, running, members, _)| {
+                crate::budget::nas::Limits::fits(*members, *running, nw.weight(&o.step, t))
             })
         };
         let cold_here = std::cell::OnceCell::new();
         let takeable = |i: usize| {
             let (t, k, _) = &o.targets[i];
             open(t, k)
-                && nas_fits(t)
+                && (nas_fits(t) || {
+                    self.nas_wait(&o.step, t, now);
+                    false
+                })
                 && match self.measured(&o.step, t) {
                     Some(m) => fits(&m),
                     // (Alone: no job of its step under way anywhere, the lead's own held by a lease too.)
@@ -1441,6 +1487,8 @@ impl Coordinator {
             placement: None,
             packing: None,
             nas: None,
+            lead_name: me.to_string(),
+            nas_waits: Default::default(),
             map_update: None,
             last: BTreeMap::new(),
             brokers: None,
@@ -1652,6 +1700,19 @@ impl Coordinator {
     /// switch is on (`nas_prober`); the tests and the simulator set them here.
     pub fn set_nas(&self, limits: Option<crate::budget::nas::Limits>) {
         self.shared.lock().unwrap().nas = limits;
+    }
+
+    /// The targets waiting on the NAS budget alone for longer than `NAS_WAIT_SAY_S` (passed over in
+    /// the last two minutes): (step, target, minutes), for the status's waiting lines.
+    pub fn nas_waits(&self) -> Vec<(String, String, u64)> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        let mut g = s.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+        g.retain(|_, (_, last)| now.saturating_duration_since(*last) < Duration::from_secs(120));
+        g.iter()
+            .filter(|(_, (first, _))| now.saturating_duration_since(*first) >= Duration::from_secs(NAS_WAIT_SAY_S))
+            .map(|((st, t), (first, _))| (st.clone(), t.clone(), now.saturating_duration_since(*first).as_secs() / 60))
+            .collect()
     }
 
     /// The lead's own Mac's capacity, measured each loop (its jobs ask nothing).
@@ -2265,8 +2326,6 @@ fn app_when(v: &str) -> String {
     }
 }
 
-/// A worker's name as a folder name.
-/// Keeps `rec` in the coordinator's `dir`'s timings log.
 /// The NAS budget's probes (crate::budget::nas), on a thread of their own while the coordinator
 /// runs: while the NAS's project folder is known (`root`), each 10 s the switch is read; on, the NAS
 /// is probed every `EVERY_S` (in a folder of this process's, removed after) and the limits set to
@@ -2282,9 +2341,18 @@ fn nas_prober(
     let run = move || {
         let mut probes = nas::Probes::default();
         let mut last: Option<std::time::Instant> = None;
+        let mut cleaned = false;
         while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
             let r = root.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(r) = r {
+                // (Once the NAS is known: this host's folders a crashed probe left.)
+                if !cleaned {
+                    cleaned = true;
+                    let n = nas::clean_stale(&r, &me);
+                    if n > 0 {
+                        eprintln!("coordinator: removed {n} probe folders of this host's a stopped process left");
+                    }
+                }
                 match nas::read_switch(&r) {
                     Some(None) => {
                         shared.lock().unwrap_or_else(|e| e.into_inner()).nas = None;
@@ -2323,12 +2391,14 @@ fn nas_prober(
     }
 }
 
+/// Keeps `rec` in the coordinator's `dir`'s timings log.
 fn keep_timings(dir: &Path, rec: &crate::timings::RunRec) {
     if let Err(e) = crate::timings::append(&dir.join("timings.jsonl"), rec) {
         eprintln!("coordinator: keeping a run's timings: {e}");
     }
 }
 
+/// A worker's name as a folder name.
 pub fn folder(w: &str) -> String {
     w.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
@@ -5136,6 +5206,52 @@ mod tests {
         let a = Ask { want: 3, ..every_ask("m1", "rail-feeds", 64_000, 100_000) };
         assert_eq!(all_granted(&w, &a).len(), 1, "one download at a time");
         assert!(all_granted(&w, &a).is_empty());
+    }
+
+    /// A job heavier than the whole (its weight capped at the whole) goes while the lead's own jobs
+    /// alone hold weight, not only with nothing leased: the lead's jobs never starve it. One more
+    /// waits; a target held back past half an hour is said (`nas_waits`), and let go once granted.
+    #[test]
+    fn a_job_past_the_whole_goes_beside_the_leads_own_and_a_long_wait_is_said() {
+        let (_d, c, w, clock) = every((0, 0));
+        c.set_packing(Some(Packing::default()));
+        // (Each target 200 MB/s of a 100 MB/s NAS: weighs the whole, capped.)
+        packable(&c, "slope", 4, Some(1));
+        for i in 1..=4 {
+            let sizes = [("threads".to_string(), 1), ("bytes".to_string(), 120_000_000_000)];
+            let cost = Cost {
+                peak_mb: 2000,
+                secs: 600,
+                worker: None,
+                v: cost_version("slope"),
+                sizes: sizes.into(),
+                ..Default::default()
+            };
+            c.add_costs_by(&[(cost_key("slope", &format!("6/1/{i}")), cost)], "m1");
+        }
+        c.set_nas(Some(crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None }));
+        let own = c.hold("slope", &[("6/1/4".into(), "k 6/1/4".into())]).expect("the lead's own: the whole");
+        let a = Ask { want: 3, ..every_ask("m1", "slope", 64_000, 100_000) };
+        assert_eq!(all_granted(&w, &a), [["6/1/1"]], "beside the lead's own alone");
+        assert!(all_granted(&w, &a).is_empty(), "beside a member's: waits");
+        assert!(c.nas_waits().is_empty(), "not yet half an hour");
+        for _ in 0..31 {
+            clock.advance(Duration::from_secs(60));
+            // (Every lease kept alive.)
+            assert!(c.renew(own, None), "the lead's own kept");
+            let ids: Vec<u64> = {
+                let g = c.shared.lock().unwrap();
+                let now = g.now();
+                g.leases.all(now).iter().filter(|l| l.worker == "m1").map(|l| l.id).collect()
+            };
+            assert_eq!(ids.len(), 1);
+            for id in ids {
+                assert!(w.beat(id, None).unwrap());
+            }
+            assert!(all_granted(&w, &a).is_empty(), "still waiting");
+        }
+        let waits = c.nas_waits();
+        assert!(waits.iter().any(|(s, t, m)| s == "slope" && t == "6/1/2" && *m >= 30), "{waits:?}");
     }
 
     /// Packing (crate::agent::packing): off, an ask gets one job whatever it wants; on, as many as

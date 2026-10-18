@@ -268,6 +268,15 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
     })
 }
 
+/// A run's NAS rate (`bytes` plus `wrote`, and `creates`, over its time), when it was measured the
+/// way its step runs now and says its `bytes`.
+fn nas_rate(step: &str, c: &Cost) -> Option<crate::budget::nas::Rate> {
+    let secs = c.secs.max(1) as f64;
+    let g = |k: &str| c.sizes.get(k).copied().unwrap_or(0) as f64;
+    (c.v >= cost_version(step) && c.sizes.contains_key("bytes"))
+        .then(|| crate::budget::nas::Rate { bytes_s: (g("bytes") + g("wrote")) / secs, creates_s: g("creates") / secs })
+}
+
 /// The 90th percentile (nearest rank); None with none.
 pub fn p90(mut v: Vec<u64>) -> Option<u64> {
     if v.is_empty() {
@@ -466,20 +475,18 @@ impl<'a> Book<'a> {
     /// percentile of each over its runs the way it runs now; None when none of them was measured.
     /// What crate::budget::nas weighs it by.
     pub fn nas(&self, step: &str, target: &str) -> Option<crate::budget::nas::Rate> {
-        let v = cost_version(step);
-        let rate = |c: &Cost| {
-            let secs = c.secs.max(1) as f64;
-            let g = |k: &str| c.sizes.get(k).copied().unwrap_or(0) as f64;
-            (c.v >= v && c.sizes.contains_key("bytes")).then(|| crate::budget::nas::Rate {
-                bytes_s: (g("bytes") + g("wrote")) / secs,
-                creates_s: g("creates") / secs,
-            })
-        };
-        if let Some(r) = self.costs.get(&cost_key(step, target)).and_then(rate) {
-            return Some(r);
-        }
+        self.nas_own(step, target).or_else(|| self.nas_prior(step))
+    }
+
+    /// `nas`'s own run's rate alone.
+    pub fn nas_own(&self, step: &str, target: &str) -> Option<crate::budget::nas::Rate> {
+        self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(step, c))
+    }
+
+    /// `nas`'s step's 90th percentile alone (a caller weighing many targets of a step keeps it).
+    pub fn nas_prior(&self, step: &str) -> Option<crate::budget::nas::Rate> {
         let runs: Vec<crate::budget::nas::Rate> =
-            self.costs.iter().filter(|(k, _)| step_of_key(k) == step).filter_map(|(_, c)| rate(c)).collect();
+            self.costs.iter().filter(|(k, _)| step_of_key(k) == step).filter_map(|(_, c)| nas_rate(step, c)).collect();
         // (In thousandths of a byte or file a second, for the percentile's integers.)
         let p = |f: fn(&crate::budget::nas::Rate) -> f64| {
             p90(runs.iter().map(|r| (f(r) * 1000.0).ceil() as u64).collect()).map(|x| x as f64 / 1000.0)

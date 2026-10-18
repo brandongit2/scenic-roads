@@ -93,21 +93,23 @@ pub struct Rate {
 
 impl Limits {
     /// The weight of a job at `r` (thousandths of the NAS; rounded up, so a measured job never
-    /// weighs nothing). 0 while no probe measured the NAS.
+    /// weighs nothing; at most the whole, `WHOLE`). 0 while no probe measured the NAS.
     pub fn weight(&self, r: Rate) -> u32 {
         let part = |x: f64, of: f64| if of > 0.0 { x / of } else { 0.0 };
         let w = (part(r.bytes_s, self.bytes_s) + part(r.creates_s, self.creates_s)) * WHOLE as f64;
         if w > 0.0 {
-            w.ceil().min(u32::MAX as f64) as u32
+            w.ceil().min(WHOLE as f64) as u32
         } else {
             0
         }
     }
 
-    /// Whether a job of weight `w` may start beside running jobs weighing `running` together: within
-    /// the whole, or the first job weighing anything (one heavier than the whole runs alone).
-    pub fn fits(running: u32, w: u32) -> bool {
-        w == 0 || running == 0 || running.saturating_add(w) <= WHOLE
+    /// Whether a job of weight `w` may start beside leased jobs weighing `running` together, of
+    /// which the members' (all but the lead's own) weigh `members`: within the whole, or, when no
+    /// member's job weighs anything, whatever the lead's own weigh (they're always about: a job
+    /// that fits only beside nothing would never go).
+    pub fn fits(members: u32, running: u32, w: u32) -> bool {
+        w == 0 || members == 0 || running.saturating_add(w) <= WHOLE
     }
 }
 
@@ -132,9 +134,34 @@ impl Probes {
     }
 }
 
-/// A folder of a probe's own under `root` (`PROBE_DIR`), by `me` and this process.
+fn host_part(me: &str) -> String {
+    me.replace(['/', '.', '-'], "_")
+}
+
+/// A folder of a probe's own under `root` (`PROBE_DIR`), by `me` and this process:
+/// `<me>-<pid>` (`me` with no `-` in it, so one host's folders are told from another's).
 pub fn probe_dir(root: &Path, me: &str) -> PathBuf {
-    root.join(PROBE_DIR).join(format!("{}-{}", me.replace(['/', '.'], "-"), std::process::id()))
+    root.join(PROBE_DIR).join(format!("{}-{}", host_part(me), std::process::id()))
+}
+
+/// Removes `me`'s probe folders under `root` a stopped process left (a crash mid-probe): every
+/// `<me>-<pid>` but this process's; other hosts' left alone. How many were removed.
+pub fn clean_stale(root: &Path, me: &str) -> usize {
+    let mine = probe_dir(root, me);
+    let prefix = format!("{}-", host_part(me));
+    let Ok(rd) = std::fs::read_dir(root.join(PROBE_DIR)) else { return 0 };
+    let mut n = 0;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let pid = name.strip_prefix(&prefix);
+        if pid.is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+            && e.path() != mine
+            && std::fs::remove_dir_all(e.path()).is_ok()
+        {
+            n += 1;
+        }
+    }
+    n
 }
 
 /// Probes the NAS in `dir` (made, then removed with all it holds): `SMALL_FILES` files of `SMALL`
@@ -203,9 +230,11 @@ mod tests {
         assert_eq!(l.weight(Rate { bytes_s: 25e6, creates_s: 4.0 }), 350);
         assert_eq!(l.weight(Rate::default()), 0);
         assert_eq!(l.weight(Rate { bytes_s: 1.0, creates_s: 0.0 }), 1, "measured: never nothing");
-        assert!(Limits::fits(600, 400) && !Limits::fits(601, 400));
-        assert!(Limits::fits(0, 5000), "one heavier than the whole runs alone");
-        assert!(Limits::fits(999, 0));
+        assert_eq!(l.weight(Rate { bytes_s: 900e6, creates_s: 0.0 }), WHOLE, "at most the whole");
+        assert!(Limits::fits(600, 600, 400) && !Limits::fits(601, 601, 400));
+        assert!(Limits::fits(0, 900, 1000), "the lead's own alone: a member's job goes");
+        assert!(!Limits::fits(1, 900, 1000));
+        assert!(Limits::fits(999, 999, 0));
     }
 
     /// The limits are the best of the last day's probes.
@@ -228,5 +257,21 @@ mod tests {
         let p = probe(&dir).unwrap();
         assert!(p.bytes_s > 0.0 && p.creates_s > 0.0, "{p:?}");
         assert!(!dir.exists());
+    }
+
+    /// At start, this host's folders a crash left go; this process's and other hosts' stay.
+    #[test]
+    fn a_crashs_probe_folders_of_this_host_are_cleaned() {
+        let d = tempfile::tempdir().unwrap();
+        let base = d.path().join(PROBE_DIR);
+        for f in ["m4_local-1", "m4_local-22", "m1_local-3", "m4_local-x"] {
+            std::fs::create_dir_all(base.join(f)).unwrap();
+            std::fs::write(base.join(f).join("s0"), b"x").unwrap();
+        }
+        let own = probe_dir(d.path(), "m4.local");
+        std::fs::create_dir_all(&own).unwrap();
+        assert_eq!(clean_stale(d.path(), "m4.local"), 2);
+        assert!(own.exists() && base.join("m1_local-3").exists() && base.join("m4_local-x").exists());
+        assert!(!base.join("m4_local-1").exists() && !base.join("m4_local-22").exists());
     }
 }

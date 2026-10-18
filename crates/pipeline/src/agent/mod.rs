@@ -2752,6 +2752,14 @@ impl Agent {
         if let Some(why) = &pool_holds {
             waiting.push(Waiting { step: None, what: "Building".into(), why: why.clone() });
         }
+        // (The lead's coordinator: targets its NAS budget has held back over half an hour.)
+        for (step, t, min) in self.coord.as_ref().map(|c| c.nas_waits()).unwrap_or_default() {
+            waiting.push(Waiting {
+                step: Some(step.clone()),
+                what: format!("{step} {t}"),
+                why: format!("waiting {min} min for room in the pool's NAS budget (docs/pool.md §7.7)"),
+            });
+        }
         // (A trim, a clear or a freeing toward the room target under way: jobs start meanwhile, what
         // they use held, store::cachefile.)
         // (Idle and not planned again: nothing to try, the last plan's waits shown.)

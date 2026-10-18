@@ -328,10 +328,13 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
             if threads + job.threads > cfg.macs[k].cores {
                 return Err(format!("{} placed {step} past its cores", cfg.macs[k].name));
             }
-            // (The NAS budget on: a member's measured job only within the pool's room left. The
-            // lead's own aren't placed by the coordinator: they count, but aren't held to it.)
+            // (The NAS budget on: a member's measured job only within the pool's room left, or with
+            // no other member's job weighing anything. The lead's own aren't placed by the
+            // coordinator: they count, but aren't held to it.)
             let pool_nas: u32 = running.iter().flatten().map(|j| j.nas).sum();
-            if k > 0 && cfg.nas.is_some() && !cold && !crate::budget::nas::Limits::fits(pool_nas, job.nas) {
+            let members_nas: u32 = running.iter().skip(1).flatten().map(|j| j.nas).sum();
+            if k > 0 && cfg.nas.is_some() && !cold && !crate::budget::nas::Limits::fits(members_nas, pool_nas, job.nas)
+            {
                 return Err(format!(
                     "{} placed {step} {targets:?} past the NAS budget: {pool_nas} + {} > {}",
                     cfg.macs[k].name,
