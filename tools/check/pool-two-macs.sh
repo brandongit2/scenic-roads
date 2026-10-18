@@ -97,11 +97,11 @@
 #                                                   broker that doesn't answer in 8 s passed over
 #   pool-two-macs.sh page-done <origin> <file>      that page beats its lease and hands its task
 #                                                   back, where it took it
-#   pool-two-macs.sh map-update <folder>            after `root`: a region done that the map hasn't
-#                                                   (the agent's test `seed_a_scratch_map_update`, from
-#                                                   this repository), so the lead begins a map update;
-#                                                   then `every` and the switches of faster
-#                                                   publishing (plan.md §8), each `: > state/pool/<s>`
+#   pool-two-macs.sh publish <folder>               after `root`: a region done that the map hasn't
+#                                                   (the agent's test `seed_a_scratch_publish`, from
+#                                                   this repository), so the lead publishes it, its
+#                                                   map tiles shared with `every`; publishing's
+#                                                   switches (plan.md §8), each `: > state/pool/<s>`
 #   pool-two-macs.sh stop <dir>                    the launcher and the agent stopped (the agent
 #                                                   by its pid, <dir>/agent.pid, which the launcher
 #                                                   writes, and logs, at each start)
@@ -145,7 +145,7 @@
 # each target took, SCENIC_COSTS, for the lead's offers by the measures.)
 #
 set -euo pipefail
-cmd=${1:?root, region, map-update, app, run, older, newer, newest, jobs, outside, fill, extra, wiki, upstream, resume, every, brokers, placement, task, page, page-done, planet, progress or stop}
+cmd=${1:?root, region, publish, app, run, older, newer, newest, jobs, outside, fill, extra, wiki, upstream, resume, every, brokers, placement, task, page, page-done, planet, progress or stop}
 case $cmd in
   root)
     r=${2:?the scratch folder}
@@ -297,10 +297,10 @@ EOF
       sleep 3
     done
     ;;
-  map-update)
+  publish)
     r=${2:?the scratch folder}
     [[ $r == */projects/scenic-roads* ]] && { print -u2 "not the project folder"; exit 1; }
-    SCENIC_SCRATCH_MAP_UPDATE=$r cargo test -p pipeline --lib -- --ignored seed_a_scratch_map_update
+    SCENIC_SCRATCH_PUBLISH=$r cargo test -p pipeline --lib -- --ignored agent::tests::seed_a_scratch_publish
     ;;
   jobs) print -n ${3:?seconds} > ${2:?its folder}/v/app/job-seconds ;;
   outside) : > ${2:?its folder}/v/app/job-outside ;;

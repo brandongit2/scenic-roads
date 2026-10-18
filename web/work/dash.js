@@ -10,7 +10,7 @@
 // sentence. The parts: the verdict (going or not, done when, next on the map, what needs a look,
 // the pause), the overview (how far, how long), the stages (each step to the end), the machines
 // (what each does now and next, why one waits, its power, disk, memory and pace), the road to
-// done (each machine's schedule, the map updates), the regions, and the activity (the hours, what
+// done (each machine's schedule, publishing), the regions, and the activity (the hours, what
 // happened).
 
 import { poolSection, termText } from "./pool.js";
@@ -48,11 +48,11 @@ const plural = (k, one, many = `${one}s`) => `${n(k)} ${k === 1 ? one : many}`;
 // stage (its colour) and where it runs. Before the table has loaded (or from a lead without it) a
 // step goes by its id.
 const STAGE_COLOURS = { pass: "#8fa2b5", sites: "#c47fb5", terrain: "#c98b4a", slope: "#d9c35a", trees: "#5fae6b", roads: "#5b8fd8", tiles: "#4fb3c6", finish: "#7fb3a8", trains: "#a9a0d6", landmarks: "#9b7be0", buildings: "#a39a8c", publish: "var(--mark)", upkeep: "#7b8590" };
-const UPDATE = "map-update";
+const UPDATE = "publishing";
 const table = { steps: {}, stages: [] };
 const S = {
   row: (id) => table.steps[id],
-  title: (id) => table.steps[id]?.title || (id === UPDATE ? "Map update" : id || ""),
+  title: (id) => table.steps[id]?.title || (id === UPDATE ? "Publishing" : id || ""),
   noun: (id) => table.steps[id]?.noun || "target",
   world: (id) => table.steps[id]?.scope === "world",
   stage: (id) => table.steps[id]?.stage || (id === UPDATE ? "publish" : ""),
@@ -288,7 +288,7 @@ function overview(m) {
   const nextUpdate = fc?.updates?.[0];
   const busy = m.macs.filter((x) => x.fresh && x.status.job).length;
   const kpis = h("div", "kpis",
-    kpi("Regions on the map", regs.length ? `${onMap} of ${regs.length}` : "–", [asWas ? `${asWas} more as they were` : "", readyNow ? `${readyNow} done, out with the next map update` : ""].filter(Boolean).join(" · ") || null),
+    kpi("Regions on the map", regs.length ? `${onMap} of ${regs.length}` : "–", [asWas ? `${asWas} more as they were` : "", readyNow ? `${readyNow} done, recorded built by the next catalog` : ""].filter(Boolean).join(" · ") || null),
     kpi("Map last updated", lastAt ? ago(now, lastAt) : "–", nextUpdate ? `next ≈ ${clock(nextUpdate.at)}` : null),
     kpi("Machines", `${busy} of ${m.macs.length} Macs working`, m.pages.length ? `and ${plural(m.pages.length, "page")}` : null),
   );
@@ -485,8 +485,8 @@ function showTip(ev, text) {
 }
 const hideTip = () => tip && (tip.style.display = "none");
 
-// Each machine's lane: a run of a step's targets is a segment in its stage's colour; a map update
-// hatched; the map updates out as marks across the lanes.
+// Each machine's lane: a run of a step's targets is a segment in its stage's colour; publishing
+// hatched; the regions out as marks across the lanes.
 function schedule(m) {
   const fc = m.fc;
   if (!fc?.lanes || !Object.keys(fc.lanes).length) return h("div", "small dim", "No schedule yet (the forecast comes with the lead's next plan).");
@@ -509,7 +509,7 @@ function schedule(m) {
     const track = h("div", "track");
     for (const l of fc.lanes[nm]) {
       if (l.until < t0) continue;
-      const say = l.step === UPDATE ? `${nm}: Map update (${plural(l.n, "region")}) ${clock(l.from)}–${clock(l.until)}` : `${nm}: ${S.said(l.step, l.n)}, ${clock(l.from)}–${clock(l.until)}`;
+      const say = l.step === UPDATE ? `${nm}: Publishing (${plural(l.n, "region")}) ${clock(l.from)}–${clock(l.until)}` : `${nm}: ${S.said(l.step, l.n)}, ${clock(l.from)}–${clock(l.until)}`;
       segment(track, l, say);
     }
     lanes.append(h("div", { class: "ln", title: nm }, nm), track);
@@ -539,20 +539,20 @@ function schedule(m) {
     axis.append(h("span", { style: { left: x(d.getTime() / 1000) } }, label));
   }
   lanes.append(h("div"), axis);
-  // Each map update, a mark across the lanes, the regions it adds when pointed at.
+  // Each publishing, a mark across the lanes, the regions it adds when pointed at.
   const marks = h("div", "updates");
   for (const r of fc.updates || []) {
     if (r.at < t0 || r.at > t1) continue;
-    const say = `${r.last ? "Last map update" : "Map update"} ≈ ${clock(r.at)}: ${r.regions.length ? r.regions.slice(0, 6).map((id) => m.regionName[id] || id).join(", ") + (r.regions.length > 6 ? ` and ${r.regions.length - 6} more` : "") : "the rest"}`;
+    const say = `${r.last ? "Last on the map" : "On the map"} ≈ ${clock(r.at)}: ${r.regions.length ? r.regions.slice(0, 6).map((id) => m.regionName[id] || id).join(", ") + (r.regions.length > 6 ? ` and ${r.regions.length - 6} more` : "") : "the rest"}`;
     marks.append(h("i", { style: { left: x(r.at) }, onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) }));
   }
-  // The legend: the stages seen, in the build's order; a map update being made (hatched), out (a mark).
+  // The legend: the stages seen, in the build's order; publishing (hatched), out (a mark).
   const order = table.stages.map((g) => g.id);
-  const legend = h("div", "legend", [...stagesSeen].sort((p, q) => order.indexOf(p) - order.indexOf(q)).map((g) => h("span", null, h("i", { style: { background: STAGE_COLOURS[g] || "#7b8590" } }), S.stageTitle(g))), h("span", null, h("i", { class: "rhatch" }), "a map update being made"), h("span", null, h("i", { class: "rmark" }), "a map update out on the map"));
+  const legend = h("div", "legend", [...stagesSeen].sort((p, q) => order.indexOf(p) - order.indexOf(q)).map((g) => h("span", null, h("i", { style: { background: STAGE_COLOURS[g] || "#7b8590" } }), S.stageTitle(g))), h("span", null, h("i", { class: "rhatch" }), "publishing"), h("span", null, h("i", { class: "rmark" }), "regions out on the map"));
   return h("div", "sched", h("div", "lanewrap", lanes, marks), legend);
 }
 
-// The regions: their order to the map with the map updates between, or by name, or by what's left; each
+// The regions: their order to the map with their publishing between, or by name, or by what's left; each
 // its state, what it has left, when it's done and when it's on the map.
 const ui = { order: "map", filter: "", all: false, feed: "all" };
 function regionsList(m, rerender) {
@@ -590,7 +590,7 @@ function regionRows(m, rerender) {
     const lft = leftOf(r);
     if (ui.order === "map" && r.map_at && r.map_at !== lastUpdate) {
       const update = fc.updates.find((x) => x.at === r.map_at);
-      out.append(h("div", "update", `${update?.last ? "Last map update" : "Map update"} ≈ ${clock(r.map_at)}${update ? ` · ${plural(update.regions.length, "region")}` : ""}`));
+      out.append(h("div", "update", `${update?.last ? "Last on the map" : "On the map"} ≈ ${clock(r.map_at)}${update ? ` · ${plural(update.regions.length, "region")}` : ""}`));
       lastUpdate = r.map_at;
     } else if (ui.order === "map" && !r.map_at && lastUpdate !== "on") {
       out.append(h("div", "update", "On the map"));
@@ -598,7 +598,7 @@ function regionRows(m, rerender) {
     }
     let state, cls = "";
     if (!lft && r.on_map === true) [state, cls] = ["on the map", "ok"];
-    else if (!lft) [state, cls] = ["done; out with the next map update", "ok"];
+    else if (!lft) [state, cls] = ["done; recorded built by the next catalog", "ok"];
     else if (r.rank === 0) [state, cls] = ["building now", "run"];
     else [state, cls] = [`#${r.rank + 1} in line`, ""];
     if (r.on_map === false) state += " · on the map as it was";
@@ -635,18 +635,16 @@ function publishing(m) {
   if (next) lines.push(h("div", null, "Next: ", h("b", null, `≈ ${clock(next.at)}`), next.regions.length ? ` with ${next.regions.slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}${next.regions.length > 4 ? ` and ${next.regions.length - 4} more` : ""}` : ""));
   const waits = (a.waiting || []).filter((w) => w.step === "catalog" || /publish/i.test(w.what));
   for (const w of waits) lines.push(h("div", "small warn", w.why));
-  // The lead's decision on the next map update, and why (agent::build::UpdateDecision).
-  const u = a.map_update;
+  // Publishing as the lead last planned it, and why (agent::build::PublishLine).
+  const u = a.publishing;
   if (u) {
-    lines.push(h("div", null, h("b", null, u.due ? "A map update is due" : "No map update due"), `: ${u.why}`));
-    const left = u.left_s > 0 ? `, ${Math.ceil(u.left_s / 60)} min left` : ", passed";
-    lines.push(h("div", "small dim", `Gap ${Math.ceil(u.gap_s / 60)} min (${u.gap_basis})${u.since_last_s != null ? left : ""}`));
-    if (u.regions?.length) lines.push(h("div", "small", `New work: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.map((k) => S.title(k)).join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));
-    if (u.buildings) lines.push(h("div", "small dim", "3D building packs being raised: they go out with the next map update (at most once a gap once all else is built)."));
+    lines.push(h("div", null, h("b", null, "Publishing"), `: ${u.why}`));
+    if (!u.low) lines.push(h("div", "small dim", "The low zooms wait for their turn (state/pool/low-zoom-later)."));
+    if (u.regions?.length) lines.push(h("div", "small", `Done, not on the map as they are: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));
   } else {
-    lines.push(h("div", "small dim", "A map update goes out when a region is done, at most hourly while roads' tiles are left; after the last, at once."));
+    lines.push(h("div", "small dim", "A unit's map tiles are drawn as soon as it's built, and a catalog goes out at most each minute."));
   }
-  if (fc?.updates?.length > 1) lines.push(h("div", "small dim", `${plural(fc.updates.length, "map update")} to come; the last ≈ ${clock(fc.updates[fc.updates.length - 1].at)}`));
+  if (fc?.updates?.length > 1) lines.push(h("div", "small dim", `Regions go on the map ${plural(fc.updates.length, "time")} more; the last ≈ ${clock(fc.updates[fc.updates.length - 1].at)}`));
   return h("div", null, lines);
 }
 
@@ -701,7 +699,6 @@ function eventText(m, e, k = 1) {
     case "task": return [k > 1 ? `${who} did ${plural(k, "task")}` : `${who} did a task${t[0] ? ` (${t[0]})` : ""} in ${dur(e.secs || 0)}`, "dim"];
     // (Given back, not failed: the page reloaded or closed, or emptied in the background.)
     case "task-fail": return /^stopped:/.test(e.note || "") ? [`${who}: a task given back (${e.note.replace(/^stopped:\s*/, "")})`, "warn"] : [`${who}: a task failed: ${e.note}`, "bad"];
-    case "map-update": return [`A map update began${t.length ? ` with ${t.length > 3 ? `${t.length} regions` : t.map(nm).join(", ")}` : ""}${e.note ? ` (${e.note})` : ""}: what's built since waits for the next`, "run"];
     case "catalog": return [t.length ? `The map got ${t.length > 3 ? `${t.length} regions` : t.map(nm).join(", ")}` : "The map was updated", "ok"];
     case "pause": return [`The build was paused by ${e.note}`, "warn"];
     case "resume": return ["The build went on", "ok"];
@@ -715,7 +712,7 @@ function eventText(m, e, k = 1) {
   }
 }
 
-const FILTERS = { all: () => true, problems: (e) => (e.ok === false && !/^stopped:/.test(e.note || "")) || e.kind === "lapse" || (e.kind === "task-fail" && !/^stopped:/.test(e.note || "")), publishing: (e) => e.kind === "catalog" || e.kind === "map-update" || (e.kind === "end" && e.step === "catalog"), pauses: (e) => ["pause", "resume", "conditions", "agent"].includes(e.kind) };
+const FILTERS = { all: () => true, problems: (e) => (e.ok === false && !/^stopped:/.test(e.note || "")) || e.kind === "lapse" || (e.kind === "task-fail" && !/^stopped:/.test(e.note || "")), publishing: (e) => e.kind === "catalog" || (e.kind === "end" && e.step === "catalog"), pauses: (e) => ["pause", "resume", "conditions", "agent"].includes(e.kind) };
 
 function feed(m, events, seen) {
   // (A job's start is shown only while it runs: once it's ended, its end says it all.)
@@ -759,7 +756,7 @@ function sinceLine(m, events, seen) {
   const total = Object.values(tiles).reduce((t, k) => t + k, 0);
   const bits = [];
   if (total) bits.push(`${S.said("unit", total)} built (${Object.entries(tiles).map(([w, k]) => `${k} by ${w}`).join(", ")})`);
-  if (updates.length) bits.push(`${plural(updates.length, "map update")}${updates.some((r) => r.targets?.length) ? `: ${updates.flatMap((r) => r.targets || []).slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}` : ""}`);
+  if (updates.length) bits.push(`${plural(updates.length, "catalog")}${updates.some((r) => r.targets?.length) ? `: ${updates.flatMap((r) => r.targets || []).slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}` : ""}`);
   if (failures) bits.push(h("span", "bad", plural(failures, "failure")));
   const first = fresh[0];
   return h("div", "since", `Since ${clock(first.t)}: `, ...bits.flatMap((b, i) => (i ? [" · ", b] : [b])), bits.length ? "" : `${plural(fresh.length, "event")}`);
@@ -830,13 +827,13 @@ function render() {
   const road = section("d-road", "road", "Road to done", m.fc?.done_at ? `done ≈ ${clock(m.fc.done_at)}` : "",
     h("div", "road",
       h("div", "box", h("h3", null, "Schedule", h("span", null, "each machine's work from now to the end")), schedule(m)),
-      h("div", "box", h("h3", null, "Map updates"), publishing(m))));
+      h("div", "box", h("h3", null, "Publishing"), publishing(m))));
   // (Their own part: while their search has the keyboard, only it waits to be refreshed.)
   const regions = section("d-regions", "regions", null, null,
     h("div", "box", h("h3", null, "Regions", h("span", null, m.fc ? "built one at a time: those the map lacks first, then those with the fewest tiles left" : "")), regionsList(m, render)));
   const activity = section("d-activity", "activity", "Activity", "the last day",
     h("div", "box", hours(m),
-      h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Map updates"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
+      h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Publishing"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
       sinceLine(m, events, seenSeq), feed(m, events, seenSeq)));
   const scrollY = window.scrollY;
   const feedTop = root.querySelector(".feed")?.scrollTop || 0;
