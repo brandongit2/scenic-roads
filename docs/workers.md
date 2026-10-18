@@ -145,7 +145,7 @@ Common rules:
 - **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`; docs/pipeline.md §5): the
   verdict (going, done when, what needs a look, pause controls); the overview; the stages (a card
   per stage, a row per step); a card per machine; the pool (who leads, "Make lead", "Take it"); the
-  road to done (each machine's forecast lane, map updates); the regions; the activity (last day by
+  road to done (each machine's forecast lane, publishing); the regions; the activity (last day by
   the hour, events); folded details (leases, waits, each Mac's capacity, workers, the steps table). It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
   `/work/history` incrementally.

@@ -99,7 +99,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <figure>
 <h3>How each layer is built</h3>
 <div class="scroll">{proposed.build(CHECK)}</div>
-<figcaption>Every step runs per area (a z6 tile), per z3 pack near the coverage, or once for the whole world; regions only say which areas to build, and a map update publishes them as they’re done. Values that span areas (whole roads, landmarks’ fame, ferries) come from worldwide steps, and each area reads its neighbours within 110 km, so tile edges and region borders don’t show. Translations and descriptions need no rebuild. Folded corner: a curated input, with how it could be made again. Dashed: planned, or built but not yet in the map.</figcaption>
+<figcaption>Every step runs per area (a z6 tile), per z3 pack near the coverage, or once for the whole world; regions only say which areas to build, and publishing puts each unit on the map within minutes of its build. Values that span areas (whole roads, landmarks’ fame, ferries) come from worldwide steps, and each area reads its neighbours within 110 km, so tile edges and region borders don’t show. Translations and descriptions need no rebuild. Folded corner: a curated input, with how it could be made again. Dashed: planned, or built but not yet in the map.</figcaption>
 </figure>
 {curated.html()}
 </main>

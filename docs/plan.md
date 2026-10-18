@@ -67,7 +67,7 @@ coverage, or once for the whole world, so region size, count and borders never s
   - The Mac's line: what's downloaded, free space, the reserve, the copy under way, and that copies
     keep to 20 MB/s while the build runs.
 - The status bar offers to reload when new data or a new app is in, and says when the NAS or the map server can't be reached.
-- New areas appear when a map update publishes its catalog (§8, A map update).
+- New areas appear as their catalog goes out, a unit's tiles within minutes of its build (§8, Publishing).
 
 **Translations and descriptions** (§7) are drop boxes of the input check: `inputs/translations/` and
 `inputs/descriptions/` (docs/inputs.md §6.3, §6.4). A drop shows on the map a few minutes after it's
@@ -1027,16 +1027,17 @@ from the first (`edit_held`).
   through in the order the agent runs it. The lead takes the pass's worldwide jobs, then a region at
   a time (terrain, then units), else the chains' work; its second job the first step that fits
   beside it; each other member the far end of the first shared step it can do (terrain's near end).
-  Units reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. Map updates go
-  as the plan makes them (`build::map_update_due`). Each target takes its last run's time at the
+  Units reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. A region is
+  published as soon as it's done, taking the measured publishing time (`forecast::update_secs`: the
+  publishing chain's jobs and catalog, summed per catalog). Each target takes its last run's time at the
   lead's pace, else its step's mean, else a first guess; each machine at its measured speed (half
   the lead's until measured). Run three times for a range. It says when each step, region and
-  everything will be done, when each region reaches the map, the map updates to come and each
-  machine's schedule, or why there's no finish.
+  everything will be done, when each region reaches the map, and each machine's schedule, or why
+  there's no finish.
 - **The history** (`coord::history`): the last week's events (50,000 at most) on the lead's disk
-  (`coord/history.jsonl`): jobs, leases, tasks, map updates, catalogs, pauses, workers, agents,
-  conditions, cache trims and clears. Summed by the hour for the worker page, and the forecast's
-  measure of members' pace and of a map update's time.
+  (`coord/history.jsonl`): jobs, leases, tasks, map tiles planned, catalogs, pauses, workers,
+  agents, conditions, cache trims and clears. Summed by the hour for the worker page, and the
+  forecast's measure of members' pace and of publishing's time.
 - **Timings** (`pipeline::timings`; `dem/timings.py`; a page's task in `web/work/worker.js`): every
   job's run is broken into named phases, each with wall time, CPU time (`getrusage`), its class
   (`nas-read`, `nas-write`, `disk`, `net`, `compute`, `wait`, `mixed`), spans, bytes and files. One
@@ -1049,7 +1050,7 @@ from the first (`edit_held`).
   mac]` prints them (`--here` this Mac's own).
 - **Publishing's times** (`pipeline::pubtimes`, task #250): each stage from a unit's job to its
   tiles on every Mac's map leaves an event. In the history: the unit's job ending; its hand-off
-  merged (`merged`: each journal entry's key, member, step and targets); the map update's map tiles
+  merged (`merged`: each journal entry's key, member, step and targets); the map tiles
   first planned at their keys (`planned`: noted once per tile and key, what was noted known again
   from the history after a restart or a change of lead; with, per unit, the tiles its change made
   stale: their owners whose base pack or road values differ from the served catalog's), leased and
@@ -1128,32 +1129,27 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
    - regions the map hasn't at all first, then those it has; of each, the one with the fewest units
      left first. For each: the stale terrain areas it reads (pieces, then each assembly once its
      pieces are current with mids), then its units whose terrain is built, then slope and tree
-     cover. Other members take the earliest shared step with work that fits, from the far end
+     cover; but first, the slope and tree cover of the regions done that the map hasn't as they are
+     now. Other members take the earliest shared step with work that fits, from the far end
      (terrain from the near end).
-   - **A map update** when a region is done that the map hasn't as it is now, an hour after the last
-     began (`PUBLISH_EVERY_S`) while units or terrain are left, and at once after the last. What it
-     publishes is fixed as it begins (`agent::build::MapUpdate`, `map-update.json`): its regions and
-     the units as they were, which its jobs read through `SCENIC_UNITS_AS_OF`. It's over once its
-     catalog is made. Its work: its regions' slope and tree cover, a prune (§5, Shrinking), the
-     roads' chain, and a catalog. A map update before the last draws only the map tiles meeting its
-     regions, those no unbuilt unit's ways come into, and those drawn before whose owners changed.
-   - **Why a map update begins, or doesn't:** the plan and the forecast decide by one test,
-     `build::map_update_due`; the lead records its decision and reasons (`build::UpdateDecision`),
-     shown in the build status (`map_update`), the worker page and `scenic status`, and logged when
-     it changes. The 3D buildings never make a region due; a rebuild of them all goes out a map
-     update each gap, and at once when done.
-   - **Faster publishing** (crate::agent::publish): five switches under `state/pool/`, each off while
-     missing or `off`:
-     - `update-per-region`: a map update begins `publish::update_gap` after the last began: twice
-       the last five map updates' measured time (`forecast::update_secs`), at most the hour.
+   - **Publishing**, before all of the regions' work (after heritage-sites), as soon as the records
+     change, from the records as they are (nothing is fixed as of a time): a prune of what the
+     coverage no longer builds (§5, Shrinking), then the publishing chain (4, Roads), its map tiles
+     whose owners changed a unit's together (`build::by_unit`: the units whose base pack or road
+     values differ from the served catalog's, in build order), shared with the members asking (the
+     lead's own job takes an even share, `publish::lead_share`); once none of it is left and no
+     member's hand-offs wait to be merged, a catalog (5). Nothing is published before a unit is
+     built, while the regions have work left. The lead keeps `publishing.json` in its agent's folder
+     (`build::LastCatalog`: when its last catalog went out, and the last with the low zooms made),
+     and records what publishing does and why (`build::PublishLine`), shown in the build status
+     (`publishing`), the worker page and `scenic status`, and logged when it changes.
+   - **Publishing's switches** (crate::agent::publish), under `state/pool/`, each off while missing
+     or `off`:
      - `low-zoom-later`: the low zooms (roads' and rails' lo packs, terrain's and slope's roots, and
-       with `near-slope` the slope and tree cover assemblies) are made only in the low zooms' map
-       update (`MapUpdate::low`): `build::LOW_EVERY_S` (three hours) after the last, when half the
-       roads' lo packs are stale (`build::low_due`), and in the last. Zoom ranges don't overlap, so
-       at any zoom a layer is of one map update; a region new since shows its roads from z9 until
-       the next low zooms' update.
-     - `update-share`: the lead's own job of a map update's map tiles takes an even share
-       (`publish::lead_share`), leaving the rest offered to members.
+       with `near-slope` the slope and tree cover assemblies) are made only `build::LOW_EVERY_S`
+       (three hours) after a catalog last went out with them made, when half the roads' lo packs are
+       stale (`build::low_due`), and once everything is built. Zoom ranges don't overlap, so a region
+       new since shows its roads from z9 until the low zooms are next made.
      - `delta-catalog`: the catalog job (`scenic-build catalog --delta`) writes what changed over the
        last (docs/formats.md, Delta catalogs), each file's size from the records
        (`state/build/sizes.json`, which the files' jobs hand off) or the last catalog: it looks up no
@@ -1162,11 +1158,12 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
        when the deltas add up to a whole one (`store::catalog::whole_due`), or a delta's run nears
        `MAX_CHAIN`. Readers apply deltas (`store::catalog::latest_nas_from`). Switch on only once
        every Mac's server reads deltas. Held catalogs are always whole.
-     - `near-slope`: a map update's slope and tree cover are the pieces near its regions
-       (`Publishing::near`), not every stale piece around.
+     - `near-slope`: a done region's slope and tree cover are the pieces near it
+       (`Publishing::near`), not every stale piece around; it's recorded built with those.
 4. **Four chains:**
-   - **Roads**, in every map update: a prune of map tiles no unit is near, road → units index, pack,
-     lo, stations, ferries, terrain and slope roots.
+   - **Roads** (the publishing chain, `build::publish_chain`): a prune of map tiles no unit is near,
+     pack (the map tiles), the road → units index, lo, stations, ferries, terrain and slope roots,
+     its first stale step at a time.
    - **Rail service**, from the start: `rail-feeds`, then `rail` (§6, Rail service).
    - **Landmarks**, from the start, each step once what it reads is built
      (`agent::build::landmarks_work`): candidates, peaks, items, the heritage chain, marks, then the
@@ -1178,14 +1175,13 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
    The trains', landmarks' and buildings' work is listed after the regions'. Last, in idle time: the
    mids of pieces current without one, each made again with `--expect-same` (`scenic-build
    trees|terrain|slope --expect-same`: a pack differing from the manifest fails the job).
-5. **A catalog** once the roads chain is done, in a map update, whenever the served files, the
-   regions or which of them are done change. It records as built the regions done (`--ready
-   <id>=<outline digest>,…`) and the others as the last catalog had them. It waits while another
-   worker builds a slope or tree cover piece of a region it would publish, or a member's hand-offs
-   wait to be merged. After the last unit a catalog follows any chain's change, but while the 3D
-   buildings have work, at most one a gap. A map update fixes the buildings' packs as it begins
-   (`out::AS_OF_OUTPUTS`). While `inputs/hold-catalog` exists, catalogs go to `catalog-held/`.
-6. **Daily:** backup and GC (not during a map update).
+5. **A catalog** once the publishing chain is done, whenever the served files, the regions or which
+   of them are done change (`build::catalog_key`), at most one each `build::CATALOG_EVERY_S` (a
+   minute) since the last began. It records as built the regions done, their slope and tree cover
+   made (`--ready <id>=<outline digest>,…`), and the others as the last catalog had them. It waits
+   while a member's hand-offs wait to be merged. While `inputs/hold-catalog` exists, catalogs go to
+   `catalog-held/`.
+6. **Daily:** backup and GC.
 
 **Planned:** stale work after step-version bumps done oldest first in idle time; registers, Overture
 and timetables refetched every ~6 months.

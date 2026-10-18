@@ -34,7 +34,7 @@ Where state lives:
 | Units' kept state | NAS: `cache/dem-units/`, `cache/scenic-units/` | none | nothing |
 | A job's progress (the OSM pass's stages, scratch) | the Mac running it | scratch folders | the OSM pass's resumed there (§7.2, Resuming); the rest redone |
 | The coordinator's state, token, history | NAS: `state/coord/` | `agent/coord/` | loads it (§6.2, §7.5) |
-| The lead's own (map update under way, daily jobs' last runs) | the lead's disk | `agent/map-update.json`, `agent/state.json` | starts afresh |
+| The lead's own (its catalogs' record, daily jobs' last runs) | the lead's disk | `agent/publishing.json`, `agent/state.json` | starts afresh |
 
 ## 3. What the NAS gives us
 
@@ -341,8 +341,7 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
 
 - **Every step to every member** (`crate::agent::every`, `crate::coord`'s `pick_every`): all but the
   lead's own steps (`every::LEAD_ONLY`: catalogs, prunes, `bld-fetch`, the answer-keeping steps, the
-  worldwide steps) go to any member whose measured room fits. `pack` and `lo` only with a map
-  update's units (`as_of`). A cold start (§7.7) goes to the member with the most room
+  worldwide steps) go to any member whose measured room fits. A cold start (§7.7) goes to the member with the most room
   (`most_room`), alone, while no job of its step runs.
 - **Packing** (`crate::agent::packing`, behind `state/pool/packing`, with every step to every
   member): a member may hold several leases. An ask says how many jobs it would start (`want`);
@@ -368,7 +367,7 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
   with the threads granted it (§7.1, Threads granted). Off, it asks with no `want` for one job at a time, as before; the jobs it holds as packing goes off run to their end.
 - **Order and locality:** a member gets a contiguous run of plan targets, from the front or just
   after its last target, as many as fit `coord::JOB_S` (a quarter hour) of measured time.
-- **A map update shared** (`crate::agent::publish`, behind `state/pool/update-share`): the lead's own
+- **The map tiles shared** (`crate::agent::publish`, with every step to every member): the lead's own
   `pack`/`lo` job takes an even share (`publish::lead_share`), leaving the rest to asking members.
 - **Placement by how crucial** (`crate::agent::placement`, behind `state/pool/placement`): asks are
   tried on steps by their forecast slack (least first), within a step from the longest target; each
@@ -557,7 +556,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   minutes; a member missing from listings for twenty minutes is forgotten.
 - **Build status**, written by the lead per term (`state/build/term/<E>/status.json`): the
   checklist (a line per stage with an item per step: docs/pipeline.md §4), forecast, regions,
-  waits, map-update decision, recent jobs, pause, last catalog, the lead.
+  waits, what publishing does, recent jobs, pause, last catalog, the lead.
   A member writes `helper.json` instead.
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
@@ -591,7 +590,7 @@ run, claims, the named writer (`SCENIC_BUILD_MAC`), the NAS's hand-off folders, 
 writes.
 
 Still behind switches under `state/pool/` (a file; off while missing unless noted):
-`slots` (§7.6), `resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2), `packing` (§7.2), `update-share` (§7.2),
+`slots` (§7.6), `resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2), `packing` (§7.2),
 `auto-handover` (§6.5), `memory-guard` (on while missing). A new switch is made only once every
 member's heartbeat shows the app that has it. The old files `state/pool/enabled` and
 `state/pool/shadow` stay on the NAS while an older app may read them.

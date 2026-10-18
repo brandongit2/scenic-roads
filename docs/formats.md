@@ -456,7 +456,7 @@ that decodes and parses, else the next.
 
 ### Delta catalogs (`catalog/<n>.delta.json.zst`)
 
-With `state/pool/delta-catalog` on (plan §8, Faster publishing), catalog `n` may be written as a
+With `state/pool/delta-catalog` on (plan §8, Publishing's switches), catalog `n` may be written as a
 patch on an earlier one (`store::catalog::Delta`), compressed and written as a whole one is; a
 number is used once, whole or as a delta:
 
@@ -523,9 +523,8 @@ The agent's folder, `agent/`:
 timings.jsonl, timings-run.json, timings-run-2.json   jobs' timings (below)
 status.json             the lead's status; a member not leading writes helper.json
 state.json, job.json, agent.lock, logs/
-map-update.json         the last map update {began, regions, last, units: {logical: content
-                        name}, over} (agent::build::MapUpdate; its jobs read the units through
-                        SCENIC_UNITS_AS_OF=<path>#<began>)
+publishing.json         the lead's record of its catalogs {at, low_at}: when the last went out,
+                        and the last with the low zooms made (agent::build::LastCatalog)
 clear-request.json      the owner's ask to clear build caches ({by, at}, agent::room::ClearRequest;
                         renamed .taken when taken up)
 room-target.json        the owner's free-disk target {bytes, by, at} (agent::room::Target; none: off)
@@ -807,8 +806,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     jobs get `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `delta-catalog`, all under
     `state/pool/`.
   - A member's ask carries `disk_mb` (free disk less the agent's reserve,
-    `pipeline::agent::room::RESERVE`, and the room target); a map update's grant carries `as_of:
-    {began, units}`.
+    `pipeline::agent::room::RESERVE`, and the room target).
   - `state/pool/progress/<member>.json`: `{member, worker, jobs: {"osm-pass <date>": {at, since,
     done, scratch}}}` (a resumable job's progress there, offered to it alone for 24 h);
     `state/pool/progress/released/<member>/<job>-<since>` (`scenic pool release`, empty).
@@ -830,9 +828,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   - Leases carry `term` and `granted_at`; `/work/done {…, journaled: true}`; `/work/done` and
     `/work/fail` carry `floors`, `disks` (`[[cost key, MB], …]`) and `job_disk_mb`.
 - **State:** `state/status.json` (the agent's heartbeat, at least every two minutes): conditions,
-  the job, `parts`/`part`, progress, `paused`/`pausing`, what waits, `pause`, `map_update`
-  (agent::build::MapUpdate: `due`, `why`, `gap_s`, `gap_basis`, `since_last_s`, `left_s`, `regions`,
-  `buildings`), the checklist (a line per stage: `id`, `what`, `steps`, `done`/`total`/`left`,
+  the job, `parts`/`part`, progress, `paused`/`pausing`, what waits, `pause`, `publishing`
+  (agent::build::PublishLine: `why`, `tiles`, `units`, `regions`, `low`, `wait_s`), the checklist (a line per stage: `id`, `what`, `steps`, `done`/`total`/`left`,
   `unit`, `items` (per step: `step`, `title`, `noun`, `done`, `total`, `left`), `next`, `note`,
   `shared`: docs/pipeline.md §4), `caches`
   (agent::room::Caches: `clearable`, `each`, `why_not`, `trimmed`, `cleared`, `declined`, `room`),

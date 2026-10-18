@@ -115,8 +115,8 @@ the lead.
 | | Clean-up | `gc` | keep | the world | lead |
 | | Backup | `backup` | keep | the world | lead |
 
-The forecast's lane for a map update as a whole is `map-update` ("Map update", the publishing
-stage's colour): not a step.
+The forecast's lane for publishing a region as a whole is `publishing` ("Publishing", the
+publishing stage's colour): not a step.
 
 ## 4. The checklist
 
@@ -153,8 +153,8 @@ kind's others, with templated words.
   running since, memory; frozen or stuck), beside it its second; what's next; facts as chips; its
   day as a spark line. Pages one card.
 - **The pool:** `pool.js`.
-- **Road to done:** each machine's lane (segments in the stages' colours, map updates hatched and
-  marked), the map updates' decision.
+- **Road to done:** each machine's lane (segments in the stages' colours, publishing hatched, the
+  regions out marked), and what publishing does now and why.
 - **Regions:** a row per region: name, state, when, tiles built, what's left by step.
 - **Activity:** the hours, and a sentence per event.
 - **Details:** tables, among them the steps table itself.

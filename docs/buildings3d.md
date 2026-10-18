@@ -165,7 +165,7 @@ No unit's key reads any of them.
 - **`bldfield-lo`:** its mids' content names.
 - **`bld-fetch`:** its version, the release and `coverage_all` (not the footers: it writes them).
 
-### 3.3 Order, map updates, the chain
+### 3.3 Order, publishing, the chain
 
 `agent::build::bld_work`:
 - **A chain of its own**, beside the roads', trains' and landmarks'. It reads no unit and no
@@ -177,9 +177,8 @@ No unit's key reads any of them.
   (the steps table's `beside` ranks: docs/pool.md §7.2); a job starts beside another by both jobs'
   measured memory and disk, never beside a cold start (docs/pool.md §7.7). Fixed batches of tiles
   (`agent::batch_size`), smaller while the regions' own work is left (`agent::job_size`).
-- **Map updates:** buildings hold no map update and no region's readiness; their packs go out with
-  the next catalog. While the chain has work left, a map update for it alone comes at most once per
-  the gap (plan.md §8); a map update fixes the packs as it begins (`out::AS_OF_OUTPUTS`).
+- **Publishing:** buildings hold no region's readiness; their packs go out with the next catalog,
+  at most one a minute (plan.md §8).
 - **Status:** the checklist's "3D buildings" stage, its steps "Buildings' sources", "Buildings
   read", "3D buildings", "3D buildings, zoomed out" (docs/pipeline.md §3). The forecast
   chains `bldtiles` after `bldprep` and `bldfield-lo` after `bldtiles` (`forecast::chain_deps`).

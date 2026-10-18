@@ -112,7 +112,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   whatever else its checks read (`Checks::context`: the pass's outlines, the accepted registers for
   the matches, check.py for translations, the regions' extract).
 - **Where:** on the lead, either slot, never beside a step that runs alone, another heavy NAS reader
-  (`bldprep`) or another check. It holds no region and no map update.
+  (`bldprep`) or another check. It holds no region and no catalog.
 - **What it does:**
   1. Hashes the files that may have changed (BLAKE3 hash16, formats.md, Names and hashes); a file
      with the accepted bytes is unchanged whatever its time.
