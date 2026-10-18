@@ -546,6 +546,10 @@ pub struct RoomView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<Target>,
     pub free: u64,
+    /// The disk its jobs have reserved and not taken yet (MB: the capacity's `reserved_mb`), for
+    /// the menu bar's words (as coord::disk_words). 0 on an older agent's.
+    #[serde(default)]
+    pub reserved_mb: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toward: Option<Freed>,
     /// Why the disk is short of the target and stays so, when it is (None: it has the target, or

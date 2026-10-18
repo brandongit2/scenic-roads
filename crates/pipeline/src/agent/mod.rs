@@ -4394,8 +4394,9 @@ impl Agent {
     }
 
     /// This Mac's whole capacity now (crate::coord::Capacity), for its asks and, leading, its own
-    /// coordinator: the memory guard's limit, the build's memory (`build_room`) less each running
-    /// job's predicted need (the larger of
+    /// coordinator: the memory guard's limit; the build's memory (`build_room`: the amount the owner
+    /// set with `scenic memory`, never more than the guard's limit; none set, the limit), and that
+    /// less each running job's predicted need (the larger of
     /// what it holds and `spec_peak`: its targets' measured peak on the lead,
     /// the step's first guess on a member), the cores the load leaves, the
     /// disk's free space less the reserve, the owner's room target and its jobs' reservations
@@ -5461,6 +5462,7 @@ impl Agent {
             room: Some(room::RoomView {
                 target: self.room_target.clone(),
                 free: self.disk_free(),
+                reserved_mb: self.reserved(None) >> 20,
                 toward: self.mem.toward.clone(),
                 short: self.room_short(nas),
             }),

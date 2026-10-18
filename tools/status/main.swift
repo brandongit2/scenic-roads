@@ -385,6 +385,8 @@ struct Caches: Decodable {
 struct RoomView: Decodable {
     let target: RoomTarget?
     let free: Int
+    /// The disk its jobs have reserved (MB; nil from an older agent).
+    let reserved_mb: Int?
     let toward: Freed?
     let short: String?
 }
@@ -1412,7 +1414,7 @@ let roomPresets = [10, 20, 50, 100, 150, 200, 300]
 /// as `scenic room` refuses them.
 func roomItem(_ own: Own?, target: Int?, free: Int?, disk: Int?) -> (title: String, tip: String, choices: [(title: String, gb: Int, on: Bool)])? {
     guard own?.caches != nil else { return nil }
-    let title = "Disk Room: " + diskWords(free: free, target: target)
+    let title = "Disk Room: " + diskWords(free: free, target: target, reserved: (own?.caches?.room?.reserved_mb ?? 0) << 20)
     let r = own?.caches?.room
     var tip = "The free space this Mac's agent keeps: it frees its build caches to it, as far as needed, jobs running or not (what they use stays), and starts no job that would cross it, until it's lowered or off."
     if let t = target, r?.target?.size == t, let why = r?.short { tip = "Short of it: \(why)" }
@@ -1429,12 +1431,13 @@ let diskReserve = 30 << 30
 /// The disk in words (task #391, as coord::disk_words): "38 GB free · 0 GB for jobs (30 GB
 /// reserve, 20 GB room target)": what's left for jobs, the free space less the reserve and the
 /// owner's room target.
-func diskWords(free: Int?, target: Int?) -> String {
+func diskWords(free: Int?, target: Int?, reserved: Int = 0) -> String {
     let g = { (b: Int) in "\(Int((Double(b) / Double(1 << 30)).rounded()))\u{00A0}GB" }
     guard let f = free else { return "? free" }
     var kept = ["\(g(diskReserve)) reserve"]
     if let t = target { kept.append("\(g(t)) room target") }
-    return "\(g(f)) free · \(g(max(0, f - diskReserve - (target ?? 0)))) for jobs (\(kept.joined(separator: ", ")))"
+    if reserved > 0 { kept.append("\(g(reserved)) reserved by its jobs") }
+    return "\(g(f)) free · \(g(max(0, f - diskReserve - (target ?? 0) - reserved))) for jobs (\(kept.joined(separator: ", ")))"
 }
 
 /// The memory this Mac gives the build's jobs together (crates/pipeline/src/agent/buildmem.rs,
