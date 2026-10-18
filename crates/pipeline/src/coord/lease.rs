@@ -110,6 +110,11 @@ pub struct Leases {
     holds: Vec<Hold>,
     /// The app this coordinator runs (crate::coord::Shared::app): what releases a hold.
     pub app: String,
+    /// The owner's cancels of running jobs (`scenic job cancel`, crate::control::Cancel), by lease:
+    /// told to the lease's worker in its beat's answer (this Mac's own, `Coordinator::cancel_of`),
+    /// which stops its job and gives the lease back, not failed. Each goes with its lease (finished,
+    /// given back, withdrawn, dropped or lapsed); not saved.
+    cancels: BTreeMap<u64, crate::control::Cancel>,
 }
 
 /// What's saved: the next id (ids never repeat across restarts), the jobs' leases and the holds.
@@ -123,7 +128,15 @@ struct Saved {
 
 impl Leases {
     pub fn new(ttl: Duration) -> Leases {
-        Leases { next: 1, by_id: BTreeMap::new(), ttl, term: 0, holds: Vec::new(), app: String::new() }
+        Leases {
+            next: 1,
+            by_id: BTreeMap::new(),
+            ttl,
+            term: 0,
+            holds: Vec::new(),
+            app: String::new(),
+            cancels: BTreeMap::new(),
+        }
     }
 
     /// The leases saved at `path` (none when there's no file), each live for a whole `ttl` from
@@ -170,6 +183,7 @@ impl Leases {
     pub fn restore(&mut self, v: &serde_json::Value, now: Instant) -> anyhow::Result<usize> {
         let s: Saved = serde_json::from_value(v.clone())?;
         self.by_id.clear();
+        self.cancels.clear();
         self.next = self.next.max(s.next);
         self.holds = s.holds;
         let n = s.leases.len();
@@ -224,6 +238,18 @@ impl Leases {
         };
         self.holds.push(h.clone());
         h
+    }
+
+    /// Lease `id`'s job cancelled by the owner (`cancels`), while the lease stands.
+    pub fn ask_cancel(&mut self, id: u64, c: crate::control::Cancel) {
+        if self.by_id.contains_key(&id) {
+            self.cancels.insert(id, c);
+        }
+    }
+
+    /// The owner's cancel of lease `id`, if there's one.
+    pub fn cancel_ask(&self, id: u64) -> Option<&crate::control::Cancel> {
+        self.cancels.get(&id)
     }
 
     /// The holds standing now (those the app releases left out).
@@ -306,13 +332,17 @@ impl Leases {
     /// Ends `worker`'s live lease `id` (done or given back); the lease, if it was that.
     pub fn finish(&mut self, id: u64, worker: &str, now: Instant) -> Option<Lease> {
         match self.by_id.get(&id) {
-            Some(l) if l.worker == worker && l.deadline > now => self.by_id.remove(&id),
+            Some(l) if l.worker == worker && l.deadline > now => {
+                self.cancels.remove(&id);
+                self.by_id.remove(&id)
+            }
             _ => None,
         }
     }
 
     /// Ends lease `id` whoever holds it (its task withdrawn); the lease, if there was one.
     pub fn cancel(&mut self, id: u64) -> Option<Lease> {
+        self.cancels.remove(&id);
         self.by_id.remove(&id)
     }
 
@@ -320,6 +350,9 @@ impl Leases {
     /// last one); those ended.
     pub fn drop_where(&mut self, gone: impl Fn(&Lease) -> bool) -> Vec<Lease> {
         let ids: Vec<u64> = self.by_id.values().filter(|l| gone(l)).map(|l| l.id).collect();
+        for id in &ids {
+            self.cancels.remove(id);
+        }
         ids.into_iter().filter_map(|id| self.by_id.remove(&id)).collect()
     }
 

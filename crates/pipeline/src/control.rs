@@ -240,8 +240,14 @@ impl Cancel {
     }
 }
 
-/// The cancel asks' file, in the agent's folder: a list, each taken up at the agent's next loop.
-pub const CANCEL_REQUEST: &str = "cancel-request.json";
+/// The cancel asks' folder, in the agent's folder: a file each (`<anything>.json`, written whole by
+/// its asker, never rewritten), taken up at the agent's next loop. One file an ask, so no ask is
+/// lost to, or done twice by, another written while the agent takes them.
+pub const CANCEL_REQUESTS: &str = "cancel-requests";
+
+/// How long a cancel ask stands (s, by its `at`): an older one, an agent that wasn't running then,
+/// is dropped unread, so it can't stop a job begun since.
+pub const CANCEL_STALE_S: u64 = 120;
 
 /// The agent's answer to the last cancel it took up (`CancelAnswer`), in its folder.
 pub const CANCEL_ANSWER: &str = "cancel-answer.json";
@@ -255,29 +261,52 @@ pub struct CancelAnswer {
     pub hit: bool,
 }
 
-/// Asks this Mac's agent (its folder `home`) to cancel a job (added to the asks waiting).
+/// Asks this Mac's agent (its folder `home`) to cancel a job: a file of its own in
+/// `CANCEL_REQUESTS`.
 pub fn request_cancel(home: &Path, c: &Cancel) -> anyhow::Result<()> {
-    std::fs::create_dir_all(home)?;
-    let mut asks = peek_cancels(home);
-    asks.push(c.clone());
-    crate::whole::write(&home.join(CANCEL_REQUEST), &serde_json::to_vec(&asks)?)
+    let dir = home.join(CANCEL_REQUESTS);
+    std::fs::create_dir_all(&dir)?;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let name = format!("{nanos}-{}.json", std::process::id());
+    crate::whole::write(&dir.join(name), &serde_json::to_vec(c)?)
+}
+
+/// The cancel asks' files waiting in `home`, oldest first.
+fn cancel_files(home: &Path) -> Vec<std::path::PathBuf> {
+    let mut v: Vec<std::path::PathBuf> = std::fs::read_dir(home.join(CANCEL_REQUESTS))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .collect();
+    v.sort();
+    v
 }
 
 /// The cancel asks waiting in `home`, read only.
 pub fn peek_cancels(home: &Path) -> Vec<Cancel> {
-    std::fs::read(home.join(CANCEL_REQUEST)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    cancel_files(home).iter().filter_map(|p| serde_json::from_slice(&std::fs::read(p).ok()?).ok()).collect()
 }
 
-/// The cancel asks waiting in `home`, taken (their file removed; one that doesn't parse: none).
-pub fn take_cancels(home: &Path) -> Vec<Cancel> {
-    // (Moved aside first: an ask written meanwhile makes a new file, taken at the next loop.)
-    let taken = home.join("cancel-request.taken.json");
-    if std::fs::rename(home.join(CANCEL_REQUEST), &taken).is_err() {
-        return Vec::new();
+/// The cancel asks waiting in `home`, taken (each file read whole, then removed): those asked within
+/// `CANCEL_STALE_S` of `now` (unix seconds); older ones, and ones that don't parse, go unread.
+pub fn take_cancels(home: &Path, now: u64) -> Vec<Cancel> {
+    let mut out = Vec::new();
+    for p in cancel_files(home) {
+        let c: Option<Cancel> = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        if std::fs::remove_file(&p).is_err() {
+            continue;
+        }
+        match c {
+            Some(c) if now.saturating_sub(c.at) <= CANCEL_STALE_S => out.push(c),
+            Some(c) => {
+                eprintln!("agent: a cancel of {} asked {} s ago dropped (stale)", c.target, now.saturating_sub(c.at))
+            }
+            None => {}
+        }
     }
-    let asks = std::fs::read(&taken).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    std::fs::remove_file(&taken).ok();
-    asks
+    out
 }
 
 /// The agent's answer to a cancel, kept for `scenic job cancel` to print.
@@ -408,5 +437,20 @@ mod tests {
         assert_eq!(peek_quit(d.path()).map(|q| q.mode), Some(QuitMode::Now));
         clear_quit(d.path());
         assert!(peek_quit(d.path()).is_none());
+    }
+
+    /// Cancel asks (task #373): a file each, taken once in order; one older than CANCEL_STALE_S
+    /// dropped unread, and a file that doesn't parse goes.
+    #[test]
+    fn cancel_asks_are_taken_once_and_stale_ones_dropped() {
+        let d = tempfile::tempdir().unwrap();
+        let a = Cancel::new("6/1/1", None, false, "x");
+        let b = Cancel { at: a.at - CANCEL_STALE_S - 1, ..Cancel::new("6/1/2", Some("unit"), true, "y") };
+        request_cancel(d.path(), &a).unwrap();
+        request_cancel(d.path(), &b).unwrap();
+        std::fs::write(d.path().join(CANCEL_REQUESTS).join("bad.json"), "{").unwrap();
+        assert_eq!(peek_cancels(d.path()).len(), 2);
+        assert_eq!(take_cancels(d.path(), a.at), vec![a.clone()]);
+        assert!(take_cancels(d.path(), a.at).is_empty() && peek_cancels(d.path()).is_empty());
     }
 }

@@ -2016,18 +2016,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// Asks this Mac's agent to cancel a running job (its step, target, and "update" to hold it
-    /// until a newer app): an ask added to its cancel asks' file (control.rs CANCEL_REQUEST), written
-    /// whole, which the agent takes up within seconds.
+    /// until a newer app), once its owner says so: an ask in a file of its own in the agent's cancel
+    /// asks' folder (control.rs CANCEL_REQUESTS), written whole, which the agent takes up within
+    /// seconds.
     @objc func cancelJob(_ sender: NSMenuItem) {
         guard let a = sender.representedObject as? [String], a.count == 3 else { return }
+        let alert = NSAlert()
+        alert.messageText = "Cancel the job building \(a[1])?"
+        alert.informativeText = "It stops now and is given back to the build (not a failure), and its work under way is dropped: it runs again from the start" + (a[2] == "update" ? ", once the lead runs a newer app than this one." : ".")
+        alert.addButton(withTitle: "Cancel the Job")
+        alert.addButton(withTitle: "Keep It Running")
+        NSApp.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
-        let ask: [String: Any] = ["step": a[0], "target": a[1], "rerun_after_update": a[2] == "update", "by": "the menu bar on \(name)", "at": Int(Date().timeIntervalSince1970)]
-        let dir = home.appendingPathComponent("agent")
-        let (tmp, dst) = (dir.appendingPathComponent("cancel-request.json.menu.tmp"), dir.appendingPathComponent("cancel-request.json"))
-        var asks = ((try? Data(contentsOf: dst)).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [Any]) ?? []
-        asks.append(ask)
+        let now = Date().timeIntervalSince1970
+        let ask: [String: Any] = ["step": a[0], "target": a[1], "rerun_after_update": a[2] == "update", "by": "the menu bar on \(name)", "at": Int(now)]
+        let dir = home.appendingPathComponent("agent/cancel-requests")
+        let file = "\(Int(now * 1e9))-\(getpid())"
+        let (tmp, dst) = (dir.appendingPathComponent(file + ".menu.tmp"), dir.appendingPathComponent(file + ".json"))
         do {
-            try JSONSerialization.data(withJSONObject: asks).write(to: tmp)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: ask).write(to: tmp)
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
             post("Couldn't cancel the job", "\(error.localizedDescription)")

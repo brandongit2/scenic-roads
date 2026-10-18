@@ -264,10 +264,6 @@ pub struct Shared {
     /// The app this Mac's agent runs: an agent on another builds with other code than the keys it
     /// would record say, so it gets no work ("" in tests: any).
     pub app: String,
-    /// The owner's cancels of running jobs (`scenic job cancel`, crate::control::Cancel), by lease:
-    /// told to the lease's worker in its beat's answer (this Mac's own, `Coordinator::cancel_of`),
-    /// which stops its job and gives the lease back, not failed. Gone with the lease.
-    pub cancels: BTreeMap<u64, crate::control::Cancel>,
     /// The build's pause (crate::control), while it's paused: no work is given, a worker's beat is
     /// told (its job pauses too), and no lease lapses. Kept in `pause.json`, so a restart keeps it.
     pub paused: Option<crate::control::Pause>,
@@ -1548,7 +1544,6 @@ impl Coordinator {
             needs: Default::default(),
             needs_rev: 0,
             app: app.to_string(),
-            cancels: BTreeMap::new(),
             paused,
             pause_at,
             history,
@@ -1875,7 +1870,7 @@ impl Coordinator {
     /// The owner's cancel of lease `id`, while it stands (`cancel`).
     pub fn cancel_of(&self, id: u64) -> Option<crate::control::Cancel> {
         let s = self.shared.lock().unwrap();
-        s.leases.of(id).and(s.cancels.get(&id).cloned())
+        s.leases.cancel_ask(id).cloned()
     }
 
     /// `target` of `step` held until this coordinator runs a newer app (lease::Hold): a job of it
@@ -2384,18 +2379,11 @@ pub struct PoolState {
     pub pause_at: u64,
 }
 
-/// Whether an agent on app `theirs` may build for a coordinator on `ours`: only the same. A target's
-/// key is the coordinator's code's, its result the worker's: on another app, older or newer, the
-/// two may differ (a step changed with its key, or without it), and the result would be recorded
-/// under a key that says it's current. No list of what changed: any other app waits. `ours` empty
-/// (tests): any.
+/// The owner's cancel (crate::control::Cancel) taken up in `s`: `Coordinator::cancel`, and the
+/// `/work/cancel` of a member's agent.
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
-/// `Coordinator::cancel`, in `s` (also the `/work/cancel` of a member's agent).
 fn cancel_in(s: &mut Shared, c: &crate::control::Cancel) -> Vec<(u64, String, String)> {
     let now = s.now();
-    // (Cancels of leases since ended go.)
-    let live: BTreeSet<u64> = s.leases.all(now).iter().map(|l| l.id).collect();
-    s.cancels.retain(|id, _| live.contains(id));
     let hits: Vec<Lease> = s
         .leases
         .all(now)
@@ -2413,7 +2401,7 @@ fn cancel_in(s: &mut Shared, c: &crate::control::Cancel) -> Vec<(u64, String, St
         if c.rerun_after_update {
             s.leases.hold_for_update(step, &c.target, &c.by, c.at);
         }
-        s.cancels.insert(l.id, c.clone());
+        s.leases.ask_cancel(l.id, c.clone());
         s.history.add(history::Event {
             worker: Some(l.worker.clone()),
             lease: Some(l.id),
@@ -2429,6 +2417,12 @@ fn cancel_in(s: &mut Shared, c: &crate::control::Cancel) -> Vec<(u64, String, St
     told
 }
 
+/// Whether an agent on app `theirs` may build for a coordinator on `ours`: only the same. A target's
+/// key is the coordinator's code's, its result the worker's: on another app, older or newer, the
+/// two may differ (a step changed with its key, or without it), and the result would be recorded
+/// under a key that says it's current. No list of what changed: any other app waits. `ours` empty
+/// (tests): any.
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn app_ok(theirs: Option<&str>, ours: &str) -> bool {
     ours.is_empty() || theirs == Some(ours)
 }
@@ -2976,7 +2970,7 @@ fn route(
             s.seen(&b.worker, b.progress.unwrap_or_else(|| "working".into()), None, now);
             // (The build paused: its job pauses too, its lease kept meanwhile. The owner cancelled
             // it, `scenic job cancel`: it stops and gives the lease back.)
-            let cancel = s.cancels.get(&b.lease).filter(|_| alive).cloned();
+            let cancel = s.leases.cancel_ask(b.lease).filter(|_| alive).cloned();
             Ok((200, serde_json::json!({ "ok": alive, "pause": s.paused, "cancel": cancel })))
         }
         "/work/cancel" => {
@@ -2985,6 +2979,9 @@ fn route(
             let mut c: crate::control::Cancel = serde_json::from_slice(body)?;
             (c.target, c.by) = (plain(&c.target, 200), plain(&c.by, WHAT_MAX));
             c.step = c.step.map(|st| plain(&st, 100));
+            // (When it was asked, by the asker's clock: no later than AHEAD_S from now by this one's,
+            // as a pause's.)
+            c.at = c.at.min(unix_now() + AHEAD_S);
             let told = cancel_in(&mut shared.lock().unwrap(), &c);
             let told: Vec<serde_json::Value> = told
                 .into_iter()

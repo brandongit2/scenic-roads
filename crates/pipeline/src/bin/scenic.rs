@@ -1031,7 +1031,7 @@ fn job_cancel(args: &[String]) -> Result<()> {
     let mut pos: Vec<&str> = Vec::new();
     let mut it = args.iter().skip(1);
     while let Some(a) = it.next() {
-        if matches!(a.as_str(), "--home" | "--root" | "--step") {
+        if matches!(a.as_str(), "--home" | "--step") {
             it.next();
         } else if !a.starts_with("--") {
             pos.push(a);

@@ -7401,7 +7401,7 @@ impl Agent {
     /// targets held for a newer app said in `waiting`. True when a job ended.
     fn tend_cancels(&mut self, root: Option<&Path>, waiting: &mut Vec<Waiting>) -> bool {
         if self._lock.is_some() && !self.o.dry_run {
-            for ask in crate::control::take_cancels(&self.o.home) {
+            for ask in crate::control::take_cancels(&self.o.home, now_s()) {
                 self.take_cancel(ask, root);
             }
         }
@@ -7415,7 +7415,9 @@ impl Agent {
         let mut ended = false;
         for k in 0..self.slots.len() {
             if let Some(c) = self.slots[k].cancel.take() {
-                if self.slots[k].running.is_some() {
+                // (A job that has ended already is left to `tend`, which records how it ended.)
+                let exited = self.slots[k].running.as_mut().map(|r| !matches!(r.poll(), Ok(None)));
+                if exited == Some(false) {
                     self.cancel_slot(k, &c);
                     ended = true;
                 }
@@ -8912,21 +8914,18 @@ impl Agent {
 }
 
 /// A cancelled job's work under way on `target` dropped (crate::control::Cancel): the entries at
-/// the top of its scratch folder `dir` named for the target, as a job names them (`6/55/25` as
-/// itself, `6_55_25` or `6-55-25`, whole, not a part of a longer number); the paths removed.
+/// the top of its scratch folder `dir` named for the target, as a job names them: `6/55/25` as
+/// `6_55_25` or `6-55-25` (a target of no slash as itself), exactly or with an extension
+/// (`6_55_25.tif`); the paths removed.
 fn clear_target_scratch(dir: &Path, target: &str) -> Vec<PathBuf> {
-    if target.is_empty() {
+    if target.is_empty() || target.contains("..") {
         return Vec::new();
     }
-    let forms = [target.to_string(), target.replace('/', "_"), target.replace('/', "-")];
+    let forms = [target.replace('/', "_"), target.replace('/', "-")];
     let names = |name: &str| {
-        forms.iter().any(|f| {
-            name.match_indices(f.as_str()).any(|(i, _)| {
-                let before = name[..i].chars().next_back();
-                let after = name[i + f.len()..].chars().next();
-                !before.is_some_and(|c| c.is_ascii_alphanumeric()) && !after.is_some_and(|c| c.is_ascii_alphanumeric())
-            })
-        })
+        forms
+            .iter()
+            .any(|f| name == f || name.strip_prefix(f.as_str()).is_some_and(|r| r.starts_with('.') && r.len() > 1))
     };
     let mut gone = Vec::new();
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -12641,6 +12640,8 @@ mod tests {
         let scratch = d.path().join("scratch");
         std::fs::create_dir_all(scratch.join("6_55_25")).unwrap();
         std::fs::create_dir_all(scratch.join("6_55_250")).unwrap();
+        std::fs::write(scratch.join("6_55_25.tif"), "x").unwrap();
+        std::fs::write(scratch.join("x-6_55_25"), "x").unwrap();
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let job = JobSpec {
             id: "terrain 6/55/25".into(),
@@ -12692,7 +12693,8 @@ mod tests {
         assert!(events.iter().any(|e| e.kind == "cancel" && e.targets == ["6/55/25"]));
         assert!(!events.iter().any(|e| e.kind == "fail" || (e.kind == "end" && e.ok == Some(false))));
         // Its work under way dropped: the target's scratch, not another's.
-        assert!(!scratch.join("6_55_25").exists() && scratch.join("6_55_250").exists());
+        assert!(!scratch.join("6_55_25").exists() && !scratch.join("6_55_25.tif").exists());
+        assert!(scratch.join("6_55_250").exists() && scratch.join("x-6_55_25").exists());
         // The update restarts at once.
         assert!(a.update_due());
         // Held on this app: it doesn't start here, said in the status.

@@ -582,12 +582,12 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
 - **Forcing stays on the Mac:** `/work/lead` refuses forced takeovers.
 - **Cancelling a job** (`crate::control::Cancel`): `scenic job cancel <target> [--step <step>]
   [--rerun-after-update]`, or the menu bar's "Cancel <job>" on the Mac running it (Option: "…,
-  Rerun on a Newer App"), writes an ask to that Mac's agent (`cancel-request.json`). The agent
+  Rerun on a Newer App"), writes an ask to that Mac's agent (a file in `cancel-requests/`; one older than two minutes is dropped). The agent
   stops a slot of its own running the target, and tells the lead's coordinator (in process, or
   `/work/cancel` from a member), which marks every live lease of the target; a member's job hears
-  it in its beat's answer (within a minute) and stops. A cancelled job ends as given back, not
+  it in its beat's answer (within a minute) and stops (a member on an app from before the cancel ignores it, and its job runs on). A cancelled job ends as given back, not
   failed: no retry delay, no backoff or guard hold against its Mac, its finished targets handed
-  off, and its scratch entries named for the target removed, so it starts again from the start.
+  off, and its scratch entries named for the target (exactly, or with an extension) removed, so it starts again from the start.
   With `--rerun-after-update` the coordinator holds the target (`coord::lease::Hold`, saved with
   the leases and carried in the term's state) from every offer and the lead's own starts until it
   runs an app other than, and not older than, the one it was cancelled on; members get work only
