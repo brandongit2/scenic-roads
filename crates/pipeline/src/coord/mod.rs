@@ -722,6 +722,8 @@ impl Shared {
         } else {
             None
         };
+        let disk_mb =
+            self.job_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>()).map_or(0, |(m, _)| m.disk_mb);
         Grant {
             lease,
             term: self.leases.term,
@@ -730,6 +732,7 @@ impl Shared {
             as_of,
             more: Vec::new(),
             threads,
+            disk_mb,
         }
     }
 
@@ -771,11 +774,17 @@ impl Shared {
             })
             .unwrap_or(0);
         // (The ask's memory and disk are a job's whole share of its Mac, whatever it runs (the
-        // agent's `helper_memory`, its free disk): every job it holds is taken off them here.)
+        // agent's `helper_memory`, its free disk): every job it holds is taken off its memory
+        // here. Its disk is taken off already for the jobs its agent reserves for (its capacity's
+        // leases: the disk said is the free space less their reservations); the others it holds
+        // (granted since it asked, or an older agent's) are taken off here.)
+        let reserved_by_agent = |l: &Lease| a.cap.as_ref().is_some_and(|c| c.leases.contains(&l.id));
         let mut room = a.clone();
-        for (m, _) in needs.iter().flatten() {
+        for (l, (m, _)) in mine.iter().zip(needs.iter().flatten()) {
             room.mem_mb = room.mem_mb.saturating_sub(m.mem_mb);
-            room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb));
+            if !reserved_by_agent(l) {
+                room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb));
+            }
         }
         let mut held = mine.len();
         let mut grants: Vec<Grant> = Vec::new();
@@ -1294,7 +1303,8 @@ pub struct Capacity {
     /// The disk's free space less the reserve (room::RESERVE), the owner's room target and the
     /// running jobs' reservations (MB).
     pub disk_mb: u64,
-    /// The running jobs' disk reservations (MB; none are made yet: 0).
+    /// The disk its jobs have reserved and not taken yet (MB): each granted or running job's
+    /// measured disk less what it has written so far (docs/pool.md §7.1).
     pub reserved_mb: u64,
     /// Its owner used it within the last five minutes (cond::AWAY_S).
     pub in_use: bool,
@@ -1352,6 +1362,11 @@ pub struct Grant {
     /// its Mac has left (`job_threads`). 0: not said (an older lead's), the agent's own rule.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub threads: u32,
+    /// The disk its job is measured to take (MB: `Coordinator::measured_batch`'s), which its agent
+    /// reserves until it hands the job off or gives it back (docs/pool.md §7.1). 0: a cold start,
+    /// a task, or an older lead's.
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub disk_mb: u64,
 }
 
 /// A map update's units as they were when it began (crate::agent::build::MapUpdate's `began` and `units`).
@@ -2834,6 +2849,9 @@ fn route(
                         term: s.leases.term,
                         ttl_s: TTL.as_secs(),
                         threads: s.job_threads(&a, &o.step, &pick),
+                        disk_mb: s
+                            .job_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
+                            .map_or(0, |(m, _)| m.disk_mb),
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
                         as_of: None,
                         more: Vec::new(),
@@ -2912,6 +2930,7 @@ fn route(
                     as_of: None,
                     more: Vec::new(),
                     threads: 0,
+                    disk_mb: 0,
                 };
                 eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
                 return Ok((200, serde_json::to_value(g)?));
@@ -5448,6 +5467,29 @@ mod tests {
         assert_eq!(all_granted(&w, &a).len(), 1);
         assert_eq!(all_granted(&w, &a).len(), 1);
         assert!(all_granted(&w, &a).is_empty(), "a third would pass its disk");
+    }
+
+    /// Disk reservations (task #242): a grant carries its job's measured disk, which its agent
+    /// reserves; the jobs its capacity names are taken off its disk by the agent already (not twice
+    /// here), so it's granted what fits the disk its reservations leave, and nothing past it.
+    #[test]
+    fn grants_carry_their_disk_and_a_members_reservations_count_once() {
+        let (_d, c, w, _clock) = every((0, 0));
+        c.set_packing(Some(Packing::default()));
+        packable(&c, "slope", 6, Some(1));
+        let ask = |disk: u64, leases: Vec<u64>| Ask {
+            cap: Some(Capacity { cores: 8, disk_mb: disk, leases, ..Default::default() }),
+            ..every_ask("m1", "slope", 64_000, disk)
+        };
+        let g1 = w.ask(&ask(250, vec![])).unwrap().unwrap();
+        assert_eq!(g1.disk_mb, 100);
+        // 250 free past the reserve, 100 of it reserved by its job: 150 said, one more fits.
+        let g2 = w.ask(&ask(150, vec![g1.lease])).unwrap().unwrap();
+        assert_eq!(g2.disk_mb, 100);
+        // Both reserved: 50 said, nothing fits.
+        assert!(w.ask(&ask(50, vec![g1.lease, g2.lease])).unwrap().is_none());
+        // A lease its agent doesn't name yet (granted since it asked) is taken off here.
+        assert!(w.ask(&ask(150, vec![g1.lease])).unwrap().is_none());
     }
 
     /// Packing on: a cold start goes only to a member running nothing, alone, and nothing goes

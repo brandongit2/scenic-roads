@@ -3,8 +3,9 @@
 //! crate::needs as every placement path reads them, on a clock of the simulator's.
 //!
 //! - **The members** ask the coordinator over HTTP, as their agents do (`client::Client::ask`), with
-//!   what their Mac spares (its memory guard's limit less what its jobs hold, its disk less the
-//!   reserve and its jobs', its capacity); what they're granted is `pick_every`'s, untouched. Each
+//!   what their Mac spares (its memory guard's limit less what its jobs hold, its disk's free space
+//!   now less the reserve and its jobs' reservations, its capacity); what they're granted is
+//!   `pick_every`'s, untouched. Each
 //!   runs `Cfg::member_slots` jobs (today's agent: one), asking again while a slot is free (packing
 //!   on, `Cfg::packing`: for as many jobs as it has slots free, running every one granted); a job
 //!   ends by giving its lease back, its costs (with its threads) and disk measured into the
@@ -15,7 +16,9 @@
 //!   second the plan's first that can run beside the first, by the agent's own rules (`clash`,
 //!   `beside_why`), nothing beside a cold start or with one next. Its room is the coordinator's
 //!   `Every::own`, as the agent's `own_room` says it.
-//! - **Each job** takes its step's true memory, disk and cores from its start to its end. A job
+//! - **Each job** takes its step's true memory and cores from its start to its end, and its disk
+//!   as it goes (written evenly over its run, as a real job fills its scratch): until it ends, the
+//!   rest is its reservation (task #242), which its member's ask takes off its free space. A job
 //!   that would pass its Mac's memory limit with the others there is stopped by the memory guard as
 //!   it starts (its floor learned, its lease given back): allowed only of a cold start, the
 //!   placement's one guess.
@@ -23,7 +26,8 @@
 //! Checked at every start, first where a job may go at all: no Mac past its slots; a step kept to the
 //! lead (crate::agent::every::LEAD_ONLY, or not offered) only on the lead; a cold start alone on its
 //! Mac and in the pool, and nothing beside one. Then what it takes: past its Mac's memory limit only
-//! a cold start, stopped by the guard; never past its disk; its threads (a member's, those granted
+//! a cold start, stopped by the guard; never past its disk (every job on it counted whole: no Mac's
+//! disk over-committed, however little its jobs have written yet); its threads (a member's, those granted
 //! it, crate::coord::Grant::threads, at least one; the lead's own, its step's) and those of the jobs
 //! beside it never past its Mac's cores (less those its in-use share keeps, `Cfg::in_use`). And that
 //! the plan finishes.
@@ -110,6 +114,7 @@ struct Job {
     step: String,
     targets: Vec<String>,
     lease: u64,
+    start: u64,
     end: u64,
     mem_mb: u64,
     disk_mb: u64,
@@ -127,8 +132,21 @@ fn target_name(step: &str, i: usize) -> String {
     format!("6/{}/{i}", step.len())
 }
 
+/// What job `j` has written on its Mac's disk by `t` (MB): its disk spread evenly over its run.
+fn written(j: &Job, t: u64) -> u64 {
+    let run = j.end.saturating_sub(j.start).max(1);
+    j.disk_mb * t.saturating_sub(j.start).min(run) / run
+}
+
 /// Runs `cfg` to the plan's end; an error names the first invariant broken.
 pub fn run(cfg: &Cfg) -> Result<Run, String> {
+    run_with(cfg, true)
+}
+
+/// `run`, the members reserving their jobs' disk (`reserve`, as the agent does) or not (asking
+/// with their free space now alone, as before task #242: a job's disk not written yet is counted
+/// free).
+fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
     let d = tempfile::tempdir().map_err(|e| e.to_string())?;
     let lead_name = cfg.macs[0].name;
     let (c, port) = coord::start_for_test(&d.path().join("coord"), lead_name, "");
@@ -271,6 +289,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 step: step.into(),
                 targets: targets.clone(),
                 lease,
+                start: t,
                 end: t + s.secs * targets.len() as u64,
                 mem_mb: s.mem_mb,
                 disk_mb: s.disk_mb * targets.len() as u64,
@@ -336,7 +355,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
             }
             if disk + job.disk_mb + reserve_mb > cfg.macs[k].disk_mb {
                 return Err(format!(
-                    "{} placed {step} {targets:?} past its disk: {} + {} + reserve {reserve_mb} > {} MB",
+                    "{} placed {step} {targets:?} past its disk (over-committed): {} + {} + reserve {reserve_mb} > {} MB",
                     cfg.macs[k].name, disk, job.disk_mb, cfg.macs[k].disk_mb
                 ));
             }
@@ -469,7 +488,11 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 let (mem, disk, threads) = used(&running[k]);
                 let m = &cfg.macs[k];
                 let mem_mb = limit(k).saturating_sub(mem);
-                let disk_mb = m.disk_mb.saturating_sub(disk + reserve_mb);
+                // (As the agent says it: the free space now (its jobs' disk written so far gone),
+                // less the reserve and what its jobs have still to write, their reservations.)
+                let wrote: u64 = running[k].iter().map(|j| written(j, t)).sum();
+                let reserved_mb = if reserve { disk - wrote } else { 0 };
+                let disk_mb = m.disk_mb.saturating_sub(wrote + reserve_mb + reserved_mb);
                 let cap = Capacity {
                     limit_mb: limit(k),
                     held_mb: mem,
@@ -477,6 +500,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                     cores: m.cores,
                     cores_free: m.cores - threads,
                     disk_mb,
+                    reserved_mb,
                     in_use: cfg.in_use.is_some(),
                     kept_cores: cfg.in_use.unwrap_or(0),
                     ac: true,
@@ -778,6 +802,26 @@ mod tests {
         let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None })
             .unwrap();
         assert!(r.granted.values().all(|&g| g == (8, 8)), "{r:?}");
+    }
+
+    /// Disk reservations (task #242): an M1 with 8 GB past the reserve, its jobs 5 GB each written
+    /// as they go. Reserving, it's never granted a job its disk can't hold beside the others
+    /// (checked at every start: every job on it counted whole) and the plan finishes; asking with
+    /// its free space now alone, a second is granted beside the first before that one has written
+    /// its disk, over-committing it.
+    #[test]
+    fn reservations_keep_a_tight_disk_from_being_over_committed() {
+        let mut macs = m4_m1();
+        macs[1].disk_mb = (room::RESERVE >> 20) + 8_000;
+        let mut steps = plan();
+        for s in steps.iter_mut().filter(|s| s.name == "slope") {
+            (s.disk_mb, s.secs, s.targets) = (5_000, 1_200, 16);
+        }
+        let cfg = Cfg { macs, steps, member_slots: 0, packing: Some(Default::default()), nas: None, in_use: None };
+        let r = run(&cfg).unwrap();
+        assert!(r.ran[1] > 0, "{r:?}");
+        let e = run_with(&cfg, false).unwrap_err();
+        assert!(e.contains("m1 placed") && e.contains("over-committed"), "{e}");
     }
 
     /// The members' owners at them (task #241): each one's in-use share keeps its cores (here 4 of

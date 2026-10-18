@@ -261,8 +261,8 @@ An ask also carries its whole Mac's capacity (`coord::Capacity`, the ask's optio
 memory guard's limit and what the running jobs hold, the memory free under the limit less each
 running job's predicted need (the larger of what it holds and its predicted peak: its targets' measured peak on the
 lead, the step's first guess on a member), its
-cores and those the last minute's load leaves free, the disk free less the reserve and the owner's
-room target (`reserved_mb`, for reservations, is 0: none are made yet), in use and the cores its
+cores and those the last minute's load leaves free, the disk free less the reserve, the owner's
+room target and its jobs' reservations (`reserved_mb`, below), in use and the cores its
 in-use share keeps (`kept_cores`, below), mains or battery,
 the NAS's reach, the guard's switch and its running leases. The lead sets its own each loop
 (its jobs ask nothing). The coordinator keeps the last per member (`Coordinator::capacities`, leaving out one older than
@@ -272,6 +272,22 @@ only its `cores`, and `kept_cores` while `in_use` (the threads granted, below). 
 ask's measures are taken then, where a heartbeat on the NAS is up to two minutes old and the
 coordinator doesn't read heartbeats. Every field has a serde default: an older coordinator ignores
 `cap`, and a newer one takes an ask without it (an older agent's) as before.
+
+**Disk reservations** (task #242). Each job granted carries the disk it's measured to take
+(`Grant::disk_mb`: its targets' disks summed, or the most a job of its step took, the larger;
+0 for a cold start), and its agent reserves it while it holds the lease: the whole of it until
+the job starts, then that less what the job has written so far (the disk guard's count). The
+lead's own running jobs reserve what their measures say they have still to take (`disk_left`).
+A reservation ends with its lease, at hand-off or give-back. The free disk an ask and its
+capacity say (`disk_mb`; the lead's own room, `Every::own`, likewise) is the free space less the
+reserve (30 GB), the owner's room target and every live reservation (`reserved_mb`), so a job not
+yet written isn't counted free twice; the coordinator takes off only the jobs a member holds that
+its capacity doesn't name yet (granted since it asked, or an older agent's ask, all of them). A
+job starting beside others waits on the reserve, its own room and the other slots'
+reservations; room-making alone makes room for the leases granted and not yet started too, and
+the owner's room-target freeing (`room::toward`) frees toward the target plus the reservations,
+the jobs' hints merged (`Agent::hints`). The disk guard stays the backstop (§7.7). `scenic
+status` shows each member's in its capacity line (`disk 12.0 GB free (8.0 GB reserved)`).
 
 **Threads granted** (task #241). Each job granted carries the worker threads it runs with
 (`Grant::threads`), which the member's agent sets as `RAYON_NUM_THREADS` (the programs taking
@@ -599,11 +615,16 @@ tiles (`pack_raw_with`) stays inside the piece's job.
   Macs, each with its memory, cores and disk, work a plan through the lead's real coordinator on a
   simulated clock. Members ask over HTTP with their capacity and take what `pick_every` grants; the
   lead runs two slots by the agent's own rules (`clash`, `beside_why`, its plan leaving out what
-  others hold and a step cold elsewhere); each job takes its step's true memory, disk and cores,
-  and its measures go back into the coordinator (crate::needs reads them). Checked at every start,
+  others hold and a step cold elsewhere); each job takes its step's true memory and cores, and
+  its disk written evenly over its run, the rest its reservation (a member's ask says its free
+  space now less the reserve and its reservations); its measures go back into the coordinator
+  (crate::needs reads them). Checked at every start,
   first where a job may go (no Mac past its slots; lead-only steps on the lead; a cold start alone
   on its Mac and in the pool, nothing beside one), then what it takes (past a Mac's memory limit
-  only a cold start, stopped by the guard; never past its disk or cores); and the plan finishes.
+  only a cold start, stopped by the guard; never past its disk, every job on it counted whole, so
+  no Mac's disk is over-committed, or past its cores); and the plan finishes. A run with an M1 8 GB
+  past the reserve and 5 GB jobs finishes reserving, and over-commits without (asking with its
+  free space now alone).
   Runs: the M4 and the M1 (the lead reaches two jobs, the member one) and four Macs; with packing
   on, members' slots a setting: the M1 with two reaches two, a 48 GB member with 16 cores holds
   three or four small jobs at once (its cores the bound), and a cap holds it to its cap; or the

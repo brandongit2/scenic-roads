@@ -1230,3 +1230,18 @@ fn main() -> Result<()> {
         c => bail!("{c}: in the table (pipeline::cli::tables::SCENIC) but not run here"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A member's capacity line shows its jobs' disk reservations (task #242), and none when it has
+    /// none.
+    #[test]
+    fn the_capacity_line_shows_the_disk_reserved() {
+        let c = pipeline::coord::Capacity { disk_mb: 12 << 10, reserved_mb: 8 << 10, ..Default::default() };
+        assert!(capacity_line(&c).contains("disk 12.0 GB free (8.0 GB reserved)"), "{}", capacity_line(&c));
+        let c = pipeline::coord::Capacity { disk_mb: 12 << 10, ..Default::default() };
+        assert!(!capacity_line(&c).contains("reserved"));
+    }
+}
