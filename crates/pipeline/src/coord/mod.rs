@@ -261,7 +261,7 @@ pub struct Shared {
     /// The most disk a job of each step took over its whole run (MB, by step): a batch's cache
     /// writes add up over its targets, and outside programs' files can outlast a target, so a
     /// batch is reckoned by the larger of this and its targets' disk summed. Only rises. Kept in
-    /// `job-disks.json`.
+    /// `job-disks-v3.json` (`JOB_DISKS`).
     pub job_disks: BTreeMap<String, u64>,
     /// The steps' models of their needs (crate::needs), kept while `needs_rev` stands: it moves with
     /// each cost, floor or disk floor taken or cleared.
@@ -2751,21 +2751,35 @@ fn check_pooled(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result
     Ok(())
 }
 
-/// Where the most each step's job took on the disk is kept (`Shared::job_disks`): its v2, task #260.
-const JOB_DISKS: &str = "job-disks-v2.json";
+/// Where the most each step's job took on the disk is kept (`Shared::job_disks`): its v3, task #381.
+const JOB_DISKS: &str = "job-disks-v3.json";
 
-/// The most each step's job took on the disk, as kept in `dir`: `JOB_DISKS`, else the file before
-/// it (`job-disks.json`) without its halo steps' (crate::needs::HALO_STEPS: a job of them spanned
-/// many halos then, its peak no measure of a halo's job now), dropped so once.
+/// The files before `JOB_DISKS`, newest first, each with the steps whose peaks in it are no measure
+/// of a job now: the halo steps' (crate::needs::HALO_STEPS) from when a job of them spanned many
+/// halos (`pack` before task #260's v2; `lo` before task #381's v3, its peak a whole pass's taken
+/// while its targets' disks were summed).
+const JOB_DISKS_BEFORE: [(&str, &[&str]); 2] = [("job-disks-v2.json", &["lo"]), ("job-disks.json", &["pack", "lo"])];
+
+/// The most each step's job took on the disk, as kept in `dir`: `JOB_DISKS`, else the newest file
+/// before it (`JOB_DISKS_BEFORE`) without its stale steps' peaks, dropped so once (the result
+/// written as `JOB_DISKS` at once).
 fn job_disks_load(dir: &std::path::Path) -> BTreeMap<String, u64> {
     let read = |f: &str| -> Option<BTreeMap<String, u64>> {
         std::fs::read(dir.join(f)).ok().and_then(|b| serde_json::from_slice(&b).ok())
     };
-    read(JOB_DISKS).unwrap_or_else(|| {
-        let mut m = read("job-disks.json").unwrap_or_default();
-        m.retain(|step, _| !crate::needs::HALO_STEPS.contains(&step.as_str()));
-        m
-    })
+    if let Some(m) = read(JOB_DISKS) {
+        return m;
+    }
+    for (f, stale) in JOB_DISKS_BEFORE {
+        if let Some(mut m) = read(f) {
+            m.retain(|step, _| !stale.contains(&step.as_str()));
+            let _ = serde_json::to_vec(&m)
+                .map_err(anyhow::Error::from)
+                .and_then(|b| crate::whole::write(&dir.join(JOB_DISKS), &b));
+            return m;
+        }
+    }
+    BTreeMap::new()
 }
 
 /// The floors `s` keeps, after clearing those of `step` (all, with no step), or of its `target`,
@@ -5211,7 +5225,7 @@ mod tests {
         assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
         assert_eq!(c.job_disk("peaks"), 20_000);
         let old = tempfile::tempdir().unwrap();
-        std::fs::write(old.path().join("job-disks.json"), r#"{"pack":146944,"peaks":20000}"#).unwrap();
+        std::fs::write(old.path().join("job-disks.json"), r#"{"pack":146944,"lo":46000,"peaks":20000}"#).unwrap();
         assert_eq!(job_disks_load(old.path()), [("peaks".to_string(), 20_000)].into());
         std::fs::write(old.path().join(JOB_DISKS), r#"{"pack":1300}"#).unwrap();
         assert_eq!(job_disks_load(old.path()), [("pack".to_string(), 1300)].into());
@@ -5219,6 +5233,33 @@ mod tests {
         c.floors(true, Some("peaks"), None);
         c.floors(true, Some("pack"), None);
         assert!(c.disks().is_empty());
+    }
+
+    /// Task #381: `lo` a halo step (a pass's z3 tiles read one cache of their owners' base packs,
+    /// each tile's disk measured as that cache): a job of them reserves the most of theirs, not the
+    /// sum; its v2 peak dropped once as the coordinator starts, the rest kept.
+    #[test]
+    fn lo_jobs_take_their_cache_once_and_its_v2_peak_goes() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("coord");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("job-disks-v2.json"), r#"{"lo":46000,"pack":1300}"#).unwrap();
+        let (c, _port) = start_for_test(&dir, "m4", "");
+        assert_eq!(c.job_disk("lo"), 0, "v2's lo peak dropped");
+        assert_eq!(c.job_disk("pack"), 1300, "the rest kept");
+        // As the M4 measured them: each tile ~45 GB (the pass's whole cache).
+        let tiles: Vec<String> = (1..=5).map(|i| format!("3/{i}/1")).collect();
+        c.add_disks(&tiles.iter().map(|t| (cost_key("lo", t), 45_778)).collect::<Vec<_>>());
+        for t in &tiles {
+            let cost = Cost { peak_mb: 800, secs: 90, worker: None, v: 0, ..Default::default() };
+            c.add_costs(&[(cost_key("lo", t), cost)]);
+        }
+        assert_eq!(c.measured_batch("lo", &tiles).map(|m| m.disk_mb), Some(45_778), "not 5 × 45 GB");
+        c.add_job_disk("lo", 47_000);
+        drop(c);
+        // Started again: v3 written, nothing more dropped.
+        let (c, _port) = start_for_test(&dir, "m4", "");
+        assert_eq!(c.job_disk("lo"), 47_000);
     }
 
     #[test]
@@ -5515,8 +5556,12 @@ mod tests {
         assert_eq!(granted(&w, &every_ask("m2", "pack", 10_000, 60_000)), ["6/1/2"], "one with the disk");
         // Each fits, two together don't: the run ends at the disk.
         let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "terrain-lo", &[("3/1/1", Some((500, 6000, 60))), ("3/1/2", Some((500, 6000, 60)))]);
+        assert_eq!(granted(&w, &every_ask("m1", "terrain-lo", 4096, 10_000)), ["3/1/1"]);
+        // A halo step's (`lo`, task #381): one cache, so both within the room.
+        let (_d, c, w, _clock) = every((0, 0));
         measured_offer(&c, "lo", &[("3/1/1", Some((500, 6000, 60))), ("3/1/2", Some((500, 6000, 60)))]);
-        assert_eq!(granted(&w, &every_ask("m1", "lo", 4096, 10_000)), ["3/1/1"]);
+        assert_eq!(granted(&w, &every_ask("m1", "lo", 4096, 10_000)), ["3/1/1", "3/1/2"]);
     }
 
     /// A cold start (a step none of whose targets has run) goes alone to the worker with the most

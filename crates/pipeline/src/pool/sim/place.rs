@@ -17,7 +17,7 @@
 //! - **Each job** takes its step's true memory and cores from its start to its end, and its disk
 //!   as it goes (written evenly over its run, as a real job fills its scratch): until it ends, the
 //!   rest is its reservation (task #242), which its member's ask takes off its free space. A halo
-//!   step's job (crate::needs::HALO_STEPS: `pack`, task #260) takes one halo's targets (`Cfg::halo`
+//!   step's job (crate::needs::HALO_STEPS: `pack`, task #260; `lo`, task #381) takes one halo's targets (`Cfg::halo`
 //!   a halo, offered a halo an offer as the agent offers them), its disk its halo's cache once
 //!   whatever its targets, each target measured to take that cache, its `bytes` that cache (read
 //!   there, not from the NAS) and its NAS what it writes. A job
@@ -832,6 +832,29 @@ mod tests {
             assert!(r.beside.contains(&(m, "pack".to_string(), "unit".to_string())), "{m}: packs beside units: {r:?}");
         }
         assert_eq!(r.granted_disk.get("pack"), Some(&1_300), "a halo's cache once: {r:?}");
+        assert!(r.most_nas <= crate::budget::nas::WHOLE, "{r:?}");
+    }
+
+    /// The low zooms (task #381): a halo step too, a pass's z3 tiles one offer (one halo: the
+    /// units owning them), a job of them granted the cache once (not its tiles' summed: each tile
+    /// measured ~45 GB, the pass's cache), its NAS what it writes; on the M4 and the M1 with the
+    /// NAS budget on, the plan finishes.
+    #[test]
+    fn lo_jobs_take_their_cache_once() {
+        let lo = Step {
+            name: "lo",
+            targets: 16,
+            mem_mb: 1_000,
+            disk_mb: 45_000,
+            secs: 100,
+            threads: 2,
+            nas_mb: 800,
+            creates: 5,
+        };
+        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let c = Cfg { steps: vec![lo], nas: Some(limits), halo: 16, known: vec!["lo"], ..cfg(m4_m1(), 0) };
+        let r = run(&c).unwrap();
+        assert_eq!(r.granted_disk.get("lo"), Some(&45_000), "the cache once: {r:?}");
         assert!(r.most_nas <= crate::budget::nas::WHOLE, "{r:?}");
     }
 

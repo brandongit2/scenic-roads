@@ -763,8 +763,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     secs, worker, v, sizes}}`, `sizes` as in `costs.jsonl`, absent before task #235; keys: a unit, `"<step> <target>"`, or `"<kind> <unit>"` for tasks: `tail 6/x/y`,
     `bldtile 8/x/y`, `treeblock 8/x/y`, `terrainsub 8/x/y`); `floors.json` (`{<cost key>: {mb, alone,
     v}}`, crate::agent::memguard::Floor; `scenic pool floors` lists and clears them);
-    `disks.json` (`{<cost key>: MB}`, rising only, docs/pool.md §7.7); `job-disks.json`
-    (`{<step>: MB}`); `journal/<worker>/` (hand-offs sent rather than journaled, drained into the
+    `disks.json` (`{<cost key>: MB}`, rising only, docs/pool.md §7.7); `job-disks-v3.json`
+    (`{<step>: MB}`; an older `job-disks-v2.json` or `job-disks.json` read once without its halo steps' stale peaks); `journal/<worker>/` (hand-offs sent rather than journaled, drained into the
     pool's journal); `tasks/<id>/`; `pause.json` (`{pause: {mode: "drain" | "freeze", by, at} | null,
     at}`, `pipeline::control::Pause`); `costs.jsonl` (`SCENIC_COSTS`: `{unit, started}` as a target
     begins, `{unit, peak_mb, secs, v, disk_mb, sizes}` as it ends; `sizes`, `pipeline::costin`, a

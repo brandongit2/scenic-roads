@@ -47,12 +47,13 @@ pub const MAX_ERR: f64 = 0.5;
 pub const GUESS_FIRST: [&str; 2] = ["unit", "pois"];
 
 /// The steps whose job opens one halo of base packs for all its targets (task #260: `pack`, a
-/// unit's map tiles together): the base packs are copied into the job's cache once (scenic-build's
+/// unit's map tiles together; task #381: `lo`, a pass of the low zooms, its z3 tiles' owners'): the
+/// base packs are copied into the job's cache once (scenic-build's
 /// `open_for_tiles`) and every target reads them there. So a target's disk measure is the job's
 /// cache, shared, not its own: a job of several takes the most of theirs, not their sum
 /// (`batch_disk`); and a target's `bytes` (the halo's base-pack bytes, its input size for the fits)
 /// are read from that cache, not the NAS: its NAS weight is what it writes (`wrote`, `creates`).
-pub const HALO_STEPS: [&str; 1] = ["pack"];
+pub const HALO_STEPS: [&str; 2] = ["pack", "lo"];
 
 /// The disk (MB) a job of `step` takes over targets each measured to take `each`: a `HALO_STEPS`
 /// step's the most of them (one cache, shared), another's their sum (each its own).
