@@ -32,6 +32,11 @@ ZOOM = {"10": 13, "100": 10}
 def block_url(cov: str, w: float, s: float, e: float, n: float) -> str:
     x0, y0 = lonlat_to_merc(w, s)
     x1, y1 = lonlat_to_merc(e, n)
+    return merc_url(cov, x0, y0, x1, y1)
+
+
+def merc_url(cov: str, x0: float, y0: float, x1: float, y1: float) -> str:
+    """The GetCoverage URL for a subset given in EPSG:3857 metres (a block, or a quarter of one)."""
     return (f"{WCS}?service=WCS&version=2.0.1&request=GetCoverage&coverageId={cov}&format=image/tiff"
             f"&subset=X({float(x0):.2f},{float(x1):.2f})&subset=Y({float(y0):.2f},{float(y1):.2f})&subsettingCrs=http://www.opengis.net/def/crs/EPSG/0/3857")
 

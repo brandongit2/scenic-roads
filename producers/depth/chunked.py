@@ -29,6 +29,7 @@ import http.client
 import json
 import shlex
 import shutil
+import socket
 import subprocess
 import time
 import urllib.error
@@ -43,10 +44,21 @@ from grid import Writer, fetch, log
 N10_ORIGIN, N10_BLOCK = (-142.0, 41.0), (0.5, 0.3)
 
 
+class Unrenderable(SystemExit):
+    """fetch_retry's stop when the last try was a 504 or a timeout: the server couldn't render the
+    subset in time, so a smaller subset may work. (A SystemExit, so uncaught it stops the run.)"""
+
+
+def _timed_out(e: BaseException) -> bool:
+    return isinstance(e, (socket.timeout, TimeoutError)) or (
+        isinstance(e, urllib.error.URLError) and isinstance(e.reason, (socket.timeout, TimeoutError)))
+
+
 def fetch_retry(url: str, dest: Path, pause: float, tries: int = 5) -> Path:
     """grid.fetch, again (30 s, 60 s, …) after a dropped or refused connection, a timeout, a body cut
     short (http.client's IncompleteRead), 429 or a 5xx; any other HTTP answer, or the last try's failure, stops the run (SystemExit), so no chunk's
     part is written with a file missing."""
+    slow = False
     for k in range(tries):
         try:
             return fetch(url, dest, pause=pause)
@@ -54,9 +66,13 @@ def fetch_retry(url: str, dest: Path, pause: float, tries: int = 5) -> Path:
             if e.code != 429 and e.code < 500:
                 raise SystemExit(f"{url}: HTTP {e.code}")
             log(f"{url}: HTTP {e.code} (try {k + 1})")
+            slow = e.code == 504
         except (OSError, http.client.HTTPException) as e:
             log(f"{url}: {e!r} (try {k + 1})")
+            slow = _timed_out(e)
         time.sleep(30 * (k + 1))
+    if slow:
+        raise Unrenderable(f"{url}: 504 or timeout {tries} times")
     raise SystemExit(f"{url}: failed {tries} times")
 
 
@@ -106,7 +122,61 @@ def bluetopo_chunk(chunk, table: str, cache: Path, w: Writer) -> list[Path]:
     return [p for h in have for p in (h[1], h[2])]
 
 
+# A NONNA-10 block is split no further when its quarters would be under this many metres a side.
+MIN_SPLIT_M = 1000.0
+NODATA = float(np.finfo("float32").max)
+
+
+def fetch_split(cov: str, box: tuple[float, float, float, float], dest: Path, pause: float, tries: int = 5) -> Path:
+    """The coverage's subset `box` (EPSG:3857 x0, y0, x1, y1) into `dest`. A 504 or timeout on the last
+    try splits it into 4 quarters, each fetched the same way (recursively, down to MIN_SPLIT_M), and
+    mosaicked into `dest` (nodata where a quarter has none), so the file is as one fetch would make it.
+    A quarter failing at the minimum size, or any other failure, stops the run (nothing is dropped)."""
+    from nonna import merc_url
+
+    x0, y0, x1, y1 = box
+    try:
+        return fetch_retry(merc_url(cov, *box), dest, pause, tries)
+    except Unrenderable:
+        if min(x1 - x0, y1 - y0) / 2 < MIN_SPLIT_M:
+            raise
+    log(f"{dest.name}: 504 or timeout on every try; splitting into 4 quarters")
+    xm, ym = (x0 + x1) / 2, (y0 + y1) / 2
+    quarters = [(x0, y0, xm, ym), (xm, y0, x1, ym), (x0, ym, xm, y1), (xm, ym, x1, y1)]
+    subs = [fetch_split(cov, q, dest.with_name(f"{dest.stem}_q{i}{dest.suffix}"), pause, tries) for i, q in enumerate(quarters)]
+    import rasterio
+    from rasterio.transform import from_origin
+
+    # (Mosaicked by hand: rasterio.merge drops values when the nodata is float32's max.)
+    srcs = [rasterio.open(p) for p in subs]
+    try:
+        rx, ry = srcs[0].res
+        xmin, ymin = min(d.bounds.left for d in srcs), min(d.bounds.bottom for d in srcs)
+        xmax, ymax = max(d.bounds.right for d in srcs), max(d.bounds.top for d in srcs)
+        wd, ht = round((xmax - xmin) / rx), round((ymax - ymin) / ry)
+        data = np.full((srcs[0].count, ht, wd), NODATA, "float32")
+        for d in srcs:
+            c0, r0 = round((d.bounds.left - xmin) / rx), round((ymax - d.bounds.top) / ry)
+            got = d.read()[:, : ht - r0, : wd - c0]
+            view = data[:, r0 : r0 + got.shape[1], c0 : c0 + got.shape[2]]
+            keep = got != NODATA
+            view[keep] = got[keep]
+        prof = {**srcs[0].profile, "height": ht, "width": wd, "transform": from_origin(xmin, ymax, rx, ry),
+                "nodata": NODATA, "dtype": "float32"}
+    finally:
+        for d in srcs:
+            d.close()
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    with rasterio.open(tmp, "w", **prof) as o:
+        o.write(data)
+    tmp.replace(dest)
+    for p in subs:
+        p.unlink(missing_ok=True)
+    return dest
+
+
 def nonna10_chunk(chunk, table: str, cache: Path, w: Writer) -> list[Path]:
+    from grid import lonlat_to_merc
     from nonna import COVERAGE, block_url, spec
     from raster import produce
 
@@ -116,7 +186,8 @@ def nonna10_chunk(chunk, table: str, cache: Path, w: Writer) -> list[Path]:
         p = cache / f"nonna10_{b[0]:.2f}_{b[1]:.2f}.tif"
         # (A block with no data comes as a whole TIFF of nodata, 200, which makes no grid: the
         # service has no empty answer, so every failure stops the run.)
-        files.append((fetch_retry(u, p, 0.5), u))
+        (x0, y0), (x1, y1) = lonlat_to_merc(b[0], b[1]), lonlat_to_merc(b[2], b[3])
+        files.append((fetch_split(COVERAGE["10"], (float(x0), float(y0), float(x1), float(y1)), p, 0.5), u))
     if files:
         s = spec("10", from_table((table, "mwl_above_cd_m", frozenset(), "id"), [p for p, _ in files]))
         for p, u in files:
