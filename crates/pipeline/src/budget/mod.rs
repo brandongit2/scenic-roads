@@ -31,6 +31,7 @@
 //! Behind `state/pool/budgets` (crate::agent::pool::BUDGETS): off, no proxy, no sandbox, the agent
 //! as it was. A clock of its own (`Clock`), so the tests decide everything without the real one.
 
+pub mod nas;
 #[cfg(not(target_os = "wasi"))]
 pub mod proxy;
 #[cfg(not(target_os = "wasi"))]

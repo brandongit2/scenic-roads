@@ -1014,6 +1014,23 @@ fn main() -> Result<()> {
                     println!("{} ({} costs, {} disk measures)\n", p.display(), costs.len(), disks.len());
                     print!("{}", pipeline::needs::fit_table(&pipeline::needs::Book::with(&costs, None, Some(&disks))));
                 }
+                Some("nas-probe") => {
+                    // The NAS budget's probe once (pipeline::budget::nas), in `--dir <folder>` (made,
+                    // then removed with what it holds), else a folder of its own under the project
+                    // folder's `state/pool/nas-probe`.
+                    let dir = opt(&args, "--dir")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| pipeline::budget::nas::probe_dir(&r, &agent::cond::host_name()));
+                    anyhow::ensure!(!dir.exists(), "{} exists: the probe makes its own folder", dir.display());
+                    let p =
+                        pipeline::budget::nas::probe(&dir).with_context(|| format!("probing in {}", dir.display()))?;
+                    println!(
+                        "{}: {:.1} MB/s (written and read back), {:.1} creates/s",
+                        dir.display(),
+                        p.bytes_s / 1e6,
+                        p.creates_s
+                    );
+                }
                 Some("floors") => {
                     // The targets' floors the lead's coordinator keeps (crate::agent::memguard):
                     // `--clear` clears them all, `--clear <step>` a step's, `--clear <step> <target>`

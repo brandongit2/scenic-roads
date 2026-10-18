@@ -342,7 +342,11 @@ impl Out {
         }
         let sha = (!existed).then_some(sha);
         // (Its bytes, to the phase it's uploaded in: crate::timings.)
-        crate::timings::count(if existed { 0 } else { std::fs::metadata(local).map(|m| m.len()).unwrap_or(0) }, 1);
+        let made = if existed { 0 } else { std::fs::metadata(local).map(|m| m.len()).unwrap_or(0) };
+        crate::timings::count(made, 1);
+        if !existed {
+            crate::costin::wrote(made);
+        }
         if let Some(sha) = sha {
             self.pending.insert(name.clone(), sha);
         }
@@ -411,6 +415,9 @@ impl Out {
         std::fs::remove_file(&local).ok();
         anyhow::ensure!(got? == name, "{logical}: wrote another name than {name}");
         crate::timings::count(if existed { 0 } else { bytes.len() as u64 }, 1);
+        if !existed {
+            crate::costin::wrote(bytes.len() as u64);
+        }
         self.sizes.insert(name.clone(), bytes.len() as u64);
         if !existed {
             self.pending.insert(name.clone(), format!("{:x}", sha2::Sha256::digest(bytes)));

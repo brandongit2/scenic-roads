@@ -52,6 +52,10 @@ pub struct Step {
     pub disk_mb: u64,
     pub secs: u64,
     pub threads: u32,
+    /// What a job of one target reads and writes on the NAS (MB together, as crate::costin's `bytes`
+    /// and `wrote`), and the files it makes there (`creates`).
+    pub nas_mb: u64,
+    pub creates: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +68,9 @@ pub struct Cfg {
     /// Packing (crate::agent::packing) on, with its caps: a member asks for as many jobs as it has
     /// slots free (`Ask::want`) and runs every one granted. None: one job an ask, as today.
     pub packing: Option<coord::Packing>,
+    /// The NAS budget on (crate::budget::nas), with the NAS's limits as a probe would measure them.
+    /// None: off.
+    pub nas: Option<crate::budget::nas::Limits>,
 }
 
 /// What a run did.
@@ -77,6 +84,12 @@ pub struct Run {
     pub guard_stops: usize,
     /// Simulated seconds to the plan's end.
     pub secs: u64,
+    /// The most NAS weight the pool's jobs held at once (thousandths of the NAS, by `Cfg::nas`'s
+    /// limits, or by a probe's of 100 MB/s and 40 creates/s with the budget off).
+    pub most_nas: u32,
+    /// Members' asks answered with nothing while a measured target of theirs was open (the NAS
+    /// budget queuing them, among other reasons).
+    pub turned_away: usize,
 }
 
 /// A loop of an agent (s).
@@ -92,6 +105,8 @@ struct Job {
     mem_mb: u64,
     disk_mb: u64,
     threads: u32,
+    /// Its NAS weight (its step's true rate by the limits).
+    nas: u32,
     cold: bool,
 }
 
@@ -112,6 +127,14 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
     c.shared.lock().unwrap().clock = clock.clone();
     c.set_map_update(Some(coord::AsOf { began: 1, units: BTreeMap::new() }));
     c.set_packing(cfg.packing.clone());
+    c.set_nas(cfg.nas);
+    let limits = cfg.nas.unwrap_or(crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None });
+    let weight = |s: &Step| {
+        limits.weight(crate::budget::nas::Rate {
+            bytes_s: (s.nas_mb << 20) as f64 / s.secs.max(1) as f64,
+            creates_s: s.creates as f64 / s.secs.max(1) as f64,
+        })
+    };
     let clients: Vec<Option<client::Client>> = cfg
         .macs
         .iter()
@@ -169,7 +192,14 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                                 worker: None,
                                 v: cost_version(&j.step),
                                 // (The threads its run was given, as crate::costin records them.)
-                                sizes: [("threads".to_string(), s.threads as u64)].into(),
+                                // (And what it read and wrote on the NAS.)
+                                sizes: [
+                                    ("threads".to_string(), s.threads as u64),
+                                    ("bytes".to_string(), (s.nas_mb << 20) / 2),
+                                    ("wrote".to_string(), (s.nas_mb << 20) - (s.nas_mb << 20) / 2),
+                                    ("creates".to_string(), s.creates),
+                                ]
+                                .into(),
                                 ..Default::default()
                             },
                         )
@@ -230,6 +260,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 mem_mb: s.mem_mb,
                 disk_mb: s.disk_mb * targets.len() as u64,
                 threads: s.threads,
+                nas: weight(s),
                 cold,
             };
             // (Where it may go at all, before whether it fits: a guard's stop excuses none of these.)
@@ -297,7 +328,19 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
             if threads + job.threads > cfg.macs[k].cores {
                 return Err(format!("{} placed {step} past its cores", cfg.macs[k].name));
             }
+            // (The NAS budget on: a member's measured job only within the pool's room left. The
+            // lead's own aren't placed by the coordinator: they count, but aren't held to it.)
+            let pool_nas: u32 = running.iter().flatten().map(|j| j.nas).sum();
+            if k > 0 && cfg.nas.is_some() && !cold && !crate::budget::nas::Limits::fits(pool_nas, job.nas) {
+                return Err(format!(
+                    "{} placed {step} {targets:?} past the NAS budget: {pool_nas} + {} > {}",
+                    cfg.macs[k].name,
+                    job.nas,
+                    crate::budget::nas::WHOLE
+                ));
+            }
             running[k].push(job);
+            out.most_nas = out.most_nas.max(running.iter().flatten().map(|j| j.nas).sum());
             out.most[k] = out.most[k].max(running[k].len());
             Ok(true)
         };
@@ -418,6 +461,14 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                     ..Default::default()
                 };
                 let Some(mut g) = w.ask(&a).map_err(|e| format!("ask: {e:#}"))? else {
+                    // (Turned away with a measured target it could take open.)
+                    let open_measured = cfg.steps.iter().filter(|s| every::offered(s.name)).any(|s| {
+                        let held = c.held(s.name);
+                        open(s)
+                            .iter()
+                            .any(|tg| !held.contains(tg) && measured(s.name, std::slice::from_ref(tg)).is_some())
+                    });
+                    out.turned_away += usize::from(open_measured);
                     break;
                 };
                 let more = std::mem::take(&mut g.more);
@@ -449,15 +500,61 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
 }
 
 /// The steps of a map update's kind: two kept to the lead, four offered, one too large for a 16 GB
-/// Mac (terrain).
+/// Mac (terrain); `pack` the NAS-heavy one (about half the NAS a job, by a probe of 100 MB/s and 40
+/// creates/s).
 pub fn plan() -> Vec<Step> {
     vec![
-        Step { name: "bld-fetch", targets: 1, mem_mb: 800, disk_mb: 2_000, secs: 300, threads: 2 },
-        Step { name: "terrain", targets: 6, mem_mb: 13_000, disk_mb: 3_000, secs: 600, threads: 4 },
-        Step { name: "slope", targets: 10, mem_mb: 3_000, disk_mb: 500, secs: 200, threads: 4 },
-        Step { name: "pack", targets: 24, mem_mb: 1_500, disk_mb: 200, secs: 120, threads: 4 },
-        Step { name: "lo", targets: 12, mem_mb: 1_000, disk_mb: 100, secs: 90, threads: 4 },
-        Step { name: "catalog", targets: 1, mem_mb: 2_000, disk_mb: 100, secs: 60, threads: 2 },
+        Step {
+            name: "bld-fetch",
+            targets: 1,
+            mem_mb: 800,
+            disk_mb: 2_000,
+            secs: 300,
+            threads: 2,
+            nas_mb: 0,
+            creates: 0,
+        },
+        Step {
+            name: "terrain",
+            targets: 6,
+            mem_mb: 13_000,
+            disk_mb: 3_000,
+            secs: 600,
+            threads: 4,
+            nas_mb: 6000,
+            creates: 50,
+        },
+        Step {
+            name: "slope",
+            targets: 10,
+            mem_mb: 3_000,
+            disk_mb: 500,
+            secs: 200,
+            threads: 4,
+            nas_mb: 2000,
+            creates: 20,
+        },
+        Step {
+            name: "pack",
+            targets: 24,
+            mem_mb: 1_500,
+            disk_mb: 200,
+            secs: 120,
+            threads: 4,
+            nas_mb: 4800,
+            creates: 300,
+        },
+        Step { name: "lo", targets: 12, mem_mb: 1_000, disk_mb: 100, secs: 90, threads: 4, nas_mb: 500, creates: 30 },
+        Step {
+            name: "catalog",
+            targets: 1,
+            mem_mb: 2_000,
+            disk_mb: 100,
+            secs: 60,
+            threads: 2,
+            nas_mb: 200,
+            creates: 5,
+        },
     ]
 }
 
@@ -477,7 +574,7 @@ mod tests {
     /// cores or disk; cold starts alone; the lead's steps on the lead; the plan done.
     #[test]
     fn the_m4_and_the_m1_finish_two_slots_and_one() {
-        let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None }).unwrap();
+        let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None, nas: None }).unwrap();
         assert_eq!(r.most, [2, 1], "{r:?}");
         assert!(r.ran.iter().all(|&n| n > 0), "{r:?}");
     }
@@ -485,11 +582,11 @@ mod tests {
     /// Four Macs (one with little disk) finish the same plan, sooner than two.
     #[test]
     fn four_macs_finish() {
-        let two = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None }).unwrap();
+        let two = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None, nas: None }).unwrap();
         let mut macs = m4_m1();
         macs.push(Mac { name: "mini", total_mb: 16_384, cores: 8, disk_mb: 40_000 });
         macs.push(Mac { name: "air", total_mb: 8_192, cores: 8, disk_mb: 35_000 });
-        let r = run(&Cfg { macs, steps: plan(), member_slots: 1, packing: None }).unwrap();
+        let r = run(&Cfg { macs, steps: plan(), member_slots: 1, packing: None, nas: None }).unwrap();
         assert!(r.ran.iter().skip(1).filter(|&&n| n > 0).count() >= 2, "{r:?}");
         assert!(r.secs < two.secs, "{} s with four, {} s with two", r.secs, two.secs);
     }
@@ -498,7 +595,9 @@ mod tests {
     /// (`most_room`), so the M1 reaches two measured jobs at once and every invariant holds.
     #[test]
     fn members_with_two_slots_pack_two_jobs_and_no_cold_start_beside_one() {
-        let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 2, packing: Some(Default::default()) }).unwrap();
+        let r =
+            run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 2, packing: Some(Default::default()), nas: None })
+                .unwrap();
         assert_eq!(r.most, [2, 2], "{r:?}");
     }
 
@@ -508,8 +607,9 @@ mod tests {
     fn a_48_gb_member_holds_several_small_jobs_at_once() {
         let mut macs = m4_m1();
         macs[1] = Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 };
-        let one = run(&Cfg { macs: macs.clone(), steps: plan(), member_slots: 1, packing: None }).unwrap();
-        let r = run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(Default::default()) }).unwrap();
+        let one = run(&Cfg { macs: macs.clone(), steps: plan(), member_slots: 1, packing: None, nas: None }).unwrap();
+        let r =
+            run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(Default::default()), nas: None }).unwrap();
         assert!(r.most[1] >= 3, "{r:?}");
         assert!(r.most[1] <= 4, "past its cores: {r:?}");
         assert!(r.secs < one.secs, "{} s packed, {} s one a time", r.secs, one.secs);
@@ -521,7 +621,32 @@ mod tests {
         let mut macs = m4_m1();
         macs[1] = Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 };
         let packing = coord::Packing { caps: [("studio".to_string(), 2)].into(), ..Default::default() };
-        let r = run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(packing) }).unwrap();
+        let r = run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(packing), nas: None }).unwrap();
         assert_eq!(r.most[1], 2, "{r:?}");
+    }
+
+    /// The NAS budget on (100 MB/s, 40 creates/s): a 48 GB member that packs `pack` jobs by its
+    /// cores past twice the NAS without it is held to what the pool's NAS weights leave, the rest
+    /// queued (asks answered with nothing while measured targets are open), every member start
+    /// within the budget (checked at each), and the plan still finishes.
+    #[test]
+    fn the_nas_budget_queues_nas_heavy_jobs_past_its_cap() {
+        let mut macs = m4_m1();
+        macs[1] = Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 };
+        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let off = run(&Cfg {
+            macs: macs.clone(),
+            steps: plan(),
+            member_slots: 8,
+            packing: Some(Default::default()),
+            nas: None,
+        })
+        .unwrap();
+        let on =
+            run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(Default::default()), nas: Some(limits) })
+                .unwrap();
+        assert!(off.most_nas > crate::budget::nas::WHOLE, "off: past the NAS: {off:?}");
+        assert!(on.most_nas < off.most_nas, "on: less of the NAS at once: {on:?} against {off:?}");
+        assert!(on.turned_away > off.turned_away, "on: asks queued: {on:?} against {off:?}");
     }
 }

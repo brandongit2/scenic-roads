@@ -461,6 +461,32 @@ impl<'a> Book<'a> {
         self.costs.iter().filter(|(k, _)| step_of_key(k) == step).filter_map(|(_, c)| threads(c)).max()
     }
 
+    /// The NAS rate a job of `step` for `target` runs at, as measured (crate::costin: `bytes` read
+    /// plus `wrote`, and `creates`, each over its wall time): its own run's, else its step's 90th
+    /// percentile of each over its runs the way it runs now; None when none of them was measured.
+    /// What crate::budget::nas weighs it by.
+    pub fn nas(&self, step: &str, target: &str) -> Option<crate::budget::nas::Rate> {
+        let v = cost_version(step);
+        let rate = |c: &Cost| {
+            let secs = c.secs.max(1) as f64;
+            let g = |k: &str| c.sizes.get(k).copied().unwrap_or(0) as f64;
+            (c.v >= v && c.sizes.contains_key("bytes")).then(|| crate::budget::nas::Rate {
+                bytes_s: (g("bytes") + g("wrote")) / secs,
+                creates_s: g("creates") / secs,
+            })
+        };
+        if let Some(r) = self.costs.get(&cost_key(step, target)).and_then(rate) {
+            return Some(r);
+        }
+        let runs: Vec<crate::budget::nas::Rate> =
+            self.costs.iter().filter(|(k, _)| step_of_key(k) == step).filter_map(|(_, c)| rate(c)).collect();
+        // (In thousandths of a byte or file a second, for the percentile's integers.)
+        let p = |f: fn(&crate::budget::nas::Rate) -> f64| {
+            p90(runs.iter().map(|r| (f(r) * 1000.0).ceil() as u64).collect()).map(|x| x as f64 / 1000.0)
+        };
+        Some(crate::budget::nas::Rate { bytes_s: p(|r| r.bytes_s)?, creates_s: p(|r| r.creates_s)? })
+    }
+
     /// What a job of `step` for `target` needs, given `threads` (0: not said) and `guess`, the memory
     /// (MB) its caller would take without a measure (the steps table's first guess, what its plan
     /// offered it with, a unit's piece-size guess).
@@ -609,6 +635,24 @@ mod tests {
         assert_eq!(b.cores("slope", "6/1/2"), Some(2));
         assert_eq!(b.cores("slope", "6/1/9"), Some(4), "an older way's run counts for nothing");
         assert_eq!(b.cores("lo", "3/1/1"), None);
+    }
+
+    /// A target's NAS rate: its own run's bytes (read and written) and creates over its time, else
+    /// its step's 90th percentile of each; None with no run measured (none says `bytes`).
+    #[test]
+    fn a_nas_rate_is_the_targets_run_else_its_steps_90th_percentile() {
+        let now = |c: Cost| Cost { v: cost_version("slope"), ..c };
+        let mut costs = BTreeMap::new();
+        costs.insert(cost_key("slope", "6/1/1"), now(cost(100, 10, &[("bytes", 600), ("wrote", 400), ("creates", 5)])));
+        for i in 2..12 {
+            costs.insert(cost_key("slope", &format!("6/1/{i}")), now(cost(100, 10, &[("bytes", 100 * i)])));
+        }
+        costs.insert(cost_key("lo", "3/1/1"), cost(100, 5, &[("threads", 2)]));
+        let b = Book::new(&costs);
+        assert_eq!(b.nas("slope", "6/1/1"), Some(crate::budget::nas::Rate { bytes_s: 100.0, creates_s: 0.5 }));
+        // (Rates 20..110, and 100 the first's: the 90th percentile of 11 the 10th, 100.)
+        assert_eq!(b.nas("slope", "6/9/9").map(|r| r.bytes_s), Some(100.0));
+        assert_eq!(b.nas("lo", "3/1/1"), None);
     }
 
     /// Memory that goes with a tile's area fits; a target never run is predicted by the fit over its

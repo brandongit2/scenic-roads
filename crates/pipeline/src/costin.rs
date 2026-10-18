@@ -6,7 +6,10 @@
 //! target, store::range::read_bytes, plus the inputs a step opens itself and notes with `add`),
 //! `threads` (always), and the step's own: `ways`/`vertices` (unit, pack, lo), `units` (pack, lo:
 //! the base packs met), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
-//! (the target's area: terrain, slope, trees and their assemblies, the units' elevations).
+//! (the target's area: terrain, slope, trees and their assemblies, the units' elevations), and,
+//! where the job wrote to the NAS through its `Out` (crate::out), `wrote` (the bytes of the files
+//! it made there) and `creates` (how many): with `bytes`, the target's NAS weight
+//! (crate::needs::Book::nas, crate::budget::nas).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -46,6 +49,14 @@ pub fn begin() {
 /// Adds `n` to measure `key`.
 pub fn add(key: &str, n: u64) {
     *state().m.entry(key.to_string()).or_default() += n;
+}
+
+/// Counts a file of `bytes` made on the NAS (crate::out's `put_file`, `store_bytes`): `wrote`
+/// and `creates`. One already there (reused, touched) isn't counted.
+pub fn wrote(bytes: u64) {
+    let mut s = state();
+    *s.m.entry("wrote".into()).or_default() += bytes;
+    *s.m.entry("creates".into()).or_default() += 1;
 }
 
 /// Sets measure `key` to `n`.
@@ -163,6 +174,12 @@ mod tests {
         assert!(m["tiffs"] >= 1);
         assert!(m["bytes"] >= 100);
         assert!(m["threads"] >= 1);
+        assert!(!m.contains_key("wrote"));
+        begin();
+        wrote(10);
+        wrote(5);
+        let m = take();
+        assert_eq!((m["wrote"], m["creates"]), (15, 2));
         begin();
         assert!(!take().contains_key("ways"));
     }

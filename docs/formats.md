@@ -760,7 +760,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     after its other measures were taken among them; a tail a worker ran (settled remotely) adds
     nothing, nor do reads outside the store's readers, remote reads, or Python steps; pack's and
     lo's `units` and `ways`; peaks' `peaks`, `z12_tiles`; bldprep's `rows`, `buildings`, `parts`;
-    bldtiles' `buildings`, `parts`); `written`, `written-2`
+    bldtiles' `buildings`, `parts`; `wrote` and `creates`, the bytes and the count of the files
+    the target's job made on the NAS through its `Out` (`put_file`, `store_bytes`; a file already
+    there, reused, not counted), absent when it made none); `written`, `written-2`
     (`SCENIC_WRITTEN`, bytes added to caches, every 64 MB); `timings.jsonl`.
   - On a member, `agent/outbox/<lease>/`: a leased task's files, `costs.jsonl`, `timings.json`,
     `spec.json`, `task.json` (`scenic run-task`'s result), `result.json` (`{ok, done: [step,
