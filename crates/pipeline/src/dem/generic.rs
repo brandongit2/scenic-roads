@@ -535,6 +535,36 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// `sel` in reading order: a tile's points together (tile pyramids), a file's together and by
+    /// row (GeoTIFFs). Each point is sampled alone, so the values are the same in any order.
+    fn in_reading_order(&self, sel: Vec<u32>, lon: &[f64], lat: &[f64]) -> Vec<u32> {
+        match self {
+            Reader::Tiles(t) => {
+                let n = 1i64 << t.zoom;
+                let mut keyed: Vec<(i64, u32)> = within(t.o.pool, || {
+                    sel.par_iter()
+                        .map(|&i| {
+                            let (fx, fy) = mercator_tile(lon[i as usize], lat[i as usize], t.zoom);
+                            (fx.floor() as i64 * n + fy.floor() as i64, i)
+                        })
+                        .collect()
+                });
+                within(t.o.pool, || keyed.par_sort_unstable());
+                keyed.into_iter().map(|p| p.1).collect()
+            }
+            Reader::Geo(g, x, y) => {
+                let mut keyed: Vec<(usize, f64, u32)> = sel
+                    .iter()
+                    .map(|&i| (g.holding(x[i as usize], y[i as usize]).next().unwrap_or(usize::MAX), y[i as usize], i))
+                    .collect();
+                within(g.o.pool, || {
+                    keyed.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)))
+                });
+                keyed.into_iter().map(|p| p.2).collect()
+            }
+        }
+    }
+
     /// Points `sel` sampled: each one's value and (GeoTIFFs) its file.
     fn sample(&self, sel: &[u32], lon: &[f64], lat: &[f64]) -> Result<Vec<(f32, u32)>> {
         match self {
@@ -566,18 +596,56 @@ pub fn blend(a: f32, b: f32, d: f64, band: f64) -> f32 {
     (b as f64 + (a as f64 - b as f64) * s) as f32
 }
 
-/// The share of `sample`'s progress the datasets' own sampling takes; the blends take the rest.
-const SAMPLING_SHARE: f64 = 0.9;
 /// Points one chunk of a dataset's sampling holds at most (a progress line each), and at least.
 const CHUNK_MAX: usize = 1 << 20;
 const CHUNK_MIN: usize = 1 << 14;
 
+/// A progress callback: how far, 0 to 1. Called from any thread (a rayon loop may call it), and by
+/// `sample` only forwards, never backwards.
+pub type Said<'a> = &'a (dyn Fn(f64) + Sync);
+
+/// `Said` made monotonic and clamped to 0..=1.
+struct Mono<'a> {
+    last: Mutex<f64>,
+    to: Said<'a>,
+}
+
+impl Mono<'_> {
+    fn say(&self, f: f64) {
+        let mut l = self.last.lock().unwrap();
+        let f = f.clamp(0.0, 1.0);
+        if f > *l {
+            *l = f;
+            (self.to)(f);
+        }
+    }
+}
+
 /// Points `lon`, `lat` (degrees) sampled from `plan`. `said`: how far it is, 0 to 1, never
-/// backwards: said once per chunk of a dataset's points and per blend step, not per point.
-pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(f64)) -> Result<Sampled> {
+/// backwards, ending at 1: once per chunk of a dataset's points and per blend step (the blends'
+/// weight is their points to measure against the points to sample), not per point. The blend
+/// stage hands `step` (the share of its call done, 0 to 1) to a distance measure that reports.
+pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Result<Sampled> {
     use crate::timings::{phase, Class};
     let n = lon.len();
+    let mono = Mono { last: Mutex::new(0.0), to: said };
     let covers: Vec<Cover> = plan.datasets.iter().map(|d| Cover::of(d.cover.as_deref())).collect();
+    // (The work to say by: points to sample (those some dataset covers), and points to measure (the
+    // first dataset covering one is followed by another).)
+    let (to_sample, to_blend) = within(o.pool, || {
+        (0..n)
+            .into_par_iter()
+            .map(|i| {
+                let mut c = (0..covers.len()).filter(|&k| covers[k].contains(lon[i], lat[i]));
+                match (c.next(), c.next()) {
+                    (None, _) => (0usize, 0usize),
+                    (Some(_), None) => (1, 0),
+                    (Some(_), Some(_)) => (1, 1),
+                }
+            })
+            .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+    });
+    let total = ((to_sample + to_blend) as f64).max(1.0);
     let mut a = vec![f32::NAN; n];
     let mut first = vec![u16::MAX; n];
     let mut file = vec![u32::MAX; n];
@@ -593,6 +661,8 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(f64
         let sel: Vec<u32> = (0..n as u32)
             .filter(|&i| first[i as usize] == u16::MAX && covers[k].contains(lon[i as usize], lat[i as usize]))
             .collect();
+        // (By tile or file, so a chunk reads each tile once, not once per chunk.)
+        let sel = r.in_reading_order(sel, lon, lat);
         if !sel.is_empty() {
             // (In chunks, a progress line after each: the datasets share the first part equally.)
             let chunk = (sel.len() / 100).clamp(CHUNK_MIN, CHUNK_MAX);
@@ -607,7 +677,8 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(f64
                     }
                 }
                 done += part.len();
-                said(SAMPLING_SHARE * (k as f64 + done as f64 / sel.len() as f64) / plan.datasets.len() as f64);
+                let share = (k as f64 + done as f64 / sel.len() as f64) / plan.datasets.len() as f64;
+                mono.say(share * to_sample as f64 / total);
             }
             println!("  {}: {here} of {} vertices", ds.id, sel.len());
         }
@@ -621,6 +692,8 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(f64
     let since = crate::fetch::fetched_bytes();
     let res: Vec<f64> = plan.datasets.iter().map(|d| d.resolution).collect();
     let mut dist = vec![f64::INFINITY; n];
+    mono.say(to_sample as f64 / total);
+    let mut blended = 0usize;
     for k in 0..plan.datasets.len() {
         let mut sel = Vec::new();
         let mut radius = Vec::new();
@@ -641,13 +714,16 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(f64
             continue;
         }
         let files: Vec<u32> = sel.iter().map(|&i| file[i as usize]).collect();
+        // (What a distance measure calls with the share of its points done.)
+        let step = |f: f64| mono.say((to_sample as f64 + blended as f64 + f * sel.len() as f64) / total);
         let d = readers[k].distance(&sel, lon, lat, &files, &radius)?;
         for ((&i, d), r) in sel.iter().zip(d).zip(radius) {
             if d < r {
                 dist[i as usize] = d;
             }
         }
-        said(SAMPLING_SHARE + (1.0 - SAMPLING_SHARE) * 0.5 * (k + 1) as f64 / plan.datasets.len() as f64);
+        step(1.0);
+        blended += sel.len();
     }
     let mut b = vec![f32::NAN; n];
     let mut second = vec![u16::MAX; n];
@@ -668,10 +744,10 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: &dyn Fn(f64
                 (b[i as usize], second[i as usize]) = (v, k as u16);
             }
         }
-        said(SAMPLING_SHARE + (1.0 - SAMPLING_SHARE) * (0.5 + 0.5 * (k + 1) as f64 / plan.datasets.len() as f64));
     }
     fetched(&p, since);
     drop(p);
+    mono.say(1.0);
     let mut out = Sampled { elev: a, src: vec![0; n], blended: vec![false; n] };
     for i in 0..n {
         if first[i] == u16::MAX {

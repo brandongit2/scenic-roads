@@ -251,8 +251,6 @@ fn sampling_says_increasing_fractions_to_one_per_chunk() {
     assert!(said.len() >= 6, "a line per chunk and per blend step: {said:?}");
     assert!(said.windows(2).all(|w| w[0] <= w[1]), "never backwards: {said:?}");
     assert!(said.iter().all(|f| (0.0..=1.0).contains(f)));
-    assert!(
-        said.iter().filter(|&&f| f > 0.0 && f < SAMPLING_SHARE).count() >= 3,
-        "moves within the sampling: {said:?}"
-    );
+    assert_eq!(said.last(), Some(&1.0), "it reaches 1: {said:?}");
+    assert!(said.iter().filter(|&&f| f > 0.0 && f < 1.0).count() >= 3, "moves within the sampling: {said:?}");
 }
