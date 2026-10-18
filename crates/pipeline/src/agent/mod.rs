@@ -12643,12 +12643,12 @@ mod tests {
         std::fs::create_dir_all(scratch.join("6_55_250")).unwrap();
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let job = JobSpec {
-            id: "elev 6/55/25".into(),
-            what: "elev 6/55/25".into(),
+            id: "terrain 6/55/25".into(),
+            what: "terrain 6/55/25".into(),
             cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "sh".into(), "--scratch".into(), s(&scratch)],
             needs: Needs { nas: false },
             restart_after_sleep: false,
-            record: Some(build::Work { step: "elev".into(), targets: vec![("6/55/25".into(), "k".into())] }),
+            record: Some(build::Work { step: "terrain".into(), targets: vec![("6/55/25".into(), "k".into())] }),
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         assert!(a.try_start(0, job.clone(), &cond, Some(&root), &mut Vec::new()));
@@ -12660,9 +12660,8 @@ mod tests {
         }
         let pgid = a.slots[0].running.as_ref().unwrap().pgid;
         let _kill = Kill(pgid);
-        // Its lease at the lead's coordinator (this Mac's own), as a shared step's.
-        let lease = co.hold("elev", &[("6/55/25".into(), "k".into())]).unwrap();
-        a.slots[0].lease = Some(Held::Own(lease));
+        // Its lease at the lead's coordinator (this Mac's own, a shared step's), taken as it started.
+        assert!(matches!(a.slots[0].lease, Some(Held::Own(_))) && co.held("terrain").contains("6/55/25"));
         // A newer app installed: the update waits on the long job (task #266).
         std::fs::remove_file(apps.join("current")).unwrap();
         std::os::unix::fs::symlink(new, apps.join("current")).unwrap();
@@ -12680,7 +12679,7 @@ mod tests {
         let mut waiting = Vec::new();
         assert!(a.tend_cancels(Some(&root), &mut waiting));
         let ans = crate::control::cancel_answer(&home, &ask).unwrap();
-        assert!(ans.hit && ans.said.contains("elev 6/55/25 on this Mac"), "{}", ans.said);
+        assert!(ans.hit && ans.said.contains("terrain 6/55/25 on this Mac"), "{}", ans.said);
         assert!(crate::control::peek_cancels(&home).is_empty());
         // Stopped, its process group gone; given back cleanly: no retry delay, recorded as cancelled,
         // no failure in the history; its lease ended.
@@ -12697,7 +12696,7 @@ mod tests {
         // The update restarts at once.
         assert!(a.update_due());
         // Held on this app: it doesn't start here, said in the status.
-        assert!(waiting.iter().any(|w| w.what == "elev 6/55/25" && w.why.contains(old)), "{waiting:?}");
+        assert!(waiting.iter().any(|w| w.what == "terrain 6/55/25" && w.why.contains(old)), "{waiting:?}");
         let mut w = Vec::new();
         assert!(!a.try_start(0, job.clone(), &cond, Some(&root), &mut w));
         assert!(w.iter().any(|w| w.why.contains("held until the lead runs an app newer")), "{w:?}");
