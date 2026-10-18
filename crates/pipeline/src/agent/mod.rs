@@ -1381,6 +1381,9 @@ pub struct Agent {
     /// The last plan's forecast (crate::agent::forecast), and the last catalog it read, for the
     /// status.
     forecast: std::cell::RefCell<Option<forecast::Forecast>>,
+    /// The last forecast's record (forecast::Record::bytes), until the lead's pool step writes it
+    /// to the NAS (`pool_lead_files`).
+    forecast_input: std::cell::RefCell<Option<Vec<u8>>>,
     /// Publishing as last planned (build::PublishLine), and the key of the last line logged (logged
     /// again only when it changes).
     publish_line: std::cell::RefCell<Option<build::PublishLine>>,
@@ -1701,6 +1704,7 @@ impl Agent {
             orphans: Vec::new(),
             last_cond: None,
             forecast: Default::default(),
+            forecast_input: Default::default(),
             publish_line: Default::default(),
             timetables: Default::default(),
             publish_logged: Default::default(),
@@ -7763,8 +7767,8 @@ impl Agent {
         let inp = forecast::Input {
             now: now_s(),
             before,
-            regions,
-            cost: &cost,
+            regions: std::borrow::Cow::Borrowed(regions),
+            costs: forecast::cost_table(regions, &cost),
             cadence,
             blind,
             chains: chain_jobs,
@@ -7785,6 +7789,7 @@ impl Agent {
         // lane each, as above), the pages as one (forecast::pool_lanes), each at
         // its speed measured against this Mac (placement::measured_speeds; one not measured, this
         // Mac's), busy with its leases' targets left.
+        let mut equal = None;
         if let (Some(c), true) = (&self.coord, self.pool.is_some()) {
             let workers: Vec<forecast::PoolWorker> =
                 c.workers().into_iter().map(|(n, w)| (n, w.kind == "web", w.mem_mb)).collect();
@@ -7829,7 +7834,14 @@ impl Agent {
                     running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), m)));
                 }
             }
+            equal = Some(forecast::EqualLanes { lanes: lanes.clone(), running: running.clone() });
             f.equal = Some(Box::new(forecast::equal_machines(&inp, lanes, running)));
+        }
+        // (As data, for the NAS: written by the lead's pool step, `pool_lead_files`.)
+        let record = forecast::Record { input: inp, each_s: f.each_s.clone(), waiting: f.waiting.clone(), equal };
+        match record.bytes() {
+            Ok(b) => *self.forecast_input.borrow_mut() = Some(b),
+            Err(e) => eprintln!("agent: the forecast's input as data: {e:#}"),
         }
         f
     }
@@ -9357,6 +9369,27 @@ impl Agent {
                     Ok(()) => run.state_written = Some((term, b)),
                     Err(e) => eprintln!("agent: the coordinator's state of term {term}: {e:#}"),
                 }
+            }
+        }
+        // The coordinator's view (what the worker page takes from its memory): when it changed, at
+        // most each `pool::VIEW_EVERY`.
+        let view = serde_json::to_vec(&co.view()).unwrap_or_default();
+        let due = match &run.view_written {
+            Some((t, b, at)) => *t != term || (*b != view && at.elapsed() >= pool::VIEW_EVERY),
+            None => true,
+        };
+        if due {
+            let mut rec = serde_json::json!({ "at": now_s() });
+            rec["view"] = serde_json::from_slice(&view).unwrap_or_default();
+            match run.side.nas().write_whole(&pool::view_path(term), &serde_json::to_vec(&rec).unwrap_or_default()) {
+                Ok(()) => run.view_written = Some((term, view, std::time::Instant::now())),
+                Err(e) => eprintln!("agent: the coordinator's view of term {term}: {e:#}"),
+            }
+        }
+        // The forecast's input, each time the forecast's made (at most each minute).
+        if let Some(b) = self.forecast_input.borrow_mut().take() {
+            if let Err(e) = run.side.nas().write_whole(&pool::forecast_input_path(term), &b) {
+                eprintln!("agent: the forecast's input of term {term}: {e:#}");
             }
         }
         let events = co.history_since(run.history_seq);
@@ -16109,6 +16142,11 @@ mod pool_tests {
             fc.next.keys().collect::<Vec<_>>()
         );
         assert!(!named("held-mac"));
+        // (Task #409) its input as written, read back and run, is the lead's forecast.
+        let b = a.forecast_input.borrow_mut().take().expect("the forecast's input");
+        let back = forecast::Record::from_bytes(&b).unwrap();
+        assert!(!back.input.machines.is_empty());
+        assert_eq!(back.forecast(), fc);
     }
 
     #[test]

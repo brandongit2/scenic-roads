@@ -23,13 +23,14 @@
 
 use super::build::{RegionLeft, CATALOG_EVERY_S, LOW_EVERY_S, MARKS_EVERY_S, OVERLAYS_EVERY_S};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 // The shared steps a helper takes, in its order of preference.
 use super::steps::SHARED;
 
 /// A machine the work is shared among.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Machine {
     pub name: String,
     /// Its speed against the lead's (1), and whether that's measured.
@@ -69,7 +70,7 @@ pub struct Machine {
 
 /// A Mac's room, as the coordinator packs its asks: its memory (MB; 0, not known) and cores, its
 /// jobs packed at the packed share each (crate::coord::packed_share).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MacRoom {
     pub mem_mb: u64,
     pub cores: u32,
@@ -82,7 +83,7 @@ pub const OLD_APP_GAP_S: f64 = 30.0;
 
 /// What a target takes: its time at the lead's pace (seconds), whether that time was measured,
 /// and its memory (MB).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cost {
     pub secs: f64,
     pub known: bool,
@@ -110,15 +111,19 @@ struct Snap {
 /// A job of the lead's alone, or one of the chains': (step, target, cost).
 pub type Job = (String, String, Cost);
 
-/// The work left, as the plan sees it (build::Plan), and what each target takes.
+/// The work left, as the plan sees it (build::Plan), and what each target takes: all of it data,
+/// so the lead's, written to the NAS each time it's made (`Record`), gives another Mac the same
+/// forecast.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Input<'a> {
     pub now: u64,
     /// The lead's jobs before the regions' (the pass's worldwide jobs, the heritage sites).
     pub before: Vec<Job>,
     /// The regions' work left, in the order they're built (build::Plan::regions).
-    pub regions: &'a [RegionLeft],
-    /// What a shared step's target takes.
-    pub cost: &'a dyn Fn(&str, &str) -> Cost,
+    pub regions: Cow<'a, [RegionLeft]>,
+    /// What each region's target takes, by step and target (`cost_table`: every target of
+    /// `regions` the forecast lists).
+    pub costs: CostTable,
     /// The cadenced publishes' last runs.
     pub cadence: Cadence,
     /// Why the work left can't all be listed now, when it can't (the units waiting for the pass's
@@ -136,6 +141,7 @@ pub struct Input<'a> {
     /// The lead first, then the members.
     pub machines: Vec<Machine>,
     /// Targets being built now: (step, target) → the machine building it.
+    #[serde(with = "pairs")]
     pub running: BTreeMap<(String, String), usize>,
     /// Each Mac's room, by the name its lanes give (`Machine::mac`).
     pub macs: BTreeMap<String, MacRoom>,
@@ -143,10 +149,109 @@ pub struct Input<'a> {
     pub old_app: bool,
 }
 
+/// What each target of the regions takes, by step, then target.
+pub type CostTable = BTreeMap<String, BTreeMap<String, Cost>>;
+
+/// The cost table of `regions`' targets the forecast lists (`forecast`: each region's own terrain
+/// and assemblies, own and expected units, map tiles, slope and tree cover), each by `cost`.
+pub fn cost_table(regions: &[RegionLeft], cost: &dyn Fn(&str, &str) -> Cost) -> CostTable {
+    let mut t = CostTable::new();
+    let mut put = |step: &str, ts: &mut dyn Iterator<Item = &String>| {
+        let e = t.entry(step.to_string()).or_default();
+        for x in ts {
+            e.entry(x.clone()).or_insert_with(|| cost(step, x));
+        }
+    };
+    for r in regions {
+        put("terrain", &mut r.own_terrain.iter());
+        put("terrain-lo", &mut r.own_terrain_lo.iter());
+        put("unit", &mut r.own_units.iter().chain(&r.expected));
+        put("pack", &mut r.packs.iter().map(|p| &p.0));
+        put("slope", &mut r.slope.iter());
+        put("slope-lo", &mut r.slope_lo.iter());
+        put("trees", &mut r.trees.iter());
+        put("trees-lo", &mut r.trees_lo.iter());
+    }
+    t.retain(|_, m| !m.is_empty());
+    t
+}
+
+impl Input<'_> {
+    /// What a region's target takes (`costs`; one not in it, nothing: `cost_table` lists them all).
+    pub fn cost(&self, step: &str, target: &str) -> Cost {
+        self.costs.get(step).and_then(|m| m.get(target)).copied().unwrap_or_default()
+    }
+}
+
+/// A map keyed by pairs, as a list of [key, value] (JSON's keys are strings).
+mod pairs {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::collections::BTreeMap;
+    type M = BTreeMap<(String, String), usize>;
+    pub fn serialize<S: Serializer>(m: &M, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(m.iter())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<M, D::Error> {
+        Ok(Vec::<((String, String), usize)>::deserialize(d)?.into_iter().collect())
+    }
+}
+
+/// The lead's forecast as data (docs/pool.md §10: `state/build/term/<E>/forecast-input.json`,
+/// written each time the lead makes it): its input, and what the lead adds to `forecast`'s answer
+/// (each step's time a target, the slots waiting on a tail, the lanes of the forecast for equal
+/// machines and what each builds now). `Record::forecast` gives the lead's forecast on any Mac.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Record<'a> {
+    pub input: Input<'a>,
+    pub each_s: BTreeMap<String, f64>,
+    pub waiting: BTreeMap<String, String>,
+    pub equal: Option<EqualLanes>,
+}
+
+/// The lanes of the forecast for equal machines (`pool_lanes`) and what each builds now.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EqualLanes {
+    pub lanes: Vec<Machine>,
+    #[serde(with = "pairs")]
+    pub running: BTreeMap<(String, String), usize>,
+}
+
+impl Record<'_> {
+    /// The forecast it holds: the lead's.
+    pub fn forecast(&self) -> Forecast {
+        let mut f = forecast(&self.input);
+        f.each_s = self.each_s.clone();
+        f.waiting = self.waiting.clone();
+        f.equal =
+            self.equal.as_ref().map(|e| Box::new(equal_machines(&self.input, e.lanes.clone(), e.running.clone())));
+        f
+    }
+
+    /// As written: JSON, zstd-compressed when it's over `ZSTD_OVER` bytes.
+    pub fn bytes(&self) -> anyhow::Result<Vec<u8>> {
+        let b = serde_json::to_vec(self)?;
+        if b.len() <= ZSTD_OVER {
+            return Ok(b);
+        }
+        Ok(zstd::encode_all(&b[..], 3)?)
+    }
+
+    /// One read back from its bytes (compressed or not: zstd's frames start with its magic number).
+    pub fn from_bytes(b: &[u8]) -> anyhow::Result<Record<'static>> {
+        if b.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+            return Ok(serde_json::from_slice(&zstd::decode_all(b)?)?);
+        }
+        Ok(serde_json::from_slice(b)?)
+    }
+}
+
+/// A forecast record over this many bytes of JSON is written compressed (zstd).
+pub const ZSTD_OVER: usize = 2 << 20;
+
 /// Seconds since each cadenced publish last went out (None: not known, so due now): the low zooms
 /// (build::LastCatalog::low_at), the landmark points and the area overlays
 /// (build::LastCatalog::since).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cadence {
     pub since_low: Option<u64>,
     pub since_marks: Option<u64>,
@@ -392,26 +497,26 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
             })
             .collect()
     };
-    for r in inp.regions {
+    for r in inp.regions.iter() {
         for t in &r.own_terrain {
-            add(&mut out, &mut by_target, "terrain", t, (inp.cost)("terrain", t), Phase::Region, Vec::new());
+            add(&mut out, &mut by_target, "terrain", t, inp.cost("terrain", t), Phase::Region, Vec::new());
         }
         for q in &r.own_terrain_lo {
             let deps = of_area(&out, "terrain", q);
-            add(&mut out, &mut by_target, "terrain-lo", q, (inp.cost)("terrain-lo", q), Phase::Region, deps);
+            add(&mut out, &mut by_target, "terrain-lo", q, inp.cost("terrain-lo", q), Phase::Region, deps);
         }
         // (Its terrain is its own or a region's before it: listed by now.)
         let mut deps: Vec<usize> = r.terrain.iter().filter_map(|t| item_of(&by_target, "terrain", t)).collect();
         deps.extend(r.terrain_lo.iter().filter_map(|q| item_of(&by_target, "terrain-lo", q)));
         deps.extend(&units_need);
         for u in &r.own_units {
-            add(&mut out, &mut by_target, "unit", u, (inp.cost)("unit", u), Phase::Region, deps.clone());
+            add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, deps.clone());
         }
         // Those its stale terrain may make stale: a share, the first in its order (`add` lists a
         // unit two regions expect once).
         let n = (r.expected.len() as f64 * EXPECTED_STALE).round() as usize;
         for u in r.expected.iter().take(n) {
-            add(&mut out, &mut by_target, "unit", u, (inp.cost)("unit", u), Phase::Region, deps.clone());
+            add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, deps.clone());
         }
         // Its map tiles, each once the units that draw it are built (a tile two regions draw, with
         // the first).
@@ -419,10 +524,10 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
             let mut built: Vec<usize> = us.iter().filter_map(|u| item_of(&by_target, "unit", u)).collect();
             built.sort_unstable();
             built.dedup();
-            add(&mut out, &mut by_target, "pack", t, (inp.cost)("pack", t), Phase::Publish, built);
+            add(&mut out, &mut by_target, "pack", t, inp.cost("pack", t), Phase::Publish, built);
         }
     }
-    for r in inp.regions {
+    for r in inp.regions.iter() {
         for t in &r.slope {
             // (The terrain of its area and its edge neighbours' areas.)
             let mut deps: Vec<usize> = Vec::new();
@@ -439,16 +544,16 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
             }
             deps.sort_unstable();
             deps.dedup();
-            add(&mut out, &mut by_target, "slope", t, (inp.cost)("slope", t), Phase::Late, deps);
+            add(&mut out, &mut by_target, "slope", t, inp.cost("slope", t), Phase::Late, deps);
         }
         for q in &r.slope_lo {
             let mut deps = of_area(&out, "slope", q);
             deps.extend(of_area(&out, "terrain", q));
             deps.extend(item_of(&by_target, "terrain-lo", q));
-            add(&mut out, &mut by_target, "slope-lo", q, (inp.cost)("slope-lo", q), Phase::Late, deps);
+            add(&mut out, &mut by_target, "slope-lo", q, inp.cost("slope-lo", q), Phase::Late, deps);
         }
         for t in &r.trees {
-            add(&mut out, &mut by_target, "trees", t, (inp.cost)("trees", t), Phase::Late, Vec::new());
+            add(&mut out, &mut by_target, "trees", t, inp.cost("trees", t), Phase::Late, Vec::new());
         }
         // An area's tree cover assembled once its pieces are made (a region lists every piece of
         // its areas: listed by now).
@@ -456,7 +561,7 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
             let deps: Vec<usize> = (0..out.len())
                 .filter(|&i| out[i].step == "trees" && crate::treepacks::area_of(&out[i].target).as_ref() == Some(q))
                 .collect();
-            add(&mut out, &mut by_target, "trees-lo", q, (inp.cost)("trees-lo", q), Phase::Late, deps);
+            add(&mut out, &mut by_target, "trees-lo", q, inp.cost("trees-lo", q), Phase::Late, deps);
         }
     }
     // Each region's items: its terrain, all its units (some come with a region before it), its
@@ -990,8 +1095,8 @@ pub fn equal_machines(inp: &Input, lanes: Vec<Machine>, running: BTreeMap<(Strin
     forecast(&Input {
         now: inp.now,
         before: inp.before.clone(),
-        regions: inp.regions,
-        cost: inp.cost,
+        regions: inp.regions.clone(),
+        costs: inp.costs.clone(),
         cadence: inp.cadence,
         blind: inp.blind.clone(),
         chains: inp.chains.clone(),
@@ -1181,8 +1286,8 @@ mod tests {
         Input {
             now: 1_000_000,
             before: Vec::new(),
-            regions,
-            cost: c,
+            regions: Cow::Borrowed(regions),
+            costs: cost_table(regions, c),
             cadence: Cadence::default(),
             blind: None,
             chains: Vec::new(),
@@ -1241,6 +1346,28 @@ mod tests {
         // More lanes finish no later than the lead's slot alone.
         let alone = equal_machines(&inp, vec![mac("m4", 1.0, false)], BTreeMap::new());
         assert!(f.done_at.unwrap() <= alone.done_at.unwrap());
+    }
+
+    #[test]
+    fn a_record_read_back_gives_the_same_forecast_compressed_or_not() {
+        // (Task #409) its input, a target running, the forecast for equal machines beside it.
+        let regions =
+            [region("a", &["6/1/1", "6/1/2"], &["u1", "u2"], &["6/1/1"]), region("b", &["6/2/1"], &["u3", "u4"], &[])];
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
+        inp.running.insert(("unit".into(), "u1".into()), 0);
+        let equal = EqualLanes {
+            lanes: vec![mac("m4", 1.0, false), mac("m1", 1.0, false)],
+            running: [(("unit".to_string(), "u1".to_string()), 0)].into(),
+        };
+        let mut lead = forecast(&inp);
+        lead.each_s.insert("unit".into(), 300.0);
+        lead.equal = Some(Box::new(equal_machines(&inp, equal.lanes.clone(), equal.running.clone())));
+        let rec = Record { input: inp, each_s: lead.each_s.clone(), waiting: BTreeMap::new(), equal: Some(equal) };
+        let b = rec.bytes().unwrap();
+        assert_eq!(b[0], b'{', "small: plain JSON");
+        assert_eq!(Record::from_bytes(&b).unwrap().forecast(), lead);
+        let z = zstd::encode_all(&b[..], 3).unwrap();
+        assert_eq!(Record::from_bytes(&z).unwrap(), rec);
     }
 
     #[test]
@@ -1681,16 +1808,16 @@ mod tests {
         assert_eq!(most(&sim), 2, "8 GB of 3 GB jobs");
         // By cores: 1 GB jobs on 8 cores at 2 each, four at once; on 4 cores, two.
         let small = |step: &str, t: &str| Cost { peak_mb: 1000, ..cost(step, t) };
-        inp.cost = &small;
+        inp.costs = cost_table(&regions, &small);
         assert_eq!(most(&run(&inp, &|c| c.secs)), 4);
         inp.macs.insert("m1".into(), MacRoom { mem_mb: 8000, cores: 4 });
         assert_eq!(most(&run(&inp, &|c| c.secs)), 2);
         // A step not measured runs alone on its Mac, none of it elsewhere.
         let cold = |step: &str, t: &str| Cost { known: false, ..small(step, t) };
-        inp.cost = &cold;
+        inp.costs = cost_table(&regions, &cold);
         assert_eq!(most(&run(&inp, &|c| c.secs)), 1);
         // A member on an older app: a job an ask, the Mac's starts 30 s apart at least.
-        inp.cost = &small;
+        inp.costs = cost_table(&regions, &small);
         inp.old_app = true;
         let sim = run(&inp, &|c| c.secs);
         let mut starts: Vec<f64> = sim.items.iter().filter(|i| i.by.is_some_and(|m| m > 0)).map(|i| i.from).collect();

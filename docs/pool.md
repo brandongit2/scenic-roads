@@ -697,6 +697,23 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   kind, the map tiles being drawn by Mac, each Mac's adopted catalog), recent jobs, pause, last
   catalog, the lead.
   A member writes `helper.json` instead.
+- **Coordinator view**, written by the lead per term (`state/coord/term/<E>/view.json`,
+  `Coordinator::view`, in its pool step: `pool_lead_files`): `{at, view}`, the view what the
+  worker page's `/work/swarm` takes from the coordinator's memory: the pause, each lease (worker,
+  step, targets' count, progress, `frac`, when granted, its last beat and when it lapses), each
+  worker (page or member: label, kind, memory, cores, done/failed/bad, visible, `can`, `fit`, when
+  last seen, its paces), the tasks by state and `task_mb`. Times are unix seconds, so it is the
+  same until something changes. Written as a whole (create and rename) when it changed, at most
+  every 15 s (`pool::VIEW_EVERY`), and at once in a new term. The page doesn't read it yet.
+- **Forecast input**, written by the lead per term (`state/build/term/<E>/forecast-input.json`,
+  `forecast::Record`): the forecast's whole input as data (the work left, each region target's
+  cost in a table by step and target, the lanes, what runs now, each Mac's room, the cadence) and
+  what the lead adds to its answer (each step's time a target, the slots waiting on a tail, the
+  lanes of the forecast for equal machines), so `Record::forecast` gives the lead's forecast on
+  any Mac. Written as a whole in the lead's next pool step each time it makes the forecast (at
+  most once a minute); zstd-compressed when its JSON is over 2 MiB (`forecast::ZSTD_OVER`; a
+  reader tells by zstd's magic number). About 70 KB with today's work left (88 regions, ~500
+  targets, 24 lanes); about 2 MB for a whole rebuild's. Nothing reads it yet.
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
   the lead's first, marked coordinator with its ramp (§7.1); its capacity as the coordinator last
   heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and

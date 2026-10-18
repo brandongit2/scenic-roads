@@ -1147,6 +1147,8 @@ pub struct Run {
     marks: Vec<(PathBuf, String)>,
     /// The coordinator's state per term as last written, and the history's last event written.
     pub state_written: Option<(u64, Vec<u8>)>,
+    /// The coordinator's view (`view_path`) as last written: its term, its bytes, when.
+    pub view_written: Option<(u64, Vec<u8>, std::time::Instant)>,
     pub history_seq: u64,
     /// The terms this process led (a take-up of the next one after them keeps its coordinator's
     /// state; one after another lead's loads that lead's).
@@ -1424,6 +1426,7 @@ impl Run {
             outbox_drained: false,
             marks: Vec::new(),
             state_written: None,
+            view_written: None,
             history_seq: 0,
             led: BTreeSet::new(),
             asks: Vec::new(),
@@ -2025,6 +2028,20 @@ fn outbox_entries(outbox: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
 /// The coordinator's state of term `term` on the NAS (§6.2, §7.5).
 pub fn state_path(term: u64) -> String {
     format!("state/coord/term/{term}/state.json")
+}
+
+/// The coordinator's view of term `term` (§10): what the worker page takes from its memory.
+pub fn view_path(term: u64) -> String {
+    format!("state/coord/term/{term}/view.json")
+}
+
+/// The view is written at most this often (when it changed).
+pub const VIEW_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The lead's forecast as data of term `term` (§10; crate::agent::forecast::Record): JSON, or
+/// zstd-compressed JSON when it's large (told by its first bytes).
+pub fn forecast_input_path(term: u64) -> String {
+    format!("state/build/term/{term}/forecast-input.json")
 }
 
 /// The pool's copy of the workers' token (§8: the same on every member).

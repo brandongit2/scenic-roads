@@ -2514,6 +2514,49 @@ impl Coordinator {
         std::mem::take(&mut self.shared.lock().unwrap().inputs_asks)
     }
 
+    /// What the worker page takes from the coordinator's memory (`/work/swarm`'s pause, leases,
+    /// workers, tasks by state and `task_mb`), for the lead's `state/coord/term/<E>/view.json`
+    /// (docs/pool.md §10): its times as unix seconds (a lease's `granted` and last `beat`, a
+    /// worker's `seen`), so it's the same until something changes. Taken under the lock.
+    pub fn view(&self) -> serde_json::Value {
+        let s = self.shared.lock().unwrap();
+        let (now, unix) = (s.now(), unix_now());
+        let at = |t: Instant| unix.saturating_sub(now.saturating_duration_since(t).as_secs());
+        let leases: Vec<serde_json::Value> = s
+            .leases
+            .all(now)
+            .iter()
+            .map(|l| {
+                let (step, n) = match &l.work {
+                    Work::Job { step, targets } => (step.clone(), targets.len()),
+                    Work::Task { id } => (s.tasks.kind_of(*id), 1),
+                };
+                let beat = unix.saturating_sub(TTL.as_secs().saturating_sub(l.left(now).as_secs()));
+                serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "granted": at(l.granted), "progress": l.progress, "frac": l.frac, "beat": beat, "lapses": beat + TTL.as_secs() })
+            })
+            .collect();
+        let workers: Vec<serde_json::Value> = s
+            .workers
+            .iter()
+            .map(|(n, w)| {
+                let fit = w.ask.as_ref().filter(|a| a.kind == "native").map(|a| s.fit(a, now)).unwrap_or_default();
+                serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "checked": w.checked, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "cap": w.cap, "fit": fit, "seen": at(w.seen), "tail_pace": s.tasks.pace(n, "tail"), "paces": PAGE_TASKS.iter().map(|k| (k.to_string(), s.tasks.pace(n, k))).collect::<BTreeMap<String, Option<f64>>>() })
+            })
+            .collect();
+        let mut tasks: BTreeMap<&str, usize> = BTreeMap::new();
+        for t in s.tasks.by_id.values() {
+            let st = match t.state {
+                task::State::Offered => "offered",
+                task::State::Leased { .. } => "leased",
+                task::State::Done { .. } => "done",
+                task::State::Failed { .. } => "failed",
+            };
+            *tasks.entry(st).or_default() += 1;
+        }
+        let task_mb: BTreeMap<&str, Option<u64>> = PAGE_TASKS.iter().map(|k| (*k, s.tasks.typical_mb(k))).collect();
+        serde_json::json!({ "pause": s.paused, "leases": leases, "workers": workers, "tasks": tasks, "task_mb": task_mb })
+    }
+
     /// Its state as the pool keeps it per term (docs/pool.md §6.2, §7.5): the jobs' leases (each
     /// with its term and when it was granted), what each target cost, the workers' failures (when,
     /// by this Mac's wall clock), the pause. Taken under the lock, written by the caller without it.
@@ -5160,6 +5203,14 @@ mod tests {
             (Some(3), Some(1), Some(1), Some(1))
         );
         assert!(sw["tasks"].is_object() && sw["leases"].as_array().unwrap().is_empty());
+        // (Task #409) the view the lead writes: the same workers, tasks and task_mb, its times as
+        // unix seconds, and the same until something changes.
+        let v = c.view();
+        assert_eq!((&v["tasks"], &v["task_mb"], &v["pause"]), (&sw["tasks"], &sw["task_mb"], &sw["pause"]));
+        let vm1 = v["workers"].as_array().unwrap().iter().find(|x| x["name"] == "m1").unwrap();
+        assert_eq!((&vm1["fit"], &vm1["label"], &vm1["done"]), (&m1["fit"], &m1["label"], &m1["done"]));
+        assert!(vm1["seen"].as_u64().unwrap() + 5 >= unix_now() && vm1.get("seen_s").is_none());
+        assert_eq!(c.view(), v);
     }
 
     #[test]
