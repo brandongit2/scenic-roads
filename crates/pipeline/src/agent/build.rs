@@ -1934,7 +1934,8 @@ pub struct Plan {
     /// Every region's work left, in the order they're built (those with none last), whether or not
     /// it can start now: what the forecast schedules (crate::agent::forecast).
     pub regions: Vec<RegionLeft>,
-    /// The catalog planned goes out with the low zooms made (`low_gate`: they were due, and nothing's left of the publishing chain, or no lo pack is stale), noted so once made
+    /// The catalog planned goes out with the low zooms made (`low_gate`: they were due, and
+    /// nothing's left of the publishing chain, or no lo pack is stale), noted so once made
     /// (`LastCatalog::low_at`). Without a catalog planned: the low zooms are made now.
     pub low: bool,
     /// A catalog is due but held back by the map tiles or the road index to draw (`CATALOG_GATE`),
@@ -7038,7 +7039,6 @@ pub(crate) mod tests {
         assert!(!gate_open(false, Some(9), 10));
     }
 
-    /// The names' to-do lists: daily while units build, after any catalog when none's left.
     #[test]
     fn the_low_zooms_go_when_idle_at_once_and_when_busy_at_their_cadence() {
         // A virtual clock: the low zooms last made at 1000.
@@ -7056,6 +7056,7 @@ pub(crate) mod tests {
         assert!(low_gate(true, false, false, since(1060)) && low_gate(false, false, false, None));
     }
 
+    /// The names' to-do lists: daily while units build, after any catalog when none's left.
     #[test]
     fn the_names_to_do_runs_daily_or_when_idle() {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
