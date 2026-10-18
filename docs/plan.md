@@ -1337,7 +1337,9 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
     chain) have no producer, so only surveyed lakes have depth; GtTM is read from windows made by
     hand, SHOM's from its archives unpacked by hand (no range reads of the HDF5 grid or the 7z yet);
     a piece's key names its water's z6–12 tiles, so a change the basemap shows only at z13–14
-    doesn't remake it; MSL sources aren't drawn in lakes (the Great Lakes wait for a lake source);
+    doesn't remake it; MSL sources aren't drawn in lakes (the Great Lakes' source is `ncei-greatlakes`);
+    EMODnet's interpolation flag isn't applied (emodnet.py reads the MSL ASCII tiles alone); CRM
+    volumes on EGM2008 aren't corrected to MSL;
     rivers the basemap draws as rivers get none; targets the coverage leaves keep their packs (no
     prune yet); the map's click popup for depth isn't built (the readout is).
 
