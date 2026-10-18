@@ -5096,7 +5096,9 @@ pub(crate) mod tests {
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
         let p = plan(&m, &done, 120);
         assert_eq!(p.work[0].step, "pack");
-        did(&mut m, &mut done, &p.work[0]);
+        for w in p.work.iter().take_while(|w| w.step == "pack") {
+            did(&mut m, &mut done, w);
+        }
         assert_eq!(plan(&m, &done, 120).work[0].step, "roadunits");
         let w = plan(&m, &done, 120).work[0].clone();
         did(&mut m, &mut done, &w);
@@ -5111,7 +5113,10 @@ pub(crate) mod tests {
             let p = plan(&m, &done, 30);
             assert_eq!(p.work[0].step, "pack");
             assert!(!p.work.iter().any(|w| w.step == "catalog"));
-            did(&mut m, &mut done, &p.work[0]);
+            // (Its tiles a halo a work, task #260: all of them drawn.)
+            for w in p.work.iter().take_while(|w| w.step == "pack") {
+                did(&mut m, &mut done, w);
+            }
             let w = plan(&m, &done, 40).work[0].clone();
             assert_eq!(w.step, "roadunits");
             did(&mut m, &mut done, &w);

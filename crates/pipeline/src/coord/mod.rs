@@ -5145,9 +5145,14 @@ mod tests {
         // target's measure that cache): the most of its targets', not their sum.
         let halo: Vec<String> = (0..110).map(|i| format!("6/{i}/2")).collect();
         c.add_disks(&halo.iter().map(|t| (cost_key("pack", t), 1300)).collect::<Vec<_>>());
+        c.add_costs(&[(
+            cost_key("pack", &halo[0]),
+            Cost { peak_mb: 1000, secs: 30, worker: None, v: 0, ..Default::default() },
+        )]);
         assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
         // Cleared with the floors.
         c.floors(true, Some("peaks"), None);
+        c.floors(true, Some("pack"), None);
         assert!(c.disks().is_empty());
     }
 
