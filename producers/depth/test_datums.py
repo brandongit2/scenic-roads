@@ -9,28 +9,64 @@ import datums
 
 
 class OpenSea(unittest.TestCase):
-    """Water beyond the 25 km reach: open sea extrapolated, an enclosed lagoon nodata."""
+    """Open-sea extrapolation (opt-in): open sea beyond the reach takes the nearest value, an
+    enclosed lagoon or an inland lake gets nodata."""
+    none = datums.OpenSea([])
+
+    def test_off_by_default_a_far_body_at_the_edge_still_stops(self):
+        water = np.zeros((40, 400), bool)
+        water[:, 0:300] = True
+        water[:, 330:400] = True
+        with self.assertRaises(SystemExit):
+            datums.Surface.harmonic([(10.5, 48.0, 1.0)], water, 10.0, 50.0, 0.1)
 
     def test_a_body_at_the_grid_edge_beyond_reach_takes_the_nearest_solved_value(self):
         water = np.zeros((40, 400), bool)
         water[:, 0:300] = True
         water[:, 330:400] = True  # 19% of the water, 3 degrees off, at the east edge: the sea going on
-        s = datums.Surface.harmonic([(10.5, 48.0, 1.0)], water, 10.0, 50.0, 0.1)
+        s = datums.Surface.harmonic([(10.5, 48.0, 1.0)], water, 10.0, 50.0, 0.1, self.none)
         self.assertAlmostEqual(float(s.a[5, 390]), 1.0, places=4)
+
+    def test_the_edge_rule_alone(self):
+        lab = np.zeros((40, 40), np.int32)
+        lab[10:20, 10:20] = 1  # 10 cells in
+        lab[10:20, 26:35] = 2  # ends at column 34, in the 6-cell margin (columns 34..39)
+        lab[25:30, 10:34] = 3  # ends at column 33, just outside it
+        self.assertEqual(datums.at_edge(lab, np.array([1, 2, 3])).tolist(), [False, True, False])
+
+    def test_the_area_rule_alone_at_70_north(self):
+        res = 0.01  # 1.11 x 0.38 km at 70 N: 0.42 km2 a cell
+        lab = np.zeros((100, 100), np.int32)
+        lab[10:30, 10:30] = 1  # 400 cells, 170 km2
+        lab[50:65, 50:65] = 2  # 225 cells, 95 km2 (at 49 N it would be 164 km2)
+        r = datums.over_area(lab, np.array([1, 2]), 70.5, res)
+        self.assertEqual(r.tolist(), [True, False])
 
     def test_a_big_enclosed_body_is_sea_a_small_one_a_lagoon(self):
         res = 0.005  # cells of 0.56 x 0.36 km at 49 N, 0.2 km2
         water = np.zeros((400, 800), bool)
         water[10:390, 10:300] = True
-        water[100:300, 500:750] = True  # 50000 cells, about 10000 km2, 1 degree off: open
+        water[100:300, 500:750] = True  # 50000 cells, about 10000 km2, 1 degree off, not at the edge: open
         water[20:30, 400:410] = True  # 100 cells, 20 km2, 0.5 degree off: a lagoon (under 2% and 5%)
-        s = datums.Surface.harmonic([(10.5, 49.0, 0.7)], water, 10.0, 50.0, res)
+        s = datums.Surface.harmonic([(10.5, 49.0, 0.7)], water, 10.0, 50.0, res, self.none)
         self.assertAlmostEqual(float(s.a[200, 600]), 0.7, places=4)
         self.assertTrue(np.isnan(s.a[25, 405]))
 
+    def test_an_inland_lake_is_left_alone_and_stops(self):
+        from shapely.geometry import box
+
+        res = 0.005
+        water = np.zeros((400, 800), bool)
+        water[10:390, 10:300] = True
+        water[100:300, 500:750] = True  # as above, but Natural Earth has a lake on it
+        lake = box(10 + 600 * res, 50 - 210 * res, 10 + 610 * res, 50 - 200 * res)
+        with self.assertRaises(SystemExit) as r:
+            datums.Surface.harmonic([(10.5, 49.0, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([lake]))
+        self.assertIn("missing area", str(r.exception))
+
     def test_no_station_within_reach_extrapolates_open_sea_from_the_nearest_station(self):
         water = np.ones((20, 40), bool)
-        s = datums.Surface.harmonic([(5.0, 49.0, 0.4), (30.0, 49.0, 2.0)], water, 10.0, 50.0, 0.1)
+        s = datums.Surface.harmonic([(5.0, 49.0, 0.4), (30.0, 49.0, 2.0)], water, 10.0, 50.0, 0.1, self.none)
         self.assertTrue(np.allclose(s.a, 0.4))
 
     def test_a_large_lagoon_beyond_reach_still_stops(self):
@@ -40,20 +76,28 @@ class OpenSea(unittest.TestCase):
         water[100:110, 500:600] = True  # 1000 cells, 200 km2: open sea, extrapolated
         water[200:220, 500:520] = True  # 400 cells, 80 km2: under OPEN_KM2, over 2% of the water: stops
         with self.assertRaises(SystemExit) as r:
-            datums.Surface.harmonic([(10.5, 49.0, 0.7)], water, 10.0, 50.0, res)
+            datums.Surface.harmonic([(10.5, 49.0, 0.7)], water, 10.0, 50.0, res, self.none)
         self.assertIn("missing area", str(r.exception))
+
+    def test_natural_earth_reads_the_lakes_table(self):
+        import sqlite3
+        import tempfile
+
+        from shapely.geometry import box
+
+        with tempfile.TemporaryDirectory() as d:
+            p = f"{d}/ne.sqlite"
+            with sqlite3.connect(p) as db:
+                db.execute("create table ne_10m_lakes (GEOMETRY blob, name text)")
+                db.execute("insert into ne_10m_lakes values (?, 'Great Slave Lake')", (box(-117, 61, -109, 63).wkb,))
+            sea = datums.OpenSea.natural_earth(p)
+            m = sea.mask((40, 40), -118.0, 64.0, 0.25)
+        self.assertTrue(m[8, 8] and not m[0, 0])
 
 
 class Harmonic(unittest.TestCase):
-    """The reach and the lagoon rule: no water here counts as open sea (OpenSea checks that)."""
+    """The reach and the lagoon rule, without open sea (the default: every caller but NONNA-10's run)."""
     water = np.ones((20, 40), bool)  # 0.1 degree cells, west 10, north 50: 10..14 E, 48..50 N
-
-    def setUp(self):
-        self.saved = datums.OPEN_KM2, datums.EDGE_CELLS
-        datums.OPEN_KM2, datums.EDGE_CELLS = float("inf"), 0
-
-    def tearDown(self):
-        datums.OPEN_KM2, datums.EDGE_CELLS = self.saved
 
     def solve(self, pts):
         return datums.Surface.harmonic(pts, self.water, 10.0, 50.0, 0.1)

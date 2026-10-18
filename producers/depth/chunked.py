@@ -39,7 +39,7 @@ from pathlib import Path
 
 import numpy as np
 
-from datums import from_table, water_of
+from datums import OpenSea, from_table, water_of
 from grid import Writer, fetch, log
 
 # NONNA-10's blocks: the service's own index cells.
@@ -242,7 +242,7 @@ def fetch_split(cov: str, box: tuple[float, float, float, float], dest: Path, pa
     return dest
 
 
-def nonna10_chunk(chunk, table: str, cache: Path, w: Writer) -> list[Path]:
+def nonna10_chunk(chunk, table: str, cache: Path, w: Writer, sea: OpenSea | None = None) -> list[Path]:
     from grid import lonlat_to_merc
     from nonna import COVERAGE, block_url, spec
     from raster import produce
@@ -256,7 +256,7 @@ def nonna10_chunk(chunk, table: str, cache: Path, w: Writer) -> list[Path]:
         (x0, y0), (x1, y1) = lonlat_to_merc(b[0], b[1]), lonlat_to_merc(b[2], b[3])
         files.append((fetch_split(COVERAGE["10"], (float(x0), float(y0), float(x1), float(y1)), p, 0.5), u))
     if files:
-        s = spec("10", from_table((table, "mwl_above_cd_m", frozenset(), "id"), [p for p, _ in files]))
+        s = spec("10", from_table((table, "mwl_above_cd_m", frozenset(), "id"), [p for p, _ in files], sea=sea))
         for p, u in files:
             produce(p, s, w, u, f"nonna10-{p.stem}")
     # (The files to delete: the blocks, and any quarters or .part files a split left.)
@@ -314,6 +314,8 @@ def main():
     ap.add_argument("work", type=Path)
     ap.add_argument("--nas", help="host:dir, the NAS's sources/fetched/<id>/")
     ap.add_argument("--size", type=int, default=300)
+    ap.add_argument("--lakes", type=Path, help="nonna10 (required): Natural Earth's SQLite (sources/basemap/natural_earth_vector.sqlite.zip, unzipped), "
+                    "the inland lakes kept out of the datum surfaces' open-sea extrapolation (datums.OpenSea)")
     ap.add_argument("--count", action="store_true", help="say how many items and chunks, and stop")
     a = ap.parse_args()
     items = bluetopo_items(a.items) if a.which == "bluetopo" else nonna10_items(a.items)
@@ -324,6 +326,11 @@ def main():
         return
     if not a.nas or ":" not in a.nas:
         raise SystemExit("--nas host:dir")
+    sea = None
+    if a.which == "nonna10":
+        if not a.lakes:
+            raise SystemExit("nonna10 needs --lakes (Natural Earth's SQLite): its datum surfaces extrapolate open sea, never into an inland lake")
+        sea = OpenSea.natural_earth(a.lakes)
     parts, cache = a.work / "parts", a.work / "cache"
     parts.mkdir(parents=True, exist_ok=True)
     for ci, chunk in enumerate(chunks):
@@ -333,7 +340,7 @@ def main():
         out = a.work / f"out-{ci:03d}"
         log(f"chunk {ci + 1}/{len(chunks)}: {free(a.work)}")
         w = Writer(out)
-        fetched = (bluetopo_chunk if a.which == "bluetopo" else nonna10_chunk)(chunk, a.table, cache, w)
+        fetched = bluetopo_chunk(chunk, a.table, cache, w) if a.which == "bluetopo" else nonna10_chunk(chunk, a.table, cache, w, sea)
         n, size = to_nas(out, a.nas) if out.exists() and any(out.iterdir()) else (0, 0)
         w.write_index(part)
         if out.exists():

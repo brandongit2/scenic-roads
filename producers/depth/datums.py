@@ -5,13 +5,15 @@ The surface is harmonic between the stations (each water cell the mean of its wa
 the stations fixed; land a barrier, so a narrow bay's tide doesn't leak across a peninsula: the
 Atlantic coast of Nova Scotia, about 1 m, stays out of the Minas Basin, 7.5 m), solved on a
 lon/lat grid over the water bodies that hold a station (a station counts for the water nearest it,
-within 25 km), and the nearest solved value beyond. Water with no station within 25 km of a solved
-cell is extrapolated when it is open sea (a body touching the grid's edge or over 100 km²: the
-nearest solved cell's value, or with no station within 25 km of any water the nearest station's,
-however far; the farthest distance logged) and gets no depth otherwise (NaN: nodata, an enclosed
-lagoon or lake), logged in one line; more than 5% of the water left without a value, or one body
-over 2%, stops the run (a missing area of the table). No station near the water and no open sea
-also stops. Extrapolated cells are not flagged in the output (one band); the log says how many. A
+within 25 km), and the nearest solved value beyond. A water body with no station within 25 km of
+a solved cell gets no depth (NaN: nodata, an inland lake or lagoon), logged in one line; more than
+5% of the water left so, or one body over 2%, stops the run (a missing area of the table), as does no
+station within 25 km of any water. A caller may opt in to open-sea extrapolation (OpenSea; only
+NONNA-10's chunked run does): such a body that is open sea (reaching within 6 cells of the grid's
+edge or over 100 km², and on no Natural Earth inland lake) takes the nearest solved cell's value,
+or with no station near any water the nearest station's, however far (the cells and the farthest
+km logged), and the stop counts only the water still without a value. Extrapolated cells are not
+flagged in the output (one band). A
 station table is a CSV with `lon`, `lat` and the value's column.
 """
 from __future__ import annotations
@@ -67,42 +69,110 @@ def nearest_station(water: np.ndarray, pts, west: float, north: float, res: floa
     from scipy.spatial import cKDTree
 
     rr, cc = np.nonzero(water)
-    lat0 = north - (rr.mean() + 0.5) * res
-    kx = np.cos(np.radians(lat0))
-    tree = cKDTree(np.column_stack([(west + (cc + 0.5) * res) * kx, north - (rr + 0.5) * res]))
-    d, _ = tree.query([[p[0] * kx, p[1]] for p in pts])
+    tree = cKDTree(xyz(west + (cc + 0.5) * res, north - (rr + 0.5) * res))
+    d, _ = tree.query(xyz([p[0] for p in pts], [p[1] for p in pts]))
     k = int(np.argmin(d))
-    return float(d[k]) * KM_DEG, (pts[k][0], pts[k][1])
+    return float(chord_km(d[k])), (pts[k][0], pts[k][1])
 
 
-# Water beyond the reach that is open sea, not a lagoon: a body touching the grid's edge (the sea
-# going on past the chunk; water_of pads the grid by 4 cells, so within 5) or larger than OPEN_KM2.
-# NONNA and the other sea grids cover the sea only, so a body that big cut off from the solved
-# water is sea split by a gap in the coverage (ice, an unsurveyed strait), not a lake; the sea's
-# datum offsets change by decimetres over hundreds of km, while an enclosed lagoon's can differ.
+R_KM = 6371.0
+
+
+def xyz(lon, lat) -> np.ndarray:
+    """Points on the unit sphere (for great-circle nearest neighbours by chord)."""
+    lon, lat = np.radians(np.asarray(lon, float)), np.radians(np.asarray(lat, float))
+    return np.column_stack([np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)])
+
+
+def chord_km(d) -> np.ndarray:
+    return 2 * R_KM * np.arcsin(np.minimum(np.asarray(d) / 2, 1.0))
+
+
+def grid_km(r1, c1, r2, c2, north: float, res: float) -> np.ndarray:
+    """km between grid cells, each pair's east-west scale at its own mean latitude."""
+    lat = north - ((np.asarray(r1) + np.asarray(r2)) / 2 + 0.5) * res
+    return np.hypot((np.asarray(r1) - r2) * KM_DEG * res, (np.asarray(c1) - c2) * KM_DEG * res * np.cos(np.radians(lat)))
+
+
+# Open sea (opt-in: OpenSea, only NONNA-10's chunked run): water beyond the reach that is sea, not a
+# lagoon or lake, takes the nearest solved value however far. A body is open sea when it reaches
+# within EDGE_CELLS of the grid's edge (the sea going on past the chunk; water_of pads the grid 4
+# cells beyond the rasters' bounds, so 6 is 2 cells inside the data's footprint) or is over OPEN_KM2
+# (NONNA covers the sea only, so a body that big cut off from the solved water is sea split by a
+# coverage gap: ice, an unsurveyed strait; the sea's offsets change by decimetres over hundreds of
+# km, an enclosed lagoon's can differ), and it overlaps no inland lake (Natural Earth's 10 m lakes:
+# Great Slave, Great Bear, the Great Lakes, Winnipeg are never extrapolated).
 OPEN_KM2 = 100.0
-EDGE_CELLS = 5
+EDGE_CELLS = 6
 
 
-def open_sea(lab: np.ndarray, bodies: np.ndarray, north: float, res: float) -> np.ndarray:
-    """Which of `bodies` (labels in `lab`) are open sea (see OPEN_KM2)."""
+class OpenSea:
+    """The inland lakes open-sea extrapolation keeps out of (shapely geometries, lon/lat)."""
+
+    def __init__(self, lakes):
+        self.lakes = list(lakes)
+
+    @classmethod
+    def natural_earth(cls, sqlite: Path) -> "OpenSea":
+        """Natural Earth's ne_10m_lakes (every row: lakes, reservoirs, alkaline lakes) from its
+        SQLite package (sources/basemap/natural_earth_vector.sqlite.zip, unzipped)."""
+        import sqlite3
+
+        from shapely import wkb
+
+        if not Path(sqlite).is_file():
+            raise SystemExit(f"{sqlite}: no Natural Earth SQLite (unzip sources/basemap/natural_earth_vector.sqlite.zip)")
+        with sqlite3.connect(f"file:{sqlite}?mode=ro", uri=True) as db:
+            rows = db.execute("select GEOMETRY from ne_10m_lakes where GEOMETRY is not null").fetchall()
+        if not rows:
+            raise SystemExit(f"{sqlite}: ne_10m_lakes is empty")
+        return cls(wkb.loads(bytes(r[0])) for r in rows)
+
+    def mask(self, shape, west: float, north: float, res: float) -> np.ndarray:
+        """Cells any lake touches."""
+        from rasterio.features import rasterize
+        from rasterio.transform import from_origin
+        from shapely.geometry import box
+
+        H, W = shape
+        b = box(west, north - H * res, west + W * res, north)
+        geoms = [g for g in self.lakes if g.intersects(b)]
+        if not geoms:
+            return np.zeros(shape, bool)
+        return rasterize(geoms, out_shape=shape, transform=from_origin(west, north, res, res), all_touched=True, dtype="uint8").astype(bool)
+
+
+def at_edge(lab: np.ndarray, bodies: np.ndarray) -> np.ndarray:
+    """Which of `bodies` reach within EDGE_CELLS of the grid's edge."""
+    H, W = lab.shape
+    e = min(EDGE_CELLS, H, W)
+    if e <= 0:
+        return np.zeros(len(bodies), bool)
+    edge = np.unique(np.concatenate([lab[:e].ravel(), lab[H - e:].ravel(), lab[:, :e].ravel(), lab[:, W - e:].ravel()]))
+    return np.isin(bodies, edge)
+
+
+def over_area(lab: np.ndarray, bodies: np.ndarray, north: float, res: float) -> np.ndarray:
+    """Which of `bodies` are over OPEN_KM2 (each row's cells at its own latitude)."""
     from scipy.ndimage import sum as nsum
 
     H, W = lab.shape
     lat = north - (np.arange(H) + 0.5) * res
     area = np.broadcast_to(((KM_DEG * res) ** 2 * np.cos(np.radians(lat)))[:, None], (H, W))
-    km2 = np.atleast_1d(nsum(area, lab, bodies))
-    e = EDGE_CELLS
-    edge = np.unique(np.concatenate([lab[:e].ravel(), lab[H - e:].ravel(), lab[:, :e].ravel(), lab[:, W - e:].ravel()]))
-    return (km2 > OPEN_KM2) | np.isin(bodies, edge)
+    return np.atleast_1d(nsum(area, lab, bodies)) > OPEN_KM2
 
 
-def check_far(lab: np.ndarray, far: np.ndarray, dist, total: int | None = None) -> None:
+def open_sea(lab: np.ndarray, bodies: np.ndarray, north: float, res: float, lake: np.ndarray) -> np.ndarray:
+    """Which of `bodies` are open sea: at the edge or over OPEN_KM2, and on no inland lake (`lake`)."""
+    inland = np.isin(bodies, np.unique(lab[lake]))
+    return (at_edge(lab, bodies) | over_area(lab, bodies, north, res)) & ~inland
+
+
+def check_far(lab: np.ndarray, far: np.ndarray, dist, total: int) -> None:
     """Log the water left without a datum (`far`) and stop when it is over 5% of the water or one
     body over 2%: a missing area of the table."""
     if not far.any():
         return
-    total = total or int((lab > 0).sum())
     ids, size = np.unique(lab[far], return_counts=True)
     how = f", the farthest {dist[far].max():.0f} km from a solved cell" if dist is not None else ""
     log(f"datum surface: {len(ids)} water bodies, {int(size.sum())} cells, with no station within {REACH_KM:g} km (the largest {int(size.max())} cells{how}) get no depth")
@@ -122,8 +192,9 @@ class Surface:
         return cls(np.full((2, 2), v, "float32"), -180.0, 90.0, 180.0)
 
     @classmethod
-    def harmonic(cls, pts, water: np.ndarray, west: float, north: float, res: float) -> "Surface":
-        """Solved over `water` (a bool lon/lat grid from `west`, `north`, cells of `res` degrees)."""
+    def harmonic(cls, pts, water: np.ndarray, west: float, north: float, res: float, sea: OpenSea | None = None) -> "Surface":
+        """Solved over `water` (a bool lon/lat grid from `west`, `north`, cells of `res` degrees);
+        with `sea`, open sea beyond the reach is extrapolated (see OpenSea)."""
         from scipy.ndimage import distance_transform_edt, label
         from scipy.sparse import coo_matrix
         from scipy.sparse.linalg import spsolve
@@ -137,32 +208,32 @@ class Surface:
             if hit:
                 fixed.setdefault(hit, []).append(v)
         lab, _ = label(water)
-        lat0 = north - H * res / 2
-        if not fixed:
+        total = int(water.sum())
+        lake = sea.mask(water.shape, west, north, res) if sea else None
+        bodies = np.unique(lab[water])
+        if not fixed and sea is not None and open_sea(lab, bodies, north, res, lake).any():
             # no station within reach of any water: open sea takes the nearest station's value
-            bodies = np.unique(lab[water])
-            opn = bodies[open_sea(lab, bodies, north, res)]
-            if not len(opn):
-                d, at = nearest_station(water, pts, west, north, res)
-                raise SystemExit(
-                    f"a datum surface needs a station within {REACH_KM:g} km of the water: none is, over "
-                    f"{west:.2f}..{west + W * res:.2f} E, {north - H * res:.2f}..{north:.2f} N (the nearest is {d:.0f} km from its nearest water cell, "
-                    f"at {at[0]:.2f}, {at[1]:.2f}); a far station's offset would be a wrong depth, so the table needs rows for this area")
             from scipy.spatial import cKDTree
 
-            ext = np.isin(lab, opn)
-            check_far(lab, water & ~ext, dist=None)
-            kx = np.cos(np.radians(lat0))
+            ext = np.isin(lab, bodies[open_sea(lab, bodies, north, res, lake)])
+            check_far(lab, water & ~ext, None, total)
             rr, cc = np.nonzero(ext)
-            d, k = cKDTree([(p[0] * kx, p[1]) for p in pts]).query(np.column_stack([(west + (cc + 0.5) * res) * kx, north - (rr + 0.5) * res]))
+            d, k = cKDTree(xyz([p[0] for p in pts], [p[1] for p in pts])).query(xyz(west + (cc + 0.5) * res, north - (rr + 0.5) * res))
             out = np.full((H, W), np.nan, "float32")
             out[rr, cc] = np.array([p[2] for p in pts])[k]
-            log(f"datum surface: no station within {REACH_KM:g} km; {len(rr)} open-sea cells extrapolated from the nearest station (the farthest {d.max() * KM_DEG:.0f} km)")
+            log(f"datum surface: no station within {REACH_KM:g} km; {len(rr)} open-sea cells extrapolated from the nearest station (the farthest {chord_km(d).max():.0f} km)")
             return cls(out, west, north, res)
+        if not fixed:
+            d, at = nearest_station(water, pts, west, north, res)
+            raise SystemExit(
+                f"a datum surface needs a station within {REACH_KM:g} km of the water: none is, over "
+                f"{west:.2f}..{west + W * res:.2f} E, {north - H * res:.2f}..{north:.2f} N (the nearest is {d:.0f} km from its nearest water cell, "
+                f"at {at[0]:.2f}, {at[1]:.2f}); a far station's offset would be a wrong depth, so the table needs rows for this area")
+        lat0 = north - H * res / 2
         solve = water & np.isin(lab, list({lab[k] for k in fixed}))
         # a water body without a station takes the nearest solved value, if one is within reach
         _, (iy2, ix2) = distance_transform_edt(~solve, return_indices=True, sampling=(KM_DEG * res, KM_DEG * res * np.cos(np.radians(lat0))))
-        dist = np.hypot((np.arange(H)[:, None] - iy2) * KM_DEG * res, (np.arange(W)[None, :] - ix2) * KM_DEG * res * np.cos(np.radians(lat0)))
+        dist = grid_km(np.arange(H)[:, None], np.arange(W)[None, :], iy2, ix2, north, res)
         bodies = np.unique(lab[water & ~solve])
         far = np.zeros((H, W), bool)
         if len(bodies):
@@ -171,13 +242,15 @@ class Surface:
             dmin = np.atleast_1d(minimum(dist, lab, bodies))
             gone = bodies[dmin > REACH_KM]
             if len(gone):
-                opn = gone[open_sea(lab, gone, north, res)]
-                ext = np.isin(lab, opn)
-                if ext.any():
-                    log(f"datum surface: {len(opn)} open-sea water bodies, {int(ext.sum())} cells, beyond {REACH_KM:g} km extrapolated from the nearest solved cell "
-                        f"(the farthest {dist[ext].max():.0f} km)")
+                ext = np.zeros((H, W), bool)
+                if sea is not None:
+                    opn = gone[open_sea(lab, gone, north, res, lake)]
+                    ext = np.isin(lab, opn)
+                    if ext.any():
+                        log(f"datum surface: {len(opn)} open-sea water bodies, {int(ext.sum())} cells, beyond {REACH_KM:g} km extrapolated from the nearest solved cell "
+                            f"(the farthest {dist[ext].max():.0f} km)")
                 far = np.isin(lab, gone) & ~ext
-                check_far(lab, far, dist, total=int(water.sum()))
+                check_far(lab, far, dist, total)
         idx = -np.ones((H, W), np.int64)
         cells = np.argwhere(solve)
         idx[solve] = np.arange(len(cells))
@@ -208,7 +281,7 @@ class Surface:
         return warp_onto((self.a, from_origin(self.west, self.north, self.res, self.res), "EPSG:4326"), 1, win, "bilinear", src_nodata=np.nan)
 
 
-def from_table(table, rasters, res: float = 0.005) -> Surface | None:
+def from_table(table, rasters, res: float = 0.005, sea: OpenSea | None = None) -> Surface | None:
     """A station table's surface (`table`: path, column, ids left out, the id column) over the
     water the `rasters` (a source's files, any CRS) have data on: a constant when every station
     says the same; None without a table."""
@@ -221,7 +294,7 @@ def from_table(table, rasters, res: float = 0.005) -> Surface | None:
     if len({round(p[2], 3) for p in pts}) == 1:
         return Surface.constant(pts[0][2])
     water, w, n, r = water_of(rasters, res)
-    return Surface.harmonic(pts, water, w, n, r)
+    return Surface.harmonic(pts, water, w, n, r, sea)
 
 
 def water_of(rasters, res: float) -> tuple[np.ndarray, float, float, float]:
