@@ -1,11 +1,11 @@
 /* The build at a glance (dash.js), the page at /work/. The page's own tokens
    (index.html's :root) are used throughout. */
 
-#dash { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "verdict" "overview" "stages" "machines" "pool" "road" "regions" "activity" "details"; }
-#dash.gated { grid-template-areas: "verdict" "inputs" "overview" "stages" "machines" "pool" "road" "regions" "activity" "details"; }
+#dash { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "verdict" "overview" "road" "stages" "machines" "pool" "regions" "activity" "details"; }
+#dash.gated { grid-template-areas: "verdict" "inputs" "overview" "road" "stages" "machines" "pool" "regions" "activity" "details"; }
 @media (min-width: 1100px) {
-  #dash { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); grid-template-areas: "verdict verdict" "overview overview" "stages stages" "machines road" "pool road" "activity road" "activity regions" "details details"; align-items: start; }
-  #dash.gated { grid-template-areas: "verdict verdict" "inputs inputs" "overview overview" "stages stages" "machines road" "pool road" "activity road" "activity regions" "details details"; }
+  #dash { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); grid-template-areas: "verdict verdict" "overview overview" "road road" "stages stages" "machines regions" "pool regions" "activity regions" "details details"; align-items: start; }
+  #dash.gated { grid-template-areas: "verdict verdict" "inputs inputs" "overview overview" "road road" "stages stages" "machines regions" "pool regions" "activity regions" "details details"; }
 }
 #dash > section { min-width: 0; }
 .d-verdict { grid-area: verdict; }

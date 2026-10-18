@@ -8,11 +8,11 @@
 // 480 tiles"), coloured by its stage; a stage is a card of its steps' rows, each row the same
 // cells; a machine is a card of its jobs, each job the same lines; an event is one templated
 // sentence. The parts: the verdict (going or not, done when, next on the map, what needs a look,
-// the pause), the overview (how far, how long), the stages (each step to the end), the machines
-// (what each does now and next, why one waits, its power, disk, memory and pace), the road to
-// done (each machine's schedule), publishing (the last catalog, the map tiles to draw by Mac, the
-// cadenced publishes next, each Mac's catalog), the regions, and the activity (the hours, what
-// happened).
+// the pause), the overview (how far, how long), the road to done (each machine's schedule) and
+// publishing (the last catalog, the map tiles to draw by Mac, the cadenced publishes next, each
+// Mac's catalog), the stages (each step to the end), the machines (what each does now and next,
+// why one waits, its power, disk, memory and pace), the regions, and the activity (the hours,
+// what happened).
 
 import { poolSection, termText } from "./pool.js";
 import { busyLanes, finished, wholeProgress } from "./sums.js";
@@ -952,7 +952,7 @@ function render() {
   const banners = gateBanners(m, (body) => ctx.call("/work/inputs", body).then(poll, (e) => ctx.onError?.(`couldn't accept: ${e.message}`)));
   root.classList.toggle("gated", banners.length > 0);
   const gate = h("section", { class: "d-inputs", id: "inputs" }, banners);
-  const next = [verdict, gate, section("d-overview", "overview", "Overview", null, overview(m)), stagesSec, machines, pool, road, regions, activity, section("d-details", "details", null, null, details(m))];
+  const next = [verdict, gate, section("d-overview", "overview", "Overview", null, overview(m)), road, stagesSec, machines, pool, regions, activity, section("d-details", "details", null, null, details(m))];
   // (A section where the user is typing or has text selected stays as it was until they're done:
   // a refresh would take their keyboard or selection away.)
   const sel = window.getSelection();
