@@ -578,22 +578,39 @@ room-making has done what it can, the disk guard as backstop.
 Planned: `cost_version` derived from the step's key version (`crate::agent::build`'s `*_V`) rather
 than kept by hand; progress of steps other than the OSM pass resumable on its Mac.
 
-### 7.8 The agent loop never waits on one NAS read
+### 7.8 The agent never waits on one NAS call
 
 An open on the SMB share can stay stuck in the kernel for many minutes while the same file reads at
-once from a shell. The agent loop's small NAS reads (the switches `state/pool/resume`,
-`placement`, `brokers`, the memory guard's and publishing's switches, the members' progress files,
-and the per-loop reads of `state/status.json` and the manifest) go through
-`crate::agent::nasread`: each runs on one of four reader threads and is waited for 20 s at most.
-Past that, the caller gets a timeout and takes it as any file it can't read now (a switch keeps its
-last value; a missing record reads as none), logged once per path until that path reads again. The
-stuck thread is left to its read and stays busy; while all four are busy, a read fails at once, so
-stuck threads never pile up. A healthy share's reads are unchanged.
+once from a shell. The agent's NAS calls listed below go through `crate::agent::nasread`: each runs
+on a thread of a small pool and is waited for a deadline at most (20 s; a listing 90 s). Past it,
+the caller gets a timeout and takes it as any call that fails now, logged once per path until that
+path answers again. The stuck thread is left to its call and stays busy; while every thread of a
+pool is busy, a call to it fails at once, so stuck threads never pile up. Three pools, so one kind
+stuck can't starve another:
 
-A watchdog thread looks at when the loop last finished a round: past five minutes it logs the stall
-and keeps `loop-stall.json` in the agent's folder (this Mac's disk), which `scenic status` shows as
-"this Mac's agent loop is stalled"; it's removed when the loop goes on. Other NAS calls in the loop
-(heartbeat writes, listings, the build's records) aren't under a deadline: planned.
+- **Switches** (two threads): `state/pool/resume`, `placement`, `brokers`, the memory guard's and
+  publishing's switches. A switch that can't be read keeps its last value.
+- **Records** (four threads): the members' progress files; the loop's reads of `state/status.json`,
+  the manifest (where planning reads it through `nasread`) and the regions' extract (unreadable for
+  a reason other than missing: no extract job planned); and the pool's reads, stats and listings
+  (`Deadlined`, which the agent opens its member over: the driver's ticks on terms, mail and
+  members, and the terms' listing as the member opens, tried three times, 10 s and 30 s apart,
+  then gone on without).
+- **Writes** (four threads): the heartbeat (`state/status.json`, or a helper's file) and the pool's
+  writes, creates and removes (the members' heartbeats, mail, terms).
+
+A healthy share's calls are unchanged.
+
+A watchdog thread, started before the agent opens anything on the NAS, looks at when the loop last
+finished a round (or the agent started): past five minutes it logs the stall and keeps
+`loop-stall.json` in the agent's folder (this Mac's disk), which `scenic status` shows as "this
+Mac's agent loop is stalled"; it's removed when the loop goes on.
+
+Still under no deadline (planned): the NAS's mount and probe (`root`); the build's keys
+(`build::Keys::load`, `load_with`); the manifest read through `out::read_record`; the regions'
+held report (`inputs::read_report`); the helpers' listing (`state/helpers`); the coordinator's
+contact published and removed; GC's reads of the journal and records;
+the caches' trims and clears; and every NAS call of the coordinator's and the jobs' own.
 
 ## 8. Tasks, and the pages as workers
 

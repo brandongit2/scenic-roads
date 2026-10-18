@@ -363,6 +363,34 @@ pub struct Side {
     clock: Arc<dyn store::clock::Clock>,
 }
 
+/// The waits between tries of a listing as a member opens (`list_patiently`).
+#[cfg(not(test))]
+const OPEN_BACKOFF: [Duration; 2] = [Duration::from_secs(10), Duration::from_secs(30)];
+#[cfg(test)]
+const OPEN_BACKOFF: [Duration; 2] = [Duration::from_millis(10), Duration::from_millis(30)];
+
+/// Folder `dir`'s names, the listing tried again after each wait of `backoff` while it fails (on a
+/// NAS under a deadline, crate::agent::nasread::Deadlined, one that hangs fails rather than
+/// waits), each failure logged; the last failure when none answers.
+pub fn list_patiently(nas: &(dyn Nas + Send + Sync), dir: &str, backoff: &[Duration]) -> Result<Vec<String>> {
+    let mut waits = backoff.iter();
+    loop {
+        match nas.list(dir) {
+            Ok(l) => return Ok(l),
+            Err(e) => match waits.next() {
+                Some(w) => {
+                    eprintln!("pool: listing {dir}: {e:#}; trying again in {} ms", w.as_millis());
+                    std::thread::sleep(*w);
+                }
+                None => {
+                    eprintln!("pool: listing {dir}: {e:#}; going on without it");
+                    return Err(e);
+                }
+            },
+        }
+    }
+}
+
 impl Side {
     /// This Mac's member in the pool, in folder `dir` (the agent's pool folder: its saved state)
     /// with its member id in `home` (the agent's folder), its lock in `locks` (the app's folder),
@@ -376,7 +404,7 @@ impl Side {
         // (A state from an earlier time the pool was on, its terms since moved aside: it names terms
         // no longer there, and would hold this member's view above them. Counted as lost: its jobs'
         // hand-offs not written yet alone kept, as the driver keeps another member's.)
-        if saved.term > 0 && nas.list(crate::pool::term::DIR).is_ok_and(|t| t.is_empty()) {
+        if saved.term > 0 && list_patiently(&*nas, crate::pool::term::DIR, &OPEN_BACKOFF).is_ok_and(|t| t.is_empty()) {
             eprintln!("pool: the NAS has no terms: this member's saved state, of term {}, is from an earlier time the pool was on; set aside", saved.term);
             std::fs::rename(dir.join("saved.json"), dir.join("saved.earlier.json")).ok();
             saved = Saved { mine: saved.mine.unwritten_only(), ..Default::default() };

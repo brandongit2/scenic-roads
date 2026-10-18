@@ -21,7 +21,7 @@ pub struct Switches {
 
 /// Whether the switch at `root` is on; None when it can't be read now.
 fn on(root: &Path, switch: &str) -> Option<bool> {
-    match super::nasread::read_to_string(&root.join(switch)) {
+    match super::nasread::read_switch(&root.join(switch)) {
         Ok(s) => Some(s.trim() != "off"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
         Err(_) => None,

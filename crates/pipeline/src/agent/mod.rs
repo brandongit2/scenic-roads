@@ -1407,6 +1407,19 @@ struct Planned {
 
 impl Agent {
     pub fn new(o: Options) -> Result<Agent> {
+        // The loop's watchdog (nasread::watch), from before anything is opened on the NAS: a start
+        // or a round not finished in STALL_AFTER logged and kept in the agent's folder for
+        // `scenic status`. (Not a single round's.)
+        if !o.once {
+            std::fs::create_dir_all(&o.home).ok();
+            nasread::watch(
+                &nasread::ROUND_AT,
+                &nasread::WATCH_DONE,
+                o.home.clone(),
+                nasread::STALL_AFTER,
+                Duration::from_secs(15),
+            );
+        }
         Agent::new_with(o, answers)
     }
 
@@ -1447,7 +1460,7 @@ impl Agent {
         if lock.is_some() && !o.dry_run {
             if let Some(r) = o.root.clone().or_else(|| find_root(false)).filter(|r| probe(r)) {
                 {
-                    let nas: pool::SharedNas = std::sync::Arc::new(crate::pool::nas::Share::new(&r));
+                    let nas: pool::SharedNas = std::sync::Arc::new(nasread::Deadlined::new(std::sync::Arc::new(crate::pool::nas::Share::new(&r))));
                     let locks = o.home.parent().unwrap_or(&o.home).to_path_buf();
                     match pool::Side::open(&o.home, &o.home.join("pool"), &locks, &app, nas)? {
                         Some(side) => {
@@ -3088,22 +3101,9 @@ impl Agent {
                 self.orphans.extend(orphan.left);
             }
         }
-        // The loop's watchdog (nasread::watch): a round not finished in STALL_AFTER logged and kept
-        // in the agent's folder for `scenic status`.
-        let round_at = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_s()));
-        let watch_done = std::sync::Arc::new(AtomicBool::new(false));
-        let watchdog = (!self.o.once).then(|| {
-            nasread::watch(
-                round_at.clone(),
-                watch_done.clone(),
-                self.o.home.clone(),
-                nasread::STALL_AFTER,
-                Duration::from_secs(15),
-            )
-        });
         loop {
             let quick = self.step()?;
-            round_at.store(now_s(), Ordering::SeqCst);
+            nasread::ROUND_AT.store(now_s(), Ordering::SeqCst);
             if self.o.once || STOP.load(Ordering::SeqCst) {
                 break;
             }
@@ -3145,8 +3145,7 @@ impl Agent {
                 std::thread::sleep(Duration::from_secs(1));
             }
         }
-        watch_done.store(true, Ordering::SeqCst);
-        drop(watchdog);
+        nasread::WATCH_DONE.store(true, Ordering::SeqCst);
         // The pool's thread stopped first: nothing steps the driver after this loop (its tick under
         // way finished, waited for a minute at most: a NAS that hangs may not return).
         if let Some(t) = self.ticker.take() {
@@ -3751,9 +3750,13 @@ impl Agent {
             let due =
                 self.last_beat.as_ref().is_none_or(|(b, t)| *b != same || t.elapsed() >= Duration::from_secs(120));
             if due {
-                std::fs::create_dir_all(root.join("state/helpers")).ok();
-                match write_replace(&root.join(&shared), &body) {
+                // (On the writers, under a deadline: a share that hangs fails it, nasread::write.)
+                let (p, b) = (root.join(&shared), body.clone());
+                let p2 = p.clone();
+                match nasread::write(&p, move || write_replace(&p2, &b)) {
                     Ok(()) => self.last_beat = Some((same, Instant::now())),
+                    // (A timeout logged once by nasread.)
+                    Err(e) if nasread::timed_out(&e) => {}
                     Err(e) => eprintln!("agent: heartbeat: {e:#}"),
                 }
             }
@@ -8997,11 +9000,12 @@ impl Agent {
         if ids.is_empty() {
             return None;
         }
-        if let Some(e) = manifest
-            .get(&extract::logical(&date))
-            .and_then(|n| nasread::read(&root.join(n)).ok())
-            .and_then(|b| extract::Extract::read(&b).ok())
-        {
+        // (The extract's file unreadable now, not missing: no job, rather than one it may not need.)
+        let had = match manifest.get(&extract::logical(&date)) {
+            Some(n) => present_or_missing(nasread::read(&root.join(n)))?,
+            None => None,
+        };
+        if let Some(e) = had.and_then(|b| extract::Extract::read(&b).ok()) {
             ids.extend(e.ids());
         }
         let key = extract::key(&date, &ids);
@@ -9505,6 +9509,16 @@ pub fn app_version(bin: &Path) -> String {
     match (canon.parent().and_then(|p| p.file_name()), canon.file_name()) {
         (Some(app), Some(v)) if app == "app" => v.to_string_lossy().into_owned(),
         _ => "development".into(),
+    }
+}
+
+/// A read's bytes (Some(Some)), the file missing (Some(None)), or None when it can't be read now
+/// (any other error, a timeout's too).
+fn present_or_missing(r: std::io::Result<Vec<u8>>) -> Option<Option<Vec<u8>>> {
+    match r {
+        Ok(b) => Some(Some(b)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(_) => None,
     }
 }
 
