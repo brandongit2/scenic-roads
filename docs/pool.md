@@ -251,9 +251,18 @@ grants them nothing. `crate::pool::reachable`, `Run::tend_reach`, `crate::agent:
 
 ### 7.1 Slots and asks
 
-Every job starts by a grant, on the lead as on a member. Each Mac runs as many job slots as its
+Every job starts by a grant, on the lead as on a member. A member runs as many job slots as its
 cores allow (`agent::job_slots`: its cores less the two kept for its owner, at least one), its lead
-granting fewer when its room holds fewer; an idle slot takes tasks (§8). While a slot is free and
+granting fewer when its room holds fewer; an idle slot takes tasks (§8).
+
+**The lead's ramp** (`Agent::tend_ramp`): the lead's slots start at 2 (`RAMP_START`) and grow by
+one only after a clean stretch of 6 hours (`RAMP_CLEAN_S`) with no memory guard stop, no NAS budget
+overrun (the pool's leased jobs' NAS weights together past the whole, by the NAS's limits as
+probed: `Coordinator::nas_over`) and no stall (the pool's step taken for hung); any of these starts
+the stretch again. They grow up to its cores' `job_slots`. The count reached and the stretch's
+start are kept in the lead's state (`agent/state.json`, `ramp`). There's no switch.
+
+ While a slot is free and
 nothing holds more back (the build's pause, a job stopping at a safe point, the memory guard's
 hold, a frozen job: `Agent::may_pack`), the agent asks for as many jobs as it has slots free
 (`Ask::want`): a member its lead's coordinator over HTTP (`/work/ask`), the lead its own in process
@@ -352,10 +361,14 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
   where its work first comes and each of its own planned jobs whole (`Offer::job`). The authority
   rule (`every::grants`): a step kept to the lead, and every planned job of the lead's, is granted
   only to the current lead's member, asking in process; a member's ask over HTTP never gets one.
-  One job of such a step runs at a time; its measures (memory, disk; a cold start alone, as any),
-  the NAS budget and a cancel's hold hold it as they hold a member's job. A planned job that can't
-  start for a reason of the agent's own (a failure's wait, the proxy not up, the memory guard's
-  hour: `wait_reason`) isn't asked for.
+  One job of such a step runs at a time; its measures (memory, disk), the NAS budget (always, §7.7)
+  and a cancel's hold hold it as they hold a member's job. Its cold start (none of it measured)
+  has the lead as its asker, whatever another's room, and runs alone: while the lead holds jobs, it
+  is granted nothing more until they end (`own_cold_waits`), then that job before any other. A
+  planned job that can't start for a reason of the agent's own (a failure's wait, the proxy not
+  up, the memory guard's hour: `wait_reason`) isn't asked for. One that fails (or the memory guard
+  stops) ends its lease failed (`finish_failed`): its targets are kept from the lead an hour,
+  doubling each time, as a member's failed work is.
 - **Packing** (`coord`'s `pack`): a Mac may hold several leases. An ask says how many jobs it would
   start (`want`); the coordinator grants up to that many in one answer (`Grant::more`, each its own
   lease), packed in plan order into the ask's room: each after the first the Mac holds must be
@@ -506,7 +519,7 @@ never correctness, politeness or work.
 | jobs on one Mac | a job is granted beside others only if their measured memory, disk and cores fit (packing, §7.2); a cold start runs alone |
 | raw tiles | `store::cachefile`'s locks; packing deletes only tiles no job holds; a job reopens its area's archives when the index changed (`RawTiles::get`, `refresh_area`) |
 | Wikimedia budget | `crate::budget`: one budget for the pool, enforced at egress. Every job's connections go through its agent's proxy (`crate::budget::proxy`, `HTTPS_PROXY`), the job sandboxed (`sandbox-exec`) to deny any other way out. A metered connection takes a token first: leases are create-new files per slot of a ten-second window (`state/pool/wiki/<class>/<window>-<slot>`). `wiki` four requests a second; `query` (WDQS, QLever) one query per two seconds of query time. A 429 told to the proxy (`POST /hold`, dem/budget.py) holds every Mac. The NAS away, each Mac takes the rate divided by known members. Lint: `tests/budgets.rs` |
-| NAS and network budget | `crate::budget::nas`, behind `state/pool/nas-budget` (off while missing or `off`), with every step to every member. A job's **NAS weight** is its share of the NAS in thousandths: its targets' measured rate (`needs::Book::nas`: `bytes` read plus `wrote`, and `creates`, each over its wall time; its own run's, else its step's 90th percentile of each; none measured, 0), each over the NAS's limit, added: one combined weight, at most the whole (1000); a job its heaviest target's. **The limits** are measured: the lead's coordinator probes the NAS every 30 minutes while the switch is on (`probe`: 12 files of 4 KB made, one of 16 MB written, synced and read back past the cache, in a folder of its own under `state/pool/nas-probe/<host>-<pid>`, all removed after; as it starts, the coordinator removes its host's folders a stopped process left, never another host's) and takes the best of the last day's probes (a probe under the build's load measures what's left). `scenic pool nas-probe [--dir <folder>]` runs one. **Enforced at grant** (`coord`'s `pick_every` and `pick_own`, so `pack` too, the lead's own jobs among them): a member's target is granted only while the weights of every job leased in the pool (the lead's own among them) leave room for its own within the whole (1000), or while no other member's job weighs anything (the lead's own alone never hold it back); the lead's own only within the whole, or while nothing leased weighs anything (`Limits::fits_own`). The rest wait for a job to end; a target held back for over 30 minutes is a waiting line in the lead's status (`Coordinator::nas_waits`). **Downloads:** a job of a fetching step (steps table kind `Fetch`) counts one, capped pool-wide by the switch's `downloads <n>` (no cap without it): the lead's own fetching steps (`bld-fetch`, `rail-feeds`; none is offered to members). Not held to it: tasks |
+| NAS and network budget | `crate::budget::nas`: the lead's own jobs always; the members' behind `state/pool/nas-budget` (off while missing or `off`). A job's **NAS weight** is its share of the NAS in thousandths: its targets' measured rate (`needs::Book::nas`: `bytes` read plus `wrote`, and `creates`, each over its wall time; its own run's, else its step's 90th percentile of each; none measured, 0), each over the NAS's limit, added: one combined weight, at most the whole (1000); a job its heaviest target's. **The limits** are measured: the lead's coordinator probes the NAS every 30 minutes, whatever the switch says (`probe`: 12 files of 4 KB made, one of 16 MB written, synced and read back past the cache, in a folder of its own under `state/pool/nas-probe/<host>-<pid>`, all removed after; as it starts, the coordinator removes its host's folders a stopped process left, never another host's) and takes the best of the last day's probes (a probe under the build's load measures what's left). `scenic pool nas-probe [--dir <folder>]` runs one. **Enforced at grant** (`coord`'s `pick_every` and `pick_own`, so `pack` too, the lead's own jobs among them): a member's target is granted only while the weights of every job leased in the pool (the lead's own among them) leave room for its own within the whole (1000), or while no other member's job weighs anything (the lead's own alone never hold it back); the lead's own only within the whole, or while nothing leased weighs anything (`Limits::fits_own`). **The lead's own jobs are always held to it**, whatever the switch says (the limits probed: `nas_own`); the switch turns it on for the members' (`nas`). The rest wait for a job to end; a target held back for over 30 minutes is a waiting line in the lead's status (`Coordinator::nas_waits`). **Downloads:** a job of a fetching step (steps table kind `Fetch`) counts one, capped pool-wide by the switch's `downloads <n>` (no cap without it): the lead's own fetching steps (`bld-fetch`, `rail-feeds`; none is offered to members). Not held to it: tasks |
 | a pass's answers | `crate::answers`: a lease on the NAS (`state/pool/answers.lease`, renewed every 150 s, lapsing after 10 min) around each sync; on a Mac a reader/writer lock (`answers::Local`) |
 | write-set | `agent::steps::writes`, enforced by `Out` and the merge (§7.3). Raw archives, answers and `bld-fetch`'s sources are outside the manifest, each written whole under its module's names |
 | targets per job | as many as fit a quarter hour of measured time (`coord::JOB_S`), the lead's and a member's alike; a step kept to the lead in one job |

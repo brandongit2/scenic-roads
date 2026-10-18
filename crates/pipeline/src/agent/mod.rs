@@ -116,6 +116,22 @@ const UPDATE_MARGIN: f64 = 1.5;
 const UPDATE_CAP: Duration = Duration::from_secs(3 * 3600);
 const UPDATE_STALL: Duration = Duration::from_secs(30 * 60);
 
+/// The lead's slots as its ramp starts them (`Agent::tend_ramp`), and the clean stretch after which
+/// it grows them by one (s).
+pub(crate) const RAMP_START: usize = 2;
+pub(crate) const RAMP_CLEAN_S: u64 = 6 * 3600;
+
+/// The lead's slots' ramp, kept in its state (`Memory::ramp`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct Ramp {
+    /// The slots reached (0: not started, `RAMP_START`).
+    #[serde(default)]
+    slots: usize,
+    /// Since when its stretch has been clean (unix s; 0: not yet).
+    #[serde(default)]
+    clean_since: u64,
+}
+
 /// The slots an agent keeps at least: a Mac runs as many jobs as its lead grants it, each in a slot
 /// of its own, the slots past these grown and shrunk with its leases (`Agent::slots`, `job_slots`).
 pub(crate) const SLOTS: usize = 2;
@@ -819,6 +835,10 @@ pub struct Done {
 struct Memory {
     /// Per job id: failures in a row and when it may run again.
     retry: BTreeMap<String, (u32, u64)>,
+    /// The lead's slots' ramp (`Agent::tend_ramp`): the slots it has reached, and since when its
+    /// stretch has been clean (no memory guard stop, no NAS budget overrun, no stall; unix s).
+    #[serde(default)]
+    ramp: Ramp,
     /// The app that last saved this: a newer one tries failed jobs again at once (it may be the
     /// fix).
     #[serde(default)]
@@ -2333,7 +2353,13 @@ impl Agent {
         match self.slots[k].lease.take() {
             Some(Held::Own(id)) => {
                 if let Some(c) = &self.coord {
-                    c.finish(id, done);
+                    // (Failed, or stopped by the memory guard: its targets not done kept from this
+                    // Mac as a member's are, an hour and doubling, `finish_failed`.)
+                    if outcome == Outcome::Failed || guard_stopped {
+                        c.finish_failed(id, done);
+                    } else {
+                        c.finish(id, done);
+                    }
                     if let Some(p) = pid {
                         c.close_tasks(p);
                     }
@@ -2371,7 +2397,11 @@ impl Agent {
                 let local = self.coord.is_some() && !self.lost_term();
                 if local {
                     if let Some(c) = &self.coord {
-                        c.finish(id, done);
+                        if outcome == Outcome::Failed || guard_stopped {
+                            c.finish_failed(id, done);
+                        } else {
+                            c.finish(id, done);
+                        }
                         if let Some(p) = pid {
                             c.close_tasks(p);
                         }
@@ -2709,7 +2739,52 @@ impl Agent {
 
     /// The most jobs this Mac runs at once (`job_slots` of its cores).
     fn job_slots(&self) -> usize {
-        job_slots(mac_cores() as usize)
+        let n = job_slots(mac_cores() as usize);
+        // (Leading: no more than its ramp has reached, `tend_ramp`.)
+        if self.o.helper {
+            n
+        } else {
+            n.min(self.mem.ramp.slots.max(RAMP_START))
+        }
+    }
+
+    /// The lead's slots' ramp: they start at `RAMP_START` and grow by one only after a clean stretch
+    /// of `RAMP_CLEAN_S`: no memory guard stop (`guard_stop_as` restarts the stretch), no NAS budget
+    /// overrun (the pool's leased jobs' weights past the whole, crate::coord::Coordinator::nas_over),
+    /// no stall (the pool's step taken for hung). The count reached is kept in the lead's state
+    /// (`state.json`), up to its cores' `job_slots`.
+    fn tend_ramp(&mut self) {
+        if self.o.helper || self.o.dry_run {
+            return;
+        }
+        let Some(c) = self.coord.as_ref() else { return };
+        let now = now_s();
+        let most = job_slots(mac_cores() as usize);
+        let trouble = if c.nas_over() {
+            Some("the pool's jobs past the NAS budget")
+        } else if self.pool_hung.is_some() {
+            Some("the pool's step stalled")
+        } else {
+            None
+        };
+        let r = &mut self.mem.ramp;
+        let was = (r.slots, r.clean_since);
+        r.slots = r.slots.max(RAMP_START);
+        if let Some(why) = trouble {
+            if r.clean_since != now {
+                eprintln!("agent: the lead's slots stay at {} ({why}: its clean stretch starts again)", r.slots);
+            }
+            r.clean_since = now;
+        } else if r.clean_since == 0 {
+            r.clean_since = now;
+        } else if r.slots < most && now.saturating_sub(r.clean_since) >= RAMP_CLEAN_S {
+            r.slots += 1;
+            r.clean_since = now;
+            eprintln!("agent: the lead's slots grow to {} after {} h clean", r.slots, RAMP_CLEAN_S / 3600);
+        }
+        if (r.slots, r.clean_since) != was && (trouble.is_none() || was.0 != r.slots) {
+            self.save();
+        }
     }
 
     /// Whether this agent asks for more work now, the lead's of its own coordinator and a member's
@@ -3141,6 +3216,7 @@ impl Agent {
         // The owner's cancels (`scenic job cancel`, the menu bar, the lead's word): those jobs stopped
         // and given back first.
         ended |= self.tend_cancels(root.as_deref(), &mut waiting);
+        self.tend_ramp();
         for k in 0..self.slots.len() {
             ended |= self.tend(k, &c, root.as_deref(), slept)?;
         }
@@ -4474,6 +4550,8 @@ impl Agent {
             self.guard_backoff.insert(id, (now_s() + GUARD_BACKOFF_S, why.clone()));
         }
         self.slots[k].guard_stopped = fail;
+        // (The lead's ramp's clean stretch starts again, `tend_ramp`.)
+        self.mem.ramp.clean_since = now_s();
         self.stopped(k, &why);
         // (Its lease ended, given back: its scratch kept, its work with it, until room-making is
         // short of the reserve, `room::free_given_back`.)
@@ -10357,6 +10435,89 @@ mod tests {
         );
         // A tile reading nothing (a GHSL tile alone): its fixed part.
         assert_eq!((bld_peak("bldprep", 0), bld_peak("bldtiles", 0)), (300, 1800));
+    }
+
+    /// A job of the lead's own that fails ends its lease as failed (`finish_failed`): its target
+    /// kept from the lead by its coordinator as a member's failed work is, so the next loop's ask
+    /// isn't granted it again, the agent's own wait aside.
+    #[test]
+    fn a_failing_own_job_is_not_granted_again_on_the_next_loop() {
+        room::TEST_FREE.with(|c| c.set(Some(100 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
+        a.free_set = Some(100 << 30);
+        a.mem_set = Some((16 << 10, 12 << 10));
+        let job = JobSpec {
+            id: "rail rail".into(),
+            what: "rail".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "exit 1".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "rail".into(), targets: vec![("rail".into(), "k".into())] }),
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let mut w = Vec::new();
+        assert_eq!(lead_start(&mut a, std::slice::from_ref(&job), &cond, &root, &mut w), [0], "{w:?}");
+        let t = Instant::now();
+        while a.slots[0].running.is_some() {
+            assert!(t.elapsed() < Duration::from_secs(10), "it ends");
+            a.tend(0, &cond, Some(&root), 0).unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // (The agent's own wait set aside: the coordinator's backoff alone holds it.)
+        a.mem.retry.clear();
+        assert!(lead_start(&mut a, std::slice::from_ref(&job), &cond, &root, &mut w).is_empty());
+    }
+
+    /// The lead's slots' ramp (`tend_ramp`): two at first, one more after a clean stretch of
+    /// `RAMP_CLEAN_S`, kept in its state; a stall or a memory guard stop starts the stretch again.
+    #[test]
+    fn the_leads_slots_ramp_up_after_a_clean_stretch() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
+        let most = job_slots(mac_cores() as usize);
+        a.tend_ramp();
+        assert_eq!(a.job_slots(), RAMP_START.min(most));
+        // Clean long enough: one more, kept.
+        a.mem.ramp.clean_since = now_s() - RAMP_CLEAN_S;
+        a.tend_ramp();
+        assert_eq!(a.mem.ramp.slots, RAMP_START + 1);
+        assert_eq!(a.job_slots(), (RAMP_START + 1).min(most));
+        let kept: Memory = serde_json::from_slice(&std::fs::read(home.join("state.json")).unwrap()).unwrap();
+        assert_eq!(kept.ramp.slots, RAMP_START + 1);
+        // A stall: the stretch starts again, the slots kept.
+        a.mem.ramp.clean_since = now_s() - RAMP_CLEAN_S;
+        a.pool_hung = Some(now_s());
+        a.tend_ramp();
+        assert_eq!((a.mem.ramp.slots, a.mem.ramp.clean_since), (RAMP_START + 1, now_s()));
+        a.pool_hung = None;
+        a.tend_ramp();
+        assert_eq!(a.mem.ramp.slots, RAMP_START + 1, "not yet clean long enough");
+        // A member's slots: by its cores alone.
+        a.o.helper = true;
+        assert_eq!(a.job_slots(), most);
     }
 
     /// Every job of the lead's by grant (task #244, docs/pool.md §7.2): its plan offered through its

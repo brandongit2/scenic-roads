@@ -98,7 +98,7 @@
 #   pool-two-macs.sh publish <folder>               after `root`: a region done that the map hasn't
 #                                                   (the agent's test `seed_a_scratch_publish`, from
 #                                                   this repository), so the lead publishes it, its
-#                                                   map tiles shared with `every`; publishing's
+#                                                   map tiles granted to every Mac asking; publishing's
 #                                                   switches (plan.md §8), each `: > state/pool/<s>`
 #   pool-two-macs.sh stop <dir>                    the launcher and the agent stopped (the agent
 #                                                   by its pid, <dir>/agent.pid, which the launcher
@@ -137,13 +137,8 @@
 # scratch folder with its unmerged file (`<scratch>/unmerged-<pid>`), the entry merged, the pass
 # complete by the records, the M1's file dropping it; the lead never starts the pass.
 #
-# With state/pool/every-step on (2026-10-15, `root`, `region`, `every`): the lead running its
-# pass's sets, alone, its free room none, the region's terrain and tree cover pieces (never run:
-# cold starts) went to the M1 one a job, both merged; no claim file made. (The fake jobs note what
-# each target took, SCENIC_COSTS, for the lead's offers by the measures.)
-#
 set -euo pipefail
-cmd=${1:?root, region, publish, app, run, older, newer, newest, jobs, outside, fill, extra, wiki, upstream, resume, every, brokers, placement, task, page, page-done, planet, progress or stop}
+cmd=${1:?root, region, publish, app, run, older, newer, newest, jobs, outside, fill, extra, wiki, upstream, resume, brokers, placement, task, page, page-done, planet, progress or stop}
 case $cmd in
   root)
     r=${2:?the scratch folder}
@@ -399,5 +394,5 @@ EOF
     touch $d/v/app/stop
     [[ -s $d/agent.pid ]] && kill $(<$d/agent.pid) 2>/dev/null || true
     ;;
-  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, fill, extra, wiki, upstream, resume, every, brokers, placement, task, page, page-done, planet, progress or stop"; exit 2 ;;
+  *) print -u2 "root, region, app, run, older, newer, newest, jobs, outside, fill, extra, wiki, upstream, resume, brokers, placement, task, page, page-done, planet, progress or stop"; exit 2 ;;
 esac
