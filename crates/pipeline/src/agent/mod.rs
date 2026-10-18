@@ -1297,6 +1297,7 @@ pub struct Agent {
     hold_mirrored: bool,
     hold_read: Option<Instant>,
     hold_handed: Option<(Instant, bool)>,
+    hold_me: Option<String>,
     /// The bytes the caches hold, for the status: what room-making can free and what a clear would
     /// (room::sizes), counted on a thread of its own every ten minutes (a walk of many files), and
     /// again after a trim or a clear; and when.
@@ -1629,6 +1630,7 @@ impl Agent {
             hold_mirrored: false,
             hold_read: None,
             hold_handed: None,
+            hold_me: None,
             cache_size: Default::default(),
             heard: None,
             lead_all_new: None,
@@ -3366,14 +3368,22 @@ impl Agent {
         if self._lock.is_none() || self.o.dry_run {
             return;
         }
-        let me: Option<String> = self.pooled().map(|p| p.side.member().id.clone());
-        if let Some(req) = crate::control::take_hold_request(&self.o.home) {
+        // (Never waiting on the pool's lock: its step may hang on the NAS. Busy, this member's id as
+        // last seen, and an ask left for the next loop.)
+        let (me, busy) = match self.try_pooled() {
+            Some(Some(p)) => (Some(p.side.member().id.clone()), false),
+            Some(None) => (self.hold_me.clone(), true),
+            None => (None, false),
+        };
+        self.hold_me = me.clone();
+        if let Some(req) = (!busy).then(|| crate::control::take_hold_request(&self.o.home)).flatten() {
             let what = if req.held.is_some() { "paused" } else { "going on" };
             let target: Result<Option<(String, String)>, String> = match req.member.as_deref() {
                 None => Ok(None),
-                Some(name) => match self.pooled() {
-                    Some(run) => lead::resolve(&run, name)
+                Some(name) => match self.try_pooled() {
+                    Some(Some(run)) => lead::resolve(&run, name)
                         .map(|id| (me.as_deref() != Some(id.as_str())).then(|| (id, name.to_string()))),
+                    Some(None) => Err("this Mac's pool step is busy (the NAS slow?): ask again".to_string()),
                     None => Err("this Mac isn't in the pool: it can pause only itself".to_string()),
                 },
             };
