@@ -3348,6 +3348,7 @@ impl Agent {
             }
             if ok && step == "catalog" {
                 // (This Mac's map server adopts it now.)
+                #[cfg(not(target_os = "wasi"))]
                 crate::net::catalog_written();
                 let ready = self.ready.borrow().clone();
                 let (n, data) = (cat_stats.as_ref().map(|c| c.n), cat_stats.and_then(|c| serde_json::to_value(c).ok()));
