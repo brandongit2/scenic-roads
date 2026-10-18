@@ -2274,6 +2274,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                         if let Some(u) = s.tasks.by_id.get(&id).and_then(|t| t.spec["unit"].as_str().map(str::to_string)) {
                             let c = s.costs.entry(task_cost_key(&kind, &u)).or_default();
                             c.peak_mb = c.peak_mb.max(peak + peak / 4);
+                            s.needs_rev += 1;
                             s.save_costs();
                         }
                     }

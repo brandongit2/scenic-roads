@@ -394,7 +394,7 @@ never correctness, politeness or work.
 **One model per step** (`pipeline::needs::Book`: `need(step, target, threads, guess)`, and `mem`
 alone for the picks): only what was measured the way the step runs now counts
 (`coord::cost_version`); a run or floor of an older way of it (a unit's before v2) is neither a
-target's measure, nor a fit's run, nor part of a prior. A target's memory, disk and time are its own
+target's memory or time measure, nor a fit's run, nor part of a prior (disk floors, `disks.json`, carry no version and always count). A target's memory, disk and time are its own
 run's (memory never below its floor; a floor alone counts as its measure); else base + k × size
 fitted over the step's measured runs (least squares raised to cover every run, × 1.1, capped at the
 most a run it was made from measured; threads a term when the runs differ in them), on whichever size
