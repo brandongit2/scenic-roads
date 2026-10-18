@@ -10747,6 +10747,9 @@ mod tests {
         a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0));
         a.free_set = Some(100 << 30);
         let most = job_slots(mac_cores() as usize);
+        // (A time the agent took from the wall clock: within a second of now, a second boundary
+        // between its reading and the test's.)
+        let near_now = |t: u64| now_s().abs_diff(t) <= 1;
         let kept = |home: &Path| -> Ramp {
             serde_json::from_slice::<Memory>(&std::fs::read(home.join("state.json")).unwrap()).unwrap().ramp
         };
@@ -10754,8 +10757,9 @@ mod tests {
         a.mem.ramp = Ramp { slots: RAMP_START + 1, clean_since: now_s() - RAMP_CLEAN_S, peak: RAMP_START + 1 };
         a.tend_ramp();
         assert_eq!(a.job_slots(), RAMP_START.min(most));
-        assert_eq!((a.mem.ramp.slots, a.mem.ramp.clean_since), (RAMP_START + 1, now_s()));
-        assert_eq!(kept(&home).clean_since, now_s(), "the reset kept");
+        assert_eq!(a.mem.ramp.slots, RAMP_START + 1);
+        assert!(near_now(a.mem.ramp.clean_since), "the stretch starts again now");
+        assert!(near_now(kept(&home).clean_since), "the reset kept");
         // Lasting: nothing rewritten, nothing reset, round after round.
         let since = a.mem.ramp.clean_since;
         std::fs::remove_file(home.join("state.json")).unwrap();
@@ -10787,8 +10791,9 @@ mod tests {
         a.mem.ramp.peak = RAMP_START + 1;
         a.pool_hung = Some(now_s());
         a.tend_ramp();
-        assert_eq!((a.mem.ramp.slots, a.mem.ramp.clean_since), (RAMP_START + 1, now_s()));
-        assert_eq!(kept(&home).clean_since, now_s());
+        assert_eq!(a.mem.ramp.slots, RAMP_START + 1);
+        assert!(near_now(a.mem.ramp.clean_since));
+        assert!(near_now(kept(&home).clean_since));
         a.pool_hung = None;
         // D4: a memory guard stop starts it again, saved at once.
         a.mem.ramp.clean_since = 5;
