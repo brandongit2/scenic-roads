@@ -1695,7 +1695,9 @@ impl Coordinator {
         }
         let mut a = a.clone();
         a.worker = self.me.clone();
-        s.seen(&self.me, format!("asked for {} steps", a.can.len()), Some(&a), now);
+        // (Its capacity kept as this Mac's own, `set_capacity`, not as a worker's: said once.)
+        let seen = Ask { cap: None, ..a.clone() };
+        s.seen(&self.me, format!("asked for {} steps", a.can.len()), Some(&seen), now);
         let offers: Vec<Offer> = s
             .offers
             .iter()
@@ -1757,11 +1759,10 @@ impl Coordinator {
         // (A capacity is refreshed only by an ask: a busy member's, older than `CAP_FRESH_S`, left out.)
         let fresh = |c: &Capacity| unix_now().saturating_sub(c.at) < CAP_FRESH_S;
         let own = s.own_cap.clone().filter(fresh).map(|c| (self.me.clone(), c));
-        // (This Mac's own asks' are its own's: said once.)
         let others = s
             .workers
             .iter()
-            .filter(|(n, w)| **n != self.me && now.saturating_duration_since(w.seen) < AROUND)
+            .filter(|(_, w)| now.saturating_duration_since(w.seen) < AROUND)
             .filter_map(|(n, w)| Some((n.clone(), w.cap.clone().filter(fresh)?)));
         own.into_iter().chain(others).collect()
     }
@@ -1773,8 +1774,7 @@ impl Coordinator {
     pub fn last_capacities(&self) -> Vec<(String, Capacity)> {
         let s = self.shared.lock().unwrap();
         let own = s.own_cap.clone().map(|c| (self.me.clone(), c));
-        let others =
-            s.workers.iter().filter(|(n, _)| **n != self.me).filter_map(|(n, w)| Some((n.clone(), w.cap.clone()?)));
+        let others = s.workers.iter().filter_map(|(n, w)| Some((n.clone(), w.cap.clone()?)));
         own.into_iter().chain(others).collect()
     }
 
