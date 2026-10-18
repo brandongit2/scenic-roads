@@ -197,8 +197,8 @@ pub fn clear_quit(home: &Path) {
     std::fs::remove_file(home.join(QUIT_REQUEST)).ok();
 }
 
-/// The owner's cancel of a running job (`scenic job cancel <target> [--rerun-after-update]`, the
-/// menu bar): the job building `target` (of `step`, when it names one) stops now and gives its work
+/// The owner's cancel of a running job (`scenic job cancel <target> [--rerun-after-update]`):
+/// the job building `target` (of `step`, when it names one) stops now and gives its work
 /// back, not failed (no retry delay, nothing kept from its Mac), its in-progress work dropped (its
 /// scratch for the target cleared; targets it finished are kept). With `rerun_after_update` the
 /// target is held until the lead runs a newer app than the one it was cancelled on
@@ -212,7 +212,7 @@ pub struct Cancel {
     pub step: Option<String>,
     #[serde(default)]
     pub rerun_after_update: bool,
-    /// Who asked, in words: "scenic job cancel on m4", "the menu bar on m4".
+    /// Who asked, in words: "scenic job cancel on m4".
     #[serde(default)]
     pub by: String,
     #[serde(default)]

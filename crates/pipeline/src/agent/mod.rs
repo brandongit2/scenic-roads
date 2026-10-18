@@ -2997,7 +2997,7 @@ impl Agent {
             self.guard_on = Some(on);
         }
         self.total = self.mac_total_mb();
-        // The owner's cancels (`scenic job cancel`, the menu bar, the lead's word): those jobs stopped
+        // The owner's cancels (`scenic job cancel`, the lead's word): those jobs stopped
         // and given back first.
         ended |= self.tend_cancels(root.as_deref(), &mut waiting);
         for k in 0..self.slots.len() {
