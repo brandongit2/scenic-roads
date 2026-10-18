@@ -28,6 +28,7 @@ import argparse
 import glob
 import http.client
 import json
+import math
 import shlex
 import shutil
 import socket
@@ -141,11 +142,24 @@ GRID_X0, GRID_Y1, GRID_RX, GRID_RY = -7081005.895301013, 5499015.35251896, 19.09
 
 
 def on_grid(box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
-    """`box` (x0, y0, x1, y1) with each edge moved to the nearest pixel line of the service's grid."""
+    """`box` (x0, y0, x1, y1) with its outer edges moved outward to the service's pixel lines (x0 and y0
+    down, x1 and y1 up; an edge already on a line, within 1e-6 pixel, stays). So the quarters of a
+    split block cover at least what the service would give the whole block: beside an unsplit
+    block they can overlap by a pixel, never leave a gap."""
     x0, y0, x1, y1 = box
-    sx = lambda x: GRID_X0 + round((x - GRID_X0) / GRID_RX) * GRID_RX
-    sy = lambda y: GRID_Y1 - round((GRID_Y1 - y) / GRID_RY) * GRID_RY
-    return sx(x0), sy(y0), sx(x1), sy(y1)
+    e = 1e-6
+    return (GRID_X0 + math.floor((x0 - GRID_X0) / GRID_RX + e) * GRID_RX,
+            GRID_Y1 - math.ceil((GRID_Y1 - y0) / GRID_RY - e) * GRID_RY,
+            GRID_X0 + math.ceil((x1 - GRID_X0) / GRID_RX - e) * GRID_RX,
+            GRID_Y1 - math.floor((GRID_Y1 - y1) / GRID_RY + e) * GRID_RY)
+
+
+def mid_on_grid(a: float, b: float, y: bool = False) -> float:
+    """The middle of `a`, `b` moved to the nearest pixel line (of the Y lines if `y`)."""
+    m = (a + b) / 2
+    if y:
+        return GRID_Y1 - round((GRID_Y1 - m) / GRID_RY) * GRID_RY
+    return GRID_X0 + round((m - GRID_X0) / GRID_RX) * GRID_RX
 
 
 def mosaic(subs: list[Path], dest: Path) -> None:
@@ -219,7 +233,7 @@ def fetch_split(cov: str, box: tuple[float, float, float, float], dest: Path, pa
                 raise
     log(f"{dest.name}: {'quarters already fetched' if resumed else '504 or timeout twice'}; splitting into 4 quarters")
     x0, y0, x1, y1 = on_grid(box)
-    xm, ym = on_grid(((x0 + x1) / 2, (y0 + y1) / 2, 0, 0))[:2]
+    xm, ym = mid_on_grid(x0, x1), mid_on_grid(y0, y1, y=True)
     quarters = [(x0, y0, xm, ym), (xm, y0, x1, ym), (x0, ym, xm, y1), (xm, ym, x1, y1)]
     subs = [fetch_split(cov, q, dest.with_name(f"{dest.stem}_q{i}{dest.suffix}"), pause, tries) for i, q in enumerate(quarters)]
     mosaic(subs, dest)

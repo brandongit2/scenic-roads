@@ -153,6 +153,33 @@ class SplitOn504(unittest.TestCase):
             self.assertEqual(d.read(1)[-1, 0], 7.0)
             self.assertEqual(d.read(1)[0, 0], 0.0)
 
+    def test_an_on_grid_box_is_unchanged(self):
+        box = (chunked.GRID_X0 + 5 * chunked.GRID_RX, chunked.GRID_Y1 - 40 * chunked.GRID_RY,
+               chunked.GRID_X0 + 77 * chunked.GRID_RX, chunked.GRID_Y1 - 3 * chunked.GRID_RY)
+        for a, b in zip(chunked.on_grid(box), box):
+            self.assertAlmostEqual(a, b, places=6)
+
+    def test_outer_edges_snap_outward(self):
+        x0, y0, x1, y1 = chunked.on_grid((chunked.GRID_X0 + 5.3 * chunked.GRID_RX, chunked.GRID_Y1 - 40.6 * chunked.GRID_RY,
+                                           chunked.GRID_X0 + 77.2 * chunked.GRID_RX, chunked.GRID_Y1 - 3.4 * chunked.GRID_RY))
+        self.assertAlmostEqual((x0 - chunked.GRID_X0) / chunked.GRID_RX, 5, places=6)
+        self.assertAlmostEqual((chunked.GRID_Y1 - y0) / chunked.GRID_RY, 41, places=6)
+        self.assertAlmostEqual((x1 - chunked.GRID_X0) / chunked.GRID_RX, 78, places=6)
+        self.assertAlmostEqual((chunked.GRID_Y1 - y1) / chunked.GRID_RY, 3, places=6)
+
+    def test_the_midpoint_snaps_the_same_way_at_every_level(self):
+        """Each level's midpoint is the halfway pixel line, in X and in Y alike."""
+        lo, hi = 3, 3 + 1024  # columns (halving never lands between lines)
+        while hi - lo > 1:
+            m = chunked.mid_on_grid(chunked.GRID_X0 + lo * chunked.GRID_RX, chunked.GRID_X0 + hi * chunked.GRID_RX)
+            col = (m - chunked.GRID_X0) / chunked.GRID_RX
+            self.assertAlmostEqual(col, round(col), places=6)
+            self.assertEqual(round(col), (lo + hi) // 2)
+            ym = chunked.mid_on_grid(chunked.GRID_Y1 - lo * chunked.GRID_RY, chunked.GRID_Y1 - hi * chunked.GRID_RY, y=True)
+            row = (chunked.GRID_Y1 - ym) / chunked.GRID_RY
+            self.assertEqual(round(row), round(col))
+            hi = round(col)
+
     def mosaic_of(self, *tiles):
         subs = []
         for i, t in enumerate(tiles):
