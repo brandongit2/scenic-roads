@@ -819,8 +819,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   - Switches (present or `on` in it: on; `off` or missing: off, unless said): `auto-handover`
     (`scenic lead auto on|off`), `slots` (§7.6), `memory-guard` (missing: on; §7.2), `resume`
     (§7.2, §7.4), `brokers` (§8; every coordinator answers `POST /work/where`), `placement` (§7.2:
-    jobs get `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `delta-catalog`, all under
-    `state/pool/`.
+    jobs get `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `delta-catalog` and `near-slope`
+    (plan §8, Publishing's switches), all under `state/pool/`.
   - A member's ask carries `disk_mb` (free disk less the agent's reserve,
     `pipeline::agent::room::RESERVE`, and the room target).
   - `state/pool/progress/<member>.json`: `{member, worker, jobs: {"osm-pass <date>": {at, since,

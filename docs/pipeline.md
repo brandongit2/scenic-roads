@@ -115,8 +115,8 @@ the lead.
 | | Clean-up | `gc` | keep | the world | lead |
 | | Backup | `backup` | keep | the world | lead |
 
-The forecast's lane for publishing a region as a whole is `publishing` ("Publishing", the
-publishing stage's colour): not a step.
+Publishing has no lane or step of its own: it goes per unit (plan §8, Publishing), and the
+forecast marks each region where it's all on the map (`map_at`).
 
 ## 4. The checklist
 
