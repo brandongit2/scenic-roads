@@ -10876,7 +10876,8 @@ mod tests {
         let stopped_state = |a: &Agent| {
             let pgid = a.slots[1].running.as_ref().unwrap().pgid;
             let o =
-                std::process::Command::new("/bin/ps").args(["-o", "stat=", "-p", &pgid.to_string()]).output().unwrap();
+                store::spawn::output(store::spawn::command("/bin/ps").args(["-o", "stat=", "-p", &pgid.to_string()]))
+                    .unwrap();
             String::from_utf8_lossy(&o.stdout).contains('T')
         };
         for trouble in [true, true, false] {
