@@ -1615,7 +1615,8 @@ fn catalog(
         if described.len() == 1 { "" } else { "s" }
     );
     // Only what the map reads: build sources (the planet's pieces, sets and road values) stay out,
-    // or every Mac's mirror would copy them. A file missing on the NAS stops the publish.
+    // or every Mac's mirror would copy them. A file missing on the NAS stops a whole catalog (a
+    // delta takes its new files' sizes from the records and doesn't look).
     let served = |l: &str| served_file(l, &basemap, &global);
     drop(p);
     // (A delta (`--delta`, served, not asked whole, with a whole catalog to start from and its run

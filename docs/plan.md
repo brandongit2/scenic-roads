@@ -1127,8 +1127,8 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
        (`publish::lead_share`), leaving the rest offered to members.
      - `delta-catalog`: the catalog job (`scenic-build catalog --delta`) writes what changed over the
        last (docs/formats.md, Delta catalogs), each file's size from the records
-       (`state/build/sizes.json`, which the files' jobs hand off) or the last catalog: it looks at
-       the NAS only for a file written before sizes were recorded. The whole catalog, which looks
+       (`state/build/sizes.json`, which the files' jobs hand off) or the last catalog: it looks up no
+       file's size on the NAS but a file written before sizes were recorded. The whole catalog, which looks
        at every file, is an idle-time job (`scenic-build catalog --whole`) the lead's agent runs
        when the deltas add up to a whole one (`store::catalog::whole_due`), or a delta's run nears
        `MAX_CHAIN`. Readers apply deltas (`store::catalog::latest_nas_from`). Switch on only once
