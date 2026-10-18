@@ -1113,6 +1113,19 @@ pub fn speeds(
 
 #[cfg(test)]
 mod tests {
+    /// This thread's CPU time (ms): a timing test's measure, not wall time, so a loaded Mac (tests
+    /// in parallel) doesn't fail it; its bound catches a complexity regression (an O(n³) run took
+    /// 16 s), not jitter.
+    fn thread_cpu_ms() -> u128 {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: a valid timespec for the call to fill.
+        assert_eq!(unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) }, 0);
+        ts.tv_sec as u128 * 1000 + ts.tv_nsec as u128 / 1_000_000
+    }
+
+    /// The CPU time (ms) a timing test's forecast may take (well under a second unloaded).
+    const CPU_BOUND_MS: u128 = 3000;
+
     use super::*;
     use std::collections::BTreeSet;
 
@@ -1721,12 +1734,12 @@ mod tests {
             ("m1".to_string(), MacRoom { mem_mb: 8_000, cores: 8 }),
         ]
         .into();
-        let took = std::time::Instant::now();
+        let took = thread_cpu_ms();
         let f = forecast(&inp);
-        let ms = took.elapsed().as_millis();
+        let ms = thread_cpu_ms() - took;
         eprintln!("the forecast took {ms} ms (3,000 units, 3,000 map tiles, 8 lanes)");
         assert!(f.done_at.is_some() && f.regions.iter().all(|r| r.map_at.is_some()));
-        assert!(ms < 1000, "{ms} ms");
+        assert!(ms < CPU_BOUND_MS, "{ms} ms of CPU");
     }
 
     /// The run as first written (task #384): every pick scans every item, each candidate's room
@@ -2001,15 +2014,15 @@ mod tests {
         for all_cold in [true, false] {
             let c = mixed(all_cold);
             let inp = two_macs(&regions, &c, false);
-            let took = std::time::Instant::now();
+            let took = thread_cpu_ms();
             let f = forecast(&inp);
-            let ms = took.elapsed().as_millis();
+            let ms = thread_cpu_ms() - took;
             eprintln!(
                 "the forecast took {ms} ms (3,000 units, {})",
                 if all_cold { "all cold" } else { "cold and big mixed" }
             );
             assert!(f.done_at.is_some());
-            assert!(ms < 1000, "{ms} ms");
+            assert!(ms < CPU_BOUND_MS, "{ms} ms of CPU");
         }
     }
 

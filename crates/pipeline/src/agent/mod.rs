@@ -10966,7 +10966,7 @@ mod tests {
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(a.try_start(0, job, &cond, Some(&root), &mut Vec::new()));
         assert!(a.guard_stop_as(0, "memory guard", "past the limit (a test)", false));
-        assert_eq!((kept(&home).clean_since, kept(&home).peak), (now_s(), 0));
+        assert!(near_now(kept(&home).clean_since) && kept(&home).peak == 0, "{:?}", kept(&home));
         // A member's slots: by its cores alone.
         a.o.helper = true;
         assert_eq!(a.job_slots(), most);
