@@ -4,14 +4,32 @@ usage: python3 robots.py <robots.txt file> <path>   exit 0: allowed, 1: disallow
 
 - Lines: CR stripped, `#` comments dropped, fields case-insensitive.
 - Groups: consecutive `User-agent` lines form one group; a `User-agent` after a rule starts a new one.
-- The groups naming our product token (`scenic-roads`, case-insensitively) are ours, all merged; with none, the `*` groups, merged; with neither, everything is allowed.
+- The groups naming our product token (`scenic-roads`, case-insensitively, a `scenic-roads/…`
+  version after it allowed) are ours, all merged; with none, the `*` groups, merged; with neither, everything is allowed.
 - `Allow` and `Disallow` match a path's start, `*` any run of characters, a final `$` its end; the
   longest matching pattern wins, an `Allow` winning a tie; an empty `Disallow` matches nothing.
-- Other fields (`Crawl-delay`, `Sitemap`, …) are ignored.
+- Patterns and the path compared with their percent-encoding normalised (RFC 9309 §2.2.2): an
+  escape of an unreserved character decoded, the others' hex upper-cased.
+- Other fields (`Crawl-delay`, `Sitemap`, …) are ignored. An error running it (exit 1) stops the
+  fetch too.
 """
 
 import re
 import sys
+
+UNRESERVED = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+
+
+def _norm(s):
+    def one(m):
+        c = chr(int(m.group(1), 16))
+        return c if c in UNRESERVED else "%" + m.group(1).upper()
+
+    return re.sub(r"%([0-9A-Fa-f]{2})", one, s)
+
+
+def _ours(agent):
+    return agent == TOKEN or agent.startswith(TOKEN + "/")
 
 TOKEN = "scenic-roads"
 
@@ -47,14 +65,15 @@ def _matches(pattern, path):
 
 
 def allowed(text, path):
+    path = _norm(path)
     groups = _groups(text)
-    mine = [r for a, r in groups if TOKEN in a]
+    mine = [r for a, r in groups if any(_ours(x) for x in a)]
     if not mine:
         mine = [r for a, r in groups if "*" in a]
     best = None  # (length, allow)
     for rules in mine:
         for allow, pattern in rules:
-            if not pattern or not _matches(pattern, path):
+            if not pattern or not _matches(_norm(pattern), path):
                 continue
             key = (len(pattern), allow)
             if best is None or key > best:

@@ -46,6 +46,16 @@ class Robots(unittest.TestCase):
         self.assertFalse(allowed("User-agent: *\nDisallow: /*egm08\n", P))
         self.assertTrue(allowed("User-agent: *\nDisallow: /*.gtx$\n", P))
 
+    def test_versioned_token_is_ours(self):
+        text = "User-agent: *\nDisallow: /\n\nUser-agent: scenic-roads/0.1\nAllow: /\n"
+        self.assertTrue(allowed(text, P))
+        self.assertFalse(allowed("User-agent: scenic\nAllow: /\nUser-agent: *\nDisallow: /\n", P))
+
+    def test_percent_encoding_is_normalised(self):
+        self.assertFalse(allowed("User-agent: *\nDisallow: /us%5Fnga\n", P))
+        self.assertFalse(allowed("User-agent: *\nDisallow: /a%2fb\n", "/a%2Fb.tif"))
+        self.assertTrue(allowed("User-agent: *\nDisallow: /a%2Fb\n", "/a/b.tif"))
+
 
 if __name__ == "__main__":
     unittest.main()

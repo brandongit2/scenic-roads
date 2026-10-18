@@ -1017,7 +1017,8 @@ territory.
   left as they are`); a unit job given no accepted sources says it converts nothing.
   `producers/geoid/fetch.sh` reads each host's robots.txt first, alone, judged by
   `producers/geoid/robots.py` (RFC 9309 groups, our token's group over `*`'s, Allow and Disallow by
-  longest match with `*` and `$`; a file it can't parse stops); unreadable counts as allow. Only
+  longest match with `*` and `$`, percent-encoding normalised; `scenic-roads/…` counts as ours; an
+  error running it stops); unreadable counts as allow (redirects followed, up to 5). Only
   EGM2008 is named in code. `scenic-build geoid-offsets --sources <folder>
   --from <reference> --at <lon,lat>[;…]` prints a chain's offsets, hop by hop.
   - **The grids** (staged in `producers/geoid/declarations/`, fetched by `producers/geoid/fetch.sh
