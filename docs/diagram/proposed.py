@@ -294,7 +294,7 @@ def build(check=False):
     # ---- 8. publishing, as the units are built -----------------------------------------------------------
     y0 = y1 + GAP
     cy = y0 + 24
-    n_rd = d.card('mix', 'd1', cy, 'publishing', 'Rust', ['as soon as a unit is built:', 'the map tiles whose owners', 'changed, a unit’s together,', 'the road index and rail stops;', 'once caught up, at most one', 'a minute:'],
+    n_rd = d.card('mix', 'd1', cy, 'publishing', 'Rust', ['as soon as a unit is built:', 'the map tiles whose owners', 'changed, a unit’s together,', 'and the road index; then at', 'most one catalog a minute;', 'low zooms by their cadence:'],
                   [(['catalog/<n>.json.zst'], 'every file the map reads')], scope='global')
     s_rd = d.src('mix', cy, 'Regions as they’re done', ['a region at a time: those', 'the map lacks first, then', 'the fewest areas left'], minh=n_rd.h)
     p_cat = d.pill('mix', n_rd.y + 46, ['/api/catalog · meta'], note=['the newest that decodes;', 'every 30 s while in use'])

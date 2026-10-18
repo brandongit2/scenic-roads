@@ -847,15 +847,20 @@ pub fn host_of(worker: &str) -> &str {
 }
 
 /// The catalog each Mac's map server last adopted, from the servers' log under `root`
-/// (crate::pubtimes::SERVERS; the last two days').
-fn adopted(root: &Path) -> BTreeMap<String, CatalogSeen> {
+/// (crate::pubtimes::SERVERS; the last two days'), read within the NAS readers' deadline
+/// (`nasread::with`): `TimedOut` past it.
+fn adopted(root: &Path) -> std::io::Result<BTreeMap<String, CatalogSeen>> {
+    let owned = root.to_path_buf();
+    let since = now_s().saturating_sub(2 * 86_400);
+    let events =
+        nasread::with(&root.join(crate::pubtimes::SERVERS), move || Ok(crate::pubtimes::read_servers(&owned, since)))?;
     let mut out: BTreeMap<String, CatalogSeen> = BTreeMap::new();
-    for e in crate::pubtimes::read_servers(root, now_s().saturating_sub(2 * 86_400)) {
+    for e in events {
         if e.kind == "adopt" && out.get(&e.host).is_none_or(|c| e.n >= c.n) {
             out.insert(e.host.clone(), CatalogSeen { n: e.n, at: e.t });
         }
     }
-    out
+    Ok(out)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -6918,8 +6923,9 @@ impl Agent {
         jobs
     }
 
-    /// Publishing as it stands (`Published`), the servers' log under `root` read again when a newer
-    /// catalog is seen or five minutes have passed.
+    /// Publishing as it stands (`Published`), the servers' log under `root` read again (within the
+    /// NAS readers' deadline; past it, the last read kept) when a newer catalog is seen or five
+    /// minutes have passed.
     fn published(&self, root: Option<&Path>) -> Published {
         let last = self.catalog_seen.get();
         let c = self.catalogs.borrow();
@@ -6931,7 +6937,10 @@ impl Agent {
             let mut a = self.adopted.borrow_mut();
             let n = last.map(|l| l.n);
             if a.1 != n || now_s().saturating_sub(a.0) >= 300 {
-                *a = (now_s(), n, adopted(root));
+                // (Past the deadline: the last read kept, tried again next time.)
+                if let Ok(read) = adopted(root) {
+                    *a = (now_s(), n, read);
+                }
             }
         }
         Published { last, low: c.at > 0 && c.low_at == Some(c.at), drawing, adopted: self.adopted.borrow().2.clone() }
@@ -11793,6 +11802,35 @@ mod tests {
             helper,
         })
         .unwrap()
+    }
+
+    /// (Task #259 review) each Mac's adopted catalog from the servers' log, read through the NAS
+    /// readers (`nasread::with`); worker names folded to their Macs.
+    #[test]
+    fn each_macs_adopted_catalog_is_its_last_adopt() {
+        use crate::pubtimes::{append_server, ServerEvent};
+        let d = tempfile::tempdir().unwrap();
+        let t = now_s() - 100;
+        let ev = |host: &str, kind: &str, n: u64, dt: u64| ServerEvent {
+            t: t + dt,
+            host: host.into(),
+            kind: kind.into(),
+            n,
+            secs: None,
+        };
+        for e in [
+            ev("m4", "adopt", 811, 0),
+            ev("m4", "adopt", 812, 10),
+            ev("m1", "adopt", 811, 5),
+            ev("m1", "mirror-start", 812, 20),
+        ] {
+            append_server(d.path(), e).unwrap();
+        }
+        let a = adopted(d.path()).unwrap();
+        assert_eq!(a["m4"], CatalogSeen { n: 812, at: t + 10 });
+        assert_eq!(a["m1"], CatalogSeen { n: 811, at: t + 5 });
+        assert!(adopted(&d.path().join("none")).unwrap().is_empty());
+        assert_eq!((host_of("m4 #3"), host_of("m4"), host_of("page #1")), ("m4", "m4", "page #1"));
     }
 
     /// A forecast made now: the build done (nothing left to build), or not.

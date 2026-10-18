@@ -342,6 +342,14 @@ impl Nas for Deadlined {
     }
 }
 
+/// `f`, a read of what's under `p` (a few small files, a folder listed), run within `DEADLINE`
+/// (`TimedOut` past it), noted as a read of `p` is.
+pub fn with<T: Send + 'static>(p: &Path, f: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
+    let r = readers().call(p, DEADLINE, f);
+    note(p, &r);
+    r
+}
+
 /// The watchdog's file in the agent's folder while its loop is stalled (`Stall`).
 pub const STALL_FILE: &str = "loop-stall.json";
 /// A loop that hasn't finished a round in this long is stalled (its start counts as a round).
