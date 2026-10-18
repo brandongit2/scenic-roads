@@ -6,8 +6,9 @@ the stations fixed; land a barrier, so a narrow bay's tide doesn't leak across a
 Atlantic coast of Nova Scotia, about 1 m, stays out of the Minas Basin, 7.5 m), solved on a
 lon/lat grid over the water bodies that hold a station (a station counts for the water nearest it,
 within 25 km; none within 25 km of any water stops the run, saying how far the nearest is), and the
-nearest solved value beyond, for a water body with no station only if it is within 25 km of a solved
-cell (each such body is logged; one farther stops the run: the table needs rows for it). A
+nearest solved value beyond. A water body with no station within 25 km of a solved cell (an inland
+lake) gets no depth (NaN: nodata), logged in one line; more than 5% of the water in such bodies, or one
+over 2%, stops the run (a missing area of the table). A
 station table is a CSV with `lon`, `lat` and the value's column.
 """
 from __future__ import annotations
@@ -108,12 +109,22 @@ class Surface:
         lat0 = north - H * res / 2
         _, (iy2, ix2) = distance_transform_edt(~solve, return_indices=True, sampling=(KM_DEG * res, KM_DEG * res * np.cos(np.radians(lat0))))
         dist = np.hypot((np.arange(H)[:, None] - iy2) * KM_DEG * res, (np.arange(W)[None, :] - ix2) * KM_DEG * res * np.cos(np.radians(lat0)))
-        for body in np.unique(lab[water & ~solve]):
-            m = lab == body
-            d = float(dist[m].min())
-            log(f"datum surface: a water body of {int(m.sum())} cells has no station; the nearest solved value is {d:.1f} km away")
-            if d > REACH_KM:
-                raise SystemExit(f"a water body of {int(m.sum())} cells has no station within {REACH_KM:g} km, the nearest solved value is {d:.0f} km away: the table needs rows for it")
+        bodies = np.unique(lab[water & ~solve])
+        far = np.zeros((H, W), bool)
+        if len(bodies):
+            from scipy.ndimage import minimum, sum as nsum
+
+            dmin = np.atleast_1d(minimum(dist, lab, bodies))
+            size = np.atleast_1d(nsum(np.ones((H, W), "float32"), lab, bodies))
+            gone = dmin > REACH_KM
+            if gone.any():
+                far = np.isin(lab, bodies[gone])
+                total = int(water.sum())
+                log(f"datum surface: {int(gone.sum())} water bodies, {int(size[gone].sum())} cells, with no station within {REACH_KM:g} km (the largest {int(size[gone].max())} cells, "
+                    f"the farthest {dmin[gone].max():.0f} km from a solved cell) get no depth")
+                if size[gone].sum() > 0.05 * total or size[gone].max() > 0.02 * total:
+                    raise SystemExit(f"{int(size[gone].sum())} of {total} water cells (the largest body {int(size[gone].max())}) have no station within {REACH_KM:g} km: "
+                                     "that is a missing area of the table, not a lake; the table needs rows for it")
         idx = -np.ones((H, W), np.int64)
         cells = np.argwhere(solve)
         idx[solve] = np.arange(len(cells))
@@ -134,13 +145,14 @@ class Surface:
         out[solve] = x
         log(f"datum surface: {len(pts)} stations on {len(fixed)} cells, {len(cells)} water cells, {x.min():.2f}–{x.max():.2f} m")
         out = out[iy2, ix2]
+        out[far] = np.nan
         return cls(out, west, north, res)
 
     def on(self, win: Window) -> np.ndarray:
         """The surface on a depth grid's window (bilinear)."""
         from rasterio.transform import from_origin
 
-        return warp_onto((self.a, from_origin(self.west, self.north, self.res, self.res), "EPSG:4326"), 1, win, "bilinear")
+        return warp_onto((self.a, from_origin(self.west, self.north, self.res, self.res), "EPSG:4326"), 1, win, "bilinear", src_nodata=np.nan)
 
 
 def from_table(table, rasters, res: float = 0.005) -> Surface | None:
