@@ -87,7 +87,9 @@ git -C $snap checkout -q --detach --force $head
 git -C $snap clean -qfdx -e /target -e /web/node_modules
 cd $snap
 mise trust -q 2>/dev/null || true
-# Rust (rust-toolchain.toml's) and the wasi-sdk (mise.toml's), installed by `mise install` once.
+# Rust (rust-toolchain.toml's), and the wasi-sdk, Node and pnpm at mise.toml's versions, installed
+# here when this Mac lacks one (a version pinned since this Mac last published).
+mise install -q || { echo "mise install failed"; exit 1; }
 eval "$(mise env -s zsh)"
 lockhash=$(shasum -a 256 web/pnpm-lock.yaml | cut -c1-64)
 if [[ ! -d web/node_modules || $(cat target/.publish-pnpm-lock 2>/dev/null) != $lockhash ]]; then
