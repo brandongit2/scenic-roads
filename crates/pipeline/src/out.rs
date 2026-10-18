@@ -70,6 +70,12 @@ pub fn lay_over(m: &mut BTreeMap<String, String>, h: &crate::handoff::Handoff) {
 
 /// A JSON record (the manifest, the unverified uploads): empty when there's none yet, an error when
 /// it can't be read now (an SMB hiccup), so nothing is ever written from an empty one by mistake.
+/// The records' manifest under `root` (`state/build/manifest.json`), read only: the accepted
+/// versions, for a reader that needs no `Out` (coord::hosts).
+pub fn read_manifest(root: &Path) -> Result<BTreeMap<String, String>> {
+    read_record(&root.join("state/build/manifest.json"))
+}
+
 pub fn read_record<T: Default + serde::de::DeserializeOwned>(p: &Path) -> Result<T> {
     match std::fs::read(p) {
         Ok(b) => serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display())),

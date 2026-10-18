@@ -76,7 +76,7 @@ impl Cache {
     /// The hosts as the records under `root` name the accepted versions (`at`: now):
     /// Cache::get_with reading `state/build/manifest.json` and deriving with `of`.
     pub fn get(&self, root: &Path, at: std::time::Instant) -> Result<BTreeSet<String>> {
-        self.get_with(at, || crate::out::read_record(&root.join("state/build/manifest.json")), |m| of(root, m))
+        self.get_with(at, || crate::out::read_manifest(root), |m| of(root, m))
     }
 
     /// The set, the records read again (`read`) at most every `RECHECK`, derived again (`derive`)
