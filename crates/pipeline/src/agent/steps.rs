@@ -1600,7 +1600,10 @@ mod tests {
         // The steps the agent makes jobs of, as its source names them: the planner's work
         // (`Work { step: "…"`), the jobs it titles (`job(format!("…`, `id: "…"`), the steps the
         // checklist counts (build::COUNTED), and those whose names it puts together.
-        let (agent, build) = (include_str!("mod.rs"), include_str!("build.rs"));
+        // (Each source with its trimmed lines joined, as rustfmt breaks a call across lines.)
+        let flat = |s: &str| s.lines().map(str::trim).collect::<String>();
+        let (agent, build) = (flat(include_str!("mod.rs")), flat(include_str!("build.rs")));
+        let (agent, build) = (agent.as_str(), build.as_str());
         let mut named = std::collections::BTreeSet::<String>::new();
         let mut take = |src: &str, pat: &str| {
             for (i, _) in src.match_indices(pat) {

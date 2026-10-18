@@ -37,7 +37,7 @@ fn writes_records(l: &str, c: &str) -> bool {
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/coord/mod.rs", "raw_again", "crate::handoff::write(&journal.join(crate::handoff::RAW_AGAIN)", "a hand-off not taken: its raw tiles' archives alone, kept for the next merge to name (outside the manifest)"),
     ("crates/pipeline/src/coord/mod.rs", "route", "crate::handoff::write(&journal.join(folder(&d.worker)), &h)", "the coordinator journaling a helper's hand-off (its job's Out wrote it) while its pool is off: the merge's path"),
-    ("crates/pipeline/src/rawpack.rs", "finish_with", "crate::handoff::write(&dir, &crate::handoff::Handoff { raw:", "a job's raw tiles' archives, named by their area (crate::rawpack::named_for, which the merge checks), outside the manifest"),
+    ("crates/pipeline/src/rawpack.rs", "finish_with", "^crate::handoff::write(&dir,&crate::handoff::Handoff { raw:", "a job's raw tiles' archives, named by their area (crate::rawpack::named_for, which the merge checks), outside the manifest"),
     ("crates/pipeline/src/agent/pool.rs", "write_today", "nas.write_whole(\"state/build/manifest.json\"", "the lead writing today's files from its merged records, for their readers"),
     ("crates/pipeline/src/bin/scenic-build.rs", "rekey_check", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): a check run by hand"),
     ("crates/pipeline/src/bin/scenic-build.rs", "p5_check_terrain", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): a check run by hand"),
@@ -88,16 +88,21 @@ fn scan() -> (Vec<String>, Vec<String>) {
         let lines: Vec<&str> = text.lines().collect();
         let code: Vec<String> = lines.iter().map(|l| code_of(l)).collect();
         let tests = test_lines(&code);
+        let mut covered = 0; // (The lines an anchored exemption has taken in, up to this one.)
         for i in 0..lines.len() {
             let l = lines[i].split("//").next().unwrap_or("");
+            if i < covered {
+                continue;
+            }
             if tests[i] || !writes_records(l, &code[i]) {
                 continue;
             }
             let name = enclosing_rs(&code, i).map_or_else(|| "<top level>".to_string(), |e| e.0);
-            if let Some(k) =
-                EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == name && l.contains(anchor))
-            {
+            if let Some((k, n)) = EXEMPT.iter().enumerate().find_map(|(k, (ef, en, anchor, _))| {
+                (*ef == rel && *en == name).then(|| anchored(&lines, i, l, anchor)).flatten().map(|n| (k, n))
+            }) {
                 used.insert(k);
+                covered = i + n;
                 continue;
             }
             bad.push(format!("{rel}:{} in {name}: {}", i + 1, l.trim()));
@@ -110,6 +115,19 @@ fn scan() -> (Vec<String>, Vec<String>) {
         .map(|(_, (f, n, a, _))| format!("{f}: {n}: {a}"))
         .collect();
     (bad, unused)
+}
+
+/// How many lines an exemption's anchor takes in at line `i` (`l` is the line cut of its comment), or
+/// None if it doesn't hold: a plain anchor is a part of the line (one line); one starting with `^` is
+/// how the item's text begins at the line, its next lines (trimmed) joined, so an exemption names a
+/// statement as it was before rustfmt broke it across lines, not any line with the same words, and
+/// the lines it spans are covered by it (and by nothing else).
+fn anchored(lines: &[&str], i: usize, l: &str, anchor: &str) -> Option<usize> {
+    match anchor.strip_prefix('^') {
+        Some(rest) => (1..=(lines.len() - i).min(6))
+            .find(|n| lines[i..i + n].iter().map(|l| l.trim()).collect::<String>().starts_with(rest)),
+        None => l.contains(anchor).then_some(1),
+    }
 }
 
 #[test]

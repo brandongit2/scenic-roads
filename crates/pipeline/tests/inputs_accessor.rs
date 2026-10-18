@@ -61,8 +61,8 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/bld/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/terrain_task.rs", "spec", "\"inputs\": [[", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/agent/gc.rs", "NEVER", "\"translations\"", "GC's never-swept list (§4.9): the drop boxes, and the old translations/ and descriptions/ (#137), whose drops the input check flags"),
-    ("crates/pipeline/src/agent/steps.rs", "TABLE", "\"inputs\", \"Input check\"", "the `inputs` step's row"),
-    ("crates/pipeline/src/agent/build.rs", "record", "matches!(step, \"inputs\" | ", "the `inputs` step's name"),
+    ("crates/pipeline/src/agent/steps.rs", "TABLE", "^\"inputs\",\"Input check\"", "the `inputs` step's row"),
+    ("crates/pipeline/src/agent/build.rs", "record", "^\"inputs\"| \"outlines\"", "the `inputs` step's name"),
     ("crates/pipeline/src/agent/backup.rs", "FOLDERS", "[\"inputs\",", "the backups: every drop box and the acceptances, by design (§4.9)"),
     ("crates/pipeline/src/agent/mod.rs", "finished", "\"inputs \"", "the `inputs` step's job ids"),
     ("crates/pipeline/src/cli/tables.rs", "SCENIC", "c(\"inputs", "the `inputs` commands' names and usage"),
@@ -78,6 +78,8 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/mod.rs", "gate_work", "strip_prefix(\"inputs/\")", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
     ("crates/pipeline/src/agent/mod.rs", "gate_work", "\"inputs {unit} full\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
     ("crates/pipeline/src/agent/mod.rs", "gate_work", "\"inputs/{unit}\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
+    ("crates/pipeline/src/agent/mod.rs", "gate_work", ".join(\"scratch\").join(\"inputs\")", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
+    ("crates/pipeline/src/agent/mod.rs", "gate_work", "\"inputs {unit} forget\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
     ("crates/pipeline/src/agent/mod.rs", "gate_work", "\"inputs-listing\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
     ("crates/pipeline/src/agent/mod.rs", "input_digests", "\"inputs/keys.env\"", "inputs/keys.env's key names (not an input, §2)"),
     ("crates/pipeline/src/offload.rs", "offer", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
@@ -147,7 +149,7 @@ fn scan() -> (Vec<String>, Vec<String>) {
                 continue;
             }
             if let Some(k) =
-                EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == name && l.contains(anchor))
+                EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == name && anchored(&lines, i, anchor))
             {
                 used.insert(k);
                 continue;
@@ -192,6 +194,17 @@ fn scan() -> (Vec<String>, Vec<String>) {
         .map(|(_, (f, n, a, _))| format!("{f}: {n}: {a}"))
         .collect();
     (bad, unused)
+}
+
+/// Whether an exemption's anchor holds at line `i`: a plain anchor is a part of the line; one
+/// starting with `^` is how the item's text begins at the line, its next lines (trimmed) joined, so
+/// an exemption names a statement as it was before rustfmt broke it across lines, not any line with
+/// the same words.
+fn anchored(lines: &[&str], i: usize, anchor: &str) -> bool {
+    match anchor.strip_prefix('^') {
+        Some(rest) => lines[i..(i + 6).min(lines.len())].iter().map(|l| l.trim()).collect::<String>().starts_with(rest),
+        None => lines[i].contains(anchor),
+    }
 }
 
 #[test]
