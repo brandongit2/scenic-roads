@@ -535,6 +535,11 @@ fn status(args: &[String]) -> Result<()> {
         }
         None => println!("Running: nothing"),
     }
+    if let Some(r) = &st.ramp {
+        let since = if r.clean_since > 0 { format!(", clean since {}", ago(r.clean_since)) } else { String::new() };
+        let held = r.held.as_ref().map(|h| format!(", held: {h}")).unwrap_or_default();
+        println!("Slots: {} (ramp reached {}){held}{since}", r.slots, r.reached);
+    }
     if let Some(j) = &st.beside {
         println!(
             "Beside it: {} (since {}){}",

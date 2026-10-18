@@ -121,6 +121,20 @@ const UPDATE_STALL: Duration = Duration::from_secs(30 * 60);
 pub(crate) const RAMP_START: usize = 2;
 pub(crate) const RAMP_CLEAN_S: u64 = 6 * 3600;
 
+/// The lead's slots' ramp as the status shows it (`Status::ramp`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RampView {
+    /// The slots it may run now, and those its ramp reached.
+    pub slots: usize,
+    pub reached: usize,
+    /// Why its stretch isn't clean now (its slots held at the start while the NAS's limits aren't
+    /// known).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<String>,
+    /// Since when its stretch has been clean (unix s; 0: not yet).
+    pub clean_since: u64,
+}
+
 /// The lead's slots' ramp, kept in its state (`Memory::ramp`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Ramp {
@@ -721,6 +735,10 @@ pub struct Status {
     /// now, what it last did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory: Option<memguard::View>,
+    /// The lead's slots' ramp (docs/pool.md §7.1): the slots it may run, why they're held, and
+    /// since when its stretch has been clean.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ramp: Option<RampView>,
     /// The budgets, while they're on (crate::budget, docs/pool.md §7.7): the proxy's address, what
     /// it has opened, holds told, the NAS out of reach.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1238,8 +1256,10 @@ pub struct Agent {
     unpublishing: Option<std::thread::JoinHandle<()>>,
     pool_skips: u32,
     pool_hung: Option<u64>,
-    /// The lead's slots held at `RAMP_START` while the NAS's limits aren't known (`tend_ramp`).
+    /// The lead's slots held at `RAMP_START` while the NAS's limits aren't known, and the trouble
+    /// its ramp's stretch is in now, if any (`tend_ramp`; not kept: a restart starts it afresh).
     ramp_held: bool,
+    ramp_trouble: Option<String>,
     restart_for: Option<String>,
     /// The gate (crate::inputs): the drop boxes' listing thread, the status's entries as the last
     /// plan made them, what they read, and the units a full check was asked of.
@@ -1498,6 +1518,7 @@ impl Agent {
             pool_skips: 0,
             pool_hung: None,
             ramp_held: true,
+            ramp_trouble: None,
             pool_seen: run.as_ref().map(|r| r.pool_view()),
             held_entries: Vec::new(),
             in_process_owed: None,
@@ -2780,17 +2801,25 @@ impl Agent {
         };
         self.ramp_held = !c.nas_known();
         let running = self.running_jobs();
+        // (Trouble entered: the stretch reset, said and kept once; while it lasts, nothing more;
+        // as it ends, the stretch starts then, kept.)
+        let entering = trouble.is_some() && self.ramp_trouble.is_none();
+        let leaving = trouble.is_none() && self.ramp_trouble.is_some();
+        self.ramp_trouble = trouble.map(str::to_string);
         let r = &mut self.mem.ramp;
         let was = *r;
         r.slots = r.slots.max(RAMP_START);
         // (The most jobs it ran at once in the stretch: idle time doesn't count toward the next.)
         r.peak = r.peak.max(running);
         if let Some(why) = trouble {
-            if r.clean_since != now {
+            if entering {
                 eprintln!("agent: the lead's slots stay at {} ({why}: its clean stretch starts again)", r.slots);
+                (r.clean_since, r.peak) = (now, running);
+            } else {
+                // (Lasting: kept as it is, the peak not counted meanwhile.)
+                r.peak = was.peak;
             }
-            (r.clean_since, r.peak) = (now, running);
-        } else if r.clean_since == 0 {
+        } else if leaving || r.clean_since == 0 {
             (r.clean_since, r.peak) = (now, running);
         } else if r.slots < most && r.peak >= r.slots && now.saturating_sub(r.clean_since) >= RAMP_CLEAN_S {
             r.slots += 1;
@@ -3574,6 +3603,12 @@ impl Agent {
                 _ => self.pool_seen.clone(),
             },
             memory: Some(self.guard_view()),
+            ramp: (!self.o.helper).then(|| RampView {
+                slots: self.job_slots(),
+                reached: self.mem.ramp.slots.max(RAMP_START),
+                held: self.ramp_trouble.clone(),
+                clean_since: self.mem.ramp.clean_since,
+            }),
             budgets: self.proxy.as_ref().map(|p| p.view()),
             inputs: if self.o.helper { Vec::new() } else { self.inputs.view.borrow().clone() },
         };
@@ -10527,6 +10562,16 @@ mod tests {
         assert_eq!(a.job_slots(), RAMP_START.min(most));
         assert_eq!((a.mem.ramp.slots, a.mem.ramp.clean_since), (RAMP_START + 1, now_s()));
         assert_eq!(kept(&home).clean_since, now_s(), "the reset kept");
+        // Lasting: nothing rewritten, nothing reset, round after round.
+        let since = a.mem.ramp.clean_since;
+        std::fs::remove_file(home.join("state.json")).unwrap();
+        a.mem.ramp.clean_since = since - 100;
+        for _ in 0..3 {
+            a.tend_ramp();
+        }
+        assert!(!home.join("state.json").exists(), "a lasting trouble doesn't rewrite the state");
+        assert_eq!(a.mem.ramp.clean_since, since - 100);
+        assert!(a.ramp_trouble.as_deref().is_some_and(|w| w.contains("no NAS limits")));
         // The NAS probed: its slots as reached.
         let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
         a.coord.as_ref().unwrap().set_nas(Some(limits));

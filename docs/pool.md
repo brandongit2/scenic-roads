@@ -263,7 +263,10 @@ probed: `Coordinator::nas_over`), no stall (the pool's step taken for hung) and 
 known; any of these starts the stretch again. While the limits aren't known (no probe yet, or the
 probes failing: `Coordinator::nas_known`), its slots are held at 2 whatever it reached. They grow
 up to its cores' `job_slots`. The count reached, the stretch's start and its peak are kept in the
-lead's state (`agent/state.json`, `ramp`), saved at every reset of the stretch. There's no switch.
+lead's state (`agent/state.json`, `ramp`), saved when trouble begins (the stretch starts again
+then, said once in the log), when it ends (the stretch starting then) and at each step up; while
+trouble lasts nothing is rewritten. `scenic status` shows the ramp: the slots now, those reached,
+why it's held and since when it's clean. There's no switch.
 
  While a slot is free and
 nothing holds more back (the build's pause, a job stopping at a safe point, the memory guard's

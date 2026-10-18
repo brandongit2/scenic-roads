@@ -2505,7 +2505,7 @@ fn nas_prober(
                 // (Probed whatever the switch says: the lead's own jobs are always held to the
                 // budget, `nas_own`; the members' only while it's on, `nas`.)
                 match nas::read_switch(&r) {
-                    None => {}
+                    None => eprintln!("coordinator: {} can't be read now: the NAS not probed this round", nas::SWITCH),
                     sw => {
                         let sw = sw.flatten();
                         if last.is_none_or(|t| t.elapsed() >= Duration::from_secs(nas::EVERY_S)) {
