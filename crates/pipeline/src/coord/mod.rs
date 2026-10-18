@@ -258,11 +258,13 @@ pub struct Shared {
     /// folder, the disk's fall while it ran alone: crate::agent::memguard). Only rises. Kept in
     /// `disks.json`.
     pub disks: BTreeMap<String, u64>,
-    /// The most disk a job of each step took over its whole run (MB, by step): a batch's cache
-    /// writes add up over its targets, and outside programs' files can outlast a target, so a
-    /// batch is reckoned by the larger of this and its targets' disk summed. Only rises. Kept in
-    /// `job-disks-v3.json` (`JOB_DISKS`).
-    pub job_disks: BTreeMap<String, u64>,
+    /// The disk each step's last jobs took over their whole runs (MB, by step, oldest first, the
+    /// last `JOB_PEAKS`): a batch's cache writes add up over its targets, and outside programs'
+    /// files can outlast a target, so a batch is reckoned by the larger of its targets' disk
+    /// summed and these runs' 90th percentile (`job_floor`); a step reading a shared cache's
+    /// (crate::needs::CACHES) are its cache's reservation instead (`cache_mb`). Kept in
+    /// `job-disks-v4.json` (`JOB_DISKS`).
+    pub job_disks: BTreeMap<String, Vec<u64>>,
     /// The steps' models of their needs (crate::needs), kept while `needs_rev` stands: it moves with
     /// each cost, floor or disk floor taken or cleared.
     pub needs: crate::needs::Cache,
@@ -414,13 +416,45 @@ impl Shared {
         any
     }
 
-    /// The most disk a job of `step` took over its run (MB), kept when it's more than the one kept.
+    /// The disk a job of `step` took over its run (MB): one of its step's last `JOB_PEAKS`.
     fn add_job_disk(&mut self, step: &str, mb: u64) -> bool {
-        if step.is_empty() || mb == 0 || self.job_disks.get(step).is_some_and(|old| *old >= mb) {
+        if step.is_empty() || mb == 0 {
             return false;
         }
-        self.job_disks.insert(step.to_string(), mb);
+        let v = self.job_disks.entry(step.to_string()).or_default();
+        v.push(mb);
+        let n = v.len().saturating_sub(JOB_PEAKS);
+        v.drain(..n);
         true
+    }
+
+    /// The 90th percentile of the disk `step`'s last jobs took (MB; 0: none seen).
+    fn job_p90(&self, step: &str) -> u64 {
+        self.job_disks.get(step).and_then(|v| crate::needs::p90(v.clone())).unwrap_or(0)
+    }
+
+    /// The disk a job of `step` takes at least, whatever its targets (MB): its last jobs' 90th
+    /// percentile; 0 for a step reading a shared cache, whose jobs' runs measure the cache (its
+    /// reservation `cache_mb`, once per Mac) and its targets' own output (`measured`).
+    fn job_floor(&self, step: &str) -> u64 {
+        if crate::needs::cache_of(step).is_some() {
+            0
+        } else {
+            self.job_p90(step)
+        }
+    }
+
+    /// The disk shared cache `cache` (crate::needs::CACHES) is reserved on a Mac with a job reading
+    /// it (MB): the most of its steps' last jobs' 90th percentiles (a warm cache's jobs measure
+    /// their output alone, a cold one's the fill).
+    fn cache_mb(&self, cache: &str) -> u64 {
+        crate::needs::CACHES
+            .iter()
+            .filter(|(c, _)| *c == cache)
+            .flat_map(|(_, steps)| steps.iter())
+            .map(|s| self.job_p90(s))
+            .max()
+            .unwrap_or(0)
     }
 
     /// Costs measured (by `worker`): each in place of what was kept, and of its target's floor.
@@ -598,7 +632,7 @@ impl Shared {
     /// None when any is a cold start.
     fn job_need(&self, step: &str, targets: &[String]) -> Option<(Measured, Option<u32>)> {
         let each: Vec<Measured> = targets.iter().map(|t| self.measured(step, t)).collect::<Option<_>>()?;
-        let job = self.job_disks.get(step).copied().unwrap_or(0);
+        let job = self.job_floor(step);
         let b = self.book();
         let cores = targets
             .iter()
@@ -617,7 +651,24 @@ impl Shared {
 
     /// A job of offer `o`'s step over `pick` granted to `a`'s worker: its lease, the worker's last
     /// target of the step, the history's event.
-    fn grant_job(&mut self, a: &Ask, o: &Offer, pick: Vec<(String, String)>, threads: u32, now: Instant) -> Grant {
+    /// The disk a job of `step` reserves for its shared cache (crate::needs::CACHES) on a Mac whose
+    /// jobs read `caches` already: the cache's (`cache_mb`) when it's the first there to read it,
+    /// else none (MB).
+    fn cache_fill(&self, step: &str, caches: &BTreeSet<&'static str>) -> u64 {
+        crate::needs::cache_of(step).filter(|c| !caches.contains(c)).map_or(0, |c| self.cache_mb(c))
+    }
+
+    /// (`fill`: the disk its shared cache is reserved, added to its own: `cache_fill`.)
+    #[allow(clippy::too_many_arguments)]
+    fn grant_job(
+        &mut self,
+        a: &Ask,
+        o: &Offer,
+        pick: Vec<(String, String)>,
+        threads: u32,
+        fill: u64,
+        now: Instant,
+    ) -> Grant {
         if let Some(l) = pick.last() {
             self.last.insert((a.worker.clone(), o.step.clone()), l.0.clone());
         }
@@ -643,7 +694,8 @@ impl Shared {
             ..history::Event::new("lease")
         });
         let disk_mb =
-            self.job_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>()).map_or(0, |(m, _)| m.disk_mb);
+            self.job_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>()).map_or(0, |(m, _)| m.disk_mb)
+                + fill;
         Grant {
             lease,
             term: self.leases.term,
@@ -727,6 +779,22 @@ impl Shared {
                 room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb));
             }
         }
+        // (The shared caches its Mac's jobs read (crate::needs::CACHES), each reserved once: with
+        // the first job granted reading it, in its grant's disk. One no job its agent reserves for
+        // holds is taken off here.)
+        let mut caches: BTreeSet<&'static str> = BTreeSet::new();
+        for (st, _) in &held_steps {
+            if let Some(c) = crate::needs::cache_of(st) {
+                if caches.insert(c)
+                    && !mine.iter().any(|l| {
+                        reserved_by_agent(l)
+                            && matches!(&l.work, Work::Job { step, .. } if crate::needs::cache_of(step) == Some(c))
+                    })
+                {
+                    room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(self.cache_mb(c)));
+                }
+            }
+        }
         // (The jobs it may be granted: one to an ask without a capacity (an older app's), and to
         // every ask while any member around is on one (`old_member`); else as many as it wants.)
         let old = if a.cap.is_none() { Some(a.worker.clone()) } else { self.old_member(now) };
@@ -744,7 +812,14 @@ impl Shared {
                 if !crate::agent::every::grants(&o.step, o.job.is_some(), lead) {
                     continue;
                 }
-                let pick = if o.job.is_some() { self.pick_own(o, &room, now) } else { self.pick_every(o, &room, now) };
+                // (A job reading a shared cache none here reads yet: its room less the cache's.)
+                let fill = self.cache_fill(&o.step, &caches);
+                let room_o = match room.disk_mb {
+                    Some(d) if fill > 0 => Ask { disk_mb: Some(d.saturating_sub(fill)), ..room.clone() },
+                    _ => room.clone(),
+                };
+                let pick =
+                    if o.job.is_some() { self.pick_own(o, &room_o, now) } else { self.pick_every(o, &room_o, now) };
                 if pick.is_empty() {
                     continue;
                 }
@@ -786,15 +861,17 @@ impl Shared {
             // (A planned job of no targets of its own is offered under its id's, keyless, to be
             // measured by it: its lease holds none, as its hand-off names none.)
             let pick = if o.job.is_some() { pick.into_iter().filter(|t| !t.1.is_empty()).collect() } else { pick };
-            grants.push(self.grant_job(a, o, pick, threads, now));
+            let fill = if n.is_some() { self.cache_fill(&o.step, &caches) } else { 0 };
+            grants.push(self.grant_job(a, o, pick, threads, fill, now));
             held += 1;
+            caches.extend(crate::needs::cache_of(&o.step));
             // (A cold start alone.)
             let Some((m, c)) = n else {
                 why = Some(format!("a cold start of {} runs alone until it's measured", o.step));
                 break;
             };
             room.mem_mb = room.mem_mb.saturating_sub(m.mem_mb);
-            room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb));
+            room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb + fill));
             cores = c.map_or(0, |_| cores.saturating_sub(threads));
         }
         let why = why.filter(|_| grants.len() < want).or_else(|| {
@@ -905,7 +982,7 @@ impl Shared {
                 && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k)
                 && !backoff
         };
-        let job_disk = self.job_disks.get(&o.step).copied().unwrap_or(0);
+        let job_disk = self.job_floor(&o.step);
         let fits = |m: &Measured| m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb.max(job_disk) <= d);
         // (The NAS budget on: a target whose weight the pool's leased jobs leave no room for, or a
         // download past the cap, is left for later.)
@@ -1005,7 +1082,7 @@ impl Shared {
         let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
             now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
         });
-        let job_disk = self.job_disks.get(&o.step).copied().unwrap_or(0);
+        let job_disk = self.job_floor(&o.step);
         !held.contains(t)
             && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k)
             && !backoff
@@ -1582,11 +1659,17 @@ impl Coordinator {
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        let disks = std::fs::read(dir.join("disks.json"))
+        let mut disks: BTreeMap<String, u64> = std::fs::read(dir.join("disks.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
-        let job_disks = job_disks_load(dir);
+        // (Measures of an old step shape dropped, `old_shape`: written without them at the next save.)
+        let mut costs: BTreeMap<String, Cost> = costs;
+        let mut floors: BTreeMap<String, Floor> = floors;
+        costs.retain(|k, _| !old_shape(k));
+        floors.retain(|k, _| !old_shape(k));
+        disks.retain(|k, _| !old_shape(k));
+        let job_disks = job_disks_load(dir, &disks);
         // The build's pause, as it was when the agent before this one stopped (`{pause, at}`; an older
         // agent's, the pause alone).
         let kept: serde_json::Value = std::fs::read(dir.join("pause.json"))
@@ -2211,9 +2294,16 @@ impl Coordinator {
         })
     }
 
-    /// The most disk a job of `step` took over its run (MB; 0: none seen).
+    /// The disk a job of `step` takes at least, whatever its targets (MB; `Shared::job_floor`: its
+    /// last jobs' 90th percentile, 0 for a step reading a shared cache).
     pub fn job_disk(&self, step: &str) -> u64 {
-        self.shared.lock().unwrap().job_disks.get(step).copied().unwrap_or(0)
+        self.shared.lock().unwrap().job_floor(step)
+    }
+
+    /// The disk shared cache `cache` is reserved on a Mac with a job reading it (MB,
+    /// `Shared::cache_mb`).
+    pub fn cache_mb(&self, cache: &str) -> u64 {
+        self.shared.lock().unwrap().cache_mb(cache)
     }
 
     /// What this Mac's job of `step` took on the disk over its run (MB).
@@ -2393,7 +2483,8 @@ impl Coordinator {
             costs: s.costs.clone(),
             floors: s.floors.clone(),
             disks: s.disks.clone(),
-            job_disks: s.job_disks.clone(),
+            job_disks: s.job_disks.keys().map(|k| (k.clone(), s.job_p90(k))).collect(),
+            job_peaks: s.job_disks.clone(),
             failed,
             pause: s.paused.clone(),
             pause_at: s.pause_at,
@@ -2429,8 +2520,17 @@ impl Coordinator {
         s.add_floors(&floors);
         let disks: Vec<(String, u64)> = p.disks.iter().map(|(k, v)| (k.clone(), *v)).collect();
         s.add_disks(&disks);
+        // (Its jobs' disks: a step's runs where none are kept here; an older lead's single peak
+        // only within reason of its targets' measures, `stale_peak`.)
+        for (step, v) in &p.job_peaks {
+            if !s.job_disks.contains_key(step) {
+                s.job_disks.insert(step.clone(), v.clone());
+            }
+        }
         for (step, mb) in &p.job_disks {
-            s.add_job_disk(step, *mb);
+            if !s.job_disks.contains_key(step) && !stale_peak(&s.disks, step, *mb) {
+                s.add_job_disk(step, *mb);
+            }
         }
         for (w, k, at, n) in &p.failed {
             let at = now.checked_sub(Duration::from_secs(unix.saturating_sub(*at))).unwrap_or(now);
@@ -2541,9 +2641,12 @@ pub struct PoolState {
     /// The targets' disk floors (cost key → MB).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub disks: BTreeMap<String, u64>,
-    /// The most disk a job of each step took over its run (step → MB).
+    /// The 90th percentile of the disk each step's last jobs took (step → MB), for an older reader.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub job_disks: BTreeMap<String, u64>,
+    /// The disk each step's last jobs took (step → MB, oldest first: `Shared::job_disks`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub job_peaks: BTreeMap<String, Vec<u64>>,
     /// (worker, cost key, when it last failed: unix seconds, how many times).
     #[serde(default)]
     pub failed: Vec<(String, String, u64, u32)>,
@@ -2779,35 +2882,60 @@ fn check_pooled(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result
     Ok(())
 }
 
-/// Where the most each step's job took on the disk is kept (`Shared::job_disks`): its v3, task #381.
-const JOB_DISKS: &str = "job-disks-v3.json";
+/// Where the disk each step's last jobs took is kept (`Shared::job_disks`): its v4, task #392.
+const JOB_DISKS: &str = "job-disks-v4.json";
 
-/// The files before `JOB_DISKS`, newest first, each with the steps whose peaks in it are no measure
-/// of a job now: the halo steps' (crate::needs::HALO_STEPS) from when a job of them spanned many
-/// halos (`pack` before task #260's v2; `lo` before task #381's v3, its peak a whole pass's taken
-/// while its targets' disks were summed).
-const JOB_DISKS_BEFORE: [(&str, &[&str]); 2] = [("job-disks-v2.json", &["lo"]), ("job-disks.json", &["pack", "lo"])];
+/// The jobs' disks kept per step (`Shared::job_disks`).
+pub const JOB_PEAKS: usize = 20;
 
-/// The most each step's job took on the disk, as kept in `dir`: `JOB_DISKS`, else the newest file
-/// before it (`JOB_DISKS_BEFORE`) without its stale steps' peaks, dropped so once (the result
-/// written as `JOB_DISKS` at once).
-fn job_disks_load(dir: &std::path::Path) -> BTreeMap<String, u64> {
-    let read = |f: &str| -> Option<BTreeMap<String, u64>> {
-        std::fs::read(dir.join(f)).ok().and_then(|b| serde_json::from_slice(&b).ok())
-    };
-    if let Some(m) = read(JOB_DISKS) {
+/// The files before `JOB_DISKS` (each the most a job of each step took, step → MB), newest first,
+/// each with the steps whose peaks in it are no measure of a job now: the halo steps'
+/// (crate::needs::HALO_STEPS) from when a job of them spanned many halos (`pack` before task #260's
+/// v2; `lo` before task #381's v3, its peak a whole pass's taken while its targets' disks were
+/// summed).
+const JOB_DISKS_BEFORE: [(&str, &[&str]); 3] =
+    [("job-disks-v3.json", &[]), ("job-disks-v2.json", &["lo"]), ("job-disks.json", &["pack", "lo"])];
+
+/// Whether `mb`, a peak an older file kept of a job of `step`, is far above what its targets
+/// measure (task #392): past three times their 90th percentile and a GB (the 68 GB `pack` and
+/// 43 GB `lo` peaks a cold cache's fill left, against 0.3 and 0.5 GB measured).
+fn stale_peak(disks: &BTreeMap<String, u64>, step: &str, mb: u64) -> bool {
+    let of: Vec<u64> =
+        disks.iter().filter(|(k, _)| crate::agent::memguard::step_of_key(k) == step).map(|(_, d)| *d).collect();
+    crate::needs::p90(of).is_some_and(|p| mb > p.saturating_mul(3) + 1024)
+}
+
+/// The disk each step's last jobs took, as kept in `dir`: `JOB_DISKS`, else the newest file before
+/// it (`JOB_DISKS_BEFORE`), each step's peak there one run, without its stale steps' and those far
+/// above their targets' measures (`stale_peak`, by `disks`), taken so once (the result written as
+/// `JOB_DISKS` at once).
+fn job_disks_load(dir: &std::path::Path, disks: &BTreeMap<String, u64>) -> BTreeMap<String, Vec<u64>> {
+    if let Some(m) = std::fs::read(dir.join(JOB_DISKS)).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
         return m;
     }
     for (f, stale) in JOB_DISKS_BEFORE {
-        if let Some(mut m) = read(f) {
-            m.retain(|step, _| !stale.contains(&step.as_str()));
-            let _ = serde_json::to_vec(&m)
-                .map_err(anyhow::Error::from)
-                .and_then(|b| crate::whole::write(&dir.join(JOB_DISKS), &b));
-            return m;
-        }
+        let Some(old) =
+            std::fs::read(dir.join(f)).ok().and_then(|b| serde_json::from_slice::<BTreeMap<String, u64>>(&b).ok())
+        else {
+            continue;
+        };
+        let m: BTreeMap<String, Vec<u64>> = old
+            .into_iter()
+            .filter(|(step, mb)| !stale.contains(&step.as_str()) && !stale_peak(disks, step, *mb))
+            .map(|(step, mb)| (step, vec![mb]))
+            .collect();
+        let _ = serde_json::to_vec(&m)
+            .map_err(anyhow::Error::from)
+            .and_then(|b| crate::whole::write(&dir.join(JOB_DISKS), &b));
+        return m;
     }
     BTreeMap::new()
+}
+
+/// Whether cost key `k` is of a step's shape no plan makes now (task #392): a z3 tile's whole
+/// `terrain` or `trees` run, before their z6 pieces; its measures would hold the pieces' priors.
+fn old_shape(k: &str) -> bool {
+    ["terrain 3/", "trees 3/"].iter().any(|p| k.starts_with(p))
 }
 
 /// The floors `s` keeps, after clearing those of `step` (all, with no step), or of its `target`,
@@ -5228,13 +5356,25 @@ mod tests {
         c.add_disks(&many);
         c.add_disks(&[(cost_key("peaks", "6/30/1"), 50_000)]);
         assert_eq!(c.measured("peaks", "6/99/1").map(|m| m.disk_mb), Some(1000));
-        // A batch: its targets' disks summed, or the most a job of the step took, the larger.
+        // A batch: its targets' disks summed, or its step's last jobs' 90th percentile, the larger.
         assert_eq!(c.measured_batch("peaks", &["6/1/1".into(), "6/10/1".into()]).map(|m| m.disk_mb), Some(8000));
         c.add_job_disk("peaks", 20_000);
         assert_eq!(c.measured_batch("peaks", &["6/1/1".into(), "6/10/1".into()]).map(|m| m.disk_mb), Some(20_000));
         assert_eq!(c.pool_state().job_disks.get("peaks"), Some(&20_000));
-        // A halo step's batch (task #260: `pack`, its targets reading one cache of base packs, each
-        // target's measure that cache): the most of its targets', not their sum.
+        // (Task #392: not the most ever, the last runs' 90th percentile: one big job is passed over
+        // once ten more have run.)
+        for _ in 0..10 {
+            c.add_job_disk("peaks", 2_000);
+        }
+        assert_eq!(c.job_disk("peaks"), 2_000);
+        assert_eq!(c.pool_state().job_peaks["peaks"].len(), 11);
+        for _ in 0..JOB_PEAKS {
+            c.add_job_disk("peaks", 3_000);
+        }
+        assert_eq!(c.pool_state().job_peaks["peaks"], vec![3_000; JOB_PEAKS], "the last JOB_PEAKS kept");
+        // A halo step's batch (task #260: `pack`, its targets reading one cache of base packs): the
+        // most of its targets', not their sum; its jobs' runs its cache's reservation (task #392,
+        // `cache_mb`), not a floor of each job.
         let halo: Vec<String> = (0..110).map(|i| format!("6/{i}/2")).collect();
         c.add_disks(&halo.iter().map(|t| (cost_key("pack", t), 1300)).collect::<Vec<_>>());
         c.add_costs(&[(
@@ -5242,52 +5382,85 @@ mod tests {
             Cost { peak_mb: 1000, secs: 30, worker: None, v: 0, ..Default::default() },
         )]);
         assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
-        // A stale job's peak (a job of many halos before, 143.5 GB) holds it until cleared with
-        // the step's floors; a file before v2 loses it as it's read.
-        c.add_job_disk("pack", 146_944);
-        assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(146_944));
+        c.add_job_disk("pack", 66_000);
+        assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
+        assert_eq!((c.job_disk("pack"), c.cache_mb("base packs")), (0, 66_000));
         c.floors(true, Some("pack"), Some(&halo[1]));
-        assert_eq!(c.job_disk("pack"), 146_944, "a target's clearing leaves the step's");
+        assert_eq!(c.cache_mb("base packs"), 66_000, "a target's clearing leaves the step's");
         c.floors(true, Some("pack"), None);
+        assert_eq!(c.cache_mb("base packs"), 0);
         c.add_disks(&halo.iter().map(|t| (cost_key("pack", t), 1300)).collect::<Vec<_>>());
         assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
-        assert_eq!(c.job_disk("peaks"), 20_000);
+        // The files before v4: each peak one run, the stale steps' and those far above their
+        // targets' measures (task #392) dropped.
         let old = tempfile::tempdir().unwrap();
         std::fs::write(old.path().join("job-disks.json"), r#"{"pack":146944,"lo":46000,"peaks":20000}"#).unwrap();
-        assert_eq!(job_disks_load(old.path()), [("peaks".to_string(), 20_000)].into());
-        std::fs::write(old.path().join(JOB_DISKS), r#"{"pack":1300}"#).unwrap();
-        assert_eq!(job_disks_load(old.path()), [("pack".to_string(), 1300)].into());
+        assert_eq!(job_disks_load(old.path(), &BTreeMap::new()), [("peaks".to_string(), vec![20_000])].into());
+        std::fs::remove_file(old.path().join(JOB_DISKS)).unwrap();
+        std::fs::write(old.path().join("job-disks-v3.json"), r#"{"pack":68279,"unit":18584,"peaks":5037}"#).unwrap();
+        let measured: BTreeMap<String, u64> =
+            [(cost_key("pack", "6/1/1"), 300), ("6/1/1".to_string(), 5_900), (cost_key("peaks", "6/1/1"), 500)].into();
+        assert_eq!(
+            job_disks_load(old.path(), &measured),
+            [("unit".to_string(), vec![18_584])].into(),
+            "68 GB against 0.3 GB measured, 5 GB against 0.5 GB: dropped; the unit's 18.6 GB within reason of its 5.9"
+        );
+        std::fs::write(old.path().join(JOB_DISKS), r#"{"pack":[1300]}"#).unwrap();
+        assert_eq!(job_disks_load(old.path(), &measured), [("pack".to_string(), vec![1300])].into());
         // Cleared with the floors.
         c.floors(true, Some("peaks"), None);
         c.floors(true, Some("pack"), None);
         assert!(c.disks().is_empty());
     }
 
-    /// Task #381: `lo` a halo step (a pass's z3 tiles read one cache of their owners' base packs,
-    /// each tile's disk measured as that cache): a job of them reserves the most of theirs, not the
-    /// sum; its v2 peak dropped once as the coordinator starts, the rest kept.
+    /// Task #381: `lo` a halo step (a pass's z3 tiles read one cache of their owners' base packs):
+    /// a job of them reserves the most of its tiles' own, not the sum; task #392: the v3 file's
+    /// peaks far above their targets' measures dropped once as the coordinator starts, and the z3
+    /// `terrain` and `trees` runs' measures (an old step shape) with them.
     #[test]
-    fn lo_jobs_take_their_cache_once_and_its_v2_peak_goes() {
+    fn lo_jobs_take_their_cache_once_and_stale_measures_go() {
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().join("coord");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("job-disks-v2.json"), r#"{"lo":46000,"pack":1300}"#).unwrap();
+        std::fs::write(dir.join("job-disks-v3.json"), r#"{"lo":42971,"pack":1300,"depth-lo":65}"#).unwrap();
+        std::fs::write(
+            dir.join("disks.json"),
+            r#"{"lo 3/1/1":500,"lo 3/0/1":43008,"lo 3/2/1":400,"lo 3/3/1":0,"lo 3/4/1":0,"lo 3/5/1":0,
+                "lo 3/6/1":0,"lo 3/7/1":0,"lo 3/8/1":0,"lo 3/9/1":0,"terrain 3/1/1":9000,"terrain 6/1/1":900}"#,
+        )
+        .unwrap();
+        let cost =
+            |mb: u64| Cost { peak_mb: mb, secs: 60, worker: None, v: cost_version("terrain"), ..Default::default() };
+        std::fs::write(
+            dir.join("costs.json"),
+            serde_json::to_vec(&BTreeMap::from([
+                ("terrain 3/1/1".to_string(), cost(30_000)),
+                ("trees 3/1/1".to_string(), cost(30_000)),
+                ("terrain 6/1/1".to_string(), cost(3_000)),
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
         let (c, _port) = start_for_test(&dir, "m4", "");
-        assert_eq!(c.job_disk("lo"), 0, "v2's lo peak dropped");
-        assert_eq!(c.job_disk("pack"), 1300, "the rest kept");
-        // As the M4 measured them: each tile ~45 GB (the pass's whole cache).
-        let tiles: Vec<String> = (1..=5).map(|i| format!("3/{i}/1")).collect();
-        c.add_disks(&tiles.iter().map(|t| (cost_key("lo", t), 45_778)).collect::<Vec<_>>());
+        assert_eq!(c.cache_mb("base packs"), 1300, "lo's 43 GB fill dropped, pack's kept");
+        assert_eq!(c.job_disk("depth-lo"), 65);
+        assert_eq!(c.measured("terrain", "6/9/9").map(|m| (m.mem_mb, m.disk_mb)), Some((3_000, 900)));
+        assert!(!c.disks().contains_key("terrain 3/1/1"));
+        // Each tile its own output (the one that filled the cache taken at its step's 90th
+        // percentile): the most of theirs, not 3 × 43 GB.
+        let tiles: Vec<String> = (0..=2).map(|i| format!("3/{i}/1")).collect();
         for t in &tiles {
-            let cost = Cost { peak_mb: 800, secs: 90, worker: None, v: 0, ..Default::default() };
-            c.add_costs(&[(cost_key("lo", t), cost)]);
+            c.add_costs(&[(
+                cost_key("lo", t),
+                Cost { peak_mb: 800, secs: 90, worker: None, v: 0, ..Default::default() },
+            )]);
         }
-        assert_eq!(c.measured_batch("lo", &tiles).map(|m| m.disk_mb), Some(45_778), "not 5 × 45 GB");
+        assert_eq!(c.measured_batch("lo", &tiles).map(|m| m.disk_mb), Some(500));
         c.add_job_disk("lo", 47_000);
         drop(c);
-        // Started again: v3 written, nothing more dropped.
+        // Started again: v4 read, nothing more dropped.
         let (c, _port) = start_for_test(&dir, "m4", "");
-        assert_eq!(c.job_disk("lo"), 47_000);
+        assert_eq!(c.cache_mb("base packs"), 47_000);
     }
 
     #[test]
@@ -6063,6 +6236,64 @@ mod tests {
             why.contains("(6.0 GB memory; disk: 38 GB free · 0 GB for jobs (30 GB reserve, 20 GB room target))"),
             "{why}"
         );
+    }
+
+    /// A shared cache reserved once per Mac (task #392, crate::needs::CACHES): `pack` and `lo` read
+    /// one cache of base packs, so of three jobs of them granted together only the first carries the
+    /// cache (its steps' last jobs' 90th percentile) beside its own output; the others their output
+    /// alone. A Mac whose disk can't hold the cache is granted none of them.
+    #[test]
+    fn a_shared_cache_is_reserved_once_per_mac() {
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "lo", 2, Some(1));
+        packable(&c, "pack", 6, Some(1));
+        c.add_job_disk("pack", 10_000);
+        let halo = |r: std::ops::RangeInclusive<usize>| Offer {
+            step: "pack".into(),
+            targets: r.map(|i| (format!("6/1/{i}"), format!("k 6/1/{i}"), 0)).collect(),
+            job: None,
+        };
+        let lo = Offer { step: "lo".into(), targets: vec![("6/1/1".into(), "k 6/1/1".into(), 0)], job: None };
+        c.offer("p", vec![halo(1..=3), halo(4..=6), lo]);
+        let ask = |disk: u64| Ask {
+            want: 3,
+            can: vec!["pack".into(), "lo".into()],
+            cap: Some(Capacity { cores: 8, disk_mb: disk, ..Default::default() }),
+            ..every_ask("m1", "pack", 64_000, disk)
+        };
+        let mut g = w.ask(&ask(20_000)).unwrap().unwrap();
+        let all: Vec<Grant> = std::iter::once(g.clone()).chain(std::mem::take(&mut g.more)).collect();
+        let disks: Vec<(String, u64)> = all
+            .iter()
+            .map(|g| match &g.work {
+                Granted::Job { step, .. } => (step.clone(), g.disk_mb),
+                Granted::Task { .. } => (String::new(), 0),
+            })
+            .collect();
+        assert_eq!(disks.len(), 3, "{disks:?}");
+        assert_eq!(disks[0].1, 10_100, "the first the cache and its output: {disks:?}");
+        assert!(disks[1..].iter().all(|d| d.1 == 100), "the others their output: {disks:?}");
+        // (One of `lo` too, reading the same cache, when it's what's granted beside.)
+        c.offer(
+            "p",
+            vec![Offer { step: "lo".into(), targets: vec![("6/1/2".into(), "k 6/1/2".into(), 0)], job: None }],
+        );
+        let more = Ask {
+            cap: Some(Capacity {
+                cores: 8,
+                disk_mb: 20_000,
+                leases: all.iter().map(|g| g.lease).collect(),
+                ..Default::default()
+            }),
+            want: 1,
+            ..ask(20_000)
+        };
+        let g = w.ask(&more).unwrap().unwrap();
+        assert!(matches!(&g.work, Granted::Job { step, .. } if step == "lo") && g.disk_mb == 100, "{g:?}");
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "pack", 6, Some(1));
+        c.add_job_disk("pack", 10_000);
+        assert!(w.ask(&ask(10_050)).unwrap().is_none(), "no room for the cache");
     }
 
     /// A cold start goes only to a member running nothing, alone, and nothing goes beside it while

@@ -317,14 +317,23 @@ list. An agent on another app than the lead's still gets nothing (409) until the
 build) or a member waiting for its update.
 
 **Disk reservations** (task #242). Each job granted carries the disk it's measured to take
-(`Grant::disk_mb`: its targets' disks summed, or the most a job of its step took, the larger;
-0 for a cold start; a halo step's, `needs::HALO_STEPS`: `pack` and `lo`, the most of its targets'
-rather than their sum, its targets all reading one cache of base packs that each one's measure
-counts whole. A `pack` job takes one unit's map tiles (`build::by_unit`'s groups, each its own
-offer); `lo` stays one work of a pass's z3 tiles (the low zooms' gate opens for a pass as a
-whole), its halo their owners' base packs. Each tile's own outputs add up on top of that cache, and the measure doesn't yet split them
-from it: a halo larger than the jobs measured so far can need more than it's granted, the disk
-guard its backstop), and its agent reserves it while it holds the lease: the whole of it until
+(`Grant::disk_mb`: its targets' disks summed, or the 90th percentile of the disk its step's last
+20 jobs took over their runs (`job-disks-v4.json`), the larger; 0 for a cold start; a halo
+step's, `needs::HALO_STEPS`: `pack` and `lo`, the most of its targets' rather than their sum. A
+`pack` job takes one unit's map tiles (`build::by_unit`'s groups, each its own offer); `lo` stays
+one work of a pass's z3 tiles (the low zooms' gate opens for a pass as a whole). **Shared
+caches** (task #392, `needs::CACHES`): `pack` and `lo` read one cache of base packs on a Mac, a
+`unit` the DEM cache; the run that fills one measures it whole (66 GB of `pack`, 43 GB of `lo`
+on the M4), the warm runs after it their output alone (0.3 and 0.5 GB at the 90th percentile).
+So a target of such a step counts its own output (its disk floor at most its step's 90th
+percentile, `needs::Book::disk`), and the cache is reserved once per Mac: the first job granted
+there reading it carries the cache's reservation (the most of its steps' last jobs' 90th
+percentiles, `coord::Shared::cache_mb`) beside its output, the jobs beside it their output alone;
+a fill bigger than the runs measured lately (a Mac whose cache was emptied) has the disk guard
+as its backstop. Its cache files are on the disk, outside the free space an ask says; the
+room-target freeing and the disk guard (`room::toward`) can delete those no job holds, but
+nothing counts them free before (room-making as a job starts frees the cheap caches alone),
+and its agent reserves it while it holds the lease: the whole of it until
 the job starts, then that less what the job has written so far (the disk guard's count). The
 lead's own running jobs reserve what their measures say they have still to take (`disk_left`).
 A reservation ends with its lease, at hand-off or give-back. The free disk an ask and its
@@ -812,10 +821,15 @@ tiles (`pack_raw_with`) stays inside the piece's job.
   its step's threads keep busy): every start checks them, with those of the jobs beside it, within
   its Mac's cores (less a member's in-use share's, with the owners at their Macs), a serial step
   granted 1–2 and packed beside its kind, and the plan finishes. A halo step's job (`pack`; `lo`, a pass's z3 tiles its halo) takes
-  one halo's targets (offered a halo an offer, checked at every start), its disk the halo's cache
-  once; with units in the plan, a halo's map tiles are offered once its unit is built, before the
-  units left: on the M4 and the M1, the NAS budget on and both steps measured before, each Mac runs
-  map tiles beside units, a job of them granted its halo's cache, and the plan finishes. Not
+  one halo's targets (offered a halo an offer, checked at every start), its disk the halo's output
+  once; a job of a step reading a shared cache fills it on a Mac without it (kept on its disk
+  after), and no job is granted a cache's reservation beside another reading it there (§7.1,
+  Disk reservations); with units in the plan, a halo's map tiles are offered once its unit is
+  built, before the units left: on the M4 and the M1, the NAS budget on and both steps measured
+  before, each Mac runs map tiles beside units, and the plan finishes. The M4 as measured on 18
+  Oct (48 GB, 14 cores, 85 GB free, its caches on its disk; units of 6.6 GB writing 6 GB, the DEM
+  cache's 18.6 GB job once, `pack` and `lo` 0.3 and 0.5 GB) runs four units at once within its
+  memory and disk, map tiles and low zooms beside each other on one cache reservation. Not
   modelled: other step dependencies, failures; a job's time doesn't depend on its threads.
 - **The agent's tests** (`crate::agent::pool`, `crate::agent::lead`, the agent's `pool_tests`): two
   agents in one process, a lead and a member, through handover, takeover, controls, hand-offs and

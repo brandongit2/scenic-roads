@@ -65,6 +65,20 @@ pub fn batch_disk(step: &str, each: impl IntoIterator<Item = u64>) -> u64 {
     }
 }
 
+/// The caches a job reads that every job of their steps on one Mac shares (task #392), each with
+/// its steps: the base packs (`pack` and `lo` copy them into the Mac's cache once, scenic-build's
+/// `open_for_tiles`) and the DEM cache (a `unit` copies it from the NAS once a Mac). The run that
+/// fills one measures the cache whole; the runs after it, warm, only their own output. So a
+/// target's disk need is its own output (`Book::disk`: a measure past its step's 90th percentile
+/// taken for a fill), and the cache is reserved once per Mac, not once per job
+/// (crate::coord's grants: `cache_mb`).
+pub const CACHES: [(&str, &[&str]); 2] = [("base packs", &["pack", "lo"]), ("DEM", &["unit"])];
+
+/// The shared cache a job of `step` reads (`CACHES`), if any.
+pub fn cache_of(step: &str) -> Option<&'static str> {
+    CACHES.iter().find(|(_, steps)| steps.contains(&step)).map(|(c, _)| *c)
+}
+
 /// Where a need came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum From {
@@ -463,10 +477,20 @@ impl<'a> Book<'a> {
     }
 
     /// The disk (MB) a job of `step` for `target` needs: its disk floor, else fitted, else its
-    /// step's prior; None when none of its step was measured.
+    /// step's prior; None when none of its step was measured. A step reading a shared cache
+    /// (`CACHES`): its own output alone, its disk floor at most its step's prior (a measure past
+    /// it a cache's fill, reserved once per Mac apart), never fitted (its measures mix fills in).
     pub fn disk(&self, step: &str, target: &str, threads: u32) -> Option<u64> {
         let key = cost_key(step, target);
-        if let Some(&d) = self.disks.and_then(|d| d.get(&key)) {
+        let own = self.disks.and_then(|d| d.get(&key)).copied();
+        if cache_of(step).is_some() {
+            let prior = self.model(step, Measure::Disk).prior;
+            return match (own, prior) {
+                (Some(o), Some(p)) => Some(o.min(p)),
+                (o, p) => o.or(p),
+            };
+        }
+        if let Some(d) = own {
             return Some(d);
         }
         let md = self.model(step, Measure::Disk);
@@ -720,6 +744,27 @@ mod tests {
         assert_eq!(b.nas("pack", "6/1/1"), Some(crate::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5 }));
         assert_eq!(batch_disk("pack", [1300, 1300, 1200]), 1300);
         assert_eq!(batch_disk("slope", [1300, 1300, 1200]), 3800);
+    }
+
+    /// A step reading a shared cache (task #392: `CACHES`): a target's disk its own output, its
+    /// floor at most its step's 90th percentile (the cold run that filled the cache measured it
+    /// whole: 66 GB of `pack` against 0.3 GB warm); another step's floor its own, whole.
+    #[test]
+    fn a_cache_steps_disk_is_its_output_not_the_fill() {
+        let costs = BTreeMap::new();
+        let mut disks: BTreeMap<String, u64> = (0..20).map(|i| (cost_key("pack", &format!("6/1/{i}")), 300)).collect();
+        disks.insert(cost_key("pack", "6/16/20"), 67_890);
+        disks.insert(cost_key("pack", "6/1/0"), 100);
+        disks.insert(cost_key("peaks", "6/1/1"), 67_890);
+        let b = Book::with(&costs, None, Some(&disks));
+        assert_eq!(b.disk("pack", "6/16/20", 0), Some(300), "the fill reserved apart, once per Mac");
+        assert_eq!(b.disk("pack", "6/1/0", 0), Some(100), "its own when under the step's");
+        assert_eq!(b.disk("pack", "6/9/9", 0), Some(300), "never measured: the step's");
+        assert_eq!(b.disk("peaks", "6/1/1", 0), Some(67_890), "no shared cache: its own whole");
+        assert_eq!(
+            (cache_of("pack"), cache_of("lo"), cache_of("unit"), cache_of("slope")),
+            (Some("base packs"), Some("base packs"), Some("DEM"), None)
+        );
     }
 
     /// Memory that goes with a tile's area fits; a target never run is predicted by the fit over its
