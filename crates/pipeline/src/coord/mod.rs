@@ -743,6 +743,11 @@ impl Shared {
         if self.leases.all(now).iter().any(|l| matches!(&l.work, Work::Job { step, .. } if *step == o.step)) {
             return Vec::new();
         }
+        // (A target held, a cancel's until a newer app among them: `Leases::held`.)
+        let held = self.leases.held(&o.step, now);
+        if o.targets.iter().any(|t| held.contains(&t.0)) {
+            return Vec::new();
+        }
         let open = o.targets.iter().all(|(t, k, _)| {
             let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
                 now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
@@ -5441,6 +5446,27 @@ mod tests {
     /// Packing (docs/pool.md §7.2): an ask gets as many jobs as it wants that fit its room together
     /// (memory, disk, cores), each its own lease, in plan order; its next ask what fits the room
     /// left; one wanted (or an older agent's ask, none), one.
+    /// The lead's own planned job (`pick_own`) is held by a cancel's hold as a member's work is:
+    /// none granted while its target waits for a newer app.
+    #[test]
+    fn a_cancels_hold_keeps_the_leads_own_job_back() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        packable(&c, "rail", 1, Some(1));
+        let own = Offer {
+            step: "rail".into(),
+            targets: vec![("6/1/1".into(), "k 6/1/1".into(), 0)],
+            job: Some("rail 6/1/1".into()),
+        };
+        c.offer("p", vec![own]);
+        let a = Ask { can: vec!["rail".into()], ..every_ask("m4", "rail", 64_000, 100_000) };
+        c.shared.lock().unwrap().leases.app = "20261005-1508-84142d3".into();
+        c.shared.lock().unwrap().leases.hold_for_update("rail", "6/1/1", "scenic job cancel on m4", 1);
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "held for a newer app");
+        // The lead on a newer app: released.
+        c.shared.lock().unwrap().leases.app = "20261005-1613-d05125b".into();
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_some());
+    }
+
     #[test]
     fn packing_grants_as_many_jobs_as_fit_the_asks_room() {
         let (_d, c, w, _clock) = every((0, 0));

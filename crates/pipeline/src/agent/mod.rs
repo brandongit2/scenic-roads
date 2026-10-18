@@ -1799,7 +1799,7 @@ impl Agent {
             want: want(self.job_slots(), self.running_jobs()),
             ..Default::default()
         };
-        self.ask_spare_mb = Some(ask.more_mb.unwrap_or(ask.mem_mb));
+        self.ask_spare_mb = Some(ask.mem_mb);
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
         let asked = client.ask(&ask);
         // (Work given: the build isn't paused.)
@@ -3787,7 +3787,10 @@ impl Agent {
                     let step =
                         spec.record.as_ref().map(|w| w.step.clone()).or_else(|| step_of(&spec.id)).unwrap_or_default();
                     let targets = spec.record.as_ref().map(|w| w.targets.clone()).unwrap_or_default();
-                    let Some(n) = co.hold(&step, &targets) else { return false };
+                    // (Held by another, or a cancel's hold: refused, why said.)
+                    let Some(n) = co.hold(&step, &targets) else {
+                        return self.try_start_said(k, spec, c, root, waiting);
+                    };
                     if !self.lease_own(k, n, &co, &spec, waiting) {
                         return false;
                     }

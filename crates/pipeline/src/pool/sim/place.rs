@@ -97,8 +97,9 @@ pub struct Run {
     pub turned_away: usize,
     /// The threads the members' jobs were granted, by step (the fewest and the most).
     pub granted: BTreeMap<String, (u32, u32)>,
-    /// The steps the lead ran a job of.
+    /// The steps the lead ran a job of, and the members.
     pub lead_steps: BTreeSet<String>,
+    pub member_steps: BTreeSet<String>,
 }
 
 /// A loop of an agent (s).
@@ -516,6 +517,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     let e = out.granted.entry(step.clone()).or_insert((g.threads, g.threads));
                     *e = (e.0.min(g.threads), e.1.max(g.threads));
                     let ts = targets.into_iter().map(|t| t.0).collect();
+                    out.member_steps.insert(step.clone());
                     all &= start(k, &step, ts, g.lease, g.threads, &mut running, &mut out)?;
                 }
                 if !all {
@@ -618,6 +620,10 @@ mod tests {
         assert!(r.most[0] >= 2 && r.most[1] == 1, "{r:?}");
         assert!(r.ran.iter().all(|&n| n > 0), "{r:?}");
         assert!(r.lead_steps.contains("bld-fetch") && r.lead_steps.contains("catalog"), "{r:?}");
+        // The map tiles shared: the member takes `pack` jobs while the lead takes some too, and
+        // neither takes the lead's own steps from it.
+        assert!(r.lead_steps.contains("pack") && r.member_steps.contains("pack"), "{r:?}");
+        assert!(!r.member_steps.contains("bld-fetch") && !r.member_steps.contains("catalog"), "{r:?}");
     }
 
     /// Four Macs (one with little disk) finish the same plan, no later than two (the lead packing
