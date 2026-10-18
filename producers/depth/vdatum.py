@@ -4,10 +4,13 @@ stations.py noaa's shape, one row a VDatum point (the centre of each `--cell`° 
 BlueTopo tile's centre), with `msl_minus_navd88_m` (NAVD88 0 → LMSL, negated) and `msl_minus_mllw_m`
 (LMSL 0 → MLLW). Regions: Puerto Rico and the Virgin Islands (`prvi`), Southeast Alaska (`seak`,
 everything north of 50°), the Pacific coast (`westcoast`, 130°–116° W north of 30° N; Hawaii and other islands have no
-region here), the rest `contiguous`.
+region here), the Chesapeake and Delaware bays and the ocean off them (`chesapeak_delaware`, VDatum's spelling,
+78°–74.5° W, 36.75°–40.5° N: `contiguous` answers 412 there), the rest `contiguous`. Texas and Louisiana west of
+91.125° W: VDatum answers 412 "Uncaught error" for every point, in every region and frame tried (October 2026), so
+their rows come from CO-OPS's stations (stations.py noaa).
 VDatum answers its errors with HTTP 200 and `{"errorCode": 412, "message": …}`. `westcoast` wants the
-target horizontal frame IGS14 for tidal datums (asked as `contiguous`, a Pacific point answers 412
-"Uncaught error"). Points VDatum can't convert (it answers 412 "Uncaught error" or −999999 for those too: land, outside its tidal models, Alaska beyond its
+target horizontal frame IGS14 for tidal datums, as does `chesapeak_delaware` (asked as `contiguous`, a Pacific
+or Chesapeake point answers 412 "Uncaught error"). Points VDatum can't convert (it answers 412 "Uncaught error" or −999999 for those too: land, outside its tidal models, Alaska beyond its
 southeast) are left out, each logged with VDatum's reason; the datum surface (datums.py) spans them.
 
 usage: vdatum.py --scheme <gpkg> --out <csv> [--cell 0.25] [--bbox <w,s,e,n>]
@@ -35,14 +38,16 @@ def region(lon, lat):
         return {"region": "seak", "t_h_frame": "IGS08", "s_v_geoid": "geoid12b", "t_v_geoid": "geoid12b"}
     if -130 < lon < -116 and lat > 30:
         return {"region": "westcoast", "t_h_frame": "IGS14"}
+    if -78 < lon < -74.5 and 36.75 < lat < 40.5:
+        return {"region": "chesapeak_delaware", "t_h_frame": "IGS14"}
     return {"region": "contiguous"}
 
 
 def query(lon, lat, src, dst):
     q = {"s_x": f"{lon:.5f}", "s_y": f"{lat:.5f}", "s_z": "0", "s_h_frame": "NAD83_2011", "t_h_frame": "NAD83_2011", "s_v_frame": src, "t_v_frame": dst}
     q.update(region(lon, lat))
-    if src != "NAVD88":  # (VDatum: tidal datums are on IGS08 in Alaska, IGS14 on the West Coast; NAVD88 on NAD 83)
-        q["s_h_frame"] = {"seak": "IGS08", "westcoast": "IGS14"}.get(q["region"], q["s_h_frame"])
+    if src != "NAVD88":  # (VDatum: tidal datums are on IGS08 in Alaska, IGS14 on the West Coast and the Chesapeake and Delaware bays; NAVD88 on NAD 83)
+        q["s_h_frame"] = {"seak": "IGS08", "westcoast": "IGS14", "chesapeak_delaware": "IGS14"}.get(q["region"], q["s_h_frame"])
     return q
 
 
