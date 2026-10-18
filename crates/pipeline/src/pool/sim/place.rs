@@ -537,7 +537,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     worker: m.name.into(),
                     kind: "native".into(),
                     can: offered_steps.clone(),
-                    // (As the agent asks: a job's fixed share of its Mac (`helper_memory`), all its
+                    // (As the agent asks: the build's memory on its Mac (`Agent::build_room`), all its
                     // cores, its free disk now; what its jobs leave free in `cap`.)
                     mem_mb: limit(k),
                     cores: m.cores,

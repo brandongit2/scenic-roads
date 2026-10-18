@@ -714,9 +714,9 @@ impl Shared {
                 n.and_then(|(_, c)| c).map(|c| left.saturating_sub(self.packed_cores(st, ts, c, share)))
             })
             .unwrap_or(0);
-        // (The ask's memory and disk are a job's whole share of its Mac, whatever it runs (the
-        // agent's `helper_memory`, its free disk): every job it holds is taken off its memory
-        // here. Its disk is taken off already for the jobs its agent reserves for (its capacity's
+        // (The ask's memory and disk are its Mac's whole room for jobs, whatever it runs (the
+        // memory its owner gives the build, the agent's `build_room`; its free disk): every job
+        // it holds is taken off its memory here. Its disk is taken off already for the jobs its agent reserves for (its capacity's
         // leases: the disk said is the free space less their reservations); the others it holds
         // (granted since it asked, or an older agent's) are taken off here.)
         let reserved_by_agent = |l: &Lease| a.cap.as_ref().is_some_and(|c| c.leases.contains(&l.id));
@@ -1341,7 +1341,10 @@ pub struct Capacity {
     pub limit_mb: u64,
     /// What its running jobs hold now, as the guard's sampler last saw them (MB).
     pub held_mb: u64,
-    /// The memory free under the limit less each running job's predicted need (the larger of
+    /// The memory its owner gives the build's jobs together (MB: `scenic memory`, within the
+    /// limit; crate::agent::buildmem::room_mb). 0: an older app's, which doesn't say.
+    pub build_mb: u64,
+    /// The build's memory (`build_mb`) less each running job's predicted need (the larger of
     /// what it holds and its predicted peak: its targets' measured peak on the lead, the
     /// step's first guess on a member, which has no coordinator's measures) (MB).
     pub mem_mb: u64,

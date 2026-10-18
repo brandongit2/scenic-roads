@@ -265,9 +265,8 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
   folders go once it's built.
 
 **The M1 (16 GB)** leads when it holds the term; as a member it builds what the lead's coordinator
-gives it (§8, The pool): any shared step's jobs that fit the memory it spares (three eighths of its
-memory; five eighths while its owner is away, for a job its last runs say ends within twenty
-minutes) and its disk (15 GB free a job, 5 a task), from the far end of the list (terrain from the
+gives it (§8, The pool): any shared step's jobs that fit the memory its owner gives the build there
+(`scenic memory`, within the memory guard's limit: docs/pool.md §7.1) and its disk (15 GB free a job, 5 a task), from the far end of the list (terrain from the
 near end), else units' tails (`docs/workers.md`). A unit's predicted peak is the most its job's
 processes held together last time, else about ten times its piece, never under 3.7 GB nor below its
 floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, the lead's the heartbeat
@@ -1262,7 +1261,7 @@ available. Until work is done, the map serves the last catalog.
 **Status.**
 - `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions),
   `scenic steps` (the steps table: docs/pipeline.md), `scenic clean`, `scenic room` (Room on the
-  disk, above).
+  disk, above), `scenic memory` (the build's memory: docs/pool.md §7.1).
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
 - **The menu bar item** asks the local server (`/api/build`): this Mac's agent's status, else the
   NAS's copy. An agent not heard from for six minutes shows as out of touch.
@@ -1270,7 +1269,7 @@ available. Until work is done, the map serves the last catalog.
     first that answers: HTTPS through `tailscale serve`, else the lead's addresses), with `?view` in
     a web view that keeps nothing, so it only watches (docs/workers.md §7).
   - **Its menu** (right-click, or "⋯"): the state, downloads and caches; Pause/Resume Building; the
-    lead items (docs/pool.md §11); Clear the Build's Caches; Disk Room ▸; Open the Build Log; Open
+    lead items (docs/pool.md §11); Clear the Build's Caches; Disk Room ▸; Memory ▸; Open the Build Log; Open
     the Map; Copy the Map's Address; Open/Copy the Build Page.
   - Its timers run in the run loop's common modes, so it updates while a menu is open
     (`scenic-status --menu-proof`).

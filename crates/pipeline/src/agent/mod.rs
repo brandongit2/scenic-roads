@@ -23,6 +23,7 @@
 pub mod backup;
 pub mod brokers;
 pub mod build;
+pub mod buildmem;
 pub mod cond;
 pub mod every;
 pub mod forecast;
@@ -362,7 +363,7 @@ struct Slot {
     /// reserved while it holds the lease (`Agent::reservation`).
     reserve_mb: Option<u64>,
     /// The memory this member spared its jobs when it asked for the job given it (MB: the ask's
-    /// `more_mb` when its owner was away, else its `mem_mb`): a member's job far past it is given
+    /// `mem_mb`: the build's memory, `Agent::build_room`): a member's job far past it is given
     /// back (`Agent::over_grant`). None: the lead's own job.
     spare_mb: Option<u64>,
     /// Its job given back for being far over `spare_mb` alone (`Agent::over_grant`): the target
@@ -569,27 +570,6 @@ fn terrain_peak(z6: usize) -> u64 {
     500 + 5440 * 270 / 1024 + 4096 / 4 + 1365 * 270 / 1024 + z6 as u64 * 20
 }
 
-/// The memory a helper spares its jobs (MB): three eighths of its Mac's (6 GB of the M1's 16, the
-/// owner's choice, 2026-10-05: a terrain area's 5–6 GB fits; its units took 3.7 GB at most over
-/// its first 205).
-/// The memory a helper spares (MB): its Mac's less the in-use share's (`kept`: share::mem_mb, by
-/// default five eighths, leaving three); while its owner is away (`away`), five eighths, or more
-/// where the share leaves more. `total_mb`: its Mac's memory (`Agent::mac_total_mb`: a test's Mac
-/// as it sets it, never the machine running the test); 0, unknown: 6 GB.
-fn helper_memory(total_mb: u64, away: bool, kept: Option<&share::Share>) -> u64 {
-    match total_mb {
-        0 => 6144,
-        t => {
-            let own = t.saturating_sub(share::mem_mb(kept, t));
-            if away {
-                own.max(t * 5 / 8)
-            } else {
-                own
-            }
-        }
-    }
-}
-
 /// Past what memory (MB) a member's jobs are far over the `spare` it gave them (`Agent::over_grant`):
 /// half as much again, 4 GB more at least (the caller caps it at the Mac's limit).
 fn far_over(spare: u64) -> u64 {
@@ -599,13 +579,6 @@ fn far_over(spare: u64) -> u64 {
 /// This Mac's cores.
 fn mac_cores() -> u32 {
     std::thread::available_parallelism().map_or(4, |n| n.get() as u32)
-}
-
-/// Whether a helper's owner is away (on mains power, not used for a quarter of an hour): it then
-/// spares more of its memory (`helper_memory`; the memory guard stops what passes its Mac's limit
-/// once they're back).
-fn helper_away(c: &Conditions) -> bool {
-    c.ac && c.idle_s >= 15 * 60
 }
 
 /// The running job's lease.
@@ -1169,9 +1142,12 @@ pub struct Agent {
     /// jobs after it wait without making room again, until a job ends, the target changes or ten
     /// minutes pass.
     room_target: Option<room::Target>,
-    /// The owner's in-use share (share::Share: the cores and memory kept free of its jobs while
-    /// they use the Mac), read each loop from the agent's folder.
+    /// The owner's in-use share (share::Share: the cores kept free of its jobs while they use the
+    /// Mac), read each loop from the agent's folder.
     in_use_share: Option<share::Share>,
+    /// The memory the owner gives the build's jobs on this Mac (buildmem::Memory, `scenic memory`),
+    /// read each loop from the agent's folder: None, the memory guard's limit alone.
+    build_memory: Option<buildmem::Memory>,
     toward_tried: Option<(u64, u64)>,
     floor_short: Option<(u64, u64, Instant)>,
     /// What a freeing under way frees toward (`goal`): set again each loop, so a target lowered or
@@ -1573,6 +1549,7 @@ impl Agent {
             grace: DRAIN_GRACE,
             room_target: None,
             in_use_share: None,
+            build_memory: None,
             toward_tried: None,
             floor_short: None,
             toward_goal: Default::default(),
@@ -1974,8 +1951,8 @@ impl Agent {
             kind: "native".into(),
             label: Some(format!("{} (helper)", self.host)),
             can,
-            // (Its share of its Mac: the more while its owner is away, `helper_away`.)
-            mem_mb: helper_memory(self.mac_total_mb(), helper_away(c), self.in_use_share.as_ref()),
+            // (The memory its owner gives the build here, within the guard's limit: `build_room`.)
+            mem_mb: self.build_room(),
             cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32),
             app: Some(self.app.clone()),
             limit_mb: Some(memguard::limit_mb(self.total_mb())).filter(|&l| l > 0 && !all_new),
@@ -2319,7 +2296,8 @@ impl Agent {
             kind: "native".into(),
             label: Some(format!("{} (lead)", self.host)),
             can,
-            mem_mb: if limit > 0 { limit + mem_back } else { u64::MAX >> 1 },
+            // (The memory its owner gives the build here, within the guard's limit: `build_room`.)
+            mem_mb: if limit > 0 || self.build_memory.is_some() { self.build_room() + mem_back } else { u64::MAX >> 1 },
             cores: mac_cores() + cores_back,
             app: Some(self.app.clone()),
             limit_mb: Some(limit).filter(|&l| l > 0 && !co.all_new()),
@@ -3371,13 +3349,23 @@ impl Agent {
         let shared = share::read(&self.o.home);
         if shared != self.in_use_share {
             eprintln!(
-                "agent: the in-use share is {} cores and {} MB kept while the owner uses this Mac ({})",
+                "agent: the in-use share is {} cores kept while the owner uses this Mac ({})",
                 share::cores(shared.as_ref(), mac_cores()),
-                share::mem_mb(shared.as_ref(), self.mac_total_mb()),
-                shared.as_ref().map_or("the defaults", |s| s.by.as_str())
+                shared.as_ref().map_or("the default", |s| s.by.as_str())
             );
         }
         self.in_use_share = shared;
+        // The memory the owner gives the build here, as set now (`scenic memory`, the menu bar).
+        let mem = buildmem::read(&self.o.home);
+        if mem.as_ref().map(|m| m.mb) != self.build_memory.as_ref().map(|m| m.mb) {
+            match &mem {
+                Some(m) => {
+                    eprintln!("agent: the build's memory is {} MB ({}), within the memory guard's limit", m.mb, m.by)
+                }
+                None => eprintln!("agent: the build's memory is the memory guard's limit (none set)"),
+            }
+        }
+        self.build_memory = mem;
         // (A freeing under way frees toward the goal as it is now: lowered or off, it stops.)
         if self.caches_task.as_ref().is_some_and(|t| t.toward.is_some()) {
             self.toward_goal.store(self.goal(), std::sync::atomic::Ordering::Relaxed);
@@ -4406,7 +4394,8 @@ impl Agent {
     }
 
     /// This Mac's whole capacity now (crate::coord::Capacity), for its asks and, leading, its own
-    /// coordinator: the memory guard's limit less each running job's predicted need (the larger of
+    /// coordinator: the memory guard's limit, the build's memory (`build_room`) less each running
+    /// job's predicted need (the larger of
     /// what it holds and `spec_peak`: its targets' measured peak on the lead,
     /// the step's first guess on a member), the cores the load leaves, the
     /// disk's free space less the reserve, the owner's room target and its jobs' reservations
@@ -4438,7 +4427,8 @@ impl Agent {
             at: now_s(),
             limit_mb,
             held_mb,
-            mem_mb: limit_mb.saturating_sub(need),
+            build_mb: self.build_room(),
+            mem_mb: self.build_room().saturating_sub(need),
             cores,
             cores_free: cores.saturating_sub(busy),
             disk_mb: self.disk_room() >> 20,
@@ -4452,6 +4442,17 @@ impl Agent {
             guard: self.guard_stops(),
             leases,
         }
+    }
+
+    /// The memory this Mac gives the build's jobs together (MB): the owner's amount
+    /// (`scenic memory`, buildmem) within the memory guard's limit, else the limit
+    /// (buildmem::room_mb). Its asks' memory (a member's, the lead's own) and the forecast's room.
+    fn build_room(&self) -> u64 {
+        let total = match self.total_mb() {
+            0 => self.mac_total_mb(),
+            t => t,
+        };
+        buildmem::room_mb(self.build_memory.as_ref(), memguard::limit_mb(total))
     }
 
     /// This Mac's memory (MB): as a test sets it, else as read once this loop (`step`); 0 when it
@@ -7134,16 +7135,10 @@ impl Agent {
         // beside the others (`forecast::MacRoom`).
         let mac_mb = (self.mac.resources(&self.o.home, None, None, None).mem_gb * 1024.0) as u64;
         let mut rooms: BTreeMap<String, forecast::MacRoom> = BTreeMap::new();
-        // (A Mac's room is what its asks spare for its jobs together, as `pack_why` takes an ask's
-        // memory: a member's `Ask::mem_mb` is its Mac's whole spare memory for jobs (`helper_memory`),
-        // not a slot's; the coordinator's worker record keeps it (`mem`). Not heard: the Mac's.)
-        rooms.insert(
-            self.host.clone(),
-            forecast::MacRoom {
-                mem_mb: mem.get(&self.host).copied().filter(|&m| m > 0).unwrap_or(mac_mb),
-                cores: mac_cores(),
-            },
-        );
+        // (A Mac's room is the memory its owner gives the build's jobs together (`build_room`,
+        // `scenic memory`), as `pack_why` takes an ask's memory: a member's `Ask::mem_mb` is it,
+        // not a slot's; the coordinator's worker record keeps it (`mem`). This Mac's, its own.)
+        rooms.insert(self.host.clone(), forecast::MacRoom { mem_mb: self.build_room(), cores: mac_cores() });
         let mut machines = vec![Machine {
             name: self.host.clone(),
             speed: 1.0,
@@ -7207,9 +7202,14 @@ impl Agent {
                 Some(c) => forecast::slot_lanes(job_slots(c.cores as usize), &running),
                 None => running.iter().map(|k| k + 1).max().unwrap_or(1),
             };
-            // (Its room: what its asks spare for its jobs together (`Ask::mem_mb`, the whole Mac's,
-            // as `pack_why` counts it), else its memory guard's limit.)
-            let mem_all = mem.get(&h.host).copied().filter(|&m| m > 0).or(cap.map(|c| c.limit_mb).filter(|&m| m > 0));
+            // (Its room: the memory its owner gives the build's jobs together (`Ask::mem_mb`, as
+            // `pack_why` counts it), else its capacity's (`build_mb`; an older app's: its memory
+            // guard's limit).)
+            let mem_all = mem
+                .get(&h.host)
+                .copied()
+                .filter(|&m| m > 0)
+                .or(cap.map(|c| if c.build_mb > 0 { c.build_mb } else { c.limit_mb }).filter(|&m| m > 0));
             rooms.insert(
                 h.host.clone(),
                 forecast::MacRoom {
@@ -10662,7 +10662,13 @@ mod tests {
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let mut w = Vec::new();
         assert!(a.may_pack());
-        // (Its ask's memory a job's share of its 16 GB, 6 GB: three of 2 GB fit.)
+        // (Its ask's memory the build's on its 16 GB (task #390): none set, the memory guard's
+        // limit, 12 GB; set to 6 GB (`scenic memory 6`), within the limit, that: three of 2 GB fit.)
+        assert_eq!(a.build_room(), memguard::limit_mb(16 << 10));
+        buildmem::set(&home, Some(6 << 10), "a test").unwrap();
+        a.build_memory = buildmem::read(&home);
+        assert_eq!(a.build_room(), 6 << 10);
+        assert_eq!(a.capacity(&cond).build_mb, 6 << 10);
         let got = a.helper_grants(&root, &cond, &mut w);
         assert_eq!(got.iter().map(|(k, _)| *k).collect::<Vec<_>>(), [0, 1, 2], "{w:?}");
         assert_eq!(a.slots.len(), 3);

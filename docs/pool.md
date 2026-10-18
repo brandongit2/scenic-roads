@@ -281,8 +281,8 @@ member on another app than the lead's gets nothing (409) until they match (plan.
 app).
 
 An ask also carries its whole Mac's capacity (`coord::Capacity`, the ask's optional `cap`): the
-memory guard's limit and what the running jobs hold, the memory free under the limit less each
-running job's predicted need (the larger of what it holds and its predicted peak: its targets' measured peak on the
+memory guard's limit and what the running jobs hold, the build's memory (`build_mb`, §7.1, The
+build's memory) and what's free of it less each running job's predicted need (the larger of what it holds and its predicted peak: its targets' measured peak on the
 lead, the step's first guess on a member), its
 cores and those the last minute's load leaves free, the disk free less the reserve, the owner's
 room target and its jobs' reservations (`reserved_mb`, below), in use and the cores its
@@ -356,14 +356,21 @@ while the owner uses it and those its other running jobs were given (one at leas
 line per job: `agent: starting <job> (<n> threads: granted <g> of <c> cores, <k> kept for the
 owner, <b> given to jobs beside it)`. The coordinator logs the threads with each grant.
 
-**The in-use share** (`crate::agent::share`): what a Mac's agent keeps free of its jobs for its
-owner. Its cores (by default 2) are kept while the owner uses the Mac (used within the last five
-minutes). Its memory (by default five eighths of the Mac's) is kept whenever the owner isn't away
-(`helper_memory`: a member spares the rest, by default three eighths; away, on mains power and idle
-a quarter hour, five eighths or what the share leaves, the more); it bounds members' asks alone. `scenic in-use [--cores <n>] [--memory <GB>] | off` sets either part (the
-other keeps its default) in the agent's folder (`in-use-share.json`); `off` clears it, the defaults
-again; with nothing, it says how it stands (and says so where the file can't be read, the
-defaults then in force). The agent reads it each loop, as the disk room target.
+**The in-use share** (`crate::agent::share`): the cores a Mac's agent keeps free of its jobs for
+its owner (by default 2) while the owner uses the Mac (used within the last five minutes).
+`scenic in-use [--cores <n>] | off` sets it in the agent's folder (`in-use-share.json`); `off`
+clears it, the default again; with nothing, it says how it stands (and says so where the file can't
+be read, the default then in force). The agent reads it each loop, as the disk room target.
+
+**The build's memory** (`crate::agent::buildmem`, task #390): one fixed amount of memory a Mac gives
+its build's jobs together, set per Mac, whether its owner uses it or not. `scenic memory <GB>` or
+the menu bar's Memory ▸ sets it in the agent's folder (`build-memory.json`); `scenic memory off` or
+the menu's The Memory Guard's Limit clears it; `scenic memory` says how it stands. The agent reads
+it each loop. It is the memory of the Mac's asks (`Ask::mem_mb`, a member's and the lead's own:
+`Agent::build_room`), its capacity's `build_mb`, and the forecast's room for that Mac
+(`forecast::MacRoom`), always within the memory guard's limit (`buildmem::room_mb`: the smaller of
+the two); not set, the limit alone. The build page's Mac card, `scenic status` and the menu bar
+show it.
 
 ### 7.2 Placement: the steps table
 
@@ -406,8 +413,8 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
   coordinator grants up to that many in one answer (`Grant::more`, each its own
   lease), packed in plan order into the ask's room: each after the first the Mac holds must be
   measured (memory, disk, and cores: `needs::Book::cores`, within the packed share, §7.1) and fit
-  what's left: the ask's memory and disk (a member's job's whole share of its Mac, `helper_memory`;
-  the lead's memory guard limit; and its free disk) and its Mac's cores (less the in-use share's
+  what's left: the ask's memory and disk (the build's memory on its Mac, §7.1, `Agent::build_room`;
+  and its free disk) and its Mac's cores (less the in-use share's
   while its owner uses it), less the measured needs of every job it holds and of those granted
   with it. A lease counts until it ends or lapses: a restarted Mac's old leases hold its room
   until their TTL runs out. A cold start goes only to a Mac holding no lease, alone, and nothing
@@ -463,8 +470,7 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   too stops at a safe point. This holds on every Mac's slots. A drain that finds no safe
   point in 15 minutes is stopped. A stopped job is given back and kept from that Mac for an hour.
 - **A member's jobs far over what it spared them** (`Agent::over_grant`, task #28): each job a
-  member is granted keeps the memory its ask spared (`more_mb` while its owner was away, else
-  `mem_mb`). Once its jobs together hold more than half as much again (4 GB more at least,
+  member is granted keeps the memory its ask spared (its `mem_mb`: the build's memory, §7.1). Once its jobs together hold more than half as much again (4 GB more at least,
   `far_over`), capped at the Mac's limit, the largest stops at once, the Mac short of memory or
   not; never a job beside it. So a member's jobs past the limit meet this first: the largest stops
   at once, not at a safe point. Past that mark by itself, or the member's only job, it's given back,

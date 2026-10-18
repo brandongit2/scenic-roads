@@ -31,12 +31,12 @@
 //!                                       running or not (what they use stays), and starting no job
 //!                                       that would cross it, until it's lowered or off; with none,
 //!                                       how it stands
-//!   scenic in-use [--cores <n>] [--memory <GB>] | off
-//!                                       the in-use share: the cores and memory this Mac's agent
-//!                                       keeps free of its jobs while its owner uses it (by default
-//!                                       2 cores and five eighths of its memory); either part set,
-//!                                       the other its default; off: the defaults; with none, how
-//!                                       it stands
+//!   scenic memory [<GB> | off]          the memory this Mac gives the build's jobs together
+//!                                       (within the memory guard's limit; off: the limit); with
+//!                                       none, how it stands
+//!   scenic in-use [--cores <n>] | off   the in-use share: the cores this Mac's agent keeps free
+//!                                       of its jobs while its owner uses it (by default 2); off:
+//!                                       the default; with none, how it stands
 //!   scenic gc [--dry-run] [--days 14]   remove replaced files from the NAS (the agent runs it daily)
 //!   scenic backup [--local <dir>]       back up the user's folders (the agent runs it daily)
 //!   scenic inputs                       every gate unit (docs/inputs.md §4): its accepted version, its
@@ -425,16 +425,22 @@ fn inputs(args: &[String]) -> Result<()> {
     }
 }
 
-/// A member's capacity in a line: "memory 9.5 GB free of the 12.0 GB limit (1.2 GB held) · 6 of 8
-/// cores free · disk 120.4 GB free · on power · in use · NAS reachable · leases 12, 14 · 20 s ago".
+/// A member's capacity in a line: "memory 8.8 GB free of the build's 10.0 GB (1.2 GB held, the
+/// limit 12.0 GB) · 6 of 8 cores free · disk 90.0 GB free · on
+/// power · in use · NAS reachable · leases 12, 14 · 20 s ago".
 fn capacity_line(c: &pipeline::coord::Capacity) -> String {
     let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
     let mut v = vec![
         format!(
-            "memory {} free of the {} limit ({} held{})",
+            "memory {} free of the build's {} ({} held{}{})",
             gb(c.mem_mb),
-            gb(c.limit_mb),
+            gb(if c.build_mb > 0 { c.build_mb } else { c.limit_mb }),
             gb(c.held_mb),
+            if c.build_mb > 0 && c.build_mb < c.limit_mb {
+                format!(", the limit {}", gb(c.limit_mb))
+            } else {
+                String::new()
+            },
             if c.guard { "" } else { ", not guarded" }
         ),
         format!("{} of {} cores free", c.cores_free, c.cores),
@@ -964,27 +970,24 @@ fn caches_line(c: &agent::room::Caches) -> String {
     s
 }
 
-/// `scenic in-use [--cores <n>] [--memory <GB>] | off`: this Mac's in-use share (agent::share), set
-/// in its agent's folder, which the agent reads each loop; with neither, how it stands.
+/// `scenic in-use [--cores <n>] | off`: this Mac's in-use share (agent::share), set in its agent's
+/// folder, which the agent reads each loop; without --cores, how it stands.
 fn in_use(args: &[String]) -> Result<()> {
     use agent::share;
     let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
     let cores = std::thread::available_parallelism().map_or(4, |n| n.get() as u32);
-    let total_mb = pipeline::sys::memsize().map_or(0, |b| b >> 20);
     let say = |s: Option<&share::Share>| {
         println!(
-            "In-use share: {} of {cores} cores and {:.1} of {:.1} GB kept free of this Mac's jobs while its owner uses it ({})",
+            "In-use share: {} of {cores} cores kept free of this Mac's jobs while its owner uses it ({})",
             share::cores(s, cores),
-            share::mem_mb(s, total_mb) as f64 / 1024.0,
-            total_mb as f64 / 1024.0,
             match s {
                 Some(s) => format!("set {} by {}", ago(s.at), s.by),
-                None => "the defaults".into(),
+                None => "the default".into(),
             }
         )
     };
     if args.iter().skip(2).any(|a| a == "off") {
-        share::set(&home, None, None, "")?;
+        share::set(&home, None, "")?;
         say(None);
         return Ok(());
     }
@@ -993,37 +996,94 @@ fn in_use(args: &[String]) -> Result<()> {
             c.parse().ok().filter(|&c: &u32| c < cores).with_context(|| format!("--cores: 0 to {}, not {c}", cores - 1))
         })
         .transpose()?;
-    let gb: Option<f64> = opt(args, "--memory")
-        .map(|g| {
-            g.trim_end_matches("GB")
-                .trim_end_matches("gb")
-                .parse()
-                .ok()
-                .filter(|g: &f64| g.is_finite() && *g >= 0.0 && (total_mb == 0 || *g * 1024.0 <= total_mb as f64))
-                .with_context(|| format!("--memory: GB, at most this Mac's, not {g}"))
-        })
-        .transpose()?;
-    if n.is_none() && gb.is_none() {
+    let Some(n) = n else {
         match share::read_checked(&home) {
             Ok(s) => say(s.as_ref()),
             Err(e) => {
-                println!("{e:#}: the agent keeps the defaults");
+                println!("{e:#}: the agent keeps the default");
                 say(None);
             }
         }
         return Ok(());
-    }
+    };
     anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
-    let old = share::read(&home);
     let by = format!("scenic in-use on {}", agent::cond::host_name());
-    let s = share::set(
-        &home,
-        n.or(old.as_ref().and_then(|s| s.cores)),
-        gb.map(|g| (g * 1024.0) as u64).or(old.as_ref().and_then(|s| s.mem_mb)),
-        &by,
-    )?;
+    let s = share::set(&home, Some(n), &by)?;
     say(s.as_ref());
     Ok(())
+}
+
+/// `scenic memory [<GB> | off]`: the memory this Mac gives the build's jobs together
+/// (agent::buildmem), set in its agent's folder, which the agent reads each loop; within the memory
+/// guard's limit; off: the limit alone; with none, how it stands.
+fn memory(args: &[String]) -> Result<()> {
+    use agent::buildmem;
+    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    let by = format!("scenic memory on {}", agent::cond::host_name());
+    let total_mb = pipeline::sys::memsize().map_or(0, |b| b >> 20);
+    let limit = agent::memguard::limit_mb(total_mb);
+    // (The first word after `memory` that isn't an option or an option's value: `--home X 10`.)
+    let mut words = args.iter().skip(2);
+    let mut what = None;
+    while let Some(a) = words.next() {
+        if a == "--home" || a == "--root" {
+            words.next();
+        } else if !a.starts_with("--") {
+            what = Some(a.as_str());
+            break;
+        }
+    }
+    let set = match what {
+        Some("off") => {
+            buildmem::set(&home, None, &by)?;
+            None
+        }
+        Some(gb) => {
+            let gb: f64 = gb
+                .trim_end_matches("GB")
+                .trim_end_matches("gb")
+                .parse()
+                .ok()
+                .filter(|g: &f64| g.is_finite() && *g >= 1.0)
+                .with_context(|| format!("scenic memory <GB> | off, not {gb}: 1 GB or more"))?;
+            let mb = (gb * 1024.0) as u64;
+            anyhow::ensure!(
+                total_mb == 0 || mb <= total_mb,
+                "{gb} GB is more than this Mac has ({:.0} GB)",
+                total_mb as f64 / 1024.0
+            );
+            anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
+            buildmem::set(&home, Some(mb), &by)?
+        }
+        None => buildmem::read(&home),
+    };
+    println!("{}", memory_line(set.as_ref(), limit, |t| ago(t)));
+    Ok(())
+}
+
+/// The build's memory in a line: "Build memory: 10.0 GB for the build's jobs together, set 2 h ago
+/// by scenic memory on m1 (the memory guard's limit, 12.0 GB, stays the ceiling)"; not set, the
+/// limit's.
+fn memory_line(set: Option<&agent::buildmem::Memory>, limit_mb: u64, ago: impl Fn(u64) -> String) -> String {
+    let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+    let room = agent::buildmem::room_mb(set, limit_mb);
+    match set {
+        Some(m) => format!(
+            "Build memory: {} for the build's jobs together, set {} by {}{}",
+            gb(room),
+            ago(m.at),
+            m.by,
+            match limit_mb {
+                0 => String::new(),
+                l if m.mb > l => format!(" ({} asked, held to the memory guard's limit)", gb(m.mb)),
+                l => format!(" (the memory guard's limit, {}, stays the ceiling)", gb(l)),
+            }
+        ),
+        None => format!(
+            "Build memory: {} for the build's jobs together, the memory guard's limit (`scenic memory <GB>` sets less)",
+            gb(room)
+        ),
+    }
 }
 
 /// `scenic room [<GB> | off]`: this Mac's disk room target (agent::room::Target), set in its agent's
@@ -1421,6 +1481,7 @@ fn main() -> Result<()> {
         "clean" => clean(&args),
         "room" => room(&args),
         "in-use" => in_use(&args),
+        "memory" => memory(&args),
         "gc" => {
             let days: u64 = opt(&args, "--days").map(|d| d.parse()).transpose()?.unwrap_or(14);
             let r = pipeline::timings::job("gc", || gc::run(&root(&args, true)?, days, flag(&args, "--dry-run")))?;
@@ -1573,5 +1634,29 @@ mod tests {
         let l = macs_lines(&st).join("\n");
         assert!(l.contains("slot 1: job 0") && l.contains("slot 4: job 3") && !l.contains("slot 2:"), "{l}");
         assert!(l.contains("        tail line"), "{l}");
+    }
+
+    /// The build's memory in words (task #390), and a Mac's capacity with it.
+    #[test]
+    fn the_build_memory_and_the_disk_are_said_plainly() {
+        let m = agent::buildmem::Memory { mb: 10 << 10, by: "scenic memory on m1".into(), at: 1 };
+        let ago = |_| "2 h ago".to_string();
+        assert_eq!(
+            memory_line(Some(&m), 12 << 10, ago),
+            "Build memory: 10.0 GB for the build's jobs together, set 2 h ago by scenic memory on m1 (the memory guard's limit, 12.0 GB, stays the ceiling)"
+        );
+        assert_eq!(
+            memory_line(Some(&m), 8 << 10, ago),
+            "Build memory: 8.0 GB for the build's jobs together, set 2 h ago by scenic memory on m1 (10.0 GB asked, held to the memory guard's limit)"
+        );
+        assert!(memory_line(None, 12 << 10, ago)
+            .starts_with("Build memory: 12.0 GB for the build's jobs together, the memory guard's limit"));
+        let c =
+            pipeline::coord::Capacity { limit_mb: 12 << 10, build_mb: 10 << 10, mem_mb: 6 << 10, ..Default::default() };
+        let l = capacity_line(&c);
+        assert!(
+            l.starts_with("memory 6.0 GB free of the build's 10.0 GB (0.0 GB held, the limit 12.0 GB, not guarded)"),
+            "{l}"
+        );
     }
 }

@@ -10,7 +10,9 @@
 // from its file, says what its build caches hold, whether they can be cleared now,
 // and the last trim and clear (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
 // that agent to clear them. Disk Room shows the disk's free space and the owner's room target, and
-// sets it (a few presets, or Off): the free space that agent keeps, freeing its caches to it. With
+// sets it (a few presets, or Off): the free space that agent keeps, freeing its caches to it. Memory shows and
+// sets the memory the build's jobs get here together (crates/pipeline/src/agent/buildmem.rs: a few
+// presets, or the memory guard's limit alone). With
 // the pool on (docs/pool.md §11), its agent's view of the pool: who leads, each Mac and its state,
 // and the lead's items: Hand the Build To ▸ on the lead, Make This Mac Lead and Take Over the
 // Build… (confirming) on another Mac, the proactive offer; each an ask to that agent
@@ -1421,6 +1423,45 @@ func roomItem(_ own: Own?, target: Int?, free: Int?, disk: Int?) -> (title: Stri
     return (title, tip, choices)
 }
 
+/// The memory this Mac gives the build's jobs together (crates/pipeline/src/agent/buildmem.rs,
+/// `scenic memory`), in its agent's folder: its MB, as set now (nil: the memory guard's limit).
+let memoryFile = "build-memory.json"
+struct BuildMemory: Decodable {
+    let mb: Double
+    let by: String
+    let at: Int
+}
+func buildMemory() -> Int? {
+    guard let d = try? Data(contentsOf: home.appendingPathComponent("agent").appendingPathComponent(memoryFile)),
+          let m = try? JSONDecoder().decode(BuildMemory.self, from: d), m.mb >= 1 else { return nil }
+    return Int(min(m.mb, Double(1 << 40)))
+}
+
+/// The memory guard's limit on a Mac of `total` MB (memguard.rs limit_mb): an eighth kept, 4 GB at least.
+func guardLimitMB(_ total: Int) -> Int { max(0, total - max(total / 8, 4096)) }
+
+/// The build memory's presets (GB).
+let memoryPresets = [4, 6, 8, 10, 12, 16, 24, 32, 48, 64]
+
+/// The menu's Memory item (none without an agent here): its title, the memory the build's jobs get
+/// together (the amount set, within the guard's limit; none set, the limit); its tooltip; its
+/// submenu's choices (a preset's GB under the limit, 0 for the limit alone), the one set checked.
+func memoryItem(_ own: Own?, set: Int?, totalMB: Int) -> (title: String, tip: String, choices: [(title: String, gb: Int, on: Bool)])? {
+    guard own?.caches != nil else { return nil }
+    let limit = guardLimitMB(totalMB)
+    let g = { (mb: Int) in String(format: "%.0f\u{00A0}GB", Double(mb) / 1024) }
+    let title: String
+    if let m = set { title = "Memory: \(g(limit > 0 ? min(m, limit) : m)) for the build (limit \(g(limit)))" } else { title = "Memory: \(g(limit)) for the build (the memory guard's limit)" }
+    let tip = "The memory this Mac's jobs get together, whether you're using the Mac or not; the memory guard's limit (\(g(limit))) stays the ceiling."
+    var choices = memoryPresets.filter { limit == 0 || $0 << 10 <= limit }.map { (title: "Give the Build \($0) GB", gb: $0, on: set == $0 << 10) }
+    if let m = set, !choices.contains(where: \.on) { choices.append((title: "Give the Build \(g(m))", gb: -1, on: true)) }
+    choices.append((title: "The Memory Guard's Limit (\(g(limit)))", gb: 0, on: set == nil))
+    return (title, tip, choices)
+}
+
+/// This Mac's memory (MB).
+func macMemoryMB() -> Int { Int(ProcessInfo.processInfo.physicalMemory >> 20) }
+
 /// "51.2 GB", or under a GB, "350 MB" (number and unit never split across lines).
 func gb(_ b: Int) -> String {
     b >= 1 << 30 ? String(format: "%.1f\u{00A0}GB", Double(b) / Double(1 << 30)) : "\(b >> 20)\u{00A0}MB"
@@ -1905,6 +1946,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             it.submenu = sub
             m.addItem(it)
         }
+        // The memory this Mac gives the build's jobs (buildmem.rs): its agent's asks are held to it.
+        if let r = memoryItem(own, set: buildMemory(), totalMB: macMemoryMB()) {
+            let it = NSMenuItem(title: r.title, action: nil, keyEquivalent: "")
+            it.toolTip = r.tip
+            let sub = NSMenu()
+            for c in r.choices {
+                let ci = NSMenuItem(title: c.title, action: c.gb >= 0 ? #selector(setMemory) : nil, keyEquivalent: "")
+                ci.target = self
+                ci.tag = c.gb
+                ci.state = c.on ? .on : .off
+                if c.gb == 0 { sub.addItem(.separator()) }
+                sub.addItem(ci)
+            }
+            it.submenu = sub
+            m.addItem(it)
+        }
         m.addItem(.separator())
         if let log = reply?.log {
             let it = NSMenuItem(title: "Open the Build Log", action: #selector(openLog), keyEquivalent: "")
@@ -2183,6 +2240,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         poll()
     }
 
+    /// Sets the memory this Mac gives the build to the item's GB (its tag; 0: the memory guard's
+    /// limit alone): the file in the agent's folder (buildmem.rs Memory), written whole, which the
+    /// agent reads each loop; signed with the name the agent goes by.
+    @objc func setMemory(_ sender: NSMenuItem) {
+        let dir = home.appendingPathComponent("agent")
+        let dst = dir.appendingPathComponent(memoryFile)
+        do {
+            if sender.tag == 0 {
+                if FileManager.default.fileExists(atPath: dst.path) { try FileManager.default.removeItem(at: dst) }
+            } else {
+                let name = SCDynamicStoreCopyLocalHostName(nil) as String? ?? "this Mac"
+                let tmp = dir.appendingPathComponent("\(memoryFile).menu.tmp")
+                try JSONSerialization.data(withJSONObject: ["mb": sender.tag << 10, "by": "the menu bar on \(name)", "at": Int(Date().timeIntervalSince1970)] as [String: Any]).write(to: tmp)
+                guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            }
+        } catch {
+            post("Couldn't set the build's memory", "\(error.localizedDescription)")
+            return
+        }
+        poll()
+    }
+
     @objc func copyPage(_ sender: NSMenuItem) {
         guard let page = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
@@ -2351,6 +2430,9 @@ if args.contains("--unregister") {
         print("item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
     }
     if let r = roomItem(own, target: roomTarget(), free: diskFree(), disk: diskSize()) {
+        print("item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
+    }
+    if let r = memoryItem(own, set: buildMemory(), totalMB: macMemoryMB()) {
         print("item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
     }
     if let p = own?.pool, let v = p.lead {

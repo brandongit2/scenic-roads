@@ -407,7 +407,7 @@ function facts(st, x, m) {
   if (r.disk_free_gb != null) out.push(chip(`${r.disk_free_gb} GB free${r.cache_gb != null ? ` (+${r.cache_gb} GB cache)` : ""}`, r.disk_free_gb < 10 ? "bad" : r.disk_free_gb < 20 ? "warn" : "", "Free on its disk; the caches the agent may drop to make room"));
   if (r.mem_gb) out.push(chip(`${r.mem_gb} GB memory${r.mem_free_pct != null ? `, ${r.mem_free_pct}% free` : ""}`, r.mem_free_pct != null && r.mem_free_pct < 10 ? "warn" : ""));
   if (r.load1 != null) out.push(chip(`load ${r.load1} on ${r.cores} cores`));
-  out.push(chip(c.idle_s != null && c.idle_s < 300 ? "in use (half the cores)" : "not in use", "", "While someone uses the Mac, its jobs get half its cores"));
+  out.push(chip(c.idle_s != null && c.idle_s < 300 ? "in use" : "not in use", "", "While someone uses the Mac, its in-use share's cores (scenic in-use) are kept free of its jobs"));
   if (st.app) out.push(chip(`app ${st.app}`, x.role !== "lead" && m.a.app && st.app !== m.a.app ? "warn" : ""));
   const sp = m.fc?.speed?.[x.name];
   if (sp != null && x.role !== "lead") out.push(chip(`${Math.round(sp * 100)}% of the lead's pace${(m.fc.guessed || []).includes(x.name) ? " (a guess until measured)" : ""}`));
@@ -453,21 +453,25 @@ function capBar(label, used, whole, words, also = 0, cls = "") {
 const gb = (mb) => `${(mb / 1024).toFixed(1)} GB`;
 
 // A Mac's capacity as the lead's coordinator last heard it (coord::Capacity): memory held of the
-// guard's limit, cores busy, disk reserved and free, its share of the NAS budget.
+// build's (scenic memory, within the guard's limit), cores busy, disk reserved and free, its share
+// of the NAS budget.
 function capacityBlock(said) {
   const c = said.cap;
   if (!c && said.nas == null) return null;
   const rows = [];
   if (c) {
-    rows.push(capBar("memory", c.held_mb, c.limit_mb, `${gb(c.held_mb)} of ${gb(c.limit_mb)} · ${gb(c.mem_mb)} free${c.guard ? "" : " · unguarded"}`, 0, c.limit_mb && c.held_mb / c.limit_mb > 0.9 ? "warn" : ""));
+    const build = c.build_mb || c.limit_mb;
+    const limit = c.build_mb && c.build_mb < c.limit_mb ? ` (limit ${gb(c.limit_mb)})` : "";
+    rows.push(capBar("memory", c.held_mb, build, `${gb(c.held_mb)} of the build's ${gb(build)}${limit} · ${gb(c.mem_mb)} free${c.guard ? "" : " · unguarded"}`, 0, build && c.held_mb / build > 0.9 ? "warn" : ""));
     const busy = Math.max(0, c.cores - c.cores_free);
     rows.push(capBar("cores", busy, c.cores, `${busy} of ${c.cores} busy${c.in_use && c.kept_cores ? ` · ${c.kept_cores} kept for its owner` : ""}`));
     const disk = c.disk_mb + c.reserved_mb;
     rows.push(capBar("disk", c.reserved_mb, disk, `${gb(c.reserved_mb)} reserved · ${gb(c.disk_mb)} free`, 0, c.disk_mb < 10240 ? "warn" : ""));
   }
   if (said.nas != null) rows.push(capBar("NAS", said.nas, 1000, `${Math.round(said.nas / 10)}% of the budget`, 0, said.nas > 1000 ? "warn" : ""));
-  return h("div", { class: "caps", title: "As the lead's coordinator last heard it: memory its jobs hold of the guard's limit (and free for more, less what they're predicted to need); cores busy by the last minute's load; disk its jobs reserved, and free less the reserve and the owner's room target; its jobs' share of the NAS budget" }, rows);
+  return h("div", { class: "caps", title: "As the lead's coordinator last heard it: memory its jobs hold of what the build gets on this Mac (scenic memory, within the memory guard's limit; and free for more, less what they're predicted to need); cores busy by the last minute's load; disk its jobs reserved, and free less the reserve and the owner's room target; its jobs' share of the NAS budget" }, rows);
 }
+
 
 // The lead's ramp (crate::agent::RampView): its slots now of the most; held (its slots kept at the
 // start) or not clean (growth stopped), else clean since when and when it grows.
