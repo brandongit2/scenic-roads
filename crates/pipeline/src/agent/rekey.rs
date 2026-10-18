@@ -1110,7 +1110,7 @@ fn derive_runs(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, ti
 mod tests {
     use super::*;
     use crate::agent::build::tests::{did, e7box, heritage_chain_done, heritage_done, tiles_for, unit_inputs};
-    use crate::agent::build::{MapUpdates, Work};
+    use crate::agent::build::{Publish, Work};
     use crate::agent::recipes::Recipe;
     use crate::reach::{LongWay, Reach};
 
@@ -1202,11 +1202,11 @@ mod tests {
             &BTreeMap::new(),
             Some(reach),
             tiles,
-            MapUpdates {
+            Publish {
                 each: &c.by_region(),
                 on_map: &BTreeMap::new(),
-                since_last: None,
-                current: None,
+                served: &BTreeMap::new(),
+                since_catalog: None,
                 held: false,
                 way: Default::default(),
             },

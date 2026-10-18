@@ -544,20 +544,14 @@ fn status(args: &[String]) -> Result<()> {
     for w in &st.waiting {
         println!("Waiting: {} — {}", w.what, w.why);
     }
-    // The lead's decision on the next map update, and why (agent::build::UpdateDecision).
-    if let Some(u) = &st.map_update {
-        println!("Map update: {} — {}", if u.due { "due" } else { "not due" }, u.why);
-        println!(
-            "  gap {} min ({}){}",
-            u.gap_s.div_ceil(60),
-            u.gap_basis,
-            u.since_last_s.map(|s| format!(", the last began {} min ago", s / 60)).unwrap_or_default()
-        );
-        for r in &u.regions {
-            println!("  new work: {} ({})", r.id, r.kinds.join(", "));
+    // Publishing as the lead last planned it, and why (agent::build::PublishLine).
+    if let Some(u) = &st.publishing {
+        println!("Publishing: {}", u.why);
+        if !u.low {
+            println!("  the low zooms wait for their turn (state/pool/low-zoom-later)");
         }
-        if u.buildings {
-            println!("  3D building packs being raised: they go out with the next map update");
+        for r in &u.regions {
+            println!("  done, not on the map as it is: {} ({})", r.id, r.kinds.join(", "));
         }
     }
     // The timetables' to-do list and the routes matching nothing on the map (docs/inputs.md §6.7.3).

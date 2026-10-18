@@ -1,7 +1,7 @@
 //! What the lead builds for the regions (docs/plan.md §6, Job keys; §8, Order): per z3 pack,
 //! the terrain and then the slope of its z6 tiles near the coverage; base(U) for every unit whose
 //! piece meets the coverage, a region at a time; pack(T) for the z6 tiles near changed units, the
-//! lo packs above them; then a catalog, as each region is done (`plan`).
+//! lo packs above them, as soon as those units are built; then a catalog, at most one a minute (`plan`).
 //!
 //! Each job's key is a hash of what it reads: its step's version, the coverage near it, and the
 //! content names (from the build manifest) of its inputs. A job whose key matches the one recorded
@@ -1637,174 +1637,85 @@ pub fn tree_work(tt: &crate::treepacks::Targets, m: &BTreeMap<String, String>, d
     w
 }
 
-/// How long after a map update began the next may begin while the units are still being built
-/// (docs/plan.md §8, Order), a region being done: so a map update goes out about every hour, its
-/// regions' slope and tree cover made before it as they're done, and it draws (the map tiles near
-/// what changed, the road index, rail stops, a catalog). After the last unit, at once.
-pub const PUBLISH_EVERY_S: u64 = 3600;
+/// A catalog at most this often (seconds; the owner's, 17 Oct): what's drawn meanwhile goes out
+/// with the next.
+pub const CATALOG_EVERY_S: u64 = 60;
 
-/// With the low zooms later (`Publishing::low_later`): how long after a map update last made them a
-/// map update makes them again, while units are still being built (the owner's "every few hours"; a
-/// policy, not a measure). Sooner when much has changed (`low_due`), and always in the last map update.
-pub const LOW_EVERY_S: u64 = 3 * PUBLISH_EVERY_S;
+/// With the low zooms later (`Publishing::low_later`): how long after they were last made they're
+/// made again while units are still being built (the owner's "every few hours"; a policy, not a
+/// measure). Sooner when much has changed (`low_due`), and once everything is built.
+pub const LOW_EVERY_S: u64 = 3 * 3600;
 
-/// How the map updates go, as the switches under `state/pool/` say (crate::agent::publish): all off,
-/// as before.
+/// How publishing goes, as the switches under `state/pool/` say (crate::agent::publish).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Publishing {
-    /// A map update for a region done this long (seconds) after the last map update began, not
-    /// PUBLISH_EVERY_S (`state/pool/update-per-region`: crate::agent::publish::update_gap, from the
-    /// map updates' measured times). None: PUBLISH_EVERY_S.
-    pub gap: Option<u64>,
-    /// The low zooms later (`state/pool/low-zoom-later`): a map update before the last makes the roads'
-    /// and rails' lo packs and the terrain's and slope's roots only when it's the low zooms' map update
-    /// (`MapUpdate::low`: `LOW_EVERY_S` after the last that made them, or once half the lo packs are
-    /// stale); the others publish the map tiles (z9 up) with the low zooms as the last made them.
+    /// The low zooms later (`state/pool/low-zoom-later`): the roads' and rails' lo packs and the
+    /// terrain's and slope's roots are made only `LOW_EVERY_S` after they were last made
+    /// (`since_low`), once half the lo packs are stale (`low_due`), or once everything is built;
+    /// the map tiles (z9 up) go out meanwhile with the low zooms as they were last made.
     pub low_later: bool,
-    /// Seconds since the last map update that made the low zooms began (None: none kept).
+    /// Seconds since a catalog last went out with the low zooms made (None: none kept).
     pub since_low: Option<u64>,
-    /// A map update's slope and tree cover by the pieces near its regions (`state/pool/near-slope`): the
-    /// slope pieces whose z6 tile is within 20 km of one (what its slope reads), the tree cover pieces
-    /// meeting one; not every stale piece of the z3 tiles around it. Their assemblies (z3–8) go with
-    /// the low zooms' map update (every map update without `low_later`), and a region is done with its pieces.
+    /// A done region's slope and tree cover by the pieces near it (`state/pool/near-slope`): the
+    /// slope pieces whose z6 tile is within 20 km of it (what its slope reads), the tree cover
+    /// pieces meeting it; not every stale piece of the z3 tiles around it. Their assemblies (z3–8)
+    /// are made with the low zooms (always, without `low_later`), and a region is done with its
+    /// pieces.
     pub near: bool,
 }
 
-/// A map update under way: what it publishes is fixed as it begins, so the regions done and the units
-/// built meanwhile wait for the next. The agent keeps it (its folder's `map-update.json`) from when it
-/// begins until its catalog (or held catalog) is made: then it's over, whatever changed meanwhile
-/// (that goes out with the next).
+/// The lead's record of its catalogs (its folder's `publishing.json`): when the last went out, and
+/// the last that went out with the low zooms made (`Publishing::since_low`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct MapUpdate {
-    /// When it began (seconds since the epoch).
-    pub began: u64,
-    /// The regions it publishes: those done, and not on the map as they are now, when it began.
-    pub regions: Vec<String>,
-    /// Whether it's the last: nothing was left to build when it began.
-    pub last: bool,
-    /// The units' outputs and the 3D buildings' packs in the manifest when it began
-    /// (crate::out::AS_OF_OUTPUTS): its map tiles, road index, rail stops and catalog are made from
-    /// them (crate::out::units_as_of; its jobs,
-    /// `AS_OF_STEPS`, read them through crate::out::UNITS_AS_OF_ENV).
-    pub units: BTreeMap<String, String>,
-    /// It's over (its catalog made, or nothing left it would publish): kept, without its units, for
-    /// when it began.
-    #[serde(default)]
-    pub over: bool,
-    /// It makes the low zooms (`Publishing::low_later`): every map update did before.
-    #[serde(default = "yes")]
-    pub low: bool,
-    /// When the last map update that made the low zooms began (this one's `began` if it does; the agent
-    /// carries it from map update to map update).
+pub struct LastCatalog {
+    /// When the last catalog was made (seconds since the epoch).
+    pub at: u64,
+    /// When the last catalog made with nothing left of the low zooms (`Plan::low`) was made.
     #[serde(default)]
     pub low_at: Option<u64>,
 }
 
-fn yes() -> bool {
-    true
-}
-
-/// What the decision on the next map update rests on: the same test for the plan
-/// (`plan`) and the forecast's map updates (crate::agent::forecast), so the two can't disagree.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct UpdateCase {
-    /// A map update is under way (no other begins until it's over).
-    pub under_way: bool,
-    /// Nothing left to build of the units and terrain (the next would be the last).
-    pub last_now: bool,
-    /// The 3D buildings are being raised (their chain has work left but the sources' fetch).
-    pub raising: bool,
-    /// How many regions are done and not on the map as they are now (new work to publish).
-    pub new_regions: usize,
-    /// Seconds since the last map update began (None: none has).
-    pub since_last: Option<u64>,
-    /// A region's gap (`Publishing::gap`; None: PUBLISH_EVERY_S).
-    pub gap: Option<u64>,
-}
-
-/// Whether a map update is due (`UpdateCase`), and why (or why not) in plain words. Due: a region
-/// done that the map hasn't, the gap after the last began; after the last unit and terrain, at
-/// once, but while the 3D buildings are being raised only the gap after the last began (the
-/// measured gap with a map update per region on, else PUBLISH_EVERY_S; task #209). Their packs
-/// never make a region due: they go out with the next map update, whichever it is.
-pub fn map_update_due(c: &UpdateCase) -> (bool, String) {
-    let gap = c.gap.unwrap_or(PUBLISH_EVERY_S);
-    let left = |every: u64| c.since_last.map_or(0, |s| every.saturating_sub(s));
-    let mins = |s: u64| s.div_ceil(60);
-    let regions = |n: usize| if n == 1 { "1 region".to_string() } else { format!("{n} regions") };
-    if c.under_way {
-        return (false, "a map update is under way".into());
-    }
-    if c.new_regions > 0 && left(gap) == 0 {
-        return (true, format!("{} done with new work to publish, the gap passed", regions(c.new_regions)));
-    }
-    if c.last_now {
-        if !c.raising {
-            return (true, "everything is built: the last map update".into());
-        }
-        if left(gap) == 0 {
-            return (true, "the 3D buildings are being raised and the gap has passed since the last map update began: their packs so far go out".into());
-        }
-        if c.new_regions > 0 {
-            return (true, format!("{} done with new work to publish", regions(c.new_regions)));
-        }
-        return (false, format!("everything else is built and the 3D buildings are being raised: no region has new work, and their packs go out at most once a gap (next map update in {} min)", mins(left(gap))));
-    }
-    if c.new_regions > 0 {
-        return (
-            false,
-            format!(
-                "{} done with new work to publish, the gap not passed (next map update in {} min)",
-                regions(c.new_regions),
-                mins(left(gap))
-            ),
-        );
-    }
-    (false, "no region has new work to publish (each has units or terrain left, or is on the map as it is)".into())
-}
-
-/// The lead's decision on the next map update as last planned (`Plan::update`), for its log and the
-/// build status (docs/plan.md §8, Faster publishing).
+/// Publishing as the plan has it now, for the agent's log and the build status (`publishing`;
+/// docs/plan.md §8, Publishing).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct UpdateDecision {
-    /// A map update is due (begins now, or waits only for what `why` says).
-    pub due: bool,
+pub struct PublishLine {
+    /// What publishing does now, or waits for, in plain words.
     pub why: String,
-    /// The gap a region's map update waits after the last began (seconds), and its basis.
-    pub gap_s: u64,
+    /// The map tiles to draw (pack(T) targets whose owners changed), and the units whose change made
+    /// them stale (`by_unit`).
     #[serde(default)]
-    pub gap_basis: String,
-    /// Seconds since the last began, and until the gap passes (0: passed).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub since_last_s: Option<u64>,
+    pub tiles: usize,
     #[serde(default)]
-    pub left_s: u64,
-    /// The regions with new work to publish (done, not on the map as they are now), each with its
-    /// kinds of work.
+    pub units: usize,
+    /// The regions done whose catalog hasn't them as they are now, each with what it still waits
+    /// for.
     #[serde(default)]
-    pub regions: Vec<UpdateRegion>,
-    /// The 3D buildings' packs being raised (they go out with the next map update, whichever).
+    pub regions: Vec<PublishRegion>,
+    /// The low zooms are made now (`Publishing::low_later` off, or theirs due).
     #[serde(default)]
-    pub buildings: bool,
+    pub low: bool,
+    /// Seconds until the next catalog may be made (`CATALOG_EVERY_S`; 0: it may now).
+    #[serde(default)]
+    pub wait_s: u64,
 }
 
-/// A region with new work to publish (`UpdateDecision::regions`).
+/// A region done whose catalog hasn't it as it is now (`PublishLine::regions`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct UpdateRegion {
+pub struct PublishRegion {
     pub id: String,
     /// "new region" or "rebuilt" (its outline or units changed), and "slope and tree cover to make"
     /// while those wait.
     pub kinds: Vec<String>,
 }
 
-impl UpdateDecision {
+impl PublishLine {
     /// One line for the agent's log.
     pub fn line(&self) -> String {
         let regions = if self.regions.is_empty() {
             String::new()
         } else {
             format!(
-                "; new work: {}",
+                "; done, not on the map as they are: {}",
                 self.regions
                     .iter()
                     .map(|r| format!("{} ({})", r.id, r.kinds.join(", ")))
@@ -1813,50 +1724,39 @@ impl UpdateDecision {
             )
         };
         format!(
-            "map update {}: {} (gap {} s, {}){regions}{}",
-            if self.due { "due" } else { "not due" },
+            "publishing: {}{regions}{}",
             self.why,
-            self.gap_s,
-            self.gap_basis,
-            if self.buildings { "; 3D building packs being raised" } else { "" }
+            if self.low { "" } else { "; the low zooms wait for their turn" }
         )
     }
 
-    /// What the log line is logged again on: the decision and its reasons, not the minutes
-    /// counting down, nor an error's text in what it waits for (the agent's "(but it can't keep
-    /// the map update now (…))", a pause's reason): logged once, not every loop the error varies.
+    /// What the log line is logged again on: what publishing does and why, not the seconds counting
+    /// down nor the tiles' count as they're drawn, nor an error's text in what it waits for.
     pub fn key(&self) -> String {
-        let (why, but) = self.why.split_once(" (but ").map_or((self.why.as_str(), None), |(w, b)| (w, Some(b)));
-        let why = why.split(" (next map update in").next().unwrap_or("");
-        let but = but.map(|b| b.split(" (").next().unwrap_or("").trim_end_matches(')'));
-        format!("{} {why} {but:?} {} {} {:?} {}", self.due, self.gap_s, self.gap_basis, self.regions, self.buildings)
+        let why = self.why.split(" (").next().unwrap_or("");
+        format!("{why} {:?} {}", self.regions, self.low)
     }
 }
 
-/// The steps a map update alone plans after its slope and tree cover (the roads' chain and its
-/// catalog): run with the units as they were when it began (those of them that read none, ferries
-/// and the world-level terrain and slope, all the same).
-pub const AS_OF_STEPS: [&str; 9] =
-    ["roadunits", "pack", "lo", "stations", "ferries", "terrain-root", "slope-root", "catalog", "catalog-held"];
-
 /// What the plan builds the regions by, one at a time, and publishes them by, as they're done:
 /// each region's own coverage, as the recipes list them (crate::coverage::Coverage::by_region); the
-/// regions the map's catalog has; when the last map update began; the map update under way.
+/// regions the map's catalog has, and its units; when the last catalog went out.
 #[derive(Clone, Copy)]
-pub struct MapUpdates<'a> {
+pub struct Publish<'a> {
     pub each: &'a [(String, Coverage)],
     /// The last catalog's regions by id: whether it has the region as its recipe is now (false: an
     /// older outline, the region on the map as it was).
     pub on_map: &'a BTreeMap<String, bool>,
-    /// Seconds since the last map update began (or the last catalog went out, before the agent kept
-    /// map updates); None when none has.
-    pub since_last: Option<u64>,
-    /// The map update under way, if one is.
-    pub current: Option<&'a MapUpdate>,
+    /// The served catalog's units' base packs and road values, by logical name
+    /// (crate::pubtimes::served_units): the map tiles to draw are grouped by the unit whose change
+    /// made them stale (`by_unit`).
+    pub served: &'a BTreeMap<String, String>,
+    /// Seconds since the last catalog went out (or one last started); None when none has.
+    pub since_catalog: Option<u64>,
     /// Catalogs are held for review (`inputs/hold-catalog`): what's new is weighed against the last
     /// held one's.
     pub held: bool,
-    /// How the map updates go (the switches: all off, as before).
+    /// How publishing goes (the switches).
     pub way: Publishing,
 }
 
@@ -1867,29 +1767,21 @@ pub struct MapUpdates<'a> {
 pub struct Plan {
     pub work: Vec<Work>,
     pub ready: Vec<String>,
-    /// A map update's slope and tree cover (step, target) its catalog waits for: while another worker
-    /// builds one (a helper's lease), the catalog waits rather than go out without its region.
-    pub publish_waits: Vec<(String, String)>,
     /// Every region's work left, in the order they're built (those with none last), whether or not
     /// it can start now: what the forecast schedules (crate::agent::forecast).
     pub regions: Vec<RegionLeft>,
-    /// A map update begins (none was under way): the agent keeps it, its `began` set, and plans with it
-    /// as `MapUpdates::current` until its catalog is out. The work is the map update's already.
-    pub begins: Option<MapUpdate>,
-    /// The map update under way has nothing left to do and no catalog to make (its catalog would be the
-    /// last's): it's over. (Its catalog made, the agent ends it.)
-    pub ends: bool,
-    /// The map update under way's chain to its end, as if each step succeeded (its map tiles, road index,
-    /// rail stops, ferries, the world-level terrain and slope, its catalog): for the forecast.
-    pub update_left: Vec<Work>,
+    /// The catalog planned goes out with the low zooms made (`Publishing::low_later`: they were
+    /// due, and nothing's left of the publishing chain, or no lo pack is stale), noted so once made
+    /// (`LastCatalog::low_at`). Without a catalog planned: the low zooms are made now.
+    pub low: bool,
     /// The units whose key can't be worked out now (a terrain pack's index unread: `unit_keys`):
     /// neither built nor counted as built until it can.
     pub unknown: Vec<String>,
     /// The pieces whose mids are made in idle time (`TreeWork::backfill`, `TerrainWork::backfill`:
     /// the work's last): for the forecast.
     pub backfill: Vec<Work>,
-    /// The decision on the next map update and why (`map_update_due`).
-    pub update: UpdateDecision,
+    /// Publishing as planned now, for the log and the status.
+    pub publishing: PublishLine,
 }
 
 /// A region's work left (`Plan::regions`), as targets.
@@ -1936,24 +1828,23 @@ pub struct RegionLeft {
 /// the first work not waiting out a failure; a helper takes a step's from the far end (the agent
 /// offers each step's targets together, in this order). The order (docs/plan.md §8, Order):
 /// - the heritage sites the units read;
+/// - publishing, as soon as the records change (`publish_chain`): what the coverage no longer
+///   builds pruned, the map tiles whose owners changed (a unit's together: `by_unit`), the road
+///   index, the low zooms (`Publishing::low_later`), rail stops and ferries, the world-level terrain
+///   and slope; once none of that is left, a catalog when what it would list changed
+///   (`catalog_key`), at most one each `CATALOG_EVERY_S`;
+/// - the slope and tree cover of the regions done that the map hasn't as they are now;
 /// - a region at a time (the regions the map hasn't at all first, the one with the fewest units
 ///   left first): the terrain areas it reads that are stale, then its units whose terrain is built
 ///   (a unit's key reads the terrain near it: one built before would be built again);
 /// - slope (each area once its terrain is built) and tree cover after them (its pieces, then each
-///   area's assembly once its pieces are built: `tree_work`), but a region's done and waiting for
-///   its map update before all that;
-/// - a map update as a region is done, PUBLISH_EVERY_S after the last began, fixed as it begins
-///   (`MapUpdate`): its areas' slope and tree cover, the map tiles, the road index, rail stops and
-///   ferries, and a catalog with its regions, from the units as they were when it began;
-/// - after the last unit and terrain area, the same for everything;
+///   area's assembly once its pieces are built: `tree_work`);
 /// - the trains' and the landmarks' chains from the start, each step once what it reads is built,
 ///   after all that in the order (a second job beside the regions' takes them: crate::agent), the
-///   overlays after the last unit; what they make goes out with the next map update's catalog, or one
-///   of its own after the last;
+///   overlays after the last unit; what they make goes out with the next catalog;
 /// - the 3D buildings' chain from the start too (`bld_work`: the sources' fetch, each z6 tile's
 ///   normalized file, then its tiles once it and its neighbours are prepared), listed after the
-///   other chains, its tiles in the regions' order; it holds no map update and no region, and while it
-///   has work left after the last unit, a map update (and its catalog) at most the gap after the last;
+///   other chains, its tiles in the regions' order; it holds no region;
 /// - last, in idle time, the mids of current tree cover pieces without one (`TreeWork::backfill`).
 #[allow(clippy::too_many_arguments)]
 pub fn plan(
@@ -1964,7 +1855,7 @@ pub fn plan(
     inputs: &BTreeMap<String, String>,
     reach: Option<&Reaches>,
     tiles: &TerrainTiles,
-    updates: MapUpdates,
+    updates: Publish,
 ) -> Plan {
     let mut work = Vec::new();
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
@@ -2037,13 +1928,8 @@ pub fn plan(
             Some(r) => format!("the regions' units wait for the pass's heritage sites: {r}"),
             None => "the regions' units wait for the pass's heritage sites, reaches or roadside buildings".into(),
         };
-        let update = UpdateDecision {
-            why,
-            gap_s: updates.way.gap.unwrap_or(PUBLISH_EVERY_S),
-            since_last_s: updates.since_last,
-            ..Default::default()
-        };
-        return Plan { work, backfill, update, ..Default::default() };
+        let publishing = PublishLine { why, ..Default::default() };
+        return Plan { work, backfill, publishing, ..Default::default() };
     };
 
     // base(U): the units the coverage builds. Each region's: those it builds itself (a road of theirs
@@ -2125,29 +2011,8 @@ pub fn plan(
             Region { id, all, stale, areas, tree_areas, tree_pieces, terrain, slope_near }
         })
         .collect();
-    // A unit built since the map update under way began (rebuilt, or new): the map update has it as it was.
-    let built_since: Vec<bool> = match updates.current {
-        Some(rd) => units
-            .iter()
-            .map(|(u, _)| {
-                crate::out::UNIT_OUTPUTS.iter().any(|p| {
-                    let l = format!("{p}{}", u.dash());
-                    m.get(&l) != rd.units.get(&l)
-                })
-            })
-            .collect(),
-        None => vec![false; units.len()],
-    };
-    // A region the map update under way publishes: one of its regions, none of its units built since
-    // (one redrawn and built again meanwhile goes out with the next).
-    let of_map_update = |r: &Region| {
-        updates.current.is_some_and(|rd| rd.regions.iter().any(|x| x == r.id)) && !r.all.iter().any(|&i| built_since[i])
-    };
     // The regions a catalog made now records as built: every unit of theirs built as the coverage
-    // wants it, and their areas' slope and tree cover; while a map update is under way, of those only its
-    // own and those on the map as they are (the others' units may be newer than the map update's).
-    let in_map_update =
-        |r: &Region| updates.current.is_none() || of_map_update(r) || updates.on_map.get(r.id) == Some(&true);
+    // wants it, and their areas' slope and tree cover.
     // (The near way: its slope and tree cover pieces near it, their assemblies later.)
     let near = updates.way.near;
     let slope_done = |r: &Region| if near { r.slope_near.is_empty() } else { r.areas.is_disjoint(&slope_left) };
@@ -2159,7 +2024,6 @@ pub fn plan(
                 && slope_done(r)
                 && r.tree_pieces.is_disjoint(&trees_left)
                 && (near || r.tree_areas.is_disjoint(&trees_lo_left))
-                && in_map_update(r)
         })
         .map(|r| r.id.to_string())
         .collect();
@@ -2269,16 +2133,14 @@ pub fn plan(
     trees.sort_by_key(tree_rank);
     trees_lo.sort_by_key(tree_rank);
 
-    // A map update: when a region is done that the map hasn't as it is now, an hour after the last began
-    // while units or terrain are left, and after the last. What it publishes is fixed as it begins
-    // (`MapUpdate`): its regions, and the units as they were then, which its map tiles, road index, rail
-    // stops and catalog are made from; regions done and units built meanwhile wait for the next.
-    // First the slope and tree cover its regions' areas lack (after the last, all that's left), then
-    // what isn't the units' own and goes out with them: what the coverage no longer builds pruned,
-    // the roads' chain (the map tiles, the road index, rail stops and ferries, the world-level
-    // terrain and slope) and a catalog (with the trains' and the landmarks' work made by then).
+    // Publishing (docs/plan.md §8, Publishing): as soon as the records change, before the regions'
+    // work, what goes out with the units: what the coverage no longer builds pruned, then the
+    // publishing chain (`publish_chain`: the map tiles whose owners changed, a unit's together, the
+    // road index, the low zooms, rail stops and ferries, the world-level terrain and slope); once
+    // none of that is left, a catalog when what it would list changed, at most one a minute
+    // (`CATALOG_EVERY_S`; with the trains', the landmarks' and the 3D buildings' work made by then).
     let done_now = |r: &Region| r.stale.is_empty() && r.terrain.is_empty();
-    // (Done, and not on the map as it is now: what a map update publishes.)
+    // (Done, and not on the map as it is now: its slope and tree cover come first.)
     let to_publish: Vec<&Region> =
         regions.iter().filter(|r| done_now(r) && updates.on_map.get(r.id) != Some(&true)).collect();
     let last_now = !unit_stale.iter().any(|&s| s) && terrain_left.is_empty();
@@ -2292,32 +2154,25 @@ pub fn plan(
         .collect();
     let bld = bld_work(cov, m, done, inputs, &bld_rank(&bld_regions));
     let depth = depth_work(cov, m, done, tiles);
-    // (After the last unit, a map update as soon as anything changed; but while the 3D buildings are
-    // being raised, at most the gap after the last began, not a catalog for each of their jobs,
-    // unless a region waits to be published: the buildings never hold one up. Their sources'
-    // fetch doesn't count: it changes nothing served, and one failing and tried again (the release
-    // gone from S3) would keep the catalogs at the gap for good.)
-    // (A region's map update: an hour after the last began, or, a map update per region, the gap its measured
-    // map updates make: crate::agent::publish::update_gap. The test is `map_update_due`, the forecast's
-    // too.)
-    let raising = bld.iter().any(|w| w.step != "bld-fetch");
-    let case = UpdateCase {
-        under_way: updates.current.is_some(),
-        last_now,
-        raising,
-        new_regions: to_publish.len(),
-        since_last: updates.since_last,
-        gap: updates.way.gap,
+    // The low zooms (the roads' and rails' lo packs, the terrain's and slope's roots): always, or
+    // with them later, `LOW_EVERY_S` after they were last made, once half the lo packs are stale, and
+    // once everything is built.
+    let near = updates.way.near;
+    let low = last_now
+        || !updates.way.low_later
+        || updates.way.since_low.is_none_or(|s| s >= LOW_EVERY_S)
+        || low_due(m, done, Some(reach));
+    // The terrain's and slope's roots wait for what makes the lo packs they read: terrain's for the
+    // terrain left (its pieces' mids, its assemblies), slope's for that and the slope left, so a
+    // root isn't made while an assembly runs (or waits to be merged) and again after it.
+    let roots_held = if low {
+        [!tw.terrain_left.is_empty(), !tw.terrain_left.is_empty() || !tw.slope_left.is_empty()]
+    } else {
+        [true, true]
     };
-    let (due, why) = map_update_due(&case);
-    let gap_s = updates.way.gap.unwrap_or(PUBLISH_EVERY_S);
-    let mut update = UpdateDecision {
-        due,
-        why,
-        gap_s,
-        gap_basis: String::new(),
-        since_last_s: updates.since_last,
-        left_s: updates.since_last.map_or(0, |s| gap_s.saturating_sub(s)),
+    let mut plan_low = low;
+    let mut publishing = PublishLine {
+        low,
         regions: to_publish
             .iter()
             .map(|r| {
@@ -2329,185 +2184,86 @@ pub fn plan(
                 if !ready.iter().any(|x| x == r.id) {
                     kinds.push("slope and tree cover to make".into());
                 }
-                UpdateRegion { id: r.id.to_string(), kinds }
+                PublishRegion { id: r.id.to_string(), kinds }
             })
             .collect(),
-        buildings: raising,
+        ..Default::default()
     };
-    if due {
-        let units_now = m
-            .iter()
-            .filter(|(l, _)| crate::out::AS_OF_OUTPUTS.iter().any(|p| l.starts_with(p)))
-            .map(|(l, c)| (l.clone(), c.clone()))
-            .collect();
-        let low = last_now
-            || !updates.way.low_later
-            || updates.way.since_low.is_none_or(|s| s >= LOW_EVERY_S)
-            || low_due(m, done, Some(reach));
-        let begun = MapUpdate {
-            began: 0,
-            regions: to_publish.iter().map(|r| r.id.to_string()).collect(),
-            last: last_now,
-            units: units_now,
-            over: false,
-            low,
-            low_at: None,
-        };
-        let p = plan(cov, date, m, done, inputs, Some(reach), tiles, MapUpdates { current: Some(&begun), ..updates });
-        // (One with nothing to publish that isn't out already, after the last: none.)
-        if !p.ends {
-            return Plan { begins: Some(begun), update, ..p };
+    // (Listed before the regions' work, not holding it: while one waits out a failure, the units
+    // go on.)
+    match prune_units(cov, date, m, &units) {
+        Some(w) => {
+            publishing.why = format!("pruning what the coverage no longer builds ({} targets)", w.targets.len());
+            work.push(w);
         }
-        update.due = false;
-        update.why = format!("nothing new to publish that isn't out already ({})", update.why);
+        // (Nothing before a unit is built, while the regions have work left: none of theirs to show
+        // yet.)
+        None if done.unit.is_empty() && !last_now => {
+            publishing.why = "nothing to publish until a unit is built".into();
+        }
+        None => match publish_chain(date, m, done, Some(reach), roots_held, low) {
+            Some(mut w) => {
+                if w.step == "pack" {
+                    let (targets, n) = by_unit(std::mem::take(&mut w.targets), m, Some(reach), updates.served);
+                    w.targets = targets;
+                    (publishing.tiles, publishing.units) = (w.targets.len(), n);
+                    publishing.why = format!(
+                        "drawing the map tiles whose owners changed ({} for {n} unit{})",
+                        w.targets.len(),
+                        if n == 1 { "" } else { "s" }
+                    );
+                } else {
+                    publishing.why = format!("{} next, then a catalog", super::steps::title(&w.step));
+                }
+                work.push(w);
+            }
+            None => match catalog_work(m, done, inputs, &ready, updates.held) {
+                Some(w) => {
+                    // (With the low zooms due, the chain's done made them; else they're made if no
+                    // lo pack is stale.)
+                    plan_low = low || pack_lo_targets(m, Some(reach)).1.iter().all(|(t, k)| done.lo.get(t) == Some(k));
+                    let wait = updates.since_catalog.map_or(0, |s| CATALOG_EVERY_S.saturating_sub(s));
+                    publishing.wait_s = wait;
+                    if wait == 0 {
+                        publishing.why = "a catalog now: what it would list changed".into();
+                        work.push(w);
+                    } else {
+                        publishing.why = format!("a catalog once a minute has passed since the last (in {wait} s)");
+                    }
+                }
+                None if inputs.get("regions").map(String::as_str) == Some("?") => {
+                    publishing.why = "the catalog waits for the regions to be read".into();
+                }
+                None => publishing.why = "caught up: the catalog has everything built".into(),
+            },
+        },
     }
-    // The slope and tree cover of the regions done and waiting for a map update (not this one): before
-    // the regions' work, so their map update only draws.
-    let waiting = |r: &&&Region| updates.current.is_none_or(|rd| !rd.regions.iter().any(|x| x == r.id));
-    // (The near way: their pieces near them; the assemblies later, in their order.)
+    // The slope and tree cover of the regions done that the map hasn't as they are now: before the
+    // regions' work, so they're on the map as built soon after their units. (The near way: their
+    // pieces near them; the assemblies with the low zooms.)
     let slope_waits = |t: &(String, String)| {
-        to_publish.iter().filter(waiting).any(|r| {
-            if near {
-                r.slope_near.contains(&t.0)
-            } else {
-                r.areas.contains(&area(t))
-            }
-        })
+        to_publish.iter().any(|r| if near { r.slope_near.contains(&t.0) } else { r.areas.contains(&area(t)) })
     };
-    let slope_lo_waits =
-        |t: &(String, String)| !near && to_publish.iter().filter(waiting).any(|r| r.areas.contains(&area(t)));
+    let slope_lo_waits = |t: &(String, String)| (!near || low) && to_publish.iter().any(|r| r.areas.contains(&area(t)));
     let trees_waits = |t: &(String, String)| {
-        to_publish.iter().filter(waiting).any(|r| {
-            if near {
-                r.tree_pieces.contains(&t.0)
-            } else {
-                r.tree_areas.contains(&tree_area(t))
-            }
-        })
+        to_publish
+            .iter()
+            .any(|r| if near { r.tree_pieces.contains(&t.0) } else { r.tree_areas.contains(&tree_area(t)) })
     };
     let trees_lo_waits =
-        |t: &(String, String)| !near && to_publish.iter().filter(waiting).any(|r| r.tree_areas.contains(&tree_area(t)));
-    let mut publish_waits = Vec::new();
-    let mut ends = false;
-    let mut update_left = Vec::new();
-    if let Some(rd) = updates.current {
-        let last = rd.last;
-        // (A region of it no longer done, its recipe edited since, or done again with units built
-        // since, waits for another.)
-        let publish: Vec<&Region> = regions.iter().filter(|r| done_now(r) && of_map_update(r)).collect();
-        // (The low zooms: in every map update, or with them later, in the low zooms' map update.)
-        let low = last || !updates.way.low_later || rd.low;
-        let now = |t: &(String, String)| last || publish.iter().any(|r| r.areas.contains(&area(t)));
-        let trees_due = |t: &(String, String)| last || publish.iter().any(|r| r.tree_areas.contains(&tree_area(t)));
-        // (The near way: the pieces near its regions; their areas' assemblies with the low zooms.)
-        let pieces_now = |t: &(String, String)| {
-            if near {
-                last || publish.iter().any(|r| r.slope_near.contains(&t.0))
-            } else {
-                now(t)
-            }
-        };
-        let tree_pieces_now = |t: &(String, String)| {
-            if near {
-                last || publish.iter().any(|r| r.tree_pieces.contains(&t.0))
-            } else {
-                trees_due(t)
-            }
-        };
-        let slope_lo_due = |t: &(String, String)| (!near || low) && now(t);
-        let trees_lo_due = |t: &(String, String)| (!near || low) && trees_due(t);
-        let slope_now: Vec<(String, String)>;
-        let slope_lo_now: Vec<(String, String)>;
-        let trees_now: Vec<(String, String)>;
-        let lo_now: Vec<(String, String)>;
-        (slope_now, slope) = slope.into_iter().partition(pieces_now);
-        (slope_lo_now, slope_lo) = slope_lo.into_iter().partition(slope_lo_due);
-        (trees_now, trees) = trees.into_iter().partition(tree_pieces_now);
-        (lo_now, trees_lo) = trees_lo.into_iter().partition(trees_lo_due);
-        publish_waits = slope_now
-            .iter()
-            .map(|t| ("slope".to_string(), t.0.clone()))
-            .chain(slope_lo_now.iter().map(|t| ("slope-lo".to_string(), t.0.clone())))
-            .chain(trees_now.iter().map(|t| ("trees".to_string(), t.0.clone())))
-            .chain(lo_now.iter().map(|t| ("trees-lo".to_string(), t.0.clone())))
-            .collect();
-        let before = work.len();
-        push(&mut work, "slope", slope_now);
-        push(&mut work, "slope-lo", slope_lo_now);
-        push(&mut work, "trees", trees_now);
-        push(&mut work, "trees-lo", lo_now);
-        // A map update before the last draws the map tiles that go out with it: those meeting a region
-        // it publishes, those whose ways no unit to build when it began reaches (their owners), and
-        // those drawn before (their owners changed). The others would be drawn again
-        // as those units are built (a region's border tiles, in every map update); the last map update draws
-        // all. (Units to build when it began: those to build now, and those built since.)
-        let m_then = crate::out::units_as_of(m, &rd.units);
-        let to_build: Vec<[i32; 4]> = (0..units.len())
-            .filter(|&i| unit_stale[i] || built_since[i])
-            .map(|i| {
-                reach
-                    .get(units[i].0)
-                    .map(|r| r.owned_extent(units[i].0))
-                    .unwrap_or_else(|| crate::reach::near_box(units[i].0))
-            })
-            .collect();
-        let each: Vec<&Coverage> =
-            publish.iter().filter_map(|r| updates.each.iter().find(|(id, _)| id == r.id).map(|(_, c)| c)).collect();
-        let keep = |x: u32, y: u32| {
-            let b = crate::hipack::tile_bounds(6, x, y);
-            last || each.iter().any(|c| c.meets_rect(b))
-                || !to_build.iter().any(|e| e[0] <= b[2] && e[2] >= b[0] && e[1] <= b[3] && e[3] >= b[1])
-        };
-        // The terrain's and slope's roots wait for what makes the lo packs they read: terrain's for
-        // the terrain left (its pieces' mids, its assemblies), slope's for that and the slope left,
-        // so a root isn't made while an assembly runs (or waits to be merged) and again after it.
-        let roots_held = [!tw.terrain_left.is_empty(), !tw.terrain_left.is_empty() || !tw.slope_left.is_empty()];
-        // (The low zooms later: the roads' and rails' lo packs and the roots only in the low zooms'
-        // map update.)
-        let roots_held = if low { roots_held } else { [true, true] };
-        // (Listed after them, not held back: while one waits out a failure, the others publish.)
-        match prune_units(cov, date, m, &units) {
-            Some(w) => work.push(w),
-            None => match roads_chain_drawing_low(date, &m_then, done, Some(reach), &keep, roots_held, low) {
-                Some(w) => work.push(w),
-                None => work.extend(catalog_work(&m_then, done, inputs, &ready, updates.held)),
-            },
-        }
-        // (Not while the regions can't be read: its catalog waits for them.)
-        ends = work.len() == before && inputs.get("regions").map(String::as_str) != Some("?");
-        update_left = remaining(done, |d| {
-            roads_chain_drawing_low(date, &m_then, d, Some(reach), &keep, roots_held, low)
-                .or_else(|| catalog_work(&m_then, d, inputs, &ready, updates.held))
-        });
-        // The regions done meanwhile: their slope and tree cover; then the regions' terrain and
-        // units: a helper's, and this Mac's while the map update's work is another's or waits out a
-        // failure.
-        let (prep, rest): (Vec<_>, Vec<_>) = slope.into_iter().partition(slope_waits);
-        push(&mut work, "slope", prep);
-        slope = rest;
-        let (prep, rest): (Vec<_>, Vec<_>) = slope_lo.into_iter().partition(slope_lo_waits);
-        push(&mut work, "slope-lo", prep);
-        slope_lo = rest;
-        let (prep, rest): (Vec<_>, Vec<_>) = trees.into_iter().partition(trees_waits);
-        push(&mut work, "trees", prep);
-        trees = rest;
-        let (prep, rest): (Vec<_>, Vec<_>) = trees_lo.into_iter().partition(trees_lo_waits);
-        push(&mut work, "trees-lo", prep);
-        trees_lo = rest;
-    } else {
-        let (prep, rest): (Vec<_>, Vec<_>) = slope.into_iter().partition(slope_waits);
-        push(&mut work, "slope", prep);
-        slope = rest;
-        let (prep, rest): (Vec<_>, Vec<_>) = slope_lo.into_iter().partition(slope_lo_waits);
-        push(&mut work, "slope-lo", prep);
-        slope_lo = rest;
-        let (prep, rest): (Vec<_>, Vec<_>) = trees.into_iter().partition(trees_waits);
-        push(&mut work, "trees", prep);
-        trees = rest;
-        let (prep, rest): (Vec<_>, Vec<_>) = trees_lo.into_iter().partition(trees_lo_waits);
-        push(&mut work, "trees-lo", prep);
-        trees_lo = rest;
-    }
+        |t: &(String, String)| (!near || low) && to_publish.iter().any(|r| r.tree_areas.contains(&tree_area(t)));
+    let (prep, rest): (Vec<_>, Vec<_>) = slope.into_iter().partition(slope_waits);
+    push(&mut work, "slope", prep);
+    let slope = rest;
+    let (prep, rest): (Vec<_>, Vec<_>) = slope_lo.into_iter().partition(slope_lo_waits);
+    push(&mut work, "slope-lo", prep);
+    let slope_lo = rest;
+    let (prep, rest): (Vec<_>, Vec<_>) = trees.into_iter().partition(trees_waits);
+    push(&mut work, "trees", prep);
+    let trees = rest;
+    let (prep, rest): (Vec<_>, Vec<_>) = trees_lo.into_iter().partition(trees_lo_waits);
+    push(&mut work, "trees-lo", prep);
+    let trees_lo = rest;
     work.extend(by_region);
     push(&mut work, "slope", slope);
     push(&mut work, "slope-lo", slope_lo);
@@ -2518,7 +2274,56 @@ pub fn plan(
     work.extend(depth);
     // Last of all, in idle time: the mids of current pieces that have none (expected the same).
     work.extend(backfill.iter().cloned());
-    Plan { work, ready, publish_waits, regions: lefts, begins: None, ends, update_left, unknown, backfill, update }
+    Plan { work, ready, regions: lefts, low: plan_low, unknown, backfill, publishing }
+}
+
+/// The map tiles `targets` to draw, a unit's together: grouped by the unit whose change made each
+/// stale (its base pack or road values in `m` not what the served catalog `served` has: the
+/// owners as crate::pubtimes::restaled_by takes them), the units in the order they're built
+/// (`spatial_order`), a tile two units made stale with the first; those no unit's change explains
+/// (a version's change, a reach's) last, in their order. And how many units.
+fn by_unit(
+    targets: Vec<(String, String)>,
+    m: &BTreeMap<String, String>,
+    reach: Option<&Reaches>,
+    served: &BTreeMap<String, String>,
+) -> (Vec<(String, String)>, usize) {
+    let at: BTreeMap<&str, usize> = targets.iter().enumerate().map(|(i, t)| (t.0.as_str(), i)).collect();
+    let mut changed: Vec<Unit> = m
+        .keys()
+        .filter_map(|l| l.strip_prefix("base/").and_then(Unit::parse))
+        .filter(|u| {
+            [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash())]
+                .iter()
+                .any(|l| m.get(l) != served.get(l))
+        })
+        .collect();
+    changed.sort_by_key(|&u| spatial_order(u));
+    let deg = |b: [i32; 4]| [b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7];
+    let mut taken = vec![false; targets.len()];
+    let mut order: Vec<usize> = Vec::new();
+    let mut units = 0;
+    for u in changed {
+        let ext = unit_reach(reach, m, u);
+        let mut mine: Vec<usize> = crate::stage::tiles_in(6, deg(ext))
+            .into_iter()
+            .filter(|&(x, y)| owns(ext, crate::hipack::tile_bounds(6, x, y)))
+            .filter_map(|(x, y)| at.get(format!("6/{x}/{y}").as_str()).copied())
+            .filter(|&i| !taken[i])
+            .collect();
+        mine.sort_unstable();
+        if mine.is_empty() {
+            continue;
+        }
+        units += 1;
+        for &i in &mine {
+            taken[i] = true;
+        }
+        order.extend(mine);
+    }
+    order.extend((0..targets.len()).filter(|&i| !taken[i]));
+    let mut slots: Vec<Option<(String, String)>> = targets.into_iter().map(Some).collect();
+    (order.into_iter().filter_map(|i| slots[i].take()).collect(), units)
 }
 
 /// Where a unit comes in a run of units: by the 10° square its tile's centre is in (column, then
@@ -2724,32 +2529,29 @@ fn prune_tiles(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<
     (!t.is_empty()).then(|| Work { step: "prune".into(), targets: t.into_iter().map(|x| (x, String::new())).collect() })
 }
 
-/// The roads' chain after the units: the road → units index, pack(T), lo, rail stops and ferries,
-/// the terrain and slope roots; its first stale step.
+/// The publishing chain, every step drawn (the forecast's and the checklist's: `publish_chain`).
 fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches>) -> Option<Work> {
-    roads_chain_drawing_low(date, m, done, reach, &|_, _| true, [false, false], true)
+    publish_chain(date, m, done, reach, [false, false], true)
 }
 
-/// Whether so much of the low zooms is stale that a map update makes them however long since the last
-/// did (`Publishing::low_later`): half the roads' lo packs or more (a z3 tile's, by its key: what
-/// the units near it are now).
+/// Whether so much of the low zooms is stale that they're made however long since they last were
+/// (`Publishing::low_later`): half the roads' lo packs or more (a z3 tile's, by its key: what the
+/// units near it are now).
 pub fn low_due(m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches>) -> bool {
     let (_, lo) = pack_lo_targets(m, reach);
     let stale = lo.iter().filter(|(t, k)| done.lo.get(t) != Some(k)).count();
     !lo.is_empty() && stale * 2 >= lo.len()
 }
 
-/// `roads_chain`, drawing the map tiles (pack(T)) `keep` says, by their z6 tile, and those whose
-/// drawn before (whose owners changed); the rest wait.
-#[allow(clippy::too_many_arguments)]
-/// `low` false: the low zooms later (`Publishing::low_later`): no lo packs (the roots are held by
-/// `roots_held`).
-fn roads_chain_drawing_low(
+/// The publishing chain after the units, its first stale step: map tiles no unit reaches pruned,
+/// the map tiles whose owners changed (pack(T)), the road → units index, the roads' and rails' lo
+/// packs, rail stops and ferries, the terrain and slope roots. `low` false: the low zooms later
+/// (`Publishing::low_later`): no lo packs (the roots are held by `roots_held`).
+fn publish_chain(
     date: &str,
     m: &BTreeMap<String, String>,
     done: &Keys,
     reach: Option<&Reaches>,
-    keep: &dyn Fn(u32, u32) -> bool,
     roots_held: [bool; 2],
     low: bool,
 ) -> Option<Work> {
@@ -2757,6 +2559,11 @@ fn roads_chain_drawing_low(
     // Map tiles no unit's ways reach any more (a region removed) leave the manifest.
     if let Some(w) = prune_tiles(m, reach) {
         return Some(w);
+    }
+    let (packs, lo) = pack_lo_targets(m, reach);
+    let packs: Vec<(String, String)> = packs.into_iter().filter(|(t, k)| stale(&done.pack, t, k)).collect();
+    if !packs.is_empty() {
+        return Some(Work { step: "pack".into(), targets: packs });
     }
     // The road → units index, once the units' road values are made.
     let roads: Vec<String> = m
@@ -2772,17 +2579,6 @@ fn roads_chain_drawing_low(
         if done.lo.get("roadunits").map(String::as_str) != Some(k.as_str()) {
             return Some(Work { step: "roadunits".into(), targets: vec![("roadunits".into(), k)] });
         }
-    }
-
-    let (packs, lo) = pack_lo_targets(m, reach);
-    let packs: Vec<(String, String)> = packs
-        .into_iter()
-        .filter(|(t, k)| {
-            stale(&done.pack, t, k) && (done.pack.contains_key(t) || Unit::parse(t).is_some_and(|u| keep(u.x, u.y)))
-        })
-        .collect();
-    if !packs.is_empty() {
-        return Some(Work { step: "pack".into(), targets: packs });
     }
     let lo: Vec<(String, String)> = lo.into_iter().filter(|(t, k)| low && stale(&done.lo, t, k)).collect();
     if !lo.is_empty() {
@@ -4023,15 +3819,26 @@ pub(crate) mod tests {
             inputs,
             Some(&reach()),
             &tiles_for(m),
-            MapUpdates {
+            Publish {
                 each: &each,
                 on_map,
-                since_last: since_publish,
-                current: None,
+                served: &BTreeMap::new(),
+                since_catalog: since_publish,
                 held: false,
                 way: Default::default(),
             },
         )
+    }
+    /// `plan`'s work once the publishing chain's and catalogs listed first are done (as their jobs
+    /// do them): the regions' work after them.
+    fn past_publishing(c: &Coverage, date: &str, m: &mut BTreeMap<String, String>, done: &mut Keys) -> Vec<Work> {
+        loop {
+            let w = plan(c, date, m, done, &BTreeMap::new());
+            match w.first() {
+                Some(x) if CHAIN.contains(&x.step.as_str()) || x.step == "catalog" => did(m, done, x),
+                _ => return w,
+            }
+        }
     }
     fn unit_keys(c: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
         ukeys(c, date, m, Some(&reach()))
@@ -4374,11 +4181,11 @@ pub(crate) mod tests {
                 &BTreeMap::new(),
                 Some(reach),
                 &tiles_for(m),
-                MapUpdates {
+                Publish {
                     each: &c.by_region(),
                     on_map: &BTreeMap::new(),
-                    since_last: None,
-                    current: None,
+                    served: &BTreeMap::new(),
+                    since_catalog: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -4455,11 +4262,11 @@ pub(crate) mod tests {
             &BTreeMap::new(),
             Some(&reach),
             &tiles_for(&m),
-            MapUpdates {
+            Publish {
                 each: &c.by_region(),
                 on_map: &BTreeMap::new(),
-                since_last: None,
-                current: None,
+                served: &BTreeMap::new(),
+                since_catalog: None,
                 held: false,
                 way: Default::default(),
             },
@@ -4514,11 +4321,11 @@ pub(crate) mod tests {
                 &BTreeMap::new(),
                 Some(&reach),
                 &tiles_for(m),
-                MapUpdates {
+                Publish {
                     each: &c.by_region(),
                     on_map: &BTreeMap::new(),
-                    since_last: None,
-                    current: None,
+                    served: &BTreeMap::new(),
+                    since_catalog: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -4674,33 +4481,32 @@ pub(crate) mod tests {
         );
         assert!(!w.iter().any(|x| x.step == "slope"), "slope once the terrain's assembled");
         terrain_did(&mut m, &mut done, &w[0]);
-        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
+        // (No units here: everything built, so each layer is published as it's made, the terrain's
+        // root once its assembly is.)
+        assert_eq!(plan(&c, "2026-09-28", &m, &done, &BTreeMap::new())[0].step, "terrain-root");
+        let w = past_publishing(&c, "2026-09-28", &mut m, &mut done);
         assert_eq!(w[0].step, "slope");
         assert_eq!(w[0].targets.len(), pieces.len());
         assert!(!w.iter().any(|x| x.step == "slope-lo"), "its pieces first");
         terrain_did(&mut m, &mut done, &w[0]);
-        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
+        let w = past_publishing(&c, "2026-09-28", &mut m, &mut done);
         assert_eq!((w[0].step.as_str(), w[0].targets[0].0.as_str()), ("slope-lo", "3/3/2"));
         terrain_did(&mut m, &mut done, &w[0]);
+        // (The slope's root once its assembly is.)
+        assert_eq!(plan(&c, "2026-09-28", &m, &done, &BTreeMap::new())[0].step, "slope-root");
         // The tree cover of the coverage's z6 tiles (pieces), then its z3 tile's assembly from their
         // mids, before the units.
-        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
+        let w = past_publishing(&c, "2026-09-28", &mut m, &mut done);
         assert_eq!(
             (w[0].step.as_str(), w[0].targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>()),
             ("trees", vec!["6/28/16", "6/28/17"])
         );
         assert!(!w.iter().any(|x| x.step == "trees-lo"), "its pieces first");
         did(&mut m, &mut done, &w[0]);
-        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
+        let w = past_publishing(&c, "2026-09-28", &mut m, &mut done);
         assert_eq!((w[0].step.as_str(), w[0].targets[0].0.as_str()), ("trees-lo", "3/3/2"));
         did(&mut m, &mut done, &w[0]);
-        // The roots from the lo packs.
-        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
-        assert_eq!(w[0].step, "terrain-root");
-        done.record("terrain-root", &w[0].targets);
-        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
-        assert_eq!(w[0].step, "slope-root");
-        done.record("slope-root", &w[0].targets);
+        // Then a catalog with it all.
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "catalog");
         done.record("catalog", &w[0].targets);
@@ -4715,7 +4521,7 @@ pub(crate) mod tests {
         // New terrain content in one piece: the slope of it and of the pieces whose edges read it
         // again, then their assembly.
         m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.3333333333333333.pack".into());
-        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
+        let w = past_publishing(&c, "2026-09-28", &mut m, &mut done);
         assert_eq!(w[0].step, "slope");
         let again: Vec<&str> = w[0].targets.iter().map(|t| t.0.as_str()).collect();
         assert!(again.contains(&"6/28/16") && again.len() < pieces.len(), "{again:?}");
@@ -4767,11 +4573,11 @@ pub(crate) mod tests {
                 &BTreeMap::new(),
                 Some(&reach),
                 &tiles_for(&m),
-                MapUpdates {
+                Publish {
                     each: &c.by_region(),
                     on_map: &BTreeMap::new(),
-                    since_last: None,
-                    current: None,
+                    served: &BTreeMap::new(),
+                    since_catalog: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -4787,319 +4593,17 @@ pub(crate) mod tests {
         (c, reach, m, done)
     }
 
-    #[test]
-    fn regions_are_built_one_at_a_time_those_the_map_lacks_first() {
-        let (c, reach, m, done) = three();
-        let each = c.by_region();
-        let plan = |on_map: &BTreeMap<String, bool>| {
-            super::plan(
-                &c,
-                "d",
-                &m,
-                &done,
-                &BTreeMap::new(),
-                Some(&reach),
-                &tiles_for(&m),
-                MapUpdates {
-                    each: &each,
-                    on_map,
-                    since_last: None,
-                    current: None,
-                    held: false,
-                    way: Default::default(),
-                },
-            )
-        };
-        let units = |p: &Plan| {
-            p.work
-                .iter()
-                .filter(|w| w.step == "unit")
-                .flat_map(|w| w.targets.iter().map(|t| t.0.clone()))
-                .collect::<Vec<_>>()
-        };
-        // Nothing on the map: the regions with the fewest units left first (a and c, one each: by
-        // place), then b's two together; their slope and tree cover after them.
-        let p = plan(&BTreeMap::new());
-        assert_eq!(
-            p.work.iter().map(|w| w.step.as_str()).collect::<Vec<_>>(),
-            ["unit", "unit", "unit", "slope", "trees"]
-        );
-        assert_eq!(units(&p), ["6/28/16", "6/31/16", "6/29/16", "6/30/16"]);
-        assert!(p.ready.is_empty());
-        // a and c on the map already (as they are, or redrawn): b first, though it has more left.
-        let on: BTreeMap<String, bool> = [("a".to_string(), true), ("c".to_string(), false)].into();
-        assert_eq!(units(&plan(&on)), ["6/29/16", "6/30/16", "6/28/16", "6/31/16"]);
-    }
-
-    #[test]
-    fn a_region_done_is_published_in_a_map_update_at_most_hourly() {
-        let (c, reach, mut m, mut done) = three();
-        let each = c.by_region();
-        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>, since: Option<u64>| {
-            super::plan(
-                &c,
-                "d",
-                m,
-                done,
-                &BTreeMap::new(),
-                Some(&reach),
-                &tiles_for(m),
-                MapUpdates {
-                    each: &each,
-                    on_map,
-                    since_last: since,
-                    current: None,
-                    held: false,
-                    way: Default::default(),
-                },
-            )
-        };
-        // (A step's works one after another, as one: the plan lists a step's by region.)
-        let steps = |p: &Plan| {
-            let mut v: Vec<String> = p.work.iter().map(|w| w.step.clone()).collect();
-            v.dedup();
-            v
-        };
-        let key = |m: &BTreeMap<String, String>, u: &str| {
-            ukeys(&c, "d", m, Some(&reach)).into_iter().find(|(x, _)| x.slash() == u).unwrap().1
-        };
-        let build = |m: &mut BTreeMap<String, String>, done: &mut Keys, u: &str| {
-            done.record("unit", &[(u.to_string(), key(m, u))]);
-            let d = u.replace('/', "-");
-            m.insert(format!("base/{d}"), format!("base/{d}.6666666666666666.base"));
-            m.insert(format!("global/roads/{d}"), format!("global/roads/{d}.7777777777777777.roads"));
-        };
-        // Reykjavik's unit built: a is done, the map lacks it, nothing published yet: a map update. Its
-        // area's slope and tree cover first, then the map tiles, then a catalog; the units after.
-        build(&mut m, &mut done, "6/28/16");
-        let p = plan(&m, &done, &BTreeMap::new(), None);
-        assert_eq!(steps(&p), ["slope", "trees", "roadunits", "unit"]);
-        assert!(p.ready.is_empty(), "its area's slope and tree cover aren't made yet");
-        terrain_did(&mut m, &mut done, &p.work[0]);
-        did(&mut m, &mut done, &p.work[1]);
-        // Then its area's slope and tree cover assembled from the pieces' mids.
-        let p = plan(&m, &done, &BTreeMap::new(), None);
-        assert_eq!(steps(&p)[..2], ["slope-lo", "trees-lo"]);
-        assert!(p.ready.is_empty(), "its area's slope and tree cover aren't assembled yet");
-        assert!(
-            p.publish_waits.contains(&("trees-lo".to_string(), "3/3/2".to_string()))
-                && p.publish_waits.contains(&("slope-lo".to_string(), "3/3/2".to_string()))
-        );
-        terrain_did(&mut m, &mut done, &p.work[0]);
-        did(&mut m, &mut done, &p.work[1]);
-        let mut p = plan(&m, &done, &BTreeMap::new(), None);
-        assert_eq!(p.ready, ["a"]);
-        while p.work[0].step != "catalog" {
-            assert!(
-                ["roadunits", "pack", "lo", "stations", "terrain-root", "slope-root"]
-                    .contains(&p.work[0].step.as_str()),
-                "{:?}",
-                steps(&p)
-            );
-            done.record(&p.work[0].step, &p.work[0].targets);
-            p = plan(&m, &done, &BTreeMap::new(), None);
-        }
-        assert_eq!(steps(&p), ["catalog", "unit"]);
-        done.record("catalog", &p.work[0].targets);
-        // Published: the units again, and no map update while none is done that the map lacks.
-        let on: BTreeMap<String, bool> = [("a".to_string(), true)].into();
-        assert_eq!(steps(&plan(&m, &done, &on, Some(60))), ["unit"]);
-        // c done ten minutes later: it waits for the hour; then a map update, with a and c.
-        build(&mut m, &mut done, "6/31/16");
-        assert_eq!(steps(&plan(&m, &done, &on, Some(600))), ["unit"]);
-        let p = plan(&m, &done, &on, Some(PUBLISH_EVERY_S));
-        assert_eq!(p.ready, ["a", "c"]);
-        assert_eq!(p.work[0].step, "roadunits");
-        assert_eq!(p.work.last().unwrap().step, "unit");
-        // The last unit: a map update at once, whatever the hour, with every region.
-        build(&mut m, &mut done, "6/29/16");
-        build(&mut m, &mut done, "6/30/16");
-        let p = plan(&m, &done, &on, Some(60));
-        assert_eq!(p.ready, ["a", "b", "c"]);
-        assert_eq!(p.work[0].step, "roadunits");
-        assert!(!steps(&p).contains(&"unit".to_string()));
-    }
-
-    #[test]
-    fn a_map_update_before_the_last_leaves_the_map_tiles_units_still_to_build_would_change() {
-        let (c, mut reach, mut m, mut done) = three();
-        // Reykjavik's unit has a long way (a ferry) east into the next z6 tile, which no region it
-        // publishes meets, and where b's eastern unit (6/30/16) is still to build.
-        reach.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-22.0, 64.0, -16.5, 64.16)), long: vec![] });
-        let each = c.by_region();
-        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>| {
-            super::plan(
-                &c,
-                "d",
-                m,
-                done,
-                &BTreeMap::new(),
-                Some(&reach),
-                &tiles_for(m),
-                MapUpdates {
-                    each: &each,
-                    on_map,
-                    since_last: None,
-                    current: None,
-                    held: false,
-                    way: Default::default(),
-                },
-            )
-        };
-        let key = |m: &BTreeMap<String, String>, u: &str| {
-            ukeys(&c, "d", m, Some(&reach)).into_iter().find(|(x, _)| x.slash() == u).unwrap().1
-        };
-        let build = |m: &mut BTreeMap<String, String>, done: &mut Keys, u: &str| {
-            done.record("unit", &[(u.to_string(), key(m, u))]);
-            let d = u.replace('/', "-");
-            m.insert(format!("base/{d}"), format!("base/{d}.6666666666666666.base"));
-            m.insert(format!("global/roads/{d}"), format!("global/roads/{d}.7777777777777777.roads"));
-        };
-        // Through a map update's work to its map tiles: what it draws.
-        let drawn = |m: &BTreeMap<String, String>, done: &mut Keys, on_map: &BTreeMap<String, bool>| -> Vec<String> {
-            let mut m = m.clone();
-            loop {
-                let p = plan(&m, done, on_map);
-                let w = &p.work[0];
-                match w.step.as_str() {
-                    "pack" => return w.targets.iter().map(|t| t.0.clone()).collect(),
-                    "slope" | "slope-lo" => terrain_did(&mut m, done, w),
-                    "trees" | "trees-lo" | "roadunits" => did(&mut m, done, w),
-                    s => panic!("{s} before the map tiles"),
-                }
-            }
-        };
-        // (The tiles by where they lie: Reykjavik's is 6/28/17, the ferry's east end in 6/29/17.)
-        build(&mut m, &mut done, "6/28/16");
-        let first = drawn(&m, &mut done, &BTreeMap::new());
-        let all: Vec<String> = pack_lo_targets(&m, Some(&reach)).0.into_iter().map(|t| t.0).collect();
-        let has = |v: &[String], t: &str| v.iter().any(|x| x == t);
-        assert!(has(&first, "6/28/17") && has(&all, "6/29/17") && !has(&first, "6/29/17"), "{first:?} of {all:?}");
-        // The last map update draws every tile.
-        for u in ["6/29/16", "6/30/16", "6/31/16"] {
-            build(&mut m, &mut done, u);
-        }
-        let last = drawn(&m, &mut done, &[("a".to_string(), true)].into());
-        assert!(has(&last, "6/29/17"), "{last:?}");
-    }
-
-    #[test]
-    fn a_map_updates_work_is_fixed_when_it_begins() {
-        let (c, reach, mut m, mut done) = three();
-        let each = c.by_region();
-        let plan = |m: &BTreeMap<String, String>,
-                    done: &Keys,
-                    on_map: &BTreeMap<String, bool>,
-                    since: Option<u64>,
-                    current: Option<&MapUpdate>| {
-            super::plan(
-                &c,
-                "d",
-                m,
-                done,
-                &BTreeMap::new(),
-                Some(&reach),
-                &tiles_for(m),
-                MapUpdates { each: &each, on_map, since_last: since, current, held: false, way: Default::default() },
-            )
-        };
-        let key = |m: &BTreeMap<String, String>, u: &str| {
-            ukeys(&c, "d", m, Some(&reach)).into_iter().find(|(x, _)| x.slash() == u).unwrap().1
-        };
-        let build = |m: &mut BTreeMap<String, String>, done: &mut Keys, u: &str| {
-            done.record("unit", &[(u.to_string(), key(m, u))]);
-            let d = u.replace('/', "-");
-            m.insert(format!("base/{d}"), format!("base/{d}.6666666666666666.base"));
-            m.insert(format!("global/roads/{d}"), format!("global/roads/{d}.7777777777777777.roads"));
-        };
-        // a done, nothing published yet: a map update begins, with a and the units as they are.
-        build(&mut m, &mut done, "6/28/16");
-        let p = plan(&m, &done, &BTreeMap::new(), None, None);
-        let mut r = p.begins.clone().expect("a map update begins");
-        r.began = 1;
-        assert_eq!(r.regions, ["a"]);
-        assert!(r.units.contains_key("base/6-28-16") && !r.last);
-        // Its work is already the map update's; planned again with it under way, the same. (Its chain to
-        // the end, for the forecast: the road index to the catalog.)
-        assert_eq!(plan(&m, &done, &BTreeMap::new(), None, Some(&r)).work, p.work);
-        assert!(plan(&m, &done, &BTreeMap::new(), None, Some(&r)).begins.is_none());
-        let left: Vec<&str> = p.update_left.iter().map(|w| w.step.as_str()).collect();
-        assert_eq!((left.first().copied(), left.last().copied()), (Some("roadunits"), Some("catalog")), "{left:?}");
-        assert!(left.contains(&"pack"), "{left:?}");
-        // c done meanwhile: it isn't in the map update (its catalog records a alone), nor are its roads
-        // in the map update's road index, map tiles and catalog: the map update goes on as it began.
-        build(&mut m, &mut done, "6/31/16");
-        let then = crate::out::units_as_of(&m, &r.units);
-        assert!(!then.contains_key("base/6-31-16"));
-        let mut steps = Vec::new();
-        loop {
-            let p = plan(&m, &done, &BTreeMap::new(), None, Some(&r));
-            if p.ends {
-                break;
-            }
-            let w = p.work[0].clone();
-            assert!(
-                [
-                    "slope",
-                    "slope-lo",
-                    "trees",
-                    "trees-lo",
-                    "roadunits",
-                    "pack",
-                    "lo",
-                    "stations",
-                    "terrain-root",
-                    "slope-root",
-                    "catalog"
-                ]
-                .contains(&w.step.as_str()),
-                "{:?}",
-                p.work
-            );
-            if w.step == "catalog" {
-                assert_eq!(p.ready, ["a"]);
-                assert_eq!(
-                    w.targets[0].1,
-                    catalog_key(&crate::out::units_as_of(&m, &r.units), &BTreeMap::new(), &["a".to_string()])
-                );
-            }
-            if w.step == "pack" {
-                // (Keyed on the units as they were.)
-                let (packs, _) = pack_lo_targets(&then, Some(&reach));
-                assert!(w.targets.iter().all(|t| packs.contains(t)), "{:?}", w.targets);
-            }
-            if w.step.starts_with("slope") {
-                terrain_did(&mut m, &mut done, &w);
-            } else {
-                did(&mut m, &mut done, &w);
-            }
-            steps.push(w.step);
-            assert!(steps.len() < 20, "{steps:?}");
-        }
-        assert_eq!(steps.iter().filter(|s| *s == "roadunits").count(), 1, "{steps:?}");
-        assert_eq!(steps.last().map(String::as_str), Some("catalog"));
-        // Over, and published (a on the map). c waits for the next map update, an hour after this one
-        // began: the regions' units meanwhile; no map update's work.
-        let on: BTreeMap<String, bool> = [("a".to_string(), true)].into();
-        let p = plan(&m, &done, &on, Some(600), None);
-        assert!(p.begins.is_none());
-        assert!(p.work.iter().all(|w| !AS_OF_STEPS.contains(&w.step.as_str())), "{:?}", p.work);
-        assert_eq!(p.work[0].step, "unit");
-        let p = plan(&m, &done, &on, Some(PUBLISH_EVERY_S), None);
-        assert_eq!(p.begins.map(|r| r.regions), Some(vec!["c".to_string()]));
-        // (The roads index again: c's roads are new to it.)
-        assert_eq!(p.work[0].step, "roadunits");
-    }
-
-    /// The tests' plan with a map update under way, and a unit of theirs built (as `content`).
-    fn rplan(
+    /// The tests' plan for `three`'s regions: those `on_map`, the last catalog `since` seconds ago,
+    /// the switches' `way`, catalogs `held` or not, nothing served.
+    #[allow(clippy::too_many_arguments)]
+    fn pplan(
         c: &Coverage,
         reach: &Reaches,
         m: &BTreeMap<String, String>,
         done: &Keys,
         on_map: &BTreeMap<String, bool>,
         since: Option<u64>,
-        current: Option<&MapUpdate>,
+        way: Publishing,
         held: bool,
     ) -> Plan {
         let each = c.by_region();
@@ -5111,9 +4615,10 @@ pub(crate) mod tests {
             &BTreeMap::new(),
             Some(reach),
             &tiles_for(m),
-            MapUpdates { each: &each, on_map, since_last: since, current, held, way: Default::default() },
+            Publish { each: &each, on_map, served: &BTreeMap::new(), since_catalog: since, held, way },
         )
     }
+    /// A unit of theirs built (as `content`).
     fn rbuild(
         c: &Coverage,
         reach: &Reaches,
@@ -5128,320 +4633,244 @@ pub(crate) mod tests {
         m.insert(format!("base/{d}"), format!("base/{d}.{content}.base"));
         m.insert(format!("global/roads/{d}"), format!("global/roads/{d}.{content}.roads"));
     }
-    /// A map update's work to its catalog, each step done as the plan lists it (`skip`: work that fails
-    /// each time it runs, passed over as the agent passes over work waiting out a failure): the
-    /// plan the catalog came in.
-    fn through_its_catalog(
+    /// A plan's steps, a step's works one after another as one (the plan lists a step's by region).
+    fn steps(p: &Plan) -> Vec<String> {
+        let mut v: Vec<String> = p.work.iter().map(|w| w.step.clone()).collect();
+        v.dedup();
+        v
+    }
+    /// The publishing chain's steps.
+    const CHAIN: [&str; 8] = ["prune", "pack", "roadunits", "lo", "stations", "ferries", "terrain-root", "slope-root"];
+    /// Through the publishing chain to its catalog, each step done as the plan lists it first (the
+    /// slope and tree cover after it as `prep` says): the chain's steps run, and the plan the catalog
+    /// came in (not recorded).
+    fn through_the_chain(
         c: &Coverage,
         reach: &Reaches,
         m: &mut BTreeMap<String, String>,
         done: &mut Keys,
-        r: &MapUpdate,
+        way: Publishing,
         held: bool,
-        skip: &dyn Fn(&Work) -> bool,
-    ) -> Plan {
+    ) -> (Vec<String>, Plan) {
+        let mut ran = Vec::new();
         for _ in 0..30 {
-            let p = rplan(c, reach, m, done, &BTreeMap::new(), None, Some(r), held);
-            let w = p
-                .work
-                .iter()
-                .find(|w| {
-                    !skip(w)
-                        && (AS_OF_STEPS.contains(&w.step.as_str())
-                            || w.step == "prune"
-                            || p.publish_waits.iter().any(|(s, t)| *s == w.step && w.targets.iter().any(|x| x.0 == *t)))
-                })
-                .cloned()
-                .expect("the map update's work");
+            let p = pplan(c, reach, m, done, &BTreeMap::new(), Some(600), way, held);
+            let w = p.work[0].clone();
             if w.step == "catalog" {
-                done.record(if held { "catalog-held" } else { "catalog" }, &w.targets);
-                return p;
+                return (ran, p);
             }
+            assert!(CHAIN.contains(&w.step.as_str()), "{:?}", steps(&p));
             did(m, done, &w);
+            ran.push(w.step);
         }
         panic!("no catalog");
     }
 
     #[test]
-    fn a_map_update_ends_with_its_catalog_what_changed_meanwhile_and_failing_work_wait_for_the_next() {
-        let (c, reach, mut m, mut done) = three();
-        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
-        let mut r =
-            rplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, false).begins.expect("a map update begins");
-        r.began = 1;
-        // a's slope fails each time it runs: the map update's catalog goes out without a (the agent then
-        // ends the map update, its catalog made).
-        let p = through_its_catalog(&c, &reach, &mut m, &mut done, &r, false, &|w| w.step == "slope");
+    fn regions_are_built_one_at_a_time_those_the_map_lacks_first() {
+        let (c, reach, m, done) = three();
+        let plan =
+            |on_map: &BTreeMap<String, bool>| pplan(&c, &reach, &m, &done, on_map, None, Default::default(), false);
+        let units = |p: &Plan| {
+            p.work
+                .iter()
+                .filter(|w| w.step == "unit")
+                .flat_map(|w| w.targets.iter().map(|t| t.0.clone()))
+                .collect::<Vec<_>>()
+        };
+        // Nothing on the map: the regions with the fewest units left first (a and c, one each: by
+        // place), then b's two together; their slope and tree cover after them (nothing to publish
+        // before a unit is built).
+        let p = plan(&BTreeMap::new());
+        assert_eq!(steps(&p), ["unit", "slope", "trees"]);
+        assert_eq!(p.publishing.why, "nothing to publish until a unit is built");
+        assert_eq!(units(&p), ["6/28/16", "6/31/16", "6/29/16", "6/30/16"]);
         assert!(p.ready.is_empty());
-        // Meanwhile c is done, and other layers changed (a unit's grids, a terrain area): with the
-        // map update over, nothing for an hour after it began, then a map update with a and c.
-        rbuild(&c, &reach, &mut m, &mut done, "6/31/16", "8888888888888888");
-        m.insert("layers/grid-class/hi/6-31-16".into(), "layers/grid-class/hi/6-31-16.9999999999999999.pack".into());
-        m.insert("layers/terrain/lo/3-2-2".into(), "layers/terrain/lo/3-2-2.2222222222222222.pack".into());
-        let p = rplan(&c, &reach, &m, &done, &BTreeMap::new(), Some(600), None, false);
-        assert!(p.begins.is_none() && p.work.iter().all(|w| !AS_OF_STEPS.contains(&w.step.as_str())), "{:?}", p.work);
-        let p = rplan(&c, &reach, &m, &done, &BTreeMap::new(), Some(PUBLISH_EVERY_S), None, false);
-        assert_eq!(p.begins.map(|r| r.regions), Some(vec!["a".to_string(), "c".to_string()]));
+        // a and c on the map already (as they are, or redrawn): b first, though it has more left.
+        let on: BTreeMap<String, bool> = [("a".to_string(), true), ("c".to_string(), false)].into();
+        assert_eq!(units(&plan(&on)), ["6/29/16", "6/30/16", "6/28/16", "6/31/16"]);
     }
 
     #[test]
-    fn a_map_update_region_built_again_mid_map_update_goes_out_with_the_next() {
+    fn a_region_done_is_published_at_once_its_map_tiles_before_the_units_a_catalog_at_most_each_minute() {
+        let (c, reach, mut m, mut done) = three();
+        let none = BTreeMap::new();
+        // Reykjavik's unit built: a is done. Its map tiles at once, then its area's slope and tree
+        // cover, then the units.
+        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
+        let p = pplan(&c, &reach, &m, &done, &none, None, Default::default(), false);
+        assert_eq!(steps(&p)[..4], ["pack", "slope", "trees", "unit"]);
+        assert_eq!((p.publishing.tiles, p.publishing.units), (p.work[0].targets.len(), 1));
+        assert!(p.publishing.why.starts_with("drawing the map tiles"), "{}", p.publishing.why);
+        assert_eq!(
+            p.publishing.regions,
+            [PublishRegion { id: "a".into(), kinds: vec!["new region".into(), "slope and tree cover to make".into()] }]
+        );
+        // Through the chain (no units fixed as of a time: the records as they are), then a catalog
+        // with the units still to build after it; a isn't recorded built yet (its slope and tree cover).
+        let (ran, p) = through_the_chain(&c, &reach, &mut m, &mut done, Default::default(), false);
+        assert_eq!(ran.first().map(String::as_str), Some("pack"), "{ran:?}");
+        assert!(ran.contains(&"roadunits".to_string()) && ran.contains(&"lo".to_string()), "{ran:?}");
+        assert!(p.ready.is_empty());
+        assert!(steps(&p).contains(&"unit".to_string()));
+        assert_eq!(p.publishing.why, "a catalog now: what it would list changed");
+        done.record("catalog", &p.work[0].targets);
+        // Caught up: the units again.
+        let p = pplan(&c, &reach, &m, &done, &none, Some(5), Default::default(), false);
+        assert_eq!(steps(&p)[..3], ["slope", "trees", "unit"]);
+        assert!(p.publishing.why.starts_with("caught up"), "{}", p.publishing.why);
+        // c done 30 s after that catalog: its map tiles at once; the catalog once a minute has
+        // passed since the last.
+        rbuild(&c, &reach, &mut m, &mut done, "6/31/16", "8888888888888888");
+        assert_eq!(pplan(&c, &reach, &m, &done, &none, Some(30), Default::default(), false).work[0].step, "pack");
+        through_the_chain(&c, &reach, &mut m, &mut done, Default::default(), false);
+        let p = pplan(&c, &reach, &m, &done, &none, Some(30), Default::default(), false);
+        assert!(!p.work.iter().any(|w| w.step == "catalog"), "{:?}", steps(&p));
+        assert_eq!(p.publishing.wait_s, 30);
+        assert!(p.publishing.why.contains("in 30 s"), "{}", p.publishing.why);
+        let p = pplan(&c, &reach, &m, &done, &none, Some(CATALOG_EVERY_S), Default::default(), false);
+        assert_eq!((p.work[0].step.as_str(), p.publishing.wait_s), ("catalog", 0));
+        // (The log line is the same as the seconds count down, and as the tiles are drawn.)
+        let at = |s: u64| pplan(&c, &reach, &m, &done, &none, Some(s), Default::default(), false).publishing.key();
+        assert_eq!(at(10), at(40));
+        // a's slope and tree cover made: recorded built by the next catalog.
+        loop {
+            let p = pplan(&c, &reach, &m, &done, &none, Some(600), Default::default(), false);
+            if p.ready.contains(&"a".to_string()) {
+                let (_, p) = through_the_chain(&c, &reach, &mut m, &mut done, Default::default(), false);
+                assert!(p.ready.contains(&"a".to_string()) && p.work[0].step == "catalog");
+                break;
+            }
+            let w = p.work.iter().find(|w| w.step != "catalog" && !CHAIN.contains(&w.step.as_str())).unwrap().clone();
+            assert!(["slope", "slope-lo", "trees", "trees-lo"].contains(&w.step.as_str()), "{:?}", steps(&p));
+            if w.step.starts_with("slope") {
+                terrain_did(&mut m, &mut done, &w);
+            } else {
+                did(&mut m, &mut done, &w);
+            }
+        }
+    }
+
+    #[test]
+    fn the_map_tiles_are_drawn_a_units_together_those_its_change_made_stale() {
         let (c, reach, mut m, mut done) = three();
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
-        let mut r =
-            rplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, false).begins.expect("a map update begins");
-        r.began = 1;
-        // a's unit built again during the map update (its outline redrawn, say): the map update's catalog
-        // doesn't record a as built, its copy of the unit being the old one; the next map update does.
-        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "aaaaaaaaaaaaaaaa");
-        let p = through_its_catalog(&c, &reach, &mut m, &mut done, &r, false, &|_| false);
-        assert!(!p.ready.contains(&"a".to_string()), "{:?}", p.ready);
-        let p = rplan(&c, &reach, &m, &done, &BTreeMap::new(), Some(PUBLISH_EVERY_S), None, false);
-        assert_eq!(p.begins.map(|r| r.regions), Some(vec!["a".to_string()]));
+        rbuild(&c, &reach, &mut m, &mut done, "6/31/16", "8888888888888888");
+        let (packs, _) = pack_lo_targets(&m, Some(&reach));
+        let owned = |u: &str, t: &str| {
+            let (u, t) = (Unit::parse(u).unwrap(), Unit::parse(t).unwrap());
+            owns(unit_reach(Some(&reach), &m, u), crate::hipack::tile_bounds(t.z, t.x, t.y))
+        };
+        let sorted = |mut v: Vec<(String, String)>| {
+            v.sort();
+            v
+        };
+        // Nothing served: both units changed; a's (west of c) first, then c's.
+        let (t, n) = by_unit(packs.clone(), &m, Some(&reach), &BTreeMap::new());
+        assert_eq!((n, sorted(t.clone())), (2, sorted(packs.clone())));
+        let first_c = t.iter().position(|x| !owned("6/28/16", &x.0)).unwrap();
+        assert!(first_c > 0 && t[first_c..].iter().all(|x| owned("6/31/16", &x.0)), "{t:?}");
+        // a served as it is: c's change alone; its tiles first, a's (no change explains them) after.
+        let served: BTreeMap<String, String> =
+            ["base/6-28-16", "global/roads/6-28-16"].into_iter().map(|l| (l.to_string(), m[l].clone())).collect();
+        let (t, n) = by_unit(packs.clone(), &m, Some(&reach), &served);
+        assert_eq!(n, 1);
+        let k = t.iter().take_while(|x| owned("6/31/16", &x.0)).count();
+        assert!(k > 0 && t[k..].iter().all(|x| !owned("6/31/16", &x.0)), "{t:?}");
+        // The plan's pack work so ordered, its targets all there.
+        let each = c.by_region();
+        let p = super::plan(
+            &c,
+            "d",
+            &m,
+            &done,
+            &BTreeMap::new(),
+            Some(&reach),
+            &tiles_for(&m),
+            Publish {
+                each: &each,
+                on_map: &BTreeMap::new(),
+                served: &served,
+                since_catalog: None,
+                held: false,
+                way: Default::default(),
+            },
+        );
+        assert_eq!((p.work[0].step.as_str(), &p.work[0].targets), ("pack", &t));
+        assert_eq!((p.publishing.tiles, p.publishing.units), (t.len(), 1));
     }
 
     #[test]
-    fn with_catalogs_held_a_map_update_weighs_its_catalog_against_the_last_held() {
+    fn a_tile_whose_owners_changed_is_drawn_at_once_though_a_unit_near_it_is_still_to_build() {
+        let (c, mut reach, mut m, mut done) = three();
+        // Reykjavik's ferry reaches 6/29/17, where b's eastern unit (6/30/16) is still to build: its
+        // tile drawn now, and again once that unit is built.
+        reach.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-22.0, 64.0, -16.5, 64.16)), long: vec![] });
+        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
+        let p = pplan(&c, &reach, &m, &done, &BTreeMap::new(), None, Default::default(), false);
+        assert_eq!(p.work[0].step, "pack");
+        let drawn: Vec<&str> = p.work[0].targets.iter().map(|t| t.0.as_str()).collect();
+        assert!(drawn.contains(&"6/28/17") && drawn.contains(&"6/29/17"), "{drawn:?}");
+    }
+
+    #[test]
+    fn with_catalogs_held_the_catalog_weighs_against_the_last_held() {
         let (c, reach, mut m, mut done) = three();
         for u in ["6/28/16", "6/29/16", "6/30/16", "6/31/16"] {
             rbuild(&c, &reach, &mut m, &mut done, u, "6666666666666666");
         }
-        let mut r = rplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, true)
-            .begins
-            .expect("the last map update begins");
-        assert!(r.last);
-        r.began = 1;
-        through_its_catalog(&c, &reach, &mut m, &mut done, &r, true, &|_| false);
-        // Its held catalog made, nothing new: no map update begins again (none every plan).
+        let (_, p) = through_the_chain(&c, &reach, &mut m, &mut done, Default::default(), true);
+        done.record("catalog-held", &p.work[0].targets);
+        // Its held catalog made, nothing new: no catalog again.
         let on: BTreeMap<String, bool> =
             [("a".to_string(), true), ("b".to_string(), true), ("c".to_string(), true)].into();
         for since in [5, 25, 4000] {
-            assert!(rplan(&c, &reach, &m, &done, &on, Some(since), None, true).begins.is_none());
+            let p = pplan(&c, &reach, &m, &done, &on, Some(since), Default::default(), true);
+            assert!(!p.work.iter().any(|w| w.step == "catalog"), "{:?}", steps(&p));
         }
-        // (Served, not held: the served one is weighed, and it's older.)
-        assert!(rplan(&c, &reach, &m, &done, &on, Some(5), None, false).begins.is_some());
-    }
-
-    /// `rplan` with the switches' way (`Publishing`).
-    #[allow(clippy::too_many_arguments)]
-    fn wplan(
-        c: &Coverage,
-        reach: &Reaches,
-        m: &BTreeMap<String, String>,
-        done: &Keys,
-        on_map: &BTreeMap<String, bool>,
-        since: Option<u64>,
-        current: Option<&MapUpdate>,
-        way: Publishing,
-    ) -> Plan {
-        let each = c.by_region();
-        super::plan(
-            c,
-            "d",
-            m,
-            done,
-            &BTreeMap::new(),
-            Some(reach),
-            &tiles_for(m),
-            MapUpdates { each: &each, on_map, since_last: since, current, held: false, way },
-        )
-    }
-
-    /// A map update's work to its catalog with the switches' way, each step done as the plan lists it
-    /// (the map update's own: its slope and tree cover, its chain): the steps run, and the plan the
-    /// catalog came in.
-    fn through_with(
-        c: &Coverage,
-        reach: &Reaches,
-        m: &mut BTreeMap<String, String>,
-        done: &mut Keys,
-        r: &MapUpdate,
-        way: Publishing,
-    ) -> (Vec<Work>, Plan) {
-        let mut ran = Vec::new();
-        for _ in 0..30 {
-            let p = wplan(c, reach, m, done, &BTreeMap::new(), None, Some(r), way);
-            let w = p
-                .work
-                .iter()
-                .find(|w| {
-                    AS_OF_STEPS.contains(&w.step.as_str())
-                        || w.step == "prune"
-                        || p.publish_waits.iter().any(|(s, t)| *s == w.step && w.targets.iter().any(|x| x.0 == *t))
-                })
-                .cloned()
-                .expect("the map update's work");
-            ran.push(w.clone());
-            if w.step == "catalog" {
-                done.record("catalog", &w.targets);
-                return (ran, p);
-            }
-            if w.step.starts_with("slope") {
-                terrain_did(m, done, &w);
-            } else {
-                did(m, done, &w);
-            }
-        }
-        panic!("no catalog");
+        // (Served, not held: the served one is weighed, and there's none.)
+        let p = pplan(&c, &reach, &m, &done, &on, Some(4000), Default::default(), false);
+        assert!(p.work.iter().any(|w| w.step == "catalog"), "{:?}", steps(&p));
     }
 
     #[test]
-    fn a_map_update_per_region_begins_after_the_gap_its_measured_map_updates_make() {
-        let (c, reach, mut m, mut done) = three();
-        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
-        let r = rplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, false).begins.expect("a map update begins");
-        let mut r = MapUpdate { began: 1, ..r };
-        through_with(&c, &reach, &mut m, &mut done, &r, Publishing::default());
-        r.over = true;
-        // c done: with the switch off, an hour after the last began; with it, the gap (300 s here).
-        rbuild(&c, &reach, &mut m, &mut done, "6/31/16", "8888888888888888");
-        let on: BTreeMap<String, bool> = [("a".to_string(), true)].into();
-        let way = Publishing { gap: Some(300), ..Default::default() };
-        assert!(wplan(&c, &reach, &m, &done, &on, Some(300), None, Publishing::default()).begins.is_none());
-        assert!(wplan(&c, &reach, &m, &done, &on, Some(299), None, way).begins.is_none());
-        assert_eq!(
-            wplan(&c, &reach, &m, &done, &on, Some(300), None, way).begins.map(|r| r.regions),
-            Some(vec!["c".to_string()])
-        );
-        // (Nothing to publish: no map update, whatever the gap.)
-        let on: BTreeMap<String, bool> = [("a".to_string(), true), ("c".to_string(), true)].into();
-        assert!(wplan(&c, &reach, &m, &done, &on, Some(5000), None, way).begins.is_none());
-    }
-
-    #[test]
-    fn the_map_update_decision_says_why() {
-        let c = |under_way, last_now, raising, new_regions, since: Option<u64>| {
-            map_update_due(&UpdateCase { under_way, last_now, raising, new_regions, since_last: since, gap: Some(300) })
-        };
-        assert_eq!(c(true, false, false, 2, Some(5000)), (false, "a map update is under way".to_string()));
-        assert_eq!(
-            c(false, false, false, 2, Some(300)),
-            (true, "2 regions done with new work to publish, the gap passed".to_string())
-        );
-        assert_eq!(
-            c(false, false, false, 1, Some(100)),
-            (
-                false,
-                "1 region done with new work to publish, the gap not passed (next map update in 4 min)".to_string()
-            )
-        );
-        assert!(c(false, false, true, 0, Some(5000)).1.starts_with("no region has new work"));
-        assert!(c(false, true, false, 0, Some(1)).0);
-        // (The 3D buildings raised after the last unit: each gap, as a region's, not hourly: task #209.)
-        let (due, why) = c(false, true, true, 0, Some(100));
-        assert!(!due && why.contains("next map update in 4 min"), "{why}");
-        assert!(c(false, true, true, 0, Some(300)).0);
-        let hourly = map_update_due(&UpdateCase {
-            last_now: true,
-            raising: true,
-            since_last: Some(1700),
-            gap: None,
-            ..Default::default()
-        });
-        assert!(!hourly.0 && hourly.1.contains("next map update in 32 min"), "{hourly:?}");
-        assert!(c(false, true, true, 1, Some(10)).0);
-        assert!(c(false, false, false, 0, None).1.starts_with("no region"));
-        // The log line changes with the reasons, not with the minutes counting down.
-        let u = |s: u64| UpdateDecision { why: c(false, true, true, 0, Some(s)).1, gap_s: 300, ..Default::default() };
-        assert_eq!(u(100).key(), u(200).key());
-        assert_ne!(
-            u(100).key(),
-            UpdateDecision { why: c(false, true, true, 0, Some(3700)).1, gap_s: 300, ..Default::default() }.key()
-        );
-        // Nor with an error's text in what it waits for (the agent's "but", task #209), only with
-        // what it waits for.
-        let but = |b: &str| {
-            UpdateDecision {
-                why: format!("{} (but it {b})", c(false, false, false, 1, Some(400)).1),
-                gap_s: 300,
-                ..Default::default()
-            }
-            .key()
-        };
-        assert_eq!(
-            but("can't keep the map update now (write /a: disk full (os error 28))"),
-            but("can't keep the map update now (write /b: timed out)")
-        );
-        assert_ne!(
-            but("can't keep the map update now (write /a: disk full)"),
-            but("waits for a helper's work to be merged")
-        );
-        assert_ne!(but("waits for a helper's work to be merged"), u(100).key());
-    }
-
-    #[test]
-    fn the_plan_records_its_map_update_decision() {
-        let (c, reach, mut m, mut done) = three();
-        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
-        let r = rplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, false).begins.expect("a map update begins");
-        let mut r = MapUpdate { began: 1, ..r };
-        through_with(&c, &reach, &mut m, &mut done, &r, Publishing::default());
-        r.over = true;
-        rbuild(&c, &reach, &mut m, &mut done, "6/31/16", "8888888888888888");
-        let on: BTreeMap<String, bool> = [("a".to_string(), true)].into();
-        let way = Publishing { gap: Some(300), ..Default::default() };
-        let p = wplan(&c, &reach, &m, &done, &on, Some(120), None, way);
-        assert!(p.begins.is_none() && !p.update.due && p.update.why.contains("gap not passed"), "{:?}", p.update);
-        assert_eq!((p.update.gap_s, p.update.left_s), (300, 180));
-        assert_eq!(p.update.regions, [UpdateRegion { id: "c".into(), kinds: vec!["new region".into()] }]);
-        let p = wplan(&c, &reach, &m, &done, &on, Some(300), None, way);
-        assert!(p.begins.is_some() && p.update.due, "{:?}", p.update);
-        // Under way: why none begins.
-        let p = wplan(
-            &c,
-            &reach,
-            &m,
-            &done,
-            &on,
-            Some(300),
-            Some(&MapUpdate { began: 2, regions: vec!["c".into()], ..Default::default() }),
-            way,
-        );
-        assert_eq!(p.update.why, "a map update is under way");
-    }
-
-    #[test]
-    fn with_the_low_zooms_later_a_map_update_draws_the_map_tiles_and_leaves_the_low_zooms() {
-        let (c, reach, mut m, mut done) = three();
-        rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
-        let way = Publishing { low_later: true, since_low: Some(60), ..Default::default() };
-        // (The first map update: everything's lo pack stale, so it makes the low zooms; so does one with
-        // none made, or made long ago.)
-        let r = wplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, way).begins.expect("a map update begins");
-        assert!(r.low);
-        assert!(
-            wplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, Publishing { since_low: None, ..way })
-                .begins
-                .unwrap()
-                .low
-        );
-        let steps = |ran: &[Work]| ran.iter().map(|w| w.step.clone()).collect::<Vec<_>>();
-        // A map update that doesn't make the low zooms: the map tiles, no lo packs nor roots, its catalog.
-        let mut m2 = m.clone();
-        let mut done2 = done.clone();
-        let (ran, p) =
-            through_with(&c, &reach, &mut m2, &mut done2, &MapUpdate { began: 1, low: false, ..r.clone() }, way);
-        let s = steps(&ran);
-        assert!(
-            s.contains(&"pack".to_string())
-                && !s.iter().any(|x| ["lo", "terrain-root", "slope-root"].contains(&x.as_str())),
-            "{s:?}"
-        );
-        assert_eq!(p.ready, ["a"]);
-        // The same map update making them (or the switch off): the lo packs and roots too.
-        for (low, way) in [(true, way), (false, Publishing::default())] {
-            let (mut m2, mut done2) = (m.clone(), done.clone());
-            let (ran, _) =
-                through_with(&c, &reach, &mut m2, &mut done2, &MapUpdate { began: 1, low, ..r.clone() }, way);
-            let s = steps(&ran);
-            assert!(["pack", "lo", "terrain-root", "slope-root"].iter().all(|x| s.contains(&x.to_string())), "{s:?}");
-        }
-        // The last map update makes them whatever.
-        for u in ["6/29/16", "6/30/16", "6/31/16"] {
+    fn with_the_low_zooms_later_the_map_tiles_go_out_and_the_low_zooms_wait_their_turn() {
+        let (c, mut reach, mut m, mut done) = three();
+        // Reykjavik's roads reach nine z3 tiles (3/1/1 to 3/3/3), Vík's 3/3/2: c built
+        // again stales less than half the lo packs.
+        reach.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-95.0, 30.0, -21.7, 75.0)), long: vec![] });
+        for u in ["6/28/16", "6/31/16"] {
             rbuild(&c, &reach, &mut m, &mut done, u, "6666666666666666");
         }
-        let r = wplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, way).begins.expect("the last map update");
-        assert!(r.last && r.low);
+        let (_, lo) = pack_lo_targets(&m, Some(&reach));
+        assert!(lo.len() >= 9, "{lo:?}");
+        let later = Publishing { low_later: true, since_low: Some(60), ..Default::default() };
+        // The first: every lo pack stale, so the low zooms are made.
+        let (ran, p) = through_the_chain(&c, &reach, &mut m, &mut done, later, false);
+        assert!(p.low && ran.contains(&"lo".to_string()), "{ran:?}");
+        done.record("catalog", &p.work[0].targets);
+        // c built again: its map tiles, the road index and rail stops; the low zooms wait.
+        rbuild(&c, &reach, &mut m, &mut done, "6/31/16", "8888888888888888");
+        assert!(!low_due(&m, &done, Some(&reach)));
+        let (mut m2, mut done2) = (m.clone(), done.clone());
+        let (ran, p) = through_the_chain(&c, &reach, &mut m2, &mut done2, later, false);
+        assert!(!p.low && !p.publishing.low, "{:?}", p.publishing);
+        assert!(
+            ran.contains(&"pack".to_string())
+                && !ran.iter().any(|x| ["lo", "terrain-root", "slope-root"].contains(&x.as_str())),
+            "{ran:?}"
+        );
+        // Their turn (LOW_EVERY_S since), or the switch off: the lo packs too.
+        for way in [Publishing { since_low: Some(LOW_EVERY_S), ..later }, Publishing::default()] {
+            let (mut m2, mut done2) = (m.clone(), done.clone());
+            let (ran, p) = through_the_chain(&c, &reach, &mut m2, &mut done2, way, false);
+            assert!(p.low && ran.contains(&"lo".to_string()), "{ran:?}");
+        }
+        // Everything built: made whatever.
+        for u in ["6/29/16", "6/30/16"] {
+            rbuild(&c, &reach, &mut m, &mut done, u, "6666666666666666");
+        }
+        assert!(pplan(&c, &reach, &m, &done, &BTreeMap::new(), Some(600), later, false).low);
     }
 
     #[test]
@@ -5457,127 +4886,59 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn near_a_map_updates_slope_is_the_pieces_near_its_regions_their_assemblies_later() {
+    fn near_a_done_regions_slope_is_the_pieces_near_it_and_it_is_ready_with_them() {
         let (c, reach, mut m, mut done) = three();
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
-        let r = MapUpdate {
-            began: 1,
-            ..rplan(&c, &reach, &m, &done, &BTreeMap::new(), None, None, false).begins.expect("a map update begins")
-        };
-        let near = Publishing { near: true, low_later: true, ..Default::default() };
-        let slope_of = |p: &Plan| {
+        let near = Publishing { near: true, ..Default::default() };
+        // (The slope listed before the regions' units: the done regions'.)
+        let prep = |p: &Plan, step: &str| {
             p.work
                 .iter()
-                .filter(|w| w.step == "slope")
+                .take_while(|w| w.step != "unit")
+                .filter(|w| w.step == step)
                 .flat_map(|w| w.targets.iter().map(|t| t.0.clone()))
-                .filter(|t| p.publish_waits.iter().any(|(s, x)| s == "slope" && x == t))
                 .collect::<BTreeSet<_>>()
         };
-        let before = slope_of(&wplan(&c, &reach, &m, &done, &BTreeMap::new(), None, Some(&r), Publishing::default()));
-        let now = slope_of(&wplan(&c, &reach, &m, &done, &BTreeMap::new(), None, Some(&r), near));
+        let on = BTreeMap::new();
+        let before = prep(&pplan(&c, &reach, &m, &done, &on, Some(600), Default::default(), false), "slope");
+        let p = pplan(&c, &reach, &m, &done, &on, Some(600), near, false);
+        let now = prep(&p, "slope");
         // (The pieces within 20 km of a: fewer than its z3 tiles' stale pieces, none left out that it reads.)
         let a = &c.by_region().into_iter().find(|(id, _)| id == "a").unwrap().1;
         assert!(!now.is_empty() && now.is_subset(&before) && now.len() < before.len(), "{now:?} of {before:?}");
         assert!(now.iter().all(|t| Unit::parse(t).is_some_and(|u| a.meets_rect(grown_e7(6, u.x, u.y, 20.0)))));
-        assert!(before
-            .iter()
-            .filter(|t| !now.contains(*t))
-            .all(|t| Unit::parse(t).is_some_and(|u| !a.meets_rect(grown_e7(6, u.x, u.y, 20.0)))));
-        // Through to its catalog: a goes out with its near pieces made; no assembly in the map update
-        // (it isn't the low zooms'), and the far pieces still to make.
-        let (ran, p) = through_with(&c, &reach, &mut m, &mut done, &MapUpdate { low: false, ..r }, near);
+        // Those and its tree cover pieces made: a ready, its far pieces and assemblies still to make.
+        for step in ["slope", "trees"] {
+            let w = Work {
+                step: step.into(),
+                targets: p
+                    .work
+                    .iter()
+                    .filter(|w| w.step == step)
+                    .flat_map(|w| w.targets.clone())
+                    .filter(|t| prep(&p, step).contains(&t.0))
+                    .collect(),
+            };
+            if step == "slope" {
+                terrain_did(&mut m, &mut done, &w);
+            } else {
+                did(&mut m, &mut done, &w);
+            }
+        }
+        let p = pplan(&c, &reach, &m, &done, &on, Some(600), near, false);
         assert_eq!(p.ready, ["a"]);
-        assert!(
-            !ran.iter().any(|w| w.step == "slope-lo" || w.step == "trees-lo"),
-            "{:?}",
-            ran.iter().map(|w| &w.step).collect::<Vec<_>>()
-        );
-        let left = wplan(&c, &reach, &m, &done, &[("a".to_string(), true)].into(), Some(60), None, near);
-        assert!(left
-            .work
-            .iter()
-            .any(|w| w.step == "slope" && w.targets.iter().any(|t| before.contains(&t.0) && !now.contains(&t.0))));
+        assert!(p.work.iter().any(|w| w.step == "slope" && w.targets.iter().any(|t| !now.contains(&t.0))));
     }
 
     #[test]
-    fn a_region_done_waits_for_its_map_update_with_its_slope_and_tree_cover_made() {
+    fn a_region_done_has_its_slope_and_tree_cover_made_before_the_units() {
         let (c, reach, mut m, mut done) = three();
-        let each = c.by_region();
         let k = ukeys(&c, "d", &m, Some(&reach)).into_iter().find(|(x, _)| x.slash() == "6/28/16").unwrap().1;
         done.record("unit", &[("6/28/16".to_string(), k)]);
         m.insert("base/6-28-16".into(), "base/6-28-16.6666666666666666.base".into());
-        // A map update began ten minutes ago: a's slope and tree cover first, then the units; no map update.
-        let p = super::plan(
-            &c,
-            "d",
-            &m,
-            &done,
-            &BTreeMap::new(),
-            Some(&reach),
-            &tiles_for(&m),
-            MapUpdates {
-                each: &each,
-                on_map: &BTreeMap::new(),
-                since_last: Some(600),
-                current: None,
-                held: false,
-                way: Default::default(),
-            },
-        );
-        assert!(p.begins.is_none() && p.publish_waits.is_empty());
-        let steps: Vec<&str> = p.work.iter().map(|w| w.step.as_str()).collect();
-        assert_eq!(&steps[..3], ["slope", "trees", "unit"]);
-    }
-
-    #[test]
-    fn a_tile_whose_owners_changed_is_drawn_in_any_map_update() {
-        let (c, mut reach, mut m, mut done) = three();
-        // Reykjavik's ferry reaches 6/29/17, where b's eastern unit is still to build (as in
-        // a_map_update_before_the_last_leaves_the_map_tiles_units_still_to_build_would_change).
-        reach.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-22.0, 64.0, -16.5, 64.16)), long: vec![] });
-        let each = c.by_region();
-        let key = |m: &BTreeMap<String, String>, u: &str| {
-            ukeys(&c, "d", m, Some(&reach)).into_iter().find(|(x, _)| x.slash() == u).unwrap().1
-        };
-        done.record("unit", &[("6/28/16".to_string(), key(&m, "6/28/16"))]);
-        m.insert("base/6-28-16".into(), "base/6-28-16.6666666666666666.base".into());
-        m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.7777777777777777.roads".into());
-        let drawn = |done: &mut Keys| -> Vec<String> {
-            let mut m = m.clone();
-            loop {
-                let p = super::plan(
-                    &c,
-                    "d",
-                    &m,
-                    done,
-                    &BTreeMap::new(),
-                    Some(&reach),
-                    &tiles_for(&m),
-                    MapUpdates {
-                        each: &each,
-                        on_map: &BTreeMap::new(),
-                        since_last: None,
-                        current: None,
-                        held: false,
-                        way: Default::default(),
-                    },
-                );
-                let w = &p.work[0];
-                match w.step.as_str() {
-                    "pack" => return w.targets.iter().map(|t| t.0.clone()).collect(),
-                    "slope" | "slope-lo" => terrain_did(&mut m, done, w),
-                    "trees" | "trees-lo" | "roadunits" => did(&mut m, done, w),
-                    s => panic!("{s} before the map tiles"),
-                }
-            }
-        };
-        // Drawn before with other owners (6/28/16 rebuilt since): drawn again, though a unit to
-        // build is near.
-        done.pack.insert("6/29/17".into(), "0000000000000000".into());
-        assert!(drawn(&mut done.clone()).contains(&"6/29/17".to_string()));
-        // Never drawn: it waits for the unit to build.
-        done.pack.remove("6/29/17");
-        assert!(!drawn(&mut done.clone()).contains(&"6/29/17".to_string()));
+        let p = pplan(&c, &reach, &m, &done, &BTreeMap::new(), Some(600), Default::default(), false);
+        let s: Vec<String> = steps(&p).into_iter().filter(|s| !CHAIN.contains(&s.as_str())).collect();
+        assert_eq!(&s[..3], ["slope", "trees", "unit"]);
     }
 
     #[test]
@@ -5609,11 +4970,11 @@ pub(crate) mod tests {
                 &BTreeMap::new(),
                 Some(&reach),
                 &tiles_for(m),
-                MapUpdates {
+                Publish {
                     each: &each,
                     on_map: &BTreeMap::new(),
-                    since_last: None,
-                    current: None,
+                    served: &BTreeMap::new(),
+                    since_catalog: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -5961,11 +5322,11 @@ pub(crate) mod tests {
                 &BTreeMap::new(),
                 Some(&reach),
                 t,
-                MapUpdates {
+                Publish {
                     each: &each,
                     on_map: &BTreeMap::new(),
-                    since_last: None,
-                    current: None,
+                    served: &BTreeMap::new(),
+                    since_catalog: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -6079,7 +5440,7 @@ pub(crate) mod tests {
         );
         // Terrain, slope, the heritage sites and the area done.
         for step in ["heritage-sites", "terrain", "terrain-lo", "unit", "slope", "slope-lo", "trees", "trees-lo"] {
-            let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+            let w = past_publishing(&c, "d", &mut m, &mut done);
             assert_eq!(w[0].step, step);
             match step {
                 "heritage-sites" => heritage_done(&mut m, &mut done, "d", &w[0]),
@@ -6101,7 +5462,7 @@ pub(crate) mod tests {
         assert_eq!(Some(roads.next.len()), roads.left, "{:?}", roads.next);
         assert!(roads.next.iter().all(|n| !n.is_empty() && n != "Catalog"), "{:?}", roads.next);
         assert_eq!(roads.unit, "runs");
-        assert_eq!(roads.counts(), [format!("{} runs left", roads.left.unwrap())]);
+        assert!(roads.counts()[0].starts_with(&format!("{} run", roads.left.unwrap())), "{:?}", roads.counts());
         assert_eq!(
             line(&l, "terrain").counts(),
             [format!("{pieces} of {pieces} tiles"), "1 of 1 areas".to_string()],
@@ -6131,11 +5492,11 @@ pub(crate) mod tests {
                 &BTreeMap::new(),
                 Some(&reach),
                 &tiles_for(m),
-                MapUpdates {
+                Publish {
                     each: &each,
                     on_map: &BTreeMap::new(),
-                    since_last: None,
-                    current: None,
+                    served: &BTreeMap::new(),
+                    since_catalog: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -6339,7 +5700,7 @@ pub(crate) mod tests {
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         m.insert("sources/osm/d/pieces/6-40-20".into(), "sources/osm/d/pieces/6-40-20.5555555555555555.osm.pbf".into());
         for step in ["heritage-sites", "terrain", "terrain-lo", "unit", "slope", "slope-lo", "trees", "trees-lo"] {
-            let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+            let w = past_publishing(&c, "d", &mut m, &mut done);
             assert_eq!(w[0].step, step);
             match step {
                 "heritage-sites" => heritage_done(&mut m, &mut done, "d", &w[0]),
@@ -6635,7 +5996,7 @@ pub(crate) mod tests {
         m.insert(crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
         // From the start, listed after the regions' work (the units don't wait for it, nor it for them).
         for step in ["heritage-sites", "terrain", "terrain-lo", "unit", "slope", "slope-lo", "trees", "trees-lo"] {
-            let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+            let w = past_publishing(&c, "d", &mut m, &mut done);
             assert_eq!(w[0].step, step);
             assert_eq!(w.last().unwrap().step, "rail-feeds", "{:?}", steps(&w));
             if step == "heritage-sites" {
@@ -6651,7 +6012,7 @@ pub(crate) mod tests {
         m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.7777777777777777.roads".into());
         // Then beside the roads' chain, after it in the order.
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
-        assert_eq!(steps(&w), vec!["roadunits", "rail-feeds"]);
+        assert_eq!(steps(&w), vec!["pack", "rail-feeds"]);
         // The checklist: two jobs left, then one.
         let line = |m: &BTreeMap<String, String>, done: &Keys| {
             checklist(&c, "d", m, done, &BTreeMap::new(), false).into_iter().find(|s| s.id == "trains").unwrap()
@@ -6661,7 +6022,7 @@ pub(crate) mod tests {
         m.insert(crate::rail::FEEDS.into(), "sources/rail/feeds.3333333333333333.json".into());
         assert_eq!(line(&m, &done).left, Some(1));
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
-        assert_eq!(steps(&w), vec!["roadunits", "rail"]);
+        assert_eq!(steps(&w), vec!["pack", "rail"]);
         done.record("rail", &w[1].targets);
         assert!(line(&m, &done).finished());
     }
@@ -6718,7 +6079,7 @@ pub(crate) mod tests {
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         unit_inputs(&mut m, "d");
         for step in ["heritage-sites", "terrain", "terrain-lo", "unit", "slope", "slope-lo", "trees", "trees-lo"] {
-            let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+            let w = past_publishing(&c, "d", &mut m, &mut done);
             assert_eq!(w[0].step, step);
             if step == "heritage-sites" {
                 heritage_done(&mut m, &mut done, "d", &w[0]);
@@ -6735,7 +6096,7 @@ pub(crate) mod tests {
         // The roads' and the landmarks' first steps (no rail sources here); no catalog while the
         // roads' chain has work.
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
-        assert_eq!(steps(&w), vec!["roadunits", "pois"]);
+        assert_eq!(steps(&w), vec!["pack", "pois"]);
         // The roads' chain to its end (the landmarks' still waiting): then a catalog first.
         for _ in 0..10 {
             let w = plan(&c, "d", &m, &done, &BTreeMap::new());
@@ -6939,11 +6300,11 @@ pub(crate) mod tests {
                 &BTreeMap::new(),
                 Some(&reach),
                 &tiles_for(m),
-                MapUpdates {
+                Publish {
                     each: &each,
                     on_map: &BTreeMap::new(),
-                    since_last: None,
-                    current: None,
+                    served: &BTreeMap::new(),
+                    since_catalog: None,
                     held: false,
                     way: Default::default(),
                 },
@@ -7364,15 +6725,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_3d_buildings_never_hold_up_a_region_nor_change_a_map_updates_catalog() {
+    fn the_3d_buildings_never_hold_up_a_region_nor_its_catalog() {
         let (c, reach, mut m, mut done) = three();
         let each = c.by_region();
         let inputs = bld_inputs(&c, "a");
-        let plan = |m: &BTreeMap<String, String>,
-                    done: &Keys,
-                    on_map: &BTreeMap<String, bool>,
-                    since: Option<u64>,
-                    current: Option<&MapUpdate>| {
+        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>| {
             super::plan(
                 &c,
                 "d",
@@ -7381,44 +6738,54 @@ pub(crate) mod tests {
                 &inputs,
                 Some(&reach),
                 &tiles_for(m),
-                MapUpdates { each: &each, on_map, since_last: since, current, held: false, way: Default::default() },
+                Publish {
+                    each: &each,
+                    on_map,
+                    served: &BTreeMap::new(),
+                    since_catalog: Some(600),
+                    held: false,
+                    way: Default::default(),
+                },
             )
         };
         for u in ["6/28/16", "6/29/16", "6/30/16", "6/31/16"] {
             rbuild(&c, &reach, &mut m, &mut done, u, "6666666666666666");
         }
         let on = |ids: &[&str]| -> BTreeMap<String, bool> { ids.iter().map(|i| (i.to_string(), true)).collect() };
-        // Every unit built, every region on the map, the 3D buildings being raised: no map update ten
-        // minutes after the last, one an hour after.
-        let p = plan(&m, &done, &on(&["a", "b", "c"]), Some(600), None);
-        assert!(p.begins.is_none() && p.work.iter().any(|w| w.step == "bldprep"), "{:?}", p.work);
-        assert!(plan(&m, &done, &on(&["a", "b", "c"]), Some(PUBLISH_EVERY_S), None).begins.is_some());
-        // A region done that the map lacks: its map update at once, the buildings or not.
-        let p = plan(&m, &done, &on(&["a", "b"]), Some(600), None);
-        assert_eq!(p.begins.map(|r| r.regions), Some(vec!["c".to_string()]));
+        // Every unit built, the 3D buildings being raised: the publishing chain first, then its
+        // catalog, their work after it.
+        loop {
+            let p = plan(&m, &done, &on(&["a", "b"]));
+            assert!(p.work.iter().any(|w| w.step == "bldprep"), "{:?}", steps(&p));
+            let w = p.work[0].clone();
+            if w.step == "catalog" {
+                break;
+            }
+            assert!(
+                CHAIN.contains(&w.step.as_str())
+                    || ["slope", "slope-lo", "trees", "trees-lo"].contains(&w.step.as_str())
+            );
+            if w.step.starts_with("slope") {
+                terrain_did(&mut m, &mut done, &w);
+            } else {
+                did(&mut m, &mut done, &w);
+            }
+        }
         // Only their sources' fetch left (failing, say, once the release has left S3): it holds
         // nothing back.
         let tt = bld_targets(&c, &m, &inputs);
         done.record("bldprep", &tt.prep);
         done.record("bldtiles", &tt.tiles);
         done.record("bldfield-lo", &tt.lo.iter().map(|(q, k, _)| (q.clone(), k.clone())).collect::<Vec<_>>());
-        let p = plan(&m, &done, &on(&["a", "b", "c"]), Some(600), None);
+        let p = plan(&m, &done, &on(&["a", "b"]));
         assert!(p.work.iter().any(|w| w.step == "bld-fetch"), "{:?}", p.work);
-        assert!(p.begins.is_some());
-        // A map update fixes the 3D buildings' packs as it begins: one made meanwhile goes out with the
-        // next, its catalog's key unchanged.
+        assert_eq!(p.work[0].step, "catalog");
+        // A tile of theirs made: a catalog with it, once the minute has passed.
+        done.record("catalog", &p.work[0].targets);
         let tile = tt.tiles[0].0.replace('/', "-");
         let pack = format!("layers/buildings/hi/{tile}");
         m.insert(pack.clone(), format!("{pack}.1111111111111111.pack"));
-        let mut r = plan(&m, &done, &on(&["a", "b"]), Some(600), None).begins.expect("c's map update");
-        r.began = 1;
-        assert!(r.units.contains_key(&pack));
-        m.insert(pack.clone(), format!("{pack}.2222222222222222.pack"));
-        let then = crate::out::units_as_of(&m, &r.units);
-        assert_eq!(then.get(&pack).map(String::as_str), Some(format!("{pack}.1111111111111111.pack").as_str()));
-        let other = format!("layers/buildings/hi/{}", tt.tiles.last().unwrap().0.replace('/', "-"));
-        m.insert(other.clone(), format!("{other}.3333333333333333.pack"));
-        assert!(!crate::out::units_as_of(&m, &r.units).contains_key(&other) || other == pack);
+        assert_eq!(plan(&m, &done, &on(&["a", "b", "c"])).work[0].step, "catalog");
     }
 
     #[test]
@@ -7556,11 +6923,11 @@ pub(crate) mod tests {
                 &inputs,
                 reach.as_ref(),
                 &tiles,
-                MapUpdates {
+                Publish {
                     each: &each,
                     on_map: &on_map,
-                    since_last: Some(0),
-                    current: None,
+                    served: &BTreeMap::new(),
+                    since_catalog: Some(0),
                     held: false,
                     way: Default::default(),
                 },

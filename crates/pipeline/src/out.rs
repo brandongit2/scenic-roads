@@ -20,8 +20,7 @@ use std::path::{Path, PathBuf};
 
 pub struct Out {
     root: PathBuf,
-    /// Logical name → content name of every file this build wrote or reused (a map update's job: with
-    /// the units as they were when the map update began, `as_of`).
+    /// Logical name → content name of every file this build wrote or reused.
     pub manifest: BTreeMap<String, String>,
     /// This run's changes to the manifest (None: removed), merged into the file when saving.
     changes: BTreeMap<String, Option<String>>,
@@ -37,9 +36,6 @@ pub struct Out {
     pub scratch: PathBuf,
     /// A helper's job: where its saves go as hand-offs ($SCENIC_HANDOFF), never the manifest.
     handoff: Option<PathBuf>,
-    /// A map update's job ($SCENIC_UNITS_AS_OF): the units' outputs as they were when the map update began,
-    /// read in place of the manifest's own (`units_as_of`).
-    as_of: Option<BTreeMap<String, String>>,
     /// The step whose job this is (`for_step`): it puts and removes only the names its outputs
     /// function gives (crate::agent::steps, the one the lead's merge checks every entry against),
     /// and a name outside them fails the job. None: no step (the agent merging hand-offs, a tool).
@@ -56,61 +52,8 @@ pub const SIZES: &str = "state/build/sizes.json";
 
 /// A unit's outputs that map tiles, the road index and rail stops read: its base pack, road values
 /// and roads' English (a prune of a unit drops them; its job also writes analysis grids, which
-/// nothing a map update makes reads).
+/// none of those reads).
 pub const UNIT_OUTPUTS: [&str; 3] = ["base/", "global/roads/", "global/roaden/"];
-
-/// What a map update fixes as it begins (`units_as_of`): the units' outputs, and the 3D buildings' hi
-/// packs, so a bldtiles job ending meanwhile doesn't change the map update's catalog (made again and
-/// again as their jobs end); they go out with the next.
-pub const AS_OF_OUTPUTS: [&str; 4] = ["base/", "global/roads/", "global/roaden/", "layers/buildings/hi/"];
-
-/// Names the file of a map update under way and when it began, `<path>#<began>` (agent::build::MapUpdate, in
-/// the agent's folder): a map update's jobs (its map tiles, road index, rail stops and catalog) read the
-/// units as they were when it began (`units_as_of`), so what's built meanwhile changes nothing the
-/// map update makes; it waits for the next.
-pub const UNITS_AS_OF_ENV: &str = "SCENIC_UNITS_AS_OF";
-
-/// `m` with its units' outputs and 3D buildings' packs (`AS_OF_OUTPUTS`) as `then` had them: those
-/// built since left out, those rebuilt since as they were, those dropped since (a prune, or a
-/// rebuild that left a unit no ways) still out.
-pub fn units_as_of(m: &BTreeMap<String, String>, then: &BTreeMap<String, String>) -> BTreeMap<String, String> {
-    m.iter()
-        .filter_map(|(l, c)| match AS_OF_OUTPUTS.iter().any(|p| l.starts_with(p)) {
-            true => then.get(l).map(|t| (l.clone(), t.clone())),
-            false => Some((l.clone(), c.clone())),
-        })
-        .collect()
-}
-
-/// The map update's file in the agent's folder (crate::agent).
-pub const MAP_UPDATE_FILE: &str = "map-update.json";
-
-/// The units of a map update's file (`UNITS_AS_OF_ENV`: `<path>#<began>`): an error when it can't be
-/// read, or it's another map update's, or the map update's over, so a map update's job fails rather
-/// than make its part from other units than the map update's.
-fn read_as_of(spec: &str) -> Result<BTreeMap<String, String>> {
-    #[derive(serde::Deserialize)]
-    struct MapUpdate {
-        began: u64,
-        units: BTreeMap<String, String>,
-        #[serde(default)]
-        over: bool,
-    }
-    let (p, began) = spec
-        .rsplit_once('#')
-        .and_then(|(p, b)| Some((p, b.parse::<u64>().ok()?)))
-        .with_context(|| format!("{UNITS_AS_OF_ENV}={spec:?}: not <path>#<began>"))?;
-    let b = std::fs::read(p).with_context(|| format!("read the map update's units, {p}"))?;
-    let r: MapUpdate = serde_json::from_slice(&b).with_context(|| format!("parse {p}"))?;
-    if r.began == began && !r.over {
-        return Ok(r.units);
-    }
-    anyhow::bail!(
-        "{p} is no longer the map update this job is for (it began at {began}; the file's began at {}{})",
-        r.began,
-        if r.over { ", and is over" } else { "" }
-    )
-}
 
 /// Hand-off `h`'s changes laid over manifest `m` (a name it removes, removed).
 pub fn lay_over(m: &mut BTreeMap<String, String>, h: &crate::handoff::Handoff) {
@@ -169,7 +112,7 @@ impl Out {
     /// A job of `step`'s: `root`, the NAS project folder (or a local folder standing in for it);
     /// `scratch`, local space. It puts and removes only `step`'s outputs (`for_step`).
     pub fn open(root: &Path, scratch: &Path, step: &str) -> Result<Self> {
-        let mut out = Self::open_as_of(root, scratch, std::env::var(UNITS_AS_OF_ENV).ok().as_deref())?;
+        let mut out = Self::open_here(root, scratch)?;
         out.for_step(step);
         Ok(out)
     }
@@ -177,32 +120,28 @@ impl Out {
     /// Not a step's job's: the agent merging hand-offs, a tool, a test of a step's parts. It may
     /// put and remove any name, so a step's job opens with `open`, never this.
     pub fn unbound(root: &Path, scratch: &Path) -> Result<Self> {
-        Self::open_as_of(root, scratch, std::env::var(UNITS_AS_OF_ENV).ok().as_deref())
+        Self::open_here(root, scratch)
     }
 
-    /// `open`, a map update's job's (`as_of`: its map update's file and when it began, `UNITS_AS_OF_ENV`).
-    pub fn open_as_of(root: &Path, scratch: &Path, as_of: Option<&str>) -> Result<Self> {
+    /// The records at `root`, with this Mac's unmerged hand-offs its agent names
+    /// (crate::agent::resume::UNMERGED_ENV).
+    fn open_here(root: &Path, scratch: &Path) -> Result<Self> {
         let unmerged = std::env::var_os(crate::agent::resume::UNMERGED_ENV).map(PathBuf::from);
-        Self::open_with(root, scratch, as_of, unmerged.as_deref())
+        Self::open_with(root, scratch, unmerged.as_deref())
     }
 
-    /// `open_as_of`, with this Mac's hand-offs for the job's step its lead hasn't merged
+    /// The records at `root`, with this Mac's hand-offs for the job's step its lead hasn't merged
     /// (`unmerged`: a file of one hand-off, their changes laid in order, made by its agent with
     /// `state/pool/resume` on: crate::agent::resume) laid over the snapshot, as
     /// `Keys::load_with` lays the done records: a job resuming its own work (the OSM pass after
     /// sleep) finds its earlier stages' outputs (docs/pool.md §7.4). Its agent gives them only to a
     /// job that hands off (`SCENIC_HANDOFF`): one that saves the records has none. They're the snapshot's,
     /// not this job's changes: its saves hand off only its own.
-    pub fn open_with(root: &Path, scratch: &Path, as_of: Option<&str>, unmerged: Option<&Path>) -> Result<Self> {
+    pub fn open_with(root: &Path, scratch: &Path, unmerged: Option<&Path>) -> Result<Self> {
         let _p = crate::timings::phase("records read", crate::timings::Class::NasRead);
         std::fs::create_dir_all(scratch)?;
         let manifest_path = root.join("state/build/manifest.json");
-        let as_of = as_of.map(read_as_of).transpose()?;
         let manifest: BTreeMap<String, String> = read_record(&manifest_path)?;
-        let manifest = match &as_of {
-            Some(then) => units_as_of(&manifest, then),
-            None => manifest,
-        };
         let handoff = std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from);
         let mut manifest = manifest;
         if let Some(p) = unmerged {
@@ -224,7 +163,6 @@ impl Out {
             manifest_path,
             scratch: scratch.to_path_buf(),
             handoff,
-            as_of,
             step: None,
             outside: Vec::new(),
         })
@@ -537,11 +475,7 @@ impl Out {
         }
         let handed = self.named_sizes();
         self.sizes.retain(|c, _| !handed.contains_key(c));
-        // (What it reads next, a map update's job's units still as they were.)
-        self.manifest = match &self.as_of {
-            Some(then) => units_as_of(&on_disk, then),
-            None => on_disk,
-        };
+        self.manifest = on_disk;
         self.pending = pending;
         self.changes.clear();
         self.checked.clear();
@@ -712,7 +646,7 @@ mod tests {
         };
         let f = d.path().join("unmerged.json");
         std::fs::write(&f, serde_json::to_vec(&h).unwrap()).unwrap();
-        let mut out = Out::open_with(&root, &d.path().join("scratch"), None, Some(&f)).unwrap();
+        let mut out = Out::open_with(&root, &d.path().join("scratch"), Some(&f)).unwrap();
         out.for_step("osm-pass");
         assert_eq!(
             out.get("sources/osm/2026-10-01/filtered"),
@@ -722,13 +656,13 @@ mod tests {
             out.get("sources/osm/2026-10-01/sets/old").is_none() && out.get("sources/osm/2026-09-01/pass").is_some()
         );
         assert!(out.changes.is_empty(), "the snapshot's, not this job's");
-        let plain = Out::open_with(&root, &d.path().join("scratch"), None, None).unwrap();
+        let plain = Out::open_with(&root, &d.path().join("scratch"), None).unwrap();
         assert!(
             plain.get("sources/osm/2026-10-01/filtered").is_none()
                 && plain.get("sources/osm/2026-10-01/sets/old").is_some()
         );
         // (A file that can't be read fails the job rather than open the snapshot without them.)
-        assert!(Out::open_with(&root, &d.path().join("scratch"), None, Some(&d.path().join("missing.json"))).is_err());
+        assert!(Out::open_with(&root, &d.path().join("scratch"), Some(&d.path().join("missing.json"))).is_err());
     }
 
     /// One read gives the name's hash and the checksum, each as hashing the bytes alone gives it,
@@ -874,81 +808,6 @@ mod tests {
         assert!(std::fs::read_dir(root.join("state/build"))
             .unwrap()
             .all(|e| !crate::whole::is_tmp(&e.unwrap().path())));
-    }
-
-    #[test]
-    fn a_map_updates_job_reads_the_units_as_they_were_and_saves_only_its_own_changes() {
-        let then: BTreeMap<String, String> = [
-            ("base/6-1-1", "base/6-1-1.1111111111111111.base"),
-            ("global/roads/6-1-1", "global/roads/6-1-1.1111111111111111.roads"),
-            ("base/6-3-3", "base/6-3-3.3333333333333333.base"),
-        ]
-        .into_iter()
-        .map(|(a, b)| (a.to_string(), b.to_string()))
-        .collect();
-        // Since: 6/1/1 rebuilt, 6/2/2 built, 6/3/3 pruned; a tile drawn.
-        let now: BTreeMap<String, String> = [
-            ("base/6-1-1", "base/6-1-1.aaaaaaaaaaaaaaaa.base"),
-            ("global/roads/6-1-1", "global/roads/6-1-1.aaaaaaaaaaaaaaaa.roads"),
-            ("base/6-2-2", "base/6-2-2.2222222222222222.base"),
-            ("global/roadunits", "global/roadunits.4444444444444444.sect"),
-            ("hidata/6-1-1", "hidata/6-1-1.5555555555555555.hidata"),
-        ]
-        .into_iter()
-        .map(|(a, b)| (a.to_string(), b.to_string()))
-        .collect();
-        let seen = units_as_of(&now, &then);
-        assert_eq!(seen.get("base/6-1-1").map(String::as_str), Some("base/6-1-1.1111111111111111.base"));
-        assert_eq!(
-            seen.get("global/roads/6-1-1").map(String::as_str),
-            Some("global/roads/6-1-1.1111111111111111.roads")
-        );
-        assert!(!seen.contains_key("base/6-2-2") && !seen.contains_key("base/6-3-3"));
-        assert_eq!(seen.get("global/roadunits"), now.get("global/roadunits"));
-        assert_eq!(seen.get("hidata/6-1-1"), now.get("hidata/6-1-1"));
-        // A job opened with the map update's file reads them so, and its save leaves the units in the
-        // manifest as they are now.
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("root");
-        std::fs::create_dir_all(root.join("state/build")).unwrap();
-        std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&now).unwrap()).unwrap();
-        let map_update = d.path().join("map-update.json");
-        std::fs::write(
-            &map_update,
-            serde_json::to_vec(&serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": then }))
-                .unwrap(),
-        )
-        .unwrap();
-        let spec = format!("{}#1", map_update.display());
-        let mut out = Out::open_as_of(&root, &d.path().join("s"), Some(&spec)).unwrap();
-        assert_eq!(out.manifest, seen);
-        out.changes.insert("hidata/6-1-1".into(), Some("hidata/6-1-1.6666666666666666.hidata".into()));
-        out.save().unwrap();
-        assert_eq!(out.get("base/6-1-1"), Some("base/6-1-1.1111111111111111.base"));
-        let on_disk: BTreeMap<String, String> = read_record(&root.join("state/build/manifest.json")).unwrap();
-        let mut want = now.clone();
-        want.insert("hidata/6-1-1".into(), "hidata/6-1-1.6666666666666666.hidata".into());
-        assert_eq!(on_disk, want);
-        // Its file unreadable, another map update's, or the map update over: the job fails rather than read
-        // other units than its map update's.
-        assert!(Out::open_as_of(
-            &root,
-            &d.path().join("s"),
-            Some(&format!("{}#1", d.path().join("none.json").display()))
-        )
-        .is_err());
-        assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&format!("{}#2", map_update.display()))).is_err());
-        let e = read_as_of(&format!("{}#2", map_update.display())).unwrap_err().to_string();
-        assert!(e.contains("no longer the map update") && e.contains("began at 1"), "{e}");
-        std::fs::write(
-            &map_update,
-            serde_json::to_vec(
-                &serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": {}, "over": true }),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&spec)).is_err());
     }
 
     #[test]

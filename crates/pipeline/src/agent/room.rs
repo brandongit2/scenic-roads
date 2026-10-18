@@ -40,10 +40,10 @@
 //!
 //! - A file the jobs queued and running read (`Hints`: a terrain run's own area's archive copies;
 //!   the pageview months, for an items or heritage job; a unit's canopy squares and packs; the
-//!   base packs copied here for a map update's map tiles) goes last.
+//!   base packs copied here for the map tiles) goes last.
 //!
 //! After the build (`trim`): once the build has nothing left to build (the lead's forecast:
-//! no work, no map update under way), jobs running here or not, the agent empties those caches by the same
+//! no work, nothing to publish), jobs running here or not, the agent empties those caches by the same
 //! rules, once (again only after a job has run here since): a member all of them, the lead all
 //! but the canopy squares, which every pass's areas read again and which never change. (Not down
 //! to the reserve: room-making makes that much room before each job, so the build ends with about
@@ -353,7 +353,7 @@ pub fn gone(clear: &BTreeMap<String, u64>, mb_s: f64) -> Vec<Gone> {
                 "terrain" => format!("copied back from the NAS's archives as terrain and peaks read them ({} in all)", time(b)),
                 "blobs" => format!("copied back from the NAS as the areas are built again ({} in all)", time(b)),
                 "months" => format!("copied back from the NAS when the items and heritage jobs next run ({})", time(b)),
-                "base" => format!("copied back by the next map update's map tiles, from the mirror where it has them, else the NAS ({})", time(b)),
+                "base" => format!("copied back by the next map tiles' job, from the mirror where it has them, else the NAS ({})", time(b)),
                 "dem" => format!("copied back from the NAS by the next unit job ({})", time(b)),
                 "copies" => format!("copied back from the NAS when the summits and peaks next run ({})", time(b)),
                 "heritage" => "made again from the NAS's filtered planet when the heritage chain next runs (about an hour of osmium)".to_string(),
@@ -628,7 +628,7 @@ fn toward_with(
             .collect();
         entries.sort();
         // The base packs a file at a time, the least recently used first (each file of the pack
-        // cache is one a map update reads, or copies again); the free space measured again once what
+        // cache is one the map tiles read, or copy again); the free space measured again once what
         // was short is deleted, every 2 GB (as room-making's `Room`), or when the goal changes.
         if k == "base" {
             let mut files = Vec::new();
@@ -726,7 +726,7 @@ pub struct Hints {
     pub squares: BTreeSet<String>,
     /// Units ("6-x-y"): the copies of their packs (`blobs/…/<unit>.<hash>.…`).
     pub units: BTreeSet<String>,
-    /// A map update's map tiles (`pack`, `lo`): the base packs and road values copied here for them
+    /// The map tiles (`pack`, `lo`): the base packs and road values copied here for them
     /// (`base/`), which the next such job copies again when they're gone.
     pub packs: bool,
 }
@@ -1389,7 +1389,7 @@ mod tests {
         );
         assert!(h.squares.iter().all(|n| n.starts_with("meta_chm_lat=")) && !h.squares.is_empty());
         assert!(h.has(c, &c.join(MONTHS).join("2026-08.tsv.zst")));
-        // A map update's map tiles: the base packs copied here for them.
+        // The map tiles: the base packs copied here for them.
         assert!(!h.has(c, &c.join("base/base/6-1-1.0000000000000001.base")));
         h.add("pack", &["6/1/1".to_string()]);
         assert!(

@@ -3,7 +3,7 @@
 //!
 //! - **In the build's history** (crate::coord::history, the lead's): a unit's job ended ("end",
 //!   "done"); its hand-off merged ("merged": `merged_event`, each entry's key, member, step and
-//!   targets); the map tiles (pack) planned ("planned": `planned_event`, the z6 tiles a map update
+//!   targets); the map tiles (pack) planned ("planned": `planned_event`, the z6 tiles the lead
 //!   first plans at their keys, and the units whose change made each stale, `restaled_by`), leased
 //!   ("lease", "start") and done ("end", "done"); and catalog n written ("catalog": its `n`, its
 //!   job's time, and `CatalogStats`: delta or whole, the files it stat'ed, its phases).
@@ -227,7 +227,7 @@ pub fn planned_event(tiles: &[(String, String)], by_unit: BTreeMap<String, Vec<S
 }
 
 /// The (tile, key) pairs `events` say were planned since `since` (keys as `planned_event` keeps
-/// them): what a lead, restarted or new, noted already in the map update under way.
+/// them): what a lead, restarted or new, noted already since the last catalog.
 pub fn planned_since<'a>(events: impl IntoIterator<Item = &'a Event>, since: u64) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
     for e in events.into_iter().filter(|e| e.kind == "planned" && e.t >= since) {
@@ -250,10 +250,11 @@ pub fn note_planned(noted: &mut BTreeSet<(String, String)>, new: &[(String, Stri
     noted.extend(new.iter().map(|(t, k)| (t.clone(), cut(k))));
 }
 
-/// A map update begun this long ago (seconds) or less has nothing noted by another lead to read.
+/// Notes begun this long ago (seconds) or less (`PlannedNotes::begin`) have nothing noted by another
+/// lead to read.
 pub const JUST_BEGUN_S: u64 = 120;
 
-/// What the lead noted planned in the map update under way (`planned_event`), by tile and key, and
+/// What the lead noted planned since the last catalog (`planned_event`), by tile and key, and
 /// the served catalog's units as last read (`served_units`, once a catalog). What it noted before
 /// a restart comes back from its coordinator's history (`begin`); before a change of lead, from
 /// the NAS's, read on a thread of its own (`seed_from_nas`) so a slow share never holds the plan.
@@ -268,14 +269,14 @@ pub struct PlannedNotes {
 }
 
 impl PlannedNotes {
-    /// When the map update its notes are of began.
+    /// When its notes begin (the last catalog's time).
     pub fn began(&self) -> u64 {
         self.began
     }
 
-    /// The map update under way began at `b`; `own`: this coordinator's history. On a new one, what
-    /// `own` says was noted since; true when the NAS's must be read too (`seed_from_nas`): `own`
-    /// doesn't reach back to `b`, and it didn't just begin (at `now`).
+    /// Its notes begin at `b` (the last catalog's time); `own`: this coordinator's history. On a new
+    /// beginning, what `own` says was noted since; true when the NAS's must be read too
+    /// (`seed_from_nas`): `own` doesn't reach back to `b`, and it didn't just begin (at `now`).
     pub fn begin(&mut self, b: u64, own: &[Event], now: u64) -> bool {
         if self.began == b {
             return false;
@@ -286,7 +287,7 @@ impl PlannedNotes {
         !covered && now.saturating_sub(b) > JUST_BEGUN_S
     }
 
-    /// The NAS's history since the map update began (`root`), read on a thread; taken up by the
+    /// The NAS's history since its notes began (`root`), read on a thread; taken up by the
     /// next `new_tiles`.
     pub fn seed_from_nas(&self, root: std::path::PathBuf) {
         let (b, seed) = (self.began, self.seed.clone());
@@ -936,7 +937,7 @@ mod tests {
         };
         let first = tiles(&[("6/1/1", "aaaaaaaaaaaaaaaa1"), ("6/1/2", "bbbbbbbbbbbbbbbb")]);
         let e = Event { t: 500, ..planned_event(&first, BTreeMap::new()) };
-        // (Before the map update began: not its.)
+        // (Before the notes began: not theirs.)
         let old = Event { t: 100, ..planned_event(&tiles(&[("6/9/9", "cccccccccccccccc")]), BTreeMap::new()) };
         let mut noted = planned_since([&e, &old], 400);
         assert_eq!(noted.len(), 2);
@@ -955,7 +956,7 @@ mod tests {
     }
 
     /// The agent's notes: a restart's from its coordinator's history (no NAS read), a new lead's
-    /// from the NAS's (none for a map update just begun), and the served catalog read once a catalog.
+    /// from the NAS's (none for notes just begun), and the served catalog read once a catalog.
     #[test]
     fn the_planned_notes_across_a_restart_a_new_lead_and_catalogs() {
         let pair = |t: &str, k: &str| (t.to_string(), k.to_string());

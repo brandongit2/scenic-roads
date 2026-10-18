@@ -316,9 +316,6 @@ pub struct Shared {
     /// Targets passed over for the NAS budget alone ((step, target) → (first, last time)), for the
     /// status (`Coordinator::nas_waits`); a target granted is let go.
     pub nas_waits: Mutex<BTreeMap<(String, String), (Instant, Instant)>>,
-    /// The lead's map update under way, while every step to every member is on: granted with a map update's
-    /// step (`Grant::as_of`).
-    pub map_update: Option<AsOf>,
     /// Each worker's last target granted of a step ((worker, step) → target): its next run starts
     /// just after it in plan order when it can (`pick_every`).
     pub last: BTreeMap<(String, String), String>,
@@ -684,15 +681,7 @@ impl Shared {
 
     /// A job of offer `o`'s step over `pick` granted to `a`'s worker: its lease, the worker's last
     /// target of the step, the history's event.
-    fn grant_job(
-        &mut self,
-        a: &Ask,
-        o: &Offer,
-        pick: Vec<(String, String)>,
-        every: bool,
-        threads: u32,
-        now: Instant,
-    ) -> Grant {
+    fn grant_job(&mut self, a: &Ask, o: &Offer, pick: Vec<(String, String)>, threads: u32, now: Instant) -> Grant {
         if let Some(l) = pick.last() {
             self.last.insert((a.worker.clone(), o.step.clone()), l.0.clone());
         }
@@ -717,11 +706,6 @@ impl Shared {
             targets: pick.iter().map(|t| t.0.clone()).collect(),
             ..history::Event::new("lease")
         });
-        let as_of = if every && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str()) {
-            self.map_update.clone()
-        } else {
-            None
-        };
         let disk_mb =
             self.job_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>()).map_or(0, |(m, _)| m.disk_mb);
         Grant {
@@ -729,7 +713,6 @@ impl Shared {
             term: self.leases.term,
             ttl_s: TTL.as_secs(),
             work: Granted::Job { step: o.step.clone(), targets: pick, pass: self.pass.clone() },
-            as_of,
             more: Vec::new(),
             threads,
             disk_mb,
@@ -810,7 +793,7 @@ impl Shared {
             let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
             let threads =
                 n.and_then(|(_, c)| c).map_or(share, |c| self.packed_cores(&o.step, &ts, c, share)).min(cores).max(1);
-            grants.push(self.grant_job(a, o, pick, true, threads, now));
+            grants.push(self.grant_job(a, o, pick, threads, now));
             held += 1;
             // (A cold start alone.)
             let Some((m, c)) = n else { break };
@@ -1349,11 +1332,6 @@ pub struct Grant {
     pub ttl_s: u64,
     #[serde(flatten)]
     pub work: Granted,
-    /// A map update's step (crate::agent::build::AS_OF_STEPS) granted with every step to every member
-    /// while a map update is under way: the units as they were when it began, which its job reads
-    /// (crate::out::UNITS_AS_OF_ENV) as the lead's own would.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub as_of: Option<AsOf>,
     /// More jobs granted with this one, packing on and the ask wanting more than one (`Ask::want`):
     /// each its own lease, packed into the ask's room beside the others.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1367,13 +1345,6 @@ pub struct Grant {
     /// a task, or an older lead's.
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub disk_mb: u64,
-}
-
-/// A map update's units as they were when it began (crate::agent::build::MapUpdate's `began` and `units`).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct AsOf {
-    pub began: u64,
-    pub units: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1585,7 +1556,6 @@ impl Coordinator {
             nas: None,
             lead_name: me.to_string(),
             nas_waits: Default::default(),
-            map_update: None,
             last: BTreeMap::new(),
             brokers: None,
             own_cap: None,
@@ -1856,17 +1826,6 @@ impl Coordinator {
         };
     }
 
-    /// The lead's map update under way (None: none), for a map update's step granted with every step to
-    /// every member (`Grant::as_of`).
-    pub fn set_map_update(&self, map_update: Option<AsOf>) {
-        self.shared.lock().unwrap().map_update = map_update;
-    }
-
-    /// When the map update it grants with began (`set_map_update`), if any.
-    pub fn map_update_began(&self) -> Option<u64> {
-        self.shared.lock().unwrap().map_update.as_ref().map(|r| r.began)
-    }
-
     /// A resumable job offered to worker `worker` alone (crate::agent::resume: its Mac holds the
     /// job's progress), or none: granted whole, its targets as `o` has them, to that worker only,
     /// while no lease holds them.
@@ -1904,8 +1863,8 @@ impl Coordinator {
         self.shared.lock().unwrap().measured(step, "").is_none() && !self.held_by_others(step).is_empty()
     }
 
-    /// How many other agents asked for work in the last half minute and can take `step` (a map update
-    /// shared: crate::agent::publish::lead_share).
+    /// How many other agents asked for work in the last half minute and can take `step` (the lead's
+    /// share of the map tiles: crate::agent::publish::lead_share).
     pub fn members_asking(&self, step: &str) -> usize {
         let s = self.shared.lock().unwrap();
         let now = s.now();
@@ -2327,7 +2286,6 @@ impl Coordinator {
         s.offers.clear();
         s.resume = None;
         s.every = None;
-        s.map_update = None;
         s.moving = None;
         s.lead_asks.clear();
         s.inputs_asks.clear();
@@ -2853,7 +2811,6 @@ fn route(
                             .job_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
                             .map_or(0, |(m, _)| m.disk_mb),
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
-                        as_of: None,
                         more: Vec::new(),
                     };
                     return Ok((200, serde_json::to_value(g)?));
@@ -2874,15 +2831,7 @@ fn route(
                 }
                 // (Packing on: as many jobs as the ask wants that fit its room together.)
                 if every && s.packing.is_some() {
-                    let mine: Vec<Offer> = offers
-                        .iter()
-                        .filter(|o| {
-                            a.can.contains(&o.step)
-                                && (s.map_update.is_some()
-                                    || !crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str()))
-                        })
-                        .cloned()
-                        .collect();
+                    let mine: Vec<Offer> = offers.iter().filter(|o| a.can.contains(&o.step)).cloned().collect();
                     if let Some(g) = s.pack(&a, &mine, now) {
                         return Ok((200, serde_json::to_value(g)?));
                     }
@@ -2893,19 +2842,12 @@ fn route(
                             if !every && !crate::agent::steps::SHARED.contains(&o.step.as_str()) {
                                 continue;
                             }
-                            // (A map update's step only with the map update's units to grant it with.)
-                            if every
-                                && s.map_update.is_none()
-                                && crate::agent::build::AS_OF_STEPS.contains(&o.step.as_str())
-                            {
-                                continue;
-                            }
                             let pick = if every { s.pick_every(o, &a, now) } else { s.pick(o, &a, now, away) };
                             if pick.is_empty() {
                                 continue;
                             }
                             let threads = s.job_threads(&a, &o.step, &pick);
-                            let g = s.grant_job(&a, o, pick, every, threads, now);
+                            let g = s.grant_job(&a, o, pick, threads, now);
                             return Ok((200, serde_json::to_value(g)?));
                         }
                     }
@@ -2927,7 +2869,6 @@ fn route(
                     term: 0,
                     ttl_s: TTL.as_secs(),
                     work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb },
-                    as_of: None,
                     more: Vec::new(),
                     threads: 0,
                     disk_mb: 0,
@@ -5107,8 +5048,6 @@ mod tests {
         let clock = store::clock::Virtual::new();
         c.shared.lock().unwrap().clock = clock.clone();
         c.set_every(Some(Every { own: Some(own) }));
-        // (A map update under way: its steps, `pack` and `lo`, are granted with it.)
-        c.set_map_update(Some(AsOf { began: 1, units: BTreeMap::new() }));
         (d, c, w, clock)
     }
 
@@ -5517,32 +5456,8 @@ mod tests {
         assert!(all_granted(&w, &a).is_empty(), "beside a cold start: nothing");
     }
 
-    /// A map update's step (`pack`) is granted only with the map update's units, as the lead last told them;
-    /// with no map update under way (none begun, or it ended), none of it is granted.
-    #[test]
-    fn every_step_a_map_updates_step_goes_only_with_the_map_updates_units() {
-        let (_d, c, w, _clock) = every((0, 0));
-        let m = Some((500, 10, 60));
-        measured_offer(&c, "pack", &[("6/1/1", m), ("6/1/2", m)]);
-        c.set_map_update(None);
-        let a = every_ask("m1", "pack", 4096, 10_000);
-        assert!(w.ask(&a).unwrap().is_none(), "no map update: none");
-        let units: BTreeMap<String, String> =
-            [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into();
-        c.set_map_update(Some(AsOf { began: 7, units: units.clone() }));
-        let g = w.ask(&a).unwrap().unwrap();
-        assert_eq!(g.as_of, Some(AsOf { began: 7, units }));
-        w.give_back(g.lease, "the test").unwrap();
-        c.set_map_update(None);
-        assert!(w.ask(&a).unwrap().is_none(), "the map update over: none");
-        // (A step not a map update's: granted without.)
-        measured_offer(&c, "slope", &[("3/1/1", m)]);
-        let g = w.ask(&every_ask("m1", "slope", 4096, 10_000)).unwrap().unwrap();
-        assert!(g.as_of.is_none());
-    }
-
-    /// A map update shared (crate::agent::publish::lead_share): the other members asking lately that can
-    /// take the step, counted.
+    /// The lead's share of the map tiles (crate::agent::publish::lead_share): the other members asking
+    /// lately that can take the step, counted.
     #[test]
     fn the_members_asking_for_a_step_are_counted() {
         let (_d, c, w, clock) = every((0, 0));

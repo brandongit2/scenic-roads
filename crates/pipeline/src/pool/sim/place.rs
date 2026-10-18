@@ -152,7 +152,6 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
     let (c, port) = coord::start_for_test(&d.path().join("coord"), lead_name, "");
     let clock = store::clock::Virtual::new();
     c.shared.lock().unwrap().clock = clock.clone();
-    c.set_map_update(Some(coord::AsOf { began: 1, units: BTreeMap::new() }));
     c.set_packing(cfg.packing.clone());
     c.set_nas(cfg.nas);
     let limits = cfg.nas.unwrap_or(crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None });
@@ -568,7 +567,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
     Ok(out)
 }
 
-/// The steps of a map update's kind: two kept to the lead, four offered, one too large for a 16 GB
+/// The steps of a build's kinds: two kept to the lead, four offered, one too large for a 16 GB
 /// Mac (terrain); `pack` the NAS-heavy one (about half the NAS a job, by a probe of 100 MB/s and 40
 /// creates/s).
 pub fn plan() -> Vec<Step> {

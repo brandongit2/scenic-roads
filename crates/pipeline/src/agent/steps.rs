@@ -118,7 +118,7 @@ pub const STAGES: [Stage; 14] = [
     Stage { id: "depth", title: "Water depth", does: "The depth under the seas and lakes from the depth sources: zoomed out by area, then a tile at a time where a source has finer detail." },
     Stage { id: "roads", title: "Roads", does: "Each tile's roads, their elevations and scenery: the base packs the map's details and profiles read." },
     Stage { id: "tiles", title: "Map tiles", does: "The road and rail map tiles drawn from the base packs, by tile and zoomed out by area." },
-    Stage { id: "finish", title: "Map finishing", does: "What each map update adds around the tiles: the road index, rail stops, ferries, the world levels, and a prune." },
+    Stage { id: "finish", title: "Map finishing", does: "What publishing adds around the tiles: the road index, rail stops, ferries, the world levels, and a prune." },
     Stage { id: "trains", title: "Trains", does: "Trains a day on the regions' rail, from timetables." },
     Stage { id: "landmarks", title: "Landmarks", does: "The landmarks: candidates, peaks, Wikidata facts, heritage details, ranked and drawn, and the area overlays." },
     Stage { id: "buildings", title: "3D buildings", does: "Every building in the coverage, raised in 3D, a tile at a time." },
@@ -792,8 +792,8 @@ pub const TASKS: [Task; 4] = [
     },
 ];
 
-/// The forecast's lane for a map update as a whole (crate::agent::forecast::Lane): not a step.
-pub const MAP_UPDATE: &str = "map-update";
+/// The forecast's lane for publishing a region as a whole (crate::agent::forecast::Lane): not a step.
+pub const PUBLISHING: &str = "publishing";
 
 /// The row of `step`; None for one the table doesn't know (a task's kind, or a step of a newer
 /// app's).
@@ -816,17 +816,17 @@ pub fn stage_title(id: &str) -> Cow<'static, str> {
     stage(id).map_or_else(|| Cow::Owned(id.to_string()), |s| Cow::Borrowed(s.title))
 }
 
-/// The stage of `step` (a task's its step's; a map update's publishing).
+/// The stage of `step` (a task's its step's; publishing's lane publishing).
 pub fn stage_of(step: &str) -> Option<&'static Stage> {
     let id = match row(step) {
         Some(s) => s.stage,
-        None if step == MAP_UPDATE => "publish",
+        None if step == PUBLISHING => "publish",
         None => task(step).and_then(|t| row(t.step)).map(|s| s.stage)?,
     };
     stage(id)
 }
 
-/// The name people see for `step` (a step's, a task's, a map update's; an unknown's its id).
+/// The name people see for `step` (a step's, a task's, publishing's lane; an unknown's its id).
 pub fn title(step: &str) -> Cow<'static, str> {
     if let Some(s) = row(step) {
         return Cow::Borrowed(s.title);
@@ -834,8 +834,8 @@ pub fn title(step: &str) -> Cow<'static, str> {
     if let Some(t) = task(step) {
         return Cow::Borrowed(t.title);
     }
-    if step == MAP_UPDATE {
-        return Cow::Borrowed("Map update");
+    if step == PUBLISHING {
+        return Cow::Borrowed("Publishing");
     }
     // (A step of a newer app's: its id.)
     Cow::Owned(step.to_string())
@@ -1677,11 +1677,11 @@ mod tests {
         assert_eq!(said("terrain-lo", 1, None), "Terrain, zoomed out: 1 area");
         assert_eq!(said("outlines", 1, None), "Outlines");
         assert_eq!(
-            [title("map-update"), title("tail"), title("a-newer-step")],
-            ["Map update", "Roads' last steps", "a-newer-step"]
+            [title("publishing"), title("tail"), title("a-newer-step")],
+            ["Publishing", "Roads' last steps", "a-newer-step"]
         );
         assert!(matches!(title("a-newer-step"), Cow::Owned(_)) && matches!(title("unit"), Cow::Borrowed(_)));
-        assert_eq!(stage_of("map-update").map(|g| g.id), Some("publish"));
+        assert_eq!(stage_of("publishing").map(|g| g.id), Some("publish"));
         assert_eq!([stage_title("trains"), stage_title("x")], ["Trains", "x"]);
         // The place, from the pool's rules: the shared steps and the map tiles any member's, the
         // lead's own and the worldwide steps the lead's.

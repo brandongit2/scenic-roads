@@ -1258,9 +1258,9 @@ mod tests {
         };
         let f = d.path().join("unmerged.json");
         std::fs::write(&f, serde_json::to_vec(&earlier).unwrap()).unwrap();
-        let fresh = Out::open_with(&root, &scratch, None, None).unwrap();
+        let fresh = Out::open_with(&root, &scratch, None).unwrap();
         assert!(filtered_nas(&fresh, date).is_err(), "without them, the stage's output isn't there to read");
-        let resumed = Out::open_with(&root, &scratch, None, Some(&f)).unwrap();
+        let resumed = Out::open_with(&root, &scratch, Some(&f)).unwrap();
         assert!(done(&scratch, "filter").exists() && !done(&scratch, "sets").exists());
         assert_eq!(
             filtered_nas(&resumed, date).unwrap(),

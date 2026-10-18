@@ -1,6 +1,6 @@
 //! What happened in the build, in order (the worker page's activity: docs/workers.md, The page):
 //! each job the lead started and ended, each lease a worker took, handed back, failed or let
-//! lapse, each task done or failed, the map updates begun and their catalogs, the pauses,
+//! lapse, each task done or failed, the catalogs written and the map tiles planned, the pauses,
 //! the workers first heard from, the devices let help or not, the agents started, the
 //! lead's conditions changing, and each Mac's build caches trimmed or cleared. Kept on the
 //! lead's disk (`history.jsonl`, a line an event, the last week's, KEEP_MAX at most), served by
@@ -25,9 +25,9 @@ pub struct Event {
     #[serde(default)]
     pub t: u64,
     /// What: "start" and "end" (a lead's job), "lease", "done", "fail" and "lapse" (a worker's
-    /// job), "task" and "task-fail", "map-update" (a map update began: its regions; "round" before task #209, still read by forecast::update_secs while the week's history holds one) and
+    /// job), "task" and "task-fail",
     /// "catalog" (a catalog written: its `n`, its job's time and its crate::pubtimes::CatalogStats),
-    /// "merged" (journal entries merged: their keys), "planned" (a map update's map tiles first
+    /// "merged" (journal entries merged: their keys), "planned" (map tiles first
     /// planned: crate::pubtimes::planned_event), "pause" and "resume", "worker" (first heard from), "device" (a device's ask to
     /// help accepted or declined, a device forgotten: its asks aren't), "agent" (one started),
     /// "conditions" (the lead's changed), "caches" (a Mac's build caches trimmed after the

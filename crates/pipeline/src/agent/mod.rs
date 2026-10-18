@@ -8,7 +8,7 @@
 //! 2. the running jobs: each finished (recorded; failures retried with a growing delay), paused or
 //!    resumed, restarted after sleep when it touches the NAS;
 //! 3. a free slot's job: the plan's first runnable job (the OSM pass when the NAS holds a newer
-//!    planet, the regions' work, the chains, the map updates; backups and cleanup once a day), and
+//!    planet, the regions' work, publishing, the chains; backups and cleanup once a day), and
 //!    beside it the first of `SECOND`'s steps that can run with it (docs/plan.md §8, Two jobs at
 //!    once);
 //! 4. this Mac's caches (`room`): the owner's ask to clear them taken up (cleared between jobs once
@@ -172,17 +172,16 @@ fn slot_suffix(k: usize) -> String {
 /// `Agent::seed_answers`).
 use steps::SECOND;
 
-// The last map update, in the agent's folder (build::MapUpdate): its jobs read the units of
-// the one under way there (crate::out::UNITS_AS_OF_ENV).
-use crate::out::MAP_UPDATE_FILE;
-/// The last map update kept in `home` (`MAP_UPDATE_FILE`). None: it doesn't read.
-fn read_map_update(home: &Path) -> Option<build::MapUpdate> {
-    std::fs::read(home.join(MAP_UPDATE_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok())
+/// The lead's record of its catalogs (build::LastCatalog), in the agent's folder.
+const PUBLISHED_FILE: &str = "publishing.json";
+/// The lead's record of its catalogs kept in `home` (`PUBLISHED_FILE`); none when it doesn't read.
+fn read_published(home: &Path) -> build::LastCatalog {
+    std::fs::read(home.join(PUBLISHED_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
-/// Keeps the map update in `home` (`MAP_UPDATE_FILE`).
-fn write_map_update(home: &Path, r: &build::MapUpdate) -> Result<()> {
-    crate::whole::write(&home.join(MAP_UPDATE_FILE), &serde_json::to_vec(r)?)
+/// Keeps the lead's record of its catalogs in `home` (`PUBLISHED_FILE`).
+fn write_published(home: &Path, r: &build::LastCatalog) -> Result<()> {
+    crate::whole::write(&home.join(PUBLISHED_FILE), &serde_json::to_vec(r)?)
 }
 
 /// The pass's worldwide steps the checklist counts, after the planet's own.
@@ -711,10 +710,10 @@ pub struct Status {
     /// (the lead's: crate::agent::forecast).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forecast: Option<forecast::Forecast>,
-    /// The decision on the next map update as the lead last planned it, and why
-    /// (build::UpdateDecision; docs/plan.md §8, Faster publishing).
+    /// Publishing as the lead last planned it, and why (build::PublishLine; docs/plan.md §8,
+    /// Publishing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub map_update: Option<build::UpdateDecision>,
+    pub publishing: Option<build::PublishLine>,
     /// The timetables' to-do list's counts and the routes matching nothing on the map
     /// (crate::timetables, docs/inputs.md §6.7.3): the lead's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -854,8 +853,8 @@ struct Memory {
     /// When each daily job last succeeded (seconds since the epoch).
     last_ok: BTreeMap<String, u64>,
     recent: Vec<Done>,
-    /// When a catalog last started (seconds since the epoch): the next map update waits an
-    /// hour from it, whether or not it went out (build::PUBLISH_EVERY_S).
+    /// When a catalog last started (seconds since the epoch): the next waits
+    /// build::CATALOG_EVERY_S from it, whether or not it went out.
     #[serde(default)]
     catalog_at: u64,
     /// About how long a target of each step takes here (seconds, as its jobs went lately), by
@@ -1202,22 +1201,22 @@ pub struct Agent {
     /// The last plan's forecast (crate::agent::forecast), and the last catalog it read, for the
     /// status.
     forecast: std::cell::RefCell<Option<forecast::Forecast>>,
-    /// The lead's decision on the next map update as last planned (build::UpdateDecision), and the key
-    /// of the last one logged (logged again only when it changes).
-    update_decision: std::cell::RefCell<Option<build::UpdateDecision>>,
+    /// Publishing as last planned (build::PublishLine), and the key of the last line logged (logged
+    /// again only when it changes).
+    publish_line: std::cell::RefCell<Option<build::PublishLine>>,
     /// The timetables' report as last read (its content name, and what the status shows).
     timetables: std::cell::RefCell<Option<(String, crate::timetables::View)>>,
-    update_logged: std::cell::RefCell<String>,
+    publish_logged: std::cell::RefCell<String>,
     catalog_seen: std::cell::Cell<Option<CatalogSeen>>,
-    /// The last map update (build::MapUpdate, its folder's `map-update.json`): the one under way,
-    /// which its jobs read the units of, or the last one over, for when it began.
-    map_update: std::cell::RefCell<Option<build::MapUpdate>>,
-    /// Faster publishing's switches as last read (crate::agent::publish), and the map updates' measured
-    /// time (forecast::update_secs, as the last forecast read the history): a map update per region's gap.
+    /// The lead's record of its catalogs (build::LastCatalog, its folder's `publishing.json`): when
+    /// the last went out with the low zooms made.
+    catalogs: std::cell::RefCell<build::LastCatalog>,
+    /// Whether the catalog last planned had the low zooms made (build::Plan::low, nothing left of
+    /// the publishing chain): its catalog, once made, is noted so (`LastCatalog::low_at`).
+    catalog_low: std::cell::Cell<bool>,
+    /// Publishing's switches as last read (crate::agent::publish).
     publishing: std::cell::Cell<publish::Switches>,
-    update_measured: std::cell::Cell<Option<f64>>,
-    /// The map update under way's map tiles noted planned in the history (crate::pubtimes), by its
-    /// beginning.
+    /// The map tiles noted planned in the history (crate::pubtimes), since the last catalog.
     planned_tiles: std::cell::RefCell<crate::pubtimes::PlannedNotes>,
     /// The pool (docs/pool.md, crate::agent::pool), always on: this Mac's part in it (None while this
     /// process isn't in it: the NAS not reached as it started, or its member's lock held by another
@@ -1403,8 +1402,12 @@ impl Agent {
         // as it was).
         let pause: Option<crate::control::Pause> =
             std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        // (A map update's file that doesn't read: none under way, the next begins afresh.)
-        let map_update = read_map_update(&o.home);
+        // (A record that doesn't read: none, the low zooms made with the next catalog. The map
+        // updates' file, before task #254, goes.)
+        let catalogs = read_published(&o.home);
+        if !o.dry_run {
+            std::fs::remove_file(o.home.join("map-update.json")).ok();
+        }
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
         Ok(Agent {
             host: test_worker().unwrap_or_else(cond::host_name),
@@ -1483,13 +1486,13 @@ impl Agent {
             orphans: Vec::new(),
             last_cond: None,
             forecast: Default::default(),
-            update_decision: Default::default(),
+            publish_line: Default::default(),
             timetables: Default::default(),
-            update_logged: Default::default(),
+            publish_logged: Default::default(),
             catalog_seen: Default::default(),
-            map_update: std::cell::RefCell::new(map_update),
+            catalogs: std::cell::RefCell::new(catalogs),
+            catalog_low: Default::default(),
             publishing: Default::default(),
-            update_measured: Default::default(),
             planned_tiles: Default::default(),
             member_id: run.as_ref().map(|r| r.side.member().id.clone()),
             ticking: run.as_ref().map(|r| r.ticking.clone()),
@@ -1903,15 +1906,10 @@ impl Agent {
         self.slots[k].granted = Some(grant.threads).filter(|&t| t > 0);
         self.slots[k].reserve_mb = Some(grant.disk_mb).filter(|&d| d > 0);
         match grant {
-            crate::coord::Grant {
-                lease,
-                term,
-                work: crate::coord::Granted::Job { step, targets, pass },
-                as_of,
-                ..
-            } if steps::SHARED.contains(&step.as_str())
-                || (every && every::offered(&step))
-                || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) =>
+            crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. }
+                if steps::SHARED.contains(&step.as_str())
+                    || (every && every::offered(&step))
+                    || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) =>
             {
                 // (A resumable job, its progress on this Mac: resumed in its own scratch folder,
                 // its step's whole hand-off as the lead's own job's, no done record: its target,
@@ -1970,24 +1968,6 @@ impl Agent {
                             record: None,
                         },
                     ));
-                }
-                // (A map update's step: the map update's units, as the lead granted them, read from its folder
-                // as the lead's own job reads its map update's file.)
-                if let Some(a) = as_of {
-                    let f = dir.join(MAP_UPDATE_FILE);
-                    let wrote = serde_json::to_vec(&serde_json::json!({ "began": a.began, "units": a.units }))
-                        .map_err(anyhow::Error::from)
-                        .and_then(|b| crate::whole::write(&f, &b));
-                    if let Err(e) = wrote {
-                        waiting.push(Waiting {
-                            step: None,
-                            what: "Building".into(),
-                            why: format!("the map update's units: {e:#}"),
-                        });
-                        fail(self, lease, &format!("the map update's units: {e:#}"));
-                        return None;
-                    }
-                    cmd.push(format!("{}={}#{}", crate::out::UNITS_AS_OF_ENV, f.display(), a.began));
                 }
                 cmd.extend([
                     s(&self.o.bin.join("scenic-build")),
@@ -3344,7 +3324,7 @@ impl Agent {
             pause: self.pause.clone(),
             resources: Some(self.resources(root.as_deref())),
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
-            map_update: if self.o.helper { None } else { self.update_decision.borrow().clone() },
+            publishing: if self.o.helper { None } else { self.publish_line.borrow().clone() },
             timetables: if self.o.helper { None } else { self.timetables.borrow().as_ref().map(|t| t.1.clone()) },
             catalog: self.catalog_seen.get(),
             caches: Some(self.caches_view(caches_why, c.home, c.nas)),
@@ -3495,11 +3475,11 @@ impl Agent {
             };
             // (The coordinator's record of what's done.)
             let handed = done.clone();
-            // (A catalog's done record handed off: its map update is over. Not the idle-time whole
-            // catalog's, of no map update.)
+            // (A catalog made: noted in the lead's record, with the low zooms if it had them. Not
+            // the idle-time whole catalog's, which changes nothing it lists.)
             let whole = done.first().is_some_and(|t| t.0 == WHOLE);
             if ok && matches!(step.as_str(), "catalog" | "catalog-held") && !whole {
-                self.end_update();
+                self.catalog_made(now_s());
             }
             self.take_timings(k);
             self.end_lease(k, outcome, &handed, &note);
@@ -4064,7 +4044,7 @@ impl Agent {
             }
             self.slots[k].lease = Some(Held::Pooled { id: n, term: lease.term, dir, own: true });
         }
-        // (A catalog's start: the next map update waits an hour from it, whether or not it goes out.)
+        // (A catalog's start: the next waits build::CATALOG_EVERY_S from it, whether or not it goes out.)
         if spec.id.starts_with("catalog") {
             self.mem.catalog_at = now_s();
             self.save();
@@ -5354,15 +5334,6 @@ impl Agent {
                 env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", c.port())));
                 env.push(("SCENIC_COORD_TOKEN".into(), c.job_token.clone()));
             }
-            // A map update's step that reads the units: as they were when the map update began.
-            let step = spec.record.as_ref().map(|w| w.step.as_str()).unwrap_or("");
-            if let Some(r) = self.map_update.borrow().as_ref().filter(|r| !r.over && build::AS_OF_STEPS.contains(&step))
-            {
-                env.push((
-                    crate::out::UNITS_AS_OF_ENV.into(),
-                    format!("{}#{}", self.o.home.join(MAP_UPDATE_FILE).display(), r.began),
-                ));
-            }
         } else if let Some(b) = &self.broker {
             // (A member's job offers its tasks through this Mac's broker, docs/pool.md §8.)
             env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", b.port())));
@@ -5563,88 +5534,40 @@ impl Agent {
         self.mem.last_ok.get(id).is_none_or(|&t| now_s().saturating_sub(t) >= every.as_secs())
     }
 
-    /// Whether this agent keeps the build's map updates (and its history): the one that runs its jobs,
-    /// not a dry run beside it (planning only: its map updates are its own, in memory).
-    fn keeps_map_updates(&self) -> bool {
+    /// Whether this agent keeps the lead's record of its catalogs (and notes planned map tiles in
+    /// its history): the one that runs its jobs, not a dry run beside it (planning only: its record
+    /// is its own, in memory).
+    fn keeps_publishing(&self) -> bool {
         self._lock.is_some() && !self.o.dry_run
     }
 
-    /// A map update begun (build::Plan::begins, its `began` set): written to its file, which its jobs read,
-    /// before any of them starts.
-    fn keep_map_update(&self, mut r: build::MapUpdate) -> Result<()> {
-        // (When the low zooms were last made: this one's beginning if it makes them, else the
-        // map update before's.)
-        r.low_at = if r.low { Some(r.began) } else { self.map_update.borrow().as_ref().and_then(|p| p.low_at) };
-        if self.keeps_map_updates() {
-            write_map_update(&self.o.home, &r)?;
-            self.note(crate::coord::history::Event {
-                targets: r.regions.clone(),
-                note: if r.last { "the last".into() } else { String::new() },
-                ..crate::coord::history::Event::new("map-update")
-            });
+    /// A catalog made at `at`: noted in the lead's record (build::LastCatalog), with the low zooms
+    /// made if its plan had them (`catalog_low`).
+    fn catalog_made(&self, at: u64) {
+        let mut r = self.catalogs.borrow_mut();
+        r.at = at;
+        if self.catalog_low.get() {
+            r.low_at = Some(at);
         }
-        eprintln!(
-            "agent: a map update begins, publishing {} region(s){}",
-            r.regions.len(),
-            if r.last { " (the last)" } else { "" }
-        );
-        *self.map_update.borrow_mut() = Some(r);
-        Ok(())
+        if self.keeps_publishing() {
+            if let Err(e) = write_published(&self.o.home, &r) {
+                eprintln!("agent: noting the catalog made: {e:#}");
+            }
+        }
     }
 
-    /// The decision on the next map update (build::UpdateDecision) kept for the status, its gap's basis
-    /// and the pause said, and logged when it or its reasons change.
-    fn record_update(&self, mut u: build::UpdateDecision, per_region: bool) {
-        u.gap_basis = match (per_region, self.update_measured.get()) {
-            (false, _) => "the hour: a map update per region is off".into(),
-            (true, None) => "the hour: no map update measured yet".into(),
-            (true, Some(s)) if u.gap_s >= build::PUBLISH_EVERY_S => {
-                format!("the hour: twice the measured {s:.0} s is more")
-            }
-            (true, Some(s)) => format!("twice the last map updates' measured {s:.0} s"),
-        };
+    /// Publishing as planned (build::PublishLine) kept for the status, the pause said, and logged
+    /// when it or its reasons change.
+    fn record_publishing(&self, mut u: build::PublishLine) {
         if let Some(p) = &self.pause {
             u.why = format!("{} (but {})", u.why, p.why());
         }
         let key = u.key() + &self.pause.is_some().to_string();
-        if *self.update_logged.borrow() != key {
+        if *self.publish_logged.borrow() != key {
             eprintln!("agent: {}", u.line());
-            *self.update_logged.borrow_mut() = key;
+            *self.publish_logged.borrow_mut() = key;
         }
-        *self.update_decision.borrow_mut() = Some(u);
-    }
-
-    /// The map update under way told to this Mac's coordinator, with the plan's offers made from the
-    /// same map update (every step to every member: a map update's step is granted only with it).
-    fn offer_update(&self, c: &crate::coord::Coordinator) {
-        let map_update = self
-            .map_update
-            .borrow()
-            .as_ref()
-            .filter(|r| !r.over && self.every_on())
-            .map(|r| (r.began, r.units.clone()));
-        if map_update.as_ref().map(|r| r.0) != c.map_update_began() {
-            c.set_map_update(map_update.map(|(began, units)| crate::coord::AsOf { began, units }));
-        }
-    }
-
-    /// The map update under way is over (its catalog made, or nothing left it would publish): kept
-    /// without its units, for when it began.
-    fn end_update(&self) {
-        // (Its units no longer granted with a map update's step.)
-        if let Some(c) = &self.coord {
-            c.set_map_update(None);
-        }
-        let mut kept = self.map_update.borrow_mut();
-        let Some(r) = kept.as_mut().filter(|r| !r.over) else { return };
-        r.over = true;
-        r.units.clear();
-        if self.keeps_map_updates() {
-            if let Err(e) = write_map_update(&self.o.home, r) {
-                eprintln!("agent: noting the map update over: {e:#}");
-            }
-        }
-        eprintln!("agent: the map update that began {} min ago is over", now_s().saturating_sub(r.began) / 60);
+        *self.publish_line.borrow_mut() = Some(u);
     }
 
     /// The timetables' report, read again when the records name another (a small file).
@@ -5691,11 +5614,9 @@ impl Agent {
             serde_json::to_string(&p.gates).unwrap_or_default().hash(&mut h);
         }
         serde_json::to_string(&self.pause).unwrap_or_default().hash(&mut h);
-        // (Faster publishing's switches, the hold on catalogs, the catalogs' folders.)
+        // (Publishing's switches, the hold on catalogs, the catalogs' folders.)
         for f in [
-            publish::UPDATE_PER_REGION,
             publish::LOW_ZOOM_LATER,
-            publish::UPDATE_SHARE,
             publish::DELTA_CATALOG,
             publish::NEAR_SLOPE,
             "inputs/hold-catalog",
@@ -5714,8 +5635,8 @@ impl Agent {
     }
 
     /// When the plan's timed waits end (epoch seconds, past `now`), the earliest: a job's failure or
-    /// memory guard wait, room-making's ten minutes, the regions' edit hold, the next map update's
-    /// gap. An idle agent plans again then (`plan_due`).
+    /// memory guard wait, room-making's ten minutes, the regions' edit hold, the next catalog's
+    /// minute. An idle agent plans again then (`plan_due`).
     fn replan_at(&self, plan: &[JobSpec], now: u64) -> Option<u64> {
         let mut at: Vec<u64> = Vec::new();
         for spec in plan {
@@ -5728,8 +5649,8 @@ impl Agent {
         if let Some((_, left)) = edit_held(self.edited_at.get(), std::time::SystemTime::now()) {
             at.push(ends_in(now, left));
         }
-        if let Some(u) = self.update_decision.borrow().as_ref().filter(|u| u.left_s > 0) {
-            at.push(now + u.left_s);
+        if let Some(u) = self.publish_line.borrow().as_ref().filter(|u| u.wait_s > 0) {
+            at.push(now + u.wait_s);
         }
         // (The budgets' proxy not started: tried again each loop, `tend_proxy`; the plan again each
         // minute, not each loop, should it keep failing.)
@@ -5826,9 +5747,7 @@ impl Agent {
                 record: None,
             });
         }
-        // (Not while a map update is under way: the units it reads as they were may be gone from the
-        // manifest, and in no catalog yet.)
-        if self.due("gc", Duration::from_secs(86400)) && self.map_update.borrow().as_ref().is_none_or(|r| r.over) {
+        if self.due("gc", Duration::from_secs(86400)) {
             out.push(JobSpec {
                 id: "gc".into(),
                 what: steps::title("gc").into(),
@@ -6253,23 +6172,21 @@ impl Agent {
         let (on_map, since_publish) = self.on_map(&dir, &recipes);
         // (The map's: the served catalog's, held ones aside.)
         self.catalog_seen.set(served_catalog(&root.join("catalog")));
-        // The map update under way, if one is; the next an hour after the last began (before the agent
-        // kept map updates, after the last catalog went out).
-        let since_last = self.map_update.borrow().as_ref().map(|r| now_s().saturating_sub(r.began)).or(since_publish);
-        // (Faster publishing's switches: crate::agent::publish; all off, the map updates as before.)
+        // (Publishing's switches: crate::agent::publish.)
         let sw = publish::Switches::read(root, self.publishing.get());
         if sw != self.publishing.get() {
-            eprintln!("agent: faster publishing: {sw:?}");
+            eprintln!("agent: publishing's switches: {sw:?}");
         }
         self.publishing.set(sw);
         let way = build::Publishing {
-            gap: sw.per_region.then(|| publish::update_gap(self.update_measured.get())),
             low_later: sw.low_later,
-            since_low: self.map_update.borrow().as_ref().and_then(|r| r.low_at).map(|t| now_s().saturating_sub(t)),
+            since_low: self.catalogs.borrow().low_at.map(|t| now_s().saturating_sub(t)),
             near: sw.near,
         };
+        // (The served catalog's units, read again only when a newer catalog is there: the map tiles
+        // to draw grouped by the unit that changed.)
+        let served = self.planned_tiles.borrow_mut().served(&root.join("catalog"));
         let mut planned = {
-            let kept = self.map_update.borrow();
             let tiles = self.terrain_tiles(root, &manifest);
             // (The records as re-keyed: what they are once the loop has re-keyed them, as a dry run,
             // or a loop that couldn't take the build lock, plans too.)
@@ -6283,11 +6200,11 @@ impl Agent {
                 &inputs,
                 reach.as_deref(),
                 &tiles,
-                build::MapUpdates {
+                build::Publish {
                     each: &covs.each,
                     on_map: &on_map,
-                    since_last,
-                    current: kept.as_ref().filter(|r| !r.over),
+                    served: &served,
+                    since_catalog: since_publish,
                     held,
                     way,
                 },
@@ -6322,38 +6239,6 @@ impl Agent {
             .handoff_bases(root)
             .iter()
             .any(|b| crate::handoff::waiting_in(b).map(|w| w.iter().any(|(_, h)| h.done.is_some())).unwrap_or(false));
-        if planned.ends {
-            self.end_update();
-        }
-        // A map update begins: kept from now on, its work planned as such already. Not while a helper's
-        // work waits to be merged (the units it counts as built would be missing from the map update's),
-        // nor while an edit is held: its own steps wait meanwhile.
-        if let Some(mut r) = planned.begins.take() {
-            let not_now = if unmerged {
-                Some("waits for a helper's work to be merged".to_string())
-            } else if edit_hold.is_some() {
-                Some("waits for the regions' edits to settle".to_string())
-            } else {
-                r.began = now_s();
-                self.keep_map_update(r).err().map(|e| format!("can't keep the map update now ({e:#})"))
-            };
-            if let Some(why) = &not_now {
-                planned.update.why = format!("{} (but it {why})", planned.update.why);
-            }
-            if let Some(why) = not_now {
-                waiting.push(Waiting {
-                    step: Some("catalog".into()),
-                    what: steps::stage_title("publish").into(),
-                    why: format!("the next map update {why}"),
-                });
-                planned.work.retain(|w| !build::AS_OF_STEPS.contains(&w.step.as_str()) && w.step != "prune");
-            }
-        }
-        self.record_update(std::mem::take(&mut planned.update), sw.per_region);
-        // (The map update under way's chain left, and when it began, for the forecast: one begun now,
-        // now.)
-        let update_left = std::mem::take(&mut planned.update_left);
-        let since_last = self.map_update.borrow().as_ref().map(|r| now_s().saturating_sub(r.began)).or(since_last);
         let ready = planned.ready;
         *self.ready.borrow_mut() = ready.clone();
         // (As the catalog's `--ready`: each with the outline it was built with.)
@@ -6366,28 +6251,24 @@ impl Agent {
             .collect::<Vec<_>>()
             .join(",");
         let mut plan = planned.work;
-        // (The map update's map tiles as first planned at their keys, for publishing's times:
-        // crate::pubtimes::PlannedNotes, what was noted known again after a restart or a change of
-        // lead.)
-        let began = self.map_update.borrow().as_ref().filter(|r| !r.over).map(|r| r.began);
-        if let Some(b) = began.filter(|_| self.keeps_map_updates()) {
+        // (The map tiles as first planned at their keys, for publishing's times:
+        // crate::pubtimes::PlannedNotes, since the last catalog, what was noted known again after a
+        // restart or a change of lead.)
+        if self.keeps_publishing() {
+            let at = self.catalogs.borrow().at;
+            let b = if at > 0 { at } else { self.started };
             let mut notes = self.planned_tiles.borrow_mut();
-            // (This coordinator's history read once a map update.)
+            // (This coordinator's history read once a catalog.)
             if notes.began() != b {
                 let own = self.coord.as_ref().map(|c| c.history_since(0)).unwrap_or_default();
                 if notes.begin(b, &own, now_s()) {
                     notes.seed_from_nas(root.to_path_buf());
                 }
             }
-            let tiles: Vec<(String, String)> = plan
-                .iter()
-                .chain(update_left.iter())
-                .filter(|w| w.step == "pack")
-                .flat_map(|w| w.targets.iter().cloned())
-                .collect();
+            let tiles: Vec<(String, String)> =
+                plan.iter().filter(|w| w.step == "pack").flat_map(|w| w.targets.iter().cloned()).collect();
             let new = notes.new_tiles(&tiles);
             if !new.is_empty() {
-                let served = notes.served(&root.join("catalog"));
                 let names: Vec<String> = new.iter().map(|t| t.0.clone()).collect();
                 let by_unit = crate::pubtimes::restaled_by(&manifest, reach.as_deref(), &served, &names);
                 notes.note(&new);
@@ -6400,6 +6281,7 @@ impl Agent {
                 what: steps::stage_title("publish").into(),
                 why: format!("the inputs' descriptions (their credits) can't be read now: {why}"),
             });
+            planned.publishing.why = "the catalog waits for the inputs' descriptions to be read".into();
             plan.retain(|w| w.step != "catalog");
         }
         // Just edited: the regions' work waits a while for more edits (each would build again what
@@ -6409,37 +6291,24 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building the regions".into(), why: format!("a region's recipe or outline changed {} min ago: their work starts in {left} min, after any more edits", age.as_secs() / 60) });
             plan.clear();
         }
-        // A map update's catalog waits while another worker builds its regions' slope or tree cover (it
-        // would go out without them, and they'd wait an hour), and while a helper's hand-offs wait
-        // to be merged (its areas counted as built, their files not yet in the manifest).
-        // (The coordinator's leases alone say what another worker builds.)
+        // A catalog waits while a helper's hand-offs wait to be merged (its work counted as built,
+        // its files not yet in the manifest).
         let every_on = self.every_on();
-        let held_by_others = |step: &str, t: &str| self.coord.as_ref().is_some_and(|c| c.held(step).contains(t));
-        let held_wait = planned.publish_waits.iter().find(|(st, t)| held_by_others(st, t));
-        if let Some((st, t)) = held_wait.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
-            let mine =
-                self.slots.iter().filter_map(|s| s.running.as_ref()).any(|r| {
-                    r.spec.record.as_ref().is_some_and(|w| w.step == *st && w.targets.iter().any(|x| x.0 == *t))
-                });
-            let who = if mine { "this Mac's job" } else { "another worker" };
-            waiting.push(Waiting {
-                step: Some("catalog".into()),
-                what: steps::stage_title("publish").into(),
-                why: format!(
-                    "waits for {who} building the {} of {t}",
-                    if st.starts_with("slope") { "slope" } else { "tree cover" }
-                ),
-            });
-            plan.retain(|w| w.step != "catalog");
-        } else if unmerged && plan.iter().any(|w| w.step == "catalog") {
+        if unmerged && plan.iter().any(|w| w.step == "catalog") {
             waiting.push(Waiting {
                 step: Some("catalog".into()),
                 what: steps::stage_title("publish").into(),
                 why: "waits for a helper's work to be merged".into(),
             });
+            planned.publishing.why = "the catalog waits for a helper's work to be merged".into();
             plan.retain(|w| w.step != "catalog");
         }
-        // Idle (nothing else to do, no map update under way, no job running), with delta catalogs
+        // (Its catalog, once made, went out with the low zooms made, or not.)
+        if plan.iter().any(|w| w.step == "catalog") {
+            self.catalog_low.set(planned.low);
+        }
+        self.record_publishing(std::mem::take(&mut planned.publishing));
+        // Idle (nothing else to do, no job running), with delta catalogs
         // on: the served catalog written whole when store::catalog::whole_due says so (asked once
         // a catalog), so a delta catalog never weighs or writes one. Its target names the last
         // catalog's key: its done record changes nothing.
@@ -6448,7 +6317,6 @@ impl Agent {
             && !held
             && idle_lead
             && self.publishing.get().delta
-            && self.map_update.borrow().as_ref().is_none_or(|r| r.over)
             && self.slots.iter().all(|s| s.running.is_none())
         {
             if let Some(k) = done.catalog.clone().filter(|k| self.whole_asked.borrow().as_deref() != Some(k.as_str())) {
@@ -6559,7 +6427,6 @@ impl Agent {
         // (The shared steps by their rank, then the others in plan order.)
         offers.sort_by_key(|o| steps::SHARED.iter().position(|s| *s == o.step).unwrap_or(usize::MAX));
         if let Some(c) = &self.coord {
-            self.offer_update(c);
             c.offer(date, offers);
         }
         // (Held here: left to a Mac with room. A target whose floor past this Mac's limit was a
@@ -6610,24 +6477,8 @@ impl Agent {
                 &self.terrain_tiles(root, &manifest),
             );
             // (A fault in it costs the status its forecast, never the agent.)
-            let under_way = self
-                .map_update
-                .borrow()
-                .as_ref()
-                .filter(|r| !r.over)
-                .map(|r| (r.regions.clone(), r.last, update_left.clone()));
             let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.forecast_now(
-                    root,
-                    &before,
-                    &planned.regions,
-                    &planned.backfill,
-                    chains,
-                    since_last,
-                    under_way,
-                    blind,
-                    &peak,
-                )
+                self.forecast_now(root, &before, &planned.regions, &planned.backfill, chains, blind, &peak)
             }));
             match made {
                 Ok(f) => *self.forecast.borrow_mut() = Some(f),
@@ -6638,14 +6489,11 @@ impl Agent {
             }
         }
         plan.retain(|w| !w.targets.is_empty());
-        // (A map update shared: the lead's own job of a map update's map tiles takes its share, the rest left
-        // to the members asking: crate::agent::publish.)
-        let share_on = self.publishing.get().share
-            && self.every_on()
-            && self.map_update.borrow().as_ref().is_some_and(|r| !r.over);
-        let coord = self.coord.as_ref().filter(|_| share_on);
+        // (The lead's own job of the map tiles takes its share, the rest left to the members asking:
+        // crate::agent::publish.)
+        let coord = self.coord.as_ref().filter(|_| self.every_on());
         let size =
-            |step: &str, total: usize, n: usize| match coord.filter(|_| publish::SHARED_IN_UPDATE.contains(&step)) {
+            |step: &str, total: usize, n: usize| match coord.filter(|_| publish::SHARED_MAP_TILES.contains(&step)) {
                 Some(c) => publish::lead_share(total, n, c.members_asking(step)),
                 None => n,
             };
@@ -6659,8 +6507,6 @@ impl Agent {
                         what: steps::stage_title("publish").into(),
                         why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into(),
                     });
-                    // (Its map update's done: the held catalog is its.)
-                    self.end_update();
                     continue;
                 }
                 let mut j = job(
@@ -6751,8 +6597,6 @@ impl Agent {
         regions: &[build::RegionLeft],
         backfill: &[build::Work],
         chains: [Vec<build::Work>; 5],
-        since_last: Option<u64>,
-        under_way: Option<(Vec<String>, bool, Vec<build::Work>)>,
         blind: Option<String>,
         peak: &dyn Fn(&str, &str) -> u64,
     ) -> forecast::Forecast {
@@ -6835,10 +6679,9 @@ impl Agent {
                 (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))
             })
             .collect();
-        // A map update: as the last ones took (beginning to catalog), else the chain's steps'
-        // times; the last map update, the roads' chain as it stands now, if more (none when it's done),
-        // less what the map update under way still does (the roads' chain counts its work too, which
-        // goes out with it).
+        // Publishing a region: as the last ones took (forecast::update_secs), else the chain's
+        // steps' times; the last publishing, the publishing chain as it stands now, if more (none
+        // when it's done).
         let [roads, rail, landmarks, buildings, depth] = chains;
         let chain_s = |works: &[build::Work]| -> f64 {
             works
@@ -6852,7 +6695,6 @@ impl Agent {
                 })
                 .sum()
         };
-        self.update_measured.set(forecast::update_secs(&events));
         let update_s = forecast::update_secs(&events).unwrap_or_else(|| {
             ["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"]
                 .iter()
@@ -6861,11 +6703,10 @@ impl Agent {
                 + mine("pack", 8).secs
                 + mine("lo", 2).secs
         });
-        let ahead = under_way.as_ref().map_or(0.0, |u| chain_s(&u.2));
-        let last_update_s = if roads.is_empty() { 0.0 } else { update_s.max(chain_s(&roads) - ahead) };
+        let last_update_s = if roads.is_empty() { 0.0 } else { update_s.max(chain_s(&roads)) };
         // The trains' and the landmarks' chains from the start (their steps once what they read is
         // built: forecast::chain_deps), but the overlays (they read the built units) after the last
-        // map update; and a catalog after it with what the chains made since.
+        // publishing; and a catalog after it with what the chains made since.
         let (mut chain_jobs, mut after): (Vec<forecast::Job>, Vec<forecast::Job>) = (Vec::new(), Vec::new());
         for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()).chain(depth.iter()) {
             let jobs: Vec<forecast::Job> = if steps::SHARED.contains(&w.step.as_str()) {
@@ -6986,19 +6827,11 @@ impl Agent {
                 running.extend(targets.into_iter().map(|t| ((step.clone(), t), m)));
             }
         }
-        // (The map update under way: its chain left as its steps take, a minute at least.)
-        let under_way = under_way.map(|(ids, last, left)| (ids, last, chain_s(&left).max(60.0)));
         // (The pieces' mids made in idle time, last.)
         let idle: Vec<forecast::Job> = backfill
             .iter()
             .flat_map(|w| w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone(), cost(&w.step, t))))
             .collect();
-        // (A region's map update an hour after the last began, or a map update per region's gap.)
-        let gap_s = if self.publishing.get().per_region {
-            publish::update_gap(self.update_measured.get())
-        } else {
-            build::PUBLISH_EVERY_S
-        } as f64;
         let inp = forecast::Input {
             now: now_s(),
             before,
@@ -7010,9 +6843,6 @@ impl Agent {
             chains: chain_jobs,
             after,
             idle,
-            since_last,
-            gap_s,
-            under_way,
             machines,
             running,
         };
@@ -7020,7 +6850,7 @@ impl Agent {
         // (A slot's job waiting on a worker holding its unit's tail: said beside its machine.)
         f.waiting = (0..self.slots.len()).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();
         // In the pool, the forecast for equal machines beside it (docs/pool.md §12 4.12), reported
-        // alone: each member's slots as lanes (this Mac's first: its map updates; its second job's
+        // alone: each member's slots as lanes (this Mac's first: its publishing; its second job's
         // memory a quarter of the Mac's, as above), the pages as one (forecast::pool_lanes), each at
         // its speed measured against this Mac (placement::measured_speeds; one not measured, this
         // Mac's), busy with its leases' targets left.
@@ -7957,8 +7787,7 @@ impl Agent {
             self.brokers = on;
         }
         self.tend_brokers();
-        // (The lead's coordinator told, with this Mac's room now, each loop; its map update with the
-        // plan's offers: `offer_update`.)
+        // (The lead's coordinator told, with this Mac's room now, each loop.)
         // (Placement worked out once a loop: the history read once.)
         let placed = self.placement_now();
         if let Some(c) = &self.coord {
@@ -7966,9 +7795,6 @@ impl Agent {
             c.set_packing(self.packing.clone().filter(|_| self.every_on()));
             c.set_capacity(self.last_cond.map(|cond| self.capacity(&cond)));
             c.set_placement(placed.clone());
-            if !self.every_on() {
-                c.set_map_update(None);
-            }
         }
         // (A member's broker draws its pages' tasks the same way: by their paces at the kind as
         // that broker measured them, its own jobs' tasks against this Mac's runs. It has no
@@ -8980,8 +8806,8 @@ fn load_regions(root: &Path) -> (Vec<recipes::Recipe>, Vec<(String, String)>) {
     }
 }
 
-/// Why the build isn't done, by its forecast (None: nothing left to build, no map update under way, no
-/// machine busy). One more than ten minutes old (the plan can't be made now), or made before the
+/// Why the build isn't done, by its forecast (None: nothing left to build or publish, no machine
+/// busy). One more than ten minutes old (the plan can't be made now), or made before the
 /// last job here ended (`since`: a "done" from before it, as a job that starts and ends between two
 /// forecasts leaves), doesn't say.
 fn work_left(f: Option<&forecast::Forecast>, since: u64) -> Option<String> {
@@ -9081,8 +8907,8 @@ fn hold_for_lakefill(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>)
 
 /// The checklist as the status shows it. A step with work left that isn't this Mac's job now (`now`,
 /// its step) says why: another Mac is on it, or its job waits (`waiting`: for the home network,
-/// out a failure). Publishing, while a step above has work left, goes out as each region is done (at
-/// most hourly) and once they all are: it's done only then.
+/// out a failure). Publishing, while a step above has work left, goes out as each unit is built (a
+/// catalog at most each minute) and once they all are: it's done only then.
 fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waiting: &[Waiting]) {
     let busy = |s: &build::Line| now.iter().any(|n| s.steps.iter().any(|x| x == n));
     // (Work known to be left: a line not sized yet, as trains a day before its sources are seeded,
@@ -9104,8 +8930,9 @@ fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waitin
         if before_left && !busy(p) {
             p.left = Some(p.left.unwrap_or(0).max(1));
             // (Its own, a catalog failing, says more.)
-            p.note
-                .get_or_insert_with(|| "as each region is done (at most hourly), and once the steps above are".into());
+            p.note.get_or_insert_with(|| {
+                "as each unit is built (a catalog at most each minute), and once the steps above are".into()
+            });
         }
     }
 }
@@ -9251,8 +9078,8 @@ fn batches(plan: Vec<build::Work>) -> Vec<(build::Work, usize)> {
     batches_sized(plan, &|_, _, n| n)
 }
 
-/// `batches`, each step's batch as `size` says from its step, its total and its batch (a map update
-/// shared: the lead's share of a map update's map tiles, crate::agent::publish::lead_share).
+/// `batches`, each step's batch as `size` says from its step, its total and its batch (the lead's
+/// share of the map tiles, crate::agent::publish::lead_share).
 fn batches_sized(plan: Vec<build::Work>, size: &dyn Fn(&str, usize, usize) -> usize) -> Vec<(build::Work, usize)> {
     let regions = regions_left(&plan);
     let mut out = Vec::new();
@@ -9576,8 +9403,8 @@ mod tests {
         let now = a.plan_seen(&root);
         assert_ne!(now, last);
         last = now;
-        // Faster publishing's switches and the hold on catalogs.
-        for f in [publish::UPDATE_PER_REGION, publish::NEAR_SLOPE, "inputs/hold-catalog"] {
+        // Publishing's switches and the hold on catalogs.
+        for f in [publish::LOW_ZOOM_LATER, publish::NEAR_SLOPE, "inputs/hold-catalog"] {
             std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
             std::fs::write(root.join(f), "on").unwrap();
             let now = a.plan_seen(&root);
@@ -11376,10 +11203,13 @@ mod tests {
     }
 
     #[test]
-    fn a_map_updates_catalog_made_ends_it_and_a_dry_run_keeps_its_map_updates_to_itself() {
+    fn a_catalog_made_is_noted_with_the_low_zooms_if_it_had_them_and_a_dry_run_keeps_its_own() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        // (The map updates' file from before: gone as the agent starts.)
+        std::fs::write(home.join("map-update.json"), "{}").unwrap();
         let a = test_agent(Options {
             root: Some(root.clone()),
             home: home.clone(),
@@ -11389,29 +11219,20 @@ mod tests {
             helper: false,
         })
         .unwrap();
-        let r = build::MapUpdate {
-            began: 100,
-            regions: vec!["a".into()],
-            last: false,
-            units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(),
-            over: false,
-            low: true,
-            low_at: None,
+        assert!(!home.join("map-update.json").exists());
+        let file = || -> build::LastCatalog {
+            serde_json::from_slice(&std::fs::read(home.join(PUBLISHED_FILE)).unwrap()).unwrap()
         };
-        a.keep_map_update(r.clone()).unwrap();
-        let file = || -> build::MapUpdate {
-            serde_json::from_slice(&std::fs::read(home.join(MAP_UPDATE_FILE)).unwrap()).unwrap()
-        };
-        // (It makes the low zooms: noted as when they were last made.)
-        assert_eq!(file(), build::MapUpdate { low_at: Some(100), ..r.clone() });
-        // Its catalog made: over, kept without its units (whatever changed meanwhile goes out with
-        // the next).
-        assert!(!file().over);
-        a.end_update();
-        let f = file();
-        assert!(f.over && f.units.is_empty() && f.began == 100);
-        // A dry run beside it (a second agent on this Mac, planning only): its map updates its own, never
-        // the file the real one's jobs read.
+        // A catalog planned with the low zooms made: noted so.
+        a.catalog_low.set(true);
+        a.catalog_made(100);
+        assert_eq!(file(), build::LastCatalog { at: 100, low_at: Some(100) });
+        // One without them (the low zooms later): when they were last made carried.
+        a.catalog_low.set(false);
+        a.catalog_made(200);
+        assert_eq!(file(), build::LastCatalog { at: 200, low_at: Some(100) });
+        // A dry run beside it (a second agent on this Mac, planning only): its record its own,
+        // never the file.
         let dry = test_agent(Options {
             root: Some(root.clone()),
             home: home.clone(),
@@ -11421,21 +11242,17 @@ mod tests {
             helper: false,
         })
         .unwrap();
-        dry.keep_map_update(build::MapUpdate { began: 200, ..r.clone() }).unwrap();
-        assert_eq!(file().began, 100);
-        // The next map update leaving the low zooms (crate::agent::publish): when they were last made carried.
-        a.keep_map_update(build::MapUpdate { began: 300, low: false, ..r.clone() }).unwrap();
-        assert_eq!((file().began, file().low_at), (300, Some(100)));
-        a.keep_map_update(build::MapUpdate { began: 400, ..r }).unwrap();
-        assert_eq!(file().low_at, Some(400));
-        // (A file from before the low zooms later: it made the low zooms, none noted.)
-        let old: build::MapUpdate =
-            serde_json::from_str(r#"{"began":1,"regions":[],"last":false,"units":{}}"#).unwrap();
-        assert!(old.low && old.low_at.is_none());
+        assert_eq!(*dry.catalogs.borrow(), file());
+        dry.catalog_low.set(true);
+        dry.catalog_made(300);
+        assert_eq!(file(), build::LastCatalog { at: 200, low_at: Some(100) });
+        // (A record that doesn't read: none.)
+        std::fs::write(home.join(PUBLISHED_FILE), "?").unwrap();
+        assert_eq!(read_published(&home), build::LastCatalog::default());
     }
 
     #[test]
-    fn a_map_update_shared_the_leads_own_job_of_its_map_tiles_takes_its_share() {
+    fn the_leads_own_job_of_the_map_tiles_takes_its_share() {
         let w = |step: &str, n: usize| build::Work {
             step: step.into(),
             targets: (0..n).map(|i| (format!("6/1/{i}"), "k".into())).collect(),
@@ -11444,7 +11261,7 @@ mod tests {
             |b: Vec<(build::Work, usize)>| b.into_iter().map(|(w, t)| (w.step, w.targets.len(), t)).collect::<Vec<_>>();
         // (One member asking: half each, the lead's from the front; the other steps as they were.)
         let share = |step: &str, total: usize, n: usize| {
-            if publish::SHARED_IN_UPDATE.contains(&step) {
+            if publish::SHARED_MAP_TILES.contains(&step) {
                 publish::lead_share(total, n, 1)
             } else {
                 n
@@ -12019,11 +11836,11 @@ mod tests {
             &input_digests(root),
             Some(&reaches),
             &tiles,
-            build::MapUpdates {
+            build::Publish {
                 each: &cov.by_region(),
                 on_map: &BTreeMap::new(),
-                since_last: None,
-                current: None,
+                served: &BTreeMap::new(),
+                since_catalog: None,
                 held: false,
                 way: Default::default(),
             },
@@ -12033,14 +11850,14 @@ mod tests {
         old.1
     }
 
-    /// Not a test: seeds the scratch folder `SCENIC_SCRATCH_MAP_UPDATE` names (never the project's) with
-    /// a region done that the map hasn't, so its lead begins a map update (tools/check/pool-two-macs.sh
-    /// `map-update`): `rekey_root`'s state, the unit's ways across four z6 tiles (map tiles to share), and
+    /// Not a test: seeds the scratch folder `SCENIC_SCRATCH_PUBLISH` names (never the project's) with
+    /// a region done that the map hasn't, so its lead publishes it (tools/check/pool-two-macs.sh
+    /// `publish`): `rekey_root`'s state, the unit's ways across four z6 tiles (map tiles to share), and
     /// the unit built as the plan wants it now.
     #[test]
-    #[ignore = "seeds a scratch folder for tools/check/pool-two-macs.sh map-update"]
-    fn seed_a_scratch_map_update() {
-        let Some(root) = std::env::var_os("SCENIC_SCRATCH_MAP_UPDATE").map(PathBuf::from) else { return };
+    #[ignore = "seeds a scratch folder for tools/check/pool-two-macs.sh publish"]
+    fn seed_a_scratch_publish() {
+        let Some(root) = std::env::var_os("SCENIC_SCRATCH_PUBLISH").map(PathBuf::from) else { return };
         assert!(!root.to_string_lossy().contains("projects/scenic-roads"), "not the project folder");
         let date = "2026-09-28";
         rekey_root_with(&root, [-220_000_000, 640_000_000, -10_000_000, 641_600_000]);
@@ -12066,11 +11883,11 @@ mod tests {
             &input_digests(&root),
             Some(&reaches),
             &tiles,
-            build::MapUpdates {
+            build::Publish {
                 each: &cov.by_region(),
                 on_map: &BTreeMap::new(),
-                since_last: None,
-                current: None,
+                served: &BTreeMap::new(),
+                since_catalog: None,
                 held: false,
                 way: Default::default(),
             },
@@ -12925,7 +12742,7 @@ mod tests {
         assert_eq!(l[1].note.as_deref(), Some("on m1"));
         assert_eq!(l[2].note, None, "this Mac's job now");
         // Publishing waits for the steps above, though its catalog is current.
-        assert!(!l[3].finished() && l[3].note.as_deref().is_some_and(|n| n.starts_with("as each region is done")));
+        assert!(!l[3].finished() && l[3].note.as_deref().is_some_and(|n| n.starts_with("as each unit is built")));
         // All above done: done.
         let mut l: Vec<build::Line> = list()
             .into_iter()
@@ -13012,7 +12829,7 @@ mod pool_tests {
         let bin = d.join("app");
         std::fs::create_dir_all(&bin).unwrap();
         let script = format!(
-            "#!/bin/sh\nstep=\"$1\"\nenv > \"{bin}/env-$step\"\n[ -n \"$SCENIC_UNITS_AS_OF\" ] && cp \"${{SCENIC_UNITS_AS_OF%#*}}\" \"{bin}/as-of-$step\"\nif [ -n \"$SCENIC_HANDOFF\" ]; then\n  mkdir -p \"$SCENIC_HANDOFF\"\n  case \"$step\" in\n    slope) printf '{{\"changes\":{{\"layers/slope/lo/3-2-2\":\"layers/slope/lo/3-2-2.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    pack) printf '{{\"changes\":{{\"layers/roads/hi/6-1-1\":\"layers/roads/hi/6-1-1.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    *) printf '{{\"changes\":{{}},\"pending\":{{\"work/%s.0123456789abcdef.json\":\"aa\"}}}}' \"$step\" > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n  esac\nfi\nexit 0\n",
+            "#!/bin/sh\nstep=\"$1\"\nenv > \"{bin}/env-$step\"\nif [ -n \"$SCENIC_HANDOFF\" ]; then\n  mkdir -p \"$SCENIC_HANDOFF\"\n  case \"$step\" in\n    slope) printf '{{\"changes\":{{\"layers/slope/lo/3-2-2\":\"layers/slope/lo/3-2-2.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    pack) printf '{{\"changes\":{{\"layers/roads/hi/6-1-1\":\"layers/roads/hi/6-1-1.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    *) printf '{{\"changes\":{{}},\"pending\":{{\"work/%s.0123456789abcdef.json\":\"aa\"}}}}' \"$step\" > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n  esac\nfi\nexit 0\n",
             bin = bin.display()
         );
         for p in ["scenic", "scenic-build"] {
@@ -13399,21 +13216,8 @@ mod pool_tests {
                 .find(|(_, w)| w.kind == "native")
                 .map(|(_, w)| (w.can.clone(), w.ask.as_ref().and_then(|a| a.disk_mb)))
         };
-        // The lead's coordinator told (with its own room, and its map update under way: `pack` is a
-        // map update's step, its job reading the units as the map update began), the member asking for every
-        // step.
-        *lead.map_update.borrow_mut() = Some(build::MapUpdate {
-            began: 1_791_000_000,
-            regions: Vec::new(),
-            last: true,
-            units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(),
-            over: false,
-            low: true,
-            low_at: None,
-        });
+        // The lead's coordinator told (with its own room), the member asking for every step.
         lead.pool_switch(Some(&r));
-        // (Told with the plan's offers, as the lead's planning does.)
-        lead.offer_update(lead.coord.as_ref().unwrap());
         m.pool_switch(Some(&r));
         assert!(lead.coord.as_ref().unwrap().shared.lock().unwrap().every.is_some_and(|e| e.own.is_some()));
         until(&mut m, |m| m.slots[0].running.is_some() || bin.join("env-pack").exists());
@@ -13444,16 +13248,6 @@ mod pool_tests {
         );
         let env = std::fs::read_to_string(bin.join("env-pack")).unwrap();
         assert!(env.contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())), "{env}");
-        let as_of = env
-            .lines()
-            .find_map(|l| l.strip_prefix(&format!("{}=", crate::out::UNITS_AS_OF_ENV)))
-            .expect("the map update's units");
-        assert!(as_of.ends_with("/map-update.json#1791000000"), "{as_of}");
-        let kept: serde_json::Value = serde_json::from_slice(&std::fs::read(bin.join("as-of-pack")).unwrap()).unwrap();
-        assert_eq!(kept["units"]["base/6-1-1"], "base/6-1-1.1111111111111111.base");
-        // The map update over: its units no longer granted.
-        lead.end_update();
-        assert!(lead.coord.as_ref().unwrap().map_update_began().is_none());
         // Its entry merged by the lead, within pack's write-set.
         until(&mut lead, |l| {
             l.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("pack", "6/1/1") == Some("kp"))

@@ -17,7 +17,7 @@
 //!   contiguous run of the plan, from its front or just after the member's last.
 //! - What another member builds is the lead's coordinator's leases alone.
 
-/// The steps kept to the lead: the map update's catalogs and prune (its gates:
+/// The steps kept to the lead: the catalogs and prune (their gates:
 /// crate::agent's catalog and sweep), the 3D buildings' sources' fetch (written outside the records,
 /// under `sources/`), and its duties outside the plan (the OSM pass, offered only to the Mac holding
 /// its progress: crate::agent::resume; GC, the backup, the input checks, the names and timetables to do: written into the drop boxes'
