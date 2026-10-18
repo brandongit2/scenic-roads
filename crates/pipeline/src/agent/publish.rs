@@ -1,11 +1,7 @@
-//! Publishing's switches (docs/plan.md §8, Publishing): three under `state/pool/`, each off while
+//! Publishing's switches (docs/plan.md §8, Publishing): two under `state/pool/`, each off while
 //! missing or `off` in it, `on` in it (or present) on. They act whatever the pool (publishing is
 //! the lead's agent's).
 //!
-//! - **The low zooms later** (`low-zoom-later`): the roads' and rails' lo packs (z3–8) and the
-//!   terrain's and slope's roots (z0–2) only `LOW_EVERY_S` after they were last made, once half
-//!   the lo packs are stale, and once everything is built (crate::agent::build::Publishing); the
-//!   map tiles (z9 up) as soon as their owners change.
 //! - **Delta catalogs** (`delta-catalog`): the catalog written as what changed over the last
 //!   (store::catalog::Delta; a whole one once the deltas since the last whole one add up to one),
 //!   and the sizes of the files the last one lists taken from it, not looked at again.
@@ -14,13 +10,11 @@
 
 use std::path::Path;
 
-pub const LOW_ZOOM_LATER: &str = "state/pool/low-zoom-later";
 pub const DELTA_CATALOG: &str = "state/pool/delta-catalog";
 pub const NEAR_SLOPE: &str = "state/pool/near-slope";
 /// The switches as last read.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Switches {
-    pub low_later: bool,
     pub delta: bool,
     pub near: bool,
 }
@@ -37,11 +31,7 @@ fn on(root: &Path, switch: &str) -> Option<bool> {
 impl Switches {
     /// The switches at `root`, each one that can't be read now as it was (`was`).
     pub fn read(root: &Path, was: Switches) -> Switches {
-        Switches {
-            low_later: on(root, LOW_ZOOM_LATER).unwrap_or(was.low_later),
-            delta: on(root, DELTA_CATALOG).unwrap_or(was.delta),
-            near: on(root, NEAR_SLOPE).unwrap_or(was.near),
-        }
+        Switches { delta: on(root, DELTA_CATALOG).unwrap_or(was.delta), near: on(root, NEAR_SLOPE).unwrap_or(was.near) }
     }
 }
 
@@ -75,11 +65,11 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         assert_eq!(Switches::read(d.path(), Switches::default()), Switches::default());
         std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
-        for (f, s) in [(LOW_ZOOM_LATER, ""), (DELTA_CATALOG, "on\n"), (NEAR_SLOPE, "off\n")] {
+        for (f, s) in [(DELTA_CATALOG, "on\n"), (NEAR_SLOPE, "off\n")] {
             std::fs::write(d.path().join(f), s).unwrap();
         }
         let s = Switches::read(d.path(), Switches::default());
-        assert_eq!(s, Switches { low_later: true, delta: true, near: false });
+        assert_eq!(s, Switches { delta: true, near: false });
         // (A switch that's a folder can't be read: as it was.)
         std::fs::remove_file(d.path().join(NEAR_SLOPE)).unwrap();
         std::fs::create_dir_all(d.path().join(NEAR_SLOPE)).unwrap();

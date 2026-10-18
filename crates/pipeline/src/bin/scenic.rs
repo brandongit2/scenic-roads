@@ -649,7 +649,7 @@ fn status(args: &[String]) -> Result<()> {
     if let Some(u) = &st.publishing {
         println!("Publishing: {}", u.why);
         if !u.low {
-            println!("  the low zooms wait for their turn (state/pool/low-zoom-later)");
+            println!("  the low zooms wait for their turn (every 3 h, or once nothing else is queued)");
         }
         for r in &u.regions {
             println!("  done, not on the map as it is: {} ({})", r.id, r.kinds.join(", "));

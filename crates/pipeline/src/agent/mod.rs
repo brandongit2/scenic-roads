@@ -5864,14 +5864,7 @@ impl Agent {
         }
         serde_json::to_string(&self.pause).unwrap_or_default().hash(&mut h);
         // (Publishing's switches, the hold on catalogs, the catalogs' folders.)
-        for f in [
-            publish::LOW_ZOOM_LATER,
-            publish::DELTA_CATALOG,
-            publish::NEAR_SLOPE,
-            "inputs/hold-catalog",
-            "catalog",
-            "catalog-held",
-        ] {
+        for f in [publish::DELTA_CATALOG, publish::NEAR_SLOPE, "inputs/hold-catalog", "catalog", "catalog-held"] {
             stat(&mut h, &root.join(f));
         }
         // (The coordinator's leases: one lapsed, given back or taken frees or holds targets.)
@@ -6446,7 +6439,6 @@ impl Agent {
         }
         self.publishing.set(sw);
         let way = build::Publishing {
-            low_later: sw.low_later,
             since_low: self.catalogs.borrow().low_at.map(|t| now_s().saturating_sub(t)),
             near: sw.near,
             since_marks: self.catalogs.borrow().since("marks", now_s()),
@@ -9823,7 +9815,7 @@ mod tests {
         assert_ne!(now, last);
         last = now;
         // Publishing's switches and the hold on catalogs.
-        for f in [publish::LOW_ZOOM_LATER, publish::NEAR_SLOPE, "inputs/hold-catalog"] {
+        for f in [publish::DELTA_CATALOG, publish::NEAR_SLOPE, "inputs/hold-catalog"] {
             std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
             std::fs::write(root.join(f), "on").unwrap();
             let now = a.plan_seen(&root);

@@ -1161,13 +1161,16 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
      when a catalog due was first held back since),
      and records what publishing does and why (`build::PublishLine`), shown in the build status
      (`publishing`), the worker page and `scenic status`, and logged when it changes.
+   - **The low zooms' cadence** (`build::low_gate`): the low zooms (roads' and rails' lo packs,
+     terrain's and slope's roots, and with `near-slope` the slope and tree cover assemblies) are
+     planned when nothing else is queued (no unit, terrain, slope or tree piece, 3D buildings or
+     depth work), at once; else `build::LOW_EVERY_S` (three hours) after a catalog last went out
+     with them made (`LastCatalog::low_at`), when half the roads' lo packs are stale
+     (`build::low_due`), or once everything is built. The gate decides only when; their keys stay
+     by content. Zoom ranges don't overlap, so a region new since shows its roads from z9 until the
+     low zooms are next made.
    - **Publishing's switches** (crate::agent::publish), under `state/pool/`, each off while missing
      or `off`:
-     - `low-zoom-later`: the low zooms (roads' and rails' lo packs, terrain's and slope's roots, and
-       with `near-slope` the slope and tree cover assemblies) are made only `build::LOW_EVERY_S`
-       (three hours) after a catalog last went out with them made, when half the roads' lo packs are
-       stale (`build::low_due`), and once everything is built. Zoom ranges don't overlap, so a region
-       new since shows its roads from z9 until the low zooms are next made.
      - `delta-catalog`: the catalog job (`scenic-build catalog --delta`) writes what changed over the
        last (docs/formats.md, Delta catalogs), each file's size from the records
        (`state/build/sizes.json`, which the files' jobs hand off) or the last catalog: it looks up no

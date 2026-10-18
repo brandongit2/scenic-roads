@@ -1715,25 +1715,20 @@ pub const CATALOG_GATE: [&str; 3] = ["prune", "pack", "roadunits"];
 /// was first held (`Publish::held_for`): past it, one goes out with what's drawn and merged.
 pub const CATALOG_CAP_S: u64 = 600;
 
-/// With the low zooms later (`Publishing::low_later`): how long after they were last made they're
-/// made again while units are still being built (the owner's "every few hours"; a policy, not a
-/// measure). Sooner when much has changed (`low_due`), and once everything is built.
+/// The low zooms' cadence (`low_gate`): how long after they were last made they're made again
+/// while other work is queued (the owner's "every few hours"; a policy, not a measure). Sooner
+/// when much has changed (`low_due`), when nothing else is queued, and once everything is built.
 pub const LOW_EVERY_S: u64 = 3 * 3600;
 
 /// How publishing goes, as the switches under `state/pool/` say (crate::agent::publish).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Publishing {
-    /// The low zooms later (`state/pool/low-zoom-later`): the roads' and rails' lo packs and the
-    /// terrain's and slope's roots are made only `LOW_EVERY_S` after they were last made
-    /// (`since_low`), once half the lo packs are stale (`low_due`), or once everything is built;
-    /// the map tiles (z9 up) go out meanwhile with the low zooms as they were last made.
-    pub low_later: bool,
     /// Seconds since a catalog last went out with the low zooms made (None: none kept).
     pub since_low: Option<u64>,
     /// A done region's slope and tree cover by the pieces near it (`state/pool/near-slope`): the
     /// slope pieces whose z6 tile is within 20 km of it (what its slope reads), the tree cover
     /// pieces meeting it; not every stale piece of the z3 tiles around it. Their assemblies (z3–8)
-    /// are made with the low zooms (always, without `low_later`), and a region is done with its
+    /// are made with the low zooms, and a region is done with its
     /// pieces.
     pub near: bool,
     /// Seconds since the landmark points and the area overlays last ran (`LastCatalog::since`;
@@ -1820,6 +1815,15 @@ impl LastCatalog {
     }
 }
 
+/// Whether the low zooms (the roads' and rails' lo packs, the terrain's and slope's roots, the
+/// near way's assemblies) may be planned now: everything's built (`last`), nothing else is queued
+/// (`queue_empty`), half the lo packs are stale (`half_stale`), or `LOW_EVERY_S` has passed since
+/// they were last made (`since`: `LastCatalog::low_at`; none known: now). The gate decides only
+/// when; their keys stay by content.
+pub fn low_gate(last: bool, queue_empty: bool, half_stale: bool, since: Option<u64>) -> bool {
+    last || half_stale || gate_open(queue_empty, since, LOW_EVERY_S)
+}
+
 /// Whether a step gated by time (`GATED`) may be planned now: nothing's left to build (`idle`), its
 /// last run isn't known, or it was `every` seconds or more ago.
 pub fn gate_open(idle: bool, since: Option<u64>, every: u64) -> bool {
@@ -1842,7 +1846,7 @@ pub struct PublishLine {
     /// for.
     #[serde(default)]
     pub regions: Vec<PublishRegion>,
-    /// The low zooms are made now (`Publishing::low_later` off, or theirs due).
+    /// The low zooms are made now (`low_gate`).
     #[serde(default)]
     pub low: bool,
     /// Seconds until the next catalog may be made (`CATALOG_EVERY_S`; 0: it may now).
@@ -1930,8 +1934,7 @@ pub struct Plan {
     /// Every region's work left, in the order they're built (those with none last), whether or not
     /// it can start now: what the forecast schedules (crate::agent::forecast).
     pub regions: Vec<RegionLeft>,
-    /// The catalog planned goes out with the low zooms made (`Publishing::low_later`: they were
-    /// due, and nothing's left of the publishing chain, or no lo pack is stale), noted so once made
+    /// The catalog planned goes out with the low zooms made (`low_gate`: they were due, and nothing's left of the publishing chain, or no lo pack is stale), noted so once made
     /// (`LastCatalog::low_at`). Without a catalog planned: the low zooms are made now.
     pub low: bool,
     /// A catalog is due but held back by the map tiles or the road index to draw (`CATALOG_GATE`),
@@ -1998,7 +2001,7 @@ pub struct RegionLeft {
 /// - the heritage sites the units read;
 /// - publishing, as soon as the records change (`publish_chain`): what the coverage no longer
 ///   builds pruned, the map tiles whose owners changed (a unit's together: `by_unit`), the road
-///   index, the low zooms (`Publishing::low_later`), rail stops and ferries, the world-level terrain
+///   index, the low zooms (`low_gate`), rail stops and ferries, the world-level terrain
 ///   and slope; once the map tiles and road index are drawn (`CATALOG_GATE`; or held back
 ///   `CATALOG_CAP_S`), a catalog when what it would list changed
 ///   (`catalog_key`), at most one each `CATALOG_EVERY_S`;
@@ -2370,14 +2373,14 @@ pub fn plan(
         .collect();
     let bld = bld_work(cov, m, done, inputs, &bld_rank(&bld_regions));
     let depth = depth_work(cov, m, done, tiles);
-    // The low zooms (the roads' and rails' lo packs, the terrain's and slope's roots): always, or
-    // with them later, `LOW_EVERY_S` after they were last made, once half the lo packs are stale, and
-    // once everything is built.
+    // The low zooms (the roads' and rails' lo packs, the terrain's and slope's roots, the near
+    // way's assemblies) by their cadence (`low_gate`): nothing else queued counts the units, terrain,
+    // slope and tree pieces, the 3D buildings and the depths (their assemblies aside: they go with
+    // the low zooms).
     let near = updates.way.near;
-    let low = last_now
-        || !updates.way.low_later
-        || updates.way.since_low.is_none_or(|s| s >= LOW_EVERY_S)
-        || low_due_of(&pl.1, done);
+    let queue_empty =
+        by_region.is_empty() && slope.is_empty() && trees.is_empty() && bld.is_empty() && depth.is_empty();
+    let low = low_gate(last_now, queue_empty, low_due_of(&pl.1, done), updates.way.since_low);
     // The terrain's and slope's roots wait for what makes the lo packs they read: terrain's for the
     // terrain left (its pieces' mids, its assemblies), slope's for that and the slope left, so a
     // root isn't made while an assembly runs (or waits to be merged) and again after it.
@@ -2799,7 +2802,7 @@ fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, reach: Opt
 }
 
 /// Whether so much of the low zooms is stale that they're made however long since they last were
-/// (`Publishing::low_later`): half the roads' lo packs or more (a z3 tile's, by its key: what the
+/// (`low_gate`): half the roads' lo packs or more (a z3 tile's, by its key: what the
 /// units near it are now).
 pub fn low_due(m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches>) -> bool {
     low_due_of(&pack_lo_targets(m, reach).1, done)
@@ -2814,8 +2817,8 @@ fn low_due_of(lo: &[(String, String)], done: &Keys) -> bool {
 /// The publishing chain after the units, its first stale step: map tiles no unit reaches pruned,
 /// the map tiles whose owners changed (pack(T)), the road → units index, the roads' and rails' lo
 /// packs, rail stops and ferries, the terrain and slope roots (`pl`: pack(T)'s and lo's targets,
-/// `pack_lo_targets`). `low` false: the low zooms later (`Publishing::low_later`): no lo packs (the
-/// roots are held by `roots_held`).
+/// `pack_lo_targets`). `low` false: the low zooms not due (`low_gate`): no lo packs (the roots are
+/// held by `roots_held`).
 fn publish_chain(
     date: &str,
     m: &BTreeMap<String, String>,
@@ -5348,7 +5351,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn with_the_low_zooms_later_the_map_tiles_go_out_and_the_low_zooms_wait_their_turn() {
+    fn while_units_build_the_map_tiles_go_out_and_the_low_zooms_wait_their_turn() {
         let (c, mut reach, mut m, mut done) = three();
         // Reykjavik's roads reach nine z3 tiles (3/1/1 to 3/3/3), Vík's 3/3/2: c built
         // again stales less than half the lo packs.
@@ -5361,12 +5364,13 @@ pub(crate) mod tests {
         }
         let (_, lo) = pack_lo_targets(&m, Some(&reach));
         assert!(lo.len() >= 9, "{lo:?}");
-        let later = Publishing { low_later: true, since_low: Some(60), ..Default::default() };
+        let later = Publishing { since_low: Some(60), ..Default::default() };
         // The first: every lo pack stale, so the low zooms are made.
         let (ran, p) = through_the_chain(&c, &reach, &mut m, &mut done, later, false);
         assert!(p.low && ran.contains(&"lo".to_string()), "{ran:?}");
         done.record("catalog", &p.work[0].targets);
-        // c built again: its map tiles, the road index and rail stops; the low zooms wait.
+        // c built again, units still queued (busy): its map tiles, the road index and rail stops;
+        // the low zooms wait.
         rbuild(&c, &reach, &mut m, &mut done, "6/31/16", "8888888888888888");
         assert!(!low_due(&m, &done, Some(&reach)));
         let (mut m2, mut done2) = (m.clone(), done.clone());
@@ -5377,7 +5381,7 @@ pub(crate) mod tests {
                 && !ran.iter().any(|x| ["lo", "terrain-root", "slope-root"].contains(&x.as_str())),
             "{ran:?}"
         );
-        // Their turn (LOW_EVERY_S since), or the switch off: the lo packs too.
+        // Their turn (LOW_EVERY_S since), or when they were last made not known: the lo packs too.
         for way in [Publishing { since_low: Some(LOW_EVERY_S), ..later }, Publishing::default()] {
             let (mut m2, mut done2) = (m.clone(), done.clone());
             let (ran, p) = through_the_chain(&c, &reach, &mut m2, &mut done2, way, false);
@@ -7035,6 +7039,23 @@ pub(crate) mod tests {
     }
 
     /// The names' to-do lists: daily while units build, after any catalog when none's left.
+    #[test]
+    fn the_low_zooms_go_when_idle_at_once_and_when_busy_at_their_cadence() {
+        // A virtual clock: the low zooms last made at 1000.
+        let low_at = 1000;
+        let since = |now: u64| Some(now - low_at);
+        // Idle (nothing else queued): planned at once, a minute after they were last made.
+        assert!(low_gate(false, true, false, since(1060)));
+        // Busy: not until LOW_EVERY_S has passed.
+        assert!(!low_gate(false, false, false, since(1060)));
+        assert!(!low_gate(false, false, false, since(low_at + LOW_EVERY_S - 1)));
+        assert!(low_gate(false, false, false, since(low_at + LOW_EVERY_S)));
+        // Busy, half the lo packs stale: planned now.
+        assert!(low_gate(false, false, true, since(1060)));
+        // The last region (everything built): planned now; never made: now.
+        assert!(low_gate(true, false, false, since(1060)) && low_gate(false, false, false, None));
+    }
+
     #[test]
     fn the_names_to_do_runs_daily_or_when_idle() {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
