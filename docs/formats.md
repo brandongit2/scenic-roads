@@ -473,8 +473,14 @@ number is used once, whole or as a delta:
 - Readers (`store::catalog`: `latest`, `latest_nas_from`, `read_n`) take the highest number that
   reads whole: a delta applied to catalog `of` (itself read the same way), checked against both
   digests; one that doesn't fit is passed over as damaged.
-- A whole catalog is written when the deltas since the last whole one would reach its size
-  (`Delta::due_whole`), when there's none, or on `scenic-build catalog --whole`.
+- A delta lists each file's size as the records have it (`state/build/sizes.json`, from its job's
+  hand-off) or the last catalog does, looking at the NAS only for a file neither has (one written
+  before sizes were recorded: once). A whole catalog looks at every file, and stops on one missing
+  or of another size than recorded.
+- A whole catalog is written in idle time once the deltas since the last whole one add up to its
+  size or their run is half `MAX_CHAIN` (`store::catalog::whole_due`: the agent's `catalog --whole`
+  job, nothing else to do), when there's none, when a delta's run nears `MAX_CHAIN`
+  (`store::catalog::chain_full`), or on `scenic-build catalog --whole`.
 - GC also keeps every catalog a kept delta is read through, back to its whole one. A Mac keeps the
   catalogs it reads whole, in its own `catalog/`.
 
@@ -778,9 +784,12 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/build/terms/<E>.json`: term E, create-new, `{term, member, host, app, since, how, from,
     seq}`; `state/build/lead.json` a copy of the newest (a hint).
   - `state/build/term/1/first.json` and `state/build/term/<E>/records.json` (`{term, seq, manifest,
-    keys, pending, raw, reflected, rejected, last: {step: {target: lease}}, horizon, handed}`); the
-    lead also writes `manifest.json`, `jobs.json`, `pending.json` after its saves.
-  - `state/journal/<day>/<term>-<n>.json`: a job's entry `{member, lease, step, handoff, at}`;
+    keys, pending, sizes, raw, reflected, rejected, last: {step: {target: lease}}, horizon,
+    handed}`; `sizes`: content name → bytes of the files the manifest names, as their jobs wrote
+    them); the lead also writes `manifest.json`, `jobs.json`, `pending.json` and `sizes.json` after
+    its saves.
+  - `state/journal/<day>/<term>-<n>.json`: a job's entry `{member, lease, step, handoff, at}`
+    (`handoff.sizes`: the bytes of each file it wrote, by content name; none in older entries);
     `state/journal/rejected/<day>/<term>-<n>.why`.
   - `state/pool/members/<id>.json`: a heartbeat `{member, host, app, beat, leads, handing_to: {to,
     term, offer, since, stage}, ready_for, stood_down, addresses, members, conds: {home, ac, battery,

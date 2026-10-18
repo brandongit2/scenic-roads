@@ -29,6 +29,9 @@ pub struct Out {
     checked: std::collections::BTreeSet<String>,
     /// Content name → SHA-256 (hex) of uploads not yet verified on the NAS.
     pending: BTreeMap<String, String>,
+    /// Content name → size (bytes) of the files this run wrote or reused, handed on with the
+    /// manifest changes that name them (`SIZES`, the catalogs' sizes without a look at the NAS).
+    sizes: BTreeMap<String, u64>,
     manifest_path: PathBuf,
     /// Local scratch space for files before upload.
     pub scratch: PathBuf,
@@ -44,6 +47,12 @@ pub struct Out {
     /// Names set or removed outside the step's outputs: the save fails, naming the first.
     outside: Vec<String>,
 }
+
+/// The records' sizes of the files the manifest names (content name → bytes, compact JSON), kept
+/// beside the manifest by its writer (`Out::save_held`; in the pool its lead, from its records):
+/// what a catalog lists a file's size as without looking at the NAS. A file written before them
+/// isn't in it (the catalog looks at it once, then has it from the catalog before).
+pub const SIZES: &str = "state/build/sizes.json";
 
 /// A unit's outputs that map tiles, the road index and rail stops read: its base pack, road values
 /// and roads' English (a prune of a unit drops them; its job also writes analysis grids, which
@@ -211,6 +220,7 @@ impl Out {
             changes: BTreeMap::new(),
             checked: Default::default(),
             pending,
+            sizes: BTreeMap::new(),
             manifest_path,
             scratch: scratch.to_path_buf(),
             handoff,
@@ -337,6 +347,7 @@ impl Out {
             self.pending.insert(name.clone(), sha);
         }
         std::fs::remove_file(local).ok();
+        self.sizes.insert(name.clone(), size);
         self.manifest.insert(logical.to_string(), name.clone());
         self.changes.insert(logical.to_string(), Some(name.clone()));
         Ok(name)
@@ -400,6 +411,7 @@ impl Out {
         std::fs::remove_file(&local).ok();
         anyhow::ensure!(got? == name, "{logical}: wrote another name than {name}");
         crate::timings::count(if existed { 0 } else { bytes.len() as u64 }, 1);
+        self.sizes.insert(name.clone(), bytes.len() as u64);
         if !existed {
             self.pending.insert(name.clone(), format!("{:x}", sha2::Sha256::digest(bytes)));
         }
@@ -452,10 +464,12 @@ impl Out {
                 changes: self.changes.clone(),
                 pending: self.pending.clone(),
                 checked: self.checked.iter().cloned().collect(),
+                sizes: self.named_sizes(),
                 done: None,
                 raw: Vec::new(),
             };
             crate::handoff::write(dir, &h)?;
+            self.sizes.retain(|c, _| !h.sizes.contains_key(c));
             self.changes.clear();
             self.pending.clear();
             self.checked.clear();
@@ -476,6 +490,7 @@ impl Out {
             self.changes.insert(k.clone(), v.clone());
         }
         self.pending.extend(h.pending.clone());
+        self.sizes.extend(h.sizes.clone());
         self.checked.extend(h.checked.iter().cloned());
     }
 
@@ -493,6 +508,13 @@ impl Out {
                 None => on_disk.remove(k),
             };
         }
+        // (The sizes of the files it names, those of names no longer in it let go.)
+        let sizes_path = self.root.join(SIZES);
+        let sizes_read: BTreeMap<String, u64> = read_record(&sizes_path)?;
+        let mut sizes = sizes_read.clone();
+        sizes.extend(self.named_sizes());
+        let named: std::collections::BTreeSet<&String> = on_disk.values().collect();
+        sizes.retain(|c, _| named.contains(c));
         let pending_path = dir.join("pending.json");
         let pending_read: BTreeMap<String, String> = read_record(&pending_path)?;
         let mut pending = pending_read.clone();
@@ -503,6 +525,11 @@ impl Out {
                 crate::whole::write(p, &serde_json::to_vec_pretty(v)?)?;
             }
         }
+        if sizes != sizes_read {
+            crate::whole::write(&sizes_path, &serde_json::to_vec(&sizes)?)?;
+        }
+        let handed = self.named_sizes();
+        self.sizes.retain(|c, _| !handed.contains_key(c));
         // (What it reads next, a map update's job's units still as they were.)
         self.manifest = match &self.as_of {
             Some(then) => units_as_of(&on_disk, then),
@@ -512,6 +539,22 @@ impl Out {
         self.changes.clear();
         self.checked.clear();
         Ok(())
+    }
+
+    /// The sizes of this run's files that its changes name (the others, `store_bytes`'s not named
+    /// yet, wait for a later save).
+    fn named_sizes(&self) -> BTreeMap<String, u64> {
+        let named: std::collections::BTreeSet<&String> = self.changes.values().flatten().collect();
+        self.sizes.iter().filter(|(c, _)| named.contains(c)).map(|(c, n)| (c.clone(), *n)).collect()
+    }
+
+    /// The sizes the records hold of the files the manifest names (`SIZES`), with this run's own:
+    /// what a catalog lists them as, never looking at the NAS for them. An error when the record
+    /// can't be read now; a file it lacks (written before sizes were recorded) isn't in it.
+    pub fn recorded_sizes(&self) -> Result<BTreeMap<String, u64>> {
+        let mut s: BTreeMap<String, u64> = read_record(&self.root.join(SIZES))?;
+        s.extend(self.sizes.iter().map(|(c, n)| (c.clone(), *n)));
+        Ok(s)
     }
 
     /// Check every unverified upload on the NAS itself: SHA-256 computed there over SSH (`ssh`
@@ -616,6 +659,33 @@ mod tests {
     /// This Mac's unmerged hand-offs laid over the snapshot (docs/pool.md §7.4): their names read
     /// as the job's earlier attempts left them, none of them this job's own changes; none given,
     /// the snapshot as it is.
+    /// What a job writes is recorded with its size: handed off with the changes naming it, or saved
+    /// beside the manifest (`SIZES`), where the catalog reads it (`recorded_sizes`); a name the
+    /// manifest no longer has is let go.
+    #[test]
+    fn a_files_size_goes_with_the_change_naming_it() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let a = out.put_bytes("base/6-1-1", "base", b"twelve bytes").unwrap();
+        let unnamed = out.store_bytes("inputs-copy/x", "json", b"{}").unwrap();
+        out.save().unwrap();
+        let saved: BTreeMap<String, u64> = read_record(&root.join(SIZES)).unwrap();
+        assert_eq!(saved, [(a.clone(), 12)].into());
+        assert_eq!(out.recorded_sizes().unwrap().get(&unnamed), Some(&2), "this run's own, named or not");
+        out.remove("base/6-1-1");
+        out.save().unwrap();
+        assert!(read_record::<BTreeMap<String, u64>>(&root.join(SIZES)).unwrap().is_empty());
+        // A helper's job hands them off.
+        let hd = d.path().join("handoff");
+        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap().handing_off(&hd);
+        let b = out.put_bytes("base/6-1-2", "base", b"four").unwrap();
+        out.save().unwrap();
+        let h = crate::handoff::written_in(&hd).unwrap().unwrap();
+        assert_eq!(h[0].sizes, [(b, 4)].into());
+    }
+
     #[test]
     fn a_jobs_unmerged_hand_offs_are_laid_over_the_snapshot() {
         let d = tempfile::tempdir().unwrap();

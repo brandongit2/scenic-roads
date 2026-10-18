@@ -22,7 +22,7 @@ const MARKERS: &[&str] = &["handoff::write(", "journal::write(", "Handoff {", "H
 
 /// The records' paths, named in a line (its strings too): the manifest's file and the journal's
 /// folder. Their readers are listed too, so a new line naming them is looked at.
-const PATHS: &[&str] = &["state/build/manifest.json", "state/journal"];
+const PATHS: &[&str] = &["state/build/manifest.json", "state/build/sizes.json", "state/journal"];
 
 /// Whether line `l` (raw, its comment cut) with code `c` makes or writes a hand-off or an entry,
 /// or names the manifest's file or the journal's folder.

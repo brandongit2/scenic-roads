@@ -59,6 +59,11 @@ pub struct Records {
     pub keys: Keys,
     /// Uploads not yet verified on the NAS: content name → SHA-256.
     pub pending: BTreeMap<String, String>,
+    /// The sizes of the files the manifest names, as their jobs wrote them (content name → bytes;
+    /// crate::out::SIZES): a catalog's, without a look at the NAS. Records from before them have
+    /// none, nor files written before.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sizes: BTreeMap<String, u64>,
     /// Raw terrain tiles' archives handed off and not yet named in the raw store's index: the lead
     /// names them (crate::rawpack::name_handed, which passes over any already named) and takes
     /// them off.
@@ -145,6 +150,7 @@ impl Records {
             manifest: read_or_default(nas, TODAY[0])?,
             keys: read_or_default(nas, TODAY[1])?,
             pending: read_or_default(nas, TODAY[2])?,
+            sizes: read_or_default(nas, crate::out::SIZES)?,
             ..Default::default()
         })
     }
@@ -155,10 +161,14 @@ impl Records {
     pub fn save(&mut self, nas: &dyn Nas) -> Result<()> {
         ensure!(self.term >= 1, "records of no term");
         self.seq += 1;
+        // (The sizes of files the manifest no longer names let go.)
+        let named: BTreeSet<&String> = self.manifest.values().collect();
+        self.sizes.retain(|c, _| named.contains(c));
         nas.write_whole(&path(self.term), &serde_json::to_vec(self)?)?;
         if self.term == 1 {
             nas.write_whole(TODAY[0], &serde_json::to_vec_pretty(&self.manifest)?)?;
             nas.write_whole(TODAY[2], &serde_json::to_vec_pretty(&self.pending)?)?;
+            nas.write_whole(crate::out::SIZES, &serde_json::to_vec(&self.sizes)?)?;
             nas.write_whole(TODAY[1], &serde_json::to_vec_pretty(&self.keys)?)?;
         }
         Ok(())
@@ -192,6 +202,10 @@ impl Records {
                 Some(n) => self.manifest.insert(k.clone(), n.clone()),
                 None => self.manifest.remove(k),
             };
+            // (Its sizes of the files it names alone.)
+            if let Some((n, size)) = v.as_ref().and_then(|n| h.sizes.get(n).map(|z| (n, *z))) {
+                self.sizes.insert(n.clone(), size);
+            }
         }
         self.pending.extend(h.pending.iter().map(|(k, v)| (k.clone(), v.clone())));
         for c in &h.checked {
@@ -512,6 +526,28 @@ mod tests {
 
     fn any(_: &Entry, _: &Records) -> std::result::Result<(), String> {
         Ok(())
+    }
+
+    /// The sizes an entry hands off are kept for the files it names alone, let go once the manifest
+    /// no longer names them, and written beside today's manifest; an entry without sizes still merges.
+    #[test]
+    fn the_records_keep_the_sizes_of_the_files_the_manifest_names() {
+        let nas = Mem::default();
+        let mut r = Records { term: 1, ..Default::default() };
+        let mut e = built(1, 1, "6-1-1", "k1");
+        e.handoff.sizes = [("base/6-1-1.k1.base".into(), 12), ("base/6-9-9.k0.base".into(), 3)].into();
+        assert!(r.apply("a", &e));
+        assert!(r.apply("b", &built(1, 2, "6-1-2", "k2")));
+        assert_eq!(r.sizes, [("base/6-1-1.k1.base".to_string(), 12)].into());
+        let mut again = built(1, 3, "6-1-1", "k3");
+        again.handoff.sizes = [("base/6-1-1.k3.base".into(), 14)].into();
+        assert!(r.apply("c", &again));
+        r.save(&nas).unwrap();
+        assert_eq!(r.sizes, [("base/6-1-1.k3.base".to_string(), 14)].into());
+        let today: BTreeMap<String, u64> =
+            serde_json::from_slice(&nas.read(crate::out::SIZES).unwrap().unwrap()).unwrap();
+        assert_eq!(today, r.sizes);
+        assert_eq!(Records::today(&nas).unwrap().sizes, r.sizes);
     }
 
     fn lead(app: &str) -> Member {

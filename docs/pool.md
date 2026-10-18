@@ -116,7 +116,9 @@ A term is `state/build/terms/<E>.json`, made once with create-new (`crate::pool:
 ### 6.2 Records per term
 
 - **One file per term** (`crate::pool::records`): `state/build/term/<E>/records.json` holds the
-  manifest, keys, pending uploads, raw archives awaiting the index, the journal entries it reflects
+  manifest, keys, pending uploads, the sizes of the files the manifest names (from the entries'
+  hand-offs, for the catalogs: `sizes.json` beside `manifest.json`), raw archives awaiting the
+  index, the journal entries it reflects
   and refused (with why), the lease that last set each target, the forget horizon, and `seq`. A
   handover's last snapshot also holds the coordinator's state. Written whole (`Nas::write_whole`)
   after each merge.
@@ -345,6 +347,9 @@ no longer fit.
   from a member on a newer app is **held** (`check_from`, `records::HOLD`) until the lead runs that
   app; otherwise it's refused, the why noted at `state/journal/rejected/<key>.why`
   (`journal::note_refusal`). The lint `tests/write_sets.rs` gates publish.
+- **Sizes ride along:** `Out` records each file it writes with its size, and the hand-off carries
+  them (`Handoff::sizes`); the merge keeps those of the files the entry names, so a delta catalog
+  never looks at them on the NAS. Entries from before carry none.
 - **Lease order holds:** an older lease's entry for targets a newer one set changes nothing.
 - **The journal is a log:** nothing is removed on merge. Planned (plan §10): GC of day folders over
   a week old once every snapshot names their entries; `forget_before` already handles it.

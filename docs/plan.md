@@ -125,7 +125,7 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   of their sources. Readers take the highest that decodes.
 - **The build manifest** (`state/build/manifest.json`) lists everything built; **job keys**
   (`state/build/jobs.json`) say what each output was made from. These and the unverified uploads
-  (`pending.json`) are written by the lead from its term's records
+  (`pending.json`) and the files' sizes (`sizes.json`) are written by the lead from its term's records
   (`state/build/term/<E>/records.json`, the truth: §8, The pool).
 
 **Copies carry the bytes and permissions, nothing else** (`store::sys::copy_data`; `cp -X` in
@@ -1126,10 +1126,13 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
      - `update-share`: the lead's own job of a map update's map tiles takes an even share
        (`publish::lead_share`), leaving the rest offered to members.
      - `delta-catalog`: the catalog job (`scenic-build catalog --delta`) writes what changed over the
-       last (docs/formats.md, Delta catalogs), whole again once deltas add up to its size or the
-       chain nears `MAX_CHAIN`; sizes of unchanged files come from the last. `scenic-build catalog
-       --whole` writes one whole. Readers apply deltas (`store::catalog::latest_nas_from`). Switch on
-       only once every Mac's server reads deltas. Held catalogs are always whole.
+       last (docs/formats.md, Delta catalogs), each file's size from the records
+       (`state/build/sizes.json`, which the files' jobs hand off) or the last catalog: it looks at
+       the NAS only for a file written before sizes were recorded. The whole catalog, which looks
+       at every file, is an idle-time job (`scenic-build catalog --whole`) the lead's agent runs
+       when the deltas add up to a whole one (`store::catalog::whole_due`), or a delta's run nears
+       `MAX_CHAIN`. Readers apply deltas (`store::catalog::latest_nas_from`). Switch on only once
+       every Mac's server reads deltas. Held catalogs are always whole.
      - `near-slope`: a map update's slope and tree cover are the pieces near its regions
        (`Publishing::near`), not every stale piece around.
 4. **Four chains:**

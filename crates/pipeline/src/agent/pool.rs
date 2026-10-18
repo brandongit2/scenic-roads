@@ -1839,6 +1839,7 @@ pub fn entry_of(
         h.changes.retain(|l, _| done.iter().any(|(t, _)| crate::coord::saves(step, t, l)));
         let kept: BTreeSet<String> = h.changes.values().flatten().cloned().collect();
         h.pending.retain(|c, _| kept.contains(c));
+        h.sizes.retain(|c, _| kept.contains(c));
         let pending = h.pending.clone();
         h.checked.retain(|c| pending.contains_key(c));
     }
@@ -1969,6 +1970,7 @@ pub fn seed(nas: &dyn Nas, coord: &Path) -> Result<()> {
 pub fn write_today(nas: &dyn Nas, r: &Records) -> Result<()> {
     nas.write_whole("state/build/manifest.json", &serde_json::to_vec_pretty(&r.manifest)?)?;
     nas.write_whole("state/build/pending.json", &serde_json::to_vec_pretty(&r.pending)?)?;
+    nas.write_whole(crate::out::SIZES, &serde_json::to_vec(&r.sizes)?)?;
     nas.write_whole("state/build/jobs.json", &serde_json::to_vec_pretty(&r.keys)?)
 }
 
