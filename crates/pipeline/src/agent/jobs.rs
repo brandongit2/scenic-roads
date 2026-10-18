@@ -377,11 +377,15 @@ pub fn adopt(record: &Path) -> Option<(Running, serde_json::Value)> {
     let (spec, hand, log) = (rec.spec?, rec.hand?, rec.log?);
     let status = status_path(record);
     let g = Group { pgid: rec.pgid, leader_start: rec.leader_start, started: rec.started, id: rec.id };
-    if !g.is_the_jobs() && read_status(&status).is_none() {
+    // (Its group gone, its status written: ended already. Its group id may since be another's:
+    // none kept (0), so nothing signals it, nothing keeps the Mac awake by it nor watches it.)
+    let ended = !g.is_the_jobs();
+    if ended && read_status(&status).is_none() {
         return None;
     }
+    let pgid = if ended { 0 } else { rec.pgid };
     let ran = Duration::from_secs(now_s().saturating_sub(rec.started));
-    let caffeinate = if rec.paused.is_none() { keep_awake(rec.pgid as u32) } else { None };
+    let caffeinate = if rec.paused.is_none() && !ended { keep_awake(pgid as u32) } else { None };
     Some((
         Running {
             spec,
@@ -390,7 +394,7 @@ pub fn adopt(record: &Path) -> Option<(Running, serde_json::Value)> {
             adopted: true,
             vanished: false,
             caffeinate,
-            pgid: rec.pgid,
+            pgid,
             started: rec.started,
             log,
             paused: rec.paused,
@@ -1011,6 +1015,25 @@ mod tests {
             unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
             assert!(wait_for(&mut a, "the group empty", |a| group_members(a.pgid).is_empty().then_some(true)));
         }
+    }
+
+    /// Task #393 review: a job that ended while no agent tended it, its group gone (its id free to
+    /// be another's), is taken over as ended: its status read, no group kept (0), so stopping it
+    /// signals nothing.
+    #[test]
+    fn a_job_ended_before_its_take_over_keeps_no_group() {
+        let d = tempfile::tempdir().unwrap();
+        let rec = d.path().join("job.json");
+        let r =
+            Running::start(spec(&["/bin/sh", "-c", "exit 4"]), 1, &[], d.path().join("log"), &rec, None, None).unwrap();
+        let pgid = r.pgid;
+        r.hand_over(&rec, serde_json::json!({"lease": null}));
+        unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
+        let (mut a, _) = adopt(&rec).expect("taken over, ended");
+        assert_eq!(a.pgid, 0);
+        assert!(a.caffeinate.is_none());
+        assert_eq!(a.poll().unwrap().and_then(|s| s.code()), Some(4));
+        a.stop(Duration::from_secs(1));
     }
 
     #[test]

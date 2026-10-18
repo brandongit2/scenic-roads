@@ -3453,7 +3453,10 @@ impl Agent {
                 r.pgid,
                 if k > 0 { format!(", in slot {}", k + 1) } else { String::new() }
             );
-            std::fs::write(self.control_path(k), b"run").ok();
+            // (Its channel "run" unless this Mac's build is paused, the pool's or this Mac's alone:
+            // then "drain", so it passes no safe point before `tend` asks it again.)
+            let paused = self.own_pause().is_some();
+            std::fs::write(self.control_path(k), if paused { &b"drain"[..] } else { b"run" }).ok();
             if let Some(p) = hand.proxy_port {
                 self.proxy_port = Some(p);
             }
@@ -3463,7 +3466,10 @@ impl Agent {
             s.reserve_mb = hand.reserve_mb;
             s.spare_mb = hand.spare_mb;
             s.running = Some(r);
-            self.watch_job(k, pgid);
+            // (One already ended, `pgid` 0, isn't watched: its end is seen at the next look.)
+            if pgid > 0 {
+                self.watch_job(k, pgid);
+            }
             self.note(crate::coord::history::Event {
                 worker: Some(self.worker_of(k)),
                 step: Some(w.step.clone()).filter(|s| !s.is_empty()),
@@ -3471,6 +3477,23 @@ impl Agent {
                 note: "taken over from the agent before".into(),
                 ..crate::coord::history::Event::new("adopt")
             });
+        }
+    }
+
+    /// The jobs taken over (`adopt_jobs`) still running stopped (`why`), as interrupted: what they
+    /// finished handed off, their leases given back.
+    fn stop_adopted(&mut self, why: &str) {
+        for k in 0..self.slots.len() {
+            if !self.slots[k].running.as_ref().is_some_and(|r| r.adopted) {
+                continue;
+            }
+            if let Some(r) = self.slots[k].running.as_mut() {
+                eprintln!("agent: stopping {}: {why}", r.spec.id);
+                r.stop(Duration::from_secs(30));
+            }
+            self.stopped(k, &format!("stopped: {why}"));
+            self.slots[k].running = None;
+            std::fs::remove_file(self.record_path(k)).ok();
         }
     }
 
@@ -8412,6 +8435,12 @@ impl Agent {
             match crate::budget::start_proxy_at(root, &me, self.proxy_port.unwrap_or(0)) {
                 Ok(p) => {
                     eprintln!("agent: the budgets' proxy listens on {}", p.url());
+                    // (Not on the port the jobs taken over were told, it taken meanwhile: they can't
+                    // reach out, so they're stopped, interrupted, their targets given back.)
+                    let told = self.proxy_port.take();
+                    if told.is_some_and(|t| proxy_port(&p.url()) != Some(t)) {
+                        self.stop_adopted("its proxy's port was taken: its connections can't go out");
+                    }
                     self.proxy = Some(p);
                 }
                 Err(e) => eprintln!("agent: the budgets' proxy didn't start ({e:#}); no job starts until it has"),
@@ -9159,6 +9188,13 @@ impl Agent {
                         }
                         self.o.helper = false;
                         self.coord = Some(c);
+                        // (Its running jobs' leases held in it at once, as a beat holds them, so
+                        // it grants none of their targets elsewhere: those taken over too.)
+                        for k in 0..self.slots.len() {
+                            if self.slots[k].running.is_some() {
+                                self.beat(k, Some(root));
+                            }
+                        }
                         self.published = None;
                     }
                     None => {
@@ -13602,6 +13638,45 @@ mod tests {
 
     /// Task #393: a record an older app wrote (no spec, no slot saved) isn't taken over: its job is
     /// stopped as before (jobs::stop_orphan), and so is a helper's leased job at the agent's end.
+    /// Task #393 review: a job taken over while this Mac's build is paused is told "drain" at once,
+    /// never "run", so it passes no safe point.
+    #[test]
+    fn a_job_taken_over_while_paused_is_told_to_drain() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let opts = || Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: d.path().join("bin"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        };
+        let mut a = test_agent(opts()).unwrap();
+        a.free_set = Some(40 << 30);
+        let job = JobSpec {
+            id: "terrain 6/55/25".into(),
+            what: "terrain 6/55/25".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "terrain".into(), targets: vec![("6/55/25".into(), "k".into())] }),
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        assert!(a.try_start(0, job, &cond, Some(&root), &mut Vec::new()));
+        let pgid = a.slots[0].running.as_ref().unwrap().pgid;
+        a.hand_over_jobs();
+        drop(a);
+        let p = crate::control::Pause::new(crate::control::Mode::Drain, "test");
+        std::fs::write(home.join("pause.json"), serde_json::to_vec(&Some(p)).unwrap()).unwrap();
+        let mut b = test_agent(opts()).unwrap();
+        assert!(b.slots[0].running.as_ref().is_some_and(|r| r.adopted && r.pgid == pgid));
+        assert_eq!(std::fs::read(b.control_path(0)).unwrap(), b"drain");
+        b.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
+        unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
+    }
+
     #[test]
     fn a_job_with_no_saved_slot_is_stopped_not_taken_over() {
         let d = tempfile::tempdir().unwrap();

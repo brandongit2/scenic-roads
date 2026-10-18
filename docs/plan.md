@@ -1047,12 +1047,16 @@ from the first (`edit_held`).
   restart, its launcher restarted, a SIGTERM) leaves its jobs running, its leases not ended
   (`hand_over_jobs`); so does a crash after the first save. The next agent, as it starts and
   before it plans, takes each over (`adopt_jobs`, `jobs::adopt`): its group still the job's (its
-  head's start time), or ended with its status written. The lead's own lease is renewed, or held
+  head's start time), or ended with its status written (then no group is kept: nothing signals
+  an id another may have taken). The lead's own lease is renewed, or held
   again under a new id if its coordinator's restart ended it (never if another holds its targets:
-  then the job is stopped, as at any lapse); a member's stays the lead's. Its channel is set to
-  "run" (a drain the agent before asked for is this one's to ask again), the memory guard watches
-  it, the pool doesn't hand its folder off as left (`take_left`), the proxy listens again on the
-  port the job was told while it's free, and the map server's updater keeps its app's folder
+  then the job is stopped, as at any lapse), its grant's disk reservation kept; a member's stays
+  the lead's, and is held in the member's own coordinator at once if it takes the lead in its
+  process. Its channel is set to
+  "run" (a drain the agent before asked for is this one's to ask again), or "drain" while this
+  Mac's build is paused (the pool's or its own), the memory guard watches it, the pool doesn't hand its folder off as left (`take_left`), the proxy listens again on the
+  port the job was told while it's free (taken, the jobs taken over are stopped as interrupted,
+  their targets given back), and the map server's updater keeps its app's folder
   (`job_apps` in the status). Its end is read from the status file: a pause's 75 counts as paused;
   a group gone with no status (killed while no agent tended it) is interrupted, not failed. A
   record an older app wrote, or one with no slot saved, isn't taken over: its job is stopped at

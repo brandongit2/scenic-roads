@@ -29,6 +29,10 @@ pub fn signal_group(pgid: i32, sig: Signal) -> bool {
             Signal::Kill => libc::SIGKILL,
             Signal::Probe => 0,
         };
+        // (No group, 0 or less: never this process's own, which killpg(0) would be.)
+        if pgid <= 0 {
+            return false;
+        }
         // SAFETY: a plain syscall on a group we started.
         unsafe { libc::killpg(pgid, s) == 0 }
     }
@@ -71,6 +75,10 @@ pub fn process_start(pid: i32) -> Option<u64> {
 
 /// The processes of a process group.
 pub fn group_members(pgid: i32) -> Vec<i32> {
+    // (No group: none.)
+    if pgid <= 0 {
+        return Vec::new();
+    }
     #[cfg(target_os = "macos")]
     {
         const PROC_PGRP_ONLY: u32 = 2;
