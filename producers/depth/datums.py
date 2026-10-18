@@ -30,6 +30,10 @@ def stations(path: Path, column: str, skip=frozenset(), id_column: str | None = 
     return out
 
 
+# A station farther than this from the water grid says nothing about it.
+REACH_DEG = 1.0
+
+
 class Surface:
     """An offset (m) on a lon/lat grid (`a`, its west, north and cell size)."""
 
@@ -52,10 +56,20 @@ class Surface:
             raise SystemExit("a datum surface needs water and stations")
         _, (iy, ix) = distance_transform_edt(~water, return_indices=True)
         fixed: dict = {}
+        reach = REACH_DEG / res
         for lon, lat, v in pts:
-            c, r = int((lon - west) / res), int((north - lat) / res)
-            if 0 <= r < H and 0 <= c < W:
+            c, r = int(np.floor((lon - west) / res)), int(np.floor((north - lat) / res))
+            # a station just off the grid's edge counts (its nearest water cell is taken from the edge cell)
+            if -reach <= r < H + reach and -reach <= c < W + reach:
+                r, c = min(max(r, 0), H - 1), min(max(c, 0), W - 1)
                 fixed.setdefault((int(iy[r, c]), int(ix[r, c])), []).append(v)
+        if not fixed:
+            cx, cy = west + W * res / 2, north - H * res / 2
+            d = min(float(np.hypot((lon - cx) * np.cos(np.radians(cy)), lat - cy)) * 111.0 for lon, lat, _ in pts)
+            raise SystemExit(
+                f"a datum surface needs a station within {REACH_DEG:g} degrees of the water: none is, over "
+                f"{west:.2f}..{west + W * res:.2f} E, {north - H * res:.2f}..{north:.2f} N (the nearest is {d:.0f} km from its centre); "
+                "a far station's offset would be a wrong depth, so the table needs rows for this area")
         lab, _ = label(water)
         solve = water & np.isin(lab, list({lab[k] for k in fixed}))
         idx = -np.ones((H, W), np.int64)
