@@ -28,10 +28,21 @@ pub(crate) fn src_bytes(out: &Out, src: &str, stem: &str) -> Result<Vec<u8>> {
     let logical = format!("{src}/{stem}");
     let content = out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?;
     let mirror = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/scenic/mirror").join(content));
-    let path = mirror.filter(|p| p.exists()).unwrap_or_else(|| out.path(content));
     // (Its own phase, or a sub-phase of the one reading it: crate::timings.)
     let p = crate::timings::phase("the heritage outputs read", crate::timings::Class::NasRead);
-    let b = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    // (The mirror's copy read under a shared lock, so the mirror's delete, under an exclusive one,
+    // waits it out: store::cachefile; gone meanwhile, the NAS's.)
+    let here = match &mirror {
+        Some(m) => store::cachefile::read(m).with_context(|| format!("read {}", m.display()))?,
+        None => None,
+    };
+    let b = match here {
+        Some(b) => b,
+        None => {
+            let path = out.path(content);
+            std::fs::read(&path).with_context(|| format!("read {}", path.display()))?
+        }
+    };
     p.count(b.len() as u64, 1);
     Ok(b)
 }

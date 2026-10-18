@@ -303,7 +303,8 @@ floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, th
   /api/downloads/reserve`), applied at once. A download that wouldn't fit is refused; when the disk
   fills later, what doesn't fit waits, and nothing downloaded goes for it.
 - **The agent's jobs** don't need the mirror, but pack and lo read their owners' base packs and
-  road values from it where present, each under a shared lock (`store::cachefile`). The mirror
+  road values, and the jobs converting the heritage job's files read those, from it where present, under a shared
+  lock (`store::cachefile`). The mirror
   deletes a file only under an exclusive lock taken without waiting, so one a job holds stays
   until a later sync.
 - **Pack indexes** are cached as they're read (`idx/`), for offline starts.
@@ -1259,7 +1260,7 @@ the jobs' wall time, and where a run's time went):
 | bldtiles | 22 % | 14 min | 4.0 | the areas' tiles made (compute) 88 % |
 | terrain | 10 % | 5 min | 1.5 | tiles prepared 58 %, uploaded 15 % |
 | names-todo | 6 % | 11 min | 0.1 | every base pack's names read from the NAS, after each catalog |
-| pack | 6 % | 12 min | 0.1 | the base packs copied here 91 % (18 GB a run) |
+| pack | 6 % | 12 min | 0.1 | getting the base packs here, before jobs opened only their tiles' owners (#251); what a tile reads now: its `units` and `bytes` sizes (crate::costin) |
 | slope | 5 % | 2 min | 0.4 | its terrain pack copied 29 %, uploaded 45 % |
 | heritage | 4 % | 81 min | 1.0 | the filtered planet clipped (osmium, once a pass) 86 % |
 | peaks | 3 % | 3 min | 1.1 | z12 tiles read one by one from the packs on the NAS (25,000 files a run) 75 % |
