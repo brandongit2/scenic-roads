@@ -4957,8 +4957,6 @@ impl Agent {
         h
     }
 
-    /// Slot `k`'s job for the status: its parts (the last it said), its progress, and from its pace
-    /// the time it has left (kept for the forecast).
     /// Whether every member of the pool reports the new app (`Status::all_new`): the lead's
     /// coordinator's word (`Coordinator::all_new`); a member's, its lead's heartbeat's as last
     /// read (once a minute: `lead_all_new`; an older lead's says no). No coordinator and no pool: true.
@@ -4978,6 +4976,8 @@ impl Agent {
         self.lead_all_new.is_some_and(|(_, n)| n)
     }
 
+    /// Slot `k`'s job for the status: its parts (the last it said), its progress, and from its pace
+    /// the time it has left (kept for the forecast).
     fn job_view(&mut self, k: usize) -> Option<JobView> {
         let waiting = self.waiting_words(k);
         let slot = &mut self.slots[k];
