@@ -35,12 +35,22 @@ GLERL = "https://www.glerl.noaa.gov/data/wlevels/dashboard/data/lakewide/{}.txt"
 COOPS = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations/{}/datums.json?units=metric"
 
 
-def low_water_datum(path: Path) -> float:
-    d = json.loads(path.read_text())
+def low_water_datum(d: dict, mean: float) -> float:
+    """The gauge's low water datum in m IGLD 85, from its CO-OPS datums (`d`). The metadata API gives a
+    Great Lakes gauge's GL_LWD as an IGLD 85 elevation, its only datum (no station datum, STND):
+    with an `IGLD` entry beside it, both are taken as above STND and IGLD is subtracted; any other
+    shape fails. The gauge's observed extremes (`min`, `max`, the same reference) must hold the
+    lake's long-term mean (`mean`, m IGLD 85), so a wrong reference fails loudly."""
     if d.get("units") != "meters":
-        raise SystemExit(f"{path}: units {d.get('units')!r}, not meters")
-    (v,) = [x["value"] for x in d["datums"] if x["name"] == "GL_LWD"]
-    return float(v)
+        raise SystemExit(f"CO-OPS datums: units {d.get('units')!r}, not meters")
+    by = {x["name"]: float(x["value"]) for x in d.get("datums") or []}
+    if "GL_LWD" not in by or set(by) - {"GL_LWD", "IGLD"}:
+        raise SystemExit(f"CO-OPS datums: {sorted(by)}, not GL_LWD (and IGLD) alone")
+    lwd = by["GL_LWD"] - by.get("IGLD", 0.0)
+    lo, hi = d.get("min"), d.get("max")
+    if lo is None or hi is None or not (float(lo) - by.get("IGLD", 0.0) <= mean <= float(hi) - by.get("IGLD", 0.0)) or not 0 < mean - lwd < 2:
+        raise SystemExit(f"CO-OPS datums: low water datum {lwd} m and extremes {lo}–{hi} m don't fit the mean level {mean:.3f} m IGLD 85")
+    return lwd
 
 
 def mean_level(path: Path, through: int | None) -> tuple[float, int, int]:
@@ -62,7 +72,7 @@ def lake_levels(cache: Path, through: int | None) -> dict[str, float]:
     out = {}
     for lake, (series, gauge) in LAKES.items():
         mean, y0, y1 = mean_level(fetch(GLERL.format(series), cache / f"glerl-{series}.txt"), through)
-        lwd = low_water_datum(fetch(COOPS.format(gauge), cache / f"coops-{gauge}-datums.json"))
+        lwd = low_water_datum(json.loads(fetch(COOPS.format(gauge), cache / f"coops-{gauge}-datums.json").read_text()), mean)
         out[lake] = mean - lwd
         log(f"{lake}: mean {mean:.3f} m ({y0}–{y1}), low water datum {lwd:.3f} m (gauge {gauge}): {out[lake]:+.3f} m")
     return out

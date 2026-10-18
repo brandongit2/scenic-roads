@@ -6,7 +6,7 @@ product made from it to carry its notice; the declaration carries it, never redi
 
 - `--box` is fetched in blocks (`--block` degrees, 0.5 × 0.3 for NONNA-10 as the service's own
   index cells are) into `--cache`, after the host's robots.txt, one request at a time; a block with
-  no data is left out. `--from <tif>…` reads blocks already fetched.
+  no data (the service sends it as nodata) makes no grid, and a failed request stops the run. `--from <tif>…` reads blocks already fetched.
 - Chart datum → MSL: the stations' mean water level above chart datum (stations.py chs), a harmonic
   surface over the water, subtracted; the same is the chart's low water below MSL (`low_file`).
 - No per-cell flags: every cell is the grid's own zoom (NONNA-100 a z10 grid, NONNA-10 z13).
@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from grid import Writer, fetch, lonlat_to_merc, log
+from grid import Writer, fetch, lonlat_to_merc
 from datums import from_table
 from raster import Spec, produce
 
@@ -70,10 +70,8 @@ def main():
                 b = (lon, lat, min(lon + bw, box[2]), min(lat + bh, box[3]))
                 u = block_url(COVERAGE[a.which], *b)
                 p = a.cache / f"nonna{a.which}_{b[0]:.2f}_{b[1]:.2f}.tif"
-                try:
-                    files.append((fetch(u, p), u))
-                except OSError as e:
-                    log(f"block {b}: {e}")
+                # (No data comes as a TIFF of nodata, making no grid; a failure stops the run.)
+                files.append((fetch(u, p), u))
                 lon += bw
             lat += bh
     # (The datum surface once, over the water of every block: chart datum below MSL is both what's

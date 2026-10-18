@@ -1191,8 +1191,12 @@ a `.tif` `file` and a `zoom` 0–18 (`src-index`); two of one `code` (`src-role`
 | `ncei-greatlakes` | NCEI's Great Lakes bathymetry, 3″ (the owner's download, `sources/ncei-greatlakes/`) | 13 | lake | `ncei.py greatlakes`: from each lake's low water datum (CO-OPS' station datums) to its long-term mean level (GLERL's coordinated lake-wide monthly means, 1918 on), both fetched as it runs | z10 |
 
 A chunked run (`chunked.py`) fetches a chunk, produces it, tars its grids over SSH into the NAS's
-`sources/fetched/<id>/`, compares the byte totals there and deletes the chunk here; each chunk's
-index part is kept, so the same command resumes. Each chunk's datum surfaces are its own.
+`sources/fetched/<id>/`, compares each file's size there and deletes the chunk here; each chunk's
+index part is kept, so the same command resumes. A dropped or refused connection, a timeout, 429 or a
+5xx is tried again (5 tries); any other failure stops the run before the chunk's part is written (a
+block with no data comes as a TIFF of nodata, making no grid). Free disk is logged a chunk;
+`--count` estimates a chunk's bytes from files already in its cache. Each chunk's datum surfaces are
+its own. (`producers/depth/test_chunked.py`: `uv run --project .. python -m unittest test_chunked`.)
 
 On macOS the producers trust the system's root certificates as well as OpenSSL's (`grid.urlopen`,
 read from its keychain): uv's Python lacks some roots the hosts use (CHS's station service's chain ends at Sectigo's

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """A depth source too big for the disk at once (BlueTopo ~97 GB, NONNA-10 ~90 GB), made a chunk at a
 time: each chunk's files fetched (bluetopo.py's and nonna.py's own URLs, checks and specs; a
-dropped connection retried), its datum surfaces solved over the chunk's water, its grids produced,
-tarred over SSH to `--nas host:dir` (the NAS's sources/fetched/<id>/), the byte totals compared
+transient failure retried, any other stopping the run), its datum surfaces solved over the chunk's water, its grids produced,
+tarred over SSH to `--nas host:dir` (the NAS's sources/fetched/<id>/), each file's size compared
 there, and the chunk's files deleted here.
 Each chunk's index part is kept in <work>/parts/; a chunk whose part exists is skipped, so the same
 command resumes. After the last chunk the parts merge into <work>/<id>-grids.geojson.
@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import shlex
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -42,15 +43,19 @@ N10_ORIGIN, N10_BLOCK = (-142.0, 41.0), (0.5, 0.3)
 
 
 def fetch_retry(url: str, dest: Path, pause: float, tries: int = 5) -> Path:
-    """grid.fetch, again after a dropped connection (30 s, 60 s, …); an HTTP answer isn't retried."""
+    """grid.fetch, again (30 s, 60 s, …) after a dropped or refused connection, a timeout, 429 or a
+    5xx; any other HTTP answer, or the last try's failure, stops the run (SystemExit), so no chunk's
+    part is written with a file missing."""
     for k in range(tries):
         try:
             return fetch(url, dest, pause=pause)
-        except urllib.error.HTTPError:
-            raise
+        except urllib.error.HTTPError as e:
+            if e.code != 429 and e.code < 500:
+                raise SystemExit(f"{url}: HTTP {e.code}")
+            log(f"{url}: HTTP {e.code} (try {k + 1})")
         except OSError as e:
             log(f"{url}: {e} (try {k + 1})")
-            time.sleep(30 * (k + 1))
+        time.sleep(30 * (k + 1))
     raise SystemExit(f"{url}: failed {tries} times")
 
 
@@ -108,10 +113,9 @@ def nonna10_chunk(chunk, table: str, cache: Path, w: Writer) -> list[Path]:
     for b in chunk:
         u = block_url(COVERAGE["10"], *b)
         p = cache / f"nonna10_{b[0]:.2f}_{b[1]:.2f}.tif"
-        try:
-            files.append((fetch_retry(u, p, 0.5), u))
-        except OSError as e:
-            log(f"block {b}: {e}")
+        # (A block with no data comes as a whole TIFF of nodata, 200, which makes no grid: the
+        # service has no empty answer, so every failure stops the run.)
+        files.append((fetch_retry(u, p, 0.5), u))
     if files:
         s = spec("10", from_table((table, "mwl_above_cd_m", frozenset(), "id"), [p for p, _ in files]))
         for p, u in files:
@@ -132,11 +136,34 @@ def to_nas(out: Path, nas: str) -> tuple[int, int]:
     if tar.wait() != 0:
         raise SystemExit(f"tar of {out} failed")
     listing = subprocess.run([*ssh, f"cd {shlex.quote(dest)} && ls -l"], capture_output=True, text=True, check=True).stdout
-    sizes = {l.split()[-1]: int(l.split()[4]) for l in listing.splitlines() if l.startswith("-")}
-    remote = sum(sizes.get(f, -10**12) for f in files)
-    if remote != local:
-        raise SystemExit(f"{out}: the NAS has {remote} bytes of {local}")
+    bad = size_mismatches({f: (out / f).stat().st_size for f in files}, listing)
+    if bad:
+        raise SystemExit(f"{out}: on the NAS not as here: {bad[:10]}{' …' if len(bad) > 10 else ''}")
     return len(files), local
+
+
+def size_mismatches(local: dict[str, int], listing: str) -> list[str]:
+    """The files whose size in `ls -l`'s `listing` isn't the local one (or that it lacks)."""
+    there = {}
+    for l in listing.splitlines():
+        if l.startswith("-"):
+            f = l.split(None, 8)
+            there[f[8]] = int(f[4])
+    return [f"{n}: {there.get(n)} of {b}" for n, b in sorted(local.items()) if there.get(n) != b]
+
+
+def estimate(cache: Path, which: str, size: int) -> str:
+    """A chunk's fetched bytes, from the files already in `cache` (none there: unknown)."""
+    pats = ("*.tiff", "*.tiff.aux.xml") if which == "bluetopo" else ("nonna10_*.tif",)
+    sizes = [[p.stat().st_size for p in cache.glob(g) if p.is_file()] for g in pats] if cache.is_dir() else []
+    if not sizes or not sizes[0]:
+        return "a chunk's bytes unknown (nothing fetched yet to measure)"
+    per = sum(sum(x) / len(x) for x in sizes if x)
+    return f"about {per * size / 1e9:.1f} GB fetched a chunk ({per / 1e6:.1f} MB an item, from {len(sizes[0])} in the cache)"
+
+
+def free(path: Path) -> str:
+    return f"{shutil.disk_usage(path).free / 1e9:.1f} GB free"
 
 
 def main():
@@ -153,6 +180,7 @@ def main():
     chunks = [items[i:i + a.size] for i in range(0, len(items), a.size)]
     log(f"{len(items)} {'tiles' if a.which == 'bluetopo' else 'blocks'} in {len(chunks)} chunks")
     if a.count:
+        log(estimate(a.work / "cache", a.which, a.size))
         return
     if not a.nas or ":" not in a.nas:
         raise SystemExit("--nas host:dir")
@@ -163,6 +191,7 @@ def main():
         if part.exists():
             continue
         out = a.work / f"out-{ci:03d}"
+        log(f"chunk {ci + 1}/{len(chunks)}: {free(a.work)}")
         w = Writer(out)
         fetched = (bluetopo_chunk if a.which == "bluetopo" else nonna10_chunk)(chunk, a.table, cache, w)
         n, size = to_nas(out, a.nas) if out.exists() and any(out.iterdir()) else (0, 0)
@@ -173,7 +202,7 @@ def main():
             out.rmdir()
         for p in fetched:
             p.unlink(missing_ok=True)
-        log(f"chunk {ci + 1}/{len(chunks)}: {n} files, {size / 1e9:.2f} GB on the NAS")
+        log(f"chunk {ci + 1}/{len(chunks)}: {n} files, {size / 1e9:.2f} GB on the NAS; {free(a.work)}")
     feats = []
     for p in sorted(parts.glob("part-*.geojson")):
         feats += json.loads(p.read_text())["features"]
