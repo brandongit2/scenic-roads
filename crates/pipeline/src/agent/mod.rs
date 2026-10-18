@@ -1530,6 +1530,10 @@ impl Agent {
     /// `new`, with how it asks whether the NAS's folder answers (`probe`: the real one, `answers`;
     /// a test's).
     fn new_with(mut o: Options, probe: fn(&Path) -> bool) -> Result<Agent> {
+        // Its programs' folder resolved (launchd starts it by `app/current`): its jobs start from
+        // its own version's folder, which they name in their command, so the agent after it lists
+        // that version as theirs (`job_apps`) once `current` names a newer one.
+        o.bin = o.bin.canonicalize().unwrap_or(o.bin);
         std::fs::create_dir_all(&o.home).with_context(|| format!("create {}", o.home.display()))?;
         let lock = AgentLock::try_take(&o.home)?;
         if lock.is_none() {
@@ -3343,19 +3347,8 @@ impl Agent {
     /// The app versions (`<apps>/<version>/`) the running jobs' programs are in, other than this
     /// agent's: those of jobs taken over from an older app's agent (`Status::job_apps`).
     fn job_apps(&self) -> Vec<String> {
-        let bin = self.o.bin.canonicalize().unwrap_or_else(|_| self.o.bin.clone());
-        let Some(apps) = bin.parent() else { return Vec::new() };
-        let mut out: Vec<String> = self
-            .slots
-            .iter()
-            .filter_map(|s| s.running.as_ref())
-            .filter_map(|r| Path::new(r.spec.cmd.first()?).strip_prefix(apps).ok()?.components().next())
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .filter(|v| *v != self.app && v != "current")
-            .collect();
-        out.sort();
-        out.dedup();
-        out
+        let cmds = self.slots.iter().filter_map(|s| s.running.as_ref()).filter_map(|r| r.spec.cmd.first());
+        job_apps_of(cmds.map(String::as_str), &self.o.bin, &self.app)
     }
 
     /// Slot `k`'s state an agent after this one needs to take its job over (`Hand`).
@@ -10209,6 +10202,32 @@ fn served_https(_port: u16) -> Option<String> {
 }
 
 /// The app version of the programs in `bin` (`…/app/<version>/`), or "development".
+/// The app versions the programs `cmds` start are in (`<apps>/<version>/<program>`), the apps'
+/// folder that of an agent whose programs are in `bin`, other than its own `app` (Agent::job_apps).
+/// Both sides compared resolved: a job's command names its agent's resolved folder (Agent::new_with),
+/// and `current`, a link whose target changes, names no version.
+fn job_apps_of<'a>(cmds: impl Iterator<Item = &'a str>, bin: &Path, app: &str) -> Vec<String> {
+    let bin = bin.canonicalize().unwrap_or_else(|_| bin.to_path_buf());
+    let Some(apps) = bin.parent() else { return Vec::new() };
+    let mut out: Vec<String> = cmds
+        .filter_map(|c| {
+            let c = Path::new(c);
+            // (Its folder resolved too, the version's own folder kept: not `current` followed.)
+            let dir = c.parent()?;
+            let dir = if dir.file_name().is_some_and(|n| n == "current") {
+                dir.to_path_buf()
+            } else {
+                dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf())
+            };
+            Some(dir.strip_prefix(apps).ok()?.components().next()?.as_os_str().to_string_lossy().into_owned())
+        })
+        .filter(|v| v != app && v != "current")
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 pub fn app_version(bin: &Path) -> String {
     let canon = bin.canonicalize().unwrap_or_else(|_| bin.to_path_buf());
     match (canon.parent().and_then(|p| p.file_name()), canon.file_name()) {
@@ -13425,6 +13444,41 @@ mod tests {
         a.step().unwrap();
         let st = read_status(Some(&root), &home).unwrap();
         assert!(st.waiting.iter().any(|w| w.why.contains("would start")), "{:?}", st.waiting);
+    }
+
+    /// An agent started by `app/current` starts its jobs from its own version's folder, so after
+    /// `current` moves twice the agent then lists that version as a running job's (the map server's
+    /// updater keeps it).
+    #[test]
+    fn a_job_started_through_current_keeps_its_version_listed() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        let apps = d.path().canonicalize().unwrap().join("app");
+        for v in ["v1", "v2", "v3"] {
+            std::fs::create_dir_all(apps.join(v)).unwrap();
+        }
+        std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
+        let a = test_agent(Options {
+            root: Some(root),
+            home,
+            bin: apps.join("current"),
+            dry_run: true,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        assert_eq!((a.o.bin.clone(), a.app.clone()), (apps.join("v1"), "v1".to_string()));
+        // Its job's command, as every job's is made.
+        let cmd = a.o.bin.join("scenic-build").to_string_lossy().into_owned();
+        for v in ["v2", "v3"] {
+            std::fs::remove_file(apps.join("current")).unwrap();
+            std::os::unix::fs::symlink(v, apps.join("current")).unwrap();
+        }
+        assert_eq!(job_apps_of([cmd.as_str()].into_iter(), &apps.join("v3"), "v3"), ["v1"]);
+        // (A command an older agent made through `current` names no version: not followed.)
+        let old = apps.join("current/scenic-build").to_string_lossy().into_owned();
+        assert!(job_apps_of([old.as_str()].into_iter(), &apps.join("v3"), "v3").is_empty());
     }
 
     #[test]

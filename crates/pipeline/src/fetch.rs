@@ -89,9 +89,12 @@ fn down_dir() -> Option<PathBuf> {
 
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn down_note(dir: Option<&Path>, url: &str) -> Option<PathBuf> {
-    let host = host_of(url);
-    let plain = !host.is_empty() && !host.contains(['/', '\\']) && !host.starts_with('.');
-    plain.then(|| dir.map(|d| d.join(host))).flatten()
+    // (Its host and port: two servers of one host are told apart. `host_port`, the ':' a '_'.)
+    let auth = url.split("://").nth(1).unwrap_or(url).split(['/', '?', '#']).next().unwrap_or("");
+    let auth = auth.rsplit_once('@').map_or(auth, |h| h.1);
+    let key = auth.replace(['[', ']'], "").replace(':', "_");
+    let plain = !host_of(url).is_empty() && !key.contains(['/', '\\']) && !key.starts_with('.');
+    plain.then(|| dir.map(|d| d.join(key))).flatten()
 }
 
 /// An error at once when `url`'s host gave no answer less than `DOWN_S` ago (its note in `dir`).
@@ -139,6 +142,10 @@ fn a_host_that_gave_no_answer_is_not_asked_again_for_a_while() {
     assert!(is_unreachable(&e) && format!("{e:#}").contains("connection reset by peer"), "{e:#}");
     // Another host: asked.
     assert!(down_check(Some(d.path()), "https://other.example.org/a.zip").is_ok());
+    // The same host on another port: another server, asked.
+    assert!(down_check(Some(d.path()), "https://data.example.org:8443/a.zip").is_ok());
+    note_down(Some(d.path()), "http://[::1]:9/x", "refused");
+    assert!(d.path().join("__1_9").is_file());
     // An old note: asked again.
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(DOWN_S + 60);
     std::fs::File::options().write(true).open(d.path().join("data.example.org")).unwrap().set_modified(old).unwrap();

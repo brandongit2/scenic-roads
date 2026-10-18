@@ -304,7 +304,7 @@ Fetch methods are protocols, generic code used by any declaration, through `pipe
 asks before any internet request. A range read (a GeoTIFF's tiles) is streamed, and one that breaks
 off goes on from the bytes received with a new range request (`fetch::net`: only a request that
 moves nothing counts against the retries). A server that gives no answer after its retries is noted
-for its host in the unit job's cache (`fetch-down/<host>`, `SCENIC_FETCH_DOWN`): requests to that host
+for its host and port in the unit job's cache (`fetch-down/<host>`, with `_<port>` when the URL names one; `SCENIC_FETCH_DOWN`): requests to that server
 fail at once for the next 30 minutes instead of each waiting out its retries, and a step that ends so
 exits 69, which the unit job reads as the area's server being down: it sets that area aside, builds
 its other areas, and fails at its end naming the areas set aside, which the agent's retry builds later. The data servers a worker's task may read through the coordinator
