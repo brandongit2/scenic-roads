@@ -989,6 +989,52 @@ struct Memory {
     /// The last freeing toward the owner's disk room target (room::toward).
     #[serde(default)]
     toward: Option<room::Freed>,
+    /// The shared caches this Mac has (crate::needs::CACHES; task #392): each since a job reading
+    /// it ended here, what was freed of it since (`caches_freed`); its capacity says them.
+    #[serde(default)]
+    caches_here: BTreeMap<String, crate::coord::CacheHere>,
+}
+
+/// The room-making kinds (room::Freed's keys) of the shared caches (crate::needs::CACHES).
+const CACHE_KINDS: [(&str, &str); 2] = [("base", "base packs"), ("dem", "DEM")];
+
+/// What freeing `f` took of the shared caches `kept` has: its bytes of each counted short of it.
+fn caches_freed(kept: &mut BTreeMap<String, crate::coord::CacheHere>, f: &room::Freed) {
+    for (kind, name) in CACHE_KINDS {
+        let b = f.freed.get(kind).copied().unwrap_or(0);
+        if let Some(h) = kept.get_mut(name).filter(|_| b > 0) {
+            h.short_mb = h.short_mb.saturating_add(b.div_ceil(1 << 20));
+        }
+    }
+}
+
+/// The shared caches this Mac has, as its capacity says them: those `kept` has, the DEM cache only
+/// while its copy (`dem-cache.*`) is in `cache` (room-making frees it whole).
+fn caches_here(
+    kept: &BTreeMap<String, crate::coord::CacheHere>,
+    cache: &Path,
+) -> BTreeMap<String, crate::coord::CacheHere> {
+    let dem = || {
+        std::fs::read_dir(cache)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("dem-cache."))
+    };
+    kept.iter().filter(|(n, _)| n.as_str() != "DEM" || dem()).map(|(n, h)| (n.clone(), h.clone())).collect()
+}
+
+/// After a job of `step` with command `cmd` ended having run, the shared cache it read
+/// (crate::needs::CACHES) is here whole: of the pass its `--pass` names (the base packs'), none
+/// short.
+fn cache_filled(kept: &mut BTreeMap<String, crate::coord::CacheHere>, step: &str, cmd: &[String]) {
+    let Some(c) = crate::needs::cache_of(step) else { return };
+    let pass = if c == "base packs" {
+        cmd.iter().position(|a| a == "--pass").and_then(|i| cmd.get(i + 1)).cloned().unwrap_or_default()
+    } else {
+        String::new()
+    };
+    kept.insert(c.to_string(), crate::coord::CacheHere { pass, short_mb: 0 });
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -2512,6 +2558,13 @@ impl Agent {
         let disks = watch.disk_floors();
         let job_disk = watch.job_disk_mb();
         let job_step = watch.step.clone();
+        // (A job that ran on: the shared cache it read here whole, `cache_filled`.)
+        if matches!(outcome, Outcome::Done | Outcome::Paused) {
+            if let Some(r) = &self.slots[k].running {
+                let cmd = r.spec.cmd.clone();
+                cache_filled(&mut self.mem.caches_here, &job_step, &cmd);
+            }
+        }
         if watch.disk_fell > 0 {
             eprintln!("agent: slot {k}'s job: the disk fell {} while it ran alone, its counts {} (a weaker signal, not a floor)", room::size(watch.disk_fell), room::size(watch.disk_peak));
         }
@@ -4668,6 +4721,7 @@ impl Agent {
             home: c.home,
             guard: self.guard_stops(),
             leases,
+            caches: caches_here(&self.mem.caches_here, &self.o.home.join("cache")),
         }
     }
 
@@ -5559,6 +5613,10 @@ impl Agent {
     /// midway: nothing kept, the trim done again by the next agent, the ask left for it.
     fn caches_done(&mut self, t: CachesTask) {
         let r = t.thread.join().unwrap_or_else(|_| Err(anyhow::anyhow!("it failed midway")));
+        // (What it freed of the shared caches: short of them since, `caches_freed`.)
+        if let Ok(f) = &r {
+            caches_freed(&mut self.mem.caches_here, f);
+        }
         if stopping() {
             return;
         }
@@ -10079,6 +10137,34 @@ fn test_agent(o: Options) -> Result<Agent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task #392 review: the shared caches a capacity says this Mac has. None before a job read
+    /// one; a map tiles' job's end makes the base packs whole, of its pass; a freeing of them
+    /// counts what it took short; the next job's end makes them whole again; the DEM cache only
+    /// while its copy is there.
+    #[test]
+    fn the_caches_here_follow_jobs_and_freeing() {
+        let d = tempfile::tempdir().unwrap();
+        let mut kept = BTreeMap::new();
+        assert!(caches_here(&kept, d.path()).is_empty());
+        let cmd: Vec<String> = ["scenic-build", "pack", "6/1/1", "--pass", "2026-10-15"].map(String::from).into();
+        cache_filled(&mut kept, "pack", &cmd);
+        cache_filled(&mut kept, "slope", &cmd);
+        let h = |pass: &str, short_mb| crate::coord::CacheHere { pass: pass.into(), short_mb };
+        assert_eq!(caches_here(&kept, d.path()), [("base packs".to_string(), h("2026-10-15", 0))].into());
+        let f = room::Freed {
+            freed: [("base".to_string(), 3 << 30), ("blobs".to_string(), 1 << 30)].into(),
+            ..Default::default()
+        };
+        caches_freed(&mut kept, &f);
+        assert_eq!(kept["base packs"], h("2026-10-15", 3072));
+        cache_filled(&mut kept, "lo", &cmd);
+        assert_eq!(kept["base packs"], h("2026-10-15", 0));
+        cache_filled(&mut kept, "unit", &cmd);
+        assert!(!caches_here(&kept, d.path()).contains_key("DEM"), "its copy isn't there");
+        std::fs::create_dir(d.path().join("dem-cache.v3")).unwrap();
+        assert_eq!(caches_here(&kept, d.path())["DEM"], h("", 0));
+    }
 
     /// A costs file's done lines read with their inputs' measures (task #235); a line before them
     /// has none, a `started` line is no cost, and the measures go on to the coordinator's record

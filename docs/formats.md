@@ -766,7 +766,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     `disks.json` (`{<cost key>: MB}`, rising only, docs/pool.md §7.7); `job-disks-v4.json`
     (`{<step>: [MB, …]}`, the disk its last 20 jobs took, oldest first; an older `job-disks-v3.json`, `-v2` or
     `job-disks.json` (`{<step>: MB}`, the most) read once, each peak one run, without its halo steps'
-    stale peaks nor those past three times their targets' 90th percentile and a GB; the measures
+    stale peaks nor those past three times their targets' 90th percentile and a GB, a step reading
+    a shared cache's peak less its targets' 90th percentile its cache's fill instead); `cache-fills.json`
+    (`{<cache>: MB}`, "base packs" and "DEM": what filling it on a Mac takes, docs/pool.md §7.1); the measures
     of z3 `terrain` and `trees` runs, an old step shape, dropped from `costs.json`, `floors.json`
     and `disks.json` as they're read); `journal/<worker>/` (hand-offs sent rather than journaled, drained into the
     pool's journal); `tasks/<id>/`; `pause.json` (`{pause: {mode: "drain" | "freeze", by, at} | null,

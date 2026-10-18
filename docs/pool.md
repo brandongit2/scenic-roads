@@ -323,18 +323,27 @@ step's, `needs::HALO_STEPS`: `pack` and `lo`, the most of its targets' rather th
 `pack` job takes one unit's map tiles (`build::by_unit`'s groups, each its own offer); `lo` stays
 one work of a pass's z3 tiles (the low zooms' gate opens for a pass as a whole). **Shared
 caches** (task #392, `needs::CACHES`): `pack` and `lo` read one cache of base packs on a Mac, a
-`unit` the DEM cache; the run that fills one measures it whole (66 GB of `pack`, 43 GB of `lo`
+`unit` the DEM cache. The run that fills one measures it whole (66 GB of `pack`, 43 GB of `lo`
 on the M4), the warm runs after it their output alone (0.3 and 0.5 GB at the 90th percentile).
 So a target of such a step counts its own output (its disk floor at most its step's 90th
-percentile, `needs::Book::disk`), and the cache is reserved once per Mac: the first job granted
-there reading it carries the cache's reservation (the most of its steps' last jobs' 90th
-percentiles, `coord::Shared::cache_mb`) beside its output in its `Grant::disk_mb`, so its agent
-counts it in `reserved_mb` with that job's (as `disk_words` and the build page's disk bar show
-it), the jobs beside it their output alone;
-a fill bigger than the runs measured lately (a Mac whose cache was emptied) has the disk guard
-as its backstop. Its cache files are on the disk, outside the free space an ask says; the
+percentile, `needs::Book::disk`), and the cache is reserved apart. What's reserved and when:
+- *The fill* (`coord::Shared::fills`, `cache-fills.json`): a run whose disk passes its targets'
+  output by 512 MB or more, and by at least half the fill kept, filled the cache; that excess
+  (its run less its own output, so a unit's output isn't counted in the DEM cache's) is the fill.
+  Warm runs, and a part refilled after an eviction, leave it.
+- *What a Mac has* (`Capacity::caches`, its agent's `caches_here`): a cache is named once a job
+  reading it ended there (done, or stopped at a safe point; the base packs with that job's
+  pass), with what room-making, the room-target freeing or the disk guard freed of it since
+  (`short_mb`); the DEM cache only while its copy is in the cache folder.
+- *The reservation*: the first job granted on a Mac reading a cache (a cold start too) carries
+  in its `Grant::disk_mb`, beside its output, what that Mac lacks of it: nothing when it has the
+  cache whole; what was freed of it since, when part was (at most the fill); the whole fill when
+  it hasn't it, has the base packs of another pass, or its ask names no caches (an older
+  agent). The jobs beside it on that Mac carry their output alone. Its agent counts the grant in
+  `reserved_mb` (as `disk_words` and the build page's disk bar show it).
+The cache files a Mac has are on its disk, outside the free space an ask says; the
 room-target freeing and the disk guard (`room::toward`) can delete those no job holds, but
-nothing counts them free before (room-making as a job starts frees the cheap caches alone),
+nothing counts them free before (room-making as a job starts frees the cheap caches alone)),
 and its agent reserves it while it holds the lease: the whole of it until
 the job starts, then that less what the job has written so far (the disk guard's count). The
 lead's own running jobs reserve what their measures say they have still to take (`disk_left`).
@@ -829,9 +838,11 @@ tiles (`pack_raw_with`) stays inside the piece's job.
   Disk reservations); with units in the plan, a halo's map tiles are offered once its unit is
   built, before the units left: on the M4 and the M1, the NAS budget on and both steps measured
   before, each Mac runs map tiles beside units, and the plan finishes. The M4 as measured on 18
-  Oct (48 GB, 14 cores, 85 GB free, its caches on its disk; units of 6.6 GB writing 6 GB, the DEM
-  cache's 18.6 GB job once, `pack` and `lo` 0.3 and 0.5 GB) runs four units at once within its
-  memory and disk, map tiles and low zooms beside each other on one cache reservation. Not
+  Oct (48 GB, 14 cores, 85 GB free, its caches on its disk so none of them reserved; units of 6.6
+  GB writing 6 GB, `pack` and `lo` 0.3 and 0.5 GB) runs four units at once within its memory and
+  disk, map tiles and low zooms beside each other. With its base packs gone (151 GB free) and
+  their 66 GB fill measured, the first job reading them is granted the fill, none beside it is,
+  no start over-commits the disk, and units still run three or more at once. Not
   modelled: other step dependencies, failures; a job's time doesn't depend on its threads.
 - **The agent's tests** (`crate::agent::pool`, `crate::agent::lead`, the agent's `pool_tests`): two
   agents in one process, a lead and a member, through handover, takeover, controls, hand-offs and
