@@ -93,7 +93,16 @@ impl Fine {
         );
         let a = crate::inputs::open(root, m, elevation::UNIT)?
             .context("the records name no accepted version of the declared elevation datasets")?;
-        Ok(Fine::of_accepted(&super::declared::accepted(&a)?))
+        let f = Fine::of_accepted(&super::declared::accepted(&a)?);
+        note(&a.version, &f);
+        Ok(f)
+    }
+
+    /// The whole of it as one digest: what the steps that read a spacing file over areas they
+    /// don't divide by cells (the links, rail and candidates) name in their keys.
+    pub fn digest(&self) -> String {
+        let cells: Vec<String> = self.cells.iter().map(|c| format!("{},{}", c[0], c[1])).collect();
+        store::naming::hash16(format!("{}|{}", self.world, cells.join(" ")).as_bytes())
     }
 
     pub fn write(&self, path: &Path) -> Result<()> {
@@ -104,6 +113,43 @@ impl Fine {
         serde_json::from_slice(&std::fs::read(path).with_context(|| format!("read {}", path.display()))?)
             .with_context(|| format!("{}: not a spacing file", path.display()))
     }
+}
+
+/// The digests (`Fine::digest`) of the accepted elevation versions read in this process, by their
+/// index's content name: noted by whatever reads them (agent::tiles::TerrainTiles::load,
+/// `Fine::of_records`), so a key from the manifest alone can name them (`digest_of`).
+/// (A test's own, by its thread: tests hold datasets under the same version names at once.)
+#[cfg(not(test))]
+static NOTED: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+#[cfg(test)]
+thread_local! {
+    static NOTED: std::cell::RefCell<std::collections::BTreeMap<String, String>> = Default::default();
+}
+
+fn noted<R>(f: impl FnOnce(&mut std::collections::BTreeMap<String, String>) -> R) -> Option<R> {
+    #[cfg(not(test))]
+    return NOTED.lock().ok().map(|mut n| f(&mut n));
+    #[cfg(test)]
+    return Some(NOTED.with(|n| f(&mut n.borrow_mut())));
+}
+
+/// Notes accepted elevation version `version`'s spacing (`digest_of`).
+pub fn note(version: &str, f: &Fine) {
+    let d = f.digest();
+    noted(|n| n.insert(version.to_string(), d));
+}
+
+/// The spacing's line for the keys of the steps reading a spacing file (`Fine::digest` of the
+/// accepted elevation version `m` names, as noted): "spacing -" before the switch or while that
+/// version isn't read in this process (made again once it is).
+pub fn digest_of(m: &std::collections::BTreeMap<String, String>) -> String {
+    use crate::inputs::elevation;
+    let d = elevation::switched(m)
+        .then(|| m.get(&crate::inputs::logical(elevation::UNIT)))
+        .flatten()
+        .and_then(|v| noted(|n| n.get(v).cloned()).flatten());
+    format!("spacing {}", d.as_deref().unwrap_or("-"))
 }
 
 impl Spacing for Fine {

@@ -1071,7 +1071,7 @@ territory.
   is the point's degrees floored: its west and south edges are its own. The unit job writes the
   fine cells into the unit's folder (`spacing.json`), which `extract` reads; the reach tests the
   units' long ways at the same spacing (`reach::LongWay::touches`). The other steps' `extract` runs
-  (the links, rail and candidates) read the same file (`Fine::of_records`). Today's datasets make HRDEM,
+  (the links, rail and candidates) read the same file (`Fine::of_records`); the rail and candidates keys name its whole digest (`spacing::digest_of`), the links are the pass's (made once a pass). Today's datasets make HRDEM,
   3DEP (10.3 m, 1/3″) and GSI's fine, MRDEM and FABDEM (30 m) not.
   - **Keys:** each unit's reach records the cells its ways start in (`Reach::cells`); its key
     names those of them that are fine (`Fine::key`), so a dataset added, dropped or measured

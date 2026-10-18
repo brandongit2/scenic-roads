@@ -1018,6 +1018,8 @@ fn current_pois<'a>(cov: &Coverage, date: &str, m: &'a BTreeMap<String, String>)
 pub fn pois_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let ends = get(&format!("work/trailends/{date}"));
+    // (The spacing its extract reads: crate::dem::spacing.)
+    let spacing = crate::dem::spacing::digest_of(m);
     let mut units = Vec::new();
     for (l, c) in m.range(format!("sources/osm/{date}/pieces/")..) {
         let Some(u) = l.strip_prefix(&format!("sources/osm/{date}/pieces/")).and_then(Unit::parse) else { break };
@@ -1027,7 +1029,7 @@ pub fn pois_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Ve
         if !cov.meets_rect(near) {
             continue;
         }
-        units.push((u, h(&[&format!("pois {POIS_V}"), c, &cov.fingerprint(near), ends])));
+        units.push((u, h(&[&format!("pois {POIS_V}"), c, &cov.fingerprint(near), ends, &spacing])));
     }
     units
 }
@@ -2622,7 +2624,7 @@ fn rail_next(
     let feeds = m.get(crate::rail::FEEDS)?;
     let set = m.get(&crate::osmpass::set_name(date, "rail"))?;
     let statics = m.get(&crate::inputs::logical(crate::inputs::gtfs::UNIT))?;
-    let k = h(&[&format!("rail {RAIL_V}"), feeds, statics, set, &cover]);
+    let k = h(&[&format!("rail {RAIL_V}"), feeds, statics, set, &cover, &crate::dem::spacing::digest_of(m)]);
     Some(
         (done.lo.get("rail").map(String::as_str) != Some(k.as_str()))
             .then(|| Work { step: "rail".into(), targets: vec![("rail".into(), k)] }),
@@ -4170,6 +4172,36 @@ pub(crate) mod tests {
     }
 
     /// The declared elevation datasets switched to, as the units need them (crate::inputs::elevation).
+    #[test]
+    fn the_steps_reading_a_spacing_file_key_on_its_digest() {
+        use crate::dem::spacing::{note, Fine};
+        let d = tempfile::tempdir().unwrap();
+        let c = Coverage::fixture(
+            &[crate::agent::recipes::Recipe {
+                id: "r".into(),
+                name: "R".into(),
+                outline: vec!["place:-21.9,64.1,20".into()],
+            }],
+            None,
+            d.path(),
+        )
+        .unwrap();
+        let mut m = BTreeMap::new();
+        m.insert("sources/osm/d/pieces/6-28-16".to_string(), "p1".to_string());
+        elevation_inputs(&mut m);
+        let v = m[&crate::inputs::logical(crate::inputs::elevation::UNIT)].clone();
+        let fine = |cells: &[[i32; 2]]| Fine { world: false, cells: cells.iter().copied().collect() };
+        note(&v, &fine(&[[-22, 64]]));
+        let (pois, digest) = (pois_keys(&c, "d", &m), crate::dem::spacing::digest_of(&m));
+        assert_eq!(pois.len(), 1);
+        note(&v, &fine(&[[-22, 64]]));
+        assert_eq!(pois_keys(&c, "d", &m), pois, "the same spacing: the same keys");
+        note(&v, &fine(&[[-22, 64], [10, 50]]));
+        assert_ne!(pois_keys(&c, "d", &m)[0].1, pois[0].1);
+        // (Rail's key names the same line.)
+        assert_ne!(crate::dem::spacing::digest_of(&m), digest);
+    }
+
     pub(crate) fn elevation_inputs(m: &mut BTreeMap<String, String>) {
         m.insert(
             crate::inputs::logical(crate::inputs::elevation::UNIT),
@@ -6404,6 +6436,21 @@ pub(crate) mod tests {
         assert_eq!(w.step, "rail");
         done.record(&w.step, &w.targets);
         assert!(rail_chain(&c, "d", &m, &done, &lta).is_none());
+        // The declared elevation datasets' spacing (its extract reads it) changed: the trains again.
+        {
+            let mut m = m.clone();
+            elevation_inputs(&mut m);
+            let v = m[&crate::inputs::logical(crate::inputs::elevation::UNIT)].clone();
+            let fine = crate::dem::spacing::Fine { world: false, cells: [[0, 0]].into_iter().collect() };
+            crate::dem::spacing::note(&v, &fine);
+            let w = rail_chain(&c, "d", &m, &done, &lta).unwrap();
+            assert_eq!(w.step, "rail");
+            let mut done = done.clone();
+            done.record(&w.step, &w.targets);
+            assert!(rail_chain(&c, "d", &m, &done, &lta).is_none());
+            crate::dem::spacing::note(&v, &crate::dem::spacing::Fine::default());
+            assert_eq!(rail_chain(&c, "d", &m, &done, &lta).unwrap().step, "rail");
+        }
         // What rail-feeds writes besides the list (the checks, the zips) isn't what anything reads:
         // no rerun for its own sake.
         m.insert(crate::rail::CHECKED.into(), "sources/rail/checked.4444444444444444.json".into());
