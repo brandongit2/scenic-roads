@@ -32,12 +32,13 @@ pub const LIST_DEADLINE: Duration = Duration::from_secs(60);
 /// How long a create in the terms' folder may take: a term made but its bytes not landed comes back
 /// as `Created::Unwritten` for the driver to finish, which a timeout would lose.
 pub const TERM_CREATE_DEADLINE: Duration = Duration::from_secs(300);
-/// The switches' readers.
-pub const SWITCH_READERS: usize = 2;
+/// The switches' readers. (A unit test's process runs many agents at once, each a Mac's, sharing
+/// the pools: more threads there.)
+pub const SWITCH_READERS: usize = if cfg!(test) { 64 } else { 2 };
 /// The records' readers.
-pub const READERS: usize = 4;
+pub const READERS: usize = if cfg!(test) { 64 } else { 4 };
 /// The writers.
-pub const WRITERS: usize = 4;
+pub const WRITERS: usize = if cfg!(test) { 64 } else { 4 };
 
 type Job = Box<dyn FnOnce() + Send>;
 
@@ -283,7 +284,10 @@ impl Deadlined {
         let inner = self.inner.clone();
         let p = Path::new(path);
         // (A write: refused while an earlier one to its path still runs, `InFlight`.)
-        let held = if std::ptr::eq(calls, self.reads) { None } else { Some(InFlight::take(p)?) };
+        // (Its path on this NAS: a test's Macs in one process write the same paths on NASes of
+        // their own.)
+        let key = PathBuf::from(format!("{:p}", Arc::as_ptr(&self.inner) as *const ())).join(path);
+        let held = if std::ptr::eq(calls, self.reads) { None } else { Some(InFlight::take(&key)?) };
         match calls.call(p, deadline, move || {
             let _held = held;
             f(&*inner)
