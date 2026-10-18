@@ -1196,7 +1196,13 @@ index part is kept, so the same command resumes. A dropped or refused connection
 5xx is tried again (5 tries); any other failure stops the run before the chunk's part is written (a
 block with no data comes as a TIFF of nodata, making no grid). Free disk is logged a chunk;
 `--count` estimates a chunk's bytes from files already in its cache. Each chunk's datum surfaces are
-its own. (`producers/depth/test_chunked.py`: `uv run --project .. python -m unittest test_chunked`.)
+its own. A datum surface (`datums.py`) is solved between the stations over the water bodies holding
+one (a station counts within 25 km of its water); water with no station within 25 km of a solved cell
+is extrapolated when it is open sea, a body touching the chunk's grid edge or over 100 km² (the
+nearest solved cell's value, or, with no station within 25 km of any water, the nearest station's,
+however far; the log gives the cells and the farthest distance), and gets nodata otherwise (an
+enclosed lagoon or lake). Over 5% of the water left without a value, or one body over 2%, stops the
+run. Extrapolated cells carry no flag in the output (one band). (`producers/depth/test_chunked.py`: `uv run --project .. python -m unittest test_chunked`.)
 
 On macOS the producers trust the system's root certificates as well as OpenSSL's (`grid.urlopen`,
 read from its keychain): uv's Python lacks some roots the hosts use (CHS's station service's chain ends at Sectigo's

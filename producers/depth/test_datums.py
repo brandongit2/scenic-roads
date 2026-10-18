@@ -8,8 +8,52 @@ import numpy as np
 import datums
 
 
+class OpenSea(unittest.TestCase):
+    """Water beyond the 25 km reach: open sea extrapolated, an enclosed lagoon nodata."""
+
+    def test_a_body_at_the_grid_edge_beyond_reach_takes_the_nearest_solved_value(self):
+        water = np.zeros((40, 400), bool)
+        water[:, 0:300] = True
+        water[:, 330:400] = True  # 19% of the water, 3 degrees off, at the east edge: the sea going on
+        s = datums.Surface.harmonic([(10.5, 48.0, 1.0)], water, 10.0, 50.0, 0.1)
+        self.assertAlmostEqual(float(s.a[5, 390]), 1.0, places=4)
+
+    def test_a_big_enclosed_body_is_sea_a_small_one_a_lagoon(self):
+        res = 0.005  # cells of 0.56 x 0.36 km at 49 N, 0.2 km2
+        water = np.zeros((400, 800), bool)
+        water[10:390, 10:300] = True
+        water[100:300, 500:750] = True  # 50000 cells, about 10000 km2, 1 degree off: open
+        water[20:30, 400:410] = True  # 100 cells, 20 km2, 0.5 degree off: a lagoon (under 2% and 5%)
+        s = datums.Surface.harmonic([(10.5, 49.0, 0.7)], water, 10.0, 50.0, res)
+        self.assertAlmostEqual(float(s.a[200, 600]), 0.7, places=4)
+        self.assertTrue(np.isnan(s.a[25, 405]))
+
+    def test_no_station_within_reach_extrapolates_open_sea_from_the_nearest_station(self):
+        water = np.ones((20, 40), bool)
+        s = datums.Surface.harmonic([(5.0, 49.0, 0.4), (30.0, 49.0, 2.0)], water, 10.0, 50.0, 0.1)
+        self.assertTrue(np.allclose(s.a, 0.4))
+
+    def test_a_large_lagoon_beyond_reach_still_stops(self):
+        res = 0.005
+        water = np.zeros((400, 800), bool)
+        water[10:60, 10:60] = True  # 2500 cells
+        water[100:110, 500:600] = True  # 1000 cells, 200 km2: open sea, extrapolated
+        water[200:220, 500:520] = True  # 400 cells, 80 km2: under OPEN_KM2, over 2% of the water: stops
+        with self.assertRaises(SystemExit) as r:
+            datums.Surface.harmonic([(10.5, 49.0, 0.7)], water, 10.0, 50.0, res)
+        self.assertIn("missing area", str(r.exception))
+
+
 class Harmonic(unittest.TestCase):
+    """The reach and the lagoon rule: no water here counts as open sea (OpenSea checks that)."""
     water = np.ones((20, 40), bool)  # 0.1 degree cells, west 10, north 50: 10..14 E, 48..50 N
+
+    def setUp(self):
+        self.saved = datums.OPEN_KM2, datums.EDGE_CELLS
+        datums.OPEN_KM2, datums.EDGE_CELLS = float("inf"), 0
+
+    def tearDown(self):
+        datums.OPEN_KM2, datums.EDGE_CELLS = self.saved
 
     def solve(self, pts):
         return datums.Surface.harmonic(pts, self.water, 10.0, 50.0, 0.1)
