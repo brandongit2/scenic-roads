@@ -222,7 +222,14 @@ pub struct Watch {
     /// The top of its scratch folder as last looked at (bytes), and when.
     pub scratch_top: u64,
     pub looked: Option<std::time::Instant>,
+    /// When it last used a core-minute more (`BUSY_CPU`), and its CPU time (ns) then (the first
+    /// sample, or a sum that fell as a process ended, starts it again): how long it has been idle,
+    /// for an update's wait (crate::agent's `update_due`), whatever its progress lines say.
+    pub cpu_mark: Option<(std::time::Instant, u64)>,
 }
+
+/// The CPU time (ns) a job uses for its sampler to call it busy again: a core-minute.
+pub const BUSY_CPU: u64 = 60_000_000_000;
 
 /// The allocated bytes of the files at the top of folder `dir` (not its subfolders': no walk of its
 /// tree; Planetiler's and osmium's outputs, the largest a job makes, are there).
@@ -314,6 +321,8 @@ struct Inner {
     /// As a test sets them: what each slot's job holds (MB), and whether the Mac is in trouble.
     held_set: Option<Vec<Option<u64>>>,
     trouble_set: Option<bool>,
+    /// As a test sets it: when each slot's job was last busy (`Watch::cpu_mark`).
+    busy_set: Option<Vec<Option<std::time::Instant>>>,
     /// What the thread did last (unix seconds, in words), for the agent's loop to say.
     froze: Vec<(u64, String)>,
     /// The swap in use as each sample read it, over the last `SWAP_WINDOW`.
@@ -468,6 +477,23 @@ impl Sampler {
         }
     }
 
+    /// When slot `k`'s job last used a core-minute (`Watch::cpu_mark`); None: not sampled yet, or
+    /// unreadable.
+    pub fn busy_at(&self, k: usize) -> Option<std::time::Instant> {
+        let g = self.inner.lock().ok()?;
+        match &g.busy_set {
+            Some(v) => v.get(k).copied().flatten(),
+            None => g.watches.get(k)?.as_ref()?.cpu_mark.map(|m| m.0),
+        }
+    }
+
+    /// As a test sets it: when each slot's job was last busy.
+    pub fn set_test_busy(&self, busy: Option<Vec<Option<std::time::Instant>>>) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.busy_set = busy;
+        }
+    }
+
     /// What slot `k`'s job holds now (MB), as last sampled.
     pub fn held(&self, k: usize) -> Option<u64> {
         self.inner.lock().ok()?.watches.get(k)?.as_ref()?.held
@@ -524,6 +550,7 @@ impl Sampler {
         let set = self.inner.lock().ok().and_then(|g| g.held_set.clone());
         // (Read outside the lock: the footprints and the files take time.)
         let mut got: Vec<(usize, i32, Option<u64>, Option<String>)> = Vec::new();
+        let mut cpu: Vec<(usize, i32, Option<u64>)> = Vec::new();
         // (Each sample reads the swap too: its window's least, for `in_trouble`.)
         self.in_trouble();
         for (k, pgid) in watches {
@@ -533,6 +560,7 @@ impl Sampler {
             };
             let key = self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.clone())).and_then(|w| w.current());
             got.push((k, pgid, held, key));
+            cpu.push((k, pgid, crate::sys::cpu_of_group(pgid)));
         }
         let live: Option<(PathBuf, Live)>;
         let over: Vec<usize> = {
@@ -544,6 +572,16 @@ impl Sampler {
                 if let (Some(mb), Some(key)) = (held, key) {
                     let e = w.seen.entry(key.clone()).or_insert(0);
                     *e = (*e).max(*mb);
+                }
+            }
+            let now = std::time::Instant::now();
+            for (k, pgid, ns) in &cpu {
+                let Some(w) = g.watches.get_mut(*k).and_then(Option::as_mut).filter(|w| w.pgid == *pgid) else { continue };
+                if let Some(ns) = *ns {
+                    match w.cpu_mark {
+                        Some((_, m)) if ns >= m && ns - m < BUSY_CPU => {}
+                        _ => w.cpu_mark = Some((now, ns)),
+                    }
                 }
             }
             let limit = g.limit_mb;

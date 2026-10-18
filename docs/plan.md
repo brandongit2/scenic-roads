@@ -912,10 +912,13 @@ from the first (`edit_held`).
   safe point (what it finished kept); once the first slot is free the agent exits and the launcher
   starts the new one. A job reaching no safe point in time is stopped then (`Agent::update_wait`):
   the time its target under way is expected to need, by its progress's pace, else its expected time
-  (its own measured run, its step's fit or prior, `needs::Book::secs`) less what it has spent, ×1.5
-  (a target's time varies by about a third between runs), at most 3 hours, never under 15 minutes;
-  15 minutes for a target with no estimate, and once 15 minutes have passed, a job whose progress
-  hasn't moved for 30 minutes is stopped. The log and the status's Waiting line say how long and
+  (its own measured run, its step's fit or prior, `needs::Book::secs`, from the coordinator's costs;
+  else its step's time on this Mac lately) less the time since the job last noted a target done (or
+  began), ×1.5 (a target's time varies by about a third between runs), at most 3 hours, never under
+  15 minutes; 15 minutes for a target with no estimate. A member, without the coordinator's costs,
+  goes by its pace, else its step's time there, else 15 minutes. Once 15 minutes have passed, a job
+  whose processes used less than a core-minute of CPU over the last 30 minutes (the memory guard's
+  sampler) is stopped: by its CPU, since a long step may print no progress for hours. The log and the status's Waiting line say how long and
   why. Pauses, the memory guard and the disk guard keep their own rules. The lead
   grants nothing to an agent on another app, and an agent with a newer app waiting asks for
   nothing.

@@ -392,6 +392,35 @@ pub fn footprint_of_group(pgid: i32) -> Option<u64> {
     }
 }
 
+/// The CPU time (user and system, ns) the live processes of group `pgid` have used, summed; None
+/// where it can't be read. (A process that ended takes its time with it: the sum may fall.)
+pub fn cpu_of_group(pgid: i32) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        // (rusage_info's times are in mach absolute time units: ns on Intel, 125/3 ns on Apple
+        // silicon.)
+        let mut tb = libc::mach_timebase_info { numer: 0, denom: 0 };
+        #[allow(deprecated)]
+        let ok = unsafe { libc::mach_timebase_info(&mut tb) } == 0 && tb.denom != 0;
+        let (numer, denom) = if ok { (tb.numer as u128, tb.denom as u128) } else { (1, 1) };
+        let mut total = None;
+        for pid in group_members(pgid) {
+            // SAFETY: rusage_info_v2 is plain old data; proc_pid_rusage fills it, the flavour asked.
+            let mut ri: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+            if unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, (&mut ri as *mut libc::rusage_info_v2).cast()) } == 0 {
+                let t = (ri.ri_user_time as u128 + ri.ri_system_time as u128) * numer / denom;
+                total = Some(total.unwrap_or(0) + t as u64);
+            }
+        }
+        total
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = pgid;
+        None
+    }
+}
+
 /// The most `group_footprint` since the last `reset_group_peak`, as a thread samples it four times
 /// a second (started by the first reset), under the lock; a sample taken before a reset is dropped
 /// (`GROUP_EPOCH`), so an earlier target's peak isn't counted in the next.

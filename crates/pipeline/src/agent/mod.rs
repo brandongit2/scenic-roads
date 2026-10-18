@@ -105,7 +105,9 @@ const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
 /// measured time varies by about a third between runs (another job beside it, the NAS's load), and
 /// a pace read early in a part runs ahead of its slower end; 3 h because a later app's fixes (often
 /// the reason for the update) shouldn't wait longer than a night's long target, an area's terrain,
-/// takes at most. A job whose progress hasn't moved for UPDATE_STALL holds it no longer.
+/// takes at most. A job that used less than a core-minute of CPU over UPDATE_STALL (its sampler's
+/// `busy_at`, crate::agent::memguard) holds it no longer, whatever its progress lines say: a step
+/// may print none for hours.
 const UPDATE_MARGIN: f64 = 1.5;
 const UPDATE_CAP: Duration = Duration::from_secs(3 * 3600);
 const UPDATE_STALL: Duration = Duration::from_secs(30 * 60);
@@ -2579,8 +2581,13 @@ impl Agent {
         // slot is free, `Agent::update_due`.)
         let update = self.pending_app().map(|a| update_why(&a));
         // (The update's wait, worked out as its drain begins: the target under way's time left.)
+        // (Only for a drain that is the update's: a pause, a condition or the memory guard first.)
+        let for_update_only = {
+            let s = &self.slots[k];
+            s.mem_drain.is_none() && s.running.as_ref().is_some_and(|r| stop_for(&r.spec.needs, c, pause.as_ref()).is_none())
+        };
         let wait = match (&update, &self.slots[k].update_wait) {
-            (Some(_), None) => Some(self.update_wait(k)),
+            (Some(_), None) if for_update_only => Some(self.update_wait(k)),
             _ => None,
         };
         let slot = &mut self.slots[k];
@@ -6481,9 +6488,10 @@ impl Agent {
                 }
                 let Some(since) = self.slots[0].drain_since else { return false };
                 let wait = self.slots[0].update_wait.as_ref().and_then(|w| w.0).unwrap_or(self.grace);
-                // (Past the time a pause gives, a job whose progress stopped moving holds it no
-                // longer: it may be stuck.)
-                let stalled = r.moved.is_some_and(|m| now_s().saturating_sub(m.1) >= UPDATE_STALL.as_secs());
+                // (Past the time a pause gives, a job whose processes have done next to nothing
+                // for UPDATE_STALL holds it no longer: it may be stuck. By its CPU, not its progress
+                // lines, which a long step may not print.)
+                let stalled = self.sampler.busy_at(0).is_some_and(|t| t.elapsed() >= UPDATE_STALL);
                 since.elapsed() >= wait || (stalled && since.elapsed() >= self.grace)
             }
         }
@@ -6509,8 +6517,11 @@ impl Agent {
             let expected = match r.spec.record.as_ref() {
                 Some(w) => {
                     let done = crate::control::read_done(&self.done_path(k), &w.step);
-                    let did: f64 = w.targets.iter().filter(|t| done.contains(&t.0)).filter_map(|t| secs(&w.step, &t.0)).sum();
-                    w.targets.iter().find(|t| !done.contains(&t.0)).and_then(|t| secs(&w.step, &t.0)).map(|s| s - (r.elapsed().as_secs_f64() - did).max(0.0))
+                    // (The target under way timed from when the job last noted one done, its
+                    // done file's change, else its start.)
+                    let noted = std::fs::metadata(self.done_path(k)).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+                    let on_it = now_s().saturating_sub(if done.is_empty() { r.started } else { noted.max(r.started) });
+                    w.targets.iter().find(|t| !done.contains(&t.0)).and_then(|t| secs(&w.step, &t.0)).map(|s| s - on_it as f64)
                 }
                 None => own(r.spec.id.split(' ').next().unwrap_or("")).map(|s| s - r.elapsed().as_secs_f64()),
             };
@@ -8941,14 +8952,24 @@ mod tests {
         assert!(!a.update_due());
         a.slots[0].drain_since = Some(ago(80 * 60));
         assert!(!a.update_due());
-        // Its progress stopped 31 min ago: it may be stuck, and holds the update no longer.
-        a.slots[0].running.as_mut().unwrap().moved = Some((0.5, now_s() - 31 * 60));
-        assert!(a.update_due());
-        // Moving again: past its wait, due.
-        a.slots[0].running.as_mut().unwrap().moved = Some((0.6, now_s()));
+        // No progress line for an hour but its processes busy (as elev, which prints none): it
+        // holds the update until its wait runs out.
+        a.slots[0].running.as_mut().unwrap().moved = Some((0.5, now_s() - 60 * 60));
+        a.sampler.set_test_busy(Some(vec![Some(Instant::now()), None]));
         assert!(!a.update_due());
         a.slots[0].drain_since = Some(ago(91 * 60));
         assert!(a.update_due());
+        // Idle (less than a core-minute) for 31 min, 20 min into the wait: it may be stuck, and holds
+        // the update no longer; idle for 20 min only, it still does.
+        a.slots[0].drain_since = Some(ago(20 * 60));
+        a.sampler.set_test_busy(Some(vec![Some(ago(20 * 60)), None]));
+        assert!(!a.update_due());
+        a.sampler.set_test_busy(Some(vec![Some(ago(31 * 60)), None]));
+        assert!(a.update_due());
+        // (Idle for 31 min but only 10 min into the drain: the time a pause gives first.)
+        a.slots[0].drain_since = Some(ago(10 * 60));
+        assert!(!a.update_due());
+        a.sampler.set_test_busy(None);
         // The install undone: the wait forgotten; a new update works it out again, from the
         // target's expected time (no pace yet), capped at 3 h.
         update(&mut a, "v1");
@@ -8959,6 +8980,19 @@ mod tests {
         let (wait, words) = a.slots[0].update_wait.clone().unwrap();
         assert_eq!(wait, Some(UPDATE_CAP), "{words}");
         assert!(words.contains("by its expected time"), "{words}");
+        // A batch with a target done just now: the next timed from then, not from the job's start
+        // (its whole run counted against it would leave it nothing).
+        update(&mut a, "v1");
+        a.mem.step_secs.insert(secs_key("elev"), 3600.0);
+        a.slots[0].running.as_mut().unwrap().spec.record.as_mut().unwrap().targets.push(("6/55/26".into(), "k".into()));
+        a.slots[0].running.as_mut().unwrap().started = now_s() - 2 * 3600;
+        std::fs::write(a.done_path(0), "elev 6/55/25\n").unwrap();
+        assert_eq!(crate::control::read_done(&a.done_path(0), "elev"), vec!["6/55/25".to_string()]);
+        update(&mut a, "v2");
+        let (wait, words) = a.slots[0].update_wait.clone().unwrap();
+        assert!(wait.is_some_and(|w| w > Duration::from_secs(80 * 60)), "{wait:?} {words}");
+        std::fs::remove_file(a.done_path(0)).unwrap();
+        a.slots[0].running.as_mut().unwrap().started = now_s();
         // A short target: never less than the time a pause gives.
         update(&mut a, "v1");
         a.mem.step_secs.insert(secs_key("elev"), 60.0);
