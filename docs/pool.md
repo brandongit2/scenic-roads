@@ -411,12 +411,13 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
 - **A member's jobs far over what it spared them** (`Agent::over_grant`, task #28): each job a
   member is granted keeps the memory its ask spared (`more_mb` while its owner was away, else
   `mem_mb`). Once its jobs together hold more than half as much again (4 GB more at least,
-  `far_over`), within the Mac's limit or not and the Mac short of memory or not, one stops at once
-  (the largest when it alone passes, else as `decide_by` picks) and is given back, not failed: no
-  hour kept from the Mac, no failure at the lead. What it held is sent with the give-back as its
-  targets' floors (below; also on the pool-off lease path, in its `result.json`), so the lead
-  offers a job of one target only to a Mac that spares that much (a batch's floor isn't held
-  against a Mac).
+  `far_over`), capped at the Mac's limit, the largest stops at once, the Mac short of memory or
+  not; never a job beside it. So a member's jobs past the limit meet this first: the largest stops
+  at once, not at a safe point. Past that mark by itself, or the member's only job, it's given back,
+  not failed (no failure at the lead), and what it held goes with the give-back as an alone floor of
+  its target under way (below), so the lead offers that target only to a Mac that spares that much.
+  Otherwise (only the jobs together past it, or its target under way unknown) it ends as failed: the
+  lead keeps it from that Mac for an hour, doubling, and its floors go as any job's.
 - **An update's drain** (a newer app installed): every job stops at its next safe point; the agent
   restarts once the lead's first slot is free, or a member's every slot, each job given its own
   wait (its target under way's expected time ×1.5, at most 3 h, at least 15 minutes).

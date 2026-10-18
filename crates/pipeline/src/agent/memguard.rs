@@ -533,6 +533,12 @@ impl Sampler {
         }
     }
 
+    /// The cost key of the target slot `k`'s job is on (`Watch::current`).
+    pub fn current_of(&self, k: usize) -> Option<String> {
+        let w = self.inner.lock().ok()?.watches.get(k)?.clone()?;
+        w.current()
+    }
+
     /// What slot `k`'s job holds now (MB), as last sampled.
     pub fn held(&self, k: usize) -> Option<u64> {
         self.inner.lock().ok()?.watches.get(k)?.as_ref()?.held
