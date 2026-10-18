@@ -11121,12 +11121,28 @@ mod tests {
         assert!(a.guard_view().last.is_some_and(|(_, w)| w.contains("frozen") && w.contains("still short")));
         // A job paused (the build's pause, a drain past its grace) counts as frozen already: the
         // pressure coming and going neither freezes it nor lets it go on.
-        assert!(a.try_start(1, job("bldtiles 6/2/3"), &cond, Some(&root), &mut Vec::new()));
+        // This job reports its own state: a heartbeat line every 50 ms into a file. Stopped means
+        // the file stops growing, going means it grows; the OS's own word (`ps`) is checked too.
+        let hb = d.path().join("heartbeat");
+        let mut beating = job("bldtiles 6/2/3");
+        beating.cmd =
+            vec!["/bin/sh".into(), "-c".into(), format!("while :; do echo x >> '{}'; sleep 0.05; done", hb.display())];
+        assert!(a.try_start(1, beating, &cond, Some(&root), &mut Vec::new()));
+        let size = || std::fs::metadata(&hb).map_or(0, |m| m.len());
+        let until = |what: &str, f: &dyn Fn() -> bool| {
+            let t = Instant::now();
+            while !f() {
+                assert!(t.elapsed() < Duration::from_secs(10), "{what}");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        until("running: the heartbeat advances", &|| size() >= 6);
         a.slots[1].running.as_mut().unwrap().pause("the test");
-        // (Polled every 20 ms for up to 2 s: a stop reaches the process a moment after it's sent.)
-        let stopped_state = |a: &Agent| {
+        // A stop reaches the process a moment after it's sent (longer under load): the process is
+        // stopped (any `T` state) and the heartbeat has stopped advancing.
+        let stopped = |a: &Agent| {
             let pgid = a.slots[1].running.as_ref().unwrap().pgid;
-            (0..100).any(|_| {
+            until("still stopped (ps)", &|| {
                 let o = store::spawn::output(store::spawn::command("/bin/ps").args([
                     "-o",
                     "stat=",
@@ -11134,18 +11150,19 @@ mod tests {
                     &pgid.to_string(),
                 ]))
                 .unwrap();
-                String::from_utf8_lossy(&o.stdout).contains('T') || {
-                    std::thread::sleep(Duration::from_millis(20));
-                    false
-                }
-            })
+                String::from_utf8_lossy(&o.stdout).contains('T')
+            });
+            let before = size();
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(size(), before, "still stopped (heartbeat)");
         };
         for trouble in [true, true, false] {
             a.sampler.set_test(Some(vec![Some(9 << 10), Some(4 << 10)]), Some(trouble));
             a.sampler.tick();
             assert!(!a.guard());
+            // The agent's own records first.
             assert!(a.slots[1].pressure_frozen.is_none() && a.slots[1].running.as_ref().unwrap().paused.is_some());
-            assert!(stopped_state(&a), "still stopped");
+            stopped(&a);
         }
         a.slots[1].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
