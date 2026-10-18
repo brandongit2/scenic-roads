@@ -398,10 +398,13 @@ mod tests {
         put(root, "state/coord/term/7/view.json", view.to_string().as_bytes());
         put(root, "state/build/term/7/forecast-input.json", &record(now).bytes().unwrap());
         let day = crate::pool::journal::day(now).unwrap();
-        let ev = |seq: u64, t: u64, kind: &str| {
-            serde_json::to_string(&Event { seq, t, ..Event::new(kind) }).unwrap() + "\n"
-        };
-        put(root, &format!("state/coord/history/{day}/m-a.jsonl"), (ev(1, now - 50, "start") + &ev(2, now - 20, "done")).as_bytes());
+        let ev =
+            |seq: u64, t: u64, kind: &str| serde_json::to_string(&Event { seq, t, ..Event::new(kind) }).unwrap() + "\n";
+        put(
+            root,
+            &format!("state/coord/history/{day}/m-a.jsonl"),
+            (ev(1, now - 50, "start") + &ev(2, now - 20, "done")).as_bytes(),
+        );
         put(root, &format!("state/coord/history/{day}/m-b.jsonl"), ev(9, now - 30, "lease").as_bytes());
         put(root, "state/helpers/m1.json", format!(r#"{{"host":"m1","beat":{now},"regions":[1]}}"#).as_bytes());
     }
