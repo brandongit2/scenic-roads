@@ -102,7 +102,7 @@ const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
 
 /// How many jobs the lead runs at once (docs/plan.md §8, Two jobs at once): the plan's first it
 /// can run, and a second beside it (`SECOND`). A member runs one, as the lead leases them.
-const SLOTS: usize = 2;
+pub(crate) const SLOTS: usize = 2;
 
 /// The steps the second job takes, in its order of preference (the steps table's: crate::agent::
 /// steps; by measure, any: `Agent::start_second`); those that keep the pass's Wikidata and Wikipedia answers here
@@ -145,8 +145,39 @@ fn is_duty(id: &str) -> bool {
 /// step's targets are held apart (crate::coord), and each slot has a scratch folder of its own;
 /// what else two jobs share is guarded where it's used (docs/pool.md §7.7: the caches' accessor,
 /// the budgets' proxy, the answers' lease), and their memory and disk measured (`fits_beside`).
-fn clash(a: &str, b: &str) -> bool {
+pub(crate) fn clash(a: &str, b: &str) -> bool {
     a == b && !steps::SHARED.contains(&a)
+}
+
+/// `Agent::fits_beside`'s rule, of what it reads (the pool's simulator applies it too:
+/// crate::pool::sim::place): why a job measured `mine` can't start beside one measured `theirs`
+/// (None: it can). A cold start (no measure) runs alone, as does a job beside one; their memory past
+/// `limit` (MB; the other's as measured, or as it holds now, `held`, if more; as it holds now alone
+/// while it waits on a worker holding its unit's tail, `waiting`); their disk (mine, the other's
+/// still to come `left` and the reserve: bytes) past `free`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn beside_why(mine: Option<crate::coord::Measured>, theirs: Option<crate::coord::Measured>, waiting: bool, held: Option<u64>, limit: u64, left: u64, free: u64, beside: &str) -> Option<String> {
+    let Some(mine) = mine else { return Some(format!("a cold start (no run of its step measured yet): it runs alone, once {beside} ends")) };
+    let Some(theirs) = theirs else { return Some(format!("{beside} beside it is a cold start, which runs alone")) };
+    if limit == 0 {
+        return Some("this Mac's memory can't be read: nothing starts beside another job".into());
+    }
+    // (One waiting on a worker holding its unit's tail: as it holds now, its own work done
+    // until the tail is back; the memory guard has the job beside it yield if the two then
+    // hold too much, `yields`.)
+    let theirs_mb = match (waiting, held) {
+        (true, Some(now)) => now,
+        _ => theirs.mem_mb.max(held.unwrap_or(0)),
+    };
+    let gb = |mb: u64| mb as f64 / 1024.0;
+    if mine.mem_mb + theirs_mb > limit {
+        return Some(format!("measured at {:.1} GB, with {beside}'s {:.1} GB past this Mac's limit of {:.1} GB", gb(mine.mem_mb), gb(theirs_mb), gb(limit)));
+    }
+    let need = (mine.disk_mb << 20) + left + room::RESERVE;
+    if need > free {
+        return Some(format!("measured at {:.1} GB on the disk, with {beside}'s {:.1} GB still to come and the {} GB kept free, past the disk's {} free", gb(mine.disk_mb), left as f64 / (1u64 << 30) as f64, room::RESERVE >> 30, room::size(free)));
+    }
+    None
 }
 
 /// The cost key a job of no targets of its own is measured by (the OSM pass's `osm-pass <date>`, GC's
@@ -3372,29 +3403,9 @@ impl Agent {
     fn fits_beside(&self, spec: &JobSpec, other: usize) -> Option<String> {
         let r = self.slots[other].running.as_ref()?;
         let beside = steps::title(&step_of(&r.spec.id).unwrap_or_default()).to_string();
-        let Some(mine) = self.measured_job(spec) else { return Some(format!("a cold start (no run of its step measured yet): it runs alone, once {beside} ends")) };
-        let Some(theirs) = self.measured_job(&r.spec) else { return Some(format!("{beside} beside it is a cold start, which runs alone")) };
-        let limit = memguard::limit_mb(self.total_mb());
-        if limit == 0 {
-            return Some("this Mac's memory can't be read: nothing starts beside another job".into());
-        }
-        // (One waiting on a worker holding its unit's tail: as it holds now, its own work done
-        // until the tail is back; the memory guard has the job beside it yield if the two then
-        // hold too much, `yields`.)
-        let theirs_mb = match (self.waiting_on(other), self.held_mb(other)) {
-            (Some(_), Some(now)) => now,
-            _ => theirs.mem_mb.max(self.held_mb(other).unwrap_or(0)),
-        };
-        let gb = |mb: u64| mb as f64 / 1024.0;
-        if mine.mem_mb + theirs_mb > limit {
-            return Some(format!("measured at {:.1} GB, with {beside}'s {:.1} GB past this Mac's limit of {:.1} GB", gb(mine.mem_mb), gb(theirs_mb), gb(limit)));
-        }
-        let left = self.disk_left(other);
-        let (need, free) = ((mine.disk_mb << 20) + left + room::RESERVE, self.disk_free());
-        if need > free {
-            return Some(format!("measured at {:.1} GB on the disk, with {beside}'s {:.1} GB still to come and the {} GB kept free, past the disk's {} free", gb(mine.disk_mb), left as f64 / (1u64 << 30) as f64, room::RESERVE >> 30, room::size(free)));
-        }
-        None
+        let theirs = self.measured_job(&r.spec);
+        let left = if theirs.is_some() { self.disk_left(other) } else { 0 };
+        beside_why(self.measured_job(spec), theirs, self.waiting_on(other).is_some(), self.held_mb(other), memguard::limit_mb(self.total_mb()), left, self.disk_free(), &beside)
     }
 
     /// The job in slot `k` the memory guard drained the one beside, while it runs: nothing starts

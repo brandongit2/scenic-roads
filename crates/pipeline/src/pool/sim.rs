@@ -31,6 +31,8 @@
 //! the term, and a journal it empties as it merges) runs on the same model, to show the model
 //! finds what lost work there.
 
+mod place;
+
 use super::beat::Beat;
 use super::driver::{self, Ask, Driver, Event, Heard, Io, Listed, Out};
 use super::journal::{self, Entry, LeaseId};

@@ -508,6 +508,19 @@ tiles (`pack_raw_with`) stays inside the piece's job.
   written. 2,000 seeds by default; longer runs are opt-in.
 - **Not modelled:** torn reads, other I/O errors, the member lock, a wall clock set while awake, GC,
   the coordinator (the driver's and modules' own tests cover these).
+- **The placement simulator** (`sim::place`, in the crate's tests, about two seconds a run): N
+  Macs, each with its memory, cores and disk, work a plan through the lead's real coordinator on a
+  simulated clock. Members ask over HTTP with their capacity and take what `pick_every` grants; the
+  lead runs two slots by the agent's own rules (`clash`, `beside_why`, its plan leaving out what
+  others hold and a step cold elsewhere); each job takes its step's true memory, disk and cores,
+  and its measures go back into the coordinator (crate::needs reads them). Checked at every start:
+  no Mac past its memory limit (only a cold start may meet the memory guard), cores, disk or slots;
+  a cold start alone on its Mac and in the pool; lead-only steps on the lead; the plan finishes.
+  Runs: the M4 and the M1 (the lead reaches two jobs, the member one) and four Macs. Members'
+  slots are a setting (today one); at two, a member is given a cold start beside its running job
+  (`most_room` weighs room, not idleness), which a test pins until multi-lease asks fix it. Not
+  modelled: the lead's batching of its own jobs, step dependencies, owner use, failures. Cores
+  aren't a placement input yet: their check holds by the steps' threads chosen.
 - **The agent's tests** (`crate::agent::pool`, `crate::agent::lead`, the agent's `pool_tests`): two
   agents in one process, a lead and a member, through handover, takeover, controls, hand-offs and
   every switch on and off.
