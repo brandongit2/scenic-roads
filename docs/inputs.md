@@ -503,20 +503,23 @@ ids `rg-<check>.<hash16>`.
 | `rg-pin-mismatch` | a pin naming another pass than the current one (§6.1.5) |
 | `rg-group` | a `_group.toml` that doesn't parse, has a field other than `name`/`order`, or an empty name |
 | `rg-extract` | ids the extract lacks: held while it's made (§6.1.6) |
-| `rg-gap` | a warning: two shapes (of two regions, or two parts of one) leave a strip under 1 km wide between them, at least 3 km long, that the coverage leaves out; one finding per gap, with a point in it, its mean width and length, holding both regions' files |
+| `rg-gap` | a warning: two shapes (of two regions, or two parts of one) leave a strip under 1 km wide between them, at least 3 km long, that the coverage leaves out (less what a shape with the coast tolerance takes in); one finding per gap, with a point in it, its mean width and length, holding both regions' files |
 
 **`rg-gap`** (crate::inputs::regions::gaps): the coverage closed (grown by 500 m and shrunk back,
 `geom::dilate`), less the coverage, in pieces. Why 1 km: a strip that narrow between two regions is
 left out of the build, nobody leaves one out on purpose, and hand-drawn edges miss a neighbour by
-tens to hundreds of metres; it's also the coast tolerance, so a shape with it (a plain `osm:` part)
-already takes in anything that narrow beside it and is never in a gap. A piece counts only when it
-meets two shapes without the tolerance (a narrow inlet of one shape is a coast), is at least 3 km
-long (a close also rounds the corner where two touching shapes meet a coast bending inward) and at
-least 1 m wide on average (shared borders whose vertices don't quite agree). Only quarter-degree tiles
-where two such shapes' unshared edges come within about 1 km are closed, so it costs nothing on a set
-of plain `osm:` regions (7 ms on the 88 in use) and grows with the drawn shapes. The finding's id is
-the regions and the place to 0.01°, so an edit elsewhere doesn't ask for it to be accepted again.
-Gaps across ±180° aren't looked for.
+tens to hundreds of metres; it's also the coast tolerance. From each piece, what a shape with the
+tolerance (a plain `osm:` part) takes in, everything within its tolerance of it, is taken out first;
+the rules then apply to each piece left: it counts only when it meets two shapes without the
+tolerance (a narrow inlet of one shape is a coast), its outer edge is at least 6 km round (half that,
+its length, at least 3 km: a close also rounds the corner where two touching shapes meet a coast
+bending inward) and it's at least 1 m wide on average (shared borders whose vertices don't quite
+agree). So a long gap between two drawn regions that ends at an `osm:` region still warns, less its
+end. Only quarter-degree tiles near where two such shapes' unshared edges come within about 1 km
+are closed, so it costs nothing on a set of plain `osm:` regions (7 ms on the 88 in use) and grows
+with the drawn shapes. The finding's id is the regions and a point inside the gap to 0.01°: an edit
+elsewhere leaves it, but one that changes the gap's shape can move the point and ask for the gap to
+be accepted again. Gaps across ±180° aren't looked for.
 
 A held region keeps its last geometry; a new held region isn't in the coverage yet. Deleting a
 region file takes it out with the next version.

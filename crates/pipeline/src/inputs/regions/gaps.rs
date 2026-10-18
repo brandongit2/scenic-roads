@@ -5,9 +5,11 @@
 //! A morphological close: the coverage grown by half the width and shrunk back (`geom::dilate` of it,
 //! then of what's outside it) fills every strip narrower than the width; what it fills that the
 //! coverage hasn't is a gap. Counted only when it meets two shapes (a narrow inlet of one shape is a
-//! coast, not a gap), is at least `MIN_LENGTH_M` long (a close also rounds the corner where two
-//! touching shapes meet a coast bending inward: a wedge under a kilometre or so), and meets no shape
-//! with the coast tolerance (whose 1 km tolerance already takes in anything that narrow).
+//! coast, not a gap) and is at least `MIN_LENGTH_M` long (a close also rounds the corner where two
+//! touching shapes meet a coast bending inward: a wedge under a kilometre or so). What a shape with the
+//! coast tolerance takes in (everything within its tolerance) is taken out of each gap first, and
+//! the rules applied to what's left: a long gap between two drawn regions that ends at an `osm:`
+//! region still counts.
 //!
 //! Done only where it can matter, so it's fast on the real set: the edges of shapes without the
 //! tolerance not shared with another shape (shared borders, the same OSM ways, are no gap) are put in
@@ -62,6 +64,8 @@ struct Unit<'a> {
     bbox: [i64; 4],
     /// Without the coast tolerance: what gaps are looked for between.
     plain: bool,
+    /// Its coast tolerance (metres; 0 for none).
+    tol: f64,
 }
 
 fn meets(a: [i64; 4], b: [i64; 4]) -> bool {
@@ -124,7 +128,14 @@ pub fn gaps(geoms: &[&Geometry]) -> Vec<Gap> {
                 s.rings.iter().map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect()).collect();
             let Some(bbox) = geom::bbox_of(rings.iter().flatten()) else { continue };
             let rings = Rings::new(rings);
-            units.push(Unit { region: &g.id, from: &s.from, rings, bbox, plain: (s.tolerance_m as f64) < GAP_M });
+            units.push(Unit {
+                region: &g.id,
+                from: &s.from,
+                rings,
+                bbox,
+                plain: (s.tolerance_m as f64) < GAP_M,
+                tol: s.tolerance_m as f64,
+            });
         }
     }
     if units.iter().filter(|u| u.plain).count() < 2 {
@@ -177,7 +188,16 @@ pub fn gaps(geoms: &[&Geometry]) -> Vec<Gap> {
             })
         });
         if near {
-            tiles.insert([(c[0] * cell).div_euclid(TILE_E7), (c[1] * cell).div_euclid(TILE_E7)]);
+            // (Every tile the neighbourhood touches: a gap across a tile's edge is closed on both sides.)
+            for dy in -1..=1 {
+                for dx in -kx..=kx {
+                    tiles.insert([((c[0] + dx) * cell).div_euclid(TILE_E7), ((c[1] + dy) * cell).div_euclid(TILE_E7)]);
+                    tiles.insert([
+                        ((c[0] + dx + 1) * cell).div_euclid(TILE_E7),
+                        ((c[1] + dy + 1) * cell).div_euclid(TILE_E7),
+                    ]);
+                }
+            }
         }
     }
     // Each tile closed within its window.
@@ -217,10 +237,25 @@ pub fn gaps(geoms: &[&Geometry]) -> Vec<Gap> {
     if found.is_empty() {
         return Vec::new();
     }
-    // The tiles' gaps joined; each piece measured and its shapes found.
-    let mut out = Vec::new();
+    // The tiles' gaps joined; less what shapes with the coast tolerance take in; each piece measured
+    // and its shapes found.
+    let mut pieces: Vec<Area> = Vec::new();
     for poly in geom::union_all(&found).polys {
-        let piece = Area { polys: vec![poly] };
+        let mut piece = Area { polys: vec![poly] };
+        let Some(pb) = piece.bbox() else { continue };
+        for u in units.iter().filter(|u| !u.plain) {
+            let b = grow(pb, u.tol + GAP_M);
+            if meets(u.bbox, b) {
+                let a = u.rings.clip(b).area();
+                if !a.is_empty() {
+                    piece = piece.minus(&geom::dilate(&a, u.tol, SIDES));
+                }
+            }
+        }
+        pieces.extend(piece.polys.into_iter().map(|p| Area { polys: vec![p] }));
+    }
+    let mut out = Vec::new();
+    for piece in pieces {
         let (area, perimeter) = measure(&piece);
         let length = perimeter / 2.0;
         if length < MIN_LENGTH_M || perimeter <= 0.0 || 2.0 * area / perimeter < MIN_WIDTH_M {
@@ -230,9 +265,9 @@ pub fn gaps(geoms: &[&Geometry]) -> Vec<Gap> {
         let Some(nb) = near.bbox() else { continue };
         let met: Vec<&Unit> = units
             .iter()
-            .filter(|u| meets(u.bbox, nb) && !u.rings.clip(nb).area().intersect(&near).is_empty())
+            .filter(|u| u.plain && meets(u.bbox, nb) && !u.rings.clip(nb).area().intersect(&near).is_empty())
             .collect();
-        if met.len() < 2 || met.iter().any(|u| !u.plain) {
+        if met.len() < 2 {
             continue;
         }
         let regions: BTreeSet<String> = met.iter().map(|u| u.region.to_string()).collect();
@@ -249,10 +284,11 @@ pub fn gaps(geoms: &[&Geometry]) -> Vec<Gap> {
     out
 }
 
-/// A piece's area (m²) and perimeter (m), on the ground near enough for a few kilometres.
+/// A piece's area (m², holes out) and its outer ring's perimeter (m: what its length is half of),
+/// on the ground near enough for a few kilometres.
 fn measure(a: &Area) -> (f64, f64) {
     let (mut area, mut per) = (0.0, 0.0);
-    for r in a.polys.iter().flatten() {
+    for (k, r) in a.polys.iter().flat_map(|p| p.iter().enumerate()) {
         let n = r.len();
         let lat = (r[0][1] as f64 * 1e-7).to_radians();
         let (sx, sy) = (M_PER_DEG * 1e-7 * lat.dcos(), M_PER_DEG * 1e-7);
@@ -261,11 +297,14 @@ fn measure(a: &Area) -> (f64, f64) {
             let (p, q) = (r[i], r[(i + 1) % n]);
             s += ((p[0] - r[0][0]) as f64 * sx) * ((q[1] - r[0][1]) as f64 * sy)
                 - ((q[0] - r[0][0]) as f64 * sx) * ((p[1] - r[0][1]) as f64 * sy);
-            per += geom::length_m(p, q);
+            if k == 0 {
+                per += geom::length_m(p, q);
+            }
         }
+        // (Outer rings counter-clockwise, holes clockwise: their signed areas sum to the piece's.)
         area += s / 2.0;
     }
-    (area.abs(), per)
+    (area.max(0.0), per)
 }
 
 /// A point in the piece: the middle of its widest crossing along the parallel through its box's
@@ -299,8 +338,10 @@ fn inside_point(a: &Area) -> Pt {
     best.map_or(first, |(_, m)| m)
 }
 
-/// The gaps as findings' parts: the regions, a place to the 100th of a degree (what it is: a gap a
-/// little moved, or measured a little differently, is the same one), and the words.
+/// The gaps as findings' parts: the regions, a place to the 100th of a degree, and the words. The
+/// place is a point inside the gap, which depends on the gap's whole shape: an edit elsewhere leaves
+/// it, but one that changes the gap (or a point landing on a rounding edge) can move it and ask for
+/// the gap to be accepted again.
 pub fn describe(g: &Gap) -> (Vec<String>, String, String) {
     let (lon, lat) = (g.at[0] as f64 * 1e-7, g.at[1] as f64 * 1e-7);
     let place = format!("{lon:.2},{lat:.2}");

@@ -562,6 +562,30 @@ fn a_thin_gap_between_regions_warns_and_touching_or_overlapping_ones_dont() {
 }
 
 #[test]
+fn a_thin_gap_ending_at_an_osm_region_still_warns() {
+    let f = fx();
+    // Drawn a and b side by side north of osm:1 (0…1, 0…1), 300 m apart, both touching it: a
+    // three-way junction at the gap's south end, which osm:1's tolerance takes in, not the rest.
+    let poly = |x0: f64, x1: f64| {
+        format!(
+            r#"{{"type": "Polygon", "coordinates": [[[{x0}, 1], [{x1}, 1], [{x1}, 1.5], [{x0}, 1.5], [{x0}, 1]]]}}"#
+        )
+    };
+    let files: Vec<(String, String)> = vec![
+        (PINS.0.into(), PINS.1.into()),
+        ("a.toml".into(), region("a", "outline = [\"shape:a.geojson\"]\n")),
+        ("a.geojson".into(), poly(0.0, 0.5)),
+        ("b.toml".into(), region("b", "outline = [\"shape:b.geojson\"]\n")),
+        ("b.geojson".into(), poly(0.5027, 1.0)),
+        ("c.toml".into(), region("c", "outline = [\"osm:1\"]\n")),
+    ];
+    let g = gaps_of(&f, &files);
+    assert_eq!(g.len(), 1, "{g:?}");
+    assert_eq!(g[0].regions, vec!["a", "b"]);
+    assert!(g[0].length_m > 50_000.0 && g[0].length_m < 55_000.0, "{g:?}");
+}
+
+#[test]
 fn a_thin_gap_holds_both_files_until_accepted() {
     let f = fx();
     let checks = Regions::new(Some(Prepared {
