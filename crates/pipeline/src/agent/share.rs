@@ -1,6 +1,8 @@
-//! The in-use share (docs/pool.md §7.1): the cores and memory a Mac's agent keeps free of its jobs
-//! while its owner uses the Mac. Set by `scenic in-use` in the agent's folder, which the agent reads
-//! each loop (as the disk room target, crate::agent::room); either part not set takes its default.
+//! The in-use share (docs/pool.md §7.1): what a Mac's agent keeps free of its jobs for its owner:
+//! its cores while the owner uses the Mac (used within five minutes), its memory whenever the owner
+//! isn't away (crate::agent's `helper_memory`). Set by `scenic in-use` in the agent's folder, which
+//! the agent reads each loop (as the disk room target, crate::agent::room); either part not set
+//! takes its default.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -28,9 +30,22 @@ pub fn default_mem_mb(total_mb: u64) -> u64 {
     total_mb * 5 / 8
 }
 
-/// The share as set in `home`, if any.
+/// The share as set in `home`, if any (one that can't be read: none, the defaults).
 pub fn read(home: &Path) -> Option<Share> {
-    std::fs::read(home.join(FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok())
+    read_checked(home).ok().flatten()
+}
+
+/// The share as set in `home`: None when there's none; an error when its file can't be read or
+/// parsed.
+pub fn read_checked(home: &Path) -> Result<Option<Share>> {
+    let p = home.join(FILE);
+    match std::fs::read(&p) {
+        Ok(b) => {
+            Ok(Some(serde_json::from_slice(&b).map_err(|e| anyhow::anyhow!("{} can't be read: {e}", p.display()))?))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("{} can't be read: {e}", p.display())),
+    }
 }
 
 /// Sets the share in `home` (both parts None: cleared, the defaults again).
@@ -80,5 +95,7 @@ mod tests {
         assert_eq!((cores(s.as_ref(), 8), mem_mb(s.as_ref(), 16_384)), (2, 4096));
         assert_eq!(set(d.path(), None, None, "a test").unwrap(), None);
         assert_eq!(read(d.path()), None);
+        std::fs::write(d.path().join(FILE), b"{not json").unwrap();
+        assert!(read_checked(d.path()).is_err() && read(d.path()).is_none());
     }
 }

@@ -10915,12 +10915,22 @@ mod tests {
         // pressure coming and going neither freezes it nor lets it go on.
         assert!(a.try_start(1, job("bldtiles 6/2/3"), &cond, Some(&root), &mut Vec::new()));
         a.slots[1].running.as_mut().unwrap().pause("the test");
+        // (Polled every 20 ms for up to 2 s: a stop reaches the process a moment after it's sent.)
         let stopped_state = |a: &Agent| {
             let pgid = a.slots[1].running.as_ref().unwrap().pgid;
-            let o =
-                store::spawn::output(store::spawn::command("/bin/ps").args(["-o", "stat=", "-p", &pgid.to_string()]))
-                    .unwrap();
-            String::from_utf8_lossy(&o.stdout).contains('T')
+            (0..100).any(|_| {
+                let o = store::spawn::output(store::spawn::command("/bin/ps").args([
+                    "-o",
+                    "stat=",
+                    "-p",
+                    &pgid.to_string(),
+                ]))
+                .unwrap();
+                String::from_utf8_lossy(&o.stdout).contains('T') || {
+                    std::thread::sleep(Duration::from_millis(20));
+                    false
+                }
+            })
         };
         for trouble in [true, true, false] {
             a.sampler.set_test(Some(vec![Some(9 << 10), Some(4 << 10)]), Some(trouble));

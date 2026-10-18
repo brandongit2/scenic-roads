@@ -633,13 +633,30 @@ impl Shared {
         g.entry((step.to_string(), target.to_string())).and_modify(|e| e.1 = now).or_insert((now, now));
     }
 
-    /// The threads a job of `step` over `pick` is granted, one job an ask (packing off): its
-    /// measured cores (crate::needs::Book::cores, the most of its targets'), else all the cores
-    /// `a`'s Mac has for its jobs (`ask_cores`), within those.
-    fn job_threads(&self, a: &Ask, step: &str, pick: &[(String, String)]) -> u32 {
-        let total = ask_cores(a);
-        let b = self.book();
-        pick.iter().filter_map(|t| b.cores(step, &t.0)).max().unwrap_or(total).clamp(1, total)
+    /// The threads a job of `step` over `pick` is granted, one job an ask (packing off): all the
+    /// cores `a`'s Mac has for its jobs (`ask_cores`), as before; measured cores size packing alone.
+    fn job_threads(&self, a: &Ask, _step: &str, _pick: &[(String, String)]) -> u32 {
+        ask_cores(a)
+    }
+
+    /// Whether a job of `step` over `targets` reads the NAS enough that its threads overlap waiting
+    /// on it: a step known to (`NAS_STEPS`), or one whose costs show 10 MB/s or more of NAS bytes.
+    fn reads_nas(&self, step: &str, targets: &[String]) -> bool {
+        NAS_STEPS.contains(&step) || {
+            let b = self.book();
+            targets.iter().any(|t| b.nas(step, t).is_some_and(|r| r.bytes_s >= 10e6))
+        }
+    }
+
+    /// The cores a packed job of `step` over `targets`, measured to take `c`, is granted (and
+    /// counted for): `c` within the packed `share`; a NAS-reading one (`reads_nas`) the share, never
+    /// fewer.
+    fn packed_cores(&self, step: &str, targets: &[String], c: u32, share: u32) -> u32 {
+        if self.reads_nas(step, targets) {
+            share
+        } else {
+            c.min(share).max(1)
+        }
     }
 
     /// What a job of `step` over `targets` is measured to take (as `Coordinator::measured_batch`:
@@ -731,6 +748,13 @@ impl Shared {
             Work::Task { .. } => None,
         };
         let needs: Vec<Option<(Measured, Option<u32>)>> = mine.iter().map(|l| need(self, l)).collect();
+        let held_steps: Vec<(String, Vec<String>)> = mine
+            .iter()
+            .filter_map(|l| match &l.work {
+                Work::Job { step, targets } => Some((step.clone(), targets.iter().map(|t| t.0.clone()).collect())),
+                Work::Task { .. } => None,
+            })
+            .collect();
         // (Nothing beside a cold start.)
         if needs.iter().any(Option::is_none) {
             return None;
@@ -741,7 +765,10 @@ impl Shared {
         // ones within the packed share, the threads it was granted.)
         let mut cores = needs
             .iter()
-            .try_fold(total, |left, n| n.and_then(|(_, c)| c).map(|c| left.saturating_sub(c.min(share))))
+            .zip(&held_steps)
+            .try_fold(total, |left, (n, (st, ts))| {
+                n.and_then(|(_, c)| c).map(|c| left.saturating_sub(self.packed_cores(st, ts, c, share)))
+            })
             .unwrap_or(0);
         // (The ask's memory and disk are a job's whole share of its Mac, whatever it runs (the
         // agent's `helper_memory`, its free disk): every job it holds is taken off them here.)
@@ -762,16 +789,18 @@ impl Shared {
                 }
                 let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
                 let n = self.job_need(&o.step, &ts);
-                if beside && !matches!(n, Some((_, Some(c))) if c.min(share) <= cores) {
+                if beside && !matches!(n, Some((_, Some(c))) if self.packed_cores(&o.step, &ts, c, share) <= cores) {
                     continue;
                 }
                 got = Some((o, pick, n));
                 break;
             }
             let Some((o, pick, n)) = got else { break };
-            // (Its threads: its measured cores within the packed share, else the share; within the
-            // cores left, one at least.)
-            let threads = n.and_then(|(_, c)| c).unwrap_or(share).min(share).min(cores).max(1);
+            // (Its threads: its packed cores (`packed_cores`), else the share; within the cores
+            // left, one at least.)
+            let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
+            let threads =
+                n.and_then(|(_, c)| c).map_or(share, |c| self.packed_cores(&o.step, &ts, c, share)).min(cores).max(1);
             grants.push(self.grant_job(a, o, pick, true, threads, now));
             held += 1;
             // (A cold start alone.)
@@ -1234,6 +1263,10 @@ pub fn ask_cores(a: &Ask) -> u32 {
 pub fn packed_share(cores: u32) -> u32 {
     (cores / 4).max(2).min(cores.max(1))
 }
+
+/// The steps that read the NAS as they go (their threads overlap the waits): never granted fewer
+/// than the packed share.
+pub const NAS_STEPS: &[&str] = &["unit", "elev", "pack", "lo"];
 
 /// How long a capacity stands (s): older, `Coordinator::capacities` leaves it out.
 pub const CAP_FRESH_S: u64 = 120;
@@ -5247,7 +5280,11 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         c.set_packing(Some(Packing::default()));
         heavy(&c, "slope");
-        assert_eq!(all_granted(&w, &a).len(), 6, "off: by its room alone");
+        assert_eq!(
+            all_granted(&w, &a).len(),
+            4,
+            "off: by its room and cores alone (a NAS reader: the packed share, 2 of 8, each)"
+        );
         let (_d, c, w, _clock) = every((0, 0));
         c.set_packing(Some(Packing::default()));
         c.set_nas(Some(limits));
@@ -5345,6 +5382,51 @@ mod tests {
         c.set_packing(Some(Packing::default()));
         packable(&c, "slope", 6, None);
         assert_eq!(all_granted(&w, &a).len(), 1);
+    }
+
+    /// Threads granted (task #241): packing off, all the ask's cores whatever was measured (less the
+    /// in-use share's while its owner uses it); on, each its measured cores within the packed share
+    /// (a quarter of 8: 2), a serial one 1; a NAS-reading step never fewer than the share.
+    #[test]
+    fn grants_carry_their_threads() {
+        let threads = |w: &client::Client, a: &Ask| -> Vec<u32> {
+            let Some(mut g) = w.ask(a).unwrap() else { return Vec::new() };
+            let more = std::mem::take(&mut g.more);
+            std::iter::once(g).chain(more).map(|g| g.threads).collect()
+        };
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "slope", 6, Some(2));
+        let a = every_ask("m1", "slope", 64_000, 100_000);
+        assert_eq!(threads(&w, &a), [8], "off: every core");
+        let cap = Capacity { cores: 8, in_use: true, kept_cores: 2, ..Default::default() };
+        let used = Ask { cap: Some(cap), ..a.clone() };
+        assert_eq!(c.shared.lock().unwrap().job_threads(&used, "slope", &[]), 6, "the owner at it");
+        assert_eq!(packed_share(8), 2);
+        assert_eq!((packed_share(14), packed_share(2), packed_share(1)), (3, 2, 1));
+        // On: a serial step's 1 each; a step measured at 2, the share's 2.
+        let (_d, c, w, _clock) = every((0, 0));
+        c.set_packing(Some(Packing::default()));
+        packable(&c, "slope", 6, Some(1));
+        let a = Ask { want: 6, ..every_ask("m1", "slope", 64_000, 100_000) };
+        assert_eq!(threads(&w, &a), [1; 6]);
+        // A step reading the NAS (30 MB/s), measured at 1: the share, never fewer.
+        let (_d, c, w, _clock) = every((0, 0));
+        c.set_packing(Some(Packing::default()));
+        packable(&c, "slope", 6, Some(1));
+        for i in 1..=6 {
+            let sizes = [("threads".to_string(), 1), ("bytes".to_string(), 18_000_000_000)];
+            let cost = Cost {
+                peak_mb: 2000,
+                secs: 600,
+                worker: None,
+                v: cost_version("slope"),
+                sizes: sizes.into(),
+                ..Default::default()
+            };
+            c.add_costs_by(&[(cost_key("slope", &format!("6/1/{i}")), cost)], "m1");
+        }
+        assert_eq!(threads(&w, &a), [2; 4], "the share each, four in 8 cores");
+        assert!(c.shared.lock().unwrap().reads_nas("unit", &[]));
     }
 
     /// Packing on, a member holding jobs asks again as the agent does (the same share of its Mac

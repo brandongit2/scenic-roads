@@ -774,10 +774,10 @@ mod tests {
         assert!(lo >= 1 && hi <= 2, "{r:?}");
         assert!(r.granted.values().all(|&(lo, hi)| lo >= 1 && hi <= 2), "the M1's packed share: 2: {r:?}");
         assert!(r.most[1] >= 3, "serial jobs pack beside each other: {r:?}");
-        // One job an ask (packing off): a cold start given every core, then its measured ones.
+        // One job an ask (packing off): every core, whatever was measured.
         let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None })
             .unwrap();
-        assert!(r.granted.values().all(|&(lo, hi)| lo >= 1 && hi <= 8), "{r:?}");
+        assert!(r.granted.values().all(|&g| g == (8, 8)), "{r:?}");
     }
 
     /// The members' owners at them (task #241): each one's in-use share keeps its cores (here 4 of

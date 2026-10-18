@@ -834,7 +834,13 @@ fn in_use(args: &[String]) -> Result<()> {
         })
         .transpose()?;
     if n.is_none() && gb.is_none() {
-        say(share::read(&home).as_ref());
+        match share::read_checked(&home) {
+            Ok(s) => say(s.as_ref()),
+            Err(e) => {
+                println!("{e:#}: the agent keeps the defaults");
+                say(None);
+            }
+        }
         return Ok(());
     }
     anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());

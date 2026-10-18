@@ -472,8 +472,17 @@ impl<'a> Book<'a> {
         let v = cost_version(step);
         let threads = |c: &Cost| {
             let t = *c.sizes.get("threads").filter(|_| c.v >= v)? as u32;
-            let busy = c.sizes.get("cpu_ms").map(|&ms| ms.div_ceil(c.secs.max(1) * 1000) as u32 + 1);
-            Some(busy.map_or(t, |b| b.min(t)).max(1))
+            // (Its threads kept busy; three quarters of them or more: it may have used more, twice
+            // them, so a grant can climb back (crate::coord caps it at the Mac's cores).)
+            let busy = c.sizes.get("cpu_ms").map(|&ms| ms.div_ceil(c.secs.max(1) * 1000) as u32);
+            Some(
+                match busy {
+                    None => t,
+                    Some(b) if b * 4 >= t * 3 => t * 2,
+                    Some(b) => (b + 1).min(t),
+                }
+                .max(1),
+            )
         };
         if let Some(t) = self.costs.get(&cost_key(step, target)).and_then(threads) {
             return Some(t);
@@ -657,7 +666,7 @@ mod tests {
         costs.insert(cost_key("pois", "6/1/1"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 9_500)])));
         costs.insert(cost_key("pois", "6/1/2"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 80_000)])));
         let b = Book::new(&costs);
-        assert_eq!((b.cores("pois", "6/1/1"), b.cores("pois", "6/1/2")), (Some(2), Some(8)));
+        assert_eq!((b.cores("pois", "6/1/1"), b.cores("pois", "6/1/2")), (Some(2), Some(16)), "a busy run climbs back");
     }
 
     /// A target's NAS rate: its own run's bytes (read and written) and creates over its time, else

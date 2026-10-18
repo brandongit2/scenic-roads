@@ -278,12 +278,16 @@ coordinator doesn't read heartbeats. Every field has a serde default: an older c
 workers read it: `scenic-build`'s); costs record them (`threads`), with the CPU time the target
 took (`cpu_ms`). A job's measured cores (`needs::Book::cores`) are the threads its runs were given,
 or fewer where their CPU time over their wall time says fewer were busy, plus one (a serial step:
-1–2). The cores a member's jobs may use together (`coord::ask_cores`) are its Mac's less, while its
-owner uses it, its in-use share's. One job an ask (packing off), a job is granted its measured
-cores within those, else all of them. Packing on, each is granted its measured cores within the
-packed share (`coord::packed_share`: a quarter of those cores, at least two where they allow: the
-M1's 8, 2) and the cores its other jobs leave, else the share: a first job alone gets no more than
-the share, so its run is never measured to take every core and leave no room beside it. The agent
+1–2), or twice them where three quarters or more were busy (so a grant can climb back; capped at
+the Mac's cores). The cores a member's jobs may use together (`coord::ask_cores`) are its Mac's
+less, while its owner uses it, its in-use share's. One job an ask (packing off), a job is granted
+all of them, as before: measured cores size packing alone. Packing on, each is granted its
+measured cores within the packed share (`coord::packed_share`: a quarter of those cores, at least
+two where they allow: the M1's 8, 2) and the cores its other jobs leave, else the share; a step
+reading the NAS as it goes (`coord::NAS_STEPS`: unit, elev, pack, lo; or one whose costs show
+10 MB/s or more of NAS bytes) the share, never fewer, its threads overlapping the waits. A first
+job alone gets no more than the share, so its run is never measured to take every core and leave
+no room beside it. The agent
 starts a granted job with those threads, within its Mac's cores less those the in-use share keeps
 while the owner uses it and those its other running jobs were given (one at least), and logs a
 line per job: `agent: starting <job> (<n> threads: granted <g> of <c> cores, <k> kept for the
@@ -291,12 +295,14 @@ owner, <b> given to jobs beside it)`. The lead's own jobs, granted nothing, keep
 rule (all the cores; the second job half, or all beside a job waiting on a worker), less the in-use
 share's cores while the owner uses the Mac. The coordinator logs the threads with each grant.
 
-**The in-use share** (`crate::agent::share`): what a Mac's agent keeps free of its jobs while its
-owner uses it: cores (by default 2) and memory (by default five eighths of the Mac's: a member
-spares three eighths, `helper_memory`; while its owner is away, five eighths or what the share
-leaves, the more). `scenic in-use [--cores <n>] [--memory <GB>] | off` sets either part (the
+**The in-use share** (`crate::agent::share`): what a Mac's agent keeps free of its jobs for its
+owner. Its cores (by default 2) are kept while the owner uses the Mac (used within the last five
+minutes). Its memory (by default five eighths of the Mac's) is kept whenever the owner isn't away
+(`helper_memory`: a member spares the rest, by default three eighths; away, on mains power and idle
+a quarter hour, five eighths or what the share leaves, the more); it bounds members' asks alone. `scenic in-use [--cores <n>] [--memory <GB>] | off` sets either part (the
 other keeps its default) in the agent's folder (`in-use-share.json`); `off` clears it, the defaults
-again; with nothing, it says how it stands. The agent reads it each loop, as the disk room target.
+again; with nothing, it says how it stands (and says so where the file can't be read, the
+defaults then in force). The agent reads it each loop, as the disk room target.
 
 ### 7.2 Placement: the steps table
 

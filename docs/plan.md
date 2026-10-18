@@ -1310,7 +1310,10 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
    predicate over names, not a type; the budgets meter rate, not concurrency; resuming covers the
    OSM pass alone; brokers and placement have the limits pool.md lists; create-new between two
    Macs and the share's stale-read window are unchecked on the real share; GC of the journal itself
-   isn't built, so the records snapshot keeps every key; `STALE_S` is an assumption.
+   isn't built, so the records snapshot keeps every key; `STALE_S` is an assumption. The lead's own jobs get no thread grant
+   (docs/pool.md §7.1, Threads granted): they keep the agent's old rule (all the cores; the second
+   job half, or all beside a job waiting on a worker), so the lead's two jobs together may run
+   more threads than it has cores.
 2. **The Python steps' environment is made inside the app's version folder**
    (`app/<version>/dem/.venv`), so the published copy changes and each version makes its own
    (~380 MB). Fix: one environment per lock file, made as an app is installed.
