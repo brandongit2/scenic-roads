@@ -11924,7 +11924,7 @@ mod tests {
         let piece = format!("sources/osm/{date}/pieces/6-28-17");
         m.insert(piece.clone(), format!("{piece}.4444444444444444.osm.pbf"));
         let mut reaches = crate::reach::Reaches { fmt: 1, date: date.into(), ..Default::default() };
-        reaches.units.insert("6/28/17".into(), crate::reach::Reach { owned: Some(owned), long: vec![] });
+        reaches.units.insert("6/28/17".into(), crate::reach::Reach { cells: vec![], owned: Some(owned), long: vec![] });
         let rc = format!("{}.5555555555555555.json.zst", crate::reach::logical(date));
         put(&root.join(&rc), &reaches.encode().unwrap());
         m.insert(crate::reach::logical(date), rc);

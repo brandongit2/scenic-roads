@@ -162,7 +162,7 @@ pub mod v1 {
         let Some(reach) = reach else { return units };
         for (l, c) in m.range(format!("sources/osm/{date}/pieces/")..) {
             let Some(u) = l.strip_prefix(&format!("sources/osm/{date}/pieces/")).and_then(Unit::parse) else { break };
-            let Some(r) = reach.get(u).filter(|r| r.builds(cov)) else { continue };
+            let Some(r) = reach.get(u).filter(|r| r.builds(cov, &super::Before)) else { continue };
             units.push((u, unit_key(cov, date, m, u, c, r, digests, buildings)));
         }
         units
@@ -186,7 +186,7 @@ pub mod v1 {
             format!("unit {UNIT_V}"),
             piece.to_string(),
             get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(),
-            r.coverage_key(cov, u),
+            r.coverage_key(cov, u, &super::Before),
             super::dem_rules_meeting(r.extent(u)),
         ];
         if super::meets_taiwan(r.extent(u)) {
@@ -252,6 +252,10 @@ pub struct Rekeyed {
     /// Units current under their keys from before the build read the declared elevation datasets,
     /// recorded under their keys now: those a single dataset meets (crate::inputs::elevation).
     pub elevation_moved: Vec<String>,
+    /// Units current under their keys from before their spacing came from the declared elevation
+    /// datasets, recorded under their keys now: those whose ways are spaced as before
+    /// (`rekey_spacing`).
+    pub spacing_moved: Vec<String>,
 }
 
 impl Rekeyed {
@@ -262,6 +266,7 @@ impl Rekeyed {
             || !self.trees_moved.is_empty()
             || !self.trees_dropped.is_empty()
             || !self.elevation_moved.is_empty()
+            || !self.spacing_moved.is_empty()
     }
 }
 
@@ -377,14 +382,36 @@ pub fn rekey(
     let older = |x: u32, y: u32| times.hi_older(m, x, y);
     let Some(reach) = reach else { return out };
     rekey_elevation(keys, cov, date, m, reach, tiles, buildings, sources, &mut out);
+    rekey_v1(keys, cov, date, m, reach, digests, tiles, &older, buildings, sources, &mut out);
+    rekey_spacing(keys, cov, date, m, reach, tiles, buildings, sources, &mut out);
+    out
+}
+
+/// The units' records from the old scheme (`v1::unit_keys`) to the scheme before the spacing
+/// (`unspaced_unit_key`), into `out`.
+#[allow(clippy::too_many_arguments)]
+fn rekey_v1(
+    keys: &mut Keys,
+    cov: &Coverage,
+    date: &str,
+    m: &BTreeMap<String, String>,
+    reach: &Reaches,
+    digests: &BTreeMap<String, String>,
+    tiles: &TerrainTiles,
+    older: &dyn Fn(u32, u32) -> Option<bool>,
+    buildings: &str,
+    sources: Option<&str>,
+    out: &mut Rekeyed,
+) {
     // (The units recorded, not all the pass's: whether the coverage builds a unit is a test of its
     // ways, seconds for all a pass's reaches.)
     let mut current: Vec<Unit> = Vec::new();
     for (t, k) in &keys.unit {
         let Some(u) = Unit::parse(t) else { continue };
-        let (Some(r), Some(piece)) =
-            (reach.get(u).filter(|r| r.builds(cov)), m.get(&format!("sources/osm/{date}/pieces/{}", u.dash())))
-        else {
+        let (Some(r), Some(piece)) = (
+            reach.get(u).filter(|r| r.builds(cov, &Before)),
+            m.get(&format!("sources/osm/{date}/pieces/{}", u.dash())),
+        ) else {
             continue;
         };
         if v1::unit_key(cov, date, m, u, piece, r, digests, buildings) == *k {
@@ -392,7 +419,7 @@ pub fn rekey(
         }
     }
     if current.is_empty() {
-        return out;
+        return;
     }
     let pieces: BTreeSet<(u32, u32)> = build::coverage_tiles(cov).into_values().flatten().collect();
     // (An area's terrain is current by its whole run's record, or by its pieces' and assembly's.)
@@ -419,7 +446,7 @@ pub fn rekey(
             }
         };
         let outputs = crate::out::UNIT_OUTPUTS.iter().any(|p| m.contains_key(&format!("{p}{}", u.dash())));
-        let why = match if outputs { unpinned(u, &read, m, &pieces, &terrain_now, &older) } else { Ok(Vec::new()) } {
+        let why = match if outputs { unpinned(u, &read, m, &pieces, &terrain_now, older) } else { Ok(Vec::new()) } {
             Ok(why) => why,
             Err(e) => {
                 out.unknown.push((t, e));
@@ -433,7 +460,7 @@ pub fn rekey(
         if why.is_empty() {
             keys.unit.insert(
                 t.clone(),
-                build::unit_key(
+                unspaced_unit_key(
                     cov,
                     date,
                     m,
@@ -455,7 +482,103 @@ pub fn rekey(
             out.left.push((t, why));
         }
     }
-    out
+}
+
+/// The spacing before it was decided by the declared elevation datasets (crate::dem::spacing): 8 m
+/// west of 40° W and in Japan's box (122.5–154° E, 20–46.5° N), 15 m elsewhere, by a way's first
+/// node. The scheme the units' keys before the spacing's line were made under (`unspaced_unit_key`).
+pub struct Before;
+
+impl Before {
+    fn fine(lon: f64, lat: f64) -> bool {
+        lon < -40.0 || ((122.5..154.0).contains(&lon) && (20.0..46.5).contains(&lat))
+    }
+
+    /// Whether every point of 1° cell `c` (half-open: crate::dem::spacing::cell) is fine; None when
+    /// the cell is split.
+    pub fn cell_fine(c: [i32; 2]) -> Option<bool> {
+        let (x, y) = (c[0] as f64, c[1] as f64);
+        // (The rule's edges inside a cell: 122.5° E, 46.5° N; the others are on cells' edges.)
+        let split_x = x < 122.5 && 122.5 < x + 1.0 && y < 46.5 && y + 1.0 > 20.0;
+        let split_y = y < 46.5 && 46.5 < y + 1.0 && x + 1.0 > 122.5 && x < 154.0;
+        (!split_x && !split_y).then(|| Before::fine(x + 0.5, y + 0.5))
+    }
+}
+
+impl crate::dem::spacing::Spacing for Before {
+    fn at(&self, p: [i32; 2]) -> f64 {
+        use crate::dem::spacing::{COARSE_M, FINE_M};
+        if Before::fine(p[0] as f64 * roadcore::E7, p[1] as f64 * roadcore::E7) {
+            FINE_M
+        } else {
+            COARSE_M
+        }
+    }
+}
+
+/// Unit `u`'s key as it was before its spacing came from the declared elevation datasets
+/// (`Before`): no spacing line, its long ways tested at the spacing before.
+#[allow(clippy::too_many_arguments)]
+pub fn unspaced_unit_key(
+    cov: &Coverage,
+    date: &str,
+    m: &BTreeMap<String, String>,
+    u: Unit,
+    piece: &str,
+    r: &Reach,
+    terrain: &str,
+    elevation: &[(crate::dem::declared::Accepted, crate::dem::declared::Cover)],
+    buildings: &str,
+    sources: Option<&str>,
+) -> String {
+    build::unit_key_spaced(cov, date, m, u, piece, r, terrain, elevation, &Before, None, buildings, sources)
+}
+
+/// Whether every way of a unit (its reach `r`) is spaced now (`fine`) as it was (`Before`): each
+/// cell its ways start in is wholly fine or wholly coarse before, and the same now.
+pub fn spaced_as_before(r: &Reach, fine: &crate::dem::spacing::Fine) -> bool {
+    r.cells.iter().all(|&c| Before::cell_fine(c) == Some(fine.fine(c)))
+}
+
+/// Re-keys the units' records once their spacing comes from the declared elevation datasets
+/// (crate::dem::spacing): a unit current under its key from before (`unspaced_unit_key`) whose ways
+/// are all spaced as they were (`spaced_as_before`) is recorded under its key now: `extract` puts
+/// the same points along them, and the coverage builds and touches what it did. The others are
+/// built again.
+#[allow(clippy::too_many_arguments)]
+fn rekey_spacing(
+    keys: &mut Keys,
+    cov: &Coverage,
+    date: &str,
+    m: &BTreeMap<String, String>,
+    reach: &Reaches,
+    tiles: &TerrainTiles,
+    buildings: &str,
+    sources: Option<&str>,
+    out: &mut Rekeyed,
+) {
+    let Ok(Some(ds)) = tiles.elevation(m) else { return };
+    let fine = crate::dem::spacing::Fine::of(&ds);
+    let units: Vec<(String, String)> = keys.unit.iter().map(|(t, k)| (t.clone(), k.clone())).collect();
+    for (t, k) in units {
+        let Some(u) = Unit::parse(&t) else { continue };
+        let (Some(r), Some(piece)) = (
+            reach.get(u).filter(|r| r.builds(cov, &Before)),
+            m.get(&format!("sources/osm/{date}/pieces/{}", u.dash())),
+        ) else {
+            continue;
+        };
+        if !spaced_as_before(r, &fine) {
+            continue;
+        }
+        let Ok(terrain) = build::unit_terrain(u, r, m, tiles) else { continue };
+        if unspaced_unit_key(cov, date, m, u, piece, r, &terrain, &ds, buildings, sources) != k {
+            continue;
+        }
+        keys.unit
+            .insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &terrain, &ds, &fine, buildings, sources));
+        out.spacing_moved.push(t);
+    }
 }
 
 /// The location rules' versions as the units' keys named them while the DEM rules were among them
@@ -500,7 +623,8 @@ pub fn pre_elevation_unit_key(
     terrain: &str,
     buildings: &str,
 ) -> String {
-    build::unit_key_with(cov, date, m, u, piece, r, terrain, dem_rules_meeting(r.extent(u)), None, buildings, None)
+    let rules = dem_rules_meeting(r.extent(u));
+    build::unit_key_with(cov, date, m, u, piece, r, terrain, &Before, rules, None, None, buildings, None)
 }
 
 /// Re-keys the units' records once the build reads the declared elevation datasets
@@ -524,9 +648,10 @@ fn rekey_elevation(
     let units: Vec<(String, String)> = keys.unit.iter().map(|(t, k)| (t.clone(), k.clone())).collect();
     for (t, k) in units {
         let Some(u) = Unit::parse(&t) else { continue };
-        let (Some(r), Some(piece)) =
-            (reach.get(u).filter(|r| r.builds(cov)), m.get(&format!("sources/osm/{date}/pieces/{}", u.dash())))
-        else {
+        let (Some(r), Some(piece)) = (
+            reach.get(u).filter(|r| r.builds(cov, &Before)),
+            m.get(&format!("sources/osm/{date}/pieces/{}", u.dash())),
+        ) else {
             continue;
         };
         let Ok(terrain) = build::unit_terrain(u, r, m, tiles) else { continue };
@@ -536,7 +661,8 @@ fn rekey_elevation(
         let e = r.extent(u);
         let deg = |v: i32| v as f64 * 1e-7;
         if crate::dem::declared::meeting(&ds, [deg(e[0]), deg(e[1]), deg(e[2]), deg(e[3])]).len() == 1 {
-            keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, &terrain, &ds, buildings, sources));
+            keys.unit
+                .insert(t.clone(), unspaced_unit_key(cov, date, m, u, piece, r, &terrain, &ds, buildings, sources));
             out.elevation_moved.push(t);
         }
     }
@@ -1151,7 +1277,7 @@ mod tests {
             ("6/28/16", e7box(-18.3, 65.6, -17.9, 65.8)),
             ("6/29/16", e7box(-14.6, 65.2, -14.2, 65.35)),
         ] {
-            reach.units.insert(u.into(), Reach { owned: Some(b), long: vec![] });
+            reach.units.insert(u.into(), Reach { cells: vec![], owned: Some(b), long: vec![] });
         }
         reaches(&mut reach);
         let mut m: BTreeMap<String, String> = BTreeMap::new();
@@ -1399,6 +1525,53 @@ mod tests {
         );
         // Again: nothing.
         assert!(!rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).changed());
+    }
+
+    #[test]
+    fn at_the_spacings_switch_the_units_spaced_as_before_are_re_keyed_and_the_others_built() {
+        // Reykjavik's tile with a way starting in cell (-22, 64), Akureyri's in (-19, 65), the
+        // east's in (-15, 65): all coarse before (east of 40° W, outside Japan's box).
+        let (c, reach, m, mut done) = iceland(&|r| {
+            for (u, cell) in [("6/28/16", [-22, 64]), ("6/28/17", [-19, 65]), ("6/29/16", [-15, 65])] {
+                r.units.get_mut(u).unwrap().cells = vec![cell];
+            }
+        });
+        // A lidar dataset of 8 m over Reykjavik's cells: fine there now; the world's 30 m.
+        let mut tiles = tiles_for(&m);
+        let index = &m[&crate::inputs::logical(crate::inputs::elevation::UNIT)];
+        let mut lidar = build::tests::dataset("lidar", "l1", Some(vec![[-23.0, 63.0, -21.0, 65.0]]));
+        lidar.0.measured.resolution = 8.0;
+        let ds = vec![lidar, build::tests::dataset("world", "w1", None)];
+        tiles.hold_elevation(index, ds.clone());
+        let release = crate::buildtiles::TEST_RELEASE;
+        let sources = tiles.keyed(&m).unwrap().unit.clone();
+        // Each unit built before it (its key without the spacing's line).
+        for u in ["6/28/16", "6/28/17", "6/29/16"] {
+            let unit = Unit::parse(u).unwrap();
+            let (r, piece) = (reach.get(unit).unwrap(), &m[&format!("sources/osm/d/pieces/{}", unit.dash())]);
+            let terrain = build::unit_terrain(unit, r, &m, &tiles).unwrap();
+            let k = unspaced_unit_key(&c, "d", &m, unit, piece, r, &terrain, &ds, release, sources.as_deref());
+            done.record("unit", &[(u.to_string(), k)]);
+        }
+        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)).len(), 3);
+        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        assert_eq!(r.spacing_moved, ["6/28/17", "6/29/16"]);
+        assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)), ["6/28/16"], "the one respaced, built again");
+        // Again: nothing.
+        assert!(!rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).changed());
+    }
+
+    #[test]
+    fn the_spacing_before_is_whole_in_a_cell_or_split() {
+        assert_eq!(Before::cell_fine([-41, 50]), Some(true));
+        assert_eq!(Before::cell_fine([-40, 50]), Some(false));
+        assert_eq!(Before::cell_fine([139, 35]), Some(true));
+        assert_eq!(Before::cell_fine([153, 35]), Some(true));
+        assert_eq!(Before::cell_fine([154, 35]), Some(false));
+        assert_eq!(Before::cell_fine([139, 19]), Some(false));
+        assert_eq!(Before::cell_fine([122, 35]), None);
+        assert_eq!(Before::cell_fine([140, 46]), None);
+        assert_eq!(Before::cell_fine([122, 50]), Some(false));
     }
 
     #[test]

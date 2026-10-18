@@ -671,8 +671,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   `outlines` (sectioned, meta `fmt` "outlines-1" and the `repaired`, `stale`, `unassembled`
   relations; `recs` (64 B `OutlineRec`), `rings`, `points`, `srings`, `spoints`, `strings`);
   `reach.json.zst` (`{fmt, date, units: {"6/x/y": {owned: [w, s, e, n] | null, long: [{owned,
-  ferry, verts}]}}}`, E7: the box of a unit's ways within its tile + 20 km, and every way reaching
-  further, whole; `pipeline::reach`); `pass.json`.
+  ferry, verts}], cells: [[x, y]]}}}`, E7: the box of a unit's ways within its tile + 20 km, every
+  way reaching further, whole, and the 1° cells (west, south corners, degrees) its ways other than
+  ferries start in; `pipeline::reach`); `pass.json`.
 - **Global files:** `global/roads/<u>` (above); `global/roadids/<u>` (`ids`: the unit's road ids,
   sorted u64, each once); `global/roadunits` (`pairs`: sorted u64 road, u64 unit key; `srcs`: JSON
   `[ROADUNITS_V, [[unit key, content name of what it read]]]`); `global/railfreq` (as `/api/railfreq`); `global/marks/summary` (`{fmt, kinds,

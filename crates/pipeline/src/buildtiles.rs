@@ -362,7 +362,7 @@ mod tests {
         let mid = (tb[1] + tb[3]) / 2;
         let ftb = crate::hipack::tile_bounds(6, 34, 21);
         let road = |owned, ferry| LongWay { owned, ferry, verts: vec![[tb[0] + 1000, mid], [ftb[0] + 100_000, mid]] };
-        let with = |w: LongWay| tiles_for(u, Some(&Reach { owned: None, long: vec![w] }));
+        let with = |w: LongWay| tiles_for(u, Some(&Reach { cells: vec![], owned: None, long: vec![w] }));
         let t = with(road(true, false));
         let along = |x: u32| t.iter().any(|v| v.x == x);
         assert!((132..=136).all(along) && !along(137), "{t:?}");

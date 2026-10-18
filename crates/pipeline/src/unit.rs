@@ -703,8 +703,6 @@ pub struct Tools {
     /// neither downloads into them nor removes from them (docs/workers.md §2); its programs are
     /// told so (`SCENIC_STORES_READ_ONLY`).
     pub stores_read_only: bool,
-    /// Densification spacing (m).
-    pub spacing_m: u32,
     /// The declared elevation datasets' accepted version (crate::inputs::elevation): a unit's
     /// folder is prepared only with one (None: a task's worker, which runs the tail alone).
     pub elevation: Option<crate::inputs::Accepted>,
@@ -1140,9 +1138,12 @@ pub fn prepare_folder(
     std::fs::create_dir_all(dir)?;
     let log = dir.join("steps.log");
     let mut rep = Report { unit: u.slash(), ..Default::default() };
-    // 1. Every way of the piece, densified.
+    // 1. Every way of the piece, densified by the declared elevation datasets (crate::dem::spacing).
+    let a = tools.elevation.as_ref().context("the unit's elevations: the declared elevation datasets' accepted version isn't given (the build reads them once their switch is recorded: docs/inputs.md §6.8)")?;
+    let spacing = dir.join(crate::dem::spacing::FILE);
+    crate::dem::spacing::Fine::of_accepted(&crate::dem::declared::accepted(a)?).write(&spacing)?;
     let mut c = store::spawn::command(tools.bin.join("extract"));
-    c.arg(dir).arg(tools.spacing_m.to_string()).arg(piece);
+    c.arg(dir).arg(&spacing).arg(piece);
     run_in(c, "extract", &log, dir, tools)?;
     use crate::timings::Class;
     let s = stage("subset to the coverage", Class::Compute);
@@ -1171,7 +1172,6 @@ pub fn prepare_folder(
     let s = stage("DEM cache slice", Class::NasRead);
     // (From the declared elevation datasets: their plan for this unit, which elev reads, and by which
     // the kept samples are judged.)
-    let a = tools.elevation.as_ref().context("the unit's elevations: the declared elevation datasets' accepted version isn't given (the build reads them once their switch is recorded: docs/inputs.md §6.8)")?;
     let e7 = |v: i32| v as f64 * 1e-7;
     let plan = crate::dem::declared::plan(a, [e7(slice[0]), e7(slice[1]), e7(slice[2]), e7(slice[3])])?;
     let validity = DemValidity::of(&plan);

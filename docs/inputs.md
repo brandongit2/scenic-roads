@@ -930,8 +930,8 @@ reported).
 box:** `inputs/elevation/`: `<dataset>.toml`, tile indexes (`<name>.geojson`) and `<dataset>/` for
 local files. Code: crate::inputs::elevation (the check), crate::dem::generic and crate::dem::declared
 (the sampler and blend), crate::dem::encoding, crate::dem::kept and crate::dem::fabdem_fetch (the store), crate::terrain_sources
-(the terrain's). Built for the roads' elevations (#143 step 1) and the 3D terrain (#144); steps 2
-and 3 are planned.
+(the terrain's), crate::dem::spacing (the densification). Built for the roads' elevations (#143
+step 1), the densification (step 2) and the 3D terrain (#144); step 3 is planned.
 
 **Shape:** a description (§5.1) and:
 
@@ -1028,6 +1028,25 @@ territory.
   (`sources/dem-cache/`, made under the DEM rules) is neither copied to a Mac nor read for a unit
   when two datasets or more cover every 1° cell its vertices meet (`DemValidity::seed_serves`):
   none of its samples could be valid there. It's copied, once a Mac, by the first unit it can serve.
+- **Densification** (crate::dem::spacing, `extract`): a way's points are put 8 m apart (`FINE_M`)
+  where a roads' dataset finer than 15 m (`COARSE_M`, its measured `resolution`) has data in the 1°
+  cell of the way's first node (its measured `cover`), 15 m elsewhere; ferries not at all. A cell
+  is the point's degrees floored: its west and south edges are its own. The unit job writes the
+  fine cells into the unit's folder (`spacing.json`), which `extract` reads; the reach tests the
+  units' long ways at the same spacing (`reach::LongWay::touches`). Other steps' `extract` runs
+  (the links, rail and candidates) take a number: 8 m everywhere. Today's datasets make HRDEM,
+  3DEP (10.3 m, 1/3″) and GSI's fine, MRDEM and FABDEM (30 m) not.
+  - **Keys:** each unit's reach records the cells its ways start in (`Reach::cells`); its key
+    names those of them that are fine (`Fine::key`), so a dataset added, dropped or measured
+    again rebuilds just the units with a way starting where the spacing changes.
+  - **Re-keyed** (`agent::rekey::rekey_spacing`): the spacing was 8 m west of 40° W and in a box
+    over Japan, 15 m elsewhere (`rekey::Before`). A unit current under its key from before whose
+    every cell is wholly fine or wholly coarse under that rule and the same now is recorded under
+    its key now: `extract` puts the same points. The others (the units of Mexico, Central and
+    South America, the Caribbean, Greenland, French Guiana, the Northwestern Hawaiian Islands and
+    the parts of Canada and Alaska without fine data, which go to 15 m; Guam and the western
+    Aleutians, which go to 8 m; and any unit with a way starting in a cell the rule split, at 122.5° E or
+    46.5° N) are built again.
 - NRCan's tile squares, the HRDEM index producer's input, are `producers/elevation/hrdem-squares.geojson`.
 
 **The 3D terrain's datasets** (`terrain = true`; crate::terrain_sources): left out of the roads'
@@ -1058,9 +1077,6 @@ source) are the terrain's code. The declarations themselves are kept in
   they're accepted the terrain waits.
 
 **Planned:**
-- **Step 2, densification from the data:** today 8 m in North America and Japan, 15 m elsewhere, by
-  boxes (bin/extract.rs, reach.rs); to become 8 m where a dataset of 10 m or finer meets the way.
-  Only respaced units rebuild.
 - **Step 3, heights converted** to EGM2008 through each reference's geoid grid (declared like any
   source, `format = "geoid-grid"`) and frame step (beside `pipeline::dem::proj`): H₂₀₀₈ = H + N_ref
   (moved to WGS 84's frame where it differs) − N₂₀₀₈. CGVD2013 uses CGG2013a (NAD83(CSRS) → WGS 84),
@@ -1368,8 +1384,7 @@ agent) stay.
   that found a building's height (its `s`, docs/buildings3d.md §2.3), not a credit; the
   buildings' credit itself comes from the catalog (`setBuildingsCredit`).
 - **Terrain:** the raw tiles' store path (`sources/aws-terrarium/`, named for its source) and the
-  credit in `rules::CREDITS` the base's declaration takes over once accepted; the densification
-  boxes in `bin/extract.rs` and `reach.rs` (derived, §6.8 step 2).
+  credit in `rules::CREDITS` the base's declaration takes over once accepted.
 - **Trees and land cover:** the canopy and leaf-type squares' resolutions (D, read from data);
   `coord::WEB_HOSTS`' land-cover host (derived from the declarations, §5.2).
 - **Buildings:** `bld/prep.rs`'s `ghsl` meta (D); `dem/bldmeasure.py`'s own Overture and GHSL

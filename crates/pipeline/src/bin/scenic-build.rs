@@ -2041,6 +2041,11 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
     println!("  stale under the old keys (built again either way): {stale}");
     println!("  never built: {never}");
     println!(
+        "  re-keyed to the declared datasets: {} (elevations), {} (spacing: their ways spaced as before)",
+        r.elevation_moved.len(),
+        r.spacing_moved.len()
+    );
+    println!(
         "  recorded, but not built by the coverage now (pruned in time): {}",
         keys.unit.keys().filter(|u| !built.contains(*u)).count()
     );
@@ -3753,7 +3758,6 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
         shared: Some(shared),
         chm: None,
         stores_read_only: false,
-        spacing_m: 8,
         snap: Some(dir.join("snap")),
         elevation: elevation_of(out)?,
         declared: Some(pipeline::inputs::sources::read(out.root(), &out.manifest)?),
@@ -3835,7 +3839,6 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         shared: Some(out.root().join("cache")),
         chm: None,
         stores_read_only: false,
-        spacing_m: 8,
         snap: None,
         elevation: elevation_of(out)?,
         declared: Some(pipeline::inputs::sources::read(out.root(), &out.manifest)?),
@@ -3885,9 +3888,11 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     };
     if units.is_empty() {
         let reach = reach.as_ref().context("the pass's reaches")?;
+        let a = tools.elevation.as_ref().context("the declared elevation datasets' accepted version")?;
+        let fine = pipeline::dem::spacing::Fine::of_accepted(&pipeline::dem::declared::accepted(a)?);
         for k in pieces["pieces"].as_object().context("pieces")?.keys() {
             let u = Unit::parse(k).context("unit")?;
-            if pipeline::agent::build::builds(&cov, reach, u) {
+            if pipeline::agent::build::builds(&cov, reach, u, &fine) {
                 units.push(u);
             }
         }

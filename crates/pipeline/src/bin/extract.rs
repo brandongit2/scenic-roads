@@ -8,16 +8,17 @@
 //! funiculars). Tracks without a route relation are kept when their type says what they are
 //! (tram, subway, funicular, preserved or tourist lines).
 //!
-//! usage: extract <out_dir> <spacing_m> [--rail-rels-only] <file.osm.pbf>...
+//! usage: extract <out_dir> <spacing> [--rail-rels-only] <file.osm.pbf>...
 //!
 //! Pass 1 collects matching ways; pass 2 resolves node coordinates and private gates.
 //! Besides the ways: rail-rels.bin, each rail track's primary service (the route relation that
 //! names it; the app opens it on openstreetmap.org), sorted little-endian (i64 OSM way id, i64
 //! relation id). `--rail-rels-only` writes just that (a build made before it existed), after
 //! pass 1.
-//! Output geometry is densified so consecutive vertices are at most `spacing_m` apart,
-//! which lets the DEM stage sample every raster cell a road crosses. Outside North America and
-//! Japan the elevation sources are 20–30 m, so there the spacing is at least `COARSE_SPACING_M`.
+//! Output geometry is densified so consecutive vertices are at most the spacing apart, which lets
+//! the DEM stage sample every raster cell a road crosses. `<spacing>` is metres, the same
+//! everywhere, or a spacing file (a unit's `spacing.json`): by the declared elevation datasets at
+//! each way's first node (pipeline::dem::spacing, docs/inputs.md §6.8).
 
 use anyhow::{Context, Result};
 use det::Det;
@@ -861,11 +862,15 @@ fn main() -> Result<()> {
         p
     });
     if args.len() < 4 {
-        eprintln!("usage: extract <out_dir> <spacing_m> [--rail-rels-only] [--candidates] [--trailends <file>] <file.osm.pbf>...");
+        eprintln!("usage: extract <out_dir> <spacing_m | spacing.json> [--rail-rels-only] [--candidates] [--trailends <file>] <file.osm.pbf>...");
         std::process::exit(2);
     }
     let out = PathBuf::from(&args[1]);
-    let spacing: f64 = args[2].parse()?;
+    use pipeline::dem::spacing::{Fine, Spacing, Uniform};
+    let spacing: Box<dyn Spacing + Sync> = match args[2].parse::<f64>() {
+        Ok(m) => Box::new(Uniform(m)),
+        Err(_) => Box::new(Fine::read(std::path::Path::new(&args[2]))?),
+    };
     let inputs: Vec<PathBuf> = args[3..].iter().map(PathBuf::from).collect();
     std::fs::create_dir_all(&out)?;
     let t0 = std::time::Instant::now();
@@ -1375,19 +1380,9 @@ fn main() -> Result<()> {
     }
 
     // ---- Assemble, drop gated minor roads, densify --------------------------------
-    // North America (west of 40° W) and Japan (GSI) have 1–10 m lidar and DEMs; elsewhere the DEMs
-    // are 30 m (FABDEM). (Versioned as "spacing" in pipeline::rules; the
-    // units' reach densifies long ways the same way, pipeline::reach::LongWay::touches.)
-    const COARSE_SPACING_M: f64 = 15.0;
-    let spacing_at = |p: [i32; 2]| {
-        let (lon, lat) = (p[0] as f64 * E7, p[1] as f64 * E7);
-        let japan = (122.5..154.0).contains(&lon) && (20.0..46.5).contains(&lat);
-        if lon < -40.0 || japan {
-            spacing
-        } else {
-            spacing.max(COARSE_SPACING_M)
-        }
-    };
+    // (The spacing by each way's first node: pipeline::dem::spacing. The code is versioned as
+    // "spacing" in pipeline::rules; the units' reach densifies long ways the same way,
+    // pipeline::reach::LongWay::touches.)
     let lookup = |id: i64| -> Option<(usize, i32, i32)> {
         let i = needed.binary_search(&id).ok()?;
         let v = coords[i].load(Relaxed);
@@ -1473,7 +1468,7 @@ fn main() -> Result<()> {
             Ok(())
         };
         emit(b.pts[0], &mut wv)?;
-        let spacing = spacing_at(b.pts[0]);
+        let spacing = spacing.at(b.pts[0]);
         for s in b.pts.windows(2) {
             let (a, c) = (s[0], s[1]);
             let (ax, ay, cx, cy) = (a[0] as f64 * E7, a[1] as f64 * E7, c[0] as f64 * E7, c[1] as f64 * E7);

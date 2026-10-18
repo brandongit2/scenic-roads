@@ -384,7 +384,8 @@ build uses them. Overlaps are harmless; nothing checks for gaps.
 **By location.** Rules that depend on where a thing is; the units' rules are versioned by area in
 `pipeline::rules`, so a changed rule reruns only the units it applies to:
 - elevation datasets and their blend (`pipeline::dem`, docs/inputs.md §6.8) and densification
-  spacing (8 m in North America and Japan, 15 m elsewhere: `extract`);
+  spacing (8 m where a declared dataset finer than 15 m has data, 15 m elsewhere:
+  `pipeline::dem::spacing`, docs/inputs.md §6.8);
 - heritage registers (`inputs/heritage/`, docs/inputs.md §6.5);
 - timetables: the Mobility Database feeds of the countries the coverage is in, declared feeds and
   static timetables (§6, Rail service; docs/inputs.md §6.7);

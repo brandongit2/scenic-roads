@@ -18,6 +18,7 @@
 //! nothing).
 
 use crate::coverage::Coverage;
+use crate::dem::spacing::Spacing;
 use crate::legacy::Unit;
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
@@ -25,8 +26,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Bumped when what a reach holds changes (the pass's reaches are made again).
-pub const REACH_V: u32 = 1;
+/// Bumped when what a reach holds changes (the pass's reaches are made again). (2: `cells`.)
+pub const REACH_V: u32 = 2;
 
 /// Ways whose box stays within the tile grown by this are a unit's ordinary ways (the piece's own
 /// buffer is 10 km).
@@ -45,30 +46,28 @@ pub struct LongWay {
 
 impl LongWay {
     /// Whether the way touches the coverage as the unit step tests it: on the points `extract` puts
-    /// along it (its nodes, and between them every 8 m in North America and Japan, 15 m elsewhere,
-    /// by its first node; ferries not; `rules` "spacing"), so a straight stretch cutting a corner of
-    /// an outline between two nodes counts as it will there.
-    pub fn touches(&self, cov: &Coverage) -> bool {
+    /// along it (its nodes, and between them every `sp.at` its first node apart: crate::dem::spacing;
+    /// ferries not), so a straight stretch cutting a corner of an outline between two nodes counts
+    /// as it will there.
+    pub fn touches(&self, cov: &Coverage, sp: &dyn Spacing) -> bool {
         let Some(&first) = self.verts.first() else { return false };
+        let spacing = sp.at(first);
         // (Each shape's answer kept for these points: crate::coverage's `Memo`.)
         let mut d = blake3::Hasher::new();
         d.update(&[self.ferry as u8]);
+        d.update(&spacing.to_le_bytes());
         d.update(bytemuck::cast_slice(&self.verts));
         let key: [u8; 32] = d.finalize().into();
         let mut b = [first[0], first[1], first[0], first[1]];
         for p in &self.verts {
             b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
         }
-        cov.shapes.iter().any(|s| s.touches_way(&key, b, || self.points()))
+        cov.shapes.iter().any(|s| s.touches_way(&key, b, || self.points(spacing)))
     }
 
     /// The points `touches` tests, in the box of its nodes: its nodes, and between them every
-    /// 8 m in North America and Japan, 15 m elsewhere (by its first node); a ferry's nodes alone.
-    fn points(&self) -> impl Iterator<Item = [i32; 2]> + '_ {
-        let first = self.verts.first().copied().unwrap_or_default();
-        let (lon, lat) = (first[0] as f64 * roadcore::E7, first[1] as f64 * roadcore::E7);
-        let japan = (122.5..154.0).contains(&lon) && (20.0..46.5).contains(&lat);
-        let spacing = if lon < -40.0 || japan { UNIT_SPACING_M } else { UNIT_SPACING_M.max(COARSE_SPACING_M) };
+    /// `spacing`; a ferry's nodes alone.
+    fn points(&self, spacing: f64) -> impl Iterator<Item = [i32; 2]> + '_ {
         let ferry = self.ferry;
         self.verts.first().copied().into_iter().chain(self.verts.windows(2).flat_map(move |s| {
             let (a, c) = (s[0], s[1]);
@@ -100,17 +99,16 @@ impl LongWay {
     }
 }
 
-/// The unit step's densification (`unit::Tools::spacing_m`, `extract`'s spacing outside North America
-/// and Japan): the points `LongWay::touches` tests.
-const UNIT_SPACING_M: f64 = 8.0;
-const COARSE_SPACING_M: f64 = 15.0;
-
 /// A unit's reach.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reach {
     /// The box (w, s, e, n, E7) of the ordinary ways the unit owns; None when it owns none.
     pub owned: Option<[i32; 4]>,
     pub long: Vec<LongWay>,
+    /// The 1° cells (crate::dem::spacing::cell) of the first nodes of its piece's ways, ferries
+    /// left out, sorted: where `extract`'s spacing is decided for them (owned or not: the unit step
+    /// keeps every way touching the coverage).
+    pub cells: Vec<[i32; 2]>,
 }
 
 /// A pass's reaches, by unit ("6/x/y"); units whose piece has no counted way aren't listed.
@@ -167,14 +165,14 @@ impl Reaches {
 impl Reach {
     /// Whether the coverage builds this unit: its owned box meets the coverage, or one of its own
     /// long ways touches it.
-    pub fn builds(&self, cov: &Coverage) -> bool {
-        self.owned.is_some_and(|o| cov.meets_rect(o)) || self.long.iter().any(|w| w.owned && w.touches(cov))
+    pub fn builds(&self, cov: &Coverage, sp: &dyn Spacing) -> bool {
+        self.owned.is_some_and(|o| cov.meets_rect(o)) || self.long.iter().any(|w| w.owned && w.touches(cov, sp))
     }
 
     /// What of the coverage the unit reads, for its key: the coverage inside its tile grown by
     /// `LONG_KM`, and which of its long ways touch the coverage.
-    pub fn coverage_key(&self, cov: &Coverage, u: Unit) -> String {
-        let touching: String = self.long.iter().map(|w| if w.touches(cov) { '1' } else { '0' }).collect();
+    pub fn coverage_key(&self, cov: &Coverage, u: Unit, sp: &dyn Spacing) -> String {
+        let touching: String = self.long.iter().map(|w| if w.touches(cov, sp) { '1' } else { '0' }).collect();
         format!("{}|{touching}", cov.fingerprint(near_box(u)))
     }
 
@@ -286,9 +284,13 @@ pub fn of_piece(piece: &Path, u: Unit) -> Result<Option<Reach>> {
     let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
     let near = near_box(u);
     let mut reach = Reach::default();
+    let mut cells = std::collections::BTreeSet::new();
     for &(_, s, n, ferry) in &w.ways {
         let verts: Vec<[i32; 2]> = w.refs[s..s + n].iter().filter_map(|&id| at(id)).collect();
         let Some(&first) = verts.first() else { continue };
+        if !ferry {
+            cells.insert(crate::dem::spacing::cell(first));
+        }
         // Owned by its first node the piece has, as `extract` (which drops missing nodes) and the
         // unit step see it.
         let owned = crate::unit::owns(tb, first);
@@ -304,6 +306,7 @@ pub fn of_piece(piece: &Path, u: Unit) -> Result<Option<Reach>> {
             reach.long.push(LongWay { owned, ferry, verts });
         }
     }
+    reach.cells = cells.into_iter().collect();
     Ok(Some(reach))
 }
 
@@ -311,6 +314,7 @@ pub fn of_piece(piece: &Path, u: Unit) -> Result<Option<Reach>> {
 mod tests {
     use super::*;
     use crate::agent::recipes::Recipe;
+    use crate::dem::spacing::{Fine, Uniform, COARSE_M, FINE_M};
 
     fn e7(x: f64, y: f64) -> [i32; 2] {
         [(x * 1e7) as i32, (y * 1e7) as i32]
@@ -334,15 +338,17 @@ mod tests {
         let r = Reach {
             owned: Some([e7(-21.0, 64.5)[0], e7(-21.0, 64.5)[1], e7(-20.5, 65.0)[0], e7(-20.5, 65.0)[1]]),
             long: vec![ferry],
+            cells: vec![],
         };
+        let sp = &Uniform(COARSE_M);
         // Coverage around the ferry's far end: built for the ferry.
-        assert!(r.builds(&cov("place:0,60,30")));
+        assert!(r.builds(&cov("place:0,60,30"), sp));
         // Coverage near neither: not built.
-        assert!(!r.builds(&cov("place:5,50,30")));
+        assert!(!r.builds(&cov("place:5,50,30"), sp));
         // The far end's coverage grows; the ferry touched it before and after: the same key.
-        assert_eq!(r.coverage_key(&cov("place:0,60,30"), u), r.coverage_key(&cov("place:0,60,40"), u));
+        assert_eq!(r.coverage_key(&cov("place:0,60,30"), u, sp), r.coverage_key(&cov("place:0,60,40"), u, sp));
         // The ferry no longer touches: another key.
-        assert_ne!(r.coverage_key(&cov("place:0,60,30"), u), r.coverage_key(&cov("place:5,50,30"), u));
+        assert_ne!(r.coverage_key(&cov("place:0,60,30"), u, sp), r.coverage_key(&cov("place:5,50,30"), u, sp));
         assert!(r.extent(u)[2] >= e7(0.0, 60.0)[0]);
     }
 
@@ -359,9 +365,23 @@ mod tests {
         .unwrap();
         let road = LongWay { owned: true, ferry: false, verts: vec![e7(-0.35, 50.009), e7(0.35, 50.009)] };
         assert!(!cov.touches(&road.verts));
-        assert!(road.touches(&cov));
+        assert!(road.touches(&cov, &Uniform(COARSE_M)));
         // A ferry isn't densified: its nodes only.
-        assert!(!LongWay { ferry: true, ..road }.touches(&cov));
+        assert!(!LongWay { ferry: true, ..road.clone() }.touches(&cov, &Uniform(COARSE_M)));
+        // By the declared datasets' spacing at its first node: a 4 m circle on a 32 m way through
+        // its centre, met by a point 8 m apart, not 15 m apart (those 5.3 m off its centre).
+        let small = Coverage::fixture(
+            &[Recipe { id: "s".into(), name: "S".into(), outline: vec!["place:0.5,50.5,0.004".into()] }],
+            None,
+            d.path(),
+        )
+        .unwrap();
+        let half = 16.0 / (111_195.0 * 50.5f64.to_radians().cos());
+        let road = LongWay { owned: true, ferry: false, verts: vec![e7(0.5 - half, 50.5), e7(0.5 + half, 50.5)] };
+        let fine = Fine { world: false, cells: [[0, 50]].into_iter().collect() };
+        assert_eq!(fine.at(road.verts[0]), FINE_M);
+        assert!(road.touches(&small, &fine));
+        assert!(!road.touches(&small, &Fine::default()));
     }
 
     #[test]
@@ -372,6 +392,7 @@ mod tests {
             Reach {
                 owned: Some([1, 2, 3, 4]),
                 long: vec![LongWay { owned: false, ferry: false, verts: vec![[5, 6], [7, 8]] }],
+                cells: vec![[0, 0], [1, 0]],
             },
         );
         let back: Reaches = serde_json::from_slice(&zstd::decode_all(&r.encode().unwrap()[..]).unwrap()).unwrap();

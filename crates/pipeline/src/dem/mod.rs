@@ -16,6 +16,7 @@ pub mod generic;
 pub mod kept;
 pub mod proj;
 pub mod sample;
+pub mod spacing;
 
 use anyhow::{ensure, Result};
 use rayon::prelude::*;

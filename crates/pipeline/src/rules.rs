@@ -34,7 +34,8 @@ const SINGAPORE: &[[f64; 4]] = &[[103.5, 1.1, 104.2, 1.5]];
 const ANDORRA: &[[f64; 4]] = &[[1.40, 42.42, 1.79, 42.66]];
 
 pub const RULES: &[Rule] = &[
-    // extract: densification (8 m in North America and Japan, 15 m elsewhere).
+    // extract: densification's code (crate::dem::spacing; where it's fine is the declared datasets',
+    // in the units' keys).
     Rule { name: "spacing", version: 1, areas: WORLD },
     // extract::network_code: road numbers by area.
     Rule { name: "networks-north-america", version: 1, areas: NORTH_AMERICA },
