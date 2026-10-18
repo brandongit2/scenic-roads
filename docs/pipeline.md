@@ -156,7 +156,7 @@ kind's others, with templated words.
   next work; why nothing more fits; facts as chips; its day as a spark line. Pages one card.
 - **The pool:** `pool.js`.
 - **Road to done:** each machine's lane (segments in the stages' colours, the map tiles' among
-  them).
+  them); only the lanes with a bar in the window shown, in their order.
 - **Publishing:** what publishing does now and why; the last catalog (number, when, with the low
   zooms or map tiles only); the map tiles to draw, by the Mac drawing them; when the low zooms, the
   landmarks and the area overlays may next go out; each Mac's map server's catalog.

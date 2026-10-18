@@ -15,7 +15,7 @@
 // happened).
 
 import { poolSection, termText } from "./pool.js";
-import { finished, wholeProgress } from "./sums.js";
+import { busyLanes, finished, wholeProgress } from "./sums.js";
 
 const POLL_MS = 10000;
 const STALE_S = 360;
@@ -586,9 +586,10 @@ function schedule(m) {
   const t1 = Math.max(fc.done_at || 0, ...Object.values(fc.lanes).flat().map((l) => l.until), t0 + 3600);
   const span = t1 - t0;
   const x = (t) => `${(((Math.max(t0, Math.min(t1, t)) - t0) / span) * 100).toFixed(3)}%`;
-  // Each Mac's lanes, a slot each in order, the lead's first; then any other the forecast has.
+  // Each Mac's lanes, a slot each in order, the lead's first; then any other the forecast has. Only
+  // those with a bar in the window (sums.js busyLanes): a slot with nothing to show has no row.
   const ordered = m.macs.flatMap((mm) => Object.keys(fc.lanes).filter((nm) => isSlotOf(nm, mm.name)).sort((p, q) => slotNo(p, mm.name) - slotNo(q, mm.name)));
-  const names = ordered.concat(Object.keys(fc.lanes).filter((nm) => !ordered.includes(nm)));
+  const names = busyLanes(ordered.concat(Object.keys(fc.lanes).filter((nm) => !ordered.includes(nm))), fc.lanes, t0, t1);
   const lanes = h("div", "lanes");
   const stagesSeen = new Set();
   const segment = (track, l, say) => {

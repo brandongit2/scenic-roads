@@ -24,3 +24,7 @@ export function wholeProgress(lines, fc) {
   return { pct, done_s: done, left_s: left };
 }
 
+
+// The schedule's lanes worth a row: those with a bar in the window [t0, t1] (a run ending at or
+// after t0 and starting by t1), in the order given.
+export const busyLanes = (names, lanes, t0, t1) => names.filter((nm) => (lanes[nm] || []).some((l) => l.until >= t0 && l.from <= t1));
