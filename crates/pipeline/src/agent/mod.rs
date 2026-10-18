@@ -4233,6 +4233,12 @@ impl Agent {
             }
             let big_on = self.slots.iter().any(|s| s.running.as_ref().is_some_and(|r| r.spec.id == big));
             if !trouble || !big_on {
+                // (Paused meanwhile, the build's pause or a drain past its grace: it stays so.)
+                let paused = self.slots[k].running.as_ref().is_some_and(|r| r.paused.is_some());
+                if paused {
+                    self.slots[k].pressure_frozen = None;
+                    continue;
+                }
                 self.sampler.thaw(k);
                 self.slots[k].pressure_frozen = None;
                 let why = if trouble { format!("{big} ended") } else { "the Mac no longer short of memory".into() };
@@ -4248,7 +4254,13 @@ impl Agent {
         if !trouble {
             return None;
         }
-        let frozen: Vec<bool> = self.slots.iter().map(|s| s.pressure_frozen.is_some()).collect();
+        // (A paused job, the build's pause or a drain past its grace, counts as frozen already: never
+        // frozen for the pressure, so never let go by it.)
+        let frozen: Vec<bool> = self
+            .slots
+            .iter()
+            .map(|s| s.pressure_frozen.is_some() || s.running.as_ref().is_some_and(|r| r.paused.is_some()))
+            .collect();
         let yields: Vec<bool> = (0..self.slots.len()).map(|k| self.yielding(k)).collect();
         let k = match memguard::decide_by(held, limit, &frozen, &yields, &self.guard_ranks()) {
             memguard::Act::Drain(k) => k,
@@ -10848,6 +10860,24 @@ mod tests {
         assert!(tick(&mut a, vec![Some(9 << 10), Some(4 << 10)], true));
         assert!(a.slots[1].running.is_none() && a.slots[0].running.is_some());
         assert!(a.guard_view().last.is_some_and(|(_, w)| w.contains("frozen") && w.contains("still short")));
+        // A job paused (the build's pause, a drain past its grace) counts as frozen already: the
+        // pressure coming and going neither freezes it nor lets it go on.
+        assert!(a.try_start(1, job("bldtiles 6/2/3"), &cond, Some(&root), &mut Vec::new()));
+        a.slots[1].running.as_mut().unwrap().pause("the test");
+        let stopped_state = |a: &Agent| {
+            let pgid = a.slots[1].running.as_ref().unwrap().pgid;
+            let o =
+                std::process::Command::new("/bin/ps").args(["-o", "stat=", "-p", &pgid.to_string()]).output().unwrap();
+            String::from_utf8_lossy(&o.stdout).contains('T')
+        };
+        for trouble in [true, true, false] {
+            a.sampler.set_test(Some(vec![Some(9 << 10), Some(4 << 10)]), Some(trouble));
+            a.sampler.tick();
+            assert!(!a.guard());
+            assert!(a.slots[1].pressure_frozen.is_none() && a.slots[1].running.as_ref().unwrap().paused.is_some());
+            assert!(stopped_state(&a), "still stopped");
+        }
+        a.slots[1].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
     }
 
