@@ -1124,9 +1124,8 @@ URL one the code asked for; the leaf sources, boxes and zip member the same),
 | Geoid grids | none yet: no step reads them (§6.8 step 3) | `geoid-grid`, pinned |
 | Canada's lake fill (CanVec) | built: `canvec-lakes.toml`, the `lake-fill` role; its zips kept by hand in `sources/fetched/canvec-lakes/` | `zip-shapefile`: where they come from, its layer, field, values kept, the intermittent ones and the confirming share (`params`) |
 
-Also kept: fonts (`scripts/fonts.sh`, the app's own assets). The depth's sources are §6.10's. NCEI's
-grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) have no declaration: no producer
-reads them yet.
+Also kept: fonts (`scripts/fonts.sh`, the app's own assets). The depth's sources are §6.10's, NCEI's
+grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) among them.
 
 **The rollout:**
 1. Both Macs run the app that reads the declarations. Until a version is accepted, the units, tree
@@ -1182,12 +1181,22 @@ a `.tif` `file` and a `zoom` 0–18 (`src-index`); two of one `code` (`src-role`
 | id | what | code | water | producer | detail |
 |---|---|---|---|---|---|
 | `gebco-2026` | the yearly global 15″ grid and its type identifiers | 1 | sea | `gebco.py`, from the owner's two zips in `sources/gebco/2026/` (CEDA's robots.txt bars programs) | z8; cells the TID calls interpolated or estimated (40–48, 71, 72) at z7 |
-| `bluetopo` | NOAA's US coastal grids, 4–16 m | 2 | sea | `bluetopo.py`, from the public bucket by its tile scheme (checksums checked); NAVD88 → MSL and MLLW by NOAA's stations (`stations.py noaa`) | z15 (4 m) to z13 (16 m); interpolated contributors at z12 |
-| `nonna-100`, `nonna-10` | CHS's 100 m and 10 m grids (licence accepted; never redistributed; its notice names the owner as the maker) | 3, 4 | sea | `nonna.py`, the keyless coverage service; chart datum → mean water level by CHS's stations (`stations.py chs`) | z10, z13 |
+| `bluetopo` | NOAA's US coastal grids, 4–16 m | 2 | sea | `bluetopo.py`'s steps, from the public bucket by its tile scheme (checksums checked), a chunk of tiles at a time (`chunked.py bluetopo`); NAVD88 → MSL and MLLW by NOAA VDatum (`vdatum.py`, a point per 0.25° cell; `stations.py noaa` gives the same table from the tide stations) | z15 (4 m) to z13 (16 m); interpolated contributors at z12 |
+| `nonna-100`, `nonna-10` | CHS's 100 m and 10 m grids (licence accepted; never redistributed; its notice names the owner as the maker) | 3, 4 | sea | `nonna.py`, the keyless coverage service (NONNA-10 a chunk of blocks at a time, where NONNA-100 has water: `chunked.py nonna10`); chart datum → mean water level by CHS's stations (`stations.py chs`) | z10, z13 |
 | `emodnet-dtm` | EMODnet's DTM 2024, MSL version | 5 | sea | `raster.py` over its tiles; its interpolation flag at z9 | gaps only (`datum_exact = false`) |
 | `shom-homonim-100`, `shom-homonim-20` | SHOM's façade and coastal DEMs, MSL versions | 6, 7 | sea | `raster.py`, the low water SHOM's own separation (`--low-raster`) | z10, z13 |
 | `gttm` | NIED's 2″ grid of Japan | 8 | sea | `raster.py` over windows of it | z11; coarse meshes at z9 |
 | `masswildlife-ponds`, `mn-dnr-lakes`, `gblq` | surveyed lakes (Massachusetts, Minnesota, Québec) | 9–11 | lake | `raster.py` (feet or metres, sign as each says) | z16, z15, z16 |
+| `ncei-crm` | NCEI's Coastal Relief Models, 1″ (the owner's download, `sources/ncei-crm/`; volume 6 absent) | 12 | sea | `ncei.py crm`; volumes on EGM2008 taken as MSL, uncorrected | z12 |
+| `ncei-greatlakes` | NCEI's Great Lakes bathymetry, 3″ (the owner's download, `sources/ncei-greatlakes/`) | 13 | lake | `ncei.py greatlakes`: from each lake's low water datum (CO-OPS' station datums) to its long-term mean level (GLERL's coordinated lake-wide monthly means, 1918 on), both fetched as it runs | z10 |
+
+A chunked run (`chunked.py`) fetches a chunk, produces it, tars its grids over SSH into the NAS's
+`sources/fetched/<id>/`, compares the byte totals there and deletes the chunk here; each chunk's
+index part is kept, so the same command resumes. Each chunk's datum surfaces are its own.
+
+On macOS the producers trust the system's root certificates as well as OpenSSL's (`grid.urlopen`,
+read from its keychain): uv's Python lacks some roots the hosts use (CHS's station service's chain ends at Sectigo's
+Public Server Authentication Root R46). `SSL_CERT_FILE`, when set, is used alone.
 
 Every request carries the User-Agent "scenic-roads/0.1 (personal offline map)" and asks the host's
 robots.txt first, in a request of its own (`grid.robots_allow`); a path it bars stops the producer,
