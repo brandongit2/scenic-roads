@@ -5527,8 +5527,15 @@ mod tests {
         std::fs::write(dir.join("job-disks-v3.json"), r#"{"lo":42971,"pack":1300,"depth-lo":65}"#).unwrap();
         std::fs::write(
             dir.join("disks.json"),
-            r#"{"lo 3/1/1":500,"lo 3/0/1":43008,"lo 3/2/1":400,"lo 3/3/1":0,"lo 3/4/1":0,"lo 3/5/1":0,
-                "lo 3/6/1":0,"lo 3/7/1":0,"lo 3/8/1":0,"lo 3/9/1":0,"terrain 3/1/1":9000,"terrain 6/1/1":900}"#,
+            // (A map, not one raw string across lines: the guards' scanners read a line at a time.)
+            serde_json::to_vec(
+                &[("lo 3/1/1".to_string(), 500), ("lo 3/0/1".into(), 43_008), ("lo 3/2/1".into(), 400)]
+                    .into_iter()
+                    .chain((3..=9).map(|i| (format!("lo 3/{i}/1"), 0)))
+                    .chain([("terrain 3/1/1".to_string(), 9000), ("terrain 6/1/1".into(), 900)])
+                    .collect::<BTreeMap<String, u64>>(),
+            )
+            .unwrap(),
         )
         .unwrap();
         let cost =

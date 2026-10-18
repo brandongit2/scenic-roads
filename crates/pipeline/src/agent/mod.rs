@@ -1033,14 +1033,10 @@ fn job_run(c: &crate::coord::Coordinator, step: &str, outcome: Outcome, done: &[
 /// the DEM cache's files (`dem-cache.*`). Read as it asks, so whatever emptied them (room-making,
 /// the OSM pass's clear, a hand) counts.
 fn caches_here(cache: &Path) -> BTreeMap<String, crate::coord::CacheHere> {
-    let dem: u64 = std::fs::read_dir(cache)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("dem-cache."))
-        .map(|e| e.metadata().map_or(0, |m| if m.is_dir() { dir_bytes(&e.path()) } else { m.len() }))
-        .sum();
-    [("base packs", dir_bytes(&cache.join("base"))), ("DEM", dem)]
+    // (Through the caches' accessor: sizes alone, a copy not yet in place (`.tmp`) left out.)
+    let base = store::cachefile::bytes_of(&cache.join("base"), "");
+    let dem = store::cachefile::bytes_of(cache, "dem-cache.");
+    [("base packs", base), ("DEM", dem)]
         .into_iter()
         .map(|(n, b)| (n.to_string(), crate::coord::CacheHere { have_mb: b >> 20 }))
         .collect()
@@ -10367,6 +10363,9 @@ mod tests {
         std::fs::write(d.path().join("base/base/a.pack"), vec![0u8; 3 << 20]).unwrap();
         std::fs::write(d.path().join("dem-cache.elev.f32"), vec![0u8; 2 << 20]).unwrap();
         std::fs::write(d.path().join("other"), vec![0u8; 5 << 20]).unwrap();
+        // (A copy not yet in place counts for nothing.)
+        std::fs::write(d.path().join("base/base/b.pack.1.2.tmp"), vec![0u8; 4 << 20]).unwrap();
+        std::fs::write(d.path().join("dem-cache.elev.f32.1.2.tmp"), vec![0u8; 4 << 20]).unwrap();
         assert_eq!((have("base packs"), have("DEM")), (3, 2));
         std::fs::remove_dir_all(d.path().join("base")).unwrap();
         assert_eq!(have("base packs"), 0, "cleared: missing again");

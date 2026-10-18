@@ -312,6 +312,38 @@ pub fn read(path: &Path) -> io::Result<Option<Vec<u8>>> {
     Err(io::Error::other(format!("{}: deleted each time it was opened", path.display())))
 }
 
+/// The bytes the caches hold under `dir` of the entries whose names start with `prefix` (all of
+/// them: ""), folders walked, temporary files (`tmp_of`'s, a copy not yet in place) left out; 0 when
+/// it isn't there. Reads only sizes, never a file.
+pub fn bytes_of(dir: &Path, prefix: &str) -> u64 {
+    fn walk(p: &Path, n: &mut u64) {
+        for e in std::fs::read_dir(p).into_iter().flatten().flatten() {
+            let name = e.file_name();
+            if name.to_string_lossy().ends_with(".tmp") {
+                continue;
+            }
+            match e.file_type() {
+                Ok(t) if t.is_dir() => walk(&e.path(), n),
+                Ok(_) => *n += e.metadata().map_or(0, |m| m.len()),
+                Err(_) => {}
+            }
+        }
+    }
+    let mut n = 0;
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(prefix) || name.ends_with(".tmp") {
+            continue;
+        }
+        match e.file_type() {
+            Ok(t) if t.is_dir() => walk(&e.path(), &mut n),
+            Ok(_) => n += e.metadata().map_or(0, |m| m.len()),
+            Err(_) => {}
+        }
+    }
+    n
+}
+
 /// A temporary name beside `path`, this process's own: `<name>.<pid>.<n>.tmp`.
 pub fn tmp_of(path: &Path) -> PathBuf {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
