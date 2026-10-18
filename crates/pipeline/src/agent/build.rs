@@ -2074,6 +2074,13 @@ pub fn owns(ways: [i32; 4], tile: [i32; 4]) -> bool {
     ways[0] <= tile[2] && ways[2] >= tile[0] && ways[1] <= tile[3] && ways[3] >= tile[1]
 }
 
+/// Of `units`, those owning any of `tiles` ((z, x, y)): whose ways (`unit_ways`) meet its box
+/// (`owns`), the units a tile's key in `pack_lo_targets` reads. What a pack or lo job opens.
+pub fn owners_of(reach: Option<&Reaches>, units: impl IntoIterator<Item = Unit>, tiles: &[(u8, u32, u32)]) -> BTreeSet<Unit> {
+    let boxes: Vec<[i32; 4]> = tiles.iter().map(|&(z, x, y)| crate::hipack::tile_bounds(z, x, y)).collect();
+    units.into_iter().filter(|&u| boxes.iter().any(|b| owns(unit_ways(reach, u), *b))).collect()
+}
+
 /// pack(T)'s targets (the z6 tiles the built units' ways reach) and lo's (their z3 tiles), each with
 /// its key, done or not. Both are keyed on what they read, the base packs and road values of the
 /// units whose ways come into the tile (its owners: pack(T)'s `here` index points into their base

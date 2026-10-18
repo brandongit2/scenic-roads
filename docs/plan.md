@@ -302,8 +302,10 @@ floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, th
 - **Room:** a per-Mac reserve ("Keep free", 30 GB unless set; `reserve.json`, `PUT
   /api/downloads/reserve`), applied at once. A download that wouldn't fit is refused; when the disk
   fills later, what doesn't fit waits, and nothing downloaded goes for it.
-- **The agent's jobs** don't need the mirror, but read base packs and the heritage job's files from
-  it where present. Nothing is deleted from the mirror while that Mac's agent runs a job.
+- **The agent's jobs** don't need the mirror, but pack and lo read their owners' base packs and
+  road values from it where present, each under a shared lock (`store::cachefile`). The mirror
+  deletes a file only under an exclusive lock taken without waiting, so one a job holds stays
+  until a later sync.
 - **Pack indexes** are cached as they're read (`idx/`), for offline starts.
 - `/api/downloads` gives the panel its state; the menu bar says what's downloaded.
 
@@ -639,7 +641,8 @@ index, so a new release rebuilds every unit.
 ### Per z6 pack: pack(T)
 
 - **Reads:** the base packs and road values of T's owners, every unit whose ways come into T (its
-  owned extent from the pass's reach; without one, its tile + 20 km).
+  owned extent from the pass's reach; without one, its tile + 20 km). A job opens only its tiles'
+  owners (`build::owners_of`, the rule their keys read); one given no tiles opens every unit.
 - **Writes:** road and rail hi tiles (z9–14) and T's hidata: the ways-here index; query parts (each
   road's 100 m samples and channels with offsets, for drives and rides); rail lines; the zoomed-out
   summaries (`docs/phase5.md`).

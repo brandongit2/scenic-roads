@@ -102,8 +102,6 @@ pub struct Data {
     last_mount: Mutex<Option<std::time::Instant>>,
     /// Whether the build agent runs a job, and when that was read.
     busy: Mutex<Option<(std::time::Instant, bool)>>,
-    /// Whether this Mac's own agent runs a job (`job_here`), and when that was read.
-    busy_here: Mutex<Option<(std::time::Instant, bool)>>,
     /// A mount by the bare name has been reported (once).
     warned_tunnel: std::sync::atomic::AtomicBool,
 }
@@ -141,7 +139,6 @@ impl Data {
             mirror_gen: Default::default(),
             last_mount: Mutex::new(None),
             busy: Mutex::new(None),
-            busy_here: Mutex::new(None),
             warned_tunnel: Default::default(),
         });
         match o.nas_root {
@@ -580,23 +577,6 @@ impl Data {
         b
     }
 
-    /// Whether this Mac's own agent runs a job: this is the lead, whose pack and lo jobs read
-    /// this mirror's base packs (nothing is deleted from it meanwhile: downloads::once). Only the lead's
-    /// agent writes the heartbeat (a helper writes `helper.json`), and its copy in this home is
-    /// fresh while it runs here, as the menu bar reads it (`build_status`). Read at most every
-    /// 10 s.
-    pub fn job_here(&self) -> bool {
-        let mut g = self.busy_here.lock().unwrap();
-        if let Some((t, b)) = *g {
-            if t.elapsed() < Duration::from_secs(10) {
-                return b;
-            }
-        }
-        let b = job_in(&self.home);
-        *g = Some((std::time::Instant::now(), b));
-        b
-    }
-
     /// Drops what was opened from the NAS and is now on this Mac, so the local copy serves it
     /// (offline too). Views read from the NAS are dropped whole; they're rebuilt on next use.
     pub fn forget_remote(&self) {
@@ -694,19 +674,6 @@ pub fn default_home() -> PathBuf {
     home.join("Library/Application Support/scenic")
 }
 
-/// Whether the agent whose heartbeat's copy is in `home` (`agent/status.json`), fresh (written in
-/// the last two minutes: it writes every few seconds while it runs), runs a job in either of its
-/// slots that isn't paused.
-fn job_in(home: &std::path::Path) -> bool {
-    job_in_at(home, unix_now())
-}
-
-/// `job_in` at `now` (unix seconds).
-fn job_in_at(home: &std::path::Path, now: u64) -> bool {
-    let v: Option<serde_json::Value> = std::fs::read(home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-    v.is_some_and(|v| runs_at(&v, 120, &["job", "beside"], now))
-}
-
 fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
@@ -729,30 +696,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_job_here_is_this_macs_own_agents_running_job() {
-        let home = tempfile::tempdir().unwrap();
+    fn a_heartbeat_runs_a_job_while_fresh_in_the_slots_asked() {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        let write = |f: &str, v: serde_json::Value| {
-            std::fs::create_dir_all(home.path().join("agent")).unwrap();
-            std::fs::write(home.path().join("agent").join(f), serde_json::to_vec(&v).unwrap()).unwrap();
-        };
-        // No agent here (another Mac's home, or a scratch one).
-        assert!(!job_in_at(home.path(), now));
-        // A helper's status: a helper's jobs don't read the mirror.
-        write("helper.json", json!({"beat": now, "job": {"id": "terrain 6/52/27"}}));
-        assert!(!job_in_at(home.path(), now));
-        // The lead's agent, running a job, in either slot; not when it's paused, or between
-        // jobs, or when the agent stopped writing.
-        write("status.json", json!({"beat": now, "job": {"id": "pack 6/52/27"}, "beside": null}));
-        assert!(job_in_at(home.path(), now));
-        write("status.json", json!({"beat": now, "job": null, "beside": {"id": "lo"}}));
-        assert!(job_in_at(home.path(), now));
-        write("status.json", json!({"beat": now, "job": {"id": "pack 6/52/27", "paused": "the user asked"}}));
-        assert!(!job_in_at(home.path(), now));
-        write("status.json", json!({"beat": now, "job": null}));
-        assert!(!job_in_at(home.path(), now));
-        write("status.json", json!({"beat": now - 600, "job": {"id": "pack 6/52/27"}}));
-        assert!(!job_in_at(home.path(), now));
+        // A job in either slot asked; not a paused one, none, or a stale beat.
+        let both = ["job", "beside"];
+        assert!(runs_at(&json!({"beat": now, "job": null, "beside": {"id": "lo"}}), 120, &both, now));
+        assert!(!runs_at(&json!({"beat": now, "job": {"id": "pack 6/52/27", "paused": "the user asked"}}), 120, &both, now));
+        assert!(!runs_at(&json!({"beat": now, "job": null}), 120, &both, now));
+        assert!(!runs_at(&json!({"beat": now - 600, "job": {"id": "pack 6/52/27"}}), 120, &both, now));
         // The NAS's heartbeat (the lead's, read by every Mac): the first slot, fresh for ten
         // minutes.
         assert!(runs_at(&json!({"beat": now - 300, "job": {"id": "pack 6/52/27"}}), 600, &["job"], now));

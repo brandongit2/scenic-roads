@@ -492,7 +492,8 @@ fn cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
 /// change, it lets go of what isn't downloaded and copies what is; a new catalog or a change of the
 /// downloads has it plan again at once. Away from home, it only lets go. While the build runs (the
 /// lead's heartbeat on the NAS says a job runs, as the copies' pause read it before
-/// downloads), copies keep to 20 MB/s; while this Mac's own agent runs a job, nothing is deleted.
+/// downloads), copies keep to 20 MB/s; a file this Mac's pack or lo job holds isn't deleted
+/// (store::mirror).
 /// Between copies it works out the basemap pieces' sizes (for the panel's sizes), those of what's
 /// downloaded first.
 pub fn spawn_mirror(s: S) {
@@ -520,7 +521,6 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
     if cat.n == 0 {
         return false;
     }
-    let hold = || s.data.job_here();
     match (s.data.nas_root(), s.data.pool()) {
         (Some(root), Some(pool)) if pool.is_online() => {
             let wanted = plan.wanted.items.iter().filter_map(|i| match i {
@@ -536,7 +536,7 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
             if MIRROR_MARKS.lock().unwrap().start(cat.n, now()) {
                 crate::data::publish_event(&root, "mirror-start", cat.n, None);
             }
-            match m.sync(&cat, &plan.wanted, &root, &pool, &Control { stop: &changed, slow: &slow, hold: &hold }) {
+            match m.sync(&cat, &plan.wanted, &root, &pool, &Control { stop: &changed, slow: &slow }) {
                 Ok(st) => {
                     let through = st.end == store::mirror::SyncEnd::Done && st.waiting == 0 && st.failed == 0 && st.pending == 0;
                     if let Some(secs) = MIRROR_MARKS.lock().unwrap().end(cat.n, now(), through) {
@@ -560,7 +560,7 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
             }
         }
         // Away from home: what isn't downloaded goes all the same.
-        _ => match m.sync_away(&cat, &plan.wanted, &hold) {
+        _ => match m.sync_away(&cat, &plan.wanted) {
             Ok(st) if st.removed > 0 => eprintln!("mirror (away): {st:?}"),
             Ok(_) => {}
             Err(e) => eprintln!("mirror: {e:#}"),

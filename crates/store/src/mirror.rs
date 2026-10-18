@@ -23,8 +23,10 @@
 //! copies what's wanted and missing, one at a time, in large sequential reads through the I/O pool.
 //! A file that doesn't fit (the disk's free space, less the reserve) waits, and nothing goes to make
 //! room for it. While the caller says the build is running (`Control::slow`), copies keep to 20 MB/s
-//! so the build's own traffic has the NAS first; while its own agent runs a job on this Mac
-//! (`Control::hold`), nothing is deleted (its pack and lo jobs may read this mirror's base packs).
+//! so the build's own traffic has the NAS first. A complete copy goes only under an exclusive lock
+//! taken without waiting (crate::cachefile::try_remove): one a job holds (this Mac's pack and lo
+//! jobs read this mirror's base packs under a shared lock, crate::cachefile) stays until a later
+//! sync finds it let go.
 
 use crate::catalog::{self, Catalog};
 use crate::iopool::{IoError, IoPool};
@@ -117,13 +119,11 @@ pub struct Control<'a> {
     pub stop: &'a dyn Fn() -> bool,
     /// The build is running: copies keep to `SLOW_RATE`.
     pub slow: &'a dyn Fn() -> bool,
-    /// Delete nothing for now (this Mac's own agent runs a job).
-    pub hold: &'a dyn Fn() -> bool,
 }
 
 impl Control<'_> {
-    /// Nothing to stop, slow or hold for.
-    pub const FREE: Control<'static> = Control { stop: &|| false, slow: &|| false, hold: &|| false };
+    /// Nothing to stop or slow for.
+    pub const FREE: Control<'static> = Control { stop: &|| false, slow: &|| false };
 }
 
 /// What a `sync` (or `let_go`) did.
@@ -141,6 +141,8 @@ pub struct SyncStats {
     /// Local files and pieces deleted: wanted no more.
     pub removed: u32,
     pub removed_bytes: u64,
+    /// Files wanted no more but held by a job (a shared lock): left for a later sync.
+    pub held: u32,
     /// Wanted, and still not here when the sync ended.
     pub pending: u32,
     pub end: SyncEnd,
@@ -532,24 +534,18 @@ impl Mirror {
     }
 
     /// Lets go of what `wanted` doesn't name: the files and pieces here, copies in progress, the
-    /// pieces of archives `cat` no longer has (their sizes too). Away from home as at home; not
-    /// while `hold()`. What it did.
-    pub fn let_go(&self, cat: &Catalog, wanted: &Wanted, hold: &dyn Fn() -> bool) -> Result<SyncStats> {
+    /// pieces of archives `cat` no longer has (their sizes too). Away from home as at home. A file
+    /// a job holds stays (`SyncStats::held`). What it did.
+    pub fn let_go(&self, cat: &Catalog, wanted: &Wanted) -> Result<SyncStats> {
         let mut stats = SyncStats::default();
-        if hold() {
-            return Ok(stats);
-        }
         let files = wanted.files();
         let gone: Vec<(String, u64)> = self.state().files.iter().filter(|(n, _)| !files.contains(n.as_str())).map(|(n, &s)| (n.clone(), s)).collect();
         for (name, size) in gone {
             let p = self.path(&name);
-            match fs::remove_file(&p) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    eprintln!("mirror: can't delete {}: {e}", p.display());
-                    continue;
-                }
+            // (Not one a job reads now: crate::cachefile.)
+            if crate::cachefile::try_remove(&p) == crate::cachefile::Removed::InUse {
+                stats.held += 1;
+                continue;
             }
             self.remove_empty_dirs(&p);
             self.state().files.remove(&name);
@@ -612,13 +608,13 @@ impl Mirror {
         }
     }
 
-    /// Lets go of what isn't wanted (unless `ctl.hold()`), then copies what `wanted` names and
+    /// Lets go of what isn't wanted (but what a job holds), then copies what `wanted` names and
     /// isn't here yet from `nas_root`, through `pool`, in its order, until done, `ctl.stop()` says
     /// stop, or the NAS goes offline. What doesn't fit waits (module doc). Run it on a background
     /// thread; it never holds the mirror's lock while it waits on the NAS.
     pub fn sync(&self, cat: &Catalog, wanted: &Wanted, nas_root: &Path, pool: &Arc<IoPool>, ctl: &Control) -> Result<SyncStats> {
         self.drop_mismatched(cat);
-        let mut stats = self.let_go(cat, wanted, ctl.hold)?;
+        let mut stats = self.let_go(cat, wanted)?;
         let mut pace = Pace { slow: ctl.slow, since: Instant::now(), bytes: 0 };
         let mut archives: HashMap<String, Arc<PmTiles>> = HashMap::new();
         let mut left = wanted.items.iter().filter(|i| !self.is_here(i)).count() as u32;
@@ -667,8 +663,8 @@ impl Mirror {
     }
 
     /// Away from the NAS: lets go of what isn't wanted, copies nothing. What it did.
-    pub fn sync_away(&self, cat: &Catalog, wanted: &Wanted, hold: &dyn Fn() -> bool) -> Result<SyncStats> {
-        let mut stats = self.let_go(cat, wanted, hold)?;
+    pub fn sync_away(&self, cat: &Catalog, wanted: &Wanted) -> Result<SyncStats> {
+        let mut stats = self.let_go(cat, wanted)?;
         stats.end = SyncEnd::Offline;
         stats.pending = wanted.items.iter().filter(|i| !self.is_here(i)).count() as u32;
         self.state().last = Some((stats, SystemTime::now()));
@@ -694,7 +690,7 @@ impl Mirror {
     }
 
     /// Deletes local copies whose size isn't the catalog's (damaged, or cut short while the app
-    /// wasn't running), so they're copied again.
+    /// wasn't running), so they're copied again; one a job holds stays until it's let go.
     fn drop_mismatched(&self, cat: &Catalog) {
         let bad: Vec<(String, u64, u64)> = {
             let st = self.state();
@@ -703,7 +699,7 @@ impl Mirror {
         for (name, have, want) in bad {
             eprintln!("mirror: {name} is {have} bytes here but {want} in the catalog; copying it again");
             let p = self.path(&name);
-            if fs::remove_file(&p).is_ok() || !p.exists() {
+            if crate::cachefile::try_remove(&p) != crate::cachefile::Removed::InUse {
                 self.state().files.remove(&name);
             }
         }

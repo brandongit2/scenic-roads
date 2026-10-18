@@ -267,11 +267,23 @@ pub fn hold(path: &Path, refill: &mut dyn FnMut(&Path) -> io::Result<()>) -> io:
 
 /// Holds the cache file at `path` when it's there (as `hold`, nothing filled): None when it isn't.
 pub fn hold_existing(path: &Path) -> io::Result<Option<PathBuf>> {
+    hold_there(path, true)
+}
+
+/// `hold_existing`, not marked used: a file of a folder this process doesn't own, read under its
+/// owner's locking (the app's mirror, store::mirror, whose deletes take the exclusive lock).
+pub fn hold_untouched(path: &Path) -> io::Result<Option<PathBuf>> {
+    hold_there(path, false)
+}
+
+fn hold_there(path: &Path, mark_used: bool) -> io::Result<Option<PathBuf>> {
     for _ in 0..100 {
         match open_shared(path)? {
             Some(f) => {
                 keep(f, path)?;
-                touch(path);
+                if mark_used {
+                    touch(path);
+                }
                 return Ok(Some(path.to_path_buf()));
             }
             None if !path.exists() => return Ok(None),

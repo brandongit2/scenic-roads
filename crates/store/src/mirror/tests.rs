@@ -327,18 +327,26 @@ fn a_download_that_doesnt_fit_waits_and_nothing_goes_for_it() {
     assert_eq!((s.copied, s.waiting, s.pending), (3, 0, 0));
 }
 
+/// A file a job holds (a pack job reading a base pack here, under its shared lock:
+/// crate::cachefile) stays, as it was, while the rest of what isn't wanted goes; it goes once let go.
 #[test]
-fn nothing_goes_while_the_agent_here_runs_a_job() {
+fn a_file_a_job_holds_stays_until_let_go() {
     let nas = nas();
     let home = tempfile::tempdir().unwrap();
     let m = big(home.path());
     let cat = two_areas(&nas, 1, 0, 1);
     sync(&m, &cat, &wanted(&[world(&cat), area(&cat, "6-32-21")]), &nas);
-    let n = m.usage().0;
-    let s = m.sync(&cat, &wanted(&[world(&cat)]), nas.root(), &nas.pool, &Control { hold: &|| true, ..Control::FREE }).unwrap();
-    assert_eq!((s.removed, m.usage().0), (0, n));
-    let s = m.sync_away(&cat, &wanted(&[world(&cat)]), &|| false).unwrap();
-    assert_eq!((s.removed, s.end), (5, SyncEnd::Offline), "away from the NAS too");
+    let base = m.path(&cat.files["base/6-32-21"].file);
+    let bytes = std::fs::read(&base).unwrap();
+    crate::cachefile::hold_existing(&base).unwrap().unwrap();
+    let s = m.sync(&cat, &wanted(&[world(&cat)]), nas.root(), &nas.pool, &Control::FREE).unwrap();
+    assert_eq!((s.removed, s.held), (4, 1), "{s:?}");
+    assert_eq!(std::fs::read(&base).unwrap(), bytes, "the held file as it was");
+    assert!(m.local(&cat.files["base/6-32-21"].file).is_some(), "still listed: a later sync takes it");
+    crate::cachefile::release(&base);
+    let s = m.sync_away(&cat, &wanted(&[world(&cat)])).unwrap();
+    assert_eq!((s.removed, s.held, s.end), (1, 0, SyncEnd::Offline), "away from the NAS too");
+    assert!(!base.exists());
 }
 
 #[test]

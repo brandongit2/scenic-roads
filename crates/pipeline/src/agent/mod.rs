@@ -1314,7 +1314,7 @@ impl Agent {
             // The server's mirror on this Mac (the agent's home is inside the app's) has the same
             // files: used instead of a second copy where it has them.
             "pack" | "lo" => {
-                let mut v = vec!["--cache".into(), s(&cache.join("base"))];
+                let mut v = vec!["--pass".into(), date.to_string(), "--cache".into(), s(&cache.join("base"))];
                 if let Some(app) = self.o.home.parent() {
                     v.extend(["--mirror".into(), s(&app.join("mirror"))]);
                 }
