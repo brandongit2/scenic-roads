@@ -28,7 +28,10 @@ use std::time::Duration;
 /// How long a small read or write may take before its caller goes on without it.
 pub const DEADLINE: Duration = Duration::from_secs(20);
 /// How long a listing may take (3 to 33 s a folder under load, pool::nas::Nas::list).
-pub const LIST_DEADLINE: Duration = Duration::from_secs(90);
+pub const LIST_DEADLINE: Duration = Duration::from_secs(60);
+/// How long a create in the terms' folder may take: a term made but its bytes not landed comes back
+/// as `Created::Unwritten` for the driver to finish, which a timeout would lose.
+pub const TERM_CREATE_DEADLINE: Duration = Duration::from_secs(300);
 /// The switches' readers.
 pub const SWITCH_READERS: usize = 2;
 /// The records' readers.
@@ -177,7 +180,11 @@ pub fn read_to_string(p: &Path) -> io::Result<String> {
 
 /// `f`, a write of `p`, run on the writers within `DEADLINE` (an error past it).
 pub fn write(p: &Path, f: impl FnOnce() -> anyhow::Result<()> + Send + 'static) -> anyhow::Result<()> {
-    match writers().call(p, DEADLINE, f) {
+    let held = InFlight::take(p)?;
+    match writers().call(p, DEADLINE, move || {
+        let _held = held;
+        f()
+    }) {
         Ok(r) => {
             note(p, false, None);
             r
@@ -185,6 +192,37 @@ pub fn write(p: &Path, f: impl FnOnce() -> anyhow::Result<()> + Send + 'static) 
         Err(e) => {
             note(p, true, Some(&e));
             Err(e.into())
+        }
+    }
+}
+
+/// A write's path while the write runs: a second write to it is refused (`TimedOut`) until the
+/// first ends on its thread, not when its caller stopped waiting (two writes to one path would share
+/// its temporary name). Released as dropped: at the call's end, or with a call never run.
+struct InFlight(PathBuf);
+
+fn in_flight() -> &'static Mutex<BTreeSet<PathBuf>> {
+    static S: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
+    S.get_or_init(Default::default)
+}
+
+impl InFlight {
+    fn take(p: &Path) -> io::Result<InFlight> {
+        let mut s = in_flight().lock().map_err(|_| io::Error::other("in-flight writes poisoned"))?;
+        if !s.insert(p.to_path_buf()) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("{}: an earlier write to it still runs", p.display()),
+            ));
+        }
+        Ok(InFlight(p.to_path_buf()))
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        if let Ok(mut s) = in_flight().lock() {
+            s.remove(&self.0);
         }
     }
 }
@@ -203,11 +241,25 @@ pub struct Deadlined {
     writes: &'static Calls,
     deadline: Duration,
     list_deadline: Duration,
+    term_create_deadline: Duration,
 }
 
 impl Deadlined {
     pub fn new(inner: Arc<dyn Nas + Send + Sync>) -> Deadlined {
-        Deadlined { inner, reads: records(), writes: writers(), deadline: DEADLINE, list_deadline: LIST_DEADLINE }
+        Deadlined {
+            inner,
+            reads: records(),
+            writes: writers(),
+            deadline: DEADLINE,
+            list_deadline: LIST_DEADLINE,
+            term_create_deadline: TERM_CREATE_DEADLINE,
+        }
+    }
+
+    /// Its terms' creates' deadline set (a test's).
+    pub fn term_create_deadline(mut self, d: Duration) -> Deadlined {
+        self.term_create_deadline = d;
+        self
     }
 
     /// With pools and deadlines of its own (a test's).
@@ -218,7 +270,7 @@ impl Deadlined {
         deadline: Duration,
         list_deadline: Duration,
     ) -> Deadlined {
-        Deadlined { inner, reads, writes, deadline, list_deadline }
+        Deadlined { inner, reads, writes, deadline, list_deadline, term_create_deadline: TERM_CREATE_DEADLINE }
     }
 
     fn run<T: Send + 'static>(
@@ -230,7 +282,12 @@ impl Deadlined {
     ) -> anyhow::Result<T> {
         let inner = self.inner.clone();
         let p = Path::new(path);
-        match calls.call(p, deadline, move || f(&*inner)) {
+        // (A write: refused while an earlier one to its path still runs, `InFlight`.)
+        let held = if std::ptr::eq(calls, self.reads) { None } else { Some(InFlight::take(p)?) };
+        match calls.call(p, deadline, move || {
+            let _held = held;
+            f(&*inner)
+        }) {
             Ok(r) => {
                 note(p, false, None);
                 r
@@ -246,7 +303,8 @@ impl Deadlined {
 impl Nas for Deadlined {
     fn create_new(&self, path: &str, bytes: &[u8]) -> anyhow::Result<Created> {
         let (p, b) = (path.to_string(), bytes.to_vec());
-        self.run(self.writes, path, self.deadline, move |n| n.create_new(&p, &b))
+        let deadline = if path.starts_with(crate::pool::term::DIR) { self.term_create_deadline } else { self.deadline };
+        self.run(self.writes, path, deadline, move |n| n.create_new(&p, &b))
     }
 
     fn write_whole(&self, path: &str, bytes: &[u8]) -> anyhow::Result<()> {
@@ -284,6 +342,8 @@ impl Nas for Deadlined {
 pub const STALL_FILE: &str = "loop-stall.json";
 /// A loop that hasn't finished a round in this long is stalled (its start counts as a round).
 pub const STALL_AFTER: Duration = Duration::from_secs(300);
+/// The agent's start given this much more before it's a stall (its first round opens the pool).
+pub const STALL_GRACE: Duration = Duration::from_secs(300);
 
 /// When the agent's loop last finished a round, or the agent started (s since the epoch).
 pub static ROUND_AT: AtomicU64 = AtomicU64::new(0);
@@ -308,9 +368,11 @@ pub fn watch(
     done: &'static AtomicBool,
     home: PathBuf,
     after: Duration,
+    grace: Duration,
     every: Duration,
 ) -> std::thread::JoinHandle<()> {
-    round_at.store(super::now_s(), Ordering::SeqCst);
+    let start = super::now_s();
+    round_at.store(start, Ordering::SeqCst);
     done.store(false, Ordering::SeqCst);
     std::thread::Builder::new()
         .name("loop-watchdog".into())
@@ -321,7 +383,9 @@ pub fn watch(
             while !done.load(Ordering::SeqCst) {
                 let now = super::now_s();
                 let at = round_at.load(Ordering::SeqCst);
-                if now.saturating_sub(at) >= after.as_secs() {
+                // (The start given `grace` more: a slow start isn't a stall.)
+                let limit = if at == start { after + grace } else { after };
+                if now.saturating_sub(at) >= limit.as_secs() {
                     if !stalled {
                         eprintln!("agent: the loop hasn't finished a round in {} s; stalled", now.saturating_sub(at));
                     }
@@ -465,20 +529,59 @@ pub(crate) mod tests {
         };
         let (reads, writes) = (leak(Calls::new("tr", 2)), leak(Calls::new("tw", 2)));
         let n = Deadlined::with(Arc::new(stuck), reads, writes, Duration::from_millis(200), Duration::from_millis(200));
-        // The heartbeat's write stuck: an error within its deadline, then at once.
-        for _ in 0..3 {
-            let t = Instant::now();
-            assert!(n.write_aside("state/pool/members/m.json", b"{}").is_err());
-            assert!(t.elapsed() < Duration::from_secs(2));
-        }
+        // The heartbeat's write stuck: an error within its deadline; a second write to that path
+        // refused at once while the first still runs (never two at once on one temporary name).
+        let t = Instant::now();
+        assert!(n.write_aside("state/pool/members/m.json", b"{}").is_err());
+        assert!(t.elapsed() < Duration::from_secs(2));
+        assert_eq!(writes.busy(), 1);
+        let t = Instant::now();
+        let e = n.write_aside("state/pool/members/m.json", b"{}").unwrap_err();
+        assert!(timed_out(&e) && format!("{e}").contains("still runs"), "{e:#}");
+        assert!(t.elapsed() < Duration::from_millis(100), "at once");
+        assert_eq!(writes.busy(), 1, "no second thread on it");
+        // Another path's write takes the other writer; then every writer is stuck: at once.
+        assert!(n.write_aside("state/pool/members/o.json", b"{}").is_err());
         assert_eq!(writes.busy(), 2);
+        let t = Instant::now();
+        assert!(n.write_aside("state/pool/members/p.json", b"{}").is_err());
+        assert!(t.elapsed() < Duration::from_millis(100), "at once");
         // The reads go on: the terms listed, read.
         assert_eq!(n.list("state/pool/terms").unwrap(), vec!["1.json".to_string()]);
         assert_eq!(n.read("state/pool/terms/1.json").unwrap().unwrap(), b"{}");
         // And a switch, on its own readers.
         std::fs::write(d.path().join("sw"), "on").unwrap();
         assert_eq!(read_switch(&d.path().join("sw")).unwrap(), "on");
+        // The share answers: the path's write ends on its thread, and the path is free again.
         drop(hold);
+        let t = Instant::now();
+        while writes.busy() > 0 && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        n.write_aside("state/pool/members/m.json", b"{\"a\":1}").unwrap();
+        assert_eq!(std::fs::read(d.path().join("state/pool/members/m.json")).unwrap(), b"{\"a\":1}");
+    }
+
+    #[test]
+    fn a_slow_term_create_keeps_its_answer() {
+        let d = tempfile::tempdir().unwrap();
+        let (hold, gate) = mpsc::channel::<()>();
+        let stuck = Stuck {
+            inner: crate::pool::nas::Share::new(d.path()),
+            stuck: crate::pool::term::DIR.into(),
+            gate: Arc::new(Mutex::new(gate)),
+        };
+        let (reads, writes) = (leak(Calls::new("cr", 1)), leak(Calls::new("cw", 2)));
+        let n = Deadlined::with(Arc::new(stuck), reads, writes, Duration::from_millis(100), Duration::from_millis(100))
+            .term_create_deadline(Duration::from_secs(10));
+        // The share answers after five ordinary deadlines: the term's create waits for its answer.
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            drop(hold);
+        });
+        let term = format!("{}/7.json", crate::pool::term::DIR);
+        assert!(matches!(n.create_new(&term, b"{}").unwrap(), Created::Made));
+        assert!(matches!(n.create_new(&term, b"{}").unwrap(), Created::There));
     }
 
     #[test]
@@ -524,7 +627,7 @@ pub(crate) mod tests {
         static AT: AtomicU64 = AtomicU64::new(0);
         static DONE: AtomicBool = AtomicBool::new(false);
         let d = tempfile::tempdir().unwrap();
-        let t = watch(&AT, &DONE, d.path().into(), Duration::from_secs(1), Duration::from_millis(50));
+        let t = watch(&AT, &DONE, d.path().into(), Duration::from_secs(1), Duration::ZERO, Duration::from_millis(50));
         std::thread::sleep(Duration::from_millis(2300));
         assert!(stall(d.path()).is_some(), "stalled");
         // (A round just now, a little ahead so a second ticking over meanwhile doesn't count.)

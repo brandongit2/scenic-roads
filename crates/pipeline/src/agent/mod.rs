@@ -1417,6 +1417,7 @@ impl Agent {
                 &nasread::WATCH_DONE,
                 o.home.clone(),
                 nasread::STALL_AFTER,
+                nasread::STALL_GRACE,
                 Duration::from_secs(15),
             );
         }

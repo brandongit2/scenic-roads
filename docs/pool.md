@@ -582,7 +582,7 @@ than kept by hand; progress of steps other than the OSM pass resumable on its Ma
 
 An open on the SMB share can stay stuck in the kernel for many minutes while the same file reads at
 once from a shell. The agent's NAS calls listed below go through `crate::agent::nasread`: each runs
-on a thread of a small pool and is waited for a deadline at most (20 s; a listing 90 s). Past it,
+on a thread of a small pool and is waited for a deadline at most (20 s; a listing 60 s; a create in the terms' folder 5 minutes, so a term made but not written comes back to the driver to finish rather than lost). Past it,
 the caller gets a timeout and takes it as any call that fails now, logged once per path until that
 path answers again. The stuck thread is left to its call and stays busy; while every thread of a
 pool is busy, a call to it fails at once, so stuck threads never pile up. Three pools, so one kind
@@ -597,12 +597,15 @@ stuck can't starve another:
   members, and the terms' listing as the member opens, tried three times, 10 s and 30 s apart,
   then gone on without).
 - **Writes** (four threads): the heartbeat (`state/status.json`, or a helper's file) and the pool's
-  writes, creates and removes (the members' heartbeats, mail, terms).
+  writes, creates and removes (the members' heartbeats, mail, terms). A write to a path is refused
+  at once (a timeout) while an earlier write to it is still in flight, its thread stuck: two writes
+  never share one temporary name. The path is free again once that write ends.
 
 A healthy share's calls are unchanged.
 
 A watchdog thread, started before the agent opens anything on the NAS, looks at when the loop last
-finished a round (or the agent started): past five minutes it logs the stall and keeps
+finished a round (or the agent started, given five minutes more: a slow start isn't a stall): past
+five minutes it logs the stall and keeps
 `loop-stall.json` in the agent's folder (this Mac's disk), which `scenic status` shows as "this
 Mac's agent loop is stalled"; it's removed when the loop goes on.
 
