@@ -14411,6 +14411,15 @@ mod pool_tests {
             };
             job.post_json("/task/offer", &serde_json::to_value(&o).unwrap()).unwrap().1["id"].as_u64().unwrap()
         };
+        // (The agents themselves, slower at a tail than the job's own run: neither takes these
+        // tasks while the heartbeats are awaited below, however many steps that takes; a page
+        // must.)
+        for co in [m.broker.as_ref().unwrap(), lead.coord.as_ref().unwrap()] {
+            let mut s = co.shared.lock().unwrap();
+            for w in [&lead.host, &m.host] {
+                s.tasks.paces.insert((w.clone(), "tail".into()), 10.0);
+            }
+        }
         let mt = offer(bport, &m.broker.as_ref().unwrap().job_token, "6/1/1");
         let lt = offer(lport, &lead.coord.as_ref().unwrap().job_token, "6/1/2");
         // The heartbeats say so, and each reads the other's (now: not waiting the half minute).
