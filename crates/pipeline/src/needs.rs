@@ -178,7 +178,13 @@ fn tile(target: &str) -> Option<(u8, u32, u32)> {
 /// The sizes known of a cost (its measured `sizes`; its tile's area when it has no `km2`).
 fn sizes_of(key: &str, c: Option<&Cost>) -> BTreeMap<String, f64> {
     let mut m: BTreeMap<String, f64> = c
-        .map(|c| c.sizes.iter().filter(|(k, _)| *k != "threads").map(|(k, v)| (k.clone(), *v as f64)).collect())
+        .map(|c| {
+            c.sizes
+                .iter()
+                .filter(|(k, _)| !matches!(k.as_str(), "threads" | "cpu_ms"))
+                .map(|(k, v)| (k.clone(), *v as f64))
+                .collect()
+        })
         .unwrap_or_default();
     if let (false, Some((z, x, y))) = (m.contains_key("km2"), tile(key)) {
         m.insert("km2".into(), crate::costin::tile_km2(z, x, y) as f64);
@@ -457,13 +463,18 @@ impl<'a> Book<'a> {
         self.fitted(&md, &key, threads).or(md.prior)
     }
 
-    /// The cores a job of `step` for `target` takes, as measured (the threads its run was given,
-    /// `sizes`' `threads`, crate::costin): its own run's, else the most of its step's runs the way
-    /// it runs now; None when none of them says (what packs jobs beside each other, crate::coord's
-    /// packing, then packs none beside it).
+    /// The cores a job of `step` for `target` takes, as measured (crate::costin's `sizes`): the
+    /// threads its run was given (`threads`), or fewer where its CPU time over its wall time
+    /// (`cpu_ms`) says it kept fewer busy, one more than those (a serial step's: 1–2); its own run's,
+    /// else the most of its step's runs the way it runs now; None when none of them says (what
+    /// packs jobs beside each other, crate::coord's packing, then packs none beside it).
     pub fn cores(&self, step: &str, target: &str) -> Option<u32> {
         let v = cost_version(step);
-        let threads = |c: &Cost| c.sizes.get("threads").filter(|_| c.v >= v).map(|&t| t as u32);
+        let threads = |c: &Cost| {
+            let t = *c.sizes.get("threads").filter(|_| c.v >= v)? as u32;
+            let busy = c.sizes.get("cpu_ms").map(|&ms| ms.div_ceil(c.secs.max(1) * 1000) as u32 + 1);
+            Some(busy.map_or(t, |b| b.min(t)).max(1))
+        };
         if let Some(t) = self.costs.get(&cost_key(step, target)).and_then(threads) {
             return Some(t);
         }
@@ -642,6 +653,11 @@ mod tests {
         assert_eq!(b.cores("slope", "6/1/2"), Some(2));
         assert_eq!(b.cores("slope", "6/1/9"), Some(4), "an older way's run counts for nothing");
         assert_eq!(b.cores("lo", "3/1/1"), None);
+        // (Its CPU time over its wall time: a serial run given 8 threads takes 2, a busy one its 8.)
+        costs.insert(cost_key("pois", "6/1/1"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 9_500)])));
+        costs.insert(cost_key("pois", "6/1/2"), now("pois", cost(100, 10, &[("threads", 8), ("cpu_ms", 80_000)])));
+        let b = Book::new(&costs);
+        assert_eq!((b.cores("pois", "6/1/1"), b.cores("pois", "6/1/2")), (Some(2), Some(8)));
     }
 
     /// A target's NAS rate: its own run's bytes (read and written) and creates over its time, else

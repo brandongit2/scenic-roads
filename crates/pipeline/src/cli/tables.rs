@@ -45,6 +45,7 @@ pub const SCENIC: Table = Table {
         c("resume", "[--home <dir>]", "let the build go on after `scenic pause`", &[], H, 0),
         c("clean", "[--yes] [--home <dir>]", "clear this Mac's build caches once the build is done, after a y/N (--yes: none): its agent does it, and says what it freed", &["--yes"], H, 0),
         c("room", "[<GB> | off] [--home <dir>]", "this Mac's disk room target: the free space its agent keeps, freeing its caches to it; with none, how it stands", &[], HR, 1),
+        c("in-use", "[--cores <n>] [--memory <GB>] | off [--home <dir>]", "this Mac's in-use share: the cores and memory its agent keeps free of its jobs while its owner uses it (by default 2 cores and five eighths of its memory); off: the defaults; with none, how it stands", &[], &["--cores", "--memory", "--home", "--root"], 1),
         c("gc", "[--dry-run] [--days 14] [--root <dir>]", "remove replaced files from the NAS (the agent runs it daily)", &["--dry-run"], &["--days", "--root"], 0),
         c("backup", "[--local <dir>] [--root <dir>]", "back up the user's folders (the agent runs it daily)", &[], &["--local", "--root"], 0),
         c("timings", "[<kind>] [--last N] [--host <mac>] [--here | --file <f>] [--json]", "the jobs' timings: each kind's phases over its last N runs (20), with their totals and shares; the build's, or with --here this Mac's own jobs' alone", &["--here", "--json"], &["--last", "--host", "--file", "--home", "--root"], 1),

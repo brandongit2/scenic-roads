@@ -23,7 +23,10 @@
 //! Checked at every start, first where a job may go at all: no Mac past its slots; a step kept to the
 //! lead (crate::agent::every::LEAD_ONLY, or not offered) only on the lead; a cold start alone on its
 //! Mac and in the pool, and nothing beside one. Then what it takes: past its Mac's memory limit only
-//! a cold start, stopped by the guard; never past its disk or cores. And that the plan finishes.
+//! a cold start, stopped by the guard; never past its disk; its threads (a member's, those granted
+//! it, crate::coord::Grant::threads, at least one; the lead's own, its step's) and those of the jobs
+//! beside it never past its Mac's cores (less those its in-use share keeps, `Cfg::in_use`). And that
+//! the plan finishes.
 
 use crate::agent::every;
 use crate::agent::memguard::{self, Floor};
@@ -72,6 +75,9 @@ pub struct Cfg {
     /// The NAS budget on (crate::budget::nas), with the NAS's limits as a probe would measure them.
     /// None: off.
     pub nas: Option<crate::budget::nas::Limits>,
+    /// The members' owners using them, each member's in-use share keeping these cores free of its
+    /// jobs (crate::agent::share). None: not in use.
+    pub in_use: Option<u32>,
 }
 
 /// What a run did.
@@ -91,6 +97,8 @@ pub struct Run {
     /// Members' asks answered with nothing while a measured target of theirs was open (the NAS
     /// budget queuing them, among other reasons).
     pub turned_away: usize,
+    /// The threads the members' jobs were granted, by step (the fewest and the most).
+    pub granted: BTreeMap<String, (u32, u32)>,
 }
 
 /// A loop of an agent (s).
@@ -195,10 +203,12 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                                 secs: s.secs,
                                 worker: None,
                                 v: cost_version(&j.step),
-                                // (The threads its run was given, as crate::costin records them.)
+                                // (The threads its run was given, and the CPU time it took (its step's
+                                // threads busy, at most those given), as crate::costin records them.)
                                 // (And what it read and wrote on the NAS.)
                                 sizes: [
-                                    ("threads".to_string(), s.threads as u64),
+                                    ("threads".to_string(), j.threads as u64),
+                                    ("cpu_ms".to_string(), j.threads.min(s.threads) as u64 * s.secs * 1000),
                                     ("bytes".to_string(), (s.nas_mb << 20) / 2),
                                     ("wrote".to_string(), (s.nas_mb << 20) - (s.nas_mb << 20) / 2),
                                     ("creates".to_string(), s.creates),
@@ -251,6 +261,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                      step: &str,
                      targets: Vec<String>,
                      lease: u64,
+                     threads: u32,
                      running: &mut Vec<Vec<Job>>,
                      out: &mut Run|
          -> Result<bool, String> {
@@ -263,7 +274,7 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 end: t + s.secs * targets.len() as u64,
                 mem_mb: s.mem_mb,
                 disk_mb: s.disk_mb * targets.len() as u64,
-                threads: s.threads,
+                threads,
                 nas: weight(s),
                 cold,
             };
@@ -329,8 +340,13 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                     cfg.macs[k].name, disk, job.disk_mb, cfg.macs[k].disk_mb
                 ));
             }
-            if threads + job.threads > cfg.macs[k].cores {
-                return Err(format!("{} placed {step} past its cores", cfg.macs[k].name));
+            // (A member's: the threads granted it, within the cores its in-use share leaves.)
+            let kept = if k > 0 { cfg.in_use.unwrap_or(0) } else { 0 };
+            if job.threads == 0 || threads + job.threads + kept > cfg.macs[k].cores {
+                return Err(format!(
+                    "{} placed {step} past its cores: {threads} + {} threads + {kept} kept > {}",
+                    cfg.macs[k].name, job.threads, cfg.macs[k].cores
+                ));
             }
             // (The NAS budget on: a member's measured job only within the pool's room left, or with
             // no other member's job weighing anything. The lead's own aren't placed by the
@@ -389,7 +405,15 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                 if let Some(spec) = plan.first() {
                     tried.insert(spec.clone());
                     if let Some(l) = c.hold(&spec.0, &[(spec.1.clone(), key_of(&spec.1))]) {
-                        start(0, &spec.0, vec![spec.1.clone()], l, &mut running, &mut out)?;
+                        start(
+                            0,
+                            &spec.0,
+                            vec![spec.1.clone()],
+                            l,
+                            steps[spec.0.as_str()].threads,
+                            &mut running,
+                            &mut out,
+                        )?;
                     }
                 }
             }
@@ -408,7 +432,15 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                         .cloned();
                     if let Some(spec) = pick {
                         if let Some(l) = c.hold(&spec.0, &[(spec.1.clone(), key_of(&spec.1))]) {
-                            start(0, &spec.0, vec![spec.1.clone()], l, &mut running, &mut out)?;
+                            start(
+                                0,
+                                &spec.0,
+                                vec![spec.1.clone()],
+                                l,
+                                steps[spec.0.as_str()].threads,
+                                &mut running,
+                                &mut out,
+                            )?;
                         }
                     }
                 }
@@ -445,6 +477,8 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                     cores: m.cores,
                     cores_free: m.cores - threads,
                     disk_mb,
+                    in_use: cfg.in_use.is_some(),
+                    kept_cores: cfg.in_use.unwrap_or(0),
                     ac: true,
                     nas: true,
                     home: true,
@@ -488,8 +522,11 @@ pub fn run(cfg: &Cfg) -> Result<Run, String> {
                     let Granted::Job { step, targets, .. } = g.work else {
                         return Err("a task granted".into());
                     };
-                    all &=
-                        start(k, &step, targets.into_iter().map(|t| t.0).collect(), g.lease, &mut running, &mut out)?;
+                    // (Run with the threads granted it, as the agent runs it.)
+                    let e = out.granted.entry(step.clone()).or_insert((g.threads, g.threads));
+                    *e = (e.0.min(g.threads), e.1.max(g.threads));
+                    let ts = targets.into_iter().map(|t| t.0).collect();
+                    all &= start(k, &step, ts, g.lease, g.threads, &mut running, &mut out)?;
                 }
                 if !all {
                     break;
@@ -582,7 +619,8 @@ mod tests {
     /// cores or disk; cold starts alone; the lead's steps on the lead; the plan done.
     #[test]
     fn the_m4_and_the_m1_finish_two_slots_and_one() {
-        let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None, nas: None }).unwrap();
+        let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None })
+            .unwrap();
         assert_eq!(r.most, [2, 1], "{r:?}");
         assert!(r.ran.iter().all(|&n| n > 0), "{r:?}");
     }
@@ -590,11 +628,12 @@ mod tests {
     /// Four Macs (one with little disk) finish the same plan, sooner than two.
     #[test]
     fn four_macs_finish() {
-        let two = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None, nas: None }).unwrap();
+        let two = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None })
+            .unwrap();
         let mut macs = m4_m1();
         macs.push(Mac { name: "mini", total_mb: 16_384, cores: 8, disk_mb: 40_000 });
         macs.push(Mac { name: "air", total_mb: 8_192, cores: 8, disk_mb: 35_000 });
-        let r = run(&Cfg { macs, steps: plan(), member_slots: 1, packing: None, nas: None }).unwrap();
+        let r = run(&Cfg { macs, steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None }).unwrap();
         assert!(r.ran.iter().skip(1).filter(|&&n| n > 0).count() >= 2, "{r:?}");
         assert!(r.secs < two.secs, "{} s with four, {} s with two", r.secs, two.secs);
     }
@@ -603,9 +642,15 @@ mod tests {
     /// (`most_room`), so the M1 reaches two measured jobs at once and every invariant holds.
     #[test]
     fn members_with_two_slots_pack_two_jobs_and_no_cold_start_beside_one() {
-        let r =
-            run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 2, packing: Some(Default::default()), nas: None })
-                .unwrap();
+        let r = run(&Cfg {
+            macs: m4_m1(),
+            steps: plan(),
+            member_slots: 2,
+            packing: Some(Default::default()),
+            nas: None,
+            in_use: None,
+        })
+        .unwrap();
         assert_eq!(r.most, [2, 2], "{r:?}");
     }
 
@@ -615,9 +660,18 @@ mod tests {
     fn a_48_gb_member_holds_several_small_jobs_at_once() {
         let mut macs = m4_m1();
         macs[1] = Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 };
-        let one = run(&Cfg { macs: macs.clone(), steps: plan(), member_slots: 1, packing: None, nas: None }).unwrap();
-        let r =
-            run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(Default::default()), nas: None }).unwrap();
+        let one =
+            run(&Cfg { macs: macs.clone(), steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None })
+                .unwrap();
+        let r = run(&Cfg {
+            macs,
+            steps: plan(),
+            member_slots: 8,
+            packing: Some(Default::default()),
+            nas: None,
+            in_use: None,
+        })
+        .unwrap();
         assert!(r.most[1] >= 3, "{r:?}");
         assert!(r.most[1] <= 4, "past its cores: {r:?}");
         assert!(r.secs < one.secs, "{} s packed, {} s one a time", r.secs, one.secs);
@@ -630,9 +684,18 @@ mod tests {
     fn members_with_the_agents_slots_pack_by_their_room() {
         let mut macs = m4_m1();
         macs.push(Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 });
-        let one = run(&Cfg { macs: macs.clone(), steps: plan(), member_slots: 1, packing: None, nas: None }).unwrap();
-        let r =
-            run(&Cfg { macs, steps: plan(), member_slots: 0, packing: Some(Default::default()), nas: None }).unwrap();
+        let one =
+            run(&Cfg { macs: macs.clone(), steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None })
+                .unwrap();
+        let r = run(&Cfg {
+            macs,
+            steps: plan(),
+            member_slots: 0,
+            packing: Some(Default::default()),
+            nas: None,
+            in_use: None,
+        })
+        .unwrap();
         assert!(r.most[1] >= 2 && r.most[2] >= 3, "{r:?}");
         assert!(r.most[2] <= 4, "past its cores: {r:?}");
         assert!(r.secs < one.secs, "{} s packed, {} s one a time", r.secs, one.secs);
@@ -644,7 +707,8 @@ mod tests {
         let mut macs = m4_m1();
         macs[1] = Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 };
         let packing = coord::Packing { caps: [("studio".to_string(), 2)].into(), ..Default::default() };
-        let r = run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(packing), nas: None }).unwrap();
+        let r = run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(packing), nas: None, in_use: None })
+            .unwrap();
         assert_eq!(r.most[1], 2, "{r:?}");
     }
 
@@ -663,13 +727,72 @@ mod tests {
             member_slots: 8,
             packing: Some(Default::default()),
             nas: None,
+            in_use: None,
         })
         .unwrap();
-        let on =
-            run(&Cfg { macs, steps: plan(), member_slots: 8, packing: Some(Default::default()), nas: Some(limits) })
-                .unwrap();
+        let on = run(&Cfg {
+            macs,
+            steps: plan(),
+            member_slots: 8,
+            packing: Some(Default::default()),
+            nas: Some(limits),
+            in_use: None,
+        })
+        .unwrap();
         assert!(off.most_nas > crate::budget::nas::WHOLE, "off: past the NAS: {off:?}");
         assert!(on.most_nas < off.most_nas, "on: less of the NAS at once: {on:?} against {off:?}");
         assert!(on.turned_away > off.turned_away, "on: asks queued: {on:?} against {off:?}");
+    }
+
+    /// Threads granted (task #241): a serial step (one thread busy) is measured to take 1–2 cores and
+    /// granted those, its later jobs packing more beside each other; a parallel one at most the
+    /// packed share (the M1's 8: 2), whatever its first, cold run was given; the members' threads
+    /// never past their cores, checked at every start.
+    #[test]
+    fn jobs_are_granted_their_measured_threads_within_the_cores() {
+        let mut steps = plan();
+        steps.push(Step {
+            name: "pois",
+            targets: 20,
+            mem_mb: 500,
+            disk_mb: 50,
+            secs: 100,
+            threads: 1,
+            nas_mb: 100,
+            creates: 5,
+        });
+        let r = run(&Cfg {
+            macs: m4_m1(),
+            steps,
+            member_slots: 0,
+            packing: Some(Default::default()),
+            nas: None,
+            in_use: None,
+        })
+        .unwrap();
+        let (lo, hi) = r.granted["pois"];
+        assert!(lo >= 1 && hi <= 2, "{r:?}");
+        assert!(r.granted.values().all(|&(lo, hi)| lo >= 1 && hi <= 2), "the M1's packed share: 2: {r:?}");
+        assert!(r.most[1] >= 3, "serial jobs pack beside each other: {r:?}");
+        // One job an ask (packing off): a cold start given every core, then its measured ones.
+        let r = run(&Cfg { macs: m4_m1(), steps: plan(), member_slots: 1, packing: None, nas: None, in_use: None })
+            .unwrap();
+        assert!(r.granted.values().all(|&(lo, hi)| lo >= 1 && hi <= 8), "{r:?}");
+    }
+
+    /// The members' owners at them (task #241): each one's in-use share keeps its cores (here 4 of
+    /// the M1's 8) free of its jobs, checked at every start, and the plan still finishes.
+    #[test]
+    fn the_in_use_share_keeps_its_cores_free() {
+        let r = run(&Cfg {
+            macs: m4_m1(),
+            steps: plan(),
+            member_slots: 0,
+            packing: Some(Default::default()),
+            nas: None,
+            in_use: Some(4),
+        })
+        .unwrap();
+        assert!(r.ran[1] > 0 && r.most[1] <= 2, "{r:?}");
     }
 }

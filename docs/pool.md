@@ -262,15 +262,41 @@ memory guard's limit and what the running jobs hold, the memory free under the l
 running job's predicted need (the larger of what it holds and its predicted peak: its targets' measured peak on the
 lead, the step's first guess on a member), its
 cores and those the last minute's load leaves free, the disk free less the reserve and the owner's
-room target (`reserved_mb`, for reservations, is 0: none are made yet), in use, mains or battery,
+room target (`reserved_mb`, for reservations, is 0: none are made yet), in use and the cores its
+in-use share keeps (`kept_cores`, below), mains or battery,
 the NAS's reach, the guard's switch and its running leases. The lead sets its own each loop
 (its jobs ask nothing). The coordinator keeps the last per member (`Coordinator::capacities`, leaving out one older than
 two minutes, `CAP_FRESH_S`: a busy member asks nothing, so its figures go stale):
 `scenic status` prints a line per member, and the worker page's details a table. Placement reads
-only its `cores` (packing, §7.2). It rides the ask, not the heartbeat: the coordinator places at ask time, and the
+only its `cores`, and `kept_cores` while `in_use` (the threads granted, below). It rides the ask, not the heartbeat: the coordinator places at ask time, and the
 ask's measures are taken then, where a heartbeat on the NAS is up to two minutes old and the
 coordinator doesn't read heartbeats. Every field has a serde default: an older coordinator ignores
 `cap`, and a newer one takes an ask without it (an older agent's) as before.
+
+**Threads granted** (task #241). Each job granted carries the worker threads it runs with
+(`Grant::threads`), which the member's agent sets as `RAYON_NUM_THREADS` (the programs taking
+workers read it: `scenic-build`'s); costs record them (`threads`), with the CPU time the target
+took (`cpu_ms`). A job's measured cores (`needs::Book::cores`) are the threads its runs were given,
+or fewer where their CPU time over their wall time says fewer were busy, plus one (a serial step:
+1–2). The cores a member's jobs may use together (`coord::ask_cores`) are its Mac's less, while its
+owner uses it, its in-use share's. One job an ask (packing off), a job is granted its measured
+cores within those, else all of them. Packing on, each is granted its measured cores within the
+packed share (`coord::packed_share`: a quarter of those cores, at least two where they allow: the
+M1's 8, 2) and the cores its other jobs leave, else the share: a first job alone gets no more than
+the share, so its run is never measured to take every core and leave no room beside it. The agent
+starts a granted job with those threads, within its Mac's cores less those the in-use share keeps
+while the owner uses it and those its other running jobs were given (one at least), and logs a
+line per job: `agent: starting <job> (<n> threads: granted <g> of <c> cores, <k> kept for the
+owner, <b> given to jobs beside it)`. The lead's own jobs, granted nothing, keep the agent's own
+rule (all the cores; the second job half, or all beside a job waiting on a worker), less the in-use
+share's cores while the owner uses the Mac. The coordinator logs the threads with each grant.
+
+**The in-use share** (`crate::agent::share`): what a Mac's agent keeps free of its jobs while its
+owner uses it: cores (by default 2) and memory (by default five eighths of the Mac's: a member
+spares three eighths, `helper_memory`; while its owner is away, five eighths or what the share
+leaves, the more). `scenic in-use [--cores <n>] [--memory <GB>] | off` sets either part (the
+other keeps its default) in the agent's folder (`in-use-share.json`); `off` clears it, the defaults
+again; with nothing, it says how it stands. The agent reads it each loop, as the disk room target.
 
 ### 7.2 Placement: the steps table
 
@@ -300,9 +326,9 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
   member): a member may hold several leases. An ask says how many jobs it would start (`want`);
   the lead grants up to that many in one answer (`Grant::more`, each its own lease), packed in
   plan order into the ask's room: each after the first the member holds must be measured
-  (memory, disk, and cores, the threads its runs were given: `needs::Book::cores`) and fit what's
+  (memory, disk, and cores: `needs::Book::cores`, within the packed share, §7.1) and fit what's
   left: the ask's memory and disk (a job's whole share of its Mac, `helper_memory`, and its free
-  disk) and its Mac's cores, less the measured needs of every job it holds and of those granted
+  disk) and its Mac's cores (less the in-use share's while its owner uses it), less the measured needs of every job it holds and of those granted
   with it. A lease counts until it ends or lapses: a restarted member's old leases hold its room
   until their TTL runs out. A cold start goes only to a member holding no lease, alone, and nothing goes beside
   one. Each job is still a quarter hour (`JOB_S`). The switch's file may cap the jobs a member
@@ -316,10 +342,8 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
   are made as jobs are granted and dropped once empty. Each slot has its own files in the agent's
   folder (`job-<k>.json`, `control-<k>`, `costs-<k>.jsonl`, `done-<k>.txt`, …, the first slot's
   without a number) and scratch folder (`scratch-<k>/`), and its own name as a worker
-  (`<host> #<k>`; an earlier agent's `<host> (second job)` is still read as `#2`). Each job is
-  given a quarter of the member's cores less two, at least two where those cores allow (one on a Mac of three or fewer: `packed_threads`), alone or not: a
-  run's threads are what packing counts, so a job given every core while alone would be measured
-  to leave no room beside it. Off, it asks with no `want` for one job at a time, as before; the jobs it holds as packing goes off run to their end.
+  (`<host> #<k>`; an earlier agent's `<host> (second job)` is still read as `#2`). Each job runs
+  with the threads granted it (§7.1, Threads granted). Off, it asks with no `want` for one job at a time, as before; the jobs it holds as packing goes off run to their end.
 - **Order and locality:** a member gets a contiguous run of plan targets, from the front or just
   after its last target, as many as fit `coord::JOB_S` (a quarter hour) of measured time.
 - **A map update shared** (`crate::agent::publish`, behind `state/pool/update-share`): the lead's own
@@ -582,10 +606,12 @@ tiles (`pack_raw_with`) stays inside the piece's job.
   the NAS budget on (§7.7; each step's NAS bytes and creates a setting, measured into the
   coordinator with its costs), that member's NAS-heavy jobs past the NAS are queued: every
   member's start is checked within the budget, the pool's most at once stays under it where it
-  passed twice the NAS off, and the plan finishes. Not
-  modelled: the lead's batching of its own jobs, step dependencies, owner use, failures. With
-  packing off nothing on the coordinator checks a job's cores against a Mac's: the simulator's
-  check holds by the steps' threads chosen.
+  passed twice the NAS off, and the plan finishes. A member's job runs with the threads granted
+  it (its costs recording them, and the CPU time its step's threads keep busy): every start checks
+  them, with those of the jobs beside it, within its Mac's cores (less its in-use share's, with the
+  owners at their Macs), a serial step granted 1–2 and packed beside its kind, and the plan finishes.
+  The lead's own run with their step's threads. Not modelled: the lead's batching of its own jobs,
+  step dependencies, failures; a job's time doesn't depend on its threads.
 - **The agent's tests** (`crate::agent::pool`, `crate::agent::lead`, the agent's `pool_tests`): two
   agents in one process, a lead and a member, through handover, takeover, controls, hand-offs and
   every switch on and off.

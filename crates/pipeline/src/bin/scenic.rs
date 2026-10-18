@@ -26,6 +26,12 @@
 //!                                       running or not (what they use stays), and starting no job
 //!                                       that would cross it, until it's lowered or off; with none,
 //!                                       how it stands
+//!   scenic in-use [--cores <n>] [--memory <GB>] | off
+//!                                       the in-use share: the cores and memory this Mac's agent
+//!                                       keeps free of its jobs while its owner uses it (by default
+//!                                       2 cores and five eighths of its memory); either part set,
+//!                                       the other its default; off: the defaults; with none, how
+//!                                       it stands
 //!   scenic gc [--dry-run] [--days 14]   remove replaced files from the NAS (the agent runs it daily)
 //!   scenic backup [--local <dir>]       back up the user's folders (the agent runs it daily)
 //!   scenic inputs                       every gate unit (docs/inputs.md §4): its accepted version, its
@@ -788,6 +794,62 @@ fn caches_line(c: &agent::room::Caches) -> String {
     s
 }
 
+/// `scenic in-use [--cores <n>] [--memory <GB>] | off`: this Mac's in-use share (agent::share), set
+/// in its agent's folder, which the agent reads each loop; with neither, how it stands.
+fn in_use(args: &[String]) -> Result<()> {
+    use agent::share;
+    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get() as u32);
+    let total_mb = pipeline::sys::memsize().map_or(0, |b| b >> 20);
+    let say = |s: Option<&share::Share>| {
+        println!(
+            "In-use share: {} of {cores} cores and {:.1} of {:.1} GB kept free of this Mac's jobs while its owner uses it ({})",
+            share::cores(s, cores),
+            share::mem_mb(s, total_mb) as f64 / 1024.0,
+            total_mb as f64 / 1024.0,
+            match s {
+                Some(s) => format!("set {} by {}", ago(s.at), s.by),
+                None => "the defaults".into(),
+            }
+        )
+    };
+    if args.iter().skip(2).any(|a| a == "off") {
+        share::set(&home, None, None, "")?;
+        say(None);
+        return Ok(());
+    }
+    let n: Option<u32> = opt(args, "--cores")
+        .map(|c| {
+            c.parse().ok().filter(|&c: &u32| c < cores).with_context(|| format!("--cores: 0 to {}, not {c}", cores - 1))
+        })
+        .transpose()?;
+    let gb: Option<f64> = opt(args, "--memory")
+        .map(|g| {
+            g.trim_end_matches("GB")
+                .trim_end_matches("gb")
+                .parse()
+                .ok()
+                .filter(|g: &f64| g.is_finite() && *g >= 0.0 && (total_mb == 0 || *g * 1024.0 <= total_mb as f64))
+                .with_context(|| format!("--memory: GB, at most this Mac's, not {g}"))
+        })
+        .transpose()?;
+    if n.is_none() && gb.is_none() {
+        say(share::read(&home).as_ref());
+        return Ok(());
+    }
+    anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
+    let old = share::read(&home);
+    let by = format!("scenic in-use on {}", agent::cond::host_name());
+    let s = share::set(
+        &home,
+        n.or(old.as_ref().and_then(|s| s.cores)),
+        gb.map(|g| (g * 1024.0) as u64).or(old.as_ref().and_then(|s| s.mem_mb)),
+        &by,
+    )?;
+    say(s.as_ref());
+    Ok(())
+}
+
 /// `scenic room [<GB> | off]`: this Mac's disk room target (agent::room::Target), set in its agent's
 /// folder, which the agent reads each loop; and how it stands, as the agent's status says.
 fn room(args: &[String]) -> Result<()> {
@@ -1134,6 +1196,7 @@ fn main() -> Result<()> {
         }
         "clean" => clean(&args),
         "room" => room(&args),
+        "in-use" => in_use(&args),
         "gc" => {
             let days: u64 = opt(&args, "--days").map(|d| d.parse()).transpose()?.unwrap_or(14);
             let r = pipeline::timings::job("gc", || gc::run(&root(&args, true)?, days, flag(&args, "--dry-run")))?;

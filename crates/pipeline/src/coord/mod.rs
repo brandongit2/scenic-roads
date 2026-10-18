@@ -633,6 +633,15 @@ impl Shared {
         g.entry((step.to_string(), target.to_string())).and_modify(|e| e.1 = now).or_insert((now, now));
     }
 
+    /// The threads a job of `step` over `pick` is granted, one job an ask (packing off): its
+    /// measured cores (crate::needs::Book::cores, the most of its targets'), else all the cores
+    /// `a`'s Mac has for its jobs (`ask_cores`), within those.
+    fn job_threads(&self, a: &Ask, step: &str, pick: &[(String, String)]) -> u32 {
+        let total = ask_cores(a);
+        let b = self.book();
+        pick.iter().filter_map(|t| b.cores(step, &t.0)).max().unwrap_or(total).clamp(1, total)
+    }
+
     /// What a job of `step` over `targets` is measured to take (as `Coordinator::measured_batch`:
     /// the most of their memory, their disks summed or the most a job of the step took), and its
     /// cores (crate::needs::Book::cores: the most of its targets'; None when one's aren't said);
@@ -658,7 +667,15 @@ impl Shared {
 
     /// A job of offer `o`'s step over `pick` granted to `a`'s worker: its lease, the worker's last
     /// target of the step, the history's event.
-    fn grant_job(&mut self, a: &Ask, o: &Offer, pick: Vec<(String, String)>, every: bool, now: Instant) -> Grant {
+    fn grant_job(
+        &mut self,
+        a: &Ask,
+        o: &Offer,
+        pick: Vec<(String, String)>,
+        every: bool,
+        threads: u32,
+        now: Instant,
+    ) -> Grant {
         if let Some(l) = pick.last() {
             self.last.insert((a.worker.clone(), o.step.clone()), l.0.clone());
         }
@@ -671,7 +688,7 @@ impl Shared {
         }
         self.save_leases();
         eprintln!(
-            "coordinator: {} took {} {}",
+            "coordinator: {} took {} {} ({threads} threads)",
             a.worker,
             o.step,
             pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" ")
@@ -695,6 +712,7 @@ impl Shared {
             work: Granted::Job { step: o.step.clone(), targets: pick, pass: self.pass.clone() },
             as_of,
             more: Vec::new(),
+            threads,
         }
     }
 
@@ -717,10 +735,14 @@ impl Shared {
         if needs.iter().any(Option::is_none) {
             return None;
         }
-        let total = a.cap.as_ref().map(|c| c.cores).filter(|&c| c > 0).unwrap_or(a.cores);
-        // (Cores left: none when a job held doesn't say its own.)
-        let mut cores =
-            needs.iter().try_fold(total, |left, n| n.and_then(|(_, c)| c).map(|c| left.saturating_sub(c))).unwrap_or(0);
+        let total = ask_cores(a);
+        let share = packed_share(total);
+        // (Cores left: none when a job held doesn't say its own. A job's cores packed: its measured
+        // ones within the packed share, the threads it was granted.)
+        let mut cores = needs
+            .iter()
+            .try_fold(total, |left, n| n.and_then(|(_, c)| c).map(|c| left.saturating_sub(c.min(share))))
+            .unwrap_or(0);
         // (The ask's memory and disk are a job's whole share of its Mac, whatever it runs (the
         // agent's `helper_memory`, its free disk): every job it holds is taken off them here.)
         let mut room = a.clone();
@@ -740,20 +762,23 @@ impl Shared {
                 }
                 let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
                 let n = self.job_need(&o.step, &ts);
-                if beside && !matches!(n, Some((_, Some(c))) if c <= cores) {
+                if beside && !matches!(n, Some((_, Some(c))) if c.min(share) <= cores) {
                     continue;
                 }
                 got = Some((o, pick, n));
                 break;
             }
             let Some((o, pick, n)) = got else { break };
-            grants.push(self.grant_job(a, o, pick, true, now));
+            // (Its threads: its measured cores within the packed share, else the share; within the
+            // cores left, one at least.)
+            let threads = n.and_then(|(_, c)| c).unwrap_or(share).min(share).min(cores).max(1);
+            grants.push(self.grant_job(a, o, pick, true, threads, now));
             held += 1;
             // (A cold start alone.)
             let Some((m, c)) = n else { break };
             room.mem_mb = room.mem_mb.saturating_sub(m.mem_mb);
             room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb));
-            cores = c.map_or(0, |c| cores.saturating_sub(c));
+            cores = c.map_or(0, |_| cores.saturating_sub(threads));
         }
         let mut it = grants.into_iter();
         let mut first = it.next()?;
@@ -1194,6 +1219,22 @@ impl Packing {
     }
 }
 
+/// The cores `a`'s Mac has for its jobs together: its capacity's (else the ask's), less the in-use
+/// share's (`Capacity::kept_cores`) while its owner uses it; one at least.
+pub fn ask_cores(a: &Ask) -> u32 {
+    let cap = a.cap.as_ref();
+    let total = cap.map(|c| c.cores).filter(|&c| c > 0).unwrap_or(a.cores).max(1);
+    total.saturating_sub(cap.filter(|c| c.in_use).map_or(0, |c| c.kept_cores)).max(1)
+}
+
+/// The most threads a packed job is granted (packing on), of the `cores` its Mac has for its jobs:
+/// a quarter of them, at least two where they allow (the M1's 8: 2; the M4's 14: 3). The same alone or
+/// beside others: a run's threads bound what it's measured to use (crate::needs::Book::cores), so a
+/// job given them all while alone could be measured to leave no room beside it.
+pub fn packed_share(cores: u32) -> u32 {
+    (cores / 4).max(2).min(cores.max(1))
+}
+
 /// How long a capacity stands (s): older, `Coordinator::capacities` leaves it out.
 pub const CAP_FRESH_S: u64 = 120;
 
@@ -1224,6 +1265,9 @@ pub struct Capacity {
     pub reserved_mb: u64,
     /// Its owner used it within the last five minutes (cond::AWAY_S).
     pub in_use: bool,
+    /// The cores its in-use share keeps free of its jobs while its owner uses it
+    /// (crate::agent::share::cores): left out of its grants' threads while `in_use`.
+    pub kept_cores: u32,
     /// On mains power, and the battery's charge when it has one.
     pub ac: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1271,6 +1315,10 @@ pub struct Grant {
     /// each its own lease, packed into the ask's room beside the others.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub more: Vec<Grant>,
+    /// The worker threads its job runs with (RAYON_NUM_THREADS): its measured cores within those
+    /// its Mac has left (`job_threads`). 0: not said (an older lead's), the agent's own rule.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub threads: u32,
 }
 
 /// A map update's units as they were when it began (crate::agent::build::MapUpdate's `began` and `units`).
@@ -2752,6 +2800,7 @@ fn route(
                         lease,
                         term: s.leases.term,
                         ttl_s: TTL.as_secs(),
+                        threads: s.job_threads(&a, &o.step, &pick),
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
                         as_of: None,
                         more: Vec::new(),
@@ -2804,7 +2853,8 @@ fn route(
                             if pick.is_empty() {
                                 continue;
                             }
-                            let g = s.grant_job(&a, o, pick, every, now);
+                            let threads = s.job_threads(&a, &o.step, &pick);
+                            let g = s.grant_job(&a, o, pick, every, threads, now);
                             return Ok((200, serde_json::to_value(g)?));
                         }
                     }
@@ -2828,6 +2878,7 @@ fn route(
                     work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb },
                     as_of: None,
                     more: Vec::new(),
+                    threads: 0,
                 };
                 eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
                 return Ok((200, serde_json::to_value(g)?));

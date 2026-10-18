@@ -4,7 +4,7 @@
 //!
 //! Keys (docs/formats.md, costs.jsonl): `bytes` (always: what the store's readers read for the
 //! target, store::range::read_bytes, plus the inputs a step opens itself and notes with `add`),
-//! `threads` (always), and the step's own: `ways`/`vertices` (unit, pack, lo), `units` (pack, lo:
+//! `threads` (always), `cpu_ms` (the CPU time its process took over it, where it can be read), and the step's own: `ways`/`vertices` (unit, pack, lo), `units` (pack, lo:
 //! the base packs met), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
 //! (the target's area: terrain, slope, trees and their assemblies, the units' elevations), and,
 //! where the job wrote to the NAS through its `Out` (crate::out), `wrote` (the bytes of the files
@@ -20,10 +20,12 @@ struct State {
     /// The store's read count and the GeoTIFFs opened as the target began.
     read_at: u64,
     tiffs_at: u64,
+    /// The process's CPU time as the target began (µs: crate::timings::cpu_us).
+    cpu_at: Option<u64>,
     m: BTreeMap<String, u64>,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { read_at: 0, tiffs_at: 0, m: BTreeMap::new() });
+static STATE: Mutex<State> = Mutex::new(State { read_at: 0, tiffs_at: 0, cpu_at: None, m: BTreeMap::new() });
 
 /// The GeoTIFFs this process has opened (crate::geotiff::Tiff::open).
 static TIFFS: AtomicU64 = AtomicU64::new(0);
@@ -43,6 +45,7 @@ pub fn begin() {
     let mut s = state();
     s.read_at = store::range::read_bytes();
     s.tiffs_at = TIFFS.load(Ordering::Relaxed);
+    s.cpu_at = crate::timings::cpu_us();
     s.m.clear();
 }
 
@@ -76,6 +79,9 @@ pub fn take() -> BTreeMap<String, u64> {
         m.insert("tiffs".into(), tiffs);
     }
     m.insert("threads".into(), threads() as u64);
+    if let (Some(a), Some(b)) = (s.cpu_at, crate::timings::cpu_us()) {
+        m.insert("cpu_ms".into(), b.saturating_sub(a) / 1000);
+    }
     m
 }
 

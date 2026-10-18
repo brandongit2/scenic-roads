@@ -38,6 +38,7 @@ pub mod recipes;
 pub mod rekey;
 pub mod resume;
 pub mod room;
+pub mod share;
 pub mod steps;
 pub mod tiles;
 
@@ -128,15 +129,6 @@ pub(crate) const MAX_SLOTS: usize = 64;
 /// lead grants fewer when its room (memory, disk, the cores its jobs measured) holds fewer.
 pub(crate) fn member_slots(cores: usize) -> usize {
     cores.saturating_sub(2).clamp(1, MAX_SLOTS)
-}
-
-/// The threads each of a member's jobs is given with packing on: a quarter of its cores less the
-/// two kept for its owner, at least two where those cores allow (one on a Mac of three or fewer). The same alone or beside others: a
-/// run's threads are what its lead's packing counts against the Mac's cores (crate::needs::Book::
-/// cores), so a job given them all while alone would be measured to leave no room beside it.
-pub(crate) fn packed_threads(cores: usize) -> usize {
-    let own = cores.saturating_sub(2).max(1);
-    (own / 4).max(2).min(own)
 }
 
 /// What a member asks for (crate::coord::Ask::want): with packing on, its slots free (`slots` its
@@ -357,6 +349,8 @@ struct Slot {
     /// The memory guard froze its job, the Mac short of memory with the jobs together past the
     /// limit (`Agent::pressure`): when, that job's id, and the largest job's it made room for.
     pressure_frozen: Option<(Instant, String, String)>,
+    /// The threads its lead granted the job given it (crate::coord::Grant::threads), for its start.
+    granted: Option<u32>,
 }
 
 /// How long the memory guard keeps a job frozen for the Mac's pressure before it stops it, the Mac
@@ -561,14 +555,27 @@ fn terrain_peak(z6: usize) -> u64 {
 /// The memory a helper spares its jobs (MB): three eighths of its Mac's (6 GB of the M1's 16, the
 /// owner's choice, 2026-10-05: a terrain area's 5–6 GB fits; its units took 3.7 GB at most over
 /// its first 205).
-/// The memory a helper spares (MB): three eighths of its Mac's; while its owner is away (`away`),
-/// five eighths. `total_mb`: its Mac's memory (`Agent::mac_total_mb`: a test's Mac as it sets it,
-/// never the machine running the test); 0, unknown: 6 GB.
-fn helper_memory(total_mb: u64, away: bool) -> u64 {
+/// The memory a helper spares (MB): its Mac's less the in-use share's (`kept`: share::mem_mb, by
+/// default five eighths, leaving three); while its owner is away (`away`), five eighths, or more
+/// where the share leaves more. `total_mb`: its Mac's memory (`Agent::mac_total_mb`: a test's Mac
+/// as it sets it, never the machine running the test); 0, unknown: 6 GB.
+fn helper_memory(total_mb: u64, away: bool, kept: Option<&share::Share>) -> u64 {
     match total_mb {
         0 => 6144,
-        t => t * if away { 5 } else { 3 } / 8,
+        t => {
+            let own = t.saturating_sub(share::mem_mb(kept, t));
+            if away {
+                own.max(t * 5 / 8)
+            } else {
+                own
+            }
+        }
     }
+}
+
+/// This Mac's cores.
+fn mac_cores() -> u32 {
+    std::thread::available_parallelism().map_or(4, |n| n.get() as u32)
 }
 
 /// Whether a helper's owner is away (on mains power, not used for a quarter of an hour): it then
@@ -1030,6 +1037,9 @@ pub struct Agent {
     /// jobs after it wait without making room again, until a job ends, the target changes or ten
     /// minutes pass.
     room_target: Option<room::Target>,
+    /// The owner's in-use share (share::Share: the cores and memory kept free of its jobs while
+    /// they use the Mac), read each loop from the agent's folder.
+    in_use_share: Option<share::Share>,
     toward_tried: Option<(u64, u64)>,
     floor_short: Option<(u64, u64, Instant)>,
     /// The room (its need and the target) of the last job tried that waited for the target:
@@ -1394,6 +1404,7 @@ impl Agent {
             free_set: None,
             grace: DRAIN_GRACE,
             room_target: None,
+            in_use_share: None,
             toward_tried: None,
             floor_short: None,
             floor_held: None,
@@ -1784,11 +1795,11 @@ impl Agent {
             kind: "native".into(),
             label: Some(format!("{} (helper)", self.host)),
             can,
-            mem_mb: helper_memory(self.mac_total_mb(), false),
+            mem_mb: helper_memory(self.mac_total_mb(), false, self.in_use_share.as_ref()),
             cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32),
             max: batch_size("unit"),
             app: Some(self.app.clone()),
-            more_mb: away.then(|| helper_memory(self.mac_total_mb(), true)),
+            more_mb: away.then(|| helper_memory(self.mac_total_mb(), true, self.in_use_share.as_ref())),
             max_secs: away.then_some(AWAY_JOB),
             limit_mb: Some(memguard::limit_mb(self.total_mb())).filter(|&l| l > 0),
             // (Its free space now, less the reserve and the owner's target, as the lead reckons its
@@ -1869,6 +1880,7 @@ impl Agent {
             }
             return None;
         };
+        self.slots[k].granted = Some(grant.threads).filter(|&t| t > 0);
         match grant {
             crate::coord::Grant {
                 lease,
@@ -2803,6 +2815,17 @@ impl Agent {
             (self.toward_tried, self.floor_short) = (None, None);
         }
         self.room_target = target;
+        // The owner's in-use share, as set now (`scenic in-use`).
+        let shared = share::read(&self.o.home);
+        if shared != self.in_use_share {
+            eprintln!(
+                "agent: the in-use share is {} cores and {} MB kept while the owner uses this Mac ({})",
+                share::cores(shared.as_ref(), mac_cores()),
+                share::mem_mb(shared.as_ref(), self.mac_total_mb()),
+                shared.as_ref().map_or("the defaults", |s| s.by.as_str())
+            );
+        }
+        self.in_use_share = shared;
         // (A freeing under way frees toward the goal as it is now: lowered or off, it stops.)
         if self.caches_task.as_ref().is_some_and(|t| t.toward.is_some()) {
             self.toward_goal.store(self.goal(), std::sync::atomic::Ordering::Relaxed);
@@ -4047,6 +4070,7 @@ impl Agent {
             disk_mb: (self.disk_free().saturating_sub(room::RESERVE + self.floor()) >> 20).saturating_sub(reserved_mb),
             reserved_mb,
             in_use: c.user_active(),
+            kept_cores: share::cores(self.in_use_share.as_ref(), cores),
             ac: c.ac,
             battery: c.battery,
             nas: c.nas,
@@ -5089,20 +5113,36 @@ impl Agent {
         }
     }
 
-    fn start(&mut self, k: usize, mut spec: JobSpec, _c: &Conditions) -> Result<()> {
-        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-        // All the cores, whoever is at the Mac (the owner's choice; a helper, two fewer: its Mac has
-        // less memory). The second job: half (the two jobs' threads share the cores).
-        // (Beside a job that waits on a worker, its cores idle: all of them.)
-        // (A member's jobs, packing on: `packed_threads`, whatever runs beside them.)
-        let packed = self.o.helper && self.packing.is_some();
-        let threads = match (k, self.o.helper) {
-            _ if packed => packed_threads(cores),
-            (1.., _) if self.waiting_on(0).is_some() => cores,
-            (1.., _) => (cores / 2).max(1),
-            (_, true) => cores.saturating_sub(2).max(1),
-            (_, false) => cores,
+    fn start(&mut self, k: usize, mut spec: JobSpec, c: &Conditions) -> Result<()> {
+        let cores = mac_cores() as usize;
+        // A job granted by the lead (a member's): the threads granted it (crate::coord's `pack`:
+        // its measured cores within those its Mac has left). Else, the lead's own: all the cores
+        // (the owner's choice; a helper, two fewer: its Mac has less memory); the second job, half
+        // (the two jobs' threads share the cores); beside a job that waits on a worker (its cores
+        // idle), all of them.
+        let granted = self.slots[k].granted.take();
+        let wanted = match (granted, k, self.o.helper) {
+            (Some(g), ..) => g as usize,
+            (None, 1.., _) if self.waiting_on(0).is_some() => cores,
+            (None, 1.., _) => (cores / 2).max(1),
+            (None, _, true) => cores.saturating_sub(2).max(1),
+            (None, _, false) => cores,
         };
+        // Within the cores its Mac has: those the in-use share keeps while the owner uses it, and,
+        // for a granted job, those its other jobs were given, left out (one at least).
+        let kept = if c.user_active() { share::cores(self.in_use_share.as_ref(), cores as u32) as usize } else { 0 };
+        let beside: usize = if granted.is_some() {
+            self.slots
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != k)
+                .filter_map(|(_, s)| s.running.as_ref())
+                .map(|r| r.threads)
+                .sum()
+        } else {
+            0
+        };
+        let threads = wanted.min(cores.saturating_sub(kept + beside)).max(1);
         // The second job's scratch folder its own (a step's work in it, wiped by its next run).
         if k > 0 {
             let first = self.o.home.join("scratch");
@@ -5123,9 +5163,13 @@ impl Agent {
         self.slots[k].timings_out = None;
         let log = self.o.home.join("logs").join(format!("{}.log", spec.id.replace([' ', '/'], "-")));
         eprintln!(
-            "agent: starting {}{} ({threads} threads)",
+            "agent: starting {}{} ({threads} threads: {} of {cores} cores, {kept} kept for the owner, {beside} given to jobs beside it)",
             spec.id,
-            if k > 0 { " beside the first job" } else { "" }
+            if k > 0 { " beside the first job" } else { "" },
+            match granted {
+                Some(g) => format!("granted {g}"),
+                None => format!("{wanted} wanted"),
+            },
         );
         // The lead's jobs hand their saves off as every job does (no job writes the records,
         // docs/pool.md §7.3), note what their units cost, and may offer tasks to other workers
@@ -9965,8 +10009,6 @@ mod tests {
         assert!(slot_workers("m4").contains(&"m4 (second job)".to_string()));
         assert_eq!((member_slots(8), member_slots(2), member_slots(1000)), (6, 1, MAX_SLOTS));
         assert_eq!((member_want(true, 6, 2), member_want(true, 6, 7), member_want(false, 6, 0)), (4, 0, 0));
-        // (The M1's 8 cores: 2 threads a job; the M4's 14: 3; a Mac of 2: its 1.)
-        assert_eq!((packed_threads(8), packed_threads(14), packed_threads(2), packed_threads(66)), (2, 3, 1, 16));
     }
 
     /// Packing on (task #240): a member asks for its slots free and runs every job granted, each in
@@ -10466,10 +10508,10 @@ mod tests {
             a.beside_why
         );
         assert_eq!(a.slots[1].yields.as_deref(), Some("unit 6/3/3"));
-        assert_eq!(
-            a.slots[1].running.as_ref().map(|r| r.threads),
-            Some(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
-        );
+        // (Every core, less the in-use share's while the owner uses the Mac.)
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        let kept = if cond.user_active() { share::cores(None, cores as u32) as usize } else { 0 };
+        assert_eq!(a.slots[1].running.as_ref().map(|r| r.threads), Some(cores - kept));
         // The tail back, the unit going on (its file gone): within the limit, the Mac not short of
         // memory, nothing.
         std::fs::remove_file(a.waiting_path(0)).unwrap();
