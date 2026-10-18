@@ -53,64 +53,146 @@ class FetchRetry(unittest.TestCase):
         self.assertEqual(produced, [])
 
 
+def tile(path, col0, row0, cols, rows, res=None, nodata=None, shift=(0.0, 0.0), value=None):
+    """A float32 tif of `cols` × `rows` pixels of the service's grid starting at column `col0`, row `row0`
+    (each cell holding its global column index, or `value`); `res`, `nodata`, `shift` (pixels) spoil it."""
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    rx, ry = res or (chunked.GRID_RX, chunked.GRID_RY)
+    x0 = chunked.GRID_X0 + (col0 + shift[0]) * chunked.GRID_RX
+    y1 = chunked.GRID_Y1 - (row0 + shift[1]) * chunked.GRID_RY
+    data = np.tile(np.arange(col0, col0 + cols, dtype="float32"), (1, rows, 1)) if value is None else np.full((1, rows, cols), value, "float32")
+    with rasterio.open(path, "w", driver="GTiff", height=rows, width=cols, count=1, dtype="float32",
+                       nodata=chunked.NODATA if nodata is None else nodata, transform=from_origin(x0, y1, rx, ry), crs="EPSG:3857") as o:
+        o.write(data)
+    return Path(path)
+
+
 class SplitOn504(unittest.TestCase):
     """fetch_split: a block the server can't render splits in 4 and the quarters merge."""
-    BOX = (0.0, 0.0, 8000.0, 4000.0)
+    COLS, ROWS = 200, 100
+    BOX = (chunked.GRID_X0, chunked.GRID_Y1 - 100 * chunked.GRID_RY, chunked.GRID_X0 + 200 * chunked.GRID_RX, chunked.GRID_Y1)
 
     def setUp(self):
         mock.patch.object(chunked.time, "sleep").start()
+        mock.patch.object(chunked, "MIN_SPLIT_M", 100.0).start()
         self.addCleanup(mock.patch.stopall)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.dest = Path(self.tmp.name) / "b.tif"
+        self.dir = Path(self.tmp.name)
+        self.dest = self.dir / "b.tif"
         self.urls = []
 
     def stub(self, fails, code=504):
-        """fetch for fetch_retry: writes a 2x2-pixel tif of the subset in the URL (value = its x0 / 1000),
-        unless `fails(x0, y0, x1, y1)` says it fails with HTTP `code`."""
+        """fetch for fetch_retry: like grid.fetch keeps a file that is there, else writes the subset in the
+        URL (on the service's grid), unless `fails(x0, y0, x1, y1)` says it fails with HTTP `code`."""
         import re
 
-        import numpy as np
-        import rasterio
-        from rasterio.transform import from_bounds
-
         def fetch(url, dest, pause):
+            if dest.exists():
+                return dest
             x0, x1 = (float(v) for v in re.search(r"subset=X\(([-\d.]+),([-\d.]+)\)", url).groups())
             y0, y1 = (float(v) for v in re.search(r"subset=Y\(([-\d.]+),([-\d.]+)\)", url).groups())
             self.urls.append((x0, y0, x1, y1))
             if fails(x0, y0, x1, y1):
                 raise http(code)
-            with rasterio.open(dest, "w", driver="GTiff", height=2, width=2, count=1, dtype="float32", nodata=chunked.NODATA,
-                               transform=from_bounds(x0, y0, x1, y1, 2, 2), crs="EPSG:3857") as o:
-                o.write(np.full((1, 2, 2), x0 / 1000, "float32"))
-            return dest
+            c0, r0 = round((x0 - chunked.GRID_X0) / chunked.GRID_RX), round((chunked.GRID_Y1 - y1) / chunked.GRID_RY)
+            return tile(dest, c0, r0, round((x1 - x0) / chunked.GRID_RX), round((y1 - y0) / chunked.GRID_RY))
 
         return mock.patch.object(chunked, "fetch", fetch)
 
     def test_a_504_block_splits_and_merges(self):
         import rasterio
 
-        with self.stub(lambda x0, y0, x1, y1: x1 - x0 > 5000):
-            chunked.fetch_split("cov", self.BOX, self.dest, 0, tries=2)
-        self.assertEqual(len(self.urls), 2 + 4)  # the whole block twice, then 4 quarters
+        with self.stub(lambda x0, y0, x1, y1: x1 - x0 > 2500):
+            chunked.fetch_split("cov", self.BOX, self.dest, 0)
         with rasterio.open(self.dest) as d:
-            self.assertEqual((d.width, d.height), (4, 4))
-            self.assertEqual(tuple(d.bounds), self.BOX)
-            self.assertEqual(d.read(1)[0].tolist(), [0.0, 0.0, 4.0, 4.0])
-        self.assertEqual(sorted(p.name for p in self.dest.parent.iterdir()), ["b.tif"])
+            self.assertEqual((d.width, d.height), (self.COLS, self.ROWS))
+            self.assertLess(max(abs(a - b) for a, b in zip(d.bounds, self.BOX)), 1e-3)
+            self.assertEqual(d.read(1)[0].tolist(), list(map(float, range(self.COLS))))
+            self.assertEqual(d.nodata, chunked.NODATA)
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["b.tif"])
+
+    def test_two_504s_in_a_row_are_the_trigger(self):
+        with self.stub(lambda x0, y0, x1, y1: x1 - x0 > 2500):
+            chunked.fetch_split("cov", self.BOX, self.dest, 0)
+        self.assertEqual(len(self.urls), 2 + 4)  # the block twice (not five times), then the 4 quarters
+
+    def test_504s_split_by_other_failures_are_not(self):
+        answers = [http(504), http(502), http(504), http(504)]
+        with mock.patch.object(chunked, "fetch", side_effect=answers) as f, self.assertRaises(chunked.Unrenderable):
+            chunked.fetch_retry("u", Path("d"), 0)
+        self.assertEqual(f.call_count, 4)
 
     def test_a_quarter_failing_at_the_minimum_size_stops_the_run(self):
-        with self.stub(lambda *b: True), mock.patch.object(chunked, "MIN_SPLIT_M", 500.0), \
+        with self.stub(lambda *b: True), mock.patch.object(chunked, "MIN_SPLIT_M", 600.0), \
                 self.assertRaises(chunked.Unrenderable):
-            chunked.fetch_split("cov", (0.0, 0.0, 2000.0, 2000.0), self.dest, 0, tries=1)
-        self.assertEqual(len(self.urls), 3)  # the block, its first quarter, that one's first: 250 m is under the minimum
+            chunked.fetch_split("cov", self.BOX, self.dest, 0)
+        # (3.8 km × 1.9 km: the block 2 tries, its first quarter 2; that one's half, 478 m, is under 600.)
+        self.assertEqual(len(self.urls), 4)
         self.assertFalse(self.dest.exists())
 
     def test_another_http_error_does_not_split(self):
         with self.stub(lambda *b: True, code=404), self.assertRaises(SystemExit) as r:
-            chunked.fetch_split("cov", self.BOX, self.dest, 0, tries=2)
+            chunked.fetch_split("cov", self.BOX, self.dest, 0)
         self.assertNotIsInstance(r.exception, chunked.Unrenderable)
         self.assertEqual(len(self.urls), 1)
+
+    def test_a_resumed_run_does_not_retry_the_block(self):
+        import rasterio
+
+        q0 = self.dir / "b_q0.tif"
+        tile(q0, 0, 50, 100, 50, value=7.0)  # (a leftover; kept, not fetched again)
+        with self.stub(lambda *b: False):
+            chunked.fetch_split("cov", self.BOX, self.dest, 0)
+        self.assertEqual(len(self.urls), 3)  # the other quarters only
+        self.assertNotIn(self.BOX, self.urls)
+        with rasterio.open(self.dest) as d:
+            self.assertEqual(d.read(1)[-1, 0], 7.0)
+            self.assertEqual(d.read(1)[0, 0], 0.0)
+
+    def mosaic_of(self, *tiles):
+        subs = []
+        for i, t in enumerate(tiles):
+            subs.append(tile(self.dir / f"q{i}.tif", *t[:4], **t[4]))
+        return chunked.mosaic(subs, self.dest)
+
+    def test_aligned_quarters_merge(self):
+        self.mosaic_of((0, 0, 10, 5, {}), (10, 0, 10, 5, {}), (0, 5, 10, 5, {}), (10, 5, 10, 5, {}))
+        self.assertTrue(self.dest.exists())
+
+    def test_quarters_off_the_grid_fail_loudly(self):
+        with self.assertRaises(SystemExit) as r:
+            self.mosaic_of((0, 0, 10, 5, {}), (10, 0, 10, 5, {"shift": (0.5, 0)}))
+        self.assertIn("pixel", str(r.exception))
+
+    def test_overlapping_quarters_fail_loudly(self):
+        with self.assertRaises(SystemExit) as r:
+            self.mosaic_of((0, 0, 10, 5, {}), (9, 0, 10, 5, {}))
+        self.assertIn("overlaps", str(r.exception))
+
+    def test_a_gap_fails_loudly(self):
+        with self.assertRaises(SystemExit) as r:
+            self.mosaic_of((0, 0, 10, 5, {}), (11, 0, 10, 5, {}))
+        self.assertIn("gap", str(r.exception))
+
+    def test_a_different_resolution_fails_loudly(self):
+        with self.assertRaises(SystemExit) as r:
+            self.mosaic_of((0, 0, 10, 5, {}), (10, 0, 10, 5, {"res": (chunked.GRID_RX * 1.01, chunked.GRID_RY)}))
+        self.assertIn("resolution", str(r.exception))
+
+    def test_another_nodata_fails_loudly(self):
+        with self.assertRaises(SystemExit) as r:
+            self.mosaic_of((0, 0, 10, 5, {"nodata": -9999.0}), (10, 0, 10, 5, {}))
+        self.assertIn("nodata", str(r.exception))
+
+    def test_the_estimate_leaves_quarters_out(self):
+        cache = self.dir
+        (cache / "nonna10_a.tif").write_bytes(b"x" * 1000)
+        (cache / "nonna10_a_q0.tif").write_bytes(b"x" * 9000)
+        self.assertIn("(0.0 MB an item, from 1 in the cache)", chunked.estimate(cache, "nonna10", 1))
 
 
 class NasCheck(unittest.TestCase):

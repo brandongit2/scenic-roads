@@ -25,6 +25,7 @@ usage: chunked.py bluetopo <gpkg> <vdatum.csv> <work dir> --nas <host>:<dir> [--
 from __future__ import annotations
 
 import argparse
+import glob
 import http.client
 import json
 import shlex
@@ -45,8 +46,9 @@ N10_ORIGIN, N10_BLOCK = (-142.0, 41.0), (0.5, 0.3)
 
 
 class Unrenderable(SystemExit):
-    """fetch_retry's stop when the last try was a 504 or a timeout: the server couldn't render the
-    subset in time, so a smaller subset may work. (A SystemExit, so uncaught it stops the run.)"""
+    """fetch_retry's stop when its last two tries were both a 504 or a timeout: the server couldn't
+    render the subset in time, and that repeats, so a smaller subset may work. (A SystemExit, so
+    uncaught it stops the run.)"""
 
 
 def _timed_out(e: BaseException) -> bool:
@@ -55,10 +57,12 @@ def _timed_out(e: BaseException) -> bool:
 
 
 def fetch_retry(url: str, dest: Path, pause: float, tries: int = 5) -> Path:
-    """grid.fetch, again (30 s, 60 s, …) after a dropped or refused connection, a timeout, a body cut
-    short (http.client's IncompleteRead), 429 or a 5xx; any other HTTP answer, or the last try's failure, stops the run (SystemExit), so no chunk's
-    part is written with a file missing."""
-    slow = False
+    """grid.fetch, again (30 s, 60 s, …, none after the last try) after a dropped or refused
+    connection, a timeout, a body cut short (http.client's IncompleteRead), 429 or a 5xx; any other HTTP
+    answer, or the last try's failure, stops the run (SystemExit), so no chunk's part is written with a
+    file missing. Two 504s or timeouts in a row (a render timeout repeats) raise Unrenderable at once,
+    without the remaining tries."""
+    slow = 0
     for k in range(tries):
         try:
             return fetch(url, dest, pause=pause)
@@ -66,13 +70,14 @@ def fetch_retry(url: str, dest: Path, pause: float, tries: int = 5) -> Path:
             if e.code != 429 and e.code < 500:
                 raise SystemExit(f"{url}: HTTP {e.code}")
             log(f"{url}: HTTP {e.code} (try {k + 1})")
-            slow = e.code == 504
+            slow = slow + 1 if e.code == 504 else 0
         except (OSError, http.client.HTTPException) as e:
             log(f"{url}: {e!r} (try {k + 1})")
-            slow = _timed_out(e)
-        time.sleep(30 * (k + 1))
-    if slow:
-        raise Unrenderable(f"{url}: 504 or timeout {tries} times")
+            slow = slow + 1 if _timed_out(e) else 0
+        if slow >= 2:
+            raise Unrenderable(f"{url}: 504 or timeout twice in a row")
+        if k + 1 < tries:
+            time.sleep(30 * (k + 1))
     raise SystemExit(f"{url}: failed {tries} times")
 
 
@@ -122,47 +127,70 @@ def bluetopo_chunk(chunk, table: str, cache: Path, w: Writer) -> list[Path]:
     return [p for h in have for p in (h[1], h[2])]
 
 
+
 # A NONNA-10 block is split no further when its quarters would be under this many metres a side.
 MIN_SPLIT_M = 1000.0
 NODATA = float(np.finfo("float32").max)
+# NONNA-10's pixel grid in EPSG:3857, as the service answers a subset: one grid for the whole coverage,
+# its pixels 19.0986 m × 19.1202 m (not square), a subset's edges snapped to its lines. Read on 17 Oct
+# from 1 km subsets near Halifax, Vancouver and the NS-coast block that 504s: subsets requested on these
+# lines came back with exactly those edges (so quarters abut with no gap or overlap), while subsets
+# requested off them came back snapped by the service to a line, with a different row count for the
+# same Y range at times (so their quarters could leave a nodata row).
+GRID_X0, GRID_Y1, GRID_RX, GRID_RY = -7081005.895301013, 5499015.35251896, 19.098649920770324, 19.120193157291325
 
 
-def fetch_split(cov: str, box: tuple[float, float, float, float], dest: Path, pause: float, tries: int = 5) -> Path:
-    """The coverage's subset `box` (EPSG:3857 x0, y0, x1, y1) into `dest`. A 504 or timeout on the last
-    try splits it into 4 quarters, each fetched the same way (recursively, down to MIN_SPLIT_M), and
-    mosaicked into `dest` (nodata where a quarter has none), so the file is as one fetch would make it.
-    A quarter failing at the minimum size, or any other failure, stops the run (nothing is dropped)."""
-    from nonna import merc_url
-
+def on_grid(box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """`box` (x0, y0, x1, y1) with each edge moved to the nearest pixel line of the service's grid."""
     x0, y0, x1, y1 = box
-    try:
-        return fetch_retry(merc_url(cov, *box), dest, pause, tries)
-    except Unrenderable:
-        if min(x1 - x0, y1 - y0) / 2 < MIN_SPLIT_M:
-            raise
-    log(f"{dest.name}: 504 or timeout on every try; splitting into 4 quarters")
-    xm, ym = (x0 + x1) / 2, (y0 + y1) / 2
-    quarters = [(x0, y0, xm, ym), (xm, y0, x1, ym), (x0, ym, xm, y1), (xm, ym, x1, y1)]
-    subs = [fetch_split(cov, q, dest.with_name(f"{dest.stem}_q{i}{dest.suffix}"), pause, tries) for i, q in enumerate(quarters)]
+    sx = lambda x: GRID_X0 + round((x - GRID_X0) / GRID_RX) * GRID_RX
+    sy = lambda y: GRID_Y1 - round((GRID_Y1 - y) / GRID_RY) * GRID_RY
+    return sx(x0), sy(y0), sx(x1), sy(y1)
+
+
+def mosaic(subs: list[Path], dest: Path) -> None:
+    """The quarter files in `subs` into `dest`, a float32 TIFF of their union. Anything but quarters of
+    one grid that tile their union exactly (one CRS and resolution, each offset a whole number of
+    pixels within 1e-6, none overlapping or leaving a gap, nodata float32's max) stops the run
+    (SystemExit): a mismatch would shift or lose rows silently. (By hand: rasterio.merge drops values
+    when the nodata is float32's max.)"""
     import rasterio
     from rasterio.transform import from_origin
 
-    # (Mosaicked by hand: rasterio.merge drops values when the nodata is float32's max.)
     srcs = [rasterio.open(p) for p in subs]
     try:
-        rx, ry = srcs[0].res
-        xmin, ymin = min(d.bounds.left for d in srcs), min(d.bounds.bottom for d in srcs)
-        xmax, ymax = max(d.bounds.right for d in srcs), max(d.bounds.top for d in srcs)
-        wd, ht = round((xmax - xmin) / rx), round((ymax - ymin) / ry)
-        data = np.full((srcs[0].count, ht, wd), NODATA, "float32")
-        for d in srcs:
-            c0, r0 = round((d.bounds.left - xmin) / rx), round((ymax - d.bounds.top) / ry)
-            got = d.read()[:, : ht - r0, : wd - c0]
-            view = data[:, r0 : r0 + got.shape[1], c0 : c0 + got.shape[2]]
-            keep = got != NODATA
-            view[keep] = got[keep]
-        prof = {**srcs[0].profile, "height": ht, "width": wd, "transform": from_origin(xmin, ymax, rx, ry),
-                "nodata": NODATA, "dtype": "float32"}
+        d0 = srcs[0]
+        rx, ry = d0.res
+        for p, d in zip(subs, srcs):
+            if d.crs != d0.crs or d.count != d0.count or d.dtypes != d0.dtypes:
+                raise SystemExit(f"{p}: not the CRS, bands or type of the other quarters")
+            if abs(d.res[0] - rx) > rx * 1e-9 or abs(d.res[1] - ry) > ry * 1e-9:
+                raise SystemExit(f"{p}: resolution {d.res} isn't {d0.res}")
+            if d.nodata != NODATA:
+                raise SystemExit(f"{p}: nodata {d.nodata} isn't float32's max")
+        xmin, ymax = min(d.bounds.left for d in srcs), max(d.bounds.top for d in srcs)
+        xmax, ymin = max(d.bounds.right for d in srcs), min(d.bounds.bottom for d in srcs)
+        wd, ht = (xmax - xmin) / rx, (ymax - ymin) / ry
+        if abs(wd - round(wd)) > 1e-6 or abs(ht - round(ht)) > 1e-6:
+            raise SystemExit(f"{dest}: the quarters' union isn't a whole number of pixels")
+        wd, ht = round(wd), round(ht)
+        data = np.full((d0.count, ht, wd), NODATA, "float32")
+        covered = np.zeros((ht, wd), bool)
+        for p, d in zip(subs, srcs):
+            c0, r0 = (d.bounds.left - xmin) / rx, (ymax - d.bounds.top) / ry
+            if abs(c0 - round(c0)) > 1e-6 or abs(r0 - round(r0)) > 1e-6:
+                raise SystemExit(f"{p}: not on the pixel grid of the others (offset {c0:.4f}, {r0:.4f} pixels)")
+            c0, r0 = round(c0), round(r0)
+            if r0 + d.height > ht or c0 + d.width > wd:
+                raise SystemExit(f"{p}: reaches past the union")
+            if covered[r0:r0 + d.height, c0:c0 + d.width].any():
+                raise SystemExit(f"{p}: overlaps another quarter")
+            covered[r0:r0 + d.height, c0:c0 + d.width] = True
+            data[:, r0:r0 + d.height, c0:c0 + d.width] = d.read()
+        if not covered.all():
+            raise SystemExit(f"{dest}: the quarters leave a gap")
+        prof = {**d0.profile, "height": ht, "width": wd, "transform": from_origin(xmin, ymax, rx, ry), "nodata": NODATA,
+                "dtype": "float32"}
     finally:
         for d in srcs:
             d.close()
@@ -170,6 +198,31 @@ def fetch_split(cov: str, box: tuple[float, float, float, float], dest: Path, pa
     with rasterio.open(tmp, "w", **prof) as o:
         o.write(data)
     tmp.replace(dest)
+
+
+def fetch_split(cov: str, box: tuple[float, float, float, float], dest: Path, pause: float, tries: int = 5) -> Path:
+    """The coverage's subset `box` (EPSG:3857 x0, y0, x1, y1) into `dest`. When the last two tries were
+    a 504 or timeout the box is split into 4 quarters on the service's pixel grid (on_grid), each
+    fetched the same way (recursively, down to MIN_SPLIT_M) and mosaicked into `dest`, so the file
+    holds the same cells as one fetch (its edges at most half a pixel from the service's own snapping).
+    A quarter failing at the minimum size, or any other failure, stops the run (nothing is dropped).
+    Quarter files already in the folder (a resumed run) skip the whole block's tries."""
+    from nonna import merc_url
+
+    x0, y0, x1, y1 = box
+    resumed = dest.parent.is_dir() and any(dest.parent.glob(f"{glob.escape(dest.stem)}_q*{dest.suffix}")) and not dest.exists()
+    if not resumed:
+        try:
+            return fetch_retry(merc_url(cov, *box), dest, pause, tries)
+        except Unrenderable:
+            if min(x1 - x0, y1 - y0) / 2 < MIN_SPLIT_M:
+                raise
+    log(f"{dest.name}: {'quarters already fetched' if resumed else '504 or timeout twice'}; splitting into 4 quarters")
+    x0, y0, x1, y1 = on_grid(box)
+    xm, ym = on_grid(((x0 + x1) / 2, (y0 + y1) / 2, 0, 0))[:2]
+    quarters = [(x0, y0, xm, ym), (xm, y0, x1, ym), (x0, ym, xm, y1), (xm, ym, x1, y1)]
+    subs = [fetch_split(cov, q, dest.with_name(f"{dest.stem}_q{i}{dest.suffix}"), pause, tries) for i, q in enumerate(quarters)]
+    mosaic(subs, dest)
     for p in subs:
         p.unlink(missing_ok=True)
     return dest
@@ -192,7 +245,8 @@ def nonna10_chunk(chunk, table: str, cache: Path, w: Writer) -> list[Path]:
         s = spec("10", from_table((table, "mwl_above_cd_m", frozenset(), "id"), [p for p, _ in files]))
         for p, u in files:
             produce(p, s, w, u, f"nonna10-{p.stem}")
-    return [p for p, _ in files]
+    # (The files to delete: the blocks, and any quarters or .part files a split left.)
+    return [p for p, _ in files] + sorted(cache.glob("nonna10_*_q*"))
 
 
 def to_nas(out: Path, nas: str) -> tuple[int, int]:
@@ -227,7 +281,7 @@ def size_mismatches(local: dict[str, int], listing: str) -> list[str]:
 def estimate(cache: Path, which: str, size: int) -> str:
     """A chunk's fetched bytes, from the files already in `cache` (none there: unknown)."""
     pats = ("*.tiff", "*.tiff.aux.xml") if which == "bluetopo" else ("nonna10_*.tif",)
-    sizes = [[p.stat().st_size for p in cache.glob(g) if p.is_file()] for g in pats] if cache.is_dir() else []
+    sizes = [[p.stat().st_size for p in cache.glob(g) if p.is_file() and "_q" not in p.name] for g in pats] if cache.is_dir() else []
     if not sizes or not sizes[0]:
         return "a chunk's bytes unknown (nothing fetched yet to measure)"
     per = sum(sum(x) / len(x) for x in sizes if x)
