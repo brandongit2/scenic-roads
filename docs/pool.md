@@ -544,7 +544,8 @@ Any worker that can run its programs takes it: a page or a member's idle slot.
 Members' messages go by mailbox on the NAS (`state/pool/mail/<to>/<from>.json`, one writer each,
 read by member id). Jobs go through the lead's coordinator (`/work/*`), tasks through each member's
 broker (§8), and the worker page's lead asks through `/work/lead`. Every member answers on port
-8090. A member that can't reach the lead keeps its jobs running and starts nothing new.
+8090. A member that can't reach the lead keeps its jobs running and starts nothing new. A member's
+agent passes its owner's job cancels to the lead through `/work/cancel` (§11).
 
 Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the mailbox.
 
@@ -579,6 +580,21 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
 - **`scenic lead`**: shows the pool; `scenic lead give <member>`, `scenic lead take [--force]
   [--downgrade]`, `scenic lead auto on|off`. `scenic status` shows the pool too.
 - **Forcing stays on the Mac:** `/work/lead` refuses forced takeovers.
+- **Cancelling a job** (`crate::control::Cancel`): `scenic job cancel <target> [--step <step>]
+  [--rerun-after-update]`, or the menu bar's "Cancel <job>" on the Mac running it (Option: "…,
+  Rerun on a Newer App"), writes an ask to that Mac's agent (`cancel-request.json`). The agent
+  stops a slot of its own running the target, and tells the lead's coordinator (in process, or
+  `/work/cancel` from a member), which marks every live lease of the target; a member's job hears
+  it in its beat's answer (within a minute) and stops. A cancelled job ends as given back, not
+  failed: no retry delay, no backoff or guard hold against its Mac, its finished targets handed
+  off, and its scratch entries named for the target removed, so it starts again from the start.
+  With `--rerun-after-update` the coordinator holds the target (`coord::lease::Hold`, saved with
+  the leases and carried in the term's state) from every offer and the lead's own starts until it
+  runs an app other than, and not older than, the one it was cancelled on; members get work only
+  on the lead's app, so the Mac that takes it runs the newer. A cancelled job's slot is free, so
+  an update waiting on it (plan.md §8) restarts at once. The cancel is a `cancel` event in the
+  history; `scenic status` shows it among the recent jobs ("Cancelled:") and each held target
+  under Waiting.
 - Every control asks the driver (`Driver::hand_to`, `Driver::takeover`) rather than re-checking.
 
 ## 12. Getting there from today

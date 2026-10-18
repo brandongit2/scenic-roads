@@ -17,6 +17,11 @@
 //!                                       battery five minutes, another Mac home on power)
 //!   scenic pause [--now] | resume       pause the whole build (every Mac's jobs stop at their next
 //!                                       safe point; --now: frozen at once), or let it go on
+//!   scenic job cancel <target> [--step <step>] [--rerun-after-update]
+//!                                       stop the running job building <target> (here, or through
+//!                                       the lead on another Mac) and give it back, not failed, its
+//!                                       scratch for the target cleared; --rerun-after-update: held
+//!                                       until the lead runs a newer app
 //!   scenic clean [--yes]                clear this Mac's build caches (what later jobs copy back
 //!                                       from the NAS or make again) once the build is done (jobs
 //!                                       running keep what they use), after a y/N (--yes: none): its
@@ -618,8 +623,15 @@ fn status(args: &[String]) -> Result<()> {
         }
     }
     for d in st.recent.iter().take(5) {
-        println!("{} {} ({}, {} s)", if d.ok { "Done:" } else { "Failed:" }, d.what, ago(d.ended), d.secs);
-        if !d.ok {
+        let how = match (d.ok, d.cancelled) {
+            (true, _) => "Done:",
+            (false, true) => "Cancelled:",
+            (false, false) => "Failed:",
+        };
+        println!("{how} {} ({}, {} s)", d.what, ago(d.ended), d.secs);
+        if d.cancelled {
+            println!("    {}", d.note);
+        } else if !d.ok {
             for l in d.note.lines().take(8) {
                 println!("    {l}");
             }
@@ -1011,6 +1023,46 @@ fn clean(args: &[String]) -> Result<()> {
     }
 }
 
+/// `scenic job cancel <target>`: an ask to this Mac's agent (pipeline::control::Cancel), followed
+/// until it says what it stopped.
+fn job_cancel(args: &[String]) -> Result<()> {
+    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    // (Its words, the options and their values aside: `job cancel <target>`.)
+    let mut pos: Vec<&str> = Vec::new();
+    let mut it = args.iter().skip(1);
+    while let Some(a) = it.next() {
+        if matches!(a.as_str(), "--home" | "--root" | "--step") {
+            it.next();
+        } else if !a.starts_with("--") {
+            pos.push(a);
+        }
+    }
+    let target = match pos.as_slice() {
+        ["job", "cancel", t] => *t,
+        _ => bail!("scenic job cancel <target> [--step <step>] [--rerun-after-update]"),
+    };
+    let host = agent::cond::host_name();
+    let c = pipeline::control::Cancel::new(
+        target,
+        opt(args, "--step").as_deref(),
+        flag(args, "--rerun-after-update"),
+        &format!("scenic job cancel on {host}"),
+    );
+    pipeline::control::request_cancel(&home, &c)?;
+    let t = std::time::Instant::now();
+    loop {
+        if let Some(a) = pipeline::control::cancel_answer(&home, &c) {
+            println!("{}", a.said);
+            anyhow::ensure!(a.hit, "nothing cancelled");
+            return Ok(());
+        }
+        if t.elapsed() > std::time::Duration::from_secs(90) {
+            bail!("no word from this Mac's agent in 90 s; it has the ask still (`scenic status` says what it did)");
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // (Its flags and arguments checked first: `--help` or a flag it doesn't know runs nothing.)
@@ -1201,6 +1253,7 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+        "job" => job_cancel(&args),
         "clean" => clean(&args),
         "room" => room(&args),
         "in-use" => in_use(&args),

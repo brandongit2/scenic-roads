@@ -74,6 +74,29 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
+/// A target held out of every offer and start until the lead runs a newer app than the one it was
+/// cancelled on (`scenic job cancel <target> --rerun-after-update`, crate::control::Cancel): its
+/// step, its target, the lead's app then, who asked and when (unix seconds). A worker gets work only
+/// on the lead's app (crate::coord's `app_ok`), so whichever Mac takes it then runs the newer one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hold {
+    pub step: String,
+    pub target: String,
+    pub newer_than: String,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub at: u64,
+}
+
+impl Hold {
+    /// Whether a lead on `app` runs the target again: an app other than the one it was held on and
+    /// not an older published one ("" in tests: any).
+    pub fn released(&self, app: &str) -> bool {
+        app.is_empty() || (app != self.newer_than && !super::app_newer(&self.newer_than, app))
+    }
+}
+
 #[derive(Debug)]
 pub struct Leases {
     next: u64,
@@ -82,18 +105,25 @@ pub struct Leases {
     pub ttl: Duration,
     /// The pool's term the leases granted now are in (0: the pool off).
     pub term: u64,
+    /// Targets held until the lead runs a newer app (`Hold`): saved, and carried across leads, with
+    /// the leases.
+    holds: Vec<Hold>,
+    /// The app this coordinator runs (crate::coord::Shared::app): what releases a hold.
+    pub app: String,
 }
 
-/// What's saved: the next id (ids never repeat across restarts) and the jobs' leases.
+/// What's saved: the next id (ids never repeat across restarts), the jobs' leases and the holds.
 #[derive(Serialize, Deserialize)]
 struct Saved {
     next: u64,
     leases: Vec<Lease>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    holds: Vec<Hold>,
 }
 
 impl Leases {
     pub fn new(ttl: Duration) -> Leases {
-        Leases { next: 1, by_id: BTreeMap::new(), ttl, term: 0 }
+        Leases { next: 1, by_id: BTreeMap::new(), ttl, term: 0, holds: Vec::new(), app: String::new() }
     }
 
     /// The leases saved at `path` (none when there's no file), each live for a whole `ttl` from
@@ -104,6 +134,7 @@ impl Leases {
         l.next = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64);
         if let Some(s) = std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<Saved>(&b).ok()) {
             l.next = l.next.max(s.next);
+            l.holds = s.holds;
             for mut x in s.leases {
                 (x.granted, x.deadline) = (now, now + ttl);
                 l.by_id.insert(x.id, x);
@@ -121,6 +152,7 @@ impl Leases {
         Saved {
             next: self.next,
             leases: self.by_id.values().filter(|l| matches!(l.work, Work::Job { .. })).cloned().collect(),
+            holds: self.holds(),
         }
     }
 
@@ -139,6 +171,7 @@ impl Leases {
         let s: Saved = serde_json::from_value(v.clone())?;
         self.by_id.clear();
         self.next = self.next.max(s.next);
+        self.holds = s.holds;
         let n = s.leases.len();
         for mut x in s.leases {
             (x.granted, x.deadline) = (now, now + self.ttl);
@@ -169,12 +202,33 @@ impl Leases {
         self.by_id.values().filter(move |l| l.deadline > now)
     }
 
-    /// Every target of `step` held now, by anyone.
+    /// Every target of `step` held now, by anyone, or until a newer app (`Hold`).
     pub fn held(&self, step: &str, now: Instant) -> BTreeSet<String> {
         self.live(now)
             .filter(|l| matches!(&l.work, Work::Job { step: s, .. } if s == step))
             .flat_map(|l| l.targets().iter().map(|t| t.0.clone()))
+            .chain(self.holds.iter().filter(|h| h.step == step && !h.released(&self.app)).map(|h| h.target.clone()))
             .collect()
+    }
+
+    /// `target` of `step` held until the lead runs a newer app than this one's (`Hold`), asked by
+    /// `by` at `at` (unix seconds); the hold.
+    pub fn hold_for_update(&mut self, step: &str, target: &str, by: &str, at: u64) -> Hold {
+        self.holds.retain(|h| !(h.step == step && h.target == target));
+        let h = Hold {
+            step: step.to_string(),
+            target: target.to_string(),
+            newer_than: self.app.clone(),
+            by: by.to_string(),
+            at,
+        };
+        self.holds.push(h.clone());
+        h
+    }
+
+    /// The holds standing now (those the app releases left out).
+    pub fn holds(&self) -> Vec<Hold> {
+        self.holds.iter().filter(|h| !h.released(&self.app)).cloned().collect()
     }
 
     /// Which leases workers other than `me` hold, as a number that changes whenever one is

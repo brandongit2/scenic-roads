@@ -386,6 +386,9 @@ struct Slot {
     /// The disk its lead measured the job given it to take (MB: crate::coord::Grant::disk_mb),
     /// reserved while it holds the lease (`Agent::reservation`).
     reserve_mb: Option<u64>,
+    /// The owner's cancel of its job (crate::control::Cancel), asked here or told by the lead:
+    /// stopped and given back at the loop's next turn (`Agent::cancel_slot`).
+    cancel: Option<crate::control::Cancel>,
 }
 
 /// How long the memory guard keeps a job frozen for the Mac's pressure before it stops it, the Mac
@@ -868,6 +871,9 @@ pub struct Done {
     pub secs: u64,
     /// The log's last lines when it failed.
     pub note: String,
+    /// Cancelled by the owner (crate::control::Cancel): not done, not failed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cancelled: bool,
 }
 
 /// What the agent remembers between runs (its local folder's `state.json`).
@@ -2409,12 +2415,16 @@ impl Agent {
                     Some(r) => self.client(r, &mut Vec::new()),
                     None => self.client.as_ref(),
                 };
-                match client.map(|c| c.beat_paused(lease, progress.as_deref())) {
+                match client.map(|c| c.beat_told(lease, progress.as_deref())) {
                     // (The build's pause as the lead says: this job stops with it, or goes on;
-                    // unless this Mac's own ask isn't with it yet.)
-                    Some(Ok((alive, pause))) => {
+                    // unless this Mac's own ask isn't with it yet. The owner's cancel: it stops at
+                    // the next loop, `tend_cancels`.)
+                    Some(Ok((alive, pause, cancel))) => {
                         if !self.pause_local {
                             self.know_pause(pause);
+                        }
+                        if cancel.is_some() && self.slots[k].cancel.is_none() {
+                            self.slots[k].cancel = cancel;
                         }
                         alive
                     }
@@ -2987,6 +2997,9 @@ impl Agent {
             self.guard_on = Some(on);
         }
         self.total = self.mac_total_mb();
+        // The owner's cancels (`scenic job cancel`, the menu bar, the lead's word): those jobs stopped
+        // and given back first.
+        ended |= self.tend_cancels(root.as_deref(), &mut waiting);
         for k in 0..self.slots.len() {
             ended |= self.tend(k, &c, root.as_deref(), slept)?;
         }
@@ -3808,8 +3821,9 @@ impl Agent {
         root: Option<&Path>,
         waiting: &mut Vec<Waiting>,
     ) -> bool {
-        // (Scenic quitting: no new work taken.)
-        if let Some(why) = self.quit_why().or_else(|| self.wait_reason(&spec, c)) {
+        // (Scenic quitting: no new work taken. A target the owner cancelled to rerun on a newer
+        // app: held until the lead runs one.)
+        if let Some(why) = self.quit_why().or_else(|| self.held_why(&spec)).or_else(|| self.wait_reason(&spec, c)) {
             waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
             return false;
         }
@@ -5558,7 +5572,9 @@ impl Agent {
             let delay = (600u64 << (n - 1).min(6)).min(6 * 3600);
             self.mem.retry.insert(id.to_string(), (n, now_s() + delay));
         }
-        self.mem.recent.insert(0, Done { id: id.into(), what: what.into(), ok, ended: now_s(), secs, note });
+        self.mem
+            .recent
+            .insert(0, Done { id: id.into(), what: what.into(), ok, ended: now_s(), secs, note, cancelled: false });
         self.mem.recent.truncate(20);
         self.save();
     }
@@ -7379,6 +7395,157 @@ impl Agent {
         self.end_lease(k, Outcome::Interrupted, &done, why);
     }
 
+    /// The owner's cancels (crate::control::Cancel), each loop: the asks in this agent's folder taken
+    /// up (`take_cancel`), the lead's word for this Mac's own leases (its coordinator's here, a
+    /// member's in its beat's answer, `beat`), and each slot so told stopped (`cancel_slot`); the
+    /// targets held for a newer app said in `waiting`. True when a job ended.
+    fn tend_cancels(&mut self, root: Option<&Path>, waiting: &mut Vec<Waiting>) -> bool {
+        if self._lock.is_some() && !self.o.dry_run {
+            for ask in crate::control::take_cancels(&self.o.home) {
+                self.take_cancel(ask, root);
+            }
+        }
+        if let Some(c) = &self.coord {
+            for s in self.slots.iter_mut().filter(|s| s.running.is_some() && s.cancel.is_none()) {
+                if let Some(Held::Own(id) | Held::Pooled { id, .. }) = &s.lease {
+                    s.cancel = c.cancel_of(*id);
+                }
+            }
+        }
+        let mut ended = false;
+        for k in 0..self.slots.len() {
+            if let Some(c) = self.slots[k].cancel.take() {
+                if self.slots[k].running.is_some() {
+                    self.cancel_slot(k, &c);
+                    ended = true;
+                }
+            }
+        }
+        if let Some(c) = &self.coord {
+            for h in c.holds() {
+                waiting.push(Waiting {
+                    step: Some(h.step.clone()),
+                    what: format!("{} {}", h.step, h.target),
+                    why: format!("cancelled by {}: held until the lead runs an app newer than {}", h.by, h.newer_than),
+                });
+            }
+        }
+        ended
+    }
+
+    /// Why `spec` doesn't start: one of its targets the owner cancelled to rerun on a newer app
+    /// (crate::coord::lease::Hold), while the lead runs the app it was cancelled on.
+    fn held_why(&self, spec: &JobSpec) -> Option<String> {
+        let w = spec.record.as_ref()?;
+        let holds = self.coord.as_ref()?.holds();
+        let h = holds.iter().find(|h| h.step == w.step && w.targets.iter().any(|t| t.0 == h.target))?;
+        Some(format!(
+            "{} was cancelled by {}: held until the lead runs an app newer than {}",
+            h.target, h.by, h.newer_than
+        ))
+    }
+
+    /// An owner's cancel taken up: the slots running its target marked (stopped by `tend_cancels`),
+    /// the lead told (this Mac's coordinator, or the lead's by HTTP: its leases elsewhere told, the
+    /// target held for a newer app when asked), and the answer written for `scenic job cancel`.
+    fn take_cancel(&mut self, ask: crate::control::Cancel, root: Option<&Path>) {
+        let mut said: Vec<String> = Vec::new();
+        let mut here: Vec<(String, u64)> = Vec::new();
+        for k in 0..self.slots.len() {
+            let Some(r) = self.slots[k].running.as_ref() else { continue };
+            let hit = r.spec.record.as_ref().is_some_and(|w| {
+                ask.step.as_ref().is_none_or(|s| *s == w.step) && w.targets.iter().any(|t| t.0 == ask.target)
+            });
+            if hit {
+                let step = r.spec.record.as_ref().map(|w| w.step.clone()).unwrap_or_default();
+                let lease = match &self.slots[k].lease {
+                    Some(Held::Own(id) | Held::Pooled { id, .. }) => *id,
+                    Some(Held::Leased { lease, .. }) => *lease,
+                    None => 0,
+                };
+                said.push(format!("{} on this Mac", r.spec.id));
+                here.push((step, lease));
+                self.slots[k].cancel = Some(ask.clone());
+            }
+        }
+        let elsewhere = |told: Vec<(u64, String, String)>, said: &mut Vec<String>| {
+            for (id, w, what) in told {
+                if !here.iter().any(|(_, l)| *l == id) {
+                    said.push(format!("{what} on {w} (told in its next beat, within a minute)"));
+                }
+            }
+        };
+        if let Some(c) = &self.coord {
+            elsewhere(c.cancel(&ask), &mut said);
+            // (A job of no lease here: its target held all the same.)
+            if ask.rerun_after_update {
+                for (step, _) in here.iter().filter(|(_, l)| *l == 0) {
+                    c.hold_for_update(step, &ask.target, &ask.by);
+                }
+            }
+        } else if let Some(r) = root {
+            match self.client(r, &mut Vec::new()).map(|c| c.cancel(&ask)) {
+                Some(Ok(told)) => elsewhere(told, &mut said),
+                Some(Err(e)) => said.push(format!("the lead couldn't be told ({e:#})")),
+                None => said.push("the lead couldn't be reached".into()),
+            }
+        } else if ask.rerun_after_update {
+            said.push("the lead couldn't be told without the NAS: it may rerun on this app".into());
+        }
+        let hit = !here.is_empty() || said.iter().any(|s| s.contains("told in its next beat"));
+        let said = if hit {
+            format!("cancelled {}: {}", said.join("; "), ask.said())
+        } else if said.is_empty() {
+            format!("nothing builds {} now", ask.target)
+        } else {
+            format!("nothing builds {} now ({})", ask.target, said.join("; "))
+        };
+        eprintln!("agent: {said}");
+        crate::control::answer_cancel(&self.o.home, &crate::control::CancelAnswer { ask, said, hit });
+    }
+
+    /// Slot `k`'s job cancelled by the owner (`c`): stopped now and given back, not failed (no retry
+    /// delay, nothing kept from this Mac), what it finished handed off, and its work under way
+    /// dropped (its scratch for the target cleared); noted in the history and the status.
+    fn cancel_slot(&mut self, k: usize, c: &crate::control::Cancel) {
+        let Some(r) = self.slots[k].running.as_mut() else { return };
+        eprintln!("agent: cancelling {} ({})", r.spec.id, c.said());
+        r.stop(Duration::from_secs(30));
+        let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
+        let scratch = r.spec.cmd.windows(2).find(|w| w[0] == "--scratch").map(|w| PathBuf::from(&w[1]));
+        let secs = r.elapsed().as_secs();
+        let step = r.spec.record.as_ref().map(|w| w.step.clone()).unwrap_or_default();
+        let done = self.finished_targets(k, false);
+        // (Not the guard's stop, nor a yield: a cancel keeps nothing from this Mac.)
+        (self.slots[k].guard_stopped, self.slots[k].yield_stopped) = (false, false);
+        self.worked(&id);
+        self.note(crate::coord::history::Event {
+            worker: Some(self.worker_of(k)),
+            step: (!step.is_empty()).then(|| step.clone()),
+            targets: vec![c.target.clone()],
+            secs: Some(secs as f64),
+            what: what.clone(),
+            note: c.said(),
+            ..crate::coord::history::Event::new("cancel")
+        });
+        let note = c.said();
+        self.end_lease(k, Outcome::Interrupted, &done, &note);
+        if let Some(dir) = scratch {
+            for p in clear_target_scratch(&dir, &c.target) {
+                eprintln!("agent: {id}: its work under way dropped ({})", p.display());
+            }
+        }
+        self.mem.retry.remove(&id);
+        self.mem.recent.insert(0, Done { id, what, ok: false, ended: now_s(), secs, note, cancelled: true });
+        self.mem.recent.truncate(20);
+        self.save();
+        let s = &mut self.slots[k];
+        (s.drain_since, s.mem_drain, s.mem_drain_alone, s.update_wait) = (None, None, false, None);
+        s.running = None;
+        s.yields = None;
+        std::fs::remove_file(self.record_path(k)).ok();
+    }
+
     /// Why this process restarts once its first job's slot is free (the pool's switch changed, or
     /// its part in the pool); None: it goes on.
     fn pool_restart(&self) -> Option<String> {
@@ -8742,6 +8909,41 @@ impl Agent {
             .and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned()))
             .is_some_and(|cur| cur != self.app)
     }
+}
+
+/// A cancelled job's work under way on `target` dropped (crate::control::Cancel): the entries at
+/// the top of its scratch folder `dir` named for the target, as a job names them (`6/55/25` as
+/// itself, `6_55_25` or `6-55-25`, whole, not a part of a longer number); the paths removed.
+fn clear_target_scratch(dir: &Path, target: &str) -> Vec<PathBuf> {
+    if target.is_empty() {
+        return Vec::new();
+    }
+    let forms = [target.to_string(), target.replace('/', "_"), target.replace('/', "-")];
+    let names = |name: &str| {
+        forms.iter().any(|f| {
+            name.match_indices(f.as_str()).any(|(i, _)| {
+                let before = name[..i].chars().next_back();
+                let after = name[i + f.len()..].chars().next();
+                !before.is_some_and(|c| c.is_ascii_alphanumeric()) && !after.is_some_and(|c| c.is_ascii_alphanumeric())
+            })
+        })
+    };
+    let mut gone = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if !names(&e.file_name().to_string_lossy()) {
+            continue;
+        }
+        let p = e.path();
+        let r = if e.file_type().is_ok_and(|t| t.is_dir()) {
+            std::fs::remove_dir_all(&p)
+        } else {
+            std::fs::remove_file(&p)
+        };
+        if r.is_ok() {
+            gone.push(p);
+        }
+    }
+    gone
 }
 
 /// What jobs read from inputs/ beside the manifest, by digest: which keys inputs/keys.env holds
@@ -12408,6 +12610,108 @@ mod tests {
         a.slots[0].running = None;
         assert!(a.update_due());
         a.slots[1].running.as_mut().unwrap().stop(Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_cancelled_job_stops_cleanly_frees_the_update_and_reruns_on_the_newer_app() {
+        // (Task #373: a long job on old code dropped so it reruns on the new app, in one command:
+        // stopped and given back, not failed, its scratch for the target cleared, the target held
+        // until the lead runs a newer app, and the update waiting on it free to restart at once.)
+        let (old, new) = ("20261018-0100-aaaaaaa", "20261018-0300-bbbbbbb");
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let apps = d.path().join("app");
+        std::fs::create_dir_all(apps.join(old)).unwrap();
+        std::fs::create_dir_all(apps.join(new)).unwrap();
+        std::os::unix::fs::symlink(old, apps.join("current")).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(root.clone()),
+            home: home.clone(),
+            bin: apps.join(old),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        a.free_set = Some(40 << 30);
+        let coord = d.path().join("coord");
+        let co = std::sync::Arc::new(crate::coord::start_for_test(&coord, &a.me, old).0);
+        a.coord = Some(co.clone());
+        let scratch = d.path().join("scratch");
+        std::fs::create_dir_all(scratch.join("6_55_25")).unwrap();
+        std::fs::create_dir_all(scratch.join("6_55_250")).unwrap();
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let job = JobSpec {
+            id: "elev 6/55/25".into(),
+            what: "elev 6/55/25".into(),
+            cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 3600".into(), "sh".into(), "--scratch".into(), s(&scratch)],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: Some(build::Work { step: "elev".into(), targets: vec![("6/55/25".into(), "k".into())] }),
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
+        assert!(a.try_start(0, job.clone(), &cond, Some(&root), &mut Vec::new()));
+        struct Kill(i32);
+        impl Drop for Kill {
+            fn drop(&mut self) {
+                unsafe { libc::kill(-self.0, libc::SIGKILL) };
+            }
+        }
+        let pgid = a.slots[0].running.as_ref().unwrap().pgid;
+        let _kill = Kill(pgid);
+        // Its lease at the lead's coordinator (this Mac's own), as a shared step's.
+        let lease = co.hold("elev", &[("6/55/25".into(), "k".into())]).unwrap();
+        a.slots[0].lease = Some(Held::Own(lease));
+        // A newer app installed: the update waits on the long job (task #266).
+        std::fs::remove_file(apps.join("current")).unwrap();
+        std::os::unix::fs::symlink(new, apps.join("current")).unwrap();
+        a.tend(0, &cond, Some(&root), 0).unwrap();
+        assert!(!a.update_due(), "the update waits for the job");
+        // A cancel of something not running: said, nothing stopped.
+        let miss = crate::control::Cancel::new("6/1/1", None, true, "scenic job cancel on m4");
+        crate::control::request_cancel(&home, &miss).unwrap();
+        assert!(!a.tend_cancels(Some(&root), &mut Vec::new()));
+        let ans = crate::control::cancel_answer(&home, &miss).unwrap();
+        assert!(!ans.hit && ans.said.contains("nothing builds 6/1/1"), "{}", ans.said);
+        // The owner's cancel, to rerun after the update.
+        let ask = crate::control::Cancel::new("6/55/25", None, true, "scenic job cancel on m4");
+        crate::control::request_cancel(&home, &ask).unwrap();
+        let mut waiting = Vec::new();
+        assert!(a.tend_cancels(Some(&root), &mut waiting));
+        let ans = crate::control::cancel_answer(&home, &ask).unwrap();
+        assert!(ans.hit && ans.said.contains("elev 6/55/25 on this Mac"), "{}", ans.said);
+        assert!(crate::control::peek_cancels(&home).is_empty());
+        // Stopped, its process group gone; given back cleanly: no retry delay, recorded as cancelled,
+        // no failure in the history; its lease ended.
+        assert!(a.slots[0].running.is_none() && a.slots[0].lease.is_none());
+        assert_eq!(unsafe { libc::kill(-pgid, 0) }, -1, "its processes stopped");
+        assert!(a.mem.retry.is_empty());
+        let r = &a.mem.recent[0];
+        assert!(r.cancelled && !r.ok && r.note.contains("scenic job cancel on m4"), "{:?}", r.note);
+        let events = co.shared.lock().unwrap().history.since(0, 1000);
+        assert!(events.iter().any(|e| e.kind == "cancel" && e.targets == ["6/55/25"]));
+        assert!(!events.iter().any(|e| e.kind == "fail" || (e.kind == "end" && e.ok == Some(false))));
+        // Its work under way dropped: the target's scratch, not another's.
+        assert!(!scratch.join("6_55_25").exists() && scratch.join("6_55_250").exists());
+        // The update restarts at once.
+        assert!(a.update_due());
+        // Held on this app: it doesn't start here, said in the status.
+        assert!(waiting.iter().any(|w| w.what == "elev 6/55/25" && w.why.contains(old)), "{waiting:?}");
+        let mut w = Vec::new();
+        assert!(!a.try_start(0, job.clone(), &cond, Some(&root), &mut w));
+        assert!(w.iter().any(|w| w.why.contains("held until the lead runs an app newer")), "{w:?}");
+        // The agent on the new app: its coordinator's app releases the hold, and the job reruns.
+        co.stop();
+        a.coord = None;
+        drop(co);
+        a.coord = Some(std::sync::Arc::new(crate::coord::start_for_test(&coord, &a.me, new).0));
+        assert!(a.held_why(&job).is_none());
+        let job = JobSpec { cmd: vec!["/bin/sh".into(), "-c".into(), "exit 0".into()], ..job };
+        assert!(a.try_start(0, job, &cond, Some(&root), &mut Vec::new()));
+        if let Some(r) = a.slots[0].running.as_mut() {
+            r.stop(Duration::from_secs(1));
+        }
     }
 
     #[test]

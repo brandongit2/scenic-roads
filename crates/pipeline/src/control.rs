@@ -197,6 +197,105 @@ pub fn clear_quit(home: &Path) {
     std::fs::remove_file(home.join(QUIT_REQUEST)).ok();
 }
 
+/// The owner's cancel of a running job (`scenic job cancel <target> [--rerun-after-update]`, the
+/// menu bar): the job building `target` (of `step`, when it names one) stops now and gives its work
+/// back, not failed (no retry delay, nothing kept from its Mac), its in-progress work dropped (its
+/// scratch for the target cleared; targets it finished are kept). With `rerun_after_update` the
+/// target is held until the lead runs a newer app than the one it was cancelled on
+/// (crate::coord::lease::Hold), so the Mac that takes it then runs the newer; an update waiting on
+/// that job restarts at once, its slot free. On the lead, or a member: a job on another Mac is told
+/// through the lead's coordinator, in its beat's answer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cancel {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    #[serde(default)]
+    pub rerun_after_update: bool,
+    /// Who asked, in words: "scenic job cancel on m4", "the menu bar on m4".
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub at: u64,
+}
+
+impl Cancel {
+    pub fn new(target: &str, step: Option<&str>, rerun_after_update: bool, by: &str) -> Cancel {
+        Cancel {
+            target: target.to_string(),
+            step: step.map(str::to_string),
+            rerun_after_update,
+            by: by.to_string(),
+            at: now(),
+        }
+    }
+
+    /// The cancel in words, for the logs, the history and the status.
+    pub fn said(&self) -> String {
+        format!(
+            "cancelled by {}{}",
+            self.by,
+            if self.rerun_after_update { "; reruns once the lead runs a newer app" } else { "; reruns" }
+        )
+    }
+}
+
+/// The cancel asks' file, in the agent's folder: a list, each taken up at the agent's next loop.
+pub const CANCEL_REQUEST: &str = "cancel-request.json";
+
+/// The agent's answer to the last cancel it took up (`CancelAnswer`), in its folder.
+pub const CANCEL_ANSWER: &str = "cancel-answer.json";
+
+/// What the agent did with a cancel: the ask, and what it stopped, in words.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelAnswer {
+    pub ask: Cancel,
+    pub said: String,
+    /// Whether a job was stopped or told to stop.
+    pub hit: bool,
+}
+
+/// Asks this Mac's agent (its folder `home`) to cancel a job (added to the asks waiting).
+pub fn request_cancel(home: &Path, c: &Cancel) -> anyhow::Result<()> {
+    std::fs::create_dir_all(home)?;
+    let mut asks = peek_cancels(home);
+    asks.push(c.clone());
+    crate::whole::write(&home.join(CANCEL_REQUEST), &serde_json::to_vec(&asks)?)
+}
+
+/// The cancel asks waiting in `home`, read only.
+pub fn peek_cancels(home: &Path) -> Vec<Cancel> {
+    std::fs::read(home.join(CANCEL_REQUEST)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// The cancel asks waiting in `home`, taken (their file removed; one that doesn't parse: none).
+pub fn take_cancels(home: &Path) -> Vec<Cancel> {
+    // (Moved aside first: an ask written meanwhile makes a new file, taken at the next loop.)
+    let taken = home.join("cancel-request.taken.json");
+    if std::fs::rename(home.join(CANCEL_REQUEST), &taken).is_err() {
+        return Vec::new();
+    }
+    let asks = std::fs::read(&taken).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    std::fs::remove_file(&taken).ok();
+    asks
+}
+
+/// The agent's answer to a cancel, kept for `scenic job cancel` to print.
+pub fn answer_cancel(home: &Path, a: &CancelAnswer) {
+    let w = serde_json::to_vec(a)
+        .map_err(anyhow::Error::from)
+        .and_then(|b| crate::whole::write(&home.join(CANCEL_ANSWER), &b));
+    if let Err(e) = w {
+        eprintln!("agent: writing the cancel's answer: {e:#}");
+    }
+}
+
+/// The agent's answer to cancel `c`, once it has taken it up.
+pub fn cancel_answer(home: &Path, c: &Cancel) -> Option<CancelAnswer> {
+    let a: CancelAnswer = serde_json::from_slice(&std::fs::read(home.join(CANCEL_ANSWER)).ok()?).ok()?;
+    (a.ask == *c).then_some(a)
+}
+
 /// The running job's channel: a file the agent writes ("run" or "drain"), named by this variable.
 pub const CONTROL_ENV: &str = "SCENIC_CONTROL";
 

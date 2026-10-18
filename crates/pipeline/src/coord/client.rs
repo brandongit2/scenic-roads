@@ -496,9 +496,34 @@ impl Client {
 
     /// `beat`, and the build's pause, while it's paused (the job pauses with it).
     pub fn beat_paused(&self, lease: u64, progress: Option<&str>) -> Result<(bool, Option<crate::control::Pause>)> {
+        self.beat_told(lease, progress).map(|(alive, pause, _)| (alive, pause))
+    }
+
+    /// `beat_paused`, and the owner's cancel of the lease's job (`scenic job cancel`), when there's
+    /// one: the job stops and gives the lease back.
+    pub fn beat_told(
+        &self,
+        lease: u64,
+        progress: Option<&str>,
+    ) -> Result<(bool, Option<crate::control::Pause>, Option<crate::control::Cancel>)> {
         let b = super::Beat { worker: self.worker.clone(), lease, progress: progress.map(str::to_string), frac: None };
         let v = self.post_json("/work/beat", &serde_json::to_value(&b)?)?.1;
-        Ok((v["ok"].as_bool().unwrap_or(false), serde_json::from_value(v["pause"].clone()).ok().flatten()))
+        Ok((
+            v["ok"].as_bool().unwrap_or(false),
+            serde_json::from_value(v["pause"].clone()).ok().flatten(),
+            serde_json::from_value(v["cancel"].clone()).ok().flatten(),
+        ))
+    }
+
+    /// Passes on the owner's cancel (crate::control::Cancel) to the lead: the leases it told to stop,
+    /// as (lease, worker, what).
+    pub fn cancel(&self, c: &crate::control::Cancel) -> Result<Vec<(u64, String, String)>> {
+        let v = self.post_json("/work/cancel", &serde_json::to_value(c)?)?.1;
+        let s = |t: &serde_json::Value, k: &str| t[k].as_str().unwrap_or("").to_string();
+        Ok(v["told"]
+            .as_array()
+            .map(|a| a.iter().map(|t| (t["lease"].as_u64().unwrap_or(0), s(t, "worker"), s(t, "what"))).collect())
+            .unwrap_or_default())
     }
 
     /// Passes on this Mac's ask (crate::control::Request): the build paused, or going on, as asked

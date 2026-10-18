@@ -264,6 +264,10 @@ pub struct Shared {
     /// The app this Mac's agent runs: an agent on another builds with other code than the keys it
     /// would record say, so it gets no work ("" in tests: any).
     pub app: String,
+    /// The owner's cancels of running jobs (`scenic job cancel`, crate::control::Cancel), by lease:
+    /// told to the lease's worker in its beat's answer (this Mac's own, `Coordinator::cancel_of`),
+    /// which stops its job and gives the lease back, not failed. Gone with the lease.
+    pub cancels: BTreeMap<u64, crate::control::Cancel>,
     /// The build's pause (crate::control), while it's paused: no work is given, a worker's beat is
     /// told (its job pauses too), and no lease lapses. Kept in `pause.json`, so a restart keeps it.
     pub paused: Option<crate::control::Pause>,
@@ -1480,6 +1484,8 @@ impl Coordinator {
         let token = http::token(dir)?;
         let now = Instant::now();
         let mut leases = Leases::load(&dir.join("leases.json"), TTL, now);
+        // (What releases a target held for a newer app: this one, `Hold`.)
+        leases.app = app.to_string();
         // This Mac's own: its jobs ended with the agent that ran them.
         for l in leases.drop_where(|l| l.worker == me) {
             eprintln!("coordinator: {}'s lease ended with the agent before this one", l.what());
@@ -1542,6 +1548,7 @@ impl Coordinator {
             needs: Default::default(),
             needs_rev: 0,
             app: app.to_string(),
+            cancels: BTreeMap::new(),
             paused,
             pause_at,
             history,
@@ -1854,6 +1861,35 @@ impl Coordinator {
     pub fn held(&self, step: &str) -> BTreeSet<String> {
         let s = self.shared.lock().unwrap();
         s.leases.held(step, s.now())
+    }
+
+    /// The owner's cancel (`scenic job cancel`, crate::control::Cancel), from this Mac's agent:
+    /// every live job lease holding its target (of its step, when it names one) told to stop and
+    /// give its work back (`cancel_of`, a member's beat), and with `rerun_after_update` the target
+    /// held until this coordinator runs a newer app (`hold_for_update`). The leases told: (lease,
+    /// worker, what).
+    pub fn cancel(&self, c: &crate::control::Cancel) -> Vec<(u64, String, String)> {
+        cancel_in(&mut self.shared.lock().unwrap(), c)
+    }
+
+    /// The owner's cancel of lease `id`, while it stands (`cancel`).
+    pub fn cancel_of(&self, id: u64) -> Option<crate::control::Cancel> {
+        let s = self.shared.lock().unwrap();
+        s.leases.of(id).and(s.cancels.get(&id).cloned())
+    }
+
+    /// `target` of `step` held until this coordinator runs a newer app (lease::Hold): a job of it
+    /// that held no lease here, cancelled to rerun after the update.
+    pub fn hold_for_update(&self, step: &str, target: &str, by: &str) -> lease::Hold {
+        let mut s = self.shared.lock().unwrap();
+        let h = s.leases.hold_for_update(step, target, by, unix_now());
+        s.save_leases();
+        h
+    }
+
+    /// The targets held until a newer app (lease::Hold), for the status.
+    pub fn holds(&self) -> Vec<lease::Hold> {
+        self.shared.lock().unwrap().leases.holds()
     }
 
     /// Whether a cold start of `step` (none of its targets measured) is under way on another worker
@@ -2354,6 +2390,45 @@ pub struct PoolState {
 /// under a key that says it's current. No list of what changed: any other app waits. `ours` empty
 /// (tests): any.
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
+/// `Coordinator::cancel`, in `s` (also the `/work/cancel` of a member's agent).
+fn cancel_in(s: &mut Shared, c: &crate::control::Cancel) -> Vec<(u64, String, String)> {
+    let now = s.now();
+    // (Cancels of leases since ended go.)
+    let live: BTreeSet<u64> = s.leases.all(now).iter().map(|l| l.id).collect();
+    s.cancels.retain(|id, _| live.contains(id));
+    let hits: Vec<Lease> = s
+        .leases
+        .all(now)
+        .into_iter()
+        .filter(|l| match &l.work {
+            Work::Job { step, targets } => {
+                c.step.as_ref().is_none_or(|x| x == step) && targets.iter().any(|t| t.0 == c.target)
+            }
+            Work::Task { .. } => false,
+        })
+        .collect();
+    let mut told = Vec::new();
+    for l in hits {
+        let Work::Job { step, .. } = &l.work else { continue };
+        if c.rerun_after_update {
+            s.leases.hold_for_update(step, &c.target, &c.by, c.at);
+        }
+        s.cancels.insert(l.id, c.clone());
+        s.history.add(history::Event {
+            worker: Some(l.worker.clone()),
+            lease: Some(l.id),
+            step: Some(step.clone()),
+            targets: vec![c.target.clone()],
+            note: c.said(),
+            ..history::Event::new("cancel")
+        });
+        eprintln!("coordinator: {} cancelled on {} ({})", l.what(), l.worker, c.said());
+        told.push((l.id, l.worker.clone(), l.what()));
+    }
+    s.save_leases();
+    told
+}
+
 fn app_ok(theirs: Option<&str>, ours: &str) -> bool {
     ours.is_empty() || theirs == Some(ours)
 }
@@ -2899,8 +2974,23 @@ fn route(
             let mut s = shared.lock().unwrap();
             let alive = s.leases.renew_frac(b.lease, &b.worker, b.progress.clone(), b.frac, now);
             s.seen(&b.worker, b.progress.unwrap_or_else(|| "working".into()), None, now);
-            // (The build paused: its job pauses too, its lease kept meanwhile.)
-            Ok((200, serde_json::json!({ "ok": alive, "pause": s.paused })))
+            // (The build paused: its job pauses too, its lease kept meanwhile. The owner cancelled
+            // it, `scenic job cancel`: it stops and gives the lease back.)
+            let cancel = s.cancels.get(&b.lease).filter(|_| alive).cloned();
+            Ok((200, serde_json::json!({ "ok": alive, "pause": s.paused, "cancel": cancel })))
+        }
+        "/work/cancel" => {
+            // A member's agent passing on its owner's `scenic job cancel` (crate::control::Cancel):
+            // the leases told, by their worker.
+            let mut c: crate::control::Cancel = serde_json::from_slice(body)?;
+            (c.target, c.by) = (plain(&c.target, 200), plain(&c.by, WHAT_MAX));
+            c.step = c.step.map(|st| plain(&st, 100));
+            let told = cancel_in(&mut shared.lock().unwrap(), &c);
+            let told: Vec<serde_json::Value> = told
+                .into_iter()
+                .map(|(id, w, what)| serde_json::json!({ "lease": id, "worker": w, "what": what }))
+                .collect();
+            Ok((200, serde_json::json!({ "told": told })))
         }
         "/work/pause" => {
             // A Mac's ask (its menu, `scenic pause`, the map), passed on by its agent, or a page's
@@ -3677,6 +3767,7 @@ mod http {
             .route("/work/inputs", any(json))
             .route("/work/done", any(json))
             .route("/work/fail", any(json))
+            .route("/work/cancel", any(json))
             .route("/work/status", any(json))
             .route("/work/swarm", any(json))
             .route("/work/history", any(json))
@@ -4693,6 +4784,68 @@ mod tests {
             (t.kind.as_str(), t.phases.len(), t.phases[1].class, t.phases[0].cpu_s),
             ("task tail", 2, crate::timings::Class::Mixed, None)
         );
+    }
+
+    /// The owner's cancel (task #373, `scenic job cancel`): a member's lease told in its beat's
+    /// answer; given back, nothing kept from it (no failure, no backoff); with --rerun-after-update
+    /// its target held from every worker, the lead's own jobs too, until the lead runs a newer app,
+    /// the hold kept across a restart and carried in the lease snapshot; a member's agent's ask
+    /// over HTTP the same.
+    #[test]
+    fn a_cancelled_job_is_given_back_and_held_until_a_newer_app() {
+        use crate::control::Cancel;
+        let (old, new) = ("20261018-0100-aaaaaaa", "20261018-0300-bbbbbbb");
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = start_for_test(&d.path().join("coord"), "m4", old);
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        let on = |app: &str| Ask { app: Some(app.into()), ..ask(4096) };
+        c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
+        let g = w.ask(&on(old)).unwrap().unwrap();
+        // Nothing told before a cancel; a cancel of another target tells nothing.
+        assert!(w.beat_told(g.lease, None).unwrap().2.is_none());
+        assert!(c.cancel(&Cancel::new("6/1/1", None, true, "scenic job cancel on m4")).is_empty());
+        assert!(c.cancel(&Cancel::new("6/55/25", Some("pack"), true, "x")).is_empty(), "another step's");
+        let told = c.cancel(&Cancel::new("6/55/25", None, true, "scenic job cancel on m4"));
+        assert_eq!(told, vec![(g.lease, "m1".to_string(), "unit 6/55/25".to_string())]);
+        let (alive, _, cancel) = w.beat_told(g.lease, None).unwrap();
+        assert!(alive && cancel.is_some_and(|x| x.rerun_after_update && x.by == "scenic job cancel on m4"));
+        // Given back, not failed: nothing kept from m1, no failure counted.
+        w.end_with(g.lease, "cancelled by scenic job cancel on m4", true, &[], &[], 0).unwrap();
+        {
+            let s = c.shared.lock().unwrap();
+            assert!(s.failed.is_empty() && s.workers.get("m1").is_none_or(|w| w.failed == 0));
+            assert!(s.history.since(0, 1000).iter().any(|e| e.kind == "cancel" && e.lease == Some(g.lease)));
+        }
+        // Held on this app: no worker gets it, nor the lead's own job.
+        assert!(c.held("unit").contains("6/55/25"));
+        assert!(w.ask(&on(old)).unwrap().is_none());
+        assert!(c.hold("unit", &[("6/55/25".into(), "k".into())]).is_none());
+        assert_eq!(c.holds().len(), 1);
+        assert!(c.pool_state().leases["holds"][0]["newer_than"] == old, "carried to the next lead");
+        // Kept across a restart on the same app; released by a restart on a newer one, whose
+        // workers (on the lead's app) get it again.
+        c.stop();
+        drop(c);
+        let (c, _) = start_for_test(&d.path().join("coord"), "m4", old);
+        assert!(c.held("unit").contains("6/55/25"));
+        c.stop();
+        drop(c);
+        let (c, port) = start_for_test(&d.path().join("coord"), "m4", new);
+        assert!(c.held("unit").is_empty() && c.holds().is_empty());
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        c.offer_units("2026-09-28", vec![("6/55/25".into(), "k".into(), 100 << 20)]);
+        let g = w.ask(&on(new)).unwrap().unwrap();
+        // A member's agent passes on its owner's cancel (no hold asked): told, nothing held.
+        let m2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
+        let told = m2.cancel(&Cancel::new("6/55/25", None, false, "scenic job cancel on m2")).unwrap();
+        assert_eq!(told, vec![(g.lease, "m1".to_string(), "unit 6/55/25".to_string())]);
+        assert!(w.beat_told(g.lease, None).unwrap().2.is_some_and(|x| !x.rerun_after_update));
+        w.end_with(g.lease, "cancelled", true, &[], &[], 0).unwrap();
+        assert!(c.held("unit").is_empty());
+        assert!(w.ask(&on(new)).unwrap().is_some(), "it reruns at once");
+        // (A hold's release by app: another app not older than its own, or any in a test's "".)
+        let h = lease::Hold { step: "u".into(), target: "t".into(), newer_than: new.into(), by: String::new(), at: 0 };
+        assert!(!h.released(new) && !h.released(old) && h.released("20261019-0000-ccccccc") && h.released(""));
     }
 
     #[test]
