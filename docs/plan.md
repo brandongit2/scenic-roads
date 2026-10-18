@@ -1178,7 +1178,8 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
    - **Landmarks**, from the start, each step once what it reads is built
      (`agent::build::landmarks_work`): candidates, peaks, items, the heritage chain, marks, then the
      overlays. Marks at most hourly while units build (`MARKS_EVERY_S`), the overlays at most every
-     6 h (`OVERLAYS_EVERY_S`); both at once after the last unit.
+     6 h (`OVERLAYS_EVERY_S`) on their own gate, from the dots the last marks run wrote; both at
+     once after the last unit.
    - **Gated by time** (`build::GATED`: marks, overlays, names-todo): the gate decides only when
      a step is planned; its key stays by content. When each last ran is the lead's observation of
      its recorded key changing (`LastCatalog::observe`, kept in `publishing.json`; not known: due).

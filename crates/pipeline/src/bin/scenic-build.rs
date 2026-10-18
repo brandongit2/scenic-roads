@@ -4524,7 +4524,9 @@ fn roadunits(out: &mut Out) -> Result<()> {
     let p = phase("the index before read", Class::NasRead);
     let before: Option<(BTreeMap<u64, String>, Vec<u64>)> = out.get("global/roadunits").and_then(|c| {
         let r = store::sect::SectReader::open(store::range::PlainFile::open(&out.path(c)).ok()?).ok()?;
-        let s: Vec<(u64, String)> = serde_json::from_slice(&r.read("srcs").ok()?).ok()?;
+        // (Made by another version of the step: read afresh.)
+        let (v, s): (u32, Vec<(u64, String)>) = serde_json::from_slice(&r.read("srcs").ok()?).ok()?;
+        (v == pipeline::agent::build::ROADUNITS_V).then_some(())?;
         Some((s.into_iter().collect(), r.read_pod("pairs").ok()?))
     });
     drop(p);
@@ -4552,7 +4554,7 @@ fn roadunits(out: &mut Out) -> Result<()> {
     pairs.sort_unstable();
     pairs.dedup();
     let flat: Vec<u64> = pairs.iter().flat_map(|&(r, u)| [r, u]).collect();
-    let srcs_json = serde_json::to_vec(&srcs)?;
+    let srcs_json = serde_json::to_vec(&(pipeline::agent::build::ROADUNITS_V, &srcs))?;
     drop(p);
     let _p = phase("uploaded", Class::NasWrite);
     put_sect(

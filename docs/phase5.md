@@ -139,7 +139,8 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 **Keys** are the step version plus the content names of what a job reads. heritage-sites, heritage
 and items include the pass's date; the coverage enters as a hash of its shapes; stations name
 the z6 tiles within 20 km of a built unit (`ovconv::cover_of`: a unit amid built ones changes
-nothing); overlays name the built units; ferries the ferries set, the ferry feeds' list (each zip by
+nothing); overlays name the built units, the heritage dots as the last marks run wrote them
+(`work/marks/heritage-dots`) and the pass's heritage job's files; ferries the ferries set, the ferry feeds' list (each zip by
 content) and the static timetables' index, all `ovconv::ferries_job` reads. `pass-sets` and
 `terrain-z8` run when their versioned outputs are missing. peaks (`agent::build::peaks_keys`) name
 the unit's candidates, the summits, `terrain-z8` and its max, the terrain hi packs within U + 30 km,

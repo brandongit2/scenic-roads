@@ -1744,6 +1744,11 @@ impl LastCatalog {
             let key = done.lo.get(step).cloned().unwrap_or_default();
             match self.ran.get_mut(step) {
                 Some(r) if r.key == key => {}
+                // (Its record dropped: not a run; its time kept.)
+                Some(r) if key.is_empty() => {
+                    r.key = key;
+                    changed = true;
+                }
                 Some(r) => {
                     *r = Ran { key, at: Some(now) };
                     changed = true;
@@ -3090,15 +3095,19 @@ fn landmarks_work(
         Some(_) => true,
     };
     if peaks_built && items_built && heritage_built {
-        // (Points stale but not due yet: the overlays, which read their dots, wait too.)
         let k = marks_key(date, m, &units);
-        if done.lo.get("marks").map(String::as_str) != Some(k.as_str()) {
-            if gate_open(last, way.since_marks, MARKS_EVERY_S) {
-                out.push(Work { step: "marks".into(), targets: vec![("marks".into(), k)] });
-            }
-        } else if let Some(k) = overlays_key(date, m)
-            .filter(|k| gate_open(last, way.since_overlays, OVERLAYS_EVERY_S) && done.lo.get("overlays") != Some(k))
+        if done.lo.get("marks").map(String::as_str) != Some(k.as_str())
+            && gate_open(last, way.since_marks, MARKS_EVERY_S)
         {
+            out.push(Work { step: "marks".into(), targets: vec![("marks".into(), k)] });
+        }
+        // (The overlays on their own gate, from the dots the last marks run wrote, whether or not
+        // the marks are current: under units arriving every minute they rarely are.)
+        if let Some(k) = overlays_key(date, m).filter(|k| {
+            m.contains_key(crate::markconv::HERITAGE_DOTS)
+                && gate_open(last, way.since_overlays, OVERLAYS_EVERY_S)
+                && done.lo.get("overlays") != Some(k)
+        }) {
             out.push(Work { step: "overlays".into(), targets: vec![("overlays".into(), k)] });
         }
     }
@@ -6803,7 +6812,18 @@ pub(crate) mod tests {
         assert_eq!(due[0].0, "marks");
         done.record("marks", &[("marks".into(), due[0].1.clone())]);
         m.insert(crate::markconv::HERITAGE_DOTS.into(), "global/marks/dots.1212121212121212.json".into());
+        // A unit committed after the marks (they're stale again: here, recorded on older inputs):
+        // the overlays still on their own gate, from the dots as recorded.
+        let fresh = due[0].1.clone();
+        done.record("marks", &[("marks".into(), "older".into())]);
+        m.insert("base/6-28-16".into(), "base/6-28-16.abababababababab.sect".into());
+        assert_eq!(gated(&m, &done, way(MARKS_EVERY_S, 0)).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["marks"]);
         assert!(gated(&m, &done, way(0, OVERLAYS_EVERY_S - 1)).is_empty());
+        assert_eq!(
+            gated(&m, &done, way(0, OVERLAYS_EVERY_S)).iter().map(|x| x.0.as_str()).collect::<Vec<_>>(),
+            ["overlays"]
+        );
+        done.record("marks", &[("marks".into(), fresh)]);
         let due = gated(&m, &done, way(0, OVERLAYS_EVERY_S));
         assert_eq!(due.iter().map(|x| x.0.as_str()).collect::<Vec<_>>(), ["overlays"]);
         assert_eq!(due, gated(&m, &done, Publishing::default()));
@@ -6824,9 +6844,16 @@ pub(crate) mod tests {
         assert!(r.observe(&done, 300));
         assert_eq!(r.since("marks", 400), Some(100));
         assert_eq!(r.since("overlays", 400), None);
+        // Its record dropped (a prune, a rekey): not a run.
+        done.lo.remove("marks");
+        assert!(r.observe(&done, 500));
+        assert_eq!(r.since("marks", 600), Some(300));
+        done.record("marks", &[("marks".into(), "k2".into())]);
+        r.observe(&done, 700);
+        assert_eq!(r.since("marks", 800), Some(100));
         // Kept across a restart.
         let back: LastCatalog = serde_json::from_slice(&serde_json::to_vec(&r).unwrap()).unwrap();
-        assert_eq!(back.since("marks", 400), Some(100));
+        assert_eq!(back.since("marks", 800), Some(100));
         assert!(gate_open(false, None, 10) && gate_open(true, Some(0), 10) && gate_open(false, Some(10), 10));
         assert!(!gate_open(false, Some(9), 10));
     }

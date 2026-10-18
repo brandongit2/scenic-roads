@@ -669,7 +669,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   further, whole; `pipeline::reach`); `pass.json`.
 - **Global files:** `global/roads/<u>` (above); `global/roadids/<u>` (`ids`: the unit's road ids,
   sorted u64, each once); `global/roadunits` (`pairs`: sorted u64 road, u64 unit key; `srcs`: JSON
-  `[[unit key, content name of what it read]]`); `global/railfreq` (as `/api/railfreq`); `global/marks/summary` (`{fmt, kinds,
+  `[ROADUNITS_V, [[unit key, content name of what it read]]]`); `global/railfreq` (as `/api/railfreq`); `global/marks/summary` (`{fmt, kinds,
   tiers}`); `global/roaden/<u>` (`{OSM way id: English}` where `name:en` differs); `global/spoken`
   (`names::spoken::Spoken::to_bytes`); `global/heritage/*`.
 - **Grid layers:** `grid-{class,canopy,cover}` hi packs of z11 tiles, encoding `u8-zstd`, not served.
