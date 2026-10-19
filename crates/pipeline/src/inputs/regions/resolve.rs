@@ -223,6 +223,14 @@ pub struct Outcome {
 /// Every region of `folder` resolved against `ctx`, in an order where each comes after those it
 /// names (`region:`); a region naming one that's held is held too.
 pub fn resolve(folder: &Folder, ctx: &Context) -> Outcome {
+    // (At most four regions at once: each operation's memory grows with its region.)
+    match rayon::ThreadPoolBuilder::new().num_threads(4).build() {
+        Ok(pool) => pool.install(|| resolve_all(folder, ctx)),
+        Err(_) => resolve_all(folder, ctx),
+    }
+}
+
+fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
     let mut out = Outcome { problems: folder.problems.clone(), ..Default::default() };
     let mut state: BTreeMap<String, u8> = BTreeMap::new(); // 1: on the stack, 2: done
     let ids: Vec<String> = folder.regions.keys().cloned().collect();
@@ -646,7 +654,7 @@ pub(super) fn resolve_one(
             }
             Part::Land(d) => {
                 // (Its own land: only its water names it, read once the land is resolved.)
-                let Some(res) = lands.get(d) else { continue };
+                let Some(res) = lands.get(d).or_else(|| done.get(d)) else { continue };
                 let shapes = res.geometry.shapes.iter().map(|s| (rings64(&s.rings), s.tolerance_m)).collect();
                 leaves.insert(part.to_string(), Leaf::Rings(shapes, String::new()));
             }
@@ -814,10 +822,11 @@ pub(super) fn resolve_one(
     let mut lakes = Area::default();
     if r.has_water() && !water {
         let data = ctx.data.expect("checked above");
-        let land = super::water::in_frame(&frame, result.bbox(), |b| data.land_in(b));
-        let big = super::water::in_frame(&frame, result.bbox(), |b| data.big_lakes_in(b));
-        lakes = result.intersect(&big);
-        result = result.intersect(&land.minus(&big));
+        // (Piece by piece: geom::with_mask, so no one operation holds a continent's coast.)
+        let big = |b: [i64; 4]| super::water::in_frame(&frame, Some(b), |p| data.big_lakes_in(p));
+        let land = |b: [i64; 4]| super::water::in_frame(&frame, Some(b), |p| data.land_in(p)).minus(&big(b));
+        lakes = geom::with_mask(&result, &big, true);
+        result = geom::with_mask(&result, &land, true);
     }
     if result.is_empty() && !r.has_water() {
         return Err(vec![problem(
@@ -967,6 +976,8 @@ pub(super) fn eval(
             Ok(geom::union_all(&areas))
         }
         Part::Buffer { of, m, .. } => match &**of {
+            // (A region with water: the coarser buffer, within a fiftieth of the distance.)
+            Target::Part(p) if r.has_water() => Ok(geom::buffer_area_coarse(&eval(p, false, placed, r, path)?, *m)),
             Target::Part(p) => Ok(geom::buffer_area(&eval(p, false, placed, r, path)?, *m)),
             Target::Line(l) => {
                 let Some(Leaf::Line(pts)) = placed.get(&format!("line:{l}")) else { unreachable!("every line read") };

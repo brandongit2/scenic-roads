@@ -1607,7 +1607,7 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
       NAS, about 7 GB in memory, the land polygons most of it), once the sources declare them; the
       lead doesn't plan anything to keep them. Fix: the land kept on disk by tile, read where asked;
     - the land polygons are osmdata's of 2026-10-18, not cut from the pinned pass;
-    - the cover check and its fills work tile by 10° tile, so a gap cut by a tile's edge is two
+    - the cover check and its fills work tile by tile (5.625°), so a gap cut by a tile's edge is two
       gaps, each settled in its tile;
     - a stretch the antimeridian cuts counts as two for `hand_out`.
 

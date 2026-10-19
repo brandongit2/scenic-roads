@@ -429,7 +429,7 @@ order where a region comes after those its water names whole (`region:`, `group:
 `hand_out` folder then takes each stretch (a connected piece) of its water that one of its regions
 alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge. With
 `cover = "earth"` in `rules.toml`, then: a region's piece of water under `sliver_km2` touching
-none of its land joins the region it shares the longest edge with; and, tile by 10° tile, land in
+none of its land joins the region it shares the longest edge with; and, tile by tile (a 64 × 32 grid, 5.625°), land in
 two regions is taken from both, and land in none, with water in none touching land (the sea between
 the zones' coastline and OSM's), joins the region it shares the longest edge with (the nearest when
 it touches none). The region whose water is `rest` takes what's left; without one, water left is an
@@ -495,7 +495,14 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   within 5 m of the arc, pieces unioned. Past 200 km the rings are first simplified within a
   thousandth of the radius and the joins drawn within a thousandth of it too. **Cuts** intersect the
   shape with each side's polygon. **Sizes** (for slivers, shared edges and the cover check) are on
-  the authalic sphere; a shared edge's length is the other area within 100 m of the edge, over 100 m.
+  the authalic sphere; a shared edge's length is the other area within 100 m of the edge, over 100 m,
+  measured in quarters while either area is large.
+- **Bounded memory:** a region with water is cut back to the land, and its water cut by the land, in
+  quarters of its box (`geom::with_mask`) until each piece holds at most 200,000 points and its box
+  2° or less; its buffers are drawn within a fiftieth of the distance (rings simplified that much, a
+  round join only where a ring turns outward); the cover check cuts each region into its tiles by
+  halving; at most four regions resolve at once. `scenic-build regions-check` reports the most
+  points one operation held, and `--max-mb` stops it past a resident size.
 - **The antimeridian:** every stored ring lies within −180°…180°. A region's parts are unwrapped
   into one longitude frame (the turn leaving the widest empty band outside it; the plain frame for
   regions away from ±180°), operated on there, then split at each odd multiple of 180° and shifted

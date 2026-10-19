@@ -349,7 +349,11 @@ pub fn check_folder(
         Some(d) => Some(super::data::Datasets::read(root, &crate::inputs::sources::Sources::of_folder(d)?)?),
         None => None,
     };
-    eprintln!("regions-check: datasets read in {:.0} s", t.elapsed().as_secs_f64());
+    eprintln!(
+        "regions-check: datasets read in {:.0} s, peak {} MB",
+        t.elapsed().as_secs_f64(),
+        crate::sys::peak_rss() / 1_000_000
+    );
     let checks = super::Regions::new(Some(super::prepare(root, manifest, data)?));
     let read = |p: &str| -> Result<std::sync::Arc<Vec<u8>>> {
         Ok(std::sync::Arc::new(std::fs::read(dir.join(p)).with_context(|| format!("read {p}"))?))
@@ -364,8 +368,14 @@ pub fn check_folder(
         findings.extend(checks.file(p, &(v.read)(p)?).findings);
     }
     let t = std::time::Instant::now();
+    super::geom::reset_peak();
     let (folder, out) = checks.resolve(&v)?;
-    eprintln!("regions-check: resolved in {:.0} s", t.elapsed().as_secs_f64());
+    let peak = super::geom::reset_peak();
+    eprintln!(
+        "regions-check: resolved in {:.0} s, peak {} MB",
+        t.elapsed().as_secs_f64(),
+        crate::sys::peak_rss() / 1_000_000
+    );
     findings.extend(out.problems.iter().map(super::problem_finding));
     let mut regions = serde_json::Map::new();
     let mut total = 0.0;
@@ -398,6 +408,7 @@ pub fn check_folder(
         "resolved": out.resolved.len(),
         "km2": total,
         "earth_km2": super::geom::area_km2(&super::geom::earth()),
+        "most_points_one_operation": peak,
         "findings": findings.iter().map(|f| serde_json::json!({"check": f.check(), "message": f.message})).collect::<Vec<_>>(),
         "by_region": regions,
     }))

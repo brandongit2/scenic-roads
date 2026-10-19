@@ -91,6 +91,7 @@ impl Area {
     /// The area of rings read under the even–odd rule (an outline's rings, a `.poly`'s, a GeoJSON
     /// polygon's), made canonical.
     pub fn from_rings(rings: &[Ring]) -> Area {
+        seen(rings.iter().map(Vec::len).sum());
         let mut o = Overlay::<i64>::new_custom(rings.iter().map(Vec::len).sum(), Default::default(), solver());
         for r in rings {
             let c: Vec<IntPoint<i64>> = r.iter().map(|&p| ip(p)).collect();
@@ -140,6 +141,7 @@ impl Area {
 
     fn op(&self, other: &Area, rule: OverlayRule) -> Area {
         let n = self.polys.iter().chain(&other.polys).flatten().map(Vec::len).sum();
+        seen(n);
         let mut o = Overlay::<i64>::new_custom(n, Default::default(), solver());
         for (a, t) in [(self, ShapeType::Subject), (other, ShapeType::Clip)] {
             for r in a.polys.iter().flatten() {
@@ -183,9 +185,64 @@ impl Area {
     }
 }
 
+/// The most points any one overlay was given since `reset_peak` (what bounds an operation's memory:
+/// i_overlay's working set grows with its input).
+static PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn seen(n: usize) {
+    PEAK.fetch_max(n, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `PEAK` read and set back to nothing.
+pub fn reset_peak() -> usize {
+    PEAK.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// An area's points.
+pub fn points(a: &Area) -> usize {
+    a.polys.iter().flatten().map(Vec::len).sum()
+}
+
+/// `a` with `mask` (the dataset's area in a box, as `mask(box)` gives it) kept (`keep`) or taken
+/// away, in pieces small enough that no one operation holds much: while the piece of `a` or the
+/// mask has more than `MASK_POINTS` points and the box is wider than a sixteenth of a degree, the box
+/// is split in four and each quarter done on its own. The pieces are put back together at the end.
+pub fn with_mask(a: &Area, mask: &(dyn Fn([i64; 4]) -> Area + Sync), keep: bool) -> Area {
+    let Some(b) = a.bbox() else { return Area::default() };
+    let mut pieces = Vec::new();
+    mask_rec(a, b, mask, keep, &mut pieces);
+    union_all(&pieces)
+}
+
+/// The most points a piece is masked with at once.
+pub const MASK_POINTS: usize = 200_000;
+
+fn mask_rec(a: &Area, b: [i64; 4], mask: &(dyn Fn([i64; 4]) -> Area + Sync), keep: bool, out: &mut Vec<Area>) {
+    if a.is_empty() {
+        return;
+    }
+    let small = b[2] - b[0] <= 625_000 && b[3] - b[1] <= 625_000;
+    // (A mask is only asked for a box of 2° or less: a wider one may hold millions of points.)
+    let narrow = b[2] - b[0] <= 20_000_000 && b[3] - b[1] <= 20_000_000;
+    if (points(a) <= MASK_POINTS && narrow) || small {
+        let m = mask(b);
+        if points(&m) <= MASK_POINTS || small {
+            let m = m.intersect(&box_area(b));
+            out.push(if keep { a.intersect(&m) } else { a.minus(&m) });
+            return;
+        }
+    }
+    let (mx, my) = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2);
+    for q in [[b[0], b[1], mx, my], [mx, b[1], b[2], my], [b[0], my, mx, b[3]], [mx, my, b[2], b[3]]] {
+        let piece = a.intersect(&box_area(q));
+        mask_rec(&piece, q, mask, keep, out);
+    }
+}
+
 /// The union of `areas` (canonical).
 pub fn union_all(areas: &[Area]) -> Area {
     let n = areas.iter().flat_map(|a| a.polys.iter().flatten()).map(Vec::len).sum();
+    seen(n);
     let mut o = Overlay::<i64>::new_custom(n, Default::default(), solver());
     for a in areas {
         for r in a.polys.iter().flatten() {
@@ -565,6 +622,37 @@ fn sweep(pts: &[Pt], closed: bool, r: f64, out: &mut Vec<Ring>) {
     }
 }
 
+/// Everything within `r` metres of the area, its inside included, to within a fiftieth of `r`: the
+/// buffer a region with water takes (§6.1.3). Each ring is first simplified within `r / 50`, and a
+/// round join drawn only where the ring turns outward (left, as canonical rings run: outer rings
+/// counter-clockwise, holes clockwise), so a detailed coast doesn't hand the union thousands of
+/// discs over each other.
+pub fn buffer_area_coarse(a: &Area, r: f64) -> Area {
+    let mut cs = Vec::new();
+    let a = a.clone().canonical();
+    let sides = if r > SIMPLIFY_PAST_M { 71 } else { circle_sides(r).min(256) };
+    for ring in a.polys.iter().flatten() {
+        let pts = densify(&simplify_ring(ring, (r / 50.0).max(1.0)), true);
+        let n = pts.len();
+        if n < 3 {
+            continue;
+        }
+        for i in 0..n {
+            let (o, p, q) = (pts[(i + n - 1) % n], pts[i], pts[(i + 1) % n]);
+            if cross(o, p, q) >= 0 {
+                cs.push(disc(p, r, sides));
+            }
+            if p != q {
+                let b = bearing(p, q);
+                let h = std::f64::consts::FRAC_PI_2;
+                cs.push(vec![destination(p, b - h, r), destination(q, b - h, r), q, p]);
+                cs.push(vec![p, q, destination(q, b + h, r), destination(p, b + h, r)]);
+            }
+        }
+    }
+    a.union(&union_contours(cs))
+}
+
 /// Everything within `r` metres of the area, its inside included.
 pub fn buffer_area(a: &Area, r: f64) -> Area {
     let mut cs = Vec::new();
@@ -791,8 +879,28 @@ pub fn shared_edge_km(a: &Area, b: &Area, w: f64) -> f64 {
     if x[0] > y[2] + pad || y[0] > x[2] + pad || x[1] > y[3] + pad || y[1] > x[3] + pad {
         return 0.0;
     }
-    let ring = buffer_area(a, w).minus(a);
-    area_km2(&ring.intersect(b)) / (w / 1000.0)
+    // (Where they meet, in quarters while either is large: no one buffer of a long coast.)
+    let m = [x[0].max(y[0]) - pad, x[1].max(y[1]) - pad, x[2].min(y[2]) + pad, x[3].min(y[3]) + pad];
+    edge_rec(a, b, m, w)
+}
+
+fn edge_rec(a: &Area, b: &Area, q: [i64; 4], w: f64) -> f64 {
+    let qa = box_area(q);
+    let (a, b) = (a.intersect(&qa), b.intersect(&qa));
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    if points(&a) + points(&b) > MASK_POINTS / 4 && q[2] - q[0] > 625_000 {
+        let (mx, my) = ((q[0] + q[2]) / 2, (q[1] + q[3]) / 2);
+        return [[q[0], q[1], mx, my], [mx, q[1], q[2], my], [q[0], my, mx, q[3]], [mx, my, q[2], q[3]]]
+            .iter()
+            .map(|s| edge_rec(&a, &b, *s, w))
+            .sum();
+    }
+    // (The quarter's own edges aren't the areas': only what lies inside it, less w, counts.)
+    let inner = box_area([q[0] + 1, q[1] + 1, q[2] - 1, q[3] - 1]);
+    let ring = buffer_area_coarse(&a, w).minus(&a).intersect(&inner);
+    area_km2(&ring.intersect(&b)) / (w / 1000.0)
 }
 
 /// Everything within `r` metres of a line.

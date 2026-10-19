@@ -38,7 +38,8 @@ pub struct Datasets {
     /// Lakes by `ne_id`: rings and size (km²).
     pub lakes: HashMap<u64, (Vec<Ring>, f64)>,
     /// The coastline's land, in pieces with their boxes.
-    pub land: Vec<([i64; 4], Vec<Ring>)>,
+    /// (Kept as E7 `i32`, half an `i64` ring's size: it's most of the datasets.)
+    pub land: Vec<([i64; 4], Vec<Vec<[i32; 2]>>)>,
     /// A bucket grid (1°) of `land`'s pieces, and of the big lakes.
     land_grid: HashMap<(i64, i64), Vec<usize>>,
     lake_grid: HashMap<(i64, i64), Vec<u64>>,
@@ -71,7 +72,10 @@ impl Datasets {
             (k, (r, a))
         });
         let mut d = Datasets { eez, ts12, lakes: lakes.collect(), names: names.into(), ..Default::default() };
-        d.land = land.into_iter().filter_map(|r| bbox(&r).map(|b| (b, r))).collect();
+        d.land = land
+            .into_iter()
+            .filter_map(|r| bbox(&r).map(|b| (b, r.iter().map(|x| super::shapes::to_i32(x)).collect())))
+            .collect();
         d.index();
         d
     }
@@ -110,7 +114,15 @@ impl Datasets {
                 let p = self.land[k].0;
                 p[0] <= b[2] && p[2] >= b[0] && p[1] <= b[3] && p[3] >= b[1]
             })
-            .map(|k| Area::from_rings(&self.land[k].1))
+            .map(|k| {
+                Area::from_rings(
+                    &self.land[k]
+                        .1
+                        .iter()
+                        .map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect())
+                        .collect::<Vec<Ring>>(),
+                )
+            })
             .collect();
         geom::union_all(&areas)
     }
@@ -160,11 +172,13 @@ impl Datasets {
         }
         if let Ok(l) = s.role(LAND) {
             let p = path(l)?;
-            for (_, rings) in read_shapefile(&p, l.param_str("layer")?, None)? {
+            let land = &mut d.land;
+            each_shape(&p, l.param_str("layer")?, None, &mut |_, rings| {
                 if let Some(b) = bbox(&rings) {
-                    d.land.push((b, rings));
+                    land.push((b, rings.iter().map(|x| super::shapes::to_i32(x)).collect()));
                 }
-            }
+            })?;
+            anyhow::ensure!(!d.land.is_empty(), "{}: no land polygons", p.display());
         }
         d.names = names.join(", ");
         d.index();
@@ -224,8 +238,15 @@ pub fn parse_geojson(b: &[u8], id: &str) -> Result<HashMap<u64, Vec<Ring>>> {
 /// A shapefile layer's polygons (in a zip or a folder), by the integer field `id` (or by record
 /// number without one).
 pub fn read_shapefile(p: &Path, layer: &str, id: Option<&str>) -> Result<BTreeMap<u64, Vec<Ring>>> {
-    use crate::lakefill::shp::{DbfReader, ShpReader};
     let mut out: BTreeMap<u64, Vec<Ring>> = BTreeMap::new();
+    each_shape(p, layer, id, &mut |k, rings| out.entry(k).or_default().extend(rings))?;
+    anyhow::ensure!(!out.is_empty(), "{}: no {layer} polygons", p.display());
+    Ok(out)
+}
+
+/// A shapefile layer's polygons one at a time, as read: (its id or record number, its rings).
+pub fn each_shape(p: &Path, layer: &str, id: Option<&str>, f: &mut dyn FnMut(u64, Vec<Ring>)) -> Result<()> {
+    use crate::lakefill::shp::{DbfReader, ShpReader};
     let mut n = 0u64;
     for (shp, dbf, _) in crate::lakefill::run::shapefiles(p, layer)? {
         let mut s = ShpReader::new(shp.open()?)?;
@@ -244,9 +265,8 @@ pub fn read_shapefile(p: &Path, layer: &str, id: Option<&str>) -> Result<BTreeMa
             if poly.is_empty() {
                 continue;
             }
-            out.entry(k).or_default().extend(poly.iter().map(|r| e7(r)));
+            f(k, poly.iter().map(|r| e7(r)).collect());
         }
     }
-    anyhow::ensure!(!out.is_empty(), "{}: no {layer} polygons", p.display());
-    Ok(out)
+    Ok(())
 }

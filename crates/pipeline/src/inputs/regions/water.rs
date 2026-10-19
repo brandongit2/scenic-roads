@@ -8,7 +8,7 @@
 //! 2. The lakes over 100 km² its outline takes in are its water too, except where another region's
 //!    water names them.
 //! 3. With `cover = "earth"` in `rules.toml`: a region's piece of water under `sliver_km2` (50 km²)
-//!    that touches none of its land joins the region it shares the longest edge with; then, 10° tile
+//!    that touches none of its land joins the region it shares the longest edge with; then, tile
 //!    by tile, land in two regions is taken from both, and land in none (and sea in none touching
 //!    land) joins the region it shares the longest edge with (the nearest when it touches none);
 //!    sea in two regions is an error (`rg-cover`), as is sea in none when no region is the rest.
@@ -165,9 +165,11 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         }
         return;
     }
-    let lands: BTreeMap<String, Resolved> = out.resolved.clone();
+    // (The land of the regions with water, as `resolve` left it; every other region's is its
+    // `out.resolved`, which then becomes each one's final geometry in place.)
+    let lands: BTreeMap<String, Resolved> = water.iter().map(|id| ((*id).clone(), out.resolved[*id].clone())).collect();
     // Land areas (plain) of every region: a region without water whole.
-    let land_of: BTreeMap<String, Area> = lands.iter().map(|(id, res)| (id.clone(), plain_of(res))).collect();
+    let land_of: BTreeMap<String, Area> = out.resolved.iter().map(|(id, res)| (id.clone(), plain_of(res))).collect();
     let boxes: BTreeMap<String, [i64; 4]> =
         land_of.iter().filter_map(|(id, a)| a.bbox().map(|b| (id.clone(), b))).collect();
     let no_water: Vec<&String> =
@@ -193,7 +195,7 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         v.dedup();
         v
     };
-    let mut finals: BTreeMap<String, Resolved> = out.resolved.clone();
+
     let mut final_area: BTreeMap<String, Area> = BTreeMap::new();
     let mut waters: BTreeMap<String, Area> = BTreeMap::new();
     let mut left: Vec<&String> = water.iter().copied().filter(|id| !rests.contains(id)).collect();
@@ -230,7 +232,7 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
                     );
                 }
                 let mut needs = BTreeSet::new();
-                let res = super::resolve::resolve_one(r, p, folder, ctx, &finals, &lands, true, &mut needs);
+                let res = super::resolve::resolve_one(r, p, folder, ctx, &out.resolved, &lands, true, &mut needs);
                 let res = res.map(|w| {
                     // Each piece (one a side of ±180°) less the land and the regions without water.
                     let pieces: Vec<Area> = w
@@ -244,15 +246,18 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
                                     .map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect())
                                     .collect::<Vec<_>>(),
                             );
-                            let Some(b) = a.bbox() else { return a };
-                            let mut cut = vec![data.land_in(b)];
-                            cut.extend(
-                                no_water
-                                    .iter()
-                                    .filter(|o| boxes.get(**o).is_some_and(|ob| meets(*ob, b)))
-                                    .map(|o| land_of[*o].clone()),
-                            );
-                            a.minus(&geom::union_all(&cut))
+                            let mask = |b: [i64; 4]| {
+                                let mut cut = vec![data.land_in(b)];
+                                let bb = geom::box_area(b);
+                                cut.extend(
+                                    no_water
+                                        .iter()
+                                        .filter(|o| boxes.get(**o).is_some_and(|ob| meets(*ob, b)))
+                                        .map(|o| land_of[*o].intersect(&bb)),
+                                );
+                                geom::union_all(&cut)
+                            };
+                            geom::with_mask(&a, &mask, false)
                         })
                         .collect();
                     geom::union_all(&pieces)
@@ -266,9 +271,8 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
                     let all = land_of[&id].union(&w);
                     waters.insert(id.clone(), w);
                     final_area.insert(id.clone(), all.clone());
-                    let mut f = finals[&id].clone();
-                    store(&folder.regions[&id].1, &mut f, &all);
-                    finals.insert(id, f);
+                    let f = out.resolved.get_mut(&id).expect("resolved");
+                    store(&folder.regions[&id].1, f, &all);
                 }
                 Err(ps) => {
                     out.problems.extend(ps);
@@ -373,15 +377,15 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         if !r.has_water() && land_of.get(id) == Some(a) {
             continue;
         }
-        let mut f = finals.get(id).cloned().unwrap_or_else(|| out.resolved[id].clone());
         if a.is_empty() {
             let (p, _) = &folder.regions[id];
             out.problems.push(problem("rg-empty", r, p, format!("{id}: the region has neither land nor water")));
             out.resolved.remove(id);
             continue;
         }
-        store(r, &mut f, a);
-        out.resolved.insert(id.clone(), f);
+        if let Some(f) = out.resolved.get_mut(id) {
+            store(r, f, a);
+        }
     }
     if let Some(id) = rest_id {
         let (p, r) = &folder.regions[&id];
@@ -459,10 +463,46 @@ fn slivers(
     }
 }
 
+/// Tile (x, y) of the 64 × 32 the Earth is halved into: its box.
+fn tile_box(x: i64, y: i64) -> [i64; 4] {
+    let (w, h) = (geom::TURN / 64, 1_800_000_000 / 32);
+    [-geom::HALF + x * w, -900_000_000 + y * h, -geom::HALF + (x + 1) * w, -900_000_000 + (y + 1) * h]
+}
+
+/// An area's pieces in each tile it meets, cut by halving the Earth's box six times.
+fn tile_pieces(a: &Area) -> Vec<((i64, i64), Area)> {
+    fn rec(a: &Area, x0: i64, y0: i64, n: i64, out: &mut Vec<((i64, i64), Area)>) {
+        if a.is_empty() {
+            return;
+        }
+        if n == 1 {
+            out.push(((x0, y0), a.clone()));
+            return;
+        }
+        let h = n / 2;
+        for (dx, dy) in [(0, 0), (h, 0), (0, h), (h, h)] {
+            let (b0, b1) = (tile_box(x0 + dx, y0 + dy), tile_box(x0 + dx + h - 1, y0 + dy + h - 1));
+            let q = [b0[0], b0[1], b1[2], b1[3]];
+            if a.bbox().is_some_and(|b| meets(b, q)) {
+                rec(&a.intersect(&geom::box_area(q)), x0 + dx, y0 + dy, h, out);
+            }
+        }
+    }
+    // (The Earth's 64 × 32 tiles as two squares of 32 × 32.)
+    let mut out = Vec::new();
+    for x0 in [0, 32] {
+        let b = [tile_box(x0, 0)[0], -900_000_000, tile_box(x0 + 31, 0)[2], 900_000_000];
+        if a.bbox().is_some_and(|ab| meets(ab, b)) {
+            rec(&a.intersect(&geom::box_area(b)), x0, 0, 32, &mut out);
+        }
+    }
+    out
+}
+
 /// What the tiles give: each region's area added and taken away, the rest, and the findings.
 type Tiles = (BTreeMap<String, (Area, Area)>, Area, Vec<Problem>);
 
-/// Steps 3–5 tile by tile (10°): with `cover`, the fills and the check; the rest when there's a
+/// Steps 3–5 tile by tile (5.625°): with `cover`, the fills and the check; the rest when there's a
 /// region for it.
 fn tiles(
     folder: &Folder,
@@ -475,20 +515,24 @@ fn tiles(
         return (BTreeMap::new(), Area::default(), Vec::new());
     }
     let boxes: Vec<(&String, [i64; 4])> = areas.iter().filter_map(|(id, a)| a.bbox().map(|b| (id, b))).collect();
-    let step = 100_000_000i64;
-    let tiles: Vec<[i64; 4]> =
-        (-18..18).flat_map(|x| (-9..9).map(move |y| [x * step, y * step, (x + 1) * step, (y + 1) * step])).collect();
+    // Each region cut into the tiles (360/64° by 180/32°) by halving: no clip of a whole region by
+    // each tile it meets.
+    let mut by_tile: BTreeMap<(i64, i64), Vec<(String, Area)>> = BTreeMap::new();
+    let cut: Vec<(String, Vec<((i64, i64), Area)>)> =
+        areas.iter().collect::<Vec<_>>().par_iter().map(|(id, a)| ((*id).clone(), tile_pieces(a))).collect();
+    for (id, ps) in cut {
+        for (k, a) in ps {
+            by_tile.entry(k).or_default().push((id.clone(), a));
+        }
+    }
+    let tiles: Vec<((i64, i64), [i64; 4])> =
+        (0..64).flat_map(|x| (0..32).map(move |y| ((x, y), tile_box(x, y)))).collect();
     type One = (Vec<(String, Area, Area)>, Area, Vec<Problem>);
     let done: Vec<One> = tiles
         .par_iter()
-        .map(|t| {
+        .map(|(k, t)| {
             let ta = geom::box_area(*t);
-            let mut pieces: Vec<(String, Area)> = boxes
-                .iter()
-                .filter(|(_, b)| meets(*b, *t))
-                .map(|(id, _)| ((*id).clone(), areas[*id].intersect(&ta)))
-                .filter(|(_, a)| !a.is_empty())
-                .collect();
+            let mut pieces: Vec<(String, Area)> = by_tile.get(k).cloned().unwrap_or_default();
             let mut changes: Vec<(String, Area, Area)> = Vec::new();
             let mut problems = Vec::new();
             if !cover {

@@ -332,3 +332,43 @@ fn a_stretch_one_region_alone_borders_is_its_own() {
     assert!(at("p-waters", 2.5, 0.5) && at("p-waters", -0.5, 0.5) && !at("p1", -0.5, 0.5));
     assert!(at("p1", 0.5, 0.5) && !at("p1", 2.5, 0.5));
 }
+
+/// Cutting a region back to the land never hands one operation a continent's coast: a mask (the
+/// land in a box) is only made for a box of 2° or less holding at most `MASK_POINTS` points of the
+/// region, and none made holds more than `MASK_POINTS` unless its box is a sixteenth of a degree; the
+/// result is the plain intersection's.
+#[test]
+fn the_land_is_cut_in_bounded_pieces() {
+    // Land: 80 × 80 islands of 64 points each (410k points) over 16° × 16°.
+    let mut land: Vec<Vec<geom::Ring>> = Vec::new();
+    for i in 0..80 {
+        for j in 0..80 {
+            let (x, y) = (i as f64 * 0.2, j as f64 * 0.2);
+            let ring: geom::Ring = (0..64)
+                .map(|k| {
+                    let t = k as f64 / 64.0 * std::f64::consts::TAU;
+                    [e7(x + 0.1 + 0.05 * t.cos()), e7(y + 0.1 + 0.05 * t.sin())]
+                })
+                .collect();
+            land.push(vec![ring]);
+        }
+    }
+    let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
+    let region = Area::from_rings(&bx(-1.0, -1.0, 17.0, 17.0));
+    let biggest = std::sync::Mutex::new((0usize, [0i64; 4]));
+    let mask = |b: [i64; 4]| {
+        let m = data.land_in(b);
+        let mut g = biggest.lock().unwrap();
+        if geom::points(&m) > g.0 {
+            *g = (geom::points(&m), b);
+        }
+        m
+    };
+    let got = geom::with_mask(&region, &mask, true);
+    let (most, b) = *biggest.lock().unwrap();
+    assert!(b[2] - b[0] <= 20_000_000 && b[3] - b[1] <= 20_000_000, "{b:?}");
+    assert!(most <= geom::MASK_POINTS, "{most}");
+    let all = data.land_in([-10_000_000, -10_000_000, 170_000_000, 170_000_000]);
+    assert!((geom::area_km2(&got) - geom::area_km2(&all)).abs() < 1.0);
+    assert!(geom::area_km2(&got.minus(&all)) < 0.01 && geom::area_km2(&all.minus(&got)) < 0.01);
+}
