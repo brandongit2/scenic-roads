@@ -981,14 +981,24 @@ mod tests {
     /// Task #393: a job handed over is taken over from its record by the next agent, which reads
     /// its end from its status file (not its child): its code, a pause's 75, and a kill while no
     /// agent tended it (`vanished`); one with no saved slot isn't.
+    ///
+    /// (The job says it's ready once its shell runs, then blocks reading a fifo: no process of its
+    /// group is being started when the kill comes. A kill while its head is still forking may miss
+    /// the child it is starting, which then waits on alone, its group never empty; on a loaded Mac,
+    /// where a job's shell takes seconds to start, it did.)
     #[test]
     fn a_job_handed_over_is_taken_over_and_its_end_read() {
         let d = tempfile::tempdir().unwrap();
         for (code, want) in [("0", Some(0)), ("75", Some(75)), ("kill", None)] {
             let rec = d.path().join(format!("job-{code}.json"));
+            let ready = d.path().join(format!("ready-{code}"));
             let go = d.path().join(format!("go-{code}"));
+            let c = std::ffi::CString::new(go.to_str().unwrap()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+            // (Shell builtins only: it starts no process once ready.)
             let script = format!(
-                "while [ ! -e '{}' ]; do sleep 0.05; done; exit {}",
+                ": > '{}'; read x < '{}'; exit {}",
+                ready.display(),
                 go.display(),
                 if code == "kill" { "0" } else { code }
             );
@@ -1001,13 +1011,15 @@ mod tests {
             assert_eq!(hand, serde_json::json!({"lease": null}));
             assert!(a.adopted && a.pgid == pgid && a.threads == 2 && a.spec.cmd[2] == script);
             assert!(a.poll().unwrap().is_none());
+            wait_for(&mut a, "it ready", |_| ready.exists().then_some(()));
             if code == "kill" {
                 // (Its status file not written: killed with its head. The head is still this
                 // test's child, as it isn't once its agent has ended: reaped here, as launchd would.)
                 crate::sys::signal_group(pgid, Signal::Kill);
                 unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
             } else {
-                std::fs::write(&go, "").unwrap();
+                // (Opened once it reads, blocked till then: the job is past its `ready`.)
+                std::fs::write(&go, "\n").unwrap();
             }
             let st = wait_for(&mut a, "its end", |a| a.poll().unwrap());
             assert_eq!(st.code(), want);
