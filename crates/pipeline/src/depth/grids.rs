@@ -161,17 +161,63 @@ impl Reader {
         if let Some(t) = self.open.lock().unwrap().get(p) {
             return Ok(t.clone());
         }
-        let f = store::range::PlainFile::open(p).with_context(|| format!("{}", p.display()))?;
+        let tiff = {
+            let _p = crate::timings::sub("depth source files opened", crate::timings::Class::NasRead);
+            crate::timings::count(0, 1);
+            open_retrying(p, &open_on_nas, &OPEN_WAITS).with_context(|| format!("{}", p.display()))?
+        };
         let id = self.open.lock().unwrap().len() as u64;
-        let t = Arc::new(
-            Tiff::open(Arc::new(f))
-                .with_context(|| format!("{}", p.display()))?
-                .with_shared_cache(id, self.cache.clone()),
-        );
+        let t = Arc::new(tiff.with_shared_cache(id, self.cache.clone()));
         self.open.lock().unwrap().insert(p.to_path_buf(), t.clone());
         Ok(t)
     }
 }
+
+/// The waits between a source file's opens (task #398): an open on the NAS's SMB share can fail
+/// for a moment on a file that's there ("No such file or directory", 19 Oct: two depth-lo jobs in
+/// the same minute), or stay stuck in the kernel (each open is held to crate::agent::nasread's
+/// deadline, `open_on_nas`).
+pub const OPEN_WAITS: [std::time::Duration; 4] = [
+    std::time::Duration::from_secs(2),
+    std::time::Duration::from_secs(5),
+    std::time::Duration::from_secs(15),
+    std::time::Duration::from_secs(30),
+];
+
+/// A GeoTIFF on the NAS opened, its header read, on crate::agent::nasread's readers within their
+/// deadline (`TimedOut` past it).
+fn open_on_nas(p: &Path) -> std::io::Result<Tiff> {
+    let owned = p.to_path_buf();
+    crate::agent::nasread::with(p, move || {
+        let f = store::range::PlainFile::open(&owned)?;
+        Tiff::open(Arc::new(f)).map_err(std::io::Error::other)
+    })
+}
+
+/// `open(p)`, tried again after each of `waits` while it fails (its last error returned), each
+/// retry logged.
+pub fn open_retrying<T>(
+    p: &Path,
+    open: &dyn Fn(&Path) -> std::io::Result<T>,
+    waits: &[std::time::Duration],
+) -> std::io::Result<T> {
+    let mut tries = 0;
+    loop {
+        match open(p) {
+            Ok(t) => return Ok(t),
+            Err(e) if tries < waits.len() => {
+                eprintln!("{}: {e}; opened again in {:?}", p.display(), waits[tries]);
+                std::thread::sleep(waits[tries]);
+                tries += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// How many of a window's blocks are read at once (`Tiff::prefetch_window`; 1: in turn, as
+/// before task #398, which a measure sets to compare).
+pub static WINDOW_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(16);
 
 /// A source sampled onto a window: depth (NaN: none), the zoom each pixel's data supports (0:
 /// none), its class (measured where its grid's own zoom, else interpolated), and the chart's low
@@ -233,7 +279,15 @@ fn read(t: &Tiff, level: usize, x0: i64, y0: i64, x1: i64, y1: i64) -> Result<Op
     if a1 <= a0 || b1 <= b0 {
         return Ok(None);
     }
-    let v = t.read_window(level, a0 as u32, b0 as u32, (a1 - a0) as u32, (b1 - b0) as u32)?;
+    let (ww, wh) = ((a1 - a0) as u32, (b1 - b0) as u32);
+    let v = {
+        let _p = crate::timings::sub("depth sources' windows read", crate::timings::Class::NasRead);
+        let reads = WINDOW_READS.load(std::sync::atomic::Ordering::Relaxed);
+        if reads > 1 {
+            t.prefetch_window(level, a0 as u32, b0 as u32, ww, wh, reads)?;
+        }
+        t.read_window(level, a0 as u32, b0 as u32, ww, wh)?
+    };
     let nod = t.nodata().map(|n| n as f32);
     let v = v.into_iter().map(|x| if Some(x) == nod || !x.is_finite() { f32::NAN } else { x }).collect();
     Ok(Some((v, a0, b0, (a1 - a0) as usize)))

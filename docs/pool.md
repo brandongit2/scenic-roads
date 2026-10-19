@@ -361,7 +361,10 @@ one work of a pass's z3 tiles (the low zooms' gate opens for a pass as a whole).
 job's disk is its own: the parts of its halo's base packs it reads from the NAS, into its scratch,
 and its output (task #396; docs/plan.md, pack(T)); their runs and targets' disks from when their
 jobs copied whole base packs into a cache of the Mac's are dropped once, as `job-disks-v5.json`
-is first written (docs/formats.md). **Shared caches** (task #392, `needs::CACHES`): a `unit`
+is first written (docs/formats.md). `depth-lo`'s (task #398, `coord::REMEASURED`): its job
+peaks and targets' measures past three times its targets' median and a GB (a 35 GB peak against
+65 MB targets, which kept it on the lead's Mac) are dropped each time the coordinator loads them,
+so it runs on any Mac by its measured use. **Shared caches** (task #392, `needs::CACHES`): a `unit`
 reads the DEM cache on a Mac. The run that fills it measures it whole, the warm runs after it
 their output alone. So a target of such a step counts its own output (its disk floor at most its
 step's 90th percentile, `needs::Book::disk`), and the cache is reserved apart. What's reserved

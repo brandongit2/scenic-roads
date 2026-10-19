@@ -4888,9 +4888,11 @@ fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
         .map(|t| Unit::parse(t).filter(|u| u.z == z).with_context(|| format!("not a z{z} tile: {t}")))
         .collect::<Result<_>>()?;
     anyhow::ensure!(!ts.is_empty(), "{step} <{z}/x/y …>");
-    let p = phase("the depth sources and the basemap's water opened", Class::NasRead);
+    let p = phase("the depth sources' declarations read", Class::NasRead);
     let sources = pipeline::depth::grids::declared(out.root(), &out.manifest)?;
     anyhow::ensure!(!sources.is_empty(), "no depth source is declared (inputs/sources/, docs/inputs.md §6.10)");
+    drop(p);
+    let p = phase("the basemap's water opened", Class::NasRead);
     let water = pipeline::terrain_pack::open_water(out)?;
     drop(p);
     let names: Vec<String> = ts.iter().map(|t| format!("Composing the depth of {}", t.slash())).collect();

@@ -287,7 +287,12 @@ impl<'a> Tiles<'a> {
     }
 }
 
-/// Composes zoom `z`'s tiles `x0..x0 + n` by `y0..y0 + n` into `t`, block by block.
+/// How often a level says how far it is.
+const SAY_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Composes zoom `z`'s tiles `x0..x0 + n` by `y0..y0 + n` into `t`, block by block, telling
+/// `done` the share of the level's blocks done after each (a level's blocks can take an hour on the
+/// NAS: the job's progress moves within it).
 fn level(
     t: &mut Tiles,
     sources: &[Source],
@@ -299,10 +304,21 @@ fn level(
     y0: u32,
     n: u32,
     zmin: u8,
+    done: &mut dyn FnMut(f64),
 ) -> Result<usize> {
+    use crate::timings::{phase, Class};
     let mut kept = 0;
+    let side = n.div_ceil(BLOCK);
+    let mut k = 0;
+    let mut said = std::time::Instant::now();
     for by in (y0..y0 + n).step_by(BLOCK as usize) {
         for bx in (x0..x0 + n).step_by(BLOCK as usize) {
+            k += 1;
+            // (Said at most every few seconds: a fine level's thousands of blocks are mostly dry.)
+            if said.elapsed() >= SAY_EVERY {
+                done(f64::from(k - 1) / f64::from(side * side));
+                said = std::time::Instant::now();
+            }
             let b = Block { z, tx0: bx, ty0: by, nx: BLOCK.min(x0 + n - bx), ny: BLOCK.min(y0 + n - by) };
             let (c0, r0) = b.origin();
             let bbox = super::grids::window_box(z, c0, r0, b.w(), b.h());
@@ -310,13 +326,18 @@ fn level(
             if !sources.iter().any(|s| s.max_zoom_in(bbox).is_some_and(|m| m >= need)) {
                 continue;
             }
-            let wt = wc.block(water, b)?;
+            let wt = {
+                let _p = phase("the basemap's water read", Class::NasRead);
+                wc.block(water, b)?
+            };
             let made = {
+                let _p = phase("composing", Class::Compute);
                 let tt: &Tiles = t;
                 let mut up = |zv: u8| tt.up(b, zv);
                 compose(b, sources, rd, &wt, &mut up, zmin)?
             };
             let Some(c) = made else { continue };
+            let _p = phase("tiles encoded", Class::Compute);
             for (x, y, d, k) in tiles(b, &c) {
                 t.put(z, x, y, &d, k)?;
                 kept += 1;
@@ -334,6 +355,7 @@ fn put_packs(
     scope: &str,
     root: (u8, u32, u32),
 ) -> Result<usize> {
+    let _p = crate::timings::phase("packs written", crate::timings::Class::NasWrite);
     for (layer, enc, which) in [(LAYER, ENCODING, 0usize), (CLASS_LAYER, CLASS_ENCODING, 1)] {
         let mut it = made.iter().map(|(&(z, x, y), p)| {
             let b = if which == 0 { &p.0 } else { &p.1 };
@@ -402,20 +424,34 @@ fn from_children(t: &Tiles, z: u8, x: u32, y: u32) -> Result<Option<(Vec<f32>, V
 
 /// The assembly of z3 tile `q`: its lo packs (z3–8); how many tiles.
 pub fn build_lo(out: &mut Out, sources: &[Source], water: &dyn WaterSource, q: (u32, u32)) -> Result<usize> {
+    let made = compose_lo(out, sources, water, q, LO_COMPOSED.1)?;
+    put_packs(out, &made, "lo", (3, q.0, q.1))
+}
+
+/// The assembly of z3 tile `q`'s tiles, made, unwritten: z6 to `upto` (at most z8) composed, the
+/// coarser ones from their children (`upto` below z8: a measure of the composing alone).
+pub fn compose_lo(
+    out: &Out,
+    sources: &[Source],
+    water: &dyn WaterSource,
+    q: (u32, u32),
+    upto: u8,
+) -> Result<BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>> {
     let rd = Reader::default();
     let mut wc = WaterCache::default();
-    let made = {
+    let upto = upto.min(LO_COMPOSED.1);
+    Ok({
         let mut t = Tiles::new(out, false);
-        for z in LO_COMPOSED.0..=LO_COMPOSED.1 {
+        let zooms = u64::from(upto.saturating_sub(LO_COMPOSED.0) + 1);
+        for z in LO_COMPOSED.0..=upto {
             let n = 1u32 << (z - 3);
-            let k = level(&mut t, sources, &rd, water, &mut wc, z, q.0 * n, q.1 * n, n, 3)?;
-            crate::agent::jobs::report(
-                u64::from(z - LO_COMPOSED.0 + 1),
-                u64::from(LO_COMPOSED.1 - LO_COMPOSED.0 + 1),
-                "zooms",
-            );
+            let at = f64::from(z - LO_COMPOSED.0);
+            let mut done = |f: f64| crate::agent::jobs::report_f(at + f, zooms, "zooms");
+            let k = level(&mut t, sources, &rd, water, &mut wc, z, q.0 * n, q.1 * n, n, 3, &mut done)?;
+            crate::agent::jobs::report(u64::from(z - LO_COMPOSED.0 + 1), zooms, "zooms");
             eprintln!("depth-lo 3/{}/{}: z{z}, {k} tiles", q.0, q.1);
         }
+        let _p = crate::timings::phase("z3–5 from their children", crate::timings::Class::Compute);
         for z in (3..LO_COMPOSED.0).rev() {
             let n = 1u32 << (z - 3);
             for y in q.1 * n..(q.1 + 1) * n {
@@ -426,9 +462,9 @@ pub fn build_lo(out: &mut Out, sources: &[Source], water: &dyn WaterSource, q: (
                 }
             }
         }
+        drop(_p);
         std::mem::take(&mut t.made)
-    };
-    put_packs(out, &made, "lo", (3, q.0, q.1))
+    })
 }
 
 /// The piece of z6 tile `t`: its hi packs (z9–16); how many tiles.
@@ -439,8 +475,11 @@ pub fn build_hi(out: &mut Out, sources: &[Source], water: &dyn WaterSource, t: (
         for z in HI.0..=HI.1 {
             let mut wc = WaterCache::default();
             let n = 1u32 << (z - 6);
-            let k = level(&mut tl, sources, &rd, water, &mut wc, z, t.0 * n, t.1 * n, n, 3)?;
-            crate::agent::jobs::report(u64::from(z - HI.0 + 1), u64::from(HI.1 - HI.0 + 1), "zooms");
+            let zooms = u64::from(HI.1 - HI.0 + 1);
+            let at = f64::from(z - HI.0);
+            let mut done = |f: f64| crate::agent::jobs::report_f(at + f, zooms, "zooms");
+            let k = level(&mut tl, sources, &rd, water, &mut wc, z, t.0 * n, t.1 * n, n, 3, &mut done)?;
+            crate::agent::jobs::report(u64::from(z - HI.0 + 1), zooms, "zooms");
             eprintln!("depth 6/{}/{}: z{z}, {k} tiles", t.0, t.1);
         }
         std::mem::take(&mut tl.made)

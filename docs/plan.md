@@ -540,8 +540,19 @@ The server builds missing deeper terrain and slope tiles from their ancestors.
 Depth under the seas and lakes (`pipeline::depth`; its sources docs/inputs.md §6.10; its files
 docs/formats.md, Depth), split by tile like the terrain, so downloads and the mirror take it as it is.
 - **Targets:** every z3 tile within 200 nautical miles (`REACH_KM`, a region's EEZ's reach) of the
-  coverage that a source meets (`depth-lo`), and every z6 tile within it that a source finer than z8
-  meets (`depth`, any Mac). The 15″ grid covers the rest of an area's water.
+  coverage that a source meets (`depth-lo`, any Mac), and every z6 tile within it that a source
+  finer than z8 meets (`depth`, any Mac). Both read only the NAS (the sources' grids, the basemap,
+  the lo packs) and write their packs there. The 15″ grid covers the rest of an area's water.
+- **Reading the sources:** a source's GeoTIFF is opened on the agent's NAS readers within their
+  deadline, and opened again after 2, 5, 15 and 30 s while it fails (an SMB open can fail for a
+  moment on a file that's there: two depth-lo jobs, 19 Oct). A window's blocks are read 16 at
+  once into the shared block cache before it's sampled (`Tiff::prefetch_window`): read in turn,
+  each waits a round trip and the job is NAS-latency-bound.
+- **Timings and progress:** a job's phases: the sources' declarations read, the basemap's water
+  opened and read, `composing` (its sub-phases: the source files opened, the sources' windows read,
+  the stored levels scaled up, feathering, gaps filled), tiles encoded, the coarse levels from
+  their children (depth-lo) and the packs written. Its progress moves within a zoom, by the
+  zoom's blocks done (said every 5 s at most).
 - **depth-lo (a z3 tile):** z6–8 composed (below), z3–5 each its children's mean.
 - **depth (a z6 tile):** z9–16, a block only where a source has a grid of that zoom or finer; its
   capped pixels scaled up from this job's coarser tiles and, at z8 and coarser, from the lo packs

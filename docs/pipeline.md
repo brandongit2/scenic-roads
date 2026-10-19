@@ -82,7 +82,7 @@ the lead.
 | Tree cover | Tree cover | `trees` | pack | a tile | ⇄ |
 | | Tree cover, zoomed out | `trees-lo` | pack | an area | ⇄ |
 | | Tree cover's blocks (task) | `treeblock` | | a task of Tree cover | ⇄ |
-| Water depth | Depth, zoomed out | `depth-lo` | pack | an area | lead |
+| Water depth | Depth, zoomed out | `depth-lo` | pack | an area | ⇄ |
 | | Depth | `depth` | pack | a tile | ⇄ |
 | Roads | Roads | `unit` | pack | a tile | ⇄ |
 | | Roads' last steps (task) | `tail` | | a task of Roads | ⇄ |

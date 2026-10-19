@@ -750,6 +750,46 @@ impl Tiff {
         Ok(out)
     }
 
+    /// Image `level`'s blocks under the window `x0..x0 + w` by `y0..y0 + h` read into the cache,
+    /// `threads` at once (task #398: over SMB each block's read waits a round trip, so a window's
+    /// blocks read in turn leave the job latency-bound); `read_window` then takes them from it. A
+    /// failed read stops the others, its error returned (`read_window` would say it again). With no
+    /// cache, or one too small for the window's blocks, nothing (the reads would be lost).
+    pub fn prefetch_window(&self, level: usize, x0: u32, y0: u32, w: u32, h: u32, threads: usize) -> Result<()> {
+        let img = self.level(level)?;
+        let Some((_, c)) = &self.cache else { return Ok(()) };
+        if w == 0 || h == 0 || x0 >= img.width || y0 >= img.height {
+            return Ok(());
+        }
+        let (x1, y1) = ((x0 + w).min(img.width) - 1, (y0 + h).min(img.height) - 1);
+        let (bw, bh) = (img.block_w, img.block_h);
+        let blocks: Vec<(u32, u32)> =
+            (y0 / bh..=y1 / bh).flat_map(|by| (x0 / bw..=x1 / bw).map(move |bx| (bx, by))).collect();
+        if blocks.len() < 2 || blocks.len() * img.block_bytes() > c.lock().unwrap().cap() / 2 {
+            return Ok(());
+        }
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failed: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+        std::thread::scope(|s| {
+            for _ in 0..threads.clamp(1, blocks.len()) {
+                s.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= blocks.len() || failed.lock().unwrap().is_some() {
+                        return;
+                    }
+                    if let Err(e) = self.block(level, blocks[i].0, blocks[i].1) {
+                        failed.lock().unwrap().get_or_insert(e);
+                        return;
+                    }
+                });
+            }
+        });
+        match failed.into_inner().unwrap() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
     /// Image `level`'s pixel (`x`, `y`), band 1, as a 32-bit float.
     pub fn pixel(&self, level: usize, x: u32, y: u32) -> Result<f32> {
         let img = self.level(level)?;

@@ -354,3 +354,109 @@ fn an_estimated_source_is_classed_so() {
     let c = tile(&out, CLASS_LAYER, "hi", (6, T.0, T.1), 11, x, y).expect("the lake's z11 tile");
     assert_eq!(class_at(&c, px, py), C_ESTIMATED | (3 << 4));
 }
+
+/// Task #398: an assembly's and a piece's run are timed by stage (no hour of "(untimed)"): the
+/// sources' files opened and windows read, the water read, composing and within it feathering
+/// (and the gaps filled, which the fixture has none of), the tiles encoded, the coarse levels and the packs written.
+#[test]
+fn the_depth_steps_time_their_stages() {
+    // (In a process of its own, this test alone: the run's timings are the process's.)
+    const ALONE: &str = "SCENIC_TEST_ALONE";
+    if std::env::var_os(ALONE).is_none() {
+        let out = store::spawn::output(
+            store::spawn::command(std::env::current_exe().unwrap())
+                .args(["--exact", "depth::tests::the_depth_steps_time_their_stages", "--nocapture"])
+                .env(ALONE, "1"),
+        )
+        .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success() && said.contains(" 1 passed"), "{said}{}", String::from_utf8_lossy(&out.stderr));
+        return;
+    }
+    let d = tempfile::tempdir().unwrap();
+    let srcs = sources(d.path());
+    crate::timings::reset();
+    crate::timings::start("depth-lo");
+    packs(&srcs, &Fixture, d.path());
+    let r = crate::timings::snapshot(true).unwrap();
+    let top: Vec<&str> = r.phases.iter().map(|p| p.name.as_str()).collect();
+    for p in ["the basemap's water read", "composing", "tiles encoded", "z3–5 from their children", "packs written"] {
+        assert!(top.contains(&p), "{p} not in {top:?}");
+    }
+    let composing = r.phases.iter().find(|p| p.name == "composing").unwrap();
+    let sub: Vec<&str> = composing.sub.iter().map(|p| p.name.as_str()).collect();
+    // (The fixture's water has no gap near data to fill: "gaps filled" isn't run.)
+    for p in ["depth source files opened", "depth sources' windows read", "feathering", "stored levels scaled up"] {
+        assert!(sub.contains(&p), "{p} not in composing's {sub:?}");
+    }
+    let opened = composing.sub.iter().find(|p| p.name == "depth source files opened").unwrap();
+    assert!(opened.files > 0);
+    // Nearly all of it timed.
+    assert!(r.untimed_s <= 0.2 * r.wall_s + 0.05, "untimed {} of {}", r.untimed_s, r.wall_s);
+    eprintln!("{}", serde_json::to_string_pretty(&r).unwrap());
+}
+
+/// Task #398: a source file's open that fails for a moment (SMB's "No such file or directory" on
+/// a file that's there) is tried again; one that keeps failing fails after its waits.
+#[test]
+fn a_source_files_open_is_tried_again_after_a_transient_error() {
+    use std::cell::Cell;
+    use std::io;
+    let waits = [std::time::Duration::from_millis(1); 3];
+    let tries = Cell::new(0);
+    let flaky = |_: &Path| -> io::Result<u32> {
+        tries.set(tries.get() + 1);
+        if tries.get() <= 2 {
+            Err(io::Error::from_raw_os_error(libc::ENOENT))
+        } else {
+            Ok(7)
+        }
+    };
+    assert_eq!(grids::open_retrying(Path::new("/nas/BlueTopo_x.low.tif"), &flaky, &waits).unwrap(), 7);
+    assert_eq!(tries.get(), 3);
+    tries.set(0);
+    let gone = |_: &Path| -> io::Result<u32> {
+        tries.set(tries.get() + 1);
+        Err(io::Error::from_raw_os_error(libc::ENOENT))
+    };
+    let e = grids::open_retrying(Path::new("/nas/x.tif"), &gone, &waits).unwrap_err();
+    assert_eq!((e.kind(), tries.get()), (io::ErrorKind::NotFound, 4));
+    // And through the depth's reader: a real file opened on the readers' pool.
+    let d = tempfile::tempdir().unwrap();
+    let srcs = sources(d.path());
+    let rd = grids::Reader::default();
+    let g = &srcs[0].grids[0];
+    assert!(grids::sample(&rd, &srcs[0], g.zoom, 0, 0, 16, 16).is_ok());
+}
+
+/// Task #398's measure (run by hand, read-only: nothing written to the root): a real z3 tile's
+/// assembly composed up to a zoom from the NAS, its windows' blocks read in turn (`reads` 1, as
+/// before) or at once, timed. SCENIC_DEPTH_MEASURE="<root> <x>/<y> <upto zoom> <reads>"; unset,
+/// nothing.
+#[test]
+fn measure_a_real_assembly() {
+    let Ok(m) = std::env::var("SCENIC_DEPTH_MEASURE") else { return };
+    let a: Vec<&str> = m.split_whitespace().collect();
+    let root = Path::new(a[0]);
+    let (x, y) = a[1].split_once('/').unwrap();
+    let q: (u32, u32) = (x.parse().unwrap(), y.parse().unwrap());
+    let upto: u8 = a[2].parse().unwrap();
+    grids::WINDOW_READS.store(a[3].parse().unwrap(), std::sync::atomic::Ordering::Relaxed);
+    let scratch = tempfile::tempdir().unwrap();
+    let out = Out::unbound(root, scratch.path()).unwrap();
+    let srcs = grids::declared(out.root(), &out.manifest).unwrap();
+    let water = crate::terrain_pack::open_water(&out).unwrap();
+    crate::timings::start("depth-lo");
+    let t0 = std::time::Instant::now();
+    let made = super::build::compose_lo(&out, &srcs, &water, q, upto).unwrap();
+    let wall = t0.elapsed().as_secs_f64();
+    let r = crate::timings::snapshot(true).unwrap();
+    println!("3/{}/{} to z{upto}, reads {}: {} tiles in {wall:.1} s", q.0, q.1, a[3], made.len());
+    for p in &r.phases {
+        println!("  {:<34} {:>8.1} s  n={}", p.name, p.wall_s, p.n);
+        for s in &p.sub {
+            println!("    {:<32} {:>8.1} s  n={}", s.name, s.wall_s, s.n);
+        }
+    }
+    println!("  untimed {:.1} s", r.untimed_s);
+}
