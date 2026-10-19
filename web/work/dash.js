@@ -599,7 +599,8 @@ function shortNames(m) {
 }
 
 // Each machine's lane: a run of a step's targets is a segment in its stage's colour (the map
-// tiles' as any step's), each lane named by its Mac's short name and slot; under them, each region
+// tiles' as any step's; 3 px at least, so a step as short as a catalog's publishing shows as its
+// legend says), each lane named by its Mac's short name and slot; under them, each region
 // marked where it's all on the map (its `map_at`).
 function schedule(m) {
   const fc = m.fc;
@@ -616,7 +617,7 @@ function schedule(m) {
   const stagesSeen = new Set();
   const segment = (track, l, say) => {
     const seg = h("i", { onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) });
-    Object.assign(seg.style, { left: x(l.from), width: `calc(${x(l.until)} - ${x(l.from)})`, background: S.colour(l.step) });
+    Object.assign(seg.style, { left: x(l.from), width: `max(3px, calc(${x(l.until)} - ${x(l.from)}))`, background: S.colour(l.step) });
     track.append(seg);
     if (S.stage(l.step)) stagesSeen.add(S.stage(l.step));
   };
