@@ -640,6 +640,20 @@ pub fn build_piece(
     Ok(rep)
 }
 
+/// The mids of z3 tile `q`'s pieces `ts` that have one, each read and checked (`read_mid`).
+fn read_mids(out: &Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<BTreeMap<(u32, u32), Vec<Made>>> {
+    let mut mids: BTreeMap<(u32, u32), Vec<Made>> = BTreeMap::new();
+    for &t in ts {
+        anyhow::ensure!((t.0 >> 3, t.1 >> 3) == q, "6/{}/{} isn't in 3/{}/{}", t.0, t.1, q.0, q.1);
+        if let Some(c) = out.get(&mid_logical(t.0, t.1)) {
+            let (of, tiles) = read_mid(&out.path(c))?;
+            anyhow::ensure!(of == t, "{c} is 6/{}/{}'s mid", of.0, of.1);
+            mids.insert(t, tiles);
+        }
+    }
+    Ok(mids)
+}
+
 /// Makes z3 tile `q`'s zoomed-out slope (an assembly: its lo pack, z3–8) from its pieces' mids (`ts`:
 /// its z6 tiles near the coverage; one current without a mid has its z6–8 tiles in the lo pack as it
 /// is) and the lo pack as it is, and uploads it.
@@ -651,17 +665,9 @@ pub fn build_lo(
 ) -> Result<Report> {
     use crate::timings::{phase, Class};
     let mut rep = Report::default();
-    let mut mids: BTreeMap<(u32, u32), Vec<Made>> = BTreeMap::new();
     let p = phase("the pieces' mids and the terrain packs' indexes read", Class::NasRead);
-    for &t in ts {
-        anyhow::ensure!((t.0 >> 3, t.1 >> 3) == q, "6/{}/{} isn't in 3/{}/{}", t.0, t.1, q.0, q.1);
-        if let Some(c) = out.get(&mid_logical(t.0, t.1)) {
-            p.count(0, 1);
-            let (of, tiles) = read_mid(&out.path(c))?;
-            anyhow::ensure!(of == t, "{c} is 6/{}/{}'s mid", of.0, of.1);
-            mids.insert(t, tiles);
-        }
-    }
+    let mids = read_mids(out, q, ts)?;
+    p.count(0, mids.len() as u64);
     let terr = ManifestTiles::new(out, "terrain");
     let (get, has) = terrain_reads(&terr);
     let terrain = Terrain::new(&get, &has);
@@ -1505,5 +1511,91 @@ mod tests {
         assert_eq!(now.0.len(), ts.len() + 1, "{:?}", now.0);
         assert_eq!(now.0, now.1, "made again over what it stored: the same");
         assert_eq!(now, before, "the same packs, byte for byte (their content names), first and again");
+    }
+
+    /// Task #400's measure (run by hand, read-only: nothing written to the root): a real slope piece
+    /// (`piece 6/x/y`: its terrain pack copied here, its tiles worked out) or assembly (`lo 3/x/y`:
+    /// its pieces' mids and the terrain read, its tiles worked out), timed, with the CPU it took and
+    /// a digest of the tiles made (the same before and after a change).
+    /// SCENIC_SLOPE_MEASURE="<root> piece|lo <x>/<y>"; unset, nothing.
+    #[test]
+    fn measure_a_real_target() {
+        let Ok(m) = std::env::var("SCENIC_SLOPE_MEASURE") else { return };
+        let a: Vec<&str> = m.split_whitespace().collect();
+        let root = std::path::Path::new(a[0]);
+        let (x, y) = a[2].split_once('/').unwrap();
+        let t: (u32, u32) = (x.parse().unwrap(), y.parse().unwrap());
+        let scratch = tempfile::tempdir().unwrap();
+        let out = Out::unbound(root, scratch.path()).unwrap();
+        let cpu = || {
+            let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+            unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
+            let s = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
+            s(u.ru_utime) + s(u.ru_stime)
+        };
+        crate::timings::start(if a[1] == "lo" { "slope-lo" } else { "slope" });
+        let (t0, c0) = (std::time::Instant::now(), cpu());
+        if std::env::var_os("SCENIC_SLOPE_MEASURE_TRACE").is_some() {
+            std::thread::spawn(move || {
+                let mut last = (std::time::Instant::now(), cpu());
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let now = (std::time::Instant::now(), cpu());
+                    eprintln!(
+                        "{:>6.1} s: {:.1} cores",
+                        now.0.duration_since(t0).as_secs_f64(),
+                        (now.1 - last.1) / now.0.duration_since(last.0).as_secs_f64()
+                    );
+                    last = now;
+                }
+            });
+        }
+        let none = |_: &str, _: u64, _: u64| {};
+        let made: Vec<Made> = if a[1] == "lo" {
+            let ts: Vec<(u32, u32)> = (0..64)
+                .map(|k| (t.0 * 8 + k % 8, t.1 * 8 + k / 8))
+                .filter(|&(x, y)| out.get(&hi_logical(x, y)).is_some() || out.get(&mid_logical(x, y)).is_some())
+                .collect();
+            let p = crate::timings::phase("mids read", crate::timings::Class::NasRead);
+            let mids = read_mids(&out, t, &ts).unwrap();
+            drop(p);
+            let terr = ManifestTiles::new(&out, "terrain");
+            let (get, has) = terrain_reads(&terr);
+            let terrain = Terrain::new(&get, &has);
+            let count =
+                Count { done: Default::default(), total: 85, said: Mutex::new(std::time::Instant::now()), on: &none };
+            let _p = crate::timings::phase("assembled", crate::timings::Class::Compute);
+            assemble(&out, &terrain, t, &ts, &mids, &count).unwrap()
+        } else {
+            let terr = ManifestTiles::with_copies(&out, "terrain", out.scratch_file("terrain-copies"));
+            let (get, has) = terrain_reads(&terr);
+            let p = crate::timings::phase("its terrain pack copied here", crate::timings::Class::NasRead);
+            terr.copy_here(9, t.0 << 3, t.1 << 3);
+            drop(p);
+            let terrain = Terrain::new(&get, &has);
+            let count =
+                Count { done: Default::default(), total: 1, said: Mutex::new(std::time::Instant::now()), on: &none };
+            let _p = crate::timings::phase("worked out", crate::timings::Class::Compute);
+            let (hi, lo) = piece(&terrain, &has, t, &count);
+            hi.into_iter().chain(lo).collect()
+        };
+        let (wall, cpu) = (t0.elapsed().as_secs_f64(), cpu() - c0);
+        let mut h = <sha2::Sha256 as sha2::Digest>::new();
+        for (z, x, y, b) in &made {
+            sha2::Digest::update(&mut h, format!("{z}/{x}/{y} {}\n", b.len()));
+            sha2::Digest::update(&mut h, b);
+        }
+        let r = crate::timings::snapshot(true).unwrap();
+        println!(
+            "{} {}: {} tiles in {wall:.1} s, CPU {cpu:.1} s ({:.2} cores); digest {:x}",
+            a[1],
+            a[2],
+            made.len(),
+            cpu / wall,
+            sha2::Digest::finalize(h)
+        );
+        for p in &r.phases {
+            println!("  {:<34} {:>8.1} s  CPU {:>6.1} s  n={}", p.name, p.wall_s, p.cpu_s.unwrap_or(0.0), p.n);
+        }
     }
 }
