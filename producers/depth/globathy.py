@@ -85,22 +85,23 @@ def read_lakes(hydrolakes_zip: Path, box, dmax: dict[int, float]):
                 yield hid, dmax[hid], rings
 
 
-def bowl(rings, dmax: float):
-    """The lake's bowl on the z11 grid: (its window, depth: negative below the surface, NaN off it)."""
+def bowl(rings, dmax: float, zoom: int = ZOOM):
+    """The lake's bowl on the `zoom` grid (z11 here; smalllakes.py's z14): (its window, depth: negative
+    below the surface, NaN off it)."""
     from rasterio import features
     from scipy import ndimage
 
     merc = [[lonlat_to_merc(x, y) for x, y in r] for r in rings]
     xs = [p[0] for r in merc for p in r]
     ys = [p[1] for r in merc for p in r]
-    win = Window.around(ZOOM, (min(xs), min(ys), max(xs), max(ys)), pad=2)
+    win = Window.around(zoom, (min(xs), min(ys), max(xs), max(ys)), pad=2)
     geom = {"type": "Polygon", "coordinates": [[(float(x), float(y)) for x, y in r] for r in merc]}
     inside = features.rasterize([(geom, 1)], out_shape=(win.h, win.w), transform=win.transform(), fill=0, dtype="uint8").astype(bool)
     if not inside.any():
         return win, np.full((win.h, win.w), np.nan, "float32")
     # (Ground metres a pixel, at the lake's middle latitude.)
     lat = math.degrees(2 * math.atan(math.exp((sum(ys) / len(ys)) / 6378137.0)) - math.pi / 2)
-    m = px_size(ZOOM) * math.cos(math.radians(lat))
+    m = px_size(zoom) * math.cos(math.radians(lat))
     l = np.maximum(ndimage.distance_transform_edt(inside) - 0.5, 0.25) * m
     big = float(l[inside].max())
     sig = big * SIGMA / m

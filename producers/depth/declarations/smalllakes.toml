@@ -1,0 +1,23 @@
+name = "Small-lake depth estimates from the surrounding land's slope, on OpenStreetMap's outlines"
+what = "Estimated depth of lakes and ponds under 10 ha"
+credit = "Small lakes' depths estimated by this map from the land's slope around them (after Hollister et al. 2011, PLoS ONE 6:e25764, fitted on measured lakes); lake outlines © OpenStreetMap contributors (ODbL)"
+licence = "ODbL-1.0"
+licence_url = "https://opendatacommons.org/licenses/odbl/1-0/"
+source = "https://doi.org/10.1371/journal.pone.0025764"
+territory = "world"
+notes = "producers/depth/smalllakes.py: every lake or pond of the basemap (OpenStreetMap's outlines, z14) under 10 ha, not intermittent, not touching the sea, and not in HydroLAKES v1.0 (the owner's polygons zip; those are GLOBathy's). Its maximum depth from the mean land slope 30–100 m from its shore (the map's z12 terrain) and its largest distance to shore, by the depth lab's fit (validation.md §3: median error 48 % on 85 measured lakes under 10 ha, against 53 % for the area rule); flat or missing terrain takes the area rule. Each lake a bowl D = Dmax · (l/L)^0.75, z14. Estimates: drawn only where no survey and no GLOBathy bowl has a value. Not for navigation."
+
+[data]
+role = "depth"
+format = "depth-grid"
+index = "smalllakes-grids.geojson"
+version = "2026-10"
+refresh = "pinned"
+
+[data.params]
+code = 15
+water = "lake"
+label = "Small-lake estimate"
+datum = "the lake's surface"
+datum_exact = false
+estimated = true

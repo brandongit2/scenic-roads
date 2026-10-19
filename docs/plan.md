@@ -1529,8 +1529,9 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
     metre or two apart.
 
 13. **Depth** (§6, Depth): the map's 3D floor toggle isn't built (the server's `?floor=1` is);
-    GLOBathy's estimated bowls (`globathy`, lakes of 10 ha and more) have a producer but no grids
-    yet (not run, not declared: until then only surveyed lakes have depth); GtTM is read from windows made by
+    GLOBathy's estimated bowls (`globathy`, lakes of 10 ha and more) and the small lakes' (`smalllakes`,
+    under 10 ha) have producers but no grids yet (not run, not declared: until then only surveyed
+    lakes have depth); GtTM is read from windows made by
     hand, SHOM's from its archives unpacked by hand (no range reads of the HDF5 grid or the 7z yet);
     a piece's key names its water's z6–12 tiles, so a change the basemap shows only at z13–14
     doesn't remake it; MSL sources aren't drawn in lakes (the Great Lakes' source is `ncei-greatlakes`);
@@ -1543,11 +1544,8 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
     targets the coverage leaves keep their packs (no
     prune yet); the map's click popup for depth isn't built (the readout is).
     **The water depth has no source for** (each checked 18–19 Oct 2026):
-    - *Lakes under 10 ha* (not in HydroLAKES, so not in GLOBathy), and lakes OSM has that
-      HydroLAKES lacks (the depth lab: 44 % of Massachusetts' OSM lakes of 10 ha or more unmatched),
-      unless surveyed. The depth lab's land-slope estimate was tested (85 measured lakes under
-      10 ha: median error 48 %, half within ±50 %, against 53 % for an area rule); whether that is
-      good enough to draw is the owner's call, and it has no producer.
+    - *Lakes of 10 ha or more that OSM has and HydroLAKES lacks* (the depth lab: 44 % of
+      Massachusetts' OSM lakes of 10 ha or more unmatched), unless surveyed.
     - *Rivers outside the sea sources' reach*: inland rivers in the US (USACE's eHydro surveys are
       public, but each project on its own datum: MLLW, NAVD88, or a sloping low-water reference
       plane on the Mississippi and Ohio, with no published surface to bring them to the river's

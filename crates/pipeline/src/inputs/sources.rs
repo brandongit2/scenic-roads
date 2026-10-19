@@ -977,7 +977,7 @@ mod tests {
 
     #[test]
     fn the_depth_declarations_pass_the_check() {
-        let staged: [(&str, &[u8]); 14] = [
+        let staged: [(&str, &[u8]); 15] = [
             ("bluetopo.toml", include_bytes!("../../../../producers/depth/declarations/bluetopo.toml")),
             ("emodnet-dtm.toml", include_bytes!("../../../../producers/depth/declarations/emodnet-dtm.toml")),
             ("gblq.toml", include_bytes!("../../../../producers/depth/declarations/gblq.toml")),
@@ -995,6 +995,7 @@ mod tests {
             ("nonna-100.toml", include_bytes!("../../../../producers/depth/declarations/nonna-100.toml")),
             ("shom-homonim-100.toml", include_bytes!("../../../../producers/depth/declarations/shom-homonim-100.toml")),
             ("shom-homonim-20.toml", include_bytes!("../../../../producers/depth/declarations/shom-homonim-20.toml")),
+            ("smalllakes.toml", include_bytes!("../../../../producers/depth/declarations/smalllakes.toml")),
         ];
         let mut codes = BTreeSet::new();
         for (p, b) in staged {

@@ -1265,6 +1265,7 @@ a `.tif` `file` and a `zoom` 0–18 (`src-index`); two of one `code` (`src-role`
 | `ncei-crm` | NCEI's Coastal Relief Models, 1″ (the owner's download, `sources/ncei-crm/`; volume 6 absent) | 12 | sea | `ncei.py crm`; volumes on EGM2008 taken as MSL, uncorrected | z12 |
 | `ncei-greatlakes` | NCEI's Great Lakes bathymetry, 3″ (the owner's download, `sources/ncei-greatlakes/`) | 13 | lake | `ncei.py greatlakes`: from each lake's low water datum (CO-OPS' station datums) to its long-term mean level (GLERL's coordinated lake-wide monthly means, 1918 on), both fetched as it runs | z10 |
 | `globathy` | GLOBathy's maximum depths (CC0) on HydroLAKES v1.0's outlines (CC BY 4.0), every lake of 10 ha and more: estimates | 14 | lake | `globathy.py` (below) | z11; `estimated`, gaps only (`datum_exact = false`): a survey wins |
+| `smalllakes` | the basemap's (OpenStreetMap's, ODbL) lakes and ponds under 10 ha that HydroLAKES lacks, each one's maximum depth estimated from the land's slope around it: estimates | 15 | lake | `smalllakes.py` (below) | z14; `estimated`, gaps only (`datum_exact = false`): a survey and GLOBathy win |
 
 `rivers = true` is staged for `nonna-100`, `nonna-10` (mean water level by CHS's stations, which
 follow the St. Lawrence up to Montréal: NONNA-100 has values there), `bluetopo` (local mean sea
@@ -1296,14 +1297,27 @@ Public Server Authentication Root R46). `SSL_CERT_FILE`, when set, is used alone
 
 Every request carries the User-Agent "scenic-roads/0.1 (personal offline map)" and asks the host's
 robots.txt first, in a request of its own (`grid.robots_allow`); a path it bars stops the producer,
-which says to download the file by hand. The small-lake estimate (the depth lab's validation.md)
-has no producer (plan §10).
+which says to download the file by hand.
 
 `globathy.py` (`test_globathy.py`) reads GLOBathy's basic-parameters zip (fetched into `--cache`, or
 `--params`) and the owner's HydroLAKES v1.0 polygons zip (`--hydrolakes`; data.hydrosheds.org's
 robots.txt bars programs, so it's never fetched), and makes a z11 grid a z8 tile: each lake a bowl
 D = Dmax · (l / L)^0.75 on its outline (l the distance to shore smoothed by L/8, the depth lab's
 fit), several `--box`es a run, each owning the tiles whose north-west corner is in it.
+
+`smalllakes.py` (`test_smalllakes.py`) reads the basemap's z14 water and the z12 terrain from this
+machine's app server (`--server`, default `http://127.0.0.1:7311`; nothing from the internet) and
+the owner's HydroLAKES v1.0 polygons zip (`--hydrolakes`), and makes a z14 grid a z10 tile. Its
+lakes: class lake or pond, merged by OSM id over the z10 tile's z14 tiles and a ring of one more (a
+lake reaching past them is skipped and counted), under 10 ha, not intermittent, not within 3 m of
+the sea, and not a fifth or more covered by a HydroLAKES polygon (GLOBathy's). Each one's maximum
+depth by the depth lab's fit (its validation.md §3): ln Dmax = −3.820 + 0.363 ln S + 1.983 ln L −
+0.1324 (ln L)², ln L held at its peak (L ≈ 1,790 m) beyond it, S the mean land slope 30–100 m from
+the shore (other lakes and terrain at or below 0.3 m left out), L the largest distance to shore;
+under 3 land pixels in the ring or S < 0.003, the area rule Dmax = 3.04 · A^0.228 (A in ha). On the
+lab's 85 measured lakes under 10 ha: median error 48 %, half within ±50 % (the area rule: 53 %).
+Each lake is `globathy.py`'s bowl at z14. Several `--box`es a run, each owning the z10 tiles whose
+north-west corner is in it.
 
 **Keys** (docs/plan.md §6, Job keys): a depth target names each source meeting it by its id and
 `Source::digest` (its `[data]` and its index's features, their hashes among them), so a new grid
