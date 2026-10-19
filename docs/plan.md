@@ -1458,7 +1458,7 @@ the jobs' wall time, and where a run's time went):
 | pack | see `scenic timings pack` | see `scenic timings pack` | — | what a tile reads: its `units` and `bytes` sizes (crate::costin) |
 | slope | 5 % | 2 min | 0.4 | its terrain pack copied 29 %, uploaded 45 % |
 | heritage | 4 % | 81 min | 1.0 | the filtered planet clipped (osmium, once a pass) 86 % |
-| peaks | 3 % | 3 min | 1.1 | z12 tiles read one by one from the packs on the NAS (25,000 files a run) 75 % |
+| peaks | 3 % | 3 min | 1.1 | z12 tiles read from the packs on the NAS (25,000 tiles a run, ~110 KB each, in spans at the link's speed) 75 %; since #399 a job's next unit's read while one is measured (3 units: 39 s against 49 s in turn, on the M1) |
 
 A tail task on the other Mac fetches 0.65–1 GB at 2–6 MB/s (the Macs reach each other over Wi-Fi at
 about 4 MB/s; the NAS at 25–55 MB/s), so a tail is worth offering only to a Mac that would otherwise

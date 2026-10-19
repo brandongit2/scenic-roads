@@ -128,10 +128,18 @@ impl UnitZ12 {
         raw: &crate::terrain_pack::RawTiles,
         want: &BTreeSet<(u32, u32)>,
     ) -> Result<UnitZ12> {
+        Self::load_from(&crate::terrain_pack::ManifestTiles::new(out, "terrain"), raw, want)
+    }
+
+    /// `load`, from the terrain packs `packs` reads (a job's several units', each pack opened once).
+    pub fn load_from(
+        packs: &crate::terrain_pack::ManifestTiles,
+        raw: &crate::terrain_pack::RawTiles,
+        want: &BTreeSet<(u32, u32)>,
+    ) -> Result<UnitZ12> {
         // (From the terrain packs on the NAS, else AWS's raw tiles, cached or fetched: in parallel,
         // one phase, its tiles' bytes counted.)
         let p = crate::timings::phase("z12 terrain tiles loaded (packs, else AWS)", crate::timings::Class::NasRead);
-        let packs = crate::terrain_pack::ManifestTiles::new(out, "terrain");
         // (The packs' tiles read in spans, a pack's at once: `get_many`.)
         let want: Vec<(u32, u32)> = want.iter().copied().collect();
         let from_packs = packs.get_many(&want.iter().map(|&(x, y)| (Z12, x, y)).collect::<Vec<_>>())?;
@@ -217,6 +225,38 @@ impl UnitZ12 {
     pub fn unexpected(&self) -> usize {
         self.unexpected.load(Ordering::Relaxed)
     }
+}
+
+/// Each of `items` loaded (`load`) and handed to `work` in order, the next one's load under way on a
+/// thread of its own while `work` takes the one before: a job's next unit's z12 tiles read from the
+/// NAS while this one's peaks are measured (task #399: the reads were most of a run, at the link's
+/// speed already). The first is loaded on this thread. `work` gets what `load` made either way, so
+/// the results are those of loading each in turn; a failed load fails when its turn comes, after
+/// the ones before it were done. Two items' loads are held at once at most.
+pub fn read_ahead<I: Sync, T: Send>(
+    items: &[I],
+    load: impl Fn(&I) -> Result<T> + Sync,
+    mut work: impl FnMut(usize, &I, T) -> Result<()>,
+) -> Result<()> {
+    std::thread::scope(|s| {
+        let load = &load;
+        let mut ahead: Option<std::thread::ScopedJoinHandle<Result<T>>> = None;
+        for (k, it) in items.iter().enumerate() {
+            let t = match ahead.take() {
+                Some(h) => {
+                    let _p =
+                        crate::timings::phase("the next area's z12 tiles waited for", crate::timings::Class::NasRead);
+                    h.join().map_err(|_| anyhow::anyhow!("the read ahead panicked"))??
+                }
+                None => load(it)?,
+            };
+            if let Some(n) = items.get(k + 1) {
+                ahead = Some(s.spawn(move || load(n)));
+            }
+            work(k, it, t)?;
+        }
+        Ok(())
+    })
 }
 
 /// The z12 tiles a unit's peaks may read: those meeting a disc of `km` around each, padded.
@@ -839,6 +879,7 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn tile_bounds_exact_and_wrapping() {
@@ -870,6 +911,139 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Task #399: two neighbouring units' peaks measured from their z12 tiles read ahead, in spans
+    /// (`read_ahead`, `UnitZ12::load_from`: `ManifestTiles::get_many`), are byte for byte those
+    /// measured from the same packs read a tile at a time, each unit in turn.
+    #[test]
+    fn read_ahead_in_spans_gives_the_same_bytes_as_tile_by_tile() {
+        use crate::terrain_pack::{ManifestTiles, RawTiles};
+        let d = tempfile::tempdir().unwrap();
+        let mut out = crate::out::Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        // Two units side by side (6/33/22, 6/34/22), peaks either side of their border.
+        let pk = |n: u32, lon: f64, lat: f64, ele: Option<f32>| {
+            let (lon, lat) = ((lon * 1e7) as i32, (lat * 1e7) as i32);
+            (
+                UnitPeak { key: format!("k{n}"), id: format!("n{n}"), lon, lat, ele },
+                Summit { id: format!("n{n}"), kind: "peak".into(), lon, lat, ele, z8: None },
+            )
+        };
+        let units: Vec<Vec<(UnitPeak, Summit)>> = vec![
+            vec![pk(1, 11.20, 47.00, Some(1500.0)), pk(2, 11.23, 47.05, None)],
+            vec![pk(3, 11.30, 47.02, Some(1200.0)), pk(4, 11.27, 46.98, Some(9000.0))],
+        ];
+        let summits: Vec<Summit> = units.iter().flatten().map(|p| p.1.clone()).collect();
+        let wants: Vec<BTreeSet<(u32, u32)>> = units
+            .iter()
+            .map(|u| {
+                tiles_wanted(
+                    &u.iter().map(|p| (p.0.lon as f64 * 1e-7, p.0.lat as f64 * 1e-7)).collect::<Vec<_>>(),
+                    29.5,
+                )
+            })
+            .collect();
+        // Hills, smooth across tiles: every tile either unit wants, in its z6 tile's hi pack.
+        let all: BTreeSet<(u32, u32)> = wants.iter().flatten().copied().collect();
+        let mut by_pack: BTreeMap<(u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
+        for &(x, y) in &all {
+            let e: Vec<f32> = (0..256 * 256)
+                .map(|i| {
+                    let (gx, gy) = ((x * 256 + i % 256) as f64, (y * 256 + i / 256) as f64);
+                    (800.0
+                        + 600.0 * (gx * 0.013).dsin() * (gy * 0.011).dcos()
+                        + 90.0 * (gx * 0.051 + gy * 0.037).dsin())
+                    .round() as f32
+                })
+                .collect();
+            let png = roadcore::grid::encode_terrain_png(&e, 256, 256).unwrap();
+            by_pack.entry((x >> 6, y >> 6)).or_default().push((Z12, x, y, png, 1));
+        }
+        for ((x, y), tiles) in by_pack {
+            crate::layers::write_pack(
+                &mut out,
+                "terrain",
+                "terrarium-png",
+                false,
+                "hi",
+                (6, x, y),
+                &mut tiles.into_iter(),
+            )
+            .unwrap();
+        }
+        // The worldwide z8: one flat tile elsewhere (the rest the open sea), its maxima.
+        let flat = roadcore::grid::encode_terrain_png(&vec![0f32; 256 * 256], 256, 256).unwrap();
+        let z8p = crate::layers::write_pack_local(
+            &out,
+            "z8t",
+            "terrarium-png",
+            false,
+            "lo",
+            (3, 0, 0),
+            &mut [(8u8, 0, 0, flat, 1)].into_iter(),
+        )
+        .unwrap()
+        .unwrap();
+        let maxes = d.path().join("maxes.f32");
+        std::fs::write(&maxes, vec![0u8; 4 << 16]).unwrap();
+        let z8 = Z8::open(&z8p.local, &maxes, 64).unwrap();
+        let base8 = Z8Base::new(&summits);
+        let bytes = |res: Vec<(String, Out)>| -> Vec<u8> {
+            let mut b = Vec::new();
+            for (key, o) in res {
+                let mut v = o.json();
+                v.as_object_mut().unwrap().remove("i");
+                v["key"] = key.into();
+                b.extend(serde_json::to_vec(&v).unwrap());
+                b.push(b'\n');
+            }
+            b
+        };
+        let peaks_of = |k: usize| units[k].iter().map(|p| p.0.clone()).collect::<Vec<_>>();
+        // Tile by tile, each unit in turn.
+        let one = ManifestTiles::new(&out, "terrain");
+        let in_turn: Vec<Vec<u8>> = (0..2)
+            .map(|k| {
+                let z12 = UnitZ12::from_tiles(
+                    wants[k].iter().map(|&(x, y)| ((x, y), Some(one.get(Z12, x, y).unwrap().unwrap()))).collect(),
+                );
+                let r = run(&peaks_of(k), &summits, &base8, &z12, &z8, 2).unwrap();
+                assert_eq!(z12.unexpected(), 0);
+                bytes(r)
+            })
+            .collect();
+        // In spans, the next unit's read ahead.
+        let packs = ManifestTiles::new(&out, "terrain");
+        let raw = RawTiles::new(&d.path().join("raw"), "http://127.0.0.1:9/{z}/{x}/{y}.png");
+        let mut ahead: Vec<Vec<u8>> = Vec::new();
+        read_ahead(
+            &[0usize, 1],
+            |&k| UnitZ12::load_from(&packs, &raw, &wants[k]),
+            |_, &k, z12| {
+                assert_eq!(z12.from, (wants[k].len(), 0, 0), "every tile from the packs");
+                ahead.push(bytes(run(&peaks_of(k), &summits, &base8, &z12, &z8, 2)?));
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(in_turn.iter().all(|b| b.len() > 100), "{in_turn:?}");
+        assert_eq!(ahead, in_turn);
+    }
+
+    /// A load that fails fails in its turn, after the units before it were done.
+    #[test]
+    fn read_ahead_fails_in_turn() {
+        let mut done = Vec::new();
+        let r = read_ahead(
+            &[1, 2, 3],
+            |&i| if i == 2 { anyhow::bail!("no candidates for {i}") } else { Ok(i * 10) },
+            |_, _, t| {
+                done.push(t);
+                Ok(())
+            },
+        );
+        assert_eq!(done, vec![10]);
+        assert!(r.unwrap_err().to_string().contains("no candidates for 2"));
     }
 
     #[test]

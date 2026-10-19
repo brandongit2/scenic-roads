@@ -514,11 +514,17 @@ impl ManifestTiles {
         }
     }
 
+    /// A pack opened and its index read, here (a copy) or on the NAS, under `nas_call`'s deadline
+    /// and retries.
     fn open_file(p: &std::path::Path) -> anyhow::Result<std::sync::Arc<OpenPack>> {
-        let file = std::fs::File::open(p)?;
-        let len = file.metadata()?.len();
-        let idx = store::pack::PackIndex::read_from(&FileSource(&file, len))?;
-        Ok(std::sync::Arc::new(OpenPack { file, idx }))
+        let owned = p.to_path_buf();
+        let open = nas_call(&p.display().to_string(), NAS_DEADLINE, &NAS_WAITS, move || {
+            let file = std::fs::File::open(&owned)?;
+            let len = file.metadata()?.len();
+            let idx = store::pack::PackIndex::read_from(&FileSource(&file, len)).map_err(io_kind)?;
+            Ok(std::sync::Arc::new(OpenPack { file, idx }))
+        });
+        anyhow::Context::with_context(open, || format!("open the pack {}", p.display()))
     }
 
     /// The open pack holding tile (z, x, y), if the manifest has it.
@@ -539,15 +545,21 @@ impl ManifestTiles {
         use store::sys::PosIo;
         let Some(e) = self.pack(z, x, y)? else { return Ok(None) };
         let Some(ent) = e.idx.find(z, x, y) else { return Ok(None) };
-        let mut b = vec![0u8; ent.len as usize];
-        e.file.read_exact_at(&mut b, ent.offset)?;
+        let (off, len) = (ent.offset, ent.len as usize);
+        let b = nas_call(&format!("{}'s {z}/{x}/{y}", self.layer), NAS_DEADLINE, &NAS_WAITS, move || {
+            let mut b = vec![0u8; len];
+            e.file.read_exact_at(&mut b, off)?;
+            Ok(b)
+        })?;
         Ok(Some(b))
     }
 
     /// Tiles `want` (each as `get` gives it), read a pack at a time in spans: the tiles' bytes in the
     /// pack's order, neighbours a gap of under `SPAN_GAP` apart read together, up to `SPAN_MAX` a
     /// read, the spans in parallel. A unit reading thousands of a pack's tiles makes a few dozen
-    /// reads of the share instead of a round trip a tile, and moves little it doesn't use.
+    /// reads of the share instead of a round trip a tile, and moves little it doesn't use. Each
+    /// span's read is under `nas_call`'s deadline and retries, on `SPAN_READERS` threads of its own
+    /// (not rayon's: a job computing meanwhile, the peaks' next unit read ahead, doesn't hold them up).
     pub fn get_many(&self, want: &[(u8, u32, u32)]) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
         use store::sys::PosIo;
         const SPAN_GAP: u64 = 256 << 10;
@@ -580,17 +592,36 @@ impl ManifestTiles {
                 }
             }
         }
-        let read: Vec<anyhow::Result<Vec<(usize, Vec<u8>)>>> = spans
-            .par_iter()
-            .map(|(e, s0, s1, ts)| {
-                let mut b = vec![0u8; (s1 - s0) as usize];
-                e.file.read_exact_at(&mut b, *s0)?;
-                Ok(ts
-                    .iter()
-                    .map(|&(o, l, i)| (i, b[(o - s0) as usize..(o - s0) as usize + l as usize].to_vec()))
-                    .collect())
-            })
-            .collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let read: Vec<anyhow::Result<Vec<(usize, Vec<u8>)>>> = std::thread::scope(|sc| {
+            let readers: Vec<_> = (0..SPAN_READERS.min(spans.len()))
+                .map(|_| {
+                    sc.spawn(|| {
+                        let mut mine = Vec::new();
+                        loop {
+                            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some((e, s0, s1, ts)) = spans.get(k) else { break };
+                            let (e, s0, n) = (e.clone(), *s0, (s1 - s0) as usize);
+                            let what = format!("{}'s bytes {s0}..{s1}", self.layer);
+                            let b = nas_call(&what, NAS_DEADLINE, &NAS_WAITS, move || {
+                                let mut b = vec![0u8; n];
+                                e.file.read_exact_at(&mut b, s0)?;
+                                Ok(b)
+                            });
+                            mine.push(b.map_err(anyhow::Error::from).map(|b| {
+                                ts.iter()
+                                    .map(|&(o, l, i)| {
+                                        (i, b[(o - s0) as usize..(o - s0) as usize + l as usize].to_vec())
+                                    })
+                                    .collect()
+                            }));
+                        }
+                        mine
+                    })
+                })
+                .collect();
+            readers.into_iter().flat_map(|r| r.join().expect("a span reader panicked")).collect()
+        });
         for r in read {
             for (i, b) in r? {
                 got[i] = Some(b);
@@ -639,6 +670,70 @@ impl Drop for ManifestTiles {
                 std::fs::remove_file(p).ok();
             }
         }
+    }
+}
+
+/// How long one read or open of a pack may take (a span is 32 MB at most: over a minute even at
+/// 0.5 MB/s) before it fails: an SMB call can stay stuck in the kernel for many minutes.
+pub const NAS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The waits before a pack's read or open is tried again after a transient failure
+/// (crate::depth::grids::transient: SMB's moment of "No such file or directory", EIO, ESTALE…).
+pub const NAS_WAITS: [std::time::Duration; 4] = crate::depth::grids::OPEN_WAITS;
+
+/// The threads `get_many` reads a layer's spans on (SMB's throughput wants a few calls in flight).
+const SPAN_READERS: usize = 8;
+
+/// `f` on a thread of its own, waited for `deadline` at most (past it, `TimedOut`, not tried again:
+/// the thread stuck in it left behind, the job's own retry takes over), tried again after each of
+/// `waits` while it fails transiently, each retry logged. No call through it blocks for ever.
+pub fn nas_call<T: Send + 'static>(
+    what: &str,
+    deadline: std::time::Duration,
+    waits: &[std::time::Duration],
+    f: impl Fn() -> std::io::Result<T> + Send + Sync + 'static,
+) -> std::io::Result<T> {
+    let f = std::sync::Arc::new(f);
+    let mut tries = 0;
+    loop {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let g = f.clone();
+        std::thread::Builder::new().name("pack-read".into()).spawn(move || {
+            let _ = tx.send(g());
+        })?;
+        let r = rx.recv_timeout(deadline).unwrap_or_else(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("{what}: over {} s (the NAS's share stuck?)", deadline.as_secs()),
+            ))
+        });
+        match r {
+            Ok(t) => return Ok(t),
+            Err(e) if tries < waits.len() && crate::depth::grids::transient(&e) => {
+                eprintln!("{what}: {e}; tried again in {:?}", waits[tries]);
+                std::thread::sleep(waits[tries]);
+                tries += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// An error as an I/O error of its kind (one the chain holds; else `InvalidData`, never transient).
+fn io_kind(e: anyhow::Error) -> std::io::Error {
+    let kind = e
+        .chain()
+        .find_map(|c| c.downcast_ref::<std::io::Error>().map(|i| (i.kind(), i.raw_os_error())))
+        .or_else(|| {
+            e.chain().find_map(|c| match c.downcast_ref::<store::iopool::IoError>() {
+                Some(store::iopool::IoError::Io(i)) => Some((i.kind(), i.raw_os_error())),
+                _ => None,
+            })
+        });
+    match kind {
+        Some((_, Some(code))) => std::io::Error::from_raw_os_error(code),
+        Some((k, None)) => std::io::Error::new(k, format!("{e:#}")),
+        None => std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{e:#}")),
     }
 }
 
@@ -1925,6 +2020,45 @@ pub(crate) mod tests {
         let one_by_one: Vec<Option<Vec<u8>>> = ask.iter().map(|t| plain.get(t.0, t.1, t.2).unwrap()).collect();
         assert_eq!(plain.get_many(&ask).unwrap(), one_by_one);
         assert_eq!(one_by_one.iter().filter(|t| t.is_none()).count(), 2);
+    }
+
+    /// A NAS call stuck past its deadline fails (`TimedOut`, not tried again); a transient failure
+    /// is tried again after each wait; any other fails at once.
+    #[test]
+    fn nas_calls_have_a_deadline_and_retry_transient_failures() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let ms = std::time::Duration::from_millis;
+        let t = std::time::Instant::now();
+        let e = nas_call("stuck", ms(100), &[ms(1)], move || {
+            std::thread::sleep(ms(3000));
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
+        assert!(t.elapsed() < ms(2000), "{:?}", t.elapsed());
+        let tries = std::sync::Arc::new(AtomicUsize::new(0));
+        let n = tries.clone();
+        let got =
+            nas_call("flaky", ms(1000), &[ms(1), ms(1), ms(1)], move || match n.fetch_add(1, Ordering::Relaxed) {
+                0 => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+                1 => Err(std::io::Error::from_raw_os_error(libc::EIO)),
+                _ => Ok(7),
+            });
+        assert_eq!((got.unwrap(), tries.load(Ordering::Relaxed)), (7, 3));
+        let tries = std::sync::Arc::new(AtomicUsize::new(0));
+        let n = tries.clone();
+        let e = nas_call("bad", ms(1000), &[ms(1), ms(1)], move || -> std::io::Result<()> {
+            n.fetch_add(1, Ordering::Relaxed);
+            Err(std::io::Error::from(std::io::ErrorKind::InvalidData))
+        })
+        .unwrap_err();
+        assert_eq!((e.kind(), tries.load(Ordering::Relaxed)), (std::io::ErrorKind::InvalidData, 1));
+        // Transient every time: the last error, after every wait.
+        let e = nas_call("gone", ms(1000), &[ms(1), ms(1)], || -> std::io::Result<()> {
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
+        .unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]

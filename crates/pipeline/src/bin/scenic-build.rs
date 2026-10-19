@@ -2980,17 +2980,16 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // Its parts: the areas' peaks, then the raw tiles AWS gave packed onto the NAS.
     let parts = Parts(&["Measuring the areas' peaks", "Packing the new raw tiles onto the NAS"]);
     parts.start(0);
-    for (k, &u) in units.iter().enumerate() {
-        // (A safe point before each area: the raw tiles fetched wait in the cache for the next job.)
-        pipeline::control::safe_point("peaks");
-        pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas");
-        let t = cost_start("peaks", &u.slash());
+    // Each area's candidates and z12 tiles, the next area's read while this one's are measured
+    // (unit::read_ahead), from the packs as the manifest had them at the start (the job writes none).
+    let pois: Vec<Option<PathBuf>> =
+        units.iter().map(|u| out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c))).collect();
+    let packs = pipeline::terrain_pack::ManifestTiles::new(out, "terrain");
+    let load = |&k: &usize| -> Result<(Vec<unit::UnitPeak>, unit::UnitZ12)> {
+        let u = units[k];
         let p = phase("candidates read", Class::NasRead);
-        let pois = out
-            .get(&format!("work/pois/{}", u.dash()))
-            .map(|c| out.path(c))
-            .with_context(|| format!("no candidates for {} (the pois step)", u.slash()))?;
-        let peaks: Vec<unit::UnitPeak> = pipeline::candidates::read(&pois)?
+        let pois = pois[k].as_ref().with_context(|| format!("no candidates for {} (the pois step)", u.slash()))?;
+        let peaks: Vec<unit::UnitPeak> = pipeline::candidates::read(pois)?
             .into_iter()
             .filter(|c| c.kind == "peak")
             .filter_map(|c| Some(unit::UnitPeak { id: c.osm.clone()?, key: c.key, lon: c.lon, lat: c.lat, ele: c.ele }))
@@ -3000,7 +2999,15 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             &peaks.iter().map(|p| (p.lon as f64 * 1e-7, p.lat as f64 * 1e-7)).collect::<Vec<_>>(),
             29.5,
         );
-        let z12 = unit::UnitZ12::load(out, &raw, &want)?;
+        Ok((peaks, unit::UnitZ12::load_from(&packs, &raw, &want)?))
+    };
+    let order: Vec<usize> = (0..units.len()).collect();
+    unit::read_ahead(&order, load, |k, _, (peaks, z12)| {
+        let u = units[k];
+        // (A safe point before each area: the raw tiles fetched wait in the cache for the next job.)
+        pipeline::control::safe_point("peaks");
+        pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas");
+        let t = cost_start("peaks", &u.slash());
         let p = phase("prominence and isolation measured", Class::Compute);
         let res = unit::run(&peaks, &summits, &base8, &z12, &z8, coarse_threads)?;
         drop(p);
@@ -3037,7 +3044,8 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         pipeline::costin::set("peaks", peaks.len() as u64);
         pipeline::costin::set("z12_tiles", (z12.from.0 + z12.from.1) as u64);
         note_cost("peaks", &u.slash(), t);
-    }
+        Ok(())
+    })?;
     pipeline::agent::jobs::report(units.len() as u64, units.len() as u64, "areas");
     parts.start(1);
     pack_raw_with(out, &raw_dir, &|what, done, total| pipeline::agent::jobs::report(done, total, what));

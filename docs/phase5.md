@@ -178,7 +178,11 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   most twice that plus 300 m.
 - **`peaks`** (per unit, `pipeline::peaks`):
   - z12 is the pack's tile when the manifest has it, else AWS's raw tile repaired with no sources
-    (not GLO-30 nor the water: plan §10), read back from the PNG as stored.
+    (not GLO-30 nor the water: plan §10), read back from the PNG as stored. A unit's pack tiles
+    are read in spans (neighbours under 256 KB apart together, up to 32 MB a read, 8 reads at
+    once, each under a 2-minute deadline and retried after 2, 5, 15, 30 s when it fails
+    transiently), and a job's next unit's are read while this one's peaks are measured
+    (`unit::read_ahead`).
   - Summits within 28 km + a margin get a summit pixel (highest within 150 m), a height (max(ele,
     DEM) when `ele` is within −30/+200 m of the DEM, else the DEM's) and a claim on shared pixels.
   - **Fine stage** (z12, a 600k-pixel flood, stopping at 28 km; isolation within 25 km), then the
