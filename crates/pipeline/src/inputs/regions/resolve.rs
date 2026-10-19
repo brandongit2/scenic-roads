@@ -941,8 +941,26 @@ pub(super) fn eval(
         }
         Part::Minus(ps) => {
             let a = eval(&ps[0], false, placed, r, path)?;
-            let rest: Vec<Area> = ps[1..].iter().map(|p| eval(p, false, placed, r, path)).collect::<Result<_, _>>()?;
-            Ok(if rest.is_empty() { a } else { a.minus(&geom::union_all(&rest)) })
+            // (Each part taken away as its pieces, `group:`'s regions one by one, never unioned
+            // whole: large ones are taken away piece by piece, geom::Tiled and geom::with_mask.)
+            let mut rest: Vec<Area> = Vec::new();
+            for p in &ps[1..] {
+                match (p, placed.get(&p.to_string())) {
+                    (Part::Group(_) | Part::Region(_) | Part::Land(_), Some(Leaf::Rings(shapes, _))) => {
+                        rest.extend(shapes.iter().map(|(rs, _)| Area::from_rings(rs)));
+                    }
+                    _ => rest.push(eval(p, false, placed, r, path)?),
+                }
+            }
+            if rest.is_empty() {
+                return Ok(a);
+            }
+            let n = geom::points(&a) + rest.iter().map(geom::points).sum::<usize>();
+            if n <= geom::MASK_POINTS {
+                return Ok(a.minus(&geom::union_all(&rest)));
+            }
+            let t = geom::Tiled::of(&rest);
+            Ok(geom::with_mask(&a, &|b| t.query(b), false))
         }
         Part::Nearest { of, to, than, step_m, .. } => {
             let of = eval(of, false, placed, r, path)?;

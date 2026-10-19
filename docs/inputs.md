@@ -571,7 +571,8 @@ lacks.
 EEZ v12, GeoJSON, by `mrgid`), `regions-internal-waters` (Internal Waters v4, by `mrgid_eez`, added
 to its zone), `regions-territorial-seas` (Territorial Seas v4), `regions-lakes` (Natural Earth 1:10m
 lakes 5.0.0, a shapefile zip, by `ne_id`) and `regions-land` (OSM's land polygons, split, in
-degrees), each a file in `sources/fetched/<id>/` named by its `params.path`. The check reads them
+degrees), each a file in `sources/fetched/<id>/` named by its `params.path`. Their rings are simplified within
+20 m as they're read (`data::SIMPLIFY_M`). The check reads them
 whole when it's prepared, once the accepted sources declare `regions-sea`; until then a region
 naming them is held (`rg-data`). Their declarations are staged in `producers/sources/`
 (`marineregions-eez.toml`, `marineregions-internal-waters.toml`, `marineregions-territorial-seas.toml`,

@@ -204,12 +204,16 @@ enum Geometry {
     MultiPolygon(Vec<Vec<Vec<[f64; 2]>>>),
 }
 
+/// The datasets' rings are simplified within this (metres) as they're read: a region's edge needs
+/// no finer, and a continent's coast at full detail is what makes the operations large.
+pub const SIMPLIFY_M: f64 = 20.0;
+
 fn e7(r: &[[f64; 2]]) -> Ring {
     let mut v: Ring = r.iter().map(|p| [(p[0] * 1e7).round() as i64, (p[1] * 1e7).round() as i64]).collect();
     if v.len() > 1 && v.first() == v.last() {
         v.pop();
     }
-    v
+    geom::simplify_ring(&v, SIMPLIFY_M)
 }
 
 /// A FeatureCollection's (Multi)Polygons, by the integer property `id` (features of one id joined).
