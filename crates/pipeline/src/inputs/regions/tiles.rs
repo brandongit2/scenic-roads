@@ -161,25 +161,32 @@ fn split_rings(rings: Vec<Ring>, x0: i64, x1: i64, y0: i64, y1: i64, out: &mut B
         let m = (y0 + y1 + 1).div_euclid(2);
         [(x0, x1, y0, m - 1), (x0, x1, m, y1)]
     };
-    for (a0, a1, b0, b1) in halves {
-        let bx = [a0 * CELL, b0 * CELL, (a1 + 1) * CELL, (b1 + 1) * CELL];
-        let part: Vec<Ring> = rings
-            .iter()
-            .filter_map(|r| {
-                let rb = geom::bbox_of(r.iter())?;
-                if rb[2] < bx[0] || rb[0] > bx[2] || rb[3] < bx[1] || rb[1] > bx[3] {
-                    // (A ring away from the half: none of it there, unless it holds the half
-                    // whole, which its clip would say; a ring's box away from it can't.)
-                    return None;
+    // (Each ring moved to the half it lies in, or clipped to each it crosses; the parent's list
+    // gone before the halves are cut further: no copies held down the levels.)
+    let boxes = halves.map(|(a0, a1, b0, b1)| [a0 * CELL, b0 * CELL, (a1 + 1) * CELL, (b1 + 1) * CELL]);
+    let mut parts: [Vec<Ring>; 2] = [Vec::new(), Vec::new()];
+    for r in rings {
+        let Some(rb) = geom::bbox_of(r.iter()) else { continue };
+        let within = |bx: [i64; 4]| rb[0] >= bx[0] && rb[2] <= bx[2] && rb[1] >= bx[1] && rb[3] <= bx[3];
+        let meets = |bx: [i64; 4]| !(rb[2] < bx[0] || rb[0] > bx[2] || rb[3] < bx[1] || rb[1] > bx[3]);
+        if within(boxes[0]) {
+            parts[0].push(r);
+        } else if within(boxes[1]) {
+            parts[1].push(r);
+        } else {
+            for k in 0..2 {
+                if meets(boxes[k]) {
+                    if let Some(c) = clip(&r, boxes[k]) {
+                        parts[k].push(c);
+                    }
                 }
-                if rb[0] >= bx[0] && rb[2] <= bx[2] && rb[1] >= bx[1] && rb[3] <= bx[3] {
-                    return Some(r.clone());
-                }
-                clip(r, bx)
-            })
-            .collect();
-        split_rings(part, a0, a1, b0, b1, out);
+            }
+        }
     }
+    let [p0, p1] = parts;
+    let (h0, h1) = (halves[0], halves[1]);
+    split_rings(p0, h0.0, h0.1, h0.2, h0.3, out);
+    split_rings(p1, h1.0, h1.1, h1.2, h1.3, out);
 }
 
 /// A ring clipped to a box (Sutherland–Hodgman): the part of it inside, edges along the box where
@@ -437,6 +444,12 @@ fn eval(p: &Part, c: Cell, env: &Env, r: &Region, path: &str) -> Result<Area, Pr
             for x in c.0 - dx..=c.0 + dx {
                 let (w, shift) = wrap(x);
                 for y in (c.1 - dy).max(-45)..=(c.1 + dy).min(44) {
+                    // (Not from the cells past 80°: a buffer drawn in longitude and latitude
+                    // there wraps round the pole; what's there is the polar land and ice, which
+                    // the coasts' own buffers, nearer the equator, already reach past.)
+                    if !(-40..40).contains(&y) {
+                        continue;
+                    }
                     let k = (key.clone(), (w, y));
                     let got = env.buffered.lock().unwrap().get(&k).cloned();
                     let b = match got {
@@ -541,8 +554,9 @@ fn land_and_lakes(data: &super::data::Datasets, c: Cell) -> (Area, Area) {
 }
 
 fn tiled_leaves(leaves: BTreeMap<String, Leaf>) -> HashMap<String, Src> {
+    // (One leaf at a time: a leaf's cutting holds its rings; its cells, in parallel.)
     leaves
-        .into_par_iter()
+        .into_iter()
         .map(|(k, l)| {
             let s = match l {
                 Leaf::Rings(shapes, _) => {
@@ -977,6 +991,7 @@ fn env_for<'a>(
     let (theirs, rest): (BTreeMap<String, Leaf>, BTreeMap<String, Leaf>) = leaves
         .into_iter()
         .partition(|(k, _)| k.starts_with("region:") || k.starts_with("land:") || k.starts_with("group:"));
+    trace(&format!("{id}: its parts gathered"));
     env.leaves = tiled_leaves(rest);
     for k in theirs.keys() {
         let src = if let Some(d) = k.strip_prefix("region:") {
@@ -1075,7 +1090,9 @@ fn make_water(
     }
     let env = env_for(id, true, folder, ctx, data, made, others, out)?;
     let _ = held;
+    trace(&format!("water of {id}: its parts read"));
     let cells: BTreeSet<Cell> = r.water.iter().flat_map(|p| support(p, &env)).collect();
+    trace(&format!("water of {id}: {} cells", cells.len()));
     let got: Vec<Result<(Cell, Area), Problem>> = cells
         .into_par_iter()
         .map(|c| {

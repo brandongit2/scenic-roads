@@ -224,7 +224,10 @@ pub struct Outcome {
 /// names (`region:`); a region naming one that's held is held too.
 pub fn resolve(folder: &Folder, ctx: &Context) -> Outcome {
     // (At most four regions at once: each operation's memory grows with its region.)
-    match rayon::ThreadPoolBuilder::new().num_threads(4).build() {
+    match rayon::ThreadPoolBuilder::new()
+        .num_threads(std::env::var("SCENIC_REGIONS_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(4))
+        .build()
+    {
         Ok(pool) => pool.install(|| resolve_all(folder, ctx)),
         Err(_) => resolve_all(folder, ctx),
     }

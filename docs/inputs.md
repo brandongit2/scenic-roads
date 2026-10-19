@@ -509,8 +509,12 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   read. The regions with water resolve one at a time, their cells several at once (regions without
   water: at most four at once). A region's parts naming other regions (`region:`, `land:`,
   `group:`) are read cell by cell where those are kept, never copied. With
-  `SCENIC_REGIONS_TRACE` set, the check prints each step's footprint and its buffers' and
-  nearest-coast splits' count, time and footprint.
+  `SCENIC_REGIONS_TRACE` set, the check prints each step's and each region's water's footprint
+  and its buffers' and nearest-coast splits' count, time and footprint; `SCENIC_REGIONS_THREADS`
+  sets how many cells at once (4). A buffer of a cell reads its neighbours' pieces each buffered
+  once, within 16 columns each way and not from the cells past 80° (the polar land); a buffer of
+  50 km or more is drawn as discs at the pieces' points a thirty-second of the distance apart
+  (within a twentieth of the distance).
 - **The memory guard:** the check stops its process (exit 3, saying so) if its physical footprint
   (`sys::footprint`: compressed and swapped memory included) passes `SCENIC_REGIONS_MAX_MB` (half the
   Mac's memory by default), looked at every 50 ms; `scenic-build regions-check --max-mb` sets it for a scratch

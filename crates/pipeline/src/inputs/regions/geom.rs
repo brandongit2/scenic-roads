@@ -591,14 +591,29 @@ fn sweep(pts: &[Pt], closed: bool, r: f64, out: &mut Vec<Ring>) {
 /// round join drawn only where the ring turns outward (left, as canonical rings run: outer rings
 /// counter-clockwise, holes clockwise), so a detailed coast doesn't hand the union thousands of
 /// discs over each other.
+/// A buffer this wide or wider is drawn within a twentieth of its distance.
+pub const WIDE_M: f64 = 50_000.0;
+
 pub fn buffer_area_coarse(a: &Area, r: f64) -> Area {
     let mut cs = Vec::new();
     let a = a.clone().canonical();
-    let sides = if r > SIMPLIFY_PAST_M { 71 } else { circle_sides(r).min(256) };
+    let sides = if r > WIDE_M { 36 } else { circle_sides(r).min(256) };
+    let mut wide: Vec<Pt> = Vec::new();
     for ring in a.polys.iter().flatten() {
-        let pts = densify(&simplify_ring(ring, (r / 50.0).max(1.0)), true);
+        // (Edges split no finer than a quarter of the distance: a wide buffer of finely split edges
+        // hands the union hundreds of overlapping quads per point of the ring.)
+        // (Past `WIDE_M`, the rings simplified within a twentieth of the distance: a coast's
+        // points a few km apart each with quads hundreds of km wide cross each other millions of
+        // times in the union.)
+        let s = simplify_ring(ring, if r > WIDE_M { r / 20.0 } else { (r / 50.0).max(1.0) });
+        let pts = if r / 4.0 > DENSIFY_M { densify_to(&s, r / 4.0) } else { densify(&s, true) };
         let n = pts.len();
         if n < 3 {
+            continue;
+        }
+        if r > WIDE_M {
+            // (Wide: discs only, at the points kept below.)
+            wide.extend(pts);
             continue;
         }
         for i in 0..n {
@@ -611,6 +626,18 @@ pub fn buffer_area_coarse(a: &Area, r: f64) -> Area {
                 let h = std::f64::consts::FRAC_PI_2;
                 cs.push(vec![destination(p, b - h, r), destination(q, b - h, r), q, p]);
                 cs.push(vec![p, q, destination(q, b + h, r), destination(p, b + h, r)]);
+            }
+        }
+    }
+    if !wide.is_empty() {
+        // (One point a grid square of a thirty-second of the distance, its first: many small
+        // islands in one place would otherwise give hundreds of discs over each other. The discs
+        // then miss at most the square's diagonal, under a twentieth of the distance.)
+        let g = (r / 32.0 / 111_320.0 * 1e7).max(1.0) as i64;
+        let mut seen = std::collections::HashSet::new();
+        for p in wide {
+            if seen.insert((p[0].div_euclid(g), p[1].div_euclid(g))) {
+                cs.push(disc(p, r, sides));
             }
         }
     }

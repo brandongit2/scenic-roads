@@ -109,7 +109,7 @@ impl Datasets {
         }
     }
 
-    /// The coastline's land in the box `b` (plain frame; the pieces meeting it, whole).
+    /// The coastline's land in the box `b` (plain frame), clipped to it.
     pub fn land_in(&self, b: [i64; 4]) -> Area {
         let mut ks: Vec<usize> = cells(b).filter_map(|c| self.land_grid.get(&c)).flatten().copied().collect();
         ks.sort();
@@ -121,11 +121,16 @@ impl Datasets {
                 p[0] <= b[2] && p[2] >= b[0] && p[1] <= b[3] && p[3] >= b[1]
             })
             .map(|k| {
+                // (Each ring clipped to the box first: a piece of the polar land may span the
+                // Earth's width.)
                 Area::from_rings(
                     &self.land[k]
                         .1
                         .iter()
-                        .map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect())
+                        .filter_map(|r| {
+                            let r: Ring = r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect();
+                            super::tiles::clip(&r, b)
+                        })
                         .collect::<Vec<Ring>>(),
                 )
             })
@@ -133,12 +138,17 @@ impl Datasets {
         geom::union_all(&areas)
     }
 
-    /// The lakes over `BIG_LAKE_KM2` meeting the box `b` (plain frame).
+    /// The lakes over `BIG_LAKE_KM2` in the box `b` (plain frame), clipped to it.
     pub fn big_lakes_in(&self, b: [i64; 4]) -> Area {
         let mut ids: Vec<u64> = cells(b).filter_map(|c| self.lake_grid.get(&c)).flatten().copied().collect();
         ids.sort();
         ids.dedup();
-        let areas: Vec<Area> = ids.iter().map(|id| Area::from_rings(&self.lakes[id].0)).collect();
+        let areas: Vec<Area> = ids
+            .iter()
+            .map(|id| {
+                Area::from_rings(&self.lakes[id].0.iter().filter_map(|r| super::tiles::clip(r, b)).collect::<Vec<_>>())
+            })
+            .collect();
         geom::union_all(&areas)
     }
 
