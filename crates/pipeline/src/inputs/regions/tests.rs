@@ -104,6 +104,7 @@ fn a_plain_region_is_today_s_coverage_exactly() {
                 s
             })
             .collect(),
+        ..Default::default()
     };
     let _: &[Recipe] = &[];
     for b in [

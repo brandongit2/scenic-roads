@@ -181,7 +181,7 @@ pub fn read_coverage(path: &Path) -> Result<Coverage> {
         sh.country = s.country;
         shapes.push(sh);
     }
-    Ok(Coverage { shapes })
+    Ok(Coverage { shapes, ..Default::default() })
 }
 
 /// A task folder's work files, as `job::work_files` has T's and its neighbours' (those not there:

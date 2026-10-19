@@ -33,6 +33,13 @@ pub struct Geometry {
     /// The relations and ways it names (sorted).
     pub relations: Vec<u64>,
     pub ways: Vec<u64>,
+    /// A region with water and no land (docs/inputs.md §6.1.3): the coverage keeps it for the
+    /// depth's targets alone (`Coverage::depth_only`).
+    pub water_only: bool,
+}
+
+fn no(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Serialize, Deserialize)]
@@ -44,6 +51,8 @@ struct Head {
     #[serde(rename = "box")]
     bbox: [i32; 4],
     names: Names,
+    #[serde(default, skip_serializing_if = "no")]
+    water_only: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -106,6 +115,7 @@ impl Geometry {
                 .collect(),
             bbox: self.bbox(),
             names: Names { osm: self.relations.clone(), ways: self.ways.clone() },
+            water_only: self.water_only,
         };
         let h = serde_json::to_vec(&head).expect("a head serialises");
         let mut out = MAGIC.to_vec();
@@ -165,7 +175,14 @@ impl Geometry {
             shapes.push(Shape { from: sh.from, country: sh.country, tolerance_m: sh.tolerance_m, rings });
         }
         ensure!(at == b.len(), "bytes after the rings");
-        Ok(Geometry { id: head.id, osm: head.osm, shapes, relations: head.names.osm, ways: head.names.ways })
+        Ok(Geometry {
+            id: head.id,
+            osm: head.osm,
+            shapes,
+            relations: head.names.osm,
+            ways: head.names.ways,
+            water_only: head.water_only,
+        })
     }
 }
 
@@ -223,6 +240,7 @@ mod tests {
             ],
             relations: vec![1629146],
             ways: vec![],
+            water_only: false,
         };
         let b = g.encode();
         assert_eq!(Geometry::decode(&b).unwrap(), g);

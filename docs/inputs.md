@@ -527,7 +527,8 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
 A region of only `osm:` and `shape:` parts in `outline` with no operation is stored as **one shape
 per part, unchanged**; any operation gives one shape (two across the antimeridian); a region with
 `water` gives one shape, its land and water together, its rings on both sides of ±180° where it
-crosses. The index names
+crosses. A region with water and no land is stored `"water_only": true` (in the head) and the
+coverage keeps it apart, for the depth's targets alone (plan §5). The index names
 each region's files in `facts.geometry` and `facts.drawn`, and its `keyed` digest is the geometry
 file's content name, so an edit that doesn't change the result reruns nothing.
 

@@ -489,6 +489,9 @@ impl Grid {
 #[derive(Clone, Default)]
 pub struct Coverage {
     pub shapes: Vec<Shape>,
+    /// The regions with no land (sea zones, the high seas: docs/inputs.md §6.1.3): only the depth's
+    /// targets read them (`meets_rect_depth`); every other step's coverage is `shapes` alone.
+    pub depth_only: Vec<Shape>,
 }
 
 /// The buffer around `osm:` outlines (coasts), metres.
@@ -545,7 +548,7 @@ pub fn fixture_circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
 /// `Coverage::accepted` keeps the coverage it reads.
 pub const CACHE_ENV: &str = "SCENIC_CACHE";
 
-const KEPT_MAGIC: &[u8; 8] = b"RDCOV001";
+const KEPT_MAGIC: &[u8; 8] = b"RDCOV002";
 
 /// The coverage's shapes as kept (`Coverage::accepted`): their source, country, buffer and rings, and
 /// the recipes that didn't read.
@@ -560,15 +563,17 @@ pub(crate) fn kept_bytes(c: &Coverage, bad: &[(String, String)]) -> Vec<u8> {
         s(&mut b, f);
         s(&mut b, e);
     }
-    b.extend_from_slice(&(c.shapes.len() as u64).to_le_bytes());
-    for sh in &c.shapes {
-        s(&mut b, &sh.source);
-        s(&mut b, &sh.country);
-        b.extend_from_slice(&sh.buffer_m.to_le_bytes());
-        b.extend_from_slice(&(sh.rings.len() as u64).to_le_bytes());
-        for r in &sh.rings {
-            b.extend_from_slice(&(r.len() as u64).to_le_bytes());
-            b.extend_from_slice(bytemuck::cast_slice(r));
+    for list in [&c.shapes, &c.depth_only] {
+        b.extend_from_slice(&(list.len() as u64).to_le_bytes());
+        for sh in list {
+            s(&mut b, &sh.source);
+            s(&mut b, &sh.country);
+            b.extend_from_slice(&sh.buffer_m.to_le_bytes());
+            b.extend_from_slice(&(sh.rings.len() as u64).to_le_bytes());
+            for r in &sh.rings {
+                b.extend_from_slice(&(r.len() as u64).to_le_bytes());
+                b.extend_from_slice(bytemuck::cast_slice(r));
+            }
         }
     }
     b
@@ -603,21 +608,24 @@ pub(crate) fn from_kept(b: &[u8]) -> Option<(Coverage, Vec<(String, String)>)> {
     for _ in 0..r.n()? {
         bad.push((r.text()?, r.text()?));
     }
-    let mut shapes = Vec::new();
-    for _ in 0..r.n()? {
-        let source = r.text()?;
-        let country = r.text()?;
-        let buffer_m = f64::from_le_bytes(r.take(8)?.try_into().ok()?);
-        let mut rings = Vec::new();
+    let mut lists = [Vec::new(), Vec::new()];
+    for shapes in lists.iter_mut() {
         for _ in 0..r.n()? {
-            let n = r.n()?;
-            rings.push(bytemuck::pod_collect_to_vec::<u8, [i32; 2]>(r.take(n.checked_mul(8)?)?));
+            let source = r.text()?;
+            let country = r.text()?;
+            let buffer_m = f64::from_le_bytes(r.take(8)?.try_into().ok()?);
+            let mut rings = Vec::new();
+            for _ in 0..r.n()? {
+                let n = r.n()?;
+                rings.push(bytemuck::pod_collect_to_vec::<u8, [i32; 2]>(r.take(n.checked_mul(8)?)?));
+            }
+            let mut sh = Shape::new(source, rings, buffer_m);
+            sh.country = country;
+            shapes.push(sh);
         }
-        let mut sh = Shape::new(source, rings, buffer_m);
-        sh.country = country;
-        shapes.push(sh);
     }
-    r.0.is_empty().then_some((Coverage { shapes }, bad))
+    let [shapes, depth_only] = lists;
+    r.0.is_empty().then_some((Coverage { shapes, depth_only }, bad))
 }
 
 impl Coverage {
@@ -645,7 +653,7 @@ impl Coverage {
                 shapes.push(Shape::new(format!("{}: {entry}", r.id), rings, 0.0));
             }
         }
-        Ok(Coverage { shapes })
+        Ok(Coverage { shapes, ..Default::default() })
     }
 
     /// Each region's own coverage (its shapes, as `Coverage::accepted` made them for it: "<id>: <from>"),
@@ -656,7 +664,7 @@ impl Coverage {
             let id = s.source.split_once(": ").map_or(s.source.as_str(), |(id, _)| id);
             match out.iter_mut().find(|(r, _)| r == id) {
                 Some((_, c)) => c.shapes.push(s.clone()),
-                None => out.push((id.to_string(), Coverage { shapes: vec![s.clone()] })),
+                None => out.push((id.to_string(), Coverage { shapes: vec![s.clone()], ..Default::default() })),
             }
         }
         out
@@ -716,6 +724,11 @@ impl Coverage {
     /// Whether the box w, s, e, n (E7) meets the coverage itself (`Shape::meets_rect`).
     pub fn meets_rect(&self, b: [i32; 4]) -> bool {
         self.shapes.iter().any(|s| s.meets_rect(b))
+    }
+
+    /// `meets_rect` with the regions with no land too: the depth's targets.
+    pub fn meets_rect_depth(&self, b: [i32; 4]) -> bool {
+        self.meets_rect(b) || self.depth_only.iter().any(|s| s.meets_rect(b))
     }
 
     /// The coverage as it is inside the box w, s, e, n (E7): its shapes' fingerprints there
@@ -1016,7 +1029,7 @@ mod tests {
         let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
         let quad = |south: f64, north: f64| vec![vec![e7(0.0, south), e7(1.0, south), e7(1.0, north), e7(0.0, north)]];
         let fp = |rings: Vec<Vec<[i32; 2]>>, bx: [i32; 4]| {
-            Coverage { shapes: vec![Shape::new("r: poly:x".into(), rings, 0.0)] }.fingerprint(bx)
+            Coverage { shapes: vec![Shape::new("r: poly:x".into(), rings, 0.0)], ..Default::default() }.fingerprint(bx)
         };
         // A box across the south edge.
         let across = b(0.2, 49.9, 0.4, 50.1);
@@ -1035,12 +1048,15 @@ mod tests {
                 Shape::new("a: poly:x".into(), quad(50.0, 51.0), 0.0),
                 Shape::new("b: osm:1".into(), quad(50.0, 51.0), 0.0),
             ],
+            ..Default::default()
         };
         assert_eq!(two.fingerprint(across), f0);
         // The buffer: an edge 0.5 km outside the box is within a 1 km buffer of it.
         let near = b(0.2, 49.9, 0.4, 49.995);
-        let buffered =
-            |south: f64| Coverage { shapes: vec![Shape::new("o".into(), quad(south, 51.0), 1000.0)] }.fingerprint(near);
+        let buffered = |south: f64| {
+            Coverage { shapes: vec![Shape::new("o".into(), quad(south, 51.0), 1000.0)], ..Default::default() }
+                .fingerprint(near)
+        };
         assert_ne!(buffered(50.0), buffered(50.001), "the edge moved within the buffer's reach");
     }
 
@@ -1063,8 +1079,9 @@ mod tests {
     fn a_ring_held_twice_isnt_the_ring() {
         let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
         let quad = vec![e7(0.0, 50.0), e7(1.0, 50.0), e7(1.0, 51.0), e7(0.0, 51.0)];
-        let once = Coverage { shapes: vec![Shape::new("a".into(), vec![quad.clone()], 0.0)] };
-        let twice = Coverage { shapes: vec![Shape::new("a".into(), vec![quad.clone(), quad], 0.0)] };
+        let once = Coverage { shapes: vec![Shape::new("a".into(), vec![quad.clone()], 0.0)], ..Default::default() };
+        let twice =
+            Coverage { shapes: vec![Shape::new("a".into(), vec![quad.clone(), quad], 0.0)], ..Default::default() };
         // A box across the south edge, its corner outside: under even-odd the doubled ring covers
         // nothing, so the fingerprints must differ.
         let across = b(0.2, 49.9, 0.4, 50.1);
@@ -1116,6 +1133,7 @@ mod tests {
         // Two shapes side by side, the second overlapping the first's east edge.
         let c = Coverage {
             shapes: vec![Shape::new("a".into(), square(0.0), 1000.0), Shape::new("b".into(), square(0.9), 0.0)],
+            ..Default::default()
         };
         assert_eq!(c.shape_at(e7(0.5, 50.5)), Some(0));
         assert_eq!(c.shape_at(e7(0.95, 50.5)), Some(0), "in both: the first");

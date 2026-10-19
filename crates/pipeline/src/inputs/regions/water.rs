@@ -97,7 +97,8 @@ fn meets(a: [i64; 4], b: [i64; 4]) -> bool {
 
 /// A region's stored geometry and drawing from its final area (plain frame): one shape, its `from`
 /// the region's parts as written.
-fn store(r: &Region, res: &mut Resolved, a: &Area) {
+fn store(r: &Region, res: &mut Resolved, a: &Area, land: &Area) {
+    res.geometry.water_only = land.is_empty();
     let from = {
         let mut f = r.outline_text().join(", ");
         if !r.intersect.is_empty() {
@@ -272,7 +273,7 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
                     waters.insert(id.clone(), w);
                     final_area.insert(id.clone(), all.clone());
                     let f = out.resolved.get_mut(&id).expect("resolved");
-                    store(&folder.regions[&id].1, f, &all);
+                    store(&folder.regions[&id].1, f, &all, &land_of[&id]);
                 }
                 Err(ps) => {
                     out.problems.extend(ps);
@@ -384,7 +385,7 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             continue;
         }
         if let Some(f) = out.resolved.get_mut(id) {
-            store(r, f, a);
+            store(r, f, a, &land_of[id]);
         }
     }
     if let Some(id) = rest_id {
@@ -399,7 +400,7 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
                 format!("{id}: the rest is empty: the other regions cover the Earth"),
             ));
         } else {
-            store(r, &mut f, &all);
+            store(r, &mut f, &all, &land_of[&id]);
             out.resolved.insert(id, f);
         }
     }

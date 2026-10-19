@@ -207,14 +207,16 @@ fn read_all(root: &Path, names: &[String]) -> Result<Vec<Vec<u8>>> {
 /// buffer, the country.
 pub fn coverage_of(geoms: &[Geometry]) -> Coverage {
     let mut shapes = Vec::new();
+    let mut depth_only = Vec::new();
     for g in geoms {
+        let shapes = if g.water_only { &mut depth_only } else { &mut shapes };
         for s in &g.shapes {
             let mut sh = Shape::new(format!("{}: {}", g.id, s.from), s.rings.clone(), s.tolerance_m as f64);
             sh.country = s.country.clone();
             shapes.push(sh);
         }
     }
-    Coverage { shapes }
+    Coverage { shapes, depth_only }
 }
 
 impl Coverage {

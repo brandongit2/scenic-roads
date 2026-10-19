@@ -3539,7 +3539,7 @@ pub fn depth_tiles(cov: &Coverage, sources: &[crate::depth::grids::Source]) -> (
     for qx in 0..8u32 {
         for qy in 0..8u32 {
             let b = crate::hipack::tile_bounds(3, qx, qy);
-            if !cov.meets_rect(crate::hipack::grow(b, crate::depth::build::REACH_KM))
+            if !cov.meets_rect_depth(crate::hipack::grow(b, crate::depth::build::REACH_KM))
                 || !sources.iter().any(|s| s.max_zoom_in(deg(b)).is_some())
             {
                 continue;
@@ -3548,7 +3548,7 @@ pub fn depth_tiles(cov: &Coverage, sources: &[crate::depth::grids::Source]) -> (
             for x in qx * 8..qx * 8 + 8 {
                 for y in qy * 8..qy * 8 + 8 {
                     let b6 = crate::hipack::tile_bounds(6, x, y);
-                    if cov.meets_rect(crate::hipack::grow(b6, crate::depth::build::REACH_KM))
+                    if cov.meets_rect_depth(crate::hipack::grow(b6, crate::depth::build::REACH_KM))
                         && sources
                             .iter()
                             .any(|s| s.max_zoom_in(deg(b6)).is_some_and(|z| z > crate::depth::compose::ALL_UPTO))
@@ -7276,6 +7276,46 @@ pub(crate) mod tests {
             pin: format!("s{code} d{code}"),
         };
         vec![s(1, vec![g([-45.0, 40.9, 0.0, 66.5], 8)]), s(2, vec![g([-22.4, 63.9, -21.6, 64.3], 13)])]
+    }
+
+    /// A region with no land (a sea zone, the high seas) is a target of the depth alone: the depth's
+    /// tiles meet it, no other step's coverage does (no z6 tile of terrain, slope, tree cover or the
+    /// buildings', and no unit, which `reach` keeps by `meets_rect` too).
+    #[test]
+    fn a_region_with_no_land_targets_only_the_depth() {
+        let ring = vec![
+            [-300_000_000, 550_000_000],
+            [-250_000_000, 550_000_000],
+            [-250_000_000, 600_000_000],
+            [-300_000_000, 600_000_000],
+        ];
+        let sea = crate::coverage::Shape::new("zone: eez:1".into(), vec![ring.clone()], 0.0);
+        let c = Coverage { shapes: Vec::new(), depth_only: vec![sea] };
+        let (lo, _) = depth_tiles(&c, &depth_sources());
+        assert!(!lo.is_empty());
+        assert!(
+            (0..64u32)
+                .all(|x| (0..64u32)
+                    .all(|y| !c.meets_rect(crate::hipack::grow(crate::hipack::tile_bounds(6, x, y), 20.0))))
+        );
+        assert!(bld_tiles(&c).is_empty());
+        // Through the stored geometry: a region with water and no land goes to `depth_only`.
+        let g = crate::inputs::regions::stored::Geometry {
+            id: "zone".into(),
+            osm: "2026-09-28".into(),
+            shapes: vec![crate::inputs::regions::stored::Shape {
+                from: "eez:1".into(),
+                country: String::new(),
+                tolerance_m: 0,
+                rings: vec![ring],
+            }],
+            relations: vec![],
+            ways: vec![],
+            water_only: true,
+        };
+        let back = crate::inputs::regions::stored::Geometry::decode(&g.encode()).unwrap();
+        let cov = crate::inputs::regions::read::coverage_of(&[back]);
+        assert!(cov.shapes.is_empty() && cov.depth_only.len() == 1);
     }
 
     /// The depth chain waits for its sources and its water's digests, then makes the assemblies

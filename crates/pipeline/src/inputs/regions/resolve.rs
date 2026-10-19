@@ -756,7 +756,14 @@ pub(super) fn resolve_one(
             shapes.push(Shape { from: key, country: country.clone(), tolerance_m: tol, rings: rings32 });
         }
         return Ok(Resolved {
-            geometry: Geometry { id: r.id.clone(), osm: pass.to_string(), shapes, relations: names.0, ways: names.1 },
+            geometry: Geometry {
+                id: r.id.clone(),
+                osm: pass.to_string(),
+                shapes,
+                relations: names.0,
+                ways: names.1,
+                water_only: false,
+            },
             drawn: Drawn { fmt: 1, id: r.id.clone(), name: r.name.clone(), outline: r.outline_text(), shapes: drawn },
             lakes: Area::default(),
         });
@@ -871,7 +878,14 @@ pub(super) fn resolve_one(
         shapes.push(Shape { from: f, country: country.clone(), tolerance_m: 0, rings: rings32 });
     }
     Ok(Resolved {
-        geometry: Geometry { id: r.id.clone(), osm: pass.to_string(), shapes, relations: names.0, ways: names.1 },
+        geometry: Geometry {
+            id: r.id.clone(),
+            osm: pass.to_string(),
+            shapes,
+            relations: names.0,
+            ways: names.1,
+            water_only: false,
+        },
         drawn: Drawn { fmt: 1, id: r.id.clone(), name: r.name.clone(), outline: r.outline_text(), shapes: drawn },
         lakes: geom::union_all(&lakes_plain),
     })

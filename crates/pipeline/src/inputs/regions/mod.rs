@@ -335,9 +335,15 @@ pub fn accept_fixture(
             };
             shapes.push(stored::Shape { from: entry.clone(), country: String::new(), tolerance_m: 0, rings });
         }
-        let g =
-            stored::Geometry { id: r.id.clone(), osm: "2026-09-28".into(), shapes, relations: vec![], ways: vec![] }
-                .encode();
+        let g = stored::Geometry {
+            id: r.id.clone(),
+            osm: "2026-09-28".into(),
+            shapes,
+            relations: vec![],
+            ways: vec![],
+            water_only: false,
+        }
+        .encode();
         let gname = format!("{}/@geometry/{}.{}.rgeo", super::store_dir(UNIT), r.id, store::naming::hash16(&g));
         put(&gname, &g);
         let d = serde_json::to_vec(&stored::Drawn {
