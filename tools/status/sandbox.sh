@@ -4,7 +4,8 @@
 # (local.scenic-sandbox.build, local.scenic-sandbox.server) and home, so the live app, services
 # (local.scenic.*) and ~/Library/Application Support/scenic are never touched. Its build service
 # runs a stand-in agent (it reports a job and quits as the app asks, as crates/pipeline/src/control.rs
-# Quit says), its map server a stand-in on port 17399.
+# Quit says), its map server a stand-in on port 17399, serving the panel's build page too (a
+# stand-in page: the app's ScenicPage, never this Mac's live agent's port 8090).
 #
 #   tools/status/sandbox.sh setup <dir>     builds v1 (and v2, for the update) and installs v1 at
 #                                           <dir>/Applications, the stand-ins, the map server's job
@@ -66,6 +67,10 @@ EOF
   # The stand-in map server, a launchd job of its own.
   print -r -- '{"local": true, "now": 0}' > $home/www/api/build
   print -r -- 'ok' > $home/www/api/ping
+  # (The panel's build page, a stand-in: the app's ScenicPage, on the stand-in map server's port,
+  # never the live agent's 8090.)
+  mkdir -p $home/www/work
+  print -r -- '<!doctype html><meta charset="utf-8"><body style="font: 13px system-ui; padding: 16px">The sandbox'"'"'s build page (a stand-in)</body>' > $home/www/work/index.html
   mkdir -p ${server_plist:h}
   rm -f $server_plist
   plutil -create xml1 $server_plist

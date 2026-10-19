@@ -732,9 +732,10 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   before the pageview's state is locked, and the results swapped in after, so a slow NAS never
   holds up an answer. The history is merged by time, writer and number, and numbered by this Mac
   as it arrives; the answers carry the numbering's `epoch` (new with each process's first read),
-  and the page starts its cursor again, and keeps "since you last looked" apart, when the epoch
-  changes or `seq` falls below its last event. Until its first read a Mac answers 503 (never its
-  memory's views: another numbering). The forecast is run here from the input, its time brought
+  and the page starts its cursor again when the epoch changes or `seq` falls below its last event
+  ("since you last looked" goes by the events' time, so it outlives a restart). Until its first
+  read a Mac answers 503 (never its memory's views: another numbering), and the page says it's
+  reading the build's state and asks again in a second. The forecast is run here from the input, its time brought
   to now and this Mac's own lanes as its slots are now, worked out as the lead works out its own
   (`forecast::SlotJob`: its own estimate, or its targets left at its speed, a minute at least; its
   running job too); a target missing from the cost table is a bug, logged once. Times are given
@@ -742,8 +743,12 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   an app from before these records (no `view.json`, no `forecast-input.json`), the answer has no
   leases, workers nor tasks, and the forecast is the one in the lead's status. A Mac with neither
   a coordinator nor a broker serves the page from a viewer (`Coordinator::viewer`): the page and
-  its views, every other call refused (its key's too); no state folder of the agent's (its token
-  alone, in a scratch folder), no history, no background loop. The usual Origin rules hold.
+  its views, and this Mac's own page's asks (§11), every other call refused (its key's too); no
+  state folder of the agent's (its token alone, in a scratch folder removed as it stops, a dead
+  process's as the next starts), no history, no background loop. The usual Origin rules hold. A
+  history file written again in its place (its inode or first line changed) is read from its
+  start, the events taken in already passed over. The menu bar's panel loads this Mac's own page
+  alone (docs/plan.md §8, Status).
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
   the lead's first, marked coordinator with its ramp (§7.1); its capacity as the coordinator last
   heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and
@@ -787,7 +792,18 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
 - **Menu bar:** on the lead, "Hand the Build To ▸" with each member's state (greyed with why); on a
   member, "Make This Mac Lead", or "Take Over the Build…" with no lead in touch (says what it forces
   or downgrades); the proactive offer; Pause/Resume.
-- **Worker page:** "Make lead" per member, a handover's progress, "Take it" (unforced).
+- **Worker page:** "Make lead" per member, a handover's progress, "Take it" (unforced). On a Mac not
+  leading these, and Pause, are this Mac's own page's alone (its viewer or broker answers none from
+  elsewhere): its agent passes them on (the pause as its menu's, `crate::control::request`; the
+  lead asks and the inputs' acceptances from their queues, as on the lead).
+- **Cancel and try again from the page** (task #409): this Mac's own page (the menu bar's panel, a
+  browser on this Mac: `/work/act`, refused from elsewhere and with a key) cancels a running job
+  and tries a failed target again. Its agent acts on them leading, else mails them to the lead
+  (`Msg::Cancel`, `Msg::Retry`; only to a lead on its own app, an older app's mail reader not
+  knowing them: refused, said why, otherwise; each message is read alone, so one an app doesn't
+  know is passed over). The lead takes a cancel as the owner's `scenic job cancel`, and a retry by
+  forgetting the target's failures: the coordinator's (no worker held off it,
+  `Coordinator::clear_failed`) and its agent's own back-off.
 - **`scenic lead`**: shows the pool; `scenic lead give <member>`, `scenic lead take [--force]
   [--downgrade]`, `scenic lead auto on|off`. `scenic status` shows the pool too.
 - **Forcing stays on the Mac:** `/work/lead` refuses forced takeovers.

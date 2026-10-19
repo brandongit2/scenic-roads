@@ -12,7 +12,8 @@
 # --sandbox builds "Scenic Sandbox.app", for testing on a Mac whose Scenic is live: its own bundle id
 # (local.scenic-sandbox.app), build service (local.scenic-sandbox.build) and map server
 # (local.scenic-sandbox.server) labels, its own home in place of ~/Library/Application Support/scenic
-# (its run files, its agent folder, its installed versions), its server's port 17399, never added
+# (its run files, its agent folder, its installed versions), its server's port 17399 (its build
+# page's too: ScenicPage), never added
 # to the login items. It never touches the live app, services or home. (tools/status/sandbox.sh)
 set -euo pipefail
 src=${0:A:h}
@@ -42,6 +43,7 @@ if [[ -n $sandbox ]]; then
   plutil -insert ScenicHome -string "$sandbox" "$info"
   plutil -insert ScenicRunDir -string "$sandbox/run" "$info"
   plutil -insert ScenicServer -string http://127.0.0.1:17399 "$info"
+  plutil -insert ScenicPage -string http://127.0.0.1:17399/work/ "$info"
   plutil -replace EnvironmentVariables.SCENIC_LAUNCHER_LOG -string "$sandbox/build.log" "$plist"
   plutil -insert EnvironmentVariables.SCENIC_RUN_DIR -string "$sandbox/run" "$plist"
 fi

@@ -137,10 +137,14 @@ Common rules:
 
 ## 7. The web worker
 
-- **The page** at `/work/` (also the menu bar's panel and `scenic status`'s "Build page") shows the
-  build to anyone the coordinator answers, with no key. A device helps only when its owner turns
-  on "Help with this tab"; any page may also pause the build and ask about the lead (`/work/lead`,
-  docs/pool.md §11). `/work/?view` only watches. Each slot (a Web Worker per core, less one) runs a
+- **The page** at `/work/` (also the menu bar's panel, on this Mac's own agent's port, and
+  `scenic status`'s "Build page") shows the build to anyone the Mac answers, with no key: in the
+  pool every Mac's agent serves it, the same, from its own read of the build's state (docs/pool.md
+  §10; a Mac with neither a coordinator nor a broker from a viewer that answers nothing else). A
+  device helps only when its owner turns on "Help with this tab"; a page may also pause the build
+  and ask about the lead (`/work/lead`, docs/pool.md §11): on a Mac not leading, from that Mac's
+  own page alone, its agent passing them on. This Mac's own page may also cancel a job and try a
+  failed target again (`/work/act`). `/work/?view` only watches. Each slot (a Web Worker per core, less one) runs a
   task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim).
 - **The build at a glance** (`web/work/dash.js`, `dash.css`, `pool.js`, `sums.js`; docs/pipeline.md §5): the
   verdict (going, done when, what needs a look, pause controls); the overview; the
@@ -148,7 +152,10 @@ Common rules:
   per step); a card per machine; the pool (who leads, "Make lead", "Take it"); the regions; the activity (last day by
   the hour, events); folded details (leases, waits, each Mac's capacity, workers, the steps table). It reads
   `/work/steps` once (the steps table: every word about a step), `/work/swarm` every 10 s and
-  `/work/history` incrementally.
+  `/work/history` incrementally. A 503 (the Mac hasn't read the build's state yet) says so and asks
+  again in a second, what's shown said to be stale if it had an answer before; a new `epoch` (the
+  Mac's agent restarted) starts the events again. "Since you last looked" goes by the events' time,
+  so it outlives a restart.
 - **HTTPS** through `tailscale serve` (docs/pool.md §14) gives the secure context the wake lock
   and PWA need; plain HTTP on the tailnet still works.
 - **The page as an app** (`manifest.webmanifest`, `sw.js`, `icons/`): installable; its service

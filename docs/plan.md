@@ -1293,9 +1293,13 @@ available. Until work is done, the map serves the last catalog.
 - The app's status bar: the NAS or map server out of reach, new data or a new app.
 - **The menu bar item** asks the local server (`/api/build`): this Mac's agent's status, else the
   NAS's copy. An agent not heard from for six minutes shows as out of touch.
-  - **Its panel:** a click opens the lead's build page in a popover (`/api/build`'s `pages`, the
-    first that answers: HTTPS through `tailscale serve`, else the lead's addresses), with `?view` in
-    a web view that keeps nothing, so it only watches (docs/workers.md §7).
+  - **Its panel:** a click opens this Mac's own agent's build page in a popover
+    (`http://127.0.0.1:8090/work/?view`: every Mac's agent serves it from its own read of the
+    build's state, docs/pool.md §10), in a web view that keeps nothing, kept for the next opening
+    and quiet while closed, 900 pt tall at most. With this Mac's agent not answering, one line says
+    so ("The build's agent isn't running on this Mac"); with it on another app than the menu bar's
+    (the swarm answer's `app`), the footer says so. From it, as from any page on this Mac, a job
+    can be cancelled and a failed target tried again (docs/pool.md §11).
   - **Its menu** (right-click, or "⋯"): the state, downloads and caches; Pause/Resume Building; the
     lead items (docs/pool.md §11); Clear the Build's Caches; Disk Room ▸; Memory ▸; Open the Build Log; Open
     the Map; Copy the Map's Address; Open/Copy the Build Page.
