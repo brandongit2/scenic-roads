@@ -543,16 +543,17 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   coverage that a source meets (`depth-lo`, any Mac), and every z6 tile within it that a source
   finer than z8 meets (`depth`, any Mac). Both read only the NAS (the sources' grids, the basemap,
   the lo packs) and write their packs there. The 15″ grid covers the rest of an area's water.
-- **Reading the sources:** a source's GeoTIFF is opened on the agent's NAS readers within their
-  deadline, and opened again after 2, 5, 15 and 30 s while it fails (an SMB open can fail for a
-  moment on a file that's there: two depth-lo jobs, 19 Oct). A window's blocks are read 16 at
-  once into the shared block cache before it's sampled (`Tiff::prefetch_window`): read in turn,
-  each waits a round trip and the job is NAS-latency-bound.
+- **Reading the sources:** each over SMB waits round trips, so a source's grids meeting a block
+  (hundreds of BlueTopo's) are opened 8 at once, then sampled 8 at once (merged in their order),
+  and each window's blocks read 8 at once into the shared block cache (`Tiff::prefetch_window`).
+  3/1/3's z6 block: 1,359 s read in turn, 508 s so (19 Oct, the M1, release). An open that fails
+  is tried again after 2, 5, 15 and 30 s (an SMB open can fail for a moment on a file that's
+  there: two depth-lo jobs, 19 Oct).
 - **Timings and progress:** a job's phases: the sources' declarations read, the basemap's water
   opened and read, `composing` (its sub-phases: the source files opened, the sources' windows read,
   the stored levels scaled up, feathering, gaps filled), tiles encoded, the coarse levels from
-  their children (depth-lo) and the packs written. Its progress moves within a zoom, by the
-  zoom's blocks done (said every 5 s at most).
+  their children (depth-lo) and the packs written. Its progress moves within a zoom, by its blocks
+  done and the grids of the block under way sampled, said every 5 s.
 - **depth-lo (a z3 tile):** z6–8 composed (below), z3–5 each its children's mean.
 - **depth (a z6 tile):** z9–16, a block only where a source has a grid of that zoom or finer; its
   capped pixels scaled up from this job's coarser tiles and, at z8 and coarser, from the lo packs

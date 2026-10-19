@@ -161,22 +161,58 @@ impl Reader {
         if let Some(t) = self.open.lock().unwrap().get(p) {
             return Ok(t.clone());
         }
-        let tiff = {
-            let _p = crate::timings::sub("depth source files opened", crate::timings::Class::NasRead);
-            crate::timings::count(0, 1);
-            open_retrying(p, &open_on_nas, &OPEN_WAITS).with_context(|| format!("{}", p.display()))?
-        };
-        let id = self.open.lock().unwrap().len() as u64;
-        let t = Arc::new(tiff.with_shared_cache(id, self.cache.clone()));
-        self.open.lock().unwrap().insert(p.to_path_buf(), t.clone());
+        let tiff = open_retrying(p, &open_file, &OPEN_WAITS).with_context(|| format!("{}", p.display()))?;
+        // (Its cache id given as it's kept, under the one lock: two threads opening files at once
+        // never share one.)
+        let mut open = self.open.lock().unwrap();
+        if let Some(t) = open.get(p) {
+            return Ok(t.clone());
+        }
+        let t = Arc::new(tiff.with_shared_cache(open.len() as u64, self.cache.clone()));
+        open.insert(p.to_path_buf(), t.clone());
         Ok(t)
+    }
+
+    /// `paths` opened (those not yet), `GRIDS_AT_ONCE` at once: over SMB each open and header read
+    /// waits round trips, and a block can meet hundreds of a source's grids (BlueTopo's).
+    fn open_all(&self, paths: &[&Path]) -> Result<()> {
+        let todo: Vec<&Path> = {
+            let open = self.open.lock().unwrap();
+            paths.iter().copied().filter(|p| !open.contains_key(*p)).collect()
+        };
+        if todo.is_empty() {
+            return Ok(());
+        }
+        crate::timings::count(0, todo.len() as u64);
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failed: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+        std::thread::scope(|s| {
+            for _ in 0..GRIDS_AT_ONCE.min(todo.len()) {
+                s.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= todo.len() || failed.lock().unwrap().is_some() {
+                        return;
+                    }
+                    if let Err(e) = self.tiff(todo[i]) {
+                        failed.lock().unwrap().get_or_insert(e);
+                        return;
+                    }
+                });
+            }
+        });
+        match failed.into_inner().unwrap() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
+/// How many of a source's grids are opened, or sampled, at once.
+pub const GRIDS_AT_ONCE: usize = 8;
+
 /// The waits between a source file's opens (task #398): an open on the NAS's SMB share can fail
 /// for a moment on a file that's there ("No such file or directory", 19 Oct: two depth-lo jobs in
-/// the same minute), or stay stuck in the kernel (each open is held to crate::agent::nasread's
-/// deadline, `open_on_nas`).
+/// the same minute).
 pub const OPEN_WAITS: [std::time::Duration; 4] = [
     std::time::Duration::from_secs(2),
     std::time::Duration::from_secs(5),
@@ -184,14 +220,11 @@ pub const OPEN_WAITS: [std::time::Duration; 4] = [
     std::time::Duration::from_secs(30),
 ];
 
-/// A GeoTIFF on the NAS opened, its header read, on crate::agent::nasread's readers within their
-/// deadline (`TimedOut` past it).
-fn open_on_nas(p: &Path) -> std::io::Result<Tiff> {
-    let owned = p.to_path_buf();
-    crate::agent::nasread::with(p, move || {
-        let f = store::range::PlainFile::open(&owned)?;
-        Tiff::open(Arc::new(f)).map_err(std::io::Error::other)
-    })
+/// A GeoTIFF opened, its header read. (Not on crate::agent::nasread's readers: their four
+/// threads, busy, fail a call at once, and the grids are opened `GRIDS_AT_ONCE` at once.)
+fn open_file(p: &Path) -> std::io::Result<Tiff> {
+    let f = store::range::PlainFile::open(p)?;
+    Tiff::open(Arc::new(f)).map_err(std::io::Error::other)
 }
 
 /// `open(p)`, tried again after each of `waits` while it fails (its last error returned), each
@@ -217,7 +250,34 @@ pub fn open_retrying<T>(
 
 /// How many of a window's blocks are read at once (`Tiff::prefetch_window`; 1: in turn, as
 /// before task #398, which a measure sets to compare).
-pub static WINDOW_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(16);
+pub static WINDOW_READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(8);
+
+/// Whether a source's grids are opened and sampled `GRIDS_AT_ONCE` at once (false: in turn, as
+/// before task #398, which a measure sets to compare).
+pub static GRIDS_TOGETHER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// The grids sampled for the block under way, and those met so far (`sample`), for its progress.
+static SAMPLED: [std::sync::atomic::AtomicU64; 2] =
+    [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+
+/// The share of the block under way's grids sampled (the grids met so far: its later sources' not
+/// yet counted), below 1.
+pub fn sampled() -> f64 {
+    let (d, m) =
+        (SAMPLED[0].load(std::sync::atomic::Ordering::Relaxed), SAMPLED[1].load(std::sync::atomic::Ordering::Relaxed));
+    if m == 0 {
+        0.0
+    } else {
+        (d as f64 / m as f64).min(0.99)
+    }
+}
+
+/// A new block: none sampled.
+pub fn sampled_reset() {
+    for a in &SAMPLED {
+        a.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 
 /// A source sampled onto a window: depth (NaN: none), the zoom each pixel's data supports (0:
 /// none), its class (measured where its grid's own zoom, else interpolated), and the chart's low
@@ -281,7 +341,6 @@ fn read(t: &Tiff, level: usize, x0: i64, y0: i64, x1: i64, y1: i64) -> Result<Op
     }
     let (ww, wh) = ((a1 - a0) as u32, (b1 - b0) as u32);
     let v = {
-        let _p = crate::timings::sub("depth sources' windows read", crate::timings::Class::NasRead);
         let reads = WINDOW_READS.load(std::sync::atomic::Ordering::Relaxed);
         if reads > 1 {
             t.prefetch_window(level, a0 as u32, b0 as u32, ww, wh, reads)?;
@@ -296,21 +355,50 @@ fn read(t: &Tiff, level: usize, x0: i64, y0: i64, x1: i64, y1: i64) -> Result<Op
 /// Source `src` on the zoom-z window of global pixels `c0..c0 + w`, `r0..r0 + h` (beyond the
 /// world's edge: none); None when it has nothing there.
 pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: usize) -> Result<Option<Sample>> {
+    use crate::timings::{sub, Class};
     let b = window_box(z, c0, r0, w, h);
+    let grids: Vec<&Grid> = src.meeting(b).collect();
+    SAMPLED[1].fetch_add(grids.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    let together = GRIDS_TOGETHER.load(std::sync::atomic::Ordering::Relaxed);
+    if together {
+        let _p = sub("depth source files opened", Class::NasRead);
+        let paths: Vec<&Path> = grids
+            .iter()
+            .flat_map(|g| std::iter::once(g.file.as_path()).chain(g.zoom_file.as_deref()).chain(g.low_file.as_deref()))
+            .collect();
+        rd.open_all(&paths).with_context(|| format!("the depth source {}", src.id))?;
+    }
+    let _p = sub("depth sources' windows read", Class::NasRead);
+    let one = |g: &Grid| {
+        sample_grid(rd, g, z, c0, r0, w, h)
+            .with_context(|| format!("the depth source {}: {}", src.id, g.file.display()))
+    };
     let mut out: Option<Sample> = None;
-    for g in src.meeting(b) {
-        let s = sample_grid(rd, g, z, c0, r0, w, h)
-            .with_context(|| format!("the depth source {}: {}", src.id, g.file.display()))?;
-        let Some(s) = s else { continue };
-        match &mut out {
-            None => out = Some(s),
-            Some(o) => {
-                for i in 0..w * h {
-                    if s.v[i].is_finite() {
-                        o.v[i] = s.v[i];
-                        o.zoom[i] = s.zoom[i];
-                        o.class[i] = s.class[i];
-                        o.low[i] = s.low[i];
+    // (In order, a chunk at a time: a finer grid's cells win where grids overlap.)
+    for chunk in grids.chunks(if together { GRIDS_AT_ONCE } else { 1 }) {
+        let made: Vec<Result<Option<Sample>>> = if chunk.len() == 1 {
+            vec![one(chunk[0])]
+        } else {
+            std::thread::scope(|s| {
+                let hs: Vec<_> = chunk.iter().map(|g| s.spawn(|| one(g))).collect();
+                hs.into_iter()
+                    .map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("a grid's sampling panicked"))))
+                    .collect()
+            })
+        };
+        SAMPLED[0].fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        for s in made {
+            let Some(s) = s? else { continue };
+            match &mut out {
+                None => out = Some(s),
+                Some(o) => {
+                    for i in 0..w * h {
+                        if s.v[i].is_finite() {
+                            o.v[i] = s.v[i];
+                            o.zoom[i] = s.zoom[i];
+                            o.class[i] = s.class[i];
+                            o.low[i] = s.low[i];
+                        }
                     }
                 }
             }

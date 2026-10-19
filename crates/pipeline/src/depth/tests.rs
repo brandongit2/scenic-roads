@@ -430,9 +430,9 @@ fn a_source_files_open_is_tried_again_after_a_transient_error() {
 }
 
 /// Task #398's measure (run by hand, read-only: nothing written to the root): a real z3 tile's
-/// assembly composed up to a zoom from the NAS, its windows' blocks read in turn (`reads` 1, as
-/// before) or at once, timed. SCENIC_DEPTH_MEASURE="<root> <x>/<y> <upto zoom> <reads>"; unset,
-/// nothing.
+/// assembly composed up to a zoom from the NAS, its grids opened and sampled and its windows'
+/// blocks read in turn (`reads` 1, as before) or at once, timed.
+/// SCENIC_DEPTH_MEASURE="<root> <x>/<y> <upto zoom> <reads>"; unset, nothing.
 #[test]
 fn measure_a_real_assembly() {
     let Ok(m) = std::env::var("SCENIC_DEPTH_MEASURE") else { return };
@@ -442,6 +442,7 @@ fn measure_a_real_assembly() {
     let q: (u32, u32) = (x.parse().unwrap(), y.parse().unwrap());
     let upto: u8 = a[2].parse().unwrap();
     grids::WINDOW_READS.store(a[3].parse().unwrap(), std::sync::atomic::Ordering::Relaxed);
+    grids::GRIDS_TOGETHER.store(a[3] != "1", std::sync::atomic::Ordering::Relaxed);
     let scratch = tempfile::tempdir().unwrap();
     let out = Out::unbound(root, scratch.path()).unwrap();
     let srcs = grids::declared(out.root(), &out.manifest).unwrap();

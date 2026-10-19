@@ -304,21 +304,60 @@ fn level(
     y0: u32,
     n: u32,
     zmin: u8,
-    done: &mut dyn FnMut(f64),
+    done: &(dyn Fn(f64) + Sync),
+) -> Result<usize> {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    let side = n.div_ceil(BLOCK);
+    let blocks = AtomicU32::new(0);
+    let stop = AtomicBool::new(false);
+    // (Said every few seconds by a thread beside the work: a block's sources can take minutes on the
+    // NAS, so a block's share counts its grids sampled so far, crate::depth::grids::sampled.)
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let mut last = std::time::Instant::now();
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                if last.elapsed() >= SAY_EVERY {
+                    let k = f64::from(blocks.load(Ordering::Relaxed));
+                    done(((k + super::grids::sampled()) / f64::from(side * side)).min(1.0));
+                    last = std::time::Instant::now();
+                }
+            }
+        });
+        let r = level_blocks(t, sources, rd, water, wc, z, x0, y0, n, zmin, &blocks);
+        stop.store(true, Ordering::Relaxed);
+        r
+    })
+}
+
+/// `level`'s blocks, in turn, counting those done in `blocks`.
+fn level_blocks(
+    t: &mut Tiles,
+    sources: &[Source],
+    rd: &Reader,
+    water: &dyn WaterSource,
+    wc: &mut WaterCache,
+    z: u8,
+    x0: u32,
+    y0: u32,
+    n: u32,
+    zmin: u8,
+    blocks: &std::sync::atomic::AtomicU32,
 ) -> Result<usize> {
     use crate::timings::{phase, Class};
     let mut kept = 0;
-    let side = n.div_ceil(BLOCK);
-    let mut k = 0;
-    let mut said = std::time::Instant::now();
     for by in (y0..y0 + n).step_by(BLOCK as usize) {
         for bx in (x0..x0 + n).step_by(BLOCK as usize) {
-            k += 1;
-            // (Said at most every few seconds: a fine level's thousands of blocks are mostly dry.)
-            if said.elapsed() >= SAY_EVERY {
-                done(f64::from(k - 1) / f64::from(side * side));
-                said = std::time::Instant::now();
+            super::grids::sampled_reset();
+            // (Counted done however it ends: skipped, dry or composed.)
+            struct Done<'a>(&'a std::sync::atomic::AtomicU32);
+            impl Drop for Done<'_> {
+                fn drop(&mut self) {
+                    self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    super::grids::sampled_reset();
+                }
             }
+            let _done = Done(blocks);
             let b = Block { z, tx0: bx, ty0: by, nx: BLOCK.min(x0 + n - bx), ny: BLOCK.min(y0 + n - by) };
             let (c0, r0) = b.origin();
             let bbox = super::grids::window_box(z, c0, r0, b.w(), b.h());
@@ -446,8 +485,8 @@ pub fn compose_lo(
         for z in LO_COMPOSED.0..=upto {
             let n = 1u32 << (z - 3);
             let at = f64::from(z - LO_COMPOSED.0);
-            let mut done = |f: f64| crate::agent::jobs::report_f(at + f, zooms, "zooms");
-            let k = level(&mut t, sources, &rd, water, &mut wc, z, q.0 * n, q.1 * n, n, 3, &mut done)?;
+            let done = |f: f64| crate::agent::jobs::report_f(at + f, zooms, "zooms");
+            let k = level(&mut t, sources, &rd, water, &mut wc, z, q.0 * n, q.1 * n, n, 3, &done)?;
             crate::agent::jobs::report(u64::from(z - LO_COMPOSED.0 + 1), zooms, "zooms");
             eprintln!("depth-lo 3/{}/{}: z{z}, {k} tiles", q.0, q.1);
         }
@@ -477,8 +516,8 @@ pub fn build_hi(out: &mut Out, sources: &[Source], water: &dyn WaterSource, t: (
             let n = 1u32 << (z - 6);
             let zooms = u64::from(HI.1 - HI.0 + 1);
             let at = f64::from(z - HI.0);
-            let mut done = |f: f64| crate::agent::jobs::report_f(at + f, zooms, "zooms");
-            let k = level(&mut tl, sources, &rd, water, &mut wc, z, t.0 * n, t.1 * n, n, 3, &mut done)?;
+            let done = |f: f64| crate::agent::jobs::report_f(at + f, zooms, "zooms");
+            let k = level(&mut tl, sources, &rd, water, &mut wc, z, t.0 * n, t.1 * n, n, 3, &done)?;
             crate::agent::jobs::report(u64::from(z - HI.0 + 1), zooms, "zooms");
             eprintln!("depth 6/{}/{}: z{z}, {k} tiles", t.0, t.1);
         }
