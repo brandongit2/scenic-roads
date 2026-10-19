@@ -858,3 +858,34 @@ fn one_slow_tile_does_not_stall_the_others() {
     let bits = |v: &[f32]| v.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
     assert_eq!(bits(&got), bits(&want));
 }
+
+/// Task #426 review: a tile's fetch that panics is a failed fetch: the sampling ends in an error
+/// naming the tile, not waiting forever on it.
+#[test]
+fn a_tile_fetch_that_panics_ends_the_sampling_in_an_error() {
+    let (f, lon, lat) = ramps();
+    struct Panics(NoneElse);
+    impl Fetch for Panics {
+        fn open(&self, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
+            self.0.open(url)
+        }
+        fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
+            if url.ends_with("/103/82.png") {
+                panic!("a bad tile");
+            }
+            self.0.get(url)
+        }
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let fetch = Panics(NoneElse(f));
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
+        let o = Opts { fetch: &fetch, store: None, pool: Some(&pool) };
+        let sel: Vec<u32> = (0..lon.len() as u32).collect();
+        let r = ramp_set(&o, TILE_MEMO_BYTES).sample(&sel, &lon, &lat, &|_| {}).map(|_| ());
+        tx.send(r.map_err(|e| format!("{e:#}"))).unwrap();
+    });
+    let r = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("the sampling hung");
+    let e = r.unwrap_err();
+    assert!(e.contains("103/82.png") && e.contains("panicked: a bad tile"), "{e}");
+}

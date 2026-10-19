@@ -16,7 +16,7 @@
 //!   to `TILE_FETCHES` at once kept in flight ahead of the sampling, each tile's points sampled as
 //!   it arrives (`TileSet::rolling`), so a stage reading few points a tile (the blends) waits on
 //!   the network no longer than it must, and a slow tile holds up its own points alone. A tile's
-//!   request is given up after `TILE_DEADLINE`, and asked again. A GeoTIFF dataset's blocks are read
+//!   request is held to `TILE_WITHIN`, and asked again past it. A GeoTIFF dataset's blocks are read
 //!   likewise ahead of their sampling (`read_ahead`): `GEO_FETCHES` at once, up to `GEO_AHEAD`
 //!   blocks past the chunk being sampled, each once (crate::geotiff::Tiff::block); so the sampler
 //!   waits on several requests at once, not on a chunk's few blocks in turn.
@@ -493,13 +493,16 @@ pub const TILE_MEMO_BYTES: usize = 512 << 20;
 /// flight all along (`TileSet::rolling`), a slow tile holding up its own points alone.
 pub const TILE_FETCHES: usize = 64;
 
-/// How long one request for a tile may take, its body too, before it's given up and asked again
-/// (crate::fetch::Fetch::get_within): a pyramid's tiles are tens to hundreds of KB, seconds at
-/// the slowest link the build has seen, so a connection silent this long is dead, not slow.
-/// Without it a silent connection held its fetch for the client's 90 s a try. (The budget
-/// proxy's idle end, crate::budget::proxy::Limits, 600 s, is left as it is: its long query
-/// tunnels need it, and the client's deadline ends a tile's tunnel first.)
-pub const TILE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+/// A tile request's limits (crate::fetch::Fetch::get_within): its answer's head within 30 s (a
+/// connection silent that long is dead, not slow: it fails and is asked again, where it held its
+/// fetch for the client's 90 s a try), then its body at 8 KB/s or more over up to 512 KB, 64 s
+/// (a pyramid's tiles are tens to a couple of hundred KB; 64 of them at once at the floor is
+/// 512 KB/s, so a slow but steady link still brings them). Not a cap on each request's whole
+/// time: a host whose every failure was these limits isn't noted down. (The budget proxy's idle
+/// end, crate::budget::proxy::Limits, 600 s, is left as it is: its long query tunnels need it,
+/// and the client's limits end a tile's tunnel first.)
+pub const TILE_WITHIN: crate::fetch::Within =
+    crate::fetch::Within { head: std::time::Duration::from_secs(30), floor: 8 << 10, most: 512 << 10 };
 
 impl TileMemo {
     pub(crate) fn new(cap: usize) -> TileMemo {
@@ -513,7 +516,7 @@ impl TileMemo {
         if let Some(v) = &*got {
             return Ok(v.clone());
         }
-        let v: Option<Arc<[u8]>> = match fetch.get_within(url, TILE_DEADLINE) {
+        let v: Option<Arc<[u8]>> = match fetch.get_within(url, TILE_WITHIN) {
             Ok(v) => v.map(Into::into),
             Err(e) => {
                 // (Its empty slot dropped, unless another took its place, or another thread is
@@ -595,7 +598,10 @@ impl TileSet<'_> {
             reads.push(mine);
         }
         let last: Vec<usize> = reads.iter().map(|r| r.iter().copied().max().unwrap_or(0)).collect();
-        let hold = self.memo.cap / 4;
+        // (A quarter of the memo, less the decoded tiles the working threads hold at once.)
+        let decoded = TILE_PX * TILE_PX * std::mem::size_of::<f32>();
+        let workers = self.o.pool.map_or(1, |p| p.current_num_threads());
+        let hold = (self.memo.cap / 4).saturating_sub(workers * decoded);
         /// The fetching's and the working's shared state.
         struct St {
             /// The next tile to fetch.
@@ -662,8 +668,20 @@ impl TileSet<'_> {
                         g.next - 1
                     };
                     let (tx, ty) = tiles[p];
-                    let got =
-                        crate::fetch::cancellable(&cancel, || self.memo.get(&self.tile_url(tx, ty), self.o.fetch));
+                    let url = self.tile_url(tx, ty);
+                    // (A fetch that panics is a failed fetch: the working, waiting on its tile,
+                    // would otherwise wait on forever.)
+                    let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        crate::fetch::cancellable(&cancel, || self.memo.get(&url, self.o.fetch))
+                    }))
+                    .unwrap_or_else(|p| {
+                        let why = p
+                            .downcast_ref::<&str>()
+                            .map(|s| s.to_string())
+                            .or_else(|| p.downcast_ref::<String>().cloned())
+                            .unwrap_or_default();
+                        Err(anyhow::anyhow!("{url}: its fetch panicked: {why}"))
+                    });
                     let mut g = lock();
                     match got {
                         Ok(v) => {

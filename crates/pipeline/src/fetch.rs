@@ -234,13 +234,32 @@ pub trait Fetch: Send + Sync {
     /// `url`'s file whole (a small one); None when the server answers 404.
     fn get(&self, url: &str) -> Result<Option<Vec<u8>>>;
 
-    /// As `get`, each request over the network given up after `deadline` (and tried again, as a
-    /// failed one is): a connection that goes silent fails fast, not after the client's 90 s or
-    /// the proxy's idle end. A reader of many small files (a pyramid's tiles) asks this; a fetch
-    /// without a network (a mirror, the tests') is `get`.
-    fn get_within(&self, url: &str, deadline: std::time::Duration) -> Result<Option<Vec<u8>>> {
-        let _ = deadline;
+    /// As `get`, each request over the network held to `within` (and tried again, as a failed
+    /// one is): a connection that goes silent before its answer's head fails fast, while a body
+    /// coming slowly but steadily is waited for. A reader of many small files (a pyramid's tiles)
+    /// asks this; a fetch without a network (a mirror, the tests') is `get`.
+    fn get_within(&self, url: &str, within: Within) -> Result<Option<Vec<u8>>> {
+        let _ = within;
         self.get(url)
+    }
+}
+
+/// A small file's request's limits (`Fetch::get_within`): its answer's head within `head` of
+/// the request being sent, then its body at `floor` bytes a second or more over up to `most`
+/// bytes (a body's time given: `most / floor`, the head's not counted). A slow body is waited for
+/// as long as that rate lets it come; only a connection silent past the head's wait, or slower
+/// than the floor, fails the attempt.
+#[derive(Clone, Copy, Debug)]
+pub struct Within {
+    pub head: std::time::Duration,
+    pub floor: u64,
+    pub most: u64,
+}
+
+impl Within {
+    /// The time a body is given.
+    pub fn body(&self) -> std::time::Duration {
+        std::time::Duration::from_secs_f64(self.most as f64 / self.floor.max(1) as f64)
     }
 }
 
@@ -444,14 +463,14 @@ impl Fetch for Fetcher {
         self.get_by(url, None)
     }
 
-    fn get_within(&self, url: &str, deadline: std::time::Duration) -> Result<Option<Vec<u8>>> {
-        self.get_by(url, Some(deadline))
+    fn get_within(&self, url: &str, within: Within) -> Result<Option<Vec<u8>>> {
+        self.get_by(url, Some(within))
     }
 }
 
 impl Fetcher {
-    /// `get`, a request over the network given up after `deadline` (`Fetch::get_within`).
-    fn get_by(&self, url: &str, deadline: Option<std::time::Duration>) -> Result<Option<Vec<u8>>> {
+    /// `get`, a request over the network held to `deadline` (`Fetch::get_within`).
+    fn get_by(&self, url: &str, deadline: Option<Within>) -> Result<Option<Vec<u8>>> {
         let _ = deadline;
         if let Some(m) = &self.mirror {
             match lookup(m, url)? {
@@ -890,13 +909,13 @@ mod net {
             })))
         }
 
-        /// `url`'s small file whole (`get`), recorded in `record`; each request given up after
+        /// `url`'s small file whole (`get`), recorded in `record`; each request held to
         /// `deadline` when one's given (`Fetch::get_within`).
         pub fn get_recorded(
             &self,
             url: &str,
             record: Option<&Path>,
-            deadline: Option<Duration>,
+            deadline: Option<super::Within>,
         ) -> Result<Option<Vec<u8>>> {
             let got = self.get_by(url, deadline)?;
             if let Some(r) = record {
@@ -1079,12 +1098,17 @@ mod net {
         }
 
         /// The whole (small) file; None for 404. Other answers are asked again: 8 tries, waiting 2,
-        /// 4, 6 … s. Each attempt is given up after `deadline` when one's given (the agent's own
-        /// 90 s otherwise): a silent connection is an attempt failed, asked again.
-        fn get_by(&self, url: &str, deadline: Option<Duration>) -> Result<Option<Vec<u8>>> {
+        /// 4, 6 … s. Each attempt is held to `deadline` when one's given (the agent's own 90 s
+        /// in all otherwise): a connection silent past its head's wait, or a body slower than its
+        /// floor, is an attempt failed, asked again. A host whose every failure was such a
+        /// deadline isn't noted down (`note_down`): it answers, slowly, and a busy link (many tiles
+        /// at once) mustn't set the job's areas aside.
+        pub(super) fn get_by(&self, url: &str, deadline: Option<super::Within>) -> Result<Option<Vec<u8>>> {
             down_check(self.down.as_deref(), url)?;
             let _slot = HostSlot::take(url);
             let mut last = String::new();
+            let mut all_late = true;
+            let late = |e: &ureq::Error| matches!(e, ureq::Error::Timeout(_));
             for attempt in 0..8u64 {
                 if attempt > 0 {
                     retry_wait(self.down.as_deref(), url, 2 * attempt)?;
@@ -1093,7 +1117,13 @@ mod net {
                 crate::fetch::online(url)?;
                 let req = self.agent.get(url);
                 let req = match deadline {
-                    Some(d) => req.config().timeout_global(Some(d)).build(),
+                    // (The agent's 90 s in all lifted: the head's wait, then the body's by its size.)
+                    Some(d) => req
+                        .config()
+                        .timeout_global(None)
+                        .timeout_recv_response(Some(d.head))
+                        .timeout_recv_body(Some(d.body()))
+                        .build(),
                     None => req,
                 };
                 match req.call() {
@@ -1103,15 +1133,26 @@ mod net {
                                 fetched(b.len());
                                 return Ok(Some(b));
                             }
-                            Err(e) => last = e.to_string(),
+                            Err(e) => {
+                                all_late &= late(&e);
+                                last = e.to_string();
+                            }
                         },
                         404 => return Ok(None),
-                        c => last = format!("status {c}"),
+                        c => {
+                            all_late = false;
+                            last = format!("status {c}");
+                        }
                     },
-                    Err(e) => last = e.to_string(),
+                    Err(e) => {
+                        all_late &= late(&e);
+                        last = e.to_string();
+                    }
                 }
             }
-            note_down(self.down.as_deref(), url, &last);
+            if deadline.is_none() || !all_late {
+                note_down(self.down.as_deref(), url, &last);
+            }
             bail!("{url}{NO_ANSWER}{last})")
         }
     }
@@ -1136,6 +1177,45 @@ mod tests {
             let _ = c.write_all(b"HTTP/1.1 503 Busy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         });
         url
+    }
+
+    /// Task #426 review: a tile's limits are the head's wait and a body's rate, not a cap on the
+    /// whole request: a body of 40 KB coming at 20 KB/s, two seconds, is fetched whole with the
+    /// head given 1 s and the body 10 KB/s or more, where a 1 s cap in all failed it.
+    #[cfg(not(target_os = "wasi"))]
+    #[test]
+    fn a_slow_but_steady_body_is_fetched_within_a_tiles_limits() {
+        use std::io::{Read, Write};
+        let l = store::spawn::listen("127.0.0.1:0").unwrap();
+        l.set_nonblocking(true).unwrap();
+        let url = format!("http://127.0.0.1:{}/t.png", l.local_addr().unwrap().port());
+        std::thread::spawn(move || {
+            let mut c = loop {
+                match store::spawn::accept(&l) {
+                    Ok((c, _)) => break c,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(2))
+                    }
+                    Err(_) => return,
+                }
+            };
+            c.set_nonblocking(false).ok();
+            let mut b = [0u8; 4096];
+            let _ = c.read(&mut b);
+            let _ = c.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 40000\r\nConnection: close\r\n\r\n");
+            for i in 0..10u8 {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                if c.write_all(&[i; 4000]).is_err() {
+                    return;
+                }
+            }
+        });
+        let within = Within { head: std::time::Duration::from_secs(1), floor: 10_000, most: 64_000 };
+        let t0 = std::time::Instant::now();
+        let got = net::Net::new().with_down(None).get_by(&url, Some(within)).unwrap().unwrap();
+        assert!(t0.elapsed() > std::time::Duration::from_millis(1500), "{:?}", t0.elapsed());
+        assert_eq!(got.len(), 40000);
+        assert!(got[..4000].iter().all(|&b| b == 0) && got[36000..].iter().all(|&b| b == 9));
     }
 
     /// Task #397 follow-up: a range read waiting out its retries ends at once when its reader
