@@ -19,8 +19,8 @@
 // Build… (confirming) on another Mac, the proactive offer; each an ask to that agent
 // (`lead-request.json`), which checks it as its driver would.
 //
-// It's the menu bar item of Scenic.app, the app opened from the Dock, Launchpad or /Applications
-// (and at login): opening it starts this Mac's build service, quitting it stops that service, and
+// It's the menu bar item of Scenic.app, the app opened from Launchpad, Spotlight or /Applications
+// (and at login), never in the Dock: opening it starts this Mac's build service, quitting it stops that service, and
 // its window starts and stops the map server, a service of its own (service.swift).
 //
 //   tools/status/bundle.sh <folder> [sandbox options]   builds Scenic.app (both files, its launcher
@@ -1649,7 +1649,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let windowItem = NSMenuItem()
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowItem.submenu = windowMenu
         menu.addItem(windowItem)
         NSApp.mainMenu = menu
@@ -1741,7 +1740,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    /// Quitting (the app's menu, the menu bar's, the Dock; a logout, restart or shutdown): the build
+    /// Quitting (the menu bar item's menu; a logout, restart or shutdown): the build
     /// service stopped. No job running: at once. A job running: asked, "Finish This Job First" (the
     /// app quits once the service has stopped) or "Stop Now". A logout, restart or shutdown: "Stop
     /// Now" without asking. The agent hands the lead away itself as it quits (control.rs Quit).
@@ -2594,7 +2593,7 @@ if let i = args.firstIndex(of: "--reopen"), i + 2 < args.count {
     delegate.proof = args.contains("--menu-proof")
     if let i = args.firstIndex(of: "--show"), i + 1 < args.count { delegate.showAtStart = args[i + 1] }
     app.delegate = delegate
-    // (A normal app, in the Dock; --show's and --menu-proof's runs the menu bar item alone.)
-    app.setActivationPolicy(delegate.proof || delegate.showAtStart != nil || insideInstalledVersion() ? .accessory : .regular)
+    // (Never in the Dock (Info.plist's LSUIElement too): the menu bar item and the app's window.)
+    app.setActivationPolicy(.accessory)
     app.run()
 }

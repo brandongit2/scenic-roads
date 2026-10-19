@@ -23,8 +23,9 @@ coverage, or once for the whole world, so region size, count and borders never s
 - Zoomed out, every road is drawn at every zoom. The water zoomed out looks as full detail rendered
   and shrunk would: an island or lake smaller than a pixel is as faint as its share of the pixel,
   never exaggerated nor dropped, with the coastal shading full detail gives it (§6, Water).
-- **Scenic** (`/Applications/Scenic.app`, `tools/status`) is an app opened from the Dock, Launchpad
-  or /Applications, and at login. Opening it starts this Mac's build service (the agent: the app's
+- **Scenic** (`/Applications/Scenic.app`, `tools/status`) is an app opened from Launchpad, Spotlight
+  or /Applications, and at login; it has no Dock icon (LSUIElement), only its menu bar item and its
+  window, and its icon is built from `tools/status/icon`. Opening it starts this Mac's build service (the agent: the app's
   own launchd job, registered with SMAppService and listed under Scenic in Login Items; launchd
   restarts it after a crash, and it restarts itself into an update). Quitting stops it: at once with
   no job running; with one, the app asks "Finish This Job First" (nothing new taken, the app quits

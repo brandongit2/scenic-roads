@@ -4,7 +4,7 @@
 # /launcher.c, which runs the build service), the build service's launchd plist (build-service.plist,
 # registered by the app with SMAppService), the version it's published as (Contents/Resources/
 # version: the app replaces itself when the installed version's differs), signed with <identity>
-# ("-": ad hoc). tools/app/publish.sh runs it for every publish.
+# ("-": ad hoc), and its icon (Contents/Resources/Scenic.icns, from icon/build.sh). tools/app/publish.sh runs it for every publish.
 #
 #   tools/status/bundle.sh <folder> <version> <identity>
 #   tools/status/bundle.sh <folder> <version> <identity> --sandbox <home>
@@ -28,6 +28,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Library/
 swiftc -O -swift-version 5 -target arm64-apple-macos26.0 -o "$app/Contents/MacOS/scenic-status" "$src/main.swift" "$src/service.swift"
 xcrun clang -O2 -Wall -target arm64-apple-macos26.0 -o "$app/Contents/MacOS/scenic-launcher" "$src/../launcher/launcher.c"
 cp -X "$src/Info.plist" "$app/Contents/Info.plist"
+zsh "$src/icon/build.sh" "$app/Contents/Resources"
 info="$app/Contents/Info.plist"
 plist="$app/Contents/Library/LaunchAgents/$label.plist"
 sed -e "s/LABEL/$label/" -e "s/BUNDLE_ID/$id/" "$src/build-service.plist" > "$plist"

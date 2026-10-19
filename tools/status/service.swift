@@ -354,7 +354,7 @@ final class MapServer {
 
 // MARK: the app's window
 
-/// The window the app opens to (from the Dock, Launchpad or /Applications; not at login): the build
+/// The window the app opens to (from Launchpad, Spotlight or /Applications, or again while it runs; not at login): the build
 /// service's state, and the map server's with its controls.
 final class StatusWindow: NSObject, NSWindowDelegate {
     let window: NSWindow
@@ -368,7 +368,7 @@ final class StatusWindow: NSObject, NSWindowDelegate {
     var onStop: () -> Void = {}
 
     override init() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 190), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 190), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
         window.title = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Scenic"
         window.isReleasedWhenClosed = false

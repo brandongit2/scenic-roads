@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Scenic's icon at 16 and 32 px: the road alone, wider: a winding road through terrain
+       contours, on macOS's icon grid (an 824 px rounded square, 100 px margins). -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f6b5a"/>
+      <stop offset="1" stop-color="#173a33"/>
+    </linearGradient>
+    <clipPath id="sq"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <g clip-path="url(#sq)" fill="none">
+    <path d="M300 930C300 760 600 760 600 610S330 470 360 330 640 200 700 100" stroke="#10241f" stroke-width="190" stroke-linecap="round"/>
+    <path d="M300 930C300 760 600 760 600 610S330 470 360 330 640 200 700 100" stroke="#f0e2c0" stroke-width="160" stroke-linecap="round"/>
+  </g>
+</svg>

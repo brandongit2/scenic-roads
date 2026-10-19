@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- Scenic's icon (tools/status/icon/build.sh renders it): a winding road through terrain
+       contours, on macOS's icon grid (an 824 px rounded square, 100 px margins). -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f6b5a"/>
+      <stop offset="1" stop-color="#173a33"/>
+    </linearGradient>
+    <clipPath id="sq"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <g clip-path="url(#sq)" fill="none">
+    <g stroke="#8fc3a3" stroke-opacity="0.35" stroke-width="10">
+      <path d="M690 250c110 20 170 110 140 200s-150 120-240 90-120-150-60-230c40-50 100-70 160-60z"/>
+      <path d="M680 320c60 10 95 60 80 110s-85 70-135 50-65-85-30-130c20-25 55-35 85-30z"/>
+      <path d="M672 375c22 4 35 22 30 40s-32 26-50 18-24-30-10-46c8-10 18-14 30-12z"/>
+      <path d="M100 700c90-50 190-40 260 10s180 70 260 20 200-60 304-10"/>
+      <path d="M100 790c100-40 200-30 280 20s190 60 290 10 180-40 254 0"/>
+      <path d="M100 610c80-40 160-50 230-20s130 20 160-30"/>
+    </g>
+    <path d="M300 930C300 760 600 760 600 610S330 470 360 330 640 200 700 100" stroke="#10241f" stroke-width="118" stroke-linecap="round"/>
+    <path d="M300 930C300 760 600 760 600 610S330 470 360 330 640 200 700 100" stroke="#f0e2c0" stroke-width="96" stroke-linecap="round"/>
+    <path d="M300 930C300 760 600 760 600 610S330 470 360 330 640 200 700 100" stroke="#d9873a" stroke-width="12" stroke-dasharray="44 36"/>
+  </g>
+</svg>
