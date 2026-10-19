@@ -66,6 +66,8 @@ fn sources(dir: &Path) -> Vec<Source> {
             band_m: 2000.0,
             intertidal: false,
             datum_exact: true,
+            rivers: false,
+            estimated: false,
             label: format!("S{code}"),
             datum: "MSL".into(),
             notice: None,
@@ -185,4 +187,115 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
         .map(|l| out.get(l).map(str::to_string))
         .collect();
     assert_eq!(names, again);
+}
+
+/// `Fixture`'s water, with (when asked) a river running east from the sea across the land, and a
+/// sea channel narrower than a z8 pixel (0.3 px) running east from the sea further south.
+struct WithMore {
+    river: bool,
+    narrow: bool,
+}
+
+/// The river's rectangle in `T` (u0, v0, u1, v1).
+const RIVER: [f64; 4] = [0.45, 0.6, 0.65, 0.62];
+/// The narrow channel's.
+const NARROW: [f64; 4] = [0.45, 0.8, 0.9, 0.8003];
+
+impl WaterSource for WithMore {
+    fn polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
+        let mut out = Fixture.polys(z, x, y)?;
+        if self.narrow && (6..=14).contains(&z) {
+            if let Some(r) = rect(z, x, y, NARROW[0], NARROW[1], NARROW[2], NARROW[3]) {
+                out.push(square(WKind::Sea, 0, r[0], r[1], r[2], r[3]));
+            }
+        }
+        Ok(out)
+    }
+    fn depth_polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
+        let mut out = self.polys(z, x, y)?;
+        if self.river && (6..=14).contains(&z) {
+            if let Some(r) = rect(z, x, y, RIVER[0], RIVER[1], RIVER[2], RIVER[3]) {
+                out.push(square(WKind::River, 1 << 63, r[0], r[1], r[2], r[3]));
+            }
+        }
+        Ok(out)
+    }
+    fn pin(&self) -> String {
+        "fixture+".into()
+    }
+}
+
+/// The content names of the packs `srcs` make on `water` (the assembly's and the piece's).
+fn packs(srcs: &[Source], water: &dyn WaterSource, root: &Path) -> (Out, Vec<Option<String>>) {
+    let mut out = Out::unbound(&root.join("root"), &root.join("scratch")).unwrap();
+    let q = (T.0 >> 3, T.1 >> 3);
+    build_lo(&mut out, srcs, water, q).unwrap();
+    build_hi(&mut out, srcs, water, T).unwrap();
+    let names = [
+        lo_logical(LAYER, q.0, q.1),
+        lo_logical(CLASS_LAYER, q.0, q.1),
+        hi_logical(LAYER, T.0, T.1),
+        hi_logical(CLASS_LAYER, T.0, T.1),
+    ]
+    .iter()
+    .map(|l| out.get(l).map(str::to_string))
+    .collect();
+    (out, names)
+}
+
+#[test]
+fn rivers_and_narrow_water_without_a_value_change_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let srcs = sources(d.path());
+    let (_, plain) = packs(&srcs, &WithMore { river: false, narrow: false }, &d.path().join("a"));
+    // (No source is drawn in rivers.)
+    let (_, river) = packs(&srcs, &WithMore { river: true, narrow: false }, &d.path().join("b"));
+    assert_eq!(plain, river, "a river no source is drawn in");
+    // (With only the lake's survey, the sea's narrow channel has no value.)
+    let lake_only = &srcs[2..];
+    let (_, a) = packs(lake_only, &WithMore { river: false, narrow: false }, &d.path().join("c"));
+    let (_, b) = packs(lake_only, &WithMore { river: false, narrow: true }, &d.path().join("e"));
+    assert!(a.iter().any(Option::is_some));
+    assert_eq!(a, b, "narrow water no source has a value in");
+}
+
+#[test]
+fn a_river_takes_the_sources_drawn_in_rivers() {
+    let d = tempfile::tempdir().unwrap();
+    let mut srcs = sources(d.path());
+    srcs[0].rivers = true;
+    let (out, _) = packs(&srcs, &WithMore { river: true, narrow: false }, d.path());
+    let q = (3, T.0 >> 3, T.1 >> 3);
+    let (x, y, px, py) = where_(8, 0.6, 0.61);
+    let t8 = tile(&out, LAYER, "lo", q, 8, x, y).expect("the river's z8 tile");
+    assert!((depth_at(&t8, px, py) + 50.0).abs() < 0.6, "{}", depth_at(&t8, px, py));
+    assert_eq!(class_at(&tile(&out, CLASS_LAYER, "lo", q, 8, x, y).unwrap(), px, py), C_MEASURED | (1 << 4));
+    // The land beside it has none.
+    let (x, y, px, py) = where_(8, 0.6, 0.7);
+    assert!(tile(&out, LAYER, "lo", q, 8, x, y).is_none_or(|t| depth_at(&t, px, py) >= NODATA_MIN));
+}
+
+#[test]
+fn narrow_water_keeps_a_sources_depth() {
+    let d = tempfile::tempdir().unwrap();
+    let srcs = sources(d.path());
+    let (out, _) = packs(&srcs, &WithMore { river: false, narrow: true }, d.path());
+    let q = (3, T.0 >> 3, T.1 >> 3);
+    let (x, y, px, py) = where_(8, 0.7, 0.80015);
+    let t8 = tile(&out, LAYER, "lo", q, 8, x, y).expect("the channel's z8 tile");
+    assert!((depth_at(&t8, px, py) + 50.0).abs() < 0.6, "{}", depth_at(&t8, px, py));
+    // (Without the channel, the land there has none.)
+    let (plain, _) = packs(&srcs, &Fixture, &d.path().join("p"));
+    assert!(tile(&plain, LAYER, "lo", q, 8, x, y).is_none_or(|t| depth_at(&t, px, py) >= NODATA_MIN));
+}
+
+#[test]
+fn an_estimated_source_is_classed_so() {
+    let d = tempfile::tempdir().unwrap();
+    let mut srcs = sources(d.path());
+    srcs[2].estimated = true;
+    let (out, _) = packs(&srcs, &Fixture, d.path());
+    let (x, y, px, py) = where_(11, 0.75, 0.25);
+    let c = tile(&out, CLASS_LAYER, "hi", (6, T.0, T.1), 11, x, y).expect("the lake's z11 tile");
+    assert_eq!(class_at(&c, px, py), C_ESTIMATED | (3 << 4));
 }

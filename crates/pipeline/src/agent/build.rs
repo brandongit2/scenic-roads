@@ -3520,8 +3520,12 @@ fn depth_versions(step: &str) -> String {
     format!("{step} {} {}", crate::depth::build::DEPTH_V, crate::depth::build::DEPTH_LO_V)
 }
 
-/// What a depth piece's water digest is made from (`WaterIdx`'s from): its z6–12 tiles.
-pub const DEPTH_WATER_FROM: &str = "depth z6-12";
+/// What a depth piece's water digest is made from (`WaterIdx`'s from): its z6–12 tiles, as the depth
+/// reads them (the rivers too: `terrain_water::RIVERS_FROM`).
+pub const DEPTH_WATER_FROM: &str = "depth z6-12 +rivers";
+/// A depth assembly's: its z3 tile's z6–8, the rivers too ("depth 3/x/y": the terrain's assembly
+/// reads the same tiles without them, "3/x/y").
+pub const DEPTH_LO_WATER_FROM: &str = "depth z6-8 +rivers";
 
 /// The z3 tiles (assemblies) and z6 tiles (pieces) the depth builds for the coverage and its
 /// declared sources (`DepthTargets`).
@@ -3559,17 +3563,13 @@ pub fn depth_tiles(cov: &Coverage, sources: &[crate::depth::grids::Source]) -> (
 }
 
 /// The water the depth's targets read, as the terrain-water job works their digests out: an
-/// assembly's z6–8 tiles (the terrain's assembly's, `AREA_FROM`), a piece's z6–12 ("depth 6/x/y").
+/// assembly's z6–8 tiles ("depth 3/x/y"), a piece's z6–12 ("depth 6/x/y"), the rivers in both.
 pub fn depth_water_reads(cov: &Coverage, sources: &[crate::depth::grids::Source]) -> Vec<crate::terrain_water::Reads> {
     let (lo, hi) = depth_tiles(cov, sources);
     let mut out: Vec<crate::terrain_water::Reads> = lo
         .into_iter()
         .map(|q| {
-            (
-                format!("3/{}/{}", q.0, q.1),
-                crate::terrain_water::AREA_FROM.to_string(),
-                crate::terrain_water::area_tiles(q),
-            )
+            (format!("depth 3/{}/{}", q.0, q.1), DEPTH_LO_WATER_FROM.to_string(), crate::terrain_water::area_tiles(q))
         })
         .collect();
     for (x, y) in hi {
@@ -3588,7 +3588,7 @@ pub fn depth_water_reads(cov: &Coverage, sources: &[crate::depth::grids::Source]
 /// source (no basemap yet).
 ///
 /// - an assembly's key: the versions, the z3 tile, the sources meeting it (their ids and digests),
-///   the water it reads (`water_key` with `AREA_FROM`);
+///   the water it reads ("depth 3/x/y", `DEPTH_LO_WATER_FROM`);
 /// - a piece's: the versions, the z6 tile, the sources meeting it, the lo packs of its z3 tile and
 ///   its eight neighbours (what its capped pixels are scaled up from), its water ("depth 6/x/y").
 pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Option<DepthTargets> {
@@ -3604,7 +3604,7 @@ pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &Terra
     let mut out = DepthTargets::default();
     for q in lo {
         let t = format!("3/{}/{}", q.0, q.1);
-        let Some(w) = water_key(Some(&pin), idx, &t, crate::terrain_water::AREA_FROM) else {
+        let Some(w) = water_key(Some(&pin), idx, &format!("depth {t}"), DEPTH_LO_WATER_FROM) else {
             out.unknown += 1;
             continue;
         };
@@ -7252,6 +7252,8 @@ pub(crate) mod tests {
             band_m: 0.0,
             intertidal: false,
             datum_exact: true,
+            rivers: false,
+            estimated: false,
             label: "S".into(),
             datum: "MSL".into(),
             notice: None,
@@ -7284,7 +7286,7 @@ pub(crate) mod tests {
         let pin = crate::terrain_pack::water_source_pin(&m).unwrap();
         let reads = depth_water_reads(&c, &depth_sources());
         assert!(
-            reads.iter().any(|r| r.0 == "3/3/2") && reads.iter().any(|r| r.0.starts_with("depth 6/")),
+            reads.iter().any(|r| r.0 == "depth 3/3/2") && reads.iter().any(|r| r.0.starts_with("depth 6/")),
             "{:?}",
             reads.iter().map(|r| &r.0).collect::<Vec<_>>()
         );

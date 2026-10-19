@@ -64,6 +64,11 @@ pub struct Source {
     pub intertidal: bool,
     /// On the others' datum (false: it fills gaps only, hard-edged).
     pub datum_exact: bool,
+    /// Drawn in rivers too: its depths are below the water's own surface there (a river's), not a
+    /// fixed level's.
+    pub rivers: bool,
+    /// Its every cell an estimate (class `C_ESTIMATED`), not a measurement.
+    pub estimated: bool,
     pub label: String,
     pub datum: String,
     pub notice: Option<String>,
@@ -105,6 +110,8 @@ impl Source {
             band_m: p.get("band_m").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
             intertidal: p.get("intertidal").and_then(|v| v.as_bool()).unwrap_or(false),
             datum_exact: p.get("datum_exact").and_then(|v| v.as_bool()).unwrap_or(true),
+            rivers: p.get("rivers").and_then(|v| v.as_bool()).unwrap_or(false),
+            estimated: p.get("estimated").and_then(|v| v.as_bool()).unwrap_or(false),
             label: s.param_str("label")?.to_string(),
             datum: s.param_str("datum")?.to_string(),
             notice: p.get("notice").and_then(|v| v.as_str()).map(str::to_string),
@@ -455,6 +462,8 @@ pub(crate) mod tests {
             band_m: 0.0,
             intertidal: false,
             datum_exact: true,
+            rivers: false,
+            estimated: false,
             label: "T".into(),
             datum: "MSL".into(),
             notice: None,

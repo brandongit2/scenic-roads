@@ -21,3 +21,4 @@ label = "SHOM HOMONIM, 100 m"
 datum = "mean sea level (NM)"
 band_m = 300
 intertidal = true
+rivers = true

@@ -1242,9 +1242,11 @@ producer writes them; the owner copies them there).
 `label` (the map's name for it), `datum` (what its depths are below, in words), optionally `band_m`
 (ground metres it's feathered in over where it ends in the water), `intertidal` (its positive values
 are drying heights), `datum_exact` (false: not corrected to the others' datum, so it fills gaps only,
-hard-edged) and `notice` (a notice its licence asks every map showing its data to carry: shown in
-full in the map's © Credits, under a "Depth:" line naming every source's `label` and "Not for
-navigation."; nothing floats over the map).
+hard-edged), `rivers` (drawn in the basemap's rivers too: its depths there are below the river's own
+surface, not a fixed level's), `estimated` (every cell an estimate: classed so) and `notice` (a
+notice its licence asks every map showing its data to carry: shown in full in the map's © Credits,
+under a "Depth:" line naming every source's `label` and "Not for navigation."; nothing floats over
+the map).
 
 **Checks** (§6.9's, and): a depth declaration's params (`src-decl`); its index's features each naming
 a `.tif` `file` and a `zoom` 0–18 (`src-index`); two of one `code` (`src-role`).
@@ -1262,6 +1264,13 @@ a `.tif` `file` and a `zoom` 0–18 (`src-index`); two of one `code` (`src-role`
 | `masswildlife-ponds`, `mn-dnr-lakes`, `gblq` | surveyed lakes (Massachusetts, Minnesota, Québec) | 9–11 | lake | `raster.py` (feet or metres, sign as each says) | z16, z15, z16 |
 | `ncei-crm` | NCEI's Coastal Relief Models, 1″ (the owner's download, `sources/ncei-crm/`; volume 6 absent) | 12 | sea | `ncei.py crm`; volumes on EGM2008 taken as MSL, uncorrected | z12 |
 | `ncei-greatlakes` | NCEI's Great Lakes bathymetry, 3″ (the owner's download, `sources/ncei-greatlakes/`) | 13 | lake | `ncei.py greatlakes`: from each lake's low water datum (CO-OPS' station datums) to its long-term mean level (GLERL's coordinated lake-wide monthly means, 1918 on), both fetched as it runs | z10 |
+| `globathy` | GLOBathy's maximum depths (CC0) on HydroLAKES v1.0's outlines (CC BY 4.0), every lake of 10 ha and more: estimates | 14 | lake | `globathy.py` (below) | z11; `estimated`, gaps only (`datum_exact = false`): a survey wins |
+
+`rivers = true` is staged for `nonna-100`, `nonna-10` (mean water level by CHS's stations, which
+follow the St. Lawrence up to Montréal: NONNA-100 has values there), `bluetopo` (local mean sea
+level by VDatum, which covers only the tidal reaches) and the SHOM grids (mean sea level, in the
+estuaries' tidal reaches). The others' depths inland are heights on a fixed level (GEBCO, CRM,
+EMODnet, GtTM) or a lake's own, so they stay out of rivers.
 
 A chunked run (`chunked.py`) fetches a chunk, produces it, tars its grids over SSH into the NAS's
 `sources/fetched/<id>/`, compares each file's size there and deletes the chunk here; each chunk's
@@ -1287,8 +1296,14 @@ Public Server Authentication Root R46). `SSL_CERT_FILE`, when set, is used alone
 
 Every request carries the User-Agent "scenic-roads/0.1 (personal offline map)" and asks the host's
 robots.txt first, in a request of its own (`grid.robots_allow`); a path it bars stops the producer,
-which says to download the file by hand. The lakes' estimated depths (GLOBathy's and the small-lake
-estimate's bowls, research/LAKES-REPORT.md in the depth lab) have no producer yet (plan §10).
+which says to download the file by hand. The small-lake estimate (the depth lab's validation.md)
+has no producer (plan §10).
+
+`globathy.py` (`test_globathy.py`) reads GLOBathy's basic-parameters zip (fetched into `--cache`, or
+`--params`) and the owner's HydroLAKES v1.0 polygons zip (`--hydrolakes`; data.hydrosheds.org's
+robots.txt bars programs, so it's never fetched), and makes a z11 grid a z8 tile: each lake a bowl
+D = Dmax · (l / L)^0.75 on its outline (l the distance to shore smoothed by L/8, the depth lab's
+fit), several `--box`es a run, each owning the tiles whose north-west corner is in it.
 
 **Keys** (docs/plan.md §6, Job keys): a depth target names each source meeting it by its id and
 `Source::digest` (its `[data]` and its index's features, their hashes among them), so a new grid

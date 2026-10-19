@@ -9,6 +9,8 @@
 //!   draws Natural Earth's; the terrain there is made from finer tiles), rasterized at 4 × 4 samples
 //!   a pixel: each pixel's share of sea and of lake, and the lake that covers most of it. Rivers
 //!   (class `river`: they slope), intermittent water, pools and water in tunnels are left as they are.
+//!   The depth reads the rivers too (`WaterSource::depth_polys`, `Kind::River`, `WaterTile::river`),
+//!   never the terrain.
 //! - The sea goes to 0 m. A lake goes to its level: the 10th percentile of the land pixels along its
 //!   shore (those wholly dry, beside a pixel at least half that lake's). The shore's lowest pixels
 //!   are where the water meets the land, the outlet's level; the very lowest are AWS's pits, voids
@@ -36,11 +38,14 @@ const FLAT_M: f32 = 1.0;
 pub const SHORE_PERCENTILE: f64 = 0.10;
 
 /// What's water in a terrain tile (256 × 256): each pixel's share of sea and of lake (its samples
-/// of SS × SS), and the lake covering most of it (an index into `ids`, or NONE).
+/// of SS × SS), and the lake covering most of it (an index into `ids`, or NONE); the depth's tiles
+/// also each pixel's share of river (`WaterSource::depth_polys`; empty: none, as the terrain's).
 #[derive(Clone, Debug, Default)]
 pub struct WaterTile {
     pub sea: Vec<u8>,
     pub lake: Vec<u8>,
+    /// The share of river (class `river`), the sea and lakes not counted in it; empty when none.
+    pub river: Vec<u8>,
     pub lake_of: Vec<u16>,
     /// The lakes' keys: their OSM ids, or (none) one of this tile's own (bit 63 set).
     pub ids: Vec<u64>,
@@ -48,7 +53,12 @@ pub struct WaterTile {
 
 impl WaterTile {
     pub fn is_empty(&self) -> bool {
-        self.ids.is_empty() && self.sea.iter().all(|&s| s == 0)
+        self.ids.is_empty() && self.sea.iter().all(|&s| s == 0) && self.river.iter().all(|&s| s == 0)
+    }
+
+    /// Pixel `i`'s share of river (0 when the tile has none).
+    pub fn river_at(&self, i: usize) -> u8 {
+        self.river.get(i).copied().unwrap_or(0)
     }
 }
 
@@ -57,6 +67,9 @@ impl WaterTile {
 pub enum Kind {
     Sea,
     Lake,
+    /// Class `river`: never the terrain's (it slopes: `WaterSource::polys` leaves it out), only the
+    /// depth's (`WaterSource::depth_polys`).
+    River,
 }
 
 /// One water polygon: its kind, its key (lakes) and its rings in tile pixels (0–256, y down).
@@ -69,6 +82,11 @@ pub struct Poly {
 /// Where a tile's water comes from.
 pub trait WaterSource: Sync {
     fn polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<Poly>>;
+    /// The depth's water: `polys` and the rivers (`Kind::River`), in the tile's order. A source
+    /// without rivers: `polys`.
+    fn depth_polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
+        self.polys(z, x, y)
+    }
     /// What pins it (the terrain's key): the basemap's content name.
     fn pin(&self) -> String;
 }
@@ -95,13 +113,26 @@ impl WaterSource for BasemapWater {
         let Some(raw) = self.pm.get(z, x, y)? else { return Ok(Vec::new()) };
         polys_of_mvt(&names::mvt::gunzip_if_gzip(&raw)?, z, x, y)
     }
+    fn depth_polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
+        if !(6..=14).contains(&z) {
+            return Ok(Vec::new());
+        }
+        let Some(raw) = self.pm.get(z, x, y)? else { return Ok(Vec::new()) };
+        polys_of_mvt_with(&names::mvt::gunzip_if_gzip(&raw)?, z, x, y, true)
+    }
     fn pin(&self) -> String {
         self.name.clone()
     }
 }
 
-/// The water polygons of an MVT tile's `water` layer, in terrain pixels.
+/// The water polygons of an MVT tile's `water` layer, in terrain pixels (the terrain's: no rivers).
 pub fn polys_of_mvt(mvt: &[u8], z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
+    polys_of_mvt_with(mvt, z, x, y, false)
+}
+
+/// The water polygons of an MVT tile's `water` layer, in terrain pixels, its rivers too when
+/// `rivers` (the depth's: a river's key is its tile's own, as a lake's without an id, never read).
+pub fn polys_of_mvt_with(mvt: &[u8], z: u8, x: u32, y: u32, rivers: bool) -> Result<Vec<Poly>> {
     let tile = names::mvt::Tile::decode(mvt)?;
     let Some(l) = tile.layers.iter().find(|l| l.name == "water") else { return Ok(Vec::new()) };
     let s = 256.0 / f64::from(l.extent);
@@ -120,6 +151,7 @@ pub fn polys_of_mvt(mvt: &[u8], z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
         let kind = match class {
             "ocean" => Kind::Sea,
             "lake" | "pond" | "dock" => Kind::Lake,
+            "river" if rivers => Kind::River,
             _ => continue,
         };
         let num = |v: Option<&names::mvt::Value>| -> Option<i64> {
@@ -259,7 +291,13 @@ fn raster(rings: &[Vec<[f64; 2]>]) -> Vec<(u32, u8)> {
 
 /// A tile's water from its polygons.
 pub fn water_tile(polys: &[Poly]) -> WaterTile {
-    let mut wt = WaterTile { sea: vec![0; 65536], lake: vec![0; 65536], lake_of: vec![NONE; 65536], ids: Vec::new() };
+    let mut wt = WaterTile {
+        sea: vec![0; 65536],
+        lake: vec![0; 65536],
+        river: Vec::new(),
+        lake_of: vec![NONE; 65536],
+        ids: Vec::new(),
+    };
     let mut best = vec![0u8; 65536];
     let mut index: HashMap<u64, u16> = HashMap::new();
     for p in polys {
@@ -272,6 +310,15 @@ pub fn water_tile(polys: &[Poly]) -> WaterTile {
                 for (i, c) in cells {
                     let i = i as usize;
                     wt.sea[i] = (wt.sea[i] + c).min(FULL);
+                }
+            }
+            Kind::River => {
+                if wt.river.is_empty() {
+                    wt.river = vec![0; 65536];
+                }
+                for (i, c) in cells {
+                    let i = i as usize;
+                    wt.river[i] = (wt.river[i] + c).min(FULL);
                 }
             }
             Kind::Lake => {
@@ -297,6 +344,12 @@ pub fn water_tile(polys: &[Poly]) -> WaterTile {
     for i in 0..65536 {
         if wt.sea[i] + wt.lake[i] > FULL {
             wt.lake[i] = FULL - wt.sea[i];
+        }
+    }
+    // (And a river only what they leave.)
+    if !wt.river.is_empty() {
+        for i in 0..65536 {
+            wt.river[i] = wt.river[i].min(FULL - wt.sea[i] - wt.lake[i]);
         }
     }
     wt
@@ -446,8 +499,9 @@ pub fn polys_digest(polys: &[Poly]) -> u64 {
         h.update(&[match p.kind {
             Kind::Sea => 1u8,
             Kind::Lake => 2,
+            Kind::River => 3,
         }]);
-        h.update(&if p.kind == Kind::Lake && p.id & OWN != 0 { OWN } else { p.id }.to_le_bytes());
+        h.update(&if p.kind != Kind::Sea && p.id & OWN != 0 { OWN } else { p.id }.to_le_bytes());
         h.update(&(p.rings.len() as u64).to_le_bytes());
         for r in &p.rings {
             h.update(&(r.len() as u64).to_le_bytes());
@@ -464,9 +518,20 @@ pub fn polys_digest(polys: &[Poly]) -> u64 {
 /// parallel): over each tile with water, its zoom, column, row and `polys_digest`; "-" when none
 /// has any. What keys a terrain piece or assembly on the water it reads (agent::build).
 pub fn tiles_digest(src: &dyn WaterSource, tiles: &[(u8, u32, u32)]) -> Result<String> {
+    tiles_digest_with(src, tiles, false)
+}
+
+/// What a from ending so says: its target reads the depth's water (`WaterSource::depth_polys`,
+/// the rivers too), so its digest is of that.
+pub const RIVERS_FROM: &str = " +rivers";
+
+/// `tiles_digest`, of the depth's water (`depth_polys`) when `rivers`.
+pub fn tiles_digest_with(src: &dyn WaterSource, tiles: &[(u8, u32, u32)], rivers: bool) -> Result<String> {
     use rayon::prelude::*;
-    let got: Vec<Result<u64>> =
-        tiles.par_iter().map(|&(z, x, y)| src.polys(z, x, y).map(|p| polys_digest(&p))).collect();
+    let got: Vec<Result<u64>> = tiles
+        .par_iter()
+        .map(|&(z, x, y)| if rivers { src.depth_polys(z, x, y) } else { src.polys(z, x, y) }.map(|p| polys_digest(&p)))
+        .collect();
     let mut lines = String::new();
     for (&(z, x, y), d) in tiles.iter().zip(got) {
         let d = d?;
@@ -548,7 +613,7 @@ pub fn make_idx(
     let n = want.len() as u64;
     for (k, (t, from, tiles)) in want.iter().enumerate() {
         if out.get(t, from).is_none() {
-            let d = tiles_digest(src, tiles)?;
+            let d = tiles_digest_with(src, tiles, from.ends_with(RIVERS_FROM))?;
             out.digests.insert(t.clone(), (from.clone(), d));
         }
         progress(k as u64 + 1, n);
@@ -730,7 +795,29 @@ pub mod tests {
         let wt = water_tile(&polys);
         assert_eq!(wt.sea[5 * 256 + 5], 16);
         assert_eq!(wt.lake[105 * 256 + 105], 16);
+        assert!(wt.river.is_empty(), "the terrain's water has no rivers");
+        // The depth's: the river too (the intermittent lake still left), the terrain's shares as
+        // they were.
+        let dp = polys_of_mvt_with(&t.encode(), 12, 1, 1, true).unwrap();
+        assert_eq!(dp.iter().map(|p| p.kind).collect::<Vec<_>>(), [Kind::Sea, Kind::Lake, Kind::River]);
+        let dw = water_tile(&dp);
+        assert_eq!((&dw.sea, &dw.lake, &dw.lake_of), (&wt.sea, &wt.lake, &wt.lake_of));
+        assert_eq!((dw.river_at(5 * 256 + 205), dw.river_at(5 * 256 + 5)), (16, 0));
+        assert_ne!(polys_digest(&dp), polys_digest(&polys), "a river changes the depth's digest");
     }
+
+    #[test]
+    fn a_river_takes_only_what_the_sea_and_lakes_leave() {
+        let wt = water_tile(&[
+            square(Kind::River, OWN, 0.0, 0.0, 100.0, 100.0),
+            square(Kind::Sea, 0, 0.0, 0.0, 50.0, 100.0),
+            square(Kind::Lake, 4, 50.0, 0.0, 75.0, 100.0),
+        ]);
+        assert_eq!((wt.river_at(10 * 256 + 10), wt.river_at(10 * 256 + 60), wt.river_at(10 * 256 + 90)), (0, 0, 16));
+        assert!(!wt.is_empty());
+        assert!(!water_tile(&[square(Kind::River, OWN, 0.0, 0.0, 10.0, 10.0)]).is_empty());
+    }
+
     /// Pins the own keys as they are (docs/plan.md §10): one tile's are distinct, but feature 16 of
     /// a tile and feature 0 of the tile below it in its column share one.
     #[test]

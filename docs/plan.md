@@ -547,8 +547,17 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   capped pixels scaled up from this job's coarser tiles and, at z8 and coarser, from the lo packs
   of its z3 tile and its neighbours (its neighbours' fine tiles are another job's: within a block's
   32-pixel margin across the tile's edge, their lo levels stand in).
-- **Composing a block** (8 × 8 tiles and a 32-pixel margin; `depth::compose`), on the terrain's water
-  (`terrain_water`, the basemap's z6–14, its z14 scaled at z15–16): sources sampled (coarser grids
+- **The water** (`depth::build`, `terrain_water`'s `depth_polys`): the basemap's z6–14 (its z14
+  scaled at z15–16), the terrain's sea and lakes and also its rivers (class `river`). A pixel is
+  water when they cover half of it or more, or when it's narrow water (some of it water and none of
+  its eight neighbours half so: a channel under a pixel wide). A river's pixel takes only the
+  sources declared `rivers` (their depths below the river's own surface: NONNA's mean water level
+  from CHS's stations, which slopes down the St. Lawrence with them; BlueTopo's and SHOM's mean sea
+  level, in the tidal reaches they cover); a river is gap-filled from a river's data alone, keeps no
+  drying heights and never dries. A river's pixel or narrow water without a value is land, so where
+  no source has a value there the block is what it was without them.
+- **Composing a block** (8 × 8 tiles and a 32-pixel margin; `depth::compose`), on that water:
+  sources sampled (coarser grids
   interpolated, finer ones averaged from the overview that lines up) and painted coarse to fine;
   past its own zoom a pixel shows the stored level of its zoom scaled up as the map's fallback makes
   it (`depth::fall`, the server's too), detail fading in over three capped pixels; a source ending in
@@ -558,7 +567,10 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   its own stays empty), the land a 3-pixel band; dries where above the chart's low water.
 - **The floor:** the depth lies on the terrain's own water, flattened to its surface, so the terrain
   less the depth is the floor; the server serves it (`/tiles/terrain/…?floor=1`), no second terrain
-  stored. The map's toggle (the 3D terrain from it, the water's surface drawn at its level, what's
+  stored. Rivers aren't flattened (they slope): there the terrain is its sources' own water surface
+  (the DEMs AWS mixes draw rivers hydro-flattened), and the floor is that less the depth. A
+  pixel of narrow water is the terrain's blend of water and shore (§6, Terrain), so its floor is
+  rough. The map's toggle (the 3D terrain from it, the water's surface drawn at its level, what's
   draped on the water kept at the surface) is planned (§10).
 - **The map:** two layers, each switched on its own (Layers → Depth): the depth's colour with the
   floor's shading (nautical blues on a log scale to 300 m by default; the panel's ramp picker; linear,
@@ -825,10 +837,11 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **bldprep (per z6 tile):** `BLDPREP_V`, the release, and each downloaded file's row groups and GHSL
   tile meeting it (`crate::bld::sources`).
 - **depth-lo (a z3 tile):** `DEPTH_V`, `DEPTH_LO_V`, the tile, the depth sources meeting it (id and
-  digest of declaration and index), the digest of its z6–8 water (the terrain assembly's).
+  digest of declaration and index), the digest of its z6–8 water as the depth reads it, rivers
+  included ("depth 3/x/y", worked out by the terrain-water job).
 - **depth (a z6 tile):** the same versions, the tile, the sources meeting it (2 km round), the content
-  names of the depth lo packs of its z3 tile and its neighbours, and the digest of its z6–12 water
-  ("depth 6/x/y", worked out by the terrain-water job).
+  names of the depth lo packs of its z3 tile and its neighbours, and the digest of its z6–12 water,
+  rivers included ("depth 6/x/y").
 - **bldtiles (per z6 tile):** `BUILDINGS_V`, the normalized files of the tile and its 8 neighbours,
   and the coverage's shapes over it with their countries (`Coverage::shapes_key`).
 
@@ -1510,16 +1523,38 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
     `terrain_z8::tests::the_raw_path_is_versioned`. A lake across two z6 tiles may take levels a
     metre or two apart.
 
-13. **Depth** (§6, Depth): the map's 3D floor toggle isn't built (the server's `?floor=1` is); the
-    lakes' estimated depths (GLOBathy's and the small-lake estimate's bowls, the depth lab's lakes
-    chain) have no producer, so only surveyed lakes have depth; GtTM is read from windows made by
+13. **Depth** (§6, Depth): the map's 3D floor toggle isn't built (the server's `?floor=1` is);
+    GLOBathy's estimated bowls (`globathy`, lakes of 10 ha and more) have a producer but no grids
+    yet (not run, not declared: until then only surveyed lakes have depth); GtTM is read from windows made by
     hand, SHOM's from its archives unpacked by hand (no range reads of the HDF5 grid or the 7z yet);
     a piece's key names its water's z6–12 tiles, so a change the basemap shows only at z13–14
     doesn't remake it; MSL sources aren't drawn in lakes (the Great Lakes' source is `ncei-greatlakes`);
     EMODnet's interpolation flag isn't applied (emodnet.py reads the MSL ASCII tiles alone); CRM
     volumes on EGM2008 aren't corrected to MSL;
-    rivers the basemap draws as rivers get none; targets the coverage leaves keep their packs (no
+    rivers take only the sources declared `rivers` and the accepted declarations don't say it yet
+    (the staged ones do: NONNA, BlueTopo, SHOM), so rivers have none until they're dropped again;
+    rivers aren't flattened in the terrain (the floor is the DEM's own river surface less the depth);
+    targets the coverage leaves keep their packs (no
     prune yet); the map's click popup for depth isn't built (the readout is).
+    **The water depth has no source for** (each checked 18–19 Oct 2026):
+    - *Lakes under 10 ha* (not in HydroLAKES, so not in GLOBathy), and lakes OSM has that
+      HydroLAKES lacks (the depth lab: 44 % of Massachusetts' OSM lakes of 10 ha or more unmatched),
+      unless surveyed. The depth lab's land-slope estimate was tested (85 measured lakes under
+      10 ha: median error 48 %, half within ±50 %, against 53 % for an area rule); whether that is
+      good enough to draw is the owner's call, and it has no producer.
+    - *Rivers outside the sea sources' reach*: inland rivers in the US (USACE's eHydro surveys are
+      public, but each project on its own datum: MLLW, NAVD88, or a sloping low-water reference
+      plane on the Mississippi and Ohio, with no published surface to bring them to the river's
+      mean level; navigation channels only), Canada's rivers beyond NONNA (CHS charts them only in
+      its ENCs and paper charts, sold under licence), and Europe's (EMODnet is marine; the national
+      river surveys, such as Rijkswaterstaat's and Germany's federal waterways', aren't assessed).
+    - *Reservoirs and canals* beyond the lakes' sources: a reservoir is a lake (GLOBathy's bowl,
+      not the dam-deep shape: the depth lab found it no better); canals are class `river` or not
+      water in the basemap, with no source.
+    - *Seasonal water and water in tunnels*: left out on purpose (the basemap's `intermittent`, and
+      `brunnel = tunnel`): no surface to measure from.
+    - *GLOBathy's rasters* (16.7 GB, per lake): not fetched; the bowls are made from its maximum
+      depths alone, which its rasters' own method (a cone to the maximum) adds nothing to.
 14. **Heights to EGM2008** (inputs.md §6.8, step 3): where no declared geoid source has a value
     (3DEP off the conterminous US and Alaska), a dataset's heights stay in its reference; in a blend
     band whose first dataset was converted and whose dataset beneath has no value, the seam mixes references (counted, dem-stats'

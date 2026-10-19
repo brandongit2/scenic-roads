@@ -156,13 +156,17 @@ fn name(prefix: &str, z: u8, x: u32, y: u32) -> String {
     format!("{prefix}-{z}-{x}-{y}")
 }
 
-/// Polygons as a task holds them: each its kind (1 sea, 2 lake), key, rings, each ring's points
+/// Polygons as a task holds them: each its kind (1 sea, 2 lake, 3 river), key, rings, each ring's points
 /// (x, y f64), little-endian, counts u32.
 pub fn polys_bytes(polys: &[Poly]) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend((polys.len() as u32).to_le_bytes());
     for p in polys {
-        b.push(if p.kind == Kind::Sea { 1 } else { 2 });
+        b.push(match p.kind {
+            Kind::Sea => 1,
+            Kind::Lake => 2,
+            Kind::River => 3,
+        });
         b.extend(p.id.to_le_bytes());
         b.extend((p.rings.len() as u32).to_le_bytes());
         for r in &p.rings {
@@ -191,6 +195,7 @@ pub fn polys_from(b: &[u8]) -> Result<Vec<Poly>> {
         let kind = match take(1)?[0] {
             1 => Kind::Sea,
             2 => Kind::Lake,
+            3 => Kind::River,
             k => bail!("a water polygon of kind {k}"),
         };
         let id = u64::from_le_bytes(take(8)?.try_into().unwrap());

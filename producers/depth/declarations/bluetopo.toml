@@ -21,3 +21,4 @@ label = "BlueTopo, 4–16 m"
 datum = "mean sea level (from NAVD88 by NOAA VDatum)"
 band_m = 120
 intertidal = true
+rivers = true

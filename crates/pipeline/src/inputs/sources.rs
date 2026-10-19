@@ -213,16 +213,17 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
 }
 
 /// The fields of a depth source's `params` (docs/inputs.md §6.10, crate::depth::sources).
-pub const DEPTH_PARAMS: [&str; 8] =
-    ["code", "water", "label", "datum", "band_m", "intertidal", "datum_exact", "notice"];
+pub const DEPTH_PARAMS: [&str; 10] =
+    ["code", "water", "label", "datum", "band_m", "intertidal", "datum_exact", "rivers", "estimated", "notice"];
 
 /// What's wrong with a depth source's `[data]` (docs/inputs.md §6.10): an index (its depth grids),
 /// and its params: `code` (1–15, the source byte the class tiles carry), `water` (`sea` or `lake`:
 /// where it's drawn), `label` (a short name for the map's popup), `datum` (what its depths are
 /// below, in words), and optionally `band_m` (the ground metres it's feathered in over, ≥ 0),
 /// `intertidal` (its positive values are drying heights), `datum_exact` (false: its datum isn't
-/// corrected to the others', so it fills gaps only, hard-edged) and `notice` (a notice its licence
-/// asks every map showing it to carry).
+/// corrected to the others', so it fills gaps only, hard-edged), `rivers` (drawn in rivers too: its
+/// depths are below a river's own surface there), `estimated` (every cell an estimate) and `notice`
+/// (a notice its licence asks every map showing it to carry).
 fn depth_params(d: &Data) -> Vec<String> {
     let mut why = Vec::new();
     let p = &d.params;
@@ -243,7 +244,7 @@ fn depth_params(d: &Data) -> Vec<String> {
     if p.get("band_m").is_some_and(|v| !v.as_f64().is_some_and(|b| b >= 0.0)) {
         why.push("`params.band_m` isn't a number ≥ 0".into());
     }
-    for k in ["intertidal", "datum_exact"] {
+    for k in ["intertidal", "datum_exact", "rivers", "estimated"] {
         if p.get(k).is_some_and(|v| !v.is_boolean()) {
             why.push(format!("`params.{k}` isn't true or false"));
         }
@@ -976,11 +977,12 @@ mod tests {
 
     #[test]
     fn the_depth_declarations_pass_the_check() {
-        let staged: [(&str, &[u8]); 13] = [
+        let staged: [(&str, &[u8]); 14] = [
             ("bluetopo.toml", include_bytes!("../../../../producers/depth/declarations/bluetopo.toml")),
             ("emodnet-dtm.toml", include_bytes!("../../../../producers/depth/declarations/emodnet-dtm.toml")),
             ("gblq.toml", include_bytes!("../../../../producers/depth/declarations/gblq.toml")),
             ("gebco-2026.toml", include_bytes!("../../../../producers/depth/declarations/gebco-2026.toml")),
+            ("globathy.toml", include_bytes!("../../../../producers/depth/declarations/globathy.toml")),
             ("gttm.toml", include_bytes!("../../../../producers/depth/declarations/gttm.toml")),
             (
                 "masswildlife-ponds.toml",
@@ -1007,6 +1009,9 @@ mod tests {
         assert_eq!(depth_index_problems(&parse_index(bad).unwrap()).len(), 2);
         let wrong = decl("role = \"depth\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 16\nwater = \"river\"\n");
         assert!(SourcesCheck::default().file("w.toml", wrong.as_bytes()).findings.iter().any(|f| f.check() == DECL));
+        let flags = decl("role = \"depth\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 15\nwater = \"lake\"\nlabel = \"L\"\ndatum = \"D\"\nrivers = \"yes\"\nestimated = true\n");
+        let f = SourcesCheck::default().file("f.toml", flags.as_bytes()).findings;
+        assert!(f.len() == 1 && f[0].message.contains("params.rivers"), "{f:?}");
     }
 
     #[test]

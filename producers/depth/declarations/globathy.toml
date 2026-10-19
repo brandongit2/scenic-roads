@@ -1,0 +1,23 @@
+name = "GLOBathy, the Global Lakes Bathymetry Dataset (maximum depths), on HydroLAKES v1.0's outlines"
+what = "Estimated depth of lakes of 10 ha and more"
+credit = "Khazaei, B., Read, L. K., Casali, M., Sampson, K. M. & Yates, D. N. (2022) GLOBathy, the Global Lakes Bathymetry Dataset (CC0); lake outlines from HydroLAKES v1.0, Messager et al. 2016, HydroSHEDS (CC BY 4.0)"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://doi.org/10.6084/m9.figshare.c.5243309.v1"
+territory = "world"
+notes = "GLOBathy is CC0; HydroLAKES, whose outlines the bowls are drawn on, CC BY 4.0 (the licence given). producers/depth/globathy.py: GLOBathy's basic-parameters zip (Dmax_use_m by Hylak_id; fetched from figshare after its robots.txt, or the depth lab's copy) and the owner's HydroLAKES v1.0 polygons zip (data.hydrosheds.org's robots.txt bars programs: never fetched by script). Each lake a bowl D = Dmax · (l/L)^0.75 on its HydroLAKES outline (the depth lab's fit), z11. Estimates: drawn only where no survey has a value. Not for navigation."
+
+[data]
+role = "depth"
+format = "depth-grid"
+index = "globathy-grids.geojson"
+version = "2022"
+refresh = "pinned"
+
+[data.params]
+code = 14
+water = "lake"
+label = "GLOBathy estimate"
+datum = "the lake's surface"
+datum_exact = false
+estimated = true

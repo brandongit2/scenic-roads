@@ -1073,7 +1073,30 @@ pub struct FilledWater<W> {
 
 impl<W: crate::terrain_water::WaterSource> crate::terrain_water::WaterSource for FilledWater<W> {
     fn polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<crate::terrain_water::Poly>> {
-        let mut out = self.base.polys(z, x, y)?;
+        let base = self.base.polys(z, x, y)?;
+        self.filled(base, z, x, y)
+    }
+
+    fn depth_polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<crate::terrain_water::Poly>> {
+        let base = self.base.depth_polys(z, x, y)?;
+        self.filled(base, z, x, y)
+    }
+
+    /// `filled_pin`'s.
+    fn pin(&self) -> String {
+        filled_pin(&self.base.pin(), self.fill.as_ref().map(Fill::pin))
+    }
+}
+
+impl<W> FilledWater<W> {
+    /// The base's polygons `out` with the fill's lakes in tile z/x/y added.
+    fn filled(
+        &self,
+        mut out: Vec<crate::terrain_water::Poly>,
+        z: u8,
+        x: u32,
+        y: u32,
+    ) -> Result<Vec<crate::terrain_water::Poly>> {
         if let Some(f) = self.fill.as_ref().filter(|_| (6..=14).contains(&z)) {
             for (id, rings) in f.in_tile(z, x, y, 256.0) {
                 if id & INTERMITTENT != 0 {
@@ -1083,11 +1106,6 @@ impl<W: crate::terrain_water::WaterSource> crate::terrain_water::WaterSource for
             }
         }
         Ok(out)
-    }
-
-    /// `filled_pin`'s.
-    fn pin(&self) -> String {
-        filled_pin(&self.base.pin(), self.fill.as_ref().map(Fill::pin))
     }
 }
 

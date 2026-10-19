@@ -26,9 +26,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 /// The depth piece's version: bumped with any change to the bytes `build_hi` writes.
-pub const DEPTH_V: u32 = 1;
+pub const DEPTH_V: u32 = 2;
 /// The depth assembly's (`build_lo`).
-pub const DEPTH_LO_V: u32 = 1;
+pub const DEPTH_LO_V: u32 = 2;
 /// How far from the coverage depth is built (km): 200 nautical miles, a region's EEZ's reach.
 pub const REACH_KM: f64 = 370.4;
 /// The zooms a piece makes.
@@ -46,15 +46,16 @@ pub fn lo_logical(layer: &str, x: u32, y: u32) -> String {
     format!("layers/{layer}/lo/3-{x}-{y}")
 }
 
-/// A tile's water polygons: the basemap's at z6–14, a z14 tile's scaled at z15–16.
+/// A tile's water polygons as the depth reads them (`WaterSource::depth_polys`, the rivers too): the
+/// basemap's at z6–14, a z14 tile's scaled at z15–16.
 pub fn polys_at(src: &dyn WaterSource, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
     if z <= WATER_Z {
-        return src.polys(z, x, y);
+        return src.depth_polys(z, x, y);
     }
     let d = z - WATER_Z;
     let n = f64::from(1u32 << d);
     let (ox, oy) = (f64::from(x & ((1 << d) - 1)), f64::from(y & ((1 << d) - 1)));
-    let mut ps = src.polys(WATER_Z, x >> d, y >> d)?;
+    let mut ps = src.depth_polys(WATER_Z, x >> d, y >> d)?;
     for p in &mut ps {
         for r in &mut p.rings {
             for pt in r.iter_mut() {
@@ -86,11 +87,15 @@ impl WaterCache {
         Ok(t)
     }
 
-    /// Block `b`'s water: a pixel is water when the sea and lakes cover half of it or more, of a
-    /// lake when lakes cover more of it than the sea; lakes numbered by their key, block-wide.
+    /// Block `b`'s water (`Water`): a pixel is water when the sea, lakes and rivers cover half of
+    /// it or more, or it's narrow water; of a lake when lakes cover more of it than the sea, of a
+    /// river when rivers cover more of it than either; lakes numbered by their key, block-wide.
     fn block(&mut self, src: &dyn WaterSource, b: Block) -> Result<Water> {
         let (w, h) = (b.w(), b.h());
-        let mut out = Water { water: vec![false; w * h], lake: vec![0; w * h] };
+        let mut out = Water::land(w * h);
+        // (Each pixel's share of water, for the narrow water.)
+        let mut share = vec![0u8; w * h];
+        let mut river = vec![false; w * h];
         let mut ids: HashMap<u64, u32> = HashMap::new();
         let n = 1i64 << b.z;
         for ty in i64::from(b.ty0) - 1..=i64::from(b.ty0 + b.ny) {
@@ -111,13 +116,14 @@ impl WaterCache {
                             continue;
                         }
                         let s = (py * 256 + px) as usize;
-                        let (sea, lake) = (t.sea[s], t.lake[s]);
-                        if u16::from(sea) + u16::from(lake) < 8 {
+                        let (sea, lake, riv) = (t.sea[s], t.lake[s], t.river_at(s));
+                        let o = y as usize * w + x as usize;
+                        share[o] = sea + lake + riv;
+                        if share[o] == 0 {
                             continue;
                         }
-                        let o = y as usize * w + x as usize;
-                        out.water[o] = true;
-                        if lake > sea && t.lake_of[s] != u16::MAX {
+                        river[o] = riv > sea && riv > lake;
+                        if lake > sea && lake >= riv && t.lake_of[s] != u16::MAX {
                             let key = t.ids[t.lake_of[s] as usize];
                             let next = ids.len() as u32 + 1;
                             out.lake[o] = *ids.entry(key).or_insert(next);
@@ -125,6 +131,31 @@ impl WaterCache {
                     }
                 }
             }
+        }
+        let half = |o: usize| share[o] >= 8;
+        let mut if_data = vec![false; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                let o = y * w + x;
+                if share[o] == 0 {
+                    continue;
+                }
+                let narrow = !half(o)
+                    && !(y.saturating_sub(1)..(y + 2).min(h))
+                        .any(|yy| (x.saturating_sub(1)..(x + 2).min(w)).any(|xx| half(yy * w + xx)));
+                if !(half(o) || narrow) {
+                    out.lake[o] = 0;
+                    continue;
+                }
+                out.water[o] = true;
+                if_data[o] = river[o] || narrow;
+            }
+        }
+        if river.iter().any(|&r| r) {
+            out.river = river.iter().zip(&out.water).map(|(r, w)| *r && *w).collect();
+        }
+        if if_data.iter().any(|&r| r) {
+            out.if_data = if_data;
         }
         Ok(out)
     }
@@ -281,7 +312,7 @@ fn level(
                 compose(b, sources, rd, &wt, &mut up, zmin)?
             };
             let Some(c) = made else { continue };
-            for (x, y, d, k) in tiles(b, &c, &wt) {
+            for (x, y, d, k) in tiles(b, &c) {
                 t.put(z, x, y, &d, k)?;
                 kept += 1;
             }

@@ -20,7 +20,7 @@
 
 use super::edt::nearest;
 use super::grids::{px, sample, Reader, Source};
-use super::{C_FILLED, C_INTERP, C_NONE, DRIES, NODATA, NODATA_MIN};
+use super::{C_ESTIMATED, C_FILLED, C_INTERP, C_NONE, DRIES, NODATA, NODATA_MIN};
 use anyhow::Result;
 
 /// The block's margin (pixels).
@@ -36,12 +36,34 @@ pub const DRY_MAX: f32 = 20.0;
 /// How far water without data is filled from data (ground metres).
 pub const GAP_M: f32 = 600.0;
 
-/// The block's water: whether each pixel is water (at least half of it), and its lake (0: the sea;
-/// else the block's own number for the lake covering most of it).
+/// The block's water: whether each pixel is water, and its lake (0: the sea or a river; else the
+/// block's own number for the lake covering most of it). A pixel is water when the sea, lakes and
+/// rivers cover half of it or more, or when it's narrow water (some of it water, none of its eight
+/// neighbours half so: a channel under a pixel wide). A river pixel (rivers cover more of it than
+/// the sea or lakes) takes only the sources drawn in rivers; a river pixel or narrow water
+/// (`if_data`) stays water only where a source gives it a value, so where none does the block is
+/// what it was without them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Water {
     pub water: Vec<bool>,
     pub lake: Vec<u32>,
+    /// A river's pixel (empty: none in the block).
+    pub river: Vec<bool>,
+    /// Water only where a source has a value (empty: none such).
+    pub if_data: Vec<bool>,
+}
+
+impl Water {
+    /// All land, `n` pixels.
+    pub fn land(n: usize) -> Water {
+        Water { water: vec![false; n], lake: vec![0; n], river: Vec::new(), if_data: Vec::new() }
+    }
+    pub fn is_river(&self, i: usize) -> bool {
+        self.river.get(i).copied().unwrap_or(false)
+    }
+    pub fn is_if_data(&self, i: usize) -> bool {
+        self.if_data.get(i).copied().unwrap_or(false)
+    }
 }
 
 /// A block's pixels.
@@ -72,11 +94,13 @@ impl Block {
     }
 }
 
-/// A block composed: depth (NODATA: none), class bytes, and the zoom each pixel's data supports.
+/// A block composed: depth (NODATA: none), class bytes, the zoom each pixel's data supports, and
+/// its water as composed (`Water::if_data` pixels without a value no longer water).
 pub struct Composed {
     pub depth: Vec<f32>,
     pub class: Vec<u8>,
     pub zoom: Vec<i8>,
+    pub water: Vec<bool>,
 }
 
 /// Composes block `b` from `sources` over `water`; `up(zv)` is the stored level `zv` scaled up onto
@@ -127,7 +151,8 @@ pub fn compose(
     for (s, _) in &order {
         let Some(mut smp) = sample(rd, s, b.z, c0, r0, w, h)? else { continue };
         for i in 0..n {
-            if (water.lake[i] > 0) != s.lake {
+            let off = if water.is_river(i) { !s.rivers } else { (water.lake[i] > 0) != s.lake };
+            if off {
                 smp.v[i] = f32::NAN;
             }
         }
@@ -176,7 +201,7 @@ pub fn compose(
         let band = s.band_m / gpx;
         if s.datum_exact && band >= 1.0 && (0..n).any(|i| dv[i] && c[i].is_finite()) {
             // (Its edge in the water; along a shore it doesn't count.)
-            let seed: Vec<bool> = (0..n).map(|i| !dv[i] && water.water[i]).collect();
+            let seed: Vec<bool> = (0..n).map(|i| !dv[i] && water.water[i] && !water.is_if_data(i)).collect();
             let (d, _) = nearest(&seed, w, h);
             let bw = band.min(PAD as f32);
             for i in 0..n {
@@ -192,7 +217,13 @@ pub fn compose(
                 zz[i] = zz[i].max(zs[i] as i8);
             }
             if wgt[i] >= 0.5 {
-                k[i] = if native[i] { smp.class[i] } else { C_INTERP };
+                k[i] = if s.estimated {
+                    C_ESTIMATED
+                } else if native[i] {
+                    smp.class[i]
+                } else {
+                    C_INTERP
+                };
                 src[i] = i16::from(s.code);
                 inter[i] = s.intertidal;
                 dok[i] = s.datum_exact;
@@ -201,11 +232,26 @@ pub fn compose(
         }
     }
     // ---- the shore ----
+    // (A river's pixel or narrow water without a value is land, as it was without them.)
+    let owned;
+    let water = if water.if_data.is_empty() {
+        water
+    } else {
+        let mut w2 = water.clone();
+        for i in 0..n {
+            if w2.water[i] && water.is_if_data(i) && !c[i].is_finite() {
+                w2.water[i] = false;
+                w2.lake[i] = 0;
+            }
+        }
+        owned = w2;
+        &owned
+    };
     for i in 0..n {
         if !water.water[i] || !c[i].is_finite() {
             continue;
         }
-        if c[i] > 0.0 && (!inter[i] || water.lake[i] > 0) {
+        if c[i] > 0.0 && (!inter[i] || water.lake[i] > 0 || water.is_river(i)) {
             c[i] = 0.0;
         }
         c[i] = c[i].min(DRY_MAX);
@@ -222,7 +268,7 @@ pub fn compose(
         c[i] = if dl[i] <= BLEED_PX && j < n && c[j].is_finite() { c[j].max(0.0) } else { f32::NAN };
         k[i] = C_NONE;
     }
-    let mut out = Composed { depth: vec![NODATA; n], class: vec![C_NONE; n], zoom: zz };
+    let mut out = Composed { depth: vec![NODATA; n], class: vec![C_NONE; n], zoom: zz, water: water.water.clone() };
     for i in 0..n {
         if c[i].is_finite() {
             out.depth[i] = c[i];
@@ -231,6 +277,7 @@ pub fn compose(
             continue;
         }
         let dries = water.lake[i] == 0
+            && !water.is_river(i)
             && inter[i]
             && k[i] != C_FILLED
             && c[i].is_finite()
@@ -243,7 +290,8 @@ pub fn compose(
 }
 
 /// Water without data near data: filled from the nearest data of the same water body, falling
-/// linearly to 0 at the shore, within `GAP_M`; a lake with no data of its own stays empty.
+/// linearly to 0 at the shore, within `GAP_M`; a lake with no data of its own stays empty (a river
+/// is filled from a river's data alone).
 fn fill(c: &mut [f32], k: &mut [u8], zz: &mut [i8], water: &Water, w: usize, h: usize, gpx: f32) {
     let n = w * h;
     let g = (GAP_M / gpx).clamp(2.0, (4 * PAD) as f32);
@@ -258,7 +306,11 @@ fn fill(c: &mut [f32], k: &mut [u8], zz: &mut [i8], water: &Water, w: usize, h: 
             continue;
         }
         let j = iv[i] as usize;
-        if j >= n || water.lake[j] != water.lake[i] || (water.lake[i] > 0 && !lakes_with.contains(&water.lake[i])) {
+        if j >= n
+            || water.lake[j] != water.lake[i]
+            || water.is_river(j) != water.is_river(i)
+            || (water.lake[i] > 0 && !lakes_with.contains(&water.lake[i]))
+        {
             continue;
         }
         // (dl: to the nearest land pixel's centre, where the depth is 0.)
@@ -270,7 +322,7 @@ fn fill(c: &mut [f32], k: &mut [u8], zz: &mut [i8], water: &Water, w: usize, h: 
 }
 
 /// The block's tiles worth keeping: (x, y, depth, class), each 256 × 256.
-pub fn tiles(b: Block, c: &Composed, water: &Water) -> Vec<(u32, u32, Vec<f32>, Vec<u8>)> {
+pub fn tiles(b: Block, c: &Composed) -> Vec<(u32, u32, Vec<f32>, Vec<u8>)> {
     let w = b.w();
     let mut out = Vec::new();
     for j in 0..b.ny as usize {
@@ -284,7 +336,7 @@ pub fn tiles(b: Block, c: &Composed, water: &Water) -> Vec<(u32, u32, Vec<f32>, 
                     let p = row + x;
                     d[y * 256 + x] = c.depth[p];
                     k[y * 256 + x] = c.class[p];
-                    if water.water[p] && c.depth[p] < NODATA_MIN {
+                    if c.water[p] && c.depth[p] < NODATA_MIN {
                         wet = true;
                         own |= c.zoom[p] >= b.z as i8;
                     }
