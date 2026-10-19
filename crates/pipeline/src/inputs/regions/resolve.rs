@@ -228,8 +228,76 @@ pub fn resolve(folder: &Folder, ctx: &Context) -> Outcome {
     let ids: Vec<String> = folder.regions.keys().cloned().collect();
     let mut held: BTreeSet<String> = BTreeSet::new();
     let mut keys: BTreeMap<String, String> = BTreeMap::new();
+    let mut order: Vec<(String, String)> = Vec::new();
     for id in ids {
-        visit(&id, folder, ctx, &mut state, &mut Vec::new(), &mut held, &mut keys, &mut out);
+        visit(&id, folder, ctx, &mut state, &mut Vec::new(), &mut held, &mut keys, &mut order, &mut out);
+    }
+    // Resolved in waves, each region once those it names are, a wave's regions at once.
+    let mut pending = order;
+    while !pending.is_empty() {
+        let (wave, rest): (Vec<(String, String)>, Vec<(String, String)>) = pending.into_iter().partition(|(id, _)| {
+            folder.deps(&folder.regions[id].1).iter().all(|d| out.resolved.contains_key(d) || held.contains(d))
+        });
+        if wave.is_empty() {
+            break;
+        }
+        let made: Vec<(String, Result<(Result<Resolved, Vec<Problem>>, Vec<Id>), Problem>)> = {
+            use rayon::prelude::*;
+            let done = &out.resolved;
+            let held = &held;
+            wave.par_iter()
+                .map(|(id, key)| {
+                    let (path, r) = &folder.regions[id];
+                    if let Some(dep) = folder.deps(r).into_iter().find(|d| held.contains(d)) {
+                        return (
+                            id.clone(),
+                            Err(Problem {
+                                check: "rg-ref",
+                                about: vec![id.to_string(), format!("region:{dep}")],
+                                found: vec!["held".into()],
+                                files: vec![path.clone()],
+                                message: format!("{id}: region:{dep} is held, and so this region with it"),
+                            }),
+                        );
+                    }
+                    let kept = ctx.memo.and_then(|m| m.lock().unwrap().get(key).cloned());
+                    let k = match kept {
+                        Some(k) => k,
+                        None => {
+                            let mut needs = BTreeSet::new();
+                            let res = resolve_one(r, path, folder, ctx, done, done, false, &mut needs);
+                            let needs: Vec<Id> = needs.into_iter().collect();
+                            if let Some(m) = ctx.memo {
+                                m.lock().unwrap().insert(key.clone(), (res.clone(), needs.clone()));
+                            }
+                            (res, needs)
+                        }
+                    };
+                    (id.clone(), Ok(k))
+                })
+                .collect()
+        };
+        for (id, m) in made {
+            match m {
+                Err(p) => {
+                    out.problems.push(p);
+                    held.insert(id);
+                }
+                Ok((res, needs)) => {
+                    out.needs.extend(needs);
+                    match res {
+                        Ok(res) => {
+                            out.resolved.insert(id, res);
+                        }
+                        Err(ps) => {
+                            out.problems.extend(ps);
+                            held.insert(id);
+                        }
+                    }
+                }
+            }
+        }
+        pending = rest;
     }
     super::water::finish(folder, ctx, &mut out);
     out.problems.sort_by(|a, b| (a.check, &a.about, &a.found).cmp(&(b.check, &b.about, &b.found)));
@@ -246,6 +314,7 @@ fn visit(
     stack: &mut Vec<String>,
     held: &mut BTreeSet<String>,
     keys: &mut BTreeMap<String, String>,
+    order: &mut Vec<(String, String)>,
     out: &mut Outcome,
 ) {
     match state.get(id) {
@@ -284,14 +353,14 @@ fn visit(
             held.insert(id.to_string());
             continue;
         }
-        visit(dep, folder, ctx, state, stack, held, keys, out);
+        visit(dep, folder, ctx, state, stack, held, keys, order, out);
     }
     stack.pop();
     state.insert(id.to_string(), 2);
     if held.contains(id) {
         return;
     }
-    if let Some(dep) = deps.iter().map(String::as_str).find(|d| held.contains(*d) || !out.resolved.contains_key(*d)) {
+    if let Some(dep) = deps.iter().map(String::as_str).find(|d| held.contains(*d)) {
         out.problems.push(Problem {
             check: "rg-ref",
             about: vec![id.to_string(), format!("region:{dep}")],
@@ -322,29 +391,7 @@ fn visit(
     }
     let key = store::naming::hash16(parts.join("\n").as_bytes());
     keys.insert(id.to_string(), key.clone());
-    let kept = ctx.memo.and_then(|m| m.lock().unwrap().get(&key).cloned());
-    let (res, needs) = match kept {
-        Some(k) => k,
-        None => {
-            let mut needs = BTreeSet::new();
-            let res = resolve_one(r, path, folder, ctx, &out.resolved, &out.resolved, false, &mut needs);
-            let needs: Vec<Id> = needs.into_iter().collect();
-            if let Some(m) = ctx.memo {
-                m.lock().unwrap().insert(key, (res.clone(), needs.clone()));
-            }
-            (res, needs)
-        }
-    };
-    out.needs.extend(needs);
-    match res {
-        Ok(res) => {
-            out.resolved.insert(id.to_string(), res);
-        }
-        Err(ps) => {
-            out.problems.extend(ps);
-            held.insert(id.to_string());
-        }
-    }
+    order.push((id.to_string(), key));
 }
 
 fn problem(check: &'static str, r: &Region, path: &str, found: Vec<String>, message: String) -> Problem {
