@@ -53,7 +53,7 @@ pub const GUESS_FIRST: [&str; 2] = ["unit", "pois"];
 /// disk measure is the job's reads, shared, not its own: a job of several takes the most of theirs,
 /// not their sum (`batch_disk`); and a target's `bytes` (the halo's base-pack files' bytes, its
 /// input size for the fits) aren't what it reads from the NAS: its NAS weight is what the job read
-/// (`nas_read`, an even share on each of its targets) and what it writes (`wrote`, `creates`).
+/// (`nas_read` over `nas_secs`, the job's reads and their time, on each of its targets) and what it writes (`wrote`, `creates`).
 pub const HALO_STEPS: [&str; 2] = ["pack", "lo"];
 
 /// The disk (MB) a job of `step` takes over targets each measured to take `each`: a `HALO_STEPS`
@@ -308,15 +308,22 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
     })
 }
 
-/// A run's NAS rate (`bytes` plus `wrote`, and `creates`, over its time; a `HALO_STEPS` step's
-/// `nas_read` in place of its `bytes`), when it was measured the way its step runs now and says its
-/// `bytes`.
+/// A run's NAS rate (`bytes` plus `wrote`, and `creates`, over its time), when it was measured the
+/// way its step runs now and says its `bytes`. A `HALO_STEPS` step's reads are its job's, not its
+/// own: `nas_read` over `nas_secs` (the job's reads and the time they took, the same on each of its
+/// targets), beside what it writes over its own time; a measure without `nas_secs` (task #396's
+/// first, b38: a share of the job's reads over the target's own time, often 0 s, so every job
+/// weighed the whole NAS) counts its writes alone.
 fn nas_rate(step: &str, c: &Cost) -> Option<crate::budget::nas::Rate> {
     let secs = c.secs.max(1) as f64;
     let g = |k: &str| c.sizes.get(k).copied().unwrap_or(0) as f64;
-    let read = if HALO_STEPS.contains(&step) { g("nas_read") } else { g("bytes") };
+    let read_s = if HALO_STEPS.contains(&step) {
+        c.sizes.get("nas_secs").filter(|&&s| s > 0).map_or(0.0, |&s| g("nas_read") / s as f64)
+    } else {
+        g("bytes") / secs
+    };
     (c.v >= cost_version(step) && c.sizes.contains_key("bytes"))
-        .then(|| crate::budget::nas::Rate { bytes_s: (read + g("wrote")) / secs, creates_s: g("creates") / secs })
+        .then(|| crate::budget::nas::Rate { bytes_s: read_s + g("wrote") / secs, creates_s: g("creates") / secs })
 }
 
 /// The 90th percentile (nearest rank); None with none.
@@ -733,20 +740,35 @@ mod tests {
         assert_eq!(b.nas("lo", "3/1/1"), None);
     }
 
-    /// A halo step's NAS rate (task #260: `pack`): what its job read from the NAS (task #396:
-    /// `nas_read`, each target's share) and what it writes and creates, its `bytes` (the halo's base
-    /// packs' files) not; a halo step's batch's disk the most of its targets', another's their sum.
+    /// A halo step's NAS rate (task #260: `pack`): its job's reads over the time they took (task
+    /// #396: `nas_read` over `nas_secs`, the same on each target, so a target of 0 s weighs the
+    /// job's real rate, not its reads over one second) and what it writes and creates over its own
+    /// time, its `bytes` (the halo's base packs' files) not; a measure with `nas_read` alone (b38's,
+    /// a share over the target's own time) counts its writes alone. A halo step's batch's disk the
+    /// most of its targets', another's their sum.
     #[test]
-    fn a_halo_steps_nas_rate_is_what_it_reads_and_writes() {
+    fn a_halo_steps_nas_rate_is_its_jobs_reads_and_what_it_writes() {
         let mut costs = BTreeMap::new();
         let c = cost(100, 10, &[("bytes", 1300 << 20), ("wrote", 400), ("creates", 5)]);
         costs.insert(cost_key("pack", "6/1/1"), Cost { v: cost_version("pack"), ..c.clone() });
-        let mut first = c;
-        first.sizes.insert("nas_read".into(), 600);
-        costs.insert(cost_key("pack", "6/1/2"), Cost { v: cost_version("pack"), ..first });
+        // (Read 30 MB in 20 s; this target itself took 0 s.)
+        let mut quick = cost(100, 0, &[("bytes", 1300 << 20), ("wrote", 400), ("creates", 5)]);
+        quick.sizes.extend([("nas_read".to_string(), 30_000_000), ("nas_secs".to_string(), 20)]);
+        costs.insert(cost_key("pack", "6/1/2"), Cost { v: cost_version("pack"), ..quick });
+        let mut b38 = c;
+        b38.sizes.insert("nas_read".into(), 959 << 20);
+        costs.insert(cost_key("pack", "6/1/3"), Cost { v: cost_version("pack"), ..b38 });
         let b = Book::new(&costs);
         assert_eq!(b.nas("pack", "6/1/1"), Some(crate::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5 }));
-        assert_eq!(b.nas("pack", "6/1/2"), Some(crate::budget::nas::Rate { bytes_s: 100.0, creates_s: 0.5 }));
+        assert_eq!(b.nas("pack", "6/1/2"), Some(crate::budget::nas::Rate { bytes_s: 1_500_400.0, creates_s: 5.0 }));
+        assert_eq!(
+            b.nas("pack", "6/1/3"),
+            Some(crate::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5 }),
+            "b38's: writes alone"
+        );
+        // (On a NAS of 100 MB/s and 40 creates/s: its 1.5 MB/s and 5 creates/s, not the whole.)
+        let l = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        assert_eq!(l.weight(b.nas("pack", "6/1/2").unwrap()), 141);
         assert_eq!(batch_disk("pack", [1300, 1300, 1200]), 1300);
         assert_eq!(batch_disk("slope", [1300, 1300, 1200]), 3800);
     }

@@ -1104,17 +1104,20 @@ fn open_for_tiles(
 
 /// The files a job read its base packs into (`open_units`), deleted when it's dropped (the job
 /// done or failed; a job killed leaves them in its scratch, for room-making), and the bytes it read
-/// from the NAS.
+/// from the NAS and the seconds it took (at least 1): the rate the job weighed on the NAS as it read.
 struct Reads {
     files: Vec<PathBuf>,
     bytes: u64,
+    secs: u64,
 }
 
 impl Reads {
-    /// Target `k`'s share of the bytes read, of `n` targets: an even one, the first taking the rest.
-    fn share(&self, k: usize, n: usize) -> u64 {
-        let n = n.max(1) as u64;
-        self.bytes / n + if k == 0 { self.bytes % n } else { 0 }
+    /// Notes the job's NAS reads on the target being measured (crate::costin: `nas_read` and
+    /// `nas_secs`, the same on each of its targets, so each says the job's own rate as it read:
+    /// crate::needs::nas_rate).
+    fn note(&self) {
+        pipeline::costin::set("nas_read", self.bytes);
+        pipeline::costin::set("nas_secs", self.secs);
     }
 }
 
@@ -1156,7 +1159,8 @@ fn open_units(
     prune_cache(cache, &kept.iter().map(String::as_str).collect())?;
     let units: Vec<&(String, String, String)> =
         all.iter().filter(|(u, _, _)| owning.is_none_or(|o| Unit::parse(u).is_some_and(|u| o.contains(&u)))).collect();
-    let mut reads = Reads { files: Vec::new(), bytes: 0 };
+    let mut reads = Reads { files: Vec::new(), bytes: 0, secs: 0 };
+    let read0 = std::time::Instant::now();
     let mut packs = Vec::with_capacity(units.len());
     let mut read = pipeline::basepart::Read::default();
     let mut said = std::time::Instant::now();
@@ -1196,6 +1200,7 @@ fn open_units(
         read += n;
         packs.push(bp);
     }
+    reads.secs = read0.elapsed().as_secs().max(1);
     pipeline::agent::jobs::report(units.len() as u64, units.len() as u64, "areas' base packs here");
     let whole: u64 = packs.iter().map(|bp| bp.bytes()).sum();
     eprintln!(
@@ -1290,8 +1295,8 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
         pipeline::costin::set("units", near.len() as u64);
         pipeline::costin::add("bytes", near.iter().map(|bp| bp.bytes()).sum());
         pipeline::costin::set("ways", in_t.len() as u64);
-        // (What the job read from the NAS, an even share a tile: needs::HALO_STEPS.)
-        pipeline::costin::set("nas_read", reads.share(k, ts.len()));
+        // (What the job read from the NAS, and over what time: needs::HALO_STEPS.)
+        reads.note();
         if in_t.is_empty() {
             // No ways here (any more): what an earlier build made for the tile goes.
             drop_entries(
@@ -1408,7 +1413,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
         pipeline::costin::set("units", near.len() as u64);
         pipeline::costin::add("bytes", near.iter().map(|bp| bp.bytes()).sum());
         pipeline::costin::set("ways", staged.len() as u64);
-        pipeline::costin::set("nas_read", reads.share(k, qs.len()));
+        reads.note();
         if staged.is_empty() {
             drop_entries(out, &[format!("layers/roads/lo/{}", q.dash()), format!("layers/rails/lo/{}", q.dash())])?;
             note_cost("lo", &q.slash(), c);
@@ -6105,10 +6110,8 @@ mod tests {
             .map(|(n, _)| n)
             .collect();
         assert_eq!(indexed, want);
-        // (What it read, shared evenly over a job's tiles, every byte counted once.)
-        assert!(reads.bytes > 0);
-        assert_eq!((0..3).map(|k| reads.share(k, 3)).sum::<u64>(), reads.bytes);
-        assert!(reads.share(1, 3).abs_diff(reads.share(2, 3)) == 0 && reads.share(0, 3) - reads.share(1, 3) < 3);
+        // (What it read, and over what time: never under a second.)
+        assert!(reads.bytes > 0 && reads.secs >= 1);
         let files = reads.files.clone();
         assert!(files.iter().all(|f| f.exists()));
         drop(reads);

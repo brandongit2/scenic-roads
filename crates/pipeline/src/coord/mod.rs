@@ -637,20 +637,27 @@ impl Shared {
     /// them (all but the lead's own), and the downloading jobs; None while it's off for the asker
     /// (the lead's own: only before the NAS was first probed, `nas_own`).
     fn nas_room(&self, now: Instant, lead: bool) -> Option<(NasWeigher<'_>, u32, u32, usize)> {
+        self.nas_room_heaviest(now, lead).map(|(nw, w, members, dl, _)| (nw, w, members, dl))
+    }
+
+    /// `nas_room`, and the most one leased job weighs, of all and of the members' ([all, members]).
+    fn nas_room_heaviest(&self, now: Instant, lead: bool) -> Option<(NasWeigher<'_>, u32, u32, usize, [u32; 2])> {
         let limits = if lead { self.nas_own.or(self.nas)? } else { self.nas? };
         let nw = NasWeigher { limits, book: self.book(), priors: Default::default() };
-        let (mut w, mut members, mut dl) = (0u32, 0u32, 0usize);
+        let (mut w, mut members, mut dl, mut most) = (0u32, 0u32, 0usize, [0u32; 2]);
         for lease in self.leases.all(now) {
             if let Work::Job { step, targets } = &lease.work {
                 let (jw, d) = Self::job_nas(&nw, step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
                 w = w.saturating_add(jw);
+                most[0] = most[0].max(jw);
                 if lease.worker != self.lead_name {
                     members = members.saturating_add(jw);
+                    most[1] = most[1].max(jw);
                 }
                 dl += usize::from(d);
             }
         }
-        Some((nw, w, members, dl))
+        Some((nw, w, members, dl, most))
     }
 
     /// Notes `target` of `step` passed over for the NAS budget alone now.
@@ -986,12 +993,29 @@ impl Shared {
     /// within the whole or beside nothing weighing anything, a download under the cap (the lead's
     /// own always held to it, `nas_room`); `alone`: as if the lead held nothing (the members' jobs
     /// alone counted: what its cold job would meet once its own jobs end, `own_cold_waits`).
+    /// Held back for the budget alone, it's noted waiting (`nas_wait`), and goes beside leased jobs
+    /// none of which weighs the whole once it weighs the whole itself or has waited `OWN_AGE`
+    /// (crate::budget::nas::Limits::fits_own_job: members' small jobs never hold it for good).
     fn own_nas_fits(&self, o: &Offer, now: Instant, alone: bool) -> bool {
         let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
-        self.nas_room(now, true).is_none_or(|(nw, running, members, dl)| {
+        let waited = {
+            let g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+            ts.iter().filter_map(|t| g.get(&(o.step.clone(), t.clone())).map(|e| e.0)).min()
+        }
+        .is_some_and(|since| now.duration_since(since) >= crate::budget::nas::OWN_AGE);
+        self.nas_room_heaviest(now, true).is_none_or(|(nw, running, members, dl, most)| {
             let (w, fetch) = Self::job_nas(&nw, &o.step, &ts);
-            let running = if alone { members } else { running };
-            crate::budget::nas::Limits::fits_own(running, w) && !(fetch && nw.limits.downloads.is_some_and(|c| dl >= c))
+            let (running, heaviest) = if alone { (members, most[1]) } else { (running, most[0]) };
+            if fetch && nw.limits.downloads.is_some_and(|c| dl >= c) {
+                return false;
+            }
+            let fits = crate::budget::nas::Limits::fits_own_job(running, heaviest, w, waited);
+            if !fits && !alone {
+                for t in &ts {
+                    self.nas_wait(&o.step, t, now);
+                }
+            }
+            fits
         })
     }
 
@@ -6505,6 +6529,68 @@ mod tests {
         // The lead's own: held, the pool past the whole.
         let a = Ask { want: 2, ..every_ask("m4", "slope", 64_000, 100_000) };
         assert!(c.ask_own(&a, &BTreeSet::new()).is_none());
+    }
+
+    /// Task #396 follow-up (b38's stall): a pack job whose target took 0 s weighs its job's real
+    /// read rate (`nas_read` over `nas_secs`), not its reads over one second, so a member's slope
+    /// still goes beside it; and the lead's own planned job weighing the whole goes while a member
+    /// runs small jobs (none of them the whole), where before it waited for the pool to hold nothing.
+    #[test]
+    fn a_halo_job_weighs_its_real_rate_and_the_leads_whole_job_goes() {
+        let (_d, c, w, _clock) = every((0, 0));
+        heavy_slope(&c);
+        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+        }
+        let pack = |c: &Coordinator, sizes: &[(&str, u64)]| {
+            let sizes = sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+            let cost =
+                Cost { peak_mb: 500, secs: 0, worker: None, v: cost_version("pack"), sizes, ..Default::default() };
+            c.add_costs_by(&[(cost_key("pack", "6/2/2"), cost)], "m1");
+            c.add_disks(&[(cost_key("pack", "6/2/2"), 100)]);
+        };
+        // (5.75 GB read in 120 s: 48 MB/s, about half the NAS.)
+        pack(&c, &[("threads", 1), ("bytes", 6 << 30), ("nas_read", 5_750_000_000), ("nas_secs", 120)]);
+        let mut offers = c.shared.lock().unwrap().offers.clone();
+        offers.push(Offer { step: "pack".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None });
+        c.offer("p", offers);
+        let m = Ask { want: 1, can: vec!["pack".into()], ..every_ask("m1", "pack", 64_000, 100_000) };
+        assert_eq!(all_granted(&w, &m), [["6/2/2"]]);
+        let m = Ask { want: 3, ..every_ask("m1", "slope", 64_000, 100_000) };
+        assert_eq!(all_granted(&w, &m).len(), 1, "a slope (half the NAS) beside it, not two");
+        // The lead's own planned job weighing the whole, beside a member's small job.
+        let (_d, c, w, _clock) = every((0, 0));
+        {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+        }
+        packable(&c, "slope", 1, Some(1));
+        let small = [("threads".to_string(), 1), ("bytes".to_string(), 600_000_000)];
+        let cost = |sizes: [(String, u64); 2]| Cost {
+            peak_mb: 500,
+            secs: 600,
+            worker: None,
+            v: cost_version("slope"),
+            sizes: sizes.into(),
+            ..Default::default()
+        };
+        c.add_costs_by(&[(cost_key("slope", "6/1/1"), cost(small))], "m1");
+        assert_eq!(all_granted(&w, &Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) }).len(), 1);
+        packable(&c, "rail", 1, Some(1));
+        let whole = [("threads".to_string(), 1), ("bytes".to_string(), 600_000_000_000)];
+        c.add_costs_by(&[(cost_key("rail", "6/1/1"), Cost { v: cost_version("rail"), ..cost(whole) })], "m4");
+        c.offer(
+            "p",
+            vec![Offer {
+                step: "rail".into(),
+                targets: vec![("6/1/1".into(), "k 6/1/1".into(), 0)],
+                job: Some("rail 6/1/1".into()),
+            }],
+        );
+        let a = Ask { can: vec!["rail".into()], ..every_ask("m4", "rail", 64_000, 100_000) };
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "the whole one goes beside the member's small job");
     }
 
     /// Six slope targets each taking half a 100 MB/s NAS (50 MB/s), a thread each.

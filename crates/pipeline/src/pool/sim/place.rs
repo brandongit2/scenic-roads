@@ -20,7 +20,7 @@
 //!   step's job (crate::needs::HALO_STEPS: `pack`, task #260; `lo`, task #381) takes one halo's targets (`Cfg::halo`
 //!   a halo, offered a halo an offer as the agent offers them), its disk its halo's output once
 //!   whatever its targets, its `bytes` its halo's base packs' files (not its NAS traffic), its NAS
-//!   what it reads of them (`nas_read`) and what it writes. A job of a step reading a shared cache (crate::needs::CACHES: the DEM
+//!   what it reads of them (`nas_read` over `nas_secs`) and what it writes. A job of a step reading a shared cache (crate::needs::CACHES: the DEM
 //!   cache) on a Mac without it fills it (`Step::cache_mb`, measured with its targets and its
 //!   job), the cache kept on that Mac's disk after (`Cfg::warm`: those every Mac has from the
 //!   start), its capacity saying the caches it has (crate::coord::Capacity::caches); the
@@ -190,7 +190,8 @@ fn written(j: &Job, t: u64) -> u64 {
 /// What a run of one target of `s` given `threads` measures, as crate::costin records it: its
 /// memory and time, the threads it was given and the CPU time it took (its step's threads busy, at
 /// most those given), and what it read and wrote on the NAS, half of `nas_mb` each (a halo step's
-/// reads its `nas_read`, its `bytes` its halo's base packs' files, as crate::needs reads them).
+/// reads its `nas_read` over `nas_secs`, its run; its `bytes` its halo's base packs' files, as
+/// crate::needs reads them).
 fn measures(s: &Step, threads: u32) -> Cost {
     let nas = s.nas_mb << 20;
     let (read, wrote) = (nas / 2, nas - nas / 2);
@@ -205,6 +206,7 @@ fn measures(s: &Step, threads: u32) -> Cost {
             ("cpu_ms".to_string(), threads.min(s.threads) as u64 * s.secs * 1000),
             ("bytes".to_string(), bytes),
             ("nas_read".to_string(), nas_read),
+            ("nas_secs".to_string(), s.secs),
             ("wrote".to_string(), wrote),
             ("creates".to_string(), s.creates),
         ]
@@ -512,8 +514,11 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             // lead's own with nothing weighing anything.)
             let pool_nas: u32 = running.iter().flatten().map(|j| j.nas).sum();
             let members_nas: u32 = running.iter().skip(1).flatten().map(|j| j.nas).sum();
+            let heaviest = running.iter().flatten().map(|j| j.nas).max().unwrap_or(0);
             let fits = if k == 0 {
-                crate::budget::nas::Limits::fits_own(pool_nas, job.nas)
+                // (A planned job of the lead's own may go beside jobs none of which weighs the whole:
+                // coord's own_nas_fits.)
+                crate::budget::nas::Limits::fits_own_job(pool_nas, heaviest, job.nas, true)
             } else {
                 crate::budget::nas::Limits::fits(members_nas, pool_nas, job.nas)
             };

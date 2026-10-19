@@ -119,7 +119,19 @@ impl Limits {
     pub fn fits_own(running: u32, w: u32) -> bool {
         w == 0 || running == 0 || running.saturating_add(w) <= WHOLE
     }
+
+    /// `fits_own` for the lead's own planned job, which members' small jobs would otherwise hold
+    /// back for good (each lease's weight keeps `running` above zero): it goes too while no leased
+    /// job weighs the whole (`heaviest`, the most one weighs), when it weighs the whole itself or
+    /// has waited `OWN_AGE` for the budget alone (`waited`).
+    pub fn fits_own_job(running: u32, heaviest: u32, w: u32, waited: bool) -> bool {
+        Self::fits_own(running, w) || (heaviest < WHOLE && (w >= WHOLE || waited))
+    }
 }
+
+/// How long the lead's own planned job waits for the NAS budget alone before it goes beside
+/// leased jobs none of which weighs the whole (`Limits::fits_own_job`).
+pub const OWN_AGE: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// The probes kept (the last `KEEP_S`'s), and the limits they give: the best of each.
 #[derive(Clone, Debug, Default)]
@@ -242,6 +254,12 @@ mod tests {
         assert!(Limits::fits(600, 600, 400) && !Limits::fits(601, 601, 400));
         assert!(Limits::fits(0, 900, 1000), "the lead's own alone: a member's job goes");
         assert!(!Limits::fits(1, 900, 1000));
+        // The lead's own planned job beside members' small jobs (task #396 follow-up): a whole one
+        // goes while none leased weighs the whole; a lesser one once it has waited; none beside a
+        // whole one.
+        assert!(!Limits::fits_own(30, 1000) && Limits::fits_own_job(30, 20, 1000, false));
+        assert!(!Limits::fits_own_job(30, 1000, 1000, true), "beside a whole one: never");
+        assert!(!Limits::fits_own_job(300, 200, 800, false) && Limits::fits_own_job(300, 200, 800, true));
         assert!(Limits::fits(999, 999, 0));
         assert!(Limits::fits_own(600, 400) && !Limits::fits_own(601, 400));
         assert!(Limits::fits_own(0, 1000) && !Limits::fits_own(1, 1000), "the lead's own: within the whole, or alone");
