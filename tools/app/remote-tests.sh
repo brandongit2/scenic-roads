@@ -64,7 +64,8 @@ remote_unlock() {  # <key> <owner> [quiet]: removes the lock only while it is st
   local d=~/scenic-check/$1 aside=~/scenic-check/$1/.busy.aside-$$
   mv $d/.busy $aside 2>/dev/null || return 1
   if [[ $(cat $aside/owner 2>/dev/null) == "$2" ]]; then rm -rf $aside; return 0; fi
-  mv $aside $d/.busy 2>/dev/null || rm -rf $aside   # someone else's: put back
+  # Someone else's (taken over and retaken meanwhile): left aside, not put back (a move onto a
+  # lock made since would nest inside it); its run sees its lock gone and reruns here.
   return 1
 }
 
@@ -98,7 +99,7 @@ remote_main() {  # on the M4: <key> <owner> <command>
       fi
       if mv $base/.slots/$s $base/.slots/.aside-$s-$$ 2>/dev/null; then
         if [[ $(cat $base/.slots/.aside-$s-$$/owner 2>/dev/null) == "$held" ]]; then rm -rf $base/.slots/.aside-$s-$$
-        else mv $base/.slots/.aside-$s-$$ $base/.slots/$s 2>/dev/null || rm -rf $base/.slots/.aside-$s-$$; fi
+        fi  # (another's, retaken meanwhile: left aside, as with a key's lock)
       fi
     done
     if (( waited == 0 )); then
@@ -146,10 +147,13 @@ remote_main() {  # on the M4: <key> <owner> <command>
     p=$(ps -o ppid= -p $p | tr -d ' ')
   done
   local pgid=$(ps -o pgid= -p $$ | tr -d ' ') wd=
-  if [[ -n $sshd ]]; then
-    ( while sleep 3; do kill -0 $sshd 2>/dev/null || { kill -TERM -- -$pgid; exit; }; done ) </dev/null >/dev/null 2>&1 &
-    wd=$!
-  fi
+  # (And it keeps the key's lock and stamp fresh, so a run past 6 h isn't taken for stale or
+  # evicted.)
+  ( while sleep 3; do
+      [[ -z $sshd ]] || kill -0 $sshd 2>/dev/null || { kill -TERM -- -$pgid; exit; }
+      touch $dir/.busy $dir/stamp 2>/dev/null
+    done ) </dev/null >/dev/null 2>&1 &
+  wd=$!
   versions "the M4"
   print "remote-tests: on the M4 (load $(loadavg), slot $slot, $dir)"
   nice -n 10 zsh -c "$cmd" </dev/null 2>&1
@@ -183,11 +187,11 @@ local_main() {  # <key> <source dir> <command>
   local key=$1 src=${2:A} cmd=$3
   [[ $key == [A-Za-z0-9._-]## && $key != .* ]] || { print "remote-tests: bad key $key"; return 2; }
   ( cd $src && versions "this Mac ($(scutil --get LocalHostName 2>/dev/null))" )
-  local why=
+  local why= rname
   if [[ -n ${SCENIC_CHECK_LOCAL:-}${SCENIC_TESTS_LOCAL:-} ]]; then why="SCENIC_CHECK_LOCAL set"
-  elif [[ ${(L)$(scutil --get LocalHostName 2>/dev/null)}.local == $(ssh -G $host 2>/dev/null | awk '$1=="hostname" {print $2}') ]]; then why="this is the M4"
   elif [[ -d $src/data/build ]]; then why="the tree has ignored test data in data/build, which the M4's copy wouldn't"
-  elif ! ssh -o ConnectTimeout=5 -o BatchMode=yes $host true 2>/dev/null; then why="the M4 isn't reachable"
+  elif ! rname=$(ssh -o ConnectTimeout=5 -o BatchMode=yes $host scutil --get LocalHostName 2>/dev/null); then why="the M4 isn't reachable"
+  elif [[ $rname == "$(scutil --get LocalHostName 2>/dev/null)" ]]; then why="this is the M4"
   fi
   if [[ -n $why ]]; then
     print "remote-tests: running here ($why; load $(loadavg))"
@@ -224,6 +228,12 @@ local_main() {  # <key> <source dir> <command>
   # sent, and goes there).
   ( cd $src && git ls-files -co --exclude-standard -z | while IFS= read -r -d '' f; do
       [[ -f $f || -L $f ]] && print -rn -- "$f"$'\0'; done ) > $tmp/files.list
+  # (The M4's prune compares lists a line a path: a path with a newline runs here.)
+  if [[ $(<$tmp/files.list) == *$'\n'* ]]; then
+    rm -rf $tmp
+    print "remote-tests: running here (a path in the tree has a newline)"
+    run_local $src "$cmd"; return
+  fi
   local t0=$SECONDS
   ssh -o BatchMode=yes $host "mkdir -p ~/scenic-check/$key/src" &&
   rsync -a --from0 --files-from=$tmp/files.list $src/ ${host}:scenic-check/$key/src/ &&
