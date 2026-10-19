@@ -1258,41 +1258,46 @@ fn slivers(
         if comps.len() < 2 {
             continue;
         }
-        for comp in comps {
-            let piece = TArea { cells: comp };
-            if piece.km2() >= km2
-                || shared_km(&piece, &land) > 0.0
-                || !piece.zip(&land, |a, b| a.intersect(b)).is_empty()
-            {
-                continue;
-            }
-            // (Only the regions with cells round the piece's: by the cells' index.)
-            let mut near: BTreeSet<&String> = BTreeSet::new();
-            for c in piece.cells.keys() {
-                for x in c.0 - 1..=c.0 + 1 {
-                    for y in c.1 - 1..=c.1 + 1 {
-                        if let Some(v) = index.get(&(wrap(x).0, y)) {
-                            near.extend(v.iter());
+        // (Each piece decided at once, the cheap tests first: its size, whether it's land, then
+        // its edges; then moved.)
+        let moves: Vec<(String, BTreeMap<Cell, Area>)> = comps
+            .into_par_iter()
+            .filter_map(|comp| {
+                let piece = TArea { cells: comp };
+                if piece.km2() >= km2
+                    || piece.cells.iter().any(|(c, p)| land.cells.get(c).is_some_and(|l| !p.intersect(l).is_empty()))
+                    || shared_km(&piece, &land) > 0.0
+                {
+                    return None;
+                }
+                // (Only the regions with cells round the piece's: by the cells' index.)
+                let mut near: BTreeSet<&String> = BTreeSet::new();
+                for c in piece.cells.keys() {
+                    for x in c.0 - 1..=c.0 + 1 {
+                        for y in c.1 - 1..=c.1 + 1 {
+                            if let Some(v) = index.get(&(wrap(x).0, y)) {
+                                near.extend(v.iter());
+                            }
                         }
                     }
                 }
-            }
-            let best = near
-                .into_iter()
-                .filter(|o| *o != id)
-                .map(|o| (shared_km(&piece, &all[o]), o.clone()))
-                .filter(|(l, _)| *l > 0.0)
-                .max_by(|x, y| x.0.total_cmp(&y.0).then(y.1.cmp(&x.1)));
-            if let Some((_, o)) = best {
-                touched.insert(o.clone());
-                for (c, p) in &piece.cells {
-                    let a = all.get_mut(id).unwrap();
-                    let left = a.get(*c).minus(p);
-                    a.set(*c, left);
-                    let b = all.get_mut(&o).unwrap();
-                    let more = b.get(*c).union(p);
-                    b.set(*c, more);
-                }
+                near.into_iter()
+                    .filter(|o| *o != id)
+                    .map(|o| (shared_km(&piece, &all[o]), o.clone()))
+                    .filter(|(l, _)| *l > 0.0)
+                    .max_by(|x, y| x.0.total_cmp(&y.0).then(y.1.cmp(&x.1)))
+                    .map(|(_, o)| (o, piece.cells))
+            })
+            .collect();
+        for (o, cells) in moves {
+            touched.insert(o.clone());
+            for (c, p) in &cells {
+                let a = all.get_mut(id).unwrap();
+                let left = a.get(*c).minus(p);
+                a.set(*c, left);
+                let b = all.get_mut(&o).unwrap();
+                let more = b.get(*c).union(p);
+                b.set(*c, more);
             }
         }
     }
