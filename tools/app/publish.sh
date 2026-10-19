@@ -21,7 +21,20 @@ NAS=/Volumes/personal/projects/scenic-roads
 # hours (its Mac gone mid-publish) is moved aside and taken.
 lock=$NAS/app/publish.lock
 cleanup=()
-on_exit() { for c in $cleanup; do eval $c; done; }
+# Its last line says how it ended: "published <version>" (exit 0), or, on any other exit, "publish:
+# FAILED, nothing published (exit N)" with N non-zero, whatever stopped it. (A wrapper's own exit
+# status, e.g. `publish.sh > log; grep … log`, is the wrapper's last command's: read this line or
+# publish.sh's own status.)
+published=
+on_exit() {
+  local rc=$?
+  for c in $cleanup; do eval $c; done
+  if [[ -z $published && ${rollback:-} != done ]]; then
+    (( rc == 0 )) && rc=1
+    echo "publish: FAILED, nothing published (exit $rc)"
+  fi
+  exit $rc
+}
 trap on_exit EXIT
 # (Ctrl-C or a kill leaves through EXIT too, so the lock is freed.)
 trap 'exit 130' INT TERM HUP
@@ -52,6 +65,7 @@ if [[ ${1:-} == --rollback ]]; then
   cp -X $NAS/app/current.json $NAS/app/current.json.tmp.old
   cp -X $NAS/app/previous.json $NAS/app/current.json.tmp && mv $NAS/app/current.json.tmp $NAS/app/current.json
   mv $NAS/app/current.json.tmp.old $NAS/app/previous.json
+  rollback=done
   echo "rolled back to $(python3 -c "import json;print(json.load(open('$NAS/app/current.json'))['version'])")"
   exit 0
 fi
@@ -125,17 +139,24 @@ tests_ok=0
 # (Tests that pass over what a Mac lacks fail instead when they're run for a publish: uv for the
 # translations' checker.)
 export SCENIC_PUBLISH=1
-cargo nextest run --no-fail-fast --hide-progress-bar -p store -p names -p pipeline --lib > $tests_log 2>&1 || tests_ok=$?
-# (And the pipeline's whole-crate checks: every cache read through the accessor, the records written
-# only through Out (docs/pool.md §7.3), every Wikimedia request through the budgets' proxy (§7.7),
-# the Python steps' timer. The drop boxes' and the sources' guards ran first.)
-cargo nextest run --no-fail-fast --hide-progress-bar -p pipeline --test cache_accessor --test write_sets --test budgets --test timings_python >> $tests_log 2>&1 || tests_ok=$?
+# (After the libraries, the pipeline's whole-crate checks: every cache read through the accessor,
+# the records written only through Out (docs/pool.md §7.3), every Wikimedia request through the
+# budgets' proxy (§7.7), the Python steps' timer. The drop boxes' and the sources' guards ran first.)
+# Both run on the M4 (tools/app/remote-tests.sh, #442: an exact copy of this snapshot, its build
+# folder kept there between publishes, at nice 10; here on the M4 itself, when it can't be reached,
+# or with SCENIC_TESTS_LOCAL=1): the suite took 13-30 min on the M1 beside its builds, and a
+# timing test failed under that load. Its exit status is the suite's.
+suite='export SCENIC_PUBLISH=1; cargo nextest --version >/dev/null 2>&1 || mise install -q; rc=0
+cargo nextest run --no-fail-fast --hide-progress-bar -p store -p names -p pipeline --lib || rc=$?
+cargo nextest run --no-fail-fast --hide-progress-bar -p pipeline --test cache_accessor --test write_sets --test budgets --test timings_python || rc=$?
+exit $rc'
+zsh tools/app/remote-tests.sh publish $snap $suite > $tests_log 2>&1 || tests_ok=$?
 # (And every child, listener and taken connection by store::spawn: clippy's disallowed-methods,
 # clippy.toml, docs/pool.md §7.5. A hit fails the publish.)
 cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
-grep -E '^ *Summary ' $tests_log
+grep -E '^ *Summary ' $tests_log || true
 if (( tests_ok != 0 )); then
-  sed -n '/^ *FAIL \[/,/^ *\(PASS\|SLOW\|FAIL\|Summary\) /p' $tests_log | grep -v '^progress: '
+  sed -n '/^ *FAIL \[/,/^ *\(PASS\|SLOW\|FAIL\|Summary\) /p' $tests_log | grep -v '^progress: ' || true
   echo "tests failed; their whole output: $tests_log"
   exit $tests_ok
 fi
@@ -204,6 +225,7 @@ print(json.dumps({'version': sys.argv[1], 'files': files, 'sha256': sha}))" "$ve
 [[ -f $NAS/app/current.json ]] && cp -X $NAS/app/current.json $NAS/app/previous.json
 print -r -- "$manifest" > $NAS/app/current.json.tmp
 mv $NAS/app/current.json.tmp $NAS/app/current.json
+published=$version
 echo "published $version"
 # The NAS's own planet fetch (DSM's Task Scheduler runs it daily): the repository's copy, when it
 # differs.
