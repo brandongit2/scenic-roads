@@ -406,11 +406,16 @@ def produce(tiles, hl, writer: Writer, box, counts: collections.Counter, done: P
             if (tx, ty) in finished:
                 counts["tiles done before"] += 1
                 continue
+            ans = getattr(tiles, "answers", collections.Counter())
+            before = (ans["base ok"], ans["base 404"])
             lakes = tile_lakes(tiles, hl_tree, hl, tx, ty, counts)
+            # (A tile whose basemap reads were all 404s isn't recorded as done: a server without
+            # the area mustn't make a rerun skip it.)
+            all_404 = ans["base ok"] == before[0] and ans["base 404"] > before[1]
             name = f"smalllakes-{PIECE_ZOOM}-{tx}-{ty}"
             wrote = bool(lakes) and writer.put(name, SOURCE_URL, Window(ZOOM, tx * span, ty * span, span, span), paint(lakes, tx, ty))
             n += wrote
-            if done is not None:
+            if done is not None and not all_404:
                 with open(done, "a") as f:
                     f.write(f"{tx} {ty} {name + '.tif' if wrote else '-'}\n")
     return n

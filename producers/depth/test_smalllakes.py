@@ -161,6 +161,22 @@ class Run(unittest.TestCase):
             self.assertEqual(smalllakes.produce(tiles, [], w3, box, collections.Counter(), done), 1)
 
 
+    def test_tiles_of_404s_are_not_recorded_done(self):
+        class Missing(FakeTiles):
+            def __init__(self):
+                super().__init__([])
+                self.answers = collections.Counter()
+
+            def base(self, z, x, y):
+                self.answers["base 404"] += 1
+                return b""
+
+        with tempfile.TemporaryDirectory() as t:
+            done = Path(t) / "i.geojson.done"
+            self.assertEqual(smalllakes.produce(Missing(), [], Writer(Path(t) / "out"), [-73.5, 44.5, -72.5, 45.5], collections.Counter(), done), 0)
+            self.assertFalse(done.exists() and done.read_text().strip())
+
+
 class Answers(unittest.TestCase):
     def test_a_box_of_404s_fails_and_retries_back_off(self):
         import http.server

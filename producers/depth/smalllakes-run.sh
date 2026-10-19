@@ -42,7 +42,11 @@ ssh -o BatchMode=yes $NAS "mkdir -p $STORE" || { echo "no SSH to the NAS (1Passw
 (cd $REPO && PATH=/opt/homebrew/opt/rustup/bin:$PATH cargo build --release -p server)
 $REPO/target/release/server --port $PORT --home $WORK/home --root $NASROOT --no-mirror --web $REPO/web/dist --fonts $REPO/data/fonts > $WORK/logs/server.log 2>&1 &
 SERVER=$!
-trap 'kill $SERVER 2>/dev/null || true' EXIT
+pids=()
+# (The server and the workers stopped by their own PIDs.)
+stop() { kill $SERVER $pids 2>/dev/null || true; }
+trap stop EXIT
+trap 'stop; exit 130' INT TERM
 for i in {1..60}; do
   curl -s -o /dev/null http://127.0.0.1:$PORT/ && break
   sleep 1
@@ -81,16 +85,17 @@ one_box() {
 import json, sys
 for f in json.load(open(sys.argv[1]))["features"]:
     print(f["properties"]["file"])
-' $WORK/index/$id.geojson > $files
+' $WORK/index/$id.geojson > $files || { echo "$id: its index unreadable"; return 1; }
   if [[ -s $files ]]; then
     COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -C $WORK/grids -cf - -T $files \
-      | ssh -o BatchMode=yes $NAS "cd $STORE && tar -xf -"
-    (cd $WORK/grids && xargs stat -f '%N %z' < $files | sort) > $files.here
-    ssh -o BatchMode=yes $NAS "cd $STORE && xargs stat -c '%n %s'" < $files | sort > $files.nas
+      | ssh -o BatchMode=yes $NAS "cd $STORE && tar -xf -" || { echo "$id: the copy to the NAS failed"; return 1; }
+    (cd $WORK/grids && xargs stat -f '%N %z' < $files | sort) > $files.here || { echo "$id: its grids unlisted here"; return 1; }
+    ssh -o BatchMode=yes $NAS "cd $STORE && xargs stat -c '%n %s'" < $files | sort > $files.nas || { echo "$id: its grids unlisted on the NAS"; return 1; }
     cmp -s $files.here $files.nas || { echo "$id: sizes on the NAS differ"; return 1; }
-    (cd $WORK/grids && xargs rm -f < $files)
   fi
+  # (Done once on the NAS; the local copies go after, so a stop in between only leaves them.)
   touch $WORK/index/$id.ok
+  [[ -s $files ]] && (cd $WORK/grids && xargs rm -f < $files)
   echo "$id: done, $(wc -l < $files | tr -d ' ') grids"
 }
 
@@ -103,7 +108,6 @@ worker() {
   return $bad
 }
 
-pids=()
 for k in $(seq 0 $((WORKERS - 1))); do
   worker $k &
   pids+=$!
