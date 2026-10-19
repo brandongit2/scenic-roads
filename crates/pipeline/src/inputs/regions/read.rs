@@ -401,7 +401,7 @@ pub fn check_folder(
         regions.insert(
             id.clone(),
             serde_json::json!({"path": folder.regions[id].0, "km2": km2, "water": folder.regions[id].1.has_water(),
-                "points": res.geometry.shapes.iter().map(|s| s.rings.iter().map(Vec::len).sum::<usize>()).sum::<usize>()}),
+                "geometry": store::naming::hash16(&res.geometry.encode()), "points": res.geometry.shapes.iter().map(|s| s.rings.iter().map(Vec::len).sum::<usize>()).sum::<usize>()}),
         );
     }
     Ok(serde_json::json!({
