@@ -571,3 +571,121 @@ fn heights_are_converted_before_the_blend() {
     let s = sample(&plan, &lon[..2], &lat[..2], &o, &|_| {}).unwrap();
     assert!(s.blended[1] && s.unconverted_seam == 1 && s.unconverted == 0, "{s:?}");
 }
+
+/// A GeoTIFF's reads, each taking a while: how many times each range was read, and the most at
+/// once.
+struct SlowReads {
+    inner: Arc<dyn RangeRead>,
+    asked: Arc<Mutex<HashMap<(u64, usize), usize>>>,
+    now: Arc<std::sync::atomic::AtomicUsize>,
+    most: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl RangeRead for SlowReads {
+    fn len(&self) -> Result<u64, store::IoError> {
+        self.inner.len()
+    }
+
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
+        use std::sync::atomic::Ordering::SeqCst;
+        *self.asked.lock().unwrap().entry((off, len)).or_default() += 1;
+        let at = self.now.fetch_add(1, SeqCst) + 1;
+        self.most.fetch_max(at, SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        self.now.fetch_sub(1, SeqCst);
+        self.inner.read_at(off, len)
+    }
+}
+
+/// Task #397: a GeoTIFF dataset's blocks are read ahead of their sampling, many at once (more
+/// than the pool's threads), each once, and the heights are those of a run on one thread with
+/// none read ahead, to the bit.
+#[test]
+fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
+    use super::super::declared::{Dataset, Plan, Source};
+    use crate::geotiff::write_f32;
+    const PX: f64 = 1.0 / 3600.0;
+    let (w, h) = (2048usize, 1536usize);
+    let gt = [10.0, PX, 0.0, 50.0, 0.0, -PX];
+    let nd = -9999.0f32;
+    let mut data: Vec<f32> =
+        (0..h).flat_map(|y| (0..w).map(move |x| 100.0 + 0.013 * x as f32 + 0.021 * y as f32)).collect();
+    for y in 600..700 {
+        for x in 900..1000 {
+            data[y * w + x] = nd;
+        }
+    }
+    let fine = write_f32(w as u32, h as u32, &data, 256, gt, 4326, Some(nd as f64)).unwrap();
+    let cgt = [9.0, 3.0 * PX, 0.0, 51.0, 0.0, -3.0 * PX];
+    let coarse = write_f32(2000, 2000, &vec![50.0f32; 2000 * 2000], 512, cgt, 4326, Some(nd as f64)).unwrap();
+    let mut f = crate::fetch::MapFetch::default();
+    f.0.insert("https://a.org/fine.tif".into(), Some(fine));
+    f.0.insert("https://b.org/coarse.tif".into(), Some(coarse));
+    let geo = |id: &str, code: u8, res: f64, url: &str, b: [f64; 4]| Dataset {
+        convert: None,
+        id: id.into(),
+        code,
+        resolution: res,
+        cover: None,
+        source: Source::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![(url.into(), Some(b))] },
+    };
+    let fine_box = [10.0, 50.0 - h as f64 * PX, 10.0 + w as f64 * PX, 50.0];
+    let plan = Plan {
+        fmt: 1,
+        version: "t".into(),
+        tag: "1".into(),
+        datasets: vec![
+            geo("fine", 1, PX * M_PER_DEG, "https://a.org/fine.tif", fine_box),
+            geo("coarse", 2, 3.0 * PX * M_PER_DEG, "https://b.org/coarse.tif", [9.0, 45.0, 15.0, 51.0]),
+        ],
+    };
+    // (Enough points for several chunks: CHUNK_MIN each.)
+    let mut seed = 7u64;
+    let mut rnd = move || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let (mut lon, mut lat) = (Vec::new(), Vec::new());
+    for _ in 0..(CHUNK_MIN * 5) {
+        lon.push(10.0 + (rnd() * 2100.0 - 20.0) * PX);
+        lat.push(50.0 - (rnd() * 1580.0 - 20.0) * PX);
+    }
+    let want = sample(&plan, &lon, &lat, &Opts { fetch: &f, store: None, pool: None }, &|_| {}).unwrap();
+    struct Slow {
+        inner: crate::fetch::MapFetch,
+        asked: Arc<Mutex<HashMap<(u64, usize), usize>>>,
+        now: Arc<std::sync::atomic::AtomicUsize>,
+        most: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl Fetch for Slow {
+        fn open(&self, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
+            let Some(r) = self.inner.open(url)? else { return Ok(None) };
+            if !url.contains("fine") {
+                return Ok(Some(r));
+            }
+            Ok(Some(Arc::new(SlowReads {
+                inner: r,
+                asked: self.asked.clone(),
+                now: self.now.clone(),
+                most: self.most.clone(),
+            })))
+        }
+        fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
+            self.inner.get(url)
+        }
+    }
+    let slow = Slow { inner: f, asked: Default::default(), now: Default::default(), most: Default::default() };
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    let got = sample(&plan, &lon, &lat, &Opts { fetch: &slow, store: None, pool: Some(&pool) }, &|_| {}).unwrap();
+    let bits = |s: &Sampled| s.elev.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&got), bits(&want));
+    assert_eq!((&got.src, &got.blended), (&want.src, &want.blended));
+    assert!(want.blended.iter().any(|b| *b) && want.src.contains(&2), "blends and the coarse file's heights");
+    let asked = slow.asked.lock().unwrap();
+    let blocks: Vec<_> = asked.iter().filter(|(k, _)| k.1 >= 1024).collect();
+    assert!(blocks.len() >= 40, "{} blocks read", blocks.len());
+    let again: Vec<_> = blocks.iter().filter(|(_, &n)| n > 1).collect();
+    assert!(again.is_empty(), "read more than once: {again:?}");
+    let most = slow.most.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(most > 2, "at most {most} reads at once, no more than the pool's threads");
+}

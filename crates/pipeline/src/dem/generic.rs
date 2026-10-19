@@ -14,7 +14,10 @@
 //!   tiles are fetched and decoded by their encoding (crate::dem::encoding), each sampled on its own
 //!   (its edges clamping). A run fetches each tile once (`TileMemo`, whatever stage reads it), up
 //!   to `TILE_FETCHES` at once ahead of the sampling, so a stage reading few points a tile (the
-//!   blends) waits on the network no longer than it must.
+//!   blends) waits on the network no longer than it must. A GeoTIFF dataset's blocks are read
+//!   likewise ahead of their sampling (`read_ahead`): `GEO_FETCHES` at once, up to `GEO_AHEAD`
+//!   blocks past the chunk being sampled, each once (crate::geotiff::Tiff::block); so the sampler
+//!   waits on several requests at once, not on a chunk's few blocks in turn.
 //! - **The distance to the invalid area** is looked for pixel by pixel only where it can be found:
 //!   each block (or tile) read for sampling is noted as clean when every pixel of it holds data
 //!   (crate::dem::sample::Clean), and a point whose band lies inside clean blocks of its file is at
@@ -23,14 +26,14 @@
 
 use super::declared::{Cover, Dataset, Plan, Source};
 use super::proj::{mercator_tile, Atlas};
-use super::sample::{bilinear, sample_raster_noting, window_clean, within, Clean, NODATA_BELOW};
+use super::sample::{bilinear, blocks_read, sample_raster_noting, window_clean, within, Clean, Seen, NODATA_BELOW};
 use crate::fetch::Fetch;
 use crate::geotiff::{BlockCache, Tiff};
 use anyhow::{bail, ensure, Context, Result};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use store::range::{PlainFile, RangeRead};
 
 /// How the files are read.
@@ -64,6 +67,66 @@ pub const M_PER_DEG: f64 = 111_320.0;
 /// The decoded blocks kept across every open file of a run (one cache for all: a unit opens
 /// tens of files a dataset, and sampling reads each block once).
 pub const CACHE_BYTES: usize = 512 << 20;
+
+/// How many of a GeoTIFF dataset's blocks are fetched at once ahead of their sampling
+/// (natively, with a pool), and how many blocks past the end of the chunk being sampled they go
+/// at most (decoded, about 1 MB each, held in the cache: well inside `CACHE_BYTES`).
+pub const GEO_FETCHES: usize = 32;
+pub const GEO_AHEAD: usize = 128;
+
+/// A file's blocks to read ahead: the file, its level, the block's column and row.
+type AheadBlock = (Arc<Tiff>, usize, u32, u32);
+
+/// Runs `run` (the sampling of parts in turn, calling its argument with a part's number before
+/// sampling it) while `GEO_FETCHES` threads read `ahead`'s blocks (the list, and where each
+/// part's begin in it) into the cache, in the list's order, at most `GEO_AHEAD` past the end of
+/// the part being sampled. A failed read stops the reading ahead (the sampling's own read of that
+/// block says why). No list: `run` alone.
+fn read_ahead<R>(ahead: Option<&(Vec<AheadBlock>, Vec<usize>)>, run: impl FnOnce(&dyn Fn(usize)) -> R) -> R {
+    let Some((blocks, starts)) = ahead.filter(|a| a.0.len() > 1) else { return run(&|_| {}) };
+    // (The next block to read, how far reading may go, and whether to stop.)
+    let st = Mutex::new((0usize, 0usize, false));
+    let cv = Condvar::new();
+    let stop = || {
+        st.lock().unwrap_or_else(|e| e.into_inner()).2 = true;
+        cv.notify_all();
+    };
+    // (Stopped however `run` ends, a panic too, so the threads end.)
+    struct Stop<F: Fn()>(F);
+    impl<F: Fn()> Drop for Stop<F> {
+        fn drop(&mut self) {
+            (self.0)()
+        }
+    }
+    std::thread::scope(|s| {
+        for _ in 0..GEO_FETCHES.min(blocks.len()) {
+            s.spawn(|| loop {
+                let i = {
+                    let mut g = st.lock().unwrap_or_else(|e| e.into_inner());
+                    while !g.2 && g.0 < blocks.len() && g.0 >= g.1 {
+                        g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                    }
+                    if g.2 || g.0 >= blocks.len() {
+                        return;
+                    }
+                    g.0 += 1;
+                    g.0 - 1
+                };
+                let (t, level, bx, by) = &blocks[i];
+                if t.block(*level, *bx, *by).is_err() {
+                    stop();
+                    return;
+                }
+            });
+        }
+        let _stop = Stop(&stop);
+        run(&|part: usize| {
+            let mut g = st.lock().unwrap_or_else(|e| e.into_inner());
+            g.1 = g.1.max(starts[(part + 1).min(starts.len() - 1)] + GEO_AHEAD);
+            cv.notify_all();
+        })
+    })
+}
 
 /// Each open file's id in the shared cache.
 static FILE_IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -226,6 +289,33 @@ impl GeoSet<'_> {
             }
         }
         Ok(out)
+    }
+
+    /// The blocks sampling `parts` in turn reads first (each point's first file's: `blocks_read`),
+    /// in that order, each once; and where each part's begin in that list (and its end).
+    fn blocks_ahead(&self, parts: &[&[u32]], x: &[f64], y: &[f64]) -> Result<(Vec<AheadBlock>, Vec<usize>)> {
+        let mut seen: HashMap<usize, Seen> = HashMap::new();
+        let (mut out, mut starts) = (Vec::new(), Vec::with_capacity(parts.len() + 1));
+        for part in parts {
+            starts.push(out.len());
+            let mut by: std::collections::BTreeMap<usize, (Vec<f64>, Vec<f64>)> = Default::default();
+            for &i in *part {
+                let (px, py) = (x[i as usize], y[i as usize]);
+                if let Some(k) = self.holding(px, py).next() {
+                    let e = by.entry(k).or_default();
+                    e.0.push(px);
+                    e.1.push(py);
+                }
+            }
+            for (k, (xs, ys)) in by {
+                let Some((t, level)) = self.open(k)? else { continue };
+                let mut b = Vec::new();
+                blocks_read(&t, level, &xs, &ys, seen.entry(k).or_default(), &mut b)?;
+                out.extend(b.into_iter().map(|(bx, by)| (t.clone(), level, bx, by)));
+            }
+        }
+        starts.push(out.len());
+        Ok((out, starts))
     }
 
     /// The value at native point (x, y) of the files but `skip`: the first holding it whose raster
@@ -825,6 +915,17 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// What to read ahead of sampling `parts` in turn (`read_ahead`): a GeoTIFF dataset's blocks,
+    /// natively with a pool; None otherwise (a pyramid fetches its tiles ahead itself).
+    fn ahead(&self, parts: &[&[u32]]) -> Result<Option<(Vec<AheadBlock>, Vec<usize>)>> {
+        match self {
+            Reader::Geo(g, x, y) if g.o.pool.is_some() && !cfg!(target_arch = "wasm32") => {
+                Ok(Some(g.blocks_ahead(parts, x, y)?))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Points `sel` sampled: each one's value and (GeoTIFFs) its file.
     fn sample(&self, sel: &[u32], lon: &[f64], lat: &[f64]) -> Result<Vec<(f32, u32)>> {
         match self {
@@ -937,20 +1038,25 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
         if !sel.is_empty() {
             // (In chunks, a progress line after each: the datasets share the first part equally.)
             let chunk = (sel.len() / 100).clamp(CHUNK_MIN, CHUNK_MAX);
+            let parts: Vec<&[u32]> = sel.chunks(chunk).collect();
             let mut here = 0;
             let mut done = 0;
-            for part in sel.chunks(chunk) {
-                let v = r.sample(part, lon, lat)?;
-                for (&i, (v, f)) in part.iter().zip(v) {
-                    if v.is_finite() {
-                        (a[i as usize], first[i as usize], file[i as usize]) = (v, k as u16, f);
-                        here += 1;
+            read_ahead(r.ahead(&parts)?.as_ref(), |at| -> Result<()> {
+                for (j, part) in parts.iter().enumerate() {
+                    at(j);
+                    let v = r.sample(part, lon, lat)?;
+                    for (&i, (v, f)) in part.iter().zip(v) {
+                        if v.is_finite() {
+                            (a[i as usize], first[i as usize], file[i as usize]) = (v, k as u16, f);
+                            here += 1;
+                        }
                     }
+                    done += part.len();
+                    let share = (k as f64 + done as f64 / sel.len() as f64) / plan.datasets.len() as f64;
+                    mono.say(share * to_sample as f64 / total);
                 }
-                done += part.len();
-                let share = (k as f64 + done as f64 / sel.len() as f64) / plan.datasets.len() as f64;
-                mono.say(share * to_sample as f64 / total);
-            }
+                Ok(())
+            })?;
             println!("  {}: {here} of {} vertices", ds.id, sel.len());
         }
         readers.push(r);
@@ -1014,17 +1120,22 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
         // last part equally.)
         let sel = r.in_reading_order(sel, lon, lat);
         let chunk = (sel.len() / 100).clamp(CHUNK_MIN, CHUNK_MAX);
+        let parts: Vec<&[u32]> = sel.chunks(chunk).collect();
         let mut done = 0;
-        for part in sel.chunks(chunk) {
-            for (&i, (v, _)) in part.iter().zip(r.sample(part, lon, lat)?) {
-                if v.is_finite() {
-                    (b[i as usize], second[i as usize]) = (v, k as u16);
+        read_ahead(r.ahead(&parts)?.as_ref(), |at| -> Result<()> {
+            for (j, part) in parts.iter().enumerate() {
+                at(j);
+                for (&i, (v, _)) in part.iter().zip(r.sample(part, lon, lat)?) {
+                    if v.is_finite() {
+                        (b[i as usize], second[i as usize]) = (v, k as u16);
+                    }
                 }
+                done += part.len();
+                let share = (k as f64 + done as f64 / sel.len() as f64) / readers.len() as f64;
+                mono.say((to_sample as f64 + to_blend as f64 * (1.0 + share)) / total);
             }
-            done += part.len();
-            let share = (k as f64 + done as f64 / sel.len() as f64) / readers.len() as f64;
-            mono.say((to_sample as f64 + to_blend as f64 * (1.0 + share)) / total);
-        }
+            Ok(())
+        })?;
     }
     fetched(&p, since);
     drop(p);

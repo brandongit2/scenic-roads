@@ -5,7 +5,7 @@
 use crate::geotiff::Tiff;
 use anyhow::Result;
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 /// Values below this are nodata (all the sources use large negative nodata values).
@@ -154,6 +154,52 @@ pub fn sample_raster_noting(
         out[i as usize] = v;
     }
     Ok(out)
+}
+
+/// The windows and blocks `blocks_read` has given already (a file's, across calls).
+#[derive(Default)]
+pub struct Seen {
+    windows: HashSet<i64>,
+    blocks: HashSet<(u32, u32)>,
+}
+
+/// The file's own blocks (tiles or strips) of image `level` of `t` that `sample_raster` reads for
+/// points (`px`, `py`): those of each point's `BLOCK` window, in the points' order, each once
+/// (`seen`), onto `out`.
+pub fn blocks_read(
+    t: &Tiff,
+    level: usize,
+    px: &[f64],
+    py: &[f64],
+    seen: &mut Seen,
+    out: &mut Vec<(u32, u32)>,
+) -> Result<()> {
+    let img = t.level(level)?;
+    let gt = t.transform(level)?;
+    let (w, h) = (img.width as i64, img.height as i64);
+    let nbx = (w + BLOCK - 1) / BLOCK;
+    let (tw, th) = (img.block_w as i64, img.block_h as i64);
+    for (&x, &y) in px.iter().zip(py) {
+        let cf = (x - gt[0]) / gt[1] - 0.5;
+        let rf = (y - gt[3]) / gt[5] - 0.5;
+        if !(cf > -0.5 && rf > -0.5 && cf < w as f64 - 0.5 && rf < h as f64 - 0.5) {
+            continue;
+        }
+        let k = block_key(w, (cf.floor() as i64).clamp(0, w - 1), (rf.floor() as i64).clamp(0, h - 1));
+        if !seen.windows.insert(k) {
+            continue;
+        }
+        let (x0, y0) = ((k % nbx) * BLOCK, (k / nbx) * BLOCK);
+        let (x1, y1) = ((x0 + BLOCK).min(w) - 1, (y0 + BLOCK).min(h) - 1);
+        for by in y0 / th..=y1 / th {
+            for bx in x0 / tw..=x1 / tw {
+                if seen.blocks.insert((bx as u32, by as u32)) {
+                    out.push((bx as u32, by as u32));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Whether every block of image `level` of `t` that the pixel window `cs..=ce` by `rs..=re` (inside

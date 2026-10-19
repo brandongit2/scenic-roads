@@ -985,6 +985,10 @@ territory.
   read again. The decoded blocks of every file share one cache (`generic::CACHE_BYTES`, 512 MB),
   so a unit opening tens of files holds that much, not a cache's worth per file. A block several
   threads ask for at once is read and decoded once (`Tiff::block`), the others waiting for it.
+  A GeoTIFF dataset's blocks are read ahead of their sampling (`generic::read_ahead`, natively):
+  `GEO_FETCHES` (32) at once, at most `GEO_AHEAD` (128) blocks past the chunk being sampled, so
+  the sampler doesn't wait on a chunk's few blocks one round trip after another. The fetcher holds
+  a process's requests to one host to `fetch::net::HOST_REQUESTS` (64) at once.
 - **Heights brought to EGM2008** (step 3, crate::dem::geoid), each dataset's before the blend (A's
   and B's alike): the conversions are declared sources (§6.9, role `geoid`, any number), each
   linking two references by `params.from` and `to`: a separation grid (`geoid-grid`: one GeoTIFF in

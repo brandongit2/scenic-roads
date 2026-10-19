@@ -681,6 +681,47 @@ mod net {
         }
     }
 
+    /// Requests to one host this process has in flight at most, whichever readers ask (the
+    /// elevation sampler's pool, its reading ahead, a pyramid's tile fetches): what one step asks
+    /// of a server at once stays bounded however many threads read. A request holds its slot
+    /// through its retries' waits.
+    pub const HOST_REQUESTS: usize = 64;
+
+    /// The requests in flight by host.
+    static HOSTS: std::sync::LazyLock<(Mutex<HashMap<String, usize>>, std::sync::Condvar)> =
+        std::sync::LazyLock::new(Default::default);
+
+    /// One of a host's `HOST_REQUESTS` slots, given back when dropped.
+    pub(super) struct HostSlot(String);
+
+    impl HostSlot {
+        /// A slot of `url`'s host, waiting while all of them are taken.
+        pub(super) fn take(url: &str) -> HostSlot {
+            let host = host_of(url).to_string();
+            let (m, cv) = &*HOSTS;
+            let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+            while g.get(&host).copied().unwrap_or(0) >= HOST_REQUESTS {
+                g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+            *g.entry(host.clone()).or_default() += 1;
+            HostSlot(host)
+        }
+    }
+
+    impl Drop for HostSlot {
+        fn drop(&mut self) {
+            let (m, cv) = &*HOSTS;
+            let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(n) = g.get_mut(&self.0) {
+                *n -= 1;
+                if *n == 0 {
+                    g.remove(&self.0);
+                }
+            }
+            cv.notify_all();
+        }
+    }
+
     #[derive(Clone)]
     pub struct Net {
         agent: ureq::Agent,
@@ -817,6 +858,7 @@ mod net {
 
         /// The file's length and first bytes; None when the server has no such file.
         fn head(&self, url: &str) -> Result<Option<(u64, Vec<u8>)>> {
+            let _slot = HostSlot::take(url);
             self.retrying(url, || {
                 crate::fetch::online(url)?;
                 let mut r = match self.agent.get(url).header("Range", format!("bytes=0-{}", READ_AHEAD - 1)).call() {
@@ -868,6 +910,7 @@ mod net {
         /// answering it whole, 200, or another validator or length) is fetched again from the start.
         pub(super) fn range(&self, url: &str, s: u64, e: u64) -> Result<Vec<u8>> {
             const CHUNK: usize = 1 << 20;
+            let _slot = HostSlot::take(url);
             let want = (e - s) as usize;
             let mut out: Vec<u8> = Vec::with_capacity(want);
             let (mut idle, mut requests) = (0u32, 0u32);
@@ -964,6 +1007,7 @@ mod net {
         /// 4, 6 … s.
         fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
             down_check(self.down.as_deref(), url)?;
+            let _slot = HostSlot::take(url);
             let mut last = String::new();
             for attempt in 0..8u64 {
                 crate::fetch::online(url)?;
@@ -993,6 +1037,27 @@ mod net {
 mod tests {
     use super::net::{content_range, Recorder};
     use super::*;
+
+    /// Task #397: a host's requests in flight are capped (`HOST_REQUESTS`), another host's not
+    /// held up by them, and a slot given back lets a waiting request go.
+    #[cfg(not(target_os = "wasi"))]
+    #[test]
+    fn a_hosts_requests_at_once_are_capped() {
+        use super::net::{HostSlot, HOST_REQUESTS};
+        let held: Vec<HostSlot> = (0..HOST_REQUESTS).map(|_| HostSlot::take("https://capped.test/a.tif")).collect();
+        let _other = HostSlot::take("https://other.test/b.tif");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let t = std::thread::spawn(move || {
+            let s = HostSlot::take("https://capped.test:443/c.tif");
+            tx.send(()).unwrap();
+            drop(s);
+        });
+        let wait = std::time::Duration::from_millis(100);
+        assert!(rx.recv_timeout(wait).is_err(), "a request past the cap waits");
+        drop(held);
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok(), "and goes once a slot is free");
+        t.join().unwrap();
+    }
 
     #[test]
     fn mirrors_and_their_ranges() {
