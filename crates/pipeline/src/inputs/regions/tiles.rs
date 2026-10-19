@@ -1242,6 +1242,13 @@ fn slivers(
     if km2 <= 0.0 {
         return;
     }
+    // (Which regions have a piece in each cell.)
+    let mut index: HashMap<Cell, Vec<String>> = HashMap::new();
+    for (id, t) in all.iter() {
+        for c in t.cells.keys() {
+            index.entry(*c).or_default().push(id.clone());
+        }
+    }
     for id in ids {
         if folder.regions[id].1.is_rest() || !all.contains_key(id) {
             continue;
@@ -1259,10 +1266,21 @@ fn slivers(
             {
                 continue;
             }
-            let best = all
-                .iter()
-                .filter(|(o, _)| *o != id)
-                .map(|(o, t)| (shared_km(&piece, t), o.clone()))
+            // (Only the regions with cells round the piece's: by the cells' index.)
+            let mut near: BTreeSet<&String> = BTreeSet::new();
+            for c in piece.cells.keys() {
+                for x in c.0 - 1..=c.0 + 1 {
+                    for y in c.1 - 1..=c.1 + 1 {
+                        if let Some(v) = index.get(&(wrap(x).0, y)) {
+                            near.extend(v.iter());
+                        }
+                    }
+                }
+            }
+            let best = near
+                .into_iter()
+                .filter(|o| *o != id)
+                .map(|o| (shared_km(&piece, &all[o]), o.clone()))
                 .filter(|(l, _)| *l > 0.0)
                 .max_by(|x, y| x.0.total_cmp(&y.0).then(y.1.cmp(&x.1)));
             if let Some((_, o)) = best {
