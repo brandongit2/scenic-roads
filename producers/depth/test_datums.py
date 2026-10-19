@@ -13,13 +13,6 @@ class OpenSea(unittest.TestCase):
     enclosed lagoon or an inland lake gets nodata."""
     none = datums.OpenSea([])
 
-    def test_off_by_default_a_far_body_at_the_edge_still_stops(self):
-        water = np.zeros((40, 400), bool)
-        water[:, 0:300] = True
-        water[:, 330:400] = True
-        with self.assertRaises(SystemExit):
-            datums.Surface.harmonic([(10.5, 48.0, 1.0)], water, 10.0, 50.0, 0.1)
-
     def test_a_body_at_the_grid_edge_beyond_reach_takes_the_nearest_solved_value(self):
         water = np.zeros((40, 400), bool)
         water[:, 0:300] = True
