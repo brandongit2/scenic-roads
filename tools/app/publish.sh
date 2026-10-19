@@ -154,9 +154,13 @@ zsh tools/app/remote-tests.sh publish $snap $suite > $tests_log 2>&1 || tests_ok
 # (And every child, listener and taken connection by store::spawn: clippy's disallowed-methods,
 # clippy.toml, docs/pool.md §7.5. A hit fails the publish.)
 cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
-grep -E '^ *Summary ' $tests_log || true
+# (Only the final result counts: when the M4's run ended without one and the suite ran again here,
+# remote-tests.sh marked where the rerun starts.)
+from=$(grep -n -- '^--- remote result discarded, local rerun ---$' $tests_log | tail -1 | cut -d: -f1)
+final() { tail -n +${from:-1} $tests_log; }
+final | grep -E '^ *Summary ' || true
 if (( tests_ok != 0 )); then
-  sed -n '/^ *FAIL \[/,/^ *\(PASS\|SLOW\|FAIL\|Summary\) /p' $tests_log | grep -v '^progress: ' || true
+  final | sed -n '/^ *FAIL \[/,/^ *\(PASS\|SLOW\|FAIL\|Summary\) /p' | grep -v '^progress: ' || true
   echo "tests failed; their whole output: $tests_log"
   exit $tests_ok
 fi
@@ -222,16 +226,17 @@ import hashlib, json, sys
 files = [l.strip() for l in sys.stdin if l.strip()]
 sha = {f: hashlib.sha256(open(f, 'rb').read()).hexdigest() for f in files}
 print(json.dumps({'version': sys.argv[1], 'files': files, 'sha256': sha}))" "$version")
-[[ -f $NAS/app/current.json ]] && cp -X $NAS/app/current.json $NAS/app/previous.json
-print -r -- "$manifest" > $NAS/app/current.json.tmp
-mv $NAS/app/current.json.tmp $NAS/app/current.json
-published=$version
-echo "published $version"
 # The NAS's own planet fetch (DSM's Task Scheduler runs it daily): the repository's copy, when it
-# differs.
+# differs. (Before the version goes live, so "published …" stays the last line and a failure here
+# publishes nothing.)
 if ! cmp -s tools/nas/fetch-planet.sh $NAS/nas/fetch-planet.sh; then
   mkdir -p $NAS/nas
   cp -X tools/nas/fetch-planet.sh $NAS/nas/fetch-planet.sh.tmp && chmod 755 $NAS/nas/fetch-planet.sh.tmp
   mv $NAS/nas/fetch-planet.sh.tmp $NAS/nas/fetch-planet.sh
   echo "updated nas/fetch-planet.sh"
 fi
+[[ -f $NAS/app/current.json ]] && cp -X $NAS/app/current.json $NAS/app/previous.json
+print -r -- "$manifest" > $NAS/app/current.json.tmp
+mv $NAS/app/current.json.tmp $NAS/app/current.json
+published=$version
+echo "published $version"
