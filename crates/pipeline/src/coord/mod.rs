@@ -299,6 +299,12 @@ pub struct Shared {
     /// The pool's lead (docs/pool.md §6.4): why it grants nothing now (settling a handover, its view
     /// not fresh, no longer leading), workers told to ask again in a moment.
     pub moving: Option<String>,
+    /// When the pool's agent last said whether it grants (`set_moving`; this Mac's wall clock, unix
+    /// s): None out of the pool. Not told for `pool::driver::STALL_S` (its process held up, or its
+    /// Mac asleep and just woken, its step not run yet), it grants nothing, as if moving: a member
+    /// may take over a lead gone silent (docs/pool.md §6.5), and a lead back from that is caught by
+    /// its next step before it grants again.
+    pub told: Option<u64>,
     /// The app the newer of the readers' switches was recorded on (the regions', the elevation
     /// datasets': crate::inputs::regions::read::switch_app), as the lead's agent last read it: no
     /// work for an older app (a page's being this Mac's), whatever else it matches.
@@ -1859,6 +1865,7 @@ impl Coordinator {
             pause_at,
             history,
             moving: None,
+            told: None,
             min_app: None,
             pool_member: None,
             lead_asks: Vec::new(),
@@ -2085,7 +2092,7 @@ impl Coordinator {
     pub fn ask_own(&self, a: &Ask, skip: &BTreeSet<String>) -> Option<Grant> {
         let mut s = self.shared.lock().unwrap();
         let now = s.now();
-        if s.paused.is_some() || s.moving.is_some() {
+        if s.paused.is_some() || s.moving_now(wall_now()).is_some() {
             return None;
         }
         let mut a = a.clone();
@@ -2616,7 +2623,9 @@ impl Coordinator {
     /// The pool's lead granting nothing now, and why (settling a handover, its view not fresh, no
     /// longer leading); None: granting again.
     pub fn set_moving(&self, why: Option<String>) {
-        self.shared.lock().unwrap().moving = why;
+        let mut s = self.shared.lock().unwrap();
+        s.moving = why;
+        s.told = Some(wall_now());
     }
 
     /// The app the newer readers' switch was recorded on (`Shared::min_app`; None: none recorded).
@@ -2808,6 +2817,7 @@ impl Coordinator {
         s.offers.clear();
         s.resume = None;
         s.moving = None;
+        s.told = None;
         s.lead_asks.clear();
         s.inputs_asks.clear();
         s.done.clear();
@@ -3403,6 +3413,23 @@ pub fn ages(view: &serde_json::Value, unix: u64) -> (serde_json::Value, serde_js
     (leases.into(), workers.into())
 }
 
+/// This Mac's wall clock (unix s).
+fn wall_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+impl Shared {
+    /// Why the pool's lead grants nothing now (`moving`), or its agent not heard from for
+    /// `STALL_S` (`told`).
+    fn moving_now(&self, now: u64) -> Option<String> {
+        self.moving.clone().or_else(|| {
+            self.told
+                .filter(|t| now.saturating_sub(*t) > crate::pool::driver::STALL_S)
+                .map(|t| format!("its pool not stepped for {} min: its view may be old", now.saturating_sub(t) / 60))
+        })
+    }
+}
+
 /// An `Instant`'s unix second, from one anchor (an `Instant` and the wall clock read together),
 /// so a time already past says the same second each time it's asked; the anchor taken again only
 /// when the wall clock has moved off it (a Mac asleep: its `Instant`s stop) by more than 2 s.
@@ -3514,7 +3541,7 @@ fn route(
                 ));
             }
             // The pool's lead moving or not fresh: nothing now (docs/pool.md §6.4).
-            if let Some(why) = s.moving.clone() {
+            if let Some(why) = s.moving_now(wall_now()) {
                 s.seen(&a.worker, format!("waiting: {why}"), None, now);
                 return Ok(if a.kind == "native" {
                     (409, serde_json::json!({ "error": format!("the lead is moving ({why}); ask again in a moment") }))
@@ -5296,6 +5323,22 @@ mod tests {
         c.stop();
         let next = Coordinator::start(&dir, None, port, "m4", "").unwrap();
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], next.contact.token.clone(), "m1");
+        w.ask(&ask(4096)).unwrap();
+    }
+
+    /// A pool lead's coordinator whose agent hasn't said it may grant for `STALL_S` (held up, or
+    /// just woken before its step: maybe taken over meanwhile) grants nothing; told again, it does.
+    #[test]
+    fn a_lead_not_stepped_for_a_stall_grants_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = start_for_test(&d.path().join("a"), "m4", "");
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        c.set_moving(None);
+        c.shared.lock().unwrap().told = Some(wall_now() - crate::pool::driver::STALL_S - 1);
+        let e = w.ask(&ask(4096)).unwrap_err();
+        assert!(format!("{e:#}").contains("not stepped"), "{e:#}");
+        assert!(c.ask_own(&ask(4096), &BTreeSet::new()).is_none());
+        c.set_moving(None);
         w.ask(&ask(4096)).unwrap();
     }
 

@@ -347,6 +347,8 @@ pub struct Give {
     /// job runs here (`Heard::lead_only`).
     pub scores: Vec<(String, u64)>,
     pub lead_only: bool,
+    /// When the lead's coordinator last answered this Mac (`Heard::answered`).
+    pub answered: Option<u64>,
 }
 
 /// One member's part in the pool, in this process.
@@ -703,6 +705,7 @@ impl Side {
             reports: self.beats.clone(),
             scores: give.scores,
             lead_only: give.lead_only,
+            answered: give.answered,
         };
         self.conds = give.conds;
         let io = Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead };
@@ -1755,6 +1758,7 @@ impl Run {
             conds: self.conds,
             scores: self.scores(),
             lead_only: self.cx.lead_only || self.cx.duty,
+            answered: self.cx.lead_answered,
         };
         let marks = std::mem::take(&mut self.marks);
         // (The merge's checks, an entry outside its step's write-set from a member on a newer app

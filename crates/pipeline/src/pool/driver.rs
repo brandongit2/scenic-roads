@@ -96,8 +96,10 @@
 //! new enough"). A member that can lead (`Heard::able`) and has seen the lead's heartbeat stood
 //! down for `STOOD_DOWN_S` takes over by itself, if the app rule lets it: the
 //! members that can, newest app first, then lowest member id, try `AUTO_RANK_S` apart, and the
-//! next term's create-new decides between them (a lead gone or asleep is taken over only at the
-//! owner's ask: it may come back). A current term its reads find unreadable (its create landed and
+//! next term's create-new decides between them. So is a lead gone silent, its heartbeat `SILENT_S`
+//! old and watched so for `SILENT_SEEN_S` (`take_over_silent`); back, it re-asserts before it
+//! acts, finds the newer term and steps down, its coordinator granting nothing meanwhile (crate::coord's
+//! `told`). A current term its reads find unreadable (its create landed and
 //! its bytes never did) for `UNREAD_TAKE_S` awake is taken past by a member that can lead, the same
 //! turns deciding, as the owner's force would (`term::forced`): only reads that answer short count
 //! (one that fails starts the time again), only while every other member's heartbeat reads whole,
@@ -150,6 +152,21 @@ pub const OVERDUE_S: u64 = 7200;
 pub const STOOD_DOWN_S: u64 = 120;
 /// The wait between the members that can take over a lead that stood down, by rank (s).
 pub const AUTO_RANK_S: u64 = 30;
+/// A lead whose heartbeat is this old (s) is silent, and a member that can lead takes over by
+/// itself (§6.5): the longer of out of touch (crate::pool::beat::OUT_OF_TOUCH_S) and a lease's
+/// life (crate::coord::TTL), so the old lead's leases have lapsed by then, unrenewed; and its
+/// coordinator, unstepped past `STALL_S` (crate::coord::Coordinator::set_moving), grants nothing.
+pub const SILENT_S: u64 = {
+    let ttl = crate::coord::TTL.as_secs();
+    if ttl > super::beat::OUT_OF_TOUCH_S {
+        ttl
+    } else {
+        super::beat::OUT_OF_TOUCH_S
+    }
+};
+/// How long, awake, a member watches the lead's silent heartbeat unchanged before it takes over
+/// (s): one read (a stale one, or this Mac just woken) isn't enough.
+pub const SILENT_SEEN_S: u64 = STOOD_DOWN_S;
 /// How long, awake, a member finds the current term unreadable (empty or short) before it makes
 /// the next past it by itself (s; §6.5): far past any stale read (`STALE_S`) and any create's bytes
 /// in flight, so no Mac reads the term whole, and none can lead it but by making a later term.
@@ -265,6 +282,10 @@ pub struct Heard {
     /// Leading: a lead-only job (a duty, crate::agent::every::LEAD_ONLY) runs here: the lead isn't
     /// offered by capacity meanwhile.
     pub lead_only: bool,
+    /// When the lead's coordinator last answered this Mac (its wall clock, unix s): a lead whose
+    /// heartbeat is silent but which answered within `beat::OUT_OF_TOUCH_S` is late, not gone, and
+    /// isn't taken over by itself.
+    pub answered: Option<u64>,
 }
 
 /// A listing of the journal to make, off the loop (crate::pool::journal::list).
@@ -503,6 +524,9 @@ pub struct Driver {
     first: Option<u64>,
     /// The lead that stood down, as seen: its term, and since when (this Mac's clock).
     stood: Option<(u64, u64)>,
+    /// The lead seen silent (its heartbeat older than `SILENT_S`): its term, its heartbeat's
+    /// `beat`, and since when (awake clock) this Mac has seen that same beat.
+    silent: Option<(u64, u64, u64)>,
     /// The current term found unreadable (no lead anyone knows): its number, and since when (awake
     /// clock).
     unread: Option<(u64, u64)>,
@@ -578,6 +602,7 @@ impl Driver {
             restarted: true,
             first: None,
             stood: None,
+            silent: None,
             unread: None,
             first_unread: None,
             reports: Vec::new(),
@@ -778,7 +803,8 @@ impl Driver {
         if let Some((force, downgrade)) = takeover {
             self.take_over(io, &mut out, force, downgrade);
         }
-        self.auto_take_over(io, &mut out, &heard.members, heard.able);
+        let read = self.auto_take_over(io, &mut out, &heard.members, heard.able);
+        self.take_over_silent(io, &mut out, &heard.members, heard.able, heard.answered, read);
         self.take_past_unread(io, &mut out, &heard.members, heard.able, learnt.is_ok());
         // Telling the lead it knows of its entries.
         if let Some(t) = self.cur.lead.as_ref().filter(|t| t.member != self.me.id) {
@@ -1525,7 +1551,9 @@ impl Driver {
     /// A lead that stood down (its heartbeat says so: §6.6), seen so for `STOOD_DOWN_S`: taken over
     /// by this Mac, if the app rule lets it, after the members that can and come first (newest app,
     /// then lowest member id) had their turn, `AUTO_RANK_S` each.
-    fn auto_take_over(&mut self, io: &dyn Io, out: &mut Out, members: &[String], able: bool) {
+    /// Returns the lead's heartbeat as it read it (None: not read, or the read failed), for
+    /// `take_over_silent`: one read a step.
+    fn auto_take_over(&mut self, io: &dyn Io, out: &mut Out, members: &[String], able: bool) -> Option<Option<Beat>> {
         let t = match &self.cur.lead {
             Some(t)
                 if t.member != self.me.id
@@ -1537,16 +1565,17 @@ impl Driver {
             }
             _ => {
                 self.stood = None;
-                return;
+                return None;
             }
         };
         // (A stand-down is its term's for good: in touch or not by this Mac's clock, which may be
         // minutes off the lead's, its heartbeat saying so is enough.)
-        let b = Beat::read(io, &t.member).ok().flatten();
+        let read = Beat::read(io, &t.member).ok();
+        let b = read.clone().flatten();
         let now = io.now();
         if !b.is_some_and(|b| b.stood_down == Some(t.term)) {
             self.stood = None;
-            return;
+            return read;
         }
         let since = match self.stood {
             Some((e, since)) if e == t.term => since,
@@ -1556,7 +1585,7 @@ impl Driver {
             }
         };
         if !able || !term::app_at_least(&self.me.app, &t.app) || now.saturating_sub(since) < STOOD_DOWN_S {
-            return;
+            return None;
         }
         let mut can = vec![self.me.clone()];
         for m in members.iter().filter(|m| **m != self.me.id && **m != t.member) {
@@ -1573,11 +1602,104 @@ impl Driver {
         can.sort_by(first_to_try);
         let rank = can.iter().position(|m| m.id == self.me.id).unwrap_or(0) as u64;
         if now.saturating_sub(since) < STOOD_DOWN_S + rank * AUTO_RANK_S {
-            return;
+            return None;
         }
         let how = format!("taken over by {}: {} stood down", self.me.host, t.host);
         match Term::after(&self.cur, &self.me, &how, io.now()).and_then(|n| Ok((term::make(io, &n)?, n))) {
             Ok((made, n)) => {
+                if !self.made(io, out, n, made) {
+                    out.events.push(Event::Waits {
+                        what: "take over",
+                        why: format!("term {} made by another first", self.cur.term + 1),
+                    });
+                }
+            }
+            Err(e) => out.events.push(Event::Failed { what: "take over", why: format!("{e:#}") }),
+        }
+        None
+    }
+
+    /// A lead gone silent (§6.5: its heartbeat older than `SILENT_S` by this Mac's clock, the same
+    /// beat watched for `SILENT_SEEN_S` awake, its coordinator not answering this Mac meanwhile):
+    /// taken over by this Mac, if it can lead now and the app rule lets it, after the members in
+    /// touch that can and come first had their turn, `AUTO_RANK_S` each; the next term's
+    /// create-new decides between them. Not while this Mac's own heartbeat isn't landing (within
+    /// `OWN_BEAT_S`: a NAS slow for everyone isn't the lead gone), nor when the lead's heartbeat
+    /// can't be read. The old lead, back, re-asserts before it acts (its clocks' gap, or `STALL_S`
+    /// unstepped), finds the newer term and steps down; its coordinator grants nothing meanwhile.
+    fn take_over_silent(
+        &mut self,
+        io: &dyn Io,
+        out: &mut Out,
+        members: &[String],
+        able: bool,
+        answered: Option<u64>,
+        read: Option<Option<Beat>>,
+    ) {
+        let t = match &self.cur.lead {
+            Some(t)
+                if t.member != self.me.id
+                    && self.lead.is_none()
+                    && self.passing.is_none()
+                    && self.saved.unfinished.is_none() =>
+            {
+                t.clone()
+            }
+            _ => {
+                self.silent = None;
+                return;
+            }
+        };
+        let now = io.now();
+        // (The lead's heartbeat as `auto_take_over` read it this step; a read that failed, or none
+        // there: not known silent.)
+        let Some(Some(b)) = read else {
+            self.silent = None;
+            return;
+        };
+        let late = answered.is_some_and(|a| now.saturating_sub(a) < super::beat::OUT_OF_TOUCH_S);
+        if b.stood_down == Some(t.term) || now <= b.beat.saturating_add(SILENT_S) || late {
+            self.silent = None;
+            return;
+        }
+        // (This Mac's own heartbeat landing: a NAS slow for every Mac isn't the lead gone.)
+        if !matches!(Beat::read(io, &self.me.id), Ok(Some(o)) if now.saturating_sub(o.beat) <= OWN_BEAT_S) {
+            self.silent = None;
+            return;
+        }
+        let awake = io.awake();
+        let since = match self.silent {
+            Some((e, beat, since)) if e == t.term && beat == b.beat => since,
+            _ => {
+                self.silent = Some((t.term, b.beat, awake));
+                awake
+            }
+        };
+        if !able || !term::app_at_least(&self.me.app, &t.app) {
+            return;
+        }
+        let mut can = vec![self.me.clone()];
+        for m in members.iter().filter(|m| **m != self.me.id && **m != t.member) {
+            if let Ok(Some(o)) = Beat::read(io, m) {
+                if !o.out_of_touch(now)
+                    && o.leads.is_none()
+                    && o.stood_down.is_none()
+                    && term::app_at_least(&o.app, &t.app)
+                {
+                    can.push(o.member());
+                }
+            }
+        }
+        can.sort_by(first_to_try);
+        let rank = can.iter().position(|m| m.id == self.me.id).unwrap_or(0) as u64;
+        if awake.saturating_sub(since) < SILENT_SEEN_S + rank * AUTO_RANK_S {
+            return;
+        }
+        let how =
+            format!("taken over by {}: {} silent for {} min", self.me.host, t.host, now.saturating_sub(b.beat) / 60);
+        match Term::after(&self.cur, &self.me, &how, now).and_then(|n| Ok((term::make(io, &n)?, n))) {
+            Ok((made, n)) => {
+                self.silent = None;
                 if !self.made(io, out, n, made) {
                     out.events.push(Event::Waits {
                         what: "take over",
@@ -2533,26 +2655,112 @@ mod tests {
     }
 
     #[test]
-    fn a_lead_asleep_or_gone_is_taken_over_only_at_the_owners_ask() {
-        // A leads, then sleeps (or is gone): B and C see its heartbeat out of touch for half an
-        // hour and take nothing over by themselves (pool.md §14: it may come back); the owner's
-        // ask does. (Re-review M21.)
+    fn a_lead_gone_silent_is_taken_over_within_the_bound_and_steps_down_when_back() {
+        // A leads, then is gone (its Mac at a login screen after a restart, 19 Oct): B and C step
+        // every 20 s. One of them takes over by itself once A's beat is `SILENT_S` old and seen so
+        // for `SILENT_SEEN_S`, within that plus the ranks' turns; B first (lowest id).
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib, ic) = (Mac::new(&mem), Mac::new(&mem), Mac::new(&mem));
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
         let mut c = Driver::unlocked(member(C, "iMac", V1), Saved::default());
-        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
-        for _ in 0..90 {
+        let out = step(&mut a, &ia, able());
+        assert_eq!(out.leads, Some(1));
+        let gone = ia.now();
+        let mut took = None;
+        for i in 0..90u64 {
             for (d, io) in [(&mut b, &ib), (&mut c, &ic)] {
                 io.pass(20);
-                assert_eq!(step(d, io, able()).leads, None);
+                if step(d, io, able()).leads.is_some() {
+                    took.get_or_insert((i, io.now()));
+                }
             }
         }
-        assert!(term::read(&mem, 2).unwrap().is_none(), "nothing taken over by itself");
+        let (_, at) = took.expect("taken over by itself");
+        let bound = SILENT_S + 20 + SILENT_SEEN_S + 2 * AUTO_RANK_S + 40;
+        assert!(at - gone <= bound, "taken over {} s after the lead went silent, past {bound}", at - gone);
+        assert!(at - gone > SILENT_S, "not before its heartbeat was silent");
+        assert_eq!(b.leads(), Some(2), "B (the lowest id) first");
+        assert_eq!(c.leads(), None, "one lead");
+        let t = term::read(&mem, 2).unwrap().unwrap();
+        assert!(t.how.contains("silent"), "{}", t.how);
+        // A comes back (its clocks moved together: a process held up, not asleep): it re-asserts,
+        // finds term 2, and steps down without a step that grants.
+        ia.pass(at - gone + 60);
+        let back = step(&mut a, &ia, able());
+        assert!(!back.duties, "back, it grants nothing");
+        assert_eq!(back.leads, None);
+        assert_eq!(back.term, 2);
+        assert!(term::read(&mem, 3).unwrap().is_none(), "its re-assertion lost to B's term");
+        assert!(back.events.iter().any(|e| matches!(e, Event::SteppedDown { term: 1, .. })), "{:?}", back.events);
         ib.pass(20);
-        assert_eq!(step(&mut b, &ib, asks(Ask::TakeOver { force: false, downgrade: false })).leads, Some(2));
+        assert_eq!(step(&mut b, &ib, able()).leads, Some(2), "B keeps the lead");
+    }
+
+    #[test]
+    fn a_slow_lead_or_one_answering_keeps_the_lead() {
+        // A steps every 8 minutes (a NAS under load: it re-asserts each time, by itself): its beat
+        // is never `SILENT_S` old, and no member takes over.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        let two = || Heard { members: vec![A.into(), B.into()], ..able() };
+        assert_eq!(step(&mut a, &ia, two()).leads, Some(1));
+        for _ in 0..6 {
+            for _ in 0..24 {
+                ib.pass(20);
+                assert_eq!(step(&mut b, &ib, two()).leads, None);
+            }
+            ia.pass(480);
+            step(&mut a, &ia, two());
+        }
+        assert!(a.leads().is_some() && b.leads().is_none(), "a slow lead keeps it");
+        let e = a.leads().unwrap();
+        // Silent past the bound, but its coordinator answered B lately: late, not gone.
+        for _ in 0..60 {
+            ib.pass(20);
+            let answered = Some(ib.now() - 30);
+            assert_eq!(step(&mut b, &ib, Heard { answered, ..two() }).leads, None);
+        }
+        assert!(term::read(&mem, e + 1).unwrap().is_none(), "a lead answering isn't gone");
+        // Silent, and B's own heartbeat not landing either (the NAS slow for every Mac): nothing.
+        let mut own = Beat::read(&mem, B).unwrap().unwrap();
+        own.beat = ib.now() - OWN_BEAT_S - 1;
+        own.write(&ib).unwrap();
+        for _ in 0..60 {
+            ib.pass(20);
+            assert_eq!(b.step(&ib, two(), &any).leads, None);
+        }
+        assert!(term::read(&mem, e + 1).unwrap().is_none(), "B's own beat stale: no takeover");
+        // B's writes land again: it takes over.
+        for _ in 0..20 {
+            ib.pass(20);
+            step(&mut b, &ib, two());
+        }
+        assert_eq!(b.leads(), Some(e + 1));
+    }
+
+    #[test]
+    fn a_silent_lead_isnt_taken_over_by_a_member_that_cant_lead() {
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        let two = |able| Heard { members: vec![A.into(), B.into()], able, ..Default::default() };
+        assert_eq!(step(&mut a, &ia, two(true)).leads, Some(1));
+        for _ in 0..90 {
+            ib.pass(20);
+            assert_eq!(step(&mut b, &ib, two(false)).leads, None, "paused, on battery or short of room");
+        }
+        for _ in 0..90 {
+            ib.pass(20);
+            assert_eq!(step(&mut b, &ib, two(true)).leads, None, "the app rule: older than the lead's");
+        }
+        assert!(term::read(&mem, 2).unwrap().is_none());
     }
 
     #[test]

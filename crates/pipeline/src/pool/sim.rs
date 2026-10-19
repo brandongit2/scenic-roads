@@ -1317,8 +1317,13 @@ impl World {
             self.wrong(format!("mac{me} says term {e}'s records are caught up by a listing begun at {began} s, before it woke at {woke} s"));
         }
         let how = self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.how);
-        let kept =
-            how.as_deref().is_some_and(|h| h == "re-asserted before a sweep" || h == "re-asserted after a long step");
+        // (A re-assertion after a long while unstepped keeps it too: no sleep, and its members tell
+        // it their entries again until acknowledged.)
+        let kept = how.as_deref().is_some_and(|h| {
+            h == "re-asserted before a sweep"
+                || h == "re-asserted after a long step"
+                || h == "re-asserted after a long while unstepped"
+        });
         if let Some(&(_, made)) = self.made.get(&e).filter(|_| !kept) {
             if began < made {
                 self.wrong(format!("mac{me} says term {e}'s records are caught up by a listing begun at {began} s, before the term was made at {made} s ({how:?})"));

@@ -193,11 +193,27 @@ that one running the same app.
   A lead whose coordinator answered this Mac within ten minutes is *late*, not gone, and needs
   `--force` (§6.7). `--force` skips the check and passes an unreadable term; `--downgrade` allows an
   older app. In-flight leases lapse and go back out; no built work is lost.
-- **No automatic takeover of a lead that's merely gone** (it may be asleep). Instead a **proactive
-  offer** (`crate::agent::lead::offer`): when the lead is away or on battery and another member is
-  home on power, every control offers "Hand the Build to <Mac>". With `scenic lead auto on`
-  (`state/pool/auto-handover`) the lead hands over by itself once the offer has stood five minutes,
-  not within half an hour of the last change.
+- **A lead gone silent is taken over automatically** (`Driver::take_over_silent`, task #435): once
+  its heartbeat is older than `SILENT_S` by a member's clock (the longer of out of touch,
+  `beat::OUT_OF_TOUCH_S`, and a lease's life, `coord::TTL`: 10 min, so its leases have lapsed
+  unrenewed), the same beat watched for `SILENT_SEEN_S` (2 min) awake, a member that can lead
+  (`Heard::able`: home, on power or charged, not paused (#224), free space past its room target
+  (#421)) and whose app the rule allows makes term E+1. Candidates try in turn as for a stand-down
+  (newest app, then lowest id, `AUTO_RANK_S` apart), the create-new deciding; the new lead takes up
+  the newest records and the coordinator's state with its leases, as an owner's takeover does.
+  Not taken over: a lead whose coordinator answered this Mac within `ANSWERED_S` (late, not gone);
+  one whose heartbeat can't be read; nor while this Mac's own heartbeat isn't landing within
+  `OWN_BEAT_S` (a NAS slow for every Mac isn't the lead gone). A lead merely slow (its steps
+  minutes apart) writes its heartbeat at each and keeps the lead.
+- **The old lead, back, never grants in the new term.** Its coordinator grants nothing once its
+  agent hasn't said so for `STALL_S` (`Coordinator::set_moving`'s time: a process held up, or a
+  Mac asleep and woken before its step), and its next step re-asserts (the clocks' gap, or
+  `STALL_S` unstepped), finds `terms/<E+1>.json` made, and steps down (§6.6). Silence of
+  `SILENT_S` is past `STALL_S`, so the two never grant at once.
+- **A proactive offer** (`crate::agent::lead::offer`) before it comes to that: when the lead is
+  away or on battery and another member is home on power, every control offers "Hand the Build to
+  <Mac>". With `scenic lead auto on` (`state/pool/auto-handover`) the lead hands over by itself
+  once the offer has stood five minutes, not within half an hour of the last change.
 - **A lead that stood down** (§6.6) is taken over automatically after `STOOD_DOWN_S` (2 min) by a
   member that can lead and whose app the rule allows; candidates try in turn (newest app, then
   lowest id), the create-new deciding.
@@ -793,8 +809,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   (`lead::own_status`): each member's state and whether the lead can be handed to it
   (`Driver::hand_to`), what a takeover needs (`Driver::takeover`), "no lead" and why, the offer, the
   last ask and change of lead.
-- **The alert** (`lead::alert`, `ALERT_S`: an hour with no lead) names the command to take over; the
-  menu bar notifies once.
+- **The alert** (`lead::alert`, `ALERT_S`: an hour with no lead) says no Mac took it over by itself
+  (none could lead, or the app rule refused) and names the command to take over; the menu bar
+  notifies once.
 - **History:** term changes, step-downs and handover events are `term` events in the member's
   history file (`crate::agent::lead::notes`).
 
@@ -940,8 +957,9 @@ tiles (`pack_raw_with`) stays inside the piece's job.
 
 ## 14. Decisions
 
-- **Automatic takeover** only of a lead that stood down; otherwise the proactive offer, automatic
-  only when the owner turns it on.
+- **Automatic takeover** of a lead that stood down, or that went silent for `SILENT_S` (#435, 19
+  Oct: a lead restarted to its FileVault login screen left the pool without a lead for 85 min);
+  before that, the proactive offer, automatic only when the owner turns it on.
 - **`tailscale serve` on every Mac** (`tailscale serve --bg 8090`) gives pages HTTPS; the agent
   finds it via `tailscale serve status --json` and puts it in its heartbeat. Without it, plain HTTP
   on the tailnet reaches every member, and an HTTPS page reaches only members with HTTPS. The

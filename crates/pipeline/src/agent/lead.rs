@@ -809,8 +809,12 @@ pub fn alert(v: &mut View, kept: &mut Kept, now: u64) {
         Some(Takeover { refused: Some(w), .. }) => format!("this Mac can't take it over ({w}): run `scenic lead take --force` on another Mac in the pool"),
         None => "run `scenic lead take --force` on a Mac in the pool".to_string(),
     };
+    // (A term unreadable is taken past by itself, a lead silent or stood down taken over (§6.5):
+    // no lead still, none could.)
     let auto = if v.lead.is_none() && v.short {
         "; no Mac took it past by itself (none can lead now, or the app rule refuses)"
+    } else if v.lead.is_some() && !late {
+        "; no Mac took it over by itself (none can lead now, or the app rule refuses)"
     } else {
         ""
     };
@@ -1192,7 +1196,7 @@ mod tests {
         kept.no_lead = None;
         alert(&mut v, &mut kept, 30_000 + ALERT_S + 120);
         assert!(
-            v.alert.as_deref().is_some_and(|w| w.starts_with("No lead for 62 min: Mac-mini is out of touch. ")
+            v.alert.as_deref().is_some_and(|w| w.starts_with("No lead for 62 min: Mac-mini is out of touch; no Mac took it over by itself (none can lead now, or the app rule refuses). ")
                 && w.contains("`scenic lead take` on this Mac")),
             "{v:?}"
         );
@@ -1415,7 +1419,7 @@ mod tests {
                 self.run.conds = Some(self.conds);
                 take(&mut self.run, &self.home);
                 self.run.tend_reach();
-                let out = self.run.step(true);
+                let out = self.run.step(self.conds.able);
                 if out.settle {
                     self.run.settled = Some(
                         serde_json::json!({ "leases": { "next": 1, "leases": [] }, "costs": {}, "failed": [], "pause": null, "pause_at": 0 }),
@@ -1802,6 +1806,8 @@ mod tests {
             // and renewed as ever; the other Mac said "No lead … out of touch".)
             let d = tempfile::tempdir().unwrap();
             let (a, mut b) = pool(d.path());
+            // (B paused: it can't lead, so doesn't take a silent lead over by itself.)
+            b.conds = Conds { held: true, able: false, ..HOME };
             b.pass(660);
             let now = b.run.side.now();
             b.run.cx.lead_answered = Some(now - 20);
@@ -1849,8 +1855,9 @@ mod tests {
         fn no_lead_for_an_hour_is_an_alert_saying_what_to_do() {
             let d = tempfile::tempdir().unwrap();
             let (a, mut b) = pool(d.path());
-            // A silent: out of touch at eleven minutes, no alert yet; an hour after its last beat,
-            // the alert, with the command.
+            // A silent, B paused (it can't lead, so takes nothing over by itself): out of touch at
+            // eleven minutes, no alert yet; an hour after its last beat, the alert, with the command.
+            b.conds = Conds { held: true, able: false, ..HOME };
             b.pass(660);
             b.go();
             assert!(b.view().no_lead.is_some() && b.view().alert.is_none(), "{:?}", b.view());
@@ -1860,10 +1867,31 @@ mod tests {
             assert!(
                 w.starts_with("No lead for 60 min: ")
                     && w.contains("out of touch")
+                    && w.contains("; no Mac took it over by itself")
                     && w.contains("`scenic lead take` on this Mac"),
                 "{w}"
             );
             assert!(said(&b.view(), b.run.side.now())[0] == w, "`scenic lead` and `scenic status` say it first");
+            drop(a);
+        }
+
+        #[test]
+        fn a_member_that_can_lead_takes_a_silent_lead_over_by_itself() {
+            // (19 Oct: the M4 at its login screen after a restart, the M1 leading nothing for 85
+            // min.) A silent, B able: B leads within the bound, no alert.
+            let d = tempfile::tempdir().unwrap();
+            let (a, mut b) = pool(d.path());
+            let bound = crate::pool::driver::SILENT_S
+                + crate::pool::driver::SILENT_SEEN_S
+                + 2 * crate::pool::driver::AUTO_RANK_S
+                + 2 * crate::agent::pool::TICK_S;
+            b.pass(bound);
+            b.go();
+            assert_eq!(b.run.side.driver().leads(), Some(2));
+            let term2: crate::pool::term::Term =
+                serde_json::from_slice(&std::fs::read(b.root.join("state/build/terms/2.json")).unwrap()).unwrap();
+            assert!(term2.how.contains("silent for"), "{term2:?}");
+            assert_eq!(b.view().alert, None);
             drop(a);
         }
 
