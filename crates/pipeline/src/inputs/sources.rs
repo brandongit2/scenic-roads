@@ -825,7 +825,7 @@ pub const STAGED: [(&str, &[u8]); 18] = [
         "marineregions-territorial-seas.toml",
         include_bytes!("../../../../producers/sources/marineregions-territorial-seas.toml"),
     ),
-    ("natural-earth-lakes.toml", include_bytes!("../../../../producers/sources/natural-earth-lakes.toml")),
+    ("ne-lakes.toml", include_bytes!("../../../../producers/sources/ne-lakes.toml")),
     ("osm-land-polygons.toml", include_bytes!("../../../../producers/sources/osm-land-polygons.toml")),
 ];
 

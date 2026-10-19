@@ -576,7 +576,7 @@ degrees), each a file in `sources/fetched/<id>/` named by its `params.path`. The
 whole when it's prepared, once the accepted sources declare `regions-sea`; until then a region
 naming them is held (`rg-data`). Their declarations are staged in `producers/sources/`
 (`marineregions-eez.toml`, `marineregions-internal-waters.toml`, `marineregions-territorial-seas.toml`,
-`natural-earth-lakes.toml`, `osm-land-polygons.toml`); Marine Regions' three are CC BY 4.0 and
+`ne-lakes.toml`, `osm-land-polygons.toml`); Marine Regions' three are CC BY 4.0 and
 credited as their declarations say. `scenic-build regions-check --dir <folder> --declarations
 <folder>` runs the check on a scratch folder in memory with the datasets those declarations name,
 and reports each region's size.
