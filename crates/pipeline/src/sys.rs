@@ -299,6 +299,19 @@ pub fn raise_open_files() {
     }
 }
 
+/// This process's open-files limit (its soft limit), where there is one.
+pub fn open_files_limit() -> Option<u64> {
+    #[cfg(unix)]
+    // SAFETY: plain getrlimit on this process.
+    unsafe {
+        let mut l: libc::rlimit = std::mem::zeroed();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) == 0 {
+            return Some(l.rlim_cur as u64);
+        }
+    }
+    None
+}
+
 /// A symbolic link `dst` to `src` where there are links; elsewhere a copy.
 pub fn symlink(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
     #[cfg(unix)]

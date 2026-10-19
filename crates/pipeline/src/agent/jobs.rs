@@ -505,6 +505,30 @@ pub fn tail(log: &Path, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
+/// What a failed run said of its failure: its error (anyhow's `Error: …` and its causes) or its
+/// panic, from its last run's log; empty when it said neither (killed, say). Found by its marker,
+/// not by position: the timings' table and progress lines may follow it.
+pub fn error_of(log: &Path) -> String {
+    let s = end_of(log);
+    let lines: Vec<&str> = s.lines().map(|l| l.rsplit('\r').next().unwrap_or(l)).collect();
+    let Some(i) = lines.iter().rposition(|l| l.starts_with("Error: ") || l.contains("panicked at")) else {
+        return String::new();
+    };
+    let panic = lines[i].contains("panicked at");
+    let mut out = vec![lines[i].trim_end()];
+    for l in &lines[i + 1..] {
+        // anyhow's causes ("Caused by:", then indented lines); a panic's message on its next line.
+        let more = l.starts_with("Caused by:") || l.starts_with("    ") || l.trim().is_empty() || (panic && out.len() == 1);
+        if !more || out.len() >= 12 {
+            break;
+        }
+        if !l.trim().is_empty() {
+            out.push(l.trim_end());
+        }
+    }
+    out.join("\n")
+}
+
 /// The line each run of a job begins with in its log (`Running::start`).
 const RUN_START: &str = "=== run of ";
 
@@ -823,6 +847,29 @@ mod tests {
         assert_eq!(tail(&log, 5), "progress: 0/3 parts (Getting ready)\nosmium: done\nsome output");
         std::fs::write(&log, format!("parts: 7 {}\n", serde_json::to_string(&names).unwrap())).unwrap();
         assert_eq!(parts(&log), None);
+    }
+
+    /// Task #438: a failed job's error is found though the timings' table and a backtrace follow
+    /// it (depth-lo's "Too many open files" was past the log's last 20 lines, and the agent's log
+    /// said only "failed after N s"); a panic's message too; none when it said neither.
+    #[test]
+    fn a_failures_error_is_found_wherever_it_is() {
+        let d = tempfile::tempdir().unwrap();
+        let log = d.path().join("log");
+        let timings = "timings: composing  14.5 s\n".repeat(30);
+        std::fs::write(
+            &log,
+            format!("{RUN_START}t (1) ===\nprogress: 0.09/3 zooms\n{timings}Error: the depth source globathy\n\nCaused by:\n    0: /x/globathy-8-81-114.tif\n    1: Too many open files (os error 24)\n\nStack backtrace:\n   0: foo\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            error_of(&log),
+            "Error: the depth source globathy\nCaused by:\n    0: /x/globathy-8-81-114.tif\n    1: Too many open files (os error 24)"
+        );
+        std::fs::write(&log, "a\nthread 'main' panicked at src/x.rs:1:2:\nboom\nnote: run with RUST_BACKTRACE=1\n").unwrap();
+        assert_eq!(error_of(&log), "thread 'main' panicked at src/x.rs:1:2:\nboom");
+        std::fs::write(&log, "progress: 1/2 areas\n").unwrap();
+        assert_eq!(error_of(&log), "");
     }
 
     #[test]

@@ -4475,11 +4475,24 @@ impl Agent {
             } else if paused {
                 format!("paused at a safe point, {} of {of} done; the rest goes on when the build does", done.len())
             } else {
+                // (Its error first, wherever it is in the log: the timings' table may follow it.)
+                let err = jobs::error_of(&r.log);
                 format!(
-                    "{st}{}\n{}",
+                    "{st}{}\n{}{}",
                     if done.is_empty() { String::new() } else { format!(" ({} of {of} done and kept)", done.len()) },
+                    if err.is_empty() { String::new() } else { format!("{err}\n…\n") },
                     jobs::tail(&r.log, 20)
                 )
+            };
+            // (A failure's status and error's first line in the agent's log too.)
+            let why = if ok || paused {
+                String::new()
+            } else {
+                let e = jobs::error_of(&r.log);
+                match e.lines().next() {
+                    Some(l) => format!(" ({st}): {l}"),
+                    None => format!(" ({st})"),
+                }
             };
             let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
             // (A catalog's own line of what it did: crate::pubtimes::CatalogStats.)
@@ -4490,7 +4503,7 @@ impl Agent {
             };
             self.progress_ended(&id, ok);
             eprintln!(
-                "agent: {id} {} after {} s",
+                "agent: {id} {} after {} s{why}",
                 if ok {
                     "finished"
                 } else if paused {
