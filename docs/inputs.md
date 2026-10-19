@@ -983,7 +983,8 @@ territory.
   sampling is noted clean when every pixel of it holds data (crate::dem::sample::Clean), and a
   point whose band lies in clean blocks inside its file is at the band's full distance, no pixel
   read again. The decoded blocks of every file share one cache (`generic::CACHE_BYTES`, 512 MB),
-  so a unit opening tens of files holds that much, not a cache's worth per file.
+  so a unit opening tens of files holds that much, not a cache's worth per file. A block several
+  threads ask for at once is read and decoded once (`Tiff::block`), the others waiting for it.
 - **Heights brought to EGM2008** (step 3, crate::dem::geoid), each dataset's before the blend (A's
   and B's alike): the conversions are declared sources (§6.9, role `geoid`, any number), each
   linking two references by `params.from` and `to`: a separation grid (`geoid-grid`: one GeoTIFF in

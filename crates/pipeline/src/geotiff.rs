@@ -239,6 +239,8 @@ impl Block {
 /// many threads each holding one hold that much over it.
 pub struct BlockCache {
     map: HashMap<(u64, usize, u64), (Arc<Block>, u64)>,
+    /// The blocks being read now: a thread asking for one waits on its lock (`Tiff::block`).
+    loading: HashMap<(u64, usize, u64), Arc<Mutex<()>>>,
     tick: u64,
     bytes: usize,
     cap: usize,
@@ -247,7 +249,7 @@ pub struct BlockCache {
 impl BlockCache {
     /// A cache holding up to `bytes` of decoded blocks.
     pub fn new(bytes: usize) -> BlockCache {
-        BlockCache { map: HashMap::new(), tick: 0, bytes: 0, cap: bytes }
+        BlockCache { map: HashMap::new(), loading: HashMap::new(), tick: 0, bytes: 0, cap: bytes }
     }
 
     fn get(&mut self, k: (u64, usize, u64)) -> Option<Arc<Block>> {
@@ -627,21 +629,35 @@ impl Tiff {
         }
     }
 
-    /// Block (`bx`, `by`) of image `level`, decoded (from the cache when there's one).
+    /// Block (`bx`, `by`) of image `level`, decoded (from the cache when there's one). With a
+    /// cache, a block asked for by several threads at once is read and decoded once: the others
+    /// wait for it, then take it from the cache.
     pub fn block(&self, level: usize, bx: u32, by: u32) -> Result<Arc<Block>> {
         let img = self.level(level)?;
         let index = by as u64 * img.blocks_across() as u64 + bx as u64;
-        if let Some((id, c)) = &self.cache {
-            if let Some(b) = c.lock().unwrap().get((*id, level, index)) {
+        let decode = || -> Result<Arc<Block>> {
+            Ok(Arc::new(self.decode(img, index, by).with_context(|| format!("TIFF block {bx},{by} of image {level}"))?))
+        };
+        let Some((id, c)) = &self.cache else { return decode() };
+        let k = (*id, level, index);
+        let slot = {
+            let mut g = c.lock().unwrap();
+            if let Some(b) = g.get(k) {
                 return Ok(b);
             }
+            g.loading.entry(k).or_default().clone()
+        };
+        let _reading = slot.lock().unwrap();
+        if let Some(b) = c.lock().unwrap().get(k) {
+            return Ok(b);
         }
-        let b =
-            Arc::new(self.decode(img, index, by).with_context(|| format!("TIFF block {bx},{by} of image {level}"))?);
-        if let Some((id, c)) = &self.cache {
-            c.lock().unwrap().put((*id, level, index), b.clone());
+        let b = decode();
+        let mut g = c.lock().unwrap();
+        if let Ok(b) = &b {
+            g.put(k, b.clone());
         }
-        Ok(b)
+        g.loading.remove(&k);
+        b
     }
 
     fn decode(&self, img: &Image, index: u64, by: u32) -> Result<Block> {
@@ -1525,4 +1541,40 @@ mod tests {
             assert_eq!(t.nodata(), Some(-32767.0));
         }
     }
+}
+
+/// Task #395: a block several threads ask for at once (the sampling's and the blend's distance
+/// measures, on a pool) is read from its file and decoded once, the others taking it from the
+/// cache; its pixels are the same to each.
+#[cfg(test)]
+#[test]
+fn a_block_asked_for_at_once_is_read_once() {
+    use std::collections::HashMap as Map;
+    struct Slow {
+        inner: Vec<u8>,
+        reads: Mutex<Map<(u64, usize), usize>>,
+    }
+    impl RangeRead for Slow {
+        fn len(&self) -> Result<u64, store::IoError> {
+            Ok(self.inner.len() as u64)
+        }
+        fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
+            *self.reads.lock().unwrap().entry((off, len)).or_default() += 1;
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            self.inner.read_at(off, len)
+        }
+    }
+    let data: Vec<f32> = (0..512 * 512).map(|i| (i % 977) as f32).collect();
+    let bytes = write_f32(512, 512, &data, 256, [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], 4326, None).unwrap();
+    let src = Arc::new(Slow { inner: bytes, reads: Default::default() });
+    let t = Tiff::open(src.clone()).unwrap().with_shared_cache(1, Arc::new(Mutex::new(BlockCache::new(64 << 20))));
+    let before = src.reads.lock().unwrap().clone();
+    let got: Vec<Vec<f32>> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..8).map(|_| s.spawn(|| t.read_window(0, 0, 0, 512, 512).unwrap())).collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert!(got.iter().all(|g| *g == data));
+    let reads = src.reads.lock().unwrap();
+    let again: Vec<_> = reads.iter().filter(|(k, &c)| c > 1 && !before.contains_key(k)).collect();
+    assert!(again.is_empty(), "read more than once: {again:?}");
 }
