@@ -590,11 +590,18 @@ fn sweep(pts: &[Pt], closed: bool, r: f64, out: &mut Vec<Ring>) {
 /// buffer a region with water takes (§6.1.3). Each ring is first simplified within `r / 50`, and a
 /// round join drawn only where the ring turns outward (left, as canonical rings run: outer rings
 /// counter-clockwise, holes clockwise), so a detailed coast doesn't hand the union thousands of
-/// discs over each other.
-/// A buffer this wide or wider is drawn within a twentieth of its distance.
-pub const WIDE_M: f64 = 50_000.0;
+/// discs over each other. From `WIDE_M` on, discs only, at the rings' points (simplified within a
+/// twentieth of the distance, a quarter of it apart at most), one a grid square of a thirty-second
+/// of it: within a twentieth of the distance, however many small islands lie together.
 
 pub fn buffer_area_coarse(a: &Area, r: f64) -> Area {
+    buffer_coarse_in(a, r)
+}
+
+/// The distance from which `buffer_area_coarse` draws discs only.
+pub const WIDE_M: f64 = 5_000.0;
+
+fn buffer_coarse_in(a: &Area, r: f64) -> Area {
     let mut cs = Vec::new();
     let a = a.clone().canonical();
     let sides = if r > WIDE_M { 36 } else { circle_sides(r).min(256) };
