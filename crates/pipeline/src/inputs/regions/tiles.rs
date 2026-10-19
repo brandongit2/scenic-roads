@@ -1326,6 +1326,13 @@ fn cells_pass(
         .par_iter()
         .map(|&c| {
             geom::set_label(format!("the cover check, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
+            {
+                static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if n % 2000 == 0 {
+                    trace(&format!("the cover check: {n} of 16,200 cells"));
+                }
+            }
             let bb = geom::box_area(cell_box(c));
             let mut pieces: Vec<(String, Area)> =
                 all.iter().filter_map(|(id, t)| t.cells.get(&c).map(|a| (id.clone(), a.clone()))).collect();
@@ -1373,14 +1380,23 @@ fn cells_pass(
             let mut sea_left = Vec::new();
             for poly in &gaps.polys {
                 let g = Area { polys: vec![poly.clone()] };
-                let touches = !g.intersect(&land).is_empty() || geom::shared_edge_km(&g, &land, 100.0) > 0.0;
+                // (Its ring of 100 m made once: whether it touches land, and the edge it shares
+                // with each region, read from it, the regions far from it passed over by box.)
+                let ring = geom::buffer_area_coarse(&g, 100.0).minus(&g);
+                let Some(rb) = ring.bbox() else {
+                    sea_left.push(g);
+                    continue;
+                };
+                let meets = |a: &Area| a.bbox().is_some_and(|b| b[0] <= rb[2] && rb[0] <= b[2] && b[1] <= rb[3] && rb[1] <= b[3]);
+                let touches = meets(&land) && (!ring.intersect(&land).is_empty() || !g.intersect(&land).is_empty());
                 if !touches {
                     sea_left.push(g);
                     continue;
                 }
                 let best = pieces
                     .iter()
-                    .map(|(id, a)| (geom::shared_edge_km(&g, a, 100.0), id.clone()))
+                    .filter(|(_, a)| meets(a))
+                    .map(|(id, a)| (geom::area_km2(&ring.intersect(a)) / 0.1, id.clone()))
                     .filter(|(l, _)| *l > 0.0)
                     .max_by(|x, y| x.0.total_cmp(&y.0).then(y.1.cmp(&x.1)))
                     .map(|(_, id)| id);
