@@ -285,6 +285,12 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     }
     // Hand-outs: a stretch of a region's water that one region of the folder named alone borders
     // goes to it; a stretch under the sliver size, to the one it shares the longest edge with.
+    // (Each region's box now, land and water: what a stretch is tested against first.)
+    let hboxes: BTreeMap<String, [i64; 4]> = land_of
+        .iter()
+        .map(|(id, a)| (id, final_area.get(id).unwrap_or(a)))
+        .filter_map(|(id, a)| a.bbox().map(|b| (id.clone(), b)))
+        .collect();
     for id in water.iter().copied().filter(|id| folder.regions[*id].1.hand_out.is_some()) {
         let Some(w) = waters.get(id).cloned() else { continue };
         let g = folder.regions[id].1.hand_out.clone().unwrap();
@@ -304,7 +310,7 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
                 let pad = [b[0] - 10_000, b[1] - 10_000, b[2] + 10_000, b[3] + 10_000];
                 let touching: Vec<(f64, &String)> = members
                     .iter()
-                    .filter(|m| area_of(m, &final_area).bbox().is_some_and(|mb| meets(mb, pad)))
+                    .filter(|m| hboxes.get(*m).is_some_and(|mb| meets(*mb, pad)))
                     .map(|m| (geom::shared_edge_km(&piece, &area_of(m, &final_area), 100.0), m))
                     .filter(|(l, _)| *l > 0.0)
                     .collect();

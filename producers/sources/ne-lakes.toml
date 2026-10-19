@@ -6,7 +6,7 @@ licence_url = "https://www.naturalearthdata.com/about/terms-of-use/"
 source = "https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-lakes/"
 retrieved = "2026-10-18"
 territory = "world"
-notes = "ne_10m_lakes.zip (its VERSION.txt says 5.0.0) from naciscdn.org, kept in sources/fetched/natural-earth-lakes-10m/. A lake by its ne_id; those over 100 km² are water (crate::inputs::regions::data::BIG_LAKE_KM2)."
+notes = "ne_10m_lakes.zip (its VERSION.txt says 5.0.0) from naciscdn.org, kept in sources/fetched/natural-earth-lakes-10m/. A lake by its ne_id; those over 100 km² are water (crate::inputs::regions::data::BIG_LAKE_KM2). robots.txt read first (2026-10-18): naciscdn.org's answered 403, which counts as allowing."
 
 [data]
 role = "regions-lakes"

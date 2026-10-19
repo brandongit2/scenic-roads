@@ -497,12 +497,18 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   shape with each side's polygon. **Sizes** (for slivers, shared edges and the cover check) are on
   the authalic sphere; a shared edge's length is the other area within 100 m of the edge, over 100 m,
   measured in quarters while either area is large.
-- **Bounded memory:** a region with water is cut back to the land, and its water cut by the land, in
-  quarters of its box (`geom::with_mask`) until each piece holds at most 200,000 points and its box
-  2° or less; its buffers are drawn within a fiftieth of the distance (rings simplified that much, a
-  round join only where a ring turns outward); the cover check cuts each region into its tiles by
-  halving; at most four regions resolve at once. `scenic-build regions-check` reports the most
-  points one operation held, and `--max-mb` stops it past a resident size.
+- **Memory:** what's bounded is the coastline's land: a region with water is cut back to it, and
+  its water cut by it, in quarters of its box (`geom::with_mask`) until each piece holds at most
+  200,000 points and its box 2° or less, so no operation holds more of the land than a region's own
+  box's share. A `minus` takes away large parts in 2° cells (`geom::Tiled`). Buffers of a region
+  with water are drawn within a fiftieth of the distance (rings simplified that much, a round join
+  only where a ring turns outward). At most four regions resolve at once. Not bounded: an operation
+  on a region's whole area (cutting it into pieces, putting the pieces back, a union, an
+  intersection, a nearest-coast split, its land and water joined, its lakes, the cover check's 5.6°
+  tile of land) holds that region's own points, so the largest region sets the peak. The datasets
+  are read only once a region in the folder names them, whole (about 1 GB in memory). The check
+  itself has no memory guard; `scenic-build regions-check` reports the most points one operation
+  held, and `--max-mb` stops it past a resident size.
 - **The antimeridian:** every stored ring lies within −180°…180°. A region's parts are unwrapped
   into one longitude frame (the turn leaving the widest empty band outside it; the plain frame for
   regions away from ±180°), operated on there, then split at each odd multiple of 180° and shifted

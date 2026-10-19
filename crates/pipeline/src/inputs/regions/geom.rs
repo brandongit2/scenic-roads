@@ -861,7 +861,9 @@ pub fn nearest(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
         let (cx, cy) = (p[0].div_euclid(cell), p[1].div_euclid(cell));
         // (Ties to the smaller sample point, so the split and its complement agree.)
         let mut best = (f64::MAX, [i64::MAX, i64::MAX], true);
-        let coslat = ((p[1] as f64) * 1e-7).to_radians().dcos().max(0.02);
+        // (The least cosine of the band searched: a degree of longitude is shortest there.)
+        let cos_at =
+            |lat_e7: i64| ((lat_e7.clamp(-900_000_000, 900_000_000) as f64) * 1e-7).to_radians().dcos().max(0.02);
         let mut r = 0i64;
         loop {
             for gx in cx - r..=cx + r {
@@ -882,25 +884,29 @@ pub fn nearest(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
             }
             // (Every sample past ring r is at least r half-degree cells away: ~55 km of latitude a
             // cell, less of longitude by the latitude's cosine.)
+            let reach = (r + 1) * cell;
+            let coslat = cos_at(p[1] - reach).min(cos_at(p[1] + reach));
             if best.0 < (r as f64) * 55_000.0 * coslat * 0.95 || r > 400 {
                 return best.2;
             }
             r += 1;
         }
     };
-    // Rows of `step`, each split into runs of cells whose middles are nearer `to`.
+    // Rows of `step`, each split into runs of cells whose middles are nearer `to`. The grid is
+    // anchored at 0°, 0° (rows and, in each row, cells in whole steps from it), so splits of
+    // neighbouring areas fall on the same cells and meet without gaps or overlaps.
     let dy = (step / 111_320.0 * 1e7).max(1.0) as i64;
     let mut rects: Vec<Ring> = Vec::new();
-    let mut y = bb[1];
+    let mut y = bb[1].div_euclid(dy) * dy;
     while y < bb[3] {
-        let y1 = (y + dy).min(bb[3]);
+        let y1 = y + dy;
         let mid = (y + y1) / 2;
         let coslat = ((mid as f64) * 1e-7).to_radians().dcos().max(0.01);
         let dx = ((step / (111_320.0 * coslat)) * 1e7).max(1.0) as i64;
-        let mut x = bb[0];
+        let mut x = bb[0].div_euclid(dx) * dx;
         let mut run: Option<i64> = None;
         while x < bb[2] {
-            let x1 = (x + dx).min(bb[2]);
+            let x1 = x + dx;
             let mine = nearest_is_mine([(x + x1) / 2, mid]);
             match (mine, run) {
                 (true, None) => run = Some(x),
@@ -913,7 +919,7 @@ pub fn nearest(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
             x = x1;
         }
         if let Some(x0) = run {
-            rects.push(vec![[x0, y], [bb[2], y], [bb[2], y1], [x0, y1]]);
+            rects.push(vec![[x0, y], [x, y], [x, y1], [x0, y1]]);
         }
         y = y1;
     }

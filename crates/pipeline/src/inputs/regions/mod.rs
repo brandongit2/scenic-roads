@@ -52,8 +52,12 @@ pub struct Prepared {
     pub outlines: Option<Outlines>,
     pub extract: Option<extract::Extract>,
     pub others: BTreeMap<String, Outlines>,
-    /// The regions' datasets (§6.1.7), when their sources are declared and read.
+    /// The regions' datasets (§6.1.7), when given (a scratch check's, the tests').
     pub data: Option<data::Datasets>,
+    /// Else where the accepted sources say they are: read only once a region in the folder names
+    /// them (`Region::needs_data`), so declaring them costs a check that needs none nothing.
+    pub data_from: Option<(std::path::PathBuf, crate::inputs::sources::Sources)>,
+    pub data_read: std::sync::OnceLock<Option<data::Datasets>>,
     /// The outline set's and the extract's content names.
     pub names: String,
     /// Why the check can't run now: no pass yet, or the current pass's outline set not made yet
@@ -71,6 +75,21 @@ impl Regions {
         let folder = resolve::Folder::read(v.paths.iter().cloned(), &|p| Ok((v.read)(p)?.to_vec()))?;
         let empty = BTreeMap::new();
         let c = self.ctx.as_ref();
+        let wanted = folder.regions.values().any(|(_, r)| r.needs_data());
+        let data = c.and_then(|c| {
+            c.data.as_ref().or_else(|| {
+                let (root, s) = c.data_from.as_ref().filter(|_| wanted)?;
+                c.data_read
+                    .get_or_init(|| match data::Datasets::read(root, s) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("regions: the datasets can't be read: {e:#}");
+                            None
+                        }
+                    })
+                    .as_ref()
+            })
+        });
         let ctx = resolve::Context {
             pass: c.and_then(|c| c.pass.as_deref()),
             outlines: c.and_then(|c| c.outlines.as_ref()),
@@ -78,7 +97,7 @@ impl Regions {
             others: c.map_or(&empty, |c| &c.others),
             memo: Some(&self.memo),
             names: c.map(|c| c.names.clone()).unwrap_or_default(),
-            data: c.and_then(|c| c.data.as_ref()),
+            data,
         };
         let out = resolve::resolve(&folder, &ctx);
         Ok((folder, out))
@@ -270,26 +289,29 @@ pub fn prepare(
             (Some(d), None) => Some(format!("the pass {d}'s outline set isn't made yet (its outlines step)")),
             _ => None,
         };
-        // (The datasets, when the accepted sources declare them: read whole; one that can't be read
-        // holds the regions naming it, `rg-data`, saying so.)
-        let data = match data {
-            Some(d) => d,
-            None => match crate::inputs::sources::open(root, manifest) {
-                Ok(Some(s)) => match data::Datasets::read(root, &s) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!("regions: the datasets can't be read: {e:#}");
-                        None
-                    }
-                },
-                _ => None,
-            },
+        // (The datasets: given, or where the accepted sources say, read once a region needs them;
+        // one that can't be read holds the regions naming it, `rg-data`, saying so.)
+        let (data, data_from) = match data {
+            Some(d) => (d, None),
+            None => {
+                (None, crate::inputs::sources::open(root, manifest).ok().flatten().map(|s| (root.to_path_buf(), s)))
+            }
         };
         let names = match &data {
             Some(d) => format!("{names} {}", d.names),
             None => names,
         };
-        Ok(Prepared { pass: date, outlines, extract, others, data, names, not_ready })
+        Ok(Prepared {
+            pass: date,
+            outlines,
+            extract,
+            others,
+            data,
+            data_from,
+            data_read: Default::default(),
+            names,
+            not_ready,
+        })
     }
 }
 

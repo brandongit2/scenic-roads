@@ -1,12 +1,12 @@
 name = "Marine Regions, Maritime Boundaries: Territorial Seas (12 NM), version 4"
 what = "The 12-nautical-mile line"
-credit = "Flanders Marine Institute (2023). Maritime Boundaries Geodatabase: Territorial Seas (12NM), version 4. Available online at https://www.marineregions.org/. https://doi.org/10.14284/632"
+credit = "Flanders Marine Institute (2023). Maritime Boundaries Geodatabase: Territorial Seas (12NM), version 4. Available online at https://www.marineregions.org/."
 licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://www.marineregions.org/downloads.php"
 retrieved = "2026-10-18"
 territory = "world"
-notes = "The layer MarineRegions:eez_12nm (Territorial Seas v4, world, 2023) from the institute's WFS, as GeoJSON, kept in sources/fetched/marineregions-territorial-seas-v4/. Regions may name a territorial sea (ts12:<mrgid>); it divides nothing by itself."
+notes = "The layer MarineRegions:eez_12nm (Territorial Seas v4, world, 2023) from the institute's WFS, as GeoJSON, kept in sources/fetched/marineregions-territorial-seas-v4/. Regions may name a territorial sea (ts12:<mrgid>); it divides nothing by itself. robots.txt read first (2026-10-18): geo.vliz.be's answered 404, which counts as allowing."
 
 [data]
 role = "regions-territorial-seas"
