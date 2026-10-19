@@ -782,38 +782,47 @@ impl TileSet<'_> {
     }
 
     /// Points `sel` sampled, each tile on its own (its edges clamping), as its tile arrives
-    /// (`rolling`); `step` told the share of the points done, about every 1 %.
+    /// (`rolling`); `step` told the share of the points done, about every 1 %. The points are
+    /// taken by runs of `sel` in one tile (one run a tile, `sel` in reading order), each run's
+    /// tile coordinates worked out as it's sampled: what's kept for the whole selection is a run's
+    /// bounds and its heights, 4 bytes a point, not each point's place in its tile.
     fn sample(&self, sel: &[u32], lon: &[f64], lat: &[f64], step: Said) -> Result<Vec<f32>> {
         let n = 1i64 << self.zoom;
-        let groups = self.groups(sel, lon, lat);
+        let at = |i: u32| mercator_tile(lon[i as usize], lat[i as usize], self.zoom);
+        let key = |i: u32| {
+            let (fx, fy) = at(i);
+            (fx.floor() as i64, fy.floor() as i64)
+        };
+        // (Runs: the first point of each, and its tile.)
+        let mut runs: Vec<(usize, (i64, i64))> = Vec::new();
+        for (j, &i) in sel.iter().enumerate() {
+            let k = key(i);
+            if runs.last().is_none_or(|r| r.1 != k) {
+                runs.push((j, k));
+            }
+        }
+        let end = |r: usize| runs.get(r + 1).map_or(sel.len(), |x| x.0);
         let tally = Tally::new(sel.len(), step);
-        let key = |g: &[(i64, usize, f64, f64)]| (g[0].0.div_euclid(n), g[0].0.rem_euclid(n));
-        let need: Vec<Vec<(i64, i64)>> = groups.iter().map(|g| vec![key(g)]).collect();
-        let sampled = self.rolling(&need, |k| -> Result<Vec<(usize, f32)>> {
-            let g = &groups[k];
-            let (tx, ty) = key(g);
-            let v = match self.tile_noted(tx, ty)? {
-                None => Vec::new(),
-                Some((w, h, a)) => {
-                    // (Told by runs of points: a tile may hold most of a unit's.)
-                    let mut v = Vec::with_capacity(g.len());
-                    for run in g.chunks(TALLY_RUN) {
-                        v.extend(run.iter().map(|&(_, j, fx, fy)| {
-                            (j, bilinear(&a, w, h, (fx - tx as f64) * 256.0 - 0.5, (fy - ty as f64) * 256.0 - 0.5))
-                        }));
-                        tally.add(run.len());
-                    }
-                    return Ok(v);
-                }
+        let need: Vec<Vec<(i64, i64)>> = runs.iter().map(|r| vec![r.1]).collect();
+        let sampled = self.rolling(&need, |r| -> Result<Vec<f32>> {
+            let (s, e, (tx, ty)) = (runs[r].0, end(r), runs[r].1);
+            debug_assert!(tx < n && ty < n);
+            let Some((w, h, a)) = self.tile_noted(tx, ty)? else {
+                tally.add(e - s);
+                return Ok(vec![f32::NAN; e - s]);
             };
-            tally.add(g.len());
+            // (Told by runs of points: a tile may hold most of a unit's.)
+            let mut v = Vec::with_capacity(e - s);
+            for part in sel[s..e].chunks(TALLY_RUN) {
+                v.extend(part.iter().map(|&i| {
+                    let (fx, fy) = at(i);
+                    bilinear(&a, w, h, (fx - tx as f64) * 256.0 - 0.5, (fy - ty as f64) * 256.0 - 0.5)
+                }));
+                tally.add(part.len());
+            }
             Ok(v)
         })?;
-        let mut out = vec![f32::NAN; sel.len()];
-        for (j, v) in sampled.into_iter().flatten() {
-            out[j] = v;
-        }
-        Ok(out)
+        Ok(sampled.concat())
     }
 
     /// The tiles `distance` reads for `groups`' points: each band's that isn't all in tiles known
