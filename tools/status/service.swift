@@ -10,8 +10,9 @@
 // - The map server is a launchd service of its own (~/Library/LaunchAgents/local.scenic.server
 //   .plist): the app shows whether it runs and starts or stops it when asked, never by itself.
 // - An update: the server installs each published version under app/<version>; the app, installed
-//   at /Applications/Scenic.app, copies the version's Scenic.app over itself and opens again (the
-//   build service's agent goes on, restarting into the new version by its own update drain). The
+//   at /Applications/Scenic.app, copies the version's Scenic.app over itself and quits, and a
+//   helper (`--reopen`) opens the new one once it has ended, retrying until it runs (the build
+//   service's agent goes on, restarting into the new version by its own update drain). The
 //   launcher launchd started would go on from the old bundle, renamed aside, without the app's
 //   NAS permission (task #389): the app opened again finds it running from outside itself and
 //   restarts it (`followApp`), then deletes the old bundle; each poll checks again.
@@ -510,12 +511,149 @@ func replaceSelf(with new: URL) -> Bool {
     }
     // (The old copy stays: the build service's launcher may run from it; the app opened again
     // restarts it from here and deletes the copy once nothing runs from it, removeOldCopies.)
-    // (Opened again once this process is gone, `open` would bring this one forward; without its window.)
+    // Opened again by a helper, the new bundle's own binary (`--reopen`, `reopenHelper`), once this
+    // process has ended: it outlives this one, retries until the new app runs, and logs each step.
     let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/bin/sh")
-    p.arguments = ["-c", "while kill -0 \(getpid()) 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open \"$0\" --args --no-window", me.path]
-    try? p.run()
+    p.executableURL = Bundle(url: me)?.executableURL ?? me.appendingPathComponent("Contents/MacOS/scenic-status")
+    p.arguments = ["--reopen", "\(getpid())", me.path]
+    p.standardInput = FileHandle.nullDevice
+    p.standardOutput = FileHandle.nullDevice
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch {
+        updateLog("starting the reopen helper: \(error.localizedDescription); \(me.path) stays closed until opened")
+        return true
+    }
+    updateLog("replaced \(me.path) by \(new.path) (version \(bundleVersion(me) ?? "?")); helper pid \(p.processIdentifier) opens it once pid \(getpid()) ends")
     return true
+}
+
+/// The update's log (~/Library/Logs/scenic/update.log): each replace and reopen, with the time (the
+/// app's own output goes nowhere when LaunchServices opens it). Also NSLog'd.
+func updateLog(_ line: String) {
+    NSLog("scenic: \(line)")
+    let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/scenic")
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let f = dir.appendingPathComponent("update.log")
+    let fmt = DateFormatter()
+    fmt.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+    let data = Data("\(fmt.string(from: Date())) [\(getpid())] \(line)\n".utf8)
+    if let h = FileHandle(forWritingAtPath: f.path) {
+        defer { try? h.close() }
+        _ = try? h.seekToEnd()
+        try? h.write(contentsOf: data)
+    } else {
+        try? data.write(to: f)
+    }
+}
+
+/// The seconds waited before each attempt to open the app again. The first lets LaunchServices
+/// forget the old process: an `open` sent while it still counts it as running goes to it and fails
+/// (procNotFound, -600: 19 Oct on the M1, 0.15 s after the old pid ended; task #427). The rest back
+/// off; about two minutes in all.
+let reopenDelays: [Double] = [1, 2, 4, 8, 15, 30, 60]
+
+/// The reopen helper's steps, apart from the system so they can be tested (`--test-reopen`): waits
+/// up to `exitWait` seconds for the old process to end, then for each delay waits, opens the app
+/// unless it already runs, and checks for up to `verifyWait` seconds that it runs. True once it
+/// runs; false after the last attempt, or when the old process never ended.
+func reopenLoop(oldGone: () -> Bool, open: () -> (Int32, String), running: () -> Bool, sleep: (Double) -> Void,
+                log: (String) -> Void, delays: [Double] = reopenDelays, exitWait: Double = 120, verifyWait: Double = 10) -> Bool {
+    var waited = 0.0
+    while !oldGone() {
+        if waited >= exitWait {
+            log("the old process still runs after \(Int(exitWait)) s: not opening the new app")
+            return false
+        }
+        sleep(0.2)
+        waited += 0.2
+    }
+    log("the old process ended")
+    for (n, d) in delays.enumerated() {
+        sleep(d)
+        if running() {
+            log("attempt \(n + 1): the app runs (opened elsewhere)")
+            return true
+        }
+        let (st, out) = open()
+        var checked = 0.0
+        while checked < verifyWait {
+            if running() {
+                log("attempt \(n + 1): opened (open exited \(st))")
+                return true
+            }
+            sleep(0.5)
+            checked += 0.5
+        }
+        let said = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        log("attempt \(n + 1): not running \(Int(verifyWait)) s after open (exited \(st)\(said.isEmpty ? "" : ": " + said))")
+    }
+    log("gave up after \(delays.count) attempts: open the app by hand")
+    return false
+}
+
+/// Whether a process other than this one runs the executable of the app at `app` (its launcher
+/// doesn't count).
+func appRuns(_ app: String) -> Bool {
+    guard let exe = Bundle(path: app)?.executableURL?.path else { return false }
+    let want = realPath(exe) ?? exe
+    var pids = [Int32](repeating: 0, count: 8192)
+    let n = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
+    guard n > 0 else { return false }
+    return pids.prefix(Int(n)).contains { $0 != getpid() && executablePath($0).map { realPath($0) ?? $0 } == want }
+}
+
+/// `--reopen <pid> <app>`: the helper an update starts (`replaceSelf`): the app opened again once
+/// the old process has ended, retried until it runs (`reopenLoop`), each step in update.log.
+/// Exits 0 when it runs.
+func reopenHelper(_ pidArg: String, _ app: String) -> Never {
+    guard let pid = Int32(pidArg) else {
+        updateLog("reopen: bad pid \(pidArg)")
+        exit(2)
+    }
+    let ok = reopenLoop(
+        oldGone: { kill(pid, 0) != 0 && errno == ESRCH },
+        open: { run("/usr/bin/open", [app, "--args", "--no-window"]) },
+        running: { appRuns(app) },
+        sleep: { Thread.sleep(forTimeInterval: $0) },
+        log: { updateLog("reopen \(app): \($0)") })
+    exit(ok ? 0 : 1)
+}
+
+/// `--test-reopen`: `reopenLoop`'s cases against fakes; prints each and PASS or FAIL, exits 1 on a
+/// failure.
+func testReopen() -> Never {
+    var failed = 0
+    func check(_ name: String, _ ok: Bool) {
+        print("\(ok ? "ok" : "FAIL") \(name)")
+        if !ok { failed += 1 }
+    }
+    // A fake system: the old process ends after `exitAfter` polls; each open succeeds from attempt
+    // `worksFrom` on (earlier ones go to the old process, as procNotFound did); the app runs from
+    // the check after a successful open.
+    func sim(exitAfter: Int, worksFrom: Int, already: Bool = false) -> (ok: Bool, opens: Int, slept: Double, log: [String]) {
+        var polls = 0, opens = 0, runs = already, slept = 0.0, log: [String] = []
+        let ok = reopenLoop(
+            oldGone: { polls += 1; return polls > exitAfter },
+            open: { opens += 1; if opens >= worksFrom { runs = true }; return (opens >= worksFrom ? 0 : 1, opens >= worksFrom ? "" : "procNotFound") },
+            running: { runs },
+            sleep: { slept += $0 },
+            log: { log.append($0) },
+            delays: [1, 2, 4], exitWait: 5, verifyWait: 2)
+        return (ok, opens, slept, log)
+    }
+    let a = sim(exitAfter: 3, worksFrom: 1)
+    check("opens once the old process ends, after the first delay", a.ok && a.opens == 1 && a.slept >= 1.6 && a.log.last?.contains("attempt 1: opened") == true)
+    let b = sim(exitAfter: 0, worksFrom: 3)
+    check("retries a failed open (procNotFound) and logs it", b.ok && b.opens == 3 && b.log.contains { $0.contains("attempt 1: not running") && $0.contains("procNotFound") })
+    let c = sim(exitAfter: 0, worksFrom: 99)
+    check("gives up after the last attempt", !c.ok && c.opens == 3 && c.log.last?.contains("gave up after 3") == true)
+    let d = sim(exitAfter: 1000, worksFrom: 1)
+    check("never opens while the old process runs", !d.ok && d.opens == 0 && d.log.last?.contains("still runs") == true)
+    let e = sim(exitAfter: 0, worksFrom: 1, already: true)
+    check("doesn't open a second copy when it already runs", e.ok && e.opens == 0)
+    check("the real schedule waits before its first attempt and spans about two minutes", reopenDelays.first! >= 1 && reopenDelays.reduce(0, +) >= 100)
+    print(failed == 0 ? "PASS" : "FAIL (\(failed))")
+    exit(failed == 0 ? 0 : 1)
 }
 
 /// A process's executable path (proc_pidpath), nil if it can't be read.

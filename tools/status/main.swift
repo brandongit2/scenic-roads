@@ -2462,7 +2462,12 @@ func stamp() -> String {
 }
 
 let args = CommandLine.arguments
-if args.contains("--unregister") {
+if let i = args.firstIndex(of: "--reopen"), i + 2 < args.count {
+    // The helper an update starts: the app opened again once the old process ended (service.swift).
+    reopenHelper(args[i + 1], args[i + 2])
+} else if args.contains("--test-reopen") {
+    testReopen()
+} else if args.contains("--unregister") {
     // The build service and the app taken off the login items (the service stopped and unloaded):
     // a sandbox's cleanup, or before the app is removed.
     for (what, s) in [("the build service", SMAppService.agent(plistName: "\(buildLabel).plist")), ("the app", SMAppService.mainApp)] {

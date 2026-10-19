@@ -33,7 +33,11 @@ coverage, or once for the whole world, so region size, count and borders never s
   take it (waiting up to three minutes for the handover), else the build waits for it
   (`control::Quit`). The map server stays a service of its own: Scenic's window and menu show it
   and start or stop it when asked, never on opening or quitting. On an update Scenic copies the
-  installed version's Scenic.app over itself and opens again (without its window). Opened, and
+  installed version's Scenic.app over itself and quits; a helper it starts (the new bundle's
+  binary, `--reopen`) waits for it to end, then opens the new app (without its window) after a
+  second, checks that it runs, and retries, backing off, for about two minutes (an `open` sent
+  while LaunchServices still counts the old process goes to it and is lost), each step in
+  `~/Library/Logs/scenic/update.log`. Opened, and
   each poll, it checks that the build service's launcher runs from its own bundle (macOS's
   network-volume permission is granted to /Applications/Scenic.app, not to the old copy an update
   leaves aside, `.Scenic.app.old-<pid>`); a launcher whose executable can't be read counts as
