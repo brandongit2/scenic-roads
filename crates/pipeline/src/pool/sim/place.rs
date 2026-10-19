@@ -381,6 +381,9 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 .map(|(c, _)| (c.to_string(), coord::CacheHere { have_mb: have[k].get(c).copied().unwrap_or(0) }))
                 .collect()
         };
+        // (The lead's own targets the coordinator has held back for the NAS budget alone for
+        // `OWN_AGE` or more, as they stood just before its ask: coord's own_nas_fits.)
+        let aged: std::cell::RefCell<BTreeSet<(String, String)>> = Default::default();
         // A job starting on Mac `k`: the guard's stop of one past the limit, else the invariants.
         let start = |k: usize,
                      step: &str,
@@ -516,9 +519,12 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             let members_nas: u32 = running.iter().skip(1).flatten().map(|j| j.nas).sum();
             let heaviest = running.iter().flatten().map(|j| j.nas).max().unwrap_or(0);
             let fits = if k == 0 {
-                // (A planned job of the lead's own may go beside jobs none of which weighs the whole:
-                // coord's own_nas_fits.)
-                crate::budget::nas::Limits::fits_own_job(pool_nas, heaviest, job.nas, true)
+                // (A planned job of the lead's own may go beside jobs none of which weighs the whole,
+                // within the whole with the lead's own: coord's own_nas_fits, its wait as the
+                // coordinator timed it.)
+                let own_nas: u32 = running[0].iter().map(|j| j.nas).sum();
+                let waited = targets.iter().any(|t| aged.borrow().contains(&(step.to_string(), t.clone())));
+                crate::budget::nas::Limits::fits_own_job(pool_nas, own_nas, heaviest, job.nas, waited)
             } else {
                 crate::budget::nas::Limits::fits(members_nas, pool_nas, job.nas)
             };
@@ -577,6 +583,15 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 cap: Some(cap),
                 want: if alone { 1 } else { crate::agent::want(slots(0), running[0].len()) },
                 ..Default::default()
+            };
+            *aged.borrow_mut() = {
+                let s = c.shared.lock().unwrap();
+                let now = s.now();
+                let g = s.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+                g.iter()
+                    .filter(|(_, (since, _))| now.duration_since(*since) >= crate::budget::nas::OWN_AGE)
+                    .map(|(k, _)| k.clone())
+                    .collect()
             };
             let Some(mut g) = c.ask_own(&a, &BTreeSet::new()) else { break };
             let more = std::mem::take(&mut g.more);

@@ -1009,7 +1009,8 @@ impl Shared {
             if fetch && nw.limits.downloads.is_some_and(|c| dl >= c) {
                 return false;
             }
-            let fits = crate::budget::nas::Limits::fits_own_job(running, heaviest, w, waited);
+            let own = running.saturating_sub(members);
+            let fits = crate::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited);
             if !fits && !alone {
                 for t in &ts {
                     self.nas_wait(&o.step, t, now);
@@ -6591,6 +6592,58 @@ mod tests {
         );
         let a = Ask { can: vec!["rail".into()], ..every_ask("m4", "rail", 64_000, 100_000) };
         assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "the whole one goes beside the member's small job");
+    }
+
+    /// The lead's own planned jobs aging past the NAS budget (task #396 follow-up): two of 800 of
+    /// 1000 each, held back beside a member's small job, are noted waiting; once they've waited
+    /// `OWN_AGE` one goes, its wait forgotten as it's granted, the other still held (the lead's own
+    /// leave it no room: aged ones don't pile up); once the first ends, the second goes.
+    #[test]
+    fn the_leads_aged_own_jobs_go_one_at_a_time() {
+        let (_d, c, w, clock) = every((0, 0));
+        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+        }
+        let cost = |bytes: u64| Cost {
+            peak_mb: 500,
+            secs: 600,
+            worker: None,
+            v: cost_version("slope"),
+            sizes: [("threads".to_string(), 1), ("bytes".to_string(), bytes)].into(),
+            ..Default::default()
+        };
+        packable(&c, "slope", 1, Some(1));
+        // (30 MB/s: 300 of the NAS, short of the whole.)
+        c.add_costs_by(&[(cost_key("slope", "6/1/1"), cost(18_000_000_000))], "m1");
+        assert_eq!(all_granted(&w, &Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) }).len(), 1);
+        packable(&c, "rail", 2, Some(1));
+        for t in ["6/1/1", "6/1/2"] {
+            // (80 MB/s: 800 of the NAS.)
+            c.add_costs_by(&[(cost_key("rail", t), Cost { v: cost_version("rail"), ..cost(48_000_000_000) })], "m4");
+        }
+        let own = |t: &str| Offer {
+            step: "rail".into(),
+            targets: vec![(t.into(), format!("k {t}"), 0)],
+            job: Some(format!("rail {t}")),
+        };
+        c.offer("p", vec![own("6/1/1"), own("6/1/2")]);
+        let a = Ask { want: 2, can: vec!["rail".into()], ..every_ask("m4", "rail", 64_000, 100_000) };
+        let waits = |c: &Coordinator| -> Vec<String> {
+            let s = c.shared.lock().unwrap();
+            let g = s.nas_waits.lock().unwrap();
+            g.keys().map(|k| k.1.clone()).collect()
+        };
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "beside the member's job, past the whole");
+        assert_eq!(waits(&c), ["6/1/1", "6/1/2"], "both noted waiting");
+        clock.advance(crate::budget::nas::OWN_AGE);
+        let g = c.ask_own(&a, &BTreeSet::new()).expect("aged: one goes");
+        assert!(g.more.is_empty(), "one at a time: {g:?}");
+        assert_eq!(waits(&c), ["6/1/2"], "the granted one's wait forgotten");
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "the other, aged too, held: no pile-up");
+        c.finish(g.lease, &[]);
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "the first ended: the second goes");
     }
 
     /// Six slope targets each taking half a 100 MB/s NAS (50 MB/s), a thread each.
