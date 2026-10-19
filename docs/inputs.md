@@ -987,7 +987,13 @@ territory.
   threads ask for at once is read and decoded once (`Tiff::block`), the others waiting for it.
   A GeoTIFF dataset's blocks are read ahead of their sampling (`generic::read_ahead`, natively):
   `GEO_FETCHES` (32) at once, at most `GEO_AHEAD` (128) blocks past the chunk being sampled, so
-  the sampler doesn't wait on a chunk's few blocks one round trip after another. The fetcher holds
+  the sampler doesn't wait on a chunk's few blocks one round trip after another. Only each point's
+  first file (the first whose footprint holds it) is read ahead; a point that file has no data for
+  reads the next file's block when it's sampled. The reading ahead goes no further than a quarter
+  of the cache holds (`generic::ahead_for`), and it stops with the sampling: a read of it waiting
+  out its retries gives up at once (`fetch::cancellable`), and every retry checks its host's
+  down note first (`SCENIC_FETCH_DOWN`), so a host that stopped answering doesn't hold the step
+  through each thread's retries. The fetcher holds
   a process's requests to one host to `fetch::net::HOST_REQUESTS` (64) at once.
 - **Heights brought to EGM2008** (step 3, crate::dem::geoid), each dataset's before the blend (A's
   and B's alike): the conversions are declared sources (§6.9, role `geoid`, any number), each

@@ -127,6 +127,11 @@ pub struct Image {
 }
 
 impl Image {
+    /// A block's decoded size in bytes (band 1, as the cache counts it), at most.
+    pub fn block_bytes(&self) -> usize {
+        self.block_w as usize * self.block_h as usize * (self.bits as usize / 8)
+    }
+
     fn blocks_across(&self) -> u32 {
         self.width.div_ceil(self.block_w)
     }
@@ -250,6 +255,11 @@ impl BlockCache {
     /// A cache holding up to `bytes` of decoded blocks.
     pub fn new(bytes: usize) -> BlockCache {
         BlockCache { map: HashMap::new(), loading: HashMap::new(), tick: 0, bytes: 0, cap: bytes }
+    }
+
+    /// What the cache holds at most, in bytes.
+    pub fn cap(&self) -> usize {
+        self.cap
     }
 
     fn get(&mut self, k: (u64, usize, u64)) -> Option<Arc<Block>> {

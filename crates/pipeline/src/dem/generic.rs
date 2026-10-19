@@ -70,24 +70,38 @@ pub const CACHE_BYTES: usize = 512 << 20;
 
 /// How many of a GeoTIFF dataset's blocks are fetched at once ahead of their sampling
 /// (natively, with a pool), and how many blocks past the end of the chunk being sampled they go
-/// at most (decoded, about 1 MB each, held in the cache: well inside `CACHE_BYTES`).
+/// at most (`ahead_for` holds that to a quarter of the cache).
 pub const GEO_FETCHES: usize = 32;
 pub const GEO_AHEAD: usize = 128;
+
+/// How many blocks of `block_bytes` (decoded) to read ahead with a cache of `cache_bytes`:
+/// `GEO_AHEAD`, but no more than a quarter of the cache holds, so the blocks read ahead never let
+/// the chunk being sampled lose its own.
+pub fn ahead_for(cache_bytes: usize, block_bytes: usize) -> usize {
+    GEO_AHEAD.min(cache_bytes / block_bytes.max(1) / 4)
+}
+
+/// What to read ahead: the blocks, where each part's begin in that list (and its end), and how
+/// many blocks past the part being sampled to go (`ahead_for`).
+type Ahead = (Vec<AheadBlock>, Vec<usize>, usize);
 
 /// A file's blocks to read ahead: the file, its level, the block's column and row.
 type AheadBlock = (Arc<Tiff>, usize, u32, u32);
 
 /// Runs `run` (the sampling of parts in turn, calling its argument with a part's number before
-/// sampling it) while `GEO_FETCHES` threads read `ahead`'s blocks (the list, and where each
-/// part's begin in it) into the cache, in the list's order, at most `GEO_AHEAD` past the end of
-/// the part being sampled. A failed read stops the reading ahead (the sampling's own read of that
-/// block says why). No list: `run` alone.
-fn read_ahead<R>(ahead: Option<&(Vec<AheadBlock>, Vec<usize>)>, run: impl FnOnce(&dyn Fn(usize)) -> R) -> R {
-    let Some((blocks, starts)) = ahead.filter(|a| a.0.len() > 1) else { return run(&|_| {}) };
+/// sampling it) while `GEO_FETCHES` threads read `ahead`'s blocks into the cache, in the list's
+/// order, at most its count past the end of the part being sampled. A failed read stops the
+/// reading ahead (the sampling's own read of that block says why); so does `run`'s end, however
+/// it ends, a read waiting to retry too (crate::fetch::cancellable): a host that gives no answer
+/// doesn't keep the threads, or the step, waiting out their retries. No list: `run` alone.
+fn read_ahead<R>(ahead: Option<&Ahead>, run: impl FnOnce(&dyn Fn(usize)) -> R) -> R {
+    let Some((blocks, starts, n_ahead)) = ahead.filter(|a| a.0.len() > 1) else { return run(&|_| {}) };
     // (The next block to read, how far reading may go, and whether to stop.)
     let st = Mutex::new((0usize, 0usize, false));
     let cv = Condvar::new();
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop = || {
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         st.lock().unwrap_or_else(|e| e.into_inner()).2 = true;
         cv.notify_all();
     };
@@ -113,7 +127,7 @@ fn read_ahead<R>(ahead: Option<&(Vec<AheadBlock>, Vec<usize>)>, run: impl FnOnce
                     g.0 - 1
                 };
                 let (t, level, bx, by) = &blocks[i];
-                if t.block(*level, *bx, *by).is_err() {
+                if crate::fetch::cancellable(&cancel, || t.block(*level, *bx, *by)).is_err() {
                     stop();
                     return;
                 }
@@ -122,7 +136,7 @@ fn read_ahead<R>(ahead: Option<&(Vec<AheadBlock>, Vec<usize>)>, run: impl FnOnce
         let _stop = Stop(&stop);
         run(&|part: usize| {
             let mut g = st.lock().unwrap_or_else(|e| e.into_inner());
-            g.1 = g.1.max(starts[(part + 1).min(starts.len() - 1)] + GEO_AHEAD);
+            g.1 = g.1.max(starts[(part + 1).min(starts.len() - 1)] + n_ahead);
             cv.notify_all();
         })
     })
@@ -293,7 +307,7 @@ impl GeoSet<'_> {
 
     /// The blocks sampling `parts` in turn reads first (each point's first file's: `blocks_read`),
     /// in that order, each once; and where each part's begin in that list (and its end).
-    fn blocks_ahead(&self, parts: &[&[u32]], x: &[f64], y: &[f64]) -> Result<(Vec<AheadBlock>, Vec<usize>)> {
+    fn blocks_ahead(&self, parts: &[&[u32]], x: &[f64], y: &[f64]) -> Result<Ahead> {
         let mut seen: HashMap<usize, Seen> = HashMap::new();
         let (mut out, mut starts) = (Vec::new(), Vec::with_capacity(parts.len() + 1));
         for part in parts {
@@ -315,7 +329,10 @@ impl GeoSet<'_> {
             }
         }
         starts.push(out.len());
-        Ok((out, starts))
+        let biggest =
+            out.iter().map(|(t, level, ..)| t.level(*level).map_or(0, |i| i.block_bytes())).max().unwrap_or(0);
+        let n_ahead = ahead_for(self.cache.lock().unwrap().cap(), biggest);
+        Ok((out, starts, n_ahead))
     }
 
     /// The value at native point (x, y) of the files but `skip`: the first holding it whose raster
@@ -917,7 +934,7 @@ impl<'a> Reader<'a> {
 
     /// What to read ahead of sampling `parts` in turn (`read_ahead`): a GeoTIFF dataset's blocks,
     /// natively with a pool; None otherwise (a pyramid fetches its tiles ahead itself).
-    fn ahead(&self, parts: &[&[u32]]) -> Result<Option<(Vec<AheadBlock>, Vec<usize>)>> {
+    fn ahead(&self, parts: &[&[u32]]) -> Result<Option<Ahead>> {
         match self {
             Reader::Geo(g, x, y) if g.o.pool.is_some() && !cfg!(target_arch = "wasm32") => {
                 Ok(Some(g.blocks_ahead(parts, x, y)?))

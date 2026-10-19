@@ -115,6 +115,52 @@ fn down_check(dir: Option<&Path>, url: &str) -> Result<()> {
     Ok(())
 }
 
+std::thread_local! {
+    /// This thread's reader's stop flag (`cancellable`).
+    static CANCEL: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f` with `flag` as this thread's stop flag: once it's set, a request `f` makes gives up
+/// (an error) before its next attempt and within a retry's wait, not after its retries (a reader
+/// reading ahead, stopped, ends at once even while its host gives no answer).
+pub fn cancellable<R>(flag: &Arc<std::sync::atomic::AtomicBool>, f: impl FnOnce() -> R) -> R {
+    let before = CANCEL.with(|c| c.replace(Some(flag.clone())));
+    struct Back(Option<Arc<std::sync::atomic::AtomicBool>>);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            let b = self.0.take();
+            CANCEL.with(|c| *c.borrow_mut() = b);
+        }
+    }
+    let _back = Back(before);
+    f()
+}
+
+/// An error when this thread's reader stopped (`cancellable`).
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
+fn cancelled(url: &str) -> Result<()> {
+    if CANCEL.with(|c| c.borrow().as_ref().is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))) {
+        bail!("{url}: given up (its reader stopped)");
+    }
+    Ok(())
+}
+
+/// A retry's wait of `secs`, in slices, ending early in an error when this thread's reader stops;
+/// then the host's note checked again (`down_check`: another request may have found it down).
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
+fn retry_wait(dir: Option<&Path>, url: &str, secs: u64) -> Result<()> {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    loop {
+        cancelled(url)?;
+        let now = std::time::Instant::now();
+        if now >= end {
+            break;
+        }
+        std::thread::sleep((end - now).min(std::time::Duration::from_millis(100)));
+    }
+    down_check(dir, url)
+}
+
 /// Notes in `dir` that `url`'s host gave no answer (`why`), for `down_check`.
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn note_down(dir: Option<&Path>, url: &str, why: &str) {
@@ -845,8 +891,9 @@ mod net {
             let mut last = String::new();
             for attempt in 0..=10u32 {
                 if attempt > 0 {
-                    std::thread::sleep(Duration::from_secs((2u64 << (attempt - 1)).min(60)));
+                    retry_wait(self.down.as_deref(), url, (2u64 << (attempt - 1)).min(60))?;
                 }
+                cancelled(url)?;
                 match f()? {
                     Ok(v) => return Ok(v),
                     Err(e) => last = e,
@@ -920,8 +967,9 @@ mod net {
             down_check(self.down.as_deref(), url)?;
             loop {
                 if requests > 0 {
-                    std::thread::sleep(Duration::from_secs(if idle == 0 { 2 } else { (2u64 << (idle - 1)).min(60) }));
+                    retry_wait(self.down.as_deref(), url, if idle == 0 { 2 } else { (2u64 << (idle - 1)).min(60) })?;
                 }
+                cancelled(url)?;
                 crate::fetch::online(url)?;
                 requests += 1;
                 let from = s + out.len() as u64;
@@ -1010,6 +1058,10 @@ mod net {
             let _slot = HostSlot::take(url);
             let mut last = String::new();
             for attempt in 0..8u64 {
+                if attempt > 0 {
+                    retry_wait(self.down.as_deref(), url, 2 * attempt)?;
+                }
+                cancelled(url)?;
                 crate::fetch::online(url)?;
                 match self.agent.get(url).call() {
                     Ok(mut r) => match r.status().as_u16() {
@@ -1025,7 +1077,6 @@ mod net {
                     },
                     Err(e) => last = e.to_string(),
                 }
-                std::thread::sleep(Duration::from_secs(2 * (attempt + 1)));
             }
             note_down(self.down.as_deref(), url, &last);
             bail!("{url}{NO_ANSWER}{last})")
@@ -1037,6 +1088,55 @@ mod net {
 mod tests {
     use super::net::{content_range, Recorder};
     use super::*;
+
+    /// A server on this Mac answering every request 503, and its URL.
+    #[cfg(not(target_os = "wasi"))]
+    fn always_busy() -> String {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}/a.tif", l.local_addr().unwrap().port());
+        std::thread::spawn(move || {
+            for c in l.incoming() {
+                let Ok(mut c) = c else { return };
+                let mut b = [0u8; 4096];
+                let _ = c.read(&mut b);
+                let _ = c.write_all(b"HTTP/1.1 503 Busy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        url
+    }
+
+    /// Task #397 follow-up: a range read waiting out its retries ends at once when its reader
+    /// stops (`cancellable`), and when another request notes its host down meanwhile
+    /// (`down_check` before each attempt), not after its retries (minutes).
+    #[cfg(not(target_os = "wasi"))]
+    #[test]
+    fn a_retrying_read_ends_when_its_reader_stops_or_its_host_is_noted_down() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let url = always_busy();
+        let flag = Arc::new(AtomicBool::new(false));
+        let f = flag.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            f.store(true, Ordering::Relaxed);
+        });
+        let t0 = std::time::Instant::now();
+        let r = cancellable(&flag, || net::Net::new().with_down(None).range(&url, 0, 10));
+        let e = format!("{:#}", r.unwrap_err());
+        assert!(e.contains("given up"), "{e}");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2), "{:?}", t0.elapsed());
+        // (Its host noted down by another request while it waits.)
+        let d = tempfile::tempdir().unwrap();
+        let (dir, u) = (d.path().to_path_buf(), url.clone());
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            note_down(Some(&dir), &u, "no answer");
+        });
+        let t0 = std::time::Instant::now();
+        let r = net::Net::new().with_down(Some(d.path().to_path_buf())).range(&url, 0, 10);
+        assert!(is_unreachable(&r.unwrap_err()));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(4), "{:?}", t0.elapsed());
+    }
 
     /// Task #397: a host's requests in flight are capped (`HOST_REQUESTS`), another host's not
     /// held up by them, and a slot given back lets a waiting request go.

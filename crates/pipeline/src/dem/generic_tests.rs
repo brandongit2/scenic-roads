@@ -689,3 +689,15 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
     let most = slow.most.load(std::sync::atomic::Ordering::SeqCst);
     assert!(most > 2, "at most {most} reads at once, no more than the pool's threads");
 }
+
+/// Task #397 follow-up: the reading ahead goes no further than a quarter of the cache holds, so
+/// it can't push the chunk being sampled out of it.
+#[test]
+fn the_reading_ahead_is_held_to_a_quarter_of_the_cache() {
+    let mb = 1 << 20;
+    assert_eq!(ahead_for(CACHE_BYTES, mb), GEO_AHEAD.min(CACHE_BYTES / mb / 4));
+    assert_eq!(ahead_for(32 * mb, mb), 8);
+    assert_eq!(ahead_for(64 * mb, 4 * mb), 4);
+    assert_eq!(ahead_for(mb, mb), 0, "a cache of one block: none ahead");
+    assert_eq!(ahead_for(1 << 40, 1), GEO_AHEAD);
+}
