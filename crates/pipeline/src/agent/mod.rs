@@ -8640,22 +8640,18 @@ impl Agent {
         }
         // (Why a member's retry can't be mailed to the lead now: said to its page at once.)
         if !lead {
-            let blocked = match self.try_pooled() {
-                Some(Some(run)) => {
-                    let me = run.side.member().app.clone();
-                    match run.side.driver().current().lead.as_ref() {
-                        None => Some("no lead now".to_string()),
-                        Some(t) if t.app != me => Some(format!(
-                            "the lead runs app {}, this Mac {me}: try again on the lead's own page",
-                            t.app
-                        )),
-                        Some(_) => None,
-                    }
-                }
+            // (Not known now, a tick holding the run: the last word kept, never cleared.)
+            let seen = match self.try_pooled() {
+                Some(Some(run)) => Some((
+                    run.side.driver().current().lead.as_ref().map(|t| t.app.clone()),
+                    run.side.member().app.clone(),
+                )),
                 _ => None,
             };
-            for c in [&self.broker, &self.viewer].into_iter().flatten() {
-                c.set_retry_blocked(blocked.clone());
+            if let Some(blocked) = retry_blocked(seen.as_ref().map(|(l, me)| (l.as_deref(), me.as_str()))) {
+                for c in [&self.broker, &self.viewer].into_iter().flatten() {
+                    c.set_retry_blocked(blocked.clone());
+                }
             }
         }
         if !acts.is_empty() {
@@ -10357,6 +10353,20 @@ fn make_coordinator_on(
             None
         }
     }
+}
+
+/// Why a member's page's retry can't be mailed to the lead now, from `seen` (the lead's app, None
+/// with no lead; this Mac's app): Some(None) it can, Some(Some(why)) it can't; None, not known
+/// now (the pool's run held by a tick, or out of the pool): the last word stands.
+fn retry_blocked(seen: Option<(Option<&str>, &str)>) -> Option<Option<String>> {
+    let (lead, me) = seen?;
+    Some(match lead {
+        None => Some("no lead now".to_string()),
+        Some(app) if app != me => {
+            Some(format!("the lead runs app {app}, this Mac {me}: try again on the lead's own page"))
+        }
+        Some(_) => None,
+    })
 }
 
 /// A viewer alone on this Mac's coordinator port (crate::coord::Coordinator::viewer): the page and
@@ -16368,6 +16378,24 @@ mod pool_tests {
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
         TEST_ABLE.with(|c| c.set(None));
+    }
+
+    #[test]
+    fn a_retry_blocked_stays_so_while_the_run_cant_be_read() {
+        // (Task #409 follow-up) a tick holding the pool's run says nothing new: the last word
+        // stands, so the page's retry is still answered 409; once read, it's said again.
+        assert_eq!(retry_blocked(Some((None, "b34"))), Some(Some("no lead now".into())));
+        assert!(retry_blocked(Some((Some("b33"), "b34"))).is_some_and(|w| w.is_some_and(|w| w.contains("b33"))));
+        assert_eq!(retry_blocked(Some((Some("b34"), "b34"))), Some(None));
+        assert_eq!(retry_blocked(None), None, "not known: nothing set");
+        let (c, _port) = crate::coord::start_for_test(&tempfile::tempdir().unwrap().path().join("coord"), "m1", "b34");
+        for seen in [Some((None, "b34")), None] {
+            if let Some(b) = retry_blocked(seen) {
+                c.set_retry_blocked(b);
+            }
+            assert!(c.shared.lock().unwrap().retry_blocked.is_some(), "{seen:?}");
+        }
+        c.stop();
     }
 
     #[test]
