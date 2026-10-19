@@ -15666,15 +15666,20 @@ mod pool_tests {
         let (il, im) = (lead.pooled().unwrap().side.member().id.clone(), m.pooled().unwrap().side.member().id.clone());
         lead.pooled().unwrap().side.know(&im);
         // The member's job, granted by the lead in term 1, runs while the owner hands the lead to it.
-        lead.coord.as_ref().unwrap().offer(
-            "2026-09-28",
-            vec![crate::coord::Offer {
-                step: "slope".into(),
-                targets: vec![("3/2/2".into(), "k".into(), 100)],
-                job: None,
-            }],
-        );
-        until(&mut m, |m| m.slots[0].running.is_some());
+        // (The test's offers stand in for the lead's plan, which is offered whole each time it's
+        // made, as a job ends: offered again until taken, so a plan made meanwhile, which hasn't
+        // them, doesn't take them back. Without, a loaded Mac's new lead ended its backup or gc
+        // first, and the offer was gone before the member asked.)
+        let offer = |c: &crate::coord::Coordinator, t: &str, k: &str| {
+            c.offer(
+                "2026-09-28",
+                vec![crate::coord::Offer { step: "slope".into(), targets: vec![(t.into(), k.into(), 100)], job: None }],
+            )
+        };
+        until(&mut m, |m| {
+            offer(lead.coord.as_ref().unwrap(), "3/2/2", "k");
+            m.slots[0].running.is_some()
+        });
         crate::control::request_lead(
             &lead.o.home,
             crate::control::LeadAsk::Give { to: im.clone() },
@@ -15722,15 +15727,11 @@ mod pool_tests {
         // The old lead, a member now, asks the new lead for work by HTTP and runs it, its entry
         // reaching the new lead's records; still no restart.
         m.pooled().unwrap().side.know(&il);
-        m.coord.as_ref().unwrap().offer(
-            "2026-09-28",
-            vec![crate::coord::Offer {
-                step: "slope".into(),
-                targets: vec![("3/3/2".into(), "k2".into(), 100)],
-                job: None,
-            }],
-        );
-        both(&mut lead, &mut m, &|_, m| {
+        offer(m.coord.as_ref().unwrap(), "3/3/2", "k2");
+        both(&mut lead, &mut m, &|l, m| {
+            if l.slots.iter().all(|s| s.running.is_none()) {
+                offer(m.coord.as_ref().unwrap(), "3/3/2", "k2");
+            }
             m.pooled().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/3/2") == Some("k2"))
         });
         assert_eq!((lead.pool_restart(), m.pool_restart()), (None, None));
