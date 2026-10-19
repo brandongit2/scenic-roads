@@ -233,6 +233,15 @@ pub trait Fetch: Send + Sync {
 
     /// `url`'s file whole (a small one); None when the server answers 404.
     fn get(&self, url: &str) -> Result<Option<Vec<u8>>>;
+
+    /// As `get`, each request over the network given up after `deadline` (and tried again, as a
+    /// failed one is): a connection that goes silent fails fast, not after the client's 90 s or
+    /// the proxy's idle end. A reader of many small files (a pyramid's tiles) asks this; a fetch
+    /// without a network (a mirror, the tests') is `get`.
+    fn get_within(&self, url: &str, deadline: std::time::Duration) -> Result<Option<Vec<u8>>> {
+        let _ = deadline;
+        self.get(url)
+    }
 }
 
 /// Byte ranges (start, end), sorted and merged.
@@ -432,6 +441,18 @@ impl Fetch for Fetcher {
     }
 
     fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
+        self.get_by(url, None)
+    }
+
+    fn get_within(&self, url: &str, deadline: std::time::Duration) -> Result<Option<Vec<u8>>> {
+        self.get_by(url, Some(deadline))
+    }
+}
+
+impl Fetcher {
+    /// `get`, a request over the network given up after `deadline` (`Fetch::get_within`).
+    fn get_by(&self, url: &str, deadline: Option<std::time::Duration>) -> Result<Option<Vec<u8>>> {
+        let _ = deadline;
         if let Some(m) = &self.mirror {
             match lookup(m, url)? {
                 Some(Found::Absent) => return Ok(None),
@@ -445,7 +466,7 @@ impl Fetch for Fetcher {
         }
         #[cfg(not(target_os = "wasi"))]
         if let Some((n, record)) = &self.net {
-            return n.get_recorded(url, record.as_deref());
+            return n.get_recorded(url, record.as_deref(), deadline);
         }
         bail!("{url}: not supplied, and there's no network here")
     }
@@ -869,9 +890,15 @@ mod net {
             })))
         }
 
-        /// `url`'s small file whole (`get`), recorded in `record`.
-        pub fn get_recorded(&self, url: &str, record: Option<&Path>) -> Result<Option<Vec<u8>>> {
-            let got = self.get(url)?;
+        /// `url`'s small file whole (`get`), recorded in `record`; each request given up after
+        /// `deadline` when one's given (`Fetch::get_within`).
+        pub fn get_recorded(
+            &self,
+            url: &str,
+            record: Option<&Path>,
+            deadline: Option<Duration>,
+        ) -> Result<Option<Vec<u8>>> {
+            let got = self.get_by(url, deadline)?;
             if let Some(r) = record {
                 let w = match &got {
                     Some(b) => Recorder::whole(r, url, b),
@@ -1052,8 +1079,9 @@ mod net {
         }
 
         /// The whole (small) file; None for 404. Other answers are asked again: 8 tries, waiting 2,
-        /// 4, 6 … s.
-        fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
+        /// 4, 6 … s. Each attempt is given up after `deadline` when one's given (the agent's own
+        /// 90 s otherwise): a silent connection is an attempt failed, asked again.
+        fn get_by(&self, url: &str, deadline: Option<Duration>) -> Result<Option<Vec<u8>>> {
             down_check(self.down.as_deref(), url)?;
             let _slot = HostSlot::take(url);
             let mut last = String::new();
@@ -1063,7 +1091,12 @@ mod net {
                 }
                 cancelled(url)?;
                 crate::fetch::online(url)?;
-                match self.agent.get(url).call() {
+                let req = self.agent.get(url);
+                let req = match deadline {
+                    Some(d) => req.config().timeout_global(Some(d)).build(),
+                    None => req,
+                };
+                match req.call() {
                     Ok(mut r) => match r.status().as_u16() {
                         200 => match r.body_mut().with_config().limit(64 << 20).read_to_vec() {
                             Ok(b) => {

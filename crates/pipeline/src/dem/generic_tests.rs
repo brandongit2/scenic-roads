@@ -701,3 +701,160 @@ fn the_reading_ahead_is_held_to_a_quarter_of_the_cache() {
     assert_eq!(ahead_for(mb, mb), 0, "a cache of one block: none ahead");
     assert_eq!(ahead_for(1 << 40, 1), GEO_AHEAD);
 }
+
+/// A 256 × 256 Terrarium tile sloping by column and row, its slope and base by `k`.
+fn ramp(k: usize) -> Vec<u8> {
+    let mut px = Vec::with_capacity(256 * 256 * 3);
+    for r in 0..256usize {
+        for c in 0..256usize {
+            let v = 32768.0 + (k % 97) as f64 * 3.0 + c as f64 * 0.25 + r as f64 * (1 + k % 5) as f64 * 0.125;
+            px.extend_from_slice(&[
+                (v / 256.0).floor() as u8,
+                (v.floor() as i64 % 256) as u8,
+                ((v - v.floor()) * 256.0) as u8,
+            ]);
+        }
+    }
+    let mut out = Vec::new();
+    let mut e = png::Encoder::new(&mut out, 256, 256);
+    e.set_color(png::ColorType::Rgb);
+    e.set_depth(png::BitDepth::Eight);
+    e.write_header().unwrap().write_image_data(&px).unwrap();
+    out
+}
+
+/// A pyramid of 8 × 6 ramps at zoom 8, one in 13
+/// missing, and points across them.
+fn ramps() -> (crate::fetch::MapFetch, Vec<f64>, Vec<f64>) {
+    let z = 8;
+    let n = 1i64 << z;
+    let mut f = crate::fetch::MapFetch::default();
+    for ty in 80..86i64 {
+        for tx in 100..108i64 {
+            let k = (tx * 40 + ty) as usize;
+            f.0.insert(format!("https://r.org/{z}/{tx}/{ty}.png"), (k % 13 != 0).then(|| ramp(k)));
+        }
+    }
+    let mut seed = 7u64;
+    let mut rnd = move || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let (mut lon, mut lat) = (Vec::new(), Vec::new());
+    for _ in 0..3_000 {
+        let (fx, fy) = (100.0 + rnd() * 8.0, 80.0 + rnd() * 6.0);
+        lon.push(fx / n as f64 * 360.0 - 180.0);
+        lat.push((std::f64::consts::PI * (1.0 - 2.0 * fy / n as f64)).sinh().atan().to_degrees());
+    }
+    (f, lon, lat)
+}
+
+/// The ramps' pyramid read through `o`, with a memo of `cap` bytes.
+fn ramp_set<'a>(o: &'a Opts<'a>, cap: usize) -> TileSet<'a> {
+    TileSet {
+        url: "https://r.org/{z}/{x}/{y}.png",
+        zoom: 8,
+        encoding: "terrarium",
+        o,
+        clean: Mutex::new(HashMap::new()),
+        memo: Arc::new(TileMemo::new(cap)),
+    }
+}
+
+/// Task #426: the rolling fetches give each point the height the old way gave it (its tile
+/// fetched, decoded and sampled on its own), to the bit, with the memo's room ample and with
+/// almost none (the fetching held to the earliest unsampled tiles), and the progress moves within
+/// the call, ending at all of it.
+#[test]
+fn rolling_tile_fetches_give_the_old_heights_to_the_bit() {
+    let (f, lon, lat) = ramps();
+    let fetch = NoneElse(f);
+    let sel: Vec<u32> = (0..lon.len() as u32).collect();
+    // (The old way, by the letter: each point's tile, decoded, sampled bilinearly.)
+    let one = Opts { fetch: &fetch, store: None, pool: None };
+    let plain = ramp_set(&one, TILE_MEMO_BYTES);
+    let want: Vec<u32> = sel
+        .iter()
+        .map(|&i| {
+            let (fx, fy) = mercator_tile(lon[i as usize], lat[i as usize], 8);
+            let (tx, ty) = (fx.floor() as i64, fy.floor() as i64);
+            match plain.tile(tx, ty).unwrap() {
+                None => f32::NAN.to_bits(),
+                Some((w, h, a)) => {
+                    bilinear(&a, w, h, (fx - tx as f64) * 256.0 - 0.5, (fy - ty as f64) * 256.0 - 0.5).to_bits()
+                }
+            }
+        })
+        .collect();
+    assert!(want.iter().any(|v| f32::from_bits(*v).is_nan()) && want.iter().any(|v| f32::from_bits(*v).is_finite()));
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
+    for cap in [TILE_MEMO_BYTES, 64 << 10] {
+        let o = Opts { fetch: &fetch, store: None, pool: Some(&pool) };
+        let t = ramp_set(&o, cap);
+        let said = Mutex::new(Vec::new());
+        let got = t.sample(&sel, &lon, &lat, &|f| said.lock().unwrap().push(f)).unwrap();
+        let got: Vec<u32> = got.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(got, want, "a memo of {cap} bytes");
+        let said = said.into_inner().unwrap();
+        assert!(said.len() >= 20, "the progress said {} times", said.len());
+        assert_eq!(said.iter().copied().fold(0.0, f64::max), 1.0);
+    }
+}
+
+/// Task #426: one tile that takes long holds up its own points alone: every other tile is
+/// fetched and sampled meanwhile (a batch's barrier held them all), and the call ends once it's
+/// in, the heights those of a run on one thread.
+#[test]
+fn one_slow_tile_does_not_stall_the_others() {
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    let (f, lon, lat) = ramps();
+    // (The first tile in the sampling's order.)
+    let slow_url = "https://r.org/8/100/80.png";
+    assert!(f.0.get(slow_url).is_some_and(|t| t.is_some()));
+    struct Slow {
+        inner: NoneElse,
+        url: &'static str,
+        /// The share of the points sampled, as said; whether the slow tile was let go by it.
+        share: Mutex<f64>,
+        cv: Condvar,
+        by_progress: AtomicBool,
+    }
+    impl Fetch for Slow {
+        fn open(&self, url: &str) -> Result<Option<Arc<dyn RangeRead>>> {
+            self.inner.open(url)
+        }
+        fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
+            if url == self.url {
+                // (Held until nine tenths of the points are sampled, or 20 s: a stall.)
+                let g = self.share.lock().unwrap();
+                let wait = std::time::Duration::from_secs(20);
+                let (g, t) = self.cv.wait_timeout_while(g, wait, |s| *s < 0.9).unwrap();
+                self.by_progress.store(!t.timed_out() && *g >= 0.9, SeqCst);
+            }
+            self.inner.get(url)
+        }
+    }
+    let slow = Slow {
+        inner: NoneElse(crate::fetch::MapFetch(f.0.clone())),
+        url: slow_url,
+        share: Mutex::new(0.0),
+        cv: Condvar::new(),
+        by_progress: AtomicBool::new(false),
+    };
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().unwrap();
+    let o = Opts { fetch: &slow, store: None, pool: Some(&pool) };
+    let t = ramp_set(&o, TILE_MEMO_BYTES);
+    let sel: Vec<u32> = (0..lon.len() as u32).collect();
+    let tell = |f: f64| {
+        let mut g = slow.share.lock().unwrap();
+        *g = g.max(f);
+        slow.cv.notify_all();
+    };
+    let got = t.sample(&sel, &lon, &lat, &tell).unwrap();
+    assert!(slow.by_progress.load(SeqCst), "the other tiles waited on the slow one");
+    let one = NoneElse(f);
+    let o1 = Opts { fetch: &one, store: None, pool: None };
+    let want = ramp_set(&o1, TILE_MEMO_BYTES).sample(&sel, &lon, &lat, &|_| {}).unwrap();
+    let bits = |v: &[f32]| v.iter().map(|e| e.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&got), bits(&want));
+}
