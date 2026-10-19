@@ -518,7 +518,8 @@ pub fn error_of(log: &Path) -> String {
     let mut out = vec![lines[i].trim_end()];
     for l in &lines[i + 1..] {
         // anyhow's causes ("Caused by:", then indented lines); a panic's message on its next line.
-        let more = l.starts_with("Caused by:") || l.starts_with("    ") || l.trim().is_empty() || (panic && out.len() == 1);
+        let more =
+            l.starts_with("Caused by:") || l.starts_with("    ") || l.trim().is_empty() || (panic && out.len() == 1);
         if !more || out.len() >= 12 {
             break;
         }
@@ -866,7 +867,8 @@ mod tests {
             error_of(&log),
             "Error: the depth source globathy\nCaused by:\n    0: /x/globathy-8-81-114.tif\n    1: Too many open files (os error 24)"
         );
-        std::fs::write(&log, "a\nthread 'main' panicked at src/x.rs:1:2:\nboom\nnote: run with RUST_BACKTRACE=1\n").unwrap();
+        std::fs::write(&log, "a\nthread 'main' panicked at src/x.rs:1:2:\nboom\nnote: run with RUST_BACKTRACE=1\n")
+            .unwrap();
         assert_eq!(error_of(&log), "thread 'main' panicked at src/x.rs:1:2:\nboom");
         std::fs::write(&log, "progress: 1/2 areas\n").unwrap();
         assert_eq!(error_of(&log), "");

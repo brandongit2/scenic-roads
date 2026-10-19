@@ -180,7 +180,11 @@ fn open_grids_limit() -> usize {
 impl Reader {
     /// A reader keeping at most `keep` grids open.
     pub fn keeping(keep: usize) -> Self {
-        Reader { open: Mutex::new(Open::default()), cache: Arc::new(Mutex::new(BlockCache::new(512 << 20))), keep: keep.max(1) }
+        Reader {
+            open: Mutex::new(Open::default()),
+            cache: Arc::new(Mutex::new(BlockCache::new(512 << 20))),
+            keep: keep.max(1),
+        }
     }
 
     /// How many grids are open now.
@@ -779,7 +783,9 @@ pub(crate) mod tests {
             .map(|i| {
                 let (gc, gr) = (c + 40 * i, r);
                 let p = d.path().join(format!("g{i}.tif"));
-                grid_file(&p, zoom, gc, gr, 64, 64, &|x, y| -(i as f32) - ((x - gc) as f32) * 0.01 - (y - gr) as f32 * 0.02);
+                grid_file(&p, zoom, gc, gr, 64, 64, &|x, y| {
+                    -(i as f32) - ((x - gc) as f32) * 0.01 - (y - gr) as f32 * 0.02
+                });
                 Grid { bbox: bbox(zoom, gc, gr, 64, 64), zoom, file: p, zoom_file: None, low_file: None }
             })
             .collect();
@@ -795,7 +801,10 @@ pub(crate) mod tests {
         for (x, y, w, h) in wins {
             let a = sample(&all, &s, zoom, x, y, w, h).unwrap().unwrap();
             let b = sample(&few, &s, zoom, x, y, w, h).unwrap().unwrap();
-            assert_eq!(a.v.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), b.v.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+            assert_eq!(
+                a.v.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                b.v.iter().map(|v| v.to_bits()).collect::<Vec<_>>()
+            );
             assert!(few.open_count() <= 3, "{}", few.open_count());
         }
         assert_eq!(all.open_count(), 7);
