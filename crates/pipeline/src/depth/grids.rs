@@ -494,7 +494,7 @@ pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: u
     let mut out: Option<Sample> = None;
     // (In order, a chunk at a time: a finer grid's cells win where grids overlap.)
     for chunk in grids.chunks(if together { GRIDS_AT_ONCE } else { 1 }) {
-        let made: Vec<Result<Option<Sample>>> = if chunk.len() == 1 {
+        let made: Vec<Result<Option<Part>>> = if chunk.len() == 1 {
             vec![one(chunk[0])]
         } else {
             std::thread::scope(|s| {
@@ -505,18 +505,22 @@ pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: u
             })
         };
         SAMPLED[0].fetch_add(chunk.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        for s in made {
-            let Some(s) = s? else { continue };
-            match &mut out {
-                None => out = Some(s),
-                Some(o) => {
-                    for i in 0..w * h {
-                        if s.v[i].is_finite() {
-                            o.v[i] = s.v[i];
-                            o.zoom[i] = s.zoom[i];
-                            o.class[i] = s.class[i];
-                            o.low[i] = s.low[i];
-                        }
+        for p in made {
+            let Some(p) = p? else { continue };
+            let o = out.get_or_insert_with(|| Sample {
+                v: vec![f32::NAN; w * h],
+                zoom: vec![0; w * h],
+                class: vec![0; w * h],
+                low: vec![f32::NAN; w * h],
+            });
+            for j in 0..p.h {
+                for i in 0..p.w {
+                    let (a, b) = (j * p.w + i, (p.y + j) * w + p.x + i);
+                    if p.s.v[a].is_finite() {
+                        o.v[b] = p.s.v[a];
+                        o.zoom[b] = p.s.zoom[a];
+                        o.class[b] = p.s.class[a];
+                        o.low[b] = p.s.low[a];
                     }
                 }
             }
@@ -526,9 +530,64 @@ pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: u
 }
 
 /// One grid on the window.
-fn sample_grid(rd: &Reader, g: &Grid, z: u8, c0: i64, r0: i64, w: usize, h: usize) -> Result<Option<Sample>> {
+/// One grid on the window: on the part of it the grid can reach alone (`Part`), its buffers that
+/// part's size. (Task #438: each grid's buffers were the whole window's, ~150 MB a grid at a z6
+/// block, eight at once, for grids mostly a sliver of it: thousands a block, and the allocator kept
+/// the freed ones, 9 GB at depth-lo 3/2/3.) A pixel's value depends on its own place alone, so the
+/// part's are the window's.
+fn sample_grid(rd: &Reader, g: &Grid, z: u8, c0: i64, r0: i64, w: usize, h: usize) -> Result<Option<Part>> {
     let t = rd.tiff(&g.file)?;
     let (gc, gr) = origin(&t, g.zoom)?;
+    let (iw, ih) = (i64::from(t.images()[0].width), i64::from(t.images()[0].height));
+    // The window's pixels the grid reaches (zoom z): those covering its cells (finer), or whose
+    // bilinear neighbours can be its cells (coarser), a pixel more each side.
+    let reach = |o: i64, n: i64| -> (i64, i64) {
+        if g.zoom >= z {
+            let k = u32::from(g.zoom - z).min(62);
+            ((o >> k) - 1, ((o + n) >> k) + 2)
+        } else {
+            let k = u32::from(z - g.zoom).min(30);
+            ((o - 1) << k, (o + n + 1) << k)
+        }
+    };
+    let ((ax0, ax1), (ay0, ay1)) = (reach(gc, iw), reach(gr, ih));
+    let (x0, x1) = ((ax0 - c0).max(0), (ax1 - c0).min(w as i64));
+    let (y0, y1) = ((ay0 - r0).max(0), (ay1 - r0).min(h as i64));
+    if x0 >= x1 || y0 >= y1 {
+        return Ok(None);
+    }
+    let (pw, ph) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    Ok(sample_grid_on(rd, g, &t, (gc, gr), z, c0 + x0, r0 + y0, pw, ph)?.map(|s| Part {
+        x: x0 as usize,
+        y: y0 as usize,
+        w: pw,
+        h: ph,
+        s,
+    }))
+}
+
+/// A grid's sample of a part of a window: at (`x`, `y`) in it, `w` × `h`.
+struct Part {
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    s: Sample,
+}
+
+/// One grid on the window (`sample_grid`'s, on the part it reaches).
+#[allow(clippy::too_many_arguments)]
+fn sample_grid_on(
+    rd: &Reader,
+    g: &Grid,
+    t: &Tiff,
+    (gc, gr): (i64, i64),
+    z: u8,
+    c0: i64,
+    r0: i64,
+    w: usize,
+    h: usize,
+) -> Result<Option<Sample>> {
     let zt = g.zoom_file.as_deref().map(|p| rd.tiff(p)).transpose()?;
     let lt = g.low_file.as_deref().map(|p| rd.tiff(p)).transpose()?;
     for x in zt.iter().chain(lt.iter()) {
@@ -808,6 +867,46 @@ pub(crate) mod tests {
             assert!(few.open_count() <= 3, "{}", few.open_count());
         }
         assert_eq!(all.open_count(), 7);
+    }
+
+    /// Task #438: a grid sampled on the part of a window it reaches gives the window what sampling
+    /// it on the whole window does, bit for bit: finer, as fine and coarser than the window, the window far larger
+    /// than the grid, its edges included (a coarser grid's bilinear reach past its cells).
+    #[test]
+    fn a_grid_on_the_part_it_reaches_is_as_on_the_whole_window() {
+        let d = tempfile::tempdir().unwrap();
+        let (zoom, c, r) = (12u8, 1200 * 256i64, 1500 * 256i64);
+        let p = d.path().join("g.tif");
+        grid_file(&p, zoom, c, r, 40, 24, &|x, y| {
+            if (x * 7 + y) % 11 == 0 {
+                f32::NAN
+            } else {
+                -((x - c) as f32) - (y - r) as f32 * 0.3 - 5.0
+            }
+        });
+        let s = source(vec![Grid { bbox: bbox(zoom, c, r, 40, 24), zoom, file: p, zoom_file: None, low_file: None }]);
+        let rd = Reader::default();
+        for z in [10u8, 12, 14] {
+            let sc = |v: i64| if z >= zoom { v << (z - zoom) } else { v >> (zoom - z) };
+            // A window four times the grid's size each way, the grid inside it off centre.
+            let (gw, gh) = (sc(40).max(1), sc(24).max(1));
+            let (wc, wr, w, h) = (sc(c) - gw - 3, sc(r) - gh / 2 - 5, (4 * gw) as usize, (3 * gh) as usize);
+            let big = sample(&rd, &s, z, wc, wr, w, h).unwrap().unwrap();
+            // As before: the grid on the whole window.
+            let g = &s.grids[0];
+            let t = rd.tiff(&g.file).unwrap();
+            let whole = sample_grid_on(&rd, g, &t, origin(&t, g.zoom).unwrap(), z, wc, wr, w, h).unwrap().unwrap();
+            for o in 0..w * h {
+                assert_eq!(
+                    (big.v[o].to_bits(), big.zoom[o], big.class[o], big.low[o].to_bits()),
+                    (whole.v[o].to_bits(), whole.zoom[o], whole.class[o], whole.low[o].to_bits()),
+                    "z{z} ({}, {})",
+                    o % w,
+                    o / w
+                );
+            }
+            assert!(big.v.iter().any(|v| v.is_finite()));
+        }
     }
 
     /// Task #398 review: grids opened and sampled `GRIDS_AT_ONCE` at once, and windows' blocks read
