@@ -65,7 +65,8 @@ remote_unlock() {  # <key> <owner> [quiet]: removes the lock only while it is st
   mv $d/.busy $aside 2>/dev/null || return 1
   if [[ $(cat $aside/owner 2>/dev/null) == "$2" ]]; then rm -rf $aside; return 0; fi
   # Someone else's (taken over and retaken meanwhile): left aside, not put back (a move onto a
-  # lock made since would nest inside it); its run sees its lock gone and reruns here.
+  # lock made since would nest inside it); its run, seeing its lock gone as it ends, gives no
+  # result, and reruns here.
   return 1
 }
 
@@ -97,6 +98,8 @@ remote_main() {  # on the M4: <key> <owner> <command>
         kill -0 $pid 2>/dev/null && [[ "$(ps -o lstart= -p $pid)" == "$start" ]] && continue
       elif [[ -z $(find $base/.slots/$s -maxdepth 0 ! -newermt '10 seconds ago' 2>/dev/null) ]]; then continue
       fi
+      # (Slots set aside so, another's, go after 10 min: their runs count no longer.)
+      find $base/.slots -maxdepth 1 -name '.aside-*' ! -newermt '10 minutes ago' -exec rm -rf {} + 2>/dev/null
       if mv $base/.slots/$s $base/.slots/.aside-$s-$$ 2>/dev/null; then
         if [[ $(cat $base/.slots/.aside-$s-$$/owner 2>/dev/null) == "$held" ]]; then rm -rf $base/.slots/.aside-$s-$$
         fi  # (another's, retaken meanwhile: left aside, as with a key's lock)
@@ -108,8 +111,10 @@ remote_main() {  # on the M4: <key> <owner> <command>
     (( waited >= 1800 )) && none "no M4 test slot within 30 min"
     sleep 5; (( waited += 5 ))
   done
-  trap "[[ \$(cat $base/.slots/$slot/owner 2>/dev/null) == ${(q)mine} ]] && rm -rf $base/.slots/$slot" EXIT
-  trap 'exit 143' TERM HUP INT
+  # On any exit: the watcher stopped (by its PID), the slot freed while still this run's.
+  typeset -g g_wd= g_cpid= g_slotdir=$base/.slots/$slot g_mine=$mine
+  trap '[[ -n $g_wd ]] && kill $g_wd 2>/dev/null; [[ $(cat $g_slotdir/owner 2>/dev/null) == "$g_mine" ]] && rm -rf $g_slotdir' EXIT
+  trap '[[ -n $g_cpid ]] && kill $(pgrep -P $g_cpid) $g_cpid 2>/dev/null; exit 143' TERM HUP INT
   (( waited )) && print "remote-tests: got an M4 test slot after ${waited} s"
   # Disk: stale keys, then the least recently used past the cap; never a locked one (a lock older
   # than 6 h aside), whose stamp was touched as it was taken.
@@ -151,15 +156,20 @@ remote_main() {  # on the M4: <key> <owner> <command>
   # evicted.)
   ( while sleep 3; do
       [[ -z $sshd ]] || kill -0 $sshd 2>/dev/null || { kill -TERM -- -$pgid; exit; }
-      touch $dir/.busy $dir/stamp 2>/dev/null
+      [[ -d $dir/.busy ]] && touch $dir/.busy $dir/stamp 2>/dev/null
     done ) </dev/null >/dev/null 2>&1 &
-  wd=$!
+  wd=$!; g_wd=$wd
   versions "the M4"
   print "remote-tests: on the M4 (load $(loadavg), slot $slot, $dir)"
-  nice -n 10 zsh -c "$cmd" </dev/null 2>&1
+  # (In the background, waited for: a TERM's trap runs at once, not when the command ends.)
+  nice -n 10 zsh -c "$cmd" </dev/null 2>&1 &
+  g_cpid=$!
+  wait $g_cpid
   local rc=$?
   [[ -n $wd ]] && kill $wd 2>/dev/null
   print "remote-tests: exit $rc on the M4 (load $(loadavg))"
+  # (A run whose lock was taken over meanwhile, its tree perhaps copied over: no result.)
+  [[ $(cat $dir/.busy/owner 2>/dev/null) == "$owner" ]] || none "the key's lock was taken over during the run"
   print "@@remote-tests-status $rc"
   exit 0
 }
