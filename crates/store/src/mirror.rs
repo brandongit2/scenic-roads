@@ -987,9 +987,10 @@ fn label(i: &Item) -> String {
 /// The logical names of the World download's files (plan §4, "Mirror, per Mac"): what the map
 /// needs to start and to draw anywhere zoomed out, and the small per-tile records any view's lists
 /// read. The worldwide files the build makes (`global/…`: rail frequencies, the road → units index,
-/// landmark totals, heritage summaries, roads' English names), the lakes filled from Canada's own data (`work/lakefill/…`, which the water's deeper
-/// zooms read: the server maps it from here), every layer's root and lo packs (zooms 0–8), and the
-/// landmark points and area details (markdata, ovdata). Not the pass's area outlines (a worldwide
+/// landmark totals, heritage summaries, roads' English names), the lakes filled from Canada's own
+/// data (`work/lakefill/…`, which the water's deeper zooms read: the server maps it from here),
+/// every layer's root and lo packs (zooms 0–8), and the landmark points and area details (markdata,
+/// ovdata). Not the pass's area outlines (a worldwide
 /// file under `sources/`, read only to make new regions), nor the basemap (its pieces:
 /// crate::pieces).
 fn essential_logicals(cat: &Catalog) -> std::collections::HashSet<&str> {
