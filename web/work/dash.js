@@ -369,6 +369,25 @@ function progressText(p, j, now) {
 
 // A job, as every machine's is shown: its name (its step's title and targets), its parts, its
 // progress, how long it's run and what it holds, and why it's stopped or stuck.
+// This Mac's own page (the app's panel, a browser on this Mac): it may cancel a job or try a failed
+// target again, through this Mac's agent (/work/act: refused from elsewhere).
+const OWN = ["127.0.0.1", "localhost", "[::1]", "::1"].includes(location.hostname);
+async function act(body, what) {
+  try {
+    const [code, r] = await ctx.call("/work/act", body);
+    if (code !== 200) throw new Error(r?.error || `answered ${code}`);
+    ctx.onState?.(`asked to ${what}`);
+    poll();
+  } catch (e) {
+    ctx.onError?.(`couldn't ask to ${what}: ${e.message}`);
+  }
+}
+// A job's step and target, as its id says them (one target alone: "step target").
+function jobTarget(j) {
+  const w = (j.id || "").split(" ");
+  return w.length === 2 ? { step: w[0], target: w[1] } : null;
+}
+
 function jobBlock(j, now) {
   const p = j.progress;
   const step = stepOf(j.id);
@@ -388,6 +407,8 @@ function jobBlock(j, now) {
   if (p?.moved_at && !j.paused && now - p.moved_at >= STUCK_S) box.append(h("div", "why", `No further for ${dur(now - p.moved_at)}: it may be stuck (its log's last lines are in the details)`));
   if (j.paused) box.append(h("div", "why", `Frozen: ${j.paused}`));
   else if (j.pausing) box.append(h("div", "why", "Stopping at its next safe point (what it's on is kept)"));
+  const t = OWN && jobTarget(j);
+  if (t) box.append(h("div", "ctl", h("button", { class: "quiet", title: "Stopped now and given back to the build (not a failure); it runs again from the start", onclick: () => confirm(`Cancel ${j.what}?`) && act({ cancel: t }, `cancel ${j.what}`) }, "Cancel")));
   return box;
 }
 
@@ -844,7 +865,10 @@ function feed(m, events, seen) {
     const d = new Date(r.e.t * 1000).toDateString();
     if (d !== day) { out.append(h("div", "day", d === new Date().toDateString() ? "Today" : d)); day = d; }
     const [text, cls] = eventText(m, r.e, r.k);
-    out.append(h("div", { class: isNew(r.e, seen) ? "new" : "" }, h("span", "t", new Date(r.e.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })), h("span", cls, r.e.step ? [swatch(S.colour(r.e.step)), text] : text)));
+    // (A failure: tried again now from this Mac's own page, its back-off forgotten.)
+    const again = OWN && r.e.kind === "fail" && r.e.step && r.e.targets?.length && !/^stopped/.test(r.e.note || "")
+      ? h("button", { class: "quiet", title: "Forget its failures and back-off: it's offered and run again now", onclick: () => act({ retry: { step: r.e.step, target: r.e.targets[0] } }, `try ${r.e.targets[0]} again`) }, "Try again") : null;
+    out.append(h("div", { class: isNew(r.e, seen) ? "new" : "" }, h("span", "t", new Date(r.e.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })), h("span", cls, r.e.step ? [swatch(S.colour(r.e.step)), text] : text), again));
   }
   if (!rows.length) out.append(h("div", "dim", events.length ? "Nothing of that kind lately." : "Nothing yet."));
   return out;

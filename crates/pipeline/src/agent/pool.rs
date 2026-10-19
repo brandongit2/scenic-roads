@@ -168,6 +168,12 @@ struct Mailbox {
     msgs: Vec<(u64, Msg)>,
 }
 
+/// A mailbox as read: each message parsed alone (`take_mail`).
+#[derive(Deserialize)]
+struct RawMailbox {
+    msgs: Vec<(u64, serde_json::Value)>,
+}
+
 /// The path of the mailbox `from` sends `to`.
 pub fn mail_path(to: &str, from: &str) -> String {
     format!("{MAIL}/{to}/{from}.json")
@@ -738,13 +744,16 @@ impl Side {
                     continue;
                 }
             };
-            let Ok(mb) = serde_json::from_slice::<Mailbox>(&b) else { continue };
+            // (Each message read alone: one this app doesn't know, a newer app's, passed over.)
+            let Ok(mb) = serde_json::from_slice::<RawMailbox>(&b) else { continue };
             let last = self.mail.read.get(&from).copied().unwrap_or(0);
             let mut top = last;
             for (n, m) in mb.msgs {
                 if n > last {
                     top = top.max(n);
-                    msgs.push((from.clone(), m));
+                    if let Ok(m) = serde_json::from_value::<Msg>(m) {
+                        msgs.push((from.clone(), m));
+                    }
                 }
             }
             if top > last {

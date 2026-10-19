@@ -341,8 +341,15 @@ pub struct Shared {
     /// The page's data as this Mac reads it from the NAS (crate::agent::pageview): `/work/swarm`
     /// and `/work/history` answered from it once it has a snapshot.
     pub pageview: Option<Arc<crate::agent::pageview::PageView>>,
-    /// A viewer alone (`Coordinator::viewer`): the page and its views, nothing else.
+    /// A viewer alone (`Coordinator::viewer`): the page and its views, nothing else (but this
+    /// Mac's own page's asks, passed to its agent).
     pub viewer: bool,
+    /// Not the lead's (a member's broker, a viewer): a page's pause is this Mac's agent's to pass
+    /// on (crate::control::request in its folder, `set_forward`), not this one's to set.
+    pub forward: Option<PathBuf>,
+    /// The build pages' asks to cancel a job or try a target again (`/work/act`), for this Mac's
+    /// agent to act on, leading, or to pass on to the lead (crate::pool::driver::Act).
+    pub page_acts: Vec<crate::pool::driver::Act>,
 }
 
 /// The NAS budget's weights for one placement (`Shared::nas_room`): the limits, one Book, and each
@@ -1826,6 +1833,8 @@ impl Coordinator {
             brokers: None,
             pageview: None,
             viewer,
+            forward: None,
+            page_acts: Vec::new(),
             own_cap: None,
             dir: dir.to_path_buf(),
             clock: store::clock::real(),
@@ -2575,6 +2584,28 @@ impl Coordinator {
     }
 
     /// The build page's asks of the pool's lead since the last call (`/work/lead`).
+    /// A target's failures forgotten (a page's retry, crate::pool::driver::Act::Retry): every
+    /// worker's, of its step (any step: None); how many.
+    pub fn clear_failed(&self, step: Option<&str>, target: &str) -> usize {
+        let mut s = self.shared.lock().unwrap();
+        let before = s.failed.len();
+        s.failed.retain(|(_, k), _| match step {
+            Some(st) => *k != cost_key(st, target),
+            None => k != target && !k.ends_with(&format!(" {target}")),
+        });
+        before - s.failed.len()
+    }
+
+    /// The pages' asks to cancel or retry (`/work/act`), taken.
+    pub fn take_page_acts(&self) -> Vec<crate::pool::driver::Act> {
+        std::mem::take(&mut self.shared.lock().unwrap().page_acts)
+    }
+
+    /// Not the lead's: a page's pause goes to this Mac's agent (its folder `home`) to pass on.
+    pub fn set_forward(&self, home: Option<PathBuf>) {
+        self.shared.lock().unwrap().forward = home;
+    }
+
     pub fn take_lead_asks(&self) -> Vec<crate::control::LeadRequest> {
         std::mem::take(&mut self.shared.lock().unwrap().lead_asks)
     }
@@ -3598,7 +3629,44 @@ fn route(
             if let (Some(p), true) = (pause.as_mut(), caller.page) {
                 p.by = format!("the build page ({})", caller.from);
             }
+            // (Not the lead's: this Mac's agent passes it on, as its menu's.)
+            let forward = shared.lock().unwrap().forward.clone();
+            if let (Some(home), true) = (forward, caller.page) {
+                crate::control::request(&home, pause)?;
+                return Ok((200, ok));
+            }
             set_pause(&mut shared.lock().unwrap(), pause, at);
+            Ok((200, ok))
+        }
+        "/work/act" => {
+            // This Mac's own build page's ask (docs/pool.md §11): cancel a job
+            // (`{"cancel": {"target": …, "step": …}}`) or try a failed target again now
+            // (`{"retry": {…}}`), for its agent: acted on leading, else passed on to the lead.
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            let by = format!("the build page ({})", caller.from);
+            let one = |v: &serde_json::Value| -> Result<(String, Option<String>)> {
+                let target =
+                    v["target"].as_str().filter(|t| !t.is_empty()).ok_or_else(|| anyhow::anyhow!("a target"))?;
+                Ok((plain(target, 200), v["step"].as_str().map(|st| plain(st, 100))))
+            };
+            let act = match (b.get("cancel"), b.get("retry")) {
+                (Some(c), None) => {
+                    let (target, step) = one(c)?;
+                    crate::pool::driver::Act::Cancel(crate::control::Cancel {
+                        target,
+                        step,
+                        rerun_after_update: false,
+                        by,
+                        at: unix_now(),
+                    })
+                }
+                (None, Some(r)) => {
+                    let (target, step) = one(r)?;
+                    crate::pool::driver::Act::Retry(crate::control::Retry { target, step, by, at: unix_now() })
+                }
+                _ => anyhow::bail!("{{\"cancel\": {{\"target\": …}}}} or {{\"retry\": {{\"target\": …}}}}"),
+            };
+            shared.lock().unwrap().page_acts.push(act);
             Ok((200, ok))
         }
         "/work/lead" => {
@@ -4338,6 +4406,7 @@ mod http {
             .route("/work/done", any(json))
             .route("/work/fail", any(json))
             .route("/work/cancel", any(json))
+            .route("/work/act", any(json))
             .route("/work/status", any(json))
             .route("/work/swarm", any(json))
             .route("/work/history", any(json))
@@ -4565,8 +4634,21 @@ mod http {
         if is_page || is_view {
             return next.run(req).await;
         }
+        // (A page's acts: this Mac's own page's alone, never a key's: crate::net::own.)
+        let own_page = key.is_none() && local && req.method() == Method::POST;
+        if path == "/work/act" {
+            return if own_page {
+                next.run(req).await
+            } else {
+                error(StatusCode::FORBIDDEN, "that's for this Mac's own build page")
+            };
+        }
         if c.shared.lock().unwrap().viewer {
-            return error(StatusCode::FORBIDDEN, "this Mac shows the build; it coordinates nothing");
+            return if own_page && matches!(path.as_str(), "/work/pause" | "/work/lead" | "/work/inputs") {
+                next.run(req).await
+            } else {
+                error(StatusCode::FORBIDDEN, "this Mac shows the build; it coordinates nothing")
+            };
         }
         // A job's: with its key, from this Mac itself.
         if path.starts_with("/task/") {
@@ -7310,6 +7392,23 @@ mod tests {
     }
 
     #[test]
+    fn a_retry_forgets_a_targets_failures_by_every_worker() {
+        // (Task #409 phase 3) a page's retry: no worker held off the target any more.
+        let (_d, c, _w) = start();
+        {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            for (w, k) in [("m1", "6/1/2"), ("m2", "6/1/2"), ("m1", "slope 6/1/2"), ("m1", "6/1/3")] {
+                s.failed.insert((w.into(), k.into()), (now, 1));
+            }
+        }
+        assert_eq!(c.clear_failed(Some("unit"), "6/1/2"), 2);
+        assert_eq!(c.clear_failed(None, "6/1/2"), 1, "any step's");
+        let left: Vec<String> = c.shared.lock().unwrap().failed.keys().map(|k| k.1.clone()).collect();
+        assert_eq!(left, ["6/1/3"]);
+    }
+
+    #[test]
     fn a_viewer_shows_the_page_does_nothing_else_and_keeps_nothing() {
         // (Task #409 review) a Mac with neither a coordinator nor a broker: the page and its views,
         // every other call refused, its key's or not; nothing written but its token, in its scratch.
@@ -7319,10 +7418,41 @@ mod tests {
         let ask = |path: &str, key: Option<&str>| send(&addr, "POST", path, key, &[], &serde_json::json!({})).0;
         assert_eq!(send(&addr, "GET", "/work/", None, &[], &serde_json::json!({})).0, 200);
         assert_eq!(ask("/work/steps", None), 200);
-        for p in ["/work/pause", "/work/ask", "/work/beat", "/work/lead", "/work/status"] {
-            assert_eq!(ask(p, None), 403, "{p}");
+        let far = |path: &str| {
+            send(
+                &addr,
+                "POST",
+                path,
+                None,
+                &[("X-Forwarded-For", "100.101.1.2")],
+                &serde_json::json!({ "cancel": { "target": "6/1/2" } }),
+            )
+            .0
+        };
+        for p in ["/work/pause", "/work/ask", "/work/beat", "/work/lead", "/work/status", "/work/act", "/work/inputs"] {
             assert_eq!(ask(p, Some(&v.contact.token)), 403, "{p} with its key");
+            assert_eq!(far(p), 403, "{p} from another device");
         }
+        for p in ["/work/ask", "/work/beat", "/work/status"] {
+            assert_eq!(ask(p, None), 403, "{p}");
+        }
+        // (Phase 3) this Mac's own page: its pause passed to its agent, as its menu's; its cancel
+        // and retry queued for its agent.
+        let home = tempfile::tempdir().unwrap();
+        v.set_forward(Some(home.path().to_path_buf()));
+        let pause = serde_json::json!({ "pause": { "mode": "drain", "by": "x", "at": 0 } });
+        assert_eq!(send(&addr, "POST", "/work/pause", None, &[], &pause).0, 200);
+        assert!(crate::control::take_request(home.path()).is_some_and(|r| r.pause.is_some()));
+        assert!(v.pause().is_none(), "not the viewer's to set");
+        let act = |b: serde_json::Value| send(&addr, "POST", "/work/act", None, &[], &b).0;
+        assert_eq!(act(serde_json::json!({ "cancel": { "target": "6/1/2", "step": "unit" } })), 200);
+        assert_eq!(act(serde_json::json!({ "retry": { "target": "6/1/3" } })), 200);
+        assert_eq!(act(serde_json::json!({ "both": 1 })), 400);
+        let acts = v.take_page_acts();
+        assert!(
+            matches!(&acts[..], [crate::pool::driver::Act::Cancel(c), crate::pool::driver::Act::Retry(r)] if c.target == "6/1/2" && r.target == "6/1/3" && c.by.starts_with("the build page")),
+            "{acts:?}"
+        );
         // In the pool (a pageview told a root), never the memory's views: not ready until it read.
         let pv = crate::agent::pageview::PageView::new();
         pv.set_inputs(crate::agent::pageview::Inputs { root: Some("/nonexistent".into()), ..Default::default() });

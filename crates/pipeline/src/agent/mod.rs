@@ -1268,6 +1268,8 @@ pub struct Agent {
     /// after it failed).
     pageview: std::sync::Arc<pageview::PageView>,
     pageview_reading: bool,
+    /// The pages' cancel and retry asks waiting for the pool's run (a tick held it).
+    page_acts: Vec<crate::pool::driver::Act>,
     viewer: Option<std::sync::Arc<crate::coord::Coordinator>>,
     viewer_failed: Option<Instant>,
     broker_failed: Option<Instant>,
@@ -1663,6 +1665,7 @@ impl Agent {
             broker: None,
             pageview: pageview::PageView::new(),
             pageview_reading: false,
+            page_acts: Vec::new(),
             viewer: None,
             viewer_failed: None,
             broker_failed: None,
@@ -8615,6 +8618,34 @@ impl Agent {
                 c.set_pageview(self.pageview.clone());
             }
         }
+        // (A page's pause on a Mac not leading: this agent's to pass on, as its menu's.)
+        let lead = self.coord.is_some();
+        for c in [&self.broker, &self.viewer].into_iter().flatten() {
+            c.set_forward((!lead).then(|| self.o.home.clone()));
+        }
+        if let Some(c) = &self.coord {
+            c.set_forward(None);
+        }
+        // The pages' cancel and retry asks: to the pool's step (acted on leading, else passed on
+        // to the lead: crate::pool::driver::Act); out of the pool, acted on here.
+        // (While a tick holds the run: kept for the next loop.)
+        let mut acts = std::mem::take(&mut self.page_acts);
+        acts.extend([&self.coord, &self.broker, &self.viewer].into_iter().flatten().flat_map(|c| c.take_page_acts()));
+        if !acts.is_empty() {
+            let alone = match self.try_pooled() {
+                Some(Some(mut run)) => {
+                    run.asks.extend(acts.drain(..).map(crate::pool::driver::Ask::Act));
+                    false
+                }
+                Some(None) => false,
+                None => true,
+            };
+            if alone {
+                self.act_on(&acts);
+            } else {
+                self.page_acts = acts;
+            }
+        }
         // (The members' ids and the term, as the run holds them: no NAS read here. Their hosts are
         // the pageview's to read, as it reads, while a page asks.)
         let Some(Some(run)) = self.try_pooled() else { return };
@@ -8639,6 +8670,36 @@ impl Agent {
         if !self.pageview_reading {
             pageview::spawn(self.pageview.clone());
             self.pageview_reading = true;
+        }
+    }
+
+    /// The build pages' asks the lead acts on (crate::pool::driver::Act): a cancel, as the owner's
+    /// `scenic job cancel` (a file in its folder: crate::control::request_cancel, taken up as its
+    /// own); a retry, its target's failures forgotten (the coordinator's, and this agent's own
+    /// back-off), so it's offered and run again now.
+    fn act_on(&mut self, acts: &[crate::pool::driver::Act]) {
+        for a in acts {
+            match a {
+                crate::pool::driver::Act::Cancel(c) => {
+                    eprintln!("agent: {} asks to cancel {}", c.by, c.target);
+                    if let Err(e) = crate::control::request_cancel(&self.o.home, c) {
+                        eprintln!("agent: the page's cancel of {}: {e:#}", c.target);
+                    }
+                }
+                crate::pool::driver::Act::Retry(r) => {
+                    let n = self.coord.as_ref().map_or(0, |c| c.clear_failed(r.step.as_deref(), &r.target));
+                    let before = self.guard_backoff.len();
+                    self.guard_backoff.retain(|id, _| !id.split(' ').any(|w| w == r.target));
+                    eprintln!(
+                        "agent: {} asks to try {} again: {n} failure{} and {} back-off{} forgotten",
+                        r.by,
+                        r.target,
+                        if n == 1 { "" } else { "s" },
+                        before - self.guard_backoff.len(),
+                        if before - self.guard_backoff.len() == 1 { "" } else { "s" }
+                    );
+                }
+            }
         }
     }
 
@@ -9188,6 +9249,10 @@ impl Agent {
         if let Some(co) = &self.coord {
             run.controls.page.extend(co.take_lead_asks());
         }
+        // (A member's page's: its broker's or its viewer's.)
+        for c in [&self.broker, &self.viewer].into_iter().flatten() {
+            run.controls.page.extend(c.take_lead_asks());
+        }
         lead::take(&mut run, &home);
         run.tend_brokers();
         run.tend_reach();
@@ -9237,6 +9302,8 @@ impl Agent {
                 .iter()
                 .any(|e| matches!(e, crate::pool::driver::Event::Failed { what: "save the records", .. }));
             self.pool_lead_files(r, saved);
+            // (The build pages' asks: its own page's and the members' passed on.)
+            self.act_on(&out.acts);
             // (A catalog and GC read today's files: caught up only once they hold these records.)
             let mut run = self.pooled()?;
             if run.behind() {
@@ -9513,7 +9580,7 @@ impl Agent {
             return;
         }
         let mut asks = crate::inputs::take_asks(&self.o.home);
-        if let Some(c) = &self.coord {
+        for c in [&self.coord, &self.broker, &self.viewer].into_iter().flatten() {
             asks.extend(c.take_inputs_asks());
         }
         if asks.is_empty() {

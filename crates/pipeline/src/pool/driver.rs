@@ -190,6 +190,28 @@ pub enum Msg {
     Leads(u64),
     /// An ask to hand the lead to a member, passed on to the lead by the member whose owner asked.
     HandTo(String),
+    /// A build page's ask to cancel a job (§11), passed on to the lead by the member whose page
+    /// asked; sent only to a lead on the sender's own app (an older one wouldn't read it).
+    Cancel(crate::control::Cancel),
+    /// A build page's ask to try a failed target again now (§11): the lead forgets its failures
+    /// (the coordinator's, and its own back-off). Passed on as `Cancel` is.
+    Retry(crate::control::Retry),
+}
+
+/// A build page's ask the lead acts on (`Out::acts`): from its own page, or a member's (`Msg`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Act {
+    Cancel(crate::control::Cancel),
+    Retry(crate::control::Retry),
+}
+
+impl Act {
+    fn msg(self) -> Msg {
+        match self {
+            Act::Cancel(c) => Msg::Cancel(c),
+            Act::Retry(r) => Msg::Retry(r),
+        }
+    }
 }
 
 /// An ask of this Mac's owner.
@@ -203,6 +225,8 @@ pub enum Ask {
     /// waiting for its target; `downgrade`, also on an older app than the current term's
     /// (crate::pool::term::forced). What it needs now: `Driver::takeover`.
     TakeOver { force: bool, downgrade: bool },
+    /// A build page's on this Mac (`Act`): the lead acts on it; a member passes it on.
+    Act(Act),
 }
 
 /// What a member heard since its last step.
@@ -303,6 +327,8 @@ pub struct Out {
     pub stop: Option<String>,
     /// A listing of the journal to make, handed back in `Heard::listed`.
     pub list: Option<Listing>,
+    /// Leading: the build pages' asks to act on (its own page's, and the members' passed on).
+    pub acts: Vec<Act>,
     /// What happened.
     pub events: Vec<Event>,
 }
@@ -656,6 +682,7 @@ impl Driver {
         // What it heard.
         let (mut tells, mut hand_asks, mut takeover, mut led_by_target, mut passed) =
             (Vec::new(), Vec::new(), None, false, None);
+        let mut acts: Vec<Act> = Vec::new();
         for (from, m) in heard.msgs {
             match m {
                 Msg::Tell(keys) => tells.push((from, keys)),
@@ -675,12 +702,15 @@ impl Driver {
                         self.passing.as_ref().is_some_and(|p| p.passed.term == e && p.passed.member == from)
                 }
                 Msg::HandTo(to) => hand_asks.push(to),
+                Msg::Cancel(c) => acts.push(Act::Cancel(c)),
+                Msg::Retry(r) => acts.push(Act::Retry(r)),
             }
         }
         for a in heard.asks {
             match a {
                 Ask::HandTo(to) => hand_asks.push(to),
                 Ask::TakeOver { force, downgrade } => takeover = Some((force, downgrade)),
+                Ask::Act(a) => acts.push(a),
             }
         }
         let learnt = self.learn(io, passed);
@@ -722,6 +752,25 @@ impl Driver {
             );
         } else if let Some(t) = self.cur.lead.as_ref().filter(|t| t.member != self.me.id) {
             out.send.extend(hand_asks.into_iter().map(|to| (t.member.clone(), Msg::HandTo(to))));
+        }
+        // The pages' asks: acted on leading, else passed on to a lead on this app (an older app's
+        // mail reader would fail on them).
+        if self.lead.is_some() {
+            out.acts.extend(acts);
+        } else if !acts.is_empty() {
+            match self.cur.lead.as_ref().filter(|t| t.member != self.me.id) {
+                Some(t) if t.app == self.me.app => {
+                    out.send.extend(acts.into_iter().map(|a| (t.member.clone(), a.msg())))
+                }
+                Some(t) => out.events.push(Event::Failed {
+                    what: "pass the build page's ask on to the lead",
+                    why: format!("the lead runs app {}, this Mac {}: ask on the lead's own page", t.app, self.me.app),
+                }),
+                None => out.events.push(Event::Failed {
+                    what: "pass the build page's ask on to the lead",
+                    why: "no lead now".into(),
+                }),
+            }
         }
         if self.passing.is_some() {
             self.passing_step(io, &mut out, led_by_target);
@@ -1990,6 +2039,48 @@ mod tests {
         let o = step(a, ia, Heard { settled: Some(serde_json::json!({"leases": []})), ..able() });
         assert!(o.events.iter().any(|e| matches!(e, Event::Handover { what: "passed", .. })), "{:?}", o.events);
         assert_eq!(o.leads, None);
+    }
+
+    #[test]
+    fn a_pages_cancel_or_retry_goes_to_the_lead_on_its_app_alone() {
+        // (Task #409 phase 3) a member's page's ask is mailed to the lead, which acts on it, as on
+        // its own page's; a lead on another app is told nothing (its mail reader wouldn't know it).
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        step(&mut b, &ib, able());
+        let cancel = Act::Cancel(crate::control::Cancel::new("6/1/2", Some("unit"), false, "the build page (m1)"));
+        let retry = Act::Retry(crate::control::Retry {
+            target: "6/1/3".into(),
+            step: Some("unit".into()),
+            ..Default::default()
+        });
+        ib.pass(5);
+        let o = step(&mut b, &ib, Heard { asks: vec![Ask::Act(cancel.clone()), Ask::Act(retry.clone())], ..able() });
+        let to_a: Vec<&Msg> = o.send.iter().filter(|(to, _)| to == A).map(|(_, m)| m).collect();
+        assert!(to_a.iter().any(|m| matches!(m, Msg::Cancel(c) if c.target == "6/1/2")), "{:?}", o.send);
+        assert!(to_a.iter().any(|m| matches!(m, Msg::Retry(r) if r.target == "6/1/3")), "{:?}", o.send);
+        assert!(o.acts.is_empty(), "a member acts on none");
+        // The lead: the member's, and its own page's.
+        let msgs: Vec<(String, Msg)> =
+            o.send.into_iter().filter(|(to, _)| to == A).map(|(_, m)| (B.to_string(), m)).collect();
+        ia.pass(5);
+        let o = step(&mut a, &ia, Heard { msgs, asks: vec![Ask::Act(retry.clone())], ..able() });
+        assert_eq!(o.acts, vec![cancel.clone(), retry.clone(), retry.clone()]);
+        // A member on another app than the lead's: refused, said why.
+        let mut c = Driver::unlocked(member(C, "MacBook-Pro", "development"), Saved::default());
+        let ic = Mac::new(&mem);
+        step(&mut c, &ic, able());
+        let o = step(&mut c, &ic, asks(Ask::Act(cancel)));
+        assert!(!o.send.iter().any(|(_, m)| matches!(m, Msg::Cancel(_))), "{:?}", o.send);
+        assert!(
+            o.events.iter().any(|e| matches!(e, Event::Failed { what, .. } if what.contains("page's ask"))),
+            "{:?}",
+            o.events
+        );
     }
 
     #[test]

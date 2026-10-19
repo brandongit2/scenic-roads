@@ -219,6 +219,20 @@ pub struct Cancel {
     pub at: u64,
 }
 
+/// A build page's ask to try a failed target again now (docs/pool.md §11): the lead forgets its
+/// failures, the coordinator's (`failed`: no worker held off it) and its agent's own back-off.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retry {
+    pub target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// Who asked, in words: "the build page (m1)".
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub at: u64,
+}
+
 impl Cancel {
     pub fn new(target: &str, step: Option<&str>, rerun_after_update: bool, by: &str) -> Cancel {
         Cancel {
