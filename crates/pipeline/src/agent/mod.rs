@@ -1631,13 +1631,21 @@ impl Agent {
                     // so this process joins as it goes rather than restarting into the pool later.)
                     let until = Instant::now() + JOIN_WAIT;
                     let mut said = false;
+                    let mut said_err = false;
                     let side = loop {
                         match pool::Side::open(&o.home, &o.home.join("pool"), &locks, &app, nas.clone()) {
                             Ok(Some(s)) => break Some(s),
                             // (A passing error, its folder unreadable a moment: tried again within
                             // the wait as a lock held is; past it, the start fails as before.)
                             Err(e) if Instant::now() < until && !STOP.load(Ordering::SeqCst) => {
-                                eprintln!("agent: opening this Mac's member in the pool: {e:#}; trying again");
+                                // (Said once: a lasting error isn't logged each second.)
+                                if !said_err {
+                                    eprintln!(
+                                        "agent: opening this Mac's member in the pool: {e:#}; trying again for up to {} s",
+                                        JOIN_WAIT.as_secs()
+                                    );
+                                    said_err = true;
+                                }
                                 std::thread::sleep(JOIN_TRY);
                             }
                             Err(e) => return Err(e),
@@ -2898,8 +2906,15 @@ impl Agent {
         }
         let now = now_s();
         let owed = std::mem::take(&mut self.owed);
+        // (An end aged out: its lease has lapsed; its folder, if it ended out of the pool, stays
+        // for the next process to hand off as a job it left, no longer waiting on the lead.)
+        let mut aged = Vec::new();
         let Some(c) = self.client(root, &mut Vec::new()) else {
-            self.owed = owed.into_iter().filter(|(at, _)| now.saturating_sub(*at) < OWED_S).collect();
+            let (keep, old): (Vec<_>, Vec<_>) = owed.into_iter().partition(|(at, _)| now.saturating_sub(*at) < OWED_S);
+            self.owed = keep;
+            for (_, t) in old {
+                self.unjournaled.remove(&t.lease());
+            }
             return;
         };
         let mut told = Vec::new();
@@ -2909,9 +2924,14 @@ impl Agent {
                 told.push((t.lease(), refused));
             } else if now.saturating_sub(at) < OWED_S {
                 left.push((at, t));
+            } else {
+                aged.push(t.lease());
             }
         }
         self.owed = left;
+        for id in aged {
+            self.unjournaled.remove(&id);
+        }
         for (id, refused) in told {
             self.told(id, refused);
         }
@@ -16878,6 +16898,30 @@ mod pool_tests {
         assert!(a.pool.is_some(), "in the pool as it starts");
         assert!(t0.elapsed() < JOIN_WAIT, "within the wait: {:?}", t0.elapsed());
         assert!(a.out_of_pool().is_none() && a.restart_now().is_none());
+    }
+
+    /// #423 nit: an end owed past `OWED_S` is dropped with its folder's wait on the lead; the
+    /// folder itself stays, for the next process's hand-off.
+    #[test]
+    fn an_owed_end_aged_out_no_longer_waits_on_the_lead() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = test_agent(Options {
+            root: Some(d.path().join("nas")),
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        let dir = d.path().join("home/pool/jobs/1-9");
+        std::fs::create_dir_all(&dir).unwrap();
+        a.unjournaled.insert(9, dir.clone());
+        a.owed
+            .push((now_s() - OWED_S - 1, Tell::Done(Box::new(crate::coord::Done { lease: 9, ..Default::default() }))));
+        a.tell_owed(&d.path().join("nas"));
+        assert!(a.owed.is_empty() && a.unjournaled.is_empty());
+        assert!(dir.is_dir(), "kept for the next process");
     }
 
     /// #423 follow-up: a passing error opening the member (its pool folder can't be made a moment)
