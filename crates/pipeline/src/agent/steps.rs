@@ -968,6 +968,12 @@ pub fn writes(step: &str, logical: &str, removal: bool) -> Option<bool> {
     row(step).map(|s| (s.writes)(logical, removal))
 }
 
+/// Whether any step of the table writes `logical`: a name no step makes (a file an older pipeline
+/// left in the manifest) is no output of today's build.
+pub fn made(logical: &str) -> bool {
+    TABLE.iter().any(|s| (s.writes)(logical, false))
+}
+
 /// Whether journal entry `e`'s changes are all within its step's write-set; why not when they
 /// aren't (the first outside it, and how many), or when the table has no row for its step.
 pub fn outside(e: &crate::pool::journal::Entry) -> Option<String> {
@@ -1379,6 +1385,28 @@ mod tests {
     use super::*;
     use crate::handoff::Handoff;
     use crate::pool::journal::{Entry, LeaseId};
+
+    #[test]
+    fn made_is_what_todays_steps_write() {
+        // The worldwide files the build makes (each family the NAS's manifest holds today).
+        for l in [
+            "global/roads/6-28-16",
+            "global/roadids/6-28-16",
+            "global/roaden/6-28-16",
+            "global/heritage/layer-summary",
+            "global/heritage/heritage-sources",
+            "global/marks/summary",
+            "global/railfreq",
+            "global/roadunits",
+            "global/spoken",
+        ] {
+            assert!(made(l), "{l}");
+        }
+        // Files an older pipeline left under global/ (no step makes them): not today's outputs.
+        for l in ["global/legacy/details-poi", "global/legacy/ferries", "global/pois", "global/other/x"] {
+            assert!(!made(l), "{l}");
+        }
+    }
 
     #[test]
     fn the_sets_are_todays() {

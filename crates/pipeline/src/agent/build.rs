@@ -4110,7 +4110,8 @@ pub fn catalog_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, Strin
     let mut served: Vec<String> = m
         .iter()
         .filter(|(l, _)| {
-            ["layers/", "base/", "hidata/", "markdata/", "ovdata/", "global/"].iter().any(|p| l.starts_with(p))
+            ["layers/", "base/", "hidata/", "markdata/", "ovdata/"].iter().any(|p| l.starts_with(p))
+                || (l.starts_with("global/") && crate::agent::steps::made(l))
                 || l.ends_with("/outlines")
         })
         .map(|(l, c)| format!("{l}={c}"))
@@ -6076,6 +6077,20 @@ pub(crate) mod tests {
         done.catalog_held = Some(k);
         assert!(line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), true), "publish").finished());
         assert!(!line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), false), "publish").finished());
+    }
+
+    #[test]
+    fn the_catalog_key_counts_only_global_files_a_step_makes() {
+        let mut m = BTreeMap::new();
+        m.insert("global/railfreq".to_string(), "global/railfreq.1111111111111111.bin".to_string());
+        let (i, r) = (BTreeMap::new(), Vec::new());
+        let k = catalog_key(&m, &i, &r);
+        // A file no step makes, left in the manifest by an older pipeline: no new catalog.
+        m.insert("global/legacy/ferries".into(), "global/legacy/ferries.2222222222222222.json".into());
+        assert_eq!(catalog_key(&m, &i, &r), k);
+        // One a step makes: a new one.
+        m.insert("global/spoken".into(), "global/spoken.3333333333333333.bin".into());
+        assert_ne!(catalog_key(&m, &i, &r), k);
     }
 
     #[test]

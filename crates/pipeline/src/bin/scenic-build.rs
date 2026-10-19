@@ -1556,8 +1556,15 @@ fn served_file(l: &str, basemap: &[String], global: &BTreeMap<String, String>) -
         || l.starts_with("hidata/")
         || l.starts_with("markdata/")
         || l.starts_with("ovdata/")
-        || l.starts_with("global/")
+        || served_global(l)
         || global.values().any(|g| g == l)
+}
+
+/// Whether `l` is a worldwide file the catalog serves: one under `global/` that a step of today's
+/// build makes (pipeline::agent::steps::made). Another name there that the manifest still holds,
+/// made by an older pipeline, isn't listed: no Mac's mirror copies it, the map never reads it.
+fn served_global(l: &str) -> bool {
+    l.starts_with("global/") && pipeline::agent::steps::made(l)
 }
 
 /// How a catalog is written (`--delta`, `--whole`).
@@ -1642,7 +1649,7 @@ fn catalog(
             ["ovdata", t] => {
                 ovdata.insert(Unit::parse(t).context("tile")?.slash(), logical.clone());
             }
-            ["global", ..] => {
+            ["global", ..] if served_global(logical) => {
                 global.insert(logical.trim_start_matches("global/").to_string(), logical.clone());
             }
             _ => {}
@@ -6215,6 +6222,17 @@ mod tests {
             "layers/basemap/world-2027-03-01.0123456789abcdef.pmtiles".to_string(),
         );
         assert_eq!(super::worldwide_globals(&m).get("lakefill"), None);
+    }
+
+    /// Under `global/`, the catalog lists only what a step of today's build makes: a file an older
+    /// pipeline left in the manifest isn't served (nor named in `global`).
+    #[test]
+    fn the_catalog_serves_only_global_files_a_step_makes() {
+        let g = std::collections::BTreeMap::new();
+        assert!(super::served_file("global/railfreq", &[], &g));
+        assert!(super::served_file("global/heritage/layer-summary", &[], &g));
+        assert!(!super::served_file("global/legacy/details-poi", &[], &g));
+        assert!(!super::served_global("global/legacy/ferries"));
     }
 
     /// A pack or lo job's base packs another such job uses (it holds them: store::cachefile) aren't

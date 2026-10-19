@@ -105,7 +105,7 @@ GROUPS = [
     ]),
     ('Being deleted', [
         ('gone', None, 'mix', 'The old build’s converted files',
-         'nothing live (catalog 17 serves the jobs’ own)',
+         'nothing: no catalog lists them (catalogs list only the global/ files a step makes)',
          'the old pipeline (deleted)',
          'NAS global/legacy/ (38 files)',
          'being deleted with the old pipeline',

@@ -330,7 +330,8 @@ floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, th
 **Mirror, per Mac** (`store::mirror`, `store::pieces`, `crates/server/src/downloads.rs`).
 - **Only what's downloaded.** The map reads a file from the Mac when it's there, else from the NAS.
   What's downloaded is this Mac's alone (`downloads.json` in its home).
-- **The World, zoomed out:** the build's worldwide files (`global/`), the Canadian lake fill
+- **The World, zoomed out:** the build's worldwide files (`global/`: only those a step makes, the
+  catalog lists no other), the Canadian lake fill
   (`work/lakefill/<date>`, read by the water's deeper zooms anywhere in Canada), every layer's root
   and lo packs (z0–8), markdata, ovdata, and the basemap's zooms 0–10: about 10 GB. Not the pass's
   outlines.
@@ -1474,8 +1475,9 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
 4. **Per-unit pipeline and rankings: done**, but determinism tests and validation (§8).
 5. **Browser: done** (`docs/phase5.md`), but drawing, splitting and merging regions in the app.
 6. **Cutover: done.** Left: the NAS's files from the build before the agent, which nothing reads
-   (`global/legacy/`, `layers/basemap/legacy-*`, `sources/legacy/`, `sources/registers/legacy`,
-   `sources/registers/legacy-seeds`); `pipeline::legacy` still names live code; the `terrain` and
+   (`global/legacy/`: still in the build's manifest, so GC keeps it, but no catalog lists it since
+   catalogs list only the `global/` files a step makes; `layers/basemap/legacy-*`,
+   `sources/legacy/`, `sources/registers/legacy`, `sources/registers/legacy-seeds`); `pipeline::legacy` still names live code; the `terrain` and
    `slope` programs' build-folder modes (`terrain --scan` is live).
 7. **Features,** each on its own. Built: the terrain repair and fix (§6, Terrain), the water (§6,
    Water), 3D buildings (`docs/buildings3d.md`). Planned: single-pixel towers of 100–300 m at z7–z9
