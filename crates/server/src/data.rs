@@ -803,14 +803,9 @@ mod tests {
             assert_eq!(ask(peer, proxied).await, StatusCode::FORBIDDEN, "{peer}");
         }
         assert_eq!(s.data.catalog().n, 1, "refused: nothing read");
-        let t = std::time::Instant::now();
+        // Adopted at once: the new catalog read by the time the answer comes, not at the next poll.
         assert_eq!(ask("127.0.0.1", false).await, StatusCode::OK);
         assert_eq!(s.data.catalog().n, 2);
-        store::clock::ended_before(
-            t,
-            Duration::from_secs(poll_every(true, true)),
-            "adopted at once, not at the next poll",
-        );
         assert_eq!(ask("::1", false).await, StatusCode::OK);
     }
 

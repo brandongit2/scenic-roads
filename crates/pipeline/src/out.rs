@@ -1117,9 +1117,9 @@ mod tests {
         out.save().unwrap();
         let m = root.join("state/build/manifest.json");
         let written = std::fs::metadata(&m).unwrap().modified().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        // Nothing new: the records stay as they were (no rename over a file another Mac may have
-        // open), and what another step saved meanwhile is read.
+        std::thread::sleep(std::time::Duration::from_millis(20)); // (sleep ok: the manifest's times apart)
+                                                                  // Nothing new: the records stay as they were (no rename over a file another Mac may have
+                                                                  // open), and what another step saved meanwhile is read.
         let mut other = Out::unbound(&root, &d.path().join("s2")).unwrap();
         other.changes.insert("b".into(), Some("b.2222222222222222.x".into()));
         other.save().unwrap();
