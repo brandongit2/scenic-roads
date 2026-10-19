@@ -487,7 +487,8 @@ func newerApp() -> URL? {
 }
 
 /// Copies `new` over this app (beside it first, then swapped in by renames) and opens it once this
-/// process has ended. False, and this app left as it was, if the copy fails.
+/// process has ended. False, and this app left as it was, if the copy fails; false too, the new
+/// copy in place but this process running on, if the helper that would open it can't start.
 func replaceSelf(with new: URL) -> Bool {
     let me = Bundle.main.bundleURL
     let dir = me.deletingLastPathComponent()
@@ -520,8 +521,10 @@ func replaceSelf(with new: URL) -> Bool {
     p.standardOutput = FileHandle.nullDevice
     p.standardError = FileHandle.nullDevice
     do { try p.run() } catch {
-        updateLog("starting the reopen helper: \(error.localizedDescription); \(me.path) stays closed until opened")
-        return true
+        // (Not quitting then: this process runs on from the copy left aside, the new one in place
+        // for the next launch.)
+        updateLog("starting the reopen helper: \(error.localizedDescription); this app runs on, the new one opens at its next launch")
+        return false
     }
     updateLog("replaced \(me.path) by \(new.path) (version \(bundleVersion(me) ?? "?")); helper pid \(p.processIdentifier) opens it once pid \(getpid()) ends")
     return true
@@ -537,6 +540,13 @@ func updateLog(_ line: String) {
     let fmt = DateFormatter()
     fmt.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
     let data = Data("\(fmt.string(from: Date())) [\(getpid())] \(line)\n".utf8)
+    // (Kept to its last ~512 KB once it passes 1 MB, cut at a line.)
+    if let size = (try? FileManager.default.attributesOfItem(atPath: f.path))?[.size] as? NSNumber, size.intValue > 1 << 20,
+       let old = try? Data(contentsOf: f) {
+        let tail = old.suffix(512 << 10)
+        let kept = tail.firstIndex(of: 10).map { tail[tail.index(after: $0)...] } ?? tail
+        try? Data(kept).write(to: f, options: .atomic)
+    }
     if let h = FileHandle(forWritingAtPath: f.path) {
         defer { try? h.close() }
         _ = try? h.seekToEnd()

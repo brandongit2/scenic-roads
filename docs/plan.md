@@ -37,7 +37,8 @@ coverage, or once for the whole world, so region size, count and borders never s
   binary, `--reopen`) waits for it to end, then opens the new app (without its window) after a
   second, checks that it runs, and retries, backing off, for about two minutes (an `open` sent
   while LaunchServices still counts the old process goes to it and is lost), each step in
-  `~/Library/Logs/scenic/update.log`. Opened, and
+  `~/Library/Logs/scenic/update.log` (cut to its last 512 KB past 1 MB); if the helper can't
+  start, the old app runs on and the new one opens at its next launch. Opened, and
   each poll, it checks that the build service's launcher runs from its own bundle (macOS's
   network-volume permission is granted to /Applications/Scenic.app, not to the old copy an update
   leaves aside, `.Scenic.app.old-<pid>`); a launcher whose executable can't be read counts as
