@@ -510,7 +510,8 @@ offset. Where coverage ends, roads end.
   server makes z12 on demand. **slope**, a piece per z6 tile (its z9–11 hi pack and its mid,
   `work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs (its own z6 tile's copied
   whole first) and its neighbours' edge strips; **slope-lo**, an assembly per z3 tile from its
-  pieces' mids. Together the area's whole run's packs, byte for byte.
+  pieces' mids (each read whole, eight at once, under a deadline and tried again while it fails
+  transiently). Together the area's whole run's packs, byte for byte.
 - **Worldwide z8 terrain** (`sources/terrain-z8-v3`, once, not served): every z8 tile repaired, with
   each tile's maximum (AWS's tiles alone, §10). Peaks read it.
 - **Grids (z11):** land cover, canopy and cover, for analysis only. Each unit makes the grid tiles

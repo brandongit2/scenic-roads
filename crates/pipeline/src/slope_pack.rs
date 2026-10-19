@@ -344,8 +344,15 @@ pub fn write_mid(path: &std::path::Path, t: (u32, u32), tiles: &[Made]) -> Resul
 pub fn read_mid(path: &std::path::Path) -> Result<((u32, u32), Vec<Made>)> {
     use anyhow::Context;
     let what = || path.display().to_string();
-    let r =
-        store::sect::SectReader::open(store::range::PlainFile::open(path).with_context(what)?).with_context(what)?;
+    // (Read whole, one read under a deadline, tried again while it fails transiently: its sections
+    // read one by one from the share were a round trip each, some 21 a mid.)
+    let bytes = crate::depth::grids::open_retrying(
+        path,
+        &|p| crate::depth::grids::within(p, MID_DEADLINE, read_file),
+        MID_WAITS,
+    )
+    .with_context(what)?;
+    let r = store::sect::SectReader::open(bytes).with_context(what)?;
     let m = r.meta();
     anyhow::ensure!(m["fmt"].as_u64() == Some(MID_FMT) && m["step"] == "slope", "{}: not a slope mid", what());
     anyhow::ensure!(
@@ -369,6 +376,22 @@ pub fn read_mid(path: &std::path::Path) -> Result<((u32, u32), Vec<Made>)> {
     }
     out.sort_by_key(|t| (t.0, t.1, t.2));
     Ok(((t.x, t.y), out))
+}
+
+/// How long a mid's read may take before the job fails (an SMB read can stay stuck in the kernel
+/// for many minutes; the job's own retry takes over). A mid is a few MB.
+const MID_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The waits before a mid's read is tried again (crate::depth::grids::open_retrying); a test's
+/// short.
+const MID_WAITS: &[std::time::Duration] =
+    if cfg!(test) { &[std::time::Duration::from_millis(1)] } else { &crate::depth::grids::OPEN_WAITS };
+
+/// How many mids an assembly reads at once (`read_mids`): each a round trip or two to the share.
+const MIDS_AT_ONCE: usize = 8;
+
+fn read_file(p: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    std::fs::read(p)
 }
 
 /// The tiles a piece (z6 tile `t`) works out: the terrain tiles it has (z9–12, `has`) and their
@@ -640,18 +663,47 @@ pub fn build_piece(
     Ok(rep)
 }
 
-/// The mids of z3 tile `q`'s pieces `ts` that have one, each read and checked (`read_mid`).
+/// The mids of z3 tile `q`'s pieces `ts` that have one, each read whole and checked (`read_mid`),
+/// `MIDS_AT_ONCE` at once (one after another, each section a read, an area's 60-odd mids took
+/// most of an assembly's time: task #400). The first failure fails it.
 fn read_mids(out: &Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<BTreeMap<(u32, u32), Vec<Made>>> {
-    let mut mids: BTreeMap<(u32, u32), Vec<Made>> = BTreeMap::new();
+    let mut todo: Vec<((u32, u32), String)> = Vec::new();
     for &t in ts {
         anyhow::ensure!((t.0 >> 3, t.1 >> 3) == q, "6/{}/{} isn't in 3/{}/{}", t.0, t.1, q.0, q.1);
         if let Some(c) = out.get(&mid_logical(t.0, t.1)) {
-            let (of, tiles) = read_mid(&out.path(c))?;
-            anyhow::ensure!(of == t, "{c} is 6/{}/{}'s mid", of.0, of.1);
-            mids.insert(t, tiles);
+            todo.push((t, c.to_string()));
         }
     }
-    Ok(mids)
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let got: Mutex<BTreeMap<(u32, u32), Vec<Made>>> = Mutex::new(BTreeMap::new());
+    let failed: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    std::thread::scope(|s| {
+        for _ in 0..MIDS_AT_ONCE.min(todo.len()) {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if i >= todo.len() || failed.lock().unwrap().is_some() {
+                    return;
+                }
+                let (t, c) = &todo[i];
+                let r = read_mid(&out.path(c)).and_then(|(of, tiles)| {
+                    anyhow::ensure!(of == *t, "{c} is 6/{}/{}'s mid", of.0, of.1);
+                    Ok(tiles)
+                });
+                match r {
+                    Ok(tiles) => {
+                        got.lock().unwrap().insert(*t, tiles);
+                    }
+                    Err(e) => {
+                        failed.lock().unwrap().get_or_insert(e);
+                    }
+                }
+            });
+        }
+    });
+    match failed.into_inner().unwrap() {
+        Some(e) => Err(e),
+        None => Ok(got.into_inner().unwrap()),
+    }
 }
 
 /// Makes z3 tile `q`'s zoomed-out slope (an assembly: its lo pack, z3–8) from its pieces' mids (`ts`:
@@ -1511,6 +1563,46 @@ mod tests {
         assert_eq!(now.0.len(), ts.len() + 1, "{:?}", now.0);
         assert_eq!(now.0, now.1, "made again over what it stored: the same");
         assert_eq!(now, before, "the same packs, byte for byte (their content names), first and again");
+    }
+
+    /// Task #400: an area's mids read whole, several at once, give each piece's tiles as written, in
+    /// order; a mid that can't be read, or is another piece's, fails the read.
+    #[test]
+    fn an_areas_mids_read_together_are_each_pieces_tiles() {
+        let d = tempfile::tempdir().unwrap();
+        let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
+        let q = (2u32, 1u32);
+        let ts: Vec<(u32, u32)> = (0..20u32).map(|k| (16 + k % 8, 8 + k / 8)).collect();
+        let tiles_of = |t: (u32, u32)| -> Vec<Made> {
+            let mut v = vec![(6, t.0, t.1, format!("6 {t:?}").into_bytes())];
+            for k in 0..4u32 {
+                v.push((7, 2 * t.0 + (k & 1), 2 * t.1 + (k >> 1), vec![k as u8; 100 + (t.0 * 7 + t.1) as usize]));
+            }
+            v.sort_by_key(|t| (t.0, t.1, t.2));
+            v
+        };
+        // (Every piece but the last has a mid: that one's tiles come from the lo pack.)
+        for &t in &ts[..ts.len() - 1] {
+            let p = out.scratch_file("mid.sect");
+            write_mid(&p, t, &tiles_of(t)).unwrap();
+            out.put_file(&mid_logical(t.0, t.1), "sect", &p).unwrap();
+        }
+        let mids = read_mids(&out, q, &ts).unwrap();
+        assert_eq!(mids.len(), ts.len() - 1);
+        for &t in &ts[..ts.len() - 1] {
+            assert_eq!(mids[&t], tiles_of(t), "6/{}/{}", t.0, t.1);
+        }
+        // Another piece's mid under one's name: an error, naming it.
+        let (a, b) = (ts[0], ts[1]);
+        let theirs = out.get(&mid_logical(b.0, b.1)).unwrap().to_string();
+        out.set(&mid_logical(a.0, a.1), Some(theirs.clone()));
+        let e = read_mids(&out, q, &ts).unwrap_err().to_string();
+        assert!(e.contains(&theirs) && e.contains(&format!("6/{}/{}'s mid", b.0, b.1)), "{e}");
+        // One gone: an error (NotFound is tried again first, as a share's moment of it is).
+        std::fs::remove_file(out.path(&theirs)).unwrap();
+        assert!(read_mids(&out, q, &ts[1..2]).is_err());
+        // A piece outside q: refused before anything is read.
+        assert!(read_mids(&out, (0, 0), &ts).unwrap_err().to_string().contains("isn't in 3/0/0"));
     }
 
     /// Task #400's measure (run by hand, read-only: nothing written to the root): a real slope piece
