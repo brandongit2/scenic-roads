@@ -607,6 +607,7 @@ pub fn build_piece(
 ) -> Result<Report> {
     let rep = build_piece_later(out, t, expect_same, on)?;
     out.save()?;
+    out.claim_into_costin();
     Ok(rep)
 }
 

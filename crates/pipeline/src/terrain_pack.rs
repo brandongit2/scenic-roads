@@ -1794,6 +1794,7 @@ pub fn build_piece_offered(
 ) -> anyhow::Result<PackReport> {
     let rep = build_piece_later(out, raw, t, cov, src, expect_same, progress, offers)?;
     out.save()?;
+    out.claim_into_costin();
     progress("packs", 1, 1);
     Ok(rep)
 }

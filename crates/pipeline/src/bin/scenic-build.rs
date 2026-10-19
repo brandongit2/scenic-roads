@@ -1287,7 +1287,6 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
     drop(p);
     eprintln!("pack: {} tiles from {} units", ts.len(), packs.len());
     parts.start(1);
-    let t0 = std::time::Instant::now();
     let n = ts.len() as u64;
     // (Within a tile: its ways read, then its tiles drawn, then written.)
     let at = |k: usize, f: f64| pipeline::agent::jobs::report_f(k as f64 + f, n, "map tiles");
@@ -1372,18 +1371,16 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
             ],
         )?;
         drop(p);
-        note_cost("pack", &t.slash(), c);
         let said = format!(
-            "pack {} ({}/{}): {} ways, {} road tiles, {} parts ({:.0?})",
+            "pack {} ({}/{}): {} ways, {} road tiles, {} parts",
             t.slash(),
             k + 1,
             ts.len(),
             in_t.len(),
             roads.len(),
-            hd.parts.len(),
-            t0.elapsed()
+            hd.parts.len()
         );
-        landing.then(out, "pack", &t.slash(), said)?;
+        landing.then(out, "pack", &t.slash(), said, c)?;
     }
     landing.land(out)?;
     pipeline::agent::jobs::report(n, n, "map tiles");
@@ -1994,7 +1991,11 @@ fn note_started(key: &str) {
 /// not counted) and its time, noted for the coordinator (`SCENIC_COSTS`), which gives a helper only
 /// work that fits its memory (crate::coord::job_peak); with its inputs' measures (pipeline::costin).
 fn note_cost(step: &str, target: &str, t0: std::time::Instant) {
-    let line = done_line(step, target, t0);
+    write_cost_line(step, target, &done_line(step, target, t0));
+}
+
+/// Writes a target's cost line (`done_line`) to `SCENIC_COSTS`.
+fn write_cost_line(step: &str, target: &str, line: &serde_json::Value) {
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
     let r = std::fs::OpenOptions::new()
         .create(true)
@@ -4480,7 +4481,7 @@ fn settle_tails(
 /// removed, and what it cost noted. `how`: where its tail's last steps ran. (What it saves is
 /// `pipeline::unit::saved_files`, all a helper's hand-off may change: keep the two together.)
 fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
-    let Built { u, dir, bdir, rep, tools, carry, piece, t, peak, group, disk, sizes, .. } = b;
+    let Built { u, dir, bdir, rep, tools, carry, piece, t, peak, group, disk, mut sizes, .. } = b;
     use pipeline::timings::Class;
     use pipeline::unit::{owns, stage as unit_stage};
     areas(|a| a.on(&u.slash()));
@@ -4616,6 +4617,13 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     s.end();
     let s = unit_stage("records saved", Class::NasWrite);
     out.save()?;
+    // (Its grids' and base pack's uploads, put off: their bytes on its cost line.)
+    let (wrote, creates) = out.claim_written(out.mark());
+    for (k, n) in [("wrote", wrote), ("creates", creates)] {
+        if n > 0 {
+            *sizes.entry(k.to_string()).or_default() += n;
+        }
+    }
     pipeline::control::done("unit", &u.slash());
     s.end();
     areas(|a| a.finished(&u.slash()));
@@ -4911,13 +4919,8 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
         // (Its inputs' measures: the buildings and parts read, drawn or not.)
         pipeline::costin::set("buildings", sum.buildings + sum.outside);
         pipeline::costin::set("parts", sum.parts);
-        note_cost("bldtiles", &t.slash(), c);
-        landing.then(
-            out,
-            "bldtiles",
-            &t.slash(),
-            format!("bldtiles {}: {}", t.slash(), serde_json::to_string(&sum)?),
-        )?;
+        let said = format!("bldtiles {}: {}", t.slash(), serde_json::to_string(&sum)?);
+        landing.then(out, "bldtiles", &t.slash(), said, c)?;
     }
     landing.land(out)
 }
@@ -5277,9 +5280,8 @@ fn terrain_pieces(
                 offers,
             )
         })?;
-        note_cost("terrain", &t.slash(), c);
-        let said = format!("terrain {} ({} of {n}): {r:?} ({:.0?} and its uploads)", t.slash(), k + 1, c.elapsed());
-        landing.then(out, "terrain", &t.slash(), said)?;
+        let said = format!("terrain {} ({} of {n}): {r:?}", t.slash(), k + 1);
+        landing.then(out, "terrain", &t.slash(), said, c)?;
     }
     landing.land(out)?;
     pipeline::control::safe_point("terrain");
@@ -5395,13 +5397,7 @@ fn slope_pieces(out: &mut Out, cov: &pipeline::coverage::Coverage, ts: &[Unit], 
                 pipeline::agent::jobs::report(done, total, what)
             })
         })?;
-        note_cost("slope", &t.slash(), c);
-        landing.then(
-            out,
-            "slope",
-            &t.slash(),
-            format!("slope {}: {r:?} ({:.0?} and its uploads)", t.slash(), c.elapsed()),
-        )?;
+        landing.then(out, "slope", &t.slash(), format!("slope {}: {r:?}", t.slash()), c)?;
     }
     landing.land(out)
 }
@@ -5409,21 +5405,43 @@ fn slope_pieces(out: &mut Out, cov: &pipeline::coverage::Coverage, ts: &[Unit], 
 /// A target whose uploads were put off (pipeline::out::Out::put_file_later) so they go on beside
 /// the next target's work: noted done (pipeline::control::done) only once they've landed and the
 /// save that names them is made (`land`), so never before its outputs are on the NAS. One at a
-/// time: a target's uploads wait for the one before's (`then`).
+/// time: a target's uploads wait for the one before's (`then`). Its cost line is taken as its work
+/// ends and written as it lands, with the bytes its own uploads copied (`Out::claim_written`).
 #[derive(Default)]
 struct Landing {
-    /// The target uploading: its step, its name, the mark after its uploads, its line for the log.
-    up: Option<(&'static str, String, pipeline::out::Mark, String)>,
+    up: Option<Uploading>,
+}
+
+/// The target uploading (`Landing`).
+struct Uploading {
+    step: &'static str,
+    target: String,
+    /// The mark after its uploads.
+    mark: pipeline::out::Mark,
+    /// Its line for the log, the time it began, and its cost line (`done_line`) as its work ended.
+    said: String,
+    began: std::time::Instant,
+    cost: serde_json::Value,
 }
 
 impl Landing {
     /// The target uploading saved and noted done, once its uploads have landed (failing, the job
-    /// fails, the target not noted done).
+    /// fails, the target not noted done); its cost line written with its uploads' bytes.
     fn land(&mut self, out: &mut Out) -> Result<()> {
-        if let Some((step, target, mark, said)) = self.up.take() {
-            out.save_upto(mark)?;
-            eprintln!("{said}");
-            pipeline::control::done(step, &target);
+        if let Some(mut u) = self.up.take() {
+            out.save_upto(u.mark)?;
+            let (wrote, creates) = out.claim_written(u.mark);
+            if let Some(m) = u.cost.get_mut("sizes").and_then(|v| v.as_object_mut()) {
+                for (k, n) in [("wrote", wrote), ("creates", creates)] {
+                    let had = m.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+                    if had + n > 0 {
+                        m.insert(k.into(), (had + n).into());
+                    }
+                }
+            }
+            eprintln!("{} ({:.0?} with its uploads)", u.said, u.began.elapsed());
+            pipeline::control::done(u.step, &u.target);
+            write_cost_line(u.step, &u.target, &u.cost);
         }
         Ok(())
     }
@@ -5442,21 +5460,31 @@ impl Landing {
         }
     }
 
-    /// `target` of `step`, its uploads put off just now, uploading next: the one before landed
-    /// first (its uploads came before these, so this waits for those alone).
-    fn then(&mut self, out: &mut Out, step: &'static str, target: &str, said: String) -> Result<()> {
+    /// `target` of `step` (begun at `began`, `cost_start`), its work done and its uploads put off
+    /// just now, uploading next: its cost line taken now (its measures, before the next target's
+    /// begin), the one before landed first (its uploads came before these, so this waits for those
+    /// alone).
+    fn then(
+        &mut self,
+        out: &mut Out,
+        step: &'static str,
+        target: &str,
+        said: String,
+        began: std::time::Instant,
+    ) -> Result<()> {
+        let cost = done_line(step, target, began);
         self.land(out)?;
-        self.up = Some((step, target.to_string(), out.mark(), said));
+        self.up = Some(Uploading { step, target: target.to_string(), mark: out.mark(), said, began, cost });
         Ok(())
     }
 
     /// `step`'s safe point: with the build pausing, the target uploading is landed (saved and noted
-    /// done) before the job stops there.
+    /// done) and the job stops here (read once, so a drain between can't skip the landing).
     fn safe_point(&mut self, out: &mut Out, step: &str) -> Result<()> {
         if pipeline::control::draining() {
             self.land(out)?;
+            pipeline::control::stop_paused(step);
         }
-        pipeline::control::safe_point(step);
         Ok(())
     }
 }
@@ -6138,8 +6166,19 @@ mod tests {
         use super::{Landing, Out};
         let d = tempfile::tempdir().unwrap();
         let done = d.path().join("done");
-        // (The only test here that notes targets done.)
+        // (The only test here that notes targets done or their costs.)
         std::env::set_var(pipeline::control::DONE_ENV, &done);
+        let costs = d.path().join("costs");
+        std::env::set_var("SCENIC_COSTS", &costs);
+        let now = std::time::Instant::now;
+        // Each target's cost line, with its own uploads' bytes and files.
+        let cost_of = |target: &str| -> Option<(u64, u64)> {
+            let text = std::fs::read_to_string(&costs).unwrap_or_default();
+            text.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).find_map(|v| {
+                (v["unit"].as_str()? == pipeline::coord::cost_key("slope", target))
+                    .then(|| (v["sizes"]["wrote"].as_u64().unwrap_or(0), v["sizes"]["creates"].as_u64().unwrap_or(0)))
+            })
+        };
         let root = d.path().join("nas");
         let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
         let put = |out: &mut Out, l: &str, bytes: &[u8]| {
@@ -6150,31 +6189,37 @@ mod tests {
         let noted = || pipeline::control::read_done(&done, "slope");
         let saved = |l: &str| pipeline::out::read_manifest(&root).unwrap().contains_key(l);
         let mut landing = Landing::default();
-        put(&mut out, "layers/slope/hi/6-1-1", b"a");
-        landing.then(&mut out, "slope", "6/1/1", "a".into()).unwrap();
+        put(&mut out, "layers/slope/hi/6-1-1", b"aaa");
+        landing.then(&mut out, "slope", "6/1/1", "a".into(), now()).unwrap();
+        assert_eq!(cost_of("6/1/1"), None, "written as it lands");
         assert!(noted().is_empty(), "not before its uploads have landed");
         let r: anyhow::Result<()> = landing.after(&mut out, |out| {
-            put(out, "layers/slope/hi/6-1-2", b"b");
+            put(out, "layers/slope/hi/6-1-2", b"bbbbb");
+            put(out, "layers/slope/hi/6-1-3", b"bb");
             Ok(())
         });
         r.unwrap();
-        landing.then(&mut out, "slope", "6/1/2", "b".into()).unwrap();
+        landing.then(&mut out, "slope", "6/1/2", "b".into(), now()).unwrap();
         assert_eq!(noted(), ["6/1/1"]);
+        assert_eq!(cost_of("6/1/1"), Some((3, 1)), "its own upload's bytes, not the next one's");
         assert!(saved("layers/slope/hi/6-1-1"));
         // The next one's work failing: the one uploading landed first.
         let r: anyhow::Result<()> = landing.after(&mut out, |_| anyhow::bail!("its work failed"));
         assert!(r.is_err());
         assert_eq!(noted(), ["6/1/1", "6/1/2"]);
+        assert_eq!(cost_of("6/1/2"), Some((7, 2)));
         // An upload that fails: the target isn't noted done; the job fails.
         std::fs::write(root.join("hidata"), b"in the way").unwrap();
         let p = out.scratch_file("h");
         std::fs::write(&p, b"c").unwrap();
         out.put_file_later("hidata/6-1-3", "sect", &p).unwrap();
-        landing.then(&mut out, "slope", "6/1/3", "c".into()).unwrap();
+        landing.then(&mut out, "slope", "6/1/4", "c".into(), now()).unwrap();
         assert!(landing.land(&mut out).is_err());
         assert_eq!(noted(), ["6/1/1", "6/1/2"]);
+        assert_eq!(cost_of("6/1/4"), None);
         assert!(landing.land(&mut out).is_ok(), "nothing uploading");
         std::env::remove_var(pipeline::control::DONE_ENV);
+        std::env::remove_var("SCENIC_COSTS");
     }
 
     /// A job's steps' programs are its own app's: `app/current` followed to the version it names

@@ -57,8 +57,14 @@ struct Later {
     /// The uploads sent and those landed (taken back): `Mark`s count them.
     sent: u64,
     landed: u64,
-    /// Each sent upload's size not yet landed, in order, for its deadline.
-    sizes: std::collections::VecDeque<u64>,
+    /// Each sent upload's size and logical name not yet landed, in order (its deadline; a name in
+    /// flight, which `put_file`, `set` and `remove` settle first).
+    sizes: std::collections::VecDeque<(u64, String)>,
+    /// The bytes copied by uploads landed and not yet claimed (`claim_written`), by their order
+    /// sent: the target that put them off claims them for its cost line.
+    unclaimed: Vec<(u64, u64)>,
+    /// The first upload that failed or didn't land: every later save fails with it.
+    failed: Option<String>,
 }
 
 /// An upload put off.
@@ -318,19 +324,45 @@ impl Out {
             bail!("logical names have no dots: {logical}");
         }
         self.admits(logical, false)?;
+        self.settle_name(logical)?;
         let landed = upload(&self.root, logical, ext, local)?;
+        if landed.sha.is_some() {
+            crate::costin::wrote(landed.size);
+        }
         Ok(self.landed(landed))
     }
 
+    /// The uploads put off up to the last of `logical` landed, when it's in flight: so a later
+    /// put, set or removal of it isn't undone when that upload lands.
+    fn settle_name(&mut self, logical: &str) -> Result<()> {
+        if let Some(k) = self.later.sizes.iter().rposition(|(_, l)| l == logical) {
+            self.settle(Mark(self.later.landed + k as u64 + 1))?;
+        }
+        Ok(())
+    }
+
+    /// Every upload put off that has landed, claimed into the target under way's measures
+    /// (crate::costin's `wrote` and `creates`): a step whose target saves its own uploads.
+    pub fn claim_into_costin(&mut self) {
+        let (b, n) = self.claim_written(self.mark());
+        crate::costin::add("wrote", b);
+        crate::costin::add("creates", n);
+    }
+
+    /// The bytes copied (and files made) by the uploads put off before `upto` that have landed,
+    /// claimed once: what the target that put them off adds to its cost line (`wrote`, `creates`).
+    pub fn claim_written(&mut self, upto: Mark) -> (u64, u64) {
+        let (mine, rest): (Vec<_>, Vec<_>) = self.later.unclaimed.iter().partition(|(seq, _)| *seq < upto.0);
+        self.later.unclaimed = rest;
+        (mine.iter().map(|(_, b)| b).sum(), mine.len() as u64)
+    }
+
     /// An upload made (`upload`), taken into this run's records: named in the manifest, its check
-    /// pending when it was copied, its bytes counted.
+    /// pending when it was copied, its bytes counted to the phase it's taken in (its target's cost
+    /// line: `put_file` now, `claim_written` for one put off).
     fn landed(&mut self, l: Landed) -> String {
-        // (Its bytes, to the phase it's taken in: crate::timings.)
         let made = if l.sha.is_some() { l.size } else { 0 };
         crate::timings::count(made, 1);
-        if l.sha.is_some() {
-            crate::costin::wrote(made);
-        }
         if let Some(sha) = l.sha {
             self.pending.insert(l.name.clone(), sha);
         }
@@ -345,7 +377,9 @@ impl Out {
     /// (`settle`). Until then `get` doesn't name it. A save waits for every upload put off before
     /// it (`save`), or those up to a mark (`save_upto`), and fails if one did: a target is noted
     /// done only after the save that names its outputs, so never before they're on the NAS. Checked
-    /// against the step's outputs now, as `put_file` is.
+    /// against the step's outputs now, as `put_file` is. A `put_file`, `set` or `remove` of a name
+    /// whose upload is in flight waits for it to land first, so it never lands over newer state.
+    /// Its bytes go to no cost line by themselves: the target claims them (`claim_written`).
     pub fn put_file_later(&mut self, logical: &str, ext: &str, local: &Path) -> Result<()> {
         if logical.contains('.') {
             bail!("logical names have no dots: {logical}");
@@ -383,7 +417,7 @@ impl Out {
             .send(u)
             .map_err(|_| anyhow::anyhow!("{logical}: the uploads' thread is gone"))?;
         self.later.sent += 1;
-        self.later.sizes.push_back(size);
+        self.later.sizes.push_back((size, logical.to_string()));
         Ok(())
     }
 
@@ -396,25 +430,43 @@ impl Out {
     /// (`upload_deadline`), and takes them into the records. The first that failed, or didn't land
     /// in time, fails this (and the job: what it put off isn't named).
     fn settle(&mut self, upto: Mark) -> Result<()> {
+        if let Some(f) = &self.later.failed {
+            bail!("an upload put off failed earlier: {f}");
+        }
         if self.later.landed >= upto.0 {
             return Ok(());
         }
         let _p = crate::timings::phase("uploads put off landed", crate::timings::Class::NasWrite);
         while self.later.landed < upto.0 {
-            let size = self.later.sizes.front().copied().unwrap_or(0);
+            let size = self.later.sizes.front().map_or(0, |s| s.0);
             let deadline = upload_deadline(size);
             let got = self.later.back.as_ref().expect("an upload sent").lock().unwrap().recv_timeout(deadline);
             let l = match got {
                 Ok(Ok(l)) => l,
-                Ok(Err(e)) => return Err(e.context("an upload put off failed")),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => bail!(
-                    "an upload put off ({size} bytes) didn't land in {} s (the NAS's share stuck?)",
-                    deadline.as_secs()
-                ),
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => bail!("the uploads' thread is gone"),
+                Ok(Err(e)) => {
+                    let e = e.context("an upload put off failed");
+                    self.later.failed = Some(format!("{e:#}"));
+                    return Err(e);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let e = anyhow::anyhow!(
+                        "an upload put off ({size} bytes) didn't land in {} s (the NAS's share stuck?)",
+                        deadline.as_secs()
+                    );
+                    self.later.failed = Some(format!("{e:#}"));
+                    return Err(e);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    self.later.failed = Some("the uploads' thread is gone".into());
+                    bail!("the uploads' thread is gone");
+                }
             };
             self.later.sizes.pop_front();
+            let seq = self.later.landed;
             self.later.landed += 1;
+            if l.sha.is_some() {
+                self.later.unclaimed.push((seq, l.size));
+            }
             self.landed(l);
         }
         Ok(())
@@ -491,6 +543,8 @@ impl Out {
     /// Names `content` (None: nothing) under `logical` in the manifest: a file uploaded already
     /// (`store_bytes`).
     pub fn set(&mut self, logical: &str, content: Option<String>) {
+        // (One in flight landing fails: the next save fails with it.)
+        let _ = self.settle_name(logical);
         self.note(logical, content.is_none());
         match &content {
             Some(c) => self.manifest.insert(logical.to_string(), c.clone()),
@@ -509,6 +563,8 @@ impl Out {
 
     /// Record a logical name as gone (its file stays until GC).
     pub fn remove(&mut self, logical: &str) {
+        // (One in flight landing fails: the next save fails with it.)
+        let _ = self.settle_name(logical);
         self.note(logical, true);
         self.manifest.remove(logical);
         self.changes.insert(logical.to_string(), None);
@@ -839,6 +895,24 @@ mod tests {
         assert!(format!("{e:#}").contains("an upload put off failed"), "{e:#}");
         assert!(b.get("hidata/6-1-4").is_none() && !records(&later).0.contains_key("hidata/6-1-4"));
         assert!(kept.exists(), "its local file kept");
+        // Failed once, every later save fails, even with nothing new put off.
+        assert!(b.save().is_err());
+        // A name in flight put, set or removed: its upload lands first, never over the newer state.
+        let mut c = Out::unbound(&d.path().join("c"), &d.path().join("s4")).unwrap();
+        c.put_file_later("base/6-2-1", "base", &file("c1", b"old")).unwrap();
+        c.remove("base/6-2-1");
+        c.put_file_later("base/6-2-2", "base", &file("c2", b"old two")).unwrap();
+        let newer = c.put_file("base/6-2-2", "base", &file("c3", b"newer")).unwrap();
+        c.save().unwrap();
+        assert_eq!(c.get("base/6-2-1"), None);
+        assert_eq!(c.get("base/6-2-2"), Some(newer.as_str()));
+        // Each upload's bytes claimed once, by the uploads before a mark.
+        let m = c.mark();
+        c.put_file_later("base/6-2-3", "base", &file("c4", b"four")).unwrap();
+        c.save().unwrap();
+        assert_eq!(c.claim_written(m), (10, 2), "the two put off before it (3 + 7 bytes)");
+        assert_eq!(c.claim_written(c.mark()), (4, 1));
+        assert_eq!(c.claim_written(c.mark()), (0, 0));
         // Outside the step's outputs: refused at once, as `put_file` is.
         let mut job = Out::open(&later, &d.path().join("s3"), "pack").unwrap();
         assert!(job.put_file_later("base/6-1-5", "base", &file("b5", b"five")).is_err());

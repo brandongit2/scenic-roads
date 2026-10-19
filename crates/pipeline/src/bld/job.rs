@@ -576,6 +576,7 @@ pub fn sites(out: &Out, t: Unit) -> Result<Vec<[i32; 2]>> {
 pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::offload::Offload>) -> Result<Summary> {
     let sum = build_later(out, cov, t, offload)?;
     out.save()?;
+    out.claim_into_costin();
     Ok(sum)
 }
 
