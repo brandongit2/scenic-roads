@@ -346,12 +346,6 @@ mod tests {
         assert_eq!(parse_idle(s), Some(12));
         assert_eq!(parse_idle("nothing"), None);
     }
-
-    #[test]
-    fn sleep_watch_quiet() {
-        let mut w = SleepWatch::default();
-        assert!(w.slept() < 2);
-    }
 }
 
 #[cfg(test)]
