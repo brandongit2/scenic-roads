@@ -1242,8 +1242,9 @@ producer writes them; the owner copies them there).
 `label` (the map's name for it), `datum` (what its depths are below, in words), optionally `band_m`
 (ground metres it's feathered in over where it ends in the water), `intertidal` (its positive values
 are drying heights), `datum_exact` (false: not corrected to the others' datum, so it fills gaps only,
-hard-edged) and `notice` (a notice its licence asks every map showing its data to carry: shown on the
-map while its depths are in view, and in the credits).
+hard-edged) and `notice` (a notice its licence asks every map showing its data to carry: shown in
+full in the map's © Credits, under a "Depth:" line naming every source's `label` and "Not for
+navigation."; nothing floats over the map).
 
 **Checks** (§6.9's, and): a depth declaration's params (`src-decl`); its index's features each naming
 a `.tif` `file` and a `zoom` 0–18 (`src-index`); two of one `code` (`src-role`).

@@ -761,12 +761,10 @@ body.panel-off #viewshed { --vs-left: calc(60px + env(safe-area-inset-left)); }
 .press-menu button:active, .press-menu button:hover { background: var(--hover); }
 
 /* Depth under the water (depth.ts, ui/depth.ts): the legend's ticks by depth, the cursor's readout,
-   and the depth's attribution with its sources' notices while a depth layer shows. */
+   and the depth's sources with their notices in the credits. */
 #layers .depth-ticks { position: relative; display: block; height: 13px; }
 #layers .depth-ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
 #layers .depth-ticks span:first-child { transform: none; }
-.depth-readout { position: absolute; left: 10px; bottom: calc(var(--strip-h) + 34px); z-index: 3; pointer-events: none; padding: 3px 8px; border-radius: 6px; background: var(--card); color: var(--text); font-size: 11px; border: 1px solid var(--line); }
-.depth-attrib { position: absolute; left: 10px; bottom: calc(var(--strip-h) + 8px); z-index: 3; max-width: min(560px, calc(100vw - 40px)); padding: 3px 8px; border-radius: 6px; background: var(--card); color: var(--muted); font-size: 10px; line-height: 1.35; border: 1px solid var(--line); }
-.depth-attrib b { color: var(--text); font-weight: 500; }
-.depth-attrib .depth-at-notice { margin-top: 3px; color: var(--faint); }
+.depth-readout { position: absolute; left: 10px; bottom: calc(var(--strip-h) + 8px); z-index: 3; pointer-events: none; padding: 3px 8px; border-radius: 6px; background: var(--card); color: var(--text); font-size: 11px; border: 1px solid var(--line); }
+dialog.credits .notices .depth { margin: 10px 0 0; color: var(--text); }
 dialog.credits .notices .notice { margin: 8px 0 0; color: var(--muted); line-height: 1.4; }

@@ -10,13 +10,12 @@
 // All go over the water fill and under the coast shading and everything else, draped on the 3D
 // terrain like the water (which stays flat at the surface). Depth is below the local water
 // surface: mean sea level at sea, the lake's surface on lakes; estimated depths look as measured
-// ones do (the readout says which they are). While a depth layer shows, the map names the depth's
-// sources in view and every notice their licences ask for (the catalog's `depth`).
+// ones do (the readout says which they are). The depth's sources and the notices their licences ask
+// for are in the credits (ui/strip.ts), not on the map.
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
 import { onVersions, ver } from './api';
 import { hostFor } from './hosts';
-import { attribution } from './depthattrib';
 import { depthColour, hdepth, hexRgb, HBINS, rgba, scaleFns, DEPTH_DEFAULTS, type DepthState } from './depthlook';
 import { h } from './ui/dom';
 import type { DepthMsg, DepthReply, Probe } from './depth.worker';
@@ -48,22 +47,16 @@ export class Depth {
   private fit: [number, number] = [1, 100];
   private viewTimer = 0;
   /** The sources with depth in view (their codes). */
-  /** The sources with depth in view (their codes); null while that isn't known (moving, before
-   * the first sample, too many tiles to sample): then every source counts, so no notice a
-   * licence asks for is ever missing while its depths could show. */
-  private inView: Set<number> | null = null;
   private hoverAt: maplibregl.LngLat | null = null;
   private hoverBusy = false;
-  /** The cursor's readout and the on-map attribution while a depth layer is on. */
+  /** The cursor's readout while a depth layer is on. */
   readonly readout: HTMLElement;
-  private attrib: HTMLElement;
   /** Told when the fitted domain changes (the panel's legend). */
   onFit: () => void = () => {};
 
   constructor(private map: MLMap) {
     this.readout = h('div', { class: 'depth-readout', hidden: true });
-    this.attrib = h('div', { class: 'depth-attrib', hidden: true });
-    map.getContainer().append(this.readout, this.attrib);
+    map.getContainer().append(this.readout);
     map.on('moveend', () => this.scheduleView());
     map.on('mousemove', (e) => {
       this.hoverAt = e.lngLat;
@@ -80,12 +73,10 @@ export class Depth {
   setCatalog(layers: Record<string, unknown> | undefined, depth: { sources?: DepthSource[] } | null | undefined) {
     const has = !!layers && 'depth' in layers && 'depth-class' in layers;
     this.sources = depth?.sources ?? [];
-    this.inView = null;
     if (has !== this.has) {
       this.has = has;
       this.apply(this.s);
     }
-    this.renderAttrib();
   }
 
   /** Whether the catalog has depth. */
@@ -207,7 +198,7 @@ export class Depth {
     this.s = s;
     const m = this.map;
     const on = this.has && (s.on || s.contours);
-    if (!on && !this.added) return this.renderAttrib();
+    if (!on && !this.added) return;
     if (on) this.addLayers();
     const u = this.urls(s), ou = this.urls(before);
     if (u.contour !== ou.contour) (m.getSource('depth-contours') as maplibregl.VectorTileSource | undefined)?.setTiles([u.contour]);
@@ -239,7 +230,6 @@ export class Depth {
       m.setPaintProperty('depth-contour-label', 'text-color', s.colour);
       m.setPaintProperty('depth-contour-label', 'text-opacity', Math.min(1, s.lineOpacity * 1.5));
     }
-    this.renderAttrib();
     this.scheduleView();
   }
 
@@ -284,8 +274,6 @@ export class Depth {
 
   private scheduleView() {
     if (!this.has || !(this.s.on || this.s.contours)) return;
-    this.inView = null;
-    this.renderAttrib();
     clearTimeout(this.viewTimer);
     this.viewTimer = window.setTimeout(() => void this.view(), 250);
   }
@@ -306,17 +294,14 @@ export class Depth {
     return tiles.length > 48 ? [] : tiles;
   }
 
-  /** The depths in view: their sources (the attribution), and with "fit to view" the scale's
-   * domain, their 2nd to 98th percentile. */
+  /** With "fit to view", the scale's domain: the depths in view's 2nd to 98th percentile. */
   private async view() {
-    if (!this.workers.length) return;
+    if (!this.workers.length || this.s.scale !== 'fit') return;
     const tiles = this.viewTiles();
-    // (Too many to sample: every source counts, `inView` left unknown.)
+    // (Too many to sample.)
     if (!tiles.length) return;
     const halves = this.workers.map((w) => tiles.filter((t) => this.workerFor(...t) === w));
     const rs = await Promise.all(halves.map((ts, i) => (ts.length ? this.ask({ type: 'hist', id: 0, tiles: ts }, undefined, this.workers[i]) : Promise.resolve({ id: 0, hist: new Array(HBINS).fill(0), codes: [] } as DepthReply))));
-    this.inView = new Set(rs.flatMap((r) => r.codes ?? []));
-    this.renderAttrib();
     if (this.s.scale !== 'fit') return;
     const hst = new Array(HBINS).fill(0);
     for (const r of rs) r.hist?.forEach((v, i) => (hst[i] += v));
@@ -335,18 +320,6 @@ export class Depth {
     this.fit = [lo, hi];
     if (this.map.getLayer('depth-relief')) this.map.setPaintProperty('depth-relief', 'color-relief-color', this.ramp(this.s), { validate: false });
     this.onFit();
-  }
-
-  /** The depth layers' on-map attribution: the sources in view, "not for navigation", and every
-   * notice a licence asks to be shown with its data, whenever a depth layer is on. */
-  private renderAttrib() {
-    const on = this.has && (this.s.on || this.s.contours);
-    this.attrib.hidden = !on;
-    if (!on) return;
-    const { here, notices } = attribution(this.sources, this.inView);
-    this.attrib.replaceChildren(
-      h('div', { class: 'depth-at-src' }, h('b', {}, 'Depth: '), here.map((s) => s.label).join(' · ') || '—', '. Not for navigation.'),
-      ...notices.map((n) => h('div', { class: 'depth-at-notice' }, n)));
   }
 
   // ---- the cursor readout -----------------------------------------------------------------------

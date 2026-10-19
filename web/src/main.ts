@@ -2248,7 +2248,8 @@ async function main() {
       if (!w.status) return;
       depth.setCatalog(w.status.layers, w.status.depth);
       layers.showDepth(depth.available);
-      strip.setNotices((w.status.depth?.sources ?? []).map((x) => x.notice).filter((n): n is string => !!n));
+      const ds = w.status.depth?.sources ?? [];
+      strip.setDepth(ds.map((x) => x.label), ds.map((x) => x.notice).filter((n): n is string => !!n));
     });
     // Landmarks by view, when the catalog has them.
     w.on(() => {
