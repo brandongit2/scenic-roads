@@ -114,6 +114,13 @@ impl Limits {
         w == 0 || members == 0 || running.saturating_add(w) <= WHOLE
     }
 
+    /// `fits` for a member's job, which would starve when it weighs the whole beside two members'
+    /// jobs or more: it goes too once it weighs the whole, has waited `OWN_AGE` for the budget
+    /// alone (`waited`), and no leased job weighs the whole (`heaviest`, the most one weighs).
+    pub fn fits_job(members: u32, running: u32, heaviest: u32, w: u32, waited: bool) -> bool {
+        Self::fits(members, running, w) || (w >= WHOLE && waited && heaviest < WHOLE)
+    }
+
     /// Whether a job of the lead's own of weight `w` may start beside leased jobs weighing
     /// `running` together: within the whole, or beside nothing that weighs anything (a job past
     /// the whole alone).

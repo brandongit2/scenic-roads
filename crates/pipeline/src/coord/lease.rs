@@ -43,6 +43,14 @@ pub struct Lease {
     pub progress: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frac: Option<f64>,
+    /// The threads its job was granted (0: not said): the cores the pool's own work takes on its
+    /// Mac, apart from load outside the pool (crate::coord::outside_cores).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub threads: u32,
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Lease {
@@ -289,9 +297,17 @@ impl Leases {
                 deadline: now + self.ttl,
                 progress: None,
                 frac: None,
+                threads: 0,
             },
         );
         id
+    }
+
+    /// Notes the threads lease `id`'s job was granted.
+    pub fn set_threads(&mut self, id: u64, threads: u32) {
+        if let Some(l) = self.by_id.get_mut(&id) {
+            l.threads = threads;
+        }
     }
 
     /// Lease `id`, live or not yet expired, whoever holds it.

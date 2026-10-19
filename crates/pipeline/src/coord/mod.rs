@@ -745,6 +745,7 @@ impl Shared {
             self.last.insert((a.worker.clone(), o.step.clone()), l.0.clone());
         }
         let lease = self.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
+        self.leases.set_threads(lease, threads);
         {
             let mut g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
             for t in &pick {
@@ -842,7 +843,7 @@ impl Shared {
         // last minute's load average keeps busy (`Capacity::cores_free`) past the threads of the
         // jobs it holds, less those the in-use share keeps already, come off the cores left
         // (task #440): a Mac swamped by other work is granted no job beside the ones it holds.)
-        let outside = outside_cores(a, total.saturating_sub(cores));
+        let outside = outside_cores(a, mine.iter().map(|l| l.threads).sum::<u32>().max(total.saturating_sub(cores)));
         cores = cores.saturating_sub(outside);
         // (The ask's memory and disk are its Mac's whole room for jobs, whatever it runs (the
         // memory its owner gives the build, the agent's `build_room`; its free disk): every job
@@ -1089,8 +1090,8 @@ impl Shared {
         // (The NAS budget on: a target whose weight the pool's leased jobs leave no room for, or a
         // download past the cap, is left for later.)
         let lead = a.worker == self.lead_name;
-        let nas = self.nas_room(now, lead);
-        let downloads_full = nas.as_ref().is_some_and(|(nw, _, _, dl)| {
+        let nas = self.nas_room_heaviest(now, lead);
+        let downloads_full = nas.as_ref().is_some_and(|(nw, _, _, dl, _)| {
             nw.limits.downloads.is_some_and(|c| *dl >= c) && Self::job_nas(nw, &o.step, &[]).1
         });
         if downloads_full {
@@ -1099,12 +1100,18 @@ impl Shared {
         // (The lead's own asks held within the whole, or alone; a member's past it beside the
         // lead's own alone: crate::budget::nas::Limits.)
         let nas_fits = |t: &str| {
-            nas.as_ref().is_none_or(|(nw, running, members, _)| {
+            nas.as_ref().is_none_or(|(nw, running, members, _, most)| {
                 let w = nw.weight(&o.step, t);
                 if lead {
                     crate::budget::nas::Limits::fits_own(*running, w)
                 } else {
-                    crate::budget::nas::Limits::fits(*members, *running, w)
+                    // (A whole one aged `OWN_AGE` goes beside jobs none of which weighs the whole.)
+                    let waited = {
+                        let g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+                        g.get(&(o.step.clone(), t.to_string()))
+                            .is_some_and(|e| now.duration_since(e.0) >= crate::budget::nas::OWN_AGE)
+                    };
+                    crate::budget::nas::Limits::fits_job(*members, *running, most[0], w, waited)
                 }
             })
         };
@@ -1192,11 +1199,33 @@ impl Shared {
             && a.disk_mb.is_none_or(|d| m.disk_mb.max(job_disk) <= d)
     }
 
-    /// Whether `worker`, as its last ask `x` said, can take no job now beside those it holds: it
-    /// holds one and its Mac's cores are all busy by its load average (`Capacity::cores_free`, the
-    /// pool's jobs and others' work alike; task #440): placement draws targets among the others.
+    /// Whether `worker`, as its last ask `x` said, is kept from more jobs by work outside the pool:
+    /// it holds a job, and the cores busy outside the pool (`outside_cores`, past its jobs' packed
+    /// cores) with those cores fill its Mac's (task #440): placement draws targets among the
+    /// others. Its own jobs alone filling its cores don't count.
     fn swamped(&self, worker: &str, x: &Ask, now: Instant) -> bool {
-        x.cap.as_ref().is_some_and(|c| c.cores_free == 0) && !self.job_leases(worker, now).is_empty()
+        let mine = self.job_leases(worker, now);
+        if mine.is_empty() {
+            return false;
+        }
+        let total = ask_cores(x);
+        let share = packed_share(total);
+        let ours: u32 = mine
+            .iter()
+            .map(|l| match &l.work {
+                // (The threads it was granted, else its packed cores.)
+                _ if l.threads > 0 => l.threads,
+                Work::Job { step, targets } => {
+                    let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
+                    self.job_need(step, &ts)
+                        .and_then(|(_, c)| c)
+                        .map_or(share, |c| self.packed_cores(step, &ts, c, share))
+                }
+                Work::Task { .. } => 0,
+            })
+            .sum();
+        let outside = outside_cores(x, ours);
+        outside > 0 && ours.saturating_add(outside) >= total
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1499,11 +1528,19 @@ pub fn ask_cores(a: &Ask) -> u32 {
 /// (its capacity's `cores` less `cores_free`) past `ours`, the threads of the pool's jobs it holds,
 /// less the cores the in-use share keeps from its jobs already while its owner uses it
 /// (`ask_cores` takes those off). 0 for an ask without a capacity.
+/// The load average lags a minute and is rounded up, and `ours` counts granted threads: an excess
+/// within the packed share (`packed_share`, a job's threads: one just ended still in the load) is
+/// taken for that and counts none.
 pub fn outside_cores(a: &Ask, ours: u32) -> u32 {
     a.cap.as_ref().map_or(0, |c| {
         let busy = c.cores.saturating_sub(c.cores_free);
         let kept = if c.in_use { c.kept_cores } else { 0 };
-        busy.saturating_sub(ours).saturating_sub(kept)
+        let excess = busy.saturating_sub(ours).saturating_sub(kept);
+        if excess <= packed_share(ask_cores(a)) {
+            0
+        } else {
+            excess
+        }
     })
 }
 
@@ -3682,6 +3719,7 @@ fn route(
                         o.targets.iter().map(|(t, k, _)| (t.clone(), k.clone())).collect();
                     let lease =
                         s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
+                    s.leases.set_threads(lease, ask_cores(&a));
                     s.save_leases();
                     eprintln!(
                         "coordinator: {} took {} {} (its progress is on its Mac)",
@@ -7251,6 +7289,114 @@ mod tests {
         // Off again: as before.
         c.set_placement(None);
         assert!(c.shared.lock().unwrap().placement.is_none());
+    }
+
+    /// Task #440 review: placement leaves a member out of a target's draw only while load from
+    /// outside the pool fills its cores, not while its own jobs do. Member m2 holds one job: granted
+    /// all 8 cores, all busy by its load, it stays in the draw by its weight; granted 2 with all 8
+    /// busy (6 outside), it's left out and m1 takes every target.
+    #[test]
+    fn placement_leaves_out_only_a_member_swamped_outside_the_pool() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        packable(&c, "slope", 40, Some(1));
+        c.set_placement(Some(placement(&[], &[("m1", 1.0), ("m2", 1.0)])));
+        let offer = c.shared.lock().unwrap().offers[0].clone();
+        let one = |i: usize| Offer { targets: vec![offer.targets[i].clone()], ..offer.clone() };
+        let a1 = every_ask("m1", "slope", 64_000, 100_000);
+        let a2 = Ask {
+            cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: 0, ..Default::default() }),
+            ..every_ask("m2", "slope", 64_000, 100_000)
+        };
+        let m1_takes = |threads: u32| -> usize {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            for l in s.leases.all(now) {
+                s.leases.cancel(l.id);
+            }
+            let id = s.leases.grant(
+                "m2",
+                Work::Job {
+                    step: "slope".into(),
+                    targets: vec![(offer.targets[39].0.clone(), offer.targets[39].1.clone())],
+                },
+                now,
+            );
+            s.leases.set_threads(id, threads);
+            s.seen("m1", String::new(), Some(&a1), now);
+            s.seen("m2", String::new(), Some(&a2), now);
+            (0..39).filter(|&i| !s.pick_every(&one(i), &a1, now).is_empty()).count()
+        };
+        let in_draw = m1_takes(8);
+        assert!(in_draw > 5 && in_draw < 34, "m2 by its weight: m1 took {in_draw} of 39");
+        assert_eq!(m1_takes(2), 39, "m2 swamped outside the pool: left out");
+    }
+
+    /// Task #440 review: the load average lags and is rounded up, so an excess within the packed
+    /// share (a job just ended) counts no cores busy outside the pool.
+    #[test]
+    fn a_just_ended_job_isnt_load_outside_the_pool() {
+        let ask = |free: u32| Ask {
+            cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: free, ..Default::default() }),
+            ..every_ask("m1", "slope", 64_000, 100_000)
+        };
+        assert_eq!(outside_cores(&ask(6), 0), 0, "two busy: a job of the share's just ended");
+        assert_eq!(outside_cores(&ask(5), 0), 3);
+        assert_eq!(outside_cores(&ask(4), 2), 0, "its job's two and two more: within the share");
+        assert_eq!(outside_cores(&ask(0), 2), 6);
+    }
+
+    /// Task #440 review: a member's job weighing the whole isn't starved by two members' jobs
+    /// filling the budget: after `OWN_AGE` held back for it alone it goes beside them (none of them
+    /// the whole).
+    #[test]
+    fn a_members_whole_job_goes_after_waiting() {
+        let (_d, c, _w, clock) = every((0, 0));
+        heavy_slope(&c);
+        let whole = [("threads".to_string(), 1), ("bytes".to_string(), 120_000_000_000)];
+        let cost = Cost {
+            peak_mb: 2000,
+            secs: 600,
+            worker: None,
+            v: cost_version("slope"),
+            sizes: whole.into(),
+            ..Default::default()
+        };
+        c.add_costs_by(&[(cost_key("slope", "6/1/6"), cost)], "m1");
+        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let offer = {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+            s.offers[0].clone()
+        };
+        let six = Offer { targets: vec![offer.targets[5].clone()], ..offer.clone() };
+        let a3 = every_ask("m3", "slope", 64_000, 100_000);
+        let held = |c: &Coordinator| {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            for (w, i) in [("m1", 0), ("m2", 1)] {
+                let ts = vec![offer.targets[i].0.clone()].into_iter().map(|t| (t, String::new())).collect();
+                s.leases.grant(w, Work::Job { step: "slope".into(), targets: ts }, now);
+            }
+        };
+        held(&c);
+        let take = |c: &Coordinator| {
+            let s = c.shared.lock().unwrap();
+            let now = s.now();
+            s.pick_every(&six, &a3, now)
+        };
+        assert!(take(&c).is_empty(), "the budget full: waits");
+        clock.advance(crate::budget::nas::OWN_AGE - Duration::from_secs(1));
+        {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            for l in s.leases.all(now) {
+                s.leases.cancel(l.id);
+            }
+        }
+        held(&c);
+        assert!(take(&c).is_empty(), "not yet aged");
+        clock.advance(Duration::from_secs(1));
+        assert_eq!(take(&c).len(), 1, "aged: goes beside the members' halves");
     }
 
     /// Placement on: of two members asking whose room fits a target, it's drawn to one by their
