@@ -1093,15 +1093,14 @@ mod tests {
     #[cfg(not(target_os = "wasi"))]
     fn always_busy() -> String {
         use std::io::{Read, Write};
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let l = store::spawn::listen("127.0.0.1:0").unwrap();
         let url = format!("http://127.0.0.1:{}/a.tif", l.local_addr().unwrap().port());
-        std::thread::spawn(move || {
-            for c in l.incoming() {
-                let Ok(mut c) = c else { return };
-                let mut b = [0u8; 4096];
-                let _ = c.read(&mut b);
-                let _ = c.write_all(b"HTTP/1.1 503 Busy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            }
+        std::thread::spawn(move || loop {
+            let c = store::spawn::accept(&l).map(|c| c.0);
+            let Ok(mut c) = c else { return };
+            let mut b = [0u8; 4096];
+            let _ = c.read(&mut b);
+            let _ = c.write_all(b"HTTP/1.1 503 Busy\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         });
         url
     }
