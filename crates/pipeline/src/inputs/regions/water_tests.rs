@@ -155,7 +155,7 @@ fn world() -> World {
     let zone1 = vec![bx(-1.0, -1.0, 4.0, 2.5)[0].clone()];
     let eez = HashMap::from([(1, zone1), (2, bx(5.0, 5.0, 6.0, 6.0))]);
     let lakes = HashMap::from([(77, bx(0.2, 0.2, 0.4, 0.4)), (78, bx(0.6, 0.6, 0.61, 0.61))]);
-    let data = Datasets::from_parts(eez, HashMap::new(), lakes, land, "fixture");
+    let data = Datasets::from_parts(eez, HashMap::new(), HashMap::new(), lakes, land, "fixture");
     World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d }
 }
 
@@ -320,7 +320,14 @@ fn a_stretch_one_region_alone_borders_is_its_own() {
     let land = vec![bx(0.0, 0.0, 1.0, 1.0), bx(1.0, 0.0, 2.0, 1.0), bx(10.0, 0.0, 11.0, 1.0)];
     // The place's zone in two stretches: round p1 and p2, and round p3.
     let zone = [bx(-1.0, -1.0, 3.0, 2.0), bx(9.0, -1.0, 12.0, 2.0)].concat();
-    let data = Datasets::from_parts(HashMap::from([(9, zone)]), HashMap::new(), HashMap::new(), land, "fixture");
+    let data = Datasets::from_parts(
+        HashMap::from([(9, zone)]),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        land,
+        "fixture",
+    );
     let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
     let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
     let (p1, p2, p3) = (m("p1", 11), m("p2", 12), m("p3", 13));
@@ -359,4 +366,50 @@ fn rings_are_cut_into_cells() {
     let across = TArea::from_rings(&[vec![[e7(179.0), 0], [e7(181.0), 0], [e7(181.0), e7(1.0)], [e7(179.0), e7(1.0)]]]);
     assert!(across.cells.contains_key(&(89, 0)) && across.cells.contains_key(&(-90, 0)));
     let _ = CELL;
+}
+
+/// A zone's internal waters overlapping it are unioned with it, never cancelled; and features of
+/// one id are unioned as they're read.
+#[test]
+fn a_zone_and_its_overlapping_internal_waters_are_unioned() {
+    let d = tempfile::tempdir().unwrap();
+    let p = outlines(d.path(), &[(4, "DD", deg_sq(20.0, 20.0, 21.0, 21.0))]);
+    let zone = bx(30.0, 30.0, 32.0, 32.0);
+    let iw = bx(31.0, 31.0, 33.0, 33.0);
+    let data = Datasets::from_parts(
+        HashMap::from([(7, zone.clone())]),
+        HashMap::from([(7, iw.clone())]),
+        HashMap::new(),
+        HashMap::new(),
+        vec![bx(20.0, 20.0, 21.0, 21.0)],
+        "fixture",
+    );
+    let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let z = "id = \"z\"\nname = \"Z\"\nwater = [\"eez:7\"]\n";
+    let out = run(&w, &[PINS, ("z.toml", z)]);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let got = geom::area_km2(&area_of(&out.resolved["z"].geometry));
+    let want = geom::area_km2(&Area::from_rings(&zone).union(&Area::from_rings(&iw)));
+    assert!((got - want).abs() < 1.0, "{got} {want}");
+    // Two features of one id, overlapping: their union.
+    let gj = br#"{"type":"FeatureCollection","features":[
+        {"type":"Feature","properties":{"m":5},"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}},
+        {"type":"Feature","properties":{"m":5},"geometry":{"type":"Polygon","coordinates":[[[1,1],[3,1],[3,3],[1,3],[1,1]]]}}]}"#;
+    let m = super::data::parse_geojson(gj, "m").unwrap();
+    let a = Area::from_rings(&m[&5]);
+    assert!(a.contains([e7(1.5), e7(1.5)]) && a.contains([e7(2.5), e7(2.5)]) && a.contains([e7(0.5), e7(0.5)]));
+}
+
+/// A region without water may not name one with it: held, saying so.
+#[test]
+fn a_region_without_water_naming_one_with_it_is_held() {
+    let w = world();
+    let old = "id = \"old\"\nname = \"Old\"\noutline = [\"osm:1\"]\nminus = [\"region:far\"]\n";
+    let out = run(&w, &[PINS, ("far.toml", FAR), ("old.toml", old)]);
+    assert!(
+        out.problems.iter().any(|p| p.check == "rg-ref" && p.about[0] == "old" && p.message.contains("has water")),
+        "{:?}",
+        out.problems
+    );
+    assert!(!out.resolved.contains_key("old") && out.resolved.contains_key("far"));
 }

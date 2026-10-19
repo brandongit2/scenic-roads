@@ -107,9 +107,12 @@ impl Regions {
 }
 
 /// The most memory (MB, as `sys::footprint` counts it) a process checking the regions may take:
-/// `SCENIC_REGIONS_MAX_MB`, else 8,000.
+/// `SCENIC_REGIONS_MAX_MB`, else half the Mac's memory (4,000 MB where that can't be read).
 pub fn max_mb() -> u64 {
-    std::env::var("SCENIC_REGIONS_MAX_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(8_000)
+    std::env::var("SCENIC_REGIONS_MAX_MB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| crate::sys::memsize().map_or(4_000, |b| b / 2 / 1_000_000))
 }
 
 /// The current pass in the records, and its outline set's and extract's content names.

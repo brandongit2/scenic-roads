@@ -506,10 +506,14 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   a split's, its neighbourhood's), never a region's; what's kept is every region's cells (the
   outcome itself) and the datasets, read only once a region in the folder names them (about 1 GB).
   A zone's internal waters are unioned with it. The datasets' rings are simplified within 20 m as
-  read. At most four regions resolve at once.
+  read. The regions with water resolve one at a time, their cells several at once (regions without
+  water: at most four at once). A region's parts naming other regions (`region:`, `land:`,
+  `group:`) are read cell by cell where those are kept, never copied. With
+  `SCENIC_REGIONS_TRACE` set, the check prints each step's footprint and its buffers' and
+  nearest-coast splits' count, time and footprint.
 - **The memory guard:** the check stops its process (exit 3, saying so) if its physical footprint
-  (`sys::footprint`: compressed and swapped memory included) passes `SCENIC_REGIONS_MAX_MB` (8,000
-  MB by default), looked at every 50 ms; `scenic-build regions-check --max-mb` sets it for a scratch
+  (`sys::footprint`: compressed and swapped memory included) passes `SCENIC_REGIONS_MAX_MB` (half the
+  Mac's memory by default), looked at every 50 ms; `scenic-build regions-check --max-mb` sets it for a scratch
   check, and reports the most points one operation held.
 
 **Stored per region** (beside the region files in the accepted version):
@@ -576,8 +580,9 @@ to its zone), `regions-territorial-seas` (Territorial Seas v4), `regions-lakes` 
 lakes 5.0.0, a shapefile zip, by `ne_id`) and `regions-land` (OSM's land polygons, split, in
 degrees), each a file in `sources/fetched/<id>/` named by its `params.path`. Their rings are simplified within
 20 m as they're read (`data::SIMPLIFY_M`). The check reads them
-whole when it's prepared, once the accepted sources declare `regions-sea`; until then a region
-naming them is held (`rg-data`). Their declarations are staged in `producers/sources/`
+whole, and only once a region in the folder names them (or has `water`), when the accepted sources
+declare `regions-sea`; until then such a region is held (`rg-data`). Features of one id are unioned
+as they're read. Their declarations are staged in `producers/sources/`
 (`marineregions-eez.toml`, `marineregions-internal-waters.toml`, `marineregions-territorial-seas.toml`,
 `ne-lakes.toml`, `osm-land-polygons.toml`); Marine Regions' three are CC BY 4.0 and
 credited as their declarations say. `scenic-build regions-check --dir <folder> --declarations

@@ -270,6 +270,9 @@ pub fn parse_rules(text: &str) -> Result<Rules, super::file::Fault> {
 enum Src {
     T(TArea),
     Line(Vec<Pt>),
+    /// Other regions (`region:`, `land:`, `group:`'s members), read cell by cell where they're
+    /// kept, never copied: their land, or (`whole`) land, water and lakes.
+    Refs(Vec<String>, bool),
 }
 
 struct Env<'a> {
@@ -278,6 +281,40 @@ struct Env<'a> {
     country: String,
     /// The coastline's land and the big lakes, by cell (asked as needed).
     data: &'a super::data::Datasets,
+    made: &'a BTreeMap<String, Made>,
+    others: &'a BTreeMap<String, TArea>,
+}
+
+impl Env<'_> {
+    /// Region `id`'s piece in cell `c` (land; or, `whole`, all of it).
+    fn piece(&self, id: &str, c: Cell, whole: bool) -> Area {
+        match self.made.get(id) {
+            Some(m) if whole => geom::union_all(&[m.land.get(c), m.water.get(c), m.lakes.get(c)]),
+            Some(m) => m.land.get(c),
+            None => self.others.get(id).map(|t| t.get(c)).unwrap_or_default(),
+        }
+    }
+
+    fn refs(&self, ids: &[String], c: Cell, whole: bool) -> Area {
+        geom::union_all(&ids.iter().map(|id| self.piece(id, c, whole)).filter(|a| !a.is_empty()).collect::<Vec<_>>())
+    }
+
+    fn ref_cells(&self, ids: &[String], whole: bool) -> BTreeSet<Cell> {
+        let mut out = BTreeSet::new();
+        for id in ids {
+            match self.made.get(id) {
+                Some(m) => {
+                    out.extend(m.land.cells.keys());
+                    if whole {
+                        out.extend(m.water.cells.keys());
+                        out.extend(m.lakes.cells.keys());
+                    }
+                }
+                None => out.extend(self.others.get(id).into_iter().flat_map(|t| t.cells.keys())),
+            }
+        }
+        out
+    }
 }
 
 fn problem(check: &'static str, r: &Region, path: &str, message: String) -> Problem {
@@ -321,6 +358,7 @@ fn support(p: &Part, env: &Env) -> BTreeSet<Cell> {
         }
         _ => match env.leaves.get(&p.to_string()) {
             Some(Src::T(t)) => t.cells.keys().copied().collect(),
+            Some(Src::Refs(ids, whole)) => env.ref_cells(ids, *whole),
             _ => BTreeSet::new(),
         },
     }
@@ -337,7 +375,7 @@ fn reach(c: Cell, m: f64) -> (i64, i64) {
 }
 
 /// The nearest-coast split's reach: coasts farther than this from a cell don't decide it.
-const NEAREST_REACH_M: f64 = 450_000.0;
+const NEAREST_REACH_M: f64 = geom::NEAREST_REACH_M;
 
 fn eval(p: &Part, c: Cell, env: &Env, r: &Region, path: &str) -> Result<Area, Problem> {
     let bb = geom::box_area(cell_box(c));
@@ -367,6 +405,7 @@ fn eval(p: &Part, c: Cell, env: &Env, r: &Region, path: &str) -> Result<Area, Pr
             a
         }
         Part::Buffer { of, m, .. } => {
+            let _t = Timed::new(if *m > 200_000.0 { &WIDE_BUFFERS } else { &BUFFERS });
             let (dx, dy) = reach(c, *m);
             let near = match &**of {
                 Target::Part(q) => around(q, c, dx, dy, env, r, path)?,
@@ -386,6 +425,7 @@ fn eval(p: &Part, c: Cell, env: &Env, r: &Region, path: &str) -> Result<Area, Pr
             if a.is_empty() {
                 return Ok(a);
             }
+            let _t = Timed::new(&NEARESTS);
             let (dx, dy) = reach(c, NEAREST_REACH_M);
             let gather = |ps: &[Part]| -> Result<Area, Problem> {
                 Ok(geom::union_all(
@@ -409,6 +449,7 @@ fn eval(p: &Part, c: Cell, env: &Env, r: &Region, path: &str) -> Result<Area, Pr
         }
         _ => match env.leaves.get(&p.to_string()) {
             Some(Src::T(t)) => t.get(c),
+            Some(Src::Refs(ids, whole)) => env.refs(ids, c, *whole),
             _ => Area::default(),
         },
     })
@@ -416,8 +457,22 @@ fn eval(p: &Part, c: Cell, env: &Env, r: &Region, path: &str) -> Result<Area, Pr
 
 /// A part's pieces in the cells around `c`, as they lie from it.
 fn around(p: &Part, c: Cell, dx: i64, dy: i64, env: &Env, r: &Region, path: &str) -> Result<Area, Problem> {
-    if let Some(Src::T(t)) = env.leaves.get(&p.to_string()) {
-        return Ok(t.around(c, dx, dy));
+    match env.leaves.get(&p.to_string()) {
+        Some(Src::T(t)) => return Ok(t.around(c, dx, dy)),
+        Some(Src::Refs(ids, whole)) => {
+            let mut v = Vec::new();
+            for x in c.0 - dx..=c.0 + dx {
+                let (w, shift) = wrap(x);
+                for y in (c.1 - dy).max(-45)..=(c.1 + dy).min(44) {
+                    let a = env.refs(ids, (w, y), *whole);
+                    if !a.is_empty() {
+                        v.push(if shift == 0 { a } else { a.shifted(shift) });
+                    }
+                }
+            }
+            return Ok(geom::union_all(&v));
+        }
+        _ => {}
     }
     let mut v = Vec::new();
     for x in c.0 - dx..=c.0 + dx {
@@ -652,7 +707,13 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
         .par_iter()
         .map(|(id, m)| (id.clone(), m.land.zip(&m.water, |a, b| a.union(b)).zip(&m.lakes, |a, b| a.union(b))))
         .collect();
-    let lands: BTreeMap<String, TArea> = made.iter().map(|(id, m)| (id.clone(), m.land.clone())).collect();
+    // (The lands kept only for the slivers' rule; otherwise only whether each is empty.)
+    let cover = rules.cover.as_deref() == Some("earth");
+    let land_empty: BTreeMap<String, bool> = made.iter().map(|(id, m)| (id.clone(), m.land.is_empty())).collect();
+    let lands: BTreeMap<String, TArea> =
+        if cover { made.iter().map(|(id, m)| (id.clone(), m.land.clone())).collect() } else { BTreeMap::new() };
+    // (Regions without water a hand-out, sliver or fill changed: stored again.)
+    let mut touched: BTreeSet<String> = BTreeSet::new();
     let countries: BTreeMap<String, String> = made.iter().map(|(id, m)| (id.clone(), m.country.clone())).collect();
     drop(made);
     trace("hand-outs");
@@ -706,6 +767,7 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
             a.set(c, left);
         }
         for (m, cells) in given {
+            touched.insert(m.clone());
             let mut b = areas.remove(&m).unwrap_or_else(|| others[&m].clone());
             for (c, mut ps) in cells {
                 ps.push(b.get(c));
@@ -716,16 +778,15 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
     }
     trace("with cover");
     // 5. With cover = "earth": slivers, then the cells' fills and the check; the rest.
-    let cover = rules.cover.as_deref() == Some("earth");
-    let mut all: BTreeMap<String, TArea> = others.clone();
-    for (id, a) in &areas {
-        all.insert(id.clone(), a.clone());
-    }
+    // (Every region's cells, moved together, not copied.)
+    let mut all: BTreeMap<String, TArea> = others;
+    all.extend(areas);
     if cover {
-        slivers(&ids, folder, &lands, rules.sliver_km2, &mut all);
+        slivers(&ids, folder, &lands, rules.sliver_km2, &mut all, &mut touched);
     }
+    drop(lands);
     let rest_id = rests.first().map(|s| (*s).clone());
-    let rest = cells_pass(folder, data, &mut all, cover, rest_id.is_some(), &mut out.problems);
+    let rest = cells_pass(folder, data, &mut all, cover, rest_id.is_some(), &mut out.problems, &mut touched);
     trace("stored");
     // 6. Stored: every region with water, every other a fill changed, and the rest.
     for (id, t) in &all {
@@ -733,7 +794,7 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
             continue;
         }
         let (p, r) = &folder.regions[id];
-        if !r.has_water() && others.get(id) == Some(t) {
+        if !r.has_water() && !touched.contains(id) {
             continue;
         }
         if t.is_empty() {
@@ -741,7 +802,7 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
             out.resolved.remove(id);
             continue;
         }
-        let land_empty = lands.get(id).is_none_or(TArea::is_empty) && r.has_water();
+        let land_empty = land_empty.get(id).copied().unwrap_or(false) && r.has_water();
         if let Some(res) = out.resolved.get_mut(id) {
             if let Some(c) = countries.get(id).filter(|c| !c.is_empty()) {
                 res.geometry.shapes =
@@ -767,10 +828,55 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
     }
 }
 
-/// With `SCENIC_REGIONS_TRACE` set: each step's start and the process's footprint, on stderr.
+/// With `SCENIC_REGIONS_TRACE` set: each step's start, the process's footprint, and the cells'
+/// buffers (wide: past 200 km, Antarctica's 200 nmi) and nearest-coast splits so far (how many, their
+/// time summed over threads, the most footprint seen as one ended), on stderr.
 fn trace(step: &str) {
     if std::env::var_os("SCENIC_REGIONS_TRACE").is_some() {
-        eprintln!("regions: {step}, footprint {} MB", crate::sys::footprint().unwrap_or(0) / 1_000_000);
+        let f = |c: &Counter| {
+            use std::sync::atomic::Ordering::Relaxed;
+            format!(
+                "{} in {:.0} s, up to {} MB",
+                c.0.load(Relaxed),
+                c.1.load(Relaxed) as f64 / 1000.0,
+                c.2.load(Relaxed)
+            )
+        };
+        eprintln!(
+            "regions: {step}, footprint {} MB; buffers {}; wide buffers {}; nearest-coast splits {}",
+            crate::sys::footprint().unwrap_or(0) / 1_000_000,
+            f(&BUFFERS),
+            f(&WIDE_BUFFERS),
+            f(&NEARESTS)
+        );
+    }
+}
+
+/// How many, milliseconds, the most footprint (MB) seen as one ended.
+type Counter = (std::sync::atomic::AtomicU64, std::sync::atomic::AtomicU64, std::sync::atomic::AtomicU64);
+static BUFFERS: Counter =
+    (std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0));
+static WIDE_BUFFERS: Counter =
+    (std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0));
+static NEARESTS: Counter =
+    (std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0));
+
+struct Timed(&'static Counter, std::time::Instant);
+
+impl Timed {
+    fn new(c: &'static Counter) -> Timed {
+        Timed(c, std::time::Instant::now())
+    }
+}
+
+impl Drop for Timed {
+    fn drop(&mut self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.0 .0.fetch_add(1, Relaxed);
+        self.0 .1.fetch_add(self.1.elapsed().as_millis() as u64, Relaxed);
+        if std::env::var_os("SCENIC_REGIONS_TRACE").is_some() {
+            self.0 .2.fetch_max(crate::sys::footprint().unwrap_or(0) / 1_000_000, Relaxed);
+        }
     }
 }
 
@@ -792,8 +898,8 @@ fn env_for<'a>(
     folder: &Folder,
     ctx: &super::resolve::Context,
     data: &'a super::data::Datasets,
-    made: &BTreeMap<String, Made>,
-    others: &BTreeMap<String, TArea>,
+    made: &'a BTreeMap<String, Made>,
+    others: &'a BTreeMap<String, TArea>,
     out: &Outcome,
 ) -> Result<Env<'a>, Vec<Problem>> {
     let (path, r) = &folder.regions[id];
@@ -815,33 +921,20 @@ fn env_for<'a>(
             _ => None,
         })
         .unwrap_or_default();
-    let mut env = Env { leaves: HashMap::new(), country, data };
+    let mut env = Env { leaves: HashMap::new(), country, data, made, others };
     let (theirs, rest): (BTreeMap<String, Leaf>, BTreeMap<String, Leaf>) = leaves
         .into_iter()
         .partition(|(k, _)| k.starts_with("region:") || k.starts_with("land:") || k.starts_with("group:"));
     env.leaves = tiled_leaves(rest);
-    let of = |d: &str, whole: bool| -> TArea {
-        match made.get(d) {
-            Some(m) if whole => m.land.zip(&m.water, |a, b| a.union(b)).zip(&m.lakes, |a, b| a.union(b)),
-            Some(m) => m.land.clone(),
-            None => others.get(d).cloned().unwrap_or_default(),
-        }
-    };
     for k in theirs.keys() {
-        let t = if let Some(d) = k.strip_prefix("region:") {
-            of(d, water)
+        let src = if let Some(d) = k.strip_prefix("region:") {
+            Src::Refs(vec![d.to_string()], water)
         } else if let Some(d) = k.strip_prefix("land:") {
-            of(d, false)
+            Src::Refs(vec![d.to_string()], false)
         } else {
-            let g = &k["group:".len()..];
-            let mut t = TArea::default();
-            for m in folder.members(g, id) {
-                let u = of(&m, water);
-                t = if t.cells.is_empty() { u } else { t.zip(&u, |a, b| a.union(b)) };
-            }
-            t
+            Src::Refs(folder.members(&k["group:".len()..], id), water)
         };
-        env.leaves.insert(k.clone(), Src::T(t));
+        env.leaves.insert(k.clone(), src);
     }
     Ok(env)
 }
@@ -1058,6 +1151,7 @@ fn slivers(
     lands: &BTreeMap<String, TArea>,
     km2: f64,
     all: &mut BTreeMap<String, TArea>,
+    touched: &mut BTreeSet<String>,
 ) {
     if km2 <= 0.0 {
         return;
@@ -1086,6 +1180,7 @@ fn slivers(
                 .filter(|(l, _)| *l > 0.0)
                 .max_by(|x, y| x.0.total_cmp(&y.0).then(y.1.cmp(&x.1)));
             if let Some((_, o)) = best {
+                touched.insert(o.clone());
                 for (c, p) in &piece.cells {
                     let a = all.get_mut(id).unwrap();
                     let left = a.get(*c).minus(p);
@@ -1109,6 +1204,7 @@ fn cells_pass(
     cover: bool,
     rest: bool,
     problems: &mut Vec<Problem>,
+    touched: &mut BTreeSet<String>,
 ) -> TArea {
     if !cover && !rest {
         return TArea::default();
@@ -1203,6 +1299,7 @@ fn cells_pass(
     for (c, changed, sea, ps) in done {
         for (id, a) in changed {
             all.get_mut(&id).unwrap().set(c, a);
+            touched.insert(id);
         }
         rest_t.set(c, sea);
         problems.extend(ps);

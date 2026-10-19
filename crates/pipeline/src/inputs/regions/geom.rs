@@ -718,6 +718,13 @@ pub fn area_km2(a: &Area) -> f64 {
 /// `within` cut along a staircase that keeps within a cell of the true median line. Where `than` is
 /// empty, all of `within`; where `to` is, none.
 pub fn nearest(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
+    nearest_in(within, to, than, step)
+}
+
+/// How far a nearest-coast split looks for coasts (metres): farther ones don't decide it.
+pub const NEAREST_REACH_M: f64 = 450_000.0;
+
+fn nearest_in(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
     if within.is_empty() || to.is_empty() {
         return Area::default();
     }
@@ -725,10 +732,14 @@ pub fn nearest(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
         return within.clone();
     }
     let Some(bb) = within.bbox() else { return Area::default() };
-    // Samples near enough to matter: within 8° of the area's box.
-    let reach = 80_000_000i64;
-    let near =
-        |q: &Pt| q[0] >= bb[0] - reach && q[0] <= bb[2] + reach && q[1] >= bb[1] - reach && q[1] <= bb[3] + reach;
+    // Samples near enough to matter: within `NEAREST_REACH_M` of the area's box, in degrees of
+    // latitude, and of longitude at the box's latitude farthest from the equator (all of them
+    // near a pole).
+    let ry = (NEAREST_REACH_M / 111_320.0 * 1e7) as i64;
+    let polar = ((bb[1] - ry).abs().max((bb[3] + ry).abs()) as f64 * 1e-7).min(90.0);
+    let cos = polar.to_radians().dcos();
+    let rx = if cos < 0.01 { TURN } else { ((NEAREST_REACH_M / (111_320.0 * cos)) * 1e7).min(TURN as f64) as i64 };
+    let near = |q: &Pt| q[0] >= bb[0] - rx && q[0] <= bb[2] + rx && q[1] >= bb[1] - ry && q[1] <= bb[3] + ry;
     let mut samples: Vec<(Pt, bool)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let deg = step / 111_320.0 * 1e7;

@@ -10,8 +10,9 @@
 //! | `regions-lakes` | Natural Earth's 1:10m lakes (a shapefile zip) | each by `ne_id`; those over 100 km² are water |
 //! | `regions-land` | OSM's land polygons, split, in degrees (a shapefile zip) | the land side of the coastline |
 //!
-//! Read whole when the check is prepared (`Datasets::read`); a region naming them waits, held
-//! (`rg-data`), while they can't be read.
+//! Read whole (`Datasets::read`), and only once a region in the folder names them (the check reads
+//! them lazily: `Prepared::data_from`); a region naming them waits, held (`rg-data`), while they
+//! can't be read. Features of one id are unioned (`merge`).
 
 use super::geom::{self, Area, Ring};
 use anyhow::{Context, Result};
@@ -62,9 +63,11 @@ fn bbox(rings: &[Ring]) -> Option<[i64; 4]> {
 }
 
 impl Datasets {
-    /// Datasets from parts in memory (tests, fixtures): zones, territorial seas, lakes, land.
+    /// Datasets from parts in memory (tests, fixtures): zones, their internal waters, territorial
+    /// seas, lakes, land.
     pub fn from_parts(
         eez: HashMap<u64, Vec<Ring>>,
+        internal: HashMap<u64, Vec<Ring>>,
         ts12: HashMap<u64, Vec<Ring>>,
         lakes: HashMap<u64, Vec<Ring>>,
         land: Vec<Vec<Ring>>,
@@ -74,7 +77,7 @@ impl Datasets {
             let a = geom::area_km2(&Area::from_rings(&r));
             (k, (r, a))
         });
-        let mut d = Datasets { eez, ts12, lakes: lakes.collect(), names: names.into(), ..Default::default() };
+        let mut d = Datasets { eez, internal, ts12, lakes: lakes.collect(), names: names.into(), ..Default::default() };
         d.land = land
             .into_iter()
             .filter_map(|r| bbox(&r).map(|b| (b, r.iter().map(|x| super::shapes::to_i32(x)).collect())))
@@ -159,7 +162,7 @@ impl Datasets {
         if let Ok(iw) = s.role(INTERNAL) {
             let p = path(iw)?;
             for (k, rings) in read_geojson(&p, iw.param_str("id")?)? {
-                d.internal.entry(k).or_default().extend(rings);
+                merge(d.internal.entry(k).or_default(), rings);
             }
         }
         if let Ok(ts) = s.role(TERRITORIAL) {
@@ -211,6 +214,16 @@ enum Geometry {
 /// no finer, and a continent's coast at full detail is what makes the operations large.
 pub const SIMPLIFY_M: f64 = 20.0;
 
+/// A feature's rings added to those of its id: the first as they are (even–odd), each further one
+/// unioned (features of one id may overlap: read together even–odd they'd cancel).
+pub fn merge(have: &mut Vec<Ring>, rings: Vec<Ring>) {
+    if have.is_empty() {
+        *have = rings;
+    } else {
+        *have = Area::from_rings(have).union(&Area::from_rings(&rings)).rings();
+    }
+}
+
 fn e7(r: &[[f64; 2]]) -> Ring {
     let mut v: Ring = r.iter().map(|p| [(p[0] * 1e7).round() as i64, (p[1] * 1e7).round() as i64]).collect();
     if v.len() > 1 && v.first() == v.last() {
@@ -232,12 +245,12 @@ pub fn parse_geojson(b: &[u8], id: &str) -> Result<HashMap<u64, Vec<Ring>>> {
         let Some(k) = f.properties.get(id).and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|x| x as u64))) else {
             continue;
         };
-        let rings = out.entry(k).or_default();
-        match f.geometry {
-            Some(Geometry::Polygon(p)) => rings.extend(p.iter().map(|r| e7(r))),
-            Some(Geometry::MultiPolygon(m)) => rings.extend(m.iter().flatten().map(|r| e7(r))),
-            None => {}
-        }
+        let rings: Vec<Ring> = match f.geometry {
+            Some(Geometry::Polygon(p)) => p.iter().map(|r| e7(r)).collect(),
+            Some(Geometry::MultiPolygon(m)) => m.iter().flatten().map(|r| e7(r)).collect(),
+            None => continue,
+        };
+        merge(out.entry(k).or_default(), rings);
     }
     Ok(out)
 }
@@ -246,7 +259,7 @@ pub fn parse_geojson(b: &[u8], id: &str) -> Result<HashMap<u64, Vec<Ring>>> {
 /// number without one).
 pub fn read_shapefile(p: &Path, layer: &str, id: Option<&str>) -> Result<BTreeMap<u64, Vec<Ring>>> {
     let mut out: BTreeMap<u64, Vec<Ring>> = BTreeMap::new();
-    each_shape(p, layer, id, &mut |k, rings| out.entry(k).or_default().extend(rings))?;
+    each_shape(p, layer, id, &mut |k, rings| merge(out.entry(k).or_default(), rings))?;
     anyhow::ensure!(!out.is_empty(), "{}: no {layer} polygons", p.display());
     Ok(out)
 }
