@@ -1145,7 +1145,18 @@ from the first (`edit_held`).
 
 **The pool** (`docs/pool.md`; `crate::pool`, `crate::agent::pool`; other workers: `docs/workers.md`),
 always on. Every Mac's agent is a member; one leads each term. A process not in the pool (no NAS at
-start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
+start, or its member lock held) starts nothing new. `scenic pool [status]` shows it, and `scenic
+status` labels the Mac by its part: "lead, coordinator", "member", or "not in the pool: waiting to
+join (why)" (`Status::role`, `out_of_pool`).
+- **Joining after an update** (task #423): the agent before may still hold the member lock while it
+  drains, so a new agent tries the lock each second for up to two minutes as it starts
+  (`JOIN_WAIT`), and joins as it starts once the lock is let go. Still held past that, it starts
+  out of the pool: the jobs it took over beat their leases with the lead over HTTP as before, and
+  a member's job that ends there hands its work off as in the pool (its folder kept for the next
+  process's hand-off, told to the lead as done, journaled). Each loop it tries the lock again,
+  and once it gets it, restarts at once (`Agent::restart_now`), not once its first slot is free: its
+  jobs are left running for the next agent, which joins as it starts and takes them over
+  (Restarts).
 - **Who leads** is the terms' (`state/build/terms/`): the first Mac makes term 1 (or the owner takes
   over: `scenic lead`, pool.md §11) and leads it: it plans, runs a coordinator (`pipeline::coord`,
   port 8090) from which every other worker asks for work, and merges the journal into the records.
@@ -1173,7 +1184,9 @@ start, or its member lock held) starts nothing. `scenic pool [status]` shows it.
 - **The contact:** `state/coordinator.json`, the coordinator's addresses and the agents' token
   (pages need none: docs/workers.md §7), removed when the agent stops.
 - **Leases:** ten minutes on the coordinator's clock, renewed by a beat each minute; a lapsed lease's
-  work is offered again. Paused, every lease is held. The lead's own jobs hold leases too, so a
+  work is offered again, its "lapse" in the history saying why (no word from its worker for ten
+  minutes: `coord::lapse_why`). A member's job that fails saying nothing goes to the lead with a
+  reason all the same (`fail_why`). Paused, every lease is held. The lead's own jobs hold leases too, so a
   target is never built twice at once. A worker's failed unit isn't offered to it for an hour,
   doubling.
 - **The coordinator's state** (leases, costs, failures, the pause) is the term's, on the NAS

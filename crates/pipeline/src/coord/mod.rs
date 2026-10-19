@@ -47,6 +47,18 @@ pub const PORT: u16 = 8090;
 pub const TTL: Duration = Duration::from_secs(600);
 /// How long a worker counts as around after its last request.
 const AROUND: Duration = Duration::from_secs(120);
+
+/// Why lease `l` lapsed, in the lead's history (a "lapse" event's note): what it was for, and that
+/// its worker said nothing for a whole `TTL` (its agent stopped or out of the pool, or this
+/// coordinator out of its reach), its work offered again.
+pub fn lapse_why(l: &Lease) -> String {
+    format!(
+        "{}: no word from {} for {} min (its agent stopped, or couldn't reach this coordinator); offered again",
+        l.what(),
+        l.worker,
+        TTL.as_secs() / 60
+    )
+}
 /// How long a worker counts as looking for work after its last ask (a page with a slot idle asks
 /// every 15–20 s; an agent's idle slot every few seconds): a task's `takers`.
 const ASKING: Duration = Duration::from_secs(30);
@@ -2314,7 +2326,7 @@ impl Coordinator {
                 lease: Some(l.id),
                 step,
                 targets,
-                note: l.what(),
+                note: lapse_why(l),
                 ..history::Event::new("lapse")
             });
         }
@@ -5210,6 +5222,20 @@ pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Coordinator, u
 #[cfg(all(test, not(target_os = "wasi")))]
 mod tests {
     use super::*;
+
+    /// Task #423: a lease lapsed for its worker's silence says so in the history, never nothing.
+    #[test]
+    fn a_lapse_says_why() {
+        let now = Instant::now();
+        let mut l = Leases::new(Duration::from_millis(10));
+        let id =
+            l.grant("m1 #2", Work::Job { step: "unit".into(), targets: vec![("6/12/25".into(), "k".into())] }, now);
+        let gone = l.expire(now + Duration::from_millis(20));
+        assert_eq!(gone.len(), 1);
+        assert_eq!(gone[0].id, id);
+        let why = lapse_why(&gone[0]);
+        assert!(why.starts_with("unit 6/12/25: no word from m1 #2 for 10 min"), "{why}");
+    }
 
     /// A stop returns whatever a blocking task of the coordinator waits on (a stat of a NAS that
     /// doesn't answer, here one that never returns), its listener closed: no clock decides it.

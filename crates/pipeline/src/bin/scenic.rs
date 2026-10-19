@@ -535,7 +535,8 @@ fn job_line(j: &agent::JobView) -> String {
     v.join(" · ")
 }
 
-/// Each Mac's lines (`scenic status`): the lead's first, marked coordinator, with its ramp; then
+/// Each Mac's lines (`scenic status`): this Mac's first, marked with its part in the pool
+/// (`Status::role`: "lead, coordinator", "member", or out of the pool and why), with its ramp; then
 /// each member building (`Status::helpers`); then any other the coordinator holds a capacity of.
 /// Under each: its capacity (coord::Capacity) and NAS share, a line per running job, and why
 /// nothing more fits (the packing's refusal, `Status::packing`).
@@ -543,11 +544,13 @@ fn macs_lines(st: &agent::Status) -> Vec<String> {
     let ramp = st.ramp.as_ref().map(|r| format!(" · {}", ramp_words(r))).unwrap_or_default();
     let mut macs: Vec<(&str, String, Option<&agent::Status>)> = vec![(
         &st.host,
-        format!("{} · lead, coordinator · {} running{ramp}", st.host, plural(jobs_of(st).len(), "job")),
+        format!("{} · {} · {} running{ramp}", st.host, st.role(), plural(jobs_of(st).len(), "job")),
         Some(st),
     )];
     for h in &st.helpers {
-        let head = format!("{} · member · {} running · seen {}", h.host, plural(jobs_of(h).len(), "job"), ago(h.beat));
+        // (A member out of the pool says so, and why.)
+        let part = if h.out_of_pool.is_some() { h.role() } else { "member".into() };
+        let head = format!("{} · {part} · {} running · seen {}", h.host, plural(jobs_of(h).len(), "job"), ago(h.beat));
         macs.push((&h.host, head, Some(h)));
     }
     for (name, _) in &st.capacity {
@@ -1686,6 +1689,29 @@ mod tests {
         let l = macs_lines(&st).join("\n");
         assert!(l.contains("slot 1: job 0") && l.contains("slot 4: job 3") && !l.contains("slot 2:"), "{l}");
         assert!(l.contains("        tail line"), "{l}");
+        // Task #423: this Mac's real part. A member says so; one out of the pool says why; a member
+        // building out of the pool, too.
+        let pooled = |role: &str| -> agent::PoolView {
+            serde_json::from_value(serde_json::json!({
+                "member": "m-0000000000000001", "role": role, "gates": {}, "members": [], "unacked": 0
+            }))
+            .unwrap()
+        };
+        let mut st = agent::Status { host: "m1".into(), pool: Some(pooled("member")), ..Default::default() };
+        assert!(macs_lines(&st)[0].starts_with("m1 · member · 0 jobs running"), "{:?}", macs_lines(&st));
+        st.pool = Some(pooled("lead"));
+        assert!(macs_lines(&st)[0].starts_with("m1 · lead, coordinator · "), "{:?}", macs_lines(&st));
+        st.pool = None;
+        st.out_of_pool = Some("its member's lock is held".into());
+        assert!(
+            macs_lines(&st)[0].starts_with("m1 · not in the pool: waiting to join (its member's lock is held) · "),
+            "{:?}",
+            macs_lines(&st)
+        );
+        let mut lead = agent::Status { host: "m4".into(), pool: Some(pooled("lead")), ..Default::default() };
+        lead.helpers = vec![st];
+        let l = macs_lines(&lead).join("\n");
+        assert!(l.contains("m1 · not in the pool: waiting to join (its member's lock is held) · 0 jobs"), "{l}");
     }
 
     /// The build's memory in words (task #390), and a Mac's capacity with it and its disk said

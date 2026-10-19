@@ -86,6 +86,21 @@ pub struct Options {
 /// How long a job asked to stop at its next safe point (the build pausing, the battery low) is given
 /// before it's frozen where it is instead: a unit takes up to ~11 min, a map tile ~10.
 const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
+/// Why an agent is out of the pool (`Status::out_of_pool`): the NAS not answering as it started.
+const NAS_AWAY: &str = "the NAS didn't answer as this agent started";
+/// Or this Mac's member's lock held by another process past `JOIN_WAIT`.
+const LOCK_HELD: &str = "this Mac's member's lock is held by another process, most often the agent before this one still draining after an update";
+/// How long an agent starting tries for this Mac's member's lock, held by another process (the
+/// agent before it, draining after an update), before it starts out of the pool.
+#[cfg(not(test))]
+const JOIN_WAIT: Duration = Duration::from_secs(120);
+#[cfg(test)]
+const JOIN_WAIT: Duration = Duration::from_secs(3);
+/// The wait between its tries (`JOIN_WAIT`).
+#[cfg(not(test))]
+const JOIN_TRY: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const JOIN_TRY: Duration = Duration::from_millis(50);
 
 /// How long a lead quitting waits for the member it handed the lead to (`Agent::hand_for_quit`)
 /// before it stops anyway (the handover's stages take a few of the pool's steps, ~20 s each).
@@ -183,6 +198,21 @@ fn test_worker() -> Option<String> {
         "agent: WARNING: SCENIC_TEST_WORKER: this agent works as {w} (the two-Mac test's alone, never a real agent's)"
     );
     Some(w)
+}
+
+/// Why a member's job ended as failed, for its lead: its note, or, the note empty (a job that
+/// ended well with nothing to hand off), what's known, so the lead's record never says nothing.
+fn fail_why(outcome: Outcome, note: &str, handed: bool) -> String {
+    if !note.trim().is_empty() {
+        return note.to_string();
+    }
+    match (outcome, handed) {
+        (Outcome::Done, false) => {
+            "it ended well, but its hand-off couldn't be read here: its work is done again".into()
+        }
+        (Outcome::Done, true) => "it ended well, but its hand-off has no done record".into(),
+        _ => "it failed, saying nothing".into(),
+    }
 }
 
 /// A slot's files' suffix in the agent's folder: none for the first, `-2`, `-3`, … after
@@ -730,6 +760,10 @@ pub struct Status {
     /// This Mac paused alone (crate::control::Hold, task #224), while it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<crate::control::Hold>,
+    /// Why this Mac's agent isn't in the pool, while it isn't (none in the pool, or a dry run's):
+    /// waiting to join, and what for (`Status::role`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out_of_pool: Option<String>,
     /// This Mac's memory, load, disk and caches, and the NAS's answer and room (cond::Resources).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resources: Option<cond::Resources>,
@@ -891,6 +925,19 @@ pub struct JobView {
 }
 
 impl Status {
+    /// This Mac's part in the pool, in words, for `scenic status`: "lead, coordinator", "member",
+    /// or "not in the pool: waiting to join (why)". An older agent's status, saying neither its
+    /// pool nor why it's out: "lead, coordinator", as before.
+    pub fn role(&self) -> String {
+        if let Some(why) = &self.out_of_pool {
+            return format!("not in the pool: waiting to join ({why})");
+        }
+        match self.pool.as_ref().map(|p| p.role) {
+            Some(pool::Role::Member) => "member".into(),
+            _ => "lead, coordinator".into(),
+        }
+    }
+
     /// Its running jobs, each with its slot: `jobs`, else an older agent's old fields (`job`,
     /// `beside`, `more`) in order; a job not saying its slot (an older agent's) has its place.
     pub fn jobs(&self) -> Vec<JobView> {
@@ -1421,6 +1468,9 @@ pub struct Agent {
     ramp_held: bool,
     ramp_trouble: Option<String>,
     restart_for: Option<String>,
+    /// Why this process isn't in the pool, while it isn't (`NAS_AWAY`, `LOCK_HELD`): the status's
+    /// `out_of_pool`.
+    out_why: String,
     /// The gate (crate::inputs): the drop boxes' listing thread, the status's entries as the last
     /// plan made them, what they read, and the units a full check was asked of.
     inputs: Gate,
@@ -1549,6 +1599,7 @@ impl Agent {
         // then restarts into it): this Mac's member takes its first step, which says its part: it
         // leads or works as a member.
         let mut run: Option<pool::Run> = None;
+        let mut out_why = NAS_AWAY.to_string();
         let mut first: Option<(crate::pool::driver::Out, PathBuf)> = None;
         if lock.is_some() && !o.dry_run {
             if let Some(r) = o.root.clone().or_else(|| find_root(false)).filter(|r| probe(r)) {
@@ -1557,7 +1608,28 @@ impl Agent {
                         crate::pool::nas::Share::new(&r),
                     )));
                     let locks = o.home.parent().unwrap_or(&o.home).to_path_buf();
-                    match pool::Side::open(&o.home, &o.home.join("pool"), &locks, &app, nas)? {
+                    // (The member's lock held by another process, most often the agent before this
+                    // one still draining after an update: tried again each second for `JOIN_WAIT`,
+                    // so this process joins as it goes rather than restarting into the pool later.)
+                    let until = Instant::now() + JOIN_WAIT;
+                    let mut said = false;
+                    let side = loop {
+                        match pool::Side::open(&o.home, &o.home.join("pool"), &locks, &app, nas.clone())? {
+                            Some(s) => break Some(s),
+                            None if Instant::now() < until && !STOP.load(Ordering::SeqCst) => {
+                                if !said {
+                                    eprintln!(
+                                        "agent: this Mac's member's lock is held by another process; trying it again for up to {} s",
+                                        JOIN_WAIT.as_secs()
+                                    );
+                                    said = true;
+                                }
+                                std::thread::sleep(JOIN_TRY);
+                            }
+                            None => break None,
+                        }
+                    };
+                    match side {
                         Some(side) => {
                             let (r1, out) = pool::Run::start(side, &o.home);
                             o.helper = r1.role == pool::Role::Member;
@@ -1570,10 +1642,12 @@ impl Agent {
                             run = Some(r1);
                             first = Some((out, r.clone()));
                         }
-                        // (Its lock held by another process: this one starts nothing, and tries the
-                        // lock again each loop, restarting into the pool once it has it.)
+                        // (Its lock still held past `JOIN_WAIT`: this one starts nothing new, keeps
+                        // the jobs it took over beating their leases, and tries the lock again each
+                        // loop, restarting into the pool at once when it has it.)
                         None => {
-                            eprintln!("agent: another process is this Mac's member in the pool; waiting for its lock")
+                            eprintln!("agent: another process is this Mac's member in the pool; waiting for its lock");
+                            out_why = LOCK_HELD.to_string();
                         }
                     }
                 }
@@ -1722,6 +1796,7 @@ impl Agent {
             pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))),
             ticker: None,
             restart_for: None,
+            out_why,
             inputs: Gate::default(),
             start_soon: Default::default(),
         };
@@ -2610,7 +2685,11 @@ impl Agent {
                 let kept: Option<pool::JobKept> =
                     std::fs::read(dir.join("work.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
                 let costs = read_costs(&if own { self.costs_path(k) } else { dir.join("costs.jsonl") });
-                let entry = match (&kept, self.member_id.as_deref()) {
+                // (Out of the pool, its member's lock held by another process a while: this Mac's
+                // member all the same, its hand-off read as the pool's would. Without it the job
+                // would go to the lead as failed, with no reason, and be built again.)
+                let me = self.member_id.clone().or_else(|| crate::pool::member_id(&self.o.home).ok());
+                let entry = match (&kept, me.as_deref()) {
                     (Some(w), Some(me)) => match pool::entry_of(&dir, me, w.lease, &w.step, done, now_s()) {
                         Ok(e) => e,
                         Err(e) => {
@@ -2684,7 +2763,7 @@ impl Agent {
                         _ if matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped => {
                             Tell::GiveBack { id, why: note.to_string(), floors, disks, job_disk }
                         }
-                        _ => Tell::Fail { id, why: note.to_string(), floors, disks, job_disk },
+                        _ => Tell::Fail { id, why: fail_why(outcome, note, entry.is_some()), floors, disks, job_disk },
                     };
                     if self.coord.is_some() {
                         eprintln!("agent: lease {id} ended as this Mac finds its term lost: told to the lead once it works as a member");
@@ -3253,7 +3332,7 @@ impl Agent {
                 break;
             }
             // The pool's switch changed, or this process's part in it: restarting into it.
-            if let (None, Some(why)) = (&self.slots[0].running, self.pool_restart()) {
+            if let Some(why) = self.restart_now() {
                 eprintln!("agent: {why}; restarting");
                 break;
             }
@@ -4205,6 +4284,7 @@ impl Agent {
                 Some(Some(p)) => Some(p.pool_view()),
                 _ => self.pool_seen.clone(),
             },
+            out_of_pool: self.out_of_pool(),
             memory: Some(self.guard_view()),
             ramp: (!self.o.helper).then(|| {
                 let most = job_slots(mac_cores() as usize);
@@ -8432,6 +8512,27 @@ impl Agent {
         std::fs::remove_file(self.record_path(k)).ok();
     }
 
+    /// Why this Mac isn't in the pool, for the status (`Status::out_of_pool`): None in the pool, or
+    /// in a process that never joins (a dry run, another agent's lock held).
+    fn out_of_pool(&self) -> Option<String> {
+        if self.pool.is_some() || self._lock.is_none() || self.o.dry_run {
+            return None;
+        }
+        Some(match &self.restart_for {
+            Some(_) => "its member's lock is free: restarting into the pool now".into(),
+            None => self.out_why.clone(),
+        })
+    }
+
+    /// Why this process restarts now (`pool_restart`): once its first job's slot is free; out of
+    /// the pool, its member's lock free now, at once, its jobs left running for the next agent
+    /// (`hand_over_jobs`), which joins the pool as it starts and takes them over: waiting for a
+    /// job's end would leave this Mac out of the pool for as long as the job runs.
+    fn restart_now(&self) -> Option<String> {
+        let joining = self.pool.is_none() && self.restart_for.is_some();
+        self.pool_restart().filter(|_| joining || self.slots[0].running.is_none())
+    }
+
     /// Why this process restarts once its first job's slot is free (the pool's switch changed, or
     /// its part in the pool); None: it goes on.
     fn pool_restart(&self) -> Option<String> {
@@ -9075,10 +9176,14 @@ impl Agent {
         if self.pool.is_none() && self.restart_for.is_none() {
             let locks = self.o.home.parent().unwrap_or(&self.o.home).to_path_buf();
             if let Ok(id) = crate::pool::member_id(&self.o.home) {
-                if let Ok(Some(_lock)) = crate::pool::MemberLock::take(&locks, &id) {
-                    let why = "the NAS answers and this Mac's member's lock is free: into the pool".to_string();
-                    eprintln!("agent: {why}");
-                    self.restart_for = Some(why);
+                match crate::pool::MemberLock::take(&locks, &id) {
+                    Ok(Some(_lock)) => {
+                        let why = "the NAS answers and this Mac's member's lock is free: into the pool".to_string();
+                        eprintln!("agent: {why}");
+                        self.restart_for = Some(why);
+                    }
+                    Ok(None) => self.out_why = LOCK_HELD.into(),
+                    Err(_) => {}
                 }
             }
         }
@@ -16654,9 +16759,125 @@ mod pool_tests {
             st.waiting
         );
         assert!(a.pool_restart().is_none() && a.slots.iter().all(|s| s.running.is_none()));
+        // (Task #423: the status says this Mac is out of the pool, and why.)
+        assert!(st.out_of_pool.as_deref().is_some_and(|w| w.contains("lock is held")), "{:?}", st.out_of_pool);
+        assert!(st.role().starts_with("not in the pool: waiting to join (this Mac's member's lock"), "{}", st.role());
+        // A job running here (one it took over): the lock free, it restarts at once all the same,
+        // the job left running for the next agent, which joins as it starts.
+        let job = JobSpec {
+            id: "sleep".into(),
+            what: "sleep".into(),
+            cmd: vec!["/bin/sleep".into(), "30".into()],
+            needs: Needs { nas: false },
+            restart_after_sleep: false,
+            record: None,
+        };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 9999 };
+        assert!(a.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
+        assert!(a.slots[0].running.is_some() && a.restart_now().is_none());
         drop(held);
         a.step().unwrap();
         assert!(a.pool_restart().is_some_and(|w| w.contains("lock")), "{:?}", a.pool_restart());
+        assert!(a.slots[0].running.is_some());
+        assert!(a.restart_now().is_some(), "not waiting for its job's end");
+        stop_jobs(&mut a);
+    }
+
+    /// Task #423: an agent started while the one before it holds this Mac's member's lock (still
+    /// draining after an update) joins the pool as it starts, within `JOIN_WAIT` of the lock's
+    /// release, not once a job it took over ends.
+    #[test]
+    fn an_agent_started_while_the_lock_is_held_joins_once_it_is_let_go() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let home = d.path().join("app-folder/agent");
+        let id = crate::pool::member_id(&home).unwrap();
+        let held = crate::pool::MemberLock::take(&d.path().join("app-folder"), &id).unwrap().unwrap();
+        let t0 = Instant::now();
+        let let_go = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            drop(held);
+        });
+        let a = test_agent(Options {
+            root: Some(r.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/nonexistent/bin"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        let_go.join().unwrap();
+        assert!(a.pool.is_some(), "in the pool as it starts");
+        assert!(t0.elapsed() < JOIN_WAIT, "within the wait: {:?}", t0.elapsed());
+        assert!(a.out_of_pool().is_none() && a.restart_now().is_none());
+    }
+
+    /// Task #423: a member's job out of the pool (its agent waiting to join) keeps its lease with
+    /// the lead: beaten by HTTP; and ending well, it's told done with its hand-off, not failed with
+    /// no reason (the lead would build it again).
+    #[test]
+    fn a_job_out_of_the_pool_keeps_its_lease_and_ends_done() {
+        let d = tempfile::tempdir().unwrap();
+        // (A root of its own, no catalog/: the NAS away as it started, the pool off.)
+        let mut a = test_agent(Options {
+            root: Some(d.path().join("nas")),
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        assert!(a.pool.is_none() && a.member_id.is_none());
+        assert_eq!(a.out_of_pool().as_deref(), Some(NAS_AWAY));
+        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        c.offer(
+            "2026-10-18",
+            vec![crate::coord::Offer {
+                step: "unit".into(),
+                targets: vec![("6/12/25".into(), "k".into(), 100)],
+                job: None,
+            }],
+        );
+        let cl = crate::coord::client::Client::at(
+            vec![format!("http://127.0.0.1:{port}")],
+            c.contact.token.clone(),
+            &a.host,
+        );
+        let ask =
+            crate::coord::Ask { kind: "native".into(), can: vec!["unit".into()], mem_mb: 64_000, ..Default::default() };
+        let g = cl.ask(&ask).unwrap().expect("granted");
+        a.client = Some(cl);
+        let dir = d.path().join("home/pool/jobs/1-7");
+        std::fs::create_dir_all(&dir).unwrap();
+        let kept = pool::JobKept {
+            step: "unit".into(),
+            targets: vec![("6/12/25".into(), "k".into())],
+            lease: crate::pool::journal::LeaseId { term: 1, n: 7 },
+        };
+        std::fs::write(dir.join("work.json"), serde_json::to_vec(&kept).unwrap()).unwrap();
+        a.slots[0].lease = Some(Held::Pooled { id: g.lease, term: 1, dir: dir.clone(), own: false });
+        assert!(a.beat(0, None), "its lease renewed with the lead");
+        assert!(c.held("unit").contains("6/12/25"));
+        // It ends well: told done, journaled, its folder kept for the next process to hand off.
+        a.client = None;
+        a.end_lease(0, Outcome::Done, &[("6/12/25".into(), "k".into())], "");
+        match a.owed.as_slice() {
+            [(_, Tell::Done(d))] => {
+                assert!(d.journaled);
+                assert_eq!(
+                    d.handoff.as_ref().and_then(|h| h.done.clone()),
+                    Some(("unit".into(), vec![("6/12/25".into(), "k".into())]))
+                );
+            }
+            o => panic!("not told done: {}", o.len()),
+        }
+        assert!(dir.join("work.json").is_file(), "kept for the next process's hand-off");
+        // A failure that says nothing still goes with a reason.
+        assert!(!fail_why(Outcome::Done, "", false).is_empty());
+        assert!(!fail_why(Outcome::Failed, " ", true).trim().is_empty());
+        assert_eq!(fail_why(Outcome::Failed, "boom", true), "boom");
     }
 
     #[test]

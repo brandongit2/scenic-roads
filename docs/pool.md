@@ -515,7 +515,11 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   restarts once every slot is free, each job given its own
   wait (its target under way's expected time ×1.5, at most 3 h, at least 15 minutes); a job still
   running then is left running, its lease kept, and the new agent takes it over (plan.md §8,
-  Restarts), as after any restart but a quit.
+  Restarts), as after any restart but a quit. The new agent may start while the old one still
+  holds the member lock: it tries the lock for up to two minutes, joining as it starts; past that
+  it starts out of the pool, its jobs' leases still beaten with the lead, and restarts into the
+  pool at once when the lock comes free, its jobs left running for the next agent (plan.md §8,
+  Joining after an update).
 - **Floors**, learned whatever the switch: the most a target held is its floor
   (`floors.json`, and the pool's state), rising only, tagged with whether it ran alone and the
   step's `cost_version`. A target's predicted memory is never below its floor. A target whose
