@@ -720,9 +720,9 @@ mod tests {
             if let Some(x) = f(r) {
                 return x;
             }
-            if t.elapsed() > Duration::from_secs(300) {
+            if t.elapsed() > store::clock::WATCHDOG {
                 r.stop(Duration::from_secs(1));
-                panic!("{what}: not within five minutes");
+                panic!("{what}: not within {:?}", store::clock::WATCHDOG);
             }
             std::thread::sleep(Duration::from_millis(10));
         }

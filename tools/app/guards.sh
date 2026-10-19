@@ -15,6 +15,16 @@ log=~/Library/Logs/scenic/guards-$(date +%Y%m%d-%H%M%S).log
   echo "the Rust isn't formatted; run cargo fmt (rustfmt.toml)"
   exit 1
 }
+# No test measures the machine (#441): a test on the real clock waits for what happens
+# (store::clock::eventually, WATCHDOG) and checks that code didn't wait by store::clock::ended_before
+# (half the time it would have waited), never by asserting a short elapsed() bound of its own, which
+# failed when a loaded Mac ran the suite.
+fast=$(grep -rnE 'assert!\(.*elapsed\(\)[^;]*< *(std::time::)?(Duration::from_millis|Duration::from_secs\([0-9]{1,2}\)|ms\()' crates || true)
+[[ -z $fast ]] || {
+  print -r -- $fast
+  echo "a test asserts a short elapsed() bound: wait for the event (store::clock::eventually) or use store::clock::ended_before"
+  exit 1
+}
 cargo test -q -p pipeline --test inputs_accessor --test source_names > $log 2>&1 || {
   sed -n '/^---- /,/^failures:$/p' $log
   echo "a guard failed; the tests' whole output: $log"

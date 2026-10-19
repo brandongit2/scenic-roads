@@ -11883,7 +11883,7 @@ mod tests {
         assert_eq!(lead_start(&mut a, std::slice::from_ref(&job), &cond, &root, &mut w), [0], "{w:?}");
         let t = Instant::now();
         while a.slots[0].running.is_some() {
-            assert!(t.elapsed() < Duration::from_secs(10), "it ends");
+            assert!(t.elapsed() < store::clock::WATCHDOG, "it ends");
             a.tend(0, &cond, Some(&root), 0).unwrap();
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -12586,7 +12586,7 @@ mod tests {
         let until = |what: &str, f: &dyn Fn() -> bool| {
             let t = Instant::now();
             while !f() {
-                assert!(t.elapsed() < Duration::from_secs(10), "{what}");
+                assert!(t.elapsed() < store::clock::WATCHDOG, "{what}");
                 std::thread::sleep(Duration::from_millis(20));
             }
         };
@@ -13711,7 +13711,7 @@ mod tests {
         ask(&a);
         let t = Instant::now();
         while watch(&a).is_none() {
-            assert!(t.elapsed() < Duration::from_secs(30), "listed");
+            assert!(t.elapsed() < store::clock::WATCHDOG, "listed");
             std::thread::sleep(Duration::from_millis(20));
         }
         // The first check: a full one, before every other job.
@@ -13764,7 +13764,7 @@ mod tests {
         assert_eq!(crate::inputs::acceptances(&root, unit).unwrap().len(), 1);
         let t = Instant::now();
         while watch(&a).is_none_or(|l| l.accepted.is_empty()) {
-            assert!(t.elapsed() < Duration::from_secs(30), "listed again");
+            assert!(t.elapsed() < store::clock::WATCHDOG, "listed again");
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(a.plan(&root, &c, &mut w)[0].id, format!("inputs {unit}"));
@@ -13773,7 +13773,7 @@ mod tests {
         b.step().unwrap();
         let t = Instant::now();
         while watch(&b).is_none() {
-            assert!(t.elapsed() < Duration::from_secs(30), "listed");
+            assert!(t.elapsed() < store::clock::WATCHDOG, "listed");
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(
@@ -14131,7 +14131,7 @@ mod tests {
         std::fs::write(&go, "").unwrap();
         let t = Instant::now();
         while !b.tend(0, &cond, Some(&root), 0).unwrap() {
-            assert!(t.elapsed() < Duration::from_secs(120), "the job ends");
+            assert!(t.elapsed() < store::clock::WATCHDOG, "the job ends");
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(b.slots[0].running.is_none() && b.slots[0].lease.is_none());
@@ -14837,7 +14837,7 @@ mod pool_tests {
         }
     }
 
-    const WATCHDOG: Duration = Duration::from_secs(300);
+    use store::clock::WATCHDOG;
 
     /// A member's Mac with more room than its lead's test Mac (`cond::Mac::TEST`'s 16 GB), as the
     /// M4's 48 GB: a cold start (no job of its step measured) goes to it, whatever Mac runs the test.

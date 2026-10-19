@@ -806,7 +806,11 @@ mod tests {
         let t = std::time::Instant::now();
         assert_eq!(ask("127.0.0.1", false).await, StatusCode::OK);
         assert_eq!(s.data.catalog().n, 2);
-        assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+        store::clock::ended_before(
+            t,
+            Duration::from_secs(poll_every(true, true)),
+            "adopted at once, not at the next poll",
+        );
         assert_eq!(ask("::1", false).await, StatusCode::OK);
     }
 

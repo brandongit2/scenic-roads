@@ -35,6 +35,36 @@ impl Clock for Real {
     }
 }
 
+/// How long a test on the real clock waits for something to happen (a job's shell to start or end,
+/// a thread to list a folder) before it fails: a watchdog, not a measure. A loaded Mac (builds
+/// beside the suite, jobs at utility priority) takes seconds for what takes milliseconds idle, so
+/// a test waits for the event and never for a time; tools/app/guards.sh refuses a test's own
+/// short watchdog (`elapsed() <` asserted).
+pub const WATCHDOG: Duration = Duration::from_secs(300);
+
+/// For a test on the real clock: polls `done` every 10 ms until it holds, failing past
+/// [`WATCHDOG`] (saying `what` it waited for).
+#[track_caller]
+pub fn eventually(what: &str, mut done: impl FnMut() -> bool) {
+    let end = Instant::now() + WATCHDOG;
+    while !done() {
+        assert!(Instant::now() < end, "never: {what} (in {WATCHDOG:?})");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// For a test on the real clock that checks code didn't wait: asserts what began at `t0` ended
+/// well before `never`, the time the code would have taken had it waited (its deadline, the stuck
+/// call's sleep, its retries). Half of that, so a loaded Mac's slow scheduling (seconds at
+/// utility priority) can't fail it, never a fixed "fast" bound such as 100 ms: those measured the
+/// machine, and failed under load. tools/app/guards.sh refuses a test asserting
+/// `elapsed() <` itself.
+#[track_caller]
+pub fn ended_before(t0: Instant, never: Duration, what: &str) {
+    let took = t0.elapsed();
+    assert!(took < never / 2, "{what}: took {took:?}, as if it waited ({never:?})");
+}
+
 /// The real clock, shared.
 pub fn real() -> Arc<dyn Clock> {
     Arc::new(Real)

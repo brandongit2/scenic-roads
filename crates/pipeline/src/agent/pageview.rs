@@ -700,7 +700,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         let t = Instant::now();
         assert!(pv.swarm().is_some() && pv.history(0, 10).is_some());
-        assert!(t.elapsed() < Duration::from_millis(50), "{:?}", t.elapsed());
+        store::clock::ended_before(t, store::clock::WATCHDOG, "answered from the snapshot, not after the stuck read");
         drop(go);
         assert!(reader.join().unwrap());
     }

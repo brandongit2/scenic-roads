@@ -2045,12 +2045,12 @@ pub(crate) mod tests {
         let ms = std::time::Duration::from_millis;
         let t = std::time::Instant::now();
         let e = nas_call("stuck", ms(100), &[ms(1)], move || {
-            std::thread::sleep(ms(3000));
+            std::thread::sleep(ms(30_000));
             Ok(())
         })
         .unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
-        assert!(t.elapsed() < ms(2000), "{:?}", t.elapsed());
+        store::clock::ended_before(t, ms(30_000), "the stuck call ends at its deadline");
         let tries = std::sync::Arc::new(AtomicUsize::new(0));
         let n = tries.clone();
         let got =

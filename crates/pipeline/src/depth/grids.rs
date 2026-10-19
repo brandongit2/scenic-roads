@@ -774,7 +774,8 @@ pub(crate) mod tests {
         let t0 = std::time::Instant::now();
         let e = within(Path::new("x"), std::time::Duration::from_millis(50), stuck).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
-        assert!(!transient(&e) && t0.elapsed() < std::time::Duration::from_secs(5));
+        assert!(!transient(&e));
+        store::clock::ended_before(t0, std::time::Duration::from_secs(30), "the stuck open ends at its deadline");
         // A file that isn't a GeoTIFF: InvalidData, not tried again.
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("n.tif"), b"nope").unwrap();

@@ -1256,7 +1256,11 @@ mod tests {
         let r = cancellable(&flag, || net::Net::new().with_down(None).range(&url, 0, 10));
         let e = format!("{:#}", r.unwrap_err());
         assert!(e.contains("given up"), "{e}");
-        assert!(t0.elapsed() < std::time::Duration::from_secs(2), "{:?}", t0.elapsed());
+        store::clock::ended_before(
+            t0,
+            std::time::Duration::from_secs(60),
+            "ended as its reader stopped, not after its retries (minutes)",
+        );
         // (Its host noted down by another request while it waits.)
         let d = tempfile::tempdir().unwrap();
         let (dir, u) = (d.path().to_path_buf(), url.clone());
@@ -1267,7 +1271,11 @@ mod tests {
         let t0 = std::time::Instant::now();
         let r = net::Net::new().with_down(Some(d.path().to_path_buf())).range(&url, 0, 10);
         assert!(is_unreachable(&r.unwrap_err()));
-        assert!(t0.elapsed() < std::time::Duration::from_secs(4), "{:?}", t0.elapsed());
+        store::clock::ended_before(
+            t0,
+            std::time::Duration::from_secs(60),
+            "ended as its host was noted down, not after its retries (minutes)",
+        );
     }
 
     /// Task #397: a host's requests in flight are capped (`HOST_REQUESTS`), another host's not
