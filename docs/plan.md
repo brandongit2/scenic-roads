@@ -268,7 +268,7 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
 
 **The M1 (16 GB)** leads when it holds the term; as a member it builds what the lead's coordinator
 gives it (§8, The pool): any shared step's jobs that fit the memory its owner gives the build there
-(`scenic memory`, within the memory guard's limit: docs/pool.md §7.1) and its disk (15 GB free a job, 5 a task), from the far end of the list (terrain from the
+(`scenic memory`, within the memory guard's limit: docs/pool.md §7.1) and its disk (its room target kept free past each job's measured disk; a task 5 GB, tree cover's rows and terrain's subtrees 1 GB), from the far end of the list (terrain from the
 near end), else units' tails (`docs/workers.md`). A unit's predicted peak is the most its job's
 processes held together last time, else about ten times its piece, never under 3.7 GB nor below its
 floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, the lead's the heartbeat
@@ -1000,8 +1000,9 @@ from the first (`edit_held`).
     back, not failed.
   - A job without the NAS is frozen at once and goes on when it's back.
   - **Any job's end** records the targets it noted done.
-- **Room on the disk:** before a job starts, when the Mac has less free than the job needs (its
-  measured disk, at least 30 GB; the M1 15 GB; the OSM pass 80 GB), copies of what the NAS keeps
+- **Room on the disk:** before a job starts, when the Mac has less free than the job needs (the
+  owner's room target past its measured disk and the other jobs' reservations; the OSM pass 80 GB;
+  no fixed reserve), copies of what the NAS keeps
   lose files until there's a sixth more.
   - **Mid-job, safely by design** (`store::cachefile`, `dem/cachefile.py`): every cache read goes
     through one accessor that refills a missing file from where that cache fills from, so a wrong
@@ -1014,8 +1015,9 @@ from the first (`edit_held`).
     months the NAS lacks) stays. What queued and running jobs read goes last (`room::Hints`).
   - **Disk measured** (docs/pool.md §7.7): what each job writes is counted by the accessor and by
     the agent's sampler over the job's scratch folder; the most a target took is its **disk floor**
-    (the lead's `disks.json`). The **disk guard**: below the reserve, the fastest-growing job is
-    frozen, room is made, and the job goes on or is given back.
+    (the lead's `disks.json`). The **disk guard**: below the owner's room target, the fastest-growing
+    job is frozen, room is made, and the job goes on or is given back; with no target set, only at
+    a full disk.
   - The order of freeing: canopy squares and copies idle an hour, least recently used first; then
     raw tiles a folder at a time and the squares read since. A file goes once the NAS has it at the
     same size; what the NAS lacks is put there first (raw tiles packed as an archive), or kept.

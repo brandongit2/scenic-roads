@@ -4,7 +4,7 @@
 //!
 //! - **The members** ask the coordinator over HTTP, as their agents do (`client::Client::ask`), with
 //!   what their Mac spares (its memory guard's limit less what its jobs hold, its disk's free space
-//!   now less the reserve and its jobs' reservations, its capacity); what they're granted is
+//!   now (past its room target) less its jobs' reservations, its capacity); what they're granted is
 //!   `pack`'s, untouched. Each runs `Cfg::member_slots` jobs (0: the agent's, by its cores), asking
 //!   while a slot is free for as many jobs as it has slots free, running every one granted; a job
 //!   ends by giving its lease back, its costs (with its threads) and disk measured into the
@@ -40,7 +40,6 @@
 
 use crate::agent::every;
 use crate::agent::memguard::{self, Floor};
-use crate::agent::room;
 use crate::coord::{self, client, cost_key, cost_version, Ask, Capacity, Cost, Granted, Offer};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -273,7 +272,6 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
     let mut cleared = false;
     let mut out = Run { most: vec![0; cfg.macs.len()], ran: vec![0; cfg.macs.len()], ..Default::default() };
     let limit = |k: usize| memguard::limit_mb(cfg.macs[k].total_mb);
-    let reserve_mb = room::RESERVE >> 20;
     let mut t = 0u64;
     while done.len() < total {
         if t > MAX_S {
@@ -490,9 +488,9 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 }
                 return Ok(false);
             }
-            if disk + job.disk_mb + reserve_mb > disk_of(k) {
+            if disk + job.disk_mb > disk_of(k) {
                 return Err(format!(
-                    "{} placed {step} {targets:?} past its disk (over-committed): {} + {} + reserve {reserve_mb} > {} MB",
+                    "{} placed {step} {targets:?} past its disk (over-committed): {} + {} > {} MB",
                     cfg.macs[k].name,
                     disk,
                     job.disk_mb,
@@ -551,7 +549,7 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 mem_mb: limit(0).saturating_sub(mem),
                 cores: m.cores,
                 cores_free: m.cores - threads,
-                disk_mb: disk_of(0).saturating_sub(wrote + reserve_mb + reserved_mb),
+                disk_mb: disk_of(0).saturating_sub(wrote + reserved_mb),
                 reserved_mb,
                 ac: true,
                 nas: true,
@@ -607,10 +605,10 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                 let m = &cfg.macs[k];
                 let mem_mb = limit(k).saturating_sub(mem);
                 // (As the agent says it: the free space now (its jobs' disk written so far gone),
-                // less the reserve and what its jobs have still to write, their reservations.)
+                // less what its jobs have still to write, their reservations.)
                 let wrote: u64 = running[k].iter().map(|j| written(j, t)).sum();
                 let reserved_mb = if reserve { disk - wrote } else { 0 };
-                let disk_mb = disk_of(k).saturating_sub(wrote + reserve_mb + reserved_mb);
+                let disk_mb = disk_of(k).saturating_sub(wrote + reserved_mb);
                 let cap = Capacity {
                     limit_mb: limit(k),
                     held_mb: mem,
@@ -891,7 +889,7 @@ mod tests {
         assert!(r.most[1] >= 3, "serial jobs pack beside each other: {r:?}");
     }
 
-    /// Disk reservations (task #242): an M1 with 8 GB past the reserve, its jobs 5 GB each written
+    /// Disk reservations (task #242): an M1 with 8 GB past its room target, its jobs 5 GB each written
     /// as they go. Reserving, it's never granted a job its disk can't hold beside the others
     /// (checked at every start: every job on it counted whole) and the plan finishes; asking with
     /// its free space now alone, a second is granted beside the first before that one has written
@@ -899,7 +897,7 @@ mod tests {
     #[test]
     fn reservations_keep_a_tight_disk_from_being_over_committed() {
         let mut macs = m4_m1();
-        macs[1].disk_mb = (room::RESERVE >> 20) + 8_000;
+        macs[1].disk_mb = 8_000;
         let mut steps = plan();
         for s in steps.iter_mut().filter(|s| s.name == "slope") {
             (s.disk_mb, s.secs, s.targets) = (5_000, 1_200, 16);
@@ -990,8 +988,8 @@ mod tests {
         assert!(r.most_nas <= crate::budget::nas::WHOLE, "{r:?}");
     }
 
-    /// Task #392, the M4 as measured on 18 Oct (48 GB, 14 cores, 85 GB free with the 30 GB
-    /// reserve; its caches on its disk): units of 6.6 GB (the densest measured, coord::unit_peak)
+    /// Task #392, the M4 as measured on 18 Oct (48 GB, 14 cores, 85 GB free; its caches on its
+    /// disk): units of 6.6 GB (the densest measured, coord::unit_peak)
     /// writing 6 GB each (their disks' 90th percentile, 5.9 GB), `pack` 0.3 GB and `lo` 0.5 GB
     /// each; the DEM cache's and the base packs' fills measured before, but there: none reserved.
     /// Where one job at a time ran before, bound by reservations of the most a job ever took,

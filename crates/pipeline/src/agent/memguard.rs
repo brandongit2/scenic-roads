@@ -361,9 +361,10 @@ struct Inner {
     /// show the latest whatever the agent's loop waits on.
     file: Option<PathBuf>,
     /// The disk guard: whether it freezes a job when the Mac runs short (the agent's switch), the
-    /// free space short of which it does (`room::RESERVE`), and the folder whose disk it watches.
+    /// free space short of which it does (the owner's room target, room::Target: `floor`), and the
+    /// folder whose disk it watches.
     disk_on: bool,
-    reserve: u64,
+    floor: u64,
     disk_at: Option<PathBuf>,
     /// As a test sets them: the disk's free space, and what each slot's job's disk counts (bytes).
     free_set: Option<u64>,
@@ -384,12 +385,19 @@ pub struct Live {
     pub frozen: Vec<bool>,
 }
 
-/// How far below the reserve the disk guard freezes (its hysteresis): a thirtieth of it, 1 GB of
-/// the 30 GB. A job starts with the reserve free (and the owner's target), so at the reserve it may
-/// be one just let in: frozen there, it would be given back before it ran. The thaw is at the
-/// reserve, so a frozen job doesn't flap; a thirtieth is small beside the room kept.
-pub fn disk_slack(reserve: u64) -> u64 {
-    reserve / 30
+/// How far below the owner's room target the disk guard freezes (its hysteresis): a thirtieth of
+/// it, 1 GB of a 30 GB target. A job starts with the target free past its own room, so at the
+/// target it may be one just let in: frozen there, it would be given back before it ran. The thaw
+/// is at the target, so a frozen job doesn't flap; a thirtieth is small beside the room kept.
+pub fn disk_slack(floor: u64) -> u64 {
+    floor / 30
+}
+
+/// The free space short of which the disk guard freezes a job, for the owner's room target
+/// `floor`: the target less its slack (`disk_slack`). No target (0): only a full disk (no byte
+/// free), no other floor.
+pub fn disk_short_of(floor: u64) -> u64 {
+    floor.saturating_sub(disk_slack(floor)).max(1)
 }
 
 /// The guard's latest sample's file, in the agent's folder.
@@ -454,10 +462,11 @@ impl Sampler {
     }
 
     /// The disk guard: on or off (the agent's switch), the free space short of which it freezes the
-    /// job growing fastest (bytes), and the folder on the disk it watches (the agent's).
-    pub fn set_disk(&self, on: bool, reserve: u64, at: &Path) {
+    /// job growing fastest (bytes: the owner's room target, 0 none), and the folder on the disk it
+    /// watches (the agent's).
+    pub fn set_disk(&self, on: bool, floor: u64, at: &Path) {
         if let Ok(mut g) = self.inner.lock() {
-            (g.disk_on, g.reserve, g.disk_at) = (on, reserve, Some(at.to_path_buf()));
+            (g.disk_on, g.floor, g.disk_at) = (on, floor, Some(at.to_path_buf()));
         }
     }
 
@@ -710,7 +719,7 @@ impl Sampler {
     /// The disk's part of a sample (docs/pool.md §7.7): each job's disk counted (what its accessors
     /// wrote, `WRITTEN_ENV`'s file; the top of its scratch folder, every `DISK_EVERY`), kept against
     /// its target under way (the disk's fall while it runs alone kept apart, logged, not a floor); and, the disk guard on and the
-    /// disk's free space short of the reserve, the job growing fastest frozen at once (the agent's
+    /// disk's free space short of the owner's room target, the job growing fastest frozen at once (the agent's
     /// loop makes room from what no job holds, then lets it go on, or gives it back).
     pub fn tick_disk(&self) {
         let (at, free_set, set) = match self.inner.lock() {
@@ -788,27 +797,28 @@ impl Sampler {
             let e = w.disk_seen.entry(key).or_insert(0);
             *e = (*e).max(took);
         }
-        // The disk guard: short of the reserve, none frozen for it yet: the job growing fastest
-        // (else the largest) frozen at once.
-        // (Below the reserve by `disk_slack` at least: a job let in at the reserve, its first
-        // bytes written, isn't frozen at once; the agent lets one go on at the reserve again.)
-        let short = g.disk_on && free.is_some_and(|f| f < g.reserve.saturating_sub(disk_slack(g.reserve)));
+        // The disk guard: short of the owner's room target, none frozen for it yet: the job growing
+        // fastest (else the largest) frozen at once.
+        // (Below the target by `disk_slack` at least: a job let in at the target, its first
+        // bytes written, isn't frozen at once; the agent lets one go on at the target again. No
+        // target: at a full disk alone, `disk_short_of`.)
+        let short = g.disk_on && free.is_some_and(|f| f < disk_short_of(g.floor));
         if !short {
             return;
         }
-        // One frozen already, the disk still falling past half the reserve (the other job filling
-        // it meanwhile): the others frozen too, until room is made.
+        // One frozen already, the disk still falling past half the target (the other job filling
+        // it meanwhile; no target: the disk full): the others frozen too, until room is made.
         if g.watches.iter().flatten().any(|w| w.disk_frozen) {
-            if free.is_some_and(|f| f < g.reserve / 2) {
+            if free.is_some_and(|f| f < (g.floor / 2).max(1)) {
                 let real = g.held_set.is_none() && g.disk_set.is_none();
-                let (mut said, reserve) = (Vec::new(), g.reserve);
+                let (mut said, floor) = (Vec::new(), g.floor);
                 for (k, w) in g.watches.iter_mut().enumerate() {
                     let Some(w) = w.as_mut().filter(|w| !w.disk_frozen) else { continue };
                     if real && !w.frozen {
                         crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
                     }
                     w.disk_frozen = true;
-                    said.push(format!("froze slot {k}'s job too: the disk has {:.1} GB free, under half the {} GB kept free, while another job is frozen for it", free.unwrap_or(0) as f64 / (1u64 << 30) as f64, reserve >> 30));
+                    said.push(format!("froze slot {k}'s job too: the disk has {:.1} GB free, under half the {} GB room target, while another job is frozen for it", free.unwrap_or(0) as f64 / (1u64 << 30) as f64, floor >> 30));
                 }
                 for what in said {
                     eprintln!("agent: disk guard {what}");
@@ -828,14 +838,14 @@ impl Sampler {
             return;
         };
         let real = g.held_set.is_none() && g.disk_set.is_none();
-        let reserve = g.reserve;
+        let floor = g.floor;
         let Some(w) = g.watches.get_mut(k).and_then(Option::as_mut) else { return };
         if real && !w.frozen {
             crate::sys::signal_group(w.pgid, crate::sys::Signal::Stop);
         }
         w.disk_frozen = true;
         let gb = |b: u64| b as f64 / (1u64 << 30) as f64;
-        let what = format!("froze slot {k}'s job: the disk has {:.1} GB free, short of the {} GB kept free, and it grew fastest ({:.1} GB in the last minute, {:.1} GB in all)", gb(free.unwrap_or(0)), reserve >> 30, gb(w.disk_growth()), gb(w.disk_now));
+        let what = format!("froze slot {k}'s job: the disk has {:.1} GB free, short of the {} GB room target, and it grew fastest ({:.1} GB in the last minute, {:.1} GB in all)", gb(free.unwrap_or(0)), floor >> 30, gb(w.disk_growth()), gb(w.disk_now));
         eprintln!("agent: disk guard {what}");
         g.froze.push((crate::agent::jobs::now_s(), what));
     }
@@ -1077,7 +1087,7 @@ mod tests {
 
     /// A job's disk counted by its accessors' bytes and the top of its scratch folder, kept per
     /// target under way as its disk floor (with what its costs file notes), the disk's fall counting
-    /// only while it runs alone; the disk guard, short of the reserve, freezes the job growing
+    /// only while it runs alone; the disk guard, short of the room target, freezes the job growing
     /// fastest, once, and lets it go on when told.
     #[test]
     fn a_jobs_disk_is_counted_per_target_and_the_fastest_frozen_short_of_room() {
@@ -1123,20 +1133,20 @@ mod tests {
         s.tick();
         assert_eq!(s.disk_now(0), Some(3 * g));
         assert!(!s.disk_frozen(0) && !s.disk_frozen(1));
-        // Short of the reserve by less than its slack (a job just let in at it): none frozen.
+        // Short of the target by less than its slack (a job just let in at it): none frozen.
         s.set_test_disk(Some(30 * g - disk_slack(30 * g) / 2), Some(vec![Some(3 * g), Some(g / 2)]));
         s.tick();
         assert!(!s.disk_frozen(0) && !s.disk_frozen(1));
-        // Short of the reserve: the job growing fastest frozen (slot 0, 1 GB against half a GB).
+        // Short of the target: the job growing fastest frozen (slot 0, 1 GB against half a GB).
         s.set_test_disk(Some(20 * g), Some(vec![Some(4 * g), Some(g)]));
         s.tick();
         assert!(s.disk_frozen(0) && !s.disk_frozen(1));
         assert!(s.take_froze().iter().any(|(_, w)| w.contains("grew fastest")));
-        // Once: none other frozen while it is, while the disk keeps half the reserve.
+        // Once: none other frozen while it is, while the disk keeps half the target.
         s.set_test_disk(Some(18 * g), Some(vec![Some(4 * g), Some(2 * g)]));
         s.tick();
         assert!(!s.disk_frozen(1));
-        // The other filling it meanwhile, past half the reserve: frozen too, said.
+        // The other filling it meanwhile, past half the target: frozen too, said.
         s.set_test_disk(Some(10 * g), Some(vec![Some(4 * g), Some(3 * g)]));
         s.tick();
         assert!(s.disk_frozen(1) && s.take_froze().iter().any(|(_, w)| w.contains("too")));
@@ -1157,6 +1167,40 @@ mod tests {
         std::fs::write(d.path().join("sub/deep.bin"), vec![1u8; 4 << 20]).unwrap();
         let top = top_bytes(d.path());
         assert!(top >= 1 << 20 && top < 4 << 20, "{top}");
+    }
+
+    /// The disk guard's threshold is the owner's room target alone (task #421): with a 20 GB
+    /// target it fires short of 20 GB (less its slack), whatever else is free; with none (0) only
+    /// at a full disk, no hidden floor.
+    #[test]
+    fn the_disk_guard_fires_at_the_room_target_and_with_none_at_a_full_disk() {
+        let d = tempfile::tempdir().unwrap();
+        let g: u64 = 1 << 30;
+        assert_eq!((disk_short_of(30 * g), disk_short_of(0)), (29 * g, 1));
+        let watch = |s: &Sampler| {
+            s.set_test(Some(vec![None]), Some(false));
+            s.set_test_disk(Some(100 * g), None);
+            s.watch(0, Watch { pgid: 0, costs: d.path().join("c.jsonl"), step: "pack".into(), ..Default::default() });
+        };
+        let s = Sampler::new(1);
+        s.set_disk(true, 20 * g, d.path());
+        watch(&s);
+        s.set_test_disk(Some(20 * g), Some(vec![Some(g)]));
+        s.tick();
+        assert!(!s.disk_frozen(0), "at the target: not frozen");
+        s.set_test_disk(Some(19 * g), Some(vec![Some(2 * g)]));
+        s.tick();
+        assert!(s.disk_frozen(0), "short of the target past its slack: frozen");
+        assert!(s.take_froze().iter().any(|(_, w)| w.contains("20 GB room target")));
+        let s = Sampler::new(1);
+        s.set_disk(true, 0, d.path());
+        watch(&s);
+        s.set_test_disk(Some(g / 4), Some(vec![Some(g)]));
+        s.tick();
+        assert!(!s.disk_frozen(0), "no target, a byte free: not frozen");
+        s.set_test_disk(Some(0), Some(vec![Some(2 * g)]));
+        s.tick();
+        assert!(s.disk_frozen(0), "no target, the disk full: frozen");
     }
 
     #[test]

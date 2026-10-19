@@ -642,10 +642,12 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             std::fs::create_dir_all(&scratch)?;
             let local = scratch.join("filtered.osm.pbf");
             let size = std::fs::metadata(&nas)?.len();
-            // (Room for the copy, the sets made from it, and the agent's reserve left free.)
+            // (Room for the copy and the sets made from it, the owner's disk room target left free:
+            // the target's file in the agent's folder, which the scratch is under.)
+            let target = scratch.ancestors().find_map(pipeline::agent::room::target).map_or(0, |t| t.bytes);
             let room = pipeline::agent::cond::free_bytes(&scratch).unwrap_or(0)
                 + std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0)
-                > size + (20 << 30) + pipeline::agent::room::RESERVE;
+                > size + (20 << 30) + target;
             let src = if room && !pipeline::osmpass::missing_sets(&out, &date).is_empty() {
                 let _p = phase("the filtered planet copied here", Class::NasRead);
                 pipeline::osmpass::copy_resume_with(&nas, &local, &mut |d, t| {

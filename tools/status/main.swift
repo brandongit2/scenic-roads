@@ -1445,19 +1445,17 @@ func roomItem(_ own: Own?, target: Int?, free: Int?, disk: Int?) -> (title: Stri
     return (title, tip, choices)
 }
 
-/// The reserve the agent keeps free of its jobs (room.rs RESERVE).
-let diskReserve = 30 << 30
-
-/// The disk in words (task #391, as coord::disk_words): "38 GB free · 0 GB for jobs (30 GB
-/// reserve, 20 GB room target)": what's left for jobs, the free space less the reserve and the
-/// owner's room target.
+/// The disk in words (task #391, as coord::disk_words): "38 GB free · 18 GB for jobs (20 GB room
+/// target)": what's left for jobs, the free space less the owner's room target and its jobs'
+/// reservations (no fixed reserve: task #421); nothing kept, no parentheses.
 func diskWords(free: Int?, target: Int?, reserved: Int = 0) -> String {
     let g = { (b: Int) in "\(Int((Double(b) / Double(1 << 30)).rounded()))\u{00A0}GB" }
     guard let f = free else { return "? free" }
-    var kept = ["\(g(diskReserve)) reserve"]
+    var kept: [String] = []
     if let t = target { kept.append("\(g(t)) room target") }
     if reserved > 0 { kept.append("\(g(reserved)) reserved by its jobs") }
-    return "\(g(f)) free · \(g(max(0, f - diskReserve - (target ?? 0) - reserved))) for jobs (\(kept.joined(separator: ", ")))"
+    let why = kept.isEmpty ? "" : " (\(kept.joined(separator: ", ")))"
+    return "\(g(f)) free · \(g(max(0, f - (target ?? 0) - reserved))) for jobs\(why)"
 }
 
 /// The memory this Mac gives the build's jobs together (crates/pipeline/src/agent/buildmem.rs,

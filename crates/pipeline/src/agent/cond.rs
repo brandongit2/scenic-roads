@@ -185,8 +185,8 @@ impl SleepWatch {
 
 /// Free bytes on the volume holding `path`; with `SCENIC_TEST_DISK_EXTRA_MB` set (the two-Mac
 /// test's alone, tools/check/pool-two-macs.sh `extra`: never the real agent's), that many MB more,
-/// so a small disk image the test's agent home is on stands for a disk past the reserve
-/// (`room::RESERVE`), its fills landing in the image, never filling the Mac's own disk.
+/// so a small disk image the test's agent home is on stands for a larger disk,
+/// its fills landing in the image, never filling the Mac's own disk.
 pub fn free_bytes(path: &std::path::Path) -> Option<u64> {
     store::sys::disk_free(path).ok().map(|f| f.saturating_add(test_disk_extra_mb() << 20))
 }

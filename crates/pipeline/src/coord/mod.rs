@@ -1394,7 +1394,7 @@ pub struct Ask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit_mb: Option<u64>,
     /// The disk it has room for a job on (MB: its free space and what its caches can free, less
-    /// its reserve and the owner's room target), measured as it asks: it's offered only targets
+    /// the owner's room target), measured as it asks: it's offered only targets
     /// whose measured disk fits (`pick_every`). An older worker says none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_mb: Option<u64>,
@@ -1450,18 +1450,19 @@ pub fn packed_cores_of(step: &str, c: Option<u32>, share: u32) -> u32 {
 pub const NAS_STEPS: &[&str] = &["unit", "elev", "pack", "lo"];
 
 /// A Mac's disk in words (task #391): its free space, what's left of it for jobs (`for_jobs_mb`:
-/// the free space less the reserve, the owner's room target and its jobs' reservations), and what
-/// keeps the rest: "38 GB free · 0 GB for jobs (30 GB reserve, 20 GB room target)".
+/// the free space less the owner's room target and its jobs' reservations), and what keeps the
+/// rest: "38 GB free · 18 GB for jobs (20 GB room target)"; nothing kept, no parentheses.
 pub fn disk_words(c: &Capacity, for_jobs_mb: u64) -> String {
     let gb = |mb: u64| format!("{} GB", (mb as f64 / 1024.0).round() as u64);
-    let mut kept = vec![format!("{} reserve", gb(c.reserve_mb))];
+    let mut kept = Vec::new();
     if c.target_mb > 0 {
         kept.push(format!("{} room target", gb(c.target_mb)));
     }
     if c.reserved_mb > 0 {
         kept.push(format!("{} reserved by its jobs", gb(c.reserved_mb)));
     }
-    format!("{} free · {} for jobs ({})", gb(c.free_mb), gb(for_jobs_mb), kept.join(", "))
+    let kept = if kept.is_empty() { String::new() } else { format!(" ({})", kept.join(", ")) };
+    format!("{} free · {} for jobs{kept}", gb(c.free_mb), gb(for_jobs_mb))
 }
 
 /// How long a capacity stands (s): older, `Coordinator::capacities` leaves it out.
@@ -1490,13 +1491,12 @@ pub struct Capacity {
     /// Its cores, and those free by the last minute's load average.
     pub cores: u32,
     pub cores_free: u32,
-    /// The disk's free space less the reserve (room::RESERVE), the owner's room target and the
-    /// running jobs' reservations (MB).
+    /// The disk's free space less the owner's room target and the running jobs' reservations (MB).
     pub disk_mb: u64,
-    /// The disk's free space (MB), the reserve kept free of jobs (room::RESERVE) and the owner's
-    /// room target (0: none): what `disk_mb` is taken from (`disk_words`). 0 all: an older app's.
+    /// The disk's free space (MB) and the owner's room target (0: none): what `disk_mb` is taken
+    /// from (`disk_words`). 0 both: an older app's. (An older app's `reserve_mb`, a fixed reserve
+    /// it took off too, is passed over as it parses: its `disk_mb` has it taken off already.)
     pub free_mb: u64,
-    pub reserve_mb: u64,
     pub target_mb: u64,
     /// The disk its jobs have reserved and not taken yet (MB): each granted or running job's
     /// measured disk less what it has written so far (docs/pool.md §7.1).
@@ -6609,7 +6609,7 @@ mod tests {
         };
         let g1 = w.ask(&ask(250, vec![])).unwrap().unwrap();
         assert_eq!(g1.disk_mb, 100);
-        // 250 free past the reserve, 100 of it reserved by its job: 150 said, one more fits.
+        // 250 free past the target, 100 of it reserved by its job: 150 said, one more fits.
         let g2 = w.ask(&ask(150, vec![g1.lease])).unwrap().unwrap();
         assert_eq!(g2.disk_mb, 100);
         // Both reserved: 50 said, nothing fits.
@@ -6619,24 +6619,27 @@ mod tests {
     }
 
     /// The disk in words (task #391): the free space, what's left of it for jobs, and what keeps
-    /// the rest (the reserve, the owner's room target, the jobs' reservations), on the refusal too.
+    /// the rest (the owner's room target, the jobs' reservations), on the refusal too. No fixed
+    /// reserve (task #421); an older app's `reserve_mb` parses and is passed over.
     #[test]
     fn the_disk_is_said_plainly() {
-        let c = Capacity { free_mb: 39_014, reserve_mb: 30 << 10, target_mb: 20 << 10, ..Default::default() };
-        assert_eq!(disk_words(&c, 0), "38 GB free · 0 GB for jobs (30 GB reserve, 20 GB room target)");
-        let c = Capacity { free_mb: 100 << 10, reserve_mb: 30 << 10, reserved_mb: 5 << 10, ..Default::default() };
-        assert_eq!(disk_words(&c, 65 << 10), "100 GB free · 65 GB for jobs (30 GB reserve, 5 GB reserved by its jobs)");
+        let c = Capacity { free_mb: 39_014, target_mb: 20 << 10, ..Default::default() };
+        assert_eq!(disk_words(&c, 18 << 10), "38 GB free · 18 GB for jobs (20 GB room target)");
+        let c = Capacity { free_mb: 100 << 10, reserved_mb: 5 << 10, ..Default::default() };
+        assert_eq!(disk_words(&c, 95 << 10), "100 GB free · 95 GB for jobs (5 GB reserved by its jobs)");
+        let c = Capacity { free_mb: 100 << 10, ..Default::default() };
+        assert_eq!(disk_words(&c, 100 << 10), "100 GB free · 100 GB for jobs");
+        let old: Capacity =
+            serde_json::from_str(r#"{"free_mb": 49152, "reserve_mb": 30720, "target_mb": 20480}"#).unwrap();
+        assert_eq!((old.free_mb, old.target_mb), (48 << 10, 20 << 10));
+        assert!(!serde_json::to_string(&old).unwrap().contains("reserve_mb"));
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope", 6, Some(1));
-        let cap =
-            Capacity { cores: 8, free_mb: 39_014, reserve_mb: 30 << 10, target_mb: 20 << 10, ..Default::default() };
+        let cap = Capacity { cores: 8, free_mb: 21 << 10, target_mb: 20 << 10, ..Default::default() };
         let a = Ask { cap: Some(cap), ..every_ask("m1", "slope", 6144, 0) };
         assert!(w.ask(&a).unwrap().is_none());
         let why = c.refusals().get("m1").cloned().unwrap_or_default();
-        assert!(
-            why.contains("(6.0 GB memory; disk: 38 GB free · 0 GB for jobs (30 GB reserve, 20 GB room target))"),
-            "{why}"
-        );
+        assert!(why.contains("(6.0 GB memory; disk: 21 GB free · 0 GB for jobs (20 GB room target))"), "{why}");
     }
 
     /// A shared cache reserved once per Mac (task #392, crate::needs::CACHES): `pack` and `lo` read

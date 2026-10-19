@@ -50,8 +50,8 @@
 #                                                   more free on its disk than there is
 #                                                   (SCENIC_TEST_DISK_EXTRA_MB; 0: none): with <dir>
 #                                                   on a small disk image (hdiutil, never the Mac's
-#                                                   own volume), the image stands for a disk past
-#                                                   the 30 GB reserve, and a fill lands in it
+#                                                   own volume), the image stands for a larger
+#                                                   disk, and a fill lands in it
 #   pool-two-macs.sh wiki <dir> <n> [hold-s]        each fake job asks Wikimedia <n> times through
 #                                                   its proxy (http://en.wikipedia.org/budget-test,
 #                                                   answered on the Mac: `upstream`), noting each

@@ -827,8 +827,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     (§7.2, §7.4), `brokers` (§8; every coordinator answers `POST /work/where`), `placement` (§7.2:
     jobs get `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `delta-catalog` and `near-slope`
     (plan §8, Publishing's switches), all under `state/pool/`.
-  - A member's ask carries `disk_mb` (free disk less the agent's reserve,
-    `pipeline::agent::room::RESERVE`, and the room target).
+  - A member's ask carries `disk_mb` (free disk less the owner's room target and its jobs'
+    reservations; no fixed reserve).
   - `state/pool/progress/<member>.json`: `{member, worker, jobs: {"osm-pass <date>": {at, since,
     done, scratch}}}` (a resumable job's progress there, offered to it alone for 24 h);
     `state/pool/progress/released/<member>/<job>-<since>` (`scenic pool release`, empty).

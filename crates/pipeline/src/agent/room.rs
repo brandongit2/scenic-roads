@@ -2,8 +2,8 @@
 //! keeps, emptied before a job (`make_room`), after the build (`trim`) and on the owner's ask
 //! (`clear`).
 //!
-//! Before a job starts, when the disk's free space is under what the job needs (`RESERVE`; a
-//! terrain run more; the OSM pass, its own), the local copies of what the NAS
+//! Before a job starts, when the disk's free space is under what the job needs (the owner's room
+//! target past its measured disk and the other jobs' reservations; the OSM pass, its own), the local copies of what the NAS
 //! keeps lose files until it has that and a margin (`margin`: a sixth more, none for the OSM pass),
 //! so the next jobs start without deleting again: Meta's canopy squares (`chm10/`, ~2 GB a 10°
 //! square; scenic-metrics marks a square used when it reads it), AWS's raw terrain tiles
@@ -46,9 +46,9 @@
 //! no work, nothing to publish), jobs running here or not, the agent empties those caches by the same
 //! rules, once (again only after a job has run here since): a member all of them, the lead all
 //! but the canopy squares, which every pass's areas read again and which never change. (Not down
-//! to the reserve: room-making makes that much room before each job, so the build ends with about
-//! that free, and a trim to it would free little or nothing, while that Mac's mirror copies nothing
-//! until 150 GB are free.)
+//! to the room target: room-making makes that much room before each job, so the build ends with
+//! about that free, and a trim to it would free little or nothing, while that Mac's mirror copies
+//! nothing until 150 GB are free.)
 //!
 //! On the owner's ask (`clear`: the menu bar's Clear the Build's Caches, `scenic clean`, a
 //! `ClearRequest`), once the build is done, jobs running here or not: those caches, the canopy squares
@@ -96,11 +96,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// The free space a job starts with, at least, when the caches can make it.
-pub const RESERVE: u64 = 30 << 30;
-
-/// What's freed past a job's `need` once the disk is short of it: a sixth more (5 GB past
-/// `RESERVE`'s 30), so the jobs after it start without deleting again. (Not for the OSM pass, whose
+/// What's freed past a job's `need` once the disk is short of it: a sixth more (5 GB past a
+/// 30 GB need), so the jobs after it start without deleting again. (Not for the OSM pass, whose
 /// need is what its conditions admitted it with.)
 pub fn margin(need: u64) -> u64 {
     need / 6

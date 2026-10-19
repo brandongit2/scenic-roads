@@ -253,7 +253,7 @@ pub struct Conds {
 
 impl Conds {
     /// Why a member with these conditions can't lead now (`able` false), as the agent decides it
-    /// (crate::agent's `pool_step`: home, on power or charged past `BATTERY_MIN`, the reserve free).
+    /// (crate::agent's `pool_step`: home, on power or charged past `BATTERY_MIN`, free space past its room target).
     pub fn why_unable(&self) -> String {
         if self.held {
             "paused: it can't lead until it's resumed (`scenic resume`)".into()
@@ -266,10 +266,7 @@ impl Conds {
                 crate::agent::cond::BATTERY_MIN
             )
         } else {
-            format!(
-                "short of room on its disk: it can't lead with less than {} GB free",
-                crate::agent::room::RESERVE >> 30
-            )
+            "short of room on its disk: it can't lead without free space past its disk room target".into()
         }
     }
 }

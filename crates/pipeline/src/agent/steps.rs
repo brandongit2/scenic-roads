@@ -23,7 +23,7 @@
 //! names, the checklist, the build page, `scenic status`. The tasks a job offers (`TASKS`) are
 //! described alike.
 //!
-//! Not in it: the disk a job starts with (the reserve and the job's measured disk, the disk guard
+//! Not in it: the disk a job starts with (the owner's room target and the job's measured disk, the disk guard
 //! behind it), groups of steps never run at once on one Mac (the raw tiles' accessor, the budgets'
 //! proxy and the answers' lease guard what they share where it's used), and which jobs run beside
 //! which (the coordinator packs a Mac's jobs by their measures; a cold start alone: docs/pool.md

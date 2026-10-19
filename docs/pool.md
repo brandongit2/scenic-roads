@@ -284,11 +284,11 @@ An ask also carries its whole Mac's capacity (`coord::Capacity`, the ask's optio
 memory guard's limit and what the running jobs hold, the build's memory (`build_mb`, §7.1, The
 build's memory) and what's free of it less each running job's predicted need (the larger of what it holds and its predicted peak: its targets' measured peak on the
 lead, the step's first guess on a member), its
-cores and those the last minute's load leaves free, the disk free less the reserve, the owner's
-room target and its jobs' reservations (`reserved_mb`, below), and the disk's free space, the
-reserve and the target themselves (`free_mb`, `reserve_mb`, `target_mb`: the build page, `scenic
-status` and a refusal say the disk as "38 GB free · 0 GB for jobs (30 GB reserve, 20 GB room
-target)", `coord::disk_words`), in use and the cores its
+cores and those the last minute's load leaves free, the disk free less the owner's room target
+and its jobs' reservations (`reserved_mb`, below), and the disk's free space and the target
+themselves (`free_mb`, `target_mb`: the build page, `scenic status` and a refusal say the disk as
+"38 GB free · 18 GB for jobs (20 GB room target)", `coord::disk_words`; nothing kept, no
+parentheses), in use and the cores its
 in-use share keeps (`kept_cores`, below), mains or battery,
 the NAS's reach, the guard's switch and its running leases. The lead's own asks carry it too, and
 it sets it each loop. The coordinator keeps the last per member (`Coordinator::capacities`, leaving out one older than
@@ -350,13 +350,16 @@ the job starts, then that less what the job has written so far (the disk guard's
 lead's own running jobs reserve what their measures say they have still to take (`disk_left`).
 A reservation ends with its lease, at hand-off or give-back. The free disk an ask and its
 capacity say (`disk_mb`; the lead's own asks' likewise) is the free space less the
-reserve (30 GB), the owner's room target and every live reservation (`reserved_mb`), so a job not
-yet written isn't counted free twice; the coordinator takes off only the jobs a member holds that
+owner's room target and every live reservation (`reserved_mb`), so a job not yet written isn't
+counted free twice. There is no fixed reserve: the room target is the only floor (a Mac with
+49 GB free and a 20 GB target offers 29 GB, less its reservations). An older agent's `reserve_mb`
+(a fixed 30 GB it took off too) parses and is passed over: its `disk_mb` has it taken off already,
+so it only offers less; the coordinator takes off only the jobs a member holds that
 its capacity doesn't name yet (granted since it asked, or an older agent's ask, all of them). The
 lead running no job asks for one, its disk not bounded: a stale or high disk floor never holds the
 build, its room made as it starts and the disk guard behind it (§7.7). A
-job starting beside others waits on the reserve, its own room and the other slots'
-reservations; room-making alone makes room for the leases granted and not yet started too, and
+job starting beside others waits on the target, its own measured room and the other slots'
+reservations (a job alone in the first slot on the target alone); room-making alone makes room for the leases granted and not yet started too, and
 the owner's room-target freeing (`room::toward`) frees toward the target plus the reservations,
 the jobs' hints merged (`Agent::hints`). The disk guard stays the backstop (§7.7). `scenic
 status` shows each member's in its capacity line (`disk 12.0 GB free (8.0 GB reserved)`).
@@ -582,7 +585,7 @@ never correctness, politeness or work.
 | --- | --- |
 | memory | measured per target (`peak_mb`, the guard's floors, §7.2) |
 | input size | measured per target beside its cost (`sizes` in `costs.jsonl`, `pipeline::costin`: bytes read, threads, area, GeoTIFFs opened, the bytes and files its `Out` made on the NAS (`wrote`, `creates`), and the counts a step has: ways and vertices, buildings, peaks); read by the step's model (below) |
-| disk | measured per target: bytes written through `store::cachefile` and the scratch writers (`SCENIC_WRITTEN`), plus a look each minute at the largest files in a slot's scratch folder; kept as the target's disk floor (`disks.json`). **Disk guard:** when free space falls below the reserve (30 GB), the fastest-growing job is frozen, room is made from caches no job holds (`room::toward`), and it goes on or is given back. Given-back jobs' scratch folders are deleted oldest first when room is short (`room::free_given_back`) |
+| disk | measured per target: bytes written through `store::cachefile` and the scratch writers (`SCENIC_WRITTEN`), plus a look each minute at the largest files in a slot's scratch folder; kept as the target's disk floor (`disks.json`). **Disk guard:** when free space falls below the owner's room target (less a thirtieth of it, so a job just let in at the target isn't frozen at once: `memguard::disk_short_of`), the fastest-growing job is frozen (another too if the disk falls past half the target), room is made from caches no job holds (`room::toward`), and it goes on once the target is free again or is given back. No target is set until the owner picks one (Off is none); with none, the guard fires only at an actually full disk, with no other floor. Given-back jobs' scratch folders are deleted oldest first when room is short (`room::free_given_back`) |
 | jobs on one Mac | a job is granted beside others only if their measured memory, disk and cores fit (packing, §7.2), and only while every member reports the new app (§7.1, Mixed versions); a cold start runs alone |
 | raw tiles | `store::cachefile`'s locks; packing deletes only tiles no job holds; a job reopens its area's archives when the index changed (`RawTiles::get`, `refresh_area`) |
 | Wikimedia budget | `crate::budget`: one budget for the pool, enforced at egress. Every job's connections go through its agent's proxy (`crate::budget::proxy`, `HTTPS_PROXY`), the job sandboxed (`sandbox-exec`) to deny any other way out. A metered connection takes a token first: leases are create-new files per slot of a ten-second window (`state/pool/wiki/<class>/<window>-<slot>`). `wiki` four requests a second; `query` (WDQS, QLever) one query per two seconds of query time. A 429 told to the proxy (`POST /hold`, dem/budget.py) holds every Mac. The NAS away, each Mac takes the rate divided by known members. Lint: `tests/budgets.rs` |
@@ -884,13 +887,13 @@ tiles (`pack_raw_with`) stays inside the piece's job.
   its cores, alone for one job with its disk not bounded, else for its slots free with its disk
   room); each takes what `pack` grants. Each job takes its step's true memory and cores, and its
   disk written evenly over its run, the rest its reservation (an ask says its free space now less
-  the reserve and its reservations); its measures go back into the coordinator (crate::needs reads
+  its room target and its reservations); its measures go back into the coordinator (crate::needs reads
   them). Checked at every start, first where a job may go (no Mac past its slots; lead-only steps
   on the lead, granted as its own jobs; a cold start alone on its Mac and in the pool, nothing
   beside one), then what it takes (past a Mac's memory limit only a cold start, stopped by the
   guard; never past its disk, every job on it counted whole, so no Mac's disk is over-committed,
   or past its cores with the threads granted); and the plan finishes. A run with an M1 8 GB past
-  the reserve and 5 GB jobs finishes reserving, and over-commits without (asking with its free
+  its room target and 5 GB jobs finishes reserving, and over-commits without (asking with its free
   space now alone).
   Runs: the M4 and the M1 (the lead packing two or more jobs and running its own steps, the member
   one) and four Macs; members' slots a setting: the M1 with two reaches two, a 48 GB member with 16

@@ -482,22 +482,18 @@ impl Tell {
 /// How long an end owed to the lead is tried (s): as long as its lease lasts unrenewed.
 const OWED_S: u64 = crate::coord::TTL.as_secs();
 
-/// The free space a member's jobs start with (its Mac has less room than the lead), but for
-/// the steps that need more (`helper_need`).
-const HELPER_RESERVE: u64 = 15 << 30;
-
 /// The free space a member's job of `step` needs: a terrain run's as on the lead (its area's
 /// archives copied here and merged); a task's ("tail": a unit's last steps, its files fetched from
 /// the coordinator; "bldtile": a 3D buildings' z8 area, its blocks) 5 GB, but tree cover's row of
 /// z8 blocks ("treeblock": it reads the squares where they lie, and writes ~80 MB) and a terrain
-/// piece's z8 subtrees ("terrainsub": a file of tens of MB, and their tiles) 1 GB; the others' `HELPER_RESERVE` (tree cover's a z6 tile a run: the one to
-/// four canopy squares its blocks touch copied here, ~2 GB each, where a z3 tile's whole run copied
-/// tens of GB).
+/// piece's z8 subtrees ("terrainsub": a file of tens of MB, and their tiles) 1 GB; the others none
+/// of their own: their grant's measured disk is reserved for them (`reservation`), and the owner's
+/// room target stays free past it, with no fixed reserve (task #421).
 fn helper_need(step: &str) -> u64 {
     match step {
         "tail" | "bldtile" => 5 << 30,
         "treeblock" | "terrainsub" => 1 << 30,
-        _ => HELPER_RESERVE,
+        _ => 0,
     }
 }
 
@@ -2067,7 +2063,7 @@ impl Agent {
             cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32),
             app: Some(self.app.clone()),
             limit_mb: Some(memguard::limit_mb(self.total_mb())).filter(|&l| l > 0 && !all_new),
-            // (Its free space now, less the reserve, the owner's target and its jobs' reservations.
+            // (Its free space now, less the owner's target and its jobs' reservations.
             // What its caches could free isn't counted: nothing frees it first.)
             disk_mb: Some(self.disk_room() >> 20),
             cap: Some(self.capacity(c)),
@@ -2341,8 +2337,8 @@ impl Agent {
     /// many as it has slots free (`want`), packed by the same measures as a member's, the lead's own
     /// planned jobs (`jobs`) among them but those that can't start now for a reason of this agent's
     /// own (`wait_reason`). It asks with its Mac's room: the memory guard's limit, its disk room
-    /// (`disk_room`) and capacity; with no job here, for one job, its disk not bounded (the reserve
-    /// and the owner's target are waited on as it starts, room made for it then, the disk guard
+    /// (`disk_room`) and capacity; with no job here, for one job, its disk not bounded (the owner's
+    /// target is waited on as it starts, room made for it then, the disk guard
     /// behind it: a stale disk floor never holds the build).
     fn lead_grants(
         &mut self,
@@ -3147,7 +3143,7 @@ impl Agent {
 
     /// Why a job that needs `need` free waits for the owner's disk room target.
     fn floor_why(&self, need: u64) -> String {
-        // (No target: by measure, the reserve alone.)
+        // (No target: by measure, the job's own room alone.)
         if self.floor() == 0 {
             return format!("waits for room on the disk: it needs {} free ({} free now), more than this Mac's caches can free now; it starts once the disk has room", room::size(need), room::size(self.disk_free()));
         }
@@ -4612,19 +4608,23 @@ impl Agent {
         }
     }
 
-    /// The free space a job of `spec` starts with in slot `k`: a member's its step's; else the
-    /// reserve, and beside another job its measured disk too.
+    /// The free space a job of `spec` starts with in slot `k`, past the owner's room target: a
+    /// member's its step's; else, beside another job, its measured disk; alone, none of its own.
     fn need_of(&self, k: usize, spec: &JobSpec) -> u64 {
         if self.o.helper {
             helper_need(spec.record.as_ref().map_or("tail", |w| w.step.as_str()))
         } else {
-            // (Beside another job: the reserve and what it was measured to take on the
-            // disk. Alone in the first slot: the reserve alone, the disk guard its backstop, so a
+            // (Beside another job: what it was measured to take on the disk. Alone in the first
+            // slot: nothing past the target, the disk guard its backstop, so a
             // stale or high disk floor, which only rises, never holds the build, the owner's room
             // target past it or not; a cold start likewise. Room is still made for its measured
             // disk as the caches allow: `try_start_said`.)
             let alone = k == 0 && self.slots.iter().skip(1).all(|s| s.running.is_none());
-            room::RESERVE + if alone { 0 } else { self.measured_job(spec).map_or(0, |m| m.disk_mb << 20) }
+            if alone {
+                0
+            } else {
+                self.measured_job(spec).map_or(0, |m| m.disk_mb << 20)
+            }
         }
     }
 
@@ -4730,7 +4730,7 @@ impl Agent {
         let short = self
             .floor_short
             .is_some_and(|(t, n, at)| t == floor && room >= n && at.elapsed() < Duration::from_secs(600));
-        // (By measure, the first slot alone waits for the reserve too, the target none: started
+        // (By measure, the first slot alone waits for the target, when room-making fell short of it: started
         // short of it, the disk guard would freeze it at once and give it back, and the next job
         // likewise, each kept from this Mac an hour.)
         let held = true;
@@ -4774,7 +4774,7 @@ impl Agent {
                 room::given_back_drop(&self.o.home, &d);
             }
             // (By measure, alone: room is made, as it can, for its measured disk too, though it
-            // waits only on the reserve and the target, `need_of`: the disk guard its backstop.)
+            // waits only on the target, `need_of`: the disk guard its backstop.)
             let measured = if !self.o.helper { self.measured_job(&spec).map_or(0, |m| m.disk_mb << 20) } else { 0 };
             let sized = room.saturating_add(measured);
             match room::make_room(&cache, &r.join("sources"), sized, margin, &hints) {
@@ -4898,7 +4898,7 @@ impl Agent {
     /// less each running job's predicted need (the larger of
     /// what it holds and `spec_peak`: its targets' measured peak on the lead,
     /// the step's first guess on a member), the cores the load leaves, the
-    /// disk's free space less the reserve, the owner's room target and its jobs' reservations
+    /// disk's free space less the owner's room target and its jobs' reservations
     /// (`reserved`), the
     /// owner's use, power and the NAS as `c` says, and its jobs' leases.
     fn capacity(&self, c: &Conditions) -> crate::coord::Capacity {
@@ -4933,7 +4933,6 @@ impl Agent {
             cores_free: cores.saturating_sub(busy),
             disk_mb: self.disk_room() >> 20,
             free_mb: self.disk_free() >> 20,
-            reserve_mb: room::RESERVE >> 20,
             target_mb: self.floor() >> 20,
             reserved_mb,
             in_use: c.user_active(),
@@ -5278,7 +5277,7 @@ impl Agent {
         self.save();
         self.stopped(k, &why);
         // (Its lease ended, given back: its scratch kept, its work with it, until room-making is
-        // short of the reserve, `room::free_given_back`.)
+        // short of the room it needs, `room::free_given_back`.)
         if let Some(d) = &scratch {
             room::given_back_add(&self.o.home, d, now_s());
         }
@@ -5295,20 +5294,24 @@ impl Agent {
     }
 
     /// The disk guard (docs/pool.md §7.7), once a loop, with the Mac shared by measure: a job the
-    /// sampler froze, the disk short of the reserve and it growing fastest, goes on once the disk
-    /// has the reserve free again; else room is made from the caches no job holds (store::cachefile's
+    /// sampler froze, the disk short of the owner's room target (memguard::disk_short_of; no
+    /// target: the disk full) and it growing fastest, goes on once the disk has the target free
+    /// again (no target: a byte); else room is made from the caches no job holds (store::cachefile's
     /// exclusive locks: room::toward, on a thread of its own), and once that's done, the disk still
     /// short, the job is given back (`guard_stop`: not failed, its work kept by its hand-off, its
     /// disk floor learned). True when it stopped a job.
     fn disk_guard(&mut self, root: Option<&Path>) -> bool {
-        self.sampler.set_disk(true, room::RESERVE, &self.o.home);
+        // (The target alone the threshold, task #421: no fixed reserve, none hidden; with no target
+        // a byte free, so a full disk.)
+        let floor = self.floor().max(1);
+        self.sampler.set_disk(true, self.floor(), &self.o.home);
         let frozen: Vec<usize> =
             (0..self.slots.len()).filter(|&k| self.slots[k].running.is_some() && self.sampler.disk_frozen(k)).collect();
         if frozen.is_empty() {
             self.disk_room = None;
             return false;
         }
-        if self.disk_free() >= room::RESERVE {
+        if self.disk_free() >= floor {
             for &k in &frozen {
                 if self.sampler.thaw_disk(k) {
                     let why = format!("goes on: the disk has {} free again", room::size(self.disk_free()));
@@ -5331,13 +5334,11 @@ impl Agent {
             // (Made, and still short: the scratch of jobs given back here, the oldest first; still
             // short, given back.)
             Some(_) if self.caches_task.is_none() => {
-                if self.free_given_back(room::RESERVE + room::margin(room::RESERVE)) > 0
-                    && self.disk_free() >= room::RESERVE
-                {
+                if self.free_given_back(floor + room::margin(floor)) > 0 && self.disk_free() >= floor {
                     return false;
                 }
                 self.disk_room = None;
-                let why = format!("given back by the disk guard: the disk had {} free, short of the {} kept free, with no more room to be made from the caches no job holds (what it took on the disk is kept as the least its target takes)", room::size(self.disk_free()), room::size(room::RESERVE));
+                let why = format!("given back by the disk guard: the disk had {} free, short of the disk room target's {}, with no more room to be made from the caches no job holds (what it took on the disk is kept as the least its target takes)", room::size(self.disk_free()), room::size(self.floor()));
                 self.guard_stop(k, "disk guard", &why)
             }
             // (A freeing of the caches under way frees already: its end waited for.)
@@ -5345,8 +5346,7 @@ impl Agent {
             _ => {
                 let Some(r) = root else { return false };
                 let (cache, sources) = (self.o.home.join("cache"), r.join("sources"));
-                let goal =
-                    std::sync::Arc::new(std::sync::atomic::AtomicU64::new(room::RESERVE + room::margin(room::RESERVE)));
+                let goal = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(floor + room::margin(floor)));
                 let hints = self.hints();
                 match std::thread::Builder::new()
                     .name("caches".into())
@@ -5425,10 +5425,10 @@ impl Agent {
         (0..self.slots.len()).filter(|&k| Some(k) != except).map(|k| self.reservation(k)).sum()
     }
 
-    /// The disk a job could have now (bytes): the free space less the reserve (room::RESERVE), the
-    /// owner's room target and the jobs' reservations (`reserved`): what an ask says (`disk_mb`).
+    /// The disk a job could have now (bytes): the free space less the owner's room target and the
+    /// jobs' reservations (`reserved`): what an ask says (`disk_mb`).
     fn disk_room(&self) -> u64 {
-        self.disk_free().saturating_sub(room::RESERVE + self.floor() + self.reserved(None))
+        self.disk_free().saturating_sub(self.floor() + self.reserved(None))
     }
 
     /// What slot `k`'s job has still to take on the disk, by measure (bytes): its targets not noted
@@ -9216,7 +9216,7 @@ impl Agent {
             }
         }
         let able =
-            c.home && (c.ac || c.battery.is_none_or(|b| b >= cond::BATTERY_MIN)) && self.disk_free() >= room::RESERVE;
+            c.home && (c.ac || c.battery.is_none_or(|b| b >= cond::BATTERY_MIN)) && self.disk_free() > self.floor();
         #[cfg(test)]
         let able = TEST_ABLE.with(|t| t.get()).unwrap_or(able);
         // (Paused alone: it neither takes the lead nor is offered it.)
@@ -10983,38 +10983,19 @@ mod tests {
     #[test]
     fn a_helper_asks_only_for_what_its_disk_has_room_for() {
         let gb = |n: u64| n << 30;
-        // 20 GB free and 10 of caches it may empty: the 15 GB steps (and their margin: tree cover's
-        // pieces, terrain's and slope's, and the 3D buildings' among them) and tasks.
-        assert_eq!(
-            helper_steps(gb(20), gb(10), 0),
-            [
-                "terrain",
-                "slope",
-                "trees",
-                "unit",
-                "pois",
-                "peaks",
-                "bldprep",
-                "bldtiles",
-                "depth",
-                "tail",
-                "bldtile",
-                "treeblock",
-                "terrainsub"
-            ]
-        );
-        assert_eq!(
-            helper_steps(gb(70), 0, 0),
-            [steps::SHARED.to_vec(), vec!["tail", "bldtile", "treeblock", "terrainsub"]].concat()
-        );
-        assert_eq!(helper_steps(gb(10), gb(5), 0), ["tail", "bldtile", "treeblock", "terrainsub"]);
+        let all = |tasks: &[&'static str]| [&steps::SHARED[..], tasks].concat();
+        // The shared steps need no room of their own (their grant's measured disk is reserved
+        // for them, and no fixed reserve: task #421); the tasks theirs and their margin.
+        assert_eq!(helper_steps(gb(20), gb(10), 0), all(&["tail", "bldtile", "treeblock", "terrainsub"]));
+        assert_eq!(helper_steps(gb(10), gb(5), 0), all(&["tail", "bldtile", "treeblock", "terrainsub"]));
         // (Tree cover's rows and terrain's subtrees need 1 GB.)
-        assert_eq!(helper_steps(gb(3), gb(2), 0), ["treeblock", "terrainsub"]);
-        assert!(helper_steps(gb(1), 0, 0).is_empty());
+        assert_eq!(helper_steps(gb(3), gb(2), 0), all(&["treeblock", "terrainsub"]));
+        assert_eq!(helper_steps(gb(1), 0, 0), all(&[]));
         // The owner's disk room target stays free past them: 70 GB free with a 60 GB target leaves
-        // room for a task alone.
-        assert_eq!(helper_steps(gb(70), 0, gb(60)), ["tail", "bldtile", "treeblock", "terrainsub"]);
-        assert!(helper_steps(gb(70), 0, gb(69)).is_empty());
+        // room for every one; with a 69 GB target, the shared steps alone; past what's free, none.
+        assert_eq!(helper_steps(gb(70), 0, gb(60)), all(&["tail", "bldtile", "treeblock", "terrainsub"]));
+        assert_eq!(helper_steps(gb(70), 0, gb(69)), all(&[]));
+        assert!(helper_steps(gb(70), 0, gb(71)).is_empty());
     }
 
     #[test]
@@ -11042,10 +11023,10 @@ mod tests {
             record: None,
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        // A 20 GB target, which the disk has (40 GB free): a job's reserve, 30 GB, past it doesn't
-        // fit, nor can the (empty) caches make it. It waits, saying why; one keeping no target
-        // starts: the daily backup.
-        room::set_target(&home, Some(20 << 30), "a test").unwrap();
+        // A 50 GB target, past what the disk has (40 GB free), which the (empty) caches can't make:
+        // it waits, saying why; one keeping no target starts: the daily backup. (No fixed reserve
+        // past the target, task #421.)
+        room::set_target(&home, Some(50 << 30), "a test").unwrap();
         a.room_target = room::target(&home);
         let mut w = Vec::new();
         assert!(!a.try_start(0, job("terrain 3/1/1"), &cond, Some(&root), &mut w));
@@ -11056,11 +11037,9 @@ mod tests {
         assert_eq!(a.slots[0].running.as_ref().map(|r| r.spec.id.as_str()), Some("backup daily"));
         a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
         a.slots = Default::default();
-        // The disk has the target but not the unit's room past it: the caches are due a freeing
-        // toward that room (the least a held job needs), not only toward the target; the status
-        // says nothing's short of the target, but without the NAS, that it can't be freed now.
+        // Short of the target: the caches are due a freeing toward it; without the NAS, the status
+        // says it can't be freed now.
         assert_eq!(a.toward_due(), Some(50 << 30));
-        assert!(a.room_short(true).is_none());
         assert!(a.room_short(false).is_some_and(|s| s.contains("NAS isn't reachable")));
         // Tried again within ten minutes: held without making room again.
         let mut w = Vec::new();
@@ -11068,7 +11047,7 @@ mod tests {
         assert!(w[0].why.contains("disk room target"), "{w:?}");
         // (Its need past the target: past what the disk has.)
         assert!(a.disk_free() < a.need_of(0, &job("unit 6/1/1")) + a.floor());
-        // A 5 GB target: 35 GB, which the disk has; it starts.
+        // A 5 GB target, which the disk has; it starts.
         room::set_target(&home, Some(5 << 30), "a test").unwrap();
         a.room_target = room::target(&home);
         a.floor_short = None;
@@ -11191,7 +11170,7 @@ mod tests {
         // A target past what's free (the freeing's thread sees this Mac's disk), and a unit held by
         // it: the caches are due a freeing toward the unit's room past the target.
         let target = (1u64 << 40) + (100 << 30);
-        let room = target + (30 << 30);
+        let room = target;
         room::set_target(&home, Some(target), "a test").unwrap();
         a.room_target = room::target(&home);
         let mut w = Vec::new();
@@ -11201,7 +11180,7 @@ mod tests {
         assert_eq!(a.toward_due(), Some(room));
         a.tend_caches(Some(&root), true);
         let f = a.mem.toward.clone().unwrap();
-        assert_eq!((f.target, f.goal, f.bytes()), (Some(target), Some(room), 1000), "{f:?}");
+        assert_eq!((f.target, f.goal, f.bytes()), (Some(target), None, 1000), "{f:?}");
         // Done, and short of both: no freeing again within ten minutes, toward the unit's room nor
         // toward the target, loop after loop (nor once the unit's wait is over).
         for _ in 0..3 {
@@ -11400,17 +11379,50 @@ mod tests {
         .unwrap();
         let g: u64 = 1 << 30;
         a.free_set = Some(50 * g);
-        assert_eq!((a.reserved(None), a.disk_room()), (0, 20 * g));
-        // Granted, not started: 8 GB reserved whole; free 50 less 30 kept, less 8.
+        assert_eq!((a.reserved(None), a.disk_room()), (0, 50 * g));
+        // Granted, not started: 8 GB reserved whole; free 50 less 8 (no fixed reserve, task #421).
         a.slots[1].lease = Some(Held::Leased { lease: 7, dir: d.path().join("out") });
         a.slots[1].reserve_mb = Some(8 << 10);
-        assert_eq!((a.reserved(None), a.reserved(Some(1)), a.disk_room()), (8 * g, 0, 12 * g));
+        assert_eq!((a.reserved(None), a.reserved(Some(1)), a.disk_room()), (8 * g, 0, 42 * g));
         // A slot holding nothing reserves nothing, whatever it was last granted with.
         a.slots[0].reserve_mb = Some(100 << 10);
         assert_eq!(a.reserved(None), 8 * g);
         // With the owner's room target, room is made toward it and the reservations past it.
         a.room_target = Some(room::Target { bytes: 10 * g, by: String::new(), at: 0 });
         assert_eq!(a.goal(), 18 * g);
+    }
+
+    /// The owner's room target is the only floor (task #421): 49 GB free and a 20 GB target
+    /// offer 29 GB for jobs, less the jobs' reservations; no target, all that's free. The
+    /// capacity says no fixed reserve.
+    #[test]
+    fn the_room_target_alone_is_taken_off_the_disk_for_jobs() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("nas")).unwrap();
+        let mut a = test_agent(Options {
+            root: Some(d.path().join("nas")),
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            helper: true,
+        })
+        .unwrap();
+        let g: u64 = 1 << 30;
+        a.free_set = Some(49 * g);
+        assert_eq!(a.disk_room(), 49 * g);
+        a.room_target = Some(room::Target { bytes: 20 * g, by: String::new(), at: 0 });
+        assert_eq!(a.disk_room(), 29 * g);
+        a.slots[1].lease = Some(Held::Leased { lease: 7, dir: d.path().join("out") });
+        a.slots[1].reserve_mb = Some(9 << 10);
+        assert_eq!(a.disk_room(), 20 * g);
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let cap = a.capacity(&cond);
+        assert_eq!((cap.free_mb, cap.target_mb, cap.reserved_mb, cap.disk_mb), (49 << 10, 20 << 10, 9 << 10, 20 << 10));
+        assert_eq!(
+            crate::coord::disk_words(&cap, cap.disk_mb),
+            "49 GB free · 20 GB for jobs (20 GB room target, 9 GB reserved by its jobs)"
+        );
     }
 
     /// Packing (task #240): a member asks for its slots free and runs every job granted, each in a
@@ -11871,9 +11883,9 @@ mod tests {
         let plan = [job("heritage"), job("labels")];
         assert_eq!(lead_start(&mut a, &plan, &cond, &root, &mut w), [0], "{w:?}");
         assert!(lead_start(&mut a, &plan, &cond, &root, &mut w).is_empty());
-        // Items fits its memory beside it, but not its disk while the disk has 50 GB (30 kept).
+        // Items fits its memory beside it, but not its disk (25 GB) while the disk has 20 GB.
         let plan = [job("heritage"), job("labels"), job("items")];
-        a.free_set = Some(50 << 30);
+        a.free_set = Some(20 << 30);
         assert!(lead_start(&mut a, &plan, &cond, &root, &mut w).is_empty());
         a.free_set = Some(100 << 30);
         assert_eq!(lead_start(&mut a, &plan, &cond, &root, &mut w), [1], "{w:?}");
@@ -12079,7 +12091,8 @@ mod tests {
         assert!(a.wait_reason(&job("items", "items"), &cond).is_none());
     }
 
-    /// The disk guard (by measure): short of the reserve, the job growing fastest frozen, room made
+    /// The disk guard (by measure): short of the owner's room target (here 30 GB), the job growing
+    /// fastest frozen, room made
     /// from what no job holds, and it goes on once the disk has room; given back when none can be
     /// made, what it took on the disk learned as its target's disk floor.
     #[test]
@@ -12109,9 +12122,10 @@ mod tests {
         };
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         a.free_set = Some(100 * g);
+        a.room_target = Some(room::Target { bytes: 30 * g, by: "a test".into(), at: now_s() });
         assert!(a.try_start(0, job("6/1/1"), &cond, Some(&root), &mut Vec::new()));
         a.sampler.set_test(Some(vec![None, None]), Some(false));
-        a.sampler.set_disk(true, room::RESERVE, &home);
+        a.sampler.set_disk(true, 30 * g, &home);
         // The disk falls short: frozen; room made (here none to make), then the disk has room again
         // (another program let go of its files): it goes on.
         a.free_set = Some(20 * g);
@@ -12145,7 +12159,7 @@ mod tests {
             "{:?}",
             a.guard_last
         );
-        // Two frozen (the second filling the disk past half the reserve meanwhile), no room to make:
+        // Two frozen (the second filling the disk past half the target meanwhile), no room to make:
         // the one taking the most given back first, the other kept frozen until the next decision.
         a.free_set = Some(200 * g);
         assert!(a.try_start(0, job("6/2/2"), &cond, Some(&root), &mut Vec::new()));
@@ -12230,10 +12244,10 @@ mod tests {
         a.sampler.tick();
         assert_eq!(a.disk_left(0), (34 * 1024 + 3072) << 20);
         // (Task #242: what it has still to take is its reservation, taken off the disk an ask and
-        // the capacity say: 100 GB free, less the 30 kept and 37 reserved.)
+        // the capacity say: 100 GB free, less the 37 reserved; no fixed reserve, task #421.)
         a.free_set = Some(100 * g);
         let cap = a.capacity(&cond);
-        assert_eq!((cap.reserved_mb, cap.disk_mb), (34 * 1024 + 3072, 33 * 1024));
+        assert_eq!((cap.reserved_mb, cap.disk_mb), (34 * 1024 + 3072, 63 * 1024));
         let unit = JobSpec {
             id: "unit 6/9/9".into(),
             what: "a unit".into(),
@@ -12242,11 +12256,11 @@ mod tests {
             restart_after_sleep: false,
             record: Some(build::Work { step: "unit".into(), targets: vec![("6/9/9".into(), "k".into())] }),
         };
-        // 10 GB, 37 GB to come and the 30 kept free: past 60 GB free (its largest alone, 3 GB, would
-        // have let it be granted beside, and the guard give it back an hour on, and again).
-        a.free_set = Some(60 * g);
+        // 10 GB and 37 GB to come: past 45 GB free (its largest alone, 3 GB, would have let it be
+        // granted beside, and the guard give it back an hour on, and again).
+        a.free_set = Some(45 * g);
         assert!(a.disk_room() < 10 * g);
-        a.free_set = Some(90 * g);
+        a.free_set = Some(50 * g);
         assert!(a.disk_room() >= 10 * g);
         if let Some(r) = a.slots[0].running.as_mut() {
             r.stop(Duration::from_secs(5));
@@ -12265,9 +12279,10 @@ mod tests {
         }
         a.end_lease(0, Outcome::Interrupted, &[], "stopped");
         a.slots[0].running = None;
-        // Short of the reserve itself, no target: it waits, said why (started, the disk guard would
+        // Short of the owner's room target itself: it waits, said why (started, the disk guard would
         // freeze it at once and give it back, and the next job likewise: the two-Mac run's loop).
-        a.free_set = Some(room::RESERVE - g);
+        a.room_target = Some(room::Target { bytes: 20 * g, by: "a test".into(), at: now_s() });
+        a.free_set = Some(19 * g);
         // (Its scratch kept from a give-back of its own, and another's: room-making takes only the
         // other's, the job's own its again before room is made.)
         let (mine, other) = (a.o.home.join("scratch/unit"), a.o.home.join("scratch/pack"));
@@ -12281,15 +12296,13 @@ mod tests {
         let mut w = Vec::new();
         assert!(!a.try_start(0, scratched, &cond, Some(&root), &mut w));
         assert!(
-            a.slots[0].running.is_none() && w.iter().any(|x| x.why.contains("waits for room on the disk")),
+            a.slots[0].running.is_none() && w.iter().any(|x| x.why.contains("waits for the disk room target")),
             "{w:?}"
         );
         assert!(mine.exists() && !other.exists(), "its own scratch kept, the other's freed for room");
         a.floor_short = None;
-        // So too with the owner's room target set: alone, the reserve and the target are what it
-        // starts with, not its floor past them.
-        a.room_target = Some(room::Target { bytes: 20 * g, by: "a test".into(), at: now_s() });
-        a.free_set = Some(room::RESERVE + 21 * g);
+        // Past the target: alone, the target is all it starts with, not its floor past it.
+        a.free_set = Some(21 * g);
         let mut w = Vec::new();
         assert!(
             a.try_start(0, unit.clone(), &cond, Some(&root), &mut w),
