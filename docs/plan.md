@@ -546,9 +546,12 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
 - **Reading the sources:** each over SMB waits round trips, so a source's grids meeting a block
   (hundreds of BlueTopo's) are opened 8 at once, then sampled 8 at once (merged in their order),
   and each window's blocks read 8 at once into the shared block cache (`Tiff::prefetch_window`).
-  3/1/3's z6 block: 1,359 s read in turn, 508 s so (19 Oct, the M1, release). An open that fails
-  is tried again after 2, 5, 15 and 30 s (an SMB open can fail for a moment on a file that's
-  there: two depth-lo jobs, 19 Oct).
+  3/1/3's z6 block: 1,359 s read in turn, 456 s so, 1.6 GB (19 Oct, the M1, release). Each window's
+  prefetch is held to its share of the block cache (an eighth: the grids read at once). A file's
+  open and header read run on a thread of their own, waited 120 s at most: past it the job fails
+  (its own retry takes over). A transient failure (NotFound, as SMB says for a moment on a file
+  that's there: two depth-lo jobs, 19 Oct; EIO, ESTALE, an interrupted or reset call) is tried
+  again after 2, 5, 15 and 30 s; a file that isn't a GeoTIFF is not.
 - **Timings and progress:** a job's phases: the sources' declarations read, the basemap's water
   opened and read, `composing` (its sub-phases: the source files opened, the sources' windows read,
   the stored levels scaled up, feathering, gaps filled), tiles encoded, the coarse levels from

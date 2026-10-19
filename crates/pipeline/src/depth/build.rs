@@ -324,9 +324,15 @@ fn level(
                 }
             }
         });
-        let r = level_blocks(t, sources, rd, water, wc, z, x0, y0, n, zmin, &blocks);
-        stop.store(true, Ordering::Relaxed);
-        r
+        // (Stopped however the blocks end, a panic too: else the scope waits on it for good.)
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let _stop = Stop(&stop);
+        level_blocks(t, sources, rd, water, wc, z, x0, y0, n, zmin, &blocks)
     })
 }
 

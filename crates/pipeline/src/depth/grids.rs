@@ -161,7 +161,8 @@ impl Reader {
         if let Some(t) = self.open.lock().unwrap().get(p) {
             return Ok(t.clone());
         }
-        let tiff = open_retrying(p, &open_file, &OPEN_WAITS).with_context(|| format!("{}", p.display()))?;
+        let tiff = open_retrying(p, &|p| within(p, OPEN_DEADLINE, open_file), &OPEN_WAITS)
+            .with_context(|| format!("{}", p.display()))?;
         // (Its cache id given as it's kept, under the one lock: two threads opening files at once
         // never share one.)
         let mut open = self.open.lock().unwrap();
@@ -222,13 +223,71 @@ pub const OPEN_WAITS: [std::time::Duration; 4] = [
 
 /// A GeoTIFF opened, its header read. (Not on crate::agent::nasread's readers: their four
 /// threads, busy, fail a call at once, and the grids are opened `GRIDS_AT_ONCE` at once.)
+/// An I/O error in its header's read keeps its kind (a transient one is tried again); a header
+/// that isn't a GeoTIFF's is `InvalidData` (never tried again).
 fn open_file(p: &Path) -> std::io::Result<Tiff> {
     let f = store::range::PlainFile::open(p)?;
-    Tiff::open(Arc::new(f)).map_err(std::io::Error::other)
+    Tiff::open(Arc::new(f)).map_err(|e| {
+        let kind = e
+            .chain()
+            .find_map(|c| c.downcast_ref::<std::io::Error>().map(|i| (i.kind(), i.raw_os_error())))
+            .or_else(|| {
+                e.chain().find_map(|c| match c.downcast_ref::<store::IoError>() {
+                    Some(store::IoError::Io(i)) => Some((i.kind(), i.raw_os_error())),
+                    _ => None,
+                })
+            });
+        match kind {
+            Some((_, Some(code))) => std::io::Error::from_raw_os_error(code),
+            Some((k, None)) => std::io::Error::new(k, format!("{e:#}")),
+            None => std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{e:#}")),
+        }
+    })
 }
 
-/// `open(p)`, tried again after each of `waits` while it fails (its last error returned), each
-/// retry logged.
+/// How long a source file's open and header read may take before the job fails (an SMB open can
+/// stay stuck in the kernel for many minutes; the job's own retry takes over).
+pub const OPEN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// `open(p)` on a thread of its own, waited for `deadline` at most: past it, `TimedOut` (the
+/// thread stuck in it left behind).
+pub fn within<T: Send + 'static>(
+    p: &Path,
+    deadline: std::time::Duration,
+    open: fn(&Path) -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let owned = p.to_path_buf();
+    std::thread::Builder::new().name("depth-open".into()).spawn(move || {
+        let _ = tx.send(open(&owned));
+    })?;
+    rx.recv_timeout(deadline).unwrap_or_else(|_| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("its open took over {} s (the NAS's share stuck?)", deadline.as_secs()),
+        ))
+    })
+}
+
+/// Whether an open's failure may pass: SMB's moment of "No such file or directory" on a file
+/// that's there, an interrupted or reset call, EIO, ESTALE. Not a deadline passed (the job fails,
+/// its retry takes over), nor a file that isn't a GeoTIFF.
+pub fn transient(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind as K;
+    matches!(
+        e.kind(),
+        K::NotFound
+            | K::Interrupted
+            | K::WouldBlock
+            | K::ConnectionReset
+            | K::ConnectionAborted
+            | K::NotConnected
+            | K::BrokenPipe
+    ) || matches!(e.raw_os_error(), Some(libc::EIO | libc::ESTALE | libc::EAGAIN | libc::EINTR))
+}
+
+/// `open(p)`, tried again after each of `waits` while it fails transiently (`transient`; its
+/// last error returned), each retry logged.
 pub fn open_retrying<T>(
     p: &Path,
     open: &dyn Fn(&Path) -> std::io::Result<T>,
@@ -238,7 +297,7 @@ pub fn open_retrying<T>(
     loop {
         match open(p) {
             Ok(t) => return Ok(t),
-            Err(e) if tries < waits.len() => {
+            Err(e) if tries < waits.len() && transient(&e) => {
                 eprintln!("{}: {e}; opened again in {:?}", p.display(), waits[tries]);
                 std::thread::sleep(waits[tries]);
                 tries += 1;
@@ -343,7 +402,7 @@ fn read(t: &Tiff, level: usize, x0: i64, y0: i64, x1: i64, y1: i64) -> Result<Op
     let v = {
         let reads = WINDOW_READS.load(std::sync::atomic::Ordering::Relaxed);
         if reads > 1 {
-            t.prefetch_window(level, a0 as u32, b0 as u32, ww, wh, reads)?;
+            t.prefetch_window(level, a0 as u32, b0 as u32, ww, wh, reads, GRIDS_AT_ONCE)?;
         }
         t.read_window(level, a0 as u32, b0 as u32, ww, wh)?
     };
@@ -651,5 +710,75 @@ pub(crate) mod tests {
         }
         // Outside it: nothing.
         assert!(sample(&rd, &s, 12, c + 5000, r, 8, 8).unwrap().is_none());
+    }
+
+    /// Task #398 review: grids opened and sampled `GRIDS_AT_ONCE` at once, and windows' blocks read
+    /// at once, give the same sample bit for bit as in turn: eleven overlapping grids (a chunk's
+    /// boundary crossed), each with holes, the later ones winning where they have data.
+    #[test]
+    fn grids_sampled_together_are_the_same_as_in_turn() {
+        use std::sync::atomic::Ordering;
+        let d = tempfile::tempdir().unwrap();
+        let (zoom, c, r) = (12u8, 1200 * 256i64, 1500 * 256i64);
+        let grids: Vec<Grid> = (0..11i64)
+            .map(|i| {
+                let (gc, gr) = (c + 20 * i, r + 12 * i);
+                let p = d.path().join(format!("g{i}.tif"));
+                grid_file(&p, zoom, gc, gr, 320, 256, &|x, y| {
+                    if (x + y) % (i + 3) == 0 {
+                        f32::NAN
+                    } else {
+                        -(i as f32) * 10.0 - ((x - gc) as f32) * 0.01 - ((y - gr) as f32) * 0.02
+                    }
+                });
+                Grid { bbox: bbox(zoom, gc, gr, 320, 256), zoom, file: p, zoom_file: None, low_file: None }
+            })
+            .collect();
+        let s = source(grids);
+        let bits = |x: &Sample| -> Vec<u32> {
+            x.v.iter()
+                .chain(&x.low)
+                .map(|v| v.to_bits())
+                .chain(x.zoom.iter().chain(&x.class).map(|&b| u32::from(b)))
+                .collect()
+        };
+        let mut got = Vec::new();
+        for (together, reads) in [(false, 1), (true, 8)] {
+            GRIDS_TOGETHER.store(together, Ordering::Relaxed);
+            WINDOW_READS.store(reads, Ordering::Relaxed);
+            let rd = Reader::default();
+            got.push(bits(&sample(&rd, &s, zoom, c - 10, r - 10, 600, 420).unwrap().unwrap()));
+        }
+        GRIDS_TOGETHER.store(true, Ordering::Relaxed);
+        WINDOW_READS.store(8, Ordering::Relaxed);
+        assert!(got[0] == got[1], "sampled together, not the same as in turn");
+    }
+
+    /// Task #398 review: only a transient failure is tried again; a deadline passed fails at once.
+    #[test]
+    fn only_transient_opens_are_tried_again_and_a_stuck_one_times_out() {
+        use std::io;
+        let waits = [std::time::Duration::from_millis(1); 3];
+        let tries = std::cell::Cell::new(0);
+        let bad = |_: &Path| -> io::Result<()> {
+            tries.set(tries.get() + 1);
+            Err(io::Error::new(io::ErrorKind::InvalidData, "not a TIFF"))
+        };
+        assert!(open_retrying(Path::new("x"), &bad, &waits).is_err());
+        assert_eq!(tries.get(), 1);
+        assert!(transient(&io::Error::from_raw_os_error(libc::EIO)));
+        fn stuck(_: &Path) -> io::Result<u8> {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            Ok(1)
+        }
+        let t0 = std::time::Instant::now();
+        let e = within(Path::new("x"), std::time::Duration::from_millis(50), stuck).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+        assert!(!transient(&e) && t0.elapsed() < std::time::Duration::from_secs(5));
+        // A file that isn't a GeoTIFF: InvalidData, not tried again.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("n.tif"), b"nope").unwrap();
+        assert!(!transient(&open_file(&d.path().join("n.tif")).map(|_| ()).unwrap_err()));
+        assert_eq!(open_file(&d.path().join("missing.tif")).map(|_| ()).unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 }

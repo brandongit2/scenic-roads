@@ -754,8 +754,18 @@ impl Tiff {
     /// `threads` at once (task #398: over SMB each block's read waits a round trip, so a window's
     /// blocks read in turn leave the job latency-bound); `read_window` then takes them from it. A
     /// failed read stops the others, its error returned (`read_window` would say it again). With no
-    /// cache, or one too small for the window's blocks, nothing (the reads would be lost).
-    pub fn prefetch_window(&self, level: usize, x0: u32, y0: u32, w: u32, h: u32, threads: usize) -> Result<()> {
+    /// cache, or one too small for the window's blocks in its share of it (`1 / sharers`: the windows
+    /// prefetched at once into one cache), nothing (they'd evict each other's blocks).
+    pub fn prefetch_window(
+        &self,
+        level: usize,
+        x0: u32,
+        y0: u32,
+        w: u32,
+        h: u32,
+        threads: usize,
+        sharers: usize,
+    ) -> Result<()> {
         let img = self.level(level)?;
         let Some((_, c)) = &self.cache else { return Ok(()) };
         if w == 0 || h == 0 || x0 >= img.width || y0 >= img.height {
@@ -765,7 +775,7 @@ impl Tiff {
         let (bw, bh) = (img.block_w, img.block_h);
         let blocks: Vec<(u32, u32)> =
             (y0 / bh..=y1 / bh).flat_map(|by| (x0 / bw..=x1 / bw).map(move |bx| (bx, by))).collect();
-        if blocks.len() < 2 || blocks.len() * img.block_bytes() > c.lock().unwrap().cap() / 2 {
+        if blocks.len() < 2 || blocks.len() * img.block_bytes() > c.lock().unwrap().cap() / sharers.max(2) {
             return Ok(());
         }
         let next = std::sync::atomic::AtomicUsize::new(0);

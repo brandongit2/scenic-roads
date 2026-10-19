@@ -3152,12 +3152,18 @@ fn targets_p90(disks: &BTreeMap<String, u64>, step: &str) -> Option<u64> {
     )
 }
 
+/// Whether a disk measure `mb` is no measure of a job whose targets measure `base` (MB): past
+/// three times it and a GB (`stale_peak`, `remeasured`).
+fn far_above(mb: u64, base: u64) -> bool {
+    mb > base.saturating_mul(3) + 1024
+}
+
 /// Whether `mb`, a peak an older file kept of a job of `step` (one reading no shared cache: those
 /// seed their cache's fill instead, `job_disks_load`), is far above what its targets measure (task
 /// #392): past three times their 90th percentile and a GB. With few targets measured that's near
 /// their most, so a peak within reason of the one job measured stays.
 fn stale_peak(disks: &BTreeMap<String, u64>, step: &str, mb: u64) -> bool {
-    targets_p90(disks, step).is_some_and(|p| mb > p.saturating_mul(3) + 1024)
+    targets_p90(disks, step).is_some_and(|p| far_above(mb, p))
 }
 
 /// The steps whose kept disk measures may hold a run that measured more than the job (task #398:
@@ -3176,7 +3182,7 @@ fn remeasured(job_disks: &mut BTreeMap<String, Vec<u64>>, disks: &mut BTreeMap<S
             continue;
         }
         own.sort_unstable();
-        let far = |mb: u64| mb > own[own.len() / 2].saturating_mul(3) + 1024;
+        let far = |mb: u64| far_above(mb, own[own.len() / 2]);
         disks.retain(|k, mb| crate::agent::memguard::step_of_key(k) != step || !far(*mb));
         if let Some(runs) = job_disks.get_mut(step) {
             runs.retain(|mb| !far(*mb));
