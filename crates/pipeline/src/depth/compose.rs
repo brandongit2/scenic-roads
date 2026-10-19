@@ -40,9 +40,10 @@ pub const GAP_M: f32 = 600.0;
 /// block's own number for the lake covering most of it). A pixel is water when the sea, lakes and
 /// rivers cover half of it or more, or when it's narrow water (some of it water, none of its eight
 /// neighbours half so: a channel under a pixel wide). A river pixel (rivers cover more of it than
-/// the sea or lakes) takes only the sources drawn in rivers; a river pixel or narrow water
-/// (`if_data`) stays water only where a source gives it a value, so where none does the block is
-/// what it was without them.
+/// the sea or lakes, which cover less than half of it) takes only the sources drawn in rivers; a
+/// pixel water only by the rivers' share (a river pixel, or the sea and lakes under half with the
+/// rivers making it half), or narrow water (`if_data`), stays water only where a source gives it a
+/// value, so where none does the block is what it was without them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Water {
     pub water: Vec<bool>,

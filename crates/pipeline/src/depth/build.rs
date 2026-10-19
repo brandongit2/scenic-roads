@@ -89,13 +89,16 @@ impl WaterCache {
 
     /// Block `b`'s water (`Water`): a pixel is water when the sea, lakes and rivers cover half of
     /// it or more, or it's narrow water; of a lake when lakes cover more of it than the sea, of a
-    /// river when rivers cover more of it than either; lakes numbered by their key, block-wide.
+    /// river when rivers cover more of it than either and the sea and lakes under half (`Water`);
+    /// lakes numbered by their key, block-wide.
     fn block(&mut self, src: &dyn WaterSource, b: Block) -> Result<Water> {
         let (w, h) = (b.w(), b.h());
         let mut out = Water::land(w * h);
         // (Each pixel's share of water, for the narrow water.)
         let mut share = vec![0u8; w * h];
         let mut river = vec![false; w * h];
+        // (The sea's and lakes' share alone: what made a pixel water before rivers counted.)
+        let mut old = vec![0u8; w * h];
         let mut ids: HashMap<u64, u32> = HashMap::new();
         let n = 1i64 << b.z;
         for ty in i64::from(b.ty0) - 1..=i64::from(b.ty0 + b.ny) {
@@ -119,10 +122,11 @@ impl WaterCache {
                         let (sea, lake, riv) = (t.sea[s], t.lake[s], t.river_at(s));
                         let o = y as usize * w + x as usize;
                         share[o] = sea + lake + riv;
+                        old[o] = sea + lake;
                         if share[o] == 0 {
                             continue;
                         }
-                        river[o] = riv > sea && riv > lake;
+                        river[o] = riv > sea && riv > lake && sea + lake < 8;
                         if lake > sea && lake >= riv && t.lake_of[s] != u16::MAX {
                             let key = t.ids[t.lake_of[s] as usize];
                             let next = ids.len() as u32 + 1;
@@ -148,7 +152,8 @@ impl WaterCache {
                     continue;
                 }
                 out.water[o] = true;
-                if_data[o] = river[o] || narrow;
+                // (Water only by the rivers' share, or narrow: water only with a value.)
+                if_data[o] = river[o] || narrow || (half(o) && old[o] < 8);
             }
         }
         if river.iter().any(|&r| r) {

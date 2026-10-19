@@ -554,8 +554,11 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   sources declared `rivers` (their depths below the river's own surface: NONNA's mean water level
   from CHS's stations, which slopes down the St. Lawrence with them; BlueTopo's and SHOM's mean sea
   level, in the tidal reaches they cover); a river is gap-filled from a river's data alone, keeps no
-  drying heights and never dries. A river's pixel or narrow water without a value is land, so where
-  no source has a value there the block is what it was without them.
+  drying heights and never dries. A river's pixel (rivers cover more of it than the sea or lakes,
+  which cover under half), a pixel water only with the rivers' share, and narrow water are land
+  where no source has a value, so a river no source is drawn in changes nothing. Narrow water a
+  source has values in is new depth: the sea's slivers under a pixel wide change many coastal
+  pieces (intended).
 - **Composing a block** (8 × 8 tiles and a 32-pixel margin; `depth::compose`), on that water:
   sources sampled (coarser grids
   interpolated, finer ones averaged from the overview that lines up) and painted coarse to fine;
@@ -567,8 +570,10 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   its own stays empty), the land a 3-pixel band; dries where above the chart's low water.
 - **The floor:** the depth lies on the terrain's own water, flattened to its surface, so the terrain
   less the depth is the floor; the server serves it (`/tiles/terrain/…?floor=1`), no second terrain
-  stored. Rivers aren't flattened (they slope): there the terrain is its sources' own water surface
-  (the DEMs AWS mixes draw rivers hydro-flattened), and the floor is that less the depth. A
+  stored. Rivers aren't flattened (they slope): there the terrain is what its sources draw, and the
+  floor is that less the depth. 3DEP draws rivers hydro-flattened at their surface; where AWS's
+  tiles come from SRTM-derived data a river's surface is noisy and not flattened, so the floor
+  there is as rough. A
   pixel of narrow water is the terrain's blend of water and shore (§6, Terrain), so its floor is
   rough. The map's toggle (the 3D terrain from it, the water's surface drawn at its level, what's
   draped on the water kept at the surface) is planned (§10).
@@ -1533,7 +1538,8 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
     volumes on EGM2008 aren't corrected to MSL;
     rivers take only the sources declared `rivers` and the accepted declarations don't say it yet
     (the staged ones do: NONNA, BlueTopo, SHOM), so rivers have none until they're dropped again;
-    rivers aren't flattened in the terrain (the floor is the DEM's own river surface less the depth);
+    rivers aren't flattened in the terrain (the floor is the terrain's river less the depth: flat
+    where 3DEP draws it, noisy where AWS's tiles are SRTM-derived);
     targets the coverage leaves keep their packs (no
     prune yet); the map's click popup for depth isn't built (the readout is).
     **The water depth has no source for** (each checked 18–19 Oct 2026):

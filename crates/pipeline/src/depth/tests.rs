@@ -259,6 +259,61 @@ fn rivers_and_narrow_water_without_a_value_change_nothing() {
     assert_eq!(a, b, "narrow water no source has a value in");
 }
 
+/// Rectangles of `T` (kind, key, u0, v0, u1, v1), the river's as the depth's alone.
+struct Rects(Vec<(WKind, u64, [f64; 4])>);
+
+impl WaterSource for Rects {
+    fn polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
+        Ok(self.depth_polys(z, x, y)?.into_iter().filter(|p| p.kind != WKind::River).collect())
+    }
+    fn depth_polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
+        if !(6..=14).contains(&z) {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .0
+            .iter()
+            .filter_map(|&(k, id, r)| {
+                rect(z, x, y, r[0], r[1], r[2], r[3]).map(|q| square(k, id, q[0], q[1], q[2], q[3]))
+            })
+            .collect())
+    }
+    fn pin(&self) -> String {
+        "rects".into()
+    }
+}
+
+#[test]
+fn a_river_meeting_the_sea_or_a_lake_changes_nothing_without_a_value() {
+    let d = tempfile::tempdir().unwrap();
+    let mut srcs = sources(d.path());
+    // (The deep source west of x 512 of z8 alone, so the mixed pixels have no value of their own.)
+    let ((c0, r0), (c1, r1)) = (at(8, 0.0, 0.0), at(8, 0.5, 1.0));
+    let p = d.path().join("west.tif");
+    grid_file(&p, 8, c0, r0, (c1 - c0) as u32, (r1 - r0) as u32, &|_, _| -50.0);
+    srcs[0].grids[0].file = p;
+    srcs[0].grids[0].bbox = window_box(8, c0, r0, (c1 - c0) as usize, (r1 - r0) as usize);
+    // (z8: 1024 pixels across T. The sea to x 512.25 of z8; a lake (no survey) on to 512.5, then a
+    // river, in a band; further south the sea to 512.5, then the river; further still the sea to
+    // 512.25 and a river to 512.5: pixels of sea 4 + lake 4 + river 8, sea 8 + river 8 and sea 4 +
+    // river 4, and at finer zooms other mixes of them.)
+    let x = |px: f64| px / 1024.0;
+    let base = vec![
+        (WKind::Sea, 0, [0.0, 0.0, x(512.25), 0.55]),
+        (WKind::Lake, 9, [x(512.25), 0.5, x(512.5), 0.55]),
+        (WKind::Sea, 0, [0.0, 0.55, x(512.5), 0.65]),
+        (WKind::Sea, 0, [0.0, 0.65, x(512.25), 1.0]),
+    ];
+    let mut with = base.clone();
+    with.push((WKind::River, 1 << 63, [x(512.5), 0.5, 0.65, 0.53]));
+    with.push((WKind::River, 1 << 63, [x(512.5), 0.6, 0.65, 0.62]));
+    with.push((WKind::River, 1 << 63, [x(512.25), 0.7, x(512.5), 0.72]));
+    let (_, a) = packs(&srcs, &Rects(base), &d.path().join("a"));
+    let (_, b) = packs(&srcs, &Rects(with), &d.path().join("b"));
+    assert!(a.iter().any(Option::is_some));
+    assert_eq!(a, b, "rivers no source is drawn in, meeting the sea and a lake");
+}
+
 #[test]
 fn a_river_takes_the_sources_drawn_in_rivers() {
     let d = tempfile::tempdir().unwrap();
