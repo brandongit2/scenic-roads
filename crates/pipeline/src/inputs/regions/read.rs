@@ -316,3 +316,89 @@ pub fn coverage_of_folder(root: &Path, manifest: &BTreeMap<String, String>, dir:
     let n = geoms.len();
     Ok((coverage_of(&geoms), n))
 }
+
+/// A scratch folder of region files checked (`scenic-build regions-check`): every finding, and each
+/// region resolved, with its size. Against the records' current pass, the datasets those that
+/// `declarations` (a folder of source declarations) names when given; reads, stores nothing.
+pub fn check_folder(
+    root: &Path,
+    manifest: &BTreeMap<String, String>,
+    dir: &Path,
+    declarations: Option<&Path>,
+) -> Result<serde_json::Value> {
+    let mut paths = Vec::new();
+    let mut stack = vec![(dir.to_path_buf(), String::new())];
+    while let Some((d, rel)) = stack.pop() {
+        for e in std::fs::read_dir(&d).with_context(|| format!("list {}", d.display()))? {
+            let e = e?;
+            let name = e.file_name().to_string_lossy().into_owned();
+            if crate::inputs::ignored(&name) {
+                continue;
+            }
+            let p = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            if e.file_type()?.is_dir() {
+                stack.push((e.path(), p));
+            } else if super::resolve::takes(&p) {
+                paths.push(p);
+            }
+        }
+    }
+    paths.sort();
+    let t = std::time::Instant::now();
+    let data = match declarations {
+        Some(d) => Some(super::data::Datasets::read(root, &crate::inputs::sources::Sources::of_folder(d)?)?),
+        None => None,
+    };
+    eprintln!("regions-check: datasets read in {:.0} s", t.elapsed().as_secs_f64());
+    let checks = super::Regions::new(Some(super::prepare(root, manifest, data)?));
+    let read = |p: &str| -> Result<std::sync::Arc<Vec<u8>>> {
+        Ok(std::sync::Arc::new(std::fs::read(dir.join(p)).with_context(|| format!("read {p}"))?))
+    };
+    let v = crate::inputs::Version { paths: paths.into_iter().collect(), read: &read };
+    use crate::inputs::Checks;
+    if let Some(why) = checks.not_ready() {
+        anyhow::bail!("the regions can't be checked now: {why}");
+    }
+    let mut findings = Vec::new();
+    for p in &v.paths {
+        findings.extend(checks.file(p, &(v.read)(p)?).findings);
+    }
+    let t = std::time::Instant::now();
+    let (folder, out) = checks.resolve(&v)?;
+    eprintln!("regions-check: resolved in {:.0} s", t.elapsed().as_secs_f64());
+    findings.extend(out.problems.iter().map(super::problem_finding));
+    let mut regions = serde_json::Map::new();
+    let mut total = 0.0;
+    for (id, res) in &out.resolved {
+        let a = super::geom::union_all(
+            &res.geometry
+                .shapes
+                .iter()
+                .map(|s| {
+                    super::geom::Area::from_rings(
+                        &s.rings
+                            .iter()
+                            .map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        let km2 = super::geom::area_km2(&a);
+        total += km2;
+        regions.insert(
+            id.clone(),
+            serde_json::json!({"path": folder.regions[id].0, "km2": km2, "water": folder.regions[id].1.has_water(),
+                "points": res.geometry.shapes.iter().map(|s| s.rings.iter().map(Vec::len).sum::<usize>()).sum::<usize>()}),
+        );
+    }
+    Ok(serde_json::json!({
+        "files": v.paths.len(),
+        "regions": folder.regions.len(),
+        "resolved": out.resolved.len(),
+        "km2": total,
+        "earth_km2": super::geom::area_km2(&super::geom::earth()),
+        "findings": findings.iter().map(|f| serde_json::json!({"check": f.check(), "message": f.message})).collect::<Vec<_>>(),
+        "by_region": regions,
+    }))
+}

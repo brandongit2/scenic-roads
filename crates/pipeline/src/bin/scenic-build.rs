@@ -119,6 +119,8 @@
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
+//!   regions-check --dir d [--declarations d] [--report f]   the regions' check on a scratch
+//!                                folder, in memory: findings and sizes. Reads only
 //!   rekey-check [--pass d]       what re-keying the records for the units' new keys
 //!                                (pipeline::agent::rekey) would do now: the units re-keyed, and
 //!                                those left to build again, each with why; and the times that show
@@ -299,6 +301,30 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
     // (Before the scratch folder: it writes nothing.)
     if step == "rekey-check" {
         return rekey_check(&root, &args);
+    }
+    if step == "regions-check" {
+        // regions-check --root <nas project folder> --dir <folder of region files>
+        // [--declarations <folder of source declarations>] [--report <file.json>]: the regions'
+        // check run on a scratch folder in memory, against the records' current pass (and the
+        // datasets the declarations name, else the accepted ones): its findings and each region's
+        // size (pipeline::inputs::regions::read::check_folder). Reads only; writes the report.
+        let dir = PathBuf::from(opt(&args, "--dir").context("--dir <folder of region files>")?);
+        let decl = opt(&args, "--declarations").map(PathBuf::from);
+        let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
+        let rep = pipeline::inputs::regions::read::check_folder(&root, &m, &dir, decl.as_deref())?;
+        let n = rep["findings"].as_array().map_or(0, Vec::len);
+        println!(
+            "regions-check: {} files, {} regions, {} resolved, {:.0} km² of the Earth's {:.0}; {n} findings",
+            rep["files"],
+            rep["regions"],
+            rep["resolved"],
+            rep["km2"].as_f64().unwrap_or(0.0),
+            rep["earth_km2"].as_f64().unwrap_or(0.0)
+        );
+        if let Some(p) = opt(&args, "--report") {
+            std::fs::write(&p, serde_json::to_vec_pretty(&rep)?)?;
+        }
+        return Ok(());
     }
     if step == "regions-fixture" {
         // regions-fixture --root <scratch folder> <id> <lon,lat,km>: an accepted version of one

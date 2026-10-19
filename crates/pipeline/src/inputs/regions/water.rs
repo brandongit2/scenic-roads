@@ -81,7 +81,10 @@ fn plain_of(res: &Resolved) -> Area {
         .iter()
         .map(|s| {
             Area::from_rings(
-                &s.rings.iter().map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect::<Vec<Pt>>()).collect::<Vec<_>>(),
+                &s.rings
+                    .iter()
+                    .map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect::<Vec<Pt>>())
+                    .collect::<Vec<_>>(),
             )
         })
         .collect();
@@ -111,7 +114,11 @@ fn store(r: &Region, res: &mut Resolved, a: &Area) {
     let polys: Vec<Vec<Vec<[f64; 2]>>> = a
         .polys
         .iter()
-        .map(|p| p.iter().map(|r| crate::coverage::ring_degrees(&crate::outlines::simplify(&super::shapes::to_i32(r), t))).collect())
+        .map(|p| {
+            p.iter()
+                .map(|r| crate::coverage::ring_degrees(&crate::outlines::simplify(&super::shapes::to_i32(r), t)))
+                .collect()
+        })
         .collect();
     res.geometry.shapes = if rings32.is_empty() {
         Vec::new()
@@ -143,7 +150,15 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     if rests.len() > 1 {
         for id in &rests {
             let (p, r) = &folder.regions[*id];
-            out.problems.push(problem("rg-rest", r, p, format!("{id}: rest is in the water of more than one region ({})", rests.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "))));
+            out.problems.push(problem(
+                "rg-rest",
+                r,
+                p,
+                format!(
+                    "{id}: rest is in the water of more than one region ({})",
+                    rests.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+            ));
         }
         for id in &rests {
             out.resolved.remove(*id);
@@ -153,8 +168,10 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     let lands: BTreeMap<String, Resolved> = out.resolved.clone();
     // Land areas (plain) of every region: a region without water whole.
     let land_of: BTreeMap<String, Area> = lands.iter().map(|(id, res)| (id.clone(), plain_of(res))).collect();
-    let boxes: BTreeMap<String, [i64; 4]> = land_of.iter().filter_map(|(id, a)| a.bbox().map(|b| (id.clone(), b))).collect();
-    let no_water: Vec<&String> = land_of.keys().filter(|id| !folder.regions.get(*id).is_some_and(|(_, r)| r.has_water())).collect();
+    let boxes: BTreeMap<String, [i64; 4]> =
+        land_of.iter().filter_map(|(id, a)| a.bbox().map(|b| (id.clone(), b))).collect();
+    let no_water: Vec<&String> =
+        land_of.keys().filter(|id| !folder.regions.get(*id).is_some_and(|(_, r)| r.has_water())).collect();
     // The order: each after those its water names whole (region:, group:).
     let wset: BTreeSet<&String> = water.iter().copied().collect();
     let wdeps = |id: &str| -> Vec<String> {
@@ -187,7 +204,12 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         if ready.is_empty() {
             for id in &wait {
                 let (p, r) = &folder.regions[*id];
-                out.problems.push(problem("rg-loop", r, p, format!("{id}: its water names regions whose water names it back ({})", wdeps(id).join(", "))));
+                out.problems.push(problem(
+                    "rg-loop",
+                    r,
+                    p,
+                    format!("{id}: its water names regions whose water names it back ({})", wdeps(id).join(", ")),
+                ));
                 held.insert((*id).clone());
             }
             break;
@@ -197,7 +219,15 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             .map(|id| {
                 let (p, r) = &folder.regions[*id];
                 if let Some(d) = wdeps(id).iter().find(|d| held.contains(*d)) {
-                    return ((*id).clone(), Err(vec![problem("rg-ref", r, p, format!("{id}: region:{d} is held, and so this region with it"))]));
+                    return (
+                        (*id).clone(),
+                        Err(vec![problem(
+                            "rg-ref",
+                            r,
+                            p,
+                            format!("{id}: region:{d} is held, and so this region with it"),
+                        )]),
+                    );
                 }
                 let mut needs = BTreeSet::new();
                 let res = super::resolve::resolve_one(r, p, folder, ctx, &finals, &lands, true, &mut needs);
@@ -208,10 +238,20 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
                         .shapes
                         .iter()
                         .map(|s| {
-                            let a = Area::from_rings(&s.rings.iter().map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect()).collect::<Vec<_>>());
+                            let a = Area::from_rings(
+                                &s.rings
+                                    .iter()
+                                    .map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect())
+                                    .collect::<Vec<_>>(),
+                            );
                             let Some(b) = a.bbox() else { return a };
                             let mut cut = vec![data.land_in(b)];
-                            cut.extend(no_water.iter().filter(|o| boxes.get(**o).is_some_and(|ob| meets(*ob, b))).map(|o| land_of[*o].clone()));
+                            cut.extend(
+                                no_water
+                                    .iter()
+                                    .filter(|o| boxes.get(**o).is_some_and(|ob| meets(*ob, b)))
+                                    .map(|o| land_of[*o].clone()),
+                            );
                             a.minus(&geom::union_all(&cut))
                         })
                         .collect();
@@ -237,6 +277,53 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             }
         }
         left = wait;
+    }
+    // Hand-outs: a stretch of a region's water that one region of the folder named alone borders
+    // goes to it; a stretch under the sliver size, to the one it shares the longest edge with.
+    for id in water.iter().copied().filter(|id| folder.regions[*id].1.hand_out.is_some()) {
+        let Some(w) = waters.get(id).cloned() else { continue };
+        let g = folder.regions[id].1.hand_out.clone().unwrap();
+        let members: Vec<String> = folder
+            .members(&g, id)
+            .into_iter()
+            .filter(|m| final_area.contains_key(m) || land_of.contains_key(m))
+            .collect();
+        let area_of =
+            |m: &String, fa: &BTreeMap<String, Area>| fa.get(m).cloned().unwrap_or_else(|| land_of[m].clone());
+        let moves: Vec<(String, Area)> = w
+            .polys
+            .par_iter()
+            .filter_map(|poly| {
+                let piece = Area { polys: vec![poly.clone()] };
+                let b = piece.bbox()?;
+                let pad = [b[0] - 10_000, b[1] - 10_000, b[2] + 10_000, b[3] + 10_000];
+                let touching: Vec<(f64, &String)> = members
+                    .iter()
+                    .filter(|m| area_of(m, &final_area).bbox().is_some_and(|mb| meets(mb, pad)))
+                    .map(|m| (geom::shared_edge_km(&piece, &area_of(m, &final_area), 100.0), m))
+                    .filter(|(l, _)| *l > 0.0)
+                    .collect();
+                if touching.len() == 1 {
+                    return Some((touching[0].1.clone(), piece));
+                }
+                if geom::area_km2(&piece) < rules.sliver_km2 {
+                    return touching
+                        .iter()
+                        .max_by(|x, y| x.0.total_cmp(&y.0).then(y.1.cmp(x.1)))
+                        .map(|(_, m)| ((*m).clone(), piece.clone()));
+                }
+                None
+            })
+            .collect();
+        for (m, piece) in moves {
+            let left = waters[id].minus(&piece);
+            waters.insert(id.clone(), left.clone());
+            final_area.insert(id.clone(), land_of[id].union(&left));
+            let mw = waters.get(&m).cloned().unwrap_or_default().union(&piece);
+            waters.insert(m.clone(), mw);
+            let mf = area_of(&m, &final_area).union(&piece);
+            final_area.insert(m, mf);
+        }
     }
     // Lakes: each region's own unless another's water names them.
     let wboxes: Vec<(&String, [i64; 4])> = waters.iter().filter_map(|(id, a)| a.bbox().map(|b| (id, b))).collect();
@@ -301,7 +388,12 @@ pub fn finish(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         let mut f = lands[&id].clone();
         let all = land_of[&id].union(&rest);
         if all.is_empty() {
-            out.problems.push(problem("rg-empty", r, p, format!("{id}: the rest is empty: the other regions cover the Earth")));
+            out.problems.push(problem(
+                "rg-empty",
+                r,
+                p,
+                format!("{id}: the rest is empty: the other regions cover the Earth"),
+            ));
         } else {
             store(r, &mut f, &all);
             out.resolved.insert(id, f);
@@ -321,8 +413,11 @@ fn slivers(
     if km2 <= 0.0 {
         return;
     }
-    let ids: Vec<String> =
-        areas.keys().filter(|id| folder.regions.get(*id).is_some_and(|(_, r)| r.has_water() && !r.is_rest())).cloned().collect();
+    let ids: Vec<String> = areas
+        .keys()
+        .filter(|id| folder.regions.get(*id).is_some_and(|(_, r)| r.has_water() && !r.is_rest()))
+        .cloned()
+        .collect();
     let _ = lands;
     let mut moves: Vec<(String, String, Area)> = Vec::new();
     for id in &ids {
@@ -333,13 +428,21 @@ fn slivers(
         }
         for poly in &a.polys {
             let piece = Area { polys: vec![poly.clone()] };
-            if geom::area_km2(&piece) >= km2 || !piece.intersect(land).is_empty() || geom::shared_edge_km(&piece, land, 100.0) > 0.0 {
+            if geom::area_km2(&piece) >= km2
+                || !piece.intersect(land).is_empty()
+                || geom::shared_edge_km(&piece, land, 100.0) > 0.0
+            {
                 continue;
             }
             let Some(b) = piece.bbox() else { continue };
             let best = areas
                 .iter()
-                .filter(|(o, oa)| *o != id && oa.bbox().is_some_and(|ob| meets(ob, [b[0] - 10_000, b[1] - 10_000, b[2] + 10_000, b[3] + 10_000])))
+                .filter(|(o, oa)| {
+                    *o != id
+                        && oa
+                            .bbox()
+                            .is_some_and(|ob| meets(ob, [b[0] - 10_000, b[1] - 10_000, b[2] + 10_000, b[3] + 10_000]))
+                })
                 .map(|(o, oa)| (geom::shared_edge_km(&piece, oa, 100.0), o.clone()))
                 .filter(|(l, _)| *l > 0.0)
                 .max_by(|x, y| x.0.total_cmp(&y.0).then(y.1.cmp(&x.1)));
@@ -361,15 +464,20 @@ type Tiles = (BTreeMap<String, (Area, Area)>, Area, Vec<Problem>);
 
 /// Steps 3–5 tile by tile (10°): with `cover`, the fills and the check; the rest when there's a
 /// region for it.
-fn tiles(folder: &Folder, data: &super::data::Datasets, areas: &BTreeMap<String, Area>, cover: bool, rest: bool) -> Tiles {
+fn tiles(
+    folder: &Folder,
+    data: &super::data::Datasets,
+    areas: &BTreeMap<String, Area>,
+    cover: bool,
+    rest: bool,
+) -> Tiles {
     if !cover && !rest {
         return (BTreeMap::new(), Area::default(), Vec::new());
     }
     let boxes: Vec<(&String, [i64; 4])> = areas.iter().filter_map(|(id, a)| a.bbox().map(|b| (id, b))).collect();
     let step = 100_000_000i64;
-    let tiles: Vec<[i64; 4]> = (-18..18)
-        .flat_map(|x| (-9..9).map(move |y| [x * step, y * step, (x + 1) * step, (y + 1) * step]))
-        .collect();
+    let tiles: Vec<[i64; 4]> =
+        (-18..18).flat_map(|x| (-9..9).map(move |y| [x * step, y * step, (x + 1) * step, (y + 1) * step])).collect();
     type One = (Vec<(String, Area, Area)>, Area, Vec<Problem>);
     let done: Vec<One> = tiles
         .par_iter()

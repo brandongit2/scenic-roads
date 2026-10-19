@@ -549,7 +549,13 @@ pub(super) fn resolve_one(
                     Some(rs) => {
                         leaves.insert(key, Leaf::Rings(vec![(rs, 0)], String::new()));
                     }
-                    None => ps.push(problem("rg-data-missing", r, path, vec![key.clone()], format!("{}: {key}: the dataset ({}) has no such id", r.id, data.names))),
+                    None => ps.push(problem(
+                        "rg-data-missing",
+                        r,
+                        path,
+                        vec![key.clone()],
+                        format!("{}: {key}: the dataset ({}) has no such id", r.id, data.names),
+                    )),
                 }
             }
             Part::OsmWay(w) => {
@@ -557,10 +563,28 @@ pub(super) fn resolve_one(
                 match ctx.extract.and_then(|e| e.way(*w)) {
                     None => {
                         needs.insert(Id::W(*w));
-                        ps.push(problem("rg-extract", r, path, vec![format!("w{w}"), pass.into()], format!("{}: {key}: waiting for the regions' extract of OSM {pass} to have it", r.id)));
+                        ps.push(problem(
+                            "rg-extract",
+                            r,
+                            path,
+                            vec![format!("w{w}"), pass.into()],
+                            format!("{}: {key}: waiting for the regions' extract of OSM {pass} to have it", r.id),
+                        ));
                     }
-                    Some(None) => ps.push(problem("rg-osm-missing", r, path, vec![format!("w{w}"), pass.into()], format!("{}: OSM {pass} has no way {w}", r.id))),
-                    Some(Some(way)) if way.ends[0] != way.ends[1] || way.line.len() < 4 => ps.push(problem("rg-osm-no-area", r, path, vec![key.clone()], format!("{}: {key}: the way isn't closed, so it has no area", r.id))),
+                    Some(None) => ps.push(problem(
+                        "rg-osm-missing",
+                        r,
+                        path,
+                        vec![format!("w{w}"), pass.into()],
+                        format!("{}: OSM {pass} has no way {w}", r.id),
+                    )),
+                    Some(Some(way)) if way.ends[0] != way.ends[1] || way.line.len() < 4 => ps.push(problem(
+                        "rg-osm-no-area",
+                        r,
+                        path,
+                        vec![key.clone()],
+                        format!("{}: {key}: the way isn't closed, so it has no area", r.id),
+                    )),
                     Some(Some(way)) => {
                         let ring = rings64(&[way.line[..way.line.len() - 1].to_vec()]);
                         leaves.insert(key, Leaf::Rings(vec![(ring, 0)], String::new()));
@@ -587,7 +611,13 @@ pub(super) fn resolve_one(
                     }
                 }
                 if shapes.is_empty() {
-                    ps.push(problem("rg-ref", r, path, vec![part.to_string()], format!("{}: {part}: no region in that folder", r.id)));
+                    ps.push(problem(
+                        "rg-ref",
+                        r,
+                        path,
+                        vec![part.to_string()],
+                        format!("{}: {part}: no region in that folder", r.id),
+                    ));
                     continue;
                 }
                 leaves.insert(part.to_string(), Leaf::Rings(shapes, String::new()));
@@ -723,7 +753,8 @@ pub(super) fn resolve_one(
         geom::union_all(&areas)
     };
     // (A region with water: its outline's parts exact, no coast tolerance; cut back to the land.)
-    let mut result = if water { eval_all(&r.water, false, &mut ps) } else { eval_all(&r.outline, !r.has_water(), &mut ps) };
+    let mut result =
+        if water { eval_all(&r.water, false, &mut ps) } else { eval_all(&r.outline, !r.has_water(), &mut ps) };
     if !water && !r.intersect.is_empty() {
         result = result.intersect(&eval_all(&r.intersect, false, &mut ps));
     }
@@ -833,10 +864,18 @@ fn string_ways(ids: &[u64], ways: &[&super::extract::Way]) -> Result<Vec<[i32; 2
 
 /// A part's area in the region's frame (`direct`: listed in `outline` itself, where the coast
 /// tolerance is a real 1 km buffer).
-pub(super) fn eval(part: &Part, direct: bool, placed: &BTreeMap<String, Leaf>, r: &Region, path: &str) -> Result<Area, Problem> {
+pub(super) fn eval(
+    part: &Part,
+    direct: bool,
+    placed: &BTreeMap<String, Leaf>,
+    r: &Region,
+    path: &str,
+) -> Result<Area, Problem> {
     match part {
         Part::Rest => Ok(Area::default()),
-        Part::Union(ps) => Ok(geom::union_all(&ps.iter().map(|p| eval(p, false, placed, r, path)).collect::<Result<Vec<_>, _>>()?)),
+        Part::Union(ps) => {
+            Ok(geom::union_all(&ps.iter().map(|p| eval(p, false, placed, r, path)).collect::<Result<Vec<_>, _>>()?))
+        }
         Part::Intersect(ps) => {
             let mut a = eval(&ps[0], false, placed, r, path)?;
             for p in &ps[1..] {

@@ -233,6 +233,18 @@ impl Checks for Regions {
     }
 
     fn prepared(&self, root: &Path, manifest: &BTreeMap<String, String>) -> Result<Option<Box<dyn Checks>>> {
+        Ok(Some(Box::new(Regions::new(Some(prepare(root, manifest, None)?)))))
+    }
+}
+
+/// What the check reads from the records `manifest` under `root` (`Checks::prepared`): the
+/// datasets those the accepted sources declare, or `data` when given (a scratch check's).
+pub fn prepare(
+    root: &Path,
+    manifest: &BTreeMap<String, String>,
+    data: Option<Option<data::Datasets>>,
+) -> Result<Prepared> {
+    {
         let (date, o, e) = current(manifest);
         let outlines = o.map(|n| Outlines::open(&root.join(n)).with_context(|| format!("open {n}"))).transpose()?;
         let extract = e
@@ -260,21 +272,24 @@ impl Checks for Regions {
         };
         // (The datasets, when the accepted sources declare them: read whole; one that can't be read
         // holds the regions naming it, `rg-data`, saying so.)
-        let data = match crate::inputs::sources::open(root, manifest) {
-            Ok(Some(s)) => match data::Datasets::read(root, &s) {
-                Ok(d) => d,
-                Err(e) => {
-                    eprintln!("regions: the datasets can't be read: {e:#}");
-                    None
-                }
+        let data = match data {
+            Some(d) => d,
+            None => match crate::inputs::sources::open(root, manifest) {
+                Ok(Some(s)) => match data::Datasets::read(root, &s) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("regions: the datasets can't be read: {e:#}");
+                        None
+                    }
+                },
+                _ => None,
             },
-            _ => None,
         };
         let names = match &data {
             Some(d) => format!("{names} {}", d.names),
             None => names,
         };
-        Ok(Some(Box::new(Regions::new(Some(Prepared { pass: date, outlines, extract, others, data, names, not_ready })))))
+        Ok(Prepared { pass: date, outlines, extract, others, data, names, not_ready })
     }
 }
 

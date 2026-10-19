@@ -28,7 +28,11 @@ fn area_of(g: &stored::Geometry) -> Area {
     geom::union_all(
         &g.shapes
             .iter()
-            .map(|s| Area::from_rings(&s.rings.iter().map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect()).collect::<Vec<_>>()))
+            .map(|s| {
+                Area::from_rings(
+                    &s.rings.iter().map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect()).collect::<Vec<_>>(),
+                )
+            })
             .collect::<Vec<_>>(),
     )
 }
@@ -57,16 +61,26 @@ water = [{ nearest = "eez:5695", to = ["land:w"], than = ["land:crimea"], step =
     assert_eq!(t[4], "water {intersect [ne-lake:1159106863, box:9.0,47.4,9.8,47.8]}");
     let hs = parse("h.toml", "id = \"h\"\nname = \"High seas\"\nwater = [\"rest\"]\n").unwrap();
     assert!(hs.is_rest() && hs.outline.is_empty());
-    assert_eq!(parse("e.toml", "id = \"e\"\nname = \"E\"\noutline = [\"earth\"]\n").unwrap().outline, vec![Part::Earth]);
+    assert_eq!(
+        parse("e.toml", "id = \"e\"\nname = \"E\"\noutline = [\"earth\"]\n").unwrap().outline,
+        vec![Part::Earth]
+    );
     let bad = |body: &str| {
-        parse("x.toml", &format!("id = \"x\"\nname = \"X\"\n{body}")).unwrap_err().iter().map(|f| f.check).collect::<Vec<_>>()
+        parse("x.toml", &format!("id = \"x\"\nname = \"X\"\n{body}"))
+            .unwrap_err()
+            .iter()
+            .map(|f| f.check)
+            .collect::<Vec<_>>()
     };
     assert_eq!(bad("outline = [\"rest\"]\n"), vec!["part"]);
     assert_eq!(bad("outline = [\"box:10,0,5,1\"]\n"), vec!["part"]);
     assert_eq!(bad("outline = [\"eez:abc\"]\n"), vec!["part"]);
     assert_eq!(bad("outline = [{ union = [] }]\n"), vec!["part"]);
     assert_eq!(bad("outline = [{ nearest = \"eez:1\", to = [\"osm:1\"] }]\n"), vec!["part"]);
-    assert_eq!(bad("outline = [{ nearest = \"eez:1\", to = [\"osm:1\"], than = [\"osm:2\"], step = \"10 m\" }]\n"), vec!["part"]);
+    assert_eq!(
+        bad("outline = [{ nearest = \"eez:1\", to = [\"osm:1\"], than = [\"osm:2\"], step = \"10 m\" }]\n"),
+        vec!["part"]
+    );
     assert_eq!(bad("outline = [{ buffer = \"osm:1\", by = \"201 nmi\" }]\n"), vec!["part"]);
     assert_eq!(bad("outline = [\"land:x\"]\n"), vec!["ref"]);
     assert_eq!(bad(""), vec!["id"]);
@@ -99,7 +113,11 @@ fn boxes_areas_and_wide_buffers() {
     // A degree square at the equator: 111.2 km a side on the authalic sphere.
     let sq = geom::box_area([0, 0, 10_000_000, 10_000_000]);
     assert!((geom::area_km2(&sq) - 12_364.0).abs() < 15.0, "{}", geom::area_km2(&sq));
-    assert!((geom::area_km2(&geom::earth()) - 510_065_622.0).abs() / 510_065_622.0 < 1e-4, "{}", geom::area_km2(&geom::earth()));
+    assert!(
+        (geom::area_km2(&geom::earth()) - 510_065_622.0).abs() / 510_065_622.0 < 1e-4,
+        "{}",
+        geom::area_km2(&geom::earth())
+    );
     // 200 nmi round a small island: the point 199 nmi east in, 201 out.
     let isl = Area::from_rings(&bx(0.0, 0.0, 0.01, 0.01));
     let b = geom::buffer_area(&isl, 370_400.0);
@@ -132,12 +150,8 @@ fn world() -> World {
             (4, "DD", deg_sq(20.0, 20.0, 21.0, 21.0)),
         ],
     );
-    let land = vec![
-        bx(0.0, 0.0, 1.2, 1.05),
-        bx(2.0, 0.0, 3.0, 1.0),
-        bx(1.6, 1.4, 1.62, 1.42),
-        bx(20.0, 20.0, 21.0, 21.0),
-    ];
+    let land =
+        vec![bx(0.0, 0.0, 1.2, 1.05), bx(2.0, 0.0, 3.0, 1.0), bx(1.6, 1.4, 1.62, 1.42), bx(20.0, 20.0, 21.0, 21.0)];
     let zone1 = vec![bx(-1.0, -1.0, 4.0, 2.5)[0].clone()];
     let eez = HashMap::from([(1, zone1), (2, bx(5.0, 5.0, 6.0, 6.0))]);
     let lakes = HashMap::from([(77, bx(0.2, 0.2, 0.4, 0.4)), (78, bx(0.6, 0.6, 0.61, 0.61))]);
@@ -182,7 +196,8 @@ name = "Slice"
 outline = [{ intersect = ["osm:2", "box:2.0,0.0,3.0,0.5"] }]
 "#;
 const DISPUTED: &str = "id = \"disputed\"\nname = \"Disputed zone\"\nwater = [\"eez:2\"]\n";
-const FAR: &str = "id = \"far\"\nname = \"Far\"\noutline = [\"osm:4\"]\nwater = [{ buffer = \"osm:4\", by = \"12 nmi\" }]\n";
+const FAR: &str =
+    "id = \"far\"\nname = \"Far\"\noutline = [\"osm:4\"]\nwater = [{ buffer = \"osm:4\", by = \"12 nmi\" }]\n";
 const HIGH: &str = "id = \"high-seas\"\nname = \"High seas\"\nwater = [\"rest\"]\n";
 const PINS: (&str, &str) = ("pins.toml", "osm = \"2026-09-28\"\n");
 const RULES: (&str, &str) = ("rules.toml", "cover = \"earth\"\n");
@@ -207,9 +222,8 @@ fn a_small_world_resolves_and_covers_the_earth_once() {
     let out = run(&w, &all());
     assert!(out.problems.is_empty(), "{:#?}", out.problems);
     let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
-    let owner = |x: f64, y: f64| -> Vec<&str> {
-        out.resolved.keys().filter(|id| at(id, x, y)).map(String::as_str).collect()
-    };
+    let owner =
+        |x: f64, y: f64| -> Vec<&str> { out.resolved.keys().filter(|id| at(id, x, y)).map(String::as_str).collect() };
     // The nearest-coast split: A's coast at 1.2°, B's at 2.0°: the median at 1.6°.
     assert_eq!(owner(1.5, 0.5), vec!["a"], "A's OSM outline at sea is water by the split");
     assert_eq!(owner(1.7, 0.5), vec!["b"]);
@@ -273,9 +287,48 @@ fn old_files_resolve_as_before_beside_new_ones() {
     assert_eq!(alone.resolved["old"].geometry.shapes[0].tolerance_m, 1000);
     // A region with water and no datasets waits, saying why.
     let others = BTreeMap::new();
-    let m: BTreeMap<String, Vec<u8>> = [PINS, ("w/a.toml", A)].iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
+    let m: BTreeMap<String, Vec<u8>> =
+        [PINS, ("w/a.toml", A)].iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
     let folder = resolve::Folder::read(m.keys().cloned(), &|p| Ok(m[p].clone())).unwrap();
-    let ctx = resolve::Context { pass: Some(PASS), outlines: Some(&w.o), extract: None, others: &others, memo: None, names: String::new(), data: None };
+    let ctx = resolve::Context {
+        pass: Some(PASS),
+        outlines: Some(&w.o),
+        extract: None,
+        others: &others,
+        memo: None,
+        names: String::new(),
+        data: None,
+    };
     let out = resolve::resolve(&folder, &ctx);
     assert!(out.problems.iter().any(|p| p.check == "rg-data"), "{:?}", out.problems);
+}
+
+/// A split place's own waters: the zone less its regions, a stretch only one of them borders handed
+/// to it (`hand_out`), the rest the place's waters region.
+#[test]
+fn a_stretch_one_region_alone_borders_is_its_own() {
+    let d = tempfile::tempdir().unwrap();
+    let p = outlines(
+        d.path(),
+        &[
+            (11, "PP", deg_sq(0.0, 0.0, 1.0, 1.0)),
+            (12, "PP", deg_sq(1.0, 0.0, 2.0, 1.0)),
+            (13, "PP", deg_sq(10.0, 0.0, 11.0, 1.0)),
+        ],
+    );
+    let land = vec![bx(0.0, 0.0, 1.0, 1.0), bx(1.0, 0.0, 2.0, 1.0), bx(10.0, 0.0, 11.0, 1.0)];
+    // The place's zone in two stretches: round p1 and p2, and round p3.
+    let zone = [bx(-1.0, -1.0, 3.0, 2.0), bx(9.0, -1.0, 12.0, 2.0)].concat();
+    let data = Datasets::from_parts(HashMap::from([(9, zone)]), HashMap::new(), HashMap::new(), land, "fixture");
+    let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
+    let (p1, p2, p3) = (m("p1", 11), m("p2", 12), m("p3", 13));
+    let pw =
+        "id = \"p-waters\"\nname = \"P waters\"\nwater = [{ minus = [\"eez:9\", \"group:p\"] }]\nhand_out = \"p\"\n";
+    let out = run(&w, &[PINS, ("p/p1.toml", &p1), ("p/p2.toml", &p2), ("p/p3.toml", &p3), ("p/p-waters.toml", pw)]);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
+    assert!(at("p3", 11.5, 0.5) && at("p3", 10.5, 0.5) && !at("p-waters", 11.5, 0.5));
+    assert!(at("p-waters", 2.5, 0.5) && at("p-waters", -0.5, 0.5) && !at("p1", -0.5, 0.5));
+    assert!(at("p1", 0.5, 0.5) && !at("p1", 2.5, 0.5));
 }

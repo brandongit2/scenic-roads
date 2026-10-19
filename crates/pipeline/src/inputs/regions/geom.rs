@@ -539,7 +539,12 @@ fn sweep(pts: &[Pt], closed: bool, r: f64, out: &mut Vec<Ring>) {
     if n == 0 {
         return;
     }
-    let sides = circle_sides(r);
+    // (Past `SIMPLIFY_PAST_M`, chords within a thousandth of the radius, as the rings are.)
+    let sides = if r > SIMPLIFY_PAST_M {
+        ((std::f64::consts::PI / (1.0 - 0.001f64).dacos()).ceil() as usize).max(8)
+    } else {
+        circle_sides(r)
+    };
     for &p in &pts {
         out.push(disc(p, r, sides));
     }
@@ -670,7 +675,8 @@ pub fn nearest(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
     let Some(bb) = within.bbox() else { return Area::default() };
     // Samples near enough to matter: within 8° of the area's box.
     let reach = 80_000_000i64;
-    let near = |q: &Pt| q[0] >= bb[0] - reach && q[0] <= bb[2] + reach && q[1] >= bb[1] - reach && q[1] <= bb[3] + reach;
+    let near =
+        |q: &Pt| q[0] >= bb[0] - reach && q[0] <= bb[2] + reach && q[1] >= bb[1] - reach && q[1] <= bb[3] + reach;
     let mut samples: Vec<(Pt, bool)> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let deg = step / 111_320.0 * 1e7;

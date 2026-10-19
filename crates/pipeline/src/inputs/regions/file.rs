@@ -46,15 +46,29 @@ pub enum Part {
     Intersect(Vec<Part>),
     /// The points of `of` nearer the parts `to` than the parts `than`, decided on a grid of `step_m`
     /// metres (`by` as written).
-    Nearest { of: Box<Part>, to: Vec<Part>, than: Vec<Part>, step_m: f64, by: String },
+    Nearest {
+        of: Box<Part>,
+        to: Vec<Part>,
+        than: Vec<Part>,
+        step_m: f64,
+        by: String,
+    },
     /// A Polygon or MultiPolygon in a GeoJSON file of the folder, by its file name.
     Shape(String),
     /// Another region's area, as stored.
     Region(String),
     /// Everything within `m` metres (`by` as written) of a part or a line.
-    Buffer { of: Box<Target>, m: f64, by: String },
+    Buffer {
+        of: Box<Target>,
+        m: f64,
+        by: String,
+    },
     /// The part of a shape on one side of a line.
-    Cut { of: Box<Part>, line: String, left: bool },
+    Cut {
+        of: Box<Part>,
+        line: String,
+        left: bool,
+    },
 }
 
 /// What a buffer is of.
@@ -173,6 +187,12 @@ pub struct Region {
     /// Its water (§6.1.3, "Land and water"): when there, the outline is cut back to the coastline's
     /// land and this is added, less every region's land.
     pub water: Vec<Part>,
+    /// Whether the file has a `water` key at all (`water = []`: land and lakes only, cut back to
+    /// the coastline's land).
+    pub water_key: bool,
+    /// `hand_out = "<folder>"`: each stretch of its water that only one region of that folder
+    /// borders goes to that region (`water::finish`).
+    pub hand_out: Option<String>,
     pub lines: BTreeMap<String, Line>,
     /// Its own `[pins]`, overriding `pins.toml`'s.
     pub pins: BTreeMap<String, String>,
@@ -182,15 +202,12 @@ impl Region {
     /// Whether it's stored as its parts unchanged (§6.1.4): only `osm:` and `shape:` parts in
     /// `outline`, no `minus` nor `intersect`.
     pub fn is_plain(&self) -> bool {
-        self.minus.is_empty()
-            && self.intersect.is_empty()
-            && self.water.is_empty()
-            && self.outline.iter().all(Part::is_plain)
+        self.minus.is_empty() && self.intersect.is_empty() && !self.water_key && self.outline.iter().all(Part::is_plain)
     }
 
     /// Whether it has land and water apart (a `water` key): the land-and-water rules apply to it.
     pub fn has_water(&self) -> bool {
-        !self.water.is_empty()
+        self.water_key
     }
 
     /// Whether any of its parts reads the regions' datasets.
@@ -224,11 +241,14 @@ impl Region {
 
     /// Whether its water is the rest (`rest`).
     pub fn is_rest(&self) -> bool {
-        self.water.iter().flat_map(|p| {
-            let mut v = Vec::new();
-            p.walk(&mut v);
-            v
-        }).any(|p| matches!(p, Part::Rest))
+        self.water
+            .iter()
+            .flat_map(|p| {
+                let mut v = Vec::new();
+                p.walk(&mut v);
+                v
+            })
+            .any(|p| matches!(p, Part::Rest))
     }
 
     /// Every part of its outline (`outline`, `minus`, `intersect`), or of its water, nested ones
@@ -377,7 +397,11 @@ const MAX_STEP_M: f64 = 20_000.0;
 /// A box, `<west>,<south>,<east>,<north>` in degrees: west under east (a box across ±180° is two),
 /// south under north, within −180…180 and −90…90; E7.
 pub fn parse_box(s: &str) -> Result<[i64; 4], String> {
-    let v: Vec<f64> = s.split(',').map(|x| x.trim().parse::<f64>()).collect::<Result<_, _>>().map_err(|_| "a box is box:<west>,<south>,<east>,<north> in degrees".to_string())?;
+    let v: Vec<f64> = s
+        .split(',')
+        .map(|x| x.trim().parse::<f64>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| "a box is box:<west>,<south>,<east>,<north> in degrees".to_string())?;
     if v.len() != 4 {
         return Err("a box is box:<west>,<south>,<east>,<north> in degrees".into());
     }
@@ -515,8 +539,9 @@ struct RawRegion {
     name: String,
     #[serde(default)]
     outline: Vec<toml::Value>,
+    water: Option<Vec<toml::Value>>,
     #[serde(default)]
-    water: Vec<toml::Value>,
+    hand_out: Option<String>,
     #[serde(default)]
     minus: Vec<toml::Value>,
     #[serde(default)]
@@ -591,7 +616,7 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
     if raw.name.trim().is_empty() {
         faults.push(fault("id", "no name"));
     }
-    if raw.outline.is_empty() && raw.water.is_empty() {
+    if raw.outline.is_empty() && raw.water.as_ref().is_none_or(Vec::is_empty) {
         faults.push(fault("id", "no outline (nor water)"));
     }
     let mut list = |vs: &[toml::Value]| -> Vec<Part> {
@@ -600,7 +625,8 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
     let outline = list(&raw.outline);
     let minus = list(&raw.minus);
     let intersect = list(&raw.intersect);
-    let water = list(&raw.water);
+    let water_key = raw.water.is_some();
+    let water = list(raw.water.as_deref().unwrap_or_default());
     let mut lines = BTreeMap::new();
     for (name, l) in raw.lines {
         if !valid_id(&name) {
@@ -638,7 +664,21 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
     if !faults.is_empty() {
         return Err(faults);
     }
-    let r = Region { id: raw.id, name: raw.name, outline, minus, intersect, water, lines, pins };
+    if raw.hand_out.is_some() && !water_key {
+        faults.push(fault("part", "hand_out is for a region with water"));
+    }
+    let r = Region {
+        id: raw.id,
+        name: raw.name,
+        outline,
+        minus,
+        intersect,
+        water,
+        water_key,
+        hand_out: raw.hand_out.map(|h| h.trim_end_matches('/').to_string()),
+        lines,
+        pins,
+    };
     // `rest` only in water; `land:`/`group:` naming the region itself.
     for p in r.outline.iter().chain(&r.minus).chain(&r.intersect) {
         let mut v = Vec::new();

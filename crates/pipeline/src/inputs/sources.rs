@@ -661,6 +661,27 @@ pub struct Sources {
 }
 
 impl Sources {
+    /// Sources from declarations read elsewhere (a scratch check's: `regions-check --declarations`),
+    /// one a role (those of the `MANY` roles left out).
+    pub fn of(v: Vec<Source>) -> Sources {
+        Sources { by_role: v.into_iter().map(|s| (s.data.role.clone(), s)).collect(), many: BTreeMap::new() }
+    }
+
+    /// The declarations (`<id>.toml`) in folder `dir`, as sources.
+    pub fn of_folder(dir: &Path) -> Result<Sources> {
+        let mut v = Vec::new();
+        for e in std::fs::read_dir(dir).with_context(|| format!("list {}", dir.display()))? {
+            let p = e?.path();
+            if p.extension().is_some_and(|x| x == "toml") {
+                let b = std::fs::read(&p)?;
+                let d = parse(&b).map_err(|w| anyhow::anyhow!("{}: {}", p.display(), w.join("; ")))?;
+                let id = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                v.push(Source { id, data: d.data, keyed: store::naming::hash16(&b), index: Vec::new() });
+            }
+        }
+        Ok(Sources::of(v))
+    }
+
     /// The source declared for role `role`, or why there's none.
     pub fn role(&self, role: &str) -> Result<&Source> {
         self.by_role.get(role).with_context(|| {
@@ -796,8 +817,14 @@ pub const STAGED: [(&str, &[u8]); 18] = [
     ("eea-leaf-type.toml", include_bytes!("../../../../producers/sources/eea-leaf-type.toml")),
     ("nalcms.toml", include_bytes!("../../../../producers/sources/nalcms.toml")),
     ("marineregions-eez.toml", include_bytes!("../../../../producers/sources/marineregions-eez.toml")),
-    ("marineregions-internal-waters.toml", include_bytes!("../../../../producers/sources/marineregions-internal-waters.toml")),
-    ("marineregions-territorial-seas.toml", include_bytes!("../../../../producers/sources/marineregions-territorial-seas.toml")),
+    (
+        "marineregions-internal-waters.toml",
+        include_bytes!("../../../../producers/sources/marineregions-internal-waters.toml"),
+    ),
+    (
+        "marineregions-territorial-seas.toml",
+        include_bytes!("../../../../producers/sources/marineregions-territorial-seas.toml"),
+    ),
     ("natural-earth-lakes.toml", include_bytes!("../../../../producers/sources/natural-earth-lakes.toml")),
     ("osm-land-polygons.toml", include_bytes!("../../../../producers/sources/osm-land-polygons.toml")),
 ];
