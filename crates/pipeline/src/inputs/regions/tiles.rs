@@ -283,6 +283,9 @@ struct Env<'a> {
     data: &'a super::data::Datasets,
     made: &'a BTreeMap<String, Made>,
     others: &'a BTreeMap<String, TArea>,
+    /// Each cell's piece of a buffered part, buffered (by the part and distance): made once,
+    /// read by every cell it reaches; dropped with the region's evaluation.
+    buffered: std::sync::Mutex<HashMap<(String, Cell), std::sync::Arc<Area>>>,
 }
 
 impl Env<'_> {
@@ -368,10 +371,20 @@ fn support(p: &Part, env: &Env) -> BTreeSet<Cell> {
 fn reach(c: Cell, m: f64) -> (i64, i64) {
     let lat_m = CELL as f64 * 1e-7 * 111_320.0;
     let dy = (m / lat_m).ceil() as i64;
-    let worst = ((c.1 + dy + 1).abs().max((c.1 - dy).abs()) * CELL) as f64 * 1e-7;
-    let cos = worst.min(89.0).to_radians().cos().max(0.02);
-    let dx = ((m / (lat_m * cos)).ceil() as i64).min(COLS / 2);
+    // (The band's latitude farthest from the equator, but no farther than 80°: past it, within
+    // `MAX_REACH_COLS` columns, the polar cells are land and ice, and a column there is narrower
+    // than the distance only in the last degrees.)
+    let worst = (((c.1 + dy + 1).abs().max((c.1 - dy).abs()) * CELL) as f64 * 1e-7).min(80.0);
+    let cos = worst.to_radians().cos();
+    let dx = ((m / (lat_m * cos)).ceil() as i64).min(MAX_REACH_COLS);
     (dx, dy)
+}
+
+/// The most columns a cell's neighbourhood takes in each way (the polar cap).
+const MAX_REACH_COLS: i64 = 16;
+
+fn bb_box(c: Cell) -> [i64; 4] {
+    cell_box(c)
 }
 
 /// The nearest-coast split's reach: coasts farther than this from a cell don't decide it.
@@ -407,18 +420,50 @@ fn eval(p: &Part, c: Cell, env: &Env, r: &Region, path: &str) -> Result<Area, Pr
         Part::Buffer { of, m, .. } => {
             let _t = Timed::new(if *m > 200_000.0 { &WIDE_BUFFERS } else { &BUFFERS });
             let (dx, dy) = reach(c, *m);
-            let near = match &**of {
-                Target::Part(q) => around(q, c, dx, dy, env, r, path)?,
-                Target::Line(l) => match env.leaves.get(&format!("line:{l}")) {
-                    Some(Src::Line(pts)) => return Ok(geom::buffer_line(pts, *m).intersect(&bb)),
-                    _ => Area::default(),
-                },
+            let q = match &**of {
+                Target::Part(q) => q,
+                Target::Line(l) => {
+                    return Ok(match env.leaves.get(&format!("line:{l}")) {
+                        Some(Src::Line(pts)) => geom::buffer_line(pts, *m).intersect(&bb),
+                        _ => Area::default(),
+                    })
+                }
             };
-            if near.is_empty() {
-                return Ok(near);
+            // (Each cell's piece of the part buffered once, kept for the cells round it: the
+            // cell's buffer is those pieces' buffers that reach it, clipped to it. No union of a
+            // neighbourhood.)
+            let key = format!("{q} {m}");
+            let mut v = Vec::new();
+            for x in c.0 - dx..=c.0 + dx {
+                let (w, shift) = wrap(x);
+                for y in (c.1 - dy).max(-45)..=(c.1 + dy).min(44) {
+                    let k = (key.clone(), (w, y));
+                    let got = env.buffered.lock().unwrap().get(&k).cloned();
+                    let b = match got {
+                        Some(b) => b,
+                        None => {
+                            let piece = eval(q, (w, y), env, r, path)?;
+                            let b = std::sync::Arc::new(if piece.is_empty() {
+                                piece
+                            } else {
+                                geom::buffer_area_coarse(&piece, *m)
+                            });
+                            env.buffered.lock().unwrap().insert(k, b.clone());
+                            b
+                        }
+                    };
+                    if b.is_empty() {
+                        continue;
+                    }
+                    let b = if shift == 0 { (*b).clone() } else { b.shifted(shift) };
+                    if b.bbox().is_some_and(|bx| {
+                        bx[0] < bb_box(c)[2] && bx[2] > bb_box(c)[0] && bx[1] < bb_box(c)[3] && bx[3] > bb_box(c)[1]
+                    }) {
+                        v.push(b.intersect(&bb));
+                    }
+                }
             }
-            // (Only the part of it within m of the cell matters.)
-            geom::buffer_area_coarse(&near, *m).intersect(&bb)
+            geom::union_all(&v)
         }
         Part::Nearest { of, to, than, step_m, .. } => {
             let a = eval(of, c, env, r, path)?;
@@ -661,8 +706,15 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
             }
             break;
         }
-        let res: Vec<(String, Result<TArea, Vec<Problem>>)> =
-            wave.iter().map(|id| (id.clone(), make_water(id, folder, ctx, data, &made, &others, out, &held))).collect();
+        let res: Vec<(String, Result<TArea, Vec<Problem>>)> = wave
+            .iter()
+            .map(|id| {
+                trace(&format!("water of {id} begins"));
+                let w = make_water(id, folder, ctx, data, &made, &others, out, &held);
+                trace(&format!("water of {id} ends"));
+                (id.clone(), w)
+            })
+            .collect();
         for (id, w) in res {
             match w {
                 Ok(w) => {
@@ -921,7 +973,7 @@ fn env_for<'a>(
             _ => None,
         })
         .unwrap_or_default();
-    let mut env = Env { leaves: HashMap::new(), country, data, made, others };
+    let mut env = Env { leaves: HashMap::new(), country, data, made, others, buffered: Default::default() };
     let (theirs, rest): (BTreeMap<String, Leaf>, BTreeMap<String, Leaf>) = leaves
         .into_iter()
         .partition(|(k, _)| k.starts_with("region:") || k.starts_with("land:") || k.starts_with("group:"));

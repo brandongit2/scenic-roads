@@ -336,7 +336,9 @@ fn a_stretch_one_region_alone_borders_is_its_own() {
     let out = run(&w, &[PINS, ("p/p1.toml", &p1), ("p/p2.toml", &p2), ("p/p3.toml", &p3), ("p/p-waters.toml", pw)]);
     assert!(out.problems.is_empty(), "{:?}", out.problems);
     let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
-    assert!(at("p3", 11.5, 0.5) && at("p3", 10.5, 0.5) && !at("p-waters", 11.5, 0.5));
+    // (The stretch round p3 crosses the 2° cells' edge at 10°: handed out whole, both sides.)
+    assert!(at("p3", 11.5, 0.5) && at("p3", 10.5, 0.5) && at("p3", 9.5, 0.5) && !at("p-waters", 9.5, 0.5));
+    assert!(at("p-waters", 2.5, 0.5) && at("p-waters", 1.5, 1.5), "the shared stretch stays, across the edge at 2°");
     assert!(at("p-waters", 2.5, 0.5) && at("p-waters", -0.5, 0.5) && !at("p1", -0.5, 0.5));
     assert!(at("p1", 0.5, 0.5) && !at("p1", 2.5, 0.5));
 }
@@ -412,4 +414,29 @@ fn a_region_without_water_naming_one_with_it_is_held() {
         out.problems
     );
     assert!(!out.resolved.contains_key("old") && out.resolved.contains_key("far"));
+}
+
+/// With `cover = "earth"`: a region's piece of water under 50 km², touching none of its land and
+/// lying across a 2° cells' edge, joins the region it shares its longest edge with, whole.
+#[test]
+fn a_sliver_across_a_cells_edge_joins_its_neighbour() {
+    let d = tempfile::tempdir().unwrap();
+    let p = outlines(d.path(), &[(4, "DD", deg_sq(20.0, 20.0, 21.0, 21.0))]);
+    let data = Datasets::from_parts(
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![bx(20.0, 20.0, 21.0, 21.0)],
+        "fixture",
+    );
+    let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    // s: land far away, and a sliver of 4.4 × 5.5 km across the edge at 2°; t: water above it.
+    let s = "id = \"s\"\nname = \"S\"\noutline = [\"osm:4\"]\nwater = [\"box:1.98,0.0,2.02,0.05\"]\n";
+    let t = "id = \"t\"\nname = \"T\"\nwater = [\"box:1.9,0.05,2.1,0.2\"]\n";
+    let out = run(&w, &[PINS, RULES, ("s.toml", s), ("t.toml", t), ("high-seas.toml", HIGH)]);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
+    assert!(at("t", 1.99, 0.02) && at("t", 2.01, 0.02), "both sides of the edge to t");
+    assert!(!at("s", 1.99, 0.02) && !at("s", 2.01, 0.02) && at("s", 20.5, 20.5));
 }
