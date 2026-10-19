@@ -8,9 +8,9 @@ lon/lat grid over the water bodies that hold a station (a station counts for the
 within 25 km), and the nearest solved value beyond. A water body with no station within 25 km of
 a solved cell gets no depth (NaN: nodata, an inland lake or lagoon), logged in one line; more than
 5% of the water left so, or one body over 2%, stops the run (a missing area of the table; with
-OpenSea a body on a Natural Earth lake is a lake, logged and left out of that count), as does no
+OpenSea a body at least half on a Natural Earth lake is a lake, logged and left out of that count), as does no
 station within 25 km of any water. A caller may opt in to open-sea extrapolation (OpenSea; only
-NONNA-10's chunked run does): such a body that is open sea (on no Natural Earth inland lake, and
+NONNA-10's chunked run does): such a body that is open sea (under half its cells on a Natural Earth lake, and
 reaching within 6 cells of the grid's edge or over 100 km²; for a sea-only chart, `every_body`,
 NONNA's, any size or place) takes the nearest solved cell's value,
 or with no station near any water the nearest station's, however far (the cells and the farthest
@@ -102,8 +102,9 @@ def grid_km(r1, c1, r2, c2, north: float, res: float) -> np.ndarray:
 # cells beyond the rasters' bounds, so 6 is 2 cells inside the data's footprint) or is over OPEN_KM2
 # (NONNA covers the sea only, so a body that big cut off from the solved water is sea split by a
 # coverage gap: ice, an unsurveyed strait; the sea's offsets change by decimetres over hundreds of
-# km, an enclosed lagoon's can differ), and it overlaps no inland lake (Natural Earth's 10 m lakes:
-# Great Slave, Great Bear, the Great Lakes, Winnipeg are never extrapolated).
+# km, an enclosed lagoon's can differ), and under LAKE_SHARE of its cells lie on an inland lake
+# (Natural Earth's 10 m lakes, cell centres: Great Slave, Great Bear, the Great Lakes, Winnipeg are
+# never extrapolated; a sea body that only touches a lake's edge stays sea).
 OPEN_KM2 = 100.0
 EDGE_CELLS = 6
 
@@ -134,7 +135,8 @@ class OpenSea:
         return cls((wkb.loads(bytes(r[0])) for r in rows), every_body)
 
     def mask(self, shape, west: float, north: float, res: float) -> np.ndarray:
-        """Cells any lake touches."""
+        """Cells whose centre is on a lake (not all_touched: a sea body grazing a lake's edge
+        must not pick up its cells)."""
         from rasterio.features import rasterize
         from rasterio.transform import from_origin
         from shapely.geometry import box
@@ -144,7 +146,7 @@ class OpenSea:
         geoms = [g for g in self.lakes if g.intersects(b)]
         if not geoms:
             return np.zeros(shape, bool)
-        return rasterize(geoms, out_shape=shape, transform=from_origin(west, north, res, res), all_touched=True, dtype="uint8").astype(bool)
+        return rasterize(geoms, out_shape=shape, transform=from_origin(west, north, res, res), all_touched=False, dtype="uint8").astype(bool)
 
 
 def at_edge(lab: np.ndarray, bodies: np.ndarray) -> np.ndarray:
@@ -168,7 +170,7 @@ def over_area(lab: np.ndarray, bodies: np.ndarray, north: float, res: float) -> 
 
 
 def open_sea(lab: np.ndarray, bodies: np.ndarray, north: float, res: float, lake: np.ndarray, every_body: bool = False) -> np.ndarray:
-    """Which of `bodies` are open sea: on no inland lake (`lake`), and (unless `every_body`) at the
+    """Which of `bodies` are open sea: not a lake (`inland`: under half on `lake`), and (unless `every_body`) at the
     edge or over OPEN_KM2."""
     on_lake = inland(lab, bodies, lake)
     if every_body:
@@ -176,14 +178,24 @@ def open_sea(lab: np.ndarray, bodies: np.ndarray, north: float, res: float, lake
     return (at_edge(lab, bodies) | over_area(lab, bodies, north, res)) & ~on_lake
 
 
+LAKE_SHARE = 0.5
+
+
 def inland(lab: np.ndarray, bodies: np.ndarray, lake: np.ndarray) -> np.ndarray:
-    """Which of `bodies` touch an inland lake (`lake`)."""
-    return np.isin(bodies, np.unique(lab[lake]))
+    """Which of `bodies` are lakes: at least LAKE_SHARE of their cells on an inland lake (`lake`),
+    so a sea body touching a lake's edge (Bras d'Or, Lake Melville, a river mouth) stays sea."""
+    from scipy.ndimage import sum as nsum
+
+    if not len(bodies):
+        return np.zeros(0, bool)
+    on = np.atleast_1d(nsum(lake, lab, bodies))
+    size = np.atleast_1d(nsum(np.ones(lab.shape), lab, bodies))
+    return on >= LAKE_SHARE * size
 
 
 def check_far(lab: np.ndarray, far: np.ndarray, dist, total: int, lake_far: np.ndarray | None = None) -> None:
     """Log the water left without a datum (`far`) and stop when it is over 5% of the water or one
-    body over 2%: a missing area of the table. Bodies on a Natural Earth lake (`lake_far`, with
+    body over 2%: a missing area of the table. Bodies at least half on a Natural Earth lake (`lake_far`, with
     OpenSea) are lakes rightly left without depth: logged, not counted toward the stop."""
     if not far.any():
         return

@@ -59,7 +59,7 @@ class OpenSea(unittest.TestCase):
         water = np.zeros((400, 800), bool)
         water[10:390, 10:300] = True
         water[100:300, 500:750] = True  # as above, but Natural Earth has a lake on it
-        lake = box(10 + 600 * res, 50 - 210 * res, 10 + 610 * res, 50 - 200 * res)
+        lake = box(10 + 500 * res, 50 - 300 * res, 10 + 750 * res, 50 - 100 * res)
         s = datums.Surface.harmonic([(10.5, 49.0, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([lake]))
         self.assertTrue(np.isnan(s.a[100:300, 500:750]).all())
         self.assertAlmostEqual(float(s.a[200, 200]), 0.7, places=4)
@@ -73,7 +73,7 @@ class OpenSea(unittest.TestCase):
         for k in range(30):  # 30 tiny survey-track pieces, 6 cells each, 1-2 degrees off: 6.7% of the water
             water[100 + 8 * k:102 + 8 * k, 400 + 10 * k:403 + 10 * k] = True
         water[200:220, 500:520] = True  # 400 cells: Natural Earth has a lake on it, 13% of the water
-        lake = box(10 + 505 * res, 50 - 215 * res, 10 + 510 * res, 50 - 205 * res)
+        lake = box(10 + 500 * res, 50 - 220 * res, 10 + 520 * res, 50 - 200 * res)
         sea = datums.OpenSea([lake], every_body=True)
         s = datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, sea)
         self.assertTrue(np.isnan(s.a[200:220, 500:520]).all())  # the lake stays nodata, not a stop
@@ -104,6 +104,34 @@ class OpenSea(unittest.TestCase):
         with self.assertRaises(SystemExit) as r:  # without the lakes the same body is a gap in the table
             datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([]))
         self.assertIn("missing area", str(r.exception))
+
+    def test_a_far_sea_body_touching_a_lake_edge_is_still_sea_not_dropped(self):
+        # (Bras d'Or, Lake Melville, a river mouth: a lake polygon grazing a sea body)
+        from shapely.geometry import box
+
+        res = 0.005
+        water = np.zeros((400, 800), bool)
+        water[10:60, 10:60] = True  # 2500 cells with the station
+        water[200:220, 500:520] = True  # 400 cells, 80 km2, far: a sea piece
+        lake = box(10 + 510 * res, 50 - 225 * res, 10 + 530 * res, 50 - 205 * res)  # over a quarter of it
+        s = datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([lake], every_body=True))
+        self.assertAlmostEqual(float(s.a[210, 510]), 0.7, places=4)
+        with self.assertRaises(SystemExit) as r:  # not every_body: a small far lagoon, over 2%: stops, not dropped as a lake
+            datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([lake]))
+        self.assertIn("missing area", str(r.exception))
+
+    def test_a_far_lake_is_subtracted_but_a_far_gap_beside_it_still_stops(self):
+        from shapely.geometry import box
+
+        res = 0.005
+        water = np.zeros((400, 800), bool)
+        water[10:60, 10:60] = True  # 2500 cells with the station
+        water[200:220, 500:520] = True  # 400 cells: a lake
+        water[300:320, 600:620] = True  # 400 cells: no lake, a small lagoon, over 2%
+        lake = box(10 + 500 * res, 50 - 220 * res, 10 + 520 * res, 50 - 200 * res)
+        with self.assertRaises(SystemExit) as r:
+            datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([lake]))
+        self.assertIn("400 of", str(r.exception))  # the lake's 400 cells left out of the count
 
     def test_no_station_within_reach_extrapolates_open_sea_from_the_nearest_station(self):
         water = np.ones((20, 40), bool)
