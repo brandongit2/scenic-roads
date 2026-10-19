@@ -1530,8 +1530,8 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
 
 13. **Depth** (§6, Depth): the map's 3D floor toggle isn't built (the server's `?floor=1` is);
     GLOBathy's estimated bowls (`globathy`, lakes of 10 ha and more) and the small lakes' (`smalllakes`,
-    under 10 ha) have producers but no grids yet (not run, not declared: until then only surveyed
-    lakes have depth); GtTM is read from windows made by
+    under 10 ha) have producers but no grids yet (not run: until then only surveyed lakes have
+    depth); GtTM is read from windows made by
     hand, SHOM's from its archives unpacked by hand (no range reads of the HDF5 grid or the 7z yet);
     a piece's key names its water's z6–12 tiles, so a change the basemap shows only at z13–14
     doesn't remake it; MSL sources aren't drawn in lakes (the Great Lakes' source is `ncei-greatlakes`);

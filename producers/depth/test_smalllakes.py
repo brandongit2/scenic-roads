@@ -138,6 +138,63 @@ class Run(unittest.TestCase):
             self.assertAlmostEqual(float(np.nanmin(a)), -want, delta=0.1 * want)
             self.assertTrue(200 < np.isfinite(a).sum() < 1000, "the pond alone")
 
+    def test_a_stopped_run_resumes(self):
+        pond = merc_square(-73.00, 45.0, 150)
+        tiles = FakeTiles([("lake", 1, 0, pond)])
+        box = [-73.5, 44.5, -72.5, 45.5]
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            done = t / "i.geojson.done"
+            w = Writer(t / "out")
+            first = collections.Counter()
+            self.assertEqual(smalllakes.produce(tiles, [], w, box, first, done), 1)
+            w.write_index(t / "i.geojson")
+            # Again, as a new process: every tile finished before is skipped.
+            w2 = Writer(t / "out")
+            w2.resume(t / "i.geojson")
+            again = collections.Counter()
+            self.assertEqual(smalllakes.produce(tiles, [], w2, box, again, done), 0)
+            self.assertEqual(again["tiles done before"], first["tiles done before"] + len(done.read_text().splitlines()))
+            self.assertEqual(len(w2.features), 1)
+            # A grid written but missing from the index (stopped in between) is made again.
+            w3 = Writer(t / "out")
+            self.assertEqual(smalllakes.produce(tiles, [], w3, box, collections.Counter(), done), 1)
+
+
+class Answers(unittest.TestCase):
+    def test_a_box_of_404s_fails_and_retries_back_off(self):
+        import http.server
+        import threading
+
+        hits = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(self.path)
+                self.send_response(404 if "/base/" in self.path else 503)
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            s = smalllakes.Server(f"http://127.0.0.1:{srv.server_address[1]}", pause=0.01)
+            self.assertEqual(s.base(14, 1, 2), b"")
+            self.assertEqual(s.answers["base 404"], 1)
+            with self.assertRaises(SystemExit):
+                s.check([0, 0, 1, 1])
+            import urllib.error
+
+            with self.assertRaises(urllib.error.HTTPError):
+                s.terrain(12, 1, 2)
+            self.assertEqual(len(hits), 1 + 5, "five tries of the 503")
+            s.answers["base ok"] += 1
+            s.check([0, 0, 1, 1])  # (some tiles answered: no failure)
+        finally:
+            srv.shutdown()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,7 +25,9 @@ and GLOBathy win where they have a value.
 A grid a z10 tile (`PIECE_ZOOM`, 4096² at z14, cropped to its data); a z10 tile's lakes are read
 from its z14 tiles and a ring of one more (a lake reaching past that ring is skipped and counted).
 Several `--box`es a run, each owning the tiles whose north-west corner is in it (globathy.owned's
-rule), one index for all.
+rule), one index for all, written after each box. A run resumes: the tiles finished are listed in
+`<index>.done` and skipped when their grid is in the index. The server's answers are counted and
+logged a box (a 404 reads as no tile); a box whose basemap answers were all 404s fails.
 
 usage: smalllakes.py --hydrolakes <zip> --box w,s,e,n [--box …] --out <dir> --index <file> [--server URL]
 """
@@ -35,6 +37,7 @@ import argparse
 import collections
 import gzip
 import math
+import time
 import urllib.error
 import urllib.request
 import zipfile
@@ -125,30 +128,43 @@ def land_slope(g, others, terrain, scale: float) -> float | None:
 
 class Server:
     """The app's tiles over HTTP (this machine's server): the basemap's MVT and the terrain's
-    Terrarium PNGs."""
+    Terrarium PNGs. `answers` counts them by kind ("base 404", "base ok", …): a 404 is read as no
+    tile, so a box whose every basemap answer is a 404 (a server without that area) fails (`check`)
+    rather than giving an empty source."""
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, pause: float = 2.0):
         self.url = url.rstrip("/")
+        self.pause = pause
+        self.answers: collections.Counter = collections.Counter()
 
-    def _get(self, path: str) -> bytes:
+    def _get(self, kind: str, path: str) -> bytes:
         req = urllib.request.Request(f"{self.url}{path}", headers={"User-Agent": UA})
         for attempt in range(5):
             try:
                 with urllib.request.urlopen(req, timeout=60) as r:
+                    self.answers[f"{kind} ok"] += 1
                     return r.read() if r.status != 204 else b""
             except urllib.error.HTTPError as e:
+                e.close()
                 if e.code == 404:
+                    self.answers[f"{kind} 404"] += 1
                     return b""
                 if attempt == 4:
                     raise
             except OSError:
                 if attempt == 4:
                     raise
+            time.sleep(self.pause * 2 ** attempt)  # (2, 4, 8, 16 s)
         return b""
+
+    def check(self, box):
+        """Fails `box` when every basemap tile asked for it was a 404."""
+        if self.answers["base 404"] and not self.answers["base ok"]:
+            raise SystemExit(f"{box}: every basemap tile was a 404 ({self.answers['base 404']}): the server at {self.url} has no basemap there")
 
     @lru_cache(maxsize=2048)
     def base(self, z: int, x: int, y: int) -> bytes:
-        return self._get(f"/tiles/base/{z}/{x}/{y}")
+        return self._get("base", f"/tiles/base/{z}/{x}/{y}")
 
     @lru_cache(maxsize=256)
     def terrain(self, z: int, x: int, y: int):
@@ -157,7 +173,7 @@ class Server:
         from rasterio.errors import NotGeoreferencedWarning
         from rasterio.io import MemoryFile
 
-        b = self._get(f"/tiles/terrain/{z}/{x}/{y}")
+        b = self._get("terrain", f"/tiles/terrain/{z}/{x}/{y}")
         if not b:
             return None
         with warnings.catch_warnings(), MemoryFile(b) as f:
@@ -365,22 +381,38 @@ def piece_range(box):
             int(math.floor((float(x1) + HALF) / span)) + 1, int(math.floor((HALF - float(y1)) / span)) + 1)
 
 
-def produce(tiles, hl, writer: Writer, box, counts: collections.Counter) -> int:
+def produce(tiles, hl, writer: Writer, box, counts: collections.Counter, done: Path | None = None) -> int:
+    """Each owned z10 tile of `box`: its grid when it has small lakes. With `done` (a file of the
+    tiles finished, "tx ty file-or-dash" a line, appended as each one ends), the tiles listed there
+    are skipped when their grid is in the writer's index (or they had none), so a stopped run
+    resumes."""
     import shapely
 
     hl_tree = shapely.STRtree(hl) if hl else None
+    finished = set()
+    if done is not None and done.exists():
+        have = {f["properties"]["file"] for f in writer.features}
+        for line in done.read_text().split("\n"):
+            p = line.split()
+            if len(p) == 3 and (p[2] == "-" or p[2] in have):
+                finished.add((int(p[0]), int(p[1])))
     n = 0
+    span = TILE * 2 ** (ZOOM - PIECE_ZOOM)
     tx0, ty0, tx1, ty1 = piece_range(box)
     for ty in range(ty0, ty1 + 1):
         for tx in range(tx0, tx1 + 1):
             if not owned(box, tx, ty):
                 continue
-            lakes = tile_lakes(tiles, hl_tree, hl, tx, ty, counts)
-            if not lakes:
+            if (tx, ty) in finished:
+                counts["tiles done before"] += 1
                 continue
-            span = TILE * 2 ** (ZOOM - PIECE_ZOOM)
-            if writer.put(f"smalllakes-{PIECE_ZOOM}-{tx}-{ty}", SOURCE_URL, Window(ZOOM, tx * span, ty * span, span, span), paint(lakes, tx, ty)):
-                n += 1
+            lakes = tile_lakes(tiles, hl_tree, hl, tx, ty, counts)
+            name = f"smalllakes-{PIECE_ZOOM}-{tx}-{ty}"
+            wrote = bool(lakes) and writer.put(name, SOURCE_URL, Window(ZOOM, tx * span, ty * span, span, span), paint(lakes, tx, ty))
+            n += wrote
+            if done is not None:
+                with open(done, "a") as f:
+                    f.write(f"{tx} {ty} {name + '.tif' if wrote else '-'}\n")
     return n
 
 
@@ -394,14 +426,18 @@ def main():
     a = ap.parse_args()
     tiles = Server(a.server)
     w = Writer(a.out)
+    w.resume(a.index)
+    done = a.index.with_name(a.index.name + ".done")
     for b in a.box:
         box = [float(v) for v in b.split(",")]
         counts = collections.Counter()
+        tiles.answers.clear()
         # (HydroLAKES' lakes meeting the box's tiles and their ring, which reach past it.)
         hl = read_hydrolakes(a.hydrolakes, [box[0] - 0.5, box[1] - 0.5, box[2] + 0.5, box[3] + 0.5])
-        n = produce(tiles, hl, w, box, counts)
-        log(f"{box}: {len(hl)} HydroLAKES lakes near it, {n} grids; lakes {dict(counts)}")
-    w.write_index(a.index)
+        n = produce(tiles, hl, w, box, counts, done)
+        log(f"{box}: {len(hl)} HydroLAKES lakes near it, {n} grids; lakes {dict(counts)}; server answers {dict(tiles.answers)}")
+        w.write_index(a.index)
+        tiles.check(box)
 
 
 if __name__ == "__main__":

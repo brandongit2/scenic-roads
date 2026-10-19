@@ -209,6 +209,14 @@ class Writer:
         self.features.append({"type": "Feature", "properties": props, "geometry": {"type": "Polygon", "coordinates": [ring]}})
         return True
 
+    def resume(self, path: Path):
+        """Takes up the features of an index written before (a resumed run), those whose files are
+        still in `out`."""
+        path = Path(path)
+        if path.exists():
+            feats = json.loads(path.read_text())["features"]
+            self.features = [f for f in feats if (self.out / f["properties"]["file"]).exists()]
+
     def write_index(self, path: Path):
         """The index, its features in file order (so the same grids give the same bytes)."""
         feats = sorted(self.features, key=lambda f: f["properties"]["file"])

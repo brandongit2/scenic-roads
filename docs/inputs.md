@@ -1317,7 +1317,14 @@ the shore (other lakes and terrain at or below 0.3 m left out), L the largest di
 under 3 land pixels in the ring or S < 0.003, the area rule Dmax = 3.04 · A^0.228 (A in ha). On the
 lab's 85 measured lakes under 10 ha: median error 48 %, half within ±50 % (the area rule: 53 %).
 Each lake is `globathy.py`'s bowl at z14. Several `--box`es a run, each owning the z10 tiles whose
-north-west corner is in it.
+north-west corner is in it; the index is written after each box, and a stopped run resumes (the
+tiles finished are listed in `<index>.done`). A failed request is tried again after 2, 4, 8 and 16 s;
+a 404 reads as no tile, the server's answers are logged a box, and a box whose every basemap tile
+was a 404 fails. `smalllakes-run.sh` is the full run, on the M4: its own server instance (own port
+and `--home`, `--root` on the NAS's project folder), one call a z6 tile of the coverage spread over
+3–4 workers, each box's grids tarred over SSH into the NAS's `sources/fetched/smalllakes/` and
+checked there by size, the indexes merged at the end; under `caffeinate`, a box starting only on
+mains power or at 30 % battery or more.
 
 **Keys** (docs/plan.md §6, Job keys): a depth target names each source meeting it by its id and
 `Source::digest` (its `[data]` and its index's features, their hashes among them), so a new grid
