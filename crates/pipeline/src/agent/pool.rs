@@ -249,11 +249,19 @@ pub struct Conds {
     /// resumed. Left out by apps before it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub held: bool,
+    /// The owner's disk room target there (MB; 0: none, and left out by apps before it): what
+    /// stays free past the free space it needs to lead.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub target_mb: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 impl Conds {
     /// Why a member with these conditions can't lead now (`able` false), as the agent decides it
-    /// (crate::agent's `pool_step`: home, on power or charged past `BATTERY_MIN`, free space past its room target).
+    /// (crate::agent's `pool_step`: home, on power or charged past `BATTERY_MIN`, free space past its room target, or with none, a disk not full).
     pub fn why_unable(&self) -> String {
         if self.held {
             "paused: it can't lead until it's resumed (`scenic resume`)".into()
@@ -266,7 +274,13 @@ impl Conds {
                 crate::agent::cond::BATTERY_MIN
             )
         } else {
-            "short of room on its disk: it can't lead without free space past its disk room target".into()
+            match self.target_mb {
+                0 => "its disk is full: it can't lead until some space is free".into(),
+                t => format!(
+                    "short of room on its disk: it can't lead without free space past its disk room target ({} GB)",
+                    t >> 10
+                ),
+            }
         }
     }
 }
@@ -2195,6 +2209,16 @@ pub fn status(root: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Why a Mac with room short can't lead (task #421): past its room target, or with none, a
+    /// full disk.
+    #[test]
+    fn a_mac_short_of_disk_says_why_by_its_target() {
+        let c = super::Conds { home: true, ac: true, ..Default::default() };
+        assert!(c.why_unable().starts_with("its disk is full"), "{}", c.why_unable());
+        let c = super::Conds { target_mb: 20 << 10, ..c };
+        assert!(c.why_unable().contains("past its disk room target (20 GB)"), "{}", c.why_unable());
+    }
+
     #[test]
     fn a_message_this_app_doesnt_know_is_read_past() {
         // (Task #409 review) a newer app's message among the others: passed over, the rest taken,
@@ -2478,7 +2502,7 @@ mod tests {
             pool: pool.clone(),
             members: vec!["m-000000000000000b".into()],
             shadow: false,
-            conds: Some(Conds { home: true, ac: false, battery: Some(54), able: false, held: false }),
+            conds: Some(Conds { home: true, ac: false, battery: Some(54), able: false, held: false, target_mb: 0 }),
             broker: None,
         };
         let b = serde_json::to_vec(&new).unwrap();

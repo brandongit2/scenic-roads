@@ -362,7 +362,10 @@ job starting beside others waits on the target, its own measured room and the ot
 reservations (a job alone in the first slot on the target alone); room-making alone makes room for the leases granted and not yet started too, and
 the owner's room-target freeing (`room::toward`) frees toward the target plus the reservations,
 the jobs' hints merged (`Agent::hints`). The disk guard stays the backstop (§7.7). `scenic
-status` shows each member's in its capacity line (`disk 12.0 GB free (8.0 GB reserved)`).
+status` shows each member's in its capacity line, as `coord::disk_words` says it (`disk 49 GB free ·
+20 GB for jobs (20 GB room target, 9 GB reserved by its jobs)`). Every job is told the target
+(`SCENIC_ROOM_TARGET_MB`, room::TARGET_ENV; 0 for the backup and GC, which keep none): the OSM pass
+and pass-sets reckon their room past it, and run by hand, without it, keep none.
 
 **Threads granted** (task #241). Each job granted carries the worker threads it runs with
 (`Grant::threads`), which the member's agent sets as `RAYON_NUM_THREADS` (the programs taking

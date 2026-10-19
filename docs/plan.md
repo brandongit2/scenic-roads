@@ -1001,8 +1001,9 @@ from the first (`edit_held`).
   - A job without the NAS is frozen at once and goes on when it's back.
   - **Any job's end** records the targets it noted done.
 - **Room on the disk:** before a job starts, when the Mac has less free than the job needs (the
-  owner's room target past its measured disk and the other jobs' reservations; the OSM pass 80 GB;
-  no fixed reserve), copies of what the NAS keeps
+  owner's room target past its measured disk and the other jobs' reservations; the OSM pass 80 GB
+  past the target; no fixed reserve; pass-sets, which makes the pass's missing sets, copies the
+  filtered planet here only with its size and 20 GB free past the target), copies of what the NAS keeps
   lose files until there's a sixth more.
   - **Mid-job, safely by design** (`store::cachefile`, `dem/cachefile.py`): every cache read goes
     through one accessor that refills a missing file from where that cache fills from, so a wrong

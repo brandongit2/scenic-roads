@@ -6055,6 +6055,13 @@ impl Agent {
         }
     }
 
+    /// The owner's room target as a job of `spec` is told it (room::TARGET_ENV, MB): the target
+    /// it keeps (`floor_for`: none for the backup and GC).
+    fn target_env(&self, spec: &JobSpec) -> (String, String) {
+        let step = step_of(&spec.id).unwrap_or_default();
+        (room::TARGET_ENV.into(), (self.floor_for(&step) >> 20).to_string())
+    }
+
     fn start(&mut self, k: usize, mut spec: JobSpec, c: &Conditions) -> Result<()> {
         let cores = mac_cores() as usize;
         // The threads its grant says (crate::coord's `pack`: its measured cores within those its Mac
@@ -6169,6 +6176,8 @@ impl Agent {
         let written = self.written_path(k);
         std::fs::remove_file(&written).ok();
         env.push((store::cachefile::WRITTEN_ENV.into(), written.to_string_lossy().into_owned()));
+        // The owner's room target it keeps free past what it writes (the OSM pass, pass-sets).
+        env.push(self.target_env(&spec));
         // Where it says it waits on a worker holding its unit's tail, while it does (`waiting_on`),
         // afresh.
         let waiting = self.waiting_path(k);
@@ -6483,7 +6492,9 @@ impl Agent {
             // its space counts as free, and so does the cheap caches' (room::make_room frees it).
             let pack_cache = self.o.home.join("cache").join("base");
             let mut free = self.disk_free() + dir_bytes(&pack_cache);
-            if free < PASS_SPACE {
+            // (The owner's room target kept free past it, as the pass keeps it: room::TARGET_ENV.)
+            let need = PASS_SPACE + self.floor();
+            if free < need {
                 free += room::cheap_bytes(&self.o.home.join("cache"), Some(&root.join("sources")));
             }
             let started = scratch.exists();
@@ -6495,11 +6506,16 @@ impl Agent {
                     what,
                     why: "sources/basemap/planetiler.jar is missing on the NAS".into(),
                 });
-            } else if !started && free < PASS_SPACE {
+            } else if !started && free < need {
                 waiting.push(Waiting {
                     step: Some("osm-pass".into()),
                     what,
-                    why: format!("needs {} GB free on this Mac ({} GB free)", PASS_SPACE >> 30, free >> 30),
+                    why: format!(
+                        "needs {} GB free on this Mac ({} GB free{})",
+                        need >> 30,
+                        free >> 30,
+                        self.floor_words()
+                    ),
                 });
             } else {
                 out.push(JobSpec {
@@ -9267,8 +9283,14 @@ impl Agent {
         run.take_left(&home, &running);
         run.drain(lead.then(|| home.join("coord/journal")).as_deref(), &home.join("outbox"));
         // The owner's lead asks (crate::agent::lead): this Mac's, and the build page's.
-        run.conds =
-            Some(pool::Conds { home: c.home, ac: c.ac, battery: c.battery, able, held: self.hold.held.is_some() });
+        run.conds = Some(pool::Conds {
+            home: c.home,
+            ac: c.ac,
+            battery: c.battery,
+            able,
+            held: self.hold.held.is_some(),
+            target_mb: self.floor() >> 20,
+        });
         if let Some(co) = &self.coord {
             run.controls.page.extend(co.take_lead_asks());
         }
@@ -14301,6 +14323,23 @@ mod tests {
             !plan.iter().any(|j| j.id == "osm-pass 2026-09-28") && w.iter().any(|x| x.why.contains("GB free")),
             "{w:?}"
         );
+        // With the owner's room target, the pass keeps it free too: PASS_SPACE alone waits; told
+        // the target, as every job is (room::TARGET_ENV).
+        a.free_set = Some(PASS_SPACE);
+        a.room_target = Some(room::Target { bytes: 20 << 30, by: "a test".into(), at: 0 });
+        let mut w = Vec::new();
+        let plan = a.plan(&root, &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() }, &mut w);
+        assert!(!plan.iter().any(|j| j.id == "osm-pass 2026-09-28"), "{w:?}");
+        assert!(w.iter().any(|x| x.why.contains("needs 100 GB free") && x.why.contains("disk room target")), "{w:?}");
+        a.free_set = Some(PASS_SPACE + (20 << 30));
+        let mut w = Vec::new();
+        let plan = a.plan(&root, &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() }, &mut w);
+        let pass = plan.iter().find(|j| j.id == "osm-pass 2026-09-28").expect("the pass past the target");
+        assert_eq!(a.target_env(pass), (room::TARGET_ENV.to_string(), "20480".to_string()));
+        let backup = JobSpec { id: "backup daily".into(), ..pass.clone() };
+        assert_eq!(a.target_env(&backup).1, "0", "the backup keeps none");
+        a.room_target = None;
+        assert_eq!(a.target_env(pass).1, "0");
         // A complete pass of that planet: nothing to do.
         std::fs::write(root.join("sources/osm/2026-09-28/pass.0123456789abcdef.json"), b"{}").unwrap();
         let mut w = Vec::new();

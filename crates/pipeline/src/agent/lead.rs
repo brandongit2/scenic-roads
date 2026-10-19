@@ -1141,7 +1141,7 @@ mod tests {
         }
     }
 
-    const HOME: Conds = Conds { home: true, ac: true, battery: Some(90), able: true, held: false };
+    const HOME: Conds = Conds { home: true, ac: true, battery: Some(90), able: true, held: false, target_mb: 0 };
 
     #[test]
     fn the_alert_counts_from_the_first_sight_of_no_lead_or_the_leads_last_beat() {
@@ -1306,7 +1306,7 @@ mod tests {
             conds: Some(conds),
             ..Default::default()
         };
-        let home = Conds { home: true, ac: true, battery: None, able: true, held: false };
+        let home = Conds { home: true, ac: true, battery: None, able: true, held: false, target_mb: 0 };
         let batt = Conds { ac: false, battery: Some(80), ..home };
         let v = View {
             leading: true,
@@ -1369,7 +1369,7 @@ mod tests {
         use crate::pool::nas::Share;
         use std::sync::Arc;
 
-        const HOME: Conds = Conds { home: true, ac: true, battery: None, able: true, held: false };
+        const HOME: Conds = Conds { home: true, ac: true, battery: None, able: true, held: false, target_mb: 0 };
 
         pub(super) struct Mac {
             pub conds: Conds,
@@ -1702,7 +1702,7 @@ mod tests {
             let d = tempfile::tempdir().unwrap();
             let (mut a, mut b) = pool(d.path());
             let ib = b.id();
-            b.conds = Conds { home: false, ac: true, battery: None, able: false, held: false };
+            b.conds = Conds { home: false, ac: true, battery: None, able: false, held: false, target_mb: 0 };
             b.go();
             a.pass(31);
             a.go();
@@ -1720,7 +1720,7 @@ mod tests {
                 !o.events.iter().any(|e| matches!(e, Event::Handover { .. })) && a.run.side.driver().leads() == Some(1)
             );
             // On battery below the least a lead runs on, the same.
-            b.conds = Conds { home: true, ac: false, battery: Some(12), able: false, held: false };
+            b.conds = Conds { home: true, ac: false, battery: Some(12), able: false, held: false, target_mb: 0 };
             b.go();
             a.ask(LeadAsk::Give { to: ib.clone() });
             a.go();

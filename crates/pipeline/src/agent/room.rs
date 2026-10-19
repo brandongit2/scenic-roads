@@ -531,6 +531,27 @@ pub fn target(home: &Path) -> Option<Target> {
         .map(|t| Target { bytes: t.bytes.min(MAX_TARGET), ..t })
 }
 
+/// The variable a job is told the owner's room target in (MB; the agent sets it on every job it
+/// starts, `Agent::target_env`, 0 for one that keeps none): what the OSM pass and pass-sets keep
+/// free past what they write. Unset (a job run by hand): no target.
+pub const TARGET_ENV: &str = "SCENIC_ROOM_TARGET_MB";
+
+/// The room target a job's `TARGET_ENV` says (bytes): `v` as MB; unset or unreadable, none (0).
+pub fn target_of_env(v: Option<&str>) -> u64 {
+    v.and_then(|v| v.trim().parse::<u64>().ok()).map_or(0, |mb| (mb << 20).min(MAX_TARGET))
+}
+
+/// This job's room target (bytes; `TARGET_ENV`, 0 unset).
+pub fn job_target() -> u64 {
+    target_of_env(std::env::var(TARGET_ENV).ok().as_deref())
+}
+
+/// The free space on `path`'s disk a job may fill (bytes): what's free less the room target
+/// `target` (`job_target`).
+pub fn free_past(path: &Path, target: u64) -> u64 {
+    super::cond::free_bytes(path).unwrap_or(0).saturating_sub(target)
+}
+
 /// The largest target (1 PB: a hand-edited file's past any disk), so sums with it can't overflow.
 pub const MAX_TARGET: u64 = 1 << 50;
 
@@ -1265,6 +1286,19 @@ thread_local! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A job is told the owner's room target in MB (TARGET_ENV, task #421); unset or unreadable, no
+    /// target; the room it reckons is the free space past it.
+    #[test]
+    fn a_jobs_room_target_is_read_from_its_env() {
+        assert_eq!(target_of_env(Some("20480")), 20 << 30);
+        assert_eq!((target_of_env(None), target_of_env(Some("x")), target_of_env(Some("0"))), (0, 0, 0));
+        let d = tempfile::tempdir().unwrap();
+        let free = super::super::cond::free_bytes(d.path()).unwrap();
+        assert!(free_past(d.path(), 0).abs_diff(free) < 1 << 30, "the free space, as it changes");
+        assert_eq!(free_past(d.path(), free + 1), 0);
+        assert!(free_past(d.path(), 2 << 30) < free_past(d.path(), 0));
+    }
 
     fn make_room_spared(
         cache: &Path,

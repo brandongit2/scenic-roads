@@ -675,7 +675,10 @@ pub fn run_pass(
     // The planet is read once (by the filter): copied first when there's room for it (resumable),
     // else read from the NAS as it streams (an interruption then repeats the filter).
     let planet_len = std::fs::metadata(planet).map(|m| m.len()).unwrap_or(u64::MAX);
-    let room = crate::agent::cond::free_bytes(scratch).unwrap_or(0);
+    // (Every room it reckons is past the owner's room target, which stays free: the agent tells
+    // it, room::TARGET_ENV; run by hand, none.)
+    let target = crate::agent::room::job_target();
+    let room = crate::agent::room::free_past(scratch, target);
     let copy_first = done(scratch, "copy").exists() || room > copy_room(planet_len);
     if copy_first && !done(scratch, "copy").exists() && !done(scratch, "filter").exists() {
         part(0, "the planet copied");
@@ -731,12 +734,15 @@ pub fn run_pass(
     // crate::agent::build::outlines_work.)
     // From here the filtered file is read twice more (the basemap's filter, the first cut): from
     // the local copy while there's room, else from the NAS's.
-    let free = |p: &Path| crate::agent::cond::free_bytes(p).unwrap_or(0);
+    let free = |p: &Path| crate::agent::room::free_past(p, target);
     if !done(scratch, "basemap").exists() {
         check_planetiler(planetiler)?;
         part(4, "the basemap's input filtered (osmium)");
         if filtered.exists() && free(scratch) < BASEMAP_ROOM {
-            eprintln!("basemap: {} GB free; reading the filtered planet from the NAS", free(scratch) >> 30);
+            eprintln!(
+                "basemap: {} GB free past the room target; reading the filtered planet from the NAS",
+                free(scratch) >> 30
+            );
             std::fs::remove_file(&filtered)?;
         }
         let b = scratch.join("basemap-input.osm.pbf");
@@ -753,7 +759,7 @@ pub fn run_pass(
         let need = planetiler_room(std::fs::metadata(&b)?.len());
         if free(scratch) < need && filtered.exists() {
             eprintln!(
-                "basemap: {} GB free, Planetiler needs ~{} GB; the cut will read the filtered planet from the NAS",
+                "basemap: {} GB free past the room target, Planetiler needs ~{} GB; the cut will read the filtered planet from the NAS",
                 free(scratch) >> 30,
                 need >> 30
             );
@@ -763,7 +769,7 @@ pub fn run_pass(
         std::fs::remove_dir_all(scratch.join("planetiler-tmp")).ok();
         ensure!(
             free(scratch) >= need,
-            "basemap: Planetiler needs ~{} GB free on this Mac, {} GB are",
+            "basemap: Planetiler needs ~{} GB free on this Mac past its room target, {} GB are",
             need >> 30,
             free(scratch) >> 30
         );
@@ -813,7 +819,10 @@ pub fn run_pass(
             .or_else(|_| std::fs::metadata(filtered_nas(out, date)?).map_err(anyhow::Error::from))?
             .len();
         if filtered.exists() && !tree.join("0-0-0.cut").exists() && free(scratch) < flen / 8 * 10 + (20 << 30) {
-            eprintln!("cut: {} GB free; reading the filtered planet from the NAS", free(scratch) >> 30);
+            eprintln!(
+                "cut: {} GB free past the room target; reading the filtered planet from the NAS",
+                free(scratch) >> 30
+            );
             std::fs::remove_file(&filtered)?;
         }
         let local = filtered.exists();
