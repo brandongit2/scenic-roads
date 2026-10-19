@@ -34,8 +34,6 @@ export interface DepthReply {
   data?: ArrayBuffer;
   probe?: Probe;
   hist?: number[];
-  /** The sources (their codes) with depth in the tiles asked about. */
-  codes?: number[];
   error?: string;
 }
 
@@ -85,13 +83,11 @@ async function handle(m: Exclude<DepthMsg, { type: 'init' } | { type: 'cancel' }
     post({ id: m.id, probe: { d: d < NODATA_MIN ? d : null, cls: c.k[i] & 7, src: c.k[i] >> 4, water: c.w[i] === 1, dries: (c.k[i] & 8) !== 0 } });
   } else if (m.type === 'hist') {
     const h = new Array(HBINS).fill(0);
-    const codes = new Set<number>();
     for (const [z, x, y] of m.tiles) {
       const c = await composite(z, x, y);
       for (let b = 0; b < HBINS; b++) h[b] += c.h[b];
-      c.codes.forEach((k) => codes.add(k));
     }
-    post({ id: m.id, hist: h, codes: [...codes] });
+    post({ id: m.id, hist: h });
   }
 }
 
@@ -201,8 +197,6 @@ interface Composite {
   w: Uint8Array;
   /** Depth histogram of the water with data (HBINS log bins). */
   h: number[];
-  /** The sources with depth here. */
-  codes: Set<number>;
   empty: boolean;
 }
 const composites = new Map<string, Promise<Composite>>();
@@ -218,7 +212,6 @@ function composite(z: number, x: number, y: number): Promise<Composite> {
     ]);
     const d = new Float32Array(N * N).fill(SENTINEL), k = new Uint8Array(N * N);
     const h = new Array(HBINS).fill(0);
-    const codes = new Set<number>();
     let any = false;
     ([[g00, 0, 0], [g10, 256, 0], [g01, 0, 256], [g11, 256, 256]] as [Grid, number, number][]).forEach(([g, ox, oy]) => {
       if (!g) return;
@@ -231,9 +224,8 @@ function composite(z: number, x: number, y: number): Promise<Composite> {
     for (let i = 0; i < N * N; i++) {
       if (!w[i] || !(d[i] < NODATA_MIN)) continue;
       if (d[i] < 0) h[hbin(-d[i])]++;
-      if (k[i] >> 4) codes.add(k[i] >> 4);
     }
-    return { d, k, w, h, codes, empty: !any };
+    return { d, k, w, h, empty: !any };
   })();
   remember(composites, key, p, 72);
   p.catch(() => composites.get(key) === p && composites.delete(key));

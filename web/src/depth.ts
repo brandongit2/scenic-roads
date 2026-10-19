@@ -46,7 +46,6 @@ export class Depth {
   /** The fitted domain (m) of the "fit to view" scale. */
   private fit: [number, number] = [1, 100];
   private viewTimer = 0;
-  /** The sources with depth in view (their codes). */
   private hoverAt: maplibregl.LngLat | null = null;
   private hoverBusy = false;
   /** The cursor's readout while a depth layer is on. */
@@ -301,7 +300,7 @@ export class Depth {
     // (Too many to sample.)
     if (!tiles.length) return;
     const halves = this.workers.map((w) => tiles.filter((t) => this.workerFor(...t) === w));
-    const rs = await Promise.all(halves.map((ts, i) => (ts.length ? this.ask({ type: 'hist', id: 0, tiles: ts }, undefined, this.workers[i]) : Promise.resolve({ id: 0, hist: new Array(HBINS).fill(0), codes: [] } as DepthReply))));
+    const rs = await Promise.all(halves.map((ts, i) => (ts.length ? this.ask({ type: 'hist', id: 0, tiles: ts }, undefined, this.workers[i]) : Promise.resolve({ id: 0, hist: new Array(HBINS).fill(0) } as DepthReply))));
     if (this.s.scale !== 'fit') return;
     const hst = new Array(HBINS).fill(0);
     for (const r of rs) r.hist?.forEach((v, i) => (hst[i] += v));
