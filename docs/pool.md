@@ -210,8 +210,10 @@ that one running the same app.
 - **When the old lead stops granting.** A lead's coordinator grants only while all three hold:
   its last step found no later term; that step read its own heartbeat back (`Nas::read_fresh`,
   `F_NOCACHE`) and found it at most `LEAD_BEAT_S` (3 min) old by its clock, or not there yet (a
-  read that fails counts as stale); and its agent told the coordinator so within `STALL_S` (5 min:
-  `Coordinator::set_moving`'s time, so a hung step or a Mac woken before its step stops grants).
+  read that fails counts as stale); and that step ran within `STALL_S` (5 min:
+  `Coordinator::set_moving_as_of` stamps the step's time, not the tell's, so a hang after the step
+  (a history write on the share) or before the next one, or a Mac woken before its step, stops
+  grants).
   So it grants at most `LEAD_BEAT_S` + `STALL_S` + a step (8 min 20 s) after its last heartbeat
   landed, and a member takes over no sooner than `SILENT_SEEN_S` after it last saw that beat
   change, 2 min later. Back, the old lead's next step finds `terms/<E+1>.json` and steps down
@@ -226,7 +228,7 @@ that one running the same app.
   own journal entry keyed by its lease, and a merge applies an entry only if no later lease set its
   targets (`Records::apply`; the old term's lease ids sort before the new term's), else counts it
   overtaken; the files it alone named go to GC. A stale lead's step already under way when the new
-  term was made may write today's three files once more from its older records, until the new
+  term was made may write today's three files from its older records on one or more steps, until the new
   lead's next save. So: rarely, some work is built twice; nothing is corrupted.
 - **A proactive offer** (`crate::agent::lead::offer`) before it comes to that: when the lead is
   away or on battery and another member is home on power, every control offers "Hand the Build to

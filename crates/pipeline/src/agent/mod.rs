@@ -9473,6 +9473,8 @@ impl Agent {
         run.tend_brokers();
         run.tend_reach();
         let out = run.step(able);
+        // (When its checks ran: the coordinator's grants count from then, not from the tell.)
+        let checked = crate::coord::wall_now();
         // (Its part changed, in this process: its coordinator started or stopped, its jobs going on;
         // not tried again once a restart is asked for, its coordinator failing to start.)
         let change = run.in_process && run.restart.is_none();
@@ -9509,7 +9511,7 @@ impl Agent {
         }
         let g = run.gates.clone();
         if let Some(co) = &self.coord {
-            co.set_moving(pool::moving(&g, false));
+            co.set_moving_as_of(pool::moving(&g, false), checked);
         }
         drop(run);
         if lead && g.leads.is_some() {

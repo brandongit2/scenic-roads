@@ -2623,9 +2623,16 @@ impl Coordinator {
     /// The pool's lead granting nothing now, and why (settling a handover, its view not fresh, no
     /// longer leading); None: granting again.
     pub fn set_moving(&self, why: Option<String>) {
+        self.set_moving_as_of(why, wall_now());
+    }
+
+    /// `set_moving` as of `as_of` (this Mac's wall clock, unix s): when the pool's step that decided
+    /// it ran, not when it's told (whatever ran between, a write on a hung share, doesn't stretch
+    /// the time it grants for: `STALL_S` from the step's checks).
+    pub fn set_moving_as_of(&self, why: Option<String>, as_of: u64) {
         let mut s = self.shared.lock().unwrap();
         s.moving = why;
-        s.told = Some(wall_now());
+        s.told = Some(as_of.min(wall_now()));
     }
 
     /// The app the newer readers' switch was recorded on (`Shared::min_app`; None: none recorded).
@@ -3414,7 +3421,7 @@ pub fn ages(view: &serde_json::Value, unix: u64) -> (serde_json::Value, serde_js
 }
 
 /// This Mac's wall clock (unix s).
-fn wall_now() -> u64 {
+pub fn wall_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
@@ -5339,6 +5346,12 @@ mod tests {
         assert!(format!("{e:#}").contains("not stepped"), "{e:#}");
         assert!(c.ask_own(&ask(4096), &BTreeSet::new()).is_none());
         c.set_moving(None);
+        w.ask(&ask(4096)).unwrap();
+        // A step's checks, then a hang (a write on the share) before the tell: told as of the
+        // checks, it grants nothing once `STALL_S` has passed since them.
+        c.set_moving_as_of(None, wall_now() - crate::pool::driver::STALL_S - 1);
+        assert!(format!("{:#}", w.ask(&ask(4096)).unwrap_err()).contains("not stepped"));
+        c.set_moving_as_of(None, wall_now() - 5);
         w.ask(&ask(4096)).unwrap();
     }
 

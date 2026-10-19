@@ -1524,6 +1524,8 @@ impl Run {
         self.tend_brokers();
         self.tend_reach();
         let out = self.step(self.cx.able);
+        // (When its checks ran: the coordinator's grants count from then, not from the tell.)
+        let checked = crate::coord::wall_now();
         for e in &out.events {
             let Event::TookUp { term, handed, .. } = e else { continue };
             match &coord {
@@ -1537,7 +1539,7 @@ impl Run {
         super::lead::after(self, &out, &root, &home, coord.as_deref());
         self.behind();
         if let Some(co) = &coord {
-            co.set_moving(moving(&self.gates, !self.pending_took_up.is_empty()));
+            co.set_moving_as_of(moving(&self.gates, !self.pending_took_up.is_empty()), checked);
         }
         for e in &out.events {
             if let Event::Failed { what, why } | Event::Waits { what, why } = e {
