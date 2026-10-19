@@ -487,8 +487,11 @@ pub fn length_m(a: Pt, b: Pt) -> f64 {
     (dn * dn + de * de).sqrt()
 }
 
-/// The most a buffer may be: 200 km (§6.1.3).
-pub const MAX_BUFFER_M: f64 = 200_000.0;
+/// The most a buffer may be: 200 nautical miles (§6.1.3).
+pub const MAX_BUFFER_M: f64 = 370_400.0;
+/// Past this radius, a buffer's rings are first simplified within a thousandth of it (a ring's
+/// detail under that changes nothing a buffer that wide shows): up to it, exactly as before.
+const SIMPLIFY_PAST_M: f64 = 200_000.0;
 /// The longest edge buffered as it is: longer ones are split first.
 const DENSIFY_M: f64 = 10_000.0;
 /// How far a round join's or end's chords may stray inside the true arc.
@@ -561,9 +564,229 @@ fn sweep(pts: &[Pt], closed: bool, r: f64, out: &mut Vec<Ring>) {
 pub fn buffer_area(a: &Area, r: f64) -> Area {
     let mut cs = Vec::new();
     for ring in a.polys.iter().flatten() {
-        sweep(ring, true, r, &mut cs);
+        if r > SIMPLIFY_PAST_M {
+            sweep(&simplify_ring(ring, r / 1000.0), true, r, &mut cs);
+        } else {
+            sweep(ring, true, r, &mut cs);
+        }
     }
     a.union(&union_contours(cs))
+}
+
+/// A ring simplified (Douglas–Peucker, in metres by the local radii) within `tol` metres.
+pub fn simplify_ring(r: &[Pt], tol: f64) -> Ring {
+    if r.len() < 4 {
+        return r.to_vec();
+    }
+    let mut pts: Vec<Pt> = r.to_vec();
+    pts.push(r[0]);
+    let mut keep = vec![false; pts.len()];
+    keep[0] = true;
+    *keep.last_mut().unwrap() = true;
+    let mut stack = vec![(0usize, pts.len() - 1)];
+    while let Some((i, j)) = stack.pop() {
+        if j <= i + 1 {
+            continue;
+        }
+        let (a, b) = (pts[i], pts[j]);
+        let mut best = (0.0, i);
+        for (k, &p) in pts.iter().enumerate().take(j).skip(i + 1) {
+            let d = seg_dist_m(p, a, b);
+            if d > best.0 {
+                best = (d, k);
+            }
+        }
+        if best.0 > tol {
+            keep[best.1] = true;
+            stack.push((i, best.1));
+            stack.push((best.1, j));
+        }
+    }
+    let mut out: Ring = pts.iter().zip(&keep).filter(|(_, k)| **k).map(|(p, _)| *p).collect();
+    out.pop();
+    if out.len() < 3 {
+        return r.to_vec();
+    }
+    out
+}
+
+/// The distance (metres, local plane at `p`) from `p` to the segment a–b.
+pub fn seg_dist_m(p: Pt, a: Pt, b: Pt) -> f64 {
+    let lat = (p[1] as f64 * 1e-7).to_radians();
+    let (m, n) = radii(lat);
+    let k = std::f64::consts::PI / 180.0 * 1e-7;
+    let xy = |q: Pt| [(q[0] - p[0]) as f64 * k * n, (q[1] - p[1]) as f64 * k * m];
+    let (a, b) = (xy(a), xy(b));
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let l2 = d[0] * d[0] + d[1] * d[1];
+    let t = if l2 > 0.0 { (-(a[0] * d[0] + a[1] * d[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    let c = [a[0] + t * d[0], a[1] + t * d[1]];
+    (c[0] * c[0] + c[1] * c[1]).sqrt()
+}
+
+/// A box (west, south, east, north; E7) as an area.
+pub fn box_area(b: [i64; 4]) -> Area {
+    Area::from_rings(&[vec![[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]]])
+}
+
+/// The whole Earth in the plain frame.
+pub fn earth() -> Area {
+    box_area([-HALF, -900_000_000, HALF, 900_000_000])
+}
+
+/// The authalic sphere's radius (WGS 84), metres.
+const R_AUTHALIC: f64 = 6_371_007.2;
+
+/// An area's size on the ground, km², on the authalic sphere (edges taken as straight in
+/// longitude and latitude).
+pub fn area_km2(a: &Area) -> f64 {
+    let k = std::f64::consts::PI / 180.0 * 1e-7;
+    let mut t = 0.0;
+    for ring in a.polys.iter().flatten() {
+        let n = ring.len();
+        let mut s = 0.0;
+        for i in 0..n {
+            let (p, q) = (ring[i], ring[(i + 1) % n]);
+            // (On the authalic sphere: the band from the equator under the edge.)
+            let (s1, s2) = ((p[1] as f64 * k).dsin(), (q[1] as f64 * k).dsin());
+            s += (q[0] - p[0]) as f64 * k * (s1 + s2) * 0.5 * R_AUTHALIC * R_AUTHALIC;
+        }
+        t -= s;
+    }
+    t / 1e6
+}
+
+/// The points of `within` nearer `to` than `than` (each the nearest of their rings' points, those
+/// densified to `step` apart), decided cell by cell on a grid of `step` metres: the result is
+/// `within` cut along a staircase that keeps within a cell of the true median line. Where `than` is
+/// empty, all of `within`; where `to` is, none.
+pub fn nearest(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
+    if within.is_empty() || to.is_empty() {
+        return Area::default();
+    }
+    if than.is_empty() {
+        return within.clone();
+    }
+    let Some(bb) = within.bbox() else { return Area::default() };
+    // Samples near enough to matter: within 8° of the area's box.
+    let reach = 80_000_000i64;
+    let near = |q: &Pt| q[0] >= bb[0] - reach && q[0] <= bb[2] + reach && q[1] >= bb[1] - reach && q[1] <= bb[3] + reach;
+    let mut samples: Vec<(Pt, bool)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let deg = step / 111_320.0 * 1e7;
+    for (a, mine) in [(to, true), (than, false)] {
+        for ring in a.polys.iter().flatten() {
+            if !ring.iter().any(near) {
+                continue;
+            }
+            for q in densify_to(ring, step) {
+                if near(&q) && seen.insert(((q[0] as f64 / deg) as i64, (q[1] as f64 / deg) as i64, mine)) {
+                    samples.push((q, mine));
+                }
+            }
+        }
+    }
+    if !samples.iter().any(|s| !s.1) {
+        return within.clone();
+    }
+    if !samples.iter().any(|s| s.1) {
+        return Area::default();
+    }
+    // A bucket grid of the samples, half-degree cells.
+    let cell = 5_000_000i64;
+    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
+    for (k, (q, _)) in samples.iter().enumerate() {
+        grid.entry((q[0].div_euclid(cell), q[1].div_euclid(cell))).or_default().push(k);
+    }
+    let dist = |a: Pt, b: Pt| -> f64 { length_m(a, b) };
+    let nearest_is_mine = |p: Pt| -> bool {
+        let (cx, cy) = (p[0].div_euclid(cell), p[1].div_euclid(cell));
+        // (Ties to the smaller sample point, so the split and its complement agree.)
+        let mut best = (f64::MAX, [i64::MAX, i64::MAX], true);
+        let coslat = ((p[1] as f64) * 1e-7).to_radians().dcos().max(0.02);
+        let mut r = 0i64;
+        loop {
+            for gx in cx - r..=cx + r {
+                for gy in cy - r..=cy + r {
+                    if (gx - cx).abs() != r && (gy - cy).abs() != r {
+                        continue;
+                    }
+                    if let Some(v) = grid.get(&(gx, gy)) {
+                        for &k in v {
+                            let d = dist(p, samples[k].0);
+                            let q = samples[k].0;
+                            if d < best.0 || (d == best.0 && q < best.1) {
+                                best = (d, q, samples[k].1);
+                            }
+                        }
+                    }
+                }
+            }
+            // (Every sample past ring r is at least r half-degree cells away: ~55 km of latitude a
+            // cell, less of longitude by the latitude's cosine.)
+            if best.0 < (r as f64) * 55_000.0 * coslat * 0.95 || r > 400 {
+                return best.2;
+            }
+            r += 1;
+        }
+    };
+    // Rows of `step`, each split into runs of cells whose middles are nearer `to`.
+    let dy = (step / 111_320.0 * 1e7).max(1.0) as i64;
+    let mut rects: Vec<Ring> = Vec::new();
+    let mut y = bb[1];
+    while y < bb[3] {
+        let y1 = (y + dy).min(bb[3]);
+        let mid = (y + y1) / 2;
+        let coslat = ((mid as f64) * 1e-7).to_radians().dcos().max(0.01);
+        let dx = ((step / (111_320.0 * coslat)) * 1e7).max(1.0) as i64;
+        let mut x = bb[0];
+        let mut run: Option<i64> = None;
+        while x < bb[2] {
+            let x1 = (x + dx).min(bb[2]);
+            let mine = nearest_is_mine([(x + x1) / 2, mid]);
+            match (mine, run) {
+                (true, None) => run = Some(x),
+                (false, Some(x0)) => {
+                    rects.push(vec![[x0, y], [x, y], [x, y1], [x0, y1]]);
+                    run = None;
+                }
+                _ => {}
+            }
+            x = x1;
+        }
+        if let Some(x0) = run {
+            rects.push(vec![[x0, y], [bb[2], y], [bb[2], y1], [x0, y1]]);
+        }
+        y = y1;
+    }
+    within.intersect(&union_contours(rects))
+}
+
+/// A ring's points with none more than `step` metres apart.
+fn densify_to(r: &[Pt], step: f64) -> Vec<Pt> {
+    let n = r.len();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let (a, b) = (r[i], r[(i + 1) % n]);
+        out.push(a);
+        let k = (length_m(a, b) / step).ceil() as i64;
+        for j in 1..k {
+            out.push([a[0] + (b[0] - a[0]) * j / k, a[1] + (b[1] - a[1]) * j / k]);
+        }
+    }
+    out
+}
+
+/// The length (km, roughly) of the edge two areas share: the area of `b` within `w` metres of `a`'s
+/// edge, over `w`.
+pub fn shared_edge_km(a: &Area, b: &Area, w: f64) -> f64 {
+    let (Some(x), Some(y)) = (a.bbox(), b.bbox()) else { return 0.0 };
+    let pad = 2_000_000;
+    if x[0] > y[2] + pad || y[0] > x[2] + pad || x[1] > y[3] + pad || y[1] > x[3] + pad {
+        return 0.0;
+    }
+    let ring = buffer_area(a, w).minus(a);
+    area_km2(&ring.intersect(b)) / (w / 1000.0)
 }
 
 /// Everything within `r` metres of a line.

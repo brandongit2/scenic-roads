@@ -65,6 +65,7 @@ fn run(f: &Fx, files: &[(&str, &str)]) -> resolve::Outcome {
         others: &others,
         memo: None,
         names: String::new(),
+        data: None,
     };
     resolve::resolve(&folder(files), &ctx)
 }
@@ -311,6 +312,7 @@ fn a_line_from_ways_buffered_and_ways_that_dont_join() {
         others: &others,
         memo: None,
         names: String::new(),
+        data: None,
     };
     let r = region("river", "outline = [{ buffer = \"line:r\", by = \"3 km\" }]\n[lines.r]\nways = [11, 12]\n");
     let out = resolve::resolve(&folder(&[PINS, ("river.toml", &r)]), &ctx);

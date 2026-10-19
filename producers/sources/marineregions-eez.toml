@@ -1,0 +1,20 @@
+name = "Marine Regions, Maritime Boundaries and Exclusive Economic Zones (200 NM), version 12"
+what = "The 200-nautical-mile zones the regions' water is drawn from"
+credit = "Flanders Marine Institute (2023). Maritime Boundaries Geodatabase: Maritime Boundaries and Exclusive Economic Zones (200NM), version 12. Available online at https://www.marineregions.org/. https://doi.org/10.14284/632"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://www.marineregions.org/downloads.php"
+retrieved = "2026-10-18"
+territory = "world"
+notes = "The whole layer MarineRegions:eez (titled EEZ v12, world, 2023) from the institute's WFS (geo.vliz.be/geoserver), as GeoJSON in degrees, kept in sources/fetched/marineregions-eez-v12/; the download page's form isn't needed for the WFS. Read by the regions' check (crate::inputs::regions::data), a zone by its mrgid."
+
+[data]
+role = "regions-sea"
+format = "geojson"
+url = "https://geo.vliz.be/geoserver/MarineRegions/wfs?service=WFS&version=1.0.0&request=GetFeature&outputFormat=application/json&typeName=MarineRegions:eez"
+version = "12"
+refresh = "pinned"
+
+[data.params]
+path = "sources/fetched/marineregions-eez-v12/eez_v12.geojson"
+id = "mrgid"

@@ -15,6 +15,7 @@
 //! The readers (crate::inputs::regions::read): `Coverage::accepted` and the regions as accepted,
 //! and, until the migration's proof (§6.1.10), the drop box's recipes as before.
 
+pub mod data;
 pub mod extract;
 pub mod file;
 pub mod geom;
@@ -22,6 +23,7 @@ pub mod read;
 pub mod resolve;
 pub mod shapes;
 pub mod stored;
+pub mod water;
 
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
 use crate::outlines::Outlines;
@@ -50,6 +52,8 @@ pub struct Prepared {
     pub outlines: Option<Outlines>,
     pub extract: Option<extract::Extract>,
     pub others: BTreeMap<String, Outlines>,
+    /// The regions' datasets (§6.1.7), when their sources are declared and read.
+    pub data: Option<data::Datasets>,
     /// The outline set's and the extract's content names.
     pub names: String,
     /// Why the check can't run now: no pass yet, or the current pass's outline set not made yet
@@ -74,6 +78,7 @@ impl Regions {
             others: c.map_or(&empty, |c| &c.others),
             memo: Some(&self.memo),
             names: c.map(|c| c.names.clone()).unwrap_or_default(),
+            data: c.and_then(|c| c.data.as_ref()),
         };
         let out = resolve::resolve(&folder, &ctx);
         Ok((folder, out))
@@ -147,6 +152,13 @@ impl Checks for Regions {
                     c.facts.insert("group".into(), serde_json::to_value(&g).unwrap_or_default());
                     // (A group's name reruns nothing: no build reads it.)
                     c.keyed = Some("-".into());
+                }
+                Err(f) => c.findings.push(finding(&f, path)),
+            }
+        } else if resolve::is_rules(path) {
+            match water::parse_rules(text) {
+                Ok(r) => {
+                    c.facts.insert("rules".into(), serde_json::to_value(&r).unwrap_or_default());
                 }
                 Err(f) => c.findings.push(finding(&f, path)),
             }
@@ -246,7 +258,23 @@ impl Checks for Regions {
             (Some(d), None) => Some(format!("the pass {d}'s outline set isn't made yet (its outlines step)")),
             _ => None,
         };
-        Ok(Some(Box::new(Regions::new(Some(Prepared { pass: date, outlines, extract, others, names, not_ready })))))
+        // (The datasets, when the accepted sources declare them: read whole; one that can't be read
+        // holds the regions naming it, `rg-data`, saying so.)
+        let data = match crate::inputs::sources::open(root, manifest) {
+            Ok(Some(s)) => match data::Datasets::read(root, &s) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("regions: the datasets can't be read: {e:#}");
+                    None
+                }
+            },
+            _ => None,
+        };
+        let names = match &data {
+            Some(d) => format!("{names} {}", d.names),
+            None => names,
+        };
+        Ok(Some(Box::new(Regions::new(Some(Prepared { pass: date, outlines, extract, others, data, names, not_ready })))))
     }
 }
 
@@ -332,3 +360,5 @@ pub fn accept_fixture(
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod water_tests;

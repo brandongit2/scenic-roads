@@ -1,0 +1,20 @@
+name = "Marine Regions, Maritime Boundaries: Internal Waters, version 4"
+what = "The internal waters each 200-nautical-mile zone is drawn with"
+credit = "Flanders Marine Institute (2023). Maritime Boundaries Geodatabase: Internal Waters, version 4. Available online at https://www.marineregions.org/. https://doi.org/10.14284/628"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://www.marineregions.org/downloads.php"
+retrieved = "2026-10-18"
+territory = "world"
+notes = "The layer MarineRegions:eez_internal_waters (Internal Waters v4, world, 2023) from the institute's WFS, as GeoJSON, kept in sources/fetched/marineregions-internal-waters-v4/. Each is added to the zone its mrgid_eez names."
+
+[data]
+role = "regions-internal-waters"
+format = "geojson"
+url = "https://geo.vliz.be/geoserver/MarineRegions/wfs?service=WFS&version=1.0.0&request=GetFeature&outputFormat=application/json&typeName=MarineRegions:eez_internal_waters"
+version = "4"
+refresh = "pinned"
+
+[data.params]
+path = "sources/fetched/marineregions-internal-waters-v4/eez_internal_waters_v4.geojson"
+id = "mrgid_eez"

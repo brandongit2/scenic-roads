@@ -38,7 +38,7 @@ const ORPHAN: &str = "src-orphan";
 
 /// The roles a source is read in, each with the formats it may be in and the placeholders its URL
 /// template may hold: the app's slots, each read by one step's generic code.
-pub const ROLES: [(&str, &[&str], &[&str]); 13] = [
+pub const ROLES: [(&str, &[&str], &[&str]); 18] = [
     // (Land cover on the analysis grid: crate::landcover. 3° tiles by their south-west corner.)
     (LAND_COVER, &["geotiff"], &["{tile}"]),
     // (Canopy height and cover: crate::trees, scenic-metrics' canopy step. By an index of 10° squares.)
@@ -68,6 +68,13 @@ pub const ROLES: [(&str, &[&str], &[&str]); 13] = [
     // GeoTIFF) or a Helmert transformation between two references, chained by the elevation step
     // to bring each roads' dataset's heights to EGM2008: `MANY`.)
     (GEOID, &["geoid-grid", "helmert"], &[]),
+    // (The regions' datasets: crate::inputs::regions::data. Each a file in `sources/fetched/<id>/`,
+    // its `params.path`.)
+    (super::regions::data::SEA, &["geojson"], &[]),
+    (super::regions::data::INTERNAL, &["geojson"], &[]),
+    (super::regions::data::TERRITORIAL, &["geojson"], &[]),
+    (super::regions::data::LAKES, &["zip-shapefile"], &[]),
+    (super::regions::data::LAND, &["zip-shapefile"], &[]),
 ];
 
 /// The roles any number of sources take (each read with the others, by its own `params.code`).
@@ -774,7 +781,7 @@ pub fn accepted(manifest: &BTreeMap<String, String>) -> bool {
 
 /// The staged declarations (producers/sources/), as the drop box takes them: path and bytes.
 #[cfg(test)]
-pub const STAGED: [(&str, &[u8]); 13] = [
+pub const STAGED: [(&str, &[u8]); 18] = [
     ("overture-buildings.toml", include_bytes!("../../../../producers/sources/overture-buildings.toml")),
     ("ghsl-built-h.toml", include_bytes!("../../../../producers/sources/ghsl-built-h.toml")),
     ("ghsl-tiles.geojson", include_bytes!("../../../../producers/sources/ghsl-tiles.geojson")),
@@ -788,6 +795,11 @@ pub const STAGED: [(&str, &[u8]); 13] = [
     ("canopy-squares.geojson", include_bytes!("../../../../producers/sources/canopy-squares.geojson")),
     ("eea-leaf-type.toml", include_bytes!("../../../../producers/sources/eea-leaf-type.toml")),
     ("nalcms.toml", include_bytes!("../../../../producers/sources/nalcms.toml")),
+    ("marineregions-eez.toml", include_bytes!("../../../../producers/sources/marineregions-eez.toml")),
+    ("marineregions-internal-waters.toml", include_bytes!("../../../../producers/sources/marineregions-internal-waters.toml")),
+    ("marineregions-territorial-seas.toml", include_bytes!("../../../../producers/sources/marineregions-territorial-seas.toml")),
+    ("natural-earth-lakes.toml", include_bytes!("../../../../producers/sources/natural-earth-lakes.toml")),
+    ("osm-land-polygons.toml", include_bytes!("../../../../producers/sources/osm-land-polygons.toml")),
 ];
 
 /// An accepted version of the staged declarations (`STAGED`), its index named in records `m`: the

@@ -1,0 +1,20 @@
+name = "OpenStreetMap land polygons, split, WGS84 (osmdata.openstreetmap.de)"
+what = "The land side of OpenStreetMap's coastline, which a region's land is cut back to"
+credit = "© OpenStreetMap contributors; land polygons by osmdata.openstreetmap.de"
+licence = "ODbL-1.0"
+licence_url = "https://opendatacommons.org/licenses/odbl/"
+source = "https://osmdata.openstreetmap.de/data/land-polygons.html"
+retrieved = "2026-10-18"
+territory = "world"
+notes = "land-polygons-split-4326.zip as published on 2026-10-18 (the coastline of about then, not the regions' OSM pass of 2026-09-28: the sea between the two is the nearest coast's by the regions' rules), kept in sources/fetched/osm-land-polygons/."
+
+[data]
+role = "regions-land"
+format = "zip-shapefile"
+url = "https://osmdata.openstreetmap.de/download/land-polygons-split-4326.zip"
+version = "2026-10-18"
+refresh = "pinned"
+
+[data.params]
+path = "sources/fetched/osm-land-polygons/land-polygons-split-4326.zip"
+layer = "land_polygons"

@@ -39,6 +39,8 @@ pub struct Folder {
     pub shapes: BTreeMap<String, (String, Result<Polys, String>)>,
     /// `pins.toml`, when there and read.
     pub pins: BTreeMap<String, String>,
+    /// `rules.toml`, when there and read.
+    pub rules: Option<super::water::Rules>,
     /// The files that didn't parse (their own findings are the file checks').
     pub unread: BTreeSet<String>,
     /// Two region files with one id, or two shapes with one name.
@@ -57,8 +59,13 @@ pub fn is_pins(path: &str) -> bool {
     path == "pins.toml"
 }
 
-/// Whether the regions take a file: a region file (`<id>.toml`), a shape (`<name>.geojson`) or
-/// `pins.toml`. Anything else is ignored: neither checked nor read (§6.1.2).
+/// Whether a drop-box path is `rules.toml` (at the folder's top).
+pub fn is_rules(path: &str) -> bool {
+    path == super::water::RULES
+}
+
+/// Whether the regions take a file: a region file (`<id>.toml`), a shape (`<name>.geojson`),
+/// `pins.toml` or `rules.toml`. Anything else is ignored: neither checked nor read (§6.1.2).
 pub fn takes(path: &str) -> bool {
     let n = file_name(path);
     n.ends_with(".toml") || n.ends_with(".geojson")
@@ -85,7 +92,14 @@ impl Folder {
             let bytes = read(&p)?;
             f.hashes.insert(p.clone(), store::naming::hash16(&bytes));
             let name = file_name(&p).to_string();
-            if is_pins(&p) {
+            if is_rules(&p) {
+                match std::str::from_utf8(&bytes).ok().map(super::water::parse_rules) {
+                    Some(Ok(r)) => f.rules = Some(r),
+                    _ => {
+                        f.unread.insert(p);
+                    }
+                }
+            } else if is_pins(&p) {
                 match std::str::from_utf8(&bytes).ok().map(super::file::parse_pins) {
                     Some(Ok(pins)) => f.pins = pins,
                     _ => {
@@ -138,6 +152,29 @@ impl Folder {
         Ok(f)
     }
 
+    /// The regions under folder `g` (its path), `but` left out.
+    pub fn members(&self, g: &str, but: &str) -> Vec<String> {
+        self.regions
+            .iter()
+            .filter(|(id, (p, _))| id.as_str() != but && p.starts_with(&format!("{g}/")))
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// The regions a region needs resolved first: those it names (`region:`, `land:`) and the
+    /// members of the folders it names (`group:`), sorted, once each.
+    pub fn deps(&self, r: &Region) -> Vec<String> {
+        // (Its outline's: its water's are `water::finish`'s, once every outline is resolved.)
+        let (ids, groups) = r.outline_refs();
+        let mut v: Vec<String> = ids.into_iter().filter(|d| *d != r.id).map(str::to_string).collect();
+        for g in groups {
+            v.extend(self.members(g, &r.id));
+        }
+        v.sort();
+        v.dedup();
+        v
+    }
+
     /// The OSM pass a region is written against: its own `[pins]`, else `pins.toml`'s.
     pub fn pin<'a>(&'a self, r: &'a Region) -> Option<&'a str> {
         r.pins.get("osm").or_else(|| self.pins.get("osm")).map(String::as_str)
@@ -157,6 +194,8 @@ pub struct Context<'a> {
     pub memo: Option<&'a Memo>,
     /// What the context is, for the memo's keys: the outline set's and the extract's names.
     pub names: String,
+    /// The regions' datasets (sea zones, territorial seas, lakes, the coastline's land), when read.
+    pub data: Option<&'a super::data::Datasets>,
 }
 
 /// Resolutions kept, by a key of everything they were made from.
@@ -167,6 +206,9 @@ pub type Memo = std::sync::Mutex<std::collections::HashMap<String, (Result<Resol
 pub struct Resolved {
     pub geometry: Geometry,
     pub drawn: Drawn,
+    /// For a region with water, before `water::finish`: the lakes over 100 km² its outline takes
+    /// in (plain frame), which become its water unless another region's water names them.
+    pub lakes: Area,
 }
 
 /// What resolving a folder gives.
@@ -189,6 +231,7 @@ pub fn resolve(folder: &Folder, ctx: &Context) -> Outcome {
     for id in ids {
         visit(&id, folder, ctx, &mut state, &mut Vec::new(), &mut held, &mut keys, &mut out);
     }
+    super::water::finish(folder, ctx, &mut out);
     out.problems.sort_by(|a, b| (a.check, &a.about, &a.found).cmp(&(b.check, &b.about, &b.found)));
     out.problems.dedup();
     out
@@ -228,7 +271,8 @@ fn visit(
     let Some((path, r)) = folder.regions.get(id) else { return };
     state.insert(id.to_string(), 1);
     stack.push(id.to_string());
-    for dep in r.regions() {
+    let deps = folder.deps(r);
+    for dep in deps.iter().map(String::as_str) {
         if !folder.regions.contains_key(dep) {
             out.problems.push(Problem {
                 check: "rg-ref",
@@ -247,7 +291,7 @@ fn visit(
     if held.contains(id) {
         return;
     }
-    if let Some(dep) = r.regions().into_iter().find(|d| held.contains(*d) || !out.resolved.contains_key(*d)) {
+    if let Some(dep) = deps.iter().map(String::as_str).find(|d| held.contains(*d) || !out.resolved.contains_key(*d)) {
         out.problems.push(Problem {
             check: "rg-ref",
             about: vec![id.to_string(), format!("region:{dep}")],
@@ -270,8 +314,11 @@ fn visit(
     for n in r.shapes() {
         parts.push(format!("{n} {:?}", folder.shapes.get(n).map(|s| folder.hashes.get(&s.0))));
     }
-    for d in r.regions() {
+    for d in &deps {
         parts.push(format!("{d} {:?}", keys.get(d)));
+    }
+    if r.needs_data() {
+        parts.push(ctx.data.map(|d| d.names.clone()).unwrap_or_default());
     }
     let key = store::naming::hash16(parts.join("\n").as_bytes());
     keys.insert(id.to_string(), key.clone());
@@ -280,7 +327,7 @@ fn visit(
         Some(k) => k,
         None => {
             let mut needs = BTreeSet::new();
-            let res = resolve_one(r, path, folder, ctx, &out.resolved, &mut needs);
+            let res = resolve_one(r, path, folder, ctx, &out.resolved, &out.resolved, false, &mut needs);
             let needs: Vec<Id> = needs.into_iter().collect();
             if let Some(m) = ctx.memo {
                 m.lock().unwrap().insert(key, (res.clone(), needs.clone()));
@@ -305,7 +352,7 @@ fn problem(check: &'static str, r: &Region, path: &str, found: Vec<String>, mess
 }
 
 /// A part's geometry before the frame: rings (or a line's points), E7, as read.
-enum Leaf {
+pub(super) enum Leaf {
     /// Rings (even–odd), each with the tolerance it's kept with (a `region:`'s shapes) and the
     /// country of an `osm:` part.
     Rings(Vec<(Vec<Ring>, u32)>, String),
@@ -329,12 +376,16 @@ fn relations_through(r: &Region, folder: &Folder, seen: &mut BTreeSet<String>, o
     }
 }
 
-fn resolve_one(
+/// A region resolved: its outline (`water` false: for a region with water, its land), or its water
+/// as written (`water` true, `done` then holding the regions' final geometry and `lands` their land).
+pub(super) fn resolve_one(
     r: &Region,
     path: &str,
     folder: &Folder,
     ctx: &Context,
     done: &BTreeMap<String, Resolved>,
+    lands: &BTreeMap<String, Resolved>,
+    water: bool,
     needs: &mut BTreeSet<Id>,
 ) -> Result<Resolved, Vec<Problem>> {
     let mut ps = Vec::new();
@@ -406,7 +457,7 @@ fn resolve_one(
     // The leaves.
     let mut leaves: BTreeMap<String, Leaf> = BTreeMap::new();
     let mut drawn_osm: BTreeMap<u64, Vec<Vec<Vec<[i32; 2]>>>> = BTreeMap::new();
-    for part in r.parts() {
+    for part in r.parts_of(water) {
         match part {
             Part::Osm(id) => {
                 let key = part.to_string();
@@ -483,6 +534,64 @@ fn resolve_one(
                     }
                 }
             }
+            Part::Eez(k) | Part::Ts12(k) | Part::NeLake(k) => {
+                let key = part.to_string();
+                let Some(data) = ctx.data else {
+                    ps.push(problem("rg-data", r, path, vec![key.clone()], format!("{}: {key}: the regions' datasets (sea zones, lakes, the coastline's land) aren't read now: their sources aren't declared, or not in sources/fetched (docs/inputs.md §6.1.7)", r.id)));
+                    continue;
+                };
+                let got = match part {
+                    Part::Eez(_) => data.eez.get(k).cloned(),
+                    Part::Ts12(_) => data.ts12.get(k).cloned(),
+                    _ => data.lakes.get(k).map(|l| l.0.clone()),
+                };
+                match got {
+                    Some(rs) => {
+                        leaves.insert(key, Leaf::Rings(vec![(rs, 0)], String::new()));
+                    }
+                    None => ps.push(problem("rg-data-missing", r, path, vec![key.clone()], format!("{}: {key}: the dataset ({}) has no such id", r.id, data.names))),
+                }
+            }
+            Part::OsmWay(w) => {
+                let key = part.to_string();
+                match ctx.extract.and_then(|e| e.way(*w)) {
+                    None => {
+                        needs.insert(Id::W(*w));
+                        ps.push(problem("rg-extract", r, path, vec![format!("w{w}"), pass.into()], format!("{}: {key}: waiting for the regions' extract of OSM {pass} to have it", r.id)));
+                    }
+                    Some(None) => ps.push(problem("rg-osm-missing", r, path, vec![format!("w{w}"), pass.into()], format!("{}: OSM {pass} has no way {w}", r.id))),
+                    Some(Some(way)) if way.ends[0] != way.ends[1] || way.line.len() < 4 => ps.push(problem("rg-osm-no-area", r, path, vec![key.clone()], format!("{}: {key}: the way isn't closed, so it has no area", r.id))),
+                    Some(Some(way)) => {
+                        let ring = rings64(&[way.line[..way.line.len() - 1].to_vec()]);
+                        leaves.insert(key, Leaf::Rings(vec![(ring, 0)], String::new()));
+                    }
+                }
+            }
+            Part::Box(b, _) => {
+                leaves.insert(part.to_string(), Leaf::Rings(vec![(geom::box_area(*b).rings(), 0)], String::new()));
+            }
+            Part::Earth => {
+                leaves.insert(part.to_string(), Leaf::Rings(vec![(geom::earth().rings(), 0)], String::new()));
+            }
+            Part::Land(d) => {
+                // (Its own land: only its water names it, read once the land is resolved.)
+                let Some(res) = lands.get(d) else { continue };
+                let shapes = res.geometry.shapes.iter().map(|s| (rings64(&s.rings), s.tolerance_m)).collect();
+                leaves.insert(part.to_string(), Leaf::Rings(shapes, String::new()));
+            }
+            Part::Group(g) => {
+                let mut shapes = Vec::new();
+                for m in folder.members(g, &r.id) {
+                    if let Some(res) = done.get(&m) {
+                        shapes.extend(res.geometry.shapes.iter().map(|s| (rings64(&s.rings), 0)));
+                    }
+                }
+                if shapes.is_empty() {
+                    ps.push(problem("rg-ref", r, path, vec![part.to_string()], format!("{}: {part}: no region in that folder", r.id)));
+                    continue;
+                }
+                leaves.insert(part.to_string(), Leaf::Rings(shapes, String::new()));
+            }
             Part::Region(d) => {
                 let res = &done[d];
                 let shapes = res.geometry.shapes.iter().map(|s| (rings64(&s.rings), s.tolerance_m)).collect();
@@ -534,6 +643,9 @@ fn resolve_one(
             }
         }
     }
+    if r.has_water() && ctx.data.is_none_or(|d| !d.has_land()) {
+        ps.push(problem("rg-data", r, path, vec!["land".into()], format!("{}: a region with water is cut back to the coastline's land, which isn't read now (the regions-land source: docs/inputs.md §6.1.7)", r.id)));
+    }
     if !ps.is_empty() {
         return Err(ps);
     }
@@ -561,6 +673,7 @@ fn resolve_one(
         return Ok(Resolved {
             geometry: Geometry { id: r.id.clone(), osm: pass.to_string(), shapes, relations: names.0, ways: names.1 },
             drawn: Drawn { fmt: 1, id: r.id.clone(), name: r.name.clone(), outline: r.outline_text(), shapes: drawn },
+            lakes: Area::default(),
         });
     }
     // Computed: every leaf in the region's frame.
@@ -609,17 +722,26 @@ fn resolve_one(
             parts.iter().filter_map(|p| eval(p, direct, &placed, r, path).map_err(|e| ps.push(e)).ok()).collect();
         geom::union_all(&areas)
     };
-    let mut result = eval_all(&r.outline, true, &mut ps);
-    if !r.intersect.is_empty() {
+    // (A region with water: its outline's parts exact, no coast tolerance; cut back to the land.)
+    let mut result = if water { eval_all(&r.water, false, &mut ps) } else { eval_all(&r.outline, !r.has_water(), &mut ps) };
+    if !water && !r.intersect.is_empty() {
         result = result.intersect(&eval_all(&r.intersect, false, &mut ps));
     }
-    if !r.minus.is_empty() {
+    if !water && !r.minus.is_empty() {
         result = result.minus(&eval_all(&r.minus, false, &mut ps));
     }
     if !ps.is_empty() {
         return Err(ps);
     }
-    if result.is_empty() {
+    let mut lakes = Area::default();
+    if r.has_water() && !water {
+        let data = ctx.data.expect("checked above");
+        let land = super::water::in_frame(&frame, result.bbox(), |b| data.land_in(b));
+        let big = super::water::in_frame(&frame, result.bbox(), |b| data.big_lakes_in(b));
+        lakes = result.intersect(&big);
+        result = result.intersect(&land.minus(&big));
+    }
+    if result.is_empty() && !r.has_water() {
         return Err(vec![problem(
             "rg-empty",
             r,
@@ -646,6 +768,7 @@ fn resolve_one(
         .unwrap_or_default();
     let pieces = Frame::split(&result);
     let n = pieces.len();
+    let lakes_plain: Vec<Area> = Frame::split(&lakes).into_iter().map(|p| p.1).collect();
     let mut shapes = Vec::new();
     let mut drawn = BTreeMap::new();
     for (k, (_, piece)) in pieces.into_iter().enumerate() {
@@ -663,6 +786,7 @@ fn resolve_one(
     Ok(Resolved {
         geometry: Geometry { id: r.id.clone(), osm: pass.to_string(), shapes, relations: names.0, ways: names.1 },
         drawn: Drawn { fmt: 1, id: r.id.clone(), name: r.name.clone(), outline: r.outline_text(), shapes: drawn },
+        lakes: geom::union_all(&lakes_plain),
     })
 }
 
@@ -709,9 +833,39 @@ fn string_ways(ids: &[u64], ways: &[&super::extract::Way]) -> Result<Vec<[i32; 2
 
 /// A part's area in the region's frame (`direct`: listed in `outline` itself, where the coast
 /// tolerance is a real 1 km buffer).
-fn eval(part: &Part, direct: bool, placed: &BTreeMap<String, Leaf>, r: &Region, path: &str) -> Result<Area, Problem> {
+pub(super) fn eval(part: &Part, direct: bool, placed: &BTreeMap<String, Leaf>, r: &Region, path: &str) -> Result<Area, Problem> {
     match part {
-        Part::Osm(_) | Part::Shape(_) | Part::Region(_) => {
+        Part::Rest => Ok(Area::default()),
+        Part::Union(ps) => Ok(geom::union_all(&ps.iter().map(|p| eval(p, false, placed, r, path)).collect::<Result<Vec<_>, _>>()?)),
+        Part::Intersect(ps) => {
+            let mut a = eval(&ps[0], false, placed, r, path)?;
+            for p in &ps[1..] {
+                a = a.intersect(&eval(p, false, placed, r, path)?);
+            }
+            Ok(a)
+        }
+        Part::Minus(ps) => {
+            let a = eval(&ps[0], false, placed, r, path)?;
+            let rest: Vec<Area> = ps[1..].iter().map(|p| eval(p, false, placed, r, path)).collect::<Result<_, _>>()?;
+            Ok(if rest.is_empty() { a } else { a.minus(&geom::union_all(&rest)) })
+        }
+        Part::Nearest { of, to, than, step_m, .. } => {
+            let of = eval(of, false, placed, r, path)?;
+            let to: Vec<Area> = to.iter().map(|p| eval(p, false, placed, r, path)).collect::<Result<_, _>>()?;
+            let than: Vec<Area> = than.iter().map(|p| eval(p, false, placed, r, path)).collect::<Result<_, _>>()?;
+            Ok(geom::nearest(&of, &geom::union_all(&to), &geom::union_all(&than), *step_m))
+        }
+        Part::Osm(_)
+        | Part::Shape(_)
+        | Part::Region(_)
+        | Part::OsmWay(_)
+        | Part::Eez(_)
+        | Part::Ts12(_)
+        | Part::NeLake(_)
+        | Part::Box(..)
+        | Part::Earth
+        | Part::Land(_)
+        | Part::Group(_) => {
             let Some(Leaf::Rings(shapes, _)) = placed.get(&part.to_string()) else { unreachable!("every leaf read") };
             let areas: Vec<Area> = shapes
                 .iter()

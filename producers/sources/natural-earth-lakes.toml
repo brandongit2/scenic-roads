@@ -1,0 +1,21 @@
+name = "Natural Earth 1:10m Physical Vectors, Lakes, version 5.0.0"
+what = "The lakes over 100 km² that are water, not land, in the regions"
+credit = "Made with Natural Earth. Free vector and raster map data @ naturalearthdata.com."
+licence = "Public domain"
+licence_url = "https://www.naturalearthdata.com/about/terms-of-use/"
+source = "https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-lakes/"
+retrieved = "2026-10-18"
+territory = "world"
+notes = "ne_10m_lakes.zip (its VERSION.txt says 5.0.0) from naciscdn.org, kept in sources/fetched/natural-earth-lakes-10m/. A lake by its ne_id; those over 100 km² are water (crate::inputs::regions::data::BIG_LAKE_KM2)."
+
+[data]
+role = "regions-lakes"
+format = "zip-shapefile"
+url = "https://naciscdn.org/naturalearth/10m/physical/ne_10m_lakes.zip"
+version = "5.0.0"
+refresh = "pinned"
+
+[data.params]
+path = "sources/fetched/natural-earth-lakes-10m/ne_10m_lakes.zip"
+layer = "ne_10m_lakes"
+id = "ne_id"
