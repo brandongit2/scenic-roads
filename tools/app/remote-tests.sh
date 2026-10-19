@@ -74,8 +74,10 @@ remote_main() {  # on the M4: <key> <command>
     done
   fi
   touch $dir
-  eval "$(mise env -s zsh 2>/dev/null)" 2>/dev/null
+  # (ssh's non-login shell has only the system's PATH: brew's, where mise is, first.)
+  path=(/opt/homebrew/bin ~/.cargo/bin $path)
   mise trust -q 2>/dev/null
+  eval "$(mise env -s zsh 2>/dev/null)" 2>/dev/null
   export CARGO_TARGET_DIR=$dir/target
   if [[ -x /opt/homebrew/bin/sccache ]]; then
     export RUSTC_WRAPPER=/opt/homebrew/bin/sccache SCCACHE_DIR=~/Library/Caches/scenic-sccache SCCACHE_CACHE_SIZE=10G

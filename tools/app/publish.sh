@@ -146,7 +146,7 @@ export SCENIC_PUBLISH=1
 # folder kept there between publishes, at nice 10; here on the M4 itself, when it can't be reached,
 # or with SCENIC_TESTS_LOCAL=1): the suite took 13-30 min on the M1 beside its builds, and a
 # timing test failed under that load. Its exit status is the suite's.
-suite='export SCENIC_PUBLISH=1; cargo nextest --version >/dev/null 2>&1 || mise install -q; rc=0
+suite='export SCENIC_PUBLISH=1; cargo nextest --version >/dev/null 2>&1 || { mise install -q; eval "$(mise env -s zsh)"; }; rc=0
 cargo nextest run --no-fail-fast --hide-progress-bar -p store -p names -p pipeline --lib || rc=$?
 cargo nextest run --no-fail-fast --hide-progress-bar -p pipeline --test cache_accessor --test write_sets --test budgets --test timings_python || rc=$?
 exit $rc'
