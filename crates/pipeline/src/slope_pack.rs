@@ -605,6 +605,20 @@ pub fn build_piece(
     expect_same: bool,
     on: &(dyn Fn(&str, u64, u64) + Sync),
 ) -> Result<Report> {
+    let rep = build_piece_later(out, t, expect_same, on)?;
+    out.save()?;
+    Ok(rep)
+}
+
+/// `build_piece`, its uploads put off (crate::out::Out::put_file_later): they go on beside what the
+/// job does next, and the piece is saved (and noted done) by a later save (`Out::save_upto` the
+/// mark after it).
+pub fn build_piece_later(
+    out: &mut Out,
+    t: (u32, u32),
+    expect_same: bool,
+    on: &(dyn Fn(&str, u64, u64) + Sync),
+) -> Result<Report> {
     use crate::timings::{phase, Class};
     let mut rep = Report::default();
     let p = phase("the terrain packs' indexes read", Class::NasRead);
@@ -647,18 +661,13 @@ pub fn build_piece(
         }
     }
     drop(p);
-    let up = phase("uploaded", Class::NasWrite);
     match pack {
-        Some(p) => {
-            out.put_file(&p.logical, "pack", &p.local)?;
-        }
+        Some(p) => out.put_file_later(&p.logical, "pack", &p.local)?,
         None => {
             crate::terrain_pack::drop_named(out, &[hl]);
         }
     }
-    out.put_file(&ml, "sect", &mid)?;
-    drop(up);
-    out.save()?;
+    out.put_file_later(&ml, "sect", &mid)?;
     count.one();
     Ok(rep)
 }
@@ -1603,6 +1612,82 @@ mod tests {
         assert!(read_mids(&out, q, &ts[1..2]).is_err());
         // A piece outside q: refused before anything is read.
         assert!(read_mids(&out, (0, 0), &ts).unwrap_err().to_string().contains("isn't in 3/0/0"));
+    }
+
+    /// Task #400's measure of uploads put off (run by hand): real slope pieces worked out from
+    /// `<root>`'s terrain (read only), each one's hi pack and mid uploaded to `<scratch root>` (a
+    /// folder of its own, never the build's) as a job of them would, in turn (`now`: each uploaded
+    /// before the next piece begins, as before) or put off (`later`: each uploading beside the
+    /// next piece's work, saved after it), timed.
+    /// SCENIC_SLOPE_UPLOADS="<root> <scratch root> now|later 6/x/y,…"; unset, nothing.
+    #[test]
+    fn measure_uploads_put_off() {
+        let Ok(m) = std::env::var("SCENIC_SLOPE_UPLOADS") else { return };
+        let a: Vec<&str> = m.split_whitespace().collect();
+        let (root, dest, later) = (std::path::Path::new(a[0]), std::path::Path::new(a[1]), a[2] == "later");
+        assert!(!dest.starts_with(root) && !root.starts_with(dest), "a scratch root of its own");
+        let ts: Vec<(u32, u32)> = a[3]
+            .split(',')
+            .map(|t| {
+                let u = crate::legacy::Unit::parse(t).unwrap();
+                (u.x, u.y)
+            })
+            .collect();
+        let scratch = tempfile::tempdir().unwrap();
+        let src = Out::unbound(root, &scratch.path().join("src")).unwrap();
+        let mut out = Out::unbound(dest, &scratch.path().join("dest")).unwrap();
+        let none = |_: &str, _: u64, _: u64| {};
+        let t0 = std::time::Instant::now();
+        let (mut work, mut waited, mut bytes) = (0f64, 0f64, 0u64);
+        let mut before: Option<crate::out::Mark> = None;
+        for &t in &ts {
+            let w = std::time::Instant::now();
+            let terr = ManifestTiles::with_copies(&src, "terrain", src.scratch_file("terrain-copies"));
+            let (get, has) = terrain_reads(&terr);
+            terr.copy_here(9, t.0 << 3, t.1 << 3);
+            let terrain = Terrain::new(&get, &has);
+            let count =
+                Count { done: Default::default(), total: 1, said: Mutex::new(std::time::Instant::now()), on: &none };
+            let (hi, lo) = piece(&terrain, &has, t, &count);
+            drop(terrain);
+            let mut it = hi.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
+            let pack =
+                crate::layers::write_pack_local(&out, "slope", "slope4-png", false, "hi", (6, t.0, t.1), &mut it)
+                    .unwrap();
+            let mid = out.scratch_file(&format!("{}.sect", mid_logical(t.0, t.1)));
+            write_mid(&mid, t, &lo).unwrap();
+            bytes += pack.as_ref().map_or(0, |p| std::fs::metadata(&p.local).unwrap().len())
+                + std::fs::metadata(&mid).unwrap().len();
+            work += w.elapsed().as_secs_f64();
+            let u = std::time::Instant::now();
+            if later {
+                if let Some(p) = pack {
+                    out.put_file_later(&p.logical, "pack", &p.local).unwrap();
+                }
+                out.put_file_later(&mid_logical(t.0, t.1), "sect", &mid).unwrap();
+                if let Some(m) = before {
+                    out.save_upto(m).unwrap();
+                }
+                before = Some(out.mark());
+            } else {
+                if let Some(p) = pack {
+                    out.put_file(&p.logical, "pack", &p.local).unwrap();
+                }
+                out.put_file(&mid_logical(t.0, t.1), "sect", &mid).unwrap();
+                out.save().unwrap();
+            }
+            waited += u.elapsed().as_secs_f64();
+        }
+        let u = std::time::Instant::now();
+        out.save().unwrap();
+        waited += u.elapsed().as_secs_f64();
+        println!(
+            "uploads {}: {} pieces, {:.0} MB, in {:.1} s: working out {work:.1} s, waiting on uploads {waited:.1} s",
+            a[2],
+            ts.len(),
+            bytes as f64 / 1e6,
+            t0.elapsed().as_secs_f64()
+        );
     }
 
     /// Task #400's measure (run by hand, read-only: nothing written to the root): a real slope piece

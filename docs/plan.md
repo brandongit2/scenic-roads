@@ -166,6 +166,13 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
 - Every built file is `<logical>.<hash16>.<ext>`, never rewritten. A write goes to `<name>.tmp`, is
   read back and checked against its hash, then renamed. An unchanged file keeps its name, so a
   rebuild uploads only what changed.
+- **Uploads beside the work** (`Out::put_file_later`): slope and terrain pieces, map tiles (`pack`)
+  and the 3D buildings' tiles upload a target's files on a thread of their own while the job works
+  on its next target, and a unit its grids and base pack while it makes its road values. A file is
+  named in the manifest only once it has landed; a target is saved and noted done only after its
+  uploads have (`save_upto`), and before the job stops at a safe point. An upload that fails
+  transiently is tried again after 2, 5 and 15 s; one that fails or doesn't land within a minute
+  and a second per 2 MB fails the job, the target not noted done.
 - **Catalogs** list every file the map reads, with the coverage they were built for and the credits
   of their sources. Readers take the highest that decodes.
 - **The build manifest** (`state/build/manifest.json`) lists everything built; **job keys**

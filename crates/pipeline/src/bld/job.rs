@@ -574,6 +574,20 @@ pub fn sites(out: &Out, t: Unit) -> Result<Vec<[i32; 2]>> {
 /// offered to workers as tasks (`super::task::Offers`) while the others are made here, in order;
 /// every area's tiles go into the pack in its turn, the same bytes wherever it was made.
 pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::offload::Offload>) -> Result<Summary> {
+    let sum = build_later(out, cov, t, offload)?;
+    out.save()?;
+    Ok(sum)
+}
+
+/// `build`, its uploads put off (crate::out::Out::put_file_later): they go on beside what the job
+/// does next, and the tile is saved (and noted done) by a later save (`Out::save_upto` the mark
+/// after it). Its summary names the files as they'll land (their content names, made here).
+pub fn build_later(
+    out: &mut Out,
+    cov: &Coverage,
+    t: Unit,
+    offload: Option<&crate::offload::Offload>,
+) -> Result<Summary> {
     ensure!(t.z == 6, "bldtiles takes z6 tiles ({} isn't one)", t.slash());
     use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
@@ -640,7 +654,6 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
         std::fs::write(&mid_local, field::write_mid(&mids)?)?;
     }
     drop(mids);
-    let p = phase("uploaded", Class::NasWrite);
     for (k, (logical, local, ext, keep)) in [
         (&logical, &local, "pack", n > 0),
         (&field_logical, &field_local, "pack", has_field),
@@ -650,7 +663,8 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
     .enumerate()
     {
         if keep {
-            let name = Some(out.put_file(logical, ext, local)?);
+            let name = Some(store::naming::content_name(logical, &store::naming::hash16_file(local)?, ext));
+            out.put_file_later(logical, ext, local)?;
             match k {
                 0 => sum.pack = name,
                 1 => sum.field_pack = name,
@@ -663,8 +677,6 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
             }
         }
     }
-    drop(p);
-    out.save()?;
     if n == 0 {
         eprintln!("bldtiles {}: no building in the coverage ({:.0?})", t.slash(), t0.elapsed());
         return Ok(sum);

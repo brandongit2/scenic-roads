@@ -998,13 +998,25 @@ fn road_ids(recs: &[pipeline::legacy::RoadRec]) -> Vec<u64> {
 }
 
 fn put_sect(out: &mut Out, logical: &str, meta: serde_json::Value, sections: &[(&str, &[u8])]) -> Result<String> {
+    let local = sect_local(out, logical, meta, sections)?;
+    out.put_file(logical, "sect", &local)
+}
+
+/// `put_sect`, its upload put off (pipeline::out::Out::put_file_later).
+fn put_sect_later(out: &mut Out, logical: &str, meta: serde_json::Value, sections: &[(&str, &[u8])]) -> Result<()> {
+    let local = sect_local(out, logical, meta, sections)?;
+    out.put_file_later(logical, "sect", &local)
+}
+
+/// A sectioned file (store::sect) written in the scratch folder, to upload as `logical`.
+fn sect_local(out: &Out, logical: &str, meta: serde_json::Value, sections: &[(&str, &[u8])]) -> Result<PathBuf> {
     let local = out.scratch_file(&format!("{logical}.sect"));
     let mut w = store::sect::SectWriter::create(&local, meta)?;
     for (n, bytes) in sections {
         w.add(n, bytes)?;
     }
     w.finish()?;
-    out.put_file(logical, "sect", &local)
+    Ok(local)
 }
 
 // ---- base packs, locally ------------------------------------------------------------------
@@ -1279,9 +1291,11 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
     let n = ts.len() as u64;
     // (Within a tile: its ways read, then its tiles drawn, then written.)
     let at = |k: usize, f: f64| pipeline::agent::jobs::report_f(k as f64 + f, n, "map tiles");
+    // (Each tile's uploads go on beside the next tile's work: it's noted done once they've landed.)
+    let mut landing = Landing::default();
     for (k, t) in ts.iter().enumerate() {
         // (A safe point before each tile: with the build pausing, the job ends here.)
-        pipeline::control::safe_point("pack");
+        landing.safe_point(out, "pack")?;
         // (What each tile takes, for the lead's offers by the measures: docs/pool.md §7.7.)
         let c = cost_start("pack", &t.slash());
         at(k, 0.0);
@@ -1289,7 +1303,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
         // (Each stage of a tile's: one phase over the tiles.)
         let p = phase("ways gathered from the base packs", Class::Compute);
         let near: Vec<&BasePack> = refs.iter().copied().filter(|bp| meets(bp.extent, tb)).collect();
-        let in_t = hipack::ways_in(&near, tb)?;
+        let in_t = landing.after(out, |_| hipack::ways_in(&near, tb))?;
         drop(p);
         // (Its inputs' measures: the base packs it meets, their bytes, its ways.)
         pipeline::costin::set("units", near.len() as u64);
@@ -1312,31 +1326,34 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
             continue;
         }
         let p = phase("road and rail tiles drawn", Class::Compute);
-        let win = hipack::way_inputs(&near, &in_t)?;
+        let win = landing.after(out, |_| hipack::way_inputs(&near, &in_t))?;
         at(k, 0.25);
         let (roads, rails) = hipack::tiles(&win, 6, t.x, t.y, 9..=14, false);
         drop(p);
         at(k, 0.6);
-        let p = phase("road and rail packs written to the NAS", Class::NasWrite);
+        // (Its packs' uploads put off: they go on beside its hidata's making and the next tile's
+        // work, and it's noted done once they've landed.)
+        let p = phase("road and rail packs written", Class::Disk);
         for (layer, enc) in [("roads", &roads), ("rails", &rails)] {
             let mut it = enc.iter().map(|e| {
                 let (z, x, y) =
                     ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
                 (z, x, y, e.gz.clone(), e.raw_len as u32)
             });
-            if layers::write_pack(out, layer, "rt7", true, "hi", (6, t.x, t.y), &mut it)?.is_none() {
-                drop_entries(out, &[format!("layers/{layer}/hi/{}", t.dash())])?;
+            match layers::write_pack_local(out, layer, "rt7", true, "hi", (6, t.x, t.y), &mut it)? {
+                Some(lp) => out.put_file_later(&lp.logical, "pack", &lp.local)?,
+                None => drop_entries(out, &[format!("layers/{layer}/hi/{}", t.dash())])?,
             }
         }
         drop(p);
         at(k, 0.75);
         let p = phase("hidata made", Class::Compute);
-        let hd = hipack::hidata(*t, &near, &in_t)?;
+        let hd = landing.after(out, |_| hipack::hidata(*t, &near, &in_t))?;
         // The zoomed-out summaries (docs/phase5.md), from the same parts.
         let ls = roadcore::lsum::build(&hd.parts, &hd.psamples, &hd.pch, &hd.here, &hd.railinfo);
         drop(p);
-        let p = phase("hidata written to the NAS", Class::NasWrite);
-        put_sect(
+        let p = phase("hidata written", Class::Disk);
+        put_sect_later(
             out,
             &format!("hidata/{}", t.dash()),
             serde_json::json!({"fmt": 1, "tile": t.slash(), "here": hd.here.len(), "parts": hd.parts.len(), "lsum": roadcore::lsum::LSUM_V}),
@@ -1355,10 +1372,8 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
             ],
         )?;
         drop(p);
-        out.save()?;
         note_cost("pack", &t.slash(), c);
-        pipeline::control::done("pack", &t.slash());
-        eprintln!(
+        let said = format!(
             "pack {} ({}/{}): {} ways, {} road tiles, {} parts ({:.0?})",
             t.slash(),
             k + 1,
@@ -1368,7 +1383,9 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
             hd.parts.len(),
             t0.elapsed()
         );
+        landing.then(out, "pack", &t.slash(), said)?;
     }
+    landing.land(out)?;
     pipeline::agent::jobs::report(n, n, "map tiles");
     Ok(())
 }
@@ -4479,14 +4496,20 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
         std::fs::remove_dir_all(pipeline::unit::ahead_carry(&dir)).ok();
     };
     // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
-    // for later units and packs. (The canopy step made canopy and cover for every tile.)
-    let s = unit_stage("missing grids written", Class::NasWrite);
+    // for later units and packs. (The canopy step made canopy and cover for every tile.) Their
+    // uploads, and its base pack's, are put off: they go on beside the rest of its last part, and
+    // its save below waits for them (pipeline::out::Out::put_file_later).
+    let s = unit_stage("missing grids written", Class::Disk);
     for var in ["class", "canopy", "cover"] {
         if rep.staged.missing.get(var).copied().unwrap_or(0) == 0 {
             continue;
         }
         let mut tiles = pipeline::stage::grid_tiles_in(&dir, var, u.x, u.y)?.into_iter();
-        layers::write_pack(out, &format!("grid-{var}"), "u8-zstd", false, "hi", (6, u.x, u.y), &mut tiles)?;
+        if let Some(p) =
+            layers::write_pack_local(out, &format!("grid-{var}"), "u8-zstd", false, "hi", (6, u.x, u.y), &mut tiles)?
+        {
+            out.put_file_later(&p.logical, "pack", &p.local)?;
+        }
     }
     s.end();
     // Its scenic results, for its next run. A cache: not keeping them only costs time later.
@@ -4533,9 +4556,9 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     let built = format!("pass:{date}");
     let bs = legacy::base_sections(&lg, u, &idx, &built);
     s.end();
-    let s = unit_stage("base pack written to the NAS", Class::NasWrite);
+    let s = unit_stage("base pack written", Class::Disk);
     let secs: Vec<(&str, &[u8])> = bs.sections.iter().map(|(n, v)| (*n, v.as_slice())).collect();
-    put_sect(out, &format!("base/{}", u.dash()), bs.meta, &secs)?;
+    put_sect_later(out, &format!("base/{}", u.dash()), bs.meta, &secs)?;
     s.end();
     // (The pass's road values read from the NAS; the unit's written back.)
     let s = unit_stage("road values made and written", Class::Mixed);
@@ -4878,19 +4901,25 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
     // Other workers, through the lead's coordinator (the agent's jobs there): some of a tile's
     // z8 areas offered as tasks while it builds the others.
     let offload = pipeline::offload::Offload::from_env(&out.scratch);
+    // (Each tile's uploads go on beside the next tile's work: it's noted done once they've landed.)
+    let mut landing = Landing::default();
     for (k, &t) in ts.iter().enumerate() {
-        pipeline::control::safe_point("bldtiles");
+        landing.safe_point(out, "bldtiles")?;
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start("bldtiles", &t.slash());
-        let sum = pipeline::bld::job::build(out, &cov, t, offload.as_ref())?;
-        eprintln!("bldtiles {}: {}", t.slash(), serde_json::to_string(&sum)?);
+        let sum = landing.after(out, |out| pipeline::bld::job::build_later(out, &cov, t, offload.as_ref()))?;
         // (Its inputs' measures: the buildings and parts read, drawn or not.)
         pipeline::costin::set("buildings", sum.buildings + sum.outside);
         pipeline::costin::set("parts", sum.parts);
-        pipeline::control::done("bldtiles", &t.slash());
         note_cost("bldtiles", &t.slash(), c);
+        landing.then(
+            out,
+            "bldtiles",
+            &t.slash(),
+            format!("bldtiles {}: {}", t.slash(), serde_json::to_string(&sum)?),
+        )?;
     }
-    Ok(())
+    landing.land(out)
 }
 
 /// depth-lo <Q …> | depth <T …>: the depth's assemblies of z3 tiles Q (their lo packs, z3–8) or
@@ -5221,8 +5250,10 @@ fn terrain_pieces(
     let offer = |t: &Unit| offer_after(t, 0);
     let offer_ahead = pipeline::terrain_task::offer_ahead();
     let mut ahead: Option<pipeline::terrain_task::Offers> = None;
+    // (Each piece's uploads go on beside the next piece's work: it's noted done once they've landed.)
+    let mut landing = Landing::default();
     for (k, t) in ts.iter().enumerate() {
-        pipeline::control::safe_point("terrain");
+        landing.safe_point(out, "terrain")?;
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start("terrain", &t.slash());
         let offers = match ahead.take() {
@@ -5234,20 +5265,23 @@ fn terrain_pieces(
                 pipeline::terrain_pack::piece_levels(cov, (t.x, t.y)).iter().map(|(_, l)| l.len()).sum();
             ahead = ts.get(k + 1).map(|n| offer_after(n, before));
         }
-        let r = pipeline::terrain_pack::build_piece_offered(
-            out,
-            &raw,
-            (t.x, t.y),
-            cov,
-            &src,
-            same.contains(&t.slash()),
-            &say,
-            offers,
-        )?;
-        eprintln!("terrain {} ({} of {n}): {r:?} ({:.0?})", t.slash(), k + 1, c.elapsed());
-        pipeline::control::done("terrain", &t.slash());
+        let r = landing.after(out, |out| {
+            pipeline::terrain_pack::build_piece_later(
+                out,
+                &raw,
+                (t.x, t.y),
+                cov,
+                &src,
+                same.contains(&t.slash()),
+                &say,
+                offers,
+            )
+        })?;
         note_cost("terrain", &t.slash(), c);
+        let said = format!("terrain {} ({} of {n}): {r:?} ({:.0?} and its uploads)", t.slash(), k + 1, c.elapsed());
+        landing.then(out, "terrain", &t.slash(), said)?;
     }
+    landing.land(out)?;
     pipeline::control::safe_point("terrain");
     pipeline::agent::jobs::part(names.len() - 1, &names);
     pack_raw_with(out, &raw_dir, &say);
@@ -5342,25 +5376,89 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
 fn slope_pieces(out: &mut Out, cov: &pipeline::coverage::Coverage, ts: &[Unit], same: &BTreeSet<String>) -> Result<()> {
     let names: Vec<String> = ts.iter().map(|t| format!("Working out {}'s slope", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    // (Each piece's uploads go on beside the next piece's work: it's noted done once they've landed.)
+    let mut landing = Landing::default();
     for (k, t) in ts.iter().enumerate() {
-        pipeline::control::safe_point("slope");
+        landing.safe_point(out, "slope")?;
         pipeline::agent::jobs::part(k, &names);
         // (A "none" piece first: nothing read, neither a `started` nor a cost line.)
         if !pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y, 20.0) {
+            landing.land(out)?;
             let n = pipeline::slope_pack::drop_piece(out, (t.x, t.y))?;
             eprintln!("slope {}: the coverage has left it; {n} files dropped", t.slash());
             pipeline::control::done("slope", &t.slash());
             continue;
         }
         let c = cost_start("slope", &t.slash());
-        let r = pipeline::slope_pack::build_piece(out, (t.x, t.y), same.contains(&t.slash()), &|what, done, total| {
-            pipeline::agent::jobs::report(done, total, what)
+        let r = landing.after(out, |out| {
+            pipeline::slope_pack::build_piece_later(out, (t.x, t.y), same.contains(&t.slash()), &|what, done, total| {
+                pipeline::agent::jobs::report(done, total, what)
+            })
         })?;
-        eprintln!("slope {}: {r:?} ({:.0?})", t.slash(), c.elapsed());
-        pipeline::control::done("slope", &t.slash());
         note_cost("slope", &t.slash(), c);
+        landing.then(
+            out,
+            "slope",
+            &t.slash(),
+            format!("slope {}: {r:?} ({:.0?} and its uploads)", t.slash(), c.elapsed()),
+        )?;
     }
-    Ok(())
+    landing.land(out)
+}
+
+/// A target whose uploads were put off (pipeline::out::Out::put_file_later) so they go on beside
+/// the next target's work: noted done (pipeline::control::done) only once they've landed and the
+/// save that names them is made (`land`), so never before its outputs are on the NAS. One at a
+/// time: a target's uploads wait for the one before's (`then`).
+#[derive(Default)]
+struct Landing {
+    /// The target uploading: its step, its name, the mark after its uploads, its line for the log.
+    up: Option<(&'static str, String, pipeline::out::Mark, String)>,
+}
+
+impl Landing {
+    /// The target uploading saved and noted done, once its uploads have landed (failing, the job
+    /// fails, the target not noted done).
+    fn land(&mut self, out: &mut Out) -> Result<()> {
+        if let Some((step, target, mark, said)) = self.up.take() {
+            out.save_upto(mark)?;
+            eprintln!("{said}");
+            pipeline::control::done(step, &target);
+        }
+        Ok(())
+    }
+
+    /// The next target's work, `f`, beside the uploading one's uploads; when it fails, the
+    /// uploading one is landed first (its outputs kept), then the failure returned.
+    fn after<T>(&mut self, out: &mut Out, f: impl FnOnce(&mut Out) -> Result<T>) -> Result<T> {
+        match f(out) {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if let Err(l) = self.land(out) {
+                    eprintln!("{l:#}");
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// `target` of `step`, its uploads put off just now, uploading next: the one before landed
+    /// first (its uploads came before these, so this waits for those alone).
+    fn then(&mut self, out: &mut Out, step: &'static str, target: &str, said: String) -> Result<()> {
+        self.land(out)?;
+        self.up = Some((step, target.to_string(), out.mark(), said));
+        Ok(())
+    }
+
+    /// `step`'s safe point: with the build pausing, the target uploading is landed (saved and noted
+    /// done) before the job stops there.
+    fn safe_point(&mut self, out: &mut Out, step: &str) -> Result<()> {
+        if pipeline::control::draining() {
+            self.land(out)?;
+        }
+        pipeline::control::safe_point(step);
+        Ok(())
+    }
 }
 
 /// slope-lo <3/x/y …>: slope's assemblies (pipeline::slope_pack::build_lo).
@@ -6031,6 +6129,54 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Task #400: a target whose uploads were put off is noted done only once they've landed and
+    /// the save naming them is made: after the next target's work (`then`), or at the end
+    /// (`land`), or before a failure of the next one's work is returned (`after`); one whose
+    /// upload failed isn't noted done, and the job fails.
+    #[test]
+    fn a_target_uploading_is_noted_done_once_its_uploads_have_landed() {
+        use super::{Landing, Out};
+        let d = tempfile::tempdir().unwrap();
+        let done = d.path().join("done");
+        // (The only test here that notes targets done.)
+        std::env::set_var(pipeline::control::DONE_ENV, &done);
+        let root = d.path().join("nas");
+        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let put = |out: &mut Out, l: &str, bytes: &[u8]| {
+            let p = out.scratch_file(l);
+            std::fs::write(&p, bytes).unwrap();
+            out.put_file_later(l, "pack", &p).unwrap();
+        };
+        let noted = || pipeline::control::read_done(&done, "slope");
+        let saved = |l: &str| pipeline::out::read_manifest(&root).unwrap().contains_key(l);
+        let mut landing = Landing::default();
+        put(&mut out, "layers/slope/hi/6-1-1", b"a");
+        landing.then(&mut out, "slope", "6/1/1", "a".into()).unwrap();
+        assert!(noted().is_empty(), "not before its uploads have landed");
+        let r: anyhow::Result<()> = landing.after(&mut out, |out| {
+            put(out, "layers/slope/hi/6-1-2", b"b");
+            Ok(())
+        });
+        r.unwrap();
+        landing.then(&mut out, "slope", "6/1/2", "b".into()).unwrap();
+        assert_eq!(noted(), ["6/1/1"]);
+        assert!(saved("layers/slope/hi/6-1-1"));
+        // The next one's work failing: the one uploading landed first.
+        let r: anyhow::Result<()> = landing.after(&mut out, |_| anyhow::bail!("its work failed"));
+        assert!(r.is_err());
+        assert_eq!(noted(), ["6/1/1", "6/1/2"]);
+        // An upload that fails: the target isn't noted done; the job fails.
+        std::fs::write(root.join("hidata"), b"in the way").unwrap();
+        let p = out.scratch_file("h");
+        std::fs::write(&p, b"c").unwrap();
+        out.put_file_later("hidata/6-1-3", "sect", &p).unwrap();
+        landing.then(&mut out, "slope", "6/1/3", "c".into()).unwrap();
+        assert!(landing.land(&mut out).is_err());
+        assert_eq!(noted(), ["6/1/1", "6/1/2"]);
+        assert!(landing.land(&mut out).is_ok(), "nothing uploading");
+        std::env::remove_var(pipeline::control::DONE_ENV);
+    }
+
     /// A job's steps' programs are its own app's: `app/current` followed to the version it names
     /// as the job starts, not read again as a newer app is installed.
     #[test]

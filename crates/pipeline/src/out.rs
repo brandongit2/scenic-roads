@@ -42,7 +42,61 @@ pub struct Out {
     step: Option<String>,
     /// Names set or removed outside the step's outputs: the save fails, naming the first.
     outside: Vec<String>,
+    /// Uploads put off (`put_file_later`), made in turn on a thread beside the job.
+    later: Later,
 }
+
+/// The uploads put off (`Out::put_file_later`): sent to a thread of their own that makes them in
+/// turn while the job goes on, their results back in the same order. Each is named in the manifest
+/// only once it has landed (`Out::settle`), so a save never names a file that isn't on the NAS.
+#[derive(Default)]
+struct Later {
+    to: Option<std::sync::mpsc::Sender<Upload>>,
+    /// (In a mutex: an `Out` is shared by reference between threads.)
+    back: Option<std::sync::Mutex<std::sync::mpsc::Receiver<Result<Landed>>>>,
+    /// The uploads sent and those landed (taken back): `Mark`s count them.
+    sent: u64,
+    landed: u64,
+    /// Each sent upload's size not yet landed, in order, for its deadline.
+    sizes: std::collections::VecDeque<u64>,
+}
+
+/// An upload put off.
+struct Upload {
+    root: PathBuf,
+    logical: String,
+    ext: String,
+    local: PathBuf,
+}
+
+/// An upload made (`upload`): where it went, and what the records need of it.
+struct Landed {
+    logical: String,
+    name: String,
+    /// Its SHA-256, when it was copied (not one already there): its check is pending.
+    sha: Option<String>,
+    size: u64,
+}
+
+/// The uploads put off up to a moment (`Out::mark`): `Out::save_upto` waits for those alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark(u64);
+
+/// How long a put-off upload may take before the job fails: a minute, and a second for each
+/// 2 MB (a file is read twice here and once on the NAS; a share answering at a few MB/s still
+/// lands well inside it). An upload stuck in the kernel no longer holds the job forever: its
+/// thread is left to it, and the job fails (its retry takes over).
+pub fn upload_deadline(bytes: u64) -> std::time::Duration {
+    std::time::Duration::from_secs(60 + (bytes >> 21))
+}
+
+/// The waits before a put-off upload that failed transiently is tried again (an SMB moment of
+/// ENOENT, EIO or a reset connection): its file is content-named, so a retry lands the same file.
+const UPLOAD_WAITS: &[std::time::Duration] = if cfg!(test) {
+    &[std::time::Duration::from_millis(1)]
+} else {
+    &[std::time::Duration::from_secs(2), std::time::Duration::from_secs(5), std::time::Duration::from_secs(15)]
+};
 
 /// The records' sizes of the files the manifest names (content name → bytes, compact JSON), kept
 /// beside the manifest by its writer (`Out::save_held`; in the pool its lead, from its records):
@@ -174,6 +228,7 @@ impl Out {
             handoff,
             step: None,
             outside: Vec::new(),
+            later: Later::default(),
         })
     }
 
@@ -263,45 +318,106 @@ impl Out {
             bail!("logical names have no dots: {logical}");
         }
         self.admits(logical, false)?;
-        // (Its name's hash and its checksum from one read of it: `write_atomic_hashed` checks the
-        // read-back against the hash, as against its own.)
-        let size = std::fs::metadata(local)?.len();
-        let (h, sha) = hashes_of(local)?;
-        let name = store::naming::content_name(logical, &h, ext);
-        let dest = self.root.join(&name);
-        let mut existed = dest.exists();
-        let got = store::naming::write_atomic_hashed(&self.root, logical, ext, local, &h, size)?;
-        anyhow::ensure!(got == name, "{logical}: wrote {got}, expected {name}");
-        if existed {
-            // In use again: a fresh time keeps GC's age rule from taking it before a catalog does
-            // (GC looks at a file's time again right before it removes it). One that can't be
-            // touched, or is gone once touched (GC took it between), is uploaded again.
-            let touched = std::fs::File::options()
-                .write(true)
-                .open(&dest)
-                .and_then(|f| f.set_modified(std::time::SystemTime::now()))
-                .is_ok();
-            if !touched || !dest.exists() {
-                existed = false;
-                let again = store::naming::write_atomic_hashed(&self.root, logical, ext, local, &h, size)?;
-                anyhow::ensure!(again == name, "{logical}: wrote {again}, expected {name}");
-            }
-        }
-        let sha = (!existed).then_some(sha);
-        // (Its bytes, to the phase it's uploaded in: crate::timings.)
-        let made = if existed { 0 } else { std::fs::metadata(local).map(|m| m.len()).unwrap_or(0) };
+        let landed = upload(&self.root, logical, ext, local)?;
+        Ok(self.landed(landed))
+    }
+
+    /// An upload made (`upload`), taken into this run's records: named in the manifest, its check
+    /// pending when it was copied, its bytes counted.
+    fn landed(&mut self, l: Landed) -> String {
+        // (Its bytes, to the phase it's taken in: crate::timings.)
+        let made = if l.sha.is_some() { l.size } else { 0 };
         crate::timings::count(made, 1);
-        if !existed {
+        if l.sha.is_some() {
             crate::costin::wrote(made);
         }
-        if let Some(sha) = sha {
-            self.pending.insert(name.clone(), sha);
+        if let Some(sha) = l.sha {
+            self.pending.insert(l.name.clone(), sha);
         }
-        std::fs::remove_file(local).ok();
-        self.sizes.insert(name.clone(), size);
-        self.manifest.insert(logical.to_string(), name.clone());
-        self.changes.insert(logical.to_string(), Some(name.clone()));
-        Ok(name)
+        self.sizes.insert(l.name.clone(), l.size);
+        self.manifest.insert(l.logical.clone(), l.name.clone());
+        self.changes.insert(l.logical, Some(l.name.clone()));
+        l.name
+    }
+
+    /// `put_file`, put off: the file is uploaded on a thread beside the job (in turn with the
+    /// others put off) while the job goes on, and named in the manifest once it has landed
+    /// (`settle`). Until then `get` doesn't name it. A save waits for every upload put off before
+    /// it (`save`), or those up to a mark (`save_upto`), and fails if one did: a target is noted
+    /// done only after the save that names its outputs, so never before they're on the NAS. Checked
+    /// against the step's outputs now, as `put_file` is.
+    pub fn put_file_later(&mut self, logical: &str, ext: &str, local: &Path) -> Result<()> {
+        if logical.contains('.') {
+            bail!("logical names have no dots: {logical}");
+        }
+        self.admits(logical, false)?;
+        let size = std::fs::metadata(local)?.len();
+        if self.later.to.is_none() {
+            let (to, rx) = std::sync::mpsc::channel::<Upload>();
+            let (tx, back) = std::sync::mpsc::channel::<Result<Landed>>();
+            let spawned = std::thread::Builder::new().name("uploads".into()).spawn(move || {
+                for u in rx {
+                    if tx.send(upload_retrying(&u.root, &u.logical, &u.ext, &u.local, UPLOAD_WAITS)).is_err() {
+                        return;
+                    }
+                }
+            });
+            if spawned.is_err() {
+                // (No threads: the WebAssembly builds. Uploaded now.)
+                self.put_file(logical, ext, local)?;
+                return Ok(());
+            }
+            self.later.to = Some(to);
+            self.later.back = Some(std::sync::Mutex::new(back));
+        }
+        let u = Upload {
+            root: self.root.clone(),
+            logical: logical.to_string(),
+            ext: ext.to_string(),
+            local: local.to_path_buf(),
+        };
+        self.later
+            .to
+            .as_ref()
+            .unwrap()
+            .send(u)
+            .map_err(|_| anyhow::anyhow!("{logical}: the uploads' thread is gone"))?;
+        self.later.sent += 1;
+        self.later.sizes.push_back(size);
+        Ok(())
+    }
+
+    /// The uploads put off so far: `save_upto` this waits for these alone.
+    pub fn mark(&self) -> Mark {
+        Mark(self.later.sent)
+    }
+
+    /// Waits for the uploads put off up to `upto` to land, each within its deadline
+    /// (`upload_deadline`), and takes them into the records. The first that failed, or didn't land
+    /// in time, fails this (and the job: what it put off isn't named).
+    fn settle(&mut self, upto: Mark) -> Result<()> {
+        if self.later.landed >= upto.0 {
+            return Ok(());
+        }
+        let _p = crate::timings::phase("uploads put off landed", crate::timings::Class::NasWrite);
+        while self.later.landed < upto.0 {
+            let size = self.later.sizes.front().copied().unwrap_or(0);
+            let deadline = upload_deadline(size);
+            let got = self.later.back.as_ref().expect("an upload sent").lock().unwrap().recv_timeout(deadline);
+            let l = match got {
+                Ok(Ok(l)) => l,
+                Ok(Err(e)) => return Err(e.context("an upload put off failed")),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => bail!(
+                    "an upload put off ({size} bytes) didn't land in {} s (the NAS's share stuck?)",
+                    deadline.as_secs()
+                ),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => bail!("the uploads' thread is gone"),
+            };
+            self.later.sizes.pop_front();
+            self.later.landed += 1;
+            self.landed(l);
+        }
+        Ok(())
     }
 
     /// `put_file`, saying how far it is to `on` about once a second, as (bytes, total): it reads the
@@ -402,6 +518,13 @@ impl Out {
     /// changes saved meanwhile are kept), and the unverified uploads likewise. A helper's job hands
     /// them off instead (crate::handoff): in the pool, every job's (`check_writer`).
     pub fn save(&mut self) -> Result<()> {
+        self.save_upto(self.mark())
+    }
+
+    /// `save`, after the uploads put off up to `upto` have landed (`settle`): those after it, still
+    /// on their way, are left for a later save (a target's, while the next one's are uploading).
+    pub fn save_upto(&mut self, upto: Mark) -> Result<()> {
+        self.settle(upto)?;
         let _p = crate::timings::phase("records saved", crate::timings::Class::NasWrite);
         // (Nothing saved of a job that named something outside its step's outputs.)
         if let Some(first) = self.outside.first() {
@@ -570,6 +693,68 @@ impl Out {
 /// docs/pool.md §7.3), whatever Mac it runs on. A folder no term was made in yet (a test's, a
 /// scratch build's) has its records written as today's files (term 1's first snapshot is made from
 /// them).
+/// Uploads local file `local` under `logical` to `root` (`Out::put_file`), the local file removed
+/// after: its content name, and its SHA-256 when it was copied. An identical file already on the
+/// NAS is reused (and touched), not copied again; one of the same name with another size is an
+/// error (content-named files are never rewritten).
+fn upload(root: &Path, logical: &str, ext: &str, local: &Path) -> Result<Landed> {
+    // (Its name's hash and its checksum from one read of it: `write_atomic_hashed` checks the
+    // read-back against the hash, as against its own.)
+    let size = std::fs::metadata(local)?.len();
+    let (h, sha) = hashes_of(local)?;
+    let name = store::naming::content_name(logical, &h, ext);
+    let dest = root.join(&name);
+    let mut existed = dest.exists();
+    let got = store::naming::write_atomic_hashed(root, logical, ext, local, &h, size)?;
+    anyhow::ensure!(got == name, "{logical}: wrote {got}, expected {name}");
+    if existed {
+        // In use again: a fresh time keeps GC's age rule from taking it before a catalog does
+        // (GC looks at a file's time again right before it removes it). One that can't be
+        // touched, or is gone once touched (GC took it between), is uploaded again.
+        let touched = std::fs::File::options()
+            .write(true)
+            .open(&dest)
+            .and_then(|f| f.set_modified(std::time::SystemTime::now()))
+            .is_ok();
+        if !touched || !dest.exists() {
+            existed = false;
+            let again = store::naming::write_atomic_hashed(root, logical, ext, local, &h, size)?;
+            anyhow::ensure!(again == name, "{logical}: wrote {again}, expected {name}");
+        }
+    }
+    std::fs::remove_file(local).ok();
+    Ok(Landed { logical: logical.to_string(), name, sha: (!existed).then_some(sha), size })
+}
+
+/// `upload`, tried again after each of `waits` while it fails transiently
+/// (crate::depth::grids::transient: an SMB moment of ENOENT, EIO, a reset connection), each retry
+/// logged; its last error returned.
+fn upload_retrying(
+    root: &Path,
+    logical: &str,
+    ext: &str,
+    local: &Path,
+    waits: &[std::time::Duration],
+) -> Result<Landed> {
+    let mut tries = 0;
+    loop {
+        match upload(root, logical, ext, local) {
+            Ok(l) => return Ok(l),
+            Err(e)
+                if tries < waits.len()
+                    && local.exists()
+                    && e.chain()
+                        .any(|c| c.downcast_ref::<std::io::Error>().is_some_and(crate::depth::grids::transient)) =>
+            {
+                eprintln!("{logical}: upload: {e:#}; again in {:?}", waits[tries]);
+                std::thread::sleep(waits[tries]);
+                tries += 1;
+            }
+            Err(e) => return Err(e.context(format!("upload {logical}"))),
+        }
+    }
+}
+
 pub fn check_writer(root: &Path) -> Result<()> {
     let terms = root.join(crate::pool::term::DIR);
     if terms.exists() {
@@ -605,6 +790,62 @@ impl BuildLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task #400: an upload put off lands as `put_file`'s would (the same name, size and pending
+    /// check), named only once it has: a save waits for those before it (or up to a mark), and one
+    /// that failed fails the save, unnamed, its local file kept.
+    #[test]
+    fn uploads_put_off_are_named_once_landed_as_put_files_are() {
+        let d = tempfile::tempdir().unwrap();
+        let file = |name: &str, bytes: &[u8]| {
+            let p = d.path().join("made").join(name);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, bytes).unwrap();
+            p
+        };
+        let records = |root: &Path| {
+            let m: BTreeMap<String, String> = read_record(&root.join("state/build/manifest.json")).unwrap();
+            let p: BTreeMap<String, String> = read_record(&root.join("state/build/pending.json")).unwrap();
+            let s: BTreeMap<String, u64> = read_record(&root.join(SIZES)).unwrap();
+            (m, p, s)
+        };
+        // Now and put off: the same records.
+        let (now, later) = (d.path().join("now"), d.path().join("later"));
+        let mut a = Out::unbound(&now, &d.path().join("s1")).unwrap();
+        a.put_file("base/6-1-1", "base", &file("a1", b"one")).unwrap();
+        a.put_file("base/6-1-2", "base", &file("a2", b"two two")).unwrap();
+        a.save().unwrap();
+        let mut b = Out::unbound(&later, &d.path().join("s2")).unwrap();
+        let first = file("b1", b"one");
+        b.put_file_later("base/6-1-1", "base", &first).unwrap();
+        let m1 = b.mark();
+        b.put_file_later("base/6-1-2", "base", &file("b2", b"two two")).unwrap();
+        assert_eq!(b.get("base/6-1-1"), None, "not named before it has landed");
+        b.save_upto(m1).unwrap();
+        assert!(records(&later).0.contains_key("base/6-1-1"), "up to the mark: saved");
+        assert!(!first.exists(), "its local file removed once uploaded");
+        b.save().unwrap();
+        assert_eq!(records(&later), records(&now));
+        assert_eq!(b.manifest, a.manifest);
+        // Reused (already there): named, nothing pending for it.
+        b.put_file_later("base/6-1-3", "base", &file("b3", b"one")).unwrap();
+        b.save().unwrap();
+        assert_eq!(b.get("base/6-1-3").map(|c| c.split('.').nth(1)), b.get("base/6-1-1").map(|c| c.split('.').nth(1)));
+        // One that fails (where its folder would go, a file): the save fails, nothing named.
+        std::fs::write(later.join("hidata"), b"in the way").unwrap();
+        let kept = file("b4", b"four");
+        b.put_file_later("hidata/6-1-4", "sect", &kept).unwrap();
+        let e = b.save().unwrap_err();
+        assert!(format!("{e:#}").contains("an upload put off failed"), "{e:#}");
+        assert!(b.get("hidata/6-1-4").is_none() && !records(&later).0.contains_key("hidata/6-1-4"));
+        assert!(kept.exists(), "its local file kept");
+        // Outside the step's outputs: refused at once, as `put_file` is.
+        let mut job = Out::open(&later, &d.path().join("s3"), "pack").unwrap();
+        assert!(job.put_file_later("base/6-1-5", "base", &file("b5", b"five")).is_err());
+        // Each a minute, and a second each 2 MB.
+        assert_eq!(upload_deadline(0).as_secs(), 60);
+        assert_eq!(upload_deadline(1 << 30).as_secs(), 60 + 512);
+    }
 
     /// This Mac's unmerged hand-offs laid over the snapshot (docs/pool.md §7.4): their names read
     /// as the job's earlier attempts left them, none of them this job's own changes; none given,

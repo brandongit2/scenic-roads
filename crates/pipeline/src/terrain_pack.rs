@@ -1792,6 +1792,26 @@ pub fn build_piece_offered(
     progress: crate::rawpack::Progress,
     offers: crate::terrain_task::Offers,
 ) -> anyhow::Result<PackReport> {
+    let rep = build_piece_later(out, raw, t, cov, src, expect_same, progress, offers)?;
+    out.save()?;
+    progress("packs", 1, 1);
+    Ok(rep)
+}
+
+/// `build_piece_offered`, its uploads put off (crate::out::Out::put_file_later): they go on beside
+/// what the job does next, and the piece is saved (and noted done) by a later save
+/// (`Out::save_upto` the mark after it).
+#[allow(clippy::too_many_arguments)]
+pub fn build_piece_later(
+    out: &mut Out,
+    raw: &RawTiles,
+    t: (u32, u32),
+    cov: &Coverage,
+    src: &Sources,
+    expect_same: bool,
+    progress: crate::rawpack::Progress,
+    offers: crate::terrain_task::Offers,
+) -> anyhow::Result<PackReport> {
     anyhow::ensure!(
         offers.piece() == t,
         "offers for 6/{}/{}, not 6/{}/{}",
@@ -1847,19 +1867,13 @@ pub fn build_piece_offered(
         }
     }
     drop(p);
-    let up = crate::timings::phase("uploaded", crate::timings::Class::NasWrite);
     match pack {
-        Some(p) => {
-            out.put_file(&p.logical, "pack", &p.local)?;
-        }
+        Some(p) => out.put_file_later(&p.logical, "pack", &p.local)?,
         None => {
             drop_named(out, &[hl]);
         }
     }
-    out.put_file(&ml, "sect", &mid_path)?;
-    drop(up);
-    out.save()?;
-    progress("packs", 1, 1);
+    out.put_file_later(&ml, "sect", &mid_path)?;
     Ok(rep)
 }
 

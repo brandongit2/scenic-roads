@@ -794,9 +794,10 @@ pub const STAGES: [(&str, f64); 25] = [
     ("missing grids written", 2.0),
     ("scenic results kept", 8.0),
     ("base pack made", 1.0),
-    ("base pack written to the NAS", 60.0),
+    ("base pack written", 1.0),
     ("road values made and written", 20.0),
-    ("records saved", 5.0),
+    // (With the grids' and base pack's uploads, put off until here.)
+    ("records saved", 60.0),
     ("its folders removed", 1.0),
 ];
 
