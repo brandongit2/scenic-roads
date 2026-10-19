@@ -196,25 +196,38 @@ that one running the same app.
 - **A lead gone silent is taken over automatically** (`Driver::take_over_silent`, task #435) when
   all of these hold at a member's step: the lead's heartbeat is older than `SILENT_S` by the
   member's clock (the longer of `beat::OUT_OF_TOUCH_S` and a lease's life, `coord::TTL`: 10 min);
-  the member has read that same beat, unchanged, for `SILENT_SEEN_S` of its own awake time (the
-  longer of `OWN_BEAT_S` plus a tick and two heartbeats, `beat::BEAT_EVERY_S`, plus a tick: 6 min
-  20 s), so a lead whose clock lags isn't taken for silent while its beat still changes; the lead's
-  coordinator hasn't answered the member within `ANSWERED_S`; the member's own heartbeat landed
-  within `OWN_BEAT_S` (a NAS slow for every Mac isn't the lead gone); it can lead (`Heard::able`:
-  home, on power or charged, not paused (#224), free space past its room target (#421)); and the
-  app rule allows it. A lead heartbeat that can't be read stops the watch. Candidates try in turn
-  as for a stand-down (newest app, then lowest id, `AUTO_RANK_S` apart); the create-new of E+1
-  decides. The new lead takes up the newest records and the coordinator's state with its leases,
-  as an owner's takeover does. A lead merely slow keeps the lead as long as its heartbeat lands.
-- **What keeps the old lead from granting meanwhile.** A lead grants only while (a) its step found
-  no later term, (b) its own heartbeat on the NAS, read back each step, is at most `OWN_BEAT_S` (6
-  min) old by its clock, or can't be found at all, and (c) its agent told its coordinator so
-  within `STALL_S` (5 min, `Coordinator::set_moving`'s time: a process held up, or a Mac woken
-  before its step); a read of its own heartbeat that fails holds grants too. A member takes over
-  only after watching the beat unchanged for longer than `OWN_BEAT_S` plus a step, so the old lead
-  has stopped granting by (b) or (c) first, as long as reads aren't staler than that margin. Back,
-  its next step finds `terms/<E+1>.json` and steps down (§6.6). Leases aren't fenced by term at the
-  grant itself: the guarantee rests on these timers and on the next step's check.
+  the member has read that same beat, unchanged, for `SILENT_SEEN_S` of its own awake time
+  (`LEAD_BEAT_S` + `STALL_S` + a step + one heartbeat's interval: 10 min 20 s), counted from its
+  first read of that beat, so a lead whose clock lags isn't taken for silent while its beat still
+  changes every `beat::BEAT_EVERY_S` (2 min); the lead's coordinator hasn't answered the member
+  within `ANSWERED_S`; the member's own heartbeat, read past its cache, landed within `OWN_BEAT_S`
+  (a NAS slow for every Mac isn't the lead gone); it can lead (`Heard::able`: home, on power or
+  charged, not paused (#224), free space past its room target (#421)); and the app rule allows
+  it. A lead heartbeat that can't be read stops the watch. Candidates try in turn as for a
+  stand-down (newest app, then lowest id, `AUTO_RANK_S` apart); the create-new of E+1 decides.
+  The new lead takes up the newest records and the coordinator's state with its leases, as an
+  owner's takeover does. A lead merely slow keeps the lead as long as its heartbeat lands.
+- **When the old lead stops granting.** A lead's coordinator grants only while all three hold:
+  its last step found no later term; that step read its own heartbeat back (`Nas::read_fresh`,
+  `F_NOCACHE`) and found it at most `LEAD_BEAT_S` (3 min) old by its clock, or not there yet (a
+  read that fails counts as stale); and its agent told the coordinator so within `STALL_S` (5 min:
+  `Coordinator::set_moving`'s time, so a hung step or a Mac woken before its step stops grants).
+  So it grants at most `LEAD_BEAT_S` + `STALL_S` + a step (8 min 20 s) after its last heartbeat
+  landed, and a member takes over no sooner than `SILENT_SEEN_S` after it last saw that beat
+  change, 2 min later. Back, the old lead's next step finds `terms/<E+1>.json` and steps down
+  (§6.6).
+- **What that rests on, and what a double grant costs.** The timers assume reads aren't staler
+  than the 2-minute margin, and that a heartbeat the lead reads back is on the server. Writes are
+  `fsync`ed and renamed before they count, and the read-back skips the page cache, but macOS's SMB
+  client may still answer from an SMB lease it holds on the file: that isn't guaranteed. Grants
+  aren't fenced by term at the grant itself, so in such a corner both leads may grant the same
+  target for a few minutes. That costs duplicated work, not corrupted records: built files are
+  content-named and never rewritten (plan.md, Immutable, content-named files), each hand-off is its
+  own journal entry keyed by its lease, and a merge applies an entry only if no later lease set its
+  targets (`Records::apply`; the old term's lease ids sort before the new term's), else counts it
+  overtaken; the files it alone named go to GC. A stale lead's step already under way when the new
+  term was made may write today's three files once more from its older records, until the new
+  lead's next save. So: rarely, some work is built twice; nothing is corrupted.
 - **A proactive offer** (`crate::agent::lead::offer`) before it comes to that: when the lead is
   away or on battery and another member is home on power, every control offers "Hand the Build to
   <Mac>". With `scenic lead auto on` (`state/pool/auto-handover`) the lead hands over by itself

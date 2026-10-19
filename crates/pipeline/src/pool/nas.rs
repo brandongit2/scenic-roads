@@ -47,6 +47,13 @@ pub trait Nas {
     /// Mac wrote last (macOS caches what it read), or a file being made: empty or short.
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>>;
 
+    /// `read`, asking past this Mac's cache (on a share: the file opened with `F_NOCACHE`, so its
+    /// bytes come from the server, not the unified buffer cache). macOS's SMB client may still
+    /// answer from an SMB lease it holds on the file: no promise beyond the page cache.
+    fn read_fresh(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        self.read(path)
+    }
+
     /// Whether `path` exists: a stat, never a listing; stale as reads are.
     fn exists(&self, path: &str) -> Result<bool>;
 
@@ -180,6 +187,27 @@ impl Nas for Share {
         }
     }
 
+    fn read_fresh(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        use std::io::Read;
+        let p = self.at(path);
+        let mut f = match std::fs::File::open(&p) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("open {}", p.display())),
+        };
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::fd::AsRawFd;
+            // SAFETY: fcntl on a descriptor this function owns, with an int argument.
+            if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1) } == -1 {
+                return Err(std::io::Error::last_os_error()).with_context(|| format!("F_NOCACHE {}", p.display()));
+            }
+        }
+        let mut b = Vec::new();
+        f.read_to_end(&mut b).with_context(|| format!("read {}", p.display()))?;
+        Ok(Some(b))
+    }
+
     fn exists(&self, path: &str) -> Result<bool> {
         let p = self.at(path);
         p.try_exists().with_context(|| format!("stat {}", p.display()))
@@ -276,6 +304,16 @@ impl Nas for Mem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A read past the cache reads what a write left, and None for a file that isn't there.
+    #[test]
+    fn a_fresh_read_reads_what_was_written() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Share::new(d.path());
+        assert_eq!(s.read_fresh("state/pool/x.json").unwrap(), None);
+        s.write_aside("state/pool/x.json", b"{\"beat\":1}").unwrap();
+        assert_eq!(s.read_fresh("state/pool/x.json").unwrap().as_deref(), Some(&b"{\"beat\":1}"[..]));
+    }
 
     /// A folder's make that says it exists (SMB's stale stat after another Mac made it) isn't an
     /// error: the write that follows says whether it's there. A folder made is made once a

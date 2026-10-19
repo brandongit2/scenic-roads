@@ -141,6 +141,9 @@ impl Nas for Clocked<'_> {
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
         self.nas.read(path)
     }
+    fn read_fresh(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        self.nas.read_fresh(path)
+    }
     fn exists(&self, path: &str) -> Result<bool> {
         self.nas.exists(path)
     }

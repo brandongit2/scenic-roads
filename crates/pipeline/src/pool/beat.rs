@@ -94,6 +94,11 @@ pub fn path(member: &str) -> String {
 impl Beat {
     /// Member `member`'s heartbeat, its pool's fields; None when there's none, or it can't be parsed
     /// (being replaced: read again next loop).
+    /// This Mac's own heartbeat as the server has it (`Nas::read_fresh`): whether its writes land.
+    pub fn read_fresh(nas: &dyn Nas, member: &str) -> Result<Option<Beat>> {
+        Ok(nas.read_fresh(&path(member))?.and_then(|b| serde_json::from_slice(&b).ok()))
+    }
+
     pub fn read(nas: &dyn Nas, member: &str) -> Result<Option<Beat>> {
         Ok(nas.read(&path(member))?.and_then(|b| serde_json::from_slice(&b).ok()))
     }

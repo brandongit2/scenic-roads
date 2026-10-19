@@ -326,6 +326,11 @@ impl Nas for Deadlined {
         self.run(self.reads, path, self.deadline, move |n| n.read(&p))
     }
 
+    fn read_fresh(&self, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        let p = path.to_string();
+        self.run(self.reads, path, self.deadline, move |n| n.read_fresh(&p))
+    }
+
     fn exists(&self, path: &str) -> anyhow::Result<bool> {
         let p = path.to_string();
         self.run(self.reads, path, self.deadline, move |n| n.exists(&p))
