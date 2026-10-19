@@ -640,12 +640,10 @@ pub(crate) mod tests {
         static DONE: AtomicBool = AtomicBool::new(false);
         let d = tempfile::tempdir().unwrap();
         let t = watch(&AT, &DONE, d.path().into(), Duration::from_secs(1), Duration::ZERO, Duration::from_millis(50));
-        std::thread::sleep(Duration::from_millis(2300));
-        assert!(stall(d.path()).is_some(), "stalled");
+        store::clock::eventually("the stall flagged", || stall(d.path()).is_some());
         // (A round just now, a little ahead so a second ticking over meanwhile doesn't count.)
         AT.store(crate::agent::now_s() + 60, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(300));
-        assert!(stall(d.path()).is_none(), "going on");
+        store::clock::eventually("the stall cleared", || stall(d.path()).is_none());
         DONE.store(true, Ordering::SeqCst);
         t.join().unwrap();
     }

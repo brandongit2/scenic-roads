@@ -383,7 +383,7 @@ mod tests {
 
         // Same bytes again: same name, nothing rewritten.
         let mtime = fs::metadata(root.join(&name)).unwrap().modified().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // (absence)
         assert_eq!(write_atomic(root, "layers/roads/root", "pack", Source::Bytes(b"hello")).unwrap(), name);
         assert_eq!(fs::metadata(root.join(&name)).unwrap().modified().unwrap(), mtime);
 

@@ -890,7 +890,7 @@ mod tests {
         assert!(t0.elapsed() < Duration::from_secs(600) && !ran.load(SeqCst));
 
         // The probe keeps failing while the share is away.
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(200)); // (absence)
         assert!(!pool.is_online());
 
         // It comes back: the prober closes the breaker.
@@ -996,7 +996,7 @@ mod tests {
         });
         assert!(pool.is_online());
         assert_eq!(pool.call_timeout(LONG, || Ok(3)).unwrap(), 3);
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(50)); // (absence)
         assert!(!ran.load(SeqCst), "a cancelled operation ran");
         assert_eq!(peak, 4);
     }
@@ -1021,7 +1021,7 @@ mod tests {
         assert!(pool.is_online(), "a queue wait must not mark the NAS offline");
         gate.release();
         long.join().unwrap().unwrap();
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(50)); // (absence)
         assert!(!ran.load(SeqCst));
         assert_eq!(pool.status().timeouts, 0);
     }
