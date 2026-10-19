@@ -88,7 +88,7 @@ const FORGOTTEN: &str = "forgotten.json";
 /// A failed listing is made again after this.
 const AGAIN: Duration = Duration::from_secs(60);
 /// The heartbeat is written at least this often.
-const BEAT_EVERY: Duration = Duration::from_secs(120);
+const BEAT_EVERY: Duration = Duration::from_secs(crate::pool::beat::BEAT_EVERY_S);
 /// A Tell the same as the last to that member is sent again only after this (the lead hears it
 /// each loop otherwise; it keeps what it was told).
 const TELL_AGAIN: Duration = Duration::from_secs(600);

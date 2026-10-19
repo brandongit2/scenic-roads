@@ -97,7 +97,8 @@
 //! down for `STOOD_DOWN_S` takes over by itself, if the app rule lets it: the
 //! members that can, newest app first, then lowest member id, try `AUTO_RANK_S` apart, and the
 //! next term's create-new decides between them. So is a lead gone silent, its heartbeat `SILENT_S`
-//! old and watched so for `SILENT_SEEN_S` (`take_over_silent`); back, it re-asserts before it
+//! old and watched unchanged for `SILENT_SEEN_S` (`take_over_silent`); a lead whose own heartbeat
+//! hasn't landed for `OWN_BEAT_S` grants nothing (`Out::duties`); back, it re-asserts before it
 //! acts, finds the newer term and steps down, its coordinator granting nothing meanwhile (crate::coord's
 //! `told`). A current term its reads find unreadable (its create landed and
 //! its bytes never did) for `UNREAD_TAKE_S` awake is taken past by a member that can lead, the same
@@ -164,9 +165,20 @@ pub const SILENT_S: u64 = {
         super::beat::OUT_OF_TOUCH_S
     }
 };
-/// How long, awake, a member watches the lead's silent heartbeat unchanged before it takes over
-/// (s): one read (a stale one, or this Mac just woken) isn't enough.
-pub const SILENT_SEEN_S: u64 = STOOD_DOWN_S;
+/// How long, awake, a member must have watched the lead's heartbeat unchanged before it takes over
+/// (s), whatever the beat's age by its clock (a lead's clock behind makes a fresh beat look old):
+/// past the lead's own check (`OWN_BEAT_S`, a lead whose beat hasn't landed that long grants
+/// nothing) by a step, so by then the lead has stopped granting; and past two heartbeats
+/// (`beat::BEAT_EVERY_S`) and a step, so a healthy lead's beat always changes within it.
+pub const SILENT_SEEN_S: u64 = {
+    let own = OWN_BEAT_S + crate::agent::pool::TICK_S;
+    let two = 2 * super::beat::BEAT_EVERY_S + crate::agent::pool::TICK_S;
+    if own > two {
+        own
+    } else {
+        two
+    }
+};
 /// How long, awake, a member finds the current term unreadable (empty or short) before it makes
 /// the next past it by itself (s; §6.5): far past any stale read (`STALE_S`) and any create's bytes
 /// in flight, so no Mac reads the term whole, and none can lead it but by making a later term.
@@ -828,7 +840,7 @@ impl Driver {
         out.term = self.saved.term;
         if let Some(l) = &self.lead {
             out.leads = Some(l.term.term);
-            out.duties = l.hand.grants() && self.must.is_none();
+            out.duties = l.hand.grants() && self.must.is_none() && !self.beat_stale(io, &mut out);
             out.settle = matches!(l.hand, Handover::Settling { .. });
             out.fresh &= self.must.is_none();
             out.caught_up = l.listed_at.is_some_and(|at| end.0.saturating_sub(at) < RELIST_S)
@@ -1619,6 +1631,23 @@ impl Driver {
         None
     }
 
+    /// Leading: whether its own heartbeat on the NAS is older than `OWN_BEAT_S` by its clock, or
+    /// can't be read (failing closed): its writes aren't landing, members may see it silent and
+    /// take over (`take_over_silent`), so it grants nothing until one lands. None there yet (a
+    /// first step): not stale, as no member can see it silent either.
+    fn beat_stale(&self, io: &dyn Io, out: &mut Out) -> bool {
+        let now = io.now();
+        let why = match Beat::read(io, &self.me.id) {
+            Ok(Some(b)) if now.saturating_sub(b.beat) > OWN_BEAT_S => {
+                format!("its own heartbeat on the NAS is {} s old", now.saturating_sub(b.beat))
+            }
+            Ok(_) => return false,
+            Err(e) => format!("its own heartbeat can't be read: {e:#}"),
+        };
+        out.events.push(Event::Waits { what: "grant", why });
+        true
+    }
+
     /// A lead gone silent (§6.5: its heartbeat older than `SILENT_S` by this Mac's clock, the same
     /// beat watched for `SILENT_SEEN_S` awake, its coordinator not answering this Mac meanwhile):
     /// taken over by this Mac, if it can lead now and the app rule lets it, after the members in
@@ -1658,15 +1687,12 @@ impl Driver {
             return;
         };
         let late = answered.is_some_and(|a| now.saturating_sub(a) < super::beat::OUT_OF_TOUCH_S);
-        if b.stood_down == Some(t.term) || now <= b.beat.saturating_add(SILENT_S) || late {
+        if b.stood_down == Some(t.term) || late {
             self.silent = None;
             return;
         }
-        // (This Mac's own heartbeat landing: a NAS slow for every Mac isn't the lead gone.)
-        if !matches!(Beat::read(io, &self.me.id), Ok(Some(o)) if now.saturating_sub(o.beat) <= OWN_BEAT_S) {
-            self.silent = None;
-            return;
-        }
+        // (The same beat watched unchanged, by this Mac's awake clock, whatever the lead's clock:
+        // from the first read of it, old or not.)
         let awake = io.awake();
         let since = match self.silent {
             Some((e, beat, since)) if e == t.term && beat == b.beat => since,
@@ -1675,6 +1701,14 @@ impl Driver {
                 awake
             }
         };
+        if now <= b.beat.saturating_add(SILENT_S) {
+            return;
+        }
+        // (This Mac's own heartbeat landing: a NAS slow for every Mac isn't the lead gone.)
+        if !matches!(Beat::read(io, &self.me.id), Ok(Some(o)) if now.saturating_sub(o.beat) <= OWN_BEAT_S) {
+            self.silent = None;
+            return;
+        }
         if !able || !term::app_at_least(&self.me.app, &t.app) {
             return;
         }
@@ -2367,6 +2401,7 @@ mod tests {
         step(&mut b, &ib, able());
         let x = journal::write(&mem, &entry(C, 1, 7, "6-1-1")).unwrap();
         ib.pass(700);
+        step(&mut b, &ib, able());
         let o = step(&mut b, &ib, asks(Ask::TakeOver { force: false, downgrade: false }));
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
         assert!(o.duties && o.fresh && !o.caught_up, "fresh, not whole");
@@ -2699,6 +2734,64 @@ mod tests {
     }
 
     #[test]
+    fn a_lead_whose_beats_dont_land_grants_nothing_before_a_member_takes_over() {
+        // A keeps stepping, every other NAS operation landing, but its heartbeat's writes fail
+        // (and B can't reach its coordinator): A stops granting once its own beat is `OWN_BEAT_S`
+        // old, before B takes over; then steps down at its next step.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        let two = || Heard { members: vec![A.into(), B.into()], ..able() };
+        assert_eq!(step(&mut a, &ia, two()).leads, Some(1));
+        let mut held_at = None;
+        for _ in 0..90 {
+            ia.pass(20);
+            let o = a.step(&ia, two(), &any);
+            if o.leads.is_some() && !o.duties {
+                held_at.get_or_insert(ia.now());
+            }
+            if o.leads.is_some() && o.duties {
+                assert!(b.leads().is_none(), "A grants while B leads");
+            }
+            ib.pass(20);
+            step(&mut b, &ib, two());
+        }
+        assert_eq!(b.leads(), Some(2), "B took over");
+        assert_eq!(a.leads(), None, "A stepped down");
+        let held = held_at.expect("A held its grants");
+        let took = term::read(&mem, 2).unwrap().unwrap().since;
+        assert!(held < took, "A stopped granting at {held}, before B's term at {took}");
+    }
+
+    #[test]
+    fn a_healthy_lead_whose_clock_lags_keeps_the_lead() {
+        // A's clock 9 min behind B's: its fresh beat looks 9 min old to B, but changes every
+        // couple of minutes, so B never watches it unchanged for `SILENT_SEEN_S`.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        ia.wall.set(ia.wall.get() - 540);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        let two = || Heard { members: vec![A.into(), B.into()], ..able() };
+        assert_eq!(step(&mut a, &ia, two()).leads, Some(1));
+        for i in 0..180u64 {
+            ia.pass(20);
+            // (Its heartbeat written every `BEAT_EVERY_S`, as the agent does, not every step.)
+            if i % (super::super::beat::BEAT_EVERY_S / 20) == 0 {
+                step(&mut a, &ia, two());
+            } else {
+                a.step(&ia, two(), &any);
+            }
+            ib.pass(20);
+            assert_eq!(step(&mut b, &ib, two()).leads, None);
+        }
+        assert_eq!(a.leads(), Some(1));
+    }
+
+    #[test]
     fn a_slow_lead_or_one_answering_keeps_the_lead() {
         // A steps every 8 minutes (a NAS under load: it re-asserts each time, by itself): its beat
         // is never `SILENT_S` old, and no member takes over.
@@ -2736,7 +2829,7 @@ mod tests {
         }
         assert!(term::read(&mem, e + 1).unwrap().is_none(), "B's own beat stale: no takeover");
         // B's writes land again: it takes over.
-        for _ in 0..20 {
+        for _ in 0..30 {
             ib.pass(20);
             step(&mut b, &ib, two());
         }

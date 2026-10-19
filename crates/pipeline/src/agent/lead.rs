@@ -1783,8 +1783,9 @@ mod tests {
         fn a_member_takes_over_a_lead_out_of_touch() {
             let d = tempfile::tempdir().unwrap();
             let (a, mut b) = pool(d.path());
-            // A is silent; eleven minutes on B's clock.
-            b.pass(660);
+            // A is silent; eleven minutes on B's clock, B not stepped meanwhile (asleep itself), so
+            // it hasn't watched A's beat long enough to take over by itself (`SILENT_SEEN_S`).
+            b.run.side.ahead += 660;
             b.go();
             let v = b.view();
             assert!(v.no_lead.as_ref().is_some_and(|w| w.contains("out of touch")), "{v:?}");

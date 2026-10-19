@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 /// A heartbeat older than this by the reader's clock is out of touch (§6.5): its member may be
 /// taken over from.
 pub const OUT_OF_TOUCH_S: u64 = 600;
+/// A member writes its heartbeat at least this often (s; crate::agent::pool).
+pub const BEAT_EVERY_S: u64 = 120;
 /// A heartbeat this far ahead of the reader's clock is shown as "clock wrong" (§6.7).
 pub const AHEAD_S: u64 = 60;
 
