@@ -199,6 +199,8 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // (Its flags and arguments checked first: `--help` or a flag the step doesn't know runs nothing.)
     let step = pipeline::cli::tables::SCENIC_BUILD.gate(&args).name.to_string();
+    // (Run by hand, its limit is the shell's, 256 on macOS: an agent's jobs inherit its raised one.)
+    pipeline::sys::raise_open_files();
     // Its phases' times (pipeline::timings: the log's table, the agent's record), however it ends.
     pipeline::timings::job(&step, || step_main(&args, &step))
 }

@@ -144,33 +144,83 @@ pub fn declared(root: &Path, manifest: &std::collections::BTreeMap<String, Strin
     Ok(out)
 }
 
-/// The GeoTIFFs opened so far, sharing one block cache.
+/// The GeoTIFFs open, sharing one block cache: at most `keep` of them, the least recently used
+/// closed past that (task #438: a z3 tile's depth-lo met thousands of GLOBathy's grids, every one
+/// kept open, and failed with "Too many open files"). A closed one is opened again when met again.
 pub struct Reader {
-    open: Mutex<HashMap<PathBuf, Arc<Tiff>>>,
+    open: Mutex<Open>,
     cache: Arc<Mutex<BlockCache>>,
+    keep: usize,
+}
+
+#[derive(Default)]
+struct Open {
+    /// Path → the file open; `uses`: when each was last used.
+    files: HashMap<PathBuf, Arc<Tiff>>,
+    /// The next cache id, and the use clock: ids never reused, so a reopened file never reads an
+    /// evicted one's blocks under another's id.
+    next_id: u64,
+    clock: u64,
+    uses: HashMap<PathBuf, u64>,
 }
 
 impl Default for Reader {
     fn default() -> Self {
-        Reader { open: Mutex::new(HashMap::new()), cache: Arc::new(Mutex::new(BlockCache::new(512 << 20))) }
+        Reader::keeping(open_grids_limit())
     }
 }
 
+/// How many grids a reader keeps open: half the process's open-files limit, past 64 held for the
+/// rest (packs, sockets, logs), 16 at least and 2,000 at most.
+fn open_grids_limit() -> usize {
+    let lim = crate::sys::open_files_limit().unwrap_or(256);
+    (lim.saturating_sub(64) / 2).clamp(16, 2000) as usize
+}
+
 impl Reader {
+    /// A reader keeping at most `keep` grids open.
+    pub fn keeping(keep: usize) -> Self {
+        Reader { open: Mutex::new(Open::default()), cache: Arc::new(Mutex::new(BlockCache::new(512 << 20))), keep: keep.max(1) }
+    }
+
+    /// How many grids are open now.
+    pub fn open_count(&self) -> usize {
+        self.open.lock().unwrap().files.len()
+    }
+
+    fn get(o: &mut Open, p: &Path) -> Option<Arc<Tiff>> {
+        let t = o.files.get(p)?.clone();
+        o.clock += 1;
+        let c = o.clock;
+        o.uses.insert(p.to_path_buf(), c);
+        Some(t)
+    }
+
     fn tiff(&self, p: &Path) -> Result<Arc<Tiff>> {
-        if let Some(t) = self.open.lock().unwrap().get(p) {
-            return Ok(t.clone());
+        if let Some(t) = Self::get(&mut self.open.lock().unwrap(), p) {
+            return Ok(t);
         }
         let tiff = open_retrying(p, &|p| within(p, OPEN_DEADLINE, open_file), &OPEN_WAITS)
             .with_context(|| format!("{}", p.display()))?;
         // (Its cache id given as it's kept, under the one lock: two threads opening files at once
         // never share one.)
-        let mut open = self.open.lock().unwrap();
-        if let Some(t) = open.get(p) {
-            return Ok(t.clone());
+        let mut o = self.open.lock().unwrap();
+        if let Some(t) = Self::get(&mut o, p) {
+            return Ok(t);
         }
-        let t = Arc::new(tiff.with_shared_cache(open.len() as u64, self.cache.clone()));
-        open.insert(p.to_path_buf(), t.clone());
+        // The least recently used closed (as the last of its users drops it) to make room.
+        while o.files.len() >= self.keep {
+            let Some(old) = o.uses.iter().min_by_key(|(_, &c)| c).map(|(k, _)| k.clone()) else { break };
+            o.uses.remove(&old);
+            o.files.remove(&old);
+        }
+        let id = o.next_id;
+        o.next_id += 1;
+        let t = Arc::new(tiff.with_shared_cache(id, self.cache.clone()));
+        o.files.insert(p.to_path_buf(), t.clone());
+        o.clock += 1;
+        let c = o.clock;
+        o.uses.insert(p.to_path_buf(), c);
         Ok(t)
     }
 
@@ -178,9 +228,14 @@ impl Reader {
     /// waits round trips, and a block can meet hundreds of a source's grids (BlueTopo's).
     fn open_all(&self, paths: &[&Path]) -> Result<()> {
         let todo: Vec<&Path> = {
-            let open = self.open.lock().unwrap();
-            paths.iter().copied().filter(|p| !open.contains_key(*p)).collect()
+            let o = self.open.lock().unwrap();
+            paths.iter().copied().filter(|p| !o.files.contains_key(*p)).collect()
         };
+        // (More than it keeps: opening them ahead would only close the first again. Each is opened
+        // as it's sampled instead.)
+        if todo.len() > self.keep {
+            return Ok(());
+        }
         if todo.is_empty() {
             return Ok(());
         }
@@ -710,6 +765,40 @@ pub(crate) mod tests {
         }
         // Outside it: nothing.
         assert!(sample(&rd, &s, 12, c + 5000, r, 8, 8).unwrap().is_none());
+    }
+
+    /// Task #438: a reader keeps at most its share of grids open (a z3 tile met thousands of
+    /// GLOBathy's, kept open, and failed "Too many open files"), closing the least recently used,
+    /// and samples the same as one that keeps them all, also when a source has more grids in a
+    /// window than it keeps.
+    #[test]
+    fn a_reader_keeps_few_grids_open_and_samples_the_same() {
+        let d = tempfile::tempdir().unwrap();
+        let (zoom, c, r) = (12u8, 1200 * 256i64, 1500 * 256i64);
+        let grids: Vec<Grid> = (0..7i64)
+            .map(|i| {
+                let (gc, gr) = (c + 40 * i, r);
+                let p = d.path().join(format!("g{i}.tif"));
+                grid_file(&p, zoom, gc, gr, 64, 64, &|x, y| -(i as f32) - ((x - gc) as f32) * 0.01 - (y - gr) as f32 * 0.02);
+                Grid { bbox: bbox(zoom, gc, gr, 64, 64), zoom, file: p, zoom_file: None, low_file: None }
+            })
+            .collect();
+        let s = source(grids);
+        let all = Reader::keeping(100);
+        let few = Reader::keeping(3);
+        // Windows over all seven, then over a few in turn (closing and opening again).
+        let mut wins = vec![(c, r, 320usize, 64usize)];
+        for i in 0..7i64 {
+            wins.push((c + 40 * i + 10, r + 5, 30, 30));
+        }
+        wins.push((c, r, 320, 64));
+        for (x, y, w, h) in wins {
+            let a = sample(&all, &s, zoom, x, y, w, h).unwrap().unwrap();
+            let b = sample(&few, &s, zoom, x, y, w, h).unwrap().unwrap();
+            assert_eq!(a.v.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), b.v.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+            assert!(few.open_count() <= 3, "{}", few.open_count());
+        }
+        assert_eq!(all.open_count(), 7);
     }
 
     /// Task #398 review: grids opened and sampled `GRIDS_AT_ONCE` at once, and windows' blocks read
