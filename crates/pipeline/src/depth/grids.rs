@@ -267,6 +267,9 @@ impl Reader {
     }
 }
 
+/// The most cells of a grid read at once for a window (a band of its rows): 4 MB of values.
+pub static STRIP_CELLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1 << 20);
+
 /// How many of a source's grids are opened, or sampled, at once.
 pub const GRIDS_AT_ONCE: usize = 8;
 
@@ -611,47 +614,62 @@ fn sample_grid_on(
         // (The level's cells covering the window, in its own pixels.)
         let (x0, y0) = (sh((c0 << k) - gc), sh((r0 << k) - gr));
         let (x1, y1) = (sh(((c0 + w as i64) << k) - gc), sh(((r0 + h as i64) << k) - gr));
-        let Some((v, a0, b0, rw)) = read(&t, lv, x0, y0, x1, y1)? else { return Ok(None) };
-        let zv = match &zt {
-            Some(zt) => read(zt, level_for(zt, k, gc, gr).0.min(lv), x0, y0, x1, y1)?.map(|r| r.0),
-            None => None,
-        };
-        let lw = match &lt {
-            Some(lt) => read(lt, level_for(lt, k, gc, gr).0.min(lv), x0, y0, x1, y1)?.map(|r| r.0),
-            None => None,
-        };
-        let rh = v.len() / rw.max(1);
         let mut sum = vec![0f64; w * h];
         let mut n = vec![0u32; w * h];
         let mut lsum = vec![0f64; w * h];
         let mut ln = vec![0u32; w * h];
-        for j in 0..rh {
-            let oy = (b0 + j as i64 - y0) / f;
-            if !(0..h as i64).contains(&oy) {
-                continue;
-            }
-            for i in 0..rw {
-                let ox = (a0 + i as i64 - x0) / f;
-                if !(0..w as i64).contains(&ox) {
+        // Read a band of rows at a time, `STRIP_CELLS` cells at most (task #438: a grid without the
+        // overview a window needs is read at full resolution, 240 MB a window at a z6 block, eight
+        // at once): the same cells in the same order, so the same sums.
+        let rows = (STRIP_CELLS.load(std::sync::atomic::Ordering::Relaxed) / (x1 - x0).max(1) as usize).max(1) as i64;
+        let mut any = false;
+        let mut ys = y0;
+        while ys < y1 {
+            let ye = (ys + rows).min(y1);
+            let band = (ys, ye);
+            ys = ye;
+            let Some((v, a0, b0, rw)) = read(t, lv, x0, band.0, x1, band.1)? else { continue };
+            any = true;
+            let zv = match &zt {
+                Some(zt) => read(zt, level_for(zt, k, gc, gr).0.min(lv), x0, band.0, x1, band.1)?.map(|r| r.0),
+                None => None,
+            };
+            let lw = match &lt {
+                Some(lt) => read(lt, level_for(lt, k, gc, gr).0.min(lv), x0, band.0, x1, band.1)?.map(|r| r.0),
+                None => None,
+            };
+            let rh = v.len() / rw.max(1);
+            for j in 0..rh {
+                let oy = (b0 + j as i64 - y0) / f;
+                if !(0..h as i64).contains(&oy) {
                     continue;
                 }
-                let x = v[j * rw + i];
-                if !x.is_finite() {
-                    continue;
-                }
-                let o = oy as usize * w + ox as usize;
-                sum[o] += f64::from(x);
-                n[o] += 1;
-                let cz = zv.as_ref().map_or(g.zoom, |zv| zv[j * rw + i].clamp(0.0, 30.0) as u8).min(g.zoom);
-                s.zoom[o] = s.zoom[o].max(cz);
-                if let Some(lw) = &lw {
-                    let y = lw[j * rw + i];
-                    if y.is_finite() {
-                        lsum[o] += f64::from(y);
-                        ln[o] += 1;
+                for i in 0..rw {
+                    let ox = (a0 + i as i64 - x0) / f;
+                    if !(0..w as i64).contains(&ox) {
+                        continue;
+                    }
+                    let x = v[j * rw + i];
+                    if !x.is_finite() {
+                        continue;
+                    }
+                    let o = oy as usize * w + ox as usize;
+                    sum[o] += f64::from(x);
+                    n[o] += 1;
+                    let cz = zv.as_ref().map_or(g.zoom, |zv| zv[j * rw + i].clamp(0.0, 30.0) as u8).min(g.zoom);
+                    s.zoom[o] = s.zoom[o].max(cz);
+                    if let Some(lw) = &lw {
+                        let y = lw[j * rw + i];
+                        if y.is_finite() {
+                            lsum[o] += f64::from(y);
+                            ln[o] += 1;
+                        }
                     }
                 }
             }
+        }
+        if !any {
+            return Ok(None);
         }
         for o in 0..w * h {
             if n[o] > 0 {
@@ -907,6 +925,45 @@ pub(crate) mod tests {
             }
             assert!(big.v.iter().any(|v| v.is_finite()));
         }
+    }
+
+    /// Task #438: a finer grid read a band of rows at a time gives the sample read whole, bit for
+    /// bit (the same cells summed in the same order), bands of one row, a few, or the window.
+    #[test]
+    fn a_grid_read_in_bands_is_as_read_whole() {
+        use std::sync::atomic::Ordering;
+        let d = tempfile::tempdir().unwrap();
+        let (zoom, c, r) = (12u8, 1200 * 256i64, 1500 * 256i64);
+        let p = d.path().join("g.tif");
+        grid_file(&p, zoom, c + 3, r + 1, 300, 200, &|x, y| {
+            if (x * 5 + y * 3) % 13 == 0 {
+                f32::NAN
+            } else {
+                -((x - c) as f32) * 0.37 - (y - r) as f32 * 0.11 - 2.0
+            }
+        });
+        let s = source(vec![Grid {
+            bbox: bbox(zoom, c + 3, r + 1, 300, 200),
+            zoom,
+            file: p,
+            zoom_file: None,
+            low_file: None,
+        }]);
+        let bits = |x: &Sample| {
+            x.v.iter().map(|v| v.to_bits()).chain(x.zoom.iter().map(|&z| u32::from(z))).collect::<Vec<_>>()
+        };
+        let mut got = Vec::new();
+        // (Bands are a global setting: the others' samples are the same whatever it is.)
+        for cells in [usize::MAX, 1, 700, 5000] {
+            STRIP_CELLS.store(cells, Ordering::Relaxed);
+            let rd = Reader::default();
+            got.push((
+                bits(&sample(&rd, &s, 10, c / 4 - 4, r / 4 - 4, 90, 60).unwrap().unwrap()),
+                bits(&sample(&rd, &s, 12, c - 10, r - 10, 330, 230).unwrap().unwrap()),
+            ));
+        }
+        STRIP_CELLS.store(1 << 20, Ordering::Relaxed);
+        assert!(got.iter().all(|g| *g == got[0]));
     }
 
     /// Task #398 review: grids opened and sampled `GRIDS_AT_ONCE` at once, and windows' blocks read
