@@ -34,6 +34,9 @@ pub const BIG_LAKE_KM2: f64 = 100.0;
 pub struct Datasets {
     /// EEZ zones with their internal waters, by MRGID.
     pub eez: HashMap<u64, Vec<Ring>>,
+    /// The internal waters drawn for each zone (by the zone's MRGID): unioned with the zone, not
+    /// read even–odd with it (the zones' polygons already take in most of them).
+    pub internal: HashMap<u64, Vec<Ring>>,
     pub ts12: HashMap<u64, Vec<Ring>>,
     /// Lakes by `ne_id`: rings and size (km²).
     pub lakes: HashMap<u64, (Vec<Ring>, f64)>,
@@ -156,7 +159,7 @@ impl Datasets {
         if let Ok(iw) = s.role(INTERNAL) {
             let p = path(iw)?;
             for (k, rings) in read_geojson(&p, iw.param_str("id")?)? {
-                d.eez.entry(k).or_default().extend(rings);
+                d.internal.entry(k).or_default().extend(rings);
             }
         }
         if let Ok(ts) = s.role(TERRITORIAL) {

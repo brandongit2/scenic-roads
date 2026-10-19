@@ -620,13 +620,18 @@ pub(super) fn gather(
                     continue;
                 };
                 let got = match part {
-                    Part::Eez(_) => data.eez.get(k).cloned(),
+                    Part::Eez(_) => data.eez.get(k).cloned().or_else(|| data.internal.get(k).map(|_| Vec::new())),
                     Part::Ts12(_) => data.ts12.get(k).cloned(),
                     _ => data.lakes.get(k).map(|l| l.0.clone()),
                 };
                 match got {
                     Some(rs) => {
-                        leaves.insert(key, Leaf::Rings(vec![(rs, 0)], String::new()));
+                        // (A zone's internal waters a shape of their own: the shapes are unioned.)
+                        let mut shapes = vec![(rs, 0)];
+                        if let (Part::Eez(_), Some(iw)) = (part, data.internal.get(k)) {
+                            shapes.push((iw.clone(), 0));
+                        }
+                        leaves.insert(key, Leaf::Rings(shapes, String::new()));
                     }
                     None => ps.push(problem(
                         "rg-data-missing",

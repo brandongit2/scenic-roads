@@ -530,6 +530,7 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
     }
     let mut made: BTreeMap<String, Made> = BTreeMap::new();
     let mut held: BTreeSet<String> = BTreeSet::new();
+    trace("land");
     // 1. Land, in waves by what outlines name.
     let mut left: Vec<String> = ids.clone();
     while !left.is_empty() {
@@ -568,6 +569,7 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
         }
         left = rest;
     }
+    trace("water");
     // 2. Water, in waves by what waters name whole.
     let wdeps = |id: &str| -> Vec<String> {
         let r = &folder.regions[id].1;
@@ -624,6 +626,7 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
         made.remove(id);
         out.resolved.remove(id);
     }
+    trace("lakes");
     // 3. Lakes: a region's own unless another's water names them.
     let lake_cells: BTreeSet<Cell> = made.values().flat_map(|m| m.lakes.cells.keys().copied()).collect();
     let lake_cuts: Vec<(String, Cell, Area)> = lake_cells
@@ -652,6 +655,7 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
     let lands: BTreeMap<String, TArea> = made.iter().map(|(id, m)| (id.clone(), m.land.clone())).collect();
     let countries: BTreeMap<String, String> = made.iter().map(|(id, m)| (id.clone(), m.country.clone())).collect();
     drop(made);
+    trace("hand-outs");
     // 4. Hand-outs.
     for id in &ids {
         let Some(g) = folder.regions[id].1.hand_out.clone() else { continue };
@@ -661,34 +665,56 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
         let members: Vec<String> =
             folder.members(&g, id).into_iter().filter(|m| areas.contains_key(m) || others.contains_key(m)).collect();
         let mine = areas[id].clone();
-        for comp in components(&mine) {
-            let piece = TArea { cells: comp };
-            let mut touching: Vec<(f64, &String)> = members
-                .iter()
-                .map(|m| (shared_km(&piece, areas.get(m).unwrap_or_else(|| &others[m])), m))
-                .filter(|(l, _)| *l > 0.0)
-                .collect();
-            touching.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(b.1)));
-            let to = match touching.len() {
-                1 => Some(touching[0].1.clone()),
-                n if n > 1 && piece.km2() < rules.sliver_km2 => Some(touching[0].1.clone()),
-                _ => None,
-            };
-            if let Some(m) = to {
-                let a = areas.get_mut(id).unwrap();
-                for (c, p) in &piece.cells {
-                    let left = a.get(*c).minus(p);
-                    a.set(*c, left);
+        let theirs: Vec<(&String, &TArea)> =
+            members.iter().map(|m| (m, areas.get(m).unwrap_or_else(|| &others[m]))).collect();
+        // Each stretch's edge with each member (the stretch's ring of 100 m made once a cell), and
+        // where it goes.
+        let moves: Vec<(String, BTreeMap<Cell, Area>)> = components(&mine)
+            .into_par_iter()
+            .filter_map(|comp| {
+                let km2: f64 = comp.values().map(geom::area_km2).sum();
+                let mut edge: Vec<f64> = vec![0.0; theirs.len()];
+                for (c, p) in &comp {
+                    let mut ring: Option<Area> = None;
+                    for (k, (_, t)) in theirs.iter().enumerate() {
+                        edge[k] += edge_in(p, *c, t, &mut ring);
+                    }
                 }
-                let mut b = areas.remove(&m).unwrap_or_else(|| others[&m].clone());
-                for (c, p) in &piece.cells {
-                    let more = b.get(*c).union(p);
-                    b.set(*c, more);
-                }
-                areas.insert(m, b);
+                let mut touching: Vec<(f64, &String)> =
+                    edge.iter().zip(&theirs).filter(|(l, _)| **l > 0.0).map(|(l, (m, _))| (*l, *m)).collect();
+                touching.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(b.1)));
+                let to = match touching.len() {
+                    1 => Some(touching[0].1.clone()),
+                    n if n > 1 && km2 < rules.sliver_km2 => Some(touching[0].1.clone()),
+                    _ => None,
+                };
+                to.map(|m| (m, comp))
+            })
+            .collect();
+        // Applied cell by cell: taken from this region, given to each member.
+        let mut given: BTreeMap<String, BTreeMap<Cell, Vec<Area>>> = BTreeMap::new();
+        let mut taken: BTreeMap<Cell, Vec<Area>> = BTreeMap::new();
+        for (m, comp) in moves {
+            for (c, p) in comp {
+                taken.entry(c).or_default().push(p.clone());
+                given.entry(m.clone()).or_default().entry(c).or_default().push(p);
             }
         }
+        let a = areas.get_mut(id).unwrap();
+        for (c, ps) in taken {
+            let left = a.get(c).minus(&geom::union_all(&ps));
+            a.set(c, left);
+        }
+        for (m, cells) in given {
+            let mut b = areas.remove(&m).unwrap_or_else(|| others[&m].clone());
+            for (c, mut ps) in cells {
+                ps.push(b.get(c));
+                b.set(c, geom::union_all(&ps));
+            }
+            areas.insert(m, b);
+        }
     }
+    trace("with cover");
     // 5. With cover = "earth": slivers, then the cells' fills and the check; the rest.
     let cover = rules.cover.as_deref() == Some("earth");
     let mut all: BTreeMap<String, TArea> = others.clone();
@@ -700,6 +726,7 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
     }
     let rest_id = rests.first().map(|s| (*s).clone());
     let rest = cells_pass(folder, data, &mut all, cover, rest_id.is_some(), &mut out.problems);
+    trace("stored");
     // 6. Stored: every region with water, every other a fill changed, and the rest.
     for (id, t) in &all {
         if rest_id.as_ref() == Some(id) {
@@ -737,6 +764,13 @@ pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome
                 out.resolved.remove(&id);
             }
         }
+    }
+}
+
+/// With `SCENIC_REGIONS_TRACE` set: each step's start and the process's footprint, on stderr.
+fn trace(step: &str) {
+    if std::env::var_os("SCENIC_REGIONS_TRACE").is_some() {
+        eprintln!("regions: {step}, footprint {} MB", crate::sys::footprint().unwrap_or(0) / 1_000_000);
     }
 }
 
@@ -991,17 +1025,29 @@ pub fn components(t: &TArea) -> Vec<BTreeMap<Cell, Area>> {
 /// The edge two tiled areas share (km): each cell's piece of `a` against `b` there and in the
 /// neighbouring cells.
 pub fn shared_km(a: &TArea, b: &TArea) -> f64 {
-    a.cells
-        .iter()
-        .map(|(c, p)| {
-            let near = b.around(*c, 1, 1);
-            if near.is_empty() {
-                0.0
-            } else {
-                geom::shared_edge_km(p, &near, 100.0)
+    a.cells.par_iter().map(|(c, p)| edge_in(p, *c, b, &mut None)).sum()
+}
+
+/// The edge (km) piece `p` of cell `c` shares with `t`'s pieces in the cells round it, its ring of
+/// 100 m made once (in `ring`) and only when one comes near.
+fn edge_in(p: &Area, c: Cell, t: &TArea, ring: &mut Option<Area>) -> f64 {
+    let Some(pb) = p.bbox() else { return 0.0 };
+    let pad = 20_000;
+    let mut sum = 0.0;
+    for x in c.0 - 1..=c.0 + 1 {
+        let (w, shift) = wrap(x);
+        for y in c.1 - 1..=c.1 + 1 {
+            let Some(q) = t.cells.get(&(w, y)) else { continue };
+            let Some(qb) = q.bbox().map(|b| [b[0] + shift, b[1], b[2] + shift, b[3]]) else { continue };
+            if !(pb[0] <= qb[2] + pad && qb[0] <= pb[2] + pad && pb[1] <= qb[3] + pad && qb[1] <= pb[3] + pad) {
+                continue;
             }
-        })
-        .sum()
+            let q = if shift == 0 { q.clone() } else { q.shifted(shift) };
+            let r = ring.get_or_insert_with(|| geom::buffer_area_coarse(p, 100.0).minus(p));
+            sum += geom::area_km2(&r.intersect(&q)) / 0.1;
+        }
+    }
+    sum
 }
 
 /// With `cover`: a region's stretches of water under `km2` touching none of its land go to the

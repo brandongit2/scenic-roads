@@ -420,8 +420,8 @@ points), or `ways = [<way id>, …]` from the pinned pass (via the extract), str
 order, each reversed as needed; ways that don't share an end node are an error. A cut line may not
 cross itself.
 
-**Land and water.** A region with a `water` key is resolved in two steps (crate::inputs::regions::
-water). First its land: its outline exact (no coast tolerance), cut back to the coastline's land
+**Land and water.** A region with a `water` key is resolved in two steps, cell by cell (crate::inputs::
+regions::tiles; §6.1.4). First its land: its outline exact (no coast tolerance), cut back to the coastline's land
 (the `regions-land` source) less the lakes over 100 km² (`regions-lakes`); those lakes inside its
 outline are its water, unless another region's water names them. Then its water: the `water` parts,
 less the coastline's land and every region without `water` (the land dominates the sea), in an
@@ -429,12 +429,12 @@ order where a region comes after those its water names whole (`region:`, `group:
 `hand_out` folder then takes each stretch (a connected piece) of its water that one of its regions
 alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge. With
 `cover = "earth"` in `rules.toml`, then: a region's piece of water under `sliver_km2` touching
-none of its land joins the region it shares the longest edge with; and, tile by tile (a 64 × 32 grid, 5.625°), land in
+none of its land joins the region it shares the longest edge with; and, cell by cell (2°), land in
 two regions is taken from both, and land in none, with water in none touching land (the sea between
 the zones' coastline and OSM's), joins the region it shares the longest edge with (the nearest when
 it touches none). The region whose water is `rest` takes what's left; without one, water left is an
 error (`rg-cover`), as is water in two regions. A region without `water` resolves as before, so old
-and new files sit together: the new rules only touch the new files, and `cover = "earth"` only
+and new files sit together (one without `water` may not name one with it: `rg-ref`): the new rules only touch the new files, and `cover = "earth"` only
 holds once every file is new. The 12-nautical-mile line is the `regions-territorial-seas` source,
 named only as `ts12:` parts; it divides nothing.
 
@@ -497,24 +497,20 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   shape with each side's polygon. **Sizes** (for slivers, shared edges and the cover check) are on
   the authalic sphere; a shared edge's length is the other area within 100 m of the edge, over 100 m,
   measured in quarters while either area is large.
-- **Memory:** what's bounded is the coastline's land: a region with water is cut back to it, and
-  its water cut by it, in quarters of its box (`geom::with_mask`) until each piece holds at most
-  200,000 points and its box 2° or less, so no operation holds more of the land than a region's own
-  box's share. A `minus` takes away large parts in 2° cells (`geom::Tiled`). Buffers of a region
-  with water are drawn within a fiftieth of the distance (rings simplified that much, a round join
-  only where a ring turns outward). At most four regions resolve at once. Not bounded: an operation
-  on a region's whole area (cutting it into pieces, putting the pieces back, a union, an
-  intersection, a nearest-coast split, its land and water joined, its lakes, the cover check's 5.6°
-  tile of land) holds that region's own points, so the largest region sets the peak. The datasets
-  are read only once a region in the folder names them, whole (about 1 GB in memory). The check
-  itself has no memory guard; `scenic-build regions-check` reports the most points one operation
-  held, and `--max-mb` stops it past a resident size.
-- **The antimeridian:** every stored ring lies within −180°…180°. A region's parts are unwrapped
-  into one longitude frame (the turn leaving the widest empty band outside it; the plain frame for
-  regions away from ±180°), operated on there, then split at each odd multiple of 180° and shifted
-  back, each piece a shape of its own (`from` ending ` (east of 180°)` / ` (west of 180°)`). OSM
-  relations are already split at ±180°, so `osm:`-only regions are stored unchanged. GeoJSON and
-  `coords` drawn across the line are unwrapped likewise. No reader of the coverage has to know.
+- **Cell by cell** (crate::inputs::regions::tiles): a region with water is resolved on a grid of 2°
+  cells. Each part it names is cut into the cells by clipping its rings to boxes (no polygon
+  operation on the whole); each expression is evaluated per cell, a buffer from the cells within
+  its distance, a nearest-coast split against the coasts in the cells within 450 km; the land, water
+  and lakes are kept by cell, stretches (`hand_out`, slivers) joined across the cells' shared
+  edges, and the cover check runs per cell. So an operation holds a cell's geometry (a buffer's or
+  a split's, its neighbourhood's), never a region's; what's kept is every region's cells (the
+  outcome itself) and the datasets, read only once a region in the folder names them (about 1 GB).
+  A zone's internal waters are unioned with it. The datasets' rings are simplified within 20 m as
+  read. At most four regions resolve at once.
+- **The memory guard:** the check stops its process (exit 3, saying so) if its physical footprint
+  (`sys::footprint`: compressed and swapped memory included) passes `SCENIC_REGIONS_MAX_MB` (8,000
+  MB by default), looked at every 50 ms; `scenic-build regions-check --max-mb` sets it for a scratch
+  check, and reports the most points one operation held.
 
 **Stored per region** (beside the region files in the accepted version):
 - `sources/inputs/regions/@geometry/<id>.<hash16>.rgeo`, what the coverage reads: uncompressed,
