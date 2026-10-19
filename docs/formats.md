@@ -84,6 +84,14 @@ catalog works it out from the sections where missing.
 | `sub9` | `(u64 z9 key, u32 first way, u32 way count)` | ways grouped by z9 tile of their first vertex |
 | `rail` | `(u32 way, u32 relation lo, u32 relation hi, u32 pad)` | rail ways' primary route relation |
 
+**Read in part** (pack and lo, task #396, `crate::basepart`): sections read whole (`ways`, `verts`,
+`samples` as the way index is worked out; `strings`, `rail`, `sub9`) are checked against their
+XXH3; ranges of a section can't be (the file checksums sections whole), so a part read isn't
+checked. **Way index** (`<cache>/base/<content name>.idx`, a Mac's own): `"WAYIDX02"`, u32 chunk
+size (1024 ways), u32 chunk count n, n × `[w, s, e, n]` i32 (each chunk's ways' box, E7), (n + 1)
+× u64 (each chunk's first sample; the last the samples' count), then u64 XXH3 of all before it;
+one that doesn't check is worked out again.
+
 ## Road values (`global/roads/<z>-<x>-<y>.<h>.sect`): per owned way of a unit
 
 Section `roads`, one 24-byte record per way of the unit's base pack, in the same order:
@@ -771,8 +779,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     one run, without `pack`'s and `lo`'s, its halo steps' stale peaks nor those past three times
     their targets' 90th percentile and a GB, a step reading a shared cache's peak less its targets'
     90th percentile its cache's fill instead); `cache-fills.json` (`{<cache>: MB}`, "DEM": what
-    filling it on a Mac takes, docs/pool.md §7.1; another cache's entry, as "base packs" before
-    task #396, dropped as it's read); the measures
+    filling it on a Mac takes, docs/pool.md §7.1; an entry of a cache that isn't one any more is
+    dropped as it's read); the measures
     of z3 `terrain` and `trees` runs, an old step shape, dropped from `costs.json`, `floors.json`
     and `disks.json` as they're read); `journal/<worker>/` (hand-offs sent rather than journaled, drained into the
     pool's journal); `tasks/<id>/`; `pause.json` (`{pause: {mode: "drain" | "freeze", by, at} | null,

@@ -53,7 +53,7 @@ pub const GUESS_FIRST: [&str; 2] = ["unit", "pois"];
 /// disk measure is the job's reads, shared, not its own: a job of several takes the most of theirs,
 /// not their sum (`batch_disk`); and a target's `bytes` (the halo's base-pack files' bytes, its
 /// input size for the fits) aren't what it reads from the NAS: its NAS weight is what the job read
-/// (`nas_read`, noted with its first target) and what it writes (`wrote`, `creates`).
+/// (`nas_read`, an even share on each of its targets) and what it writes (`wrote`, `creates`).
 pub const HALO_STEPS: [&str; 2] = ["pack", "lo"];
 
 /// The disk (MB) a job of `step` takes over targets each measured to take `each`: a `HALO_STEPS`
@@ -734,7 +734,7 @@ mod tests {
     }
 
     /// A halo step's NAS rate (task #260: `pack`): what its job read from the NAS (task #396:
-    /// `nas_read`, its first target's) and what it writes and creates, its `bytes` (the halo's base
+    /// `nas_read`, each target's share) and what it writes and creates, its `bytes` (the halo's base
     /// packs' files) not; a halo step's batch's disk the most of its targets', another's their sum.
     #[test]
     fn a_halo_steps_nas_rate_is_what_it_reads_and_writes() {

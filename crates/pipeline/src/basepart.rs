@@ -14,16 +14,20 @@
 //! The ranges are copied into a sparse local file the size of the original, at their own offsets,
 //! then mapped as a whole file is (crate::basepack::Sect::open_only, only the sections read named):
 //! the bytes not read are zeros and take no room. Neighbouring ranges are read as one (`GAP`), in
-//! reads of `READ` bytes at most, `READERS` at once. Sections read whole are checked against their
-//! XXH3; ranges can't be (a file's sections are checksummed whole).
+//! reads of `READ` bytes at most, `READERS` at once, each given up after `STALL` without a byte
+//! (`watched`: a stuck SMB read fails the job rather than holding it for good). Sections read
+//! whole are checked against their XXH3; ranges can't be (a file's sections are checksummed whole).
 
 use crate::basepack::{BasePack, Sect, Span};
 use crate::hipack::{meets, Bounds};
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use roadcore::scenic::Sample;
 use roadcore::WayRec;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use store::sys::PosIo;
 
 /// Ways per chunk of the way index.
@@ -34,7 +38,7 @@ pub const GAP: u64 = 1 << 20;
 const READ: usize = 8 << 20;
 /// Reads of one file at once.
 const READERS: usize = 4;
-const MAGIC: &[u8; 8] = b"WAYIDX01";
+const MAGIC: &[u8; 8] = b"WAYIDX02";
 /// The box of nothing (meets no area).
 const EMPTY: Bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
 
@@ -95,12 +99,17 @@ impl Index {
         b.extend_from_slice(&(self.boxes.len() as u32).to_le_bytes());
         b.extend_from_slice(bytemuck::cast_slice(&self.boxes));
         b.extend_from_slice(bytemuck::cast_slice(&self.samples));
+        let h = store::naming::xxh3(&b);
+        b.extend_from_slice(&h.to_le_bytes());
         b
     }
 
-    /// Kept bytes `b`, for a pack of `chunks` chunks; None when they're another's.
+    /// Kept bytes `b`, for a pack of `chunks` chunks; None when they're another's, or damaged
+    /// (their XXH3 last).
     fn decode(b: &[u8], chunks: usize) -> Option<Index> {
-        let ok = b.len() == 16 + chunks * 16 + (chunks + 1) * 8
+        let (b, h) = b.split_at_checked(b.len().checked_sub(8)?)?;
+        let ok = store::naming::xxh3(b) == u64::from_le_bytes(h.try_into().ok()?)
+            && b.len() == 16 + chunks * 16 + (chunks + 1) * 8
             && &b[..8] == MAGIC
             && u32::from_le_bytes(b[8..12].try_into().ok()?) as usize == CHUNK
             && u32::from_le_bytes(b[12..16].try_into().ok()?) as usize == chunks;
@@ -118,19 +127,60 @@ pub fn index_path(cache: &Path, content: &str) -> PathBuf {
     cache.join(format!("{content}.idx"))
 }
 
+/// How long a read of the NAS may go without a byte before the job gives up on it (Task #380: an
+/// SMB read can hang in the kernel for many minutes): its error, the job failed, its lease back.
+pub const STALL: Duration = Duration::from_secs(120);
+
+/// `f` on a thread of its own, given a count of the bytes it has read to add to; its result,
+/// unless that count stays the same for `stall`: then an error at once, the thread left to its
+/// read (it ends with it, or with the process).
+pub fn watched<T: Send + 'static>(
+    stall: Duration,
+    what: &str,
+    f: impl FnOnce(&AtomicU64) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let progress = Arc::new(AtomicU64::new(0));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let p = progress.clone();
+    std::thread::Builder::new().name("basepart-read".into()).spawn(move || {
+        let _ = tx.send(f(&p));
+    })?;
+    let (mut seen, mut since) = (0, Instant::now());
+    loop {
+        match rx.recv_timeout(Duration::from_millis(200).min(stall)) {
+            Ok(r) => return r,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => bail!("{what}: its reader ended without a word"),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        let now = progress.load(Ordering::Relaxed);
+        if now != seen {
+            (seen, since) = (now, Instant::now());
+        } else if since.elapsed() >= stall {
+            bail!("{what}: no byte read in {stall:?} (the NAS's read stuck?): given up");
+        }
+    }
+}
+
 /// A source file being copied in part to a sparse local one of its size.
 struct Copy {
-    src: File,
-    dst: File,
+    src: Arc<File>,
+    dst: Arc<File>,
+    name: String,
     len: u64,
     ranges: Vec<(u64, u64)>,
     read: Read,
+    stall: Duration,
 }
 
 impl Copy {
-    fn new(src: &Path, dst: &Path) -> Result<Copy> {
-        let src = File::open(src).with_context(|| format!("open {}", src.display()))?;
-        let len = src.metadata()?.len();
+    fn new(src: &Path, dst: &Path, stall: Duration) -> Result<Copy> {
+        let name = src.display().to_string();
+        let s = src.to_owned();
+        let (src, len) = watched(stall, &format!("open {name}"), move |_| {
+            let f = File::open(&s).with_context(|| format!("open {}", s.display()))?;
+            let len = f.metadata()?.len();
+            Ok((f, len))
+        })?;
         let dst = File::options()
             .read(true)
             .write(true)
@@ -139,15 +189,22 @@ impl Copy {
             .open(dst)
             .with_context(|| format!("create {}", dst.display()))?;
         dst.set_len(len)?;
-        Ok(Copy { src, dst, len, ranges: Vec::new(), read: Read::default() })
+        Ok(Copy { src: Arc::new(src), dst: Arc::new(dst), name, len, ranges: Vec::new(), read: Read::default(), stall })
     }
 
     /// Bytes `[off, off + len)` of the source, read now (not copied).
     fn get(&mut self, off: u64, len: usize) -> Result<Vec<u8>> {
         ensure!(off + len as u64 <= self.len, "a read past the end of the file");
-        let mut b = vec![0u8; len];
-        self.src.read_exact_at(&mut b, off)?;
-        self.read += Read { bytes: len as u64, reads: 1 };
+        let src = self.src.clone();
+        let b = watched(self.stall, &format!("read {}", self.name), move |p| {
+            let mut b = vec![0u8; len];
+            for (k, c) in b.chunks_mut(READ).enumerate() {
+                src.read_exact_at(c, off + (k * READ) as u64)?;
+                p.fetch_add(c.len() as u64, Ordering::Relaxed);
+            }
+            Ok(b)
+        })?;
+        self.read += Read { bytes: len as u64, reads: len.div_ceil(READ).max(1) as u64 };
         Ok(b)
     }
 
@@ -172,7 +229,7 @@ impl Copy {
     }
 
     /// The ranges wanted so far, neighbouring ones together, copied: in pieces of `READ` bytes at
-    /// most, `READERS` at once.
+    /// most, `READERS` at once, watched (`watched`).
     fn flush(&mut self) -> Result<()> {
         let mut rs = std::mem::take(&mut self.ranges);
         rs.sort_unstable();
@@ -187,29 +244,35 @@ impl Copy {
             .iter()
             .flat_map(|&(a, b)| (a..b).step_by(READ).map(move |at| (at, ((b - at) as usize).min(READ))))
             .collect();
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        let (src, dst) = (&self.src, &self.dst);
-        let done: Vec<Result<Read>> = std::thread::scope(|s| {
-            let hs: Vec<_> = (0..READERS.min(pieces.len()))
-                .map(|_| {
-                    s.spawn(|| -> Result<Read> {
-                        let mut buf = vec![0u8; READ];
-                        let mut r = Read::default();
-                        loop {
-                            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some(&(at, n)) = pieces.get(k) else { return Ok(r) };
-                            src.read_exact_at(&mut buf[..n], at)?;
-                            dst.write_all_at(&buf[..n], at)?;
-                            r += Read { bytes: n as u64, reads: 1 };
-                        }
+        let (src, dst) = (self.src.clone(), self.dst.clone());
+        let r = watched(self.stall, &format!("read {}", self.name), move |p| {
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let done: Vec<Result<Read>> = std::thread::scope(|s| {
+                let hs: Vec<_> = (0..READERS.min(pieces.len()))
+                    .map(|_| {
+                        s.spawn(|| -> Result<Read> {
+                            let mut buf = vec![0u8; READ];
+                            let mut r = Read::default();
+                            loop {
+                                let k = next.fetch_add(1, Ordering::Relaxed);
+                                let Some(&(at, n)) = pieces.get(k) else { return Ok(r) };
+                                src.read_exact_at(&mut buf[..n], at)?;
+                                dst.write_all_at(&buf[..n], at)?;
+                                p.fetch_add(n as u64, Ordering::Relaxed);
+                                r += Read { bytes: n as u64, reads: 1 };
+                            }
+                        })
                     })
-                })
-                .collect();
-            hs.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("a reader panicked")))).collect()
-        });
-        for r in done {
-            self.read += r?;
-        }
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("a reader panicked")))).collect()
+            });
+            let mut all = Read::default();
+            for r in done {
+                all += r?;
+            }
+            Ok(all)
+        })?;
+        self.read += r;
         Ok(())
     }
 }
@@ -253,8 +316,20 @@ pub fn open(
     to: [&Path; 2],
     areas: Option<&[Bounds]>,
 ) -> Result<(BasePack, Read)> {
+    open_watched(base, roads, index, to, areas, STALL)
+}
+
+/// `open`, its NAS reads given up after `stall` without a byte (`watched`).
+pub fn open_watched(
+    base: &Path,
+    roads: &Path,
+    index: &Path,
+    to: [&Path; 2],
+    areas: Option<&[Bounds]>,
+    stall: Duration,
+) -> Result<(BasePack, Read)> {
     let [bdst, rdst] = to;
-    let mut c = Copy::new(base, bdst)?;
+    let mut c = Copy::new(base, bdst, stall)?;
     let l = layout(&mut c)?;
     let sec = |n: &str| l.sections.get(n).copied();
     let (woff, wlen, _) = sec("ways").context("no section ways")?;
@@ -372,7 +447,7 @@ pub fn open(
     c.flush()?;
     let mut read = c.read;
     // The road values: a record a way.
-    let mut rc = Copy::new(roads, rdst)?;
+    let mut rc = Copy::new(roads, rdst, stall)?;
     let rl = layout(&mut rc)?;
     let (roff, rlen, _) = rl.sections.get("roads").copied().context("no section roads in the road values")?;
     ensure!(rlen == nways as u64 * 24, "road values out of step with the base pack");

@@ -64,22 +64,6 @@ fn scratch_of(spec: &JobSpec) -> Option<PathBuf> {
     spec.cmd.iter().position(|a| a == "--scratch").and_then(|i| spec.cmd.get(i + 1)).map(PathBuf::from)
 }
 
-/// Bytes of the files under `dir` (0 when it isn't there).
-fn dir_bytes(dir: &Path) -> u64 {
-    let mut n = 0;
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-            match e.file_type() {
-                Ok(t) if t.is_dir() => stack.push(e.path()),
-                Ok(_) => n += e.metadata().map(|m| m.len()).unwrap_or(0),
-                Err(_) => {}
-            }
-        }
-    }
-    n
-}
-
 /// Where things are.
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -6483,10 +6467,10 @@ impl Agent {
             let what = format!("Reading the OpenStreetMap planet of {date}");
             let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
             let jar = root.join("sources/basemap/planetiler.jar");
-            // The pack cache is cleared when the pass starts (it refills from the mirror or the NAS):
-            // its space counts as free, and so does the cheap caches' (room::make_room frees it).
-            let pack_cache = self.o.home.join("cache").join("base");
-            let mut free = self.disk_free() + dir_bytes(&pack_cache);
+            // The cheap caches' space counts as free (room::make_room frees it). (The pack cache the
+            // pass clears holds the base packs' way indexes alone since task #396: a few kB each,
+            // not counted.)
+            let mut free = self.disk_free();
             // (The owner's room target kept free past it, as the pass keeps it: room::TARGET_ENV.)
             let need = PASS_SPACE + self.floor();
             if free < need {

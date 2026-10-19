@@ -1772,7 +1772,7 @@ impl Coordinator {
         costs.retain(|k, _| !old_shape(k));
         floors.retain(|k, _| !old_shape(k));
         disks.retain(|k, _| !old_shape(k));
-        let (job_disks, fills) = job_disks_load(dir, &mut disks);
+        let (job_disks, fills) = job_disks_load(dir, &mut disks, !viewer);
         // The build's pause, as it was when the agent before this one stopped (`{pause, at}`; an older
         // agent's, the pause alone).
         let kept: serde_json::Value = std::fs::read(dir.join("pause.json"))
@@ -3113,10 +3113,12 @@ fn stale_peak(disks: &BTreeMap<String, u64>, step: &str, mb: u64) -> bool {
 /// without its stale and gone steps' and those far above their targets' measures (`stale_peak`,
 /// by `disks`); a step reading a shared cache's peak there (the most a job took: a cold run's) its
 /// cache's fill, less its targets' output (their 90th percentile), the most of its steps', and not
-/// a run of it. Taken so once (`JOB_DISKS`, `FILLS` and `disks.json` written at once).
+/// a run of it. Taken so once (`JOB_DISKS`, `FILLS` and `disks.json` written at once; with `keep`
+/// alone: a viewer writes nothing).
 fn job_disks_load(
     dir: &std::path::Path,
     disks: &mut BTreeMap<String, u64>,
+    keep: bool,
 ) -> (BTreeMap<String, Vec<u64>>, BTreeMap<String, u64>) {
     // (Fills only of the caches there are: the base packs' went with task #396.)
     let fills: Option<BTreeMap<String, u64>> = std::fs::read(dir.join(FILLS))
@@ -3133,12 +3135,15 @@ fn job_disks_load(
     let (v4, gone) = JOB_DISKS_V4;
     let before = disks.len();
     disks.retain(|k, _| !gone.contains(&crate::agent::memguard::step_of_key(k)));
-    if disks.len() < before {
+    if keep && disks.len() < before {
         let _ = serde_json::to_vec(&*disks)
             .map_err(anyhow::Error::from)
             .and_then(|b| crate::whole::write(&dir.join("disks.json"), &b));
     }
     let write = |m: &BTreeMap<String, Vec<u64>>, fills: &BTreeMap<String, u64>| {
+        if !keep {
+            return;
+        }
         for (f, v) in [(JOB_DISKS, serde_json::to_vec(m)), (FILLS, serde_json::to_vec(fills))] {
             let _ = v.map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&dir.join(f), &b));
         }
@@ -3176,7 +3181,10 @@ fn job_disks_load(
         write(&m, &fills);
         return (m, fills);
     }
-    (BTreeMap::new(), fills.unwrap_or_default())
+    // (None before: v5 written now, so the drop above is done once.)
+    let (m, fills) = (BTreeMap::new(), fills.unwrap_or_default());
+    write(&m, &fills);
+    (m, fills)
 }
 
 /// Whether cost key `k` is of a step's shape no plan makes now (task #392): a z3 tile's whole
@@ -5815,10 +5823,17 @@ mod tests {
         assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
         // The files before v4: each peak one run, the stale steps' (pack's and lo's always, task
         // #396) and those far above their targets' measures (task #392) dropped.
+        let fresh = tempfile::tempdir().unwrap();
+        let mut d: BTreeMap<String, u64> = [(cost_key("pack", "6/1/1"), 300)].into();
+        assert_eq!(job_disks_load(fresh.path(), &mut d, true), Default::default());
+        assert!(fresh.path().join(JOB_DISKS).exists(), "a fresh folder's v5 written: the drop done once");
+        let mut d: BTreeMap<String, u64> = [(cost_key("pack", "6/1/1"), 300)].into();
+        job_disks_load(fresh.path(), &mut d, true);
+        assert_eq!(d.len(), 1, "not dropped again");
         let old = tempfile::tempdir().unwrap();
         std::fs::write(old.path().join("job-disks.json"), r#"{"pack":146944,"lo":46000,"peaks":20000}"#).unwrap();
         assert_eq!(
-            job_disks_load(old.path(), &mut BTreeMap::new()),
+            job_disks_load(old.path(), &mut BTreeMap::new(), true),
             ([("peaks".to_string(), vec![20_000])].into(), BTreeMap::new())
         );
         std::fs::remove_file(old.path().join(JOB_DISKS)).unwrap();
@@ -5827,14 +5842,14 @@ mod tests {
         let mut measured: BTreeMap<String, u64> =
             [(cost_key("pack", "6/1/1"), 300), ("6/1/1".to_string(), 5_900), (cost_key("peaks", "6/1/1"), 500)].into();
         assert_eq!(
-            job_disks_load(old.path(), &mut measured),
+            job_disks_load(old.path(), &mut measured, true),
             (BTreeMap::new(), [("DEM".to_string(), 12_684)].into()),
             "unit's 18.6 GB its cache's fill less its output, not a run; pack's gone; 5 GB against 0.5 GB dropped"
         );
         assert!(!measured.contains_key(&cost_key("pack", "6/1/1")), "pack's targets' disks gone too");
         std::fs::write(old.path().join(JOB_DISKS), r#"{"peaks":[1300]}"#).unwrap();
         assert_eq!(
-            job_disks_load(old.path(), &mut measured),
+            job_disks_load(old.path(), &mut measured, true),
             ([("peaks".to_string(), vec![1300])].into(), [("DEM".to_string(), 12_684)].into())
         );
         // Cleared with the floors.

@@ -19,8 +19,8 @@
 //!   rest is its reservation (task #242), which its member's ask takes off its free space. A halo
 //!   step's job (crate::needs::HALO_STEPS: `pack`, task #260; `lo`, task #381) takes one halo's targets (`Cfg::halo`
 //!   a halo, offered a halo an offer as the agent offers them), its disk its halo's output once
-//!   whatever its targets, its `bytes` its halo's base packs' files (not its NAS traffic) and its
-//!   NAS what it writes. A job of a step reading a shared cache (crate::needs::CACHES: the DEM
+//!   whatever its targets, its `bytes` its halo's base packs' files (not its NAS traffic), its NAS
+//!   what it reads of them (`nas_read`) and what it writes. A job of a step reading a shared cache (crate::needs::CACHES: the DEM
 //!   cache) on a Mac without it fills it (`Step::cache_mb`, measured with its targets and its
 //!   job), the cache kept on that Mac's disk after (`Cfg::warm`: those every Mac has from the
 //!   start), its capacity saying the caches it has (crate::coord::Capacity::caches); the
@@ -189,11 +189,12 @@ fn written(j: &Job, t: u64) -> u64 {
 
 /// What a run of one target of `s` given `threads` measures, as crate::costin records it: its
 /// memory and time, the threads it was given and the CPU time it took (its step's threads busy, at
-/// most those given), and what it read and wrote on the NAS (a halo step's `bytes` its halo's base
-/// packs' files, not its NAS traffic: all of its `nas_mb` what it writes).
+/// most those given), and what it read and wrote on the NAS, half of `nas_mb` each (a halo step's
+/// reads its `nas_read`, its `bytes` its halo's base packs' files, as crate::needs reads them).
 fn measures(s: &Step, threads: u32) -> Cost {
     let nas = s.nas_mb << 20;
-    let (bytes, wrote) = if is_halo(s.name) { (s.disk_mb << 20, nas) } else { (nas / 2, nas - nas / 2) };
+    let (read, wrote) = (nas / 2, nas - nas / 2);
+    let (bytes, nas_read) = if is_halo(s.name) { (s.disk_mb << 20, read) } else { (read, 0) };
     Cost {
         peak_mb: s.mem_mb,
         secs: s.secs,
@@ -203,6 +204,7 @@ fn measures(s: &Step, threads: u32) -> Cost {
             ("threads".to_string(), threads as u64),
             ("cpu_ms".to_string(), threads.min(s.threads) as u64 * s.secs * 1000),
             ("bytes".to_string(), bytes),
+            ("nas_read".to_string(), nas_read),
             ("wrote".to_string(), wrote),
             ("creates".to_string(), s.creates),
         ]
@@ -1091,10 +1093,10 @@ mod tests {
         assert!(r.most_of[&("m4", "unit".to_string())] >= 3, "{r:?}");
     }
 
-    /// Task #392 re-review: a Mac whose jobs each copy a part of a shared cache, a quarter of a
+    /// Task #392 re-review: a member whose units each copy a part of the DEM cache, a quarter of a
     /// 40 GB fill: each job that's the first there reading it is still reserved what the Mac truly
-    /// lacks (checked at each start), no start over-committing its disk; and
-    /// its cache emptied midway, the pass the same, no job after is reserved short of what it lacks.
+    /// lacks (checked at each start), several such grants, no start over-committing its disk; and
+    /// its cache emptied midway, the pass the same, the next job is reserved the fill again.
     #[test]
     fn a_cache_filled_in_parts_or_emptied_is_reserved_what_it_lacks() {
         let unit = Step {
@@ -1109,13 +1111,14 @@ mod tests {
             creates: 30,
         };
         let mut macs = m4_m1();
-        macs[1].disk_mb = 100_000;
+        // (The lead too small for a unit's memory: the member runs them.)
+        (macs[0].total_mb, macs[1].disk_mb) = (1_024, 100_000);
         let base = Cfg { steps: vec![unit], known: vec!["unit"], fill_parts: 4, ..cfg(macs, 1) };
-        let fills = |r: &Run| r.fills_granted.values().sum::<usize>();
         let r = run(&base).unwrap();
-        assert!(fills(&r) >= 2, "{r:?}");
+        assert!(r.fills_granted.get("m1").is_some_and(|&n| n >= 2), "{r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
         let r = run(&Cfg { fill_parts: 1, clear: Some((1, 1_200, "DEM")), ..base }).unwrap();
+        assert!(r.fills_granted.get("m1").is_some_and(|&n| n >= 2), "filled, emptied, filled again: {r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
     }
 

@@ -189,11 +189,45 @@ fn bad_boxes_are_worked_out_again() {
     let d = tempfile::tempdir().unwrap();
     let (base, roads) = make(d.path(), 3 * CHUNK);
     let boxes = d.path().join("b.boxes");
-    std::fs::write(&boxes, b"WAYIDX01short").unwrap();
+    std::fs::write(&boxes, b"WAYIDX02short").unwrap();
     let t = Unit { z: 6, x: 10, y: 20 };
     let s = d.path().join("s");
     std::fs::create_dir_all(&s).unwrap();
     let (part, _) = open(&base, &roads, &boxes, refs(&to(&s)), Some(&[tile_bounds(6, 10, 20)])).unwrap();
     assert_eq!(made(&part, t), made(&BasePack::open(&base, &roads).unwrap(), t));
-    assert_eq!(std::fs::read(&boxes).unwrap().len(), 16 + 3 * 16 + 4 * 8, "the index kept in its place");
+    let kept = std::fs::read(&boxes).unwrap();
+    assert_eq!(kept.len(), 16 + 3 * 16 + 4 * 8 + 8, "the index kept in its place");
+    // (Damaged: its checksum doesn't hold, and it's worked out again.)
+    let mut bad = kept.clone();
+    bad[20] ^= 1;
+    assert!(Index::decode(&bad, 3).is_none());
+    std::fs::remove_file(&boxes).unwrap();
+    std::fs::write(&boxes, &bad).unwrap();
+    let (part, _) = open(&base, &roads, &boxes, refs(&to(&s)), Some(&[tile_bounds(6, 10, 20)])).unwrap();
+    assert_eq!(made(&part, t), made(&BasePack::open(&base, &roads).unwrap(), t));
+    assert_eq!(std::fs::read(&boxes).unwrap(), kept);
+}
+
+/// A read that brings no byte for its stall time is given up (Task #380: a stuck SMB read), its
+/// thread left to it; one that keeps bringing bytes runs on past it; a quick one's result is its own.
+#[test]
+fn a_stuck_read_is_given_up() {
+    let stall = std::time::Duration::from_millis(300);
+    let t0 = std::time::Instant::now();
+    let e = watched(stall, "read x", |_| -> Result<()> {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(t0.elapsed() < std::time::Duration::from_secs(3), "{:?}", t0.elapsed());
+    assert!(format!("{e:#}").contains("no byte read"), "{e:#}");
+    let slow = watched(stall, "read y", |p| {
+        for _ in 0..8 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            p.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(7)
+    });
+    assert_eq!(slow.unwrap(), 7);
+    assert!(watched(stall, "read z", |_| -> Result<()> { anyhow::bail!("gone") }).is_err());
 }

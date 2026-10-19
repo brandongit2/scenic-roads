@@ -1110,6 +1110,14 @@ struct Reads {
     bytes: u64,
 }
 
+impl Reads {
+    /// Target `k`'s share of the bytes read, of `n` targets: an even one, the first taking the rest.
+    fn share(&self, k: usize, n: usize) -> u64 {
+        let n = n.max(1) as u64;
+        self.bytes / n + if k == 0 { self.bytes % n } else { 0 }
+    }
+}
+
 impl Drop for Reads {
     fn drop(&mut self) {
         for p in &self.files {
@@ -1282,10 +1290,8 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
         pipeline::costin::set("units", near.len() as u64);
         pipeline::costin::add("bytes", near.iter().map(|bp| bp.bytes()).sum());
         pipeline::costin::set("ways", in_t.len() as u64);
-        // (What the job read from the NAS, with its first tile: needs::HALO_STEPS.)
-        if k == 0 {
-            pipeline::costin::set("nas_read", reads.bytes);
-        }
+        // (What the job read from the NAS, an even share a tile: needs::HALO_STEPS.)
+        pipeline::costin::set("nas_read", reads.share(k, ts.len()));
         if in_t.is_empty() {
             // No ways here (any more): what an earlier build made for the tile goes.
             drop_entries(
@@ -1402,9 +1408,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
         pipeline::costin::set("units", near.len() as u64);
         pipeline::costin::add("bytes", near.iter().map(|bp| bp.bytes()).sum());
         pipeline::costin::set("ways", staged.len() as u64);
-        if k == 0 {
-            pipeline::costin::set("nas_read", reads.bytes);
-        }
+        pipeline::costin::set("nas_read", reads.share(k, qs.len()));
         if staged.is_empty() {
             drop_entries(out, &[format!("layers/roads/lo/{}", q.dash()), format!("layers/rails/lo/{}", q.dash())])?;
             note_cost("lo", &q.slash(), c);
@@ -6101,6 +6105,10 @@ mod tests {
             .map(|(n, _)| n)
             .collect();
         assert_eq!(indexed, want);
+        // (What it read, shared evenly over a job's tiles, every byte counted once.)
+        assert!(reads.bytes > 0);
+        assert_eq!((0..3).map(|k| reads.share(k, 3)).sum::<u64>(), reads.bytes);
+        assert!(reads.share(1, 3).abs_diff(reads.share(2, 3)) == 0 && reads.share(0, 3) - reads.share(1, 3) < 3);
         let files = reads.files.clone();
         assert!(files.iter().all(|f| f.exists()));
         drop(reads);
