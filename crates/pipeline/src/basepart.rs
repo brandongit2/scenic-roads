@@ -258,7 +258,7 @@ pub fn open(
     let l = layout(&mut c)?;
     let sec = |n: &str| l.sections.get(n).copied();
     let (woff, wlen, _) = sec("ways").context("no section ways")?;
-    let (_, vlen, _) = sec("verts").context("no section verts")?;
+    let vlen = sec("verts").map_or(0, |v| v.1);
     const W: u64 = std::mem::size_of::<WayRec>() as u64;
     const S: u64 = std::mem::size_of::<Sample>() as u64;
     ensure!(wlen % W == 0 && vlen % 8 == 0, "ways or verts not whole records");

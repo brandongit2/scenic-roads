@@ -6036,8 +6036,8 @@ mod tests {
     }
 
     /// A pack job opens its tiles' owners and no other unit (`owners_of`, as their keys read
-    /// them): from the mirror where it has them (held, nothing copied), else copied into the cache
-    /// from the NAS; another unit's file is neither copied nor opened.
+    /// them): from the mirror where it has them (held, nothing copied), else read in part from the
+    /// NAS (their way indexes kept in the cache); another unit's file is neither read nor opened.
     #[test]
     fn a_pack_job_opens_only_its_tiles_owners() {
         use pipeline::legacy::Unit;
@@ -6087,14 +6087,24 @@ mod tests {
             ["6-31-22", "6-32-21", "6-33-21"],
             "its neighbours' ways reach into it, a far unit's don't (its extent not kept yet)"
         );
-        let packs = super::open_units(&out, &cache, Some(&mirror), Some(&owners)).unwrap();
+        let (packs, reads) = super::open_units(&out, &cache, Some(&mirror), Some(&owners), None).unwrap();
         let opened: std::collections::BTreeSet<Unit> = packs.iter().map(|bp| bp.unit).collect();
         assert_eq!(opened, owners);
-        // Copied into the cache: the owners' files the mirror doesn't have, nothing else.
-        let copied: Vec<&String> = names.keys().filter(|n| cache.join(n).exists()).collect();
-        let want: Vec<&String> =
-            names.iter().filter(|(_, u)| owners.contains(u) && u.dash() != "6-32-21").map(|(n, _)| n).collect();
-        assert_eq!(copied, want);
+        // Read in part from the NAS (task #396): the owners' base packs the mirror doesn't have,
+        // their way indexes kept in the cache, no copies there; the reads deleted with the job's.
+        assert!(names.keys().all(|n| !cache.join(n).exists()), "no copies in the cache");
+        let indexed: Vec<&String> =
+            names.keys().filter(|n| pipeline::basepart::index_path(&cache, n).exists()).collect();
+        let want: Vec<&String> = names
+            .iter()
+            .filter(|(n, u)| n.starts_with("base/") && owners.contains(u) && u.dash() != "6-32-21")
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(indexed, want);
+        let files = reads.files.clone();
+        assert!(files.iter().all(|f| f.exists()));
+        drop(reads);
+        assert!(files.iter().all(|f| !f.exists()), "the reads deleted");
         // The mirror's files it opened are held: the mirror's delete leaves them.
         let held = mirror.join(&m["base/6-32-21"]);
         assert_eq!(store::cachefile::try_remove(&held), store::cachefile::Removed::InUse);
@@ -6115,7 +6125,7 @@ mod tests {
         assert_eq!(super::outside_their_ways(&m, &reach).iter().map(|u| u.dash()).collect::<Vec<_>>(), ["6-40-30"]);
         let owners = pipeline::agent::build::owners_of(Some(&reach), &m, &tile);
         assert_eq!(owners.iter().map(|u| u.dash()).collect::<Vec<_>>(), ["6-31-22", "6-32-21", "6-33-21", "6-40-30"]);
-        assert_eq!(super::open_units(&out, &cache, Some(&mirror), Some(&owners)).unwrap().len(), 4);
+        assert_eq!(super::open_units(&out, &cache, Some(&mirror), Some(&owners), None).unwrap().0.len(), 4);
         // A job whose manifest lists fewer packs: its own view drops one, the lead's file keeps every
         // entry; the lead's own manifest listing fewer drops it from the file.
         let mut fewer = m.clone();
@@ -6125,7 +6135,7 @@ mod tests {
         pipeline::extents::keep(&root, &fewer).unwrap();
         assert_eq!(pipeline::extents::load(&root).len(), 3);
         // No tiles named: every unit.
-        assert_eq!(super::open_units(&out, &cache, Some(&mirror), None).unwrap().len(), units.len());
+        assert_eq!(super::open_units(&out, &cache, Some(&mirror), None, None).unwrap().0.len(), units.len());
         for name in names.keys() {
             store::cachefile::release(&mirror.join(name));
             store::cachefile::release(&cache.join(name));
