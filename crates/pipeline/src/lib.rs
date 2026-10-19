@@ -2,6 +2,7 @@ pub mod agent;
 pub mod answers;
 pub mod areaflags;
 pub mod basepack;
+pub mod basepart;
 pub mod bld;
 pub mod budget;
 pub mod buildings;

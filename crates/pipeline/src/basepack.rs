@@ -20,6 +20,12 @@ pub struct Sect {
 
 impl Sect {
     pub fn open(path: &Path) -> Result<Sect> {
+        Sect::open_only(path, &|_| true)
+    }
+
+    /// `open`, with only the sections `keep` says (the rest as if not there): a file only partly
+    /// filled in (crate::basepart), whose other sections' bytes are zeros.
+    pub fn open_only(path: &Path, keep: &dyn Fn(&str) -> bool) -> Result<Sect> {
         let f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
         // SAFETY: content-named files are never modified after they're written.
         let map = unsafe { Mmap::map(&f)? };
@@ -37,7 +43,9 @@ impl Sect {
             let off = u64::from_le_bytes(e[24..32].try_into()?) as usize;
             let len = u64::from_le_bytes(e[32..40].try_into()?) as usize;
             ensure!(off + len <= map.len(), "{}: section {name} out of bounds", path.display());
-            sections.insert(name, (off, len));
+            if keep(&name) {
+                sections.insert(name, (off, len));
+            }
         }
         Ok(Sect { map, sections, meta })
     }
@@ -67,12 +75,25 @@ pub struct BasePack {
     /// [west, south, east, north], E7, of all its geometry.
     pub extent: [i32; 4],
     bboxes: std::sync::OnceLock<Vec<[i32; 4]>>,
+    /// Only partly read (crate::basepart): the ways read, as spans `[a, b)` of ways with their
+    /// samples' `[a, b)`; the other ways' records, vertices and samples are zeros.
+    spans: Option<Vec<Span>>,
+}
+
+/// Ways `ways` of a base pack read, and their samples `samples` (crate::basepart).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub ways: std::ops::Range<u32>,
+    pub samples: std::ops::Range<usize>,
 }
 
 impl BasePack {
     pub fn open(base: &Path, roads: &Path) -> Result<BasePack> {
-        let sect = Sect::open(base)?;
-        let roads = Sect::open(roads)?;
+        BasePack::from_sects(Sect::open(base)?, Sect::open(roads)?)
+    }
+
+    /// A base pack and its road values from their sectioned files, opened.
+    pub fn from_sects(sect: Sect, roads: Sect) -> Result<BasePack> {
         let unit =
             sect.meta.get("unit").and_then(|v| v.as_str()).and_then(Unit::parse).context("base pack without a unit")?;
         let extent: Vec<i32> = serde_json::from_value(sect.meta.get("extent").cloned().unwrap_or_default())?;
@@ -86,6 +107,7 @@ impl BasePack {
             strings,
             extent: [extent[0], extent[1], extent[2], extent[3]],
             bboxes: std::sync::OnceLock::new(),
+            spans: None,
         };
         ensure!(
             bp.road_vals()?.len() == bp.ways()?.len(),
@@ -93,6 +115,29 @@ impl BasePack {
             unit.slash()
         );
         Ok(bp)
+    }
+
+    /// It, only ways `spans` read (crate::basepart).
+    pub fn with_spans(mut self, spans: Vec<Span>) -> BasePack {
+        self.spans = Some(spans);
+        self
+    }
+
+    /// The range of `samples()` that are way `way`'s (grouped by way, in way order); empty for a way
+    /// not read.
+    pub fn samples_of(&self, way: u32) -> Result<std::ops::Range<usize>> {
+        let samples = self.samples()?;
+        let (lo, hi) = match &self.spans {
+            None => (0, samples.len()),
+            Some(spans) => match spans.iter().find(|s| s.ways.contains(&way)) {
+                Some(s) => (s.samples.start, s.samples.end),
+                None => return Ok(0..0),
+            },
+        };
+        let within = &samples[lo..hi];
+        let a = within.partition_point(|x| x.way < way);
+        let b = within.partition_point(|x| x.way <= way);
+        Ok(lo + a..lo + b)
     }
 
     /// Its files' bytes (the base pack and its road values), a measure of a target's input

@@ -5,7 +5,8 @@
 //! Keys (docs/formats.md, costs.jsonl): `bytes` (always: what the store's readers read for the
 //! target, store::range::read_bytes, plus the inputs a step opens itself and notes with `add`),
 //! `threads` (always), `cpu_ms` (the CPU time its process took over it, where it can be read), and the step's own: `ways`/`vertices` (unit, pack, lo), `units` (pack, lo:
-//! the base packs met), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
+//! the base packs met), `nas_read` (pack, lo: the bytes the job read of the base packs from the NAS,
+//! noted with its first target), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
 //! (the target's area: terrain, slope, trees and their assemblies, the units' elevations), and,
 //! where the job wrote to the NAS through its `Out` (crate::out), `wrote` (the bytes of the files
 //! it made there) and `creates` (how many): with `bytes`, the target's NAS weight

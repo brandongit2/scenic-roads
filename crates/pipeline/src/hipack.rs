@@ -209,8 +209,7 @@ pub fn hidata(t: Unit, packs: &[&BasePack], in_t: &[Staged]) -> Result<HiData> {
         let Some(hi) = pos_of(s.pack, s.way) else { continue };
         let samples = bp.samples()?;
         let chs = bp.samplech()?;
-        let a = samples.partition_point(|x| x.way < s.way);
-        let b = samples.partition_point(|x| x.way <= s.way);
+        let std::ops::Range { start: a, end: b } = bp.samples_of(s.way)?;
         if a == b {
             continue;
         }

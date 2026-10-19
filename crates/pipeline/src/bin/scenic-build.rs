@@ -966,15 +966,14 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
 
 /// A unit's road values file: the values per way, and the ways by road (sorted (road, way index)
 /// pairs, for the server's whole-road lookups).
-fn put_roads(out: &mut Out, u: Unit, recs: &[pipeline::legacy::RoadRec], keep: Option<&Path>) -> Result<String> {
+fn put_roads(out: &mut Out, u: Unit, recs: &[pipeline::legacy::RoadRec]) -> Result<String> {
     let mut byroad: Vec<[u64; 2]> = recs.iter().enumerate().map(|(i, r)| [r.road, i as u64]).collect();
     byroad.sort_unstable();
-    put_sect_kept(
+    put_sect(
         out,
         &format!("global/roads/{}", u.dash()),
         serde_json::json!({"fmt": 1, "unit": u.slash()}),
         &[("roads", b(recs)), ("byroad", b(&byroad))],
-        keep,
     )
 }
 
@@ -999,48 +998,13 @@ fn road_ids(recs: &[pipeline::legacy::RoadRec]) -> Vec<u64> {
 }
 
 fn put_sect(out: &mut Out, logical: &str, meta: serde_json::Value, sections: &[(&str, &[u8])]) -> Result<String> {
-    put_sect_kept(out, logical, meta, sections, None)
-}
-
-/// `put_sect`, a copy kept in cache `keep` too (by its content name, as `open_units` looks for it)
-/// when there's one.
-fn put_sect_kept(
-    out: &mut Out,
-    logical: &str,
-    meta: serde_json::Value,
-    sections: &[(&str, &[u8])],
-    keep: Option<&Path>,
-) -> Result<String> {
     let local = out.scratch_file(&format!("{logical}.sect"));
     let mut w = store::sect::SectWriter::create(&local, meta)?;
     for (n, bytes) in sections {
         w.add(n, bytes)?;
     }
     w.finish()?;
-    if let Some(cache) = keep {
-        keep_for_packs(cache, logical, &local);
-    }
     out.put_file(logical, "sect", &local)
-}
-
-/// The base packs' cache of this Mac's map tiles' jobs (`open_units`: `<cache>/<content name>`),
-/// given unit file `local` (logical `logical`) as it's uploaded, so the next pack job here needn't
-/// copy back from the NAS what this Mac just wrote. Only where that cache is (a Mac that makes the
-/// map tiles), not held after (room-making may take it), and only a cache: failing costs that copy.
-fn keep_for_packs(cache: &Path, logical: &str, local: &Path) {
-    if !cache.is_dir() {
-        return;
-    }
-    let kept = (|| -> Result<()> {
-        let name = store::naming::content_name(logical, &store::naming::hash16_file(local)?, "sect");
-        let at = cache.join(&name);
-        store::cachefile::create(&at, &mut |tmp| std::fs::copy(local, tmp).map(|_| ()))?;
-        store::cachefile::release(&at);
-        Ok(())
-    })();
-    if let Err(e) = kept {
-        eprintln!("{logical}: no copy kept for the map tiles ({e:#})");
-    }
 }
 
 // ---- base packs, locally ------------------------------------------------------------------
@@ -1123,7 +1087,8 @@ fn outside_their_ways(m: &BTreeMap<String, String>, reach: &pipeline::reach::Rea
 }
 
 /// The base packs a pack or lo job of tiles `only` (z`z`) reads: its tiles' owners
-/// (`owners_here`), every unit when they can't be told.
+/// (`owners_here`), every unit when they can't be told; each read only where its ways reach the
+/// tiles (`open_units`).
 fn open_for_tiles(
     out: &Out,
     cache: &Path,
@@ -1131,24 +1096,43 @@ fn open_for_tiles(
     pass: Option<String>,
     z: u8,
     only: &[Unit],
-) -> Result<Vec<BasePack>> {
-    open_units(out, cache, mirror, owners_here(out, pass, z, only).as_ref())
+) -> Result<(Vec<BasePack>, Reads)> {
+    let areas: Vec<hipack::Bounds> = only.iter().map(|t| tile_bounds(t.z, t.x, t.y)).collect();
+    let areas = (!only.is_empty()).then_some(&areas[..]);
+    open_units(out, cache, mirror, owners_here(out, pass, z, only).as_ref(), areas)
+}
+
+/// The files a job read its base packs into (`open_units`), deleted when it's dropped (the job
+/// done or failed; a job killed leaves them in its scratch, for room-making), and the bytes it read
+/// from the NAS.
+struct Reads {
+    files: Vec<PathBuf>,
+    bytes: u64,
+}
+
+impl Drop for Reads {
+    fn drop(&mut self) {
+        for p in &self.files {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }
 
 /// The base packs (with their road values) of the manifest's units, of only those in `owning`
-/// when given: each held while the job runs (store::cachefile), from this Mac's mirror when it
-/// has it, else from the cache, copied there from the NAS first when it isn't. (Past this
-/// process's cap of held files, store::cachefile lets the earliest go, as a run of every unit,
-/// about 528 files, may: harmless, since each pack is mmapped once opened, and a mapped file's
-/// bytes stay until it's unmapped though the mirror or room-making unlinks it; it only frees its
-/// room later.)
+/// when given, each only where its ways reach `areas` (all of it: None): from this Mac's mirror
+/// when it has them (whole, mapped), else read in part from the NAS (crate::basepart: the byte
+/// ranges of the chunks of ways meeting the areas, copied into sparse files at the top of the
+/// job's scratch, where the agent counts the disk it takes, and mapped; deleted as the `Reads`
+/// returned is dropped). Their way indexes are kept in `cache` by content name
+/// (`basepart::index_path`), a few kB each; whatever else is there (whole packs as jobs copied
+/// them before Task #396, indexes of packs replaced since) goes.
 fn open_units(
     out: &Out,
     cache: &Path,
     mirror: Option<&Path>,
     owning: Option<&BTreeSet<Unit>>,
-) -> Result<Vec<BasePack>> {
-    // (From this Mac's mirror, else copied from the NAS: the copies counted.)
+    areas: Option<&[hipack::Bounds]>,
+) -> Result<(Vec<BasePack>, Reads)> {
     let _p = phase("the areas' base packs here", Class::NasRead);
     std::fs::create_dir_all(cache)?;
     let mut all: Vec<(String, String, String)> = Vec::new();
@@ -1158,49 +1142,62 @@ fn open_units(
             all.push((u.to_string(), v.clone(), roads.to_string()));
         }
     }
-    // (Every unit's copies kept: another job's tiles may need them. One a running job holds stays
+    // (Every unit's index kept: another job's tiles may need it. One a running job holds stays
     // anyway: prune_cache.)
-    let needed: BTreeSet<&str> = all.iter().flat_map(|(_, b, r)| [b.as_str(), r.as_str()]).collect();
-    prune_cache(cache, &needed)?;
+    let kept: Vec<String> = all.iter().map(|(_, b, _)| format!("{b}.idx")).collect();
+    prune_cache(cache, &kept.iter().map(String::as_str).collect())?;
     let units: Vec<&(String, String, String)> =
         all.iter().filter(|(u, _, _)| owning.is_none_or(|o| Unit::parse(u).is_some_and(|u| o.contains(&u)))).collect();
+    let mut reads = Reads { files: Vec::new(), bytes: 0 };
     let mut packs = Vec::with_capacity(units.len());
+    let mut read = pipeline::basepart::Read::default();
     let mut said = std::time::Instant::now();
     for (k, (u, base, roads)) in units.iter().enumerate() {
-        // (The first job after a pass copies most of them: minutes.)
         if k == 0 || said.elapsed() >= std::time::Duration::from_secs(1) {
             said = std::time::Instant::now();
             pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas' base packs here");
         }
+        // (The mirror renames a file into place only once it's copied and checked, and deletes
+        // one only under an exclusive lock: held here under a shared one, it stays.)
         let mut local = Vec::new();
         for name in [base, roads] {
-            // (The mirror renames a file into place only once it's copied and checked, and deletes
-            // one only under an exclusive lock: held here under a shared one, it stays.)
             if let Some(m) = mirror.map(|m| m.join(name)) {
                 if let Some(m) =
                     store::cachefile::hold_untouched(&m).with_context(|| format!("hold {}", m.display()))?
                 {
                     local.push(m);
-                    continue;
                 }
             }
-            // (Held for the job, copied from the NAS first when it isn't here: store::cachefile.)
-            let p = store::cachefile::hold(&cache.join(name), &mut |tmp| {
-                pipeline::timings::count(store::sys::copy_data(out.path(name), tmp)?, 1);
-                if store::naming::hash16_file(tmp).map_err(std::io::Error::other)?
-                    != name.rsplit('.').nth(1).unwrap_or("")
-                {
-                    return Err(std::io::Error::other("hash mismatch after copy"));
-                }
-                Ok(())
-            })
-            .with_context(|| format!("copy {name} from the NAS"))?;
-            local.push(p);
         }
-        packs.push(BasePack::open(&local[0], &local[1]).with_context(|| format!("unit {u}"))?);
+        if let [b, r] = &local[..] {
+            packs.push(BasePack::open(b, r).with_context(|| format!("unit {u}"))?);
+            continue;
+        }
+        let to = [base, roads].map(|n| out.scratch_file(&format!("read/{n}")));
+        reads.files.extend(to.iter().cloned());
+        let (bp, n) = pipeline::basepart::open(
+            &out.path(base),
+            &out.path(roads),
+            &pipeline::basepart::index_path(cache, base),
+            [&to[0], &to[1]],
+            areas,
+        )
+        .with_context(|| format!("unit {u}: its base pack read from the NAS"))?;
+        pipeline::timings::count(n.bytes, 2);
+        reads.bytes += n.bytes;
+        read += n;
+        packs.push(bp);
     }
     pipeline::agent::jobs::report(units.len() as u64, units.len() as u64, "areas' base packs here");
-    Ok(packs)
+    let whole: u64 = packs.iter().map(|bp| bp.bytes()).sum();
+    eprintln!(
+        "base packs: {} units, {} MB read from the NAS in {} reads (their files: {} MB)",
+        packs.len(),
+        read.bytes >> 20,
+        read.reads,
+        whole >> 20
+    );
+    Ok((packs, reads))
 }
 
 /// Removes from `cache` every file not in `keep` (content names relative to it), and leftovers of
@@ -1258,7 +1255,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
     parts.start(0);
     let only = parse_tiles(only, 6)?;
     // (Only the tiles' owners: no other unit's ways come into them.)
-    let packs = open_for_tiles(out, cache, mirror, pass, 6, &only)?;
+    let (packs, reads) = open_for_tiles(out, cache, mirror, pass, 6, &only)?;
     let refs: Vec<&BasePack> = packs.iter().collect();
     let p = phase("the tiles they touch found", Class::Compute);
     let ts: Vec<Unit> = if only.is_empty() { tiles_touched(&packs, 6)?.into_iter().collect() } else { only };
@@ -1285,6 +1282,10 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
         pipeline::costin::set("units", near.len() as u64);
         pipeline::costin::add("bytes", near.iter().map(|bp| bp.bytes()).sum());
         pipeline::costin::set("ways", in_t.len() as u64);
+        // (What the job read from the NAS, with its first tile: needs::HALO_STEPS.)
+        if k == 0 {
+            pipeline::costin::set("nas_read", reads.bytes);
+        }
         if in_t.is_empty() {
             // No ways here (any more): what an earlier build made for the tile goes.
             drop_entries(
@@ -1379,7 +1380,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
     let parts = Parts(&["Getting the areas' base packs here", "Drawing the zoomed-out tiles"]);
     parts.start(0);
     let only = parse_tiles(only, 3)?;
-    let packs = open_for_tiles(out, cache, mirror, pass, 3, &only)?;
+    let (packs, reads) = open_for_tiles(out, cache, mirror, pass, 3, &only)?;
     let refs: Vec<&BasePack> = packs.iter().collect();
     let p = phase("the tiles they touch found", Class::Compute);
     let qs: Vec<Unit> = if only.is_empty() { tiles_touched(&packs, 3)?.into_iter().collect() } else { only };
@@ -1401,6 +1402,9 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
         pipeline::costin::set("units", near.len() as u64);
         pipeline::costin::add("bytes", near.iter().map(|bp| bp.bytes()).sum());
         pipeline::costin::set("ways", staged.len() as u64);
+        if k == 0 {
+            pipeline::costin::set("nas_read", reads.bytes);
+        }
         if staged.is_empty() {
             drop_entries(out, &[format!("layers/roads/lo/{}", q.dash()), format!("layers/rails/lo/{}", q.dash())])?;
             note_cost("lo", &q.slash(), c);
@@ -4507,8 +4511,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     s.end();
     let s = unit_stage("base pack written to the NAS", Class::NasWrite);
     let secs: Vec<(&str, &[u8])> = bs.sections.iter().map(|(n, v)| (*n, v.as_slice())).collect();
-    // (A copy kept for this Mac's map tiles, where it makes them: `keep_for_packs`.)
-    put_sect_kept(out, &format!("base/{}", u.dash()), bs.meta, &secs, Some(&tools.base_packs()))?;
+    put_sect(out, &format!("base/{}", u.dash()), bs.meta, &secs)?;
     s.end();
     // (The pass's road values read from the NAS; the unit's written back.)
     let s = unit_stage("road values made and written", Class::Mixed);
@@ -4545,7 +4548,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
         .collect();
     {
         let _p = pipeline::timings::sub("the unit's written", Class::NasWrite);
-        put_roads(out, u, &recs, Some(&tools.base_packs()))?;
+        put_roads(out, u, &recs)?;
         put_road_ids(out, u, &recs)?;
     }
     // The roads' own English (OSM's name:en where it isn't the name), for the server to show
@@ -6204,30 +6207,6 @@ mod tests {
         super::prune_cache(&cache, &std::collections::BTreeSet::new()).unwrap();
         assert!(!used.exists());
     }
-    /// A unit's files kept where this Mac's map tiles read them (`open_units`: the cache by content
-    /// name), only on a Mac that has that cache.
-    #[test]
-    fn a_units_files_are_kept_for_the_packs_where_they_are_made() {
-        let d = tempfile::tempdir().unwrap();
-        let local = d.path().join("local.sect");
-        std::fs::write(&local, b"a base pack").unwrap();
-        let name = store::naming::content_name("base/6-1-2", &store::naming::hash16_file(&local).unwrap(), "sect");
-        // No packs' cache here (a Mac that doesn't make map tiles): nothing.
-        let none = d.path().join("none");
-        super::keep_for_packs(&none, "base/6-1-2", &local);
-        assert!(!none.exists());
-        let cache = d.path().join("base");
-        std::fs::create_dir_all(&cache).unwrap();
-        super::keep_for_packs(&cache, "base/6-1-2", &local);
-        assert_eq!(std::fs::read(cache.join(&name)).unwrap(), b"a base pack");
-        // Kept again (a unit made again the same): as it was.
-        super::keep_for_packs(&cache, "base/6-1-2", &local);
-        assert_eq!(std::fs::read(cache.join(&name)).unwrap(), b"a base pack");
-        // Not held: the packs' prune takes it once the manifest no longer names it.
-        super::prune_cache(&cache, &std::collections::BTreeSet::new()).unwrap();
-        assert!(!cache.join(&name).exists());
-    }
-
     /// Delta catalogs (`--delta`): written as what changed over the last, read back whole as the
     /// catalog written whole would be (its time and app aside), with the sizes of the files the last
     /// one lists taken from it (one gone from the NAS since isn't looked at; a whole one's check
@@ -6454,9 +6433,9 @@ mod tests {
         let (a, b, c) = (Unit::parse("6/1/1").unwrap(), Unit::parse("6/1/2").unwrap(), Unit::parse("6/1/3").unwrap());
         // (a built before the road ids: its road values alone; b and c with theirs.)
         let fill = |out: &mut pipeline::out::Out, c_roads: &[RoadRec]| {
-            super::put_roads(out, a, &[rec(5), rec(1), rec(5)], None).unwrap();
+            super::put_roads(out, a, &[rec(5), rec(1), rec(5)]).unwrap();
             for (u, rs) in [(b, &[rec(1), rec(2)][..]), (c, c_roads)] {
-                super::put_roads(out, u, rs, None).unwrap();
+                super::put_roads(out, u, rs).unwrap();
                 super::put_road_ids(out, u, rs).unwrap();
             }
         };

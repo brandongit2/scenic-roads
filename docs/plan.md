@@ -251,7 +251,8 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
     (`chm10/`; the M4's trim keeps them), raw terrain tiles and archive copies (`aws-terrarium/`),
     copies of record files staging reads (`blobs/`: hi packs, roadside buildings' z8 tiles, units'
     kept DEM samples), pageview month indexes (`items/months/`).
-  - **Cleared too, on the owner's ask:** the pack cache (`base/`, base packs for pack(T) and lo), the
+  - **Cleared too, on the owner's ask:** the pack cache (`base/`, the base packs' way indexes for
+    pack(T) and lo), the
     per-vertex DEM seed (only while the NAS has it whole), local copies the summits and peaks jobs
     read, and the heritage jobs' clip of the filtered planet (made again by osmium in about an hour).
   - **Kept:** the answers (`items/`, `heritage-<date>/`), the trains' stop pairs (`rail/`), the unit
@@ -347,7 +348,7 @@ floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, th
   /api/downloads/reserve`), applied at once. A download that wouldn't fit is refused; when the disk
   fills later, what doesn't fit waits, and nothing downloaded goes for it.
 - **The agent's jobs** don't need the mirror, but read some files from it where present: pack and
-  lo their owners' base packs and road values, the marks and overlay conversions the heritage
+  lo their owners' base packs and road values (whole, mapped, in place of their part reads), the marks and overlay conversions the heritage
   job's files. Each is read under a shared lock (`store::cachefile`). The mirror deletes a file
   only under an exclusive lock taken without waiting, so a file a job holds stays until a later
   sync.
@@ -693,7 +694,17 @@ index, so a new release rebuilds every unit.
   in `state/build/extents.json`, which the lead keeps as it plans, reading each new pack's header
   once; jobs only read it, and read the headers of packs it lacks without writing). A job opens
   only its tiles' owners (`build::owners_of`, the rule their keys read); one given no tiles, or
-  whose reaches don't list every unit, opens every unit.
+  whose reaches don't list every unit, opens every unit. Of each it reads from the NAS only the
+  byte ranges of the ways that can reach its tiles (task #396, `crate::basepart`): the ways cut
+  into chunks of 1,024 in file order, each chunk's box and first sample in the pack's *way index*,
+  kept on the Mac (`<cache>/base/<content name>.idx`, a few kB) once worked out from the pack's
+  ways, vertices and samples (read whole that once); the chunks whose box meets a tile are read,
+  their records, vertices, per-vertex values, samples and road values, neighbouring ranges in
+  one read, into sparse files at the top of the job's scratch (the disk its agent counts),
+  deleted as the job ends. What it makes is byte-identical to what the whole files make. Measured
+  on the M1 over Wi-Fi, 6/18/22's nine owners (5.6 GB of files): copying them whole took 75–119 s;
+  read in part, 2.1 GB in 49 s the first time (the indexes worked out), 0.57 GB in 21 s after
+  (18 Oct, the M1 busy with other builds).
 - **Writes:** road and rail hi tiles (z9–14) and T's hidata: the ways-here index; query parts (each
   road's 100 m samples and channels with offsets, for drives and rides); rail lines; the zoomed-out
   summaries (`docs/phase5.md`).

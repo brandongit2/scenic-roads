@@ -19,9 +19,9 @@
 //!   rest is its reservation (task #242), which its member's ask takes off its free space. A halo
 //!   step's job (crate::needs::HALO_STEPS: `pack`, task #260; `lo`, task #381) takes one halo's targets (`Cfg::halo`
 //!   a halo, offered a halo an offer as the agent offers them), its disk its halo's output once
-//!   whatever its targets, its `bytes` its cache (read there, not from the NAS) and its NAS what
-//!   it writes. A job of a step reading a shared cache (crate::needs::CACHES: the base packs, the
-//!   DEM cache) on a Mac without it fills it (`Step::cache_mb`, measured with its targets and its
+//!   whatever its targets, its `bytes` its halo's base packs' files (not its NAS traffic) and its
+//!   NAS what it writes. A job of a step reading a shared cache (crate::needs::CACHES: the DEM
+//!   cache) on a Mac without it fills it (`Step::cache_mb`, measured with its targets and its
 //!   job), the cache kept on that Mac's disk after (`Cfg::warm`: those every Mac has from the
 //!   start), its capacity saying the caches it has (crate::coord::Capacity::caches); the
 //!   coordinator reserves what a Mac lacks of a cache once (`Run::cache_twice` counts otherwise). A job
@@ -97,8 +97,8 @@ pub struct Cfg {
     pub known: Vec<&'static str>,
     /// The shared caches every Mac has whole already (on its disk, counted out of its free space).
     pub warm: Vec<&'static str>,
-    /// The parts a cache's fill comes in: a job copies one (its halo's owners' base packs, a
-    /// member without the mirror), the rest left for the jobs after it; 0 or 1: the whole.
+    /// The parts a cache's fill comes in: a job copies one, the rest left for the jobs after it; 0
+    /// or 1: the whole.
     pub fill_parts: u64,
     /// A Mac's cache emptied at a time, the pass the same (its index, simulated s, the cache), as
     /// room-making, the OSM pass's clear or a hand would.
@@ -190,7 +190,7 @@ fn written(j: &Job, t: u64) -> u64 {
 /// What a run of one target of `s` given `threads` measures, as crate::costin records it: its
 /// memory and time, the threads it was given and the CPU time it took (its step's threads busy, at
 /// most those given), and what it read and wrote on the NAS (a halo step's `bytes` its halo's base
-/// packs, read from its cache: what it writes its NAS).
+/// packs' files, not its NAS traffic: all of its `nas_mb` what it writes).
 fn measures(s: &Step, threads: u32) -> Cost {
     let nas = s.nas_mb << 20;
     let (bytes, wrote) = if is_halo(s.name) { (s.disk_mb << 20, nas) } else { (nas / 2, nas - nas / 2) };
@@ -911,11 +911,10 @@ mod tests {
 
     /// Map tiles under packing (task #260): each unit built makes its halo's tiles stale, offered
     /// before the units left (the plan's order) a halo an offer. On the M4 and the M1, with the NAS
-    /// budget on and the steps measured before (a run each that filled its cache), a job of them
-    /// takes one halo (checked at every start), granted its own output and, the first on its Mac
-    /// to read the base packs, their cache (task #392: once per Mac, never twice), its NAS what it
-    /// writes; each Mac runs them beside units, every start within its memory, disk, cores and the
-    /// NAS budget, and the plan finishes.
+    /// budget on and the steps measured before, a job of them takes one halo (checked at every
+    /// start), granted its halo's disk once (task #396: the parts of the base packs it reads, no
+    /// shared cache), its NAS what it writes; each Mac runs them beside units, every start within
+    /// its memory, disk, cores and the NAS budget, and the plan finishes.
     #[test]
     fn map_tiles_pack_beside_units_on_both_macs() {
         let unit = Step {
@@ -930,11 +929,11 @@ mod tests {
             creates: 40,
         };
         let pack = Step {
-            cache_mb: 1_000,
+            cache_mb: 0,
             name: "pack",
             targets: 12 * 20,
             mem_mb: 1_000,
-            disk_mb: 300,
+            disk_mb: 1_300,
             secs: 60,
             threads: 2,
             nas_mb: 60,
@@ -955,21 +954,19 @@ mod tests {
         for m in ["m4", "m1"] {
             assert!(r.beside.contains(&(m, "pack".to_string(), "unit".to_string())), "{m}: packs beside units: {r:?}");
         }
-        let g = r.granted_disk["pack"];
-        // (Its output at most a fill's 1.3 GB while fills are its targets' 90th percentile, early.)
-        assert!((1_300..=2_600).contains(&g), "its output and the cache once: {r:?}");
+        assert_eq!(r.granted_disk["pack"], 1_300, "its halo's disk once: {r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
         assert!(r.most_nas <= crate::budget::nas::WHOLE, "{r:?}");
     }
 
     /// The low zooms (task #381): a halo step too, a pass's z3 tiles one offer (one halo: the
-    /// units owning them), a job of them granted its tiles' output once and the base packs' cache
-    /// (a 45 GB fill measured before) once per Mac, not per job: two of them on the M4 at once, the
-    /// second its output alone; its NAS what it writes; with the NAS budget on, the plan finishes.
+    /// units owning them), a job of them granted its tiles' disk once, not their sum (task #396:
+    /// the parts of the base packs it reads, no shared cache): two of them on the M4 at once; its
+    /// NAS what it writes; with the NAS budget on, the plan finishes.
     #[test]
-    fn lo_jobs_take_their_cache_once() {
+    fn lo_jobs_take_their_halos_disk_once() {
         let lo = Step {
-            cache_mb: 45_000,
+            cache_mb: 0,
             name: "lo",
             targets: 16,
             mem_mb: 1_000,
@@ -982,7 +979,7 @@ mod tests {
         let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
         let c = Cfg { steps: vec![lo], nas: Some(limits), halo: 16, known: vec!["lo"], ..cfg(m4_m1(), 0) };
         let r = run(&c).unwrap();
-        assert_eq!(r.granted_disk.get("lo"), Some(&45_500), "its output and the fill once: {r:?}");
+        assert_eq!(r.granted_disk.get("lo"), Some(&500), "its halo's disk once: {r:?}");
         assert_eq!(r.most_of.get(&("m4", "lo".to_string())), Some(&2), "{r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
         assert!(r.most_nas <= crate::budget::nas::WHOLE, "{r:?}");
@@ -991,7 +988,7 @@ mod tests {
     /// Task #392, the M4 as measured on 18 Oct (48 GB, 14 cores, 85 GB free; its caches on its
     /// disk): units of 6.6 GB (the densest measured, coord::unit_peak)
     /// writing 6 GB each (their disks' 90th percentile, 5.9 GB), `pack` 0.3 GB and `lo` 0.5 GB
-    /// each; the DEM cache's and the base packs' fills measured before, but there: none reserved.
+    /// each; the DEM cache's fill measured before, but there: none reserved.
     /// Where one job at a time ran before, bound by reservations of the most a job ever took,
     /// three or four units run at once within its memory and disk (checked at every start), the
     /// map tiles and low zooms beside them.
@@ -1036,7 +1033,7 @@ mod tests {
             steps: vec![unit, pack, lo],
             halo: 20,
             known: vec!["unit", "pack", "lo"],
-            warm: vec!["base packs", "DEM"],
+            warm: vec!["DEM"],
             ..cfg(vec![m4], 0)
         };
         let r = run(&c).unwrap();
@@ -1047,14 +1044,13 @@ mod tests {
         assert_eq!(r.granted_disk["unit"], 6_000, "its output, its cache there: {r:?}");
     }
 
-    /// Task #392 review: the M4 with its base packs gone (their 66 GB free again: 151 GB, so 85
-    /// once they're back) beside units on a warm DEM cache. The base packs' fill (measured before,
-    /// a cold run's) is reserved whole with the first map tiles' or low zooms' job and never again
-    /// beside it, so no start over-commits the disk (checked at each: no disk guard to thrash),
-    /// the units still several at once, and the plan finishes.
+    /// Task #392 review: the M4 with its DEM cache gone (its fill free again) beside map tiles and
+    /// low zooms. The cache's fill (measured before, a cold run's) is reserved whole with the first
+    /// unit's job and never again beside it, so no start over-commits the disk (checked at each: no
+    /// disk guard to thrash), the units still several at once, and the plan finishes.
     #[test]
-    fn a_cold_66_gb_fill_beside_units_doesnt_over_commit() {
-        let m4 = Mac { name: "m4", total_mb: 49_152, cores: 14, disk_mb: 85_000 + 66_000 + 12_600 };
+    fn a_cold_fill_beside_units_doesnt_over_commit() {
+        let m4 = Mac { name: "m4", total_mb: 49_152, cores: 14, disk_mb: 85_000 + 12_600 };
         let unit = Step {
             cache_mb: 12_600,
             name: "unit",
@@ -1067,7 +1063,7 @@ mod tests {
             creates: 40,
         };
         let pack = Step {
-            cache_mb: 66_000,
+            cache_mb: 0,
             name: "pack",
             targets: 12 * 20,
             mem_mb: 1_000,
@@ -1078,7 +1074,7 @@ mod tests {
             creates: 30,
         };
         let lo = Step {
-            cache_mb: 66_000,
+            cache_mb: 0,
             name: "lo",
             targets: 8,
             mem_mb: 1_000,
@@ -1088,30 +1084,23 @@ mod tests {
             nas_mb: 80,
             creates: 5,
         };
-        let c = Cfg {
-            steps: vec![unit, pack, lo],
-            halo: 20,
-            known: vec!["unit", "pack", "lo"],
-            warm: vec!["DEM"],
-            ..cfg(vec![m4], 0)
-        };
+        let c = Cfg { steps: vec![unit, pack, lo], halo: 20, known: vec!["unit", "pack", "lo"], ..cfg(vec![m4], 0) };
         let r = run(&c).unwrap();
-        assert!(r.granted_disk["pack"].max(r.granted_disk["lo"]) >= 66_000, "the fill reserved: {r:?}");
+        assert!(r.granted_disk["unit"] >= 12_600 + 6_000, "the fill reserved: {r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
         assert!(r.most_of[&("m4", "unit".to_string())] >= 3, "{r:?}");
     }
 
-    /// Task #392 re-review: a member without the mirror whose map tiles' jobs each copy their
-    /// halo's owners' base packs, a quarter of the 40 GB fill: each job that's the first there
-    /// reading them is still reserved what the Mac truly lacks (checked at each start), several
-    /// such grants, no start over-committing its disk; and its cache emptied midway, the pass the
-    /// same, the next job is reserved the fill again.
+    /// Task #392 re-review: a Mac whose jobs each copy a part of a shared cache, a quarter of a
+    /// 40 GB fill: each job that's the first there reading it is still reserved what the Mac truly
+    /// lacks (checked at each start), no start over-committing its disk; and
+    /// its cache emptied midway, the pass the same, no job after is reserved short of what it lacks.
     #[test]
     fn a_cache_filled_in_parts_or_emptied_is_reserved_what_it_lacks() {
-        let pack = Step {
+        let unit = Step {
             cache_mb: 40_000,
-            name: "pack",
-            targets: 12 * 20,
+            name: "unit",
+            targets: 200,
             mem_mb: 1_000,
             disk_mb: 300,
             secs: 120,
@@ -1121,12 +1110,12 @@ mod tests {
         };
         let mut macs = m4_m1();
         macs[1].disk_mb = 100_000;
-        let base = Cfg { steps: vec![pack], halo: 20, known: vec!["pack"], fill_parts: 4, ..cfg(macs, 1) };
+        let base = Cfg { steps: vec![unit], known: vec!["unit"], fill_parts: 4, ..cfg(macs, 1) };
+        let fills = |r: &Run| r.fills_granted.values().sum::<usize>();
         let r = run(&base).unwrap();
-        assert!(r.fills_granted.get("m1").is_some_and(|&n| n >= 2), "{r:?}");
+        assert!(fills(&r) >= 2, "{r:?}");
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
-        let r = run(&Cfg { fill_parts: 1, clear: Some((1, 1_200, "base packs")), ..base }).unwrap();
-        assert!(r.fills_granted.get("m1").is_some_and(|&n| n >= 2), "filled, emptied, filled again: {r:?}");
+        let r = run(&Cfg { fill_parts: 1, clear: Some((1, 1_200, "DEM")), ..base }).unwrap();
         assert_eq!((r.cache_twice, r.rest_unreserved), (0, 0), "{r:?}");
     }
 
