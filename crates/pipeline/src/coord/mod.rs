@@ -6646,6 +6646,46 @@ mod tests {
         assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "the first ended: the second goes");
     }
 
+    /// A whole-weight job of the lead's own goes beside a running job of the lead's own (and a
+    /// member's small one), not held back until the lead holds nothing: the room the lead's own
+    /// leave is asked of aged jobs alone.
+    #[test]
+    fn the_leads_whole_job_goes_beside_its_own_running_job() {
+        let (_d, c, w, _clock) = every((0, 0));
+        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+        }
+        let cost = |bytes: u64| Cost {
+            peak_mb: 500,
+            secs: 600,
+            worker: None,
+            v: cost_version("slope"),
+            sizes: [("threads".to_string(), 1), ("bytes".to_string(), bytes)].into(),
+            ..Default::default()
+        };
+        packable(&c, "slope", 1, Some(1));
+        c.add_costs_by(&[(cost_key("slope", "6/1/1"), cost(6_000_000_000))], "m1");
+        assert_eq!(all_granted(&w, &Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) }).len(), 1);
+        // (A rail job of 30 MB/s: 300 of the NAS; a peaks job the whole.)
+        for (step, b) in [("rail", 18_000_000_000), ("peaks", 600_000_000_000)] {
+            packable(&c, step, 1, Some(1));
+            c.add_costs_by(&[(cost_key(step, "6/1/1"), Cost { v: cost_version(step), ..cost(b) })], "m4");
+        }
+        let own = |step: &str| Offer {
+            step: step.into(),
+            targets: vec![("6/1/1".into(), "k 6/1/1".into(), 0)],
+            job: Some(format!("{step} 6/1/1")),
+        };
+        let a = |step: &str| Ask { want: 1, can: vec![step.into()], ..every_ask("m4", step, 64_000, 100_000) };
+        c.offer("p", vec![own("rail")]);
+        assert!(c.ask_own(&a("rail"), &BTreeSet::new()).is_some(), "the lead's 300 beside the member's 100");
+        c.offer("p", vec![own("rail"), own("peaks")]);
+        let g = c.ask_own(&a("peaks"), &BTreeSet::new()).expect("the whole one beside the lead's own running");
+        assert!(matches!(&g.work, Granted::Job { step, .. } if step == "peaks"), "{g:?}");
+    }
+
     /// Six slope targets each taking half a 100 MB/s NAS (50 MB/s), a thread each.
     fn heavy_slope(c: &Coordinator) {
         packable(c, "slope", 6, Some(1));

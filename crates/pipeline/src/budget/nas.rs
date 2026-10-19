@@ -122,12 +122,13 @@ impl Limits {
 
     /// `fits_own` for the lead's own planned job, which members' small jobs would otherwise hold
     /// back for good (each lease's weight keeps `running` above zero): it goes too while no leased
-    /// job weighs the whole (`heaviest`, the most one weighs) and the lead's own leased jobs
-    /// (`own`, their weight together) leave it room within the whole, when it weighs the whole
-    /// itself or has waited `OWN_AGE` for the budget alone (`waited`). So the members' jobs are all
-    /// it goes past: one such job of the lead's at a time, aged ones never piling up.
+    /// job weighs the whole (`heaviest`, the most one weighs), when it weighs the whole itself, or
+    /// has waited `OWN_AGE` for the budget alone (`waited`) and the lead's own leased jobs (`own`,
+    /// their weight together) leave it room within the whole: aged ones go past the members' jobs
+    /// alone, one at a time, never piling up, and a whole one isn't held back by the lead's own
+    /// stream of smaller jobs.
     pub fn fits_own_job(running: u32, own: u32, heaviest: u32, w: u32, waited: bool) -> bool {
-        Self::fits_own(running, w) || (heaviest < WHOLE && own.saturating_add(w) <= WHOLE && (w >= WHOLE || waited))
+        Self::fits_own(running, w) || (heaviest < WHOLE && (w >= WHOLE || (waited && own.saturating_add(w) <= WHOLE)))
     }
 }
 
@@ -265,6 +266,7 @@ mod tests {
         // (Beside an aged one of the lead's own already past the budget: within the whole with it.)
         assert!(!Limits::fits_own_job(1100, 800, 800, 800, true), "aged ones don't pile up");
         assert!(Limits::fits_own_job(1100, 800, 800, 200, true));
+        assert!(Limits::fits_own_job(1100, 300, 300, 1000, false), "a whole one beside the lead's own smaller ones");
         assert!(Limits::fits(999, 999, 0));
         assert!(Limits::fits_own(600, 400) && !Limits::fits_own(601, 400));
         assert!(Limits::fits_own(0, 1000) && !Limits::fits_own(1, 1000), "the lead's own: within the whole, or alone");
