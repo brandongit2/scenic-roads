@@ -322,6 +322,39 @@ mod tests {
         [(x * 1e7) as i32, (y * 1e7) as i32]
     }
 
+    /// A ferry crossing the open sea between two coasts, the sea a region with no land (the high
+    /// seas: the coverage's `depth_only`): built for the land it reaches, its whole route kept (its
+    /// unit is built and the way touches the coverage), whatever the sea between is; a sea alone
+    /// builds no unit.
+    #[test]
+    fn a_ferry_across_a_sea_with_no_land_is_kept_by_its_coasts() {
+        let d = tempfile::tempdir().unwrap();
+        let fixture = |place: &str| {
+            Coverage::fixture(
+                &[Recipe { id: "r".into(), name: "R".into(), outline: vec![place.into()] }],
+                None,
+                d.path(),
+            )
+            .unwrap()
+        };
+        let ferry = LongWay { owned: true, ferry: true, verts: vec![e7(-20.0, 65.0), e7(-10.0, 62.0), e7(0.0, 60.0)] };
+        let r = Reach {
+            owned: Some([e7(-21.0, 64.5)[0], e7(-21.0, 64.5)[1], e7(-20.5, 65.0)[0], e7(-20.5, 65.0)[1]]),
+            long: vec![ferry],
+            cells: vec![],
+        };
+        let sp = &Uniform(COARSE_M);
+        // The sea between, a region with no land: kept apart for the depth alone.
+        let sea = fixture("place:-10,62,400").shapes;
+        // With the coast it reaches: built, and the way touches.
+        let mut c = fixture("place:0,60,30");
+        c.depth_only = sea.clone();
+        assert!(r.builds(&c, sp) && r.long[0].touches(&c, sp));
+        // The sea alone: nothing built for it.
+        let alone = Coverage { shapes: Vec::new(), depth_only: sea };
+        assert!(!r.builds(&alone, sp));
+    }
+
     #[test]
     fn long_ways_decide_by_touching() {
         let d = tempfile::tempdir().unwrap();

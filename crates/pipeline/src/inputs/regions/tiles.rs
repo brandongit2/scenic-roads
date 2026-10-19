@@ -866,6 +866,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         slivers(&ids, folder, &lands, rules.sliver_km2, &mut all, &mut touched);
     }
     drop(lands);
+    trace("the cells' fills and the cover check");
     let rest_id = rests.first().map(|s| (*s).clone());
     let rest = cells_pass(folder, data, &mut all, cover, rest_id.is_some(), &mut out.problems, &mut touched);
     trace("stored");
@@ -1254,8 +1255,12 @@ fn slivers(
             continue;
         }
         let land = lands.get(id).cloned().unwrap_or_default();
-        let comps = components(&all[id]);
-        if comps.len() < 2 {
+        // (The stretches of its water alone: its land taken out cell by cell first, so its
+        // islands aren't pieces to test, each against its land.)
+        let water = all[id].zip(&land, |a, l| if l.is_empty() { a.clone() } else { a.minus(l) });
+        let comps = components(&water);
+        // (A region all of whose area is one piece of water keeps it.)
+        if comps.len() + usize::from(!land.is_empty()) < 2 {
             continue;
         }
         // (Each piece decided at once, the cheap tests first: its size, whether it's land, then
@@ -1264,10 +1269,7 @@ fn slivers(
             .into_par_iter()
             .filter_map(|comp| {
                 let piece = TArea { cells: comp };
-                if piece.km2() >= km2
-                    || piece.cells.iter().any(|(c, p)| land.cells.get(c).is_some_and(|l| !p.intersect(l).is_empty()))
-                    || shared_km(&piece, &land) > 0.0
-                {
+                if piece.km2() >= km2 || shared_km(&piece, &land) > 0.0 {
                     return None;
                 }
                 // (Only the regions with cells round the piece's: by the cells' index.)
