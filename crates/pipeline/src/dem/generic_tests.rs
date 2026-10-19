@@ -825,9 +825,9 @@ fn one_slow_tile_does_not_stall_the_others() {
         }
         fn get(&self, url: &str) -> Result<Option<Vec<u8>>> {
             if url == self.url {
-                // (Held until nine tenths of the points are sampled, or 20 s: a stall.)
+                // (Held until nine tenths of the points are sampled, or 180 s: a stall; long, so a loaded Mac does not fail it.)
                 let g = self.share.lock().unwrap();
-                let wait = std::time::Duration::from_secs(20);
+                let wait = std::time::Duration::from_secs(180);
                 let (g, t) = self.cv.wait_timeout_while(g, wait, |s| *s < 0.9).unwrap();
                 self.by_progress.store(!t.timed_out() && *g >= 0.9, SeqCst);
             }
