@@ -549,7 +549,12 @@ pub fn job_target() -> u64 {
 /// The free space on `path`'s disk a job may fill (bytes): what's free less the room target
 /// `target` (`job_target`).
 pub fn free_past(path: &Path, target: u64) -> u64 {
-    super::cond::free_bytes(path).unwrap_or(0).saturating_sub(target)
+    free_past_of(super::cond::free_bytes(path).unwrap_or(0), target)
+}
+
+/// The free space `free` has past `target` (none short of it).
+fn free_past_of(free: u64, target: u64) -> u64 {
+    free.saturating_sub(target)
 }
 
 /// The largest target (1 PB: a hand-edited file's past any disk), so sums with it can't overflow.
@@ -1293,11 +1298,14 @@ mod tests {
     fn a_jobs_room_target_is_read_from_its_env() {
         assert_eq!(target_of_env(Some("20480")), 20 << 30);
         assert_eq!((target_of_env(None), target_of_env(Some("x")), target_of_env(Some("0"))), (0, 0, 0));
+        // (Over a given free space: the disk's own changes as other work writes, #442.)
+        let free = 100 << 30;
+        assert_eq!(free_past_of(free, 0), free);
+        assert_eq!(free_past_of(free, free + 1), 0);
+        assert_eq!(free_past_of(free, 2 << 30), 98 << 30);
+        // And read from the disk: none past a target beyond any disk.
         let d = tempfile::tempdir().unwrap();
-        let free = super::super::cond::free_bytes(d.path()).unwrap();
-        assert!(free_past(d.path(), 0).abs_diff(free) < 1 << 30, "the free space, as it changes");
-        assert_eq!(free_past(d.path(), free + 1), 0);
-        assert!(free_past(d.path(), 2 << 30) < free_past(d.path(), 0));
+        assert_eq!(free_past(d.path(), MAX_TARGET), 0);
     }
 
     fn make_room_spared(
