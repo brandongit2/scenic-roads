@@ -52,6 +52,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/pipeline/src/unit.rs", "dem_samples_keep", "the units' kept samples, which room-making never deletes"),
     ("crates/pipeline/src/unit.rs", "dem_samples_keep_with", "reads elev's dem-cache.* in the unit's own folder, not the agent's cache; its copy kept by keep_dem_copy (store::cachefile)"),
     ("crates/pipeline/src/unit.rs", "dem_copies", "a path: keep_dem_copy writes the copies through store::cachefile, dem_cache_slice_with holds each it reads"),
+    ("crates/pipeline/src/basepart.rs", "index_path", "a path: open reads, keeps and removes the index through store::cachefile"),
     ("crates/pipeline/src/buildtiles.rs", "tile_copy", "a path: fetch_tile holds each copy (store::cachefile) before the buildings step reads it"),
     ("crates/pipeline/src/unit.rs", "dem_cache_slice", "reads the seed dem_seed holds just before (build_folder)"),
     ("crates/pipeline/src/unit.rs", "tail", "a task's arguments: where its caches are"),
