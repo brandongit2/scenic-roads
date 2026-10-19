@@ -16765,8 +16765,8 @@ mod pool_tests {
         // A job running here (one it took over): the lock free, it restarts at once all the same,
         // the job left running for the next agent, which joins as it starts.
         let job = JobSpec {
-            id: "sleep".into(),
-            what: "sleep".into(),
+            id: "backup".into(),
+            what: "a backup (a sleep)".into(),
             cmd: vec!["/bin/sleep".into(), "30".into()],
             needs: Needs { nas: false },
             restart_after_sleep: false,
