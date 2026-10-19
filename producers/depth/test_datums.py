@@ -52,7 +52,7 @@ class OpenSea(unittest.TestCase):
         self.assertAlmostEqual(float(s.a[200, 600]), 0.7, places=4)
         self.assertTrue(np.isnan(s.a[25, 405]))
 
-    def test_an_inland_lake_is_left_alone_and_stops(self):
+    def test_an_inland_lake_is_left_alone_without_depth_and_does_not_stop(self):
         from shapely.geometry import box
 
         res = 0.005
@@ -60,9 +60,9 @@ class OpenSea(unittest.TestCase):
         water[10:390, 10:300] = True
         water[100:300, 500:750] = True  # as above, but Natural Earth has a lake on it
         lake = box(10 + 600 * res, 50 - 210 * res, 10 + 610 * res, 50 - 200 * res)
-        with self.assertRaises(SystemExit) as r:
-            datums.Surface.harmonic([(10.5, 49.0, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([lake]))
-        self.assertIn("missing area", str(r.exception))
+        s = datums.Surface.harmonic([(10.5, 49.0, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([lake]))
+        self.assertTrue(np.isnan(s.a[100:300, 500:750]).all())
+        self.assertAlmostEqual(float(s.a[200, 200]), 0.7, places=4)
 
     def test_every_body_a_sea_only_chart_extrapolates_tiny_far_bodies_but_not_lakes(self):
         from shapely.geometry import box
@@ -75,14 +75,35 @@ class OpenSea(unittest.TestCase):
         water[200:220, 500:520] = True  # 400 cells: Natural Earth has a lake on it, 13% of the water
         lake = box(10 + 505 * res, 50 - 215 * res, 10 + 510 * res, 50 - 205 * res)
         sea = datums.OpenSea([lake], every_body=True)
-        with self.assertRaises(SystemExit):  # the lake stays nodata and counts toward the stop
-            datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, sea)
+        s = datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, sea)
+        self.assertTrue(np.isnan(s.a[200:220, 500:520]).all())  # the lake stays nodata, not a stop
         water[200:220, 500:520] = False
         s = datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, sea)
         self.assertAlmostEqual(float(s.a[100, 400]), 0.7, places=4)
         self.assertAlmostEqual(float(s.a[100 + 8 * 29, 400 + 10 * 29]), 0.7, places=4)
         with self.assertRaises(SystemExit):  # without every_body the same pieces are lagoons, over 5%: stops
             datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([]))
+
+    def test_nonna10_chunk_10_lake_superior_far_from_any_station_gets_no_depth_and_does_not_stop(self):
+        # NONNA-10's chunk 10 (18 Oct): 47-84 N, Hudson Bay to the Arctic islands and Lake Superior's
+        # Thunder Bay; no station within 25 km of the lake's 8705 cells (3% of the water), 97% on
+        # Natural Earth's lake, its rim off it. Sea pieces as far take the nearest offset.
+        from shapely.geometry import box
+
+        res = 0.005
+        water = np.zeros((400, 800), bool)
+        water[10:60, 10:300] = True  # 14500 cells of sea with the station
+        for k in range(20):  # far sea pieces (ice, survey tracks), 6 cells each
+            water[100 + 8 * k:102 + 8 * k, 400 + 10 * k:403 + 10 * k] = True
+        water[300:320, 500:520] = True  # 400 cells, 80 km2, 2.7% of the water: the lake
+        lake = box(10 + 502 * res, 50 - 318 * res, 10 + 518 * res, 50 - 302 * res)  # the rim off the polygon
+        s = datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([lake], every_body=True))
+        self.assertTrue(np.isnan(s.a[300:320, 500:520]).all())
+        self.assertAlmostEqual(float(s.a[100, 400]), 0.7, places=4)
+        self.assertAlmostEqual(float(s.a[30, 200]), 0.7, places=4)
+        with self.assertRaises(SystemExit) as r:  # without the lakes the same body is a gap in the table
+            datums.Surface.harmonic([(10.1, 49.9, 0.7)], water, 10.0, 50.0, res, datums.OpenSea([]))
+        self.assertIn("missing area", str(r.exception))
 
     def test_no_station_within_reach_extrapolates_open_sea_from_the_nearest_station(self):
         water = np.ones((20, 40), bool)

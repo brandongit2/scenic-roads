@@ -7,7 +7,8 @@ Atlantic coast of Nova Scotia, about 1 m, stays out of the Minas Basin, 7.5 m), 
 lon/lat grid over the water bodies that hold a station (a station counts for the water nearest it,
 within 25 km), and the nearest solved value beyond. A water body with no station within 25 km of
 a solved cell gets no depth (NaN: nodata, an inland lake or lagoon), logged in one line; more than
-5% of the water left so, or one body over 2%, stops the run (a missing area of the table), as does no
+5% of the water left so, or one body over 2%, stops the run (a missing area of the table; with
+OpenSea a body on a Natural Earth lake is a lake, logged and left out of that count), as does no
 station within 25 km of any water. A caller may opt in to open-sea extrapolation (OpenSea; only
 NONNA-10's chunked run does): such a body that is open sea (on no Natural Earth inland lake, and
 reaching within 6 cells of the grid's edge or over 100 km²; for a sea-only chart, `every_body`,
@@ -169,20 +170,33 @@ def over_area(lab: np.ndarray, bodies: np.ndarray, north: float, res: float) -> 
 def open_sea(lab: np.ndarray, bodies: np.ndarray, north: float, res: float, lake: np.ndarray, every_body: bool = False) -> np.ndarray:
     """Which of `bodies` are open sea: on no inland lake (`lake`), and (unless `every_body`) at the
     edge or over OPEN_KM2."""
-    inland = np.isin(bodies, np.unique(lab[lake]))
+    on_lake = inland(lab, bodies, lake)
     if every_body:
-        return ~inland
-    return (at_edge(lab, bodies) | over_area(lab, bodies, north, res)) & ~inland
+        return ~on_lake
+    return (at_edge(lab, bodies) | over_area(lab, bodies, north, res)) & ~on_lake
 
 
-def check_far(lab: np.ndarray, far: np.ndarray, dist, total: int) -> None:
+def inland(lab: np.ndarray, bodies: np.ndarray, lake: np.ndarray) -> np.ndarray:
+    """Which of `bodies` touch an inland lake (`lake`)."""
+    return np.isin(bodies, np.unique(lab[lake]))
+
+
+def check_far(lab: np.ndarray, far: np.ndarray, dist, total: int, lake_far: np.ndarray | None = None) -> None:
     """Log the water left without a datum (`far`) and stop when it is over 5% of the water or one
-    body over 2%: a missing area of the table."""
+    body over 2%: a missing area of the table. Bodies on a Natural Earth lake (`lake_far`, with
+    OpenSea) are lakes rightly left without depth: logged, not counted toward the stop."""
     if not far.any():
         return
     ids, size = np.unique(lab[far], return_counts=True)
     how = f", the farthest {dist[far].max():.0f} km from a solved cell" if dist is not None else ""
     log(f"datum surface: {len(ids)} water bodies, {int(size.sum())} cells, with no station within {REACH_KM:g} km (the largest {int(size.max())} cells{how}) get no depth")
+    if lake_far is not None and lake_far.any():
+        lk, lsize = np.unique(lab[lake_far], return_counts=True)
+        log(f"datum surface: {len(lk)} of those bodies, {int(lsize.sum())} cells (the largest {int(lsize.max())}), are Natural Earth lakes: not a gap in the table")
+        far = far & ~lake_far
+        if not far.any():
+            return
+        ids, size = np.unique(lab[far], return_counts=True)
     if size.sum() > 0.05 * total or size.max() > 0.02 * total:
         raise SystemExit(f"{int(size.sum())} of {total} water cells (the largest body {int(size.max())}) have no station within {REACH_KM:g} km: "
                          "that is a missing area of the table, not a lake; the table needs rows for it")
@@ -223,7 +237,8 @@ class Surface:
             from scipy.spatial import cKDTree
 
             ext = np.isin(lab, bodies[open_sea(lab, bodies, north, res, lake, sea.every_body)])
-            check_far(lab, water & ~ext, None, total)
+            far = water & ~ext
+            check_far(lab, far, None, total, far & np.isin(lab, bodies[inland(lab, bodies, lake)]))
             rr, cc = np.nonzero(ext)
             d, k = cKDTree(xyz([p[0] for p in pts], [p[1] for p in pts])).query(xyz(west + (cc + 0.5) * res, north - (rr + 0.5) * res))
             out = np.full((H, W), np.nan, "float32")
@@ -257,7 +272,7 @@ class Surface:
                         log(f"datum surface: {len(opn)} open-sea water bodies, {int(ext.sum())} cells, beyond {REACH_KM:g} km extrapolated from the nearest solved cell "
                             f"(the farthest {dist[ext].max():.0f} km)")
                 far = np.isin(lab, gone) & ~ext
-                check_far(lab, far, dist, total)
+                check_far(lab, far, dist, total, np.isin(lab, gone[inland(lab, gone, lake)]) if sea is not None else None)
         idx = -np.ones((H, W), np.int64)
         cells = np.argwhere(solve)
         idx[solve] = np.arange(len(cells))
