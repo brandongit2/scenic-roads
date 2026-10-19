@@ -49,7 +49,7 @@ Every drop box is a folder under `inputs/` in the NAS project folder (plan §3):
 
 ```
 inputs/
-  regions/            declare: <id>.toml, <name>.geojson, _group.toml in any subfolders; pins.toml (§6.1)
+  regions/            declare: <id>.toml, <name>.geojson, _group.toml in any subfolders; pins.toml, rules.toml (§6.1)
   languages/          declare: territories.tsv, about.toml (§6.2)
   translations/       request–fulfil: **/*.jsonl; todo/ (§6.3)
   descriptions/       request–fulfil: **/*.jsonl, about.toml; todo/ (§6.4)
@@ -328,14 +328,17 @@ checked with `If-Match` on every read so a file changed mid-build fails rather t
 ### 6.1 Regions
 
 **Kind:** declare. **Drop box:** `inputs/regions/`, read recursively. **Unit:** `regions`. Code:
-crate::inputs::regions (`file`, `shapes`, `geom`, `resolve`, `stored`, `extract`, `read`).
+crate::inputs::regions (`file`, `shapes`, `geom`, `resolve`, `water`, `data`, `stored`, `extract`,
+`read`).
 
 #### 6.1.1 What a region is
 
 A name for a piece of the coverage. The coverage is the union of every region; nothing is built per
-region (plan §5), so regions may overlap freely. The check validates each region's definition, not
-how regions fit together (no gap or partition checks); the map's region layer shows overlaps and
-gaps by eye.
+region (plan §5). Without `rules.toml`, regions may overlap freely and the check validates each
+region's definition, not how regions fit together; the map's region layer shows overlaps and gaps
+by eye. With `cover = "earth"` in `rules.toml` (§6.1.3, "Land and water"), the regions must cover
+the Earth once: the check fills land gaps and settles land overlaps by the folder-wide rules, and
+any water in two regions, or in none, is an error.
 
 #### 6.1.2 Files and folders
 
@@ -350,6 +353,8 @@ gaps by eye.
   Moving a region between folders changes its group, never its geometry or keys (the index, and so
   the catalog, is new).
 - `pins.toml` names the OSM pass the folder is written against (§6.1.5).
+- `rules.toml` (optional, at the top) holds the rules for the whole folder: `cover = "earth"` and
+  `sliver_km2` (default 50), §6.1.3 "Land and water". Unknown fields are an error (`rg-rules`).
 - Every other file (a `.poly`, `.txt`, `.toml.removed`) is ignored: neither checked, read nor copied.
 
 #### 6.1.3 The region file
@@ -358,28 +363,51 @@ gaps by eye.
 |---|---|---|
 | `id` | `[a-z0-9-]`, 1–64 characters, the file's name without `.toml` | required |
 | `name` | string, non-empty | required |
-| `outline` | list of parts, their union | required, non-empty |
+| `outline` | list of parts, their union | required, non-empty, unless there's `water` |
 | `minus` | list of parts, their union taken away | optional |
 | `intersect` | list of parts, the region kept only inside their union | optional |
+| `water` | list of parts, the region's water: their union (`water = []`: none but its lakes) | optional; makes it a region of land and water |
+| `hand_out` | a folder's path: each stretch of this region's water only one region of that folder borders goes to that region | optional, with `water` |
 | `[lines.<name>]` | a line, from `coords` or `ways` | optional |
 | `[pins]` | as `pins.toml`, overriding it for this file | optional |
 
-Unknown fields are an error. The region is ((∪ `outline`) ∩ (∪ `intersect`)) − (∪ `minus`).
+Unknown fields are an error. The region is ((∪ `outline`) ∩ (∪ `intersect`)) − (∪ `minus`); a region
+with `water` is its land, that cut back to the coastline's land, and its water ("Land and water").
 
 **Parts:**
 - `"osm:<relation>"`: an OSM relation's area, from the pinned pass's outline set (administrative and
   ISO 3166 relations, plan §5) or, for any other relation, the regions' extract (§6.1.6).
 - `"shape:<name>.geojson"`: a Polygon or MultiPolygon (a Feature, geometry or FeatureCollection,
   unioned), exact.
-- `"region:<id>"`: another region's stored geometry.
+- `"region:<id>"`: another region's stored geometry (in `outline`, `minus` and `intersect`, a
+  region with water's land; in `water`, all of it).
+- `"land:<id>"`: another region's land (its outline as resolved; a region with water may name its
+  own in its `water`).
+- `"group:<folder>"`: every region under that folder (`group:europe/portugal`), the region naming it
+  left out.
+- `"osm-way:<id>"`: a closed OSM way's area, from the regions' extract (§6.1.6).
+- `"eez:<mrgid>"`, `"ts12:<mrgid>"`, `"ne-lake:<ne_id>"`: a 200-nautical-mile zone of Marine
+  Regions' EEZ v12 with the internal waters Internal Waters v4 draws for it, a territorial sea of
+  Territorial Seas v4, a lake of Natural Earth's 1:10m lakes (§6.1.7).
+- `"box:<west>,<south>,<east>,<north>"`: degrees of longitude and latitude (west under east, so a
+  box across ±180° is two); a slice of latitude is a box from −180 to 180.
+- `"earth"`: the whole Earth. `"rest"`: only in `water`, and in one region: what no other region
+  covers (the high seas).
 - `{ buffer = <part or "line:<name>">, by = "<distance>" }`: everything within that ground distance
-  (`m`, `km`, `nmi`; positive, at most 200 km).
+  (`m`, `km`, `nmi`; positive, at most 200 nmi).
+- `{ union = [<parts>] }`, `{ minus = [<part>, <parts>] }` (the first less the others),
+  `{ intersect = [<parts>] }`.
+- `{ nearest = <part>, to = [<parts>], than = [<parts>], step = "<distance>" }`: the points of the
+  part nearer the `to` parts than the `than` parts (each the nearest of their edges' points), decided
+  on a grid of `step` (default 1 km; 100 m to 20 km): the split follows the median line within a
+  cell. A split by nearest coast names every competing coast in `than`; the complementary split
+  (`to` and `than` swapped) is exactly the rest (ties go the same way in both).
 - `{ cut = <part>, by = "line:<name>", keep = "left" | "right" }`: the part on one side of a line as
   drawn. Each piece the line crosses edge to edge is split; a piece it doesn't meet is kept if it
   lies on the `keep` side of the line extended straight from its ends. A line ending inside a piece
   is an error.
 
-`buffer` and `cut` nest.
+The operations nest.
 
 **The coast tolerance.** `osm:` parts listed directly in `outline` of a region with no `minus` or
 `intersect` are stored as the relation's rings with a 1 km tolerance (a vertex within 1 km counts as
@@ -391,6 +419,24 @@ parts by a real 1 km buffer first, so subtracting a neighbour removes exactly it
 points), or `ways = [<way id>, …]` from the pinned pass (via the extract), strung end to end in
 order, each reversed as needed; ways that don't share an end node are an error. A cut line may not
 cross itself.
+
+**Land and water.** A region with a `water` key is resolved in two steps (crate::inputs::regions::
+water). First its land: its outline exact (no coast tolerance), cut back to the coastline's land
+(the `regions-land` source) less the lakes over 100 km² (`regions-lakes`); those lakes inside its
+outline are its water, unless another region's water names them. Then its water: the `water` parts,
+less the coastline's land and every region without `water` (the land dominates the sea), in an
+order where a region comes after those its water names whole (`region:`, `group:`). A region's
+`hand_out` folder then takes each stretch (a connected piece) of its water that one of its regions
+alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge. With
+`cover = "earth"` in `rules.toml`, then: a region's piece of water under `sliver_km2` touching
+none of its land joins the region it shares the longest edge with; and, tile by 10° tile, land in
+two regions is taken from both, and land in none, with water in none touching land (the sea between
+the zones' coastline and OSM's), joins the region it shares the longest edge with (the nearest when
+it touches none). The region whose water is `rest` takes what's left; without one, water left is an
+error (`rg-cover`), as is water in two regions. A region without `water` resolves as before, so old
+and new files sit together: the new rules only touch the new files, and `cover = "earth"` only
+holds once every file is new. The 12-nautical-mile line is the `regions-territorial-seas` source,
+named only as `ts12:` parts; it divides nothing.
 
 **Examples:**
 ```toml
@@ -414,6 +460,26 @@ id = "azores"
 name = "Azores"
 outline = [{ buffer = "osm:1629145", by = "12 nmi" }]
 ```
+```toml
+# cyprus.toml: the island's zone by nearest coast, the bases' 3 nmi their own
+id = "cyprus"
+name = "Cyprus"
+outline = ["osm:307787"]
+water = [{ minus = [{ nearest = "eez:8376", to = ["land:cyprus", "land:akrotiri-and-dhekelia"], than = ["land:northern-cyprus"] }, "region:akrotiri-and-dhekelia"] }]
+```
+```toml
+# canada/canadian-waters.toml: the rest of a split place's zone
+id = "canadian-waters"
+name = "Canadian waters"
+water = [{ minus = ["eez:8493", "group:canada"] }]
+hand_out = "canada"
+```
+```toml
+# high-seas.toml
+id = "high-seas"
+name = "High seas"
+water = ["rest"]
+```
 `pins.toml`: `osm = "2026-09-29"` (the pass, `sources/osm/<date>/`). A file's `[pins]` overrides it
 and may record other datasets a shape came from (`gadm = "4.1"`, checked only as a non-empty string).
 
@@ -426,7 +492,10 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   repeated and collinear vertices removed, rings sorted, so equal geometry is equal bytes.
 - **Buffers** are computed on the ground: parts densified to 10 km edges, each edge offset in a
   local equirectangular projection at its mid-latitude (under 0.1 % error at 200 km), round joins
-  within 5 m of the arc, pieces unioned. **Cuts** intersect the shape with each side's polygon.
+  within 5 m of the arc, pieces unioned. Past 200 km the rings are first simplified within a
+  thousandth of the radius and the joins drawn within a thousandth of it too. **Cuts** intersect the
+  shape with each side's polygon. **Sizes** (for slivers, shared edges and the cover check) are on
+  the authalic sphere; a shared edge's length is the other area within 100 m of the edge, over 100 m.
 - **The antimeridian:** every stored ring lies within −180°…180°. A region's parts are unwrapped
   into one longitude frame (the turn leaving the widest empty band outside it; the plain frame for
   regions away from ±180°), operated on there, then split at each odd multiple of 180° and shifted
@@ -449,7 +518,9 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   `draw_tolerance_m`), degrees to 5 decimals, keyed by `from`.
 
 A region of only `osm:` and `shape:` parts in `outline` with no operation is stored as **one shape
-per part, unchanged**; any operation gives one shape (two across the antimeridian). The index names
+per part, unchanged**; any operation gives one shape (two across the antimeridian); a region with
+`water` gives one shape, its land and water together, its rings on both sides of ±180° where it
+crosses. The index names
 each region's files in `facts.geometry` and `facts.drawn`, and its `keyed` digest is the geometry
 file's content name, so an edit that doesn't change the result reruns nothing.
 
@@ -486,6 +557,22 @@ lacks.
 - It reads the pass's filtered planet, then the full planet only for ids the filtered one lacks,
   with `osmpbf` in three scans (relations, ways, nodes); it runs alone on its Mac.
 
+#### 6.1.7 The datasets
+
+`eez:`, `ts12:` and `ne-lake:` parts, and a region with `water`, read the regions' datasets
+(crate::inputs::regions::data): declared sources (§6.9) of the roles `regions-sea` (Marine Regions'
+EEZ v12, GeoJSON, by `mrgid`), `regions-internal-waters` (Internal Waters v4, by `mrgid_eez`, added
+to its zone), `regions-territorial-seas` (Territorial Seas v4), `regions-lakes` (Natural Earth 1:10m
+lakes 5.0.0, a shapefile zip, by `ne_id`) and `regions-land` (OSM's land polygons, split, in
+degrees), each a file in `sources/fetched/<id>/` named by its `params.path`. The check reads them
+whole when it's prepared, once the accepted sources declare `regions-sea`; until then a region
+naming them is held (`rg-data`). Their declarations are staged in `producers/sources/`
+(`marineregions-eez.toml`, `marineregions-internal-waters.toml`, `marineregions-territorial-seas.toml`,
+`natural-earth-lakes.toml`, `osm-land-polygons.toml`); Marine Regions' three are CC BY 4.0 and
+credited as their declarations say. `scenic-build regions-check --dir <folder> --declarations
+<folder>` runs the check on a scratch folder in memory with the datasets those declarations name,
+and reports each region's size.
+
 #### 6.1.8 Checks
 
 All errors; ids `rg-<check>.<hash16>`.
@@ -508,6 +595,11 @@ All errors; ids `rg-<check>.<hash16>`.
 | `rg-pin-mismatch` | a pin naming another pass than the current one (§6.1.5) |
 | `rg-group` | a `_group.toml` that doesn't parse, has a field other than `name`/`order`, or an empty name |
 | `rg-extract` | ids the extract lacks: held while it's made (§6.1.6) |
+| `rg-data` | a region naming the datasets, or with `water`, while they aren't read (§6.1.7) |
+| `rg-data-missing` | an `eez:`, `ts12:` or `ne-lake:` id the dataset hasn't |
+| `rg-rest` | `rest` in more than one region's water |
+| `rg-rules` | a `rules.toml` that doesn't parse or has an unknown field or value |
+| `rg-cover` | with `cover = "earth"`: water in two regions, or in none without a `rest` region |
 
 A held region keeps its last geometry; a new held region isn't in the coverage yet. Deleting a
 region file takes it out with the next version.
@@ -1136,8 +1228,8 @@ their indexes.
 
 | Field | Meaning |
 |---|---|
-| `role` | the slot the app reads it in, one source a role: `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikidata-live`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights`; and `depth` (§6.10) and `geoid` (§6.8, step 3), which any number of sources take |
-| `format` | one of its role's: `geotiff`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet`, `depth-grid`, `geoid-grid`, `helmert` |
+| `role` | the slot the app reads it in, one source a role: `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikidata-live`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights`, `regions-sea`, `regions-internal-waters`, `regions-territorial-seas`, `regions-lakes`, `regions-land` (§6.1.7); and `depth` (§6.10) and `geoid` (§6.8, step 3), which any number of sources take |
+| `format` | one of its role's: `geotiff`, `geojson`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet`, `depth-grid`, `geoid-grid`, `helmert` |
 | `url` / `urls` / `index` | exactly one; a template's placeholders only its role's (`{tile}` for land cover, `{y}` `{m}` for the pageviews); an index is a GeoJSON beside it, a feature per file with its `url` and footprint |
 | `version` | the pinned release |
 | `refresh` | `pinned` (default: a new release is the owner's edit) or `live` (a query service asked each run) |
@@ -1194,6 +1286,7 @@ URL one the code asked for; the leaf sources, boxes and zip member the same),
 | Wikidata, Wikipedia's API | built: `wikidata-qlever.toml`, `wikidata-query-service.toml`, `wikipedia-api.toml`, the `wikidata`, `wikidata-live` and `wikipedia` roles | endpoints (`sparql`, `mediawiki-api`, `refresh = "live"`) |
 | Wikipedia pageviews | built: `wikipedia-pageviews.toml`, the `pageviews` role | URL template (`{y}`, `{m}`); the months stay the items job's rule |
 | Geoid grids | staged, not yet dropped: `producers/geoid/declarations/` (the `geoid` role, any number; the grids by `producers/geoid/fetch.sh`), read by the elevation step (§6.8, step 3) | `geoid-grid` (a URL, its two references, `store`) and `helmert` (its parameters), pinned |
+| The regions' datasets (Marine Regions EEZ v12, Internal Waters v4, Territorial Seas v4; Natural Earth lakes; OSM land polygons) | staged, not yet dropped: `producers/sources/` (§6.1.7); the files fetched into `sources/fetched/marineregions-eez-v12/`, `marineregions-internal-waters-v4/`, `marineregions-territorial-seas-v4/`, `natural-earth-lakes-10m/`, `osm-land-polygons/` on 2026-10-18 | `geojson` and `zip-shapefile`, their file (`params.path`), id field and layer |
 | Canada's lake fill (CanVec) | built: `canvec-lakes.toml`, the `lake-fill` role; its zips kept by hand in `sources/fetched/canvec-lakes/` | `zip-shapefile`: where they come from, its layer, field, values kept, the intermittent ones and the confirming share (`params`) |
 
 Also kept: fonts (`scripts/fonts.sh`, the app's own assets). The depth's sources are §6.10's, NCEI's

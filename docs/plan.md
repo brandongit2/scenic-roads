@@ -396,7 +396,12 @@ floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, th
 
 **Regions** are files in `inputs/regions/` (docs/inputs.md §6.1): `osm:` relations, GeoJSON shapes
 and other regions combined, each pinned to an OSM snapshot, checked by the input check before the
-build uses them. Overlaps are harmless; nothing checks for gaps.
+build uses them. A region may also have water (sea zones from Marine Regions' EEZ v12, lakes, the
+high seas as the rest: docs/inputs.md §6.1.3). Overlaps are harmless to the build; nothing checks for
+gaps unless `inputs/regions/rules.toml` says the regions cover the Earth once (`cover = "earth"`),
+when the check fills and checks them. A region of water is coverage like any other: every z6 tile
+it meets is a tile job's target (terrain, slope, tree cover, the buildings' tiles, depth), sea or
+not (§10, Gaps).
 
 **Coverage** is the union of the regions.
 - **What gets built:** a feature that touches the coverage; for a way, any node inside. Ways are kept
@@ -1592,6 +1597,18 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
     band whose first dataset was converted and whose dataset beneath has no value, the seam mixes references (counted, dem-stats'
     `unconverted_seam`, not corrected). NAD83(2011) and NAD83(CSRS) are taken as one frame, WGS 84 as
     ITRF2008.
+15. **Regions of water** (§5; docs/inputs.md §6.1.3, §6.1.7):
+    - the coverage doesn't say land from water, so a sea-only region makes every z6 tile it meets a
+      target of the tile jobs (terrain, slope, tree cover, the buildings' tiles) and of downloads,
+      and the high seas (`rest`) meets nearly every tile; a region's download is its tiles' packs;
+    - the 12-nautical-mile line (Territorial Seas v4) is read as `ts12:` parts but not drawn on the
+      map;
+    - the regions' datasets are read whole each time the check is prepared (about 1.4 GB on the
+      NAS), once the sources declare them; the lead doesn't plan anything to keep them;
+    - the land polygons are osmdata's of 2026-10-18, not cut from the pinned pass;
+    - the cover check and its fills work tile by 10° tile, so a gap cut by a tile's edge is two
+      gaps, each settled in its tile;
+    - a stretch the antimeridian cuts counts as two for `hand_out`.
 
 ## 11. Risks and checks
 

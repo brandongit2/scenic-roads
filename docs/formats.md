@@ -467,6 +467,8 @@ that decodes and parses, else the next.
   built region has no `tiles`; an app made before them reads such a region as built, and this app
   reads a catalog without them as before. Outlines are GeoJSON MultiPolygon coordinates in degrees to 5 decimals, rings
   closed: `osm:` entries from the pass's simplified outlines, others simplified by size (60 m–1 km);
+  a region with water (docs/inputs.md §6.1.3) lists its `water` parts after its outline's, each
+  `"water <part>"`, and draws one shape, its land and water together;
   an unreadable entry has no shape. A catalog with `"credits": []` and no `recorded`: the server
   gives every credit and builds the coverage from the recipes.
 - GC's roots: the newest catalog, every catalog of the last 14 days and the build manifest; an
