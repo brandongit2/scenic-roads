@@ -647,17 +647,31 @@ impl Tiff {
             }
             g.loading.entry(k).or_default().clone()
         };
-        let _reading = slot.lock().unwrap();
+        // (A reader that panicked left the slot poisoned: the next one takes it all the same,
+        // finds no block in the cache, and reads it again.)
+        let _reading = slot.lock().unwrap_or_else(|e| e.into_inner());
+        // (The slot's entry goes when this read ends, however it ends, a panic too: its own
+        // entry, not a newer one put under the key since.)
+        struct Loading<'a> {
+            cache: &'a Mutex<BlockCache>,
+            k: (u64, usize, u64),
+            slot: &'a Arc<Mutex<()>>,
+        }
+        impl Drop for Loading<'_> {
+            fn drop(&mut self) {
+                let mut g = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+                if g.loading.get(&self.k).is_some_and(|s| Arc::ptr_eq(s, self.slot)) {
+                    g.loading.remove(&self.k);
+                }
+            }
+        }
+        let _entry = Loading { cache: c, k, slot: &slot };
         if let Some(b) = c.lock().unwrap().get(k) {
             return Ok(b);
         }
-        let b = decode();
-        let mut g = c.lock().unwrap();
-        if let Ok(b) = &b {
-            g.put(k, b.clone());
-        }
-        g.loading.remove(&k);
-        b
+        let b = decode()?;
+        c.lock().unwrap().put(k, b.clone());
+        Ok(b)
     }
 
     fn decode(&self, img: &Image, index: u64, by: u32) -> Result<Block> {
@@ -1541,40 +1555,78 @@ mod tests {
             assert_eq!(t.nodata(), Some(-32767.0));
         }
     }
-}
 
-/// Task #395: a block several threads ask for at once (the sampling's and the blend's distance
-/// measures, on a pool) is read from its file and decoded once, the others taking it from the
-/// cache; its pixels are the same to each.
-#[cfg(test)]
-#[test]
-fn a_block_asked_for_at_once_is_read_once() {
-    use std::collections::HashMap as Map;
+    /// A file whose reads are counted and slow, and whose next block read can be made to fail or
+    /// to panic (once).
     struct Slow {
         inner: Vec<u8>,
-        reads: Mutex<Map<(u64, usize), usize>>,
+        reads: Mutex<HashMap<(u64, usize), usize>>,
+        /// 0: reads; 1: the next block read fails; 2: it panics.
+        trip: std::sync::atomic::AtomicU8,
     }
+
     impl RangeRead for Slow {
         fn len(&self) -> Result<u64, store::IoError> {
             Ok(self.inner.len() as u64)
         }
+
         fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
             *self.reads.lock().unwrap().entry((off, len)).or_default() += 1;
             std::thread::sleep(std::time::Duration::from_millis(20));
+            if len > 64 {
+                match self.trip.swap(0, std::sync::atomic::Ordering::SeqCst) {
+                    1 => return Err(store::IoError::Io(std::io::Error::other("a failed read"))),
+                    2 => panic!("a reader that panics"),
+                    _ => {}
+                }
+            }
             self.inner.read_at(off, len)
         }
     }
-    let data: Vec<f32> = (0..512 * 512).map(|i| (i % 977) as f32).collect();
-    let bytes = write_f32(512, 512, &data, 256, [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], 4326, None).unwrap();
-    let src = Arc::new(Slow { inner: bytes, reads: Default::default() });
-    let t = Tiff::open(src.clone()).unwrap().with_shared_cache(1, Arc::new(Mutex::new(BlockCache::new(64 << 20))));
-    let before = src.reads.lock().unwrap().clone();
-    let got: Vec<Vec<f32>> = std::thread::scope(|s| {
-        let hs: Vec<_> = (0..8).map(|_| s.spawn(|| t.read_window(0, 0, 0, 512, 512).unwrap())).collect();
-        hs.into_iter().map(|h| h.join().unwrap()).collect()
-    });
-    assert!(got.iter().all(|g| *g == data));
-    let reads = src.reads.lock().unwrap();
-    let again: Vec<_> = reads.iter().filter(|(k, &c)| c > 1 && !before.contains_key(k)).collect();
-    assert!(again.is_empty(), "read more than once: {again:?}");
+
+    /// A 512² file of tiles of 256, opened over `Slow` with a cache.
+    fn slow() -> (Vec<f32>, Arc<Slow>, Tiff) {
+        let data: Vec<f32> = (0..512 * 512).map(|i| (i % 977) as f32).collect();
+        let bytes = write_f32(512, 512, &data, 256, [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], 4326, None).unwrap();
+        let src = Arc::new(Slow { inner: bytes, reads: Default::default(), trip: Default::default() });
+        let t = Tiff::open(src.clone()).unwrap().with_shared_cache(1, Arc::new(Mutex::new(BlockCache::new(64 << 20))));
+        (data, src, t)
+    }
+
+    /// Task #395: a block several threads ask for at once (the sampling's and the blend's
+    /// distance measures, on a pool) is read from its file and decoded once, the others taking it
+    /// from the cache; its pixels are the same to each.
+    #[test]
+    fn a_block_asked_for_at_once_is_read_once() {
+        let (data, src, t) = slow();
+        let before = src.reads.lock().unwrap().clone();
+        let got: Vec<Vec<f32>> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8).map(|_| s.spawn(|| t.read_window(0, 0, 0, 512, 512).unwrap())).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert!(got.iter().all(|g| *g == data));
+        let reads = src.reads.lock().unwrap();
+        let again: Vec<_> = reads.iter().filter(|(k, &c)| c > 1 && !before.contains_key(k)).collect();
+        assert!(again.is_empty(), "read more than once: {again:?}");
+        assert!(t.cache.as_ref().unwrap().1.lock().unwrap().loading.is_empty());
+    }
+
+    /// A block whose read failed, or whose reader panicked, is read again when next asked for,
+    /// by the threads waiting on it and by later ones; nothing is left marked as being read.
+    #[test]
+    fn a_block_whose_read_failed_or_panicked_is_read_again() {
+        for trip in [1u8, 2] {
+            let (data, src, t) = slow();
+            src.trip.store(trip, std::sync::atomic::Ordering::SeqCst);
+            let got: Vec<std::thread::Result<Result<Arc<Block>>>> = std::thread::scope(|s| {
+                let hs: Vec<_> = (0..4).map(|_| s.spawn(|| t.block(0, 0, 0))).collect();
+                hs.into_iter().map(|h| h.join()).collect()
+            });
+            let bad = got.iter().filter(|g| !matches!(g, Ok(Ok(_)))).count();
+            assert_eq!(bad, 1, "trip {trip}: one asker fails, the others read it again");
+            let b = t.block(0, 0, 0).unwrap();
+            assert_eq!(b.f32_at(5, 3), data[3 * 512 + 5]);
+            assert!(t.cache.as_ref().unwrap().1.lock().unwrap().loading.is_empty(), "trip {trip}");
+        }
+    }
 }
