@@ -1321,13 +1321,19 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         if a.targetFrame?.isMainFrame ?? true { NSWorkspace.shared.open(u) }
     }
 
-    /// The page's confirm() (a cancel, freezing the build): asked natively, the panel's own.
+    /// The page's confirm() (a cancel, freezing the build): asked natively, the panel's own. The
+    /// popover kept open meanwhile (a transient one closes as the alert takes the keyboard, and
+    /// closing stops the page's timers), then made the key window again, the page going on.
     func webView(_ w: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
         let a = NSAlert()
         a.messageText = message
         a.addButton(withTitle: "OK")
         a.addButton(withTitle: "Cancel")
-        completionHandler(a.runModal() == .alertFirstButtonReturn)
+        popover.behavior = .applicationDefined
+        let ok = a.runModal() == .alertFirstButtonReturn
+        popover.behavior = .transient
+        if popover.isShown { popover.contentViewController?.view.window?.makeKey() }
+        completionHandler(ok)
     }
 
     /// A link to a new window: in the browser.

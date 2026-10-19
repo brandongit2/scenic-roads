@@ -798,12 +798,17 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   lead asks and the inputs' acceptances from their queues, as on the lead).
 - **Cancel and try again from the page** (task #409): this Mac's own page (the menu bar's panel, a
   browser on this Mac: `/work/act`, refused from elsewhere and with a key) cancels a running job
-  and tries a failed target again. Its agent acts on them leading, else mails them to the lead
-  (`Msg::Cancel`, `Msg::Retry`; only to a lead on its own app, an older app's mail reader not
-  knowing them: refused, said why, otherwise; each message is read alone, so one an app doesn't
-  know is passed over). The lead takes a cancel as the owner's `scenic job cancel`, and a retry by
-  forgetting the target's failures: the coordinator's (no worker held off it,
-  `Coordinator::clear_failed`) and its agent's own back-off.
+  and tries a failed target again. A cancel goes the way `scenic job cancel` does: on the lead to
+  its agent; on a member, an ask in its agent's folder (`crate::control::request_cancel`), passed
+  on to the lead whatever app it runs. A retry: this Mac's own back-off for the target forgotten at
+  once; on the lead, its coordinator's failures of the target too (no worker held off it,
+  `Coordinator::clear_failed`, in the state it writes this step, so a restart keeps it); on a
+  member, mailed to the lead (`Msg::Retry`), only to a lead on its own app: with none, or one on
+  another app, `/work/act` answers 409 and the page says why. Each mailed message is read alone, so
+  one an app doesn't know is passed over and read past. **Still open:** a lead rolled back to an app
+  from before these messages fails to read the whole mailbox of a member that mailed one, until
+  that message leaves the member's last few sent (`KEPT`); and a member rolled back reads its own
+  `mail.json` (its sent messages) as empty, so it may take messages again.
 - **`scenic lead`**: shows the pool; `scenic lead give <member>`, `scenic lead take [--force]
   [--downgrade]`, `scenic lead auto on|off`. `scenic status` shows the pool too.
 - **Forcing stays on the Mac:** `/work/lead` refuses forced takeovers.

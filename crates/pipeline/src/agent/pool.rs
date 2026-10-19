@@ -174,6 +174,24 @@ struct RawMailbox {
     msgs: Vec<(u64, serde_json::Value)>,
 }
 
+/// A mailbox's messages after number `last`, and the number read up to: each message read alone,
+/// so one this app doesn't know (a newer app's) is passed over, and read past all the same (never
+/// read again, never holding the others back). None: the file doesn't read.
+fn read_mailbox(b: &[u8], last: u64) -> Option<(Vec<Msg>, u64)> {
+    let mb = serde_json::from_slice::<RawMailbox>(b).ok()?;
+    let mut top = last;
+    let mut out = Vec::new();
+    for (n, m) in mb.msgs {
+        if n > last {
+            top = top.max(n);
+            if let Ok(m) = serde_json::from_value::<Msg>(m) {
+                out.push(m);
+            }
+        }
+    }
+    Some((out, top))
+}
+
 /// The path of the mailbox `from` sends `to`.
 pub fn mail_path(to: &str, from: &str) -> String {
     format!("{MAIL}/{to}/{from}.json")
@@ -744,18 +762,9 @@ impl Side {
                     continue;
                 }
             };
-            // (Each message read alone: one this app doesn't know, a newer app's, passed over.)
-            let Ok(mb) = serde_json::from_slice::<RawMailbox>(&b) else { continue };
             let last = self.mail.read.get(&from).copied().unwrap_or(0);
-            let mut top = last;
-            for (n, m) in mb.msgs {
-                if n > last {
-                    top = top.max(n);
-                    if let Ok(m) = serde_json::from_value::<Msg>(m) {
-                        msgs.push((from.clone(), m));
-                    }
-                }
-            }
+            let Some((got, top)) = read_mailbox(&b, last) else { continue };
+            msgs.extend(got.into_iter().map(|m| (from.clone(), m)));
             if top > last {
                 self.mail.read.insert(from, top);
             }
@@ -2189,6 +2198,18 @@ pub fn status(root: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_message_this_app_doesnt_know_is_read_past() {
+        // (Task #409 review) a newer app's message among the others: passed over, the rest taken,
+        // and read past (its number the top), so it holds nothing back and isn't read again.
+        let b = br#"{"msgs": [[5, {"Leads": 3}], [6, {"FromTheFuture": {"x": 1}}], [7, {"HandTo": "m-b"}]]}"#;
+        let (msgs, top) = super::read_mailbox(b, 4).unwrap();
+        assert_eq!(msgs, vec![super::Msg::Leads(3), super::Msg::HandTo("m-b".into())]);
+        assert_eq!(top, 7);
+        let (msgs, top) = super::read_mailbox(b, 7).unwrap();
+        assert!(msgs.is_empty() && top == 7);
+    }
+
     use super::*;
 
     #[test]

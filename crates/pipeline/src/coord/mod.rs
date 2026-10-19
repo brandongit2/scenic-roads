@@ -350,6 +350,9 @@ pub struct Shared {
     /// The build pages' asks to cancel a job or try a target again (`/work/act`), for this Mac's
     /// agent to act on, leading, or to pass on to the lead (crate::pool::driver::Act).
     pub page_acts: Vec<crate::pool::driver::Act>,
+    /// Not the lead's: why a page's retry can't be passed on to the lead now (none leads, or it runs
+    /// another app: crate::pool::driver's `Act`), as its agent last saw; None: it can.
+    pub retry_blocked: Option<String>,
 }
 
 /// The NAS budget's weights for one placement (`Shared::nas_room`): the limits, one Book, and each
@@ -1835,6 +1838,7 @@ impl Coordinator {
             viewer,
             forward: None,
             page_acts: Vec::new(),
+            retry_blocked: None,
             own_cap: None,
             dir: dir.to_path_buf(),
             clock: store::clock::real(),
@@ -2599,6 +2603,11 @@ impl Coordinator {
     /// The pages' asks to cancel or retry (`/work/act`), taken.
     pub fn take_page_acts(&self) -> Vec<crate::pool::driver::Act> {
         std::mem::take(&mut self.shared.lock().unwrap().page_acts)
+    }
+
+    /// Not the lead's: why a page's retry can't reach the lead now (`Shared::retry_blocked`).
+    pub fn set_retry_blocked(&self, why: Option<String>) {
+        self.shared.lock().unwrap().retry_blocked = why;
     }
 
     /// Not the lead's: a page's pause goes to this Mac's agent (its folder `home`) to pass on.
@@ -3631,7 +3640,7 @@ fn route(
             }
             // (Not the lead's: this Mac's agent passes it on, as its menu's.)
             let forward = shared.lock().unwrap().forward.clone();
-            if let (Some(home), true) = (forward, caller.page) {
+            if let (Some(home), true) = (forward, caller.page && caller.local) {
                 crate::control::request(&home, pause)?;
                 return Ok((200, ok));
             }
@@ -3666,6 +3675,25 @@ fn route(
                 }
                 _ => anyhow::bail!("{{\"cancel\": {{\"target\": …}}}} or {{\"retry\": {{\"target\": …}}}}"),
             };
+            // Not the lead's: a cancel through this Mac's agent's own cancel asks (as `scenic job
+            // cancel`: it tells the lead, whatever app the lead runs); a retry mailed to the lead,
+            // refused now when it can't be (`retry_blocked`).
+            let (forward, blocked) = {
+                let s = shared.lock().unwrap();
+                (s.forward.clone(), s.retry_blocked.clone())
+            };
+            match (&act, forward) {
+                (crate::pool::driver::Act::Cancel(c), Some(home)) => {
+                    crate::control::request_cancel(&home, c)?;
+                    return Ok((200, ok));
+                }
+                (crate::pool::driver::Act::Retry(_), Some(_)) => {
+                    if let Some(why) = blocked {
+                        return Ok((409, serde_json::json!({ "error": format!("can't ask the lead: {why}") })));
+                    }
+                }
+                _ => {}
+            }
             shared.lock().unwrap().page_acts.push(act);
             Ok((200, ok))
         }
@@ -4643,8 +4671,18 @@ mod http {
                 error(StatusCode::FORBIDDEN, "that's for this Mac's own build page")
             };
         }
-        if c.shared.lock().unwrap().viewer {
-            return if own_page && matches!(path.as_str(), "/work/pause" | "/work/lead" | "/work/inputs") {
+        // (Not the lead's, a member's broker: a page's pause, lead ask and acceptances its own
+        // page's alone, as a viewer's; its agent passes them on.)
+        let (viewer, forwards) = {
+            let s = c.shared.lock().unwrap();
+            (s.viewer, s.forward.is_some())
+        };
+        let owners_asks = matches!(path.as_str(), "/work/pause" | "/work/lead" | "/work/inputs");
+        if forwards && !viewer && key.is_none() && owners_asks && !own_page {
+            return error(StatusCode::FORBIDDEN, "that's for this Mac's own build page (it doesn't lead)");
+        }
+        if viewer {
+            return if own_page && owners_asks {
                 next.run(req).await
             } else {
                 error(StatusCode::FORBIDDEN, "this Mac shows the build; it coordinates nothing")
@@ -7392,6 +7430,36 @@ mod tests {
     }
 
     #[test]
+    fn a_members_broker_takes_the_owners_asks_from_its_own_page_alone() {
+        // (Task #409 review) a broker (not the lead's: its agent passes them on) refuses a page
+        // elsewhere's pause, lead ask and acceptance; its own page's pause goes to its agent; a
+        // retry that can't reach the lead is answered so.
+        let (_d, c, w) = start();
+        let home = tempfile::tempdir().unwrap();
+        c.set_forward(Some(home.path().to_path_buf()));
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let far = [("X-Forwarded-For", "100.101.1.2")];
+        let pause = serde_json::json!({ "pause": { "mode": "drain", "by": "x", "at": 0 } });
+        for (p, b) in [
+            ("/work/pause", pause.clone()),
+            ("/work/lead", serde_json::json!({ "take": true })),
+            ("/work/inputs", serde_json::json!({ "unit": "6/1/1", "all": true })),
+            ("/work/act", serde_json::json!({ "retry": { "target": "6/1/1" } })),
+        ] {
+            assert_eq!(send(&addr, "POST", p, None, &far, &b).0, 403, "{p} from elsewhere");
+        }
+        assert!(crate::control::take_request(home.path()).is_none() && c.pause().is_none());
+        assert_eq!(send(&addr, "POST", "/work/pause", None, &[], &pause).0, 200);
+        assert!(crate::control::take_request(home.path()).is_some() && c.pause().is_none(), "passed to its agent");
+        c.set_retry_blocked(Some("no lead now".into()));
+        let (code, _, b) =
+            send(&addr, "POST", "/work/act", None, &[], &serde_json::json!({ "retry": { "target": "6/1/1" } }));
+        assert_eq!(code, 409);
+        assert!(b["error"].as_str().is_some_and(|e| e.contains("no lead now")), "{b}");
+        assert!(c.take_page_acts().is_empty());
+    }
+
+    #[test]
     fn a_retry_forgets_a_targets_failures_by_every_worker() {
         // (Task #409 phase 3) a page's retry: no worker held off the target any more.
         let (_d, c, _w) = start();
@@ -7406,6 +7474,9 @@ mod tests {
         assert_eq!(c.clear_failed(None, "6/1/2"), 1, "any step's");
         let left: Vec<String> = c.shared.lock().unwrap().failed.keys().map(|k| k.1.clone()).collect();
         assert_eq!(left, ["6/1/3"]);
+        // (Kept so: the state the lead writes per term, read again by a restart's take-up.)
+        let kept: Vec<String> = c.pool_state().failed.iter().map(|f| f.1.clone()).collect();
+        assert_eq!(kept, ["6/1/3"]);
     }
 
     #[test]
@@ -7448,11 +7519,15 @@ mod tests {
         assert_eq!(act(serde_json::json!({ "cancel": { "target": "6/1/2", "step": "unit" } })), 200);
         assert_eq!(act(serde_json::json!({ "retry": { "target": "6/1/3" } })), 200);
         assert_eq!(act(serde_json::json!({ "both": 1 })), 400);
-        let acts = v.take_page_acts();
+        // (Its cancel through its agent's own cancel asks, as `scenic job cancel`; its retry queued
+        // for the agent to mail to the lead.)
+        let cancels = crate::control::peek_cancels(home.path());
         assert!(
-            matches!(&acts[..], [crate::pool::driver::Act::Cancel(c), crate::pool::driver::Act::Retry(r)] if c.target == "6/1/2" && r.target == "6/1/3" && c.by.starts_with("the build page")),
-            "{acts:?}"
+            matches!(&cancels[..], [c] if c.target == "6/1/2" && c.by.starts_with("the build page")),
+            "{cancels:?}"
         );
+        let acts = v.take_page_acts();
+        assert!(matches!(&acts[..], [crate::pool::driver::Act::Retry(r)] if r.target == "6/1/3"), "{acts:?}");
         // In the pool (a pageview told a root), never the memory's views: not ready until it read.
         let pv = crate::agent::pageview::PageView::new();
         pv.set_inputs(crate::agent::pageview::Inputs { root: Some("/nonexistent".into()), ..Default::default() });

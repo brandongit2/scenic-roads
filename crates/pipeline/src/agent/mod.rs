@@ -8631,6 +8631,33 @@ impl Agent {
         // (While a tick holds the run: kept for the next loop.)
         let mut acts = std::mem::take(&mut self.page_acts);
         acts.extend([&self.coord, &self.broker, &self.viewer].into_iter().flatten().flat_map(|c| c.take_page_acts()));
+        // (A retry: this Mac's own back-off for the target forgotten at once, a member's too; the
+        // lead forgets its own and the coordinator's.)
+        for a in &acts {
+            if let crate::pool::driver::Act::Retry(r) = a {
+                self.guard_backoff.retain(|id, _| !id.split(' ').any(|w| w == r.target));
+            }
+        }
+        // (Why a member's retry can't be mailed to the lead now: said to its page at once.)
+        if !lead {
+            let blocked = match self.try_pooled() {
+                Some(Some(run)) => {
+                    let me = run.side.member().app.clone();
+                    match run.side.driver().current().lead.as_ref() {
+                        None => Some("no lead now".to_string()),
+                        Some(t) if t.app != me => Some(format!(
+                            "the lead runs app {}, this Mac {me}: try again on the lead's own page",
+                            t.app
+                        )),
+                        Some(_) => None,
+                    }
+                }
+                _ => None,
+            };
+            for c in [&self.broker, &self.viewer].into_iter().flatten() {
+                c.set_retry_blocked(blocked.clone());
+            }
+        }
         if !acts.is_empty() {
             let alone = match self.try_pooled() {
                 Some(Some(mut run)) => {
@@ -9301,9 +9328,10 @@ impl Agent {
                 .events
                 .iter()
                 .any(|e| matches!(e, crate::pool::driver::Event::Failed { what: "save the records", .. }));
-            self.pool_lead_files(r, saved);
-            // (The build pages' asks: its own page's and the members' passed on.)
+            // (The build pages' asks, its own page's and the members' passed on: first, so the
+            // coordinator's state written now holds a retry's forgotten failures.)
             self.act_on(&out.acts);
+            self.pool_lead_files(r, saved);
             // (A catalog and GC read today's files: caught up only once they hold these records.)
             let mut run = self.pooled()?;
             if run.behind() {
