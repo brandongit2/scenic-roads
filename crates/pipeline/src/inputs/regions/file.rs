@@ -191,7 +191,7 @@ pub struct Region {
     /// the coastline's land).
     pub water_key: bool,
     /// `hand_out = "<folder>"`: each stretch of its water that only one region of that folder
-    /// borders goes to that region (`water::finish`).
+    /// borders goes to that region (`tiles::resolve`).
     pub hand_out: Option<String>,
     pub lines: BTreeMap<String, Line>,
     /// Its own `[pins]`, overriding `pins.toml`'s.

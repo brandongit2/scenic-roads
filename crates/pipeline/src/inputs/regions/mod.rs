@@ -23,7 +23,7 @@ pub mod read;
 pub mod resolve;
 pub mod shapes;
 pub mod stored;
-pub mod water;
+pub mod tiles;
 
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
 use crate::outlines::Outlines;
@@ -70,8 +70,10 @@ impl Regions {
         Regions { ctx, ..Default::default() }
     }
 
-    /// The folder `v` holds, resolved.
+    /// The folder `v` holds, resolved. The process is stopped (exit 3, saying so) if its footprint
+    /// passes `max_mb()` while it resolves: a check never takes the Mac down.
     pub fn resolve(&self, v: &Version) -> Result<(resolve::Folder, resolve::Outcome)> {
+        crate::sys::footprint_guard("the regions' check", max_mb());
         let folder = resolve::Folder::read(v.paths.iter().cloned(), &|p| Ok((v.read)(p)?.to_vec()))?;
         let empty = BTreeMap::new();
         let c = self.ctx.as_ref();
@@ -102,6 +104,12 @@ impl Regions {
         let out = resolve::resolve(&folder, &ctx);
         Ok((folder, out))
     }
+}
+
+/// The most memory (MB, as `sys::footprint` counts it) a process checking the regions may take:
+/// `SCENIC_REGIONS_MAX_MB`, else 8,000.
+pub fn max_mb() -> u64 {
+    std::env::var("SCENIC_REGIONS_MAX_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(8_000)
 }
 
 /// The current pass in the records, and its outline set's and extract's content names.
@@ -175,7 +183,7 @@ impl Checks for Regions {
                 Err(f) => c.findings.push(finding(&f, path)),
             }
         } else if resolve::is_rules(path) {
-            match water::parse_rules(text) {
+            match tiles::parse_rules(text) {
                 Ok(r) => {
                     c.facts.insert("rules".into(), serde_json::to_value(&r).unwrap_or_default());
                 }

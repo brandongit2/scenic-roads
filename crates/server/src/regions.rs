@@ -256,7 +256,7 @@ fn load_all(pool: &IoPool, dir: &std::path::Path) -> Result<ListedAll> {
                 stack.push((d.join(&it.name), path));
                 continue;
             }
-            if !it.name.ends_with(".toml") || path == "pins.toml" || path == pipeline::inputs::regions::water::RULES {
+            if !it.name.ends_with(".toml") || path == "pins.toml" || path == pipeline::inputs::regions::tiles::RULES {
                 continue;
             }
             let p = d.join(&it.name);

@@ -84,9 +84,9 @@ water = [{ nearest = "eez:5695", to = ["land:w"], than = ["land:crimea"], step =
     assert_eq!(bad("outline = [{ buffer = \"osm:1\", by = \"201 nmi\" }]\n"), vec!["part"]);
     assert_eq!(bad("outline = [\"land:x\"]\n"), vec!["ref"]);
     assert_eq!(bad(""), vec!["id"]);
-    assert!(water::parse_rules("cover = \"earth\"\n").is_ok());
-    assert!(water::parse_rules("cover = \"mars\"\n").is_err());
-    assert!(water::parse_rules("covers = \"earth\"\n").is_err());
+    assert!(tiles::parse_rules("cover = \"earth\"\n").is_ok());
+    assert!(tiles::parse_rules("cover = \"mars\"\n").is_err());
+    assert!(tiles::parse_rules("covers = \"earth\"\n").is_err());
 }
 
 #[test]
@@ -194,6 +194,7 @@ water = [{ nearest = { intersect = [{ buffer = "osm:3", by = "12 nmi" }, "eez:1"
 const SLICE: &str = r#"id = "slice"
 name = "Slice"
 outline = [{ intersect = ["osm:2", "box:2.0,0.0,3.0,0.5"] }]
+water = []
 "#;
 const DISPUTED: &str = "id = \"disputed\"\nname = \"Disputed zone\"\nwater = [\"eez:2\"]\n";
 const FAR: &str =
@@ -333,42 +334,29 @@ fn a_stretch_one_region_alone_borders_is_its_own() {
     assert!(at("p1", 0.5, 0.5) && !at("p1", 2.5, 0.5));
 }
 
-/// Cutting a region back to the land never hands one operation a continent's coast: a mask (the
-/// land in a box) is only made for a box of 2° or less holding at most `MASK_POINTS` points of the
-/// region, and none made holds more than `MASK_POINTS` unless its box is a sixteenth of a degree; the
-/// result is the plain intersection's.
+/// Rings cut into cells by clipping: the cells' pieces make the same area as the rings, none
+/// outside its cell; a ring round a whole cell gives the cell; a polygon with a hole keeps it.
 #[test]
-fn the_land_is_cut_in_bounded_pieces() {
-    // Land: 80 × 80 islands of 64 points each (410k points) over 16° × 16°.
-    let mut land: Vec<Vec<geom::Ring>> = Vec::new();
-    for i in 0..80 {
-        for j in 0..80 {
-            let (x, y) = (i as f64 * 0.2, j as f64 * 0.2);
-            let ring: geom::Ring = (0..64)
-                .map(|k| {
-                    let t = k as f64 / 64.0 * std::f64::consts::TAU;
-                    [e7(x + 0.1 + 0.05 * t.cos()), e7(y + 0.1 + 0.05 * t.sin())]
-                })
-                .collect();
-            land.push(vec![ring]);
-        }
+fn rings_are_cut_into_cells() {
+    use super::tiles::{cell_box, TArea, CELL};
+    // A ring over 5° × 3° (several cells), with a hole across a cell line.
+    let outer = bx(-1.3, 0.7, 3.9, 3.6)[0].clone();
+    let hole = bx(0.5, 1.5, 2.5, 2.5)[0].clone();
+    let rings = vec![outer, hole];
+    let whole = Area::from_rings(&rings);
+    let t = TArea::from_rings(&rings);
+    assert!(t.cells.len() > 4);
+    for (c, a) in &t.cells {
+        let b = cell_box(*c);
+        assert!(geom::area_km2(&a.minus(&geom::box_area(b))) < 1e-6, "{c:?}");
     }
-    let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
-    let region = Area::from_rings(&bx(-1.0, -1.0, 17.0, 17.0));
-    let biggest = std::sync::Mutex::new((0usize, [0i64; 4]));
-    let mask = |b: [i64; 4]| {
-        let m = data.land_in(b);
-        let mut g = biggest.lock().unwrap();
-        if geom::points(&m) > g.0 {
-            *g = (geom::points(&m), b);
-        }
-        m
-    };
-    let got = geom::with_mask(&region, &mask, true);
-    let (most, b) = *biggest.lock().unwrap();
-    assert!(b[2] - b[0] <= 20_000_000 && b[3] - b[1] <= 20_000_000, "{b:?}");
-    assert!(most <= geom::MASK_POINTS, "{most}");
-    let all = data.land_in([-10_000_000, -10_000_000, 170_000_000, 170_000_000]);
-    assert!((geom::area_km2(&got) - geom::area_km2(&all)).abs() < 1.0);
-    assert!(geom::area_km2(&got.minus(&all)) < 0.01 && geom::area_km2(&all.minus(&got)) < 0.01);
+    assert!((t.km2() - geom::area_km2(&whole)).abs() < 0.01, "{} {}", t.km2(), geom::area_km2(&whole));
+    assert!(!t.get((0, 0)).contains([e7(1.5), e7(2.0)]) && t.get((0, 0)).contains([e7(0.3), e7(1.0)]));
+    // A ring wholly round a cell: the cell.
+    let big = TArea::from_rings(&bx(-5.0, -5.0, 5.0, 5.0));
+    assert_eq!(geom::area_km2(&big.get((0, 0))).round(), geom::area_km2(&geom::box_area(cell_box((0, 0)))).round());
+    // Across ±180°: a ring from 179° to 181° lands in the first and last columns.
+    let across = TArea::from_rings(&[vec![[e7(179.0), 0], [e7(181.0), 0], [e7(181.0), e7(1.0)], [e7(179.0), e7(1.0)]]]);
+    assert!(across.cells.contains_key(&(89, 0)) && across.cells.contains_key(&(-90, 0)));
+    let _ = CELL;
 }

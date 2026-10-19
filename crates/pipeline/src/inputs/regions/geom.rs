@@ -203,106 +203,6 @@ pub fn points(a: &Area) -> usize {
     a.polys.iter().flatten().map(Vec::len).sum()
 }
 
-/// `a` with `mask` (the dataset's area in a box, as `mask(box)` gives it) kept (`keep`) or taken
-/// away, in pieces small enough that no one operation holds much: while the piece of `a` or the
-/// mask has more than `MASK_POINTS` points and the box is wider than a sixteenth of a degree, the box
-/// is split in four and each quarter done on its own. The pieces are put back together at the end.
-pub fn with_mask(a: &Area, mask: &(dyn Fn([i64; 4]) -> Area + Sync), keep: bool) -> Area {
-    let Some(b) = a.bbox() else { return Area::default() };
-    let mut pieces = Vec::new();
-    mask_rec(a, b, mask, keep, &mut pieces);
-    union_all(&pieces)
-}
-
-/// Areas kept cut into 2° cells (each area halved until its pieces lie in one cell): what lies in a
-/// box is then read from the cells it meets, not clipped from whole areas.
-pub struct Tiled {
-    cells: std::collections::HashMap<(i64, i64), Vec<Area>>,
-}
-
-const TILED_CELL: i64 = 20_000_000;
-
-impl Tiled {
-    pub fn of(areas: &[Area]) -> Tiled {
-        fn rec(a: &Area, out: &mut std::collections::HashMap<(i64, i64), Vec<Area>>) {
-            let Some(b) = a.bbox() else { return };
-            let (cx0, cx1) = (b[0].div_euclid(TILED_CELL), (b[2] - 1).div_euclid(TILED_CELL));
-            let (cy0, cy1) = (b[1].div_euclid(TILED_CELL), (b[3] - 1).div_euclid(TILED_CELL));
-            if cx0 >= cx1 && cy0 >= cy1 {
-                out.entry((cx0, cy0)).or_default().push(a.clone());
-                return;
-            }
-            // (Halved at a cell line along its longer side.)
-            if cx1 - cx0 >= cy1 - cy0 {
-                let m = ((cx0 + cx1 + 1) / 2) * TILED_CELL;
-                rec(&a.intersect(&box_area([b[0], b[1], m, b[3]])), out);
-                rec(&a.intersect(&box_area([m, b[1], b[2], b[3]])), out);
-            } else {
-                let m = ((cy0 + cy1 + 1) / 2) * TILED_CELL;
-                rec(&a.intersect(&box_area([b[0], b[1], b[2], m])), out);
-                rec(&a.intersect(&box_area([b[0], m, b[2], b[3]])), out);
-            }
-        }
-        use rayon::prelude::*;
-        let each: Vec<std::collections::HashMap<(i64, i64), Vec<Area>>> = areas
-            .par_iter()
-            .map(|a| {
-                let mut m = std::collections::HashMap::new();
-                rec(a, &mut m);
-                m
-            })
-            .collect();
-        let mut cells: std::collections::HashMap<(i64, i64), Vec<Area>> = std::collections::HashMap::new();
-        for m in each {
-            for (k, v) in m {
-                cells.entry(k).or_default().extend(v);
-            }
-        }
-        Tiled { cells }
-    }
-
-    /// What lies in box `b`, clipped to it.
-    pub fn query(&self, b: [i64; 4]) -> Area {
-        let bb = box_area(b);
-        let mut v = Vec::new();
-        for x in b[0].div_euclid(TILED_CELL)..=b[2].div_euclid(TILED_CELL) {
-            for y in b[1].div_euclid(TILED_CELL)..=b[3].div_euclid(TILED_CELL) {
-                for a in self.cells.get(&(x, y)).into_iter().flatten() {
-                    if a.bbox().is_some_and(|ab| ab[0] <= b[2] && b[0] <= ab[2] && ab[1] <= b[3] && b[1] <= ab[3]) {
-                        v.push(a.intersect(&bb));
-                    }
-                }
-            }
-        }
-        union_all(&v)
-    }
-}
-
-/// The most points a piece is masked with at once.
-pub const MASK_POINTS: usize = 200_000;
-
-fn mask_rec(a: &Area, b: [i64; 4], mask: &(dyn Fn([i64; 4]) -> Area + Sync), keep: bool, out: &mut Vec<Area>) {
-    if a.is_empty() {
-        return;
-    }
-    let small = b[2] - b[0] <= 625_000 && b[3] - b[1] <= 625_000;
-    // (A mask is only asked for a box of 2° or less: a wider one may hold millions of points.)
-    let narrow = b[2] - b[0] <= 20_000_000 && b[3] - b[1] <= 20_000_000;
-    if (points(a) <= MASK_POINTS && narrow) || small {
-        let m = mask(b);
-        if points(&m) <= MASK_POINTS || small {
-            let m = m.intersect(&box_area(b));
-            out.push(if keep { a.intersect(&m) } else { a.minus(&m) });
-            return;
-        }
-    }
-    let (mx, my) = ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2);
-    for q in [[b[0], b[1], mx, my], [mx, b[1], b[2], my], [b[0], my, mx, b[3]], [mx, my, b[2], b[3]]] {
-        let piece = a.intersect(&box_area(q));
-        mask_rec(&piece, q, mask, keep, out);
-    }
-}
-
 /// The union of `areas` (canonical).
 pub fn union_all(areas: &[Area]) -> Area {
     let n = areas.iter().flat_map(|a| a.polys.iter().flatten()).map(Vec::len).sum();
@@ -960,7 +860,7 @@ fn edge_rec(a: &Area, b: &Area, q: [i64; 4], w: f64) -> f64 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }
-    if points(&a) + points(&b) > MASK_POINTS / 4 && q[2] - q[0] > 625_000 {
+    if points(&a) + points(&b) > 50_000 && q[2] - q[0] > 625_000 {
         let (mx, my) = ((q[0] + q[2]) / 2, (q[1] + q[3]) / 2);
         return [[q[0], q[1], mx, my], [mx, q[1], q[2], my], [q[0], my, mx, q[3]], [mx, my, q[2], q[3]]]
             .iter()

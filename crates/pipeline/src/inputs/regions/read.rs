@@ -352,8 +352,9 @@ pub fn check_folder(
         None => None,
     };
     eprintln!(
-        "regions-check: datasets read in {:.0} s, peak {} MB",
+        "regions-check: datasets read in {:.0} s, footprint {} MB, peak resident {} MB",
         t.elapsed().as_secs_f64(),
+        crate::sys::footprint().unwrap_or(0) / 1_000_000,
         crate::sys::peak_rss() / 1_000_000
     );
     let checks = super::Regions::new(Some(super::prepare(root, manifest, data)?));
@@ -374,8 +375,9 @@ pub fn check_folder(
     let (folder, out) = checks.resolve(&v)?;
     let peak = super::geom::reset_peak();
     eprintln!(
-        "regions-check: resolved in {:.0} s, peak {} MB",
+        "regions-check: resolved in {:.0} s, footprint {} MB, peak resident {} MB",
         t.elapsed().as_secs_f64(),
+        crate::sys::footprint().unwrap_or(0) / 1_000_000,
         crate::sys::peak_rss() / 1_000_000
     );
     findings.extend(out.problems.iter().map(super::problem_finding));

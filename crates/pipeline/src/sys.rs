@@ -320,6 +320,53 @@ pub fn symlink(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
     std::fs::copy(src, dst).map(|_| ())
 }
 
+/// This process's physical footprint now (bytes): what the system charges it, its compressed and
+/// swapped memory included (macOS: `proc_pid_rusage`'s `ri_phys_footprint`); elsewhere, its
+/// resident peak. None when it can't be read.
+pub fn footprint() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: the call fills the struct we own, of the flavour asked for.
+        let mut info: libc::rusage_info_v4 = unsafe { std::mem::zeroed() };
+        let ok = unsafe {
+            libc::proc_pid_rusage(
+                libc::getpid(),
+                libc::RUSAGE_INFO_V4,
+                &mut info as *mut libc::rusage_info_v4 as *mut libc::rusage_info_t,
+            )
+        };
+        if ok == 0 {
+            return Some(info.ri_phys_footprint);
+        }
+        None
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Some(peak_rss()).filter(|v| *v > 0)
+    }
+}
+
+/// A watch on this process's footprint (`footprint`), every 50 ms: past `max_mb` MB it says so on
+/// stderr, naming `what`, and exits with code 3. Once per process; later calls do nothing.
+pub fn footprint_guard(what: &'static str, max_mb: u64) {
+    static ON: std::sync::Once = std::sync::Once::new();
+    ON.call_once(|| {
+        std::thread::Builder::new()
+            .name("footprint-guard".into())
+            .spawn(move || loop {
+                if let Some(b) = footprint() {
+                    let mb = b / 1_000_000;
+                    if mb > max_mb {
+                        eprintln!("{what}: {mb} MB of memory (its footprint, compressed and swapped included), past its limit of {max_mb} MB: stopped");
+                        std::process::exit(3);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            })
+            .ok();
+    });
+}
+
 /// The most memory this process and its finished children have held at once (bytes): getrusage's
 /// maximum resident sizes, the larger (macOS gives them in bytes); 0 where there's no such call.
 /// (A child's own, not theirs together: programs running at once, a pool's workers, are summed by

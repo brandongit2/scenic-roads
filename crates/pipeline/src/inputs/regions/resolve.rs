@@ -40,7 +40,7 @@ pub struct Folder {
     /// `pins.toml`, when there and read.
     pub pins: BTreeMap<String, String>,
     /// `rules.toml`, when there and read.
-    pub rules: Option<super::water::Rules>,
+    pub rules: Option<super::tiles::Rules>,
     /// The files that didn't parse (their own findings are the file checks').
     pub unread: BTreeSet<String>,
     /// Two region files with one id, or two shapes with one name.
@@ -61,7 +61,7 @@ pub fn is_pins(path: &str) -> bool {
 
 /// Whether a drop-box path is `rules.toml` (at the folder's top).
 pub fn is_rules(path: &str) -> bool {
-    path == super::water::RULES
+    path == super::tiles::RULES
 }
 
 /// Whether the regions take a file: a region file (`<id>.toml`), a shape (`<name>.geojson`),
@@ -93,7 +93,7 @@ impl Folder {
             f.hashes.insert(p.clone(), store::naming::hash16(&bytes));
             let name = file_name(&p).to_string();
             if is_rules(&p) {
-                match std::str::from_utf8(&bytes).ok().map(super::water::parse_rules) {
+                match std::str::from_utf8(&bytes).ok().map(super::tiles::parse_rules) {
                     Some(Ok(r)) => f.rules = Some(r),
                     _ => {
                         f.unread.insert(p);
@@ -164,7 +164,7 @@ impl Folder {
     /// The regions a region needs resolved first: those it names (`region:`, `land:`) and the
     /// members of the folders it names (`group:`), sorted, once each.
     pub fn deps(&self, r: &Region) -> Vec<String> {
-        // (Its outline's: its water's are `water::finish`'s, once every outline is resolved.)
+        // (Its outline's: its water's are `tiles::resolve`'s, once every outline is resolved.)
         let (ids, groups) = r.outline_refs();
         let mut v: Vec<String> = ids.into_iter().filter(|d| *d != r.id).map(str::to_string).collect();
         for g in groups {
@@ -206,7 +206,7 @@ pub type Memo = std::sync::Mutex<std::collections::HashMap<String, (Result<Resol
 pub struct Resolved {
     pub geometry: Geometry,
     pub drawn: Drawn,
-    /// For a region with water, before `water::finish`: the lakes over 100 km² its outline takes
+    /// For a region with water, before `tiles::resolve`: the lakes over 100 km² its outline takes
     /// in (plain frame), which become its water unless another region's water names them.
     pub lakes: Area,
 }
@@ -240,8 +240,30 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
     for id in ids {
         visit(&id, folder, ctx, &mut state, &mut Vec::new(), &mut held, &mut keys, &mut order, &mut out);
     }
-    // Resolved in waves, each region once those it names are, a wave's regions at once.
-    let mut pending = order;
+    // Resolved in waves, each region once those it names are, a wave's regions at once. Regions
+    // with water are `tiles::resolve`'s; one without naming one in its outline is held.
+    let mut pending: Vec<(String, String)> = Vec::new();
+    for (id, key) in order {
+        let (path, r) = &folder.regions[&id];
+        if r.has_water() {
+            continue;
+        }
+        if let Some(d) = folder.deps(r).into_iter().find(|d| folder.regions.get(d).is_some_and(|(_, x)| x.has_water()))
+        {
+            out.problems.push(Problem {
+                check: "rg-ref",
+                about: vec![id.clone(), format!("region:{d}")],
+                found: vec!["water".into()],
+                files: vec![path.clone()],
+                message: format!(
+                    "{id}: region:{d} has water: a region without water can't name one (give it a water key too)"
+                ),
+            });
+            held.insert(id);
+            continue;
+        }
+        pending.push((id, key));
+    }
     while !pending.is_empty() {
         let (wave, rest): (Vec<(String, String)>, Vec<(String, String)>) = pending.into_iter().partition(|(id, _)| {
             folder.deps(&folder.regions[id].1).iter().all(|d| out.resolved.contains_key(d) || held.contains(d))
@@ -307,7 +329,7 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
         }
         pending = rest;
     }
-    super::water::finish(folder, ctx, &mut out);
+    super::tiles::resolve(folder, ctx, &mut out);
     out.problems.sort_by(|a, b| (a.check, &a.about, &a.found).cmp(&(b.check, &b.about, &b.found)));
     out.problems.dedup();
     out
@@ -431,9 +453,11 @@ fn relations_through(r: &Region, folder: &Folder, seen: &mut BTreeSet<String>, o
     }
 }
 
-/// A region resolved: its outline (`water` false: for a region with water, its land), or its water
-/// as written (`water` true, `done` then holding the regions' final geometry and `lands` their land).
-pub(super) fn resolve_one(
+/// The leaves of a region's outline (`water` false) or water: its pin checked against the pass,
+/// each part's rings read (relations, ways, shapes, the datasets, other regions as `done` and
+/// `lands` hold them), its lines strung; with the pass and the relations' drawn outlines.
+#[allow(clippy::type_complexity)]
+pub(super) fn gather(
     r: &Region,
     path: &str,
     folder: &Folder,
@@ -442,7 +466,7 @@ pub(super) fn resolve_one(
     lands: &BTreeMap<String, Resolved>,
     water: bool,
     needs: &mut BTreeSet<Id>,
-) -> Result<Resolved, Vec<Problem>> {
+) -> Result<(BTreeMap<String, Leaf>, BTreeMap<u64, Vec<Vec<Vec<[i32; 2]>>>>, String, Vec<Problem>), Vec<Problem>> {
     let mut ps = Vec::new();
     // The pin.
     let Some(pin) = folder.pin(r) else {
@@ -665,7 +689,7 @@ pub(super) fn resolve_one(
                         shapes.extend(res.geometry.shapes.iter().map(|s| (rings64(&s.rings), 0)));
                     }
                 }
-                if shapes.is_empty() {
+                if folder.members(g, &r.id).is_empty() {
                     ps.push(problem(
                         "rg-ref",
                         r,
@@ -728,6 +752,23 @@ pub(super) fn resolve_one(
             }
         }
     }
+    Ok((leaves, drawn_osm, pass.to_string(), ps))
+}
+
+/// A region resolved: its outline (`water` false: for a region with water, its land), or its water
+/// as written (`water` true, `done` then holding the regions' final geometry and `lands` their land).
+pub(super) fn resolve_one(
+    r: &Region,
+    path: &str,
+    folder: &Folder,
+    ctx: &Context,
+    done: &BTreeMap<String, Resolved>,
+    lands: &BTreeMap<String, Resolved>,
+    water: bool,
+    needs: &mut BTreeSet<Id>,
+) -> Result<Resolved, Vec<Problem>> {
+    let (leaves, drawn_osm, pass, mut ps) = gather(r, path, folder, ctx, done, lands, water, needs)?;
+    let pass = pass.as_str();
     if r.has_water() && ctx.data.is_none_or(|d| !d.has_land()) {
         ps.push(problem("rg-data", r, path, vec!["land".into()], format!("{}: a region with water is cut back to the coastline's land, which isn't read now (the regions-land source: docs/inputs.md §6.1.7)", r.id)));
     }
@@ -826,15 +867,7 @@ pub(super) fn resolve_one(
     if !ps.is_empty() {
         return Err(ps);
     }
-    let mut lakes = Area::default();
-    if r.has_water() && !water {
-        let data = ctx.data.expect("checked above");
-        // (Piece by piece: geom::with_mask, so no one operation holds a continent's coast.)
-        let big = |b: [i64; 4]| super::water::in_frame(&frame, Some(b), |p| data.big_lakes_in(p));
-        let land = |b: [i64; 4]| super::water::in_frame(&frame, Some(b), |p| data.land_in(p)).minus(&big(b));
-        lakes = geom::with_mask(&result, &big, true);
-        result = geom::with_mask(&result, &land, true);
-    }
+    let lakes = Area::default();
     if result.is_empty() && !r.has_water() {
         return Err(vec![problem(
             "rg-empty",
@@ -955,26 +988,8 @@ pub(super) fn eval(
         }
         Part::Minus(ps) => {
             let a = eval(&ps[0], false, placed, r, path)?;
-            // (Each part taken away as its pieces, `group:`'s regions one by one, never unioned
-            // whole: large ones are taken away piece by piece, geom::Tiled and geom::with_mask.)
-            let mut rest: Vec<Area> = Vec::new();
-            for p in &ps[1..] {
-                match (p, placed.get(&p.to_string())) {
-                    (Part::Group(_) | Part::Region(_) | Part::Land(_), Some(Leaf::Rings(shapes, _))) => {
-                        rest.extend(shapes.iter().map(|(rs, _)| Area::from_rings(rs)));
-                    }
-                    _ => rest.push(eval(p, false, placed, r, path)?),
-                }
-            }
-            if rest.is_empty() {
-                return Ok(a);
-            }
-            let n = geom::points(&a) + rest.iter().map(geom::points).sum::<usize>();
-            if n <= geom::MASK_POINTS {
-                return Ok(a.minus(&geom::union_all(&rest)));
-            }
-            let t = geom::Tiled::of(&rest);
-            Ok(geom::with_mask(&a, &|b| t.query(b), false))
+            let rest: Vec<Area> = ps[1..].iter().map(|p| eval(p, false, placed, r, path)).collect::<Result<_, _>>()?;
+            Ok(if rest.is_empty() { a } else { a.minus(&geom::union_all(&rest)) })
         }
         Part::Nearest { of, to, than, step_m, .. } => {
             let of = eval(of, false, placed, r, path)?;

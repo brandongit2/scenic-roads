@@ -309,16 +309,10 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         // datasets the declarations name, else the accepted ones): its findings and each region's
         // size (pipeline::inputs::regions::read::check_folder). Reads only; writes the report.
         let dir = PathBuf::from(opt(&args, "--dir").context("--dir <folder of region files>")?);
-        // (`--max-mb n`: stopped, saying so, once its peak resident memory passes n MB.)
+        // (`--max-mb n`: stopped, saying so, once its footprint (compressed and swapped memory
+        // included) passes n MB; else the regions' check's own limit.)
         if let Some(max) = opt(&args, "--max-mb").and_then(|v| v.parse::<u64>().ok()) {
-            std::thread::spawn(move || loop {
-                let mb = pipeline::sys::peak_rss() / 1_000_000;
-                if mb > max {
-                    eprintln!("regions-check: {mb} MB resident, past --max-mb {max}: stopped");
-                    std::process::exit(3);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(200));
-            });
+            pipeline::sys::footprint_guard("regions-check", max);
         }
         let decl = opt(&args, "--declarations").map(PathBuf::from);
         let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
