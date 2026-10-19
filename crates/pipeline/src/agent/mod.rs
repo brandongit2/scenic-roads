@@ -15551,15 +15551,19 @@ mod pool_tests {
         m.mac = MEMBER_MAC;
         let im = m.pooled().unwrap().side.member().id.clone();
         lead.pooled().unwrap().side.know(&im);
-        lead.coord.as_ref().unwrap().offer(
-            "2026-09-28",
-            vec![crate::coord::Offer {
-                step: "slope".into(),
-                targets: vec![("3/2/2".into(), "k".into(), 100)],
-                job: None,
-            }],
-        );
-        until(&mut m, |m| m.slots[0].running.is_some());
+        // (Offered again until taken: the lead's own plan, made as it steps, offers whole and
+        // would take a single offer back.)
+        until(&mut m, |m| {
+            lead.coord.as_ref().unwrap().offer(
+                "2026-09-28",
+                vec![crate::coord::Offer {
+                    step: "slope".into(),
+                    targets: vec![("3/2/2".into(), "k".into(), 100)],
+                    job: None,
+                }],
+            );
+            m.slots[0].running.is_some()
+        });
         // The owner asks the lead, from its menu, to hand the build to the member, mid-job.
         crate::control::request_lead(
             &lead.o.home,
@@ -15667,8 +15671,8 @@ mod pool_tests {
         lead.pooled().unwrap().side.know(&im);
         // The member's job, granted by the lead in term 1, runs while the owner hands the lead to it.
         // (The test's offers stand in for the lead's plan, which is offered whole each time it's
-        // made, as a job ends: offered again until taken, so a plan made meanwhile, which hasn't
-        // them, doesn't take them back. Without, a loaded Mac's new lead ended its backup or gc
+        // made, as a job ends: offered again until taken, so a plan made meanwhile, without these
+        // targets, doesn't take them back. Without, a loaded Mac's new lead ended its backup or gc
         // first, and the offer was gone before the member asked.)
         let offer = |c: &crate::coord::Coordinator, t: &str, k: &str| {
             c.offer(
@@ -15792,15 +15796,19 @@ mod pool_tests {
         // The member's broker, on a port of its own; the lead's coordinator brokers the lead's.
         assert!(m.coord.is_none() && m.broker.as_ref().is_some_and(|b| b.port() == bport) && lead.broker.is_none());
         // Its job given its broker's address (it waits at the gate meanwhile).
-        lead.coord.as_ref().unwrap().offer(
-            "2026-09-28",
-            vec![crate::coord::Offer {
-                step: "slope".into(),
-                targets: vec![("3/2/2".into(), "k".into(), 100)],
-                job: None,
-            }],
-        );
-        until(&mut m, |m| m.slots[0].running.is_some());
+        // (Offered again until taken: the lead's own plan, made as it steps, offers whole and
+        // would take a single offer back.)
+        until(&mut m, |m| {
+            lead.coord.as_ref().unwrap().offer(
+                "2026-09-28",
+                vec![crate::coord::Offer {
+                    step: "slope".into(),
+                    targets: vec![("3/2/2".into(), "k".into(), 100)],
+                    job: None,
+                }],
+            );
+            m.slots[0].running.is_some()
+        });
         // A task each: the member's job's at its broker, the lead's own at its coordinator.
         let offer = |port: u16, token: &str, unit: &str| -> u64 {
             let job =
