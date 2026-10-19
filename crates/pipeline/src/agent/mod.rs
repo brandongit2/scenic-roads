@@ -467,28 +467,43 @@ impl Tell {
     /// Tells lead `c`: true once it answered (taken, or the lease gone); said when it refused it or
     /// didn't answer.
     fn to(&self, c: &crate::coord::client::Client) -> bool {
+        self.tell(c).is_some()
+    }
+
+    /// `to`, saying how it answered: None not answered; Some(true) it refused the hand-off.
+    fn tell(&self, c: &crate::coord::client::Client) -> Option<bool> {
         let (id, r) = match self {
             Tell::Done(d) => (
                 d.lease,
-                c.done(d).map(|h| {
-                    if let crate::coord::client::Handed::Refused(why) = h {
-                        eprintln!("agent: the lead refused lease {}'s end: {why} (it lapses)", d.lease)
+                c.done(d).map(|h| match h {
+                    crate::coord::client::Handed::Refused(why) => {
+                        eprintln!("agent: the lead refused lease {}'s end: {why} (it lapses)", d.lease);
+                        true
                     }
+                    _ => false,
                 }),
             ),
             Tell::GiveBack { id, why, floors, disks, job_disk } => {
-                (*id, c.end_with(*id, why, true, floors, disks, *job_disk))
+                (*id, c.end_with(*id, why, true, floors, disks, *job_disk).map(|()| false))
             }
             Tell::Fail { id, why, floors, disks, job_disk } => {
-                (*id, c.end_with(*id, why, false, floors, disks, *job_disk))
+                (*id, c.end_with(*id, why, false, floors, disks, *job_disk).map(|()| false))
             }
         };
         match r {
-            Ok(()) => true,
+            Ok(refused) => Some(refused),
             Err(e) => {
                 eprintln!("agent: telling the lead lease {id} ended: {e:#}");
-                false
+                None
             }
+        }
+    }
+
+    /// Its lease.
+    fn lease(&self) -> u64 {
+        match self {
+            Tell::Done(d) => d.lease,
+            Tell::GiveBack { id, .. } | Tell::Fail { id, .. } => *id,
         }
     }
 }
@@ -1361,6 +1376,9 @@ pub struct Agent {
     /// didn't take when they ended (it didn't answer). Each told each loop until `OWED_S` after it
     /// ended (its lease has lapsed by then).
     owed: Vec<(u64, Tell)>,
+    /// The folders of the jobs that ended out of the pool, by lease: their hand-offs go to the lead
+    /// to journal (`journaled: false`), and each folder goes once the lead answers (`told`).
+    unjournaled: BTreeMap<u64, PathBuf>,
     /// A helper's: the bytes its cheap caches held (room::cheap_bytes) and when they were counted.
     cheap: Option<(Instant, u64)>,
     /// The last catalog's folder and number, and its regions' outline entries by id (`on_map`).
@@ -1614,9 +1632,16 @@ impl Agent {
                     let until = Instant::now() + JOIN_WAIT;
                     let mut said = false;
                     let side = loop {
-                        match pool::Side::open(&o.home, &o.home.join("pool"), &locks, &app, nas.clone())? {
-                            Some(s) => break Some(s),
-                            None if Instant::now() < until && !STOP.load(Ordering::SeqCst) => {
+                        match pool::Side::open(&o.home, &o.home.join("pool"), &locks, &app, nas.clone()) {
+                            Ok(Some(s)) => break Some(s),
+                            // (A passing error, its folder unreadable a moment: tried again within
+                            // the wait as a lock held is; past it, the start fails as before.)
+                            Err(e) if Instant::now() < until && !STOP.load(Ordering::SeqCst) => {
+                                eprintln!("agent: opening this Mac's member in the pool: {e:#}; trying again");
+                                std::thread::sleep(JOIN_TRY);
+                            }
+                            Err(e) => return Err(e),
+                            Ok(None) if Instant::now() < until && !STOP.load(Ordering::SeqCst) => {
                                 if !said {
                                     eprintln!(
                                         "agent: this Mac's member's lock is held by another process; trying it again for up to {} s",
@@ -1626,7 +1651,7 @@ impl Agent {
                                 }
                                 std::thread::sleep(JOIN_TRY);
                             }
-                            None => break None,
+                            Ok(None) => break None,
                         }
                     };
                     match side {
@@ -1748,6 +1773,7 @@ impl Agent {
             published: None,
             client: None,
             owed: Vec::new(),
+            unjournaled: BTreeMap::new(),
             cheap: None,
             last_catalog: Default::default(),
             ready: Default::default(),
@@ -2734,6 +2760,20 @@ impl Agent {
                     // (A job with targets is done by its done record; one of no targets of its own,
                     // a lead's duty as pass-sets', by having ended so, whatever it handed off.)
                     let no_targets = kept.as_ref().is_some_and(|w| w.targets.is_empty());
+                    // Out of the pool (its member's lock held by another process), nothing goes to
+                    // the pool's journal from this process: the hand-off goes to the lead to journal
+                    // itself (`journaled: false`; its coordinator journals it whole before the
+                    // lease ends, or answers an error and it's told again), and the folder goes once
+                    // the lead answers (`told`). Saying "journaled" here would end the lease with
+                    // nothing journaled yet, the work left to the next process's `left_jobs`, which
+                    // rebuilds it from what the job noted done and removes a folder it can't read:
+                    // the lead would then hold the targets done with no entry ever merged. Told
+                    // twice (the lead's answer lost, the folder then handed off as left), the same
+                    // saves merge twice, which changes nothing; never told (the process ends
+                    // first), the folder goes to the journal through the next process as before.
+                    // (A give-back or failure out of the pool carries no hand-off: its folder stays
+                    // for the next process, which hands what it finished off as left.)
+                    let pooled = self.pool.is_some();
                     let tell = match entry.as_ref() {
                         Some(e) if e.handoff.done.is_some() => Tell::Done(Box::new(crate::coord::Done {
                             lease: id,
@@ -2743,7 +2783,7 @@ impl Agent {
                             disks,
                             job_disk_mb: job_disk,
                             failed,
-                            journaled: true,
+                            journaled: pooled,
                             timings,
                             ..Default::default()
                         })),
@@ -2755,7 +2795,7 @@ impl Agent {
                                 floors,
                                 disks,
                                 job_disk_mb: job_disk,
-                                journaled: true,
+                                journaled: pooled,
                                 timings,
                                 ..Default::default()
                             }))
@@ -2765,6 +2805,9 @@ impl Agent {
                         }
                         _ => Tell::Fail { id, why: fail_why(outcome, note, entry.is_some()), floors, disks, job_disk },
                     };
+                    if !pooled && matches!(tell, Tell::Done(_)) {
+                        self.unjournaled.insert(id, dir.clone());
+                    }
                     if self.coord.is_some() {
                         eprintln!("agent: lease {id} ended as this Mac finds its term lost: told to the lead once it works as a member");
                         self.owed.push((now_s(), tell));
@@ -2831,8 +2874,9 @@ impl Agent {
     /// already, or there's no client): told again each loop until `OWED_S` (`tell_owed`), never
     /// lost to a fast fail.
     fn tell_or_owe(&mut self, tell: Tell) {
-        if !self.client.as_ref().is_some_and(|c| tell.to(c)) {
-            self.owed.push((now_s(), tell));
+        match self.client.as_ref().and_then(|c| tell.tell(c)) {
+            Some(refused) => self.told(tell.lease(), refused),
+            None => self.owed.push((now_s(), tell)),
         }
     }
 
@@ -2858,9 +2902,32 @@ impl Agent {
             self.owed = owed.into_iter().filter(|(at, _)| now.saturating_sub(*at) < OWED_S).collect();
             return;
         };
-        let left: Vec<(u64, Tell)> =
-            owed.into_iter().filter(|(at, t)| !t.to(c) && now.saturating_sub(*at) < OWED_S).collect();
+        let mut told = Vec::new();
+        let mut left: Vec<(u64, Tell)> = Vec::new();
+        for (at, t) in owed {
+            if let Some(refused) = t.tell(c) {
+                told.push((t.lease(), refused));
+            } else if now.saturating_sub(at) < OWED_S {
+                left.push((at, t));
+            }
+        }
         self.owed = left;
+        for (id, refused) in told {
+            self.told(id, refused);
+        }
+    }
+
+    /// Lease `id`'s end answered by the lead: the folder of a job that ended out of the pool, its
+    /// hand-off given to the lead to journal (`unjournaled`), removed, so the next process doesn't
+    /// hand it off again (`pool::left_jobs`); kept when the lead `refused` it (its checks are a
+    /// hand-off's, stricter than a journal entry's), for the next process to hand off as a job it
+    /// left.
+    fn told(&mut self, id: u64, refused: bool) {
+        if let Some(dir) = self.unjournaled.remove(&id) {
+            if !refused {
+                std::fs::remove_dir_all(&dir).ok();
+            }
+        }
     }
 
     /// Beats for slot `k`'s job's lease (each minute it isn't paused); false when it's lost: it
@@ -16813,6 +16880,35 @@ mod pool_tests {
         assert!(a.out_of_pool().is_none() && a.restart_now().is_none());
     }
 
+    /// #423 follow-up: a passing error opening the member (its pool folder can't be made a moment)
+    /// is tried again within `JOIN_WAIT`, not a failed start.
+    #[test]
+    fn a_passing_error_opening_the_member_is_tried_again() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let home = d.path().join("app-folder/agent");
+        std::fs::create_dir_all(&home).unwrap();
+        // (A file where its pool folder goes: `Side::open` fails until it's gone.)
+        let blocker = home.join("pool");
+        std::fs::write(&blocker, b"").unwrap();
+        let gone = blocker.clone();
+        let clear = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            std::fs::remove_file(&gone).unwrap();
+        });
+        let a = test_agent(Options {
+            root: Some(r.clone()),
+            home: home.clone(),
+            bin: PathBuf::from("/nonexistent/bin"),
+            dry_run: false,
+            once: true,
+            helper: false,
+        })
+        .unwrap();
+        clear.join().unwrap();
+        assert!(a.pool.is_some(), "in the pool once the error passed");
+    }
+
     /// Task #423: a member's job out of the pool (its agent waiting to join) keeps its lease with
     /// the lead: beaten by HTTP; and ending well, it's told done with its hand-off, not failed with
     /// no reason (the lead would build it again).
@@ -16860,12 +16956,13 @@ mod pool_tests {
         a.slots[0].lease = Some(Held::Pooled { id: g.lease, term: 1, dir: dir.clone(), own: false });
         assert!(a.beat(0, None), "its lease renewed with the lead");
         assert!(c.held("unit").contains("6/12/25"));
-        // It ends well: told done, journaled, its folder kept for the next process to hand off.
-        a.client = None;
+        // It ends well: told done for the lead to journal (nothing is in the pool's journal from
+        // here), owed while the lead isn't reached, its folder kept meanwhile.
+        let cl = a.client.take();
         a.end_lease(0, Outcome::Done, &[("6/12/25".into(), "k".into())], "");
         match a.owed.as_slice() {
             [(_, Tell::Done(d))] => {
-                assert!(d.journaled);
+                assert!(!d.journaled, "the lead journals it");
                 assert_eq!(
                     d.handoff.as_ref().and_then(|h| h.done.clone()),
                     Some(("unit".into(), vec![("6/12/25".into(), "k".into())]))
@@ -16873,7 +16970,15 @@ mod pool_tests {
             }
             o => panic!("not told done: {}", o.len()),
         }
-        assert!(dir.join("work.json").is_file(), "kept for the next process's hand-off");
+        assert!(dir.join("work.json").is_file(), "kept until the lead answers");
+        // The lead reached: it journals the hand-off and ends the lease; the folder goes, so the
+        // next process doesn't hand it off again.
+        a.client = cl;
+        a.tell_owed(&d.path().join("nas"));
+        assert!(a.owed.is_empty() && a.unjournaled.is_empty());
+        assert_eq!(crate::handoff::waiting_in(&c.journal()).unwrap().len(), 1, "journaled by the lead");
+        assert!(!c.held("unit").contains("6/12/25"));
+        assert!(!dir.exists(), "its folder gone");
         // A failure that says nothing still goes with a reason.
         assert!(!fail_why(Outcome::Done, "", false).is_empty());
         assert!(!fail_why(Outcome::Failed, " ", true).trim().is_empty());

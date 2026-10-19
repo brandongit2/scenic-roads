@@ -1152,8 +1152,10 @@ join (why)" (`Status::role`, `out_of_pool`).
   drains, so a new agent tries the lock each second for up to two minutes as it starts
   (`JOIN_WAIT`), and joins as it starts once the lock is let go. Still held past that, it starts
   out of the pool: the jobs it took over beat their leases with the lead over HTTP as before, and
-  a member's job that ends there hands its work off as in the pool (its folder kept for the next
-  process's hand-off, told to the lead as done, journaled). Each loop it tries the lock again,
+  a member's job that ends well there gives its hand-off to the lead to journal (told done,
+  `journaled: false`), its folder removed once the lead takes it (kept if the lead refuses it or
+  isn't reached, for the next process to hand off as a job it left). A passing error opening the
+  member is tried again within the same wait. Each loop it tries the lock again,
   and once it gets it, restarts at once (`Agent::restart_now`), not once its first slot is free: its
   jobs are left running for the next agent, which joins as it starts and takes them over
   (Restarts).
