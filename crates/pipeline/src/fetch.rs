@@ -245,10 +245,10 @@ pub trait Fetch: Send + Sync {
 }
 
 /// A small file's request's limits (`Fetch::get_within`): its answer's head within `head` of
-/// the request being sent, then its body at `floor` bytes a second or more over up to `most`
-/// bytes (a body's time given: `most / floor`, the head's not counted). A slow body is waited for
-/// as long as that rate lets it come; only a connection silent past the head's wait, or slower
-/// than the floor, fails the attempt.
+/// the request being sent, then its whole body within `most / floor` seconds (`body`: the time
+/// a body of `most` bytes takes at `floor` bytes a second), the head's wait not counted. It's a
+/// time for the body in all, not a rate checked as it comes: a body may stall and resume, so
+/// long as it's all in by then.
 #[derive(Clone, Copy, Debug)]
 pub struct Within {
     pub head: std::time::Duration,
@@ -1099,16 +1099,18 @@ mod net {
 
         /// The whole (small) file; None for 404. Other answers are asked again: 8 tries, waiting 2,
         /// 4, 6 … s. Each attempt is held to `deadline` when one's given (the agent's own 90 s
-        /// in all otherwise): a connection silent past its head's wait, or a body slower than its
-        /// floor, is an attempt failed, asked again. A host whose every failure was such a
-        /// deadline isn't noted down (`note_down`): it answers, slowly, and a busy link (many tiles
-        /// at once) mustn't set the job's areas aside.
+        /// in all otherwise): a connection silent past its head's wait, or a body not all in by
+        /// its time, is an attempt failed, asked again. A host whose every failure was a body past
+        /// its time isn't noted down (`note_down`): it answers, slowly, and a busy link (many
+        /// tiles at once) mustn't set the job's areas aside; one that never answered is.
         pub(super) fn get_by(&self, url: &str, deadline: Option<super::Within>) -> Result<Option<Vec<u8>>> {
             down_check(self.down.as_deref(), url)?;
             let _slot = HostSlot::take(url);
             let mut last = String::new();
             let mut all_late = true;
-            let late = |e: &ureq::Error| matches!(e, ureq::Error::Timeout(_));
+            // (Late: an answer that began, its body slow. A connection or a name that timed
+            // out, or a head that never came, is a host giving no answer: noted down.)
+            let late = |e: &ureq::Error| matches!(e, ureq::Error::Timeout(ureq::Timeout::RecvBody));
             for attempt in 0..8u64 {
                 if attempt > 0 {
                     retry_wait(self.down.as_deref(), url, 2 * attempt)?;
@@ -1216,6 +1218,24 @@ mod tests {
         assert!(t0.elapsed() > std::time::Duration::from_millis(1500), "{:?}", t0.elapsed());
         assert_eq!(got.len(), 40000);
         assert!(got[..4000].iter().all(|&b| b == 0) && got[36000..].iter().all(|&b| b == 9));
+    }
+
+    /// Task #426 re-review: a host that takes the connection and never answers (each attempt's
+    /// head past its wait) is noted down, as one giving no answer: only a body past its time is
+    /// late without being down. (About a minute: its eight tries and their waits.)
+    #[cfg(not(target_os = "wasi"))]
+    #[test]
+    fn a_host_silent_after_connecting_is_noted_down_within_a_tiles_limits() {
+        // (Never accepted: the system's backlog takes the connections, and nothing answers.)
+        let l = store::spawn::listen("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}/t.png", l.local_addr().unwrap().port());
+        let dir = tempfile::tempdir().unwrap();
+        let within = Within { head: std::time::Duration::from_millis(200), floor: 10_000, most: 64_000 };
+        let e = net::Net::new().with_down(Some(dir.path().to_path_buf())).get_by(&url, Some(within)).unwrap_err();
+        assert!(is_unreachable(&e), "{e:#}");
+        let note = down_note(Some(dir.path()), &url).unwrap();
+        assert!(note.exists(), "not noted down: {e:#}");
+        drop(l);
     }
 
     /// Task #397 follow-up: a range read waiting out its retries ends at once when its reader

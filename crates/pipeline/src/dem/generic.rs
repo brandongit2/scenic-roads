@@ -495,10 +495,10 @@ pub const TILE_FETCHES: usize = 64;
 
 /// A tile request's limits (crate::fetch::Fetch::get_within): its answer's head within 30 s (a
 /// connection silent that long is dead, not slow: it fails and is asked again, where it held its
-/// fetch for the client's 90 s a try), then its body at 8 KB/s or more over up to 512 KB, 64 s
-/// (a pyramid's tiles are tens to a couple of hundred KB; 64 of them at once at the floor is
-/// 512 KB/s, so a slow but steady link still brings them). Not a cap on each request's whole
-/// time: a host whose every failure was these limits isn't noted down. (The budget proxy's idle
+/// fetch for the client's 90 s a try), then its whole body within 64 s (512 KB's time at
+/// 8 KB/s: a pyramid's tiles are tens to a couple of hundred KB, so even 64 at once on a link of
+/// 512 KB/s come in time). Not a cap on each request's whole time; a host whose every failure was
+/// a body past its time isn't noted down, one whose head never came is. (The budget proxy's idle
 /// end, crate::budget::proxy::Limits, 600 s, is left as it is: its long query tunnels need it,
 /// and the client's limits end a tile's tunnel first.)
 pub const TILE_WITHIN: crate::fetch::Within =
@@ -512,7 +512,8 @@ impl TileMemo {
     /// `url`'s file, fetched by `fetch` unless kept.
     fn get(&self, url: &str, fetch: &dyn Fetch) -> Result<Option<Arc<[u8]>>> {
         let slot = self.inner.lock().unwrap().map.entry(url.to_string()).or_default().clone();
-        let mut got = slot.lock().unwrap();
+        // (A slot a panicking fetch left poisoned holds None still: fetched again.)
+        let mut got = slot.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(v) = &*got {
             return Ok(v.clone());
         }
