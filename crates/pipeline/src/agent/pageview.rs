@@ -172,7 +172,13 @@ impl PageView {
 
     /// A page asked: the reads go on (or start) for `ASKED_FOR_S`.
     pub fn touch(&self) {
-        self.asked.store(now_s(), Ordering::Relaxed);
+        self.touch_at(now_s());
+    }
+
+    /// A page asked at `at` (unix s): a test's clock, the same as its ticks', so an ask can't land
+    /// a second past the time the test reads it at.
+    fn touch_at(&self, at: u64) {
+        self.asked.store(at, Ordering::Relaxed);
     }
 
     /// Whether a page asked lately.
@@ -523,7 +529,7 @@ mod tests {
         fixture(d.path(), now);
         let pv = PageView::default();
         pv.set_inputs(inputs("1.2.3"));
-        pv.touch();
+        pv.touch_at(now);
         assert!(pv.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now));
         let a = pv.swarm().unwrap();
         assert_eq!(a["app"], "1.2.3");
@@ -550,7 +556,7 @@ mod tests {
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
-        pv.touch();
+        pv.touch_at(now);
         pv.tick(&src, now);
         let h = pv.history(0, 100).unwrap();
         let kinds: Vec<&str> = h["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
@@ -582,7 +588,7 @@ mod tests {
         lead.set_inputs(inputs("1.2.3"));
         member.set_inputs(inputs("1.2.3"));
         for pv in [&lead, &member] {
-            pv.touch();
+            pv.touch_at(now);
             pv.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now);
         }
         let strip = |mut a: Value| {
@@ -621,14 +627,14 @@ mod tests {
         assert!(!pv.tick(&src, now));
         assert_eq!(src.1.load(Ordering::Relaxed), 0);
         // Asked: read once, not again within `EVERY`; a minute after the last ask, not at all.
-        pv.touch();
+        pv.touch_at(now);
         assert!(pv.tick(&src, now) && !pv.tick(&src, now));
         let n = src.1.load(Ordering::Relaxed);
         pv.state.lock().unwrap().last = None;
         assert!(!pv.tick(&src, now + ASKED_FOR_S));
         assert_eq!(src.1.load(Ordering::Relaxed), n);
         // (The forecast's input read again only when its file changed.)
-        pv.touch();
+        pv.touch_at(now);
         assert!(pv.tick(&src, now));
         assert_eq!(src.1.load(Ordering::Relaxed) - n, n - 1, "all but the forecast's input");
     }
@@ -647,7 +653,7 @@ mod tests {
         let a = first.swarm().unwrap();
         let again = PageView::default();
         again.set_inputs(inputs(""));
-        again.touch();
+        again.touch_at(now);
         again.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now + 1);
         let b = again.swarm().unwrap();
         assert!(a["epoch"].as_str().is_some_and(|e| !e.is_empty()));
@@ -682,7 +688,7 @@ mod tests {
         fixture(d.path(), now);
         let pv = Arc::new(PageView::default());
         pv.set_inputs(inputs(""));
-        pv.touch();
+        pv.touch_at(now);
         pv.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now);
         // A second read, stuck on its first file: the answers go on from the snapshot meanwhile.
         let (go, wait) = std::sync::mpsc::channel::<()>();
@@ -707,7 +713,7 @@ mod tests {
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
-        pv.touch();
+        pv.touch_at(now);
         pv.tick(&src, now);
         let day = crate::pool::journal::day(now).unwrap();
         let line = serde_json::to_string(&Event { seq: 1, t: now - 5, ..Event::new("catalog") }).unwrap() + "\n";
@@ -728,7 +734,7 @@ mod tests {
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::default();
         pv.set_inputs(inputs(""));
-        pv.touch();
+        pv.touch_at(now);
         pv.tick(&src, now);
         let day = crate::pool::journal::day(now).unwrap();
         let p = d.path().join(format!("state/coord/history/{day}/m-a.jsonl"));
