@@ -2028,7 +2028,8 @@ mod tests {
         // ...not once the unit kept other samples (a new file); kept here, the copy is it, and the
         // earlier one goes (once no job holds it: the unit job lets its files go unit by unit).
         store::cachefile::release(&copy);
-        std::thread::sleep(std::time::Duration::from_millis(20)); // (sleep ok: the new file's time apart)
+        // (sleep ok: the new file's time apart)
+        std::thread::sleep(std::time::Duration::from_millis(20));
         keep(&[(1, 1), (5, 5), (9, 9), (9, 10)], 9.0, Some(&copies));
         assert_eq!(copied(), 1);
         assert_eq!(slice([0, 0, 10, 10], "e", Some(&copies)), (4, vec![9.0; 4]));
