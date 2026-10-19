@@ -650,8 +650,14 @@ impl Shared {
     fn nas_room_heaviest(&self, now: Instant, lead: bool) -> Option<(NasWeigher<'_>, u32, u32, usize, [u32; 2])> {
         let limits = if lead { self.nas_own.or(self.nas)? } else { self.nas? };
         let nw = NasWeigher { limits, book: self.book(), priors: Default::default() };
+        // (The switch `off`: the members' jobs aren't held, so the lead's own aren't held back by
+        // them either, only by its own (task #440: else a member's unheld jobs keep the lead idle).)
+        let members_held = self.nas.is_some();
         let (mut w, mut members, mut dl, mut most) = (0u32, 0u32, 0usize, [0u32; 2]);
         for lease in self.leases.all(now) {
+            if !members_held && lease.worker != self.lead_name {
+                continue;
+            }
             if let Work::Job { step, targets } = &lease.work {
                 let (jw, d) = Self::job_nas(&nw, step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
                 w = w.saturating_add(jw);
@@ -832,6 +838,12 @@ impl Shared {
                 n.and_then(|(_, c)| c).map(|c| left.saturating_sub(self.packed_cores(st, ts, c, share)))
             })
             .unwrap_or(0);
+        // (Its Mac's load from outside the pool (other processes: builds, tests): the cores its
+        // last minute's load average keeps busy (`Capacity::cores_free`) past the threads of the
+        // jobs it holds, less those the in-use share keeps already, come off the cores left
+        // (task #440): a Mac swamped by other work is granted no job beside the ones it holds.)
+        let outside = outside_cores(a, total.saturating_sub(cores));
+        cores = cores.saturating_sub(outside);
         // (The ask's memory and disk are its Mac's whole room for jobs, whatever it runs (the
         // memory its owner gives the build, the agent's `build_room`; its free disk): every job
         // it holds is taken off its memory here. Its disk is taken off already for the jobs its agent reserves for (its capacity's
@@ -905,6 +917,11 @@ impl Shared {
                 let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
                 why = Some(match short {
                     Some((st, 0)) => format!("{st} isn't measured: a cold start goes only to a Mac running nothing"),
+                    Some((st, c)) if outside > 0 => {
+                        format!(
+                            "cores: {cores} of {total} left ({outside} busy outside the pool), a job of {st} takes {c}"
+                        )
+                    }
                     Some((st, c)) => format!("cores: {cores} of {total} left, a job of {st} takes {c}"),
                     None => format!(
                         "nothing offered fits the room left ({} memory{}) or is free to take",
@@ -1175,6 +1192,13 @@ impl Shared {
             && a.disk_mb.is_none_or(|d| m.disk_mb.max(job_disk) <= d)
     }
 
+    /// Whether `worker`, as its last ask `x` said, can take no job now beside those it holds: it
+    /// holds one and its Mac's cores are all busy by its load average (`Capacity::cores_free`, the
+    /// pool's jobs and others' work alike; task #440): placement draws targets among the others.
+    fn swamped(&self, worker: &str, x: &Ask, now: Instant) -> bool {
+        x.cap.as_ref().is_some_and(|c| c.cores_free == 0) && !self.job_leases(worker, now).is_empty()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn placed_start(
         &self,
@@ -1209,10 +1233,12 @@ impl Shared {
                         && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)
                         && w.app.as_ref().is_none_or(|x| *x == self.app)
                 })
-                .filter(|(_, w)| {
-                    w.ask
-                        .as_ref()
-                        .is_some_and(|x| x.can.contains(&o.step) && self.may_take_measured(o, x, t, k, &m, held, now))
+                .filter(|(n, w)| {
+                    w.ask.as_ref().is_some_and(|x| {
+                        x.can.contains(&o.step)
+                            && self.may_take_measured(o, x, t, k, &m, held, now)
+                            && !self.swamped(n, x, now)
+                    })
                 })
                 .map(|(n, _)| (n.clone(), p.weight(n)))
                 .collect();
@@ -1467,6 +1493,18 @@ pub fn ask_cores(a: &Ask) -> u32 {
     let cap = a.cap.as_ref();
     let total = cap.map(|c| c.cores).filter(|&c| c > 0).unwrap_or(a.cores).max(1);
     total.saturating_sub(cap.filter(|c| c.in_use).map_or(0, |c| c.kept_cores)).max(1)
+}
+
+/// The cores `a`'s Mac has busy outside the pool: those its last minute's load average keeps busy
+/// (its capacity's `cores` less `cores_free`) past `ours`, the threads of the pool's jobs it holds,
+/// less the cores the in-use share keeps from its jobs already while its owner uses it
+/// (`ask_cores` takes those off). 0 for an ask without a capacity.
+pub fn outside_cores(a: &Ask, ours: u32) -> u32 {
+    a.cap.as_ref().map_or(0, |c| {
+        let busy = c.cores.saturating_sub(c.cores_free);
+        let kept = if c.in_use { c.kept_cores } else { 0 };
+        busy.saturating_sub(ours).saturating_sub(kept)
+    })
 }
 
 /// The most threads a packed job is granted, of the `cores` its Mac has for its jobs:
@@ -6326,7 +6364,7 @@ mod tests {
             mem_mb,
             cores: 8,
             disk_mb: Some(disk_mb),
-            cap: Some(Capacity { at: unix_now(), cores: 8, ..Default::default() }),
+            cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: 8, ..Default::default() }),
             ..Default::default()
         }
     }
@@ -6628,7 +6666,8 @@ mod tests {
     }
 
     /// The NAS budget holds the lead's own jobs whatever its switch says (`nas_own`, probed
-    /// always), the members' only while it's on.
+    /// always), the members' only while it's on; switched `off`, the lead's own by their own
+    /// weights alone.
     #[test]
     fn the_nas_budget_always_holds_the_leads_own() {
         let (_d, c, w, _clock) = every((0, 0));
@@ -6638,13 +6677,72 @@ mod tests {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (None, Some(limits));
         }
-        // A member's two halves of the NAS, the switch off: granted past the whole.
+        // A member's two halves of the NAS, the switch `off`: granted past the whole.
         let m = Ask { want: 3, ..every_ask("m1", "slope", 64_000, 100_000) };
         assert_eq!(all_granted(&w, &m).len(), 3, "the members unbudgeted");
-        assert!(c.nas_over());
-        // The lead's own: held, the pool past the whole.
-        let a = Ask { want: 2, ..every_ask("m4", "slope", 64_000, 100_000) };
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none());
+        assert_eq!(c.nas_shares().get("m1"), Some(&1500), "its share shown past the whole");
+        // The lead's own: held within the whole by its own jobs alone (task #440: the members'
+        // unheld jobs no longer keep it idle).
+        assert!(!c.nas_over(), "the lead's ramp counts its own");
+        let a = Ask { want: 3, ..every_ask("m4", "slope", 64_000, 100_000) };
+        assert_eq!(all_granted_own(&c, &a).len(), 2, "two halves of its own, no more");
+    }
+
+    fn all_granted_own(c: &Coordinator, a: &Ask) -> Vec<Vec<String>> {
+        let Some(mut g) = c.ask_own(a, &BTreeSet::new()) else { return Vec::new() };
+        let more = std::mem::take(&mut g.more);
+        std::iter::once(g)
+            .chain(more)
+            .map(|g| match g.work {
+                Granted::Job { targets, .. } => targets.into_iter().map(|t| t.0).collect(),
+                Granted::Task { .. } => Vec::new(),
+            })
+            .collect()
+    }
+
+    /// Task #440 (b44): the switch missing, the members' jobs are held to the NAS budget (a member
+    /// no longer reaches 248 % of it while the lead waits), and the lead's own then share it.
+    #[test]
+    fn a_missing_switch_holds_the_members_too() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(crate::budget::nas::read_switch(d.path()), Some(Some(Default::default())), "missing: on");
+        std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
+        std::fs::write(d.path().join(crate::budget::nas::SWITCH), "off\n").unwrap();
+        assert_eq!(crate::budget::nas::read_switch(d.path()), Some(None), "`off`: off");
+        let (_d, c, w, _clock) = every((0, 0));
+        heavy_slope(&c);
+        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+        }
+        let m = Ask { want: 6, ..every_ask("m1", "slope", 64_000, 100_000) };
+        assert_eq!(all_granted(&w, &m).len(), 2, "the member within the whole");
+        assert!(c.nas_shares().get("m1").is_some_and(|&s| s <= 1000));
+        let a = Ask { want: 3, ..every_ask("m4", "slope", 64_000, 100_000) };
+        assert!(all_granted_own(&c, &a).is_empty(), "the NAS full: the lead waits its turn");
+    }
+
+    /// Task #440 (b44: the M1's load ~280 from agents' builds outside the pool): a Mac whose load
+    /// average keeps its cores busy is granted no job beside those it holds, and the cores busy
+    /// outside the pool are said; one idle is packed as before.
+    #[test]
+    fn a_mac_busy_outside_the_pool_gets_fewer_jobs() {
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "slope", 6, Some(2));
+        let ask = |free: u32| Ask {
+            want: 4,
+            cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: free, ..Default::default() }),
+            ..every_ask("m1", "slope", 64_000, 100_000)
+        };
+        assert_eq!(all_granted(&w, &ask(0)).len(), 1, "swamped: its first job only");
+        let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
+        assert!(why.contains("busy outside the pool"), "{why}");
+        // (Its one job's two threads busy, four more by others: two cores left, one job more.)
+        assert_eq!(all_granted(&w, &ask(2)).len(), 1, "two cores free: one more");
+        let (_d, c, w, _clock) = every((0, 0));
+        packable(&c, "slope", 6, Some(2));
+        assert_eq!(all_granted(&w, &ask(8)).len(), 4, "idle: by its cores");
     }
 
     /// Task #396 follow-up (b38's stall): a pack job whose target took 0 s weighs its job's real
@@ -6896,13 +6994,16 @@ mod tests {
         assert!(why.contains("m1 runs an older app"), "{why}");
         assert!(!c.all_new(), "the lead's own never counts as old");
         // The member updated: its asks carry a capacity; packing on again.
-        let updated = Ask { cap: Some(Capacity { at: unix_now(), cores: 8, ..Default::default() }), ..old.clone() };
+        let updated = Ask {
+            cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: 8, ..Default::default() }),
+            ..old.clone()
+        };
         assert_eq!(all_granted(&w, &Ask { want: 2, ..updated.clone() }).len(), 2, "packing on for the member");
         assert!(c.all_new(), "every member on the new app");
         assert_eq!(own(&c, 2), 2, "packing on for the lead");
         // A capacity's limit read over the old field's.
         let capped = Ask {
-            cap: Some(Capacity { at: unix_now(), cores: 8, limit_mb: 20 << 10, ..Default::default() }),
+            cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: 8, limit_mb: 20 << 10, ..Default::default() }),
             limit_mb: None,
             ..updated
         };
@@ -6980,7 +7081,7 @@ mod tests {
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope", 6, Some(1));
         let ask = |disk: u64, leases: Vec<u64>| Ask {
-            cap: Some(Capacity { cores: 8, disk_mb: disk, leases, ..Default::default() }),
+            cap: Some(Capacity { cores: 8, cores_free: 8, disk_mb: disk, leases, ..Default::default() }),
             ..every_ask("m1", "slope", 64_000, disk)
         };
         let g1 = w.ask(&ask(250, vec![])).unwrap().unwrap();
@@ -7039,7 +7140,7 @@ mod tests {
         let ask = |disk: u64| Ask {
             want: 3,
             can: vec!["unit".into()],
-            cap: Some(Capacity { cores: 8, disk_mb: disk, ..Default::default() }),
+            cap: Some(Capacity { cores: 8, cores_free: 8, disk_mb: disk, ..Default::default() }),
             ..every_ask("m1", "unit", 64_000, disk)
         };
         let mut g = w.ask(&ask(20_000)).unwrap().unwrap();
@@ -7056,6 +7157,7 @@ mod tests {
         let here = |have: Option<u64>| Ask {
             cap: Some(Capacity {
                 cores: 8,
+                cores_free: 8,
                 disk_mb: 20_000,
                 caches: have.map(|h| ("DEM".to_string(), CacheHere { have_mb: h })).into_iter().collect(),
                 ..Default::default()

@@ -1,5 +1,5 @@
-//! The pool's NAS and network limits (docs/pool.md §7.7, task #243), behind the switch
-//! `state/pool/nas-budget` (`SWITCH`; off while missing or `off` in it). Packing lets more jobs run
+//! The pool's NAS and network limits (docs/pool.md §7.7, task #243), on unless the switch
+//! `state/pool/nas-budget` (`SWITCH`) says `off` (on while missing). Packing lets more jobs run
 //! at once, and the share takes 20 to 55 small-file creates a second: the lead's coordinator keeps
 //! the pool's running jobs' NAS weights together within what the NAS was measured to give
 //! (crate::coord's `pack`, `pick_every` and `pick_own`: the lead's own jobs too), as the Wikimedia
@@ -12,7 +12,7 @@
 //!   A job's targets run one after another: its weight is its heaviest target's.
 //! - **The limits** are measured, never typed: `probe` makes a few small files and one larger in a
 //!   folder of its own, reads the larger back past the cache, and removes them all. The coordinator
-//!   probes every `EVERY_S` while the switch is on, and takes the best of the last `KEEP_S`'s probes
+//!   probes every `EVERY_S`, whatever the switch says, and takes the best of the last `KEEP_S`'s probes
 //!   (`Probes`): a probe run while the build loads the NAS measures what's left, so the best is the
 //!   nearest to the whole.
 //! - **Downloads**: a job of a fetching step (crate::agent::steps::Kind::Fetch) counts one; the
@@ -43,11 +43,12 @@ pub struct Switch {
     pub downloads: Option<usize>,
 }
 
-/// The switch at `root` (None in it: off); None when it can't be read now.
+/// The switch at `root` (None in it: off; missing, on with no download cap); None when it can't
+/// be read now.
 pub fn read_switch(root: &Path) -> Option<Option<Switch>> {
     match std::fs::read_to_string(root.join(SWITCH)) {
         Ok(s) => Some(parse(&s)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Some(Switch::default())),
         Err(_) => None,
     }
 }
