@@ -515,6 +515,13 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   once, within 16 columns each way and not from the cells past 80° (the polar land); a buffer of
   50 km or more is drawn as discs at the pieces' points a thirty-second of the distance apart
   (within a twentieth of the distance).
+- **Snapping and the operations' watch:** the regions with water's operations snap with a growing
+  radius (i_overlay's `Precision::HIGH`, from a unit; the others' stay at a unit, so they're byte
+  for byte as before): with a fixed unit radius, cells whose edges ran nearly along each other
+  (Australian and Indonesian waters) split over and over for half an hour; snapping, those
+  subsets resolve in 11 s and 38 s. Every operation is watched: one past 30 s is said on stderr
+  (the region, the cell, its points), one past `SCENIC_REGIONS_OP_BUDGET_S` (300 s by default;
+  none measured over 30 s since) stops the check, naming the cell.
 - **The memory guard:** the check stops its process (exit 3, saying so) if its physical footprint
   (`sys::footprint`: compressed and swapped memory included) passes `SCENIC_REGIONS_MAX_MB` (half the
   Mac's memory by default), looked at every 50 ms; `scenic-build regions-check --max-mb` sets it for a scratch

@@ -32,8 +32,22 @@ pub struct Area {
 }
 
 fn solver() -> Solver {
-    // (No snapping past a unit, and one thread: the same input gives the same output everywhere.)
-    Solver { strategy: Strategy::Auto, precision: Precision::ABSOLUTE, multithreading: None }
+    // (No snapping past a unit, and one thread: the same input gives the same output everywhere.
+    // On a thread `snap_here` marked, the snapping radius grows each round instead (from a unit),
+    // so near-coincident edges settle: with a fixed unit radius, a cell of edges nearly along each
+    // other split over and over for minutes.)
+    let precision = if SNAP.with(|s| s.get()) { Precision::HIGH } else { Precision::ABSOLUTE };
+    Solver { strategy: Strategy::Auto, precision, multithreading: None }
+}
+
+thread_local! {
+    static SNAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This thread's operations snap with a growing radius (the regions with water's, cell by cell);
+/// the regions without water's stay exactly as they were.
+pub fn snap_here() {
+    SNAP.with(|s| s.set(true));
 }
 
 fn ip(p: Pt) -> IntPoint<i64> {
@@ -141,7 +155,7 @@ impl Area {
 
     fn op(&self, other: &Area, rule: OverlayRule) -> Area {
         let n = self.polys.iter().chain(&other.polys).flatten().map(Vec::len).sum();
-        seen(n);
+        let _op = Op::start(n);
         let mut o = Overlay::<i64>::new_custom(n, Default::default(), solver());
         for (a, t) in [(self, ShapeType::Subject), (other, ShapeType::Clip)] {
             for r in a.polys.iter().flatten() {
@@ -193,6 +207,84 @@ fn seen(n: usize) {
     PEAK.fetch_max(n, std::sync::atomic::Ordering::Relaxed);
 }
 
+// ---- The operations' watch ------------------------------------------------------------------------
+
+thread_local! {
+    /// What this thread is working on (a region and cell), for the watch's messages.
+    static LABEL: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// What the current thread's operations are for, in the watch's messages.
+pub fn set_label(s: String) {
+    LABEL.with(|l| *l.borrow_mut() = s);
+}
+
+/// Operations under way: (what for, since, points, said slow).
+type Running = std::collections::HashMap<u64, (String, std::time::Instant, usize, bool)>;
+static RUNNING: std::sync::Mutex<Option<Running>> = std::sync::Mutex::new(None);
+static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WATCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// An operation under way, while the watch is on (`watch`).
+struct Op(Option<u64>);
+
+impl Op {
+    fn start(n: usize) -> Op {
+        seen(n);
+        if !WATCHED.load(std::sync::atomic::Ordering::Relaxed) {
+            return Op(None);
+        }
+        let k = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let label = LABEL.with(|l| l.borrow().clone());
+        RUNNING
+            .lock()
+            .unwrap()
+            .get_or_insert_with(Default::default)
+            .insert(k, (label, std::time::Instant::now(), n, false));
+        Op(Some(k))
+    }
+}
+
+impl Drop for Op {
+    fn drop(&mut self) {
+        if let Some(k) = self.0 {
+            if let Some(m) = RUNNING.lock().unwrap().as_mut() {
+                m.remove(&k);
+            }
+        }
+    }
+}
+
+/// The watch on every overlay operation: one running past `say_s` seconds is said on stderr (what
+/// it's for, its points, its time); one past `budget_s` stops the process (exit 3), naming it, so a
+/// pathological cell fails loudly rather than hanging. Once per process.
+pub fn watch(say_s: u64, budget_s: u64) {
+    if WATCHED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    std::thread::Builder::new()
+        .name("overlay-watch".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            let mut g = RUNNING.lock().unwrap();
+            let Some(m) = g.as_mut() else { continue };
+            for (label, since, n, said) in m.values_mut() {
+                let s = since.elapsed().as_secs();
+                if s >= budget_s {
+                    eprintln!(
+                        "regions: an operation on {label} ({n} points) ran past its budget of {budget_s} s: stopped"
+                    );
+                    std::process::exit(3);
+                }
+                if s >= say_s && !*said {
+                    eprintln!("regions: slow operation on {label}: {n} points, {s} s so far");
+                    *said = true;
+                }
+            }
+        })
+        .ok();
+}
+
 /// `PEAK` read and set back to nothing.
 pub fn reset_peak() -> usize {
     PEAK.swap(0, std::sync::atomic::Ordering::Relaxed)
@@ -206,7 +298,7 @@ pub fn points(a: &Area) -> usize {
 /// The union of `areas` (canonical).
 pub fn union_all(areas: &[Area]) -> Area {
     let n = areas.iter().flat_map(|a| a.polys.iter().flatten()).map(Vec::len).sum();
-    seen(n);
+    let _op = Op::start(n);
     let mut o = Overlay::<i64>::new_custom(n, Default::default(), solver());
     for a in areas {
         for r in a.polys.iter().flatten() {

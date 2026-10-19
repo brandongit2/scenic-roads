@@ -587,6 +587,21 @@ struct Made {
 
 /// Every region with water resolved (those without, `resolve`'s, as they were): into `out`.
 pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome) {
+    // (On threads whose operations snap: `geom::snap_here`.)
+    let threads = std::env::var("SCENIC_REGIONS_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
+    match rayon::ThreadPoolBuilder::new().num_threads(threads).start_handler(|_| geom::snap_here()).build() {
+        Ok(pool) => pool.install(|| {
+            geom::snap_here();
+            resolve_in(folder, ctx, out)
+        }),
+        Err(_) => {
+            geom::snap_here();
+            resolve_in(folder, ctx, out)
+        }
+    }
+}
+
+fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome) {
     let rules = folder.rules.clone().unwrap_or_default();
     let ids: Vec<String> =
         folder.regions.iter().filter(|(_, (_, r))| r.has_water()).map(|(id, _)| id.clone()).collect();
@@ -1030,6 +1045,7 @@ fn make_land(
     let got: Vec<Result<(Cell, Area, Area), Problem>> = cells
         .into_par_iter()
         .map(|c| {
+            geom::set_label(format!("the land of {id}, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
             let o =
                 geom::union_all(&r.outline.iter().map(|p| eval(p, c, &env, r, path)).collect::<Result<Vec<_>, _>>()?);
             let o =
@@ -1096,6 +1112,7 @@ fn make_water(
     let got: Vec<Result<(Cell, Area), Problem>> = cells
         .into_par_iter()
         .map(|c| {
+            geom::set_label(format!("the water of {id}, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
             let w = geom::union_all(&r.water.iter().map(|p| eval(p, c, &env, r, path)).collect::<Result<Vec<_>, _>>()?);
             if w.is_empty() {
                 return Ok((c, w));
@@ -1283,6 +1300,7 @@ fn cells_pass(
     let done: Vec<One> = cells
         .par_iter()
         .map(|&c| {
+            geom::set_label(format!("the cover check, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
             let bb = geom::box_area(cell_box(c));
             let mut pieces: Vec<(String, Area)> =
                 all.iter().filter_map(|(id, t)| t.cells.get(&c).map(|a| (id.clone(), a.clone()))).collect();

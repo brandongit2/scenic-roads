@@ -74,6 +74,7 @@ impl Regions {
     /// passes `max_mb()` while it resolves: a check never takes the Mac down.
     pub fn resolve(&self, v: &Version) -> Result<(resolve::Folder, resolve::Outcome)> {
         crate::sys::footprint_guard("the regions' check", max_mb());
+        geom::watch(30, op_budget_s());
         let folder = resolve::Folder::read(v.paths.iter().cloned(), &|p| Ok((v.read)(p)?.to_vec()))?;
         let empty = BTreeMap::new();
         let c = self.ctx.as_ref();
@@ -113,6 +114,12 @@ pub fn max_mb() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| crate::sys::memsize().map_or(4_000, |b| b / 2 / 1_000_000))
+}
+
+/// The most seconds one overlay operation of the check may take (`geom::watch`):
+/// `SCENIC_REGIONS_OP_BUDGET_S`, else 300.
+pub fn op_budget_s() -> u64 {
+    std::env::var("SCENIC_REGIONS_OP_BUDGET_S").ok().and_then(|v| v.parse().ok()).unwrap_or(300)
 }
 
 /// The current pass in the records, and its outline set's and extract's content names.
