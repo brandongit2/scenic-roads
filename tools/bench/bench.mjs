@@ -169,7 +169,8 @@ try {
       const moved = cam !== B.lastCam;
       B.lastCam = cam;
       let q = null;
-      if (tq && !B.qBusy) { q = gl.createQuery(); gl.beginQuery(tq.TIME_ELAPSED_EXT, q); B.qBusy = true; }
+      // (--set instrumentation running timer queries of its own sets window.__noFrameQuery: one query at a time)
+      if (tq && !B.qBusy && !window.__noFrameQuery) { q = gl.createQuery(); gl.beginQuery(tq.TIME_ELAPSED_EXT, q); B.qBusy = true; }
       const r = orig(t);
       if (q) { gl.endQuery(tq.TIME_ELAPSED_EXT); B.qBusy = false; queries.push([q, moved]); }
       B.renders.push([a, performance.now() - a, moved]);
@@ -248,7 +249,7 @@ try {
       }
       return inside;
     };
-    const c0 = __clearance; window.__clearance = () => { const c = c0() ?? {}; const m = __app.map.getCenter(); c.covered = __covered(m.lng, m.lat); return c; };`, 120);
+    const c0 = __clearance; window.__clearance = () => { const c = c0() ?? {}; const m = __app.map.getCenter(); c.covered = __covered(m.lng, m.lat); c.center = [+m.lng.toFixed(3), +m.lat.toFixed(3)]; return c; };`, 120);
   load.clearance = await evaluate('return window.__clearance()');
   const outside = (c, where) => {
     if (!c || args.anywhere || c.covered !== false) return;
@@ -285,13 +286,23 @@ try {
   const cx = W * 0.55, cy = H * 0.55;
   const wheel = (dx, dy, modifiers = 0, x = cx, y = cy) =>
     send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: dx, deltaY: dy, modifiers, pointerType: 'mouse' });
+  // The pan's speed below zoom 10: halved a zoom level out (a flick that crosses a city at 14
+  // crossed a continent at 6, and the centre left the map's coverage).
+  const zoom0 = await evaluate('return window.__app.map.getZoom()');
+  const panK = Math.min(1, 2 ** (zoom0 - 10));
+  // The view's centre on screen (the map's padding, e.g. a side panel, moves it off the middle):
+  // the pinch and the orbit act there, so the centre stays put and the view stays on the map.
+  const [mx, my] = await evaluate('const m = window.__app.map, p = m.project(m.getCenter()), r = m.getCanvas().getBoundingClientRect(); return [r.left + p.x, r.top + p.y]');
   const gestures = {
-    // Two-finger pan: a steady drag, reversing halfway so the view returns near its start.
-    pan: (t) => { const s = t < SECS / 2 ? 1 : -1; return wheel(9 * s, 5 * s); },
-    // Pinch (ctrl + wheel): zoom in 2.5 levels, then out again.
-    pinch: (t) => wheel(0, t < SECS / 2 ? -3.4 : 3.4, 2),
-    // ⌥ + two-finger drag: rotate and tilt.
-    orbit: (t) => wheel(t < SECS / 2 ? 6 : -6, t < SECS / 4 || t > (3 * SECS) / 4 ? -2 : 2, 1),
+    // Two-finger pan: a steady drag, reversing every 1.25 s (so the view stays within ~60 km of its
+    // start at zoom 11 and comes back; an island or a coast keeps the centre on the map).
+    pan: (t) => { const s = Math.floor(t / 1.25) % 2 ? -1 : 1; return wheel(9 * s * panK, 5 * s * panK); },
+    // Pinch (ctrl + wheel) at the view's centre (so the centre stays put): zoom out 2.5 levels, then
+    // in again (out first: the camera only rises, so a tilted city view stays over CLEAR_M; in
+    // first, Tokyo's at 16.5 was 156 m over the ground).
+    pinch: (t) => wheel(0, t < SECS / 2 ? 3.4 : -3.4, 2, mx, my),
+    // ⌥ + two-finger drag at the centre: rotate and tilt.
+    orbit: (t) => wheel(t < SECS / 2 ? 6 : -6, t < SECS / 4 || t > (3 * SECS) / 4 ? -2 : 2, 1, mx, my),
     // Hovering over roads and places: mouse moves sweeping the view.
     hover: (t) => send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: W * (0.3 + 0.4 * ((t * 0.37) % 1)), y: H * (0.3 + 0.4 * ((t * 0.23) % 1)) }),
     // No input: the same view redrawn every frame (render cost alone: CPU and GPU).
@@ -380,7 +391,10 @@ try {
         topFrames: B.loaf.filter(([s]) => s >= B.t0 && s <= tEnd).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([, d, , sc]) => [Math.round(d), ...sc]),
         settleMs: Math.round(settleMs),
         // The least clearance along the run (sampled every 15th frame): under the camera, sight lines.
-        clearance: B.clear.length ? { under: Math.min(...B.clear.map((c) => c.under ?? Infinity)), over: Math.min(...B.clear.map((c) => c.over ?? Infinity)), covered: B.clear.every((c) => c.covered !== false), n: B.clear.length } : null,
+        clearance: B.clear.length ? { under: Math.min(...B.clear.map((c) => c.under ?? Infinity)), over: Math.min(...B.clear.map((c) => c.over ?? Infinity)), covered: B.clear.every((c) => c.covered !== false), n: B.clear.length,
+          // (where the run took the view, and where it first left the map: to place a view that strays)
+          end: (() => { const c = map.getCenter(); return [+c.lng.toFixed(3), +c.lat.toFixed(3), +map.getZoom().toFixed(2)]; })(),
+          outsideAt: B.clear.find((c) => c.covered === false)?.center ?? null } : null,
       };
     `, 120);
     if (args.profile) {
