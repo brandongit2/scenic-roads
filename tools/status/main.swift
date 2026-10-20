@@ -1130,10 +1130,13 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     /// set on each opening and again on each switch: the popover's and the content's appearance
     /// (the web view's prefers-color-scheme follows the content's, so the page re-styles itself
     /// live), and the popover's own glass (one NSGlassEffectView under the arrow and the body
-    /// alike) in its clear style (the regular one is near opaque over a window), tinted with the
-    /// window's colour of that appearance, resolved now, so the dim text stays readable over a
-    /// bright window behind. (Before, both were set at opening only: a switch while open, or the
-    /// glass's tint kept from the other appearance, left a grey veil over a light page.)
+    /// alike) in its regular style, tinted with the window's colour of that appearance, resolved
+    /// now, so the dim text stays readable over a bright window behind. (Before, both were set at
+    /// opening only: a switch while open, or the glass's tint kept from the other appearance, left
+    /// a grey veil over a light page.)
+    /// (Regular, not clear (#485): the popover puts its glass back to regular on each resize, so
+    /// regular was the look nearly always; a clear set after the last resize (a light/dark switch
+    /// while open, a kept page reopened at its height) stayed, and showed the backdrop unblurred.)
     func applyAppearance() {
         let a = NSApp.effectiveAppearance
         popover.appearance = a
@@ -1143,7 +1146,7 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         a.performAsCurrentDrawingAppearance { tint = NSColor(cgColor: NSColor.windowBackgroundColor.cgColor) ?? tint }
         for case let g as NSGlassEffectView in popover.contentViewController?.view.window?.contentView?.superview?.subviews ?? [] {
             g.appearance = a
-            g.style = .clear
+            g.style = .regular
             g.tintColor = tint.withAlphaComponent(0.6)
         }
         root.needsDisplay = true
