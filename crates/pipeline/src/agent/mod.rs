@@ -996,6 +996,21 @@ pub struct Notice {
     pub why: String,
 }
 
+/// The waiting lines for targets the lead's NAS budget has held back (`waits`: step, target,
+/// minutes; coord::Coordinator::nas_waits), once each: those already in `waiting` (a plan's lines,
+/// kept and said again between plans) replaced (task #444: each was listed twice).
+fn nas_wait_lines(waiting: &mut Vec<Waiting>, waits: Vec<(String, String, u64)>) {
+    const WHY: &str = "for room in the pool's NAS budget (docs/pool.md §7.7)";
+    waiting.retain(|w| !w.why.ends_with(WHY));
+    for (step, t, min) in waits {
+        waiting.push(Waiting {
+            what: format!("{step} {t}"),
+            why: format!("waiting {min} min {WHY}"),
+            step: Some(step),
+        });
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Waiting {
     pub what: String,
@@ -4227,13 +4242,7 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building".into(), why: why.clone() });
         }
         // (The lead's coordinator: targets its NAS budget has held back over half an hour.)
-        for (step, t, min) in self.coord.as_ref().map(|c| c.nas_waits()).unwrap_or_default() {
-            waiting.push(Waiting {
-                step: Some(step.clone()),
-                what: format!("{step} {t}"),
-                why: format!("waiting {min} min for room in the pool's NAS budget (docs/pool.md §7.7)"),
-            });
-        }
+        nas_wait_lines(&mut waiting, self.coord.as_ref().map(|c| c.nas_waits()).unwrap_or_default());
         // Leading: this Mac's own agent asks its coordinator for work as a member asks the lead's
         // (`lead_grants`), each loop a slot is free. (A trim, a clear or a freeing toward the room
         // target under way: jobs start meanwhile, what they use held, store::cachefile.)
@@ -10822,6 +10831,19 @@ fn test_agent(o: Options) -> Result<Agent> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Task #444: a NAS wait said again between plans (the plan's lines kept) is listed once, with
+    /// its minutes now; gone once granted.
+    #[test]
+    fn nas_wait_lines_once_each() {
+        let mut w = vec![Waiting { what: "other".into(), why: "x".into(), step: None }];
+        nas_wait_lines(&mut w, vec![("depth-lo".into(), "3/1/3".into(), 45)]);
+        nas_wait_lines(&mut w, vec![("depth-lo".into(), "3/1/3".into(), 48)]);
+        assert_eq!(w.len(), 2, "{w:?}");
+        assert!(w[1].why.starts_with("waiting 48 min") && w[1].what == "depth-lo 3/1/3", "{w:?}");
+        nas_wait_lines(&mut w, Vec::new());
+        assert_eq!(w.len(), 1, "granted: gone");
+    }
     use super::*;
 
     /// Task #392 review: what a capacity says this Mac holds of the shared caches is read off its

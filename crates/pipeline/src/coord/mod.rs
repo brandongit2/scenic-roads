@@ -672,6 +672,40 @@ impl Shared {
         Some((nw, w, members, dl, most))
     }
 
+    /// The room the NAS budget holds for a target aged in it (task #444): of the targets held back
+    /// for the budget alone for `OWN_AGE` or more and passed over in the last two minutes, the one
+    /// first held back: (step, target, its weight). While it's held, no other job weighing anything
+    /// starts unless it leaves that room (`nas_reserve_ok`): the leased jobs end, and it fits.
+    fn nas_reserved(&self, nw: &NasWeigher, now: Instant) -> Option<(String, String, u32)> {
+        let g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+        g.iter()
+            .filter(|(_, (since, last))| {
+                now.saturating_duration_since(*since) >= crate::budget::nas::OWN_AGE
+                    && now.saturating_duration_since(*last) < Duration::from_secs(120)
+            })
+            .min_by_key(|(k, (since, _))| (*since, (*k).clone()))
+            .map(|((st, t), _)| (st.clone(), t.clone(), nw.weight(st, t)))
+    }
+
+    /// Whether a job of `step` over `targets` of weight `w`, beside leased jobs weighing `running`,
+    /// leaves the room held for an aged target (`nas_reserved`): it weighs nothing, nothing's
+    /// held, it's the one held for, or both fit within the whole.
+    fn nas_reserve_ok(
+        &self,
+        nw: &NasWeigher,
+        now: Instant,
+        step: &str,
+        targets: &[String],
+        running: u32,
+        w: u32,
+    ) -> bool {
+        w == 0
+            || self.nas_reserved(nw, now).is_none_or(|(st, t, rw)| {
+                (st == step && targets.contains(&t))
+                    || running.saturating_add(w).saturating_add(rw) <= crate::budget::nas::WHOLE
+            })
+    }
+
     /// Notes `target` of `step` passed over for the NAS budget alone now.
     fn nas_wait(&self, step: &str, target: &str, now: Instant) {
         let mut g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
@@ -1034,7 +1068,8 @@ impl Shared {
                 return false;
             }
             let own = running.saturating_sub(members);
-            let fits = crate::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited);
+            let fits = crate::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited)
+                && (alone || self.nas_reserve_ok(&nw, now, &o.step, &ts, running, w));
             if !fits && !alone {
                 for t in &ts {
                     self.nas_wait(&o.step, t, now);
@@ -1102,6 +1137,10 @@ impl Shared {
         let nas_fits = |t: &str| {
             nas.as_ref().is_none_or(|(nw, running, members, _, most)| {
                 let w = nw.weight(&o.step, t);
+                // (Room held for a target aged in the budget left to it: `nas_reserved`.)
+                if !self.nas_reserve_ok(nw, now, &o.step, &[t.to_string()], *running, w) {
+                    return false;
+                }
                 if lead {
                     crate::budget::nas::Limits::fits_own(*running, w)
                 } else {
@@ -7397,6 +7436,76 @@ mod tests {
         assert!(take(&c).is_empty(), "not yet aged");
         clock.advance(Duration::from_secs(1));
         assert_eq!(take(&c).len(), 1, "aged: goes beside the members' halves");
+    }
+
+    /// Task #444: a member's job weighing less than the whole but more than the room the leased
+    /// jobs leave (depth-lo's) isn't starved by a stream of smaller jobs refilling the budget: until
+    /// `OWN_AGE` the smaller ones go; once aged, its room is held (no smaller job that would take it
+    /// starts, a member's or the lead's), and it goes as the leased jobs end, never past the whole.
+    #[test]
+    fn a_members_heavy_job_reserves_room_after_waiting() {
+        let (_d, c, _w, clock) = every((0, 0));
+        heavy_slope(&c);
+        let weigh = |t: &str, bytes: u64| {
+            let sizes = [("threads".to_string(), 1), ("bytes".to_string(), bytes)];
+            let cost = Cost {
+                peak_mb: 2000,
+                secs: 600,
+                worker: None,
+                v: cost_version("slope"),
+                sizes: sizes.into(),
+                ..Default::default()
+            };
+            c.add_costs_by(&[(cost_key("slope", t), cost)], "m1");
+        };
+        // (6/1/1 500; 6/1/2 to 6/1/5 200 each; 6/1/6 600.)
+        weigh("6/1/6", 36_000_000_000);
+        for i in 2..=5 {
+            weigh(&format!("6/1/{i}"), 12_000_000_000);
+        }
+        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let offer = {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+            s.offers[0].clone()
+        };
+        let one = |i: usize| Offer { targets: vec![offer.targets[i].clone()], ..offer.clone() };
+        let lease = |c: &Coordinator, w: &str, i: usize| {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            let ts = vec![(offer.targets[i].0.clone(), String::new())];
+            s.leases.grant(w, Work::Job { step: "slope".into(), targets: ts }, now)
+        };
+        let end = |c: &Coordinator, id| {
+            c.shared.lock().unwrap().leases.cancel(id);
+        };
+        let take = |c: &Coordinator, w: &str, i: usize| {
+            let s = c.shared.lock().unwrap();
+            let now = s.now();
+            s.pick_every(&one(i), &every_ask(w, "slope", 64_000, 100_000), now)
+        };
+        let big = lease(&c, "m1", 0);
+        let mut small = lease(&c, "m2", 1);
+        assert!(take(&c, "m3", 5).is_empty(), "500 + 200 + 600: waits");
+        // (A stream of smaller jobs: each one ending, the next goes in its place before it's aged.)
+        for i in [2, 3] {
+            clock.advance(crate::budget::nas::OWN_AGE / 3);
+            end(&c, small);
+            assert!(take(&c, "m3", 5).is_empty(), "500 + 600: waits");
+            assert_eq!(take(&c, "m4", i).len(), 1, "not aged: the smaller one goes");
+            small = lease(&c, "m4", i);
+        }
+        clock.advance(crate::budget::nas::OWN_AGE / 3);
+        assert!(take(&c, "m3", 5).is_empty(), "aged, but 500 + 200 + 600 > 1000");
+        end(&c, small);
+        assert!(take(&c, "m3", 5).is_empty(), "500 + 600 > 1000: waits for 6/1/1 to end");
+        assert!(take(&c, "m4", 4).is_empty(), "aged: its room held, no smaller job takes it");
+        assert!(take(&c, "m2", 1).is_empty(), "nor another member's");
+        let lead = c.shared.lock().unwrap().lead_name.clone();
+        assert!(take(&c, &lead, 4).is_empty(), "nor the lead's");
+        end(&c, big);
+        assert_eq!(take(&c, "m3", 5).len(), 1, "6/1/1 ended: it goes");
+        assert_eq!(take(&c, "m4", 4).len(), 1, "600 + 200 would fit beside it: the smaller one too");
     }
 
     /// Placement on: of two members asking whose room fits a target, it's drawn to one by their
