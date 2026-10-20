@@ -112,7 +112,8 @@ records. `ferries.ts` merges blocks by id; in-view kilometres are measured on th
   tiles and blocks are cached by bytes (192 MB); the named-MVT cache holds up to 6,000 tiles.
 - markdata and ovdata are read as typed section views: paged from the NAS, mapped from the mirror.
   A tile's markdata is its member of the bundle, found by the bundle's pack index and read in place;
-  the views' caches and the blocks' ETags name it by the bundle and the tile.
+  the views' caches and the blocks' ETags name it by the bundle and the tile. So a change to any one tile
+  gives the bundle a new name, which invalidates every tile's cache entries and ETags.
 - The client loads z6 blocks from zoom 6 and thinned tiles below, held as typed arrays (least
   recently used dropped past 256 MB); `/api/marks/view` is asked by the worker and `extra` joins
   its kind's points; specks below zoom 6 are pseudo-points weighted by count; filtered kinds' cells

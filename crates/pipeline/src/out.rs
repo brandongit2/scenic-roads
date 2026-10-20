@@ -3,9 +3,8 @@
 //!
 //! A file is first written locally (this Mac's SSD), hashed, then copied to `<name>.tmp` on
 //! the NAS, read back past the client's cache and checked against its hash, and renamed into place
-//! (`store::naming::write_atomic`). A file the manifest already names under the same logical name
-//! isn't looked at again (`put_file`); one already there otherwise is reused and touched, so GC sees it as
-//! in use. `verify` can also check uploads on the NAS itself (SHA-256 over SSH, run by hand).
+//! (`store::naming::write_atomic`). A file already there is reused and touched, so GC sees it as
+//! in use (one the manifest names under the same logical name with one look: `put_file`). `verify` can also check uploads on the NAS itself (SHA-256 over SSH, run by hand).
 //!
 //! Several steps may run at once on the lead (the agent's job and a manual one): each records
 //! its own changes and merges them into the manifest on disk under this Mac's lock (`BuildLock`)
@@ -329,13 +328,27 @@ impl Out {
         let size = std::fs::metadata(local)?.len();
         let (h, sha) = hashes_of(local)?;
         let name = store::naming::content_name(logical, &h, ext);
-        if self.manifest.get(logical) == Some(&name) {
-            // The records name this very file under it already: it's on the NAS, and GC never
-            // takes a file the manifest names (nor did it any moment since: the name stays), so
-            // nothing to copy, check or touch there (a step of many small outputs, most of them
-            // unchanged, saves their round trips: heritage-sites' slices).
+        if self.changes.get(logical) == Some(&Some(name.clone())) {
+            // Landed under it by this very run already: nothing to look at again.
             std::fs::remove_file(local).ok();
             return Ok(self.landed(Landed { logical: logical.to_string(), name, sha: None, size }));
+        }
+        if self.manifest.get(logical) == Some(&name) {
+            // The records name this very file under it: one look (task #449: heritage-sites'
+            // slices, hundreds of small files nearly all unchanged). There at its size: touched
+            // (GC's age rule: a snapshot's name may have been dropped since) and taken; missing,
+            // of another size or not touchable: put again below.
+            let dest = self.root.join(&name);
+            let here = std::fs::metadata(&dest).is_ok_and(|m| m.len() == size)
+                && std::fs::File::options()
+                    .write(true)
+                    .open(&dest)
+                    .and_then(|f| f.set_modified(std::time::SystemTime::now()))
+                    .is_ok();
+            if here {
+                std::fs::remove_file(local).ok();
+                return Ok(self.landed(Landed { logical: logical.to_string(), name, sha: None, size }));
+            }
         }
         let landed = upload_hashed(&self.root, logical, ext, local, (h, sha), size)?;
         if landed.sha.is_some() {
@@ -944,28 +957,60 @@ mod tests {
         assert_eq!(upload_deadline(1 << 30).as_secs(), 60 + 512);
     }
 
-    /// Task #449: a file the records already name under its logical name is taken as it is, with no
-    /// look at the NAS (no copy, check or touch); the same bytes under another name, or other bytes
-    /// under this one, are uploaded as before.
+    /// Task #449: a file the records already name under its logical name is looked at once: there
+    /// at its size, touched and taken; missing or of another size, put back; one this run landed,
+    /// not looked at again. Other bytes, or another name, are uploaded as before.
     #[test]
-    fn a_file_the_records_name_already_is_not_looked_at_again() {
+    fn a_file_the_records_name_is_checked_once_and_put_back_if_missing() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
+        let l = "work/heritage/d/pos/6-1-1";
         let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
-        let a = out.put_bytes("work/heritage/d/pos/6-1-1", "json", b"[[1,2]]").unwrap();
+        let a = out.put_bytes(l, "json", b"[[1,2]]").unwrap();
         out.save().unwrap();
-        // (Its NAS copy gone: a put that looked would copy it again.)
+        let open = || Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        // There: touched.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
+        std::fs::File::options().write(true).open(root.join(&a)).unwrap().set_modified(old).unwrap();
+        let mut out = open();
+        assert_eq!(out.put_bytes(l, "json", b"[[1,2]]").unwrap(), a);
+        let t = std::fs::metadata(root.join(&a)).unwrap().modified().unwrap();
+        assert!(t.elapsed().unwrap() < std::time::Duration::from_secs(600), "touched");
+        // Gone from the NAS (a GC after an old snapshot): put back.
         std::fs::remove_file(root.join(&a)).unwrap();
-        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
-        assert_eq!(out.put_bytes("work/heritage/d/pos/6-1-1", "json", b"[[1,2]]").unwrap(), a);
-        assert!(!root.join(&a).exists(), "not copied again");
-        out.save().unwrap();
-        assert_eq!(read_manifest(&root).unwrap()["work/heritage/d/pos/6-1-1"], a);
+        let mut out = open();
+        assert_eq!(out.put_bytes(l, "json", b"[[1,2]]").unwrap(), a);
+        assert_eq!(std::fs::read(root.join(&a)).unwrap(), b"[[1,2]]");
+        // Landed by this run (before its save): not looked at again (its copy gone meanwhile stays gone).
+        std::fs::remove_file(root.join(&a)).unwrap();
+        assert_eq!(out.put_bytes(l, "json", b"[[1,2]]").unwrap(), a);
+        assert!(!root.join(&a).exists());
         // Other bytes, or another name: uploaded.
-        let b = out.put_bytes("work/heritage/d/pos/6-1-1", "json", b"[[3,4]]").unwrap();
+        let b = out.put_bytes(l, "json", b"[[3,4]]").unwrap();
         assert!(root.join(&b).exists());
         let c = out.put_bytes("work/heritage/d/pos/6-1-2", "json", b"[[1,2]]").unwrap();
         assert!(root.join(&c).exists());
+    }
+
+    /// Task #449: a file the records name, of another size on the NAS (cut short), is not taken: the
+    /// put fails as any upload over a damaged content-named file does, never naming it as good.
+    #[test]
+    fn a_file_the_records_name_of_another_size_is_not_taken() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        let l = "work/heritage/d/pos/6-1-1";
+        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let a = out.put_bytes(l, "json", b"[[1,2],[3,4]]").unwrap();
+        out.save().unwrap();
+        std::fs::write(root.join(&a), b"[[1,2]").unwrap();
+        let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        let got = out.put_bytes(l, "json", b"[[1,2],[3,4]]");
+        match got {
+            // Put back whole.
+            Ok(n) => assert_eq!((n, std::fs::read(root.join(&a)).unwrap()), (a, b"[[1,2],[3,4]]".to_vec())),
+            // Or refused: not taken as it is.
+            Err(_) => assert_eq!(std::fs::read(root.join(&a)).unwrap(), b"[[1,2]"),
+        }
     }
 
     /// This Mac's unmerged hand-offs laid over the snapshot (docs/pool.md §7.4): their names read

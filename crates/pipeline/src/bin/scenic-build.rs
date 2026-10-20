@@ -1979,7 +1979,7 @@ fn catalog(
     std::fs::create_dir_all(&dir)?;
     let n = store::catalog::next_n(&dir)?;
     let cat = serde_json::json!({
-        "fmt": 1,
+        "fmt": store::catalog::FMT,
         "n": n,
         "created": utc(now as i64),
         // The published app that made it (its folder's name), or "development".

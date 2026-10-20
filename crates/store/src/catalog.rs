@@ -14,8 +14,10 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// The catalog format version written.
-pub const FMT: u32 = 1;
+/// The catalog format version written. (2, task #449: `markdata` may name one bundle of every
+/// tile, docs/formats.md "Bundles", which an app reading only 1 can't read: it keeps its last
+/// catalog of format 1 until it updates.)
+pub const FMT: u32 = 2;
 /// The oldest version read (docs/building.md §2).
 pub const MIN_FMT: u32 = 1;
 
@@ -808,6 +810,10 @@ mod tests {
         fs::write(d.join("5.json.zst"), b"not zstd").unwrap();
         fs::write(d.join("6.json.zst"), sample(2).encode().unwrap()).unwrap();
         // And a catalog in a format this app doesn't read.
+        // (Task #449: format 1, before markdata bundles, still read.)
+        let mut one = sample(1);
+        one.fmt = 1;
+        assert_eq!(Catalog::decode(&one.encode().unwrap()).unwrap().fmt, 1);
         let mut future = sample(7);
         future.fmt = FMT + 1;
         fs::write(d.join("7.json.zst"), future.encode().unwrap()).unwrap();

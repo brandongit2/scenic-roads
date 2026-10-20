@@ -442,7 +442,7 @@ that decodes and parses, else the next.
 
 ```json
 {
-  "fmt": 1, "n": 7, "created": "2026-10-03T04:05:06Z", "app": "<published app version, or development>",
+  "fmt": 2, "n": 7, "created": "2026-10-03T04:05:06Z", "app": "<published app version, or development>",
   "files": {"<logical>": {"file": "<content name>", "size": 123, "fmt": 1}},
   "units": ["6/32/21"],
   "layers": {
@@ -465,6 +465,8 @@ that decodes and parses, else the next.
 ```
 
 - `files` holds every file the catalog references.
+- `fmt` 2 (task #449): `markdata` may name the bundle of every tile ("Bundles"). Readers take 1 and 2;
+  an app that reads only 1 passes a catalog of 2 over and keeps the last it can read until it updates.
 - `credits`: `pipeline::rules::CREDITS` plus the inputs' accepted descriptions
   (`pipeline::inputs::credits`, docs/inputs.md §4.8; a description replaces the table's entry of its
   `what`), those whose areas meet the coverage + 20 km or a built unit's extent. `areas` are w, s, e,

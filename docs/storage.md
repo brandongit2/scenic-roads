@@ -33,9 +33,10 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
 **Immutable, content-named files.**
 - Every built file is `<logical>.<hash16>.<ext>`, never rewritten. A write goes to `<name>.tmp`, is
   read back and checked against its hash, then renamed. An unchanged file keeps its name, so a
-  rebuild uploads only what changed; one already there is reused and touched (GC's age rule), and
-  one the manifest already names under the same logical name isn't looked at on the NAS at all
-  (`Out::put_file`: heritage-sites' slices, hundreds of small files nearly all unchanged, task #449).
+  rebuild uploads only what changed; one already there is reused and touched (GC's age rule). One
+  the manifest already names under the same logical name takes one look (`Out::put_file`, task
+  #449: heritage-sites' slices, hundreds of small files nearly all unchanged): there at its size, it
+  is touched and taken; missing or of another size, put again.
 - **Uploads beside the work** (`Out::put_file_later`): slope and terrain pieces, map tiles (`pack`)
   and the 3D buildings' tiles upload a target's files on a thread of their own while the job works
   on its next target, and a unit its grids and base pack while it makes its road values. A file is
