@@ -164,6 +164,39 @@ struct Open {
     uses: HashMap<PathBuf, u64>,
 }
 
+/// How many grids a reader closes at once as it goes: a close is a round trip on the NAS and holds
+/// nothing else up (3/3/2's assembly, its grids closed: 15.6 s one at a time, 3.9 s 8 at once,
+/// 1.2 s 32 at once).
+const CLOSES_AT_ONCE: usize = 32;
+
+/// Its grids closed `CLOSES_AT_ONCE` at once as it goes: a reader can hold 2,000.
+impl Drop for Reader {
+    fn drop(&mut self) {
+        let files: Vec<Arc<Tiff>> = {
+            let mut o = self.open.lock().unwrap_or_else(|e| e.into_inner());
+            o.uses.clear();
+            o.files.drain().map(|(_, t)| t).collect()
+        };
+        close_all(files, CLOSES_AT_ONCE);
+    }
+}
+
+/// `files` dropped (closed, where theirs is the last handle) by `at_once` threads.
+fn close_all<T: Send>(files: Vec<T>, at_once: usize) {
+    if files.len() < 2 {
+        return;
+    }
+    let files = Mutex::new(files);
+    std::thread::scope(|s| {
+        for _ in 0..at_once.max(1) {
+            s.spawn(|| loop {
+                let Some(t) = files.lock().unwrap_or_else(|e| e.into_inner()).pop() else { return };
+                drop(t);
+            });
+        }
+    });
+}
+
 impl Default for Reader {
     fn default() -> Self {
         Reader::keeping(open_grids_limit())
@@ -785,6 +818,28 @@ fn sample_grid_on(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A reader's grids all closed as it's dropped, several at once, every one exactly once.
+    #[test]
+    fn a_reader_closes_every_grid_at_once() {
+        let live = Arc::new(());
+        for n in [0, 1, 2, 7, 100] {
+            let files: Vec<Arc<()>> = (0..n).map(|_| live.clone()).collect();
+            assert_eq!(Arc::strong_count(&live), n + 1);
+            close_all(files, GRIDS_AT_ONCE);
+            assert_eq!(Arc::strong_count(&live), 1, "{n}");
+        }
+        // (At once: the closes overlap, each a round trip on the NAS.)
+        struct Slow;
+        impl Drop for Slow {
+            fn drop(&mut self) {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+        let t = std::time::Instant::now();
+        close_all((0..16).map(|_| Slow).collect(), 8);
+        assert!(t.elapsed() < std::time::Duration::from_millis(400), "{:?}", t.elapsed());
+    }
 
     /// A depth grid file of zoom `zoom` at global pixel (`c`, `r`), `w` × `h`, with overviews of
     /// 2× and 4×, values `f(col, row)` (global pixels), NaN where it says.
