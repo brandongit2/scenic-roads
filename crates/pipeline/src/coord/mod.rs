@@ -336,9 +336,10 @@ pub struct Shared {
     /// The NAS's limits as probed whatever the switch says: the lead's own jobs are always held to
     /// the budget (`nas_room`). None: not probed yet.
     pub nas_own: Option<crate::budget::nas::Limits>,
-    /// Whether the last probe failed (the limits, if any, the earlier probes'): the lead's slots'
-    /// ramp holds and its stretch starts again (crate::agent's `tend_ramp`).
-    pub nas_failed: bool,
+    /// The probes failed in a row, the last first (0: the last landed): at `NAS_FAILED_RUN` or more
+    /// the lead's slots' ramp holds and its stretch starts again (crate::agent's `tend_ramp`); one
+    /// alone (a hiccup every few hours, probes being half an hour apart) is neither.
+    pub nas_failures: u32,
     /// This Mac's member name, its own jobs' leases held under it (`Coordinator::ask_own`): the NAS
     /// budget lets a member's job go past the whole while the lead's own alone hold weight.
     pub lead_name: String,
@@ -1697,6 +1698,8 @@ pub struct CacheHere {
 /// times (s): a quarter of an hour (docs/pool.md §7.7, batch). Its first target is taken whatever
 /// its time.
 pub const JOB_S: u64 = 15 * 60;
+/// The NAS probes failed in a row from which they count as failing (`Coordinator::nas_failing`).
+pub const NAS_FAILED_RUN: u32 = 2;
 /// The most targets a job so offered takes, whatever their times (a step measured at no time).
 pub const JOB_MAX: usize = 256;
 
@@ -1993,7 +1996,7 @@ impl Coordinator {
             placement: None,
             nas: None,
             nas_own: None,
-            nas_failed: false,
+            nas_failures: 0,
             lead_name: me.to_string(),
             nas_waits: Default::default(),
             refused: BTreeMap::new(),
@@ -2266,15 +2269,15 @@ impl Coordinator {
         self.shared.lock().unwrap().nas_own.is_some()
     }
 
-    /// Whether the last NAS probe failed (`Shared::nas_failed`): the ramp holds, and its stretch
-    /// starts again.
-    pub fn nas_failed(&self) -> bool {
-        self.shared.lock().unwrap().nas_failed
+    /// Whether the NAS probes are failing: `NAS_FAILED_RUN` or more in a row (`Shared::nas_failures`):
+    /// the ramp holds, and its stretch starts again. One failed alone isn't failing.
+    pub fn nas_failing(&self) -> bool {
+        self.shared.lock().unwrap().nas_failures >= NAS_FAILED_RUN
     }
 
-    /// Tests: the last probe failed, or landed.
-    pub fn set_nas_failed(&self, failed: bool) {
-        self.shared.lock().unwrap().nas_failed = failed;
+    /// Tests: the probes failed `n` in a row (0: the last landed).
+    pub fn set_nas_failures(&self, n: u32) {
+        self.shared.lock().unwrap().nas_failures = n;
     }
 
     /// Whether the pool's leased jobs' NAS weights together pass the whole (crate::budget::nas::WHOLE)
@@ -3161,8 +3164,10 @@ fn nas_prober(
                         let own = probes.limits(sw.as_ref().and_then(|w| w.downloads));
                         let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                         s.nas_own = own;
-                        if let Some(f) = failed {
-                            s.nas_failed = f;
+                        match failed {
+                            Some(true) => s.nas_failures = s.nas_failures.saturating_add(1),
+                            Some(false) => s.nas_failures = 0,
+                            None => {}
                         }
                         s.nas = sw.and_then(|w| probes.limits(w.downloads));
                     }

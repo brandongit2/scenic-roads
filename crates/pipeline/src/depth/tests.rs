@@ -442,20 +442,26 @@ fn a_z14_tiles_water_is_read_once_for_its_finer_descendants() {
     use super::compose::Block;
     use std::collections::BTreeMap;
     use std::sync::Mutex;
-    struct Counting(Mutex<BTreeMap<(u8, u32, u32), usize>>);
+    struct Counting(Mutex<BTreeMap<(u8, u32, u32), usize>>, Mutex<Vec<(u8, u32, u32)>>);
     impl WaterSource for Counting {
         fn polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
             Fixture.polys(z, x, y)
         }
         fn depth_polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
             *self.0.lock().unwrap().entry((z, x, y)).or_default() += 1;
+            self.1.lock().unwrap().push((z, x, y));
             Fixture.depth_polys(z, x, y)
         }
         fn pin(&self) -> String {
             "counting".into()
         }
     }
-    let src = Counting(Mutex::new(BTreeMap::new()));
+    let counting = || Counting(Mutex::new(BTreeMap::new()), Mutex::new(Vec::new()));
+    let bytes_of = |t: (u8, u32, u32)| {
+        let ps = Fixture.depth_polys(t.0, t.1, t.2).unwrap();
+        ps.iter().map(|p| 48 + p.rings.iter().map(|r| 24 + r.len() * 16).sum::<usize>()).sum::<usize>()
+    };
+    let src = counting();
     let mut wc = WaterCache::default();
     // (The z14 tiles a block and its margin of a tile touch.)
     let touched = |b: Block| -> std::collections::BTreeSet<(u32, u32)> {
@@ -490,21 +496,26 @@ fn a_z14_tiles_water_is_read_once_for_its_finer_descendants() {
     once(&src.0.lock().unwrap(), &expect);
     // Bounded to a byte: one z14 tile's polygons kept at a time, so a block's tiles read theirs
     // again as its rows come back to them; never more than the bound past that one tile.
-    let src = Counting(Mutex::new(BTreeMap::new()));
+    let src = counting();
     let mut wc = WaterCache::with_bound(1);
-    let b = Block { z: 16, tx0: x0 + 504, ty0: y0 + 8, nx: 8, ny: 8 };
+    // (Blocks in the sea: every tile has polygons.)
+    let b = Block { z: 16, tx0: x0 + 256, ty0: y0 + 8, nx: 8, ny: 8 };
     wc.block(&src, b).unwrap();
     let reads: usize = src.0.lock().unwrap().values().sum();
     assert!(reads > touched(b).len(), "{reads} reads of {} tiles", touched(b).len());
-    assert_eq!(
-        wc.polys_bytes(),
-        {
-            let p = src.0.lock().unwrap().keys().last().copied().unwrap();
-            let ps = Fixture.depth_polys(p.0, p.1, p.2).unwrap();
-            ps.iter().map(|p| 48 + p.rings.iter().map(|r| 24 + r.len() * 16).sum::<usize>()).sum::<usize>()
-        },
-        "the last tile's alone"
-    );
+    let last = *src.1.lock().unwrap().last().unwrap();
+    assert!(bytes_of(last) > 0);
+    assert_eq!(wc.polys_bytes(), bytes_of(last), "the last tile's alone");
+    // A block farther down the tile first, then one above it: the tile read last has the smallest
+    // key, and the ones after it in order go too (the eviction never stops at the new one).
+    let src = counting();
+    let mut wc = WaterCache::with_bound(1);
+    for ty in [y0 + 24, y0 + 8] {
+        wc.block(&src, Block { z: 16, tx0: x0 + 256, ty0: ty, nx: 8, ny: 8 }).unwrap();
+    }
+    let last = *src.1.lock().unwrap().last().unwrap();
+    assert!(bytes_of(last) > 0 && last.2 < (y0 + 24) >> 2, "{last:?}");
+    assert_eq!(wc.polys_bytes(), bytes_of(last), "the last tile's alone, the rows below it gone");
 }
 
 /// A measure on real data, reading the NAS alone: `SCENIC_DEPTH_WATER="<root> 6/x/y <zoom> <blocks>

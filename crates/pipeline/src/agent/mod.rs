@@ -131,7 +131,8 @@ const UPDATE_STALL: Duration = Duration::from_secs(30 * 60);
 pub(crate) const RAMP_START: usize = 2;
 pub(crate) const RAMP_CLEAN_S: u64 = 6 * 3600;
 /// Why the lead's slots are held at `RAMP_START` (`RampView::held`): only this holds them.
-pub(crate) const RAMP_HELD_WHY: &str = "no NAS limits yet (the probe missing or failing)";
+pub(crate) const RAMP_HELD_WHY: &str =
+    "no NAS limits yet (no probe landed), or the probes failing (two or more in a row)";
 
 /// The lead's slots' ramp as the status shows it (`Status::ramp`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -3175,8 +3176,9 @@ impl Agent {
     /// coordinator's first probe lands, each start) the slots are held at `RAMP_START`, but the
     /// stretch goes on: a hold isn't trouble (task #433: every restart into a published app, a dozen
     /// a day, began the hold a moment before the probe landed and started the six hours again, so
-    /// the lead never grew past two slots). A probe failing (`Coordinator::nas_failed`, the last
-    /// one) holds them too and is trouble. Not the pool's leased jobs' NAS weight past the whole
+    /// the lead never grew past two slots). The probes failing (`Coordinator::nas_failing`: two or
+    /// more in a row; one alone, a hiccup every few hours, is neither a hold nor trouble) holds
+    /// them too and is trouble. Not the pool's leased jobs' NAS weight past the whole
     /// (`Coordinator::nas_over`): the budget grants that by its own rules (the lead's own jobs alone,
     /// an aged job weighing the whole, §7.7) and holds the lead's own jobs at grant whatever the
     /// slots, so it says nothing about them.
@@ -3187,10 +3189,10 @@ impl Agent {
         let Some(c) = self.coord.as_ref() else { return };
         let now = now_s();
         let most = job_slots(mac_cores() as usize);
-        let failed = c.nas_failed();
-        let held = !c.nas_known() || failed;
-        let trouble = if failed {
-            Some("the NAS probe failing")
+        let failing = c.nas_failing();
+        let held = !c.nas_known() || failing;
+        let trouble = if failing {
+            Some("the NAS probes failing (two or more in a row)")
         } else if self.pool_hung.is_some() {
             Some("the pool's step stalled")
         } else {
@@ -11994,14 +11996,25 @@ mod tests {
         assert!(!a.ramp_held);
         assert_eq!(a.mem.ramp.slots, RAMP_START + 2, "grown after the hold: the stretch was clean through it");
         assert_eq!(a.job_slots(), (RAMP_START + 2).min(most));
-        // The probe failing (the limits known from before): held, and trouble: the stretch starts
-        // again, kept; as a probe lands again, the stretch starts then.
-        a.coord.as_ref().unwrap().set_nas_failed(true);
+        // One probe failing (the limits known from before): neither a hold nor trouble, nothing
+        // rewritten (a hiccup every few hours would keep the lead at two for good).
+        let since = a.mem.ramp.clean_since;
+        std::fs::remove_file(home.join("state.json")).unwrap();
+        a.coord.as_ref().unwrap().set_nas_failures(1);
+        a.tend_ramp();
+        assert!(!a.ramp_held && a.ramp_trouble.is_none());
+        assert_eq!(a.job_slots(), (RAMP_START + 2).min(most));
+        assert_eq!(a.mem.ramp.clean_since, since);
+        assert!(!home.join("state.json").exists());
+        a.mem.ramp.clean_since = since - 100;
+        // Two in a row: held, and trouble: the stretch starts again, kept; as a probe lands again,
+        // the stretch starts then.
+        a.coord.as_ref().unwrap().set_nas_failures(2);
         a.tend_ramp();
         assert!(a.ramp_held && a.ramp_trouble.as_deref().is_some_and(|w| w.contains("failing")));
         assert_eq!(a.job_slots(), RAMP_START.min(most));
         assert!(near_now(a.mem.ramp.clean_since) && near_now(kept(&home).clean_since));
-        a.coord.as_ref().unwrap().set_nas_failed(false);
+        a.coord.as_ref().unwrap().set_nas_failures(0);
         a.tend_ramp();
         assert!(!a.ramp_held && a.ramp_trouble.is_none());
         assert_eq!(a.job_slots(), (RAMP_START + 2).min(most));

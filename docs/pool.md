@@ -297,8 +297,10 @@ its slots (the stretch's peak: idle time doesn't count), with no memory guard st
 (the pool's step taken for hung); either starts the stretch again. While the NAS's limits aren't
 known (no probe landed yet: `Coordinator::nas_known`), its slots are held at 2 whatever it
 reached, and the stretch goes on without growing (a hold isn't trouble: a restart's moment before
-the probe lands doesn't start the six hours again). The last probe failing (`Coordinator::nas_failed`,
-the limits the earlier probes' meanwhile) holds them too and is trouble: the stretch starts again.
+the probe lands doesn't start the six hours again). The probes failing, two or more in a row
+(`Coordinator::nas_failing`, the limits the earlier probes' meanwhile), holds them too and is
+trouble: the stretch starts again; one failed alone (probes are half an hour apart: a hiccup every
+few hours) is neither.
 The pool's leased jobs' NAS weights past the whole (`Coordinator::nas_over`) aren't trouble: the
 budget grants that by its own rules (§7.7) and holds the lead's own jobs at grant whatever the
 slots. They grow up to its cores' `job_slots`. The count reached, the stretch's start and its peak are kept in the
@@ -306,9 +308,9 @@ lead's state (`agent/state.json`, `ramp`), saved when trouble begins (the stretc
 then, said once in the log), when it ends (the stretch starting then) and at each step up; while
 trouble lasts, or the slots are held, nothing is rewritten. `scenic status` and the build page show
 the ramp (`agent::RampView`): the slots now of the most its cores allow, those reached, then
-`held: …` (the NAS's limits not known, or the probe failing), `not clean: …` (a stall, or the
-probe failing: growth stops, the slots stay), or since when it's clean and when it grows if its
-slots keep busy. There's no switch.
+`held: …` (the NAS's limits not known, or the probes failing), `not clean: …` (a stall, or the
+probes failing two or more in a row: growth stops, the slots stay), or since when it's clean and
+when it grows if its slots keep busy. There's no switch.
 
  While a slot is free and
 nothing holds more back (the build's pause, a job stopping at a safe point, the memory guard's

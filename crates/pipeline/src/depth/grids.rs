@@ -789,11 +789,26 @@ pub(crate) mod tests {
     /// A depth grid file of zoom `zoom` at global pixel (`c`, `r`), `w` × `h`, with overviews of
     /// 2× and 4×, values `f(col, row)` (global pixels), NaN where it says.
     pub(crate) fn grid_file(path: &Path, zoom: u8, c: i64, r: i64, w: u32, h: u32, f: &dyn Fn(i64, i64) -> f32) {
+        grid_file_levels(path, zoom, c, r, w, h, 4, f);
+    }
+
+    /// `grid_file` with overviews down to `coarsest` cells (1: none; 4: the usual two).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn grid_file_levels(
+        path: &Path,
+        zoom: u8,
+        c: i64,
+        r: i64,
+        w: u32,
+        h: u32,
+        coarsest: u32,
+        f: &dyn Fn(i64, i64) -> f32,
+    ) {
         let p = px(zoom);
         let gt = [-HALF + c as f64 * p, p, 0.0, HALF - r as f64 * p, 0.0, -p];
         let mut levels = Vec::new();
         let mut f_ = 1u32;
-        while f_ <= 4 {
+        while f_ <= coarsest {
             let (lw, lh) = (w.div_ceil(f_), h.div_ceil(f_));
             let mut v = vec![f32::NAN; (lw * lh) as usize];
             for j in 0..lh {
@@ -1057,6 +1072,20 @@ pub(crate) mod tests {
             }
         }
         assert!(lo > 0 && hi > 0, "{lo} {hi}");
+        // A zoom file with fewer overviews than its grid: the window that reads the grid's 4-cell
+        // overview fails, saying so (one reading the full image is fine).
+        let zp = d.path().join("g.short.zoom.tif");
+        grid_file_levels(&zp, zoom, c + 3, r + 1, 256, 128, 2, &|_, _| 12.0);
+        let s = source(vec![Grid {
+            bbox: bbox(zoom, c + 3, r + 1, 256, 128),
+            zoom,
+            file: d.path().join("g.tif"),
+            zoom_file: Some(zp),
+            low_file: None,
+        }]);
+        let e = sample(&rd, &s, 8, c >> 4, r >> 4, 18, 10).unwrap_err();
+        assert!(format!("{e:#}").contains("lacks its grid's overview"), "{e:#}");
+        assert!(sample(&rd, &s, 12, c, r, 40, 40).unwrap().is_some(), "the full image: fine");
     }
 
     /// Task #438: a reader keeps at most its share of grids open (a z3 tile met thousands of

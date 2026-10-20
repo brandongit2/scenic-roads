@@ -132,14 +132,13 @@ impl WaterCache {
                 let bytes = polys_bytes(&p);
                 self.polys.insert(key, (p.clone(), bytes));
                 self.polys_bytes += bytes;
-                // (Past the bound: the rows farthest up go, this tile's own last of all.)
-                while self.polys_bytes > self.bound && self.polys.len() > 1 {
-                    let Some((k, (_, b))) = self.polys.pop_first() else { break };
-                    if k == key {
-                        self.polys.insert(k, (p.clone(), b));
-                        break;
+                // (Past the bound: the others go, the rows farthest up first, until it fits; this
+                // tile's own stays whatever the bound.)
+                while self.polys_bytes > self.bound {
+                    let Some(k) = self.polys.keys().find(|k| **k != key).copied() else { break };
+                    if let Some((_, b)) = self.polys.remove(&k) {
+                        self.polys_bytes -= b;
                     }
-                    self.polys_bytes -= b;
                 }
                 p
             }
