@@ -306,7 +306,9 @@ case ${1:-} in
   --remote-drop) remote_drop $2 ;;
   --drop)
     [[ -n ${2:-} ]] || exit 2
-    ssh -o ConnectTimeout=5 -o BatchMode=yes $host zsh -s -- --remote-drop $2 < $self ;;
+    # (On the M4 itself, which has no ssh alias for itself, the folder is dropped here.)
+    if [[ -d ~/scenic-check ]]; then remote_drop $2
+    else ssh -o ConnectTimeout=5 -o BatchMode=yes $host zsh -s -- --remote-drop $2 < $self; fi ;;
   *)
     (( $# == 3 )) || { print "usage: remote-tests.sh <key> <source dir> <command> | --drop <key>"; exit 2; }
     local_main "$@"; exit $? ;;
