@@ -156,7 +156,7 @@ zsh tools/app/remote-tests.sh publish $snap $suite > $tests_log 2>&1 || tests_ok
 cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
 # (Only the final result counts: when the M4's run ended without one and the suite ran again here,
 # remote-tests.sh marked where the rerun starts.)
-from=$(grep -n -- '^--- remote result discarded, local rerun ---$' $tests_log | tail -1 | cut -d: -f1)
+from=$(grep -n -- '^--- remote result discarded, local rerun ---$' $tests_log | tail -1 | cut -d: -f1 || true)
 final() { tail -n +${from:-1} $tests_log; }
 final | grep -E '^ *Summary ' || true
 if (( tests_ok != 0 )); then
