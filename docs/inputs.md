@@ -621,7 +621,7 @@ All errors; ids `rg-<check>.<hash16>`.
 | `rg-shape` | a GeoJSON missing, not a (Multi)Polygon, or invalid |
 | `rg-line` | a line under two points, ways that don't join, a cut line crossing itself |
 | `rg-cut` | a cut line ending inside a piece |
-| `rg-ref` | a `region:` or `line:` naming nothing |
+| `rg-ref` | a `region:`, `land:` or `line:` naming nothing (in `water` too) |
 | `rg-loop` | a loop of `region:` references |
 | `rg-empty` | a result with no area |
 | `rg-pin` | no OSM pin, or one that isn't a date |

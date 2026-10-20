@@ -544,6 +544,22 @@ fn a_region_without_water_naming_one_with_it_is_held() {
     assert!(!out.resolved.contains_key("old") && out.resolved.contains_key("far"));
 }
 
+/// A region with water whose water names a region the folder hasn't (a coast in a nearest-coast
+/// split) is held, never resolved as if that coast were empty.
+#[test]
+fn water_naming_no_region_is_held() {
+    let w = world();
+    let out = run(&w, &[PINS, ("a.toml", A), ("isl.toml", ISL), ("slice.toml", SLICE)]);
+    assert!(
+        out.problems
+            .iter()
+            .any(|p| p.check == "rg-ref" && p.message.contains("land:b") && p.message.contains("names no region")),
+        "{:?}",
+        out.problems
+    );
+    assert!(!out.resolved.contains_key("a"));
+}
+
 /// With `cover = "earth"`: a region's piece of water under 50 km², touching none of its land and
 /// lying across a 2° cells' edge, joins the region it shares its longest edge with, whole.
 #[test]

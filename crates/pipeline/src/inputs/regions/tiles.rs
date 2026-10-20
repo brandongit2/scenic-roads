@@ -1041,6 +1041,18 @@ fn env_for<'a>(
         .partition(|(k, _)| k.starts_with("region:") || k.starts_with("land:") || k.starts_with("group:"));
     trace(&format!("{id}: its parts gathered"));
     env.leaves = tiled_leaves(rest);
+    // (A `region:` or `land:` naming no region of the folder is an error, never read as empty.)
+    let mut missing: Vec<String> = r
+        .parts_of(water)
+        .into_iter()
+        .filter(|p| matches!(p, Part::Region(d) | Part::Land(d) if !folder.regions.contains_key(d)))
+        .map(|p| p.to_string())
+        .collect();
+    missing.sort();
+    missing.dedup();
+    if !missing.is_empty() {
+        return Err(vec![problem("rg-ref", r, path, format!("{id}: {} names no region", missing.join(", ")))]);
+    }
     for k in theirs.keys() {
         let src = if let Some(d) = k.strip_prefix("region:") {
             Src::Refs(vec![d.to_string()], water)
