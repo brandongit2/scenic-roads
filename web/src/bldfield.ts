@@ -1054,9 +1054,10 @@ export class FieldLayer implements CustomLayerInterface {
   /** The terrain's tiles in view and whether each has loaded (a tile's elevations sampled before its
    * DEM tile loaded read 0 there: sampled again once it has). */
   private terrainKey() {
-    const t = (this.map as unknown as { terrain?: { tileManager?: { _inViewTiles?: { getAllTiles?: () => { state?: string; tileID: { key: string } }[] } } } | null }).terrain;
+    const t = (this.map as unknown as { terrain?: { exaggeration?: number; tileManager?: { _inViewTiles?: { getAllTiles?: () => { state?: string; tileID: { key: string } }[] } } } | null }).terrain;
     const ids = t?.tileManager?._inViewTiles?.getAllTiles?.()?.map((x) => `${x.tileID.key}${x.state === 'loaded' ? '' : '?'}`).sort().join(',') ?? '';
-    return `${!!t}|${ids}|${this.map.getTerrain()?.exaggeration ?? 0}`;
+    // (The live Terrain's exaggeration: main.ts's rise eases it while the options stay put.)
+    return `${!!t}|${ids}|${t?.exaggeration ?? 0}`;
   }
 
   /** The field's loading for the status line (tasks.ts), from the last frame's cover: its tiles

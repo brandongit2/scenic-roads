@@ -203,25 +203,28 @@ async function main() {
   };
   // At start the ground lies flat until the terrain's tiles in view are in, then its height eases up
   // (RISE_MS), the pivot following it each frame (camera fixed): no jump when the heights land.
-  // The exaggeration is set on the Terrain itself (setTerrain would rebuild it every frame); a
-  // setTerrain meanwhile (settings) replaces that Terrain and ends the rise.
+  // The exaggeration is set on the Terrain itself (setTerrain would rebuild it every frame; FORK.md
+  // "The app's reads and writes"). A setTerrain before the rise has finished (settings) builds a new
+  // Terrain at full height: riseTerrain is called again for it and carries on from where it was.
   const RISE_MS = 700;
+  let riseF = -1; // the rise's progress, 0–1; -1 before it starts, 1 once done
   const riseTerrain = () => {
     const terrain = map.terrain;
-    if (!terrain) return;
-    terrain.exaggeration = 0;
+    if (!terrain || riseF >= 1) return;
+    const ease = (f: number) => store.s.terrain.exaggeration * (1 - (1 - f) ** 3);
+    terrain.exaggeration = ease(Math.max(0, riseF));
     const ready = () => {
       if (map.terrain !== terrain) return map.off('sourcedata', ready);
       if (!map.getSource('dem') || !map.isSourceLoaded('dem')) return;
       map.off('sourcedata', ready);
-      const t0 = performance.now();
+      const t0 = performance.now() - Math.max(0, riseF) * RISE_MS;
       const step = () => {
         if (map.terrain !== terrain) return;
-        const f = Math.min(1, (performance.now() - t0) / RISE_MS);
-        terrain.exaggeration = store.s.terrain.exaggeration * (1 - (1 - f) ** 3);
+        riseF = Math.min(1, (performance.now() - t0) / RISE_MS);
+        terrain.exaggeration = ease(riseF);
         if (!driving) cam3d.relevel(map);
         map.triggerRepaint();
-        if (f < 1) requestAnimationFrame(step);
+        if (riseF < 1) requestAnimationFrame(step);
       };
       requestAnimationFrame(step);
     };
@@ -275,7 +278,6 @@ async function main() {
   };
   // Depth precision on the globe (see cam3d.tuneDepth): before every frame the camera moved for.
   map.on('move', () => cam3d.tuneDepth(map));
-  map.on('load', () => cam3d.tuneDepth(map));
   // The camera stays a few metres above the 3D buildings' roofs, as above the ground.
   cam3d.setRoofs((ll) => roofAt(map, ll));
   // (and the near plane clear of the tallest of them, read again once the map settles: tuneDepth)
@@ -2049,6 +2051,7 @@ async function main() {
         }
         lastExaggeration = s.terrain.on ? s.terrain.exaggeration : 0;
         applyTerrain(map, s.terrain);
+        if (s.terrain.on) riseTerrain(); // (unless it has finished)
         applyLabelOpacity(map, s.labelOpacity, overlayLabelScale(s.poiOpacity));
       }
       // Label sizes lay the labels out again: at most every 150 ms while a slider is dragged.
@@ -2247,6 +2250,8 @@ async function main() {
     applyLayers();
     applyTerrain(map, store.s.terrain);
     if (store.s.terrain.on) riseTerrain();
+    // (MapLibre's 'load' came with the empty style, and the opening view's moves before this.)
+    cam3d.tuneDepth(map);
     applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize);
     applyLand(store.s.land);
     applyWater(map, store.s.water, coastInput, store.s.layers.water);

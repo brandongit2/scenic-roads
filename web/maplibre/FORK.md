@@ -38,6 +38,14 @@ The app compiles this source with its own code; there is no separate build or `d
 - `test/scenic/demo.html?case=custom|lines|water|rasterwater` shows the features on the app's
   terrain.
 
+## The app's reads and writes
+
+Besides the changes below, the app reaches into internals that aren't API (listed in
+`web/package.json`'s note too). Among them: `web/src/main.ts`'s terrain rise at start writes
+`map.terrain.exaggeration` (the `Terrain`'s field) each frame, as `setTerrain` would build a new
+`Terrain`; `map.getTerrain()` keeps the options' value meanwhile, so readers that must follow the
+height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
+
 ## What we changed
 
 ### Rendering
