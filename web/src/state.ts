@@ -524,6 +524,10 @@ export interface AppState {
   lineWeights: LineWeights;
   /** Opacity of the roads layer (every display type), 0.1..1. */
   roadOpacity: number;
+  /** Line widths with distance in tilted views (roads/layer.ts): strength 0 (the per-zoom style
+   * curve) .. 1 (true perspective); cap: widest near the camera, × the width at the view centre;
+   * fade: far lines thinned further by (distance ratio)^fade, so they fade through coverage. */
+  roadPersp: RoadPersp;
   /** Opacity of the boundary lines (countries, provinces & states, counties), 0..1. */
   boundaryOpacity: number;
   routeGlow: boolean;
@@ -598,6 +602,13 @@ export const WEIGHT_RANGE: [number, number] = [0.25, 3];
 const clampWeight = (v: number) => Math.min(WEIGHT_RANGE[1], Math.max(WEIGHT_RANGE[0], v));
 /** A kind of line's weight in effect: the global weight times its own. */
 export const lineWeight = (s: AppState, kind: LineKind) => s.lineWeights.global * s.lineWeights[kind];
+/** Line widths with distance (AppState.roadPersp). */
+export type RoadPersp = { strength: number; cap: number; fade: number };
+export const DEFAULT_PERSP: RoadPersp = { strength: 1, cap: 3, fade: 0.3 };
+/** Slider limits: [min, max] of each. */
+export const PERSP_RANGE = { strength: [0, 1], cap: [1, 8], fade: [0, 1] } as const;
+const clampPersp = (p: RoadPersp): RoadPersp => Object.fromEntries((['strength', 'cap', 'fade'] as const)
+  .map((k) => [k, Math.min(PERSP_RANGE[k][1], Math.max(PERSP_RANGE[k][0], p[k]))])) as RoadPersp;
 /** Road widths at weight 1 (roads/layer.ts WIDTHS × this). */
 export const ROAD_WEIGHT = 0.5;
 
@@ -650,6 +661,7 @@ export const defaults: AppState = {
   toll: { free: true, toll: true },
   lineWeights: { global: 1, roads: 1.5, rail: 0.5, ferries: 0.5, borders: 1, rivers: 1, outlines: 1 },
   roadOpacity: 1,
+  roadPersp: { ...DEFAULT_PERSP },
   boundaryOpacity: 1,
   routeGlow: false,
   lowFade: 0.8,
@@ -904,6 +916,8 @@ export function toHash(s: AppState, buildings: boolean): string {
   const lw = (l: LineWeights) => [l.global, ...LINE_KINDS.map(([k]) => l[k])].map((v) => +v.toFixed(2)).join(',');
   if (lw(s.lineWeights) !== lw(defaults.lineWeights)) p.set('lw', lw(s.lineWeights));
   if (s.roadOpacity !== defaults.roadOpacity) p.set('ro', s.roadOpacity.toFixed(2));
+  const rp = (q: RoadPersp) => [q.strength, q.cap, q.fade].map((v) => +v.toFixed(2)).join(',');
+  if (rp(s.roadPersp) !== rp(defaults.roadPersp)) p.set('wp', rp(s.roadPersp));
   if (s.boundaryOpacity !== defaults.boundaryOpacity) p.set('bo', s.boundaryOpacity.toFixed(2));
   if (s.routeGlow) p.set('rg', '1');
   const l = s.layers;
@@ -1175,6 +1189,8 @@ export function fromHash(hash: string, buildings = true): AppState {
   }
   const ro = Number(p.get('ro'));
   if (p.get('ro') && ro >= 0.1 && ro <= 1) s.roadOpacity = ro;
+  const rpv = p.get('wp')?.split(',').map(Number);
+  if (rpv && rpv.length === 3 && rpv.every(Number.isFinite)) s.roadPersp = clampPersp({ strength: rpv[0], cap: rpv[1], fade: rpv[2] });
   const bo = Number(p.get('bo'));
   if (p.get('bo') && bo >= 0 && bo <= 1) s.boundaryOpacity = bo;
   s.routeGlow = p.get('rg') === '1';
@@ -1362,6 +1378,7 @@ export function fromSaved(o: unknown): AppState {
     if (fw) s.lineWeights.ferries = clampWeight(fw);
   }
   for (const k of ['global', ...LINE_KINDS.map(([k]) => k)] as const) s.lineWeights[k] = clampWeight(s.lineWeights[k]);
+  s.roadPersp = clampPersp(s.roadPersp);
   if (Array.isArray(rest.heritageOff)) s.heritageOff = rest.heritageOff.filter((k): k is string => typeof k === 'string');
   else if (Array.isArray(rest.heritageLevels) && rest.heritageLevels.length === 5) s.heritageOff = offFromLevels(rest.heritageLevels.map(Boolean));
   // Saved settings of the other display types and modes.

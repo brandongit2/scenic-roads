@@ -4,7 +4,7 @@ import { FERRY_GROUPS, FERRY_GROUP_COLOURS } from '../ferry';
 import { HERITAGE_GROUPS, HERITAGE_TIERS, POI_STYLE } from '../basemap';
 import { Dist, type ViewStats } from '../roads/stats';
 import { STOP_FILTERS, axisPos, filtersOf, type StopFilter } from '../stopfilters';
-import { DEFAULT_DENSITY, DENSITY_KINDS, FOG_RANGE, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, STOP_SIZE_RANGE, TIES_RANGE, WEIGHT_RANGE, defaults, type AppState, type RailState, type ContourLook, type FogLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
+import { DEFAULT_DENSITY, DENSITY_KINDS, FOG_RANGE, LABEL_KINDS, LINE_KINDS, OVERLAYS, PERSP_RANGE, SPACING_RANGE, STOP_SIZE_RANGE, TIES_RANGE, WEIGHT_RANGE, defaults, type AppState, type RailState, type ContourLook, type FogLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
 import { TINT_PALETTES, TINT_VARS, contourInterval } from '../terrain';
 import * as prefs from '../prefs';
 import { fmt, h } from './dom';
@@ -472,6 +472,25 @@ export class LayersCard {
       label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: defaults.roadOpacity, title: 'Opacity of the roads, in every display type',
       get: () => S().roadOpacity, set: (roadOpacity) => this.store.set({ roadOpacity }), fmt: pct,
     });
+    // Widths with distance in tilted views (roads/layer.ts; rail lines too).
+    const P = (patch: Partial<AppState['roadPersp']>) => this.store.set({ roadPersp: { ...S().roadPersp, ...patch } });
+    const perspRows = [
+      sl({
+        label: 'Perspective', min: PERSP_RANGE.strength[0], max: PERSP_RANGE.strength[1], step: 0.05, reset: defaults.roadPersp.strength,
+        title: 'Tilted views: how lines thin with distance. 100 %: true perspective (a road twice as far is half as wide); 0 %: by the zoom style curve only (distant roads stay thicker)',
+        get: () => S().roadPersp.strength, set: (strength) => P({ strength }), fmt: pct,
+      }),
+      sl({
+        label: 'Near size cap', min: PERSP_RANGE.cap[0], max: PERSP_RANGE.cap[1], step: 0.1, reset: defaults.roadPersp.cap, cls: 'sub',
+        title: 'Tilted views: the widest a line grows near the camera, × its width at the view centre',
+        get: () => S().roadPersp.cap, set: (cap) => P({ cap }), fmt: (v) => `${v.toFixed(1)}×`,
+      }),
+      sl({
+        label: 'Far fade', min: PERSP_RANGE.fade[0], max: PERSP_RANGE.fade[1], step: 0.05, reset: defaults.roadPersp.fade, cls: 'sub',
+        title: 'Tilted views: distant lines thinned further, so they fade into the haze (through their pixel coverage) rather than stay dense',
+        get: () => S().roadPersp.fade, set: (fade) => P({ fade }), fmt: pct,
+      }),
+    ];
     const boundOpRow = sl({
       label: 'Opacity', min: 0, max: 1, step: 0.05, reset: defaults.boundaryOpacity, cls: 'sub', title: 'Opacity of the boundary lines',
       get: () => S().boundaryOpacity, set: (boundaryOpacity) => this.store.set({ boundaryOpacity }), fmt: pct, disabled: () => !S().layers.boundaries,
@@ -691,6 +710,7 @@ export class LayersCard {
         sub('Style'),
         roadOpRow,
         lwOf.roads,
+        ...perspRows,
         tog(this.glow, h('span', { class: 'lbl' }, h('span', { class: 'dot', style: 'background:#f5bd4d' }), 'Scenic-route glow'), '', 'tog', 'Gold halo on designated scenic byways and routes touristiques'),
         tog(this.occlude, 'Hide roads behind terrain', '', 'tog',
           'With 3D terrain. Off: roads behind hills are drawn faint, as if seen through them. On: they are hidden.'),

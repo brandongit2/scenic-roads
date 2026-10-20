@@ -201,6 +201,7 @@ uniform float u_cell;       // per tile: the cell (tile units) a dot stands for:
 // Width (px) and colour strength per class at zoom stops, evaluated per segment at the zoom its
 // own distance corresponds to (see below).
 uniform float u_zoom;
+uniform vec3 u_persp;   // widths with distance: strength, near cap, far fade (RoadStyle.persp)
 uniform float u_wz[${WIDTH_Z.length}];
 uniform float u_wv[${NCLASS * WIDTH_Z.length}];
 uniform float u_fz[${FADE_Z.length}];
@@ -471,7 +472,17 @@ void main() {
   g_fog = fogAt(u_camDist / kr);   // (kr: the centre's distance ÷ the piece's, PROJECT_GLSL)
   float ze = u_zoom + log2(kr);
   float k = clamp(kr, 0.2, 4.0);
-  float w = widthAt(cls, ze) + (hov ? 2.0 * u_dpr : 0.0);
+  // Width with distance (RoadStyle.persp, perspWidth on the CPU): between the style curve's width
+  // at ze (strength 0) and the view centre's width × kr (1: true perspective), in log space; at
+  // most cap × the centre's near the camera; far pieces thinned further by kr^fade, so they fade
+  // through the coverage below rather than stay thick. g: the change from the style curve's
+  // width, which the casing and halo follow.
+  float w0 = widthAt(cls, u_zoom), wsz = widthAt(cls, ze);
+  float w = wsz * pow(w0 * kr / wsz, u_persp.x);
+  w = min(w, max(w0 * u_persp.y, wsz));   // (never below the style curve's)
+  w *= pow(min(kr, 1.0), u_persp.z);
+  float g = w / wsz;
+  w += hov ? 2.0 * u_dpr : 0.0;
   bool dot = kind == 2;
   // Zoomed out, what a road adds to a pixel is its area there (length × width), so a view looks
   // the same whichever tiles and level of detail draw it: a dot (tile.rs: the roads shorter than
@@ -506,7 +517,7 @@ void main() {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
     return;
   }
-  float cw = casingAt(ze), gw = route ? glowAt(ze) : 0.0;
+  float cw = casingAt(ze) * g, gw = route ? glowAt(ze) * g : 0.0;
   float extra = casing ? (route ? max(gw, cased ? cw : 0.0) : cw) : 0.0;
   float halfw = w * 0.5 + extra;
   // A railway's cross-ties (raildraw.ts railGeom) may reach past the line's width.
@@ -949,6 +960,17 @@ export interface RoadStyle {
   freqFilter: { on: boolean; min: number; max: number; unknown: boolean };
   /** Classes (bits) that get a casing when zoomed in. */
   casingMask: number;
+  /** Widths with distance in tilted views (state.ts RoadPersp); absent: the style curve's alone. */
+  persp?: { strength: number; cap: number; fade: number };
+}
+
+const NO_PERSP = { strength: 0, cap: 1e6, fade: 0 };
+/** A piece's width (as the vertex shader: w0 the style width at the view centre's zoom, wz at the
+ * piece's own zoom, kr the centre's distance ÷ the piece's). */
+export function perspWidth(w0: number, wz: number, kr: number, p: { strength: number; cap: number; fade: number } = NO_PERSP): number {
+  let w = wz * (w0 * kr / wz) ** p.strength;
+  w = Math.min(w, Math.max(w0 * p.cap, wz));
+  return w * Math.min(kr, 1) ** p.fade;
 }
 
 export interface SchemeUniforms {
@@ -1119,7 +1141,7 @@ export class RoadLayer implements CustomLayerInterface {
       const draw = (sprite: boolean, accum = false) => {
         const def = (sprite ? '#define SPRITE\n' : '') + (accum ? '#define ACCUM\n' : '');
         return linkLater(map, gl, head + def + VS_BODY, `#version 300 es\n${accum ? '#define ACCUM\n' : ''}${sprite ? FS_SPRITE : FS_BODY}`, uniforms([
-          'u_extScale', 'u_viewport', 'u_tile', 'u_cell', 'u_zoom', 'u_wz', 'u_wv', 'u_fz', 'u_fv', 'u_cz', 'u_cv', 'u_gz', 'u_gv', 'u_casing', 'u_glow', 'u_casingPass', 'u_casingMask',
+          'u_extScale', 'u_viewport', 'u_tile', 'u_cell', 'u_zoom', 'u_persp', 'u_wz', 'u_wv', 'u_fz', 'u_fv', 'u_cz', 'u_cv', 'u_gz', 'u_gv', 'u_casing', 'u_glow', 'u_casingPass', 'u_casingMask',
           'u_classMask', 'u_surfaceMask', 'u_tollMask', 'u_unnamedHide', 'u_lsOn', 'u_hlOn', 'u_hovSel', 'u_thinSel', 'u_ls', 'u_dpr', 'u_mode', 'u_w', 'u_wsum', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol', 'u_ztolB',
           'u_lut', 'u_cdf', 'u_eq', 'u_palRow', 'u_range', 'u_bg', 'u_dim', 'u_thr', 'u_lowFade', 'u_lowSpan',
           'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane',
@@ -2075,6 +2097,8 @@ export class RoadLayer implements CustomLayerInterface {
     each((u) => {
       gl.uniform2f(u.u_viewport, gl.drawingBufferWidth, gl.drawingBufferHeight);
       gl.uniform1f(u.u_zoom, zoom);
+      const pp = s.persp ?? NO_PERSP;
+      gl.uniform3f(u.u_persp, pp.strength, pp.cap, pp.fade);
       gl.uniform1fv(u.u_wz, WIDTH_Z);
       gl.uniform1fv(u.u_wv, WIDTHS.flatMap((w) => w.map((v) => v * dpr * s.weight)));
       gl.uniform1fv(u.u_fz, FADE_Z);
@@ -2852,8 +2876,9 @@ export class RoadLayer implements CustomLayerInterface {
     const my = Math.max(mx, haversine(ll.lng, ll.lat, ay.lng, ay.lat) / 8);
     const mppCentre = (40075016.686 * Math.cos((map.getCenter().lat * Math.PI) / 180)) / (512 * 2 ** zoom);
     // As drawn: at the zoom the local ground scale corresponds to (see the vertex shader).
-    const ze = zoom + Math.log2(Math.max(1 / 256, Math.min(16, mppCentre / mx)));
-    const widths = WIDTHS.map((w) => Math.max(1, interp(WIDTH_Z, w, ze) * this.style.weight));
+    const kr = Math.max(1 / 256, Math.min(16, mppCentre / mx));
+    const ze = zoom + Math.log2(kr);
+    const widths = WIDTHS.map((w) => Math.max(1, perspWidth(interp(WIDTH_Z, w, zoom), interp(WIDTH_Z, w, ze), kr, this.style.persp) * this.style.weight));
     const TOL = 7; // px beyond the drawn edge
     const radiusM = (TOL + Math.max(...widths) / 2) * my;
     const mxN = lon2x(ll.lng), myN = lat2y(ll.lat);

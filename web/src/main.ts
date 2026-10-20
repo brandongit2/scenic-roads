@@ -326,6 +326,7 @@ async function main() {
     railMask: 0,
     railWeights: [],
     casingMask: CASING_CLASSES_MASK,
+    persp: { ...s0.roadPersp },
   });
   // The tiles' version in their URLs (cached for good): the catalog's for the layer, else none. (Not
   // the build time in meta: it stayed when the tiles' way column changed from indices to OSM ids,
@@ -2004,6 +2005,7 @@ async function main() {
     st.tollMask = tollMask(s);
     st.unnamedHide = unnamedHideClasses(s);
     st.weight = ROAD_WEIGHT * lineWeight(s, 'roads');
+    st.persp = rails.style.persp = { ...s.roadPersp };
     st.threshold = { ...s.threshold };
     st.visible = s.layers.roads;
     st.weights = [...s.weights];
