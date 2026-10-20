@@ -76,6 +76,9 @@
 //!                                has there) and the blocks' tiles as the manifest's packs and mid
 //!                                have them (out/packs/8-x-y/, as `trees --blocks` writes them), for
 //!                                the checks; nothing written to the NAS
+//!   terrain-same <6/x/y> [--whole]  piece 6/x/y made as its job makes it (by z8 subtree), or
+//!                                whole, its hi pack and mid written locally; their content names
+//!                                beside the manifest's. Nothing written to the NAS
 //!   terrainsub-task <6/x/y> --out dir [--group 8/x/y] [--pass d]  a terrain piece's z8 subtrees
 //!                                in their groups, each group's task file as the piece's run cuts
 //!                                it (pipeline::terrain_task: out/<x>-<y>/u/in.sect), for the
@@ -933,6 +936,53 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                     serde_json::json!({ "group": pipeline::terrain_task::subtrees_arg(g), "tiles": c.tiles, "made": c.made.len(), "raw": c.raw, "cells": c.cells, "bytes": c.bytes, "mem_mb": pipeline::terrain_task::mem_mb(c.bytes, &lv), "secs": t0.elapsed().as_secs_f64() })
                 );
             }
+            return Ok(());
+        }
+        "terrain-same" => {
+            // terrain-same <6/x/y> [--whole] [--raw dir] [--pass d] [--regions dir]: piece 6/x/y
+            // made as its job makes it (each level a z8 subtree's worth of tiles at a time:
+            // pipeline::terrain_pack::make_piece), or with `--whole` each level's tiles all
+            // together (make_piece_whole, the way before), its hi pack and mid written in the scratch folder only; their
+            // content names said beside the manifest's (the same inputs give the same bytes). It
+            // only reads the NAS (AWS's raw tiles copied to this Mac's cache, as a terrain run does).
+            let cov = coverage_of(&out, &args)?;
+            let t = positional(&args)
+                .first()
+                .and_then(|t| Unit::parse(t))
+                .filter(|u| u.z == 6)
+                .context("terrain-same <6/x/y>")?;
+            let raw_dir = PathBuf::from(
+                opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
+            );
+            let raw = raw_tiles(&out, &raw_dir)?;
+            let opened = pipeline::terrain_pack::SourceFiles::open(&out, false)?;
+            let coarse = pipeline::terrain_pack::Coarse::new(&raw);
+            let src = opened.sources(Some(&coarse));
+            let levels = pipeline::terrain_pack::piece_levels(&cov, (t.x, t.y));
+            let whole = args.iter().any(|a| a == "--whole");
+            let t0 = std::time::Instant::now();
+            let (hi, mid) = if whole {
+                pipeline::terrain_pack::make_piece_whole(&raw, &src, levels)?
+            } else {
+                pipeline::terrain_pack::make_piece(&raw, &src, levels)?
+            };
+            let secs = t0.elapsed().as_secs_f64();
+            let n = hi.len();
+            let mut it = hi.into_iter().map(|(z, x, y, b)| {
+                let n = b.len() as u32;
+                (z, x, y, b, n)
+            });
+            let pack = layers::write_pack_local(&out, "terrain", "terrarium-png", false, "hi", (6, t.x, t.y), &mut it)?;
+            let made = pack.as_ref().map(|p| p.content_name()).transpose()?;
+            let ml = pipeline::terrain_pack::mid_logical(t.x, t.y);
+            let mid_path = out.scratch_file(&format!("{ml}.sect"));
+            pipeline::terrain_pack::write_mid(&mid_path, (t.x, t.y), &mid)?;
+            let mid_made = store::naming::content_name(&ml, &store::naming::hash16_file(&mid_path)?, "sect");
+            let hl = format!("layers/terrain/hi/6-{}-{}", t.x, t.y);
+            println!(
+                "{}",
+                serde_json::json!({ "piece": t.slash(), "way": if whole { "whole" } else { "by block" }, "tiles": n, "secs": secs, "hi": made, "hi_manifest": out.get(&hl), "mid": mid_made, "mid_manifest": out.get(&ml) })
+            );
             return Ok(());
         }
         "prune" => prune_step(&mut out, &args)?,

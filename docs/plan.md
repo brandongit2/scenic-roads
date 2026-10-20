@@ -489,6 +489,16 @@ offset. Where coverage ends, roads end.
     piece's z9 means from its mid), since a lake's level at z8 is gathered from the whole area: its
     lo pack.
   - A piece's z8 subtrees, grouped by shared lakes, are tasks (`terrainsub`, docs/workers.md §3).
+    The piece's own run prepares each level a block at a time (a z8 subtree's tiles at z12, the
+    tiles under one four levels up: `terrain_pack::blocks`), the next block prepared while this
+    one's tiles are finished. A tile whose lakes all have their levels by then (known from finer
+    levels, or lakes no other block's tile has, found from the water's lake polygons first) is
+    finished and let go; the rest wait for the level's last block (about a tenth at z12 in 6/8/18).
+    So a run holds about two blocks' prepared tiles, not the level's: the same bytes, since a lake's
+    level is of its samples in any order. Measured (task #447, footprint with `MallocLargeCache=0`):
+    6/8/18 5.5–6.0 GB → 2.6–3.0 GB, 6/13/18 6.5 → 2.8 GB, 6/10/21 3.2 → 1.1 GB. `scenic-build
+    terrain-same 6/x/y [--whole]` makes a live piece either way and sets its pack's and mid's
+    content names beside the manifest's, writing nothing to the NAS.
   - Together they make the same packs, byte for byte, as the area's whole run (`build_q_with`,
     `scenic-build terrain 3/x/y`; `terrain_pack` tests).
   - **The root (z0–2)** is made from the lo packs once no terrain work is left.

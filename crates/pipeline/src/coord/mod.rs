@@ -118,10 +118,13 @@ fn is_zero64(v: &u64) -> bool {
 /// where they held their whole area's; tree cover 2: a z6 tile a run (a piece), where 1 was a z3
 /// tile's whole run with the trees program, a band of a block's rows at a time on each thread, and
 /// before that trees.py's workers each held a block's every zoom-12 value, 12 to 36 GB together;
-/// its assemblies 1; terrain 3 and slope 3: a z6 tile a run (a piece), their assemblies 1).
+/// its assemblies 1; terrain 3 and slope 3: a z6 tile a run (a piece), their assemblies 1; terrain
+/// 4: a piece's tiles made a group of z8 subtrees at a time, where 3 held all its z12 tiles' at once,
+/// 7 GB at its 90th percentile).
 pub fn cost_version(step: &str) -> u32 {
     match step {
-        "terrain" | "slope" => 3,
+        "terrain" => 4,
+        "slope" => 3,
         "trees" => 2,
         // (A unit's measure its job's processes together, as the memory guard measures a job; 0
         // was its programs' most, one at a time; 2: its processes started without malloc's large

@@ -112,6 +112,7 @@ pub const SCENIC_BUILD: Table = Table {
         c("trees-lo", "<Q …> [--pass d] [--regions dir]", "z3 tiles Q's zoomed-out tree cover (lo packs) from their pieces' mids", &[], PASS_REGIONS, ANY),
         c("trees-coverage", "<Q> --out <file> [--pass d] [--regions dir]", "the coverage the trees program reads for z3 tile Q; nothing written to the NAS", &[], &["--out", "--pass", "--regions"], 1),
         c("treeblock-task", "<6/x/y> --row y --out dir [--pass d] [--regions dir]", "a row of tree cover blocks' task folder as a piece's run cuts it; nothing written to the NAS", &[], &["--row", "--out", "--pass", "--regions"], 1),
+        c("terrain-same", "<6/x/y> [--whole] [--raw dir] [--pass d] [--regions dir]", "a terrain piece made by subtree (or whole), its pack and mid's content names beside the manifest's; nothing written to the NAS", &["--whole"], &["--raw", "--pass", "--regions"], 1),
         c("terrainsub-task", "<6/x/y> --out dir [--group 8/x/y] [--raw dir] [--pass d] [--regions dir]", "a terrain piece's z8 subtrees' task files; nothing written to the NAS", &[], &["--out", "--group", "--raw", "--pass", "--regions"], 1),
         c("reach", "[--pass d] [U …]", "every unit's reach (units named: printed, nothing written)", &[], PASS, ANY),
         c("labels", "[--pass d] [--dem dir]", "the labels by importance, worldwide, as the labels layer's packs", &[], PASS_DEM, 0),

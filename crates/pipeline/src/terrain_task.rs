@@ -902,6 +902,13 @@ mod tests {
         // The whole piece, and each group from its file: the same tiles, the same mid.
         let whole = crate::terrain_pack::make_piece(&raw, &src, levels.clone()).unwrap();
         assert!(whole.1.levels.contains_key(&9) && whole.1.levels.contains_key(&11), "{:?}", whole.1.levels);
+        // Each level's tiles all prepared at once (the way before task #447), and in blocks of one
+        // tile (the lakes 9, across blocks, and 11, in one block's tiles or more): the same bytes.
+        assert!(same(&crate::terrain_pack::make_piece_whole(&raw, &src, levels.clone()).unwrap(), &whole), "whole");
+        for up in 0..4 {
+            let by = crate::terrain_pack::make_piece_up(&raw, &src, levels.clone(), up).unwrap();
+            assert!(same(&by, &whole), "blocks {up} levels up");
+        }
         let (mut hi, mut mid) = (Vec::new(), Mid::default());
         for g in &gs {
             let lv = levels_of(&levels, &g.iter().copied().collect(), true);
