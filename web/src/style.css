@@ -612,10 +612,10 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #strip .r2 .build button:hover { color: #fff; }
 
 /* A region's build state (Regions panel). */
-.rg-state { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.rg-state { flex: 0 1 auto; min-width: 0; font-size: 10.5px; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rg-state.ok { color: var(--ok, #56c47f); }
 .rg-state.wait { color: var(--faint, #8b919a); }
-.rg-state.held { color: #f3c77a; max-width: 50%; overflow: hidden; text-overflow: ellipsis; }
+.rg-state.held { color: #f3c77a; max-width: 50%; }
 #layers .rg-dir > summary { font-size: 10.5px; padding: 5px 0 1px; cursor: pointer; color: #a9b6c8; }
 #layers .rg-dir .rg-dir { padding-left: 10px; }
 
