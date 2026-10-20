@@ -391,7 +391,7 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
   (`n123`, `w123`, `r123`), `k` kind, `c` class, `mz`, `ms`, `s` (dem/labels.py). Before `LABELS_V`
   2: `n`, `en`, `k`, `c`, `mz`, `ms`, `s`.
 - **To translate** (`inputs/translations/todo/<language>.jsonl`, `names-todo`'s, rewritten after
-  each catalog): `{"n", "kind", "langs", "things", "example": {"osm" | "qid" | "label", "at": [lon,
+  each catalog that changed what it reads): `{"n", "kind", "langs", "things", "example": {"osm" | "qid" | "label", "at": [lon,
   lat]}, "priority"}`, by priority; with `README.md` and `check.py`.
 - **Lines with no timetable** (`inputs/timetables/gtfs/todo/lines.jsonl`, `timetables-todo`'s):
   `{"osm", "kind" ("rail" | "ferry"), "name", "ref", "operator", "from", "to", "km", "priority"}`;

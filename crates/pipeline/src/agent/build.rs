@@ -414,14 +414,16 @@ pub fn spoken_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opt
 }
 
 /// The to-do lists of names to translate and descriptions to write (crate::namestodo), once per
-/// catalog the map serves, accepted version of the translations and of the descriptions (it reads
-/// them: docs/inputs.md §6.3, §6.4), or step version: after each build, and after each batch taken
-/// in. None while either input has no accepted version yet.
+/// change of what it reads in the catalog the map serves (`served`: crate::namestodo::inputs_key,
+/// a catalog of depth or terrain alone changing none of it), accepted version of the translations
+/// and of the descriptions (it reads them: docs/inputs.md §6.3, §6.4), or step version: after each
+/// build that changed names, and after each batch taken in. None while either input has no
+/// accepted version yet.
 ///
 /// Gated by time (`gate_open`): at most every `NAMES_TODO_EVERY_S` (`since`: seconds since it last
 /// ran) while units build; after any catalog once none's left (`idle`).
 pub fn names_todo_work(
-    served: Option<u64>,
+    served: Option<&str>,
     m: &BTreeMap<String, String>,
     done: &Keys,
     since: Option<u64>,
@@ -433,7 +435,7 @@ pub fn names_todo_work(
     let n = served?;
     let tr = m.get(&crate::inputs::logical(crate::inputs::translations::UNIT))?;
     let de = m.get(&crate::inputs::logical(crate::inputs::descriptions::UNIT))?;
-    let k = h(&[&format!("names-todo {}", crate::namestodo::VERSION), &n.to_string(), tr, de]);
+    let k = h(&[&format!("names-todo {}", crate::namestodo::VERSION), n, tr, de]);
     (done.lo.get("names-todo").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "names-todo".into(), targets: vec![("names-todo".into(), k)] })
 }
@@ -7142,12 +7144,30 @@ pub(crate) mod tests {
             m.insert(crate::inputs::logical(u), format!("sources/inputs/{u}/@index.1111111111111111.json"));
         }
         let mut done = Keys::default();
-        let w = names_todo_work(Some(1), &m, &done, None, false).unwrap();
+        let w = names_todo_work(Some("a"), &m, &done, None, false).unwrap();
         done.record("names-todo", &w.targets);
-        assert!(names_todo_work(Some(1), &m, &done, None, true).is_none(), "made for this catalog");
-        assert!(names_todo_work(Some(2), &m, &done, Some(NAMES_TODO_EVERY_S - 1), false).is_none());
-        let k = names_todo_work(Some(2), &m, &done, Some(NAMES_TODO_EVERY_S), false).unwrap().targets;
-        assert_eq!(names_todo_work(Some(2), &m, &done, Some(0), true).unwrap().targets, k, "the key by content");
+        assert!(names_todo_work(Some("a"), &m, &done, None, true).is_none(), "made for these inputs");
+        assert!(names_todo_work(Some("b"), &m, &done, Some(NAMES_TODO_EVERY_S - 1), false).is_none());
+        let k = names_todo_work(Some("b"), &m, &done, Some(NAMES_TODO_EVERY_S), false).unwrap().targets;
+        assert_eq!(names_todo_work(Some("b"), &m, &done, Some(0), true).unwrap().targets, k, "the key by content");
+        // A catalog that changed none of what it reads (crate::namestodo::inputs_key): the same key.
+        let mut cat = store::catalog::Catalog { n: 1, units: vec!["6/1/1".into()], ..Default::default() };
+        let add = |cat: &mut store::catalog::Catalog, l: &str, c: &str| {
+            cat.files.insert(l.into(), store::catalog::FileRef { file: c.into(), ..Default::default() });
+        };
+        add(&mut cat, "base/6-1-1", "base/6-1-1.1111111111111111.sect");
+        cat.base.insert("6/1/1".into(), "base/6-1-1".into());
+        add(&mut cat, "global/roaden/6-1-1", "global/roaden/6-1-1.2222222222222222.json");
+        let k1 = crate::namestodo::inputs_key(&cat);
+        let mut later = cat.clone();
+        later.n = 2;
+        add(&mut later, "layers/depth/hi/6-1-1", "layers/depth/hi/6-1-1.3333333333333333.pack");
+        assert_eq!(crate::namestodo::inputs_key(&later), k1, "depth alone: the lists as they are");
+        add(&mut later, "global/roaden/6-1-1", "global/roaden/6-1-1.4444444444444444.json");
+        assert_ne!(crate::namestodo::inputs_key(&later), k1, "a unit's own roads changed");
+        let mut more = cat.clone();
+        add(&mut more, "base/6-1-1", "base/6-1-1.5555555555555555.sect");
+        assert_ne!(crate::namestodo::inputs_key(&more), k1, "a base pack changed");
     }
 
     /// The road index is keyed on each unit's road ids by content (a unit without them: its road

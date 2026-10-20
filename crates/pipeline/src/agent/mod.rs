@@ -7014,14 +7014,14 @@ impl Agent {
         // After each catalog the map serves: the names to translate and descriptions to write.
         // (From the translations' and descriptions' accepted versions, which the agent names: the
         // job reads them through the accessor, never the drop boxes.)
-        let served = served_catalog(&root.join("catalog")).map(|c| c.n);
+        let served = served_catalog_and(&root.join("catalog"));
         // (The steps gated by time: when each last ran, as its recorded key changed.)
         self.note_ran(&keys);
         let (since, idle) = {
             let r = self.catalogs.borrow();
             (r.since("names-todo", now_s()), r.idle)
         };
-        if let Some(w) = build::names_todo_work(served, &manifest, &keys, since, idle) {
+        if let Some(w) = build::names_todo_work(served.as_ref().map(|s| s.1.as_str()), &manifest, &keys, since, idle) {
             let n = w.targets[0].1.clone();
             let mut args = Vec::new();
             for unit in [crate::inputs::translations::UNIT, crate::inputs::descriptions::UNIT] {
@@ -10748,18 +10748,29 @@ fn helpers(root: &Path) -> Vec<Status> {
 /// serves (a damaged one passed over, as it does). (One read whole once: by its file and time, the
 /// last that read is remembered, so a delta's chain isn't read again each loop.)
 fn served_catalog(dir: &Path) -> Option<CatalogSeen> {
-    static READ: std::sync::Mutex<Option<(PathBuf, std::time::SystemTime)>> = std::sync::Mutex::new(None);
+    served_catalog_and(dir).map(|(c, _)| c)
+}
+
+/// `served_catalog`, with what the names' to-do lists read of it (crate::namestodo::inputs_key),
+/// worked out as it's read.
+fn served_catalog_and(dir: &Path) -> Option<(CatalogSeen, String)> {
+    type Seen = Option<(PathBuf, std::time::SystemTime, String)>;
+    static READ: std::sync::Mutex<Seen> = std::sync::Mutex::new(None);
     let mut ns = store::catalog::list(dir).ok()?;
     ns.sort_unstable();
     ns.into_iter().rev().find_map(|n| {
         let path = store::catalog::path_n(dir, n)?;
         let t = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
-        let seen = Some((path.clone(), t));
-        if *READ.lock().unwrap_or_else(|e| e.into_inner()) != seen {
-            store::catalog::read_n(dir, n).ok()?;
-            *READ.lock().unwrap_or_else(|e| e.into_inner()) = seen;
-        }
-        Some(CatalogSeen { n, at: t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) })
+        let mut g = READ.lock().unwrap_or_else(|e| e.into_inner());
+        let key = match &*g {
+            Some((p, at, k)) if *p == path && *at == t => k.clone(),
+            _ => {
+                let k = crate::namestodo::inputs_key(&store::catalog::read_n(dir, n).ok()?);
+                *g = Some((path.clone(), t, k.clone()));
+                k
+            }
+        };
+        Some((CatalogSeen { n, at: t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) }, key))
     })
 }
 

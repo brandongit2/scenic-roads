@@ -338,6 +338,31 @@ pub fn spoken_for(root: &Path, cat: &store::catalog::Catalog) -> Result<Spoken> 
     Spoken::from_bytes(&b).with_context(|| format!("read {}", f.file))
 }
 
+/// What `run` reads of catalog `cat`, by content: the units and the coverage it records, the
+/// languages spoken, the labels' hi packs, the base packs, the units' own-road lists, the hi data,
+/// the landmark points and the area overlays. A catalog that changed none of them (most do: a
+/// depth or terrain tile alone) leaves the lists as they are, so they aren't made again.
+pub fn inputs_key(cat: &store::catalog::Catalog) -> String {
+    let mut parts: Vec<String> = vec![format!("names-todo inputs {VERSION}")];
+    parts.extend(cat.units.iter().cloned());
+    parts.push(cat.coverage.get("regions").map(|r| r.to_string()).unwrap_or_default());
+    let mut logical: Vec<&str> = Vec::new();
+    logical.extend(cat.global.get("spoken").map(String::as_str));
+    if let Some(l) = cat.layers.get("labels") {
+        logical.extend(l.hi.values().map(String::as_str));
+    }
+    logical.extend(cat.base.values().map(String::as_str));
+    logical.extend(cat.files.keys().filter(|k| k.starts_with("global/roaden/")).map(String::as_str));
+    logical.extend(cat.hidata.values().map(String::as_str));
+    logical.extend(cat.markdata.values().map(String::as_str));
+    logical.extend(cat.ovdata.values().map(String::as_str));
+    for l in logical {
+        parts.push(format!("{l} {}", cat.content(l).unwrap_or("")));
+    }
+    let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+    crate::agent::build::h(&refs)
+}
+
 /// The units' z6 tiles.
 fn unit_tiles(cat: &store::catalog::Catalog) -> HashSet<(u32, u32)> {
     cat.units
@@ -857,6 +882,27 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
+    /// A measure on real catalogs, reading the NAS alone: `SCENIC_NAMES_KEYS="<root> <last n>"`
+    /// prints each of the last n catalogs' `inputs_key` and how many of them changed it (the runs
+    /// the lists would take).
+    #[test]
+    fn measure_the_catalogs_inputs_keys() {
+        let Ok(m) = std::env::var("SCENIC_NAMES_KEYS") else { return };
+        let (root, last) = m.split_once(' ').unwrap();
+        let dir = std::path::Path::new(root).join("catalog");
+        let mut ns = store::catalog::list(&dir).unwrap();
+        ns.sort_unstable();
+        let ns = &ns[ns.len().saturating_sub(last.parse().unwrap())..];
+        let (mut prev, mut changed) = (String::new(), 0);
+        for &n in ns {
+            let Ok(cat) = store::catalog::read_n(&dir, n) else { continue };
+            let k = super::inputs_key(&cat);
+            changed += usize::from(k != prev);
+            println!("{n} {} {k}", cat.created);
+            prev = k;
+        }
+        println!("{} catalogs, {changed} with the names' inputs changed", ns.len());
+    }
     use super::*;
 
     #[test]

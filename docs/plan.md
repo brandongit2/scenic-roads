@@ -792,8 +792,11 @@ index, so a new release rebuilds every unit.
   §6.7.0) and the static timetables (§6.7.2).
 - **Rail service** (below).
 - **Landmarks:** `docs/phase5.md`.
-- **The to-do lists:** `names-todo` after a catalog the map serves, at most daily while units
-  build, after any once none's left (§7, `NAMES_TODO_EVERY_S`); `timetables-todo` after each rail
+- **The to-do lists:** `names-todo` after a catalog the map serves that changed what it reads
+  (`namestodo::inputs_key`: the units, coverage, languages spoken, labels' hi packs, base packs,
+  own-road lists, hi data, landmark points and area overlays, by content; a catalog of depth or
+  terrain alone changes none), at most daily while units build, after any such once none's left
+  (§7, `NAMES_TODO_EVERY_S`); `timetables-todo` after each rail
   and ferries run (docs/inputs.md §6.7.3).
 
 ### Rail service
@@ -986,8 +989,8 @@ lines hold for their source area's languages.
 `kana`, `l` the languages OSM gives its name, `o` its OSM object); the basemap (`name:en`, `name:fr`,
 and from the next pass `osmpass::BASEMAP_LANGUAGES`); roads (`global/roaden/<u>`, no language tags).
 
-**To-do** (`pipeline::namestodo`, the `names-todo` job, after a catalog the map serves: at most
-daily while units build, after any once none's left):
+**To-do** (`pipeline::namestodo`, the `names-todo` job, after a catalog the map serves that changed
+what it reads (`inputs_key`): at most daily while units build, after any such once none's left):
 - **`inputs/translations/todo/<language>.jsonl`:** each name something in the coverage has with no
   English of its own and no line in any language spoken there. Read from labels, roads and rail
   lines (base packs, each way placed once by the ways-here index), and landmarks. Names already in
@@ -1486,7 +1489,7 @@ the jobs' wall time, and where a run's time went):
 | unit | 34 % | 10 min (19 in a rebuild of every unit's elevations) | 0.4 | `elev` 55–78 %: the blends' distance scan 34–48 %, 3DEP read over the network 18–27 %; the DEM seed copied 5 %; the base pack uploaded 5 % |
 | bldtiles | 22 % | 14 min | 4.0 | the areas' tiles made (compute) 88 % |
 | terrain | 10 % | 5 min | 1.5 | tiles prepared 58 %, uploaded 15 % |
-| names-todo | 6 % | 11 min | 0.1 | every base pack's names read from the NAS, after each catalog |
+| names-todo | 6 % | 11 min | 0.1 | every base pack's names read from the NAS, after each catalog that changed what it reads |
 | pack | see `scenic timings pack` | see `scenic timings pack` | — | what a tile reads: its `units` and `bytes` sizes (crate::costin) |
 | slope | 5 % | 2 min | 0.4 | its terrain pack copied 29 %, uploaded 45 % |
 | heritage | 4 % | 81 min | 1.0 | the filtered planet clipped (osmium, once a pass) 86 % |
