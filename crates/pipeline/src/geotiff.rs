@@ -6,7 +6,9 @@
 //! and floating-point samples, of which band 1 is read. The georeferencing as GDAL computes it
 //! (pixel scale and tie point, or the transformation matrix; a PixelIsPoint raster moved half a
 //! pixel), the GeoKeys, and GDAL's nodata tag. And `write_f32` for FABDEM's store: one band,
-//! tiled, Deflate, predictor 3.
+//! tiled, Deflate, predictor 3. An open reads the header in windows (`Windowed`: one read a
+//! cluster of directories) and keeps the tile arrays, so over a network each open is a read or
+//! two and each block's read is one.
 
 use anyhow::{bail, ensure, Context, Result};
 use std::collections::{BTreeMap, HashMap};
@@ -285,6 +287,65 @@ impl BlockCache {
     }
 }
 
+/// How many bytes a header's read fetches at once (`Windowed`): a directory, its out-of-line
+/// values and its tile arrays lie within a few KB of each other, in one or two clusters (the first
+/// image's at the file's start, the overviews' after its data: the depth sources' grids, 20 Oct
+/// 2026, their headers 24–38 reads each), so a window at each cluster serves the whole header.
+const HEADER_WINDOW: usize = 32 << 10;
+/// How many windows a header's read keeps (its clusters; one past that goes).
+const HEADER_WINDOWS: usize = 8;
+/// A tile or strip array read whole at open and kept (bytes each, offsets or counts), so a block's
+/// read is its data alone; a larger one (a huge striped image's) is read entry by entry as before.
+const STRILES_KEPT: u64 = 1 << 20;
+
+/// A reader's small reads taken from windows of `HEADER_WINDOW` bytes, each fetched once at the
+/// first read in it (task #492: over SMB each read is a round trip, 50–120 ms under load, and a
+/// GeoTIFF's open made 24–38 of them; now one or two). A read past a window's end, or larger than
+/// a window, goes to the source as it is.
+struct Windowed {
+    src: Arc<dyn RangeRead>,
+    len: u64,
+    windows: Mutex<Vec<(u64, Vec<u8>)>>,
+}
+
+impl Windowed {
+    fn new(src: Arc<dyn RangeRead>) -> Result<Self, store::IoError> {
+        let len = src.len()?;
+        Ok(Windowed { src, len, windows: Mutex::new(Vec::new()) })
+    }
+}
+
+impl RangeRead for Windowed {
+    fn len(&self) -> Result<u64, store::IoError> {
+        Ok(self.len)
+    }
+
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
+        if !off.checked_add(len as u64).is_some_and(|end| end <= self.len) {
+            return Err(store::IoError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("bytes {off}..+{len} are past the end ({} bytes)", self.len),
+            )));
+        }
+        if len > HEADER_WINDOW {
+            return self.src.read_at(off, len);
+        }
+        let mut ws = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, b)) = ws.iter().find(|(at, b)| off >= *at && off + len as u64 <= *at + b.len() as u64) {
+            let s = (off - at) as usize;
+            return Ok(b[s..s + len].to_vec());
+        }
+        let n = (self.len - off).min(HEADER_WINDOW as u64) as usize;
+        let b = self.src.read_at(off, n)?;
+        let out = b[..len].to_vec();
+        if ws.len() >= HEADER_WINDOWS {
+            ws.remove(0);
+        }
+        ws.push((off, b));
+        Ok(out)
+    }
+}
+
 /// An open (Geo)TIFF.
 pub struct Tiff {
     src: Arc<dyn RangeRead>,
@@ -339,6 +400,9 @@ impl Tiff {
     /// georeferencing and nodata. Tiles are read as they're needed.
     pub fn open(src: Arc<dyn RangeRead>) -> Result<Tiff> {
         crate::costin::tiff_opened();
+        let plain = src;
+        // (The header read through windows: one fetch a cluster of directories, not one a value.)
+        let src: Arc<dyn RangeRead> = Arc::new(Windowed::new(plain.clone())?);
         let len = src.len()?;
         ensure!(len >= 8, "not a TIFF ({len} bytes)");
         let head = src.read_at(0, len.min(16) as usize)?;
@@ -407,6 +471,26 @@ impl Tiff {
             }
         }
         t.geo(&dirs[0])?;
+        // The tile arrays kept (from the windows, mostly: they lie by their directories), so a
+        // block's read is one read, its data's; then the file's reads go to the source as they are.
+        for i in 0..t.images.len() {
+            for which in 0..2 {
+                let s = if which == 0 { &t.images[i].offsets } else { &t.images[i].counts };
+                let Striles::At { off, typ, count } = *s else { continue };
+                let sz = type_size(typ).unwrap_or(1);
+                if count.saturating_mul(sz) > STRILES_KEPT {
+                    continue;
+                }
+                let b = t.src.read_at(off, (count * sz) as usize)?;
+                let v = Striles::Inline(b.chunks_exact(sz as usize).map(|c| t.order.uint(c)).collect());
+                if which == 0 {
+                    t.images[i].offsets = v;
+                } else {
+                    t.images[i].counts = v;
+                }
+            }
+        }
+        t.src = plain;
         Ok(t)
     }
 
@@ -1651,6 +1735,43 @@ mod tests {
         let src = Arc::new(Slow { inner: bytes, reads: Default::default(), trip: Default::default() });
         let t = Tiff::open(src.clone()).unwrap().with_shared_cache(1, Arc::new(Mutex::new(BlockCache::new(64 << 20))));
         (data, src, t)
+    }
+
+    /// Task #492: a header is read in windows, one a cluster of directories (a file within one
+    /// window: one read), its tile arrays kept, so a block's read is one read, its data's; a file
+    /// larger than a window still opens in a read or two, and its blocks read once each.
+    #[test]
+    fn a_header_is_read_in_windows_and_a_block_in_one_read() {
+        let counted = |b: Vec<u8>| Arc::new(Slow { inner: b, reads: Default::default(), trip: Default::default() });
+        let reads = |s: &Slow| s.reads.lock().unwrap().values().sum::<usize>();
+        let gt = [100.0, 2.0, 0.0, 500.0, 0.0, -2.0];
+        for big in [false, true] {
+            let o = Opts { big, compression: 5, ..Opts::default() };
+            let (b, vals) =
+                super::testtiff::make_images(&[(40, 30), (20, 15), (10, 8)], o, gt, Some("-32767"), &|k, x, y, _| {
+                    (k * 1000) as f64 + (y * 100 + x) as f64
+                });
+            assert!(b.len() < HEADER_WINDOW);
+            let src = counted(b);
+            let t = Tiff::open(src.clone()).unwrap();
+            assert_eq!(reads(&src), 1, "big {big}: a file within one window opens in one read");
+            assert!(t
+                .images
+                .iter()
+                .all(|i| matches!((&i.offsets, &i.counts), (Striles::Inline(_), Striles::Inline(_)))));
+            assert_eq!(t.read_window(2, 0, 0, 10, 8).unwrap(), vals[2]);
+            assert_eq!(reads(&src), 2, "big {big}: the block's data alone");
+        }
+        // (Values that don't compress: a file of many windows.)
+        let data: Vec<f32> = (0..1024 * 1024).map(|i| ((i as u64 * 2_654_435_761) % 1_000_003) as f32 * 1.7).collect();
+        let bytes = write_f32(1024, 1024, &data, 256, [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], 4326, None).unwrap();
+        assert!(bytes.len() > 8 * HEADER_WINDOW);
+        let src = counted(bytes);
+        let t = Tiff::open(src.clone()).unwrap();
+        let at_open = reads(&src);
+        assert!(at_open <= 2, "{at_open} reads to open a file larger than a window");
+        assert_eq!(t.block(0, 1, 1).unwrap().f32_at(0, 0), data[256 * 1024 + 256]);
+        assert_eq!(reads(&src), at_open + 1, "a block: one read");
     }
 
     /// Task #395: a block several threads ask for at once (the sampling's and the blend's
