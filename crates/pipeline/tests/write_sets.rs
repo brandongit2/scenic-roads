@@ -45,7 +45,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "p5_check", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): a check run by hand"),
     ("crates/pipeline/src/bin/scenic.rs", "inputs", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): `scenic inputs`'s report"),
     ("crates/pipeline/src/agent/mod.rs", "plan_seen", "\"state/build/manifest.json\"", "reads only the manifest's and the jobs' records' size and time (an idle agent's plan digest, task #154)"),
-    ("crates/pipeline/src/agent/gc.rs", "run", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): GC's live set"),
+    ("crates/pipeline/src/agent/gc.rs", "run_once", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): GC's live set"),
     ("crates/pipeline/src/agent/mod.rs", "region_jobs", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the plan"),
     ("crates/pipeline/src/agent/mod.rs", "checklist", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the status's checklist"),
     ("crates/pipeline/examples/checklist.rs", "main", "\"state/build/manifest.json\"", "reads the manifest (today's file; the lead writes it from its records): the checklist worked out by hand, read only"),
