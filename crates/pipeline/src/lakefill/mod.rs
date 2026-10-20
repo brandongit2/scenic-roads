@@ -489,7 +489,10 @@ pub fn select(
     // east–west line (a sheet's edge) over some length.
     let n = ps.len();
     let mut dsu = Dsu((0..n as u32).collect());
-    let mut edges: HashMap<(u64, u64), u32> = HashMap::new();
+    // (Every edge as (its ends' keys, its piece), sorted after: pieces sharing an edge are joined.
+    // A list, not a map of every edge, which held several GB for a band (task #448); a lake's
+    // root is its smallest piece whatever order the joins come in, `Dsu::union`.)
+    let mut edges: Vec<(u64, u64, u32)> = Vec::new();
     // (Per line, east–west or not and where: its pieces' spans along it, (from, to, piece).)
     type Spans = Vec<(u32, u32, u32)>;
     let mut lines: HashMap<(bool, u32), Spans> = HashMap::new();
@@ -500,12 +503,7 @@ pub fn select(
                 let (qa, qb) = ([quant(a[0]), quant(a[1])], [quant(b[0]), quant(b[1])]);
                 let (ka, kb) =
                     ((u64::from(qa[0]) << 32) | u64::from(qa[1]), (u64::from(qb[0]) << 32) | u64::from(qb[1]));
-                match edges.entry((ka.min(kb), ka.max(kb))) {
-                    std::collections::hash_map::Entry::Occupied(e) => dsu.union(*e.get(), i as u32),
-                    std::collections::hash_map::Entry::Vacant(e) => {
-                        e.insert(i as u32);
-                    }
-                }
+                edges.push((ka.min(kb), ka.max(kb), i as u32));
                 if qa[0] == qb[0] && qa[1] != qb[1] {
                     lines.entry((false, qa[0])).or_default().push((qa[1].min(qb[1]), qa[1].max(qb[1]), i as u32));
                 } else if qa[1] == qb[1] && qa[0] != qb[0] {
@@ -514,6 +512,13 @@ pub fn select(
             }
         }
     }
+    edges.sort_unstable();
+    for w in edges.windows(2) {
+        if (w[0].0, w[0].1) == (w[1].0, w[1].1) {
+            dsu.union(w[0].2, w[1].2);
+        }
+    }
+    drop(edges);
     let mut line_keys: Vec<_> = lines.keys().copied().collect();
     line_keys.sort_unstable();
     for k in line_keys {
@@ -533,6 +538,7 @@ pub fn select(
             }
         }
     }
+    drop(lines);
     let mut groups: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
     for i in 0..n as u32 {
         let r = dsu.find(i);
@@ -566,11 +572,15 @@ pub fn select(
         }
     }
     stats.inside = dropped.iter().filter(|&&d| d).count() as u64;
+    // (Each piece's rings moved into its lake, not copied: a piece is in one lake alone.)
     let lakes: Vec<Lake> = groups
         .values()
         .filter_map(|m| {
-            let rings: Vec<Vec<[f64; 2]>> =
-                m.iter().filter(|&&i| !dropped[i as usize]).flat_map(|&i| ps[i as usize].rings.clone()).collect();
+            let rings: Vec<Vec<[f64; 2]>> = m
+                .iter()
+                .filter(|&&i| !dropped[i as usize])
+                .flat_map(|&i| std::mem::take(&mut ps[i as usize].rings))
+                .collect();
             // (Intermittent only when all of it is.)
             let intermittent = m.iter().filter(|&&i| !dropped[i as usize]).all(|&i| ps[i as usize].intermittent);
             (!rings.is_empty()).then_some(Lake { rings, intermittent })
@@ -1679,6 +1689,22 @@ mod tests {
         let east2 = lake(&[vec![[-72.0, 53.80], [-72.0, 53.805], [-72.0, 53.81], [-71.98, 53.81], [-71.98, 53.80]]]);
         let s = run(vec![west, east2], Vec::new());
         assert_eq!((s.stats.lakes, s.lakes.len()), (1, 1));
+    }
+
+    /// Pieces sharing an edge are one lake whichever comes first (the edges sorted, task #448): a
+    /// lake's rings in its pieces' order, lakes in their first piece's.
+    #[test]
+    fn pieces_sharing_an_edge_join_in_their_order() {
+        let a = lake(&[sq(-72.32, 53.80, -72.30, 53.81)]);
+        let b = lake(&[sq(-72.2, 53.80, -72.19, 53.81)]);
+        let c = lake(&[sq(-72.30, 53.80, -72.28, 53.81)]);
+        let s = run(vec![a.clone(), b.clone(), c.clone()], Vec::new());
+        assert_eq!(s.lakes.len(), 2);
+        assert_eq!(s.lakes[0].rings, [a.rings[0].clone(), c.rings[0].clone()]);
+        assert_eq!(s.lakes[1], b);
+        let s = run(vec![b.clone(), c.clone(), a.clone()], Vec::new());
+        assert_eq!(s.lakes[0], b);
+        assert_eq!(s.lakes[1].rings, [c.rings[0].clone(), a.rings[0].clone()]);
     }
 
     #[test]
