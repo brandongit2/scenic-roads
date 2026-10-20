@@ -73,6 +73,7 @@ pub enum Kind {
 }
 
 /// One water polygon: its kind, its key (lakes) and its rings in tile pixels (0–256, y down).
+#[derive(Clone)]
 pub struct Poly {
     pub kind: Kind,
     pub id: u64,

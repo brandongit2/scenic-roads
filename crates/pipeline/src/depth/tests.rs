@@ -433,12 +433,142 @@ fn a_source_files_open_is_tried_again_after_a_transient_error() {
 /// assembly composed up to a zoom from the NAS, its grids opened and sampled and its windows'
 /// blocks read in turn (`reads` 1, as before) or at once, timed.
 /// SCENIC_DEPTH_MEASURE="<root> <x>/<y> <upto zoom> <reads>"; unset, nothing.
+/// Task #433: a z14 tile's water polygons are read once for its z15 and z16 descendants (a block
+/// of 8 × 8 z16 tiles and its margin asks the water of 100 tiles, from 9 z14 tiles), across the
+/// levels; a level's own tiles are read once each across neighbouring blocks.
+#[test]
+fn a_z14_tiles_water_is_read_once_for_its_finer_descendants() {
+    use super::build::WaterCache;
+    use super::compose::Block;
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+    struct Counting(Mutex<BTreeMap<(u8, u32, u32), usize>>);
+    impl WaterSource for Counting {
+        fn polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
+            Fixture.polys(z, x, y)
+        }
+        fn depth_polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
+            *self.0.lock().unwrap().entry((z, x, y)).or_default() += 1;
+            Fixture.depth_polys(z, x, y)
+        }
+        fn pin(&self) -> String {
+            "counting".into()
+        }
+    }
+    let src = Counting(Mutex::new(BTreeMap::new()));
+    let mut wc = WaterCache::default();
+    // (The z14 tiles a block and its margin of a tile touch.)
+    let touched = |b: Block| -> std::collections::BTreeSet<(u32, u32)> {
+        let d = b.z - 14;
+        (b.ty0 - 1..=b.ty0 + b.ny).flat_map(|y| (b.tx0 - 1..=b.tx0 + b.nx).map(move |x| (x >> d, y >> d))).collect()
+    };
+    // (Two z16 blocks side by side at the sea's edge of T, then the first again: their water
+    // tiles kept, nothing read again.)
+    let (x0, y0) = (T.0 << 10, T.1 << 10);
+    let blocks = [(x0 + 504, y0 + 8), (x0 + 512, y0 + 8), (x0 + 504, y0 + 8)];
+    let mut expect = std::collections::BTreeSet::new();
+    for (bx, by) in blocks {
+        let b = Block { z: 16, tx0: bx, ty0: by, nx: 8, ny: 8 };
+        expect.extend(touched(b));
+        let w = wc.block(&src, b).unwrap();
+        assert!(w.water.iter().any(|&w| w), "the fixture's sea is there");
+    }
+    let once = |reads: &BTreeMap<(u8, u32, u32), usize>, expect: &std::collections::BTreeSet<(u32, u32)>| {
+        assert!(reads.keys().all(|k| k.0 == 14), "only z14 is read: {reads:?}");
+        assert!(reads.values().all(|&n| n == 1), "each z14 tile once: {reads:?}");
+        let got: std::collections::BTreeSet<(u32, u32)> = reads.keys().map(|k| (k.1, k.2)).collect();
+        assert_eq!(&got, expect);
+    };
+    once(&src.0.lock().unwrap(), &expect);
+    // A level done: the next level's blocks over the same z14 tiles are drawn from the polygons
+    // kept, read no more; new ones read once.
+    wc.next_level();
+    let b = Block { z: 15, tx0: x0 / 2 + 252, ty0: y0 / 2 + 4, nx: 8, ny: 8 };
+    expect.extend(touched(b));
+    wc.block(&src, b).unwrap();
+    once(&src.0.lock().unwrap(), &expect);
+}
+
+/// A measure on real data, reading the NAS alone: `SCENIC_DEPTH_WATER="<root> 6/x/y <zoom> <blocks>
+/// <rounds>"` reads the water of the first `blocks` blocks of z6 tile x/y's first row at `zoom`
+/// (`WaterCache::block`, as a level's blocks read it, the z14 polygons kept: task #433), and as
+/// before it: each block's tiles' polygons read and rasterised one by one (`polys_at`,
+/// `water_tile`), `rounds` times each in turn; prints each round's time and the basemap tiles
+/// read.
+#[test]
+fn measure_the_waters_reads() {
+    use super::build::WaterCache;
+    use super::compose::{Block, BLOCK};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Ok(m) = std::env::var("SCENIC_DEPTH_WATER") else { return };
+    let a: Vec<&str> = m.split_whitespace().collect();
+    let root = Path::new(a[0]);
+    let (x, y) = a[1].strip_prefix("6/").unwrap().split_once('/').unwrap();
+    let t: (u32, u32) = (x.parse().unwrap(), y.parse().unwrap());
+    let zoom: u8 = a[2].parse().unwrap();
+    let blocks: u32 = a[3].parse().unwrap();
+    let rounds: usize = a[4].parse().unwrap();
+    struct Counting<W: WaterSource>(W, AtomicUsize);
+    impl<W: WaterSource> WaterSource for Counting<W> {
+        fn polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
+            self.0.polys(z, x, y)
+        }
+        fn depth_polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            self.0.depth_polys(z, x, y)
+        }
+        fn pin(&self) -> String {
+            self.0.pin()
+        }
+    }
+    let scratch = tempfile::tempdir().unwrap();
+    let out = Out::unbound(root, scratch.path()).unwrap();
+    let water = Counting(crate::terrain_pack::open_water(&out).unwrap(), AtomicUsize::new(0));
+    let n = 1u32 << (zoom - 6);
+    for round in 0..rounds {
+        for kept in [true, false] {
+            let mut wc = WaterCache::default();
+            water.1.store(0, Ordering::Relaxed);
+            let t0 = std::time::Instant::now();
+            let mut wet = 0usize;
+            for bx in (t.0 * n..t.0 * n + n).step_by(BLOCK as usize).take(blocks as usize) {
+                let b = Block { z: zoom, tx0: bx, ty0: t.1 * n, nx: BLOCK.min(t.0 * n + n - bx), ny: BLOCK };
+                if kept {
+                    wet += wc.block(&water, b).unwrap().water.iter().filter(|&&w| w).count();
+                } else {
+                    // (As before: each tile of the block and its margin read on its own.)
+                    for ty in b.ty0 - 1..=b.ty0 + b.ny {
+                        for tx in b.tx0 - 1..=b.tx0 + b.nx {
+                            let ps = super::build::polys_at(&water, zoom, tx, ty).unwrap();
+                            if !ps.is_empty() {
+                                let wt = crate::terrain_water::water_tile(&ps);
+                                wet += wt.sea.iter().filter(|&&s| s >= 8).count();
+                            }
+                        }
+                    }
+                }
+            }
+            println!(
+                "round {round}, z14 polygons {}: {blocks} blocks of z{zoom} in {:.1} s, {} basemap tiles read, {wet} water pixels",
+                if kept { "kept" } else { "read for each tile (as before)" },
+                t0.elapsed().as_secs_f64(),
+                water.1.load(Ordering::Relaxed)
+            );
+        }
+    }
+}
+
+/// A measure on real data, reading the NAS alone (nothing written): `SCENIC_DEPTH_MEASURE="<root>
+/// x/y <upto> <reads>"` composes z3 tile x/y's assembly to zoom `upto` (`SCENIC_DEPTH_MEASURE="<root>
+/// 6/x/y <upto> <reads>"`: z6 tile x/y's piece, from the NAS's lo packs) with `reads` windows read
+/// at once (1: in turn, the grids too), and prints its phases.
 #[test]
 fn measure_a_real_assembly() {
     let Ok(m) = std::env::var("SCENIC_DEPTH_MEASURE") else { return };
     let a: Vec<&str> = m.split_whitespace().collect();
     let root = Path::new(a[0]);
-    let (x, y) = a[1].split_once('/').unwrap();
+    let (z, xy) = a[1].strip_prefix("6/").map_or((3u8, a[1]), |r| (6, r));
+    let (x, y) = xy.split_once('/').unwrap();
     let q: (u32, u32) = (x.parse().unwrap(), y.parse().unwrap());
     let upto: u8 = a[2].parse().unwrap();
     grids::WINDOW_READS.store(a[3].parse().unwrap(), std::sync::atomic::Ordering::Relaxed);
@@ -447,12 +577,16 @@ fn measure_a_real_assembly() {
     let out = Out::unbound(root, scratch.path()).unwrap();
     let srcs = grids::declared(out.root(), &out.manifest).unwrap();
     let water = crate::terrain_pack::open_water(&out).unwrap();
-    crate::timings::start("depth-lo");
+    crate::timings::start(if z == 3 { "depth-lo" } else { "depth" });
     let t0 = std::time::Instant::now();
-    let made = super::build::compose_lo(&out, &srcs, &water, q, upto).unwrap();
+    let made = if z == 3 {
+        super::build::compose_lo(&out, &srcs, &water, q, upto).unwrap()
+    } else {
+        super::build::compose_hi(&out, &srcs, &water, q, upto).unwrap()
+    };
     let wall = t0.elapsed().as_secs_f64();
     let r = crate::timings::snapshot(true).unwrap();
-    println!("3/{}/{} to z{upto}, reads {}: {} tiles in {wall:.1} s", q.0, q.1, a[3], made.len());
+    println!("{z}/{}/{} to z{upto}, reads {}: {} tiles in {wall:.1} s", q.0, q.1, a[3], made.len());
     for p in &r.phases {
         println!("  {:<34} {:>8.1} s  n={}", p.name, p.wall_s, p.n);
         for s in &p.sub {

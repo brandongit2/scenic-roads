@@ -425,12 +425,21 @@ fn origin(t: &Tiff, zoom: u8) -> Result<(i64, i64)> {
     Ok((c.round() as i64, r.round() as i64))
 }
 
-/// The image of `t` whose cells are 2^l of image 0's (l ≤ `most`) and line up with (c0, r0)
-/// (image 0's origin on the global grid), the largest such: (its index, l).
+/// How much finer than the window's pixels an overview must be when its cells don't line up with
+/// them (`level_for`): its cells 2^`ASKEW_FINER` to a pixel's side, so a cell straddling two pixels
+/// (counted to the one its centre is in) moves a pixel's average by at most a quarter of a pixel.
+pub const ASKEW_FINER: u32 = 2;
+
+/// The image of `t` whose cells are 2^l of image 0's (l ≤ `most`), the largest such: one that
+/// lines up with (c0, r0) (image 0's origin on the global grid: a cell is whole pixels of the
+/// window's zoom, so each pixel's mean is exact), else one at least `ASKEW_FINER` finer than the
+/// pixels (task #433: a grid whose origin lines up with no overview, most of BlueTopo's, was read
+/// at full resolution for every window, 85 GB for z3 tile 3/2/3's assembly); (its index, l).
 fn level_for(t: &Tiff, most: u32, c0: i64, r0: i64) -> (usize, u32) {
     let im = t.images();
     let (w0, h0) = (im[0].width, im[0].height);
     let mut best = (0usize, 0u32);
+    let mut askew = (0usize, 0u32);
     for (i, img) in im.iter().enumerate().skip(1) {
         let r = (f64::from(w0) / f64::from(img.width)).log2().round();
         if !(1.0..=16.0).contains(&r) {
@@ -438,17 +447,22 @@ fn level_for(t: &Tiff, most: u32, c0: i64, r0: i64) -> (usize, u32) {
         }
         let l = r as u32;
         let f = 1i64 << l;
-        if l <= most
-            && l > best.1
-            && img.width == w0.div_ceil(f as u32)
-            && img.height == h0.div_ceil(f as u32)
-            && c0 % f == 0
-            && r0 % f == 0
-        {
-            best = (i, l);
+        if l > most || img.width != w0.div_ceil(f as u32) || img.height != h0.div_ceil(f as u32) {
+            continue;
+        }
+        if c0 % f == 0 && r0 % f == 0 {
+            if l > best.1 {
+                best = (i, l);
+            }
+        } else if l + ASKEW_FINER <= most && l > askew.1 {
+            askew = (i, l);
         }
     }
-    best
+    if best.1 >= askew.1 {
+        best
+    } else {
+        askew
+    }
 }
 
 /// Image `level` of `t` over its own pixels `x0..x1`, `y0..y1` (clamped to it): the values, the
@@ -609,23 +623,31 @@ fn sample_grid_on(
             bail!("zoom {} sampled at {z}", g.zoom);
         }
         let (lv, l) = level_for(&t, k, gc, gr);
-        let f = 1i64 << (k - l); // an output pixel's cells across, at that level
-        let sh = |v: i64| v >> l;
-        // (The level's cells covering the window, in its own pixels.)
-        let (x0, y0) = (sh((c0 << k) - gc), sh((r0 << k) - gr));
-        let (x1, y1) = (sh(((c0 + w as i64) << k) - gc), sh(((r0 + h as i64) << k) - gr));
+        // (The level's cells covering the window, in its own pixels: the first at or before the
+        // window's first cell, the last at or after its last, so a level askew of the pixels,
+        // `level_for`, still covers them whole.)
+        let (down, up) = (|v: i64| v >> l, |v: i64| (v + (1i64 << l) - 1) >> l);
+        let (x0, y0) = (down((c0 << k) - gc), down((r0 << k) - gr));
+        let (x1, y1) = (up(((c0 + w as i64) << k) - gc), up(((r0 + h as i64) << k) - gr));
+        // (The window pixel a level cell counts to: the one its centre is in, by its place on the
+        // global grid. A level lined up with the pixels puts every cell whole in one.)
+        let half = (1i64 << l) >> 1;
+        let pixel = |origin: i64, cell: i64, from: i64| ((origin + (cell << l) + half) >> k) - from;
         let mut sum = vec![0f64; w * h];
         let mut n = vec![0u32; w * h];
         let mut lsum = vec![0f64; w * h];
         let mut ln = vec![0u32; w * h];
         // Read a band of rows at a time, `STRIP_CELLS` cells at most (task #438: a grid without the
         // overview a window needs is read at full resolution, 240 MB a window at a z6 block, eight
-        // at once): the same cells in the same order, so the same sums.
-        let rows = (STRIP_CELLS.load(std::sync::atomic::Ordering::Relaxed) / (x1 - x0).max(1) as usize).max(1) as i64;
+        // at once): the same cells in the same order, so the same sums. A row at least, and a band
+        // never past i64 (task #433: a setting past it, over a part a cell wide, made a negative
+        // band and a loop that never ended).
+        let rows = (STRIP_CELLS.load(std::sync::atomic::Ordering::Relaxed) / (x1 - x0).max(1) as usize)
+            .clamp(1, i64::MAX as usize) as i64;
         let mut any = false;
         let mut ys = y0;
         while ys < y1 {
-            let ye = (ys + rows).min(y1);
+            let ye = ys.saturating_add(rows).min(y1);
             let band = (ys, ye);
             ys = ye;
             let Some((v, a0, b0, rw)) = read(t, lv, x0, band.0, x1, band.1)? else { continue };
@@ -640,12 +662,12 @@ fn sample_grid_on(
             };
             let rh = v.len() / rw.max(1);
             for j in 0..rh {
-                let oy = (b0 + j as i64 - y0) / f;
+                let oy = pixel(gr, b0 + j as i64, r0);
                 if !(0..h as i64).contains(&oy) {
                     continue;
                 }
                 for i in 0..rw {
-                    let ox = (a0 + i as i64 - x0) / f;
+                    let ox = pixel(gc, a0 + i as i64, c0);
                     if !(0..w as i64).contains(&ox) {
                         continue;
                     }
@@ -814,6 +836,59 @@ pub(crate) mod tests {
     }
 
     /// A plane sampled coarser is its cells' mean, finer its bilinear interpolation: the plane.
+    /// A measure on real data, reading the NAS's grid headers alone: `SCENIC_DEPTH_LEVELS="<root>
+    /// 3/x/y <zoom> <sample>"` opens up to `sample` grids of each source meeting z3 tile x/y and says,
+    /// per source, which overview level a window at `zoom` would read from (`level_for`), how many
+    /// grids fall back to their full image, and the bytes those levels hold (task #433: a z3 tile's
+    /// assembly read 85 GB).
+    #[test]
+    fn measure_the_levels_a_zoom_reads() {
+        let Ok(m) = std::env::var("SCENIC_DEPTH_LEVELS") else { return };
+        let a: Vec<&str> = m.split_whitespace().collect();
+        let root = Path::new(a[0]);
+        let (x, y) = a[1].strip_prefix("3/").unwrap().split_once('/').unwrap();
+        let (x, y): (u32, u32) = (x.parse().unwrap(), y.parse().unwrap());
+        let zoom: u8 = a[2].parse().unwrap();
+        let sample: usize = a[3].parse().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let out = crate::out::Out::unbound(root, scratch.path()).unwrap();
+        let srcs = declared(out.root(), &out.manifest).unwrap();
+        let n = 1u32 << (zoom - 3);
+        let b = window_box(zoom, i64::from(x * n) * 256, i64::from(y * n) * 256, n as usize * 256, n as usize * 256);
+        let rd = Reader::keeping(64);
+        for s in &srcs {
+            let grids: Vec<&Grid> = s.meeting(b).collect();
+            if grids.is_empty() {
+                continue;
+            }
+            let mut by_level: std::collections::BTreeMap<(u8, u32, u32), (usize, u64, u64)> = Default::default();
+            let step = (grids.len() / sample.max(1)).max(1);
+            let mut opened = 0usize;
+            for g in grids.iter().step_by(step).take(sample) {
+                let Ok(t) = rd.tiff(&g.file) else { continue };
+                opened += 1;
+                let (gc, gr) = origin(&t, g.zoom).unwrap();
+                let k = u32::from(g.zoom.saturating_sub(zoom));
+                let (lv, l) = level_for(&t, k, gc, gr);
+                let im = &t.images()[lv];
+                let full = &t.images()[0];
+                let e = by_level.entry((g.zoom, k, l)).or_default();
+                e.0 += 1;
+                e.1 += u64::from(im.width) * u64::from(im.height) * 4;
+                e.2 += u64::from(full.width) * u64::from(full.height) * 4;
+            }
+            println!("{}: {} grids meet 3/{x}/{y}, {opened} opened (every {step}th)", s.id, grids.len());
+            for ((gz, k, l), (n, bytes, full)) in &by_level {
+                println!(
+                    "  grid zoom {gz}, {k} zooms finer than z{zoom}: level {l} read by {n} grids, {:.1} MB at that level (their full images {:.1} MB){}",
+                    *bytes as f64 / 1e6,
+                    *full as f64 / 1e6,
+                    if *l < *k { "  <- finer than the zoom: its coarsest level that lines up" } else { "" }
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_grid_is_averaged_down_and_interpolated_up() {
         let d = tempfile::tempdir().unwrap();

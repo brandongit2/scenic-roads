@@ -128,6 +128,9 @@ pub fn cost_version(step: &str) -> u32 {
         // cache, store::spawn::NO_LARGE_CACHE, where 1's measures counted 6–7 GB of freed blocks.)
         "unit" => 2,
         "trees-lo" | "terrain-lo" | "slope-lo" => 1,
+        // (A grid lined up with no overview sampled from one askew, task #433: the assemblies
+        // that read tens of GB read a hundredth of it.)
+        "depth" | "depth-lo" => 1,
         _ => 0,
     }
 }
@@ -595,7 +598,7 @@ impl Shared {
     }
 
     /// How long `target` of `step` is measured to take `worker` (s): its own run's (`job_secs`), else
-    /// its step's model's (crate::needs: its fit, else its step's 90th percentile); None when
+    /// its step's model's (crate::needs: its fit, else the mean of its step's runs); None when
     /// none of its step's has run the way it runs now.
     fn secs_of(&self, step: &str, target: &str, worker: &str) -> Option<u64> {
         job_secs(&self.costs, step, target, worker).or_else(|| self.book().secs(step, target, 0))

@@ -25,10 +25,11 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-/// The depth piece's version: bumped with any change to the bytes `build_hi` writes.
-pub const DEPTH_V: u32 = 2;
+/// The depth piece's version: bumped with any change to the bytes `build_hi` writes (3: a grid
+/// lined up with no overview sampled from one askew, `grids::level_for`, task #433).
+pub const DEPTH_V: u32 = 3;
 /// The depth assembly's (`build_lo`).
-pub const DEPTH_LO_V: u32 = 2;
+pub const DEPTH_LO_V: u32 = 3;
 /// How far from the coverage depth is built (km): 200 nautical miles, a region's EEZ's reach.
 pub const REACH_KM: f64 = 370.4;
 /// The zooms a piece makes.
@@ -53,9 +54,13 @@ pub fn polys_at(src: &dyn WaterSource, z: u8, x: u32, y: u32) -> Result<Vec<Poly
         return src.depth_polys(z, x, y);
     }
     let d = z - WATER_Z;
+    Ok(scaled(src.depth_polys(WATER_Z, x >> d, y >> d)?, d, x, y))
+}
+
+/// Z14 tile (x >> d, y >> d)'s polygons `ps` scaled onto its descendant x/y, `d` zooms finer.
+fn scaled(mut ps: Vec<Poly>, d: u8, x: u32, y: u32) -> Vec<Poly> {
     let n = f64::from(1u32 << d);
     let (ox, oy) = (f64::from(x & ((1 << d) - 1)), f64::from(y & ((1 << d) - 1)));
-    let mut ps = src.depth_polys(WATER_Z, x >> d, y >> d)?;
     for p in &mut ps {
         for r in &mut p.rings {
             for pt in r.iter_mut() {
@@ -63,22 +68,55 @@ pub fn polys_at(src: &dyn WaterSource, z: u8, x: u32, y: u32) -> Result<Vec<Poly
             }
         }
     }
-    Ok(ps)
+    ps
 }
 
+/// The z14 tiles' polygons a `WaterCache` keeps: four rows of a z6 tile's 256 across, the rows of
+/// z14 tiles a row of z15–16 blocks and its margin touch, with the next row's overlap.
+const POLYS_KEPT: usize = 2048;
+
 /// The water of the tiles around blocks, kept while a level is made (neighbouring blocks share
-/// their rings).
+/// their rings), and the z14 polygons the finer levels are drawn from, kept across them (task
+/// #433: each z14 tile's were read from the basemap on the NAS and decoded for each of its 4 z15
+/// and 16 z16 children, a fifth of a piece's run).
 #[derive(Default)]
-struct WaterCache {
+pub struct WaterCache {
     tiles: HashMap<(u8, u32, u32), Option<Arc<WaterTile>>>,
+    polys: HashMap<(u32, u32), Arc<Vec<Poly>>>,
 }
 
 impl WaterCache {
+    /// A level done: its tiles let go (the z14 polygons kept for the next).
+    pub fn next_level(&mut self) {
+        self.tiles.clear();
+    }
+
+    /// `polys_at`, a z14 tile's polygons read once for its z15–16 descendants.
+    fn polys(&mut self, src: &dyn WaterSource, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
+        if z <= WATER_Z {
+            return src.depth_polys(z, x, y);
+        }
+        let d = z - WATER_Z;
+        let q = (x >> d, y >> d);
+        let base = match self.polys.get(&q) {
+            Some(p) => p.clone(),
+            None => {
+                if self.polys.len() >= POLYS_KEPT {
+                    self.polys.clear();
+                }
+                let p = Arc::new(src.depth_polys(WATER_Z, q.0, q.1)?);
+                self.polys.insert(q, p.clone());
+                p
+            }
+        };
+        Ok(scaled((*base).clone(), d, x, y))
+    }
+
     fn tile(&mut self, src: &dyn WaterSource, z: u8, x: u32, y: u32) -> Result<Option<Arc<WaterTile>>> {
         if let Some(t) = self.tiles.get(&(z, x, y)) {
             return Ok(t.clone());
         }
-        let ps = polys_at(src, z, x, y)?;
+        let ps = self.polys(src, z, x, y)?;
         let t = if ps.is_empty() { None } else { Some(Arc::new(water_tile(&ps))).filter(|t| !t.is_empty()) };
         if self.tiles.len() > 4096 {
             self.tiles.clear();
@@ -91,7 +129,7 @@ impl WaterCache {
     /// it or more, or it's narrow water; of a lake when lakes cover more of it than the sea, of a
     /// river when rivers cover more of it than either and the sea and lakes under half (`Water`);
     /// lakes numbered by their key, block-wide.
-    fn block(&mut self, src: &dyn WaterSource, b: Block) -> Result<Water> {
+    pub fn block(&mut self, src: &dyn WaterSource, b: Block) -> Result<Water> {
         let (w, h) = (b.w(), b.h());
         let mut out = Water::land(w * h);
         // (Each pixel's share of water, for the narrow water.)
@@ -514,22 +552,34 @@ pub fn compose_lo(
 
 /// The piece of z6 tile `t`: its hi packs (z9–16); how many tiles.
 pub fn build_hi(out: &mut Out, sources: &[Source], water: &dyn WaterSource, t: (u32, u32)) -> Result<usize> {
-    let rd = Reader::default();
-    let made = {
-        let mut tl = Tiles::new(out, true);
-        for z in HI.0..=HI.1 {
-            let mut wc = WaterCache::default();
-            let n = 1u32 << (z - 6);
-            let zooms = u64::from(HI.1 - HI.0 + 1);
-            let at = f64::from(z - HI.0);
-            let done = |f: f64| crate::agent::jobs::report_f(at + f, zooms, "zooms");
-            let k = level(&mut tl, sources, &rd, water, &mut wc, z, t.0 * n, t.1 * n, n, 3, &done)?;
-            crate::agent::jobs::report(u64::from(z - HI.0 + 1), zooms, "zooms");
-            eprintln!("depth 6/{}/{}: z{z}, {k} tiles", t.0, t.1);
-        }
-        std::mem::take(&mut tl.made)
-    };
+    let made = compose_hi(out, sources, water, t, HI.1)?;
     put_packs(out, &made, "hi", (6, t.0, t.1))
+}
+
+/// The piece of z6 tile `t`'s tiles, made, unwritten: z9 to `upto` (at most z16) composed (`upto`
+/// below z16: a measure of part of it).
+pub fn compose_hi(
+    out: &Out,
+    sources: &[Source],
+    water: &dyn WaterSource,
+    t: (u32, u32),
+    upto: u8,
+) -> Result<BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>> {
+    let rd = Reader::default();
+    let upto = upto.min(HI.1);
+    let mut tl = Tiles::new(out, true);
+    let mut wc = WaterCache::default();
+    let zooms = u64::from(upto.saturating_sub(HI.0) + 1);
+    for z in HI.0..=upto {
+        wc.next_level();
+        let n = 1u32 << (z - 6);
+        let at = f64::from(z - HI.0);
+        let done = |f: f64| crate::agent::jobs::report_f(at + f, zooms, "zooms");
+        let k = level(&mut tl, sources, &rd, water, &mut wc, z, t.0 * n, t.1 * n, n, 3, &done)?;
+        crate::agent::jobs::report(u64::from(z - HI.0 + 1), zooms, "zooms");
+        eprintln!("depth 6/{}/{}: z{z}, {k} tiles", t.0, t.1);
+    }
+    Ok(std::mem::take(&mut tl.made))
 }
 
 /// The sea and lakes `polys` of a test: squares in a tile's pixels.
