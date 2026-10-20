@@ -21,9 +21,15 @@ lists them in):
    takes it in like any edit). Until then the build reads the loose files, untouched.
 4. `--sweep`, once the build reads the packed index: the drop box holds exactly its bytes, and the
    build's current accepted version of the unit (`state/status.json`'s `inputs` entry for
-   `sources`, its `@index`) names an accepted copy with exactly its bytes. Then the loose grids it
-   packed are deleted on the NAS (one `xargs rm` over SSH). Never before, nor after a rollback to
-   the loose index.
+   `sources`, its `@index`) names an accepted copy with exactly its bytes; and safely past the
+   switch: the lead's status beat fresh (`--stale-min`, 10 min), the packed version named there for
+   `--min-age-h` (24 h) at least, from when a sweep first saw it so (`done.json`'s `taken_in_seen`)
+   and from the accepted copy's time, and no depth or depth-lo job running, queued or held to
+   resume on any Mac (status.json's jobs, waiting and helpers' jobs, state/pool/resume/): a job
+   planned before the switch reads the loose index. Then the packs are checked on the NAS at their
+   sizes once more, and the loose grids it packed deleted (one `xargs rm` over SSH).
+   The sweep is the point of no return: after it the loose index can't be rolled back to (its
+   files are gone); until it, putting the loose index back in the drop box is a full rollback.
 
 The drop box's index is read once and kept (`<work>/<id>/index.orig.geojson`): a run whose drop
 box index changed since stops (start again with a new --work).
@@ -191,7 +197,7 @@ def repack(a, sid: str, rem: Remote) -> Path | None:
         for k, p, at in batch:
             files = {f["properties"]["file"]: {kk: list(at[f["properties"][kk]]) for kk in FILE_KEYS if kk in f["properties"]} for f in areas[k]}
             done[k] = {"pack": p, "size": (out / p).stat().st_size, "files": files}
-        write_json(done_path, {"run": run, "areas": done})
+        write_json(done_path, {**saved, "run": run, "areas": done})
         for _, p, _ in batch:
             (out / p).unlink()
         log(f"{sid}: {len(done)}/{len(areas)} areas on the NAS")
@@ -278,15 +284,85 @@ def taken_in(a, sid: str, packed: Path) -> bool:
     return acc is not None and (a.root / acc["file"]).read_bytes() == want
 
 
-def sweep(a, sid: str, packed: Path, rem: Remote):
-    """The loose grids the packed index no longer names deleted on the NAS, once it's taken in."""
+def depth_jobs(a) -> list[str]:
+    """The depth and depth-lo jobs running, queued or held to resume on any Mac, as the lead's
+    status and the pool's resume folder say."""
+    status = json.loads((a.root / "state/status.json").read_text())
+    found = []
+
+    def look(v):
+        if isinstance(v, dict):
+            i = v.get("id")
+            if isinstance(i, str) and i.split(" ", 1)[0] in ("depth", "depth-lo"):
+                found.append(i)
+            for w in v.values():
+                look(w)
+        elif isinstance(v, list):
+            for w in v:
+                look(w)
+        elif isinstance(v, str) and v.split(" ", 1)[0] in ("depth", "depth-lo") and "/" in v:
+            found.append(v)
+
+    look(status.get("jobs"))
+    look(status.get("waiting"))
+    for h in status.get("helpers") or []:
+        look(h.get("jobs"))
+    res = a.root / "state/pool/resume"
+    if res.is_dir():
+        for p in res.iterdir():
+            if "depth" in p.name or (p.is_file() and b"depth" in p.read_bytes()):
+                found.append(f"resume: {p.name}")
+    return found
+
+
+def safe_to_sweep(a, sid: str, packed: Path, done_path: Path) -> str | None:
+    """Why the loose grids may not go yet (None: they may)."""
     if not taken_in(a, sid, packed):
-        raise SystemExit(f"{sid}: the build doesn't read the packed index (the drop box's, or its current accepted version's, isn't it): not swept")
+        # (A rollback: the wait starts again once it's taken in again.)
+        saved = json.loads(done_path.read_text())
+        if saved.pop("taken_in_seen", None) is not None:
+            write_json(done_path, saved)
+        return "the build doesn't read the packed index (the drop box's, or its current accepted version's, isn't it)"
+    st = a.root / "state/status.json"
+    status = json.loads(st.read_text())
+    now = time.time()
+    beat = max(float(status.get("beat") or 0), 0.0)
+    if now - min(beat, st.stat().st_mtime) > a.stale_min * 60:
+        return f"the lead's status is stale (beat {now - beat:.0f} s ago): is the build running?"
+    saved = json.loads(done_path.read_text())
+    seen = saved.get("taken_in_seen")
+    if seen is None:
+        seen = saved["taken_in_seen"] = now
+        write_json(done_path, saved)
+    name = index_name(a.drop, sid)
+    ver = [u["version"] for u in status["inputs"] if u.get("unit") == "sources"][0]
+    copy = a.root / json.loads((a.root / ver).read_text())["files"][name]["file"]
+    since = max(seen, copy.stat().st_mtime)
+    if now - since < a.min_age_h * 3600:
+        return f"the packed index taken in only {(now - since) / 3600:.1f} h ago (wait {a.min_age_h:g} h: jobs planned before it read the loose one)"
+    jobs = depth_jobs(a)
+    if jobs:
+        return f"depth jobs running, queued or held ({', '.join(jobs[:5])}): they may be planned on the loose index"
+    return None
+
+
+def sweep(a, sid: str, packed: Path, rem: Remote):
+    """The loose grids the packed index no longer names deleted on the NAS, once it's safely taken
+    in (`safe_to_sweep`): the point of no return."""
+    why = safe_to_sweep(a, sid, packed, a.work / sid / "done.json")
+    if why:
+        raise SystemExit(f"{sid}: not swept: {why}")
     feats = json.loads(packed.read_text())["features"]
     if any("pack" not in f["properties"] for f in feats):
         raise SystemExit(f"{sid}: some grids aren't packed: not swept")
     files = sorted(n for f in feats for n in names(f))
     src = f"{a.nas_root}/sources/fetched/{sid}"
+    # (The packs there at their sizes once more, just before.)
+    want = {d["pack"]: d["size"] for d in json.loads((a.work / sid / "done.json").read_text())["areas"].values()}
+    there = rem.sizes(src, sorted(want))
+    bad = [p for p in want if there.get(p) != want[p]]
+    if bad:
+        raise SystemExit(f"{sid}: not swept: {len(bad)} packs not on the NAS at their sizes ({bad[:3]})")
     rem.run(f"cd {shlex.quote(src)} && xargs -0 rm -f --", "\0".join(files).encode())
     log(f"{sid}: {len(files)} loose files deleted on the NAS")
 
@@ -303,6 +379,8 @@ def main(argv=None):
     ap.add_argument("--box", help="w,s,e,n: only the grids meeting it (a trial)")
     ap.add_argument("--batch-gb", type=float, default=2.0)
     ap.add_argument("--pause", type=float, default=0.0, help="seconds between areas (to spare the NAS)")
+    ap.add_argument("--min-age-h", type=float, default=24.0, help="--sweep: hours the packed index must have been taken in")
+    ap.add_argument("--stale-min", type=float, default=10.0, help="--sweep: the lead's status beat at most this old")
     ap.add_argument("--adopt", action="store_true")
     ap.add_argument("--sweep", action="store_true")
     a = ap.parse_args(argv)

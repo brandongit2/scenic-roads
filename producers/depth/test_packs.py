@@ -1,10 +1,12 @@
 """packs.py and repack.py (task #452): `uv run --project .. python -m unittest test_packs`."""
 import hashlib
 import io
+import os
 import json
 import shutil
 import tarfile
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -68,13 +70,29 @@ class Packs(unittest.TestCase):
                 packs.pack_folder(a, fa)
 
 
-def accept(root: Path, data: bytes, tag: str):
-    """The build's current accepted version of the sources unit: index `s-grids.geojson` as `data`."""
+def accept(root: Path, data: bytes, tag: str, beat_ago: float = 0, jobs=(), helper_jobs=()):
+    """The build's current accepted version of the sources unit: index `s-grids.geojson` as `data`;
+    the lead's beat `beat_ago` s ago, with `jobs` running here and `helper_jobs` on a helper."""
     acc = root / "sources/inputs/sources"
     (acc / f"s-grids.{tag}.geojson").write_bytes(data)
     (acc / f"@index.{tag}.json").write_text(json.dumps({"files": {"s-grids.geojson": {"file": f"sources/inputs/sources/s-grids.{tag}.geojson"}}}))
     (root / "state").mkdir(exist_ok=True)
-    (root / "state/status.json").write_text(json.dumps({"inputs": [{"unit": "sources", "version": f"sources/inputs/sources/@index.{tag}.json"}]}))
+    (root / "state/status.json").write_text(json.dumps({
+        "beat": time.time() - beat_ago,
+        "jobs": [{"id": j} for j in jobs],
+        "waiting": [],
+        "helpers": [{"jobs": [{"id": j} for j in helper_jobs]}],
+        "inputs": [{"unit": "sources", "version": f"sources/inputs/sources/@index.{tag}.json"}],
+    }))
+
+
+def backdate(root: Path, work: Path, hours: float):
+    """The packed index taken in `hours` ago (its first sighting and its accepted copy's time)."""
+    d = json.loads((work / "done.json").read_text())
+    d["taken_in_seen"] = time.time() - hours * 3600
+    (work / "done.json").write_text(json.dumps(d))
+    for p in (root / "sources/inputs/sources").glob("s-grids.packed.geojson"):
+        os.utime(p, (time.time() - hours * 3600,) * 2)
 
 
 class Repack(unittest.TestCase):
@@ -135,11 +153,44 @@ class Repack(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.run_(args + ["--sweep"])
             self.assertTrue(all((src / n).exists() for n in loose))
-            # Taken in: swept, the packs alone left.
+            # Taken in, but only now: nothing deleted (jobs planned before read the loose index).
             accept(root, before, "packed")
+            self.refused(args, "only 0.0 h ago")
+            self.assertTrue(all((src / n).exists() for n in loose))
+            backdate(root, t / "work/s", 25)
+            # A day on, but the lead's status stale, a depth job running, one on a helper, or one
+            # held to resume: nothing deleted.
+            accept(root, before, "packed", beat_ago=3600)
+            backdate(root, t / "work/s", 25)
+            self.refused(args, "stale")
+            accept(root, before, "packed", jobs=["depth 6/20/23"])
+            backdate(root, t / "work/s", 25)
+            self.refused(args, "depth 6/20/23")
+            accept(root, before, "packed", helper_jobs=["depth-lo 3/2/2"])
+            backdate(root, t / "work/s", 25)
+            self.refused(args, "depth-lo 3/2/2")
+            accept(root, before, "packed")
+            backdate(root, t / "work/s", 25)
+            (root / "state/pool/resume").mkdir(parents=True)
+            (root / "state/pool/resume/m-1.json").write_text('{"step": "depth", "target": "6/1/2"}')
+            self.refused(args, "resume: m-1.json")
+            (root / "state/pool/resume/m-1.json").unlink()
+            # A pack gone from the NAS just before: nothing deleted.
+            gone = next(src.glob("*.tar"))
+            keep = gone.read_bytes()
+            gone.unlink()
+            self.refused(args, "not on the NAS")
+            gone.write_bytes(keep)
+            self.assertTrue(all((src / n).exists() for n in loose))
+            # Safely taken in: swept, the packs alone left.
             self.run_(args + ["--sweep"])
             self.assertFalse(any((src / n).exists() for n in loose))
             self.assertEqual(sorted(p.name for p in src.glob("*.tar")), sorted({f["properties"]["pack"] for f in packed}))
+
+    def refused(self, args, why):
+        with self.assertRaises(SystemExit) as e:
+            self.run_(args + ["--sweep"])
+        self.assertIn(why, str(e.exception))
 
     def test_a_trial_packs_a_box_into_its_own_folder_and_never_adopts(self):
         with tempfile.TemporaryDirectory() as t:
