@@ -696,3 +696,16 @@ fn a_hand_out_all_leftover_is_a_finding() {
     );
     assert!(!out.resolved.contains_key("q-rest"));
 }
+
+/// A region with water whose outline names a relation the pass's outline set and extract lack
+/// (spain/perejil-island.toml, #487): held by rg-extract, and the relation named in the needs, as
+/// for a region without water, so the held report lists it and the lead plans the extract.
+#[test]
+fn a_region_with_water_missing_from_the_extract_names_its_needs() {
+    let w = world();
+    let islet = "id = \"islet\"\nname = \"Islet\"\noutline = [\"osm:21030917\"]\nwater = [\"eez:2\"]\n";
+    let out = run(&w, &[PINS, ("spain/islet.toml", islet)]);
+    assert!(out.problems.iter().any(|p| p.check == "rg-extract" && p.about[0] == "islet"), "{:?}", out.problems);
+    assert!(!out.resolved.contains_key("islet"));
+    assert_eq!(out.needs.iter().map(|i| i.to_string()).collect::<Vec<_>>(), vec!["r21030917"]);
+}

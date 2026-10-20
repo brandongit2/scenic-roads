@@ -44,8 +44,9 @@ pub mod view;
 pub mod watch;
 
 /// The `inputs` step's version: bumping it checks every unit again.
-/// (2: the held report's `needs` taken from the candidate's check, not overwritten by step 5's.)
-pub const INPUTS_V: u32 = 2;
+/// (2: the held report's `needs` taken from the candidate's check, not overwritten by step 5's.
+/// 3: a region with water's needs kept too: the land-and-water pass dropped them.)
+pub const INPUTS_V: u32 = 3;
 
 /// The gate units on the gate (each input's task adds its own).
 pub const UNITS: [&str; 10] = [

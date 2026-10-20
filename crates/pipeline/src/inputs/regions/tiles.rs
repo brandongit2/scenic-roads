@@ -23,6 +23,7 @@
 //!   `rest` region. The `rest` region takes what's left, cell by cell. Regions without water are
 //!   never changed.
 
+use super::extract::Id;
 use super::file::{Part, Region, Target};
 use super::geom::{self, Area, Pt, Ring};
 use super::resolve::{Folder, Leaf, Outcome, Problem, Resolved};
@@ -660,6 +661,9 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     }
     let mut made: BTreeMap<String, Made> = BTreeMap::new();
     let mut held: BTreeSet<String> = BTreeSet::new();
+    // (What the extract lacks, as the regions without water name it: the held report's needs, so
+    // the lead makes the extract; `out` is read by the waves, so added to it after.)
+    let mut needs: BTreeSet<Id> = BTreeSet::new();
     trace("land");
     // 1. Land, in waves by what outlines name.
     let mut left: Vec<String> = ids.clone();
@@ -684,8 +688,10 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             }
             break;
         }
-        let res: Vec<(String, Result<Made, Vec<Problem>>)> =
-            wave.iter().map(|id| (id.clone(), make_land(id, folder, ctx, data, &made, &others, out, &held))).collect();
+        let res: Vec<(String, Result<Made, Vec<Problem>>)> = wave
+            .iter()
+            .map(|id| (id.clone(), make_land(id, folder, ctx, data, &made, &others, out, &held, &mut needs)))
+            .collect();
         for (id, m) in res {
             match m {
                 Ok(m) => {
@@ -740,7 +746,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             .iter()
             .map(|id| {
                 trace(&format!("water of {id} begins"));
-                let w = make_water(id, folder, ctx, data, &made, &others, out, &held);
+                let w = make_water(id, folder, ctx, data, &made, &others, out, &held, &mut needs);
                 trace(&format!("water of {id} ends"));
                 (id.clone(), w)
             })
@@ -759,6 +765,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         }
         left = rest;
     }
+    out.needs.extend(needs);
     for id in &held {
         made.remove(id);
         out.resolved.remove(id);
@@ -1015,13 +1022,13 @@ fn env_for<'a>(
     made: &'a BTreeMap<String, Made>,
     others: &'a BTreeMap<String, TArea>,
     out: &Outcome,
+    needs: &mut BTreeSet<Id>,
 ) -> Result<Env<'a>, Vec<Problem>> {
     let (path, r) = &folder.regions[id];
     // (Other regions' geometry for gather: those without water as stored; ours aren't read from
-    // there, but from `made` below.)
-    let mut needs = BTreeSet::new();
-    let (leaves, _, _, ps) =
-        super::resolve::gather(r, path, folder, ctx, &out.resolved, &out.resolved, water, &mut needs)?;
+    // there, but from `made` below. What the extract lacks kept in `needs`: a region with water
+    // waits for the extract too.)
+    let (leaves, _, _, ps) = super::resolve::gather(r, path, folder, ctx, &out.resolved, &out.resolved, water, needs)?;
     if !ps.is_empty() {
         return Err(ps);
     }
@@ -1076,12 +1083,13 @@ fn make_land(
     others: &BTreeMap<String, TArea>,
     out: &Outcome,
     held: &BTreeSet<String>,
+    needs: &mut BTreeSet<Id>,
 ) -> Result<Made, Vec<Problem>> {
     let (path, r) = &folder.regions[id];
     if let Some(d) = folder.deps(r).into_iter().find(|d| held.contains(d)) {
         return Err(vec![problem("rg-ref", r, path, format!("{id}: region:{d} is held, and so this region with it"))]);
     }
-    let env = env_for(id, false, folder, ctx, data, made, others, out)?;
+    let env = env_for(id, false, folder, ctx, data, made, others, out, needs)?;
     let mut cells: BTreeSet<Cell> = r.outline.iter().flat_map(|p| support(p, &env)).collect();
     if !r.intersect.is_empty() {
         let i: BTreeSet<Cell> = r.intersect.iter().flat_map(|p| support(p, &env)).collect();
@@ -1144,12 +1152,13 @@ fn make_water(
     others: &BTreeMap<String, TArea>,
     out: &Outcome,
     held: &BTreeSet<String>,
+    needs: &mut BTreeSet<Id>,
 ) -> Result<TArea, Vec<Problem>> {
     let (path, r) = &folder.regions[id];
     if r.water.is_empty() {
         return Ok(TArea::default());
     }
-    let env = env_for(id, true, folder, ctx, data, made, others, out)?;
+    let env = env_for(id, true, folder, ctx, data, made, others, out, needs)?;
     let _ = held;
     trace(&format!("water of {id}: its parts read"));
     let cells: BTreeSet<Cell> = r.water.iter().flat_map(|p| support(p, &env)).collect();

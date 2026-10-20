@@ -581,7 +581,7 @@ Relations outside the outline set, and every way a line names, come from **the r
 lacks.
 - A check needing an id the extract lacks holds the files (`rg-extract`) and lists what it needs in
   its held report (`needs`, the candidate's: step 5's check of the version without the held files
-  doesn't replace them); the lead plans `regions-extract <date>`, keyed by the pass and the
+  doesn't replace them; a region with water's as a region without water's); the lead plans `regions-extract <date>`, keyed by the pass and the
   sorted id set, named in the records as `sources/osm/<date>/regions-extract`. Its content name is
   in the check's key, so the check runs again once it's made. The extract never shrinks within a
   pass.
