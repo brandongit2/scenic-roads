@@ -2874,16 +2874,20 @@ impl Coordinator {
         }
         // (Its measures, each in place of a floor kept here that the other lead had none of: its
         // measure took that floor's place there.)
-        for k in p.costs.keys() {
+        for k in p.costs.keys().filter(|k| !old_shape(k)) {
             if !p.floors.contains_key(k) {
                 s.floors.remove(k);
             }
         }
-        s.costs.extend(p.costs.clone());
+        // (Nor an old step shape's measures, `old_shape`: a term's state kept them past the
+        // folder's drop, and they came back with every take-up: the `trees 3/x/y` at 30–37 GB.)
+        s.costs.extend(p.costs.iter().filter(|(k, _)| !old_shape(k)).map(|(k, v)| (k.clone(), v.clone())));
         s.needs_rev += 1;
-        let floors: Vec<(String, Floor)> = p.floors.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let floors: Vec<(String, Floor)> =
+            p.floors.iter().filter(|(k, _)| !old_shape(k)).map(|(k, v)| (k.clone(), *v)).collect();
         s.add_floors(&floors);
-        let disks: Vec<(String, u64)> = p.disks.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        let disks: Vec<(String, u64)> =
+            p.disks.iter().filter(|(k, _)| !old_shape(k)).map(|(k, v)| (k.clone(), *v)).collect();
         s.add_disks(&disks);
         // (Its jobs' disks: a step's runs where none are kept here; an older lead's single peak
         // only within reason of its targets' measures, `stale_peak`.)
@@ -6358,6 +6362,21 @@ mod tests {
         };
         c.load_pool_state(&p).unwrap();
         assert_eq!((c.floor("peaks", "6/1/1"), c.peak("peaks", "6/1/1")), (None, Some(3000)));
+        // An old step shape's measures in a term's state aren't taken up (`old_shape`).
+        let old =
+            |mb: u64| Cost { peak_mb: mb, secs: 60, worker: None, v: cost_version("trees"), ..Default::default() };
+        let p = PoolState {
+            costs: [(cost_key("trees", "3/1/3"), old(37_450)), (cost_key("trees", "6/4/14"), old(1_360))].into(),
+            floors: [(cost_key("trees", "3/2/3"), f(36_000))].into(),
+            disks: [(cost_key("terrain", "3/1/1"), 9_000)].into(),
+            leases: serde_json::json!({ "next": 1, "leases": [] }),
+            ..Default::default()
+        };
+        c.load_pool_state(&p).unwrap();
+        let costs = c.shared.lock().unwrap().costs.clone();
+        assert!(!costs.contains_key("trees 3/1/3") && costs.contains_key("trees 6/4/14"), "{costs:?}");
+        assert_eq!(c.floor("trees", "3/2/3"), None);
+        assert!(!c.disks().contains_key("terrain 3/1/1"));
         assert_eq!(
             (c.floor("peaks", "6/1/2").map(|f| f.mb), c.floor("peaks", "6/1/3").map(|f| f.mb)),
             (Some(9000), Some(7000))
