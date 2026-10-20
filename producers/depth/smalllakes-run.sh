@@ -9,7 +9,7 @@
 # - The boxes: one a z6 tile of the basemap's coverage (the NAS's base/ sections), each its own
 #   smalllakes.py call with its own index ($WORK/index/<z6>.geojson); the workers take every
 #   workers-th box of the list, so each holds its own boxes.
-# - Output local ($WORK/grids); after a box, its grids are tarred over SSH into the NAS's
+# - Output local ($WORK/grids), packed by z6 tile (packs.py); after a box, its packs are tarred over SSH into the NAS's
 #   sources/fetched/smalllakes/, their sizes there compared, then deleted here and the box marked
 #   done ($WORK/index/<z6>.ok). Re-running skips the boxes done and resumes a box stopped part way
 #   (smalllakes.py's <index>.done). At the end the boxes' indexes are merged into
@@ -83,8 +83,8 @@ one_box() {
   local files=$WORK/index/$id.files
   uv run --project $REPO/producers python -c '
 import json, sys
-for f in json.load(open(sys.argv[1]))["features"]:
-    print(f["properties"]["file"])
+for p in sorted({f["properties"]["pack"] for f in json.load(open(sys.argv[1]))["features"]}):
+    print(p)
 ' $WORK/index/$id.geojson > $files || { echo "$id: its index unreadable"; return 1; }
   if [[ -s $files ]]; then
     COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -C $WORK/grids -cf - -T $files \

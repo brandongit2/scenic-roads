@@ -15,10 +15,12 @@ A depth source is a set of GeoTIFFs listed by an index (GeoJSON) beside its decl
   lies below the mean sea level, metres ≥ 0, for the "dries at low tide" flag;
 - the index feature: its footprint (lon/lat), `url` (where the data came from), `file`,
   `zoom_file`, `low_file`, `zoom`, and `hash` (BLAKE3-free: SHA-256's first 16 hex digits of the
-  depth file, so a changed grid changes the index and the keys reading it).
+  depth file, so a changed grid changes the index and the keys reading it), and where it's packed
+  (`pack`, `at`: packs.py).
 
-Files go in `sources/fetched/<id>/` on the NAS (the producer writes them to `--out`; the owner
-copies them there with the index into `inputs/sources/`).
+The grids are packed by z6 tile as the index is written (packs.py, task #452): `--out` holds the
+packs, never loose grids, and they go to `sources/fetched/<id>/` on the NAS (tar over SSH) with the
+index into `inputs/sources/`.
 """
 from __future__ import annotations
 
@@ -210,15 +212,24 @@ class Writer:
         return True
 
     def resume(self, path: Path):
-        """Takes up the features of an index written before (a resumed run), those whose files are
-        still in `out`."""
+        """Takes up the features of an index written before (a resumed run), those whose files (or
+        pack) are still in `out`."""
         path = Path(path)
         if path.exists():
             feats = json.loads(path.read_text())["features"]
-            self.features = [f for f in feats if (self.out / f["properties"]["file"]).exists()]
+            self.features = [f for f in feats if (self.out / f["properties"].get("pack", f["properties"]["file"])).exists()]
+
+    def pack(self) -> list[str]:
+        """The grids written since the last pack packed in `out` by z6 tile (packs.py), the loose
+        files deleted; the packs made."""
+        from packs import pack_folder
+
+        return pack_folder(self.out, self.features)
 
     def write_index(self, path: Path):
-        """The index, its features in file order (so the same grids give the same bytes)."""
+        """The grids not yet packed packed, and the index, its features in file order (so the same
+        grids give the same bytes)."""
+        self.pack()
         feats = sorted(self.features, key=lambda f: f["properties"]["file"])
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)

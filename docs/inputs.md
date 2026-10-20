@@ -1361,8 +1361,23 @@ reads them by pixel arithmetic, never reprojecting:
   the "dries at low tide" flag.
 
 Its index (`<name>.geojson`, a feature per grid): its footprint, `url` (where the data came from),
-`file`, `zoom`, `zoom_file`, `low_file`, `hash`. The files are kept in `sources/fetched/<id>/` (the
-producer writes them; the owner copies them there).
+`file`, `zoom`, `zoom_file`, `low_file`, `hash`, and where it's packed: `pack` and `at`. The files
+are kept in `sources/fetched/<id>/` (the producer writes them; they're copied there by tar over SSH).
+
+**Packs** (task #452; producers/depth/packs.py): a source's grids are kept in packs, not a file a
+grid (the NAS seeks between small files: tens of thousands of grids made it seek-bound). A pack is
+a plain tar (GNU format, its headers' times, owners and modes fixed, so the same grids make the same
+bytes) of whole GeoTIFFs, holding a source's grids of one z6 tile (the tile of each footprint's
+centre; a tile can have several packs, one per producer run or chunk), named
+`<6-x-y>.<hash16>.tar` (SHA-256 of its bytes). A packed grid's feature names its `pack` and its
+files' byte ranges in it, `at`: `{"file": [offset, length], "zoom_file": […], "low_file": […]}`. The
+build opens a pack once a job and reads each GeoTIFF in place by its range (crate::depth::grids), so
+its reading and output are a loose file's; `pack` and `at` are left out of the source's digest in the
+depth's keys (`grids::unpacked_digest`), so packing builds nothing again. A feature without `pack`
+is a loose file, read as before. The producers pack as they write the index (`grid.Writer`); a
+source's loose grids already on the NAS are packed once by `producers/depth/repack.py` (its
+docstring: by tar over SSH, resumable, the drop box's index replaced only once every pack is on
+the NAS, the loose files deleted only once the build has taken the packed index in).
 
 **`[data.params]`:** `code` (1–15, the source byte the class tiles carry, one a source), `water`
 (`sea` or `lake`: where it's drawn: a sea source stays off the lakes, a lake source in them),
@@ -1376,7 +1391,8 @@ under a "Depth:" line naming every source's `label` and "Not for navigation."; n
 the map).
 
 **Checks** (§6.9's, and): a depth declaration's params (`src-decl`); its index's features each naming
-a `.tif` `file` and a `zoom` 0–18 (`src-index`); two of one `code` (`src-role`).
+a `.tif` `file` and a `zoom` 0–18, and a packed one a `.tar` `pack` in the source's folder and a
+range in `at` for each file it names (`src-index`); two of one `code` (`src-role`).
 
 **The sources** (`producers/depth/declarations/`; the owner's decisions of 6 and 17 October 2026):
 
@@ -1400,7 +1416,7 @@ level by VDatum, which covers only the tidal reaches) and the SHOM grids (mean s
 estuaries' tidal reaches). The others' depths inland are heights on a fixed level (GEBCO, CRM,
 EMODnet, GtTM) or a lake's own, so they stay out of rivers.
 
-A chunked run (`chunked.py`) fetches a chunk, produces it, tars its grids over SSH into the NAS's
+A chunked run (`chunked.py`) fetches a chunk, produces it, packs it, tars its packs over SSH into the NAS's
 `sources/fetched/<id>/`, compares each file's size there and deletes the chunk here; each chunk's
 index part is kept, so the same command resumes. A dropped or refused connection, a timeout, 429 or a
 5xx is tried again (5 tries); any other failure stops the run before the chunk's part is written (a

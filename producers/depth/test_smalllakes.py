@@ -126,12 +126,15 @@ class Run(unittest.TestCase):
             w.write_index(t / "i.geojson")
             self.assertEqual(n, 1)
             self.assertEqual(counts, {"by the land slope": 1, "in HydroLAKES": 1, "intermittent": 1})
-            files = [f["properties"] for f in json.loads((t / "i.geojson").read_text())["features"]]
+            feats = json.loads((t / "i.geojson").read_text())["features"]
+            files = [f["properties"] for f in feats]
             self.assertEqual(len(files), 1)
             self.assertEqual(files[0]["zoom"], smalllakes.ZOOM)
             import rasterio
 
-            with rasterio.open(t / "out" / files[0]["file"]) as r:
+            from packs import gdal_path
+
+            with rasterio.open(gdal_path(t / "out", feats[0])) as r:
                 a = r.read(1)
             # (L ≈ 75 m, S = 0.05: the lab's model.)
             want, _ = smalllakes.dmax_estimate(0.05, 75.0, 2.25)

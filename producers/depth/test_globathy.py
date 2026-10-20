@@ -63,14 +63,17 @@ class Bowls(unittest.TestCase):
                 reach = [box[0], box[1] - 1.5, box[2] + 1.5, box[3]]
                 n += globathy.produce(globathy.read_lakes(t / "hl.zip", reach, dmax), w, "u", box)
             w.write_index(t / "i.geojson")
-            files = [f["properties"]["file"] for f in json.loads((t / "i.geojson").read_text())["features"]]
+            feats = json.loads((t / "i.geojson").read_text())["features"]
+            files = [f["properties"]["file"] for f in feats]
             self.assertEqual(len(files), n)
             self.assertEqual(len(files), len(set(files)))
             import rasterio
 
             lo = []
-            for f in files:
-                with rasterio.open(t / "out" / f) as r:
+            from packs import gdal_path
+
+            for f in feats:
+                with rasterio.open(gdal_path(t / "out", f)) as r:
                     a = r.read(1)
                     lo.append(float(np.nanmin(a)))
             self.assertAlmostEqual(min(lo), -20.0, places=3)

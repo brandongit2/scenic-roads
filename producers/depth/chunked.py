@@ -356,6 +356,7 @@ def main():
         log(f"chunk {ci + 1}/{len(chunks)}: {free(a.work)}")
         w = Writer(out)
         fetched = bluetopo_chunk(chunk, a.table, cache, w) if a.which == "bluetopo" else nonna10_chunk(chunk, a.table, cache, w, sea)
+        w.pack()  # (The chunk's grids go to the NAS as packs: packs.py.)
         n, size = to_nas(out, a.nas) if out.exists() and any(out.iterdir()) else (0, 0)
         w.write_index(part)
         if out.exists():

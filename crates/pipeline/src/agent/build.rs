@@ -7279,6 +7279,7 @@ pub(crate) mod tests {
             file: "g.tif".into(),
             zoom_file: None,
             low_file: None,
+            packed: None,
         };
         let s = |code: u8, grids| crate::depth::grids::Source {
             id: format!("s{code}"),

@@ -77,6 +77,7 @@ fn sources(dir: &Path) -> Vec<Source> {
                 file: p,
                 zoom_file: None,
                 low_file: None,
+                packed: None,
             }],
             pin: format!("s{code}"),
         }
@@ -591,7 +592,18 @@ fn measure_the_waters_reads() {
 /// A measure on real data, reading the NAS alone (nothing written): `SCENIC_DEPTH_MEASURE="<root>
 /// x/y <upto> <reads>"` composes z3 tile x/y's assembly to zoom `upto` (`SCENIC_DEPTH_MEASURE="<root>
 /// 6/x/y <upto> <reads>"`: z6 tile x/y's piece, from the NAS's lo packs) with `reads` windows read
-/// at once (1: in turn, the grids too), and prints its phases.
+/// at once (1: in turn, the grids too), and prints its phases, the depth files opened and read, and
+/// the digest of the tiles made. `SCENIC_DEPTH_PACKED="<id>=<index>=<folder> …"` (task #452) reads
+/// source `id`'s grids by a packed index (producers/depth/repack.py's) from its packs in `folder`
+/// instead: the same digest is the same output.
+/// A packed index's feature as the build reads it (`Source::from_declared`'s, one grid).
+fn grid_of(root: &Path, id: &str, f: &crate::inputs::sources::Feature) -> grids::Grid {
+    let decl = "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"depth\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 3\nwater = \"sea\"\nlabel = \"L\"\ndatum = \"D\"\n";
+    let d = crate::inputs::sources::parse(decl.as_bytes()).unwrap();
+    let s = crate::inputs::sources::Source { id: id.into(), data: d.data, keyed: "k".into(), index: vec![f.clone()] };
+    grids::Source::from_declared(root, &s).unwrap().grids.remove(0)
+}
+
 #[test]
 fn measure_a_real_assembly() {
     let Ok(m) = std::env::var("SCENIC_DEPTH_MEASURE") else { return };
@@ -607,8 +619,37 @@ fn measure_a_real_assembly() {
     crate::sys::raise_open_files();
     let scratch = tempfile::tempdir().unwrap();
     let out = Out::unbound(root, scratch.path()).unwrap();
-    let srcs = grids::declared(out.root(), &out.manifest).unwrap();
+    let mut srcs = grids::declared(out.root(), &out.manifest).unwrap();
+    for o in std::env::var("SCENIC_DEPTH_PACKED").unwrap_or_default().split_whitespace() {
+        let v: Vec<&str> = o.split('=').collect();
+        let (id, index, dir) = (v[0], Path::new(v[1]), Path::new(v[2]));
+        let s = srcs.iter_mut().find(|s| s.id == id).expect("a declared depth source");
+        let feats = crate::inputs::sources::parse_index(&std::fs::read(index).unwrap()).unwrap();
+        let mut pin = std::collections::HashMap::new();
+        let mut packed: Vec<grids::Grid> = Vec::new();
+        for f in &feats {
+            let g = grid_of(root, id, f);
+            pin.insert(g.file.clone(), g);
+        }
+        for g in pin.into_values() {
+            let mut g = g;
+            let p = g.packed.as_mut().expect("a packed grid");
+            p.pack = std::sync::Arc::new(dir.join(p.pack.file_name().unwrap()));
+            packed.push(g);
+        }
+        // (Its grids as the index orders them: coarse first, then by file.)
+        packed.sort_by(|a, b| a.zoom.cmp(&b.zoom).then(a.file.cmp(&b.file)));
+        let n = packed.len();
+        // (A trial's index has the grids meeting a box: those of the target, the rest kept loose.)
+        let names: std::collections::HashSet<std::path::PathBuf> = packed.iter().map(|g| g.file.clone()).collect();
+        let mut all: Vec<grids::Grid> = s.grids.iter().filter(|g| !names.contains(&g.file)).cloned().collect();
+        all.extend(packed);
+        all.sort_by(|a, b| a.zoom.cmp(&b.zoom).then(a.file.cmp(&b.file)));
+        s.grids = all;
+        println!("{id}: {n} grids read from packs in {}", dir.display());
+    }
     let water = crate::terrain_pack::open_water(&out).unwrap();
+    let io0 = grids::io_counts();
     crate::timings::start(if z == 3 { "depth-lo" } else { "depth" });
     let t0 = std::time::Instant::now();
     let made = if z == 3 {
@@ -619,6 +660,19 @@ fn measure_a_real_assembly() {
     let wall = t0.elapsed().as_secs_f64();
     let r = crate::timings::snapshot(true).unwrap();
     println!("{z}/{}/{} to z{upto}, reads {}: {} tiles in {wall:.1} s", q.0, q.1, a[3], made.len());
+    let io = grids::io_counts();
+    let mut h = Vec::new();
+    for (k, (d, c)) in &made {
+        h.extend_from_slice(format!("{k:?} {} {}\n", d.len(), c.len()).as_bytes());
+        h.extend_from_slice(d);
+        h.extend_from_slice(c);
+    }
+    println!(
+        "  depth files opened {}, range reads {}; tiles' digest {}",
+        io.0 - io0.0,
+        io.1 - io0.1,
+        store::naming::hash16(&h)
+    );
     for p in &r.phases {
         println!("  {:<34} {:>8.1} s  n={}", p.name, p.wall_s, p.n);
         for s in &p.sub {

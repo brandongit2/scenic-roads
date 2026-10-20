@@ -128,7 +128,12 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   coverage that a source meets (`depth-lo`, any Mac), and every z6 tile within it that a source
   finer than z8 meets (`depth`, any Mac). Both read only the NAS (the sources' grids, the basemap,
   the lo packs) and write their packs there. The 15″ grid covers the rest of an area's water.
-- **Reading the sources:** each over SMB waits round trips, so a source's grids meeting a block
+- **Reading the sources:** a source's grids are packed by z6 tile (docs/inputs.md §6.10, Packs:
+  a tar of whole GeoTIFFs, each read in place by its byte range), so a job opens a pack once and
+  reads its grids from it, not a file a grid; a pack is kept open by the job's reader like a grid
+  (the least recently used let go past the open-files cap, task #438), and its open has a loose
+  file's deadline and retries (below). Loose grids (an index feature without `pack`) are read as
+  before. Each read over SMB waits round trips, so a source's grids meeting a block
   (hundreds of BlueTopo's) are opened 8 at once, then sampled 8 at once (merged in their order),
   and each window's blocks read 8 at once into the shared block cache (`Tiff::prefetch_window`).
   A grid finer than the window is read from the coarsest overview whose cells are whole pixels of
@@ -199,8 +204,9 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   1. Both Macs run the app with the depth (until a depth declaration is accepted the chain has no
      targets).
   2. The producers make the grids on the M4 (`producers/depth/`, `uv run --project producers`) into a
-     local folder, each source then copied whole to `sources/fetched/<id>/` with `tar` over SSH (the
-     NAS's small-file limits; docs/storage.md).
+     local folder, packed by z6 tile, each source's packs then copied to `sources/fetched/<id>/`
+     with `tar` over SSH (the NAS's small-file limits; docs/storage.md). Grids already there loose are
+     packed once by `producers/depth/repack.py`.
   3. The declarations (`producers/depth/declarations/`) and the indexes are dropped into
      `inputs/sources/`. Once accepted, the terrain-water job works out the depth targets' water
      digests (once a basemap), then the assemblies run, then the pieces.

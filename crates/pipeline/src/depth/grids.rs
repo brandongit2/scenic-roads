@@ -13,6 +13,7 @@ use anyhow::{bail, ensure, Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use store::range::RangeRead;
 
 /// Web Mercator's half extent (m).
 pub const HALF: f64 = 20_037_508.342_789_244;
@@ -48,7 +49,49 @@ pub struct Grid {
     pub file: PathBuf,
     pub zoom_file: Option<PathBuf>,
     pub low_file: Option<PathBuf>,
+    /// Where its files are packed (task #452): the pack in the source's folder, and each file's
+    /// bytes in it (`file`, `zoom_file`, `low_file`); None: loose files, as before.
+    pub packed: Option<Packed>,
 }
+
+/// A grid's files inside a pack: a tar of whole GeoTIFFs (producers/depth/packs.py), each read in
+/// place by its byte range (store::range::Slice), so the TIFF reading is a loose file's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Packed {
+    pub pack: Arc<PathBuf>,
+    pub at: [Option<(u64, u64)>; 3],
+}
+
+/// Where one of a grid's files is read: its own name (its identity) and, packed, its pack and
+/// byte range.
+#[derive(Clone, Copy, Debug)]
+pub struct Loc<'a> {
+    pub path: &'a Path,
+    pub pack: Option<(&'a Path, u64, u64)>,
+}
+
+impl<'a> Loc<'a> {
+    pub fn loose(path: &'a Path) -> Self {
+        Loc { path, pack: None }
+    }
+}
+
+impl Grid {
+    /// Its file `k` (0 depth, 1 zoom, 2 low water), if it has it.
+    pub fn loc(&self, k: usize) -> Option<Loc<'_>> {
+        let path = match k {
+            0 => self.file.as_path(),
+            1 => self.zoom_file.as_deref()?,
+            _ => self.low_file.as_deref()?,
+        };
+        let pack = self.packed.as_ref().and_then(|p| p.at[k].map(|(o, n)| (p.pack.as_path(), o, n)));
+        Some(Loc { path, pack })
+    }
+}
+
+/// The index properties naming where a grid is packed (`pack`, `at`): not what it is, so left out
+/// of the source's pin (a repack builds nothing again).
+pub const PACK_PROPS: [&str; 2] = ["pack", "at"];
 
 /// A depth source, as its declaration and index say.
 #[derive(Clone, Debug, PartialEq)]
@@ -85,8 +128,22 @@ impl Source {
         let code = s.param_u64("code")?;
         ensure!((1..=15).contains(&code), "the depth source {}: code {code} isn't 1–15", s.id);
         let mut grids = Vec::with_capacity(s.index.len());
+        let mut packs: HashMap<String, Arc<PathBuf>> = HashMap::new();
         for f in &s.index {
             let name = |k: &str| f.props.get(k).and_then(|v| v.as_str()).map(|n| dir.join(n));
+            let packed = match f.props.get("pack").and_then(|v| v.as_str()) {
+                None => None,
+                Some(p) => {
+                    let pack = packs.entry(p.to_string()).or_insert_with(|| Arc::new(dir.join(p))).clone();
+                    let at = |k: &str| -> Option<(u64, u64)> {
+                        let a = f.props.get("at")?.get(k)?.as_array()?;
+                        Some((a.first()?.as_u64()?, a.get(1)?.as_u64()?))
+                    };
+                    let at = [at("file"), at("zoom_file"), at("low_file")];
+                    ensure!(at[0].is_some(), "the depth source {}: a packed grid without its file's range", s.id);
+                    Some(Packed { pack, at })
+                }
+            };
             grids.push(Grid {
                 bbox: f.bbox,
                 zoom: f
@@ -99,6 +156,7 @@ impl Source {
                 file: name("file").with_context(|| format!("the depth source {}: a grid without a file", s.id))?,
                 zoom_file: name("zoom_file"),
                 low_file: name("low_file"),
+                packed,
             });
         }
         // (Coarse first: a finer grid's cells win where grids overlap.)
@@ -116,7 +174,7 @@ impl Source {
             datum: s.param_str("datum")?.to_string(),
             notice: p.get("notice").and_then(|v| v.as_str()).map(str::to_string),
             grids,
-            pin: format!("{} {}", s.id, s.digest()),
+            pin: format!("{} {}", s.id, unpacked_digest(s)),
         })
     }
 
@@ -132,6 +190,18 @@ impl Source {
     pub fn max_zoom_in(&self, b: [f64; 4]) -> Option<u8> {
         self.meeting(b).map(|g| g.zoom).max()
     }
+}
+
+/// Declaration `s`'s digest with its grids' packing left out (`PACK_PROPS`): the same packed or
+/// loose, so a repack keeps every key.
+pub fn unpacked_digest(s: &crate::inputs::sources::Source) -> String {
+    let mut s = s.clone();
+    for f in &mut s.index {
+        for k in PACK_PROPS {
+            f.props.remove(k);
+        }
+    }
+    s.digest()
 }
 
 /// The accepted depth sources of the records `manifest`, in code order; none before any version
@@ -162,6 +232,33 @@ struct Open {
     next_id: u64,
     clock: u64,
     uses: HashMap<PathBuf, u64>,
+    /// The packs open (task #452), each opened once and its grids read from it by range; the least
+    /// recently used let go past the reader's `keep` (closed when its last grid is).
+    packs: HashMap<PathBuf, (Arc<Counted<store::range::PlainFile>>, u64)>,
+}
+
+/// A depth file's reads counted (`io_counts`).
+pub struct Counted<R>(R);
+
+impl<R: RangeRead> RangeRead for Counted<R> {
+    fn len(&self) -> Result<u64, store::IoError> {
+        self.0.len()
+    }
+
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
+        IO[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.0.read_at(off, len)
+    }
+}
+
+/// The depth files opened (a loose grid or a pack) and read (each range read), since the process
+/// began: a measure's.
+static IO: [std::sync::atomic::AtomicU64; 2] =
+    [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+
+/// (opens, reads) of depth files so far.
+pub fn io_counts() -> (u64, u64) {
+    (IO[0].load(std::sync::atomic::Ordering::Relaxed), IO[1].load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// How many grids a reader closes at once as it goes: a close is a round trip on the NAS and holds
@@ -172,12 +269,14 @@ const CLOSES_AT_ONCE: usize = 32;
 /// Its grids closed `CLOSES_AT_ONCE` at once as it goes: a reader can hold 2,000.
 impl Drop for Reader {
     fn drop(&mut self) {
-        let files: Vec<Arc<Tiff>> = {
+        let (files, packs): (Vec<Arc<Tiff>>, Vec<_>) = {
             let mut o = self.open.lock().unwrap_or_else(|e| e.into_inner());
             o.uses.clear();
-            o.files.drain().map(|(_, t)| t).collect()
+            (o.files.drain().map(|(_, t)| t).collect(), o.packs.drain().map(|(_, p)| p.0).collect())
         };
+        // (The grids first: a pack is closed with the last of them.)
         close_all(files, CLOSES_AT_ONCE);
+        close_all(packs, CLOSES_AT_ONCE);
     }
 }
 
@@ -240,12 +339,67 @@ impl Reader {
         Some(t)
     }
 
+    /// Loose file `p` (a test's).
+    #[cfg(test)]
     fn tiff(&self, p: &Path) -> Result<Arc<Tiff>> {
+        self.tiff_at(Loc::loose(p))
+    }
+
+    /// Pack `p`, open (opened now, or kept from before).
+    fn pack(&self, p: &Path) -> Result<Arc<Counted<store::range::PlainFile>>> {
+        {
+            let mut o = self.open.lock().unwrap();
+            o.clock += 1;
+            let c = o.clock;
+            if let Some(e) = o.packs.get_mut(p) {
+                e.1 = c;
+                return Ok(e.0.clone());
+            }
+        }
+        let f = open_retrying(p, &|p| within(p, OPEN_DEADLINE, store::range::PlainFile::open), &OPEN_WAITS)
+            .with_context(|| format!("{}", p.display()))?;
+        IO[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut o = self.open.lock().unwrap();
+        if let Some(e) = o.packs.get(p) {
+            return Ok(e.0.clone());
+        }
+        while o.packs.len() >= self.keep {
+            let Some(old) = o.packs.iter().min_by_key(|(_, e)| e.1).map(|(k, _)| k.clone()) else { break };
+            o.packs.remove(&old);
+        }
+        let f = Arc::new(Counted(f));
+        o.clock += 1;
+        let c = o.clock;
+        o.packs.insert(p.to_path_buf(), (f.clone(), c));
+        Ok(f)
+    }
+
+    fn tiff_at(&self, l: Loc<'_>) -> Result<Arc<Tiff>> {
+        let p = l.path;
         if let Some(t) = Self::get(&mut self.open.lock().unwrap(), p) {
             return Ok(t);
         }
-        let tiff = open_retrying(p, &|p| within(p, OPEN_DEADLINE, open_file), &OPEN_WAITS)
-            .with_context(|| format!("{}", p.display()))?;
+        let tiff = match l.pack {
+            None => open_retrying(p, &|p| within(p, OPEN_DEADLINE, open_file), &OPEN_WAITS)
+                .with_context(|| format!("{}", p.display()))?,
+            Some((pack, off, len)) => {
+                let f = self.pack(pack)?;
+                // (Its header read under the same deadline and retries as a loose file's open.)
+                open_retrying(
+                    p,
+                    &|_| {
+                        let f = f.clone();
+                        within_do(OPEN_DEADLINE, move || {
+                            let s = store::range::Slice::new(f, off, len)
+                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{e}")))?;
+                            tiff_of(Arc::new(s))
+                        })
+                    },
+                    &OPEN_WAITS,
+                )
+                .with_context(|| format!("{} in {}", p.display(), pack.display()))?
+            }
+        };
         // (Its cache id given as it's kept, under the one lock: two threads opening files at once
         // never share one.)
         let mut o = self.open.lock().unwrap();
@@ -270,10 +424,10 @@ impl Reader {
 
     /// `paths` opened (those not yet), `GRIDS_AT_ONCE` at once: over SMB each open and header read
     /// waits round trips, and a block can meet hundreds of a source's grids (BlueTopo's).
-    fn open_all(&self, paths: &[&Path]) -> Result<()> {
-        let todo: Vec<&Path> = {
+    fn open_all(&self, paths: &[Loc<'_>]) -> Result<()> {
+        let todo: Vec<Loc<'_>> = {
             let o = self.open.lock().unwrap();
-            paths.iter().copied().filter(|p| !o.files.contains_key(*p)).collect()
+            paths.iter().copied().filter(|l| !o.files.contains_key(l.path)).collect()
         };
         // (More than it keeps: opening them ahead would only close the first again. Each is opened
         // as it's sampled instead.)
@@ -293,7 +447,7 @@ impl Reader {
                     if i >= todo.len() || failed.lock().unwrap().is_some() {
                         return;
                     }
-                    if let Err(e) = self.tiff(todo[i]) {
+                    if let Err(e) = self.tiff_at(todo[i]) {
                         failed.lock().unwrap().get_or_insert(e);
                         return;
                     }
@@ -329,7 +483,13 @@ pub const OPEN_WAITS: [std::time::Duration; 4] = [
 /// that isn't a GeoTIFF's is `InvalidData` (never tried again).
 fn open_file(p: &Path) -> std::io::Result<Tiff> {
     let f = store::range::PlainFile::open(p)?;
-    Tiff::open(Arc::new(f)).map_err(|e| {
+    IO[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    tiff_of(Arc::new(Counted(f)))
+}
+
+/// A GeoTIFF's header read from `src` (`open_file`'s errors).
+fn tiff_of(src: Arc<dyn RangeRead>) -> std::io::Result<Tiff> {
+    Tiff::open(src).map_err(|e| {
         let kind = e
             .chain()
             .find_map(|c| c.downcast_ref::<std::io::Error>().map(|i| (i.kind(), i.raw_os_error())))
@@ -358,10 +518,18 @@ pub fn within<T: Send + 'static>(
     deadline: std::time::Duration,
     open: fn(&Path) -> std::io::Result<T>,
 ) -> std::io::Result<T> {
-    let (tx, rx) = std::sync::mpsc::channel();
     let owned = p.to_path_buf();
+    within_do(deadline, move || open(&owned))
+}
+
+/// `f()` on a thread of its own, waited for `deadline` at most (`within`'s).
+pub fn within_do<T: Send + 'static>(
+    deadline: std::time::Duration,
+    f: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+) -> std::io::Result<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new().name("depth-open".into()).spawn(move || {
-        let _ = tx.send(open(&owned));
+        let _ = tx.send(f());
     })?;
     rx.recv_timeout(deadline).unwrap_or_else(|_| {
         Err(std::io::Error::new(
@@ -540,10 +708,7 @@ pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: u
     let together = GRIDS_TOGETHER.load(std::sync::atomic::Ordering::Relaxed);
     if together {
         let _p = sub("depth source files opened", Class::NasRead);
-        let paths: Vec<&Path> = grids
-            .iter()
-            .flat_map(|g| std::iter::once(g.file.as_path()).chain(g.zoom_file.as_deref()).chain(g.low_file.as_deref()))
-            .collect();
+        let paths: Vec<Loc<'_>> = grids.iter().flat_map(|g| (0..3).filter_map(|k| g.loc(k))).collect();
         rd.open_all(&paths).with_context(|| format!("the depth source {}", src.id))?;
     }
     let _p = sub("depth sources' windows read", Class::NasRead);
@@ -596,7 +761,7 @@ pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: u
 /// the freed ones, 9 GB at depth-lo 3/2/3.) A pixel's value depends on its own place alone, so the
 /// part's are the window's.
 fn sample_grid(rd: &Reader, g: &Grid, z: u8, c0: i64, r0: i64, w: usize, h: usize) -> Result<Option<Part>> {
-    let t = rd.tiff(&g.file)?;
+    let t = rd.tiff_at(g.loc(0).context("no file")?)?;
     let (gc, gr) = origin(&t, g.zoom)?;
     let (iw, ih) = (i64::from(t.images()[0].width), i64::from(t.images()[0].height));
     // The window's pixels the grid reaches (zoom z): those covering its cells (finer), or whose
@@ -648,8 +813,8 @@ fn sample_grid_on(
     w: usize,
     h: usize,
 ) -> Result<Option<Sample>> {
-    let zt = g.zoom_file.as_deref().map(|p| rd.tiff(p)).transpose()?;
-    let lt = g.low_file.as_deref().map(|p| rd.tiff(p)).transpose()?;
+    let zt = g.loc(1).map(|l| rd.tiff_at(l)).transpose()?;
+    let lt = g.loc(2).map(|l| rd.tiff_at(l)).transpose()?;
     for x in zt.iter().chain(lt.iter()) {
         ensure!(
             origin(x, g.zoom)? == (gc, gr)
@@ -1002,6 +1167,7 @@ pub(crate) mod tests {
             file: p.clone(),
             zoom_file: None,
             low_file: None,
+            packed: None,
         }]);
         let rd = Reader::default();
         // Two zooms out: each pixel the mean of 4 × 4 cells, from the 4× overview.
@@ -1071,6 +1237,7 @@ pub(crate) mod tests {
             file: askew.clone(),
             zoom_file: None,
             low_file: None,
+            packed: None,
         }]);
         let (px0, py0) = ((c + 3) >> 4, (r + 1) >> 4);
         let got = sample(&rd, &s, 8, px0 - 1, py0 - 1, 70, 38).unwrap().unwrap();
@@ -1124,6 +1291,7 @@ pub(crate) mod tests {
             file: p,
             zoom_file: Some(zp),
             low_file: None,
+            packed: None,
         }]);
         let rd = Reader::default();
         let got = sample(&rd, &s, 8, c >> 4, r >> 4, 18, 10).unwrap().unwrap();
@@ -1153,6 +1321,7 @@ pub(crate) mod tests {
             file: d.path().join("g.tif"),
             zoom_file: Some(zp),
             low_file: None,
+            packed: None,
         }]);
         let e = sample(&rd, &s, 8, c >> 4, r >> 4, 18, 10).unwrap_err();
         assert!(format!("{e:#}").contains("lacks its grid's overview"), "{e:#}");
@@ -1174,7 +1343,7 @@ pub(crate) mod tests {
                 grid_file(&p, zoom, gc, gr, 64, 64, &|x, y| {
                     -(i as f32) - ((x - gc) as f32) * 0.01 - (y - gr) as f32 * 0.02
                 });
-                Grid { bbox: bbox(zoom, gc, gr, 64, 64), zoom, file: p, zoom_file: None, low_file: None }
+                Grid { bbox: bbox(zoom, gc, gr, 64, 64), zoom, file: p, zoom_file: None, low_file: None, packed: None }
             })
             .collect();
         let s = source(grids);
@@ -1198,6 +1367,111 @@ pub(crate) mod tests {
         assert_eq!(all.open_count(), 7);
     }
 
+    /// Task #452: grids packed (their files' bytes in a pack, read by range) sample bit for bit as
+    /// loose, each pack opened once by a reader, and a reader keeping few lets packs go too.
+    #[test]
+    fn packed_grids_sample_as_loose_and_each_pack_opens_once() {
+        let d = tempfile::tempdir().unwrap();
+        let (zoom, c, r) = (12u8, 1200 * 256i64, 1500 * 256i64);
+        let mut loose = Vec::new();
+        let mut packed = Vec::new();
+        let mut packs: Vec<Vec<u8>> = vec![vec![7u8; 512], vec![9u8; 1024]];
+        for i in 0..7i64 {
+            let (gc, gr) = (c + 40 * i, r);
+            let (p, l) = (d.path().join(format!("g{i}.tif")), d.path().join(format!("g{i}.low.tif")));
+            grid_file(&p, zoom, gc, gr, 64, 64, &|x, y| {
+                -(i as f32) - ((x - gc) as f32) * 0.01 - (y - gr) as f32 * 0.02
+            });
+            grid_file(&l, zoom, gc, gr, 64, 64, &|x, _| 0.5 + (x - gc) as f32 * 0.001);
+            let g = Grid {
+                bbox: bbox(zoom, gc, gr, 64, 64),
+                zoom,
+                file: p.clone(),
+                zoom_file: None,
+                low_file: Some(l.clone()),
+                packed: None,
+            };
+            loose.push(g.clone());
+            // (The first four in one pack, the rest in another, each after some other bytes.)
+            let k = usize::from(i >= 4);
+            let mut at = [None; 3];
+            for (j, f) in [(0, &p), (2, &l)] {
+                let b = std::fs::read(f).unwrap();
+                at[j] = Some((packs[k].len() as u64, b.len() as u64));
+                packs[k].extend_from_slice(&b);
+                packs[k].extend_from_slice(&[0u8; 100]);
+            }
+            let pack = Arc::new(d.path().join(format!("pack{k}.tar")));
+            packed.push(Grid {
+                file: d.path().join(format!("packed/g{i}.tif")),
+                low_file: Some(d.path().join(format!("packed/g{i}.low.tif"))),
+                packed: Some(Packed { pack, at }),
+                ..g
+            });
+        }
+        for (k, b) in packs.iter().enumerate() {
+            std::fs::write(d.path().join(format!("pack{k}.tar")), b).unwrap();
+        }
+        let (a, b) = (source(loose), source(packed));
+        for keep in [100, 1] {
+            let (ra, rb) = (Reader::keeping(keep), Reader::keeping(keep));
+            let mut wins = vec![(c, r, 320usize, 64usize)];
+            for i in 0..7i64 {
+                wins.push((c + 40 * i + 10, r + 5, 30, 30));
+            }
+            for (x, y, w, h) in wins {
+                let sa = sample(&ra, &a, zoom, x, y, w, h).unwrap().unwrap();
+                let sb = sample(&rb, &b, zoom, x, y, w, h).unwrap().unwrap();
+                let bits = |v: &[f32]| v.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&sa.v), bits(&sb.v));
+                assert_eq!(bits(&sa.low), bits(&sb.low));
+                assert_eq!((sa.zoom, sa.class), (sb.zoom, sb.class));
+                assert!(rb.open.lock().unwrap().packs.len() <= keep.min(2));
+            }
+            if keep == 100 {
+                assert_eq!(rb.open.lock().unwrap().packs.len(), 2);
+                assert_eq!(rb.open_count(), 14);
+            }
+        }
+        // A range past its pack's end is an error, never a short read.
+        let mut bad = b.grids[0].clone();
+        bad.packed.as_mut().unwrap().at[0] = Some((10, 1 << 30));
+        bad.file = d.path().join("packed/bad.tif");
+        assert!(sample(&Reader::keeping(4), &source(vec![bad]), zoom, c, r, 64, 64).is_err());
+    }
+
+    /// Task #452: a packed index's grids name their pack and ranges, and the source's pin is the
+    /// same as loose (a repack builds nothing again).
+    #[test]
+    fn a_packed_index_is_read_and_keeps_its_pin() {
+        let decl = "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"depth\"\n\
+                    format = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 3\nwater = \"sea\"\nlabel = \"L\"\ndatum = \"MSL\"\n";
+        let idx = |extra: &str| {
+            format!(
+                r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{"url":"https://a.org/x","file":"a.tif","low_file":"a.low.tif","zoom":8,"hash":"0123"{extra}}},"geometry":{{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}}}]}}"#
+            )
+        };
+        let src = |extra: &str| {
+            let d = crate::inputs::sources::parse(decl.as_bytes()).unwrap();
+            let index = crate::inputs::sources::parse_index(idx(extra).as_bytes()).unwrap();
+            let s = crate::inputs::sources::Source { id: "s".into(), data: d.data, keyed: "k".into(), index };
+            Source::from_declared(Path::new("/r"), &s).unwrap()
+        };
+        let loose = src("");
+        let packed = src(r#","pack":"6-1-2.00ff.tar","at":{"file":[512,100],"low_file":[1024,50]}"#);
+        assert_eq!(loose.pin, packed.pin);
+        assert_eq!(src(r#","hash":"9999""#).pin == loose.pin, false, "the grid's own change changes the pin");
+        let g = &packed.grids[0];
+        assert_eq!(g.file, Path::new("/r/sources/fetched/s/a.tif"));
+        let p = g.packed.as_ref().unwrap();
+        assert_eq!(p.pack.as_path(), Path::new("/r/sources/fetched/s/6-1-2.00ff.tar"));
+        assert_eq!(p.at, [Some((512, 100)), None, Some((1024, 50))]);
+        assert!(loose.grids[0].packed.is_none());
+        let l = g.loc(2).unwrap();
+        assert_eq!((l.path, l.pack), (Path::new("/r/sources/fetched/s/a.low.tif"), Some((p.pack.as_path(), 1024, 50))));
+        assert!(g.loc(1).is_none());
+    }
+
     /// Task #438: a grid sampled on the part of a window it reaches gives the window what sampling
     /// it on the whole window does, bit for bit: finer, as fine and coarser than the window, the window far larger
     /// than the grid, its edges included (a coarser grid's bilinear reach past its cells).
@@ -1213,7 +1487,14 @@ pub(crate) mod tests {
                 -((x - c) as f32) - (y - r) as f32 * 0.3 - 5.0
             }
         });
-        let s = source(vec![Grid { bbox: bbox(zoom, c, r, 40, 24), zoom, file: p, zoom_file: None, low_file: None }]);
+        let s = source(vec![Grid {
+            bbox: bbox(zoom, c, r, 40, 24),
+            zoom,
+            file: p,
+            zoom_file: None,
+            low_file: None,
+            packed: None,
+        }]);
         let rd = Reader::default();
         for z in [10u8, 12, 14] {
             let sc = |v: i64| if z >= zoom { v << (z - zoom) } else { v >> (zoom - z) };
@@ -1259,6 +1540,7 @@ pub(crate) mod tests {
             file: p,
             zoom_file: None,
             low_file: None,
+            packed: None,
         }]);
         let bits = |x: &Sample| {
             x.v.iter().map(|v| v.to_bits()).chain(x.zoom.iter().map(|&z| u32::from(z))).collect::<Vec<_>>()
@@ -1296,7 +1578,14 @@ pub(crate) mod tests {
                         -(i as f32) * 10.0 - ((x - gc) as f32) * 0.01 - ((y - gr) as f32) * 0.02
                     }
                 });
-                Grid { bbox: bbox(zoom, gc, gr, 320, 256), zoom, file: p, zoom_file: None, low_file: None }
+                Grid {
+                    bbox: bbox(zoom, gc, gr, 320, 256),
+                    zoom,
+                    file: p,
+                    zoom_file: None,
+                    low_file: None,
+                    packed: None,
+                }
             })
             .collect();
         let s = source(grids);

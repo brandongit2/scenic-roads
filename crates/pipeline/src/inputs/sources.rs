@@ -266,8 +266,8 @@ fn depth_params(d: &Data) -> Vec<String> {
 }
 
 /// What's wrong with a depth source's index features: each grid's `file` (its name in
-/// `sources/fetched/<id>/`) and `zoom` (the Web Mercator zoom whose pixels it's on), and its
-/// optional `zoom_file` and `low_file` (crate::depth::grid).
+/// `sources/fetched/<id>/`) and `zoom` (the Web Mercator zoom whose pixels it's on), its
+/// optional `zoom_file` and `low_file` (crate::depth::grid), and where packed its `pack` and `at`.
 pub fn depth_index_problems(f: &[Feature]) -> Vec<String> {
     let mut why = Vec::new();
     for (i, x) in f.iter().enumerate() {
@@ -284,6 +284,27 @@ pub fn depth_index_problems(f: &[Feature]) -> Vec<String> {
             if x.props.contains_key(k) && !name_ok(k) {
                 why.push(format!("feature {}: `{k}` isn't a .tif in the source's folder", i + 1));
             }
+        }
+        // (Packed, task #452: `pack`, a tar in the source's folder, and `at`, each file's byte range
+        // in it, [offset, length].)
+        if let Some(p) = x.props.get("pack") {
+            if !p
+                .as_str()
+                .is_some_and(|n| !n.is_empty() && !n.contains('/') && !n.contains("..") && n.ends_with(".tar"))
+            {
+                why.push(format!("feature {}: `pack` isn't a .tar in the source's folder", i + 1));
+            }
+            for k in ["file", "zoom_file", "low_file"] {
+                let r = x.props.get("at").and_then(|a| a.get(k));
+                let ok = r
+                    .and_then(|r| r.as_array())
+                    .is_some_and(|a| a.len() == 2 && a[0].as_u64().is_some() && a[1].as_u64().is_some_and(|n| n > 0));
+                if x.props.contains_key(k) != r.is_some() || (r.is_some() && !ok) {
+                    why.push(format!("feature {}: `at.{k}` isn't its file's [offset, length] in its pack", i + 1));
+                }
+            }
+        } else if x.props.contains_key("at") {
+            why.push(format!("feature {}: `at` without a `pack`", i + 1));
         }
         if !x.props.get("zoom").and_then(|v| v.as_u64()).is_some_and(|z| z <= 18) {
             why.push(format!("feature {} names no `zoom` 0–18", i + 1));
@@ -1047,6 +1068,20 @@ mod tests {
         assert!(depth_index_problems(&parse_index(ok).unwrap()).is_empty());
         let bad = br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"url":"https://a.org/x","file":"../a.tif"},"geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}]}"#;
         assert_eq!(depth_index_problems(&parse_index(bad).unwrap()).len(), 2);
+        // (Packed, task #452: a range for each file it names, and none for one it doesn't.)
+        let packed = |props: &str| {
+            let j = format!(
+                r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","properties":{{"url":"https://a.org/x","file":"a.tif","zoom":8,{props}}},"geometry":{{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}}}]}}"#
+            );
+            depth_index_problems(&parse_index(j.as_bytes()).unwrap())
+        };
+        assert!(packed(r#""pack":"6-1-2.0123456789abcdef.tar","at":{"file":[512,100]}"#).is_empty());
+        assert!(packed(r#""zoom_file":"a.zoom.tif","pack":"p.tar","at":{"file":[512,100],"zoom_file":[1024,9]}"#)
+            .is_empty());
+        assert_eq!(packed(r#""zoom_file":"a.zoom.tif","pack":"p.tar","at":{"file":[512,100]}"#).len(), 1);
+        assert_eq!(packed(r#""pack":"p.tar","at":{"file":[512,100],"low_file":[0,1]}"#).len(), 1);
+        assert_eq!(packed(r#""pack":"../p.tar","at":{"file":[512,0]}"#).len(), 2);
+        assert_eq!(packed(r#""at":{"file":[512,100]}"#).len(), 1);
         let wrong = decl("role = \"depth\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 16\nwater = \"river\"\n");
         assert!(SourcesCheck::default().file("w.toml", wrong.as_bytes()).findings.iter().any(|f| f.check() == DECL));
         let flags = decl("role = \"depth\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 15\nwater = \"lake\"\nlabel = \"L\"\ndatum = \"D\"\nrivers = \"yes\"\nestimated = true\n");
