@@ -441,7 +441,8 @@ R['kenya']['outline'].append({'minus': ['box:33.9,4.0,36.2,5.2', 'osm:192798', '
 # Israel's whole. (The 1949 no-man's-land strips are OSM 13950791, a boundary=historic relation outside
 # the outline set: they wait for the regions' extract; until then they are Palestine's.)
 IP = ['osm:1473946', 'osm:1613659', 'osm:1473938', 'osm:1473947', 'osm:184818', 'osm:184843', 'osm:184840']
-ip_rest = {'minus': ['box:34.2,29.4,35.95,33.4'] + IP}
+# (The catch-all box is the West Bank's extent, so no land elsewhere in neither border can join either.)
+ip_rest = {'minus': ['box:34.85,31.3,35.6,32.6'] + IP}
 R['israel']['outline'] += [{'intersect': [ip_rest, 'osm:1381350']}, 'osm:1377972']
 R['palestine']['outline'].append({'minus': [ip_rest, 'osm:1381350']})
 R['palestine']['minus'].append('osm:1381350')

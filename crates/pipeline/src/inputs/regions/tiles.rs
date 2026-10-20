@@ -891,7 +891,23 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         if !r.has_water() {
             continue;
         }
-        if t.is_empty() && r.hand_out_all {
+        if r.hand_out_all {
+            // (The holding region ends empty; anything left had no member to go to.)
+            if !t.is_empty() {
+                let v = t.cells.values().flat_map(|a| a.polys.iter()).next().map(|p| p[0][0]).unwrap_or_default();
+                out.problems.push(problem(
+                    "rg-hand-out",
+                    r,
+                    p,
+                    format!(
+                        "{id}: {:.1} km² by {:.4}°, {:.4}° found no region of \"{}\" with land to go to (hand_out_all)",
+                        t.km2(),
+                        v[0] as f64 / 1e7,
+                        v[1] as f64 / 1e7,
+                        r.hand_out.as_deref().unwrap_or_default()
+                    ),
+                ));
+            }
             out.resolved.remove(id);
             continue;
         }
@@ -1531,14 +1547,17 @@ fn nearest_member(comp: &BTreeMap<Cell, Area>, theirs: &[(&String, &TArea)]) -> 
         let mut seen = BTreeSet::new();
         for c in comp.keys() {
             for x in c.0 - 2..=c.0 + 2 {
-                for y in c.1 - 2..=c.1 + 2 {
-                    if !seen.insert((x, y)) {
+                // (Across ±180° the member's cell is wrapped and its points shifted to this side.)
+                let (w, shift) = wrap(x);
+                for y in (c.1 - 2).max(-45)..=(c.1 + 2).min(44) {
+                    if !seen.insert((w, y)) {
                         continue;
                     }
-                    let Some(a) = t.cells.get(&(x, y)) else { continue };
+                    let Some(a) = t.cells.get(&(w, y)) else { continue };
                     for q in a.polys.iter().flatten().flatten() {
+                        let q = [q[0] + shift, q[1]];
                         for p in &pts {
-                            d = d.min(seg_m(*p, *q));
+                            d = d.min(seg_m(*p, q));
                         }
                     }
                 }

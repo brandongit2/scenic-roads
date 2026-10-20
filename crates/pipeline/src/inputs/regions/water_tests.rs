@@ -637,3 +637,46 @@ fn hand_out_all_gives_every_stretch() {
     assert!(at("p3", 10.1, 3.1), "an island touching none goes to the nearest");
     assert!(!out.resolved.contains_key("p-rest"));
 }
+
+/// `hand_out_all` across ±180°: an island just east of the antimeridian goes to the member just west
+/// of it, not to a farther one on its own side.
+#[test]
+fn hand_out_all_looks_across_the_antimeridian() {
+    let d = tempfile::tempdir().unwrap();
+    let p = outlines(
+        d.path(),
+        &[(31, "PP", deg_sq(179.0, 0.0, 179.95, 1.0)), (32, "PP", deg_sq(-175.5, 0.0, -175.0, 1.0))],
+    );
+    let land = vec![bx(179.0, 0.0, 179.95, 1.0), bx(-175.5, 0.0, -175.0, 1.0), bx(-179.9, 0.2, -179.7, 0.4)];
+    let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
+    let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
+    let (west, east) = (m("west", 31), m("east", 32));
+    let rest = "id = \"p-rest\"\nname = \"P rest\"\noutline = [\"box:-180,0,-179,1\"]\nwater = []\nhand_out = \"p\"\nhand_out_all = true\n";
+    let out = run(&w, &[PINS, ("p/west.toml", &west), ("p/east.toml", &east), ("p/p-rest.toml", rest)]);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
+    assert!(at("west", -179.8, 0.3), "the nearer member, across ±180°");
+    assert!(!at("east", -179.8, 0.3));
+    assert!(!out.resolved.contains_key("p-rest"));
+}
+
+/// `hand_out_all` with no member able to take a stretch (none has land): the leftover is a
+/// finding, never stored quietly as a region.
+#[test]
+fn a_hand_out_all_leftover_is_a_finding() {
+    let d = tempfile::tempdir().unwrap();
+    let p = outlines(d.path(), &[(41, "PP", deg_sq(5.0, 5.0, 6.0, 6.0))]);
+    let land = vec![bx(0.0, 0.0, 0.5, 0.5)];
+    let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
+    let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let sea = "id = \"q1\"\nname = \"Q1\"\noutline = [\"osm:41\"]\nwater = [\"box:5,5,6,6\"]\n";
+    let rest = "id = \"q-rest\"\nname = \"Q rest\"\noutline = [\"box:0,0,1,1\"]\nwater = []\nhand_out = \"q\"\nhand_out_all = true\n";
+    let out = run(&w, &[PINS, ("q/q1.toml", sea), ("q/q-rest.toml", rest)]);
+    assert!(
+        out.problems.iter().any(|p| p.check == "rg-hand-out" && p.message.contains("q-rest")),
+        "{:?}",
+        out.problems
+    );
+    assert!(!out.resolved.contains_key("q-rest"));
+}
