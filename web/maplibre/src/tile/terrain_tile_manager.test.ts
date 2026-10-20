@@ -296,6 +296,17 @@ describe('TerrainTileManager', () => {
             return {parent, same, child, sibling, tiles, rttObjects, painter};
         }
 
+        test('dirtyAllRTT notes every tile with textures for the next frame, keeping them meanwhile (Scenic Roads)', () => {
+            const {tiles, rttObjects, painter} = setupTilesWithRttObjects();
+            (tsc.tileManager.map as any).triggerRepaint ??= vi.fn();
+            tsc._dirtyRTT.clear();
+            tsc.dirtyAllRTT();
+            expect([...tsc._dirtyRTT].sort()).toEqual(Object.keys(tiles).sort());
+            for (const key in tiles) expect(tiles[key].rttObjects[0]).toBe(rttObjects[key]);
+            expect(painter.releaseRTT).not.toHaveBeenCalled();
+            tsc._dirtyRTT.clear();
+        });
+
         test('with pacedDrapes, a tileID notes the matching tile, its ancestors and descendants for the next frame', () => {
             const {parent, same, child, sibling, tiles, painter} = setupTilesWithRttObjects();
             tsc.tileManager.map.triggerRepaint = vi.fn();
@@ -311,6 +322,7 @@ describe('TerrainTileManager', () => {
 
         test('with no tileID releases every cached tile', () => {
             const {tiles, rttObjects, painter} = setupTilesWithRttObjects();
+            (tsc.tileManager.map as any).triggerRepaint ??= vi.fn();
 
             tsc.releaseAllRTT();
 

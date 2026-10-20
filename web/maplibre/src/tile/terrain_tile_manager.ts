@@ -241,6 +241,16 @@ export class TerrainTileManager extends Evented {
     }
 
     /**
+     * Scenic Roads: with pacedDrapes, every tile's textures noted to be drawn again (`_dirtyRTT`:
+     * the next frame at rest, paced while moving); the retired tiles' released.
+     */
+    dirtyAllRTT(): void {
+        for (const key in this._tiles) if (this._tiles[key].rttObjects.length) this._dirtyRTT.add(key);
+        this.releaseRetired(() => false);
+        this.tileManager.map?.triggerRepaint();
+    }
+
+    /**
      * Scenic Roads: releases the retired tiles' textures but those `keep` names.
      */
     releaseRetired(keep: (key: string) => boolean): void {

@@ -124,7 +124,14 @@ The app compiles this source with its own code; there is no separate build or `d
   them in time; meanwhile each draws its own mesh with its part of the ancestor's texture (coarser
   for a frame or two). Tiles without one are drawn at once. At rest none waits and the retired
   textures are released; the texture rect is (0, 0, 1, 1), so a still view is drawn as before. When
-  the cover changed level in a pan over the lochs, 20–40 textures of 1024² were drawn in one frame.
+  the cover changed level in a pan over the lochs, 4–8 new textures came in one frame.
+- **A style change redraws the drapes at the same pace** (`Map#_handleTerrainDataEvent`,
+  `TerrainTileManager.dirtyAllRTT`): with pacedDrapes, a `style` data event (any paint, layout or
+  filter change) notes every texture to be drawn again instead of dropping them all: at rest all
+  are drawn again in that frame, as upstream; while moving `movingRedraws` a frame, the others kept
+  meanwhile (a draped layer's new paint reaches the whole view over a few frames). The app eases the
+  ferry lines' colour range every 100 ms during gestures, and each change drew every texture again
+  in one frame: 19–29 textures of 1024² ~7 times a second in a pan over the lochs.
 
 - **A camera moved a frame at a time counts as moving** (`Map#isMoving`, `MOVING_HOLD_MS`): the
   map is moving for 100 ms after any frame whose view-projection matrix differs from the last

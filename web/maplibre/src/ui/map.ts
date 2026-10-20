@@ -3025,7 +3025,12 @@ export class Map extends Evented<MapEventType> {
 
     private _handleTerrainDataEvent(event: MapStyleDataEvent | MapSourceDataEvent, terrainSourceId: string): void {
         if (event.dataType === 'style') {
-            this.terrain.tileManager.releaseAllRTT();
+            // Scenic Roads: with pacedDrapes, every texture is noted to be drawn again (at rest all
+            // in this frame, as upstream; while moving movingRedraws a frame, the others kept a few
+            // frames): the app eases a draped layer's paint during gestures (the ferry lines'
+            // colour range, every 100 ms), and each change drew every texture again in one frame.
+            if (this.terrain.tileManager.pacedDrapes) this.terrain.tileManager.dirtyAllRTT();
+            else this.terrain.tileManager.releaseAllRTT();
             return;
         }
 
