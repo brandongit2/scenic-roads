@@ -304,8 +304,11 @@ fn osmium(args: &mut Command, what: &str) -> Result<()> {
 /// ([`Summary::unassembled`]): a few dozen subdivisions broken in OSM at any time would otherwise
 /// stop every pass. The file's meta lists all three.
 pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &str)>) -> Result<Summary> {
+    use crate::timings::{sub, Class};
     std::fs::create_dir_all(work)?;
     let rels_opl = work.join("outlines-relations.opl");
+    // (Each program and stage its sub-phase, with the memory it held: crate::timings.)
+    let p = sub("the relations listed (osmium cat)", Class::Compute);
     osmium(
         store::spawn::command("osmium")
             .args(["cat", "-t", "relation", "-f", "opl", "--overwrite", "-o"])
@@ -315,11 +318,13 @@ pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &s
     )?;
     let rels = opl::kept_relations(BufReader::with_capacity(1 << 20, std::fs::File::open(&rels_opl)?))?;
     std::fs::remove_file(&rels_opl).ok();
+    drop(p);
     let geo = work.join("outlines.geojsonseq");
     // Node locations in a sparse index on disk (16 bytes a node): osmium's default can switch to a
     // dense array as big as the highest node id (about 100 GB for the planet's).
     let idx = work.join("outlines-nodes.idx");
     std::fs::remove_file(&idx).ok();
+    let p = sub("the polygons exported (osmium export)", Class::Compute);
     let st = store::spawn::status(
         store::spawn::command("osmium")
             .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite"])
@@ -331,9 +336,13 @@ pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &s
     .context("run osmium export")?;
     std::fs::remove_file(&idx).ok();
     ensure!(st.success(), "osmium export of {} failed: {st}", set.display());
+    drop(p);
+    let p = sub("the export read", Class::Compute);
     let parsed = read_export(&geo);
     std::fs::remove_file(&geo).ok();
     let mut parsed = parsed?;
+    drop(p);
+    let p = sub("the left-out countries repaired", Class::Compute);
     let have: std::collections::HashSet<u64> = parsed.iter().map(|p| p.id).collect();
     let missing: Vec<&opl::Relation> = rels.iter().filter(|r| !have.contains(&r.id)).collect();
     let (countries, others): (Vec<&opl::Relation>, Vec<&opl::Relation>) =
@@ -380,6 +389,8 @@ pub fn assemble(set: &Path, work: &Path, out: &Path, previous: Option<(&Path, &s
             parsed.push(p);
         }
     }
+    drop(p);
+    let _p = sub("simplified, placed and written", Class::Compute);
     write(parsed, out, sum)
 }
 
@@ -816,7 +827,7 @@ fn write(mut parsed: Vec<Parsed>, out: &Path, mut sum: Summary) -> Result<Summar
         .collect();
     // Which country each one lies in: the smallest country or territory outline holding a point
     // of it (a town in Guadeloupe lies in GP, not FR, whose relation holds Guadeloupe too).
-    let mut countries: Vec<(usize, f64, crate::coverage::Shape)> = parsed
+    let mut countries: Vec<(usize, f64)> = parsed
         .par_iter()
         .enumerate()
         .filter(|(_, p)| p.flags & flag::ISO1 != 0)
@@ -830,31 +841,53 @@ fn write(mut parsed: Vec<Parsed>, out: &Path, mut sum: Summary) -> Result<Summar
                         .map(|(k, r)| if k == 0 { ring_area_m2(r).abs() } else { -ring_area_m2(r).abs() })
                 })
                 .sum();
-            (i, area, crate::coverage::Shape::new(String::new(), p.polys.iter().flatten().cloned().collect(), 0.0))
+            (i, area)
         })
         .collect();
     countries.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
-    let countries: Vec<(usize, crate::coverage::Shape)> = countries.into_iter().map(|(i, _, s)| (i, s)).collect();
-    let country_of: Vec<Option<usize>> = parsed
+    // Each outline's two points: its outer ring's centre, and its first point (None: a country's
+    // own, or no ring).
+    let probes: Vec<Option<([i32; 2], [i32; 2])>> = parsed
         .par_iter()
         .map(|p| {
             if p.flags & flag::ISO1 != 0 {
                 return None;
             }
-            // A point inside the area: its outer ring's centre, else its first point.
             let r = p.polys.first()?.first()?;
             let n = r.len().max(1) as i64;
             let c = [
                 (r.iter().map(|q| q[0] as i64).sum::<i64>() / n) as i32,
                 (r.iter().map(|q| q[1] as i64).sum::<i64>() / n) as i32,
             ];
-            let inside = |pt: [i32; 2]| countries.iter().find(|(_, sh)| sh.contains(pt)).map(|(i, _)| *i);
-            inside(c).or_else(|| inside(r[0]))
+            Some((c, r[0]))
         })
         .collect();
+    // The smallest country holding the centre, else the smallest holding the first point: the
+    // countries in turn, smallest first, each one's shape (a copy of its rings, with a grid) made
+    // and let go before the next's, never all at once (task #448: they were the step's most memory
+    // after the points' list).
+    let (mut at_c, mut at_0): (Vec<Option<usize>>, Vec<Option<usize>>) =
+        (vec![None; parsed.len()], vec![None; parsed.len()]);
+    for &(i, _) in &countries {
+        let p = &parsed[i];
+        let sh = crate::coverage::Shape::new(String::new(), p.polys.iter().flatten().cloned().collect(), 0.0);
+        at_c.par_iter_mut().zip(at_0.par_iter_mut()).zip(&probes).for_each(|((c, z), pr)| {
+            let Some((pc, p0)) = pr else { return };
+            if c.is_none() && sh.contains(*pc) {
+                *c = Some(i);
+            }
+            if z.is_none() && sh.contains(*p0) {
+                *z = Some(i);
+            }
+        });
+    }
+    drop(probes);
+    let country_of: Vec<Option<usize>> = at_c.into_iter().zip(at_0).map(|(c, z)| c.or(z)).collect();
     let mut recs = Vec::with_capacity(parsed.len());
-    let (mut rings, mut points, mut srings, mut spoints): (Vec<Ring>, Vec<[i32; 2]>, Vec<Ring>, Vec<[i32; 2]>) =
-        Default::default();
+    let (mut rings, mut srings, mut spoints): (Vec<Ring>, Vec<Ring>, Vec<[i32; 2]>) = Default::default();
+    // The points are written from the outlines as they are (below), never gathered into one list
+    // beside them: that copy was the step's most memory (task #448).
+    let mut npoints: u64 = 0;
     for (pi, (p, simple)) in parsed.iter().zip(simplified).enumerate() {
         let mut bbox = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
         let mut area = 0.0;
@@ -869,8 +902,8 @@ fn write(mut parsed: Vec<Parsed>, out: &Path, mut sum: Summary) -> Result<Summar
                 }
                 let kind = (k > 0) as u32;
                 kinds.push(kind);
-                rings.push(Ring { start: points.len() as u64, count: r.len() as u32, kind });
-                points.extend_from_slice(r);
+                rings.push(Ring { start: npoints, count: r.len() as u32, kind });
+                npoints += r.len() as u64;
             }
         }
         let s0 = srings.len();
@@ -907,17 +940,23 @@ fn write(mut parsed: Vec<Parsed>, out: &Path, mut sum: Summary) -> Result<Summar
         });
     }
     sum.outlines = recs.len();
-    sum.points = points.len();
+    sum.points = npoints as usize;
     sum.simplified_points = spoints.len();
     if let Some(d) = out.parent() {
         std::fs::create_dir_all(d)?;
     }
     let stale: Vec<(u64, &str)> = sum.stale.iter().map(|s| (s.0, s.3.as_str())).collect();
-    let meta = serde_json::json!({ "fmt": FORMAT, "outlines": recs.len(), "points": points.len(), "spoints": spoints.len(), "repaired": sum.repaired, "stale": stale, "unassembled": sum.unassembled });
+    let meta = serde_json::json!({ "fmt": FORMAT, "outlines": recs.len(), "points": npoints, "spoints": spoints.len(), "repaired": sum.repaired, "stale": stale, "unassembled": sum.unassembled });
     let mut w = store::sect::SectWriter::create(out, meta)?;
     w.add_pod("recs", &recs)?;
     w.add_pod("rings", &rings)?;
-    w.add_pod("points", &points)?;
+    // (Each outline's rings' points in the order `rings` gives them.)
+    w.add_with("points", |sink| {
+        for r in parsed.iter().flat_map(|p| p.polys.iter().flatten()) {
+            std::io::Write::write_all(sink, bytemuck::cast_slice(r))?;
+        }
+        Ok(())
+    })?;
     w.add_pod("srings", &srings)?;
     w.add_pod("spoints", &spoints)?;
     w.add("strings", strings.join("\n").as_bytes())?;
@@ -1178,6 +1217,33 @@ fn territory_code(iso: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
+    /// A measure on real data, reading the NAS alone: `SCENIC_OUTLINES_MEASURE="<root> <date> <out
+    /// file>"` assembles the pass's outline set as the outlines step does (the previous pass's file
+    /// for its repairs) into `<out file>`, a local file, and prints its phases with the memory each
+    /// held (crate::timings). Unset, nothing.
+    #[test]
+    fn measure_a_real_assembly() {
+        let Ok(m) = std::env::var("SCENIC_OUTLINES_MEASURE") else { return };
+        let a: Vec<&str> = m.split_whitespace().collect();
+        let scratch = tempfile::tempdir().unwrap();
+        let out = crate::out::Out::unbound(Path::new(a[0]), scratch.path()).unwrap();
+        let set = out.path(out.get(&crate::osmpass::set_name(a[1], "outlines")).unwrap());
+        let previous =
+            crate::osmpass::previous_outlines(&out.manifest, a[1]).map(|(d, c)| (out.path(c), d.to_string()));
+        crate::timings::start("outlines");
+        let p = crate::timings::phase("assembled", crate::timings::Class::Compute);
+        let s = assemble(
+            &set,
+            &scratch.path().join("work"),
+            Path::new(a[2]),
+            previous.as_ref().map(|(p, d)| (p.as_path(), d.as_str())),
+        )
+        .unwrap();
+        drop(p);
+        println!("{} outlines, {} points", s.outlines, s.points);
+        print!("{}", crate::timings::table(&crate::timings::snapshot(true).unwrap()));
+    }
+
     const SQUARE_WITH_HOLE: &str = r#"{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]]},"properties":{"@type":"relation","@id":7,"boundary":"administrative","admin_level":"4","name":"Carré","name:en":"Square","ISO3166-2":"XX-SQ"}}"#;
 
     #[test]
@@ -1258,6 +1324,41 @@ mod tests {
         assert_eq!(o.string(o.by_id(12).unwrap().country), "PR");
         assert_eq!(o.country_code(o.by_id(12).unwrap()), "PR");
         assert_eq!(o.country_code(o.by_id(13).unwrap()), "ES");
+    }
+
+    /// Each outline's country is the smallest country holding its outer ring's centre, else the
+    /// smallest holding its first point (the countries' shapes made one at a time, task #448); and
+    /// the points, written as they are, read back ring by ring.
+    #[test]
+    fn the_smallest_country_holding_the_centre_else_the_first_point() {
+        let d = tempfile::tempdir().unwrap();
+        let geo = d.path().join("o.geojsonseq");
+        let square = |id: u32, ring: &str, tags: &str| {
+            SQUARE_WITH_HOLE
+                .replace("\"@id\":7", &format!("\"@id\":{id}"))
+                .replace("[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]", ring)
+                .replace("\"admin_level\":\"4\",", "")
+                .replace("\"ISO3166-2\":\"XX-SQ\"", tags)
+        };
+        let fr = square(1, "[[-1,-1],[2,-1],[2,2],[-1,2],[-1,-1]]", "\"admin_level\":\"2\",\"ISO3166-1\":\"FR\"");
+        let gp = square(2, "[[0,0],[1,0],[1,1],[0,1],[0,0]]", "\"admin_level\":\"2\",\"ISO3166-1\":\"GP\"");
+        let town = square(3, "[[0.1,0.1],[0.2,0.1],[0.2,0.2],[0.1,0.2],[0.1,0.1]]", "\"admin_level\":\"8\"");
+        // (Its centre outside every country; its first point in France alone.)
+        let reach = square(4, "[[1.5,1.5],[5,1.5],[5,5],[1.5,5],[1.5,1.5]]", "\"admin_level\":\"8\"");
+        let away = square(5, "[[10,10],[11,10],[11,11],[10,11],[10,10]]", "\"admin_level\":\"8\"");
+        std::fs::write(&geo, [fr, gp, town, reach, away].map(|f| format!("\u{1e}{f}\n")).concat()).unwrap();
+        let out = d.path().join("outlines.sect");
+        let s = assemble_geojsonseq(&geo, &out).unwrap();
+        assert_eq!((s.outlines, s.points), (5, 25));
+        let o = Outlines::open(&out).unwrap();
+        let country = |id: u64| o.string(o.by_id(id).unwrap().country).to_string();
+        assert_eq!([country(1), country(2), country(3), country(4), country(5)], ["FR", "GP", "GP", "FR", ""]);
+        let e7 = |x: f64, y: f64| [(x * 1e7).round() as i32, (y * 1e7).round() as i32];
+        for (id, first) in [(1, e7(-1.0, -1.0)), (3, e7(0.1, 0.1)), (4, e7(1.5, 1.5)), (5, e7(10.0, 10.0))] {
+            let p = o.polygons(o.by_id(id).unwrap()).unwrap();
+            assert_eq!((p.len(), p[0].len(), p[0][0].len()), (1, 1, 5), "{id}");
+            assert!(p[0][0].contains(&first), "{id}: {:?}", p[0][0]);
+        }
     }
 
     #[test]
