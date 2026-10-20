@@ -1386,6 +1386,31 @@ mod tests {
     use crate::handoff::Handoff;
     use crate::pool::journal::{Entry, LeaseId};
 
+    /// The worker page's schedule colours each stage from STAGE_COLOURS (web/work/dash.js), falling
+    /// back to upkeep's grey: every stage has a colour there, and no two stages share one.
+    #[test]
+    fn every_stage_has_a_colour_of_its_own_on_the_worker_page() {
+        let js = include_str!("../../../../web/work/dash.js");
+        let line = js.lines().find(|l| l.starts_with("const STAGE_COLOURS = {")).expect("STAGE_COLOURS in dash.js");
+        let body = &line[line.find('{').unwrap() + 1..line.rfind('}').unwrap()];
+        let colours: std::collections::BTreeMap<&str, &str> = body
+            .split(',')
+            .map(|kv| {
+                let (k, v) = kv.split_once(':').expect("key: colour");
+                (k.trim(), v.trim().trim_matches('"'))
+            })
+            .collect();
+        for s in &STAGES {
+            assert!(colours.contains_key(s.id), "stage {} has no colour in dash.js's STAGE_COLOURS", s.id);
+        }
+        let mut seen = std::collections::BTreeMap::new();
+        for (k, v) in &colours {
+            if let Some(other) = seen.insert(v.to_ascii_lowercase(), k) {
+                panic!("stages {other} and {k} share the colour {v} in dash.js's STAGE_COLOURS");
+            }
+        }
+    }
+
     #[test]
     fn made_is_what_todays_steps_write() {
         // The worldwide files the build makes (each family the NAS's manifest holds today).
