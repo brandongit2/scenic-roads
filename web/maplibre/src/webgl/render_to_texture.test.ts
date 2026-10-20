@@ -731,6 +731,16 @@ describe('render to texture', () => {
             expect(drawn()).toBe(4);
         });
 
+        test('a retired tile marked to be drawn again keeps its mark through a frame', () => {
+            setUp(true);
+            terrain.tileManager._dirtyRTT.add(parent.tileID.key);
+            rtt.prepareForRender(style, 0);
+            expect(terrain.tileManager._retired[parent.tileID.key]).toBe(parent);
+            expect(terrain.tileManager._dirtyRTT.has(parent.tileID.key)).toBe(true);
+            terrain.tileManager.releaseRetired(() => false);
+            expect(terrain.tileManager._dirtyRTT.has(parent.tileID.key)).toBe(false);
+        });
+
         test('standInFrames 0: drawn at once while moving too', () => {
             setUp(true);
             terrain.tileManager.standInFrames = 0;

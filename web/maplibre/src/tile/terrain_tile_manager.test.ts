@@ -134,11 +134,19 @@ describe('TerrainTileManager', () => {
             const child = manager.getRenderableTiles().find(t => t.tileID.isChildOf(textured.tileID));
             if (child) expect(manager.retiredAncestor(child.tileID)).toBe(textured);
             expect(manager.retiredAncestor(textured.tileID)).toBeUndefined();
+            // a source tile under it loads while it's retired: its mark is kept
+            (manager.tileManager.map as any).triggerRepaint = vi.fn();
+            manager._dirtyRTT.clear();
+            manager.releaseRTT(textured.tileID);
+            expect(manager._dirtyRTT.has(textured.tileID.key)).toBe(true);
+            manager._dirtyRTT.clear();
             transform.setZoom(8);
             manager.update(transform, null);
             expect(manager._retired).toEqual({});
             expect(manager.getTileByID(textured.tileID.key)).toBe(textured);
             expect(textured.rttObjects).toHaveLength(1);
+            // taken back with its textures, it's drawn again (a mark made while retired may be gone)
+            expect(manager._dirtyRTT.has(textured.tileID.key)).toBe(true);
             manager.releaseAllRTT();
             expect(textured.rttObjects).toHaveLength(0);
         });

@@ -119,7 +119,8 @@ The app compiles this source with its own code; there is no separate build or `d
   `TerrainTileManager._retired`, `RenderToTexture._pickStandIns`, `u_texture_rect` in
   `terrain.vertex.glsl`): with pacedDrapes, a terrain tile leaving the cover keeps its textures
   (retired) while a tile under it in the new cover has none, and is taken back whole if the cover
-  returns to it. While the camera moves, the new tiles that have such a retired ancestor are drawn
+  returns to it (marked to be drawn again, paced: a source tile may have loaded under it meanwhile;
+  a retired tile keeps its marks). While the camera moves, the new tiles that have such a retired ancestor are drawn
   over at most `standInFrames` + 1 frames, the longest-waiting first and as many a frame as finish
   them in time; meanwhile each draws its own mesh with its part of the ancestor's texture (coarser
   for a frame or two). Tiles without one are drawn at once. At rest none waits and the retired

@@ -172,9 +172,11 @@ export class TerrainTileManager extends Evented {
             keys[tileID.key] = true;
             this._renderableTilesKeys.push(tileID.key);
             if (!this._tiles[tileID.key] && this._retired[tileID.key]) {
-                // Scenic Roads: back in the cover before its textures were released.
+                // Scenic Roads: back in the cover before its textures were released; drawn again
+                // (paced) since a mark made while it was retired is gone.
                 this._tiles[tileID.key] = this._retired[tileID.key];
                 delete this._retired[tileID.key];
+                this._dirtyRTT.add(tileID.key);
                 this._lastTilesetChange = now();
                 changed = true;
             } else if (!this._tiles[tileID.key]) {
@@ -226,6 +228,11 @@ export class TerrainTileManager extends Evented {
                 else tile.releaseRTT(this.tileManager.map.painter);
             }
         }
+        // (Scenic Roads: a retired tile's mark is kept until the cover takes it back or it's released)
+        for (const key in this._retired) {
+            const id = this._retired[key].tileID;
+            if (id.equals(tileID) || id.isChildOf(tileID) || tileID.isChildOf(id)) this._dirtyRTT.add(key);
+        }
         if (this.pacedDrapes) this.tileManager.map?.triggerRepaint();
     }
 
@@ -258,6 +265,7 @@ export class TerrainTileManager extends Evented {
             if (keep(key)) continue;
             this._retired[key].releaseRTT(this.tileManager.map.painter);
             delete this._retired[key];
+            if (!this._tiles[key]) this._dirtyRTT.delete(key);
         }
     }
 

@@ -257,7 +257,7 @@ export class RenderToTexture {
         for (const key of [...tm._dirtyRTT]) {
             const tile = tm._tiles[key];
             if (tile && !release(tile)) break;
-            tm._dirtyRTT.delete(key);
+            if (!tm._retired[key]) tm._dirtyRTT.delete(key); // (Scenic Roads: a retired tile keeps its mark)
         }
         let staleTileReleased = false;
         for (const tile of this._renderableTiles) {
