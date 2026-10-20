@@ -1092,6 +1092,11 @@ impl<W: crate::terrain_water::WaterSource> crate::terrain_water::WaterSource for
         self.filled(base, z, x, y)
     }
 
+    fn depth_polys_many(&self, tiles: &[(u8, u32, u32)]) -> Result<Vec<Vec<crate::terrain_water::Poly>>> {
+        let base = self.base.depth_polys_many(tiles)?;
+        tiles.iter().zip(base).map(|(&(z, x, y), b)| self.filled(b, z, x, y)).collect()
+    }
+
     /// `filled_pin`'s.
     fn pin(&self) -> String {
         filled_pin(&self.base.pin(), self.fill.as_ref().map(Fill::pin))

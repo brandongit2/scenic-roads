@@ -74,6 +74,15 @@ fn scaled(ps: &[Poly], d: u8, x: u32, y: u32) -> Vec<Poly> {
         .collect()
 }
 
+/// A tile's water from its polygons (`water_tile`), None where there's none.
+fn made(ps: Vec<Poly>) -> Option<Arc<WaterTile>> {
+    if ps.is_empty() {
+        None
+    } else {
+        Some(Arc::new(water_tile(&ps))).filter(|t| !t.is_empty())
+    }
+}
+
 /// The bytes of polygons `ps` hold (their rings' points, and each ring's and polygon's own).
 fn polys_bytes(ps: &[Poly]) -> usize {
     ps.iter().map(|p| 48 + p.rings.iter().map(|r| 24 + r.len() * 16).sum::<usize>()).sum()
@@ -86,7 +95,9 @@ pub const POLYS_BYTES: usize = 48 << 20;
 
 /// The water of the tiles around blocks, kept while a level is made (neighbouring blocks share
 /// their rings), and the z14 polygons the finer levels are drawn from, kept across them: each
-/// z14 tile's are read from the basemap and decoded once for its 4 z15 and 16 z16 children.
+/// z14 tile's are read from the basemap and decoded once for its 4 z15 and 16 z16 children. A
+/// block's tiles it lacks are read together (`prefetch`: the basemap reads them in runs) and
+/// rasterised on the job's threads.
 pub struct WaterCache {
     tiles: HashMap<(u8, u32, u32), Option<Arc<WaterTile>>>,
     /// By (y, x): the z14 tile's polygons, shared, and their bytes.
@@ -151,12 +162,66 @@ impl WaterCache {
             return Ok(t.clone());
         }
         let ps = self.polys(src, z, x, y)?;
-        let t = if ps.is_empty() { None } else { Some(Arc::new(water_tile(&ps))).filter(|t| !t.is_empty()) };
+        let t = made(ps);
         if self.tiles.len() > 4096 {
             self.tiles.clear();
         }
         self.tiles.insert((z, x, y), t.clone());
         Ok(t)
+    }
+
+    /// The water tiles of `keys` (zoom `z`'s x, y) this cache lacks, made together: their
+    /// polygons read in one ask (`WaterSource::depth_polys_many`: the basemap reads a block's
+    /// tiles in runs, task #492; at z15–16 the z14 tiles they're drawn from, those not kept) and
+    /// rasterised on the job's threads, each tile's as `tile` makes it one by one.
+    fn prefetch(&mut self, src: &dyn WaterSource, z: u8, keys: &[(u32, u32)]) -> Result<()> {
+        use rayon::prelude::*;
+        let todo: Vec<(u32, u32)> =
+            keys.iter().copied().filter(|&(x, y)| !self.tiles.contains_key(&(z, x, y))).collect();
+        if todo.is_empty() {
+            return Ok(());
+        }
+        let polys: Vec<Vec<Poly>> = if z <= WATER_Z {
+            src.depth_polys_many(&todo.iter().map(|&(x, y)| (z, x, y)).collect::<Vec<_>>())?
+        } else {
+            let d = z - WATER_Z;
+            let mut parents: Vec<(u32, u32)> = todo.iter().map(|&(x, y)| (y >> d, x >> d)).collect();
+            parents.sort_unstable();
+            parents.dedup();
+            let missing: Vec<(u32, u32)> = parents.iter().copied().filter(|k| !self.polys.contains_key(k)).collect();
+            let mut last = None;
+            if !missing.is_empty() {
+                let read = src.depth_polys_many(&missing.iter().map(|&(y, x)| (WATER_Z, x, y)).collect::<Vec<_>>())?;
+                for (k, p) in missing.iter().zip(read) {
+                    let bytes = polys_bytes(&p);
+                    self.polys.insert(*k, (Arc::new(p), bytes));
+                    self.polys_bytes += bytes;
+                    last = Some(*k);
+                }
+            }
+            let kept = &self.polys;
+            let scaled: Vec<Vec<Poly>> =
+                todo.par_iter().map(|&(x, y)| scaled(&kept[&(y >> d, x >> d)].0, d, x, y)).collect();
+            // (Past the bound: the others go, the rows farthest up first, until it fits; the last
+            // read stays whatever the bound.)
+            if let Some(last) = last {
+                while self.polys_bytes > self.bound {
+                    let Some(k) = self.polys.keys().find(|k| **k != last).copied() else { break };
+                    if let Some((_, b)) = self.polys.remove(&k) {
+                        self.polys_bytes -= b;
+                    }
+                }
+            }
+            scaled
+        };
+        let tiles: Vec<Option<Arc<WaterTile>>> = polys.into_par_iter().map(made).collect();
+        if self.tiles.len() + tiles.len() > 4096 {
+            self.tiles.clear();
+        }
+        for ((x, y), t) in todo.into_iter().zip(tiles) {
+            self.tiles.insert((z, x, y), t);
+        }
+        Ok(())
     }
 
     /// Block `b`'s water (`Water`): a pixel is water when the sea, lakes and rivers cover half of
@@ -173,6 +238,12 @@ impl WaterCache {
         let mut old = vec![0u8; w * h];
         let mut ids: HashMap<u64, u32> = HashMap::new();
         let n = 1i64 << b.z;
+        let around: Vec<(u32, u32)> = (i64::from(b.ty0) - 1..=i64::from(b.ty0 + b.ny))
+            .flat_map(|ty| (i64::from(b.tx0) - 1..=i64::from(b.tx0 + b.nx)).map(move |tx| (tx, ty)))
+            .filter(|&(tx, ty)| (0..n).contains(&ty) && (0..n).contains(&tx))
+            .map(|(tx, ty)| (tx as u32, ty as u32))
+            .collect();
+        self.prefetch(src, b.z, &around)?;
         for ty in i64::from(b.ty0) - 1..=i64::from(b.ty0 + b.ny) {
             for tx in i64::from(b.tx0) - 1..=i64::from(b.tx0 + b.nx) {
                 if !(0..n).contains(&ty) || !(0..n).contains(&tx) {

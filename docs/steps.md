@@ -136,6 +136,11 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   before. Each read over SMB waits round trips, so a source's grids meeting a block
   (hundreds of BlueTopo's) are opened 8 at once, then sampled 8 at once (merged in their order),
   and each window's blocks read 8 at once into the shared block cache (`Tiff::prefetch_window`).
+  A grid's open reads its header in windows of 32 KB (`geotiff::Windowed`: its directories, their
+  values and its tile arrays lie in one or two clusters, the first image's at the file's start
+  and the overviews' after its data) and keeps the tile arrays, so an open is one or two reads
+  (it was 24–38, one a value) and a block's read is one, its data's (it was three: the tile's
+  offset, its length, then its bytes); task #492.
   A grid finer than the window is read from the coarsest overview whose cells are whole pixels of
   the window's zoom (each pixel's mean exact), else, when its origin lines up with no overview
   (most of BlueTopo's), from the coarsest at least four cells to a pixel's side, each cell counted
@@ -157,7 +162,12 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
 - **The water's reads:** a level's blocks share the water tiles their margins overlap
   (`depth::build::WaterCache`), and a z14 tile's polygons, the basemap's deepest, are read and
   decoded once for its 4 z15 and 16 z16 descendants, across the two levels, shared among them and
-  kept within `POLYS_BYTES` (48 MB; past it the rows farthest up go first).
+  kept within `POLYS_BYTES` (48 MB; past it the rows farthest up go first). A block's tiles it
+  lacks (a hundred, with its margin) are read from the basemap together
+  (`WaterSource::depth_polys_many`, `PmTiles::get_many`: their places sorted and those within
+  64 KB of each other read in one range, 8 ranges at once; a clustered archive keeps neighbours
+  together, so a block is a few reads, not a hundred round trips), then decoded and rasterised on
+  the job's threads (task #492). The same polygons and water as one by one.
 - **depth-lo (a z3 tile):** z6–8 composed (below), z3–5 each its children's mean.
 - **depth (a z6 tile):** z9–16, a block only where a source has a grid of that zoom or finer; its
   capped pixels scaled up from this job's coarser tiles and, at z8 and coarser, from the lo packs

@@ -88,9 +88,18 @@ pub trait WaterSource: Sync {
     fn depth_polys(&self, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
         self.polys(z, x, y)
     }
+    /// `depth_polys` of each of `tiles`, in their order: a source that can read them together
+    /// does (the basemap: its tiles in runs, `store::pmtiles::PmTiles::get_many`); the same
+    /// polygons as one by one.
+    fn depth_polys_many(&self, tiles: &[(u8, u32, u32)]) -> Result<Vec<Vec<Poly>>> {
+        tiles.iter().map(|&(z, x, y)| self.depth_polys(z, x, y)).collect()
+    }
     /// What pins it (the terrain's key): the basemap's content name.
     fn pin(&self) -> String;
 }
+
+/// How many of the basemap's runs of tiles `depth_polys_many` reads at once.
+pub const WATER_READS: usize = 8;
 
 /// The pass's basemap (Planetiler's OpenMapTiles PMTiles): its `water` layer.
 pub struct BasemapWater {
@@ -120,6 +129,23 @@ impl WaterSource for BasemapWater {
         }
         let Some(raw) = self.pm.get(z, x, y)? else { return Ok(Vec::new()) };
         polys_of_mvt_with(&names::mvt::gunzip_if_gzip(&raw)?, z, x, y, true)
+    }
+    /// The tiles read in runs (`PmTiles::get_many`), then each decoded as `depth_polys` does, on
+    /// the job's threads.
+    fn depth_polys_many(&self, tiles: &[(u8, u32, u32)]) -> Result<Vec<Vec<Poly>>> {
+        use rayon::prelude::*;
+        let asked: Vec<(u8, u32, u32)> = tiles.iter().copied().filter(|t| (6..=14).contains(&t.0)).collect();
+        let raws = self.pm.get_many(&asked, WATER_READS)?;
+        let decoded: Vec<Result<Vec<Poly>>> = asked
+            .par_iter()
+            .zip(raws.into_par_iter())
+            .map(|(&(z, x, y), raw)| match raw {
+                Some(raw) => polys_of_mvt_with(&names::mvt::gunzip_if_gzip(&raw)?, z, x, y, true),
+                None => Ok(Vec::new()),
+            })
+            .collect();
+        let mut by = decoded.into_iter();
+        tiles.iter().map(|t| if (6..=14).contains(&t.0) { by.next().unwrap() } else { Ok(Vec::new()) }).collect()
     }
     fn pin(&self) -> String {
         self.name.clone()

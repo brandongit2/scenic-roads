@@ -25,6 +25,10 @@ const FIRST_READ: u64 = 16384;
 const LEAF_CACHE: usize = 128;
 /// The root and up to three levels of leaves (as the reference reader).
 const MAX_DEPTH: usize = 4;
+/// How far apart two tiles' bytes may lie for one of `get_many`'s reads to take both.
+pub const GATHER_GAP: u64 = 64 << 10;
+/// The most bytes one of `get_many`'s reads takes.
+pub const GATHER_MAX: u64 = 4 << 20;
 /// Largest directory or metadata accepted once decompressed (a guard against damaged archives).
 const MAX_DECOMPRESSED: u64 = 256 << 20;
 
@@ -523,6 +527,66 @@ impl PmTiles {
         }
     }
 
+    /// Tiles `zxys` as stored (`get`'s bytes, in their order; None where the archive has none),
+    /// read in runs: the tiles' places sorted, those within `GATHER_GAP` of each other taken in one
+    /// read of at most `GATHER_MAX` bytes, `threads` runs read at once (task #492: a clustered
+    /// archive keeps neighbouring tiles together, so a block's hundred tiles lie in a few runs, and
+    /// over SMB each read is a round trip). The same bytes as `get` gives each.
+    pub fn get_many(&self, zxys: &[(u8, u32, u32)], threads: usize) -> Result<Vec<Option<Vec<u8>>>> {
+        let places: Vec<Option<(u64, u32)>> =
+            zxys.iter().map(|&(z, x, y)| self.locate(z, x, y)).collect::<Result<_>>()?;
+        let mut distinct: Vec<(u64, u32)> = places.iter().flatten().copied().collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        // The runs: (offset, length) each.
+        let mut runs: Vec<(u64, u64)> = Vec::new();
+        for &(off, len) in &distinct {
+            let end = off + u64::from(len);
+            if let Some(last) = runs.last_mut() {
+                let last_end = last.0 + last.1;
+                if off <= last_end + GATHER_GAP && end - last.0 <= GATHER_MAX {
+                    last.1 = end.max(last_end) - last.0;
+                    continue;
+                }
+            }
+            runs.push((off, u64::from(len)));
+        }
+        let bufs: Vec<Mutex<Option<Vec<u8>>>> = runs.iter().map(|_| Mutex::new(None)).collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failed: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+        std::thread::scope(|s| {
+            for _ in 0..threads.clamp(1, runs.len().max(1)) {
+                s.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= runs.len() || failed.lock().unwrap().is_some() {
+                        return;
+                    }
+                    match self.src.read_at(runs[i].0, runs[i].1 as usize) {
+                        Ok(b) => *bufs[i].lock().unwrap() = Some(b),
+                        Err(e) => {
+                            failed.lock().unwrap().get_or_insert(e.into());
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(e) = failed.into_inner().unwrap() {
+            return Err(e);
+        }
+        let bufs: Vec<Vec<u8>> = bufs.into_iter().map(|b| b.into_inner().unwrap().unwrap_or_default()).collect();
+        Ok(places
+            .iter()
+            .map(|p| {
+                p.map(|(off, len)| {
+                    let i = runs.partition_point(|r| r.0 <= off) - 1;
+                    let s = (off - runs[i].0) as usize;
+                    bufs[i][s..s + len as usize].to_vec()
+                })
+            })
+            .collect())
+    }
+
     /// Where tile z/x/y's bytes are (absolute offset and length), or None when the archive has no
     /// such tile (or there is no such tile). Tiles with the same bytes share a location.
     pub fn locate(&self, z: u8, x: u32, y: u32) -> Result<Option<(u64, u32)>> {
@@ -821,6 +885,48 @@ mod tests {
             let (file, tiles) = build(Some(size));
             let a = PmTiles::with_leaf_cache(Box::new(file), 3).unwrap();
             check(&a, &tiles);
+        }
+    }
+
+    /// Task #492: tiles asked for together are each `get`'s bytes (none where there's no tile),
+    /// read in runs: a small archive's tiles, lying within a gap of each other, in one read.
+    #[test]
+    fn tiles_asked_for_together_are_read_in_runs() {
+        struct Counting(Vec<u8>, std::sync::atomic::AtomicUsize);
+        impl RangeRead for Counting {
+            fn len(&self) -> Result<u64, crate::IoError> {
+                RangeRead::len(&self.0)
+            }
+            fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, crate::IoError> {
+                self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.0.read_at(off, len)
+            }
+        }
+        for leaves in [None, Some(7)] {
+            let (file, tiles) = build(leaves);
+            let src = Arc::new(Counting(file, Default::default()));
+            // (Every leaf directory kept: each read once as the tiles are located.)
+            let a = PmTiles::with_leaf_cache(Box::new(src.clone()), 4096).unwrap();
+            let mut ask: Vec<(u8, u32, u32)> = tiles.iter().map(|t| (t.0, t.1, t.2)).collect();
+            ask.push((6, 0, 0));
+            ask.push((3, 8, 0));
+            ask.push((5, 3, 20));
+            let n0 = src.1.load(std::sync::atomic::Ordering::Relaxed);
+            let got = a.get_many(&ask, 3).unwrap();
+            let reads = src.1.load(std::sync::atomic::Ordering::Relaxed) - n0;
+            for (t, g) in ask.iter().zip(&got) {
+                assert_eq!(g, &a.get(t.0, t.1, t.2).unwrap(), "{t:?}");
+            }
+            assert_eq!(got[ask.len() - 3], None);
+            assert_eq!(got[ask.len() - 2], None);
+            assert_eq!(got[ask.len() - 1].as_deref(), Some(&b"sea"[..]));
+            // (Its tiles' bytes lie together: one read of the data, past any leaf directories'.)
+            let leaf_dirs = if leaves.is_some() { a.root.len() } else { 0 };
+            assert!(reads >= 1 && reads <= 1 + leaf_dirs, "{reads} reads, leaves {leaves:?}");
+            if leaves.is_none() {
+                assert_eq!(reads, 1);
+            }
+            assert_eq!(a.get_many(&[], 4).unwrap(), Vec::<Option<Vec<u8>>>::new());
         }
     }
 

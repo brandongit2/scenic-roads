@@ -495,18 +495,23 @@ fn a_z14_tiles_water_is_read_once_for_its_finer_descendants() {
     expect.extend(touched(b));
     wc.block(&src, b).unwrap();
     once(&src.0.lock().unwrap(), &expect);
-    // Bounded to a byte: one z14 tile's polygons kept at a time, so a block's tiles read theirs
-    // again as its rows come back to them; never more than the bound past that one tile.
+    // Bounded to a byte: a block's z14 tiles are read together (task #492: once each, whatever the
+    // bound) and only the last read is kept past it; the next block reads its own again.
     let src = counting();
     let mut wc = WaterCache::with_bound(1);
     // (Blocks in the sea: every tile has polygons.)
     let b = Block { z: 16, tx0: x0 + 256, ty0: y0 + 8, nx: 8, ny: 8 };
-    wc.block(&src, b).unwrap();
+    let w1 = wc.block(&src, b).unwrap();
     let reads: usize = src.0.lock().unwrap().values().sum();
-    assert!(reads > touched(b).len(), "{reads} reads of {} tiles", touched(b).len());
+    assert_eq!(reads, touched(b).len(), "{reads} reads of {} tiles", touched(b).len());
     let last = *src.1.lock().unwrap().last().unwrap();
     assert!(bytes_of(last) > 0);
     assert_eq!(wc.polys_bytes(), bytes_of(last), "the last tile's alone");
+    let w2 = wc.block(&src, b).unwrap();
+    assert_eq!(w1, w2, "the same water from the tiles kept");
+    assert_eq!(w1, WaterCache::default().block(&src, b).unwrap(), "and whatever the bound");
+    let reads: usize = src.0.lock().unwrap().values().sum();
+    assert_eq!(reads, 2 * touched(b).len(), "the block's tiles kept: nothing read again");
     // A block farther down the tile first, then one above it: the tile read last has the smallest
     // key, and the ones after it in order go too (the eviction never stops at the new one).
     let src = counting();
