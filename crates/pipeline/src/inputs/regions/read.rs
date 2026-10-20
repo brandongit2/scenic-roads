@@ -384,21 +384,7 @@ pub fn check_folder(
     let mut regions = serde_json::Map::new();
     let mut total = 0.0;
     for (id, res) in &out.resolved {
-        let a = super::geom::union_all(
-            &res.geometry
-                .shapes
-                .iter()
-                .map(|s| {
-                    super::geom::Area::from_rings(
-                        &s.rings
-                            .iter()
-                            .map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect())
-                            .collect::<Vec<_>>(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-        );
-        let km2 = super::geom::area_km2(&a);
+        let km2 = km2_of(&res.geometry.shapes, folder.regions[id].1.has_water());
         total += km2;
         regions.insert(
             id.clone(),
@@ -416,4 +402,34 @@ pub fn check_folder(
         "findings": findings.iter().map(|f| serde_json::json!({"check": f.check(), "message": f.message})).collect::<Vec<_>>(),
         "by_region": regions,
     }))
+}
+
+/// A resolved region's area (km²). A region with water is stored as one shape of cell pieces
+/// (crate::inputs::regions::tiles): its rings are read cell by cell (each ring to the 2° cell its box's
+/// middle is in), never as one area, so the high seas without `rules.toml` stays small; any other
+/// region's shapes are unioned.
+fn km2_of(shapes: &[super::stored::Shape], by_cell: bool) -> f64 {
+    let ring64 = |r: &Vec<[i32; 2]>| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect::<Vec<_>>();
+    if by_cell && shapes.len() == 1 {
+        use super::tiles::CELL;
+        let mut cells: BTreeMap<(i64, i64), Vec<super::geom::Ring>> = BTreeMap::new();
+        for r in &shapes[0].rings {
+            let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+            for p in r {
+                (x0, y0, x1, y1) = (x0.min(p[0] as i64), y0.min(p[1] as i64), x1.max(p[0] as i64), y1.max(p[1] as i64));
+            }
+            cells
+                .entry((((x0 + x1) / 2).div_euclid(CELL), ((y0 + y1) / 2).div_euclid(CELL)))
+                .or_default()
+                .push(ring64(r));
+        }
+        return cells.values().map(|rs| super::geom::area_km2(&super::geom::Area::from_rings(rs))).sum();
+    }
+    let a = super::geom::union_all(
+        &shapes
+            .iter()
+            .map(|s| super::geom::Area::from_rings(&s.rings.iter().map(ring64).collect::<Vec<_>>()))
+            .collect::<Vec<_>>(),
+    );
+    super::geom::area_km2(&a)
 }

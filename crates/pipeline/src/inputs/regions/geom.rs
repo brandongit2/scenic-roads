@@ -897,11 +897,13 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64) -> Area {
     let near = |q: &Pt| q[0] >= bb[0] - rx && q[0] <= bb[2] + rx && q[1] >= bb[1] - ry && q[1] <= bb[3] + ry;
     let mut samples: Vec<(Pt, bool, usize)> = Vec::new();
     let mut fps: Vec<Fp> = Vec::new();
+    let mut coasts: Vec<&Area> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let deg = step / 111_320.0 * 1e7;
     for (a, mine) in to.iter().map(|a| (a, true)).chain(than.iter().map(|a| (a, false))) {
         let k = fps.len();
         fps.push(fingerprint(a));
+        coasts.push(a);
         for ring in a.polys.iter().flatten() {
             if !ring.iter().any(near) {
                 continue;
@@ -945,8 +947,13 @@ fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64) -> Area {
                             let d = dist(p, samples[k].0);
                             let q = samples[k].0;
                             let (_, mine, part) = samples[k];
-                            // (A point two coasts share: the coast with the least fingerprint.)
-                            let lesser = || best.3 == usize::MAX || fps[part] < fps[best.3];
+                            // (A point two coasts share: the coast with the least fingerprint,
+                            // equal fingerprints by their rings compared in order: a total order,
+                            // so the split and its complement decide alike.)
+                            let lesser = || {
+                                best.3 == usize::MAX
+                                    || (&fps[part], &coasts[part].polys) < (&fps[best.3], &coasts[best.3].polys)
+                            };
                             if d < best.0 || (d == best.0 && (q < best.1 || (q == best.1 && lesser()))) {
                                 best = (d, q, mine, part);
                             }

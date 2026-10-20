@@ -224,7 +224,10 @@ for id in (cr, ec):
 ua, crm, sev = ID('Ukraine'), ID('Crimea', 'Russia'), ID('Sevastopol', 'Russia')
 AZOV = {'intersect': [{'union': ['box:34.8,45.25,39.5,47.4', 'box:36.3,44.95,36.8,45.25']}, {'union': ['eez:5695', 'eez:5690']}]}
 SPECIAL.add(5695)
-W(ua, {'minus': [nearest('eez:5695', land(ua), land(crm, sev)), AZOV]})
+# (Ukraine's part is the zone less Russia's, not a second split, so the two meet exactly; and less the
+# outlines of Crimea and Sevastopol, whose lakes (the Syvash) are theirs.)
+R[ua]['minus'] += ['osm:72639', 'osm:3788485']  # ("region:" is their land: their outlines take their lakes, the Syvash, too)
+W(ua, {'minus': ['eez:5695', nearest('eez:5695', land(crm, sev), land(ua)), AZOV, 'osm:72639', 'osm:3788485']})
 group_zones.setdefault('Russia', []).extend([{'minus': [nearest('eez:5695', land(crm, sev), land(ua)), AZOV]}, AZOV])
 approx(ua, 'the Sea of Azov and the Kerch Strait drawn as two boxes (34.8–39.5°E 45.25–47.4°N; 36.3–36.8°E 44.95–45.25°N) within the zones')
 notes['zones'][5695] = 'split: ukraine; russian-waters (Crimea, Sevastopol, Azov)'
@@ -377,6 +380,157 @@ R[icef].update(outline=[{'intersect': ['osm:286393', 'osm:167454', 'box:-74.5,-4
 ab = ID('Abyei Area')
 R[ab].update(outline=[{'intersect': ['osm:192789', 'osm:1656678', 'box:27.0,8.5,30.0,10.8']}], minus=[], intersect=[])
 approx(ab, 'the overlap of the two borders taken within a box round Abyei (27–30°E, 8.5–10.8°N)')
+
+# ---- Task #443: land the outlines leave in no region, placed by the list's rules -------------------------
+# (Relations: Sudan 192789, South Sudan 1656678, Egypt 1473947, Kenya 192798, Ethiopia 192800, Uganda
+# 192796, Argentina 286393, Chile 167454, Israel 1473946, the West Bank 1613659, Gaza 1473938, Jordan
+# 184818, Lebanon 184843, Syria 184840, Germany 51477, Luxembourg 2171347.)
+
+
+def outline_parts(id):
+    return list(R[id]['outline'])
+
+
+def rest_of(country, g):
+    """Land inside a split place's border but outside all of its regions."""
+    return {'minus': [f'osm:{country}'] + [p for m in members(g) for p in outline_parts(m)]}
+
+
+# Abyei Area: OSM relation 13428763 is a boundary=disputed relation, outside the pass's outline set
+# (it waits for the regions' extract); until then, the land around Abyei town that neither Sudan's
+# nor South Sudan's border takes in, which is that relation's area (the gap measured 10,536 km²).
+# (It came out empty only because South Sudan and Sudan's Kordofan states, regions with water too,
+# hold the same land, and land in two such regions is taken from both: they now leave it out, as
+# the list says ("South Sudan (excl. the Abyei Area)", "Sudan (excl. ... the Abyei Area)").)
+for id in ('south-sudan', 'west-kordofan', 'south-kordofan'):
+    R[id]['minus'].append(f'region:{ab}')
+notes['approx'][ab] = ["the land inside both Sudan's and South Sudan's OSM borders within a box round Abyei (27–30°E, 8.5–10.8°N), standing in for OSM relation 13428763 until the regions' extract has it"]
+# Bir Tawil: "the land south of 22°N enclosed by the 1902 line; claimed by neither" — the land there
+# in neither Egypt's nor Sudan's border (its OSM relation waits for the extract).
+bt = ID('Bir Tawil')
+R[bt].update(outline=[{'minus': ['box:33.0,21.4,34.4,22.0', 'osm:1473947', 'osm:192789']}], minus=[], intersect=[])
+approx(bt, "the land south of 22°N (33–34.4°E) in neither Egypt's nor Sudan's OSM border, standing in for its OSM relation until the regions' extract has it")
+# The Southern Patagonian Ice Field: OSM's two borders leave the undemarcated zone in neither (as well
+# as overlapping a little), so it is both: their overlap and the land between them, in its box.
+ICEBOX = 'box:-74.5,-49.8,-72.0,-49.2'
+R[icef]['outline'] = [{'union': [{'intersect': ['osm:286393', 'osm:167454', ICEBOX]}, {'minus': [ICEBOX, 'osm:286393', 'osm:167454']}]}]
+approx(icef, "the land in both OSM borders or in neither, within 49.2–49.8°S: OSM leaves the undemarcated zone out of both")
+R['santa-cruz-argentina']['water'].append('ne-lake:1159114641')  # Lago Viedma, all Argentine: named, so the ice field's outline takes none of it
+for id in ('chile', 'santa-cruz-argentina'):  # "excl. the undemarcated Southern Patagonian Ice Field zone"
+    R[id]['minus'].append(f'region:{icef}')
+# Moselle, Sauer and Our: "OpenStreetMap's river areas along the stretch of the border they follow".
+# The river areas wait for the regions' extract (their ids aren't known here); until then the 120 m
+# band the German–Luxembourg border runs down the middle of, which is the rivers' bed.
+msu = ID('Moselle, Sauer and Our')
+DELU = 'box:5.7,49.4,6.6,50.25'
+R[msu].update(outline=[{'intersect': [{'buffer': {'intersect': ['osm:51477', DELU]}, 'by': '60 m'},
+                                      {'buffer': {'intersect': ['osm:2171347', DELU]}, 'by': '60 m'}]}], minus=[], intersect=[])
+approx(msu, "a 120 m band down the German–Luxembourg border (60 m each side), standing in for OSM's river areas until the regions' extract has them")
+for id in ('germany', 'luxembourg'):  # "excl. the Moselle, Sauer and Our"
+    R[id]['minus'].append(f'region:{msu}')
+# Kenya "incl. the Ilemi Triangle": the land there in none of the four borders.
+R['kenya']['outline'].append({'minus': ['box:33.9,4.0,36.2,5.2', 'osm:192798', 'osm:1656678', 'osm:192800', 'osm:192796']})
+# Israel and Palestine: land in neither OSM border (along the 1949 line) goes to the nearer of the two.
+IP = ['osm:1473946', 'osm:1613659', 'osm:1473938', 'osm:1473947', 'osm:184818', 'osm:184843', 'osm:184840']
+ip_rest = {'minus': ['box:34.2,29.4,35.95,33.4'] + IP}
+R['israel']['outline'].append({'nearest': ip_rest, 'to': IP[:1], 'than': IP[1:3]})
+R['palestine']['outline'].append({'nearest': ip_rest, 'to': IP[1:3], 'than': IP[:1]})
+# Where the two OSM borders overlap: Israel "excl. the rest of the West Bank" but incl. East Jerusalem
+# within its municipal boundary (OSM relation 1381350), which Palestine leaves out; land Jordan's
+# border also holds stays Jordan's.
+R['israel']['minus'] += [{'minus': ['osm:1613659', 'osm:1381350']}, 'osm:184818']
+R['palestine']['minus'] += ['osm:1381350', 'osm:184818']
+# Bonaire, Saba and Sint Eustatius are also inside OSM's Netherlands (47796): "a place on its own line
+# is never part of another region".
+R['netherlands']['minus'] += ['region:bonaire', 'region:saba', 'region:sint-eustatius']
+# Islands whose OSM outline leaves them out: the land in a box round the group, nothing else there.
+R['crozet-islands']['outline'].append('box:49.5,-46.7,52.6,-45.8')
+R['bonaire']['outline'].append('box:-68.5,11.95,-68.15,12.35')  # "incl. Klein Bonaire"
+# "Land inside the border of a place split into regions, but outside all of them and not placed by a
+# note, joins the one it shares the longest border with, or the nearest one if it touches none."
+R['nuqat-al-khams']['outline'].append({'intersect': [rest_of(192758, 'Libya'), 'box:11.4,31.6,12.6,33.3']})  # its note
+R['puno']['outline'].append({'intersect': [rest_of(288247, 'Peru'), 'box:-70.3,-16.7,-68.6,-15.1']})  # "incl. the Peruvian islands in Lake Titicaca"
+R['la-paz']['outline'].append({'intersect': [rest_of(252645, 'Bolivia'), 'box:-70.3,-16.7,-68.6,-15.1']})
+R['gujarat']['outline'].append({'intersect': [rest_of(304716, 'India'), 'box:72.0,21.0,73.2,22.4']})
+R['jiangsu']['outline'].append({'intersect': [rest_of(270056, 'China'), 'box:119.5,32.0,121.9,35.2']})
+# Indonesia's islands outside its units' outlines: each to the nearest unit (they touch none).
+id_rest = rest_of(304751, 'Indonesia')
+for u in units:
+    R[u]['outline'].append({'nearest': id_rest, 'to': [p for p in outline_parts(u) if isinstance(p, str)],
+                            'than': [p for o in units if o != u for p in outline_parts(o) if isinstance(p, str)]})
+for id in ('kenya', 'israel', 'palestine', 'crozet-islands', 'bonaire', 'nuqat-al-khams', 'puno', 'la-paz', 'gujarat', 'jiangsu', *units):
+    approx(id, 'Task #443: land in no OSM outline placed by the list\'s rules (see gen.py)')
+
+
+# ---- "Where no side holds it, it is its own region", "any other joint zone is its own region" ----------
+# EEZ v12 draws its joint and overlapping zones over the sides' own 200-nautical-mile zones, so a
+# zone that went to a region of its own, or to one side, is taken out of every other part of water
+# that names a 200NM zone it meets (by box). Its assignee keeps it through its own part.
+def eez_refs(x, out):
+    if isinstance(x, str):
+        if x.startswith('eez:'):
+            out.add(int(x[4:]))
+    elif isinstance(x, list):
+        for y in x:
+            eez_refs(y, out)
+    elif isinstance(x, dict):
+        for y in x.values():
+            eez_refs(y, out)
+    return out
+
+
+def boxes_meet(a, b):
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+
+SHARED = sorted(m for m in SPECIAL if Z[m]['type'] != '200NM')
+
+
+def less_shared(parts):
+    out = []
+    for p in parts:
+        refs = eez_refs(p, set())
+        cut = [m for m in SHARED if m not in refs and any(Z[k]['type'] == '200NM' and boxes_meet(Z[k]['box'], Z[m]['box']) for k in refs)]
+        out.append({'minus': [p] + [f'eez:{m}' for m in cut]} if cut else p)
+    return out
+
+
+for id in R:
+    R[id]['water'] = less_shared(R[id]['water'])
+
+
+# Two sides' zones the dataset draws over each other at their shared edge: the overlap split by
+# nearest coast, the land dominating the sea. (The pairs the whole-list check found.)
+def zone_of(id):
+    return sorted(m for m in eez_refs(R[id]['water'], set()) if Z[m]['type'] == '200NM')
+
+
+WATERS_OF = {wid: g for g, wid in WATERS.items()}
+
+
+def land_of(id):
+    """A region's coast: its land, or for a place's waters region, its place's regions' land."""
+    return land(*members(WATERS_OF[id])) if id in WATERS_OF else land(id)
+
+
+def overlap_split(a, b, za=None, zb=None, la=None, lb=None):
+    za, zb = za or zone_of(a), zb or zone_of(b)
+    la, lb = la or land_of(a), lb or land_of(b)
+    ua = {'union': [f'eez:{m}' for m in za]} if len(za) > 1 else f'eez:{za[0]}'
+    ub = {'union': [f'eez:{m}' for m in zb]} if len(zb) > 1 else f'eez:{zb[0]}'
+    both = {'intersect': [ua, ub]}
+    R[a]['water'] = [{'minus': [p, {'nearest': both, 'to': lb, 'than': la}]} for p in R[a]['water']]
+    R[b]['water'] = [{'minus': [p, {'nearest': both, 'to': la, 'than': lb}]} for p in R[b]['water']]
+    notes['zones'].setdefault('overlaps', []).append(f'{a} / {b}: by nearest coast')
+
+
+for a, b in [('australian-waters', 'papua-new-guinea'), ('australian-waters', 'timor-leste'), ('bangladesh', 'myanmar'),
+             ('brazilian-waters', 'french-guiana'), ('egypt', 'libyan-waters'),
+             ('guyana', 'suriname'), ('indonesian-waters', 'timor-leste'), ('iranian-waters', 'qatar'),
+             ('maluku-islands', 'timor-leste'), ('papua-new-guinea', 'queensland')]:
+    overlap_split(a, b)
+# Qatar's zone against Saudi Arabia's, at the Eastern Province's coast.
+overlap_split('saudi-waters', 'qatar', la=land('eastern-province'))
 
 
 # ---- write ----------------------------------------------------------------------------------------------
