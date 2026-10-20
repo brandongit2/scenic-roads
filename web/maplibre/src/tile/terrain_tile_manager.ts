@@ -98,13 +98,26 @@ export class TerrainTileManager extends Evented {
      * draped (render_to_texture.ts `drapes`) shown; and while the camera moves at most
      * `movingRedraws` existing textures are redrawn a frame, whatever the reason, the others kept a
      * few frames longer (`RenderToTexture.prepareForRender`). A terrain tile without textures is drawn
-     * at once; at rest, as upstream. True by default; false gives upstream's drops.
+     * at once (while moving, within standInFrames frames if a retired ancestor can stand in); at rest, as upstream. True by default; false gives upstream's drops.
      */
     pacedDrapes: boolean = true;
     /** Scenic Roads: with pacedDrapes, the textures redrawn a frame while the camera moves. */
     movingRedraws: number = 2;
     /** Scenic Roads: with pacedDrapes, the terrain tiles (by key) whose textures are to be redrawn. */
     _dirtyRTT: Set<string> = new Set();
+    /**
+     * Scenic Roads: with pacedDrapes, the most frames a new terrain tile's textures wait while the
+     * camera moves, an ancestor's texture standing in (`RenderToTexture.prepareForRender`): when the
+     * cover changes level (a group of tiles splits), its new tiles' textures are drawn over this many
+     * frames and the next instead of all in one. 0: drawn at once, as upstream.
+     */
+    standInFrames: number = 2;
+    /**
+     * Scenic Roads: with pacedDrapes, tiles that left the cover with their textures, kept as stand-ins
+     * for their descendants still without textures (released once none needs them: prepareForRender),
+     * and taken back with their textures if the cover returns to them meanwhile.
+     */
+    _retired: {[_: string]: Tile} = {};
 
     constructor(tileManager: TileManager) {
         super();
@@ -158,7 +171,13 @@ export class TerrainTileManager extends Evented {
         })) {
             keys[tileID.key] = true;
             this._renderableTilesKeys.push(tileID.key);
-            if (!this._tiles[tileID.key]) {
+            if (!this._tiles[tileID.key] && this._retired[tileID.key]) {
+                // Scenic Roads: back in the cover before its textures were released.
+                this._tiles[tileID.key] = this._retired[tileID.key];
+                delete this._retired[tileID.key];
+                this._lastTilesetChange = now();
+                changed = true;
+            } else if (!this._tiles[tileID.key]) {
                 tileID.terrainRttPosMatrix32f = new Float32Array(16);
                 mat4.ortho(tileID.terrainRttPosMatrix32f, 0, EXTENT, EXTENT, 0, 0, 1);
                 this._tiles[tileID.key] = new Tile(tileID, this.tileSize);
@@ -184,7 +203,10 @@ export class TerrainTileManager extends Evented {
         // free unused tiles
         for (const key in this._tiles) {
             if (!keys[key]) {
-                this._tiles[key].releaseRTT(this.tileManager.map.painter);
+                // Scenic Roads: kept as a stand-in a frame (pacedDrapes, standInFrames)
+                const tile = this._tiles[key];
+                if (this.pacedDrapes && this.standInFrames > 0 && tile.rttObjects.length) this._retired[key] = tile;
+                else tile.releaseRTT(this.tileManager.map.painter);
                 delete this._tiles[key];
                 changed = true;
             }
@@ -215,6 +237,29 @@ export class TerrainTileManager extends Evented {
             const tile = this._tiles[key];
             tile.releaseRTT(this.tileManager.map.painter);
         }
+        this.releaseRetired(() => false);
+    }
+
+    /**
+     * Scenic Roads: releases the retired tiles' textures but those `keep` names.
+     */
+    releaseRetired(keep: (key: string) => boolean): void {
+        for (const key in this._retired) {
+            if (keep(key)) continue;
+            this._retired[key].releaseRTT(this.tileManager.map.painter);
+            delete this._retired[key];
+        }
+    }
+
+    /**
+     * Scenic Roads: the nearest retired ancestor of a tile with textures, if any.
+     */
+    retiredAncestor(tileID: OverscaledTileID): Tile | undefined {
+        for (let z = tileID.canonical.z - 1; z >= 0; z--) {
+            const tile = this._retired[tileID.scaledTo(z).key];
+            if (tile?.rttObjects.length) return tile;
+        }
+        return undefined;
     }
 
     /**

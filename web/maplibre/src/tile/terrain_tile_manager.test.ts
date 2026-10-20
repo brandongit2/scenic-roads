@@ -113,6 +113,35 @@ describe('TerrainTileManager', () => {
             expect(manager.update(transform, null)).toBe(true);
             expect(renderableKeys()).not.toEqual(keys);
         });
+
+        test('with pacedDrapes, a tile leaving the cover with its textures is kept as a stand-in, and taken back with them if the cover returns (Scenic Roads)', () => {
+            const manager = new TerrainTileManager(style.tileManagers.terrain);
+            const painter = {releaseRTT: vi.fn()};
+            manager.tileManager.map = {painter} as any;
+            const transform = new MercatorTransform();
+            transform.resize(512, 512);
+            transform.setCenter(new LngLat(-46, -6));
+            transform.setZoom(8);
+            manager.update(transform, null);
+            const before = manager.getRenderableTiles();
+            const textured = before[0];
+            textured.rttObjects[0] = {texture: {}, size: 512} as any;
+            transform.setZoom(9);
+            manager.update(transform, null);
+            expect(manager._retired[textured.tileID.key]).toBe(textured);
+            // (without textures: dropped)
+            expect(Object.keys(manager._retired)).toHaveLength(1);
+            const child = manager.getRenderableTiles().find(t => t.tileID.isChildOf(textured.tileID));
+            if (child) expect(manager.retiredAncestor(child.tileID)).toBe(textured);
+            expect(manager.retiredAncestor(textured.tileID)).toBeUndefined();
+            transform.setZoom(8);
+            manager.update(transform, null);
+            expect(manager._retired).toEqual({});
+            expect(manager.getTileByID(textured.tileID.key)).toBe(textured);
+            expect(textured.rttObjects).toHaveLength(1);
+            manager.releaseAllRTT();
+            expect(textured.rttObjects).toHaveLength(0);
+        });
     });
 
     describe('getTerrainCoords', () => {

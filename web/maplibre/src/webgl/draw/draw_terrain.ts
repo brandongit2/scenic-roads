@@ -55,7 +55,7 @@ function drawTerrain(painter: Painter, terrain: Terrain, tiles: Tile[], renderCo
         context.activeTexture.set(gl.TEXTURE0);
         texture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE, gl.LINEAR_MIPMAP_LINEAR);
         const eleDelta = terrain.getSkirtLength(tr.zoom);
-        const uniformValues = terrainUniformValues(eleDelta, painter.style.sky, tr);
+        const uniformValues = terrainUniformValues(eleDelta, painter.style.sky, tr, painter.renderToTexture.getTextureRect(tile));
         const projectionData = getProjectionDataForTile(renderContext, tile.tileID, {applyTerrainMatrix: false});
         program.draw(context, gl.TRIANGLES, depthMode, StencilMode.disabled, colorMode, CullFaceMode.backCCW, uniformValues, terrainData, projectionData, 'terrain', mesh.vertexBuffer, mesh.indexBuffer, mesh.segments);
     }

@@ -672,4 +672,72 @@ describe('render to texture', () => {
             expect(tile.getRTT(0)).toBeUndefined();
         });
     });
+
+    describe('a cover changing level while moving (Scenic Roads)', () => {
+        const parent = new Tile(new OverscaledTileID(1, 0, 1, 0, 1), 512);
+        const children = [[0, 2], [1, 2], [0, 3], [1, 3]].map(([x, y]) => new Tile(new OverscaledTileID(2, 0, 2, x, y), 512));
+        const draw = () => {
+            const renderContext = createRenderContext(painter.transform, undefined, terrain);
+            rtt.renderLayer(fillLayer, renderContext);
+            rtt.renderLayer(symbolLayer, renderContext);
+        };
+        const drawn = () => children.filter(c => c.getRTT(0)).length;
+        const setUp = (moving: boolean) => {
+            for (const t of [parent, ...children]) t.rttObjects.length = 0;
+            parent.rttObjects[0] = {texture: {bind: vi.fn()}, size: 512} as unknown as RTTObject;
+            terrain.tileManager._retired = {[parent.tileID.key]: parent};
+            terrain.tileManager.tileManager.map = {painter, triggerRepaint: vi.fn()} as any as Map;
+            vi.spyOn(terrain.tileManager, 'getRenderableTiles').mockReturnValue(children);
+            (vi.mocked(terrain.tileManager.getTerrainCoords)).mockReturnValue(Object.fromEntries(children.map(c => [c.tileID.key, c.tileID])));
+            painter.options.moving = moving;
+            rtt._waitingSince = new globalThis.Map();
+        };
+
+        test('the new tiles\' textures are drawn over standInFrames + 1 frames, the parent\'s standing in', () => {
+            setUp(true);
+            rtt.prepareForRender(style, 0);
+            // 4 waiting, 3 frames: 2 now, the others with the parent's quarter
+            expect(Object.keys(rtt._standIns)).toHaveLength(2);
+            const [key, standIn] = Object.entries(rtt._standIns)[0];
+            const c = children.find(t => t.tileID.key === key);
+            expect(standIn.tile).toBe(parent);
+            expect(standIn.rect).toEqual([c.tileID.canonical.x / 2, (c.tileID.canonical.y - 2) / 2, 0.5, 0.5]);
+            expect(rtt.needsFollowUpFrame).toBe(true);
+            draw();
+            expect(drawn()).toBe(2);
+            expect(rtt.getTextureRect(c)).toEqual(standIn.rect);
+            expect(rtt.getTexture(c)).toBe(parent.getRTT(0).texture);
+            expect(rtt.getTextureRect(children.find(t => t.getRTT(0)))).toEqual([0, 0, 1, 1]);
+            rtt.prepareForRender(style, 0);
+            draw();
+            expect(drawn()).toBe(3);
+            expect(terrain.tileManager._retired[parent.tileID.key]).toBe(parent);
+            rtt.prepareForRender(style, 0);
+            draw();
+            expect(drawn()).toBe(4);
+            // none waits: the parent's textures released
+            rtt.prepareForRender(style, 0);
+            expect(Object.keys(rtt._standIns)).toHaveLength(0);
+            expect(terrain.tileManager._retired).toEqual({});
+            expect(parent.rttObjects).toHaveLength(0);
+        });
+
+        test('at rest every new tile is drawn at once and the stand-ins released', () => {
+            setUp(false);
+            rtt.prepareForRender(style, 0);
+            expect(Object.keys(rtt._standIns)).toHaveLength(0);
+            expect(terrain.tileManager._retired).toEqual({});
+            draw();
+            expect(drawn()).toBe(4);
+        });
+
+        test('standInFrames 0: drawn at once while moving too', () => {
+            setUp(true);
+            terrain.tileManager.standInFrames = 0;
+            rtt.prepareForRender(style, 0);
+            draw();
+            expect(drawn()).toBe(4);
+            terrain.tileManager.standInFrames = 2;
+        });
+    });
 });

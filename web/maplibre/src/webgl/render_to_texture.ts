@@ -103,8 +103,61 @@ export class RenderToTexture {
         this.rttSize = terrain.tileManager.tileSize * terrain.qualityFactor;
     }
 
+    /**
+     * Scenic Roads: this frame's tiles (by key) drawn with an ancestor's texture, the new tiles
+     * whose textures wait (TerrainTileManager.standInFrames): the ancestor, and the part of its
+     * texture the tile covers (u, v offset and scale).
+     */
+    _standIns: {[_: string]: {tile: Tile; rect: [number, number, number, number]}} = {};
+    /** Scenic Roads: frames prepared, and the frame each waiting tile first waited in. */
+    _frame: number = 0;
+    _waitingSince: Map<string, number> = new Map();
+
     getTexture(tile: Tile): Texture {
-        return tile.getRTT(this._stacks.length - 1).texture;
+        const stack = this._stacks.length - 1;
+        return (tile.getRTT(stack) ?? this._standIns[tile.tileID.key]?.tile.getRTT(stack)).texture;
+    }
+
+    /** Scenic Roads: the part of its texture a tile draws (a stand-in's: part of an ancestor's). */
+    getTextureRect(tile: Tile): [number, number, number, number] {
+        const stack = this._stacks.length - 1;
+        return !tile.getRTT(stack) && this._standIns[tile.tileID.key] ? this._standIns[tile.tileID.key].rect : [0, 0, 1, 1];
+    }
+
+    /**
+     * Scenic Roads: with pacedDrapes, while the camera moves, the renderable tiles without textures
+     * that have a retired ancestor with them (TerrainTileManager._retired: the cover changed level)
+     * are drawn over at most standInFrames + 1 frames, the ancestor's texture standing in meanwhile:
+     * the longest-waiting first, as many a frame as finish them in time. Tiles without such an
+     * ancestor are drawn at once. At rest none waits, and the retired tiles are released.
+     */
+    _pickStandIns(moving: boolean, bare: Set<Tile>): void {
+        const tm = this.terrain.tileManager;
+        const frame = ++this._frame;
+        this._standIns = {};
+        const waiting: {tile: Tile; standIn: Tile; since: number}[] = [];
+        if (tm.pacedDrapes && moving && tm.standInFrames > 0) {
+            for (const tile of this._renderableTiles) {
+                if (!bare.has(tile)) continue;
+                const standIn = tm.retiredAncestor(tile.tileID);
+                if (standIn) waiting.push({tile, standIn, since: this._waitingSince.get(tile.tileID.key) ?? frame});
+            }
+        }
+        const since = new Map<string, number>();
+        if (waiting.length) {
+            waiting.sort((a, b) => a.since - b.since);
+            const oldest = frame - waiting[0].since;
+            const budget = Math.ceil(waiting.length / Math.max(1, tm.standInFrames + 1 - oldest));
+            for (const w of waiting.slice(budget)) {
+                const c = w.tile.tileID.canonical, a = w.standIn.tileID.canonical, n = 2 ** (c.z - a.z);
+                this._standIns[w.tile.tileID.key] = {tile: w.standIn, rect: [(c.x - a.x * n) / n, (c.y - a.y * n) / n, 1 / n, 1 / n]};
+                since.set(w.tile.tileID.key, w.since);
+                this.needsFollowUpFrame = true;
+            }
+        }
+        this._waitingSince = since;
+        const used = new Set(Object.values(this._standIns).map(s => s.tile.tileID.key));
+        tm.releaseRetired(key => used.has(key));
     }
 
     /**
@@ -184,6 +237,8 @@ export class RenderToTexture {
         // check tiles to render
         this.needsFollowUpFrame = false;
         const moving = zoomChanged || this.painter.options.moving;
+        // (Scenic Roads: the tiles new to the cover, before any texture is released below)
+        const bare = new Set(this._renderableTiles.filter(tile => !tile.rttObjects.length));
         // Scenic Roads: with pacedDrapes, the source tiles' drops noted since the last frame first,
         // and while moving at most movingRedraws textures redrawn this frame, the rest next frames.
         const tm = this.terrain.tileManager;
@@ -218,6 +273,7 @@ export class RenderToTexture {
                 release(tile);
             }
         }
+        this._pickStandIns(moving, bare);
     }
 
     /**
@@ -285,6 +341,8 @@ export class RenderToTexture {
                 this._rttTiles.push(tile);
                 // Cache hit: this tile already has a RTT object for this stack from a previous frame.
                 if (tile.getRTT(stack)) continue;
+                // Scenic Roads: its texture waits, an ancestor's standing in (_pickStandIns).
+                if (this._standIns[tile.tileID.key]?.tile.getRTT(stack)) continue;
                 const obj = tile.acquireRTT(painter, stack, tile.rttTargetSize ?? this.rttSize);
                 const pendingBefore = painter.context.pendingPrograms;
                 painter.bindRTT(obj);

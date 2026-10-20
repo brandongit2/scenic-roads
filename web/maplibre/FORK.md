@@ -115,6 +115,16 @@ The app compiles this source with its own code; there is no separate build or `d
 - **Draped textures at a steady pace** (`pacedDrapes`, default true; `movingRedraws`, 2): a tile of a
   source with nothing draped no longer drops the terrain's textures; while the camera moves at most
   `movingRedraws` existing textures are redrawn a frame. At rest, as upstream.
+- **New drape textures over a few frames while moving** (`standInFrames`, 2;
+  `TerrainTileManager._retired`, `RenderToTexture._pickStandIns`, `u_texture_rect` in
+  `terrain.vertex.glsl`): with pacedDrapes, a terrain tile leaving the cover keeps its textures
+  (retired) while a tile under it in the new cover has none, and is taken back whole if the cover
+  returns to it. While the camera moves, the new tiles that have such a retired ancestor are drawn
+  over at most `standInFrames` + 1 frames, the longest-waiting first and as many a frame as finish
+  them in time; meanwhile each draws its own mesh with its part of the ancestor's texture (coarser
+  for a frame or two). Tiles without one are drawn at once. At rest none waits and the retired
+  textures are released; the texture rect is (0, 0, 1, 1), so a still view is drawn as before. When
+  the cover changed level in a pan over the lochs, 20–40 textures of 1024² were drawn in one frame.
 
 - **A camera moved a frame at a time counts as moving** (`Map#isMoving`, `MOVING_HOLD_MS`): the
   map is moving for 100 ms after any frame whose view-projection matrix differs from the last

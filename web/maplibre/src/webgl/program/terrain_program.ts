@@ -3,6 +3,7 @@ import {
     Uniform1f,
     Uniform2f,
     Uniform3f,
+    Uniform4f,
     UniformColor
 } from '../uniform_binding.ts';
 import {Color} from '@maplibre/maplibre-gl-style-spec';
@@ -29,6 +30,9 @@ export type FogUniformsType = {
 export type TerrainUniformsType = {
     'u_texture': Uniform1i;
     'u_ele_delta': Uniform1f;
+    // Scenic Roads: the part of the texture the tile draws (u, v offset and scale; a stand-in's
+    // part of an ancestor's texture: render_to_texture.ts _pickStandIns), else 0, 0, 1, 1.
+    'u_texture_rect': Uniform4f;
 } & FogUniformsType;
 
 export type TerrainDepthUniformsType = {
@@ -51,6 +55,7 @@ const fogUniforms = (context: Context, locations: UniformLocations): FogUniforms
 const terrainUniforms = (context: Context, locations: UniformLocations): TerrainUniformsType => ({
     'u_texture': new Uniform1i(context, locations.u_texture),
     'u_ele_delta': new Uniform1f(context, locations.u_ele_delta),
+    'u_texture_rect': new Uniform4f(context, locations.u_texture_rect),
     ...fogUniforms(context, locations),
 });
 
@@ -77,9 +82,11 @@ const fogUniformValues = (sky: Sky | null | undefined, tr: FogTransform): Unifor
 const terrainUniformValues = (
     eleDelta: number,
     sky: Sky | null | undefined,
-    tr: FogTransform): UniformValues<TerrainUniformsType> => ({
+    tr: FogTransform,
+    textureRect: [number, number, number, number] = [0, 0, 1, 1]): UniformValues<TerrainUniformsType> => ({
     'u_texture': 0,
     'u_ele_delta': eleDelta,
+    'u_texture_rect': textureRect,
     ...fogUniformValues(sky, tr),
 });
 

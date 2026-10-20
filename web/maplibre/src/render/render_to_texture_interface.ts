@@ -16,4 +16,6 @@ export interface IRenderToTexture {
     prepareForRender(style: Style, zoom: number): void;
     renderLayer(layer: StyleLayer, renderContext: RenderContext): boolean;
     getTexture(tile: Tile): any;
+    /** Scenic Roads: the part of its texture a tile draws (u, v offset and scale). */
+    getTextureRect(tile: Tile): [number, number, number, number];
 }
