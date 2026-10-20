@@ -79,13 +79,15 @@ pub fn source_now(root: &Path) -> Result<Accepted> {
     source(root, &m)
 }
 
-/// An accepted region: its file's path, its recipe (id, name, outline entries), its stored files.
+/// An accepted region: its file's path, its recipe (id, name, outline entries), its stored files,
+/// and whether it's disabled (`disabled = true`: checked, never built).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Listed {
     pub path: String,
     pub recipe: Recipe,
     pub geometry: String,
     pub drawn: String,
+    pub disabled: bool,
 }
 
 /// The regions of an accepted version, by id: each region file's (a `.toml` but `pins.toml` and
@@ -114,6 +116,7 @@ pub fn listed(a: &Accepted) -> Result<Vec<Listed>> {
             recipe: Recipe { id: s("id")?, name: s("name")?, outline },
             geometry: s("geometry")?,
             drawn: s("drawn")?,
+            disabled: f.facts.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false),
         });
     }
     v.sort_by(|a, b| a.recipe.id.cmp(&b.recipe.id));
@@ -180,9 +183,15 @@ pub fn tree(index: &crate::inputs::Index) -> Folder {
     build("", &groups, &regions)
 }
 
-/// The regions as a reader lists them, sorted by id.
+/// The regions the build reads, sorted by id: the enabled ones (a disabled region is checked and
+/// stored, others may name it, but nothing builds, plans, sizes, downloads or catalogs it).
 pub fn recipes(a: &Accepted) -> Result<Vec<Recipe>> {
-    Ok(listed(a)?.into_iter().map(|l| l.recipe).collect())
+    Ok(enabled(a)?.into_iter().map(|l| l.recipe).collect())
+}
+
+/// The enabled regions of an accepted version (`listed`, the disabled left out).
+pub fn enabled(a: &Accepted) -> Result<Vec<Listed>> {
+    Ok(listed(a)?.into_iter().filter(|l| !l.disabled).collect())
 }
 
 /// Reads `names` (content names under `root`), 16 at a time (on the NAS each waits a round trip or
@@ -220,12 +229,13 @@ pub fn coverage_of(geoms: &[Geometry]) -> Coverage {
 }
 
 impl Coverage {
-    /// The coverage of the regions' accepted version (§6.1.4): their stored geometry. Where there's
+    /// The coverage of the regions' accepted version (§6.1.4): its enabled regions' stored geometry
+    /// (a disabled region is no coverage). Where there's
     /// a `cache` (this Mac's), kept there by the version (`coverage/<hash>.cov`): the geometry
     /// files are read once per version and Mac.
     pub fn accepted(root: &Path, a: &Accepted, cache: Option<&Path>) -> Result<Coverage> {
         let made = || -> Result<Coverage> {
-            let l = listed(a)?;
+            let l = enabled(a)?;
             let names: Vec<String> = l.iter().map(|x| x.geometry.clone()).collect();
             let geoms: Vec<Geometry> = read_all(root, &names)?
                 .iter()
@@ -268,7 +278,8 @@ pub fn drawn(root: &Path, a: &Accepted, regions: &[Recipe]) -> Result<Vec<DrawnR
 
 /// The coverage of a scratch folder of region files (`--regions <dir>`, for proofs: docs/inputs.md
 /// §6.1.10, 10): the check's own code run on it in memory against the records' current pass,
-/// storing nothing; a region it would hold is an error naming why.
+/// storing nothing; a region it would hold is an error naming why. Disabled regions are checked
+/// and resolved, and left out of the coverage.
 pub fn coverage_of_folder(root: &Path, manifest: &BTreeMap<String, String>, dir: &Path) -> Result<(Coverage, usize)> {
     let mut paths = Vec::new();
     let mut stack = vec![(dir.to_path_buf(), String::new())];
@@ -298,8 +309,13 @@ pub fn coverage_of_folder(root: &Path, manifest: &BTreeMap<String, String>, dir:
         anyhow::bail!("the regions can't be checked now: {why}");
     }
     let mut findings = Vec::new();
+    let mut disabled = std::collections::BTreeSet::new();
     for p in &v.paths {
-        findings.extend(checks.file(p, &(v.read)(p)?).findings);
+        let c = checks.file(p, &(v.read)(p)?);
+        if c.facts.get("disabled").and_then(|d| d.as_bool()) == Some(true) {
+            disabled.extend(c.facts.get("id").and_then(|i| i.as_str()).map(str::to_string));
+        }
+        findings.extend(c.findings);
     }
     findings.extend(checks.whole(&v)?);
     anyhow::ensure!(
@@ -311,7 +327,10 @@ pub fn coverage_of_folder(root: &Path, manifest: &BTreeMap<String, String>, dir:
     let mut geoms: Vec<Geometry> = Vec::new();
     for (name, bytes) in &d.store {
         if name.ends_with(".rgeo") {
-            geoms.push(Geometry::decode(bytes)?);
+            let g = Geometry::decode(bytes)?;
+            if !disabled.contains(&g.id) {
+                geoms.push(g);
+            }
         }
     }
     geoms.sort_by(|a, b| a.id.cmp(&b.id));
@@ -382,13 +401,17 @@ pub fn check_folder(
     );
     findings.extend(out.problems.iter().map(super::problem_finding));
     let mut regions = serde_json::Map::new();
-    let mut total = 0.0;
+    let (mut total, mut enabled_km2) = (0.0, 0.0);
     for (id, res) in &out.resolved {
         let km2 = km2_of(&res.geometry.shapes, folder.regions[id].1.has_water());
         total += km2;
+        let off = folder.regions[id].1.disabled;
+        if !off {
+            enabled_km2 += km2;
+        }
         regions.insert(
             id.clone(),
-            serde_json::json!({"path": folder.regions[id].0, "km2": km2, "water": folder.regions[id].1.has_water(),
+            serde_json::json!({"path": folder.regions[id].0, "km2": km2, "water": folder.regions[id].1.has_water(), "disabled": off,
                 "geometry": store::naming::hash16(&res.geometry.encode()), "points": res.geometry.shapes.iter().map(|s| s.rings.iter().map(Vec::len).sum::<usize>()).sum::<usize>()}),
         );
     }
@@ -396,7 +419,9 @@ pub fn check_folder(
         "files": v.paths.len(),
         "regions": folder.regions.len(),
         "resolved": out.resolved.len(),
+        "disabled": folder.regions.values().filter(|(_, r)| r.disabled).count(),
         "km2": total,
+        "enabled_km2": enabled_km2,
         "earth_km2": super::geom::area_km2(&super::geom::earth()),
         "most_points_one_operation": peak,
         "findings": findings.iter().map(|f| serde_json::json!({"check": f.check(), "message": f.message})).collect::<Vec<_>>(),

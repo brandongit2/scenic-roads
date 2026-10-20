@@ -236,6 +236,7 @@ export class RegionsPanel {
   /** A region's outlines: the catalog's (each entry's; none until the coverage is loaded), or for a
    * pending one its osm: entries' areas, once loaded. */
   private outlinesOf(r: Region): Outline[] {
+    if (r.disabled) return { text: 'disabled', cls: 'off', title: 'Disabled in its file (disabled = true): checked like every region, and other regions may name it, but nothing is built for it, so it isn’t on the map and can’t be downloaded. Its file enables it.' };
     if (this.isPending(r)) return this.pendingOutlines.get(r.id) ?? [];
     return (this.coverage?.features ?? []).filter((f) => f.properties?.region === r.id);
   }
@@ -312,7 +313,7 @@ export class RegionsPanel {
   private regionRow(r: Region): HTMLElement {
     const fs = this.outlinesOf(r);
     const summary = r.outline.map((e) => entryLabel(e, fs.find((f) => f.properties?.entry === e)?.properties as Area | undefined)).join(' + ');
-    const row = h('div', { class: 'rg' });
+    const row = h('div', { class: r.disabled ? 'rg off' : 'rg' });
     const show = () => {
       const state = this.stateOf(r);
       const name = h('span', { class: 'rg-name', title: `${r.name}: show it` }, r.name);
@@ -404,6 +405,13 @@ export class RegionsPanel {
     const k = this.dl;
     const rk: RegionDl | undefined = k?.regions[id];
     const r = this.regions.find((x) => x.id === id);
+    // (A disabled region is never built: no size, no Download.)
+    if (r?.disabled) {
+      els.size.textContent = '';
+      els.btn?.remove();
+      els.btn = null;
+      return;
+    }
     let text = '', cls = 'rg-size', title = '';
     if (!k || !k.mirror) text = '';
     else if (!rk) text = 'not built yet';

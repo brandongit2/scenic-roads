@@ -197,6 +197,10 @@ pub struct Region {
     /// shares the longest edge with, or the nearest if it touches none (the list's rule for land
     /// inside a split place's border but outside all its regions); the region itself ends empty.
     pub hand_out_all: bool,
+    /// `disabled = true`: checked and resolved like any other region (others may name it, the cover
+    /// check counts it), but never built: left out of the coverage and every list the build plans
+    /// or sizes from (crate::inputs::regions::read).
+    pub disabled: bool,
     pub lines: BTreeMap<String, Line>,
     /// Its own `[pins]`, overriding `pins.toml`'s.
     pub pins: BTreeMap<String, String>,
@@ -549,6 +553,8 @@ struct RawRegion {
     #[serde(default)]
     hand_out_all: bool,
     #[serde(default)]
+    disabled: bool,
+    #[serde(default)]
     minus: Vec<toml::Value>,
     #[serde(default)]
     intersect: Vec<toml::Value>,
@@ -686,6 +692,7 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
         water_key,
         hand_out: raw.hand_out.map(|h| h.trim_end_matches('/').to_string()),
         hand_out_all: raw.hand_out_all,
+        disabled: raw.disabled,
         lines,
         pins,
     };

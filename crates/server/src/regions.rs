@@ -217,6 +217,10 @@ pub struct Listed {
     pub state: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held: Vec<Value>,
+    /// `disabled = true` in its file: checked like any region, never built or downloaded (the panel
+    /// shows it greyed, with no Download button).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
 }
 
 impl Listed {
@@ -228,6 +232,7 @@ impl Listed {
             path,
             state: String::new(),
             held: Vec::new(),
+            disabled: r.disabled,
         }
     }
 }
@@ -371,6 +376,7 @@ fn states(s: &crate::AppState, pool: &IoPool, list: &mut [Listed]) {
         let same = index.as_ref().and_then(|i| i.files.get(&r.path)).is_some_and(|e| {
             e.facts.get("name").and_then(Value::as_str) == Some(r.name.as_str())
                 && e.facts.get("outline") == Some(&json!(r.outline))
+                && e.facts.get("disabled").and_then(Value::as_bool).unwrap_or(false) == r.disabled
         });
         r.state = if same { "accepted" } else { "checking" }.into();
     }
@@ -458,9 +464,10 @@ pub async fn layer(State(s): State<S>) -> Response {
             let index: Option<pipeline::inputs::served::Kept> = std::fs::read(dir.join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
             for (path, e) in index.map(|k| k.index.files).unwrap_or_default() {
                 let Some(drawn) = e.facts.get("drawn").and_then(Value::as_str) else { continue };
+                let disabled = e.facts.get("disabled").and_then(Value::as_bool).unwrap_or(false);
                 let Some(d) = std::fs::read(dir.join(drawn)).ok().and_then(|b| serde_json::from_slice::<pipeline::inputs::regions::stored::Drawn>(&b).ok()) else { continue };
                 for (from, coords) in &d.shapes {
-                    feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": coords }, "properties": { "region": d.id, "name": d.name, "from": from, "colour": colour(&d.id), "held": held.contains(&path) } }));
+                    feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": coords }, "properties": { "region": d.id, "name": d.name, "from": from, "colour": colour(&d.id), "held": held.contains(&path), "disabled": disabled } }));
                 }
             }
             "accepted"
@@ -654,6 +661,24 @@ mod tests {
         );
         assert_eq!(bad.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["bad.toml"]);
         assert!(pool.is_online());
+    }
+
+    #[test]
+    fn a_disabled_region_is_listed_as_disabled() {
+        let share = tempfile::tempdir().unwrap();
+        let dir = share.path().join("inputs/regions");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("on.toml"), region("on", "On")).unwrap();
+        std::fs::write(dir.join("off.toml"), format!("{}disabled = true\n", region("off", "Off"))).unwrap();
+        let (ok, bad) = load_all(&pool(share.path()), &dir).unwrap();
+        assert!(bad.is_empty(), "{bad:?}");
+        assert_eq!(ok.iter().map(|l| (l.id.as_str(), l.disabled)).collect::<Vec<_>>(), [("off", true), ("on", false)]);
+        // The panel's field: there only when set.
+        let v = serde_json::to_value(&ok).unwrap();
+        assert_eq!(v[0]["disabled"], true);
+        assert!(v[1].get("disabled").is_none());
+        let back: Vec<Listed> = serde_json::from_value(v).unwrap();
+        assert_eq!(back, ok);
     }
 
     #[test]

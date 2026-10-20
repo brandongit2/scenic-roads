@@ -37,6 +37,9 @@ export interface Region {
    * last accepted outline stays in use). */
   state?: 'accepted' | 'checking' | 'held';
   held?: { id: string; message: string }[];
+  /** `disabled = true` in its file: checked like any region (others may name it), never built or
+   * downloaded. */
+  disabled?: boolean;
   /** In the catalog's coverage, a region still building: its units (z6 tiles) built of those it
    * builds when the catalog was made. Its tiles are on the map, and downloadable, as they come. */
   tiles?: Tiles;
@@ -95,7 +98,7 @@ export interface Folder {
  */
 export type Coverage = GeoJSON.FeatureCollection<GeoJSON.MultiPolygon> & { regions?: Region[]; catalog?: number };
 /** Every region's accepted outline for drawing, a feature per stored shape (properties: region,
- * name, from, colour, held). `source` 'catalog': the catalog's coverage stands in until this Mac
+ * name, from, colour, held, disabled). `source` 'catalog': the catalog's coverage stands in until this Mac
  * has the accepted copy. */
 export type RegionsLayer = GeoJSON.FeatureCollection<GeoJSON.MultiPolygon> & { source?: 'accepted' | 'catalog' };
 export const getRegionsLayer = () => call<RegionsLayer>('/api/regions/layer');

@@ -708,4 +708,35 @@ fn a_region_with_water_missing_from_the_extract_names_its_needs() {
     assert!(out.problems.iter().any(|p| p.check == "rg-extract" && p.about[0] == "islet"), "{:?}", out.problems);
     assert!(!out.resolved.contains_key("islet"));
     assert_eq!(out.needs.iter().map(|i| i.to_string()).collect::<Vec<_>>(), vec!["r21030917"]);
+    // Disabled, it still needs them: it's checked like any region (the extract is the check's,
+    // not a build's), so it isn't held for good.
+    let off = format!("{islet}disabled = true\n");
+    let out = run(&w, &[PINS, ("spain/islet.toml", &off)]);
+    assert_eq!(out.needs.iter().map(|i| i.to_string()).collect::<Vec<_>>(), vec!["r21030917"]);
+}
+
+#[test]
+fn disabled_regions_still_cover_the_earth_once() {
+    // The island and the far land disabled: the same geometry, byte for byte, and the Earth once
+    // (the high seas, the rest, still less what they cover).
+    let w = world();
+    let on = run(&w, &all());
+    let isl = format!("{ISL}disabled = true\n");
+    let far = format!("{FAR}disabled = true\n");
+    let files: Vec<(&str, &str)> = all()
+        .into_iter()
+        .map(|(p, t)| match p {
+            "w/isl.toml" => (p, isl.as_str()),
+            "far.toml" => (p, far.as_str()),
+            _ => (p, t),
+        })
+        .collect();
+    let off = run(&w, &files);
+    assert!(off.problems.is_empty(), "{:#?}", off.problems);
+    assert_eq!(off.resolved.keys().collect::<Vec<_>>(), on.resolved.keys().collect::<Vec<_>>());
+    for (id, r) in &on.resolved {
+        assert_eq!(r.geometry.encode(), off.resolved[id].geometry.encode(), "{id}");
+    }
+    let sum: f64 = off.resolved.values().map(|r| geom::area_km2(&area_of(&r.geometry))).sum();
+    assert!((sum - geom::area_km2(&geom::earth())).abs() < 5.0, "{sum}");
 }

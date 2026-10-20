@@ -514,3 +514,84 @@ fn the_switch_s_app_fails_closed() {
     );
     assert_eq!(read::needed_app(None, Some("20261015-1200-aaaaaaa")).as_deref(), Some("20261015-1200-aaaaaaa"));
 }
+
+/// Writes region files into a check job's drop box, old enough to be taken.
+fn drop_files(root: &Path, files: &[(&str, &str)]) {
+    let dir = root.join("inputs/regions");
+    let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    for (p, t) in files {
+        std::fs::write(dir.join(p), t).unwrap();
+        std::fs::File::options().write(true).open(dir.join(p)).unwrap().set_modified(old).unwrap();
+    }
+}
+
+#[test]
+fn a_disabled_region_is_checked_and_named_but_never_built() {
+    let f = fx();
+    // Parsed: the field, false by default; anything but a boolean is an error.
+    assert!(file::parse("b.toml", &region("b", "outline = [\"osm:2\"]\ndisabled = true\n")).unwrap().disabled);
+    assert!(!file::parse("b.toml", &region("b", "outline = [\"osm:2\"]\n")).unwrap().disabled);
+    assert!(file::parse("b.toml", &region("b", "outline = [\"osm:2\"]\ndisabled = \"yes\"\n")).is_err());
+    // Resolved like any region, and another may name it.
+    let b_off = region("b", "outline = [\"osm:2\"]\ndisabled = true\n");
+    let c = region("c", "outline = [\"osm:1\", \"osm:2\"]\nminus = [\"region:b\"]\n");
+    let out = run(&f, &[PINS, ("b.toml", &b_off), ("c.toml", &c)]);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    assert!(out.resolved.contains_key("b") && out.resolved.contains_key("c"));
+    let cc = read::coverage_of(std::slice::from_ref(&out.resolved["c"].geometry));
+    assert!(cc.contains([5_000_000, 5_000_000]) && !cc.contains([15_000_000, 5_000_000]), "c less the disabled b");
+
+    // Taken in by the gate: stored like the others, the index saying it's disabled.
+    let d = job_root(&f, true);
+    let root = d.path();
+    drop_files(root, &[("b.toml", &b_off), ("c.toml", &c)]);
+    let mut out = crate::out::Out::unbound(root, &root.join("scratch")).unwrap();
+    let said = crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
+    assert!(said.contains("taken in"), "{said}");
+    let a = crate::inputs::open(root, &manifest(root), UNIT).unwrap().unwrap();
+    assert_eq!(a.index.files["b.toml"].facts["disabled"], true);
+    assert!(a.index.files["b.toml"].facts.contains_key("geometry"), "stored, so others read it");
+    assert!(!a.index.files["c.toml"].facts.contains_key("disabled"), "an enabled region's facts as before");
+    // Listed, and in the tree (the panel shows it), but not among the regions the build reads, nor
+    // in the coverage (units, tiles, catalogs and downloads all come from these).
+    let listed = read::listed(&a).unwrap();
+    assert_eq!(
+        listed.iter().map(|l| (l.recipe.id.as_str(), l.disabled)).collect::<Vec<_>>(),
+        [("a", false), ("b", true), ("c", false)]
+    );
+    assert!(read::tree(&a.index).regions.contains(&"b".to_string()));
+    assert_eq!(read::recipes(&a).unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a", "c"]);
+    let cov = Coverage::accepted(root, &a, None).unwrap();
+    let b_box = [10_200_000, 2_000_000, 19_800_000, 8_000_000];
+    assert!(cov.contains([5_000_000, 5_000_000]) && !cov.contains([15_000_000, 5_000_000]));
+    assert!(!cov.meets_rect(b_box));
+    assert!(
+        cov.by_region().iter().all(|(id, _)| !id.starts_with("b")),
+        "{:?}",
+        cov.by_region().iter().map(|(i, _)| i).collect::<Vec<_>>()
+    );
+    let off_print = cov.fingerprint(b_box);
+
+    // Enabled: a new version, b in the regions and the coverage, and the jobs over its box keyed anew.
+    drop_files(root, &[("b.toml", &region("b", "outline = [\"osm:2\"]\n"))]);
+    let mut out = crate::out::Out::unbound(root, &root.join("scratch")).unwrap();
+    crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
+    let a2 = crate::inputs::open(root, &manifest(root), UNIT).unwrap().unwrap();
+    assert_ne!(a2.version, a.version);
+    assert_eq!(a2.index.files["b.toml"].keyed, a.index.files["b.toml"].keyed, "the same geometry");
+    assert_eq!(read::recipes(&a2).unwrap().len(), 3);
+    let cov2 = Coverage::accepted(root, &a2, None).unwrap();
+    assert!(cov2.contains([15_000_000, 5_000_000]) && cov2.meets_rect(b_box));
+    assert_ne!(cov2.fingerprint(b_box), off_print);
+    // A box b doesn't reach keeps its key.
+    let far = [100_000_000, 100_000_000, 101_000_000, 101_000_000];
+    assert_eq!(cov2.fingerprint(far), cov.fingerprint(far));
+
+    // Disabled again: out of the coverage once more, as when it was first disabled.
+    drop_files(root, &[("b.toml", &b_off)]);
+    let mut out = crate::out::Out::unbound(root, &root.join("scratch")).unwrap();
+    crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
+    let a3 = crate::inputs::open(root, &manifest(root), UNIT).unwrap().unwrap();
+    assert_eq!(read::recipes(&a3).unwrap().len(), 2);
+    assert_eq!(Coverage::accepted(root, &a3, None).unwrap().fingerprint(b_box), off_print);
+}

@@ -369,11 +369,25 @@ any water in two regions, or in none, is an error.
 | `water` | list of parts, the region's water: their union (`water = []`: none but its lakes) | optional; makes it a region of land and water |
 | `hand_out` | a folder's path: each stretch of this region's water only one region of that folder borders goes to that region | optional, with `water` |
 | `hand_out_all` | `true`: with `hand_out`, every stretch goes — to the region of the folder sharing its longest edge, or the nearest region with land if it touches none (the list's rule for land inside a split place's border but outside all its regions); the region then ends empty and is not stored; anything no region of the folder can take is an error (`rg-hand-out`) | optional, with `hand_out` |
+| `disabled` | `true`: checked and stored like any region, but never built (below) | optional, default `false` |
 | `[lines.<name>]` | a line, from `coords` or `ways` | optional |
 | `[pins]` | as `pins.toml`, overriding it for this file | optional |
 
 Unknown fields are an error. The region is ((∪ `outline`) ∩ (∪ `intersect`)) − (∪ `minus`); a region
 with `water` is its land, that cut back to the coastline's land, and its water ("Land and water").
+
+**Disabled regions.** `disabled = true` keeps a region in the list without building it. The check
+treats it like any other region: it is parsed, resolved, held and stored the same way, other regions
+may name it (`region:`, `land:`, `group:`, `rest`, nearest-coast splits, hand-outs), and with
+`cover = "earth"` it counts toward covering the Earth once. Its stored geometry is the same either
+way. The index records it (`facts.disabled`, set only when true). The readers leave it out
+(crate::inputs::regions::read: `recipes`, `enabled`, `Coverage::accepted`), so it is in no coverage,
+unit, map tile, catalog or download, and it adds nothing to any forecast or size. The regions'
+extract (§6.1.6) still fetches the relations and ways a disabled region names, because the check
+needs them. Enabling or disabling a region changes only the index, which makes a new version. The
+coverage changes over the region's area alone, so only jobs whose box it reaches run again. The panel
+shows it greyed out with a "disabled" state and no Download button. `scenic-build regions-check`
+reports it (`disabled`, per region and in all, and `enabled_km2`).
 
 **Parts:**
 - `"osm:<relation>"`: an OSM relation's area, from the pinned pass's outline set (administrative and
@@ -581,7 +595,8 @@ Relations outside the outline set, and every way a line names, come from **the r
 lacks.
 - A check needing an id the extract lacks holds the files (`rg-extract`) and lists what it needs in
   its held report (`needs`, the candidate's: step 5's check of the version without the held files
-  doesn't replace them; a region with water's as a region without water's); the lead plans `regions-extract <date>`, keyed by the pass and the
+  doesn't replace them; a region with water's as a region without water's; a disabled region's
+  too, since it is checked like the others); the lead plans `regions-extract <date>`, keyed by the pass and the
   sorted id set, named in the records as `sources/osm/<date>/regions-extract`. Its content name is
   in the check's key, so the check runs again once it's made. The extract never shrinks within a
   pass.
@@ -642,11 +657,12 @@ region file takes it out with the next version.
 #### 6.1.9 What the owner sees
 
 - **The Regions panel** (Settings → Regions), read only: the folder tree, each region with its parts
-  and state (accepted, checking, "held: <finding>"). The server reads region files through the NAS
+  and state (accepted, checking, "held: <finding>"; a disabled region greyed out with a "disabled" pill and no Download button). The server reads region files through the NAS
   I/O pool (`GET /api/regions`) and states from the accepted index and held report. Nothing in the
   app writes a region.
 - **The region layer** (a switch in Settings → Regions, `/api/regions/layer`): each region's stored
-  outline, a light fill coloured by its id's hash, its name as a label; a held region drawn dashed.
+  outline, a light fill coloured by its id's hash, its name as a label; a held region drawn dashed;
+  a disabled region drawn too (its feature's `disabled`), since it is checked even though it isn't built.
   Read from the drawn files, copied to the Mac as the translations are.
 - **The banner and menu bar** (§4.7).
 

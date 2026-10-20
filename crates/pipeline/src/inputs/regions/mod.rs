@@ -212,6 +212,10 @@ impl Checks for Regions {
                     c.facts.insert("id".into(), r.id.clone().into());
                     c.facts.insert("name".into(), r.name.clone().into());
                     c.facts.insert("outline".into(), r.outline_text().into());
+                    // (Only when set, so an enabled region's facts are as before.)
+                    if r.disabled {
+                        c.facts.insert("disabled".into(), true.into());
+                    }
                 }
                 Err(fs) => c.findings.extend(fs.iter().map(|f| finding(f, path))),
             }

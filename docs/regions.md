@@ -14,7 +14,11 @@ for the depth alone (`Coverage::depth_only`, its stored geometry's `water_only`)
 terrain, slope, tree cover or buildings' tile is built for it. A region of land and water is coverage
 like any other, its water included.
 
-**Coverage** is the union of the regions.
+A region marked `disabled = true` (docs/inputs.md §6.1.3) is checked and stored, and other regions
+may name it, but it is not part of the coverage. That way a list can cover the Earth, as the cover
+check requires, while only some of it is built.
+
+**Coverage** is the union of the enabled regions.
 - **What gets built:** a feature that touches the coverage; for a way, any node inside. Ways are kept
   whole, so roads end a little past the edge.
 - **Units** are chosen by their reach, worked out once per pass from each piece's roads, rail and
