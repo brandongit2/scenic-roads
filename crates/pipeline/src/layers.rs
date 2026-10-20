@@ -307,3 +307,276 @@ pub fn split_grid(out: &mut Out, dir: &std::path::Path, var: &str) -> Result<Lay
     out.save()?;
     Ok(lo)
 }
+
+/// Task #449's measure, by hand on real data (release; nothing without its variables): the live build's landmark
+/// and overlay outputs (`SCENIC_BUNDLE_LIVE`, its project root, only read) uploaded to a scratch
+/// root on the NAS (`SCENIC_BUNDLE_SCRATCH`) as the jobs wrote them before (a file per tile, a pack
+/// per key) and as bundles: files made and time, each bundle's members checked byte for byte
+/// against the files they replace; and heritage-sites' slices put again unchanged, looked at on the
+/// NAS (before) and not (now). Writes catalogs of each form (`old/`, `new/`) for a server to compare.
+#[cfg(test)]
+mod measure {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::path::Path;
+    use std::time::Instant;
+    use store::range::PlainFile;
+
+    fn copy(live: &Path, content: &str, to: &Path) -> std::path::PathBuf {
+        let p = to.join(content.replace('/', "_"));
+        std::fs::copy(live.join(content), &p).unwrap();
+        p
+    }
+
+    #[test]
+    fn bundles_on_real_data() {
+        let (Ok(live), Ok(scratch)) = (std::env::var("SCENIC_BUNDLE_LIVE"), std::env::var("SCENIC_BUNDLE_SCRATCH"))
+        else {
+            return;
+        };
+        let (live, scratch) = (Path::new(&live), Path::new(&scratch));
+        assert!(!scratch.starts_with(live), "the scratch root is outside the live one");
+        let m: BTreeMap<String, String> =
+            serde_json::from_slice(&std::fs::read(live.join("state/build/manifest.json")).unwrap()).unwrap();
+        let local = tempfile::tempdir().unwrap();
+        let roots = [scratch.join("old"), scratch.join("new")];
+        let outs: Vec<Out> = roots
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                std::fs::create_dir_all(r.join("state/build")).unwrap();
+                Out::unbound(r, &local.path().join(format!("s{i}"))).unwrap()
+            })
+            .collect();
+        let [mut old, mut new]: [Out; 2] = outs.try_into().ok().unwrap();
+        let layers: Vec<String> = {
+            let mut v: Vec<String> = m
+                .keys()
+                .filter_map(|l| l.strip_prefix("layers/"))
+                .filter_map(|l| l.split('/').next())
+                .filter(|l| l.starts_with("marks-") || l.starts_with("ov-"))
+                .map(str::to_string)
+                .collect();
+            v.dedup();
+            v
+        };
+        let packs = |layer: &str| -> Vec<(&String, &String)> {
+            m.iter().filter(|(l, _)| l.starts_with(&format!("layers/{layer}/")) && !l.ends_with("/all")).collect()
+        };
+        let markdata: Vec<(&String, &String)> = m.iter().filter(|(l, _)| l.starts_with("markdata/6-")).collect();
+        eprintln!("{} markdata files, layers {layers:?}", markdata.len());
+
+        // Before: a file per tile, a pack per key, each uploaded as the jobs did (put_file).
+        let dl = local.path().join("live");
+        std::fs::create_dir_all(&dl).unwrap();
+        let mut olds: Vec<(String, std::path::PathBuf)> = Vec::new();
+        for (l, c) in markdata.iter().copied().chain(layers.iter().flat_map(|ly| packs(ly))) {
+            olds.push((l.clone(), copy(live, c, &dl)));
+        }
+        let bytes: u64 = olds.iter().map(|(_, p)| std::fs::metadata(p).unwrap().len()).sum();
+        let t = Instant::now();
+        let mut md_old = std::time::Duration::ZERO;
+        for (l, p) in &olds {
+            let t1 = Instant::now();
+            let ext = if l.starts_with("markdata/") { "sect" } else { "pack" };
+            let up = dl.join(format!("{}.up", l.replace('/', "_")));
+            std::fs::copy(p, &up).unwrap();
+            old.put_file(l, ext, &up).unwrap();
+            if l.starts_with("markdata/") {
+                md_old += t1.elapsed();
+            }
+        }
+        old.save().unwrap();
+        let old_s = t.elapsed();
+        eprintln!(
+            "before: {} files made ({} MB) in {:.1?} (markdata {} files {md_old:.1?}, packs {} files {:.1?})",
+            olds.len(),
+            bytes >> 20,
+            old_s,
+            markdata.len(),
+            olds.len() - markdata.len(),
+            old_s - md_old
+        );
+
+        // Now: the bundles, made as the jobs make them.
+        let t = Instant::now();
+        let files: Vec<(u8, u32, u32, std::path::PathBuf)> = olds
+            .iter()
+            .filter(|(l, _)| l.starts_with("markdata/"))
+            .map(|(l, p)| {
+                let u = crate::legacy::Unit::parse(l.trim_start_matches("markdata/")).unwrap();
+                let to = dl.join(format!("{}.member", l.replace('/', "_")));
+                std::fs::copy(p, &to).unwrap();
+                (6, u.x, u.y, to)
+            })
+            .collect();
+        let md_made = Instant::now();
+        crate::layers::write_file_bundle(
+            &mut new,
+            crate::marks::MARKDATA_BUNDLE,
+            serde_json::json!({"bundle": "markdata", "fmt": 1}),
+            files,
+        )
+        .unwrap();
+        let md_make = md_made.elapsed();
+        let mut ntiles = 0;
+        for ly in &layers {
+            let mut tiles = Vec::new();
+            let mut enc = String::new();
+            for (l, _) in packs(ly) {
+                let p = &olds.iter().find(|(o, _)| o == l).unwrap().1;
+                let f = PlainFile::open(p).unwrap();
+                let idx = store::pack::PackIndex::read_from(&f).unwrap();
+                enc = idx.meta["encoding"].as_str().unwrap_or_default().to_string();
+                for e in &idx.entries {
+                    let (z, x, y) = e.zxy();
+                    tiles.push((z, x, y, idx.read_blob(&f, e).unwrap(), e.raw_len));
+                }
+            }
+            ntiles += tiles.len();
+            write_layer_bundle(&mut new, ly, &enc, true, tiles).unwrap();
+        }
+        new.save().unwrap();
+        let new_s = t.elapsed();
+        eprintln!(
+            "now: {} files made in {new_s:.1?} (the markdata bundle made in {md_make:.1?}; {ntiles} tiles in {} layer bundles)",
+            1 + layers.len(),
+            layers.len()
+        );
+
+        // The members, byte for byte: each tile's markdata, each layer's tiles and their entries.
+        let nm = &new.manifest;
+        let bundle = PlainFile::open(&roots[1].join(&nm[crate::marks::MARKDATA_BUNDLE])).unwrap();
+        let bidx = store::pack::PackIndex::read_from(&bundle).unwrap();
+        assert_eq!(bidx.entries.len(), markdata.len());
+        for (l, p) in olds.iter().filter(|(l, _)| l.starts_with("markdata/")) {
+            let u = crate::legacy::Unit::parse(l.trim_start_matches("markdata/")).unwrap();
+            let e = bidx.find(6, u.x, u.y).unwrap();
+            assert_eq!(bidx.read_blob(&bundle, &e).unwrap(), std::fs::read(p).unwrap(), "{l}");
+            assert_eq!(e.offset % BUNDLE_ALIGN, 0);
+        }
+        for ly in &layers {
+            let b = PlainFile::open(&roots[1].join(&nm[&bundle_logical(ly)])).unwrap();
+            let bi = store::pack::PackIndex::read_from(&b).unwrap();
+            let mut n = 0;
+            for (l, _) in packs(ly) {
+                let p = &olds.iter().find(|(o, _)| o == l).unwrap().1;
+                let f = PlainFile::open(p).unwrap();
+                let idx = store::pack::PackIndex::read_from(&f).unwrap();
+                for e in &idx.entries {
+                    let (z, x, y) = e.zxy();
+                    let be = bi.find(z, x, y).unwrap();
+                    assert_eq!((be.len, be.raw_len, be.hash), (e.len, e.raw_len, e.hash), "{l} {z}/{x}/{y}");
+                    assert_eq!(bi.read_blob(&b, &be).unwrap(), idx.read_blob(&f, e).unwrap());
+                    n += 1;
+                }
+            }
+            assert_eq!(n, bi.entries.len(), "{ly}: no other tiles");
+        }
+        eprintln!("every member byte for byte as before");
+
+        // Catalogs of each form, with the overlays' details and the summaries, for a server.
+        let extra: Vec<(&String, &String)> = m
+            .iter()
+            .filter(|(l, _)| {
+                l.starts_with("ovdata/") || *l == "global/marks/summary" || l.starts_with("global/heritage/")
+            })
+            .collect();
+        for (i, (root, out)) in roots.iter().zip([&mut old, &mut new]).enumerate() {
+            for (l, c) in &extra {
+                let ext = c.rsplit('.').next().unwrap();
+                let p = copy(live, c, &local.path().join(format!("s{i}")));
+                out.put_file(l, ext, &p).unwrap();
+            }
+            out.save().unwrap();
+            let mut cat = store::catalog::Catalog::new(1);
+            let mut layers_out: BTreeMap<String, LayerOut> = BTreeMap::new();
+            for (l, c) in &out.manifest {
+                let size = std::fs::metadata(root.join(c)).unwrap().len();
+                cat.files
+                    .insert(l.clone(), store::catalog::FileRef { file: c.clone(), size, fmt: 1, ..Default::default() });
+                let parts: Vec<&str> = l.split('/').collect();
+                match parts.as_slice() {
+                    ["layers", ly, "all"] => {
+                        let f = PlainFile::open(&root.join(c)).unwrap();
+                        let keys = bundle_keys(&store::pack::PackIndex::read_from(&f).unwrap());
+                        let enc = if ly.starts_with("marks-") { "rdmt" } else { "mvt" };
+                        layers_out.entry(ly.to_string()).or_insert_with(|| LayerOut::new(enc)).add_bundle(l, &keys);
+                    }
+                    ["layers", ly, scope, k] => {
+                        let u = crate::legacy::Unit::parse(k).unwrap();
+                        let enc = if ly.starts_with("marks-") { "rdmt" } else { "mvt" };
+                        layers_out.entry(ly.to_string()).or_insert_with(|| LayerOut::new(enc)).add(
+                            scope,
+                            (u.z, u.x, u.y),
+                            l.clone(),
+                            (0, 0),
+                        );
+                    }
+                    ["markdata", "all"] => {
+                        for e in &bidx.entries {
+                            let (z, x, y) = e.zxy();
+                            cat.markdata.insert(format!("{z}/{x}/{y}"), l.clone());
+                        }
+                    }
+                    ["markdata", t] => {
+                        cat.markdata.insert(crate::legacy::Unit::parse(t).unwrap().slash(), l.clone());
+                    }
+                    ["ovdata", t] => {
+                        cat.ovdata.insert(crate::legacy::Unit::parse(t).unwrap().slash(), l.clone());
+                    }
+                    ["global", g @ ..] => {
+                        cat.global.insert(g.join("/"), l.clone());
+                    }
+                    _ => {}
+                }
+            }
+            for (name, mut lo) in layers_out {
+                (lo.minzoom, lo.maxzoom) = if name.starts_with("marks-") { (0, 5) } else { (0, crate::ovconv::MAXZ) };
+                cat.layers.insert(name, serde_json::from_value(serde_json::to_value(&lo).unwrap()).unwrap());
+            }
+            cat.validate().unwrap();
+            std::fs::remove_dir_all(root.join("catalog")).ok();
+            store::catalog::write(&root.join("catalog"), &cat).unwrap();
+        }
+
+        // Heritage-sites' slices put again unchanged (a sample): looked at on the NAS, as before
+        // (the name dropped first, so the records don't name it), and not, as now.
+        let her = scratch.join("heritage");
+        std::fs::create_dir_all(her.join("state/build")).unwrap();
+        let slices: Vec<(&String, &String)> = m
+            .iter()
+            .filter(|(l, _)| l.starts_with("work/heritage/") && (l.contains("/pos/") || l.contains("/parts/")))
+            .take(150)
+            .collect();
+        let sd = local.path().join("her");
+        std::fs::create_dir_all(&sd).unwrap();
+        let read: Vec<(String, Vec<u8>)> =
+            slices.iter().map(|(l, c)| (l.to_string(), std::fs::read(live.join(c)).unwrap())).collect();
+        let mut o = Out::unbound(&her, &sd).unwrap();
+        let t = Instant::now();
+        for (l, b) in &read {
+            o.put_bytes(l, "json", b).unwrap();
+        }
+        o.save().unwrap();
+        let first = t.elapsed();
+        let mut o = Out::unbound(&her, &sd).unwrap();
+        let t = Instant::now();
+        for (l, b) in &read {
+            o.remove(l);
+            o.put_bytes(l, "json", b).unwrap();
+        }
+        let before = t.elapsed();
+        let mut o = Out::unbound(&her, &sd).unwrap();
+        let t = Instant::now();
+        for (l, b) in &read {
+            o.put_bytes(l, "json", b).unwrap();
+        }
+        let now = t.elapsed();
+        eprintln!(
+            "heritage slices ({} files, {} kB): first upload {first:.1?}; put again unchanged: looked at {before:.1?}, not looked at {now:.1?}",
+            read.len(),
+            read.iter().map(|r| r.1.len()).sum::<usize>() >> 10
+        );
+    }
+}
