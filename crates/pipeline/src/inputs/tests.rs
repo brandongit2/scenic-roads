@@ -1170,3 +1170,79 @@ fn the_languages_table_is_checked_and_taken_in() {
     let t = names::Table::parse(std::str::from_utf8(&read("territories.tsv")).unwrap());
     assert_eq!(t.iter().map(|(c, _)| c).collect::<Vec<_>>(), ["CA", "CA-QC", "FR", "XK"]);
 }
+
+/// A unit whose whole check, like the regions', holds a file for an id its extract lacks
+/// (`rg-extract`) and keeps the ids of its last run as its needs.
+#[derive(Default)]
+struct Waits {
+    last: std::sync::Mutex<Vec<String>>,
+}
+
+impl Checks for Waits {
+    fn unit(&self) -> &'static str {
+        "_waits"
+    }
+    fn version(&self) -> u32 {
+        1
+    }
+    fn file(&self, _path: &str, _bytes: &[u8]) -> FileCheck {
+        FileCheck::default()
+    }
+    fn holds_unchanged(&self) -> bool {
+        true
+    }
+    fn whole(&self, v: &Version) -> Result<Vec<Finding>> {
+        let mut found = Vec::new();
+        let mut needs = Vec::new();
+        for p in &v.paths {
+            let t = String::from_utf8_lossy(&(v.read)(p)?).into_owned();
+            if let Some(id) = t.strip_prefix("outline osm:") {
+                let key = format!("osm:{}", id.trim());
+                needs.push(format!("r{}", id.trim()));
+                found.push(Finding::new(
+                    "rg-extract",
+                    Level::Error,
+                    &[&key, "2026-09-28"],
+                    &[],
+                    vec![p.clone()],
+                    format!("{p}: {key} isn't in the pass's outline set"),
+                ));
+            }
+        }
+        *self.last.lock().unwrap() = needs;
+        Ok(found)
+    }
+    fn needs(&self) -> Vec<String> {
+        let mut v = self.last.lock().unwrap().clone();
+        if !v.is_empty() {
+            v.insert(0, "pass 2026-09-28".into());
+        }
+        v
+    }
+}
+
+#[test]
+fn a_file_held_for_the_extract_puts_its_ids_in_the_held_reports_needs() {
+    let store = Store::default();
+    let mut b = Box_::default();
+    b.put("spain.toml", "plain", 100);
+    let w = Waits::default();
+    let v1 = check(&w, &b, None, &[], &store, false).index;
+    // A new region naming a relation the extract lacks: held, and the version taken without it is
+    // checked whole after (raising nothing): the report's needs are the candidate's, not that one's.
+    b.put("spain/perejil-island.toml", "outline osm:21030917", 200);
+    b.put("other.toml", "plain too", 200);
+    let d = check(&w, &b, Some(&v1), &[], &store, false);
+    assert_eq!(held(&d), ["spain/perejil-island.toml"]);
+    assert!(d.changed, "the clean change goes in");
+    let r = d.report.unwrap();
+    assert_eq!(r.needs, ["pass 2026-09-28", "r21030917"]);
+    // Through the report as written and read, as the lead's extract_job reads it.
+    let r: Report = serde_json::from_slice(&serde_json::to_vec(&r).unwrap()).unwrap();
+    assert_eq!(r.needs.first().and_then(|s| s.strip_prefix("pass ")), Some("2026-09-28"));
+    let ids: Vec<regions::extract::Id> = r.needs.iter().skip(1).filter_map(|s| s.parse().ok()).collect();
+    assert_eq!(ids, [regions::extract::Id::R(21030917)]);
+    // Checked again with nothing changed (the file stays held): the needs stay too.
+    let d2 = check(&w, &b, Some(&d.index), &[], &store, false);
+    assert_eq!(d2.report.unwrap().needs, ["pass 2026-09-28", "r21030917"]);
+}

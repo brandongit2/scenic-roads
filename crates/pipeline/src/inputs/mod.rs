@@ -44,7 +44,8 @@ pub mod view;
 pub mod watch;
 
 /// The `inputs` step's version: bumping it checks every unit again.
-pub const INPUTS_V: u32 = 1;
+/// (2: the held report's `needs` taken from the candidate's check, not overwritten by step 5's.)
+pub const INPUTS_V: u32 = 2;
 
 /// The gate units on the gate (each input's task adds its own).
 pub const UNITS: [&str; 10] = [

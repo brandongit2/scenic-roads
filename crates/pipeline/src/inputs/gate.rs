@@ -168,6 +168,9 @@ pub fn decide(g: &Given) -> Result<Decision> {
         let rd = reader(&candidate, prev, g.read_old);
         findings.extend(g.checks.whole(&Version { paths: candidate.keys().cloned().collect(), read: &rd })?);
     }
+    // (What the candidate needs made, taken now: the later checks of other versions (step 5's, the
+    // version in use's) would each replace it with their own, which leave the held files out.)
+    let needs_found = g.checks.needs();
     // 3. The verdicts.
     let all: BTreeSet<String> = g.listing.files.keys().chain(prev.files.keys()).cloned().collect();
     let mut held: BTreeSet<String> = BTreeSet::new();
@@ -350,7 +353,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
         let mut raised: Vec<String> = findings.iter().chain(&whole_found).map(|f| f.id.clone()).collect();
         raised.sort();
         raised.dedup();
-        let mut needs = g.checks.needs();
+        let mut needs = needs_found;
         needs.sort();
         needs.dedup();
         Report {
