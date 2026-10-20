@@ -1341,11 +1341,20 @@ fn cells_pass(
                 let u = geom::union_all(&pieces.iter().map(|p| p.1.clone()).collect::<Vec<_>>());
                 return (c, Vec::new(), bb.minus(&u), ps);
             }
+            let t0 = std::time::Instant::now();
             let land = land_and_lakes(data, c).0;
             let mut changed: BTreeSet<String> = BTreeSet::new();
             let mut twice = Vec::new();
+            let boxes: Vec<Option<[i64; 4]>> = pieces.iter().map(|p| p.1.bbox()).collect();
+            let near = |a: &Option<[i64; 4]>, b: &Option<[i64; 4]>| match (a, b) {
+                (Some(a), Some(b)) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3],
+                _ => false,
+            };
             for i in 0..pieces.len() {
                 for j in i + 1..pieces.len() {
+                    if !near(&boxes[i], &boxes[j]) {
+                        continue;
+                    }
                     let o = pieces[i].1.intersect(&pieces[j].1);
                     if o.is_empty() {
                         continue;
@@ -1375,41 +1384,82 @@ fn cells_pass(
                     }
                 }
             }
+            let t1 = t0.elapsed().as_secs_f64();
             let u = geom::union_all(&pieces.iter().map(|p| p.1.clone()).collect::<Vec<_>>());
             let gaps = bb.minus(&u);
+            let t2 = t0.elapsed().as_secs_f64();
             let mut sea_left = Vec::new();
+            // (Each gap goes to the region it shares the most edge with, if it's within 100 m of
+            // land: read from an index of the segments, no buffer per gap.)
+            let pidx = SegIndex::new(pieces.iter().enumerate().flat_map(|(k, (_, a))| a.polys.iter().flatten().map(move |r| (k, r))));
+            let lidx = SegIndex::new(land.polys.iter().enumerate().flat_map(|(k, p)| p.iter().map(move |r| (k, r))));
+            let land_boxes: Vec<Option<[i64; 4]>> = land.polys.iter().map(|p| geom::bbox_of(p.iter().flatten())).collect();
+            let mut won: Vec<Vec<Area>> = vec![Vec::new(); pieces.len()];
+            let mut sample: Vec<(f64, String)> = Vec::new();
             for poly in &gaps.polys {
                 let g = Area { polys: vec![poly.clone()] };
-                // (Its ring of 100 m made once: whether it touches land, and the edge it shares
-                // with each region, read from it, the regions far from it passed over by box.)
-                let ring = geom::buffer_area_coarse(&g, 100.0).minus(&g);
-                let Some(rb) = ring.bbox() else {
-                    sea_left.push(g);
-                    continue;
-                };
-                let meets = |a: &Area| a.bbox().is_some_and(|b| b[0] <= rb[2] && rb[0] <= b[2] && b[1] <= rb[3] && rb[1] <= b[3]);
-                let touches = meets(&land) && (!ring.intersect(&land).is_empty() || !g.intersect(&land).is_empty());
+                let gb = geom::bbox_of(poly.iter().flatten());
+                let touches = poly.iter().flatten().any(|v| lidx.within(*v, 100.0))
+                    || poly.first().and_then(|r| r.first()).is_some_and(|v| {
+                        land.polys.iter().zip(&land_boxes).any(|(lp, b)| near(b, &gb) && inside(*v, lp))
+                    })
+                    || land.polys.iter().zip(&land_boxes).any(|(lp, b)| {
+                        near(b, &gb) && lp.first().and_then(|r| r.first()).is_some_and(|v| inside(*v, poly))
+                    });
                 if !touches {
                     sea_left.push(g);
                     continue;
                 }
-                let best = pieces
-                    .iter()
-                    .filter(|(_, a)| meets(a))
-                    .map(|(id, a)| (geom::area_km2(&ring.intersect(a)) / 0.1, id.clone()))
-                    .filter(|(l, _)| *l > 0.0)
-                    .max_by(|x, y| x.0.total_cmp(&y.0).then(y.1.cmp(&x.1)))
-                    .map(|(_, id)| id);
-                match best {
-                    Some(id) => {
-                        let p = pieces.iter_mut().find(|p| p.0 == id).unwrap();
-                        p.1 = p.1.union(&g);
-                        changed.insert(id);
+                let mut len = vec![0.0f64; pieces.len()];
+                for r in poly {
+                    for k in 0..r.len() {
+                        let (a, b) = (r[k], r[(k + 1) % r.len()]);
+                        let m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+                        if let Some(owner) = pidx.on(m) {
+                            len[owner] += seg_m(a, b);
+                        }
                     }
+                }
+                let best = (0..pieces.len())
+                    .filter(|&k| len[k] > 0.0)
+                    .max_by(|&x, &y| len[x].total_cmp(&len[y]).then(pieces[y].0.cmp(&pieces[x].0)));
+                if sample.len() < 400 {
+                    let km2 = geom::area_km2(&g);
+                    let v = poly[0][0];
+                    let by: Vec<String> = (0..pieces.len()).filter(|&k| len[k] > 0.0).map(|k| format!("{} {:.0} m", pieces[k].0, len[k])).collect();
+                    sample.push((km2, format!("{:.5},{:.5} {:.6} km² land-near borders [{}]", v[0] as f64 / 1e7, v[1] as f64 / 1e7, km2, by.join("; "))));
+                }
+                match best {
+                    Some(k) => won[k].push(g),
                     None => sea_left.push(g),
                 }
             }
+            for (k, gs) in won.into_iter().enumerate() {
+                if gs.is_empty() {
+                    continue;
+                }
+                let mut all = gs;
+                all.push(pieces[k].1.clone());
+                pieces[k].1 = geom::union_all(&all);
+                changed.insert(pieces[k].0.clone());
+            }
             let sea = geom::union_all(&sea_left);
+            let t3 = t0.elapsed().as_secs_f64();
+            if t3 > 2.0 || (gaps.polys.len() > 3000 && std::env::var("SCENIC_REGIONS_GAPS").is_ok()) {
+                trace(&format!(
+                    "the cover check: the cell from {}°, {}° took {t3:.0} s ({} regions, land {} rings, overlaps {t1:.0} s, union {:.0} s, {} gaps {:.0} s)",
+                    c.0 * 2, c.1 * 2, pieces.len(), land.polys.len(), t2 - t1, gaps.polys.len(), t3 - t2
+                ));
+                if std::env::var("SCENIC_REGIONS_GAPS").is_ok() {
+                    let mut a: Vec<f64> = sample.iter().map(|x| x.0).collect();
+                    a.sort_by(|x, y| x.total_cmp(y));
+                    let tot: f64 = a.iter().sum();
+                    trace(&format!("gaps sampled {} (land-near), total {tot:.4} km², median {:.7} km², max {:.4} km²", a.len(), a.get(a.len() / 2).copied().unwrap_or(0.0), a.last().copied().unwrap_or(0.0)));
+                    for (_, l) in sample.iter().step_by((sample.len() / 8).max(1)) {
+                        trace(&format!("  gap {l}"));
+                    }
+                }
+            }
             if !rest && geom::area_km2(&sea) > 0.1 {
                 ps.push(Problem {
                     check: "rg-cover",
@@ -1461,4 +1511,88 @@ fn store(r: &Region, res: &mut Resolved, t: &TArea, water_only: bool) {
     res.geometry.water_only = water_only;
     res.drawn.shapes = BTreeMap::from([(from, polys)]);
     res.lakes = Area::default();
+}
+
+/// Metres along a segment (a local equirectangular measure: segments here are short).
+fn seg_m(a: geom::Pt, b: geom::Pt) -> f64 {
+    let lat = ((a[1] + b[1]) as f64 / 2e7).to_radians();
+    let dx = (b[0] - a[0]) as f64 * lat.cos();
+    let dy = (b[1] - a[1]) as f64;
+    (dx * dx + dy * dy).sqrt() * 0.011_131_95
+}
+
+/// Whether a point is inside a polygon (its rings read even-odd, holes included).
+fn inside(p: geom::Pt, poly: &[geom::Ring]) -> bool {
+    let mut c = false;
+    for r in poly {
+        let n = r.len();
+        for i in 0..n {
+            let (a, b) = (r[i], r[(i + n - 1) % n]);
+            if (a[1] > p[1]) != (b[1] > p[1]) {
+                let x = a[0] as f64 + (p[1] - a[1]) as f64 * (b[0] - a[0]) as f64 / (b[1] - a[1]) as f64;
+                if (p[0] as f64) < x {
+                    c = !c;
+                }
+            }
+        }
+    }
+    c
+}
+
+/// Rings' segments in a grid of about 2 km, each with its owner's number.
+struct SegIndex {
+    grid: std::collections::HashMap<(i64, i64), Vec<(usize, geom::Pt, geom::Pt)>>,
+}
+
+const SEG_CELL: i64 = 20_000;
+
+impl SegIndex {
+    fn new<'a>(rings: impl Iterator<Item = (usize, &'a geom::Ring)>) -> Self {
+        let mut grid: std::collections::HashMap<(i64, i64), Vec<(usize, geom::Pt, geom::Pt)>> = Default::default();
+        for (k, r) in rings {
+            let n = r.len();
+            for i in 0..n {
+                let (a, b) = (r[i], r[(i + 1) % n]);
+                for x in a[0].min(b[0]).div_euclid(SEG_CELL)..=a[0].max(b[0]).div_euclid(SEG_CELL) {
+                    for y in a[1].min(b[1]).div_euclid(SEG_CELL)..=a[1].max(b[1]).div_euclid(SEG_CELL) {
+                        grid.entry((x, y)).or_default().push((k, a, b));
+                    }
+                }
+            }
+        }
+        SegIndex { grid }
+    }
+
+    /// The segments within `d` metres of a point, with their distance in metres.
+    fn near(&self, p: geom::Pt, d: f64) -> impl Iterator<Item = (usize, f64)> + '_ {
+        let cos = (p[1] as f64 / 1e7).to_radians().cos().max(0.01);
+        let (ry, rx) = ((d / 0.011_131_95) as i64 + 1, (d / 0.011_131_95 / cos) as i64 + 1);
+        let (x0, x1) = ((p[0] - rx).div_euclid(SEG_CELL), (p[0] + rx).div_euclid(SEG_CELL));
+        let (y0, y1) = ((p[1] - ry).div_euclid(SEG_CELL), (p[1] + ry).div_euclid(SEG_CELL));
+        (x0..=x1)
+            .flat_map(move |x| (y0..=y1).map(move |y| (x, y)))
+            .filter_map(move |c| self.grid.get(&c))
+            .flatten()
+            .map(move |&(k, a, b)| (k, seg_dist_m(p, a, b, cos)))
+            .filter(move |(_, m)| *m <= d)
+    }
+
+    fn within(&self, p: geom::Pt, d: f64) -> bool {
+        self.near(p, d).next().is_some()
+    }
+
+    /// The owner of the nearest segment the point lies on (within a metre).
+    fn on(&self, p: geom::Pt) -> Option<usize> {
+        self.near(p, 1.0).min_by(|x, y| x.1.total_cmp(&y.1)).map(|x| x.0)
+    }
+}
+
+fn seg_dist_m(p: geom::Pt, a: geom::Pt, b: geom::Pt, cos: f64) -> f64 {
+    let f = |q: geom::Pt| [(q[0] - p[0]) as f64 * cos, (q[1] - p[1]) as f64];
+    let (a, b) = (f(a), f(b));
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let l2 = d[0] * d[0] + d[1] * d[1];
+    let t = if l2 == 0.0 { 0.0 } else { (-(a[0] * d[0] + a[1] * d[1]) / l2).clamp(0.0, 1.0) };
+    let q = [a[0] + t * d[0], a[1] + t * d[1]];
+    (q[0] * q[0] + q[1] * q[1]).sqrt() * 0.011_131_95
 }

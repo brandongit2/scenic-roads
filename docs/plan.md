@@ -1609,7 +1609,13 @@ idle. `elev`'s memory is the point arrays (30 M vertices: ~2 GB) and the files' 
     - the land polygons are osmdata's of 2026-10-18, not cut from the pinned pass;
     - the cover check and its fills work cell by cell (2°), so a gap cut by a cell's edge is two
       gaps, each settled in its cell;
-    - a nearest-coast split ignores coasts more than 450 km from a cell.
+    - a nearest-coast split ignores coasts more than 450 km from a cell;
+    - two coastlines: a land region is its OSM admin outline ∩ the OSM land polygons, and water is
+      cut by the land polygons. Where the outline's coast lies inland of the polygons' coast, that
+      land is in neither: on Canada's coasts, 3,000–5,000 gaps per 2° cell (median 0.0005–0.014 km²,
+      the largest 0.3–4.5 km², 2–43 km² per cell). The cover rule hands each gap near land to the
+      region sharing the most edge with it. Fix: the outlines' coastal edges taken from the land
+      polygons, one coastline for both.
 
 ## 11. Risks and checks
 
