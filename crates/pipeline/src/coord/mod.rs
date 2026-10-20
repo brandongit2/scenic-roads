@@ -1088,15 +1088,13 @@ impl Shared {
         if !self.own_open(o, a, now) {
             return Vec::new();
         }
-        if !self.own_nas_fits(o, now, false) {
-            return Vec::new();
-        }
         let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
         let fits = match self.job_need(&o.step, &ts) {
             Some((m, _)) => m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d),
             None => self.job_leases(&a.worker, now).is_empty(),
         };
-        if !fits {
+        // (The budget asked last: its wait noted only when the job would go but for it.)
+        if !fits || !self.own_nas_fits(o, now, false) {
             return Vec::new();
         }
         o.targets.iter().map(|(t, k, _)| (t.clone(), k.clone())).collect()
@@ -1157,11 +1155,9 @@ impl Shared {
         let cold_here = std::cell::OnceCell::new();
         let takeable = |i: usize| {
             let (t, k, _) = &o.targets[i];
+            // (Its wait noted only when this asker would take it but for the budget: a target no
+            // asker can take never ages into holding room, `nas_reserved`.)
             open(t, k)
-                && (nas_fits(t) || {
-                    self.nas_wait(&o.step, t, now);
-                    false
-                })
                 && match self.measured(&o.step, t) {
                     Some(m) => fits(&m),
                     // (Alone: no job of its step under way anywhere, the lead's own held by a lease too.)
@@ -1171,6 +1167,10 @@ impl Shared {
                                 .get_or_init(|| self.most_room(&o.step, now).as_deref() == Some(a.worker.as_str()))
                     }
                 }
+                && (nas_fits(t) || {
+                    self.nas_wait(&o.step, t, now);
+                    false
+                })
         };
         let after = self
             .last
@@ -7517,6 +7517,44 @@ mod tests {
         end(&c, big);
         assert_eq!(take(&c, "m3", 5).len(), 1, "6/1/1 ended: it goes");
         assert_eq!(take(&c, "m4", 4).len(), 1, "600 + 200 would fit beside it: the smaller one too");
+    }
+
+    /// Task #444 review: a target over the budget that fits no asking member (its measured memory
+    /// past theirs) is never noted waiting, so it never ages into holding the budget's room.
+    #[test]
+    fn a_target_no_member_can_take_never_reserves() {
+        let (_d, c, _w, clock) = every((0, 0));
+        heavy_slope(&c);
+        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let offer = {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+            s.offers[0].clone()
+        };
+        let one = |i: usize| Offer { targets: vec![offer.targets[i].clone()], ..offer.clone() };
+        {
+            let mut s = c.shared.lock().unwrap();
+            let now = s.now();
+            for (w, i) in [("m1", 0), ("m2", 1)] {
+                let ts = vec![(offer.targets[i].0.clone(), String::new())];
+                s.leases.grant(w, Work::Job { step: "slope".into(), targets: ts }, now);
+            }
+        }
+        let take = |c: &Coordinator, mem: u64| {
+            let s = c.shared.lock().unwrap();
+            let now = s.now();
+            s.pick_every(&one(5), &every_ask("m3", "slope", mem, 100_000), now)
+        };
+        // (Its 2000 MB past the 1000 the member spares: not noted, whatever the budget.)
+        assert!(take(&c, 1000).is_empty());
+        clock.advance(Duration::from_secs(60));
+        assert!(take(&c, 1000).is_empty());
+        assert!(c.shared.lock().unwrap().nas_waits.lock().unwrap().is_empty(), "never noted waiting");
+        // (One that could take it but for the budget: noted.)
+        assert!(take(&c, 64_000).is_empty());
+        assert_eq!(c.shared.lock().unwrap().nas_waits.lock().unwrap().len(), 1);
+        // (Never noted, it can't have aged into holding room past `OWN_AGE` either: `nas_reserved`
+        // reads only the waits noted.)
     }
 
     /// Placement on: of two members asking whose room fits a target, it's drawn to one by their
