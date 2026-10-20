@@ -997,6 +997,27 @@ describe('map events', () => {
         expect(map.isMoving()).toBeFalsy();
     });
 
+    // Scenic Roads (task #434): a camera moved a frame at a time (jumpTo) counts as moving for a
+    // while after each change, and the map comes to rest (idle) by itself once the hold is over.
+    test('a jumpTo a frame at a time counts as moving, and idle comes once the hold is over', async () => {
+        const style = createStyle();
+        const map = createMap({style, fadeDuration: 0});
+        await map.once('idle');
+        expect(map.isMoving()).toBeFalsy();
+        map.jumpTo({center: [1, 1]});
+        map._render(0);
+        expect(map.isMoving()).toBeTruthy();
+        // (another frame with the camera where it is: still within the hold)
+        map._render(0);
+        expect(map.isMoving()).toBeTruthy();
+        const idle = map.once('idle');
+        map.jumpTo({center: [2, 2]});
+        map._render(0);
+        expect(map.isMoving()).toBeTruthy();
+        await idle;
+        expect(map.isMoving()).toBeFalsy();
+    });
+
     test('fires sourcedataabort event on dataabort event', async () => {
         const map = createMap();
         const sourcePromise = map.once('sourcedataabort');

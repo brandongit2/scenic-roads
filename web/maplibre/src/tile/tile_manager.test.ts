@@ -2824,3 +2824,69 @@ describe('TileManager content elevation', () => {
             }
         });
 });
+
+// Scenic Roads (task #434): covers shared between sources within an update, and a source's
+// visible coordinates sorted once a frame.
+describe('TileManager covers shared within an update', () => {
+    test('sources asking the same cover get one answer, a copy each; another cover is its own', async () => {
+        const transform = new MercatorTransform();
+        transform.resize(512, 512);
+        transform.setZoom(3);
+        const managers = [createTileManager({}), createTileManager({}), createTileManager({minzoom: 2, maxzoom: 2})];
+        for (const tm of managers) {
+            const metadata = waitForEvent(tm, 'data', e => e.sourceDataType === 'metadata');
+            tm.onAdd(undefined);
+            await metadata;
+        }
+        const memo = new globalThis.Map<string, OverscaledTileID[]>();
+        for (const tm of managers) {
+            tm._coverMemo = memo;
+            tm.update(transform);
+            tm._coverMemo = null;
+        }
+        // two covers worked out: the first two sources' and the third's
+        expect(memo.size).toBe(2);
+        expect(managers[1].getIds()).toEqual(managers[0].getIds());
+        expect(managers[2].getIds()).not.toEqual(managers[0].getIds());
+        expect(managers[2].getIds().every(id => managers[2].getTileByID(id).tileID.overscaledZ === 2)).toBeTruthy();
+        // the memo's arrays are the covers, not the managers' own
+        for (const ids of memo.values()) expect(ids.length).toBeGreaterThan(0);
+        // without a memo, as before
+        managers[0].update(transform);
+        expect(managers[1].getIds()).toEqual(managers[0].getIds());
+    });
+});
+
+describe('TileManager.getVisibleCoordinates once a frame', () => {
+    test('the renderable ids are sorted once a frame, a copy given each time, again next frame', async () => {
+        const transform = new MercatorTransform();
+        transform.resize(512, 512);
+        transform.setZoom(2);
+        const tm = createTileManager({});
+        const metadata = waitForEvent(tm, 'data', e => e.sourceDataType === 'metadata');
+        tm.onAdd(undefined);
+        await metadata;
+        tm.update(transform);
+        for (const id of tm.getIds()) tm.getTileByID(id).state = 'loaded';
+        const frame = {programFrame: 1};
+        tm.map = {painter: {context: frame}} as any;
+        const sorted = vi.spyOn(tm, 'getRenderableIds');
+        const a = tm.getVisibleCoordinates();
+        const b = tm.getVisibleCoordinates();
+        expect(sorted).toHaveBeenCalledTimes(1);
+        expect(b).toEqual(a);
+        expect(b).not.toBe(a);
+        expect(a.length).toBeGreaterThan(0);
+        // symbol layers' order is its own
+        tm.getVisibleCoordinates(true);
+        expect(sorted).toHaveBeenCalledTimes(2);
+        // the next frame sorts again
+        frame.programFrame = 2;
+        tm.getVisibleCoordinates();
+        expect(sorted).toHaveBeenCalledTimes(3);
+        // a changed bearing too (the symbol order depends on it)
+        transform.setBearing(90);
+        tm.getVisibleCoordinates();
+        expect(sorted).toHaveBeenCalledTimes(4);
+    });
+});

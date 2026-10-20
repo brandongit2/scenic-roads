@@ -4549,7 +4549,7 @@ export class Map extends Evented<MapEventType> {
             // Scenic Roads: moving only by the hold (_lastCameraMove): a frame once it is over, so
             // the map comes to rest (the drapes due at rest, `idle`) without another input.
             const left = MOVING_HOLD_MS - (now() - this._lastCameraMove);
-            if (!this._holdTimer) this._holdTimer = setTimeout(() => { this._holdTimer = null; this.triggerRepaint(); }, Math.max(0, left) + 1);
+            if (!this._holdTimer) this._holdTimer = setTimeout(() => { this._holdTimer = null; if (!this._removed) this.triggerRepaint(); }, Math.max(0, left) + 1);
         }
 
         if (this._loaded && !this._fullyLoaded && !somethingDirty) {
@@ -4614,6 +4614,11 @@ export class Map extends Evented<MapEventType> {
         this._cleanupContainer();
 
         this._removed = true;
+        // Scenic Roads: the hold's frame (MOVING_HOLD_MS) no longer wanted.
+        if (this._holdTimer) {
+            clearTimeout(this._holdTimer);
+            this._holdTimer = null;
+        }
         this.fire(new MapLibreEvent('remove'));
     }
 
