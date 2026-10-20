@@ -437,18 +437,10 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #profile .btns { display: flex; gap: 4px; }
 #profile .loading { padding: 26px 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
 
-/* boot & toast ------------------------------------------------------------- */
-#boot { position: absolute; inset: 0; display: grid; place-items: center; z-index: 10; background: var(--bg); transition: opacity 0.5s ease; }
-#boot.done { opacity: 0; pointer-events: none; }
-.boot-box { width: 300px; }
-.boot-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; color: #eef1f5; }
-#boot ol { list-style: none; padding: 0; margin: 0 0 12px; color: var(--muted); line-height: 1.9; }
-#boot li.done { color: var(--faint); }
-#boot li.done::before { content: '✓ '; color: var(--accent); }
-#boot li.now::before { content: '› '; color: var(--text); }
-#boot li.err { color: #ff8b8b; }
-.boot-bar { height: 2px; background: rgba(255, 255, 255, 0.06); border-radius: 1px; overflow: hidden; }
-.boot-bar div { height: 100%; width: 0; background: var(--accent); transition: width 0.3s ease; }
+/* load bar, banner & toast ---------------------------------------------------- */
+#loadbar { position: absolute; top: 0; left: 0; right: 0; height: 2px; z-index: 7; pointer-events: none; background: var(--accent); opacity: 0.7; transform-origin: 0 50%; transform: scaleX(0.04); transition: transform 0.3s ease, opacity 0.5s ease 0.25s; }
+#loadbar.done { opacity: 0; }
+#banner { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); max-width: calc(100vw - 32px); z-index: 7; background: var(--card-solid); border: 1px solid rgba(255, 139, 139, 0.45); color: #ff8b8b; padding: 6px 12px; border-radius: 8px; }
 #toast { position: absolute; left: calc(var(--left-w) + (100% - var(--left-w) - var(--side-w)) / 2); top: 14px; transform: translateX(-50%) translateY(-8px); background: var(--card-solid); border: 1px solid var(--line-strong); padding: 6px 12px; border-radius: 8px; opacity: 0; transition: all 0.2s ease; z-index: 6; pointer-events: none; }
 #toast.show { opacity: 1; transform: translateX(-50%); }
 
@@ -686,7 +678,6 @@ body.panel-off #viewshed { --vs-left: calc(60px + env(safe-area-inset-left)); }
   /* (Under the search.) */
   #toast { left: 50%; top: calc(18px + var(--search-h) + env(safe-area-inset-top)); max-width: calc(100vw - 130px); text-align: center; }
   .maplibregl-popup { max-width: min(340px, calc(100vw - 24px)) !important; }
-  .boot-box { width: min(300px, calc(100vw - 40px)); }
   dialog.credits { max-width: calc(100vw - 20px); }
 }
 

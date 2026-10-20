@@ -49,10 +49,10 @@ import { cheaperCovers } from './covers';
 import { steadierPlacement } from './placement';
 import { slicedGlyphs } from './glyphs';
 import { installTrackpad } from './trackpad';
-import { Boot } from './ui/boot';
 import { MapStatus } from './ui/mapstatus';
 import { ColourCard } from './ui/colour';
 import { cap, fmt, h, toast } from './ui/dom';
+import { loadBar } from './ui/loadbar';
 import { DrivesPane } from './ui/drives';
 import { LayersCard } from './ui/layers';
 import { NavControls } from './ui/nav';
@@ -78,40 +78,16 @@ if (new URLSearchParams(location.search).has('bgrender')) {
   window.cancelAnimationFrame = (id) => window.clearTimeout(id);
 }
 
-const boot = new Boot(['Loading dataset metadata', 'Starting map engine', 'Loading basemap style', 'Loading road tiles in view']);
-
 async function main() {
-  boot.at(0);
-  let meta: Meta;
-  try {
-    // The data hosts are probed while the metadata loads (hosts.ts).
-    const [r] = await Promise.all([fetch('/api/meta'), initHosts()]);
+  // The metadata and the data hosts' probe (hosts.ts) load while the map engine starts (its
+  // container, WebGL context and workers, on an empty style); the basemap style follows them, as
+  // its tile URLs need both. (No cached metadata: a stale catalog's packs and versions would fetch
+  // tiles the server no longer has.)
+  const metaReady = Promise.all([fetch('/api/meta'), initHosts()]).then(async ([r]) => {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    meta = await r.json();
-    setPacks(meta.packs);
-    setVersions(meta.versions);
-  } catch (e) {
-    boot.fail(0, `backend not reachable (${(e as Error).message})`);
-    return;
-  }
-
-  /** Whether the catalog has the 3D buildings: their settings section, the B key and `bd=` in
-   * links only then (a catalog can gain them while the map is open: newCatalog). */
-  let hasBuildings = !!meta.layers?.buildings;
-  // A link (URL hash) wins; otherwise restore the last session from localStorage. (A link's `bd=`
-  // only with the buildings: without, the saved settings stay.)
-  // (An address from when the map had a key, `#k=…`: the key dropped, the view kept.)
-  if (/(^#|&)k=/.test(location.hash)) {
-    const rest = location.hash.slice(1).split('&').filter((p) => p && !p.startsWith('k=')).join('&');
-    history.replaceState(null, '', location.pathname + location.search + (rest ? `#${rest}` : ''));
-  }
-  const saved = fromSaved(prefs.load('state', null));
-  // (The self-benchmark, `#bench` (selfbench.ts): its view, as a `#map=` link.)
-  const linked = BENCH ? fromHash(benchHash(), hasBuildings) : location.hash.length > 1 ? { ...fromHash(location.hash, hasBuildings), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
-  // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.
-  const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings)) : CMP ? cmpState(fromHash(location.hash, hasBuildings)) : linked);
-  history.replaceState(null, '', toHash(store.s, hasBuildings)); // the address bar holds the restored state
-  boot.at(1);
+    return (await r.json()) as Meta;
+  });
+  metaReady.catch(() => undefined); // (handled below)
   maplibregl.setWorkerUrl(mlWorkerUrl);
   // MapLibre parses every tile and overlay file on a single worker by default (outside Safari):
   // the basemap and terrain tiles then wait behind a 50 MB overlay file. Several, leaving cores for
@@ -120,15 +96,14 @@ async function main() {
   // Terrain, slope and tree tiles are images: more of them at once than MapLibre's default 16, now
   // that each kind has connections of its own (hosts.ts).
   maplibregl.setMaxParallelImageRequests(32);
-  const v = store.s.view;
+  // The opening view, before the metadata: only `bd=` in a link depends on it, not the view.
+  const pre = BENCH ? fromHash(benchHash(), false) : location.hash.length > 1 ? fromHash(location.hash, false) : fromSaved(prefs.load('state', null));
+  const v = pre.view;
   // (Eval mode: the map fills the window, the panels under it.)
   if (EVAL || CMP) document.getElementById('map')!.style.cssText = 'position:fixed;inset:0;z-index:1000';
-  // (The water's tiles carry its colours: the user's from the start, so they're fetched once.)
-  setLandColour(store.s.land);
-  setWaterColours(store.s.water.colour, lakeColour(store.s.water.colour));
   const map = new maplibregl.Map({
     container: 'map',
-    style: baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.water),
+    style: { version: 8, sources: {}, layers: [] },
     center: v ? [v.lng, v.lat] : [-70, 46],
     zoom: v ? v.zoom : 5,
     bearing: v?.bearing ?? 0,
@@ -159,6 +134,43 @@ async function main() {
   setAshader();
   // (a restored context is a new painter's: set again)
   map.on('webglcontextrestored', setAshader);
+  if (v?.elev) map.jumpTo({ elevation: v.elev });
+  if (!v) {
+    map.fitBounds([[-80.6, 40.4], [-52.6, 51.8]], { duration: 0, padding: 20 });
+    // 3D terrain is on by default: start with a gentle tilt so it shows.
+    if (pre.terrain.on) map.jumpTo({ pitch: 40 });
+  }
+  let meta: Meta;
+  try {
+    meta = await metaReady;
+    setPacks(meta.packs);
+    setVersions(meta.versions);
+  } catch (e) {
+    loadBar.fail(`Backend not reachable (${(e as Error).message}). Reload to try again.`);
+    return;
+  }
+
+  /** Whether the catalog has the 3D buildings: their settings section, the B key and `bd=` in
+   * links only then (a catalog can gain them while the map is open: newCatalog). */
+  let hasBuildings = !!meta.layers?.buildings;
+  // A link (URL hash) wins; otherwise restore the last session from localStorage. (A link's `bd=`
+  // only with the buildings: without, the saved settings stay.)
+  // (An address from when the map had a key, `#k=…`: the key dropped, the view kept.)
+  if (/(^#|&)k=/.test(location.hash)) {
+    const rest = location.hash.slice(1).split('&').filter((p) => p && !p.startsWith('k=')).join('&');
+    history.replaceState(null, '', location.pathname + location.search + (rest ? `#${rest}` : ''));
+  }
+  const saved = fromSaved(prefs.load('state', null));
+  // (The self-benchmark, `#bench` (selfbench.ts): its view, as a `#map=` link.)
+  const linked = BENCH ? fromHash(benchHash(), hasBuildings) : location.hash.length > 1 ? { ...fromHash(location.hash, hasBuildings), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
+  // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.
+  const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings)) : CMP ? cmpState(fromHash(location.hash, hasBuildings)) : linked);
+  history.replaceState(null, '', toHash(store.s, hasBuildings)); // the address bar holds the restored state
+  // (The water's tiles carry its colours: the user's from the start, so they're fetched once.)
+  setLandColour(store.s.land);
+  setWaterColours(store.s.water.colour, lakeColour(store.s.water.colour));
+  // diff: false, so the new style loads as one (style.load, below) rather than as edits to the empty one.
+  map.setStyle(baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.water), { diff: false });
   if (EVAL) installEval(map);
   // The far buildings' field (bldfield.ts, task #102), on by default where the catalog has its
   // layer (`buildings-field`); `?bldfield=off` leaves it out, `?bldfield=<url>` takes its tiles from
@@ -183,19 +195,39 @@ async function main() {
   cacheTerrainRays(map);
   cheaperCovers(map);
   slicedGlyphs(map);
-  if (v?.elev) map.jumpTo({ elevation: v.elev });
   // Once the terrain is ready, set the pivot for the view (camera fixed; see camera3d.relevel).
   const levelOnce = () => {
     if (map.queryTerrainElevation(map.getCenter()) === null) return;
     map.off('idle', levelOnce);
     cam3d.relevel(map);
   };
-  if (store.s.terrain.on) map.on('idle', levelOnce);
-  if (!v) {
-    map.fitBounds([[-80.6, 40.4], [-52.6, 51.8]], { duration: 0, padding: 20 });
-    // 3D terrain is on by default: start with a gentle tilt so it shows.
-    if (store.s.terrain.on) map.jumpTo({ pitch: 40 });
-  }
+  // At start the ground lies flat until the terrain's tiles in view are in, then its height eases up
+  // (RISE_MS), the pivot following it each frame (camera fixed): no jump when the heights land.
+  // The exaggeration is set on the Terrain itself (setTerrain would rebuild it every frame); a
+  // setTerrain meanwhile (settings) replaces that Terrain and ends the rise.
+  const RISE_MS = 700;
+  const riseTerrain = () => {
+    const terrain = map.terrain;
+    if (!terrain) return;
+    terrain.exaggeration = 0;
+    const ready = () => {
+      if (map.terrain !== terrain) return map.off('sourcedata', ready);
+      if (!map.getSource('dem') || !map.isSourceLoaded('dem')) return;
+      map.off('sourcedata', ready);
+      const t0 = performance.now();
+      const step = () => {
+        if (map.terrain !== terrain) return;
+        const f = Math.min(1, (performance.now() - t0) / RISE_MS);
+        terrain.exaggeration = store.s.terrain.exaggeration * (1 - (1 - f) ** 3);
+        if (!driving) cam3d.relevel(map);
+        map.triggerRepaint();
+        if (f < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    };
+    map.on('sourcedata', ready);
+    ready();
+  };
   // (A long press's menu needs the links, defined further on.)
   let onLongPress = (_px: number, _py: number) => {};
   const cameraControls = installTrackpad(map, { onLongPress: (px, py) => onLongPress(px, py) });
@@ -1305,11 +1337,11 @@ async function main() {
   roads.onChange = () => {
     markDirty();
     const p = roads.progress();
-    if (!bootDone) {
-      boot.sub(3, p.wanted ? p.loaded / p.wanted : 0, `${p.loaded}/${p.wanted}`);
+    if (!firstViewDone) {
+      loadBar.set(p.wanted ? p.loaded / p.wanted : 0);
       // On a timer, out of MapLibre's render pass (this runs in the road layer's prerender): the
       // pass sets up its draped textures (3D terrain) first, and threw on overlays released in it.
-      if (p.wanted > 0 && p.loaded >= p.wanted) setTimeout(finishBoot, 0);
+      if (p.wanted > 0 && p.loaded >= p.wanted) setTimeout(finishFirstView, 0);
     }
   };
   map.on('move', () => {
@@ -2167,12 +2199,15 @@ async function main() {
   // Keep this view: the ground on screen, as the lists "in view" take it.
   regions.viewOutline = () => groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]);
 
-  // ---- boot --------------------------------------------------------------------------
-  let bootDone = false;
-  const finishBoot = () => {
-    if (bootDone) return;
-    bootDone = true;
-    boot.done();
+  // ---- first view ----------------------------------------------------------------------
+  // The load bar runs until the road tiles in view are in (or FIRST_VIEW_MS); the overlays then,
+  // or 2 s after the style at the latest.
+  const FIRST_VIEW_MS = 12000;
+  let firstViewDone = false;
+  const finishFirstView = () => {
+    if (firstViewDone) return;
+    firstViewDone = true;
+    loadBar.done();
     releaseOverlays();
   };
   const releaseOverlays = () => {
@@ -2180,7 +2215,6 @@ async function main() {
     stations.release();
     ferries.release();
   };
-  boot.at(2);
   // The field's layer, once loaded, right after the extruded buildings (when they're there).
   const addField = () =>
     void fieldReady?.then((f) => {
@@ -2212,6 +2246,7 @@ async function main() {
     map.addLayer(dots, `poi-${Object.keys(POI_STYLE)[0]}`);
     applyLayers();
     applyTerrain(map, store.s.terrain);
+    if (store.s.terrain.on) riseTerrain();
     applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize);
     applyLand(store.s.land);
     applyWater(map, store.s.water, coastInput, store.s.layers.water);
@@ -2267,13 +2302,12 @@ async function main() {
       }
       reachable = now;
     });
-    boot.at(3);
     if (store.s.selected !== null) {
       select(store.s.selected);
       applyStretch();
     }
-    // Never block the UI for long on a slow first view; overlays start within 2 s either way.
-    setTimeout(finishBoot, 12000);
+    // The bar gives up on a slow first view; overlays start within 2 s either way.
+    setTimeout(finishFirstView, FIRST_VIEW_MS);
     // On another device (an iPhone, an iPad), the app kept for when the Mac can't be reached, and
     // the map looked at with it (public/sw.js). Not on the Macs: they have the data themselves.
     const local = /^(localhost|127\.0\.0\.1|\[::1\])$|\.localhost$/.test(location.hostname);
