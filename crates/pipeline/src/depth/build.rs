@@ -54,62 +54,97 @@ pub fn polys_at(src: &dyn WaterSource, z: u8, x: u32, y: u32) -> Result<Vec<Poly
         return src.depth_polys(z, x, y);
     }
     let d = z - WATER_Z;
-    Ok(scaled(src.depth_polys(WATER_Z, x >> d, y >> d)?, d, x, y))
+    Ok(scaled(&src.depth_polys(WATER_Z, x >> d, y >> d)?, d, x, y))
 }
 
 /// Z14 tile (x >> d, y >> d)'s polygons `ps` scaled onto its descendant x/y, `d` zooms finer.
-fn scaled(mut ps: Vec<Poly>, d: u8, x: u32, y: u32) -> Vec<Poly> {
+fn scaled(ps: &[Poly], d: u8, x: u32, y: u32) -> Vec<Poly> {
     let n = f64::from(1u32 << d);
     let (ox, oy) = (f64::from(x & ((1 << d) - 1)), f64::from(y & ((1 << d) - 1)));
-    for p in &mut ps {
-        for r in &mut p.rings {
-            for pt in r.iter_mut() {
-                *pt = [(pt[0] - ox * 256.0 / n) * n, (pt[1] - oy * 256.0 / n) * n];
-            }
-        }
-    }
-    ps
+    ps.iter()
+        .map(|p| Poly {
+            kind: p.kind,
+            id: p.id,
+            rings: p
+                .rings
+                .iter()
+                .map(|r| r.iter().map(|pt| [(pt[0] - ox * 256.0 / n) * n, (pt[1] - oy * 256.0 / n) * n]).collect())
+                .collect(),
+        })
+        .collect()
 }
 
-/// The z14 tiles' polygons a `WaterCache` keeps: four rows of a z6 tile's 256 across, the rows of
-/// z14 tiles a row of z15–16 blocks and its margin touch, with the next row's overlap.
-const POLYS_KEPT: usize = 2048;
+/// The bytes of polygons `ps` hold (their rings' points, and each ring's and polygon's own).
+fn polys_bytes(ps: &[Poly]) -> usize {
+    ps.iter().map(|p| 48 + p.rings.iter().map(|r| 24 + r.len() * 16).sum::<usize>()).sum()
+}
+
+/// The most bytes of z14 polygons a `WaterCache` keeps (`polys_bytes`): past it, the rows farthest
+/// up go first (a level's blocks go row by row down the tile, each row's blocks sharing the z14
+/// tiles of the row before it: a row of a z6 tile's 256 z14 tiles holds a few MB on a coast).
+pub const POLYS_BYTES: usize = 48 << 20;
 
 /// The water of the tiles around blocks, kept while a level is made (neighbouring blocks share
-/// their rings), and the z14 polygons the finer levels are drawn from, kept across them (task
-/// #433: each z14 tile's were read from the basemap on the NAS and decoded for each of its 4 z15
-/// and 16 z16 children, a fifth of a piece's run).
-#[derive(Default)]
+/// their rings), and the z14 polygons the finer levels are drawn from, kept across them: each
+/// z14 tile's are read from the basemap and decoded once for its 4 z15 and 16 z16 children.
 pub struct WaterCache {
     tiles: HashMap<(u8, u32, u32), Option<Arc<WaterTile>>>,
-    polys: HashMap<(u32, u32), Arc<Vec<Poly>>>,
+    /// By (y, x): the z14 tile's polygons, shared, and their bytes.
+    polys: BTreeMap<(u32, u32), (Arc<Vec<Poly>>, usize)>,
+    polys_bytes: usize,
+    bound: usize,
+}
+
+impl Default for WaterCache {
+    fn default() -> Self {
+        Self::with_bound(POLYS_BYTES)
+    }
 }
 
 impl WaterCache {
+    /// A cache keeping at most `bound` bytes of z14 polygons (`POLYS_BYTES` by default).
+    pub fn with_bound(bound: usize) -> Self {
+        WaterCache { tiles: HashMap::new(), polys: BTreeMap::new(), polys_bytes: 0, bound }
+    }
+
+    /// The bytes of z14 polygons it holds.
+    pub fn polys_bytes(&self) -> usize {
+        self.polys_bytes
+    }
+
     /// A level done: its tiles let go (the z14 polygons kept for the next).
     pub fn next_level(&mut self) {
         self.tiles.clear();
     }
 
-    /// `polys_at`, a z14 tile's polygons read once for its z15–16 descendants.
+    /// `polys_at`, a z14 tile's polygons read once for its z15–16 descendants and shared among
+    /// them (each scaled from the one copy).
     fn polys(&mut self, src: &dyn WaterSource, z: u8, x: u32, y: u32) -> Result<Vec<Poly>> {
         if z <= WATER_Z {
             return src.depth_polys(z, x, y);
         }
         let d = z - WATER_Z;
-        let q = (x >> d, y >> d);
-        let base = match self.polys.get(&q) {
-            Some(p) => p.clone(),
+        let key = (y >> d, x >> d);
+        let base = match self.polys.get(&key) {
+            Some((p, _)) => p.clone(),
             None => {
-                if self.polys.len() >= POLYS_KEPT {
-                    self.polys.clear();
+                let p = Arc::new(src.depth_polys(WATER_Z, key.1, key.0)?);
+                let bytes = polys_bytes(&p);
+                self.polys.insert(key, (p.clone(), bytes));
+                self.polys_bytes += bytes;
+                // (Past the bound: the rows farthest up go, this tile's own last of all.)
+                while self.polys_bytes > self.bound && self.polys.len() > 1 {
+                    let Some((k, (_, b))) = self.polys.pop_first() else { break };
+                    if k == key {
+                        self.polys.insert(k, (p.clone(), b));
+                        break;
+                    }
+                    self.polys_bytes -= b;
                 }
-                let p = Arc::new(src.depth_polys(WATER_Z, q.0, q.1)?);
-                self.polys.insert(q, p.clone());
                 p
             }
         };
-        Ok(scaled((*base).clone(), d, x, y))
+        Ok(scaled(&base, d, x, y))
     }
 
     fn tile(&mut self, src: &dyn WaterSource, z: u8, x: u32, y: u32) -> Result<Option<Arc<WaterTile>>> {

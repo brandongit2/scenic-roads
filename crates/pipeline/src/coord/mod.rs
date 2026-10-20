@@ -336,6 +336,9 @@ pub struct Shared {
     /// The NAS's limits as probed whatever the switch says: the lead's own jobs are always held to
     /// the budget (`nas_room`). None: not probed yet.
     pub nas_own: Option<crate::budget::nas::Limits>,
+    /// Whether the last probe failed (the limits, if any, the earlier probes'): the lead's slots'
+    /// ramp holds and its stretch starts again (crate::agent's `tend_ramp`).
+    pub nas_failed: bool,
     /// This Mac's member name, its own jobs' leases held under it (`Coordinator::ask_own`): the NAS
     /// budget lets a member's job go past the whole while the lead's own alone hold weight.
     pub lead_name: String,
@@ -1990,6 +1993,7 @@ impl Coordinator {
             placement: None,
             nas: None,
             nas_own: None,
+            nas_failed: false,
             lead_name: me.to_string(),
             nas_waits: Default::default(),
             refused: BTreeMap::new(),
@@ -2256,10 +2260,21 @@ impl Coordinator {
         (s.nas, s.nas_own) = (limits, limits);
     }
 
-    /// Whether the NAS's limits are known (`nas_own`: probed, the probes not failing): the lead's
-    /// slots' ramp holds at its start until they are (crate::agent's `tend_ramp`).
+    /// Whether the NAS's limits are known (`nas_own`: a probe landed, this day's best kept): the
+    /// lead's slots' ramp holds at its start until they are (crate::agent's `tend_ramp`).
     pub fn nas_known(&self) -> bool {
         self.shared.lock().unwrap().nas_own.is_some()
+    }
+
+    /// Whether the last NAS probe failed (`Shared::nas_failed`): the ramp holds, and its stretch
+    /// starts again.
+    pub fn nas_failed(&self) -> bool {
+        self.shared.lock().unwrap().nas_failed
+    }
+
+    /// Tests: the last probe failed, or landed.
+    pub fn set_nas_failed(&self, failed: bool) {
+        self.shared.lock().unwrap().nas_failed = failed;
     }
 
     /// Whether the pool's leased jobs' NAS weights together pass the whole (crate::budget::nas::WHOLE)
@@ -3124,6 +3139,7 @@ fn nas_prober(
                     None => eprintln!("coordinator: {} can't be read now: the NAS not probed this round", nas::SWITCH),
                     sw => {
                         let sw = sw.flatten();
+                        let mut failed = None;
                         if last.is_none_or(|t| t.elapsed() >= Duration::from_secs(nas::EVERY_S)) {
                             last = Some(std::time::Instant::now());
                             match nas::probe(&nas::probe_dir(&r, &me)) {
@@ -3134,13 +3150,20 @@ fn nas_prober(
                                         p.creates_s
                                     );
                                     probes.add(p);
+                                    failed = Some(false);
                                 }
-                                Err(e) => eprintln!("coordinator: probing the NAS: {e}"),
+                                Err(e) => {
+                                    eprintln!("coordinator: probing the NAS: {e}");
+                                    failed = Some(true);
+                                }
                             }
                         }
                         let own = probes.limits(sw.as_ref().and_then(|w| w.downloads));
                         let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                         s.nas_own = own;
+                        if let Some(f) = failed {
+                            s.nas_failed = f;
+                        }
                         s.nas = sw.and_then(|w| probes.limits(w.downloads));
                     }
                 }

@@ -426,8 +426,11 @@ fn origin(t: &Tiff, zoom: u8) -> Result<(i64, i64)> {
 }
 
 /// How much finer than the window's pixels an overview must be when its cells don't line up with
-/// them (`level_for`): its cells 2^`ASKEW_FINER` to a pixel's side, so a cell straddling two pixels
-/// (counted to the one its centre is in) moves a pixel's average by at most a quarter of a pixel.
+/// them (`level_for`): its cells 2^`ASKEW_FINER` to a pixel's side. A cell is counted to the pixel
+/// its centre is in, so the cells counted to a pixel are the pixel's moved by at most half a cell:
+/// an eighth of a pixel at four cells to a side. (The sources' overviews average their cells and
+/// the zoom files' take the nearest, producers/depth/grid.py: a coarse cell is a mean of the
+/// grid's, as a lined-up one is.)
 pub const ASKEW_FINER: u32 = 2;
 
 /// The image of `t` whose cells are 2^l of image 0's (l ≤ `most`), the largest such: one that
@@ -615,6 +618,15 @@ fn sample_grid_on(
             "its zoom or low-water file isn't on its own grid"
         );
     }
+    // (A zoom or low-water file is read at the level its grid is read at, its cells the same:
+    // at another level the band's coordinates would mean other cells.)
+    let same_level = |x: &Tiff, what: &str, lv: usize| -> Result<usize> {
+        let im = &t.images()[lv];
+        match x.images().get(lv) {
+            Some(xi) if xi.width == im.width && xi.height == im.height => Ok(lv),
+            _ => bail!("its {what} file lacks its grid's overview {} ({} × {} cells)", lv, im.width, im.height),
+        }
+    };
     let mut s =
         Sample { v: vec![f32::NAN; w * h], zoom: vec![0; w * h], class: vec![0; w * h], low: vec![f32::NAN; w * h] };
     if g.zoom >= z {
@@ -623,6 +635,8 @@ fn sample_grid_on(
             bail!("zoom {} sampled at {z}", g.zoom);
         }
         let (lv, l) = level_for(&t, k, gc, gr);
+        let zlv = zt.as_ref().map(|x| same_level(x, "zoom", lv)).transpose()?;
+        let llv = lt.as_ref().map(|x| same_level(x, "low-water", lv)).transpose()?;
         // (The level's cells covering the window, in its own pixels: the first at or before the
         // window's first cell, the last at or after its last, so a level askew of the pixels,
         // `level_for`, still covers them whole.)
@@ -652,13 +666,13 @@ fn sample_grid_on(
             ys = ye;
             let Some((v, a0, b0, rw)) = read(t, lv, x0, band.0, x1, band.1)? else { continue };
             any = true;
-            let zv = match &zt {
-                Some(zt) => read(zt, level_for(zt, k, gc, gr).0.min(lv), x0, band.0, x1, band.1)?.map(|r| r.0),
-                None => None,
+            let zv = match (&zt, zlv) {
+                (Some(zt), Some(zlv)) => read(zt, zlv, x0, band.0, x1, band.1)?.map(|r| r.0),
+                _ => None,
             };
-            let lw = match &lt {
-                Some(lt) => read(lt, level_for(lt, k, gc, gr).0.min(lv), x0, band.0, x1, band.1)?.map(|r| r.0),
-                None => None,
+            let lw = match (&lt, llv) {
+                (Some(lt), Some(llv)) => read(lt, llv, x0, band.0, x1, band.1)?.map(|r| r.0),
+                _ => None,
             };
             let rh = v.len() / rw.max(1);
             for j in 0..rh {
@@ -835,7 +849,6 @@ pub(crate) mod tests {
         window_box(zoom, c, r, w as usize, h as usize)
     }
 
-    /// A plane sampled coarser is its cells' mean, finer its bilinear interpolation: the plane.
     /// A measure on real data, reading the NAS's grid headers alone: `SCENIC_DEPTH_LEVELS="<root>
     /// 3/x/y <zoom> <sample>"` opens up to `sample` grids of each source meeting z3 tile x/y and says,
     /// per source, which overview level a window at `zoom` would read from (`level_for`), how many
@@ -889,6 +902,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// A plane sampled coarser is its cells' mean, finer its bilinear interpolation: the plane.
     #[test]
     fn a_grid_is_averaged_down_and_interpolated_up() {
         let d = tempfile::tempdir().unwrap();
@@ -921,6 +935,128 @@ pub(crate) mod tests {
         }
         // Outside it: nothing.
         assert!(sample(&rd, &s, 12, c + 5000, r, 8, 8).unwrap().is_none());
+    }
+
+    /// Task #433: a grid whose origin lines up with no overview is sampled from the coarsest
+    /// overview at least `ASKEW_FINER` zooms finer than the window (`level_for`), a lined-up one
+    /// taken when it's at least as coarse, the full image for a window under two zooms coarser;
+    /// each pixel's mean is the plane's within half an overview cell (an eighth of a pixel), and
+    /// the grid's edge in pixels moves by at most one overview cell.
+    #[test]
+    fn an_askew_grid_is_sampled_from_a_coarse_overview_near_the_plane() {
+        let d = tempfile::tempdir().unwrap();
+        let (zoom, c, r) = (12u8, 1200 * 256i64, 1500 * 256i64);
+        let plane = |x: i64, y: i64| -((x - c) as f32) * 0.5 - (y - r) as f32 * 0.25 - 10.0;
+        let rd = Reader::default();
+        // (Three images each: the full one and overviews of 2 and 4 cells.)
+        let at = |dx: i64, dy: i64, name: &str| {
+            let p = d.path().join(name);
+            grid_file(&p, zoom, c + dx, r + dy, 1024, 512, &plane);
+            p
+        };
+        let askew = at(3, 1, "askew.tif");
+        let t = rd.tiff(&askew).unwrap();
+        assert_eq!(level_for(&t, 4, c + 3, r + 1), (2, 2), "four zooms coarser: the 4-cell overview");
+        assert_eq!(level_for(&t, 3, c + 3, r + 1), (1, 1), "three: the 2-cell one");
+        assert_eq!(level_for(&t, 1, c + 3, r + 1), (0, 0), "under two: the full image");
+        assert_eq!(level_for(&t, 0, c + 3, r + 1), (0, 0));
+        let even = at(2, 2, "even.tif");
+        let t2 = rd.tiff(&even).unwrap();
+        assert_eq!(
+            level_for(&t2, 4, c + 2, r + 2),
+            (2, 2),
+            "lined up with the 2-cell one alone: the coarser 4-cell one"
+        );
+        assert_eq!(level_for(&t2, 3, c + 2, r + 2), (1, 1), "as coarse: the lined-up one");
+        let lined = at(4, 0, "lined.tif");
+        let t4 = rd.tiff(&lined).unwrap();
+        assert_eq!(level_for(&t4, 4, c + 4, r), (2, 2));
+        assert_eq!(
+            level_for(&t4, 2, c + 4, r),
+            (2, 2),
+            "lined up: a window of its zoom reads it whatever the finer rule"
+        );
+        // Four zooms out over the askew grid: each pixel (16 × 16 cells) the mean of the 4-cell
+        // overview's cells whose centres are in it: the plane at the pixel's centre, moved by at
+        // most half a cell (2 cells: 1.5 in the plane's units), and not exact everywhere.
+        let s = source(vec![Grid {
+            bbox: bbox(zoom, c + 3, r + 1, 1024, 512),
+            zoom,
+            file: askew.clone(),
+            zoom_file: None,
+            low_file: None,
+        }]);
+        let (px0, py0) = ((c + 3) >> 4, (r + 1) >> 4);
+        let got = sample(&rd, &s, 8, px0 - 1, py0 - 1, 70, 38).unwrap().unwrap();
+        let (mut off, mut worst, mut seen) = (0usize, 0f32, 0usize);
+        for (o, v) in got.v.iter().enumerate() {
+            let (px, py) = (px0 - 1 + (o % 70) as i64, py0 - 1 + (o / 70) as i64);
+            // (The grid's cells c+3..c+1027 by r+1..r+513: a pixel wholly in them, one past them by a
+            // cell or more, or an edge pixel between, which may or may not have a value.)
+            let inside = px * 16 >= c + 3 && (px + 1) * 16 <= c + 1027 && py * 16 >= r + 1 && (py + 1) * 16 <= r + 513;
+            let past = (px + 1) * 16 + 4 <= c + 3
+                || px * 16 >= c + 1027 + 4
+                || (py + 1) * 16 + 4 <= r + 1
+                || py * 16 >= r + 513 + 4;
+            if past {
+                assert!(v.is_nan(), "{o}: a cell or more past the grid: {v}");
+                continue;
+            }
+            if !inside {
+                continue;
+            }
+            assert!(v.is_finite(), "{o}: inside the grid");
+            seen += 1;
+            let want = plane(px * 16, py * 16) - 0.5 * 7.5 - 0.25 * 7.5;
+            let e = (v - want).abs();
+            assert!(e <= 1.5 + 1e-3, "{o}: {v} against {want}");
+            worst = worst.max(e);
+            if e > 1e-3 {
+                off += 1;
+            }
+            assert_eq!(got.zoom[o], zoom);
+        }
+        assert!(
+            seen > 1000 && off > 0 && worst > 0.1,
+            "askew: the means move ({seen} pixels, {off} off, worst {worst})"
+        );
+    }
+
+    /// Task #433 review: a zoom file is read at the overview its grid is read at (their cells the
+    /// same), an askew grid's too: where its zoom is below the grid's every pixel is interpolated.
+    #[test]
+    fn a_zoom_file_is_read_at_its_grids_overview() {
+        let d = tempfile::tempdir().unwrap();
+        let (zoom, c, r) = (12u8, 1200 * 256i64, 1500 * 256i64);
+        let p = d.path().join("g.tif");
+        grid_file(&p, zoom, c + 3, r + 1, 256, 128, &|x, y| -((x - c) as f32) * 0.1 - (y - r) as f32 * 0.1 - 5.0);
+        let zp = d.path().join("g.zoom.tif");
+        grid_file(&zp, zoom, c + 3, r + 1, 256, 128, &|x, _| if x < c + 131 { 11.0 } else { 12.0 });
+        let s = source(vec![Grid {
+            bbox: bbox(zoom, c + 3, r + 1, 256, 128),
+            zoom,
+            file: p,
+            zoom_file: Some(zp),
+            low_file: None,
+        }]);
+        let rd = Reader::default();
+        let got = sample(&rd, &s, 8, c >> 4, r >> 4, 18, 10).unwrap().unwrap();
+        let (mut lo, mut hi) = (0, 0);
+        for (o, v) in got.v.iter().enumerate() {
+            if v.is_nan() {
+                continue;
+            }
+            let px = (c >> 4) + (o % 18) as i64;
+            // (Pixels wholly west of cell c+131 by a cell or more have zoom 11, east 12.)
+            if (px + 1) * 16 + 4 <= c + 131 {
+                assert_eq!((got.zoom[o], got.class[o]), (11, super::super::C_INTERP), "{o}");
+                lo += 1;
+            } else if px * 16 >= c + 131 + 4 {
+                assert_eq!((got.zoom[o], got.class[o]), (12, super::super::C_MEASURED), "{o}");
+                hi += 1;
+            }
+        }
+        assert!(lo > 0 && hi > 0, "{lo} {hi}");
     }
 
     /// Task #438: a reader keeps at most its share of grids open (a z3 tile met thousands of

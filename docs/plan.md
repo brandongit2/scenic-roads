@@ -567,9 +567,10 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   A grid finer than the window is read from the coarsest overview whose cells are whole pixels of
   the window's zoom (each pixel's mean exact), else, when its origin lines up with no overview
   (most of BlueTopo's), from the coarsest at least four cells to a pixel's side, each cell counted
-  to the pixel its centre is in (`grids::level_for`, `ASKEW_FINER`: a pixel's mean moved by at most
-  a quarter of a pixel; task #433: such a grid was read at full resolution for every window,
-  85 GB for 3/2/3's assembly, 1 h 54 min).
+  to the pixel its centre is in (`grids::level_for`, `ASKEW_FINER`: the cells counted to a pixel
+  are the pixel's moved by at most half a cell, an eighth of a pixel; the sources' overviews
+  average their cells and the zoom files' take the nearest, producers/depth/grid.py). A grid's
+  zoom and low-water files are read at the overview its grid is.
   3/1/3's z6 block: 1,359 s read in turn, 456 s so, 1.6 GB (19 Oct, the M1, release). Each window's
   prefetch is held to its share of the block cache (an eighth: the grids read at once). A file's
   open and header read run on a thread of their own, waited 120 s at most: past it the job fails
@@ -583,8 +584,8 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   done and the grids of the block under way sampled, said every 5 s.
 - **The water's reads:** a level's blocks share the water tiles their margins overlap
   (`depth::build::WaterCache`), and a z14 tile's polygons, the basemap's deepest, are read and
-  decoded once for its 4 z15 and 16 z16 descendants, across the two levels (task #433: read for
-  each of the 20, the water was a fifth of a piece's run).
+  decoded once for its 4 z15 and 16 z16 descendants, across the two levels, shared among them and
+  kept within `POLYS_BYTES` (48 MB; past it the rows farthest up go first).
 - **depth-lo (a z3 tile):** z6–8 composed (below), z3–5 each its children's mean.
 - **depth (a z6 tile):** z9–16, a block only where a source has a grid of that zoom or finer; its
   capped pixels scaled up from this job's coarser tiles and, at z8 and coarser, from the lo packs

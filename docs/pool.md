@@ -295,20 +295,20 @@ granting fewer when its room holds fewer; an idle slot takes tasks (§8).
 one only after a clean stretch of 6 hours (`RAMP_CLEAN_S`) in which it ran as many jobs at once as
 its slots (the stretch's peak: idle time doesn't count), with no memory guard stop and no stall
 (the pool's step taken for hung); either starts the stretch again. While the NAS's limits aren't
-known (no probe yet, or the probes failing: `Coordinator::nas_known`), its slots are held at 2
-whatever it reached, and the stretch goes on without growing (a hold isn't trouble: before task
-#433 each restart into a published app, a dozen a day, began the hold a moment before the probe
-landed and started the six hours again, so the lead never grew past two slots; the pool's leased
-jobs' NAS weights past the whole, `Coordinator::nas_over`, counted too, though the budget grants
-that by its own rules, §7.7, and holds the lead's own jobs at grant whatever the slots). They grow
-up to its cores' `job_slots`. The count reached, the stretch's start and its peak are kept in the
+known (no probe landed yet: `Coordinator::nas_known`), its slots are held at 2 whatever it
+reached, and the stretch goes on without growing (a hold isn't trouble: a restart's moment before
+the probe lands doesn't start the six hours again). The last probe failing (`Coordinator::nas_failed`,
+the limits the earlier probes' meanwhile) holds them too and is trouble: the stretch starts again.
+The pool's leased jobs' NAS weights past the whole (`Coordinator::nas_over`) aren't trouble: the
+budget grants that by its own rules (§7.7) and holds the lead's own jobs at grant whatever the
+slots. They grow up to its cores' `job_slots`. The count reached, the stretch's start and its peak are kept in the
 lead's state (`agent/state.json`, `ramp`), saved when trouble begins (the stretch starts again
 then, said once in the log), when it ends (the stretch starting then) and at each step up; while
 trouble lasts, or the slots are held, nothing is rewritten. `scenic status` and the build page show
 the ramp (`agent::RampView`): the slots now of the most its cores allow, those reached, then
-`held: …` (only the NAS's limits not known holds the slots), `not clean: …` (a stall: growth
-stops, the slots stay), or since when it's clean and when it grows if its slots keep busy. There's
-no switch.
+`held: …` (the NAS's limits not known, or the probe failing), `not clean: …` (a stall, or the
+probe failing: growth stops, the slots stay), or since when it's clean and when it grows if its
+slots keep busy. There's no switch.
 
  While a slot is free and
 nothing holds more back (the build's pause, a job stopping at a safe point, the memory guard's
@@ -561,7 +561,8 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   lead keeps it from that Mac for an hour, doubling, and its floors go as any job's.
 - **An update's drain** (a newer app installed): every job stops at its next safe point; the agent
   restarts once every slot is free, each job given its own
-  wait (its target under way's expected time ×1.5, at most 3 h, at least 15 minutes); a job still
+  wait (its target under way's measured time, else its step's fit, else the 90th percentile of
+  its step's runs, `needs::Book::secs_p90`, ×1.5, at most 3 h, at least 15 minutes); a job still
   running then is left running, its lease kept, and the new agent takes it over (plan.md §8,
   Restarts), as after any restart but a quit. The new agent may start while the old one still
   holds the member lock: it tries the lock for up to two minutes, joining as it starts; past that
@@ -664,10 +665,9 @@ and landmark candidates, their piece-size first guess (`coord::unit_peak`), so o
 set every other's; else the step's prior: memory and disk, the 90th percentile of its targets'
 measures (memory: their floors among them), a heavy target held by its own floor; time, the mean
 of its targets' runs, the expected time a job's targets are counted to the quarter hour by and the
-forecast sums (task #433: by the 90th percentile a unit was 1151 s against a mean of 363, so every
-unit job carried one unit and paid the job's setup, 28 s of NAS reads, for it alone; a depth job
-three tiles against six, 21 s of setup each); else the caller's first guess (the steps table's, or
-the size the plan offered): a cold start. A fit is judged on runs held out of it
+forecast sums (an update's drain alone waits by their 90th percentile, `Book::secs_p90`, so a long
+tail's long jobs aren't cut short); else the caller's first guess (the steps table's, or the size
+the plan offered): a cold start. A fit is judged on runs held out of it
 (5 folds) and not used when it predicts under on more than 5% of them, is off by more than 50% on
 the median one, or has fewer than 10 runs. The models are kept until a cost, floor or disk floor
 changes. The coordinator's picks (`pick`, `pick_every`, `measured`, `secs_of`, `peak`), its floors

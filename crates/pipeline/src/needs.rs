@@ -529,6 +529,21 @@ impl<'a> Book<'a> {
         self.fitted(&md, &key, threads).or(md.prior)
     }
 
+    /// `secs` with its step's prior the 90th percentile of its runs the way it runs now instead of
+    /// their mean: what an update's drain waits for a target under way (crate::agent's
+    /// `update_wait`), where a long tail's long jobs must not be cut short.
+    pub fn secs_p90(&self, step: &str, target: &str, threads: u32) -> Option<u64> {
+        let key = cost_key(step, target);
+        let v = cost_version(step);
+        if let Some(c) = self.costs.get(&key).filter(|c| c.v >= v) {
+            return Some(c.secs);
+        }
+        let md = self.model(step, Measure::Secs);
+        self.fitted(&md, &key, threads).or_else(|| {
+            p90(self.costs.iter().filter(|(k, c)| step_of_key(k) == step && c.v >= v).map(|(_, c)| c.secs).collect())
+        })
+    }
+
     /// The cores a job of `step` for `target` takes, as measured (crate::costin's `sizes`): the
     /// threads its run was given (`threads`), or fewer where its CPU time over its wall time
     /// (`cpu_ms`) says it kept fewer busy, one more than those (a serial step's: 1–2); its own run's,
@@ -854,6 +869,17 @@ mod tests {
         assert_eq!(b.prior("peaks", Measure::Mem), Some(500));
         assert_eq!(mean(&[]), None);
         assert_eq!(mean(&[1, 2]), Some(2), "rounded up");
+        // An update's wait keeps the 90th percentile (a long tail's long jobs): 17 runs of 100 s
+        // and 3 of 1200: the mean 265, the 90th percentile 1200; a measured target its own.
+        let mut costs = BTreeMap::new();
+        for i in 1..=20u64 {
+            costs.insert(format!("peaks 6/{i}/1"), cost(500, if i > 17 { 1200 } else { 100 }, &[]));
+        }
+        let b = Book::new(&costs);
+        assert_eq!(b.secs("peaks", "6/99/1", 0), Some(265));
+        assert_eq!(b.secs_p90("peaks", "6/99/1", 0), Some(1200));
+        assert_eq!(b.secs_p90("peaks", "6/1/1", 0), Some(100), "a measured one its own");
+        assert_eq!(b.secs_p90("pois", "6/1/1", 0), None);
     }
 
     /// A poor fit takes the step's prior (its 90th percentile, not one outlier); one never measured

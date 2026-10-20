@@ -480,6 +480,7 @@ fn a_z14_tiles_water_is_read_once_for_its_finer_descendants() {
         assert_eq!(&got, expect);
     };
     once(&src.0.lock().unwrap(), &expect);
+    assert!(wc.polys_bytes() > 0 && wc.polys_bytes() <= super::build::POLYS_BYTES);
     // A level done: the next level's blocks over the same z14 tiles are drawn from the polygons
     // kept, read no more; new ones read once.
     wc.next_level();
@@ -487,6 +488,23 @@ fn a_z14_tiles_water_is_read_once_for_its_finer_descendants() {
     expect.extend(touched(b));
     wc.block(&src, b).unwrap();
     once(&src.0.lock().unwrap(), &expect);
+    // Bounded to a byte: one z14 tile's polygons kept at a time, so a block's tiles read theirs
+    // again as its rows come back to them; never more than the bound past that one tile.
+    let src = Counting(Mutex::new(BTreeMap::new()));
+    let mut wc = WaterCache::with_bound(1);
+    let b = Block { z: 16, tx0: x0 + 504, ty0: y0 + 8, nx: 8, ny: 8 };
+    wc.block(&src, b).unwrap();
+    let reads: usize = src.0.lock().unwrap().values().sum();
+    assert!(reads > touched(b).len(), "{reads} reads of {} tiles", touched(b).len());
+    assert_eq!(
+        wc.polys_bytes(),
+        {
+            let p = src.0.lock().unwrap().keys().last().copied().unwrap();
+            let ps = Fixture.depth_polys(p.0, p.1, p.2).unwrap();
+            ps.iter().map(|p| 48 + p.rings.iter().map(|r| 24 + r.len() * 16).sum::<usize>()).sum::<usize>()
+        },
+        "the last tile's alone"
+    );
 }
 
 /// A measure on real data, reading the NAS alone: `SCENIC_DEPTH_WATER="<root> 6/x/y <zoom> <blocks>
@@ -549,10 +567,11 @@ fn measure_the_waters_reads() {
                 }
             }
             println!(
-                "round {round}, z14 polygons {}: {blocks} blocks of z{zoom} in {:.1} s, {} basemap tiles read, {wet} water pixels",
+                "round {round}, z14 polygons {}: {blocks} blocks of z{zoom} in {:.1} s, {} basemap tiles read, {wet} water pixels, {:.1} MB of z14 polygons held",
                 if kept { "kept" } else { "read for each tile (as before)" },
                 t0.elapsed().as_secs_f64(),
-                water.1.load(Ordering::Relaxed)
+                water.1.load(Ordering::Relaxed),
+                wc.polys_bytes() as f64 / 1e6
             );
         }
     }

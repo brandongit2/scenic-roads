@@ -3175,7 +3175,8 @@ impl Agent {
     /// coordinator's first probe lands, each start) the slots are held at `RAMP_START`, but the
     /// stretch goes on: a hold isn't trouble (task #433: every restart into a published app, a dozen
     /// a day, began the hold a moment before the probe landed and started the six hours again, so
-    /// the lead never grew past two slots). Nor is the pool's leased jobs' NAS weight past the whole
+    /// the lead never grew past two slots). A probe failing (`Coordinator::nas_failed`, the last
+    /// one) holds them too and is trouble. Not the pool's leased jobs' NAS weight past the whole
     /// (`Coordinator::nas_over`): the budget grants that by its own rules (the lead's own jobs alone,
     /// an aged job weighing the whole, §7.7) and holds the lead's own jobs at grant whatever the
     /// slots, so it says nothing about them.
@@ -3186,8 +3187,15 @@ impl Agent {
         let Some(c) = self.coord.as_ref() else { return };
         let now = now_s();
         let most = job_slots(mac_cores() as usize);
-        let held = !c.nas_known();
-        let trouble = if self.pool_hung.is_some() { Some("the pool's step stalled") } else { None };
+        let failed = c.nas_failed();
+        let held = !c.nas_known() || failed;
+        let trouble = if failed {
+            Some("the NAS probe failing")
+        } else if self.pool_hung.is_some() {
+            Some("the pool's step stalled")
+        } else {
+            None
+        };
         let holding = held && !self.ramp_held;
         self.ramp_held = held;
         let running = self.running_jobs();
@@ -10158,10 +10166,11 @@ impl Agent {
 
     /// How long an update's drain waits for slot `k`'s job to reach its safe point, and why: the
     /// time the target under way is expected to need, from its progress's pace (the status's time
-    /// left, `job_view`) else its expected time (its own measured run, its step's fit or prior,
-    /// crate::needs::Book::secs; a step of the lead's own, its time here lately) less what it has
-    /// spent on it, times UPDATE_MARGIN, at most UPDATE_CAP; with no estimate, or one already
-    /// spent, the time a pause gives (`self.grace`).
+    /// left, `job_view`) else its expected time (its own measured run, its step's fit, else the
+    /// 90th percentile of its step's runs, crate::needs::Book::secs_p90: a long tail's long jobs
+    /// aren't cut short by the mean jobs are sized by; a step of the lead's own, its time here
+    /// lately) less what it has spent on it, times UPDATE_MARGIN, at most UPDATE_CAP; with no
+    /// estimate, or one already spent, the time a pause gives (`self.grace`).
     fn update_wait(&self, k: usize) -> (Option<Duration>, String) {
         let base = self.grace;
         let Some(r) = self.slots[k].running.as_ref() else { return (None, String::new()) };
@@ -10173,7 +10182,7 @@ impl Agent {
             let book = crate::needs::Book::new(&costs);
             let own = |step: &str| self.mem.step_secs.get(&secs_key(step)).copied();
             let secs =
-                |step: &str, t: &str| book.secs(step, t, r.threads as u32).map(|s| s as f64).or_else(|| own(step));
+                |step: &str, t: &str| book.secs_p90(step, t, r.threads as u32).map(|s| s as f64).or_else(|| own(step));
             let expected = match r.spec.record.as_ref() {
                 Some(w) => {
                     let done = crate::control::read_done(&self.done_path(k), &w.step);
@@ -11984,6 +11993,17 @@ mod tests {
         a.tend_ramp();
         assert!(!a.ramp_held);
         assert_eq!(a.mem.ramp.slots, RAMP_START + 2, "grown after the hold: the stretch was clean through it");
+        assert_eq!(a.job_slots(), (RAMP_START + 2).min(most));
+        // The probe failing (the limits known from before): held, and trouble: the stretch starts
+        // again, kept; as a probe lands again, the stretch starts then.
+        a.coord.as_ref().unwrap().set_nas_failed(true);
+        a.tend_ramp();
+        assert!(a.ramp_held && a.ramp_trouble.as_deref().is_some_and(|w| w.contains("failing")));
+        assert_eq!(a.job_slots(), RAMP_START.min(most));
+        assert!(near_now(a.mem.ramp.clean_since) && near_now(kept(&home).clean_since));
+        a.coord.as_ref().unwrap().set_nas_failed(false);
+        a.tend_ramp();
+        assert!(!a.ramp_held && a.ramp_trouble.is_none());
         assert_eq!(a.job_slots(), (RAMP_START + 2).min(most));
         a.mem.ramp = Ramp::default();
         a.tend_ramp();
@@ -14452,6 +14472,32 @@ mod tests {
         let (wait, words) = a.slots[0].update_wait.clone().unwrap();
         assert_eq!(wait, Some(UPDATE_CAP), "{words}");
         assert!(words.contains("by its expected time"), "{words}");
+        // Its step's runs, its own not measured: their 90th percentile (a long tail's long jobs),
+        // not the mean the jobs are sized by: 17 runs of 100 s and 3 of 2 h wait 2 h × 1.5, capped.
+        update(&mut a, "v1");
+        a.mem.step_secs.remove(&secs_key("elev"));
+        let co = crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0;
+        let runs: Vec<(String, crate::coord::Cost)> = (0..20u64)
+            .map(|i| {
+                let c = crate::coord::Cost {
+                    peak_mb: 100,
+                    secs: if i < 17 { 100 } else { 7200 },
+                    worker: None,
+                    v: 0,
+                    sizes: Default::default(),
+                };
+                (crate::coord::cost_key("elev", &format!("6/1/{i}")), c)
+            })
+            .collect();
+        co.add_costs(&runs);
+        a.coord = Some(std::sync::Arc::new(co));
+        update(&mut a, "v2");
+        let (wait, words) = a.slots[0].update_wait.clone().unwrap();
+        assert!(
+            wait.is_some_and(|w| w >= Duration::from_secs(179 * 60)),
+            "the 90th percentile, 2 h × 1.5 capped, not the mean's 19 min: {wait:?} {words}"
+        );
+        a.coord = None;
         // A batch with a target done just now: the next timed from then, not from the job's start
         // (its whole run counted against it would leave it nothing).
         update(&mut a, "v1");
