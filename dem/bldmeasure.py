@@ -51,10 +51,8 @@ import argparse
 import gzip
 import json
 import math
-import os
 import pickle
 import shutil
-import sys
 import time
 import urllib.request
 from collections import Counter
@@ -949,7 +947,7 @@ def fill_tile(job):
     mi, mq = subset(own & bld & ~m0 & ~f1, None)
     di2, d2 = subset(bld & (m0 | f1), np.where(m0, h, h1))
     r_map = rule2(mq, d2, False)
-    del mq, d2, di2, X, Y, cosl, mo
+    del mq, d2, di2
 
     # GHSL and size, for the tile's own buildings.
     oi = np.flatnonzero(own & bld)
@@ -990,7 +988,7 @@ def fill_tile(job):
     hr[m0m], sr[m0m] = h[m0m], 0
     hr = np.where(part, hpart, hr)
     sr = np.where(part, np.where(m0, 0, np.where(f1, 1, 5)), sr).astype(np.uint8)
-    hf_plan, s_plan = hf, s
+    s_plan = s
     hf, s = hr, sr
 
     out = {"key": key, "n": int(own.sum()), "pairs": [r_ho.get("pairs", 0), r_map.get("pairs", 0)]}
@@ -1386,7 +1384,6 @@ def phase_report(args, work: Path, root: Path) -> None:
     md = []
     pr = md.append
     ds = dicts["datasets"]
-    creg = [regc[i] for i in range(1, nreg)]
 
     def by_country(a):
         out = np.zeros((len(clist),) + a.shape[1:], np.int64)
