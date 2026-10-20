@@ -759,3 +759,19 @@ body.panel-off #viewshed { --vs-left: calc(60px + env(safe-area-inset-left)); }
 .depth-readout { position: absolute; left: 10px; bottom: calc(var(--strip-h) + 8px); z-index: 3; pointer-events: none; padding: 3px 8px; border-radius: 6px; background: var(--card); color: var(--text); font-size: 11px; border: 1px solid var(--line); }
 dialog.credits .notices .depth { margin: 10px 0 0; color: var(--text); }
 dialog.credits .notices .notice { margin: 8px 0 0; color: var(--muted); line-height: 1.4; }
+
+/* Layers → Roads → Style → Widths by zoom (ui/widthgrid.ts) */
+.wtab-box { margin: 4px 0 6px; font-size: 11px; }
+.wtab-box > summary { cursor: pointer; color: var(--muted); padding: 3px 0; user-select: none; }
+.wtab-box[open] > summary { color: var(--text); }
+.wtab { display: grid; grid-template-columns: 50px repeat(6, minmax(0, 1fr)) 12px; gap: 1px 1px; min-width: 0; max-width: 100%; align-items: center; margin-top: 3px; }
+.wtab label { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10.5px; }
+.wtab-h { color: var(--muted); font-size: 9.5px; text-align: right; padding-right: 3px; }
+.wtab input { width: 100%; min-width: 0; box-sizing: border-box; padding: 1px 2px; font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right;
+  color: var(--text); background: rgba(255, 255, 255, 0.03); border: 1px solid transparent; border-radius: 3px; }
+.wtab input:hover { border-color: var(--line-strong); }
+.wtab input:focus { outline: none; border-color: var(--accent); background: rgba(255, 255, 255, 0.06); }
+.wtab input.edited { color: var(--accent); }
+.wtab-rs { padding: 0; width: 12px; height: 16px; font-size: 11px; line-height: 1; color: var(--muted); background: none; border: 0; cursor: pointer; }
+.wtab-rs:hover { color: var(--text); }
+.wtab-all { margin-top: 5px; font-size: 10.5px; }

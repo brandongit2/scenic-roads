@@ -8,6 +8,7 @@ import { DEFAULT_DENSITY, DENSITY_KINDS, FOG_RANGE, LABEL_KINDS, LINE_KINDS, OVE
 import { TINT_PALETTES, TINT_VARS, contourInterval } from '../terrain';
 import * as prefs from '../prefs';
 import { fmt, h } from './dom';
+import { WidthGrid } from './widthgrid';
 import { ScaleControls } from './scale';
 import { ColourPick, RangeFilter, Slider, pct, type SliderOpts } from './controls';
 import { TreeSection } from './trees';
@@ -491,6 +492,8 @@ export class LayersCard {
         get: () => S().roadPersp.fade, set: (fade) => P({ fade }), fmt: pct,
       }),
     ];
+    // The width table, editable (store.set({}): the listeners redraw the map with it).
+    const widthGrid = new WidthGrid(() => this.store.set({}));
     const boundOpRow = sl({
       label: 'Opacity', min: 0, max: 1, step: 0.05, reset: defaults.boundaryOpacity, cls: 'sub', title: 'Opacity of the boundary lines',
       get: () => S().boundaryOpacity, set: (boundaryOpacity) => this.store.set({ boundaryOpacity }), fmt: pct, disabled: () => !S().layers.boundaries,
@@ -711,6 +714,7 @@ export class LayersCard {
         roadOpRow,
         lwOf.roads,
         ...perspRows,
+        widthGrid.el,
         tog(this.glow, h('span', { class: 'lbl' }, h('span', { class: 'dot', style: 'background:#f5bd4d' }), 'Scenic-route glow'), '', 'tog', 'Gold halo on designated scenic byways and routes touristiques'),
         tog(this.occlude, 'Hide roads behind terrain', '', 'tog',
           'With 3D terrain. Off: roads behind hills are drawn faint, as if seen through them. On: they are hidden.'),

@@ -1,5 +1,7 @@
 // Road classes (must match roadcore::class, ordered minor → major), then the passenger rail
 // groups (rails.tiles).
+import { load as prefsLoad, save as prefsSave } from './prefs';
+
 export const CLASS_KEYS = [
   'service', 'living_street', 'residential', 'unclassified', 'tertiary',
   'secondary', 'primary', 'trunk', 'motorway', 'ferry',
@@ -98,6 +100,28 @@ export const WIDTHS: number[][] = [
   [0.8, 1.0, 1.5, 2.2, 3.6, 6], // intercity
   [0.7, 0.9, 1.4, 2.1, 3.6, 6], // heritage
 ];
+/** The table as shipped (WIDTHS may be edited: Layers → Roads → Style → Widths by zoom). */
+export const DEFAULT_WIDTHS: readonly (readonly number[])[] = WIDTHS.map((r) => [...r]);
+/** Limits of an edited width (CSS px). */
+export const WIDTH_RANGE: [number, number] = [0.05, 40];
+/**
+ * Puts an edited table (null: the defaults) into WIDTHS, in place, so every reader (the shader's
+ * uniforms each frame, hit testing, the frame's width bounds) uses it; saved in localStorage
+ * (not in links). Widths out of range are clamped; a malformed table is the defaults.
+ */
+export function setWidths(t: readonly (readonly number[])[] | null, save = true) {
+  const ok = !!t && t.length === NCLASS && t.every((r) => r.length === WIDTH_Z.length && r.every(Number.isFinite));
+  for (let c = 0; c < NCLASS; c++) for (let i = 0; i < WIDTH_Z.length; i++) {
+    WIDTHS[c][i] = ok ? Math.min(WIDTH_RANGE[1], Math.max(WIDTH_RANGE[0], t![c][i])) : DEFAULT_WIDTHS[c][i];
+  }
+  if (!save) return;
+  const same = WIDTHS.every((r, c) => r.every((v, i) => v === DEFAULT_WIDTHS[c][i]));
+  if (same) prefsSave('roadWidths', null);
+  else prefsSave('roadWidths', WIDTHS);
+}
+// The edited table, from the start (in a worker there is no storage: the defaults).
+setWidths(prefsLoad<number[][] | null>('roadWidths', null), false);
+
 // Casing width (CSS px) at zooms CASING_Z (no casing below the first), and the scenic-route
 // halo width at zooms GLOW_Z.
 export const CASING_Z: [number, number, number] = [9.5, 12, 16];
