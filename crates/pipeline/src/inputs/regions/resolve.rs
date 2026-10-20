@@ -1003,7 +1003,7 @@ pub(super) fn eval(
             let of = eval(of, false, placed, r, path)?;
             let to: Vec<Area> = to.iter().map(|p| eval(p, false, placed, r, path)).collect::<Result<_, _>>()?;
             let than: Vec<Area> = than.iter().map(|p| eval(p, false, placed, r, path)).collect::<Result<_, _>>()?;
-            Ok(geom::nearest(&of, &geom::union_all(&to), &geom::union_all(&than), *step_m))
+            Ok(geom::nearest(&of, &to, &than, *step_m))
         }
         Part::Osm(_)
         | Part::Shape(_)

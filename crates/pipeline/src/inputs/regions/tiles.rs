@@ -15,11 +15,13 @@
 //!   water names; the three together its area, kept by cell and stored as the cells' rings.
 //! - `hand_out`: a stretch (cells' pieces joined across the cells' edges they share) of a region's
 //!   water that one region of the folder alone borders goes to it; one under `sliver_km2`, to the
-//!   one sharing its longest edge.
-//! - With `cover = "earth"` in `rules.toml`: per cell, land in two regions is taken from both, and
-//!   land in none and water in none touching land join the region sharing the longest edge in the
-//!   cell (the nearest by box when none); water in two regions, or in none without a `rest` region,
-//!   is `rg-cover`. The `rest` region takes what's left, cell by cell.
+//!   one sharing its longest edge. Only regions with water take one.
+//! - With `cover = "earth"` in `rules.toml`: per cell, land in two regions is taken from those of
+//!   them with water; each piece in no region within 100 m of land, up to `sliver_km2`, joins the
+//!   region with water sharing the longest edge with it, and a piece touching none stays; land in
+//!   no region over `sliver_km2` is `rg-cover`, as is water in two regions, or in none without a
+//!   `rest` region. The `rest` region takes what's left, cell by cell. Regions without water are
+//!   never changed.
 
 use super::file::{Part, Region, Target};
 use super::geom::{self, Area, Pt, Ring};
@@ -378,17 +380,23 @@ fn support(p: &Part, env: &Env) -> BTreeSet<Cell> {
 fn reach(c: Cell, m: f64) -> (i64, i64) {
     let lat_m = CELL as f64 * 1e-7 * 111_320.0;
     let dy = (m / lat_m).ceil() as i64;
-    // (The band's latitude farthest from the equator, but no farther than 80°: past it, within
-    // `MAX_REACH_COLS` columns, the polar cells are land and ice, and a column there is narrower
-    // than the distance only in the last degrees.)
-    let worst = (((c.1 + dy + 1).abs().max((c.1 - dy).abs()) * CELL) as f64 * 1e-7).min(80.0);
+    // (The band's latitude farthest from the equator, but no farther than 86°N or 80°S: the
+    // buffers read no cells past those (no land north of 83.7°N; Antarctica's inland ice), and
+    // the columns are capped, `MAX_REACH_COLS` south, `MAX_REACH_COLS_NORTH` north, enough for
+    // 200 nmi at 86°N.)
+    let north = c.1 + dy + 1 > (c.1 - dy).abs();
+    let edge = if north { c.1 + dy + 1 } else { (c.1 - dy).abs() };
+    let worst = ((edge * CELL) as f64 * 1e-7).min(if north { 86.0 } else { 80.0 });
     let cos = worst.to_radians().cos();
-    let dx = ((m / (lat_m * cos)).ceil() as i64).min(MAX_REACH_COLS);
+    let dx = ((m / (lat_m * cos)).ceil() as i64).min(if north { MAX_REACH_COLS_NORTH } else { MAX_REACH_COLS });
     (dx, dy)
 }
 
-/// The most columns a cell's neighbourhood takes in each way (the polar cap).
+/// The most columns a cell's neighbourhood takes in each way (the polar cap), south.
 const MAX_REACH_COLS: i64 = 16;
+
+/// North: 370 km (200 nmi) at 86°N is about 48° of longitude, 24 columns.
+const MAX_REACH_COLS_NORTH: i64 = 25;
 
 fn bb_box(c: Cell) -> [i64; 4] {
     cell_box(c)
@@ -486,10 +494,8 @@ fn eval(p: &Part, c: Cell, env: &Env, r: &Region, path: &str) -> Result<Area, Pr
             }
             let _t = Timed::new(&NEARESTS);
             let (dx, dy) = reach(c, NEAREST_REACH_M);
-            let gather = |ps: &[Part]| -> Result<Area, Problem> {
-                Ok(geom::union_all(
-                    &ps.iter().map(|q| around(q, c, dx, dy, env, r, path)).collect::<Result<Vec<_>, _>>()?,
-                ))
+            let gather = |ps: &[Part]| -> Result<Vec<Area>, Problem> {
+                ps.iter().map(|q| around(q, c, dx, dy, env, r, path)).collect::<Result<Vec<_>, _>>()
             };
             let (ta, tb) = (gather(to)?, gather(than)?);
             geom::nearest(&a, &ta, &tb, *step_m)

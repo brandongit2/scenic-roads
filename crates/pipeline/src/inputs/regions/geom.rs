@@ -858,22 +858,32 @@ pub fn area_km2(a: &Area) -> f64 {
     t / 1e6
 }
 
-/// The points of `within` nearer `to` than `than` (each the nearest of their rings' points, those
-/// densified to `step` apart), decided cell by cell on a grid of `step` metres: the result is
-/// `within` cut along a staircase that keeps within a cell of the true median line. Where `than` is
-/// empty, all of `within`; where `to` is, none.
-pub fn nearest(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
+/// The points of `within` nearer the coasts `to` than the coasts `than` (each the nearest of their
+/// rings' points, those densified to `step` apart), decided cell by cell on a grid of `step`
+/// metres: the result is `within` cut along a staircase that keeps within a cell of the true median
+/// line. Where `than` is empty, all of `within`; where `to` is, none. A point two coasts share (a
+/// land border) goes to the coast with the least fingerprint, whichever side it's on: splits of the
+/// same area among any number of coasts neither overlap nor leave a gap there.
+pub fn nearest(within: &Area, to: &[Area], than: &[Area], step: f64) -> Area {
     nearest_in(within, to, than, step)
+}
+
+/// What decides a point two coasts share: the coast's box, its points' count and their sum.
+type Fp = (Option<[i64; 4]>, usize, (i128, i128));
+
+fn fingerprint(a: &Area) -> Fp {
+    let pts = a.polys.iter().flatten().flatten();
+    (a.bbox(), pts.clone().count(), pts.fold((0i128, 0i128), |s, p| (s.0 + p[0] as i128, s.1 + p[1] as i128)))
 }
 
 /// How far a nearest-coast split looks for coasts (metres): farther ones don't decide it.
 pub const NEAREST_REACH_M: f64 = 450_000.0;
 
-fn nearest_in(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
-    if within.is_empty() || to.is_empty() {
+fn nearest_in(within: &Area, to: &[Area], than: &[Area], step: f64) -> Area {
+    if within.is_empty() || to.iter().all(Area::is_empty) {
         return Area::default();
     }
-    if than.is_empty() {
+    if than.iter().all(Area::is_empty) {
         return within.clone();
     }
     let Some(bb) = within.bbox() else { return Area::default() };
@@ -885,17 +895,20 @@ fn nearest_in(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
     let cos = polar.to_radians().dcos();
     let rx = if cos < 0.01 { TURN } else { ((NEAREST_REACH_M / (111_320.0 * cos)) * 1e7).min(TURN as f64) as i64 };
     let near = |q: &Pt| q[0] >= bb[0] - rx && q[0] <= bb[2] + rx && q[1] >= bb[1] - ry && q[1] <= bb[3] + ry;
-    let mut samples: Vec<(Pt, bool)> = Vec::new();
+    let mut samples: Vec<(Pt, bool, usize)> = Vec::new();
+    let mut fps: Vec<Fp> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let deg = step / 111_320.0 * 1e7;
-    for (a, mine) in [(to, true), (than, false)] {
+    for (a, mine) in to.iter().map(|a| (a, true)).chain(than.iter().map(|a| (a, false))) {
+        let k = fps.len();
+        fps.push(fingerprint(a));
         for ring in a.polys.iter().flatten() {
             if !ring.iter().any(near) {
                 continue;
             }
             for q in densify_to(ring, step) {
-                if near(&q) && seen.insert(((q[0] as f64 / deg) as i64, (q[1] as f64 / deg) as i64, mine)) {
-                    samples.push((q, mine));
+                if near(&q) && seen.insert(((q[0] as f64 / deg) as i64, (q[1] as f64 / deg) as i64, k)) {
+                    samples.push((q, mine, k));
                 }
             }
         }
@@ -906,24 +919,17 @@ fn nearest_in(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
     if !samples.iter().any(|s| s.1) {
         return Area::default();
     }
-    // (Where a point is both's, as on a shared border, the side with the lesser fingerprint wins
-    // it: a split and its complement agree, so they don't both claim the strip.)
-    let fp = |a: &Area| {
-        let pts = a.polys.iter().flatten().flatten();
-        (a.bbox(), pts.clone().count(), pts.fold((0i128, 0i128), |s, p| (s.0 + p[0] as i128, s.1 + p[1] as i128)))
-    };
-    let to_wins = fp(to) <= fp(than);
     // A bucket grid of the samples, half-degree cells.
     let cell = 5_000_000i64;
     let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
-    for (k, (q, _)) in samples.iter().enumerate() {
+    for (k, (q, _, _)) in samples.iter().enumerate() {
         grid.entry((q[0].div_euclid(cell), q[1].div_euclid(cell))).or_default().push(k);
     }
     let dist = |a: Pt, b: Pt| -> f64 { length_m(a, b) };
     let nearest_is_mine = |p: Pt| -> bool {
         let (cx, cy) = (p[0].div_euclid(cell), p[1].div_euclid(cell));
         // (Ties to the smaller sample point, so the split and its complement agree.)
-        let mut best = (f64::MAX, [i64::MAX, i64::MAX], true);
+        let mut best = (f64::MAX, [i64::MAX, i64::MAX], true, usize::MAX);
         // (The least cosine of the band searched: a degree of longitude is shortest there.)
         let cos_at =
             |lat_e7: i64| ((lat_e7.clamp(-900_000_000, 900_000_000) as f64) * 1e-7).to_radians().dcos().max(0.02);
@@ -938,11 +944,11 @@ fn nearest_in(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
                         for &k in v {
                             let d = dist(p, samples[k].0);
                             let q = samples[k].0;
-                            if d < best.0 || (d == best.0 && q < best.1) {
-                                best = (d, q, samples[k].1);
-                            } else if d == best.0 && q == best.1 && samples[k].1 != best.2 {
-                                // (A point of both: the same side wins it whichever is `to`.)
-                                best.2 = to_wins;
+                            let (_, mine, part) = samples[k];
+                            // (A point two coasts share: the coast with the least fingerprint.)
+                            let lesser = || best.3 == usize::MAX || fps[part] < fps[best.3];
+                            if d < best.0 || (d == best.0 && (q < best.1 || (q == best.1 && lesser()))) {
+                                best = (d, q, mine, part);
                             }
                         }
                     }

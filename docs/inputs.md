@@ -515,7 +515,7 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   `SCENIC_REGIONS_TRACE` set, the check prints each step's and each region's water's footprint
   and its buffers' and nearest-coast splits' count, time and footprint; `SCENIC_REGIONS_THREADS`
   sets how many cells at once (4). A buffer of a cell reads its neighbours' pieces each buffered
-  once, within 16 columns each way and not from the cells south of 80°S (Antarctica's inland ice) or
+  once, within 16 columns each way (25 in the north, enough for 200 nmi at 86°N) and not from the cells south of 80°S (Antarctica's inland ice) or
   north of 86°N (where no land is); a buffer of
   50 km or more is drawn as discs at the pieces' points a thirty-second of the distance apart
   (within a twentieth of the distance).
@@ -631,7 +631,7 @@ All errors; ids `rg-<check>.<hash16>`.
 | `rg-data-missing` | an `eez:`, `ts12:` or `ne-lake:` id the dataset hasn't |
 | `rg-rest` | `rest` in more than one region's water |
 | `rg-rules` | a `rules.toml` that doesn't parse or has an unknown field or value |
-| `rg-cover` | with `cover = "earth"`: water in two regions, or in none without a `rest` region |
+| `rg-cover` | with `cover = "earth"`: water in two regions, or in none without a `rest` region; land in no region over `sliver_km2` |
 
 A held region keeps its last geometry; a new held region isn't in the coverage yet. Deleting a
 region file takes it out with the next version.

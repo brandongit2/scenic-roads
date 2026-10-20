@@ -94,18 +94,18 @@ fn nearest_splits_at_the_median_line() {
     let within = Area::from_rings(&bx(-1.0, -1.0, 4.0, 2.0));
     let a = Area::from_rings(&bx(0.0, 0.0, 1.0, 1.0));
     let b = Area::from_rings(&bx(2.0, 0.0, 3.0, 1.0));
-    let n = geom::nearest(&within, &a, &b, 1000.0);
+    let n = geom::nearest(&within, &[a.clone()], &[b.clone()], 1000.0);
     assert!(n.contains([e7(1.45), e7(0.5)]) && n.contains([e7(-0.5), e7(1.5)]));
     assert!(!n.contains([e7(1.55), e7(0.5)]) && !n.contains([e7(3.5), e7(0.5)]));
     // Within a step of the median (x = 1.5).
     assert!(n.contains([e7(1.49), e7(0.5)]) && !n.contains([e7(1.51), e7(0.5)]));
     // Its complement and it make the whole, with no overlap.
-    let m = geom::nearest(&within, &b, &a, 1000.0);
+    let m = geom::nearest(&within, &[b.clone()], &[a.clone()], 1000.0);
     assert!(n.intersect(&m).is_empty() || geom::area_km2(&n.intersect(&m)) < 1.0);
     assert!((geom::area_km2(&n.union(&m)) - geom::area_km2(&within)).abs() < 1.0);
     // Nothing to be nearer than: all; nothing to be near: none.
-    assert_eq!(geom::nearest(&within, &a, &Area::default(), 1000.0), within);
-    assert!(geom::nearest(&within, &Area::default(), &b, 1000.0).is_empty());
+    assert_eq!(geom::nearest(&within, &[a.clone()], &[], 1000.0), within);
+    assert!(geom::nearest(&within, &[], &[b.clone()], 1000.0).is_empty());
 }
 
 #[test]
@@ -114,11 +114,37 @@ fn nearest_splits_of_touching_lands_dont_overlap() {
     let within = Area::from_rings(&bx(-1.0, -1.0, 3.0, 2.0));
     let a = Area::from_rings(&bx(0.0, 0.0, 1.0, 1.0));
     let b = Area::from_rings(&bx(1.0, 0.0, 2.0, 1.0));
-    let n = geom::nearest(&within, &a, &b, 1000.0);
-    let m = geom::nearest(&within, &b, &a, 1000.0);
+    let n = geom::nearest(&within, &[a.clone()], &[b.clone()], 1000.0);
+    let m = geom::nearest(&within, &[b.clone()], &[a.clone()], 1000.0);
     let both = geom::area_km2(&n.intersect(&m));
     assert!(both < 1.0, "the splits overlap by {both} km²");
     assert!((geom::area_km2(&n.union(&m)) - geom::area_km2(&within)).abs() < 1.0);
+}
+
+#[test]
+fn nearest_splits_among_three_touching_lands_cover_once() {
+    // Three lands sharing borders (as Ukraine, Crimea and Sevastopol): each one's split against the
+    // other two, together, the whole, once.
+    let within = Area::from_rings(&bx(-1.0, -1.0, 4.0, 2.0));
+    let lands = [
+        Area::from_rings(&bx(0.0, 0.0, 1.0, 1.0)),
+        Area::from_rings(&bx(1.0, 0.0, 2.0, 1.0)),
+        Area::from_rings(&bx(2.0, 0.0, 3.0, 1.0)),
+    ];
+    let splits: Vec<Area> = (0..3)
+        .map(|i| {
+            let others: Vec<Area> = (0..3).filter(|&j| j != i).map(|j| lands[j].clone()).collect();
+            geom::nearest(&within, &[lands[i].clone()], &others, 1000.0)
+        })
+        .collect();
+    for i in 0..3 {
+        for j in i + 1..3 {
+            let both = geom::area_km2(&splits[i].intersect(&splits[j]));
+            assert!(both < 1.0, "{i} and {j} overlap by {both} km²");
+        }
+    }
+    let sum: f64 = splits.iter().map(geom::area_km2).sum();
+    assert!((sum - geom::area_km2(&within)).abs() < 1.0, "{sum} of {}", geom::area_km2(&within));
 }
 
 #[test]
@@ -463,9 +489,16 @@ fn a_zone_and_its_overlapping_internal_waters_are_unioned() {
 /// both sides, so they neither overlap nor leave a sliver.
 #[test]
 fn zones_sharing_a_border_keep_it_the_same() {
-    // A border from (1, 0) to (1, 1), wiggling 5 m (0.00005°) every 0.001°.
-    let border: Vec<[f64; 2]> =
-        (0..=1000).map(|i| [1.0 + if i % 2 == 1 { 0.000_05 } else { 0.0 }, i as f64 / 1000.0]).collect();
+    // A border from (1, 0) to (1, 1), wandering up to 30 m (0.00027°) either way every 0.001°: about
+    // the simplifying tolerance, so each side simplified alone would keep different points.
+    let mut x = 1u64;
+    let border: Vec<[f64; 2]> = (0..=1000)
+        .map(|i| {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            let off = if i == 0 || i == 1000 { 0.0 } else { ((x >> 33) as f64 / (1u64 << 31) as f64 - 0.5) * 0.000_54 };
+            [1.0 + off, i as f64 / 1000.0]
+        })
+        .collect();
     let ring = |x0: f64, rev: bool| {
         let mut b = border.clone();
         if rev {
@@ -473,6 +506,11 @@ fn zones_sharing_a_border_keep_it_the_same() {
         }
         let mut r = vec![[x0, if rev { 1.0 } else { 0.0 }]];
         r.extend(b);
+        // (One ring starts mid-border: simplified alone, its sides would split the border at
+        // different points.)
+        if !rev {
+            r.rotate_left(377);
+        }
         r.push(r[0]);
         serde_json::to_string(&r).unwrap()
     };
