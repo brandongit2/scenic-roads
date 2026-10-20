@@ -603,6 +603,8 @@ fn measure_a_real_assembly() {
     let upto: u8 = a[2].parse().unwrap();
     grids::WINDOW_READS.store(a[3].parse().unwrap(), std::sync::atomic::Ordering::Relaxed);
     grids::GRIDS_TOGETHER.store(a[3] != "1", std::sync::atomic::Ordering::Relaxed);
+    // (Its open-files limit a job's, so a reader keeps as many grids open: crate::sys.)
+    crate::sys::raise_open_files();
     let scratch = tempfile::tempdir().unwrap();
     let out = Out::unbound(root, scratch.path()).unwrap();
     let srcs = grids::declared(out.root(), &out.manifest).unwrap();
@@ -623,5 +625,5 @@ fn measure_a_real_assembly() {
             println!("    {:<32} {:>8.1} s  n={}", s.name, s.wall_s, s.n);
         }
     }
-    println!("  untimed {:.1} s", r.untimed_s);
+    println!("  untimed {:.1} s of {:.1} s", r.untimed_s, r.wall_s);
 }

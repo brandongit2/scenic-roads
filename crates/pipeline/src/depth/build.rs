@@ -440,7 +440,10 @@ fn level_blocks(
             let (c0, r0) = b.origin();
             let bbox = super::grids::window_box(z, c0, r0, b.w(), b.h());
             let need = if z > super::compose::ALL_UPTO { z } else { zmin };
-            if !sources.iter().any(|s| s.max_zoom_in(bbox).is_some_and(|m| m >= need)) {
+            let _p = phase("the block's sources found", Class::Compute);
+            let any = sources.iter().any(|s| s.max_zoom_in(bbox).is_some_and(|m| m >= need));
+            drop(_p);
+            if !any {
                 continue;
             }
             let wt = {
@@ -580,8 +583,19 @@ pub fn compose_lo(
             }
         }
         drop(_p);
-        std::mem::take(&mut t.made)
+        let made = std::mem::take(&mut t.made);
+        drop(t);
+        close(rd, wc);
+        made
     })
+}
+
+/// The grids a reader holds open closed and the water's polygons let go, as a phase: on the NAS
+/// a close is a round trip, and a reader keeps up to 2,000 open (grids::open_grids_limit).
+fn close(rd: Reader, wc: WaterCache) {
+    let _p = crate::timings::phase("the grids closed and the caches let go", crate::timings::Class::NasRead);
+    drop(rd);
+    drop(wc);
 }
 
 /// The piece of z6 tile `t`: its hi packs (z9–16); how many tiles.
@@ -613,7 +627,10 @@ pub fn compose_hi(
         crate::agent::jobs::report(u64::from(z - HI.0 + 1), zooms, "zooms");
         eprintln!("depth 6/{}/{}: z{z}, {k} tiles", t.0, t.1);
     }
-    Ok(std::mem::take(&mut tl.made))
+    let made = std::mem::take(&mut tl.made);
+    drop(tl);
+    close(rd, wc);
+    Ok(made)
 }
 
 /// The sea and lakes `polys` of a test: squares in a tile's pixels.

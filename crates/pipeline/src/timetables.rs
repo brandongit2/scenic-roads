@@ -283,8 +283,14 @@ pub fn run(out: &mut crate::out::Out, cov: &crate::coverage::Coverage, todo_root
         let c = out.get(l).with_context(|| format!("no {l} yet"))?;
         Ok(serde_json::from_slice(&std::fs::read(out.path(c)).with_context(|| format!("read {c}"))?)?)
     };
+    use crate::timings::{phase, Class};
+    let p = phase("the rail and ferry lines read", Class::NasRead);
     let (rail, ferries) = (read(RAIL_LINES)?, read(FERRY_LINES)?);
+    drop(p);
+    let p = phase("the lines matched", Class::Compute);
     let (todo, report, r) = merge(&rail, &ferries, &|p| cov.contains(p));
+    drop(p);
+    let _p = phase("the to-do list and the report written", Class::NasWrite);
     let dir = crate::inputs::todo_dir(todo_root, crate::inputs::gtfs::UNIT);
     std::fs::create_dir_all(&dir)?;
     let text: String = todo.iter().map(|l| l.to_string() + "\n").collect();

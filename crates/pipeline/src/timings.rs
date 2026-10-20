@@ -126,7 +126,31 @@ pub struct RunRec {
     #[serde(default)]
     pub overhead_s: f64,
     pub phases: Vec<PhaseRec>,
+    /// Where its untimed time lies: the main thread's spans between two top-level phases, by the
+    /// phases either side ("the start", "the end" at the run's ends), largest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<Gap>,
 }
+
+/// Untimed time between two of a run's top-level phases on its main thread, summed over the times
+/// it fell there.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Gap {
+    pub after: String,
+    pub before: String,
+    pub wall_s: f64,
+    pub n: u64,
+}
+
+/// A run's untimed share past which the report flags it (docs/plan.md §8, Timings: under about 5 %).
+pub const UNACCOUNTED_MAX: f64 = 0.05;
+/// A gap shorter than this isn't kept (a phase's close and the next's open).
+const GAP_MIN_NS: u64 = 1_000_000;
+/// How many gaps a run keeps, largest first.
+const GAPS_KEPT: usize = 8;
+/// Where nothing is either side of a gap.
+const START: &str = "the start";
+const END: &str = "the end";
 
 impl RunRec {
     /// The main thread's top-level phases' wall time.
@@ -175,6 +199,24 @@ struct Run {
     open: Vec<Arc<Open>>,
     overhead_ns: u64,
     finished: bool,
+    /// The main thread's last top-level phase to end, and when (the start at first).
+    mark: (Instant, String),
+    /// Its gaps so far: (after, before) → (ns, spans).
+    gaps: Vec<(String, String, u64, u64)>,
+}
+
+/// Adds a gap of `ns` between `after` and `before` (none under `GAP_MIN_NS`).
+fn add_gap(gaps: &mut Vec<(String, String, u64, u64)>, after: &str, before: &str, ns: u64) {
+    if ns < GAP_MIN_NS {
+        return;
+    }
+    match gaps.iter_mut().find(|g| g.0 == after && g.1 == before) {
+        Some(g) => {
+            g.2 += ns;
+            g.3 += 1;
+        }
+        None => gaps.push((after.to_string(), before.to_string(), ns, 1)),
+    }
 }
 
 static RUN: OnceLock<Mutex<Option<Run>>> = OnceLock::new();
@@ -228,6 +270,8 @@ pub fn start(kind: &str) {
             open: Vec::new(),
             overhead_ns: 0,
             finished: false,
+            mark: (Instant::now(), START.to_string()),
+            gaps: Vec::new(),
         });
     }
 }
@@ -289,6 +333,13 @@ fn open(name: &str, class: Class) -> Phase {
         return Phase::none();
     }
     let parent = inner;
+    // (The main thread's time since its last top-level phase ended: a gap, named by its ends.)
+    if parent.is_none() && me == r.main {
+        let ns = r.mark.0.elapsed().as_nanos() as u64;
+        let after = std::mem::take(&mut r.mark.1);
+        add_gap(&mut r.gaps, &after, name, ns);
+        r.mark.1 = after;
+    }
     let idx = match r.accs.iter().position(|a| a.name == name && a.parent == parent) {
         Some(i) => i,
         None => {
@@ -361,6 +412,9 @@ impl Drop for Phase {
             return;
         }
         let parent = r.accs[o.idx].parent;
+        if parent.is_none() && o.thread == r.main {
+            r.mark = (Instant::now(), r.accs[o.idx].name.clone());
+        }
         let a = &mut r.accs[o.idx];
         a.wall_ns += wall.as_nanos() as u64;
         a.cpu_us = match (a.cpu_us, cpu) {
@@ -564,9 +618,29 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
         untimed_s: 0.0,
         overhead_s: r.overhead_ns as f64 / 1e9,
         phases,
+        gaps: Vec::new(),
     };
     rec.untimed_s = (wall_s - rec.timed_s()).max(0.0);
+    // (Its gaps, the one since the main thread's last phase too where none is open on it now.)
+    let mut gaps = r.gaps.clone();
+    if !r.open.iter().any(|o| o.thread == r.main && r.accs[o.idx].parent.is_none()) {
+        add_gap(&mut gaps, &r.mark.1, END, r.mark.0.elapsed().as_nanos() as u64);
+    }
+    gaps.sort_by(|a, b| b.2.cmp(&a.2));
+    gaps.truncate(GAPS_KEPT);
+    rec.gaps =
+        gaps.into_iter().map(|(after, before, ns, n)| Gap { after, before, wall_s: ns as f64 / 1e9, n }).collect();
     rec
+}
+
+/// "between A and B" (or "before B", "after A" at the run's ends).
+fn gap_name(g: &Gap) -> String {
+    match (g.after.as_str(), g.before.as_str()) {
+        (START, END) => "with no phase at all".into(),
+        (START, b) => format!("before {b}"),
+        (a, END) => format!("after {a}"),
+        (a, b) => format!("between {a} and {b}"),
+    }
 }
 
 /// Ends the run: its table in the log, its record where `SCENIC_TIMINGS` (a job's) or
@@ -685,7 +759,16 @@ pub fn table(r: &RunRec) -> String {
         }
     }
     let share = if r.wall_s > 0.0 { r.untimed_s / r.wall_s * 100.0 } else { 0.0 };
-    s.push_str(&format!("timings: {:<40} {:>10} {:>4.0}%\n", "(untimed)", secs(r.untimed_s), share));
+    s.push_str(&format!("timings: {:<40} {:>10} {:>4.0}%\n", "(unaccounted)", secs(r.untimed_s), share));
+    for g in r.gaps.iter().take(3) {
+        s.push_str(&format!("timings:   {:<38} {:>10}\n", gap_name(g), secs(g.wall_s)));
+    }
+    if share > UNACCOUNTED_MAX * 100.0 {
+        s.push_str(&format!(
+            "timings: ! {share:.0}% of the run in no phase (over {:.0}%): the gaps above want phases\n",
+            UNACCOUNTED_MAX * 100.0
+        ));
+    }
     s
 }
 
@@ -767,6 +850,25 @@ pub struct KindSum {
     pub untimed_s: f64,
     pub overhead_s: f64,
     pub phases: Vec<PhaseSum>,
+    /// The runs' gaps summed by their ends, largest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<Gap>,
+}
+
+impl KindSum {
+    /// The share of its runs' time in no phase.
+    pub fn unaccounted(&self) -> f64 {
+        if self.wall_s > 0.0 {
+            self.untimed_s / self.wall_s
+        } else {
+            0.0
+        }
+    }
+}
+
+/// The kinds whose runs leave more than `UNACCOUNTED_MAX` of their time in no phase.
+pub fn blind_spots(sums: &[KindSum]) -> Vec<&KindSum> {
+    sums.iter().filter(|k| k.unaccounted() > UNACCOUNTED_MAX).collect()
 }
 
 fn add_phase(list: &mut Vec<PhaseSum>, p: &PhaseRec, total: f64, top: bool) {
@@ -832,7 +934,17 @@ pub fn summary(runs: &[RunRec], kind: Option<&str>, last: usize, host: Option<&s
                 for p in &r.phases {
                     add_phase(&mut s.phases, p, r.wall_s, true);
                 }
+                for g in &r.gaps {
+                    match s.gaps.iter_mut().find(|h| h.after == g.after && h.before == g.before) {
+                        Some(h) => {
+                            h.wall_s += g.wall_s;
+                            h.n += g.n;
+                        }
+                        None => s.gaps.push(g.clone()),
+                    }
+                }
             }
+            s.gaps.sort_by(|a, b| b.wall_s.total_cmp(&a.wall_s));
             let total = s.wall_s;
             shares(&mut s.phases, total);
             s
@@ -914,11 +1026,30 @@ pub fn summary_text(sums: &[KindSum]) -> String {
             }
         }
         out.push_str(&format!(
-            "  {:<44} {:>5.1}% {:>11} {:>11}\n\n",
-            "(untimed)",
-            if k.wall_s > 0.0 { k.untimed_s / k.wall_s * 100.0 } else { 0.0 },
+            "  {:<44} {:>5.1}% {:>11} {:>11}\n",
+            "(unaccounted)",
+            k.unaccounted() * 100.0,
             secs(k.untimed_s),
             secs(k.untimed_s / n)
+        ));
+        for g in k.gaps.iter().take(3) {
+            out.push_str(&format!("    {:<42} {:>6} {:>11}\n", gap_name(g), "", secs(g.wall_s)));
+        }
+        if k.unaccounted() > UNACCOUNTED_MAX {
+            out.push_str(&format!(
+                "  ! {:.0}% in no phase (over {:.0}%): its gaps want phases\n",
+                k.unaccounted() * 100.0,
+                UNACCOUNTED_MAX * 100.0
+            ));
+        }
+        out.push('\n');
+    }
+    let blind = blind_spots(sums);
+    if !blind.is_empty() {
+        out.push_str(&format!(
+            "Over {:.0}% of their time in no phase: {}\n",
+            UNACCOUNTED_MAX * 100.0,
+            blind.iter().map(|k| format!("{} {:.0}%", k.kind, k.unaccounted() * 100.0)).collect::<Vec<_>>().join(", ")
         ));
     }
     out
@@ -1004,6 +1135,8 @@ mod tests {
             .join()
             .unwrap();
         }
+        // Time in no phase: a gap, named by the phases either side.
+        std::thread::sleep(std::time::Duration::from_millis(30));
         // A span still open as the run ends: counted to then.
         let held = phase("held open", Class::Disk);
         held.count(3, 1);
@@ -1027,7 +1160,13 @@ mod tests {
         let back: RunRec = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back, r);
         assert!((r.untimed_s - (r.wall_s - r.timed_s()).max(0.0)).abs() < 1e-9);
-        assert!(table(&r).contains("(untimed)"));
+        assert!(table(&r).contains("(unaccounted)"));
+        let g = &r.gaps[0];
+        assert_eq!((g.after.as_str(), g.before.as_str(), g.n), ("main work", "held open", 1), "{:?}", r.gaps);
+        assert!(g.wall_s >= 0.03 && g.wall_s <= r.untimed_s + 1e-9, "{:?} {}", r.gaps, r.untimed_s);
+        // (A phase open on the main thread: no gap after the last.)
+        assert!(r.gaps.iter().all(|g| g.before != END), "{:?}", r.gaps);
+        assert!(table(&r).contains("between main work and held open"), "{}", table(&r));
         // A transfer's rate beside its bytes.
         let net = RunRec {
             wall_s: 4.0,
@@ -1049,6 +1188,37 @@ mod tests {
         // Nothing timed after.
         let _p = phase("after", Class::Compute);
         reset();
+    }
+
+    /// The report says where a kind's untimed time lies and flags a kind past `UNACCOUNTED_MAX`.
+    #[test]
+    fn blind_spots_are_flagged_with_their_gaps() {
+        let run = |kind: &str, wall: f64, untimed: f64, gap: (&str, &str)| RunRec {
+            kind: kind.into(),
+            wall_s: wall,
+            untimed_s: untimed,
+            phases: vec![PhaseRec { name: "work".into(), wall_s: wall - untimed, n: 1, ..Default::default() }],
+            gaps: vec![Gap { after: gap.0.into(), before: gap.1.into(), wall_s: untimed, n: 1 }],
+            ..Default::default()
+        };
+        let runs = [
+            run("depth-lo", 100.0, 30.0, ("z3–5 from their children", END)),
+            run("depth-lo", 100.0, 10.0, ("z3–5 from their children", END)),
+            run("depth-lo", 100.0, 5.0, (START, "work")),
+            run("terrain", 100.0, 1.0, ("work", END)),
+        ];
+        let sums = summary(&runs, None, 50, None);
+        let blind: Vec<&str> = blind_spots(&sums).iter().map(|k| k.kind.as_str()).collect();
+        assert_eq!(blind, ["depth-lo"]);
+        let d = &sums[0];
+        assert_eq!((d.gaps[0].wall_s, d.gaps[0].n), (40.0, 2));
+        assert_eq!(d.gaps[1].before, "work");
+        let t = summary_text(&sums);
+        assert!(t.contains("after z3–5 from their children"), "{t}");
+        assert!(t.contains("before work"), "{t}");
+        assert!(t.contains("! 15% in no phase"), "{t}");
+        assert!(t.contains("Over 5% of their time in no phase: depth-lo 15%"), "{t}");
+        assert!(!t.contains("! 1%"), "{t}");
     }
 
     #[test]
@@ -1108,7 +1278,7 @@ mod tests {
         assert_eq!((m4.len(), m4[0].runs), (1, 2));
         let t = summary_text(&s);
         assert!(
-            t.contains("unit — 2 runs (1 not ok) on m1, m4") && t.contains("(untimed)") && t.contains("  inner"),
+            t.contains("unit — 2 runs (1 not ok) on m1, m4") && t.contains("(unaccounted)") && t.contains("  inner"),
             "{t}"
         );
         // Cut to its newer half past the limit.

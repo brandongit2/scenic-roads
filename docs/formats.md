@@ -581,7 +581,7 @@ deleted only under an exclusive flock taken without waiting.
 A job's run, a JSON object, `pipeline::timings::RunRec`:
 
 ```
-{v: 1, kind, id, host, start, wall_s, cpu_s, threads, ok, untimed_s, overhead_s, phases: [phase, …]}
+{v: 1, kind, id, host, start, wall_s, cpu_s, threads, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …]}
 phase: {name, class, wall_s, cpu_s, n, bytes, files, overlapped, background, sub: [phase, …]}
 ```
 
@@ -592,6 +592,10 @@ phase: {name, class, wall_s, cpu_s, n, bytes, files, overlapped, background, sub
 - `cpu_s`: user + system, the process's and its finished children's (none on a page). `threads`:
   RAYON_NUM_THREADS. `ok`: ended without error (a pause isn't). `untimed_s`: `wall_s` less the
   top-level non-`background` phases. `overhead_s`: the timing's own cost.
+- `gaps` (`{after, before, wall_s, n}`): where `untimed_s` lies, the main thread's spans between
+  two top-level phases summed by the phases either side ("the start" and "the end" at the run's
+  ends), its eight largest, each 1 ms or more; left out when none (a Python child's record has
+  none).
 - A phase totals its `n` spans. `class`: `nas-read`, `nas-write`, `disk`, `net`, `compute`, `wait`,
   `mixed`. `overlapped`: another thread's phase ran during it. `background`: off the main thread.
   `sub`: one level of sub-phases (a child program's phases come in here). Empty, zero and false

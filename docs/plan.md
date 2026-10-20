@@ -1185,7 +1185,10 @@ from the first (`edit_held`).
   level of sub-phases; a child program's phases arrive as sub-phases (`SCENIC_PHASES_TO`). Rules:
   every bulk data move, compute stage and external program is a phase; `Out::open` and `Out::save`
   are phases for free; a loop is never a phase per iteration; nothing is timed per item in a hot
-  loop; untimed time stays under about 5 %. Background and overlapped phases are marked. The record
+  loop; untimed time stays under about 5 %. A run keeps where its untimed time lies (`gaps`: the
+  main thread's time between two top-level phases, named by them), and `scenic timings` shows it
+  as "(unaccounted)" with its three largest gaps, flagging a kind past 5 % (`UNACCOUNTED_MAX`) with
+  a closing line naming every such kind. Background and overlapped phases are marked. The record
   (docs/formats.md, Timings) goes to `SCENIC_TIMINGS`; the agent keeps `timings.jsonl`, the lead's
   coordinator `coord/timings.jsonl` for every worker. `scenic timings [kind] [--last N] [--host
   mac]` prints them (`--here` this Mac's own).

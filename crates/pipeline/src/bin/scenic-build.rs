@@ -966,8 +966,10 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let raw_dir = PathBuf::from(
                 opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
             );
+            let p = phase("the raw tiles and the terrain's sources opened", Class::NasRead);
             let raw = raw_tiles(&out, &raw_dir)?;
             let opened = pipeline::terrain_pack::SourceFiles::open(&out, true)?;
+            drop(p);
             let n = pipeline::terrain_pack::build_root(&mut out, &raw, &opened.sources(None))?;
             eprintln!("terrain root: {n} tiles");
             pack_raw(&out, &raw_dir);
@@ -5329,12 +5331,16 @@ fn terrain_pieces(
 /// the same reads kept, the others read from the basemap.
 fn terrain_water_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
+    let p = phase("the basemap's water opened", Class::NasRead);
     let src = pipeline::terrain_pack::open_water(out)?;
+    drop(p);
     let idx = water_idx_of(out, &cov, &src, &|done, total| pipeline::agent::jobs::report(done, total, "targets"))?;
+    let p = phase("the digests written", Class::NasWrite);
     let local = out.scratch_file("terrain-water.json");
     std::fs::write(&local, serde_json::to_vec(&idx)?)?;
     let name = out.put_file(&pipeline::terrain_water::idx_logical(&idx.pin), "json", &local)?;
     std::fs::remove_file(&local).ok();
+    drop(p);
     out.save()?;
     eprintln!("terrain-water: {} targets' digests, {name}", idx.digests.len());
     Ok(())
@@ -5353,6 +5359,7 @@ fn water_idx_of(
         Some(&pin) == pipeline::terrain_pack::water_source_pin(&out.manifest).as_ref(),
         "the water source's pin ({pin}) isn't the one the plan names"
     );
+    let p = phase("the last digests and the depth's declarations read", Class::NasRead);
     let prior = match out.get(&pipeline::terrain_water::idx_logical(&pin)) {
         Some(c) => Some(pipeline::terrain_water::WaterIdx::from_bytes(&std::fs::read(out.path(c))?)?),
         None => None,
@@ -5369,6 +5376,8 @@ fn water_idx_of(
             reads.push(r);
         }
     }
+    drop(p);
+    let _p = phase("the targets' water read and digested", Class::NasRead);
     pipeline::terrain_water::make_idx(src, prior.as_ref(), &reads, progress)
 }
 
@@ -5462,7 +5471,10 @@ impl Landing {
     /// fails, the target not noted done); its cost line written with its uploads' bytes.
     fn land(&mut self, out: &mut Out) -> Result<()> {
         if let Some(mut u) = self.up.take() {
+            // (Its uploads waited for: what the work beside them didn't cover.)
+            let p = phase("the uploads beside landed", Class::NasWrite);
             out.save_upto(u.mark)?;
+            drop(p);
             let (wrote, creates) = out.claim_written(u.mark);
             if let Some(m) = u.cost.get_mut("sizes").and_then(|v| v.as_object_mut()) {
                 for (k, n) in [("wrote", wrote), ("creates", creates)] {
@@ -5640,6 +5652,7 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
         opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cov = coverage_of(out, args)?;
     let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
+    let p = phase("the feeds' declarations read", Class::NasRead);
     let decls = {
         let unit = pipeline::inputs::feeds::UNIT;
         let index = opt(args, "--feeds-index")
@@ -5650,6 +5663,7 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
             pipeline::inputs::open(out.root(), &m, unit)?.with_context(|| format!("no accepted version of {unit}"))?;
         pipeline::inputs::feeds::of_accepted(&a)?
     };
+    drop(p);
     let catalogue = out.get(rail::CATALOGUE).map(|c| out.path(c));
     // (A catalogue without its declaration, held by the input check, would be read without its
     // corrections: the job waits for it instead.)
