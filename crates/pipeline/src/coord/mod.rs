@@ -346,6 +346,9 @@ pub struct Shared {
     /// Targets passed over for the NAS budget alone ((step, target) → (first, last time)), for the
     /// status (`Coordinator::nas_waits`); a target granted is let go.
     pub nas_waits: Mutex<BTreeMap<(String, String), (Instant, Instant)>>,
+    /// When each quiet step's job (crate::budget::nas::QUIET_STEPS) was first held back for a
+    /// quiet NAS since it was last granted: past `QUIET_AGE` it goes as an aged job (task #451).
+    pub quiet_since: Mutex<BTreeMap<String, Instant>>,
     /// Why each worker's last ask was granted fewer jobs than it wanted (`pack`: the packing's
     /// refusal, in words), and when (unix s); none once an ask got all it wanted. The status's
     /// (`Coordinator::refusals`): why nothing more fits a Mac.
@@ -719,6 +722,22 @@ impl Shared {
             })
     }
 
+    /// Whether a leased job may load the NAS unseen by its weight: one of a step known to read it
+    /// (`NAS_STEPS`), or one none of whose step's runs measured its NAS rate (a cold one).
+    fn nas_unknown_running(&self, nw: &NasWeigher, now: Instant) -> bool {
+        self.leases.all(now).into_iter().any(|l| match &l.work {
+            Work::Job { step, targets } => {
+                NAS_STEPS.contains(&step.as_str())
+                    || if targets.is_empty() {
+                        nw.book.nas(step, "").is_none()
+                    } else {
+                        targets.iter().any(|t| nw.book.nas(step, &t.0).is_none())
+                    }
+            }
+            _ => false,
+        })
+    }
+
     /// Notes `target` of `step` passed over for the NAS budget alone now.
     fn nas_wait(&self, step: &str, target: &str, now: Instant) {
         let mut g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
@@ -798,6 +817,7 @@ impl Shared {
             for t in &pick {
                 g.remove(&(o.step.clone(), t.0.clone()));
             }
+            self.quiet_since.lock().unwrap_or_else(|e| e.into_inner()).remove(&o.step);
         }
         self.save_leases();
         eprintln!(
@@ -1111,9 +1131,22 @@ impl Shared {
             let own = running.saturating_sub(members);
             // (A quiet step, the clean-up: alone or within the whole by its measured weight, never
             // aged past it, its wait not noted: it never holds room, crate::budget::nas::QUIET_STEPS.)
-            let quiet = crate::budget::nas::QUIET_STEPS.contains(&o.step.as_str());
+            // Held back `QUIET_AGE` (a pool that stays busy), it goes as an aged job of the lead's
+            // own, its wait noted so its room is held: never starved for good.
+            let quiet = crate::budget::nas::QUIET_STEPS.contains(&o.step.as_str()) && {
+                let mut g = self.quiet_since.lock().unwrap_or_else(|e| e.into_inner());
+                let since = if alone {
+                    g.get(&o.step).copied().unwrap_or(now)
+                } else {
+                    *g.entry(o.step.clone()).or_insert(now)
+                };
+                now.saturating_duration_since(since) < crate::budget::nas::QUIET_AGE
+            };
+            let waited = waited || (crate::budget::nas::QUIET_STEPS.contains(&o.step.as_str()) && !quiet);
             let fits = if quiet {
-                crate::budget::nas::Limits::fits_quiet(running, w)
+                // (Unmeasured, it goes only beside no NAS-heavy job: none of a step known to read
+                // the NAS, none whose weight isn't measured yet.)
+                crate::budget::nas::Limits::fits_quiet(running, w) && (w > 0 || !self.nas_unknown_running(&nw, now))
             } else {
                 crate::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited)
             } && (alone || self.nas_reserve_ok(&nw, now, &o.step, &ts, running, w));
@@ -2039,6 +2072,7 @@ impl Coordinator {
             nas_failures: 0,
             lead_name: me.to_string(),
             nas_waits: Default::default(),
+            quiet_since: Default::default(),
             refused: BTreeMap::new(),
             last: BTreeMap::new(),
             brokers: None,
@@ -7216,6 +7250,84 @@ mod tests {
         assert!(c.ask_own(&a, &BTreeSet::new()).is_none());
         age(crate::budget::nas::OWN_AGE * 3);
         assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "never urgent");
+    }
+
+    /// Task #451 review: an unmeasured clean-up doesn't start beside a cold job (weight 0, its NAS
+    /// load unknown), and one held back `QUIET_AGE` by a pool that stays busy goes as an aged job.
+    #[test]
+    fn the_clean_up_waits_for_no_cold_job_and_ages_in_after_a_day() {
+        let (_d, c, w, clock) = every((0, 0));
+        let limits = crate::budget::nas::Limits {
+            bytes_s: 100e6,
+            creates_s: 40.0,
+            listed_s: 1000.0,
+            stats_s: 500.0,
+            deletes_s: 40.0,
+            downloads: None,
+        };
+        {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+        }
+        // (A slope job measured for memory but not its NAS: cold for the budget, weight 0.)
+        packable(&c, "slope", 1, Some(1));
+        let mut offers = c.shared.lock().unwrap().offers.clone();
+        offers.push(Offer {
+            step: "gc".into(),
+            targets: vec![("gc".into(), String::new(), 0)],
+            job: Some("gc".into()),
+        });
+        c.offer("p", offers);
+        let g1 = w.ask(&Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) }).unwrap().expect("slope");
+        assert_eq!(c.nas_shares().get("m1"), Some(&0));
+        let a = Ask { want: 1, can: vec!["gc".into()], ..every_ask("m4", "gc", 64_000, 100_000) };
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "unmeasured beside a cold job: held");
+        w.give_back(g1.lease, "test").unwrap();
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "alone: goes");
+
+        // Measured at 400, beside a member's 700 that never ends: held, until a day has passed.
+        let (_d, c, w, clock2) = every((0, 0));
+        drop(clock);
+        {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+        }
+        packable(&c, "slope", 1, Some(1));
+        let cost = |sizes: &[(&str, u64)]| Cost {
+            peak_mb: 500,
+            secs: 600,
+            worker: None,
+            v: 0,
+            sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            ..Default::default()
+        };
+        let slope = Cost { v: cost_version("slope"), ..cost(&[("threads", 1), ("bytes", 42_000_000_000)]) };
+        c.add_costs_by(&[(cost_key("slope", "6/1/1"), slope)], "m1");
+        c.add_costs_by(
+            &[(cost_key("gc", "gc"), cost(&[("threads", 1), ("bytes", 0), ("listed", 120_000), ("deletes", 4_800)]))],
+            "m4",
+        );
+        c.add_disks(&[(cost_key("gc", "gc"), 0)]);
+        let mut offers = c.shared.lock().unwrap().offers.clone();
+        offers.push(Offer {
+            step: "gc".into(),
+            targets: vec![("gc".into(), String::new(), 0)],
+            job: Some("gc".into()),
+        });
+        c.offer("p", offers);
+        let g1 = w.ask(&Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) }).unwrap().expect("slope");
+        assert_eq!(c.nas_shares().get("m1"), Some(&700));
+        let age = |by: Duration| {
+            for _ in 0..200 {
+                clock2.advance(by / 200);
+                assert!(w.beat(g1.lease, None).unwrap());
+            }
+        };
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "700 + 400: held");
+        age(crate::budget::nas::QUIET_AGE / 2);
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "half a day: still held");
+        age(crate::budget::nas::QUIET_AGE / 2);
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "a day held back: it goes as an aged job");
     }
 
     /// A whole-weight job of the lead's own goes beside a running job of the lead's own (and a

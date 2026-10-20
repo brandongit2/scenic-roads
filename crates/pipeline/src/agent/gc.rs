@@ -276,10 +276,18 @@ pub fn note_cost() {
 /// to jobs long held back for it, docs/pool.md §7.7), it notes its cost and ends as paused; what it
 /// removed is gone for good and the rest waits for its next run (each removal stands alone).
 fn yield_point() {
+    #[cfg(test)]
+    YIELD_CHECKS.set(YIELD_CHECKS.get() + 1);
     if crate::control::draining() {
         note_cost();
         crate::control::stop_paused(STEP);
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The safe points a run on this thread passed (`yield_point`).
+    static YIELD_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 thread_local! {
@@ -414,6 +422,7 @@ fn run_once(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         crate::agent::jobs::within(k as f64 / tops.len() as f64);
         let mut stack = vec![root.join(top)];
         while let Some(dir) = stack.pop() {
+            yield_point();
             let Ok(rd) = std::fs::read_dir(&dir) else { continue };
             for e in rd.flatten() {
                 let p = e.path();
@@ -777,6 +786,27 @@ mod tests {
         crate::costin::begin();
         meta(5, 5, 5);
         assert!(!crate::costin::take().contains_key("listed"), "not in a job: not counted");
+    }
+
+    /// Task #451 review: the main sweep passes a safe point at every folder, not only at each
+    /// top folder, so a yield waits for one folder's work at most.
+    #[test]
+    fn the_sweep_passes_a_safe_point_each_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let mut cat = store::catalog::Catalog::new(1);
+        for i in 0..6 {
+            let rel = format!("layers/a/d{i}/6-1-{i}.0123456789abcdef.pack");
+            fs::create_dir_all(root.join(&rel).parent().unwrap()).unwrap();
+            fs::write(root.join(&rel), b"x").unwrap();
+            cat.files
+                .insert(format!("layers/a/d{i}/6-1-{i}"), store::catalog::FileRef { file: rel, ..Default::default() });
+        }
+        store::catalog::write(&root.join("catalog"), &cat).unwrap();
+        YIELD_CHECKS.set(0);
+        run(root, 14, false).unwrap();
+        // (layers, layers/a and its six folders.)
+        assert!(YIELD_CHECKS.get() >= 8, "{}", YIELD_CHECKS.get());
     }
 
     #[test]

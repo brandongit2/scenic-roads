@@ -170,6 +170,10 @@ impl Limits {
 /// for the budget `OWN_AGE` that their going would let start (crate::coord's `nas_yield`).
 pub const QUIET_STEPS: [&str; 1] = ["gc"];
 
+/// How long a quiet step's job is held back for a quiet NAS before it goes as an aged job of the
+/// lead's own (`fits_own_job`, its room held): a pool that stays busy never starves it for good.
+pub const QUIET_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
 impl Limits {
     /// Whether a job of a quiet step (`QUIET_STEPS`) of weight `w` may start beside leased jobs
     /// weighing `running` together: beside nothing that weighs anything, or, its weight measured
@@ -293,23 +297,58 @@ fn probe_in(dir: &Path) -> std::io::Result<Probe> {
 /// statted and files deleted a second.
 fn probe_meta(dir: &Path) -> std::io::Result<(f64, f64, f64)> {
     let rate = |n: usize, t: Instant| n as f64 / t.elapsed().as_secs_f64().max(1e-6);
-    let t = Instant::now();
-    let mut n = 0;
-    for e in std::fs::read_dir(dir)? {
-        e?;
-        n += 1;
-    }
-    let listed_s = rate(n, t);
-    let t = Instant::now();
-    for i in 0..SMALL_FILES {
-        std::fs::metadata(dir.join(format!("s{i}")))?;
-    }
-    let stats_s = rate(SMALL_FILES, t);
+    let (listed_s, stats_s) = probe_listing(&meta_dir(dir))?;
     let t = Instant::now();
     for i in 0..SMALL_FILES {
         std::fs::remove_file(dir.join(format!("s{i}")))?;
     }
     Ok((listed_s, stats_s, rate(SMALL_FILES, t)))
+}
+
+/// The folder a probe in `dir` lists and stats (`<host>-meta` beside `<host>-<pid>`): kept between
+/// probes, never written by the probe that measures it, so its listing and its files' attributes
+/// come from the NAS, not this Mac's SMB cache of what it just wrote (task #451 review).
+pub fn meta_dir(dir: &Path) -> PathBuf {
+    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let host = name.rsplit_once('-').map_or(name.as_str(), |(h, _)| h);
+    dir.with_file_name(format!("{host}-meta"))
+}
+
+/// Files in the kept folder (`meta_dir`), and how long since it was last written before it's
+/// measured (the client's caches of it long gone).
+pub const META_FILES: usize = 48;
+pub const META_SETTLE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Entries listed and files statted a second in the kept folder `m`: (0, 0), not measured, when
+/// it's missing (made now, for the next probe), incomplete (made again) or written within
+/// `META_SETTLE`.
+fn probe_listing(m: &Path) -> std::io::Result<(f64, f64)> {
+    let names: Vec<String> = (0..META_FILES).map(|i| format!("m{i}")).collect();
+    let settled = std::fs::metadata(m.join(&names[META_FILES - 1]))
+        .and_then(|md| md.modified())
+        .is_ok_and(|t| t.elapsed().is_ok_and(|e| e >= META_SETTLE));
+    if !settled {
+        if !m.join(&names[META_FILES - 1]).exists() {
+            std::fs::create_dir_all(m)?;
+            for n in &names {
+                std::fs::write(m.join(n), b"m")?;
+            }
+        }
+        return Ok((0.0, 0.0));
+    }
+    let rate = |n: usize, t: Instant| n as f64 / t.elapsed().as_secs_f64().max(1e-6);
+    let t = Instant::now();
+    let mut n = 0;
+    for e in std::fs::read_dir(m)? {
+        e?;
+        n += 1;
+    }
+    let listed_s = rate(n, t);
+    let t = Instant::now();
+    for f in &names {
+        std::fs::metadata(m.join(f))?;
+    }
+    Ok((listed_s, rate(META_FILES, t)))
 }
 
 #[cfg(test)]
@@ -377,6 +416,22 @@ mod tests {
         let p = probe(&dir).unwrap();
         assert!(p.bytes_s > 0.0 && p.creates_s > 0.0, "{p:?}");
         assert!(!dir.exists());
+        // Its listing and stats measured only in the kept folder, settled: none the first time
+        // (the folder made), then once its files are old.
+        assert_eq!((p.listed_s, p.stats_s), (0.0, 0.0), "{p:?}");
+        assert!(p.deletes_s > 0.0);
+        let m = meta_dir(&dir);
+        assert!(m.join(format!("m{}", META_FILES - 1)).exists());
+        let old = std::time::SystemTime::now() - META_SETTLE * 2;
+        for i in 0..META_FILES {
+            let f = std::fs::File::options().write(true).open(m.join(format!("m{i}"))).unwrap();
+            f.set_times(std::fs::FileTimes::new().set_modified(old)).unwrap();
+        }
+        let p = probe(&dir).unwrap();
+        assert!(p.listed_s > 0.0 && p.stats_s > 0.0, "{p:?}");
+        assert!(!dir.exists() && m.exists());
+        let probe_m = probe_dir(d.path(), "m1.local");
+        assert_eq!(meta_dir(&probe_m).file_name().unwrap(), "m1_local-meta");
     }
 
     /// At start, this host's folders a crash left go; this process's and other hosts' stay.
