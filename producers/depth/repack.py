@@ -28,7 +28,6 @@ a trial; it never adopts or sweeps.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shlex
@@ -39,7 +38,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from packs import FILE_KEYS, PackWriter, by_area, check_hash, names, set_packed
+from packs import FILE_KEYS, PackWriter, by_area, check_hash, names
 
 NAS = "brandontsang@fishandchips.local"
 NAS_ROOT = "/volume1/personal/projects/scenic-roads"
