@@ -170,17 +170,15 @@ def get_json(url: str):
 
 # ---- the coverage ----------------------------------------------------------------------------------
 
-def coverage(args) -> tuple[object, list[str]]:
-    """The coverage grown by the margin (a prepared shapely geometry), and what it's made of."""
+def coverage(args) -> tuple[Near, list[str]]:
+    """The coverage, as what tells whether a box comes within the margin of it, and what it's made of."""
     from shapely.geometry import shape
-    from shapely.ops import unary_union
-    from shapely.prepared import prep
     parts, what = [], []
     if args.coverage:
         d = json.loads(Path(args.coverage).read_text())
         feats = d["features"] if d.get("type") == "FeatureCollection" else [d]
         for f in feats:
-            parts.append(shape(f.get("geometry", f)).buffer(0))
+            parts.append(shape(f.get("geometry", f)))
         what.append(f"file {args.coverage}")
     else:
         server = args.server.rstrip("/")
@@ -208,22 +206,35 @@ def coverage(args) -> tuple[object, list[str]]:
                         time.sleep(15 * (k + 1))
                     if g is None:
                         raise SystemExit(f"{r['id']}: the server has no outline for {entry}")
-                    parts.append(shape(g).buffer(0))
+                    parts.append(shape(g))
                 else:
                     # (Any other part: the agent's job passes --coverage, the regions' accepted
                     # geometry as the build reads it; asking the server by hand covers osm: parts.)
                     raise SystemExit(f"{r['id']}: a part only --coverage gives: {entry}")
-    grown = []
-    for p in parts:
-        if p.is_empty:
-            continue
-        # Degrees of longitude shrink with latitude: grow by the margin at the shape's highest
-        # latitude, so it's at least the margin everywhere.
-        lat = min(80.0, max(abs(p.bounds[1]), abs(p.bounds[3])))
-        grown.append(p.buffer(args.margin_km / (111.32 * math.cos(math.radians(lat))), resolution=4))
-    if not grown:
+    polys = [g for p in parts for g in getattr(p, "geoms", [p]) if not g.is_empty]
+    if not polys:
         raise SystemExit("no coverage")
-    return prep(unary_union(grown)), what
+    return Near(polys, args.margin_km), what
+
+
+class Near:
+    """Whether a box comes within the margin of the coverage: a distance query on the coverage's
+    polygons as they are (an STR tree), never the coverage grown. Growing it (a buffer of every
+    region, then their union) took GEOS past 60 GB on the regions' 244 MB outlines (126 regions,
+    one of 98 k polygons: each polygon's 20 km ring overlapping thousands of others), task #493."""
+
+    def __init__(self, polys: list, margin_km: float):
+        from shapely import STRtree
+        self.polys, self.margin_km = polys, margin_km
+        self.tree = STRtree(polys)
+
+    def meets(self, w: float, s: float, e: float, n: float) -> bool:
+        from shapely.geometry import box
+        # Degrees of longitude shrink with latitude: the margin in degrees at the highest latitude
+        # within the margin of the box, so it's at least the margin everywhere near it.
+        lat = min(80.0, max(abs(s), abs(n)) + self.margin_km / 111.32)
+        d = self.margin_km / (111.32 * math.cos(math.radians(lat)))
+        return len(self.tree.query(box(w, s, e, n), predicate="dwithin", distance=d)) > 0
 
 
 # ---- Overture --------------------------------------------------------------------------------------
@@ -357,12 +368,11 @@ def overture_jobs(args, cov) -> tuple[list[dict], Path, dict]:
                     cache[f["key"]] = {"etag": f["etag"], "size": f["size"], **r}
         with phase("the footers' cache written", "nas-write"):
             write_json(cache_path, cache, gz=True)
-    from shapely.geometry import box
     with phase("the files meeting the coverage picked", "compute"):
         jobs = []
         for f in listed:
             c = cache[f["key"]]
-            hit = [g for g in c["rgs"] if cov.intersects(box(g[0], g[1], g[2], g[3]))]
+            hit = [g for g in c["rgs"] if cov.meets(g[0], g[1], g[2], g[3])]
             if not hit:
                 continue
             rel_path = f["key"].split(f"release/{rel}/", 1)[1]
@@ -377,7 +387,6 @@ def overture_jobs(args, cov) -> tuple[list[dict], Path, dict]:
 # ---- GHSL ------------------------------------------------------------------------------------------
 
 def ghsl_jobs(args, cov) -> tuple[list[dict], Path]:
-    from shapely.geometry import box
     src = declared.source("building-heights")
     base = Path(args.root) / "sources/ghsl" / src["version"]
     base.mkdir(parents=True, exist_ok=True)
@@ -388,7 +397,7 @@ def ghsl_jobs(args, cov) -> tuple[list[dict], Path]:
         jobs = []
         for f in sorted(src["index"], key=lambda f: f["url"]):
             name, b = f["url"].rsplit("/", 1)[1], f["bbox"]
-            if cov.intersects(box(*b)):
+            if cov.meets(*b):
                 jobs.append({"src": "ghsl", "url": f["url"], "dest": base / name, "size": None, "etag": None, "name": name, "bbox": b})
 
     # Each tile's size (the listing rounds them), so one already here is known whole.

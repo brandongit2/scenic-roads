@@ -575,8 +575,10 @@ pub const TABLE: [Step; 51] = [
         mem_mb: 4096,
         ..step("landmarks", Pack, World, "overlays", "Area overlays", "Draws the area overlays.", w_overlays)
     },
+    // (Its peak is reading the coverage: 2.0 GB for the regions' 244 MB outlines on 20 Oct, task
+    // #493; the downloads stay under 100 MB.)
     Step {
-        mem_mb: 1024,
+        mem_mb: 2560,
         ..step(
             "buildings",
             Fetch,
@@ -1459,7 +1461,7 @@ mod tests {
             ("rail", 6144),
             ("items", 3072),
             ("rail-feeds", 1024),
-            ("bld-fetch", 1024),
+            ("bld-fetch", 2560),
             ("marks", 4096),
             ("overlays", 4096),
             ("unit", 8600),
