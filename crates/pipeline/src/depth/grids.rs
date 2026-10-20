@@ -829,16 +829,25 @@ pub(crate) mod tests {
             close_all(files, GRIDS_AT_ONCE);
             assert_eq!(Arc::strong_count(&live), 1, "{n}");
         }
-        // (At once: the closes overlap, each a round trip on the NAS.)
+        // (At once: the closes overlap, each a round trip on the NAS. Each close waits until a
+        // second one is under way, so they can only all end if several run together.)
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        static NOW: AtomicUsize = AtomicUsize::new(0);
+        static MOST: AtomicUsize = AtomicUsize::new(0);
         struct Slow;
         impl Drop for Slow {
             fn drop(&mut self) {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                let n = NOW.fetch_add(1, SeqCst) + 1;
+                MOST.fetch_max(n, SeqCst);
+                let t = std::time::Instant::now();
+                while MOST.load(SeqCst) < 2 && t.elapsed() < std::time::Duration::from_secs(10) {
+                    std::thread::yield_now();
+                }
+                NOW.fetch_sub(1, SeqCst);
             }
         }
-        let t = std::time::Instant::now();
         close_all((0..16).map(|_| Slow).collect(), 8);
-        assert!(t.elapsed() < std::time::Duration::from_millis(400), "{:?}", t.elapsed());
+        assert!(MOST.load(SeqCst) >= 2, "closed one at a time");
     }
 
     /// A depth grid file of zoom `zoom` at global pixel (`c`, `r`), `w` × `h`, with overviews of

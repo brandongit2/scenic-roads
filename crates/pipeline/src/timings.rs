@@ -1136,8 +1136,8 @@ mod tests {
             .unwrap();
         }
         // Time in no phase: a gap, named by the phases either side.
-        std::thread::sleep(std::time::Duration::from_millis(30));
-        // A span still open as the run ends: counted to then.
+        std::thread::sleep(std::time::Duration::from_millis(30)); // (sleep ok: a gap of at least 30 ms to find)
+                                                                  // A span still open as the run ends: counted to then.
         let held = phase("held open", Class::Disk);
         held.count(3, 1);
         let r = snapshot(true).unwrap();
