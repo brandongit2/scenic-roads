@@ -301,8 +301,9 @@ try {
     // in again (out first: the camera only rises, so a tilted city view stays over CLEAR_M; in
     // first, Tokyo's at 16.5 was 156 m over the ground).
     pinch: (t) => wheel(0, t < SECS / 2 ? 3.4 : -3.4, 2, mx, my),
-    // ⌥ + two-finger drag at the centre: rotate and tilt.
-    orbit: (t) => wheel(t < SECS / 2 ? 6 : -6, t < SECS / 4 || t > (3 * SECS) / 4 ? -2 : 2, 1, mx, my),
+    // ⌥ + two-finger drag at the centre: rotate, and tilt down then back (never further up: the
+    // camera stays over what it clears at the start; tilting up first put the Alps' peaks over it).
+    orbit: (t) => wheel(t < SECS / 2 ? 6 : -6, t < SECS / 4 || t > (3 * SECS) / 4 ? 2 : -2, 1, mx, my),
     // Hovering over roads and places: mouse moves sweeping the view.
     hover: (t) => send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: W * (0.3 + 0.4 * ((t * 0.37) % 1)), y: H * (0.3 + 0.4 * ((t * 0.23) % 1)) }),
     // No input: the same view redrawn every frame (render cost alone: CPU and GPU).
