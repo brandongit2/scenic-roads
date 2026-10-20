@@ -15,7 +15,7 @@
 // what happened).
 
 import { poolSection, termText } from "./pool.js";
-import { busyLanes, finished, wholeProgress } from "./sums.js";
+import { busyLanes, finished, notRead, wholeProgress } from "./sums.js";
 
 const POLL_MS = 10000;
 const STALE_S = 360;
@@ -952,6 +952,16 @@ function isNew(e, seen) {
 // Whether the last answer was the build's (a 503 after it: what's shown is stale).
 let answered = false;
 let retry = null;
+// When the 503s in a row began (ms), null while answered.
+let readSince = null;
+function waitRead() {
+  readSince ??= Date.now();
+  const w = notRead(answered, readSince, Date.now());
+  if (w.state) ctx.onState?.(w.state);
+  if (w.error) ctx.onState?.(`can't show the build: ${w.error}`);
+  clearTimeout(retry);
+  if (w.retryMs) retry = setTimeout(poll, w.retryMs);
+}
 
 function section(cls, id, title, sub, ...body) {
   return h("section", { class: cls, id }, title ? h("h2", null, title, sub ? h("span", null, sub) : null) : null, ...body);
@@ -1034,15 +1044,12 @@ async function pollOnce() {
   try {
     await loadTable();
     const [code, sw] = await ctx.call("/work/swarm", {});
-    // (This Mac's agent hasn't read the build's state yet: asked again in a second.)
-    if (code === 503) {
-      ctx.onState?.(answered ? "reading the build's state again… (what's shown may be stale)" : "reading the build's state…");
-      clearTimeout(retry);
-      retry = setTimeout(poll, 1000);
-      return;
-    }
+    // (This Mac's agent hasn't read the build's state yet: a quiet line, asked again in 2 s, an
+    // error after a minute of it: sums.js notRead.)
+    if (code === 503) return waitRead();
     if (code !== 200 || !sw) return;
     answered = true;
+    readSince = null;
     last = sw;
     // (Another numbering, or this one gone back past the last event this page has: started again.)
     if (sw.epoch !== epoch || (sw.seq != null && events.length && sw.seq < events[events.length - 1].seq)) {
@@ -1055,7 +1062,8 @@ async function pollOnce() {
       const from = events.length ? events[events.length - 1].seq : Math.max(0, sw.seq - 600);
       if (sw.seq > from) {
         const [c2, hist] = await ctx.call("/work/history", { since: from, max: 1000 }).catch(() => [0, null]);
-        if (c2 === 200 && hist?.events) {
+        if (c2 === 503) waitRead();
+        else if (c2 === 200 && hist?.events) {
           const last = events.length ? events[events.length - 1].seq : -1;
           events = events.concat(hist.events.filter((e) => e.seq > last)).slice(-2000);
         }

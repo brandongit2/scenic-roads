@@ -200,12 +200,15 @@ let nearMisses = store.get("near", 0);
 // A POST of JSON to this page's own member (`base` ""), or straight to another member's broker
 // (docs/pool.md §8: its address, with CORS), given up after eight seconds there: a member whose
 // firewall drops connections mustn't hold the page up.
+const READING = new Set(["/work/swarm", "/work/history"]);
 async function call(path, body, base = "") {
   const headers = { "Content-Type": "application/json", "X-Worker": worker };
   const r = await fetch(base + path, { method: "POST", headers, body: JSON.stringify(body), signal: base && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined });
   if (r.status === 204) return [204, null];
   const text = await r.text();
-  if (!r.ok && r.status !== 410) throw new Error(`${path}: ${r.status} ${text.slice(0, 200)}`);
+  // (A 503 from the build at a glance is an answer: this Mac hasn't read the build's state yet,
+  // and the dashboard waits for it quietly; anything else not ok is an error.)
+  if (!r.ok && r.status !== 410 && !(r.status === 503 && READING.has(path))) throw new Error(`${path}: ${r.status} ${text.slice(0, 200)}`);
   return [r.status, text ? JSON.parse(text) : null];
 }
 

@@ -1,8 +1,9 @@
 // node --test tools/check/worksums.test.mjs: the build page's sums (web/work/sums.js): the
-// headline's share of the whole build's work, and the schedule's lanes worth a row.
+// headline's share of the whole build's work, the schedule's lanes worth a row, and the wait while
+// this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { busyLanes, wholeProgress } from '../../web/work/sums.js';
+import { busyLanes, notRead, READ_RETRY_MS, READ_WAIT_MS, wholeProgress } from '../../web/work/sums.js';
 
 const line = (step, done, total) => ({ steps: [step], done, total, left: total - done, items: [{ step, done, total, left: total - done }] });
 
@@ -44,4 +45,16 @@ test('lanes: only those with a bar in the window, in their order', () => {
     'm1 #2': [{ from: 5000, until: 6000 }], // after it
   };
   assert.deepEqual(busyLanes(['m4', 'm4 #2', 'm4 #3', 'm1', 'm1 #2', 'gone'], lanes, 60, 1000), ['m4', 'm1']);
+});
+
+test('not read yet: a quiet state and a retry every 2 s, an error after a minute', () => {
+  const a = notRead(false, 1000, 3000);
+  assert.equal(a.error, null);
+  assert.equal(a.retryMs, READ_RETRY_MS);
+  assert.equal(a.state, "reading the build's state…");
+  assert.match(notRead(true, 0, READ_WAIT_MS - 1).state, /stale/);
+  const z = notRead(true, 0, READ_WAIT_MS);
+  assert.equal(z.retryMs, null);
+  assert.equal(z.state, null);
+  assert.match(z.error, /hasn't read the build's state in 60 s/);
 });

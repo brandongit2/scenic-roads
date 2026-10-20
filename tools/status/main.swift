@@ -1196,8 +1196,12 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         w.load(URLRequest(url: url))
     }
 
+    /// How often the app asks /work/swarm in the background: under the agent's 60 s ASKED_FOR_S.
+    static let keepWarmS: TimeInterval = 50
+
     /// The agent's app against this one's: the swarm answer's `app` (an agent from #409 on), a
-    /// notice in the footer when they differ.
+    /// notice in the footer when they differ. Also the background ask that keeps this Mac's page
+    /// view reading (`keepWarmS`); a 503 (not read yet) or no answer changes nothing here.
     func checkApp() {
         guard let u = URL(string: Panel.page + "swarm") else { return }
         var req = URLRequest(url: u)
@@ -1593,6 +1597,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         poll()
         every(5) { [weak self] in self?.poll() }
         every(60) { [weak self] in self?.updateIfReplaced() }
+        // (This Mac's page view reads the build's state only while asked within the last minute,
+        // pageview.rs ASKED_FOR_S: asked every `keepWarmS`, its snapshot stays fresh and the panel
+        // has the build the moment it opens. The NAS cost is the agent's own 12 s read loop, kept
+        // going while this app runs.)
+        panel.checkApp()
+        every(Panel.keepWarmS) { [weak self] in self?.panel.checkApp() }
         if proof { menuProof() }
         if let what = showAtStart {
             after(2) {
