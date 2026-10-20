@@ -124,7 +124,10 @@ The app compiles this source with its own code; there is no separate build or `d
   and the image queue's throttling, were those of a map at rest in every gesture: each drape whose
   source tiles or zoom changed was drawn again in the frame it changed (20–30 textures of 1024² in
   one frame of a pan over the lochs, 50–100 ms a time) and the drape pool was emptied every frame.
-  `idle` fires once the hold is over (a frame is scheduled for it).
+  `idle` comes at least 100 ms after the last camera change (a frame is scheduled for the hold's
+  end, only while the hold alone keeps the map from idle; a map still loading waits for its tiles as
+  upstream), and so does everything that waits for it: the app's `idle` listeners, bldcmp's and
+  evalmode's waits, the benches' settling.
 - **Tile covers shared between sources** (`Style#_updateSources`, `TileManager#_coverMemo`): within
   one update, sources asking `coveringTiles` with the same options (tile size, zoom range, rounding,
   overscaling, content elevation, zoom function) share one answer (a copy each). The app's 28 sources

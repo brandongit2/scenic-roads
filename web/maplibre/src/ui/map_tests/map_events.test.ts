@@ -1018,6 +1018,31 @@ describe('map events', () => {
         expect(map.isMoving()).toBeFalsy();
     });
 
+    test('a map still loading, its camera still, schedules no frame for the hold (no repaint loop)', async () => {
+        const style = createStyle();
+        const map = createMap({style, fadeDuration: 0});
+        // (the style not loaded yet: at rest, loaded() is false and the hold is not what keeps idle away)
+        expect(map.loaded()).toBeFalsy();
+        map._render(0);
+        map._render(0);
+        expect(map._holdTimer).toBeNull();
+        // a camera change while still loading: no frame scheduled for the hold either
+        map.jumpTo({center: [1, 1]});
+        map._render(0);
+        expect(map.loaded()).toBeFalsy();
+        expect(map._holdTimer).toBeNull();
+        await map.once('idle');
+        // loaded and at rest: a change now schedules the hold's frame, once
+        map.jumpTo({center: [2, 2]});
+        map._render(0);
+        expect(map._holdTimer).not.toBeNull();
+        const timer = map._holdTimer;
+        map._render(0);
+        expect(map._holdTimer).toBe(timer);
+        await map.once('idle');
+        expect(map._holdTimer).toBeNull();
+    });
+
     test('fires sourcedataabort event on dataabort event', async () => {
         const map = createMap();
         const sourcePromise = map.once('sourcedataabort');

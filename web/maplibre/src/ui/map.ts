@@ -4545,9 +4545,11 @@ export class Map extends Evented<MapEventType> {
             this.triggerRepaint();
         } else if (!this.isMoving() && this.loaded()) {
             this.fire(new MapLibreEvent('idle'));
-        } else if (!this._camera.isMoving() && !this._handlers?.isMoving()) {
+        } else if (this.loaded() && !this._camera.isMoving() && !this._handlers?.isMoving() && now() - this._lastCameraMove < MOVING_HOLD_MS) {
             // Scenic Roads: moving only by the hold (_lastCameraMove): a frame once it is over, so
-            // the map comes to rest (the drapes due at rest, `idle`) without another input.
+            // the map comes to rest (the drapes due at rest, `idle`) without another input. Only
+            // while the hold is what keeps the map from idle: a map still loading, at rest, waits for
+            // its tiles as upstream (a timer here ran a frame every millisecond until they came).
             const left = MOVING_HOLD_MS - (now() - this._lastCameraMove);
             if (!this._holdTimer) this._holdTimer = setTimeout(() => { this._holdTimer = null; if (!this._removed) this.triggerRepaint(); }, Math.max(0, left) + 1);
         }

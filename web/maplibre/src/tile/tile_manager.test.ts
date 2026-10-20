@@ -2855,6 +2855,31 @@ describe('TileManager covers shared within an update', () => {
         managers[0].update(transform);
         expect(managers[1].getIds()).toEqual(managers[0].getIds());
     });
+
+    test('a bounded source filters its own copy: its hasTile never reaches the shared cover', async () => {
+        const transform = new MercatorTransform();
+        transform.resize(511, 511);
+        transform.setZoom(1);
+        const bounded = createTileManager({hasTile: (coord: OverscaledTileID) => coord.canonical.x !== 0});
+        const whole = createTileManager({});
+        for (const tm of [bounded, whole]) {
+            const metadata = waitForEvent(tm, 'data', e => e.sourceDataType === 'metadata');
+            tm.onAdd(undefined);
+            await metadata;
+        }
+        const memo = new globalThis.Map<string, OverscaledTileID[]>();
+        // the bounded source first: the memo holds the whole cover, not its filtered copy
+        for (const tm of [bounded, whole]) {
+            tm._coverMemo = memo;
+            tm.update(transform);
+            tm._coverMemo = null;
+        }
+        expect(memo.size).toBe(1);
+        const all = [...memo.values()][0].map(id => id.key).sort();
+        expect(all).toEqual([0, 1, 2, 3].map(i => new OverscaledTileID(1, 0, 1, i >> 1, i & 1).key).sort());
+        expect(bounded.getIds().sort()).toEqual([new OverscaledTileID(1, 0, 1, 1, 0).key, new OverscaledTileID(1, 0, 1, 1, 1).key].sort());
+        expect(whole.getIds().sort()).toEqual(all);
+    });
 });
 
 describe('TileManager.getVisibleCoordinates once a frame', () => {
