@@ -4,7 +4,7 @@ import * as maplibregl from 'maplibre-gl';
 import { cdfOf } from './ui/scale';
 import { Dist } from './roads/stats';
 import type { ExpressionSpecification, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
-import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, OV_LAYER, OV_SOURCES, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, pointTiles, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, POI_SOURCE, POI_LABEL_LAYER, poiLabelFilter, poiTilesUrl, type NameScale } from './basemap';
+import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, OV_LAYER, OV_SOURCES, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, pointTiles, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, POI_SOURCE, poiTilesUrl, type NameScale } from './basemap';
 import { OVERLAYS, kindSpacing, labelShown, type AppState, type LabelKind, type OverlayKey } from './state';
 import { keepable, onVersions, ver } from './api';
 import { hostFor } from './hosts';
@@ -363,26 +363,17 @@ export class Overlays {
           if (!map.getLayer(id)) continue;
           if (!this.baseFilters.has(id)) this.baseFilters.set(id, map.getFilter(id) ?? null);
           const base = this.baseFilters.get(id) as ExpressionSpecification | null;
-          const parts = [base, extra].filter((x): x is ExpressionSpecification => !!x);
+          const thin = id.startsWith('poi-') && id.endsWith('-label') ? spacingFilter(spacing) : null;
+          const parts = [base, extra, thin].filter((x): x is ExpressionSpecification => !!x);
           map.setFilter(id, parts.length > 1 ? ['all', ...parts] : parts[0] ?? null);
         }
       }
       if (!on) this.layers.setOverlayStatus(k, '');
       else if (src) this.refreshStatus(k, src);
     }
-    // The stops & sights' names, every kind in one layer (basemap.ts poiLabelLayer): shown while a
-    // kind is on and its labels are, each kind on with its own Stops & sights filters (as their own
-    // layers were), from the zoom its interest isolation spans the landmarks' label spacing; their
-    // tiles hold the kinds on.
+    // The stops & sights' one source holds the kinds on (its tiles' URL).
     const poiOn = Object.keys(POI_STYLE).filter((k) => s.overlays[k as OverlayKey]);
     if (poiOn.length) this.setPoiTiles(poiOn);
-    if (map.getLayer(POI_LABEL_LAYER)) {
-      map.setLayoutProperty(POI_LABEL_LAYER, 'visibility', poiOn.length && labelShown(s, 'stops') ? 'visible' : 'none');
-      if (!this.baseFilters.has(POI_LABEL_LAYER)) this.baseFilters.set(POI_LABEL_LAYER, map.getFilter(POI_LABEL_LAYER) ?? null);
-      const base = this.baseFilters.get(POI_LABEL_LAYER) as ExpressionSpecification | null;
-      const thin = spacingFilter(spacing);
-      map.setFilter(POI_LABEL_LAYER, ['all', ...(base ? [base] : []), poiLabelFilter(poiOn, (k) => stopFilterExpr(k as OverlayKey, s.stopFilters, s.stopUnknown[k as OverlayKey] !== false)), ...(thin ? [thin] : [])]);
-    }
     const shown = HERITAGE_TIERS.map((t) => t.key).filter((k) => !s.heritageOff.includes(k));
     // World Heritage outlines: shown with their kind (cultural, natural).
     if (map.getLayer('whs-line')) {
