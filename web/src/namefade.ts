@@ -1,7 +1,7 @@
 // Landmark names easing with their dots. The names are MapLibre symbol layers, and their opacity
 // was a paint expression of the prominence scale: MapLibre snaps such a change (it never eases a
 // data-driven paint property), so the names jumped while their dots eased over 350 ms, and it lays
-// the whole source out again for it (every point tile of the eight sources, whenever the view
+// the whole source out again for it (every point tile of the sources, whenever the view
 // settled). Now a name's opacity is its feature state `o` (basemap.ts nameOpacityPaint), else as
 // its tile was made: the landmarks worker writes each name's opacity on the scale of the moment
 // into the tile, and sends the tile's named points with it. While the dots ease to a new scale,

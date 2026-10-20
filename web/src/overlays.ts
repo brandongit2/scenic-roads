@@ -4,7 +4,7 @@ import * as maplibregl from 'maplibre-gl';
 import { cdfOf } from './ui/scale';
 import { Dist } from './roads/stats';
 import type { ExpressionSpecification, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
-import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, OV_LAYER, OV_SOURCES, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, pointTiles, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, type NameScale } from './basemap';
+import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, OV_LAYER, OV_SOURCES, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, pointTiles, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, POI_SOURCE, POI_LABEL_LAYER, poiLabelFilter, poiTilesUrl, type NameScale } from './basemap';
 import { OVERLAYS, kindSpacing, labelShown, type AppState, type LabelKind, type OverlayKey } from './state';
 import { keepable, onVersions, ver } from './api';
 import { hostFor } from './hosts';
@@ -121,6 +121,8 @@ const MARK_KINDS = ['viewpoint', 'peak', 'waterfall', 'lighthouse', 'covered_bri
 /** Point sources: heritage, and the stops & sights per kind (pois-<kind>). */
 type PointSource = string;
 const isPoints = (src: string): src is PointSource => src === 'heritage' || src.startsWith('pois-');
+/** A point source's map source: heritage's own; every stops & sights kind's, POI_SOURCE. */
+const mapSourceOf = (src: PointSource) => (src === 'heritage' ? 'heritage' : POI_SOURCE);
 
 /** The point sources' map tiles (basemap.ts POINT_TILES, `lmk://<source>/{z}/{x}/{y}`): made by the
  * landmarks worker from the points by view (landmarks.worker.ts tile). Registered before any map asks; the requests wait for the Overlays' worker. */
@@ -133,7 +135,10 @@ const tileQueue: LandmarkRequest[] = [];
 let tileScale: () => NameScale | null = () => null;
 let tileNames: (src: string, z: number, x: number, y: number, names: TileNames) => void = () => {};
 maplibregl.addProtocol(POINT_TILES, (params) => new Promise((resolve, reject) => {
-  const [src, z, x, y] = params.url.replace(`${POINT_TILES}://`, '').split('/').map((v, i) => (i ? parseInt(v, 10) : v)) as [string, number, number, number];
+  const [path, query = ''] = params.url.replace(`${POINT_TILES}://`, '').split('?');
+  const [src, z, x, y] = path.split('/').map((v, i) => (i ? parseInt(v, 10) : v)) as [string, number, number, number];
+  // The stops & sights' tiles hold the kinds their URL names (poiTilesUrl).
+  const kinds = src === POI_SOURCE ? (new URLSearchParams(query).get('k') ?? '').split(',').filter(Boolean) : undefined;
   const id = ++tileSeq;
   tileReplies.set(id, (m) => {
     // (By view, a tile whose points couldn't be had fails: TileRetry asks again.)
@@ -141,7 +146,7 @@ maplibregl.addProtocol(POINT_TILES, (params) => new Promise((resolve, reject) =>
     tileNames(src, z, x, y, m.names);
     resolve({ data: m.data });
   });
-  const req: LandmarkRequest = { type: 'tile', id, src, z, x, y, scale: tileScale() };
+  const req: LandmarkRequest = { type: 'tile', id, src, kinds, z, x, y, scale: tileScale() };
   if (tileWorker) tileWorker.postMessage(req);
   else tileQueue.push(req);
 }));
@@ -216,10 +221,9 @@ export class Overlays {
     setMarksVersion(cfg?.v ?? null);
     this.worker.postMessage({ type: 'marks', cfg, base: hostFor('layers') } satisfies LandmarkRequest);
     if (was !== undefined) {
-      for (const src of this.indexed.keys()) {
-        if (!this.byView(src)) continue;
-        this.map.getSource<maplibregl.VectorTileSource>(src)?.setTiles([`${pointTiles(src)}?v=${cfg?.v ?? 0}`]);
-      }
+      if (this.indexed.has('heritage') && this.byView('heritage')) this.map.getSource<maplibregl.VectorTileSource>('heritage')?.setTiles([`${pointTiles('heritage')}?v=${cfg?.v ?? 0}`]);
+      // (the stops & sights' tiles with the kinds shown: apply below)
+      this.poiV = cfg?.v ?? 0;
     }
     if (this.state) this.apply(this.state);
   }
@@ -292,7 +296,7 @@ export class Overlays {
       tileReplies.delete(m.id);
     } else if (m.type === 'refresh') {
       // By view: name tiles whose extras changed (their hit-testing), made again.
-      this.map.refreshTiles(m.src, m.tiles.map(([z, x, y]) => ({ z, x, y })));
+      this.map.refreshTiles(mapSourceOf(m.src), m.tiles.map(([z, x, y]) => ({ z, x, y })));
     } else if (m.type === 'stale') {
       // The server has newer points: the catalog is read now (setMarks follows).
       this.onStale?.();
@@ -359,13 +363,25 @@ export class Overlays {
           if (!map.getLayer(id)) continue;
           if (!this.baseFilters.has(id)) this.baseFilters.set(id, map.getFilter(id) ?? null);
           const base = this.baseFilters.get(id) as ExpressionSpecification | null;
-          const thin = id.startsWith('poi-') && id.endsWith('-label') ? spacingFilter(spacing) : null;
-          const parts = [base, extra, thin].filter((x): x is ExpressionSpecification => !!x);
+          const parts = [base, extra].filter((x): x is ExpressionSpecification => !!x);
           map.setFilter(id, parts.length > 1 ? ['all', ...parts] : parts[0] ?? null);
         }
       }
       if (!on) this.layers.setOverlayStatus(k, '');
       else if (src) this.refreshStatus(k, src);
+    }
+    // The stops & sights' names, every kind in one layer (basemap.ts poiLabelLayer): shown while a
+    // kind is on and its labels are, each kind on with its own Stops & sights filters (as their own
+    // layers were), from the zoom its interest isolation spans the landmarks' label spacing; their
+    // tiles hold the kinds on.
+    const poiOn = Object.keys(POI_STYLE).filter((k) => s.overlays[k as OverlayKey]);
+    if (poiOn.length) this.setPoiTiles(poiOn);
+    if (map.getLayer(POI_LABEL_LAYER)) {
+      map.setLayoutProperty(POI_LABEL_LAYER, 'visibility', poiOn.length && labelShown(s, 'stops') ? 'visible' : 'none');
+      if (!this.baseFilters.has(POI_LABEL_LAYER)) this.baseFilters.set(POI_LABEL_LAYER, map.getFilter(POI_LABEL_LAYER) ?? null);
+      const base = this.baseFilters.get(POI_LABEL_LAYER) as ExpressionSpecification | null;
+      const thin = spacingFilter(spacing);
+      map.setFilter(POI_LABEL_LAYER, ['all', ...(base ? [base] : []), poiLabelFilter(poiOn, (k) => stopFilterExpr(k as OverlayKey, s.stopFilters, s.stopUnknown[k as OverlayKey] !== false)), ...(thin ? [thin] : [])]);
     }
     const shown = HERITAGE_TIERS.map((t) => t.key).filter((k) => !s.heritageOff.includes(k));
     // World Heritage outlines: shown with their kind (cultural, natural).
@@ -399,6 +415,18 @@ export class Overlays {
       this.requestMasks([...this.indexed.keys()]);
     }
     this.prominence(s);
+  }
+
+  /** The catalog's points version in the stops & sights' tile URL (a new catalog's: setMarks). */
+  private poiV: string | number = 0;
+  private poiUrl = '';
+  /** The stops & sights' tiles hold these kinds (a change loads them again). */
+  private setPoiTiles(kinds: string[]) {
+    const url = poiTilesUrl(this.poiV, kinds);
+    const source = this.map.getSource<maplibregl.VectorTileSource>(POI_SOURCE);
+    if (url === this.poiUrl || !source) return;
+    this.poiUrl = url;
+    source.setTiles([url]);
   }
 
   /** The landmark scale's distribution, range and lookup, for the Layers panel's legend. */

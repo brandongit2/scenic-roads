@@ -49,7 +49,10 @@ export type LandmarkRequest =
   | { type: 'mask'; id: number; kinds: KindQuery[] }
   /** A map tile of a source's points (vector tile, layer POINT_TILE_LAYER), its names' opacity on
    * the dots' scale as it stands (null before the first). */
-  | { type: 'tile'; id: number; src: string; z: number; x: number; y: number; scale: NameScale | null };
+  | { type: 'tile'; id: number; src: string; z: number; x: number; y: number; scale: NameScale | null;
+      /** The stops & sights' one source (basemap.ts POI_SOURCE): the kinds (overlay keys) its tile
+       * holds, each kind's points as its own tile had them, one kind after another. */
+      kinds?: string[] };
 
 export type LandmarkResponse =
   /** By view: a source's points as drawn now (again whenever the tiles in view change), with
@@ -199,13 +202,10 @@ async function byView(v: MarksView, m: LandmarkRequest) {
 /** A map tile of a source's points by view (names and hit-testing): the points of the server's
  * tile covering it, the most prominent TILE_MAX of them below TILE_CAP_Z. */
 async function viewTile(v: MarksView, m: Extract<LandmarkRequest, { type: 'tile' }>) {
-  let pts = await v.pointsIn(kindOf(m.src), m.z, m.x, m.y);
-  if (!pts) return post({ type: 'tileFailed', id: m.id });
-  if (m.z < TILE_CAP_Z && pts.length > TILE_MAX) {
-    // (Ranked by the higher score at fame or isolation alone, in f32.)
-    const rank = (p: { t: MarkTile; i: number }) => { const fa = p.t.fa[p.i], ia = p.t.ia[p.i]; return Math.fround(Math.max(landmarkScoreOf(fa, ia, 0), landmarkScoreOf(fa, ia, 1))); };
-    pts = pts.map((p) => [rank(p), p] as const).sort((a, b) => b[0] - a[0]).slice(0, TILE_MAX).map((x) => x[1]);
-  }
+  // (the stops & sights' tile: each kind's points, capped as a kind's own tile was)
+  const each = await Promise.all((m.kinds ?? [kindOf(m.src)]).map((k) => v.pointsIn(k, m.z, m.x, m.y)));
+  if (each.some((p) => !p)) return post({ type: 'tileFailed', id: m.id });
+  const pts = each.flatMap((p) => capped(p!, m.z));
   const n = 2 ** m.z;
   const ids: number[] = [], fas: number[] = [], ias: number[] = [], mzs: number[] = [];
   const tps: TilePoint[] = pts.map(({ t, i }) => {
@@ -223,6 +223,14 @@ async function viewTile(v: MarksView, m: Extract<LandmarkRequest, { type: 'tile'
   const data = encodePoints(POINT_TILE_LAYER, tps).buffer as ArrayBuffer;
   const names: TileNames = { ids: idsOf(ids), fa: Float32Array.from(fas), ia: Float32Array.from(ias), mz: Float32Array.from(mzs), scaled: !!m.scale };
   post({ type: 'tile', id: m.id, data, names }, [data, names.ids.buffer, names.fa.buffer, names.ia.buffer, names.mz.buffer]);
+}
+
+/** A kind's points in a tile: below TILE_CAP_Z the most prominent TILE_MAX of them. */
+function capped(pts: { t: MarkTile; i: number }[], z: number): { t: MarkTile; i: number }[] {
+  if (z >= TILE_CAP_Z || pts.length <= TILE_MAX) return pts;
+  // (Ranked by the higher score at fame or isolation alone, in f32.)
+  const rank = (p: { t: MarkTile; i: number }) => { const fa = p.t.fa[p.i], ia = p.t.ia[p.i]; return Math.fround(Math.max(landmarkScoreOf(fa, ia, 0), landmarkScoreOf(fa, ia, 1))); };
+  return pts.map((p) => [rank(p), p] as const).sort((a, b) => b[0] - a[0]).slice(0, TILE_MAX).map((x) => x[1]);
 }
 
 /** A map tile of a source's points, sent back as a vector tile (empty without points; waiting

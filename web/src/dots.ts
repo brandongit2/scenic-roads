@@ -5,7 +5,7 @@
 // never interpolate one. Theirs stay, invisible, under the names and for hit-testing (overlays.ts
 // keeps their hits that fall on a dot as drawn: hits).
 //
-// Per source (heritage, pois-<kind>), the landmarks worker lays the points out (dotlayout.ts):
+// Per set of points (heritage, pois-<kind>; on the map every kind is one source, POI_SOURCE), the landmarks worker lays the points out (dotlayout.ts):
 // grouped by zoom-4 tile ("chunk"), in fame order within one (the best known drawn last, on top).
 // Each dot is one point sprite. Zoomed out, a source draws in a few calls, one per run of chunks in
 // view, positioned in world units; closer in (float precision), one per chunk in view, in its

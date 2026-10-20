@@ -9,7 +9,7 @@
 // MapLibre keeps these in its internals (style.tileManagers), read defensively: none of it is
 // public API, and a change there only empties this list.
 import type { Map as MLMap } from 'maplibre-gl';
-import { OVERLAY_SOURCE } from './basemap';
+import { OVERLAY_SOURCE, POI_SOURCE } from './basemap';
 import { OVERLAYS } from './state';
 import type { Task } from './tasks';
 import { glyphsWaiting } from './glyphs';
@@ -44,6 +44,7 @@ function labelOf(id: string): string | null {
   if (id === 'stations') return 'Stations';
   if (id === 'ferries') return 'Ferries';
   if (id === 'whs') return 'World Heritage outlines';
+  if (id === POI_SOURCE) return 'Stops & sights';
   const k = Object.keys(OVERLAY_SOURCE).find((key) => OVERLAY_SOURCE[key] === id);
   return (k ? OVERLAYS.find(([o]) => o === k)?.[1] : null) ?? id;
 }

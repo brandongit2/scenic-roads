@@ -25,7 +25,7 @@ export const LABEL_LAYERS: Record<string, string[]> = {
   parks: ['park-label'],
   heritage: ['heritage-label'],
   areas: ['special-label', 'indigenous-label'],
-  stops: ['poi-viewpoint-label', 'poi-peak-label', 'poi-waterfall-label', 'poi-lighthouse-label', 'poi-covered_bridge-label', 'poi-rest-label', 'poi-trailhead-label'],
+  stops: ['poi-label'],
   ferries: ['ferry-label', 'ferry-terminal-label'],
   stations: ['rail-stop-label'],
 };
@@ -39,14 +39,35 @@ export const OVERLAY_LAYERS: Record<string, string[]> = {
   heritageAreas: ['heritage-area-fill', 'heritage-area-line'],
   special: ['special-fill', 'special-line', 'special-label'],
   indigenous: ['indigenous-fill', 'indigenous-line', 'indigenous-label'],
-  viewpoint: ['poi-viewpoint', 'poi-viewpoint-label'],
-  peak: ['poi-peak', 'poi-peak-label'],
-  waterfall: ['poi-waterfall', 'poi-waterfall-label'],
-  lighthouse: ['poi-lighthouse', 'poi-lighthouse-label'],
-  covered_bridge: ['poi-covered_bridge', 'poi-covered_bridge-label'],
-  rest: ['poi-rest', 'poi-rest-label'],
-  trailhead: ['poi-trailhead', 'poi-trailhead-label'],
+  // Stops & sights: each kind's hit-testing layer; their names are one layer for every kind
+  // (POI_LABEL_LAYER: overlays.ts shows it while a kind is on, and filters it to the kinds on).
+  viewpoint: ['poi-viewpoint'],
+  peak: ['poi-peak'],
+  waterfall: ['poi-waterfall'],
+  lighthouse: ['poi-lighthouse'],
+  covered_bridge: ['poi-covered_bridge'],
+  rest: ['poi-rest'],
+  trailhead: ['poi-trailhead'],
 };
+/** The stops & sights' one source (every kind shown, the landmarks worker's tiles: overlays.ts). */
+export const POI_SOURCE = 'pois';
+/** The stops & sights' names, every kind in one layer (poiLabelLayer). */
+export const POI_LABEL_LAYER = 'poi-label';
+/** A stops & sights overlay key's feature kinds (Rest areas: rest areas and picnic sites). */
+export const poiKinds = (key: string): string[] => (key === 'rest' ? ['rest_area', 'picnic_site'] : [key]);
+/** The features of a stops & sights overlay key. */
+export const poiKindFilter = (key: string): ExpressionSpecification => ['in', ['get', 'kind'], ['literal', poiKinds(key)]];
+/** The stops & sights' tiles (landmarks.worker.ts tile): the catalog's points version `v`, and the
+ * kinds (overlay keys) they hold, in POI_STYLE's order. */
+export const poiTilesUrl = (v: string | number, keys: string[]) =>
+  `${pointTiles(POI_SOURCE)}?v=${v}&k=${Object.keys(POI_STYLE).filter((k) => keys.includes(k)).join(',')}`;
+/** The stops & sights names' kinds: those on, each with its own filter (Stops & sights filters;
+ * null: none), as each kind's own layer showed them. */
+export const poiLabelFilter = (keys: string[], extra: (key: string) => ExpressionSpecification | null): ExpressionSpecification =>
+  ['any', ...keys.map((k): ExpressionSpecification => {
+    const e = extra(k);
+    return e ? ['all', poiKindFilter(k), e] : poiKindFilter(k);
+  })];
 /** The point overlays' tiles (overlays.ts): their URL scheme and their one layer. */
 export const POINT_TILES = 'lmk';
 /** A point source's tiles (the landmarks worker makes them: overlays.ts). */
@@ -60,7 +81,8 @@ export const OVERLAY_SOURCE: Record<string, string | null> = {
   heritageAreas: 'heritage-areas',
   special: 'special',
   indigenous: 'indigenous',
-  // Stops & sights: a file and source per kind (only the kinds shown are loaded).
+  // Stops & sights: a set of points per kind in the landmarks worker (only the kinds shown are
+  // loaded), drawn from one map source (POI_SOURCE) whose tiles hold the kinds shown.
   viewpoint: 'pois-viewpoint', peak: 'pois-peak', waterfall: 'pois-waterfall', lighthouse: 'pois-lighthouse', covered_bridge: 'pois-covered_bridge',
   rest: 'pois-rest', trailhead: 'pois-trailhead',
 };
@@ -368,7 +390,48 @@ export const nameOpacityPaint = (labelOpacity: number): ExpressionSpecification 
   ['*', labelOpacity, ['coalesce', ['feature-state', 'o'], ['get', 'o'], 0]];
 
 /** Names of the landmark layers: their opacity follows their dots' (nameOpacity). */
-export const LANDMARK_LABELS: Record<string, string> = Object.fromEntries(SIG_LAYERS.map((id) => [id, id === 'heritage-pt' ? 'heritage-label' : `${id}-label`]));
+export const LANDMARK_LABELS: Record<string, string> = Object.fromEntries(SIG_LAYERS.map((id) => [id, id === 'heritage-pt' ? 'heritage-label' : POI_LABEL_LAYER]));
+
+/** Where a stops & sights kind's names stand among the others': the kinds were a layer each, in
+ * POI_STYLE's order, and MapLibre places the topmost layer's labels first, so the last kind's names
+ * win collisions over the earlier kinds'. In one layer the sort key keeps that order: the kind's
+ * rank (0 for the last kind) × POI_RANK_STEP, less the name's fame (fa, log10 of monthly pageviews,
+ * well under the step), the best-known of a kind first, across tiles as before. */
+export const POI_RANK_STEP = 100;
+export const poiRank = (key: string): number => Object.keys(POI_STYLE).length - 1 - Object.keys(POI_STYLE).indexOf(key);
+/** The names of every stops & sights kind, one layer (they were a layer a kind: the same text,
+ * colours, sizes and order). Hidden, and showing every kind, until overlays.ts filters it to the
+ * kinds on. */
+export function poiLabelLayer(): LayerSpecification {
+  const keys = Object.keys(POI_STYLE);
+  const byKind = (f: (key: string) => unknown, fallback: unknown): ExpressionSpecification =>
+    ['match', ['get', 'kind'], ...keys.flatMap((k) => [poiKinds(k), f(k)]), fallback] as unknown as ExpressionSpecification;
+  const peak = ['format', mainOf(), {}, ['case', ['==', SUB, ''], '', ['concat', '\n', SUB]], { 'font-scale': 0.8 },
+    ['case', ['to-boolean', ['get', 'ele']], ['concat', '\n', ['to-string', ['round', ['get', 'ele']]], ' m'], ''], {}];
+  return {
+    id: POI_LABEL_LAYER,
+    type: 'symbol',
+    source: POI_SOURCE,
+    'source-layer': POINT_TILE_LAYER,
+    minzoom: 5,
+    filter: ['all', ['in', ['get', 'kind'], ['literal', keys.flatMap(poiKinds)]], ['!=', ['get', 'name'], '']],
+    layout: {
+      visibility: 'none',
+      'symbol-sort-key': ['-', byKind((k) => poiRank(k) * POI_RANK_STEP, 0), ['coalesce', ['get', 'fa'], 0]],
+      'text-field': ['case', ['==', ['get', 'kind'], 'peak'], peak, twoLine(mainOf())] as unknown as ExpressionSpecification,
+      'text-font': ['Noto Sans Regular'],
+      'text-size': 10.5,
+      'text-offset': [0, 0.8],
+      'text-anchor': 'top',
+      'text-max-width': 8,
+      'text-optional': true,
+    },
+    paint: {
+      'text-color': byKind((k) => POI_STYLE[k][1], '#cccccc'),
+      'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': nameOpacityPaint(TEXT_OPACITY),
+    },
+  };
+}
 const LANDMARK_LABEL_IDS = new Set(Object.values(LANDMARK_LABELS));
 /** Label opacity scale for a layer: the Stops & sights opacity on overlay labels; NaN leaves the
  * landmark names alone (set with their dots). */
@@ -403,49 +466,23 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
   // Point overlays (heritage sites, stops & sights): vector tiles the landmarks worker makes from
   // its index (overlays.ts, protocol lmk), no deeper than z12 (finer zooms reuse it).
   const points = (id: string) => ({ type: 'vector' as const, tiles: [pointTiles(id)], maxzoom: 12, attribution: '' });
-  const poiLayers: LayerSpecification[] = [];
-  for (const [key, [, colour]] of Object.entries(POI_STYLE)) {
-    const kinds = key === 'rest' ? ['rest_area', 'picnic_site'] : [key];
-    const flt: ExpressionSpecification = ['in', ['get', 'kind'], ['literal', kinds]];
-    // Every dot at every zoom, sized and faded by prominence among the landmarks in view
-    // (prominencePaint), the best-known on top; names once their interest isolation spans the
-    // landmarks' label spacing (overlays.ts).
-    poiLayers.push(
-      {
-        id: `poi-${key}`,
-        type: 'circle',
-        source: `pois-${key}`,
-        'source-layer': POINT_TILE_LAYER,
-        filter: flt,
-        // Drawn by dots.ts; this one for hit-testing (SIG_LAYERS).
-        layout: { visibility: 'none' },
-        paint: hitPaint(['interpolate', ['linear'], ['zoom'], ...POI_R.flatMap(([z, r]) => [z, r * 1.25])] as ExpressionSpecification),
-      },
-      {
-        id: `poi-${key}-label`,
-        type: 'symbol',
-        source: `pois-${key}`,
-        'source-layer': POINT_TILE_LAYER,
-        minzoom: 5,
-        filter: ['all', flt, ['!=', ['get', 'name'], '']],
-        layout: {
-          visibility: 'none',
-          'symbol-sort-key': ['-', 0, ['coalesce', ['get', 'fa'], 0]],
-          'text-field': key === 'peak'
-            ? ['format', mainOf(), {}, ['case', ['==', SUB, ''], '', ['concat', '\n', SUB]], { 'font-scale': 0.8 },
-              ['case', ['to-boolean', ['get', 'ele']], ['concat', '\n', ['to-string', ['round', ['get', 'ele']]], ' m'], ''], {}] as unknown as ExpressionSpecification
-            : twoLine(mainOf()),
-          'text-font': ['Noto Sans Regular'],
-          'text-size': 10.5,
-          'text-offset': [0, 0.8],
-          'text-anchor': 'top',
-          'text-max-width': 8,
-          'text-optional': true,
-        },
-        paint: { 'text-color': colour, 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': nameOpacityPaint(TEXT_OPACITY) },
-      },
-    );
-  }
+  // Every dot at every zoom, sized and faded by prominence among the landmarks in view
+  // (prominencePaint), the best-known on top; names once their interest isolation spans the
+  // landmarks' label spacing (overlays.ts). One source for every kind (POI_SOURCE), an invisible
+  // hit-testing layer per kind, and one layer of names for them all (poiLabelLayer).
+  const poiLayers: LayerSpecification[] = [
+    ...Object.keys(POI_STYLE).map((key): LayerSpecification => ({
+      id: `poi-${key}`,
+      type: 'circle',
+      source: POI_SOURCE,
+      'source-layer': POINT_TILE_LAYER,
+      filter: poiKindFilter(key),
+      // Drawn by dots.ts; this one for hit-testing (SIG_LAYERS).
+      layout: { visibility: 'none' },
+      paint: hitPaint(['interpolate', ['linear'], ['zoom'], ...POI_R.flatMap(([z, r]) => [z, r * 1.25])] as ExpressionSpecification),
+    })),
+    poiLabelLayer(),
+  ];
   const hvis = { visibility: 'none' as const };
 
   const style: StyleSpecification = {
@@ -476,7 +513,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       drives: empty,
       'drive-hl': empty,
       marks: empty,
-      ...Object.fromEntries(Object.keys(POI_STYLE).map((k) => [`pois-${k}`, points(`pois-${k}`)])),
+      [POI_SOURCE]: points(POI_SOURCE),
       heritage: points('heritage'),
       // The area overlays: vector tiles by view.
       ...Object.fromEntries(['heritage-areas', 'special', 'indigenous'].map((src) => [src, { type: 'vector' as const, tiles: [tiles[src]], maxzoom: 12, attribution: '' }])),
