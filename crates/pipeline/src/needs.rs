@@ -22,8 +22,12 @@
 //! - **Guess first** (units and landmark candidates, `GUESS_FIRST`): with no good fit, the caller's
 //!   guess scaled by the target's piece comes before the step's prior, so one dense unit doesn't set
 //!   every other's need.
-//! - **Prior**: the step's targets' measures' 90th percentile (memory: their floors among them), so
-//!   one outlier doesn't hold every other target to its figure; a heavy target's own floor holds it.
+//! - **Prior**: memory and disk, the step's targets' measures' 90th percentile (memory: their
+//!   floors among them), so one outlier doesn't hold every other target to its figure, and a heavy
+//!   target's own floor holds it; time, the mean of its targets' runs: the expected time, what a
+//!   job's targets are counted to a quarter hour by and the forecast sums (task #433: by the 90th
+//!   percentile a unit was 1151 s against a mean of 363, so every unit job carried one unit and
+//!   paid the job's setup for it alone; depth 265 against 131).
 //! - **Table**: the caller's guess, when nothing of the step was measured.
 
 use std::collections::BTreeMap;
@@ -335,6 +339,11 @@ pub fn p90(mut v: Vec<u64>) -> Option<u64> {
     Some(v[(v.len() * 9).div_ceil(10).saturating_sub(1)])
 }
 
+/// The mean, rounded up; None with none.
+pub fn mean(v: &[u64]) -> Option<u64> {
+    (!v.is_empty()).then(|| v.iter().sum::<u64>().div_ceil(v.len() as u64))
+}
+
 impl<'a> Book<'a> {
     /// A Book over `costs` alone, keeping its own models.
     pub fn new(costs: &'a BTreeMap<String, Cost>) -> Self {
@@ -427,8 +436,8 @@ impl<'a> Book<'a> {
         self.model(step, m).fits
     }
 
-    /// The step's prior of `m` (`p90` of its targets' measures the way it runs now; memory: their
-    /// floors among them; disk: its disk floors).
+    /// The step's prior of `m`: memory and disk, `p90` of its targets' measures the way it runs now
+    /// (memory: their floors among them; disk: its disk floors); time, the `mean` of its runs.
     pub fn prior(&self, step: &str, m: Measure) -> Option<u64> {
         self.model(step, m).prior
     }
@@ -447,7 +456,11 @@ impl<'a> Book<'a> {
                 }
                 by.into_values().collect()
             }
-            Measure::Secs => self.costs.iter().filter(|(k, c)| of(k) && c.v >= v).map(|(_, c)| c.secs).collect(),
+            Measure::Secs => {
+                let secs: Vec<u64> =
+                    self.costs.iter().filter(|(k, c)| of(k) && c.v >= v).map(|(_, c)| c.secs).collect();
+                return mean(&secs);
+            }
             Measure::Disk => self.disks.into_iter().flatten().filter(|(k, _)| of(k)).map(|(_, d)| *d).collect(),
         };
         p90(vals)
@@ -595,7 +608,7 @@ pub fn fit_table(book: &Book) -> String {
     steps.dedup();
     let mut out = format!(
         "{:<14} {:<7} {:>5}  {:<10} {:>7} {:>7} {:>8}  fit\n",
-        "step", "measure", "runs", "size", "miss", "error", "p90 err"
+        "step", "measure", "runs", "size", "miss", "error", "prior err"
     );
     let mut poor: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for s in &steps {
@@ -648,7 +661,7 @@ pub fn fit_table(book: &Book) -> String {
             }
         }
     }
-    out += &format!("\nheld out: {FOLDS} folds; poor past {:.0}% missed or {:.0}% median error, or under {MIN_RUNS} runs; a fit's prediction is its envelope × {MARGIN}; capped at its runs' most; p90 err: the step's prior (its runs' 90th percentile) taken as each run's (median)\n", MAX_MISS * 100.0, MAX_ERR * 100.0);
+    out += &format!("\nheld out: {FOLDS} folds; poor past {:.0}% missed or {:.0}% median error, or under {MIN_RUNS} runs; a fit's prediction is its envelope × {MARGIN}; capped at its runs' most; prior err: the step's prior (memory and disk its runs' 90th percentile, time their mean) taken as each run's (median)\n", MAX_MISS * 100.0, MAX_ERR * 100.0);
     out += "steps that don't fit (they take their prior; units and candidates their piece's guess first):\n";
     for (s, ms) in &poor {
         out += &format!("  {s}: {}\n", ms.join(", "));
@@ -821,6 +834,26 @@ mod tests {
         // Past them (a tile at the equator's edge is larger than any seen): no more than the most.
         let most = costs.values().map(|c| c.peak_mb).max().unwrap();
         assert_eq!(b.mem("bldprep", "6/1/31", 0, 1), (most, From::Fit));
+    }
+
+    /// A step's time prior is the mean of its runs the way it runs now (the expected time: what a
+    /// job's targets are counted to a quarter hour by), not their 90th percentile (task #433: by
+    /// that, every unit job carried one unit); its memory prior stays the 90th percentile.
+    #[test]
+    fn a_steps_time_prior_is_the_mean_of_its_runs() {
+        let mut costs = BTreeMap::new();
+        // (Nine quick pieces and one slow: a heavy tail, as the units' times are; a step at cost
+        // version 0, as the helper makes its costs.)
+        for i in 1..=10u64 {
+            costs.insert(format!("peaks 6/{i}/1"), cost(500, if i == 10 { 1200 } else { 100 }, &[]));
+        }
+        let b = Book::new(&costs);
+        assert_eq!(b.prior("peaks", Measure::Secs), Some(210), "the mean: (9 × 100 + 1200) / 10");
+        assert_eq!(b.secs("peaks", "6/99/1", 0), Some(210), "an unmeasured target takes it");
+        assert_eq!(b.secs("peaks", "6/10/1", 0), Some(1200), "a measured one its own");
+        assert_eq!(b.prior("peaks", Measure::Mem), Some(500));
+        assert_eq!(mean(&[]), None);
+        assert_eq!(mean(&[1, 2]), Some(2), "rounded up");
     }
 
     /// A poor fit takes the step's prior (its 90th percentile, not one outlier); one never measured

@@ -661,9 +661,13 @@ fitted over the step's measured runs (least squares raised to cover every run, Ã
 most a run it was made from measured; threads a term when the runs differ in them), on whichever size
 fits best (a `sizes` measure the target has from an earlier run, or its tile's area); else, for units
 and landmark candidates, their piece-size first guess (`coord::unit_peak`), so one dense unit doesn't
-set every other's; else the step's prior, the 90th percentile of its targets' measures (memory:
-their floors among them), a heavy target held by its own floor; else the caller's first guess (the
-steps table's, or the size the plan offered): a cold start. A fit is judged on runs held out of it
+set every other's; else the step's prior: memory and disk, the 90th percentile of its targets'
+measures (memory: their floors among them), a heavy target held by its own floor; time, the mean
+of its targets' runs, the expected time a job's targets are counted to the quarter hour by and the
+forecast sums (task #433: by the 90th percentile a unit was 1151 s against a mean of 363, so every
+unit job carried one unit and paid the job's setup, 28 s of NAS reads, for it alone; a depth job
+three tiles against six, 21 s of setup each); else the caller's first guess (the steps table's, or
+the size the plan offered): a cold start. A fit is judged on runs held out of it
 (5 folds) and not used when it predicts under on more than 5% of them, is off by more than 50% on
 the median one, or has fewer than 10 runs. The models are kept until a cost, floor or disk floor
 changes. The coordinator's picks (`pick`, `pick_every`, `measured`, `secs_of`, `peak`), its floors
