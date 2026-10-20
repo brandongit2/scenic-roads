@@ -405,25 +405,13 @@ pub fn check_folder(
 }
 
 /// A resolved region's area (km²). A region with water is stored as one shape of cell pieces
-/// (crate::inputs::regions::tiles): its rings are read cell by cell (each ring to the 2° cell its box's
-/// middle is in), never as one area, so the high seas without `rules.toml` stays small; any other
-/// region's shapes are unioned.
-fn km2_of(shapes: &[super::stored::Shape], by_cell: bool) -> f64 {
+/// (crate::inputs::regions::tiles), read back cell by cell as tiles keeps it (`TArea::from_rings`),
+/// never as one area, so the high seas without `rules.toml` stays small; any other region's shapes
+/// are unioned.
+pub(crate) fn km2_of(shapes: &[super::stored::Shape], by_cell: bool) -> f64 {
     let ring64 = |r: &Vec<[i32; 2]>| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect::<Vec<_>>();
     if by_cell && shapes.len() == 1 {
-        use super::tiles::CELL;
-        let mut cells: BTreeMap<(i64, i64), Vec<super::geom::Ring>> = BTreeMap::new();
-        for r in &shapes[0].rings {
-            let (mut x0, mut y0, mut x1, mut y1) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
-            for p in r {
-                (x0, y0, x1, y1) = (x0.min(p[0] as i64), y0.min(p[1] as i64), x1.max(p[0] as i64), y1.max(p[1] as i64));
-            }
-            cells
-                .entry((((x0 + x1) / 2).div_euclid(CELL), ((y0 + y1) / 2).div_euclid(CELL)))
-                .or_default()
-                .push(ring64(r));
-        }
-        return cells.values().map(|rs| super::geom::area_km2(&super::geom::Area::from_rings(rs))).sum();
+        return super::tiles::TArea::from_rings(&shapes[0].rings.iter().map(ring64).collect::<Vec<_>>()).km2();
     }
     let a = super::geom::union_all(
         &shapes

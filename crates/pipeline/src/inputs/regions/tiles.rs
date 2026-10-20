@@ -813,9 +813,14 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             let (p, r) = &folder.regions[id];
             out.problems.push(problem("rg-ref", r, p, format!("{id}: hand_out \"{g}\" has region {o} without water (and {} more): a hand-out gives only to regions with water", old.len() - 1)));
         }
+        let every = folder.regions[id].1.hand_out_all;
         let mine = areas[id].clone();
-        let theirs: Vec<(&String, &TArea)> =
-            members.iter().map(|m| (m, areas.get(m).unwrap_or_else(|| &others[m]))).collect();
+        let theirs: Vec<(&String, &TArea)> = members
+            .iter()
+            // (`hand_out_all` hands out land: only to regions with land.)
+            .filter(|m| !every || !land_empty.get(*m).copied().unwrap_or(false))
+            .map(|m| (m, areas.get(m).unwrap_or_else(|| &others[m])))
+            .collect();
         // Each stretch's edge with each member (the stretch's ring of 100 m made once a cell), and
         // where it goes.
         let moves: Vec<(String, BTreeMap<Cell, Area>)> = components(&mine)
@@ -834,7 +839,8 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
                 touching.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(b.1)));
                 let to = match touching.len() {
                     1 => Some(touching[0].1.clone()),
-                    n if n > 1 && km2 < rules.sliver_km2 => Some(touching[0].1.clone()),
+                    n if n > 1 && (every || km2 < rules.sliver_km2) => Some(touching[0].1.clone()),
+                    0 if every => nearest_member(&comp, &theirs),
                     _ => None,
                 };
                 to.map(|m| (m, comp))
@@ -883,6 +889,10 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         }
         let (p, r) = &folder.regions[id];
         if !r.has_water() {
+            continue;
+        }
+        if t.is_empty() && r.hand_out_all {
+            out.resolved.remove(id);
             continue;
         }
         if t.is_empty() {
@@ -1509,6 +1519,36 @@ fn cells_pass(
         problems.extend(ps);
     }
     rest_t
+}
+
+/// The member nearest a stretch touching none (`hand_out_all`): the least distance between the
+/// stretch's points and a member's in the cells within two of the stretch's, ties to the lesser id.
+fn nearest_member(comp: &BTreeMap<Cell, Area>, theirs: &[(&String, &TArea)]) -> Option<String> {
+    let pts: Vec<geom::Pt> = comp.values().flat_map(|a| a.polys.iter().flatten().flatten().copied()).collect();
+    let mut best: Option<(f64, &String)> = None;
+    for (m, t) in theirs {
+        let mut d = f64::MAX;
+        let mut seen = BTreeSet::new();
+        for c in comp.keys() {
+            for x in c.0 - 2..=c.0 + 2 {
+                for y in c.1 - 2..=c.1 + 2 {
+                    if !seen.insert((x, y)) {
+                        continue;
+                    }
+                    let Some(a) = t.cells.get(&(x, y)) else { continue };
+                    for q in a.polys.iter().flatten().flatten() {
+                        for p in &pts {
+                            d = d.min(seg_m(*p, *q));
+                        }
+                    }
+                }
+            }
+        }
+        if d < f64::MAX && best.is_none_or(|b| d < b.0 || (d == b.0 && *m < b.1)) {
+            best = Some((d, m));
+        }
+    }
+    best.map(|b| b.1.clone())
 }
 
 /// A region's stored geometry and drawing: its cells' rings, one shape, its `from` its parts.

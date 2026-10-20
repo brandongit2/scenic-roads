@@ -568,3 +568,72 @@ fn a_sliver_across_a_cells_edge_joins_its_neighbour() {
     assert!(at("t", 1.99, 0.02) && at("t", 2.01, 0.02), "both sides of the edge to t");
     assert!(!at("s", 1.99, 0.02) && !at("s", 2.01, 0.02) && at("s", 20.5, 20.5));
 }
+
+/// Two coasts with the same fingerprint (box, point count, point sums) but different rings: a split
+/// and its complement still divide the area exactly (ties decided by the rings, a total order).
+#[test]
+fn equal_fingerprints_split_exactly() {
+    let s = 1_000_000i64;
+    let ring = |pts: &[(i64, i64)]| pts.iter().map(|&(x, y)| [x * s, y * s]).collect::<geom::Ring>();
+    let a = Area::from_rings(&[ring(&[(0, 0), (4, 0), (3, 1), (4, 4), (0, 4), (1, 3)])]);
+    let b = Area::from_rings(&[ring(&[(4, 0), (0, 0), (1, 1), (0, 4), (4, 4), (3, 3)])]);
+    let (pa, pb) = (a.polys.iter().flatten().flatten(), b.polys.iter().flatten().flatten());
+    assert_eq!(pa.clone().count(), pb.clone().count());
+    let sum = |t: (i64, i64), p: &[i64; 2]| (t.0 + p[0], t.1 + p[1]);
+    assert_eq!(pa.fold((0, 0), sum), pb.fold((0, 0), sum));
+    assert_eq!(a.bbox(), b.bbox());
+    assert_ne!(a.polys, b.polys);
+    let within = Area::from_rings(&[ring(&[(-6, -6), (10, -6), (10, 10), (-6, 10)])]);
+    let one = geom::nearest(&within, &[a.clone()], &[b.clone()], 5_000.0);
+    let two = geom::nearest(&within, &[b], &[a], 5_000.0);
+    assert!(geom::area_km2(&one.intersect(&two)) < 1e-6, "the two splits overlap");
+    let all = geom::area_km2(&within);
+    assert!((geom::area_km2(&one.union(&two)) - all).abs() < 1e-6 * all, "the two splits leave a gap");
+}
+
+/// A region with water's area read cell by cell (regions-check's report) is its area read whole.
+#[test]
+fn km2_by_cell_is_the_whole_area() {
+    let w = world();
+    let out = run(&w, &all());
+    assert!(out.resolved.len() > 3);
+    for (id, res) in &out.resolved {
+        let by_cell = read::km2_of(&res.geometry.shapes, true);
+        let whole = read::km2_of(&res.geometry.shapes, false);
+        assert!((by_cell - whole).abs() <= 1e-6 * whole.max(1.0), "{id}: {by_cell} against {whole}");
+    }
+}
+
+/// `hand_out_all`: land inside a place but outside its regions goes to the region sharing the longest
+/// border with it, or the nearest when it touches none; the holding region ends empty, unreported.
+#[test]
+fn hand_out_all_gives_every_stretch() {
+    let d = tempfile::tempdir().unwrap();
+    let p = outlines(
+        d.path(),
+        &[
+            (21, "PP", deg_sq(0.0, 0.0, 1.0, 1.0)),
+            (22, "PP", deg_sq(1.3, 0.3, 2.0, 1.0)),
+            (23, "PP", deg_sq(10.0, 0.0, 11.0, 1.0)),
+        ],
+    );
+    // A piece between p1 and p2 (0.6° of edge with p1, 0.3° with p2), and an island near p3.
+    let land = vec![
+        bx(0.0, 0.0, 1.0, 1.0),
+        bx(1.0, 0.0, 1.3, 0.6),
+        bx(1.3, 0.3, 2.0, 1.0),
+        bx(10.0, 0.0, 11.0, 1.0),
+        bx(10.0, 3.0, 10.2, 3.2),
+    ];
+    let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
+    let w = World { o: crate::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
+    let (p1, p2, p3) = (m("p1", 21), m("p2", 22), m("p3", 23));
+    let rest = "id = \"p-rest\"\nname = \"P rest\"\noutline = [{ minus = [\"box:0,0,11,4\", \"osm:21\", \"osm:22\", \"osm:23\"] }]\nwater = []\nhand_out = \"p\"\nhand_out_all = true\n";
+    let out = run(&w, &[PINS, ("p/p1.toml", &p1), ("p/p2.toml", &p2), ("p/p3.toml", &p3), ("p/p-rest.toml", rest)]);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
+    assert!(at("p1", 1.15, 0.3) && !at("p2", 1.15, 0.3), "the longest border wins");
+    assert!(at("p3", 10.1, 3.1), "an island touching none goes to the nearest");
+    assert!(!out.resolved.contains_key("p-rest"));
+}

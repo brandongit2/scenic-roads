@@ -193,6 +193,10 @@ pub struct Region {
     /// `hand_out = "<folder>"`: each stretch of its water that only one region of that folder
     /// borders goes to that region (`tiles::resolve`).
     pub hand_out: Option<String>,
+    /// `hand_out_all = true`, with `hand_out`: every stretch goes, to the region of the folder it
+    /// shares the longest edge with, or the nearest if it touches none (the list's rule for land
+    /// inside a split place's border but outside all its regions); the region itself ends empty.
+    pub hand_out_all: bool,
     pub lines: BTreeMap<String, Line>,
     /// Its own `[pins]`, overriding `pins.toml`'s.
     pub pins: BTreeMap<String, String>,
@@ -543,6 +547,8 @@ struct RawRegion {
     #[serde(default)]
     hand_out: Option<String>,
     #[serde(default)]
+    hand_out_all: bool,
+    #[serde(default)]
     minus: Vec<toml::Value>,
     #[serde(default)]
     intersect: Vec<toml::Value>,
@@ -667,6 +673,9 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
     if raw.hand_out.is_some() && !water_key {
         faults.push(fault("part", "hand_out is for a region with water"));
     }
+    if raw.hand_out_all && raw.hand_out.is_none() {
+        faults.push(fault("part", "hand_out_all is for a region with hand_out"));
+    }
     let r = Region {
         id: raw.id,
         name: raw.name,
@@ -676,6 +685,7 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
         water,
         water_key,
         hand_out: raw.hand_out.map(|h| h.trim_end_matches('/').to_string()),
+        hand_out_all: raw.hand_out_all,
         lines,
         pins,
     };

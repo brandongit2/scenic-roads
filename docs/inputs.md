@@ -368,6 +368,7 @@ any water in two regions, or in none, is an error.
 | `intersect` | list of parts, the region kept only inside their union | optional |
 | `water` | list of parts, the region's water: their union (`water = []`: none but its lakes) | optional; makes it a region of land and water |
 | `hand_out` | a folder's path: each stretch of this region's water only one region of that folder borders goes to that region | optional, with `water` |
+| `hand_out_all` | `true`: with `hand_out`, every stretch goes — to the region of the folder sharing its longest edge, or the nearest region with land if it touches none (the list's rule for land inside a split place's border but outside all its regions); the region then ends empty and is not stored | optional, with `hand_out` |
 | `[lines.<name>]` | a line, from `coords` or `ways` | optional |
 | `[pins]` | as `pins.toml`, overriding it for this file | optional |
 
