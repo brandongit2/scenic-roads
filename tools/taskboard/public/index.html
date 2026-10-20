@@ -247,6 +247,9 @@
   .st.s-review { color: var(--st-rev-fg); background: var(--st-rev-bg); }
   .st.s-waiting { color: var(--st-wait-fg); background: var(--st-wait-bg); }
   .st.s-done { color: var(--st-done-fg); padding: 0; }
+  .st.s-abandoned { color: var(--dim, #888); padding: 0; text-decoration: line-through; }
+  .box.s-abandoned { border-color: var(--dim, #888); }
+  .row.abandoned .ti, .row.abandoned .title { text-decoration: line-through; }
   .ed-chips .st.s-done::before, .legend .st.s-done::before { content: "✓"; font-weight: 600; }
   .tag { flex: none; height: 16px; padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font: 500 10px/14px var(--sans); letter-spacing: 0.05em; text-transform: uppercase; }
   .tail { position: relative; flex: none; display: flex; align-items: center; gap: 2px; height: 18px; }
@@ -575,7 +578,9 @@
 
   // ---------------------------------------------------------------------------------------------
   // Stages, filters, the model.
-  const STAGES = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done" };
+  const STAGES = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done", abandoned: "Abandoned" };
+  // Done or abandoned: closed, out of the open counts.
+  const isClosed = (t) => stageOf(t) === "done" || stageOf(t) === "abandoned";
   const stageOf = (t) => (typeof t.stage === "string" && t.stage in STAGES ? t.stage : "");
   const shortWhere = (w) => String(w ?? "").replace(/\s*\(.*$/s, "").trim();
   function stageText(t) {
@@ -586,6 +591,7 @@
       case "review": return "in review";
       case "waiting": return "waiting on you";
       case "done": return "done";
+      case "abandoned": return "abandoned";
       default: return "";
     }
   }
@@ -1233,7 +1239,7 @@
   // too). Between two that share a number, a moved task takes that number too, placed between them
   // by `slot` (the order within a number). (While the open numbers run unbroken, as 2 to 13 do
   // today, a move to the top still renumbers every one after it: some twenty writes.)
-  const isOpen = (t) => stageOf(t) !== "done" && !isArch(t);
+  const isOpen = (t) => !isClosed(t) && !isArch(t);
   function placeAt(it, x) {
     const p = Math.ceil(x);
     const ops = [];
@@ -1442,7 +1448,7 @@
     put($("top-hist"), icon("clock"), `Top level · ${topEv}`);
     $("expand-all").hidden = $("collapse-all").hidden = !M.order.some((it) => it.$folder);
     renderChips();
-    const open = M.tasks.filter((t) => !isArch(t) && stageOf(t) !== "done").length;
+    const open = M.tasks.filter((t) => !isArch(t) && !isClosed(t)).length;
     const done = M.tasks.filter((t) => !isArch(t) && stageOf(t) === "done").length;
     $("tree-sum").textContent = M.order.length ? `${open} open · ${done} done` : "";
     $("tab-tree").setAttribute("aria-selected", String(S.tab === "tree"));
@@ -1504,7 +1510,7 @@
   }
   function rowBase(it, pane, depth, extra) {
     const st = it.$folder ? "" : stageOf(it);
-    const cls = ["row", it.$folder ? "folder" : "task", st === "done" ? "done" : "", isArch(it) ? "arch" : "", S.sel === it.id ? "sel" : "", extra].filter(Boolean).join(" ");
+    const cls = ["row", it.$folder ? "folder" : "task", st === "done" ? "done" : "", st === "abandoned" ? "done abandoned" : "", isArch(it) ? "arch" : "", S.sel === it.id ? "sel" : "", extra].filter(Boolean).join(" ");
     return h("div", { class: cls, "data-id": it.id, tabindex: "-1", style: `--d:${depth}` });
   }
 
@@ -1656,7 +1662,7 @@
       if (first) first.tabIndex = 0;
     } else frag.append(h("p", { class: "empty" }, "Every task, by priority, appears here."));
     host.replaceChildren(frag);
-    const open = M.tasks.filter((t) => !isArch(t) && stageOf(t) !== "done");
+    const open = M.tasks.filter((t) => !isArch(t) && !isClosed(t));
     $("prio-sum").textContent = S.loaded.items ? (searching() ? `${total} shown` : `${open.filter((t) => isNum(t.priority)).length} with a priority · ${open.filter((t) => !isNum(t.priority)).length} without`) : "";
     $("sort").value = S.sort;
   }
