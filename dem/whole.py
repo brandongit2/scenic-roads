@@ -1,4 +1,4 @@
-"""Files kept whole (docs/plan.md §3, Downloads; the Python steps' side of
+"""Files kept whole (docs/storage.md, Downloads; the Python steps' side of
 crates/pipeline/src/whole.rs). What's written to the NAS's stores, or copied from them to a Mac's
 cache, goes by a temporary name (this Mac's name and the process's, so two Macs never share one),
 is flushed to the disk and has its length checked before the rename. And a kept TIFF can be checked

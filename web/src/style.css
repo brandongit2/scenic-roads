@@ -628,7 +628,7 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .rg-dir .rg-dir { padding-left: 10px; }
 
 
-/* Phones and tablets (docs/plan.md §4, Devices) ------------------------------------------------ */
+/* Phones and tablets (docs/macs.md, Devices) ------------------------------------------------ */
 /* Every touch reaches the app: one finger pans (trackpad.ts), two pinch, turn and tilt (MapLibre);
    the page itself neither pans, zooms nor bounces under them. */
 html, body { overscroll-behavior: none; }

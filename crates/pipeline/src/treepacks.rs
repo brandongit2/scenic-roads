@@ -1,4 +1,4 @@
-//! The tree cover layers (docs/plan.md §6, Trees): tree cover, canopy height and leaf type, zoom 4–12,
+//! The tree cover layers (docs/steps.md §2, Trees): tree cover, canopy height and leaf type, zoom 4–12,
 //! clipped to the coverage, made by the `trees` program (crate::trees, dem/trees.py's port) from
 //! Meta's canopy squares, kept on the NAS (`sources/canopy/`, each downloaded once, and copied into
 //! the agent's cache the units read too) and the leaf-type squares on the NAS
@@ -798,7 +798,7 @@ mod tests {
         }
     }
 
-    /// Byte identity on the build's own data (docs/plan.md §6, Trees), by hand on the M4, the
+    /// Byte identity on the build's own data (docs/steps.md §2, Trees), by hand on the M4, the
     /// NAS only read: for each z3 tile of `P5T_AREAS` ("3/7/3,3/7/2"), its whole run as the build
     /// makes it today (the baseline), and its pieces' runs and their assembly, from the live coverage
     /// and squares (`P5T_ROOT`, the NAS's project folder; the canopy squares read in place where

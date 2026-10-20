@@ -1,4 +1,4 @@
-//! The tree cover layers' tiles (docs/plan.md §6, Trees): tree cover, canopy height and leaf type,
+//! The tree cover layers' tiles (docs/steps.md §2, Trees): tree cover, canopy height and leaf type,
 //! zoom 4–12, of a z3 tile the coverage meets, clipped to it. dem/trees.py's `--z3` run in Rust (the
 //! `trees` program), the same tiles to the pixel:
 //! - **Sampling:** each zoom-8 block is sampled at zoom 12, at its pixels' centres (the source pixel
@@ -850,7 +850,7 @@ pub fn z3(a: &Run) -> Result<[usize; 3]> {
     Ok(end(a, w.finish()?, t0))
 }
 
-/// A z6 tile's run (docs/plan.md §6, Trees: a piece): z6 tile `a.tile`'s blocks the coverage meets,
+/// A z6 tile's run (docs/steps.md §2, Trees: a piece): z6 tile `a.tile`'s blocks the coverage meets,
 /// as `z3` runs them, its zoom 9–12 tiles into `out`'s three archives (its hi packs' tiles), and
 /// its blocks' zoom-8 tiles and values into its mid, `out/MID` (`write_mid`), from which its z3
 /// tile's assembly (`assemble_lo`) makes zoom 8 to 4. A z3 run's tiles are its z6 tiles' runs' and
@@ -1041,7 +1041,7 @@ pub fn read_mid(path: &Path) -> Result<Mid> {
     Ok(out)
 }
 
-/// A z3 tile's assembly (docs/plan.md §6, Trees): its zoom 8 to 4 in `out`'s three archives (its lo
+/// A z3 tile's assembly (docs/steps.md §2, Trees): its zoom 8 to 4 in `out`'s three archives (its lo
 /// packs' tiles), from its z6 tiles' mids (`z6`, `MID`): their blocks' zoom-8 tiles as they made
 /// them, and zoom 7 to 4 from every block's values (`said` told how many of those are made, of how
 /// many), as `z3` makes them. The mids must be of one z3 tile, each z6 tile once. Each archive's

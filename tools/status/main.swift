@@ -1,4 +1,4 @@
-// Scenic's menu bar item: the build agent's state at a glance (docs/plan.md §8, Status). An icon for
+// Scenic's menu bar item: the build agent's state at a glance (docs/building.md §2, Status). An icon for
 // the state (building, paused, waiting, nothing to do, a problem, the lead out of touch); a
 // click opens the panel, the build page in a popover (`Panel`: this Mac's own agent's `/work/?view`, a viewer
 // only), and a right-click, or the panel's "⋯", the menu: the state in a line, this Mac's downloads
@@ -1024,7 +1024,7 @@ final class Flipped: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// The panel: the build page in a popover under the icon (docs/plan.md §8, Status). This Mac's own
+/// The panel: the build page in a popover under the icon (docs/building.md §2, Status). This Mac's own
 /// agent's page (`Panel.page`, its port 8090: every Mac's agent serves it, from its own read of the
 /// build's state, docs/pool.md §10) with `?view`, so it only ever watches (web/work/index.html), in
 /// a web view of its own that keeps nothing (no stored data: never a page that helps); made as the

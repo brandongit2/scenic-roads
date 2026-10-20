@@ -17,19 +17,19 @@ a **unit** of the input check. (In the code the mechanism keeps the older word "
 
 Built: the input check and its units for regions, languages, translations, descriptions, heritage
 registers and matches, timetable feeds and static GTFS, elevation datasets (the roads' and the 3D
-terrain's), the remaining sources (§6.9); the guards (§7). Companions: `docs/plan.md` (pipeline, keys, order), `docs/formats.md`
+terrain's), the remaining sources (§6.9); the guards (§7). Companions: `docs/steps.md` (pipeline, keys), `docs/building.md` (order), `docs/formats.md`
 (files), `docs/pool.md` (lead, jobs, journal), `docs/phase5.md` (the heritage chain).
 
 ## 1. Constraints
 
-- **Determinism** (plan §8): every input reaches a job's key by content (a content name or a digest
+- **Determinism** (docs/building.md §2): every input reaches a job's key by content (a content name or a digest
   of its bytes), never by a path, a size or a time. The one exception is a `range` source (§5.2),
   read in place a range at a time, which can't be pinned by content.
 - **No hand-kept figures:** a declaration states facts that can't be read from the data (licence,
   height reference, where it is); everything readable from the data (resolution, coverage, extent,
   counts, a feed's box) is read at check time. Where a declared fact can be checked against the
   data, it is, and a wrong one is a finding.
-- **The NAS's limits** (plan §3): no input is stored or read as thousands of small files, and
+- **The NAS's limits** (docs/storage.md): no input is stored or read as thousands of small files, and
   nothing lists a drop box in a tight loop.
 
 ## 2. The three kinds of input
@@ -45,7 +45,7 @@ Not inputs: `inputs/keys.env` (secrets; their names enter keys, never their valu
 
 ## 3. The drop boxes on the NAS
 
-Every drop box is a folder under `inputs/` in the NAS project folder (plan §3):
+Every drop box is a folder under `inputs/` in the NAS project folder (docs/storage.md):
 
 ```
 inputs/
@@ -127,7 +127,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   5. **Checks that version whole.** If it raises a finding neither accepted nor raised by the
      current version, every changed file of the unit is held and the version stays; the banner says
      they were held together and why.
-  6. Stores each file content-named under `sources/inputs/<unit>/` (uploaded and read back, plan §3).
+  6. Stores each file content-named under `sources/inputs/<unit>/` (uploaded and read back, docs/storage.md).
   7. Hands off the records: `sources/inputs/<unit>/@index` (when it differs; the replaced index is
      touched so GC keeps it, §4.9), `@listed`, and `@held` (the held report, or none). `@` starts
      no drop-box path component or unit name, so these never clash with copies or nested units.
@@ -196,7 +196,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 
 ### 4.7 Where it shows
 
-- **The status** (`state/status.json`, plan §8): `inputs`, one entry per unit
+- **The status** (`state/status.json`, docs/building.md §2): `inputs`, one entry per unit
   (crate::inputs::view, the lead's):
   ```json
   {"unit": "heritage", "version": "sources/inputs/heritage/@index.7a…json", "state": "held",
@@ -245,7 +245,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   be read, nothing is swept that day. Drop boxes and `state/inputs/` are never swept.
 - Every accepted version of a file is kept whole, so the briefs say to drop one answer file per
   batch rather than append to a big one.
-- Backups (plan §3; agent/backup.rs `FOLDERS`) cover `inputs/` and `state/inputs/accepted/`, not
+- Backups (docs/storage.md; agent/backup.rs `FOLDERS`) cover `inputs/` and `state/inputs/accepted/`, not
   `todo/`.
 
 ### 4.10 The test unit and the tests
@@ -334,7 +334,7 @@ crate::inputs::regions (`file`, `shapes`, `geom`, `resolve`, `water`, `data`, `s
 #### 6.1.1 What a region is
 
 A name for a piece of the coverage. The coverage is the union of every region; nothing is built per
-region (plan §5). Without `rules.toml`, regions may overlap freely and the check validates each
+region (docs/regions.md). Without `rules.toml`, regions may overlap freely and the check validates each
 region's definition, not how regions fit together; the map's region layer shows overlaps and gaps
 by eye. With `cover = "earth"` in `rules.toml` (§6.1.3, "Land and water"), the regions must cover
 the Earth once: the check fills land gaps and settles land overlaps by the folder-wide rules, and
@@ -377,7 +377,7 @@ with `water` is its land, that cut back to the coastline's land, and its water (
 
 **Parts:**
 - `"osm:<relation>"`: an OSM relation's area, from the pinned pass's outline set (administrative and
-  ISO 3166 relations, plan §5) or, for any other relation, the regions' extract (§6.1.6).
+  ISO 3166 relations, docs/regions.md) or, for any other relation, the regions' extract (§6.1.6).
 - `"shape:<name>.geojson"`: a Polygon or MultiPolygon (a Feature, geometry or FeatureCollection,
   unioned), exact.
 - `"region:<id>"`: another region's stored geometry (in `outline`, `minus` and `intersect`, a
@@ -550,7 +550,7 @@ A region of only `osm:` and `shape:` parts in `outline` with no operation is sto
 per part, unchanged**; any operation gives one shape (two across the antimeridian); a region with
 `water` gives one shape, its land and water together, its rings on both sides of ±180° where it
 crosses. A region with water and no land is stored `"water_only": true` (in the head) and the
-coverage keeps it apart, for the depth's targets alone (plan §5). The index names
+coverage keeps it apart, for the depth's targets alone (docs/regions.md). The index names
 each region's files in `facts.geometry` and `facts.drawn`, and its `keyed` digest is the geometry
 file's content name, so an edit that doesn't change the result reruns nothing.
 
@@ -685,7 +685,7 @@ syntax; a language not a BCP 47 primary subtag; a code twice; an empty list; a v
 (`outlines::spoken_codes`, in the key); a subdivision whose country has no line. `keyed` is of the
 lines as read, so comments rerun nothing.
 
-**Ingesting.** The `spoken` job (plan §7) keys on the outlines, `spoken::RULES` and the accepted
+**Ingesting.** The `spoken` job (docs/names.md) keys on the outlines, `spoken::RULES` and the accepted
 index (`--languages-index`), and waits while there's none. `global/spoken` carries the table, which
 `names-todo` reads; the server reads the accepted table (`accepted/languages/` in its home) only for
 catalogs without `global/spoken`.
@@ -695,7 +695,7 @@ catalogs without `global/spoken`.
 **Kind:** request–fulfil. **Drop box:** `inputs/translations/`. Code: crate::inputs::translations,
 crate::inputs::lint; the server's crate::accepted; `names::Names::set_files`.
 
-**Shape** (plan §7, Files): `**/*.jsonl` outside `todo/` and `how/`, one translation a line, read by
+**Shape** (docs/names.md, Files): `**/*.jsonl` outside `todo/` and `how/`, one translation a line, read by
 `names::line_shape` (the check and the server share it):
 
 | Field | Type | |
@@ -729,7 +729,7 @@ content. `names-todo` keys on the accepted version.
 
 **Kind:** request–fulfil. **Drop box:** `inputs/descriptions/`. Code: crate::inputs::descriptions.
 
-**Shape** (plan §7, Descriptions): `**/*.jsonl` lines, and an optional `about.toml` (its credit;
+**Shape** (docs/names.md, Descriptions): `**/*.jsonl` lines, and an optional `about.toml` (its credit;
 without one the catalog keeps `rules::CREDITS`' "Heritage descriptions"; its extent is the world
 when its `territory` is `"world"`, else unknown):
 
@@ -770,7 +770,7 @@ register.
 | `id` | string | required, unique | the register's own reference, or `h` + 16 hex made by the producer from name, designation and place (with `ref: ""`); two entries sharing a reference take `~2`, `~3` |
 | `ref` | string | optional | the reference when it isn't the `id`; `""`: none |
 | `name` | string | optional (a warning without) | as the register gives it |
-| `name_en` | string | optional | the register's own English (plan §7) |
+| `name_en` | string | optional | the register's own English (docs/names.md) |
 | `level` | 1–5 | required for `heritage`, `world-heritage` | 1 World Heritage, 2 top national grade, 3 other national, 4 regional, 5 local |
 | `designation` | string | required for `heritage` | the register's designation |
 | `tier` | string | optional | the kind of designation the Heritage toggles group by (web/src/basemap.ts HERITAGE_TIERS); else by level |
@@ -806,7 +806,7 @@ over 10 % of its entries, or removed; over half its entries `approx`; entries wi
 Derived: `facts.box`, `facts.entries`, and `facts.extent` (the box) for the credits.
 
 **Ingesting.**
-- **One generic reader:** the heritage-sites job (plan §6; docs/phase5.md) lays out every accepted
+- **One generic reader:** the heritage-sites job (docs/steps.md; docs/phase5.md) lays out every accepted
   register whose box meets one of its cover's z6 tiles (`pipeline::heritage::registers_meeting`)
   for dem/heritage.py, which reads them in id order: a point is a site; a polygon a heritage area
   (and a site at its representative point with `dot`); a line a site at its representative point; a
@@ -849,11 +849,11 @@ pass's working copy of the chain's answers (`cache/heritage-<date>/`).
 The old `sources/registers/legacy-seeds` archive is read by nothing:
 - **English:** the heritage layers' `en` is the thing's own English only (`dem/names.py`
   `english_at`: a site's UNESCO name or English Wikipedia title, an area's `name_en`). Other English
-  is the server's, from the translations as it serves the layers (plan §7). A name lacking English
+  is the server's, from the translations as it serves the layers (docs/names.md). A name lacking English
   goes onto the translations' to-do (`pipeline::namestodo` reads the landmarks' `en`).
 - **Park facts:** areadetails.py's cache is the pass's answers (`areas-wikidata.json`,
   `pipeline::answers`), asking Wikidata only for parks it lacks.
-- **Pageviews:** the items job's months' indexes (`sources/pageviews/`, plan §6).
+- **Pageviews:** the items job's months' indexes (`sources/pageviews/`, docs/steps.md).
 
 #### 6.5.4 Heritage matches: the owner's judgment calls
 
@@ -956,7 +956,7 @@ Warnings: `replaces` or `exclude` naming a feed neither declared nor in the cata
 `replaces`. A `key` missing from `inputs/keys.env` isn't a finding: the feed waits. What a fetch
 brings back is the fetching job's status, not a finding.
 
-**Fetching.** `rail-feeds` (plan §6) reads the accepted declarations (`--feeds-index`) and the
+**Fetching.** `rail-feeds` (docs/steps.md) reads the accepted declarations (`--feeds-index`) and the
 catalogue's copy and writes `sources/rail/feeds` and `sources/rail/ferry-feeds`, each zip pinned by
 content in `sources/rail/gtfs/<id>` with its day (`sources/rail/fetched`). Its key names the index,
 the catalogue's copy, the coverage, the outlines and which keys `keys.env` holds. `rail` keys on the
@@ -1133,8 +1133,8 @@ territory.
   grid a region) takes, at a point, the first by id with a value there. Grids are read bilinearly
   between pixel centres in f64 (no data where a neighbour has none). A point no source of a link
   covers keeps its height as sampled, counted (`dem-stats.json`'s `unconverted`; a blended one whose
-  first dataset was converted and whose dataset beneath had no value, `unconverted_seam`: plan.md
-  §10); a dataset no chain reaches is left as it is, said by the agent (the status's `notices`,
+  first dataset was converted and whose dataset beneath had no value, `unconverted_seam`: task
+  #467); a dataset no chain reaches is left as it is, said by the agent (the status's `notices`,
   apart from the waits: an info line on the build page and "note: elevation heights — not
   converted to EGM2008: …" in scenic status) and by the unit job (`elevation: <id>: its heights …
   left as they are`); a unit job given no accepted sources says it converts nothing.
@@ -1220,7 +1220,7 @@ territory.
 **The 3D terrain's datasets** (`terrain = true`; crate::terrain_sources): left out of the roads'
 order, keys, plan, cache and ties. Two are read: a tile pyramid in the `terrarium` encoding, the
 terrain's base (AWS's Terrarium tiles, `heights = "mixed"`: its sources mix references), fetched
-raw by its template and packed onto the NAS (`sources/aws-terrarium/`, plan.md §4); and at most one
+raw by its template and packed onto the NAS (`sources/aws-terrarium/`, docs/macs.md); and at most one
 GeoTIFF dataset of 1° tiles by an index in EPSG:4326, each tile with its fill mask (`mask`),
 blended in north of 60°N (Copernicus GLO-30: the index from the bucket's tile list,
 `indexes.py glo30`), its files kept in `sources/fetched/<id>/` by their URLs' names. The repair,
@@ -1345,7 +1345,7 @@ grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) among them.
 
 **Kind:** source declarations of the `depth` role, any number (crate::inputs::sources `MANY`), in
 `inputs/sources/` beside the others, each with its index of depth grids. Code: crate::depth::grids
-(the build's reading), crate::depth (the steps, docs/plan.md §6, Depth). The declarations are staged in
+(the build's reading), crate::depth (the steps, docs/steps.md §3). The declarations are staged in
 `producers/depth/declarations/`; the producers that make their grids in `producers/depth/`.
 
 **The standard: depth grids** (`format = "depth-grid"`). A source is a set of GeoTIFFs, each on the
@@ -1385,7 +1385,7 @@ a `.tif` `file` and a `zoom` 0–18 (`src-index`); two of one `code` (`src-role`
 | `gebco-2026` | the yearly global 15″ grid and its type identifiers | 1 | sea | `gebco.py`, from the owner's two zips in `sources/gebco/2026/` (CEDA's robots.txt bars programs) | z8; cells the TID calls interpolated or estimated (40–48, 71, 72) at z7 |
 | `bluetopo` | NOAA's US coastal grids, 4–16 m | 2 | sea | `bluetopo.py`'s steps, from the public bucket by its tile scheme (checksums checked), a chunk of tiles at a time (`chunked.py bluetopo`); NAVD88 → MSL and MLLW by NOAA VDatum (`vdatum.py`, a point per 0.25° cell; `stations.py noaa` gives the same table from the tide stations) | z15 (4 m) to z13 (16 m); interpolated contributors at z12 |
 | `nonna-100`, `nonna-10` | CHS's 100 m and 10 m grids (licence accepted; never redistributed; its notice names the owner as the maker) | 3, 4 | sea | `nonna.py`, the keyless coverage service (NONNA-10 a chunk of blocks at a time, where NONNA-100 has water: `chunked.py nonna10`); chart datum → mean water level by CHS's stations (`stations.py chs`) | z10, z13 |
-| `emodnet-dtm` | EMODnet's DTM 2024, MSL version | 5 | sea | `emodnet.py`: its MSL ASCII tiles one at a time (a WGS 84 `.prj` given each), `raster.py`'s produce; its interpolation flag not applied (plan §10) | gaps only (`datum_exact = false`) |
+| `emodnet-dtm` | EMODnet's DTM 2024, MSL version | 5 | sea | `emodnet.py`: its MSL ASCII tiles one at a time (a WGS 84 `.prj` given each), `raster.py`'s produce; its interpolation flag not applied (task #466) | gaps only (`datum_exact = false`) |
 | `shom-homonim-100`, `shom-homonim-20` | SHOM's façade and coastal DEMs, MSL versions | 6, 7 | sea | `raster.py`, the low water SHOM's own separation (`--low-raster`) | z10, z13 |
 | `gttm` | NIED's 2″ grid of Japan | 8 | sea | `raster.py` over windows of it | z11; coarse meshes at z9 |
 | `masswildlife-ponds`, `mn-dnr-lakes`, `gblq` | surveyed lakes (Massachusetts, Minnesota, Québec) | 9–11 | lake | `raster.py` (feet or metres, sign as each says) | z16, z15, z16 |
@@ -1453,11 +1453,11 @@ and `--home`, `--root` on the NAS's project folder), one call a z6 tile of the c
 checked there by size, the indexes merged at the end; under `caffeinate`, a box starting only on
 mains power or at 30 % battery or more.
 
-**Keys** (docs/plan.md §6, Job keys): a depth target names each source meeting it by its id and
+**Keys** (docs/steps.md §12): a depth target names each source meeting it by its id and
 `Source::digest` (its `[data]` and its index's features, their hashes among them), so a new grid
 re-keys the tiles it meets.
 
-**The rollout:** docs/plan.md §6, Depth.
+**The rollout:** docs/steps.md, Depth.
 
 ## 7. The guards
 

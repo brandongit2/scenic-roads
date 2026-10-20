@@ -126,7 +126,7 @@ pub const GAP_S: u64 = 60;
 /// or the process stepping it was held up, and its lead re-asserts (s).
 pub const STALL_S: u64 = 300;
 /// The longest a read is taken to stay stale (s; how long the share keeps reads stale is unchecked:
-/// plan §10): term 1 with no snapshot a take-up can read whole for this long awake (its lead's, or
+/// task #455): term 1 with no snapshot a take-up can read whole for this long awake (its lead's, or
 /// its first) has a first snapshot that won't be, and the take-up starts from today's files.
 pub const STALE_S: u64 = 600;
 /// The time a step spends writing its jobs' entries, and reading entries to merge, before it leaves

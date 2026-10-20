@@ -1,10 +1,10 @@
-// The Regions panel (Layers → Regions; docs/plan.md §1): the regions the map is built for, read
+// The Regions panel (Layers → Regions; docs/surface.md): the regions the map is built for, read
 // only. Regions are files in the drop box's inputs/regions/ (docs/inputs.md §6.1), changed there
 // alone and checked before they're used: the list shows them grouped by their folders, each with
 // its check's state (and the findings holding it), and the coverage they add up to on the map.
 // The coverage drawn is the one the map's catalog was built for; a region it doesn't have (added
 // or redrawn since) is listed as pending.
-// Downloads (docs/plan.md §4, "Mirror, per Mac"): nothing is copied to this Mac unless it's
+// Downloads (docs/macs.md, "Mirror, per Mac"): nothing is copied to this Mac unless it's
 // downloaded here: the World, zoomed out, and each region or view, each with its size, its state
 // and a Download or Remove button; this Mac's room (downloads.ts).
 import { dlRegion, dlStatus, dlView, dlWorld, dropView, renameView, setReserve, size, sizeOf, stateClass, stateText, viewSize, type DlStatus, type RegionDl, type ViewDl } from '../downloads';

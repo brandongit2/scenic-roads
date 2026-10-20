@@ -1,4 +1,4 @@
-//! The basemap's pieces (docs/plan.md §4, "Mirror, per Mac"): the parts of Planetiler's worldwide
+//! The basemap's pieces (docs/macs.md, "Mirror, per Mac"): the parts of Planetiler's worldwide
 //! PMTiles archive a Mac downloads, each a PMTiles archive of its own.
 //!
 //! - **lo**: zooms 0–10 of the whole world (the World download's; ~1.7 GB of the 28.5 GB).

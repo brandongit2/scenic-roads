@@ -224,7 +224,7 @@ that one running the same app.
   client may still answer from an SMB lease it holds on the file: that isn't guaranteed. Grants
   aren't fenced by term at the grant itself, so in such a corner both leads may grant the same
   target for a few minutes. That costs duplicated work, not corrupted records: built files are
-  content-named and never rewritten (plan.md, Immutable, content-named files), each hand-off is its
+  content-named and never rewritten (docs/storage.md, Immutable, content-named files), each hand-off is its
   own journal entry keyed by its lease, and a merge applies an entry only if no later lease set its
   targets (`Records::apply`; the old term's lease ids sort before the new term's), else counts it
   overtaken; the files it alone named go to GC. A stale lead's step already under way when the new
@@ -318,7 +318,7 @@ hold, a frozen job: `Agent::may_pack`), the agent asks for as many jobs as it ha
 (`Ask::want`): a member its lead's coordinator over HTTP (`/work/ask`), the lead its own in process
 (`Coordinator::ask_own`, `Agent::lead_grants`). An ask says the memory it spares, its free disk,
 cores, conditions, app and member id. The coordinator answers with jobs that fit, packed (§7.2); a
-member on another app than the lead's gets nothing (409) until they match (plan.md §8, The same
+member on another app than the lead's gets nothing (409) until they match (docs/building.md §2, The same
 app).
 
 An ask also carries its whole Mac's capacity (`coord::Capacity`, the ask's optional `cap`): the
@@ -353,8 +353,8 @@ rest) are written beside them only while the lead's coordinator says a member ru
 an older lead's saying none); likewise an ask's `limit_mb`, which its capacity's limit replaces
 (`coord::ask_limit` reads either). Readers (`Status::jobs`, the build page, the menu bar app) take
 `jobs`, else the old fields; a job not saying its slot (an older agent's) has its place in the
-list. An agent on another app than the lead's still gets nothing (409) until they match (plan.md
-§8, The same app): so a mixed pool is one whose coordinator doesn't check apps (a development
+list. An agent on another app than the lead's still gets nothing (409) until they match (docs/building.md
+§2, The same app): so a mixed pool is one whose coordinator doesn't check apps (a development
 build) or a member waiting for its update.
 
 **Disk reservations** (task #242). Each job granted carries the disk it's measured to take
@@ -364,7 +364,7 @@ step's, `needs::HALO_STEPS`: `pack` and `lo`, the most of its targets' rather th
 `pack` job takes one unit's map tiles (`build::by_unit`'s groups, each its own offer); `lo` stays
 one work of a pass's z3 tiles (the low zooms' gate opens for a pass as a whole). A `pack` or `lo`
 job's disk is its own: the parts of its halo's base packs it reads from the NAS, into its scratch,
-and its output (task #396; docs/plan.md, pack(T)); their runs and targets' disks from when their
+and its output (task #396; docs/steps.md §8); their runs and targets' disks from when their
 jobs copied whole base packs into a cache of the Mac's are dropped once, as `job-disks-v5.json`
 is first written (docs/formats.md). `depth-lo`'s (task #398, `coord::REMEASURED`): its job
 peaks and targets' measures past three times its targets' median and a GB (a 35 GB peak against
@@ -463,7 +463,7 @@ generated from it at build time.
 | answered | keeps the pass's answers (the lead's alone) |
 | write-set | the manifest names its jobs may change (`agent::steps::writes`, §7.3) |
 
-Rows of note: `trees`/`terrain`/`slope` per z6 tile with `*-lo` assemblies per z3 tile (plan.md §6);
+Rows of note: `trees`/`terrain`/`slope` per z6 tile with `*-lo` assemblies per z3 tile (docs/steps.md);
 `bldprep`/`bldtiles` per z6 tile, `bld-fetch` the lead's (docs/buildings3d.md §3.6); `inputs`, a
 target per unit, the lead's, planned before every other job (docs/inputs.md §4.3).
 
@@ -569,11 +569,11 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   restarts once every slot is free, each job given its own
   wait (its target under way's measured time, else its step's fit, else the 90th percentile of
   its step's runs, `needs::Book::secs_p90`, ×1.5, at most 3 h, at least 15 minutes); a job still
-  running then is left running, its lease kept, and the new agent takes it over (plan.md §8,
+  running then is left running, its lease kept, and the new agent takes it over (docs/building.md §2,
   Restarts), as after any restart but a quit. The new agent may start while the old one still
   holds the member lock: it tries the lock for up to two minutes, joining as it starts; past that
   it starts out of the pool, its jobs' leases still beaten with the lead, and restarts into the
-  pool at once when the lock comes free, its jobs left running for the next agent (plan.md §8,
+  pool at once when the lock comes free, its jobs left running for the next agent (docs/building.md §2,
   Joining after an update).
 - **Floors**, learned whatever the switch: the most a target held is its floor
   (`floors.json`, and the pool's state), rising only, tagged with whether it ran alone and the
@@ -598,7 +598,7 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   them (`Handoff::sizes`); the merge keeps those of the files the entry names, so a delta catalog
   never looks at them on the NAS. Entries from before carry none.
 - **Lease order holds:** an older lease's entry for targets a newer one set changes nothing.
-- **The journal is a log:** nothing is removed on merge. Planned (plan §10): GC of day folders over
+- **The journal is a log:** nothing is removed on merge. Planned (task #455): GC of day folders over
   a week old once every snapshot names their entries; `forget_before` already handles it.
 - **The lead lists the journal off its loop:** every day after take-up and daily, the last two days
   every ten minutes. Otherwise it reads the entries members tell it of. An entry unreadable for an
@@ -636,7 +636,7 @@ answers nothing and the job runs the task itself. With `state/pool/slots`, a mem
 term starts its coordinator in process, and a lead losing it stops its coordinator and duties,
 keeping its jobs running; without it, the agent restarts into its new part once its first slot is
 free. A lead whose update waits on its jobs hands the lead to a member already on the new app
-(plan.md §8, A newly installed app). The lead's own asks always carry its capacity, so the lead never
+(docs/building.md §2, A newly installed app). The lead's own asks always carry its capacity, so the lead never
 holds packing off for the pool (§7.1, Mixed versions); its heartbeat says whether the pool is all on
 the new app (`all_new`) for its members' heartbeats.
 
@@ -821,7 +821,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   process's as the next starts), no history, no background loop. The usual Origin rules hold. A
   history file written again in its place (its inode or first line changed) is read from its
   start, the events taken in already passed over. The menu bar's panel loads this Mac's own page
-  alone (docs/plan.md §8, Status).
+  alone (docs/building.md §2, Status).
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
   the lead's first, marked coordinator with its ramp (§7.1); its capacity as the coordinator last
   heard it (memory held of the guard's limit and free for more, cores busy, disk reserved and
@@ -898,7 +898,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   the leases and carried in the term's state) from every offer and the lead's own starts until it
   runs an app other than, and not older than, the one it was cancelled on; members get work only
   on the lead's app, so the Mac that takes it runs the newer. A cancelled job's slot is free, so
-  an update waiting on it (plan.md §8) restarts at once. The cancel is a `cancel` event in the
+  an update waiting on it (docs/building.md §2) restarts at once. The cancel is a `cancel` event in the
   history; `scenic status` shows it among the recent jobs ("Cancelled:") and each held target
   under Waiting.
 - **Pausing one Mac** (`crate::control::Hold`, task #224): `scenic pause --here` / `scenic resume

@@ -1,4 +1,4 @@
-//! Canada's lakes missing from OSM, map sheet by map sheet (docs/plan.md §6 Water, "Lakes filled
+//! Canada's lakes missing from OSM, map sheet by map sheet (docs/steps.md §4, "Lakes filled
 //! from Canada's own data"): the `lakefill` step's parts (pipeline::lakefill::run) one at a time,
 //! and checks of a fill. Scratch folders only: the step puts the fill in the build.
 //!

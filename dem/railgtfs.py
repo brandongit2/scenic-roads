@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Passenger rail service frequency from published timetables (GTFS): trains between consecutive
 stops on a typical weekday, for matching onto the OSM track network (`railfreq`). The `rail` job
-runs it (docs/plan.md §6, Rail service).
+runs it (docs/steps.md §10).
 
 Feeds (--feeds: railfeeds.py's list, in its order, each with `path`, its zip, and `fetched`, the day
 its timetable counts from), each read:

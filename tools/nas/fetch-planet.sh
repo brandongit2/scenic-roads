@@ -5,7 +5,7 @@
 # stopped; the file is checked against its MD5, then moved to sources/osm/<date>/planet.osm.pbf.
 # One run at a time; the log is state/logs/fetch-planet.log.
 # The repository's tools/nas/fetch-planet.sh is the source: tools/app/publish.sh copies it to the
-# NAS's nas/ folder (docs/plan.md §6, The OSM pass).
+# NAS's nas/ folder (docs/steps.md §1).
 set -u
 ROOT=/volume1/personal/projects/scenic-roads
 LIST=https://planet.openstreetmap.org/pbf/

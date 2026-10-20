@@ -1,5 +1,5 @@
 """The build agent's caches, read and written through one accessor: the Python steps' side of
-crates/store/src/cachefile.rs (docs/plan.md §8, Room on the disk), the same protocol, so the
+crates/store/src/cachefile.rs (docs/building.md §2, Room on the disk), the same protocol, so the
 agent's room-making may delete any cache file no job uses, at any moment, mid-job too.
 
 - A job holds each cache file it uses (`hold`): opened, with a shared flock on it, kept until the

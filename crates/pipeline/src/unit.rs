@@ -1,4 +1,4 @@
-//! base(U) (docs/plan.md §6): one unit's base pack, from its OSM piece, by the unit's programs run on
+//! base(U) (docs/steps.md): one unit's base pack, from its OSM piece, by the unit's programs run on
 //! a unit folder (`extract`, `elev`, `areaflags`, `tile … elev`, `scenic-metrics`), then its arrays as
 //! a base pack (`legacy::base_sections`) for the ways the unit owns (first
 //! vertex inside it) that touch the coverage, with the pass's worldwide road values.
@@ -1820,7 +1820,7 @@ mod tests {
         assert!(!local.join(DEM_UNITS).join("6-9-9.dem").exists() && !local.join("scenic-units/6-9-9").exists());
     }
 
-    /// Room-making mid-job (docs/plan.md §8, store::cachefile): the DEM seed, deleted as fast as it
+    /// Room-making mid-job (docs/building.md §2, store::cachefile): the DEM seed, deleted as fast as it
     /// can be while a unit job slices it, is copied again from the NAS and held for each unit: every
     /// slice is what it is left alone.
     #[test]

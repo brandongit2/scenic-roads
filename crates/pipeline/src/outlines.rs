@@ -1,4 +1,4 @@
-//! Administrative and ISO 3166 outlines (docs/plan.md §5 and §6, OSM pass step 8): what regions are
+//! Administrative and ISO 3166 outlines (docs/regions.md and docs/steps.md §1, step 8): what regions are
 //! made of (`osm:<relation>`), the areas modules apply by (ISO 3166-1 and -2), and the Regions
 //! panel's "areas containing this place".
 //!

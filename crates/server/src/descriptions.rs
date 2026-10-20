@@ -1,4 +1,4 @@
-//! Descriptions, live (docs/plan.md §7, docs/inputs.md §6.4): the descriptions' accepted version
+//! Descriptions, live (docs/names.md, docs/inputs.md §6.4): the descriptions' accepted version
 //! (the `.jsonl` files the input check took in), lines `{"qid": "Q243", "long": "…", "src": […]}`
 //! (or `{"id": "n123" | "w123" | "r123", …}` for things without a Wikidata item), `{"qid": …,
 //! "drop": true}` removing an earlier one. Later files (by path) win. Copied to this Mac like the

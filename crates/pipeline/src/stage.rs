@@ -1,5 +1,5 @@
 //! A unit's local copies of the global-source layers, in the files the unit's programs read
-//! (docs/plan.md §6, base(U)): `terrain.tiles` (z0–12) and the z11 grids (`grid.idx`,
+//! (docs/steps.md §6): `terrain.tiles` (z0–12) and the z11 grids (`grid.idx`,
 //! `grid.terrain.i16`, `grid.class.u8`, `grid.areas.u8`, and canopy and cover when the catalog has
 //! them), over the unit grown by a margin (viewsheds see 15 km past the unit's buffer ways).
 //!

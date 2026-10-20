@@ -1,5 +1,5 @@
 // The map app's service worker on another device (an iPhone, an iPad: main.ts registers it there,
-// not on the Macs, which have the data themselves). What it keeps (docs/plan.md §4, Devices):
+// not on the Macs, which have the data themselves). What it keeps (docs/macs.md, Devices):
 // - the page, from the Mac whenever it answers in time and well, else as kept;
 // - the app's scripts and styles (their names hashed), all of them as soon as a page is kept: the
 //   ones it names and the ones those name in turn (the map's workers), so the next start needs

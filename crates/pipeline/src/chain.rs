@@ -1,4 +1,4 @@
-//! The one chaining (docs/plan.md §6, docs/formats.md "Road values"): which ways form one road.
+//! The one chaining (docs/steps.md, docs/formats.md "Road values"): which ways form one road.
 //! Whole-road lengths, strokes, drives, the hover highlight, profiles and rail rides all use it.
 //!
 //! **Pairing.** At each node (a shared way end), way ends pair by mutual best continuation. Two ends

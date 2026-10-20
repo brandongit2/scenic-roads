@@ -1,4 +1,4 @@
-//! The depth layers' fallback (docs/plan.md §6, Depth): depth follows each source's own detail, so
+//! The depth layers' fallback (docs/steps.md §3): depth follows each source's own detail, so
 //! the deepest zoom stored varies from place to place (4 m surveys nearshore, the 15″ grid
 //! offshore, estimated lakes capped at z12). A tile the layer lacks is made from its nearest stored
 //! ancestor: that tile's part scaled up, bilinear in metres for depth (Terrarium PNG) and nearest

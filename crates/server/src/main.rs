@@ -1,4 +1,4 @@
-//! The map's server: tiles, layers and the APIs over the catalog's data (docs/plan.md §4).
+//! The map's server: tiles, layers and the APIs over the catalog's data (docs/macs.md).
 //!
 //! usage: server [--port 7311] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]
 //!               [--no-mirror | --mirror] [--listen <IPv4 address>]
@@ -221,7 +221,7 @@ impl AppState {
         let own: Option<serde_json::Value> =
             std::fs::read(self.home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let fresh = own.as_ref().and_then(|v| v["beat"].as_u64()).is_some_and(|b| now.saturating_sub(b) < 120);
-        // A helper on this Mac (docs/plan.md §8, Two Macs; a pool's member): its own status, fresh.
+        // A helper on this Mac (docs/building.md §2, Two Macs; a pool's member): its own status, fresh.
         let helper: Option<serde_json::Value> = std::fs::read(self.home.join("agent/helper.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())
@@ -661,7 +661,7 @@ fn layer_logical(cat: &store::catalog::Catalog, name: &str) -> Option<String> {
 /// English names and the layer files (with names attached, gzipped).
 /// Again whenever the catalog or the translations change.
 async fn warm(s: S) {
-    // Nothing until the map is first used: an idle server loads nothing (plan §1).
+    // Nothing until the map is first used: an idle server loads nothing (docs/surface.md).
     while !updater::in_use(u64::MAX) {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }

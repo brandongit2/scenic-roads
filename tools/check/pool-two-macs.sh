@@ -99,7 +99,7 @@
 #                                                   (the agent's test `seed_a_scratch_publish`, from
 #                                                   this repository), so the lead publishes it, its
 #                                                   map tiles granted to every Mac asking; publishing's
-#                                                   switches (plan.md §8), each `: > state/pool/<s>`
+#                                                   switches (docs/building.md §2), each `: > state/pool/<s>`
 #   pool-two-macs.sh stop <dir>                    the launcher and the agent stopped (the agent
 #                                                   by its pid, <dir>/agent.pid, which the launcher
 #                                                   writes, and logs, at each start)

@@ -1,4 +1,4 @@
-//! The build's forecast (docs/plan.md §8, The forecast; the worker page's road to done): when each
+//! The build's forecast (docs/building.md §2, The forecast; the worker page's road to done): when each
 //! step, each region and the whole build will be done, when each region reaches the map, when the
 //! cadenced publishes may next go out, and what each machine does next.
 //!
@@ -13,7 +13,7 @@
 //! a job an ask while a member runs an older app); the pages' lane (`helper`) the far end of the
 //! first shared step it can do (terrain's near end). Each lane starts with its slot's job under
 //! way. The trains' and the landmarks' chains run from the start, each step once what it reads is
-//! built. Publishing goes per unit (docs/plan.md §8, Publishing): each map tile of a region
+//! built. Publishing goes per unit (docs/building.md §2, Publishing): each map tile of a region
 //! (`RegionLeft::packs`, at its own measured time) is drawn once the units that draw it are built,
 //! ahead of the regions' work, and a catalog follows within the minute (build::CATALOG_EVERY_S):
 //! the region is all on the map then (none said once only slope and tree cover are left). The whole-map steps go by their cadence (`Forecast::publishes`:

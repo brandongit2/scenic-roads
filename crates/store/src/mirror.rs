@@ -1,4 +1,4 @@
-//! The per-Mac mirror (plan §4, "Mirror, per Mac"; docs/formats.md, "On each Mac"): the map's
+//! The per-Mac mirror (docs/macs.md, "Mirror, per Mac"; docs/formats.md, "On each Mac"): the map's
 //! files this Mac has downloaded, copied from the NAS under the same content names, so the map
 //! reads them mmapped and works away from home where they reach. Nothing is copied unless the
 //! owner downloaded it (the Regions panel: the World, zoomed out; a region; a view), and nothing
@@ -274,7 +274,7 @@ fn unreachable(e: &anyhow::Error) -> bool {
 
 impl Mirror {
     /// Opens (creating as needed) the mirror under `root`, the app's folder. `reserve_bytes` of
-    /// the disk stay free (plan §4: the owner's setting in the Regions panel, 30 GB unless set).
+    /// the disk stay free (docs/macs.md: the owner's setting in the Regions panel, 30 GB unless set).
     pub fn open(root: PathBuf, reserve_bytes: u64) -> Result<Mirror> {
         for d in ["mirror", "idx", "catalog"] {
             let p = root.join(d);
@@ -984,7 +984,7 @@ fn label(i: &Item) -> String {
     }
 }
 
-/// The logical names of the World download's files (plan §4, "Mirror, per Mac"): what the map
+/// The logical names of the World download's files (docs/macs.md, "Mirror, per Mac"): what the map
 /// needs to start and to draw anywhere zoomed out, and the small per-tile records any view's lists
 /// read. The worldwide files the build makes (`global/…`: rail frequencies, the road → units index,
 /// landmark totals, heritage summaries, roads' English names), the lakes filled from Canada's own

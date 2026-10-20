@@ -23,7 +23,7 @@ pub use roadcore::archive::tile_key;
 pub const MAGIC: &[u8; 8] = b"RDPACK01";
 /// The format version written.
 pub const VERSION: u32 = 1;
-/// The oldest version read (plan §8: readers take the current and the previous version).
+/// The oldest version read (docs/building.md §2: readers take the current and the previous version).
 pub const MIN_VERSION: u32 = 1;
 /// Flag bit 0: the blobs are gzip'd (served as is, with `Content-Encoding: gzip`).
 pub const FLAG_GZIP: u32 = 1;
@@ -89,7 +89,7 @@ pub struct PackStats {
     pub file_len: u64,
 }
 
-/// Writes a pack. Add tiles in a deterministic order (plan §8: the same inputs give the same
+/// Writes a pack. Add tiles in a deterministic order (docs/building.md §2: the same inputs give the same
 /// bytes); the index is sorted at `finish`. Until then the header's index offset is zero, so a
 /// half-written pack never parses. After an error the writer refuses further use.
 pub struct PackWriter {

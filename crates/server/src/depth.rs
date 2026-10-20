@@ -1,4 +1,4 @@
-//! The depth layers' tiles (docs/plan.md §6, Depth; docs/formats.md, Depth): `depth` (Terrarium PNG,
+//! The depth layers' tiles (docs/steps.md §3; docs/formats.md, Depth): `depth` (Terrarium PNG,
 //! metres below the water's surface) and `depth-class` (a byte a pixel: class, dries, source), as
 //! stored, or, where the layer stores none (depth follows each source's own detail), made from the
 //! nearest stored ancestor as the build scales a level up (pipeline::depth::fall). Outside the

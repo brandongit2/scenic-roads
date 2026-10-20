@@ -3,7 +3,7 @@
 //! others came from, what a request must name to be one of theirs (never a web page elsewhere's),
 //! the addresses others reach it by, whether `tailscale serve` proxies a port over HTTPS, and the
 //! tokens a service keeps (made once, readable by its owner alone). The lead's coordinator
-//! (crate::coord) and the map's server (crates/server, docs/plan.md §4) use them.
+//! (crate::coord) and the map's server (crates/server, docs/macs.md) use them.
 
 use anyhow::{Context, Result};
 use axum::http::{header, HeaderMap};

@@ -1,4 +1,4 @@
-//! Display names (docs/plan.md §7): each name gets a main label and an optional sub line: the
+//! Display names (docs/names.md): each name gets a main label and an optional sub line: the
 //! thing's own English, else its name's translation in the languages OSM gives it and those spoken
 //! where it is, from the user's translation files (the server's local copy of the NAS folder).
 //! `mvt` attaches them to vector tiles as they're served.

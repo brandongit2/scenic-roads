@@ -41,7 +41,7 @@ The map runs on each Mac at http://localhost:7311, installed by `tools/app/insta
 5. **Flags:** scenic route, viewpoint within 1 km, heritage within 500 m, parks, UNESCO/dark-sky areas, Indigenous lands, waterfront within 100 m.
 6. **Score:** each factor normalised to 0–1; score = Σ wᵢcᵢ / Σ max(wᵢ, 0), the same in the shader and the server.
 
-Rail frequencies come only from published timetables (GTFS feeds from the Mobility Database and operators, plus hand-researched files), matched onto OSM tracks (`docs/plan.md` §6). Ferry sailings come from GTFS, hand-checked timetables, or OSM `interval` + `opening_hours`; never estimated.
+Rail frequencies come only from published timetables (GTFS feeds from the Mobility Database and operators, plus hand-researched files), matched onto OSM tracks (`docs/steps.md`). Ferry sailings come from GTFS, hand-checked timetables, or OSM `interval` + `opening_hours`; never estimated.
 
 ## Building and running
 
@@ -55,7 +55,7 @@ The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the ma
 
 ## Docs
 
-- `docs/plan.md`: the design, the build's jobs and keys, and known gaps.
+- The design: `docs/surface.md` (what the user sees and does), `docs/building.md` (units, jobs, the scheduler and its order), `docs/storage.md` (the NAS), `docs/macs.md` (each Mac's agent, server and mirror), `docs/regions.md` (coverage and regions), `docs/steps.md` (each step in detail, its keys), `docs/names.md` (names and descriptions), `docs/sizes.md`. Phases, known gaps, risks and decisions are on the task board.
 - `docs/pipeline.md`: every build step as one row of one table (the concepts, the names, the checklist, the build page).
 - `docs/formats.md`: the files.
 - `docs/inputs.md`: the input drop boxes and their checks.
@@ -104,7 +104,7 @@ The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the ma
 | Heritage descriptions | English Wikipedia short descriptions; descriptions written by Claude from Wikipedia articles or register entries | CC BY-SA 4.0 (sources credited) |
 | Peak prominence & isolation | Computed from the terrain; OSM and Wikidata values preferred | Derived |
 
-**Terrain repair** (`roadcore::grid::repair_terrain`, in the `terrain` job). AWS's Terrain Tiles have voids and spurious towers and pits, mostly over water. One pass repairs only what is broken or undefined: voids (above 8,900 m or below −11,500 m); blobs standing over 100 m out of their ground, steeper than real terrain can be and far rougher than their surroundings; small steep spikes; ringing and walled patches where AWS's sources meet (`seam_spikes`, `walled_patches`). Each is filled with a harmonic surface from the ground around it. Summits, ridges, cliffs, islands, sea stacks, mesas and buttes stay; coarser zooms are rebuilt from the repaired finer tiles. North of 60°N the terrain is GLO-30's; everywhere the sea goes to 0 m and each lake to its shore's level, from the basemap's water (`terrain_north`, `terrain_water`, `docs/plan.md` §6).
+**Terrain repair** (`roadcore::grid::repair_terrain`, in the `terrain` job). AWS's Terrain Tiles have voids and spurious towers and pits, mostly over water. One pass repairs only what is broken or undefined: voids (above 8,900 m or below −11,500 m); blobs standing over 100 m out of their ground, steeper than real terrain can be and far rougher than their surroundings; small steep spikes; ringing and walled patches where AWS's sources meet (`seam_spikes`, `walled_patches`). Each is filled with a harmonic surface from the ground around it. Summits, ridges, cliffs, islands, sea stacks, mesas and buttes stay; coarser zooms are rebuilt from the repaired finer tiles. North of 60°N the terrain is GLO-30's; everywhere the sea goes to 0 m and each lake to its shore's level, from the basemap's water (`terrain_north`, `terrain_water`, `docs/steps.md`).
 
 The map's © Credits dialog lists each source as its catalog serves it (`CREDITS` in `crates/pipeline/src/rules.rs`, plus the inputs' own descriptions).
 

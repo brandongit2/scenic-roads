@@ -5,7 +5,7 @@
 # Opening Scenic then starts this Mac's build service (its agent, a member of the pool:
 # docs/pool.md), which it registers as its own login item; Scenic replaces itself on each update.
 # The menu bar item's and the agent's login items from before Scenic was an app
-# (local.scenic.status, local.scenic.agent) are removed: the switch-over (docs/plan.md §8, Scenic).
+# (local.scenic.status, local.scenic.agent) are removed: the switch-over (docs/building.md §2, Scenic).
 #
 #   tools/app/install.sh            the app (the switch-over, on a Mac that ran the login items)
 #   tools/app/install.sh --legacy   the login items as before Scenic was an app, Scenic.app

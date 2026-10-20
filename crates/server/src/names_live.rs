@@ -1,4 +1,4 @@
-//! Display names, live (docs/plan.md §7): the translations' accepted version (docs/inputs.md §6.3:
+//! Display names, live (docs/names.md): the translations' accepted version (docs/inputs.md §6.3:
 //! the files the input check took in) is copied from the NAS to this Mac (so it works offline and
 //! loads fast: crate::accepted), compiled by the `names` crate, and attached to everything the
 //! server serves. The records are read every minute, but only while the map is in use (a request

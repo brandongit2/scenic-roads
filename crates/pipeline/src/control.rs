@@ -1,4 +1,4 @@
-//! Pausing the build (docs/plan.md §8, Pausing): what a pause is, how a Mac asks for one, and the
+//! Pausing the build (docs/building.md §2, Pausing): what a pause is, how a Mac asks for one, and the
 //! channel a running job hears it on.
 //!
 //! One pause holds for every machine. The lead's coordinator keeps it (crate::coord: on its

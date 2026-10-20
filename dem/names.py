@@ -2,7 +2,7 @@
 when it truly differs from the name, not just in accents, case, punctuation or spacing (Montréal,
 Montreal). A heritage site's own English is UNESCO's (its register's `name_en`), else its English
 Wikipedia article's title when that's English. Any other English is the map's server's, from the
-translations' live tables as it serves the layers (crates/names, docs/plan.md §7): the `en` written
+translations' live tables as it serves the layers (crates/names, docs/names.md): the `en` written
 here is the thing's own, which the server shows first; a name with neither goes on the
 translations' to-do list (pipeline::namestodo).
 """

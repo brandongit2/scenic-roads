@@ -1,4 +1,4 @@
-//! The OSM pass (docs/plan.md §6): the planet, fetched onto the NAS, turned on the lead into
+//! The OSM pass (docs/steps.md): the planet, fetched onto the NAS, turned on the lead into
 //! what every later step reads: the filtered planet, pieces per z6 unit (10 km buffer, ways whole,
 //! multipolygons complete), the worldwide sets, the basemap, and worldwide road values.
 //!
@@ -787,7 +787,7 @@ pub fn run_pass(
             "--nodemap-type=sparsearray",
             "--only-layers=water,waterway,boundary,place,water_name,park",
             // The names' languages and their romanised forms and kana readings, for the thing's own
-            // English and the languages OSM gives its name (docs/plan.md §7); the 2026-09-28 pass's
+            // English and the languages OSM gives its name (docs/names.md); the 2026-09-28 pass's
             // basemap has en and fr alone.
             &format!("--languages={}", BASEMAP_LANGUAGES),
             "--maxzoom=14",
@@ -1188,7 +1188,7 @@ pub fn check_planetiler(jar: &Path) -> Result<()> {
     let v =
         buildinfo_version(&props).with_context(|| format!("no version in {}'s buildinfo.properties", jar.display()))?;
     let pinned = crate::water::PLANETILER_VERSION;
-    ensure!(v == pinned, "{} is Planetiler {v}, but the water layer was checked against Planetiler {pinned}'s z14 water (pipeline::water, docs/plan.md §6): check {v}'s with tools/coastcheck, then pin it", jar.display());
+    ensure!(v == pinned, "{} is Planetiler {v}, but the water layer was checked against Planetiler {pinned}'s z14 water (pipeline::water, docs/steps.md): check {v}'s with tools/coastcheck, then pin it", jar.display());
     Ok(())
 }
 

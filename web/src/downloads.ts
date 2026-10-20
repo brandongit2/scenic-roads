@@ -1,4 +1,4 @@
-// Downloads (docs/plan.md §4, "Mirror, per Mac"): what this Mac has downloaded for when it's away
+// Downloads (docs/macs.md, "Mirror, per Mac"): what this Mac has downloaded for when it's away
 // from the NAS (the World, zoomed out; regions; views), and the mirror's state (/api/downloads,
 // crates/server/src/downloads.rs). Nothing else is copied to this Mac, and nothing downloaded goes
 // until it's removed. The Regions panel (ui/regions.ts) shows them.

@@ -817,7 +817,7 @@ fn canopy_squares_from_the_store() {
     assert_eq!(std::fs::read(chm.join(chm_name(50, 0, "cover5m"))).unwrap(), t);
 }
 
-/// Room-making while tree cover runs (docs/plan.md §8, store::cachefile): the canopy squares a z3
+/// Room-making while tree cover runs (docs/building.md §2, store::cachefile): the canopy squares a z3
 /// run copies into the agent's cache are read by its blocks by name, and a square room-making
 /// deleted in between failed the run ("gone since this run found it"; a block not told which
 /// squares are there would read it as Meta's "none there"). Held as they're copied now: with

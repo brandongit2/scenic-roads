@@ -1,4 +1,4 @@
-//! Dated copies of the user's folders (docs/plan.md §3, Backups): `inputs/` (every drop box, the
+//! Dated copies of the user's folders (docs/storage.md, Backups): `inputs/` (every drop box, the
 //! translations and descriptions among them since #137) and the input check's acceptances (`state/inputs/accepted/`), kept 30 days under
 //! `state/backups/` on the NAS and mirrored to the lead.
 //!

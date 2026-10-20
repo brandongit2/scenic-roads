@@ -1,4 +1,4 @@
-//! Kana romanised by rule: modified Hepburn without macrons (docs/plan.md §7), for a thing whose
+//! Kana romanised by rule: modified Hepburn without macrons (docs/names.md), for a thing whose
 //! only English source is OSM's kana reading of its name (`name:ja-Hira`, `name:ja_kana`).
 //!
 //! - Long vowels lose their mark: おう, おお and うう are o, o and u (とうきょう Tokyo, おおさか

@@ -1,4 +1,4 @@
-//! The NAS I/O pool (plan §4, Server; §11, Hard SMB mounts). Every NAS filesystem operation
+//! The NAS I/O pool (docs/macs.md, Server; task #478). Every NAS filesystem operation
 //! (open, stat, list, read, write, rename) runs on one of a few worker threads while the caller
 //! waits with a timeout, so a stalled SMB mount can never hang a request.
 //!

@@ -1,5 +1,5 @@
 //! The terrain packs' indexes, for keys that name the terrain tiles a job reads by their contents
-//! (docs/plan.md §6, Job keys: a unit's, `build::unit_terrain`): a tile's XXH3 comes from its pack's
+//! (docs/steps.md §12: a unit's, `build::unit_terrain`): a tile's XXH3 comes from its pack's
 //! index (store::pack), never from the tile. Each index is read once by its pack's content name (two
 //! range reads: `PackIndex::read_from`) and kept in the agent's folder, `pack-idx/<hash16>.idx`
 //! (`PackIndex::to_bytes`): a content-named pack never changes, so a kept index is never stale. Not

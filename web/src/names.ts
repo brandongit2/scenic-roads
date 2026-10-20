@@ -1,4 +1,4 @@
-// Display names (docs/plan.md §7): each name has a main label and an optional sub line, which the
+// Display names (docs/names.md): each name has a main label and an optional sub line, which the
 // server works out (the user's translation files for the name's area, else the thing's own
 // English) and attaches to what it serves: `main` and `sub` properties on the features of the
 // basemap, label and layer files (main only where it differs from the name), and `main` and `sub`

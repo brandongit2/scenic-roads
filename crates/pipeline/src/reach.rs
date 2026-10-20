@@ -1,4 +1,4 @@
-//! Each unit's reach (docs/plan.md §5, Coverage): where the roads, rail and ferries of its OSM
+//! Each unit's reach (docs/regions.md, Coverage): where the roads, rail and ferries of its OSM
 //! piece go, worked out once per pass (`scenic-build reach`) and kept as `sources/osm/<date>/reach`.
 //! The planner picks the units to build by it and keys them on the coverage they read.
 //!

@@ -1,4 +1,4 @@
-// A row of a tree cover piece's z8 blocks as a page's task (docs/plan.md §6 Trees, docs/workers.md
+// A row of a tree cover piece's z8 blocks as a page's task (docs/steps.md §2, Trees, docs/workers.md
 // §3): its task folder cut from the NAS's coverage (`scenic-build treeblock-task`, as a piece's run
 // cuts it), then the `trees` program's `--blocks` run natively (on each thread count given), each
 // block alone natively (`--block`), as WebAssembly under Node's WASI (tools/check/wasi-run.mjs),

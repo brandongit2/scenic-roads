@@ -1,10 +1,10 @@
-//! Running one build job (docs/plan.md §4 and §8): a child process in its own process group, at
+//! Running one build job (docs/macs.md and docs/building.md §2): a child process in its own process group, at
 //! utility priority (`taskpolicy -c utility`), the Mac kept awake while it runs (`caffeinate -i -s
 //! -w`: no idle sleep, on battery too, and no sleep on mains power) but not while it's paused
 //! (`SIGSTOP` to the group while a condition it needs lapses; `SIGCONT` when it holds again), and
 //! stopped as a group.
 //!
-//! A job outlives its agent (docs/plan.md §8, Restarts): its record on disk names all an agent
+//! A job outlives its agent (docs/building.md §2, Restarts): its record on disk names all an agent
 //! needs to tend it (its spec, threads, log, and the slot's lease as the agent last saved it,
 //! `save_hand`), and a shell at the head of its group writes its exit status to a file beside the
 //! record (`status_path`), so the agent after it, not its parent, still learns how it ended. An

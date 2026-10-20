@@ -1,4 +1,4 @@
-//! Rail service (docs/plan.md §6, Rail service): trains a day on every rail way of the coverage,
+//! Rail service (docs/steps.md §10): trains a day on every rail way of the coverage,
 //! from the operators' timetables (GTFS) and the static timetables compiled by hand
 //! (crate::inputs::gtfs, docs/inputs.md §6.7.2: the MTR's lines among them), as `global/railfreq`;
 //! and the timetable feeds the ferries are counted from.

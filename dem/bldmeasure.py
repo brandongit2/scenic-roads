@@ -77,7 +77,7 @@ GHSL_TOP, GHSL_LEFT, GHSL_DEG = 89.09958317764332, -180.00791620856731, 10.0
 EQ = 40075016.68557849             # the equator (WGS84), m: a Web Mercator world unit there
 DEG_M = 6371008.8 * math.pi / 180  # a degree on the mean sphere, m
 EXTENT = 4096
-COVER_M = 1000.0                   # the coverage's buffer (plan.md §5)
+COVER_M = 1000.0                   # the coverage's buffer (docs/regions.md)
 EDGE_M = 310.0                     # the neighbours' 300 m, and some
 H_MIN, H_MAX = 2.0, 700.0          # a measured height taken (§2.3, rule 0)
 # Heights that are estimates, not measurements: left out of rule 1's fit, and scored apart.

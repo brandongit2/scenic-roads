@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The timetable feeds (GTFS) where the coverage is, each fetched once: those that run passenger
 rail (trains, metros, trams, funiculars) for the rail counter (railgtfs.py), and the ferry feeds for
-the ferry counter (ferrygtfs.py, run by the ferries job). The `rail-feeds` job runs it (docs/plan.md
-§6, Rail service) on the accepted declarations of inputs/timetables/feeds/ (docs/inputs.md §6.7.1,
+the ferry counter (ferrygtfs.py, run by the ferries job). The `rail-feeds` job runs it (docs/steps.md
+§10) on the accepted declarations of inputs/timetables/feeds/ (docs/inputs.md §6.7.1,
 --declarations: each as pipeline::inputs::feeds gives it, `facts.feed`).
 
 The feeds:

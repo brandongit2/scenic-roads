@@ -1,4 +1,4 @@
-"""How the map is built (docs/plan.md v7): OpenStreetMap comes from one worldwide download, cut by area; a region is
+"""How the map is built (docs/steps.md, docs/building.md): OpenStreetMap comes from one worldwide download, cut by area; a region is
 only an outline of what to build. Every step runs per area (a z6 tile), per z3 pack near the coverage, or once,
 worldwide; ⇄ marks the steps whose jobs any member of the pool may take, TASK the steps with parts any worker may run
 (docs/workers.md). Publishing puts each unit's map tiles on the map within minutes of its build. The curated inputs (sheets with a folded corner)

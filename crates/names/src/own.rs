@@ -1,4 +1,4 @@
-//! A thing's own English and the languages OSM gives its name, from its tags (docs/plan.md §7,
+//! A thing's own English and the languages OSM gives its name, from its tags (docs/names.md,
 //! step 1): what the vector tiles and the build's records carry about one thing.
 //!
 //! Its own English, in order:

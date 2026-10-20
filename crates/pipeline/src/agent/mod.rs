@@ -1,4 +1,4 @@
-//! The build agent (docs/plan.md §8): `scenic agent`, a login item on every Mac under the
+//! The build agent (docs/building.md §2): `scenic agent`, a login item on every Mac under the
 //! launcher. It works out what needs doing (leading), runs as many jobs at once as its lead's
 //! coordinator grants it (`job_slots`) when their conditions hold (power, the NAS), pauses each
 //! when they lapse, and writes a heartbeat the app shows.
@@ -77,7 +77,7 @@ pub struct Options {
     pub dry_run: bool,
     /// One loop, then exit (tests, `scenic agent --once`).
     pub once: bool,
-    /// A helper on another Mac (`scenic agent --helper`, docs/plan.md §8, Two Macs): it plans
+    /// A helper on another Mac (`scenic agent --helper`, docs/building.md §2, Two Macs): it plans
     /// nothing, but asks the lead's coordinator (crate::coord) for work that fits it, and
     /// reports to `state/helpers/<host>.json`, never the heartbeat.
     pub helper: bool,
@@ -789,7 +789,7 @@ pub struct Status {
     /// (the lead's: crate::agent::forecast).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forecast: Option<forecast::Forecast>,
-    /// Publishing as the lead last planned it, and why (build::PublishLine; docs/plan.md §8,
+    /// Publishing as the lead last planned it, and why (build::PublishLine; docs/building.md §2,
     /// Publishing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publishing: Option<build::PublishLine>,
@@ -866,7 +866,7 @@ pub struct CatalogSeen {
 }
 
 /// Publishing as it stands, for the build page's Publishing card and `scenic status` (the
-/// lead's; docs/plan.md §8, Publishing): the last catalog, whether it went with the low zooms
+/// lead's; docs/building.md §2, Publishing): the last catalog, whether it went with the low zooms
 /// (build::LastCatalog::low_at), the map tiles being drawn by Mac (pack's targets leased), and the
 /// catalog each Mac's map server last adopted (crate::pubtimes, the servers' log on the NAS).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -6147,7 +6147,7 @@ impl Agent {
 
     /// This Mac's caches for the status (room::Caches), `why` they can't be cleared now: what a clear
     /// would free, as last counted, each cache with about how long it takes to come back at the
-    /// NAS's speed here (measured: 60 MB/s on the LAN, 12 through Tailscale, plan §12).
+    /// NAS's speed here (measured: 60 MB/s on the LAN, 12 through Tailscale, task #484).
     fn caches_view(&self, why: Option<String>, home: bool, nas: bool) -> room::Caches {
         let sizes = self.cache_size.lock().unwrap().1.clone();
         room::Caches {
@@ -6588,7 +6588,7 @@ impl Agent {
         }
     }
 
-    /// The work there is, in order (docs/plan.md §8, Order).
+    /// The work there is, in order (docs/building.md §2, Order).
     /// A digest of what an idle agent's plan depends on, read cheaply: the build's records (the
     /// manifest, the jobs' keys, the hand-offs waiting), the gate's view of the inputs, the pool
     /// (membership, role, gates), its mode and switch, and the pause. Equal digests: the plan would
@@ -6767,7 +6767,7 @@ impl Agent {
         out
     }
 
-    /// The build steps for the regions, as jobs (docs/plan.md §8), in order: the newest pass's
+    /// The build steps for the regions, as jobs (docs/building.md §2), in order: the newest pass's
     /// worldwide jobs, each gated by its own inputs, then what `build::plan` finds stale (its
     /// chains), each step's targets in one run of `scenic-build`. The agent runs the first not
     /// waiting out a failure, so one failing job doesn't hold up the others.
@@ -9709,7 +9709,7 @@ impl Agent {
 
     /// A lead whose update waits on its own job (a newer app installed, a slot busy: it restarts
     /// into it only once both are free) hands the lead to a member already on that app, which the
-    /// same-app rule otherwise leaves idle meanwhile (docs/plan.md §8, The same app): asked once per
+    /// same-app rule otherwise leaves idle meanwhile (docs/building.md §2, The same app): asked once per
     /// app, as the owner's ask would be, if such a member can lead now.
     fn hand_for_update(&mut self) {
         let Some(newer) = self.pending_app() else { return };

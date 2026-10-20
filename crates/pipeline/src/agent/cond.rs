@@ -1,4 +1,4 @@
-//! A Mac's conditions (docs/plan.md §8, Interruptions): the NAS (and whether it answers by its LAN
+//! A Mac's conditions (docs/building.md §2, Interruptions): the NAS (and whether it answers by its LAN
 //! name: at home), the user at the keyboard, sleep; and its power, which no job waits on, for the
 //! status and for whether it may lead (crate::agent::lead: a lead on battery or away is offered to
 //! hand over).

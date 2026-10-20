@@ -71,7 +71,7 @@ offsets), then each point's lean JSON props back to back. The server attaches di
   at the request's `tz` don't keep, less those the client holds, at most 5,000.
 - `GET /api/marks/count?kind=…&q=…`: worldwide filtered counts.
 - `GET /api/marks/detail/{kind}/{id}?at=lon,lat`: the popup record with descriptions laid over
-  (plan §7), from the z6 tile of `at` or its neighbours (204 if none).
+  (docs/names.md), from the z6 tile of `at` or its neighbours (204 if none).
 - Requests carry the marks version (the marks files' content names and the translations' version);
   a mismatch is 409, and the client asks again after switching.
 - `GET /api/layer/summary`: the area overlays' counts.
@@ -117,7 +117,7 @@ records. `ferries.ts` merges blocks by id; in-view kilometres are measured on th
 
 ## Build
 
-The jobs form a chain without cycles; the landmark chain runs beside the roads chain (plan §8):
+The jobs form a chain without cycles; the landmark chain runs beside the roads chain (docs/building.md §2):
 
 | Job | Reads | Writes |
 |---|---|---|
@@ -126,7 +126,7 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 | `terrain-z8` (once; network) | AWS's raw z8 tiles | `sources/terrain-z8-v3` and `-v3-max` |
 | `summits` (per pass) | `summits` set, `terrain-z8` | `work/summits/<d>` |
 | `heritage-sites` (before the units) | the registers meeting the cover, the matches (docs/inputs.md §6.5), the pass's `areas` set, the coverage | `work/heritage/<d>/base/…` and per z6 tile slices |
-| `unit` | as plan §6, with the heritage slices within U + 30 km | the base pack |
+| `unit` | as docs/steps.md, with the heritage slices within U + 30 km | the base pack |
 | `pois` (per unit) | U's piece, `trailends`, the coverage | `work/pois/<u>` |
 | `peaks` (per unit; network) | U's peak candidates, `summits`, z12 within 30 km, `terrain-z8` | `work/peaks/<u>` |
 | `items` (per pass; network) | the current units' candidates' QIDs | `sources/items/<d>/{facts,views,meta}` |
@@ -145,7 +145,7 @@ content) and the static timetables' index, all `ovconv::ferries_job` reads. `pas
 `terrain-z8` run when their versioned outputs are missing. peaks (`agent::build::peaks_keys`) name
 the unit's candidates, the summits, `terrain-z8` and its max, the terrain hi packs within U + 30 km,
 and `TERRAIN_V` (raw tiles outside the packs are processed by its code), not the z12 tiles read
-(plan §12).
+(task #484).
 
 **Network jobs:** a tile or answer that can't be fetched fails the job (retried), never counts as
 "none".
@@ -178,7 +178,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   most twice that plus 300 m.
 - **`peaks`** (per unit, `pipeline::peaks`):
   - z12 is the pack's tile when the manifest has it, else AWS's raw tile repaired with no sources
-    (not GLO-30 nor the water: plan §10), read back from the PNG as stored. A unit's pack tiles
+    (not GLO-30 nor the water: task #465), read back from the PNG as stored. A unit's pack tiles
     are read in spans (neighbours under 256 KB apart together, up to 32 MB a read, 8 reads at
     once, each under a 2-minute deadline and retried after 2, 5, 15, 30 s when it fails
     transiently), and a job's next unit's are read while this one's peaks are measured
@@ -194,7 +194,7 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   first QID: the mean of the last November, February, May and August ended 20 days before the pass.
   Everything is fetched again each pass; between passes only QIDs not seen. Caches are appended
   5,000 items at a time. The answers are kept on the NAS (`sources/items/<d>/answers.tar.zst`:
-  plan §4, Downloads). meta holds the months and the fetch days. User-Agent "scenic-roads/0.1
+  docs/macs.md, Downloads). meta holds the months and the fetch days. User-Agent "scenic-roads/0.1
   (personal offline map)"; a 403 or failed batch fails the job.
 - **`marks`** (worldwide): reads the current units' pois and peaks from the manifest, builds
   `marksjob::Candidate`s, turns them into points (`marksjob::poi_points`), adds the heritage points,
@@ -238,7 +238,7 @@ docs/inputs.md §6.5.2), split into two jobs so the units never wait on Wikidata
 `markdata/` and `ovdata/` are catalog maps, so GC handles them. `work/` holds build intermediates,
 in no catalog: `work/pois/<u>`, `work/peaks/<u>`, `work/trailends/<d>`, `work/summits/<d>`,
 `work/heritage/<d>/…`, `work/marks/heritage-dots`. GC keeps what the manifest names; a retired pass's
-entries leave it when a newer pass completes, a unit's pois and peaks with the prune (plan §5,
+entries leave it when a newer pass completes, a unit's pois and peaks with the prune (docs/regions.md,
 Shrinking).
 
 ## Zoomed-out queries

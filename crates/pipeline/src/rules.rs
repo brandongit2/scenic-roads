@@ -1,4 +1,4 @@
-//! The unit steps' rules that depend on where a road is (docs/plan.md §5, By location), each with
+//! The unit steps' rules that depend on where a road is (docs/regions.md, By location), each with
 //! the areas it applies to and a version. A unit's key names the versions of the rules whose areas
 //! meet its reach, so a changed rule reruns only the units it applies to: change the rule, bump its
 //! version here (the code of each rule points back to this table).

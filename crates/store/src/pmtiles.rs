@@ -1,5 +1,5 @@
 //! A read-only PMTiles v3 reader (spec: github.com/protomaps/PMTiles, spec/v3/spec.md), for the
-//! basemap: Planetiler's worldwide archive, served tile by tile (plan §3). It reads through any
+//! basemap: Planetiler's worldwide archive, served tile by tile (docs/storage.md). It reads through any
 //! boxed `RangeRead`: the mirror's copy mmapped, or the NAS file through the I/O pool.
 //!
 //! An archive is a 127-byte header, a root directory, JSON metadata, leaf directories and tile

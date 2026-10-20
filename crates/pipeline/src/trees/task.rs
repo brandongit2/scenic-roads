@@ -1,5 +1,5 @@
 //! A row of a tree cover piece's zoom-8 blocks as a task (kind `treeblock`; docs/workers.md §3,
-//! docs/plan.md §6 Trees): the blocks of one z6 tile in one zoom-8 row, made together by the
+//! docs/steps.md §2, Trees): the blocks of one z6 tile in one zoom-8 row, made together by the
 //! `trees` program (`--blocks`, natively or as WebAssembly in a page). A row's blocks read the same
 //! canopy rows (a canopy square's strips are rows of its whole 10° width), so one worker reads each
 //! strip once for all of them.

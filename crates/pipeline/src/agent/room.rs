@@ -1,4 +1,4 @@
-//! Room on the disk (docs/plan.md §8, Room on the disk): the agent's local copies of what the NAS
+//! Room on the disk (docs/building.md §2, Room on the disk): the agent's local copies of what the NAS
 //! keeps, emptied before a job (`make_room`), after the build (`trim`) and on the owner's ask
 //! (`clear`).
 //!
@@ -74,7 +74,7 @@
 //! `heritage_remade`), each only as far as needed, the goal read again as it goes (lowered or
 //! off: it stops).
 //!
-//! Mid-job (docs/plan.md §8): room-making, a trim, a clear and a freeing toward the target act
+//! Mid-job (docs/building.md §2): room-making, a trim, a clear and a freeing toward the target act
 //! while jobs run. They never delete what a job uses: a job holds each cache file it uses
 //! (store::cachefile's shared flock), and a file goes only under an exclusive one taken without
 //! waiting (`store::cachefile::try_remove`; the DEM seed's three files together), so one in use is
@@ -335,7 +335,7 @@ pub struct Gone {
 
 /// What a clear would free (`Sizes::clear`), the most first, with how each cache comes back and
 /// about how long that takes, the NAS read at `mb_s` (MB/s; measured: 60 on the LAN, 12 through
-/// Tailscale, plan §12).
+/// Tailscale, task #484).
 pub fn gone(clear: &BTreeMap<String, u64>, mb_s: f64) -> Vec<Gone> {
     let time = |b: u64| match b as f64 / (mb_s * (1u64 << 20) as f64) {
         s if s < 5400.0 => format!("about {} min", (s / 60.0).ceil().max(1.0)),

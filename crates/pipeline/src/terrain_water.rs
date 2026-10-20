@@ -1,4 +1,4 @@
-//! Water flattened in the terrain (docs/plan.md §6, Terrain): the sea to 0 m and each lake or
+//! Water flattened in the terrain (docs/steps.md §2, Terrain): the sea to 0 m and each lake or
 //! reservoir to its shore's level, from OSM's water as the pass's basemap draws it (its `water`
 //! layer: the sea from the pinned water polygons, `sources/basemap/water-polygons-split-3857.zip`;
 //! lakes, ponds, reservoirs and docks from the pass's OSM, each with its OSM id). AWS fills water its
@@ -183,7 +183,7 @@ pub fn polys_of_mvt_with(mvt: &[u8], z: u8, x: u32, y: u32, rivers: bool) -> Res
 }
 
 /// The key of a lake without an OSM id, feature `k` of tile z/x/y: meant to be its tile's own, but
-/// not always (docs/plan.md §10): from the tile's 16th feature on, `k`'s bits meet `y`'s, so two
+/// not always (task #464): from the tile's 16th feature on, `k`'s bits meet `y`'s, so two
 /// tiles of a column can give two lakes one key, and a piece's run would gather them as one lake
 /// (one level). The live basemap's lakes all have ids (none keyed so in the 398 pieces near the
 /// coverage, 9 Oct 2026); kept as it is until the terrain's version changes anyway.
@@ -819,7 +819,7 @@ pub mod tests {
         assert!(!water_tile(&[square(Kind::River, OWN, 0.0, 0.0, 10.0, 10.0)]).is_empty());
     }
 
-    /// Pins the own keys as they are (docs/plan.md §10): one tile's are distinct, but feature 16 of
+    /// Pins the own keys as they are (task #464): one tile's are distinct, but feature 16 of
     /// a tile and feature 0 of the tile below it in its column share one.
     #[test]
     fn own_keys_as_they_are() {

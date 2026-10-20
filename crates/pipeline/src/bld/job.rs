@@ -3,7 +3,7 @@
 //! `layers/buildings/hi/6-x-y`, a z8 area at a time.
 //!
 //! - **Which:** a building or part touches the coverage when its centroid or one of its vertices
-//!   is inside it (with the 1 km buffer of `osm:` outlines), as a way does (plan.md §5). Its
+//!   is inside it (with the 1 km buffer of `osm:` outlines), as a way does (docs/regions.md). Its
 //!   country, which the fill's fits go by, is that of its centroid's shape (`Coverage::shape_at`:
 //!   the first outline holding it, else the first buffer reaching it), else its first vertex's
 //!   with one (`Shape::country`; the coverage's fits where it's unknown).

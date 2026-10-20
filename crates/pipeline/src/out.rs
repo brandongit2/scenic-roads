@@ -1,4 +1,4 @@
-//! Where build steps put their outputs: the NAS project folder (docs/plan.md §3), as immutable
+//! Where build steps put their outputs: the NAS project folder (docs/storage.md), as immutable
 //! content-named files, with a build manifest (logical name → file) the catalog is made from.
 //!
 //! A file is first written locally (this Mac's SSD), hashed, then copied to `<name>.tmp` on
@@ -8,7 +8,7 @@
 //!
 //! Several steps may run at once on the lead (the agent's job and a manual one): each records
 //! its own changes and merges them into the manifest on disk under this Mac's lock (`BuildLock`)
-//! when it saves. A helper's job on the other Mac (docs/plan.md §8, Two Macs; `SCENIC_HANDOFF`)
+//! when it saves. A helper's job on the other Mac (docs/building.md §2, Two Macs; `SCENIC_HANDOFF`)
 //! saves its changes as hand-offs instead (crate::handoff), which the lead's agent merges: the
 //! lead alone writes the manifest.
 

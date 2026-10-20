@@ -1,4 +1,4 @@
-"""Room-making mid-job for the Python steps (docs/plan.md §8, dem/cachefile.py): pageviews.py
+"""Room-making mid-job for the Python steps (docs/building.md §2, dem/cachefile.py): pageviews.py
 looks up the months' indexes again and again (each copied here from the NAS when it isn't here),
 while every cache file no job holds is deleted as fast as it can be in another process; every
 lookup gives what the first did. (Run by crates/pipeline's cache chaos test, or alone:

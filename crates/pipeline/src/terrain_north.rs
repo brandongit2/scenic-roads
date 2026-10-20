@@ -1,5 +1,5 @@
-//! The terrain north of 60°N from the dataset declared for it, Copernicus DEM GLO-30 (docs/plan.md
-//! §6, Terrain; docs/inputs.md §6.8; crate::terrain_sources). AWS's Terrain Tiles mix sources there: one with ellipsoidal
+//! The terrain north of 60°N from the dataset declared for it, Copernicus DEM GLO-30 (docs/steps.md
+//! §2, Terrain; docs/inputs.md §6.8; crate::terrain_sources). AWS's Terrain Tiles mix sources there: one with ellipsoidal
 //! heights (ArcticDEM's, most likely) beside sea-level ones, so lakes and patches stand the geoid's
 //! height (10–50 m) above or below the land around them in steps ("Minecraft" terraces, plateaus),
 //! and water missing from the detailed source is filled from a coarse one that blurs the hills into

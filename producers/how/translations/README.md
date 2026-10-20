@@ -1,6 +1,6 @@
 # Translations: how they're made
 
-English for names on the map that have none of their own (docs/inputs.md §6.3, plan.md §7).
+English for names on the map that have none of their own (docs/inputs.md §6.3, docs/names.md).
 
 ## New translations (on request)
 

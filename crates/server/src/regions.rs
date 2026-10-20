@@ -1,4 +1,4 @@
-//! Regions and the areas they're made of (docs/plan.md §1, the Regions panel; §5).
+//! Regions and the areas they're made of (docs/surface.md, the Regions panel; docs/regions.md).
 //!
 //!   GET    /api/regions             the region files in inputs/regions on the NAS, in every folder,
 //!                                   each with its path and its state in the input check (accepted,

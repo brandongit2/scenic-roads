@@ -1,4 +1,4 @@
-//! The map on other devices: an iPhone, an iPad (docs/plan.md §4, Devices). The server listens
+//! The map on other devices: an iPhone, an iPad (docs/macs.md, Devices). The server listens
 //! beyond this Mac and answers this Mac, its LAN and the tailnet alone, also through a proxy on
 //! this Mac (`tailscale serve`), from those alone (pipeline::net::reached).
 //!

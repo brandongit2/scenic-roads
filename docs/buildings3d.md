@@ -8,7 +8,7 @@ fill-extrusion (meshes, z14 tiles) and far by a ray-marched density field (§4.8
 
 Code: `dem/bldfetch.py`, `dem/bldprep.py`, `pipeline::bld` (prep, fill, tiles, field, job, task),
 `agent::build` (`bld_targets`, `bld_work`), `web/src/buildings.ts`, `web/src/bldfield.ts`.
-Companions: `docs/plan.md` (pipeline, keys, order), `docs/formats.md` (bytes), `docs/workers.md` and
+Companions: `docs/steps.md` (pipeline, keys), `docs/building.md` (order), `docs/formats.md` (bytes), `docs/workers.md` and
 `docs/pool.md` (sharing the work).
 
 ## 1. What the map shows
@@ -18,7 +18,7 @@ Companions: `docs/plan.md` (pipeline, keys, order), `docs/formats.md` (bytes), `
   with parts (`has_parts`) isn't extruded (Simple 3D Buildings); an outline none of whose parts are
   in the files is drawn as a building. Flat roofs only. Underground buildings are left out.
 - **Where:** every building touching the coverage (any vertex inside it, with its 1 km buffer, as a
-  way: plan.md §5). Where the coverage ends, buildings end.
+  way: docs/regions.md). Where the coverage ends, buildings end.
 - **Zooms:** meshes from z14 tiles alone, wherever MapLibre's cover takes z14 tiles (from map zoom
   14, and nearer the camera of a tilted view below it); above z14 the z14 tiles are drawn whole up
   to zoom 19.5 (§4.1). Elsewhere the field (§4.8), on by default where the catalog has the layer
@@ -178,7 +178,7 @@ No unit's key reads any of them.
   cold start (docs/pool.md §7.7), as many tiles as fit a quarter of an hour by their measured
   times (`coord::JOB_S`).
 - **Publishing:** buildings hold no region's readiness; their packs go out with the next catalog,
-  at most one a minute (plan.md §8).
+  at most one a minute (docs/building.md §2).
 - **Status:** the checklist's "3D buildings" stage, its steps "Buildings' sources", "Buildings
   read", "3D buildings", "3D buildings, zoomed out" (docs/pipeline.md §3). The forecast
   chains `bldtiles` after `bldprep` and `bldfield-lo` after `bldtiles` (`forecast::chain_deps`).
@@ -214,7 +214,7 @@ docs/formats.md has the bytes. In brief:
   GHSL (CC BY 4.0), as their declarations' descriptions credit them once accepted (docs/inputs.md
   §4.8, §6.9); `CREDITS`' entries stand until then, a test tying Overture's to the staged
   declaration's release.
-- Nothing is published or redistributed (plan.md §3).
+- Nothing is published or redistributed (docs/storage.md).
 
 ### 3.6 Sharing the work
 
@@ -242,7 +242,7 @@ docs/formats.md has the bytes. In brief:
 
 ### 3.7 Determinism
 
-Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8): parquet decoded by the
+Same inputs, same bytes, on any machine and in WebAssembly (docs/building.md §2): parquet decoded by the
 pinned pyarrow and shapely of `dem/`, every derived number computed in Rust (E7 by
 `(v * 1e7).round()`, Mercator by `det`, f64 in a fixed order); heights as integer decimetres; a
 median of an even count takes the lower middle; ties by id; records by (z14 tile, id), features by

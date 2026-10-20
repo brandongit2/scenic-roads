@@ -1,4 +1,4 @@
-//! A block of depth tiles composed from the depth sources (docs/plan.md §6, Depth): up to 8 × 8
+//! A block of depth tiles composed from the depth sources (docs/steps.md §3): up to 8 × 8
 //! tiles of one zoom with a margin of `PAD` pixels, on the basemap's own water as the terrain
 //! flattens it (crate::terrain_water).
 //!

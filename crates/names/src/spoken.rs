@@ -1,4 +1,4 @@
-//! The languages spoken where a thing is (docs/plan.md §7): the only place location enters the
+//! The languages spoken where a thing is (docs/names.md): the only place location enters the
 //! names. They set the order a name's translations are looked up in, and which to-do list a name
 //! goes on.
 //!

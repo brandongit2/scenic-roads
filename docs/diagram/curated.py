@@ -1,7 +1,7 @@
 """The curated inputs: what a person or an AI agent made by hand (research, curation, agents' writing, hand downloads,
 hand-run steps), not a deterministic job or configuration in the code. For each: what it feeds, who or what makes it, where
 it lives, where its method is written down, and what making it again would take today. The owner's starting point for
-standardising them (9 Oct 2026). Kept to what's true on main; each drop box's how/ (docs/inputs.md §8) and plan.md §6
+standardising them (9 Oct 2026). Kept to what's true on main; each drop box's how/ (docs/inputs.md §8) and docs/steps.md
 "Hand-made inputs" say how each is made."""
 from html import escape as E
 
@@ -18,7 +18,7 @@ GROUPS = [
          'that repository’s rules and brief, or translating again from the to-do lists'),
         ('doc', None, 'base', 'New translations',
          'as above, within a minute or two of a drop',
-         'Claude agents on request (Haiku, per plan.md §7), from the names-todo job’s lists; a pilot, then checks',
+         'Claude agents on request (Haiku, per docs/names.md), from the names-todo job’s lists; a pilot, then checks',
          'NAS translations/ (any folder but todo/)',
          'tools/names/translations-todo.md (the brief, as translations/todo/README.md) and check.py; the model, batch sizes and pilot in its how/',
          'agents on translations/todo/*.jsonl with the brief, then check.py'),
@@ -30,7 +30,7 @@ GROUPS = [
          'the new brief on the to-do list; the same set again: the old briefs, and the Wikipedia extracts in the heritage chain’s answers (desc/)'),
         ('doc', None, 'base', 'New descriptions',
          'as above',
-         'Claude agents on request (Sonnet, per plan.md §7), from descriptions/todo/',
+         'Claude agents on request (Sonnet, per docs/names.md), from descriptions/todo/',
          'NAS descriptions/',
          'tools/names/descriptions-todo.md (the brief: 55 words, sources credited); the model in its how/',
          'agents on descriptions/todo/*.jsonl with the brief'),
@@ -50,7 +50,7 @@ GROUPS = [
          'trains a day in Hong Kong (the rail job counts its count rows)',
          'Claude research on mtr.com.hk; producers/timetables/mtr.py, by hand; the input check',
          'NAS inputs/timetables/gtfs/mtr.zip (the research in its how/mtr.json)',
-         'its how/ and plan.md §6 (the commands); each line’s source and month; no research brief',
+         'its how/ and docs/steps.md (the commands); each line’s source and month; no research brief',
          'the research again, then mtr.py (it needs a Hong Kong stations extract) and drop the zip'),
     ]),
     ('Chosen, researched or downloaded by hand', [
@@ -58,7 +58,7 @@ GROUPS = [
          'the coverage: what every step builds',
          'you, as files in the drop box: OSM boundaries and shapes each',
          'NAS inputs/regions/ (88; backed up daily)',
-         'plan.md §5; its how/',
+         'docs/regions.md; its how/',
          'nothing: they are the definition'),
         ('part', None, 'place', 'Heritage registers',
          'heritage sites and chain: heritage landmarks, the area overlays, the areas’ flags',
@@ -70,7 +70,7 @@ GROUPS = [
          'the basemap, and from it the water, the terrain’s water and labels',
          'downloaded by hand: the jar (0.10.2), Natural Earth, the water polygons, lake centrelines',
          'NAS sources/basemap/',
-         'plan.md §6 (the pins; a new jar waits for the shoreline check); no URL or date for the data',
+         'docs/steps.md (the pins; a new jar waits for the shoreline check); no URL or date for the data',
          'the same versions fetched again, or new ones checked by tools/coastcheck'),
         ('part', None, 'terr', 'Which DEM where',
          'roads’ elevations (elev): HRDEM, 3DEP, MRDEM in North America, GSI in Japan, FABDEM elsewhere',
@@ -94,13 +94,13 @@ GROUPS = [
          'rail-feeds: which feeds there are (1,545 checked)',
          'the Mobility Database’s list, downloaded once and put on the NAS by hand',
          'NAS sources/rail/',
-         'plan.md §6 (the put); fetching it again every ~6 months is planned',
+         'docs/steps.md (the put); fetching it again every ~6 months is planned',
          'the catalogue downloaded again'),
         ('part', None, 'net', 'Keys',
          'rail-feeds (Singapore’s LTA); ODPT and TDX planned',
          'you: accounts made by hand',
          'NAS inputs/keys.env',
-         'which keys: plan.md §6; not how each was got',
+         'which keys: docs/steps.md; not how each was got',
          'the accounts again'),
     ]),
     ('Being deleted', [

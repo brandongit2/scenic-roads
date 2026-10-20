@@ -1,4 +1,4 @@
-//! Terrai tiles (docs/plan.md §6, global-source layers): AWS's Terrarium tiles, repaired.
+//! Terrai tiles (docs/steps.md, global-source layers): AWS's Terrarium tiles, repaired.
 //!
 //! Levels are made finest first: each tile is repaired (voids, towers and pits:
 //! `roadcore::grid::repair_terrain`; then bathymetry to sea level), the pixels above a repaired one
@@ -48,7 +48,7 @@ pub fn fetch(agent: &ureq::Agent, url: &str, z: u8, x: u32, y: u32) -> Option<Ve
     None
 }
 
-/// What the terrain is made from besides AWS's tiles (docs/plan.md §6, Terrain): GLO-30 north of
+/// What the terrain is made from besides AWS's tiles (docs/steps.md §2, Terrain): GLO-30 north of
 /// 60°N (crate::terrain_north), OSM's water (crate::terrain_water), and AWS's z9 tiles for the
 /// walled patches' rule (roadcore::grid::walled_patches). None of them: AWS's tiles repaired alone.
 #[derive(Clone, Copy, Default)]
@@ -244,7 +244,7 @@ impl Prepared {
     }
 }
 
-/// A tile's elevations made (docs/plan.md §6, Terrain), but for its water: the pixels above the
+/// A tile's elevations made (docs/steps.md §2, Terrain), but for its water: the pixels above the
 /// changed ones below made again from them (`below`, the four children's changes: their 2×2
 /// means); from REBUILD_Z down, each quarter whose child tile exists made again whole from it
 /// (`quads`: AWS's coarse levels come from coarser sources, and lost peaks: Fuji's summit pixel
@@ -1757,7 +1757,7 @@ pub fn makes_hi(cov: &Coverage, t: (u32, u32)) -> bool {
 }
 
 /// Drops z6 tile `t`'s terrain hi pack and mid from the manifest (a piece the coverage has left:
-/// docs/plan.md §5, Shrinking), saving it; how many it had.
+/// docs/regions.md, Shrinking), saving it; how many it had.
 pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> anyhow::Result<usize> {
     let n = drop_named(out, &[format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1)]);
     out.save()?;
@@ -1765,7 +1765,7 @@ pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> anyhow::Result<usize> {
 }
 
 /// Drops z3 tile `q`'s terrain lo pack from the manifest (a "none" assembly: the coverage has left
-/// the z3 tile, docs/plan.md §5, Shrinking), saving it; how many it had.
+/// the z3 tile, docs/regions.md, Shrinking), saving it; how many it had.
 pub fn drop_lo(out: &mut Out, q: (u32, u32)) -> anyhow::Result<usize> {
     let n = drop_named(out, &[format!("layers/terrain/lo/3-{}-{}", q.0, q.1)]);
     out.save()?;
@@ -2423,7 +2423,7 @@ pub(crate) mod tests {
         assert_eq!(now, before, "the same packs, byte for byte (their content names)");
     }
 
-    /// Room-making mid-job (docs/plan.md §8, store::cachefile): a terrain run whose raw tiles come
+    /// Room-making mid-job (docs/building.md §2, store::cachefile): a terrain run whose raw tiles come
     /// from the NAS (half loose there, half in their area's archives), while every file of its
     /// cache no job holds is deleted as fast as it can be, makes the same packs, byte for byte, as
     /// a run left alone.
@@ -2567,7 +2567,7 @@ pub(crate) mod tests {
         assert_eq!(busy, calm, "each piece's packs the same, byte for byte (their content names)");
     }
 
-    /// The timed demonstration (docs/plan.md §8, Room on the disk; run by hand: `cargo test
+    /// The timed demonstration (docs/building.md §2, Room on the disk; run by hand: `cargo test
     /// --release -p pipeline demo_room_making_mid_job -- --ignored --nocapture`, scratch dir in
     /// SCENIC_DEMO_DIR, else a temporary one): a scratch agent cache holding copies of a scratch
     /// NAS's files (SCENIC_DEMO_MB of them, 1024 by default) and a terrain run reading its raw tiles

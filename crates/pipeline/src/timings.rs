@@ -1,4 +1,4 @@
-//! A job's timings (docs/plan.md §8, Timings; the record: docs/formats.md, timings.jsonl): its run
+//! A job's timings (docs/building.md §2, Timings; the record: docs/formats.md, timings.jsonl): its run
 //! broken into named phases, each with its wall time, its CPU time (user + system, the process's
 //! and its finished children's), its class (what it waits on: the NAS, the network, the local disk,
 //! the CPU, a lock or another worker) and, for I/O, the bytes and files it moved.
@@ -151,7 +151,7 @@ pub struct Gap {
     pub n: u64,
 }
 
-/// A run's untimed share past which the report flags it (docs/plan.md §8, Timings: under about 5 %).
+/// A run's untimed share past which the report flags it (docs/building.md §2, Timings: under about 5 %).
 pub const UNACCOUNTED_MAX: f64 = 0.05;
 /// A gap shorter than this isn't kept (a phase's close and the next's open).
 const GAP_MIN_NS: u64 = 1_000_000;

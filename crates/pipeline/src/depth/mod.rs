@@ -1,4 +1,4 @@
-//! Depth under the water (docs/plan.md §6, Depth; docs/inputs.md §6.10): the depth layers, split by
+//! Depth under the water (docs/steps.md §3; docs/inputs.md §6.10): the depth layers, split by
 //! tile like the terrain, from the declared depth sources' grids.
 //!
 //! - **`depth`** (Terrarium PNG, 256 px): depth below the water's surface in metres, negative (the

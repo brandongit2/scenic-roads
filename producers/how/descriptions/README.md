@@ -1,7 +1,7 @@
 # Descriptions: how they're made
 
 Short descriptions of landmarks, heritage sites and areas for the map's popups (docs/inputs.md §6.4,
-plan.md §7). Each line credits its sources (`src`: title and URL).
+docs/names.md). Each line credits its sources (`src`: title and URL).
 
 ## New descriptions (on request)
 

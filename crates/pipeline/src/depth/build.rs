@@ -1,4 +1,4 @@
-//! The depth steps (docs/plan.md §6, Depth): `depth-lo`, a z3 tile's zoomed-out levels, then
+//! The depth steps (docs/steps.md §3): `depth-lo`, a z3 tile's zoomed-out levels, then
 //! `depth`, a z6 tile's fine levels, each composed block by block (crate::depth::compose) and
 //! written as packs of the two layers (`depth`, `depth-class`), like the terrain's.
 //!

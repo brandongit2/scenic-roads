@@ -1,4 +1,4 @@
-"""Where the data lives (docs/plan.md v7 §3): the NAS holds everything; the lead (the M4 today) alone merges the
+"""Where the data lives (docs/storage.md): the NAS holds everything; the lead (the M4 today) alone merges the
 journal into the build's records, and every member's jobs put their files there (workers.py); what was made by hand
 goes into inputs/, translations/, descriptions/ and sources/ (the curated inputs: page.py); the app Macs run the
 published app and copy what you download."""

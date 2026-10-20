@@ -1,4 +1,4 @@
-//! Slope tiles per pack (docs/plan.md §6, global-source layers): slope in percent from the
+//! Slope tiles per pack (docs/steps.md, global-source layers): slope in percent from the
 //! terrain's z12 (Horn's method with neighbouring tiles), not stored; z11 and coarser stored, each
 //! pixel the four quarters of the slopes beneath it (`roadcore::slope::merge4`), or where no finer
 //! level covers it, the slope of its own level's terrain. Today's `slope` step does the same over a
@@ -291,7 +291,7 @@ pub fn hi_logical(x: u32, y: u32) -> String {
 }
 
 /// Drops z6 tile `t`'s slope hi pack and mid from the manifest (a piece the coverage has left:
-/// docs/plan.md §5, Shrinking), saving it; how many it had.
+/// docs/regions.md, Shrinking), saving it; how many it had.
 pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> Result<usize> {
     let n = crate::terrain_pack::drop_named(out, &[hi_logical(t.0, t.1), mid_logical(t.0, t.1)]);
     out.save()?;

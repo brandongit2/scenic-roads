@@ -18,7 +18,7 @@ use xxhash_rust::xxh3::Xxh3Default;
 pub const MAGIC: &[u8; 8] = b"RDSECT01";
 /// The format version written.
 pub const VERSION: u32 = 1;
-/// The oldest version read (plan §8).
+/// The oldest version read (docs/building.md §2).
 pub const MIN_VERSION: u32 = 1;
 /// Sections start at multiples of this.
 pub const ALIGN: u64 = 64;

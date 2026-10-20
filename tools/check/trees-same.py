@@ -1,5 +1,5 @@
 """The tree cover tiles of a few zoom-8 blocks from real data, made by dem/trees.py and by its Rust
-port (the `trees` program), compared tile by tile (docs/plan.md §6, Trees): which tiles each made,
+port (the `trees` program), compared tile by tile (docs/steps.md §2, Trees): which tiles each made,
 then per layer how many are the same bytes, how many the same pixels, and the largest difference of
 a decoded value elsewhere. Then zoom 7–4 over those blocks (trees.py's `lower_zooms` against `trees
 --assemble`). The port runs on each thread count given, its files compared byte for byte; with

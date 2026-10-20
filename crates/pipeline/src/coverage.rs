@@ -1,4 +1,4 @@
-//! Coverage (docs/plan.md §5): the union of the regions' outlines. A feature is built if it touches
+//! Coverage (docs/regions.md): the union of the regions' outlines. A feature is built if it touches
 //! the coverage (for a way: any vertex inside, as Geofabrik does).
 //!
 //! Each outline becomes a [`Shape`]: its rings, a buffer (1 km for `osm:` outlines, so piers and

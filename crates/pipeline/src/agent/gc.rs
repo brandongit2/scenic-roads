@@ -1,4 +1,4 @@
-//! Removing replaced files from the NAS (docs/plan.md §3, GC): every content-named file that
+//! Removing replaced files from the NAS (docs/storage.md, GC): every content-named file that
 //! neither the newest catalog, nor a catalog of the last `keep_days`, nor the build's manifest
 //! nor (with the pool) its newest records or a journal entry they don't reflect yet (`unmerged`)
 //! references, and that is itself older than `keep_days`; abandoned `.tmp` files; old catalogs.

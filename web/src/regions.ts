@@ -1,4 +1,4 @@
-// Regions (docs/plan.md §1, §5), read only: the server's list of the region files (/api/regions),
+// Regions (docs/surface.md, docs/regions.md), read only: the server's list of the region files (/api/regions),
 // the outlines of the administrative areas they're made of (/api/areas/{id}), and the coverage the
 // map's catalog was built for, drawn on the map (/api/coverage). The panel is ui/regions.ts.
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';

@@ -1,4 +1,4 @@
-//! The display rule (docs/plan.md §7) and the translation lines it reads.
+//! The display rule (docs/names.md) and the translation lines it reads.
 //!
 //! A name shows as a **main** label and an optional smaller **sub** line. A thing's English, in
 //! order:

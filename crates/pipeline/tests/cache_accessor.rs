@@ -1,5 +1,5 @@
 //! The build agent's caches are read only through their accessor (store::cachefile;
-//! dem/cachefile.py): a guard for docs/plan.md §8's room-making mid-job. Every function outside
+//! dem/cachefile.py): a guard for docs/building.md §2's room-making mid-job. Every function outside
 //! tests that names a cache path (`MARKERS`) uses the accessor, or is listed in `EXEMPT` with why
 //! it may not: it builds a job's arguments, counts, or the path isn't the agent's cache at all.
 //! A new reader of the caches fails here until it's routed through the accessor (or, if it truly

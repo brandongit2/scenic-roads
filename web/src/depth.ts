@@ -1,4 +1,4 @@
-// Depth under the water, seas and lakes (docs/plan.md §6, Depth), as two layers, each with its
+// Depth under the water, seas and lakes (docs/steps.md §3), as two layers, each with its
 // own switch (Layers → Depth):
 //
 // 1. Depth colour and floor shading: a colour-relief and a hillshade layer over raster-dem

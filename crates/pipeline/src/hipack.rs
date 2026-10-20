@@ -1,4 +1,4 @@
-//! Per-area packs from base packs (docs/plan.md §6): pack(T) for a z6 tile T (road and rail tiles
+//! Per-area packs from base packs (docs/steps.md): pack(T) for a z6 tile T (road and rail tiles
 //! z9–14, and hidata: the ways drawn here, query parts, rail lines) and lo packs for a z3 tile (road
 //! and rail tiles z4–8). Each reads the base packs of every unit whose geometry reaches the area,
 //! never anything per region.

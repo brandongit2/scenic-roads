@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Copy this Mac's raw terrain tiles that the NAS's store lacks into it (docs/plan.md §3,
+# Copy this Mac's raw terrain tiles that the NAS's store lacks into it (docs/storage.md,
 # Downloads): AWS's tiles are kept in the agent's cache as terrain jobs fetch them, and reach the
 # store in bulk, one tar stream unpacked on the NAS itself (a tile at a time over SMB, the NAS's
 # small-file writes run at ~25 a second; this, thousands). Then every tile is checked to be there at

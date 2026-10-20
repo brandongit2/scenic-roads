@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 /// The catalog format version written.
 pub const FMT: u32 = 1;
-/// The oldest version read (plan §8).
+/// The oldest version read (docs/building.md §2).
 pub const MIN_FMT: u32 = 1;
 
 const LEVEL: i32 = 9;
@@ -41,7 +41,7 @@ pub struct Catalog {
     #[serde(default)]
     pub app: String,
     /// Every file the catalog references, by logical name. GC keeps them, and the files of the last
-    /// 14 days' catalogs (docs/plan.md §3).
+    /// 14 days' catalogs (docs/storage.md).
     #[serde(default)]
     pub files: BTreeMap<String, FileRef>,
     /// The built units (tile keys as "z/x/y"), sorted.
@@ -672,7 +672,7 @@ pub fn next_n(dir: &Path) -> Result<u64> {
 }
 
 /// Deletes all but the `keep` highest catalogs in `dir`. For a Mac's own copies only: on the NAS,
-/// deletions go through SSH (plan §3); a Mac keeps its copies whole (`write_copy`), so none is a
+/// deletions go through SSH (docs/storage.md); a Mac keeps its copies whole (`write_copy`), so none is a
 /// delta another needs. Returns how many were deleted.
 pub fn prune(dir: &Path, keep: usize) -> Result<usize> {
     let mut gone = 0;

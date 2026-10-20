@@ -1,4 +1,4 @@
-"""A step program's timings: the Python twin of pipeline::timings (docs/plan.md §8, Timings).
+"""A step program's timings: the Python twin of pipeline::timings (docs/building.md §2, Timings).
 
 Its run in named phases, each with its wall time, CPU time (user + system, this process's and its
 finished children's), class and the bytes and files it moved:

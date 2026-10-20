@@ -16,7 +16,7 @@ use std::path::Path;
 use store::range::PlainFile;
 use store::sect::SectReader;
 
-/// The blocks' zstd level (fixed: the same bytes everywhere, plan.md §8).
+/// The blocks' zstd level (fixed: the same bytes everywhere, docs/building.md §2).
 pub const ZSTD_LEVEL: i32 = 9;
 
 /// A block's place: its z14 tile key, where it is in `blocks`, its length and its records.

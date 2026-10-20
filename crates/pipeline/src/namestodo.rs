@@ -1,4 +1,4 @@
-//! The to-do lists (docs/plan.md §7), written after each build by the `names-todo` job:
+//! The to-do lists (docs/names.md), written after each build by the `names-todo` job:
 //!
 //! - **`inputs/translations/todo/<language>.jsonl`:** the names in the coverage that something has with no
 //!   English of its own and no line in any language spoken where it is, one entry per name, kind

@@ -1,6 +1,6 @@
 # Workers: one coordinator, its data plane, any number of workers
 
-This extends plan §8 (Building) and docs/pool.md. The lead's agent plans, alone merges the build's
+This extends docs/building.md §2 (Building) and docs/pool.md. The lead's agent plans, alone merges the build's
 records, and runs the coordinator; every worker (each Mac's agent, the lead's own slots among them,
 any device that opens the build page) asks it for work that fits, does it, and hands it back.
 What is not built is marked planned.
@@ -13,7 +13,7 @@ What is not built is marked planned.
   each byte leaves it once per need, in large reads, and arrives in large writes.
 - **Resilient:** workers vanish, the coordinator restarts, the NAS goes away; none of it may
   corrupt the build.
-- **Same bytes everywhere** (plan §8, Determinism): a task gives identical output on every worker
+- **Same bytes everywhere** (docs/building.md §2, Determinism): a task gives identical output on every worker
   and thread count, so results can be checked by running them twice.
 
 ## 2. The model
@@ -46,12 +46,12 @@ the page and by `scenic run-task` unchanged:
 - **The 3D buildings' z8 areas** (`bldtile`, `pipeline::bld::task`, docs/buildings3d.md §3.6): a
   `bldtiles` job offers some of a z6 tile's areas, cut from its work files; the run is `bldtile`
   over `{dir}`, writing `area.tiles` and `area.json`. Checked by `tools/check/bldtile-same.mjs`.
-- **Tree cover's rows of blocks** (`treeblock`, `pipeline::trees::task`, plan §6 Trees): a piece's
+- **Tree cover's rows of blocks** (`treeblock`, `pipeline::trees::task`, docs/steps.md §2, Trees): a piece's
   run offers rows (up to four z8 blocks sharing canopy rows), run as `trees --blocks … --coverage
   {dir}/coverage.json --chm {chm} --leaf {sources}/trees/leaf --squares … --out {dir}`. The task's
   one file is the coverage cut to the row; canopy strips are read where they lie. Checked by
   `tools/check/treeblock-same.mjs`.
-- **Terrain's z8 subtrees** (`terrainsub`, `pipeline::terrain_task`, plan §6 Terrain): a piece's
+- **Terrain's z8 subtrees** (`terrainsub`, `pipeline::terrain_task`, docs/steps.md §2, Terrain): a piece's
   16 subtrees go out in groups closed under the lakes they share (a lake's level depends on all its
   shore); groups over two subtrees are not offered. Its one file `u/in.sect` holds all it reads;
   the run `terrainsub --in {dir}/in.sect --out {dir}` writes `hi.sect` and `mid.sect`.
@@ -97,7 +97,7 @@ Common rules:
 
 - **Built:** packs that staging reads are copied once to the job's Mac's SSD (`blobs/`,
   content-named) and shared by its units; the next unit's inputs are copied ahead; task files are
-  served from that SSD; one disk budget covers the caches (plan §8, Room on the disk).
+  served from that SSD; one disk budget covers the caches (docs/building.md §2, Room on the disk).
 - **Planned:** exact byte ranges fetched; a content-named index per dataset instead of listings;
   writes journaled on the SSD and committed in groups; reads and writes paced by the NAS's latency.
 
@@ -106,8 +106,8 @@ Common rules:
 - **Asking** (`/work/ask`): a worker sends its name, kind, the work it does (pages: only the task
   kinds in `coord::PAGE_TASKS`), memory, cores and (an agent) its app. A NAS-mounting worker gets a
   job first, then a task. An agent on a different app than the lead's gets 409 until they match
-  (plan §8, The same app).
-- **Pausing** (plan §8, Pausing): the coordinator holds `pause.json`; asks are refused, beats carry
+  (docs/building.md §2, The same app).
+- **Pausing** (docs/building.md §2, Pausing): the coordinator holds `pause.json`; asks are refused, beats carry
   it, and no lease lapses while it holds. Work given back for an interruption isn't held against it.
 - **Leases** (`coord::lease`): ten minutes on the coordinator's monotonic clock, renewed by a beat
   each minute; a lapsed lease's work is offered again.
@@ -169,7 +169,7 @@ Common rules:
 
 - **Every Mac's agent** (the lead's slots too: docs/pool.md §7.6) asks for jobs and tasks over HTTP.
   A job runs its step's one command; a task runs as `scenic run-task`.
-- **A Mac's slots past the first** (plan §8, Jobs at once) each appear as a worker of their own
+- **A Mac's slots past the first** (docs/building.md §2, Jobs at once) each appear as a worker of their own
   ("<host> #<k>"); a Mac's agent asks once for as many jobs as it has slots free, and is granted
   them together (docs/pool.md §7.2, Packing). An agent on an older app (its ask carries no
   capacity) is granted one job at a time, and while one is around every Mac is (docs/pool.md §7.1,
@@ -188,4 +188,4 @@ Common rules:
   timeouts and names are bounded; lease ids are never reused.
 - **Known limits:** by the owner's choice, any device on the LAN or tailnet can take page tasks
   (results verified, §5) or pause the build.
-- Licensed data on the owner's own devices isn't redistribution (plan §3).
+- Licensed data on the owner's own devices isn't redistribution (docs/storage.md).

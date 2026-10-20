@@ -1,4 +1,4 @@
-//! NAS storage for the map (docs/plan.md §3–4, docs/formats.md): content-named immutable files,
+//! NAS storage for the map (docs/storage.md–4, docs/formats.md): content-named immutable files,
 //! packs of tiles, sectioned files, catalogs, the bounded NAS I/O pool, finding and mounting the
 //! share, the per-Mac mirror and PMTiles reading.
 

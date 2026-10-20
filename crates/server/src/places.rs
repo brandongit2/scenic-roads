@@ -1,7 +1,7 @@
-//! Place search (docs/plan.md §4, The map): the map's own place names, from its labels layer
+//! Place search (docs/macs.md, The map): the map's own place names, from its labels layer
 //! (dem/labels.py): every label in the tiles of the map's areas (its z6 tiles with roads), and the
 //! labels that show by zoom 8 worldwide (cities and towns, seas, states, big lakes and parks).
-//! Found by a word of the name the map shows (its translation's main and sub, plan §7) or of the
+//! Found by a word of the name the map shows (its translation's main and sub, docs/names.md) or of the
 //! place's own name and English, as typed: accents, case and punctuation aside, the words in order.
 //! Made on this Mac the first time a search asks after the labels or the translations change
 //! (`Index`), in the background on threads of its own: nothing more for the build to make or the
@@ -408,7 +408,7 @@ struct Chunk {
 
 impl Chunk {
     /// Adds a label (not an isolated dwelling's: a farm's name at most) with its names and the
-    /// map's for it: `names`, the translations (plan §7; None before they've loaded), read where
+    /// map's for it: `names`, the translations (docs/names.md; None before they've loaded), read where
     /// it is, as the map's server does for its tiles (names::mvt::attach).
     fn add(&mut self, l: &Label, names: Option<&names::Namer>) {
         let Some(kind) = KINDS.iter().position(|k| *k == l.kind) else { return };

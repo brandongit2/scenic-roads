@@ -1,6 +1,6 @@
 """Every Rust step of a unit, from the snapshots `scenic-build unit-snap` took, run three ways and
 compared byte for byte: natively on 1 thread, natively on many, and as WebAssembly under Node's
-WASI (docs/plan.md §8, Determinism; docs/workers.md). The Python steps are left out.
+WASI (docs/building.md §2, Determinism; docs/workers.md). The Python steps are left out.
 
     python3 tools/check/same.py <unit-snap --out dir> [--bin target/release]
         [--wasm target/wasm32-wasip1/release] [--threads 14] [--only step]

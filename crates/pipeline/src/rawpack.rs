@@ -1,4 +1,4 @@
-//! AWS's raw terrain tiles on the NAS, packed (docs/plan.md §3, Downloads), in archives grouped the
+//! AWS's raw terrain tiles on the NAS, packed (docs/storage.md, Downloads), in archives grouped the
 //! way the terrain's packs are (crate::terrain_pack::build_q), so a job copies the archives of what
 //! it makes and no more: z9–12 by their z6 tile (`6-<x>-<y>`), z3–8 by their z3 tile
 //! (`3-<x>-<y>`), z0–2 together (`root`). Each is roadcore::archive's RDTILES1 (an empty entry for

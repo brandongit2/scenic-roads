@@ -1,4 +1,4 @@
-//! The mirror's reserve (docs/plan.md §4, "Mirror, per Mac"): the free space this Mac's downloads
+//! The mirror's reserve (docs/macs.md, "Mirror, per Mac"): the free space this Mac's downloads
 //! leave on its disk, the owner's setting in the Regions panel. Kept in `<home>/reserve.json`
 //! (`{"gb": 30}`, GB of 10⁹ bytes; written through a temporary file), read at start; 30 GB while
 //! unset. Changed live: the mirror checks against it from its next round, and the mirror thread is

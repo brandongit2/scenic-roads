@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Publish the app (docs/plan.md §8, App publishing): build the server and the web app, run the
+# Publish the app (docs/building.md §2, App publishing): build the server and the web app, run the
 # tests, smoke-test the new server on a spare port against the NAS's current catalog, then copy it
 # to the NAS (app/<version>/) and point app/current.json at it. Both Macs' servers pick it up within
 # five minutes and restart into it when their map is idle.

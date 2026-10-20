@@ -1,4 +1,4 @@
-//! A terrain piece's z8 subtrees as tasks (kind `terrainsub`; docs/workers.md §3, docs/plan.md §6
+//! A terrain piece's z8 subtrees as tasks (kind `terrainsub`; docs/workers.md §3, docs/steps.md
 //! Terrain): a piece (a z6 tile's levels z12 → z9, crate::terrain_pack::build_piece) is 16 z8
 //! subtrees, each a z8 tile's z9–12 tiles near the coverage. A tile's making reads only its own raw
 //! tile, its children's changes and AWS's z9 tile over it, all within its subtree, and GLO-30 and

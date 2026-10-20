@@ -3,7 +3,7 @@
 How the build is described, so that a few concepts read the whole of it: every step is one row of
 one table, every job is a step over targets, every text about a step is templated from its row,
 and the build page, the menu bar and `scenic status` show the same checklist of stages and steps.
-What each step does in detail is `docs/plan.md` §6; how jobs are placed on Macs, `docs/pool.md`;
+What each step does in detail is `docs/steps.md`; how jobs are placed on Macs, `docs/pool.md`;
 tasks for any worker, `docs/workers.md`.
 
 ## 1. The concepts
@@ -12,7 +12,7 @@ tasks for any worker, `docs/workers.md`.
 |---|---|---|
 | **step** | one kind of work, described by one row of the steps table | `crate::agent::steps::TABLE` |
 | **target** | what one run of a step is for: a tile, an area, the world (`scope`) | the plan (`agent::build::Work`) |
-| **key** | a target's version and inputs by content; a target is done when its record's key is the plan's | `state/build/jobs.json` (plan.md §6, Job keys) |
+| **key** | a target's version and inputs by content; a target is done when its record's key is the plan's | `state/build/jobs.json` (docs/steps.md §12) |
 | **job** | a step over a batch of its targets, run on one Mac | `agent::jobs::JobSpec` |
 | **task** | a pure piece a running job offers any worker, described as a step is | `steps::TASKS`, workers.md §3 |
 | **record** | what a job's hand-off puts in the records, within its step's write-set | the manifest and jobs (pool.md §7.3) |
@@ -115,7 +115,7 @@ the lead.
 | | Clean-up | `gc` | keep | the world | lead |
 | | Backup | `backup` | keep | the world | lead |
 
-Publishing has no lane or step of its own: it goes per unit (plan §8, Publishing), and the
+Publishing has no lane or step of its own: it goes per unit (docs/building.md §2, Publishing), and the
 forecast marks each region where it's all on the map (`map_at`).
 
 ## 4. The checklist

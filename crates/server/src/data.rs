@@ -1,4 +1,4 @@
-//! The map's data as the server sees it (docs/plan.md §3–4): the current catalog, every file it
+//! The map's data as the server sees it (docs/storage.md–4): the current catalog, every file it
 //! names read from this Mac's mirror when it's there (memory-mapped) or from the NAS (through the
 //! bounded I/O pool, never mapped), and the background work that keeps all that current: finding
 //! and mounting the NAS, following new catalogs, filling the mirror.

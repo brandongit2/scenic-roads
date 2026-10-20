@@ -1,4 +1,4 @@
-//! Roadside buildings (docs/plan.md §6, base(U)): the declared buildings source's release (its
+//! Roadside buildings (docs/steps.md §6): the declared buildings source's release (its
 //! `version`: crate::inputs::sources, the `buildings` role, Overture's), as bounding boxes, in z8
 //! tiles by their centre: `sources/buildings/<release>/8/<x>-<y>.f32` (the release's dot a dash: logical names have none), f32 `[xmin, ymin, xmax, ymax]` per building,
 //! degrees, sorted, each once (no file for a tile without any), with their index

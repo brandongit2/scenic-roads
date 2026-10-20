@@ -1,6 +1,6 @@
 // Place search, top right beside the view controls: the map's own place names (its labels: towns
 // and cities, lakes and bays, parks, states), found by any word of the name the map shows (its
-// main and sub, plan §7) or of the place's own name and English, as typed (the map's server,
+// main and sub, docs/names.md) or of the place's own name and English, as typed (the map's server,
 // /api/places: crates/server/src/places.rs), the best first and, among like ones, the nearest to
 // the view; two letters at least (one ideograph or kana). ↑ ↓ pick, Return goes (to what's typed:
 // searched first if the list isn't of it), Esc closes then clears; / (outside a field) opens it.

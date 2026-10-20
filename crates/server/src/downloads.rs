@@ -1,4 +1,4 @@
-//! Downloads (docs/plan.md §4, "Mirror, per Mac"; §1, the Regions panel): what the owner has
+//! Downloads (docs/macs.md, "Mirror, per Mac"; docs/surface.md, the Regions panel): what the owner has
 //! downloaded to this Mac for when it's away from the NAS. Nothing else is copied here, and nothing
 //! downloaded goes until the owner removes it (store::mirror).
 //!

@@ -1,4 +1,4 @@
-//! The build's records re-keyed when a step's key scheme changes (docs/plan.md §8, A new key
+//! The build's records re-keyed when a step's key scheme changes (docs/building.md §2, A new key
 //! scheme), so that the change itself rebuilds only what it would make differently. A target whose
 //! recorded key is what the old scheme computes now is current; it's recorded under the new scheme's
 //! key when every input the new key names is pinned by the old key's (the same input, or a function

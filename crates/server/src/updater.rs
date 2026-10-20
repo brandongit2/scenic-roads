@@ -1,4 +1,4 @@
-//! The app on this Mac (docs/plan.md §4). The server runs from a local copy of the published app
+//! The app on this Mac (docs/macs.md). The server runs from a local copy of the published app
 //! (`<home>/app/<version>/`, with `<home>/app/current` pointing at it, which the launcher runs).
 //! When the NAS's `app/current.json` names another version, it's copied here and `current` is
 //! pointed at it; the server then exits once the map has been idle a minute, and the launcher starts

@@ -1,4 +1,4 @@
-//! `scenic`: the user's command (docs/plan.md §1, §8).
+//! `scenic`: the user's command (docs/surface.md, docs/building.md §2).
 //!
 //!   scenic status                       what the lead is doing, what waits and why, regions
 //!   scenic agent [--once] [--dry-run] [--home <dir>]  the agent (every Mac's login item: its
@@ -894,7 +894,7 @@ fn status(args: &[String]) -> Result<()> {
     if let Some(p) = page {
         println!("Build page: {p} (open it on a device on the LAN or the tailnet)");
     }
-    // The map on an iPhone or an iPad (docs/plan.md §4, Devices): its address, which this Mac's
+    // The map on an iPhone or an iPad (docs/macs.md, Devices): its address, which this Mac's
     // server writes.
     if let Some(m) = std::fs::read_to_string(app_home().join("map-page"))
         .ok()

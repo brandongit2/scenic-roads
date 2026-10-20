@@ -22,7 +22,7 @@ const HR: &[&str] = &["--home", "--root"];
 /// `scenic`, the user's command (src/bin/scenic.rs).
 pub const SCENIC: Table = Table {
     prog: "scenic",
-    about: "the build and its pool, from this Mac (docs/plan.md §1, §8). --root <dir>: the NAS project folder (default: the mounted share); --home <dir>: this Mac's agent's folder",
+    about: "the build and its pool, from this Mac (docs/surface.md, docs/building.md §2). --root <dir>: the NAS project folder (default: the mounted share); --home <dir>: this Mac's agent's folder",
     default: Some("status"),
     common: &[],
     cmds: &[
@@ -68,7 +68,7 @@ const PASS_REGIONS: &[&str] = &["--pass", "--regions"];
 /// `scenic-build`, the build's steps (src/bin/scenic-build.rs; its doc comment says more of each).
 pub const SCENIC_BUILD: Table = Table {
     prog: "scenic-build",
-    about: "the build's steps, writing to the NAS project folder (docs/plan.md §6). Every step takes --root <nas project folder> and --scratch <local dir>",
+    about: "the build's steps, writing to the NAS project folder (docs/steps.md). Every step takes --root <nas project folder> and --scratch <local dir>",
     default: None,
     common: &["--root", "--scratch"],
     cmds: &[

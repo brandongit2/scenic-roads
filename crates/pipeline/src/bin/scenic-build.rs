@@ -1,4 +1,4 @@
-//! The build steps of the new pipeline (docs/plan.md §6), writing to the NAS project folder.
+//! The build steps of the new pipeline (docs/steps.md), writing to the NAS project folder.
 //!
 //! usage: scenic-build <step> --root <nas project folder> --scratch <local dir> [options]
 //!
@@ -2170,7 +2170,7 @@ fn epoch_of(t: &str) -> Option<i64> {
 /// re-keyed, and those left to build again, each with why. And the times that show its one
 /// assumption: a unit re-keyed that reads an area's zoomed-out terrain (z8–z4) was built after the
 /// build first made that area's (before, it may have staged the converted legacy tiles, which its
-/// old key couldn't tell from the build's; docs/plan.md §8, A new key scheme): its base pack written
+/// old key couldn't tell from the build's; docs/building.md §2, A new key scheme): its base pack written
 /// over an hour after that area's first lo pack after the conversion's (the first catalog's), by
 /// that file's time or, if earlier, the catalog's that first listed it.
 fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
@@ -5624,7 +5624,7 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
         opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()),
     );
     let raw = raw_tiles(out, &raw_dir)?;
-    // GLO-30 north of 60°N and the pass's basemap's water (docs/plan.md §6, Terrain), and AWS's z9
+    // GLO-30 north of 60°N and the pass's basemap's water (docs/steps.md §2, Terrain), and AWS's z9
     // tiles for the walled patches.
     let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
     let coarse = pipeline::terrain_pack::Coarse::new(&raw);

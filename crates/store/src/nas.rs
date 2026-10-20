@@ -1,4 +1,4 @@
-//! Finding and mounting the NAS share (plan §4, Server). The mount table is read with
+//! Finding and mounting the NAS share (docs/macs.md, Server). The mount table is read with
 //! `getfsstat(MNT_NOWAIT)`, which answers from the kernel's records without asking any
 //! filesystem, so a dead mount can't block it (`statfs` on a path can). A missing share is mounted
 //! with `osascript`'s `mount volume`, which takes the credentials from the Keychain, and

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 pub const Z: u8 = 8;
 /// Its version: a change to how it's made is a new logical name. 2: the one-pass repair
 /// (roadcore::grid::repair_terrain, through terrain_pack::process). 3: with the seam spikes'
-/// rule (AWS's tiles alone: not GLO-30 nor the water, docs/plan.md §10).
+/// rule (AWS's tiles alone: not GLO-30 nor the water, task #465).
 pub const V: u32 = 3;
 
 pub fn logical() -> String {

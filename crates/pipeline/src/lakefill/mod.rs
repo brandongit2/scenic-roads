@@ -1,4 +1,4 @@
-//! Lakes filled from Canada's own data where OSM has none (docs/plan.md §6 Water, "Lakes filled
+//! Lakes filled from Canada's own data where OSM has none (docs/steps.md §4, "Lakes filled
 //! from Canada's own data").
 //!
 //! OSM's Canadian lakes came from Canada's own (CanVec, the National Hydro Network) map sheet by map

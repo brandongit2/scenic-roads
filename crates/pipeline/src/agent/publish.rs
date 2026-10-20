@@ -1,4 +1,4 @@
-//! Publishing's switches (docs/plan.md §8, Publishing): two under `state/pool/`, each off while
+//! Publishing's switches (docs/building.md §2, Publishing): two under `state/pool/`, each off while
 //! missing or `off` in it, `on` in it (or present) on. They act whatever the pool (publishing is
 //! the lead's agent's).
 //!

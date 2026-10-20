@@ -1,4 +1,4 @@
-// Phones and tablets (docs/plan.md §4, Devices): the settings panel folding away, and a double tap
+// Phones and tablets (docs/macs.md, Devices): the settings panel folding away, and a double tap
 // where a mouse would double-click. Nothing here asks what the device is: a narrow window folds the
 // panel, a coarse pointer gets the touch hints, any touch screen the double tap.
 import type { Map as MLMap } from 'maplibre-gl';

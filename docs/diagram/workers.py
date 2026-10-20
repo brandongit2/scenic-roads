@@ -1,4 +1,4 @@
-"""Who builds the map (docs/pool.md, phase 1 and phase 3's controls on since 8 Oct 2026; plan.md §8; docs/workers.md):
+"""Who builds the map (docs/pool.md, phase 1 and phase 3's controls on since 8 Oct 2026; docs/building.md §2; docs/workers.md):
 the Mac the current term names leads (the M4 today): its agent plans, its coordinator lends work out on leases (jobs to
 any member's agent, an area's last steps and other tasks to any worker, a device's page too), and it alone merges the
 journal into the term's records. Every job, the lead's too, hands its results to the journal on the NAS. What the

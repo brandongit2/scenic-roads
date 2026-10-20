@@ -1,4 +1,4 @@
-//! The build agent's caches, read and written through one accessor (docs/plan.md §8, Room on the
+//! The build agent's caches, read and written through one accessor (docs/building.md §2, Room on the
 //! disk), so room-making may delete any file of them no job uses, at any moment, mid-job too.
 //!
 //! - A job holds each cache file it uses (`hold`): opened, with a shared advisory lock (`flock`

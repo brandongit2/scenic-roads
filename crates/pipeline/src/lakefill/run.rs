@@ -1,4 +1,4 @@
-//! The fill made (crate::lakefill; docs/plan.md §6 Water, "Lakes filled from Canada's own data"):
+//! The fill made (crate::lakefill; docs/steps.md §4, "Lakes filled from Canada's own data"):
 //! the survey of the sheets OSM's small lakes are missing from (`survey`, `gaps`), the fill of
 //! those from the source's shapefiles (`fill`, by longitude bands, `merge`), and the whole of it as
 //! the `lakefill` step runs it (`all`). The `lakefill` tool runs each part on its own.

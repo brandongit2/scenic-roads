@@ -1,4 +1,4 @@
-//! The water layer (docs/plan.md §6 "Water"; docs/formats.md "Water"): each pixel's exact share
+//! The water layer (docs/steps.md "Water"; docs/formats.md "Water"): each pixel's exact share
 //! of water, sea and inland apart, at every zoom, from the basemap's own water at its deepest zoom.
 //!
 //! The basemap (Planetiler's OpenMapTiles profile) simplifies its water and leaves small polygons

@@ -1,4 +1,4 @@
-//! What the lead builds for the regions (docs/plan.md §6, Job keys; §8, Order): per z3 pack,
+//! What the lead builds for the regions (docs/steps.md §12; docs/building.md §2, Order): per z3 pack,
 //! the terrain and then the slope of its z6 tiles near the coverage; base(U) for every unit whose
 //! piece meets the coverage, a region at a time; pack(T) for the z6 tiles near changed units, the
 //! lo packs above them, as soon as those units are built; then a catalog, at most one a minute (`plan`).
@@ -21,7 +21,7 @@ use std::path::Path;
 /// Terrain 2: the one-pass repair (roadcore::grid::repair_terrain), on AWS's values before
 /// bathymetry goes to sea level. 3: GLO-30 north of 60°N, the water flattened from the pass's
 /// basemap (the digest of what each target reads of it in the key: `water_key`), the seam spikes
-/// and walled patches (docs/plan.md §6, Terrain).
+/// and walled patches (docs/steps.md §2, Terrain).
 pub const TERRAIN_V: u32 = 3;
 pub const SLOPE_V: u32 = 1;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
@@ -391,7 +391,7 @@ pub fn reach_key(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
 
 /// The labels by importance, worldwide, once per pass (or labels step version): independent of the
 /// regions. (2: each label's OSM object, the languages OSM gives its name, its romanised name or
-/// kana reading: docs/plan.md §7.)
+/// kana reading: docs/names.md.)
 pub const LABELS_V: u32 = 2;
 
 pub fn labels_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
@@ -1089,7 +1089,7 @@ pub const TERRAIN_LO_V: u32 = 1;
 /// (crate::slope_pack::assemble).
 pub const SLOPE_LO_V: u32 = 2;
 
-/// Terrain's and slope's targets, each with its key, done or not (docs/plan.md §6, Terrain): a
+/// Terrain's and slope's targets, each with its key, done or not (docs/steps.md §2, Terrain): a
 /// piece per z6 tile near the coverage (`coverage_tiles`), an assembly per z3 tile with pieces.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TerrainTargets {
@@ -1660,7 +1660,7 @@ pub struct TreeWork {
     pub lo: Vec<(String, String)>,
     /// The current pieces without a mid in an area whose assembly won't run (those the re-keying
     /// recorded: agent::rekey): their mids made in idle time, after all other work, expected the
-    /// same (docs/plan.md §8, Order).
+    /// same (docs/building.md §2, Order).
     pub backfill: Vec<(String, String)>,
     /// What a region lacks before it's published: the stale pieces and assemblies, runnable or not.
     pub stale_pieces: BTreeSet<String>,
@@ -1833,7 +1833,7 @@ pub fn gate_open(idle: bool, since: Option<u64>, every: u64) -> bool {
 }
 
 /// Publishing as the plan has it now, for the agent's log and the build status (`publishing`;
-/// docs/plan.md §8, Publishing).
+/// docs/building.md §2, Publishing).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PublishLine {
     /// What publishing does now, or waits for, in plain words.
@@ -2005,7 +2005,7 @@ pub struct RegionLeft {
 /// manifest), by name: "keys" (the key names inputs/keys.env holds), "regions" (the regions' accepted version). `tiles`: the
 /// terrain packs' indexes, which the units' keys read (`unit_terrain`). The agent runs
 /// the first work not waiting out a failure; a helper takes a step's from the far end (the agent
-/// offers each step's targets together, in this order). The order (docs/plan.md §8, Order):
+/// offers each step's targets together, in this order). The order (docs/building.md §2, Order):
 /// - the heritage sites the units read;
 /// - publishing, as soon as the records change (`publish_chain`): what the coverage no longer
 ///   builds pruned, the map tiles whose owners changed (a unit's together: `by_unit`), the road
@@ -2376,7 +2376,7 @@ pub fn plan(
     trees.sort_by_key(tree_rank);
     trees_lo.sort_by_key(tree_rank);
 
-    // Publishing (docs/plan.md §8, Publishing): as soon as the records change, before the regions'
+    // Publishing (docs/building.md §2, Publishing): as soon as the records change, before the regions'
     // work, what goes out with the units: what the coverage no longer builds pruned, then the
     // publishing chain (`publish_chain`: the map tiles whose owners changed, a unit's together, the
     // road index, the low zooms, rail stops and ferries, the world-level terrain and slope); once
@@ -3134,7 +3134,7 @@ fn landmarks_chain(
         .map(|k| Work { step: "overlays".into(), targets: vec![("overlays".into(), k)] })
 }
 
-/// The landmarks' work that can run now (docs/plan.md §8, Order), each step once what it reads is
+/// The landmarks' work that can run now (docs/building.md §2, Order), each step once what it reads is
 /// built as it will stay (a worldwide job of the pass that's stale, about to make it again, counts
 /// as not built: what read it would be built twice), none waiting for the units but the overlays
 /// (they read the built units: after the last, `last`): the candidates (once the pass's
@@ -3506,7 +3506,7 @@ fn bld_rank<'a>(regions: &'a [&'a Coverage]) -> impl Fn(&str) -> BldRank + 'a {
     }
 }
 
-/// The depth chain's targets (docs/plan.md §6, Depth): every z3 tile within `REACH_KM` of the
+/// The depth chain's targets (docs/steps.md §3): every z3 tile within `REACH_KM` of the
 /// coverage that a depth source meets (`depth-lo`: zooms 3–8), and every z6 tile within it that a
 /// source with a grid finer than z8 meets (`depth`: zooms 9–16), each with its key; the targets
 /// whose water digests aren't worked out yet (`unknown`) wait.
