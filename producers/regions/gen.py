@@ -358,6 +358,9 @@ W(ID('Malawi'), {'minus': ['ne-lake:1159113163', 'osm:195273']})
 # ---- the high seas, Antarctica ---------------------------------------------------------------------
 R[ID('High seas')]['water'] = ['rest']
 an = ID('Antarctica')
+# (All land south of 60°S, by the list's words: the OSM relation stops short of the pole and leaves
+# out land the coastline has, which no other region takes.)
+R[an].update(outline=['box:-180,-90,180,-60'], minus=[], intersect=[])
 W(an, {'minus': [{'buffer': f'land:{an}', 'by': '200 nmi'}] + [f'eez:{m}' for m, z in sorted(Z.items()) if z['box'][1] < -45]})
 
 # ---- land the #420 files couldn't say ------------------------------------------------------------------

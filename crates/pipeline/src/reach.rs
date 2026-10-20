@@ -344,8 +344,40 @@ mod tests {
             cells: vec![],
         };
         let sp = &Uniform(COARSE_M);
-        // The sea between, a region with no land: kept apart for the depth alone.
-        let sea = fixture("place:-10,62,400").shapes;
+        // The sea between, a region with no land resolved as the regions are (cell by cell, its
+        // land and the coastline's land none here): kept apart for the depth alone.
+        use crate::inputs::regions::{data::Datasets, read, resolve};
+        let files: std::collections::BTreeMap<String, Vec<u8>> = [
+            ("pins.toml", "osm = \"2026-09-28\"\n"),
+            ("sea.toml", "id = \"sea\"\nname = \"Sea\"\nwater = [\"box:-16,58,-4,66\"]\n"),
+        ]
+        .iter()
+        .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
+        .collect();
+        let folder = resolve::Folder::read(files.keys().cloned(), &|p| Ok(files[p].clone())).unwrap();
+        let data = Datasets::from_parts(
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            vec![vec![vec![[-200_000_000, 640_000_000], [-205_000_000, 640_000_000], [-205_000_000, 650_000_000]]]],
+            "fixture",
+        );
+        let others = std::collections::BTreeMap::new();
+        let ctx = resolve::Context {
+            pass: Some("2026-09-28"),
+            outlines: None,
+            extract: None,
+            others: &others,
+            memo: None,
+            names: String::new(),
+            data: Some(&data),
+        };
+        let out = resolve::resolve(&folder, &ctx);
+        assert!(out.problems.is_empty(), "{:?}", out.problems);
+        let cov = read::coverage_of(&[out.resolved["sea"].geometry.clone()]);
+        assert!(cov.shapes.is_empty() && cov.depth_only.len() == 1, "the sea is the depth's alone");
+        let sea = cov.depth_only;
         // With the coast it reaches: built, and the way touches.
         let mut c = fixture("place:0,60,30");
         c.depth_only = sea.clone();

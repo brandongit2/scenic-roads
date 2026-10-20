@@ -109,6 +109,19 @@ fn nearest_splits_at_the_median_line() {
 }
 
 #[test]
+fn nearest_splits_of_touching_lands_dont_overlap() {
+    // Two lands sharing a border: its points are both's, and only one side wins them.
+    let within = Area::from_rings(&bx(-1.0, -1.0, 3.0, 2.0));
+    let a = Area::from_rings(&bx(0.0, 0.0, 1.0, 1.0));
+    let b = Area::from_rings(&bx(1.0, 0.0, 2.0, 1.0));
+    let n = geom::nearest(&within, &a, &b, 1000.0);
+    let m = geom::nearest(&within, &b, &a, 1000.0);
+    let both = geom::area_km2(&n.intersect(&m));
+    assert!(both < 1.0, "the splits overlap by {both} km²");
+    assert!((geom::area_km2(&n.union(&m)) - geom::area_km2(&within)).abs() < 1.0);
+}
+
+#[test]
 fn boxes_areas_and_wide_buffers() {
     // A degree square at the equator: 111.2 km a side on the authalic sphere.
     let sq = geom::box_area([0, 0, 10_000_000, 10_000_000]);
@@ -140,6 +153,11 @@ struct World {
 }
 
 fn world() -> World {
+    world_with(1.002)
+}
+
+/// The small world, A's land reaching `north` (its outline to 1°: a strip of land in no outline).
+fn world_with(north: f64) -> World {
     let d = tempfile::tempdir().unwrap();
     let p = outlines(
         d.path(),
@@ -151,7 +169,7 @@ fn world() -> World {
         ],
     );
     let land =
-        vec![bx(0.0, 0.0, 1.2, 1.05), bx(2.0, 0.0, 3.0, 1.0), bx(1.6, 1.4, 1.62, 1.42), bx(20.0, 20.0, 21.0, 21.0)];
+        vec![bx(0.0, 0.0, 1.2, north), bx(2.0, 0.0, 3.0, 1.0), bx(1.6, 1.4, 1.62, 1.42), bx(20.0, 20.0, 21.0, 21.0)];
     let zone1 = vec![bx(-1.0, -1.0, 4.0, 2.5)[0].clone()];
     let eez = HashMap::from([(1, zone1), (2, bx(5.0, 5.0, 6.0, 6.0))]);
     let lakes = HashMap::from([(77, bx(0.2, 0.2, 0.4, 0.4)), (78, bx(0.6, 0.6, 0.61, 0.61))]);
@@ -231,7 +249,7 @@ fn a_small_world_resolves_and_covers_the_earth_once() {
     assert_eq!(owner(-0.5, -0.5), vec!["a"]);
     // The land: A's, B's less the slice, the slice; the leftover strip north of A joins A.
     assert_eq!(owner(0.9, 0.9), vec!["a"]);
-    assert_eq!(owner(0.9, 1.02), vec!["a"], "the strip no outline has");
+    assert_eq!(owner(0.9, 1.001), vec!["a"], "the strip no outline has");
     assert_eq!(owner(2.5, 0.25), vec!["slice"]);
     assert_eq!(owner(2.5, 0.75), vec!["b"]);
     // The lake over 100 km² in A's outline is A's water (and A's either way); the small one land.
@@ -302,6 +320,39 @@ fn old_files_resolve_as_before_beside_new_ones() {
     };
     let out = resolve::resolve(&folder, &ctx);
     assert!(out.problems.iter().any(|p| p.check == "rg-data"), "{:?}", out.problems);
+}
+
+/// Land in no region over `sliver_km2` isn't filled silently: a finding.
+#[test]
+fn a_large_piece_of_land_in_no_region_is_an_error() {
+    // A's land past its outline by 0.05° (about 700 km²).
+    let w = world_with(1.05);
+    let out = run(&w, &all());
+    assert!(
+        out.problems.iter().any(|p| p.check == "rg-cover" && p.found == vec!["gap"] && p.message.contains("sliver_km2")),
+        "{:?}",
+        out.problems
+    );
+}
+
+/// The new rules leave regions without water as they resolve alone: the cover's fills and a
+/// hand-out never change them (a hand-out naming one says so).
+#[test]
+fn the_new_rules_never_change_an_old_region() {
+    let w = world();
+    let old = "id = \"old\"\nname = \"Old\"\noutline = [\"osm:4\"]\n";
+    let alone = run(&w, &[PINS, ("old.toml", old)]);
+    let mut files = all();
+    files.retain(|f| f.0 != "far.toml");
+    files.push(("old.toml", old));
+    let mixed = run(&w, &files);
+    assert_eq!(alone.resolved["old"], mixed.resolved["old"]);
+    assert_eq!(mixed.resolved["old"].geometry.shapes[0].tolerance_m, 1000);
+    // A hand-out naming an old region: it gets nothing, and the finding says why.
+    let ho = "id = \"ho\"\nname = \"Ho\"\nwater = [{ minus = [\"eez:2\"] }]\nhand_out = \"g\"\n";
+    let out = run(&w, &[PINS, ("g/old.toml", old), ("g/ho.toml", ho)]);
+    assert!(out.problems.iter().any(|p| p.check == "rg-ref" && p.message.contains("without water")), "{:?}", out.problems);
+    assert_eq!(alone.resolved["old"], out.resolved["old"]);
 }
 
 /// A split place's own waters: the zone less its regions, a stretch only one of them borders handed
@@ -400,6 +451,39 @@ fn a_zone_and_its_overlapping_internal_waters_are_unioned() {
     let m = super::data::parse_geojson(gj, "m").unwrap();
     let a = Area::from_rings(&m[&5]);
     assert!(a.contains([e7(1.5), e7(1.5)]) && a.contains([e7(2.5), e7(2.5)]) && a.contains([e7(0.5), e7(0.5)]));
+}
+
+/// Neighbouring zones' shared border, wiggling under the simplifying tolerance: kept the same on
+/// both sides, so they neither overlap nor leave a sliver.
+#[test]
+fn zones_sharing_a_border_keep_it_the_same() {
+    // A border from (1, 0) to (1, 1), wiggling 5 m (0.00005°) every 0.001°.
+    let border: Vec<[f64; 2]> =
+        (0..=1000).map(|i| [1.0 + if i % 2 == 1 { 0.000_05 } else { 0.0 }, i as f64 / 1000.0]).collect();
+    let ring = |x0: f64, rev: bool| {
+        let mut b = border.clone();
+        if rev {
+            b.reverse();
+        }
+        let mut r = vec![[x0, if rev { 1.0 } else { 0.0 }]];
+        r.extend(b);
+        r.push(r[0]);
+        serde_json::to_string(&r).unwrap()
+    };
+    let gj = format!(
+        r#"{{"type":"FeatureCollection","features":[
+        {{"type":"Feature","properties":{{"m":1}},"geometry":{{"type":"Polygon","coordinates":[{}]}}}},
+        {{"type":"Feature","properties":{{"m":2}},"geometry":{{"type":"Polygon","coordinates":[{}]}}}}]}}"#,
+        ring(0.0, false),
+        ring(2.0, true)
+    );
+    let m = super::data::parse_geojson(gj.as_bytes(), "m").unwrap();
+    let (a, b) = (Area::from_rings(&m[&1]), Area::from_rings(&m[&2]));
+    let both = geom::area_km2(&a.intersect(&b));
+    assert!(both < 1e-6, "they overlap by {both} km²");
+    // The border's points kept on both sides.
+    let pts = |r: &Vec<geom::Ring>| r.iter().flatten().filter(|p| p[1] > 0 && p[1] < e7(1.0)).count();
+    assert!(pts(&m[&1]) > 900 && pts(&m[&2]) > 900, "{} {}", pts(&m[&1]), pts(&m[&2]));
 }
 
 /// A region without water may not name one with it: held, saying so.

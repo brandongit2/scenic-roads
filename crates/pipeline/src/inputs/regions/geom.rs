@@ -50,6 +50,18 @@ pub fn snap_here() {
     SNAP.with(|s| s.set(true));
 }
 
+/// `f` with this thread's operations snapping, the thread as it was after.
+pub fn snapping<T>(f: impl FnOnce() -> T) -> T {
+    struct Back(bool);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            SNAP.with(|s| s.set(self.0));
+        }
+    }
+    let _back = Back(SNAP.with(|s| s.replace(true)));
+    f()
+}
+
 fn ip(p: Pt) -> IntPoint<i64> {
     IntPoint::new(p[0], p[1])
 }
@@ -758,15 +770,22 @@ pub fn buffer_area(a: &Area, r: f64) -> Area {
 
 /// A ring simplified (Douglas–Peucker, in metres by the local radii) within `tol` metres.
 pub fn simplify_ring(r: &[Pt], tol: f64) -> Ring {
+    simplify_ring_pinned(r, tol, &|_| false)
+}
+
+/// A ring simplified within `tol` metres, the points `pinned` says kept (a border another ring
+/// shares stays the same on both sides).
+pub fn simplify_ring_pinned(r: &[Pt], tol: f64, pinned: &dyn Fn(&Pt) -> bool) -> Ring {
     if r.len() < 4 {
         return r.to_vec();
     }
     let mut pts: Vec<Pt> = r.to_vec();
     pts.push(r[0]);
-    let mut keep = vec![false; pts.len()];
+    let mut keep: Vec<bool> = pts.iter().map(pinned).collect();
     keep[0] = true;
     *keep.last_mut().unwrap() = true;
-    let mut stack = vec![(0usize, pts.len() - 1)];
+    let kept: Vec<usize> = (0..pts.len()).filter(|&k| keep[k]).collect();
+    let mut stack: Vec<(usize, usize)> = kept.windows(2).map(|w| (w[0], w[1])).collect();
     while let Some((i, j)) = stack.pop() {
         if j <= i + 1 {
             continue;
@@ -887,6 +906,13 @@ fn nearest_in(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
     if !samples.iter().any(|s| s.1) {
         return Area::default();
     }
+    // (Where a point is both's, as on a shared border, the side with the lesser fingerprint wins
+    // it: a split and its complement agree, so they don't both claim the strip.)
+    let fp = |a: &Area| {
+        let pts = a.polys.iter().flatten().flatten();
+        (a.bbox(), pts.clone().count(), pts.fold((0i128, 0i128), |s, p| (s.0 + p[0] as i128, s.1 + p[1] as i128)))
+    };
+    let to_wins = fp(to) <= fp(than);
     // A bucket grid of the samples, half-degree cells.
     let cell = 5_000_000i64;
     let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
@@ -914,6 +940,9 @@ fn nearest_in(within: &Area, to: &Area, than: &Area, step: f64) -> Area {
                             let q = samples[k].0;
                             if d < best.0 || (d == best.0 && q < best.1) {
                                 best = (d, q, samples[k].1);
+                            } else if d == best.0 && q == best.1 && samples[k].1 != best.2 {
+                                // (A point of both: the same side wins it whichever is `to`.)
+                                best.2 = to_wins;
                             }
                         }
                     }

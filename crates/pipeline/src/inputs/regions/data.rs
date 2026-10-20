@@ -167,18 +167,23 @@ impl Datasets {
             Ok(root.join(src.param_str("path")?))
         };
         let mut d = Datasets::default();
+        // (The zones read whole first, then simplified with the borders any two of their rings
+        // share kept: neighbours' borders stay the same on both sides, no slivers between them.)
         let p = path(sea)?;
-        d.eez = read_geojson(&p, sea.param_str("id")?)?;
-        if let Ok(iw) = s.role(INTERNAL) {
-            let p = path(iw)?;
-            for (k, rings) in read_geojson(&p, iw.param_str("id")?)? {
-                merge(d.internal.entry(k).or_default(), rings);
-            }
-        }
-        if let Ok(ts) = s.role(TERRITORIAL) {
-            let p = path(ts)?;
-            d.ts12 = read_geojson(&p, ts.param_str("id")?)?;
-        }
+        let eez = read_geojson_raw(&p, sea.param_str("id")?)?;
+        let iw = match s.role(INTERNAL) {
+            Ok(iw) => read_geojson_raw(&path(iw)?, iw.param_str("id")?)?,
+            Err(_) => Raw::new(),
+        };
+        let ts = match s.role(TERRITORIAL) {
+            Ok(ts) => read_geojson_raw(&path(ts)?, ts.param_str("id")?)?,
+            Err(_) => Raw::new(),
+        };
+        let pins = shared_points(&[&eez, &iw, &ts]);
+        d.eez = simplified(eez, &pins);
+        d.internal = simplified(iw, &pins);
+        d.ts12 = simplified(ts, &pins);
+        drop(pins);
         if let Ok(l) = s.role(LAKES) {
             let p = path(l)?;
             for (id, rings) in read_shapefile(&p, l.param_str("layer")?, Some(l.param_str("id")?))? {
@@ -234,35 +239,86 @@ pub fn merge(have: &mut Vec<Ring>, rings: Vec<Ring>) {
     }
 }
 
-fn e7(r: &[[f64; 2]]) -> Ring {
+fn e7_raw(r: &[[f64; 2]]) -> Ring {
     let mut v: Ring = r.iter().map(|p| [(p[0] * 1e7).round() as i64, (p[1] * 1e7).round() as i64]).collect();
     if v.len() > 1 && v.first() == v.last() {
         v.pop();
     }
-    geom::simplify_ring(&v, SIMPLIFY_M)
+    v
 }
 
-/// A FeatureCollection's (Multi)Polygons, by the integer property `id` (features of one id joined).
-pub fn read_geojson(p: &Path, id: &str) -> Result<HashMap<u64, Vec<Ring>>> {
+fn e7(r: &[[f64; 2]]) -> Ring {
+    geom::simplify_ring(&e7_raw(r), SIMPLIFY_M)
+}
+
+/// A FeatureCollection's features as read (rings not simplified): (the integer property `id`,
+/// its rings).
+pub type Raw = Vec<(u64, Vec<Ring>)>;
+
+pub fn read_geojson_raw(p: &Path, id: &str) -> Result<Raw> {
     let b = std::fs::read(p).with_context(|| format!("read {}", p.display()))?;
-    parse_geojson(&b, id).with_context(|| format!("parse {}", p.display()))
+    parse_geojson_raw(&b, id).with_context(|| format!("parse {}", p.display()))
 }
 
-pub fn parse_geojson(b: &[u8], id: &str) -> Result<HashMap<u64, Vec<Ring>>> {
+pub fn parse_geojson_raw(b: &[u8], id: &str) -> Result<Raw> {
     let fc: Fc = serde_json::from_slice(b)?;
-    let mut out: HashMap<u64, Vec<Ring>> = HashMap::new();
+    let mut out = Raw::new();
     for f in fc.features {
         let Some(k) = f.properties.get(id).and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|x| x as u64))) else {
             continue;
         };
         let rings: Vec<Ring> = match f.geometry {
-            Some(Geometry::Polygon(p)) => p.iter().map(|r| e7(r)).collect(),
-            Some(Geometry::MultiPolygon(m)) => m.iter().flatten().map(|r| e7(r)).collect(),
+            Some(Geometry::Polygon(p)) => p.iter().map(|r| e7_raw(r)).collect(),
+            Some(Geometry::MultiPolygon(m)) => m.iter().flatten().map(|r| e7_raw(r)).collect(),
             None => continue,
         };
-        merge(out.entry(k).or_default(), rings);
+        out.push((k, rings));
     }
     Ok(out)
+}
+
+/// The points more than one ring of `sets` has: the borders they share.
+pub fn shared_points(sets: &[&Raw]) -> std::collections::HashSet<geom::Pt> {
+    let mut first: HashMap<geom::Pt, u32> = HashMap::new();
+    let mut shared = std::collections::HashSet::new();
+    let mut n = 0u32;
+    for set in sets {
+        for (_, rings) in set.iter() {
+            for r in rings {
+                n += 1;
+                for p in r {
+                    match first.get(p) {
+                        None => {
+                            first.insert(*p, n);
+                        }
+                        Some(&m) if m != n => {
+                            shared.insert(*p);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    shared
+}
+
+/// Features simplified within `SIMPLIFY_M`, the `pins` kept, and joined by id.
+pub fn simplified(raw: Raw, pins: &std::collections::HashSet<geom::Pt>) -> HashMap<u64, Vec<Ring>> {
+    let mut out: HashMap<u64, Vec<Ring>> = HashMap::new();
+    for (k, rings) in raw {
+        let rings = rings.iter().map(|r| geom::simplify_ring_pinned(r, SIMPLIFY_M, &|p| pins.contains(p))).collect();
+        merge(out.entry(k).or_default(), rings);
+    }
+    out
+}
+
+/// A FeatureCollection's (Multi)Polygons, by the integer property `id` (features of one id joined),
+/// the borders its features share kept as they are.
+pub fn parse_geojson(b: &[u8], id: &str) -> Result<HashMap<u64, Vec<Ring>>> {
+    let raw = parse_geojson_raw(b, id)?;
+    let pins = shared_points(&[&raw]);
+    Ok(simplified(raw, &pins))
 }
 
 /// A shapefile layer's polygons (in a zip or a folder), by the integer field `id` (or by record

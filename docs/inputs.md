@@ -429,13 +429,16 @@ order where a region comes after those its water names whole (`region:`, `group:
 `hand_out` folder then takes each stretch (a connected piece) of its water that one of its regions
 alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge. With
 `cover = "earth"` in `rules.toml`, then: a region's piece of water under `sliver_km2` touching
-none of its land joins the region it shares the longest edge with; and, cell by cell (2°), land in
-two regions is taken from both, and land in none, with water in none touching land (the sea between
-the zones' coastline and OSM's), joins the region it shares the longest edge with (the nearest when
-it touches none). The region whose water is `rest` takes what's left; without one, water left is an
-error (`rg-cover`), as is water in two regions. A region without `water` resolves as before, so old
-and new files sit together (one without `water` may not name one with it: `rg-ref`): the new rules only touch the new files, and `cover = "earth"` only
-holds once every file is new. The 12-nautical-mile line is the `regions-territorial-seas` source,
+none of its land joins the region with water it shares the longest edge with; and, cell by cell
+(2°), land in two regions is taken from those of them with water, and each piece in no region
+within 100 m of land (land in no outline, the sea between the zones' coastline and OSM's) up to
+`sliver_km2` joins the region with water it shares the longest edge with; a piece touching none
+stays. Land in no region over `sliver_km2` is an error (`rg-cover`). The region whose water is
+`rest` takes what's left; without one, water left is an error, as is water in two regions. A region
+without `water` resolves as before, and no new rule changes it: a hand-out gives only to regions
+with water (naming one without is `rg-ref`), and one without `water` may not name one with it
+(`rg-ref`). So old and new files sit together, and `cover = "earth"` only holds once every
+file is new. The 12-nautical-mile line is the `regions-territorial-seas` source,
 named only as `ts12:` parts; it divides nothing.
 
 **Examples:**
@@ -506,13 +509,14 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   a split's, its neighbourhood's), never a region's; what's kept is every region's cells (the
   outcome itself) and the datasets, read only once a region in the folder names them (about 1 GB).
   A zone's internal waters are unioned with it. The datasets' rings are simplified within 20 m as
-  read. The regions with water resolve one at a time, their cells several at once (regions without
+  read, the points two rings of the zones share kept (neighbours' borders the same on both sides). The regions with water resolve one at a time, their cells several at once (regions without
   water: at most four at once). A region's parts naming other regions (`region:`, `land:`,
   `group:`) are read cell by cell where those are kept, never copied. With
   `SCENIC_REGIONS_TRACE` set, the check prints each step's and each region's water's footprint
   and its buffers' and nearest-coast splits' count, time and footprint; `SCENIC_REGIONS_THREADS`
   sets how many cells at once (4). A buffer of a cell reads its neighbours' pieces each buffered
-  once, within 16 columns each way and not from the cells past 80° (the polar land); a buffer of
+  once, within 16 columns each way and not from the cells south of 80°S (Antarctica's inland ice) or
+  north of 86°N (where no land is); a buffer of
   50 km or more is drawn as discs at the pieces' points a thirty-second of the distance apart
   (within a twentieth of the distance).
 - **Snapping and the operations' watch:** the regions with water's operations snap with a growing
@@ -590,7 +594,8 @@ EEZ v12, GeoJSON, by `mrgid`), `regions-internal-waters` (Internal Waters v4, by
 to its zone), `regions-territorial-seas` (Territorial Seas v4), `regions-lakes` (Natural Earth 1:10m
 lakes 5.0.0, a shapefile zip, by `ne_id`) and `regions-land` (OSM's land polygons, split, in
 degrees), each a file in `sources/fetched/<id>/` named by its `params.path`. Their rings are simplified within
-20 m as they're read (`data::SIMPLIFY_M`). The check reads them
+20 m as they're read (`data::SIMPLIFY_M`); the zones' (sea, internal waters, territorial seas) keep
+every point two of their rings share, so a border two zones share stays the same on both sides. The check reads them
 whole, and only once a region in the folder names them (or has `water`), when the accepted sources
 declare `regions-sea`; until then such a region is held (`rg-data`). Features of one id are unioned
 as they're read. Their declarations are staged in `producers/sources/`
