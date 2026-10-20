@@ -35,13 +35,15 @@ trailhead, heritage.
 
 ### Stored
 
-**`markdata/6-x-y`** (docs/formats.md): a sectioned file per z6 tile, every point in it, sorted by
+**`markdata/all`** (docs/formats.md, "Bundles"): one bundle of a sectioned file per z6 tile, every
+point in it, sorted by
 kind then id: `kinds`, `ids`, `pts` (28 B: E7 position; fa, ia, mz as f32; rank, the point's place in
 its kind's order and the tie-break; kz, the lowest zoom whose thinned tile keeps it; class, tier,
 flags), `fvals` (per kind, an f64 column per filter property), `props` and `info` (JSON in zstd blocks
 of 256), and `summits` (the named peaks with a height, with their place in the worldwide list).
 
-**`layers/marks-<kind>/{root,lo}`**: thinned tiles (root z0–2, lo z3–5) in the marks tile format.
+**`layers/marks-<kind>/all`**: thinned tiles (z0–5) in the marks tile format, one bundle per kind
+that the catalog names as the kind's root and lo packs.
 At zoom z a tile keeps the named points with mz ≤ z − 3, the top 256 by score at balances 0, ¼, ½, ¾
 and 1, and the top 64 by each range filter but years. Ties go by rank, so "kept at z" is "kz ≤ z".
 World Heritage components are drawn from z6 blocks only. The rest are speck cells at zoom z + 10
@@ -86,8 +88,8 @@ in the summits list's order.
 
 ## Areas: heritage areas, Indigenous lands, special areas, World Heritage outlines
 
-- **`layers/ov-{heritage-areas,indigenous,special,whs}`** (root, lo; hi z9–12 within the coverage +
-  20 km): MVT, layer `a`, each feature with its id, lean properties and `own` (the z3 tile whose
+- **`layers/ov-{heritage-areas,indigenous,special,whs}/all`** (z0–8; z9–12 within the coverage +
+  20 km): one bundle per layer, which the catalog names as each root, lo and hi pack it holds; MVT, layer `a`, each feature with its id, lean properties and `own` (the z3 tile whose
   ovdata holds its details). A World Heritage outline carries its site dot's id and position.
 - **`ovdata/3-x-y`**: area details by id and park records, owned by the z3 tile of the box centre.
 - **Routes:** `GET /api/overlays/detail/{layer}/{id}?own=3/x/y`; `/api/park`.
@@ -109,6 +111,8 @@ records. `ferries.ts` merges blocks by id; in-view kilometres are measured on th
 - Named tiles have one handler with a rule per layer; the marks format has its own attacher. Marks
   tiles and blocks are cached by bytes (192 MB); the named-MVT cache holds up to 6,000 tiles.
 - markdata and ovdata are read as typed section views: paged from the NAS, mapped from the mirror.
+  A tile's markdata is its member of the bundle, found by the bundle's pack index and read in place;
+  the views' caches and the blocks' ETags name it by the bundle and the tile.
 - The client loads z6 blocks from zoom 6 and thinned tiles below, held as typed arrays (least
   recently used dropped past 256 MB); `/api/marks/view` is asked by the worker and `extra` joins
   its kind's points; specks below zoom 6 are pseudo-points weighted by count; filtered kinds' cells
@@ -131,8 +135,8 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 | `peaks` (per unit; network) | U's peak candidates, `summits`, z12 within 30 km, `terrain-z8` | `work/peaks/<u>` |
 | `items` (per pass; network) | the current units' candidates' QIDs | `sources/items/<d>/{facts,views,meta}` |
 | `heritage` (network) | the heritage-sites outputs, the `areas` and `named` sets, the filtered planet within the cover, the pass's answers | `work/heritage/<d>/…` |
-| `marks` (worldwide) | the units' `work/pois` and `work/peaks`, the items' facts and views, the heritage job's outputs | `marks-*` packs, `markdata`, `global/marks/summary`, `work/marks/heritage-dots` |
-| `overlays` | the heritage job's outputs, `work/marks/heritage-dots` | `ov-*` packs, `ovdata`, `global/heritage/…` |
+| `marks` (worldwide) | the units' `work/pois` and `work/peaks`, the items' facts and views, the heritage job's outputs | a `marks-*` bundle per kind, the `markdata` bundle, `global/marks/summary`, `work/marks/heritage-dots` |
+| `overlays` | the heritage job's outputs, `work/marks/heritage-dots` | an `ov-*` bundle per layer, `ovdata`, `global/heritage/…` |
 | `stations` (roads chain) | the `rail` set, the z6 tiles within 20 km of a built unit | `stations` packs |
 | `ferries` (roads chain) | the `ferries` set, the ferry feeds (`dem/ferrygtfs.py`), the static timetables (docs/inputs.md §6.7.2) | `ferries` packs |
 
@@ -235,7 +239,8 @@ docs/inputs.md §6.5.2), split into two jobs so the units never wait on Wikidata
 
 ## Storage
 
-`markdata/` and `ovdata/` are catalog maps, so GC handles them. `work/` holds build intermediates,
+`markdata/` and `ovdata/` are catalog maps (the markdata's every tile naming the one bundle), so GC
+handles them. `work/` holds build intermediates,
 in no catalog: `work/pois/<u>`, `work/peaks/<u>`, `work/trailends/<d>`, `work/summits/<d>`,
 `work/heritage/<d>/…`, `work/marks/heritage-dots`. GC keeps what the manifest names; a retired pass's
 entries leave it when a newer pass completes, a unit's pois and peaks with the prune (docs/regions.md,

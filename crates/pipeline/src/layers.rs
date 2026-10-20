@@ -1,6 +1,8 @@
 //! Layers as packs (docs/formats.md "Pack"): every tile in exactly one pack — the root pack
 //! (z0–2), a lo pack per z3 tile (z3–8) or a hi pack per z6 tile (z9–14) — uploaded content-named
-//! under `layers/<layer>/`.
+//! under `layers/<layer>/`. A small layer made whole by one job may instead be one bundle
+//! (`layers/<layer>/all`, docs/formats.md "Bundles"): every tile in one pack, which the catalog
+//! names for each pack key its tiles fall in (`bundle_keys`).
 
 use crate::out::Out;
 use anyhow::Result;
@@ -46,7 +48,114 @@ impl LayerOut {
         self.minzoom = self.minzoom.min(zs.0);
         self.maxzoom = self.maxzoom.max(zs.1);
     }
+
+    /// A bundle's pack keys (`bundle_keys`) named in the catalog as one pack: `logical` for each.
+    pub fn add_bundle(&mut self, logical: &str, keys: &BundleKeys) {
+        if keys.root {
+            self.root = Some(logical.to_string());
+        }
+        for k in &keys.lo {
+            self.lo.insert(k.clone(), logical.to_string());
+        }
+        for k in &keys.hi {
+            self.hi.insert(k.clone(), logical.to_string());
+        }
+    }
 }
+
+/// A layer bundle's logical name (docs/formats.md "Bundles").
+pub fn bundle_logical(layer: &str) -> String {
+    format!("layers/{layer}/all")
+}
+
+/// The pack keys a bundle's tiles fall in (`pack_of`): whether it has root tiles, and its lo
+/// ("3/x/y") and hi ("6/x/y") keys.
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct BundleKeys {
+    pub root: bool,
+    pub lo: std::collections::BTreeSet<String>,
+    pub hi: std::collections::BTreeSet<String>,
+}
+
+/// `BundleKeys` of a pack's index.
+pub fn bundle_keys(idx: &store::pack::PackIndex) -> BundleKeys {
+    let mut k = BundleKeys::default();
+    for e in &idx.entries {
+        let (z, x, y) = e.zxy();
+        match pack_of(z, x, y) {
+            ("root", ..) => k.root = true,
+            ("lo", pz, px, py) => {
+                k.lo.insert(format!("{pz}/{px}/{py}"));
+            }
+            (_, pz, px, py) => {
+                k.hi.insert(format!("{pz}/{px}/{py}"));
+            }
+        }
+    }
+    k
+}
+
+/// Writes a whole layer's tiles (z, x, y, blob, raw_len; any order) as its bundle and uploads it,
+/// put off (crate::out::Out::put_file_later: named once landed); its logical name and zoom range,
+/// None when there are no tiles. One file where a pack per tile key made hundreds (task #449: each
+/// file made on the NAS is a second or so).
+pub fn write_layer_bundle(
+    out: &mut Out,
+    layer: &str,
+    encoding: &str,
+    gzip: bool,
+    mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)>,
+) -> Result<Option<(String, (u8, u8))>> {
+    if tiles.is_empty() {
+        return Ok(None);
+    }
+    tiles.sort_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
+    let logical = bundle_logical(layer);
+    let local = out.scratch_file(&format!("{logical}.pack"));
+    let meta = serde_json::json!({"layer": layer, "scope": "all", "encoding": encoding});
+    let mut w = store::pack::PackWriter::create(&local, meta, gzip)?;
+    let (mut zmin, mut zmax) = (u8::MAX, 0u8);
+    for (z, x, y, blob, raw) in tiles {
+        w.add(z, x, y, &blob, raw)?;
+        zmin = zmin.min(z);
+        zmax = zmax.max(z);
+    }
+    w.finish()?;
+    out.put_file_later(&logical, "pack", &local)?;
+    Ok(Some((logical, (zmin, zmax))))
+}
+
+/// Writes files made per tile (z, x, y, local path; any order) as one bundle under `logical` and
+/// uploads it, put off (crate::out::Out::put_file_later): an RDPACK whose blobs are the files' bytes
+/// as they are, not gzip'd, each starting on a 64-byte boundary, so a sectioned file in it maps and
+/// casts in place as on its own (docs/formats.md "Bundles"). The local files are removed. False
+/// when there were none.
+pub fn write_file_bundle(
+    out: &mut Out,
+    logical: &str,
+    meta: serde_json::Value,
+    mut files: Vec<(u8, u32, u32, std::path::PathBuf)>,
+) -> Result<bool> {
+    if files.is_empty() {
+        return Ok(false);
+    }
+    files.sort_by_key(|f| roadcore::archive::tile_key(f.0, f.1, f.2));
+    let local = out.scratch_file(&format!("{logical}.pack"));
+    let mut w = store::pack::PackWriter::create(&local, meta, false)?.aligned(BUNDLE_ALIGN);
+    for (z, x, y, p) in &files {
+        let b = std::fs::read(p)?;
+        w.add(*z, *x, *y, &b, b.len() as u32)?;
+    }
+    w.finish()?;
+    for (.., p) in &files {
+        std::fs::remove_file(p).ok();
+    }
+    out.put_file_later(logical, "pack", &local)?;
+    Ok(true)
+}
+
+/// Where a file bundle's members start (RDSECT's sections are 64-byte aligned within a file).
+pub const BUNDLE_ALIGN: u64 = 64;
 
 /// Write one pack of tiles (key, blob, raw_len) and upload it; returns its logical name.
 pub fn write_pack(

@@ -102,6 +102,8 @@ pub struct PackWriter {
     blobs: HashMap<(u64, u32), Vec<u64>>,
     stats: PackStats,
     failed: bool,
+    /// Each blob starts at a multiple of this (1: back to back).
+    align: u64,
 }
 
 impl PackWriter {
@@ -137,7 +139,16 @@ impl PackWriter {
             blobs: HashMap::new(),
             stats: PackStats::default(),
             failed: false,
+            align: 1,
         })
+    }
+
+    /// Each blob from here on starts at a multiple of `align` bytes in the file (zeros between):
+    /// a bundle whose members are sectioned files, mapped and cast in place (docs/formats.md
+    /// "Bundles").
+    pub fn aligned(mut self, align: u64) -> Self {
+        self.align = align.max(1);
+        self
     }
 
     /// Adds tile z/x/y. `blob` is stored as given (gzip'd already when the pack's blobs are);
@@ -180,6 +191,11 @@ impl PackWriter {
                     return Ok(off);
                 }
             }
+        }
+        let pad = (self.align - self.pos % self.align) % self.align;
+        if pad > 0 {
+            self.w.write_all(&vec![0u8; pad as usize])?;
+            self.pos += pad;
         }
         let off = self.pos;
         self.w.write_all(blob)?;
@@ -490,6 +506,25 @@ mod tests {
             w.add(z, x, y, &blob, body.len() as u32).unwrap();
         }
         w.finish().unwrap()
+    }
+
+    /// An aligned pack's blobs each start on the boundary, and read back as written.
+    #[test]
+    fn aligned_blobs_start_on_their_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("b.pack");
+        let mut w = PackWriter::create(&p, json!({"bundle": "test"}), false).unwrap().aligned(64);
+        for (z, x, y, body) in tiles() {
+            w.add(z, x, y, &body, body.len() as u32).unwrap();
+        }
+        w.finish().unwrap();
+        let m = MmapFile::open(&p).unwrap();
+        let ix = PackIndex::read_from(&m).unwrap();
+        for (z, x, y, body) in tiles() {
+            let e = ix.find(z, x, y).unwrap();
+            assert_eq!(e.offset % 64, 0, "{z}/{x}/{y}");
+            assert_eq!(ix.read_blob(&m, &e).unwrap(), body);
+        }
     }
 
     #[test]

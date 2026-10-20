@@ -39,6 +39,22 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   tile. A tile lives in exactly one pack.
 - Readers fetch header and index once (two range reads) and keep the index locally
   (`idx/<file hash>.idx`), so serving a tile is one range read.
+- **Layer bundles** (`layers/<layer>/all`; meta `{"layer", "scope": "all", "encoding"}`): every tile
+  of a layer one job makes whole in one pack (each landmark kind's thinned tiles, the area
+  overlays). The catalog names it for each pack key its tiles fall in (`root`, `lo`'s z3 keys, `hi`'s
+  z6 keys), over any pack of before; the keys come from its index, or from the last catalog when that
+  named the same file.
+
+## Bundles of files (`.pack`, an RDPACK of files)
+
+Files made per tile by one job, in one pack keyed by the tile (`roadcore::archive::tile_key`), each
+member a whole file as it would be on its own, not gzip'd, starting on a 64-byte boundary
+(`PackWriter::aligned`), so a sectioned file in it is mapped and cast in place as on its own
+(`pipeline::layers::write_file_bundle`). `markdata/all` (meta `{"bundle": "markdata", "fmt": 1}`):
+the landmark points, a member per z6 tile. The catalog's `markdata` names it for each tile it holds;
+a reader finds the member through the pack's index (kept as a pack's is) and reads it in place
+(`SectView::open_at`; `pipeline::marks::markdata_files`). A catalog naming a `.sect` per tile (before
+task #449) is read as before.
 
 ## Sectioned file (`.sect`, RDSECT v1): named arrays
 
@@ -151,7 +167,7 @@ RailInfo { u32 here; u32 colour; i64 rel (primary route relation, 0 none); u32 n
 
 The record types are `roadcore::packs`.
 
-## Landmark points (`markdata/6-<x>-<y>.<h>.sect`): per z6 tile (docs/phase5.md)
+## Landmark points (a member per z6 tile of `markdata/all.<h>.pack`; docs/phase5.md)
 
 Every point of the 8 kinds (`pipeline::marks::KINDS`) positioned in the tile, sorted by kind, then
 id. Meta: `{"fmt": 1, "tile": "6/x/y", "block": 256, "fields": {kind: [prop, …]}}` (a reader
@@ -179,7 +195,7 @@ objects block: u32 count, u32 × (count + 1) offsets, then the JSON objects back
 
 ## Marks tile (RDMT v1): thinned tiles, z6 blocks, served gzip'd
 
-`layers/marks-<kind>/{root,lo}` packs hold the thinned tiles of zooms 0–5 (encoding `rdmt`); the
+`layers/marks-<kind>/all` bundles hold the thinned tiles of zooms 0–5 (encoding `rdmt`); the
 server makes z6 blocks from markdata. Each column starts 8-byte aligned.
 
 ```
@@ -199,7 +215,7 @@ A thinned tile at zoom z holds the points with kz ≤ z, the rest as speck cells
 Made by the `overlays`, `stations` and `ferries` jobs; `overlays` also writes
 `global/heritage/{layer-summary,heritage-sources}`.
 
-- **Areas** `layers/ov-{heritage-areas,indigenous,special,whs}/{root,lo,hi}` (encoding `mvt`,
+- **Areas** `layers/ov-{heritage-areas,indigenous,special,whs}/all` (bundles; encoding `mvt`,
   z0–12; hi tiles within the coverage + 20 km): extent 4096, layer `a`; the feature id is its id
   (phase5.md "Ids"), with the lean file's properties and (heritage areas, Indigenous lands, special
   areas) `own` ("3/x/y", the ovdata holding its details); a World Heritage outline's id is its site

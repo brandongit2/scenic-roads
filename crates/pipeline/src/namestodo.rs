@@ -640,10 +640,20 @@ fn landmarks(
     progress: &dyn Fn(&str, u64, u64),
 ) -> Result<()> {
     let n = cat.markdata.len() as u64;
-    for (i, logical) in cat.markdata.values().enumerate() {
-        progress("landmark tiles read", i as u64, n);
+    // Each file opened once (a bundle holds every tile, task #449), its tiles read in the
+    // catalog's order.
+    let mut files: HashMap<&str, HashMap<(u32, u32), crate::marks::MarkdataFile>> = HashMap::new();
+    for logical in cat.markdata.values() {
+        if files.contains_key(logical.as_str()) {
+            continue;
+        }
         let Some(path) = path_of(root, cat, logical) else { continue };
-        let s = sect(&path)?;
+        files.insert(logical, crate::marks::markdata_files(&path)?.into_iter().collect());
+    }
+    for (i, (tile, logical)) in cat.markdata.iter().enumerate() {
+        progress("landmark tiles read", i as u64, n);
+        let Some(t) = crate::legacy::Unit::parse(tile).map(|u| (u.x, u.y)) else { continue };
+        let Some(s) = files.get(logical.as_str()).and_then(|f| f.get(&t)) else { continue };
         let pts: Vec<crate::marks::MarkPt> = s.read_pod("pts")?;
         let blocks = |name: &str, idx: &str| -> Result<Vec<Vec<u8>>> {
             let data = s.read(name)?;

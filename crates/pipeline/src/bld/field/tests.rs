@@ -230,9 +230,7 @@ fn region_sizes_tried() {
 
 /// A z6 tile's heritage sites from its markdata (`marks::KINDS`' heritage, a World Heritage Site's
 /// components left out: they aren't dots), E7.
-fn sites_of_markdata(path: &std::path::Path) -> Result<Vec<[i32; 2]>> {
-    let f = store::range::PlainFile::open(path).with_context(|| format!("open {}", path.display()))?;
-    let r = store::sect::SectReader::open(f)?;
+fn sites_of_markdata(r: &crate::marks::MarkdataFile) -> Result<Vec<[i32; 2]>> {
     let kinds: Vec<[u32; 2]> = r.read_pod("kinds")?;
     let pts: Vec<crate::marks::MarkPt> = r.read_pod("pts")?;
     let k = crate::marks::kind_index("heritage").unwrap();
@@ -267,13 +265,18 @@ fn heritage_slices_against_markdata() {
         .map(|k| k.split('/').next().unwrap().to_string())
         .max()
         .unwrap();
+    // (Markdata by tile: the marks job's bundle, or a file per tile from before task #449.)
+    let markdata: std::collections::HashMap<(u32, u32), crate::marks::MarkdataFile> = m
+        .iter()
+        .filter(|(k, _)| k.starts_with("markdata/"))
+        .flat_map(|(_, c)| crate::marks::markdata_files(&root.join(c)).unwrap())
+        .collect();
     for t in ["6-33-22", "6-18-24", "6-56-25", "6-17-23", "6-31-18", "6-32-22"] {
-        let md = m.get(&format!("markdata/{t}")).map(|c| sites_of_markdata(&root.join(c)).unwrap()).unwrap_or_default();
-        let all = m
-            .get(&format!("markdata/{t}"))
-            .map(|c| {
-                let f = store::range::PlainFile::open(&root.join(c)).unwrap();
-                let r = store::sect::SectReader::open(f).unwrap();
+        let u = crate::legacy::Unit::parse(t).unwrap();
+        let md = markdata.get(&(u.x, u.y)).map(|r| sites_of_markdata(r).unwrap()).unwrap_or_default();
+        let all = markdata
+            .get(&(u.x, u.y))
+            .map(|r| {
                 let kinds: Vec<[u32; 2]> = r.read_pod("kinds").unwrap();
                 let pts: Vec<crate::marks::MarkPt> = r.read_pod("pts").unwrap();
                 let k = kinds[crate::marks::kind_index("heritage").unwrap()];

@@ -8,6 +8,41 @@ use det::Det;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+/// The marks job's markdata: one bundle of every z6 tile's file (crate::layers::write_file_bundle,
+/// docs/formats.md "Bundles"; task #449). The catalog names it for each tile it holds.
+pub const MARKDATA_BUNDLE: &str = "markdata/all";
+
+/// A markdata file read in place: a bundle's member, or a file of its own.
+pub type MarkdataFile = store::sect::SectReader<store::range::Slice<std::sync::Arc<store::range::PlainFile>>>;
+
+/// Every z6 tile's markdata in the file at `path`, by tile: a bundle's members (a `.pack`), each
+/// read in place, or a file of one tile (`.sect`, as the marks job wrote them before task #449).
+pub fn markdata_files(path: &Path) -> Result<Vec<((u32, u32), MarkdataFile)>> {
+    use store::range::{PlainFile, RangeRead, Slice};
+    let f = std::sync::Arc::new(PlainFile::open(path).with_context(|| format!("open {}", path.display()))?);
+    let read = |off: u64, len: u64| -> Result<MarkdataFile> {
+        store::sect::SectReader::open(Slice::new(f.clone(), off, len)?)
+            .with_context(|| format!("read {}", path.display()))
+    };
+    if path.extension().is_some_and(|e| e == "pack") {
+        let idx = store::pack::PackIndex::read_from(&*f).with_context(|| format!("read {}", path.display()))?;
+        idx.entries
+            .iter()
+            .map(|e| {
+                let (_, x, y) = e.zxy();
+                Ok(((x, y), read(e.offset, u64::from(e.len))?))
+            })
+            .collect()
+    } else {
+        let s = read(0, f.len()?)?;
+        let t = s.meta()["tile"].as_str().and_then(|t| {
+            let mut p = t.split('/').skip(1).map(|v| v.parse::<u32>().ok());
+            Some((p.next()??, p.next()??))
+        });
+        Ok(vec![(t.with_context(|| format!("{}: markdata without its tile", path.display()))?, s)])
+    }
+}
+
 /// The point kinds, in the order markdata's `kinds` section lists them.
 pub const KINDS: [&str; 8] =
     ["viewpoint", "peak", "waterfall", "lighthouse", "covered_bridge", "rest", "trailhead", "heritage"];

@@ -990,14 +990,16 @@ pub const ROADUNITS_V: u32 = 1;
 /// 3: the lines no timetable counts and the routes matching none, `work/ferries/lines`, §6.7.3.)
 pub const STATIONS_V: u32 = 1;
 pub const FERRIES_V: u32 = 3;
-/// The landmark points from the candidates (crate::marksjob).
-pub const MARKS_V: u32 = 1;
+/// The landmark points from the candidates (crate::marksjob). (2: the markdata and each kind's
+/// thinned tiles written as bundles, docs/formats.md "Bundles", task #449.)
+pub const MARKS_V: u32 = 2;
 /// The rest of the heritage chain on the heritage-sites outputs (scenic-build heritage), and the
 /// area overlays from it with the marks' World Heritage dots (ovconv::overlays). (2: the registers
 /// read generically, their caches the pass's answers alone, docs/inputs.md §6.5. 3: no seeds, the
 /// layers' `en` the things' own, §6.5.3.)
 pub const HERITAGE_V: u32 = 3;
-pub const OVERLAYS_V: u32 = 1;
+/// (Overlays 2: each area layer's tiles written as a bundle, docs/formats.md "Bundles", task #449.)
+pub const OVERLAYS_V: u32 = 2;
 
 /// The rail service (crate::rail): the feeds for the coverage, fetched once (dem/railfeeds.py), and
 /// trains a day on its rail ways (dem/railgtfs.py, railfreq: global/railfreq). (Rail 2: the static

@@ -1605,6 +1605,84 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>, now: u64) -> Result<se
     Ok(m)
 }
 
+/// Names the bundles (docs/formats.md "Bundles"; task #449) in the catalog for every key they hold,
+/// over any pack or file of that key from before: each layer bundle (`layers`: a layer, its
+/// bundle's logical name) for the root, lo and hi keys of its tiles, the markdata's for its tiles.
+/// The keys are the last catalog's when it named the same file (by content name: the same bytes),
+/// else read from the bundle's index on the NAS (its header and index: a read or two).
+fn bundled(
+    out: &Out,
+    last: Option<&store::catalog::Catalog>,
+    layer_bundles: &[(String, String)],
+    markdata_bundle: Option<&str>,
+    layers: &mut BTreeMap<String, LayerOut>,
+    markdata: &mut BTreeMap<String, String>,
+) -> Result<()> {
+    let same = |logical: &str| {
+        last.filter(|c| c.files.get(logical).is_some_and(|f| Some(&f.file) == out.manifest.get(logical)))
+    };
+    let index = |logical: &str| -> Result<store::pack::PackIndex> {
+        let p = out.path(&out.manifest[logical]);
+        let f = store::range::PlainFile::open(&p).with_context(|| format!("open {}", p.display()))?;
+        store::pack::PackIndex::read_from(&f).with_context(|| format!("read {}", p.display()))
+    };
+    for (layer, logical) in layer_bundles {
+        let keys = match same(logical).and_then(|c| c.layers.get(layer)) {
+            Some(l) => pipeline::layers::BundleKeys {
+                root: l.root.as_deref() == Some(logical.as_str()),
+                lo: l.lo.iter().filter(|(_, v)| *v == logical).map(|(k, _)| k.clone()).collect(),
+                hi: l.hi.iter().filter(|(_, v)| *v == logical).map(|(k, _)| k.clone()).collect(),
+            },
+            None => pipeline::layers::bundle_keys(&index(logical)?),
+        };
+        let x = layers.entry(layer.clone()).or_insert_with(|| LayerOut::new(layer_encoding(layer)));
+        // (Only the bundle's own: a pack of before at a key it doesn't hold isn't the step's now.)
+        x.root = None;
+        x.lo.clear();
+        x.hi.clear();
+        x.add_bundle(logical, &keys);
+        if let Some(zs) = layer_zooms(layer) {
+            (x.minzoom, x.maxzoom) = zs;
+        }
+    }
+    if let Some(logical) = markdata_bundle {
+        let tiles: Vec<String> = match same(logical) {
+            Some(c) => c.markdata.iter().filter(|(_, v)| *v == logical).map(|(k, _)| k.clone()).collect(),
+            None => index(logical)?
+                .entries
+                .iter()
+                .map(|e| {
+                    let (z, x, y) = e.zxy();
+                    format!("{z}/{x}/{y}")
+                })
+                .collect(),
+        };
+        markdata.clear();
+        markdata.extend(tiles.into_iter().map(|t| (t, logical.to_string())));
+    }
+    Ok(())
+}
+
+/// A layer's tiles' encoding, as the catalog lists it.
+fn layer_encoding(layer: &str) -> &'static str {
+    match layer {
+        "roads" | "rails" => "rt7",
+        "terrain" => "terrarium-png",
+        "slope" => "slope4-png",
+        "labels" => "mvt",
+        "water" => "water-png",
+        l if l.starts_with("trees-") => "terrarium-webp",
+        l if l.starts_with("grid-") => "u8-zstd",
+        l if l.starts_with("marks-") => "rdmt",
+        l if l.starts_with("ov-") || l == "stations" || l == "buildings" => "mvt",
+        "ferries" => "geojson-gz",
+        "buildings-field" => pipeline::bld::field::ENCODING,
+        pipeline::depth::LAYER => pipeline::depth::ENCODING,
+        pipeline::depth::CLASS_LAYER => pipeline::depth::CLASS_ENCODING,
+        _ => "unknown",
+    }
+}
+
 /// A layer's zoom range as its builders make it.
 fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
     Some(match layer {
@@ -1697,6 +1775,11 @@ fn catalog(
         (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), Vec::new());
     let mut markdata = BTreeMap::new();
     let mut ovdata = BTreeMap::new();
+    // Bundles (docs/formats.md "Bundles"): a layer's (layer, logical), and the markdata's; named
+    // for the keys they hold once the last catalog is read (`bundled`), over any pack or file of
+    // the same key from before.
+    let mut layer_bundles: Vec<(String, String)> = Vec::new();
+    let mut markdata_bundle: Option<String> = None;
     // The basemap: the newest pass's worldwide archive.
     let world = out.manifest.keys().filter(|k| k.starts_with("layers/basemap/world-")).max().cloned();
     for logical in out.manifest.keys() {
@@ -1707,24 +1790,12 @@ fn catalog(
                     basemap.push(logical.clone());
                 }
             }
+            ["layers", layer, "all"] => {
+                layer_bundles.push((layer.to_string(), logical.clone()));
+            }
             ["layers", layer, scope, key] => {
                 let u = Unit::parse(key).context("pack key")?;
-                let enc = match *layer {
-                    "roads" | "rails" => "rt7",
-                    "terrain" => "terrarium-png",
-                    "slope" => "slope4-png",
-                    "labels" => "mvt",
-                    "water" => "water-png",
-                    l if l.starts_with("trees-") => "terrarium-webp",
-                    l if l.starts_with("grid-") => "u8-zstd",
-                    l if l.starts_with("marks-") => "rdmt",
-                    l if l.starts_with("ov-") || l == "stations" || l == "buildings" => "mvt",
-                    "ferries" => "geojson-gz",
-                    "buildings-field" => pipeline::bld::field::ENCODING,
-                    pipeline::depth::LAYER => pipeline::depth::ENCODING,
-                    pipeline::depth::CLASS_LAYER => pipeline::depth::CLASS_ENCODING,
-                    _ => "unknown",
-                };
+                let enc = layer_encoding(layer);
                 let zs = match *scope {
                     "root" => (0, 2),
                     "lo" => (3, 8),
@@ -1746,6 +1817,7 @@ fn catalog(
             ["hidata", t] => {
                 hidata.insert(Unit::parse(t).context("tile")?.slash(), logical.clone());
             }
+            ["markdata", "all"] => markdata_bundle = Some(logical.clone()),
             ["markdata", t] => {
                 markdata.insert(Unit::parse(t).context("tile")?.slash(), logical.clone());
             }
@@ -1788,6 +1860,7 @@ fn catalog(
     if last.is_none() && held {
         last = store::catalog::latest(&out.root().join("catalog")).context("the last catalog")?;
     }
+    bundled(out, last.as_ref(), &layer_bundles, markdata_bundle.as_deref(), &mut layers, &mut markdata)?;
     let regions = catalog_coverage(out, global.get("outlines").map(String::as_str), ready, building, last.as_ref())?;
     // (The inputs' accepted descriptions' credits beside the table's: pipeline::inputs::credits;
     // one that can't be read now fails the catalog, as the agent's plan waits then, rather than
@@ -6710,6 +6783,77 @@ mod tests {
 
     /// What a catalog says of itself (pipeline::pubtimes::CatalogStats): whole, then a delta that
     /// stat'ed only the new files, its phases taken once written (the write's phase among them).
+    /// Task #449: a layer's bundle is named for every root, lo and hi key its tiles fall in (over
+    /// a pack of before), the markdata's for each tile it holds; a delta takes them from the last
+    /// catalog naming the same file, without reading it again.
+    #[test]
+    fn bundles_are_named_for_every_key_they_hold() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
+        let mut m = std::collections::BTreeMap::new();
+        pipeline::inputs::regions::accept_fixture(root, root, &[], &mut m);
+        std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
+        let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+        // A pack of before, and the bundle: tiles at z1 (root), z4 under 3/1/2, z10 under 6/9/20.
+        out.put_bytes("layers/ov-whs/hi/6-1-1", "pack", b"old").unwrap();
+        let gz = |b: &[u8]| {
+            use std::io::Write;
+            let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(6));
+            e.write_all(b).unwrap();
+            e.finish().unwrap()
+        };
+        let tiles = vec![(1, 0, 1, gz(b"a"), 1), (4, 2, 5, gz(b"b"), 1), (10, 9 * 16 + 3, 20 * 16, gz(b"c"), 1)];
+        let (l, zs) = pipeline::layers::write_layer_bundle(&mut out, "ov-whs", "mvt", true, tiles).unwrap().unwrap();
+        assert_eq!((l.as_str(), zs), ("layers/ov-whs/all", (1, 10)));
+        let mut files = Vec::new();
+        for (x, y) in [(9u32, 20u32), (10, 20)] {
+            let p = root.join(format!("scratch/m-{x}-{y}.sect"));
+            let w = store::sect::SectWriter::create(&p, serde_json::json!({"tile": format!("6/{x}/{y}")})).unwrap();
+            w.finish().unwrap();
+            files.push((6, x, y, p));
+        }
+        let meta = serde_json::json!({"bundle": "markdata"});
+        assert!(pipeline::layers::write_file_bundle(&mut out, pipeline::marks::MARKDATA_BUNDLE, meta, files).unwrap());
+        out.save().unwrap();
+        let run = |way| {
+            let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+            super::catalog(&mut out, false, None, &Default::default(), way, NOW).unwrap()
+        };
+        run(super::CatalogWay::default());
+        let check = || {
+            let c = store::catalog::latest(&root.join("catalog")).unwrap().unwrap();
+            c.validate().unwrap();
+            let l = &c.layers["ov-whs"];
+            assert_eq!(l.root.as_deref(), Some("layers/ov-whs/all"));
+            assert_eq!(
+                l.lo.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(),
+                [("3/1/2", "layers/ov-whs/all")]
+            );
+            assert_eq!(
+                l.hi.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(),
+                [("6/9/20", "layers/ov-whs/all")]
+            );
+            assert_eq!(
+                c.markdata.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect::<Vec<_>>(),
+                [("6/10/20", "markdata/all"), ("6/9/20", "markdata/all")]
+            );
+            c
+        };
+        let first = check();
+        // The bundles gone from the NAS: a delta (another file new) names them as the last did.
+        for l in ["layers/ov-whs/all", "markdata/all"] {
+            std::fs::remove_file(root.join(first.content(l).unwrap())).unwrap();
+        }
+        let mut out = pipeline::out::Out::unbound(root, &root.join("scratch")).unwrap();
+        out.put_bytes("layers/roads/hi/6-1-1", "pack", b"new").unwrap();
+        out.save().unwrap();
+        let second = run(super::CatalogWay { delta: true, whole: false });
+        assert!(second.delta);
+        assert_eq!(check().n, 2);
+    }
+
     #[test]
     fn a_catalog_says_what_it_did_once_written() {
         pipeline::timings::start("catalog");

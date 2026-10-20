@@ -1305,19 +1305,25 @@ fn w_heritage(l: &str, _: bool) -> bool {
     matches!(parts(l).as_slice(), ["work", "heritage", d, stem] if date(d) && !stem.is_empty())
 }
 
-/// The landmarks drawn: each kind's zoomed-out packs, their data by z6 tile, the heritage dots and
-/// the summary (what it didn't write removed).
+/// The landmarks drawn: each kind's zoomed-out tiles as a bundle, their data by z6 tile as one
+/// bundle (task #449; the packs and files per tile from before, removed), the heritage dots and the
+/// summary (what it didn't write removed).
 fn w_marks(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| ly.strip_prefix("marks-").is_some_and(|k| !k.is_empty()), &["root", "lo"])
+    let kind = |ly: &str| ly.strip_prefix("marks-").is_some_and(|k| !k.is_empty());
+    pack_of(l, &kind, &["root", "lo"])
+        || matches!(parts(l).as_slice(), ["layers", ly, "all"] if kind(ly))
         || matches!(parts(l).as_slice(), ["markdata", t] if tile(t, 6))
+        || l == crate::marks::MARKDATA_BUNDLE
         || l == crate::markconv::HERITAGE_DOTS
         || l == "global/marks/summary"
 }
 
-/// The area overlays' packs, every zoom, their data by z3 tile, and the heritage summaries (what it
-/// didn't write removed).
+/// The area overlays' tiles, every zoom, a bundle per layer (task #449; the packs from before,
+/// removed), their data by z3 tile, and the heritage summaries (what it didn't write removed).
 fn w_overlays(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| ["ov-heritage-areas", "ov-indigenous", "ov-special", "ov-whs"].contains(&ly), &ALL)
+    let layer = |ly: &str| ["ov-heritage-areas", "ov-indigenous", "ov-special", "ov-whs"].contains(&ly);
+    pack_of(l, &layer, &ALL)
+        || matches!(parts(l).as_slice(), ["layers", ly, "all"] if layer(ly))
         || matches!(parts(l).as_slice(), ["ovdata", t] if tile(t, 3))
         || matches!(parts(l).as_slice(), ["global", "heritage", s] if !s.is_empty())
 }
@@ -1787,15 +1793,22 @@ mod tests {
             (
                 "marks",
                 &[
-                    ("layers/marks-peak/lo/3-1-2", false),
+                    ("layers/marks-peak/lo/3-1-2", true),
+                    ("layers/marks-peak/all", false),
                     ("markdata/6-1-2", true),
+                    ("markdata/all", false),
                     ("global/marks/summary", false),
                     ("work/marks/heritage-dots", false),
                 ],
             ),
             (
                 "overlays",
-                &[("layers/ov-whs/hi/6-1-2", false), ("ovdata/3-1-2", false), ("global/heritage/layer-summary", false)],
+                &[
+                    ("layers/ov-whs/hi/6-1-2", true),
+                    ("layers/ov-whs/all", false),
+                    ("ovdata/3-1-2", false),
+                    ("global/heritage/layer-summary", false),
+                ],
             ),
             (
                 "rail-feeds",
@@ -1821,7 +1834,10 @@ mod tests {
         // Outside: another step's files, a name of the wrong zoom, another layer, a pass's files
         // removed by a step that doesn't retire passes, a prune that writes, a removal the step
         // doesn't make.
-        let bad: [(&str, &[(&str, bool)]); 12] = [
+        let bad: [(&str, &[(&str, bool)]); 14] = [
+            // (Bundles of another step's layer, task #449.)
+            ("marks", &[("layers/ov-whs/all", false)]),
+            ("overlays", &[("layers/stations/all", false)]),
             ("lakefill", &[("work/lakefill", false), ("work/lakefill/x", false)]),
             (
                 "inputs",

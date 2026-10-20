@@ -14,7 +14,8 @@ static BLOCKS: LazyLock<Mutex<Lru<(String, u8, u32), Arc<Vec<u8>>>>> = LazyLock:
 
 pub struct MarkView {
     pub tile: (u32, u32),
-    /// The file's content name (cache keys, ETags).
+    /// The file's content name, with the tile for a bundle's member (`Data::markdata_id`): cache
+    /// keys, ETags.
     pub content: String,
     kinds: Vec<[u32; 2]>,
     /// Per kind, where its values start in `fvals`, and its fields.

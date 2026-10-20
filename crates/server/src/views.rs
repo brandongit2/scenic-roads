@@ -181,12 +181,25 @@ pub struct SectView {
 impl SectView {
     /// Parse the header and table: from the mapped file, or with two reads from the NAS.
     pub fn open(src: Src) -> Result<SectView> {
+        let len = match &src {
+            Src::Local(m) => m.len() as u64,
+            Src::Remote(r) => r.len()?,
+        };
+        SectView::open_at(src, 0, len)
+    }
+
+    /// `open` of a sectioned file stored at bytes `base..base + len` of `src`: a bundle's member
+    /// (docs/formats.md "Bundles"), read in place as a file of its own would be.
+    pub fn open_at(src: Src, base: u64, len: u64) -> Result<SectView> {
+        let total = match &src {
+            Src::Local(m) => m.len() as u64,
+            Src::Remote(r) => r.len()?,
+        };
+        ensure!(base.checked_add(len).is_some_and(|e| e <= total), "sectioned file at {base}+{len} past the end");
+        let (b, n) = (base as usize, len as usize);
         let head: Vec<u8> = match &src {
-            Src::Local(m) => m[..m.len().min(1 << 16)].to_vec(),
-            Src::Remote(r) => {
-                let len = r.len()?;
-                r.read_at(0, (len as usize).min(1 << 16))?
-            }
+            Src::Local(m) => m[b..b + n.min(1 << 16)].to_vec(),
+            Src::Remote(r) => r.read_at(base, n.min(1 << 16))?,
         };
         ensure!(head.len() >= 28 && &head[..8] == b"RDSECT01", "not a sectioned file");
         let version = u32::from_le_bytes(head[8..12].try_into()?);
@@ -194,26 +207,30 @@ impl SectView {
         let count = u32::from_le_bytes(head[12..16].try_into()?) as usize;
         let table_off = u64::from_le_bytes(head[16..24].try_into()?);
         let mlen = u32::from_le_bytes(head[24..28].try_into()?) as usize;
+        ensure!(28 + mlen <= n, "sectioned file meta past its end");
         let meta: serde_json::Value = if 28 + mlen <= head.len() {
             serde_json::from_slice(&head[28..28 + mlen])?
         } else {
             match &src {
-                Src::Local(m) => serde_json::from_slice(&m[28..28 + mlen])?,
-                Src::Remote(r) => serde_json::from_slice(&r.read_at(28, mlen)?)?,
+                Src::Local(m) => serde_json::from_slice(&m[b + 28..b + 28 + mlen])?,
+                Src::Remote(r) => serde_json::from_slice(&r.read_at(base + 28, mlen)?)?,
             }
         };
+        ensure!(table_off.checked_add(count as u64 * 48).is_some_and(|e| e <= len), "section table out of bounds");
         let tbytes: Vec<u8> = match &src {
             Src::Local(m) => {
-                let a = table_off as usize;
-                ensure!(a + count * 48 <= m.len(), "section table out of bounds");
+                let a = b + table_off as usize;
                 m[a..a + count * 48].to_vec()
             }
-            Src::Remote(r) => r.read_at(table_off, count * 48)?,
+            Src::Remote(r) => r.read_at(base + table_off, count * 48)?,
         };
         let mut table = HashMap::new();
         for e in tbytes.chunks_exact(48) {
             let name = String::from_utf8_lossy(&e[..24]).trim_end_matches('\0').to_string();
-            table.insert(name, (u64::from_le_bytes(e[24..32].try_into()?), u64::from_le_bytes(e[32..40].try_into()?)));
+            let (off, slen) = (u64::from_le_bytes(e[24..32].try_into()?), u64::from_le_bytes(e[32..40].try_into()?));
+            ensure!(off.checked_add(slen).is_some_and(|e| e <= len), "section {name} out of bounds");
+            // (Kept as offsets in `src`.)
+            table.insert(name, (base + off, slen));
         }
         Ok(SectView { meta, table, src, loaded: Mutex::new(HashMap::new()) })
     }

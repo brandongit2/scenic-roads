@@ -850,7 +850,7 @@ pub async fn block(
         return StatusCode::CONFLICT.into_response();
     }
     let tile = format!("6/{x}/{y}");
-    let Some(content) = s.data.catalog().markdata.get(&tile).and_then(|l| s.data.content(l)) else {
+    let Some(content) = s.data.markdata_id(&tile) else {
         return StatusCode::NO_CONTENT.into_response();
     };
     let nv = s.names.version_for_tile(6, x, y, 0.0);
@@ -921,8 +921,7 @@ pub async fn specks(
         return StatusCode::BAD_REQUEST.into_response();
     };
     let tiles = z6_under(&s, z, x, y);
-    let contents: Vec<String> =
-        tiles.iter().filter_map(|t| s.data.catalog().markdata.get(t).and_then(|l| s.data.content(l))).collect();
+    let contents: Vec<String> = tiles.iter().filter_map(|t| s.data.markdata_id(t)).collect();
     let h = xxhash_rust::xxh3::xxh3_64(format!("{}|{kind}|{z}/{x}/{y}|{qs}", contents.join(",")).as_bytes());
     let etag = format!("\"{h:016x}\"");
     let key = format!("s|{h:x}");

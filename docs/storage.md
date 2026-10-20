@@ -15,11 +15,11 @@ sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, 
                inputs/<unit>/ (the input check's checked copies and accepted indexes: inputs.md §4.6)
 base/          base packs, one per unit
 hidata/        per z6 tile: ways-here index, query parts, rail lines, zoomed-out summaries
-markdata/      per z6 tile: landmark points
+markdata/      landmark points per z6 tile, in one bundle (all)
 ovdata/        per z3 tile: area and park details
 global/        worldwide files: road values per unit, road → units, rail frequencies, landmark
                totals, heritage/, spoken
-layers/<layer>/  root, lo and hi packs; basemap/world-<date>.<hash>.pmtiles
+layers/<layer>/  root, lo and hi packs, or one bundle (all); basemap/world-<date>.<hash>.pmtiles
 work/          build intermediates, not served
 cache/         what units keep for later runs, shared by both Macs: dem-units/, scenic-units/
 catalog/       <n>.json.zst (or deltas): every file the map reads, by content name
@@ -33,7 +33,9 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
 **Immutable, content-named files.**
 - Every built file is `<logical>.<hash16>.<ext>`, never rewritten. A write goes to `<name>.tmp`, is
   read back and checked against its hash, then renamed. An unchanged file keeps its name, so a
-  rebuild uploads only what changed.
+  rebuild uploads only what changed; one already there is reused and touched (GC's age rule), and
+  one the manifest already names under the same logical name isn't looked at on the NAS at all
+  (`Out::put_file`: heritage-sites' slices, hundreds of small files nearly all unchanged, task #449).
 - **Uploads beside the work** (`Out::put_file_later`): slope and terrain pieces, map tiles (`pack`)
   and the 3D buildings' tiles upload a target's files on a thread of their own while the job works
   on its next target, and a unit its grids and base pack while it makes its road values. A file is
@@ -59,6 +61,11 @@ folder's, so `std::fs::copy` or plain `cp` fail with "Permission denied".
   of (tile key, offset, length, raw length, 64-bit hash) sorted by key. Root: z0–2; lo: z3–8 per z3
   tile; hi: z9–14 per z6 tile. Hi tiles exist only near the coverage for the layers built by area;
   worldwide layers (labels, water) have them wherever they have tiles.
+- **Bundles** (docs/formats.md): a small layer one job makes whole (each landmark kind's thinned
+  tiles, each area overlay) is one pack of every tile, `layers/<layer>/all`, which the catalog names
+  for each pack key it holds; the landmark points (a sectioned file per z6 tile) are one bundle,
+  `markdata/all`. Each file made on the NAS costs a second or so of round trips: the marks and
+  overlays jobs made about 450 and 380 a run before (task #449).
 - **The basemap** is Planetiler's worldwide PMTiles file, one per pass, served tile by tile.
 - **Base packs, hidata, markdata and ovdata** are sectioned files: mapped when local, read from the
   NAS in pages (docs/macs.md).

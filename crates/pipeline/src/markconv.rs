@@ -288,13 +288,19 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
     let kinds = by_kind.len().max(1) as f64;
     drop(p);
     let p = phase("markdata tiles uploaded", Class::NasWrite);
-    for (k, (t, local)) in written.iter().enumerate() {
-        let l = format!("markdata/6-{}-{}", t.0, t.1);
-        out.put_file(&l, "sect", local)?;
-        wrote.insert(l);
-        crate::agent::jobs::within(0.5 * (k + 1) as f64 / written.len() as f64);
+    // (One bundle of every tile's file, uploaded beside the thinned tiles' making: task #449.)
+    let ntiles = written.len();
+    let files = written.into_iter().map(|((x, y), local)| (6u8, x, y, local)).collect();
+    if crate::layers::write_file_bundle(
+        out,
+        marks::MARKDATA_BUNDLE,
+        serde_json::json!({"bundle": "markdata", "fmt": 1}),
+        files,
+    )? {
+        wrote.insert(marks::MARKDATA_BUNDLE.to_string());
     }
-    eprintln!("marks: {} markdata tiles in {:.1?}", written.len(), t0.elapsed());
+    crate::agent::jobs::within(0.5);
+    eprintln!("marks: {ntiles} markdata tiles in {:.1?}", t0.elapsed());
     drop(p);
 
     // Thinned tiles per kind, z0–5: root (z0–2) and lo per z3 (z3–5).
@@ -310,7 +316,7 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
                 KeepPt { lon: p.lon, lat: p.lat, pt: &p.pt, sizes: Vec::new() }
             })
             .collect();
-        let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
+        let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
         for z in 0..=marks::THIN_MAX_Z {
             let mut at: BTreeMap<(u32, u32), Vec<usize>> = BTreeMap::new();
             for (q, p) in kp.iter().enumerate() {
@@ -342,25 +348,14 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
                 })
                 .collect::<Result<_>>()?;
             for ((x, y), gz, raw) in made {
-                packs.entry(crate::layers::pack_of(z, x, y)).or_default().push((z, x, y, gz, raw));
+                tiles.push((z, x, y, gz, raw));
                 thinned += 1;
             }
         }
         drop(made_p);
         let _p = phase("thinned packs uploaded", Class::NasWrite);
-        for ((scope, rz, rx, ry), mut tiles) in packs {
-            tiles.sort_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
-            if let Some((l, _)) = crate::layers::write_pack(
-                out,
-                &format!("marks-{kind}"),
-                "rdmt",
-                true,
-                scope,
-                (rz, rx, ry),
-                &mut tiles.into_iter(),
-            )? {
-                wrote.insert(l);
-            }
+        if let Some((l, _)) = crate::layers::write_layer_bundle(out, &format!("marks-{kind}"), "rdmt", true, tiles)? {
+            wrote.insert(l);
         }
     }
     // Totals per kind (the `kind` property: rest is rest_area and picnic_site) and heritage tier, for
@@ -396,7 +391,7 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
         eprintln!("marks: {} stale markdata tiles and packs dropped", stale.len());
     }
     out.save()?;
-    Ok(Converted { points: all.len(), tiles: written.len(), thinned })
+    Ok(Converted { points: all.len(), tiles: ntiles, thinned })
 }
 
 fn gzip(b: &[u8]) -> Result<Vec<u8>> {

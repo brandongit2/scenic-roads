@@ -293,7 +293,7 @@ fn areas_and_parks(
         areas += made.len();
         drop(p);
         let feats: Vec<Feature> = made.into_iter().map(|m| m.0).collect();
-        wrote.extend(write_tiles(out, a.layer, LAYER, &feats, want, ntiles)?);
+        wrote.extend(write_tiles(out, a.layer, LAYER, &feats, want, ntiles, true)?);
         eprintln!(
             "overlays: {} {} features ({empty} without geometry), {ntiles} tiles so far ({:.1?})",
             a.layer,
@@ -639,7 +639,8 @@ fn drop_stale(out: &mut Out, layer: &str, wrote: &[String]) -> usize {
     stale.len()
 }
 
-/// Writes a layer's tiles (gzipped, in packs by scope).
+/// Writes a layer's tiles (gzipped, in packs by scope, or with `bundle` all in the layer's bundle:
+/// crate::layers::write_layer_bundle).
 /// The features as vector tiles in the layer's packs; the packs' logical names.
 fn write_tiles(
     out: &mut Out,
@@ -648,6 +649,7 @@ fn write_tiles(
     feats: &[Feature],
     want: &(dyn Fn(u8, u32, u32) -> bool + Sync),
     ntiles: &mut usize,
+    bundle: bool,
 ) -> Result<Vec<String>> {
     use crate::timings::{phase, Class};
     let p = phase("vector tiles cut", Class::Compute);
@@ -665,6 +667,13 @@ fn write_tiles(
     drop(p);
     let _p = phase("their packs uploaded", Class::NasWrite);
     let mut wrote = Vec::new();
+    if bundle {
+        let tiles: Vec<_> = packs.into_values().flatten().collect();
+        *ntiles += tiles.len();
+        wrote.extend(crate::layers::write_layer_bundle(out, layer, "mvt", true, tiles)?.map(|b| b.0));
+        crate::agent::jobs::within(1.0);
+        return Ok(wrote);
+    }
     let n = packs.len().max(1) as f64;
     for (k, ((scope, rz, rx, ry), mut tiles)) in packs.into_iter().enumerate() {
         tiles.sort_by_key(|t| (t.0, t.1, t.2));
@@ -742,7 +751,7 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
     drop(p);
     let want = |z: u8, x: u32, y: u32| z < 9 || cover.contains(&(x >> (z - 6), y >> (z - 6)));
     let mut ntiles = 0;
-    let wrote = write_tiles(out, "stations", STATION_LAYER, &made, &want, &mut ntiles)?;
+    let wrote = write_tiles(out, "stations", STATION_LAYER, &made, &want, &mut ntiles, false)?;
     drop_stale(out, "stations", &wrote);
     Ok((kept.len(), ntiles))
 }

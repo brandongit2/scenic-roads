@@ -344,19 +344,34 @@ impl Data {
         Ok(Some(v))
     }
 
-    /// A z6 tile's landmark points ("6/32/21"), cached by content.
+    /// What names a z6 tile's landmark points ("6/32/21") in caches and ETags: its file's content
+    /// name, with the tile when the file is the marks job's bundle of every tile (docs/formats.md
+    /// "Bundles"; task #449). None when the catalog has none there.
+    pub fn markdata_id(&self, tile: &str) -> Option<String> {
+        let content = self.content(self.catalog().markdata.get(tile)?)?;
+        Some(if is_bundle(&content) { format!("{content}#{tile}") } else { content })
+    }
+
+    /// A z6 tile's landmark points ("6/32/21"), cached by `markdata_id`: its own file, or its member
+    /// of the bundle (read in place: one range read of the bundle's index, kept as a pack's is).
     pub fn markdata(&self, tile: &str) -> Result<Option<Arc<crate::markview::MarkView>>> {
         let cat = self.catalog();
         let Some(l) = cat.markdata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
-        if let Some(v) = self.marks.lock().unwrap().get(&content) {
+        let id = if is_bundle(&content) { format!("{content}#{tile}") } else { content.clone() };
+        if let Some(v) = self.marks.lock().unwrap().get(&id) {
             return Ok(Some(v));
         }
-        let v = Arc::new(
-            crate::markview::MarkView::new(SectView::open(self.src(&content)?)?, content.clone())
-                .with_context(|| format!("markdata {content}"))?,
-        );
-        self.marks.lock().unwrap().put(content, v.clone());
+        let s = if is_bundle(&content) {
+            let mut p = tile.split('/').skip(1).map(|v| v.parse::<u32>().ok());
+            let (Some(Some(x)), Some(Some(y))) = (p.next(), p.next()) else { return Ok(None) };
+            let Some(e) = self.index(&content)?.find(6, x, y) else { return Ok(None) };
+            SectView::open_at(self.src(&content)?, e.offset, u64::from(e.len))
+        } else {
+            SectView::open(self.src(&content)?)
+        };
+        let v = Arc::new(crate::markview::MarkView::new(s?, id.clone()).with_context(|| format!("markdata {id}"))?);
+        self.marks.lock().unwrap().put(id, v.clone());
         Ok(Some(v))
     }
 
@@ -775,6 +790,102 @@ mod tests {
         assert!(!runs_at(&json!({"beat": now - 300, "job": null, "beside": {"id": "lo"}}), 600, &["job"], now));
     }
 
+    /// Task #449: a tile's landmark points read from the marks job's bundle of every tile (from the
+    /// NAS, or mapped here) are those of its own file: the same rows, properties and named peaks;
+    /// each tile its own cache and ETag name.
+    #[test]
+    fn markdata_from_a_bundle_is_the_tiles_own_file() {
+        use pipeline::marks::{self, MarkPt, Row, SummitRec, KINDS};
+        let (nas, homes) = (tempfile::tempdir().unwrap(), [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()]);
+        let made = nas.path().join("made");
+        std::fs::create_dir_all(&made).unwrap();
+        let tiles = [(9u32, 20u32), (10, 20)];
+        let mut files = Vec::new();
+        for (n, &(x, y)) in tiles.iter().enumerate() {
+            let mut rows: Vec<Vec<Row>> = (0..KINDS.len()).map(|_| Vec::new()).collect();
+            let k = marks::kind_index("waterfall").unwrap();
+            for i in 0..3u64 {
+                rows[k].push(Row {
+                    id: 100 * n as u64 + i,
+                    pt: MarkPt { lon: -700_000_000 + i as i32, lat: 470_000_000, rank: i as u32, ..Default::default() },
+                    fvals: vec![f64::NAN; marks::fields("waterfall").len()],
+                    props: format!(r#"{{"name":"falls {n}.{i}"}}"#).into_bytes(),
+                    info: br#"{"qid":"Q1"}"#.to_vec(),
+                });
+            }
+            let summits = [(SummitRec { rank: n as u32, lon: 1, lat: 2, pad: 0, ele: 1234.5 }, format!("peak {n}"))];
+            let p = made.join(format!("6-{x}-{y}.sect"));
+            marks::write_markdata(&p, (x, y), &rows, &summits).unwrap();
+            files.push(p);
+        }
+        // The two forms: a file per tile, and the bundle (docs/formats.md "Bundles").
+        let mut old = Catalog::new(1);
+        let mut new = Catalog::new(1);
+        let mut w = store::pack::PackWriter::create(&made.join("all.pack"), json!({"bundle": "markdata"}), false)
+            .unwrap()
+            .aligned(64);
+        for (&(x, y), p) in tiles.iter().zip(&files) {
+            let b = std::fs::read(p).unwrap();
+            let l = format!("markdata/6-{x}-{y}");
+            let c = store::naming::write_atomic(nas.path(), &l, "sect", store::naming::Source::Bytes(&b)).unwrap();
+            old.files
+                .insert(l.clone(), store::catalog::FileRef { file: c, size: b.len() as u64, ..Default::default() });
+            old.markdata.insert(format!("6/{x}/{y}"), l);
+            new.markdata.insert(format!("6/{x}/{y}"), "markdata/all".into());
+            w.add(6, x, y, &b, b.len() as u32).unwrap();
+        }
+        w.finish().unwrap();
+        let b = std::fs::read(made.join("all.pack")).unwrap();
+        let c =
+            store::naming::write_atomic(nas.path(), "markdata/all", "pack", store::naming::Source::Bytes(&b)).unwrap();
+        new.files.insert(
+            "markdata/all".into(),
+            store::catalog::FileRef { file: c.clone(), size: b.len() as u64, ..Default::default() },
+        );
+        let open = |home: &std::path::Path, cat: &Catalog| {
+            let dir = nas.path().join("catalog");
+            std::fs::remove_dir_all(&dir).ok();
+            store::catalog::write(&dir, cat).unwrap();
+            Data::open(Options {
+                home: home.to_owned(),
+                nas_root: Some(nas.path().to_owned()),
+                mirror: false,
+                reserve: 0,
+            })
+            .unwrap()
+        };
+        let (a, z) = (open(homes[0].path(), &old), open(homes[1].path(), &new));
+        let rows = |v: &crate::markview::MarkView| {
+            let (ids, pts, fvals) = v.scan().unwrap();
+            let props: Vec<Vec<u8>> = (0..ids.cast::<u64>().len()).map(|i| v.props(i).unwrap()).collect();
+            let info: Vec<Vec<u8>> = (0..ids.cast::<u64>().len()).map(|i| v.info(i).unwrap()).collect();
+            (
+                v.tile,
+                ids.bytes().to_vec(),
+                pts.cast::<MarkPt>().to_vec(),
+                fvals.bytes().to_vec(),
+                props,
+                info,
+                v.summits.clone(),
+                v.summit_name(0).unwrap().to_string(),
+            )
+        };
+        for &(x, y) in &tiles {
+            let t = format!("6/{x}/{y}");
+            let (va, vz) = (a.markdata(&t).unwrap().unwrap(), z.markdata(&t).unwrap().unwrap());
+            assert_eq!(rows(&vz), rows(&va), "{t}");
+            assert_eq!(z.markdata_id(&t).unwrap(), format!("{c}#{t}"));
+            // Mapped here (a mirror's copy): the same.
+            let m = Arc::new(unsafe { Mmap::map(&std::fs::File::open(nas.path().join(&c)).unwrap()).unwrap() });
+            let e = store::pack::PackIndex::parse_bytes(&m).unwrap().find(6, x, y).unwrap();
+            let s = SectView::open_at(Src::Local(m), e.offset, u64::from(e.len)).unwrap();
+            // (Its own name: the blocks are cached by it.)
+            let vm = crate::markview::MarkView::new(s, format!("mapped {t}")).unwrap();
+            assert_eq!(rows(&vm), rows(&va), "{t} mapped");
+        }
+        assert!(z.markdata("6/1/1").unwrap().is_none());
+    }
+
     /// The agent's word after a catalog: adopted at once, from this Mac alone (not the LAN, the
     /// tailnet, or a device through a proxy on this Mac).
     #[tokio::test]
@@ -912,4 +1023,10 @@ impl store::RangeRead for Whole {
             ))),
         }
     }
+}
+
+/// Whether a content name is a bundle of files (an RDPACK whose members are files: docs/formats.md
+/// "Bundles"), not a file of its own: the markdata's (task #449).
+pub fn is_bundle(content: &str) -> bool {
+    content.ends_with(".pack")
 }
