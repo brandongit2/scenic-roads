@@ -176,15 +176,18 @@ of a host's slots, left out once the member's heartbeat is out of touch; placeme
 `CAP_FRESH_S`). The score is the memory guard's limit (4 points a GB) plus its cores (8 each), scaled
 down by free disk below 50 GB (none: 0), halved while its owner uses it, and on battery scaled by
 half its charge; away from home or without the NAS, 0. Its jobs' load isn't counted, so the free
-disk is taken before its jobs' reservations (`disk_mb` + `reserved_mb`): a busy lead whose jobs
+disk is taken before its jobs' reservations (free space less the room target; an older app's
+`disk_mb`): a busy lead whose jobs
 reserved its room once scored 0 and offered the lead to any idle Mac (#491). No Mac is named: a member is offered the
 lead when its score beats the lead's by 25 % and at least 16 points (`handover::beats`) at every
 look for 5 minutes (`PREFER_S`), and `Driver::hand_to` lets it. The margin holds both ways, so a
 score moving less than that doesn't hand the lead back; an offer that comes to nothing is made
 again only after twice as long each time (10, 20, then 40 minutes). Lead-only work weighs the
 members' memory guard limits (#491): the lead's last plan notes the most a target of a step only the
-lead runs (the non-shared steps), planned or held by the guard, is expected to take (its floor or
-measured peak, `Agent::lead_need`). With the lead's limit fitting it, a member whose limit doesn't
+lead runs (the non-shared steps), planned or held by the guard, is expected to take: the larger of
+its floor and its measured peak, which survives `scenic pool floors --clear` (`Agent::lead_need`).
+Targets no Mac's limit fits don't count (they wait whoever leads, and would hide those one can run:
+`handover::lead_need`). With the lead's limit fitting it, a member whose limit doesn't
 (or isn't known) is never offered the lead, whatever it scores; with the lead's short of it, only
 members whose limit fits it count, and the best of them is offered the lead whatever the scores
 (seen so for 5 minutes, as any: `handover::fits_lead_work`). So the lead goes to a Mac that can run

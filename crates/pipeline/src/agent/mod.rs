@@ -5690,16 +5690,17 @@ impl Agent {
     }
 
     /// The memory the most demanding target of a step only the lead runs among `works` is expected
-    /// to take (MB): its holding floor or its peak, the larger (`Agent::lead_need`).
+    /// to take (MB): its holding floor or its peak, the larger, among the targets some Mac's limit
+    /// fits (`Agent::lead_need`, `handover::lead_need`).
     fn lead_need_of(&self, works: &[build::Work]) -> u64 {
         let Some(c) = &self.coord else { return 0 };
-        works
+        let most = c.largest_limit().unwrap_or(0).max(memguard::limit_mb(self.total_mb()));
+        let needs = works
             .iter()
             .filter(|w| !steps::SHARED.contains(&w.step.as_str()))
             .flat_map(|w| w.targets.iter().map(move |(t, _)| (w.step.as_str(), t.as_str())))
-            .map(|(st, t)| c.holding_floor(st, t).map_or(0, |f| f.mb).max(c.peak(st, t).unwrap_or(0)))
-            .max()
-            .unwrap_or(0)
+            .map(|(st, t)| c.holding_floor(st, t).map_or(0, |f| f.mb).max(c.peak(st, t).unwrap_or(0)));
+        crate::pool::handover::lead_need(needs, most)
     }
 
     /// The targets of the plan's `works` the memory guard holds (its switch on): those whose floor,

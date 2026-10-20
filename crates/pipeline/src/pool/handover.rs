@@ -56,15 +56,16 @@ pub const DISK_FULL_GB: u64 = 50;
 /// cores (8 each), scaled down by its free disk below `DISK_FULL_GB`, halved while its owner uses
 /// it (the owner's share), and on battery scaled by half its charge (none known: nothing). Away
 /// from home or the NAS not answering: nothing. Its jobs' load isn't counted: a lead's own jobs
-/// would hand the lead away. So its free disk is counted before its jobs' reservations
-/// (`disk_mb` + `reserved_mb`: the free space less the owner's room target): a lead busy with
-/// jobs that reserved its room would score nothing and offer the lead to any idle Mac.
+/// would hand the lead away. So its free disk is counted before its jobs' reservations (the free
+/// space less the owner's room target, `free_mb` - `target_mb`; an older app's, which doesn't
+/// say, its `disk_mb`): a lead busy with jobs that reserved its room would score nothing and offer
+/// the lead to any idle Mac.
 pub fn score(c: &crate::coord::Capacity) -> u64 {
     if !c.home || !c.nas {
         return 0;
     }
     let base = (c.limit_mb / 1024) * 4 + c.cores as u64 * 8;
-    let room = c.disk_mb.saturating_add(c.reserved_mb);
+    let room = if c.free_mb > 0 { c.free_mb.saturating_sub(c.target_mb) } else { c.disk_mb };
     let mut s = base * (room / 1024).min(DISK_FULL_GB) / DISK_FULL_GB;
     if c.in_use {
         s /= 2;
@@ -92,6 +93,13 @@ pub enum Fit {
     /// The lead's limit can't fit it: only a member whose limit does is offered the lead, and it
     /// is whatever the scores (seen so for `PREFER_S`, as any).
     Short,
+}
+
+/// The memory lead-only work waiting or planned needs (MB): the largest of the targets' `needs`
+/// that `most`, the largest limit of any Mac in the pool, fits (one fitting none waits whoever
+/// leads, and would hide those a Mac can run).
+pub fn lead_need(needs: impl IntoIterator<Item = u64>, most: u64) -> u64 {
+    needs.into_iter().filter(|&n| n <= most).max().unwrap_or(0)
 }
 
 /// How the lead's limit (`own`, MB) stands to `need`, the memory the most demanding target of a
@@ -520,6 +528,12 @@ mod tests {
         let (gb, need) = (|g: u64| g << 10, 21_914);
         let fit = fits_lead_work(need, Some(gb(42)));
         assert_eq!(fit, Fit::Fits);
+        // Buildings' sources (42.3 GB) fits no Mac: it doesn't hide heritage (21.4 GB).
+        let need_now = lead_need([43_315, 21_914], gb(42).max(gb(12)));
+        assert_eq!(need_now, 21_914);
+        assert_eq!(fits_lead_work(need_now, Some(gb(12))), Fit::Short);
+        assert!(Fit::Short.allows(need_now, Some(gb(42))));
+        assert_eq!(lead_need([43_315], gb(42)), 0, "none a Mac fits: the scores alone");
         assert!(!fit.allows(need, Some(gb(12))) && !fit.allows(need, None) && fit.allows(need, Some(gb(24))));
         // None waits: the scores alone, as before.
         assert_eq!(fits_lead_work(0, Some(gb(42))), Fit::Free);
@@ -544,16 +558,22 @@ mod tests {
         let c = |disk: u64, reserved: u64| crate::coord::Capacity {
             limit_mb: 42 << 10,
             cores: 10,
-            disk_mb: disk << 10,
+            disk_mb: disk.saturating_sub(reserved) << 10,
+            free_mb: (disk + 20) << 10,
+            target_mb: 20 << 10,
             reserved_mb: reserved << 10,
             ac: true,
             home: true,
             nas: true,
             ..Default::default()
         };
-        assert_eq!(score(&c(0, 80)), score(&c(80, 0)));
-        assert!(score(&c(0, 80)) > 0);
+        assert_eq!(score(&c(80, 80)), score(&c(80, 0)));
+        assert!(score(&c(80, 80)) > 0);
         assert_eq!(score(&c(0, 0)), 0, "a full disk still scores nothing");
+        assert_eq!(score(&c(0, 80)), 0, "a full disk with large reservations: nothing");
+        // An older app's, free and target unsaid: its disk_mb.
+        let old = crate::coord::Capacity { free_mb: 0, target_mb: 0, ..c(0, 0) };
+        assert_eq!(score(&crate::coord::Capacity { disk_mb: 80 << 10, ..old.clone() }), score(&c(80, 0)));
     }
 
     #[test]
