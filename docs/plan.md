@@ -1201,7 +1201,10 @@ from the first (`edit_held`).
   loop; untimed time stays under about 5 %. A run keeps where its untimed time lies (`gaps`: the
   main thread's time between two top-level phases, named by them), and `scenic timings` shows it
   as "(unaccounted)" with its three largest gaps, flagging a kind past 5 % (`UNACCOUNTED_MAX`) with
-  a closing line naming every such kind. Background and overlapped phases are marked. The record
+  a closing line naming every such kind. Background and overlapped phases are marked. Each phase keeps the most memory the job held
+  while it was open (`peak_mb`, sampled four times a second over the job's process group), shown in
+  the log's table and as `scenic timings`' peak column; `scenic pool needs --fit` ends with each
+  step's heaviest phase over its last 20 timed runs (`timings::peak_holders`). The record
   (docs/formats.md, Timings) goes to `SCENIC_TIMINGS`; the agent keeps `timings.jsonl`, the lead's
   coordinator `coord/timings.jsonl` for every worker. `scenic timings [kind] [--last N] [--host
   mac]` prints them (`--here` this Mac's own).

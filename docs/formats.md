@@ -582,7 +582,7 @@ A job's run, a JSON object, `pipeline::timings::RunRec`:
 
 ```
 {v: 1, kind, id, host, start, wall_s, cpu_s, threads, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …]}
-phase: {name, class, wall_s, cpu_s, n, bytes, files, overlapped, background, sub: [phase, …]}
+phase: {name, class, wall_s, cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
 ```
 
 - `kind`: the job's step (`unit`, `peaks`, `gc`, `backup`, `osm-pass`), or `task <kind>` (`task
@@ -598,7 +598,9 @@ phase: {name, class, wall_s, cpu_s, n, bytes, files, overlapped, background, sub
   none).
 - A phase totals its `n` spans. `class`: `nas-read`, `nas-write`, `disk`, `net`, `compute`, `wait`,
   `mixed`. `overlapped`: another thread's phase ran during it. `background`: off the main thread.
-  `sub`: one level of sub-phases (a child program's phases come in here). Empty, zero and false
+  `peak_mb`: the most memory the job's process group held while it was open (physical
+  footprints summed, sampled every 250 ms, as the memory guard measures a job; the most over its
+  spans); a phase running a program is that program's peak. Absent where it can't be read. `sub`: one level of sub-phases (a child program's phases come in here). Empty, zero and false
   fields left out.
 
 Where they're kept:
