@@ -101,6 +101,7 @@ remote_main() {  # on the M4: <key> <owner> <command>
       # (Slots set aside so, another's, go after 10 min: their runs count no longer.)
       find $base/.slots -maxdepth 1 -name '.aside-*' ! -newermt '10 minutes ago' -exec rm -rf {} + 2>/dev/null
       if mv $base/.slots/$s $base/.slots/.aside-$s-$$ 2>/dev/null; then
+        touch $base/.slots/.aside-$s-$$  # (its 10 min counted from now: mv keeps the old mtime)
         if [[ $(cat $base/.slots/.aside-$s-$$/owner 2>/dev/null) == "$held" ]]; then rm -rf $base/.slots/.aside-$s-$$
         fi  # (another's, retaken meanwhile: left aside, as with a key's lock)
       fi
@@ -114,7 +115,18 @@ remote_main() {  # on the M4: <key> <owner> <command>
   # On any exit: the watcher stopped (by its PID), the slot freed while still this run's.
   typeset -g g_wd= g_cpid= g_slotdir=$base/.slots/$slot g_mine=$mine
   trap '[[ -n $g_wd ]] && kill $g_wd 2>/dev/null; [[ $(cat $g_slotdir/owner 2>/dev/null) == "$g_mine" ]] && rm -rf $g_slotdir' EXIT
-  trap '[[ -n $g_cpid ]] && kill $(pgrep -P $g_cpid) $g_cpid 2>/dev/null; exit 143' TERM HUP INT
+  # A signal stops the whole run, grandchildren too (cargo's rustc and test binaries): the watcher
+  # stopped and the slot freed first, then this connection's process group (only this run is in
+  # it), as the watcher does.
+  typeset -g g_pgid=$(ps -o pgid= -p $$ | tr -d ' ')
+  on_signal() {
+    trap '' TERM HUP INT
+    [[ -n $g_wd ]] && kill $g_wd 2>/dev/null
+    [[ $(cat $g_slotdir/owner 2>/dev/null) == "$g_mine" ]] && rm -rf $g_slotdir
+    kill -TERM -- -$g_pgid 2>/dev/null
+    exit 143
+  }
+  trap on_signal TERM HUP INT
   (( waited )) && print "remote-tests: got an M4 test slot after ${waited} s"
   # Disk: stale keys, then the least recently used past the cap; never a locked one (a lock older
   # than 6 h aside), whose stamp was touched as it was taken.
@@ -156,7 +168,7 @@ remote_main() {  # on the M4: <key> <owner> <command>
   # evicted.)
   ( while sleep 3; do
       [[ -z $sshd ]] || kill -0 $sshd 2>/dev/null || { kill -TERM -- -$pgid; exit; }
-      [[ -d $dir/.busy ]] && touch $dir/.busy $dir/stamp 2>/dev/null
+      [[ -d $dir/.busy ]] && touch -c $dir/.busy $dir/stamp 2>/dev/null
     done ) </dev/null >/dev/null 2>&1 &
   wd=$!; g_wd=$wd
   versions "the M4"
