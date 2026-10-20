@@ -44,6 +44,10 @@ pub struct Out {
     outside: Vec<String>,
     /// Uploads put off (`put_file_later`), made in turn on a thread beside the job.
     later: Later,
+    /// Logical name → content name of each file this run uploaded (or reused there by `upload`)
+    /// and landed, until set or removed: one put again unchanged isn't looked at on the NAS again
+    /// (`put_file`).
+    uploaded: BTreeMap<String, String>,
 }
 
 /// The uploads put off (`Out::put_file_later`): sent to a thread of their own that makes them in
@@ -235,6 +239,7 @@ impl Out {
             step: None,
             outside: Vec::new(),
             later: Later::default(),
+            uploaded: BTreeMap::new(),
         })
     }
 
@@ -328,16 +333,18 @@ impl Out {
         let size = std::fs::metadata(local)?.len();
         let (h, sha) = hashes_of(local)?;
         let name = store::naming::content_name(logical, &h, ext);
-        if self.changes.get(logical) == Some(&Some(name.clone())) {
-            // Landed under it by this very run already: nothing to look at again.
+        if self.uploaded.get(logical) == Some(&name) {
+            // Uploaded under it by this very run already: nothing to look at again.
             std::fs::remove_file(local).ok();
             return Ok(self.landed(Landed { logical: logical.to_string(), name, sha: None, size }));
         }
         if self.manifest.get(logical) == Some(&name) {
             // The records name this very file under it: one look (task #449: heritage-sites'
             // slices, hundreds of small files nearly all unchanged). There at its size: touched
-            // (GC's age rule: a snapshot's name may have been dropped since) and taken; missing,
-            // of another size or not touchable: put again below.
+            // (GC's age rule: a snapshot's name may have been dropped since) and taken. Else
+            // `upload` as for any file: missing, put again; of another size, the put fails (a
+            // damaged content-named file is removed by hand: store::naming); not touchable, taken
+            // as an upload of its own, its check pending (nothing written).
             let dest = self.root.join(&name);
             let here = std::fs::metadata(&dest).is_ok_and(|m| m.len() == size)
                 && std::fs::File::options()
@@ -351,6 +358,7 @@ impl Out {
             }
         }
         let landed = upload_hashed(&self.root, logical, ext, local, (h, sha), size)?;
+        self.uploaded.insert(landed.logical.clone(), landed.name.clone());
         if landed.sha.is_some() {
             crate::costin::wrote(landed.size);
         }
@@ -492,6 +500,7 @@ impl Out {
             if l.sha.is_some() {
                 self.later.unclaimed.push((seq, l.size));
             }
+            self.uploaded.insert(l.logical.clone(), l.name.clone());
             self.landed(l);
         }
         Ok(())
@@ -570,6 +579,7 @@ impl Out {
     pub fn set(&mut self, logical: &str, content: Option<String>) {
         // (One in flight landing fails: the next save fails with it.)
         let _ = self.settle_name(logical);
+        self.uploaded.remove(logical);
         self.note(logical, content.is_none());
         match &content {
             Some(c) => self.manifest.insert(logical.to_string(), c.clone()),
@@ -590,6 +600,7 @@ impl Out {
     pub fn remove(&mut self, logical: &str) {
         // (One in flight landing fails: the next save fails with it.)
         let _ = self.settle_name(logical);
+        self.uploaded.remove(logical);
         self.note(logical, true);
         self.manifest.remove(logical);
         self.changes.insert(logical.to_string(), None);
@@ -993,7 +1004,7 @@ mod tests {
     }
 
     /// Task #449: a file the records name, of another size on the NAS (cut short), is not taken: the
-    /// put fails as any upload over a damaged content-named file does, never naming it as good.
+    /// put fails, as any upload over a damaged content-named file does (removed by hand).
     #[test]
     fn a_file_the_records_name_of_another_size_is_not_taken() {
         let d = tempfile::tempdir().unwrap();
@@ -1004,13 +1015,8 @@ mod tests {
         out.save().unwrap();
         std::fs::write(root.join(&a), b"[[1,2]").unwrap();
         let mut out = Out::unbound(&root, &d.path().join("scratch")).unwrap();
-        let got = out.put_bytes(l, "json", b"[[1,2],[3,4]]");
-        match got {
-            // Put back whole.
-            Ok(n) => assert_eq!((n, std::fs::read(root.join(&a)).unwrap()), (a, b"[[1,2],[3,4]]".to_vec())),
-            // Or refused: not taken as it is.
-            Err(_) => assert_eq!(std::fs::read(root.join(&a)).unwrap(), b"[[1,2]"),
-        }
+        assert!(out.put_bytes(l, "json", b"[[1,2],[3,4]]").is_err());
+        assert_eq!(std::fs::read(root.join(&a)).unwrap(), b"[[1,2]", "left for the owner");
     }
 
     /// This Mac's unmerged hand-offs laid over the snapshot (docs/pool.md §7.4): their names read

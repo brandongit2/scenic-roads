@@ -36,7 +36,8 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   rebuild uploads only what changed; one already there is reused and touched (GC's age rule). One
   the manifest already names under the same logical name takes one look (`Out::put_file`, task
   #449: heritage-sites' slices, hundreds of small files nearly all unchanged): there at its size, it
-  is touched and taken; missing or of another size, put again.
+  is touched and taken; missing, put again; of another size, the put fails (a damaged file is
+  removed by hand).
 - **Uploads beside the work** (`Out::put_file_later`): slope and terrain pieces, map tiles (`pack`)
   and the 3D buildings' tiles upload a target's files on a thread of their own while the job works
   on its next target, and a unit its grids and base pack while it makes its road values. A file is
