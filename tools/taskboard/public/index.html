@@ -247,9 +247,9 @@
   .st.s-review { color: var(--st-rev-fg); background: var(--st-rev-bg); }
   .st.s-waiting { color: var(--st-wait-fg); background: var(--st-wait-bg); }
   .st.s-done { color: var(--st-done-fg); padding: 0; }
-  .st.s-abandoned { color: var(--dim, #888); padding: 0; text-decoration: line-through; }
+  .st.s-abandoned { color: var(--dim, #888); padding: 0; }
   .box.s-abandoned { border-color: var(--dim, #888); }
-  .row.abandoned .ti, .row.abandoned .title { text-decoration: line-through; }
+  .row.abandoned .ttl { text-decoration: line-through; }
   .ed-chips .st.s-done::before, .legend .st.s-done::before { content: "✓"; font-weight: 600; }
   .tag { flex: none; height: 16px; padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font: 500 10px/14px var(--sans); letter-spacing: 0.05em; text-transform: uppercase; }
   .tail { position: relative; flex: none; display: flex; align-items: center; gap: 2px; height: 18px; }
@@ -602,6 +602,7 @@
     { key: "backgrounded", label: "Backgrounded", sw: "var(--st-work-fg)", test: (t) => stageOf(t) === "backgrounded" },
     { key: "intrev", label: "Integrating or in review", sw: "var(--st-rev-fg)", test: (t) => stageOf(t) === "integrating" || stageOf(t) === "review" },
     { key: "waiting", label: "Waiting on you", sw: "var(--st-wait-fg)", test: (t) => stageOf(t) === "waiting" },
+    { key: "abandoned", label: "Abandoned", sw: "var(--dim, #888)", test: (t) => stageOf(t) === "abandoned" },
     { key: "discuss", label: "Needs discussion", sw: "var(--disc)", test: (t) => !!t.discuss },
   ];
 
@@ -1706,7 +1707,7 @@
   const edItem = () => (ED.id && M ? M.byId.get(ED.id) : null);
   function emptyEditor() {
     const legend = h("dl", { class: "legend" });
-    for (const [st, what] of [["working", "Claude or a subagent is on it"], ["backgrounded", "waiting on a long process (a download, a build); its slot is free for another task"], ["integrating", "finished; Claude is merging it"], ["review", "finished; a subagent is reviewing it"], ["waiting", "it needs you: an answer, a decision, something only you can do"], ["done", "finished"]]) {
+    for (const [st, what] of [["working", "Claude or a subagent is on it"], ["backgrounded", "waiting on a long process (a download, a build); its slot is free for another task"], ["integrating", "finished; Claude is merging it"], ["review", "finished; a subagent is reviewing it"], ["waiting", "it needs you: an answer, a decision, something only you can do"], ["done", "finished"], ["abandoned", "dropped without being finished; closed, counted apart from done"]]) {
       legend.append(h("dt", null, stChip({ stage: st, where: "Subagent" })), h("dd", null, what));
     }
     legend.append(h("dt", null, h("span", { class: "ic disc on", "aria-hidden": "true" }, icon("bubble"))), h("dd", null, "needs discussion first"));
