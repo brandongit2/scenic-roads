@@ -224,8 +224,12 @@ def lakes_of(tiles, x0: int, y0: int, x1: int, y1: int):
     import shapely
 
     pieces, inter, noid, sea = collections.defaultdict(list), {}, [], []
-    for x in range(x0, x1 + 1):
-        for y in range(y0, y1 + 1):
+    # (A piece at the map's edge asks for its neighbours past it, x or y -1 or 2^ZOOM: there are
+    # none, and the server answers 400. A lake cut by the antimeridian keeps only its part on
+    # this side.)
+    n = 2**ZOOM
+    for x in range(max(x0, 0), min(x1, n - 1) + 1):
+        for y in range(max(y0, 0), min(y1, n - 1) + 1):
             for cls, key, it, pg in water_polygons(tiles.base(ZOOM, x, y), ZOOM, x, y):
                 if cls == "ocean":
                     sea.append(pg)
