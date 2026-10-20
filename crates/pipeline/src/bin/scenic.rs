@@ -1373,6 +1373,17 @@ fn main() -> Result<()> {
                     disks.extend(kept);
                     println!("{} ({} costs, {} disk measures)\n", p.display(), costs.len(), disks.len());
                     print!("{}", pipeline::needs::fit_table(&pipeline::needs::Book::with(&costs, None, Some(&disks))));
+                    // Where each step's memory peaks: the phase (a program it runs) that held the
+                    // most over its last runs, from the build's timings beside the costs
+                    // (pipeline::timings::peak_holders).
+                    let runs = pipeline::timings::read_log(&p.with_file_name("timings.jsonl"));
+                    let holders = pipeline::timings::peak_holders(&runs, 20);
+                    if !holders.is_empty() {
+                        println!(
+                            "\nwhere each step's memory peaks (its phase holding the most, its last 20 timed runs):"
+                        );
+                        print!("{}", pipeline::timings::peak_text(&holders));
+                    }
                 }
                 Some("nas-probe") => {
                     // The NAS budget's probe once (pipeline::budget::nas), in `--dir <folder>` (made,

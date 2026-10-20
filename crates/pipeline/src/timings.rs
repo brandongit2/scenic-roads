@@ -16,6 +16,11 @@
 //!   phase) runs counts that thread's CPU too. Such a phase is marked `overlapped`, its CPU an
 //!   approximation; a phase on a thread but the job's main one is marked `background`, and its wall
 //!   isn't counted toward the run's timed part (it ran beside the main thread's phases).
+//! - Memory: while a run is timed, a thread samples the job's memory four times a second (its
+//!   process group's physical footprints summed, `crate::sys::group_footprint`, as the agent's
+//!   memory guard measures a job), and each phase keeps the most it saw while open (`peak_mb`): a
+//!   phase that runs a program (a unit's steps, the heritage chain's scripts, osmium) is that
+//!   program's peak, with the job's own memory beside it. A child's own phases carry its samples.
 //! - `finish(ok)` ends the run: the readable table in the log (stderr), and the record, where
 //!   `SCENIC_TIMINGS` says (the agent collects it), or as a child's phases where `SCENIC_PHASES_TO`
 //!   says. A run never `start`ed (a program run by hand, a test) keeps nothing and prints nothing.
@@ -91,6 +96,10 @@ pub struct PhaseRec {
     /// Run on a thread beside the main one: not counted toward the run's timed part.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background: bool,
+    /// The most memory the job's processes held together while it was open (MB; the most over
+    /// its spans): None where the job's memory can't be read, or from a record before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_mb: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub: Vec<PhaseRec>,
 }
@@ -172,6 +181,8 @@ struct Acc {
     files: u64,
     overlapped: bool,
     background: bool,
+    /// The most memory seen while a span of it was open (bytes; `Open::peak`).
+    peak: Option<u64>,
     /// Its child programs' phases, as they came in.
     kids: Vec<PhaseRec>,
 }
@@ -182,6 +193,8 @@ struct Open {
     bytes: AtomicU64,
     files: AtomicU64,
     overlapped: AtomicBool,
+    /// The most memory sampled while it's open (bytes; 0: none yet).
+    peak: AtomicU64,
     thread: std::thread::ThreadId,
     children: Mutex<Vec<PathBuf>>,
     /// When it opened, and the CPU then: a span still open as the run ends counts to then.
@@ -273,7 +286,54 @@ pub fn start(kind: &str) {
             mark: (Instant::now(), START.to_string()),
             gaps: Vec::new(),
         });
+        drop(g);
+        sample_memory();
     }
+}
+
+/// The job's memory as last sampled (bytes; 0: not sampled).
+static LAST_MEM: AtomicU64 = AtomicU64::new(0);
+/// How often the job's memory is sampled.
+const MEM_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Starts the thread that samples the job's memory (`crate::sys::group_footprint`) into every open
+/// span while the run is timed; none where it can't be read (WebAssembly, elsewhere than macOS).
+fn sample_memory() {
+    static ON: std::sync::Once = std::sync::Once::new();
+    let Some(now) = crate::sys::group_footprint() else { return };
+    LAST_MEM.store(now, Ordering::Relaxed);
+    ON.call_once(|| {
+        std::thread::Builder::new()
+            .name("timings-memory".into())
+            .spawn(|| loop {
+                std::thread::sleep(MEM_EVERY);
+                // (Sampled while a run is timed, spans open or not: a span opening takes the last
+                // sample, at most `MEM_EVERY` old, as its first.)
+                if !on() {
+                    continue;
+                }
+                let Some(v) = crate::sys::group_footprint() else { continue };
+                LAST_MEM.store(v, Ordering::Relaxed);
+                let Ok(g) = run().lock() else { return };
+                for o in g.iter().flat_map(|r| &r.open) {
+                    o.peak.fetch_max(v, Ordering::Relaxed);
+                }
+            })
+            .ok();
+    });
+}
+
+/// Folds a span's peak (bytes; 0: none) into a phase's.
+fn fold_peak(a: Option<u64>, b: u64) -> Option<u64> {
+    match (a, b) {
+        (a, 0) => a,
+        (Some(a), b) => Some(a.max(b)),
+        (None, b) => Some(b),
+    }
+}
+
+fn mb(b: Option<u64>) -> Option<u64> {
+    b.map(|b| b >> 20)
 }
 
 /// Whether a run is being timed.
@@ -354,6 +414,7 @@ fn open(name: &str, class: Class) -> Phase {
                 files: 0,
                 overlapped: false,
                 background: me != r.main,
+                peak: None,
                 kids: Vec::new(),
             });
             r.accs.len() - 1
@@ -364,6 +425,7 @@ fn open(name: &str, class: Class) -> Phase {
         bytes: AtomicU64::new(0),
         files: AtomicU64::new(0),
         overlapped: AtomicBool::new(false),
+        peak: AtomicU64::new(LAST_MEM.load(Ordering::Relaxed)),
         thread: me,
         children: Mutex::new(Vec::new()),
         t0: Instant::now(),
@@ -426,6 +488,8 @@ impl Drop for Phase {
         a.bytes += o.bytes.load(Ordering::Relaxed);
         a.files += o.files.load(Ordering::Relaxed);
         a.overlapped |= o.overlapped.load(Ordering::Relaxed);
+        o.peak.fetch_max(LAST_MEM.load(Ordering::Relaxed), Ordering::Relaxed);
+        a.peak = fold_peak(a.peak, o.peak.load(Ordering::Relaxed));
         // (A sub-phase's child's phases go to its parent's: one level.)
         if !kids.is_empty() {
             let to = parent.unwrap_or(o.idx);
@@ -450,6 +514,7 @@ fn merge_into(list: &mut Vec<PhaseRec>, k: PhaseRec) {
             p.bytes += k.bytes;
             p.files += k.files;
             p.overlapped |= k.overlapped;
+            p.peak_mb = p.peak_mb.max(k.peak_mb);
         }
         None => list.push(PhaseRec { sub: Vec::new(), background: false, ..k }),
     }
@@ -487,6 +552,7 @@ pub fn record(name: &str, class: Class, wall: std::time::Duration, cpu0: Option<
                 files: 0,
                 overlapped: false,
                 background: me != r.main,
+                peak: None,
                 kids: Vec::new(),
             });
             r.accs.len() - 1
@@ -562,6 +628,7 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
         a.bytes += o.bytes.load(Ordering::Relaxed);
         a.files += o.files.load(Ordering::Relaxed);
         a.overlapped |= o.overlapped.load(Ordering::Relaxed);
+        a.peak = fold_peak(a.peak, o.peak.load(Ordering::Relaxed));
     }
     let rec_of = |i: usize| {
         let a = &accs[i];
@@ -579,6 +646,7 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
                 files: s.files,
                 overlapped: s.overlapped,
                 background: s.background,
+                peak_mb: mb(s.peak),
                 sub: Vec::new(),
             })
             .collect();
@@ -595,6 +663,7 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
             files: a.files,
             overlapped: a.overlapped,
             background: a.background,
+            peak_mb: mb(a.peak),
             sub,
         }
     };
@@ -740,6 +809,9 @@ pub fn table(r: &RunRec) -> String {
         if p.files > 0 {
             extra.push(format!("{} files", p.files));
         }
+        if let Some(m) = p.peak_mb {
+            extra.push(format!("peak {}", bytes(m << 20)));
+        }
         if p.background {
             extra.push("beside".into());
         }
@@ -834,6 +906,9 @@ pub struct PhaseSum {
     pub background: bool,
     /// Its share of the runs' wall time.
     pub share: f64,
+    /// The most memory the job held while it was open, over the runs (MB; `PhaseRec::peak_mb`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peak_mb: Option<u64>,
     pub sub: Vec<PhaseSum>,
 }
 
@@ -871,6 +946,55 @@ pub fn blind_spots(sums: &[KindSum]) -> Vec<&KindSum> {
     sums.iter().filter(|k| k.unaccounted() > UNACCOUNTED_MAX).collect()
 }
 
+/// Where each kind's memory peaks (`scenic pool needs --fit`): over its last `last` runs, its
+/// top-level phase that held the most (`PhaseRec::peak_mb`), with its sub-phase (a child program's
+/// own phase) that did where one says; by kind. Kinds whose runs carry no peaks are left out.
+pub fn peak_holders(runs: &[RunRec], last: usize) -> Vec<PeakHolder> {
+    summary(runs, None, last, None)
+        .into_iter()
+        .filter_map(|k| {
+            let top = k.phases.iter().filter(|p| p.peak_mb.is_some()).max_by_key(|p| p.peak_mb)?;
+            let sub = top.sub.iter().filter(|p| p.peak_mb.is_some()).max_by_key(|p| p.peak_mb);
+            Some(PeakHolder {
+                kind: k.kind.clone(),
+                runs: k.runs,
+                phase: top.name.clone(),
+                peak_mb: top.peak_mb.unwrap_or(0),
+                sub: sub.map(|s| (s.name.clone(), s.peak_mb.unwrap_or(0))),
+            })
+        })
+        .collect()
+}
+
+/// A kind's heaviest phase (`peak_holders`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PeakHolder {
+    pub kind: String,
+    pub runs: usize,
+    pub phase: String,
+    pub peak_mb: u64,
+    pub sub: Option<(String, u64)>,
+}
+
+/// `peak_holders`, readably: a line a kind, heaviest first.
+pub fn peak_text(holders: &[PeakHolder]) -> String {
+    let mut h: Vec<&PeakHolder> = holders.iter().collect();
+    h.sort_by(|a, b| b.peak_mb.cmp(&a.peak_mb).then(a.kind.cmp(&b.kind)));
+    let mut out = String::new();
+    for p in h {
+        out.push_str(&format!(
+            "  {:<16} {:>9}  {}{} (of {} run{})\n",
+            p.kind,
+            bytes(p.peak_mb << 20),
+            p.phase,
+            p.sub.as_ref().map(|(n, m)| format!("; within it {n} {}", bytes(m << 20))).unwrap_or_default(),
+            p.runs,
+            if p.runs == 1 { "" } else { "s" }
+        ));
+    }
+    out
+}
+
 fn add_phase(list: &mut Vec<PhaseSum>, p: &PhaseRec, total: f64, top: bool) {
     let i = match list.iter().position(|q| q.name == p.name) {
         Some(i) => i,
@@ -891,6 +1015,7 @@ fn add_phase(list: &mut Vec<PhaseSum>, p: &PhaseRec, total: f64, top: bool) {
     q.files += p.files;
     q.overlapped |= p.overlapped;
     q.background |= p.background;
+    q.peak_mb = q.peak_mb.max(p.peak_mb);
     if top {
         for s in &p.sub {
             add_phase(&mut q.sub, s, total, false);
@@ -987,8 +1112,8 @@ pub fn summary_text(sums: &[KindSum]) -> String {
             if k.wall_s > 0.0 { k.overhead_s / k.wall_s * 100.0 } else { 0.0 },
         ));
         out.push_str(&format!(
-            "  {:<44} {:>6} {:>11} {:>11} {:>7}  {:<9} {}\n",
-            "phase", "share", "total", "a run", "CPU/wall", "class", "moved"
+            "  {:<44} {:>6} {:>11} {:>11} {:>7}  {:<9} {:>9}  {}\n",
+            "phase", "share", "total", "a run", "CPU/wall", "class", "peak", "moved"
         ));
         let row = |out: &mut String, indent: &str, p: &PhaseSum| {
             let ratio = match p.cpu_s {
@@ -1009,13 +1134,14 @@ pub fn summary_text(sums: &[KindSum]) -> String {
             }
             let name = format!("{indent}{}", p.name);
             out.push_str(&format!(
-                "  {:<44} {:>5.1}% {:>11} {:>11} {:>7}  {:<9} {}\n",
+                "  {:<44} {:>5.1}% {:>11} {:>11} {:>7}  {:<9} {:>9}  {}\n",
                 name,
                 p.share * 100.0,
                 secs(p.wall_s),
                 secs(p.wall_s / n),
                 ratio,
                 p.class.name(),
+                p.peak_mb.map(|m| bytes(m << 20)).unwrap_or_default(),
                 moved.join(", ")
             ));
         };
@@ -1188,6 +1314,76 @@ mod tests {
         // Nothing timed after.
         let _p = phase("after", Class::Compute);
         reset();
+    }
+
+    /// Each phase keeps the most memory the job held while it was open (its process group's, as the
+    /// memory guard measures a job): a phase holding 400 MB more than the one before says so, a
+    /// child's phases bring their own, and the report names the heaviest phase of each kind.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn a_phase_keeps_the_memory_the_job_held() {
+        // (Alone, in a process group of its own: the job's memory is its group's, and the runner's
+        // other tests aren't this run's.)
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let mut c = store::spawn::command(std::env::current_exe().unwrap());
+            c.args(["--exact", "timings::tests::a_phase_keeps_the_memory_the_job_held"]).env(ALONE, "1");
+            crate::sys::own_group(&mut c);
+            let out = store::spawn::output(&mut c).unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        reset();
+        start("test");
+        let hold = |mb: usize| {
+            let v = vec![1u8; mb << 20];
+            // (Long enough for the samples, four a second, to see it.)
+            std::thread::sleep(MEM_EVERY * 3); // (sleep ok: the sampler's to see the memory held)
+            std::hint::black_box(&v);
+        };
+        {
+            let _p = phase("light", Class::Compute);
+            hold(0);
+        }
+        {
+            let _p = phase("heavy", Class::Compute);
+            hold(400);
+            let mut c = store::spawn::command("true");
+            child(&mut c);
+            let to = c.get_envs().find(|(k, _)| *k == PHASES_TO_ENV).and_then(|(_, v)| v).map(PathBuf::from).unwrap();
+            let kid = RunRec {
+                phases: vec![PhaseRec { name: "its program".into(), n: 1, peak_mb: Some(123), ..Default::default() }],
+                ..Default::default()
+            };
+            std::fs::write(&to, serde_json::to_vec(&kid).unwrap()).unwrap();
+        }
+        let r = snapshot(true).unwrap();
+        finish(true);
+        reset();
+        let (light, heavy) = (r.phases[0].peak_mb.unwrap(), r.phases[1].peak_mb.unwrap());
+        assert!(heavy >= light + 350, "light {light} MB, heavy {heavy} MB");
+        assert_eq!(r.phases[1].sub[0].peak_mb, Some(123));
+        assert!(table(&r).contains(&format!("peak {}", bytes(heavy << 20))), "{}", table(&r));
+        // The record's round trip, and a record from before peaks (none) reads.
+        let back: RunRec = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
+        let old: PhaseRec = serde_json::from_str(r#"{"name":"x","class":"disk","wall_s":1.0,"n":1}"#).unwrap();
+        assert_eq!(old.peak_mb, None);
+        // Over runs: each phase's most, and the kind's heaviest phase with its program.
+        let mut r2 = r.clone();
+        r2.phases[0].peak_mb = Some(heavy + 10);
+        let h = peak_holders(&[r.clone(), r2.clone()], 20);
+        assert_eq!(h.len(), 1);
+        assert_eq!((h[0].phase.as_str(), h[0].peak_mb, h[0].runs), ("light", heavy + 10, 2));
+        let h = peak_holders(&[r], 20);
+        assert_eq!((h[0].phase.as_str(), h[0].sub.clone()), ("heavy", Some(("its program".to_string(), 123))));
+        assert!(peak_text(&h).contains("within it its program"), "{}", peak_text(&h));
+        assert!(summary_text(&summary(&[r2], None, 20, None)).contains(&bytes((heavy + 10) << 20)));
     }
 
     /// The report says where a kind's untimed time lies and flags a kind past `UNACCOUNTED_MAX`.
