@@ -34,6 +34,7 @@ import { metricOf, modeDef, NCOMP, type Mode } from '../scenic';
 import { RNCOMP, freqCode } from '../rail';
 import { CORE_K, CORE_MIN_CSS, TIE_MIN_Z } from '../raildraw';
 import { PickGrid, type PickHit } from './pick';
+import { NO_PERSP, perspWidth } from './persp';
 import { lodCells, lodSig, pieceLists, type LodFilter } from './lod';
 import { DRAPE_OFF, ELEV_OFF, NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
 
@@ -474,13 +475,14 @@ void main() {
   float k = clamp(kr, 0.2, 4.0);
   // Width with distance (RoadStyle.persp, perspWidth on the CPU): between the style curve's width
   // at ze (strength 0) and the view centre's width × kr (1: true perspective), in log space; at
-  // most cap × the centre's near the camera; far pieces thinned further by kr^fade, so they fade
-  // through the coverage below rather than stay thick. g: the change from the style curve's
-  // width, which the casing and halo follow.
+  // most cap × the centre's near the camera (or the style curve's, if wider); far pieces thinned
+  // further by kr^(fade × strength), so they fade through the coverage below rather than stay
+  // thick (strength 0: exactly the style curve). g: the change from the style curve's width,
+  // which the casing and halo follow.
   float w0 = widthAt(cls, u_zoom), wsz = widthAt(cls, ze);
   float w = wsz * pow(w0 * kr / wsz, u_persp.x);
-  w = min(w, max(w0 * u_persp.y, wsz));   // (never below the style curve's)
-  w *= pow(min(kr, 1.0), u_persp.z);
+  w = min(w, max(w0 * u_persp.y, wsz));   // (the cap: a ceiling, never lower than the style curve's)
+  w *= pow(min(kr, 1.0), u_persp.z * u_persp.x);
   float g = w / wsz;
   w += hov ? 2.0 * u_dpr : 0.0;
   bool dot = kind == 2;
@@ -964,14 +966,6 @@ export interface RoadStyle {
   persp?: { strength: number; cap: number; fade: number };
 }
 
-const NO_PERSP = { strength: 0, cap: 1e6, fade: 0 };
-/** A piece's width (as the vertex shader: w0 the style width at the view centre's zoom, wz at the
- * piece's own zoom, kr the centre's distance ÷ the piece's). */
-export function perspWidth(w0: number, wz: number, kr: number, p: { strength: number; cap: number; fade: number } = NO_PERSP): number {
-  let w = wz * (w0 * kr / wz) ** p.strength;
-  w = Math.min(w, Math.max(w0 * p.cap, wz));
-  return w * Math.min(kr, 1) ** p.fade;
-}
 
 export interface SchemeUniforms {
   classCol: Float32Array;
@@ -1867,9 +1861,14 @@ export class RoadLayer implements CustomLayerInterface {
     // Sprites while every piece of the tile fits in one (SPRITE_MAX_CSS), else quads (see the top).
     const s = this.style;
     const { zoom, dpr, casingW, glowW, nearZoom } = this.frameParams();
-    let maxW = 0;
-    for (let c = 0; c < NCLASS; c++) maxW = Math.max(maxW, interp(WIDTH_Z, WIDTHS[c], nearZoom) * s.weight * dpr);
-    const spriteExt = maxW / 2 + dpr + Math.max(casingW, glowW) + 1;
+    let maxW = 0, gNear = 1;
+    for (let c = 0; c < NCLASS; c++) {
+      const w = this.drawnWidth(c, zoom, nearZoom);
+      maxW = Math.max(maxW, w * s.weight * dpr);
+      gNear = Math.max(gNear, w / interp(WIDTH_Z, WIDTHS[c], nearZoom));
+    }
+    // (casing and halo grow with the width: × its change from the style curve's, as the shader)
+    const spriteExt = maxW / 2 + dpr + Math.max(casingW, glowW) * gNear + 1;
     // Each tile's largest scale on screen: tilted, from the cover's samples on it (with a margin
     // for the pixels between samples); flat, from the zoom (and the widest a slight tilt makes it).
     const persp = 2 ** (nearZoom - zoom);
@@ -1958,6 +1957,14 @@ export class RoadLayer implements CustomLayerInterface {
   private frame: ReturnType<RoadLayer['projFrame']> | null = null;
 
   /** What the frame's sprite choice and uniforms share. */
+  /** Class c's width (CSS px at weight 1) as the vertex shader draws a piece at zoom z (its
+   * distance ratio 2^(z − zoom)) in a view at `zoom`: an upper bound at the near edge, a lower at
+   * the far (perspWidth grows with the ratio). */
+  private drawnWidth(c: number, zoom: number, z: number): number {
+    const kr = Math.max(1 / 256, Math.min(16, 2 ** (z - zoom)));
+    return perspWidth(interp(WIDTH_Z, WIDTHS[c], zoom), interp(WIDTH_Z, WIDTHS[c], zoom + Math.log2(kr)), kr, this.style.persp);
+  }
+
   private frameParams() {
     const s = this.style;
     const zoom = this.map.getZoom();
@@ -2074,7 +2081,7 @@ export class RoadLayer implements CustomLayerInterface {
     let thinnest = Infinity, thinMajor = false;
     for (let c = 0; c < NCLASS; c++) {
       if (!((s.classMask >> c) & 1)) continue;
-      const w = interp(WIDTH_Z, WIDTHS[c], farZoom) * s.weight;
+      const w = this.drawnWidth(c, zoom, farZoom) * s.weight;
       thinnest = Math.min(thinnest, w);
       if (w < 1 && c > MINOR_MAX_CLASS) thinMajor = true;
     }
@@ -2204,7 +2211,7 @@ export class RoadLayer implements CustomLayerInterface {
     // left out of the single pass. Switching all of them to core and fringe while one is hovered
     // changed every minor road's brightness as the hover came and went.
     let minorW = 0;
-    for (let c = 0; c <= MINOR_MAX_CLASS; c++) minorW = Math.max(minorW, interp(WIDTH_Z, WIDTHS[c], nearZoom) * s.weight);
+    for (let c = 0; c <= MINOR_MAX_CLASS; c++) minorW = Math.max(minorW, this.drawnWidth(c, zoom, nearZoom) * s.weight);
     const thinMinors = !this.rail && minorW < 1;
     // The casing passes leave out the minor classes when none of them is cased (nor glows along a
     // scenic route): the vertex shader would only throw every one of them away, twice a frame, and

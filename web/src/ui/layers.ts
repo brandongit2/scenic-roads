@@ -487,7 +487,7 @@ export class LayersCard {
       }),
       sl({
         label: 'Far fade', min: PERSP_RANGE.fade[0], max: PERSP_RANGE.fade[1], step: 0.05, reset: defaults.roadPersp.fade, cls: 'sub',
-        title: 'Tilted views: distant lines thinned further, so they fade into the haze (through their pixel coverage) rather than stay dense',
+        title: 'Tilted views: distant lines thinned further, so they fade into the haze (through their pixel coverage) rather than stay dense; scaled by Perspective (none at 0 %)',
         get: () => S().roadPersp.fade, set: (fade) => P({ fade }), fmt: pct,
       }),
     ];
