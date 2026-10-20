@@ -7484,18 +7484,29 @@ mod tests {
             let now = s.now();
             s.pick_every(&one(i), &every_ask(w, "slope", 64_000, 100_000), now)
         };
+        // (A third of `OWN_AGE` passing, the leases `ids` beating every 10 s, as their workers do.)
+        let tick = |c: &Coordinator, ids: &[u64]| {
+            for _ in 0..crate::budget::nas::OWN_AGE.as_secs() / 30 {
+                clock.advance(Duration::from_secs(10));
+                let mut s = c.shared.lock().unwrap();
+                let now = s.now();
+                for l in s.leases.all(now).into_iter().filter(|l| ids.contains(&l.id)) {
+                    assert!(s.leases.renew(l.id, &l.worker, None, now));
+                }
+            }
+        };
         let big = lease(&c, "m1", 0);
         let mut small = lease(&c, "m2", 1);
         assert!(take(&c, "m3", 5).is_empty(), "500 + 200 + 600: waits");
         // (A stream of smaller jobs: each one ending, the next goes in its place before it's aged.)
         for i in [2, 3] {
-            clock.advance(crate::budget::nas::OWN_AGE / 3);
+            tick(&c, &[big, small]);
             end(&c, small);
             assert!(take(&c, "m3", 5).is_empty(), "500 + 600: waits");
             assert_eq!(take(&c, "m4", i).len(), 1, "not aged: the smaller one goes");
             small = lease(&c, "m4", i);
         }
-        clock.advance(crate::budget::nas::OWN_AGE / 3);
+        tick(&c, &[big, small]);
         assert!(take(&c, "m3", 5).is_empty(), "aged, but 500 + 200 + 600 > 1000");
         end(&c, small);
         assert!(take(&c, "m3", 5).is_empty(), "500 + 600 > 1000: waits for 6/1/1 to end");
