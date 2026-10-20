@@ -58,10 +58,27 @@ type TileResult = {
  *  - unloading cached tiles not needed to render a given viewport
  *  - managing tile state and feature state
  */
+/** Scenic Roads: a stable key for a tile-zoom function (by identity), for the covers' memo. */
+const coverFnKeys = new WeakMap<object, number>();
+let coverFnNext = 1;
+function coverFnKey(fn: object): number {
+    let k = coverFnKeys.get(fn);
+    if (k === undefined) coverFnKeys.set(fn, (k = coverFnNext++));
+    return k;
+}
+
 export class TileManager extends Evented<SourceEventType> {
     id: string;
     dispatcher: Dispatcher;
     map: Map;
+    /**
+     * Scenic Roads: while Style._updateSources runs, the covers worked out so far in it, by the
+     * options they were asked with (the transform and terrain are the call's): a source asking the
+     * same gets a copy (task #434).
+     */
+    _coverMemo: globalThis.Map<string, OverscaledTileID[]> | null = null;
+    /** Scenic Roads: the frame's renderable coordinates, worked out once a frame (getVisibleCoordinates). */
+    _visibleMemo: {frame: number; bearing: number; plain: OverscaledTileID[] | null; symbol: OverscaledTileID[] | null} | null = null;
     style: Style;
 
     _source: Source;
@@ -581,7 +598,7 @@ export class TileManager extends Evented<SourceEventType> {
             idealTileIDs = transform.getVisibleUnwrappedCoordinates(this._source.tileID)
                 .map((unwrapped) => new OverscaledTileID(unwrapped.canonical.z, unwrapped.wrap, unwrapped.canonical.z, unwrapped.canonical.x, unwrapped.canonical.y));
         } else {
-            idealTileIDs = coveringTiles(transform, {
+            const options = {
                 tileSize: this.usedForTerrain ? this.tileSize : this._source.tileSize,
                 minzoom: this._source.minzoom,
                 maxzoom: this._source.type === 'vector' && this.map._zoomLevelsToOverscale !== undefined
@@ -592,7 +609,18 @@ export class TileManager extends Evented<SourceEventType> {
                 terrain,
                 calculateTileZoom: this._source.calculateTileZoom,
                 maxContentElevation: this._updateMaxContentElevation(),
-            });
+            };
+            // Scenic Roads: the same cover asked for by another source this update (see _coverMemo).
+            const memo = this._coverMemo;
+            const key = memo ? [options.tileSize, options.minzoom, options.maxzoom, options.roundZoom ? 1 : 0, options.reparseOverscaled ? 1 : 0,
+                options.maxContentElevation, options.calculateTileZoom ? coverFnKey(options.calculateTileZoom) : ''].join('|') : '';
+            const known = memo?.get(key);
+            if (known) {
+                idealTileIDs = known.slice();
+            } else {
+                idealTileIDs = coveringTiles(transform, options);
+                memo?.set(key, idealTileIDs.slice());
+            }
 
             if (this._source.hasTile) { // tile should be in bounds
                 idealTileIDs = idealTileIDs.filter((coord) => this._source.hasTile(coord));
@@ -1010,10 +1038,22 @@ export class TileManager extends Evented<SourceEventType> {
     }
 
     getVisibleCoordinates(symbolLayer?: boolean): OverscaledTileID[] {
+        // Scenic Roads: worked out once a frame (the painter asks three times a source a frame, the
+        // drapes' and the app's layers again; the renderable tiles change only between frames), a
+        // copy each time (task #434).
+        const frame = this.map?.painter?.context.programFrame ?? -1;
+        const bearing = this.transform?.bearingInRadians ?? 0;
+        let memo = this._visibleMemo;
+        if (frame < 0) memo = null;
+        else if (!memo || memo.frame !== frame || memo.bearing !== bearing) memo = this._visibleMemo = {frame, bearing, plain: null, symbol: null};
+        const kind = symbolLayer ? 'symbol' : 'plain';
+        const held = memo?.[kind];
+        if (held) return held.slice();
         const coords = this.getRenderableIds(symbolLayer).map((id) => this._inViewTiles.getTileById(id).tileID);
         if (this.transform) {
             this.transform.populateCache(coords);
         }
+        if (memo) memo[kind] = coords.slice();
         return coords;
     }
 

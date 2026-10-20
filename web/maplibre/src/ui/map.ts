@@ -481,6 +481,8 @@ type LostContextStyle = {
     images: {[_: string]: StyleImage} | null;
 };
 
+/** Scenic Roads: how long after a camera change the map counts as moving (Map._lastCameraMove). */
+const MOVING_HOLD_MS = 100;
 const defaultMinZoom = -2;
 const defaultMaxZoom = 22;
 
@@ -618,6 +620,19 @@ export class Map extends Evented<MapEventType> {
 
     _loaded: boolean;
     _idleTriggered = false;
+    /**
+     * Scenic Roads: when the camera last changed between two frames (`_render` compares the
+     * view-projection matrix with the last frame's), and that matrix. A map moved by `jumpTo` a
+     * frame at a time (the app's trackpad gestures, its glides and flights) counts as moving for
+     * MOVING_HOLD_MS after each change: the painter's `moving` (the drapes' pacing, the RTT pool,
+     * the hillshade's alignment), the image queue's throttling and `idle` follow it, as they do a
+     * handler's drag. Upstream saw no movement in it (Camera._moving is an ease's), so every drape
+     * whose source tiles or zoom changed was drawn again in the same frame: 20–30 textures of 1024²
+     * in one frame of a pan over the lochs, 50–100 ms each time.
+     */
+    _lastCameraMove: number = -Infinity;
+    _lastCameraMatrix: Float64Array | null = null;
+    _holdTimer: ReturnType<typeof setTimeout> | null = null;
     // accounts for placement finishing as well
     _fullyLoaded: boolean;
     _trackResize: boolean;
@@ -2090,7 +2105,7 @@ export class Map extends Evented<MapEventType> {
      * ```
      */
     isMoving(): boolean {
-        return this._camera.isMoving() || this._handlers?.isMoving() || false;
+        return this._camera.isMoving() || this._handlers?.isMoving() || now() - this._lastCameraMove < MOVING_HOLD_MS;
     }
 
     /**
@@ -4474,6 +4489,18 @@ export class Map extends Evented<MapEventType> {
             }
         }
 
+        // Scenic Roads: the camera moved since the last frame (see _lastCameraMove).
+        {
+            const m = this._camera.transform.modelViewProjectionMatrix;
+            const last = this._lastCameraMatrix;
+            let changed = !last;
+            if (last) for (let i = 0; i < 16; i++) if (last[i] !== m[i]) { changed = true; break; }
+            if (changed) {
+                this._lastCameraMove = now();
+                this._lastCameraMatrix = Float64Array.from(m as ArrayLike<number>);
+            }
+        }
+
         this._placementDirty = this.style?._updatePlacement(this._camera.transform, this.showCollisionBoxes, fadeDuration, this._crossSourceCollisions, globeRenderingChanged);
 
         // Actually draw
@@ -4518,6 +4545,11 @@ export class Map extends Evented<MapEventType> {
             this.triggerRepaint();
         } else if (!this.isMoving() && this.loaded()) {
             this.fire(new MapLibreEvent('idle'));
+        } else if (!this._camera.isMoving() && !this._handlers?.isMoving()) {
+            // Scenic Roads: moving only by the hold (_lastCameraMove): a frame once it is over, so
+            // the map comes to rest (the drapes due at rest, `idle`) without another input.
+            const left = MOVING_HOLD_MS - (now() - this._lastCameraMove);
+            if (!this._holdTimer) this._holdTimer = setTimeout(() => { this._holdTimer = null; this.triggerRepaint(); }, Math.max(0, left) + 1);
         }
 
         if (this._loaded && !this._fullyLoaded && !somethingDirty) {

@@ -116,6 +116,23 @@ The app compiles this source with its own code; there is no separate build or `d
   source with nothing draped no longer drops the terrain's textures; while the camera moves at most
   `movingRedraws` existing textures are redrawn a frame. At rest, as upstream.
 
+- **A camera moved a frame at a time counts as moving** (`Map#isMoving`, `MOVING_HOLD_MS`): the
+  map is moving for 100 ms after any frame whose view-projection matrix differs from the last
+  frame's, not only during an ease or a handler's drag. The app moves the camera with `jumpTo` (its
+  trackpad gestures, glides and flights), which upstream never counted as moving, so the painter's
+  `moving`, and with it the drapes' pacing above, the RTT pool's reuse, the hillshade's alignment
+  and the image queue's throttling, were those of a map at rest in every gesture: each drape whose
+  source tiles or zoom changed was drawn again in the frame it changed (20–30 textures of 1024² in
+  one frame of a pan over the lochs, 50–100 ms a time) and the drape pool was emptied every frame.
+  `idle` fires once the hold is over (a frame is scheduled for it).
+- **Tile covers shared between sources** (`Style#_updateSources`, `TileManager#_coverMemo`): within
+  one update, sources asking `coveringTiles` with the same options (tile size, zoom range, rounding,
+  overscaling, content elevation, zoom function) share one answer (a copy each). The app's 28 sources
+  in use ask 8 distinct covers; the covers were 2–3 ms of each frame of a pan over terrain.
+- **Visible coordinates once a frame** (`TileManager#getVisibleCoordinates`, `_visibleMemo`): the
+  renderable tiles' ids are sorted once a frame per source (the painter asked three times, the
+  drapes and the app's layers again), a copy each time.
+
 - **Feature state redraws only the drapes that read it** (`render_to_texture.ts`): a source's state
   revision is part of a terrain texture's fingerprint only when one of its draped layers reads
   feature state. The ferry terminals' colours (feature state on `ferries`, whose lines are draped

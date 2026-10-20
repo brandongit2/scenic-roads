@@ -1864,8 +1864,18 @@ export class Style extends Evented<MapEventType> {
     }
 
     _updateSources(transform: ITransform): void {
+        // Scenic Roads: the tile covers worked out once for every source asking the same (task
+        // #434: 14 of the app's 28 sources in use share one, 512 px tiles from 0 to 12; the covers
+        // were 2–3 ms of every frame of a pan over terrain).
+        const memo = new globalThis.Map<string, OverscaledTileID[]>();
         for (const id in this.tileManagers) {
-            this.tileManagers[id].update(transform, this.map.terrain);
+            const tm = this.tileManagers[id];
+            tm._coverMemo = memo;
+            try {
+                tm.update(transform, this.map.terrain);
+            } finally {
+                tm._coverMemo = null;
+            }
         }
     }
 
