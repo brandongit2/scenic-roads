@@ -1,6 +1,6 @@
 // Layers → Roads → Style → Widths by zoom: the line width table (config.ts WIDTHS, CSS px at
 // weight 1 at the zooms WIDTH_Z, per class) as a grid of numbers. Typing sets a cell (Enter or
-// leaving it); scrolling over one (trackpad or wheel) nudges it by 5 % a step. Edits go into
+// leaving it); scrolling over the one being edited (trackpad or wheel) nudges it by 5 % a step. Edits go into
 // WIDTHS in place (setWidths, saved in localStorage), so the next frame draws them; no tile reload.
 import { CLASS_LABELS, DEFAULT_WIDTHS, NCLASS, WIDTHS, WIDTH_RANGE, WIDTH_Z, setWidths } from '../config';
 import { h } from './dom';
@@ -24,7 +24,7 @@ export class WidthGrid {
       const row: HTMLInputElement[] = [];
       grid.append(h('label', { title: CLASS_LABELS[c] }, CLASS_LABELS[c]));
       WIDTH_Z.forEach((z, i) => {
-        const inp = h('input', { type: 'text', inputmode: 'decimal', spellcheck: 'false', title: `${CLASS_LABELS[c]} at zoom ${z}: width in CSS px (${WIDTH_RANGE[0]}–${WIDTH_RANGE[1]}; default ${DEFAULT_WIDTHS[c][i]}). Scroll over it to nudge.` });
+        const inp = h('input', { type: 'text', 'aria-label': `${CLASS_LABELS[c]} z${z}`, inputmode: 'decimal', spellcheck: 'false', title: `${CLASS_LABELS[c]} at zoom ${z}: width in CSS px (${WIDTH_RANGE[0]}–${WIDTH_RANGE[1]}; default ${DEFAULT_WIDTHS[c][i]}). Scroll over it while editing to nudge.` });
         const commit = () => {
           const v = Number(inp.value.replace(',', '.'));
           if (inp.value.trim() !== '' && Number.isFinite(v)) put(c, i, v);
@@ -35,8 +35,9 @@ export class WidthGrid {
           if (e.key === 'Enter') inp.blur();
           else if (e.key === 'Escape') { this.sync(); inp.blur(); }
         });
+        // Scrolling nudges only the cell being edited (focused); elsewhere it scrolls the panel.
         inp.addEventListener('wheel', (e) => {
-          if (Math.abs(e.deltaY) < 1) return;
+          if (document.activeElement !== inp || Math.abs(e.deltaY) < 1) return;
           e.preventDefault();
           put(c, i, +(WIDTHS[c][i] * (e.deltaY < 0 ? 1.05 : 1 / 1.05)).toPrecision(3));
         }, { passive: false });

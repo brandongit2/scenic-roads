@@ -109,11 +109,14 @@ export const WIDTH_RANGE: [number, number] = [0.05, 40];
  * uniforms each frame, hit testing, the frame's width bounds) uses it; saved in localStorage
  * (not in links). Widths out of range are clamped; a malformed table is the defaults.
  */
+/** Bumped on every change to WIDTHS (the levels of detail weigh pieces by it: roads/lod.ts). */
+export let widthsRev = 0;
 export function setWidths(t: readonly (readonly number[])[] | null, save = true) {
   const ok = !!t && t.length === NCLASS && t.every((r) => r.length === WIDTH_Z.length && r.every(Number.isFinite));
   for (let c = 0; c < NCLASS; c++) for (let i = 0; i < WIDTH_Z.length; i++) {
     WIDTHS[c][i] = ok ? Math.min(WIDTH_RANGE[1], Math.max(WIDTH_RANGE[0], t![c][i])) : DEFAULT_WIDTHS[c][i];
   }
+  widthsRev++;
   if (!save) return;
   const same = WIDTHS.every((r, c) => r.every((v, i) => v === DEFAULT_WIDTHS[c][i]));
   if (same) prefsSave('roadWidths', null);

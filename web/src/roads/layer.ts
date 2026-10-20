@@ -27,7 +27,7 @@ import { packVersion } from '../api';
 import { FOG_UNIFORMS, fogUniforms, setFogUniforms } from '../fog';
 import { MercatorCoordinate, Point, type CustomLayerInterface, type CustomRenderMethodInput, type LngLat, type Map as MLMap } from 'maplibre-gl';
 import {
-  BG, LF_UNNAMED, LF_RAIL_SHIFT, LF_TOLL, CASING_W, CASING_Z, DIM_GREY, FADES, FADE_Z, GLOW_W, GLOW_Z, LOD_CELL_PX, MINOR_MAX_CLASS, NCLASS, SPRITE_MAX_CSS, TILE_MAXZOOM, TILE_MINZOOM, WIDTHS, WIDTH_Z, interp,
+  BG, LF_UNNAMED, LF_RAIL_SHIFT, LF_TOLL, CASING_W, CASING_Z, DIM_GREY, FADES, FADE_Z, GLOW_W, GLOW_Z, LOD_CELL_PX, MINOR_MAX_CLASS, NCLASS, SPRITE_MAX_CSS, TILE_MAXZOOM, TILE_MINZOOM, WIDTHS, WIDTH_Z, interp, widthsRev,
 } from '../config';
 import { LUT_ROWS, LUT_W, buildLut, paletteRow } from '../palettes';
 import { metricOf, modeDef, NCOMP, type Mode } from '../scenic';
@@ -1860,15 +1860,21 @@ export class RoadLayer implements CustomLayerInterface {
     if (!this.style.visible || draw.length === 0 || !this.program(opts.shaderData)) return;
     // Sprites while every piece of the tile fits in one (SPRITE_MAX_CSS), else quads (see the top).
     const s = this.style;
-    const { zoom, dpr, casingW, glowW, nearZoom } = this.frameParams();
-    let maxW = 0, gNear = 1;
-    for (let c = 0; c < NCLASS; c++) {
-      const w = this.drawnWidth(c, zoom, nearZoom);
-      maxW = Math.max(maxW, w * s.weight * dpr);
-      gNear = Math.max(gNear, w / interp(WIDTH_Z, WIDTHS[c], nearZoom));
+    const { zoom, dpr, glowK, nearZoom, farZoom } = this.frameParams();
+    let maxW = 0;
+    for (let c = 0; c < NCLASS; c++) maxW = Math.max(maxW, this.drawnWidth(c, zoom, nearZoom) * s.weight * dpr);
+    // Casing and halo: the shader's casingAt(ze) and glowAt(ze), × the width's change from the
+    // style curve's (g), which the cap makes peak between the edges, not at the near one: the
+    // largest over the zooms from the far edge to the near (sampled, 1/8 zoom apart).
+    let edge = 0;
+    for (let z = Math.min(farZoom, nearZoom); z <= nearZoom + 1e-9; z += 0.125) {
+      const cw = z < CASING_Z[0] ? 0 : interp(CASING_Z, CASING_W, z) * dpr, gw = s.routeGlow ? interp(GLOW_Z, GLOW_W, z) * glowK : 0;
+      if (!cw && !gw) continue;
+      let g = 1;
+      for (let c = 0; c < NCLASS; c++) g = Math.max(g, this.drawnWidth(c, zoom, z) / interp(WIDTH_Z, WIDTHS[c], z));
+      edge = Math.max(edge, Math.max(cw, gw) * g);
     }
-    // (casing and halo grow with the width: × its change from the style curve's, as the shader)
-    const spriteExt = maxW / 2 + dpr + Math.max(casingW, glowW) * gNear + 1;
+    const spriteExt = maxW / 2 + dpr + edge + 1;
     // Each tile's largest scale on screen: tilted, from the cover's samples on it (with a margin
     // for the pixels between samples); flat, from the zoom (and the widest a slight tilt makes it).
     const persp = 2 ** (nearZoom - zoom);
@@ -1902,19 +1908,19 @@ export class RoadLayer implements CustomLayerInterface {
       const fq = s.freqFilter;
       const freq = fq.on && !!this.lineValue;
       return {
-        classMask: s.classMask, surfaceMask: 3, tollMask: 3, unnamedHide: 0, lenMin: 0, lenMax: Infinity, railMask: s.railMask,
+        classMask: s.classMask, surfaceMask: 3, tollMask: 3, unnamedHide: 0, lenMin: 0, lenMax: Infinity, railMask: s.railMask, widthsRev,
         freqSig: freq ? `${fq.min}|${fq.max}|${fq.unknown}|${this.lineValuesSet}` : '',
         lineHidden: freq && d ? (line) => this.freqHidden(d, line) : undefined,
       };
     }
-    return { classMask: s.classMask, surfaceMask: s.surfaceMask, tollMask: s.tollMask, unnamedHide: s.unnamedHide, lenMin: s.lenMin, lenMax: s.lenMax };
+    return { classMask: s.classMask, surfaceMask: s.surfaceMask, tollMask: s.tollMask, unnamedHide: s.unnamedHide, lenMin: s.lenMin, lenMax: s.lenMax, widthsRev };
   }
 
   /** The filter the tile workers build the coarser lists for (they can't apply the frequency
    * filter: those lists come out for another filter, and the main thread makes them, relist). */
   private workerLodFilter(): LodFilter | null {
     const f = this.lodFilter();
-    return f && { ...f, freqSig: '', lineHidden: undefined };
+    return f && { ...f, freqSig: '', lineHidden: undefined, widths: WIDTHS.map((r) => [...r]) };
   }
 
   /** The filters a tile's coarser lists must be for ('' if it has none). */

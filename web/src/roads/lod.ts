@@ -38,10 +38,14 @@ export interface LodFilter {
    * the tile workers don't have the timetables, so lists for it are made there). */
   freqSig?: string;
   lineHidden?: (line: number) => boolean;
+  /** The width table the pieces are weighed by (config.ts WIDTHS, as edited: the workers have
+   * only the defaults), and its revision (in the signature, so an edit re-weighs). */
+  widths?: number[][];
+  widthsRev?: number;
 }
 
 export const lodSig = (f: LodFilter | null): string =>
-  f ? `${f.classMask}|${f.surfaceMask}|${f.tollMask}|${f.unnamedHide}|${f.lenMin}|${f.lenMax}|${f.railMask ?? ''}|${f.freqSig ?? ''}` : '';
+  f ? `${f.classMask}|${f.surfaceMask}|${f.tollMask}|${f.unnamedHide}|${f.lenMin}|${f.lenMax}|${f.railMask ?? ''}|${f.freqSig ?? ''}|${f.widthsRev ?? ''}` : '';
 
 /** Cells of a tile's coarser levels: the coarsest tiles get them all (for views zoomed out beyond
  * them), the others those up to 8; none for tiles never drawn as sprites, nor with no filter. */
@@ -147,7 +151,7 @@ export function pieceLists(verts: ArrayBuffer, all: Uint32Array, bounds: number[
     };
     // A piece's area in tile units × px of width at about the zoom the tile is drawn at (only the
     // ratios between pieces matter): a dot's merged road length (worker.ts), else its length.
-    const wcls = Array.from({ length: NCLASS }, (_, c) => interp(WIDTH_Z, WIDTHS[c], z - 0.5));
+    const wcls = Array.from({ length: NCLASS }, (_, c) => interp(WIDTH_Z, (f.widths ?? WIDTHS)[c], z - 0.5));
     const own = new Float32Array(u8.length / STRIDE);
     for (const i of all) {
       const x0 = i16[i * S2], y0 = i16[i * S2 + 1], x1 = i16[(i + 1) * S2], y1 = i16[(i + 1) * S2 + 1];
