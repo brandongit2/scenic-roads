@@ -86,13 +86,32 @@ pub fn take() -> BTreeMap<String, u64> {
     m
 }
 
+/// What `measured` took: the bytes read, the GeoTIFFs opened and the CPU time (ms; None where
+/// it can't be read).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Taken {
+    pub bytes: u64,
+    pub tiffs: u64,
+    pub cpu_ms: Option<u64>,
+}
+
 /// Runs `f` (a unit's tail steps run here after its measures were taken, before the next unit
-/// begins) and gives back what it read and the GeoTIFFs it opened, `(bytes, tiffs)`: its programs'
-/// own (`child_reads`) among them. (Reads on other threads meanwhile are counted too.)
-pub fn measured<T>(f: impl FnOnce() -> T) -> (T, u64, u64) {
-    let (r0, t0) = (store::range::read_bytes(), TIFFS.load(Ordering::Relaxed));
+/// begins) and gives back what it read, the GeoTIFFs it opened and the CPU it took: its programs'
+/// own (`child_reads`; their CPU as each is waited for) among them. (Reads and CPU on other
+/// threads meanwhile are counted too.)
+pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
+    let (r0, t0, c0) = (store::range::read_bytes(), TIFFS.load(Ordering::Relaxed), crate::timings::cpu_us());
     let v = f();
-    (v, store::range::read_bytes().saturating_sub(r0), TIFFS.load(Ordering::Relaxed).saturating_sub(t0))
+    let cpu_ms = match (c0, crate::timings::cpu_us()) {
+        (Some(a), Some(b)) => Some(b.saturating_sub(a) / 1000),
+        _ => None,
+    };
+    let t = Taken {
+        bytes: store::range::read_bytes().saturating_sub(r0),
+        tiffs: TIFFS.load(Ordering::Relaxed).saturating_sub(t0),
+        cpu_ms,
+    };
+    (v, t)
 }
 
 /// Where a step's program notes, as it exits, what it read and the GeoTIFFs it opened (`<bytes>
@@ -137,11 +156,16 @@ pub fn child_reads(p: &Path) {
     std::fs::remove_file(p).ok();
 }
 
-/// Adds measures taken by `measured` to a target's.
-pub fn add_to(m: &mut BTreeMap<String, u64>, bytes: u64, tiffs: u64) {
-    *m.entry("bytes".into()).or_default() += bytes;
-    if tiffs > 0 || m.contains_key("km2") {
-        *m.entry("tiffs".into()).or_default() += tiffs;
+/// Adds measures taken by `measured` to a target's: its CPU too, so a unit's `cpu_ms` counts its
+/// tail's programs run after its measures were taken (crate::needs::Book::cores reads it over the
+/// target's whole time, the tail's included).
+pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {
+    *m.entry("bytes".into()).or_default() += t.bytes;
+    if t.tiffs > 0 || m.contains_key("km2") {
+        *m.entry("tiffs".into()).or_default() += t.tiffs;
+    }
+    if let Some(ms) = t.cpu_ms {
+        *m.entry("cpu_ms".into()).or_default() += ms;
     }
 }
 
@@ -199,12 +223,13 @@ mod tests {
         let p = d.path().join("reads");
         append_reads(&p, 1000, 3);
         append_reads(&p, 24, 1);
-        let ((), bytes, tiffs) = measured(|| child_reads(&p));
-        assert!(bytes >= 1024 && tiffs >= 4);
+        let ((), t) = measured(|| child_reads(&p));
+        assert!(t.bytes >= 1024 && t.tiffs >= 4);
         assert!(!p.exists());
         let mut m = BTreeMap::from([("km2".to_string(), 5)]);
-        add_to(&mut m, 7, 2);
+        add_to(&mut m, Taken { bytes: 7, tiffs: 2, cpu_ms: None });
         assert_eq!((m["bytes"], m["tiffs"]), (7, 2));
+        assert!(!m.contains_key("cpu_ms"));
     }
 
     #[test]

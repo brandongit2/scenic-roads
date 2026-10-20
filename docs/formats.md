@@ -792,7 +792,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     pool's journal); `tasks/<id>/`; `pause.json` (`{pause: {mode: "drain" | "freeze", by, at} | null,
     at}`, `pipeline::control::Pause`); `costs.jsonl` (`SCENIC_COSTS`: `{unit, started}` as a target
     begins, `{unit, peak_mb, secs, v, disk_mb, sizes}` as it ends; `sizes`, `pipeline::costin`, a
-    map of the target's input measures, absent from lines before it: `bytes` and `threads` (the threads it was given) always, `cpu_ms` (its process's CPU time over the target) where it can be read
+    map of the target's input measures, absent from lines before it: `bytes` and `threads` (the threads it was given) always, `cpu_ms` (its process's CPU time over the target, its programs' as each is waited for; a unit's with its tail's steps run here after its other measures were taken) where it can be read
     (bytes: what the store's readers read for the target, plus a step's own inputs: a unit's piece,
     pack's and lo's base packs, pois' piece); `km2` (the tile's area) and `tiffs` (GeoTIFFs opened)
     for every tile target; a unit's `ways` and `vertices` kept, `piece_ways`, `dem_tiles`. A unit's

@@ -1544,9 +1544,19 @@ mod tests {
         // (A tail's, after its unit's measures were taken.)
         let mut c = store::spawn::command("sh");
         c.arg("-c").arg("echo '300 2' >> \"$SCENIC_READS\"");
-        let (r, bytes, tiffs) = crate::costin::measured(|| run(c, "a tail step", &d.path().join("tail.log")));
+        let (r, t) = crate::costin::measured(|| run(c, "a tail step", &d.path().join("tail.log")));
         r.unwrap();
-        assert!(bytes >= 300 && tiffs >= 2);
+        assert!(t.bytes >= 300 && t.tiffs >= 2);
+        // (Its programs' CPU as each is waited for: a busy one's counted, and added to the unit's.)
+        let mut c = store::spawn::command("sh");
+        c.arg("-c").arg("i=0; while [ $i -lt 200000 ]; do i=$((i+1)); done");
+        let (r, t) = crate::costin::measured(|| run(c, "a busy tail step", &d.path().join("busy.log")));
+        r.unwrap();
+        let ms = t.cpu_ms.unwrap();
+        assert!(ms >= 50, "{t:?}");
+        let mut m = BTreeMap::from([("cpu_ms".to_string(), 7u64)]);
+        crate::costin::add_to(&mut m, t);
+        assert_eq!(m["cpu_ms"], 7 + ms);
     }
 
     /// Kept samples judged as the seed's: every one made so is valid.

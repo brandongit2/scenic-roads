@@ -4353,14 +4353,14 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             None => {
                 let mut b = b;
                 if b.rep.kept_ways > 0 {
-                    let (r, bytes, tiffs) = pipeline::costin::measured(|| run_tail(&b.anywhere, &b.dir, &b.tools));
+                    let (r, taken) = pipeline::costin::measured(|| run_tail(&b.anywhere, &b.dir, &b.tools));
                     if let Err(e) = r {
                         set_aside(&mut aside, u, e)?;
                         clean();
                         areas(|a| a.finished(&u.slash()));
                         continue;
                     }
-                    pipeline::costin::add_to(&mut b.sizes, bytes, tiffs);
+                    pipeline::costin::add_to(&mut b.sizes, taken);
                     b.peak = b.peak.max(pipeline::unit::take_peak());
                 }
                 commit_unit(out, &date, b, "here")?;
@@ -4466,10 +4466,17 @@ fn settle_tails(
         let (dir, tools, anywhere) = (b.dir.clone(), b.tools.clone(), b.anywhere.clone());
         // (What its steps read when run here is added to its sizes: `costin::measured`. A tail a
         // worker settled adds none.)
-        let mut read = (0, 0);
+        let mut read = pipeline::costin::Taken::default();
         let mut here = || {
-            let (r, bytes, tiffs) = pipeline::costin::measured(|| pipeline::unit::run_tail(&anywhere, &dir, &tools));
-            read = (read.0 + bytes, read.1 + tiffs);
+            let (r, t) = pipeline::costin::measured(|| pipeline::unit::run_tail(&anywhere, &dir, &tools));
+            read = pipeline::costin::Taken {
+                bytes: read.bytes + t.bytes,
+                tiffs: read.tiffs + t.tiffs,
+                cpu_ms: match (read.cpu_ms, t.cpu_ms) {
+                    (Some(a), Some(b)) => Some(a + b),
+                    (a, b) => a.or(b),
+                },
+            };
             r
         };
         // (This Mac's own run of its steps, as its stages have taken here: a worker is waited on
@@ -4494,7 +4501,7 @@ fn settle_tails(
             None => i += 1,
             Some(how) => {
                 let (mut b, _) = waiting.remove(i).unwrap();
-                pipeline::costin::add_to(&mut b.sizes, read.0, read.1);
+                pipeline::costin::add_to(&mut b.sizes, read);
                 b.peak = b.peak.max(pipeline::unit::take_peak());
                 let how = match how {
                     pipeline::offload::Settled::Remote(w) => format!("by {w}"),
