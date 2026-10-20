@@ -329,7 +329,9 @@ fn a_large_piece_of_land_in_no_region_is_an_error() {
     let w = world_with(1.05);
     let out = run(&w, &all());
     assert!(
-        out.problems.iter().any(|p| p.check == "rg-cover" && p.found == vec!["gap"] && p.message.contains("sliver_km2")),
+        out.problems
+            .iter()
+            .any(|p| p.check == "rg-cover" && p.found == vec!["gap"] && p.message.contains("sliver_km2")),
         "{:?}",
         out.problems
     );
@@ -351,7 +353,11 @@ fn the_new_rules_never_change_an_old_region() {
     // A hand-out naming an old region: it gets nothing, and the finding says why.
     let ho = "id = \"ho\"\nname = \"Ho\"\nwater = [{ minus = [\"eez:2\"] }]\nhand_out = \"g\"\n";
     let out = run(&w, &[PINS, ("g/old.toml", old), ("g/ho.toml", ho)]);
-    assert!(out.problems.iter().any(|p| p.check == "rg-ref" && p.message.contains("without water")), "{:?}", out.problems);
+    assert!(
+        out.problems.iter().any(|p| p.check == "rg-ref" && p.message.contains("without water")),
+        "{:?}",
+        out.problems
+    );
     assert_eq!(alone.resolved["old"], out.resolved["old"]);
 }
 
