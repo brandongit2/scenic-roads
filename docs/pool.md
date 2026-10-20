@@ -807,7 +807,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   ("since you last looked" goes by the events' time, so it outlives a restart). Until its first
   read a Mac answers 503 (never its memory's views: another numbering), and the page says it's
   reading the build's state (quietly, not as an error) and asks again every 2 s, saying it as an
-  error only after a minute of 503s (`sums.js` `notRead`). The menu bar app asks `/work/swarm`
+  error only after a minute of 503s (`sums.js` `notRead`; a 503 from `/work/history` alone waits for the next 10 s poll; no retry while the page is hidden). The menu bar app asks `/work/swarm`
   every 50 s while it runs, so this Mac keeps reading and its panel has the build when it opens. The forecast is run here from the input, its time brought
   to now and this Mac's own lanes as its slots are now, worked out as the lead works out its own
   (`forecast::SlotJob`: its own estimate, or its targets left at its speed, a minute at least; its

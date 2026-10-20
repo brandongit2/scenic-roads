@@ -57,4 +57,8 @@ test('not read yet: a quiet state and a retry every 2 s, an error after a minute
   assert.equal(z.retryMs, null);
   assert.equal(z.state, null);
   assert.match(z.error, /hasn't read the build's state in 60 s/);
+  // (Counted from the first 503 in a row: still an error, no quick retry, minutes on.)
+  const later = notRead(false, 0, 5 * READ_WAIT_MS);
+  assert.equal(later.retryMs, null);
+  assert.match(later.error, /in 300 s/);
 });

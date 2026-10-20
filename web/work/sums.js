@@ -29,10 +29,11 @@ export function wholeProgress(lines, fc) {
 // after t0 and starting by t1), in the order given.
 export const busyLanes = (names, lanes, t0, t1) => names.filter((nm) => (lanes[nm] || []).some((l) => l.until >= t0 && l.from <= t1));
 
-// While this Mac hasn't read the build's state (a 503 from /work/swarm or /work/history: its page
-// view reads only while asked lately, crates/pipeline/src/agent/pageview.rs): asked again every
-// READ_RETRY_MS with a quiet line, not an error, until READ_WAIT_MS after the first 503 in a row;
-// then an error, asked again only with the regular poll. `since` is when the 503s began (ms),
+// While this Mac hasn't read the build's state (a 503 from /work/swarm: its page view reads only
+// while asked lately, crates/pipeline/src/agent/pageview.rs; a 503 from /work/history alone waits
+// for the next regular poll): asked again every READ_RETRY_MS while the page is seen, with a quiet
+// line, not an error, until READ_WAIT_MS after the first 503 in a row; then an error, asked again
+// only with the regular poll. `since` is when the 503s began (ms),
 // `answered` whether the build was shown before. Returns { state, error, retryMs } (retryMs null:
 // no quick retry).
 export const READ_RETRY_MS = 2000;

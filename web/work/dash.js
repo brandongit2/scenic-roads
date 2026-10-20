@@ -960,7 +960,8 @@ function waitRead() {
   if (w.state) ctx.onState?.(w.state);
   if (w.error) ctx.onState?.(`can't show the build: ${w.error}`);
   clearTimeout(retry);
-  if (w.retryMs) retry = setTimeout(poll, w.retryMs);
+  // (Like the regular poll, only while the page is seen: none from a closed popover.)
+  if (w.retryMs) retry = setTimeout(() => document.visibilityState === "visible" && poll(), w.retryMs);
 }
 
 function section(cls, id, title, sub, ...body) {
@@ -1050,6 +1051,7 @@ async function pollOnce() {
     if (code !== 200 || !sw) return;
     answered = true;
     readSince = null;
+    clearTimeout(retry);
     last = sw;
     // (Another numbering, or this one gone back past the last event this page has: started again.)
     if (sw.epoch !== epoch || (sw.seq != null && events.length && sw.seq < events[events.length - 1].seq)) {
@@ -1062,8 +1064,8 @@ async function pollOnce() {
       const from = events.length ? events[events.length - 1].seq : Math.max(0, sw.seq - 600);
       if (sw.seq > from) {
         const [c2, hist] = await ctx.call("/work/history", { since: from, max: 1000 }).catch(() => [0, null]);
-        if (c2 === 503) waitRead();
-        else if (c2 === 200 && hist?.events) {
+        // (A 503 here, the swarm answered: left to the next regular poll.)
+        if (c2 === 200 && hist?.events) {
           const last = events.length ? events[events.length - 1].seq : -1;
           events = events.concat(hist.events.filter((e) => e.seq > last)).slice(-2000);
         }
