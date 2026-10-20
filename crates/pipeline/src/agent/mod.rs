@@ -1513,6 +1513,10 @@ pub struct Agent {
     /// The last start held by something on a short timer (the pool's step under way, the answers
     /// going to the NAS): the idle agent plans again next loop.
     start_soon: std::cell::Cell<bool>,
+    /// The most memory a target of a step only the lead runs, planned or held by the guard in the
+    /// last plan, is expected to take (MB: its learned floor or its measured peak; 0: none): the
+    /// lead isn't offered by capacity to a member whose limit can't fit it (docs/pool.md §6.4).
+    lead_need: std::cell::Cell<u64>,
 }
 
 /// The agent's part of the gate (docs/inputs.md §4.2, §4.7).
@@ -1851,6 +1855,7 @@ impl Agent {
             out_why,
             inputs: Gate::default(),
             start_soon: Default::default(),
+            lead_need: Default::default(),
         };
         // (The jobs the agent before this one left running, taken over before anything is
         // planned or offered.)
@@ -4298,6 +4303,7 @@ impl Agent {
             run.cx.starting = false;
             run.cx.duty = duty;
             run.cx.lead_only = lead_only;
+            run.cx.lead_need_mb = self.lead_need.get();
         }
         // A lease for a job that didn't start (room on the disk, say): given back.
         for k in 0..self.slots.len() {
@@ -5683,6 +5689,19 @@ impl Agent {
         }
     }
 
+    /// The memory the most demanding target of a step only the lead runs among `works` is expected
+    /// to take (MB): its holding floor or its peak, the larger (`Agent::lead_need`).
+    fn lead_need_of(&self, works: &[build::Work]) -> u64 {
+        let Some(c) = &self.coord else { return 0 };
+        works
+            .iter()
+            .filter(|w| !steps::SHARED.contains(&w.step.as_str()))
+            .flat_map(|w| w.targets.iter().map(move |(t, _)| (w.step.as_str(), t.as_str())))
+            .map(|(st, t)| c.holding_floor(st, t).map_or(0, |f| f.mb).max(c.peak(st, t).unwrap_or(0)))
+            .max()
+            .unwrap_or(0)
+    }
+
     /// The targets of the plan's `works` the memory guard holds (its switch on): those whose floor,
     /// learned alone the way its step runs now, passes this Mac's limit (`here`), and of them those
     /// past every Mac's in the pool, as the lead knows them (`all`: a step only this Mac runs, this
@@ -5717,12 +5736,12 @@ impl Agent {
             }
             if n_all > 0 && !steps::SHARED.contains(&w.step.as_str()) {
                 // A step only the lead runs: judged against the lead's limit alone. A member whose
-                // limit fits it is named, with how to hand it the lead (not done here: moving the
-                // lead is the owner's call, `scenic lead give`).
+                // limit fits it is named: the lead offers it the lead by itself within minutes
+                // (docs/pool.md §6.4, `Agent::lead_need`), or the owner hands it (`scenic lead give`).
                 let (s, v) = if n_all == 1 { ("", "s") } else { ("s", "") };
                 let remedy = match c.roomiest_agent().filter(|(_, l)| *l >= need) {
                     Some((m, l)) => format!(
-                        "{m}'s limit is {:.1} GB: hand it the lead (`scenic lead give {m}`), or fix the step's memory",
+                        "{m}'s limit is {:.1} GB: the lead is offered to it within minutes (or `scenic lead give {m}`), or fix the step's memory",
                         gb(l)
                     ),
                     None => {
@@ -7410,6 +7429,7 @@ impl Agent {
         // Mac's built only by a Mac with room.)
         let holds = self.guard_holds(&plan);
         waiting.extend(holds.why.iter().cloned());
+        self.lead_need.set(self.lead_need_of(&plan));
         for w in plan.iter_mut() {
             w.targets.retain(|t| !holds.all.contains(&(w.step.clone(), t.0.clone())));
         }
@@ -9485,6 +9505,7 @@ impl Agent {
             duty,
             // (Set where the jobs start, below.)
             lead_only: run.cx.lead_only,
+            lead_need_mb: run.cx.lead_need_mb,
             starting: false,
             lead_answered,
             broker: self.brokering(),

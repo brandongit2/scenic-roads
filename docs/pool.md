@@ -175,11 +175,20 @@ whatever its age (`Coordinator::last_capacities`; a busy member asks nothing for
 of a host's slots, left out once the member's heartbeat is out of touch; placement keeps to
 `CAP_FRESH_S`). The score is the memory guard's limit (4 points a GB) plus its cores (8 each), scaled
 down by free disk below 50 GB (none: 0), halved while its owner uses it, and on battery scaled by
-half its charge; away from home or without the NAS, 0. No Mac is named: a member is offered the
+half its charge; away from home or without the NAS, 0. Its jobs' load isn't counted, so the free
+disk is taken before its jobs' reservations (`disk_mb` + `reserved_mb`): a busy lead whose jobs
+reserved its room once scored 0 and offered the lead to any idle Mac (#491). No Mac is named: a member is offered the
 lead when its score beats the lead's by 25 % and at least 16 points (`handover::beats`) at every
 look for 5 minutes (`PREFER_S`), and `Driver::hand_to` lets it. The margin holds both ways, so a
 score moving less than that doesn't hand the lead back; an offer that comes to nothing is made
-again only after twice as long each time (10, 20, then 40 minutes). Never while a lead-only job
+again only after twice as long each time (10, 20, then 40 minutes). Lead-only work weighs the
+members' memory guard limits (#491): the lead's last plan notes the most a target of a step only the
+lead runs (the non-shared steps), planned or held by the guard, is expected to take (its floor or
+measured peak, `Agent::lead_need`). With the lead's limit fitting it, a member whose limit doesn't
+(or isn't known) is never offered the lead, whatever it scores; with the lead's short of it, only
+members whose limit fits it count, and the best of them is offered the lead whatever the scores
+(seen so for 5 minutes, as any: `handover::fits_lead_work`). So the lead goes to a Mac that can run
+the waiting heritage or buildings' sources, never away from one. Never while a lead-only job
 (`agent::every::LEAD_ONLY`, or a duty) runs on the lead, a handover is under way, or entries wait to
 be read whole (it couldn't settle). The lead's log says each such offer, with both scores. So a
 weaker Mac that got the lead (the owner's ask, a takeover, or a lead whose update waited on its job
@@ -579,7 +588,8 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   (`floors.json`, and the pool's state), rising only, tagged with whether it ran alone and the
   step's `cost_version`. A target's predicted memory is never below its floor. A target whose
   floor exceeds this Mac's limit goes to a Mac with room; past every Mac's, it waits; for a lead-only
-  step, the status names a member with room and `scenic lead give`. `scenic pool floors [--clear
+  step, the status names a member with room, which the lead offers the lead within minutes (§6.4),
+  or `scenic lead give`. `scenic pool floors [--clear
   [<step> [<target>]]]` lists or clears them.
 
 ### 7.3 Results: the journal
@@ -884,7 +894,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   that message leaves the member's last few sent (`KEPT`); and a member rolled back reads its own
   `mail.json` (its sent messages) as empty, so it may take messages again.
 - **`scenic lead`**: shows the pool; `scenic lead give <member>`, `scenic lead take [--force]
-  [--downgrade]`, `scenic lead auto on|off`. `scenic status` shows the pool too.
+  [--downgrade]`, `scenic lead auto on|off`. `scenic status` shows the pool too. The owner's give
+  isn't weighed against lead-only work; the lead's proactive offer (§6.4) is, so a lead given to a
+  Mac whose limit can't fit lead-only work waiting offers it back to one whose limit can.
 - **Forcing stays on the Mac:** `/work/lead` refuses forced takeovers.
 - **Cancelling a job** (`crate::control::Cancel`): `scenic job cancel <target> [--step <step>]
   [--rerun-after-update]`, or the menu bar's "Cancel <job>" on the Mac running it (Option: "…,

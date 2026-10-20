@@ -288,8 +288,14 @@ impl Conds {
     }
 }
 
-/// `Run::scores`, given this Mac, the members' heartbeats, the capacities by worker and the time.
-fn scores_of(me: &Member, beats: &[Beat], caps: Vec<(String, crate::coord::Capacity)>, now: u64) -> Vec<(String, u64)> {
+/// `Run::scores`, given this Mac, the members' heartbeats, the capacities by worker and the time:
+/// each member's score and its memory guard's limit (MB).
+fn scores_of(
+    me: &Member,
+    beats: &[Beat],
+    caps: Vec<(String, crate::coord::Capacity)>,
+    now: u64,
+) -> Vec<(String, u64, u64)> {
     // (A worker's host: its slot's number taken off.)
     let host_of = |w: &str| match w.rsplit_once(" #") {
         Some((h, n)) if n.parse::<usize>().is_ok() => h.to_string(),
@@ -314,7 +320,7 @@ fn scores_of(me: &Member, beats: &[Beat], caps: Vec<(String, crate::coord::Capac
                 }
                 b.member.clone()
             };
-            Some((id, crate::pool::handover::score(&cap)))
+            Some((id, crate::pool::handover::score(&cap), cap.limit_mb))
         })
         .collect()
 }
@@ -350,6 +356,10 @@ pub struct Give {
     /// job runs here (`Heard::lead_only`).
     pub scores: Vec<(String, u64)>,
     pub lead_only: bool,
+    /// Leading: each Mac's memory guard limit by member id (MB, `Heard::limits`), and the memory
+    /// the lead-only work waiting or planned here needs (`Heard::lead_need_mb`).
+    pub limits: Vec<(String, u64)>,
+    pub lead_need_mb: u64,
     /// When the lead's coordinator last answered this Mac (`Heard::answered`).
     pub answered: Option<u64>,
 }
@@ -708,6 +718,8 @@ impl Side {
             reports: self.beats.clone(),
             scores: give.scores,
             lead_only: give.lead_only,
+            limits: give.limits,
+            lead_need_mb: give.lead_need_mb,
             answered: give.answered,
         };
         self.conds = give.conds;
@@ -1285,6 +1297,9 @@ pub struct Cx {
     /// A lead-only job (crate::agent::every::LEAD_ONLY, or a duty) runs here: the lead isn't
     /// offered by capacity meanwhile (`Heard::lead_only`).
     pub lead_only: bool,
+    /// The memory the most demanding target of a step only the lead runs, planned or held, is
+    /// expected to take (MB; 0: none): `Heard::lead_need_mb`.
+    pub lead_need_mb: u64,
     /// The agent's loop is starting a job (its lease from this coordinator): a tick doesn't settle
     /// until it's done.
     pub starting: bool,
@@ -1746,7 +1761,7 @@ impl Run {
     /// its age (`Coordinator::last_capacities`: a busy member asks nothing for long), the newest
     /// per host; a member's (its host's newest heartbeat's) left out once that heartbeat is out of
     /// touch. None without a coordinator.
-    fn scores(&self) -> Vec<(String, u64)> {
+    fn scores(&self) -> Vec<(String, u64, u64)> {
         let Some(c) = &self.cx.coord else { return Vec::new() };
         scores_of(self.side.member(), &self.side.beats, c.last_capacities(), self.side.now())
     }
@@ -1754,6 +1769,7 @@ impl Run {
     /// One step: what the agent gathered handed over, the gates kept; the role's change noted (it
     /// restarts into its new part).
     pub fn step(&mut self, able: bool) -> Out {
+        let scores = self.scores();
         let give = Give {
             entries: std::mem::take(&mut self.entries),
             settled: self.settled.take(),
@@ -1761,8 +1777,10 @@ impl Run {
             reassert: self.reassert,
             asks: std::mem::take(&mut self.asks),
             conds: self.conds,
-            scores: self.scores(),
+            scores: scores.iter().map(|(m, s, _)| (m.clone(), *s)).collect(),
             lead_only: self.cx.lead_only || self.cx.duty,
+            limits: scores.into_iter().map(|(m, _, l)| (m, l)).collect(),
+            lead_need_mb: self.cx.lead_need_mb,
             answered: self.cx.lead_answered,
         };
         let marks = std::mem::take(&mut self.marks);
@@ -2272,9 +2290,9 @@ mod tests {
         let mut got = scores_of(&me, &[old.clone(), beat("Mac-mini", "m-b", now - 30)], caps.clone(), now);
         got.sort();
         let s = |gb: u64| crate::pool::handover::score(&cap(0, gb));
-        assert_eq!(got, vec![("m-a".to_string(), s(8)), ("m-b".to_string(), s(24))]);
+        assert_eq!(got, vec![("m-a".to_string(), s(8), 8 << 10), ("m-b".to_string(), s(24), 24 << 10)]);
         // Its heartbeat out of touch: left out.
-        assert_eq!(scores_of(&me, &[old], caps, now), vec![("m-a".to_string(), s(8))]);
+        assert_eq!(scores_of(&me, &[old], caps, now), vec![("m-a".to_string(), s(8), 8 << 10)]);
     }
     use crate::pool::driver::Ask;
     use crate::pool::journal::LeaseId;

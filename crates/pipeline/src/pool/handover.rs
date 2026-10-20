@@ -56,13 +56,16 @@ pub const DISK_FULL_GB: u64 = 50;
 /// cores (8 each), scaled down by its free disk below `DISK_FULL_GB`, halved while its owner uses
 /// it (the owner's share), and on battery scaled by half its charge (none known: nothing). Away
 /// from home or the NAS not answering: nothing. Its jobs' load isn't counted: a lead's own jobs
-/// would hand the lead away.
+/// would hand the lead away. So its free disk is counted before its jobs' reservations
+/// (`disk_mb` + `reserved_mb`: the free space less the owner's room target): a lead busy with
+/// jobs that reserved its room would score nothing and offer the lead to any idle Mac.
 pub fn score(c: &crate::coord::Capacity) -> u64 {
     if !c.home || !c.nas {
         return 0;
     }
     let base = (c.limit_mb / 1024) * 4 + c.cores as u64 * 8;
-    let mut s = base * (c.disk_mb / 1024).min(DISK_FULL_GB) / DISK_FULL_GB;
+    let room = c.disk_mb.saturating_add(c.reserved_mb);
+    let mut s = base * (room / 1024).min(DISK_FULL_GB) / DISK_FULL_GB;
     if c.in_use {
         s /= 2;
     }
@@ -75,6 +78,41 @@ pub fn score(c: &crate::coord::Capacity) -> u64 {
 /// Whether score `theirs` beats the lead's `own` enough to be offered the lead.
 pub fn beats(theirs: u64, own: u64) -> bool {
     theirs >= own + PREFER_MIN && theirs * 100 >= own * (100 + PREFER_PCT)
+}
+
+/// How the lead's memory guard limit stands to the lead-only work waiting or planned on it
+/// (`fits_lead_work`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fit {
+    /// None waits, or the lead's limit isn't known: the scores alone decide.
+    Free,
+    /// The lead's limit fits it: a member whose limit doesn't (or isn't known) isn't offered the
+    /// lead, however it scores.
+    Fits,
+    /// The lead's limit can't fit it: only a member whose limit does is offered the lead, and it
+    /// is whatever the scores (seen so for `PREFER_S`, as any).
+    Short,
+}
+
+/// How the lead's limit (`own`, MB) stands to `need`, the memory the most demanding target of a
+/// lead-only step waiting or planned on it is expected to take (MB; 0: none).
+pub fn fits_lead_work(need: u64, own: Option<u64>) -> Fit {
+    match own {
+        _ if need == 0 => Fit::Free,
+        None => Fit::Free,
+        Some(l) if l >= need => Fit::Fits,
+        Some(_) => Fit::Short,
+    }
+}
+
+impl Fit {
+    /// Whether a member whose limit is `limit` (MB; None: not known) may be offered the lead.
+    pub fn allows(self, need: u64, limit: Option<u64>) -> bool {
+        match self {
+            Fit::Free => true,
+            Fit::Fits | Fit::Short => limit.is_some_and(|l| l >= need),
+        }
+    }
 }
 
 /// The member a lead prefers to itself by capacity, and since when (its clock) it has.
@@ -93,13 +131,22 @@ impl Prefer {
     /// (`beats`) at every look for `PREFER_S` (after an offer, twice as long each time: `tries`).
     /// `hold` (a lead-only job runs, a handover is under way, entries wait to be read whole): none
     /// now, the time kept. A look with nothing measured keeps it too; one where none
-    /// beats the lead's, or another is best, starts it over.
-    pub fn step(&mut self, now: u64, own: Option<u64>, others: &[(String, u64)], hold: bool) -> Option<String> {
-        let (Some(own), Some(best)) = (own, others.iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0))))
-        else {
+    /// beats the lead's, or another is best, starts it over. `urge` (the lead's limit can't fit
+    /// lead-only work that `others`' can: `Fit::Short`): the best of them counts as beating the
+    /// lead's, whatever the scores.
+    pub fn step(
+        &mut self,
+        now: u64,
+        own: Option<u64>,
+        others: &[(String, u64)],
+        hold: bool,
+        urge: bool,
+    ) -> Option<String> {
+        let Some(best) = others.iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(&a.0))) else {
             return None;
         };
-        if !beats(best.1, own) {
+        let Some(own) = own.or(urge.then_some(0)) else { return None };
+        if !urge && !beats(best.1, own) {
             *self = Prefer::default();
             return None;
         }
@@ -443,27 +490,70 @@ mod tests {
     fn a_stronger_member_is_preferred_once_it_has_been_for_minutes() {
         let mut p = Prefer::default();
         let them = vec![(B.to_string(), 176), ("m-000000000000000c".to_string(), 120)];
-        assert_eq!(p.step(100, Some(100), &them, false), None, "first seen");
-        assert_eq!(p.step(100 + PREFER_S - 1, Some(100), &them, false), None);
-        assert_eq!(p.step(100 + PREFER_S, Some(100), &[], false), None, "nothing measured: no offer");
-        assert_eq!(p.step(100 + PREFER_S, Some(100), &them, true), None, "a lead-only job runs");
-        assert_eq!(p.step(100 + PREFER_S, Some(100), &them, false), Some(B.into()));
-        assert_eq!(p.step(99 + 3 * PREFER_S, Some(100), &them, false), None, "offered: twice as long again");
-        assert_eq!(p.step(100 + 3 * PREFER_S, Some(100), &them, false), Some(B.into()));
-        assert_eq!(p.step(99 + 7 * PREFER_S, Some(100), &them, false), None);
-        assert_eq!(p.step(100 + 7 * PREFER_S, Some(100), &them, false), Some(B.into()));
+        assert_eq!(p.step(100, Some(100), &them, false, false), None, "first seen");
+        assert_eq!(p.step(100 + PREFER_S - 1, Some(100), &them, false, false), None);
+        assert_eq!(p.step(100 + PREFER_S, Some(100), &[], false, false), None, "nothing measured: no offer");
+        assert_eq!(p.step(100 + PREFER_S, Some(100), &them, true, false), None, "a lead-only job runs");
+        assert_eq!(p.step(100 + PREFER_S, Some(100), &them, false, false), Some(B.into()));
+        assert_eq!(p.step(99 + 3 * PREFER_S, Some(100), &them, false, false), None, "offered: twice as long again");
+        assert_eq!(p.step(100 + 3 * PREFER_S, Some(100), &them, false, false), Some(B.into()));
+        assert_eq!(p.step(99 + 7 * PREFER_S, Some(100), &them, false, false), None);
+        assert_eq!(p.step(100 + 7 * PREFER_S, Some(100), &them, false, false), Some(B.into()));
         // A look where it no longer beats the lead's starts it over.
         let mut q = Prefer::default();
-        q.step(0, Some(100), &them, false);
-        q.step(200, Some(150), &them, false);
+        q.step(0, Some(100), &them, false, false);
+        q.step(200, Some(150), &them, false, false);
         assert_eq!(q, Prefer::default());
-        assert_eq!(q.step(PREFER_S, Some(100), &them, false), None);
+        assert_eq!(q.step(PREFER_S, Some(100), &them, false, false), None);
         // Another best starts it over too; equal scores, the lowest id.
         let tie = vec![("m-000000000000000c".to_string(), 176), (B.to_string(), 176)];
-        q.step(0, Some(100), &tie, false);
+        q.step(0, Some(100), &tie, false, false);
         assert_eq!(q.to.as_ref().map(|t| t.0.as_str()), Some(B));
         // The lead's own unknown: none.
-        assert_eq!(Prefer::default().step(0, None, &them, false), None);
+        assert_eq!(Prefer::default().step(0, None, &them, false, false), None);
+    }
+
+    #[test]
+    fn lead_only_work_weighs_the_members_limits() {
+        // (Task #491) The M4 leads (42 GB), busy; the M1 (12 GB) idle and scoring higher. Heritage
+        // waits with a target of 21.4 GB, only the lead runs it: the M1 isn't offered the lead.
+        let (gb, need) = (|g: u64| g << 10, 21_914);
+        let fit = fits_lead_work(need, Some(gb(42)));
+        assert_eq!(fit, Fit::Fits);
+        assert!(!fit.allows(need, Some(gb(12))) && !fit.allows(need, None) && fit.allows(need, Some(gb(24))));
+        // None waits: the scores alone, as before.
+        assert_eq!(fits_lead_work(0, Some(gb(42))), Fit::Free);
+        assert!(Fit::Free.allows(0, Some(gb(12))));
+        // The M1 leads with it waiting: only the M4 counts, offered whatever the scores, once
+        // seen so for PREFER_S.
+        let fit = fits_lead_work(need, Some(gb(12)));
+        assert_eq!(fit, Fit::Short);
+        assert!(fit.allows(need, Some(gb(42))) && !fit.allows(need, Some(gb(16))));
+        let mut p = Prefer::default();
+        let m4 = vec![(B.to_string(), 36)];
+        assert_eq!(p.step(100, Some(128), &m4, false, true), None, "first seen");
+        assert_eq!(p.step(100 + PREFER_S, Some(128), &m4, true, true), None, "a lead-only job runs");
+        assert_eq!(p.step(100 + PREFER_S, Some(128), &m4, false, true), Some(B.into()));
+        // Not urged, the lower score isn't offered it.
+        assert_eq!(Prefer::default().step(100 + PREFER_S, Some(128), &m4, false, false), None);
+    }
+
+    #[test]
+    fn a_busy_leads_reserved_disk_doesnt_take_its_score() {
+        // (Task #491) The lead's jobs reserved all its room: still scored on the room before them.
+        let c = |disk: u64, reserved: u64| crate::coord::Capacity {
+            limit_mb: 42 << 10,
+            cores: 10,
+            disk_mb: disk << 10,
+            reserved_mb: reserved << 10,
+            ac: true,
+            home: true,
+            nas: true,
+            ..Default::default()
+        };
+        assert_eq!(score(&c(0, 80)), score(&c(80, 0)));
+        assert!(score(&c(0, 80)) > 0);
+        assert_eq!(score(&c(0, 0)), 0, "a full disk still scores nothing");
     }
 
     #[test]
