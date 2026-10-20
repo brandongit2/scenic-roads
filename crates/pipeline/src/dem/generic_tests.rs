@@ -690,6 +690,42 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
     assert!(most > 2, "at most {most} reads at once, no more than the pool's threads");
 }
 
+/// Task #445: a GeoTIFF dataset in the points' own CRS reads their `lon` and `lat` as given, no
+/// copy of them per dataset (16 bytes a point each: a dense unit's 85 M points, 1.4 GB a dataset).
+#[test]
+fn a_geotiff_dataset_in_degrees_keeps_no_copy_of_the_points() {
+    use super::super::declared::{Dataset, Source};
+    let f = crate::fetch::MapFetch::default();
+    let o = Opts { fetch: &f, store: None, pool: None };
+    let ds = |crs: u16| Dataset {
+        convert: None,
+        id: "d".into(),
+        code: 1,
+        resolution: 30.0,
+        cover: None,
+        source: Source::Geotiff { crs, read_resolution: None, store: false, files: Vec::new() },
+    };
+    let (lon, lat) = (vec![-80.0, -79.5], vec![43.0, 44.0]);
+    let cache = Arc::new(Mutex::new(BlockCache::new(1 << 20)));
+    let memo = Arc::new(TileMemo::new(1 << 20));
+    let cover = Cover::of(None);
+    for crs in [4326, 4269] {
+        let d = ds(crs);
+        let r = Reader::new(&d, &o, &lon, &lat, &cover, &cache, &memo).unwrap();
+        assert!(matches!(r, Reader::Geo(_, None)), "EPSG:{crs}");
+    }
+    // (One in another CRS: its points projected, into its own two columns.)
+    let d = ds(3979);
+    let r = Reader::new(&d, &o, &lon, &lat, &cover, &cache, &memo).unwrap();
+    let Reader::Geo(_, Some((x, y))) = &r else { panic!("projected") };
+    assert_eq!((x.len(), y.len()), (2, 2));
+    assert!(x.iter().chain(y).all(|v| v.is_finite() && v.abs() > 1000.0), "{x:?} {y:?}");
+    let own = Some((x.clone(), y.clone()));
+    let (nx, ny) = native(&own, &lon, &lat);
+    assert_eq!((nx, ny), (&x[..], &y[..]));
+    assert_eq!(native(&None, &lon, &lat), (&lon[..], &lat[..]));
+}
+
 /// Task #397 follow-up: the reading ahead goes no further than a quarter of the cache holds, so
 /// it can't push the chunk being sampled out of it.
 #[test]

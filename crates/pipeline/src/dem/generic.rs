@@ -997,7 +997,10 @@ impl TileSet<'_> {
 
 /// A dataset as it's read.
 enum Reader<'a> {
-    Geo(GeoSet<'a>, Vec<f64>, Vec<f64>),
+    /// A GeoTIFF dataset, with its points' native coordinates where its CRS isn't the points'
+    /// own (EPSG:4326 and 4269 read `lon` and `lat` as given: no copy of them, 16 bytes a point, for
+    /// each such dataset).
+    Geo(GeoSet<'a>, Option<(Vec<f64>, Vec<f64>)>),
     Tiles(TileSet<'a>),
 }
 
@@ -1039,12 +1042,13 @@ impl<'a> Reader<'a> {
                     clean: (0..files.len()).map(|_| Clean::default()).collect(),
                     cache: cache.clone(),
                 };
-                // (Native coordinates of the points it covers; NaN for the others.)
-                let (x, y) = match crs {
-                    4326 | 4269 => (lon.to_vec(), lat.to_vec()),
+                // (Native coordinates of the points it covers; NaN for the others. Made straight
+                // into their two columns: no list of pairs beside them.)
+                let xy = match crs {
+                    4326 | 4269 => None,
                     3979 => {
                         let atlas = Atlas::new();
-                        let xy: Vec<(f64, f64)> =
+                        let xy: (Vec<f64>, Vec<f64>) =
                             within(o.pool, || {
                                 lon.par_iter()
                                     .zip(lat.par_iter())
@@ -1055,13 +1059,13 @@ impl<'a> Reader<'a> {
                                             (f64::NAN, f64::NAN)
                                         }
                                     })
-                                    .collect()
+                                    .unzip()
                             });
-                        xy.into_iter().unzip()
+                        Some(xy)
                     }
                     c => bail!("{}: EPSG:{c} isn't a CRS the app knows", ds.id),
                 };
-                Reader::Geo(set, x, y)
+                Reader::Geo(set, xy)
             }
         })
     }
@@ -1083,7 +1087,8 @@ impl<'a> Reader<'a> {
                 within(t.o.pool, || keyed.par_sort_unstable());
                 keyed.into_iter().map(|p| p.1).collect()
             }
-            Reader::Geo(g, x, y) => {
+            Reader::Geo(g, xy) => {
+                let (x, y) = native(xy, lon, lat);
                 let mut keyed: Vec<(usize, f64, u32)> = sel
                     .iter()
                     .map(|&i| (g.holding(x[i as usize], y[i as usize]).next().unwrap_or(usize::MAX), y[i as usize], i))
@@ -1098,9 +1103,10 @@ impl<'a> Reader<'a> {
 
     /// What to read ahead of sampling `parts` in turn (`read_ahead`): a GeoTIFF dataset's blocks,
     /// natively with a pool; None otherwise (a pyramid fetches its tiles ahead itself).
-    fn ahead(&self, parts: &[&[u32]]) -> Result<Option<Ahead>> {
+    fn ahead(&self, parts: &[&[u32]], lon: &[f64], lat: &[f64]) -> Result<Option<Ahead>> {
         match self {
-            Reader::Geo(g, x, y) if g.o.pool.is_some() && !cfg!(target_arch = "wasm32") => {
+            Reader::Geo(g, xy) if g.o.pool.is_some() && !cfg!(target_arch = "wasm32") => {
+                let (x, y) = native(xy, lon, lat);
                 Ok(Some(g.blocks_ahead(parts, x, y)?))
             }
             _ => Ok(None),
@@ -1111,7 +1117,10 @@ impl<'a> Reader<'a> {
     /// share of them done as it goes (a GeoTIFF dataset's chunks are said by its caller).
     fn sample(&self, sel: &[u32], lon: &[f64], lat: &[f64], step: Said) -> Result<Vec<(f32, u32)>> {
         match self {
-            Reader::Geo(g, x, y) => g.sample(sel, x, y),
+            Reader::Geo(g, xy) => {
+                let (x, y) = native(xy, lon, lat);
+                g.sample(sel, x, y)
+            }
             Reader::Tiles(t) => Ok(t.sample(sel, lon, lat, step)?.into_iter().map(|v| (v, 0)).collect()),
         }
     }
@@ -1137,9 +1146,20 @@ impl<'a> Reader<'a> {
         step: Said,
     ) -> Result<Vec<f64>> {
         match self {
-            Reader::Geo(g, x, y) => g.distance(sel, x, y, lat, file, radius, step),
+            Reader::Geo(g, xy) => {
+                let (x, y) = native(xy, lon, lat);
+                g.distance(sel, x, y, lat, file, radius, step)
+            }
             Reader::Tiles(t) => t.distance(sel, lon, lat, radius, step),
         }
+    }
+}
+
+/// A GeoTIFF dataset's points in its CRS: its own columns, else the points' `lon` and `lat`.
+fn native<'b>(xy: &'b Option<(Vec<f64>, Vec<f64>)>, lon: &'b [f64], lat: &'b [f64]) -> (&'b [f64], &'b [f64]) {
+    match xy {
+        Some((x, y)) => (x, y),
+        None => (lon, lat),
     }
 }
 
@@ -1232,7 +1252,7 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
             let parts: Vec<&[u32]> = sel.chunks(r.chunk(sel.len())).collect();
             let mut here = 0;
             let mut done = 0;
-            read_ahead(r.ahead(&parts)?.as_ref(), |at| -> Result<()> {
+            read_ahead(r.ahead(&parts, lon, lat)?.as_ref(), |at| -> Result<()> {
                 for (j, part) in parts.iter().enumerate() {
                     at(j);
                     let step = |f: f64| {
@@ -1317,7 +1337,7 @@ pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Re
         let sel = r.in_reading_order(sel, lon, lat);
         let parts: Vec<&[u32]> = sel.chunks(r.chunk(sel.len())).collect();
         let mut done = 0;
-        read_ahead(r.ahead(&parts)?.as_ref(), |at| -> Result<()> {
+        read_ahead(r.ahead(&parts, lon, lat)?.as_ref(), |at| -> Result<()> {
             for (j, part) in parts.iter().enumerate() {
                 at(j);
                 let step = |f: f64| {
