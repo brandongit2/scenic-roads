@@ -181,19 +181,26 @@ impl Drop for Reader {
     }
 }
 
-/// `files` dropped (closed, where theirs is the last handle) by `at_once` threads.
+/// `files` dropped (closed, where theirs is the last handle) by `at_once` threads, no more than
+/// there are files; those a thread can't be started for closed on this one (it may run in an
+/// unwind: never a panic).
 fn close_all<T: Send>(files: Vec<T>, at_once: usize) {
     if files.len() < 2 {
         return;
     }
+    let n = at_once.clamp(1, files.len());
     let files = Mutex::new(files);
+    let close = || loop {
+        let Some(t) = files.lock().unwrap_or_else(|e| e.into_inner()).pop() else { return };
+        drop(t);
+    };
     std::thread::scope(|s| {
-        for _ in 0..at_once.max(1) {
-            s.spawn(|| loop {
-                let Some(t) = files.lock().unwrap_or_else(|e| e.into_inner()).pop() else { return };
-                drop(t);
-            });
+        for _ in 0..n {
+            if std::thread::Builder::new().spawn_scoped(s, close).is_err() {
+                break;
+            }
         }
+        close();
     });
 }
 
@@ -846,7 +853,7 @@ pub(crate) mod tests {
                 NOW.fetch_sub(1, SeqCst);
             }
         }
-        close_all((0..16).map(|_| Slow).collect(), 8);
+        close_all((0..16).map(|_| Slow).collect(), CLOSES_AT_ONCE);
         assert!(MOST.load(SeqCst) >= 2, "closed one at a time");
     }
 

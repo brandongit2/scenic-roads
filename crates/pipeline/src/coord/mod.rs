@@ -946,8 +946,9 @@ impl Shared {
                 let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
                 let n = self.job_need(&o.step, &ts);
                 // (A cold job of the lead's own whose floors fit: beside, on a core, `floors_fit`.)
-                let floored =
-                    n.is_none_or(|(_, c)| c.is_none()) && o.job.is_some() && self.floors_fit(&o.step, &ts, &room_o);
+                // (Its memory then the floors', its cores unknown: only a step none of whose runs
+                // noted a cost, not a measured one whose costs lack its threads.)
+                let floored = o.job.is_some() && self.cold(&o.step) && self.floors_fit(&o.step, &ts, &room_o);
                 if beside
                     && !floored
                     && !matches!(n, Some((_, Some(c))) if self.packed_cores(&o.step, &ts, c, share) <= cores)
@@ -1067,7 +1068,18 @@ impl Shared {
     /// and goes beside running jobs instead of waiting for its Mac to run nothing, which with
     /// long jobs may never come.
     fn floors_fit(&self, step: &str, ts: &[String], a: &Ask) -> bool {
-        !ts.is_empty() && ts.iter().all(|t| self.floors.get(&cost_key(step, t)).is_some_and(|f| f.mb <= a.mem_mb))
+        // (A floor the way it runs now, measured alone: a batch's is only a lower bound.)
+        let v = cost_version(step);
+        !ts.is_empty()
+            && ts
+                .iter()
+                .all(|t| self.floors.get(&cost_key(step, t)).is_some_and(|f| f.v >= v && f.alone && f.mb <= a.mem_mb))
+    }
+
+    /// Whether none of `step`'s runs the way it runs now noted a cost: a cold step.
+    fn cold(&self, step: &str) -> bool {
+        let v = cost_version(step);
+        !self.costs.iter().any(|(k, c)| crate::agent::memguard::step_of_key(k) == step && c.v >= v)
     }
 
     /// Whether the NAS budget has room for the lead's own planned job of offer `o`: its weight
@@ -6801,10 +6813,24 @@ mod tests {
             targets: vec![(format!("inputs/{unit}"), "k".into(), 0)],
             job: Some(format!("inputs inputs/{unit}")),
         };
-        for (mb, beside) in [(340, true), (90_000, false)] {
+        // (mb, alone, version, a cost without threads noted): beside or not.
+        let v = cost_version("inputs");
+        for (mb, alone, fv, costed, beside) in [
+            (340, true, v, false, true),
+            (90_000, true, v, false, false),
+            (340, false, v, false, false),
+            (340, true, v, true, false),
+        ] {
             let (_d, c, _w, _clock) = every((0, 0));
             packable(&c, "slope", 4, Some(1));
-            c.add_floors(&[(cost_key("inputs", "inputs/sources"), Floor { mb, alone: true, v: 0 })]);
+            c.add_floors(&[(cost_key("inputs", "inputs/sources"), Floor { mb, alone, v: fv })]);
+            if costed {
+                // (Measured, its costs without its threads: not cold, so not beside on floors.)
+                c.add_costs(&[(
+                    cost_key("inputs", "inputs/other"),
+                    Cost { peak_mb: 300, secs: 30, worker: None, v, ..Default::default() },
+                )]);
+            }
             let mut offers = c.shared.lock().unwrap().offers.clone();
             offers.insert(0, own("sources"));
             c.offer("p", offers);
@@ -6821,8 +6847,21 @@ mod tests {
                 .flatten()
                 .collect();
             let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
-            assert_eq!(jobs.iter().any(|j| j == "inputs inputs/sources"), beside, "{mb} MB: {jobs:?} {why}");
+            assert_eq!(
+                jobs.iter().any(|j| j == "inputs inputs/sources"),
+                beside,
+                "{mb} MB {alone} {costed}: {jobs:?} {why}"
+            );
         }
+        // A floor of an earlier way of its step counts for nothing.
+        let (_d, c, _w, _clock) = every((0, 0));
+        let a = every_ask("m4", "depth", 64_000, 100_000);
+        let ts = vec!["6/1/1".to_string()];
+        let dv = cost_version("depth");
+        c.add_floors(&[(cost_key("depth", "6/1/1"), Floor { mb: 300, alone: true, v: dv - 1 })]);
+        assert!(!c.shared.lock().unwrap().floors_fit("depth", &ts, &a), "a stale floor");
+        c.add_floors(&[(cost_key("depth", "6/1/1"), Floor { mb: 300, alone: true, v: dv })]);
+        assert!(c.shared.lock().unwrap().floors_fit("depth", &ts, &a), "a floor the way it runs now");
     }
 
     /// A failed job of the lead's own (`finish_failed`) is kept from it as a member's failed work is:

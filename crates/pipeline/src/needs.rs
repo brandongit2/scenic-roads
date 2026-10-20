@@ -345,7 +345,7 @@ pub fn mean(v: &[u64]) -> Option<u64> {
 }
 
 /// How many runs the way a step runs now its time prior takes alone (`Book::prior_of`); fewer, its
-/// earlier way's mean stands in when larger.
+/// latest earlier way's mean stands in when larger.
 pub const PRIOR_RUNS: usize = 20;
 
 impl<'a> Book<'a> {
@@ -464,12 +464,14 @@ impl<'a> Book<'a> {
                 let secs: Vec<u64> =
                     self.costs.iter().filter(|(k, c)| of(k) && c.v >= v).map(|(_, c)| c.secs).collect();
                 // (While its runs the way it runs now are few, they are the quick ones: the first to
-                // end. Its earlier way's mean stands in when larger, so its first jobs aren't sized by
+                // end. Its latest earlier way's mean stands in when larger, so its first jobs aren't sized by
                 // them: depth's first 8 runs at version 1 took 14–34 s but one, and jobs of 64 tiles
                 // ran 90 min against `JOB_S`'s quarter hour.)
                 if secs.len() < PRIOR_RUNS {
+                    // (The latest earlier way's runs alone.)
+                    let last = self.costs.iter().filter(|(k, c)| of(k) && c.v < v).map(|(_, c)| c.v).max();
                     let old: Vec<u64> =
-                        self.costs.iter().filter(|(k, c)| of(k) && c.v < v).map(|(_, c)| c.secs).collect();
+                        self.costs.iter().filter(|(k, c)| of(k) && Some(c.v) == last).map(|(_, c)| c.secs).collect();
                     return match (mean(&secs), mean(&old)) {
                         (Some(a), Some(b)) => Some(a.max(b)),
                         (a, b) => a.or(b),
@@ -915,6 +917,13 @@ mod tests {
             costs.insert(format!("depth 6/{i}/2"), Cost { v, ..cost(500, 20, &[]) });
         }
         assert_eq!(Book::new(&costs).prior("depth", Measure::Secs), Some(20), "enough runs: their own mean");
+        // (The latest earlier way's alone: an older one's long runs don't count.)
+        let mut two = BTreeMap::new();
+        two.insert("unit 6/1/1".to_string(), Cost { v: 0, ..cost(500, 5000, &[]) });
+        two.insert("unit 6/1/2".to_string(), Cost { v: 1, ..cost(500, 100, &[]) });
+        two.insert("unit 6/1/3".to_string(), Cost { v: 2, ..cost(500, 50, &[]) });
+        assert_eq!(cost_version("unit"), 2);
+        assert_eq!(Book::new(&two).prior("unit", Measure::Secs), Some(100));
         // (A new way slower than the old: its own, the larger.)
         let mut slow = BTreeMap::new();
         slow.insert("depth 6/1/1".to_string(), Cost { v: v - 1, ..cost(500, 10, &[]) });
