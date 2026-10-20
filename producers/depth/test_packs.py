@@ -68,6 +68,15 @@ class Packs(unittest.TestCase):
                 packs.pack_folder(a, fa)
 
 
+def accept(root: Path, data: bytes, tag: str):
+    """The build's current accepted version of the sources unit: index `s-grids.geojson` as `data`."""
+    acc = root / "sources/inputs/sources"
+    (acc / f"s-grids.{tag}.geojson").write_bytes(data)
+    (acc / f"@index.{tag}.json").write_text(json.dumps({"files": {"s-grids.geojson": {"file": f"sources/inputs/sources/s-grids.{tag}.geojson"}}}))
+    (root / "state").mkdir(exist_ok=True)
+    (root / "state/status.json").write_text(json.dumps({"inputs": [{"unit": "sources", "version": f"sources/inputs/sources/@index.{tag}.json"}]}))
+
+
 class Repack(unittest.TestCase):
     def setup(self, t: Path):
         root, drop, acc = t / "nas", t / "drop", t / "nas/sources/inputs/sources"
@@ -77,7 +86,7 @@ class Repack(unittest.TestCase):
         feats = grids(src)
         (drop / "s.toml").write_text('[data]\nrole = "depth"\nindex = "s-grids.geojson"\n')
         (drop / "s-grids.geojson").write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
-        args = ["s", "--work", str(t / "work"), "--nas", "local", "--nas-root", str(root), "--drop", str(drop), "--accepted", str(acc), "--batch-gb", "0"]
+        args = ["s", "--work", str(t / "work"), "--nas", "local", "--nas-root", str(root), "--drop", str(drop), "--root", str(root), "--batch-gb", "0"]
         return root, drop, acc, src, feats, args
 
     def run_(self, args):
@@ -99,6 +108,7 @@ class Repack(unittest.TestCase):
                 for k in packs.FILE_KEYS:
                     if k in f["properties"]:
                         self.assertEqual(packs.read_member(src, f, k), loose[f["properties"][k]])
+                        self.assertEqual(f["properties"]["at"][k][2], hashlib.sha256(loose[f["properties"][k]]).hexdigest()[:16])
             self.assertFalse((src / ".repack-incoming").exists() and any((src / ".repack-incoming").iterdir()))
             self.assertEqual(list((t / "work/s/out").glob("*.tar")), [], "the local packs deleted once on the NAS")
             # Again (resumed): the same, nothing read again.
@@ -112,8 +122,21 @@ class Repack(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.run_(args + ["--sweep"])
             self.assertTrue(all((src / n).exists() for n in loose))
+            # Taken in, then rolled back (the drop box and the accepted version the loose index
+            # again, an accepted copy of the packed one still there): nothing deleted.
+            accept(root, before, "packed")
+            (drop / "s-grids.geojson").write_bytes(orig)
+            accept(root, orig, "loose")
+            with self.assertRaises(SystemExit):
+                self.run_(args + ["--sweep"])
+            self.assertTrue(all((src / n).exists() for n in loose))
+            # The drop box packed again but the build's version still the loose one: nothing deleted.
+            self.run_(args + ["--adopt"])
+            with self.assertRaises(SystemExit):
+                self.run_(args + ["--sweep"])
+            self.assertTrue(all((src / n).exists() for n in loose))
             # Taken in: swept, the packs alone left.
-            (acc / "s-grids.0123456789abcdef.geojson").write_bytes(before)
+            accept(root, before, "packed")
             self.run_(args + ["--sweep"])
             self.assertFalse(any((src / n).exists() for n in loose))
             self.assertEqual(sorted(p.name for p in src.glob("*.tar")), sorted({f["properties"]["pack"] for f in packed}))
@@ -131,6 +154,9 @@ class Repack(unittest.TestCase):
             self.assertEqual(len(list(src.glob("*.tar"))), 0)
             with self.assertRaises(SystemExit):
                 self.run_(args + ["--box", "-64,44,-63,45", "--dest", str(dest), "--adopt"])
+            # Its --work refuses a real run (its done areas are the trial's folder's).
+            with self.assertRaises(SystemExit):
+                self.run_(args)
 
     def test_a_changed_drop_box_index_stops_a_run(self):
         with tempfile.TemporaryDirectory() as t:

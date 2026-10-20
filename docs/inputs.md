@@ -1370,14 +1370,21 @@ a plain tar (GNU format, its headers' times, owners and modes fixed, so the same
 bytes) of whole GeoTIFFs, holding a source's grids of one z6 tile (the tile of each footprint's
 centre; a tile can have several packs, one per producer run or chunk), named
 `<6-x-y>.<hash16>.tar` (SHA-256 of its bytes). A packed grid's feature names its `pack` and its
-files' byte ranges in it, `at`: `{"file": [offset, length], "zoom_file": […], "low_file": […]}`. The
+files' byte ranges in it and their hashes as packed, `at`: `{"file": [offset, length, hash16],
+"zoom_file": […], "low_file": […]}` (SHA-256's first 16 digits; a range alone is read too). The
 build opens a pack once a job and reads each GeoTIFF in place by its range (crate::depth::grids), so
 its reading and output are a loose file's; `pack` and `at` are left out of the source's digest in the
-depth's keys (`grids::unpacked_digest`), so packing builds nothing again. A feature without `pack`
+depth's keys (`grids::unpacked_digest`), so packing builds nothing again. So a source's pin names
+its grids' depth files by `hash` alone, packed or loose: a zoom or low-water file changed with its
+depth file unchanged changes no key (the loose index never named their contents, so naming the
+packed hashes would rebuild every depth target at adoption). A producer that changes them changes
+the depth file's `hash` too, or a new key is forced by the declaration's `version`. A feature without `pack`
 is a loose file, read as before. The producers pack as they write the index (`grid.Writer`); a
 source's loose grids already on the NAS are packed once by `producers/depth/repack.py` (its
-docstring: by tar over SSH, resumable, the drop box's index replaced only once every pack is on
-the NAS, the loose files deleted only once the build has taken the packed index in).
+docstring: by tar over SSH, resumable, each depth file checked against its `hash` and every
+member's hash recorded, the drop box's index replaced only once every pack is on the NAS at its
+size, the loose files deleted only while both the drop box and the build's current accepted
+version hold the packed index).
 
 **`[data.params]`:** `code` (1–15, the source byte the class tiles carry, one a source), `water`
 (`sea` or `lake`: where it's drawn: a sea source stays off the lakes, a lake source in them),

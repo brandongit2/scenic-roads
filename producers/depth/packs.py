@@ -7,7 +7,8 @@ time, owner and mode fixed, so the same grids give the same bytes) of whole GeoT
 per z6 tile (the tile of each grid's footprint's centre; an area may have several packs, one per
 producer run or chunk), named `<area>.<hash16>.tar` (SHA-256 of its bytes): a depth job reads its
 z6 tile's grids from one file. The index names each grid's pack (`pack`) and its files' byte ranges
-in it (`at`: {"file": [offset, length], "zoom_file": …, "low_file": …}); the build opens a pack once
+in it and their hashes (`at`: {"file": [offset, length, hash16], "zoom_file": …, "low_file": …}: every
+member's bytes recorded as packed, SHA-256's first 16 digits); the build opens a pack once
 and reads each GeoTIFF in place by its range (crate::depth::grids), as it would the loose file.
 """
 from __future__ import annotations
@@ -67,7 +68,7 @@ class PackWriter:
         self.folder.mkdir(parents=True, exist_ok=True)
         self.f = open(self.tmp, "wb")
         self.tar = tarfile.open(fileobj=self.f, mode="w", format=tarfile.GNU_FORMAT)
-        self.at: dict[str, tuple[int, int]] = {}
+        self.at: dict[str, tuple[int, int, str]] = {}
 
     def add(self, name: str, data: bytes):
         if name in self.at:
@@ -76,10 +77,10 @@ class PackWriter:
         ti.size, ti.mtime, ti.mode, ti.uid, ti.gid, ti.uname, ti.gname = len(data), 0, 0o644, 0, 0, "", ""
         start = self.tar.offset + len(ti.tobuf(self.tar.format, self.tar.encoding, self.tar.errors))
         self.tar.addfile(ti, io.BytesIO(data))
-        self.at[name] = (start, len(data))
+        self.at[name] = (start, len(data), hashlib.sha256(data).hexdigest()[:16])
 
-    def finish(self) -> tuple[str, dict[str, tuple[int, int]]]:
-        """The pack's name and each file's (offset, length) in it."""
+    def finish(self) -> tuple[str, dict[str, tuple[int, int, str]]]:
+        """The pack's name and each file's (offset, length, SHA-256's first 16 digits) in it."""
         self.tar.close()
         self.f.flush()
         os.fsync(self.f.fileno())
@@ -93,7 +94,7 @@ class PackWriter:
         return name, self.at
 
 
-def set_packed(feature: dict, pack: str, at: dict[str, tuple[int, int]]):
+def set_packed(feature: dict, pack: str, at: dict[str, tuple[int, int, str]]):
     """Names a feature's pack and its files' ranges in it."""
     p = feature["properties"]
     p["pack"] = pack
@@ -134,14 +135,14 @@ def pack_folder(folder: Path, features: list[dict], delete: bool = True) -> list
 def gdal_path(folder: Path, feature: dict, key: str = "file") -> str:
     """A packed grid's file `key` as GDAL (rasterio) opens it in place: `/vsisubfile/`."""
     p = feature["properties"]
-    off, n = p["at"][key]
+    off, n = p["at"][key][:2]
     return f"/vsisubfile/{off}_{n},{Path(folder) / p['pack']}"
 
 
 def read_member(folder: Path, feature: dict, key: str = "file") -> bytes:
     """A packed grid's file `key`, read from its pack by its range (tests, checks)."""
     p = feature["properties"]
-    off, n = p["at"][key]
+    off, n = p["at"][key][:2]
     with open(Path(folder) / p["pack"], "rb") as f:
         f.seek(off)
         return f.read(n)

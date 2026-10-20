@@ -6,19 +6,24 @@ Run on the M4, from producers/depth. For each source, a z6 area at a time (the o
 lists them in):
 
 1. Its grids are read on the NAS by one `tar` over SSH (one sequential stream, no SMB opens), each
-   depth file checked against its index's `hash`, and written into the area's pack here
-   (`<work>/<id>/out/`).
+   depth file checked against its index's `hash` (the zoom and low-water files have none there),
+   and written into the area's pack here (`<work>/<id>/out/`), every member's hash recorded in the
+   packed index (`at`) and checked again from the pack written.
 2. Every `--batch-gb` of packs, they're tarred over SSH into the source's folder on the NAS
    (`.repack-incoming/` first, sizes compared there, then moved in: a pack is in its folder only
-   whole), the batch's areas recorded done (`<work>/<id>/done.json`: each grid's pack and ranges),
-   and deleted here. A stopped run resumes from there: the same command.
-3. Once every area is done, the packs on the NAS are listed (one `stat` over SSH) and must all be
-   there at their sizes; then the packed index is written (`<work>/<id>/<index>`). `--adopt` copies
+   whole), the batch's areas recorded done (`<work>/<id>/done.json`: each area's pack, its size,
+   and its grids' ranges), and deleted here. A stopped run resumes from there: the same command.
+   done.json names the run's folder on the NAS and box: a --work used for a trial refuses a real
+   run (and the reverse).
+3. Once every area is done, the packs on the NAS are listed (one `ls` over SSH) and must all be
+   there at their recorded sizes; then the packed index is written (`<work>/<id>/<index>`). `--adopt` copies
    it into the drop box (`inputs/sources/`, as `_<index>.repack` then renamed: the build checks and
    takes it in like any edit). Until then the build reads the loose files, untouched.
-4. `--sweep`, once the build has taken the packed index in (an accepted copy in
-   `sources/inputs/sources/` with its bytes): the loose grids it packed are deleted on the NAS (one
-   `xargs rm` over SSH). Never before.
+4. `--sweep`, once the build reads the packed index: the drop box holds exactly its bytes, and the
+   build's current accepted version of the unit (`state/status.json`'s `inputs` entry for
+   `sources`, its `@index`) names an accepted copy with exactly its bytes. Then the loose grids it
+   packed are deleted on the NAS (one `xargs rm` over SSH). Never before, nor after a rollback to
+   the loose index.
 
 The drop box's index is read once and kept (`<work>/<id>/index.orig.geojson`): a run whose drop
 box index changed since stops (start again with a new --work).
@@ -28,6 +33,7 @@ a trial; it never adopts or sweeps.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -166,7 +172,11 @@ def repack(a, sid: str, rem: Remote) -> Path | None:
     src = f"{a.nas_root}/sources/fetched/{sid}"
     dest = f"{a.dest}/{sid}" if a.dest else src
     done_path = work / "done.json"
-    done = json.loads(done_path.read_text()) if done_path.exists() else {}  # area → {file: [pack, at]}
+    run = {"dest": dest, "box": a.box}
+    saved = json.loads(done_path.read_text()) if done_path.exists() else {"run": run, "areas": {}}
+    if saved.get("run") != run:
+        raise SystemExit(f"{sid}: {done_path} is a run's into {saved.get('run')}, not {run}: use another --work")
+    done = saved["areas"]  # area → {"pack", "size", "files": {file: at}}
     areas = by_area(feats)
     todo = [k for k in areas if k not in done]
     nfiles = sum(len(names(f)) for k in todo for f in areas[k])
@@ -179,8 +189,9 @@ def repack(a, sid: str, rem: Remote) -> Path | None:
             return
         upload(rem, out, dest, [p for _, p, _ in batch])
         for k, p, at in batch:
-            done[k] = {f["properties"]["file"]: [p, {kk: list(at[f["properties"][kk]]) for kk in FILE_KEYS if kk in f["properties"]}] for f in areas[k]}
-        write_json(done_path, done)
+            files = {f["properties"]["file"]: {kk: list(at[f["properties"][kk]]) for kk in FILE_KEYS if kk in f["properties"]} for f in areas[k]}
+            done[k] = {"pack": p, "size": (out / p).stat().st_size, "files": files}
+        write_json(done_path, {"run": run, "areas": done})
         for _, p, _ in batch:
             (out / p).unlink()
         log(f"{sid}: {len(done)}/{len(areas)} areas on the NAS")
@@ -190,6 +201,7 @@ def repack(a, sid: str, rem: Remote) -> Path | None:
         w = PackWriter(out, k)
         read_area(rem, src, areas[k], w)
         p, at = w.finish()
+        verify(out / p, at)
         size = (out / p).stat().st_size
         read_bytes += size
         read_files += len(at)
@@ -204,12 +216,13 @@ def repack(a, sid: str, rem: Remote) -> Path | None:
         dt = time.time() - t0
         log(f"{sid}: read {read_files} files, {read_bytes / 1e6:.1f} MB in {dt:.1f} s ({read_files / max(dt, 1e-9):.1f} files/s, {read_bytes / 1e6 / max(dt, 1e-9):.2f} MB/s)")
     # Every pack on the NAS whole, then the packed index.
-    packs = sorted({v[0] for area in done.values() for v in area.values()})
+    want = {d["pack"]: d["size"] for d in done.values()}
+    packs = sorted(want)
     sizes = rem.sizes(dest, packs)
-    missing = [p for p in packs if p not in sizes]
-    if missing:
-        raise SystemExit(f"{sid}: {len(missing)} packs not on the NAS ({missing[:3]}): run again")
-    byfile = {f: v for area in done.values() for f, v in area.items()}
+    bad = [p for p in packs if sizes.get(p) != want[p]]
+    if bad:
+        raise SystemExit(f"{sid}: {len(bad)} packs not on the NAS at their sizes ({bad[:3]}): run again")
+    byfile = {f: (d["pack"], at) for d in done.values() for f, at in d["files"].items()}
     for f in feats:
         v = byfile.get(f["properties"]["file"])
         if v is None and "pack" not in f["properties"]:
@@ -237,19 +250,38 @@ def adopt(a, sid: str, packed: Path):
     log(f"{sid}: {a.drop / name} is the packed index now (the build checks and takes it in)")
 
 
+def verify(pack: Path, at: dict[str, tuple[int, int, str]]):
+    """Every member of a pack written read back by its range against its recorded hash."""
+    with open(pack, "rb") as f:
+        for n, (off, ln, h) in at.items():
+            f.seek(off)
+            if hashlib.sha256(f.read(ln)).hexdigest()[:16] != h:
+                raise SystemExit(f"{pack}: {n} isn't as read")
+
+
 def taken_in(a, sid: str, packed: Path) -> bool:
-    """Whether the build has an accepted copy of the packed index (sources/inputs/sources/<stem>.*)."""
+    """Whether the build reads the packed index now: the drop box holds its bytes, and the unit's
+    current accepted version (state/status.json's `sources` entry, its @index) names a copy with
+    its bytes."""
     name = index_name(a.drop, sid)
-    stem = name.removesuffix(".geojson")
     want = packed.read_bytes()
-    acc = a.accepted
-    return any(p.stat().st_size == len(want) and p.read_bytes() == want for p in acc.glob(f"{stem}.*.geojson"))
+    if (a.drop / name).read_bytes() != want:
+        return False
+    try:
+        status = json.loads((a.root / "state/status.json").read_text())
+    except (OSError, ValueError):
+        return False
+    ver = [u.get("version") for u in status.get("inputs", []) if u.get("unit") == "sources"]
+    if len(ver) != 1 or not ver[0]:
+        return False
+    acc = json.loads((a.root / ver[0]).read_text())["files"].get(name)
+    return acc is not None and (a.root / acc["file"]).read_bytes() == want
 
 
 def sweep(a, sid: str, packed: Path, rem: Remote):
     """The loose grids the packed index no longer names deleted on the NAS, once it's taken in."""
     if not taken_in(a, sid, packed):
-        raise SystemExit(f"{sid}: the build hasn't taken the packed index in yet (no accepted copy in {a.accepted}): not swept")
+        raise SystemExit(f"{sid}: the build doesn't read the packed index (the drop box's, or its current accepted version's, isn't it): not swept")
     feats = json.loads(packed.read_text())["features"]
     if any("pack" not in f["properties"] for f in feats):
         raise SystemExit(f"{sid}: some grids aren't packed: not swept")
@@ -266,7 +298,7 @@ def main(argv=None):
     ap.add_argument("--nas", default=NAS, help='"local": the commands run here (tests)')
     ap.add_argument("--nas-root", default=NAS_ROOT)
     ap.add_argument("--drop", type=Path, default=MOUNT / "inputs/sources", help="the drop box (indexes, declarations)")
-    ap.add_argument("--accepted", type=Path, default=MOUNT / "sources/inputs/sources", help="the build's accepted copies")
+    ap.add_argument("--root", type=Path, default=MOUNT, help="the build's root (state/status.json, the accepted copies)")
     ap.add_argument("--dest", help="a trial: the packs go to <dest>/<id> on the NAS (a scratch folder), not the source folder")
     ap.add_argument("--box", help="w,s,e,n: only the grids meeting it (a trial)")
     ap.add_argument("--batch-gb", type=float, default=2.0)
