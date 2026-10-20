@@ -56,6 +56,7 @@ The lead Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the ma
 ## Docs
 
 - The design: `docs/surface.md` (what the user sees and does), `docs/building.md` (units, jobs, the scheduler and its order), `docs/storage.md` (the NAS), `docs/macs.md` (each Mac's agent, server and mirror), `docs/regions.md` (coverage and regions), `docs/steps.md` (each step in detail, its keys), `docs/names.md` (names and descriptions), `docs/sizes.md`. Phases, known gaps, risks and decisions are on the task board.
+- `docs/diagram/`: the pipeline diagram (`python3 page.py out.html`, then republish out.html to https://claude.ai/artifact/PrjaaDXLuuXGpGr2xt5Vjg).
 - `docs/pipeline.md`: every build step as one row of one table (the concepts, the names, the checklist, the build page).
 - `docs/formats.md`: the files.
 - `docs/inputs.md`: the input drop boxes and their checks.

@@ -947,7 +947,8 @@ def fill_tile(job):
     mi, mq = subset(own & bld & ~m0 & ~f1, None)
     di2, d2 = subset(bld & (m0 | f1), np.where(m0, h, h1))
     r_map = rule2(mq, d2, False)
-    del mq, d2, di2
+    del mq, d2, di2, subset
+    X = Y = cosl = mo = None  # the per-building arrays freed (a del here reads to pyflakes as a closure use after del)
 
     # GHSL and size, for the tile's own buildings.
     oi = np.flatnonzero(own & bld)

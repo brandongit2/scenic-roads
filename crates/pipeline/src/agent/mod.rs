@@ -77,7 +77,7 @@ pub struct Options {
     pub dry_run: bool,
     /// One loop, then exit (tests, `scenic agent --once`).
     pub once: bool,
-    /// A helper on another Mac (`scenic agent --helper`, docs/building.md §2, Two Macs): it plans
+    /// A helper on another Mac (`scenic agent --helper`, docs/building.md §2, The pool): it plans
     /// nothing, but asks the lead's coordinator (crate::coord) for work that fits it, and
     /// reports to `state/helpers/<host>.json`, never the heartbeat.
     pub helper: bool,

@@ -221,7 +221,7 @@ impl AppState {
         let own: Option<serde_json::Value> =
             std::fs::read(self.home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let fresh = own.as_ref().and_then(|v| v["beat"].as_u64()).is_some_and(|b| now.saturating_sub(b) < 120);
-        // A helper on this Mac (docs/building.md §2, Two Macs; a pool's member): its own status, fresh.
+        // A helper on this Mac (docs/building.md §2, The pool; a pool's member): its own status, fresh.
         let helper: Option<serde_json::Value> = std::fs::read(self.home.join("agent/helper.json"))
             .ok()
             .and_then(|b| serde_json::from_slice(&b).ok())

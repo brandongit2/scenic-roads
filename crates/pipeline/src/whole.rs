@@ -1,4 +1,4 @@
-//! Files kept whole (docs/storage.md, Downloads). What's written to the NAS's stores, or copied from
+//! Files kept whole (docs/macs.md, Downloads). What's written to the NAS's stores, or copied from
 //! them to a Mac's cache, goes by a temporary name (this Mac's name and the process's, so two Macs
 //! never share one), is flushed to the disk and has its length checked before the rename: a write
 //! cut short never takes the file's name. (The build agent's caches are made through
