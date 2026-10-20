@@ -945,7 +945,13 @@ impl Shared {
                 }
                 let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
                 let n = self.job_need(&o.step, &ts);
-                if beside && !matches!(n, Some((_, Some(c))) if self.packed_cores(&o.step, &ts, c, share) <= cores) {
+                // (A cold job of the lead's own whose floors fit: beside, on a core, `floors_fit`.)
+                let floored =
+                    n.is_none_or(|(_, c)| c.is_none()) && o.job.is_some() && self.floors_fit(&o.step, &ts, &room_o);
+                if beside
+                    && !floored
+                    && !matches!(n, Some((_, Some(c))) if self.packed_cores(&o.step, &ts, c, share) <= cores)
+                {
                     if short.is_none() {
                         let need = n.and_then(|(_, c)| c).map_or(0, |c| self.packed_cores(&o.step, &ts, c, share));
                         short = Some((o.step.clone(), need));
@@ -1052,6 +1058,16 @@ impl Shared {
             && self.own_open(o, a, now)
             && self.own_nas_fits(o, now, true)
             && self.job_need(&o.step, &ts).is_none()
+            && !self.floors_fit(&o.step, &ts, a)
+    }
+
+    /// Whether every target of `ts` has a floor of `step` the memory guard measured
+    /// (crate::agent::memguard: the most a run of it took) within what `a` spares: a step that never
+    /// noted a cost (the input checks' before task #445) is so measured by its runs all the same,
+    /// and goes beside running jobs instead of waiting for its Mac to run nothing, which with
+    /// long jobs may never come.
+    fn floors_fit(&self, step: &str, ts: &[String], a: &Ask) -> bool {
+        !ts.is_empty() && ts.iter().all(|t| self.floors.get(&cost_key(step, t)).is_some_and(|f| f.mb <= a.mem_mb))
     }
 
     /// Whether the NAS budget has room for the lead's own planned job of offer `o`: its weight
@@ -1098,7 +1114,7 @@ impl Shared {
         let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
         let fits = match self.job_need(&o.step, &ts) {
             Some((m, _)) => m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d),
-            None => self.job_leases(&a.worker, now).is_empty(),
+            None => self.job_leases(&a.worker, now).is_empty() || self.floors_fit(&o.step, &ts, a),
         };
         // (The budget asked last: its wait noted only when the job would go but for it.)
         if !fits || !self.own_nas_fits(o, now, false) {
@@ -6773,6 +6789,40 @@ mod tests {
         assert_eq!(g.job.as_deref(), Some("catalog catalog"));
         assert!(g.more.is_empty(), "a cold start alone");
         assert!(why(&c).contains("a cold start of catalog runs alone"), "{}", why(&c));
+    }
+
+    /// Task #445: a cold job of the lead's own whose targets' floors the memory guard measured (an
+    /// input check, which noted no cost) goes beside the lead's running jobs when they fit its room,
+    /// instead of waiting for them all to end; one whose floor doesn't fit still waits.
+    #[test]
+    fn a_cold_job_of_the_leads_own_with_floors_goes_beside() {
+        let own = |unit: &str| Offer {
+            step: "inputs".into(),
+            targets: vec![(format!("inputs/{unit}"), "k".into(), 0)],
+            job: Some(format!("inputs inputs/{unit}")),
+        };
+        for (mb, beside) in [(340, true), (90_000, false)] {
+            let (_d, c, _w, _clock) = every((0, 0));
+            packable(&c, "slope", 4, Some(1));
+            c.add_floors(&[(cost_key("inputs", "inputs/sources"), Floor { mb, alone: true, v: 0 })]);
+            let mut offers = c.shared.lock().unwrap().offers.clone();
+            offers.insert(0, own("sources"));
+            c.offer("p", offers);
+            let a = Ask {
+                want: 4,
+                can: vec!["slope".into(), "inputs".into()],
+                ..every_ask("m4", "slope", 64_000, 100_000)
+            };
+            let _held = c.hold("slope", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
+            let g = c.ask_own(&a, &BTreeSet::new());
+            let jobs: Vec<String> = g
+                .iter()
+                .flat_map(|g| std::iter::once(g.job.clone()).chain(g.more.iter().map(|m| m.job.clone())))
+                .flatten()
+                .collect();
+            let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
+            assert_eq!(jobs.iter().any(|j| j == "inputs inputs/sources"), beside, "{mb} MB: {jobs:?} {why}");
+        }
     }
 
     /// A failed job of the lead's own (`finish_failed`) is kept from it as a member's failed work is:

@@ -344,6 +344,10 @@ pub fn mean(v: &[u64]) -> Option<u64> {
     (!v.is_empty()).then(|| v.iter().sum::<u64>().div_ceil(v.len() as u64))
 }
 
+/// How many runs the way a step runs now its time prior takes alone (`Book::prior_of`); fewer, its
+/// earlier way's mean stands in when larger.
+pub const PRIOR_RUNS: usize = 20;
+
 impl<'a> Book<'a> {
     /// A Book over `costs` alone, keeping its own models.
     pub fn new(costs: &'a BTreeMap<String, Cost>) -> Self {
@@ -459,6 +463,18 @@ impl<'a> Book<'a> {
             Measure::Secs => {
                 let secs: Vec<u64> =
                     self.costs.iter().filter(|(k, c)| of(k) && c.v >= v).map(|(_, c)| c.secs).collect();
+                // (While its runs the way it runs now are few, they are the quick ones: the first to
+                // end. Its earlier way's mean stands in when larger, so its first jobs aren't sized by
+                // them: depth's first 8 runs at version 1 took 14–34 s but one, and jobs of 64 tiles
+                // ran 90 min against `JOB_S`'s quarter hour.)
+                if secs.len() < PRIOR_RUNS {
+                    let old: Vec<u64> =
+                        self.costs.iter().filter(|(k, c)| of(k) && c.v < v).map(|(_, c)| c.secs).collect();
+                    return match (mean(&secs), mean(&old)) {
+                        (Some(a), Some(b)) => Some(a.max(b)),
+                        (a, b) => a.or(b),
+                    };
+                }
                 return mean(&secs);
             }
             Measure::Disk => self.disks.into_iter().flatten().filter(|(k, _)| of(k)).map(|(_, d)| *d).collect(),
@@ -880,6 +896,30 @@ mod tests {
         assert_eq!(b.secs_p90("peaks", "6/99/1", 0), Some(1200));
         assert_eq!(b.secs_p90("peaks", "6/1/1", 0), Some(100), "a measured one its own");
         assert_eq!(b.secs_p90("pois", "6/1/1", 0), None);
+    }
+
+    /// Task #445: while a step's runs the way it runs now are fewer than `PRIOR_RUNS` (the quick
+    /// ones, first to end), its earlier way's mean stands in when larger; past them, theirs alone.
+    #[test]
+    fn a_new_ways_first_quick_runs_dont_shrink_the_time_prior() {
+        let v = cost_version("depth");
+        let mut costs = BTreeMap::new();
+        for i in 1..=40u64 {
+            costs.insert(format!("depth 6/{i}/1"), Cost { v: v - 1, ..cost(500, 216, &[]) });
+        }
+        for i in 1..=8u64 {
+            costs.insert(format!("depth 6/{i}/2"), Cost { v, ..cost(500, 20, &[]) });
+        }
+        assert_eq!(Book::new(&costs).prior("depth", Measure::Secs), Some(216), "8 quick runs: the earlier way's");
+        for i in 9..=PRIOR_RUNS as u64 {
+            costs.insert(format!("depth 6/{i}/2"), Cost { v, ..cost(500, 20, &[]) });
+        }
+        assert_eq!(Book::new(&costs).prior("depth", Measure::Secs), Some(20), "enough runs: their own mean");
+        // (A new way slower than the old: its own, the larger.)
+        let mut slow = BTreeMap::new();
+        slow.insert("depth 6/1/1".to_string(), Cost { v: v - 1, ..cost(500, 10, &[]) });
+        slow.insert("depth 6/1/2".to_string(), Cost { v, ..cost(500, 300, &[]) });
+        assert_eq!(Book::new(&slow).prior("depth", Measure::Secs), Some(300));
     }
 
     /// A poor fit takes the step's prior (its 90th percentile, not one outlier); one never measured

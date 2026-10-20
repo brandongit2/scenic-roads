@@ -499,10 +499,13 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
   gets no job beside those it holds, and its refusal says the cores busy outside the pool), less the measured needs of every job it holds and of those granted
   with it. A lease counts until it ends or lapses: a restarted Mac's old leases hold its room
   until their TTL runs out. A cold start goes only to a Mac holding no lease, alone, and nothing
-  goes beside one. With placement on, a member holding a job whose cores, as its last ask
+  goes beside one; but a cold job of the lead's own whose targets each have a floor the memory
+  guard measured within the room left goes beside its running jobs (`floors_fit`: the input
+  checks, which noted no cost before task #445, waited hours for a Mac running nothing). With placement on, a member holding a job whose cores, as its last ask
   showed, are filled by load from outside the pool with its jobs' (`Shared::swamped`; its own
   jobs alone filling them don't count) isn't among those a target is drawn to: the others take it. Each job is as many targets as fit a quarter hour (`JOB_S`) by their measured
-  times, a step kept to the lead in one job. The agent starts every job granted, each in a slot of
+  times (an unmeasured target's: its step's mean, the earlier way's when larger while the way it
+  runs now has fewer than `needs::PRIOR_RUNS` runs, those being the quick ones first to end), a step kept to the lead in one job. The agent starts every job granted, each in a slot of
   its own; the slots past the first two are made as jobs are granted and dropped once empty. Each
   slot has its own files in the agent's folder (`job-<k>.json`, `control-<k>`, `costs-<k>.jsonl`,
   `done-<k>.txt`, …, the first slot's without a number) and scratch folder (`scratch-<k>/`), and

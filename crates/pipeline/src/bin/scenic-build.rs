@@ -231,8 +231,12 @@ fn inputs_step(out: &mut Out, args: &[String]) -> Result<()> {
             &out.scratch_file("lint"),
         ));
     }
+    // (Its cost noted, as every step's: measured, a check goes beside running jobs, crate::coord.)
+    let target = format!("inputs/{unit}");
+    let c = cost_start("inputs", &target);
     let said = pipeline::inputs::gate::run(out, &unit, args.iter().any(|a| a == "--full"), planned)?;
     eprintln!("inputs: {said}");
+    note_cost("inputs", &target, c);
     Ok(())
 }
 
