@@ -4648,6 +4648,16 @@ impl Agent {
             (Some(_), None) if for_update_only => Some(self.update_wait(k)),
             _ => None,
         };
+        // (A quiet step's job, the clean-up, yields the NAS at its next safe point to a job held
+        // back for it long, which it alone keeps out: never urgent, docs/pool.md §7.7, task #451.)
+        let nas_yield = self.slots[k].running.as_ref().and_then(|r| {
+            let step = step_of(&r.spec.id)?;
+            if !crate::budget::nas::QUIET_STEPS.contains(&step.as_str()) {
+                return None;
+            }
+            let ts: Vec<String> = own_targets(&r.spec).into_iter().map(|t| t.0).collect();
+            self.coord.as_ref()?.nas_yield(&step, &ts)
+        });
         let slot = &mut self.slots[k];
         let r = slot.running.as_mut().unwrap();
         // (The memory guard's drain holds whatever else stops it: asked through its channel, timed
@@ -4665,6 +4675,7 @@ impl Agent {
         match stop_for(&r.spec.needs, c, pause.as_ref())
             .or_else(|| slot.mem_drain.clone().map(|why| (crate::control::Mode::Drain, why)))
             .or_else(|| update.clone().map(|why| (crate::control::Mode::Drain, why)))
+            .or_else(|| nas_yield.map(|why| (crate::control::Mode::Drain, why)))
         {
             Some((crate::control::Mode::Freeze, why)) => {
                 if r.paused.is_none() {
@@ -12001,7 +12012,8 @@ mod tests {
         assert!(a.ramp_trouble.is_none() && a.ramp_held);
         // The NAS probed: its slots as reached; the stretch, old enough and run at its slots
         // before the hold, grows them at once.
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         a.coord.as_ref().unwrap().set_nas(Some(limits));
         a.tend_ramp();
         assert!(!a.ramp_held);

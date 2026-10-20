@@ -208,6 +208,7 @@ pub fn inputs_kept(
         };
         for e in rd {
             let e = e.with_context(|| format!("list {}", dir.display()))?;
+            meta(1, 0, 0);
             if e.file_type()?.is_dir() {
                 stack.push(e.path());
                 continue;
@@ -220,6 +221,7 @@ pub fn inputs_kept(
             else {
                 continue;
             };
+            meta(0, 1, 0);
             let young =
                 e.metadata()?.modified().ok().is_some_and(|t| now.duration_since(t).map_or(true, |d| d <= within));
             if !young {
@@ -239,7 +241,74 @@ pub fn inputs_kept(
     Ok(keep)
 }
 
+/// The clean-up's step and target, as its costs file names them (`note_cost`; crate::coord::cost_key:
+/// `gc gc`, as the lead offers its own job of no targets, the id's rest its target).
+pub const STEP: &str = "gc";
+
+/// When this process's run began (`run`), for its cost line's time.
+static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Notes what this run cost so far in the job's costs file (`SCENIC_COSTS`, as scenic-build's steps
+/// do): its NAS work (crate::costin: bytes read, and the folder entries listed, files statted and
+/// deleted, `meta`) over its time, its memory: the clean-up's NAS weight (crate::budget::nas) as the
+/// coordinator weighs it from then on, measured, never guessed (docs/pool.md §7.7, task #451).
+pub fn note_cost() {
+    let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
+    let secs = STARTED.get().map_or(0, |t| t.elapsed().as_secs());
+    let line = serde_json::json!({
+        "unit": crate::coord::cost_key(STEP, STEP),
+        "peak_mb": crate::sys::group_peak() >> 20,
+        "secs": secs,
+        "v": crate::coord::cost_version(STEP),
+        "sizes": crate::costin::take(),
+    });
+    let r = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
+    if let Err(e) = r {
+        eprintln!("gc: noting what it cost: {e}");
+    }
+}
+
+/// A safe point between folders: asked to stop (the build pausing, or the agent yielding the NAS
+/// to jobs long held back for it, docs/pool.md §7.7), it notes its cost and ends as paused; what it
+/// removed is gone for good and the rest waits for its next run (each removal stands alone).
+fn yield_point() {
+    if crate::control::draining() {
+        note_cost();
+        crate::control::stop_paused(STEP);
+    }
+}
+
+thread_local! {
+    /// Whether this run notes its NAS work (`SCENIC_COSTS` set as `run` began: a job's). Its walks
+    /// run on the thread that called `run`.
+    static COUNTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Counts NAS metadata work (crate::costin::meta) while this process notes it (`COUNTING`).
+fn meta(listed: u64, stats: u64, deletes: u64) {
+    if COUNTING.get() {
+        crate::costin::meta(listed, stats, deletes);
+    }
+}
+
+/// `run_once`, its NAS work counted from its start and noted as it ends (`note_cost`), in a job
+/// (`SCENIC_COSTS` set).
 pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
+    STARTED.get_or_init(std::time::Instant::now);
+    if std::env::var_os("SCENIC_COSTS").is_some() {
+        COUNTING.set(true);
+        crate::costin::begin();
+    }
+    let r = run_once(root, keep_days, dry_run);
+    note_cost();
+    r
+}
+
+fn run_once(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     use crate::timings::{phase, Class};
     let keep = Duration::from_secs(keep_days * 86400);
     let now = SystemTime::now();
@@ -260,6 +329,7 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     let mut in_window: BTreeSet<u64> = BTreeSet::new();
     for &n in &ns {
         let p = store::catalog::path_n(&cat_dir, n).with_context(|| format!("catalog {n} gone meanwhile"))?;
+        meta(0, 1, 0);
         let mtime =
             std::fs::metadata(&p).and_then(|m| m.modified()).with_context(|| format!("stat {}", p.display()))?;
         if n == latest || !old(mtime) {
@@ -340,12 +410,14 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     // (Listing the folders and removing what's due, file by file: one phase, the removals counted.)
     let sweep = phase("folders swept", Class::NasWrite);
     for (k, top) in tops.iter().enumerate() {
+        yield_point();
         crate::agent::jobs::within(k as f64 / tops.len() as f64);
         let mut stack = vec![root.join(top)];
         while let Some(dir) = stack.pop() {
             let Ok(rd) = std::fs::read_dir(&dir) else { continue };
             for e in rd.flatten() {
                 let p = e.path();
+                meta(1, 1, 0);
                 let Ok(md) = e.metadata() else { continue };
                 if md.is_dir() {
                     stack.push(p);
@@ -392,9 +464,11 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         let _p = phase("the inputs' copies swept", Class::NasWrite);
         let mut stack = vec![root.join("sources/inputs")];
         while let Some(dir) = stack.pop() {
+            yield_point();
             let Ok(rd) = std::fs::read_dir(&dir) else { continue };
             for e in rd.flatten() {
                 let p = e.path();
+                meta(1, 1, 0);
                 let Ok(md) = e.metadata() else { continue };
                 if md.is_dir() {
                     stack.push(p);
@@ -454,6 +528,7 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                 .collect();
             dates.sort();
             for d in dates {
+                yield_point();
                 let dir = root.join("sources").join(kind).join(&d);
                 sweep_retired(root, &dir, &referenced, &old, plain_due, dry_run, &mut rep)?;
             }
@@ -484,6 +559,7 @@ fn sweep_retired(
         let Ok(rd) = std::fs::read_dir(&d) else { continue };
         for e in rd.flatten() {
             let p = e.path();
+            meta(1, 1, 0);
             let Ok(md) = e.metadata() else { continue };
             if md.is_dir() {
                 stack.push(p.clone());
@@ -524,7 +600,9 @@ fn sweep_retired(
     // Deepest first: a folder emptied above may let its parent go too.
     dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
     for d in dirs {
+        meta(1, 0, 0);
         if std::fs::read_dir(&d).is_ok_and(|mut rd| rd.next().is_none()) && !dry_run {
+            meta(0, 0, 1);
             std::fs::remove_dir(&d).ok();
         }
     }
@@ -534,6 +612,7 @@ fn sweep_retired(
 /// Whether file `p` is still old by a fresh look at its time (not the listing's: a job reusing a
 /// content-named file touches it, and GC's listing may be minutes old by the time it gets there).
 fn still_old(p: &Path, old: &dyn Fn(SystemTime) -> bool) -> bool {
+    meta(0, 1, 0);
     std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).is_some_and(old)
 }
 
@@ -567,6 +646,7 @@ fn put_back(tomb: &Path, dry_run: bool, rep: &mut Report) {
 /// tombstone goes. (A replacing rename would put the tombstone's old time over the new upload's,
 /// for the next run to remove.)
 fn restore(tomb: &Path, name: &Path) -> std::io::Result<()> {
+    meta(0, 0, 1);
     match store::naming::rename_no_replace(tomb, name) {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => std::fs::remove_file(tomb),
         r => r,
@@ -586,6 +666,8 @@ fn remove_unless_touched(p: &Path, old: &dyn Fn(SystemTime) -> bool, dry_run: bo
     tomb.push(TOMB);
     let tomb = PathBuf::from(tomb);
     // (Not renamed aside, for whatever reason: kept this run, as a young file is.)
+    // (A rename and a removal: each a metadata write, counted as a delete.)
+    meta(0, 0, 1);
     if let Err(e) = std::fs::rename(p, &tomb) {
         if e.kind() != std::io::ErrorKind::NotFound {
             eprintln!("gc: {} not set aside ({e}): kept this run", p.display());
@@ -593,6 +675,7 @@ fn remove_unless_touched(p: &Path, old: &dyn Fn(SystemTime) -> bool, dry_run: bo
         return Ok(false);
     }
     if still_old(&tomb, old) {
+        meta(0, 0, 1);
         return match std::fs::remove_file(&tomb) {
             Ok(()) => Ok(true),
             // (Another GC put it back meanwhile: kept.)
@@ -616,6 +699,7 @@ fn remove(p: &Path, dry_run: bool) -> Result<()> {
         eprintln!("gc: would remove {}", p.display());
         return Ok(());
     }
+    meta(0, 0, 1);
     std::fs::remove_file(p).with_context(|| format!("remove {}", p.display()))
 }
 
@@ -659,6 +743,40 @@ mod tests {
         assert!(root.join("layers/roads/hi/6-1-3.1111111111111111.pack").exists());
         assert!(root.join("sources/osm/x.3333333333333333.osm.pbf").exists());
         assert!(root.join("layers/roads/README").exists());
+    }
+
+    /// Task #451: a run in a job counts its NAS metadata work (crate::costin: `listed`, `stats`,
+    /// `deletes`), its weight beside its bytes; outside one (no `SCENIC_COSTS`) nothing.
+    #[test]
+    fn a_run_counts_its_listings_stats_and_deletes() {
+        let _l = crate::costin::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        for (rel, days) in [("layers/a/6-1-2.0123456789abcdef.pack", 30), ("layers/a/6-1-3.fedcba9876543210.pack", 30)]
+        {
+            let p = root.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, b"x").unwrap();
+            age(&p, days);
+        }
+        let mut cat = store::catalog::Catalog::new(1);
+        cat.files.insert(
+            "layers/a/6-1-2".into(),
+            store::catalog::FileRef { file: "layers/a/6-1-2.0123456789abcdef.pack".into(), ..Default::default() },
+        );
+        store::catalog::write(&root.join("catalog"), &cat).unwrap();
+        crate::costin::begin();
+        COUNTING.set(true);
+        let r = run_once(root, 14, false).unwrap();
+        COUNTING.set(false);
+        let m = crate::costin::take();
+        assert_eq!(r.removed, 1);
+        assert!(m["listed"] >= 2 && m["stats"] >= 3, "{m:?}");
+        // (Its rename aside and its removal.)
+        assert_eq!(m["deletes"], 2, "{m:?}");
+        crate::costin::begin();
+        meta(5, 5, 5);
+        assert!(!crate::costin::take().contains_key("listed"), "not in a job: not counted");
     }
 
     #[test]

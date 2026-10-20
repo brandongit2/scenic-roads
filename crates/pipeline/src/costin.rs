@@ -9,7 +9,8 @@
 //! from the NAS and the seconds that took, the same on each of its targets), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
 //! (the target's area: terrain, slope, trees and their assemblies, the units' elevations), and,
 //! where the job wrote to the NAS through its `Out` (crate::out), `wrote` (the bytes of the files
-//! it made there) and `creates` (how many): with `bytes`, the target's NAS weight
+//! it made there) and `creates` (how many), and its NAS metadata work (`meta`: `listed`, `stats`,
+//! `deletes`, task #451): with `bytes`, the target's NAS weight
 //! (crate::needs::Book::nas, crate::budget::nas).
 
 use std::collections::BTreeMap;
@@ -61,6 +62,18 @@ pub fn wrote(bytes: u64) {
     let mut s = state();
     *s.m.entry("wrote".into()).or_default() += bytes;
     *s.m.entry("creates".into()).or_default() += 1;
+}
+
+/// Counts NAS metadata work (task #451): `listed` folder entries listed, `stats` files statted,
+/// `deletes` files deleted, for its weight beside its bytes and creates (crate::budget::nas). A
+/// walk that only lists, stats and removes (GC's) reads and writes next to nothing.
+pub fn meta(listed: u64, stats: u64, deletes: u64) {
+    let mut s = state();
+    for (k, n) in [("listed", listed), ("stats", stats), ("deletes", deletes)] {
+        if n > 0 {
+            *s.m.entry(k.into()).or_default() += n;
+        }
+    }
 }
 
 /// Sets measure `key` to `n`.
@@ -211,6 +224,12 @@ mod tests {
         wrote(5);
         let m = take();
         assert_eq!((m["wrote"], m["creates"]), (15, 2));
+        begin();
+        meta(10, 3, 0);
+        meta(5, 0, 2);
+        let m = take();
+        // (At least: other tests' walks may count meanwhile, this process's measures shared.)
+        assert!(m["listed"] >= 15 && m["stats"] >= 3 && m["deletes"] >= 2, "{m:?}");
         begin();
         assert!(!take().contains_key("ways"));
     }

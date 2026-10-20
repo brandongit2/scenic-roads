@@ -312,7 +312,8 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
     })
 }
 
-/// A run's NAS rate (`bytes` plus `wrote`, and `creates`, over its time), when it was measured the
+/// A run's NAS rate (`bytes` plus `wrote`, and `creates`, over its time; its metadata work,
+/// `listed`, `stats` and `deletes`, likewise), when it was measured the
 /// way its step runs now and says its `bytes`. A `HALO_STEPS` step's reads are its job's, not its
 /// own: `nas_read` over `nas_secs` (the job's reads and the time they took, the same on each of its
 /// targets), beside what it writes over its own time; a measure without `nas_secs` (task #396's
@@ -326,8 +327,13 @@ fn nas_rate(step: &str, c: &Cost) -> Option<crate::budget::nas::Rate> {
     } else {
         g("bytes") / secs
     };
-    (c.v >= cost_version(step) && c.sizes.contains_key("bytes"))
-        .then(|| crate::budget::nas::Rate { bytes_s: read_s + g("wrote") / secs, creates_s: g("creates") / secs })
+    (c.v >= cost_version(step) && c.sizes.contains_key("bytes")).then(|| crate::budget::nas::Rate {
+        bytes_s: read_s + g("wrote") / secs,
+        creates_s: g("creates") / secs,
+        listed_s: g("listed") / secs,
+        stats_s: g("stats") / secs,
+        deletes_s: g("deletes") / secs,
+    })
 }
 
 /// The 90th percentile (nearest rank); None with none.
@@ -610,7 +616,13 @@ impl<'a> Book<'a> {
         let p = |f: fn(&crate::budget::nas::Rate) -> f64| {
             p90(runs.iter().map(|r| (f(r) * 1000.0).ceil() as u64).collect()).map(|x| x as f64 / 1000.0)
         };
-        Some(crate::budget::nas::Rate { bytes_s: p(|r| r.bytes_s)?, creates_s: p(|r| r.creates_s)? })
+        Some(crate::budget::nas::Rate {
+            bytes_s: p(|r| r.bytes_s)?,
+            creates_s: p(|r| r.creates_s)?,
+            listed_s: p(|r| r.listed_s)?,
+            stats_s: p(|r| r.stats_s)?,
+            deletes_s: p(|r| r.deletes_s)?,
+        })
     }
 
     /// What a job of `step` for `target` needs, given `threads` (0: not said) and `guess`, the memory
@@ -780,7 +792,10 @@ mod tests {
         }
         costs.insert(cost_key("lo", "3/1/1"), cost(100, 5, &[("threads", 2)]));
         let b = Book::new(&costs);
-        assert_eq!(b.nas("slope", "6/1/1"), Some(crate::budget::nas::Rate { bytes_s: 100.0, creates_s: 0.5 }));
+        assert_eq!(
+            b.nas("slope", "6/1/1"),
+            Some(crate::budget::nas::Rate { bytes_s: 100.0, creates_s: 0.5, ..Default::default() })
+        );
         // (Rates 20..110, and 100 the first's: the 90th percentile of 11 the 10th, 100.)
         assert_eq!(b.nas("slope", "6/9/9").map(|r| r.bytes_s), Some(100.0));
         assert_eq!(b.nas("lo", "3/1/1"), None);
@@ -805,15 +820,21 @@ mod tests {
         b38.sizes.insert("nas_read".into(), 959 << 20);
         costs.insert(cost_key("pack", "6/1/3"), Cost { v: cost_version("pack"), ..b38 });
         let b = Book::new(&costs);
-        assert_eq!(b.nas("pack", "6/1/1"), Some(crate::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5 }));
-        assert_eq!(b.nas("pack", "6/1/2"), Some(crate::budget::nas::Rate { bytes_s: 1_500_400.0, creates_s: 5.0 }));
+        assert_eq!(
+            b.nas("pack", "6/1/1"),
+            Some(crate::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5, ..Default::default() })
+        );
+        assert_eq!(
+            b.nas("pack", "6/1/2"),
+            Some(crate::budget::nas::Rate { bytes_s: 1_500_400.0, creates_s: 5.0, ..Default::default() })
+        );
         assert_eq!(
             b.nas("pack", "6/1/3"),
-            Some(crate::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5 }),
+            Some(crate::budget::nas::Rate { bytes_s: 40.0, creates_s: 0.5, ..Default::default() }),
             "b38's: writes alone"
         );
         // (On a NAS of 100 MB/s and 40 creates/s: its 1.5 MB/s and 5 creates/s, not the whole.)
-        let l = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let l = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         assert_eq!(l.weight(b.nas("pack", "6/1/2").unwrap()), 141);
         assert_eq!(batch_disk("pack", [1300, 1300, 1200]), 1300);
         assert_eq!(batch_disk("slope", [1300, 1300, 1200]), 3800);

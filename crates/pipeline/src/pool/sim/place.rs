@@ -237,11 +237,17 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
         c.add_disks(&[(cost_key(s.name, &tg), s.disk_mb)]);
         c.add_job_run(s.name, std::slice::from_ref(&tg), s.disk_mb + s.cache_mb);
     }
-    let limits = cfg.nas.unwrap_or(crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None });
+    let limits = cfg.nas.unwrap_or(crate::budget::nas::Limits {
+        bytes_s: 100e6,
+        creates_s: 40.0,
+        downloads: None,
+        ..Default::default()
+    });
     let weight = |s: &Step| {
         limits.weight(crate::budget::nas::Rate {
             bytes_s: (s.nas_mb << 20) as f64 / s.secs.max(1) as f64,
             creates_s: s.creates as f64 / s.secs.max(1) as f64,
+            ..Default::default()
         })
     };
     let clients: Vec<Option<client::Client>> = cfg
@@ -878,7 +884,8 @@ mod tests {
     fn the_nas_budget_queues_nas_heavy_jobs_past_its_cap() {
         let mut macs = m4_m1();
         macs[1] = Mac { name: "studio", total_mb: 49_152, cores: 16, disk_mb: 300_000 };
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let off = run(&cfg(macs.clone(), 8)).unwrap();
         let on = run(&Cfg { nas: Some(limits), ..cfg(macs, 8) }).unwrap();
         assert!(off.most_nas > crate::budget::nas::WHOLE, "off: past the NAS: {off:?}");
@@ -961,7 +968,8 @@ mod tests {
             nas_mb: 60,
             creates: 30,
         };
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let c = Cfg {
             steps: vec![pack, unit],
             nas: Some(limits),
@@ -998,7 +1006,8 @@ mod tests {
             nas_mb: 800,
             creates: 5,
         };
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let c = Cfg { steps: vec![lo], nas: Some(limits), halo: 16, known: vec!["lo"], ..cfg(m4_m1(), 0) };
         let r = run(&c).unwrap();
         assert_eq!(r.granted_disk.get("lo"), Some(&500), "its halo's disk once: {r:?}");

@@ -8,10 +8,14 @@
 //! - **A job's NAS weight** is the share of the NAS it takes, in thousandths: its targets' measured
 //!   rate (crate::needs::Book::nas: bytes read and written a second, files made a second, from
 //!   crate::costin's `bytes`, `wrote` and `creates` over its time), each over the NAS's (`Limits`),
-//!   added (one combined weight; reads and writes split only if measures show they limit apart).
+//!   added (one combined weight; reads and writes split only if measures show they limit apart),
+//!   with its metadata work beside them (task #451): the folder entries it listed, the files it
+//!   statted and deleted a second (crate::costin's `listed`, `stats`, `deletes`), each over the
+//!   NAS's rate for it. A clean-up's walk reads and writes next to nothing yet keeps the share busy.
 //!   A job's targets run one after another: its weight is its heaviest target's.
 //! - **The limits** are measured, never typed: `probe` makes a few small files and one larger in a
-//!   folder of its own, reads the larger back past the cache, and removes them all. The coordinator
+//!   folder of its own, reads the larger back past the cache, lists the folder, stats the small
+//!   files and deletes them one by one, and removes the rest. The coordinator
 //!   probes every `EVERY_S`, whatever the switch says, and takes the best of the last `KEEP_S`'s probes
 //!   (`Probes`): a probe run while the build loads the NAS measures what's left, so the best is the
 //!   nearest to the whole.
@@ -68,14 +72,21 @@ pub fn parse(s: &str) -> Option<Switch> {
     Some(w)
 }
 
-/// What one probe measured: bytes moved a second (written and read back, together) and files made
-/// a second.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// What one probe measured: bytes moved a second (written and read back, together), files made a
+/// second, and the metadata operations a second: folder entries listed, files statted, files
+/// deleted (0 in a probe from before them: not measured, so not weighed).
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Probe {
     /// When (unix s).
     pub at: u64,
     pub bytes_s: f64,
     pub creates_s: f64,
+    #[serde(default)]
+    pub listed_s: f64,
+    #[serde(default)]
+    pub stats_s: f64,
+    #[serde(default)]
+    pub deletes_s: f64,
 }
 
 /// The pool's limits now: the NAS's (a probe's), and the downloads' cap.
@@ -83,14 +94,22 @@ pub struct Probe {
 pub struct Limits {
     pub bytes_s: f64,
     pub creates_s: f64,
+    /// The metadata operations a second (0: not probed, not weighed).
+    pub listed_s: f64,
+    pub stats_s: f64,
+    pub deletes_s: f64,
     pub downloads: Option<usize>,
 }
 
-/// A target's or job's measured NAS rate (crate::needs::Book::nas).
+/// A target's or job's measured NAS rate (crate::needs::Book::nas): bytes and files made, and its
+/// metadata work, a second.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rate {
     pub bytes_s: f64,
     pub creates_s: f64,
+    pub listed_s: f64,
+    pub stats_s: f64,
+    pub deletes_s: f64,
 }
 
 impl Limits {
@@ -98,7 +117,12 @@ impl Limits {
     /// weighs nothing; at most the whole, `WHOLE`). 0 while no probe measured the NAS.
     pub fn weight(&self, r: Rate) -> u32 {
         let part = |x: f64, of: f64| if of > 0.0 { x / of } else { 0.0 };
-        let w = (part(r.bytes_s, self.bytes_s) + part(r.creates_s, self.creates_s)) * WHOLE as f64;
+        let w = (part(r.bytes_s, self.bytes_s)
+            + part(r.creates_s, self.creates_s)
+            + part(r.listed_s, self.listed_s)
+            + part(r.stats_s, self.stats_s)
+            + part(r.deletes_s, self.deletes_s))
+            * WHOLE as f64;
         if w > 0.0 {
             w.ceil().min(WHOLE as f64) as u32
         } else {
@@ -140,6 +164,21 @@ impl Limits {
     }
 }
 
+/// The steps that wait for a quiet NAS (task #451): never urgent, they start only beside nothing
+/// that weighs anything, or within the whole by their own measured weight, never by an aged wait
+/// (`fits_quiet`), never hold room for themselves, and yield at a safe point to a job held back
+/// for the budget `OWN_AGE` that their going would let start (crate::coord's `nas_yield`).
+pub const QUIET_STEPS: [&str; 1] = ["gc"];
+
+impl Limits {
+    /// Whether a job of a quiet step (`QUIET_STEPS`) of weight `w` may start beside leased jobs
+    /// weighing `running` together: beside nothing that weighs anything, or, its weight measured
+    /// (`w` > 0), within the whole with them. Unmeasured, it goes only alone.
+    pub fn fits_quiet(running: u32, w: u32) -> bool {
+        running == 0 || (w > 0 && running.saturating_add(w) <= WHOLE)
+    }
+}
+
 /// How long the lead's own planned job waits for the NAS budget alone before it goes beside
 /// leased jobs none of which weighs the whole (`Limits::fits_own_job`).
 pub const OWN_AGE: std::time::Duration = std::time::Duration::from_secs(600);
@@ -160,6 +199,9 @@ impl Probes {
         (!self.0.is_empty()).then(|| Limits {
             bytes_s: best(|p| p.bytes_s),
             creates_s: best(|p| p.creates_s),
+            listed_s: best(|p| p.listed_s),
+            stats_s: best(|p| p.stats_s),
+            deletes_s: best(|p| p.deletes_s),
             downloads,
         })
     }
@@ -197,7 +239,10 @@ pub fn clean_stale(root: &Path, me: &str) -> usize {
 
 /// Probes the NAS in `dir` (made, then removed with all it holds): `SMALL_FILES` files of `SMALL`
 /// bytes made (create-new, each written and closed: the share's creates), then one of `LARGE`
-/// written and synced and read back past the cache. Small and short: under a second or two.
+/// written and synced and read back past the cache; then the folder listed (its entries a second:
+/// one listing of a few entries, its round trip in it, so a listing's cost is if anything
+/// overstated), the small files statted and deleted one by one. Small and short: under a second or
+/// two.
 pub fn probe(dir: &Path) -> std::io::Result<Probe> {
     std::fs::create_dir_all(dir)?;
     let r = probe_in(dir);
@@ -238,8 +283,33 @@ fn probe_in(dir: &Path) -> std::io::Result<Probe> {
         return Err(std::io::Error::other(format!("read back {} of {LARGE} bytes", back.len())));
     }
     let bytes_s = (2 * LARGE) as f64 / t.elapsed().as_secs_f64().max(1e-6);
+    drop(f);
+    let (listed_s, stats_s, deletes_s) = probe_meta(dir)?;
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    Ok(Probe { at, bytes_s, creates_s })
+    Ok(Probe { at, bytes_s, creates_s, listed_s, stats_s, deletes_s })
+}
+
+/// The metadata part of a probe in `dir` (its small files `s<i>` there): entries listed, files
+/// statted and files deleted a second.
+fn probe_meta(dir: &Path) -> std::io::Result<(f64, f64, f64)> {
+    let rate = |n: usize, t: Instant| n as f64 / t.elapsed().as_secs_f64().max(1e-6);
+    let t = Instant::now();
+    let mut n = 0;
+    for e in std::fs::read_dir(dir)? {
+        e?;
+        n += 1;
+    }
+    let listed_s = rate(n, t);
+    let t = Instant::now();
+    for i in 0..SMALL_FILES {
+        std::fs::metadata(dir.join(format!("s{i}")))?;
+    }
+    let stats_s = rate(SMALL_FILES, t);
+    let t = Instant::now();
+    for i in 0..SMALL_FILES {
+        std::fs::remove_file(dir.join(format!("s{i}")))?;
+    }
+    Ok((listed_s, stats_s, rate(SMALL_FILES, t)))
 }
 
 #[cfg(test)]
@@ -256,12 +326,12 @@ mod tests {
     /// A weight is the job's share of the NAS's bytes and creates, added, in thousandths.
     #[test]
     fn a_weight_is_a_share_of_the_nas() {
-        let l = Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
-        assert_eq!(l.weight(Rate { bytes_s: 25e6, creates_s: 0.0 }), 250);
-        assert_eq!(l.weight(Rate { bytes_s: 25e6, creates_s: 4.0 }), 350);
+        let l = Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
+        assert_eq!(l.weight(Rate { bytes_s: 25e6, creates_s: 0.0, ..Default::default() }), 250);
+        assert_eq!(l.weight(Rate { bytes_s: 25e6, creates_s: 4.0, ..Default::default() }), 350);
         assert_eq!(l.weight(Rate::default()), 0);
-        assert_eq!(l.weight(Rate { bytes_s: 1.0, creates_s: 0.0 }), 1, "measured: never nothing");
-        assert_eq!(l.weight(Rate { bytes_s: 900e6, creates_s: 0.0 }), WHOLE, "at most the whole");
+        assert_eq!(l.weight(Rate { bytes_s: 1.0, creates_s: 0.0, ..Default::default() }), 1, "measured: never nothing");
+        assert_eq!(l.weight(Rate { bytes_s: 900e6, creates_s: 0.0, ..Default::default() }), WHOLE, "at most the whole");
         assert!(Limits::fits(600, 600, 400) && !Limits::fits(601, 601, 400));
         assert!(Limits::fits(0, 900, 1000), "the lead's own alone: a member's job goes");
         assert!(!Limits::fits(1, 900, 1000));
@@ -276,6 +346,10 @@ mod tests {
         assert!(Limits::fits_own_job(1100, 800, 800, 200, true));
         assert!(Limits::fits_own_job(1100, 300, 300, 1000, false), "a whole one beside the lead's own smaller ones");
         assert!(Limits::fits(999, 999, 0));
+        // A quiet step (the clean-up): alone, or measured and within the whole; never aged past it.
+        assert!(Limits::fits_quiet(0, 0) && Limits::fits_quiet(0, 1000));
+        assert!(!Limits::fits_quiet(1, 0), "unmeasured: alone only");
+        assert!(Limits::fits_quiet(700, 300) && !Limits::fits_quiet(701, 300));
         assert!(Limits::fits_own(600, 400) && !Limits::fits_own(601, 400));
         assert!(Limits::fits_own(0, 1000) && !Limits::fits_own(1, 1000), "the lead's own: within the whole, or alone");
     }
@@ -285,10 +359,13 @@ mod tests {
     fn the_limits_are_the_best_of_the_days_probes() {
         let mut p = Probes::default();
         assert!(p.limits(None).is_none());
-        p.add(Probe { at: 1000, bytes_s: 80e6, creates_s: 30.0 });
-        p.add(Probe { at: 2000, bytes_s: 50e6, creates_s: 45.0 });
-        assert_eq!(p.limits(Some(2)), Some(Limits { bytes_s: 80e6, creates_s: 45.0, downloads: Some(2) }));
-        p.add(Probe { at: 1000 + KEEP_S, bytes_s: 10e6, creates_s: 5.0 });
+        p.add(Probe { at: 1000, bytes_s: 80e6, creates_s: 30.0, ..Default::default() });
+        p.add(Probe { at: 2000, bytes_s: 50e6, creates_s: 45.0, ..Default::default() });
+        assert_eq!(
+            p.limits(Some(2)),
+            Some(Limits { bytes_s: 80e6, creates_s: 45.0, downloads: Some(2), ..Default::default() })
+        );
+        p.add(Probe { at: 1000 + KEEP_S, bytes_s: 10e6, creates_s: 5.0, ..Default::default() });
         assert_eq!(p.limits(None).unwrap().bytes_s, 50e6, "a day old: let go");
     }
 

@@ -605,11 +605,14 @@ pub fn list(root: &Path, unit: &str, recursive: bool) -> Result<Listing> {
     while let Some((dir, rel)) = stack.pop() {
         for e in std::fs::read_dir(&dir).with_context(|| format!("list {}", dir.display()))? {
             let e = e.with_context(|| format!("list {}", dir.display()))?;
+            // (Its NAS metadata work, for the step's weight: crate::costin::meta, task #451.)
+            crate::costin::meta(1, 0, 0);
             let name = e.file_name().to_string_lossy().into_owned();
             if ignored(&name) && !checks(unit).is_some_and(|c| c.takes_ignored(&name)) {
                 continue;
             }
             let path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            crate::costin::meta(0, 1, 0);
             let md = e.metadata().with_context(|| format!("stat {}", e.path().display()))?;
             if !md.is_dir() && checks(unit).is_some_and(|c| !c.takes(&path)) {
                 continue;
@@ -646,6 +649,7 @@ pub fn list(root: &Path, unit: &str, recursive: bool) -> Result<Listing> {
             };
             for e in rd {
                 let e = e.with_context(|| format!("list {}", dir.display()))?;
+                crate::costin::meta(1, 0, 0);
                 let name = e.file_name().to_string_lossy().into_owned();
                 if ignored(&name) {
                     continue;

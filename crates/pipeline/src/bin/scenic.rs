@@ -1385,10 +1385,13 @@ fn main() -> Result<()> {
                     let p =
                         pipeline::budget::nas::probe(&dir).with_context(|| format!("probing in {}", dir.display()))?;
                     println!(
-                        "{}: {:.1} MB/s (written and read back), {:.1} creates/s",
+                        "{}: {:.1} MB/s (written and read back), {:.1} creates/s, {:.0} entries listed/s, {:.1} stats/s, {:.1} deletes/s",
                         dir.display(),
                         p.bytes_s / 1e6,
-                        p.creates_s
+                        p.creates_s,
+                        p.listed_s,
+                        p.stats_s,
+                        p.deletes_s
                     );
                 }
                 Some("floors") => {

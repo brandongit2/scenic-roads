@@ -637,11 +637,17 @@ impl Shared {
     }
 
     /// A job of `step` over `targets`: its NAS weight under `l` (its heaviest target's,
-    /// crate::budget::nas; 0 for a target none of whose step's runs measured it), and whether it
+    /// crate::budget::nas; 0 for a target none of whose step's runs measured it; with none, its
+    /// step's), and whether it
     /// downloads (its step's kind a fetch, crate::agent::steps::Kind::Fetch).
     /// (`nw` keeps the Book and the steps' percentiles for one placement: `NasWeigher`.)
     fn job_nas(nw: &NasWeigher, step: &str, targets: &[String]) -> (u32, bool) {
-        let w = targets.iter().map(|t| nw.weight(step, t)).max().unwrap_or(0);
+        // (A job of no targets of its own, the clean-up's lease: its step's measured weight, task #451.)
+        let w = if targets.is_empty() {
+            nw.weight(step, "")
+        } else {
+            targets.iter().map(|t| nw.weight(step, t)).max().unwrap_or(0)
+        };
         (w, crate::agent::steps::row(step).is_some_and(|r| r.kind == crate::agent::steps::Kind::Fetch))
     }
 
@@ -1103,9 +1109,15 @@ impl Shared {
                 return false;
             }
             let own = running.saturating_sub(members);
-            let fits = crate::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited)
-                && (alone || self.nas_reserve_ok(&nw, now, &o.step, &ts, running, w));
-            if !fits && !alone {
+            // (A quiet step, the clean-up: alone or within the whole by its measured weight, never
+            // aged past it, its wait not noted: it never holds room, crate::budget::nas::QUIET_STEPS.)
+            let quiet = crate::budget::nas::QUIET_STEPS.contains(&o.step.as_str());
+            let fits = if quiet {
+                crate::budget::nas::Limits::fits_quiet(running, w)
+            } else {
+                crate::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited)
+            } && (alone || self.nas_reserve_ok(&nw, now, &o.step, &ts, running, w));
+            if !fits && !alone && !quiet {
                 for t in &ts {
                     self.nas_wait(&o.step, t, now);
                 }
@@ -2316,6 +2328,30 @@ impl Coordinator {
         let s = self.shared.lock().unwrap();
         let now = s.now();
         s.nas_room(now, true).is_some_and(|(_, running, _, _)| running > crate::budget::nas::WHOLE)
+    }
+
+    /// Whether this Mac's running job of a quiet step (crate::budget::nas::QUIET_STEPS: the clean-up)
+    /// over `targets` should yield the NAS (task #451): a target held back for the budget alone for
+    /// `OWN_AGE` (`Shared::nas_reserved`) that doesn't fit beside the leased jobs now but would
+    /// without this one. Why, in words; None: it goes on.
+    pub fn nas_yield(&self, step: &str, targets: &[String]) -> Option<String> {
+        let s = self.shared.lock().unwrap();
+        let now = s.now();
+        let (nw, running, _, _) = s.nas_room(now, true)?;
+        let (st, t, rw) = s.nas_reserved(&nw, now)?;
+        if st == step {
+            return None;
+        }
+        let (w, _) = Shared::job_nas(&nw, step, targets);
+        let whole = crate::budget::nas::WHOLE;
+        (w > 0 && running.saturating_add(rw) > whole && running.saturating_sub(w).saturating_add(rw) <= whole).then(
+            || {
+                format!(
+                    "yields the NAS to {st} {t}, held back for it {} min or more",
+                    crate::budget::nas::OWN_AGE.as_secs() / 60
+                )
+            },
+        )
     }
 
     /// The targets waiting on the NAS budget alone for longer than `NAS_WAIT_SAY_S` (passed over in
@@ -6680,7 +6716,8 @@ mod tests {
                 c.add_costs_by(&[(cost_key(step, &format!("6/1/{i}")), cost)], "m1");
             }
         };
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let a = Ask { want: 6, ..every_ask("m1", "slope", 64_000, 100_000) };
         let (_d, c, w, _clock) = every((0, 0));
         heavy(&c, "slope");
@@ -6741,7 +6778,12 @@ mod tests {
             };
             c.add_costs_by(&[(cost_key("slope", &format!("6/1/{i}")), cost)], "m1");
         }
-        c.set_nas(Some(crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None }));
+        c.set_nas(Some(crate::budget::nas::Limits {
+            bytes_s: 100e6,
+            creates_s: 40.0,
+            downloads: None,
+            ..Default::default()
+        }));
         let own = c.hold("slope", &[("6/1/4".into(), "k 6/1/4".into())]).expect("the lead's own: the whole");
         let a = Ask { want: 3, ..every_ask("m1", "slope", 64_000, 100_000) };
         assert_eq!(all_granted(&w, &a), [["6/1/1"]], "beside the lead's own alone");
@@ -6889,7 +6931,8 @@ mod tests {
     fn the_nas_budget_always_holds_the_leads_own() {
         let (_d, c, w, _clock) = every((0, 0));
         heavy_slope(&c);
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (None, Some(limits));
@@ -6928,7 +6971,8 @@ mod tests {
         assert_eq!(crate::budget::nas::read_switch(d.path()), Some(None), "`off`: off");
         let (_d, c, w, _clock) = every((0, 0));
         heavy_slope(&c);
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -6970,7 +7014,8 @@ mod tests {
     fn a_halo_job_weighs_its_real_rate_and_the_leads_whole_job_goes() {
         let (_d, c, w, _clock) = every((0, 0));
         heavy_slope(&c);
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -7031,7 +7076,8 @@ mod tests {
     #[test]
     fn the_leads_aged_own_jobs_go_one_at_a_time() {
         let (_d, c, w, clock) = every((0, 0));
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -7076,13 +7122,110 @@ mod tests {
         assert!(c.ask_own(&a, &BTreeSet::new()).is_some(), "the first ended: the second goes");
     }
 
+    /// Task #451 (20 Oct: GC beside two depth-lo jobs, the NAS at 34 % IO wait, all three stalled):
+    /// the clean-up weighs its metadata work (folder entries listed, files statted and deleted over
+    /// the NAS's probed rates for them), starts only on a quiet NAS (unmeasured, alone; measured,
+    /// within the whole, never aged past it, its wait never noted), and yields to a job held back
+    /// `OWN_AGE` that it alone keeps out.
+    #[test]
+    fn the_clean_up_waits_for_a_quiet_nas_and_yields_to_a_held_job() {
+        let (_d, c, w, clock) = every((0, 0));
+        let limits = crate::budget::nas::Limits {
+            bytes_s: 100e6,
+            creates_s: 40.0,
+            listed_s: 1000.0,
+            stats_s: 500.0,
+            deletes_s: 40.0,
+            downloads: None,
+        };
+        {
+            let mut s = c.shared.lock().unwrap();
+            (s.nas, s.nas_own) = (Some(limits), Some(limits));
+        }
+        let cost = |step: &str, sizes: &[(&str, u64)]| Cost {
+            peak_mb: 500,
+            secs: 600,
+            worker: None,
+            v: cost_version(step),
+            sizes: sizes.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            ..Default::default()
+        };
+        packable(&c, "slope", 3, Some(1));
+        // (6/1/1: 30 MB/s, 300 of the NAS; 6/1/2: 50 MB/s, 500.)
+        let slope = |b: u64| cost("slope", &[("threads", 1), ("bytes", b)]);
+        c.add_costs_by(&[(cost_key("slope", "6/1/1"), slope(18_000_000_000))], "m1");
+        c.add_costs_by(&[(cost_key("slope", "6/1/2"), slope(30_000_000_000))], "m1");
+        let mut offers = c.shared.lock().unwrap().offers.clone();
+        offers.push(Offer {
+            step: "gc".into(),
+            targets: vec![("gc".into(), String::new(), 0)],
+            job: Some("gc".into()),
+        });
+        c.offer("p", offers);
+        let m = Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) };
+        let g1 = w.ask(&m).unwrap().expect("the member's 300");
+        // (Time passes, the jobs' leases kept alive: the member's, and the clean-up's once held.)
+        let own: std::cell::Cell<Option<u64>> = Default::default();
+        let members = std::cell::RefCell::new(vec![g1.lease]);
+        let age = |by: Duration| {
+            for _ in 0..20 {
+                clock.advance(by / 20);
+                for &l in members.borrow().iter() {
+                    assert!(w.beat(l, None).unwrap());
+                }
+                if let Some(n) = own.get() {
+                    assert!(c.renew(n, None));
+                }
+            }
+        };
+        let a = Ask { want: 1, can: vec!["gc".into()], ..every_ask("m4", "gc", 64_000, 100_000) };
+        let waits = |c: &Coordinator| -> Vec<String> {
+            let s = c.shared.lock().unwrap();
+            let g = s.nas_waits.lock().unwrap();
+            g.keys().map(|k| k.0.clone()).collect()
+        };
+        // Unmeasured: alone only, its wait not noted, whatever the time.
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "cold: beside the member's job, held");
+        age(crate::budget::nas::OWN_AGE);
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "never aged past it");
+        assert!(waits(&c).is_empty(), "its wait never noted: it holds no room");
+        // Measured: 200 entries listed and 8 files deleted a second (200 + 200 of the NAS), its
+        // bytes next to nothing: 400 beside the member's 300.
+        let gc = cost("gc", &[("threads", 1), ("bytes", 0), ("listed", 120_000), ("deletes", 4_800)]);
+        c.add_costs_by(&[(cost_key("gc", "gc"), gc)], "m4");
+        c.add_disks(&[(cost_key("gc", "gc"), 0)]);
+        let g = c.ask_own(&a, &BTreeSet::new()).expect("within the whole beside the member's job");
+        own.set(Some(g.lease));
+        assert_eq!(c.nas_shares().get("m4"), Some(&400), "its metadata work weighed");
+        assert_eq!(c.nas_yield("gc", &["gc".into()]), None, "nothing held back for it");
+        // A member's 500 doesn't fit beside it (300 + 400); once held back `OWN_AGE`, the clean-up
+        // yields (without it, 300 + 500 fit).
+        let m2 = Ask { want: 1, ..every_ask("m1", "slope", 64_000, 100_000) };
+        assert!(all_granted(&w, &m2).is_empty(), "the member's 500 held back");
+        assert_eq!(c.nas_yield("gc", &["gc".into()]), None, "not held long yet");
+        age(crate::budget::nas::OWN_AGE);
+        assert!(all_granted(&w, &m2).is_empty());
+        let why = c.nas_yield("gc", &["gc".into()]).expect("yields to the held job");
+        assert!(why.contains("slope 6/1/2"), "{why}");
+        c.finish(g.lease, &[]);
+        own.set(None);
+        let g2 = w.ask(&m2).unwrap().expect("the clean-up gone: it goes");
+        assert!(matches!(&g2.work, Granted::Job { targets, .. } if targets[0].0 == "6/1/2"));
+        members.borrow_mut().push(g2.lease);
+        // Beside 800 it waits, however long.
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_none());
+        age(crate::budget::nas::OWN_AGE * 3);
+        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "never urgent");
+    }
+
     /// A whole-weight job of the lead's own goes beside a running job of the lead's own (and a
     /// member's small one), not held back until the lead holds nothing: the room the lead's own
     /// leave is asked of aged jobs alone.
     #[test]
     fn the_leads_whole_job_goes_beside_its_own_running_job() {
         let (_d, c, w, _clock) = every((0, 0));
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -7541,7 +7684,8 @@ mod tests {
             ..Default::default()
         };
         c.add_costs_by(&[(cost_key("slope", "6/1/6"), cost)], "m1");
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let offer = {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -7603,7 +7747,8 @@ mod tests {
         for i in 2..=5 {
             weigh(&format!("6/1/{i}"), 12_000_000_000);
         }
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let offer = {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
@@ -7665,7 +7810,8 @@ mod tests {
     fn a_target_no_member_can_take_never_reserves() {
         let (_d, c, _w, clock) = every((0, 0));
         heavy_slope(&c);
-        let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
+        let limits =
+            crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None, ..Default::default() };
         let offer = {
             let mut s = c.shared.lock().unwrap();
             (s.nas, s.nas_own) = (Some(limits), Some(limits));
