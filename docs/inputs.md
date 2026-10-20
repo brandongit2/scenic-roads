@@ -1384,10 +1384,12 @@ source's loose grids already on the NAS are packed once by `producers/depth/repa
 docstring: by tar over SSH, resumable, each depth file checked against its `hash` and every
 member's hash recorded, the drop box's index replaced only once every pack is on the NAS at its
 size). Its `--sweep` deletes the loose files only while both the drop box and the build's current
-accepted version hold the packed index, the lead's status is fresh (10 min), that version has been
-taken in for 24 h, and no depth or depth-lo job is running, queued or held to resume on any Mac
-(jobs planned before the switch read the loose index), with the packs checked on the NAS once more
-just before. The sweep is the point of no return: after it the loose index can't be rolled back to;
+accepted version hold the packed index, the lead's status is fresh (10 min), the same accepted
+version has named it for 24 h (a rollback starts the wait again), and no depth or depth-lo job is
+running on any Mac, waiting, or held to resume in a member's progress file; jobs planned before the
+switch read the loose index, and those planned but not yet started aren't in the status, so the
+24 h wait is what guards them. The packs are checked on the NAS, and the build on the packed index,
+once more just before. The sweep is the point of no return: after it the loose index can't be rolled back to;
 until it, putting the loose index back in the drop box is a full rollback.
 
 **`[data.params]`:** `code` (1–15, the source byte the class tiles carry, one a source), `water`

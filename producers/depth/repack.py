@@ -22,12 +22,17 @@ lists them in):
 4. `--sweep`, once the build reads the packed index: the drop box holds exactly its bytes, and the
    build's current accepted version of the unit (`state/status.json`'s `inputs` entry for
    `sources`, its `@index`) names an accepted copy with exactly its bytes; and safely past the
-   switch: the lead's status beat fresh (`--stale-min`, 10 min), the packed version named there for
-   `--min-age-h` (24 h) at least, from when a sweep first saw it so (`done.json`'s `taken_in_seen`)
-   and from the accepted copy's time, and no depth or depth-lo job running, queued or held to
-   resume on any Mac (status.json's jobs, waiting and helpers' jobs, state/pool/resume/): a job
-   planned before the switch reads the loose index. Then the packs are checked on the NAS at their
-   sizes once more, and the loose grids it packed deleted (one `xargs rm` over SSH).
+   switch: the lead's status fresh (its beat and its file's time within `--stale-min`, 10 min); the
+   same accepted version naming the packed index for `--min-age-h` (24 h) at least, from when a
+   sweep first saw it (`done.json`'s `taken_in_seen`, with the version and copy seen: another one
+   seen, as after a rollback, starts the wait again); and no depth or depth-lo job running on any
+   Mac (the lead's and each helper's jobs in status.json, the old fields `job`, `beside`, `more`
+   too), none its waiting list names, and none held to resume in the members' progress files
+   (`state/pool/progress/<member>.json`). Jobs planned and leased but not yet started aren't in
+   the status: the 24 h wait is what guards those planned before the switch (they read the loose
+   index). Then the packs are checked on the NAS at their sizes once more and the build checked to
+   read the packed index still, and the loose grids it packed are deleted (one `xargs rm` over
+   SSH).
    The sweep is the point of no return: after it the loose index can't be rolled back to (its
    files are gone); until it, putting the loose index back in the drop box is a full rollback.
 
@@ -265,6 +270,23 @@ def verify(pack: Path, at: dict[str, tuple[int, int, str]]):
                 raise SystemExit(f"{pack}: {n} isn't as read")
 
 
+def current_version(a, name: str):
+    """The build's current accepted version of the sources unit and its copy of index `name`:
+    (the @index named in state/status.json's `inputs`, the copy's path), None for what's missing."""
+    try:
+        status = json.loads((a.root / "state/status.json").read_text())
+    except (OSError, ValueError):
+        return None, None
+    ver = [u.get("version") for u in status.get("inputs") or [] if u.get("unit") == "sources"]
+    if len(ver) != 1 or not ver[0]:
+        return None, None
+    try:
+        copy = json.loads((a.root / ver[0]).read_text())["files"][name]["file"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return ver[0], None
+    return ver[0], copy
+
+
 def taken_in(a, sid: str, packed: Path) -> bool:
     """Whether the build reads the packed index now: the drop box holds its bytes, and the unit's
     current accepted version (state/status.json's `sources` entry, its @index) names a copy with
@@ -273,76 +295,73 @@ def taken_in(a, sid: str, packed: Path) -> bool:
     want = packed.read_bytes()
     if (a.drop / name).read_bytes() != want:
         return False
-    try:
-        status = json.loads((a.root / "state/status.json").read_text())
-    except (OSError, ValueError):
-        return False
-    ver = [u.get("version") for u in status.get("inputs", []) if u.get("unit") == "sources"]
-    if len(ver) != 1 or not ver[0]:
-        return False
-    acc = json.loads((a.root / ver[0]).read_text())["files"].get(name)
-    return acc is not None and (a.root / acc["file"]).read_bytes() == want
+    _, copy = current_version(a, name)
+    return copy is not None and (a.root / copy).read_bytes() == want
+
+
+DEPTH_STEPS = ("depth", "depth-lo")
 
 
 def depth_jobs(a) -> list[str]:
-    """The depth and depth-lo jobs running, queued or held to resume on any Mac, as the lead's
-    status and the pool's resume folder say."""
+    """The depth and depth-lo jobs running on any Mac as the lead's status says (its jobs, and an
+    older agent's `job`, `beside` and `more`, the lead's and each helper's), the depth steps it
+    says wait, and the depth jobs held to resume in the members' progress files
+    (state/pool/progress/<member>.json, crate::agent::resume)."""
     status = json.loads((a.root / "state/status.json").read_text())
     found = []
 
-    def look(v):
-        if isinstance(v, dict):
-            i = v.get("id")
-            if isinstance(i, str) and i.split(" ", 1)[0] in ("depth", "depth-lo"):
-                found.append(i)
-            for w in v.values():
-                look(w)
-        elif isinstance(v, list):
-            for w in v:
-                look(w)
-        elif isinstance(v, str) and v.split(" ", 1)[0] in ("depth", "depth-lo") and "/" in v:
-            found.append(v)
+    def job(v):
+        if isinstance(v, dict) and isinstance(v.get("id"), str) and v["id"].split(" ", 1)[0] in DEPTH_STEPS:
+            found.append(v["id"])
 
-    look(status.get("jobs"))
-    look(status.get("waiting"))
-    for h in status.get("helpers") or []:
-        look(h.get("jobs"))
-    res = a.root / "state/pool/resume"
-    if res.is_dir():
-        for p in res.iterdir():
-            if "depth" in p.name or (p.is_file() and b"depth" in p.read_bytes()):
-                found.append(f"resume: {p.name}")
+    for who in [status, *(status.get("helpers") or [])]:
+        for j in [*(who.get("jobs") or []), who.get("job"), who.get("beside"), *(who.get("more") or [])]:
+            job(j)
+    for w in status.get("waiting") or []:
+        if isinstance(w, dict) and w.get("step") in DEPTH_STEPS:
+            found.append(f"waiting: {w.get('what')}")
+    pool = status.get("pool") or {}
+    for m in pool.get("members") or []:
+        p = a.root / f"state/pool/progress/{m}.json"
+        try:
+            held = json.loads(p.read_text()).get("jobs") or {}
+        except FileNotFoundError:
+            continue
+        for k, h in held.items():
+            if k.split(" ", 1)[0] in DEPTH_STEPS and not h.get("done"):
+                found.append(f"held to resume on {m}: {k}")
     return found
 
 
 def safe_to_sweep(a, sid: str, packed: Path, done_path: Path) -> str | None:
-    """Why the loose grids may not go yet (None: they may)."""
+    """Why the loose grids may not go yet (None: they may). The wait (`--min-age-h`) runs from when
+    a sweep first saw the build's current version name the packed index, kept in done.json with
+    that version; a different version seen (a rollback, a new acceptance) starts it again."""
+    saved = json.loads(done_path.read_text())
+    name = index_name(a.drop, sid)
+    ver, copy = current_version(a, name)
     if not taken_in(a, sid, packed):
-        # (A rollback: the wait starts again once it's taken in again.)
-        saved = json.loads(done_path.read_text())
         if saved.pop("taken_in_seen", None) is not None:
             write_json(done_path, saved)
+        if ver is None:
+            return "the lead's status names no accepted version of the sources unit"
         return "the build doesn't read the packed index (the drop box's, or its current accepted version's, isn't it)"
     st = a.root / "state/status.json"
     status = json.loads(st.read_text())
     now = time.time()
-    beat = max(float(status.get("beat") or 0), 0.0)
-    if now - min(beat, st.stat().st_mtime) > a.stale_min * 60:
-        return f"the lead's status is stale (beat {now - beat:.0f} s ago): is the build running?"
-    saved = json.loads(done_path.read_text())
+    beat = float(status.get("beat") or 0)
+    age = now - min(beat, st.stat().st_mtime)
+    if age > a.stale_min * 60:
+        return f"the lead's status is stale ({age:.0f} s old): is the build running?"
     seen = saved.get("taken_in_seen")
-    if seen is None:
-        seen = saved["taken_in_seen"] = now
+    if not isinstance(seen, dict) or seen.get("version") != ver or seen.get("copy") != copy:
+        seen = saved["taken_in_seen"] = {"version": ver, "copy": copy, "at": now}
         write_json(done_path, saved)
-    name = index_name(a.drop, sid)
-    ver = [u["version"] for u in status["inputs"] if u.get("unit") == "sources"][0]
-    copy = a.root / json.loads((a.root / ver).read_text())["files"][name]["file"]
-    since = max(seen, copy.stat().st_mtime)
-    if now - since < a.min_age_h * 3600:
-        return f"the packed index taken in only {(now - since) / 3600:.1f} h ago (wait {a.min_age_h:g} h: jobs planned before it read the loose one)"
+    if now - seen["at"] < a.min_age_h * 3600:
+        return f"the packed index taken in only {(now - seen['at']) / 3600:.1f} h ago (wait {a.min_age_h:g} h: jobs planned before it read the loose one)"
     jobs = depth_jobs(a)
     if jobs:
-        return f"depth jobs running, queued or held ({', '.join(jobs[:5])}): they may be planned on the loose index"
+        return f"depth jobs running, waiting or held ({', '.join(jobs[:5])}): they may be planned on the loose index"
     return None
 
 
@@ -357,12 +376,15 @@ def sweep(a, sid: str, packed: Path, rem: Remote):
         raise SystemExit(f"{sid}: some grids aren't packed: not swept")
     files = sorted(n for f in feats for n in names(f))
     src = f"{a.nas_root}/sources/fetched/{sid}"
-    # (The packs there at their sizes once more, just before.)
+    # (The packs there at their sizes once more, and the build still on the packed index, just
+    # before.)
     want = {d["pack"]: d["size"] for d in json.loads((a.work / sid / "done.json").read_text())["areas"].values()}
     there = rem.sizes(src, sorted(want))
     bad = [p for p in want if there.get(p) != want[p]]
     if bad:
         raise SystemExit(f"{sid}: not swept: {len(bad)} packs not on the NAS at their sizes ({bad[:3]})")
+    if not taken_in(a, sid, packed):
+        raise SystemExit(f"{sid}: not swept: the build no longer reads the packed index")
     rem.run(f"cd {shlex.quote(src)} && xargs -0 rm -f --", "\0".join(files).encode())
     log(f"{sid}: {len(files)} loose files deleted on the NAS")
 

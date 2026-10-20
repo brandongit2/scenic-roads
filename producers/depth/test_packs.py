@@ -70,9 +70,11 @@ class Packs(unittest.TestCase):
                 packs.pack_folder(a, fa)
 
 
-def accept(root: Path, data: bytes, tag: str, beat_ago: float = 0, jobs=(), helper_jobs=()):
+def accept(root: Path, data: bytes, tag: str, beat_ago: float = 0, jobs=(), helper_jobs=(), old_wire=(), waiting=(), inputs=True):
     """The build's current accepted version of the sources unit: index `s-grids.geojson` as `data`;
-    the lead's beat `beat_ago` s ago, with `jobs` running here and `helper_jobs` on a helper."""
+    the lead's beat `beat_ago` s ago, with `jobs` running here, `helper_jobs` on a helper, one in an
+    older agent's field `job` on another (`old_wire`), depth steps `waiting`; without the sources'
+    inputs entry unless `inputs`."""
     acc = root / "sources/inputs/sources"
     (acc / f"s-grids.{tag}.geojson").write_bytes(data)
     (acc / f"@index.{tag}.json").write_text(json.dumps({"files": {"s-grids.geojson": {"file": f"sources/inputs/sources/s-grids.{tag}.geojson"}}}))
@@ -80,19 +82,18 @@ def accept(root: Path, data: bytes, tag: str, beat_ago: float = 0, jobs=(), help
     (root / "state/status.json").write_text(json.dumps({
         "beat": time.time() - beat_ago,
         "jobs": [{"id": j} for j in jobs],
-        "waiting": [],
-        "helpers": [{"jobs": [{"id": j} for j in helper_jobs]}],
-        "inputs": [{"unit": "sources", "version": f"sources/inputs/sources/@index.{tag}.json"}],
+        "waiting": [{"what": f"{w} 6/1/2", "why": "waiting 3 min", "step": w} for w in waiting],
+        "helpers": [{"jobs": [{"id": j} for j in helper_jobs]}, {"job": {"id": o}} if (o := next(iter(old_wire), None)) else {}],
+        "pool": {"members": ["m-1", "m-2"]},
+        "inputs": [{"unit": "sources", "version": f"sources/inputs/sources/@index.{tag}.json"}] if inputs else [{"unit": "regions", "version": "x"}],
     }))
 
 
-def backdate(root: Path, work: Path, hours: float):
-    """The packed index taken in `hours` ago (its first sighting and its accepted copy's time)."""
+def backdate(work: Path, hours: float):
+    """The version seen first `hours` ago (a sweep's first sighting, done.json)."""
     d = json.loads((work / "done.json").read_text())
-    d["taken_in_seen"] = time.time() - hours * 3600
+    d["taken_in_seen"]["at"] = time.time() - hours * 3600
     (work / "done.json").write_text(json.dumps(d))
-    for p in (root / "sources/inputs/sources").glob("s-grids.packed.geojson"):
-        os.utime(p, (time.time() - hours * 3600,) * 2)
 
 
 class Repack(unittest.TestCase):
@@ -153,28 +154,51 @@ class Repack(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.run_(args + ["--sweep"])
             self.assertTrue(all((src / n).exists() for n in loose))
+            work = t / "work/s"
+            # The status without the sources' inputs entry: nothing deleted.
+            accept(root, before, "packed", inputs=False)
+            self.refused(args, "names no accepted version")
             # Taken in, but only now: nothing deleted (jobs planned before read the loose index).
             accept(root, before, "packed")
             self.refused(args, "only 0.0 h ago")
             self.assertTrue(all((src / n).exists() for n in loose))
-            backdate(root, t / "work/s", 25)
-            # A day on, but the lead's status stale, a depth job running, one on a helper, or one
-            # held to resume: nothing deleted.
-            accept(root, before, "packed", beat_ago=3600)
-            backdate(root, t / "work/s", 25)
-            self.refused(args, "stale")
-            accept(root, before, "packed", jobs=["depth 6/20/23"])
-            backdate(root, t / "work/s", 25)
-            self.refused(args, "depth 6/20/23")
-            accept(root, before, "packed", helper_jobs=["depth-lo 3/2/2"])
-            backdate(root, t / "work/s", 25)
-            self.refused(args, "depth-lo 3/2/2")
+            # A rollback between sweeps (and back): the wait starts again.
+            backdate(work, 25)
+            (drop / "s-grids.geojson").write_bytes(orig)
+            accept(root, orig, "loose")
+            self.refused(args, "doesn't read the packed index")
+            self.assertNotIn("taken_in_seen", json.loads((work / "done.json").read_text()))
+            self.run_(args + ["--adopt"])
+            accept(root, before, "packed2")
+            self.refused(args, "only 0.0 h ago")
+            # Another accepted version naming it (no rollback seen in between): again too.
+            backdate(work, 25)
             accept(root, before, "packed")
-            backdate(root, t / "work/s", 25)
-            (root / "state/pool/resume").mkdir(parents=True)
-            (root / "state/pool/resume/m-1.json").write_text('{"step": "depth", "target": "6/1/2"}')
-            self.refused(args, "resume: m-1.json")
-            (root / "state/pool/resume/m-1.json").unlink()
+            self.refused(args, "only 0.0 h ago")
+            # A day on, but the lead's status stale (its beat, or its file's time alone), a depth
+            # job running, one on a helper, one in an older agent's field, one waiting, or one held
+            # to resume: nothing deleted.
+            backdate(work, 25)
+            accept(root, before, "packed", beat_ago=3600)
+            self.refused(args, "stale")
+            accept(root, before, "packed")
+            old = time.time() - 3600
+            os.utime(root / "state/status.json", (old, old))
+            self.refused(args, "stale")
+            for kw, why in [
+                ({"jobs": ["depth 6/20/23"]}, "depth 6/20/23"),
+                ({"helper_jobs": ["depth-lo 3/2/2"]}, "depth-lo 3/2/2"),
+                ({"old_wire": ["depth 6/1/1"]}, "depth 6/1/1"),
+                ({"waiting": ["depth"]}, "waiting: depth 6/1/2"),
+            ]:
+                accept(root, before, "packed", **kw)
+                self.refused(args, why)
+            accept(root, before, "packed")
+            (root / "state/pool/progress").mkdir(parents=True)
+            prog = root / "state/pool/progress/m-2.json"
+            prog.write_text(json.dumps({"member": "m-2", "worker": "w", "jobs": {"depth 6/1/2": {"at": 1}}}))
+            self.refused(args, "held to resume on m-2: depth 6/1/2")
+            prog.write_text(json.dumps({"member": "m-2", "worker": "w", "jobs": {"depth 6/1/2": {"at": 1, "done": True}, "osm-pass 2026-10-20": {"at": 1}}}))
             # A pack gone from the NAS just before: nothing deleted.
             gone = next(src.glob("*.tar"))
             keep = gone.read_bytes()
