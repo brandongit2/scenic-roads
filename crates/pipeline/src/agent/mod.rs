@@ -130,6 +130,8 @@ const UPDATE_STALL: Duration = Duration::from_secs(30 * 60);
 /// it grows them by one (s).
 pub(crate) const RAMP_START: usize = 2;
 pub(crate) const RAMP_CLEAN_S: u64 = 6 * 3600;
+/// Why the lead's slots are held at `RAMP_START` (`RampView::held`): only this holds them.
+pub(crate) const RAMP_HELD_WHY: &str = "no NAS limits yet (the probe missing or failing)";
 
 /// The lead's slots' ramp as the status shows it (`Status::ramp`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -139,11 +141,11 @@ pub struct RampView {
     pub reached: usize,
     #[serde(default)]
     pub most: usize,
-    /// Why its slots are held at the start now (the NAS's limits not known): only this holds them.
+    /// Why its slots are held at the start now (the NAS's limits not known): only this holds them;
+    /// its stretch goes on meanwhile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
-    /// Why its stretch isn't clean now while its slots aren't held (a NAS budget overrun, a stall):
-    /// it stops their growth alone.
+    /// Why its stretch isn't clean now (a stall): it stops their growth alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_clean: Option<String>,
     /// Since when its stretch has been clean (unix s; 0: not yet).
@@ -3165,10 +3167,18 @@ impl Agent {
     }
 
     /// The lead's slots' ramp: they start at `RAMP_START` and grow by one only after a clean stretch
-    /// of `RAMP_CLEAN_S`: no memory guard stop (`guard_stop_as` restarts the stretch), no NAS budget
-    /// overrun (the pool's leased jobs' weights past the whole, crate::coord::Coordinator::nas_over),
-    /// no stall (the pool's step taken for hung). The count reached is kept in the lead's state
+    /// of `RAMP_CLEAN_S`: no memory guard stop (`guard_stop_as` restarts the stretch), no stall
+    /// (the pool's step taken for hung). The count reached is kept in the lead's state
     /// (`state.json`), up to its cores' `job_slots`.
+    ///
+    /// While the NAS's limits aren't known (crate::coord::Coordinator::nas_known: before the
+    /// coordinator's first probe lands, each start) the slots are held at `RAMP_START`, but the
+    /// stretch goes on: a hold isn't trouble (task #433: every restart into a published app, a dozen
+    /// a day, began the hold a moment before the probe landed and started the six hours again, so
+    /// the lead never grew past two slots). Nor is the pool's leased jobs' NAS weight past the whole
+    /// (`Coordinator::nas_over`): the budget grants that by its own rules (the lead's own jobs alone,
+    /// an aged job weighing the whole, §7.7) and holds the lead's own jobs at grant whatever the
+    /// slots, so it says nothing about them.
     fn tend_ramp(&mut self) {
         if self.o.helper || self.o.dry_run {
             return;
@@ -3176,16 +3186,10 @@ impl Agent {
         let Some(c) = self.coord.as_ref() else { return };
         let now = now_s();
         let most = job_slots(mac_cores() as usize);
-        let trouble = if !c.nas_known() {
-            Some("no NAS limits yet (the probe missing or failing)")
-        } else if c.nas_over() {
-            Some("the pool's jobs past the NAS budget")
-        } else if self.pool_hung.is_some() {
-            Some("the pool's step stalled")
-        } else {
-            None
-        };
-        self.ramp_held = !c.nas_known();
+        let held = !c.nas_known();
+        let trouble = if self.pool_hung.is_some() { Some("the pool's step stalled") } else { None };
+        let holding = held && !self.ramp_held;
+        self.ramp_held = held;
         let running = self.running_jobs();
         // (Trouble entered: the stretch reset, said and kept once; while it lasts, nothing more;
         // as it ends, the stretch starts then, kept.)
@@ -3197,6 +3201,9 @@ impl Agent {
         r.slots = r.slots.max(RAMP_START);
         // (The most jobs it ran at once in the stretch: idle time doesn't count toward the next.)
         r.peak = r.peak.max(running);
+        if holding {
+            eprintln!("agent: the lead's slots held at {RAMP_START} ({RAMP_HELD_WHY}); its clean stretch goes on");
+        }
         if let Some(why) = trouble {
             if entering {
                 eprintln!("agent: the lead's slots stay at {} ({why}: its clean stretch starts again)", r.slots);
@@ -3207,6 +3214,8 @@ impl Agent {
             }
         } else if leaving || r.clean_since == 0 {
             (r.clean_since, r.peak) = (now, running);
+        } else if held {
+            // (Held: the slots can't be filled, so the stretch runs on without growing.)
         } else if r.slots < most && r.peak >= r.slots && now.saturating_sub(r.clean_since) >= RAMP_CLEAN_S {
             r.slots += 1;
             (r.clean_since, r.peak) = (now, running);
@@ -4391,10 +4400,10 @@ impl Agent {
                     slots: self.job_slots(),
                     reached,
                     most,
-                    held: trouble.clone().filter(|_| self.ramp_held),
-                    not_clean: trouble.clone().filter(|_| !self.ramp_held),
+                    held: self.ramp_held.then(|| RAMP_HELD_WHY.to_string()),
+                    not_clean: trouble.clone(),
                     clean_since,
-                    grows_at: (trouble.is_none() && reached < most && clean_since > 0)
+                    grows_at: (trouble.is_none() && !self.ramp_held && reached < most && clean_since > 0)
                         .then_some(clean_since + RAMP_CLEAN_S),
                 }
             }),
@@ -11927,9 +11936,10 @@ mod tests {
         assert!(lead_start(&mut a, std::slice::from_ref(&job), &cond, &root, &mut w).is_empty());
     }
 
-    /// The lead's slots' ramp (`tend_ramp`): held at two while the NAS's limits aren't known (D1);
-    /// one more after a clean stretch of `RAMP_CLEAN_S` in which it ran its slots at once (D2),
-    /// kept in its state; a stall or a memory guard stop starts the stretch again, kept too (D4).
+    /// The lead's slots' ramp (`tend_ramp`): held at two while the NAS's limits aren't known, the
+    /// stretch going on meanwhile (D1); one more after a clean stretch of `RAMP_CLEAN_S` in which
+    /// it ran its slots at once (D2), kept in its state; a stall or a memory guard stop starts the
+    /// stretch again, kept too (D4).
     #[test]
     fn the_leads_slots_ramp_up_after_a_clean_stretch() {
         room::TEST_FREE.with(|c| c.set(Some(100 << 30)));
@@ -11954,26 +11964,27 @@ mod tests {
         let kept = |home: &Path| -> Ramp {
             serde_json::from_slice::<Memory>(&std::fs::read(home.join("state.json")).unwrap()).unwrap().ramp
         };
-        // D1: no NAS limits yet: held at two whatever it reached, the stretch never clean.
-        a.mem.ramp = Ramp { slots: RAMP_START + 1, clean_since: now_s() - RAMP_CLEAN_S, peak: RAMP_START + 1 };
-        a.tend_ramp();
-        assert_eq!(a.job_slots(), RAMP_START.min(most));
-        assert_eq!(a.mem.ramp.slots, RAMP_START + 1);
-        assert!(near_now(a.mem.ramp.clean_since), "the stretch starts again now");
-        assert!(near_now(kept(&home).clean_since), "the reset kept");
-        // Lasting: nothing rewritten, nothing reset, round after round.
-        let since = a.mem.ramp.clean_since;
-        std::fs::remove_file(home.join("state.json")).unwrap();
-        a.mem.ramp.clean_since = since - 100;
+        // D1: no NAS limits yet: held at two whatever it reached, but the stretch goes on (a hold
+        // isn't trouble: a restart's moment before the probe lands never starts it again), and it
+        // doesn't grow while held (its slots can't be filled). Nothing rewritten meanwhile.
+        let since = now_s() - RAMP_CLEAN_S - 100;
+        a.mem.ramp = Ramp { slots: RAMP_START + 1, clean_since: since, peak: RAMP_START + 1 };
         for _ in 0..3 {
             a.tend_ramp();
         }
-        assert!(!home.join("state.json").exists(), "a lasting trouble doesn't rewrite the state");
-        assert_eq!(a.mem.ramp.clean_since, since - 100);
-        assert!(a.ramp_trouble.as_deref().is_some_and(|w| w.contains("no NAS limits")));
-        // The NAS probed: its slots as reached.
+        assert_eq!(a.job_slots(), RAMP_START.min(most));
+        assert_eq!(a.mem.ramp.slots, RAMP_START + 1, "held: no growth");
+        assert_eq!(a.mem.ramp.clean_since, since, "the stretch goes on through the hold");
+        assert!(!home.join("state.json").exists(), "a hold doesn't rewrite the state");
+        assert!(a.ramp_trouble.is_none() && a.ramp_held);
+        // The NAS probed: its slots as reached; the stretch, old enough and run at its slots
+        // before the hold, grows them at once.
         let limits = crate::budget::nas::Limits { bytes_s: 100e6, creates_s: 40.0, downloads: None };
         a.coord.as_ref().unwrap().set_nas(Some(limits));
+        a.tend_ramp();
+        assert!(!a.ramp_held);
+        assert_eq!(a.mem.ramp.slots, RAMP_START + 2, "grown after the hold: the stretch was clean through it");
+        assert_eq!(a.job_slots(), (RAMP_START + 2).min(most));
         a.mem.ramp = Ramp::default();
         a.tend_ramp();
         assert_eq!(a.job_slots(), RAMP_START.min(most));

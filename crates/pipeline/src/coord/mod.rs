@@ -2260,8 +2260,9 @@ impl Coordinator {
     }
 
     /// Whether the pool's leased jobs' NAS weights together pass the whole (crate::budget::nas::WHOLE)
-    /// by the NAS's limits as probed (`nas_own`): the lead's slots' ramp waits (crate::agent's
-    /// `tend_ramp`). False before the NAS is probed.
+    /// by the NAS's limits as probed (`nas_own`), as the budget's own rules let them (§7.7: the
+    /// lead's own jobs alone, an aged job weighing the whole). False before the NAS is probed. (Not
+    /// the lead's ramp's trouble since task #433: a grant by the rules says nothing about its slots.)
     pub fn nas_over(&self) -> bool {
         let s = self.shared.lock().unwrap();
         let now = s.now();
