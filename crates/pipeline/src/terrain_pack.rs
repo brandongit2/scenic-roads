@@ -425,8 +425,8 @@ pub fn process_with(
     finish(p, &levels)
 }
 
-/// Levels made again from the level below where it exists (process): z8 from z9 (which covers the
-/// ground within a z9 tile of a road; averaging our z12 instead gives the same within a few metres).
+/// Levels made again from the level below where it exists (process): z8 from z9 (made over the whole
+/// coverage plus 20 km, as z10–12 are; averaging our z12 instead gives the same within a few metres).
 /// The finer levels stay AWS's, so the analysis grid (z11) and what follows from it don't change.
 pub const REBUILD_Z: u8 = 8;
 
