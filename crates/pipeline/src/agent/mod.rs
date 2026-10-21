@@ -14741,7 +14741,6 @@ mod tests {
             ..Default::default()
         };
         let mut l = vec![build::Line {
-            id: "landmarks".into(),
             what: "Landmarks".into(),
             steps: ["peaks", "heritage", "marks"].iter().map(|s| s.to_string()).collect(),
             done: 4,
