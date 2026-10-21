@@ -616,6 +616,11 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
         l.iter().map(|l| (l.recipe.id.as_str(), l.stored.is_some(), l.disabled)).collect::<Vec<_>>(),
         [("a", true, false), ("b", false, true), ("c", false, false)]
     );
+    // The enabled empty one (c) named in a warning, once per version; the disabled one (b) not.
+    let w = read::skipped_empty("v-empty-test", &l).unwrap();
+    assert!(w.starts_with("warning: v-empty-test:") && w.ends_with(": c"), "{w}");
+    assert_eq!(read::skipped_empty("v-empty-test", &l), None);
+    assert_eq!(read::skipped_empty("v-none", &l[..2]), None);
     let t = read::tree(&e.index);
     assert!(t.regions.contains(&"b".to_string()) && t.regions.contains(&"c".to_string()));
     assert_eq!(read::recipes(&e).unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a"]);

@@ -204,9 +204,27 @@ pub fn recipes(a: &Accepted) -> Result<Vec<Recipe>> {
 }
 
 /// The enabled regions of an accepted version with an area (`listed`, the disabled and the empty
-/// left out).
+/// left out). An enabled region that resolved to nothing is skipped, never silently: a warning
+/// names it (`skipped_empty`), once per version.
 pub fn enabled(a: &Accepted) -> Result<Vec<Listed>> {
-    Ok(listed(a)?.into_iter().filter(|l| !l.disabled && l.stored.is_some()).collect())
+    let l = listed(a)?;
+    if let Some(w) = skipped_empty(&a.version, &l) {
+        eprintln!("{w}");
+    }
+    Ok(l.into_iter().filter(|l| !l.disabled && l.stored.is_some()).collect())
+}
+
+/// The warning for the enabled regions of `listed` that resolved to nothing (the check holds one
+/// unless it's a `hand_out_all` leftover, `rg-empty`; an enabled leftover is still nothing to
+/// build): None when there are none, or `version`'s were already named in this process.
+pub fn skipped_empty(version: &str, listed: &[Listed]) -> Option<String> {
+    static SAID: std::sync::Mutex<Option<std::collections::BTreeSet<String>>> = std::sync::Mutex::new(None);
+    let ids: Vec<&str> =
+        listed.iter().filter(|l| !l.disabled && l.stored.is_none()).map(|l| l.recipe.id.as_str()).collect();
+    if ids.is_empty() || !SAID.lock().unwrap().get_or_insert_default().insert(version.to_string()) {
+        return None;
+    }
+    Some(format!("warning: {version}: enabled but resolved to nothing, skipped (no area to build): {}", ids.join(", ")))
 }
 
 /// Reads `names` (content names under `root`), 16 at a time (on the NAS each waits a round trip or
