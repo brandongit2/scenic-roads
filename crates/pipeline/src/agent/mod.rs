@@ -7644,7 +7644,9 @@ impl Agent {
             let mut said = self.departed.borrow_mut();
             said.retain(|_, at| now.saturating_sub(*at) < 3600);
             for (k, d) in forecast::departures(prev, &real, now) {
-                if said.insert(k, now).is_none() {
+                // (Stamped when logged only: a departure recurring every plan is said again an hour on.)
+                if let std::collections::btree_map::Entry::Vacant(e) = said.entry(k) {
+                    e.insert(now);
                     eprintln!("agent: the grants departed from the forecast: {d}");
                 }
             }
