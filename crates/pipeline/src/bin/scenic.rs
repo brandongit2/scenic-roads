@@ -39,6 +39,9 @@
 //!   scenic in-use [--cores <n>] | off   the in-use share: the cores this Mac's agent keeps free
 //!                                       of its jobs while its owner uses it (by default 2); off:
 //!                                       the default; with none, how it stands
+//!   scenic nas-target [<percent> | off] the pool's NAS load target: the busiest disk's busy share
+//!                                       the NAS budget grants up to (by default 85, 30 to 95);
+//!                                       off: the default; with none, how it stands
 //!   scenic gc [--dry-run] [--days 14]   remove replaced files from the NAS (the agent runs it daily)
 //!   scenic backup [--local <dir>]       back up the user's folders (the agent runs it daily)
 //!   scenic inputs                       every gate unit (docs/inputs.md §4): its accepted version, its
@@ -1008,6 +1011,45 @@ fn in_use(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `scenic nas-target [<percent> | off]`: the pool's NAS load target (pipeline::budget::nas::Target),
+/// set in the project folder on the NAS (`state/pool/nas-target.json`), which the lead reads each
+/// 10 s, whichever Mac set it; off: the default; with none, how it stands.
+fn nas_target(args: &[String]) -> Result<()> {
+    use pipeline::budget::nas;
+    let r = root(args, true)?;
+    let mut words = args.iter().skip(2);
+    let mut what = None;
+    while let Some(a) = words.next() {
+        if a == "--home" || a == "--root" {
+            words.next();
+        } else if !a.starts_with("--") {
+            what = Some(a.as_str());
+            break;
+        }
+    }
+    let by = format!("scenic nas-target on {}", agent::cond::host_name());
+    let t = match what {
+        Some("off") => nas::set_target(&r, None, &by)?,
+        Some(p) => {
+            let pct: u32 = p
+                .trim_end_matches('%')
+                .parse()
+                .with_context(|| format!("scenic nas-target <percent> | off, not {p}"))?;
+            nas::set_target(&r, Some(pct), &by)?
+        }
+        None => nas::read_target(&r),
+    };
+    println!(
+        "NAS target: the budget grants while the NAS's busiest disk is under {} % busy ({})",
+        nas::target_pct(t.as_ref()),
+        match &t {
+            Some(t) => format!("set {} by {}", ago(t.at), t.by),
+            None => "the default".into(),
+        }
+    );
+    Ok(())
+}
+
 /// `scenic memory [<GB> | off]`: the memory this Mac gives the build's jobs together
 /// (agent::buildmem), set in its agent's folder, which the agent reads each loop; within the memory
 /// guard's limit; off: the limit alone; with none, how it stands.
@@ -1530,6 +1572,7 @@ fn main() -> Result<()> {
         "clean" => clean(&args),
         "room" => room(&args),
         "in-use" => in_use(&args),
+        "nas-target" => nas_target(&args),
         "memory" => memory(&args),
         "gc" => {
             let days: u64 = opt(&args, "--days").map(|d| d.parse()).transpose()?.unwrap_or(14);

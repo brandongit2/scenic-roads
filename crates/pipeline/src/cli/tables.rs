@@ -47,6 +47,7 @@ pub const SCENIC: Table = Table {
         c("room", "[<GB> | off] [--home <dir>]", "this Mac's disk room target: the free space its agent keeps, freeing its caches to it; with none, how it stands", &[], HR, 1),
         c("memory", "[<GB> | off] [--home <dir>]", "the memory this Mac gives the build's jobs together, within the memory guard's limit; off: the limit; with none, how it stands", &[], HR, 1),
         c("in-use", "[--cores <n>] | off [--home <dir>]", "this Mac's in-use share: the cores its agent keeps free of its jobs while its owner uses it (by default 2); off: the default; with none, how it stands", &[], &["--cores", "--home", "--root"], 1),
+        c("nas-target", "[<percent> | off] [--root <dir>]", "the pool's NAS load target: the busiest disk's busy share the NAS budget grants up to (by default 85, 30 to 95), kept on the NAS for the lead; off: the default; with none, how it stands", &[], &["--root"], 1),
         c("gc", "[--dry-run] [--days 14] [--root <dir>]", "remove replaced files from the NAS (the agent runs it daily)", &["--dry-run"], &["--days", "--root"], 0),
         c("backup", "[--local <dir>] [--root <dir>]", "back up the user's folders (the agent runs it daily)", &[], &["--local", "--root"], 0),
         c("timings", "[<kind>] [--last N] [--host <mac>] [--here | --file <f>] [--json]", "the jobs' timings: each kind's phases over its last N runs (20), with their totals and shares; the build's, or with --here this Mac's own jobs' alone", &["--here", "--json"], &["--last", "--host", "--file", "--home", "--root"], 1),

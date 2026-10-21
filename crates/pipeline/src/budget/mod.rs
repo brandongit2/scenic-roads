@@ -34,6 +34,7 @@
 pub mod nas;
 #[cfg(not(target_os = "wasi"))]
 pub mod proxy;
+pub mod snmp;
 #[cfg(not(target_os = "wasi"))]
 pub use proxy::Proxy;
 

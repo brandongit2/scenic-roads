@@ -13,12 +13,16 @@
 //!   statted and deleted a second (crate::costin's `listed`, `stats`, `deletes`), each over the
 //!   NAS's rate for it. A clean-up's walk reads and writes next to nothing yet keeps the share busy.
 //!   A job's targets run one after another: its weight is its heaviest target's.
-//! - **The limits** are measured, never typed: `probe` makes a few small files and one larger in a
-//!   folder of its own, reads the larger back past the cache, lists the folder, stats the small
-//!   files and deletes them one by one, and removes the rest. The coordinator
-//!   probes every `EVERY_S`, whatever the switch says, and takes the best of the last `KEEP_S`'s probes
-//!   (`Probes`): a probe run while the build loads the NAS measures what's left, so the best is the
-//!   nearest to the whole.
+//! - **The limits** are measured, never typed: `probe` makes small files and larger ones in a
+//!   folder of its own, `STREAMS` streams at once (the NAS's capacity together, task #534), reads
+//!   the larger back past the cache, lists a kept folder, stats its files, deletes the small ones
+//!   one by one, and removes the rest. The coordinator probes every `EVERY_S`, whatever the switch
+//!   says, and takes the best of the last `KEEP_S`'s probes (`Probes`): a probe run while the build
+//!   loads the NAS measures what's left, so the best is the nearest to the whole.
+//! - **The closed loop** (`Loop`, task #534): every 10 s the coordinator reads the NAS's own disks'
+//!   busy shares (crate::budget::snmp) and scales the limits by a gain kept under the owner's
+//!   target (`Target`, `scenic nas-target`, by default `DEFAULT_TARGET_PCT`), whatever loads the
+//!   NAS, the build or not.
 //! - **Downloads**: a job of a fetching step (crate::agent::steps::Kind::Fetch) counts one; the
 //!   switch's `downloads <n>` caps them pool-wide (no cap without it).
 
@@ -36,10 +40,121 @@ pub const EVERY_S: u64 = 30 * 60;
 pub const KEEP_S: u64 = 24 * 3600;
 /// The whole NAS, in weight (thousandths).
 pub const WHOLE: u32 = 1000;
-/// A probe's small files (each `SMALL` bytes), and its larger file's size.
+/// A probe's streams at once (task #534, 21 Oct: one stream measured 5 creates/s and 25 MB/s
+/// where four together made 41 creates/s and eight 57 MB/s).
+pub const STREAMS: usize = 4;
+/// Each stream's small files (each `SMALL` bytes), and its larger file's size.
 pub const SMALL_FILES: usize = 12;
 pub const SMALL: usize = 4096;
 pub const LARGE: usize = 16 << 20;
+
+/// The owner's load target for the NAS's disks, pool-wide (`TARGET_FILE`, `scenic nas-target`):
+/// the busiest disk's share busy (%) the budget grants up to (`Loop`).
+pub const TARGET_FILE: &str = "state/pool/nas-target.json";
+/// The target while none is set: 85 % (headroom kept: #451's stall came at a NAS held busy).
+pub const DEFAULT_TARGET_PCT: u32 = 85;
+/// The targets that may be set (%): never 100, never so low the pool stops.
+pub const TARGET_RANGE: std::ops::RangeInclusive<u32> = 30..=95;
+
+/// The target as set: its share (%), who set it and when (unix s).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Target {
+    pub pct: u32,
+    pub by: String,
+    pub at: u64,
+}
+
+/// The target as set under the project folder `root` (None: none set, or unreadable: the default).
+pub fn read_target(root: &Path) -> Option<Target> {
+    let t: Target = serde_json::from_slice(&std::fs::read(root.join(TARGET_FILE)).ok()?).ok()?;
+    TARGET_RANGE.contains(&t.pct).then_some(t)
+}
+
+/// The target's share (%): the set one's, else `DEFAULT_TARGET_PCT`.
+pub fn target_pct(t: Option<&Target>) -> u32 {
+    t.map_or(DEFAULT_TARGET_PCT, |t| t.pct)
+}
+
+/// Sets the target under `root` (None: cleared, the default again).
+pub fn set_target(root: &Path, pct: Option<u32>, by: &str) -> anyhow::Result<Option<Target>> {
+    let p = root.join(TARGET_FILE);
+    let Some(pct) = pct else {
+        match std::fs::remove_file(&p) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => return Ok(None),
+        }
+    };
+    anyhow::ensure!(
+        TARGET_RANGE.contains(&pct),
+        "the NAS target: {}–{} %, not {pct}",
+        TARGET_RANGE.start(),
+        TARGET_RANGE.end()
+    );
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let t = Target { pct, by: by.to_string(), at: now };
+    crate::whole::write(&p, &serde_json::to_vec(&t)?)?;
+    Ok(Some(t))
+}
+
+/// The closed loop on the NAS's own disk load (task #534): the probed limits scaled by `gain`,
+/// lowered while the busiest disk (smoothed) is over the target, raised back toward 1 once it's
+/// `BAND` under it. Scaled limits make every job weigh more, the running ones too, so a NAS
+/// over its target takes no new job that weighs anything until the load falls (the alone rules
+/// stand: a job beside nothing that weighs anything still goes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Loop {
+    pub gain: f64,
+    /// The busiest disk's busy share, smoothed (%; None: not read yet).
+    pub load: Option<f64>,
+}
+
+/// The loop's gain's floor, its steps down and up per reading, the smoothing's weight of a new
+/// reading, and the band under the target the load must fall below before the gain rises.
+pub const GAIN_MIN: f64 = 0.25;
+pub const GAIN_DOWN: f64 = 0.9;
+pub const GAIN_UP: f64 = 1.05;
+pub const SMOOTH: f64 = 0.3;
+pub const BAND: f64 = 10.0;
+
+impl Default for Loop {
+    fn default() -> Self {
+        Loop { gain: 1.0, load: None }
+    }
+}
+
+impl Loop {
+    /// One reading of the disks' busy shares (%) against the target `pct`.
+    pub fn read(&mut self, busy: &[f64], pct: u32) {
+        let Some(now) = busy.iter().copied().filter(|b| b.is_finite()).reduce(f64::max) else { return };
+        let load = self.load.map_or(now, |l| l + SMOOTH * (now - l));
+        self.load = Some(load);
+        if load > pct as f64 {
+            self.gain = (self.gain * GAIN_DOWN).max(GAIN_MIN);
+        } else if load < pct as f64 - BAND {
+            self.gain = (self.gain * GAIN_UP).min(1.0);
+        }
+    }
+
+    /// No reading to be had (no keys, the NAS not answering): the probe's limits alone.
+    pub fn lost(&mut self) {
+        *self = Loop::default();
+    }
+}
+
+impl Limits {
+    /// The limits scaled by the loop's gain (the downloads' cap as it was).
+    pub fn scaled(self, g: f64) -> Limits {
+        Limits {
+            bytes_s: self.bytes_s * g,
+            creates_s: self.creates_s * g,
+            listed_s: self.listed_s * g,
+            stats_s: self.stats_s * g,
+            deletes_s: self.deletes_s * g,
+            downloads: self.downloads,
+        }
+    }
+}
 
 /// The switch as its file says: None, off; else on, with its download cap.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -241,12 +356,11 @@ pub fn clean_stale(root: &Path, me: &str) -> usize {
     n
 }
 
-/// Probes the NAS in `dir` (made, then removed with all it holds): `SMALL_FILES` files of `SMALL`
-/// bytes made (create-new, each written and closed: the share's creates), then one of `LARGE`
-/// written and synced and read back past the cache; then the folder listed (its entries a second:
-/// one listing of a few entries, its round trip in it, so a listing's cost is if anything
-/// overstated), the small files statted and deleted one by one. Small and short: under a second or
-/// two.
+/// Probes the NAS in `dir` (made, then removed with all it holds): in each of `STREAMS` streams at
+/// once, `SMALL_FILES` files of `SMALL` bytes made (create-new, each written and closed: the
+/// share's creates), then in each one of `LARGE` written and synced and read back past the cache;
+/// then the kept folder listed (`meta_dir`) and its files statted, and the small files deleted one
+/// by one. Short: a few seconds.
 pub fn probe(dir: &Path) -> std::io::Result<Probe> {
     std::fs::create_dir_all(dir)?;
     let r = probe_in(dir);
@@ -257,22 +371,45 @@ pub fn probe(dir: &Path) -> std::io::Result<Probe> {
 }
 
 fn probe_in(dir: &Path) -> std::io::Result<Probe> {
-    let small = vec![7u8; SMALL];
+    // (Each part `STREAMS` streams at once: the NAS's capacity together, not one stream's.)
     let t = Instant::now();
-    for i in 0..SMALL_FILES {
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(format!("s{i}")))?;
-        f.write_all(&small)?;
-    }
-    let creates_s = SMALL_FILES as f64 / t.elapsed().as_secs_f64().max(1e-6);
+    in_streams(|k| {
+        let small = vec![7u8; SMALL];
+        for i in 0..SMALL_FILES {
+            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(format!("s{k}_{i}")))?;
+            f.write_all(&small)?;
+        }
+        Ok(())
+    })?;
+    let creates_s = (STREAMS * SMALL_FILES) as f64 / t.elapsed().as_secs_f64().max(1e-6);
+    let t = Instant::now();
+    in_streams(|k| large_round(&dir.join(format!("large{k}"))))?;
+    let bytes_s = (STREAMS * 2 * LARGE) as f64 / t.elapsed().as_secs_f64().max(1e-6);
+    let (listed_s, stats_s, deletes_s) = probe_meta(dir)?;
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    Ok(Probe { at, bytes_s, creates_s, listed_s, stats_s, deletes_s })
+}
+
+/// Runs `f(k)` for each stream `k` of `STREAMS` at once: the first error, if any.
+fn in_streams(f: impl Fn(usize) -> std::io::Result<()> + Sync) -> std::io::Result<()> {
+    std::thread::scope(|s| {
+        let f = &f;
+        let hs: Vec<_> = (0..STREAMS).map(|k| s.spawn(move || f(k))).collect();
+        hs.into_iter()
+            .map(|h| h.join().unwrap_or_else(|_| Err(std::io::Error::other("a probe stream panicked"))))
+            .collect()
+    })
+}
+
+/// One stream's larger file at `p`: `LARGE` bytes written and synced, read back past the cache.
+fn large_round(p: &Path) -> std::io::Result<()> {
     let large: Vec<u8> = (0..LARGE).map(|i| (i * 31 % 251) as u8).collect();
-    let p = dir.join("large");
-    let t = Instant::now();
     {
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&p)?;
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(p)?;
         f.write_all(&large)?;
         f.sync_all()?;
     }
-    let mut f = std::fs::File::open(&p)?;
+    let mut f = std::fs::File::open(p)?;
     #[cfg(target_os = "macos")]
     {
         use std::os::fd::AsRawFd;
@@ -286,23 +423,21 @@ fn probe_in(dir: &Path) -> std::io::Result<Probe> {
     if back.len() != LARGE {
         return Err(std::io::Error::other(format!("read back {} of {LARGE} bytes", back.len())));
     }
-    let bytes_s = (2 * LARGE) as f64 / t.elapsed().as_secs_f64().max(1e-6);
-    drop(f);
-    let (listed_s, stats_s, deletes_s) = probe_meta(dir)?;
-    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    Ok(Probe { at, bytes_s, creates_s, listed_s, stats_s, deletes_s })
+    Ok(())
 }
 
-/// The metadata part of a probe in `dir` (its small files `s<i>` there): entries listed, files
-/// statted and files deleted a second.
+/// The metadata part of a probe in `dir` (its small files `s<k>_<i>` there): entries listed, files
+/// statted and files deleted a second (one stream: a clean-up's walk is one).
 fn probe_meta(dir: &Path) -> std::io::Result<(f64, f64, f64)> {
     let rate = |n: usize, t: Instant| n as f64 / t.elapsed().as_secs_f64().max(1e-6);
     let (listed_s, stats_s) = probe_listing(&meta_dir(dir))?;
     let t = Instant::now();
-    for i in 0..SMALL_FILES {
-        std::fs::remove_file(dir.join(format!("s{i}")))?;
+    for k in 0..STREAMS {
+        for i in 0..SMALL_FILES {
+            std::fs::remove_file(dir.join(format!("s{k}_{i}")))?;
+        }
     }
-    Ok((listed_s, stats_s, rate(SMALL_FILES, t)))
+    Ok((listed_s, stats_s, rate(STREAMS * SMALL_FILES, t)))
 }
 
 /// The folder a probe in `dir` lists and stats (`<host>-meta` beside `<host>-<pid>`): kept between
@@ -391,6 +526,48 @@ mod tests {
         assert!(Limits::fits_quiet(700, 300) && !Limits::fits_quiet(701, 300));
         assert!(Limits::fits_own(600, 400) && !Limits::fits_own(601, 400));
         assert!(Limits::fits_own(0, 1000) && !Limits::fits_own(1, 1000), "the lead's own: within the whole, or alone");
+    }
+
+    /// The loop lowers the gain while the busiest disk is over the target, to its floor at most,
+    /// holds it within the band, and raises it back to 1 below it; lost, the probes' limits alone.
+    #[test]
+    fn the_loop_keeps_the_nas_under_its_target() {
+        let mut l = Loop::default();
+        l.read(&[60.0, 95.0, 70.0], 85);
+        assert_eq!((l.load, l.gain), (Some(95.0), GAIN_DOWN), "the busiest disk counts");
+        for _ in 0..100 {
+            l.read(&[99.0], 85);
+        }
+        assert_eq!(l.gain, GAIN_MIN, "never below its floor");
+        let mut held = l;
+        held.load = Some(80.0);
+        held.read(&[80.0], 85);
+        assert_eq!(held.gain, GAIN_MIN, "within the band: held");
+        for _ in 0..200 {
+            l.read(&[40.0], 85);
+        }
+        assert_eq!(l.gain, 1.0, "never above the probes' limits");
+        l.lost();
+        assert_eq!(l, Loop::default());
+        let lim = Limits { bytes_s: 100e6, creates_s: 40.0, downloads: Some(2), ..Default::default() };
+        let r = Rate { bytes_s: 25e6, ..Default::default() };
+        assert_eq!(lim.scaled(0.5).weight(r), 500, "a lowered gain: every job weighs more");
+        assert_eq!(lim.scaled(0.5).downloads, Some(2));
+    }
+
+    /// The owner's target: set, read, bounded and cleared under the project folder.
+    #[test]
+    fn the_target_is_set_read_and_cleared() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
+        assert_eq!(target_pct(read_target(d.path()).as_ref()), DEFAULT_TARGET_PCT);
+        assert!(set_target(d.path(), Some(100), "t").is_err(), "never 100 %");
+        let t = set_target(d.path(), Some(70), "t").unwrap();
+        assert_eq!(read_target(d.path()), t);
+        assert_eq!(target_pct(t.as_ref()), 70);
+        assert_eq!(set_target(d.path(), None, "t").unwrap(), None);
+        assert_eq!(read_target(d.path()), None);
+        assert_eq!(set_target(d.path(), None, "t").unwrap(), None, "cleared twice: fine");
     }
 
     /// The limits are the best of the last day's probes.
