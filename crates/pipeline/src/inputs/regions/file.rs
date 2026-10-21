@@ -1,4 +1,4 @@
-//! The region file (docs/inputs.md §6.1.3), `pins.toml` (§6.1.3, §6.1.5) and their parts, parsed:
+//! The region file (docs/inputs.md §6.1.3), `_pins.toml` (§6.1.3, §6.1.5) and their parts, parsed:
 //! every fault a finding of its own kind (`Fault`), nothing repaired.
 
 use serde::Deserialize;
@@ -202,7 +202,7 @@ pub struct Region {
     /// or sizes from (crate::inputs::regions::read).
     pub disabled: bool,
     pub lines: BTreeMap<String, Line>,
-    /// Its own `[pins]`, overriding `pins.toml`'s.
+    /// Its own `[pins]`, overriding `_pins.toml`'s.
     pub pins: BTreeMap<String, String>,
 }
 
@@ -605,10 +605,10 @@ pub fn parse_group(text: &str) -> Result<Group, Fault> {
     Ok(g)
 }
 
-/// `pins.toml`, parsed.
+/// `_pins.toml`, parsed.
 pub fn parse_pins(text: &str) -> Result<BTreeMap<String, String>, Fault> {
     let raw: BTreeMap<String, toml::Value> =
-        toml::from_str(text).map_err(|e| fault("toml", format!("pins.toml: {}", e.message())))?;
+        toml::from_str(text).map_err(|e| fault("toml", format!("_pins.toml: {}", e.message())))?;
     pins_of(raw)
 }
 

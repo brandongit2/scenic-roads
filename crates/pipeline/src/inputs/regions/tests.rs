@@ -70,7 +70,7 @@ fn run(f: &Fx, files: &[(&str, &str)]) -> resolve::Outcome {
     resolve::resolve(&folder(files), &ctx)
 }
 
-const PINS: (&str, &str) = ("pins.toml", "osm = \"2026-09-28\"\n");
+const PINS: (&str, &str) = ("_pins.toml", "osm = \"2026-09-28\"\n");
 
 fn region(id: &str, body: &str) -> String {
     format!("id = \"{id}\"\nname = \"{id}\"\n{body}")
@@ -167,7 +167,7 @@ fn loops_refs_dups_and_pins_are_problems() {
     // No pin; a pin naming another pass.
     let out = run(&f, &[("a.toml", &a)]);
     assert_eq!(out.problems[0].check, "rg-pin");
-    let out = run(&f, &[("pins.toml", "osm = \"2026-06-01\"\n"), ("a.toml", &a)]);
+    let out = run(&f, &[("_pins.toml", "osm = \"2026-06-01\"\n"), ("a.toml", &a)]);
     assert_eq!(out.problems[0].check, "rg-pin-mismatch");
     assert!(out.problems[0].message.contains("move the pin"));
     // A relation outside the outline set: the extract's, waited for.
@@ -234,7 +234,7 @@ fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
         ..Default::default()
     }));
     let a = region("a", "outline = [\"osm:1\"]\n");
-    let drop: BTreeMap<String, Vec<u8>> = [("pins.toml", PINS.1), ("eu/a.toml", a.as_str())]
+    let drop: BTreeMap<String, Vec<u8>> = [("_pins.toml", PINS.1), ("eu/a.toml", a.as_str())]
         .iter()
         .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
         .collect();
@@ -393,7 +393,55 @@ fn folders_make_the_tree_and_moving_a_region_changes_no_key() {
     assert_eq!(d.index.files["eu/pt/b.toml"].facts["geometry"], d2.index.files["b.toml"].facts["geometry"]);
     // A bad group file: an error on it.
     assert_eq!(checks.file("eu/_group.toml", b"name = \"x\"\ncolour = 1\n").findings[0].check(), "rg-group");
-    assert!(checks.takes_ignored("_group.toml") && !checks.takes_ignored("_draft.toml"));
+    assert!(checks.takes_ignored("_group.toml") && checks.takes_ignored("_draft.toml"));
+    assert!(!checks.takes_ignored("_x.geojson") && !checks.takes_ignored(".DS_Store"));
+}
+
+/// Any `_*.toml` is special, never a region: the known three are read, any other is a fault naming
+/// them, the old names are a fault saying what to rename them to, and the special files at the wrong
+/// place are faults (#536).
+#[test]
+fn a_name_starting_with_an_underscore_is_special() {
+    use resolve::{is_special, special, Special};
+    let checks = Regions::new(None);
+    assert!(is_special("_x.toml") && is_special("a/_group.toml") && !is_special("a.toml") && !is_special("_x.geojson"));
+    assert_eq!(special("_pins.toml"), Some(Special::Pins));
+    assert_eq!(special("_rules.toml"), Some(Special::Rules));
+    assert_eq!(special("eu/_group.toml"), Some(Special::Group));
+    assert_eq!(special("eu/_pins.toml"), None);
+    assert_eq!(special("_draft.toml"), None);
+    let ok = |p: &str, t: &str| checks.file(p, t.as_bytes()).findings;
+    assert!(ok("_pins.toml", "osm = \"2026-09-28\"\n").is_empty());
+    assert!(ok("_rules.toml", "cover = \"earth\"\n").is_empty());
+    for (p, t) in [("_draft.toml", ""), ("eu/_pins.toml", "osm = \"2026-09-28\"\n"), ("eu/_rules.toml", "")] {
+        let fs = ok(p, t);
+        assert_eq!(fs.len(), 1, "{p}");
+        assert_eq!(fs[0].check(), "rg-special");
+        assert!(
+            fs[0].message.contains("_pins.toml")
+                && fs[0].message.contains("_rules.toml")
+                && fs[0].message.contains("_group.toml")
+        );
+    }
+    for (old, new) in [("pins.toml", "_pins.toml"), ("rules.toml", "_rules.toml")] {
+        let fs = ok(old, "osm = \"2026-09-28\"\n");
+        assert_eq!(fs.len(), 1, "{old}");
+        assert_eq!(fs[0].check(), "rg-special");
+        assert!(fs[0].message.contains(&format!("is now {new}")));
+    }
+    // A region with the file name of a special one is that: a fault, never a region.
+    let fs = ok("_a.toml", &region("_a", "outline = [\"osm:1\"]\n"));
+    assert_eq!(fs[0].check(), "rg-special");
+    // The folder reads them as what they are, and an unknown one is no region.
+    let files: BTreeMap<String, Vec<u8>> =
+        [("_pins.toml", PINS.1), ("_rules.toml", "cover = \"earth\"\n"), ("_draft.toml", "id = \"x\"\n")]
+            .iter()
+            .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
+            .collect();
+    let folder = resolve::Folder::read(files.keys().cloned(), &|p| Ok(files[p].clone())).unwrap();
+    assert_eq!(folder.pins.get("osm").map(String::as_str), Some("2026-09-28"));
+    assert_eq!(folder.rules.unwrap().cover.as_deref(), Some("earth"));
+    assert!(folder.regions.is_empty() && folder.unread.contains("_draft.toml"));
 }
 
 /// A NAS root for the check job: the records naming pass `PASS` (and its outline set, when
@@ -463,8 +511,9 @@ fn a_region_missing_a_fact_is_an_error() {
     assert!(read::listed(&a).is_err());
 }
 
-/// `rules.toml` taken in beside the regions (its facts the rules, no outline): not a region, so the
-/// regions read (21 Oct: the index taking it in stopped the regions' build, "rules.toml has no outline").
+/// `_rules.toml` (and `rules.toml`, its old name, while a version has it) taken in beside the regions
+/// (its facts the rules, no outline): not a region, so the regions read (21 Oct: the index taking it
+/// in stopped the regions' build, "rules.toml has no outline").
 #[test]
 fn the_rules_file_is_not_a_region() {
     let index: Index = serde_json::from_str(include_str!("testdata/index-empty-regions.json")).unwrap();
@@ -474,7 +523,9 @@ fn the_rules_file_is_not_a_region() {
     let n = read::listed(&a).unwrap().len();
     let mut rules = a.index.files.values().next().unwrap().clone();
     rules.facts = serde_json::from_str(r#"{"rules": {"cover": "earth", "sliver_km2": 50.0}}"#).unwrap();
-    a.index.files.insert("rules.toml".into(), rules);
+    for name in ["rules.toml", "_rules.toml", "_pins.toml"] {
+        a.index.files.insert(name.into(), rules.clone());
+    }
     assert_eq!(read::listed(&a).unwrap().len(), n);
 }
 

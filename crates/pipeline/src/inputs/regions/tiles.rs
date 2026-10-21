@@ -16,7 +16,7 @@
 //! - `hand_out`: a stretch (cells' pieces joined across the cells' edges they share) of a region's
 //!   water that one region of the folder alone borders goes to it; one under `sliver_km2`, to the
 //!   one sharing its longest edge. Only regions with water take one.
-//! - With `cover = "earth"` in `rules.toml`: per cell, land in two regions is taken from those of
+//! - With `cover = "earth"` in `_rules.toml`: per cell, land in two regions is taken from those of
 //!   them with water; each piece in no region within 100 m of land, up to `sliver_km2`, joins the
 //!   region with water sharing the longest edge with it, and a piece touching none stays; land in
 //!   no region over `sliver_km2` is `rg-cover`, as is water in two regions, or in none without a
@@ -241,9 +241,9 @@ pub fn clip(r: &[Pt], b: [i64; 4]) -> Option<Ring> {
     (pts.len() >= 3 && geom::area2(&pts) != 0).then_some(pts)
 }
 
-// ---- rules.toml ---------------------------------------------------------------------------------
+// ---- _rules.toml ---------------------------------------------------------------------------------
 
-/// `rules.toml` (at the folder's top): the rules for the whole folder.
+/// `_rules.toml` (at the folder's top): the rules for the whole folder.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rules {
@@ -260,16 +260,14 @@ fn sliver() -> f64 {
     50.0
 }
 
-pub const RULES: &str = "rules.toml";
-
 pub fn parse_rules(text: &str) -> Result<Rules, super::file::Fault> {
     let r: Rules = toml::from_str(text)
-        .map_err(|e| super::file::Fault { check: "rules", message: format!("rules.toml: {}", e.message()) })?;
+        .map_err(|e| super::file::Fault { check: "rules", message: format!("_rules.toml: {}", e.message()) })?;
     if r.cover.as_deref().is_some_and(|c| c != "earth") {
-        return Err(super::file::Fault { check: "rules", message: "rules.toml: cover is \"earth\" or absent".into() });
+        return Err(super::file::Fault { check: "rules", message: "_rules.toml: cover is \"earth\" or absent".into() });
     }
     if !(r.sliver_km2 >= 0.0 && r.sliver_km2 <= 10_000.0) {
-        return Err(super::file::Fault { check: "rules", message: "rules.toml: sliver_km2 is 0 to 10,000".into() });
+        return Err(super::file::Fault { check: "rules", message: "_rules.toml: sliver_km2 is 0 to 10,000".into() });
     }
     Ok(r)
 }
@@ -1530,7 +1528,7 @@ fn cells_pass(
                     check: "rg-cover",
                     about: vec![format!("{},{}", c.0 * 2, c.1 * 2)],
                     found: vec!["gap".into()],
-                    files: vec![RULES.into()],
+                    files: vec![super::resolve::RULES.into()],
                     message: format!("{km2:.1} km² of land by {:.4}°, {:.4}° is in no region, over sliver_km2 ({fill_km2}) for the fill to give it to a neighbour", v[0] as f64 / 1e7, v[1] as f64 / 1e7),
                 });
             }
@@ -1539,7 +1537,7 @@ fn cells_pass(
                     check: "rg-cover",
                     about: vec![format!("{},{}", c.0 * 2, c.1 * 2)],
                     found: vec!["gap".into()],
-                    files: vec![RULES.into()],
+                    files: vec![super::resolve::RULES.into()],
                     message: format!("{:.1} km² of water in the cell from {}°, {}° is in no region, and no region's water is the rest", geom::area_km2(&sea), c.0 * 2, c.1 * 2),
                 });
             }

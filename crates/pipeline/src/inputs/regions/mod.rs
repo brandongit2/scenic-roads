@@ -1,6 +1,6 @@
 //! The regions (docs/inputs.md §6.1): a declare input, `inputs/regions/`, read recursively. One
 //! region per file, `<id>.toml` anywhere under it (crate::inputs::regions::file), shapes as GeoJSON
-//! (`<name>.geojson`, crate::inputs::regions::shapes), `pins.toml` naming the OSM pass the folder is
+//! (`<name>.geojson`, crate::inputs::regions::shapes), `_pins.toml` naming the OSM pass the folder is
 //! written against; anything else ignored.
 //!
 //! The check (`Regions`, on the gate) resolves every region against the build's current pass (its
@@ -162,7 +162,7 @@ impl Checks for Regions {
     }
 
     fn takes_ignored(&self, name: &str) -> bool {
-        name == resolve::GROUP
+        resolve::is_special(name)
     }
 
     fn holds_unchanged(&self) -> bool {
@@ -184,7 +184,19 @@ impl Checks for Regions {
             }
             return c;
         };
-        if resolve::is_group(path) {
+        let known = resolve::special(path);
+        if let Some(new) = resolve::renamed(path) {
+            let message = format!("{path} is now {new}: rename it");
+            c.findings.push(finding(&file::Fault { check: "special", message }, path));
+        } else if resolve::is_special(path) && known.is_none() {
+            let message = format!(
+                "{name}: a file whose name starts with _ is special, and the special files are {} and {} (at the top) and {} (in any folder)",
+                resolve::PINS,
+                resolve::RULES,
+                resolve::GROUP
+            );
+            c.findings.push(finding(&file::Fault { check: "special", message }, path));
+        } else if known == Some(resolve::Special::Group) {
             match file::parse_group(text) {
                 Ok(g) => {
                     c.facts.insert("group".into(), serde_json::to_value(&g).unwrap_or_default());
@@ -193,14 +205,14 @@ impl Checks for Regions {
                 }
                 Err(f) => c.findings.push(finding(&f, path)),
             }
-        } else if resolve::is_rules(path) {
+        } else if known == Some(resolve::Special::Rules) {
             match tiles::parse_rules(text) {
                 Ok(r) => {
                     c.facts.insert("rules".into(), serde_json::to_value(&r).unwrap_or_default());
                 }
                 Err(f) => c.findings.push(finding(&f, path)),
             }
-        } else if resolve::is_pins(path) {
+        } else if known == Some(resolve::Special::Pins) {
             match file::parse_pins(text) {
                 Ok(p) => {
                     c.facts.insert("pins".into(), serde_json::to_value(&p).unwrap_or_default());

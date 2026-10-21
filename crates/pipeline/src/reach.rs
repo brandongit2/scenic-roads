@@ -349,7 +349,7 @@ mod tests {
         // land and the coastline's land none here): kept apart for the depth alone.
         use crate::inputs::regions::{data::Datasets, read, resolve};
         let files: std::collections::BTreeMap<String, Vec<u8>> = [
-            ("pins.toml", "osm = \"2026-09-28\"\n"),
+            ("_pins.toml", "osm = \"2026-09-28\"\n"),
             ("sea.toml", "id = \"sea\"\nname = \"Sea\"\nwater = [\"box:-16,58,-4,66\"]\n"),
         ]
         .iter()

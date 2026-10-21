@@ -37,9 +37,9 @@ pub struct Folder {
     pub regions: BTreeMap<String, (String, Region)>,
     /// By name: (the file's path, its polygons, or why it can't be read).
     pub shapes: BTreeMap<String, (String, Result<Polys, String>)>,
-    /// `pins.toml`, when there and read.
+    /// `_pins.toml`, when there and read.
     pub pins: BTreeMap<String, String>,
-    /// `rules.toml`, when there and read.
+    /// `_rules.toml`, when there and read.
     pub rules: Option<super::tiles::Rules>,
     /// The files that didn't parse (their own findings are the file checks').
     pub unread: BTreeSet<String>,
@@ -54,29 +54,60 @@ pub fn file_name(path: &str) -> &str {
     path.rsplit_once('/').map_or(path, |(_, n)| n)
 }
 
-/// Whether a drop-box path is `pins.toml` (at the folder's top).
-pub fn is_pins(path: &str) -> bool {
-    path == "pins.toml"
-}
-
-/// Whether a drop-box path is `rules.toml` (at the folder's top).
-pub fn is_rules(path: &str) -> bool {
-    path == super::tiles::RULES
-}
-
-/// Whether the regions take a file: a region file (`<id>.toml`), a shape (`<name>.geojson`),
-/// `pins.toml` or `rules.toml`. Anything else is ignored: neither checked nor read (§6.1.2).
+/// Whether the regions take a file: a region file (`<id>.toml`), a shape (`<name>.geojson`) or a
+/// special file (`is_special`). Anything else is ignored: neither checked nor read (§6.1.2).
 pub fn takes(path: &str) -> bool {
     let n = file_name(path);
     n.ends_with(".toml") || n.ends_with(".geojson")
 }
 
+/// Whether a drop-box path is a special file, never a region: a `.toml` whose name starts with `_`
+/// (§6.1.2). Only the known ones (`special`) are taken; any other is a check fault.
+pub fn is_special(path: &str) -> bool {
+    let n = file_name(path);
+    n.starts_with('_') && n.ends_with(".toml")
+}
+
+/// Whether the regions pass over a name in a drop box: `inputs::ignored`'s, but a special file's
+/// (`_*.toml`) is taken, to be read or to be a fault.
+pub fn passes_over(name: &str) -> bool {
+    crate::inputs::ignored(name) && !is_special(name)
+}
+
 /// A folder's group file: its name in the map's Regions list, and its order (§6.1.2).
 pub const GROUP: &str = "_group.toml";
+/// The pins (at the folder's top): the OSM pass the folder is written against (§6.1.5).
+pub const PINS: &str = "_pins.toml";
+/// The rules for the whole folder (at the folder's top).
+pub const RULES: &str = "_rules.toml";
 
-/// Whether a drop-box path is a folder's `_group.toml`.
-pub fn is_group(path: &str) -> bool {
-    file_name(path) == GROUP
+/// The known special files.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Special {
+    Group,
+    Pins,
+    Rules,
+}
+
+/// Which known special file a drop-box path is: `_group.toml` in any folder, `_pins.toml` and
+/// `_rules.toml` at the top. (Their old names too, `renamed`, while a version still has them, so it
+/// reads as before until the update that renames them is in; #536.)
+pub fn special(path: &str) -> Option<Special> {
+    match (file_name(path), path.contains('/')) {
+        (GROUP, _) => Some(Special::Group),
+        (PINS | "pins.toml", false) => Some(Special::Pins),
+        (RULES | "rules.toml", false) => Some(Special::Rules),
+        _ => None,
+    }
+}
+
+/// The new name of a special file under its old one (at the top): what the check says to rename it to.
+pub fn renamed(path: &str) -> Option<&'static str> {
+    match path {
+        "pins.toml" => Some(PINS),
+        "rules.toml" => Some(RULES),
+        _ => None,
+    }
 }
 
 impl Folder {
@@ -88,18 +119,25 @@ impl Folder {
         let mut f = Folder::default();
         let mut by_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for p in paths.into_iter().filter(|p| takes(p) && !is_group(p)) {
+        for p in paths.into_iter().filter(|p| takes(p)) {
+            let kind = special(&p);
+            if kind == Some(Special::Group) {
+                continue;
+            }
             let bytes = read(&p)?;
             f.hashes.insert(p.clone(), store::naming::hash16(&bytes));
             let name = file_name(&p).to_string();
-            if is_rules(&p) {
+            if is_special(&p) && kind.is_none() {
+                // (An unknown special file: its own finding is the file check's.)
+                f.unread.insert(p);
+            } else if kind == Some(Special::Rules) {
                 match std::str::from_utf8(&bytes).ok().map(super::tiles::parse_rules) {
                     Some(Ok(r)) => f.rules = Some(r),
                     _ => {
                         f.unread.insert(p);
                     }
                 }
-            } else if is_pins(&p) {
+            } else if kind == Some(Special::Pins) {
                 match std::str::from_utf8(&bytes).ok().map(super::file::parse_pins) {
                     Some(Ok(pins)) => f.pins = pins,
                     _ => {
@@ -479,7 +517,7 @@ pub(super) fn gather(
             path,
             vec!["none".into()],
             format!(
-                "{}: no OSM pin: inputs/regions/pins.toml names the pass the folder is written against (osm = \"{}\")",
+                "{}: no OSM pin: inputs/regions/_pins.toml names the pass the folder is written against (osm = \"{}\")",
                 r.id,
                 ctx.pass.unwrap_or("<the pass's date>")
             ),

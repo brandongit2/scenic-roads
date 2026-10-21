@@ -49,7 +49,7 @@ Every drop box is a folder under `inputs/` in the NAS project folder (docs/stora
 
 ```
 inputs/
-  regions/            declare: <id>.toml, <name>.geojson, _group.toml in any subfolders; pins.toml, rules.toml (§6.1)
+  regions/            declare: <id>.toml, <name>.geojson in any subfolders; special files _group.toml, _pins.toml, _rules.toml (§6.1.2)
   languages/          declare: territories.tsv, about.toml (§6.2)
   translations/       request–fulfil: **/*.jsonl; todo/ (§6.3)
   descriptions/       request–fulfil: **/*.jsonl, about.toml; todo/ (§6.4)
@@ -68,7 +68,7 @@ Inside any drop box:
 - `todo/` is the app's and `how/` the owner's notes (pointing to `producers/<input>/`, §8); neither
   is read as input.
 - Names starting with `.`, `@`, `#` or `_` are ignored (`@eaDir`, `#recycle`, `.DS_Store`, drafts),
-  except the regions' `_group.toml`.
+  except the regions' special files (`_*.toml`, §6.1.2).
 - A file is taken only once its time is 10 s old, so a half-written file isn't checked.
 - Any other file that isn't the drop box's shape is an error finding, never skipped silently
   (except in `regions/`, which ignores unknown files: §6.1.2).
@@ -334,9 +334,9 @@ crate::inputs::regions (`file`, `shapes`, `geom`, `resolve`, `water`, `data`, `s
 #### 6.1.1 What a region is
 
 A name for a piece of the coverage. The coverage is the union of every region; nothing is built per
-region (docs/regions.md). Without `rules.toml`, regions may overlap freely and the check validates each
+region (docs/regions.md). Without `_rules.toml`, regions may overlap freely and the check validates each
 region's definition, not how regions fit together; the map's region layer shows overlaps and gaps
-by eye. With `cover = "earth"` in `rules.toml` (§6.1.3, "Land and water"), the regions must cover
+by eye. With `cover = "earth"` in `_rules.toml` (§6.1.3, "Land and water"), the regions must cover
 the Earth once: the check fills land gaps and settles land overlaps by the folder-wide rules, and
 any water in two regions, or in none, is an error.
 
@@ -352,9 +352,14 @@ any water in two regions, or in none, is an error.
   and the tree is made from the index alone (`regions::read::tree`). Empty folders aren't shown.
   Moving a region between folders changes its group, never its geometry or keys (the index, and so
   the catalog, is new).
-- `pins.toml` names the OSM pass the folder is written against (§6.1.5).
-- `rules.toml` (optional, at the top) holds the rules for the whole folder: `cover = "earth"` and
-  `sliver_km2` (default 50), §6.1.3 "Land and water". Unknown fields are an error (`rg-rules`).
+- **Special files** are the `.toml` files whose name starts with `_`: never a region (an id has no
+  `_`, so a region file can't be named so). Three are known, and any other `_*.toml` is an error
+  (`rg-special`) naming them; so are the old names `pins.toml` and `rules.toml`, which say to
+  rename them. A `_` name that isn't a `.toml` is ignored (drafts).
+  - `_group.toml`, in any folder: its group (above).
+  - `_pins.toml` (at the top) names the OSM pass the folder is written against (§6.1.5).
+  - `_rules.toml` (optional, at the top) holds the rules for the whole folder: `cover = "earth"` and
+    `sliver_km2` (default 50), §6.1.3 "Land and water". Unknown fields are an error (`rg-rules`).
 - Every other file (a `.poly`, `.txt`, `.toml.removed`) is ignored: neither checked, read nor copied.
 
 #### 6.1.3 The region file
@@ -371,7 +376,7 @@ any water in two regions, or in none, is an error.
 | `hand_out_all` | `true`: with `hand_out`, every stretch goes — to the region of the folder sharing its longest edge, or the nearest region with land if it touches none (the list's rule for land inside a split place's border but outside all its regions); the region then ends empty and is not stored; anything no region of the folder can take is an error (`rg-hand-out`) | optional, with `hand_out` |
 | `disabled` | `true`: checked and stored like any region, but never built (below) | optional, default `false` |
 | `[lines.<name>]` | a line, from `coords` or `ways` | optional |
-| `[pins]` | as `pins.toml`, overriding it for this file | optional |
+| `[pins]` | as `_pins.toml`, overriding it for this file | optional |
 
 Unknown fields are an error. The region is ((∪ `outline`) ∩ (∪ `intersect`)) − (∪ `minus`); a region
 with `water` is its land, that cut back to the coastline's land, and its water ("Land and water").
@@ -443,7 +448,7 @@ less the coastline's land and every region without `water` (the land dominates t
 order where a region comes after those its water names whole (`region:`, `group:`). A region's
 `hand_out` folder then takes each stretch (a connected piece) of its water that one of its regions
 alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge. With
-`cover = "earth"` in `rules.toml`, then: a region's piece of water under `sliver_km2` touching
+`cover = "earth"` in `_rules.toml`, then: a region's piece of water under `sliver_km2` touching
 none of its land joins the region with water it shares the longest edge with; and, cell by cell
 (2°), land in two regions is taken from those of them with water, and each piece in no region
 within 100 m of land (land in no outline, the sea between the zones' coastline and OSM's) up to
@@ -498,7 +503,7 @@ id = "high-seas"
 name = "High seas"
 water = ["rest"]
 ```
-`pins.toml`: `osm = "2026-09-29"` (the pass, `sources/osm/<date>/`). A file's `[pins]` overrides it
+`_pins.toml`: `osm = "2026-09-29"` (the pass, `sources/osm/<date>/`). A file's `[pins]` overrides it
 and may record other datasets a shape came from (`gadm = "4.1"`, checked only as a non-empty string).
 
 #### 6.1.4 Geometry: how it's computed and what's stored
@@ -586,7 +591,7 @@ trying regions) runs the same check in memory and stores nothing. Tests build co
   geometry kept. The finding lists, for each relation named, whether the new pass has it and whether
   its rings changed ("pinned to OSM 2026-09-29; the build's pass is 2026-12-28. Changed:
   osm:1629145. Unchanged: 2. Missing: none."). With one folder-wide pin, a new pass holds every
-  region until `pins.toml` is moved; the banner leads with that.
+  region until `_pins.toml` is moved; the banner leads with that.
 - While the current pass has no outline set yet, the check does nothing (the outline set's name is
   in its key).
 
@@ -645,13 +650,14 @@ All errors; ids `rg-<check>.<hash16>`.
 | `rg-empty` | a result with no area |
 | `rg-pin` | no OSM pin, or one that isn't a date |
 | `rg-pin-mismatch` | a pin naming another pass than the current one (§6.1.5) |
+| `rg-special` | a `_*.toml` that isn't `_group.toml`, `_pins.toml` or `_rules.toml` (the last two at the top), or the old `pins.toml` or `rules.toml` |
 | `rg-group` | a `_group.toml` that doesn't parse, has a field other than `name`/`order`, or an empty name |
 | `rg-extract` | ids the extract lacks: held while it's made (§6.1.6) |
 | `rg-data` | a region naming the datasets, or with `water`, while they aren't read (§6.1.7) |
 | `rg-data-missing` | an `eez:`, `ts12:` or `ne-lake:` id the dataset hasn't |
 | `rg-hand-out` | a `hand_out_all` region left with land or water no region of its folder could take |
 | `rg-rest` | `rest` in more than one region's water |
-| `rg-rules` | a `rules.toml` that doesn't parse or has an unknown field or value |
+| `rg-rules` | a `_rules.toml` that doesn't parse or has an unknown field or value |
 | `rg-cover` | with `cover = "earth"`: water in two regions, or in none without a `rest` region; land in no region over `sliver_km2` |
 
 A held region keeps its last geometry; a new held region isn't in the coverage yet. Deleting a

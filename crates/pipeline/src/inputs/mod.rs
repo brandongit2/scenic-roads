@@ -337,12 +337,12 @@ pub trait Checks: Sync {
         Vec::new()
     }
     /// Whether it takes a file of its drop box at all (the regions take their region files, shapes
-    /// and `pins.toml` alone): a file it doesn't take is ignored, neither listed nor read.
+    /// and special files alone): a file it doesn't take is ignored, neither listed nor read.
     fn takes(&self, _path: &str) -> bool {
         true
     }
     /// Whether it takes a file whose name every drop box passes over (`ignored`): the regions'
-    /// `_group.toml`, a folder's group's name (§6.1.2).
+    /// special files, `_*.toml` (§6.1.2).
     fn takes_ignored(&self, _name: &str) -> bool {
         false
     }

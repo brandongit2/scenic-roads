@@ -8,7 +8,7 @@ coverage, or once for the whole world, so region size, count and borders never s
 and other regions combined, each pinned to an OSM snapshot, checked by the input check before the
 build uses them. A region may also have water (sea zones from Marine Regions' EEZ v12, lakes, the
 high seas as the rest: docs/inputs.md §6.1.3). Overlaps are harmless to the build; nothing checks for
-gaps unless `inputs/regions/rules.toml` says the regions cover the Earth once (`cover = "earth"`),
+gaps unless `inputs/regions/_rules.toml` says the regions cover the Earth once (`cover = "earth"`),
 when the check fills and checks them. A region with no land (a sea zone, the high seas) is coverage
 for the depth alone (`Coverage::depth_only`, its stored geometry's `water_only`): no z6 tile, map tile,
 terrain, slope, tree cover or buildings' tile is built for it. A region of land and water is coverage

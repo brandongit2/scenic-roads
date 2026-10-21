@@ -99,18 +99,14 @@ pub struct Stored {
     pub drawn: String,
 }
 
-/// The regions of an accepted version, by id: each region file's (a `.toml` but `pins.toml`,
-/// `rules.toml` and `_group.toml`). One missing a fact (its id, name or outline; its drawing without its geometry or
+/// The regions of an accepted version, by id: each region file's (a `.toml` but the special files:
+/// the `_` names, and the old `pins.toml` and `rules.toml`). One missing a fact (its id, name or outline; its drawing without its geometry or
 /// the other way round) is an error, never left out; one with neither resolved to nothing (empty)
 /// and is listed with no stored files.
 pub fn listed(a: &Accepted) -> Result<Vec<Listed>> {
     let mut v: Vec<Listed> = Vec::new();
     for (p, f) in &a.index.files {
-        if !p.ends_with(".toml")
-            || super::resolve::is_pins(p)
-            || super::resolve::is_group(p)
-            || super::resolve::is_rules(p)
-        {
+        if !p.ends_with(".toml") || super::resolve::is_special(p) || super::resolve::special(p).is_some() {
             continue;
         }
         let s = |k: &str| {
@@ -326,7 +322,7 @@ pub fn coverage_of_folder(root: &Path, manifest: &BTreeMap<String, String>, dir:
         for e in std::fs::read_dir(&d).with_context(|| format!("list {}", d.display()))? {
             let e = e?;
             let name = e.file_name().to_string_lossy().into_owned();
-            if crate::inputs::ignored(&name) || (rel.is_empty() && (name == "how" || name == "todo")) {
+            if super::resolve::passes_over(&name) || (rel.is_empty() && (name == "how" || name == "todo")) {
                 continue;
             }
             let p = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
@@ -392,7 +388,7 @@ pub fn check_folder(
         for e in std::fs::read_dir(&d).with_context(|| format!("list {}", d.display()))? {
             let e = e?;
             let name = e.file_name().to_string_lossy().into_owned();
-            if crate::inputs::ignored(&name) {
+            if super::resolve::passes_over(&name) {
                 continue;
             }
             let p = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
@@ -470,7 +466,7 @@ pub fn check_folder(
 
 /// A resolved region's area (km²). A region with water is stored as one shape of cell pieces
 /// (crate::inputs::regions::tiles), read back cell by cell as tiles keeps it (`TArea::from_rings`),
-/// never as one area, so the high seas without `rules.toml` stays small; any other region's shapes
+/// never as one area, so the high seas without `_rules.toml` stays small; any other region's shapes
 /// are unioned.
 pub(crate) fn km2_of(shapes: &[super::stored::Shape], by_cell: bool) -> f64 {
     let ring64 = |r: &Vec<[i32; 2]>| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect::<Vec<_>>();
