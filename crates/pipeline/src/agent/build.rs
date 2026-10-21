@@ -3770,10 +3770,9 @@ impl Line {
         self.left == Some(0) || self.total.is_some_and(|t| self.done >= t && self.left.is_none())
     }
 
-    /// `step`'s item under way (a job of it running, on any Mac): never done while it runs, though
-    /// its records say so (they're read at most every five minutes, and a target whose key changed
-    /// while its job runs again reads as its old record). One target counted left, the line's sums
-    /// with it.
+    /// `step`'s item under way (a job of it running, on any Mac): never done while it runs. Bridges
+    /// the checklist being up to five minutes old (it's made at a job's end or every five minutes,
+    /// before the job started). One target counted left, the line's sums with it.
     pub fn under_way(&mut self, step: &str) {
         let noun = self.unit.trim_end_matches('s').to_string();
         let Some(i) = self.items.iter_mut().find(|i| i.step == step && i.finished()) else { return };
@@ -4084,6 +4083,14 @@ pub fn checklist(
     next.insert("trains", next_of(&trains));
     let landmarks = remaining(done, |d| landmarks_chain(cov, date, m, d, inputs));
     out.extend(chain_items(&landmarks, &["pois", "peaks", "items", "heritage", "marks", "overlays"], pieces));
+    // (The heritage details as landmarks_work decides them, beside the candidates: not after the
+    // chain's pois, peaks and items, which stop it early. One run left while their key isn't
+    // recorded, or the heritage sites are to be made first; none without registers accepted.)
+    if let Some(i) = out.iter_mut().find(|i| i.step == "heritage" && i.known()) {
+        let left = heritage_sites_key(cov, date, m, inputs).is_some()
+            && (sites_left || heritage_key(cov, date, m).is_none_or(|k| done.lo.get("heritage") != Some(&k)));
+        i.left = Some(left as usize);
+    }
     next.insert("landmarks", next_of(&landmarks));
     // (Its tiles' normalized files and tiles together; known once the sources' indexes read.)
     let bt = bld_targets(cov, m, inputs);
@@ -6080,6 +6087,14 @@ pub(crate) mod tests {
         m.insert("base/6-28-16".into(), "base/6-28-16.6666666666666666.base".into());
         m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.7777777777777777.roads".into());
         let l = checklist(&c, "d", &m, &done, &BTreeMap::new(), false);
+        // (Task #506) The heritage details, their key not recorded, have a run left though the
+        // candidates before them in the chain can't be told (no hiking-route ends yet); recorded,
+        // none.
+        assert!(!m.keys().any(|k| k.starts_with("work/trailends/")));
+        assert_eq!(item(&l, "heritage").left, Some(1));
+        let mut d2 = done.clone();
+        heritage_chain_done(&c, &m, &mut d2, "d");
+        assert_eq!(item(&checklist(&c, "d", &m, &d2, &BTreeMap::new(), false), "heritage").left, Some(0));
         for what in ["terrain", "slope", "sites", "roads", "trees"] {
             assert!(line(&l, what).finished(), "{what} done");
         }

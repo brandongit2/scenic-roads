@@ -135,6 +135,7 @@ runs left": `Line::counts`, said the same by the page and the menu bar); then it
 order (`next`), why it waits or which Mac is on it (`note`), and which of its steps any member may
 take (`shared`). `agent::build::fold` makes the lines from the items; the planet's and its
 worldwide steps' items are the agent's own (`Agent::checklist`), the regions' `build::checklist`'s.
+A step with a job running, on any Mac, is never done (`Line::under_way`).
 
 The same lines are shown three ways, each the same shape: the build page's stage cards (§5), the
 menu bar's menu (`tools/status`: "To the end", a line per stage with its counts, under it a line

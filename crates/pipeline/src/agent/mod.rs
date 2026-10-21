@@ -5725,7 +5725,8 @@ impl Agent {
             let key = jobs::unit_key(&unit).to_string();
             let fresh = r.progress_base.as_ref().is_none_or(|b| b.2 != key || b.3 != part || frac < b.1);
             if fresh {
-                r.progress_base = Some(pace_base(r.progress_base.is_none(), r.started_at, frac, key, part));
+                r.progress_base =
+                    Some(pace_base(r.adopted && r.progress_base.is_none(), r.started_at, frac, key, part));
             }
             if fresh || r.moved.is_none_or(|m| frac > m.0) {
                 r.moved = Some((frac, now_s()));
@@ -10442,17 +10443,19 @@ fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waitin
     }
 }
 
-/// Where a job's pace is measured from, its progress first seen (`first`) or measured again: its
-/// first part (or a job of no parts) from its start (`started_at`, a job taken over from the agent
-/// before this one: its real start, not the take-over), at nothing done; else from now, at `frac`.
+/// Where a job's pace is measured from: from now, at `frac`, as its progress is first seen or is
+/// measured again (a fresh job's setup isn't folded in). But a job taken over from the agent before
+/// this one (`taken_over`: adopted, its progress first seen here) is paced from its real start
+/// (`started_at`) at nothing done, so its estimate doesn't start over: when it's on its first part
+/// or has none. (On a later part it's paced from the take-over: when that part started isn't known.)
 fn pace_base(
-    first: bool,
+    taken_over: bool,
     started_at: Instant,
     frac: f64,
     key: String,
     part: Option<usize>,
 ) -> (Instant, f64, String, Option<usize>) {
-    if first && part.is_none_or(|p| p == 0) {
+    if taken_over && part.is_none_or(|p| p == 0) {
         (started_at, 0.0, key, part)
     } else {
         (Instant::now(), frac, key, part)
@@ -14780,7 +14783,8 @@ mod tests {
     }
 
     /// Task #506: a job taken over from the agent before this one is paced from its real start,
-    /// not from the take-over (where its next tick of progress made "about 346 min left" of 81%).
+    /// not from the take-over (where its next tick of progress made "about 346 min left" of 81%);
+    /// a fresh job from its progress first seen.
     #[test]
     fn a_taken_over_jobs_pace_runs_from_its_start() {
         let started = Instant::now() - Duration::from_secs(20 * 60);
@@ -14788,11 +14792,11 @@ mod tests {
         assert_eq!((t0, f0), (started, 0.0));
         let eta = t0.elapsed().as_secs_f64() * (1.0 - 0.82) / (0.82 - f0);
         assert!(eta < 6.0 * 60.0, "about 4–5 min left, not hours: {eta}");
-        // A later part, or one measured again: from now.
-        let (t0, f0, _, _) = pace_base(true, started, 0.5, "steps".into(), Some(2));
-        assert!(t0 > started && f0 == 0.5);
-        let (t0, f0, _, _) = pace_base(false, started, 0.5, "steps".into(), None);
-        assert!(t0 > started && f0 == 0.5);
+        // A fresh job (its setup not folded in), or a later part: from now.
+        for (taken_over, part) in [(false, None), (true, Some(2))] {
+            let (t0, f0, _, _) = pace_base(taken_over, started, 0.5, "steps".into(), part);
+            assert!(t0 > started && f0 == 0.5);
+        }
     }
 
     #[test]
