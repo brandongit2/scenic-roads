@@ -149,7 +149,8 @@ impl Checks for Regions {
     }
 
     fn version(&self) -> u32 {
-        1
+        // (2: `disabled`, #495: files an older app held as an unknown field are checked again.)
+        2
     }
 
     fn recursive(&self) -> bool {

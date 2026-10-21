@@ -183,6 +183,8 @@ def load_regions(args, work: Path):
 
             feats = []
             for r in get(f"{server}/api/regions")["regions"]:
+                if r.get("disabled"):
+                    continue  # (never built: docs/inputs.md §6.1.3)
                 for entry in r["outline"]:
                     kind, _, arg = entry.partition(":")
                     if kind != "osm":

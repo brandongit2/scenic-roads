@@ -193,6 +193,8 @@ def coverage(args) -> tuple[Near, list[str]]:
         if regs is None:
             raise SystemExit("the map's server didn't list the regions")
         for r in regs:
+            if r.get("disabled"):
+                continue  # (never built: docs/inputs.md §6.1.3)
             what.append(r["id"])
             for entry in r["outline"]:
                 kind, _, arg = entry.partition(":")

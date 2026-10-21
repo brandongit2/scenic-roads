@@ -918,6 +918,10 @@ pub async fn put_region(State(s): State<S>, Path(id): Path<String>, Json(q): Jso
     blocking(s, move |s| {
         ensure!(pipeline::agent::recipes::valid_id(&id), "{id:?} isn't a region id");
         ensure!(s.data.mirror.is_some(), "this server keeps no copy of the map (--no-mirror)");
+        ensure!(
+            !(q.on && crate::regions::is_disabled(s, &id)),
+            "{id:?} is disabled in its file (disabled = true): nothing is built for it to download"
+        );
         let cat = s.data.catalog();
         let name = crate::regions::recorded_list(&cat)
             .iter()

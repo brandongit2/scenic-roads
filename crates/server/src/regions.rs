@@ -449,6 +449,25 @@ pub fn colour(id: &str) -> String {
     format!("#{:02x}{:02x}{:02x}", to(r), to(g), to(b))
 }
 
+/// Whether region `id` is disabled (`disabled = true`): by the accepted copy kept on this Mac, else
+/// the last list read from the drop box.
+pub fn is_disabled(s: &crate::AppState, id: &str) -> bool {
+    let dir = accepted_dir(s);
+    let kept: Option<pipeline::inputs::served::Kept> =
+        std::fs::read(dir.join("@index.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    if let Some(k) = kept {
+        return k.index.files.values().any(|e| {
+            e.facts.get("id").and_then(Value::as_str) == Some(id)
+                && e.facts.get("disabled").and_then(Value::as_bool) == Some(true)
+        });
+    }
+    let last: Vec<Listed> = std::fs::read(s.data.home.join("regions.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    last.iter().any(|l| l.id == id && l.disabled)
+}
+
 /// The region layer (docs/inputs.md §6.1.9): every region's accepted outline, from the drawn files
 /// kept on this Mac, a feature per stored shape with the region's id, name, colour and whether it's
 /// held now; the catalog's regions (as built) until this Mac has the accepted copy.
