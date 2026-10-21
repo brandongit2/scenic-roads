@@ -106,10 +106,6 @@ const JOIN_TRY: Duration = Duration::from_millis(50);
 /// before it stops anyway (the handover's stages take a few of the pool's steps, ~20 s each).
 const QUIT_HAND_WAIT: Duration = Duration::from_secs(3 * 60);
 
-/// How often a lead paused alone (crate::control::Hold) asks again to hand the lead away, while it
-/// still leads (none could take it, or the handover didn't go through).
-const HOLD_HAND_AGAIN: Duration = Duration::from_secs(10 * 60);
-
 /// How often a member reads its hold on the NAS (crate::control::hold_path), set there by another
 /// Mac's `scenic pause <member>`.
 const HOLD_READ_EVERY: Duration = Duration::from_secs(30);
@@ -1284,8 +1280,7 @@ pub struct Agent {
     /// The memory this member spared its jobs in its last ask (MB: `Slot::spare_mb`).
     ask_spare_mb: Option<u64>,
     /// The pool's switch for a part changing in this process (`pool::SLOTS`), as last read; the
-    /// idle-sleep assertion it holds while it leads with leases out; the app it last handed the lead
-    /// on for (a newer one installed, its update waiting on its own job: `hand_for_update`).
+    /// idle-sleep assertion it holds while it leads with leases out.
     slots_on: bool,
     /// The budgets (docs/pool.md §7.7): every job's connections out through this agent's proxy,
     /// each Wikimedia request taken from the pool's one budget on the NAS, the job sandboxed so it
@@ -1337,7 +1332,6 @@ pub struct Agent {
     /// The NAS's project folder as the loop last found it (a job ending between loops tells the
     /// lead through a client made from it).
     last_root: Option<PathBuf>,
-    update_handed: Option<String>,
     /// Quitting as the app asked (crate::control::Quit): this Mac's lead handed away then
     /// (`hand_for_quit`; true: asked of a member, false: none could take it), and whether the loop
     /// ended for it (the process then exits with `QUIT_EXIT`).
@@ -1408,12 +1402,10 @@ pub struct Agent {
     mirrored: Option<Option<crate::control::Pause>>,
     pause_pushed: bool,
     /// This Mac paused alone (crate::control::Hold, task #224), kept in `hold.json`; whether it's
-    /// written to the NAS as it stands; when the NAS's was last read; and when a lead held here
-    /// last asked to hand the lead away (and whether a member was asked).
+    /// written to the NAS as it stands; when the NAS's was last read.
     hold: crate::control::HoldState,
     hold_mirrored: bool,
     hold_read: Option<Instant>,
-    hold_handed: Option<(Instant, bool)>,
     hold_me: Option<String>,
     /// When the hold ask the loop last saw was written (its file's time), so a wait is cut short
     /// only by a newer one, not by one left for a later loop.
@@ -1770,7 +1762,6 @@ impl Agent {
             probe,
             lead_awake: None,
             last_root: None,
-            update_handed: None,
             quit_lead: None,
             quit_done: false,
             mac: cond::Mac::Real,
@@ -1805,7 +1796,6 @@ impl Agent {
             hold,
             hold_mirrored: false,
             hold_read: None,
-            hold_handed: None,
             hold_me: None,
             hold_seen: None,
             cache_size: Default::default(),
@@ -3799,7 +3789,6 @@ impl Agent {
         }
         if held.is_some() != self.hold.held.is_some() {
             eprintln!("agent: {}", held.as_ref().map_or("this Mac goes on building".to_string(), |h| h.why()));
-            self.hold_handed = None;
         }
         self.hold = crate::control::HoldState { held, at };
         self.hold_mirrored = false;
@@ -3920,40 +3909,6 @@ impl Agent {
                 Err(e) => eprintln!("agent: this Mac's pause on the NAS: {e:#}"),
             }
         }
-    }
-
-    /// A lead paused alone (crate::control::Hold) hands the lead to a member that can take it now,
-    /// as the owner's ask would (docs/pool.md §6.3), its jobs meanwhile stopping at their next safe
-    /// point; asked again every `HOLD_HAND_AGAIN` while it still leads. With none, it keeps leading
-    /// (planning and granting the others' work) and takes no work of its own.
-    fn hand_for_hold(&mut self) {
-        let Some(h) = self.hold.held.clone() else { return };
-        if self.hold_handed.is_some_and(|(t, _)| t.elapsed() < HOLD_HAND_AGAIN) {
-            return;
-        }
-        let handed = {
-            let Some(mut run) = self.pooled().filter(|p| p.role == pool::Role::Lead) else { return };
-            let to = run.controls.view.as_ref().and_then(|v| v.members.iter().find(|m| !m.me && m.can_lead).cloned());
-            match to {
-                Some(m) => {
-                    eprintln!("agent: this Mac is paused ({}); handing the lead to {}", h.by, m.host);
-                    run.controls.page.push(crate::control::LeadRequest {
-                        ask: crate::control::LeadAsk::Give { to: m.member.clone() },
-                        by: format!("{}, pausing this Mac", h.by),
-                        at: now_s(),
-                    });
-                    true
-                }
-                None => {
-                    eprintln!(
-                        "agent: this Mac is paused ({}); no other Mac can take the lead now, so it keeps leading",
-                        h.by
-                    );
-                    false
-                }
-            }
-        };
-        self.hold_handed = Some((Instant::now(), handed));
     }
 
     /// This member's run in the pool, locked (`pool::lock`): held only for what reads or changes it,
@@ -9454,12 +9409,8 @@ impl Agent {
         // (Paused alone: it neither takes the lead nor is offered it.)
         let able = able && self.hold.held.is_none();
         let home = self.o.home.clone();
-        // (Its update waiting on its own job: the lead to a member on the newer app.)
-        self.hand_for_update();
         // (Quitting, its jobs ended: the lead to a member that can take it.)
         self.hand_for_quit();
-        // (Paused alone: the lead to a member that can take it, first.)
-        self.hand_for_hold();
         let duty = self.slots.iter().any(|s| s.running.as_ref().is_some_and(|j| is_duty(&j.spec.id)));
         let answered = self.client.as_ref().and_then(|c| c.answered());
         let (lead_urls, lead_failed) = self.client.as_ref().map(|c| (c.urls(), c.failed())).unwrap_or_default();
@@ -9697,38 +9648,6 @@ impl Agent {
             c.kill().ok();
             c.wait().ok();
         }
-    }
-
-    /// A lead whose update waits on its own job (a newer app installed, a slot busy: it restarts
-    /// into it only once both are free) hands the lead to a member already on that app, which the
-    /// same-app rule otherwise leaves idle meanwhile (docs/building.md §2, The same app): asked once per
-    /// app, as the owner's ask would be, if such a member can lead now.
-    fn hand_for_update(&mut self) {
-        let Some(newer) = self.pending_app() else { return };
-        let busy = self.slots.iter().any(|s| s.running.is_some());
-        if !busy || !self.slots_on || self.update_handed.as_deref() == Some(newer.as_str()) {
-            return;
-        }
-        {
-            let Some(mut run) = self.pooled().filter(|p| p.role == pool::Role::Lead && p.gates.leads.is_some()) else {
-                return;
-            };
-            let Some(m) = run
-                .controls
-                .view
-                .as_ref()
-                .and_then(|v| v.members.iter().find(|m| !m.me && m.app == newer && m.can_lead).cloned())
-            else {
-                return;
-            };
-            eprintln!("agent: a newer app ({newer}) waits on this Mac's job; handing the lead to {}, on it", m.host);
-            run.controls.page.push(crate::control::LeadRequest {
-                ask: crate::control::LeadAsk::Give { to: m.member.clone() },
-                by: format!("this Mac's update to {newer}, waiting on its job"),
-                at: now_s(),
-            });
-        }
-        self.update_handed = Some(newer);
     }
 
     /// What the lead keeps written besides its records (docs/pool.md §12): today's three files from
@@ -16504,7 +16423,9 @@ mod pool_tests {
     }
 
     #[test]
-    fn a_lead_whose_update_waits_on_its_job_hands_the_lead_to_a_member_on_it() {
+    fn a_lead_whose_update_waits_on_its_job_keeps_the_lead() {
+        // (Task #497) A newer app waits on the lead's own job, a member already on it: the lead
+        // isn't handed over by itself; it restarts at a safe point like any member.
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
         TEST_PORT.with(|p| p.set(Some(free_port())));
         TEST_ABLE.with(|c| c.set(Some(true)));
@@ -16558,25 +16479,14 @@ mod pool_tests {
         lead.pooled().unwrap().side.know(&im);
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, job, &cond, Some(&r), &mut Vec::new()));
-        let end = Instant::now() + WATCHDOG;
-        while m.pooled().unwrap().side.driver().leads() != Some(2) {
+        for _ in 0..12 {
             lead.step().unwrap();
             m.step().unwrap();
-            assert!(Instant::now() < end, "not handed over: {:?}", lead.pooled().unwrap().controls.kept.asked);
             std::thread::sleep(Duration::from_millis(250));
         }
-        assert!(
-            lead.pooled()
-                .unwrap()
-                .controls
-                .kept
-                .asked
-                .as_ref()
-                .is_some_and(|a| a.by.contains("update to 20261010-0200-bbbbbbb")),
-            "{:?}",
-            lead.pooled().unwrap().controls.kept.asked
-        );
-        assert_eq!(lead.update_handed.as_deref(), Some("20261010-0200-bbbbbbb"));
+        assert_eq!(m.pooled().unwrap().side.driver().leads(), None);
+        assert!(lead.pooled().unwrap().side.driver().leads().is_some(), "it keeps the lead");
+        assert!(lead.pooled().unwrap().controls.kept.asked.is_none(), "nothing asked");
         assert!(lead.slots[0].running.is_some(), "its job runs on");
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
@@ -16655,9 +16565,10 @@ mod pool_tests {
     }
 
     #[test]
-    fn a_lead_paused_from_a_member_hands_the_lead_over_and_resumes() {
-        // (Task #224: `scenic pause <member>` from another Mac, the lead named; it hands the lead
-        // away, can't be offered it back while paused, and goes on once resumed.)
+    fn a_lead_paused_from_a_member_keeps_the_lead_and_resumes() {
+        // (Task #224: `scenic pause <member>` from another Mac, the lead named. Task #497: its own
+        // jobs stop; it keeps the lead and goes on granting the members' work; it goes on once
+        // resumed.)
         room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
         TEST_PORT.with(|p| p.set(Some(free_port())));
         TEST_ABLE.with(|c| c.set(Some(true)));
@@ -16714,16 +16625,22 @@ mod pool_tests {
         let a = crate::control::hold_answer(&m.o.home, &ask).unwrap();
         assert!(a.ok, "{a:?}");
         assert!(m.hold.held.is_none(), "the member itself goes on");
-        while m.pooled().unwrap().side.driver().leads() != Some(2) {
+        for _ in 0..12 {
             lead.hold_read = None;
             lead.step().unwrap();
             m.step().unwrap();
-            assert!(Instant::now() < end, "not handed over: {:?}", lead.pooled().unwrap().controls.kept.asked);
             std::thread::sleep(Duration::from_millis(250));
         }
         assert!(lead.hold.held.as_ref().is_some_and(|h| h.by == "scenic pause on m"));
-        assert_eq!(lead.hold_handed.map(|h| h.1), Some(true));
-        // Paused, it can't lead: its heartbeat says so.
+        assert_eq!(m.pooled().unwrap().side.driver().leads(), None);
+        assert!(lead.pooled().unwrap().side.driver().leads().is_some(), "it keeps the lead");
+        assert!(lead.pooled().unwrap().controls.kept.asked.is_none(), "nothing asked");
+        assert_eq!(
+            lead.coord.as_ref().unwrap().shared.lock().unwrap().moving,
+            None,
+            "its coordinator grants the members' work"
+        );
+        // Paused, it can't take the lead anew: its heartbeat says so.
         let conds = lead.pooled().unwrap().conds.unwrap();
         assert!(conds.held && !conds.able && conds.why_unable().contains("paused"));
         // Resumed from the member: taken up by the old lead, which can lead again.

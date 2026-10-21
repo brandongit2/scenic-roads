@@ -178,16 +178,16 @@ past `cond::BATTERY_MIN`, not paused, room past its disk target, an app the rule
    (`agent::lead::low_battery`), through the stages above; asked again every `BATTERY_AGAIN_S`
    (5 min) while it still leads so. None can: it keeps leading. On battery at or above it, or away
    from home with the NAS, it keeps the lead.
-2. **Uncontactable:** its heartbeat stops (asleep, offline, crashed, the app quit, the build
-   paused): taken over as silent (§6.5). A lead quitting or paused alone first hands the lead over
-   itself (`Agent::hand_for_quit`, `hand_for_hold`), and one its members can't reach hands it to one
-   they can (§6.8).
+2. **Uncontactable:** its heartbeat stops (asleep, offline, crashed, the app quit, its agent
+   stopped): taken over as silent (§6.5). A lead quitting first hands the lead over itself
+   (`Agent::hand_for_quit`), and one its members can't reach hands it to one they can (§6.8).
 3. **It lost the NAS while online** (away, reachable over Tailscale, its share gone): it can't write
    its heartbeat, and its coordinator's answers stop saying its term (`Coordinator::set_member(None)`),
    so members don't count it late: taken over as silent (§6.5).
 4. **It stood down** (§6.6): taken over after `STOOD_DOWN_S` (§6.5).
 
-A lead whose update waits on its jobs hands the lead to a member already on the new app (§7.6).
+A lead paused alone keeps the lead (§11), and a lead whose update waits on its own jobs keeps it
+too, restarting at a safe point like any member (§7.6).
 Lead-only work that doesn't fit the lead's memory limit waits; its status line names a member whose
 limit fits it, for the owner to hand the lead over by hand if wanted (§7.2, Floors).
 
@@ -638,8 +638,8 @@ handover. A job's tasks are offered through its own Mac's coordinator or broker;
 answers nothing and the job runs the task itself. With `state/pool/slots`, a member taking up a
 term starts its coordinator in process, and a lead losing it stops its coordinator and duties,
 keeping its jobs running; without it, the agent restarts into its new part once its first slot is
-free. A lead whose update waits on its jobs hands the lead to a member already on the new app
-(docs/building.md §2, A newly installed app). The lead's own asks always carry its capacity, so the lead never
+free. A lead whose update waits on its jobs keeps the lead and restarts into the new app at a safe
+point like any member (docs/building.md §2, A newly installed app). The lead's own asks always carry its capacity, so the lead never
 holds packing off for the pool (§7.1, Mixed versions); its heartbeat says whether the pool is all on
 the new app (`all_new`) for its members' heartbeats.
 
@@ -916,9 +916,8 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   don't matter, except that a remote ask may lose to a Mac's own ask not yet written there (within
   a loop). A member whose app is older than the asking Mac's is refused ("too old to pause alone"). A paused Mac's running jobs stop
   at their next safe point and are given back (as the build's pause stops them, frozen past the
-  grace), it asks for no work and starts none, it can't lead (`Conds::held`, `able` false), and a
-  lead paused hands the lead to a member that can take it (asked again every ten minutes while it
-  still leads; with none it keeps leading, granting the others' work, and runs none of its own).
+  grace), it asks for no work and starts none, it can't take the lead anew (`Conds::held`, `able`
+  false), and a lead paused keeps the lead, granting the others' work, and runs none of its own.
   It keeps beating. `scenic status`, the build page's machine card and the menu bar show it
   paused (`Status::held`; the pool's view says "paused"); the forecast gives it no lanes. The
   rest of the pool goes on. `--now` stays the whole build's.

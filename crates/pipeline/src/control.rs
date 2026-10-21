@@ -400,8 +400,8 @@ pub fn read_done(path: &Path, step: &str) -> Vec<String> {
 }
 
 /// One Mac paused alone (task #224; docs/pool.md §11): its jobs stop at their next safe point and
-/// are given back, it takes no new work, hands the lead away if it leads, and keeps beating; the
-/// rest of the pool goes on. Who asked, in words, and when (unix seconds).
+/// are given back, it takes no new work and can't take the lead anew (leading, it keeps the lead
+/// and goes on granting the members' work), and keeps beating; the rest of the pool goes on. Who asked, in words, and when (unix seconds).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hold {
     pub by: String,

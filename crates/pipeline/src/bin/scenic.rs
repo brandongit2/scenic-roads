@@ -17,8 +17,8 @@
 //!                                       safe point; --now: frozen at once), or let it go on
 //!   scenic pause --here | <member>      pause one Mac alone (this one, or a member by host name or
 //!   scenic resume --here | <member>     id): its jobs stop at their next safe point and are given
-//!                                       back, it takes no new work and hands the lead away; the
-//!                                       rest of the pool goes on; kept over restarts until resumed
+//!                                       back, it takes no new work (leading, it keeps the
+//!                                       lead); the rest of the pool goes on; kept over restarts until resumed
 //!   scenic job cancel <target> [--step <step>] [--rerun-after-update]
 //!                                       stop the running job building <target> (here, or through
 //!                                       the lead on another Mac) and give it back, not failed, its
@@ -1498,7 +1498,7 @@ fn main() -> Result<()> {
                             "{}{}",
                             a.said,
                             if cmd == "pause" {
-                                ": its running jobs stop at their next safe point and are given back, it takes no new work and hands the lead away if it leads, until `scenic resume`; the rest of the pool goes on"
+                                ": its running jobs stop at their next safe point and are given back, it takes no new work (leading, it keeps the lead and grants the others' work), until `scenic resume`; the rest of the pool goes on"
                             } else {
                                 ""
                             }
