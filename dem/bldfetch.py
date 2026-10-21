@@ -225,15 +225,11 @@ class Near:
 
     def __init__(self, polys: list, margin_km: float):
         from shapely import STRtree, make_valid
-        # (An invalid polygon, a ring crossing itself, answers distances wrongly: made valid first,
-        # its parts kept, unlike buffer(0), which drops a bowtie's lobe.)
-        fixed = []
-        for g in polys:
-            if not g.is_valid:
-                g = make_valid(g)
-                fixed += [x for x in getattr(g, "geoms", [g]) if x.geom_type in ("Polygon", "MultiPolygon")]
-            else:
-                fixed.append(g)
+        # (GEOS leaves its predicates on invalid input undefined; its distances on a bowtie happen
+        # to be right today, so an invalid polygon is made valid first, every part kept: the
+        # lobes, and the lines and points of a zero-area outline, which still answer distances.
+        # buffer(0) would drop a bowtie's lobe and a zero-area outline whole.)
+        fixed = [make_valid(g) if not g.is_valid else g for g in polys]
         polys = [x for g in fixed for x in getattr(g, "geoms", [g]) if not x.is_empty]
         self.polys, self.margin_km = polys, margin_km
         self.tree = STRtree(polys)
@@ -249,10 +245,10 @@ class Near:
         dlon = self.margin_km / (111.32 * c) if c > 1e-9 else math.inf
         if dlon >= 180.0:
             return len(self.tree.query(box(-180.0, s - dlat, 180.0, n + dlat))) > 0
-        # (No wrap in the coordinates: the box also as it is a turn east and west, so a polygon at
+        # (No wrap in the coordinates: the box also a turn east or west when its margin crosses ±180°, so a polygon at
         # 179.9° meets a box at -179.9°.)
-        return any(len(self.tree.query(box(w + k, s, e + k, n), predicate="dwithin", distance=dlon)) > 0
-                   for k in (0.0, -360.0, 360.0))
+        ks = [0.0] + ([360.0] if w - dlon < -180.0 else []) + ([-360.0] if e + dlon > 180.0 else [])
+        return any(len(self.tree.query(box(w + k, s, e + k, n), predicate="dwithin", distance=dlon)) > 0 for k in ks)
 
 
 # ---- Overture --------------------------------------------------------------------------------------

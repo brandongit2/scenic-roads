@@ -29,6 +29,9 @@ class NearTest(unittest.TestCase):
         # 81°: a degree of longitude ~17 km; a box 1° away across the meridians is within 20 km.
         near = Near([box(20.0, 81.0, 20.1, 81.1)], 20.0)
         self.assertTrue(near.meets(21.0, 81.0, 21.1, 81.1))
+        # Nothing near the pole: a box there meets nothing.
+        near = Near([box(20.0, 70.0, 20.1, 70.1)], 20.0)
+        self.assertFalse(near.meets(-160.0, 89.9, -159.9, 89.95))
 
     def test_across_the_antimeridian(self):
         near = Near([box(179.8, 52.0, 179.95, 52.1)], 20.0)
@@ -46,6 +49,14 @@ class NearTest(unittest.TestCase):
         self.assertTrue(near.meets(0.9, 0.45, 0.95, 0.55))
         self.assertTrue(near.meets(1.0 + 10 * KM, 0.45, 1.1, 0.55))
         self.assertFalse(near.meets(3.0, 3.0, 3.1, 3.1))
+
+    def test_a_zero_area_outline(self):
+        # A ring folded on itself: made valid, a line, which still answers distances.
+        flat = Polygon([(0, 0), (1, 0), (2, 0), (0, 0)])
+        self.assertFalse(flat.is_valid)
+        near = Near([flat], 20.0)
+        self.assertTrue(near.meets(0.5, 10 * KM, 0.6, 0.2))
+        self.assertFalse(near.meets(0.5, 1.0, 0.6, 1.1))
 
 
 if __name__ == "__main__":
