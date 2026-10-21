@@ -442,6 +442,19 @@ fn a_name_starting_with_an_underscore_is_special() {
     assert_eq!(folder.pins.get("osm").map(String::as_str), Some("2026-09-28"));
     assert_eq!(folder.rules.unwrap().cover.as_deref(), Some("earth"));
     assert!(folder.regions.is_empty() && folder.unread.contains("_draft.toml"));
+    // Both names of the pins, or the rules, in one version: the new name's file is read.
+    let files: BTreeMap<String, Vec<u8>> = [
+        ("_pins.toml", "osm = \"2026-09-28\"\n"),
+        ("pins.toml", "osm = \"2026-01-01\"\n"),
+        ("_rules.toml", "cover = \"earth\"\n"),
+        ("rules.toml", "sliver_km2 = 7.0\n"),
+    ]
+    .iter()
+    .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
+    .collect();
+    let folder = resolve::Folder::read(files.keys().cloned(), &|p| Ok(files[p].clone())).unwrap();
+    assert_eq!(folder.pins.get("osm").map(String::as_str), Some("2026-09-28"));
+    assert_eq!(folder.rules.unwrap().cover.as_deref(), Some("earth"));
 }
 
 /// A NAS root for the check job: the records naming pass `PASS` (and its outline set, when

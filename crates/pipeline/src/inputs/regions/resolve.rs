@@ -119,9 +119,12 @@ impl Folder {
         let mut f = Folder::default();
         let mut by_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for p in paths.into_iter().filter(|p| takes(p)) {
+        let paths: Vec<String> = paths.into_iter().filter(|p| takes(p)).collect();
+        for p in &paths {
+            let p = p.clone();
             let kind = special(&p);
-            if kind == Some(Special::Group) {
+            // (Group files are the index's; an old name yields to the new one when both are there.)
+            if kind == Some(Special::Group) || renamed(&p).is_some_and(|new| paths.iter().any(|q| q == new)) {
                 continue;
             }
             let bytes = read(&p)?;
@@ -213,7 +216,7 @@ impl Folder {
         v
     }
 
-    /// The OSM pass a region is written against: its own `[pins]`, else `pins.toml`'s.
+    /// The OSM pass a region is written against: its own `[pins]`, else `_pins.toml`'s.
     pub fn pin<'a>(&'a self, r: &'a Region) -> Option<&'a str> {
         r.pins.get("osm").or_else(|| self.pins.get("osm")).map(String::as_str)
     }
@@ -549,7 +552,7 @@ pub(super) fn gather(
             }
         }
         let mut msg = format!(
-            "{}: pinned to OSM {pin}; the build's pass is {pass}: move the pin in inputs/regions/pins.toml.",
+            "{}: pinned to OSM {pin}; the build's pass is {pass}: move the pin in inputs/regions/_pins.toml.",
             r.id
         );
         if !changed.is_empty() || same > 0 || !missing.is_empty() {

@@ -56,7 +56,7 @@ GROUPS = [
     ('Chosen, researched or downloaded by hand', [
         ('doc', None, 'osm', 'Regions',
          'the coverage (the enabled regions’ union): what every step builds; disabled ones are checked, never built',
-         'you, as files in the drop box: OSM relations and ways, shapes, sea zones; rules.toml (cover = "earth")',
+         'you, as files in the drop box: OSM relations and ways, shapes, sea zones; _rules.toml (cover = "earth")',
          'NAS inputs/regions/ (backed up daily)',
          'docs/regions.md, docs/inputs.md §6.1; its how/',
          'nothing: they are the definition'),

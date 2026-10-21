@@ -244,8 +244,8 @@ const DISPUTED: &str = "id = \"disputed\"\nname = \"Disputed zone\"\nwater = [\"
 const FAR: &str =
     "id = \"far\"\nname = \"Far\"\noutline = [\"osm:4\"]\nwater = [{ buffer = \"osm:4\", by = \"12 nmi\" }]\n";
 const HIGH: &str = "id = \"high-seas\"\nname = \"High seas\"\nwater = [\"rest\"]\n";
-const PINS: (&str, &str) = ("pins.toml", "osm = \"2026-09-28\"\n");
-const RULES: (&str, &str) = ("rules.toml", "cover = \"earth\"\n");
+const PINS: (&str, &str) = ("_pins.toml", "osm = \"2026-09-28\"\n");
+const RULES: (&str, &str) = ("_rules.toml", "cover = \"earth\"\n");
 
 fn all() -> Vec<(&'static str, &'static str)> {
     vec![
@@ -312,8 +312,8 @@ fn overlapping_water_or_an_uncovered_sea_is_an_error() {
     let files: Vec<_> = all().into_iter().filter(|f| f.0 != "high-seas.toml").collect();
     let out = run(&w, &files);
     assert!(out.problems.iter().any(|p| p.check == "rg-cover" && p.found == vec!["gap"]), "{:?}", out.problems);
-    // Without rules.toml nothing is checked: old and new files side by side.
-    let files: Vec<_> = all().into_iter().filter(|f| f.0 != "high-seas.toml" && f.0 != "rules.toml").collect();
+    // Without _rules.toml nothing is checked: old and new files side by side.
+    let files: Vec<_> = all().into_iter().filter(|f| f.0 != "high-seas.toml" && f.0 != "_rules.toml").collect();
     let out = run(&w, &files);
     assert!(out.problems.is_empty(), "{:?}", out.problems);
 }
@@ -324,7 +324,7 @@ fn old_files_resolve_as_before_beside_new_ones() {
     let old = "id = \"old\"\nname = \"Old\"\noutline = [\"osm:4\"]\n";
     let alone = run(&w, &[PINS, ("old.toml", old)]);
     let mut files = all();
-    files.retain(|f| f.0 != "far.toml" && f.0 != "rules.toml");
+    files.retain(|f| f.0 != "far.toml" && f.0 != "_rules.toml");
     files.push(("old.toml", old));
     let mixed = run(&w, &files);
     assert!(mixed.problems.is_empty(), "{:?}", mixed.problems);

@@ -34,10 +34,17 @@ def slug(s):
 if os.path.exists(OUT):
     shutil.rmtree(OUT)
 shutil.copytree(SRC, OUT)
+
+
+def special(f):
+    # (A `_` name, and the old names of `_pins.toml` and `_rules.toml`: never regions.)
+    return f.startswith('_') or f in ('pins.toml', 'rules.toml')
+
+
 files = {}
 for d, _, fs in os.walk(OUT):
     for f in fs:
-        if f.endswith('.toml') and not f.startswith('_'):
+        if f.endswith('.toml') and not special(f):
             files[f[:-5]] = os.path.relpath(os.path.join(d, f), OUT)
 built = json.load(open(os.path.join(args.src, 'built.json')))
 by_name = {}
@@ -577,7 +584,7 @@ def tomlv(v):
 
 for d, _, fs in os.walk(OUT):
     for f in fs:
-        if f.endswith('.toml') and not f.startswith('_') and f[:-5] not in R:
+        if f.endswith('.toml') and not special(f) and f[:-5] not in R:
             os.remove(os.path.join(d, f))
 for id, r in R.items():
     # (#420's GAP/APPROX lines are dropped: what's approximate now is said by gen-notes' approx.)
@@ -600,6 +607,10 @@ for id, r in R.items():
     p = os.path.join(OUT, r['path'])
     os.makedirs(os.path.dirname(p), exist_ok=True)
     open(p, 'w').write('\n'.join(out) + '\n')
+for old, new in (('pins.toml', '_pins.toml'), ('rules.toml', '_rules.toml')):
+    # (The old names move to the new ones; a pin already there is never replaced by the default.)
+    if os.path.exists(os.path.join(OUT, old)) and not os.path.exists(os.path.join(OUT, new)):
+        os.rename(os.path.join(OUT, old), os.path.join(OUT, new))
 if not os.path.exists(os.path.join(OUT, '_pins.toml')):
     open(os.path.join(OUT, '_pins.toml'), 'w').write('osm = "2026-09-28"\n')
 json.dump(notes, open(os.path.join(args.out, 'gen-notes.json'), 'w'), indent=1, ensure_ascii=False, default=str)
