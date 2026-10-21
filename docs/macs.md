@@ -74,6 +74,23 @@ processes held together last time, else about ten times its extract, never under
 floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, the lead's the heartbeat
 (`state/status.json`).
 
+**The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: a member of the pool like the
+M1, with room for more at once (build memory 28 GB by default).
+
+**A new (headless) Mac**, in this order:
+1. `sudo scutil --set LocalHostName <name>` first: the pool's identity (a member's status file is
+   named by it).
+2. Automatic login (FileVault off), so the LaunchAgents and Scenic start after a restart; start up
+   after a power failure (`sudo pmset -a autorestart 1`); never sleep on mains (`sudo pmset -c sleep
+   0`); Screen Sharing on, to reach it.
+3. Mount the NAS share at `/Volumes/personal`, its password saved to the login Keychain.
+4. Homebrew, then `brew install osmium-tool openjdk@21 uv git`.
+5. Tailscale; SSH keys both ways with the other Macs.
+6. `tools/app/install.sh` (it also creates the map server's LaunchAgent), then open Scenic.app once.
+7. Allow `scenic` and `server` through the firewall (pool.md §6.8).
+8. `scenic memory` says the build's memory (total − 4 GB unless set); the room target is the
+   owner's choice.
+
 **App Macs (both laptops).**
 - **The launcher** (`tools/launcher/launcher.c`) runs the command in `~/Library/Application
   Support/scenic/run/<name>` and restarts it when it exits: `bin/scenic-launcher server` (the map

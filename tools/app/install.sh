@@ -21,6 +21,24 @@ esac
 NAS=/Volumes/personal/projects/scenic-roads
 HOME_S="$HOME/Library/Application Support/scenic"
 uid=$(id -u)
+# A LaunchAgent's plist, written when missing (never changed once there): the launcher running
+# <name>, started at load and kept alive. $2 is its ProcessType (Interactive: else launchd throttles
+# it); $3 = aqua limits it to a logged-in session.
+make_plist() {
+  local name=$1 type=$2 aqua=${3:-} plist="$HOME/Library/LaunchAgents/local.scenic.$1.plist"
+  [[ -f $plist ]] && return 0
+  plutil -create xml1 "$plist"
+  plutil -insert Label -string local.scenic.$name "$plist"
+  plutil -insert ProgramArguments -array "$plist"
+  plutil -insert ProgramArguments.0 -string "$HOME_S/bin/scenic-launcher" "$plist"
+  plutil -insert ProgramArguments.1 -string $name "$plist"
+  plutil -insert RunAtLoad -bool true "$plist"
+  plutil -insert KeepAlive -bool true "$plist"
+  plutil -insert ProcessType -string $type "$plist"
+  [[ $aqua == aqua ]] && plutil -insert LimitLoadToSessionType -string Aqua "$plist"
+  plutil -insert StandardOutPath -string "$HOME/Library/Logs/scenic/$name.log" "$plist"
+  plutil -insert StandardErrorPath -string "$HOME/Library/Logs/scenic/$name.log" "$plist"
+}
 # The agent's jobs run osmium (Homebrew), Planetiler (Java 21) and the Python steps (uv, wherever
 # the login shell finds it: Homebrew, ~/.local/bin, a mise or asdf shim). Scenic writes the agent's
 # run file with it when it opens; checked here so a Mac without it says so now.
@@ -48,10 +66,9 @@ printf '%s\n' "$HOME_S/app/current/server" --web "$HOME_S/app/current/web" --fon
 server_plist="$HOME/Library/LaunchAgents/local.scenic.server.plist"
 if launchctl print gui/$uid/local.scenic.server >/dev/null 2>&1; then
   launchctl kickstart -k gui/$uid/local.scenic.server
-elif [[ -f $server_plist ]]; then
-  launchctl bootstrap gui/$uid "$server_plist"
 else
-  echo "no map server job ($server_plist): it was set up when this Mac was first installed" >&2
+  make_plist server Interactive
+  launchctl bootstrap gui/$uid "$server_plist"
 fi
 # A running Scenic ended before it's replaced or removed (SIGTERM: it quits without asking, its build
 # service left as it is).
@@ -69,23 +86,7 @@ if (( legacy )); then
   printf '%s\n' "$HOME_S/app/current/Scenic.app/Contents/MacOS/scenic-status" > "$HOME_S/run/status"
   for name in agent status; do
     plist="$HOME/Library/LaunchAgents/local.scenic.$name.plist"
-    if [[ ! -f $plist ]]; then
-      plutil -create xml1 "$plist"
-      plutil -insert Label -string local.scenic.$name "$plist"
-      plutil -insert ProgramArguments -array "$plist"
-      plutil -insert ProgramArguments.0 -string "$HOME_S/bin/scenic-launcher" "$plist"
-      plutil -insert ProgramArguments.1 -string $name "$plist"
-      plutil -insert RunAtLoad -bool true "$plist"
-      plutil -insert KeepAlive -bool true "$plist"
-      if [[ $name == agent ]]; then
-        plutil -insert ProcessType -string Standard "$plist"
-      else
-        plutil -insert ProcessType -string Interactive "$plist"
-        plutil -insert LimitLoadToSessionType -string Aqua "$plist"
-      fi
-      plutil -insert StandardOutPath -string "$HOME/Library/Logs/scenic/$name.log" "$plist"
-      plutil -insert StandardErrorPath -string "$HOME/Library/Logs/scenic/$name.log" "$plist"
-    fi
+    if [[ $name == agent ]]; then make_plist agent Standard; else make_plist status Interactive aqua; fi
     launchctl bootout gui/$uid/local.scenic.$name 2>/dev/null || true
     launchctl bootstrap gui/$uid "$plist"
   done
