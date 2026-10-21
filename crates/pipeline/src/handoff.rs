@@ -94,7 +94,7 @@ fn stamp(name: &str) -> Option<u128> {
 }
 
 /// The hand-offs a job wrote into `dir` (a helper's outbox folder: named by time, as `write` names
-/// them), in the order written; None when one is damaged (its saves can't all go back: its units are
+/// them), in the order written; None when one is damaged (its saves can't all go back: its z6 tiles are
 /// built again).
 pub fn written_in(dir: &Path) -> Result<Option<Vec<Handoff>>> {
     let mut files: Vec<PathBuf> = listing(dir)?
@@ -136,7 +136,7 @@ pub fn write(dir: &Path, h: &Handoff) -> Result<()> {
 /// Every hand-off waiting under `base` (the coordinator's journal of hand-offs received over HTTP,
 /// crate::coord, kept on this Mac's disk), a folder's in order, with its path; an error when a
 /// listing, a marker or a hand-off can't be read now. One that can't be parsed is set aside; its
-/// folder's done records after it in this look are dropped (their units are built again), as its
+/// folder's done records after it in this look are dropped (their z6 tiles are built again), as its
 /// job's saves may be lost with it.
 pub fn waiting_in(base: &Path) -> Result<Vec<(PathBuf, Handoff)>> {
     let mut out = Vec::new();

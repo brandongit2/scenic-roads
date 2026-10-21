@@ -1,13 +1,13 @@
-//! base(U) (docs/steps.md): one unit's base pack, from its OSM piece, by the unit's programs run on
-//! a unit folder (`extract`, `elev`, `areaflags`, `tile … elev`, `scenic-metrics`), then its arrays as
-//! a base pack (`legacy::base_sections`) for the ways the unit owns (first
+//! base(U) (docs/steps.md): one z6 tile's base pack, from its OSM extract, by the z6 tile's programs run on
+//! a z6 tile folder (`extract`, `elev`, `areaflags`, `tile … elev`, `scenic-metrics`), then its arrays as
+//! a base pack (`legacy::base_sections`) for the ways the z6 tile owns (first
 //! vertex inside it) that touch the coverage, with the pass's worldwide road values.
 //!
 //! Before the expensive steps the folder is cut down to the ways that touch the coverage (whoever
 //! owns them: a way just outside still gives the clean-up its junction context at shared nodes).
-//! The global-source layers come from the catalog's packs (`stage`). Each unit reads a slice of the
+//! The global-source layers come from the catalog's packs (`stage`). Each z6 tile reads a slice of the
 //! per-vertex DEM cache: the seed (copied once from the NAS's `sources/dem-cache/`)
-//! and the samples every unit kept from its last run (`dem_samples_keep`), so a vertex is sampled
+//! and the samples every z6 tile kept from its last run (`dem_samples_keep`), so a vertex is sampled
 //! from the DEM servers once.
 
 use crate::coverage::Coverage;
@@ -40,12 +40,12 @@ fn dem_in_box(keys: &[u64], elev: &[f32], srcs: &[u8], b: [i32; 4], out: &mut Ve
     }
 }
 
-/// The per-unit DEM samples (`dem-units/<unit>.<box>.dem`, in the NAS's `cache/` so both Macs'
-/// units read them; `Tools::dem_units`): one file per unit, replaced after each of its runs (written
+/// The per-z6 tile DEM samples (`dem-units/<unit>.<box>.dem`, in the NAS's `cache/` so both Macs'
+/// z6 tiles read them; `Tools::dem_units`): one file per z6 tile, replaced after each of its runs (written
 /// whole, then renamed; the old one deleted after): "RDDEM002", the count (u64), the box of its
 /// points (4 × i32, E7), what it was sampled under (4 × u32: `DemValidity`), then the
 /// sorted keys (u64), elevations (f32) and sources (u8). The box is in the name too (`box_tag`), so
-/// a unit finds the files near it from one listing of the folder, without opening each.
+/// a z6 tile finds the files near it from one listing of the folder, without opening each.
 pub const DEM_UNITS: &str = "dem-units";
 const DEM_MAGIC: &[u8; 8] = b"RDDEM002";
 const DEM_HEAD: usize = 48;
@@ -70,7 +70,7 @@ pub struct DemValidity {
 }
 
 impl DemValidity {
-    /// Of the plan a unit samples from.
+    /// Of the plan a z6 tile samples from.
     pub fn of(p: &crate::dem::declared::Plan) -> DemValidity {
         let t = u64::from_str_radix(&p.tag, 16).unwrap_or(0);
         let made = [u32::MAX, 0, t as u32, (t >> 32) as u32];
@@ -93,7 +93,7 @@ impl DemValidity {
     /// (w, s, e, n, E7): only where a single dataset covers a point, its heights not converted. A dataset's cover is by 1°
     /// cell, and a point on a cell's edge is covered by the datasets of every cell it touches, so
     /// when every cell the box meets is covered by two datasets or more, no point of the box is
-    /// covered by one alone, and the seed has nothing for the unit: neither copied nor read.
+    /// covered by one alone, and the seed has nothing for the z6 tile: neither copied nor read.
     pub fn seed_serves(&self, b: [i32; 4]) -> bool {
         let cell = |v: i32| (v as f64 * 1e-7).floor() as i32;
         for x in cell(b[0])..=cell(b[2]) {
@@ -111,7 +111,7 @@ impl DemValidity {
     }
 }
 
-/// Keeps a unit's DEM samples (the `dem-cache.*` elev left in `from`: its vertices, cached or
+/// Keeps a z6 tile's DEM samples (the `dem-cache.*` elev left in `from`: its vertices, cached or
 /// sampled anew, under `v`) for later runs of it and of its neighbours. Returns how many.
 pub fn dem_samples_keep(dir: &Path, u: TileId, from: &Path, v: &DemValidity) -> Result<usize> {
     dem_samples_keep_with(dir, u, from, None, v)
@@ -170,7 +170,7 @@ fn box_tag(b: [i32; 4]) -> String {
     b.iter().map(|v| format!("{:08x}", *v as u32)).collect()
 }
 
-/// A DEM samples file's unit and box, from its name (`<unit>.<box>.dem`); the box None for a name
+/// A DEM samples file's z6 tile and box, from its name (`<unit>.<box>.dem`); the box None for a name
 /// without one.
 fn dem_file(name: &str) -> Option<(String, Option<[i32; 4]>)> {
     let stem = name.strip_suffix(".dem")?;
@@ -184,8 +184,8 @@ fn dem_file(name: &str) -> Option<(String, Option<[i32; 4]>)> {
     }
 }
 
-/// Moves what units kept in this Mac's own cache (`dem-units/`, `scenic-units/`) to the shared one
-/// (`Tools::shared`), once: both Macs' units read them there. Two unit jobs on one Mac may do this
+/// Moves what z6 tiles kept in this Mac's own cache (`dem-units/`, `scenic-units/`) to the shared one
+/// (`Tools::shared`), once: both Macs' z6 tiles read them there. Two `unit` jobs on one Mac may do this
 /// at once (crate::agent: a Mac's jobs at once): what the other moved first is passed over.
 pub fn move_kept_to_shared(cache: &Path, shared: &Path) -> Result<usize> {
     let gone = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
@@ -261,7 +261,7 @@ fn dem_head(m: &[u8]) -> Option<(usize, [i32; 4], [u32; 4])> {
     })
 }
 
-/// The part of a units' DEM samples file (`dem_samples_keep`) whose longitudes are within box `b`'s:
+/// The part of a z6 tiles' DEM samples file (`dem_samples_keep`) whose longitudes are within box `b`'s:
 /// its box and versions, and those entries (its keys sorted, lon first, so a run of them), with the
 /// bytes read for them.
 struct DemRange {
@@ -301,8 +301,8 @@ impl DemRange {
     }
 }
 
-/// This Mac's copy of units' DEM samples file `p` (on the NAS: `<name>`, replaced whole by each of
-/// its unit's runs) in `copies`, named by the file's name, length and modification time, so a copy
+/// This Mac's copy of z6 tiles' DEM samples file `p` (on the NAS: `<name>`, replaced whole by each of
+/// its z6 tile's runs) in `copies`, named by the file's name, length and modification time, so a copy
 /// is of that file as it is: `<name>.<length>.<mtime ns>`.
 fn dem_copy_name(p: &Path, copies: &Path) -> Option<PathBuf> {
     let m = std::fs::metadata(p).ok()?;
@@ -310,8 +310,8 @@ fn dem_copy_name(p: &Path, copies: &Path) -> Option<PathBuf> {
     Some(copies.join(format!("{}.{}.{t}", p.file_name()?.to_string_lossy(), m.len())))
 }
 
-/// Keeps `bytes`, units' DEM samples file `p` as written or read whole, as this Mac's copy of it in
-/// `copies` (`dem_copy_name`), and lets the unit's earlier copies go: a cache, the copies of the
+/// Keeps `bytes`, z6 tiles' DEM samples file `p` as written or read whole, as this Mac's copy of it in
+/// `copies` (`dem_copy_name`), and lets the z6 tile's earlier copies go: a cache, the copies of the
 /// NAS's files', so failing costs only reading it again.
 fn keep_dem_copy(p: &Path, copies: &Path, bytes: &[u8]) {
     let Some(at) = dem_copy_name(p, copies) else { return };
@@ -329,11 +329,11 @@ fn keep_dem_copy(p: &Path, copies: &Path, bytes: &[u8]) {
     }
 }
 
-/// A units' DEM samples file read for box `b`: its header, the bounds of the entries within `b`'s
+/// A z6 tiles' DEM samples file read for box `b`: its header, the bounds of the entries within `b`'s
 /// longitudes found by a binary search over its keys (read a page at a time), then those entries
 /// alone, from each of its three arrays. None when it isn't whole (its length not its header's).
 /// On the NAS a file is read in a few large reads where reading it whole moved hundreds of MB that
-/// the box doesn't need (a unit's neighbours to the east and west).
+/// the box doesn't need (a z6 tile's neighbours to the east and west).
 fn dem_range(p: &Path, b: [i32; 4]) -> std::io::Result<Option<DemRange>> {
     use store::sys::PosIo;
     let f = std::fs::File::open(p)?;
@@ -402,7 +402,7 @@ fn dem_range(p: &Path, b: [i32; 4]) -> std::io::Result<Option<DemRange>> {
     Ok(Some(DemRange { bx, made, keys, elev, srcs, read, n }))
 }
 
-/// The units' kept DEM samples files in `dir`, the newest of each unit's: (unit, its box, the file).
+/// The z6 tiles' kept DEM samples files in `dir`, the newest of each z6 tile's: (z6 tile, its box, the file).
 pub fn dem_samples_files(dir: &Path) -> Vec<(String, Option<[i32; 4]>, PathBuf)> {
     let mut files: BTreeMap<String, (PathBuf, Option<[i32; 4]>)> = BTreeMap::new();
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -449,17 +449,17 @@ fn dem_valid_in_box(
 }
 
 /// Copies the DEM cache entries inside `b` (w, s, e, n, E7) into `dst` (`dem-cache.*` files, for
-/// elev): the seed's (`cache`'s `dem-cache.*`), then every unit's kept samples
+/// elev): the seed's (`cache`'s `dem-cache.*`), then every z6 tile's kept samples
 /// in `units` whose box meets `b` (`dem_samples_keep`), which win over the seed's (they're newer); entries
 /// no longer valid (`v`) are left out. With none, nothing is written (elev
 /// samples every vertex). The files near `b` are found by the boxes in their names (one listing);
-/// a unit's newest file counts, and one that isn't whole is passed over (it's only a cache).
+/// a z6 tile's newest file counts, and one that isn't whole is passed over (it's only a cache).
 pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path, v: &DemValidity) -> Result<usize> {
     dem_cache_slice_with(cache, units_dir, b, dst, None, v)
 }
 
 /// `dem_cache_slice`, the files read whole kept in `copies` and read from there while they're as
-/// they are on the NAS (`keep_dem_copy`): a unit's own file and its neighbours' above and below it
+/// they are on the NAS (`keep_dem_copy`): a z6 tile's own file and its neighbours' above and below it
 /// are read whole by each of them.
 pub fn dem_cache_slice_with(
     cache: &Path,
@@ -486,7 +486,7 @@ pub fn dem_cache_slice_with(
     let seed = all.len();
     drop(p);
     let reading = sub("units' kept samples read", Class::NasRead);
-    // Each unit's file, by its name: the newest when there are two (one being replaced).
+    // Each z6 tile's file, by its name: the newest when there are two (one being replaced).
     let mut files: std::collections::BTreeMap<String, (PathBuf, Option<[i32; 4]>)> = Default::default();
     for e in std::fs::read_dir(units_dir).into_iter().flatten().flatten() {
         let Some((u, bx)) = dem_file(&e.file_name().to_string_lossy()) else { continue };
@@ -533,7 +533,7 @@ pub fn dem_cache_slice_with(
     }
     drop(reading);
     let _p = sub("merged and written", Class::Disk);
-    // The units' samples first, so a stable dedup keeps theirs (by file name order among them).
+    // The z6 tiles' samples first, so a stable dedup keeps theirs (by file name order among them).
     newer.extend(all);
     newer.sort_by_key(|e| e.0);
     newer.dedup_by_key(|e| e.0);
@@ -559,7 +559,7 @@ pub fn dem_cache_slice_with(
 
 /// Puts the DEM cache's seed in `cache` when it isn't there whole, from the NAS's copy
 /// (`sources/dem-cache/`), and holds it (store::cachefile: room-making may delete it while no job
-/// holds it, the NAS having it whole; it's copied again then). Without one the units sample every
+/// holds it, the NAS having it whole; it's copied again then). Without one the z6 tiles sample every
 /// vertex anew.
 pub fn dem_seed(root: &Path, cache: &Path) -> Result<()> {
     let names = ["keys.u64", "elev.f32", "src.u8"];
@@ -584,7 +584,7 @@ pub fn dem_seed(root: &Path, cache: &Path) -> Result<()> {
     let mut before = 0u64;
     let mut copied = false;
     // Each file whole before the next (one here of another length, from an older seed, goes first:
-    // its fellows are copied again too). Made under this process's own temporary name: two unit
+    // its fellows are copied again too). Made under this process's own temporary name: two z6 tile
     // jobs on a Mac without the seed copy it at once, the first named wins.
     for attempt in 0..2 {
         for (n, want) in names.iter().zip(&there) {
@@ -645,12 +645,12 @@ pub fn subset(dir: &Path, keep: impl Fn(&WayRec, &[[i32; 2]]) -> bool) -> Result
     Ok((out_ways.len(), out_verts.len()))
 }
 
-/// Whether the unit with bounds `tb` (w, s, e, n, E7) owns a way starting at `p`.
+/// Whether the z6 tile with bounds `tb` (w, s, e, n, E7) owns a way starting at `p`.
 pub fn owns(tb: [i32; 4], p: [i32; 2]) -> bool {
     p[0] >= tb[0] && p[0] < tb[2] && p[1] >= tb[1] && p[1] < tb[3]
 }
 
-/// What a unit's programs read of the declared sources (crate::inputs::sources), in its folder
+/// What a z6 tile's programs read of the declared sources (crate::inputs::sources), in its folder
 /// (`UnitSources::FILE`), written as the folder is prepared (`prepare_folder`).
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UnitSources {
@@ -665,7 +665,7 @@ pub struct UnitSources {
 impl UnitSources {
     pub const FILE: &'static str = "sources.json";
 
-    /// What the unit's programs read of `s`.
+    /// What the z6 tile's programs read of `s`.
     pub fn of(s: &crate::inputs::sources::Sources) -> Result<UnitSources> {
         use crate::inputs::sources::{CANOPY, LAND_COVER};
         Ok(UnitSources {
@@ -685,7 +685,7 @@ impl UnitSources {
     }
 }
 
-/// Where a unit's steps find their programs and caches.
+/// Where a z6 tile's steps find their programs and caches.
 #[derive(Clone)]
 pub struct Tools {
     /// `extract`, `tile`, `scenic-metrics`.
@@ -693,16 +693,16 @@ pub struct Tools {
     /// The repository's `dem/` folder (run with `uv run python`).
     pub dem: PathBuf,
     /// This Mac's caches: `chm10/` (canopy 10° files) and `dem-cache.*` (the seed's per-vertex
-    /// elevations); and the units' kept results when there's no `shared`.
+    /// elevations); and the z6 tiles' kept results when there's no `shared`.
     pub cache: PathBuf,
-    /// Overture building boxes: a folder of `.f32` files (the unit's tiles staged by
+    /// Overture building boxes: a folder of `.f32` files (the z6 tile's tiles staged by
     /// `buildtiles::stage`), when there are any.
     pub buildings: Option<PathBuf>,
     /// The NAS's `sources/`, where downloads are kept, each downloaded once: Meta's canopy squares
     /// (`canopy/`) and the declared elevation datasets' kept files (`fetched/<dataset>/`: FABDEM's tiles); the local caches fill from it. None: local
     /// caches alone.
     pub sources: Option<PathBuf>,
-    /// The NAS's `cache/`, where what a unit keeps for its later runs is shared by both Macs: its DEM
+    /// The NAS's `cache/`, where what a z6 tile keeps for its later runs is shared by both Macs: its DEM
     /// samples (`dem-units/`) and scenic results (`scenic-units/`). None: the local cache.
     pub shared: Option<PathBuf>,
     /// The canopy squares read where they lie (the NAS's `sources/canopy/`), for a worker that
@@ -712,10 +712,10 @@ pub struct Tools {
     /// neither downloads into them nor removes from them (docs/workers.md §2); its programs are
     /// told so (`SCENIC_STORES_READ_ONLY`).
     pub stores_read_only: bool,
-    /// The declared elevation datasets' accepted version (crate::inputs::elevation): a unit's
+    /// The declared elevation datasets' accepted version (crate::inputs::elevation): a z6 tile's
     /// folder is prepared only with one (None: a task's worker, which runs the tail alone).
     pub elevation: Option<crate::inputs::Accepted>,
-    /// The declared sources' accepted version (crate::inputs::sources): what a unit's programs read
+    /// The declared sources' accepted version (crate::inputs::sources): what a z6 tile's programs read
     /// of them is written into its folder (`UnitSources`); a folder is prepared only with them (None:
     /// a task's worker, which runs the tail alone).
     pub declared: Option<crate::inputs::sources::Sources>,
@@ -727,32 +727,32 @@ pub struct Tools {
 }
 
 impl Tools {
-    /// The units' kept DEM samples (`Tools::shared`, else the local cache).
+    /// The z6 tiles' kept DEM samples (`Tools::shared`, else the local cache).
     pub fn dem_units(&self) -> PathBuf {
         self.shared.as_ref().unwrap_or(&self.cache).join(DEM_UNITS)
     }
 
-    /// Where this Mac keeps copies of the shared units' DEM samples it read or wrote whole (among the
+    /// Where this Mac keeps copies of the shared z6 tiles' DEM samples it read or wrote whole (among the
     /// copies of the NAS's files, which room-making may take: `blobs/dem-units/`); none when they're
     /// this Mac's own (no shared cache).
     pub fn dem_copies(&self) -> Option<PathBuf> {
         self.shared.as_ref().map(|_| self.cache.join("blobs").join(DEM_UNITS))
     }
 
-    /// Where unit `u`'s scenic results are kept between its runs (crate::scache::Carry).
+    /// Where z6 tile `u`'s scenic results are kept between its runs (crate::scache::Carry).
     pub fn scenic_kept(&self, u: TileId) -> PathBuf {
         self.shared.as_ref().unwrap_or(&self.cache).join("scenic-units").join(u.dash())
     }
 }
 
-/// Where a unit's build says how far it is (`on_stage`): each stage it finishes (a lap, a program)
+/// Where a z6 tile's build says how far it is (`on_stage`): each stage it finishes (a lap, a program)
 /// with the time it took, and a program's own progress within its stage (its `progress:` lines),
 /// as (stage, fraction of it done, its time when finished).
 pub type StageHook = Box<dyn Fn(&str, f64, Option<std::time::Duration>) + Send + Sync>;
 
 static HOOK: std::sync::RwLock<Option<StageHook>> = std::sync::RwLock::new(None);
 
-/// Has a unit's stages said to `h` from now on (None: to nothing): the unit job's progress
+/// Has a z6 tile's stages said to `h` from now on (None: to nothing): the `unit` job's progress
 /// (scenic-build).
 pub fn on_stage(h: Option<StageHook>) {
     if let Ok(mut w) = HOOK.write() {
@@ -769,7 +769,7 @@ pub fn stage_said(stage: &str, frac: f64, took: Option<std::time::Duration>) {
     }
 }
 
-/// A unit's stages in the order they run (`Laps::lap`'s and the programs' names), each with about
+/// A z6 tile's stages in the order they run (`Laps::lap`'s and the programs' names), each with about
 /// how long it takes (seconds: the M4's, over its z6 tiles of 2026-10): how far a z6 tile is, by
 /// the stages it's through (`TileProgress`), until this Mac has timed its own.
 pub const STAGES: [(&str, f64); 25] = [
@@ -801,7 +801,7 @@ pub const STAGES: [(&str, f64); 25] = [
     ("its folders removed", 1.0),
 ];
 
-/// A unit job's progress (scenic-build's unit step), z6 tile by z6 tile: those finished, and each under
+/// A `unit` job's progress (scenic-build's `unit` step), z6 tile by z6 tile: those finished, and each under
 /// way by how far through its stages it is (`STAGES`), each stage weighted by about how long it
 /// takes here (learned as z6 tiles finish, and kept: `file`). Its line says `<done>/<n> z6 tiles`.
 pub struct TileProgress {
@@ -915,7 +915,7 @@ impl TileProgress {
     }
 }
 
-/// A part of a unit's build done in-process: a phase of the job's (crate::timings), logged as its
+/// A part of a z6 tile's build done in-process: a phase of the job's (crate::timings), logged as its
 /// programs' times are, "  <what>: <time>", and said as a stage finished (`on_stage`) when it
 /// `end`s. (Ended by an error instead, its time is the phase's alone.)
 pub struct Stage {
@@ -937,9 +937,9 @@ impl Stage {
     }
 }
 
-/// What a unit's step program mostly waits on, for its phase (crate::timings): its elevations read
+/// What a z6 tile's step program mostly waits on, for its phase (crate::timings): its elevations read
 /// the DEM servers' files (and say their own phases), the land cover downloads ESA's, the canopy
-/// reads the canopy squares; the rest compute over the unit's folder.
+/// reads the canopy squares; the rest compute over the z6 tile's folder.
 pub fn program_class(what: &str) -> crate::timings::Class {
     use crate::timings::Class;
     match what {
@@ -953,7 +953,7 @@ pub fn program_class(what: &str) -> crate::timings::Class {
 static PEAK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The most memory one of the steps' programs took since the last call (scenic-build's log line per
-/// unit), and starts again.
+/// z6 tile), and starts again.
 pub fn take_peak() -> u64 {
     PEAK.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
@@ -999,8 +999,8 @@ fn run_in(c: Command, what: &str, log: &Path, dir: &Path, tools: &Tools) -> Resu
     snapshot(snap, n, &shown, dir, what, "after")
 }
 
-/// A unit's step ended by a server it reads giving no answer (its program's exit status
-/// crate::fetch::UNREACHABLE_EXIT): the network's or the server's, not the unit's. The unit job sets
+/// A z6 tile's step ended by a server it reads giving no answer (its program's exit status
+/// crate::fetch::UNREACHABLE_EXIT): the network's or the server's, not the z6 tile's. The `unit` job sets
 /// the z6 tile aside and goes on with its others (scenic-build's `unit` step).
 #[derive(Debug)]
 pub struct SourceDown(pub String);
@@ -1056,7 +1056,7 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     let (st, peak) = waited?;
     PEAK.fetch_max(peak, std::sync::atomic::Ordering::Relaxed);
     if !st.success() {
-        // The end of its log into the job's: the unit's folder, its log with it, goes when the next
+        // The end of its log into the job's: the z6 tile's folder, its log with it, goes when the next
         // job starts.
         eprintln!("{what}, the end of its log:\n{}", log_tail(log, 40));
         if st.code() == Some(crate::fetch::UNREACHABLE_EXIT as i32) {
@@ -1095,18 +1095,18 @@ pub struct Report {
     pub owned: usize,
     pub dem_cache: usize,
     pub staged: crate::stage::Staged,
-    /// Heritage sites and designated-area polygons around the unit.
+    /// Heritage sites and designated-area polygons around the z6 tile.
     pub heritage: usize,
     pub areas: usize,
 }
 
-/// Writes a unit's heritage inputs for its box (degrees) into its folder: `heritage.json` and
+/// Writes a z6 tile's heritage inputs for its box (degrees) into its folder: `heritage.json` and
 /// `area-shapes.geojsonseq` (crate::heritage::unit_inputs); the sites and polygons written.
 pub type HeritageInputs<'a> = &'a dyn Fn([f64; 4], &Path) -> Result<(usize, usize)>;
 
-/// Runs the unit's programs for unit `u` in `dir` from `piece`, with the coverage and the global-source
+/// Runs the z6 tile's programs for z6 tile `u` in `dir` from `piece`, with the coverage and the global-source
 /// layers on the NAS (`src`), and its scenic results from its last run (`carry`): `prepare_folder`,
-/// then its `tail`. Leaves the unit folder ready for its base pack.
+/// then its `tail`. Leaves the z6 tile folder ready for its base pack.
 #[allow(clippy::too_many_arguments)]
 pub fn build_folder(
     u: TileId,
@@ -1126,7 +1126,7 @@ pub fn build_folder(
     Ok(rep)
 }
 
-/// The DEM samples a unit's elevations made (its tail's first step), kept for its later runs and
+/// The DEM samples a z6 tile's elevations made (its tail's first step), kept for its later runs and
 /// its neighbours' (new ones aren't sampled twice). A cache: not keeping them (the NAS away) only
 /// costs sampling them again.
 pub fn keep_dem_samples(u: TileId, dir: &Path, tools: &Tools) {
@@ -1148,7 +1148,7 @@ pub fn keep_dem_samples(u: TileId, dir: &Path, tools: &Tools) {
     }
 }
 
-/// A unit's build up to its tail (docs/workers.md: what needs the NAS): its ways from the piece,
+/// A z6 tile's build up to its tail (docs/workers.md: what needs the NAS): its ways from the extract,
 /// those touching the coverage, the DEM cache's slice over them, the global-source layers staged
 /// from the packs, the heritage inputs, area flags and land cover; then its scenic results from its
 /// last run restored (`carry`), as the tail's canopy and view steps read them. (Its elevations are
@@ -1167,7 +1167,7 @@ pub fn prepare_folder(
     std::fs::create_dir_all(dir)?;
     let log = dir.join("steps.log");
     let mut rep = Report { unit: u.slash(), ..Default::default() };
-    // 1. Every way of the piece, densified by the declared elevation datasets (crate::dem::spacing).
+    // 1. Every way of the extract, densified by the declared elevation datasets (crate::dem::spacing).
     let a = tools.elevation.as_ref().context("the unit's elevations: the declared elevation datasets' accepted version isn't given (the build reads them once their switch is recorded: docs/inputs.md §6.8)")?;
     let spacing = dir.join(crate::dem::spacing::FILE);
     crate::dem::spacing::Fine::of_accepted(&crate::dem::declared::accepted(a)?).write(&spacing)?;
@@ -1199,7 +1199,7 @@ pub fn prepare_folder(
     };
     s.end();
     let s = stage("DEM cache slice", Class::NasRead);
-    // (From the declared elevation datasets: their plan for this unit, which elev reads, and by which
+    // (From the declared elevation datasets: their plan for this z6 tile, which elev reads, and by which
     // the kept samples are judged.)
     let e7 = |v: i32| v as f64 * 1e-7;
     // (Each dataset's heights brought to EGM2008 by the declared geoid sources: crate::dem::geoid.)
@@ -1213,8 +1213,8 @@ pub fn prepare_folder(
     let plan =
         crate::dem::declared::plan_converted(a, [e7(slice[0]), e7(slice[1]), e7(slice[2]), e7(slice[3])], geoid)?;
     let validity = DemValidity::of(&plan);
-    // (The seed held for this unit, copied again if room-making took it: store::cachefile. Not
-    // where two datasets cover every point of the unit: no sample of it is valid there.)
+    // (The seed held for this z6 tile, copied again if room-making took it: store::cachefile. Not
+    // where two datasets cover every point of the z6 tile: no sample of it is valid there.)
     if let Some(root) = tools.sources.as_deref().and_then(Path::parent) {
         if validity.seed_serves(slice) {
             let _p = crate::timings::sub("DEM cache seeded here (once a Mac)", Class::NasRead);
@@ -1247,7 +1247,7 @@ pub fn prepare_folder(
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     rep.staged = crate::stage::stage(src, b, dir)?;
     s.end();
-    // The heritage sites around the unit (the flags step's `heritage.json`), and the designated
+    // The heritage sites around the z6 tile (the flags step's `heritage.json`), and the designated
     // areas rasterised onto its grid (`grid.areas.u8`), from the heritage-sites job's slices.
     let s = stage("heritage inputs", Class::NasRead);
     (rep.heritage, rep.areas) = heritage(b, dir)?;
@@ -1266,7 +1266,7 @@ pub fn prepare_folder(
     // unchanged), restored over the staged grids they were made from.
     if let Some(c) = carry {
         let s = stage("scenic results restored", Class::NasRead);
-        // (From the copy made ahead of it, while the unit before it built: `ahead_carry`.)
+        // (From the copy made ahead of it, while the z6 tile before it built: `ahead_carry`.)
         let ahead = ahead_carry(dir);
         match c.restore_ahead(dir, ahead.is_dir().then_some(ahead.as_path())) {
             Ok(Some(n)) => eprintln!("unit {}: {n} samples' scenic results from its last run", u.slash()),
@@ -1282,7 +1282,7 @@ pub fn prepare_folder(
     Ok(rep)
 }
 
-/// Where the unit job copies the scenic results kept for the unit whose folder is `dir`, ahead of
+/// Where the `unit` job copies the scenic results kept for the z6 tile whose folder is `dir`, ahead of
 /// it (scache::Carry::fetch): beside its folder.
 pub fn ahead_carry(dir: &Path) -> PathBuf {
     let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1290,7 +1290,7 @@ pub fn ahead_carry(dir: &Path) -> PathBuf {
 }
 
 /// One program a task runs (docs/workers.md §3): its name (the build's `bin/<prog>`, or
-/// `<prog>.wasm` in a web worker), its arguments and environment, in which `{dir}` is the unit's
+/// `<prog>.wasm` in a web worker), its arguments and environment, in which `{dir}` is the z6 tile's
 /// folder, `{cache}` the canopy cache, `{scache}` the folder's scenic cache, `{buildings}` its
 /// roadside buildings, `{store}` the NAS's canopy store to download into, and what's read where it
 /// lies: `{sources}` the NAS's sources, `{chm}` its canopy squares, `{net}`
@@ -1302,14 +1302,14 @@ pub struct Run {
     pub prog: String,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
-    /// The files it reads of the unit's own (`{dir}/<name>`, `{buildings}/<name>`; a trailing `*`
+    /// The files it reads of the z6 tile's own (`{dir}/<name>`, `{buildings}/<name>`; a trailing `*`
     /// for any name so begun), earlier steps' outputs too: a task sends those there when it
     /// starts, so it may run on any worker (crate::offload). None: it stays here (`keep_here`).
     #[serde(default)]
     pub reads: Vec<String>,
 }
 
-/// The files a unit job saves for a unit (its tile's dash name: `6-31-20`): its base pack, road
+/// The files a `unit` job saves for a z6 tile (its tile's dash name: `6-31-20`): its base pack, road
 /// values, roads' English and the grids its packs lacked (scenic-build's `commit_unit`). All a
 /// helper's hand-off may change (crate::coord).
 pub fn saved_files(dash: &str) -> [String; 7] {
@@ -1326,7 +1326,7 @@ pub fn saved_files(dash: &str) -> [String; 7] {
 }
 
 /// A tail split: the runs that stay here, then those any worker may run (what they read of the
-/// unit's folder listed: it's sent them), the longest such end.
+/// z6 tile's folder listed: it's sent them), the longest such end.
 pub fn split(runs: &[Run]) -> (&[Run], &[Run]) {
     let i = runs.iter().rposition(|r| r.reads.is_empty()).map_or(0, |i| i + 1);
     runs.split_at(i)
@@ -1363,7 +1363,7 @@ pub fn canopy_square_files((top, left): (i32, i32)) -> [String; 3] {
 }
 
 /// Whether the NAS's store (`<sources>/canopy/`) has every canopy square the canopy step of the
-/// unit in `dir` reads (a file, or Meta's "none there"): a worker reads them where they lie, and
+/// z6 tile in `dir` reads (a file, or Meta's "none there"): a worker reads them where they lie, and
 /// can't download one.
 pub fn canopy_stored(dir: &Path, sources: &Path) -> bool {
     let Ok(idx) = roadcore::grid::GridIndex::load(dir) else { return false };
@@ -1372,14 +1372,14 @@ pub fn canopy_stored(dir: &Path, sources: &Path) -> bool {
         .all(|sq| canopy_square_files(sq).iter().all(|n| sources.join("canopy").join(n).exists()))
 }
 
-/// The tail of unit `u`'s build: its elevations, its clean-up and grade, then its road samples,
+/// The tail of z6 tile `u`'s build: its elevations, its clean-up and grade, then its road samples,
 /// canopy, views, buildings (with `buildings`) and flags. Every program is Rust, and gives the same
 /// bytes natively and as WebAssembly (tools/check/same.py, tail.mjs), so any worker can run it. The
 /// data the elevations and canopy read is read where it lies: the DEM servers' files and the NAS's
 /// (`{net}`, `{sources}`, `{chm}`: a browser's through the coordinator, a Mac's as this
 /// Mac reads them).
 pub fn tail(u: TileId, buildings: bool, store: bool) -> Vec<Run> {
-    // What each step reads of the unit's folder, earlier steps' outputs too: a task sends what's
+    // What each step reads of the z6 tile's folder, earlier steps' outputs too: a task sends what's
     // there when it starts (traced in WebAssembly, the outputs compared: tools/check/tail.mjs).
     let mine = |names: &[&str]| {
         names
@@ -1527,8 +1527,8 @@ pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// What a unit's spawned program reads (noted as it exits, `costin::READS_ENV`) lands in the
-    /// unit's measures, as its tail's steps run here (task #235).
+    /// What a z6 tile's spawned program reads (noted as it exits, `costin::READS_ENV`) lands in the
+    /// z6 tile's measures, as its tail's steps run here (task #235).
     #[test]
     fn a_spawned_steps_reads_land_on_its_unit() {
         let _l = crate::costin::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1541,13 +1541,13 @@ mod tests {
         let m = crate::costin::take();
         assert!(m["bytes"] >= 5_000_000_000 && m["tiffs"] >= 7, "{m:?}");
         assert!(!d.path().join("step.log.reads").exists());
-        // (A tail's, after its unit's measures were taken.)
+        // (A tail's, after its z6 tile's measures were taken.)
         let mut c = store::spawn::command("sh");
         c.arg("-c").arg("echo '300 2' >> \"$SCENIC_READS\"");
         let (r, t) = crate::costin::measured(|| run(c, "a tail step", &d.path().join("tail.log")));
         r.unwrap();
         assert!(t.bytes >= 300 && t.tiffs >= 2);
-        // (Its programs' CPU as each is waited for: a busy one's counted, and added to the unit's.)
+        // (Its programs' CPU as each is waited for: a busy one's counted, and added to the z6 tile's.)
         let mut c = store::spawn::command("sh");
         c.arg("-c").arg("i=0; while [ $i -lt 200000 ]; do i=$((i+1)); done");
         let (r, t) = crate::costin::measured(|| run(c, "a busy tail step", &d.path().join("busy.log")));
@@ -1821,7 +1821,7 @@ mod tests {
     }
 
     /// Room-making mid-job (docs/building.md §2, store::cachefile): the DEM seed, deleted as fast as it
-    /// can be while a unit job slices it, is copied again from the NAS and held for each unit: every
+    /// can be while a `unit` job slices it, is copied again from the NAS and held for each z6 tile: every
     /// slice is what it is left alone.
     #[test]
     fn a_seed_deleted_mid_job_is_copied_again_and_every_slice_is_alike() {
@@ -1854,7 +1854,7 @@ mod tests {
                         .flat_map(|n| std::fs::read(dst.join(format!("dem-cache.{n}"))).unwrap())
                         .collect(),
                 );
-                // (The unit done: its hold let go, as the job's loop does.)
+                // (The z6 tile done: its hold let go, as the job's loop does.)
                 seed.iter().for_each(|p| store::cachefile::release(p));
             }
             v
@@ -1911,7 +1911,7 @@ mod tests {
             0
         );
         assert!(!d.path().join("t/dem-cache.keys.u64").exists());
-        // A unit's kept samples: in the slices of boxes meeting them, over the seed's.
+        // A z6 tile's kept samples: in the slices of boxes meeting them, over the seed's.
         let run = d.path().join("run");
         std::fs::create_dir_all(&run).unwrap();
         let mine = [k(3, 3), k(4, 4)];
@@ -2038,8 +2038,8 @@ mod tests {
         std::fs::write(&copy, &b).unwrap();
         assert_eq!(slice([0, 0, 10, 10], "c", Some(&copies)), (3, vec![8.0; 3]));
         assert_eq!(slice([0, 0, 10, 10], "d", None), (3, vec![7.0; 3]));
-        // ...not once the unit kept other samples (a new file); kept here, the copy is it, and the
-        // earlier one goes (once no job holds it: the unit job lets its files go unit by unit).
+        // ...not once the z6 tile kept other samples (a new file); kept here, the copy is it, and the
+        // earlier one goes (once no job holds it: the `unit` job lets its files go z6 tile by z6 tile).
         store::cachefile::release(&copy);
         // (sleep ok: the new file's time apart)
         std::thread::sleep(std::time::Duration::from_millis(20));

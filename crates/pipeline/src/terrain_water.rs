@@ -210,8 +210,8 @@ pub fn polys_of_mvt_with(mvt: &[u8], z: u8, x: u32, y: u32, rivers: bool) -> Res
 
 /// The key of a lake without an OSM id, feature `k` of tile z/x/y: meant to be its tile's own, but
 /// not always (task #464): from the tile's 16th feature on, `k`'s bits meet `y`'s, so two
-/// tiles of a column can give two lakes one key, and a piece's run would gather them as one lake
-/// (one level). The live basemap's lakes all have ids (none keyed so in the 398 pieces near the
+/// tiles of a column can give two lakes one key, and a z6 tile's run would gather them as one lake
+/// (one level). The live basemap's lakes all have ids (none keyed so in the 398 z6 tiles near the
 /// coverage, 9 Oct 2026); kept as it is until the terrain's version changes anyway.
 pub fn own_key(z: u8, x: u32, y: u32, k: usize) -> u64 {
     (1u64 << 63) | (u64::from(z) << 56) ^ (u64::from(x) << 30) ^ (u64::from(y) << 4) ^ k as u64
@@ -543,7 +543,7 @@ pub fn polys_digest(polys: &[Poly]) -> u64 {
 
 /// The digest of the water `src` has in the tiles `tiles` (each read as the terrain reads it, in
 /// parallel): over each tile with water, its zoom, column, row and `polys_digest`; "-" when none
-/// has any. What keys a terrain piece or assembly on the water it reads (agent::build).
+/// has any. What keys a terrain z6 tile or assembly on the water it reads (agent::build).
 pub fn tiles_digest(src: &dyn WaterSource, tiles: &[(u8, u32, u32)]) -> Result<String> {
     tiles_digest_with(src, tiles, false)
 }
@@ -583,7 +583,7 @@ pub const IDX_FMT: u64 = 1;
 
 /// A water source's digests (`tiles_digest`) of what each terrain target reads of it: JSON,
 /// `{"fmt": 1, "step": "terrain-water", "pin": <its pin>, "digests": {<target>: [<from>, <digest>]}}`,
-/// a target a piece ("6/x/y": its z9–12 tiles near the coverage, `terrain_pack::piece_levels`; from:
+/// a target a z6 tile ("6/x/y": its z9–12 tiles near the coverage, `terrain_pack::piece_levels`; from:
 /// the coverage's fingerprint that decides them) or an assembly ("3/x/y": its z6–8 tiles; from
 /// "z6-8"). Made by the `terrain-water` job (`make_idx`), which keeps those made before whose from
 /// is the coverage's still.

@@ -1,5 +1,5 @@
 //! The OSM pass (docs/steps.md): the planet, fetched onto the NAS, turned on the lead into
-//! what every later step reads: the filtered planet, pieces per z6 unit (10 km buffer, ways whole,
+//! what every later step reads: the filtered planet, extracts per z6 z6 tile (10 km buffer, ways whole,
 //! multipolygons complete), the worldwide sets, the basemap, and worldwide road values.
 //!
 //! Each stage leaves a marker in the scratch folder, so a pass interrupted by sleep, a reboot or a
@@ -69,7 +69,7 @@ pub const SETS: &[(&str, u32, &[&str])] = &[
             "wr/leisure=nature_reserve",
         ],
     ),
-    // (The landmark candidates come from the units' pieces, extract `--candidates`, not a set.)
+    // (The landmark candidates come from the z6 tiles' extracts, extract `--candidates`, not a set.)
     // Summits, worldwide, for prominence and isolation: peaks and volcanoes, nodes and ways (2: ways
     // too, as the peaks among the candidates are).
     ("summits", 2, &["nw/natural=peak,volcano"]),
@@ -167,7 +167,7 @@ pub fn planetiler_room(input_len: u64) -> u64 {
     input_len * 6
 }
 
-/// Piece buffer around a unit, km.
+/// Extract buffer around a z6 tile, km.
 pub const BUFFER_KM: f64 = 10.0;
 
 pub fn osmium() -> Command {
@@ -314,16 +314,16 @@ pub fn copy_resume_with(src: &Path, dst: &Path, progress: &mut dyn FnMut(u64, u6
     Ok(())
 }
 
-/// Every z3 tile, with its pieces' bounds (the tile grown by the buffer).
+/// Every z3 tile, with its extracts' bounds (the tile grown by the buffer).
 /// The pass's filtered planet on the NAS.
 fn filtered_nas(out: &Out, date: &str) -> Result<PathBuf> {
     Ok(out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the filtered planet on the NAS")?))
 }
 
-/// Cuts `input` (the data of tile `t` and its buffer) down to the z6 pieces below `t`, a quarter at
-/// a time and depth first, calling `each` on every non-empty z6 piece. osmium keeps id sets per
+/// Cuts `input` (the data of tile `t` and its buffer) down to the z6 extracts below `t`, a quarter at
+/// a time and depth first, calling `each` on every non-empty z6 extract. osmium keeps id sets per
 /// output that span the whole id range (about 4 GB each on a planet-sized input, measured), so a
-/// run makes four. Each piece goes as soon as its quarters are cut, so the tree's files on disk add
+/// run makes four. Each extract goes as soon as its quarters are cut, so the tree's files on disk add
 /// up to about one copy of the input (plus the buffers' overlap), however uneven the data.
 /// Resumable: `<tile>.cut` marks a tile whose quarters were cut, `<tile>.done` one whose whole
 /// subtree is done.
@@ -342,7 +342,7 @@ fn cut_tree(
         cut(input, &kids, &dir, 4)?;
         std::fs::write(&marker, b"")?;
     }
-    // Its quarters are on disk: the input goes (`consume`: a piece of this tree, not the root's).
+    // Its quarters are on disk: the input goes (`consume`: a z6 tile of this tree, not the root's).
     if consume {
         std::fs::remove_file(input).ok();
     }
@@ -382,7 +382,7 @@ fn extract_config(tiles: &[TileId], dir: &Path) -> serde_json::Value {
     serde_json::json!({"directory": dir, "extracts": ex})
 }
 
-/// Cut `input` into one piece per tile, in batches (osmium keeps an id set per output).
+/// Cut `input` into one extract per tile, in batches (osmium keeps an id set per output).
 fn cut(input: &Path, tiles: &[TileId], dir: &Path, batch: usize) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     for (i, chunk) in tiles.chunks(batch).enumerate() {
@@ -398,20 +398,22 @@ fn cut(input: &Path, tiles: &[TileId], dir: &Path, batch: usize) -> Result<()> {
     Ok(())
 }
 
-/// A piece with nothing in it (osmium writes a header-only file for an empty bbox).
+/// An extract with nothing in it (osmium writes a header-only file for an empty bbox).
 fn is_empty_piece(p: &Path) -> bool {
     std::fs::metadata(p).map(|m| m.len() < 1024).unwrap_or(true)
 }
 
-/// The pieces of one pass, as the build manifest records them.
+/// The z6 tile extracts of one pass, as the build manifest records them. (Stored under the names
+/// `pieces` and `sources/osm/<date>/pieces/<z6 tile>`, from when an extract was a "piece": kept, as
+/// every pass's records and its files on the NAS carry them; the pass summary's `units` is its count.)
 #[derive(serde::Serialize, serde::Deserialize, Default, Debug)]
 pub struct Pieces {
     pub date: String,
-    /// Unit "6/x/y" → logical name of its piece.
+    /// Z6 tile "6/x/y" → logical name of its extract.
     pub pieces: BTreeMap<String, String>,
 }
 
-/// One unit's chaining inputs: its owned ways (OSM id, length) and the pairs made at its nodes.
+/// One z6 tile's chaining inputs: its owned ways (OSM id, length) and the pairs made at its nodes.
 #[derive(Default, Debug, PartialEq)]
 pub struct UnitLinks {
     pub ways: Vec<(u64, f32)>,
@@ -459,8 +461,8 @@ impl UnitLinks {
     }
 }
 
-/// Run `extract` on a piece and work out its unit's chaining inputs.
-/// `spacing`: the declared datasets' spacing file (crate::dem::spacing), as the units' extract has it.
+/// Run `extract` on a extract and work out its z6 tile's chaining inputs.
+/// `spacing`: the declared datasets' spacing file (crate::dem::spacing), as the z6 tiles' extract has it.
 pub fn unit_links(extract: &Path, spacing: &Path, piece: &Path, unit: TileId, work: &Path) -> Result<UnitLinks> {
     std::fs::create_dir_all(work)?;
     let mut c = store::spawn::command(extract);
@@ -510,7 +512,7 @@ pub fn unit_links(extract: &Path, spacing: &Path, piece: &Path, unit: TileId, wo
             len,
         });
     }
-    // Pairs at this unit's nodes only: the piece holds every way through them.
+    // Pairs at this z6 tile's nodes only: the extract holds every way through them.
     let partner = chain::pair(&links, &pool, &inside);
     let mut out = UnitLinks::default();
     for (i, l) in links.iter().enumerate() {
@@ -533,9 +535,9 @@ pub fn unit_links(extract: &Path, spacing: &Path, piece: &Path, unit: TileId, wo
     Ok(out)
 }
 
-/// The worldwide walk over every unit's chaining inputs: road values by OSM way id.
-/// The worldwide walk over every unit's chaining inputs: the ways (OSM id, length), sorted by id,
-/// and each one's road value in the same order. Each unit's pairs are dropped once used: at planet
+/// The worldwide walk over every z6 tile's chaining inputs: road values by OSM way id.
+/// The worldwide walk over every z6 tile's chaining inputs: the ways (OSM id, length), sorted by id,
+/// and each one's road value in the same order. Each z6 tile's pairs are dropped once used: at planet
 /// scale (some 250 M ways) the walk then stays near 20 GB.
 pub fn walk_all(units: &mut [UnitLinks]) -> (Vec<(u64, f32)>, Vec<RoadVal>) {
     let mut ways: Vec<(u64, f32)> = units.iter().flat_map(|u| u.ways.iter().copied()).collect();
@@ -808,12 +810,12 @@ pub fn run_pass(
     }
     let tree = scratch.join("cut");
     let links = scratch.join("links");
-    // (The road links spaced as the units' extract spaces them: crate::dem::spacing.)
+    // (The road links spaced as the z6 tiles' extract spaces them: crate::dem::spacing.)
     let spacing = scratch.join(crate::dem::spacing::FILE);
     crate::dem::spacing::Fine::of_records(out.root(), &out.manifest)?.write(&spacing)?;
     if !done(scratch, "cut").exists() {
         // The first cut writes about the filtered file again (its four quarters); below it each
-        // piece goes as soon as it's cut, so the tree stays near that size. The local filtered
+        // extract goes as soon as it's cut, so the tree stays near that size. The local filtered
         // file is kept for the first cut only when there's room for both, and goes after it.
         let flen = std::fs::metadata(&filtered)
             .or_else(|_| std::fs::metadata(filtered_nas(out, date)?).map_err(anyhow::Error::from))?
@@ -828,8 +830,8 @@ pub fn run_pass(
         let local = filtered.exists();
         let src = if local { filtered.clone() } else { filtered_nas(out, date)? };
         let work = scratch.join("extract-work");
-        // Progress by data: the pieces' sizes against the filtered planet's (their buffers overlap a
-        // little, so it's capped just short of the end), the pieces uploaded before a restart too.
+        // Progress by data: the extracts' sizes against the filtered planet's (their buffers overlap a
+        // little, so it's capped just short of the end), the extracts uploaded before a restart too.
         let total_mb = std::fs::metadata(&src)?.len() >> 20;
         let prefix = format!("sources/osm/{date}/pieces/");
         let mut done_mb: u64 = out
@@ -879,8 +881,8 @@ pub fn run_pass(
     let name = out.get(&format!("sources/osm/{date}/pieces")).context("pieces list")?.to_string();
     let pieces: Pieces = serde_json::from_slice(&std::fs::read(out.path(&name))?)?;
     if !done(scratch, "roads").exists() {
-        // Every unit's chaining inputs (kept by the cut, else worked out from its piece), then the
-        // worldwide walk; values sliced by owner unit.
+        // Every z6 tile's chaining inputs (kept by the cut, else worked out from its extract), then the
+        // worldwide walk; values sliced by owner z6 tile.
         let mut all: Vec<(TileId, UnitLinks)> = Vec::new();
         let n = pieces.pieces.len() as u64;
         part(7, "z6 tiles' road links read");
@@ -936,6 +938,7 @@ pub fn run_pass(
     }
     // The pass is complete: its summary marks it so (the agent's `pass_done`).
     if out.get(&format!("sources/osm/{date}/pass")).is_none() {
+        // (`units`: the pass summary's stored key for its count of z6 tile extracts: kept.)
         let summary = serde_json::json!({ "date": date, "units": pieces.pieces.len() });
         out.put_bytes(&format!("sources/osm/{date}/pass"), "json", &serde_json::to_vec_pretty(&summary)?)?;
         out.save()?;
@@ -954,7 +957,7 @@ pub fn is_date(s: &str) -> bool {
     b.len() == 10 && b.iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
 }
 
-/// Removes the manifest's entries of passes older than `date` (their planet's pieces, sets, road
+/// Removes the manifest's entries of passes older than `date` (their planet's extracts, sets, road
 /// values and outlines; the summits, route ends, items and heritage made from them) once `date`'s
 /// pass is complete: every job reads the newest pass, so nothing reads them again. (Their files
 /// go with GC: its sweep of retired passes' sources, agent::gc.) How many went.
@@ -1064,18 +1067,18 @@ pub fn newer_planet(root: &Path, have: Option<&str>) -> Result<Option<(PathBuf, 
     Ok(Some((dir.join(&last).join("planet.osm.pbf"), last)))
 }
 
-/// Puts into the pass's pieces the ferry ways its filtered planet lacks. The 2026-09-28 pass's was
+/// Puts into the pass's extracts the ferry ways its filtered planet lacks. The 2026-09-28 pass's was
 /// filtered without `w/route=ferry`: it has a ferry way only where another of the filter's tags
-/// kept it (a route relation's member, a `wikidata` tag, …), so its pieces lack the rest
-/// (Kobe–Miyazaki, Tanger–Tarifa, …). Its ferries set is the planet's own, with them. Each piece
+/// kept it (a route relation's member, a `wikidata` tag, …), so its extracts lack the rest
+/// (Kobe–Miyazaki, Tanger–Tarifa, …). Its ferries set is the planet's own, with them. Each extract
 /// gets the set's ferry ways it meets as the cut kept ways (its tile and buffer, the smart
 /// strategy: whole, with their nodes) and lacks, merged in (an object both have, at the one
 /// version the planet has, is written once).
-/// A piece that lacks none stays as it is, so only the units whose pieces change are built again,
-/// and a run after it changes nothing. Only the pieces of the units `only` takes. The pieces changed
-/// and the ways they gained. The records are saved once, at the end: a piece changed goes stale the
-/// roads' reach, and with it the units' planning on both Macs, so saving each as it changed would
-/// hold the units up for the whole run (a run stopped part way saves none, and is run again).
+/// An extract that lacks none stays as it is, so only the z6 tiles whose extracts change are built again,
+/// and a run after it changes nothing. Only the extracts of the z6 tiles `only` takes. The extracts changed
+/// and the ways they gained. The records are saved once, at the end: a extract changed goes stale the
+/// roads' reach, and with it the z6 tiles' planning on both Macs, so saving each as it changed would
+/// hold the z6 tiles up for the whole run (a run stopped part way saves none, and is run again).
 pub fn patch_ferries(
     out: &mut Out,
     date: &str,
@@ -1320,8 +1323,8 @@ mod tests {
     fn pieces_gain_the_ferries_they_lack() {
         let d = tempfile::tempdir().unwrap();
         let mut out = Out::unbound(d.path(), &d.path().join("scratch")).unwrap();
-        // Unit 6/32/21 (lon 0 to 5.6, lat 48.9 to 52.5): a road and a ferry the filter kept (a route
-        // relation's member) in its piece; unit 6/40/20's piece has a road only.
+        // Z6 tile 6/32/21 (lon 0 to 5.6, lat 48.9 to 52.5): a road and a ferry the filter kept (a route
+        // relation's member) in its extract; z6 tile 6/40/20's extract has a road only.
         let shared = "n1 v1 x1.0 y50.0\nn2 v1 x1.1 y50.0\nn3 v1 x1.2 y50.1\nn4 v1 x1.5 y50.5\n";
         let piece = osm(
             d.path(),
@@ -1329,7 +1332,7 @@ mod tests {
             &format!("{shared}w10 v1 Thighway=primary Nn1,n2\nw20 v1 Troute=ferry,motor_vehicle=yes Nn2,n3\n"),
         );
         let other = osm(d.path(), "other", "n9 v1 x45.0 y45.0\nn8 v1 x45.1 y45.0\nw90 v1 Thighway=primary Nn9,n8\n");
-        // The ferries set: that ferry, and a standalone one from the piece's coast far out to sea.
+        // The ferries set: that ferry, and a standalone one from the extract's coast far out to sea.
         let set = osm(d.path(), "set", &format!("{shared}n5 v1 x-3.0 y52.0\nw20 v1 Troute=ferry,motor_vehicle=yes Nn2,n3\nw30 v1 Troute=ferry,motor_vehicle=yes Nn3,n4,n5\n"));
         out.put_file("sources/osm/2026-09-28/pieces/6-32-21", "osm.pbf", &piece).unwrap();
         out.put_file("sources/osm/2026-09-28/pieces/6-40-20", "osm.pbf", &other).unwrap();
@@ -1339,7 +1342,7 @@ mod tests {
             out.get("sources/osm/2026-09-28/pieces/6-40-20").unwrap().to_string(),
         );
         assert_eq!(patch_ferries(&mut out, "2026-09-28", &d.path().join("scratch"), &|_| true).unwrap(), (1, 1));
-        // The piece gained the standalone ferry, whole (its node at sea too), and kept the rest once.
+        // The extract gained the standalone ferry, whole (its node at sea too), and kept the rest once.
         let after = out.path(out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap());
         assert_ne!(out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap(), before);
         assert_eq!(way_ids(&after, None).unwrap().into_iter().collect::<Vec<_>>(), [10, 20, 30]);
@@ -1348,10 +1351,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(opl.lines().filter(|l| l.starts_with('n')).count(), 5);
-        // A piece with no ferries near it stays as it was; a second run changes nothing.
+        // An extract with no ferries near it stays as it was; a second run changes nothing.
         assert_eq!(out.get("sources/osm/2026-09-28/pieces/6-40-20").unwrap(), untouched);
         assert_eq!(patch_ferries(&mut out, "2026-09-28", &d.path().join("scratch"), &|_| true).unwrap(), (0, 0));
-        // Units left out stay as they are.
+        // Z6 tiles left out stay as they are.
         assert_eq!(patch_ferries(&mut out, "2026-09-28", &d.path().join("scratch"), &|u| u.x == 40).unwrap(), (0, 0));
     }
 

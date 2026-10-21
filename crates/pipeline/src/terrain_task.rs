@@ -1,21 +1,21 @@
-//! A terrain piece's z8 subtrees as tasks (kind `terrainsub`; docs/workers.md §3, docs/steps.md
-//! Terrain): a piece (a z6 tile's levels z12 → z9, crate::terrain_pack::build_piece) is 16 z8
+//! A terrain z6 tile's z8 subtrees as tasks (kind `terrainsub`; docs/workers.md §3, docs/steps.md
+//! Terrain): a z6 tile (a z6 tile's levels z12 → z9, crate::terrain_pack::build_piece) is 16 z8
 //! subtrees, each a z8 tile's z9–12 tiles near the coverage. A tile's making reads only its own raw
 //! tile, its children's changes and AWS's z9 tile over it, all within its subtree, and GLO-30 and
-//! the water at its place; but a lake's level is one, from all its shore in the piece's level that
+//! the water at its place; but a lake's level is one, from all its shore in the z6 tile's level that
 //! first has it. So the subtrees go out in groups closed under the lakes they share (a lake whose
 //! water reaches two subtrees' tiles puts them in one group): a group made alone then makes each of
-//! its tiles, and its lakes' levels, as the whole piece's run does, and the piece's run of the
+//! its tiles, and its lakes' levels, as the whole z6 tile's run does, and the z6 tile's run of the
 //! others the same as of the whole (`groups`).
 //!
 //! A task's one file (`u/in.sect`; docs/formats.md) holds everything its group reads, cut by the
 //! job from what it reads itself: the raw tiles (`r-<z>-<x>-<y>`, as the job's `RawTiles` gives
 //! them; one AWS hasn't, absent), the water's polygons as the basemap gives them (`w-…`), and north
 //! of 59.5°N the windows of GLO-30's cells its tiles sample (`c-<lat>-<lon>`, zstd), its meta the
-//! piece, the group's levels and which sources the job's run has. A worker reads nothing else: no
+//! z6 tile, the group's levels and which sources the job's run has. A worker reads nothing else: no
 //! NAS, no network. Its run (the program `terrainsub`) writes the group's tiles (`u/hi.sect`) and
 //! its mid's part (`u/mid.sect`, crate::terrain_pack::write_mid's), which the job takes into the
-//! piece as if made here: the same bytes.
+//! z6 tile as if made here: the same bytes.
 
 use crate::offload::{Offered, Offload, Patience, Settled};
 use crate::terrain_north::{Cell, Cells, Got};
@@ -34,9 +34,9 @@ pub const INPUT: &str = "in.sect";
 /// Its outputs: the group's tiles, and its mid's part.
 pub const HI: &str = "hi.sect";
 pub const MID: &str = "mid.sect";
-/// At most this many groups of a piece out at once.
+/// At most this many groups of a z6 tile out at once.
 pub const MOST: usize = 3;
-/// Whether a terrain job offers its next piece's groups as it begins a piece (a whole piece's time
+/// Whether a terrain job offers its next z6 tile's groups as it begins a z6 tile (a whole z6 tile's time
 /// for a worker to make them, not the moments before the run needs them): while its agent's
 /// placement is on (crate::agent::placement::ahead_on). Each group then says its head start (the
 /// tiles the run makes before it needs the group, over the group's: `Offers::offer_after`), and the
@@ -46,12 +46,12 @@ pub const MOST: usize = 3;
 pub fn offer_ahead() -> bool {
     crate::agent::placement::ahead_on()
 }
-/// A group of more subtrees than this isn't offered (its memory, and the piece's run waiting on it).
+/// A group of more subtrees than this isn't offered (its memory, and the z6 tile's run waiting on it).
 pub const MOST_SUBTREES: usize = 2;
 /// The files' format.
 const FMT: u64 = 1;
 
-/// A piece's levels, or a part of them: (zoom, its tiles), z12 → z9.
+/// A z6 tile's levels, or a part of them: (zoom, its tiles), z12 → z9.
 pub type Levels = Vec<(u8, Vec<(u32, u32)>)>;
 
 /// The z8 subtree tile z/x/y (z ≥ 8) is in.
@@ -76,8 +76,8 @@ pub fn subtrees_arg(list: &[(u32, u32)]) -> String {
     list.iter().map(|(x, y)| format!("8/{x}/{y}")).collect::<Vec<_>>().join(",")
 }
 
-/// A piece's subtrees in groups closed under the lakes they share (any lake key of a tile's water,
-/// its own keys too: the piece's run gathers a lake's shore by its key, whatever it is), each
+/// A z6 tile's subtrees in groups closed under the lakes they share (any lake key of a tile's water,
+/// its own keys too: the z6 tile's run gathers a lake's shore by its key, whatever it is), each
 /// group's subtrees in column then row order, the groups by their first. Without water, each
 /// subtree alone.
 pub fn groups(levels: &Levels, water: Option<&dyn WaterSource>) -> Result<Vec<Vec<(u32, u32)>>> {
@@ -272,7 +272,7 @@ pub struct CutReport {
     pub made: BTreeSet<(u8, u32, u32)>,
 }
 
-/// Group `group`'s task file at `path`, of piece `piece` (`levels`: the group's part of its levels),
+/// Group `group`'s task file at `path`, of z6 tile `piece` (`levels`: the group's part of its levels),
 /// from what the job's run reads (`raw`, `src`).
 pub fn cut(
     piece: (u32, u32),
@@ -428,7 +428,7 @@ impl Inputs {
         Ok(Inputs { r, meta, reads, cells })
     }
 
-    /// The piece and the group's subtrees.
+    /// The z6 tile and the group's subtrees.
     pub fn piece(&self) -> Result<(u32, u32)> {
         let u = crate::legacy::TileId::parse(&self.meta.piece)
             .filter(|u| u.z == 6)
@@ -488,8 +488,9 @@ impl Cells for Inputs {
 }
 
 /// Writes a group's tiles (`hi`, sorted) to `path`: a sectioned file, meta `{"fmt": 1, "step":
-/// "terrainsub", "piece": "6/x/y", "subtrees": "8/x/y,…"}`, a section `t-<z>-<x>-<y>` a tile.
+/// "terrainsub", "z6 tile": "6/x/y", "subtrees": "8/x/y,…"}`, a section `t-<z>-<x>-<y>` a tile.
 pub fn write_hi(path: &Path, piece: &str, subtrees: &str, hi: &[Made]) -> Result<()> {
+    // (`piece`: the key of a z6 tile in the task file's meta, kept: workers' older builds read it.)
     let meta = serde_json::json!({ "fmt": FMT, "step": KIND, "piece": piece, "subtrees": subtrees });
     let mut w = store::sect::SectWriter::create(path, meta)?;
     for (z, x, y, b) in hi {
@@ -499,7 +500,7 @@ pub fn write_hi(path: &Path, piece: &str, subtrees: &str, hi: &[Made]) -> Result
     Ok(())
 }
 
-/// A group's tiles as a worker wrote them (`write_hi`), checked: its piece's and group's, each
+/// A group's tiles as a worker wrote them (`write_hi`), checked: its z6 tile's and group's, each
 /// tile one of the group's levels, and every one whose raw tile the task had (`raw`: it makes each
 /// of those, and no other).
 pub fn read_hi(path: &Path, piece: &str, subtrees: &str, raw: &BTreeSet<(u8, u32, u32)>) -> Result<Vec<Made>> {
@@ -552,6 +553,7 @@ pub fn spec(group: &[(u32, u32)], version: &str, input: u64) -> serde_json::Valu
         reads: vec![format!("{{dir}}/{INPUT}")],
     };
     let first = group.first().map(|(x, y)| format!("8/{x}/{y}")).unwrap_or_default();
+    // (`unit`: the task spec's key for its tile, kept: docs/workers.md §3.)
     serde_json::json!({ "unit": first, "subtrees": subtrees_arg(group), "version": version, "runs": [run], "inputs": [[format!("u/{INPUT}"), input]], "places": crate::offload::places() })
 }
 
@@ -575,7 +577,7 @@ struct Out {
 /// What the job runs a group's levels with here (crate::terrain_pack::make_piece over them).
 pub type Here<'a> = &'a dyn Fn(Levels) -> Result<(Vec<Made>, Mid)>;
 
-/// A piece's groups out as tasks (crate::offload), as tree cover's rows are: offered from the far
+/// A z6 tile's groups out as tasks (crate::offload), as tree cover's rows are: offered from the far
 /// end (its last groups of at most `MOST_SUBTREES` subtrees) when the run begins, one per worker
 /// that takes them around, at most `MOST`, never every group; the run makes the others (`rest`),
 /// then settles each, waiting for no worker longer than this Mac would take (`Patience`: its tiles
@@ -590,7 +592,7 @@ pub struct Offers<'a> {
 }
 
 impl<'a> Offers<'a> {
-    /// Offers some of piece `piece`'s groups (its levels `levels`, read from `raw` and `src`),
+    /// Offers some of z6 tile `piece`'s groups (its levels `levels`, read from `raw` and `src`),
     /// their folders under the job's tasks' folder, while workers that take them are around: none
     /// without `offload`.
     pub fn offer(
@@ -603,10 +605,10 @@ impl<'a> Offers<'a> {
         Self::offer_after(offload, piece, levels, raw, src, 0)
     }
 
-    /// `offer`, the run making `before` tiles of other pieces before it begins this one (a job's
-    /// next piece offered ahead: the piece under way's): each group's head start, told with it when
+    /// `offer`, the run making `before` tiles of other z6 tiles before it begins this one (a job's
+    /// next extract offered ahead: the extract under way's): each group's head start, told with it when
     /// the job offers ahead (`offer_ahead`), is the tiles made here before the run needs it (those,
-    /// and this piece's own it makes first) over the group's.
+    /// and this z6 tile's own it makes first) over the group's.
     pub fn offer_after(
         offload: Option<&'a Offload>,
         piece: (u32, u32),
@@ -632,7 +634,7 @@ impl<'a> Offers<'a> {
         let depth = workers.min(MOST).min(groups.len().saturating_sub(1));
         let chosen: Vec<&Vec<(u32, u32)>> =
             groups.iter().rev().filter(|g| g.len() <= MOST_SUBTREES).take(depth).collect();
-        // (The run's own tiles of this piece, made before it settles any group out.)
+        // (The run's own tiles of this z6 tile, made before it settles any group out.)
         let out_subs: BTreeSet<(u32, u32)> = chosen.iter().flat_map(|g| g.iter().copied()).collect();
         let own = count(&levels_of(levels, &out_subs, false));
         for g in chosen {
@@ -676,7 +678,7 @@ impl<'a> Offers<'a> {
         o
     }
 
-    /// The piece offered.
+    /// The z6 tile offered.
     pub fn piece(&self) -> (u32, u32) {
         self.piece
     }
@@ -852,9 +854,9 @@ mod tests {
         }
     }
 
-    /// A piece in the far north (GLO-30 blended in, the walled patches' z9 tiles), the coverage at
+    /// A z6 tile in the far north (GLO-30 blended in, the walled patches' z9 tiles), the coverage at
     /// a corner of four of its subtrees (12.656°E, 70.10°N: z8 columns 136–137, rows 56–57, in z6
-    /// tile 6/34/14), and its raw tiles under `d`: the piece, its coverage, its raw tiles' cache.
+    /// tile 6/34/14), and its raw tiles under `d`: the z6 tile, its coverage, its raw tiles' cache.
     fn north_piece(d: &Path) -> ((u32, u32), Coverage, RawTiles) {
         let cov = Coverage::fixture(
             &[crate::agent::recipes::Recipe {
@@ -899,7 +901,7 @@ mod tests {
         assert_eq!(gs.len(), subs.len() - 1, "the lake's two subtrees in one group");
         let joint = gs.iter().find(|g| g.contains(&a)).unwrap();
         assert_eq!(joint, &vec![a, b]);
-        // The whole piece, and each group from its file: the same tiles, the same mid.
+        // The whole z6 tile, and each group from its file: the same tiles, the same mid.
         let whole = crate::terrain_pack::make_piece(&raw, &src, levels.clone()).unwrap();
         assert!(whole.1.levels.contains_key(&9) && whole.1.levels.contains_key(&11), "{:?}", whole.1.levels);
         // Each level's tiles all prepared at once (the way before task #447), and in blocks of one
@@ -932,7 +934,7 @@ mod tests {
         }
         hi.sort_by_key(|t| (t.0, t.1, t.2));
         assert!(same(&(hi, mid), &whole), "the groups make the piece");
-        // Not closed under its lakes, the piece isn't the same: the lake's level differs.
+        // Not closed under its lakes, the z6 tile isn't the same: the lake's level differs.
         let split = levels_of(&levels, &[a].into(), true);
         let rest = levels_of(&levels, &[a].into(), false);
         let (x, y) = (
@@ -962,7 +964,7 @@ mod tests {
         assert_eq!(parse_subtrees(&subtrees_arg(&[a, b])).unwrap(), [a, b]);
     }
 
-    /// The piece's run with `offload` into root `name` under `d`: its hi pack's and mid's content
+    /// The z6 tile's run with `offload` into root `name` under `d`: its hi pack's and mid's content
     /// names.
     fn piece(
         d: &Path,
@@ -1079,13 +1081,13 @@ mod tests {
         let tok = c.contact.token.clone();
         let ask =
             crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
-        // No worker around: nothing offered, the same piece.
+        // No worker around: nothing offered, the same z6 tile.
         let o = Offload::at(url.clone(), c.job_token.clone(), &p.join("job"));
         assert_eq!(piece(p, "none", t, &cov, &raw, &src, Some(&o)), alone);
         assert!(c.shared.lock().unwrap().tasks.by_id.is_empty());
 
         // A worker measured fast, its results trusted: its group (the last) waited for and taken,
-        // the same piece.
+        // the same z6 tile.
         let m1 = Client::at(vec![url.clone()], tok.clone(), "m1");
         assert!(m1.ask(&ask).unwrap().is_none());
         let fast = || {
@@ -1123,9 +1125,9 @@ mod tests {
     /// By hand, read-only (§10 latent bug): lakes without an OSM id keyed by their tile
     /// (`terrain_water::polys_of_mvt`: `1<<63 | z<<56 ^ x<<30 ^ y<<4 ^ k`) can share a key between
     /// two tiles of a column once a tile has 16 features or more (y's bits and k's overlap); a
-    /// piece's run gathers one level's lakes by key, so two such lakes would take one level. Over
-    /// every piece near the live coverage (`TT_ROOT`: the NAS's project folder, read only), the
-    /// keys two tiles of one level of one piece share, rasterized in both (`water_tile`'s lakes),
+    /// z6 tile's run gathers one level's lakes by key, so two such lakes would take one level. Over
+    /// every z6 tile near the live coverage (`TT_ROOT`: the NAS's project folder, read only), the
+    /// keys two tiles of one level of one z6 tile share, rasterized in both (`water_tile`'s lakes),
     /// each said with its tiles; and the count.
     #[test]
     #[ignore]
@@ -1189,14 +1191,14 @@ mod tests {
         Coverage::accepted(root, &a, None).unwrap()
     }
 
-    /// By hand, on the build's own data (docs/workers.md §3): pieces `TT_PIECES` ("6/x/y,…") made
+    /// By hand, on the build's own data (docs/workers.md §3): z6 tiles `TT_PIECES` ("6/x/y,…") made
     /// again in a scratch root over the NAS (`TT_ROOT`: its terrain hi packs' and mids' folders its
     /// own, the rest read only; `TT_SCRATCH`, `TT_RAW` the raw tiles' cache), expecting the same as
-    /// the manifest has them (hi pack and mid), some of each piece's subtrees made by another worker
+    /// the manifest has them (hi pack and mid), some of each z6 tile's subtrees made by another worker
     /// through a coordinator listening on `TT_PORT` (its WebAssembly programs from `TT_WASM`):
     /// `TT_WORKER=native`, a thread running each task as `scenic run-task` does (the programs in
     /// `TT_BIN`); `page`, a page that opens `http://127.0.0.1:<port>/work/` (waited for). The first
-    /// piece's group is checked against this Mac's run (as a worker's first results are), the
+    /// z6 tile's group is checked against this Mac's run (as a worker's first results are), the
     /// others' taken (the worker's pace and checks set so: this is the exchange, not the waiting
     /// rule). Each group's worker, time and peak memory said.
     #[test]

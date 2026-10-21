@@ -1,8 +1,8 @@
-//! A unit job's tasks (docs/workers.md §3): the part of a unit's tail any worker can run, offered
-//! through the lead's coordinator (crate::coord) while the job prepares its next units. The
+//! A `unit` job's tasks (docs/workers.md §3): the part of a z6 tile's tail any worker can run, offered
+//! through the lead's coordinator (crate::coord) while the job prepares its next z6 tiles. The
 //! steps that read the caches (the canopy files) run here, where the data is; those that read only
-//! the unit's folder (`Run::reads`) may run anywhere: the files they read are cloned into the task's
-//! own folder (copy-on-write: instant, and the job may go on in the unit's), the coordinator serves
+//! the z6 tile's folder (`Run::reads`) may run anywhere: the files they read are cloned into the task's
+//! own folder (copy-on-write: instant, and the job may go on in the z6 tile's), the coordinator serves
 //! them to the worker that takes the task, and takes back what it wrote.
 //!
 //! Nothing waits on a worker slower than this Mac: each worker's pace at each kind of task is
@@ -131,7 +131,7 @@ impl Patience {
     }
 }
 
-/// How a unit's tail went, for its log line.
+/// How a z6 tile's tail went, for its log line.
 pub enum Settled {
     /// A worker's result, used.
     Remote(String),
@@ -203,7 +203,7 @@ impl Offload {
     }
 
     /// How many tails may be out at once now: one per worker around that takes them, at most three
-    /// (each holds a unit's folder on this disk until it's back); none when no one's there.
+    /// (each holds a z6 tile's folder on this disk until it's back); none when no one's there.
     pub fn depth(&self) -> usize {
         self.workers("tail").min(3)
     }
@@ -265,7 +265,7 @@ impl Offload {
         Ok(Offered { id: v["id"].as_u64().context("the coordinator gave no task id")?, root: root.to_path_buf() })
     }
 
-    /// Offers `runs` over unit `u`'s folder `dir` (and its roadside buildings `bdir`).
+    /// Offers `runs` over z6 tile `u`'s folder `dir` (and its roadside buildings `bdir`).
     pub fn offer(&self, u: TileId, dir: &Path, bdir: Option<&Path>, runs: &[Run]) -> Result<Offered> {
         let root = self.dir.join(u.dash());
         std::fs::remove_dir_all(&root).ok();
@@ -286,14 +286,15 @@ impl Offload {
         // Its memory: its files twice (a worker holds them, and a program reads them in), and room
         // to work as much again, what the steps write meanwhile and a step's own (6/20/22's whole
         // tail: 996 MB of files, 565 MB written, the view step 1 GB), with 300 MB at least. What the
-        // unit's task took last time, when a worker measured it, replaces this (the coordinator's).
+        // z6 tile's task took last time, when a worker measured it, replaces this (the coordinator's).
         let mem_mb = (inputs.values().sum::<u64>() >> 20) * 3 + 300;
         let list: Vec<serde_json::Value> = inputs.iter().map(|(p, n)| serde_json::json!([p, n])).collect();
+        // (The spec's `unit` is the task's z6 tile: the key of every task spec, read by workers and pages: kept.)
         let spec = serde_json::json!({ "unit": u.slash(), "version": self.version, "runs": runs, "inputs": list, "places": places() });
         self.offer_spec("tail", spec, &root, inputs, mem_mb)
     }
 
-    /// Settles task `t` of the unit in `dir`; with `wait` false only when a worker finished or
+    /// Settles task `t` of the z6 tile in `dir`; with `wait` false only when a worker finished or
     /// failed it (None otherwise). `here` runs its steps in `dir`.
     pub fn settle(
         &self,
@@ -533,7 +534,7 @@ pub fn places() -> serde_json::Value {
     })
 }
 
-/// A task's kind, by its first step: "tail" (a unit's last steps), or the 3D buildings', tree
+/// A task's kind, by its first step: "tail" (a z6 tile's last steps), or the 3D buildings', tree
 /// cover's or terrain's (crate::bld::task::KIND, crate::trees::task::KIND,
 /// crate::terrain_task::KIND).
 pub fn task_kind(spec: &serde_json::Value) -> String {
@@ -577,7 +578,7 @@ pub fn run_task(
             crate::agent::jobs::report_f((1 + i) as f64 + frac, steps, &format!("steps ({what})"));
         }
     })));
-    // (Each input's hash: what's written back unchanged isn't sent, the unit's folder has it.)
+    // (Each input's hash: what's written back unchanged isn't sent, the z6 tile's folder has it.)
     let mut sent = std::collections::HashMap::new();
     let fetching = crate::timings::phase("its files fetched from the coordinator", crate::timings::Class::Net);
     for (p, n) in &inputs {
@@ -729,12 +730,12 @@ fn clone(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// A finished task's outputs (`u/<path>`) in the unit's folder.
+/// A finished task's outputs (`u/<path>`) in the z6 tile's folder.
 fn place(dir: &Path, path: &str) -> Option<PathBuf> {
     path.strip_prefix("u/").and_then(crate::coord::task::safe).map(|p| dir.join(p))
 }
 
-/// Moves a worker's outputs into the unit's folder, and removes what it removed.
+/// Moves a worker's outputs into the z6 tile's folder, and removes what it removed.
 fn take(st: &serde_json::Value, dir: &Path) -> Result<()> {
     let out = PathBuf::from(st["out"].as_str().context("no outputs' folder")?);
     for o in st["outputs"].as_array().into_iter().flatten() {
@@ -771,7 +772,7 @@ fn timeless(path: &str, b: Vec<u8>) -> Vec<u8> {
     }
 }
 
-/// Whether a worker's outputs are what this Mac's run (from `since`) left in the unit's folder:
+/// Whether a worker's outputs are what this Mac's run (from `since`) left in the z6 tile's folder:
 /// each it sent is this Mac's, and each file this Mac's run wrote that it didn't send is as the
 /// task sent it (`sent`, the task's inputs: a worker sends only what it changed).
 fn same(st: &serde_json::Value, dir: &Path, sent: &Path, since: std::time::SystemTime) -> Result<bool> {
@@ -813,7 +814,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
-        // The unit's folder, and a stand-in step: it writes one file, removes another, and writes
+        // The z6 tile's folder, and a stand-in step: it writes one file, removes another, and writes
         // a third again as it was.
         let dir = d.path().join("unit");
         std::fs::create_dir_all(&dir).unwrap();
@@ -979,7 +980,7 @@ mod tests {
         assert!(!p.wait_on(100.0, 200.0, Some(0.5)));
     }
 
-    /// A coordinator, a job's Offload and a unit's folder with a stand-in step (it writes one file),
+    /// A coordinator, a job's Offload and a z6 tile's folder with a stand-in step (it writes one file),
     /// in `d`, both on a virtual clock: (the clock, the coordinator, its address, the job's Offload,
     /// the folder, the step's programs, its runs).
     fn setup(

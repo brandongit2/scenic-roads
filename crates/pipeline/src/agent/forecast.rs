@@ -3,8 +3,8 @@
 //! cadenced publishes may next go out, and what each machine does next.
 //!
 //! The work left is run through in the order the agent runs it: the lead's first slot takes the
-//! first it can (the pass's worldwide jobs, then the map tiles of the units built, then a region at
-//! a time: its terrain, then its units; with none it can do now, the slope, tree cover and the
+//! first it can (the pass's worldwide jobs, then the map tiles of the z6 tiles built, then a region at
+//! a time: its terrain, then its z6 tiles; with none it can do now, the slope, tree cover and the
 //! chains' work). Every other slot, the lead's and each member's (a lane each, `equal`; as many as
 //! each Mac may run now, and the slots the lead's ramp grows to later, `Machine::from_s`), takes
 //! from the front of the plan's order the first work that it may run (a member never the lead's own
@@ -13,8 +13,8 @@
 //! a job an ask while a member runs an older app); the pages' lane (`helper`) the far end of the
 //! first shared step it can do (terrain's near end). Each lane starts with its slot's job under
 //! way. The trains' and the landmarks' chains run from the start, each step once what it reads is
-//! built. Publishing goes per unit (docs/building.md §2, Publishing): each map tile of a region
-//! (`RegionLeft::packs`, at its own measured time) is drawn once the units that draw it are built,
+//! built. Publishing goes per z6 tile (docs/building.md §2, Publishing): each map tile of a region
+//! (`RegionLeft::packs`, at its own measured time) is drawn once the z6 tiles that draw it are built,
 //! ahead of the regions' work, and a catalog follows within the minute (build::CATALOG_EVERY_S):
 //! the region is all on the map then (none said once only slope and tree cover are left). The whole-map steps go by their cadence (`Forecast::publishes`:
 //! build::low_gate, build::gate_open). Each target takes its last run's time (else its step's mean,
@@ -46,10 +46,10 @@ pub struct Machine {
     pub mem_mb: u64,
     /// Seconds from now until it's free (its job under way's time left).
     pub busy_s: f64,
-    /// What each unit takes it more (seconds): the lead's, while a worker that takes tails is
+    /// What each z6 tile takes it more (seconds): the lead's, while a worker that takes tails is
     /// around, the moment its job gives one to take its tail (crate::offload::LEASE_WAIT). (A
-    /// terrain piece's subtrees out with workers, crate::terrain_task, take none: they're offered as
-    /// the piece begins and waited for only after its own run, by then taken or not, and its
+    /// terrain z6 tile's subtrees out with workers, crate::terrain_task, take none: they're offered as
+    /// the z6 tile begins and waited for only after its own run, by then taken or not, and its
     /// measured time, the job's, has those waits in it.)
     pub unit_extra_s: f64,
     /// It may run the lead's own steps (`steps::Place::Lead`): the lead's slots; a member's take
@@ -126,16 +126,16 @@ pub struct Input<'a> {
     pub costs: CostTable,
     /// The cadenced publishes' last runs.
     pub cadence: Cadence,
-    /// Why the work left can't all be listed now, when it can't (the units waiting for the pass's
+    /// Why the work left can't all be listed now, when it can't (the z6 tiles waiting for the pass's
     /// heritage sites, reaches or buildings; a new pass under way): no finish is forecast.
     pub blind: Option<String>,
     /// The trains' and the landmarks' chains (but the overlays): from the start, each step once what
     /// it reads is built (`chain_deps`).
     pub chains: Vec<Job>,
-    /// After everything else: the overlays (they read the built units) and a catalog with what the
+    /// After everything else: the overlays (they read the built z6 tiles) and a catalog with what the
     /// chains made since.
     pub after: Vec<Job>,
-    /// Last of all, in idle time: the tree cover pieces' mids (build::TreeWork::backfill), each
+    /// Last of all, in idle time: the tree cover z6 tiles' mids (build::TreeWork::backfill), each
     /// once everything else is done, side by side.
     pub idle: Vec<Job>,
     /// The lead first, then the members.
@@ -203,7 +203,7 @@ pub fn busy_s(eta: f64, left: f64) -> f64 {
 pub type CostTable = BTreeMap<String, BTreeMap<String, Cost>>;
 
 /// The cost table of `regions`' targets the forecast lists (`forecast`: each region's own terrain
-/// and assemblies, own and expected units, map tiles, slope and tree cover), each by `cost`.
+/// and assemblies, own and expected z6 tiles, map tiles, slope and tree cover), each by `cost`.
 pub fn cost_table(regions: &[RegionLeft], cost: &dyn Fn(&str, &str) -> Cost) -> CostTable {
     let mut t = CostTable::new();
     let mut put = |step: &str, ts: &mut dyn Iterator<Item = &String>| {
@@ -387,7 +387,7 @@ pub struct Forecast {
     /// pool: reported beside this one, nothing placed or decided by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equal: Option<Box<Forecast>>,
-    /// The machines (this Mac's slots) whose job waits on a worker holding its unit's tail, and on
+    /// The machines (this Mac's slots) whose job waits on a worker holding its z6 tile's tail, and on
     /// what (the agent's `waiting_on`): their room free for a job beside it meanwhile.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub waiting: BTreeMap<String, String>,
@@ -432,14 +432,14 @@ pub struct RegionFc {
     pub on_map: Option<bool>,
     /// Its targets left by step ("unit", "terrain", "slope", "trees", "trees-lo", "pack").
     pub left: BTreeMap<String, usize>,
-    /// When it'll be done, and when it'll be on the map as it's built now: its last unit's end,
+    /// When it'll be done, and when it'll be on the map as it's built now: its last z6 tile's end,
     /// then its map tiles drawn, then a catalog within the minute (None: no work left of its own).
     pub ready_at: Option<u64>,
     pub map_at: Option<u64>,
 }
 
 /// A cadenced publish: what ("low", "marks", "overlays") and when it may next go out (unix
-/// seconds): once its cadence has passed since it last went, or once no unit or terrain is left to
+/// seconds): once its cadence has passed since it last went, or once no z6 tile or terrain is left to
 /// build, whichever comes first. (The low zooms may go sooner, once half their packs are stale:
 /// build::low_gate.)
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -457,9 +457,9 @@ pub struct NextFc {
     pub until: u64,
 }
 
-/// When a job runs: before the regions, a region's map tiles (once its units are built, ahead of
-/// the regions' work), a region's (terrain, units), late (slope and tree cover: the lead's once a
-/// region is on the map, and after the last unit), a chain's (the trains' and the landmarks': from
+/// When a job runs: before the regions, a region's map tiles (once its z6 tiles are built, ahead of
+/// the regions' work), a region's (terrain, z6 tiles), late (slope and tree cover: the lead's once a
+/// region is on the map, and after the last z6 tile), a chain's (the trains' and the landmarks': from
 /// the start, once what it reads is built), or after everything else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
@@ -518,14 +518,14 @@ struct Sim {
     done: bool,
 }
 
-/// The share of a region's units reading stale terrain, built as the coverage wants them now, taken
+/// The share of a region's z6 tiles reading stale terrain, built as the coverage wants them now, taken
 /// to go stale once that terrain is built (`RegionLeft::expected`; which ones is known only then).
 /// A round figure, not measured each time: the terrain fix (8 Oct 2026) made most of the north's and
-/// every coast's units stale, a little over half of those reading changed terrain, and the forecast
-/// had counted none of them until their terrain was built (32 units at 17:00, 149 by 19:00).
+/// every coast's z6 tiles stale, a little over half of those reading changed terrain, and the forecast
+/// had counted none of them until their terrain was built (32 z6 tiles at 17:00, 149 by 19:00).
 pub const EXPECTED_STALE: f64 = 0.6;
 
-/// The jobs before the regions' that the units wait for (build::plan).
+/// The jobs before the regions' that the z6 tiles wait for (build::plan).
 const UNITS_NEED: [&str; 3] = ["heritage-sites", "reach", "buildings"];
 
 /// The work as items, each with the items it waits for.
@@ -563,19 +563,19 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         add(&mut out, &mut by_target, step, target, *cost, Phase::Before, Vec::new());
     }
     let before: Vec<usize> = (0..out.len()).collect();
-    // (The units wait for the pass's heritage sites, reaches and roadside buildings, as the plan's
+    // (The z6 tiles wait for the pass's heritage sites, reaches and roadside buildings, as the plan's
     // do; terrain for nothing.)
     let units_need: Vec<usize> =
         before.iter().copied().filter(|&i| UNITS_NEED.contains(&out[i].step.as_str())).collect();
-    // A region at a time: its own terrain (the pieces, then each z3 tile's assembly once its pieces
-    // are made), then its own units (each once its region's terrain is built: the terrain it
-    // reads); then every region's slope (a piece once the terrain of its z3 tile and its neighbours'
-    // is, a z3 tile's assembly once its pieces are) and tree cover.
+    // A region at a time: its own terrain (the z6 tiles, then each z3 tile's assembly once its z6 tiles
+    // are made), then its own z6 tiles (each once its region's terrain is built: the terrain it
+    // reads); then every region's slope (a z6 tile once the terrain of its z3 tile and its neighbours'
+    // is, a z3 tile's assembly once its z6 tiles are) and tree cover.
     let mut region_items: Vec<Vec<usize>> = vec![Vec::new(); inp.regions.len()];
     let item_of = |by: &BTreeMap<(String, String), usize>, step: &str, t: &str| {
         by.get(&(step.to_string(), t.to_string())).copied()
     };
-    // (A step's items in z3 tile `q`: its pieces there, or its target that's the z3 tile itself.)
+    // (A step's items in z3 tile `q`: its z6 tiles there, or its target that's the z3 tile itself.)
     let of_z3 = |out: &Vec<Item>, step: &str, q: &str| -> Vec<usize> {
         (0..out.len())
             .filter(|&i| {
@@ -600,12 +600,12 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
             add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, deps.clone());
         }
         // Those its stale terrain may make stale: a share, the first in its order (`add` lists a
-        // unit two regions expect once).
+        // z6 tile two regions expect once).
         let n = (r.expected.len() as f64 * EXPECTED_STALE).round() as usize;
         for u in r.expected.iter().take(n) {
             add(&mut out, &mut by_target, "unit", u, inp.cost("unit", u), Phase::Region, deps.clone());
         }
-        // Its map tiles, each once the units that draw it are built (a tile two regions draw, with
+        // Its map tiles, each once the z6 tiles that draw it are built (a tile two regions draw, with
         // the first).
         for (t, us) in &r.packs {
             let mut built: Vec<usize> = us.iter().filter_map(|u| item_of(&by_target, "unit", u)).collect();
@@ -642,7 +642,7 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         for t in &r.trees {
             add(&mut out, &mut by_target, "trees", t, inp.cost("trees", t), Phase::Late, Vec::new());
         }
-        // A z3 tile's tree cover assembled once its pieces are made (a region lists every piece of
+        // A z3 tile's tree cover assembled once its z6 tiles are made (a region lists every z6 tile of
         // its z3 tiles: listed by now).
         for q in &r.trees_lo {
             let deps: Vec<usize> = (0..out.len())
@@ -651,7 +651,7 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
             add(&mut out, &mut by_target, "trees-lo", q, inp.cost("trees-lo", q), Phase::Late, deps);
         }
     }
-    // Each region's items: its terrain, all its units (some come with a region before it), its
+    // Each region's items: its terrain, all its z6 tiles (some come with a region before it), its
     // slope and tree cover.
     for (k, r) in inp.regions.iter().enumerate() {
         let mut mine: Vec<usize> = Vec::new();
@@ -790,7 +790,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             ready.insert(i, it, pi(it.phase));
         }
     }
-    // The regions' terrain, units and map tiles: how many not yet taken, and when the last taken
+    // The regions' terrain, z6 tiles and map tiles: how many not yet taken, and when the last taken
     // ends; each region's slope and tree cover; each item's regions.
     let mut rp_left = vec![0usize; region_items.len()];
     let mut rp_end = vec![0.0f64; region_items.len()];
@@ -943,7 +943,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         };
         let pick = if mac.helper {
             // The far end of the first shared step it can do (terrain's near end: the lead's
-            // next units wait on it, as crate::coord picks).
+            // next z6 tiles wait on it, as crate::coord picks).
             SHARED.iter().find_map(|s| {
                 let set = ready.shared.get(*s)?;
                 let fits = |&i: &usize| items[i].cost.peak_mb <= mac.mem_mb;
@@ -965,7 +965,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             PHASES.iter().find_map(|&p| scan(&items, p, &may))
         } else {
             // The lead. While the regions have work left: the first it can do of the pass's; then the
-            // map tiles of the units built (publishing comes before the regions' work); then the slope
+            // map tiles of the z6 tiles built (publishing comes before the regions' work); then the slope
             // and tree cover of a region on the map whose catalog doesn't record it built yet; then the
             // regions' (in order); with none it can do now, the chains' (listed after them).
             let any = |_: usize| true;
@@ -982,7 +982,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
                     .or_else(|| scan(&items, Phase::Region, &any))
                     .or_else(|| scan(&items, Phase::Chain, &any))
             } else {
-                // After the last unit and terrain: the map tiles left, the slope and tree cover, the
+                // After the last z6 tile and terrain: the map tiles left, the slope and tree cover, the
                 // chains' work, then what comes after.
                 [Phase::Publish, Phase::Late, Phase::Chain, Phase::After].iter().find_map(|&p| scan(&items, p, &any))
             }
@@ -1076,7 +1076,7 @@ pub fn forecast(inp: &Input) -> Forecast {
         });
     }
     // Each region: its work left, when it's done, and when it's on the map as it's built now: its
-    // units and map tiles done, and a catalog within the minute.
+    // z6 tiles and map tiles done, and a catalog within the minute.
     let on_map_at = |mine: &[usize]| {
         let its: Vec<&Item> = mine
             .iter()
@@ -1102,11 +1102,11 @@ pub fn forecast(inp: &Input) -> Forecast {
             on_map: r.on_map,
             left,
             ready_at: ready.map(at),
-            // (None with no terrain, unit or map tile of its left, or on the map as it is.)
+            // (None with no terrain, z6 tile or map tile of its left, or on the map as it is.)
             map_at: if r.on_map == Some(true) { None } else { on_map_at(mine).map(at) },
         });
     }
-    // The cadenced publishes: each once its cadence has passed since it last went, or once no unit
+    // The cadenced publishes: each once its cadence has passed since it last went, or once no z6 tile
     // or terrain is left (build::Plan::idle), whichever comes first.
     let idle_s = expected.items.iter().filter(|i| i.phase == Phase::Region).map(|i| i.end).fold(0.0, f64::max);
     let c = &inp.cadence;
@@ -1340,7 +1340,7 @@ mod tests {
         }
     }
 
-    /// A map tile and the units that draw it.
+    /// A map tile and the z6 tiles that draw it.
     fn tile(t: &str, units: &[&str]) -> (String, Vec<String>) {
         (t.into(), units.iter().map(|u| u.to_string()).collect())
     }
@@ -1408,7 +1408,7 @@ mod tests {
         assert!(f.why.is_none() && f.done_at.is_some(), "{:?}", f.why);
         assert!(f.equal.is_none() && forecast(&inp).equal.is_none(), "reports only: no forecast nested");
         let steps = |lane: &str| f.lanes[lane].iter().map(|l| l.step.clone()).collect::<BTreeSet<_>>();
-        // The member's slot takes what a helper never does: the work before the regions, units.
+        // The member's slot takes what a helper never does: the work before the regions, z6 tiles.
         // (Both free at once: the lead's slot takes the first, the member's the second, which no
         // helper would.)
         assert!(
@@ -1522,8 +1522,8 @@ mod tests {
 
     #[test]
     fn a_tree_cover_assembly_after_its_pieces_and_mids_in_idle_time_last() {
-        // Region a: three tree cover pieces of z3 tile 3/3/2 and its assembly; a helper beside the
-        // lead; and a piece's mid made in idle time.
+        // Region a: three tree cover z6 tiles of z3 tile 3/3/2 and its assembly; a helper beside the
+        // lead; and a z6 tile's mid made in idle time.
         let mut a = region("a", &[], &[], &[]);
         a.trees = vec!["6/28/16".into(), "6/28/17".into(), "6/29/16".into()];
         a.trees_lo = vec!["3/3/2".into()];
@@ -1533,7 +1533,7 @@ mod tests {
             vec![("trees".into(), "6/40/20".into(), Cost { secs: 100.0, known: false, peak_mb: 1000, cores: None })];
         let sim = run(&inp, &|c| c.secs);
         let item = |step: &str, t: &str| sim.items.iter().find(|i| i.step == step && i.target == t).unwrap();
-        // The assembly once its pieces are made (the member takes some), by the lead alone.
+        // The assembly once its z6 tiles are made (the member takes some), by the lead alone.
         let lo = item("trees-lo", "3/3/2");
         assert!(["6/28/16", "6/28/17", "6/29/16"].iter().all(|t| item("trees", t).end <= lo.from + 1e-9));
         assert!(sim.items.iter().any(|i| i.step == "trees" && i.by == Some(1)), "the helper's pieces");
@@ -1590,7 +1590,7 @@ mod tests {
 
     #[test]
     fn a_page_around_takes_each_unit_the_moment_its_job_gives_it() {
-        // As below, a worker that takes tails around: each of the two units 30 s longer.
+        // As below, a worker that takes tails around: each of the two z6 tiles 30 s longer.
         let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])];
         let f = forecast(&input(&regions, vec![Machine { unit_extra_s: 30.0, ..mac("m4", 1.0, false) }], &cost));
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 1460));
@@ -1603,8 +1603,8 @@ mod tests {
             ..region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])
         }];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
-        // Terrain 600, two units 600, each unit's map tile (100 s, measured per tile) drawn once
-        // that unit is built, before the next unit (each tile waits for its own units alone): on
+        // Terrain 600, two z6 tiles 600, each z6 tile's map tile (100 s, measured per tile) drawn once
+        // that z6 tile is built, before the next z6 tile (each tile waits for its own z6 tiles alone): on
         // the map a catalog's minute after the last. Then its slope (200), then the landmarks (300).
         assert_eq!(f.regions[0].map_at, Some(1_000_000 + 1200 + 200 + 60));
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 1600));
@@ -1642,13 +1642,13 @@ mod tests {
 
     #[test]
     fn a_share_of_the_units_reading_stale_terrain_is_counted_as_work_to_come() {
-        // One unit stale, five more reading the stale terrain: three of them (0.6) counted too.
+        // One z6 tile stale, five more reading the stale terrain: three of them (0.6) counted too.
         let expected = ["6/9/8", "6/9/9", "6/10/8", "6/10/9", "6/11/8"].map(String::from).to_vec();
         let regions = [RegionLeft { expected, ..region("a", &["3/1/1"], &["6/8/8"], &[]) }];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
         let unit = f.steps.iter().find(|s| s.step == "unit").unwrap();
         assert_eq!((unit.left, unit.work_s), (4, 1200));
-        // The region's ready once they're built too: terrain 600, four units 1200.
+        // The region's ready once they're built too: terrain 600, four z6 tiles 1200.
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 1800));
         // None once the terrain's built (none expected).
         let regions = [region("a", &[], &["6/8/8"], &[])];
@@ -1664,10 +1664,10 @@ mod tests {
         };
         let regions = [a, region("b", &["3/2/2"], &["6/16/16"], &[])];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost));
-        // The M1 takes b's terrain (the far end) at half the pace (1,200 s), then b's unit, its
-        // terrain built (600 s at its pace); the lead a's terrain and unit (900 s), its two map
+        // The M1 takes b's terrain (the far end) at half the pace (1,200 s), then b's z6 tile, its
+        // terrain built (600 s at its pace); the lead a's terrain and z6 tile (900 s), its two map
         // tiles (200 s), then its slope (200 s), on the map by then. Each region on the map a
-        // catalog's minute after its last unit and map tiles.
+        // catalog's minute after its last z6 tile and map tiles.
         assert_eq!(
             f.next["m1"].iter().map(|n| (n.step.as_str(), n.targets[0].as_str())).collect::<Vec<_>>(),
             [("terrain", "3/2/2"), ("unit", "6/16/16")]
@@ -1684,14 +1684,14 @@ mod tests {
             region("c", &["3/3/3"], &["6/24/24"], &[]),
         ];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost));
-        // The lead takes a's terrain; the M1 b's (whose units the lead builds next), not c's.
+        // The lead takes a's terrain; the M1 b's (whose z6 tiles the lead builds next), not c's.
         assert_eq!(f.next["m1"].first().map(|n| (n.step.as_str(), n.targets[0].as_str())), Some(("terrain", "3/2/2")));
     }
 
     #[test]
     fn a_regions_map_tiles_come_before_the_next_regions_work() {
-        // a, b and c (a unit of 300 s and a map tile of 100 s each): each region's tile drawn once
-        // its unit is built, before the next region's unit; each on the map a minute after.
+        // a, b and c (a z6 tile of 300 s and a map tile of 100 s each): each region's tile drawn once
+        // its z6 tile is built, before the next region's z6 tile; each on the map a minute after.
         let packs = |r: RegionLeft, t: &str| {
             let us: Vec<&str> = r.units.iter().map(String::as_str).collect();
             RegionLeft { packs: vec![tile(t, &us)], ..r }
@@ -1718,7 +1718,7 @@ mod tests {
 
     #[test]
     fn a_region_with_only_slope_or_tree_cover_left_has_no_time_to_the_map() {
-        // (Task #259 review) its units and map tiles done: on the map as it's built now already,
+        // (Task #259 review) its z6 tiles and map tiles done: on the map as it's built now already,
         // not "in a minute" each time the forecast is made; nor one on the map as it is.
         let regions =
             [region("a", &[], &[], &["3/1/1"]), RegionLeft { on_map: Some(true), ..region("b", &[], &["6/2/2"], &[]) }];
@@ -1729,7 +1729,7 @@ mod tests {
 
     #[test]
     fn the_cadenced_publishes_go_by_their_cadence_or_once_nothing_is_left_to_build() {
-        // Thirty units (9,000 s) left. The low zooms last made an hour ago (due in two more), the
+        // Thirty z6 tiles (9,000 s) left. The low zooms last made an hour ago (due in two more), the
         // landmarks ten minutes ago (due in fifty), the overlays never seen run (due now).
         let units: Vec<String> = (0..30).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
@@ -1742,7 +1742,7 @@ mod tests {
             at(&f),
             [("low".into(), LOW_EVERY_S - 3600), ("marks".into(), MARKS_EVERY_S - 600), ("overlays".into(), 0)]
         );
-        // Two units left (600 s): each once they're built, if sooner.
+        // Two z6 tiles left (600 s): each once they're built, if sooner.
         let regions = [region("a", &[], &refs[..2], &[])];
         let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
         inp.cadence = Cadence { since_low: Some(3600), since_marks: Some(600), since_overlays: Some(0) };
@@ -1753,7 +1753,7 @@ mod tests {
     fn regions_are_built_one_at_a_time() {
         let regions = [region("a", &["3/1/1"], &["6/8/8"], &[]), region("b", &["3/2/2"], &["6/16/16"], &[])];
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
-        // a's terrain and unit, then b's terrain and unit: a done first.
+        // a's terrain and z6 tile, then b's terrain and z6 tile: a done first.
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 900));
         assert_eq!(f.regions[1].ready_at, Some(1_000_000 + 900 + 900));
         assert_eq!(f.measured, 1.0);
@@ -1773,8 +1773,8 @@ mod tests {
     #[test]
     fn a_helper_isnt_stranded_by_a_worldwide_job() {
         // The lead runs a worldwide job (no item) for an hour; the member takes the terrain at
-        // once (terrain waits for nothing), then the units once their region's terrain is built
-        // and the job the units need is done: it wakes when the lead is free.
+        // once (terrain waits for nothing), then the z6 tiles once their region's terrain is built
+        // and the job the z6 tiles need is done: it wakes when the lead is free.
         let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &[])];
         let mut inp =
             input(&regions, vec![Machine { busy_s: 0.0, ..mac("m4", 1.0, false) }, mac("m1", 1.0, true)], &cost);
@@ -1783,7 +1783,7 @@ mod tests {
         let f = forecast(&inp);
         assert_eq!(f.next["m1"][0].step, "terrain");
         assert_eq!(f.next["m1"][0].from, 1_000_000);
-        // Both units after the hour: one each.
+        // Both z6 tiles after the hour: one each.
         let lanes: Vec<&str> = f.lanes["m1"].iter().map(|l| l.step.as_str()).collect();
         assert_eq!(lanes, ["terrain", "unit"]);
         assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 3600 + 300));
@@ -1798,7 +1798,7 @@ mod tests {
         assert_eq!((f.done_at, f.why.as_deref()), (None, Some("nothing left to build")));
         assert!(f.regions.is_empty());
         // A region on the map as it was (its outline changed): on the map as it is a minute after
-        // its unit; one the map has as it is, rebuilt units or none left, no time.
+        // its z6 tile; one the map has as it is, rebuilt z6 tiles or none left, no time.
         let regions = [
             RegionLeft { on_map: Some(false), ..region("a", &[], &["6/8/8"], &[]) },
             RegionLeft { on_map: Some(true), ..region("b", &[], &["6/9/8"], &[]) },
@@ -1821,7 +1821,7 @@ mod tests {
 
     #[test]
     fn a_members_slots_take_any_work_offered_to_it_but_the_leads_own() {
-        // (Task #383) the lead's two slots and a member's two: the member's take units (no helper's
+        // (Task #383) the lead's two slots and a member's two: the member's take z6 tiles (no helper's
         // far-end rule), never the landmark points (the lead's own step).
         let units: Vec<String> = (0..8).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
@@ -1837,7 +1837,7 @@ mod tests {
 
     #[test]
     fn two_macs_finish_in_about_half_the_time_of_one() {
-        // (Task #384) forty units: one Mac's two slots, then two Macs' two each, all as fast.
+        // (Task #384) forty z6 tiles: one Mac's two slots, then two Macs' two each, all as fast.
         let units: Vec<String> = (0..40).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
@@ -1856,7 +1856,7 @@ mod tests {
     fn a_lane_starts_with_its_slots_running_job_then_the_plans_work_of_every_kind() {
         // (Task #385) the lead's second slot runs a depth job no item is (40 min left). Its lane
         // says the depth job first; a chain's step (the candidates) comes in the plan's order,
-        // from the front, as the coordinator offers it (pick_every), once the units ahead of it are
+        // from the front, as the coordinator offers it (pick_every), once the z6 tiles ahead of it are
         // taken.
         let units: Vec<String> = (0..6).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
@@ -1881,7 +1881,7 @@ mod tests {
     #[test]
     fn a_macs_slots_share_its_room_as_the_coordinator_packs() {
         // (Task #383 review) a member of 8 cores (jobs packed at 2 each) and 8 GB, four slots;
-        // units of 3 GB: two at once by memory, not four.
+        // z6 tiles of 3 GB: two at once by memory, not four.
         let units: Vec<String> = (0..8).map(|i| format!("6/8/{i}")).collect();
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
@@ -1934,7 +1934,7 @@ mod tests {
 
     #[test]
     fn three_thousand_units_forecast_in_well_under_a_second() {
-        // (Task #384 review) 3,000 units in 30 regions, each unit's map tile, two Macs of four
+        // (Task #384 review) 3,000 z6 tiles in 30 regions, each z6 tile's map tile, two Macs of four
         // slots packed by room (`MacRoom`): the whole forecast (three runs) well under a second.
         let regions: Vec<RegionLeft> = (0..30)
             .map(|r| {
@@ -2153,8 +2153,8 @@ mod tests {
         Sim { items, region_items, done }
     }
 
-    /// Inputs for the run's tests at scale: `units` units in regions of 100, each its map tile, two
-    /// Macs of four slots packed by room; each unit's cost by `cost_of(k)`.
+    /// Inputs for the run's tests at scale: `units` z6 tiles in regions of 100, each its map tile, two
+    /// Macs of four slots packed by room; each z6 tile's cost by `cost_of(k)`.
     fn many(units: usize) -> Vec<RegionLeft> {
         (0..units.div_ceil(100))
             .map(|r| {
@@ -2193,7 +2193,7 @@ mod tests {
         inp
     }
 
-    /// Unit `t`'s kind for the tests at scale: every third cold, every fifth big (6 GB), the rest
+    /// Z6 tile `t`'s kind for the tests at scale: every third cold, every fifth big (6 GB), the rest
     /// measured and small; `all_cold`: every one cold.
     fn mixed(all_cold: bool) -> impl Fn(&str, &str) -> Cost {
         move |step: &str, t: &str| {
@@ -2235,7 +2235,7 @@ mod tests {
 
     #[test]
     fn three_thousand_cold_or_big_units_forecast_in_well_under_a_second() {
-        // (Task #384 review) the worst cases: every unit cold (each alone on its Mac), and cold and
+        // (Task #384 review) the worst cases: every z6 tile cold (each alone on its Mac), and cold and
         // big mixed.
         let regions = many(3000);
         for all_cold in [true, false] {
@@ -2273,13 +2273,13 @@ mod tests {
         let refs: Vec<&str> = units.iter().map(String::as_str).collect();
         let regions = [region("a", &[], &refs, &[])];
         let others = Machine { equal: true, mem_mb: 12_000, ..mac("m4 #2", 1.0, false) };
-        // Half the units, whoever's at the Mac (the owner's choice: no rule for a Mac in use).
+        // Half the z6 tiles, whoever's at the Mac (the owner's choice: no rule for a Mac in use).
         let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), others.clone()], &cost));
         assert_eq!(
             f.lanes.get("m4 #2").map_or(0, |l| l.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()),
             4
         );
-        // The lead's first job two hours from done: its other slots take the units from now.
+        // The lead's first job two hours from done: its other slots take the z6 tiles from now.
         let f = forecast(&input(&regions, vec![Machine { busy_s: 7200.0, ..mac("m4", 1.0, false) }, others], &cost));
         let lane = &f.lanes["m4 #2"];
         assert_eq!(
@@ -2294,7 +2294,7 @@ mod tests {
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
         (inp.chains, inp.after) = (chains(), Vec::new());
         let f = forecast(&inp);
-        // While the lead builds the terrain the units wait for, the member makes the candidates
+        // While the lead builds the terrain the z6 tiles wait for, the member makes the candidates
         // (from the far end), 200 s each at its pace.
         let m1 = &f.lanes["m1"];
         assert_eq!((m1[0].step.as_str(), m1[0].from, m1[0].until, m1[0].n), ("pois", 1_000_000, 1_000_400, 2));

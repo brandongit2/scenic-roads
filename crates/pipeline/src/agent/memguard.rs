@@ -193,7 +193,7 @@ impl From<FloorRead> for Floor {
     }
 }
 
-/// The step of a cost key (crate::coord::cost_key): a unit's is its target alone.
+/// The step of a cost key (crate::coord::cost_key): a z6 tile's is its target alone.
 pub fn step_of_key(key: &str) -> &str {
     match key.split_once(' ') {
         Some((s, _)) => s,

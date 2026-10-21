@@ -39,7 +39,7 @@
 //!   there from here.
 //!
 //! - A file the jobs queued and running read (`Hints`: a terrain run's own shard's archive copies;
-//!   the pageview months, for an items or heritage job; a unit's canopy squares and packs; the
+//!   the pageview months, for an items or heritage job; a z6 tile's canopy squares and packs; the
 //!   base packs copied here for the map tiles) goes last.
 //!
 //! After the build (`trim`): once the build has nothing left to build (the lead's forecast:
@@ -59,7 +59,7 @@
 //! the heritage chain's working copy, `heritage-<date>/`, is whole or nothing), the heritage
 //! scripts' old Python environment (`heritage-venv/`: their next run removes it), what frees next to
 //! nothing (the trains' stop pairs, under a MB), the agent's own timings (`unit-stages.json`) and
-//! what units kept that isn't on the NAS yet (`dem-units/`, `scenic-units/`).
+//! what z6 tiles kept that isn't on the NAS yet (`dem-units/`, `scenic-units/`).
 //!
 //! The owner's room target (`Target`: `scenic room <GB>`, the menu bar's Disk Room; `toward`): the
 //! free space this Mac's agent keeps, set at any moment, in its folder (each Mac's disk is its own).
@@ -422,7 +422,7 @@ pub fn trim(cache: &Path, sources: &Path, spare: &dyn Fn(&Path) -> bool) -> Resu
 /// Clears this Mac's build caches at `cache` on the owner's ask (the module's doc, On the owner's
 /// ask): the cheap caches as a trim empties them, the canopy squares too, then the others whole
 /// (nothing through a link, nor in the NAS's folder: `ours`), the DEM seed only while the NAS's
-/// `sources` has it whole (else every unit would sample its vertices anew). What it freed, and
+/// `sources` has it whole (else every z6 tile would sample its vertices anew). What it freed, and
 /// what stays of them.
 pub fn clear(cache: &Path, sources: &Path) -> Result<Freed> {
     if !cache.is_dir() {
@@ -744,14 +744,14 @@ fn toward_with(
 /// a running job uses it holds (store::cachefile), and a stale hint costs only a fetch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hints {
-    /// Terrain jobs' targets ("terrain 3/x/y", a z3 tile's whole run; "terrain 6/x/y", a piece;
+    /// Terrain jobs' targets ("terrain 3/x/y", a z3 tile's whole run; "terrain 6/x/y", a z6 tile;
     /// "terrain-lo 3/x/y", an assembly): the archive copies they read (`terrain_reads`).
     pub terrain: Vec<String>,
     /// An items or heritage job: the pageview months.
     pub months: bool,
-    /// Canopy squares' files (`chm10/<name>`) the units and tree cover read.
+    /// Canopy squares' files (`chm10/<name>`) the z6 tiles and tree cover read.
     pub squares: BTreeSet<String>,
-    /// Units ("6-x-y"): the copies of their packs (`blobs/…/<unit>.<hash>.…`).
+    /// Z6 tiles ("6-x-y"): the copies of their packs (`blobs/…/<unit>.<hash>.…`).
     pub units: BTreeSet<String>,
     /// The map tiles (`pack`, `lo`): the base packs and road values copied here for them
     /// (`base/`), which the next such job copies again when they're gone.
@@ -759,7 +759,7 @@ pub struct Hints {
 }
 
 impl Hints {
-    /// The hints of the work of `step` on `targets` ("z/x/y"): a unit's canopy squares (its box
+    /// The hints of the work of `step` on `targets` ("z/x/y"): a z6 tile's canopy squares (its box
     /// with staging's margin) and packs; a tree cover tile's squares; a terrain run's archives; an
     /// items or heritage job's pageview months.
     pub fn add(&mut self, step: &str, targets: &[String]) {
@@ -1423,7 +1423,7 @@ mod tests {
             h.has(c, &c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles"))
                 && !h.has(c, &c.join("aws-terrarium/packs/6-9-9.0000000000000002.tiles"))
         );
-        // A unit's canopy squares and the copies of its packs; an items job's pageview months.
+        // A z6 tile's canopy squares and the copies of its packs; an items job's pageview months.
         h.add("unit", &["6/33/22".to_string()]);
         h.add("items", &[]);
         assert!(
@@ -1834,7 +1834,7 @@ mod tests {
         }
         // What stays: the answers the NAS keeps too (they free little), a pageview month the NAS
         // lacks (said as kept: pageviews.py puts it there when it next reads it), what frees next to
-        // nothing, the agent's own timings, what units kept that isn't on the NAS yet; and
+        // nothing, the agent's own timings, what z6 tiles kept that isn't on the NAS yet; and
         // everything outside the caches (the agent's state, logs, work and outbox, the map's
         // mirror).
         let kept = [

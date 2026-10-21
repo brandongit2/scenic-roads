@@ -1,20 +1,20 @@
-//! Each unit's reach (docs/regions.md, Coverage): where the roads, rail and ferries of its OSM
-//! piece go, worked out once per pass (`scenic-build reach`) and kept as `sources/osm/<date>/reach`.
-//! The planner picks the units to build by it and keys them on the coverage they read.
+//! Each z6 tile's reach (docs/regions.md, Coverage): where the roads, rail and ferries of its OSM
+//! extract go, worked out once per pass (`scenic-build reach`) and kept as `sources/osm/<date>/reach`.
+//! The planner picks the z6 tiles to build by it and keys them on the coverage they read.
 //!
-//! Most of a piece's ways stay within its tile grown by `LONG_KM`. For those only a box is kept: the
-//! box of the ones the unit owns (first node inside its tile). The few that reach further (ferries,
-//! long rural roads) are kept whole, with whether the unit owns each. Then:
-//! - **A unit is built** when its owned box meets the coverage, or one of its own long ways touches
+//! Most of a extract's ways stay within its tile grown by `LONG_KM`. For those only a box is kept: the
+//! box of the ones the z6 tile owns (first node inside its tile). The few that reach further (ferries,
+//! long rural roads) are kept whole, with whether the z6 tile owns each. Then:
+//! - **A z6 tile is built** when its owned box meets the coverage, or one of its own long ways touches
 //!   it. So a road starting in a tile far from every outline is built when it enters the coverage,
 //!   and a tile owning a ferry to a far coast isn't built for that coast unless the ferry touches it.
 //! - **Its key** names the coverage inside its tile grown by `LONG_KM` (where its other ways are)
-//!   and, for each long way, whether it touches the coverage: what decides which ways the unit
-//!   keeps (the unit step keeps every way of the piece that touches it, owned or not, for junction
+//!   and, for each long way, whether it touches the coverage: what decides which ways the z6 tile
+//!   keeps (the `unit` step keeps every way of the extract that touches it, owned or not, for junction
 //!   context). Adding a region far along a ferry that already touched the coverage reruns nothing.
 //!
 //! The ways counted are those tagged `highway`, `railway` or `route=ferry`: a superset of what
-//! `extract` keeps, so nothing a unit builds is missed (an extra way only costs a run that keeps
+//! `extract` keeps, so nothing a z6 tile builds is missed (an extra way only costs a run that keeps
 //! nothing).
 
 use crate::coverage::Coverage;
@@ -29,7 +29,7 @@ use std::path::Path;
 /// Bumped when what a reach holds changes (the pass's reaches are made again). (2: `cells`.)
 pub const REACH_V: u32 = 2;
 
-/// Ways whose box stays within the tile grown by this are a unit's ordinary ways (the piece's own
+/// Ways whose box stays within the tile grown by this are a z6 tile's ordinary ways (the extract's own
 /// buffer is 10 km).
 pub const LONG_KM: f64 = 20.0;
 
@@ -45,7 +45,7 @@ pub struct LongWay {
 }
 
 impl LongWay {
-    /// Whether the way touches the coverage as the unit step tests it: on the points `extract` puts
+    /// Whether the way touches the coverage as the `unit` step tests it: on the points `extract` puts
     /// along it (its nodes, and between them every `sp.at` its first node apart: crate::dem::spacing;
     /// ferries not), so a straight stretch cutting a corner of an outline between two nodes counts
     /// as it will there.
@@ -99,25 +99,26 @@ impl LongWay {
     }
 }
 
-/// A unit's reach.
+/// A z6 tile's reach.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reach {
-    /// The box (w, s, e, n, E7) of the ordinary ways the unit owns; None when it owns none.
+    /// The box (w, s, e, n, E7) of the ordinary ways the z6 tile owns; None when it owns none.
     pub owned: Option<[i32; 4]>,
     pub long: Vec<LongWay>,
-    /// The 1° cells (crate::dem::spacing::cell) of the first nodes of its piece's ways, ferries
-    /// left out, sorted: where `extract`'s spacing is decided for them (owned or not: the unit step
+    /// The 1° cells (crate::dem::spacing::cell) of the first nodes of its extract's ways, ferries
+    /// left out, sorted: where `extract`'s spacing is decided for them (owned or not: the `unit` step
     /// keeps every way touching the coverage). Required, never `serde(default)`: a reach from
     /// before it would read as no cells, which every spacing agrees on (`rekey::spaced_as_before`
     /// vacuously true) and its key would name none; it fails to decode instead and is made again.
     pub cells: Vec<[i32; 2]>,
 }
 
-/// A pass's reaches, by unit ("6/x/y"); units whose piece has no counted way aren't listed.
+/// A pass's reaches, by z6 tile ("6/x/y"); z6 tiles whose extract has no counted way aren't listed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Reaches {
     pub fmt: u32,
     pub date: String,
+    /// (Stored as `units` in `reach.json.zst`, from when a z6 tile was a "unit": kept, as every pass's file has it.)
     pub units: BTreeMap<String, Reach>,
     /// The base packs' extents kept with them (crate::extents), read as the reaches are: what
     /// their headers say, by content name. Not part of the reaches' file.
@@ -130,7 +131,7 @@ pub fn logical(date: &str) -> String {
     format!("sources/osm/{date}/reach")
 }
 
-/// A unit's tile grown by `LONG_KM` (E7): where its ordinary ways are.
+/// A z6 tile's tile grown by `LONG_KM` (E7): where its ordinary ways are.
 pub fn near_box(u: TileId) -> [i32; 4] {
     crate::hipack::grow(crate::hipack::tile_bounds(u.z, u.x, u.y), LONG_KM)
 }
@@ -165,20 +166,20 @@ impl Reaches {
 }
 
 impl Reach {
-    /// Whether the coverage builds this unit: its owned box meets the coverage, or one of its own
+    /// Whether the coverage builds this z6 tile: its owned box meets the coverage, or one of its own
     /// long ways touches it.
     pub fn builds(&self, cov: &Coverage, sp: &dyn Spacing) -> bool {
         self.owned.is_some_and(|o| cov.meets_rect(o)) || self.long.iter().any(|w| w.owned && w.touches(cov, sp))
     }
 
-    /// What of the coverage the unit reads, for its key: the coverage inside its tile grown by
+    /// What of the coverage the z6 tile reads, for its key: the coverage inside its tile grown by
     /// `LONG_KM`, and which of its long ways touch the coverage.
     pub fn coverage_key(&self, cov: &Coverage, u: TileId, sp: &dyn Spacing) -> String {
         let touching: String = self.long.iter().map(|w| if w.touches(cov, sp) { '1' } else { '0' }).collect();
         format!("{}|{touching}", cov.fingerprint(near_box(u)))
     }
 
-    /// The box of the ways the unit owns, wherever they go (E7): its tile, its owned box and its own
+    /// The box of the ways the z6 tile owns, wherever they go (E7): its tile, its owned box and its own
     /// long ways. A base pack's ways lie inside it (the map tiles are keyed by it).
     pub fn owned_extent(&self, u: TileId) -> [i32; 4] {
         let mut b = crate::hipack::tile_bounds(u.z, u.x, u.y);
@@ -194,7 +195,7 @@ impl Reach {
         b
     }
 
-    /// The box of everything the unit's ways reach (E7): its tile grown by `LONG_KM` and its long
+    /// The box of everything the z6 tile's ways reach (E7): its tile grown by `LONG_KM` and its long
     /// ways.
     pub fn extent(&self, u: TileId) -> [i32; 4] {
         let mut b = near_box(u);
@@ -221,7 +222,7 @@ fn within(b: [i32; 4], p: [i32; 2]) -> bool {
     p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3]
 }
 
-/// The reach of unit `u` from its piece (None when no way of the piece counts).
+/// The reach of z6 tile `u` from its extract (None when no way of the extract counts).
 pub fn of_piece(piece: &Path, u: TileId) -> Result<Option<Reach>> {
     // Pass 1, ways: each counted way's node ids (flat).
     #[derive(Default)]
@@ -293,8 +294,8 @@ pub fn of_piece(piece: &Path, u: TileId) -> Result<Option<Reach>> {
         if !ferry {
             cells.insert(crate::dem::spacing::cell(first));
         }
-        // Owned by its first node the piece has, as `extract` (which drops missing nodes) and the
-        // unit step see it.
+        // Owned by its first node the extract has, as `extract` (which drops missing nodes) and the
+        // `unit` step see it.
         let owned = crate::unit::owns(tb, first);
         if verts.iter().all(|&p| within(near, p)) {
             if owned {
@@ -324,8 +325,8 @@ mod tests {
 
     /// A ferry crossing the open sea between two coasts, the sea a region with no land (the high
     /// seas: the coverage's `depth_only`): built for the land it reaches, its whole route kept (its
-    /// unit is built and the way touches the coverage), whatever the sea between is; a sea alone
-    /// builds no unit.
+    /// z6 tile is built and the way touches the coverage), whatever the sea between is; a sea alone
+    /// builds no z6 tile.
     #[test]
     fn a_ferry_across_a_sea_with_no_land_is_kept_by_its_coasts() {
         let d = tempfile::tempdir().unwrap();

@@ -1,7 +1,7 @@
 //! What the lead builds for the regions (docs/steps.md §12; docs/building.md §2, Order): per z3 pack,
-//! the terrain and then the slope of its z6 tiles near the coverage; base(U) for every unit whose
-//! piece meets the coverage, a region at a time; pack(T) for the z6 tiles near changed units, the
-//! lo packs above them, as soon as those units are built; then a catalog, at most one a minute (`plan`).
+//! the terrain and then the slope of its z6 tiles near the coverage; base(U) for every z6 tile whose
+//! extract meets the coverage, a region at a time; pack(T) for the z6 tiles near changed z6 tiles, the
+//! lo packs above them, as soon as those z6 tiles are built; then a catalog, at most one a minute (`plan`).
 //!
 //! Each job's key is a hash of what it reads: its step's version, the coverage near it, and the
 //! content names (from the build manifest) of its inputs. A job whose key matches the one recorded
@@ -26,8 +26,8 @@ pub const TERRAIN_V: u32 = 3;
 pub const SLOPE_V: u32 = 1;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
 /// 3: heritage sites and area flags from the pass's heritage-sites job (crate::heritage), the
-/// flags rasterised per unit.
-/// 4: the roads' own English (`global/roaden/<u>`); a unit left with no ways drops its outputs.
+/// flags rasterised per z6 tile.
+/// 4: the roads' own English (`global/roaden/<u>`); a z6 tile left with no ways drops its outputs.
 pub const UNIT_V: u32 = 4;
 /// 3: keyed on the tile's owners alone; hidata of the tile's own ways (here, query parts, rail
 /// lines, zoomed-out summaries).
@@ -39,8 +39,8 @@ pub const LO_V: u32 = 1;
 /// The keys of the jobs that last succeeded, by step and target ("3/4/2", "6/31/20").
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Keys {
-    /// Terrain's and slope's pieces, per z6 tile ("6/x/y": `terrain_slope_targets`; records of
-    /// their z3 tiles' whole runs, "3/x/y", from before the pieces: agent::rekey).
+    /// Terrain's and slope's z6 tiles, per z6 tile ("6/x/y": `terrain_slope_targets`; records of
+    /// their z3 tiles' whole runs, "3/x/y", from before the z6 tiles: agent::rekey).
     #[serde(default)]
     pub terrain: BTreeMap<String, String>,
     #[serde(default)]
@@ -50,20 +50,22 @@ pub struct Keys {
     pub terrain_lo: BTreeMap<String, String>,
     #[serde(default)]
     pub slope_lo: BTreeMap<String, String>,
+    /// The `unit` step's z6 tiles ("6/x/y"). (Its name is stored, in `jobs.json` and everywhere a step
+    /// is named: kept, docs/pipeline.md §2.)
     #[serde(default)]
     pub unit: BTreeMap<String, String>,
-    /// The units' landmark candidates.
+    /// The z6 tiles' landmark candidates.
     #[serde(default)]
     pub pois: BTreeMap<String, String>,
-    /// The units' peaks' prominence and isolation.
+    /// The z6 tiles' peaks' prominence and isolation.
     #[serde(default)]
     pub peaks: BTreeMap<String, String>,
     #[serde(default)]
     pub pack: BTreeMap<String, String>,
     #[serde(default)]
     pub lo: BTreeMap<String, String>,
-    /// The tree cover layers' pieces, per z6 tile ("6/x/y", crate::treepacks::targets; records of
-    /// the z3 tiles' whole runs, "3/x/y", from before the pieces: agent::rekey).
+    /// The tree cover layers' z6 tiles, per z6 tile ("6/x/y", crate::treepacks::targets; records of
+    /// the z3 tiles' whole runs, "3/x/y", from before the z6 tiles: agent::rekey).
     #[serde(default)]
     pub trees: BTreeMap<String, String>,
     /// Their assemblies, per z3 tile ("3/x/y").
@@ -78,7 +80,7 @@ pub struct Keys {
     /// The buildings field's lo levels, per z3 tile ("3/x/y": `bld_targets`).
     #[serde(default)]
     pub bldfield_lo: BTreeMap<String, String>,
-    /// The depth's pieces, per z6 tile ("6/x/y"), and its assemblies, per z3 tile ("3/x/y":
+    /// The depth's z6 tiles, per z6 tile ("6/x/y"), and its assemblies, per z3 tile ("3/x/y":
     /// `depth_targets`).
     #[serde(default)]
     pub depth: BTreeMap<String, String>,
@@ -96,7 +98,7 @@ pub struct Keys {
     #[serde(flatten)]
     pub other: BTreeMap<String, serde_json::Value>,
     /// For planning (`load_with`; never saved): the files the hand-offs waiting to be merged save,
-    /// by logical name. A tree cover piece's mid there counts as made (`tree_work`).
+    /// by logical name. A tree cover z6 tile's mid there counts as made (`tree_work`).
     #[serde(skip)]
     pub handed: BTreeSet<String>,
 }
@@ -355,7 +357,7 @@ pub fn outlines_hold(made: bool, failures: u32) -> bool {
     !made || failures < OUTLINES_HOLDS
 }
 
-/// Every hiking route's ends, worldwide, once per pass (crate::trailends): what the units' extract
+/// Every hiking route's ends, worldwide, once per pass (crate::trailends): what the z6 tiles' extract
 /// reads.
 pub const TRAILENDS_V: u32 = 1;
 
@@ -366,7 +368,7 @@ pub fn trailends_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> 
         .then(|| Work { step: "trailends".into(), targets: vec![("trailends".into(), k)] })
 }
 
-/// Each unit's reach (crate::reach), once per pass: which units the coverage builds, and what their
+/// Each z6 tile's reach (crate::reach), once per pass: which z6 tiles the coverage builds, and what their
 /// keys read of it.
 pub fn reach_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let k = reach_key(date, m)?;
@@ -375,7 +377,7 @@ pub fn reach_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opti
         .then(|| Work { step: "reach".into(), targets: vec![("reach".into(), k)] })
 }
 
-/// The reach job's key: its version and the pieces, by content (a piece cut again changes it).
+/// The reach job's key: its version and the extracts, by content (a extract cut again changes it).
 pub fn reach_key(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
     let prefix = format!("sources/osm/{date}/pieces/");
     let pieces: Vec<&str> =
@@ -421,7 +423,7 @@ pub fn spoken_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opt
 /// accepted version yet.
 ///
 /// Gated by time (`gate_open`): at most every `NAMES_TODO_EVERY_S` (`since`: seconds since it last
-/// ran) while units build; after any catalog once none's left (`idle`).
+/// ran) while z6 tiles build; after any catalog once none's left (`idle`).
 pub fn names_todo_work(
     served: Option<&str>,
     m: &BTreeMap<String, String>,
@@ -440,9 +442,9 @@ pub fn names_todo_work(
         .then(|| Work { step: "names-todo".into(), targets: vec![("names-todo".into(), k)] })
 }
 
-/// The timetables' to-do list and report (crate::timetables), once per rail and ferries pieces
+/// The timetables' to-do list and report (crate::timetables), once per rail and ferries extracts
 /// (`work/rail/lines`, `work/ferries/lines`: after each rail and ferries run), coverage (it keeps
-/// the ferry lines in it) or step version. None until both pieces are made.
+/// the ferry lines in it) or step version. None until both extracts are made.
 pub fn timetables_todo_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let rail = m.get(crate::timetables::RAIL_LINES)?;
     let ferries = m.get(crate::timetables::FERRY_LINES)?;
@@ -480,7 +482,7 @@ pub fn water_waits_for_lakefill(lakefill: bool, failures: u32) -> bool {
 }
 
 /// The steps that read the declared sources (crate::inputs::sources), which wait for their first
-/// accepted version (agent's `hold_for_sources`): the units (their land cover and canopy), the tree
+/// accepted version (agent's `hold_for_sources`): the z6 tiles (their land cover and canopy), the tree
 /// cover (its canopy and leaf-type squares), the items and the heritage chain (Wikidata, Wikipedia, the
 /// pageviews).
 pub fn reads_sources(step: &str) -> bool {
@@ -507,19 +509,19 @@ pub fn water_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opti
         .then(|| Work { step: "water".into(), targets: vec![("water".into(), k)] })
 }
 
-/// Whether unit `u` is built for the coverage: some road it owns may touch it (`Reach::builds`, at
-/// the spacing `fine` gives: crate::dem::spacing; the unit step then keeps exactly the ways that do).
+/// Whether z6 tile `u` is built for the coverage: some road it owns may touch it (`Reach::builds`, at
+/// the spacing `fine` gives: crate::dem::spacing; the `unit` step then keeps exactly the ways that do).
 pub fn builds(cov: &Coverage, reach: &Reaches, u: TileId, fine: &Fine) -> bool {
     reach.get(u).is_some_and(|r| r.builds(cov, fine))
 }
 
 /// Where the declared elevation datasets `m` names are fine (crate::dem::spacing): none before the
-/// build reads them or while they can't be read (every way at the coarse spacing; the units wait).
+/// build reads them or while they can't be read (every way at the coarse spacing; the z6 tiles wait).
 pub fn spacing_now(m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Fine {
     tiles.elevation(m).ok().flatten().map(|e| Fine::of(&e)).unwrap_or_default()
 }
 
-/// The units the coverage builds (`builds`), each with its key (`unit_key`); None for one whose
+/// The z6 tiles the coverage builds (`builds`), each with its key (`unit_key`); None for one whose
 /// terrain can't be worked out now (a terrain pack's index unread: agent::tiles), which waits. None
 /// before the pass's reaches are made.
 pub fn unit_keys(
@@ -532,7 +534,7 @@ pub fn unit_keys(
     let mut units = Vec::new();
     let Some(reach) = reach else { return units };
     // (Without the declared elevation datasets, before the switch or while they can't be read, no
-    // key: the unit waits. Which units the coverage builds is then told at the coarse spacing.)
+    // key: the z6 tile waits. Which z6 tiles the coverage builds is then told at the coarse spacing.)
     // (Nor without the declared buildings source's release.)
     let elevation = tiles.elevation(m).ok().flatten().zip(tiles.keyed(m));
     let fine = spacing_now(m, tiles);
@@ -550,7 +552,7 @@ pub fn unit_keys(
     units
 }
 
-/// Unit `u`'s key (its piece `piece`, its reach `r`): what it reads. Its piece and road values, the
+/// Z6 tile `u`'s key (its extract `piece`, its reach `r`): what it reads. Its extract and road values, the
 /// coverage as its ways meet it (`Reach::coverage_key`), the location rules where they go
 /// (`crate::rules`), the `keyed` digests of the declared elevation datasets meeting its ways
 /// (`elevation`: crate::inputs::elevation), which of the cells its ways start in a fine dataset
@@ -558,7 +560,7 @@ pub fn unit_keys(
 /// `buildings`: crate::buildtiles), the land-cover and canopy declarations where they aren't as
 /// staged (`sources`: crate::inputs::sources::unit_extra), the terrain tiles it reads by their contents (`terrain`: `unit_terrain`'s
 /// digest), and the heritage sites' and areas' slices near it, as the manifest has them, which is
-/// what the unit step stages from.
+/// what the `unit` step stages from.
 #[allow(clippy::too_many_arguments)]
 pub fn unit_key(
     cov: &Coverage,
@@ -638,8 +640,8 @@ pub(crate) fn unit_key_with(
     inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical(buildings))));
     // (The land cover and canopy it reads, once their declarations aren't as staged.)
     inputs.extend(sources.map(|s| format!("sources {s}")));
-    // The terrain it reads. Not the analysis grids' packs (grid-class, -canopy, -cover): the units
-    // write those where they're missing, so each built unit would change its own key and its
+    // The terrain it reads. Not the analysis grids' packs (grid-class, -canopy, -cover): the z6 tiles
+    // write those where they're missing, so each built z6 tile would change its own key and its
     // neighbours' (built again, over and over); a grid read from its pack or made afresh is the
     // same, from fixed datasets (WorldCover, Meta's canopy squares).
     inputs.push(format!("terrain-tiles {terrain}"));
@@ -652,8 +654,8 @@ pub(crate) fn unit_key_with(
     h(&refs)
 }
 
-/// `unit_terrain_tiles` as one digest, kept by `tiles` with what it reads (the unit's reach and the
-/// content names of the packs its staged tiles are in): a plan works out only the units next to
+/// `unit_terrain_tiles` as one digest, kept by `tiles` with what it reads (the z6 tile's reach and the
+/// content names of the packs its staged tiles are in): a plan works out only the z6 tiles next to
 /// what changed.
 pub fn unit_terrain(
     u: TileId,
@@ -687,8 +689,8 @@ pub fn terrain_digest(tiles: &[Tile]) -> String {
     h(&refs)
 }
 
-/// The terrain tiles unit `u` reads, by their contents (from the packs' indexes: agent::tiles),
-/// sorted. A unit stages terrain z0–12 over its tile + 30 km, `b` (crate::stage), which two steps
+/// The terrain tiles z6 tile `u` reads, by their contents (from the packs' indexes: agent::tiles),
+/// sorted. A z6 tile stages terrain z0–12 over its tile + 30 km, `b` (crate::stage), which two steps
 /// read:
 /// - its grid (canopy, view and flags: `grid.terrain.i16`), every z11 tile staged, as it is (a
 ///   missing one reads as zeros);
@@ -698,7 +700,7 @@ pub fn terrain_digest(tiles: &[Tile]) -> String {
 ///   own long ways (extract puts points along them in degrees; a ferry's are its nodes alone, but
 ///   its segments are taken), each tile tested grown by `EDGE_DEG`.
 ///
-/// Nothing else a unit makes reads terrain. A tile staged but missing is named by its absence: one
+/// Nothing else a z6 tile makes reads terrain. A tile staged but missing is named by its absence: one
 /// appearing (the coverage grown) changes the list, as does any tile read changing.
 pub fn unit_terrain_tiles(
     u: TileId,
@@ -743,7 +745,7 @@ pub fn unit_terrain_tiles(
     Ok(walk.out.into_iter().collect())
 }
 
-/// How far a tile's box is grown when tested against where a unit's points are (degrees, ~11 cm):
+/// How far a tile's box is grown when tested against where a z6 tile's points are (degrees, ~11 cm):
 /// extract rounds the points it puts along a segment to E7, and a point on a tile's edge may read
 /// either tile.
 const EDGE_DEG: f64 = 1e-6;
@@ -759,7 +761,7 @@ fn tile_deg(z: u8, x: u32, y: u32) -> [f64; 4] {
     [lon(x as f64) - EDGE_DEG, lat(y as f64 + 1.0) - EDGE_DEG, lon(x as f64 + 1.0) + EDGE_DEG, top + EDGE_DEG]
 }
 
-/// Where the points of a unit's own ways lie: its owned box, or a segment of one of its long ways
+/// Where the points of a z6 tile's own ways lie: its owned box, or a segment of one of its long ways
 /// (degrees).
 enum Reached {
     Box([f64; 4]),
@@ -801,7 +803,7 @@ impl Reached {
     }
 }
 
-/// A walk down the tiles a unit's points are in (`unit_terrain_tiles`), each point's z12 tile at the
+/// A walk down the tiles a z6 tile's points are in (`unit_terrain_tiles`), each point's z12 tile at the
 /// end with the tile it reads.
 struct Walk<'a> {
     /// The tiles staged, by zoom: [x0, x1, y0, y1].
@@ -850,10 +852,10 @@ impl Walk<'_> {
     }
 }
 
-/// The heritage sites and designated areas the units read (crate::heritage), once per pass,
+/// The heritage sites and designated areas the z6 tiles read (crate::heritage), once per pass,
 /// coverage, accepted registers meeting it and accepted matches. (2: an area across the
 /// antimeridian sliced by its parts; 3: the World Heritage components' `parts` slices too, for the
-/// 3D buildings' heritage lists. The `pos` and `areas` slices are the same bytes, so the units'
+/// 3D buildings' heritage lists. The `pos` and `areas` slices are the same bytes, so the z6 tiles'
 /// keys don't change. 4: the registers read generically from the input check's accepted version,
 /// docs/inputs.md §6.5.)
 pub const HERITAGE_SITES_V: u32 = 4;
@@ -895,7 +897,7 @@ pub fn heritage_sites_key(
     ]))
 }
 
-/// Why the units wait when the pass has no heritage sites and the registers have no accepted
+/// Why the z6 tiles wait when the pass has no heritage sites and the registers have no accepted
 /// version (no key: just after the publish that made them an input), in words; None otherwise.
 /// The hold is the owner's (heritage must not go out wrong), the reason said so it isn't a silent
 /// stall.
@@ -921,7 +923,7 @@ pub fn heritage_sites_work(
         .then(|| Work { step: "heritage-sites".into(), targets: vec![("heritage-sites".into(), k)] })
 }
 
-/// Every summit worldwide with its z8 height, once per pass (crate::summits): what the units' peaks
+/// Every summit worldwide with its z8 height, once per pass (crate::summits): what the z6 tiles' peaks
 /// read.
 pub const SUMMITS_V: u32 = 1;
 
@@ -950,7 +952,7 @@ fn tiles_in_wrapped(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
     out
 }
 
-/// The coverage's units with candidates, each with its peaks' key: the candidates, the summits,
+/// The coverage's z6 tiles with candidates, each with its peaks' key: the candidates, the summits,
 /// the z8, the terrain hi packs within 30 km of it, across the antimeridian too, and the terrain's
 /// version (its peaks' z12: the packs', else AWS's raw tiles, which don't change, processed by the
 /// terrain's code as it is now: `terrain_pack::process`, which `TERRAIN_V` versions).
@@ -981,15 +983,15 @@ fn peaks_keys_at(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, terra
 }
 
 /// The candidates' version (crate::candidates, extract `--candidates`): bumping it makes every
-/// unit's candidates again, not the units. 2: the trailhead searches reach as far east and west
+/// z6 tile's candidates again, not the z6 tiles. 2: the trailhead searches reach as far east and west
 /// at every latitude; a covered bridge's length only for a line.
 pub const POIS_V: u32 = 2;
 
 /// The facts and pageviews of the candidates' items, per pass (dem/items.py).
 pub const ITEMS_V: u32 = 1;
-/// The road → units index from every unit's road values (the server's whole-road lookups).
+/// The road → z6 tiles index from every z6 tile's road values (the server's whole-road lookups).
 pub const ROADUNITS_V: u32 = 1;
-/// Rail stops near the built units (pipeline::ovconv::stations_job), and ferries worldwide
+/// Rail stops near the built z6 tiles (pipeline::ovconv::stations_job), and ferries worldwide
 /// (ferries_job).
 /// (Ferries 2: the looked-up timetables read from the accepted static files, docs/inputs.md §6.7.2.
 /// 3: the lines no timetable counts and the routes matching none, `work/ferries/lines`, §6.7.3.)
@@ -1014,7 +1016,7 @@ pub const OVERLAYS_V: u32 = 2;
 pub const RAIL_FEEDS_V: u32 = 1;
 pub const RAIL_V: u32 = 4;
 
-/// The current units' candidates (their content names), for the worldwide jobs' keys.
+/// The current z6 tiles' candidates (their content names), for the worldwide jobs' keys.
 fn current_pois<'a>(cov: &Coverage, date: &str, m: &'a BTreeMap<String, String>) -> Vec<&'a str> {
     pois_units(cov, date, m)
         .into_iter()
@@ -1022,7 +1024,7 @@ fn current_pois<'a>(cov: &Coverage, date: &str, m: &'a BTreeMap<String, String>)
         .collect()
 }
 
-/// The units with candidates: those whose piece meets the coverage (the tile and 10 km around it:
+/// The z6 tiles with candidates: those whose extract meets the coverage (the tile and 10 km around it:
 /// the clip tests the candidates' points, which are the tile's, and their ways' nodes, which reach
 /// a little past it), each with that box.
 pub fn pois_units(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(TileId, [i32; 4], String)> {
@@ -1037,7 +1039,7 @@ pub fn pois_units(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> V
     units
 }
 
-/// `pois_units`, each with its candidates' key: its piece, the coverage over it (the clip), the
+/// `pois_units`, each with its candidates' key: its extract, the coverage over it (the clip), the
 /// pass's hiking-route ends and the spacing its extract reads (crate::dem::spacing, from the
 /// planner's `inputs`). None while the spacing isn't known: the candidates wait.
 pub fn pois_keys(
@@ -1056,7 +1058,7 @@ pub fn pois_keys(
     )
 }
 
-/// How far each region is built: of the units its outlines meet, how many are built as the whole
+/// How far each region is built: of the z6 tiles its outlines meet, how many are built as the whole
 /// coverage now wants them.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct RegionState {
@@ -1089,41 +1091,41 @@ pub fn region_states(
 }
 
 /// The assemblies' versions (their keys): bumped on any change to the bytes of the lo packs an
-/// assembly makes from the same pieces' mids.
+/// assembly makes from the same z6 tiles' mids.
 pub const TERRAIN_LO_V: u32 = 1;
-/// Slope's 2: an assembly's z6 tiles that aren't its pieces' made from their terrain, never kept
+/// Slope's 2: an assembly's z6 tiles that aren't its z6 tiles' made from their terrain, never kept
 /// from the lo pack as an earlier run stored them, and their z7–8 tiles not kept
 /// (crate::slope_pack::assemble).
 pub const SLOPE_LO_V: u32 = 2;
 
 /// Terrain's and slope's targets, each with its key, done or not (docs/steps.md §2, Terrain): a
-/// piece per z6 tile near the coverage (`coverage_tiles`), an assembly per z3 tile with pieces.
+/// z6 tile per z6 tile near the coverage (`coverage_tiles`), an assembly per z3 tile with z6 tiles.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TerrainTargets {
-    /// Terrain's pieces ("6/x/y"): keyed on the terrain's version, the coverage within 20 km of the
+    /// Terrain's z6 tiles ("6/x/y"): keyed on the terrain's version, the coverage within 20 km of the
     /// tile (which decides its tiles), the terrain's declared sources and the water it reads
     /// (`water_key`); `UNKNOWN` while either isn't worked out.
     pub terrain: Vec<(String, String)>,
-    /// Its assemblies ("3/x/y"): keyed on their pieces' mids by content ("-" for one without: it
+    /// Its assemblies ("3/x/y"): keyed on their z6 tiles' mids by content ("-" for one without: it
     /// can't be assembled until each has one) and the water it reads (`water_key`); `UNKNOWN`
     /// likewise.
     pub terrain_lo: Vec<(String, String)>,
-    /// Slope's pieces ("6/x/y"): keyed on the terrain tiles each can read (`slope_piece_key`); None
+    /// Slope's z6 tiles ("6/x/y"): keyed on the terrain tiles each can read (`slope_piece_key`); None
     /// while that can't be told (a terrain pack's index unread).
     pub slope: Vec<(String, Option<String>)>,
-    /// Its assemblies ("3/x/y"): keyed on their pieces' mids by content and the z3 tile's terrain lo
+    /// Its assemblies ("3/x/y"): keyed on their z6 tiles' mids by content and the z3 tile's terrain lo
     /// pack.
     pub slope_lo: Vec<(String, String)>,
-    /// The z6 tiles ("6/x/y") with a terrain hi pack or mid that the coverage has left (no piece):
-    /// "none" pieces, whose runs drop them (`none_piece_key`). Not in `terrain`: terrain's assembly
+    /// The z6 tiles ("6/x/y") with a terrain hi pack or mid that the coverage has left (no z6 tile):
+    /// "none" z6 tiles, whose runs drop them (`none_piece_key`). Not in `terrain`: terrain's assembly
     /// doesn't wait for them (it reads no hi pack).
     #[serde(default)]
     pub terrain_none: Vec<(String, String)>,
     /// The same of slope's hi packs and mids (their z3 tile's slope assembly waits for them, as for
-    /// any of its slope pieces left).
+    /// any of its slope z6 tiles left).
     #[serde(default)]
     pub slope_none: Vec<(String, String)>,
-    /// The z3 tiles ("3/x/y") with a terrain lo pack that the coverage has left (no piece): "none"
+    /// The z3 tiles ("3/x/y") with a terrain lo pack that the coverage has left (no z6 tile): "none"
     /// assemblies, whose runs drop it (`none_lo_key`); the root is then made again (its key names
     /// the lo packs).
     #[serde(default)]
@@ -1139,11 +1141,11 @@ pub fn z3_of(piece: &str) -> Option<String> {
 }
 
 /// Terrain's and slope's targets (`TerrainTargets`) for the coverage and the build manifest `m`;
-/// `tiles`, the terrain packs' indexes the slope pieces' keys read.
+/// `tiles`, the terrain packs' indexes the slope z6 tiles' keys read.
 pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> TerrainTargets {
     // (Kept by `tiles` with what they're worked out from: the coverage's shapes, the terrain packs
     // and the mids by content, the basemap. A plan works them out again only when one changes; not
-    // kept while a slope piece's key can't be told.)
+    // kept while a slope z6 tile's key can't be told.)
     let named = |prefix: &str| {
         m.range(prefix.to_string()..)
             .take_while(|(l, _)| l.starts_with(prefix))
@@ -1188,7 +1190,7 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
     let pin = crate::terrain_pack::water_source_pin(m);
     let idx = pin.as_deref().and_then(|p| tiles.water_idx(m, p));
     let water = |t: &str, from: &str| water_key(pin.as_deref(), idx, t, from);
-    // (The terrain's declared sources: its pieces wait while there are none.)
+    // (The terrain's declared sources: its z6 tiles wait while there are none.)
     let sources = tiles.terrain_sources(m).map(|p| p.pin.as_str());
     let mut out = TerrainTargets::default();
     let near = coverage_tiles(cov);
@@ -1216,7 +1218,7 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
         ));
         out.slope_lo.push((qs.clone(), slope_lo_key(*q, &smids, get(&format!("layers/terrain/lo/3-{}-{}", q.0, q.1)))));
     }
-    // The z6 tiles the coverage has left with a hi pack or a mid still named: "none" pieces.
+    // The z6 tiles the coverage has left with a hi pack or a mid still named: "none" z6 tiles.
     let pieces: BTreeSet<(u32, u32)> = near.values().flatten().copied().collect();
     let left = |step: &str, prefixes: [&str; 2]| -> Vec<(String, String)> {
         let mut ts: BTreeSet<(u32, u32)> = BTreeSet::new();
@@ -1261,7 +1263,7 @@ pub fn none_lo_key(layer: &str, q: &str) -> String {
     h(&[&format!("{layer}-lo {v}"), q, "none"])
 }
 
-/// The key of a terrain or slope piece (`step`) the coverage has left ("6/x/y"), with a hi pack or a
+/// The key of a terrain or slope z6 tile (`step`) the coverage has left ("6/x/y"), with a hi pack or a
 /// mid still named: its run drops them (crate::terrain_pack::drop_piece,
 /// crate::slope_pack::drop_piece).
 pub fn none_piece_key(step: &str, t: &str) -> String {
@@ -1269,7 +1271,7 @@ pub fn none_piece_key(step: &str, t: &str) -> String {
     h(&[&format!("{step} {v}"), t, "none"])
 }
 
-/// A terrain piece's key as the targets have it: `terrain_piece_key`, and for a piece that makes no
+/// A terrain z6 tile's key as the targets have it: `terrain_piece_key`, and for a z6 tile that makes no
 /// hi tile (`hi` false: crate::terrain_pack::makes_hi) "no hi tiles" after it, its run dropping any
 /// hi pack an earlier run left (so a record from before that drop isn't current).
 pub fn piece_key_made(t: (u32, u32), fp: &str, sources: &str, water: &str, hi: bool) -> String {
@@ -1290,9 +1292,9 @@ pub const UNKNOWN: &str = "?";
 /// makes (crate::terrain_water::tiles_digest), which changes every terrain key.
 pub const TERRAIN_WATER_V: u32 = 1;
 
-/// The water terrain target `t` (a piece "6/x/y", an assembly "3/x/y") reads, as its key names it:
+/// The water terrain target `t` (a z6 tile "6/x/y", an assembly "3/x/y") reads, as its key names it:
 /// "water <digest>" from the water source's digests (`idx`, pinned `pin`) made from `from` (a
-/// piece's: the coverage's fingerprint that decides its tiles; an assembly's,
+/// z6 tile's: the coverage's fingerprint that decides its tiles; an assembly's,
 /// crate::terrain_water::AREA_FROM); "-" without a water source (none read); None while its digest
 /// isn't there.
 pub fn water_key(
@@ -1307,7 +1309,7 @@ pub fn water_key(
     }
 }
 
-/// Terrain piece `t`'s key (z6 tile (x, y)): the version, the coverage within 20 km (`fp`: which
+/// Terrain z6 tile `t`'s key (z6 tile (x, y)): the version, the coverage within 20 km (`fp`: which
 /// decides its tiles), the terrain's declared sources (`sources`: crate::terrain_sources::pin) and
 /// the water it reads (`water_key`).
 pub fn terrain_piece_key(t: (u32, u32), fp: &str, sources: &str, water: &str) -> String {
@@ -1315,7 +1317,7 @@ pub fn terrain_piece_key(t: (u32, u32), fp: &str, sources: &str, water: &str) ->
 }
 
 /// What the terrain's targets read of the water, as the `terrain-water` job works their digests
-/// out (crate::terrain_water::WaterIdx): each piece ("6/x/y") with the coverage's fingerprint that
+/// out (crate::terrain_water::WaterIdx): each z6 tile ("6/x/y") with the coverage's fingerprint that
 /// decides its tiles, each assembly ("3/x/y") with AREA_FROM.
 pub fn water_wants(cov: &Coverage) -> Vec<(String, String)> {
     let mut out = Vec::new();
@@ -1328,7 +1330,7 @@ pub fn water_wants(cov: &Coverage) -> Vec<(String, String)> {
     out
 }
 
-/// `water_wants` with the tiles each reads: a piece's z9–12 (crate::terrain_pack::piece_levels),
+/// `water_wants` with the tiles each reads: a z6 tile's z9–12 (crate::terrain_pack::piece_levels),
 /// an assembly's z6–8 (crate::terrain_water::z3_tiles).
 pub fn water_reads(cov: &Coverage) -> Vec<crate::terrain_water::Reads> {
     water_wants(cov)
@@ -1382,7 +1384,7 @@ pub fn terrain_water_work(
         .then(|| Work { step: "terrain-water".into(), targets: vec![("terrain-water".into(), k)] })
 }
 
-/// Terrain's assembly of z3 tile `q`'s key: `mids`, its pieces' as "6/x/y=<content name | ->", in
+/// Terrain's assembly of z3 tile `q`'s key: `mids`, its z6 tiles' as "6/x/y=<content name | ->", in
 /// column then row order; `water`, the water it reads (`water_key`).
 pub fn terrain_lo_key(q: (u32, u32), water: &str, mids: &[String]) -> String {
     h(&[
@@ -1406,7 +1408,7 @@ pub fn slope_lo_key(q: (u32, u32), mids: &[String], terrain_lo: &str) -> String 
     ])
 }
 
-/// Slope piece `t`'s key (z6 tile (x, y)): the step's version, its terrain hi pack (which tiles of
+/// Slope z6 tile `t`'s key (z6 tile (x, y)): the step's version, its terrain hi pack (which tiles of
 /// it there are: what it works out) and every terrain tile it can read, by content
 /// (`slope_piece_reads`). Kept by `tiles` with the packs those can be in.
 pub fn slope_piece_key(t: (u32, u32), m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Result<String, Unread> {
@@ -1423,7 +1425,7 @@ pub fn slope_piece_key(t: (u32, u32), m: &BTreeMap<String, String>, tiles: &Terr
     })
 }
 
-/// What slope piece `t`'s reads (`slope_piece_reads`) are worked out from, as a digest, for
+/// What slope z6 tile `t`'s reads (`slope_piece_reads`) are worked out from, as a digest, for
 /// `TerrainTiles::memo`: the content names of the packs they can be in (its own and its edge
 /// neighbours' hi packs, their z3 tiles' lo packs, the root).
 pub fn slope_piece_from(t: (u32, u32), m: &BTreeMap<String, String>) -> String {
@@ -1456,9 +1458,9 @@ pub fn edge_neighbours(z: u8, x: u32, y: u32) -> Vec<(u32, u32)> {
     v
 }
 
-/// The terrain tiles slope piece `t` (z6 tile (x, y)) can read, by content, sorted, without
+/// The terrain tiles slope z6 tile `t` (z6 tile (x, y)) can read, by content, sorted, without
 /// repeats (None: one reading no tile). It works out the tiles of its terrain hi pack (z9–12) and
-/// their ancestors down to z6, and its z6 tile (crate::slope_pack::piece); of those, each z12 one and
+/// their ancestors down to z6, and its z6 tile (crate::slope_pack::z6 tile); of those, each z12 one and
 /// each its children don't all cover reads its own terrain and that of the tiles west, east, north
 /// and south of it, at its zoom (Horn's method's border), each resolved as crate::slope_pack::Terrain
 /// resolves it, the tile or its nearest ancestor up to eight levels up (`TerrainTiles::resolve`):
@@ -1502,30 +1504,30 @@ pub fn slope_piece_reads(
 /// Terrain's and slope's work as the plan lists it (`terrain_slope_targets`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TerrainWork {
-    /// Terrain's pieces to make: those stale, and those current without a mid (in the manifest, or
+    /// Terrain's z6 tiles to make: those stale, and those current without a mid (in the manifest, or
     /// in a hand-off waiting to be merged) in a z3 tile whose assembly will run (it's stale, or a
-    /// piece of it is): made again as they are, expected the same; and the "none" pieces not yet
+    /// z6 tile of it is): made again as they are, expected the same; and the "none" z6 tiles not yet
     /// run (`TerrainTargets::terrain_none`), last.
     pub terrain: Vec<(String, String)>,
-    /// Its assemblies that can run: stale, every piece of theirs current with its mid; and the
+    /// Its assemblies that can run: stale, every z6 tile of theirs current with its mid; and the
     /// "none" assemblies not yet run (`TerrainTargets::terrain_lo_none`), whenever, last.
     pub terrain_lo: Vec<(String, String)>,
-    /// Slope's pieces that can run: stale, their key known, the terrain of their z3 tile and of their
-    /// edge neighbours' z3 tiles built (none of them in `terrain_left`); and the "none" pieces not yet
+    /// Slope's z6 tiles that can run: stale, their key known, the terrain of their z3 tile and of their
+    /// edge neighbours' z3 tiles built (none of them in `terrain_left`); and the "none" z6 tiles not yet
     /// run (`TerrainTargets::slope_none`), whenever, last.
     pub slope: Vec<(String, String)>,
-    /// Its assemblies that can run: stale, every piece of theirs current, their z3 tile's terrain
+    /// Its assemblies that can run: stale, every z6 tile of theirs current, their z3 tile's terrain
     /// built (one current without a mid has its tiles in the lo pack); and the "none" assemblies
     /// not yet run (`TerrainTargets::slope_lo_none`), whenever, last.
     pub slope_lo: Vec<(String, String)>,
-    /// The current pieces without a mid nothing else makes (those the re-keying recorded:
+    /// The current z6 tiles without a mid nothing else makes (those the re-keying recorded:
     /// agent::rekey): their mids made in idle time, after all other work, expected the same:
     /// terrain's in z3 tiles whose assembly won't run, slope's all.
     pub backfill: Vec<Work>,
-    /// The z3 tiles whose terrain is to be made: a piece stale or wanted for its mid, or the assembly
-    /// stale (what the units and peaks there wait for, and their regions).
+    /// The z3 tiles whose terrain is to be made: a z6 tile stale or wanted for its mid, or the assembly
+    /// stale (what the z6 tiles and peaks there wait for, and their regions).
     pub terrain_left: BTreeSet<String>,
-    /// What a region lacks before it's published, runnable or not: the stale pieces, by target, and
+    /// What a region lacks before it's published, runnable or not: the stale z6 tiles, by target, and
     /// the stale assemblies, by z3 tile; and the z3 tiles with either, of slope.
     pub terrain_pieces_left: BTreeSet<String>,
     pub terrain_lo_left: BTreeSet<String>,
@@ -1535,7 +1537,7 @@ pub struct TerrainWork {
 }
 
 /// Terrain's and slope's work (`TerrainWork`) for their targets `tt`, the manifest `m` and what was
-/// done (with the hand-offs waiting to be merged: a piece current by one of them has its mid
+/// done (with the hand-offs waiting to be merged: a z6 tile current by one of them has its mid
 /// there, not in `m`, until it's merged).
 pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Keys) -> TerrainWork {
     let has_mid = |mid: &dyn Fn(u32, u32) -> String, t: &str| {
@@ -1547,8 +1549,8 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
     // Terrain.
     // (A target whose key isn't known yet, UNKNOWN, is neither current nor made: its z3 tile waits.)
     let current = |t: &str, k: &str| k != UNKNOWN && done.terrain.get(t).map(String::as_str) == Some(k);
-    // (A "none" piece, the coverage gone from its z6 tile, counts as one left until its run has
-    // dropped its hi pack and mid: the units reading its tiles wait for it.)
+    // (A "none" z6 tile, the coverage gone from its z6 tile, counts as one left until its run has
+    // dropped its hi pack and mid: the z6 tiles reading its tiles wait for it.)
     w.terrain_pieces_left =
         tt.terrain.iter().chain(&tt.terrain_none).filter(|(t, k)| !current(t, k)).map(|p| p.0.clone()).collect();
     let lo_none: Vec<(String, String)> =
@@ -1634,7 +1636,7 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
             idle.push((t.clone(), k.clone()));
         }
     }
-    // (A "none" piece reads no terrain: it runs whenever.)
+    // (A "none" z6 tile reads no terrain: it runs whenever.)
     w.slope.extend(snone);
     w.slope_lo = tt
         .slope_lo
@@ -1653,28 +1655,28 @@ pub fn terrain_work(tt: &TerrainTargets, m: &BTreeMap<String, String>, done: &Ke
     w
 }
 
-/// Tree cover's work as the plan lists it (crate::treepacks::targets: a piece per z6 tile, an
-/// assembly per z3 tile from its pieces' mids).
+/// Tree cover's work as the plan lists it (crate::treepacks::targets: a z6 tile per z6 tile, an
+/// assembly per z3 tile from its z6 tiles' mids).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TreeWork {
-    /// The pieces to make: those stale, and those current without a mid (in the manifest, or in a
+    /// The z6 tiles to make: those stale, and those current without a mid (in the manifest, or in a
     /// hand-off waiting to be merged: made again as they are, expected the same) in a z3 tile whose
-    /// assembly will run: it's stale, or a piece of it is.
+    /// assembly will run: it's stale, or a z6 tile of it is.
     pub pieces: Vec<(String, String)>,
-    /// The assemblies that can run: stale, every piece of theirs current with its mid (one of
+    /// The assemblies that can run: stale, every z6 tile of theirs current with its mid (one of
     /// "none", whenever).
     pub lo: Vec<(String, String)>,
-    /// The current pieces without a mid in a z3 tile whose assembly won't run (those the re-keying
+    /// The current z6 tiles without a mid in a z3 tile whose assembly won't run (those the re-keying
     /// recorded: agent::rekey): their mids made in idle time, after all other work, expected the
     /// same (docs/building.md §2, Order).
     pub backfill: Vec<(String, String)>,
-    /// What a region lacks before it's published: the stale pieces and assemblies, runnable or not.
+    /// What a region lacks before it's published: the stale z6 tiles and assemblies, runnable or not.
     pub stale_pieces: BTreeSet<String>,
     pub stale_lo: BTreeSet<String>,
 }
 
 /// Tree cover's work (`TreeWork`) for its targets `tt`, the manifest `m` and what was done (with
-/// the hand-offs waiting to be merged: a piece current by one of them has its mid there, not in
+/// the hand-offs waiting to be merged: a z6 tile current by one of them has its mid there, not in
 /// `m`, until it's merged: not made again for it, while its assembly waits for it).
 pub fn tree_work(tt: &crate::treepacks::Targets, m: &BTreeMap<String, String>, done: &Keys) -> TreeWork {
     use crate::treepacks::{mid_logical, z3_of};
@@ -1713,13 +1715,13 @@ pub fn tree_work(tt: &crate::treepacks::Targets, m: &BTreeMap<String, String>, d
 /// with the next.
 pub const CATALOG_EVERY_S: u64 = 60;
 
-/// The publishing chain's steps a catalog waits for (`publish_chain`): the map tiles no unit
+/// The publishing chain's steps a catalog waits for (`publish_chain`): the map tiles no z6 tile
 /// reaches pruned, the map tiles whose owners changed, the road index. The rest (the low zooms, rail
 /// stops, ferries, roots) go out with a later catalog.
 pub const CATALOG_GATE: [&str; 3] = ["prune", "pack", "roadunits"];
 
 /// How long (seconds) a catalog may be held back by the map tiles or the road index still to draw,
-/// or their hand-offs waiting to be merged (units landing one after another), counted from when it
+/// or their hand-offs waiting to be merged (z6 tiles landing one after another), counted from when it
 /// was first held (`Publish::held_for`): past it, one goes out with what's drawn and merged.
 pub const CATALOG_CAP_S: u64 = 600;
 
@@ -1733,11 +1735,11 @@ pub const LOW_EVERY_S: u64 = 3 * 3600;
 pub struct Publishing {
     /// Seconds since a catalog last went out with the low zooms made (None: none kept).
     pub since_low: Option<u64>,
-    /// A done region's slope and tree cover by the pieces near it (`state/pool/near-slope`): the
-    /// slope pieces whose z6 tile is within 20 km of it (what its slope reads), the tree cover
-    /// pieces meeting it; not every stale piece of the z3 tiles around it. Their assemblies (z3–8)
+    /// A done region's slope and tree cover by the z6 tiles near it (`state/pool/near-slope`): the
+    /// slope z6 tiles whose z6 tile is within 20 km of it (what its slope reads), the tree cover
+    /// z6 tiles meeting it; not every stale z6 tile of the z3 tiles around it. Their assemblies (z3–8)
     /// are made with the low zooms, and a region is done with its
-    /// pieces.
+    /// z6 tiles.
     pub near: bool,
     /// Seconds since the landmark points and the area overlays last ran (`LastCatalog::since`;
     /// None: not known): their cadence (`MARKS_EVERY_S`, `OVERLAYS_EVERY_S`).
@@ -1764,7 +1766,7 @@ pub struct LastCatalog {
     /// never in a key.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ran: BTreeMap<String, Ran>,
-    /// The last plan had no unit or terrain left to build (`Plan::idle`; not kept).
+    /// The last plan had no z6 tile or terrain left to build (`Plan::idle`; not kept).
     #[serde(skip)]
     pub idle: bool,
 }
@@ -1780,12 +1782,12 @@ pub struct Ran {
     pub at: Option<u64>,
 }
 
-/// The landmark points at most this often (seconds; the owner's, a policy) while units build; at
+/// The landmark points at most this often (seconds; the owner's, a policy) while z6 tiles build; at
 /// once when none's left.
 pub const MARKS_EVERY_S: u64 = 3600;
-/// The area overlays at most this often while units build; and after the last.
+/// The area overlays at most this often while z6 tiles build; and after the last.
 pub const OVERLAYS_EVERY_S: u64 = 6 * 3600;
-/// The names' to-do lists at most this often while units build; after any catalog when none's left.
+/// The names' to-do lists at most this often while z6 tiles build; after any catalog when none's left.
 pub const NAMES_TODO_EVERY_S: u64 = 24 * 3600;
 /// The steps gated by time: the gate decides only WHEN they're planned; their keys stay by content.
 pub const GATED: [&str; 3] = ["marks", "overlays", "names-todo"];
@@ -1844,10 +1846,11 @@ pub fn gate_open(idle: bool, since: Option<u64>, every: u64) -> bool {
 pub struct PublishLine {
     /// What publishing does now, or waits for, in plain words.
     pub why: String,
-    /// The map tiles to draw (pack(T) targets whose owners changed), and the units whose change made
+    /// The map tiles to draw (pack(T) targets whose owners changed), and the z6 tiles whose change made
     /// them stale (`by_unit`).
     #[serde(default)]
     pub tiles: usize,
+    /// The z6 tiles drawn (`units`: the status's stored key, read by the menu bar app and the page: kept).
     #[serde(default)]
     pub units: usize,
     /// The regions done whose catalog hasn't them as they are now, each with what it still waits
@@ -1866,8 +1869,8 @@ pub struct PublishLine {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PublishRegion {
     pub id: String,
-    /// "new region" or "rebuilt" (its outline or units changed), and while it isn't recorded built,
-    /// why: "waiting to be merged" (a unit's or a map tile's hand-off), "map tiles to draw", or
+    /// "new region" or "rebuilt" (its outline or z6 tiles changed), and while it isn't recorded built,
+    /// why: "waiting to be merged" (a z6 tile's or a map tile's hand-off), "map tiles to draw", or
     /// "slope and tree cover to make".
     pub kinds: Vec<String>,
 }
@@ -1904,15 +1907,15 @@ impl PublishLine {
 
 /// What the plan builds the regions by, one at a time, and publishes them by, as they're done:
 /// each region's own coverage, as the recipes list them (crate::coverage::Coverage::by_region); the
-/// regions the map's catalog has, and its units; when the last catalog went out.
+/// regions the map's catalog has, and its z6 tiles; when the last catalog went out.
 #[derive(Clone, Copy)]
 pub struct Publish<'a> {
     pub each: &'a [(String, Coverage)],
     /// The last catalog's regions by id: whether it has the region as its recipe is now (false: an
     /// older outline, the region on the map as it was).
     pub on_map: &'a BTreeMap<String, bool>,
-    /// The served catalog's units' base packs and road values, by logical name
-    /// (crate::pubtimes::served_units): the map tiles to draw are grouped by the unit whose change
+    /// The served catalog's z6 tiles' base packs and road values, by logical name
+    /// (crate::pubtimes::served_units): the map tiles to draw are grouped by the z6 tile whose change
     /// made them stale (`by_unit`).
     pub served: &'a BTreeMap<String, String>,
     /// Seconds since the last catalog went out (or one last started); None when none has.
@@ -1929,14 +1932,14 @@ pub struct Publish<'a> {
 }
 
 /// The work there is, in order, and the regions a catalog made now records as built (`ready`: every
-/// unit of theirs built as the coverage wants it, and their z3 tiles' slope and tree cover; the
+/// z6 tile of theirs built as the coverage wants it, and their z3 tiles' slope and tree cover; the
 /// catalog keeps the others as the last one had them).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Plan {
     pub work: Vec<Work>,
     pub ready: Vec<String>,
-    /// The regions not `ready`, each with its units built of those it builds (by the records: a
-    /// unit current under its key), in the regions' order: what a catalog records of a region still
+    /// The regions not `ready`, each with its z6 tiles built of those it builds (by the records: a
+    /// z6 tile current under its key), in the regions' order: what a catalog records of a region still
     /// building (its `--building`; docs/formats.md, Catalog `coverage`).
     pub building: Vec<(String, usize, usize)>,
     /// Every region's work left, in the order they're built (those with none last), whether or not
@@ -1952,15 +1955,15 @@ pub struct Plan {
     /// A catalog is due, not held back, but waits out its minute (`CATALOG_EVERY_S`): the hold's
     /// count (`LastCatalog::held_at`) is kept till it goes.
     pub catalog_due: bool,
-    /// The units whose key can't be worked out now (a terrain pack's index unread: `unit_keys`):
+    /// The z6 tiles whose key can't be worked out now (a terrain pack's index unread: `unit_keys`):
     /// neither built nor counted as built until it can.
     pub unknown: Vec<String>,
-    /// The pieces whose mids are made in idle time (`TreeWork::backfill`, `TerrainWork::backfill`:
+    /// The z6 tiles whose mids are made in idle time (`TreeWork::backfill`, `TerrainWork::backfill`:
     /// the work's last): for the forecast.
     pub backfill: Vec<Work>,
     /// Publishing as planned now, for the log and the status.
     pub publishing: PublishLine,
-    /// No unit or terrain left to build: the steps gated by time (`GATED`) run at once.
+    /// No z6 tile or terrain left to build: the steps gated by time (`GATED`) run at once.
     pub idle: bool,
 }
 
@@ -1971,12 +1974,12 @@ pub struct RegionLeft {
     /// Whether the map's catalog has it: as its recipe is now (true), as it was (false), or not at
     /// all (None).
     pub on_map: Option<bool>,
-    /// Its units not built as the coverage wants them, all of them (a region is done when they
+    /// Its z6 tiles not built as the coverage wants them, all of them (a region is done when they
     /// are), and those it builds itself (the rest come with a region before it), in the order
     /// they're built.
     pub units: Vec<String>,
     pub own_units: Vec<String>,
-    /// The terrain pieces of the z3 tiles it reads to make (stale, or their mids for an assembly),
+    /// The terrain z6 tiles of the z3 tiles it reads to make (stale, or their mids for an assembly),
     /// and those it makes itself (the rest come with a region before it); those z3 tiles' stale
     /// assemblies, and those it makes itself.
     pub terrain: Vec<String>,
@@ -1985,7 +1988,7 @@ pub struct RegionLeft {
     pub terrain_lo: Vec<String>,
     #[serde(default)]
     pub own_terrain_lo: Vec<String>,
-    /// Its z3 tiles' stale slope pieces and assemblies; the tree cover pieces of its z3 tiles to make
+    /// Its z3 tiles' stale slope z6 tiles and assemblies; the tree cover z6 tiles of its z3 tiles to make
     /// (stale, or their mids for an assembly), and its z3 tiles whose tree cover assembly is stale.
     pub slope: Vec<String>,
     #[serde(default)]
@@ -1993,14 +1996,14 @@ pub struct RegionLeft {
     pub trees: Vec<String>,
     #[serde(default)]
     pub trees_lo: Vec<String>,
-    /// Its units built as the coverage wants them now but reading terrain that's stale: whether
+    /// Its z6 tiles built as the coverage wants them now but reading terrain that's stale: whether
     /// each goes stale too is known only once that terrain is built (its key names the tiles'
     /// contents). For the forecast, which takes a share of them as work to come
     /// (`forecast::EXPECTED_STALE`).
     #[serde(default)]
     pub expected: Vec<String>,
-    /// The map tiles (pack(T)'s targets, "6/x/y") its units draw that are stale now or will be once
-    /// its units left are built, each with its units that draw it (a tile waits for those alone):
+    /// The map tiles (pack(T)'s targets, "6/x/y") its z6 tiles draw that are stale now or will be once
+    /// its z6 tiles left are built, each with its z6 tiles that draw it (a tile waits for those alone):
     /// what's drawn before it's on the map as it's built now.
     #[serde(default)]
     pub packs: Vec<(String, Vec<String>)>,
@@ -2009,29 +2012,29 @@ pub struct RegionLeft {
 /// The plan for the coverage `cov`, the pass of `date`, the build manifest `m` (logical → content)
 /// and what was done (`done`). `inputs`: digests of what jobs read from `inputs/` (not in the
 /// manifest), by name: "keys" (the key names inputs/keys.env holds), "regions" (the regions' accepted version). `tiles`: the
-/// terrain packs' indexes, which the units' keys read (`unit_terrain`). The agent runs
+/// terrain packs' indexes, which the z6 tiles' keys read (`unit_terrain`). The agent runs
 /// the first work not waiting out a failure; a helper takes a step's from the far end (the agent
 /// offers each step's targets together, in this order). The order (docs/building.md §2, Order):
-/// - the heritage sites the units read;
+/// - the heritage sites the z6 tiles read;
 /// - publishing, as soon as the records change (`publish_chain`): what the coverage no longer
-///   builds pruned, the map tiles whose owners changed (a unit's together: `by_unit`), the road
+///   builds pruned, the map tiles whose owners changed (a z6 tile's together: `by_unit`), the road
 ///   index, the low zooms (`low_gate`), rail stops and ferries, the world-level terrain
 ///   and slope; once the map tiles and road index are drawn (`CATALOG_GATE`; or held back
 ///   `CATALOG_CAP_S`), a catalog when what it would list changed
 ///   (`catalog_key`), at most one each `CATALOG_EVERY_S`;
 /// - the slope and tree cover of the regions done that the map hasn't as they are now;
-/// - a region at a time (the regions the map hasn't at all first, the one with the fewest units
-///   left first): the terrain z3 tiles it reads that are stale, then its units whose terrain is built
-///   (a unit's key reads the terrain near it: one built before would be built again);
-/// - slope (each z3 tile once its terrain is built) and tree cover after them (its pieces, then each
-///   z3 tile's assembly once its pieces are built: `tree_work`);
+/// - a region at a time (the regions the map hasn't at all first, the one with the fewest z6 tiles
+///   left first): the terrain z3 tiles it reads that are stale, then its z6 tiles whose terrain is built
+///   (a z6 tile's key reads the terrain near it: one built before would be built again);
+/// - slope (each z3 tile once its terrain is built) and tree cover after them (its z6 tiles, then each
+///   z3 tile's assembly once its z6 tiles are built: `tree_work`);
 /// - the trains' and the landmarks' chains from the start, each step once what it reads is built,
 ///   after all that in the order (a slot beside the regions' work takes them: crate::agent), the
-///   overlays after the last unit; what they make goes out with the next catalog;
+///   overlays after the last z6 tile; what they make goes out with the next catalog;
 /// - the 3D buildings' chain from the start too (`bld_work`: the sources' fetch, each z6 tile's
 ///   normalized file, then its tiles once it and its neighbours are prepared), listed after the
 ///   other chains, its tiles in the regions' order; it holds no region;
-/// - last, in idle time, the mids of current tree cover pieces without one (`TreeWork::backfill`).
+/// - last, in idle time, the mids of current tree cover z6 tiles without one (`TreeWork::backfill`).
 #[allow(clippy::too_many_arguments)]
 pub fn plan(
     cov: &Coverage,
@@ -2051,7 +2054,7 @@ pub fn plan(
         }
     };
 
-    // The heritage sites and designated areas the units read: first, once per pass and coverage (one
+    // The heritage sites and designated areas the z6 tiles read: first, once per pass and coverage (one
     // job). Not waited for: terrain still runs while it waits out a failure.
     let sites = heritage_sites_work(cov, date, m, done, inputs);
     let sites_pending = sites.is_some();
@@ -2060,7 +2063,7 @@ pub fn plan(
     // and again as the coverage grows): the terrain whose keys need them waits for it.
     work.extend(terrain_water_work(cov, m, done, tiles));
 
-    // Terrain and slope (pieces per z6 tile, then each z3 tile's assembly; slope's once the terrain
+    // Terrain and slope (z6 tiles per z6 tile, then each z3 tile's assembly; slope's once the terrain
     // it reads is built) and the tree cover layers (likewise), what a region needs before it's
     // published.
     let tw = terrain_work(&terrain_slope_targets(cov, m, tiles), m, done);
@@ -2078,18 +2081,18 @@ pub fn plan(
         backfill.push(Work { step: "trees".into(), targets: tree_backfill });
     }
     backfill.extend(tw.backfill.iter().cloned());
-    // A tree cover, terrain or slope target's z3 tile (a piece's z3 tile, an assembly's own).
+    // A tree cover, terrain or slope target's z3 tile (a z6 tile's z3 tile, an assembly's own).
     let tree_z3 = |t: &(String, String)| crate::treepacks::z3_of(&t.0).unwrap_or_else(|| t.0.clone());
     let z3 = |t: &(String, String)| z3_of(&t.0).unwrap_or_else(|| t.0.clone());
 
-    // The units wait for the heritage sites, the pass's reaches (which units the coverage builds)
+    // The z6 tiles wait for the heritage sites, the pass's reaches (which z6 tiles the coverage builds)
     // and the release's roadside buildings (a worldwide job, once): the terrain, slope and tree
     // cover meanwhile.
     let waiting = sites_pending
         || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources"))
         || tiles.buildings_release(m).is_none_or(|b| !m.contains_key(&crate::buildtiles::index_logical(b)));
     // The trains' and the landmarks' chains: from the start, each step once what it reads is built
-    // (`landmarks_work`: none waits for the units but the overlays), listed after the regions'
+    // (`landmarks_work`: none waits for the z6 tiles but the overlays), listed after the regions'
     // work. A slot beside the regions' work takes them (crate::agent: every job by grant, packed by
     // its measures), a helper the candidates and peaks.
     let chains = |last: bool| -> Vec<Work> {
@@ -2118,15 +2121,15 @@ pub fn plan(
         return Plan { work, backfill, publishing, ..Default::default() };
     };
 
-    // base(U): the units the coverage builds. Each region's: those it builds itself (a road of theirs
+    // base(U): the z6 tiles the coverage builds. Each region's: those it builds itself (a road of theirs
     // may touch its outline), the ones of them not built as the coverage now wants, its z3 tiles (the
     // z3 tiles its slope and tree cover are in) and the terrain z3 tiles it reads (its z3 tiles and those
-    // near its units).
+    // near its z6 tiles).
     let units = unit_keys(cov, date, m, Some(reach), tiles);
     // (One whose key can't be worked out now is left, and isn't built: `unknown`.)
     let unit_stale: Vec<bool> =
         units.iter().map(|(u, k)| k.as_ref().is_none_or(|k| stale(&done.unit, &u.slash(), k))).collect();
-    // A unit's terrain z3 tiles: those of the z6 tiles near it, whose packs hold the tiles its key
+    // A z6 tile's terrain z3 tiles: those of the z6 tiles near it, whose packs hold the tiles its key
     // reads (every tile it stages is in the lo or hi pack of a z3 tile it meets).
     let reads: Vec<BTreeSet<String>> = units
         .iter()
@@ -2142,17 +2145,17 @@ pub fn plan(
     let target = |i: usize| -> Option<(String, String)> { Some((units[i].0.slash(), units[i].1.clone()?)) };
     struct Region<'a> {
         id: &'a str,
-        /// Its units, and those not built as the coverage wants them.
+        /// Its z6 tiles, and those not built as the coverage wants them.
         all: Vec<usize>,
         stale: Vec<usize>,
         /// Its slope's z3 tiles (the z3 tiles within 20 km of it, as the terrain's and slope's targets
-        /// go) and its tree cover's (those it meets: their assemblies, and every piece of them,
-        /// which the assemblies read), and its tree cover's pieces (the z6 tiles it meets).
+        /// go) and its tree cover's (those it meets: their assemblies, and every z6 tile of them,
+        /// which the assemblies read), and its tree cover's z6 tiles (the z6 tiles it meets).
         z3s: BTreeSet<String>,
         tree_z3s: BTreeSet<String>,
         tree_pieces: BTreeSet<String>,
         terrain: BTreeSet<String>,
-        /// Its slope pieces left whose z6 tile is within 20 km of it (`Publishing::near`).
+        /// Its slope z6 tiles left whose z6 tile is within 20 km of it (`Publishing::near`).
         slope_near: BTreeSet<String>,
     }
     let fine = spacing_now(m, tiles);
@@ -2187,7 +2190,7 @@ pub fn plan(
                 .chain(stale.iter().flat_map(|&i| reads[i].iter().cloned()))
                 .filter(|a| terrain_left.contains(a))
                 .collect();
-            // (Its stale slope pieces whose z6 tile is within 20 km of it: what its slope reads, the
+            // (Its stale slope z6 tiles whose z6 tile is within 20 km of it: what its slope reads, the
             // near way's.)
             let slope_near = tw
                 .slope_pieces_left
@@ -2198,24 +2201,24 @@ pub fn plan(
             Region { id, all, stale, z3s, tree_z3s, tree_pieces, terrain, slope_near }
         })
         .collect();
-    // The regions a catalog made now records as built: every unit of theirs built as the coverage
+    // The regions a catalog made now records as built: every z6 tile of theirs built as the coverage
     // wants it and merged (one whose hand-off waits counts as built, but its files aren't in the
     // manifest), their map tiles drawn and merged (a catalog postponed past `CATALOG_CAP_S` goes
     // out while some are left), and their z3 tiles' slope and tree cover.
-    // (The near way: its slope and tree cover pieces near it, their assemblies later.)
+    // (The near way: its slope and tree cover z6 tiles near it, their assemblies later.)
     let near = updates.way.near;
     let slope_done = |r: &Region| if near { r.slope_near.is_empty() } else { r.z3s.is_disjoint(&slope_left) };
     let unmerged = |i: &usize| {
         let d = units[*i].0.dash();
         crate::out::UNIT_OUTPUTS.iter().any(|p| done.handed.contains(&format!("{p}{d}")))
     };
-    // (A unit's map tiles: those its ways meet; stale, or drawn by a hand-off not yet merged.)
+    // (A z6 tile's map tiles: those its ways meet; stale, or drawn by a hand-off not yet merged.)
     // (pack(T)'s and lo's targets, once for the plan.)
     let pl = pack_lo_targets(m, Some(reach));
     let stale_tiles: BTreeSet<&str> =
         pl.0.iter().filter(|(t, k)| stale(&done.pack, t, k)).map(|(t, _)| t.as_str()).collect();
     let deg = |b: [i32; 4]| [b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7];
-    // (Each unit's tiles worked out once, as asked for.)
+    // (Each z6 tile's tiles worked out once, as asked for.)
     let unit_tiles: Vec<std::cell::OnceCell<Vec<(u32, u32)>>> = units.iter().map(|_| Default::default()).collect();
     let tiles_of = |i: usize| -> &Vec<(u32, u32)> {
         unit_tiles[i].get_or_init(|| {
@@ -2261,11 +2264,11 @@ pub fn plan(
         .collect();
 
     // A region at a time: those the map hasn't at all first, then those it has (redrawn, or their
-    // units' keys changed: on the map as they were meanwhile); of each, the one with the fewest units
+    // z6 tiles' keys changed: on the map as they were meanwhile); of each, the one with the fewest z6 tiles
     // left first, so regions are done (and published) as soon as they can be. Each region's stale
-    // terrain z3 tiles, then its units whose terrain is built, neighbours together (`spatial_order`), so
-    // the downloads and caches one fills serve the next; a unit or a z3 tile two regions share comes
-    // with the first. (A unit whose terrain isn't built comes once it is: the plan's made again after
+    // terrain z3 tiles, then its z6 tiles whose terrain is built, neighbours together (`spatial_order`), so
+    // the downloads and caches one fills serve the next; a z6 tile or a z3 tile two regions share comes
+    // with the first. (A z6 tile whose terrain isn't built comes once it is: the plan's made again after
     // each job.)
     let mut order: Vec<&Region> = regions.iter().filter(|r| !r.stale.is_empty() || !r.terrain.is_empty()).collect();
     order.sort_by_key(|r| {
@@ -2296,7 +2299,7 @@ pub fn plan(
         }
         push(&mut by_region, "unit", mine.into_iter().filter_map(target).collect());
     }
-    // Every region's work left, buildable now or not, for the forecast: its units (each with the
+    // Every region's work left, buildable now or not, for the forecast: its z6 tiles (each with the
     // first region in this order that builds it) and terrain likewise, its slope and tree cover.
     let mut claimed = vec![false; units.len()];
     let mut claimed_terrain: BTreeSet<String> = BTreeSet::new();
@@ -2343,7 +2346,7 @@ pub fn plan(
                 .map(|i| units[i].0.slash())
                 .collect(),
             packs: {
-                // (Its units left's tiles, and its built units' tiles stale now; each with the units
+                // (Its z6 tiles left's tiles, and its built z6 tiles' tiles stale now; each with the z6 tiles
                 // of its that draw it: what it waits for.)
                 let mut p: BTreeMap<String, Vec<String>> = BTreeMap::new();
                 for &i in &r.all {
@@ -2362,7 +2365,7 @@ pub fn plan(
         });
     }
 
-    // (Terrain no region with work left reads, and a unit in no region's own coverage, last.)
+    // (Terrain no region with work left reads, and a z6 tile in no region's own coverage, last.)
     push(&mut by_region, "terrain", terrain.iter().filter(|t| !listed.contains(&t.0)).cloned().collect());
     push(
         &mut by_region,
@@ -2383,8 +2386,8 @@ pub fn plan(
     trees_lo.sort_by_key(tree_rank);
 
     // Publishing (docs/building.md §2, Publishing): as soon as the records change, before the regions'
-    // work, what goes out with the units: what the coverage no longer builds pruned, then the
-    // publishing chain (`publish_chain`: the map tiles whose owners changed, a unit's together, the
+    // work, what goes out with the z6 tiles: what the coverage no longer builds pruned, then the
+    // publishing chain (`publish_chain`: the map tiles whose owners changed, a z6 tile's together, the
     // road index, the low zooms, rail stops and ferries, the world-level terrain and slope); once
     // the map tiles and road index are drawn (or held back `CATALOG_CAP_S`), a catalog when what it
     // would list changed, at most one a minute
@@ -2405,15 +2408,15 @@ pub fn plan(
     let bld = bld_work(cov, m, done, inputs, &bld_rank(&bld_regions));
     let depth = depth_work(cov, m, done, tiles);
     // The low zooms (the roads' and rails' lo packs, the terrain's and slope's roots, the near
-    // way's assemblies) by their cadence (`low_gate`): nothing else queued counts the units, terrain,
-    // slope and tree pieces, the 3D buildings and the depths (their assemblies aside: they go with
+    // way's assemblies) by their cadence (`low_gate`): nothing else queued counts the z6 tiles, terrain,
+    // slope and tree z6 tiles, the 3D buildings and the depths (their assemblies aside: they go with
     // the low zooms).
     let near = updates.way.near;
     let queue_empty =
         by_region.is_empty() && slope.is_empty() && trees.is_empty() && bld.is_empty() && depth.is_empty();
     let low = low_gate(last_now, queue_empty, low_due_of(&pl.1, done), updates.way.since_low);
     // The terrain's and slope's roots wait for what makes the lo packs they read: terrain's for the
-    // terrain left (its pieces' mids, its assemblies), slope's for that and the slope left, so a
+    // terrain left (its z6 tiles' mids, its assemblies), slope's for that and the slope left, so a
     // root isn't made while an assembly runs (or waits to be merged) and again after it.
     let roots_held = if low {
         [!tw.terrain_left.is_empty(), !tw.terrain_left.is_empty() || !tw.slope_left.is_empty()]
@@ -2439,23 +2442,23 @@ pub fn plan(
             .collect(),
         ..Default::default()
     };
-    // (Listed before the regions' work, not holding it: while one waits out a failure, the units
+    // (Listed before the regions' work, not holding it: while one waits out a failure, the z6 tiles
     // go on.)
     match prune_units(cov, date, m, &units) {
         Some(w) => {
             publishing.why = format!("pruning what the coverage no longer builds ({} targets)", w.targets.len());
             work.push(w);
         }
-        // (Nothing before a unit is built, while the regions have work left: none of theirs to show
+        // (Nothing before a z6 tile is built, while the regions have work left: none of theirs to show
         // yet.)
         None if done.unit.is_empty() && !last_now => {
             publishing.why = "nothing to publish until a unit is built".into();
         }
         None => {
             let chain = publish_chain(date, m, done, &pl, roots_held, low);
-            // A catalog once the units' map tiles and the road index are drawn (`CATALOG_GATE`): the
+            // A catalog once the z6 tiles' map tiles and the road index are drawn (`CATALOG_GATE`): the
             // low zooms, rail stops, ferries and roots go out with a later one. Postponed past
-            // `CATALOG_CAP_S` by map tiles still to draw (units landing one after another), it goes
+            // `CATALOG_CAP_S` by map tiles still to draw (z6 tiles landing one after another), it goes
             // with what's drawn.
             let gated = chain.as_ref().is_some_and(|w| CATALOG_GATE.contains(&w.step.as_str()));
             let capped = gated && updates.held_for.is_some_and(|s| s >= CATALOG_CAP_S);
@@ -2526,8 +2529,8 @@ pub fn plan(
         }
     }
     // The slope and tree cover of the regions done that the map hasn't as they are now: before the
-    // regions' work, so they're on the map as built soon after their units. (The near way: their
-    // pieces near them; the assemblies with the low zooms.)
+    // regions' work, so they're on the map as built soon after their z6 tiles. (The near way: their
+    // z6 tiles near them; the assemblies with the low zooms.)
     let slope_waits = |t: &(String, String)| {
         to_publish.iter().any(|r| if near { r.slope_near.contains(&t.0) } else { r.z3s.contains(&z3(t)) })
     };
@@ -2557,7 +2560,7 @@ pub fn plan(
     work.extend(chains(last_now));
     work.extend(bld);
     work.extend(depth);
-    // Last of all, in idle time: the mids of current pieces that have none (expected the same).
+    // Last of all, in idle time: the mids of current z6 tiles that have none (expected the same).
     work.extend(backfill.iter().cloned());
     Plan {
         work,
@@ -2574,13 +2577,13 @@ pub fn plan(
     }
 }
 
-/// The map tiles `targets` to draw, a unit's together, a group a halo (task #260: a job of the map
-/// tiles takes one group, its base packs opened once, crate::needs::HALO_STEPS): grouped by the unit
+/// The map tiles `targets` to draw, a z6 tile's together, a group a halo (task #260: a job of the map
+/// tiles takes one group, its base packs opened once, crate::needs::HALO_STEPS): grouped by the z6 tile
 /// whose change made each stale (its base pack or road values in `m` not what the served catalog
-/// `served` has: the owners as crate::pubtimes::restaled_by takes them), the units in the order
-/// they're built (`spatial_order`), a tile two units made stale with the first; those no unit's
+/// `served` has: the owners as crate::pubtimes::restaled_by takes them), the z6 tiles in the order
+/// they're built (`spatial_order`), a tile two z6 tiles made stale with the first; those no z6 tile's
 /// change explains (a version's change, a reach's) last, in their order, grouped by their z3 tile
-/// (the base packs near it). And how many units.
+/// (the base packs near it). And how many z6 tiles.
 fn by_unit(
     targets: Vec<(String, String)>,
     m: &BTreeMap<String, String>,
@@ -2635,7 +2638,7 @@ fn by_unit(
     (groups.into_iter().map(|g| g.into_iter().filter_map(|i| slots[i].take()).collect()).collect(), units)
 }
 
-/// Where a unit comes in a run of units: by the 10° square its tile's centre is in (column, then
+/// Where a z6 tile comes in a run of z6 tiles: by the 10° square its tile's centre is in (column, then
 /// row from the north), then by tile.
 fn spatial_order(u: TileId) -> (i32, i32, u32, u32) {
     let b = crate::hipack::tile_bounds(u.z, u.x, u.y);
@@ -2707,18 +2710,18 @@ fn rail_next(
     )
 }
 
-/// Where unit `u`'s ways lie (E7): its owned extent (`Reach::owned_extent`), without a reach its
+/// Where z6 tile `u`'s ways lie (E7): its owned extent (`Reach::owned_extent`), without a reach its
 /// tile + 20 km (`reach::near_box`). A map tile it meets (`owns`) is one of its owners'.
 pub fn unit_ways(reach: Option<&Reaches>, u: TileId) -> [i32; 4] {
     reach.and_then(|r| r.get(u)).map(|r| r.owned_extent(u)).unwrap_or_else(|| crate::reach::near_box(u))
 }
 
-/// Whether a unit whose ways lie in `ways` owns the tile of box `tile` (both E7): they meet.
+/// Whether a z6 tile whose ways lie in `ways` owns the tile of box `tile` (both E7): they meet.
 pub fn owns(ways: [i32; 4], tile: [i32; 4]) -> bool {
     ways[0] <= tile[2] && ways[2] >= tile[0] && ways[1] <= tile[3] && ways[3] >= tile[1]
 }
 
-/// Where unit `u`'s ways lie, its base pack in manifest `m` taken in: `unit_ways`, grown by the
+/// Where z6 tile `u`'s ways lie, its base pack in manifest `m` taken in: `unit_ways`, grown by the
 /// pack's own extent when the reaches keep it (crate::extents) and it lies further (a pack built by
 /// other reaches). A pack whose extent isn't kept yet is taken to lie inside (the pack and lo jobs
 /// keep it: then its tiles are keyed again).
@@ -2730,8 +2733,8 @@ pub fn unit_reach(reach: Option<&Reaches>, m: &BTreeMap<String, String>, u: Tile
     }
 }
 
-/// Of the units of manifest `m`, those owning any of `tiles` ((z, x, y)): whose ways
-/// (`unit_reach`) meet its box (`owns`), the units a tile's key in `pack_lo_targets` reads. What a
+/// Of the z6 tiles of manifest `m`, those owning any of `tiles` ((z, x, y)): whose ways
+/// (`unit_reach`) meet its box (`owns`), the z6 tiles a tile's key in `pack_lo_targets` reads. What a
 /// pack or lo job opens.
 pub fn owners_of(reach: Option<&Reaches>, m: &BTreeMap<String, String>, tiles: &[(u8, u32, u32)]) -> BTreeSet<TileId> {
     let boxes: Vec<[i32; 4]> = tiles.iter().map(|&(z, x, y)| crate::hipack::tile_bounds(z, x, y)).collect();
@@ -2741,12 +2744,12 @@ pub fn owners_of(reach: Option<&Reaches>, m: &BTreeMap<String, String>, tiles: &
         .collect()
 }
 
-/// pack(T)'s targets (the z6 tiles the built units' ways reach) and lo's (their z3 tiles), each with
+/// pack(T)'s targets (the z6 tiles the built z6 tiles' ways reach) and lo's (their z3 tiles), each with
 /// its key, done or not. Both are keyed on what they read, the base packs and road values of the
-/// units whose ways come into the tile (its owners: pack(T)'s `here` index points into their base
-/// packs, way by way, and its catalog lists them). A unit's
+/// z6 tiles whose ways come into the tile (its owners: pack(T)'s `here` index points into their base
+/// packs, way by way, and its catalog lists them). A z6 tile's
 /// ways lie in its owned extent (`Reach::owned_extent`: long ways such as ferries reach far), or
-/// without a reach within its tile + 20 km. An identical rebuild of a unit (same content names)
+/// without a reach within its tile + 20 km. An identical rebuild of a z6 tile (same content names)
 /// reruns neither.
 fn pack_lo_targets(
     m: &BTreeMap<String, String>,
@@ -2767,7 +2770,7 @@ fn pack_lo_targets(
     for (_, _, ext) in &base_units {
         tiles.extend(crate::stage::tiles_in(6, deg(*ext)));
     }
-    // The units whose extent meets a tile's box.
+    // The z6 tiles whose extent meets a tile's box.
     let owners = |z: u8, x: u32, y: u32| -> Vec<String> {
         let gb = crate::hipack::tile_bounds(z, x, y);
         base_units.iter().filter(|(_, _, e)| owns(*e, gb)).map(|(_, c, _)| c.clone()).collect()
@@ -2785,8 +2788,8 @@ fn pack_lo_targets(
     (packs, lo)
 }
 
-/// What the coverage no longer builds (`units`: the units it does): the outputs of units it doesn't
-/// (their base pack, road values and English), and the candidates and peaks of units out of the
+/// What the coverage no longer builds (`units`: the z6 tiles it does): the outputs of z6 tiles it doesn't
+/// (their base pack, road values and English), and the candidates and peaks of z6 tiles out of the
 /// candidates' set, as prune targets ("unit 6/x/y", "pois 6/x/y"). Catalogs then stop listing them
 /// and GC frees them.
 fn prune_units(
@@ -2820,7 +2823,7 @@ fn prune_units(
 /// pack(T)'s and lo's targets with their keys (`pack_lo_targets`), worked out once per plan.
 type PackLo = (Vec<(String, String)>, Vec<(String, String)>);
 
-/// Map tiles no unit's ways reach any more: pack(T)'s outputs (hidata, road and rail hi packs) of
+/// Map tiles no z6 tile's ways reach any more: pack(T)'s outputs (hidata, road and rail hi packs) of
 /// tiles that aren't pack targets (`pl`, `pack_lo_targets`), and lo packs of z3 tiles that aren't
 /// lo targets, as prune targets ("pack 6/x/y", "lo 3/x/y").
 fn prune_tiles(m: &BTreeMap<String, String>, pl: &PackLo) -> Option<Work> {
@@ -2851,7 +2854,7 @@ fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, reach: Opt
 
 /// Whether so much of the low zooms is stale that they're made however long since they last were
 /// (`low_gate`): half the roads' lo packs or more (a z3 tile's, by its key: what the
-/// units near it are now).
+/// z6 tiles near it are now).
 pub fn low_due(m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches>) -> bool {
     low_due_of(&pack_lo_targets(m, reach).1, done)
 }
@@ -2862,8 +2865,8 @@ fn low_due_of(lo: &[(String, String)], done: &Keys) -> bool {
     !lo.is_empty() && stale * 2 >= lo.len()
 }
 
-/// The publishing chain after the units, its first stale step: map tiles no unit reaches pruned,
-/// the map tiles whose owners changed (pack(T)), the road → units index, the roads' and rails' lo
+/// The publishing chain after the z6 tiles, its first stale step: map tiles no z6 tile reaches pruned,
+/// the map tiles whose owners changed (pack(T)), the road → z6 tiles index, the roads' and rails' lo
 /// packs, rail stops and ferries, the terrain and slope roots (`pl`: pack(T)'s and lo's targets,
 /// `pack_lo_targets`). `low` false: the low zooms not due (`low_gate`): no lo packs (the roots are
 /// held by `roots_held`).
@@ -2876,7 +2879,7 @@ fn publish_chain(
     low: bool,
 ) -> Option<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
-    // Map tiles no unit's ways reach any more (a region removed) leave the manifest.
+    // Map tiles no z6 tile's ways reach any more (a region removed) leave the manifest.
     if let Some(w) = prune_tiles(m, pl) {
         return Some(w);
     }
@@ -2885,8 +2888,8 @@ fn publish_chain(
     if !packs.is_empty() {
         return Some(Work { step: "pack".into(), targets: packs });
     }
-    // The road → units index, once the units' road values are made: on each unit's road ids by
-    // content (`global/roadids/`; a unit built before them: its road values), what the job reads
+    // The road → z6 tiles index, once the z6 tiles' road values are made: on each z6 tile's road ids by
+    // content (`global/roadids/`; a z6 tile built before them: its road values), what the job reads
     // (only those changed since the index before: `roadunits_reads`).
     let roads: Vec<String> = roadunits_reads(m).into_iter().map(|(_, l, c)| format!("{l}={c}")).collect();
     if !roads.is_empty() {
@@ -2903,9 +2906,9 @@ fn publish_chain(
         return Some(Work { step: "lo".into(), targets: lo });
     }
 
-    // Rail stops near the built units, and ferries worldwide, from the pass's sets (once there are
-    // units: before them there are no roads to ride to). The stops are keyed on the z6 tiles they're
-    // kept for (crate::ovconv::cover_of: a unit within the halo of those built changes nothing).
+    // Rail stops near the built z6 tiles, and ferries worldwide, from the pass's sets (once there are
+    // z6 tiles: before them there are no roads to ride to). The stops are keyed on the z6 tiles they're
+    // kept for (crate::ovconv::cover_of: a z6 tile within the halo of those built changes nothing).
     let built = crate::ovconv::cover_of(
         m.range("base/".to_string()..).take_while(|(l, _)| l.starts_with("base/")).map(|(l, _)| l),
     );
@@ -2928,7 +2931,7 @@ fn publish_chain(
                 ins.push(f.clone());
                 ins.push(s.clone());
             }
-            // The stops are clipped to the built units' tiles; the ferries aren't clipped at all (the
+            // The stops are clipped to the built z6 tiles' tiles; the ferries aren't clipped at all (the
             // set, the ferry feeds' list naming each zip by content, the static timetables' index:
             // all ovconv::ferries_job reads).
             if per_unit {
@@ -2955,9 +2958,9 @@ fn publish_chain(
     None
 }
 
-/// What the road → units index reads, per unit in `m`: (unit, logical name, content name) of its
-/// road ids (`global/roadids/`, the unit job's), or, for a unit built before they were made, its
-/// road values (`global/roads/`). In the units' order.
+/// What the road → z6 tiles index reads, per z6 tile in `m`: (z6 tile, logical name, content name) of its
+/// road ids (`global/roadids/`, the `unit` job's), or, for a z6 tile built before they were made, its
+/// road values (`global/roads/`). In the z6 tiles' order.
 pub fn roadunits_reads(m: &BTreeMap<String, String>) -> Vec<(TileId, String, String)> {
     m.range("global/roads/".to_string()..)
         .take_while(|(l, _)| l.starts_with("global/roads/"))
@@ -2987,7 +2990,7 @@ pub fn root_key(layer: &str, m: &BTreeMap<String, String>) -> Option<String> {
     Some(h(&refs))
 }
 
-/// The items' facts and pageviews' key (network; only new items within a pass): the current units'
+/// The items' facts and pageviews' key (network; only new items within a pass): the current z6 tiles'
 /// candidates (`current_pois`).
 fn items_key(date: &str, pois_now: &[&str]) -> String {
     let mut ins = vec![format!("items {ITEMS_V}"), date.to_string()];
@@ -3019,7 +3022,7 @@ fn heritage_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Opt
     Some(h(&refs))
 }
 
-/// The landmark points' key: every current unit's candidates and peaks (`units`: pois_keys), the
+/// The landmark points' key: every current z6 tile's candidates and peaks (`units`: pois_keys), the
 /// items' facts and pageviews, the heritage sites (the files markconv reads: the pass's heritage
 /// job's).
 fn marks_key(date: &str, m: &BTreeMap<String, String>, units: &[TileId]) -> String {
@@ -3043,7 +3046,7 @@ fn marks_key(date: &str, m: &BTreeMap<String, String>, units: &[TileId]) -> Stri
 }
 
 /// The area overlays' key: the pass's heritage, with the dots the marks gave the World Heritage
-/// sites, and the built units (their hi tiles are where the units are); None before the pass's
+/// sites, and the built z6 tiles (their hi tiles are where the z6 tiles are); None before the pass's
 /// heritage job has made its outputs.
 fn overlays_key(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
@@ -3071,7 +3074,7 @@ fn overlays_key(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
     Some(h(&refs))
 }
 
-/// The terrain's z3 tiles a unit's peaks read (the terrain's z6 tiles within 30 km: peaks_keys).
+/// The terrain's z3 tiles a z6 tile's peaks read (the terrain's z6 tiles within 30 km: peaks_keys).
 fn peaks_terrain(u: TileId) -> BTreeSet<String> {
     tiles_in_wrapped(6, crate::stage::tile_box_grown(u.z, u.x, u.y, 30.0))
         .into_iter()
@@ -3140,16 +3143,16 @@ fn landmarks_chain(
 
 /// The landmarks' work that can run now (docs/building.md §2, Order), each step once what it reads is
 /// built as it will stay (a worldwide job of the pass that's stale, about to make it again, counts
-/// as not built: what read it would be built twice), none waiting for the units but the overlays
-/// (they read the built units: after the last, `last`): the candidates (once the pass's
+/// as not built: what read it would be built twice), none waiting for the z6 tiles but the overlays
+/// (they read the built z6 tiles: after the last, `last`): the candidates (once the pass's
 /// hiking-route ends are made); their peaks once every candidate is, the pass's summits are made
-/// and the terrain they read is built (`terrain_left`), each unit's as its own is; the items' facts
+/// and the terrain they read is built (`terrain_left`), each z6 tile's as its own is; the items' facts
 /// and pageviews once every candidate is; the rest of the heritage chain once the heritage sites
 /// are; the landmark points once those four are (on the pass's heritage, never today's meanwhile);
 /// then the overlays. They don't wait for each other otherwise: the heritage chain (an hour and
 /// more of network) runs beside the candidates. The landmark points and the overlays are gated by
-/// time (`gate_open`, `way`'s gaps): the points at most hourly while units build (`MARKS_EVERY_S`),
-/// the overlays every `OVERLAYS_EVERY_S`; both at once after the last unit.
+/// time (`gate_open`, `way`'s gaps): the points at most hourly while z6 tiles build (`MARKS_EVERY_S`),
+/// the overlays every `OVERLAYS_EVERY_S`; both at once after the last z6 tile.
 #[allow(clippy::too_many_arguments)]
 fn landmarks_work(
     cov: &Coverage,
@@ -3223,7 +3226,7 @@ fn landmarks_work(
             out.push(Work { step: "marks".into(), targets: vec![("marks".into(), k)] });
         }
         // (The overlays on their own gate, from the dots the last marks run wrote, whether or not
-        // the marks are current: under units arriving every minute they rarely are.)
+        // the marks are current: under z6 tiles arriving every minute they rarely are.)
         if let Some(k) = overlays_key(date, m).filter(|k| {
             m.contains_key(crate::markconv::HERITAGE_DOTS)
                 && gate_open(last, way.since_overlays, OVERLAYS_EVERY_S)
@@ -3526,14 +3529,14 @@ fn depth_versions(step: &str) -> String {
     format!("{step} {} {}", crate::depth::build::DEPTH_V, crate::depth::build::DEPTH_LO_V)
 }
 
-/// What a depth piece's water digest is made from (`WaterIdx`'s from): its z6–12 tiles, as the depth
+/// What a depth z6 tile's water digest is made from (`WaterIdx`'s from): its z6–12 tiles, as the depth
 /// reads them (the rivers too: `terrain_water::RIVERS_FROM`).
 pub const DEPTH_WATER_FROM: &str = "depth z6-12 +rivers";
 /// A depth assembly's: its z3 tile's z6–8, the rivers too ("depth 3/x/y": the terrain's assembly
 /// reads the same tiles without them, "3/x/y").
 pub const DEPTH_LO_WATER_FROM: &str = "depth z6-8 +rivers";
 
-/// The z3 tiles (assemblies) and z6 tiles (pieces) the depth builds for the coverage and its
+/// The z3 tiles (assemblies) and z6 tiles (z6 tiles) the depth builds for the coverage and its
 /// declared sources (`DepthTargets`).
 pub fn depth_tiles(cov: &Coverage, sources: &[crate::depth::grids::Source]) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
     let deg =
@@ -3569,7 +3572,7 @@ pub fn depth_tiles(cov: &Coverage, sources: &[crate::depth::grids::Source]) -> (
 }
 
 /// The water the depth's targets read, as the terrain-water job works their digests out: an
-/// assembly's z6–8 tiles ("depth 3/x/y"), a piece's z6–12 ("depth 6/x/y"), the rivers in both.
+/// assembly's z6–8 tiles ("depth 3/x/y"), a z6 tile's z6–12 ("depth 6/x/y"), the rivers in both.
 pub fn depth_water_reads(cov: &Coverage, sources: &[crate::depth::grids::Source]) -> Vec<crate::terrain_water::Reads> {
     let (lo, hi) = depth_tiles(cov, sources);
     let mut out: Vec<crate::terrain_water::Reads> = lo
@@ -3595,7 +3598,7 @@ pub fn depth_water_reads(cov: &Coverage, sources: &[crate::depth::grids::Source]
 ///
 /// - an assembly's key: the versions, the z3 tile, the sources meeting it (their ids and digests),
 ///   the water it reads ("depth 3/x/y", `DEPTH_LO_WATER_FROM`);
-/// - a piece's: the versions, the z6 tile, the sources meeting it, the lo packs of its z3 tile and
+/// - a z6 tile's: the versions, the z6 tile, the sources meeting it, the lo packs of its z3 tile and
 ///   its eight neighbours (what its capped pixels are scaled up from), its water ("depth 6/x/y").
 pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Option<DepthTargets> {
     let sources = tiles.depth(m)?;
@@ -3646,8 +3649,8 @@ pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &Terra
     Some(out)
 }
 
-/// The depth chain's work that can run now: the stale assemblies, then the stale pieces whose z3
-/// tile and its neighbours' assemblies are done as they'll stay (their lo packs are in the pieces'
+/// The depth chain's work that can run now: the stale assemblies, then the stale z6 tiles whose z3
+/// tile and its neighbours' assemblies are done as they'll stay (their lo packs are in the z6 tiles'
 /// keys).
 pub fn depth_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Vec<Work> {
     let Some(dt) = depth_targets(cov, m, tiles) else { return Vec::new() };
@@ -4002,7 +4005,7 @@ pub fn checklist(
     if sites_left {
         next.insert("sites", vec![super::steps::title("heritage-sites").into()]);
     }
-    // (A slope piece whose key can't be told now isn't done.)
+    // (A slope z6 tile whose key can't be told now isn't done.)
     out.push(sized("terrain", &ts.terrain, &done.terrain, true));
     out.push(sized("terrain-lo", &ts.terrain_lo, &done.terrain_lo, true));
     let known: Vec<(String, String)> = ts.slope.iter().filter_map(|(t, k)| Some((t.clone(), k.clone()?))).collect();
@@ -4261,7 +4264,7 @@ pub(crate) mod tests {
         t
     }
 
-    /// The declared elevation datasets switched to, as the units need them (crate::inputs::elevation).
+    /// The declared elevation datasets switched to, as the z6 tiles need them (crate::inputs::elevation).
     pub(crate) fn elevation_inputs(m: &mut BTreeMap<String, String>) {
         m.insert(
             crate::inputs::logical(crate::inputs::elevation::UNIT),
@@ -4304,7 +4307,7 @@ pub(crate) mod tests {
         assert_eq!(landmarks_chain(&c, "d", &m, &Keys::default(), &with("aaaa")).unwrap().step, "pois");
     }
 
-    /// `unit_keys` with `tiles_for(m)` (every unit's key known; the declared elevation datasets
+    /// `unit_keys` with `tiles_for(m)` (every z6 tile's key known; the declared elevation datasets
     /// switched to when `m` doesn't say).
     pub(crate) fn ukeys(
         c: &Coverage,
@@ -4332,7 +4335,7 @@ pub(crate) mod tests {
         .unwrap()
     }
 
-    /// What the units wait for besides terrain and slope: the heritage-sites job's inputs (the
+    /// What the z6 tiles wait for besides terrain and slope: the heritage-sites job's inputs (the
     /// pass's areas set, the heritage registers' accepted version), and the release's roadside
     /// buildings.
     pub(crate) fn unit_inputs(m: &mut BTreeMap<String, String>, date: &str) {
@@ -4369,10 +4372,10 @@ pub(crate) mod tests {
     }
 
     /// Work done as its job does it: its targets recorded, and a tree cover, terrain or slope
-    /// piece's mid in the manifest (named by its key), or dropped for one of "none".
+    /// z6 tile's mid in the manifest (named by its key), or dropped for one of "none".
     pub(crate) fn did(m: &mut BTreeMap<String, String>, done: &mut Keys, w: &Work) {
         done.record(&w.step, &w.targets);
-        // (Terrain's and slope's pieces: their mids, named by their keys; a "none" piece's hi pack
+        // (Terrain's and slope's z6 tiles: their mids, named by their keys; a "none" z6 tile's hi pack
         // and mid dropped.)
         if w.step == "terrain" || w.step == "slope" {
             for (t, k) in &w.targets {
@@ -4404,7 +4407,7 @@ pub(crate) mod tests {
     }
 
     /// Terrain's or slope's work done as its job does it (`did`), with the packs it writes: a
-    /// piece's hi pack, an assembly's lo pack (named by its key).
+    /// z6 tile's hi pack, an assembly's lo pack (named by its key).
     pub(crate) fn terrain_did(m: &mut BTreeMap<String, String>, done: &mut Keys, w: &Work) {
         did(m, done, w);
         let layer = w.step.trim_end_matches("-lo");
@@ -4424,7 +4427,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_slope_pieces_key_reads_its_neighbours_edges_alone() {
-        // Piece 6/28/16 (its z9 tiles, no finer) beside 6/29/16, in z3 tile 3/3/2: its z9 tiles on
+        // Z6 tile 6/28/16 (its z9 tiles, no finer) beside 6/29/16, in z3 tile 3/3/2: its z9 tiles on
         // the east edge read 6/29/16's west column of z9 tiles, not its others.
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         for (l, c) in
@@ -4465,16 +4468,16 @@ pub(crate) mod tests {
         assert!(!reads.contains(&Some((6, 28, 16, 6))) && reads.contains(&None), "{reads:?}");
     }
 
-    /// The terrain and slope hi packs and mids of z6 tiles the coverage has left are "none" pieces,
-    /// run whenever (no assembly waits for them), their z3 tiles left until they are: the units
-    /// reading them wait. Their runs drop them, and then they're gone from the targets. A piece
+    /// The terrain and slope hi packs and mids of z6 tiles the coverage has left are "none" z6 tiles,
+    /// run whenever (no assembly waits for them), their z3 tiles left until they are: the z6 tiles
+    /// reading them wait. Their runs drop them, and then they're gone from the targets. A z6 tile
     /// near the coverage that makes no hi tile is keyed apart: a record from before isn't current.
     #[test]
     fn packs_the_coverage_has_left_are_dropped_by_none_pieces() {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let pieces: Vec<(u32, u32)> = coverage_tiles(&c).into_values().flatten().collect();
-        // Everything built: the coverage's pieces and assembly, and two z6 tiles it has left, one
+        // Everything built: the coverage's z6 tiles and assembly, and two z6 tiles it has left, one
         // in its z3 tile (6/24/23), one in another (6/40/20, terrain alone, its slope mid alone).
         for &(x, y) in &pieces {
             for l in [format!("layers/terrain/hi/6-{x}-{y}"), format!("layers/slope/hi/6-{x}-{y}")] {
@@ -4557,7 +4560,7 @@ pub(crate) mod tests {
         let tt = terrain_slope_targets(&c, &m, &tiles_for(&m));
         assert_eq!(tt.terrain_none.len(), 1);
         assert!(terrain_work(&tt, &m, &done).terrain.is_empty());
-        // A piece making no hi tile (crate::terrain_pack::makes_hi): keyed apart from one that does.
+        // A z6 tile making no hi tile (crate::terrain_pack::makes_hi): keyed apart from one that does.
         let d = tempfile::tempdir().unwrap();
         let near = crate::terrain_pack::tests::near_without_hi(d.path());
         let tt = terrain_slope_targets(&near, &BTreeMap::new(), &TerrainTiles::new(None));
@@ -4577,7 +4580,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// Every step of the plan done as its job does it (`did`, `terrain_did`), a unit's candidates in
+    /// Every step of the plan done as its job does it (`did`, `terrain_did`), a z6 tile's candidates in
     /// the manifest once they're made; the steps run, in order, until nothing's left.
     fn run_all(c: &Coverage, reach: &Reaches, m: &mut BTreeMap<String, String>, done: &mut Keys) -> Vec<String> {
         let mut ran = Vec::new();
@@ -4622,9 +4625,9 @@ pub(crate) mod tests {
         panic!("the plan never ran out: {ran:?}");
     }
 
-    /// A terrain and slope hi pack the coverage has left within a unit's 30 km (6/29/16, beside
-    /// Reykjavik's 6/28/16), and the lo packs of a z3 tile it has left (3/4/2): their "none" pieces
-    /// and assemblies first, the unit and its peaks waiting for them, then built again once each,
+    /// A terrain and slope hi pack the coverage has left within a z6 tile's 30 km (6/29/16, beside
+    /// Reykjavik's 6/28/16), and the lo packs of a z3 tile it has left (3/4/2): their "none" z6 tiles
+    /// and assemblies first, the z6 tile and its peaks waiting for them, then built again once each,
     /// and the roots made again once; nothing after.
     #[test]
     fn a_units_terrain_dropped_where_the_coverage_has_left_rebuilds_it_once() {
@@ -4653,7 +4656,7 @@ pub(crate) mod tests {
             "{first:?}"
         );
         assert!(!coverage_tiles(&c).into_values().flatten().any(|t| t == (29, 16)));
-        // The stale packs, as an earlier, larger coverage left them, the unit and its peaks built
+        // The stale packs, as an earlier, larger coverage left them, the z6 tile and its peaks built
         // reading them (recorded under the keys that name them).
         for l in
             ["layers/terrain/hi/6-29-16", "layers/slope/hi/6-29-16", "layers/terrain/lo/3-4-2", "layers/slope/lo/3-4-2"]
@@ -4775,8 +4778,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// The coverage leaving a z6 tile, coming back, and leaving again: a piece, then a "none"
-    /// piece, then a piece, then "none" again, each run once, its records never taken for another's.
+    /// The coverage leaving a z6 tile, coming back, and leaving again: a z6 tile, then a "none"
+    /// z6 tile, then a z6 tile, then "none" again, each run once, its records never taken for another's.
     #[test]
     fn a_z6_tile_the_coverage_leaves_and_comes_back_to() {
         let d = tempfile::tempdir().unwrap();
@@ -4836,7 +4839,7 @@ pub(crate) mod tests {
         assert!(step(&small, &mut m, &mut done).is_empty());
     }
 
-    /// A "none" piece's or assembly's hand-off removes files and writes none: the lead's merge
+    /// A "none" z6 tile's or assembly's hand-off removes files and writes none: the lead's merge
     /// check (agent::pool::check) and the steps table's write-sets take it.
     #[test]
     fn a_removal_only_hand_off_is_taken() {
@@ -4875,7 +4878,7 @@ pub(crate) mod tests {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         unit_inputs(&mut m, "2026-09-28");
         let mut done = Keys::default();
-        // The heritage sites first (one job: a helper's units then wait only for the terrain).
+        // The heritage sites first (one job: a helper's z6 tiles then wait only for the terrain).
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w.iter().map(|x| x.step.as_str()).collect::<Vec<_>>(), vec!["heritage-sites", "terrain", "trees"]);
         heritage_done(&mut m, &mut done, "2026-09-28", &w[0]);
@@ -4885,8 +4888,8 @@ pub(crate) mod tests {
         heritage_chain_done(&c, &m, &mut done, "2026-09-28");
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w.len(), 2);
-        // The terrain's pieces (its z6 tiles near the coverage), then their z3 tile's assembly from
-        // their mids; slope's pieces once that's built, then its assembly.
+        // The terrain's z6 tiles (its z6 tiles near the coverage), then their z3 tile's assembly from
+        // their mids; slope's z6 tiles once that's built, then its assembly.
         assert_eq!(w[0].step, "terrain");
         let pieces: Vec<String> =
             coverage_tiles(&c).into_values().flatten().map(|(x, y)| format!("6/{x}/{y}")).collect();
@@ -4899,7 +4902,7 @@ pub(crate) mod tests {
         );
         assert!(!w.iter().any(|x| x.step == "slope"), "slope once the terrain's assembled");
         terrain_did(&mut m, &mut done, &w[0]);
-        // (No units here: everything built, so each layer is published as it's made, the terrain's
+        // (No z6 tiles here: everything built, so each layer is published as it's made, the terrain's
         // root once its assembly is.)
         assert!(plan(&c, "2026-09-28", &m, &done, &BTreeMap::new()).iter().any(|w| w.step == "terrain-root"));
         let w = past_publishing(&c, "2026-09-28", &mut m, &mut done);
@@ -4912,8 +4915,8 @@ pub(crate) mod tests {
         terrain_did(&mut m, &mut done, &w[0]);
         // (The slope's root once its assembly is.)
         assert!(plan(&c, "2026-09-28", &m, &done, &BTreeMap::new()).iter().any(|w| w.step == "slope-root"));
-        // The tree cover of the coverage's z6 tiles (pieces), then its z3 tile's assembly from their
-        // mids, before the units.
+        // The tree cover of the coverage's z6 tiles (z6 tiles), then its z3 tile's assembly from their
+        // mids, before the z6 tiles.
         let w = past_publishing(&c, "2026-09-28", &mut m, &mut done);
         assert_eq!(
             (w[0].step.as_str(), w[0].targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>()),
@@ -4936,7 +4939,7 @@ pub(crate) mod tests {
         // The regions unreadable for now: no catalog on that.
         let unread: BTreeMap<String, String> = [("regions".to_string(), "?".to_string())].into();
         assert!(plan(&c, "2026-09-28", &m, &done, &unread).is_empty());
-        // New terrain content in one piece: the slope of it and of the pieces whose edges read it
+        // New terrain content in one z6 tile: the slope of it and of the z6 tiles whose edges read it
         // again, then their assembly.
         m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.3333333333333333.pack".into());
         let w = past_publishing(&c, "2026-09-28", &mut m, &mut done);
@@ -4951,8 +4954,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// Three regions in Iceland, all in z3 tile 3/3/2: a (Reykjavik: unit 6/28/16), b (Akureyri and
-    /// Egilsstaðir: 6/29/16 and 6/30/16) and c (Vík: 6/31/16); their pieces and reaches, the units'
+    /// Three regions in Iceland, all in z3 tile 3/3/2: a (Reykjavik: z6 tile 6/28/16), b (Akureyri and
+    /// Egilsstaðir: 6/29/16 and 6/30/16) and c (Vík: 6/31/16); their extracts and reaches, the z6 tiles'
     /// inputs, and the heritage sites and the terrain done.
     fn three() -> (Coverage, Reaches, BTreeMap<String, String>, Keys) {
         let d = tempfile::tempdir().unwrap();
@@ -5066,7 +5069,7 @@ pub(crate) mod tests {
             Publish { each: &each, on_map, served: &BTreeMap::new(), since_catalog: since, held_for: None, held, way },
         )
     }
-    /// A unit of theirs built (as `content`).
+    /// A z6 tile of theirs built (as `content`).
     fn rbuild(
         c: &Coverage,
         reach: &Reaches,
@@ -5123,8 +5126,8 @@ pub(crate) mod tests {
         let plan = |m: &BTreeMap<String, String>, done: &Keys, since: u64| {
             pplan(&c, &reach, m, done, &none, Some(since), Default::default(), false)
         };
-        // a's unit merged: its map tiles, then the road index; then a catalog at once, before the
-        // low zooms and rail stops (stale with every unit: they go out with a later one).
+        // a's z6 tile merged: its map tiles, then the road index; then a catalog at once, before the
+        // low zooms and rail stops (stale with every z6 tile: they go out with a later one).
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
         let p = plan(&m, &done, 120);
         assert_eq!(p.work[0].step, "pack");
@@ -5138,7 +5141,7 @@ pub(crate) mod tests {
         assert_eq!(p.work[0].step, "catalog", "{:?}", steps(&p));
         assert!(["lo", "stations", "ferries", "terrain-root", "slope-root"].contains(&p.work[1].step.as_str()));
         done.record("catalog", &p.work[0].targets);
-        // c's unit lands 30 s later, b's units after it, one after another: each one's tiles drawn
+        // c's z6 tile lands 30 s later, b's z6 tiles after it, one after another: each one's tiles drawn
         // first, a catalog a minute after the last once they're drawn, whatever else is stale.
         for (u, content) in [("6/31/16", "8888888888888888"), ("6/29/16", "9999999999999999")] {
             rbuild(&c, &reach, &mut m, &mut done, u, content);
@@ -5157,7 +5160,7 @@ pub(crate) mod tests {
             assert_eq!(p.work[0].step, "catalog");
             done.record("catalog", &p.work[0].targets);
         }
-        // Map tiles to draw again and again (units landing faster than they're drawn): the catalog
+        // Map tiles to draw again and again (z6 tiles landing faster than they're drawn): the catalog
         // held back, said so, counted from when it first was (not from the last catalog); past the
         // cap, it goes out with what's drawn, before them, recording built no region whose map
         // tiles are left.
@@ -5177,25 +5180,25 @@ pub(crate) mod tests {
 
     #[test]
     fn the_cap_holds_before_any_catalog() {
-        // No catalog made yet, a unit's tiles to draw: held, then out past the cap.
+        // No catalog made yet, a z6 tile's tiles to draw: held, then out past the cap.
         let (c, reach, mut m, mut done) = three();
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
         let p = hplan(&c, &reach, &m, &done, None, None);
         assert!(p.catalog_held && p.work[0].step == "pack");
         // (Task #259) each region's map tiles to draw before it's on the map as it's built now,
-        // for the forecast: the tiles stale now among its, and its units left's.
+        // for the forecast: the tiles stale now among its, and its z6 tiles left's.
         assert!(
             p.work[0].targets.iter().all(|t| p.regions.iter().any(|r| r.packs.iter().any(|(x, _)| *x == t.0))),
             "{:?}",
             p.regions.iter().map(|r| (&r.id, &r.packs)).collect::<Vec<_>>()
         );
         assert!(p.regions.iter().filter(|r| !r.units.is_empty()).all(|r| !r.packs.is_empty()));
-        // Each tile with the units of its region that draw it, one at least.
+        // Each tile with the z6 tiles of its region that draw it, one at least.
         assert!(p.regions.iter().flat_map(|r| &r.packs).all(|(_, us)| !us.is_empty()));
         let p = hplan(&c, &reach, &m, &done, None, Some(CATALOG_CAP_S));
         assert_eq!((p.work[0].step.as_str(), p.work[1].step.as_str()), ("catalog", "pack"));
         assert!(p.ready.is_empty());
-        // Every region still building, each with its units built (by the records) of its total.
+        // Every region still building, each with its z6 tiles built (by the records) of its total.
         assert!(!p.building.is_empty() && p.building.iter().all(|(_, b, t)| b <= t), "{:?}", p.building);
         assert!(p.building.iter().any(|(_, b, _)| *b > 0), "a unit built: {:?}", p.building);
     }
@@ -5218,7 +5221,7 @@ pub(crate) mod tests {
                 did(&mut m, &mut done, &w);
             }
         }
-        // Its unit's hand-off not yet merged (counted as built, its outputs not in the manifest):
+        // Its z6 tile's hand-off not yet merged (counted as built, its outputs not in the manifest):
         // a isn't recorded built, and says so; a catalog still goes out, without it.
         let mut handed = done.clone();
         let mut m2 = m.clone();
@@ -5258,9 +5261,9 @@ pub(crate) mod tests {
                 .flat_map(|w| w.targets.iter().map(|t| t.0.clone()))
                 .collect::<Vec<_>>()
         };
-        // Nothing on the map: the regions with the fewest units left first (a and c, one each: by
+        // Nothing on the map: the regions with the fewest z6 tiles left first (a and c, one each: by
         // place), then b's two together; their slope and tree cover after them (nothing to publish
-        // before a unit is built).
+        // before a z6 tile is built).
         let p = plan(&BTreeMap::new());
         assert_eq!(steps(&p), ["unit", "slope", "trees"]);
         assert_eq!(p.publishing.why, "nothing to publish until a unit is built");
@@ -5275,8 +5278,8 @@ pub(crate) mod tests {
     fn a_region_done_is_published_at_once_its_map_tiles_before_the_units_a_catalog_at_most_each_minute() {
         let (c, reach, mut m, mut done) = three();
         let none = BTreeMap::new();
-        // Reykjavik's unit built: a is done. Its map tiles at once, then its z3 tile's slope and tree
-        // cover, then the units.
+        // Reykjavik's z6 tile built: a is done. Its map tiles at once, then its z3 tile's slope and tree
+        // cover, then the z6 tiles.
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
         let p = pplan(&c, &reach, &m, &done, &none, None, Default::default(), false);
         assert_eq!(steps(&p)[..4], ["pack", "slope", "trees", "unit"]);
@@ -5286,8 +5289,8 @@ pub(crate) mod tests {
             p.publishing.regions,
             [PublishRegion { id: "a".into(), kinds: vec!["new region".into(), "map tiles to draw".into()] }]
         );
-        // Through the chain (no units fixed as of a time: the records as they are), then a catalog
-        // with the units still to build after it; a isn't recorded built yet (its slope and tree cover).
+        // Through the chain (no z6 tiles fixed as of a time: the records as they are), then a catalog
+        // with the z6 tiles still to build after it; a isn't recorded built yet (its slope and tree cover).
         let (ran, p) = through_the_chain(&c, &reach, &mut m, &mut done, Default::default(), false);
         assert_eq!(ran.first().map(String::as_str), Some("pack"), "{ran:?}");
         assert!(ran.contains(&"roadunits".to_string()) && ran.contains(&"lo".to_string()), "{ran:?}");
@@ -5295,7 +5298,7 @@ pub(crate) mod tests {
         assert!(steps(&p).contains(&"unit".to_string()));
         assert_eq!(p.publishing.why, "a catalog now: what it would list changed");
         done.record("catalog", &p.work[0].targets);
-        // Caught up: the units again.
+        // Caught up: the z6 tiles again.
         let p = pplan(&c, &reach, &m, &done, &none, Some(5), Default::default(), false);
         assert_eq!(steps(&p)[..3], ["slope", "trees", "unit"]);
         assert!(p.publishing.why.starts_with("caught up"), "{}", p.publishing.why);
@@ -5345,7 +5348,7 @@ pub(crate) mod tests {
             v.sort();
             v
         };
-        // Nothing served: both units changed; a's (west of c) first, then c's, each a group (a job:
+        // Nothing served: both z6 tiles changed; a's (west of c) first, then c's, each a group (a job:
         // its halo opened once, task #260).
         let (g, n) = by_unit(packs.clone(), &m, Some(&reach), &BTreeMap::new());
         let t: Vec<(String, String)> = g.concat();
@@ -5392,8 +5395,8 @@ pub(crate) mod tests {
     #[test]
     fn a_tile_whose_owners_changed_is_drawn_at_once_though_a_unit_near_it_is_still_to_build() {
         let (c, mut reach, mut m, mut done) = three();
-        // Reykjavik's ferry reaches 6/29/17, where b's eastern unit (6/30/16) is still to build: its
-        // tile drawn now, and again once that unit is built.
+        // Reykjavik's ferry reaches 6/29/17, where b's eastern z6 tile (6/30/16) is still to build: its
+        // tile drawn now, and again once that z6 tile is built.
         reach.units.insert(
             "6/28/16".into(),
             Reach { cells: vec![], owned: Some(e7box(-22.0, 64.0, -16.5, 64.16)), long: vec![] },
@@ -5444,7 +5447,7 @@ pub(crate) mod tests {
         let (ran, p) = through_the_chain(&c, &reach, &mut m, &mut done, later, false);
         assert!(p.low && ran.contains(&"lo".to_string()), "{ran:?}");
         done.record("catalog", &p.work[0].targets);
-        // c built again, units still queued (busy): its map tiles, the road index and rail stops;
+        // c built again, z6 tiles still queued (busy): its map tiles, the road index and rail stops;
         // the low zooms wait.
         rbuild(&c, &reach, &mut m, &mut done, "6/31/16", "8888888888888888");
         assert!(!low_due(&m, &done, Some(&reach)));
@@ -5486,7 +5489,7 @@ pub(crate) mod tests {
         let (c, reach, mut m, mut done) = three();
         rbuild(&c, &reach, &mut m, &mut done, "6/28/16", "6666666666666666");
         let near = Publishing { near: true, ..Default::default() };
-        // (The slope listed before the regions' units: the done regions'.)
+        // (The slope listed before the regions' z6 tiles: the done regions'.)
         let prep = |p: &Plan, step: &str| {
             p.work
                 .iter()
@@ -5499,11 +5502,11 @@ pub(crate) mod tests {
         let before = prep(&pplan(&c, &reach, &m, &done, &on, Some(120), Default::default(), false), "slope");
         let p = pplan(&c, &reach, &m, &done, &on, Some(120), near, false);
         let now = prep(&p, "slope");
-        // (The pieces within 20 km of a: fewer than its z3 tiles' stale pieces, none left out that it reads.)
+        // (The z6 tiles within 20 km of a: fewer than its z3 tiles' stale z6 tiles, none left out that it reads.)
         let a = &c.by_region().into_iter().find(|(id, _)| id == "a").unwrap().1;
         assert!(!now.is_empty() && now.is_subset(&before) && now.len() < before.len(), "{now:?} of {before:?}");
         assert!(now.iter().all(|t| TileId::parse(t).is_some_and(|u| a.meets_rect(grown_e7(6, u.x, u.y, 20.0)))));
-        // Those and its tree cover pieces made: a ready, its far pieces and assemblies still to make.
+        // Those and its tree cover z6 tiles made: a ready, its far z6 tiles and assemblies still to make.
         for step in ["slope", "trees"] {
             let w = Work {
                 step: step.into(),
@@ -5542,8 +5545,8 @@ pub(crate) mod tests {
 
     #[test]
     fn a_regions_terrain_comes_with_it_and_its_units_once_theirs_is_built() {
-        // Two regions in two terrain z3 tiles: g (Nuuk: unit 6/22/17, z3 tile 3/2/2) and a (Reykjavik:
-        // 6/28/16, 3/3/2); one unit each, g's first by place.
+        // Two regions in two terrain z3 tiles: g (Nuuk: z6 tile 6/22/17, z3 tile 3/2/2) and a (Reykjavik:
+        // 6/28/16, 3/3/2); one z6 tile each, g's first by place.
         let d = tempfile::tempdir().unwrap();
         let r = |id: &str, place: &str| Recipe {
             id: id.into(),
@@ -5591,7 +5594,7 @@ pub(crate) mod tests {
         let w = plan(&m, &done);
         heritage_done(&mut m, &mut done, "d", &w[0]);
         heritage_chain_done(&c, &m, &mut done, "d");
-        // Each region's terrain z3 tile, g's first; neither's unit until its terrain is built.
+        // Each region's terrain z3 tile, g's first; neither's z6 tile until its terrain is built.
         let w = plan(&m, &done);
         let line = |w: &[Work]| {
             w.iter()
@@ -5606,8 +5609,8 @@ pub(crate) mod tests {
                 "trees 6/22/16,6/22/17,6/28/16,6/28/17"
             ]
         );
-        // g's terrain pieces made: their z3 tile's assembly, ahead of a's terrain (a helper takes a's
-        // from the far end); then g's unit.
+        // g's terrain z6 tiles made: their z3 tile's assembly, ahead of a's terrain (a helper takes a's
+        // from the far end); then g's z6 tile.
         terrain_did(&mut m, &mut done, &w[0]);
         let w = plan(&m, &done);
         assert_eq!(
@@ -5632,7 +5635,7 @@ pub(crate) mod tests {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let mut done = Keys::default();
-        // Terrain, slope and tree cover's pieces and assemblies done, tree cover's assembly last.
+        // Terrain, slope and tree cover's z6 tiles and assemblies done, tree cover's assembly last.
         let mut w = plan(&c, "d", &m, &done, &BTreeMap::new());
         for _ in 0..8 {
             if w.iter().all(|x| x.step == "trees-lo") {
@@ -5651,19 +5654,19 @@ pub(crate) mod tests {
         did(&mut m, &mut done, &w[0]);
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         m.insert("sources/osm/d/pieces/6-40-20".into(), "sources/osm/d/pieces/6-40-20.5555555555555555.osm.pbf".into());
-        // No heritage inputs yet: the units wait.
+        // No heritage inputs yet: the z6 tiles wait.
         assert!(plan(&c, "d", &m, &done, &BTreeMap::new()).is_empty());
         unit_inputs(&mut m, "d");
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         heritage_done(&mut m, &mut done, "d", &w[0]);
-        // Without the release's buildings (the worldwide job), the units wait for them.
+        // Without the release's buildings (the worldwide job), the z6 tiles wait for them.
         let index = m.remove(&crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE)).unwrap();
         assert!(!plan(&c, "d", &m, &done, &BTreeMap::new()).iter().any(|w| w.step == "unit"));
         m.insert(crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE), index);
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "unit");
         assert_eq!(w[0].targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), vec!["6/28/16"]);
-        // Buildings made again: every unit again.
+        // Buildings made again: every z6 tile again.
         let k = unit_keys(&c, "d", &m)[0].1.clone();
         let mut m2 = m.clone();
         m2.insert(
@@ -5671,7 +5674,7 @@ pub(crate) mod tests {
             format!("{}.6868686868686868.json", crate::buildtiles::index_logical(crate::buildtiles::TEST_RELEASE)),
         );
         assert_ne!(unit_keys(&c, "d", &m2)[0].1, k);
-        // A unit's key names the heritage slices near it, and only those.
+        // A z6 tile's key names the heritage slices near it, and only those.
         let key = |m: &BTreeMap<String, String>| unit_keys(&c, "d", m)[0].1.clone();
         let k0 = key(&m);
         m.insert(crate::heritage::pos_logical("d", 40, 20), "work/heritage/d/pos/6-40-20.7878787878787878.json".into());
@@ -5715,8 +5718,8 @@ pub(crate) mod tests {
         )
     }
 
-    /// A unit's and a tree cover piece's keys are as they were while the land-cover, canopy and
-    /// leaf-type declarations are as staged, and new once one isn't (the units then built again with
+    /// A z6 tile's and a tree cover z6 tile's keys are as they were while the land-cover, canopy and
+    /// leaf-type declarations are as staged, and new once one isn't (the z6 tiles then built again with
     /// it, never mixed); none while the declared sources can't be read (they wait).
     #[test]
     fn a_changed_land_cover_canopy_or_leaf_declaration_is_a_new_key() {
@@ -5767,7 +5770,7 @@ pub(crate) mod tests {
             }
             super::unit_keys(&c, "d", m, Some(&reach()), &t)[0].1.clone()
         };
-        // No key before the switch (the units wait for it), nor with the accepted version named alone.
+        // No key before the switch (the z6 tiles wait for it), nor with the accepted version named alone.
         assert_eq!(key(&m, None), None);
         m.insert(
             crate::inputs::logical(crate::inputs::elevation::UNIT),
@@ -5797,7 +5800,7 @@ pub(crate) mod tests {
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         let key = |m: &BTreeMap<String, String>| unit_keys(&c, "d", m)[0].1.clone();
         let k0 = key(&m);
-        // The unit (or a neighbour) writes the grid packs its tile lacked: no rebuild.
+        // The z6 tile (or a neighbour) writes the grid packs its tile lacked: no rebuild.
         for layer in ["grid-class", "grid-canopy", "grid-cover"] {
             m.insert(format!("layers/{layer}/hi/6-28-16"), format!("layers/{layer}/hi/6-28-16.1212121212121212.pack"));
             m.insert(format!("layers/{layer}/hi/6-29-16"), format!("layers/{layer}/hi/6-29-16.1313131313131313.pack"));
@@ -5941,7 +5944,7 @@ pub(crate) mod tests {
                 },
             )
         };
-        // The terrain's lo pack's index not read: no unit is built, nor counted as built, nor pruned.
+        // The terrain's lo pack's index not read: no z6 tile is built, nor counted as built, nor pruned.
         let p = plan(&TerrainTiles::new(None));
         assert!(!p.work.iter().any(|w| matches!(w.step.as_str(), "unit" | "prune")), "{:?}", p.work);
         assert_eq!(p.unknown, ["6/28/16", "6/29/16", "6/30/16", "6/31/16"]);
@@ -6128,7 +6131,7 @@ pub(crate) mod tests {
             )
         };
         let ts = |v: &[(String, String)]| v.iter().map(|t| t.0.clone()).collect::<Vec<_>>();
-        // Iceland's regions: z3 tile 3/3/2's pieces 6/28/16, 6/28/17 and 6/29/16.
+        // Iceland's regions: z3 tile 3/3/2's z6 tiles 6/28/16, 6/28/17 and 6/29/16.
         let tt = crate::treepacks::targets(&c, &m);
         assert_eq!(
             (
@@ -6137,7 +6140,7 @@ pub(crate) mod tests {
             ),
             (vec!["6/28/16", "6/28/17", "6/29/16"], vec!["3/3/2"])
         );
-        // Each piece first, then the assembly once every piece has its mid.
+        // Each z6 tile first, then the assembly once every z6 tile has its mid.
         let w = tree_work(&tt, &m, &done);
         assert_eq!(
             (ts(&w.pieces), w.lo.len(), w.backfill.len()),
@@ -6162,7 +6165,7 @@ pub(crate) mod tests {
         assert_eq!(p.work.last(), Some(&Work { step: "trees".into(), targets: w.backfill.clone() }));
         assert_eq!(p.backfill, [Work { step: "trees".into(), targets: w.backfill.clone() }]);
         assert!(!p.work[..p.work.len() - 1].iter().any(|x| x.step == "trees" || x.step == "trees-lo"), "{:?}", p.work);
-        // One mid made: the assembly's key names it, so it's stale, and the other pieces' mids are
+        // One mid made: the assembly's key names it, so it's stale, and the other z6 tiles' mids are
         // made for it (with the z3 tile's work, no longer idle work); then it runs.
         did(&mut m, &mut done, &Work { step: "trees".into(), targets: vec![w.backfill[0].clone()] });
         let tt = crate::treepacks::targets(&c, &m);
@@ -6187,7 +6190,7 @@ pub(crate) mod tests {
         assert_eq!((w.pieces.len(), ts(&w.lo)), (0, vec!["3/3/2".to_string()]));
         did(&mut m, &mut done, &Work { step: "trees-lo".into(), targets: w.lo.clone() });
         assert_eq!(tree_work(&crate::treepacks::targets(&c, &m), &m, &done), TreeWork::default());
-        // A piece made again (its coverage changed) and another without its mid: both, then the
+        // A z6 tile made again (its coverage changed) and another without its mid: both, then the
         // assembly.
         done.trees.insert("6/28/16".into(), "0000000000000000".into());
         m.remove(&crate::treepacks::mid_logical(29, 16));
@@ -6198,14 +6201,14 @@ pub(crate) mod tests {
             (vec!["6/28/16".to_string(), "6/29/16".into()], 0, 0)
         );
         assert_eq!(w.stale_pieces.iter().collect::<Vec<_>>(), ["6/28/16"]);
-        // (Its regions aren't ready meanwhile: a's piece is stale, and b's z3 tile's assembly will be.)
+        // (Its regions aren't ready meanwhile: a's z6 tile is stale, and b's z3 tile's assembly will be.)
         let p = plan(&m, &done);
         assert!(
             p.ready.is_empty() && p.regions.iter().all(|r| r.trees.contains(&"6/28/16".to_string())),
             "{:?}",
             p.regions
         );
-        // The coverage gone from 3/3/2 altogether: each piece drops its packs and mid ("none"),
+        // The coverage gone from 3/3/2 altogether: each z6 tile drops its packs and mid ("none"),
         // and the assembly its lo packs.
         let far = Coverage::fixture(
             &[crate::agent::recipes::Recipe {
@@ -6295,9 +6298,9 @@ pub(crate) mod tests {
         );
         let built: Vec<String> = ukeys(&c, "d", &m, Some(&r)).into_iter().map(|(u, _)| u.slash()).collect();
         assert_eq!(built, vec!["6/28/16", "6/29/16"]);
-        // No reaches yet: no units.
+        // No reaches yet: no z6 tiles.
         assert!(ukeys(&c, "d", &m, None).is_empty());
-        // An outline's change outside a unit's whole reach leaves its key; inside it, not.
+        // An outline's change outside a z6 tile's whole reach leaves its key; inside it, not.
         let poly = |east: f64| {
             std::fs::write(
                 d.path().join("p.poly"),
@@ -6346,7 +6349,7 @@ pub(crate) mod tests {
             }
         }
         // Built once for a region since removed: 6/40/20's outputs, its candidates, a map tile far
-        // from any unit and the zoomed-out tile over it.
+        // from any z6 tile and the zoomed-out tile over it.
         for l in [
             "base/6-40-20",
             "global/roads/6-40-20",
@@ -6390,7 +6393,7 @@ pub(crate) mod tests {
             pack_lo_targets(m, None).1.into_iter().find(|(t, _)| t == q).unwrap().1
         };
         let (near, far) = (lo_of(&m, "3/3/2"), lo_of(&m, "3/6/2"));
-        // A unit rebuilt with new content: the zoomed-out tile over it is stale, the far one isn't.
+        // A z6 tile rebuilt with new content: the zoomed-out tile over it is stale, the far one isn't.
         put(&mut m, "6-28-16", "3333333333333333");
         assert_ne!(lo_of(&m, "3/3/2"), near);
         assert_eq!(lo_of(&m, "3/6/2"), far);
@@ -6519,7 +6522,7 @@ pub(crate) mod tests {
         m.insert("global/roads/6-40-20".into(), "global/roads/6-40-20.2222222222222222.sect".into());
         assert_ne!(key(&m, "stations"), stations, "stops are clipped to the built units");
         assert_eq!(key(&m, "ferries"), ferries);
-        // A unit amid those built: the z6 tiles the stops are kept for (within 20 km of a unit) are
+        // A z6 tile amid those built: the z6 tiles the stops are kept for (within 20 km of a z6 tile) are
         // the same; the stops too.
         for (x, y) in [(49, 19), (50, 19), (51, 19), (49, 20), (51, 20), (49, 21), (50, 21), (51, 21)] {
             m.insert(format!("base/6-{x}-{y}"), format!("base/6-{x}-{y}.2222222222222222.sect"));
@@ -6527,7 +6530,7 @@ pub(crate) mod tests {
         let stations = key(&m, "stations");
         m.insert("base/6-50-20".into(), "base/6-50-20.2222222222222222.sect".into());
         assert_eq!(key(&m, "stations"), stations, "keyed on the tiles the stops are kept for");
-        // (A unit's base pack made again: neither.)
+        // (A z6 tile's base pack made again: neither.)
         m.insert("base/6-28-16".into(), "base/6-28-16.7777777777777777.sect".into());
         assert_eq!(key(&m, "stations"), stations);
         assert_eq!(key(&m, "ferries"), ferries);
@@ -6662,7 +6665,7 @@ pub(crate) mod tests {
             "sources/inputs/timetables/gtfs/@index.1111111111111111.json".into(),
         );
         m.insert(crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
-        // From the start, listed after the regions' work (the units don't wait for it, nor it for them).
+        // From the start, listed after the regions' work (the z6 tiles don't wait for it, nor it for them).
         for step in ["heritage-sites", "terrain", "terrain-lo", "unit", "slope", "slope-lo", "trees", "trees-lo"] {
             let w = past_publishing(&c, "d", &mut m, &mut done);
             assert_eq!(w[0].step, step);
@@ -6743,7 +6746,7 @@ pub(crate) mod tests {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let mut done = Keys::default();
         let steps = |w: &[Work]| w.iter().map(|x| x.step.clone()).collect::<Vec<_>>();
-        // Terrain, slope, the heritage sites and the unit done.
+        // Terrain, slope, the heritage sites and the z6 tile done.
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         unit_inputs(&mut m, "d");
         for step in ["heritage-sites", "terrain", "terrain-lo", "unit", "slope", "slope-lo", "trees", "trees-lo"] {
@@ -6907,7 +6910,7 @@ pub(crate) mod tests {
             d0.record("heritage", &[("heritage".to_string(), heritage_key(&c, "d", &m0).unwrap())]);
             let w = plan(&c, "d", &m0, &d0, &BTreeMap::new());
             assert!(!steps(&w).iter().any(|s| held.contains(&s.as_str())), "{:?}", steps(&w));
-            // The units' wait says why while the pass has no heritage sites: the registers await
+            // The z6 tiles' wait says why while the pass has no heritage sites: the registers await
             // their first acceptance (with an older heritage-sources there, they don't wait).
             assert_eq!(heritage_awaits_acceptance(&c, "d", &m0, &BTreeMap::new()), None);
             m0.remove(&crate::heritage::base_logical("d", "heritage-sources"));
@@ -6937,7 +6940,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_landmarks_go_on_beside_the_regions_each_step_once_what_it_reads_is_built() {
-        // Two units in two terrain z3 tiles (Nuuk 6/22/17 in 3/2/2, Reykjavik 6/28/16 in 3/3/2).
+        // Two z6 tiles in two terrain z3 tiles (Nuuk 6/22/17 in 3/2/2, Reykjavik 6/28/16 in 3/3/2).
         let d = tempfile::tempdir().unwrap();
         let r = |id: &str, place: &str| Recipe {
             id: id.into(),
@@ -6990,7 +6993,7 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>()
         };
         let mut done = Keys::default();
-        // Before the heritage sites (the units wait for them): the candidates already, after the
+        // Before the heritage sites (the z6 tiles wait for them): the candidates already, after the
         // terrain and tree cover.
         let w = plan(&m, &done);
         assert_eq!(
@@ -7016,7 +7019,7 @@ pub(crate) mod tests {
                 "heritage heritage"
             ]
         );
-        // One unit's candidates made: the items' facts wait for the other's (they read them all).
+        // One z6 tile's candidates made: the items' facts wait for the other's (they read them all).
         done.record("pois", &[w[3].targets[0].clone()]);
         m.insert("work/pois/6-22-17".into(), "work/pois/6-22-17.9999999999999999.json".into());
         let w = plan(&m, &done);
@@ -7035,7 +7038,7 @@ pub(crate) mod tests {
         assert_eq!(line(&w).last().unwrap(), "heritage heritage");
         assert!(line(&w).contains(&"peaks 6/22/17".to_string()), "{:?}", line(&w));
         // The landmark points wait for the peaks, the items' facts and the heritage chain; the
-        // overlays for the last unit.
+        // overlays for the last z6 tile.
         let rest: Vec<Work> =
             w.iter().filter(|x| matches!(x.step.as_str(), "peaks" | "items" | "heritage")).cloned().collect();
         for x in &rest {
@@ -7055,7 +7058,7 @@ pub(crate) mod tests {
         let peaks = plan(&m, &done).into_iter().find(|x| x.step == "peaks").unwrap();
         done.record("peaks", &peaks.targets);
         assert_eq!(marks(&m, &done), ["marks"]);
-        // Gated by time while units build: the points at most hourly, the overlays every 6 h (their
+        // Gated by time while z6 tiles build: the points at most hourly, the overlays every 6 h (their
         // keys as they were: only when they're planned changes).
         let gated = |m: &BTreeMap<String, String>, done: &Keys, way: Publishing| {
             plan_with(m, done, way)
@@ -7081,7 +7084,7 @@ pub(crate) mod tests {
         assert_eq!(due[0].0, "marks");
         done.record("marks", &[("marks".into(), due[0].1.clone())]);
         m.insert(crate::markconv::HERITAGE_DOTS.into(), "global/marks/dots.1212121212121212.json".into());
-        // A unit committed after the marks (they're stale again: here, recorded on older inputs):
+        // A z6 tile committed after the marks (they're stale again: here, recorded on older inputs):
         // the overlays still on their own gate, from the dots as recorded.
         let fresh = due[0].1.clone();
         done.record("marks", &[("marks".into(), "older".into())]);
@@ -7144,7 +7147,7 @@ pub(crate) mod tests {
         assert!(low_gate(true, false, false, since(1060)) && low_gate(false, false, false, None));
     }
 
-    /// The names' to-do lists: daily while units build, after any catalog when none's left.
+    /// The names' to-do lists: daily while z6 tiles build, after any catalog when none's left.
     #[test]
     fn the_names_to_do_runs_daily_or_when_idle() {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
@@ -7178,7 +7181,7 @@ pub(crate) mod tests {
         assert_ne!(crate::namestodo::inputs_key(&more), k1, "a base pack changed");
     }
 
-    /// The road index is keyed on each unit's road ids by content (a unit without them: its road
+    /// The road index is keyed on each z6 tile's road ids by content (a z6 tile without them: its road
     /// values), what its job reads.
     #[test]
     fn the_road_index_is_keyed_on_the_road_ids() {
@@ -7309,7 +7312,7 @@ pub(crate) mod tests {
 
     /// A region with no land (a sea zone, the high seas) is a target of the depth alone: the depth's
     /// tiles meet it, no other step's coverage does (no z6 tile of terrain, slope, tree cover or the
-    /// buildings', and no unit, which `reach` keeps by `meets_rect` too).
+    /// buildings', and no z6 tile, which `reach` keeps by `meets_rect` too).
     #[test]
     fn a_region_with_no_land_targets_only_the_depth() {
         let ring = vec![
@@ -7348,7 +7351,7 @@ pub(crate) mod tests {
     }
 
     /// The depth chain waits for its sources and its water's digests, then makes the assemblies
-    /// before the pieces that read them; a source's change re-keys what it meets.
+    /// before the z6 tiles that read them; a source's change re-keys what it meets.
     #[test]
     fn the_depth_chain() {
         let c = cov();
@@ -7389,7 +7392,7 @@ pub(crate) mod tests {
         let dt = depth_targets(&c, &m, &tiles).unwrap();
         assert_eq!(dt.unknown, 0);
         assert!(dt.lo.iter().any(|t| t.0 == "3/3/2"));
-        // Pieces only where the fine source is.
+        // Z6 tiles only where the fine source is.
         assert!(
             !dt.hi.is_empty()
                 && dt.hi.iter().all(|(t, _)| {
@@ -7399,7 +7402,7 @@ pub(crate) mod tests {
             "{:?}",
             dt.hi
         );
-        // The assemblies first; the pieces once theirs are done.
+        // The assemblies first; the z6 tiles once theirs are done.
         let w = depth_work(&c, &m, &done, &tiles);
         assert_eq!(w.iter().map(|x| x.step.as_str()).collect::<Vec<_>>(), ["depth-lo"]);
         let mut d2 = done.clone();
@@ -7409,8 +7412,8 @@ pub(crate) mod tests {
         d2.record("depth", &w[0].targets);
         assert!(depth_work(&c, &m, &d2, &tiles).is_empty());
         assert!(remaining(&d2, |d| depth_next(&c, &m, d, &tiles)).is_empty());
-        // An assembly's lo pack made new changes its pieces' keys; a fine source changed, its
-        // pieces' alone.
+        // An assembly's lo pack made new changes its z6 tiles' keys; a fine source changed, its
+        // z6 tiles' alone.
         let mut m2 = m.clone();
         m2.insert(
             crate::depth::build::lo_logical(crate::depth::LAYER, 3, 2),
@@ -7621,7 +7624,7 @@ pub(crate) mod tests {
             rbuild(&c, &reach, &mut m, &mut done, u, "6666666666666666");
         }
         let on = |ids: &[&str]| -> BTreeMap<String, bool> { ids.iter().map(|i| (i.to_string(), true)).collect() };
-        // Every unit built, the 3D buildings being raised: the publishing chain first, then its
+        // Every z6 tile built, the 3D buildings being raised: the publishing chain first, then its
         // catalog, their work after it.
         loop {
             let p = plan(&m, &done, &on(&["a", "b"]));

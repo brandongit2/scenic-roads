@@ -2,7 +2,7 @@
 //! same fields, so the whole pipeline is read with a few concepts:
 //!
 //! - **id** (`name`): the step's stored name, in the records, the journal, the leases, the timings
-//!   and the floors; never shown as such, never changed (a rename would re-key what's built).
+//!   and the floors; never shown as such, never changed (a rename would re-key what's built: so Roads, a z6 tile's roads, is still `unit`).
 //! - **title**: the name people see; **does**: one sentence of what it makes from what.
 //! - **kind**: where its output goes (`Kind`: a fetch from outside, a derived work file, a pack the
 //!   map serves, a publish, upkeep).
@@ -143,7 +143,7 @@ pub struct Step {
     pub stage: &'static str,
     /// The memory a job of it is expected to take (MB) before a target's own run has said
     /// (`SCENIC_COSTS`, crate::coord::Cost): offered so to the members, and reckoned so beside
-    /// another job. (Units and candidates are offered by their piece's size, terrain by its z3 tile's,
+    /// another job. (Z6 tiles and candidates are offered by their extract's size, terrain by its z3 tile's,
     /// the 3D buildings by their rows: crate::agent's offers.)
     pub mem_mb: u64,
     /// Other members take its jobs (the shared steps), at this rank of preference (what later steps
@@ -177,7 +177,7 @@ use Scope::{Input, World, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
 pub const TABLE: [Step; 51] = [
-    // The OSM pass: the planet filtered, its sets, pieces and road values; then its worldwide steps.
+    // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
         ..step(
@@ -330,8 +330,8 @@ pub const TABLE: [Step; 51] = [
             w_heritage_sites,
         )
     },
-    // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is its whole run, the scheme
-    // before pieces).
+    // Terrain's z6 tiles (a z6 tile each, eight a job; a z3 tile is its whole run, the scheme
+    // before z6 tiles).
     Step {
         ..step(
             "terrain",
@@ -355,8 +355,8 @@ pub const TABLE: [Step; 51] = [
             w_terrain,
         )
     },
-    // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its pieces' z9 means, up to 4 MB a
-    // piece, and half a GB besides.)
+    // (Its z3 tile's 1,365 zoomed-out tiles, ~270 KB each made, its z6 tiles' z9 means, up to 4 MB a
+    // z6 tile, and half a GB besides.)
     Step {
         mem_mb: 1200,
         ..step(
@@ -388,7 +388,7 @@ pub const TABLE: [Step; 51] = [
         )
     },
     // (Tree cover's program holds a band of a block's rows on each thread and the blocks made but
-    // not yet written: 1.05 GB on 14 threads for 3/2/2's 792 blocks, 2026-10-05; a piece has 16
+    // not yet written: 1.05 GB on 14 threads for 3/2/2's 792 blocks, 2026-10-05; a z6 tile has 16
     // blocks at most. Its assembly its z3 tile's blocks' zoom-8 values, compressed.)
     Step {
         mem_mb: 1000,
@@ -435,7 +435,7 @@ pub const TABLE: [Step; 51] = [
             w_depth,
         )
     },
-    // (A unit's most its jobs took here, 8.4 GB, 2026-10-05; offered by its piece's size.)
+    // (A z6 tile's most its jobs took here, 8.4 GB, 2026-10-05; offered by its extract's size.)
     Step {
         mem_mb: 8600,
         shared: Some(3),
@@ -1008,12 +1008,12 @@ pub fn outside_by(e: &crate::pool::journal::Entry, writes: &dyn Fn(&str, bool) -
 }
 
 /// Whether `l` is a file a job of `step` saves for `target` (what a shared step's hand-off may
-/// change for each target it did): a unit's base pack, road values, English and the grids its
-/// packs lacked; candidates' and peaks' own files; a tree cover piece's (a z6 tile's) hi packs of
+/// change for each target it did): a z6 tile's base pack, road values, English and the grids its
+/// packs lacked; candidates' and peaks' own files; a tree cover z6 tile's (a z6 tile's) hi packs of
 /// the tree layers and its mid, an assembly's (a z3 tile's) lo packs of them; terrain's and slope's
-/// pieces (a z6 tile's) hi pack of their layer and its mid, an assembly's (a z3 tile's) lo pack; an
+/// z6 tiles (a z6 tile's) hi pack of their layer and its mid, an assembly's (a z3 tile's) lo pack; an
 /// a z3 tile's lo pack and its z6 tiles' hi packs of terrain, slope, or the tree layers (a
-/// z3 tile's whole run: a lease of the scheme before pieces); a z6 tile's normalized buildings
+/// z3 tile's whole run: a lease of the scheme before z6 tiles); a z6 tile's normalized buildings
 /// (`bldprep`) or 3D buildings' hi pack, its field's hi pack and mid (`bldtiles`); a z3 tile's field
 /// lo pack (`bldfield-lo`). False for the other steps.
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
@@ -1134,7 +1134,7 @@ fn w_none(_: &str, _: bool) -> bool {
     false
 }
 
-/// The pass's sources (`sources/osm/<date>/…`: its filtered planet, sets, outlines, pieces, road
+/// The pass's sources (`sources/osm/<date>/…`: its filtered planet, sets, outlines, extracts, road
 /// values, the mark that it's complete) and its basemap; as it completes, the older passes' entries
 /// removed (crate::osmpass::retire_older: their sources, items, heritage, summits, route ends).
 fn w_osm_pass(l: &str, removal: bool) -> bool {
@@ -1219,7 +1219,7 @@ fn w_spoken(l: &str, _: bool) -> bool {
     l == "global/spoken"
 }
 
-/// A piece's hi pack and mid (a z6 tile); a z3 tile's whole run's lo pack and its z6 tiles' hi packs.
+/// A z6 tile's hi pack and mid (a z6 tile); a z3 tile's whole run's lo pack and its z6 tiles' hi packs.
 fn w_terrain(l: &str, _: bool) -> bool {
     pack(l, "terrain", &["lo", "hi"]) || matches!(parts(l).as_slice(), ["work", "terrain-mid", t] if tile(t, 6))
 }
@@ -1259,7 +1259,7 @@ fn w_slope_root(l: &str, _: bool) -> bool {
     pack(l, "slope", &["root"])
 }
 
-/// The tree layers' hi packs and a piece's mid (a z6 tile); a z3 tile's whole run their lo packs
+/// The tree layers' hi packs and a z6 tile's mid (a z6 tile); a z3 tile's whole run their lo packs
 /// too.
 fn w_trees(l: &str, _: bool) -> bool {
     pack_of(l, &|ly| crate::treepacks::LAYERS.contains(&ly), &["lo", "hi"])
@@ -1270,7 +1270,7 @@ fn w_trees_lo(l: &str, _: bool) -> bool {
     pack_of(l, &|ly| crate::treepacks::LAYERS.contains(&ly), &["lo"])
 }
 
-/// A unit's files (crate::unit::saved_files), of a z6 tile.
+/// A z6 tile's files (crate::unit::saved_files), of a z6 tile.
 fn w_unit(l: &str, _: bool) -> bool {
     l.rsplit_once('/').is_some_and(|(_, t)| tile(t, 6) && crate::unit::saved_files(t).iter().any(|f| f == l))
 }
@@ -1370,7 +1370,7 @@ fn w_bldfield_lo(l: &str, _: bool) -> bool {
     pack(l, crate::bld::field::LAYER, &["lo"])
 }
 
-/// What the regions no longer cover, removed: a unit's files, candidates and peaks, map tiles, the
+/// What the regions no longer cover, removed: a z6 tile's files, candidates and peaks, map tiles, the
 /// 3D buildings'. Nothing written.
 fn w_prune(l: &str, removal: bool) -> bool {
     removal
@@ -1448,7 +1448,7 @@ mod tests {
     #[test]
     fn the_rows_are_todays() {
         // The memory first guessed (what the agent's first_peak and second_peak gave, the latter's
-        // where they differed: the network steps', a unit's and candidates', which nothing offered
+        // where they differed: the network steps', a z6 tile's and candidates', which nothing offered
         // by the former).
         let mem: [(&str, u64); 21] = [
             ("lakefill", 12288),

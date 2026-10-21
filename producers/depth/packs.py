@@ -4,8 +4,8 @@ A source's grids are kept in packs, never one file a grid: the NAS (three spinni
 pays a directory lookup, a stat and an open for every file, and seeks between them, so tens of
 thousands of small GeoTIFFs made it seek-bound. A pack is a plain tar (GNU format, every header's
 time, owner and mode fixed, so the same grids give the same bytes) of whole GeoTIFFs, one a source
-per z6 tile (the tile of each grid's footprint's centre; an area may have several packs, one per
-producer run or chunk), named `<area>.<hash16>.tar` (SHA-256 of its bytes): a depth job reads its
+per z6 tile (the tile of each grid's footprint's centre; a z6 tile may have several packs, one per
+producer run or chunk), named `<z6 tile>.<hash16>.tar` (SHA-256 of its bytes): a depth job reads its
 z6 tile's grids from one file. The index names each grid's pack (`pack`) and its files' byte ranges
 in it and their hashes (`at`: {"file": [offset, length, hash16], "zoom_file": …, "low_file": …}: every
 member's bytes recorded as packed, SHA-256's first 16 digits); the build opens a pack once
@@ -23,7 +23,7 @@ from pathlib import Path
 FILE_KEYS = ("file", "zoom_file", "low_file")
 
 
-def area(feature: dict) -> str:
+def tile(feature: dict) -> str:
     """The z6 tile of the centre of a feature's footprint: `6-<x>-<y>`."""
     xs, ys = [], []
 
@@ -44,12 +44,12 @@ def area(feature: dict) -> str:
     return f"6-{x}-{y}"
 
 
-def by_area(features: list[dict]) -> dict[str, list[dict]]:
-    """The features not yet packed, by area (each area's in file order)."""
+def by_tile(features: list[dict]) -> dict[str, list[dict]]:
+    """The features not yet packed, by z6 tile (each z6 tile's in file order)."""
     out: dict[str, list[dict]] = {}
     for f in sorted(features, key=lambda f: f["properties"]["file"]):
         if "pack" not in f["properties"]:
-            out.setdefault(area(f), []).append(f)
+            out.setdefault(tile(f), []).append(f)
     return out
 
 
@@ -59,12 +59,12 @@ def names(feature: dict) -> list[str]:
 
 
 class PackWriter:
-    """One pack being written into `folder` (as `.<area>.writing.tar`, renamed by its hash once
+    """One pack being written into `folder` (as `.<z6 tile>.writing.tar`, renamed by its hash once
     whole): add each feature's files' bytes, then `finish`."""
 
-    def __init__(self, folder: Path, area_: str):
-        self.folder, self.area = Path(folder), area_
-        self.tmp = self.folder / f".{area_}.writing.tar"
+    def __init__(self, folder: Path, tile_: str):
+        self.folder, self.tile = Path(folder), tile_
+        self.tmp = self.folder / f".{tile_}.writing.tar"
         self.folder.mkdir(parents=True, exist_ok=True)
         self.f = open(self.tmp, "wb")
         self.tar = tarfile.open(fileobj=self.f, mode="w", format=tarfile.GNU_FORMAT)
@@ -89,7 +89,7 @@ class PackWriter:
         with open(self.tmp, "rb") as f:
             for b in iter(lambda: f.read(1 << 20), b""):
                 h.update(b)
-        name = f"{self.area}.{h.hexdigest()[:16]}.tar"
+        name = f"{self.tile}.{h.hexdigest()[:16]}.tar"
         os.replace(self.tmp, self.folder / name)
         return name, self.at
 
@@ -109,11 +109,11 @@ def check_hash(feature: dict, data: bytes):
 
 
 def pack_folder(folder: Path, features: list[dict], delete: bool = True) -> list[str]:
-    """The loose grids of `features` in `folder` packed there by area (their features updated), the
+    """The loose grids of `features` in `folder` packed there by z6 tile (their features updated), the
     loose files deleted once their pack is whole (`delete`); the packs written."""
     folder = Path(folder)
     made = []
-    for a, feats in by_area(features).items():
+    for a, feats in by_tile(features).items():
         w = PackWriter(folder, a)
         for f in feats:
             for k, n in zip([k for k in FILE_KEYS if k in f["properties"]], names(f)):

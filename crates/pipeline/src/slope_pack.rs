@@ -290,7 +290,7 @@ pub fn hi_logical(x: u32, y: u32) -> String {
     format!("layers/slope/hi/6-{x}-{y}")
 }
 
-/// Drops z6 tile `t`'s slope hi pack and mid from the manifest (a piece the coverage has left:
+/// Drops z6 tile `t`'s slope hi pack and mid from the manifest (a z6 tile the coverage has left:
 /// docs/regions.md, Shrinking), saving it; how many it had.
 pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> Result<usize> {
     let n = crate::terrain_pack::drop_named(out, &[hi_logical(t.0, t.1), mid_logical(t.0, t.1)]);
@@ -394,7 +394,7 @@ fn read_file(p: &std::path::Path) -> std::io::Result<Vec<u8>> {
     std::fs::read(p)
 }
 
-/// The tiles a piece (z6 tile `t`) works out: the terrain tiles it has (z9–12, `has`) and their
+/// The tiles a z6 tile (z6 tile `t`) works out: the terrain tiles it has (z9–12, `has`) and their
 /// ancestors down to z6, and its z6 tile.
 fn piece_set(has: &(dyn Fn(u8, u32, u32) -> bool + Sync), t: (u32, u32)) -> HashSet<(u8, u32, u32)> {
     let (tx, ty) = t;
@@ -415,7 +415,7 @@ fn piece_set(has: &(dyn Fn(u8, u32, u32) -> bool + Sync), t: (u32, u32)) -> Hash
     tiles
 }
 
-/// A piece's slope (z6 tile `t`): its hi tiles (z9–11), sorted, and its z6–8 tiles (its mid's).
+/// A z6 tile's slope (z6 tile `t`): its hi tiles (z9–11), sorted, and its z6–8 tiles (its mid's).
 fn piece(
     terrain: &Terrain,
     has: &(dyn Fn(u8, u32, u32) -> bool + Sync),
@@ -433,8 +433,8 @@ fn piece(
     (hi, lo)
 }
 
-/// A z3 tile's assembly (z3 tile `q`, its pieces `ts`): its lo tiles (z3–8), sorted. Each piece's
-/// z6–8 tiles from `mids` (its mid, or the slope lo pack's for one that has none: a piece current
+/// A z3 tile's assembly (z3 tile `q`, its z6 tiles `ts`): its lo tiles (z3–8), sorted. Each z6 tile's
+/// z6–8 tiles from `mids` (its mid, or the slope lo pack's for one that has none: a z6 tile current
 /// without one has its tiles there), its z6 tile's quadrant read from its stored z6 tile; each other
 /// z6 tile of q its terrain's own slope (none of its z7–8 tiles: the server makes them from the
 /// terrain, as for any tile the layer lacks), never what an earlier run stored, so the pack is what
@@ -524,13 +524,13 @@ fn terrain_reads(
     )
 }
 
-/// The slope of the z6 tiles `ts` (in z3 tile `q`: all its pieces) from the build's terrain packs: each one's hi pack
+/// The slope of the z6 tiles `ts` (in z3 tile `q`: all its z6 tiles) from the build's terrain packs: each one's hi pack
 /// (z9–11), written as soon as it's worked out (a z3 tile holds a z6 tile's tiles at a time, under a
 /// GB, where all of them took up to 20 GB), and `q`'s lo pack (z3–8), the other z6 tiles of `q`
-/// from their terrain (`assemble`): its pieces (`build_piece`'s runs) and its assembly
-/// (`build_lo`'s, from the pieces' z6–8 tiles held here), the same bytes as their jobs make, a
-/// piece's hi pack dropped when it makes no hi tile, as its job drops it. (A z6 tile of `q` the
-/// coverage has left, not among `ts`, is left as it is: its "none" piece's job drops its hi pack and
+/// from their terrain (`assemble`): its z6 tiles (`build_piece`'s runs) and its assembly
+/// (`build_lo`'s, from the z6 tiles' z6–8 tiles held here), the same bytes as their jobs make, a
+/// z6 tile's hi pack dropped when it makes no hi tile, as its job drops it. (A z6 tile of `q` the
+/// coverage has left, not among `ts`, is left as it is: its "none" z6 tile's job drops its hi pack and
 /// mid, `drop_piece`.)
 pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report> {
     build_q_with(out, q, ts, &|_, _, _| {})
@@ -593,10 +593,10 @@ pub fn build_q_with(
     Ok(rep)
 }
 
-/// Makes z6 tile `t`'s slope (a piece) from the build's terrain packs and uploads it: its hi pack
+/// Makes z6 tile `t`'s slope (a z6 tile) from the build's terrain packs and uploads it: its hi pack
 /// (z9–11; none when it made no tile, its terrain having no hi tile: the manifest's then dropped)
 /// and its mid (`mid_logical`: its z6–8 tiles), which its z3 tile's assembly reads. `expect_same`: a
-/// piece made again as it is (its mid made), whose hi pack must come out as the manifest has it
+/// z6 tile made again as it is (its mid made), whose hi pack must come out as the manifest has it
 /// (none where it has none), else an error and nothing uploaded. A z6 tile the coverage has left
 /// isn't made: its hi pack and mid are dropped (`drop_piece`).
 pub fn build_piece(
@@ -612,7 +612,7 @@ pub fn build_piece(
 }
 
 /// `build_piece`, its uploads put off (crate::out::Out::put_file_later): they go on beside what the
-/// job does next, and the piece is saved (and noted done) by a later save (`Out::save_upto` the
+/// job does next, and the z6 tile is saved (and noted done) by a later save (`Out::save_upto` the
 /// mark after it).
 pub fn build_piece_later(
     out: &mut Out,
@@ -673,7 +673,7 @@ pub fn build_piece_later(
     Ok(rep)
 }
 
-/// The mids of z3 tile `q`'s pieces `ts` that have one, each read whole and checked (`read_mid`),
+/// The mids of z3 tile `q`'s z6 tiles `ts` that have one, each read whole and checked (`read_mid`),
 /// `MIDS_AT_ONCE` at once (one after another, each section a read, a z3 tile's 60-odd mids took
 /// most of an assembly's time: task #400). The first failure fails it.
 fn read_mids(out: &Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<BTreeMap<(u32, u32), Vec<Made>>> {
@@ -716,7 +716,7 @@ fn read_mids(out: &Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<BTreeMap<(u3
     }
 }
 
-/// Makes z3 tile `q`'s zoomed-out slope (an assembly: its lo pack, z3–8) from its pieces' mids (`ts`:
+/// Makes z3 tile `q`'s zoomed-out slope (an assembly: its lo pack, z3–8) from its z6 tiles' mids (`ts`:
 /// its z6 tiles near the coverage; one current without a mid has its z6–8 tiles in the lo pack as it
 /// is) and the lo pack as it is, and uploads it.
 pub fn build_lo(
@@ -1056,7 +1056,7 @@ mod tests {
         Ok(rep)
     }
 
-    /// A z3 tile's slope as main made it at 1fa03d8, before it was made as pieces and an assembly: the
+    /// A z3 tile's slope as main made it at 1fa03d8, before it was made as z6 tiles and an assembly: the
     /// reference they must match, byte for byte.
     fn z3_v1(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
         let mut rep = Report::default();
@@ -1191,12 +1191,12 @@ mod tests {
     }
 
     /// With terrain: an assembly over a lo pack an earlier run stored, holding real slope tiles of a
-    /// z6 tile that isn't its piece (6/24/23's z6 tile and a z7 tile of it, another tile's bytes),
+    /// z6 tile that isn't its z6 tile (6/24/23's z6 tile and a z7 tile of it, another tile's bytes),
     /// comes out as a fresh build's assembly, byte for byte: nothing of the earlier run kept.
     #[test]
     fn an_assembly_over_an_earlier_runs_lo_pack_is_a_fresh_builds() {
         let d = tempfile::tempdir().unwrap();
-        // Terrain for 3/3/2: its z6–z3 tiles (a lo pack) and four z9 tiles of its piece 6/28/16 (a
+        // Terrain for 3/3/2: its z6–z3 tiles (a lo pack) and four z9 tiles of its z6 tile 6/28/16 (a
         // hi pack), each its own slope.
         let png = |z: u8, x: u32, y: u32| {
             let e: Vec<f32> = (0..256 * 256)
@@ -1232,7 +1232,7 @@ mod tests {
         build_piece(&mut fresh, (28, 16), false, &|_, _, _| {}).unwrap();
         build_lo(&mut fresh, (3, 2), &[(28, 16)], &|_, _, _| {}).unwrap();
         assert!(fresh.get(lo).is_some());
-        // (Real slope tiles, another z6 tile's and the piece's z7's, as an earlier run would have
+        // (Real slope tiles, another z6 tile's and the z6 tile's z7's, as an earlier run would have
         // stored them for 6/24/23.)
         let made = ManifestTiles::new(&fresh, "slope");
         let (z6, z7) = (made.get(6, 25, 23).unwrap().unwrap(), made.get(7, 56, 32).unwrap().unwrap());
@@ -1253,7 +1253,7 @@ mod tests {
         assert_eq!(again.get(lo), fresh.get(lo), "the same lo pack as a fresh build's");
     }
 
-    /// A piece whose terrain has no hi tile makes no hi tile, and drops the hi pack an earlier run
+    /// A z6 tile whose terrain has no hi tile makes no hi tile, and drops the hi pack an earlier run
     /// left (expected the same, it isn't: refused, nothing uploaded); a z6 tile the coverage has
     /// left drops its hi pack and mid (`drop_piece`); a z3 tile's whole run drops the first the same.
     #[test]
@@ -1293,8 +1293,8 @@ mod tests {
                 && again.get(&lmid).is_none()
                 && again.get(&mid).is_some()
         );
-        // A z3 tile's whole run (3/3/2, its one piece 6/28/16): its piece's hi pack dropped the same;
-        // a z6 tile not among its pieces left as it is (its "none" piece drops it).
+        // A z3 tile's whole run (3/3/2, its one z6 tile 6/28/16): its z6 tile's hi pack dropped the same;
+        // a z6 tile not among its z6 tiles left as it is (its "none" z6 tile drops it).
         let mut z3run = Out::unbound(&d.path().join("z3run"), &d.path().join("z3run-scratch")).unwrap();
         for l in [&hi, &lhi] {
             fake(&mut z3run, l);
@@ -1302,7 +1302,7 @@ mod tests {
         build_q(&mut z3run, (3, 2), &[(28, 16)]).unwrap();
         assert!(z3run.get(&hi).is_none() && z3run.get(&lhi).is_some());
         // An assembly over a lo pack an earlier run stored, holding tiles of z6 tiles that aren't
-        // its pieces (6/24/23's z6 and a z7 tile of it): none kept, the lo pack what a fresh build's
+        // its z6 tiles (6/24/23's z6 and a z7 tile of it): none kept, the lo pack what a fresh build's
         // assembly makes. (No terrain here: the fresh one has no tiles, so the old pack goes.)
         let lo = "layers/slope/lo/3-3-2";
         let old: Vec<(u8, u32, u32, Vec<u8>, u32)> =
@@ -1333,10 +1333,10 @@ mod tests {
         assert!(out.get("layers/slope/lo/3-5-2").is_none());
     }
 
-    /// Two z3 tiles' slope (3/3/1 and 3/4/1: a coverage on lon 0° at 70.5°N, their border pieces reading
-    /// each other's terrain) as pieces and assemblies, each from the mids as uploaded, and as main's
-    /// z3 tile runs made it: the same packs, byte for byte; an assembly with a piece's mid missing takes
-    /// its tiles from the lo pack, the same; a piece made again expecting the same changes nothing.
+    /// Two z3 tiles' slope (3/3/1 and 3/4/1: a coverage on lon 0° at 70.5°N, their border z6 tiles reading
+    /// each other's terrain) as z6 tiles and assemblies, each from the mids as uploaded, and as main's
+    /// z3 tile runs made it: the same packs, byte for byte; an assembly with a z6 tile's mid missing takes
+    /// its tiles from the lo pack, the same; a z6 tile made again expecting the same changes nothing.
     #[test]
     fn pieces_and_their_assembly_make_the_z3_runs_packs_across_z3_tiles() {
         use crate::terrain_pack::{near_coverage, RawTiles};
@@ -1439,7 +1439,7 @@ mod tests {
         assert_eq!(slope(&v1).len(), by_q.values().map(Vec::len).sum::<usize>() + 2);
         assert_eq!(slope(&z3run), slope(&v1), "the z3 tile runs as pieces and an assembly in memory");
         assert_eq!(slope(&parts), slope(&v1), "the pieces' jobs and the assemblies'");
-        // A mid gone (a piece current without one): its tiles from the lo pack, the same lo pack.
+        // A mid gone (a z6 tile current without one): its tiles from the lo pack, the same lo pack.
         let (&q, ts) = by_q.iter().next().unwrap();
         let mut out = Out::unbound(&parts, &d.path().join("p2")).unwrap();
         let before = out.manifest.clone();
@@ -1570,8 +1570,8 @@ mod tests {
         assert_eq!(now, before, "the same packs, byte for byte (their content names), first and again");
     }
 
-    /// Task #400: a z3 tile's mids read whole, several at once, give each piece's tiles as written, in
-    /// order; a mid that can't be read, or is another piece's, fails the read.
+    /// Task #400: a z3 tile's mids read whole, several at once, give each z6 tile's tiles as written, in
+    /// order; a mid that can't be read, or is another z6 tile's, fails the read.
     #[test]
     fn an_areas_mids_read_together_are_each_pieces_tiles() {
         let d = tempfile::tempdir().unwrap();
@@ -1586,7 +1586,7 @@ mod tests {
             v.sort_by_key(|t| (t.0, t.1, t.2));
             v
         };
-        // (Every piece but the last has a mid: that one's tiles come from the lo pack.)
+        // (Every z6 tile but the last has a mid: that one's tiles come from the lo pack.)
         for &t in &ts[..ts.len() - 1] {
             let p = out.scratch_file("mid.sect");
             write_mid(&p, t, &tiles_of(t)).unwrap();
@@ -1597,7 +1597,7 @@ mod tests {
         for &t in &ts[..ts.len() - 1] {
             assert_eq!(mids[&t], tiles_of(t), "6/{}/{}", t.0, t.1);
         }
-        // Another piece's mid under one's name: an error, naming it.
+        // Another z6 tile's mid under one's name: an error, naming it.
         let (a, b) = (ts[0], ts[1]);
         let theirs = out.get(&mid_logical(b.0, b.1)).unwrap().to_string();
         out.set(&mid_logical(a.0, a.1), Some(theirs.clone()));
@@ -1606,15 +1606,15 @@ mod tests {
         // One gone: an error (NotFound is tried again first, as a share's moment of it is).
         std::fs::remove_file(out.path(&theirs)).unwrap();
         assert!(read_mids(&out, q, &ts[1..2]).is_err());
-        // A piece outside q: refused before anything is read.
+        // A z6 tile outside q: refused before anything is read.
         assert!(read_mids(&out, (0, 0), &ts).unwrap_err().to_string().contains("isn't in 3/0/0"));
     }
 
-    /// Task #400's measure of uploads put off (run by hand): real slope pieces worked out from
+    /// Task #400's measure of uploads put off (run by hand): real slope z6 tiles worked out from
     /// `<root>`'s terrain (read only), each one's hi pack and mid uploaded to `<scratch root>` (a
     /// folder of its own, never the build's) as a job of them would, in turn (`now`: each uploaded
-    /// before the next piece begins, as before) or put off (`later`: each uploading beside the
-    /// next piece's work, saved after it), timed.
+    /// before the next z6 tile begins, as before) or put off (`later`: each uploading beside the
+    /// next z6 tile's work, saved after it), timed.
     /// SCENIC_SLOPE_UPLOADS="<root> <scratch root> now|later 6/x/y,…"; unset, nothing.
     #[test]
     fn measure_uploads_put_off() {
@@ -1686,11 +1686,11 @@ mod tests {
         );
     }
 
-    /// Task #400's measure (run by hand, read-only: nothing written to the root): a real slope piece
+    /// Task #400's measure (run by hand, read-only: nothing written to the root): a real slope z6 tile
     /// (`piece 6/x/y`: its terrain pack copied here, its tiles worked out) or assembly (`lo 3/x/y`:
-    /// its pieces' mids and the terrain read, its tiles worked out), timed, with the CPU it took and
+    /// its z6 tiles' mids and the terrain read, its tiles worked out), timed, with the CPU it took and
     /// a digest of the tiles made (the same before and after a change).
-    /// SCENIC_SLOPE_MEASURE="<root> piece|lo <x>/<y>"; unset, nothing.
+    /// SCENIC_SLOPE_MEASURE="<root> z6 tile|lo <x>/<y>"; unset, nothing.
     #[test]
     fn measure_a_real_target() {
         let Ok(m) = std::env::var("SCENIC_SLOPE_MEASURE") else { return };

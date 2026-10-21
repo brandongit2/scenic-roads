@@ -1,5 +1,5 @@
-//! A unit folder's arrays (ways.bin, verts.bin and the per-vertex and per-sample arrays the unit's
-//! steps write) as its base pack (docs/formats.md "Base pack"); and the units' tile (`Unit`).
+//! A z6 tile folder's arrays (ways.bin, verts.bin and the per-vertex and per-sample arrays the z6 tile's
+//! steps write) as its base pack (docs/formats.md "Base pack"); and a tile's id (`TileId`).
 
 use anyhow::{ensure, Result};
 use rayon::prelude::*;
@@ -9,7 +9,7 @@ use roadcore::{class, merc, Array, WayRec, Ways};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// A unit's tile (z6), or any z/x/y tile.
+/// A tile of any zoom: z/x/y (the grid's z3, z6 and z8 tiles, or a map tile).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TileId {
     pub z: u8,
@@ -42,7 +42,7 @@ impl TileId {
     }
 }
 
-/// A unit folder's arrays, memory-mapped.
+/// A z6 tile folder's arrays, memory-mapped.
 pub struct Legacy {
     pub ways: Ways,
     pub strings: Vec<String>,
@@ -104,7 +104,7 @@ impl Legacy {
         w.vstart as usize..(w.vstart + w.vcount as u64) as usize
     }
 
-    /// Every way's unit (z6 tile of its first vertex), and the ways of each unit in base-pack order:
+    /// Every way's z6 tile (z6 tile of its first vertex), and the ways of each z6 tile in base-pack order:
     /// by the z9 tile of the first vertex, then the folder's (Morton) order.
     pub fn units(&self) -> BTreeMap<TileId, Vec<u32>> {
         let ways = self.ways.ways();
@@ -138,13 +138,13 @@ pub fn bytes<T: bytemuck::Pod>(v: &[T]) -> &[u8] {
 
 pub use roadcore::packs::{RailRel, RoadRec, Sub9};
 
-/// The sections of one unit's base pack, as bytes, from the folder's arrays.
+/// The sections of one z6 tile's base pack, as bytes, from the folder's arrays.
 pub struct BaseSections {
     pub meta: serde_json::Value,
     pub sections: Vec<(&'static str, Vec<u8>)>,
 }
 
-/// Build a unit's base pack from the folder's ways `idx` (in base-pack order).
+/// Build a z6 tile's base pack from the folder's ways `idx` (in base-pack order).
 pub fn base_sections(lg: &Legacy, unit: TileId, idx: &[u32], built: &str) -> BaseSections {
     let all = lg.ways.ways();
     let verts = lg.ways.verts();
@@ -239,6 +239,7 @@ pub fn base_sections(lg: &Legacy, unit: TileId, idx: &[u32], built: &str) -> Bas
     sb.push('\n');
     let meta = serde_json::json!({
         "fmt": 1,
+        // ("unit": the base pack's stored key for its z6 tile, kept: meta of every base pack on the NAS.)
         "unit": unit.slash(),
         "ways": ways.len(),
         "verts": v.len(),

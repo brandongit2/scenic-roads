@@ -39,10 +39,10 @@ def grids(folder: Path) -> list[dict]:
 
 class Packs(unittest.TestCase):
     def test_areas_are_z6_tiles(self):
-        self.assertEqual(packs.area(feature("a", -63.6, 44.6, b"")), "6-20-23")
-        self.assertEqual(packs.area(feature("a", -123.1, 49.2, b"")), "6-10-21")
+        self.assertEqual(packs.tile(feature("a", -63.6, 44.6, b"")), "6-20-23")
+        self.assertEqual(packs.tile(feature("a", -123.1, 49.2, b"")), "6-10-21")
 
-    def test_a_folder_packs_by_area_its_ranges_its_bytes_and_the_same_grids_the_same_pack(self):
+    def test_a_folder_packs_by_z6_tile_its_ranges_its_bytes_and_the_same_grids_the_same_pack(self):
         with tempfile.TemporaryDirectory() as t:
             a, b = Path(t) / "a", Path(t) / "b"
             fa, fb = grids(a), grids(b)

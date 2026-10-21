@@ -146,7 +146,7 @@ fn timings(args: &[String]) -> Result<()> {
 
 /// `scenic timings publish [--last N]`: publishing end to end (pipeline::pubtimes), from the
 /// build's history (the NAS's, else this Mac's coordinator's; `--file` a history file) and the map
-/// servers' log on the NAS: each catalog of the last N (10) and its units, then the medians.
+/// servers' log on the NAS: each catalog of the last N (10) and its z6 tiles, then the medians.
 fn timings_publish(args: &[String]) -> Result<()> {
     use pipeline::pubtimes;
     let last: usize = opt(args, "--last").map(|n| n.parse()).transpose()?.unwrap_or(10);
@@ -583,7 +583,7 @@ fn macs_lines(st: &agent::Status) -> Vec<String> {
 }
 
 /// A region still building, as the Regions panel and the menu bar say it: and when all of it is
-/// on the map, as the forecast has it (`map_at`); every unit built but not yet recorded built,
+/// on the map, as the forecast has it (`map_at`); every z6 tile built but not yet recorded built,
 /// finishing.
 fn building_line(built: usize, total: usize, map_at: Option<u64>) -> String {
     if built >= total {
@@ -808,8 +808,8 @@ fn status(args: &[String]) -> Result<()> {
             st.regions.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ")
         }
     );
-    // (Those still building: their units built of their total, on the map as they come, and when
-    // all of it is, as the forecast has it; and those with every unit built but not yet recorded
+    // (Those still building: their z6 tiles built of their total, on the map as they come, and when
+    // all of it is, as the forecast has it; and those with every z6 tile built but not yet recorded
     // built (publishing's held regions): finishing.)
     let held = |id: &str| {
         st.publishing.as_ref().is_some_and(|p| {

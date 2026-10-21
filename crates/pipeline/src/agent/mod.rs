@@ -55,7 +55,7 @@ use std::time::{Duration, Instant};
 
 /// Free space the OSM pass needs on the lead to start: the filtered planet (about half the
 /// planet's 95 GB) with room to spare. The planet is read from the NAS when there's no room to
-/// copy it, the filtered file too once space runs short, and the pieces are cut a quarter at a
+/// copy it, the filtered file too once space runs short, and the extracts are cut a quarter at a
 /// time, so the pass's peak stays near the filtered file's size.
 pub const PASS_SPACE: u64 = 80 << 30;
 
@@ -84,7 +84,7 @@ pub struct Options {
 }
 
 /// How long a job asked to stop at its next safe point (the build pausing, the battery low) is given
-/// before it's frozen where it is instead: a unit takes up to ~11 min, a map tile ~10.
+/// before it's frozen where it is instead: a z6 tile takes up to ~11 min, a map tile ~10.
 const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
 /// Why an agent is out of the pool (`Status::out_of_pool`): the NAS not answering as it started.
 const NAS_AWAY: &str = "the NAS didn't answer as this agent started";
@@ -506,10 +506,10 @@ impl Tell {
 const OWED_S: u64 = crate::coord::TTL.as_secs();
 
 /// The free space a member's job of `step` needs: a terrain run's as on the lead (its shard's
-/// archives copied here and merged); a task's ("tail": a unit's last steps, its files fetched from
+/// archives copied here and merged); a task's ("tail": a z6 tile's last steps, its files fetched from
 /// the coordinator; "bldtile": a 3D buildings' z8 tile, its blocks) 5 GB, but tree cover's row of
 /// z8 blocks ("treeblock": it reads the squares where they lie, and writes ~80 MB) and a terrain
-/// piece's z8 subtrees ("terrainsub": a file of tens of MB, and their tiles) 1 GB; the others none
+/// z6 tile's z8 subtrees ("terrainsub": a file of tens of MB, and their tiles) 1 GB; the others none
 /// of their own: their grant's measured disk is reserved for them (`reservation`), and the owner's
 /// room target stays free past it, with no fixed reserve (task #421).
 fn helper_need(step: &str) -> u64 {
@@ -536,8 +536,8 @@ fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
 }
 
 /// Whether `p` is an archive copy a terrain job's target (`id`: "terrain 3/x/y", a z3 tile's whole
-/// run; "terrain 6/x/y", a piece; "terrain-lo 3/x/y", an assembly) reads at once: a z3 tile's run its
-/// shard's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), a piece its z6 tile's, an
+/// run; "terrain 6/x/y", a z6 tile; "terrain-lo 3/x/y", an assembly) reads at once: a z3 tile's run its
+/// shard's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), a z6 tile its z6 tile's, an
 /// assembly its z3 tile's (crate::rawpack's shards).
 fn terrain_reads(id: &str, p: &Path) -> bool {
     let tile = |s: &str| -> Option<(u32, u32, u32)> {
@@ -564,8 +564,8 @@ fn terrain_reads(id: &str, p: &Path) -> bool {
 }
 
 /// The memory a step's job is expected to take (MB) before one has run for its target and said
-/// (`SCENIC_COSTS`): its row's in the steps table. (Units and candidates are offered by their
-/// piece's size, crate::coord::job_peak; terrain by its z3 tile's size, `terrain_peak`; the 3D
+/// (`SCENIC_COSTS`): its row's in the steps table. (Z6 tiles and candidates are offered by their
+/// extract's size, crate::coord::job_peak; terrain by its z3 tile's size, `terrain_peak`; the 3D
 /// buildings by their rows, `bld_peak`.)
 fn first_peak(step: &str) -> u64 {
     steps::mem_mb(step)
@@ -596,7 +596,7 @@ pub const fn bldtiles_peak(rows: u64) -> u64 {
 /// (up to 4,096 at 256 KB), each z6 tile's z9 repairs and quarters (~20 MB) and the z3 tile's zoomed-out
 /// tiles (z3–8, 1,365), and half a GB besides: 3.3 to 4.6 GB, what a helper spares. (Measured
 /// before it wrote a z6 tile at a time: 32.9 GB for 3/0/2's whole z3 tile at once.)
-/// (A piece: one z6 tile, `terrain_peak(1)`.)
+/// (A z6 tile: one z6 tile, `terrain_peak(1)`.)
 fn terrain_peak(z6: usize) -> u64 {
     500 + 5440 * 270 / 1024 + 4096 / 4 + 1365 * 270 / 1024 + z6 as u64 * 20
 }
@@ -666,7 +666,7 @@ fn read_timings(dir: &Path) -> Option<crate::timings::RunRec> {
     std::fs::read(dir.join(TIMINGS_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-/// What a unit job's units cost (`SCENIC_COSTS`: a JSON line per unit).
+/// What a `unit` job's z6 tiles cost (`SCENIC_COSTS`: a JSON line per z6 tile).
 fn read_costs(p: &Path) -> Vec<(String, crate::coord::Cost)> {
     let Ok(s) = std::fs::read_to_string(p) else { return Vec::new() };
     s.lines()
@@ -923,7 +923,7 @@ pub struct JobView {
     pub mem_mb: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threads: Option<usize>,
-    /// What it waits on, while it waits on a worker holding its unit's tail and nothing else (its
+    /// What it waits on, while it waits on a worker holding its z6 tile's tail and nothing else (its
     /// slot's room then counted as free beside it: docs/pool.md §7.7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waiting: Option<String>,
@@ -1348,7 +1348,7 @@ pub struct Agent {
     progress: Option<(Instant, BTreeMap<String, build::RegionState>, Vec<build::Line>)>,
     /// The pass's reaches as last read, by content name (large: read again only when they change).
     reach: std::cell::RefCell<Option<(String, std::rc::Rc<crate::reach::Reaches>)>>,
-    /// The terrain packs' indexes, which the units' keys read (`tiles`, kept in `pack-idx/`): those
+    /// The terrain packs' indexes, which the z6 tiles' keys read (`tiles`, kept in `pack-idx/`): those
     /// the manifest names, each read once.
     tiles: std::cell::RefCell<tiles::TerrainTiles>,
     /// The coverage and each region's as last made, with what they were made from (`coverage`).
@@ -1359,7 +1359,7 @@ pub struct Agent {
     edited_at: std::cell::Cell<Option<(std::time::SystemTime, std::time::SystemTime)>>,
     /// Who this agent is ("<host> <pid>").
     me: String,
-    /// The OSM pieces' sizes by content name (the coordinator sizes units by them; content-named
+    /// The OSM extracts' sizes by content name (the coordinator sizes z6 tiles by them; content-named
     /// files never change).
     piece_sizes: std::cell::RefCell<std::collections::HashMap<String, u64>>,
     /// The served catalog's key (`Keys::catalog`) last asked whether a whole catalog is due
@@ -2316,7 +2316,7 @@ impl Agent {
                 ))
             }
             crate::coord::Grant { lease, work: crate::coord::Granted::Task { id, task, .. }, .. } => {
-                // A task (a unit's tail, or a 3D buildings' z8 tile, for the lead's job), run here
+                // A task (a z6 tile's tail, or a 3D buildings' z8 tile, for the lead's job), run here
                 // by `scenic run-task` over its files fetched from the coordinator, reading the NAS's
                 // data where it lies (only reading it: crate::unit::Tools::stores_read_only).
                 let dir = self.outbox().join(lease.to_string());
@@ -2477,7 +2477,7 @@ impl Agent {
         };
         let limit = memguard::limit_mb(total);
         let alone = self.running_jobs() == 0;
-        // (A job waiting on a worker holding its unit's tail: counted as it holds now, none of its
+        // (A job waiting on a worker holding its z6 tile's tail: counted as it holds now, none of its
         // cores, where its lease counts it by its measures: the room past them given back to the
         // ask. A job started beside it yields to it, `start_granted`.)
         let (mut mem_back, mut cores_back) = (0u64, 0u32);
@@ -2608,7 +2608,7 @@ impl Agent {
     }
 
     /// The command of a job of an offered `step` over `targets` (crate::agent::every::offered), from
-    /// `pass`, the lead's and a member's alike: `scenic-build` with the step's arguments, the pieces
+    /// `pass`, the lead's and a member's alike: `scenic-build` with the step's arguments, the z6 tiles
     /// made again as they are expected the same (by the build's records as read; records that can't
     /// be read now expect nothing).
     fn step_cmd(&self, root: &Path, step: &str, targets: &[(String, String)], pass: &str) -> Vec<String> {
@@ -2640,7 +2640,7 @@ impl Agent {
     }
 
     /// Slot `k`'s job ended (or stopped): its lease ended with it. This Mac's own: done when it
-    /// recorded its targets, and what its units cost learned; a helper's: its result in its outbox
+    /// recorded its targets, and what its z6 tiles cost learned; a helper's: its result in its outbox
     /// folder, to send.
     fn end_lease(&mut self, k: usize, outcome: Outcome, done: &[(String, String)], note: &str) {
         // (A job ended: what a helper's caches can free is counted again before it next asks.)
@@ -3067,7 +3067,7 @@ impl Agent {
         }
     }
 
-    /// Where slot `k`'s job notes what its units cost (`SCENIC_COSTS`).
+    /// Where slot `k`'s job notes what its z6 tiles cost (`SCENIC_COSTS`).
     fn costs_path(&self, k: usize) -> PathBuf {
         self.o.home.join(format!("costs{}.jsonl", slot_suffix(k)))
     }
@@ -3084,7 +3084,7 @@ impl Agent {
         self.o.home.join(format!("waiting{}", slot_suffix(k)))
     }
 
-    /// What slot `k`'s job waits on, when it waits on a worker holding its unit's tail and nothing
+    /// What slot `k`'s job waits on, when it waits on a worker holding its z6 tile's tail and nothing
     /// else (its file, `waiting_path`): None with no job, no file, or a stale one (its process gone,
     /// or not of this job's group).
     fn waiting_on(&self, k: usize) -> Option<crate::offload::WaitNote> {
@@ -5721,7 +5721,7 @@ impl Agent {
         }
         let progress = r.said.clone().map(|(done, total, unit, _)| {
             let frac = done / total;
-            // (Its pace measured again from a new unit, a new part, or a step back.)
+            // (Its pace measured again from a new z6 tile, a new part, or a step back.)
             let key = jobs::unit_key(&unit).to_string();
             let fresh = r.progress_base.as_ref().is_none_or(|b| b.2 != key || b.3 != part || frac < b.1);
             if fresh {
@@ -6258,7 +6258,7 @@ impl Agent {
             },
         );
         // The lead's jobs hand their saves off as every job does (no job writes the records,
-        // docs/pool.md §7.3), note what their units cost, and may offer tasks to other workers
+        // docs/pool.md §7.3), note what their z6 tiles cost, and may offer tasks to other workers
         // through the coordinator; a member's hand theirs off likewise (SCENIC_HANDOFF, in their
         // command).
         let mut env: Vec<(String, String)> = Vec::new();
@@ -6319,7 +6319,7 @@ impl Agent {
         env.push((store::cachefile::WRITTEN_ENV.into(), written.to_string_lossy().into_owned()));
         // The owner's room target it keeps free past what it writes (the OSM pass, pass-sets).
         env.push(self.target_env(&spec));
-        // Where it says it waits on a worker holding its unit's tail, while it does (`waiting_on`),
+        // Where it says it waits on a worker holding its z6 tile's tail, while it does (`waiting_on`),
         // afresh.
         let waiting = self.waiting_path(k);
         std::fs::remove_file(&waiting).ok();
@@ -7150,8 +7150,8 @@ impl Agent {
             since_marks: self.catalogs.borrow().since("marks", now_s()),
             since_overlays: self.catalogs.borrow().since("overlays", now_s()),
         };
-        // (The served catalog's units, read again only when a newer catalog is there: the map tiles
-        // to draw grouped by the unit that changed.)
+        // (The served catalog's z6 tiles, read again only when a newer catalog is there: the map tiles
+        // to draw grouped by the z6 tile that changed.)
         let served = self.planned_tiles.borrow_mut().served(&root.join("catalog"));
         let mut planned = {
             let tiles = self.terrain_tiles(root, &manifest);
@@ -7179,7 +7179,7 @@ impl Agent {
             )
         };
         self.catalogs.borrow_mut().idle = planned.idle;
-        // The units held until the heritage registers are first accepted: said, not a silent stall.
+        // The z6 tiles held until the heritage registers are first accepted: said, not a silent stall.
         if let Some(why) = build::heritage_awaits_acceptance(cov, date, &manifest, &inputs) {
             waiting.push(Waiting {
                 step: Some("heritage-sites".into()),
@@ -7187,7 +7187,7 @@ impl Agent {
                 why: format!("the regions' units wait: {why}"),
             });
         }
-        // Units whose terrain can't be worked out now (a pack's index unread): they wait for it.
+        // Z6 tiles whose terrain can't be worked out now (a pack's index unread): they wait for it.
         // Or the declared elevation datasets: before their switch (docs/inputs.md §6.8), or while
         // their accepted version can't be read.
         if !planned.unknown.is_empty() {
@@ -7203,7 +7203,7 @@ impl Agent {
         }
         let edit_hold = edit_held(self.edited_at.get(), std::time::SystemTime::now());
         // (Hand-offs of a step a catalog waits for (build::CATALOG_GATE: the map tiles, the road
-        // index) not yet merged: counted as done, their files not yet in the manifest. A unit's
+        // index) not yet merged: counted as done, their files not yet in the manifest. A z6 tile's
         // waiting goes out with a later catalog.)
         let unmerged = self.handoff_bases(root).iter().any(|b| {
             crate::handoff::waiting_in(b)
@@ -7223,7 +7223,7 @@ impl Agent {
             })
             .collect::<Vec<_>>()
             .join(",");
-        // (The catalog's `--building`: the regions still building, each with its units built of
+        // (The catalog's `--building`: the regions still building, each with its z6 tiles built of
         // those it builds.)
         let building_arg: String =
             planned.building.iter().map(|(id, b, t)| format!("{id}={b}/{t}")).collect::<Vec<_>>().join(",");
@@ -7325,7 +7325,7 @@ impl Agent {
         }
         // (What room-making lets go last: `hints`.)
         *self.queued.borrow_mut() = plan.clone();
-        // A unit's piece's size (content-named files never change: each looked up once).
+        // A z6 tile's extract's size (content-named files never change: each looked up once).
         let size = |u: &str| {
             let Some(c) = manifest.get(&format!("sources/osm/{date}/pieces/{}", u.replace('/', "-"))) else {
                 return u64::MAX;
@@ -7387,7 +7387,7 @@ impl Agent {
                 others.extend(c.held(&w.step));
             }
             w.targets.retain(|t| !others.contains(&t.0));
-            // The rest, offered to the workers that mount the NAS: units with their pieces' sizes,
+            // The rest, offered to the workers that mount the NAS: z6 tiles with their extracts' sizes,
             // the others with the memory their jobs are expected to take (until one's run says);
             // each worker takes what fits its memory.
             let guess = |t: &str| match w.step.as_str() {
@@ -7432,7 +7432,7 @@ impl Agent {
         // again at most each minute: idle, the plan's made each loop).
         let stale = self.forecast.borrow().as_ref().is_none_or(|f| now_s().saturating_sub(f.at) >= 60);
         if !self.o.helper && stale {
-            // (What can't be listed now: the regions' work after a new pass, or while the units wait.)
+            // (What can't be listed now: the regions' work after a new pass, or while the z6 tiles wait.)
             let blind = match newer {
                 Some(d) => Some(format!("a new OpenStreetMap pass (the planet of {d}) comes first; the regions' work is known once it's done")),
                 None if planned.regions.is_empty() => Some("the z6 tiles wait for the pass's heritage sites, reaches and roadside buildings; what the regions need is known once they're made".to_string()),
@@ -7533,7 +7533,7 @@ impl Agent {
                     }
                 }
             }
-            // (Tree cover pieces made again as they are, their mids made: expected the same.)
+            // (Tree cover z6 tiles made again as they are, their mids made: expected the same.)
             let same = expect_same(&w, &done);
             if !same.is_empty() {
                 extra.extend(["--expect-same".to_string(), same.join(",")]);
@@ -7555,7 +7555,7 @@ impl Agent {
             }
             let n = w.targets.len();
             // "Terrain: 3 tiles" (the checklist names the steps alike: crate::agent::steps::said); the
-            // pieces made again for their mids say so.
+            // z6 tiles made again for their mids say so.
             let mut what = steps::said(&w.step, n);
             if same.len() == n && matches!(w.step.as_str(), "trees" | "terrain" | "slope") {
                 what += ", their mids made and checked the same";
@@ -7595,7 +7595,7 @@ impl Agent {
     }
 
     /// The forecast (crate::agent::forecast) of the work left: `before`, the lead's jobs before
-    /// the regions'; `regions`, the plan's; `backfill`, the pieces whose mids it makes in
+    /// the regions'; `regions`, the plan's; `backfill`, the z6 tiles whose mids it makes in
     /// idle time (build::Plan::backfill); `chains`, the trains', landmarks', 3D buildings' and depths' work to come
     /// (build::chains_left); `blind`, why the work can't all be listed now. Each target's time (at
     /// the lead's pace: a time measured on a member over its speed) and memory as last measured,
@@ -7639,7 +7639,7 @@ impl Agent {
         speeds.extend(forecast::speeds(&events, &self.host, &own_names, 0.8));
         // (A time measured on a member, at the lead's pace; one measured here or by a page, as it is.)
         let pace = |worker: Option<&String>| worker.and_then(|w| speeds.get(w)).map_or(1.0, |s| s.0);
-        // Each shared step's mean of the targets measured (a unit's are kept by its target alone);
+        // Each shared step's mean of the targets measured (a z6 tile's are kept by its target alone);
         // else what its jobs here took a target; else a first guess.
         // (Each measured the way its step runs now: crate::coord::cost_version. A z3 tile's tree
         // cover isn't a z6 tile's.)
@@ -7702,7 +7702,7 @@ impl Agent {
             }
         };
         // The trains' and the landmarks' chains from the start (their steps once what they read is
-        // built: forecast::chain_deps), but the overlays (they read the built units) after everything
+        // built: forecast::chain_deps), but the overlays (they read the built z6 tiles) after everything
         // else; and a catalog after them with what the chains made since.
         let (mut chain_jobs, mut after): (Vec<forecast::Job>, Vec<forecast::Job>) = (Vec::new(), Vec::new());
         for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()).chain(depth.iter()) {
@@ -7728,7 +7728,7 @@ impl Agent {
         // they took last time, less what it spent on the one under way, if longer.
         let busy =
             |k: usize, speed: f64| self.slot_job(k).map_or(0.0, |j| j.busy_s(&|step, t| cost(step, t).secs, speed));
-        // (A worker that takes tails around: each of this Mac's units the moment its job gives it to
+        // (A worker that takes tails around: each of this Mac's z6 tiles the moment its job gives it to
         // take its tail, crate::offload.)
         let unit_extra_s = if self.coord.as_ref().is_some_and(|c| c.tail_takers()) {
             crate::offload::LEASE_WAIT.as_secs_f64()
@@ -7903,7 +7903,7 @@ impl Agent {
                 running.extend(targets.into_iter().map(|t| ((step.clone(), t), m)));
             }
         }
-        // (The pieces' mids made in idle time, last.)
+        // (The z6 tiles' mids made in idle time, last.)
         let idle: Vec<forecast::Job> = backfill
             .iter()
             .flat_map(|w| w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone(), cost(&w.step, t))))
@@ -7926,7 +7926,7 @@ impl Agent {
         let mut f = forecast::forecast(&inp);
         // (Each step's time a target, for the page to weigh the targets done: the headline.)
         f.each_s = steps::TABLE.iter().map(|r| (r.name.to_string(), (per(r.name) * 10.0).round() / 10.0)).collect();
-        // (A slot's job waiting on a worker holding its unit's tail: said beside its machine.)
+        // (A slot's job waiting on a worker holding its z6 tile's tail: said beside its machine.)
         f.waiting = (0..self.slots.len()).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();
         // In the pool, the forecast for equal machines beside it (docs/pool.md §12 4.12), reported
         // alone: each member's slots as lanes (this Mac's first: its publishing; its other slots a
@@ -8178,7 +8178,7 @@ impl Agent {
     }
 
     /// The pass's reaches (crate::reach), once they're made for the current version (Ok(None)
-    /// until then: no unit is planned, and the reach job comes first among the pass's worldwide
+    /// until then: no z6 tile is planned, and the reach job comes first among the pass's worldwide
     /// jobs), or why they can't be read.
     fn current_reach(
         &self,
@@ -9901,7 +9901,7 @@ impl Agent {
                 checking.insert(unit.to_string());
                 // (The listing and acceptances the key is made from, for the job to check exactly
                 // them: inputs::Planned.)
-                // (Named by the unit flat, `timetables+gtfs`: a nested unit's name is one file's.)
+                // (Named by the z6 tile flat, `timetables+gtfs`: a nested z6 tile's name is one file's.)
                 let flat = crate::inputs::flat(unit);
                 let planned = self.o.home.join("inputs-listing").join(format!("{flat}.{key}.json"));
                 let wrote =
@@ -10404,7 +10404,7 @@ fn hold_for_lakefill(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>)
 
 /// The checklist as the status shows it. A step with work left that isn't this Mac's job now (`now`,
 /// its step) says why: another Mac is on it, or its job waits (`waiting`: for the home network,
-/// out a failure). Publishing, while a step above has work left, goes out as each unit is built (a
+/// out a failure). Publishing, while a step above has work left, goes out as each z6 tile is built (a
 /// catalog at most each minute) and once they all are: it's done only then.
 fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waiting: &[Waiting]) {
     let busy = |s: &build::Line| now.iter().any(|n| s.steps.iter().any(|x| x == n));
@@ -10637,7 +10637,7 @@ pub fn read_status(root: Option<&Path>, home: &Path) -> Option<Status> {
 }
 
 /// The targets of `w` made again as they are, expected the same (scenic-build trees, terrain and
-/// slope `--expect-same`): tree cover's, terrain's and slope's pieces the records as read (`done`:
+/// slope `--expect-same`): tree cover's, terrain's and slope's z6 tiles the records as read (`done`:
 /// agent::rekey::as_read) have under the key they're built with, their mids made
 /// (build::TreeWork::backfill, build::TerrainWork::backfill, and those an assembly needs). Any
 /// other step's: none.
@@ -10708,7 +10708,7 @@ fn secs_key(step: &str) -> String {
 
 /// About how long a target of `step` takes on the lead (seconds) until it's been timed there:
 /// the forecast's first guess (crate::agent::forecast), from the jobs' logs of 2026-10 (a tree cover
-/// piece's from its z3 tiles' whole runs: 8,171 s for ~370 z6 tiles).
+/// z6 tile's from its z3 tiles' whole runs: 8,171 s for ~370 z6 tiles).
 fn first_secs(step: &str) -> f64 {
     match step {
         "pass-sets" => 5000.0,
@@ -10722,10 +10722,10 @@ fn first_secs(step: &str) -> f64 {
         // (The survey, 47 s, and the fill by bands, about 15 min on the M1, 2026-10-09.)
         "lakefill" => 1200.0,
         "heritage-sites" => 240.0,
-        // (Reading the latest basemap's water under every piece near the coverage.)
+        // (Reading the latest basemap's water under every z6 tile near the coverage.)
         "terrain-water" => 900.0,
         "heritage" => 5400.0,
-        // (Terrain's and slope's pieces a z6 tile, their assemblies a z3 tile's zoomed-out levels:
+        // (Terrain's and slope's z6 tiles a z6 tile, their assemblies a z3 tile's zoomed-out levels:
         // the z3 tiles' last runs, 9,707 s and ~4,100 s over ~400 z6 tiles, 2026-10.)
         "terrain" => 25.0,
         "terrain-lo" => 60.0,
@@ -11065,7 +11065,7 @@ mod tests {
         assert_eq!(crate::cli::tables::check_command(&pass), Some(Ok(())));
     }
 
-    /// A unit's tail as it runs its programs (scenic-metrics and the rest: crate::unit::tail)
+    /// A z6 tile's tail as it runs its programs (scenic-metrics and the rest: crate::unit::tail)
     /// passes their tables.
     #[test]
     fn a_units_programs_pass_their_tables() {
@@ -11098,7 +11098,7 @@ mod tests {
         assert!(!terrain_reads("unit 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles")));
         assert!(!terrain_reads("terrain-root terrain-root", &packs.join("root.0123456789abcdef.tiles")));
         assert!(!terrain_reads("terrain 3/1/2", Path::new("/c/aws-terrarium/12/2048/1500.png")));
-        // A piece its z6 tile's; an assembly its z3 tile's.
+        // A z6 tile its z6 tile's; an assembly its z3 tile's.
         assert!(
             terrain_reads("terrain 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles"))
                 && !terrain_reads("terrain 6/8/16", &packs.join("6-8-17.0123456789abcdef.tiles"))
@@ -11126,7 +11126,7 @@ mod tests {
         };
         crate::handoff::write(&home.join("coord/journal/m1"), &done("6/1/2", "k2")).unwrap();
         crate::handoff::write(&home.join("coord/journal/m1"), &done("6/1/3", "k3")).unwrap();
-        // The files they save count too (a tree cover piece's mid: build::tree_work), but one a
+        // The files they save count too (a tree cover z6 tile's mid: build::tree_work), but one a
         // later hand-off removes.
         let save = |l: &str, c: Option<&str>| crate::handoff::Handoff {
             changes: [(l.to_string(), c.map(str::to_string))].into(),
@@ -11351,8 +11351,8 @@ mod tests {
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         std::fs::create_dir_all(home.join("cache/base/base")).unwrap();
         std::fs::write(home.join("cache/base/base/6-1-1.0000000000000001.base"), vec![0u8; 1000]).unwrap();
-        // A target past what's free (the freeing's thread sees this Mac's disk), and a unit held by
-        // it: the caches are due a freeing toward the unit's room past the target.
+        // A target past what's free (the freeing's thread sees this Mac's disk), and a z6 tile held by
+        // it: the caches are due a freeing toward the z6 tile's room past the target.
         let target = (1u64 << 40) + (100 << 30);
         let room = target;
         room::set_target(&home, Some(target), "a test").unwrap();
@@ -11365,8 +11365,8 @@ mod tests {
         a.tend_caches(Some(&root), true);
         let f = a.mem.toward.clone().unwrap();
         assert_eq!((f.target, f.goal, f.bytes()), (Some(target), None, 1000), "{f:?}");
-        // Done, and short of both: no freeing again within ten minutes, toward the unit's room nor
-        // toward the target, loop after loop (nor once the unit's wait is over).
+        // Done, and short of both: no freeing again within ten minutes, toward the z6 tile's room nor
+        // toward the target, loop after loop (nor once the z6 tile's wait is over).
         for _ in 0..3 {
             a.tend_caches(Some(&root), true);
             assert!(a.caches_task.is_none());
@@ -12110,7 +12110,7 @@ mod tests {
         stop(&mut a);
     }
 
-    /// A unit job waiting on a worker holding its unit's tail (its `WAITING_ENV` file) counts, beside
+    /// A `unit` job waiting on a worker holding its z6 tile's tail (its `WAITING_ENV` file) counts, beside
     /// it, as the memory it holds now, its cores idle: a second job starts in the room it frees; a
     /// stale file (its process not the job's) counts for nothing; when the first goes on and the two
     /// hold too much, the second yields to the memory guard, the larger or not.
@@ -12175,7 +12175,7 @@ mod tests {
         assert!(note(1).keep(&a.waiting_path(0)).map(std::mem::forget).is_some());
         assert!(a.waiting_on(0).is_none());
         assert!(lead_start(&mut a, &labels, &cond, &root, &mut w).is_empty());
-        // Its own (the job's process): labels is granted beside it (the unit counted as it holds
+        // Its own (the job's process): labels is granted beside it (the z6 tile counted as it holds
         // now), with its measured threads, yielding.
         let pgid = a.slots[0].running.as_ref().unwrap().pgid as u32;
         assert!(note(pgid).keep(&a.waiting_path(0)).map(std::mem::forget).is_some());
@@ -12185,13 +12185,13 @@ mod tests {
         assert_eq!(a.slots[1].running.as_ref().map(|r| r.spec.id.clone()).as_deref(), Some("labels labels"));
         assert_eq!(a.slots[1].yields.as_deref(), Some("unit 6/3/3"));
         assert!(a.slots[1].running.as_ref().is_some_and(|r| r.threads >= 1));
-        // The tail back, the unit going on (its file gone): within the limit, the Mac not short of
+        // The tail back, the z6 tile going on (its file gone): within the limit, the Mac not short of
         // memory, nothing.
         std::fs::remove_file(a.waiting_path(0)).unwrap();
         tick(&mut a, vec![Some(5 << 10), Some(6 << 10)]);
         assert!(!a.guard() && a.slots[1].running.is_some());
         // Past the limit together, the second the larger: it's stopped at once (no safe point
-        // waited for), given back, not kept from this Mac, no floor learned of it; the unit goes on.
+        // waited for), given back, not kept from this Mac, no floor learned of it; the z6 tile goes on.
         tick(&mut a, vec![Some(5 << 10), Some(8 << 10)]);
         assert!(a.guard());
         assert!(
@@ -12414,7 +12414,7 @@ mod tests {
         a.mem_set = Some((64 << 10, 56 << 10));
         let g: u64 = 1 << 30;
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-        // 40 slope pieces of 1 GB each on the disk, one of 3 GB; a unit of 10 GB.
+        // 40 slope z6 tiles of 1 GB each on the disk, one of 3 GB; a z6 tile of 10 GB.
         let tiles: Vec<String> = (0..40).map(|i| format!("6/{i}/0")).collect();
         let c = a.coord.as_ref().unwrap();
         let cost = |step: &str, mb: u64| crate::coord::Cost {
@@ -13409,14 +13409,14 @@ mod tests {
         );
     }
 
-    /// A root as the build has it before the units' keys changed: a pass whose reaches build
-    /// Reykjavik's unit (6/28/17) for region a, the heritage sites and the terrain made (the z3 tile's
-    /// lo pack a real pack), and the unit built under the old keys, with its outputs. Its old key.
+    /// A root as the build has it before the z6 tiles' keys changed: a pass whose reaches build
+    /// Reykjavik's z6 tile (6/28/17) for region a, the heritage sites and the terrain made (the z3 tile's
+    /// lo pack a real pack), and the z6 tile built under the old keys, with its outputs. Its old key.
     fn rekey_root(root: &Path) -> String {
         rekey_root_with(root, [-220_000_000, 640_000_000, -217_000_000, 641_600_000])
     }
 
-    /// `rekey_root`, the unit's ways where `owned` says (E7).
+    /// `rekey_root`, the z6 tile's ways where `owned` says (E7).
     fn rekey_root_with(root: &Path, owned: [i32; 4]) -> String {
         let date = "2026-09-28";
         std::fs::create_dir_all(root.join("catalog")).unwrap();
@@ -13433,7 +13433,7 @@ mod tests {
         let rc = format!("{}.5555555555555555.json.zst", crate::reach::logical(date));
         put(&root.join(&rc), &reaches.encode().unwrap());
         m.insert(crate::reach::logical(date), rc);
-        // (What the units wait for: the heritage sites' inputs and outputs, the buildings' index.)
+        // (What the z6 tiles wait for: the heritage sites' inputs and outputs, the buildings' index.)
         m.insert(
             crate::osmpass::set_name(date, "areas"),
             format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"),
@@ -13491,7 +13491,7 @@ mod tests {
             t.load(root, &m);
             t
         };
-        // (Terrain's z3 record read as its pieces and assembly, as every reader reads it.)
+        // (Terrain's z3 record read as its z6 tiles and assembly, as every reader reads it.)
         let mut read = keys.clone();
         rekey::derive(&mut read, &cov, &m, &tiles);
         let plan = build::plan(
@@ -13519,8 +13519,8 @@ mod tests {
 
     /// Not a test: seeds the scratch folder `SCENIC_SCRATCH_PUBLISH` names (never the project's) with
     /// a region done that the map hasn't, so its lead publishes it (tools/check/pool-two-macs.sh
-    /// `publish`): `rekey_root`'s state, the unit's ways across four z6 tiles (map tiles to share), and
-    /// the unit built as the plan wants it now.
+    /// `publish`): `rekey_root`'s state, the z6 tile's ways across four z6 tiles (map tiles to share), and
+    /// the z6 tile built as the plan wants it now.
     #[test]
     #[ignore = "seeds a scratch folder for tools/check/pool-two-macs.sh publish"]
     fn seed_a_scratch_publish() {
@@ -14559,8 +14559,8 @@ mod tests {
         assert!(!a.plan(&root, &Conditions::default(), &mut w).iter().any(|j| j.id.starts_with("osm-pass")));
     }
 
-    /// A "none" terrain or slope piece (the coverage gone from its z6 tile) is never expected the
-    /// same, its piece's earlier record or its own (a flap back) whatever: its job drops files.
+    /// A "none" terrain or slope z6 tile (the coverage gone from its z6 tile) is never expected the
+    /// same, its z6 tile's earlier record or its own (a flap back) whatever: its job drops files.
     #[test]
     fn none_pieces_are_never_expected_the_same() {
         let mut done = build::Keys::default();
@@ -14591,7 +14591,7 @@ mod tests {
             targets: ts.iter().map(|(t, k)| (t.to_string(), k.to_string())).collect(),
         };
         // One by one in a batch (a helper takes the far end of an offer, so a batch can mix them): a
-        // piece the records have under the key it's made with (its mid made), not one under another
+        // z6 tile the records have under the key it's made with (its mid made), not one under another
         // key (stale) nor one never made.
         assert_eq!(
             expect_same(&w("trees", &[("6/28/16", "a"), ("6/28/17", "b2"), ("6/29/16", "e")]), &done),
@@ -14601,7 +14601,7 @@ mod tests {
         assert!(expect_same(&w("trees", &[("3/3/2", "c")]), &done).is_empty());
         assert!(expect_same(&w("trees-lo", &[("3/3/2", "d")]), &done).is_empty());
         assert!(expect_same(&w("unit", &[("6/28/16", "a")]), &done).is_empty());
-        // The times kept here go by the way a step runs now: a z3 tile's tree cover isn't a piece's.
+        // The times kept here go by the way a step runs now: a z3 tile's tree cover isn't a z6 tile's.
         assert_eq!([secs_key("trees"), secs_key("trees-lo"), secs_key("unit")], ["trees v2", "trees-lo v1", "unit v2"]);
     }
 

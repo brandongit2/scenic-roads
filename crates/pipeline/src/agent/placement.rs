@@ -14,8 +14,8 @@
 //!   for a target drawn to another passes it by; a task likewise among the pages and workers that
 //!   could take it, weighted by their measured pace at its kind. No rule names a Mac or a kind of
 //!   job.
-//! - **Offered ahead** (`AHEAD_ENV`, told to every job): a terrain job offers its next piece's
-//!   subtrees as it begins a piece; each task of a terrain piece or a tree cover's row says how
+//! - **Offered ahead** (`AHEAD_ENV`, told to every job): a terrain job offers its next z6 tile's
+//!   subtrees as it begins a z6 tile; each task of a terrain z6 tile or a tree cover's row says how
 //!   much of this Mac's work comes before the job needs it (`ahead`, in tasks' worth: a head start
 //!   of that many times this Mac's measured time at its kind). A worker measured slower than this
 //!   Mac at a kind is given such a task only while its pace (with the margin) times this Mac's time

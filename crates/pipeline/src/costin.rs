@@ -4,10 +4,10 @@
 //!
 //! Keys (docs/formats.md, costs.jsonl): `bytes` (always: what the store's readers read for the
 //! target, store::range::read_bytes, plus the inputs a step opens itself and notes with `add`),
-//! `threads` (always), `cpu_ms` (the CPU time its process took over it, where it can be read), and the step's own: `ways`/`vertices` (unit, pack, lo), `units` (pack, lo:
+//! `threads` (always), `cpu_ms` (the CPU time its process took over it, where it can be read), and the step's own: `ways`/`vertices` (z6 tile, pack, lo), `units` (pack, lo:
 //! the base packs met), `nas_read` and `nas_secs` (pack, lo: the bytes the job read of the base packs
 //! from the NAS and the seconds that took, the same on each of its targets), `buildings` (bldprep, bldtiles), `tiffs` (the GeoTIFFs opened) and `km2`
-//! (the target's area: terrain, slope, trees and their assemblies, the units' elevations), and,
+//! (the target's area: terrain, slope, trees and their assemblies, the z6 tiles' elevations), and,
 //! where the job wrote to the NAS through its `Out` (crate::out), `wrote` (the bytes of the files
 //! it made there) and `creates` (how many), and its NAS metadata work (`meta`: `listed`, `stats`,
 //! `deletes`, task #451): with `bytes`, the target's NAS weight
@@ -108,7 +108,7 @@ pub struct Taken {
     pub cpu_ms: Option<u64>,
 }
 
-/// Runs `f` (a unit's tail steps run here after its measures were taken, before the next unit
+/// Runs `f` (a z6 tile's tail steps run here after its measures were taken, before the next z6 tile
 /// begins) and gives back what it read, the GeoTIFFs it opened and the CPU it took: its programs'
 /// own (`child_reads`; their CPU as each is waited for) among them. (Reads and CPU on other
 /// threads meanwhile are counted too.)
@@ -131,7 +131,7 @@ pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
 /// <tiffs>` lines appended: `report_on_exit`), for the process that ran it (`child_reads`).
 pub const READS_ENV: &str = "SCENIC_READS";
 
-/// In a step's program (a unit's: extract, areaflags, landcover, elev, tile, scenic-metrics): when
+/// In a step's program (a z6 tile's: extract, areaflags, landcover, elev, tile, scenic-metrics): when
 /// `READS_ENV` names a file, what this process read and opened is appended to it as it exits.
 pub fn report_on_exit() {
     if std::env::var_os(READS_ENV).is_some() {
@@ -169,7 +169,7 @@ pub fn child_reads(p: &Path) {
     std::fs::remove_file(p).ok();
 }
 
-/// Adds measures taken by `measured` to a target's: its CPU too, so a unit's `cpu_ms` counts its
+/// Adds measures taken by `measured` to a target's: its CPU too, so a z6 tile's `cpu_ms` counts its
 /// tail's programs run after its measures were taken (crate::needs::Book::cores reads it over the
 /// target's whole time, the tail's included).
 pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {

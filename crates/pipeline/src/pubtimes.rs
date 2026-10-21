@@ -1,10 +1,10 @@
 //! Publishing timed end to end (task #250; docs/building.md §2, Publishing's times): from a build
-//! unit done to its map tiles on every Mac's map, by the events each stage leaves.
+//! z6 tile done to its map tiles on every Mac's map, by the events each stage leaves.
 //!
-//! - **In the build's history** (crate::coord::history, the lead's): a unit's job ended ("end",
+//! - **In the build's history** (crate::coord::history, the lead's): a z6 tile's job ended ("end",
 //!   "done"); its hand-off merged ("merged": `merged_event`, each entry's key, member, step and
 //!   targets); the map tiles (pack) planned ("planned": `planned_event`, the z6 tiles the lead
-//!   first plans at their keys, and the units whose change made each stale, `restaled_by`), leased
+//!   first plans at their keys, and the z6 tiles whose change made each stale, `restaled_by`), leased
 //!   ("lease", "start") and done ("end", "done"); and catalog n written ("catalog": its `n`, its
 //!   job's time, and `CatalogStats`: delta or whole, the files it stat'ed, its phases).
 //! - **The Macs' map servers' own log on the NAS** (`SERVERS`, a file per Mac appended to: a few
@@ -12,7 +12,7 @@
 //!   server's adoption of catalog n ("adopt") and its mirror's sync of it, begun ("mirror-start")
 //!   and through everything wanted ("mirror-end"), each once per catalog and server process.
 //!
-//! `chains` joins them, per catalog and per unit; `scenic timings publish` prints them.
+//! `chains` joins them, per catalog and per z6 tile; `scenic timings publish` prints them.
 
 use crate::coord::history::Event;
 use serde::{Deserialize, Serialize};
@@ -157,10 +157,10 @@ impl CatalogStats {
     }
 }
 
-/// The units whose change made each of `tiles` (z6, "6/x/y") stale: of its owners (their ways meet
+/// The z6 tiles whose change made each of `tiles` (z6, "6/x/y") stale: of its owners (their ways meet
 /// it: crate::agent::build::{unit_reach, owns}, as its key reads them), those whose base pack or
 /// road values in the manifest `m` aren't what `served` (the served catalog's, by logical name)
-/// has: by unit ("6/x/y"), its tiles. A unit rebuilt the same (the same content names) made none
+/// has: by z6 tile ("6/x/y"), its tiles. A z6 tile rebuilt the same (the same content names) made none
 /// stale.
 pub fn restaled_by(
     m: &BTreeMap<String, String>,
@@ -214,13 +214,14 @@ fn cut(k: &str) -> String {
     k.chars().take(KEY_KEPT).collect()
 }
 
-/// A "planned" event: map tiles first planned at their keys (`tiles`: (tile, key)), and the units
-/// whose change made them stale (`restaled_by`). Small: the keys cut short, each unit its own tiles.
+/// A "planned" event: map tiles first planned at their keys (`tiles`: (tile, key)), and the z6 tiles
+/// whose change made them stale (`restaled_by`). Small: the keys cut short, each z6 tile its own tiles.
 pub fn planned_event(tiles: &[(String, String)], by_unit: BTreeMap<String, Vec<String>>) -> Event {
     let keys: Vec<String> = tiles.iter().map(|(_, k)| cut(k)).collect();
     Event {
         step: Some("pack".into()),
         targets: tiles.iter().map(|t| t.0.clone()).collect(),
+        // (`units`: the stored key of the z6 tiles by their changed map tiles, in the history's events: kept.)
         data: Some(serde_json::json!({ "k": keys, "units": by_unit })),
         ..Event::new("planned")
     }
@@ -255,7 +256,7 @@ pub fn note_planned(noted: &mut BTreeSet<(String, String)>, new: &[(String, Stri
 pub const JUST_BEGUN_S: u64 = 120;
 
 /// What the lead noted planned since the last catalog (`planned_event`), by tile and key, and
-/// the served catalog's units as last read (`served_units`, once a catalog). What it noted before
+/// the served catalog's z6 tiles as last read (`served_units`, once a catalog). What it noted before
 /// a restart comes back from its coordinator's history (`begin`); before a change of lead, from
 /// the NAS's, read on a thread of its own (`seed_from_nas`) so a slow share never holds the plan.
 #[derive(Debug, Default)]
@@ -321,7 +322,7 @@ impl PlannedNotes {
         note_planned(&mut self.noted, new);
     }
 
-    /// The served catalog's units (in `dir`), read again only when a newer catalog is there.
+    /// The served catalog's z6 tiles (in `dir`), read again only when a newer catalog is there.
     pub fn served(&mut self, dir: &Path) -> BTreeMap<String, String> {
         let latest = store::catalog::list(dir).ok().and_then(|ns| ns.into_iter().max());
         if latest.is_some() && self.served.as_ref().map(|s| s.0) != latest {
@@ -344,7 +345,7 @@ pub fn merged_event(done: &[crate::pool::records::MergedJob]) -> Event {
     }
 }
 
-/// A unit's way to the map: when each stage was reached (unix seconds).
+/// A z6 tile's way to the map: when each stage was reached (unix seconds).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct UnitChain {
     pub unit: String,
@@ -379,7 +380,7 @@ pub struct CatalogChain {
     /// catalog to its start, and its length).
     pub adopted: BTreeMap<String, f64>,
     pub mirrored: BTreeMap<String, (f64, Option<f64>)>,
-    /// The units in it, and the map tiles planned between the catalog before's beginning and its own.
+    /// The z6 tiles in it, and the map tiles planned between the catalog before's beginning and its own.
     pub units: usize,
     pub tiles: usize,
     /// Of `COUNTED`, the steps that ran for it (between the same beginnings; names-todo after it).
@@ -395,8 +396,8 @@ fn began(c: &Event) -> u64 {
     c.t.saturating_sub(c.secs.unwrap_or(0.0).ceil() as u64)
 }
 
-/// The chains of the catalogs in `events` (any order) and their units, joined with the servers'
-/// events; oldest first. A unit is in the first catalog begun once its hand-off was merged (a
+/// The chains of the catalogs in `events` (any order) and their z6 tiles, joined with the servers'
+/// events; oldest first. A z6 tile is in the first catalog begun once its hand-off was merged (a
 /// member's job; the lead's own, at its end) and the map tiles its change made stale were packed;
 /// a catalog's map tiles and steps are those between the catalog before's beginning and its own.
 pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, Vec<UnitChain>) {
@@ -424,7 +425,7 @@ pub fn chains(events: &[Event], servers: &[ServerEvent]) -> (Vec<CatalogChain>, 
     let stats_of =
         |c: &Event| -> Option<CatalogStats> { c.data.as_ref().and_then(|d| serde_json::from_value(d.clone()).ok()) };
     let n_of = |c: &Event| c.n.or(stats_of(c).map(|s| s.n));
-    // Each planned tile: when, which, and the units whose change made it stale.
+    // Each planned tile: when, which, and the z6 tiles whose change made it stale.
     let planned: Vec<(u64, String, Vec<String>)> = ev
         .iter()
         .filter(|e| e.kind == "planned")
@@ -573,7 +574,7 @@ fn s(x: Option<f64>) -> String {
     x.map_or_else(|| "-".into(), crate::timings::secs)
 }
 
-/// The stages a unit goes through, each's time.
+/// The stages a z6 tile goes through, each's time.
 fn unit_stages(u: &UnitChain) -> Vec<(&'static str, Option<f64>)> {
     let last = |m: &BTreeMap<String, u64>| m.values().max().copied();
     let hand = u.merged.or(Some(u.done));
@@ -589,7 +590,7 @@ fn unit_stages(u: &UnitChain) -> Vec<(&'static str, Option<f64>)> {
     ]
 }
 
-/// The chains in words: the last `last` catalogs, each with its units, then the medians.
+/// The chains in words: the last `last` catalogs, each with its z6 tiles, then the medians.
 pub fn text(cats: &[CatalogChain], units: &[UnitChain], last: usize) -> String {
     let mut o = String::new();
     let cats = &cats[cats.len().saturating_sub(last)..];
@@ -764,7 +765,7 @@ mod tests {
         Event { t, ..planned_event(&tiles, by) }
     }
 
-    /// A unit from its job to every Mac's map: each stage's time, its restale count, the catalog's
+    /// A z6 tile from its job to every Mac's map: each stage's time, its restale count, the catalog's
     /// kind, its files stat'ed, the counted steps, and the servers' adoptions and mirrors.
     #[test]
     fn a_units_chain_from_its_job_to_every_macs_map() {
@@ -830,7 +831,7 @@ mod tests {
         assert!(!text(&cats, &units, 1).contains("catalog 7"));
     }
 
-    /// A catalog reads the manifest as it begins: a unit merged, or its tiles packed, while one
+    /// A catalog reads the manifest as it begins: a z6 tile merged, or its tiles packed, while one
     /// runs is in the next; the map tiles and steps are counted by the catalogs' beginnings.
     #[test]
     fn a_unit_done_while_a_catalog_runs_is_in_the_next() {
@@ -842,7 +843,7 @@ mod tests {
             job("end", 1120, "unit", &["6/2/2"], None),
             planned(1130, &["6/2/2"], &[("6/2/2", &["6/2/2"])]),
             job("end", 1560, "pack", &["6/2/2"], None),
-            // (A unit with no map tile stale: in the first begun after its end.)
+            // (A z6 tile with no map tile stale: in the first begun after its end.)
             job("end", 1200, "unit", &["6/3/3"], None),
             job("end", 1540, "ferries", &["ferries"], None),
             catalog(1600, 100.0, 8, true),
@@ -870,18 +871,18 @@ mod tests {
         assert_eq!(units[0].catalog, None);
     }
 
-    /// Lease numbers repeat across leads (terms): a hand-off's merge is the one of its unit, after
+    /// Lease numbers repeat across leads (terms): a hand-off's merge is the one of its z6 tile, after
     /// its job ended, at its lease's number.
     #[test]
     fn a_hand_off_is_matched_by_its_unit_and_lease_across_terms() {
         let events = vec![
             job("done", 100, "unit", &["6/1/1"], Some(5)),
             merged(110, "2026-10-17/2-5", "unit", &["6/1/1"]),
-            // (A new lead's lease 5: another unit.)
+            // (A new lead's lease 5: another z6 tile.)
             job("done", 200, "unit", &["6/2/2"], Some(5)),
             merged(205, "2026-10-17/3-5", "unit", &["6/9/9"]),
             merged(230, "2026-10-17/3-5", "unit", &["6/2/2"]),
-            // (The same unit again, lease 7: its own merge, not the first's.)
+            // (The same z6 tile again, lease 7: its own merge, not the first's.)
             job("done", 300, "unit", &["6/1/1"], Some(7)),
             merged(320, "2026-10-17/3-6", "unit", &["6/1/1"]),
             merged(340, "2026-10-17/3-7", "unit", &["6/1/1"]),
@@ -895,7 +896,7 @@ mod tests {
         );
     }
 
-    /// The units whose change made a tile stale: its owners whose base pack or road values aren't
+    /// The z6 tiles whose change made a tile stale: its owners whose base pack or road values aren't
     /// the served catalog's; one rebuilt the same made none.
     #[test]
     fn a_tile_is_restaled_by_its_owners_that_changed() {

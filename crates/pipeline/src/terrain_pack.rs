@@ -556,10 +556,10 @@ impl ManifestTiles {
 
     /// Tiles `want` (each as `get` gives it), read a pack at a time in spans: the tiles' bytes in the
     /// pack's order, neighbours a gap of under `SPAN_GAP` apart read together, up to `SPAN_MAX` a
-    /// read, the spans in parallel. A unit reading thousands of a pack's tiles makes a few dozen
+    /// read, the spans in parallel. A z6 tile reading thousands of a pack's tiles makes a few dozen
     /// reads of the share instead of a round trip a tile, and moves little it doesn't use. Each
     /// span's read is under `nas_call`'s deadline and retries, on `SPAN_READERS` threads of its own
-    /// (not rayon's: a job computing meanwhile, the peaks' next unit read ahead, doesn't hold them up).
+    /// (not rayon's: a job computing meanwhile, the peaks' next z6 tile read ahead, doesn't hold them up).
     pub fn get_many(&self, want: &[(u8, u32, u32)]) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
         use store::sys::PosIo;
         const SPAN_GAP: u64 = 256 << 10;
@@ -1298,11 +1298,11 @@ pub fn build_q(
     build_q_with(out, raw, q, ts, cov, src, &|_, _, _| {})
 }
 
-/// What a terrain piece (a z6 tile's run: `build_piece`) keeps for its z3 tile's assembly
+/// What a terrain z6 tile (a z6 tile's run: `build_piece`) keeps for its z3 tile's assembly
 /// (`build_lo`), its mid: its z9 tiles' 2×2 means (128 × 128, f32: each a quarter of the z8 tile
 /// above), and its lakes' levels as its own levels gave them (crate::terrain_water). Its z8–z6
 /// can't be made with it: a lake's level at z8 is gathered from the whole z3 tile's z8 tiles, and the
-/// z3 tile's levels start from every piece's lakes, the first piece's (in column, then row order)
+/// z3 tile's levels start from every z6 tile's lakes, the first z6 tile's (in column, then row order)
 /// kept for a lake two of them have.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Mid {
@@ -1598,7 +1598,7 @@ impl<'a> Maker<'a> {
         }
     }
 
-    /// A piece (z6 tile `t`): its levels z12 → z9 (`levels`, `piece_levels`), its lakes' levels
+    /// A z6 tile (z6 tile `t`): its levels z12 → z9 (`levels`, `piece_levels`), its lakes' levels
     /// from them alone, each level a block at a time (`by_block`, `level`; else all at once: the
     /// way before task #447, kept to check the bytes against). Its hi tiles, sorted, and its mid.
     fn piece(&self, levels: Vec<(u8, Vec<(u32, u32)>)>, by_block: bool) -> anyhow::Result<(Vec<Made>, Mid)> {
@@ -1614,11 +1614,11 @@ impl<'a> Maker<'a> {
         Ok((hi, Mid { quads: quads.into_iter().collect(), levels: lakes.into_iter().collect() }))
     }
 
-    /// A z3 tile's assembly (z3 tile `q`): its levels z8 → z3, the whole of it, from its pieces' mids
+    /// A z3 tile's assembly (z3 tile `q`): its levels z8 → z3, the whole of it, from its z6 tiles' mids
     /// (`mids`, in column then row order: their z9 tiles' means taken in, each lake's level the
     /// first of them that has one, the levels' lakes added below them). Its lo tiles, sorted.
     ///
-    /// (A z8 tile's quarter over a piece's z9 tile is made again whole from that tile's means: the
+    /// (A z8 tile's quarter over a z6 tile's z9 tile is made again whole from that tile's means: the
     /// pixels a z9 tile's repair moved, which `prepare` takes in first, are written over by them;
     /// so the mid needn't hold those.)
     fn lo(&self, q: (u32, u32), mids: &[((u32, u32), &Mid)]) -> anyhow::Result<Vec<Made>> {
@@ -1648,7 +1648,7 @@ impl<'a> Maker<'a> {
     }
 }
 
-/// A piece's levels `levels` (z12 → z9, `piece_levels`, or a task's part of them:
+/// A z6 tile's levels `levels` (z12 → z9, `piece_levels`, or a task's part of them:
 /// crate::terrain_task) made from `raw` and `src`, its lakes' levels from them alone: its hi tiles,
 /// sorted, and its mid.
 pub fn make_piece(
@@ -1660,7 +1660,7 @@ pub fn make_piece(
 }
 
 /// `make_piece` with each level's tiles all prepared at once (the way before task #447, which held
-/// a piece's every z12 tile prepared: 7 GB at the 90th percentile): the same bytes, for checking
+/// a z6 tile's every z12 tile prepared: 7 GB at the 90th percentile): the same bytes, for checking
 /// them (`scenic-build terrain-same --whole`, tests).
 pub fn make_piece_whole(
     raw: &dyn RawSource,
@@ -1673,7 +1673,7 @@ pub fn make_piece_whole(
 /// How many levels up a block's tile is (`blocks`): a z8 subtree's tiles at z12, 256 at most.
 const BLOCK_UP: u8 = 4;
 
-/// `make_piece` with blocks `up` levels up (`blocks`), for tests: more blocks on a small piece.
+/// `make_piece` with blocks `up` levels up (`blocks`), for tests: more blocks on a small z6 tile.
 #[cfg(test)]
 pub fn make_piece_up(
     raw: &dyn RawSource,
@@ -1733,7 +1733,7 @@ fn lakes_by_block(
     Some(by)
 }
 
-/// A piece's levels (z6 tile `t`'s), z12 → z9: the tiles near the coverage (20 km), as fine as the
+/// A z6 tile's levels (z6 tile `t`'s), z12 → z9: the tiles near the coverage (20 km), as fine as the
 /// latitude allows.
 pub fn piece_levels(cov: &Coverage, t: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)> {
     let (tx, ty) = t;
@@ -1750,13 +1750,13 @@ pub fn piece_levels(cov: &Coverage, t: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)>
         .collect()
 }
 
-/// Whether z6 tile `t`'s piece makes any hi tile (`piece_levels` not all empty): one near the
+/// Whether z6 tile `t`'s z6 tile makes any hi tile (`piece_levels` not all empty): one near the
 /// coverage at z6 can still have none of its z9–12 tiles near it (6/21/18).
 pub fn makes_hi(cov: &Coverage, t: (u32, u32)) -> bool {
     piece_levels(cov, t).iter().any(|(_, ts)| !ts.is_empty())
 }
 
-/// Drops z6 tile `t`'s terrain hi pack and mid from the manifest (a piece the coverage has left:
+/// Drops z6 tile `t`'s terrain hi pack and mid from the manifest (a z6 tile the coverage has left:
 /// docs/regions.md, Shrinking), saving it; how many it had.
 pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> anyhow::Result<usize> {
     let n = drop_named(out, &[format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1)]);
@@ -1831,11 +1831,11 @@ fn saying<T>(
 /// every few seconds; each z6 tile's hi pack written as its tiles are done), then its lo pack
 /// written ("packs").
 ///
-/// Its pieces, a z6 tile at a time (`build_piece`'s run: its levels z12 → z9 made, then its hi pack
-/// written, so only its tiles are held), then its assembly (`build_lo`'s, from the pieces' mids held
-/// here): the same bytes as the pieces' jobs and the assembly's, and the same hi packs dropped (a
-/// piece's when it makes no hi tile; that of each z6 tile of `q` the coverage has left, as its
-/// "none" piece's run drops it with its mid, `drop_piece`: a whole run writes no mids). A tile's making reads only its own raw
+/// Its z6 tiles, a z6 tile at a time (`build_piece`'s run: its levels z12 → z9 made, then its hi pack
+/// written, so only its tiles are held), then its assembly (`build_lo`'s, from the z6 tiles' mids held
+/// here): the same bytes as the z6 tiles' jobs and the assembly's, and the same hi packs dropped (a
+/// z6 tile's when it makes no hi tile; that of each z6 tile of `q` the coverage has left, as its
+/// "none" z6 tile's run drops it with its mid, `drop_piece`: a whole run writes no mids). A tile's making reads only its own raw
 /// tile and its children's (`process`): the same bytes in any order.
 pub fn build_q_with(
     out: &mut Out,
@@ -1871,7 +1871,7 @@ pub fn build_q_with(
         }
         // (The z3 tile's z6 tiles the coverage has left: their hi packs go. Not their mids, which
         // a whole run never writes (its lease's write-set: agent::steps::saves); their "none"
-        // pieces drop those.)
+        // z6 tiles drop those.)
         for x in q.0 * 8..(q.0 + 1) * 8 {
             for y in q.1 * 8..(q.1 + 1) * 8 {
                 if !near_coverage(cov, 6, x, y, 20.0) {
@@ -1901,11 +1901,11 @@ pub fn build_q_with(
     Ok(rep)
 }
 
-/// Makes z6 tile `t`'s terrain (a piece: its levels z12 → z9, `piece_levels`) and uploads it: its hi
+/// Makes z6 tile `t`'s terrain (a z6 tile: its levels z12 → z9, `piece_levels`) and uploads it: its hi
 /// pack (none when it made no tile: the manifest's then dropped, so no earlier run's hi tiles stay
 /// above the z8–z6 its assembly makes from the raw tiles alone) and its mid (`Mid`, `mid_logical`),
 /// which its z3 tile's assembly reads (`build_lo`). A z6 tile the coverage has left (not near it: no
-/// piece) has its hi pack and mid dropped instead (`drop_piece`). `expect_same`: a piece made again
+/// z6 tile) has its hi pack and mid dropped instead (`drop_piece`). `expect_same`: a z6 tile made again
 /// as it is (its mid made), whose hi pack must come out as the manifest has it (none where it has
 /// none), else an error and nothing uploaded. Says how far it is as `build_q_with` does.
 #[allow(clippy::too_many_arguments)]
@@ -1939,8 +1939,8 @@ pub fn build_piece_with(
     build_piece_offered(out, raw, t, cov, src, expect_same, progress, offers)
 }
 
-/// `build_piece` with its subtrees out as `offers` says (made for this piece: `Offers::offer`,
-/// when it begins or, a job's next piece, ahead: crate::terrain_task::offer_ahead).
+/// `build_piece` with its subtrees out as `offers` says (made for this z6 tile: `Offers::offer`,
+/// when it begins or, a job's next z6 tile, ahead: crate::terrain_task::offer_ahead).
 #[allow(clippy::too_many_arguments)]
 pub fn build_piece_offered(
     out: &mut Out,
@@ -1960,7 +1960,7 @@ pub fn build_piece_offered(
 }
 
 /// `build_piece_offered`, its uploads put off (crate::out::Out::put_file_later): they go on beside
-/// what the job does next, and the piece is saved (and noted done) by a later save
+/// what the job does next, and the z6 tile is saved (and noted done) by a later save
 /// (`Out::save_upto` the mark after it).
 #[allow(clippy::too_many_arguments)]
 pub fn build_piece_later(
@@ -2039,7 +2039,7 @@ pub fn build_piece_later(
 }
 
 /// Makes z3 tile `q`'s zoomed-out terrain (an assembly: its levels z8 → z3, the whole of it) from
-/// its pieces' mids (`ts`: its z6 tiles near the coverage, in column then row order, each with its
+/// its z6 tiles' mids (`ts`: its z6 tiles near the coverage, in column then row order, each with its
 /// mid in the manifest), and uploads its lo pack (none when it made no tile: the manifest's then
 /// dropped). Says how far it is as `build_q_with` does.
 pub fn build_lo(
@@ -2482,11 +2482,11 @@ pub(crate) mod tests {
     }
 
     /// Two raw-tile jobs at once on one Mac (docs/pool.md §7.7, the raw tiles' group's going): two
-    /// terrain pieces of one z3 tile reading their raw tiles through one cache at the same time, while
+    /// terrain z6 tiles of one z3 tile reading their raw tiles through one cache at the same time, while
     /// the tiles waiting there are packed onto the NAS and deleted under them (rawpack::pack_local:
     /// only tiles no job holds, only once their archive is named) and every copy of the NAS's
     /// archives no job holds is deleted as fast as it can be (as room-making takes them: a loose
-    /// tile the NAS lacks it never takes, so neither does this): each piece makes the same packs,
+    /// tile the NAS lacks it never takes, so neither does this): each z6 tile makes the same packs,
     /// byte for byte, as when it ran alone.
     #[test]
     fn two_raw_tile_jobs_at_once_with_packing_between_make_the_same_bytes() {
@@ -2716,8 +2716,8 @@ pub(crate) mod tests {
         assert_eq!(fresh.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
     }
 
-    /// The z3 tile's terrain as main made it at 1fa03d8 (TERRAIN_V 3), before it was made as pieces and an
-    /// assembly: the reference the pieces and assembly must match, byte for byte.
+    /// The z3 tile's terrain as main made it at 1fa03d8 (TERRAIN_V 3), before it was made as z6 tiles and an
+    /// assembly: the reference the z6 tiles and assembly must match, byte for byte.
     fn z3_v3(
         out: &mut Out,
         raw: &RawTiles,
@@ -2966,9 +2966,9 @@ pub(crate) mod tests {
         vec![rect(Kind::Lake, 5, 11.0, 70.42, 11.5, 70.5), rect(Kind::Sea, 0, 10.9, 70.56, 11.6, 70.6)]
     }
 
-    /// The pieces and the assembly (each from the mids as uploaded) make what main's z3 tile run made,
-    /// byte for byte, with GLO-30, the water (a lake across two pieces: its level the first's) and
-    /// AWS's z9 tiles for the walled patches; so does the z3 tile run made of them. A piece made again
+    /// The z6 tiles and the assembly (each from the mids as uploaded) make what main's z3 tile run made,
+    /// byte for byte, with GLO-30, the water (a lake across two z6 tiles: its level the first's) and
+    /// AWS's z9 tiles for the walled patches; so does the z3 tile run made of them. A z6 tile made again
     /// expecting the same changes nothing; one that isn't the same uploads nothing.
     #[test]
     fn pieces_and_their_assembly_make_the_z3_runs_packs() {
@@ -3011,7 +3011,7 @@ pub(crate) mod tests {
         for &t in ts {
             build_piece(&mut parts, &raw, t, &cov, &src, false, &|_, _, _| {}).unwrap();
         }
-        // (The lake's level, from each of the two pieces' own shore.)
+        // (The lake's level, from each of the two z6 tiles' own shore.)
         let mids: Vec<Mid> =
             ts.iter().map(|t| read_mid(&parts.path(parts.get(&mid_logical(t.0, t.1)).unwrap())).unwrap().1).collect();
         assert!(
@@ -3051,7 +3051,7 @@ pub(crate) mod tests {
         let e = build_piece(&mut parts, &raw, t, &cov, &src, true, &|_, _, _| {}).unwrap_err().to_string();
         assert!(e.contains(&hi) && e.contains("nothing uploaded"), "{e}");
         assert!(parts.get(&ml).is_none(), "its mid wasn't uploaded");
-        // An assembly without a piece's mid: refused.
+        // An assembly without a z6 tile's mid: refused.
         assert!(build_lo(&mut parts, &raw, q, ts, &src, &|_, _, _| {}).unwrap_err().to_string().contains("no mid"));
     }
 
@@ -3145,7 +3145,7 @@ pub(crate) mod tests {
 
     /// Byte identity on the build's own data, by hand on the M4 (§10): the terrain and slope
     /// packs of the z3 tiles `P5_AREAS` ("3/2/2,3/0/2") in two roots' manifests, `P5_A` (a z3 tile's
-    /// whole run, main's) and `P5_B` (its pieces and assembly), and `P5_LIVE` (the NAS's, if set):
+    /// whole run, main's) and `P5_B` (its z6 tiles and assembly), and `P5_LIVE` (the NAS's, if set):
     /// each pack's content name, and every tile's pixels (terrain's heights, slope's quarters),
     /// those along a z6 tile's edge counted apart.
     #[test]
@@ -3261,7 +3261,7 @@ pub(crate) mod tests {
         c
     }
 
-    /// A piece that makes no hi tile drops the hi pack an earlier run left (expected the same, it
+    /// A z6 tile that makes no hi tile drops the hi pack an earlier run left (expected the same, it
     /// isn't: refused, nothing uploaded); a z6 tile the coverage has left drops its hi pack and mid
     /// (it can't be expected the same); neither touches another tile's.
     #[test]
@@ -3312,9 +3312,9 @@ pub(crate) mod tests {
                 && again.get(&mid).is_some()
         );
         assert_eq!(drop_piece(&mut out, (10, 10)).unwrap(), 0, "nothing left to drop");
-        // A z3 tile's whole run drops the same hi packs: its piece's making no hi tile, and its z6
-        // tile's the coverage has left (that tile's mid left to its "none" piece); its other
-        // pieces' it writes. Every name it changes is one its lease may (agent::steps::saves).
+        // A z3 tile's whole run drops the same hi packs: its z6 tile's making no hi tile, and its z6
+        // tile's the coverage has left (that tile's mid left to its "none" z6 tile); its other
+        // z6 tiles' it writes. Every name it changes is one its lease may (agent::steps::saves).
         let by_q = crate::agent::build::coverage_tiles(&cov);
         let ts = by_q.get(&(2, 2)).unwrap().clone();
         assert!(ts.contains(&(21, 18)) && ts.contains(&(22, 18)), "{ts:?}");

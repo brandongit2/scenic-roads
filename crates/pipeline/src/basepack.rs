@@ -66,7 +66,7 @@ impl Sect {
     }
 }
 
-/// One unit's base pack, with its road values.
+/// One z6 tile's base pack, with its road values.
 pub struct BasePack {
     pub unit: TileId,
     pub sect: Sect,
@@ -94,6 +94,7 @@ impl BasePack {
 
     /// A base pack and its road values from their sectioned files, opened.
     pub fn from_sects(sect: Sect, roads: Sect) -> Result<BasePack> {
+        // (A base pack's meta names its z6 tile `unit`: stored so, kept.)
         let unit = sect
             .meta
             .get("unit")

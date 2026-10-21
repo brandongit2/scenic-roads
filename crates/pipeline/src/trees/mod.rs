@@ -18,8 +18,8 @@
 //! WebAssembly one after another), and the archives are the same bytes either way, and as
 //! `assemble` writes them.
 //!
-//! The build makes the layers a z6 tile at a time (a piece, `z6`: its blocks' zoom 9–12 tiles, and
-//! its mid, `MID`, their zoom-8 tiles and values), then each z3 tile's zoom 8 to 4 from its pieces'
+//! The build makes the layers a z6 tile at a time (a z6 tile, `z6`: its blocks' zoom 9–12 tiles, and
+//! its mid, `MID`, their zoom-8 tiles and values), then each z3 tile's zoom 8 to 4 from its z6 tiles'
 //! mids (`assemble_lo`): together the same tiles, byte for byte, as `z3` makes.
 
 pub mod mask;
@@ -850,7 +850,7 @@ pub fn z3(a: &Run) -> Result<[usize; 3]> {
     Ok(end(a, w.finish()?, t0))
 }
 
-/// A z6 tile's run (docs/steps.md §2, Trees: a piece): z6 tile `a.tile`'s blocks the coverage meets,
+/// A z6 tile's run (docs/steps.md §2, Trees: a z6 tile): z6 tile `a.tile`'s blocks the coverage meets,
 /// as `z3` runs them, its zoom 9–12 tiles into `out`'s three archives (its hi packs' tiles), and
 /// its blocks' zoom-8 tiles and values into its mid, `out/MID` (`write_mid`), from which its z3
 /// tile's assembly (`assemble_lo`) makes zoom 8 to 4. A z3 run's tiles are its z6 tiles' runs' and

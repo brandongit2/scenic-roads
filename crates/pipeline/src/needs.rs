@@ -2,10 +2,10 @@
 //! coordinator's picks, its floors, the forecast). Nothing here is a figure kept by hand: a need is
 //! measured (the target's own run, its floor), fitted over the step's measured runs, the step's
 //! prior from its measured runs, or the caller's first guess (the steps table's, the size its plan
-//! offered, a unit's piece-size guess).
+//! offered, a z6 tile's extract-size guess).
 //!
 //! Only what was measured the way the step runs now counts (crate::coord::cost_version): a run or a
-//! floor of an older way of it (a unit's before its v2, whose measures held malloc's cached freed
+//! floor of an older way of it (a z6 tile's before its v2, whose measures held malloc's cached freed
 //! blocks) is neither a measure, nor a fit's run, nor part of a prior.
 //!
 //! - **Measured**: the target's own run, never below its floor (crate::agent::memguard::Floor); a
@@ -19,14 +19,14 @@
 //!   its fit (`FOLDS`-fold): one that misses more than `MAX_MISS` of them, or is off by more than
 //!   `MAX_ERR` on the median one, is poor and not used. The best of the good ones is used, when the
 //!   target has that size (its own earlier run's, or its area).
-//! - **Guess first** (units and landmark candidates, `GUESS_FIRST`): with no good fit, the caller's
-//!   guess scaled by the target's piece comes before the step's prior, so one dense unit doesn't set
+//! - **Guess first** (z6 tiles and landmark candidates, `GUESS_FIRST`): with no good fit, the caller's
+//!   guess scaled by the target's extract comes before the step's prior, so one dense z6 tile doesn't set
 //!   every other's need.
 //! - **Prior**: memory and disk, the step's targets' measures' 90th percentile (memory: their
 //!   floors among them), so one outlier doesn't hold every other target to its figure, and a heavy
 //!   target's own floor holds it; time, the mean of its targets' runs: the expected time, what a
 //!   job's targets are counted to a quarter hour by and the forecast sums (task #433: by the 90th
-//!   percentile a unit was 1151 s against a mean of 363, so every unit job carried one unit and
+//!   percentile a z6 tile was 1151 s against a mean of 363, so every `unit` job carried one z6 tile and
 //!   paid the job's setup for it alone; depth 265 against 131).
 //! - **Table**: the caller's guess, when nothing of the step was measured.
 
@@ -46,12 +46,12 @@ pub const FOLDS: usize = 5;
 pub const MAX_MISS: f64 = 0.05;
 /// The median held-out error (|predicted − measured| / measured) past which a fit is poor.
 pub const MAX_ERR: f64 = 0.5;
-/// The steps whose caller's guess scales with the target (a unit's piece; candidates read the
-/// same piece) and so comes before the step's prior while no fit is good.
+/// The steps whose caller's guess scales with the target (a z6 tile's extract; candidates read the
+/// same extract) and so comes before the step's prior while no fit is good.
 pub const GUESS_FIRST: [&str; 2] = ["unit", "pois"];
 
 /// The steps whose job opens one halo of base packs for all its targets (task #260: `pack`, a
-/// unit's map tiles together; task #381: `lo`, a pass of the low zooms, its z3 tiles' owners'): the
+/// z6 tile's map tiles together; task #381: `lo`, a pass of the low zooms, its z3 tiles' owners'): the
 /// parts of the base packs its targets need are read from the NAS once, into the job's scratch
 /// (scenic-build's `open_for_tiles`, task #396), and every target reads them there. So a target's
 /// disk measure is the job's reads, shared, not its own: a job of several takes the most of theirs,
@@ -627,7 +627,7 @@ impl<'a> Book<'a> {
 
     /// What a job of `step` for `target` needs, given `threads` (0: not said) and `guess`, the memory
     /// (MB) its caller would take without a measure (the steps table's first guess, what its plan
-    /// offered it with, a unit's piece-size guess).
+    /// offered it with, a z6 tile's extract-size guess).
     pub fn need(&self, step: &str, target: &str, threads: u32, guess: u64) -> Need {
         let (mem_mb, mem_from) = self.mem(step, target, threads, guess);
         let io = match crate::agent::steps::row(step).map(|r| r.kind) {
@@ -646,7 +646,7 @@ impl<'a> Book<'a> {
 }
 
 /// `scenic pool needs --fit`: per step and measure, its fits' held-out errors, and the steps that
-/// don't fit (they take their prior, a unit or candidates their piece's guess first).
+/// don't fit (they take their prior, a z6 tile or candidates their extract's guess first).
 pub fn fit_table(book: &Book) -> String {
     let mut steps: Vec<&str> = book.costs.keys().map(|k| step_of_key(k)).collect();
     steps.sort();
@@ -892,11 +892,11 @@ mod tests {
 
     /// A step's time prior is the mean of its runs the way it runs now (the expected time: what a
     /// job's targets are counted to a quarter hour by), not their 90th percentile (task #433: by
-    /// that, every unit job carried one unit); its memory prior stays the 90th percentile.
+    /// that, every `unit` job carried one z6 tile); its memory prior stays the 90th percentile.
     #[test]
     fn a_steps_time_prior_is_the_mean_of_its_runs() {
         let mut costs = BTreeMap::new();
-        // (Nine quick pieces and one slow: a heavy tail, as the units' times are; a step at cost
+        // (Nine quick extracts and one slow: a heavy tail, as the z6 tiles' times are; a step at cost
         // version 0, as the helper makes its costs.)
         for i in 1..=10u64 {
             costs.insert(format!("peaks 6/{i}/1"), cost(500, if i == 10 { 1200 } else { 100 }, &[]));
@@ -979,7 +979,7 @@ mod tests {
         assert_eq!(b.mem("terrain", "6/50/1", 0, 1500), (1500, From::Table));
     }
 
-    /// One dense unit measured doesn't set the others': with no good fit, a unit's piece-size guess
+    /// One dense z6 tile measured doesn't set the others': with no good fit, a z6 tile's extract-size guess
     /// comes before its step's prior.
     #[test]
     fn a_dense_unit_leaves_the_others_their_piece_guess() {

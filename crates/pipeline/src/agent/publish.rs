@@ -5,7 +5,7 @@
 //! - **Delta catalogs** (`delta-catalog`): the catalog written as what changed over the last
 //!   (store::catalog::Delta; a whole one once the deltas since the last whole one add up to one),
 //!   and the sizes of the files the last one lists taken from it, not looked at again.
-//! - **Slope and tree cover near** (`near-slope`): a done region's slope and tree cover the pieces
+//! - **Slope and tree cover near** (`near-slope`): a done region's slope and tree cover the z6 tiles
 //!   near it (crate::agent::build::Publishing::near), their assemblies with the low zooms.
 
 use std::path::Path;

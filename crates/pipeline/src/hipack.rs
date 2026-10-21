@@ -1,6 +1,6 @@
 //! Per-tile packs from base packs (docs/steps.md): pack(T) for a z6 tile T (road and rail tiles
 //! z9–14, and hidata: the ways drawn here, query parts, rail lines) and lo packs for a z3 tile (road
-//! and rail tiles z4–8). Each reads the base packs of every unit whose geometry reaches the tile,
+//! and rail tiles z4–8). Each reads the base packs of every z6 tile whose geometry reaches the tile,
 //! never anything per region.
 
 use crate::basepack::BasePack;

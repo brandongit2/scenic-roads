@@ -5,40 +5,40 @@
 //!   pack [--cache dir] [T …]     pack(T) for z6 tiles T (default: every tile with ways): road and
 //!                                rail hi packs (z9–14) and hidata
 //!   lo [--cache dir] [Q …]       lo packs (z4–8 road and rail tiles) for z3 tiles Q (default: all)
-//!   osm-pass --planet <p> --date <d>  the OSM pass (pieces, sets, basemap, road values); resumable
+//!   osm-pass --planet <p> --date <d>  the OSM pass (extracts, sets, basemap, road values); resumable
 //!   outlines [--pass d]          the pass's administrative and ISO 3166 outlines from its outline
 //!                                set (pipeline::osmpass::make_outlines)
-//!   patch-ferries [--pass d] [--near-coverage]  the pass's pieces given the standalone ferry ways
+//!   patch-ferries [--pass d] [--near-coverage]  the pass's extracts given the standalone ferry ways
 //!                                its filtered planet lacked (pipeline::osmpass::patch_ferries), all
 //!                                or those meeting the regions (10 km round); run by hand
-//!   unit [U …] [--pass d] [--layers-root r] [--regions dir] [--dem dir] [--cache-dir dir] [--buildings dir]
-//!                                base(U) from the pass's pieces (the unit's programs on a unit folder):
-//!                                default every unit whose piece meets the coverage
-//!   unit-snap U --out d --cache c [--carry]  unit U's folder built from the records into d, nothing
+//!   z6 tile [U …] [--pass d] [--layers-root r] [--regions dir] [--dem dir] [--cache-dir dir] [--buildings dir]
+//!                                base(U) from the pass's extracts (the z6 tile's programs on a z6 tile folder):
+//!                                default every z6 tile whose extract meets the coverage
+//!   unit-snap U --out d --cache c [--carry]  z6 tile U's folder built from the records into d, nothing
 //!                                written to the NAS, snapshotted around each step's program (for
 //!                                tools/check/same.py and tail.mjs)
-//!   tail-spec U --root R         unit U's tail as a task gives it a worker, its data servers by --root's declarations (tools/check/tail.mjs)
-//!   roadunits                    the road → units index from the units' road ids
+//!   tail-spec U --root R         z6 tile U's tail as a task gives it a worker, its data servers by --root's declarations (tools/check/tail.mjs)
+//!   roadunits                    the road → z6 tiles index from the z6 tiles' road ids
 //!   terrain [T …] [--regions dir] [--pass d] [--raw dir] [--expect-same T,…]  the terrain from AWS's
 //!                                raw tiles (cached in --raw), GLO-30 and the basemap's water: of z6
-//!                                tiles T near the coverage (pieces: each one's hi pack, z9–12, and
+//!                                tiles T near the coverage (z6 tiles: each one's hi pack, z9–12, and
 //!                                its mid; --expect-same, those made again as the manifest has them,
 //!                                else it fails, uploading nothing), or of z3 tiles' whole (default:
-//!                                all of them; by hand, and a lease of the scheme before pieces);
-//!                                --pieces-of Q,…: every piece of z3 tiles Q
+//!                                all of them; by hand, and a lease of the scheme before extracts);
+//!                                --z6 tiles-of Q,…: every z6 tile of z3 tiles Q
 //!   terrain-lo <Q …> [--raw dir]  z3 tiles Q's zoomed-out terrain (lo packs, z3–8) from their
-//!                                pieces' mids
+//!                                z6 tiles' mids
 //!   slope [T …] [--regions dir] [--expect-same T,…]  the slope from the terrain packs: of z6 tiles
-//!                                T (pieces: each one's hi pack, z9–11, and its mid), or of z3 tiles'
+//!                                T (z6 tiles: each one's hi pack, z9–11, and its mid), or of z3 tiles'
 //!                                whole (default: all of them)
-//!   slope-lo <Q …>               z3 tiles Q's zoomed-out slope (lo packs, z3–8) from their pieces'
+//!   slope-lo <Q …>               z3 tiles Q's zoomed-out slope (lo packs, z3–8) from their z6 tiles'
 //!                                mids and the lo pack as it is
 //!   terrain-root, slope-root     their z0–2 root packs, from the lo packs' z3 tiles
 //!   raw-pack [--from-tar -] [--cache dir]  AWS's raw tiles packed into the NAS's archives
 //!                                (pipeline::rawpack): a tar of them on stdin (tools/nas/raw-pack.sh),
 //!                                else those waiting in the cache
 //!   prune <target …>             drops from the manifest what the coverage no longer builds:
-//!                                "unit U" (its base pack, road values, English), "pois U" (its
+//!                                "z6 tile U" (its base pack, road values, English), "pois U" (its
 //!                                candidates, peaks), "pack T" (hidata, road and rail hi packs),
 //!                                "lo Q" (road and rail lo packs), "bldprep T" (its normalized
 //!                                buildings), "bldtiles T" (its 3D buildings' hi pack)
@@ -63,28 +63,28 @@
 //!                                densest z8 tile), for the `bldtile` program and the checks
 //!   trees <T …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]  the tree cover layers
 //!                                (pipeline::treepacks), clipped to the coverage: of z6 tiles T (a
-//!                                piece: its hi packs and its mid; --expect-same, those made again
+//!                                z6 tile: its hi packs and its mid; --expect-same, those made again
 //!                                as the manifest has them, else it fails, uploading nothing), or a
 //!                                z3 tile's whole (by hand, and a lease of the old scheme)
-//!   trees-lo <Q …> [--pass d]    z3 tiles Q's zoomed-out tree cover (lo packs) from their pieces'
+//!   trees-lo <Q …> [--pass d]    z3 tiles Q's zoomed-out tree cover (lo packs) from their z6 tiles'
 //!                                mids
 //!   trees-coverage <Q> --out <file> [--pass d]  the coverage the trees program reads for z3 tile
 //!                                Q (its cov.json), to run it by hand; nothing written to the NAS
 //!   treeblock-task <6/x/y> --row y --out dir [--pass d]  a row of tree cover blocks' task folder as a
-//!                                piece's run cuts it (pipeline::trees::task: out/task/u/), its
+//!                                z6 tile's run cuts it (pipeline::trees::task: out/task/u/), its
 //!                                arguments (out/task.json: the blocks, the canopy squares the NAS
 //!                                has there) and the blocks' tiles as the manifest's packs and mid
 //!                                have them (out/packs/8-x-y/, as `trees --blocks` writes them), for
 //!                                the checks; nothing written to the NAS
-//!   terrain-same <6/x/y> [--whole]  piece 6/x/y made as its job makes it (by z8 subtree), or
+//!   terrain-same <6/x/y> [--whole]  z6 tile 6/x/y made as its job makes it (by z8 subtree), or
 //!                                whole, its hi pack and mid written locally; their content names
 //!                                beside the manifest's. Nothing written to the NAS
-//!   terrainsub-task <6/x/y> --out dir [--group 8/x/y] [--pass d]  a terrain piece's z8 subtrees
-//!                                in their groups, each group's task file as the piece's run cuts
+//!   terrainsub-task <6/x/y> --out dir [--group 8/x/y] [--pass d]  a terrain z6 tile's z8 subtrees
+//!                                in their groups, each group's task file as the z6 tile's run cuts
 //!                                it (pipeline::terrain_task: out/<x>-<y>/u/in.sect), for the
 //!                                checks; nothing written to the NAS
-//!   reach [--pass d] [U …]       every unit's reach (pipeline::reach): the boxes of its piece's
-//!                                roads, rail and ferries, owned and all (units named: printed,
+//!   reach [--pass d] [U …]       every z6 tile's reach (pipeline::reach): the boxes of its extract's
+//!                                roads, rail and ferries, owned and all (z6 tiles named: printed,
 //!                                nothing written)
 //!   labels [--pass d] [--dem dir]  the labels by importance, worldwide, from the pass's labels set
 //!                                (dem/labels.py), as the labels layer's packs
@@ -106,13 +106,13 @@
 //!                                timetables of index i, else the records' accepted one, then
 //!                                railfreq on the pass's rail set), as global/railfreq
 //!   terrain-water [--pass d]     the terrain's water digests (pipeline::terrain_water::WaterIdx):
-//!                                what each terrain piece and assembly near the coverage reads of
+//!                                what each terrain z6 tile and assembly near the coverage reads of
 //!                                the latest basemap's water, as work/water-idx/<hash16 of its
 //!                                pin>; those made before for the same reads kept
 //!   water-key-check [--pass d] [--compute [--save f] | --digests f] [--fill n]  what keying
 //!                                terrain on its water's digests does with the records now
 //!                                (pipeline::agent::rekey::derive): the terrain left to make, then
-//!                                as if a new basemap came with the same water, and with n pieces'
+//!                                as if a new basemap came with the same water, and with n z6 tiles'
 //!                                water changed; without the manifest's digests, --compute works
 //!                                them out here, in memory, timed. Reads only
 //!   inputs <unit> [--full] [--listing f]  a gate unit's drop box checked (pipeline::inputs::gate): its clean
@@ -124,18 +124,18 @@
 //!   catalog                      publish a catalog of the build manifest
 //!   regions-check --dir d [--declarations d] [--report f]   the regions' check on a scratch
 //!                                folder, in memory: findings and sizes. Reads only
-//!   rekey-check [--pass d]       what re-keying the records for the units' new keys
-//!                                (pipeline::agent::rekey) would do now: the units re-keyed, and
+//!   rekey-check [--pass d]       what re-keying the records for the z6 tiles' new keys
+//!                                (pipeline::agent::rekey) would do now: the z6 tiles re-keyed, and
 //!                                those left to build again, each with why; and the times that show
 //!                                its one assumption holds. Reads only: writes nothing, keeps no index
-//!   p5-check terrain [--pass d] [--costs f]  what switching terrain and slope to pieces and
+//!   p5-check terrain [--pass d] [--costs f]  what switching terrain and slope to z6 tiles and
 //!                                assemblies (pipeline::agent::rekey::derive) does now: each z3
-//!                                tile read as its pieces and assembly or not, slope's pieces left
+//!                                tile read as its z6 tiles and assembly or not, slope's z6 tiles left
 //!                                to make and why, the work after it and its time, what deriving
 //!                                costs a plan. Reads only (the terrain packs' indexes into memory)
-//!   p5-check trees [--pass d] [--costs f]  what switching tree cover to pieces and assemblies
+//!   p5-check trees [--pass d] [--costs f]  what switching tree cover to z6 tiles and assemblies
 //!                                (pipeline::agent::rekey) would do now: each z3 tile re-keyed, or
-//!                                made again as pieces and why, the work left and its time by the
+//!                                made again as z6 tiles and why, the work left and its time by the
 //!                                last runs (`f`: the coordinator's costs.json). Reads only
 //!
 //! `--cache` is where base packs are kept locally (copied from the NAS when missing). `--help` (or
@@ -246,7 +246,7 @@ fn inputs_step(out: &mut Out, args: &[String]) -> Result<()> {
 fn step_main(args: &[String], step: &str) -> Result<()> {
     let args: Vec<String> = args.to_vec();
     let step = step.to_string();
-    // tail-spec U --root R: unit U's tail as a task gives it a worker (its steps, where its places lie, the
+    // tail-spec U --root R: z6 tile U's tail as a task gives it a worker (its steps, where its places lie, the
     // data servers it may read), for tools/check/tail.mjs; nothing written.
     if step == "tail-spec" {
         let u = positional(&args).first().and_then(|s| TileId::parse(s)).context("tail-spec U")?;
@@ -462,7 +462,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let date = opt(&args, "--pass")
                 .or_else(|| pipeline::osmpass::latest_pass(out.root()))
                 .context("no complete OSM pass")?;
-            // --near-coverage: the pieces meeting the regions, 10 km round (as their candidates read them).
+            // --near-coverage: the extracts meeting the regions, 10 km round (as their candidates read them).
             let cov = if args.iter().any(|a| a == "--near-coverage") { Some(coverage_of(&out, &args)?) } else { None };
             let near = |u: TileId| {
                 cov.as_ref().is_none_or(|c| {
@@ -482,9 +482,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         // no server reads (a build to compare before it's switched to: inputs/hold-catalog);
         // `--ready`, the regions it records as built (comma-separated; the agent's plan says which),
         // the others as the last catalog had them (without it: every region as its recipe is now);
-        // `--building`, the regions still building with their units built of their total (the
+        // `--building`, the regions still building with their z6 tiles built of their total (the
         // plan's), recorded as their recipes are now with that count, unless the last catalog had
-        // them built (with an older outline, or units rebuilt: on the map as they were).
+        // them built (with an older outline, or z6 tiles rebuilt: on the map as they were).
         // `--delta` (the agent's, with state/pool/delta-catalog on): the served catalog written as
         // what changed over the last (docs/formats.md, Delta catalogs), each file's size as the
         // records or the last catalog have it, not looked at on the NAS; `--whole` (the agent's in
@@ -500,7 +500,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                     })
                     .collect()
             });
-            // (`<id>=<built>/<total>` each: a region still building, its units built of its total.)
+            // (`<id>=<built>/<total>` each: a region still building, its z6 tiles built of its total.)
             let building: BTreeMap<String, pipeline::coverage::Tiles> = opt(&args, "--building")
                 .map(|v| {
                     v.split(',')
@@ -780,7 +780,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "depth-lo" | "depth" => depth_step(&mut out, &args, step.as_str())?,
         "trees" => {
             // trees <tile …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]: the tree cover
-            // of z6 tiles (pieces: their hi packs and mids; pipeline::treepacks::build_piece), or a
+            // of z6 tiles (z6 tiles: their hi packs and mids; pipeline::treepacks::build_piece), or a
             // z3 tile's whole (by hand, and a lease of the old scheme: treepacks::build_with).
             // `--expect-same`: those z6 tiles made again as they are (their mids backfilled), each
             // pack as the manifest has it, else the job fails, uploading nothing for it.
@@ -842,7 +842,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         "trees-lo" => {
             // trees-lo <z3 tile …> [--pass d]: each z3 tile's zoomed-out tree cover (its lo packs)
-            // assembled from its pieces' mids (pipeline::treepacks::build_lo).
+            // assembled from its z6 tiles' mids (pipeline::treepacks::build_lo).
             let cov = coverage_of(&out, &args)?;
             let workers: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(8);
             let qs: Vec<TileId> = positional(&args)
@@ -895,9 +895,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             return Ok(());
         }
         "terrainsub-task" => {
-            // terrainsub-task <6/x/y> --out dir [--group 8/x/y] [--pass d]: piece 6/x/y's z8 subtrees
+            // terrainsub-task <6/x/y> --out dir [--group 8/x/y] [--pass d]: z6 tile 6/x/y's z8 subtrees
             // in their groups (pipeline::terrain_task::groups), each group's task file as the
-            // piece's run cuts it (out/<x>-<y>/u/in.sect, by its first subtree; `--group`: that
+            // z6 tile's run cuts it (out/<x>-<y>/u/in.sect, by its first subtree; `--group`: that
             // group's alone), a line each said (its subtrees, tiles, bytes, predicted memory). It
             // only reads (AWS's raw tiles copied to this Mac's cache, as a terrain run does).
             let cov = coverage_of(&out, &args)?;
@@ -941,7 +941,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             return Ok(());
         }
         "terrain-same" => {
-            // terrain-same <6/x/y> [--whole] [--raw dir] [--pass d] [--regions dir]: piece 6/x/y
+            // terrain-same <6/x/y> [--whole] [--raw dir] [--pass d] [--regions dir]: z6 tile 6/x/y
             // made as its job makes it (each level a z8 subtree's worth of tiles at a time:
             // pipeline::terrain_pack::make_piece), or with `--whole` each level's tiles all
             // together (make_piece_whole, the way before), its hi pack and mid written in the scratch folder only; their
@@ -1012,7 +1012,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             // timetables-todo [--pass d] [--regions dir] [--out dir]: the timetables' to-do list
             // into the static timetables' todo/ under the root (or --out), and the report of the
             // routes matching nothing on the map (pipeline::timetables), from the rail and ferries
-            // jobs' pieces.
+            // jobs' z6 tiles.
             let cov = coverage_of(&out, &args)?;
             let to = opt(&args, "--out").map_or_else(|| out.root().to_path_buf(), PathBuf::from);
             let r = pipeline::timetables::run(&mut out, &cov, &to)?;
@@ -1055,7 +1055,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
 
 // ---- road values ---------------------------------------------------------------------------
 
-/// A unit's road values file: the values per way, and the ways by road (sorted (road, way index)
+/// A z6 tile's road values file: the values per way, and the ways by road (sorted (road, way index)
 /// pairs, for the server's whole-road lookups).
 fn put_roads(out: &mut Out, u: TileId, recs: &[pipeline::legacy::RoadRec]) -> Result<String> {
     let mut byroad: Vec<[u64; 2]> = recs.iter().enumerate().map(|(i, r)| [r.road, i as u64]).collect();
@@ -1068,8 +1068,8 @@ fn put_roads(out: &mut Out, u: TileId, recs: &[pipeline::legacy::RoadRec]) -> Re
     )
 }
 
-/// A unit's road ids (`pipeline::out::ROAD_IDS`): its road values' roads, sorted, each once, as
-/// section "ids" (u64); what the road → units index reads of it (`roadunits`).
+/// A z6 tile's road ids (`pipeline::out::ROAD_IDS`): its road values' roads, sorted, each once, as
+/// section "ids" (u64); what the road → z6 tiles index reads of it (`roadunits`).
 fn put_road_ids(out: &mut Out, u: TileId, recs: &[pipeline::legacy::RoadRec]) -> Result<String> {
     let ids = road_ids(recs);
     put_sect(
@@ -1112,15 +1112,15 @@ fn sect_local(out: &Out, logical: &str, meta: serde_json::Value, sections: &[(&s
 
 // ---- base packs, locally ------------------------------------------------------------------
 
-/// Every unit's base pack and road values, copied into `cache` when missing, opened.
-/// Every unit's base pack and road values, opened from local copies: this Mac's mirror's when it
+/// Every z6 tile's base pack and road values, copied into `cache` when missing, opened.
+/// Every z6 tile's base pack and road values, opened from local copies: this Mac's mirror's when it
 /// has them (`mirror`, the server's: same content names, so no second copy), else the cache's,
-/// copied from the NAS when missing. Cached files no unit uses any more go first, so the cache
+/// copied from the NAS when missing. Cached files no z6 tile uses any more go first, so the cache
 /// holds at most one copy of what the mirror lacks.
-/// The units of the manifest owning tiles `only` (z`z`: `build::owners_of`, the owners their keys
+/// The z6 tiles of the manifest owning tiles `only` (z`z`: `build::owners_of`, the owners their keys
 /// read), by the reaches of pass `pass` (else the latest) and every base pack's extent
-/// (crate::extents: the lead's, those it lacks read from their headers): None (every unit)
-/// when no tiles are named, the reaches or extents can't be read, or a unit isn't in the reaches
+/// (crate::extents: the lead's, those it lacks read from their headers): None (every z6 tile)
+/// when no tiles are named, the reaches or extents can't be read, or a z6 tile isn't in the reaches
 /// (said).
 fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[TileId]) -> Option<BTreeSet<TileId>> {
     if only.is_empty() {
@@ -1138,7 +1138,7 @@ fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[TileId]) -> Optio
             return None;
         }
     };
-    // (A unit the reaches don't know: where its ways lie isn't known, so neither are the owners.)
+    // (A z6 tile the reaches don't know: where its ways lie isn't known, so neither are the owners.)
     if let Some(u) = out
         .manifest
         .keys()
@@ -1176,8 +1176,8 @@ fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[TileId]) -> Optio
     Some(pipeline::agent::build::owners_of(Some(&reach), &out.manifest, &tiles))
 }
 
-/// The manifest's units whose base pack's extent (kept with `reach`) isn't all inside where
-/// `reach` puts their ways (`build::unit_ways`): units built by other reaches.
+/// The manifest's z6 tiles whose base pack's extent (kept with `reach`) isn't all inside where
+/// `reach` puts their ways (`build::unit_ways`): z6 tiles built by other reaches.
 fn outside_their_ways(m: &BTreeMap<String, String>, reach: &pipeline::reach::Reaches) -> Vec<TileId> {
     m.iter()
         .filter_map(|(l, c)| Some((l.strip_prefix("base/").and_then(TileId::parse)?, reach.extents.get(c)?)))
@@ -1190,7 +1190,7 @@ fn outside_their_ways(m: &BTreeMap<String, String>, reach: &pipeline::reach::Rea
 }
 
 /// The base packs a pack or lo job of tiles `only` (z`z`) reads: its tiles' owners
-/// (`owners_here`), every unit when they can't be told; each read only where its ways reach the
+/// (`owners_here`), every z6 tile when they can't be told; each read only where its ways reach the
 /// tiles (`open_units`).
 fn open_for_tiles(
     out: &Out,
@@ -1232,7 +1232,7 @@ impl Drop for Reads {
     }
 }
 
-/// The base packs (with their road values) of the manifest's units, of only those in `owning`
+/// The base packs (with their road values) of the manifest's z6 tiles, of only those in `owning`
 /// when given, each only where its ways reach `boxes` (all of it: None): from this Mac's mirror
 /// when it has them (whole, mapped), else read in part from the NAS (crate::basepart: the byte
 /// ranges of the chunks of ways meeting the z6 tiles, copied into sparse files at the top of the
@@ -1256,7 +1256,7 @@ fn open_units(
             all.push((u.to_string(), v.clone(), roads.to_string()));
         }
     }
-    // (Every unit's index kept: another job's tiles may need it. One a running job holds stays
+    // (Every z6 tile's index kept: another job's tiles may need it. One a running job holds stays
     // anyway: prune_cache.)
     let kept: Vec<String> = all.iter().map(|(_, b, _)| format!("{b}.idx")).collect();
     prune_cache(cache, &kept.iter().map(String::as_str).collect())?;
@@ -1374,7 +1374,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
     let parts = Parts(&["Getting the z6 tiles' base packs here", "Drawing the map tiles"]);
     parts.start(0);
     let only = parse_tiles(only, 6)?;
-    // (Only the tiles' owners: no other unit's ways come into them.)
+    // (Only the tiles' owners: no other z6 tile's ways come into them.)
     let (packs, reads) = open_for_tiles(out, cache, mirror, pass, 6, &only)?;
     let refs: Vec<&BasePack> = packs.iter().collect();
     let p = phase("the tiles they touch found", Class::Compute);
@@ -1566,7 +1566,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
 
 // ---- catalog --------------------------------------------------------------------------------
 
-/// The map's meta, added up from the units' summaries: each base pack's own, else worked out from
+/// The map's meta, added up from the z6 tiles' summaries: each base pack's own, else worked out from
 /// its sections once (packs without it) and kept in `state/build/summaries.json` by content
 /// name (a content name never changes).
 /// `now`: the catalog's moment (seconds since the epoch), its `built`.
@@ -1736,7 +1736,7 @@ fn worldwide_globals(m: &BTreeMap<String, String>) -> BTreeMap<String, String> {
 }
 
 /// Whether the catalog lists logical `l` among its files: only what the map reads (build sources,
-/// the planet's pieces, sets and road values, stay out, or every Mac's mirror would copy them).
+/// the planet's extracts, sets and road values, stay out, or every Mac's mirror would copy them).
 fn served_file(l: &str, basemap: &[String], global: &BTreeMap<String, String>) -> bool {
     (l.starts_with("layers/") && (!l.starts_with("layers/basemap/") || basemap.iter().any(|b| b == l)))
         || l.starts_with("base/")
@@ -1859,7 +1859,7 @@ fn catalog(
     let p = phase("the coverage drawn and the credits found", Class::NasRead);
     let units: Vec<String> = base.keys().cloned().collect();
     // The coverage it's built for, drawn from the outlines it lists, and the credits of the sources
-    // its data comes from: where the coverage is, and where the units' ways are.
+    // its data comes from: where the coverage is, and where the z6 tiles' ways are.
     let dir = out.root().join(if held { "catalog-held" } else { "catalog" });
     // The last catalog there, whole (the first held one goes by the served one).
     let mut last = store::catalog::latest(&dir).with_context(|| format!("the last catalog in {}", dir.display()))?;
@@ -1906,7 +1906,7 @@ fn catalog(
         described.len(),
         if described.len() == 1 { "" } else { "s" }
     );
-    // Only what the map reads: build sources (the planet's pieces, sets and road values) stay out,
+    // Only what the map reads: build sources (the planet's extracts, sets and road values) stay out,
     // or every Mac's mirror would copy them. A file missing on the NAS stops a whole catalog (a
     // delta takes its new files' sizes from the records and doesn't look).
     let served = |l: &str| served_file(l, &basemap, &global);
@@ -2040,10 +2040,10 @@ fn catalog(
 /// The coverage a catalog records: the regions built as their recipes are now (`ready`; without it
 /// every recipe), each outline entry simplified for drawing (pipeline::coverage::drawn), `osm:`
 /// ones from `outlines` (the catalog's own); and a region not built yet as the last catalog in
-/// `catalogs` had it, if it had it (on the map as it was: its old outline, its units not yet rebuilt),
+/// `catalogs` had it, if it had it (on the map as it was: its old outline, its z6 tiles not yet rebuilt),
 /// in the recipes' order; a region still building (`building`, the plan's) the last catalog didn't
 /// have built, as its recipe is now with its tiles built of its total (`DrawnRegion::tiles`): its
-/// units are on the map, and downloadable, as they come. So the regions are those the catalog's
+/// z6 tiles are on the map, and downloadable, as they come. So the regions are those the catalog's
 /// data is built for or being built for; the Regions panel shows a recipe it lacks, or has with
 /// another outline, as still to come.
 /// A read that fails (the NAS) fails the catalog, to be tried again, rather than record a region
@@ -2077,7 +2077,7 @@ fn catalog_coverage(
         .into_iter()
         .map(|d| (d.id.clone(), d))
         .collect();
-    // (Still building, and not on the map built as it was: its units as they come.)
+    // (Still building, and not on the map built as it was: its z6 tiles as they come.)
     let progress = |r: &pipeline::agent::recipes::Recipe| {
         building.get(&r.id).copied().filter(|_| !is_ready(r) && had.get(&r.id).is_none_or(|h| h.tiles.is_some()))
     };
@@ -2098,7 +2098,7 @@ fn catalog_coverage(
     Ok(recipes.iter().filter_map(|r| drawn.remove(&r.id).or_else(|| had.get(&r.id).cloned())).collect())
 }
 
-/// Where each built unit's ways are (E7): its summary's extent, as units_meta left the summaries in
+/// Where each built z6 tile's ways are (E7): its summary's extent, as units_meta left the summaries in
 /// state/build/summaries.json by content name, else its tile.
 fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
     let known: BTreeMap<String, pipeline::summary::Summary> =
@@ -2108,7 +2108,7 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
             .unwrap_or_default();
     base.iter()
         .filter_map(|(u, logical)| match out.get(logical).and_then(|c| known.get(c)) {
-            // (An empty unit's extent is inverted: nothing of it is anywhere.)
+            // (An empty z6 tile's extent is inverted: nothing of it is anywhere.)
             Some(s) => (s.extent[0] <= s.extent[2]).then_some(s.extent),
             None => TileId::parse(u).map(|u| tile_bounds(u.z, u.x, u.y)),
         })
@@ -2244,10 +2244,10 @@ fn epoch_of(t: &str) -> Option<i64> {
 
 // ---- rekey-check -------------------------------------------------------------------------------
 
-/// `rekey-check`: what re-keying the records for the units' new keys (pipeline::agent::rekey) would
-/// do now, read from the NAS with nothing written (no scratch folder, no index kept): the units
+/// `rekey-check`: what re-keying the records for the z6 tiles' new keys (pipeline::agent::rekey) would
+/// do now, read from the NAS with nothing written (no scratch folder, no index kept): the z6 tiles
 /// re-keyed, and those left to build again, each with why. And the times that show its one
-/// assumption: a unit re-keyed that reads a z3 tile's zoomed-out terrain (z8–z4) was built after the
+/// assumption: a z6 tile re-keyed that reads a z3 tile's zoomed-out terrain (z8–z4) was built after the
 /// build first made that z3 tile's (before, it may have staged the converted legacy tiles, which its
 /// old key couldn't tell from the build's; docs/building.md §2, A new key scheme): its base pack written
 /// over an hour after that z3 tile's first lo pack after the conversion's (the first catalog's), by
@@ -2362,7 +2362,7 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
     // The build's first zoomed-out terrain of each z3 tile it makes terrain for.
     let targets: BTreeSet<String> = build::coverage_tiles(&cov).keys().map(|q| format!("3/{}/{}", q.0, q.1)).collect();
     // The stale terrain hi packs: their z6 tile no longer near the coverage, or left by an earlier
-    // run (older than the z3 tile's lo pack: its last run made no hi tiles for the piece).
+    // run (older than the z3 tile's lo pack: its last run made no hi tiles for the z6 tile).
     let pieces: BTreeSet<(u32, u32)> = build::coverage_tiles(&cov).into_values().flatten().collect();
     let hi: Vec<(u32, u32)> = m
         .keys()
@@ -2468,17 +2468,17 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
 
 // ---- p5-check ----------------------------------------------------------------------------------
 
-/// `p5-check trees`: what switching tree cover from a z3 tile's whole run to pieces and assemblies
+/// `p5-check trees`: what switching tree cover from a z3 tile's whole run to z6 tiles and assemblies
 /// (pipeline::agent::rekey's trees rules) does now, read from the NAS with nothing written (no
 /// scratch folder): each z3 tile's record, current or stale under the old scheme, whose packs made
 /// it (the trees program, or trees.py before it, by their files' times), and so re-keyed (its
-/// pieces and assembly recorded, their mids made in idle time, expected the same) or made again as
-/// pieces; then the work the plan has (agent::build::tree_work), and its time by the z3 tiles' last
+/// z6 tiles and assembly recorded, their mids made in idle time, expected the same) or made again as
+/// z6 tiles; then the work the plan has (agent::build::tree_work), and its time by the z3 tiles' last
 /// runs (`--costs`: the coordinator's costs.json; at this Mac's pace, another Mac's time
 /// halved) and the packs made again (their size now).
-/// `p5-check terrain`: what switching terrain and slope from a z3 tile's whole run to pieces and
-/// assemblies (pipeline::agent::rekey::derive) does now: each z3 tile's records read as its pieces
-/// and assembly, or not and why; slope's pieces left to make (reading another z3 tile's terrain); the
+/// `p5-check terrain`: what switching terrain and slope from a z3 tile's whole run to z6 tiles and
+/// assemblies (pipeline::agent::rekey::derive) does now: each z3 tile's records read as its z6 tiles
+/// and assembly, or not and why; slope's z6 tiles left to make (reading another z3 tile's terrain); the
 /// work after the switch, and its time by the z3 tiles' last runs (`--costs`: the coordinator's
 /// costs.json); and what deriving costs a plan. Reads only: the terrain packs' indexes into memory.
 fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
@@ -2528,7 +2528,7 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
         keys.slope.len() - z3(&keys.slope),
         keys.slope_lo.len()
     );
-    // Deriving, as a plan does: the first time (the slope pieces' reads worked out), then again (as
+    // Deriving, as a plan does: the first time (the slope z6 tiles' reads worked out), then again (as
     // each plan after: kept with the packs they read).
     let t1 = std::time::Instant::now();
     let mut read = keys.clone();
@@ -2540,7 +2540,7 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
     let next = t2.elapsed();
     let mut twice = read.clone();
     let d3 = rekey::derive(&mut twice, &cov, &m, &tiles);
-    // (What a plan works out anyway: the pieces' and assemblies' keys.)
+    // (What a plan works out anyway: the z6 tiles' and assemblies' keys.)
     let t3 = std::time::Instant::now();
     let _ = build::terrain_slope_targets(&cov, &m, &tiles);
     let targets = t3.elapsed();
@@ -2635,7 +2635,7 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
 /// terrain on its water's digests (agent::build::water_key) does with the records as they are,
 /// reading only: the records read as every reader reads them (agent::rekey::derive) and the
 /// terrain left to make; then, as if a new basemap came whose water is the same, and again with
-/// `n` pieces' water changed (a lake fill's), what's left to make. The digests are the manifest's;
+/// `n` z6 tiles' water changed (a lake fill's), what's left to make. The digests are the manifest's;
 /// without them, `--compute` works them out here, in memory, timed (`--save f` keeps them in a
 /// file, which `--digests f` reads instead).
 fn water_key_check(root: &Path, args: &[String]) -> Result<()> {
@@ -2795,7 +2795,7 @@ fn water_key_check(root: &Path, args: &[String]) -> Result<()> {
     held(&mut m2, &mut tiles2, idx.clone());
     held(&mut m2, &mut tiles2, WaterIdx { pin: pin2.clone(), ..idx.clone() });
     let (_, same) = left(&m2, &tiles2, "a new basemap whose water is the same")?;
-    // And with some pieces' water changed (a lake fill's): those pieces, their z3 tiles' assemblies.
+    // And with some z6 tiles' water changed (a lake fill's): those z6 tiles, their z3 tiles' assemblies.
     let k: usize = opt(args, "--fill").map(|v| v.parse()).transpose()?.unwrap_or(10);
     let mut changed = WaterIdx { pin: pin2, ..idx.clone() };
     let touched: Vec<String> = changed
@@ -2877,7 +2877,7 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
         .map(|(t, k)| (t.clone(), k.clone()))
         .collect();
     println!("pass {date}, {} regions; tree cover's records: {} z3 tiles' whole runs (the old scheme), {} pieces, {} assemblies", recipes.len(), z3.len(), keys.trees.len() - z3.len(), keys.trees_lo.len());
-    // The re-keying, its tree cover rules alone (no reaches: the units' are rekey-check's).
+    // The re-keying, its tree cover rules alone (no reaches: the z6 tiles' are rekey-check's).
     let mut after = keys.clone();
     let r = rekey::rekey(&mut after, &cov, &date, &m, None, &BTreeMap::new(), &TerrainTiles::new(None), &times);
     let mut twice = after.clone();
@@ -2970,7 +2970,7 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
 
 // ---- base(U) from the pass ------------------------------------------------------------------
 
-/// The pass's road values of a unit: (OSM way id, record), sorted by id.
+/// The pass's road values of a z6 tile: (OSM way id, record), sorted by id.
 fn pass_roads(out: &Out, date: &str, u: TileId) -> Result<Vec<(u64, pipeline::legacy::RoadRec)>> {
     let Some(name) = out.get(&format!("sources/osm/{date}/roads/{}", u.dash())) else { return Ok(Vec::new()) };
     let b = std::fs::read(out.path(name))?;
@@ -2979,8 +2979,8 @@ fn pass_roads(out: &Out, date: &str, u: TileId) -> Result<Vec<(u64, pipeline::le
         .collect())
 }
 
-/// pois <units…> [--pass <date>]: each unit's landmark candidates (pipeline::candidates), from
-/// its piece through `extract --candidates` with the pass's hiking-route ends, as `work/pois/<u>`.
+/// pois <z6 tiles…> [--pass <date>]: each z6 tile's landmark candidates (pipeline::candidates), from
+/// its extract through `extract --candidates` with the pass's hiking-route ends, as `work/pois/<u>`.
 fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let date = match opt(args, "--pass") {
         Some(d) => d,
@@ -2994,7 +2994,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         .context("no hiking-route ends for the pass (the trailends step)")?;
     let extract = own_bin()?.join("extract");
     std::fs::create_dir_all(scratch)?;
-    // (Spaced as the units' extract spaces them: pipeline::dem::spacing.)
+    // (Spaced as the z6 tiles' extract spaces them: pipeline::dem::spacing.)
     let spacing = scratch.join(pipeline::dem::spacing::FILE);
     pipeline::dem::spacing::Fine::of_records(out.root(), &out.manifest)?.write(&spacing)?;
     let units: Vec<TileId> = positional(args).iter().filter_map(|s| TileId::parse(s)).collect();
@@ -3011,7 +3011,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let p = phase("pieces copied from the NAS", Class::NasRead);
         let n = store::sys::copy_data(&piece, &local).with_context(|| format!("copy {}", piece.display()))?;
         p.count(n, 1);
-        // (Its input's measure: the piece's bytes.)
+        // (Its input's measure: the extract's bytes.)
         pipeline::costin::add("bytes", n);
         drop(p);
         let dir = scratch.join(format!("pois-{}", u.dash()));
@@ -3147,8 +3147,8 @@ fn summits_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     Ok(())
 }
 
-/// peaks <units…> [--pass <date>] [--raw dir] [--cache dir] [--coarse-threads n]: prominence and
-/// isolation of each unit's peak candidates (pipeline::peaks::unit), as `work/peaks/<u>`.
+/// peaks <z6 tiles…> [--pass <date>] [--raw dir] [--cache dir] [--coarse-threads n]: prominence and
+/// isolation of each z6 tile's peak candidates (pipeline::peaks::unit), as `work/peaks/<u>`.
 fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::peaks::unit;
     let date =
@@ -3245,7 +3245,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     Ok(())
 }
 
-/// marks [--pass <date>] [--facts file] [--views file]: the landmark points from the current units'
+/// marks [--pass <date>] [--facts file] [--views file]: the landmark points from the current z6 tiles'
 /// candidates and peaks (pipeline::marksjob), with the heritage sites, as markdata and the
 /// marks packs. Facts (Wikidata, by QID) and monthly pageviews: the files given, else the items
 /// job's for the pass.
@@ -3311,7 +3311,7 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     }
     drop(p);
     anyhow::ensure!(missing_peaks == 0, "marks: {missing_peaks} peaks have no prominence yet (the peaks step)");
-    // One order for every candidate, whichever unit it came from.
+    // One order for every candidate, whichever z6 tile it came from.
     cands.sort_by(|a, b| a.0.cmp(&b.0));
     let cands: Vec<pipeline::marksjob::Candidate> = cands.into_iter().map(|c| c.1).collect();
     eprintln!("marks: {} candidates from {} units ({with_peaks} peaks)", cands.len(), units.len());
@@ -3333,7 +3333,7 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// items [--pass <date>] [--dem dir] [--cache dir]: facts and pageviews for the current units'
+/// items [--pass <date>] [--dem dir] [--cache dir]: facts and pageviews for the current z6 tiles'
 /// candidates' Wikidata items (dem/items.py, per pass epoch), as sources/items/<date>/{facts,views}.
 /// What items.py fetched is kept on the NAS too (pipeline::answers:
 /// sources/items/<date>/answers.tar.zst), made one with its cache here as it starts, and sent there
@@ -3880,7 +3880,7 @@ fn heritage_inputs(
 }
 
 /// heritage-sites [--pass <date>] [--dem dir] [--heritage-index i] [--heritage-matches-index i]:
-/// the heritage sites and designated areas the units read (pipeline::heritage): heritage.py in a
+/// the heritage sites and designated areas the z6 tiles read (pipeline::heritage): heritage.py in a
 /// stand-in root, over the tiles within 20 km of the coverage, on the accepted heritage registers
 /// meeting them (docs/inputs.md §6.5: the indexes the agent names, from the records it planned
 /// with; by hand, the records' now), the owner's matches, and the pass's protected areas (its
@@ -3942,7 +3942,7 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     }
     heritage_script(&root, &dem, out.root(), None, "heritage.py", &hargs)?;
     parts.start(3);
-    // The units' slices, then the whole files.
+    // The z6 tiles' slices, then the whole files.
     let p = phase("the sites and areas sliced per z6 tile", Class::Compute);
     let her = std::fs::read(b.join("heritage.json"))?;
     let sites = slice_sites(&her)?;
@@ -3972,7 +3972,7 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     Ok(())
 }
 
-/// The unit step's global-source layers: the manifest's, or a pilot's published catalog.
+/// The `unit` step's global-source layers: the manifest's, or a pilot's published catalog.
 fn layers_source<'a>(
     out: &'a Out,
     pilot: &'a Option<(PathBuf, store::catalog::Catalog)>,
@@ -3984,7 +3984,7 @@ fn layers_source<'a>(
     }
 }
 
-/// The pass the units build from (`--pass`, else the newest complete one) and the regions'
+/// The pass the z6 tiles build from (`--pass`, else the newest complete one) and the regions'
 /// coverage (`--regions`, else the NAS's recipes), with the regions' count.
 fn pass_and_coverage(out: &Out, args: &[String]) -> Result<(String, pipeline::coverage::Coverage, usize)> {
     let date = match opt(args, "--pass") {
@@ -4007,7 +4007,7 @@ fn canopy_files(b: [f64; 4]) -> Vec<String> {
         .collect()
 }
 
-/// unit-snap U --out <dir> --cache <dir> [--carry]: unit U's folder built as the unit step builds
+/// unit-snap U --out <dir> --cache <dir> [--carry]: z6 tile U's folder built as the `unit` step builds
 /// it, from the build's records, writing nothing to the NAS: its kept samples go under <dir>/shared
 /// (seeded with its and its neighbours' from the NAS), and the folder is copied before and after
 /// each of its steps' programs into <dir>/snap (pipeline::unit::Tools::snap) for
@@ -4098,7 +4098,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The declared elevation datasets' accepted version the units read (pipeline::inputs::elevation):
+/// The declared elevation datasets' accepted version the z6 tiles read (pipeline::inputs::elevation):
 /// an error before the records say the build reads them (their switch, docs/inputs.md §6.8).
 fn elevation_of(out: &Out) -> Result<Option<pipeline::inputs::Accepted>> {
     use pipeline::inputs::elevation;
@@ -4108,7 +4108,7 @@ fn elevation_of(out: &Out) -> Result<Option<pipeline::inputs::Accepted>> {
     )?))
 }
 
-/// The unit job's progress (pipeline::unit::TileProgress): each z6 tile under way by the stages it's
+/// The `unit` job's progress (pipeline::unit::TileProgress): each z6 tile under way by the stages it's
 /// through, said as they finish.
 static TILE_PROGRESS: std::sync::Mutex<Option<pipeline::unit::TileProgress>> = std::sync::Mutex::new(None);
 
@@ -4124,7 +4124,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::unit::{prepare_folder, run_tail, stage as unit_stage, Tools};
     let setup = phase("the pass, coverage, pieces and reaches read", Class::NasRead);
     let (date, cov, regions) = pass_and_coverage(out, args)?;
-    // Global-source layers: as this build's manifest has them now (what the unit keys hash: a
+    // Global-source layers: as this build's manifest has them now (what the z6 tile keys hash: a
     // terrain job of the same plan is published only with its catalog, at the end), or another
     // root's published catalog (a pilot builds against the real one).
     let pilot = match opt(args, "--layers-root").map(PathBuf::from) {
@@ -4155,9 +4155,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     if std::env::var_os(pipeline::fetch::DOWN_ENV).is_none() {
         std::env::set_var(pipeline::fetch::DOWN_ENV, std::path::absolute(tools.cache.join("fetch-down"))?);
     }
-    // (The DEM cache's seed, where the units' elevations start from, is copied here once a Mac by
-    // the first unit that it can serve: unit::prepare_folder.)
-    // What units kept in this Mac's own cache: moved to the shared one (both Macs' units read it).
+    // (The DEM cache's seed, where the z6 tiles' elevations start from, is copied here once a Mac by
+    // the first z6 tile that it can serve: unit::prepare_folder.)
+    // What z6 tiles kept in this Mac's own cache: moved to the shared one (both Macs' z6 tiles read it).
     let _p = phase("kept results moved to the shared cache", Class::NasWrite);
     if let Some(shared) = &tools.shared {
         match pipeline::unit::move_kept_to_shared(&tools.cache, shared) {
@@ -4168,18 +4168,18 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     }
     drop(_p);
     let setup = phase("the pass, coverage, pieces and reaches read", Class::NasRead);
-    // The pass's heritage sites and designated areas (the heritage-sites step), for every unit's
+    // The pass's heritage sites and designated areas (the heritage-sites step), for every z6 tile's
     // flags.
     anyhow::ensure!(
         out.get(&pipeline::heritage::base_logical(&date, "heritage-sources")).is_some(),
         "no heritage sites for the pass of {date} (the heritage-sites step)"
     );
-    // The units: as asked, else every unit whose piece meets the coverage.
+    // The z6 tiles: as asked, else every z6 tile whose extract meets the coverage.
     let pieces: serde_json::Value = serde_json::from_slice(&std::fs::read(
         out.path(out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?),
     )?)?;
     let mut units: Vec<TileId> = positional(args).iter().filter_map(|s| TileId::parse(s)).collect();
-    // The pass's reaches: which units the coverage builds, and the roadside buildings' tiles each
+    // The pass's reaches: which z6 tiles the coverage builds, and the roadside buildings' tiles each
     // reads (unless a folder of them is given), from the release's (the buildings step).
     let buildings = match tools.buildings {
         Some(_) => None,
@@ -4210,7 +4210,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     }
     eprintln!("unit: pass {date}, {regions} region(s), {} unit(s)", units.len());
     drop(setup);
-    // A unit's folders go once it's built; what an earlier job left (a unit that failed) goes now.
+    // A z6 tile's folders go once it's built; what an earlier job left (a z6 tile that failed) goes now.
     std::fs::remove_dir_all(scratch.join("units")).ok();
     for e in std::fs::read_dir(scratch).into_iter().flatten().flatten() {
         if e.file_name().to_string_lossy().starts_with("piece-") {
@@ -4224,10 +4224,10 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     pipeline::unit::on_stage(Some(Box::new(|stage, frac, took| tile_progress(|a| a.stage(stage, frac, took)))));
     // This Mac's copies of the packs staging reads (pipeline::stage), kept with the agent's caches.
     let blobs = store::blobs::Blobs::new(tools.cache.join("blobs"));
-    // The next unit's piece and packs, copied while this one builds (one stream: large sequential
-    // reads, nothing the unit building now waits on).
+    // The next z6 tile's extract and packs, copied while this one builds (one stream: large sequential
+    // reads, nothing the z6 tile building now waits on).
     let mut ahead: Option<std::thread::JoinHandle<()>> = None;
-    // Other workers, through the lead's coordinator (the agent's jobs there), and the units
+    // Other workers, through the lead's coordinator (the agent's jobs there), and the z6 tiles
     // whose tails' last steps are out with them.
     let offload = pipeline::offload::Offload::from_env(scratch);
     let mut out_now: std::collections::VecDeque<(Built, pipeline::offload::Offered)> = Default::default();
@@ -4235,9 +4235,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // The z6 tiles set aside: a server a step reads gave no answer (pipeline::unit::source_down). The
     // job goes on with its other z6 tiles, and fails at its end with these left for its next run.
     let mut aside: Vec<(TileId, String)> = Vec::new();
-    // The cache files held for the units (store::cachefile): each unit's let go once the unit after
-    // it is under way (what this unit and the next's copying ahead hold stays), so room-making may
-    // take them meanwhile, and a job of hundreds of units doesn't hold them all.
+    // The cache files held for the z6 tiles (store::cachefile): each z6 tile's let go once the z6 tile after
+    // it is under way (what this z6 tile and the next's copying ahead hold stays), so room-making may
+    // take them meanwhile, and a job of hundreds of z6 tiles doesn't hold them all.
     let mut held_since: Option<u64> = None;
     for (k, &u) in units.iter().enumerate() {
         if let Some(m) = held_since.replace(store::cachefile::mark()) {
@@ -4258,11 +4258,11 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         pipeline::sys::reset_group_peak();
         note_started(&pipeline::coord::cost_key("unit", &u.slash()));
         // (What the caches' accessor had written as it began: its own disk, carried with it, as a
-        // later unit begins before its tail ends.)
+        // later z6 tile begins before its tail ends.)
         let written_at = store::cachefile::written();
         let t = std::time::Instant::now();
         if let Some(h) = ahead.take() {
-            // (The z6 tile before's copying ahead of this one's piece and packs, not done yet.)
+            // (The z6 tile before's copying ahead of this one's extract and packs, not done yet.)
             let _p = phase("waiting for the copying ahead", Class::Wait);
             h.join().ok();
         }
@@ -4373,7 +4373,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         };
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         let s = unit_stage("piece copied from the NAS", Class::NasRead);
-        // (Copied ahead, while the unit before it built, unless it's the job's first.)
+        // (Copied ahead, while the z6 tile before it built, unless it's the job's first.)
         if std::fs::metadata(&local_piece).map(|m| m.len()).ok() != std::fs::metadata(&piece).map(|m| m.len()).ok() {
             let n = store::sys::copy_data(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
             pipeline::timings::count(n, 1);
@@ -4425,7 +4425,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             }
         };
         std::fs::remove_file(&local_piece).ok();
-        // Its tail: offered to another worker while this Mac prepares the next unit (when one's
+        // Its tail: offered to another worker while this Mac prepares the next z6 tile (when one's
         // around, and fewer than such are out), else run here too. The canopy squares a worker
         // reads where they lie, and can't download one: while the NAS's store lacks one, the
         // steps through the canopy stay here (where it's downloaded).
@@ -4442,7 +4442,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 continue;
             }
         }
-        // (Its inputs' measures: the piece's bytes beside what the store's readers read, its ways
+        // (Its inputs' measures: the extract's bytes beside what the store's readers read, its ways
         // and vertices kept, its elevation tiles and area.)
         // (Its tail's later steps run here add theirs: `costin::measured`.)
         pipeline::costin::set("km2", pipeline::costin::tile_km2(u.z, u.x, u.y));
@@ -4501,7 +4501,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 commit_unit(out, &date, b, "here")?;
             }
         }
-        // Units whose last steps came back from other workers: committed before the next.
+        // Z6 tiles whose last steps came back from other workers: committed before the next.
         settle_tails(out, &date, offload.as_ref(), &mut out_now, false, &mut aside)?;
     }
     // The rest: given a moment to be taken by a worker whose pace beats this Mac's (or isn't
@@ -4520,7 +4520,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 /// The folder of this program's app, its links followed: the agent starts jobs by `app/current`,
 /// which an app installed while a job runs points at the newer one, and a step's program of another
-/// version reads what this one didn't write (a unit's `sources.json`, before task #145's app). The
+/// version reads what this one didn't write (a z6 tile's `sources.json`, before task #145's app). The
 /// job's app folder is kept while it runs (agent::Status::job_apps).
 fn own_bin() -> Result<PathBuf> {
     app_folder(&std::env::current_exe()?)
@@ -4555,7 +4555,7 @@ fn aside_end(aside: &[(TileId, String)], of: usize) -> Result<()> {
     )
 }
 
-/// A unit prepared (and its tail's first steps run), waiting to be finished and committed.
+/// A z6 tile prepared (and its tail's first steps run), waiting to be finished and committed.
 struct Built {
     u: TileId,
     dir: PathBuf,
@@ -4581,7 +4581,7 @@ struct Built {
 /// A tail's time on the lead until it has timed its stages (seconds).
 const TAIL_GUESS_S: f64 = 120.0;
 
-/// Settles the units whose last steps are out with other workers (pipeline::offload), in order,
+/// Settles the z6 tiles whose last steps are out with other workers (pipeline::offload), in order,
 /// and commits them: with `wait` false only those a worker finished or failed; with it, each after
 /// the patience its steps' time here and its worker's pace allow (pipeline::offload::Patience).
 fn settle_tails(
@@ -4653,7 +4653,7 @@ fn settle_tails(
     Ok(())
 }
 
-/// A unit's last part, its folder ready: the grids its packs lacked, its scenic results kept for
+/// A z6 tile's last part, its folder ready: the grids its packs lacked, its scenic results kept for
 /// its next run, its base pack, road values, road ids and roads' English saved, its folders
 /// removed, and what it cost noted. `how`: where its tail's last steps ran. (What it saves is
 /// `pipeline::unit::saved_files`, all a helper's hand-off may change: keep the two together.)
@@ -4673,8 +4673,8 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
         std::fs::remove_dir_all(&bdir).ok();
         std::fs::remove_dir_all(pipeline::unit::ahead_carry(&dir)).ok();
     };
-    // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
-    // for later units and packs. (The canopy step made canopy and cover for every tile.) Their
+    // Grids its packs lacked (new coverage), made in the folder: the z6 tile's own z6 tile's go up,
+    // for later z6 tiles and packs. (The canopy step made canopy and cover for every tile.) Their
     // uploads, and its base pack's, are put off: they go on beside the rest of its last part, and
     // its save below waits for them (pipeline::out::Out::put_file_later).
     let s = unit_stage("missing grids written", Class::Disk);
@@ -4738,7 +4738,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     let secs: Vec<(&str, &[u8])> = bs.sections.iter().map(|(n, v)| (*n, v.as_slice())).collect();
     put_sect_later(out, &format!("base/{}", u.dash()), bs.meta, &secs)?;
     s.end();
-    // (The pass's road values read from the NAS; the unit's written back.)
+    // (The pass's road values read from the NAS; the z6 tile's written back.)
     let s = unit_stage("road values made and written", Class::Mixed);
     let vals = {
         let _p = pipeline::timings::sub("the pass's road values read", Class::NasRead);
@@ -4810,8 +4810,8 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     s.end();
     // The most memory the job's processes held together while it was built here (as the agent's
     // memory guard measures a job: the same kind of figure, so either takes the other's place),
-    // noted for the coordinator (`SCENIC_COSTS`), which gives a worker only units that fit its
-    // memory; its steps' programs' most, one at a time, logged against its piece's size.
+    // noted for the coordinator (`SCENIC_COSTS`), which gives a worker only z6 tiles that fit its
+    // memory; its steps' programs' most, one at a time, logged against its extract's size.
     let piece_mb = std::fs::metadata(&piece).map(|m| m.len() >> 20).unwrap_or(0);
     let peak = peak.max(pipeline::unit::take_peak());
     eprintln!(
@@ -4870,7 +4870,7 @@ fn prune_step(out: &mut Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Every unit's reach (pipeline::reach) from its piece, as `sources/osm/<date>/reach`: each piece
+/// Every z6 tile's reach (pipeline::reach) from its extract, as `sources/osm/<date>/reach`: each extract
 /// copied here and read twice (its ways, then their nodes).
 fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::reach::{logical, of_piece, Reaches};
@@ -4920,9 +4920,9 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The road → units index from every unit's road ids in the manifest (a unit built before them: its
+/// The road → z6 tiles index from every z6 tile's road ids in the manifest (a z6 tile built before them: its
 /// road values; `pipeline::agent::build::roadunits_reads`). Only the lists changed since the index
-/// before are read: it names each unit's list by content (section "srcs"), and a unit whose list
+/// before are read: it names each z6 tile's list by content (section "srcs"), and a z6 tile whose list
 /// it names as now keeps its pairs from it. The same index as one made from every list.
 fn roadunits(out: &mut Out) -> Result<()> {
     let reads = pipeline::agent::build::roadunits_reads(&out.manifest);
@@ -5103,7 +5103,7 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
 }
 
 /// depth-lo <Q …> | depth <T …>: the depth's assemblies of z3 tiles Q (their lo packs, z3–8) or
-/// pieces of z6 tiles T (their hi packs, z9–16), from the declared depth sources on the latest
+/// z6 tiles of z6 tiles T (their hi packs, z9–16), from the declared depth sources on the latest
 /// pass's water (pipeline::depth::build).
 fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
     let z = if step == "depth-lo" { 3 } else { 6 };
@@ -5137,10 +5137,10 @@ fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
     Ok(())
 }
 
-/// treeblock-task's work: row `row`'s task folder in `dir/task` (cut from its piece's coverage as
-/// the piece's run cuts it), `dir/task.json` (its blocks and the canopy squares the NAS's store
+/// treeblock-task's work: row `row`'s task folder in `dir/task` (cut from its z6 tile's coverage as
+/// the z6 tile's run cuts it), `dir/task.json` (its blocks and the canopy squares the NAS's store
 /// has whole there), and `dir/packs/8-x-y/` its blocks' tiles from the manifest's hi packs (zoom
-/// 9–12) and its piece's mid (zoom 8, the values), written as the trees program writes a block.
+/// 9–12) and its z6 tile's mid (zoom 8, the values), written as the trees program writes a block.
 fn treeblock_task(out: &Out, cov: &pipeline::coverage::Coverage, row: &[(u32, u32)], dir: &Path) -> Result<()> {
     use pipeline::trees::{self, task};
     anyhow::ensure!(
@@ -5256,7 +5256,7 @@ fn bldtile_task_step(out: &mut Out, args: &[String]) -> Result<()> {
 
 /// The z6 tiles a z3 tile's whole terrain or slope run makes, by z3 pack: those near the coverage (as
 /// the agent's keys list them, `build::coverage_tiles`) of each z3 pack named (`3/x/y`), or with
-/// none named every z6 tile near the coverage. (Z6 tiles named are pieces: `pieces_named`.)
+/// none named every z6 tile near the coverage. (Z6 tiles named are extracts: `pieces_named`.)
 fn terrain_targets(
     cov: &pipeline::coverage::Coverage,
     args: &[String],
@@ -5289,8 +5289,8 @@ fn terrain_targets(
     Ok(by_q)
 }
 
-/// The z6 tiles named (pieces: `terrain` and `slope` of z6 tiles; one not near the coverage is a
-/// "none" piece, whose run drops its hi pack and mid, if any); None when none is (a z3 tile's whole
+/// The z6 tiles named (z6 tiles: `terrain` and `slope` of z6 tiles; one not near the coverage is a
+/// "none" z6 tile, whose run drops its hi pack and mid, if any); None when none is (a z3 tile's whole
 /// run, of z3 tiles or of all); an error when z6 tiles are named with others. `--expect-same`'s,
 /// those of them made again as they are (each near the coverage).
 fn pieces_named(
@@ -5302,7 +5302,7 @@ fn pieces_named(
         .iter()
         .map(|s| TileId::parse(s).with_context(|| format!("not a tile: {s}")))
         .collect::<Result<_>>()?;
-    // (`--pieces-of Q,…`: every piece of those z3 tiles, by hand.)
+    // (`--pieces-of Q,…`: every z6 tile of those z3 tiles, by hand.)
     if let Some(qs) = opt(args, "--pieces-of") {
         let near = pipeline::agent::build::coverage_tiles(cov);
         for q in qs.split(',').filter(|q| !q.is_empty()) {
@@ -5339,7 +5339,7 @@ fn pieces_named(
     Ok(Some((named, same)))
 }
 
-/// The z3 tiles named (assemblies: `terrain-lo`, `slope-lo`), each with its pieces (its z6 tiles
+/// The z3 tiles named (assemblies: `terrain-lo`, `slope-lo`), each with its z6 tiles (its z6 tiles
 /// near the coverage, in column then row order; none for a "none" assembly, a z3 tile the coverage
 /// has left, whose run drops its lo pack).
 fn z3s_named(
@@ -5357,7 +5357,7 @@ fn z3s_named(
     Ok(qs.into_iter().map(|q| (q, near.get(&(q.x, q.y)).cloned().unwrap_or_default())).collect())
 }
 
-/// The "none" assemblies of `qs` (those without a piece: `areas_named`) run: each z3 tile's lo pack
+/// The "none" assemblies of `qs` (those without a z6 tile: `areas_named`) run: each z3 tile's lo pack
 /// of `step`'s layer dropped; the others returned. Nothing is read for them, so a job of them alone opens
 /// no sources.
 fn none_assemblies(
@@ -5379,7 +5379,7 @@ fn none_assemblies(
     Ok(rest)
 }
 
-/// terrain <6/x/y …> [--expect-same T,…]: terrain's pieces (pipeline::terrain_pack::build_piece:
+/// terrain <6/x/y …> [--expect-same T,…]: terrain's z6 tiles (pipeline::terrain_pack::build_piece:
 /// each z6 tile's hi pack and mid), then the raw tiles AWS gave packed onto the NAS.
 fn terrain_pieces(
     out: &mut Out,
@@ -5388,7 +5388,7 @@ fn terrain_pieces(
     ts: &[TileId],
     same: &BTreeSet<String>,
 ) -> Result<()> {
-    // ("None" pieces, z6 tiles the coverage has left, first: their hi packs and mids dropped, nothing
+    // ("None" z6 tiles, z6 tiles the coverage has left, first: their hi packs and mids dropped, nothing
     // read, no cost noted; a job of them alone opens no sources and packs nothing.)
     let (ts, gone): (Vec<TileId>, Vec<TileId>) =
         ts.iter().partition(|t| pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y, 20.0));
@@ -5415,10 +5415,10 @@ fn terrain_pieces(
     names.push("Packing the new raw tiles onto the NAS".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let say = |what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what);
-    // Other workers, through the lead's coordinator: some of each piece's z8 subtrees
+    // Other workers, through the lead's coordinator: some of each z6 tile's z8 subtrees
     // (pipeline::terrain_task).
-    // (Each piece's offered as it begins; offering ahead (`offer_ahead`), the next's then too, its
-    // head start the piece under way's tiles.)
+    // (Each z6 tile's offered as it begins; offering ahead (`offer_ahead`), the next's then too, its
+    // head start the extract under way's tiles.)
     let offload = pipeline::offload::Offload::from_env(&out.scratch);
     let offer_after = |t: &TileId, before: usize| {
         pipeline::terrain_task::Offers::offer_after(
@@ -5433,7 +5433,7 @@ fn terrain_pieces(
     let offer = |t: &TileId| offer_after(t, 0);
     let offer_ahead = pipeline::terrain_task::offer_ahead();
     let mut ahead: Option<pipeline::terrain_task::Offers> = None;
-    // (Each piece's uploads go on beside the next piece's work: it's noted done once they've landed.)
+    // (Each z6 tile's uploads go on beside the next z6 tile's work: it's noted done once they've landed.)
     let mut landing = Landing::default();
     for (k, t) in ts.iter().enumerate() {
         landing.safe_point(out, "terrain")?;
@@ -5471,7 +5471,7 @@ fn terrain_pieces(
 }
 
 /// terrain-water [--pass d]: the terrain's water digests (`pipeline::terrain_water::make_idx`) of
-/// what each terrain piece and assembly near the coverage reads (agent::build::water_wants), of
+/// what each terrain z6 tile and assembly near the coverage reads (agent::build::water_wants), of
 /// the latest basemap's water, under `work/water-idx/<hash16 of its pin>`: those already there for
 /// the same reads kept, the others read from the basemap.
 fn terrain_water_step(out: &mut Out, args: &[String]) -> Result<()> {
@@ -5527,7 +5527,7 @@ fn water_idx_of(
 }
 
 /// terrain-lo <3/x/y …>: terrain's assemblies (pipeline::terrain_pack::build_lo: each z3 tile's lo
-/// pack from its pieces' mids), then the raw tiles AWS gave packed onto the NAS.
+/// pack from its z6 tiles' mids), then the raw tiles AWS gave packed onto the NAS.
 fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
     let qs = none_assemblies(out, "terrain-lo", z3s_named(&cov, args, "terrain-lo")?)?;
@@ -5560,7 +5560,7 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// slope <6/x/y …> [--expect-same T,…]: slope's pieces (pipeline::slope_pack::build_piece); of a z6
+/// slope <6/x/y …> [--expect-same T,…]: slope's z6 tiles (pipeline::slope_pack::build_piece); of a z6
 /// tile the coverage has left, its hi pack and mid dropped (pipeline::slope_pack::drop_piece).
 fn slope_pieces(
     out: &mut Out,
@@ -5570,12 +5570,12 @@ fn slope_pieces(
 ) -> Result<()> {
     let names: Vec<String> = ts.iter().map(|t| format!("Working out {}'s slope", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    // (Each piece's uploads go on beside the next piece's work: it's noted done once they've landed.)
+    // (Each z6 tile's uploads go on beside the next z6 tile's work: it's noted done once they've landed.)
     let mut landing = Landing::default();
     for (k, t) in ts.iter().enumerate() {
         landing.safe_point(out, "slope")?;
         pipeline::agent::jobs::part(k, &names);
-        // (A "none" piece first: nothing read, neither a `started` nor a cost line.)
+        // (A "none" z6 tile first: nothing read, neither a `started` nor a cost line.)
         if !pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y, 20.0) {
             landing.land(out)?;
             let n = pipeline::slope_pack::drop_piece(out, (t.x, t.y))?;
@@ -5923,7 +5923,7 @@ fn static_timetables(out: &Out, args: &[String]) -> Result<pipeline::inputs::Acc
 /// apart, the static files' count rows as given; their stops
 /// beyond the coverage marked, matched by `railfreq` onto the rail ways of the pass's rail set that
 /// touch the coverage: the set clipped to the tiles within 20 km of it (as the heritage jobs' cover),
-/// then `extract` (8 m, as the units), then the ways touching it. The feeds' days and trips go to
+/// then `extract` (8 m, as the z6 tiles), then the ways touching it. The feeds' days and trips go to
 /// `work/rail/used`.
 fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::rail;
@@ -6055,7 +6055,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     parts.start(3);
     let p = phase("its ways extracted and those in the coverage kept (extract)", Class::Compute);
     let dir = scratch.join("ways");
-    // (Spaced as the units' extract spaces them: pipeline::dem::spacing.)
+    // (Spaced as the z6 tiles' extract spaces them: pipeline::dem::spacing.)
     let spacing = scratch.join(pipeline::dem::spacing::FILE);
     pipeline::dem::spacing::Fine::of_records(out.root(), &out.manifest)?.write(&spacing)?;
     std::fs::remove_dir_all(&dir).ok();
@@ -6449,9 +6449,9 @@ mod tests {
         assert!(aside_end(&[], 3).is_ok());
     }
 
-    /// A pack job opens its tiles' owners and no other unit (`owners_of`, as their keys read
+    /// A pack job opens its tiles' owners and no other z6 tile (`owners_of`, as their keys read
     /// them): from the mirror where it has them (held, nothing copied), else read in part from the
-    /// NAS (their way indexes kept in the cache); another unit's file is neither read nor opened.
+    /// NAS (their way indexes kept in the cache); another z6 tile's file is neither read nor opened.
     #[test]
     fn a_pack_job_opens_only_its_tiles_owners() {
         use pipeline::legacy::TileId;
@@ -6480,7 +6480,7 @@ mod tests {
                 w.add(sect, &vec![0u8; rec]).unwrap();
                 w.finish().unwrap();
                 let name = store::naming::content_name(&logical, &store::naming::hash16_file(&tmp).unwrap(), "sect");
-                // (The first unit's files in the mirror, the rest only on the NAS.)
+                // (The first z6 tile's files in the mirror, the rest only on the NAS.)
                 let dirs: &[&std::path::Path] = if i == 0 { &[&root, &mirror] } else { &[&root] };
                 for dir in dirs {
                     std::fs::create_dir_all(dir.join(&name).parent().unwrap()).unwrap();
@@ -6493,7 +6493,7 @@ mod tests {
         std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
         let out = pipeline::out::Out::unbound(&root, &d.path().join("scratch")).unwrap();
         let tile = [(6u8, 32u32, 21u32)];
-        // (No reaches here: each unit's ways taken to lie within its tile + 20 km.)
+        // (No reaches here: each z6 tile's ways taken to lie within its tile + 20 km.)
         let mut reach = pipeline::reach::Reaches::default();
         let owners = pipeline::agent::build::owners_of(Some(&reach), &m, &tile);
         assert_eq!(
@@ -6525,7 +6525,7 @@ mod tests {
         let held = mirror.join(&m["base/6-32-21"]);
         assert_eq!(store::cachefile::try_remove(&held), store::cachefile::Removed::InUse);
         // The packs' extents (crate::extents), read by a job from their headers when the lead
-        // hasn't kept them, in memory only; once the lead has, read from its file: the far unit
+        // hasn't kept them, in memory only; once the lead has, read from its file: the far z6 tile
         // whose pack spills into the tile is caught, and is an owner.
         let (e, read) = pipeline::extents::fill(&root, &m, Default::default()).unwrap();
         assert_eq!(read, units.len());
@@ -6550,7 +6550,7 @@ mod tests {
         assert_eq!(pipeline::extents::load(&root).len(), 4);
         pipeline::extents::keep(&root, &fewer).unwrap();
         assert_eq!(pipeline::extents::load(&root).len(), 3);
-        // No tiles named: every unit.
+        // No tiles named: every z6 tile.
         assert_eq!(super::open_units(&out, &cache, Some(&mirror), None, None).unwrap().0.len(), units.len());
         for name in names.keys() {
             store::cachefile::release(&mirror.join(name));
@@ -6917,7 +6917,7 @@ mod tests {
 
     #[test]
     fn a_boxs_canopy_files() {
-        // Unit 6/20/22 grown by 30 km (New Brunswick): one 10° square, its three files.
+        // Z6 tile 6/20/22 grown by 30 km (New Brunswick): one 10° square, its three files.
         let b = pipeline::stage::tile_box_grown(6, 20, 22, pipeline::stage::MARGIN_KM);
         assert_eq!(
             super::canopy_files(b),
@@ -6931,7 +6931,7 @@ mod tests {
         }
     }
 
-    /// The road → units index from the units' road ids (a unit built before them: its road
+    /// The road → z6 tiles index from the z6 tiles' road ids (a z6 tile built before them: its road
     /// values), reading only the lists changed since the index before: the same index as one made
     /// from every list.
     #[test]

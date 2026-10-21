@@ -46,7 +46,8 @@ pub struct Catalog {
     /// 14 days' catalogs (docs/storage.md).
     #[serde(default)]
     pub files: BTreeMap<String, FileRef>,
-    /// The built units (tile keys as "z/x/y"), sorted.
+    /// The built z6 tiles (tile keys as "z/x/y"), sorted. (Stored and served as `units`: catalogs on the NAS and
+    /// the web client read it so; kept.)
     #[serde(default)]
     pub units: Vec<String>,
     #[serde(default)]

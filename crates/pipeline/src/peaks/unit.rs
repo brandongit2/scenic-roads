@@ -1,10 +1,10 @@
-//! Prominence and isolation for a unit's peaks (docs/phase5.md "peaks"), so that a peak's result
-//! doesn't depend on which unit computes it (the coverage decides which z12 tiles are the packs'):
+//! Prominence and isolation for a z6 tile's peaks (docs/phase5.md "peaks"), so that a peak's result
+//! doesn't depend on which z6 tile computes it (the coverage decides which z12 tiles are the packs'):
 //!
 //! - z12 is the terrain pack's tile where the manifest has it, else AWS's raw tile repaired
 //!   (`UnitZ12`: `terrain_pack::process` with no sources, so not GLO-30, the water nor the coarse
 //!   data's repair the packs' tiles have; the open sea, which AWS has no tile for, at 0 m). Either
-//!   is the same whichever unit reads it.
+//!   is the same whichever z6 tile reads it.
 //! - The summits near a peak count at their own heights, each worked out from z12 the same way
 //!   whichever peak asks: its summit pixel (highest within 150 m), its claim of that pixel (several
 //!   on one: the highest tagged, then the nearest to it, then the lowest OSM id), its height.
@@ -111,7 +111,7 @@ pub fn tile_lower_bound_m(lon: f64, lat: f64, z: u8, tx: u32, ty: u32) -> f64 {
     best
 }
 
-/// A unit's z12 tiles, read before the run: each is the terrain pack's when the manifest has it,
+/// A z6 tile's z12 tiles, read before the run: each is the terrain pack's when the manifest has it,
 /// else AWS's raw tile from the cache (fetched when missing; a failed fetch fails) processed the
 /// same way and read back from its PNG; AWS having none is the open sea. A tile asked for that
 /// wasn't read before is counted (`unexpected`), and fails the run.
@@ -131,7 +131,7 @@ impl UnitZ12 {
         Self::load_from(&crate::terrain_pack::ManifestTiles::new(out, "terrain"), raw, want)
     }
 
-    /// `load`, from the terrain packs `packs` reads (a job's several units', each pack opened once).
+    /// `load`, from the terrain packs `packs` reads (a job's several z6 tiles', each pack opened once).
     pub fn load_from(
         packs: &crate::terrain_pack::ManifestTiles,
         raw: &crate::terrain_pack::RawTiles,
@@ -228,7 +228,7 @@ impl UnitZ12 {
 }
 
 /// Each of `items` loaded (`load`) and handed to `work` in order, the next one's load under way on a
-/// thread of its own while `work` takes the one before: a job's next unit's z12 tiles read from the
+/// thread of its own while `work` takes the one before: a job's next z6 tile's z12 tiles read from the
 /// NAS while this one's peaks are measured (task #399: the reads were most of a run, at the link's
 /// speed already). The first is loaded on this thread. `work` gets what `load` made either way, so
 /// the results are those of loading each in turn; a failed load fails when its turn comes, after
@@ -261,7 +261,7 @@ pub fn read_ahead<I: Sync, T: Send>(
     })
 }
 
-/// The z12 tiles a unit's peaks may read: those meeting a disc of `km` around each, padded.
+/// The z12 tiles a z6 tile's peaks may read: those meeting a disc of `km` around each, padded.
 pub fn tiles_wanted(points: &[(f64, f64)], km: f64) -> BTreeSet<(u32, u32)> {
     let n = 1u32 << Z12;
     let mut want = BTreeSet::new();
@@ -283,7 +283,7 @@ pub fn tiles_wanted(points: &[(f64, f64)], km: f64) -> BTreeSet<(u32, u32)> {
     want
 }
 
-/// The overlays the unit's searches read: at z12 a peak's nearby summits; at z8 every summit's
+/// The overlays the z6 tile's searches read: at z12 a peak's nearby summits; at z8 every summit's
 /// tagged height where plausible, and the nearby ones' z12 heights instead.
 trait Ov: Sync {
     fn at(&self, p: (i64, i64)) -> Option<f32>;
@@ -354,7 +354,7 @@ impl Ov for Ov8<'_> {
     }
 }
 
-/// One zoom's pixels for the unit's searches: x wraps around the world; beyond the poles nothing.
+/// One zoom's pixels for the z6 tile's searches: x wraps around the world; beyond the poles nothing.
 struct UDem<'a> {
     z: u8,
     z12: Option<&'a UnitZ12>,
@@ -554,7 +554,7 @@ fn nearest_higher(
     best
 }
 
-/// A peak of the unit: its key (handed back), its summit's id in `summits`, position, tagged height.
+/// A peak of the z6 tile: its key (handed back), its summit's id in `summits`, position, tagged height.
 #[derive(Clone, Debug)]
 pub struct UnitPeak {
     pub key: String,
@@ -564,7 +564,7 @@ pub struct UnitPeak {
     pub ele: Option<f32>,
 }
 
-/// A summit as the unit's peaks see it (from z12).
+/// A summit as the z6 tile's peaks see it (from z12).
 #[derive(Clone, Copy, Debug)]
 struct Seen {
     /// Its summit pixel after the claims, and its height there.
@@ -572,7 +572,7 @@ struct Seen {
     e: f32,
 }
 
-/// Peaks of a unit: (key, result) in the peaks' order.
+/// Peaks of a z6 tile: (key, result) in the peaks' order.
 pub fn run(
     peaks: &[UnitPeak],
     summits: &[Summit],
@@ -583,7 +583,7 @@ pub fn run(
 ) -> Result<Vec<(String, Out)>> {
     let t0 = std::time::Instant::now();
     let by_id: HashMap<&str, usize> = summits.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
-    // The summits near the unit's peaks, by 0.1° cell.
+    // The summits near the z6 tile's peaks, by 0.1° cell.
     let mut grid: HashMap<(i32, i32), Vec<u32>> = HashMap::new();
     for (i, s) in summits.iter().enumerate() {
         grid.entry((s.lon.div_euclid(1_000_000), s.lat.div_euclid(1_000_000))).or_default().push(i as u32);
@@ -915,15 +915,15 @@ mod tests {
         }
     }
 
-    /// Task #399: two neighbouring units' peaks measured from their z12 tiles read ahead, in spans
+    /// Task #399: two neighbouring z6 tiles' peaks measured from their z12 tiles read ahead, in spans
     /// (`read_ahead`, `UnitZ12::load_from`: `ManifestTiles::get_many`), are byte for byte those
-    /// measured from the same packs read a tile at a time, each unit in turn.
+    /// measured from the same packs read a tile at a time, each z6 tile in turn.
     #[test]
     fn read_ahead_in_spans_gives_the_same_bytes_as_tile_by_tile() {
         use crate::terrain_pack::{ManifestTiles, RawTiles};
         let d = tempfile::tempdir().unwrap();
         let mut out = crate::out::Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
-        // Two units side by side (6/33/22, 6/34/22), peaks either side of their border.
+        // Two z6 tiles side by side (6/33/22, 6/34/22), peaks either side of their border.
         let pk = |n: u32, lon: f64, lat: f64, ele: Option<f32>| {
             let (lon, lat) = ((lon * 1e7) as i32, (lat * 1e7) as i32);
             (
@@ -945,7 +945,7 @@ mod tests {
                 )
             })
             .collect();
-        // Hills, smooth across tiles: every tile either unit wants, in its z6 tile's hi pack.
+        // Hills, smooth across tiles: every tile either z6 tile wants, in its z6 tile's hi pack.
         let all: BTreeSet<(u32, u32)> = wants.iter().flatten().copied().collect();
         let mut by_pack: BTreeMap<(u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
         for &(x, y) in &all {
@@ -1002,7 +1002,7 @@ mod tests {
             b
         };
         let peaks_of = |k: usize| units[k].iter().map(|p| p.0.clone()).collect::<Vec<_>>();
-        // Tile by tile, each unit in turn.
+        // Tile by tile, each z6 tile in turn.
         let one = ManifestTiles::new(&out, "terrain");
         let in_turn: Vec<Vec<u8>> = (0..2)
             .map(|k| {
@@ -1014,7 +1014,7 @@ mod tests {
                 bytes(r)
             })
             .collect();
-        // In spans, the next unit's read ahead.
+        // In spans, the next z6 tile's read ahead.
         let packs = ManifestTiles::new(&out, "terrain");
         let raw = RawTiles::new(&d.path().join("raw"), "http://127.0.0.1:9/{z}/{x}/{y}.png");
         let mut ahead: Vec<Vec<u8>> = Vec::new();
@@ -1032,7 +1032,7 @@ mod tests {
         assert_eq!(ahead, in_turn);
     }
 
-    /// A load that fails fails in its turn, after the units before it were done.
+    /// A load that fails fails in its turn, after the z6 tiles before it were done.
     #[test]
     fn read_ahead_fails_in_turn() {
         let mut done = Vec::new();

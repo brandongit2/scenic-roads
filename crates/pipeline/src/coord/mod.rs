@@ -3,7 +3,7 @@
 //! which it alone writes; a worker only asks for work that fits it, does it, and hands it back.
 //!
 //! Two kinds of work, by what a worker can reach (§2):
-//! - **Jobs** of the plan (crate::agent::steps::SHARED: units, terrain, slope, tree cover,
+//! - **Jobs** of the plan (crate::agent::steps::SHARED: z6 tiles, terrain, slope, tree cover,
 //!   landmark candidates and peaks), for workers that mount the NAS (the M1's agent, `--helper`). A
 //!   worker's job saves through the coordinator: its hand-off (its manifest changes and done record,
 //!   one per job) is journaled on this Mac's disk, written whole, then merged into the records by the
@@ -14,7 +14,7 @@
 //! twice and a worker that goes quiet (or pauses for its conditions: it doesn't beat) gives its work
 //! back; while the build is paused, every lease is held. A hand-off
 //! for a lease that's gone is refused (410): its work was offered again, and a late save could put
-//! an older build in the manifest. The token, the jobs' leases and what each unit cost are kept on
+//! an older build in the manifest. The token, the jobs' leases and what each z6 tile cost are kept on
 //! this Mac's disk, so the agent restarting (a new app) is a pause to every worker, nothing more.
 //!
 //! Workers find it in `state/coordinator.json` on the NAS: its addresses (Tailscale's first, then
@@ -89,7 +89,7 @@ pub fn contact_path(root: &Path) -> PathBuf {
     root.join("state/coordinator.json")
 }
 
-/// What a job's target cost last time (a unit's, another shared step's, a task's): its peak memory
+/// What a job's target cost last time (a z6 tile's, another shared step's, a task's): its peak memory
 /// (MB) and its wall time, the worker it was measured on (None: the lead, or not said), and
 /// the way its step was run then (`cost_version`), and its inputs' measures then (crate::costin;
 /// none from a job before them, and a reader before them ignores them).
@@ -115,18 +115,18 @@ fn is_zero64(v: &u64) -> bool {
 
 /// The way a step runs now, as far as its memory and time go: a cost measured another way says
 /// nothing of what a run takes now (terrain 2 and slope 2: each z6 tile's pack written as it's made,
-/// where they held their whole z3 tile's; tree cover 2: a z6 tile a run (a piece), where 1 was a z3
+/// where they held their whole z3 tile's; tree cover 2: a z6 tile a run (a z6 tile), where 1 was a z3
 /// tile's whole run with the trees program, a band of a block's rows at a time on each thread, and
 /// before that trees.py's workers each held a block's every zoom-12 value, 12 to 36 GB together;
-/// its assemblies 1; terrain 3 and slope 3: a z6 tile a run (a piece), their assemblies 1; terrain
-/// 4: a piece's tiles made a group of z8 subtrees at a time, where 3 held all its z12 tiles' at once,
+/// its assemblies 1; terrain 3 and slope 3: a z6 tile a run (a z6 tile), their assemblies 1; terrain
+/// 4: a z6 tile's tiles made a group of z8 subtrees at a time, where 3 held all its z12 tiles' at once,
 /// 7 GB at its 90th percentile).
 pub fn cost_version(step: &str) -> u32 {
     match step {
         "terrain" => 4,
         "slope" => 3,
         "trees" => 2,
-        // (A unit's measure its job's processes together, as the memory guard measures a job; 0
+        // (A z6 tile's measure its job's processes together, as the memory guard measures a job; 0
         // was its programs' most, one at a time; 2: its processes started without malloc's large
         // cache, store::spawn::NO_LARGE_CACHE, where 1's measures counted 6–7 GB of freed blocks.)
         "unit" => 2,
@@ -138,7 +138,7 @@ pub fn cost_version(step: &str) -> u32 {
     }
 }
 
-/// A unit's predicted peak memory (MB): what it took last time, else about ten times its piece (the
+/// A z6 tile's predicted peak memory (MB): what it took last time, else about ten times its extract (the
 /// densest measured: 6.6 GB for 668 MB), and never under 3.7 GB (the canopy step's).
 pub fn unit_peak(costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 {
     costs
@@ -148,8 +148,8 @@ pub fn unit_peak(costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 
         .unwrap_or_else(|| (piece >> 20).saturating_mul(10).max(3700))
 }
 
-/// The kinds of task a page may take: a unit's tail, a 3D buildings' z8 tile (`bld::task::KIND`),
-/// a row of a tree cover piece's z8 blocks (`trees::task::KIND`), a terrain piece's z8 subtrees
+/// The kinds of task a page may take: a z6 tile's tail, a 3D buildings' z8 tile (`bld::task::KIND`),
+/// a row of a tree cover z6 tile's z8 blocks (`trees::task::KIND`), a terrain z6 tile's z8 subtrees
 /// (`terrain_task::KIND`).
 pub const PAGE_TASKS: [&str; 4] = ["tail", crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND];
 
@@ -159,7 +159,7 @@ pub fn task_cost_key(kind: &str, unit: &str) -> String {
     format!("{kind} {unit}")
 }
 
-/// What a job of `step` for `target` costs is kept under: a unit's by its target alone (as before
+/// What a job of `step` for `target` costs is kept under: a z6 tile's by its target alone (as before
 /// other steps were offered), another step's as "<step> <target>".
 pub fn cost_key(step: &str, target: &str) -> String {
     if step == "unit" {
@@ -184,8 +184,8 @@ pub fn job_peak(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: 
 }
 
 /// The memory a job of `step` for `target` is guessed to take (MB) when none of its step has been
-/// measured (crate::needs' last resort): a unit's by `unit_peak` (`size` its piece's bytes);
-/// candidates' as the unit's (they read the same piece, with one of the unit's programs: `size` its
+/// measured (crate::needs' last resort): a z6 tile's by `unit_peak` (`size` its extract's bytes);
+/// candidates' as the z6 tile's (they read the same extract, with one of the z6 tile's programs: `size` its
 /// bytes too); another step's `size`, the estimate it was offered with.
 pub fn first_guess(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: u64) -> u64 {
     match step {
@@ -195,7 +195,7 @@ pub fn first_guess(costs: &BTreeMap<String, Cost>, step: &str, target: &str, siz
 }
 
 /// A step's work offered to the workers that mount the NAS: its targets in plan order (target, key,
-/// size: a unit's or candidates' piece bytes, another step's predicted peak memory in MB). A job
+/// size: a z6 tile's or candidates' extract bytes, another step's predicted peak memory in MB). A job
 /// takes as many as fit `JOB_S` by their measured times (`pick_every`), but the lead's own planned
 /// job (`job`: its id), granted whole and to the lead alone (crate::agent::every::grants).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -594,7 +594,7 @@ impl Shared {
     }
 
     /// `Coordinator::measured`, under its lock: its step's model's (crate::needs) memory and disk (a
-    /// unit's or candidates' piece-size guess first while their fit isn't good, by the size it was
+    /// z6 tile's or candidates' extract-size guess first while their fit isn't good, by the size it was
     /// offered with); None while nothing of its step was measured. Floors of an older way of the
     /// step count for nothing (crate::needs).
     fn measured(&self, step: &str, target: &str) -> Option<Measured> {
@@ -1596,8 +1596,8 @@ pub struct Ask {
     #[serde(default)]
     pub label: Option<String>,
     /// The kinds of work it does: a shared step's jobs (crate::agent::steps::SHARED: it mounts
-    /// the NAS), "tail", "bldtile", "treeblock" or "terrainsub" (tasks: a unit's tail, a 3D
-    /// buildings' z8 tile, a row of tree cover's z8 blocks, a terrain piece's z8 subtrees).
+    /// the NAS), "tail", "bldtile", "treeblock" or "terrainsub" (tasks: a z6 tile's tail, a 3D
+    /// buildings' z8 tile, a row of tree cover's z8 blocks, a terrain z6 tile's z8 subtrees).
     pub can: Vec<String>,
     /// The memory it spares now (MB).
     pub mem_mb: u64,
@@ -1828,7 +1828,7 @@ pub struct Beat {
     pub frac: Option<f64>,
 }
 
-/// Work done: a job's one hand-off (its saves and done record) and what its units cost, or a task's
+/// Work done: a job's one hand-off (its saves and done record) and what its z6 tiles cost, or a task's
 /// uploaded outputs, time and peak memory.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Done {
@@ -2484,7 +2484,7 @@ impl Coordinator {
         self.shared.lock().unwrap().resume = to.filter(|(_, o)| !o.targets.is_empty());
     }
 
-    /// `offer` with units alone (target, key, piece bytes).
+    /// `offer` with z6 tiles alone (target, key, extract bytes).
     pub fn offer_units(&self, pass: &str, units: Vec<(String, String, u64)>) {
         self.offer(pass, vec![Offer { step: "unit".into(), targets: units, job: None }]);
     }
@@ -2610,7 +2610,7 @@ impl Coordinator {
         keep_timings(&dir, rec);
     }
 
-    /// What this Mac's job's units cost (measured here).
+    /// What this Mac's job's z6 tiles cost (measured here).
     pub fn add_costs(&self, costs: &[(String, Cost)]) {
         self.add_costs_by(costs, &self.me.clone());
     }
@@ -2742,7 +2742,7 @@ impl Coordinator {
     }
 
     /// The memory a job of `step` for `target` is expected to take (MB), as `pick` sizes it: its
-    /// step's model's (crate::needs), its first guess what the plan offered it with (a unit's piece,
+    /// step's model's (crate::needs), its first guess what the plan offered it with (a z6 tile's extract,
     /// another step's guess); None when nothing of its step was measured and it isn't offered.
     pub fn peak(&self, step: &str, target: &str) -> Option<u64> {
         let s = self.shared.lock().unwrap();
@@ -2805,8 +2805,8 @@ impl Coordinator {
 
     /// Whether a worker around (not found wrong) takes tails, spares what one takes typically (any,
     /// before one was offered) and is measured faster than this Mac at them (task::beats): this
-    /// Mac's unit jobs then give it a moment to take theirs (crate::offload::LEASE_WAIT), the
-    /// forecast's units that much longer.
+    /// Mac's `unit` jobs then give it a moment to take theirs (crate::offload::LEASE_WAIT), the
+    /// forecast's z6 tiles that much longer.
     pub fn tail_takers(&self) -> bool {
         let s = self.shared.lock().unwrap();
         let mb = s.tasks.typical_mb("tail").unwrap_or(0);
@@ -3515,7 +3515,7 @@ fn job_disks_load(
 }
 
 /// Whether cost key `k` is of a step's shape no plan makes now (task #392): a z3 tile's whole
-/// `terrain` or `trees` run, before their z6 pieces; its measures would hold the pieces' priors.
+/// `terrain` or `trees` run, before their z6 z6 tiles; its measures would hold the z6 tiles' priors.
 fn old_shape(k: &str) -> bool {
     ["terrain 3/", "trees 3/"].iter().any(|p| k.starts_with(p))
 }
@@ -3841,7 +3841,7 @@ fn route(
             // An agent on another app than this one's waits until the two run the same (its updater
             // run, or this Mac's: an agent switches between jobs, a lead re-asserting on its new app;
             // or the lead handed to a Mac on the newer): its work would be built with other code than
-            // the keys it records say. (Before it's seen as a worker that does tasks: a unit job's
+            // the keys it records say. (Before it's seen as a worker that does tasks: a `unit` job's
             // tails would wait for it.) Jobs it runs already go on.
             if a.kind == "native" && !app_ok(a.app.as_deref(), &s.app) {
                 let theirs = a.app.as_deref().map_or("an older one".to_string(), app_when);
@@ -4123,7 +4123,7 @@ fn route(
                 .unwrap_or_default();
             let all = b["all"].as_bool() == Some(true);
             // (And a member's agent's word that the drop boxes or acceptances changed, `check`, so
-            // they're listed now; or its owner's ask to forget a unit's records, `forget`: not a
+            // they're listed now; or its owner's ask to forget a z6 tile's records, `forget`: not a
             // page's.)
             let check = b["check"].as_bool() == Some(true);
             let full = check && b["full"].as_bool() == Some(true);
@@ -4194,7 +4194,7 @@ fn route(
                         raw_again(journal, Some(&h));
                         return Ok((422, serde_json::json!({ "error": format!("{e:#}") })));
                     }
-                    // Its lease ended and its units kept out of offers now (those it did: a job paused
+                    // Its lease ended and its z6 tiles kept out of offers now (those it did: a job paused
                     // at a safe point did some), then the journal written without the lock (a whole
                     // file, flushed); put back if that fails.
                     s.leases.finish(d.lease, &d.worker, now);
@@ -4282,7 +4282,7 @@ fn route(
                             d.worker
                         );
                     }
-                    // What its unit's task takes, for the next time it's offered.
+                    // What its z6 tile's task takes, for the next time it's offered.
                     if let Some(u) = &unit {
                         s.costs.insert(
                             task_cost_key(&kind, u),
@@ -4506,7 +4506,7 @@ fn route(
         "/task/offer" => {
             let mut o: task::Offer = serde_json::from_slice(body)?;
             let mut s = shared.lock().unwrap();
-            // What its unit's task took last time (a worker's measure, with some room), in place of
+            // What its z6 tile's task took last time (a worker's measure, with some room), in place of
             // the guess.
             if let Some(c) =
                 o.spec["unit"].as_str().and_then(|u| s.costs.get(&task_cost_key(&o.kind, u))).filter(|c| c.peak_mb > 0)
@@ -5678,7 +5678,7 @@ mod tests {
         (d, c, w)
     }
 
-    /// Units 6/1/1 to 6/1/`n` measured: 3 GB, a minute, a thread each.
+    /// Z6 tiles 6/1/1 to 6/1/`n` measured: 3 GB, a minute, a thread each.
     fn measure_units(c: &Coordinator, n: usize) {
         for i in 1..=n {
             let sizes = [("threads".to_string(), 1)].into();
@@ -5804,8 +5804,8 @@ mod tests {
         assert_eq!(job_peak(&costs, "peaks", "6/1/1", 2500), 5000);
     }
 
-    /// One dense unit measured the way units run now doesn't keep the others, not yet measured, off
-    /// a 12 GB worker: they go by their pieces' guess (crate::needs::GUESS_FIRST), it by its own.
+    /// One dense z6 tile measured the way z6 tiles run now doesn't keep the others, not yet measured, off
+    /// a 12 GB worker: they go by their extracts' guess (crate::needs::GUESS_FIRST), it by its own.
     #[test]
     fn a_dense_unit_leaves_the_small_ones_to_a_12_gb_worker() {
         let (_d, c, w) = start();
@@ -5829,7 +5829,7 @@ mod tests {
             (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
         c.offer_units("2026-09-28", units);
         // A worker that spares 4 GB takes two z3 tiles (the third too big), hands one back.
-        // (Each measured: a unit not measured would take its step's largest, crate::needs.)
+        // (Each measured: a z6 tile not measured would take its step's largest, crate::needs.)
         for (u, mb) in [("6/1/1", 9000), ("6/1/2", 3000), ("6/1/3", 3000)] {
             c.shared.lock().unwrap().costs.insert(
                 u.into(),
@@ -6050,10 +6050,10 @@ mod tests {
     fn candidates_are_expected_to_take_what_their_unit_did() {
         let cost = |mb: u64| Cost { peak_mb: mb, secs: 1, worker: None, v: 2, ..Default::default() };
         let mut costs = BTreeMap::new();
-        // Before either ran: as a unit on its piece would (ten times it, at least 3.7 GB).
+        // Before either ran: as a z6 tile on its extract would (ten times it, at least 3.7 GB).
         assert_eq!(job_peak(&costs, "pois", "6/1/1", 500 << 20), 5000);
         assert_eq!(job_peak(&costs, "pois", "6/1/1", 100 << 20), 3700);
-        // The unit's run, then its own.
+        // The z6 tile's run, then its own.
         costs.insert("6/1/1".to_string(), cost(4200));
         assert_eq!(job_peak(&costs, "pois", "6/1/1", 100 << 20), 4200);
         costs.insert("pois 6/1/1".to_string(), cost(1200));
@@ -6079,7 +6079,7 @@ mod tests {
         let e = w.ask(&Ask { app: Some("20261005-0819-7638722".into()), ..ask(4096) }).unwrap_err();
         assert!(e.to_string().contains("5 Oct 08:19 UTC"), "{e:#}");
         assert!(c.held("unit").is_empty());
-        // On the same: the unit.
+        // On the same: the z6 tile.
         let g = w.ask(&Ask { app: Some("20261005-1508-84142d3".into()), ..ask(4096) }).unwrap().unwrap();
         assert!(matches!(g.work, Granted::Job { ref step, .. } if step == "unit"));
         // A page (its code is this coordinator's) never says.
@@ -6188,7 +6188,7 @@ mod tests {
         assert_eq!(c.measured_batch("pack", &halo).map(|m| m.disk_mb), Some(1300));
         c.add_job_run("pack", &halo[..1], 1_500);
         assert_eq!((c.job_disk("pack"), c.fill_mb("base packs")), (1_500, 0));
-        // A step reading a shared cache (task #392: a unit, the DEM cache): a run past its target's
+        // A step reading a shared cache (task #392: a z6 tile, the DEM cache): a run past its target's
         // output that cache's fill (`fills`), not a floor of each job; a warm run's leaves it.
         let u = ["6/1/1".to_string()];
         c.add_job_run("unit", &u, 18_584);
@@ -6382,7 +6382,7 @@ mod tests {
         .unwrap();
         assert_eq!((c.floor("peaks", "6/1/1").map(|f| f.mb), c.floor("peaks", "6/7/7")), (Some(3500), None));
         // A batch's floor gives way to one learned alone, even lower; a floor of an older way of its
-        // step neither holds the target nor sizes it (crate::needs: a unit's v1 floors held malloc's
+        // step neither holds the target nor sizes it (crate::needs: a z6 tile's v1 floors held malloc's
         // cached blocks).
         c.add_floors(&[(cost_key("peaks", "6/2/2"), f(20_000, false))]);
         c.add_floors(&[(cost_key("peaks", "6/2/2"), f(4000, true))]);
@@ -7585,7 +7585,7 @@ mod tests {
         assert!(why.contains("(6.0 GB memory; disk: 21 GB free · 0 GB for jobs (20 GB room target))"), "{why}");
     }
 
-    /// A shared cache reserved once per Mac (task #392, crate::needs::CACHES): units read one DEM
+    /// A shared cache reserved once per Mac (task #392, crate::needs::CACHES): z6 tiles read one DEM
     /// cache, so of three jobs of them granted together only the first carries the cache (the fill
     /// measured) beside its own output; the others their output alone. A Mac whose disk can't hold
     /// the cache is granted none of them.
@@ -8175,8 +8175,8 @@ mod tests {
             &ts("3/2/2")
         )
         .is_ok());
-        // A tree cover piece: its own hi packs and its mid, never its z3 tile's lo pack or another
-        // piece's; an assembly isn't a helper's.
+        // A tree cover z6 tile: its own hi packs and its mid, never its z3 tile's lo pack or another
+        // z6 tile's; an assembly isn't a helper's.
         assert!(check_handoff(
             &h(
                 "trees",
@@ -8203,7 +8203,7 @@ mod tests {
             saves("trees-lo", "3/2/2", "layers/trees-leaf/lo/3-2-2")
                 && !saves("trees-lo", "3/2/2", "layers/trees-leaf/hi/6-16-16")
         );
-        // Terrain's and slope's pieces: their hi pack and mid; their assemblies: their lo pack.
+        // Terrain's and slope's z6 tiles: their hi pack and mid; their assemblies: their lo pack.
         assert!(
             saves("terrain", "6/16/16", "layers/terrain/hi/6-16-16")
                 && saves("terrain", "6/16/16", "work/terrain-mid/6-16-16")
@@ -8291,7 +8291,7 @@ mod tests {
         assert_eq!(pass, "2026-09-28");
         assert!(w.ask(&ask(4096)).unwrap().is_none(), "held: nothing left");
         assert!(w.beat(g.lease, Some("1/2 z3 tiles")).unwrap());
-        // A hand-off naming another unit's files is refused; its own, journaled whole.
+        // A hand-off naming another z6 tile's files is refused; its own, journaled whole.
         // (Its raw tiles' archives, on the NAS whatever became of it, kept for naming: the well
         // named alone.)
         let mut bad = handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")]);
@@ -8378,7 +8378,7 @@ mod tests {
         };
         assert!(with("global/roads/6-1-3", Some("global/roads/6-1-3.0000000000000004.roads")).is_ok());
         assert!(with("layers/grid-canopy/hi/6-1-3", None).is_ok());
-        // Another step's file of the same tile, another unit's, a value that isn't its content name.
+        // Another step's file of the same tile, another z6 tile's, a value that isn't its content name.
         assert!(with("sources/osm/2026-09-28/pieces/6-1-3", None).is_err());
         assert!(with("work/pois/6-1-3", None).is_err());
         assert!(with("global/roads/6-1-3", Some("../../../../etc/passwd")).is_err());
@@ -8794,7 +8794,7 @@ mod tests {
         );
         assert!(asks.iter().all(|a| a.unit == "some-unit" && a.by.starts_with("the build page")));
         // A member's agent's word to list now (with the build's key), and its owner's ask to forget
-        // a unit's records: never a page's forget.
+        // a z6 tile's records: never a page's forget.
         assert_eq!(
             send(
                 &addr,
@@ -9113,7 +9113,7 @@ mod tests {
             job.post_json(&format!("/task/{id2}/withdraw"), &serde_json::json!({})).unwrap().1["withdrawn"],
             true
         );
-        // What a worker measured for the unit replaces the guess, more or less: 300 MB and a tenth.
+        // What a worker measured for the z6 tile replaces the guess, more or less: 300 MB and a tenth.
         let id3 = job
             .post_json("/task/offer", &serde_json::to_value(&task::Offer { mem_mb: 5000, ..offer }).unwrap())
             .unwrap()

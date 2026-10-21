@@ -1,16 +1,16 @@
 //! The tree cover layers (docs/steps.md §2, Trees): tree cover, canopy height and leaf type, zoom 4–12,
 //! clipped to the coverage, made by the `trees` program (crate::trees, dem/trees.py's port) from
 //! Meta's canopy squares, kept on the NAS (`sources/canopy/`, each downloaded once, and copied into
-//! the agent's cache the units read too) and the leaf-type squares on the NAS
+//! the agent's cache the z6 tiles read too) and the leaf-type squares on the NAS
 //! (`sources/trees/leaf/`, made whole by `dem/leaftype.py` where missing), packed as the layers
 //! `trees-cover`, `trees-height` and `trees-leaf` (a lo pack per z3 tile, hi packs per z6 tile).
 //!
 //! The build makes them in two steps (`targets`):
-//! - **trees**, a piece per z6 tile the coverage meets (`build_piece`): its hi packs (zoom 9–12) and
+//! - **trees**, a z6 tile per z6 tile the coverage meets (`build_piece`): its hi packs (zoom 9–12) and
 //!   its mid (`work/trees-mid/6-x-y`, crate::trees::MID: its blocks' zoom-8 tiles and values, which
 //!   its z3 tile's assembly reads); a z6 tile the coverage has left drops its hi packs and mid;
-//! - **trees-lo**, an assembly per z3 tile with a piece (`build_lo`): its lo packs (zoom 4–8) from
-//!   its pieces' mids; a z3 tile with lo packs and no piece drops them.
+//! - **trees-lo**, an assembly per z3 tile with a z6 tile (`build_lo`): its lo packs (zoom 4–8) from
+//!   its z6 tiles' mids; a z3 tile with lo packs and no z6 tile drops them.
 //!
 //! Together the same packs, byte for byte, as a z3 tile's whole run (`build`: by hand, and for a
 //! lease of the scheme before, agent::rekey::v1::trees_targets; with SCENIC_TREES_PY=1 trees.py
@@ -23,12 +23,12 @@ use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// The pieces' version, in their keys and their mids: bumped on any change to the bytes a piece
-/// writes, its hi packs' or its mid's, pixels or not (every piece and assembly is made again). A
-/// piece made again as it is (`build_piece`'s `expect_same`: its mid backfilled) expects the bytes
+/// The z6 tiles' version, in their keys and their mids: bumped on any change to the bytes a z6 tile
+/// writes, its hi packs' or its mid's, pixels or not (every z6 tile and assembly is made again). A
+/// z6 tile made again as it is (`build_piece`'s `expect_same`: its mid backfilled) expects the bytes
 /// its key made, and one that could never match would hold its z3 tile's assembly back for good.
 /// (trees.py's packs, the same pixels in other bytes than the `trees` program's, are made again at
-/// the switch to pieces, by their files' times: agent::rekey::TREES_PROGRAM_SINCE.)
+/// the switch to z6 tiles, by their files' times: agent::rekey::TREES_PROGRAM_SINCE.)
 pub const TREES_V: u32 = 2;
 /// The assemblies' own version (their keys: `targets`), bumped likewise on any change to the bytes
 /// of the lo packs an assembly makes from the same mids.
@@ -48,26 +48,26 @@ pub fn mid_logical(x: u32, y: u32) -> String {
 /// Tree cover's targets, each with its key, done or not.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Targets {
-    /// The pieces ("6/x/y", key, none): each z6 tile the coverage meets, keyed on the version and
+    /// The z6 tiles ("6/x/y", key, none): each z6 tile the coverage meets, keyed on the version and
     /// the coverage there (Meta's canopy and the leaf-type sources are fixed datasets); and each z6
     /// tile with tree hi packs or a mid that the coverage no longer meets, "none", whose run drops
     /// them. By z3 tile, then column, then row.
     pub pieces: Vec<(String, String, bool)>,
-    /// The assemblies ("3/x/y", key, none): each z3 tile with a piece the coverage meets, keyed on
-    /// those pieces' mids by content ("-" for a piece without one: it can't be assembled until each
-    /// has), so a piece made again to the same bytes changes nothing here; and each z3 tile with
-    /// tree lo packs and no such piece, "none", whose run drops them.
+    /// The assemblies ("3/x/y", key, none): each z3 tile with a z6 tile the coverage meets, keyed on
+    /// those z6 tiles' mids by content ("-" for a z6 tile without one: it can't be assembled until each
+    /// has), so a z6 tile made again to the same bytes changes nothing here; and each z3 tile with
+    /// tree lo packs and no such z6 tile, "none", whose run drops them.
     pub lo: Vec<(String, String, bool)>,
 }
 
 impl Targets {
-    /// The pieces of z3 tile `q` ("3/x/y") the coverage meets.
+    /// The z6 tiles of z3 tile `q` ("3/x/y") the coverage meets.
     pub fn pieces_of<'a>(&'a self, q: &'a str) -> impl Iterator<Item = &'a (String, String, bool)> + 'a {
         self.pieces.iter().filter(move |p| !p.2 && z3_of(&p.0).as_deref() == Some(q))
     }
 }
 
-/// The z3 tile ("3/x/y") a piece ("6/x/y") is in.
+/// The z3 tile ("3/x/y") a z6 tile ("6/x/y") is in.
 pub fn z3_of(piece: &str) -> Option<String> {
     TileId::parse(piece).filter(|u| u.z == 6).map(|u| format!("3/{}/{}", u.x >> 3, u.y >> 3))
 }
@@ -77,7 +77,7 @@ pub fn targets(cov: &Coverage, m: &BTreeMap<String, String>) -> Targets {
     targets_with(cov, m, None)
 }
 
-/// `targets`, a piece's key naming the declared canopy and leaf-type sources where they aren't as
+/// `targets`, a z6 tile's key naming the declared canopy and leaf-type sources where they aren't as
 /// staged (`sources`: crate::inputs::sources::trees_extra; None while they are, the keys as they
 /// were).
 pub fn targets_with(cov: &Coverage, m: &BTreeMap<String, String>, sources: Option<&str>) -> Targets {
@@ -346,9 +346,9 @@ fn drop_layer_packs(out: &mut Out, q: TileId, layer: &str, made: &crate::layers:
     Ok(gone.len())
 }
 
-/// Makes z6 tile `t`'s tree cover (a piece) and uploads it: its hi packs and its mid (`put_piece`),
+/// Makes z6 tile `t`'s tree cover (a z6 tile) and uploads it: its hi packs and its mid (`put_piece`),
 /// dropping those it no longer makes; all of them when the coverage has left it. `expect_same`: a
-/// piece made again as it is (its mid backfilled), whose packs must come out as the manifest has
+/// z6 tile made again as it is (its mid backfilled), whose packs must come out as the manifest has
 /// them (`put_piece`). `writing` is told when it begins writing.
 #[allow(clippy::too_many_arguments)]
 pub fn build_piece(
@@ -363,7 +363,7 @@ pub fn build_piece(
     writing: &dyn Fn(),
 ) -> Result<()> {
     anyhow::ensure!(t.z == 6, "a piece is a z6 tile, not {}", t.slash());
-    // (A piece of the coverage, as `targets` has it, has a mid, made with no block if no ring's box
+    // (A z6 tile of the coverage, as `targets` has it, has a mid, made with no block if no ring's box
     // meets one; one the coverage has left, none.)
     if !cov.meets_rect(crate::hipack::tile_bounds(6, t.x, t.y)) {
         anyhow::ensure!(!expect_same, "6/{}/{}: the coverage has left it, so it can't be made as it is", t.x, t.y);
@@ -514,9 +514,9 @@ fn drop_piece(out: &mut Out, t: TileId) -> Result<usize> {
     Ok(gone.len())
 }
 
-/// Makes z3 tile `q`'s zoomed-out tree cover (an assembly: its lo packs, zoom 4–8) from its pieces'
+/// Makes z3 tile `q`'s zoomed-out tree cover (an assembly: its lo packs, zoom 4–8) from its z6 tiles'
 /// mids (`targets`: the z6 tiles of it the coverage meets, each with its mid in the manifest), and
-/// uploads it (`put_lo`); with no piece in it, drops its lo packs. `workers`: the trees program's
+/// uploads it (`put_lo`); with no z6 tile in it, drops its lo packs. `workers`: the trees program's
 /// threads.
 pub fn build_lo(out: &mut Out, cov: &Coverage, q: TileId, scratch: &Path, workers: usize) -> Result<()> {
     anyhow::ensure!(q.z == 3, "an assembly is a z3 tile's, not {}", q.slash());
@@ -620,17 +620,17 @@ mod tests {
             (vec!["6/28/16".to_string(), "6/28/17".into()], vec!["3/3/2".to_string()])
         );
         assert_eq!(t.pieces_of("3/3/2").count(), 2);
-        // A piece's key is the coverage in it: grown where it reaches one of them, the other's stays.
+        // An extract's key is the coverage in it: grown where it reaches one of them, the other's stays.
         let wider = targets(&cov("place:-21.9,64.13,21"), &m);
         assert!(wider.pieces.iter().zip(&t.pieces).all(|(a, b)| a.1 != b.1), "the circle crosses both");
-        // An assembly's key is its pieces' mids, by content: one made, another key; made again to the
+        // An assembly's key is its z6 tiles' mids, by content: one made, another key; made again to the
         // same bytes, the same.
         m.insert(mid_logical(28, 16), "work/trees-mid/6-28-16.1111111111111111.sect".into());
         let with = targets(&c, &m);
         assert_eq!(with.pieces, t.pieces, "the pieces' keys don't read the mids");
         assert_ne!(with.lo[0].1, t.lo[0].1);
         assert_eq!(targets(&c, &m).lo, with.lo);
-        // Packs and a mid where the coverage no longer is (6/33/23, in 3/4/2): a "none" piece, whose
+        // Packs and a mid where the coverage no longer is (6/33/23, in 3/4/2): a "none" z6 tile, whose
         // run drops them, and a "none" assembly for 3/4/2's lo pack.
         m.insert("layers/trees-leaf/hi/6-33-23".into(), "x".into());
         m.insert(mid_logical(33, 22), "y".into());
@@ -657,7 +657,7 @@ mod tests {
         assert!(coverage_json(&c, TileId { z: 6, x: 30, y: 16 })["shapes"].as_array().unwrap().is_empty());
     }
 
-    /// A z3 tile's packs from one run (as `build`), and from its pieces' runs and their assembly
+    /// A z3 tile's packs from one run (as `build`), and from its z6 tiles' runs and their assembly
     /// (as `build_piece` and `build_lo`), on the trees tests' squares: the same content names.
     #[test]
     fn pieces_and_their_assembly_make_the_z3_runs_packs() {
@@ -694,7 +694,7 @@ mod tests {
         let q = TileId { z: 3, x: 4, y: 2 };
         run(q, &d.path().join("z3"));
         put_z3(&mut whole, q, &d.path().join("z3")).unwrap();
-        // The pieces, then the assembly from their mids.
+        // The z6 tiles, then the assembly from their mids.
         let mut parts = out("parts");
         let tt = targets(&c, &parts.manifest);
         let pieces: Vec<TileId> = tt.pieces_of("3/4/2").map(|p| TileId::parse(&p.0).unwrap()).collect();
@@ -717,7 +717,7 @@ mod tests {
         };
         assert_eq!(trees(&whole).len(), 15, "a lo pack and four hi packs a layer: {:?}", trees(&whole).keys());
         assert_eq!(trees(&parts), trees(&whole), "the same packs, by content");
-        // Each piece's mid, uploaded beside them.
+        // Each z6 tile's mid, uploaded beside them.
         assert!(pieces.iter().all(|t| parts.get(&mid_logical(t.x, t.y)).is_some()));
         // Made again expecting the same (a mid backfilled): nothing changes.
         let before = parts.manifest.clone();
@@ -740,7 +740,7 @@ mod tests {
         // Without expecting the same: uploaded as it is now.
         put_piece(&mut parts, t, &dir, false).unwrap();
         assert_eq!(parts.get(&hi), before.get(&hi).map(String::as_str));
-        // The coverage gone from a piece: its packs and mid dropped.
+        // The coverage gone from a z6 tile: its packs and mid dropped.
         let gone = Coverage::fixture(
             &[Recipe { id: "f".into(), name: "F".into(), outline: vec!["place:-21.9,64.13,20".into()] }],
             None,
@@ -800,7 +800,7 @@ mod tests {
 
     /// Byte identity on the build's own data (docs/steps.md §2, Trees), by hand on the M4, the
     /// NAS only read: for each z3 tile of `P5T_AREAS` ("3/7/3,3/7/2"), its whole run as the build
-    /// makes it today (the baseline), and its pieces' runs and their assembly, from the live coverage
+    /// makes it today (the baseline), and its z6 tiles' runs and their assembly, from the live coverage
     /// and squares (`P5T_ROOT`, the NAS's project folder; the canopy squares read in place where
     /// `P5T_CHM`, the agent's cache, has them, else on the NAS), into `P5T_DATA`: every pack the same
     /// content name. And against the live packs: which have the same bytes, and whether every tile
@@ -919,7 +919,7 @@ mod tests {
                 })
                 .sum();
             std::fs::remove_dir_all(&base_dir).unwrap();
-            // The pieces, then their assembly from their mids.
+            // The z6 tiles, then their assembly from their mids.
             let mut made: BTreeMap<String, String> = BTreeMap::new();
             let mut mids: Vec<PathBuf> = Vec::new();
             let pieces: Vec<TileId> = tt.pieces_of(&q.slash()).map(|p| TileId::parse(&p.0).unwrap()).collect();

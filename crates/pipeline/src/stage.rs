@@ -1,12 +1,12 @@
-//! A unit's local copies of the global-source layers, in the files the unit's programs read
+//! A z6 tile's local copies of the global-source layers, in the files the z6 tile's programs read
 //! (docs/steps.md §6): `terrain.tiles` (z0–12) and the z11 grids (`grid.idx`,
 //! `grid.terrain.i16`, `grid.class.u8`, `grid.areas.u8`, and canopy and cover when the catalog has
-//! them), over the unit grown by a margin (viewsheds see 15 km past the unit's buffer ways).
+//! them), over the z6 tile grown by a margin (viewsheds see 15 km past the z6 tile's buffer ways).
 //!
 //! Read from the packs with plain reads (never mmapped), each pack's index once: the ones this
-//! build's manifest names now (`Source::Manifest`, what the unit keys hash), through this Mac's
+//! build's manifest names now (`Source::Manifest`, what the z6 tile keys hash), through this Mac's
 //! local copies of them when it has a `Blobs` cache (each pack copied once, whole: neighbouring
-//! units share most of theirs, and a pack read tile by tile over SMB took thousands of small reads;
+//! z6 tiles share most of theirs, and a pack read tile by tile over SMB took thousands of small reads;
 //! but a neighbour's terrain hi pack the margin only clips is read where it is, its few tiles in
 //! spans, unless it's here already: `copied_whole`), or a published catalog's (`Source::Catalog`,
 //! another root's for a pilot).
@@ -23,12 +23,12 @@ use store::catalog::Catalog;
 use store::pack::PackIndex;
 use store::range::PlainFile;
 
-/// How far past the unit the copies reach, km (10 km of buffer ways, then 15 km of view, rounded up).
+/// How far past the z6 tile the copies reach, km (10 km of buffer ways, then 15 km of view, rounded up).
 pub const MARGIN_KM: f64 = 30.0;
 
 /// Where the global-source layers are read from.
 pub enum Source<'a> {
-    /// This build's manifest as it is now: the packs the unit keys hash, including what earlier
+    /// This build's manifest as it is now: the packs the z6 tile keys hash, including what earlier
     /// jobs of the same plan wrote (the catalog is published only at its end); read through the
     /// local copies when there's a cache.
     Manifest(&'a Out, Option<&'a store::blobs::Blobs>),
@@ -80,7 +80,7 @@ impl Source<'_> {
     }
 
     /// The content names of the packs `stage` reads for box `b` (manifest sources only): what to
-    /// copy ahead, while the unit before it builds. A neighbour's terrain hi pack that the box only
+    /// copy ahead, while the z6 tile before it builds. A neighbour's terrain hi pack that the box only
     /// clips isn't (`copied_whole`): its strip is read where it is.
     pub fn pack_contents(&self, b: [f64; 4]) -> Vec<String> {
         let Source::Manifest(out, _) = self else { return Vec::new() };
@@ -186,7 +186,7 @@ pub struct Staged {
 }
 
 /// Whether the terrain pack holding tile (z, x, y) is copied here whole for box `b` (`Blobs`): a lo
-/// or root pack, or a z6 tile's hi pack the box holds at least half of (its own unit's), not a
+/// or root pack, or a z6 tile's hi pack the box holds at least half of (its own z6 tile's), not a
 /// neighbour's the box's margin only clips, whose few tiles are read where they are (`read_tiles`).
 fn copied_whole(z: u8, x: u32, y: u32, b: [f64; 4]) -> bool {
     if z < 9 {
@@ -313,7 +313,7 @@ pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
     }
     write_file(dir, "grid.terrain.i16", bytemuck::cast_slice(&terr))?;
     st.grids.push("terrain".into());
-    // (The area flags are rasterised per unit: crate::heritage, crate::areaflags.)
+    // (The area flags are rasterised per z6 tile: crate::heritage, crate::areaflags.)
     for var in ["class", "canopy", "cover"] {
         let mut l = LayerReader::new(src, &format!("grid-{var}"));
         let mut data = vec![0u8; tiles.len() * CELLS];
@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(tiles_in(11, tile_box_grown(6, 31, 19, 0.0)).len(), 33 * 33);
     }
 
-    /// A unit's own terrain pack is copied here whole, its neighbours' that its margin only clips
+    /// A z6 tile's own terrain pack is copied here whole, its neighbours' that its margin only clips
     /// aren't (their strips read in spans where they are, or from a copy here if there's one), and
     /// what's staged is the same as reading every tile from the NAS's packs.
     #[test]

@@ -2,20 +2,20 @@
 
     uv run --project .. python repack.py <id> [<id> …] --work <local dir> [--adopt] [--sweep]
 
-Run on the M4, from producers/depth. For each source, a z6 area at a time (the order its index
+Run on the M4, from producers/depth. For each source, a z6 tile at a time (the order its index
 lists them in):
 
 1. Its grids are read on the NAS by one `tar` over SSH (one sequential stream, no SMB opens), each
    depth file checked against its index's `hash` (the zoom and low-water files have none there),
-   and written into the area's pack here (`<work>/<id>/out/`), every member's hash recorded in the
+   and written into the z6 tile's pack here (`<work>/<id>/out/`), every member's hash recorded in the
    packed index (`at`) and checked again from the pack written.
 2. Every `--batch-gb` of packs, they're tarred over SSH into the source's folder on the NAS
    (`.repack-incoming/` first, sizes compared there, then moved in: a pack is in its folder only
-   whole), the batch's areas recorded done (`<work>/<id>/done.json`: each area's pack, its size,
+   whole), the batch's z6 tiles recorded done (`<work>/<id>/done.json`, its `areas` key kept from when a z6 tile was called an area: each z6 tile's pack, its size,
    and its grids' ranges), and deleted here. A stopped run resumes from there: the same command.
    done.json names the run's folder on the NAS and box: a --work used for a trial refuses a real
    run (and the reverse).
-3. Once every area is done, the packs on the NAS are listed (one `ls` over SSH) and must all be
+3. Once every z6 tile is done, the packs on the NAS are listed (one `ls` over SSH) and must all be
    there at their recorded sizes; then the packed index is written (`<work>/<id>/<index>`). `--adopt` copies
    it into the drop box (`inputs/sources/`, as `_<index>.repack` then renamed: the build checks and
    takes it in like any edit). Until then the build reads the loose files, untouched.
@@ -55,7 +55,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from packs import FILE_KEYS, PackWriter, by_area, check_hash, names
+from packs import FILE_KEYS, PackWriter, by_tile, check_hash, names
 
 NAS = "brandontsang@fishandchips.local"
 NAS_ROOT = "/volume1/personal/projects/scenic-roads"
@@ -93,8 +93,8 @@ class Remote:
         return got
 
 
-def read_area(rem: Remote, src: str, feats: list[dict], into: PackWriter):
-    """An area's grids read from the NAS by one tar stream into a pack, in order, each depth file
+def read_tile(rem: Remote, src: str, feats: list[dict], into: PackWriter):
+    """A z6 tile's grids read from the NAS by one tar stream into a pack, in order, each depth file
     checked against its hash."""
     want = [n for f in feats for n in names(f)]
     depth = {f["properties"]["file"]: f for f in feats}
@@ -187,11 +187,11 @@ def repack(a, sid: str, rem: Remote) -> Path | None:
     saved = json.loads(done_path.read_text()) if done_path.exists() else {"run": run, "areas": {}}
     if saved.get("run") != run:
         raise SystemExit(f"{sid}: {done_path} is a run's into {saved.get('run')}, not {run}: use another --work")
-    done = saved["areas"]  # area → {"pack", "size", "files": {file: at}}
-    areas = by_area(feats)
-    todo = [k for k in areas if k not in done]
-    nfiles = sum(len(names(f)) for k in todo for f in areas[k])
-    log(f"{sid}: {len(feats)} grids in {len(areas)} areas; {len(todo)} areas ({nfiles} files) to pack")
+    done = saved["areas"]  # z6 tile → {"pack", "size", "files": {file: at}}
+    tiles = by_tile(feats)
+    todo = [k for k in tiles if k not in done]
+    nfiles = sum(len(names(f)) for k in todo for f in tiles[k])
+    log(f"{sid}: {len(feats)} grids in {len(tiles)} z6 tiles; {len(todo)} z6 tiles ({nfiles} files) to pack")
     batch, batch_bytes, t0, read_bytes, read_files = [], 0, time.time(), 0, 0
 
     def flush():
@@ -200,17 +200,17 @@ def repack(a, sid: str, rem: Remote) -> Path | None:
             return
         upload(rem, out, dest, [p for _, p, _ in batch])
         for k, p, at in batch:
-            files = {f["properties"]["file"]: {kk: list(at[f["properties"][kk]]) for kk in FILE_KEYS if kk in f["properties"]} for f in areas[k]}
+            files = {f["properties"]["file"]: {kk: list(at[f["properties"][kk]]) for kk in FILE_KEYS if kk in f["properties"]} for f in tiles[k]}
             done[k] = {"pack": p, "size": (out / p).stat().st_size, "files": files}
         write_json(done_path, {**saved, "run": run, "areas": done})
         for _, p, _ in batch:
             (out / p).unlink()
-        log(f"{sid}: {len(done)}/{len(areas)} areas on the NAS")
+        log(f"{sid}: {len(done)}/{len(tiles)} z6 tiles on the NAS")
         batch, batch_bytes = [], 0
 
     for k in todo:
         w = PackWriter(out, k)
-        read_area(rem, src, areas[k], w)
+        read_tile(rem, src, tiles[k], w)
         p, at = w.finish()
         verify(out / p, at)
         size = (out / p).stat().st_size
@@ -400,7 +400,7 @@ def main(argv=None):
     ap.add_argument("--dest", help="a trial: the packs go to <dest>/<id> on the NAS (a scratch folder), not the source folder")
     ap.add_argument("--box", help="w,s,e,n: only the grids meeting it (a trial)")
     ap.add_argument("--batch-gb", type=float, default=2.0)
-    ap.add_argument("--pause", type=float, default=0.0, help="seconds between areas (to spare the NAS)")
+    ap.add_argument("--pause", type=float, default=0.0, help="seconds between z6 tiles (to spare the NAS)")
     ap.add_argument("--min-age-h", type=float, default=24.0, help="--sweep: hours the packed index must have been taken in")
     ap.add_argument("--stale-min", type=float, default=10.0, help="--sweep: the lead's status beat at most this old")
     ap.add_argument("--adopt", action="store_true")

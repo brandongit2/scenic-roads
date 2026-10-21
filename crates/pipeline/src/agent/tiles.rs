@@ -1,5 +1,5 @@
 //! The terrain packs' indexes, for keys that name the terrain tiles a job reads by their contents
-//! (docs/steps.md §12: a unit's, `build::unit_terrain`): a tile's XXH3 comes from its pack's
+//! (docs/steps.md §12: a z6 tile's, `build::unit_terrain`): a tile's XXH3 comes from its pack's
 //! index (store::pack), never from the tile. Each index is read once by its pack's content name (two
 //! range reads: `PackIndex::read_from`) and kept in the agent's folder, `pack-idx/<hash16>.idx`
 //! (`PackIndex::to_bytes`): a content-named pack never changes, so a kept index is never stale. Not
@@ -47,12 +47,12 @@ pub struct TerrainTiles {
     /// which writes nothing).
     dir: Option<PathBuf>,
     /// Values worked out from the tiles, each kept with what it was worked out from (`memo`): a
-    /// unit's terrain digest (build::unit_terrain), by unit.
+    /// z6 tile's terrain digest (build::unit_terrain), by z6 tile.
     memo: RefCell<HashMap<String, (String, String)>>,
     /// The terrain's water digests the manifest names (crate::terrain_water::WaterIdx), by content
     /// name: read as the indexes are (kept beside them as `<hash16>.water`), a few KB each.
     water: HashMap<String, crate::terrain_water::WaterIdx>,
-    /// The declared elevation datasets the units' keys name once the build reads them
+    /// The declared elevation datasets the z6 tiles' keys name once the build reads them
     /// (crate::inputs::elevation): the accepted index's content name, and each dataset with where
     /// it has data.
     elevation: Option<(String, std::sync::Arc<Elevation>)>,
@@ -64,7 +64,7 @@ pub struct TerrainTiles {
     /// The terrain's declared sources (crate::terrain_sources) as its keys name them: the accepted
     /// elevation index's content name, and their pin or why they can't be read.
     terrain: Option<(String, Result<TerrainPin, String>)>,
-    /// The declared sources as the units' and tree cover's keys name them (crate::inputs::sources):
+    /// The declared sources as the z6 tiles' and tree cover's keys name them (crate::inputs::sources):
     /// the accepted sources' index content name, and what they read of it (None: not declared, or
     /// not to be read now).
     buildings: Option<(String, Option<KeyedSources>)>,
@@ -73,7 +73,7 @@ pub struct TerrainTiles {
     depth: Option<(String, Option<std::sync::Arc<Vec<crate::depth::grids::Source>>>)>,
 }
 
-/// What the units' and tree cover's keys name of the declared sources: the buildings source's
+/// What the z6 tiles' and tree cover's keys name of the declared sources: the buildings source's
 /// release (the roadside buildings' index), and the land-cover, canopy and leaf-type declarations
 /// where they aren't as staged (crate::inputs::sources::unit_extra, trees_extra).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -95,7 +95,7 @@ pub struct TerrainPin {
     pub as_before: bool,
 }
 
-/// The declared elevation datasets as the units' keys name them: each with its coverage.
+/// The declared elevation datasets as the z6 tiles' keys name them: each with its coverage.
 pub type Elevation = Vec<(crate::dem::declared::Accepted, crate::dem::declared::Cover)>;
 
 impl TerrainTiles {
@@ -149,7 +149,7 @@ impl TerrainTiles {
     }
 
     /// Holds the declared elevation datasets of the accepted version `m` names, once the build reads
-    /// them (one that can't be read now: the units' keys wait, tried again with the next load).
+    /// them (one that can't be read now: the z6 tiles' keys wait, tried again with the next load).
     fn load_elevation(&mut self, root: &Path, m: &BTreeMap<String, String>) {
         use crate::inputs::elevation;
         let want = elevation::switched(m).then(|| m.get(&crate::inputs::logical(elevation::UNIT))).flatten();
@@ -281,13 +281,13 @@ impl TerrainTiles {
     }
 
     /// The declared buildings source's release, of the accepted sources `m` names; None while
-    /// there's none, or it can't be read now (the units' keys wait).
+    /// there's none, or it can't be read now (the z6 tiles' keys wait).
     pub fn buildings_release(&self, m: &BTreeMap<String, String>) -> Option<&str> {
         self.keyed(m).map(|k| k.release.as_str())
     }
 
     /// What the keys name of the declared sources, of the accepted sources `m` names; None while
-    /// there's none, or they can't be read now (the units' and tree cover's keys wait). Tests holding
+    /// there's none, or they can't be read now (the z6 tiles' and tree cover's keys wait). Tests holding
     /// none: the staged declarations' (nothing beside the release).
     pub fn keyed(&self, m: &BTreeMap<String, String>) -> Option<&KeyedSources> {
         #[cfg(test)]
@@ -334,7 +334,7 @@ impl TerrainTiles {
         self.terrain = Some((content.to_string(), Ok(p)));
     }
 
-    /// The declared elevation datasets the units' keys name: None before the build reads them; an
+    /// The declared elevation datasets the z6 tiles' keys name: None before the build reads them; an
     /// error while their accepted version can't be read.
     pub fn elevation(&self, m: &BTreeMap<String, String>) -> Result<Option<std::sync::Arc<Elevation>>, Unread> {
         use crate::inputs::elevation;
@@ -537,7 +537,7 @@ fn read(dir: Option<&Path>, root: &Path, content: &str) -> Result<Held, String> 
     Ok(compact(&ix))
 }
 
-/// Lookups in the packs a manifest names, each pack looked up once (a unit's key reads thousands of
+/// Lookups in the packs a manifest names, each pack looked up once (a z6 tile's key reads thousands of
 /// tiles from a few packs).
 pub struct Reader<'a> {
     tiles: &'a TerrainTiles,

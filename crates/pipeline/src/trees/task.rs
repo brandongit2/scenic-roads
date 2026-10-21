@@ -1,17 +1,17 @@
-//! A row of a tree cover piece's zoom-8 blocks as a task (kind `treeblock`; docs/workers.md §3,
+//! A row of a tree cover z6 tile's zoom-8 blocks as a task (kind `treeblock`; docs/workers.md §3,
 //! docs/steps.md §2, Trees): the blocks of one z6 tile in one zoom-8 row, made together by the
 //! `trees` program (`--blocks`, natively or as WebAssembly in a page). A row's blocks read the same
 //! canopy rows (a canopy square's strips are rows of its whole 10° width), so one worker reads each
 //! strip once for all of them.
 //!
-//! A task's folder (`u/` on a worker; docs/formats.md) holds only `coverage.json`: the piece's
+//! A task's folder (`u/` on a worker; docs/formats.md) holds only `coverage.json`: the z6 tile's
 //! coverage rings whose box meets the row's (with a margin), as the trees program reads a
 //! coverage. Everything else the program reads where it lies: the canopy squares (`{chm}`, the
 //! NAS's `sources/canopy/`) and the leaf-type squares (`{sources}/trees/leaf`), a range at a time.
 //! It's told the canopy squares the job found there (`--squares`): one a worker doesn't find fails
 //! the task, never a block without its trees. It writes `8-<x>-<y>/` for each block
 //! (`trees-{cover,height,leaf}.tiles`, `trees-tops.bin`: `trees::write_block`'s), which the job
-//! takes into the piece in the blocks' turn, as if made here: the same bytes (`trees::blocks`).
+//! takes into the z6 tile in the blocks' turn, as if made here: the same bytes (`trees::blocks`).
 
 use super::{block_dir, mask, Inputs, Tile, LAYERS, TOPS, ZBLOCK, ZMAX};
 use crate::offload::{Offered, Offload, Patience, Settled};
@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 pub const KIND: &str = "treeblock";
 /// The coverage's file in a task's folder.
 pub const COVERAGE: &str = "coverage.json";
-/// At most this many rows of a piece out at once.
+/// At most this many rows of a z6 tile out at once.
 pub const MOST: usize = 3;
 
 /// Blocks named `8/x/y,…`.
@@ -60,7 +60,7 @@ pub fn squares_arg(sq: &[(i32, i32)]) -> String {
     sq.iter().map(|(t, l)| format!("{t},{l}")).collect::<Vec<_>>().join(";")
 }
 
-/// A piece's blocks (in `blocks_of`'s order) by row: each row's blocks west to east, the rows
+/// A z6 tile's blocks (in `blocks_of`'s order) by row: each row's blocks west to east, the rows
 /// north to south.
 pub fn rows_of(blocks: &[(u32, u32)]) -> Vec<Vec<(u32, u32)>> {
     let mut by: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
@@ -120,7 +120,7 @@ pub fn cut_coverage(json: &str, b: [f64; 4]) -> Result<String> {
     Ok(serde_json::to_string(&serde_json::json!({ "shapes": kept }))?)
 }
 
-/// A row's task folder `root` (its `u/`): the piece's coverage (`coverage`, its JSON) cut to the
+/// A row's task folder `root` (its `u/`): the extract's coverage (`coverage`, its JSON) cut to the
 /// row (`cut_coverage`). Its files (path in it, size).
 pub fn cut(coverage: &str, row: &[(u32, u32)], root: &Path) -> Result<BTreeMap<String, u64>> {
     let u = root.join("u");
@@ -162,6 +162,7 @@ pub fn spec(
     };
     let list: Vec<serde_json::Value> = inputs.iter().map(|(p, n)| serde_json::json!([p, n])).collect();
     let first = row.first().map(|(x, y)| format!("{ZBLOCK}/{x}/{y}")).unwrap_or_default();
+    // (`unit`: the task spec's key for its tile, kept: docs/workers.md §3.)
     serde_json::json!({ "unit": first, "blocks": blocks_arg(row), "version": version, "runs": [run], "inputs": list, "places": crate::offload::places() })
 }
 
@@ -216,7 +217,7 @@ type Out = (Offered, Vec<(u32, u32)>);
 /// What the job runs a row with here: the row's blocks made into a folder (`trees::blocks_files`).
 pub type Here<'a> = &'a (dyn Fn(&[(u32, u32)], &Path) -> Result<()> + Sync);
 
-/// A piece's rows out as tasks (crate::offload), as a `bldtiles` job's z8 tiles are: offered from
+/// A z6 tile's rows out as tasks (crate::offload), as a `bldtiles` job's z8 tiles are: offered from
 /// the far end (its last rows) when the run begins, one per worker that takes them around, at most
 /// `MOST`, never every row; each settled when the run comes to its first block, waiting for no
 /// worker longer than this Mac would take (`Patience`: its blocks at the pace of the blocks made
@@ -237,7 +238,7 @@ pub struct Offers<'a> {
 }
 
 impl<'a> Offers<'a> {
-    /// Offers some of piece `piece`'s rows (its blocks `blocks`, the canopy squares there `there`,
+    /// Offers some of z6 tile `piece`'s rows (its blocks `blocks`, the canopy squares there `there`,
     /// its coverage's JSON `coverage`), results under `dir`, while workers that take them are
     /// around: none without `offload`.
     pub fn offer(
@@ -398,7 +399,7 @@ impl<'a> Offers<'a> {
     }
 }
 
-/// The inputs a piece's run reads its rows with here: `inp`'s (the canopy squares in this Mac's
+/// The inputs a z6 tile's run reads its rows with here: `inp`'s (the canopy squares in this Mac's
 /// cache) with the squares found there.
 pub fn here_run<'a>(
     shapes: &'a mask::Shapes,
@@ -414,7 +415,7 @@ mod tests {
     use crate::trees::{block_files as one_block, blocks_files, mask::Shapes, tests::squares_dir, Run, Source, MID};
     use std::sync::{Arc, Mutex};
 
-    /// Over blocks 8/132–133, rows 88 and 89: two rows of two in piece 6/33/22, the squares'
+    /// Over blocks 8/132–133, rows 88 and 89: two rows of two in z6 tile 6/33/22, the squares'
     /// data in 8/132/88.
     const COV: &str = r#"{"shapes": [[[[5.7, 47.3], [8.3, 47.3], [8.3, 48.9], [5.7, 48.9]]], [[[20.0, 10.0], [21.0, 10.0], [21.0, 11.0]]]]}"#;
 
@@ -467,7 +468,7 @@ mod tests {
         assert!(parse_squares("").unwrap().is_empty() && parse_blocks("6/1/1").is_err());
     }
 
-    /// Piece 6/33/22's run in `dir/out`, with `offload`.
+    /// Z6 tile 6/33/22's run in `dir/out`, with `offload`.
     fn piece(d: &Path, sq: &Path, out: &str, offload: Option<&Offload>) {
         std::fs::write(d.join("cov.json"), COV).unwrap();
         let a = Run {
@@ -488,7 +489,7 @@ mod tests {
             .unwrap();
     }
 
-    /// Whether two pieces' runs wrote the same bytes.
+    /// Whether two z6 tiles' runs wrote the same bytes.
     fn same_piece(a: &Path, b: &Path) -> bool {
         LAYERS
             .iter()
@@ -592,13 +593,13 @@ mod tests {
         let tok = c.contact.token.clone();
         let ask =
             crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 4096, ..Default::default() };
-        // No worker around: nothing offered, the same piece.
+        // No worker around: nothing offered, the same z6 tile.
         piece(p, sq.path(), "none", Some(&o));
         assert!(same_piece(&p.join("alone"), &p.join("none")));
         assert!(c.shared.lock().unwrap().tasks.by_id.is_empty());
 
         // A worker measured fast (a fifth of this Mac's time), its results trusted: its row (the
-        // last, never both) waited for and taken, the same piece.
+        // last, never both) waited for and taken, the same z6 tile.
         let m1 = Client::at(vec![url.clone()], tok.clone(), "m1");
         assert!(m1.ask(&ask).unwrap().is_none());
         {

@@ -123,7 +123,7 @@ impl GridChange {
             }
             None => GridChange { prev: Vec::new(), new: HashSet::new(), first: true },
         };
-        // Tiles whose terrain or land cover changed since a unit's last run (`Carry::restore`): new
+        // Tiles whose terrain or land cover changed since a z6 tile's last run (`Carry::restore`): new
         // for the samples near them, while their last values (canopy, cover) are still copied.
         if !c.first {
             if let Ok(b) = std::fs::read(cache_dir.join("changed.tiles")) {
@@ -186,7 +186,7 @@ impl GridChange {
     }
 }
 
-/// A unit's scenic results kept between its runs (in the NAS's `cache/scenic-units/`, both Macs'), so a rerun (a new pass,
+/// A z6 tile's scenic results kept between its runs (in the NAS's `cache/scenic-units/`, both Macs'), so a rerun (a new pass,
 /// a region nearby changed) redoes only the samples that are new or near what changed:
 /// - kept after a run: the canopy and view steps' sample keys and grid tiles, their per-sample
 ///   outputs, the canopy and cover grids (zstd), and `basis`, a hash of each grid tile's terrain
@@ -231,12 +231,12 @@ fn grid_basis(build: &Path) -> Result<Vec<([u32; 2], String)>> {
 
 impl Carry {
     /// Keeps the results of the run in `build` (replacing what was kept), or drops what was kept
-    /// when the run made none (a unit left without ways).
+    /// when the run made none (a z6 tile left without ways).
     pub fn save(&self, build: &Path) -> Result<()> {
         let cache = unit_dir(build);
         let have = KEPT_OUTPUTS.iter().chain(&KEPT_GRIDS).all(|f| build.join(f).exists())
             && KEPT_CACHE.iter().all(|f| cache.join(f).exists());
-        // (This Mac's own temporary folder: both Macs may keep the same unit's at once.)
+        // (This Mac's own temporary folder: both Macs may keep the same z6 tile's at once.)
         let tmp = self.dir.with_extension(format!("{}.tmp", crate::agent::cond::host()));
         if tmp.exists() {
             std::fs::remove_dir_all(&tmp)?;
@@ -326,7 +326,7 @@ impl Carry {
             std::fs::write(build.join(f), zstd::stream::decode_all(&z[..])?)?;
         }
         std::fs::write(cache.join("changed.tiles"), bytemuck::cast_slice(&changed))?;
-        // Replaced meanwhile (the other Mac keeping this unit's results too): what was copied may
+        // Replaced meanwhile (the other Mac keeping this z6 tile's results too): what was copied may
         // mix two runs, so it isn't used. (Two runs on the same basis kept the same results.)
         anyhow::ensure!(
             std::fs::read(self.dir.join("basis.json")).ok().as_deref() == Some(&first[..]),
@@ -341,7 +341,7 @@ mod tests {
     use super::*;
     use det::Det;
 
-    /// A unit's folder after a run: `tiles` in grid.idx, terrain `elev` for every cell.
+    /// A z6 tile's folder after a run: `tiles` in grid.idx, terrain `elev` for every cell.
     fn build_with(d: &Path, keys: &[u64], tiles: &[[u32; 2]], elev: &[i16]) {
         let cache = unit_dir(d);
         std::fs::create_dir_all(&cache).unwrap();

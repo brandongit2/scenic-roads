@@ -2893,7 +2893,7 @@ mod tests {
         up.handoff.pending.insert("base/6-1-9.3333333333333333.base".into(), "aa".into());
         assert!(check(&up, &r).unwrap_err().contains("isn't one of its saves"));
         // Another step's (the OSM pass's stages): any name of its outputs, and none outside them
-        // (the unit's base pack, another step's).
+        // (the z6 tile's base pack, another step's).
         let mut pass = e;
         pass.step = "osm-pass".into();
         pass.handoff.done = None;

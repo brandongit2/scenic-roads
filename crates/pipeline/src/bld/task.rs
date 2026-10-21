@@ -33,7 +33,9 @@ use std::path::{Path, PathBuf};
 
 /// The coverage's file in a task's folder.
 pub const COVERAGE: &str = "coverage.sect";
-/// What the program writes: the z8 tile's tiles, and what it made.
+/// What the program writes: the z8 tile's tiles, and what it made. (The files' names keep "area", from
+/// when a z8 tile was called an area, as does "area" in their meta: a worker running an earlier
+/// build reads them, and archives made so are stored; renaming would break both.)
 pub const TILES: &str = "area.tiles";
 pub const SUMMARY: &str = "area.json";
 pub const FIELD: &str = "area.field";
@@ -211,7 +213,7 @@ pub fn write_z8(
     sites: &[[i32; 2]],
     dir: &Path,
 ) -> Result<Summary> {
-    ensure!(a.z == 8, "a z8 tile is a z8 tile ({} isn't one)", a.slash());
+    ensure!(a.z == 8, "{} isn't a z8 tile", a.slash());
     std::fs::create_dir_all(dir)?;
     let meta = serde_json::json!({ "layer": super::LAYER, "area": a.slash(), "encoding": "mvt" }).to_string();
     let mut w = ArchiveWriter::create(&dir.join(TILES), &meta)?;
