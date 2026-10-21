@@ -69,27 +69,23 @@ if [[ ${1:-} == --rollback ]]; then
   echo "rolled back to $(python3 -c "import json;print(json.load(open('$NAS/app/current.json'))['version'])")"
   exit 0
 fi
-# Only a clean tree's commit is published, and only one on origin's main, so every version names a
-# commit either Mac can check out. (Built from a snapshot of that commit, below.)
-# (The task board's database changes all the time and isn't published; untracked files, such as
-# notes, aren't counted.)
-unclean() { git status --porcelain --untracked-files=no -- . ':(exclude)tools/taskboard/taskboard.db*'; }
-[[ -z $(unclean) ]] || { echo "the tree isn't clean: commit or set aside what changed first"; unclean | head -20; exit 1; }
+# What's published is always the tip of origin's main, fetched now, so every version names a commit
+# either Mac can check out; this checkout (its branch, its edits) plays no part. (Built from a
+# snapshot of that commit, below.)
 git fetch -q origin main || { echo "can't fetch origin's main"; exit 1; }
-git merge-base --is-ancestor HEAD origin/main || { echo "HEAD ($(git rev-parse --short HEAD)) isn't on origin's main: push it first"; exit 1; }
+head=$(git rev-parse --short origin/main)
 # The old name of the lead's role (the pattern below) nowhere in the code, docs or UI (the owner's
 # rule, 14 Oct 2026): the role is the lead's, a measure taken on a Mac names it (the M4, the M1).
 # History (the task board) is exempt.
-if git grep -qniI -E 'build[ -]mac' -- . ':(exclude)tools/taskboard'; then
+if git grep -qniI -E 'build[ -]mac' $head -- . ':(exclude)tools/taskboard'; then
   echo "the old name of the lead's role is back (the role is \"the lead\"; a measure names its Mac, the M4 or the M1):"
-  git grep -niI -E 'build[ -]mac' -- . ':(exclude)tools/taskboard' | head -20
+  git grep -niI -E 'build[ -]mac' $head -- . ':(exclude)tools/taskboard' | head -20
   exit 1
 fi
-# The commit it's built from, read now, and built from a snapshot of it: a checkout of its own kept
+# Built from a snapshot of that commit: a checkout of its own kept
 # for publishing (~/Library/Caches/scenic-publish/tree), so commits and edits here meanwhile change
 # nothing published. Kept between publishes as a build cache: its target/ and web/node_modules
 # (reinstalled when web's lockfile changed) carry over, so only what changed is rebuilt.
-head=$(git rev-parse --short HEAD)
 repo=$PWD
 snap=~/Library/Caches/scenic-publish/tree
 if [[ ! -e $snap/.git ]]; then
