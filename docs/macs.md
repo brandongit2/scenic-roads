@@ -53,7 +53,7 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
   - **Cleared too, on the owner's ask:** the pack cache (`base/`, the base packs' way indexes for
     pack(T) and lo), the
     per-vertex DEM seed (only while the NAS has it whole), local copies the summits and peaks jobs
-    read, and the heritage jobs' clip of the filtered planet (made again by osmium in about an hour).
+    read, and the heritage job's clip of the pass's `whs` set (made again by osmium).
   - **Kept:** the answers (`items/`, `heritage-<date>/`), the trains' stop pairs (`rail/`), the z6 tile
     stages' timings (`unit-stages.json`), what a z6 tile kept that isn't on the NAS yet, and the
     coverage as last read (`coverage/<key>.cov`, reused while every recipe and outline file has the

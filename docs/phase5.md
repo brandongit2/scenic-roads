@@ -126,7 +126,7 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 
 | Job | Reads | Writes |
 |---|---|---|
-| OSM pass sets | the filtered planet | `summits` (`-v2`), `hikes`, `named` (the heritage chain's filter plus World Heritage tags), `marks` |
+| OSM pass sets | the filtered planet | `summits` (`-v2`), `hikes`, `named` (the heritage chain's filter plus World Heritage tags), `whs` (whsshapes.py's objects and every multipolygon, with their references), `marks` |
 | `trailends` (per pass) | `hikes` | `work/trailends/<d>`: every simple linear hiking route's two ends |
 | `terrain-z8` (once; network) | AWS's raw z8 tiles | `sources/terrain-z8-v3` and `-v3-max` |
 | `summits` (per pass) | `summits` set, `terrain-z8` | `work/summits/<d>` |
@@ -135,7 +135,7 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 | `pois` (per z6 tile) | U's extract, `trailends`, the coverage | `work/pois/<u>` |
 | `peaks` (per z6 tile; network) | U's peak candidates, `summits`, z12 within 30 km, `terrain-z8` | `work/peaks/<u>` |
 | `items` (per pass; network) | the current z6 tiles' candidates' QIDs | `sources/items/<d>/{facts,views,meta}` |
-| `heritage` (network) | the heritage-sites outputs, the `areas` and `named` sets, the filtered planet within the cover, the pass's answers | `work/heritage/<d>/…` |
+| `heritage` (network) | the heritage-sites outputs, the `areas`, `named` and `whs` sets, the pass's answers | `work/heritage/<d>/…` |
 | `marks` (worldwide) | the z6 tiles' `work/pois` and `work/peaks`, the items' facts and views, the heritage job's outputs | a `marks-*` bundle per kind, the `markdata` bundle, `global/marks/summary`, `work/marks/heritage-dots` |
 | `overlays` | the heritage job's outputs, `work/marks/heritage-dots` | an `ov-*` bundle per layer, `ovdata`, `global/heritage/…` |
 | `stations` (roads chain) | the `rail` set, the z6 tiles within 20 km of a built z6 tile | `stations` packs |
@@ -229,8 +229,13 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
   `areaflags` (pipeline::areaflags) rasterises the polygons onto the z6 tile's grid. Their keys name the
   slices.
 - **The `heritage` job** (after items, before marks) runs the rest of the chain over the same cover:
-  the pass's areas and named objects within it, and for whsshapes the filtered planet clipped to it
-  (cached per pass and cover). heritagewd.py indexes named objects with a Wikidata item on a 0.01°
+  the pass's areas and named objects within it, and for whsshapes the pass's `whs` set clipped to
+  it (cached per set and cover; the job waits for the set, which pass-sets makes for an older
+  pass). The set holds every object tagged `wikidata`, `ref:whc` or `heritage:operator=whc` and
+  every multipolygon, with what they reference, so the clip (osmium's smart strategy) holds what
+  whsshapes reads of the filtered planet's clip (task #496: the same export and relations on a
+  sample z6 tile), from about a fifth of the bytes: copied here first when there's room, read
+  three times by osmium. heritagewd.py indexes named objects with a Wikidata item on a 0.01°
   grid; areadetails.py asks Wikidata for parks the answers lack; pageviews.py takes the pass's
   months. The layers' `en` is the things' own; the server adds translations. Outputs:
   `work/heritage/<d>/<stem>`.

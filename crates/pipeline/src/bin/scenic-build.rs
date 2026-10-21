@@ -3430,8 +3430,8 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 /// (heritagewd, heritagedetails, areadetails, whsshapes, filterprops' and interest's heritage parts,
 /// pageviews, layers) in the stand-in root on the heritage-sites job's outputs (docs/phase5.md
 /// "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
-/// (named with the chain's filter), and for the World Heritage parts the kept filtered planet within
-/// it (one clip per pass and cover, kept in the cache). The park facts are the pass's answers'
+/// (named with the chain's filter), and for the World Heritage parts the pass's `whs` set within
+/// it (one clip per set and cover, kept in the cache: `whs_over_cover`). The park facts are the pass's answers'
 /// (`areas-wikidata.json`: areadetails.py asks Wikidata for those it lacks); the pageview months are
 /// the items job's cache, the epoch's months; the layers' English is the things' own (the map's
 /// server adds the translations' as it serves them: docs/inputs.md §6.5.3).
@@ -3477,12 +3477,6 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         std::fs::remove_file(epoch.dir.join("osm/named.geojsonseq")).ok();
         epoch.keep(scratch);
     });
-    // (Extracts of the registers' seeds, which the job read until #139: gone.)
-    for e in std::fs::read_dir(&cache)?.flatten() {
-        if e.file_name().to_string_lossy().starts_with("registers-") {
-            store::cachefile::remove_tree(&e.path());
-        }
-    }
     let p = phase("the heritage sites copied here", Class::NasRead);
     let root = heritage_root(scratch, &dem, Some(&epoch.dir))?;
     let b = root.join("data/build");
@@ -3543,10 +3537,11 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::remove_file(&named).ok();
     std::fs::remove_file(&named_today).ok();
     drop(p);
-    // The kept filtered planet within the cover, once per pass and cover (whsshapes.py's merged.osm.pbf).
-    stage(4, 5, "clipping the pass's filtered planet to the coverage (osmium, once a pass)");
-    let p = phase("the filtered planet clipped to the cover (osmium, once a pass)", Class::NasRead);
-    let merged = merged_over_cover(out, &date, &poly, &cache)?;
+    // The pass's World Heritage sources within the cover, once per pass and cover (whsshapes.py's
+    // merged.osm.pbf).
+    stage(4, 5, "clipping the pass's World Heritage sources to the coverage (osmium, once a pass)");
+    let p = phase("the World Heritage sources clipped to the cover (osmium, once a pass)", Class::NasRead);
+    let merged = whs_over_cover(out, &date, &poly, &cache, scratch)?;
     drop(p);
     let p = phase("the caches linked", Class::Disk);
     pipeline::sys::symlink(&merged, &root.join("data/osm/merged.osm.pbf"))?;
@@ -3662,24 +3657,39 @@ fn areas_over_cover(out: &Out, date: &str, poly: &Path, scratch: &Path, dest: &P
     Ok(())
 }
 
-/// The pass's kept filtered planet within the cover (whole relations), kept in the cache for the
-/// pass and cover (`heritage-merged-<date>-<cover>.osm.pbf`; others go): whsshapes.py's
-/// merged.osm.pbf. Read from the NAS (an hour or so for the 60 GB file: osmium reads
-/// it twice), once per pass and cover.
-fn merged_over_cover(out: &Out, date: &str, poly: &Path, cache: &Path) -> Result<PathBuf> {
-    let id = store::naming::hash16(&std::fs::read(poly)?)[..12].to_string();
+/// The pass's World Heritage sources (its `whs` set, pipeline::osmpass::SETS) within the cover
+/// (whole multipolygons: smart), kept in the cache for the set and cover
+/// (`heritage-merged-<date>-<set and cover>.osm.pbf`; others go): whsshapes.py's merged.osm.pbf,
+/// what it reads of it the same as the filtered planet's clip gave it (task #496). The set, about
+/// a fifth of the filtered planet, is copied here first when there's room (osmium reads its input
+/// three times), else read where it is; once per set and cover.
+fn whs_over_cover(out: &Out, date: &str, poly: &Path, cache: &Path, scratch: &Path) -> Result<PathBuf> {
+    let set = out.get(&pipeline::osmpass::set_name(date, "whs")).context("the pass's whs set (pass-sets makes it)")?;
+    let mut ins = std::fs::read(poly)?;
+    ins.extend_from_slice(set.as_bytes());
+    let id = store::naming::hash16(&ins)[..12].to_string();
     let name = format!("heritage-merged-{date}-{id}.osm.pbf");
     let dest = cache.join(&name);
     // Held for the job (store::cachefile: osmium and the scripts read it by name); clipped first
     // when it isn't here, osmium writing into the held temporary file in place (--overwrite: the
     // same file, truncated), with a name osmium reads as a PBF.
-    let src = out.get(&format!("sources/osm/{date}/filtered")).map(|c| out.path(c));
     if store::cachefile::hold_existing(&dest)?.is_none() {
-        let src = src.context("the pass's filtered planet")?;
+        let src = out.path(set);
+        let local = scratch.join("whs.osm.pbf");
+        let room = pipeline::agent::room::free_past(scratch, pipeline::agent::room::job_target())
+            > 3 * std::fs::metadata(&src)?.len();
+        let read = if room {
+            let _p = pipeline::timings::sub("the whs set copied here", Class::NasRead);
+            pipeline::timings::count(store::sys::copy_data(&src, &local)?, 1);
+            local.clone()
+        } else {
+            src
+        };
         let (tmp, held) = store::cachefile::scratch(&cache.join(format!("{name}.tmp.osm.pbf")))?;
         let pbf = tmp.with_extension("osm.pbf");
         std::fs::hard_link(&tmp, &pbf)?;
-        let clipped = osmium_clip(&src, poly, &pbf);
+        let clipped = osmium_clip(&read, poly, &pbf);
+        std::fs::remove_file(&local).ok();
         // (osmium writes in place, but one that made a file of its own there is followed:
         // store::cachefile::publish. The same file under both names: the rename does nothing.)
         std::fs::rename(&pbf, &tmp).ok();
@@ -3690,7 +3700,7 @@ fn merged_over_cover(out: &Out, date: &str, poly: &Path, cache: &Path) -> Result
         }
         store::cachefile::publish(held, &tmp, &dest)?;
     }
-    // (Other passes' and covers' clips go, unless a job uses them.)
+    // (Other sets' and covers' clips go, unless a job uses them.)
     for e in std::fs::read_dir(cache)?.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
         if n.starts_with("heritage-merged-") && n != name && !n.contains(".tmp") {

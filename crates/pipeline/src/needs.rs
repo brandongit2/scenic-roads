@@ -940,10 +940,10 @@ mod tests {
         assert_eq!(Book::new(&costs).prior("depth", Measure::Secs), Some(20), "enough runs: their own mean");
         // (The latest earlier way's alone: an older one's long runs don't count.)
         let mut two = BTreeMap::new();
-        two.insert("unit 6/1/1".to_string(), Cost { v: 0, ..cost(500, 5000, &[]) });
-        two.insert("unit 6/1/2".to_string(), Cost { v: 1, ..cost(500, 100, &[]) });
-        two.insert("unit 6/1/3".to_string(), Cost { v: 2, ..cost(500, 50, &[]) });
-        assert_eq!(cost_version("unit"), 2);
+        two.insert("unit 6/1/1".to_string(), Cost { v: 1, ..cost(500, 5000, &[]) });
+        two.insert("unit 6/1/2".to_string(), Cost { v: 2, ..cost(500, 100, &[]) });
+        two.insert("unit 6/1/3".to_string(), Cost { v: 3, ..cost(500, 50, &[]) });
+        assert_eq!(cost_version("unit"), 3);
         assert_eq!(Book::new(&two).prior("unit", Measure::Secs), Some(100));
         // (A new way slower than the old: its own, the larger.)
         let mut slow = BTreeMap::new();

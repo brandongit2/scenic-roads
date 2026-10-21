@@ -65,7 +65,8 @@ but holds the sources' reads as sub-phases, so depth's NAS share is really highe
 - **terrain** (4 min): tiles prepared 63 %, shaded and encoded 18 %, uploaded 6 %.
 - **heritage** (83 min): the filtered planet clipped to the cover 84 % (osmium extract, strategy
   smart: the 60.6 GB `sources/osm/<date>/filtered` read three times from the NAS, 182 GB at
-  43 MB/s).
+  43 MB/s). Since task #496 it clips the pass's `whs` set instead (about a fifth of it, copied
+  once); not yet timed.
 - **slope** (2 min, the last 20: 24 s): its terrain pack copied here 30 % (52 MB/s), uploaded
   42 % (13 MB/s), tiles worked out 17 %.
 - **pack** (32 s): the z6 tiles' base packs copied here 46 % (26 MB/s); the uploads beside landed

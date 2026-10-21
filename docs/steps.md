@@ -310,7 +310,10 @@ a scratch folder, wiped at each run:
 2. **Elevations:** `elev` (`pipeline::dem`), the declared elevation datasets (docs/inputs.md §6.8) by
    their plan for U (`elevation.json`) through one sampler, blended at their edges, on U's slice of
    the per-vertex DEM cache (the seed, where one of its samples could be valid, and the z6 tiles' kept
-   samples). U's samples are kept for later runs and its neighbours'.
+   samples). U's samples are kept for later runs and its neighbours'. The vertices the cache lacks are
+   sampled in batches of 2 M along a Z-order curve (`dem::generic::BATCH`, task #496), the files,
+   blocks and tiles read kept across them: each vertex's height is its own, so the batches change
+   nothing but the memory (some 150 bytes a vertex sampled at once: the densest z6 tiles took 16 GB).
 3. **Heritage:** the heritage-sites job's slices within U + 30 km; `areaflags` rasterises the heritage and designated areas
    onto U's grid.
 4. **Terrain and grids:** terrain z11 and the grids, staged from the packs the manifest names.

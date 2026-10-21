@@ -506,3 +506,29 @@ fn an_interrupted_run_is_done_again() {
     assert_eq!(f.outputs().1, whole.outputs().1);
     assert!(f.outputs().0.iter().zip(&whole.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
 }
+
+/// Task #496: a run sampled in batches (a few vertices each, along the Z-order curve) writes the
+/// heights and sources of one batch to the bit, counts the same, and asks for no file or tile the
+/// one batch didn't (the files, blocks and tiles kept across the batches).
+#[test]
+fn a_run_in_batches_is_a_run_in_one() {
+    let (one, many) = (Fixture::new(), Fixture::new());
+    let ask = |f: &Fixture, batch: usize| {
+        let c = Counting { inner: &f.fetch, asked: Mutex::default(), fail: None };
+        let s = generic::run_in_batches(&f.config(), &declared_plan(), &Lenient(&c), batch).unwrap();
+        let mut asked = c.asked.into_inner().unwrap();
+        asked.sort();
+        asked.dedup();
+        (serde_json::to_value(&s).unwrap(), asked)
+    };
+    let (mut s1, a1) = ask(&one, usize::MAX);
+    let (mut s7, a7) = ask(&many, 7);
+    assert!(one.verts.len() > 7 * 4, "several batches");
+    for s in [&mut s1, &mut s7] {
+        s.as_object_mut().unwrap().remove("seconds");
+    }
+    assert_eq!(s1, s7);
+    assert_eq!(a1, a7);
+    assert_eq!(one.outputs().1, many.outputs().1);
+    assert!(one.outputs().0.iter().zip(&many.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
+}

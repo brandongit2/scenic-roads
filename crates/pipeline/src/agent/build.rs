@@ -3000,21 +3000,21 @@ fn items_key(date: &str, pois_now: &[&str]) -> String {
 }
 
 /// The rest of the heritage chain's key (network), on the pass's heritage sites (the registers'
-/// fields the chain reads are in their heritage-sources); None before they're made (the marks wait).
+/// fields the chain reads are in their heritage-sources); None before they're made, or before the
+/// pass's World Heritage sources (its `whs` set, which pass-sets makes for a pass older than it)
+/// are (the marks wait).
 fn heritage_key(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Option<String> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     if !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) {
         return None;
     }
+    let whs = crate::osmpass::set_name(date, "whs");
+    m.get(&whs)?;
     let mut ins = vec![format!("heritage {HERITAGE_V}"), date.to_string()];
     for stem in ["heritage", "heritage-areas", "special", "indigenous", "heritage-sources"] {
         ins.push(get(&crate::heritage::base_logical(date, stem)).to_string());
     }
-    for l in [
-        crate::osmpass::set_name(date, "named"),
-        crate::osmpass::set_name(date, "areas"),
-        format!("sources/osm/{date}/filtered"),
-    ] {
+    for l in [crate::osmpass::set_name(date, "named"), crate::osmpass::set_name(date, "areas"), whs] {
         ins.push(get(&l).to_string());
     }
     ins.push(coverage_all(cov));
@@ -4419,6 +4419,10 @@ pub(crate) mod tests {
         m.insert(
             crate::heritage::base_logical(date, "heritage-sources"),
             format!("work/heritage/{date}/base/heritage-sources.5656565656565656.json"),
+        );
+        m.insert(
+            crate::osmpass::set_name(date, "whs"),
+            format!("sources/osm/{date}/sets/whs.7878787878787878.osm.pbf"),
         );
     }
 
@@ -6958,12 +6962,22 @@ pub(crate) mod tests {
             crate::heritage::base_logical("d", "heritage-sources"),
             "work/heritage/d/heritage-sources.1111111111111111.json".into(),
         );
+        // (Not before the pass's World Heritage sources are made: pass-sets makes the set for an
+        // older pass.)
+        assert_eq!(heritage_key(&c, "d", &m), None);
+        let whs = crate::osmpass::set_name("d", "whs");
+        m.insert(whs.clone(), "sources/osm/d/sets/whs.1111111111111111.osm.pbf".into());
         let k = heritage_key(&c, "d", &m).unwrap();
         m.insert(
             "sources/registers/legacy-seeds".into(),
             "sources/registers/legacy-seeds.5555555555555555.tar.zst".into(),
         );
         assert_eq!(heritage_key(&c, "d", &m).unwrap(), k);
+        // Its key is the set's, not the filtered planet's.
+        m.insert("sources/osm/d/filtered".into(), "sources/osm/d/filtered.2222222222222222.osm.pbf".into());
+        assert_eq!(heritage_key(&c, "d", &m).unwrap(), k);
+        m.insert(whs, "sources/osm/d/sets/whs.3333333333333333.osm.pbf".into());
+        assert_ne!(heritage_key(&c, "d", &m).unwrap(), k);
     }
 
     #[test]

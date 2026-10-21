@@ -128,8 +128,13 @@ pub fn cost_version(step: &str) -> u32 {
         "trees" => 2,
         // (A z6 tile's measure its job's processes together, as the memory guard measures a job; 0
         // was its programs' most, one at a time; 2: its processes started without malloc's large
-        // cache, store::spawn::NO_LARGE_CACHE, where 1's measures counted 6–7 GB of freed blocks.)
-        "unit" => 2,
+        // cache, store::spawn::NO_LARGE_CACHE, where 1's measures counted 6–7 GB of freed blocks;
+        // 3: its elevations sampled in batches, crate::dem::generic::BATCH, where 2's sampled a
+        // z6 tile's vertices at once: 16 GB for the densest.)
+        "unit" => 3,
+        // (1: the World Heritage outlines clipped from the pass's `whs` set, not the filtered
+        // planet; 0's floor, 21.9 GB, no run with its memory timed came near: 6.4 GB, the clip's 4 GB.)
+        "heritage" => 1,
         "trees-lo" | "terrain-lo" | "slope-lo" => 1,
         // (A grid lined up with no overview sampled from one askew, task #433: the assemblies
         // that read tens of GB read a hundredth of it.)
@@ -6129,7 +6134,7 @@ mod tests {
 
     #[test]
     fn candidates_are_expected_to_take_what_their_unit_did() {
-        let cost = |mb: u64| Cost { peak_mb: mb, secs: 1, worker: None, v: 2, ..Default::default() };
+        let cost = |mb: u64| Cost { peak_mb: mb, secs: 1, worker: None, v: cost_version("unit"), ..Default::default() };
         let mut costs = BTreeMap::new();
         // Before either ran: as a z6 tile on its extract would (ten times it, at least 3.7 GB).
         assert_eq!(job_peak(&costs, "pois", "6/1/1", 500 << 20), 5000);

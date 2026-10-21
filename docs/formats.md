@@ -586,7 +586,7 @@ cache/                  build caches (below)
 
 `agent/cache/`: `dem-cache.*` (the seed), `chm10/` (canopy files), `aws-terrarium/` (raw tiles
 until packed onto the NAS; `packs/`, archive copies), `blobs/`, `base/`, `sources-*/` and `work-*/`
-(local copies of NAS files by logical name), `heritage-merged-<date>-<cover>.osm.pbf`, `items/`
+(local copies of NAS files by logical name), `heritage-merged-<date>-<set and cover>.osm.pbf` (the `whs` set within the cover), `items/`
 (the items job's answers, `kept-<date>.json`: {archive, files: {name: hash16}}; `months/`: pageview
 index copies), `rail/` (stop pairs), `heritage-<date>/` (the heritage chain's answers, with its
 `.kept.json`), `unit-stages.json`, and the flocks `answers.gate`, `answers.use`

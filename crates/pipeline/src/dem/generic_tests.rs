@@ -711,12 +711,13 @@ fn a_geotiff_dataset_in_degrees_keeps_no_copy_of_the_points() {
     let cover = Cover::of(None);
     for crs in [4326, 4269] {
         let d = ds(crs);
-        let r = Reader::new(&d, &o, &lon, &lat, &cover, &cache, &memo).unwrap();
-        assert!(matches!(r, Reader::Geo(_, None)), "EPSG:{crs}");
+        let s = Set::new(&d, &o, &cache, &memo).unwrap();
+        assert!(matches!(s.reader(&lon, &lat, &cover), Reader::Geo(_, None)), "EPSG:{crs}");
     }
     // (One in another CRS: its points projected, into its own two columns.)
     let d = ds(3979);
-    let r = Reader::new(&d, &o, &lon, &lat, &cover, &cache, &memo).unwrap();
+    let s = Set::new(&d, &o, &cache, &memo).unwrap();
+    let r = s.reader(&lon, &lat, &cover);
     let Reader::Geo(_, Some((x, y))) = &r else { panic!("projected") };
     assert_eq!((x.len(), y.len()), (2, 2));
     assert!(x.iter().chain(y).all(|v| v.is_finite() && v.abs() > 1000.0), "{x:?} {y:?}");

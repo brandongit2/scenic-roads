@@ -995,27 +995,17 @@ impl TileSet<'_> {
     }
 }
 
-/// A dataset as it's read.
-enum Reader<'a> {
-    /// A GeoTIFF dataset, with its points' native coordinates where its CRS isn't the points'
-    /// own (EPSG:4326 and 4269 read `lon` and `lat` as given: no copy of them, 16 bytes a point, for
-    /// each such dataset).
-    Geo(GeoSet<'a>, Option<(Vec<f64>, Vec<f64>)>),
+/// A dataset as a run reads it, kept across its batches of points (`Sampler`): its open files
+/// and the blocks or tiles known to be whole.
+enum Set<'a> {
+    Geo(GeoSet<'a>),
     Tiles(TileSet<'a>),
 }
 
-impl<'a> Reader<'a> {
-    fn new(
-        ds: &'a Dataset,
-        o: &'a Opts<'a>,
-        lon: &[f64],
-        lat: &[f64],
-        cover: &Cover,
-        cache: &Arc<Mutex<BlockCache>>,
-        memo: &Arc<TileMemo>,
-    ) -> Result<Reader<'a>> {
+impl<'a> Set<'a> {
+    fn new(ds: &'a Dataset, o: &'a Opts<'a>, cache: &Arc<Mutex<BlockCache>>, memo: &Arc<TileMemo>) -> Result<Set<'a>> {
         Ok(match &ds.source {
-            Source::Tiles { url, zoom, encoding } => Reader::Tiles(TileSet {
+            Source::Tiles { url, zoom, encoding } => Set::Tiles(TileSet {
                 url,
                 zoom: *zoom,
                 encoding,
@@ -1024,6 +1014,7 @@ impl<'a> Reader<'a> {
                 memo: memo.clone(),
             }),
             Source::Geotiff { crs, read_resolution, store, files } => {
+                ensure!(matches!(crs, 4326 | 4269 | 3979), "{}: EPSG:{crs} isn't a CRS the app knows", ds.id);
                 let store = match (*store, &o.store) {
                     (false, _) => None,
                     (true, Some(s)) => Some(s.join(&ds.id)),
@@ -1031,7 +1022,7 @@ impl<'a> Reader<'a> {
                         bail!("{}: its files are read from the store, and no store is given (SCENIC_STORE)", ds.id)
                     }
                 };
-                let set = GeoSet {
+                Set::Geo(GeoSet {
                     id: &ds.id,
                     crs: *crs,
                     files,
@@ -1041,35 +1032,50 @@ impl<'a> Reader<'a> {
                     opened: Mutex::new(HashMap::new()),
                     clean: (0..files.len()).map(|_| Clean::default()).collect(),
                     cache: cache.clone(),
-                };
-                // (Native coordinates of the points it covers; NaN for the others. Made straight
-                // into their two columns: no list of pairs beside them.)
-                let xy = match crs {
-                    4326 | 4269 => None,
-                    3979 => {
-                        let atlas = Atlas::new();
-                        let xy: (Vec<f64>, Vec<f64>) =
-                            within(o.pool, || {
-                                lon.par_iter()
-                                    .zip(lat.par_iter())
-                                    .map(|(&lo, &la)| {
-                                        if cover.contains(lo, la) {
-                                            atlas.project(lo, la)
-                                        } else {
-                                            (f64::NAN, f64::NAN)
-                                        }
-                                    })
-                                    .unzip()
-                            });
-                        Some(xy)
-                    }
-                    c => bail!("{}: EPSG:{c} isn't a CRS the app knows", ds.id),
-                };
-                Reader::Geo(set, xy)
+                })
             }
         })
     }
 
+    /// The set reading points `lon`, `lat` (one batch's): a GeoTIFF dataset in a CRS but the
+    /// points' own with their native coordinates where `cover` holds them (NaN elsewhere), made
+    /// straight into their two columns (no list of pairs beside them).
+    fn reader<'s>(&'s self, lon: &[f64], lat: &[f64], cover: &Cover) -> Reader<'s, 'a> {
+        match self {
+            Set::Tiles(t) => Reader::Tiles(t),
+            Set::Geo(g) if g.crs == 3979 => {
+                let atlas = Atlas::new();
+                let xy = within(g.o.pool, || {
+                    lon.par_iter()
+                        .zip(lat.par_iter())
+                        .map(
+                            |(&lo, &la)| {
+                                if cover.contains(lo, la) {
+                                    atlas.project(lo, la)
+                                } else {
+                                    (f64::NAN, f64::NAN)
+                                }
+                            },
+                        )
+                        .unzip()
+                });
+                Reader::Geo(g, Some(xy))
+            }
+            Set::Geo(g) => Reader::Geo(g, None),
+        }
+    }
+}
+
+/// A dataset reading one batch of points.
+enum Reader<'s, 'a> {
+    /// A GeoTIFF dataset, with its points' native coordinates where its CRS isn't the points'
+    /// own (EPSG:4326 and 4269 read `lon` and `lat` as given: no copy of them, 16 bytes a point, for
+    /// each such dataset).
+    Geo(&'s GeoSet<'a>, Option<(Vec<f64>, Vec<f64>)>),
+    Tiles(&'s TileSet<'a>),
+}
+
+impl Reader<'_, '_> {
     /// `sel` in reading order: a tile's points together (tile pyramids), a file's together and by
     /// row (GeoTIFFs). Each point is sampled alone, so the values are the same in any order.
     fn in_reading_order(&self, sel: Vec<u32>, lon: &[f64], lat: &[f64]) -> Vec<u32> {
@@ -1203,221 +1209,250 @@ impl Mono<'_> {
     }
 }
 
-/// Points `lon`, `lat` (degrees) sampled from `plan`. `said`: how far it is, 0 to 1, never
-/// backwards, ending at 1: once per chunk of a dataset's points and per blend step (the blends'
-/// weight is their points to measure against the points to sample), not per point. The blend
-/// stage hands `step` (the share of its call done, 0 to 1) to a distance measure that reports.
+/// Points `lon`, `lat` (degrees) sampled from `plan` (`Sampler::sample`, in one batch).
 pub fn sample(plan: &Plan, lon: &[f64], lat: &[f64], o: &Opts, said: Said) -> Result<Sampled> {
-    use crate::timings::{phase, Class};
-    let n = lon.len();
-    let mono = Mono { last: Mutex::new(0.0), to: said };
-    let covers: Vec<Cover> = plan.datasets.iter().map(|d| Cover::of(d.cover.as_deref())).collect();
-    // (The work to say by: points to sample (those some dataset covers), and points to measure (the
-    // first dataset covering one is followed by another).)
-    let (to_sample, to_blend) = within(o.pool, || {
-        (0..n)
-            .into_par_iter()
-            .map(|i| {
-                let mut c = (0..covers.len()).filter(|&k| covers[k].contains(lon[i], lat[i]));
-                match (c.next(), c.next()) {
-                    (None, _) => (0usize, 0usize),
-                    (Some(_), None) => (1, 0),
-                    (Some(_), Some(_)) => (1, 1),
-                }
-            })
-            .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
-    });
-    // (The blends' points counted twice: their distances measured, then their second heights.)
-    let total = ((to_sample + 2 * to_blend) as f64).max(1.0);
-    let mut a = vec![f32::NAN; n];
-    let mut first = vec![u16::MAX; n];
-    let mut file = vec![u32::MAX; n];
-    let mut readers = Vec::new();
-    let cache = Arc::new(Mutex::new(BlockCache::new(CACHE_BYTES)));
-    let memo = Arc::new(TileMemo::new(TILE_MEMO_BYTES));
-    // (What each phase fetches over the network: its count.)
-    let fetched =
-        |p: &crate::timings::Phase, since: u64| p.count(crate::fetch::fetched_bytes().saturating_sub(since), 0);
-    for (k, ds) in plan.datasets.iter().enumerate() {
-        let p = phase(&format!("{} sampled", ds.id), Class::Net);
+    Sampler::new(plan, o)?.sample(lon, lat, said)
+}
+
+/// A plan's datasets as a run reads them, over its batches of points (`run`): the decoded blocks,
+/// the fetched tiles, the open files, the blocks and tiles known whole and the geoid grids kept
+/// from one batch to the next, so a batch reads again only what the caches let go. Each point is
+/// sampled alone, so its height is the same in any batch.
+pub struct Sampler<'a> {
+    plan: &'a Plan,
+    o: &'a Opts<'a>,
+    covers: Vec<Cover>,
+    sets: Vec<Set<'a>>,
+    grids: super::geoid::Grids<'a>,
+}
+
+impl<'a> Sampler<'a> {
+    pub fn new(plan: &'a Plan, o: &'a Opts<'a>) -> Result<Sampler<'a>> {
+        let cache = Arc::new(Mutex::new(BlockCache::new(CACHE_BYTES)));
+        let memo = Arc::new(TileMemo::new(TILE_MEMO_BYTES));
+        Ok(Sampler {
+            plan,
+            o,
+            covers: plan.datasets.iter().map(|d| Cover::of(d.cover.as_deref())).collect(),
+            sets: plan.datasets.iter().map(|d| Set::new(d, o, &cache, &memo)).collect::<Result<_>>()?,
+            grids: super::geoid::Grids::new(o),
+        })
+    }
+
+    /// Points `lon`, `lat` (degrees) sampled. `said`: how far it is, 0 to 1, never backwards,
+    /// ending at 1: once per chunk of a dataset's points and per blend step (the blends' weight is
+    /// their points to measure against the points to sample), not per point. The blend stage hands
+    /// `step` (the share of its call done, 0 to 1) to a distance measure that reports.
+    pub fn sample(&self, lon: &[f64], lat: &[f64], said: Said) -> Result<Sampled> {
+        use crate::timings::{phase, Class};
+        let (plan, o, covers) = (self.plan, self.o, &self.covers);
+        let n = lon.len();
+        let mono = Mono { last: Mutex::new(0.0), to: said };
+        // (The work to say by: points to sample (those some dataset covers), and points to measure (the
+        // first dataset covering one is followed by another).)
+        let (to_sample, to_blend) = within(o.pool, || {
+            (0..n)
+                .into_par_iter()
+                .map(|i| {
+                    let mut c = (0..covers.len()).filter(|&k| covers[k].contains(lon[i], lat[i]));
+                    match (c.next(), c.next()) {
+                        (None, _) => (0usize, 0usize),
+                        (Some(_), None) => (1, 0),
+                        (Some(_), Some(_)) => (1, 1),
+                    }
+                })
+                .reduce(|| (0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
+        });
+        // (The blends' points counted twice: their distances measured, then their second heights.)
+        let total = ((to_sample + 2 * to_blend) as f64).max(1.0);
+        let mut a = vec![f32::NAN; n];
+        let mut first = vec![u16::MAX; n];
+        let mut file = vec![u32::MAX; n];
+        let mut readers = Vec::new();
+        // (What each phase fetches over the network: its count.)
+        let fetched =
+            |p: &crate::timings::Phase, since: u64| p.count(crate::fetch::fetched_bytes().saturating_sub(since), 0);
+        for (k, ds) in plan.datasets.iter().enumerate() {
+            let p = phase(&format!("{} sampled", ds.id), Class::Net);
+            let since = crate::fetch::fetched_bytes();
+            let r = self.sets[k].reader(lon, lat, &covers[k]);
+            let sel: Vec<u32> = (0..n as u32)
+                .filter(|&i| first[i as usize] == u16::MAX && covers[k].contains(lon[i as usize], lat[i as usize]))
+                .collect();
+            // (By tile or file, so a chunk reads each tile once, not once per chunk.)
+            let sel = r.in_reading_order(sel, lon, lat);
+            if !sel.is_empty() {
+                // (In chunks, a progress line after each: the datasets share the first part equally.)
+                let parts: Vec<&[u32]> = sel.chunks(r.chunk(sel.len())).collect();
+                let mut here = 0;
+                let mut done = 0;
+                read_ahead(r.ahead(&parts, lon, lat)?.as_ref(), |at| -> Result<()> {
+                    for (j, part) in parts.iter().enumerate() {
+                        at(j);
+                        let step = |f: f64| {
+                            let share = (k as f64 + (done as f64 + f * part.len() as f64) / sel.len() as f64)
+                                / plan.datasets.len() as f64;
+                            mono.say(share * to_sample as f64 / total);
+                        };
+                        let v = r.sample(part, lon, lat, &step)?;
+                        for (&i, (v, f)) in part.iter().zip(v) {
+                            if v.is_finite() {
+                                (a[i as usize], first[i as usize], file[i as usize]) = (v, k as u16, f);
+                                here += 1;
+                            }
+                        }
+                        done += part.len();
+                        let share = (k as f64 + done as f64 / sel.len() as f64) / plan.datasets.len() as f64;
+                        mono.say(share * to_sample as f64 / total);
+                    }
+                    Ok(())
+                })?;
+                println!("  {}: {here} of {} vertices", ds.id, sel.len());
+            }
+            readers.push(r);
+            fetched(&p, since);
+        }
+        // The blends: each point's distance to its first dataset's invalid area, up to the widest band
+        // it could have (four of the coarsest pixels of the datasets after it there); then the next
+        // dataset with data, for those within it.
+        let p = phase("the edges blended", Class::Net);
         let since = crate::fetch::fetched_bytes();
-        let r = Reader::new(ds, o, lon, lat, &covers[k], &cache, &memo)?;
-        let sel: Vec<u32> = (0..n as u32)
-            .filter(|&i| first[i as usize] == u16::MAX && covers[k].contains(lon[i as usize], lat[i as usize]))
-            .collect();
-        // (By tile or file, so a chunk reads each tile once, not once per chunk.)
-        let sel = r.in_reading_order(sel, lon, lat);
-        if !sel.is_empty() {
-            // (In chunks, a progress line after each: the datasets share the first part equally.)
+        let res: Vec<f64> = plan.datasets.iter().map(|d| d.resolution).collect();
+        let mut dist = vec![f64::INFINITY; n];
+        mono.say(to_sample as f64 / total);
+        let mut blended = 0usize;
+        for k in 0..plan.datasets.len() {
+            let mut sel = Vec::new();
+            let mut radius = Vec::new();
+            for i in 0..n {
+                if first[i] as usize != k {
+                    continue;
+                }
+                let coarsest = (k + 1..plan.datasets.len())
+                    .filter(|&m| covers[m].contains(lon[i], lat[i]))
+                    .map(|m| res[m])
+                    .fold(0.0f64, f64::max);
+                if coarsest > 0.0 {
+                    sel.push(i as u32);
+                    radius.push(4.0 * coarsest.max(res[k]));
+                }
+            }
+            if sel.is_empty() {
+                continue;
+            }
+            let files: Vec<u32> = sel.iter().map(|&i| file[i as usize]).collect();
+            // (What a distance measure calls with the share of its points done.)
+            let step = |f: f64| mono.say((to_sample as f64 + blended as f64 + f * sel.len() as f64) / total);
+            let d = readers[k].distance(&sel, lon, lat, &files, &radius, &step)?;
+            for ((&i, d), r) in sel.iter().zip(d).zip(radius) {
+                if d < r {
+                    dist[i as usize] = d;
+                }
+            }
+            step(1.0);
+            blended += sel.len();
+        }
+        let mut b = vec![f32::NAN; n];
+        let mut second = vec![u16::MAX; n];
+        for (k, r) in readers.iter().enumerate() {
+            let sel: Vec<u32> = (0..n as u32)
+                .filter(|&i| {
+                    dist[i as usize].is_finite()
+                        && second[i as usize] == u16::MAX
+                        && (first[i as usize] as usize) < k
+                        && covers[k].contains(lon[i as usize], lat[i as usize])
+                })
+                .collect();
+            if sel.is_empty() {
+                continue;
+            }
+            // (In reading order and in chunks, a progress line after each: the datasets share the
+            // last part equally.)
+            let sel = r.in_reading_order(sel, lon, lat);
             let parts: Vec<&[u32]> = sel.chunks(r.chunk(sel.len())).collect();
-            let mut here = 0;
             let mut done = 0;
             read_ahead(r.ahead(&parts, lon, lat)?.as_ref(), |at| -> Result<()> {
                 for (j, part) in parts.iter().enumerate() {
                     at(j);
                     let step = |f: f64| {
                         let share = (k as f64 + (done as f64 + f * part.len() as f64) / sel.len() as f64)
-                            / plan.datasets.len() as f64;
-                        mono.say(share * to_sample as f64 / total);
+                            / readers.len() as f64;
+                        mono.say((to_sample as f64 + to_blend as f64 * (1.0 + share)) / total);
                     };
-                    let v = r.sample(part, lon, lat, &step)?;
-                    for (&i, (v, f)) in part.iter().zip(v) {
+                    for (&i, (v, _)) in part.iter().zip(r.sample(part, lon, lat, &step)?) {
                         if v.is_finite() {
-                            (a[i as usize], first[i as usize], file[i as usize]) = (v, k as u16, f);
-                            here += 1;
+                            (b[i as usize], second[i as usize]) = (v, k as u16);
                         }
                     }
                     done += part.len();
-                    let share = (k as f64 + done as f64 / sel.len() as f64) / plan.datasets.len() as f64;
-                    mono.say(share * to_sample as f64 / total);
+                    let share = (k as f64 + done as f64 / sel.len() as f64) / readers.len() as f64;
+                    mono.say((to_sample as f64 + to_blend as f64 * (1.0 + share)) / total);
                 }
                 Ok(())
             })?;
-            println!("  {}: {here} of {} vertices", ds.id, sel.len());
         }
-        readers.push(r);
         fetched(&p, since);
-    }
-    // The blends: each point's distance to its first dataset's invalid area, up to the widest band
-    // it could have (four of the coarsest pixels of the datasets after it there); then the next
-    // dataset with data, for those within it.
-    let p = phase("the edges blended", Class::Net);
-    let since = crate::fetch::fetched_bytes();
-    let res: Vec<f64> = plan.datasets.iter().map(|d| d.resolution).collect();
-    let mut dist = vec![f64::INFINITY; n];
-    mono.say(to_sample as f64 / total);
-    let mut blended = 0usize;
-    for k in 0..plan.datasets.len() {
-        let mut sel = Vec::new();
-        let mut radius = Vec::new();
+        drop(p);
+        // Each dataset's heights brought to EGM2008 (crate::dem::geoid) before the blend: the first's
+        // and the second's alike.
+        let p = phase("the heights brought to EGM2008", Class::Net);
+        let since = crate::fetch::fetched_bytes();
+        let grids = &self.grids;
+        let mut unconverted = 0usize;
+        let mut b_kept = vec![false; n];
+        let mut a_converted = vec![false; n];
+        for (k, ds) in plan.datasets.iter().enumerate() {
+            let Some(c) = &ds.convert else { continue };
+            for (vals, from, firsts) in [(&mut a, &first, true), (&mut b, &second, false)] {
+                let sel: Vec<usize> = (0..n).filter(|&i| from[i] as usize == k && vals[i].is_finite()).collect();
+                if sel.is_empty() {
+                    continue;
+                }
+                let (lo, la): (Vec<f64>, Vec<f64>) = sel.iter().map(|&i| (lon[i], lat[i])).unzip();
+                let off = grids.offsets(c, &lo, &la)?;
+                for (&i, d) in sel.iter().zip(off) {
+                    if d.is_finite() {
+                        vals[i] = (vals[i] as f64 + d) as f32;
+                        if firsts {
+                            a_converted[i] = true;
+                        }
+                    } else if firsts {
+                        unconverted += 1;
+                    } else {
+                        b_kept[i] = true;
+                    }
+                }
+            }
+        }
+        if unconverted > 0 {
+            println!("  {unconverted} vertices' heights not converted: no declared geoid source has a value there");
+        }
+        fetched(&p, since);
+        drop(p);
+        mono.say(1.0);
+        let mut out = Sampled { elev: a, src: vec![0; n], blended: vec![false; n], unconverted, unconverted_seam: 0 };
         for i in 0..n {
-            if first[i] as usize != k {
+            if first[i] == u16::MAX {
                 continue;
             }
-            let coarsest = (k + 1..plan.datasets.len())
-                .filter(|&m| covers[m].contains(lon[i], lat[i]))
-                .map(|m| res[m])
-                .fold(0.0f64, f64::max);
-            if coarsest > 0.0 {
-                sel.push(i as u32);
-                radius.push(4.0 * coarsest.max(res[k]));
-            }
-        }
-        if sel.is_empty() {
-            continue;
-        }
-        let files: Vec<u32> = sel.iter().map(|&i| file[i as usize]).collect();
-        // (What a distance measure calls with the share of its points done.)
-        let step = |f: f64| mono.say((to_sample as f64 + blended as f64 + f * sel.len() as f64) / total);
-        let d = readers[k].distance(&sel, lon, lat, &files, &radius, &step)?;
-        for ((&i, d), r) in sel.iter().zip(d).zip(radius) {
-            if d < r {
-                dist[i as usize] = d;
-            }
-        }
-        step(1.0);
-        blended += sel.len();
-    }
-    let mut b = vec![f32::NAN; n];
-    let mut second = vec![u16::MAX; n];
-    for (k, r) in readers.iter().enumerate() {
-        let sel: Vec<u32> = (0..n as u32)
-            .filter(|&i| {
-                dist[i as usize].is_finite()
-                    && second[i as usize] == u16::MAX
-                    && (first[i as usize] as usize) < k
-                    && covers[k].contains(lon[i as usize], lat[i as usize])
-            })
-            .collect();
-        if sel.is_empty() {
-            continue;
-        }
-        // (In reading order and in chunks, a progress line after each: the datasets share the
-        // last part equally.)
-        let sel = r.in_reading_order(sel, lon, lat);
-        let parts: Vec<&[u32]> = sel.chunks(r.chunk(sel.len())).collect();
-        let mut done = 0;
-        read_ahead(r.ahead(&parts, lon, lat)?.as_ref(), |at| -> Result<()> {
-            for (j, part) in parts.iter().enumerate() {
-                at(j);
-                let step = |f: f64| {
-                    let share =
-                        (k as f64 + (done as f64 + f * part.len() as f64) / sel.len() as f64) / readers.len() as f64;
-                    mono.say((to_sample as f64 + to_blend as f64 * (1.0 + share)) / total);
-                };
-                for (&i, (v, _)) in part.iter().zip(r.sample(part, lon, lat, &step)?) {
-                    if v.is_finite() {
-                        (b[i as usize], second[i as usize]) = (v, k as u16);
-                    }
-                }
-                done += part.len();
-                let share = (k as f64 + done as f64 / sel.len() as f64) / readers.len() as f64;
-                mono.say((to_sample as f64 + to_blend as f64 * (1.0 + share)) / total);
-            }
-            Ok(())
-        })?;
-    }
-    fetched(&p, since);
-    drop(p);
-    // Each dataset's heights brought to EGM2008 (crate::dem::geoid) before the blend: the first's
-    // and the second's alike.
-    let p = phase("the heights brought to EGM2008", Class::Net);
-    let since = crate::fetch::fetched_bytes();
-    let grids = super::geoid::Grids::new(o);
-    let mut unconverted = 0usize;
-    let mut b_kept = vec![false; n];
-    let mut a_converted = vec![false; n];
-    for (k, ds) in plan.datasets.iter().enumerate() {
-        let Some(c) = &ds.convert else { continue };
-        for (vals, from, firsts) in [(&mut a, &first, true), (&mut b, &second, false)] {
-            let sel: Vec<usize> = (0..n).filter(|&i| from[i] as usize == k && vals[i].is_finite()).collect();
-            if sel.is_empty() {
-                continue;
-            }
-            let (lo, la): (Vec<f64>, Vec<f64>) = sel.iter().map(|&i| (lon[i], lat[i])).unzip();
-            let off = grids.offsets(c, &lo, &la)?;
-            for (&i, d) in sel.iter().zip(off) {
-                if d.is_finite() {
-                    vals[i] = (vals[i] as f64 + d) as f32;
-                    if firsts {
-                        a_converted[i] = true;
-                    }
-                } else if firsts {
-                    unconverted += 1;
-                } else {
-                    b_kept[i] = true;
+            out.src[i] = plan.datasets[first[i] as usize].code;
+            if second[i] != u16::MAX {
+                let band = 4.0 * res[first[i] as usize].max(res[second[i] as usize]);
+                if dist[i] < band {
+                    out.elev[i] = blend(out.elev[i], b[i], dist[i], band);
+                    out.blended[i] = true;
+                    out.unconverted_seam += (a_converted[i] && b_kept[i]) as usize;
                 }
             }
         }
-    }
-    if unconverted > 0 {
-        println!("  {unconverted} vertices' heights not converted: no declared geoid source has a value there");
-    }
-    fetched(&p, since);
-    drop(p);
-    mono.say(1.0);
-    let mut out = Sampled { elev: a, src: vec![0; n], blended: vec![false; n], unconverted, unconverted_seam: 0 };
-    for i in 0..n {
-        if first[i] == u16::MAX {
-            continue;
-        }
-        out.src[i] = plan.datasets[first[i] as usize].code;
-        if second[i] != u16::MAX {
-            let band = 4.0 * res[first[i] as usize].max(res[second[i] as usize]);
-            if dist[i] < band {
-                out.elev[i] = blend(out.elev[i], b[i], dist[i], band);
-                out.blended[i] = true;
-                out.unconverted_seam += (a_converted[i] && b_kept[i]) as usize;
-            }
-        }
-    }
-    if out.unconverted_seam > 0 {
-        println!(
+        if out.unconverted_seam > 0 {
+            println!(
             "  {} blended vertices mix references: the first converted, the one beneath without a geoid value there",
             out.unconverted_seam
         );
+        }
+        Ok(out)
     }
-    Ok(out)
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -1445,6 +1480,31 @@ pub struct Stats {
 /// `elev` from a plan: samples the build folder's vertices (`verts.bin`) not in the cache; writes
 /// `elev.f32`, `src.u8`, `dem-stats.json` and the cache for the next run, as `super::run` does.
 pub fn run(cfg: &super::Config, plan: &Plan, fetch: &dyn Fetch) -> Result<Stats> {
+    run_in_batches(cfg, plan, fetch, BATCH)
+}
+
+/// The points one batch of `run`'s sampling holds at most (task #496): a batch's own columns, some
+/// 150 bytes a point while it's sampled, blended and converted, so a dense z6 tile (85 M vertices,
+/// 16 GB sampled at once) takes a few hundred MB beside its vertices' heights. The batches go
+/// along a Z-order curve (`z_order`): a batch's points lie together, and the caches `Sampler`
+/// keeps across them hold what the next one reads at their edge.
+pub const BATCH: usize = 1 << 21;
+
+/// A vertex's place along a Z-order curve (its coordinates' bits interleaved).
+fn z_order(v: [i32; 2]) -> u64 {
+    fn spread(x: i32) -> u64 {
+        let mut x = (x as u32 ^ 0x8000_0000) as u64;
+        x = (x | x << 16) & 0x0000_FFFF_0000_FFFF;
+        x = (x | x << 8) & 0x00FF_00FF_00FF_00FF;
+        x = (x | x << 4) & 0x0F0F_0F0F_0F0F_0F0F;
+        x = (x | x << 2) & 0x3333_3333_3333_3333;
+        (x | x << 1) & 0x5555_5555_5555_5555
+    }
+    spread(v[0]) | spread(v[1]) << 1
+}
+
+/// `run`, its vertices sampled `batch` at a time.
+pub(super) fn run_in_batches(cfg: &super::Config, plan: &Plan, fetch: &dyn Fetch, batch: usize) -> Result<Stats> {
     use crate::timings::{phase, Class};
     let t_start = std::time::Instant::now();
     let b = &cfg.build;
@@ -1462,18 +1522,29 @@ pub fn run(cfg: &super::Config, plan: &Plan, fetch: &dyn Fetch) -> Result<Stats>
         prog.mark("cache")?;
     }
     drop(p);
-    let miss: Vec<u32> = (0..n as u32).filter(|&i| prog.elev[i as usize].is_nan()).collect();
+    let mut miss: Vec<u32> = (0..n as u32).filter(|&i| prog.elev[i as usize].is_nan()).collect();
     println!("{} vertices need DEM sampling", super::th(miss.len()));
     super::said(0.0, miss.len());
-    let lon: Vec<f64> = miss.iter().map(|&i| verts[i as usize][0] as f64 * 1e-7).collect();
-    let lat: Vec<f64> = miss.iter().map(|&i| verts[i as usize][1] as f64 * 1e-7).collect();
     let pool = super::pool(cfg.workers);
+    within(pool.as_ref(), || miss.par_sort_unstable_by_key(|&i| (z_order(verts[i as usize]), i)));
     let o = Opts { fetch, store: cfg.store.clone(), pool: pool.as_ref() };
-    let s = sample(plan, &lon, &lat, &o, &|f| super::said(f, miss.len()))?;
+    let sampler = Sampler::new(plan, &o)?;
+    let (mut blended, mut unconverted, mut unconverted_seam, mut done) = (0, 0, 0, 0);
+    for part in miss.chunks(batch.max(1)) {
+        let lon: Vec<f64> = part.iter().map(|&i| verts[i as usize][0] as f64 * 1e-7).collect();
+        let lat: Vec<f64> = part.iter().map(|&i| verts[i as usize][1] as f64 * 1e-7).collect();
+        let s = sampler.sample(&lon, &lat, &|f| {
+            super::said((done as f64 + f * part.len() as f64) / miss.len() as f64, miss.len())
+        })?;
+        prog.scatter(part, &s.elev, &s.src);
+        blended += s.blended.iter().filter(|b| **b).count();
+        (unconverted, unconverted_seam) = (unconverted + s.unconverted, unconverted_seam + s.unconverted_seam);
+        done += part.len();
+    }
+    drop(sampler);
     drop(o);
     drop(pool);
     super::said(1.0, miss.len());
-    prog.scatter(&miss, &s.elev, &s.src);
     let _p = phase("heights and the cache written", Class::Disk);
     let mut by: std::collections::BTreeMap<String, usize> = plan.datasets.iter().map(|d| (d.id.clone(), 0)).collect();
     let mut missing = 0;
@@ -1486,10 +1557,10 @@ pub fn run(cfg: &super::Config, plan: &Plan, fetch: &dyn Fetch) -> Result<Stats>
     let stats = Stats {
         vertices: n,
         datasets: by,
-        blended: s.blended.iter().filter(|b| **b).count(),
+        blended,
         missing,
-        unconverted: s.unconverted,
-        unconverted_seam: s.unconverted_seam,
+        unconverted,
+        unconverted_seam,
         sampled_this_run: miss.len(),
         seconds: (t_start.elapsed().as_secs_f64() * 10.0).round() / 10.0,
     };
