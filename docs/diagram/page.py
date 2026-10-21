@@ -88,7 +88,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <figure>
 <h3>Where the data lives</h3>
 <div class="scroll">{storage.build(CHECK)}</div>
-<figcaption>Big files live only on the NAS. Every Mac’s jobs put their files there and their results in the journal; the lead alone merges them into the build’s records. What was made by hand goes straight into the NAS’s inputs/ (its drop boxes) and sources/. GC removes unreferenced files after 14 days, only while the NAS is quiet. Your Macs copy only what you download in the Regions panel (the World, zoomed out; regions; views), and read the rest from the NAS.</figcaption>
+<figcaption>Big files live only on the NAS. Every Mac’s jobs put their files there and their results in the journal; the lead alone merges them into the build’s records. What was made by hand goes straight into the NAS’s inputs/ (its drop boxes) and sources/. GC removes unreferenced files after 14 days: daily, when the NAS is quiet (or after waiting a day). Your Macs copy only what you download in the Regions panel (the World, zoomed out; regions; views), and read the rest from the NAS.</figcaption>
 </figure>
 <figure>
 <h3>Who builds it</h3>
@@ -98,7 +98,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <figure>
 <h3>How each layer is built</h3>
 <div class="scroll">{proposed.build(CHECK)}</div>
-<figcaption>Every step runs per z6 tile, per z3 area near the coverage, or once for the whole world; regions only say which tiles to build, and publishing puts each unit on the map within minutes of its build. Values that span areas (whole roads, landmarks’ fame, ferries) come from worldwide steps, and each tile reads its neighbours within 110 km, so tile edges and region borders don’t show. Translations and descriptions need no rebuild. Folded corner: a curated input, with how it could be made again. A card’s last line: a target’s median and 90th-percentile time and its peak memory (p90), or a worldwide run’s.</figcaption>
+<figcaption>Every step runs per z6 tile, per z3 area near the coverage, or once for the whole world; regions only say which tiles to build, and publishing puts each unit on the map within minutes of its build. Values that span areas (whole roads, landmarks’ fame, ferries) come from worldwide steps, so tile edges and region borders don’t show. Translations and descriptions need no rebuild. Folded corner: a curated input, with how it could be made again. A card’s last line: a target’s median and 90th-percentile time and its peak memory (p90), or a worldwide run’s.</figcaption>
 </figure>
 {curated.html()}
 </main>

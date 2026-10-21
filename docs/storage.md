@@ -77,7 +77,9 @@ on the NAS, which the lead merges; no step writes the records directly once a te
 (`crate::out::check_writer`). Other writers: the owner's drop boxes, `tools/app/publish.sh`, and the
 NAS's own planet fetch.
 
-**GC** runs daily, in the agent.
+**GC** runs daily, in the agent, when the NAS is quiet: only beside leased jobs that leave its
+measured weight room (pool.md §7.2, `Limits::fits_quiet`), or, held back 24 hours, as an aged job
+of the lead's own (`QUIET_AGE`); running, it yields to a target held back for the budget.
 - **Roots:** the newest catalog, every catalog of the last 14 days, and the build manifest.
 - An unreferenced content-named file goes once older than 14 days; older catalogs go except the
   newest; stray `.tmp` files after 2 days.

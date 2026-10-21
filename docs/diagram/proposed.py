@@ -104,7 +104,7 @@ def build(check=False):
     yd = p_ds.my
     d.arrow('base', (c_ds.r, yd), (p_ds.l, yd))
     ylp = c_tr.t - 5   # the translators' and writers' loop, outside the pipeline
-    d.arrow('base', (n_todo.l + 90, n_todo.b), (n_todo.l + 90, ylp), (c_tr.l + 150, ylp), (c_tr.l + 150, c_tr.t), dashed=True,
+    d.arrow('base', (n_todo.l + 90, n_todo.b), (n_todo.l + 90, ylp), (c_tr.l + 150, ylp), (c_tr.l + 150, c_tr.t),
             label='lists → agents, on request', at=(n_todo.l + 98, (n_todo.b + ylp) / 2 + 4))
     d.arrow('base', (n_sp.r - 30, n_sp.b), (n_sp.r - 30, p_en.y - 8), (p_en.l + 30, p_en.y - 8), (p_en.l + 30, p_en.t),
             label='the lookup order', at=(n_todo.r + 12, p_en.y + 5))
@@ -373,7 +373,7 @@ def build(check=False):
             'worldwide once a pass, and from its z14 water and the lake fill the water layer, each pixel’s exact share of water at '
             'every zoom. Terrain and slope are built a piece per z6 tile and assembled per z3 area; the water depth per z3 area near '
             'the coverage, then per z6 tile where a source is finer. Each z6 tile’s roads, elevations and scenic values are one job, '
-            'reading its neighbours within 110 km; map tiles, tree cover and 3D buildings per z6 tile, zoomed out per z3 area. Labels, '
+            'map tiles, tree cover and 3D buildings per z6 tile, zoomed out per z3 area. Labels, '
             'the languages spoken where, the to-do lists, landmarks, the heritage chain, area overlays, rail stops, ferries and trains '
             'a day are worldwide, run by the lead. Curated inputs, made by hand, feed them, each with how reproducible it is today. '
             'Any member of the pool may take the jobs marked ⇄, the rest are the lead’s; tasks any worker may run, a device’s page too. '

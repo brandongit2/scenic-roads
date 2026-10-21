@@ -42,7 +42,7 @@ def build(check=False):
             ('work/ · cache/', 'build intermediates; what each area keeps for its next run, on either Mac'),
             ('app/ · catalog/', 'the app your Macs run; catalogs: every file the map reads'),
             ('state/', 'who leads (terms); the journal; the records: what each file is made from')]
-    # GC: unreferenced files after 14 days, only while the NAS is quiet (storage.md, pool.md §7.2)
+    # GC: unreferenced files after 14 days, daily, when the NAS is quiet or after waiting a day (storage.md, pool.md §7.2)
     top = 16
     sx, sw = 16, 196
     nx, nw, fw = 270, 590, 172

@@ -266,9 +266,10 @@ drawn as a raster.
     regions, its small lakes (under 1 km²) per 100 km² of land. A sheet is a gap when that's under a
     tenth of its neighbours' (75th percentile within 3 sheets), under 2, or its size curve is cut
     off.
-  - **The source:** CanVec 1:50,000 Hydro `waterbody_2`, the provinces' zips in
-    `sources/canvec/50k/`, downloaded by hand (the FTP's robots.txt disallows `/pub`), read in place
-    (`lakefill::zip`). Taken: lakes, reservoirs, ponds and unidentified water bodies; intermittent
+  - **The source:** CanVec 1:50,000 Hydro `waterbody_2`, the provinces' zips, downloaded by hand
+    (the FTP's robots.txt disallows `/pub`) and kept in the declared source's folder,
+    `sources/fetched/canvec-lakes/` (`lakefill::run::source_dir`, docs/inputs.md §6.9), read from
+    there (`lakefill::zip`). Taken: lakes, reservoirs, ponds and unidentified water bodies; intermittent
     ones drawn as water but not flattened. Licence: OGL–Canada, credited.
   - **The rules** (`lakefill::select`): whole lakes only (pieces sharing an edge or a sheet line are
     one); none touching OSM's water within 10 m; OSM's lakes cut at a gap sheet's edge completed with

@@ -227,7 +227,7 @@ class Diagram:
         return Bx(x, y, w, h)
 
     def layer(self, k, y, title, subs, computed=False, cy=None):
-        """A map layer in the browser (dotted: computed there; dashed: planned); cy: centred there."""
+        """A map layer in the browser (dotted: computed there); cy: centred there."""
         x, w = COLS['brw']
         tl = wrap('lt', title, w - 20)
         sl = wrap('sub', subs, w - 20)
