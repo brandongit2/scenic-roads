@@ -7993,8 +7993,8 @@ impl Agent {
                     running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), m)));
                 }
             }
-            equal = Some(forecast::EqualLanes { lanes: lanes.clone(), running: running.clone() });
-            f.equal = Some(Box::new(forecast::equal_machines(&inp, lanes, running)));
+            // (Not run: see forecast::Record::forecast; the lanes are kept for when it's bounded.)
+            equal = Some(forecast::EqualLanes { lanes, running });
         }
         // (As data, for the NAS: written by the lead's pool step, `pool_lead_files`.)
         let record = forecast::Record { input: inp, each_s: f.each_s.clone(), waiting: f.waiting.clone(), equal };

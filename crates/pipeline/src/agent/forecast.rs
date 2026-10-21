@@ -262,8 +262,8 @@ impl Record<'_> {
         let mut f = forecast(&self.input);
         f.each_s = self.each_s.clone();
         f.waiting = self.waiting.clone();
-        f.equal =
-            self.equal.as_ref().map(|e| Box::new(equal_machines(&self.input, e.lanes.clone(), e.running.clone())));
+        // (Not the equal machines' view: its run through the scheduler took the agent's loop for
+        // a quarter hour on the live build, 21 Oct; it waits for a bounded run off the loop.)
         f
     }
 
@@ -1606,7 +1606,7 @@ mod tests {
         };
         let mut lead = forecast(&inp);
         lead.each_s.insert("unit".into(), 300.0);
-        lead.equal = Some(Box::new(equal_machines(&inp, equal.lanes.clone(), equal.running.clone())));
+        // (No equal machines' view while it isn't bounded: Record::forecast leaves it out.)
         let rec = Record { input: inp, each_s: lead.each_s.clone(), waiting: BTreeMap::new(), equal: Some(equal) };
         let b = rec.bytes().unwrap();
         assert_eq!(b[0], b'{', "small: plain JSON");
