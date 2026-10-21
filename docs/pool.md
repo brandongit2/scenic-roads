@@ -560,15 +560,12 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   start, or until `scenic pool release <member> "<job>"`. Progress is in
   `state/pool/progress/<member>.json`, written only by that member. A finished one is held unoffered
   until merged.
-- **The forecast for equal machines** (`crate::agent::forecast::equal_machines`): a second forecast,
-  `equal`, with each member's slots and the pages as lanes at their measured speeds. Reports only.
 - **The forecast runs off the loop** (task #544): the lead makes its input on the loop and runs it
   on a thread of its own (`Agent::start_forecast`); the status keeps the last one done, so reaping,
-  starting jobs and writing the status never wait on it. Its three runs go side by side, the
-  equal machines' view's three after them (three threads at most, each at the utility QoS:
-  `forecast::low_priority`), each view cut at `forecast::BUDGET` (15 s): one cut is `partial`, its
-  `why` says so, no finish shown, and the build page marks its lanes and next jobs partial. On 21 Oct's live input (4,155 targets, 20 lanes) the lead's view took
-  3.7 s and the equal machines' 3.3 s (205 s and 89 s before #544; a quarter hour on the lead).
+  starting jobs and writing the status never wait on it. Its three runs go side by side (three
+  threads, each at the utility QoS: `forecast::low_priority`), cut at `forecast::BUDGET` (15 s): one
+  cut is `partial`, its `why` says so, no finish shown, and the build page marks its lanes and next
+  jobs partial. On 21 Oct's live input (4,155 targets, 20 lanes) it took 3.7 s (205 s before #544).
 
 **A job waiting on a worker** (`crate::offload`'s `WAITING_ENV`): a z6 tile job waiting on a faster
 worker for its tail writes `SCENIC_WAITING`; while it exists the lead's asks count the waiting
@@ -836,8 +833,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
 - **Forecast input**, written by the lead per term (`state/build/term/<E>/forecast-input.json`,
   `forecast::Record`): the forecast's whole input as data (the work left, each region target's
   cost in a table by step and target, the lanes, what runs now, each Mac's room, the cadence) and
-  what the lead adds to its answer (each step's time a target, the slots waiting on a tail, the
-  lanes of the forecast for equal machines), so `Record::forecast` gives the lead's forecast on
+  what the lead adds to its answer (each step's time a target, the slots waiting on a tail), so `Record::forecast` gives the lead's forecast on
   any Mac. Written as a whole in the lead's next pool step each time it makes the forecast (at
   most once a minute); zstd-compressed when its JSON is over 2 MiB (`forecast::ZSTD_OVER`; a
   reader tells by zstd's magic number). About 70 KB with today's work left (88 regions, ~500

@@ -455,9 +455,6 @@ pub fn local_forecast(r: &Record, now: u64, own: &[OwnLane]) -> Forecast {
         }
     };
     r.input.machines.iter_mut().for_each(age);
-    if let Some(e) = &mut r.equal {
-        e.lanes.iter_mut().for_each(age);
-    }
     let c = &mut r.input.cadence;
     let dt_s = dt as u64;
     for x in [&mut c.since_low, &mut c.since_marks, &mut c.since_overlays].into_iter().flatten() {
@@ -546,7 +543,6 @@ mod tests {
             },
             each_s: BTreeMap::new(),
             waiting: BTreeMap::new(),
-            equal: None,
         }
     }
 

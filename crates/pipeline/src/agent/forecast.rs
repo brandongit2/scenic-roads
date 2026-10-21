@@ -43,8 +43,7 @@ pub struct Machine {
     pub helper: bool,
     /// A lane of any work in the lead's order that fits its memory (and that it may run:
     /// `lead_steps`): the lead's other slots, each member's slots (as the coordinator packs them:
-    /// any step offered that fits), and every lane but the first of the forecast for equal machines
-    /// (`equal_machines`).
+    /// any step offered that fits).
     pub equal: bool,
     pub mem_mb: u64,
     /// Seconds from now until it's free (its job under way's time left).
@@ -245,26 +244,14 @@ pub struct Record<'a> {
     pub input: Input<'a>,
     pub each_s: BTreeMap<String, f64>,
     pub waiting: BTreeMap<String, String>,
-    pub equal: Option<EqualLanes>,
-}
-
-/// The lanes of the forecast for equal machines (`pool_lanes`) and what each builds now.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct EqualLanes {
-    pub lanes: Vec<Machine>,
-    #[serde(with = "pairs")]
-    pub running: BTreeMap<(String, String), usize>,
 }
 
 impl Record<'_> {
     /// The forecast it holds: the lead's.
     pub fn forecast(&self) -> Forecast {
-        // (The equal machines' view after it, with its own budget: three runs at a time at most.)
         let mut f = forecast(&self.input);
         f.each_s = self.each_s.clone();
         f.waiting = self.waiting.clone();
-        f.equal =
-            self.equal.as_ref().map(|e| Box::new(equal_machines(&self.input, e.lanes.clone(), e.running.clone())));
         f
     }
 
@@ -285,9 +272,6 @@ impl Record<'_> {
         };
         let inp = &mut self.input;
         inp.machines.iter_mut().for_each(m);
-        if let Some(e) = &mut self.equal {
-            e.lanes.iter_mut().for_each(m);
-        }
         for j in inp.before.iter_mut().chain(&mut inp.chains).chain(&mut inp.after).chain(&mut inp.idle) {
             f(&mut j.2.secs)
         }
@@ -366,10 +350,6 @@ pub struct Forecast {
     /// Each machine's work to the end, a step's run together (`Lane`): the schedule.
     #[serde(default)]
     pub lanes: BTreeMap<String, Vec<Lane>>,
-    /// The forecast for equal machines (docs/pool.md §7.2, §12 4.12; `equal_machines`), in the
-    /// pool: reported beside this one, nothing placed or decided by it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub equal: Option<Box<Forecast>>,
     /// The machines (this Mac's slots) whose job waits on a worker holding its z6 tile's tail, and on
     /// what (the agent's `waiting_on`): their room free for a job beside it meanwhile.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1417,106 +1397,12 @@ fn departed(fc: usize, got: usize) -> bool {
     d >= 2 && d * 2 > fc
 }
 
-/// The forecast for equal machines (docs/pool.md §7.2, §12 4.12): the same work as `inp`'s, run
-/// through on `lanes` (each member's slots, the lead's first slot first: it alone publishes; and
-/// the pages as one lane, a helper's: the shared steps alone), what each lane builds
-/// now `running`. Reports only: nothing is placed or decided by it.
-pub fn equal_machines(inp: &Input, lanes: Vec<Machine>, running: BTreeMap<(String, String), usize>) -> Forecast {
-    let lanes: Vec<Machine> = lanes
-        .into_iter()
-        .enumerate()
-        .map(|(k, m)| Machine { equal: k > 0 && !m.helper, lead_steps: true, ..m })
-        .collect();
-    forecast(&Input {
-        now: inp.now,
-        before: inp.before.clone(),
-        regions: inp.regions.clone(),
-        costs: inp.costs.clone(),
-        cadence: inp.cadence,
-        blind: inp.blind.clone(),
-        chains: inp.chains.clone(),
-        after: inp.after.clone(),
-        idle: inp.idle.clone(),
-        machines: lanes,
-        running,
-        macs: inp.macs.clone(),
-        sched: inp.sched.clone(),
-    })
-}
-
-/// A worker the lead's coordinator knows, for `pool_lanes`: its name, whether it's a page, the
-/// memory it spares (MB: 0, not said).
-pub type PoolWorker = (String, bool, u64);
-
 /// A Mac's lanes: the slots it may run now (`slots`: the lead's ramp's, a member's
 /// crate::agent::job_slots), never fewer than its last running slot's number (`running`: the slots
 /// running a job, 0 the first; they may be sparse).
 pub fn slot_lanes(slots: usize, running: &[usize]) -> usize {
     let top = running.iter().map(|k| k + 1).max().unwrap_or(0);
     slots.max(top).max(1)
-}
-
-/// The memory a lane is taken to have when its worker says none (MB), as a helper's.
-pub const LANE_MEM_MB: u64 = 6144;
-
-/// The lanes of the forecast for equal machines (`equal_machines`): the lead's slots (`lead`, then
-/// `others`, its other slots' lanes), each other native worker a lane, the pages one lane (their measured speeds summed,
-/// the largest memory one said), each at its speed in `speeds` (one not in it: the lead's, 1) and
-/// busy with its leases' targets left (`leased`: worker, step, targets, seconds since granted; a
-/// page's, the pages' lane's); and the leased targets as running on their lanes.
-pub fn pool_lanes(
-    lead: Machine,
-    others: Vec<Machine>,
-    workers: &[PoolWorker],
-    speeds: &BTreeMap<String, f64>,
-    leased: &[(String, String, Vec<String>, u64)],
-    cost: &dyn Fn(&str, &str) -> Cost,
-) -> (Vec<Machine>, BTreeMap<(String, String), usize>) {
-    let speed_of = |n: &str| speeds.get(n).copied().map_or((1.0, false), |s| (s, true));
-    let left = |names: &[&str], speed: f64| {
-        leased
-            .iter()
-            .filter(|l| names.contains(&l.0.as_str()))
-            .map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed.max(0.1) - *age as f64)
-            .fold(0.0, f64::max)
-    };
-    let lane = |name: &str, speed: f64, measured: bool, helper: bool, mem_mb: u64, busy_s: f64| Machine {
-        name: name.to_string(),
-        speed,
-        measured,
-        helper,
-        equal: false,
-        mem_mb,
-        busy_s,
-        unit_extra_s: 0.0,
-        ..Default::default()
-    };
-    let own: Vec<String> = std::iter::once(lead.name.clone()).chain(others.iter().map(|m| m.name.clone())).collect();
-    let mut lanes: Vec<Machine> = std::iter::once(lead).chain(others).collect();
-    let (mut speed, mut measured, mut mem, mut pages): (f64, bool, u64, Vec<&str>) = (0.0, true, 0, Vec::new());
-    for (n, web, mem_mb) in workers {
-        if own.contains(n) {
-            continue;
-        }
-        let (sp, m) = speed_of(n);
-        if *web {
-            (speed, measured, mem) = (speed + sp, measured && m, mem.max(*mem_mb));
-            pages.push(n);
-        } else {
-            lanes.push(lane(n, sp, m, false, if *mem_mb > 0 { *mem_mb } else { LANE_MEM_MB }, left(&[n.as_str()], sp)));
-        }
-    }
-    if !pages.is_empty() {
-        lanes.push(lane("pages", speed, measured, true, if mem > 0 { mem } else { LANE_MEM_MB }, left(&pages, speed)));
-    }
-    let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for (worker, step, targets, _) in leased {
-        let name = if pages.contains(&worker.as_str()) { "pages" } else { worker.as_str() };
-        if let Some(m) = lanes.iter().position(|l| l.name == name) {
-            running.extend(targets.iter().map(|t| ((step.clone(), t.clone()), m)));
-        }
-    }
-    (lanes, running)
 }
 
 /// Each member's speed against the lead's, from the history: for each shared step both did,
@@ -1642,69 +1528,25 @@ mod tests {
     }
 
     #[test]
-    fn equal_machines_share_every_step() {
-        // Two regions; the work before them (a step no helper takes); the lead's slot, a member's
-        // slot as fast, and the pages as one lane.
-        let regions =
-            [region("a", &["6/1/1", "6/1/2"], &["u1", "u2"], &["6/1/1"]), region("b", &["6/2/1"], &["u3", "u4"], &[])];
-        let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
-        inp.before = vec![
-            ("reach".into(), "reach".into(), Cost { secs: 900.0, known: true, peak_mb: 0 }),
-            ("heritage-sites".into(), "heritage-sites".into(), Cost { secs: 900.0, known: true, peak_mb: 0 }),
-        ];
-        let lanes =
-            vec![mac("m4", 1.0, false), mac("m1", 1.0, false), Machine { mem_mb: 4096, ..mac("pages", 2.0, true) }];
-        let f = equal_machines(&inp, lanes, BTreeMap::new());
-        assert!(f.why.is_none() && f.done_at.is_some(), "{:?}", f.why);
-        assert!(f.equal.is_none() && forecast(&inp).equal.is_none(), "reports only: no forecast nested");
-        let steps = |lane: &str| f.lanes[lane].iter().map(|l| l.step.clone()).collect::<BTreeSet<_>>();
-        // The member's slot takes what a helper never does: the work before the regions, z6 tiles.
-        // (Both free at once: the lead's slot takes the first, the member's the second, which no
-        // helper would.)
-        assert!(
-            steps("m4").contains("reach") && steps("m1").contains("heritage-sites"),
-            "{:?} {:?}",
-            steps("m4"),
-            steps("m1")
-        );
-        assert!(steps("m1").contains("unit"), "{:?}", steps("m1"));
-        // The pages' only shared steps.
-        assert!(steps("pages").iter().all(|s| SHARED.contains(&s.as_str())), "{:?}", steps("pages"));
-        // Every lane reported, at its speed; the same input the same forecast.
-        assert_eq!(f.speed.keys().cloned().collect::<Vec<_>>(), vec!["m1", "m4", "pages"]);
-        assert_eq!(
-            f,
-            equal_machines(
-                &inp,
-                vec![mac("m4", 1.0, false), mac("m1", 1.0, false), Machine { mem_mb: 4096, ..mac("pages", 2.0, true) }],
-                BTreeMap::new()
-            )
-        );
-        // More lanes finish no later than the lead's slot alone.
-        let alone = equal_machines(&inp, vec![mac("m4", 1.0, false)], BTreeMap::new());
-        assert!(f.done_at.unwrap() <= alone.done_at.unwrap());
-    }
-
-    #[test]
     fn a_record_read_back_gives_the_same_forecast_compressed_or_not() {
-        // (Task #409) its input, a target running, the forecast for equal machines beside it.
+        // (Task #409) its input, a target running.
         let regions =
             [region("a", &["6/1/1", "6/1/2"], &["u1", "u2"], &["6/1/1"]), region("b", &["6/2/1"], &["u3", "u4"], &[])];
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
         inp.running.insert(("unit".into(), "u1".into()), 0);
-        let equal = EqualLanes {
-            lanes: vec![mac("m4", 1.0, false), mac("m1", 1.0, false)],
-            running: [(("unit".to_string(), "u1".to_string()), 0)].into(),
-        };
         let mut lead = forecast(&inp);
         lead.each_s.insert("unit".into(), 300.0);
-        lead.equal = Some(Box::new(equal_machines(&inp, equal.lanes.clone(), equal.running.clone())));
-        let rec = Record { input: inp, each_s: lead.each_s.clone(), waiting: BTreeMap::new(), equal: Some(equal) };
+        let rec = Record { input: inp, each_s: lead.each_s.clone(), waiting: BTreeMap::new() };
         let b = rec.bytes().unwrap();
         assert_eq!(b[0], b'{', "small: plain JSON");
         assert_eq!(Record::from_bytes(&b).unwrap().forecast(), lead);
         let z = zstd::encode_all(&b[..], 3).unwrap();
         assert_eq!(Record::from_bytes(&z).unwrap(), rec);
+        // (An older lead's record, with the equal machines' lanes it no longer writes: read, the
+        // field passed over.)
+        let mut old: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        old["equal"] = serde_json::json!({ "lanes": [], "running": [] });
+        assert_eq!(Record::from_bytes(&serde_json::to_vec(&old).unwrap()).unwrap(), rec);
         // (Task #409 review) a time not finite is written finite: it reads back.
         let mut bad = rec.clone();
         bad.input.machines[1].busy_s = f64::INFINITY;
@@ -1728,31 +1570,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pages_lease_is_the_pages_lanes_running_work_and_its_time_left() {
-        let workers: Vec<PoolWorker> = vec![
-            ("m1".into(), false, 0),
-            ("page a".into(), true, 0),
-            ("page b".into(), true, 0),
-            ("m4".into(), false, 9),
-        ];
-        let speeds: BTreeMap<String, f64> = [("page a".to_string(), 0.5)].into();
-        let leased =
-            vec![("page b".to_string(), "trees".to_string(), vec!["6/1/1".to_string(), "6/1/2".to_string()], 50)];
-        let (lanes, running) = pool_lanes(mac("m4", 1.0, false), Vec::new(), &workers, &speeds, &leased, &cost);
-        assert_eq!(lanes.iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), vec!["m4", "m1", "pages"]);
-        let pages = &lanes[2];
-        // (Speeds summed: one measured, one the lead's; no memory said, a helper's.)
-        assert!(pages.helper && (pages.speed - 1.5).abs() < 1e-9 && !pages.measured && pages.mem_mb == LANE_MEM_MB);
-        assert_eq!(lanes[1].mem_mb, LANE_MEM_MB);
-        // Two trees targets of 100 s at 1.5, less the 50 s since.
-        assert!((pages.busy_s - (200.0 / 1.5 - 50.0)).abs() < 1e-9, "{}", pages.busy_s);
-        assert_eq!(running.get(&("trees".to_string(), "6/1/2".to_string())), Some(&2));
-        // A page saying its memory: the largest said.
-        let workers: Vec<PoolWorker> = vec![("page a".into(), true, 2048), ("page b".into(), true, 4096)];
-        assert_eq!(pool_lanes(mac("m4", 1.0, false), Vec::new(), &workers, &speeds, &[], &cost).0[1].mem_mb, 4096);
-    }
-
-    #[test]
     fn an_equal_lane_takes_only_what_fits_its_memory_and_its_running_targets_are_its_own() {
         let regions = [region("a", &[], &["u1", "u2"], &[])];
         let big = |step: &str, t: &str| Cost { peak_mb: if t == "u2" { 9000 } else { 1000 }, ..cost(step, t) };
@@ -1760,7 +1577,10 @@ mod tests {
         let mut running = BTreeMap::new();
         running.insert(("unit".to_string(), "u1".to_string()), 1);
         let small = Machine { busy_s: 300.0, ..mac("m1", 1.0, false) };
-        let f = equal_machines(&inp, vec![Machine { mem_mb: u64::MAX, ..mac("m4", 1.0, false) }, small], running);
+        // (The member's slot a lane of any work that fits, `equal`.)
+        let small = Machine { equal: true, lead_steps: true, ..small };
+        let machines = vec![Machine { mem_mb: u64::MAX, ..mac("m4", 1.0, false) }, small];
+        let f = forecast(&Input { machines, running, ..inp });
         assert!(f.lanes["m1"].iter().all(|l| l.step != "unit" || l.n == 1), "{:?}", f.lanes["m1"]);
         assert!(
             f.next["m1"].iter().all(|n| n.step != "unit"),
@@ -2673,8 +2493,7 @@ mod tests {
     /// At live scale (task #544: the scheduler's run of 21 Oct's lead took a quarter hour): tens
     /// of thousands of targets across regions and chains, twenty lanes on two Macs, the
     /// scheduler's state with thousands of measures (their NAS rates too), the NAS budget on and
-    /// leases out. The forecast runs whole in bounded time; with the equal machines' view, within
-    /// its budget.
+    /// leases out. The forecast runs whole in bounded time, and within its budget.
     #[test]
     fn a_live_scale_forecast_runs_whole_and_bounded() {
         use crate::coord::sched::{Asked, Leased};
@@ -2815,21 +2634,14 @@ mod tests {
         eprintln!("live scale, {n} targets: {} ms", took.as_millis());
         assert!(!f.partial && f.done_at.is_some(), "{:?}", f.why);
         assert!(took < Duration::from_secs(90), "{took:?}");
-        // The equal machines' view after it, within its budget (cut there: partial, said so).
-        let rec = Record {
-            input: inp,
-            each_s: BTreeMap::new(),
-            waiting: BTreeMap::new(),
-            equal: Some(EqualLanes { lanes: machines, running: BTreeMap::new() }),
-        };
+        // Within its budget: cut there, partial and said so.
         let t = Instant::now();
-        let e = rec.forecast().equal.expect("the equal machines' view");
-        assert!(t.elapsed() < 2 * BUDGET + Duration::from_secs(10), "{:?}", t.elapsed());
-        assert!(e.done_at.is_some() || e.partial, "{:?}", e.why);
+        let f = forecast(&inp);
+        assert!(t.elapsed() < BUDGET + Duration::from_secs(10), "{:?}", t.elapsed());
+        assert!(f.done_at.is_some() || f.partial, "{:?}", f.why);
     }
 
-    /// A recorded forecast (SCENIC_FORECAST_RECORD: a forecast-input.json) timed: the lead's run
-    /// and the equal machines'. For profiling at live scale (unset: nothing).
+    /// A recorded forecast (SCENIC_FORECAST_RECORD: a forecast-input.json) timed. For profiling at live scale (unset: nothing).
     #[test]
     fn recorded_timing() {
         let Ok(p) = std::env::var("SCENIC_FORECAST_RECORD") else { return };
@@ -2840,18 +2652,5 @@ mod tests {
         let t = Instant::now();
         let f = forecast_by(&r.input, Instant::now() + Duration::from_secs(limit));
         eprintln!("lead: {} ms, partial {}, done_at {:?}", t.elapsed().as_millis(), f.partial, f.done_at);
-        if let Some(e) = &r.equal {
-            let lanes: Vec<Machine> = e
-                .lanes
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(k, m)| Machine { equal: k > 0 && !m.helper, lead_steps: true, ..m })
-                .collect();
-            let inp = Input { machines: lanes, running: e.running.clone(), ..r.input.clone() };
-            let t = Instant::now();
-            let f = forecast_by(&inp, Instant::now() + Duration::from_secs(limit));
-            eprintln!("equal: {} ms, partial {}, done_at {:?}", t.elapsed().as_millis(), f.partial, f.done_at);
-        }
     }
 }

@@ -7938,59 +7938,7 @@ impl Agent {
         let each_s = steps::TABLE.iter().map(|r| (r.name.to_string(), (per(r.name) * 10.0).round() / 10.0)).collect();
         // (A slot's job waiting on a worker holding its z6 tile's tail: said beside its machine.)
         let waiting = (0..self.slots.len()).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();
-        // In the pool, the forecast for equal machines beside it (docs/pool.md §12 4.12), reported
-        // alone: each member's slots as lanes (this Mac's first: its publishing; its other slots a
-        // lane each, as above), the pages as one (forecast::pool_lanes), each at
-        // its speed measured against this Mac (placement::measured_speeds; one not measured, this
-        // Mac's), busy with its leases' targets left.
-        let mut equal = None;
-        if let (Some(c), true) = (&self.coord, self.pool.is_some()) {
-            let workers: Vec<forecast::PoolWorker> =
-                c.workers().into_iter().map(|(n, w)| (n, w.kind == "web", w.mem_mb)).collect();
-            let names: Vec<String> = workers.iter().map(|w| w.0.clone()).filter(|n| *n != self.host).collect();
-            let measured = placement::measured_speeds(&events, &self.host, &names);
-            let lead = Machine {
-                name: self.host.clone(),
-                speed: 1.0,
-                measured: true,
-                helper: false,
-                equal: false,
-                mem_mb: u64::MAX,
-                busy_s: busy(0, 1.0),
-                unit_extra_s,
-                ..Default::default()
-            };
-            let slots: Vec<Machine> = (1..own_lanes)
-                .map(|k| {
-                    let name = self.worker_of(k);
-                    let sp = measured.get(&name).or_else(|| measured.get(&others)).copied().unwrap_or(1.0);
-                    Machine {
-                        measured: measured.contains_key(&name),
-                        name,
-                        speed: sp,
-                        helper: false,
-                        equal: false,
-                        mem_mb: mac_mb / own_lanes as u64,
-                        busy_s: if k < self.slots.len() { busy(k, sp) } else { 0.0 },
-                        unit_extra_s: 0.0,
-                        ..Default::default()
-                    }
-                })
-                .collect();
-            let (lanes, mut running) = forecast::pool_lanes(lead, slots, &workers, &measured, &leased, &cost);
-            for k in 0..self.slots.len() {
-                let Some(m) = lanes.iter().position(|m| m.name == self.worker_of(k)) else { continue };
-                let Some(r) = self.slots[k].running.as_ref() else { continue };
-                if let Some(b) = inp.before.iter().find(|b| b.0 == step_of(&r.spec.id)) {
-                    running.insert((b.0.clone(), b.1.clone()), m);
-                }
-                if let Some(w) = r.spec.record.as_ref() {
-                    running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), m)));
-                }
-            }
-            equal = Some(forecast::EqualLanes { lanes, running });
-        }
-        forecast::Record { input: inp, each_s, waiting, equal }
+        forecast::Record { input: inp, each_s, waiting }
     }
 
     /// Runs `record`'s forecast on a thread of its own (task #544: the scheduler's run at live
