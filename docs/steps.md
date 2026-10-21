@@ -12,7 +12,15 @@ What each step does, in detail. The steps as one table (names, chains, the check
 3. **Filter:** one `osmium tags-filter` into (a), the filtered planet, kept until the next pass so a
    new tag needs no download.
 4. **Sets and the basemap's input (b)**, filtered from (a). Sets are versioned (`summits-v2`).
-   `pass-sets` makes a finished pass's missing sets.
+   `pass-sets` makes a finished pass's missing sets (copying (a) here when there's room for it and
+   20 GB).
+
+   A filter whose input isn't copied here reads it off the NAS over SSH, never the SMB mount
+   (`osmpass::streamed`: `ssh brandontsang@fishandchips.local cat …`, one stream for each of
+   osmium's two reads, through a named pipe; the soft mount timed out on the hour-long reads). It
+   needs SSH keys to the NAS (docs/macs.md) and fails saying so. A job under the budgets' sandbox
+   reaches the NAS through its agent's proxy (`CONNECT`, unmetered). The bytes count as NAS reads.
+   The first cut (`osmium extract`) still reads (a) off the mount when the local copy went.
 5. **Outlines:** administrative levels 2–8 and ISO 3166 areas, assembled into polygons in a
    sectioned file, with simplified copies. Made by their own step (`outlines`,
    `osmpass::make_outlines`, keyed by `OUTLINES_V`, the pass, the set and the previous outlines);

@@ -29,6 +29,19 @@ pub const SMB_URL: &str = "smb://brandontsang@fishandchips.local/personal";
 /// The share by the bare name, for a Mac whose Keychain has the password only for that name.
 pub const SMB_URL_BARE: &str = "smb://brandontsang@fishandchips/personal";
 
+/// The NAS by SSH (docs/macs.md: keys from every Mac), by its LAN name, and where the share is on
+/// it (producers/depth/repack.py's NAS_ROOT is its project folder).
+pub const SSH: &str = "brandontsang@fishandchips.local";
+pub const SHARE_ON_NAS: &str = "/volume1/personal";
+
+/// `p`, a file on the share's mount, as the NAS's own path (for reading it over SSH); None when the
+/// share isn't mounted or `p` isn't on it.
+pub fn on_nas(p: &Path) -> Option<String> {
+    let m = find_mount(HOST, SHARE)?;
+    let rel = p.strip_prefix(&m.point).ok()?;
+    Some(format!("{SHARE_ON_NAS}/{}", rel.to_str()?))
+}
+
 /// The URL to mount the share by: the LAN name when the Keychain has a password for it (the
 /// `.local` name itself, or the NAS's Bonjour service), else the bare name. Mounting by a name the
 /// Keychain doesn't know asks for the password in a dialog, which an unattended Mac never answers.

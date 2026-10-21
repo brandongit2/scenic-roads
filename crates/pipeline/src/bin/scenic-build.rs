@@ -697,9 +697,10 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                     )
                 })?;
                 pipeline::timings::count(std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0), 1);
-                local.clone()
+                pipeline::osmpass::Input::Local(local.clone())
             } else {
-                nas
+                // (Streamed over SSH: the SMB mount times out on osmium's long reads.)
+                pipeline::osmpass::Input::Nas(nas)
             };
             let n = pipeline::osmpass::make_missing_sets(&mut out, &date, &src, &scratch)?;
             let p = phase("the copy removed", Class::Disk);
