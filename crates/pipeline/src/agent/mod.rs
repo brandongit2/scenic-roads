@@ -14630,7 +14630,7 @@ mod tests {
         assert!(expect_same(&w("trees-lo", &[("3/3/2", "d")]), &done).is_empty());
         assert!(expect_same(&w("unit", &[("6/28/16", "a")]), &done).is_empty());
         // The times kept here go by the way a step runs now: a z3 tile's tree cover isn't a z6 tile's.
-        assert_eq!([secs_key("trees"), secs_key("trees-lo"), secs_key("unit")], ["trees v2", "trees-lo v1", "unit v2"]);
+        assert_eq!([secs_key("trees"), secs_key("trees-lo"), secs_key("unit")], ["trees v2", "trees-lo v1", "unit v3"]);
     }
 
     #[test]
