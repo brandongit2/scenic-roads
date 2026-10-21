@@ -183,7 +183,8 @@ past `cond::BATTERY_MIN`, not paused, room past its disk target, an app the rule
    (`Agent::hand_for_quit`), and one its members can't reach hands it to one they can (§6.8).
 3. **It lost the NAS while online** (away, reachable over Tailscale, its share gone): it can't write
    its heartbeat, and its coordinator's answers stop saying its term (`Coordinator::set_member(None)`),
-   so members don't count it late: taken over as silent (§6.5).
+   so members don't count it late: taken over as silent (§6.5). The same holds while its share hangs
+   (a pool step held past `STALL_S`).
 4. **It stood down** (§6.6): taken over after `STOOD_DOWN_S` (§6.5).
 
 A lead paused alone keeps the lead (§11), and a lead whose update waits on its own jobs keeps it
@@ -261,9 +262,10 @@ its heartbeat), so another member takes over (§6.5). Every step it also checks 
 - **The pool is stepped whatever the agent is doing** (`crate::agent::pool`'s `Ticker`): the agent's
   loop steps it about every 20 s, and the pool's own thread steps it when that loop has been quiet
   for `QUIET_S` (25 s). Jobs and the coordinator's start/stop stay with the loop. A tick held past
-  `STALL_S` is taken as hung on the share: the lead grants nothing and the status says so.
+  `STALL_S` is taken as hung on the share: the lead grants nothing, its coordinator's answers stop
+  saying its term (`Coordinator::set_member(None)`, until a step runs again) and the status says so.
 - **Late, not gone:** every coordinator answer carries `x-pool-term` and `x-pool-member`, except
-  while its Mac has lost the NAS; a lead whose heartbeat is stale but whose coordinator answered
+  while its Mac has lost the NAS or its pool step is taken as hung; a lead whose heartbeat is stale but whose coordinator answered
   with them within `ANSWERED_S` is shown as late, and isn't taken over by itself.
 - **The lead stays awake** (`caffeinate -i`) while it leads with leases out.
 
