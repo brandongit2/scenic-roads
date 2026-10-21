@@ -237,8 +237,8 @@ mod pairs {
 
 /// The lead's forecast as data (docs/pool.md §10: `state/build/term/<E>/forecast-input.json`,
 /// written each time the lead makes it): its input, and what the lead adds to `forecast`'s answer
-/// (each step's time a target, the slots waiting on a tail, the lanes of the forecast for equal
-/// machines and what each builds now). `Record::forecast` gives the lead's forecast on any Mac.
+/// (each step's time a target, the slots waiting on a tail). `Record::forecast` gives the lead's
+/// forecast on any Mac.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Record<'a> {
     pub input: Input<'a>,
