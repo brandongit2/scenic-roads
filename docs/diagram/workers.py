@@ -1,8 +1,7 @@
-"""Who builds the map (docs/pool.md, phase 1 and phase 3's controls on since 8 Oct 2026; docs/building.md §2; docs/workers.md):
-the Mac the current term names leads (the M4 today): its agent plans, its coordinator lends work out on leases (jobs to
-any member's agent, an area's last steps and other tasks to any worker, a device's page too), and it alone merges the
-journal into the term's records. Every job, the lead's too, hands its results to the journal on the NAS. What the
-pool leaves for later is planned."""
+"""Who builds the map (docs/pool.md, docs/building.md §2, docs/workers.md): the Mac the current term names leads: its agent
+plans, its coordinator grants every job (its own too) and lends tasks to any worker, a device's page too, and it alone merges
+the journal into the term's records. The lead moves by hand, or by itself only on low battery, its heartbeat silent, the NAS
+lost or a stand-down (pool.md §6.4, task #497). What the pool leaves for later is planned (pool.md §12)."""
 from html import escape as E
 
 from diag import W, Diagram, rpath, wrap
@@ -36,26 +35,27 @@ def build(check=False):
     nx, nw = 16, 236
     nas = box(nx, top, nw, 'NAS', ['the terms: who leads, made', 'once each (state/build/terms/);',
                                    'the journal: every job’s', 'results (state/journal/);', 'the term’s records, which',
-                                   'only the lead writes; every', 'built file, by content name;', 'a catalog at most a minute; cache/'],
+                                   'only the lead writes; every', 'built file, by content name;', 'a catalog at most a minute;', 'GC when the NAS is quiet'],
               cls='nas')
 
     # The lead: its agent and, inside it, the coordinator.
     bx, bw = 320, 760
     ix, iw, gap = bx + 16, 330, 68
     cx = ix + iw + gap
-    agent_lines = ['plans every step from the job keys, a region at a', 'time: those the map lacks first, the fewest areas',
-                   'left first; runs two jobs at once, which hand off', 'like anyone’s; merges the journal into the',
-                   'term’s records; publishes each unit’s map tiles', 'as it’s built, a catalog at most each minute']
-    coord_lines = ['port 8090, for this Mac, its LAN and the tailnet;', 'lends work out on leases of ten minutes,',
-                   'renewed by a beat each minute: a lapsed', 'lease’s work is offered again; its state is the',
-                   'term’s, on the NAS; checks a worker’s first', 'three tasks, then one in eight; waits on a',
-                   'worker’s task only if it’s measured faster']
+    agent_lines = ['plans every step from the job keys, a region at a', 'time: those the map lacks first, the fewest tiles',
+                   'left first; runs its own steps (the pass, worldwide', 'steps, catalogs, GC) and any shared step, packed',
+                   'by measured memory, disk and cores; merges the', 'journal into the term’s records; publishes each',
+                   'unit’s map tiles as it’s built, a catalog at most', 'each minute']
+    coord_lines = ['port 8090, for this Mac, its LAN and the tailnet;', 'grants every job, the lead’s own too, on leases',
+                   'of ten minutes renewed each minute: a lapsed', 'lease’s work is offered again; holds jobs to the',
+                   'NAS budget; its state is the term’s, on the NAS;', 'checks a worker’s first three tasks, then one in',
+                   'eight; waits on a task only for a faster worker']
     iy = top + 42
     agent = box(ix, iy, iw, 'Its agent', agent_lines)
     coord = box(cx, iy, iw, 'Its coordinator', coord_lines)
     bh = max(agent[3], coord[3]) + 56
     fr.append(f'<rect class="st-box group" x="{bx}" y="{top}" width="{bw}" height="{bh:.1f}" rx="9"/>')
-    fr.append(tx('st-t', bx + 14, top + 25, 'The lead (the M4 today, 48 GB) · any Mac can lead', bw - 28))
+    fr.append(tx('st-t', bx + 14, top + 25, 'The lead (the M4 today, 48 GB) · any member can lead', bw - 28))
 
     # The workers: a device's page (tasks), the M1 (jobs, and tasks when no job fits it).
     wx, ww = 1148, W - 16 - 1148
@@ -63,11 +63,11 @@ def build(check=False):
                                                             'tailnet sees the build; a tab helps, no key:',
                                                             'an area’s last steps, tree cover’s rows of',
                                                             'blocks, 3D buildings’ z8 areas (WebAssembly)'])
-    m1 = box(wx, page[1] + page[3] + 22, ww, 'The M1 (16 GB) · a member', ['takes the jobs that fit the 6 GB it spares',
-                                                                         '(10 for a short one while you’re away):',
-                                                                         'terrain, slope, tree cover’s pieces, areas,',
-                                                                         'candidates, peaks, 3D buildings’ steps; when',
-                                                                         'none fits, tasks; it leads when handed it'])
+    m1 = box(wx, page[1] + page[3] + 22, ww, 'The M1 (16 GB) · a member', ['takes the ⇄ jobs that fit the memory its owner',
+                                                                         'gives the build (scenic memory) and its disk:',
+                                                                         'terrain, slope, trees, depth, roads, map tiles,',
+                                                                         'candidates, peaks, 3D buildings; when none',
+                                                                         'fits, tasks; it leads when handed the lead'])
 
     # Arrows: the NAS and the agent; the agent and its coordinator; the coordinator and the workers.
     ay = iy + 34
@@ -91,23 +91,22 @@ def build(check=False):
 
     # The pool's controls, built; what it leaves for later, planned.
     py0 = ub + 26
-    ctl = box(nx, py0, (W - 32 - 16) / 2, 'The lead moves: the pool (docs/pool.md), on since 8 October',
-              ['Handed over from any Mac’s menu bar (Hand the Build To…), the build page, the map’s build', 'panel or scenic lead; taken over (Take Over the Build…) when the lead is gone; a lead that', 'stood down is taken over by itself after two minutes. One lead a term; nothing is lost.'])
+    ctl = box(nx, py0, (W - 32 - 16) / 2, 'Who leads is your call (docs/pool.md §6)',
+              ['Handed over by hand: the menu bar (Hand the Build To…), the build page or scenic lead;', 'taken over when the lead is gone. By itself only when the lead’s battery is below 30 %,', 'its heartbeat goes silent, it loses the NAS while online, or it stood down. No score.'])
     px = nx + ctl[2] + 16
     box(px, py0, W - 16 - px, 'Planned',
-        ['The lead’s own jobs in their own processes (pool phase 2); any member serving the build page', 'and brokering its own jobs’ tasks, the pool’s API for its mailboxes (phase 4); the journal’s GC;', 'every job’s detailed timing log, at equal detail (#130, under way).'], cls='later')
+        ['The journal’s GC (#455); the HTTP pool API for the mailboxes; resuming beyond the OSM pass;', 'readers reading the term’s snapshot. Behind switches: job slots changing part in place, each', 'member brokering its own jobs’ tasks, resume, placement.'], cls='later')
     h = py0 + ctl[3] + 14
 
     aria = ('Who builds the map. The NAS holds the terms, which say who leads, the journal every job writes its results to, the '
-            'term’s records, which only the lead writes, every built file by content name, a catalog at most each minute, and what areas keep '
-            'for their next run. The lead, the M4 today, plans every step a region at a time, runs two jobs at once, merges the '
-            'journal into the records and publishes each unit’s map tiles as it’s built, a catalog at most each minute once caught up. Its coordinator, on port 8090, lends work '
-            'out on ten-minute leases renewed each minute: jobs to the M1, a member that takes terrain, slope, tree cover’s pieces, '
-            'areas, candidates, peaks and the 3D buildings’ steps, and tasks (an area’s last steps, tree cover’s rows of blocks, the '
-            '3D buildings’ z8 areas) to any worker, a device’s build page too, with no key; a worker’s first three tasks, then one '
-            'in eight, are checked. The lead is handed over from any Mac’s menu bar, the build page, the map or scenic lead, and '
-            'taken over when it’s gone. Planned: the lead’s own jobs in their own processes, any member serving the build page, '
-            'the journal’s GC, and every job’s detailed timing log.')
+            'term’s records, which only the lead writes, every built file by content name and a catalog at most each minute; GC runs '
+            'only when the NAS is quiet. The lead plans every step a region at a time, runs its own steps and any shared one, packed by '
+            'measured memory, disk and cores, merges the journal into the records and publishes each unit’s map tiles as it’s built. '
+            'Its coordinator, on port 8090, grants every job on ten-minute leases renewed each minute: jobs to the M1, a member that '
+            'takes the shared steps that fit the memory its owner gives the build, and tasks to any worker, a device’s build page too, '
+            'with no key; a worker’s first three tasks, then one in eight, are checked. Who leads is the owner’s call: the lead is '
+            'handed over by hand, and moves by itself only on low battery, a silent heartbeat, the NAS lost or a stand-down. Planned: '
+            'the journal’s GC, the HTTP pool API, resuming beyond the OSM pass.')
     marker = ('<marker id="wm-a" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">'
               '<path class="st-mk" d="M0,0.8 L10,5 L0,9.2 z"/></marker>')
     return (f'<svg viewBox="0 0 {W} {h:.0f}" role="img" aria-label="{E(aria)}" xmlns="http://www.w3.org/2000/svg">'

@@ -8,11 +8,11 @@ W = 1484
 COLS = {'src': (16, 180), 'd1': (224, 196), 'd2': (448, 196), 'd3': (672, 196), 'd4': (896, 196),
         'srv': (1114, 154), 'brw': (1288, 180)}
 CLASSES = ['base', 'place', 'terr', 'net', 'scen', 'land', 'bldg', 'osm', 'mix']
-TAB = {'area': 'PER AREA', 'pack': 'PER Z3 PACK', 'global': 'WORLDWIDE', 'task': 'TASK'}
+TAB = {'area': 'PER Z6 TILE', 'pack': 'PER Z3 AREA', 'global': 'WORLDWIDE', 'task': 'TASK'}
 # Before a step's language: members may take its jobs (agent::steps::SHARED).
 SHARED = '⇄'
-# How reproducible a curated input is today: its method written down, partly, not at all, or its maker gone.
-REPRO = {'doc': 'method written down', 'part': 'partly written down', 'none': 'undocumented', 'gone': 'maker gone, frozen'}
+# How reproducible a curated input is today: its method written down, or partly.
+REPRO = {'doc': 'method written down', 'part': 'partly written down'}
 
 # Each text class's font (as CSS draws it): (face, size, letter-spacing in em); wrap() measures with them.
 FONT = {'tt': ('b', 14), 'lt': ('b', 13.5), 'tool': ('b', 10.5, .04), 'sub': ('s', 12.5), 'file': ('m', 12), 'fmt': ('m', 11),
@@ -56,17 +56,11 @@ def wrap(cls, s, maxw, first=None):
 
 
 def repro_mark(x, cy, level, r=4.2):
-    """The reproducibility marker: a full, half or empty disc, or a crossed one (maker gone)."""
+    """The reproducibility marker: a full or a half disc."""
     if level == 'doc':
         return f'<circle class="rp full" cx="{x:.1f}" cy="{cy:.1f}" r="{r}"/>'
-    if level == 'part':
-        return (f'<circle class="rp" cx="{x:.1f}" cy="{cy:.1f}" r="{r}"/>'
-                f'<path class="rp-half" d="M{x:.1f},{cy - r:.1f} A{r},{r} 0 0 0 {x:.1f},{cy + r:.1f} Z"/>')
-    if level == 'gone':
-        q = r * 0.62
-        return (f'<circle class="rp" cx="{x:.1f}" cy="{cy:.1f}" r="{r}"/>'
-                f'<path class="rp-x" d="M{x - q:.1f},{cy - q:.1f} L{x + q:.1f},{cy + q:.1f} M{x + q:.1f},{cy - q:.1f} L{x - q:.1f},{cy + q:.1f}"/>')
-    return f'<circle class="rp" cx="{x:.1f}" cy="{cy:.1f}" r="{r}"/>'
+    return (f'<circle class="rp" cx="{x:.1f}" cy="{cy:.1f}" r="{r}"/>'
+            f'<path class="rp-half" d="M{x:.1f},{cy - r:.1f} A{r},{r} 0 0 0 {x:.1f},{cy + r:.1f} Z"/>')
 
 
 class Bx:
@@ -107,12 +101,12 @@ class Diagram:
         m = f' data-max="{maxw:.0f}"' if self.check and maxw else ''
         return f'<text class="{cls}" x="{x:.1f}" y="{y:.1f}"{a}{m}>{E(s)}</text>'
 
-    def card(self, k, col, y, title, tool, subs, groups, kept=None, minh=0, scope=None, later=False, shared=False, task=False):
+    def card(self, k, col, y, title, tool, subs, groups, kept=None, minh=0, scope=None, shared=False, task=False, fig=None):
         """A build step (tinted header: name, language, what it does) over the files it writes
-        (body: names, then format and size); scope: a tab saying how it's divided; later: planned,
-        not built yet (a dashed outline); shared: the M1's helper may take its jobs (⇄ before the
+        (body: names, then format and size); scope: a tab saying how it's divided; shared: any member of the pool may take its jobs (⇄ before the
         language); task: a second tab, the step is part of an area's last steps, which any worker
-        may run as a task (a device's page too). Texts wrap to the card's width."""
+        may run as a task (a device's page too); fig: its time and memory, from docs/phase-times.md or
+        the steps table (`agent::steps`), said as measured or a first guess. Texts wrap to the card's width."""
         x, w = COLS[col]
         tx = self.tx
         if shared:
@@ -131,6 +125,9 @@ class Diagram:
             for ln in (wrap('fmt', fmt, w - 18) if fmt else []):
                 yy += LH_FMT
                 body.append(tx('fmt', x + 9, yy, ln, w - 18))
+        for ln in (wrap('fmt', fig, w - 18) if fig else []):
+            yy += LH_FMT
+            body.append(tx('fmt fig', x + 9, yy, ln, w - 18))
         yy += 9
         if kept:
             body.append(f'<rect class="kept" x="{x + 6}" y="{yy:.1f}" width="{w - 12}" height="20" rx="3"/>')
@@ -150,7 +147,7 @@ class Diagram:
         el += [f'<rect class="card" x="{x}" y="{y}" width="{w}" height="{h:.1f}" rx="{r}"/>',
                f'<path class="card-hd" d="M{x},{y + hh:.1f} V{y + r} Q{x},{y} {x + r},{y} H{x + w - r} Q{x + w},{y} {x + w},{y + r} V{y + hh:.1f} Z"/>',
                f'<line class="card-sep" x1="{x}" y1="{y + hh:.1f}" x2="{x + w}" y2="{y + hh:.1f}"/>',
-               f'<rect class="card-ol{" later" if later else ""}" x="{x}" y="{y}" width="{w}" height="{h:.1f}" rx="{r}"/>',
+               f'<rect class="card-ol" x="{x}" y="{y}" width="{w}" height="{h:.1f}" rx="{r}"/>',
                tx('tool', x + w - 9, ty - 0.5, tool, anchor='end')]
         for i, ln in enumerate(tl):
             el.append(tx('tt', x + 9, ty + 17 * i, ln, w - 26 - width('tool', tool) if i == 0 else w - 18))
@@ -182,7 +179,7 @@ class Diagram:
         self.boxes.append(f'<g class="c-{k}"><rect class="src" x="{x}" y="{y}" width="{w}" height="{h:.1f}" rx="11"/>' + ''.join(el) + '</g>')
         return Bx(x, y, w, h)
 
-    def cur(self, k, y, title, subs, who, repro, col='src', minh=0, later=False, w=None):
+    def cur(self, k, y, title, subs, who, repro, col='src', minh=0, w=None):
         """A curated input: made by hand (by the owner, a Claude agent, a hand download or a hand-run step), not by a
         job. A sheet with a folded corner; who: who or what makes it (in the class's colour); repro: how reproducible
         it is today (REPRO's keys, or (key, words)), its marker and words at the foot."""
@@ -210,18 +207,18 @@ class Diagram:
         d = (f'M{x + 3},{y} H{x + w - f} L{x + w},{y + f} V{y + h - 3:.1f} Q{x + w},{y + h:.1f} {x + w - 3},{y + h:.1f} '
              f'H{x + 3} Q{x},{y + h:.1f} {x},{y + h - 3:.1f} V{y + 3} Q{x},{y} {x + 3},{y} Z')
         fold = f'M{x + w - f},{y} V{y + f} H{x + w}'
-        self.boxes.append(f'<g class="c-{k}"><path class="cur{" later" if later else ""}" d="{d}"/><path class="cur-fold" d="{fold}"/>'
+        self.boxes.append(f'<g class="c-{k}"><path class="cur" d="{d}"/><path class="cur-fold" d="{fold}"/>'
                           + ''.join(el) + '</g>')
         return Bx(x, y, w, h)
 
-    def pill(self, k, cy, lines, note=None, later=False):
-        """Server routes, centred on cy; note: a line on how they're served; later: planned."""
+    def pill(self, k, cy, lines, note=None):
+        """Server routes, centred on cy; note: a line on how they're served."""
         x, w = COLS['srv']
         rl = [ln for s in lines for ln in wrap('route', s, w - 18)]
         nl = wrap('pnote', note, w - 18) if note else []
         h = 10 + LH_FMT * len(rl) + LH_NOTE * len(nl)
         y = cy - h / 2
-        el = [f'<rect class="pill{" later" if later else ""}" x="{x}" y="{y:.1f}" width="{w}" height="{h:.1f}" rx="8"/>']
+        el = [f'<rect class="pill" x="{x}" y="{y:.1f}" width="{w}" height="{h:.1f}" rx="8"/>']
         for i, s in enumerate(rl):
             el.append(self.tx('route', x + 9, y + 3.5 + LH_FMT * (i + 1), s, w - 18))
         for i, s in enumerate(nl):
@@ -229,7 +226,7 @@ class Diagram:
         self.boxes.append(f'<g class="c-{k}">' + ''.join(el) + '</g>')
         return Bx(x, y, w, h)
 
-    def layer(self, k, y, title, subs, computed=False, cy=None, later=False):
+    def layer(self, k, y, title, subs, computed=False, cy=None):
         """A map layer in the browser (dotted: computed there; dashed: planned); cy: centred there."""
         x, w = COLS['brw']
         tl = wrap('lt', title, w - 20)
@@ -238,7 +235,7 @@ class Diagram:
         if cy is not None:
             y = cy - h / 2
         ty = y + 19
-        cls = 'layer' + (' computed' if computed else '') + (' later' if later else '')
+        cls = 'layer' + (' computed' if computed else '')
         el = [f'<rect class="{cls}" x="{x}" y="{y:.1f}" width="{w}" height="{h:.1f}" rx="6"/>']
         el += [self.tx('lt', x + 10, ty + 16.5 * i, s, w - 20) for i, s in enumerate(tl)]
         ty += 16.5 * (len(tl) - 1)
@@ -335,7 +332,6 @@ svg .card{fill:var(--surface)}
 svg .card-hd{fill:color-mix(in srgb,var(--k) 17%,var(--surface))}
 svg .card-sep{stroke:color-mix(in srgb,var(--k) 45%,var(--surface));stroke-width:1}
 svg .card-ol{fill:none;stroke:var(--k);stroke-width:1.2}
-svg .card-ol.later{stroke-dasharray:5 3.5}
 svg .tab{fill:color-mix(in srgb,var(--k) 17%,var(--surface));stroke:var(--k);stroke-width:1}
 svg .tab-t{font:600 9px var(--sans);letter-spacing:.08em;fill:var(--muted)}
 svg .tab.pack{fill:color-mix(in srgb,var(--k) 55%,var(--surface))}
@@ -349,13 +345,13 @@ svg .kept{fill:none;stroke:var(--k);stroke-width:1;stroke-dasharray:3.5 2.5}
 svg .pill{fill:var(--surface);stroke:var(--k);stroke-width:1}
 svg .layer{fill:color-mix(in srgb,var(--k) 9%,var(--surface));stroke:var(--k);stroke-width:1.2}
 svg .layer.computed{stroke-dasharray:1.2 3;stroke-linecap:round;stroke-width:1.6}
-svg .pill.later,svg .layer.later{stroke-dasharray:5 3.5}
 svg .tt{font:600 14px var(--sans);fill:var(--fg)}
 svg .lt{font:600 13.5px var(--sans);fill:var(--fg)}
 svg .tool{font:600 10.5px var(--sans);letter-spacing:.04em;fill:var(--k)}
 svg .sub{font:400 12.5px var(--sans);fill:var(--muted)}
 svg .file{font:500 12px var(--mono);fill:var(--fg)}
 svg .fmt,svg .keep,svg .route{font:400 11px var(--mono);fill:var(--muted)}
+svg .fig{fill:var(--faint)}
 svg .route{fill:var(--fg)}
 svg .pnote{font:400 11.5px var(--sans);fill:var(--muted)}
 svg .a{fill:none;stroke:var(--k);stroke-width:1.4;stroke-linejoin:round}
@@ -364,13 +360,11 @@ svg .halo{fill:none;stroke:var(--bg);stroke-width:7}
 svg .mk{fill:var(--k)}
 svg .lbl{font:600 12px var(--sans);fill:var(--k);paint-order:stroke;stroke:var(--bg);stroke-width:4px;stroke-linejoin:round}
 svg .cur{fill:color-mix(in srgb,var(--k) 4%,var(--surface));stroke:var(--k);stroke-width:1.2;stroke-linejoin:round}
-svg .cur.later{stroke-dasharray:5 3.5}
 svg .cur-fold{fill:color-mix(in srgb,var(--k) 30%,var(--surface));stroke:var(--k);stroke-width:1;stroke-linejoin:round}
 svg .who{font:600 12px var(--sans);fill:var(--k)}
 svg .rpt{font:400 11px var(--mono);fill:var(--muted)}
 svg .rp{fill:var(--surface);stroke:var(--fg);stroke-width:1.1}
 svg .rp.full,svg .rp-half{fill:var(--fg)}
-svg .rp-x{stroke:var(--fg);stroke-width:1.1;stroke-linecap:round}
 svg .st-box{fill:var(--surface);stroke:var(--edge);stroke-width:1.2}
 svg .st-box.nas{stroke:var(--fg);stroke-width:1.5}
 svg .st-box.later{stroke-dasharray:5 3.5}

@@ -13,27 +13,27 @@ GROUPS = [
         ('part', None, 'base', 'Place-name translations (today’s)',
          'English everywhere: labels, basemap names, roads, rail, popups (the servers, names::table)',
          'the earlier translation work (its own repository): word rules, romanisation, Claude agents (lines tagged agent:sonnet); converted once (log in translations/how/conversion-log.txt)',
-         'NAS translations/0-converted/ (2.78 M lines); the area tables it came from in translations/<area>/',
+         'NAS inputs/translations/0-converted/; the area tables it came from beside it',
          'its how/: the conversion’s log, the first Haiku brief and launch prompt; the later session’s rules and brief only in the other repository',
          'that repository’s rules and brief, or translating again from the to-do lists'),
         ('doc', None, 'base', 'New translations',
          'as above, within a minute or two of a drop',
-         'Claude agents on request (Haiku, per docs/names.md), from the names-todo job’s lists; a pilot, then checks',
-         'NAS translations/ (any folder but todo/)',
+         'Claude agents on request (Haiku), from the names-todo job’s lists; a pilot, then checks; the input check',
+         'NAS inputs/translations/ (any folder but todo/ and how/)',
          'tools/names/translations-todo.md (the brief, as translations/todo/README.md) and check.py; the model, batch sizes and pilot in its how/',
-         'agents on translations/todo/*.jsonl with the brief, then check.py'),
+         'agents on inputs/translations/todo/*.jsonl with the brief, then check.py'),
         ('part', None, 'base', 'Descriptions written so far',
          'popups of landmarks, heritage sites and areas',
          'Sonnet agents in four rounds (a pilot, fixes, a second voice, researched), on targets chosen by fame',
-         'NAS descriptions/heritage/',
+         'NAS inputs/descriptions/heritage/',
          'each line credits its sources (title, URL); the briefs (WRITERS, FIXERS, RESEARCH) in its how/briefs-2026-09/; not the targets’ rule or the checks',
          'the new brief on the to-do list; the same set again: the old briefs, and the Wikipedia extracts in the heritage chain’s answers (desc/)'),
         ('doc', None, 'base', 'New descriptions',
          'as above',
-         'Claude agents on request (Sonnet, per docs/names.md), from descriptions/todo/',
-         'NAS descriptions/',
+         'Claude agents on request (Sonnet), from inputs/descriptions/todo/; the input check',
+         'NAS inputs/descriptions/',
          'tools/names/descriptions-todo.md (the brief: 55 words, sources credited); the model in its how/',
-         'agents on descriptions/todo/*.jsonl with the brief'),
+         'agents on inputs/descriptions/todo/*.jsonl with the brief'),
         ('part', None, 'net', 'Ferry timetables looked up',
          'the ferries job: sailings a day where no feed has them',
          'Claude research agents, with a written prompt (the model not recorded); static GTFS since #141; the input check',
@@ -41,7 +41,7 @@ GROUPS = [
          'docs/inputs.md §6.7.2; each route’s page and the month it was checked; the prompt, batches and not-found lists in its how/; not the model; routes pinned to OSM ids that may drift',
          'agents with that prompt over the lines with no feed'),
         ('doc', None, 'net', 'Ferry operators’ GTFS feeds',
-         'the ferries job: sailings a day (40 operators), counted by dem/ferrygtfs.py',
+         'the ferries job: sailings a day, counted by dem/ferrygtfs.py',
          'a feed list an agent picked (2026-09-28), now declarations; the input check',
          'NAS inputs/timetables/feeds/*.toml (modes = ["ferry"])',
          'docs/inputs.md §6.7.1; how they were found in its how/; each declaration’s URL, licence and credit',
@@ -54,16 +54,16 @@ GROUPS = [
          'the research again, then mtr.py (it needs a Hong Kong stations extract) and drop the zip'),
     ]),
     ('Chosen, researched or downloaded by hand', [
-        ('doc', None, 'osm', 'Region recipes',
-         'the coverage: what every step builds',
-         'you, as files in the drop box: OSM boundaries and shapes each',
-         'NAS inputs/regions/ (88; backed up daily)',
-         'docs/regions.md; its how/',
+        ('doc', None, 'osm', 'Regions',
+         'the coverage (the enabled regions’ union): what every step builds; disabled ones are checked, never built',
+         'you, as files in the drop box: OSM relations and ways, shapes, sea zones; rules.toml (cover = "earth")',
+         'NAS inputs/regions/ (backed up daily)',
+         'docs/regions.md, docs/inputs.md §6.1; its how/',
          'nothing: they are the definition'),
         ('part', None, 'place', 'Heritage registers',
          'heritage sites and chain: heritage landmarks, the area overlays, the areas’ flags',
          'producers/heritage/registers.py from the registers’ downloads (Canada’s federal list located by federal.py, the CRHP read by crhp.py, each country’s and province’s open data), a GeoJSON file and a description per register',
-         'NAS inputs/heritage/ (40 registers, through the input check), the owner’s matches in inputs/heritage-matches/',
+         'NAS inputs/heritage/ (through the input check), the owner’s matches in inputs/heritage-matches/',
          'inputs.md §6.5: each register’s credit, licence, source, download date and territory in its description; its how/ (the commands, the downloads’ cache); no download URL per file of a register',
          'the producers on the downloads (their data folder), dropped into the drop box'),
         ('part', None, 'base', 'The basemap’s pinned versions',
@@ -72,6 +72,18 @@ GROUPS = [
          'NAS sources/basemap/',
          'docs/steps.md (the pins; a new jar waits for the shoreline check); no URL or date for the data',
          'the same versions fetched again, or new ones checked by tools/coastcheck'),
+        ('part', None, 'terr', 'Depth grids',
+         'the water depth (depth-lo, depth): 15 sources staged, GEBCO to surveyed lakes and estimates',
+         'producers/depth/, run by hand on the M4 (GEBCO and NCEI from the owner’s downloads), packed per z6 tile and copied by tar over SSH',
+         'NAS sources/fetched/<id>/ (packs); declarations and indexes in inputs/sources/',
+         'docs/inputs.md §6.10 (each source, its producer and datum); docs/steps.md §3, the rollout',
+         'the producers again (the downloads the owner made by hand among their inputs)'),
+        ('part', None, 'base', 'Canada’s lake fill (CanVec)',
+         'the lake fill, and from it the water and the terrain’s lakes',
+         'downloaded by hand (the FTP’s robots.txt disallows /pub): the provinces’ 1:50,000 Hydro zips; declared',
+         'NAS sources/canvec/50k/, copied to sources/fetched/canvec-lakes/; inputs/sources/canvec-lakes.toml',
+         'docs/steps.md §4; docs/inputs.md §6.9',
+         'the zips downloaded again by hand'),
         ('part', None, 'terr', 'Which DEM where',
          'roads’ elevations (elev): HRDEM, 3DEP, MRDEM in North America, GSI in Japan, FABDEM elsewhere',
          'declared in inputs/elevation/ (one .toml per dataset; the order by rank and resolution read from the data), checked by the input check',
@@ -91,7 +103,7 @@ GROUPS = [
          'docs/inputs.md §6.7.1, each declaration with its URL, licence and credit; its how/',
          'rail-feeds reads the accepted version'),
         ('doc', None, 'net', 'The rail feeds’ catalogue',
-         'rail-feeds: which feeds there are (1,545 checked)',
+         'rail-feeds: which feeds there are',
          'the Mobility Database’s list, downloaded once and put on the NAS by hand',
          'NAS sources/rail/',
          'docs/steps.md (the put); fetching it again every ~6 months is planned',
@@ -102,14 +114,6 @@ GROUPS = [
          'NAS inputs/keys.env',
          'which keys: docs/steps.md; not how each was got',
          'the accounts again'),
-    ]),
-    ('Being deleted', [
-        ('gone', None, 'mix', 'The old build’s converted files',
-         'nothing: no catalog lists them (catalogs list only the global/ files a step makes)',
-         'the old pipeline (deleted)',
-         'NAS global/legacy/ (38 files)',
-         'being deleted with the old pipeline',
-         'nothing: going'),
     ]),
 ]
 
@@ -127,7 +131,6 @@ CSS = """
 .cur-row>span>i{display:none;font-style:normal;color:var(--faint);font:600 10.5px/1 var(--sans);letter-spacing:.06em;text-transform:uppercase;margin-right:6px}
 .cur-row svg .rp{fill:var(--surface);stroke:var(--fg);stroke-width:1.1}
 .cur-row svg .rp.full,.cur-row svg .rp-half{fill:var(--fg)}
-.cur-row svg .rp-x{stroke:var(--fg);stroke-width:1.1;stroke-linecap:round}
 .cur-row b .k{width:3px;align-self:stretch;border-radius:2px;background:var(--k);flex:none}
 @media (max-width:900px){.cur-head{display:none}.cur-row{grid-template-columns:1fr;gap:3px}.cur-row>span>i{display:inline}}
 """
@@ -147,8 +150,7 @@ def html():
                         + ''.join(f'<span><i>{E(h)}</i>{E(c)}</span>' for h, c in zip(HEAD[1:], cells)) + '</div>')
     n = sum(len(i) for _, i in GROUPS)
     counts = {lvl: sum(1 for _, i in GROUPS for r in i if r[0] == lvl) for lvl in diag.REPRO}
-    summary = (f'{n} kinds: {counts["doc"]} with their method written down, {counts["part"]} partly, {counts["none"]} undocumented, '
-               f'{counts["gone"]} frozen with their maker gone.')
+    summary = f'{n} kinds: {counts["doc"]} with their method written down, {counts["part"]} partly.'
     return ('<section class="cur-list" aria-label="Curated inputs"><h3>Curated inputs · made by hand</h3>'
             '<p>Everything a person or an AI agent made by hand rather than a job: what it feeds, who makes it, where it lives, '
             'where its method is written down and what making it again would take today. ' + E(summary) +
