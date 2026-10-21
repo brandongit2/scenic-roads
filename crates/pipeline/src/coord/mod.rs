@@ -996,19 +996,30 @@ impl Shared {
         let want = if old.is_some() { 1 } else { a.want.max(1) };
         // (A cold job of the lead's own that can't go beside its jobs (`own_cold_waits`): nothing
         // more until they end; then it, before any other work, so the work offered doesn't starve
-        // it.)
-        let cold_own: Vec<Offer> = if lead {
+        // it. Once they've ended, if it still can't be granted (its disk, say), the other offers
+        // go: the lead never sits idle for it.)
+        let mut cold_own: Vec<Offer> = if lead {
             offers
                 .iter()
-                .find(|o| self.own_cold_waits(o, a, room.mem_mb, cold_here, now))
+                .find(|o| {
+                    crate::agent::every::grants(&o.step, true, lead)
+                        && self.own_cold_waits(o, a, room.mem_mb, cold_here, now)
+                })
                 .cloned()
                 .into_iter()
                 .collect()
         } else {
             Vec::new()
         };
-        if let Some(o) = cold_own.first().filter(|_| !mine.is_empty()) {
-            return (None, Some(format!("a cold job of {} waits for the lead's jobs to end", o.step)));
+        if let Some(o) = cold_own.first() {
+            if !mine.is_empty() {
+                return (None, Some(format!("a cold job of {} waits for the lead's jobs to end", o.step)));
+            }
+            let fill = self.cache_fill(&o.step, &caches, a);
+            let room_o = Ask { disk_mb: room.disk_mb.map(|d| d.saturating_sub(fill)), ..room.clone() };
+            if self.pick_own(o, &room_o, now).is_empty() {
+                cold_own.clear();
+            }
         }
         let offers = if cold_own.is_empty() { offers } else { &cold_own[..] };
         let mut held = mine.len();
@@ -1162,8 +1173,8 @@ impl Shared {
     /// Whether the NAS budget has room for the lead's own planned job of offer `o`: its weight
     /// within the whole or beside nothing weighing anything, a download under the cap (the lead's
     /// own always held to it, `nas_room`); `alone`: as if the lead held nothing (the members' jobs
-    /// alone counted: what its cold job would meet once its own jobs end, `own_cold_waits`).
-    /// Held back for the budget alone, it's noted waiting (`nas_wait`), and goes beside leased jobs
+    /// alone counted: what its cold job would meet once its own jobs end, `own_cold_waits`), a test
+    /// that changes nothing (no wait noted, no quiet clock started). Not `alone`, held back for the budget alone, it's noted waiting (`nas_wait`), and goes beside leased jobs
     /// none of which weighs the whole once it weighs the whole itself or has waited `OWN_AGE`
     /// (crate::budget::nas::Limits::fits_own_job: members' small jobs never hold it for good).
     fn own_nas_fits(&self, o: &Offer, now: Instant, alone: bool) -> bool {
