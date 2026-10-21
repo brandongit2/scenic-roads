@@ -160,6 +160,9 @@ fn tags_filter(src: &Input, o: &Path, exprs: &[&str], scratch: &Path, what: &str
             let _p = crate::timings::phase(&format!("{phase} (osmium)"), crate::timings::Class::Compute);
             filter(p, true)
         }
+        #[cfg(target_os = "wasi")]
+        Input::Nas(p) => bail!("{}: no streaming off the NAS here", p.display()),
+        #[cfg(not(target_os = "wasi"))]
         Input::Nas(p) => {
             let remote =
                 store::nas::on_nas(p).with_context(|| format!("{} isn't on the NAS's mounted share", p.display()))?;
@@ -175,6 +178,7 @@ fn tags_filter(src: &Input, o: &Path, exprs: &[&str], scratch: &Path, what: &str
 /// `ssh` to the NAS in batch mode (no prompts), through the job's proxy when it has one (a job
 /// under the budgets' sandbox, crate::budget::SANDBOX, connects only to this Mac: the proxy
 /// tunnels the connection, `CONNECT`, unmetered).
+#[cfg(not(target_os = "wasi"))]
 fn ssh() -> Command {
     let mut c = store::spawn::command("ssh");
     c.args(["-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", "-o", "ConnectTimeout=20"]);
@@ -185,6 +189,7 @@ fn ssh() -> Command {
 }
 
 /// The proxy's `host:port` from its URL (`http://127.0.0.1:<port>`).
+#[cfg(not(target_os = "wasi"))]
 fn proxy_addr(url: &str) -> Option<String> {
     let a = url.strip_prefix("http://")?.trim_end_matches('/');
     a.contains(':').then(|| a.to_string())
@@ -197,6 +202,7 @@ fn proxy_addr(url: &str) -> Option<String> {
 /// the path is a link to a named pipe, fed one `cat` each time osmium opens it: once it's opened,
 /// the link is pointed at a fresh pipe for the next open. Returns the bytes read off the NAS. In
 /// `dir`, made afresh.
+#[cfg(not(target_os = "wasi"))]
 pub fn streamed(
     ssh: &(dyn Fn() -> Command + Sync),
     remote: &str,
