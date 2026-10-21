@@ -175,11 +175,13 @@ home=$(mktemp -d); port=18080
 pid=$!
 cleanup+=("kill $pid 2>/dev/null; rm -rf $home")
 ok=1
-for i in {1..60}; do curl -sf -o /dev/null http://127.0.0.1:$port/api/ping && break; sleep 0.5; done
+# Up to 2 min: its catalog is read from the NAS, which a busy NAS answers slowly (21 Oct: 19 s+ under the
+# depth repack; past the old 30 s the smoke test's curl couldn't connect and the publish ended, exit 7).
+for i in {1..240}; do curl -sf -o /dev/null http://127.0.0.1:$port/api/ping && break; kill -0 $pid 2>/dev/null || break; sleep 0.5; done
 for u in /api/ping /api/meta /api/catalog / "/tiles/terrain/5/9/11" "/tiles/roads/10/300/380"; do
   # A busy NAS can answer 503 for a moment (a slow read fails alone): a few tries each.
   for try in 1 2 3 4 5; do
-    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$u")
+    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$u") || true
     [[ $code == 503 ]] || break
     sleep 3
   done
