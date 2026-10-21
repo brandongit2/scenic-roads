@@ -394,6 +394,25 @@ pub fn encode_directory(entries: &[DirEntry]) -> Vec<u8> {
     b
 }
 
+/// The runs `get_many` reads, (offset, length) each, over tiles' places sorted by offset: a place
+/// within `GATHER_GAP` of the run's end joins it unless that would take the run past
+/// `GATHER_MAX` (a place larger than `GATHER_MAX` alone is a run of its own, read whole).
+fn runs_of(places: &[(u64, u32)]) -> Vec<(u64, u64)> {
+    let mut runs: Vec<(u64, u64)> = Vec::new();
+    for &(off, len) in places {
+        let end = off + u64::from(len);
+        if let Some(last) = runs.last_mut() {
+            let last_end = last.0 + last.1;
+            if off <= last_end + GATHER_GAP && end - last.0 <= GATHER_MAX {
+                last.1 = end.max(last_end) - last.0;
+                continue;
+            }
+        }
+        runs.push((off, u64::from(len)));
+    }
+    runs
+}
+
 /// The entry holding `id`: an exact match, else the entry before it when that is a leaf
 /// directory or a run that reaches `id`.
 fn find_entry(entries: &[DirEntry], id: u64) -> Option<DirEntry> {
@@ -538,19 +557,7 @@ impl PmTiles {
         let mut distinct: Vec<(u64, u32)> = places.iter().flatten().copied().collect();
         distinct.sort_unstable();
         distinct.dedup();
-        // The runs: (offset, length) each.
-        let mut runs: Vec<(u64, u64)> = Vec::new();
-        for &(off, len) in &distinct {
-            let end = off + u64::from(len);
-            if let Some(last) = runs.last_mut() {
-                let last_end = last.0 + last.1;
-                if off <= last_end + GATHER_GAP && end - last.0 <= GATHER_MAX {
-                    last.1 = end.max(last_end) - last.0;
-                    continue;
-                }
-            }
-            runs.push((off, u64::from(len)));
-        }
+        let runs = runs_of(&distinct);
         let bufs: Vec<Mutex<Option<Vec<u8>>>> = runs.iter().map(|_| Mutex::new(None)).collect();
         let next = std::sync::atomic::AtomicUsize::new(0);
         let failed: Mutex<Option<anyhow::Error>> = Mutex::new(None);
@@ -928,6 +935,44 @@ mod tests {
             }
             assert_eq!(a.get_many(&[], 4).unwrap(), Vec::<Option<Vec<u8>>>::new());
         }
+    }
+
+    /// `get_many`'s runs: places within the gap join a run, a wider gap or the cap splits them, a
+    /// place larger than the cap is a run of its own; and a failed read fails the ask.
+    #[test]
+    fn runs_join_within_the_gap_and_split_at_the_cap() {
+        let g = GATHER_GAP;
+        let m = GATHER_MAX;
+        assert_eq!(runs_of(&[]), Vec::<(u64, u64)>::new());
+        assert_eq!(runs_of(&[(10, 5), (15, 5), (20 + g, 5)]), vec![(10, 15 + g)], "a gap of exactly the gap joins");
+        assert_eq!(runs_of(&[(10, 5), (16 + g, 5)]), vec![(10, 5), (16 + g, 5)], "one past it splits");
+        assert_eq!(runs_of(&[(0, m as u32 - 1), (m - 1, 2)]), vec![(0, m - 1), (m - 1, 2)], "past the cap: a new run");
+        assert_eq!(runs_of(&[(0, m as u32 - 2), (m - 2, 2)]), vec![(0, m)], "to the cap: one run");
+        assert_eq!(
+            runs_of(&[(0, 2 * m as u32), (2 * m, 1)]),
+            vec![(0, 2 * m), (2 * m, 1)],
+            "a tile past the cap is read whole, alone"
+        );
+        assert_eq!(runs_of(&[(0, 100), (0, 100), (50, 10)]), vec![(0, 100)], "the same place, a place within another");
+
+        struct Failing(Vec<u8>, u64);
+        impl RangeRead for Failing {
+            fn len(&self) -> Result<u64, crate::IoError> {
+                RangeRead::len(&self.0)
+            }
+            fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, crate::IoError> {
+                if off >= self.1 {
+                    return Err(crate::IoError::Io(std::io::Error::other("a failed read")));
+                }
+                self.0.read_at(off, len)
+            }
+        }
+        let (file, tiles) = build(None);
+        let data_at = PmTiles::open(Box::new(file.clone())).unwrap().header().data_offset;
+        let a = PmTiles::open(Box::new(Failing(file, data_at))).unwrap();
+        let ask: Vec<(u8, u32, u32)> = tiles.iter().take(5).map(|t| (t.0, t.1, t.2)).collect();
+        assert!(a.get_many(&ask, 2).is_err(), "a run's failed read fails the ask");
+        assert!(a.get_many(&[(6, 0, 0)], 2).unwrap().iter().all(Option::is_none), "nothing to read: nothing fails");
     }
 
     #[test]

@@ -106,7 +106,13 @@ struct Entry {
 #[derive(Clone, Debug)]
 enum Striles {
     Inline(Vec<u64>),
-    At { off: u64, typ: u16, count: u64 },
+    /// Where it lies; `kept`: the array, once read whole (`Tiff::keep`).
+    At {
+        off: u64,
+        typ: u16,
+        count: u64,
+        kept: std::sync::OnceLock<Vec<u64>>,
+    },
 }
 
 /// One image of the file: the full-resolution one or an overview.
@@ -294,9 +300,12 @@ impl BlockCache {
 const HEADER_WINDOW: usize = 32 << 10;
 /// How many windows a header's read keeps (its clusters; one past that goes).
 const HEADER_WINDOWS: usize = 8;
-/// A tile or strip array read whole at open and kept (bytes each, offsets or counts), so a block's
-/// read is its data alone; a larger one (a huge striped image's) is read entry by entry as before.
-const STRILES_KEPT: u64 = 1 << 20;
+/// The most bytes of tile or strip arrays (offsets and counts) a file keeps: an array within it is
+/// read whole and kept the first time a block of its image is asked for (at open when its bytes
+/// are already in a header window: nothing read), so a block's read is its data alone; past the
+/// budget (a huge striped image's) an array is read entry by entry as before. 2,000 grids open at
+/// once (depth::grids) hold at most 2,000 times this; the depth sources' arrays are 1–8 KB a file.
+pub const STRILES_KEPT: u64 = 256 << 10;
 
 /// A reader's small reads taken from windows of `HEADER_WINDOW` bytes, each fetched once at the
 /// first read in it (task #492: over SMB each read is a round trip, 50–120 ms under load, and a
@@ -312,6 +321,15 @@ impl Windowed {
     fn new(src: Arc<dyn RangeRead>) -> Result<Self, store::IoError> {
         let len = src.len()?;
         Ok(Windowed { src, len, windows: Mutex::new(Vec::new()) })
+    }
+
+    /// Whether `off..off + len` lies within a window already fetched (a read of it costs nothing).
+    fn has(&self, off: u64, len: u64) -> bool {
+        self.windows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|(at, b)| off >= *at && off + len <= *at + b.len() as u64)
     }
 }
 
@@ -362,6 +380,8 @@ pub struct Tiff {
     band0: (f64, f64),
     /// This file's id in the cache, and the cache (its own, or one shared).
     cache: Option<(u64, Arc<Mutex<BlockCache>>)>,
+    /// The bytes of tile arrays this file may still keep (`STRILES_KEPT` less those kept).
+    kept_left: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for Tiff {
@@ -399,10 +419,16 @@ impl Tiff {
     /// Opens the TIFF that `src` holds: its directories (each image's, the overviews' among them),
     /// georeferencing and nodata. Tiles are read as they're needed.
     pub fn open(src: Arc<dyn RangeRead>) -> Result<Tiff> {
+        Self::open_keeping(src, STRILES_KEPT)
+    }
+
+    /// `open`, keeping at most `budget` bytes of tile arrays (`STRILES_KEPT`).
+    pub fn open_keeping(src: Arc<dyn RangeRead>, budget: u64) -> Result<Tiff> {
         crate::costin::tiff_opened();
         let plain = src;
         // (The header read through windows: one fetch a cluster of directories, not one a value.)
-        let src: Arc<dyn RangeRead> = Arc::new(Windowed::new(plain.clone())?);
+        let win = Arc::new(Windowed::new(plain.clone())?);
+        let src: Arc<dyn RangeRead> = win.clone();
         let len = src.len()?;
         ensure!(len >= 8, "not a TIFF ({len} bytes)");
         let head = src.read_at(0, len.min(16) as usize)?;
@@ -455,6 +481,7 @@ impl Tiff {
             metadata: Vec::new(),
             band0: (1.0, 0.0),
             cache: None,
+            kept_left: std::sync::atomic::AtomicU64::new(budget),
         };
         let main = t.image(&dirs[0]).context("TIFF image")?;
         t.images.push(main);
@@ -471,27 +498,43 @@ impl Tiff {
             }
         }
         t.geo(&dirs[0])?;
-        // The tile arrays kept (from the windows, mostly: they lie by their directories), so a
-        // block's read is one read, its data's; then the file's reads go to the source as they are.
-        for i in 0..t.images.len() {
-            for which in 0..2 {
-                let s = if which == 0 { &t.images[i].offsets } else { &t.images[i].counts };
-                let Striles::At { off, typ, count } = *s else { continue };
-                let sz = type_size(typ).unwrap_or(1);
-                if count.saturating_mul(sz) > STRILES_KEPT {
-                    continue;
-                }
-                let b = t.src.read_at(off, (count * sz) as usize)?;
-                let v = Striles::Inline(b.chunks_exact(sz as usize).map(|c| t.order.uint(c)).collect());
-                if which == 0 {
-                    t.images[i].offsets = v;
-                } else {
-                    t.images[i].counts = v;
+        // The tile arrays already within a header window kept now (nothing read: they lie by their
+        // directories); the others the first time a block of their image is asked for (`strile`),
+        // so a malformed one fails there, as before. Then the file's reads go to the source as
+        // they are.
+        for img in &t.images {
+            for s in [&img.offsets, &img.counts] {
+                if let Striles::At { off, typ, count, .. } = s {
+                    let n = count.saturating_mul(type_size(*typ).unwrap_or(1));
+                    if win.has(*off, n) {
+                        t.keep(s)?;
+                    }
                 }
             }
         }
         t.src = plain;
         Ok(t)
+    }
+
+    /// Array `s` read whole and kept, within the file's budget (`STRILES_KEPT`; past it, nothing).
+    fn keep(&self, s: &Striles) -> Result<()> {
+        let Striles::At { off, typ, count, kept } = s else { return Ok(()) };
+        if kept.get().is_some() {
+            return Ok(());
+        }
+        let sz = type_size(*typ).unwrap_or(1);
+        let n = count.saturating_mul(sz);
+        let taken = self.kept_left.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |left| left.checked_sub(n),
+        );
+        if taken.is_err() {
+            return Ok(());
+        }
+        let b = self.src.read_at(*off, n as usize)?;
+        let _ = kept.set(b.chunks_exact(sz as usize).map(|c| self.order.uint(c)).collect());
+        Ok(())
     }
 
     /// Keeps up to `bytes` of decoded tiles for reuse (for readers that come back to tiles).
@@ -589,7 +632,7 @@ impl Tiff {
         ensure!(matches!(e.typ, 3 | 4 | 16), "TIFF tag {tag}: type {}", e.typ);
         Ok(match e.at {
             None => Striles::Inline(self.uints(d, tag)?),
-            Some(off) => Striles::At { off, typ: e.typ, count: e.count },
+            Some(off) => Striles::At { off, typ: e.typ, count: e.count, kept: std::sync::OnceLock::new() },
         })
     }
 
@@ -715,8 +758,14 @@ impl Tiff {
     fn strile(&self, s: &Striles, i: u64) -> Result<u64> {
         match s {
             Striles::Inline(v) => v.get(i as usize).copied().context("tile index past the TIFF's list"),
-            Striles::At { off, typ, count } => {
+            Striles::At { off, typ, count, kept } => {
                 ensure!(i < *count, "tile index {i} past the TIFF's {count}");
+                if kept.get().is_none() {
+                    self.keep(s)?;
+                }
+                if let Some(v) = kept.get() {
+                    return Ok(v[i as usize]);
+                }
                 let sz = type_size(*typ).unwrap();
                 Ok(self.order.uint(&self.src.read_at(off + i * sz, sz as usize)?))
             }
@@ -1755,12 +1804,37 @@ mod tests {
             let src = counted(b);
             let t = Tiff::open(src.clone()).unwrap();
             assert_eq!(reads(&src), 1, "big {big}: a file within one window opens in one read");
-            assert!(t
-                .images
-                .iter()
-                .all(|i| matches!((&i.offsets, &i.counts), (Striles::Inline(_), Striles::Inline(_)))));
+            let kept = |s: &Striles| match s {
+                Striles::Inline(_) => true,
+                Striles::At { kept, .. } => kept.get().is_some(),
+            };
+            assert!(t.images.iter().all(|i| kept(&i.offsets) && kept(&i.counts)), "its arrays kept from the window");
             assert_eq!(t.read_window(2, 0, 0, 10, 8).unwrap(), vals[2]);
             assert_eq!(reads(&src), 2, "big {big}: the block's data alone");
+            // No budget for the arrays: read entry by entry as before (two reads, then the data).
+            let src = counted(src.inner.clone());
+            let t = Tiff::open_keeping(src.clone(), 0).unwrap();
+            assert_eq!(reads(&src), 1);
+            assert_eq!(t.read_window(2, 0, 0, 10, 8).unwrap(), vals[2]);
+            let n = reads(&src);
+            assert!(n >= 2 && n <= 4, "big {big}: {n} reads without a budget");
+            assert!(t.images.iter().all(|i| match &i.offsets {
+                Striles::Inline(_) => true,
+                Striles::At { kept, .. } => kept.get().is_none(),
+            }));
+        }
+        // A budget of one array: the first image's arrays kept, an overview's read entry by entry.
+        {
+            let (b, vals) =
+                super::testtiff::make_images(&[(40, 30), (20, 15)], Opts::default(), gt, None, &|k, x, y, _| {
+                    (k * 1000) as f64 + (y * 100 + x) as f64
+                });
+            let src = counted(b);
+            let t = Tiff::open_keeping(src.clone(), 8).unwrap();
+            let n0 = reads(&src);
+            assert_eq!(t.read_window(0, 0, 0, 40, 30).unwrap(), vals[0]);
+            assert_eq!(t.read_window(1, 0, 0, 20, 15).unwrap(), vals[1]);
+            assert!(reads(&src) > n0 + 2, "an array past the budget is read entry by entry");
         }
         // (Values that don't compress: a file of many windows.)
         let data: Vec<f32> = (0..1024 * 1024).map(|i| ((i as u64 * 2_654_435_761) % 1_000_003) as f32 * 1.7).collect();
@@ -1772,6 +1846,33 @@ mod tests {
         assert!(at_open <= 2, "{at_open} reads to open a file larger than a window");
         assert_eq!(t.block(0, 1, 1).unwrap().f32_at(0, 0), data[256 * 1024 + 256]);
         assert_eq!(reads(&src), at_open + 1, "a block: one read");
+    }
+
+    /// Task #492: a header's reads come from windows: a read within one costs nothing, one past
+    /// it fetches a window there, one larger than a window goes through as it is; the oldest window
+    /// goes past `HEADER_WINDOWS`.
+    #[test]
+    fn a_windowed_reader_fetches_a_window_a_cluster() {
+        let n = HEADER_WINDOW as u64;
+        let bytes: Vec<u8> = (0..20 * n).map(|i| (i % 251) as u8).collect();
+        let src = Arc::new(Slow { inner: bytes.clone(), reads: Default::default(), trip: Default::default() });
+        let w = Windowed::new(src.clone()).unwrap();
+        let reads = || src.reads.lock().unwrap().values().sum::<usize>();
+        assert_eq!(w.read_at(0, 16).unwrap(), bytes[..16]);
+        assert_eq!(w.read_at(100, 50).unwrap(), bytes[100..150]);
+        assert_eq!(reads(), 1, "within the first window");
+        assert!(w.has(0, n) && !w.has(1, n));
+        assert_eq!(w.read_at(n - 8, 16).unwrap(), bytes[n as usize - 8..n as usize + 8]);
+        assert_eq!(reads(), 2, "past the window's end: a window from there");
+        assert_eq!(w.read_at(3 * n, 2 * n as usize).unwrap(), bytes[3 * n as usize..5 * n as usize]);
+        assert_eq!(reads(), 3, "larger than a window: as it is");
+        assert!(!w.has(3 * n, 1));
+        for k in 0..HEADER_WINDOWS as u64 {
+            w.read_at((6 + k) * n, 8).unwrap();
+        }
+        assert!(!w.has(0, 16), "the first window gone past the kept number");
+        assert_eq!(w.read_at(20 * n - 4, 4).unwrap(), bytes[20 * n as usize - 4..], "a window cut at the end");
+        assert!(w.read_at(20 * n - 4, 8).is_err(), "past the end");
     }
 
     /// Task #395: a block several threads ask for at once (the sampling's and the blend's

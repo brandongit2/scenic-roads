@@ -165,7 +165,7 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   kept within `POLYS_BYTES` (48 MB; past it the rows farthest up go first). A block's tiles it
   lacks (a hundred, with its margin) are read from the basemap together
   (`WaterSource::depth_polys_many`, `PmTiles::get_many`: their places sorted and those within
-  64 KB of each other read in one range, 8 ranges at once; a clustered archive keeps neighbours
+  64 KB of each other read in one range of at most 4 MB, 8 ranges at once; a clustered archive keeps neighbours
   together, so a block is a few reads, not a hundred round trips), then decoded and rasterised on
   the job's threads (task #492). The same polygons and water as one by one.
 - **depth-lo (a z3 tile):** z6–8 composed (below), z3–5 each its children's mean.

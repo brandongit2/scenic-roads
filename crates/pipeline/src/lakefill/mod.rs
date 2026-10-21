@@ -1890,6 +1890,17 @@ mod tests {
         assert_eq!((p[0].kind, p[0].id), (Kind::Lake, id));
         let wt = crate::terrain_water::water_tile(&p);
         assert!(wt.lake.iter().any(|&v| v > 0));
+        // Tiles asked for together (task #492): each the fill's lake as one by one, in order,
+        // tiles beyond the fill's zooms empty.
+        let tiles = [(12u8, x, y), (12, x + 1, y + 1), (12, x, y), (15, x << 3, y << 3)];
+        let many = with.depth_polys_many(&tiles).unwrap();
+        assert_eq!(many.len(), tiles.len());
+        for (t, m) in tiles.iter().zip(&many) {
+            let one = with.depth_polys(t.0, t.1, t.2).unwrap();
+            assert_eq!(m.len(), one.len(), "{t:?}");
+            assert!(m.iter().zip(&one).all(|(a, b)| (a.kind, a.id, &a.rings) == (b.kind, b.id, &b.rings)), "{t:?}");
+        }
+        assert_eq!((many[0].len(), many[2].len(), many[3].len()), (1, 1, 0));
     }
 
     #[test]
