@@ -14,7 +14,9 @@
 //! lock is taken, so a slow NAS never holds up an answer. It keeps one snapshot: those, the history
 //! merged and numbered here (`epoch` names the numbering), and the forecast run here
 //! (`forecast::Record::forecast`) with its time brought to now, this Mac's own lanes as its slots
-//! are now (`Inputs::own`, worked out as the lead works out its own: forecast::SlotJob).
+//! are now (`Inputs::own`, worked out as the lead works out its own: forecast::SlotJob). The
+//! forecast runs on a thread of its own (`Runs`, task #544), again when the input changed or
+//! `FORECAST_EVERY` passed: the snapshot carries the last one done, never waiting on it.
 
 use super::forecast::{Forecast, Record, SlotJob};
 use crate::coord::history::{Event, History};
@@ -29,6 +31,8 @@ use std::time::{Duration, Instant, SystemTime};
 pub const ASKED_FOR_S: u64 = 60;
 /// The files are read again this often at most.
 pub const EVERY: Duration = Duration::from_secs(12);
+/// The forecast is run here again this often at most while its input is unchanged.
+const FORECAST_EVERY: Duration = Duration::from_secs(60);
 /// A member's status older than this (s) isn't shown (as the lead's own `helpers` takes them).
 const HELPER_FRESH_S: u64 = 600;
 
@@ -128,7 +132,28 @@ struct Snap {
     view: Value,
     pause: Value,
     helpers: Vec<Value>,
-    forecast: Option<Forecast>,
+}
+
+/// The forecast run here off the reads (`PageView::forecast_run`): the last one done; the one
+/// running; the input's time and when the last was started.
+#[derive(Default)]
+struct Runs {
+    done: Option<Forecast>,
+    running: Option<std::thread::JoinHandle<Forecast>>,
+    of: Option<(SystemTime, Instant)>,
+}
+
+impl Runs {
+    /// The one running, taken in once it's done (`wait`: waited for).
+    fn take(&mut self, wait: bool) {
+        if self.running.as_ref().is_some_and(|h| wait || h.is_finished()) {
+            match self.running.take().map(std::thread::JoinHandle::join) {
+                Some(Ok(f)) => self.done = Some(f),
+                Some(Err(_)) => eprintln!("pageview: the forecast failed"),
+                None => {}
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -153,6 +178,7 @@ pub struct PageView {
     asked: AtomicU64,
     inputs: Mutex<Inputs>,
     state: Mutex<State>,
+    forecast: Mutex<Runs>,
 }
 
 fn now_s() -> u64 {
@@ -258,7 +284,7 @@ impl PageView {
             Some(_) => had,
             None => None,
         };
-        let forecast = record.as_ref().map(|(_, r)| local_forecast(r, now, &inp.own));
+        self.forecast_run(record.as_ref(), now, &inp.own);
         // The history: what each member's files of the two newest days gained.
         let mut new: Vec<(u64, String, u64, Event)> = Vec::new();
         let mut read_to: BTreeMap<String, (u64, FileId)> = BTreeMap::new();
@@ -321,7 +347,7 @@ impl PageView {
             // (Numbered here: the page's cursor, rising as events arrive.)
             h.add(e);
         }
-        st.snap = Some(Snap { status, view, pause, helpers, forecast });
+        st.snap = Some(Snap { status, view, pause, helpers });
         st.last = Some(Instant::now());
     }
 
@@ -330,9 +356,14 @@ impl PageView {
     pub fn swarm(&self) -> Option<Value> {
         self.touch();
         let app = self.inputs.lock().unwrap().app.clone();
+        let forecast = {
+            let mut r = self.forecast.lock().unwrap();
+            r.take(false);
+            r.done.clone()
+        };
         let st = self.state.lock().unwrap();
         let s = st.snap.as_ref()?;
-        Some(answer(s, st.history.as_ref(), &st.epoch, &app, now_s()))
+        Some(answer(s, forecast.as_ref(), st.history.as_ref(), &st.epoch, &app, now_s()))
     }
 
     /// `/work/history`'s answer: the events after number `since` (this Mac's numbering, `epoch`),
@@ -346,11 +377,11 @@ impl PageView {
     }
 }
 
-/// The swarm's answer at `now` from snapshot `s`.
-fn answer(s: &Snap, h: Option<&History>, epoch: &str, app: &str, now: u64) -> Value {
+/// The swarm's answer at `now` from snapshot `s` and the last forecast run here.
+fn answer(s: &Snap, forecast: Option<&Forecast>, h: Option<&History>, epoch: &str, app: &str, now: u64) -> Value {
     let mut agent = s.status.clone();
     if agent.is_object() {
-        if let Some(f) = &s.forecast {
+        if let Some(f) = forecast {
             agent["forecast"] = serde_json::to_value(f).unwrap_or(Value::Null);
         }
         agent["helpers"] = Value::Array(s.helpers.clone());
@@ -373,6 +404,32 @@ fn answer(s: &Snap, h: Option<&History>, epoch: &str, app: &str, now: u64) -> Va
         "rates": h.map(|h| h.rates(now, 24)),
         "app": app,
     })
+}
+
+impl PageView {
+    /// The lead's forecast (`record`, by its file's time) run here at `now` on a thread of its own,
+    /// when none is running and its input changed or `FORECAST_EVERY` passed; none without a
+    /// record. The snapshot's answer takes the last one done (`Runs`).
+    fn forecast_run(&self, record: Option<&(SystemTime, Arc<Record<'static>>)>, now: u64, own: &[OwnLane]) {
+        let mut r = self.forecast.lock().unwrap();
+        r.take(false);
+        let Some((t, rec)) = record else {
+            *r = Runs::default();
+            return;
+        };
+        let due = r.of.is_none_or(|(at, started)| at != *t || started.elapsed() >= FORECAST_EVERY);
+        if r.running.is_some() || !due {
+            return;
+        }
+        let (rec, own) = (rec.clone(), own.to_vec());
+        match std::thread::Builder::new()
+            .name("pageview-forecast".into())
+            .spawn(move || local_forecast(&rec, now, &own))
+        {
+            Ok(h) => (r.running, r.of) = (Some(h), Some((*t, Instant::now()))),
+            Err(e) => eprintln!("pageview: the forecast's thread: {e}"),
+        }
+    }
 }
 
 /// The lead's forecast run here at `now`: each lane's time left and each cadence's time since
@@ -518,6 +575,11 @@ mod tests {
         put(root, "state/helpers/m1.json", format!(r#"{{"host":"m1","beat":{now},"regions":[1]}}"#).as_bytes());
     }
 
+    /// The forecast run off the reads (`Runs`), waited for.
+    fn settle(pv: &PageView) {
+        pv.forecast.lock().unwrap().take(true);
+    }
+
     fn inputs(app: &str) -> Inputs {
         Inputs { root: None, term: 7, members: vec!["m-a".into(), "m-b".into()], app: app.into(), own: Vec::new() }
     }
@@ -531,6 +593,7 @@ mod tests {
         pv.set_inputs(inputs("1.2.3"));
         pv.touch_at(now);
         assert!(pv.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now));
+        settle(&pv);
         let a = pv.swarm().unwrap();
         assert_eq!(a["app"], "1.2.3");
         assert_eq!(a["tasks"]["done"], 3);
@@ -590,6 +653,7 @@ mod tests {
         for pv in [&lead, &member] {
             pv.touch_at(now);
             pv.tick(&Dir(d.path().into(), AtomicUsize::new(0)), now);
+            settle(pv);
         }
         let strip = |mut a: Value| {
             a["now"] = Value::Null;

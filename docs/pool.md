@@ -562,6 +562,12 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   until merged.
 - **The forecast for equal machines** (`crate::agent::forecast::equal_machines`): a second forecast,
   `equal`, with each member's slots and the pages as lanes at their measured speeds. Reports only.
+- **The forecast runs off the loop** (task #544): the lead makes its input on the loop and runs it
+  on a thread of its own (`Agent::start_forecast`); the status keeps the last one done, so reaping,
+  starting jobs and writing the status never wait on it. Its three runs (and the equal machines'
+  view) go side by side, each cut at `forecast::BUDGET` (15 s): one cut is `partial`, its `why`
+  says so, no finish shown. On 21 Oct's live input (4,155 targets, 20 lanes) the lead's view took
+  3.7 s and the equal machines' 3.3 s (205 s and 89 s before #544; a quarter hour on the lead).
 
 **A job waiting on a worker** (`crate::offload`'s `WAITING_ENV`): a z6 tile job waiting on a faster
 worker for its tail writes `SCENIC_WAITING`; while it exists the lead's asks count the waiting
@@ -859,7 +865,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   every 50 s while it runs, so this Mac keeps reading and its panel has the build when it opens. The forecast is run here from the input, its time brought
   to now and this Mac's own lanes as its slots are now, worked out as the lead works out its own
   (`forecast::SlotJob`: its own estimate, or its targets left at its speed, a minute at least; its
-  running job too); a target missing from the cost table is a bug, logged once. Times are given
+  running job too); a target missing from the cost table is a bug, logged once. It runs on a
+  thread of its own, again when the input changes or a minute has passed (`pageview::Runs`): the
+  answer carries the last one done. Times are given
   the page as ages (`coord::ages`). The answer carries the app serving it (`app`). With a lead on
   an app from before these records (no `view.json`, no `forecast-input.json`), the answer has no
   leases, workers nor tasks, and the forecast is the one in the lead's status. A Mac with neither

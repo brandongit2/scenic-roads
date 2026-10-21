@@ -259,12 +259,18 @@ pub struct EqualLanes {
 impl Record<'_> {
     /// The forecast it holds: the lead's.
     pub fn forecast(&self) -> Forecast {
-        let mut f = forecast(&self.input);
-        f.each_s = self.each_s.clone();
-        f.waiting = self.waiting.clone();
-        // (Not the equal machines' view: its run through the scheduler took the agent's loop for
-        // a quarter hour on the live build, 21 Oct; it waits for a bounded run off the loop.)
-        f
+        // (The equal machines' view beside it, on a thread of its own.)
+        std::thread::scope(|s| {
+            let equal = self
+                .equal
+                .as_ref()
+                .map(|e| s.spawn(|| equal_machines(&self.input, e.lanes.clone(), e.running.clone())));
+            let mut f = forecast(&self.input);
+            f.each_s = self.each_s.clone();
+            f.waiting = self.waiting.clone();
+            f.equal = equal.map(|h| Box::new(h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))));
+            f
+        })
     }
 
     /// Every time and speed in it made finite (JSON has no NaN nor infinity: one would read back
@@ -377,6 +383,10 @@ pub struct Forecast {
     /// the lead's real grants are held to (`departures`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub grants: Vec<Grant>,
+    /// Its run was cut at its time budget (`BUDGET`): the work it placed by then as placed, no
+    /// finish nor range (`why` says so).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 impl Forecast {
@@ -505,6 +515,8 @@ struct Sim {
     done: bool,
     /// The jobs the scheduler granted in the run's first `GRANTS_S` (`Forecast::grants`).
     grants: Vec<Grant>,
+    /// Cut at its deadline before every item was placed (`forecast_by`).
+    cut: bool,
 }
 
 /// A job the scheduler granted in the forecast's run (`Forecast::grants`): to which Mac, its step
@@ -527,19 +539,27 @@ pub const EXPECTED_STALE: f64 = 0.6;
 /// The jobs before the regions' that the z6 tiles wait for (build::plan).
 const UNITS_NEED: [&str; 3] = ["heritage-sites", "reach", "buildings"];
 
+/// The items listed so far (`items`): by step and target, and each step's by z3 tile (its z6
+/// tiles there and its target that's the z3 tile itself, in order).
+#[derive(Default)]
+struct Index {
+    of: BTreeMap<(String, String), usize>,
+    z3: BTreeMap<(String, String), Vec<usize>>,
+}
+
 /// The work as items, each with the items it waits for.
 fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
     let mut out: Vec<Item> = Vec::new();
-    let mut by_target: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut by_target = Index::default();
     let add = |out: &mut Vec<Item>,
-               by: &mut BTreeMap<(String, String), usize>,
+               by: &mut Index,
                step: &str,
                target: &str,
                cost: Cost,
                phase: Phase,
                deps: Vec<usize>|
      -> usize {
-        if let Some(&i) = by.get(&(step.to_string(), target.to_string())) {
+        if let Some(&i) = by.of.get(&(step.to_string(), target.to_string())) {
             return i;
         }
         let shared = SHARED.contains(&step) && phase != Phase::Before;
@@ -555,8 +575,13 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
             from: 0.0,
             end: 0.0,
         });
-        by.insert((step.to_string(), target.to_string()), out.len() - 1);
-        out.len() - 1
+        let i = out.len() - 1;
+        by.of.insert((step.to_string(), target.to_string()), i);
+        by.z3.entry((step.to_string(), target.to_string())).or_default().push(i);
+        if let Some(q) = crate::agent::build::z3_of(target).filter(|q| q != target) {
+            by.z3.entry((step.to_string(), q)).or_default().push(i);
+        }
+        i
     };
     for (step, target, cost) in &inp.before {
         add(&mut out, &mut by_target, step, target, *cost, Phase::Before, Vec::new());
@@ -571,24 +596,21 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
     // reads); then every region's slope (a z6 tile once the terrain of its z3 tile and its neighbours'
     // is, a z3 tile's assembly once its z6 tiles are) and tree cover.
     let mut region_items: Vec<Vec<usize>> = vec![Vec::new(); inp.regions.len()];
-    let item_of = |by: &BTreeMap<(String, String), usize>, step: &str, t: &str| {
-        by.get(&(step.to_string(), t.to_string())).copied()
-    };
-    // (A step's items in z3 tile `q`: its z6 tiles there, or its target that's the z3 tile itself.)
-    let of_z3 = |out: &Vec<Item>, step: &str, q: &str| -> Vec<usize> {
-        (0..out.len())
-            .filter(|&i| {
-                out[i].step == step
-                    && (out[i].target == q || crate::agent::build::z3_of(&out[i].target).as_deref() == Some(q))
-            })
-            .collect()
+    let item_of = |by: &Index, step: &str, t: &str| by.of.get(&(step.to_string(), t.to_string())).copied();
+    // (A step's items in z3 tile `q`: its z6 tiles there, or its target that's the z3 tile itself;
+    // in order.)
+    let of_z3 = |by: &Index, step: &str, q: &str| -> Vec<usize> {
+        let mut v = by.z3.get(&(step.to_string(), q.to_string())).cloned().unwrap_or_default();
+        v.sort_unstable();
+        v.dedup();
+        v
     };
     for r in inp.regions.iter() {
         for t in &r.own_terrain {
             add(&mut out, &mut by_target, "terrain", t, inp.cost("terrain", t), Phase::Region, Vec::new());
         }
         for q in &r.own_terrain_lo {
-            let deps = of_z3(&out, "terrain", q);
+            let deps = of_z3(&by_target, "terrain", q);
             add(&mut out, &mut by_target, "terrain-lo", q, inp.cost("terrain-lo", q), Phase::Region, deps);
         }
         // (Its terrain is its own or a region's before it: listed by now.)
@@ -625,7 +647,7 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
                 _ => vec![t.clone()],
             };
             for q in z3s {
-                deps.extend(of_z3(&out, "terrain", &q));
+                deps.extend(of_z3(&by_target, "terrain", &q));
                 deps.extend(item_of(&by_target, "terrain-lo", &q));
             }
             deps.sort_unstable();
@@ -633,8 +655,8 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
             add(&mut out, &mut by_target, "slope", t, inp.cost("slope", t), Phase::Late, deps);
         }
         for q in &r.slope_lo {
-            let mut deps = of_z3(&out, "slope", q);
-            deps.extend(of_z3(&out, "terrain", q));
+            let mut deps = of_z3(&by_target, "slope", q);
+            deps.extend(of_z3(&by_target, "terrain", q));
             deps.extend(item_of(&by_target, "terrain-lo", q));
             add(&mut out, &mut by_target, "slope-lo", q, inp.cost("slope-lo", q), Phase::Late, deps);
         }
@@ -644,9 +666,8 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         // A z3 tile's tree cover assembled once its z6 tiles are made (a region lists every z6 tile of
         // its z3 tiles: listed by now).
         for q in &r.trees_lo {
-            let deps: Vec<usize> = (0..out.len())
-                .filter(|&i| out[i].step == "trees" && crate::treepacks::z3_of(&out[i].target).as_ref() == Some(q))
-                .collect();
+            // (crate::treepacks::z3_of is build's: a z6 tile's z3 tile.)
+            let deps: Vec<usize> = of_z3(&by_target, "trees", q).into_iter().filter(|&i| out[i].target != *q).collect();
             add(&mut out, &mut by_target, "trees-lo", q, inp.cost("trees-lo", q), Phase::Late, deps);
         }
     }
@@ -664,9 +685,9 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
             ("trees", &r.trees),
             ("trees-lo", &r.trees_lo),
         ] {
-            mine.extend(list.iter().filter_map(|t| by_target.get(&(step.to_string(), t.clone())).copied()));
+            mine.extend(list.iter().filter_map(|t| item_of(&by_target, step, t)));
         }
-        mine.extend(r.packs.iter().filter_map(|(t, _)| by_target.get(&("pack".to_string(), t.clone())).copied()));
+        mine.extend(r.packs.iter().filter_map(|(t, _)| item_of(&by_target, "pack", t)));
         region_items[k] = mine;
     }
     // The chains: from the start, each step once what it reads is built.
@@ -854,7 +875,8 @@ fn mac_of(m: &Machine) -> String {
 /// its targets one after another at the lane's pace, its lease out until it ends. Refused, a lane
 /// asks again once a job ends (or `ASK_AGAIN_S`). The pages' lane takes the shared steps' targets
 /// alone, as tasks.
-fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
+/// Cut at `deadline` (`Sim::cut`).
+fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64, deadline: Instant) -> Sim {
     let (mut items, region_items) = items(inp);
     for it in &mut items {
         it.cost.secs = scale(&it.cost).max(1.0);
@@ -936,10 +958,22 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         items.iter().filter(|i| i.phase == Phase::Region && i.by.is_some()).map(|i| i.end).fold(0.0, f64::max);
     let mut before_left = items.iter().filter(|i| i.phase == Phase::Before && i.by.is_none()).count();
     let mut grants: Vec<Grant> = Vec::new();
+    // (The state's changes counted (a job granted or ended), and each Mac's ask refused (by its
+    // Mac, whether it may run the lead's own steps, and its lane's order) at which count and time:
+    // asked again unchanged, at the same time, the scheduler answers the same, so the lanes of a
+    // Mac woken together ask it once, task #544.)
+    let mut changes = 0u64;
+    let mut pruned_at = f64::NEG_INFINITY;
+    let mut refused: BTreeMap<(String, bool, bool), (u64, f64)> = BTreeMap::new();
     let mut guard = 0usize;
+    let mut cut = false;
     loop {
         guard += 1;
         if guard > 40 * (items.len() + 10) * n.max(1) || unassigned == 0 {
+            break;
+        }
+        if guard.is_multiple_of(32) && Instant::now() >= deadline {
+            cut = true;
             break;
         }
         // The machine free first (the lead on a tie).
@@ -951,6 +985,14 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         if !t.is_finite() {
             break;
         }
+        // (The NAS budget's waits passed over no more lately let go, as the live coordinator lets
+        // them go each status (crate::coord's `nas_waits`): the waits it weighs stay few.)
+        if t > pruned_at + 1e-9 {
+            pruned_at = t;
+            let now = pool.clock(t).now;
+            let mut g = pool.sched.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+            g.retain(|_, (_, last)| now.saturating_duration_since(*last) < Duration::from_secs(120));
+        }
         // (Those ended by now: what waits on them counted down, ready once nothing else is left;
         // the jobs' leases ended.)
         let mut ended: Vec<usize> = Vec::new();
@@ -961,6 +1003,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             }
             on
         });
+        changes += ended.len() as u64;
         for d in ended {
             for &w in &waiting_on[d] {
                 pending[w] -= 1;
@@ -975,6 +1018,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         out.retain(|(end, id, its)| {
             let on = *end > t + 1e-9;
             if !on {
+                changes += 1;
                 pool.sched.end(*id);
                 for &i in its.iter() {
                     if pool.sched.never_measured(&items[i].step) {
@@ -1002,7 +1046,9 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         // catalog doesn't record it built yet, then the regions' (in order), the chains' with none
         // it can do now; after the last z6 tile and terrain, the map tiles left, the slope and tree
         // cover, the chains', then what comes after. Every other lane: the plan's order.
-        let order: Vec<Vec<usize>> = if mac.helper {
+        let key = (!mac.helper).then(|| (mac_of(mac), m == 0 || mac.lead_steps, mac.equal));
+        let asked = key.as_ref().is_some_and(|k| refused.get(k) == Some(&(changes, t)));
+        let order: Vec<Vec<usize>> = if mac.helper || asked {
             Vec::new()
         } else if mac.equal {
             PHASES.iter().flat_map(|&p| ready.steps(pi(p))).collect()
@@ -1040,11 +1086,20 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
                 .into_iter()
                 .collect()
         } else {
-            let g = mac_of(mac);
-            let ask = &pool.asks[&g];
-            let offers = offers(&items, &order, ask);
-            let lead = m == 0 || mac.lead_steps;
-            let (picks, _) = pool.sched.pack(ask, &offers, lead, pool.clock(t));
+            let key = key.unwrap_or_default();
+            let (g, lead) = (key.0.clone(), key.1);
+            let picks = if asked {
+                Vec::new()
+            } else {
+                let ask = &pool.asks[&g];
+                let offers = offers(&items, &order, ask);
+                pool.sched.pack(ask, &offers, lead, pool.clock(t)).0
+            };
+            if picks.is_empty() {
+                refused.insert(key, (changes, t));
+            } else {
+                changes += 1;
+            }
             let mut took = Vec::new();
             for p in picks {
                 let mut end = t;
@@ -1101,7 +1156,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         free[m] = start;
     }
     let done = items.iter().all(|i| i.by.is_some());
-    Sim { items, region_items, done, grants }
+    Sim { items, region_items, done, grants, cut }
 }
 
 /// How far into the run its grants are kept (`Forecast::grants`, s): what the lead's real grants are
@@ -1152,24 +1207,45 @@ fn offers(items: &[Item], order: &[Vec<usize>], ask: &Ask) -> Vec<Offer> {
 /// The key the run's targets are offered under (no work of the run is done under it yet).
 const KEY: &str = "forecast";
 
-/// The forecast for `inp`.
+/// How long a forecast's three runs may take together (wall time): past it, each run stops where
+/// it is (`Sim::cut`) and the forecast is partial (`Forecast::partial`). It runs off the agent's
+/// loop (crate::agent's `start_forecast`); this bounds a run at a scale it was never measured at
+/// (task #544).
+pub const BUDGET: Duration = Duration::from_secs(15);
+
+/// The forecast for `inp`, within `BUDGET`.
 pub fn forecast(inp: &Input) -> Forecast {
+    forecast_by(inp, Instant::now() + BUDGET)
+}
+
+/// The forecast for `inp`, its runs cut at `deadline`.
+pub fn forecast_by(inp: &Input, deadline: Instant) -> Forecast {
     let now = inp.now as f64;
-    let expected = run(inp, &|c| c.secs);
-    let soon = run(inp, &|c| c.secs * if c.known { 0.95 } else { 0.75 });
-    let late = run(inp, &|c| c.secs * if c.known { 1.15 } else { 1.6 });
+    // (The three runs side by side, each on a thread of its own.)
+    let (expected, soon, late) = std::thread::scope(|s| {
+        let soon = s.spawn(|| run(inp, &|c| c.secs * if c.known { 0.95 } else { 0.75 }, deadline));
+        let late = s.spawn(|| run(inp, &|c| c.secs * if c.known { 1.15 } else { 1.6 }, deadline));
+        let expected = run(inp, &|c| c.secs, deadline);
+        let join =
+            |h: std::thread::ScopedJoinHandle<'_, Sim>| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
+        (expected, join(soon), join(late))
+    });
     // (Done once every machine is free too: a job under way that's no item, a daily one's, ends then.)
     let end_of = |s: &Sim| -> Option<f64> {
         s.done.then(|| s.items.iter().map(|i| i.end).chain(inp.machines.iter().map(|m| m.busy_s)).fold(0.0, f64::max))
     };
     let at = |secs: f64| (now + secs).round() as u64;
-    let mut f = Forecast { at: inp.now, ..Default::default() };
+    let mut f = Forecast { at: inp.now, partial: expected.cut || soon.cut || late.cut, ..Default::default() };
     f.grants = expected.grants.iter().map(|g| Grant { at: at(g.at) as f64, ..g.clone() }).collect();
     // (Never while a machine is busy: a job under way is work left, items or not.)
     let busy = inp.machines.iter().any(|m| m.busy_s > 0.0) || !inp.running.is_empty();
     let nothing = expected.items.is_empty() && !busy;
     f.why = match (&inp.blind, nothing, expected.done) {
         (Some(b), _, _) => Some(b.clone()),
+        _ if expected.cut => Some(format!(
+            "the forecast's run was cut at its time budget ({} s): the work placed by then is shown, no finish",
+            BUDGET.as_secs()
+        )),
         (None, true, _) => Some(NOTHING_LEFT.into()),
         (None, false, false) => Some("there's work no machine can do (none that fits it is around)".into()),
         _ => None,
@@ -1177,7 +1253,7 @@ pub fn forecast(inp: &Input) -> Forecast {
     if f.why.is_none() {
         f.done_at = end_of(&expected).map(at);
         f.range = match (end_of(&soon), end_of(&late)) {
-            (Some(a), Some(b)) => Some([at(a.min(b)), at(a.max(b))]),
+            (Some(a), Some(b)) if !soon.cut && !late.cut => Some([at(a.min(b)), at(a.max(b))]),
             _ => None,
         };
     }
@@ -1521,6 +1597,11 @@ mod tests {
         }
     }
 
+    /// A deadline no test's run meets.
+    fn far() -> Instant {
+        Instant::now() + Duration::from_secs(3600)
+    }
+
     fn cost(step: &str, _t: &str) -> Cost {
         let secs = match step {
             "terrain" => 600.0,
@@ -1606,7 +1687,7 @@ mod tests {
         };
         let mut lead = forecast(&inp);
         lead.each_s.insert("unit".into(), 300.0);
-        // (No equal machines' view while it isn't bounded: Record::forecast leaves it out.)
+        lead.equal = Some(Box::new(equal_machines(&inp, equal.lanes.clone(), equal.running.clone())));
         let rec = Record { input: inp, each_s: lead.each_s.clone(), waiting: BTreeMap::new(), equal: Some(equal) };
         let b = rec.bytes().unwrap();
         assert_eq!(b[0], b'{', "small: plain JSON");
@@ -1690,7 +1771,7 @@ mod tests {
         let long = |step: &str, t: &str| Cost { secs: 1000.0, ..cost(step, t) };
         let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &long);
         inp.idle = vec![("trees".into(), "6/40/20".into(), Cost { secs: 100.0, known: false, peak_mb: 1000 })];
-        let sim = run(&inp, &|c| c.secs);
+        let sim = run(&inp, &|c| c.secs, far());
         let item = |step: &str, t: &str| sim.items.iter().find(|i| i.step == step && i.target == t).unwrap();
         // The assembly once its z6 tiles are made (the member takes some), by the lead alone.
         let lo = item("trees-lo", "3/3/2");
@@ -2046,7 +2127,7 @@ mod tests {
         let mut inp = input(&regions, vec![lead, slot(0), slot(1), slot(2), slot(3)], &big);
         inp.after = Vec::new();
         inp.macs.insert("m1".into(), MacRoom { mem_mb: 8000, cores: 8 });
-        let sim = run(&inp, &|c| c.secs);
+        let sim = run(&inp, &|c| c.secs, far());
         let most = |sim: &Sim| {
             (0..40)
                 .map(|k| k as f64 * 100.0 + 1.0)
@@ -2058,14 +2139,14 @@ mod tests {
         // By cores: 1 GB jobs on 8 cores at 2 each, four at once; on 4 cores, two.
         let small = |step: &str, t: &str| Cost { peak_mb: 1000, ..cost(step, t) };
         inp.costs = cost_table(&regions, &small);
-        assert_eq!(most(&run(&inp, &|c| c.secs)), 4);
+        assert_eq!(most(&run(&inp, &|c| c.secs, far())), 4);
         inp.macs.insert("m1".into(), MacRoom { mem_mb: 8000, cores: 4 });
-        assert_eq!(most(&run(&inp, &|c| c.secs)), 2);
+        assert_eq!(most(&run(&inp, &|c| c.secs, far())), 2);
         // A step never measured: its first job alone on its Mac, nothing beside it (task #499);
         // once it ends its measure packs the rest as above.
         let cold = |step: &str, t: &str| Cost { known: false, ..small(step, t) };
         inp.costs = cost_table(&regions, &cold);
-        let sim = run(&inp, &|c| c.secs);
+        let sim = run(&inp, &|c| c.secs, far());
         let first =
             sim.items.iter().filter(|i| i.by.is_some_and(|m| m > 0)).min_by(|a, b| a.from.total_cmp(&b.from)).unwrap();
         assert!(sim
@@ -2495,7 +2576,7 @@ mod tests {
                 macs: BTreeMap::new(),
                 sched: Some(st),
             };
-            let sim = run(&inp, &|c| c.secs);
+            let sim = run(&inp, &|c| c.secs, far());
             let last_real = work.iter().map(|j| j.4).max().unwrap_or(t0) - t0;
             let last_fc = sim.items.iter().map(|i| i.end).fold(0.0, f64::max);
             for (host, name) in [(m4, "M4"), (m1, "M1")] {
@@ -2576,5 +2657,190 @@ mod tests {
         let s = speeds(&events, "m4", &["m1".into(), "ipad".into()], 0.5);
         assert!((s["m1"].0 - 0.5).abs() < 1e-9 && s["m1"].1);
         assert_eq!(s["ipad"], (0.5, false));
+    }
+
+    /// At live scale (task #544: the scheduler's run of 21 Oct's lead took a quarter hour): tens
+    /// of thousands of targets across regions and chains, twenty lanes on two Macs, the
+    /// scheduler's state with thousands of measures (their NAS rates too), the NAS budget on and
+    /// leases out. The forecast runs whole in bounded time; with the equal machines' view, within
+    /// its budget.
+    #[test]
+    fn a_live_scale_forecast_runs_whole_and_bounded() {
+        use crate::coord::sched::{Asked, Leased};
+        let z6 = |i: usize| format!("6/{}/{}", i / 64, i % 64);
+        let z8 = |i: usize, j: usize| format!("8/{i}/{j}");
+        let regions: Vec<RegionLeft> = (0..400)
+            .map(|r| {
+                let terrain: Vec<String> = (0..15).map(|j| z6(r * 15 + j)).collect();
+                let units: Vec<String> = terrain[..3].to_vec();
+                let tiles = |n: usize, off: usize| (0..n).map(|j| z8(r, off + j)).collect::<Vec<_>>();
+                RegionLeft {
+                    id: format!("r{r}"),
+                    own_units: units.clone(),
+                    units,
+                    own_terrain: terrain.clone(),
+                    terrain: terrain.clone(),
+                    slope: tiles(15, 0),
+                    trees: tiles(25, 100),
+                    packs: (0..15).map(|j| (z8(r, 200 + j), vec![terrain[j % 3].clone()])).collect(),
+                    ..Default::default()
+                }
+            })
+            .collect();
+        // (Measures for a sixth of the regions' targets, each with its NAS rate; the rest by their
+        // step's.)
+        let mut costs: BTreeMap<String, crate::coord::Cost> = BTreeMap::new();
+        for (k, r) in regions.iter().enumerate().filter(|(k, _)| k % 6 == 0) {
+            let each = r.terrain.iter().map(|t| ("terrain", t)).chain(r.units.iter().map(|t| ("unit", t)));
+            for (step, t) in
+                each.chain(r.slope.iter().map(|t| ("slope", t))).chain(r.trees.iter().map(|t| ("trees", t)))
+            {
+                let sizes = [
+                    ("threads".to_string(), 2),
+                    ("bytes".to_string(), 2_000_000_000 + k as u64),
+                    ("creates".to_string(), 3000),
+                    ("listed".to_string(), 50_000),
+                ]
+                .into();
+                let c = crate::coord::Cost {
+                    peak_mb: 800 + (k as u64 % 7) * 300,
+                    secs: 60 + k as u64 % 500,
+                    v: crate::coord::cost_version(step),
+                    sizes,
+                    ..Default::default()
+                };
+                costs.insert(cost_key(step, t), c);
+            }
+        }
+        let cost = |step: &str, t: &str| match costs.get(&cost_key(step, t)) {
+            Some(c) => Cost { secs: c.secs as f64, known: true, peak_mb: c.peak_mb },
+            None => Cost { secs: 120.0, known: false, peak_mb: 1000 },
+        };
+        let chains: Vec<Job> = ["pois", "bldtiles", "depth", "peaks"]
+            .iter()
+            .flat_map(|s| {
+                (0..1500).map(move |i| (s.to_string(), z6(i), Cost { secs: 90.0, known: true, peak_mb: 700 }))
+            })
+            .collect();
+        let ask = |w: &str, mem_mb: u64, cores: u32| Asked {
+            ask: Ask {
+                worker: w.into(),
+                kind: "native".into(),
+                mem_mb,
+                cores,
+                disk_mb: Some(400_000),
+                cap: Some(Capacity { cores, cores_free: cores, ..Default::default() }),
+                want: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let limits = crate::budget::nas::Limits {
+            bytes_s: 37e6,
+            creates_s: 30.0,
+            listed_s: 836.0,
+            stats_s: 174.0,
+            deletes_s: 30.0,
+            ..Default::default()
+        };
+        let leased = |w: &str, step: &str, ts: &[String]| Leased {
+            worker: w.into(),
+            step: step.into(),
+            targets: ts.iter().map(|t| (t.clone(), "k".to_string())).collect(),
+            threads: 2,
+        };
+        let packs: Vec<String> = regions[0].packs.iter().map(|p| p.0.clone()).take(5).collect();
+        let st = State {
+            leases: vec![
+                leased("m4", "pack", &packs),
+                leased("m1", "trees", &regions[1].trees[..15]),
+                leased("m1", "terrain", &regions[1].terrain[..6]),
+            ],
+            workers: vec![ask("m4", 36_000, 14), ask("m1", 10_240, 10)],
+            costs: costs.clone(),
+            lead_name: "m4".into(),
+            nas: Some(limits),
+            nas_own: Some(limits),
+            ..Default::default()
+        };
+        let lanes = |host: &str, n: usize, lead: bool| -> Vec<Machine> {
+            (0..n)
+                .map(|k| Machine {
+                    name: super::super::slot_worker(host, k),
+                    speed: if lead { 1.0 } else { 0.6 },
+                    measured: true,
+                    equal: k > 0 || !lead,
+                    lead_steps: lead,
+                    mem_mb: if lead { 36_000 } else { 10_240 },
+                    mac: Some(host.into()),
+                    ..Default::default()
+                })
+                .collect()
+        };
+        let machines: Vec<Machine> = lanes("m4", 12, true).into_iter().chain(lanes("m1", 8, false)).collect();
+        let inp = Input {
+            now: 1_792_605_430,
+            before: Vec::new(),
+            costs: cost_table(&regions, &cost),
+            regions: Cow::Owned(regions.clone()),
+            cadence: Cadence::default(),
+            blind: None,
+            chains,
+            after: Vec::new(),
+            idle: Vec::new(),
+            machines: machines.clone(),
+            running: BTreeMap::new(),
+            macs: BTreeMap::new(),
+            sched: Some(st),
+        };
+        let n = items(&inp).0.len();
+        assert!(n > 30_000, "{n} targets");
+        // (Whole, its time bounded well past what it takes (12.5 s in a release build on the M4,
+        // its three runs side by side; 21 Oct's code took over 200 s at a tenth of the scale) and
+        // short of the regression's.)
+        let t = Instant::now();
+        let f = forecast_by(&inp, t + Duration::from_secs(600));
+        let took = t.elapsed();
+        eprintln!("live scale, {n} targets: {} ms", took.as_millis());
+        assert!(!f.partial && f.done_at.is_some(), "{:?}", f.why);
+        assert!(took < Duration::from_secs(90), "{took:?}");
+        // The equal machines' view beside it, within its budget (cut there: partial, said so).
+        let rec = Record {
+            input: inp,
+            each_s: BTreeMap::new(),
+            waiting: BTreeMap::new(),
+            equal: Some(EqualLanes { lanes: machines, running: BTreeMap::new() }),
+        };
+        let t = Instant::now();
+        let e = rec.forecast().equal.expect("the equal machines' view");
+        assert!(t.elapsed() < BUDGET + Duration::from_secs(10), "{:?}", t.elapsed());
+        assert!(e.done_at.is_some() || e.partial, "{:?}", e.why);
+    }
+
+    /// A recorded forecast (SCENIC_FORECAST_RECORD: a forecast-input.json) timed: the lead's run
+    /// and the equal machines'. For profiling at live scale (unset: nothing).
+    #[test]
+    fn recorded_timing() {
+        let Ok(p) = std::env::var("SCENIC_FORECAST_RECORD") else { return };
+        let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
+        let limit: u64 = std::env::var("SCENIC_FORECAST_LIMIT_S").ok().and_then(|s| s.parse().ok()).unwrap_or(15);
+        let (items, _) = items(&r.input);
+        eprintln!("items {}, machines {}", items.len(), r.input.machines.len());
+        let t = Instant::now();
+        let f = forecast_by(&r.input, Instant::now() + Duration::from_secs(limit));
+        eprintln!("lead: {} ms, partial {}, done_at {:?}", t.elapsed().as_millis(), f.partial, f.done_at);
+        if let Some(e) = &r.equal {
+            let lanes: Vec<Machine> = e
+                .lanes
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(k, m)| Machine { equal: k > 0 && !m.helper, lead_steps: true, ..m })
+                .collect();
+            let inp = Input { machines: lanes, running: e.running.clone(), ..r.input.clone() };
+            let t = Instant::now();
+            let f = forecast_by(&inp, Instant::now() + Duration::from_secs(limit));
+            eprintln!("equal: {} ms, partial {}, done_at {:?}", t.elapsed().as_millis(), f.partial, f.done_at);
+        }
     }
 }

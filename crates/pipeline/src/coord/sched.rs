@@ -109,6 +109,11 @@ pub struct Sched {
     /// Targets passed over for the NAS budget alone ((step, target) → (first, last time)), for the
     /// status (`Coordinator::nas_waits`); a target granted is let go.
     pub nas_waits: Mutex<BTreeMap<(String, String), (Instant, Instant)>>,
+    /// `nas_reserved`'s wait (since when, step and target) as last worked out, at which time: kept
+    /// while the time stands, an aged wait passed over again taking its place when it was held
+    /// back first, worked out again when the one kept is granted (task #544: a pick weighs it for
+    /// every target).
+    pub nas_reserved_at: Mutex<Option<(Instant, Option<Reserved>)>>,
     /// When each quiet step's job (crate::budget::nas::QUIET_STEPS) was first held back for a
     /// quiet NAS since it was last granted: past `QUIET_AGE` it goes as an aged job (task #451).
     pub quiet_since: Mutex<BTreeMap<String, Instant>>,
@@ -119,27 +124,26 @@ pub struct Sched {
     pub measured_steps: Mutex<(u64, BTreeSet<String>)>,
 }
 
-/// The NAS budget's weights for one placement (`Shared::nas_room`): the limits, one Book, and each
-/// step's 90th percentile kept once worked out (crate::needs::Book::nas_prior).
+/// The NAS budget's weights for one placement (`Shared::nas_room`): the limits and one Book (its
+/// steps' 90th percentiles kept with its models: crate::needs::Book::nas_prior).
 pub(crate) struct NasWeigher<'a> {
     limits: crate::budget::nas::Limits,
     book: crate::needs::Book<'a>,
-    priors: std::cell::RefCell<BTreeMap<String, Option<crate::budget::nas::Rate>>>,
 }
 
 impl NasWeigher<'_> {
     /// The weight of `target` of `step` (none of its step measured: the whole for a NAS step, else 0).
     fn weight(&self, step: &str, target: &str) -> u32 {
-        let r = self
-            .book
-            .nas_own(step, target)
-            .or_else(|| *self.priors.borrow_mut().entry(step.to_string()).or_insert_with(|| self.book.nas_prior(step)));
+        let r = self.book.nas(step, target);
         // (A step known to read the NAS (`NAS_STEPS`) none of whose runs noted its rate, in any
         // way it ran: the whole budget, so its first job never overloads the NAS unseen, task #499
         // review; its step's runs of earlier ways count by `nas_prior`.)
         r.map_or(if NAS_STEPS.contains(&step) { crate::budget::nas::WHOLE } else { 0 }, |r| self.limits.weight(r))
     }
 }
+
+/// A wait that holds the NAS budget's room (`Sched::nas_reserved`): since when, its step and target.
+pub type Reserved = (Instant, (String, String));
 
 /// What a job is packed as (`Shared::pack_need`): its memory and disk, its cores as measured
 /// (None: not said), and whether it's a cold start (none of it measured, `m` its provisional need).
@@ -340,7 +344,7 @@ impl Sched {
         lead: bool,
     ) -> Option<(NasWeigher<'_>, u32, u32, usize, [u32; 2])> {
         let limits = if lead { self.nas_own.or(self.nas)? } else { self.nas? };
-        let nw = NasWeigher { limits, book: self.book(), priors: Default::default() };
+        let nw = NasWeigher { limits, book: self.book() };
         // (The switch `off`: the members' jobs aren't held, so the lead's own aren't held back by
         // them either, only by its own (task #440: else a member's unheld jobs keep the lead idle).)
         let members_held = self.nas.is_some();
@@ -368,32 +372,48 @@ impl Sched {
     /// first held back: (step, target, its weight). While it's held, no other job weighing anything
     /// starts unless it leaves that room (`nas_reserve_ok`): the leased jobs end, and it fits.
     pub(super) fn nas_reserved(&self, nw: &NasWeigher, now: Instant) -> Option<(String, String, u32)> {
-        let g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
-        g.iter()
-            .filter(|(_, (since, last))| {
-                now.saturating_duration_since(*since) >= crate::budget::nas::OWN_AGE
-                    && now.saturating_duration_since(*last) < Duration::from_secs(120)
-            })
-            .min_by_key(|(k, (since, _))| (*since, (*k).clone()))
-            .map(|((st, t), _)| (st.clone(), t.clone(), nw.weight(st, t)))
+        // (One lock at a time: never one inside the other.)
+        let kept = self.nas_reserved_at.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let held = match kept {
+            Some((at, held)) if at == now => held.map(|h| h.1),
+            _ => {
+                let aged_by = now.checked_sub(crate::budget::nas::OWN_AGE);
+                let fresh_from = now.checked_sub(Duration::from_secs(120));
+                let held = self
+                    .nas_waits
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    // (Aged `OWN_AGE` and passed over in the last two minutes, as instants compared.)
+                    .filter(|(_, (since, last))| {
+                        aged_by.is_some_and(|a| *since <= a) && fresh_from.is_none_or(|f| *last > f)
+                    })
+                    .min_by(|x, y| (x.1 .0, x.0).cmp(&(y.1 .0, y.0)))
+                    .map(|(k, (since, _))| (*since, k.clone()));
+                *self.nas_reserved_at.lock().unwrap_or_else(|e| e.into_inner()) = Some((now, held.clone()));
+                held.map(|h| h.1)
+            }
+        };
+        held.map(|(st, t)| {
+            let w = nw.weight(&st, &t);
+            (st, t, w)
+        })
     }
 
     /// Whether a job of `step` over `targets` of weight `w`, beside leased jobs weighing `running`,
-    /// leaves the room held for an aged target (`nas_reserved`): it weighs nothing, nothing's
-    /// held, it's the one held for, or both fit within the whole.
+    /// leaves the room held for an aged target (`reserved`, `nas_reserved`'s): it weighs nothing,
+    /// nothing's held, it's the one held for, or both fit within the whole.
     pub(super) fn nas_reserve_ok(
-        &self,
-        nw: &NasWeigher,
-        now: Instant,
+        reserved: Option<&(String, String, u32)>,
         step: &str,
         targets: &[String],
         running: u32,
         w: u32,
     ) -> bool {
         w == 0
-            || self.nas_reserved(nw, now).is_none_or(|(st, t, rw)| {
-                (st == step && targets.contains(&t))
-                    || running.saturating_add(w).saturating_add(rw) <= crate::budget::nas::WHOLE
+            || reserved.is_none_or(|(st, t, rw)| {
+                (st == step && targets.contains(t))
+                    || running.saturating_add(w).saturating_add(*rw) <= crate::budget::nas::WHOLE
             })
     }
 
@@ -416,7 +436,20 @@ impl Sched {
     /// Notes `target` of `step` passed over for the NAS budget alone now.
     pub(super) fn nas_wait(&self, step: &str, target: &str, now: Instant) {
         let mut g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
-        g.entry((step.to_string(), target.to_string())).and_modify(|e| e.1 = now).or_insert((now, now));
+        let e = g.entry((step.to_string(), target.to_string())).and_modify(|e| e.1 = now).or_insert((now, now));
+        let since = e.0;
+        drop(g);
+        let aged = now.saturating_duration_since(since) >= crate::budget::nas::OWN_AGE;
+        // (Aged, it holds room now: in the kept one's place when it was held back first.)
+        if aged {
+            let mut kept = self.nas_reserved_at.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((_, held)) = kept.as_mut().filter(|(at, _)| *at == now) {
+                let me = (since, (step.to_string(), target.to_string()));
+                if held.as_ref().is_none_or(|h| (h.0, &h.1) > (me.0, &me.1)) {
+                    *held = Some(me);
+                }
+            }
+        }
     }
 
     /// Whether a job of `step` over `targets` reads the NAS enough that its threads overlap waiting
@@ -782,6 +815,16 @@ impl Sched {
             }
             self.quiet_since.lock().unwrap_or_else(|e| e.into_inner()).remove(&o.step);
         }
+        // (The wait kept let go: worked out again.)
+        let mut kept = self.nas_reserved_at.lock().unwrap_or_else(|e| e.into_inner());
+        if kept
+            .as_ref()
+            .and_then(|k| k.1.as_ref())
+            .is_some_and(|h| h.1 .0 == o.step && pick.iter().any(|t| t.0 == h.1 .1))
+        {
+            *kept = None;
+        }
+        drop(kept);
         let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
         let disk_mb = self.job_need(&o.step, &ts).map_or(0, |(m, _)| m.disk_mb) + fill;
         Pick { lease, step: o.step.clone(), targets: pick, threads, disk_mb, job: o.job.clone() }
@@ -878,7 +921,7 @@ impl Sched {
             } else {
                 crate::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited)
             } && nw.limits.open(running, w)
-                && (alone || self.nas_reserve_ok(&nw, now, &o.step, &ts, running, w));
+                && (alone || Self::nas_reserve_ok(self.nas_reserved(&nw, now).as_ref(), &o.step, &ts, running, w));
             if !fits && !alone && !quiet {
                 for t in &ts {
                     self.nas_wait(&o.step, t, now);
@@ -950,7 +993,7 @@ impl Sched {
                     return false;
                 }
                 // (Room held for a target aged in the budget left to it: `nas_reserved`.)
-                if !self.nas_reserve_ok(nw, now, &o.step, &[t.to_string()], *running, w) {
+                if !Self::nas_reserve_ok(self.nas_reserved(nw, now).as_ref(), &o.step, &[t.to_string()], *running, w) {
                     return false;
                 }
                 if lead {
@@ -1311,6 +1354,7 @@ impl Sched {
                     .map(|(st, t, a, b)| ((st.clone(), t.clone()), (ago(now, *a), ago(now, *b))))
                     .collect(),
             ),
+            nas_reserved_at: Default::default(),
             quiet_since: Mutex::new(s.quiet_since.iter().map(|(st, a)| (st.clone(), ago(now, *a))).collect()),
             last: s.last.iter().map(|(w, st, t)| ((w.clone(), st.clone()), t.clone())).collect(),
             measured_steps: Default::default(),

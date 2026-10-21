@@ -176,9 +176,14 @@ struct Model {
 
 /// The models made, kept until the measures they're made from change: the change count they were
 /// made at (the owner's: the coordinator bumps its count with each cost, floor or disk floor it
-/// takes), by (step, measure).
+/// takes), by (step, measure); each step's most cores (`Book::cores`) and NAS prior
+/// (`Book::nas_prior`) alike.
 #[derive(Debug, Default)]
-pub struct Cache(Mutex<(u64, BTreeMap<(String, Measure), Model>)>, Mutex<(u64, BTreeMap<String, Option<u32>>)>);
+pub struct Cache(
+    Mutex<(u64, BTreeMap<(String, Measure), Model>)>,
+    Mutex<(u64, BTreeMap<String, Option<u32>>)>,
+    Mutex<(u64, BTreeMap<String, Option<crate::budget::nas::Rate>>)>,
+);
 
 /// The measures needs are read from: what each target cost (crate::coord::Cost), and, where kept,
 /// the floors (crate::agent::memguard) and disk floors (MB, by cost key); the models made from them
@@ -616,8 +621,19 @@ impl<'a> Book<'a> {
         self.costs.get(&cost_key(step, target)).and_then(|c| nas_rate(step, c))
     }
 
-    /// `nas`'s step's 90th percentile alone (a caller weighing many targets of a step keeps it).
+    /// `nas`'s step's 90th percentile alone: kept with the models while the measures stand (the
+    /// NAS budget weighs every target offered and leased by it, task #544).
     pub fn nas_prior(&self, step: &str) -> Option<crate::budget::nas::Rate> {
+        let CacheRef::Kept(cache) = &self.cache else { return self.nas_p90(step) };
+        let mut g = cache.2.lock().unwrap_or_else(|e| e.into_inner());
+        if g.0 != self.rev {
+            *g = (self.rev, BTreeMap::new());
+        }
+        *g.1.entry(step.to_string()).or_insert_with(|| self.nas_p90(step))
+    }
+
+    /// `nas_prior` worked out: its step's runs' 90th percentile of each rate.
+    fn nas_p90(&self, step: &str) -> Option<crate::budget::nas::Rate> {
         let runs: Vec<crate::budget::nas::Rate> =
             self.costs.iter().filter(|(k, _)| step_of_key(k) == step).filter_map(|(_, c)| nas_rate(step, c)).collect();
         // (In thousandths of a byte or file a second, for the percentile's integers.)

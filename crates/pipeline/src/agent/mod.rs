@@ -1448,6 +1448,9 @@ pub struct Agent {
     /// The last forecast's record (forecast::Record::bytes), until the lead's pool step writes it
     /// to the NAS (`pool_lead_files`).
     forecast_input: std::cell::RefCell<Option<Vec<u8>>>,
+    /// The forecast being run off the loop (its own thread, `start_forecast`): its answer, its
+    /// record's bytes and how long it took, taken in once it's done (`take_forecast`).
+    forecasting: std::cell::RefCell<Option<std::thread::JoinHandle<Forecasted>>>,
     /// Publishing as last planned (build::PublishLine), and the key of the last line logged (logged
     /// again only when it changes).
     publish_line: std::cell::RefCell<Option<build::PublishLine>>,
@@ -1820,6 +1823,7 @@ impl Agent {
             forecast: Default::default(),
             departed: Default::default(),
             forecast_input: Default::default(),
+            forecasting: Default::default(),
             publish_line: Default::default(),
             timetables: Default::default(),
             publish_logged: Default::default(),
@@ -7445,8 +7449,11 @@ impl Agent {
         plan.extend(alone);
         // The forecast of the work left (crate::agent::forecast): the lead's, for the status (made
         // again at most each minute: idle, the plan's made each loop).
+        // (Run on a thread of its own, `start_forecast`: the loop reads the last one done and never
+        // waits on it, task #544.)
+        self.take_forecast();
         let stale = self.forecast.borrow().as_ref().is_none_or(|f| now_s().saturating_sub(f.at) >= 60);
-        if !self.o.helper && stale {
+        if !self.o.helper && stale && self.forecasting.borrow().is_none() {
             // (What can't be listed now: the regions' work after a new pass, or while the z6 tiles wait.)
             let blind = match newer {
                 Some(d) => Some(format!("a new OpenStreetMap pass (the planet of {d}) comes first; the regions' work is known once it's done")),
@@ -7470,20 +7477,8 @@ impl Agent {
                     .map(|w| job(format!("heritage-sites {date}"), "heritage-sites", Vec::new(), Some(w.clone()))),
             );
             let chains = build::chains_left(cov, date, &manifest, &done, &inputs, &self.terrain_tiles(root, &manifest));
-            // (A fault in it costs the status its forecast, never the agent.)
-            let took = std::time::Instant::now();
-            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.forecast_now(root, &before, &planned.regions, &planned.backfill, chains, blind, &peak)
-            }));
-            // (Its time, in the log: it runs with each plan.)
-            eprintln!("agent: the forecast took {} ms", took.elapsed().as_millis());
-            match made {
-                Ok(f) => *self.forecast.borrow_mut() = Some(f),
-                Err(_) => {
-                    eprintln!("agent: the forecast failed; the status goes without it");
-                    *self.forecast.borrow_mut() = None;
-                }
-            }
+            let record = self.forecast_record(root, &before, &planned.regions, &planned.backfill, chains, blind, &peak);
+            self.start_forecast(record);
         }
         plan.retain(|w| !w.targets.is_empty());
         // (A job a step's work in the plan: an offered step's is its place in the plan's order, its
@@ -7615,9 +7610,10 @@ impl Agent {
     /// (build::chains_left); `blind`, why the work can't all be listed now. Each target's time (at
     /// the lead's pace: a time measured on a member over its speed) and memory as last measured,
     /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
-    /// their measured speed; each machine free once its job under way is done.
+    /// their measured speed; each machine free once its job under way is done. As data
+    /// (forecast::Record), run off the loop (`start_forecast`).
     #[allow(clippy::too_many_arguments)]
-    fn forecast_now(
+    fn forecast_record(
         &self,
         root: &Path,
         before: &[JobSpec],
@@ -7626,7 +7622,7 @@ impl Agent {
         chains: [Vec<build::Work>; 5],
         blind: Option<String>,
         peak: &dyn Fn(&str, &str) -> u64,
-    ) -> forecast::Forecast {
+    ) -> forecast::Record<'static> {
         use forecast::{Cost, Machine};
         let (costs, leased, events, mem) = match &self.coord {
             Some(c) => c.for_forecast(),
@@ -7926,7 +7922,7 @@ impl Agent {
         let inp = forecast::Input {
             now: now_s(),
             before,
-            regions: std::borrow::Cow::Borrowed(regions),
+            regions: std::borrow::Cow::Owned(regions.to_vec()),
             costs: forecast::cost_table(regions, &cost),
             cadence,
             blind,
@@ -7938,11 +7934,10 @@ impl Agent {
             macs: rooms,
             sched: self.coord.as_ref().map(|c| c.sched_state()),
         };
-        let mut f = forecast::forecast(&inp);
         // (Each step's time a target, for the page to weigh the targets done: the headline.)
-        f.each_s = steps::TABLE.iter().map(|r| (r.name.to_string(), (per(r.name) * 10.0).round() / 10.0)).collect();
+        let each_s = steps::TABLE.iter().map(|r| (r.name.to_string(), (per(r.name) * 10.0).round() / 10.0)).collect();
         // (A slot's job waiting on a worker holding its z6 tile's tail: said beside its machine.)
-        f.waiting = (0..self.slots.len()).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();
+        let waiting = (0..self.slots.len()).filter_map(|k| Some((self.worker_of(k), self.waiting_words(k)?))).collect();
         // In the pool, the forecast for equal machines beside it (docs/pool.md §12 4.12), reported
         // alone: each member's slots as lanes (this Mac's first: its publishing; its other slots a
         // lane each, as above), the pages as one (forecast::pool_lanes), each at
@@ -7993,16 +7988,54 @@ impl Agent {
                     running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), m)));
                 }
             }
-            // (Not run: see forecast::Record::forecast; the lanes are kept for when it's bounded.)
             equal = Some(forecast::EqualLanes { lanes, running });
         }
-        // (As data, for the NAS: written by the lead's pool step, `pool_lead_files`.)
-        let record = forecast::Record { input: inp, each_s: f.each_s.clone(), waiting: f.waiting.clone(), equal };
-        match record.bytes() {
-            Ok(b) => *self.forecast_input.borrow_mut() = Some(b),
-            Err(e) => eprintln!("agent: the forecast's input as data: {e:#}"),
+        forecast::Record { input: inp, each_s, waiting, equal }
+    }
+
+    /// Runs `record`'s forecast on a thread of its own (task #544: the scheduler's run at live
+    /// scale took the loop for a quarter hour, 21 Oct): the loop reaps, starts jobs and writes the
+    /// status meanwhile, and takes it in once it's done (`take_forecast`). Its record's bytes are
+    /// made there too (as data, for the NAS: written by the lead's pool step, `pool_lead_files`).
+    fn start_forecast(&self, record: forecast::Record<'static>) {
+        let run = std::thread::Builder::new().name("forecast".into()).spawn(move || {
+            let took = std::time::Instant::now();
+            let f = record.forecast();
+            Forecasted { forecast: f, bytes: record.bytes(), took: took.elapsed() }
+        });
+        match run {
+            Ok(h) => *self.forecasting.borrow_mut() = Some(h),
+            Err(e) => eprintln!("agent: the forecast's thread: {e}"),
         }
-        f
+    }
+
+    /// The forecast run off the loop (`start_forecast`), taken in once it's done: the status's from
+    /// then, its record's bytes for the NAS. A fault in it costs the status its forecast, never the
+    /// agent.
+    fn take_forecast(&self) {
+        if !self.forecasting.borrow().as_ref().is_some_and(|h| h.is_finished()) {
+            return;
+        }
+        let Some(h) = self.forecasting.borrow_mut().take() else { return };
+        match h.join() {
+            Ok(done) => {
+                // (Its time, in the log.)
+                eprintln!(
+                    "agent: the forecast took {} ms{}",
+                    done.took.as_millis(),
+                    if done.forecast.partial { " (cut at its time budget: partial)" } else { "" }
+                );
+                match done.bytes {
+                    Ok(b) => *self.forecast_input.borrow_mut() = Some(b),
+                    Err(e) => eprintln!("agent: the forecast's input as data: {e:#}"),
+                }
+                *self.forecast.borrow_mut() = Some(done.forecast);
+            }
+            Err(_) => {
+                eprintln!("agent: the forecast failed; the status goes without it");
+                *self.forecast.borrow_mut() = None;
+            }
+        }
     }
 
     /// Slot `k`'s job under way, as its lane's time left is worked out (forecast::SlotJob): its
@@ -10825,6 +10858,14 @@ fn test_agent(o: Options) -> Result<Agent> {
         }
         a
     })
+}
+
+/// A forecast run off the agent's loop (`Agent::start_forecast`): it, its record's bytes, and how
+/// long it took.
+struct Forecasted {
+    forecast: forecast::Forecast,
+    bytes: anyhow::Result<Vec<u8>>,
+    took: std::time::Duration,
 }
 
 #[cfg(test)]
@@ -16814,7 +16855,8 @@ mod pool_tests {
         let work: Vec<build::Work> = (0..40)
             .map(|i| build::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
             .collect();
-        let fc = a.forecast_now(&r, &[], &[], &work, Default::default(), None, &|_, _| 0);
+        let rec = a.forecast_record(&r, &[], &[], &work, Default::default(), None, &|_, _| 0);
+        let fc = rec.forecast();
         let named = |h: &str| fc.lanes.keys().chain(fc.next.keys()).any(|k| is_slot_of(k, h));
         assert!(
             named("busy-mac"),
@@ -16824,7 +16866,7 @@ mod pool_tests {
         );
         assert!(!named("held-mac"));
         // (Task #409) its input as written, read back and run, is the lead's forecast.
-        let b = a.forecast_input.borrow_mut().take().expect("the forecast's input");
+        let b = rec.bytes().unwrap();
         let back = forecast::Record::from_bytes(&b).unwrap();
         assert!(!back.input.machines.is_empty());
         assert_eq!(back.forecast(), fc);

@@ -1129,6 +1129,7 @@ impl Coordinator {
                 nas_own: None,
                 lead_name: me.to_string(),
                 nas_waits: Default::default(),
+                nas_reserved_at: Default::default(),
                 quiet_since: Default::default(),
                 last: BTreeMap::new(),
                 measured_steps: Default::default(),
