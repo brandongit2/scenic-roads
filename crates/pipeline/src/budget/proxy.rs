@@ -336,7 +336,8 @@ fn handle(mut s: TcpStream, ctx: &Arc<Ctx>) -> io::Result<()> {
             Ok(u) => u,
             Err(e) => return answer(&mut s, "502 Bad Gateway", &format!("{host}:{port}: {e}\n")),
         };
-        s.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")?;
+        // (HTTP/1.0: macOS's nc, the ssh tunnel's ProxyCommand (osmpass::streamed), takes no other.)
+        s.write_all(b"HTTP/1.0 200 Connection established\r\n\r\n")?;
         let mut up_w = up.try_clone()?;
         if !head.rest.is_empty() {
             up_w.write_all(&head.rest)?;
@@ -503,7 +504,7 @@ mod tests {
             assert_eq!(s.read(&mut b).unwrap(), 1, "the proxy closed: {}", String::from_utf8_lossy(&head));
             head.push(b[0]);
         }
-        assert!(head.starts_with(b"HTTP/1.1 200"), "{}", String::from_utf8_lossy(&head));
+        assert!(head.starts_with(b"HTTP/1.0 200"), "{}", String::from_utf8_lossy(&head));
         s.write_all(msg).unwrap();
         s.shutdown(Shutdown::Write).unwrap();
         let mut out = Vec::new();
@@ -626,7 +627,7 @@ mod tests {
         s.write_all(b"CONNECT query.wikidata.org:443 HTTP/1.1\r\n\r\nq").unwrap();
         let mut all = Vec::new();
         s.read_to_end(&mut all).unwrap();
-        assert_eq!(all, b"HTTP/1.1 200 Connection established\r\n\r\nq", "{}", String::from_utf8_lossy(&all));
+        assert_eq!(all, b"HTTP/1.0 200 Connection established\r\n\r\nq", "{}", String::from_utf8_lossy(&all));
         // (Charged as it ended, before the client saw its end: four tokens of the window's five
         // spent with its own, so the next query takes the fifth, leasing every slot, or the next
         // window's.)
