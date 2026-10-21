@@ -71,9 +71,11 @@ pub struct Running {
     pub paused: Option<String>,
     /// Why it's stopping at its next safe point (crate::control), while it is.
     pub pausing: Option<String>,
-    started_at: Instant,
-    /// Its progress when it first reported this kind of progress: the estimate's start (time,
-    /// fraction, unit).
+    /// When it started (one taken over: when the agent before this one started it).
+    pub started_at: Instant,
+    /// Where its pace is measured from (time, fraction, unit, part): its start at nothing done, its
+    /// first part's progress first seen (agent::pace_base); else where this kind of progress was
+    /// first seen.
     pub progress_base: Option<(Instant, f64, String, Option<usize>)>,
     /// Its parts and the one it's on, as it last said (`part`): kept while a part's own output
     /// pushes that line out of the log's end.

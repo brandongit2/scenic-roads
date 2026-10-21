@@ -5725,7 +5725,7 @@ impl Agent {
             let key = jobs::unit_key(&unit).to_string();
             let fresh = r.progress_base.as_ref().is_none_or(|b| b.2 != key || b.3 != part || frac < b.1);
             if fresh {
-                r.progress_base = Some((Instant::now(), frac, key, part));
+                r.progress_base = Some(pace_base(r.progress_base.is_none(), r.started_at, frac, key, part));
             }
             if fresh || r.moved.is_none_or(|m| frac > m.0) {
                 r.moved = Some((frac, now_s()));
@@ -10407,6 +10407,14 @@ fn hold_for_lakefill(jobs: Vec<JobSpec>, held: bool, waiting: &mut Vec<Waiting>)
 /// out a failure). Publishing, while a step above has work left, goes out as each z6 tile is built (a
 /// catalog at most each minute) and once they all are: it's done only then.
 fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waiting: &[Waiting]) {
+    // (A step whose job runs, here or on a helper, isn't done: build::Line::under_way.)
+    let helper_steps = helpers.iter().flat_map(|h| h.jobs()).filter_map(|j| step_of(&j.id));
+    let running: Vec<String> = now.iter().cloned().chain(helper_steps).collect();
+    for s in list.iter_mut() {
+        for r in &running {
+            s.under_way(r);
+        }
+    }
     let busy = |s: &build::Line| now.iter().any(|n| s.steps.iter().any(|x| x == n));
     // (Work known to be left: a line not sized yet, as trains a day before its sources are seeded,
     // holds nothing up.)
@@ -10431,6 +10439,23 @@ fn annotate(list: &mut [build::Line], now: &[String], helpers: &[Status], waitin
                 "as each unit is built (a catalog at most each minute), and once the steps above are".into()
             });
         }
+    }
+}
+
+/// Where a job's pace is measured from, its progress first seen (`first`) or measured again: its
+/// first part (or a job of no parts) from its start (`started_at`, a job taken over from the agent
+/// before this one: its real start, not the take-over), at nothing done; else from now, at `frac`.
+fn pace_base(
+    first: bool,
+    started_at: Instant,
+    frac: f64,
+    key: String,
+    part: Option<usize>,
+) -> (Instant, f64, String, Option<usize>) {
+    if first && part.is_none_or(|p| p == 0) {
+        (started_at, 0.0, key, part)
+    } else {
+        (Instant::now(), frac, key, part)
     }
 }
 
@@ -14702,6 +14727,73 @@ mod tests {
         let mut waiting = Vec::new();
         assert_eq!(ids(&hold_for_sources(jobs(), false, &mut waiting)), ids(&jobs()));
         assert!(waiting.is_empty());
+    }
+
+    /// Task #506: a step whose job runs again (its key changed: new regions, say) isn't done though
+    /// its records, read earlier, say so; the stage's count goes with it.
+    #[test]
+    fn a_step_running_again_is_not_done() {
+        let item = |step: &str, done: usize, total: Option<usize>, left: usize| build::Item {
+            step: step.into(),
+            done,
+            total,
+            left: Some(left),
+            ..Default::default()
+        };
+        let mut l = vec![build::Line {
+            id: "landmarks".into(),
+            what: "Landmarks".into(),
+            steps: ["peaks", "heritage", "marks"].iter().map(|s| s.to_string()).collect(),
+            done: 4,
+            total: Some(4),
+            left: Some(0),
+            unit: "z6 tiles".into(),
+            items: vec![item("peaks", 4, Some(4), 0), item("heritage", 0, None, 0), item("marks", 0, None, 0)],
+            ..Default::default()
+        }];
+        assert!(l[0].finished());
+        annotate(&mut l, &["heritage".to_string()], &[], &[]);
+        assert!(!l[0].finished(), "its step runs");
+        assert_eq!(l[0].left, Some(1));
+        assert_eq!(l[0].items[1].left, Some(1), "Heritage details: 1 run left, not done");
+        assert!(l[0].items[2].finished());
+        // A sized step's: one target under way, the stage's count one fewer. And a helper's job
+        // counts as this Mac's does.
+        let mut helper = Status { host: "m1".into(), ..Default::default() };
+        helper.jobs = vec![JobView {
+            id: "peaks 6/1/2".into(),
+            what: String::new(),
+            started: 0,
+            pausing: None,
+            paused: None,
+            tail: String::new(),
+            progress: None,
+            parts: Vec::new(),
+            part: None,
+            mem_mb: None,
+            threads: None,
+            waiting: None,
+            slot: Some(0),
+        }];
+        annotate(&mut l, &[], &[helper], &[]);
+        assert_eq!((l[0].items[0].done, l[0].items[0].left), (3, Some(1)));
+        assert_eq!((l[0].done, l[0].left), (3, Some(2)));
+    }
+
+    /// Task #506: a job taken over from the agent before this one is paced from its real start,
+    /// not from the take-over (where its next tick of progress made "about 346 min left" of 81%).
+    #[test]
+    fn a_taken_over_jobs_pace_runs_from_its_start() {
+        let started = Instant::now() - Duration::from_secs(20 * 60);
+        let (t0, f0, _, _) = pace_base(true, started, 0.81, "steps".into(), None);
+        assert_eq!((t0, f0), (started, 0.0));
+        let eta = t0.elapsed().as_secs_f64() * (1.0 - 0.82) / (0.82 - f0);
+        assert!(eta < 6.0 * 60.0, "about 4–5 min left, not hours: {eta}");
+        // A later part, or one measured again: from now.
+        let (t0, f0, _, _) = pace_base(true, started, 0.5, "steps".into(), Some(2));
+        assert!(t0 > started && f0 == 0.5);
+        let (t0, f0, _, _) = pace_base(false, started, 0.5, "steps".into(), None);
+        assert!(t0 > started && f0 == 0.5);
     }
 
     #[test]

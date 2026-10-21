@@ -3770,6 +3770,23 @@ impl Line {
         self.left == Some(0) || self.total.is_some_and(|t| self.done >= t && self.left.is_none())
     }
 
+    /// `step`'s item under way (a job of it running, on any Mac): never done while it runs, though
+    /// its records say so (they're read at most every five minutes, and a target whose key changed
+    /// while its job runs again reads as its old record). One target counted left, the line's sums
+    /// with it.
+    pub fn under_way(&mut self, step: &str) {
+        let noun = self.unit.trim_end_matches('s').to_string();
+        let Some(i) = self.items.iter_mut().find(|i| i.step == step && i.finished()) else { return };
+        i.left = Some(1);
+        if let Some(t) = i.total.filter(|&t| t > 0 && i.done >= t) {
+            i.done = t - 1;
+            if i.noun.is_empty() || i.noun == noun {
+                self.done = self.done.saturating_sub(1);
+            }
+        }
+        self.left = self.left.map(|l| l + 1);
+    }
+
     /// Its counts in words, a noun at a time in its items' order: "398 of 398 tiles", "18 of 18
     /// z3 tiles", "2 runs left"; "done" when nothing is left, "to come" while it isn't sized. (The
     /// line's own `done`/`total` are the first noun's: what readers of the line alone show.)
