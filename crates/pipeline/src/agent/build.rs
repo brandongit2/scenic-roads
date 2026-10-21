@@ -7592,7 +7592,7 @@ pub(crate) mod tests {
             Some("Buildings read and 3D buildings")
         );
         assert!(st.iter().all(|x| x.left.is_none() && x.total.is_none() && !x.finished()), "to come: not sized");
-        assert_eq!(st.iter().find(|x| x.id == "roads").unwrap().counts(), ["tiles to come"]);
+        assert_eq!(st.iter().find(|x| x.id == "roads").unwrap().counts(), ["z6 tiles to come"]);
     }
 
     #[test]
