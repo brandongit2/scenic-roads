@@ -85,14 +85,24 @@ pub fn source_now(root: &Path) -> Result<Accepted> {
 pub struct Listed {
     pub path: String,
     pub recipe: Recipe,
-    pub geometry: String,
-    pub drawn: String,
+    /// Its stored geometry and drawn files; None for a region that resolved to nothing (empty by
+    /// design, as `hand_out_all`'s "land outside its regions" once its country is handed out): the
+    /// check stores no files for it, and it has no area to cover or draw.
+    pub stored: Option<Stored>,
     pub disabled: bool,
 }
 
+/// A region's stored files (content names): its geometry (the coverage's) and its drawing (the map's).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stored {
+    pub geometry: String,
+    pub drawn: String,
+}
+
 /// The regions of an accepted version, by id: each region file's (a `.toml` but `pins.toml` and
-/// `_group.toml`). One missing a fact (its id, name, outline, geometry or drawing) is an error,
-/// never left out.
+/// `_group.toml`). One missing a fact (its id, name or outline; its drawing without its geometry or
+/// the other way round) is an error, never left out; one with neither resolved to nothing (empty)
+/// and is listed with no stored files.
 pub fn listed(a: &Accepted) -> Result<Vec<Listed>> {
     let mut v: Vec<Listed> = Vec::new();
     for (p, f) in &a.index.files {
@@ -111,11 +121,14 @@ pub fn listed(a: &Accepted) -> Result<Vec<Listed>> {
             .get("outline")
             .and_then(|o| serde_json::from_value(o.clone()).ok())
             .with_context(|| format!("{}: {p} has no outline in its facts", a.version))?;
+        let stored = match (f.facts.contains_key("geometry"), f.facts.contains_key("drawn")) {
+            (false, false) => None,
+            _ => Some(Stored { geometry: s("geometry")?, drawn: s("drawn")? }),
+        };
         v.push(Listed {
             path: p.clone(),
             recipe: Recipe { id: s("id")?, name: s("name")?, outline },
-            geometry: s("geometry")?,
-            drawn: s("drawn")?,
+            stored,
             disabled: f.facts.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false),
         });
     }
@@ -146,7 +159,7 @@ pub fn tree(index: &crate::inputs::Index) -> Folder {
         let dir = p.rsplit_once('/').map_or("", |(d, _)| d).to_string();
         if let Some(g) = f.facts.get("group").and_then(|v| serde_json::from_value(v.clone()).ok()) {
             groups.insert(dir, g);
-        } else if let Some(id) = f.facts.get("geometry").and(f.facts.get("id")).and_then(|v| v.as_str()) {
+        } else if let Some(id) = f.facts.get("id").and_then(|v| v.as_str()) {
             regions.push((dir, id.to_string()));
         }
     }
@@ -184,14 +197,16 @@ pub fn tree(index: &crate::inputs::Index) -> Folder {
 }
 
 /// The regions the build reads, sorted by id: the enabled ones (a disabled region is checked and
-/// stored, others may name it, but nothing builds, plans, sizes, downloads or catalogs it).
+/// stored, others may name it, but nothing builds, plans, sizes, downloads or catalogs it), less
+/// those that resolved to nothing (no area: nothing to build).
 pub fn recipes(a: &Accepted) -> Result<Vec<Recipe>> {
     Ok(enabled(a)?.into_iter().map(|l| l.recipe).collect())
 }
 
-/// The enabled regions of an accepted version (`listed`, the disabled left out).
+/// The enabled regions of an accepted version with an area (`listed`, the disabled and the empty
+/// left out).
 pub fn enabled(a: &Accepted) -> Result<Vec<Listed>> {
-    Ok(listed(a)?.into_iter().filter(|l| !l.disabled).collect())
+    Ok(listed(a)?.into_iter().filter(|l| !l.disabled && l.stored.is_some()).collect())
 }
 
 /// Reads `names` (content names under `root`), 16 at a time (on the NAS each waits a round trip or
@@ -236,7 +251,7 @@ impl Coverage {
     pub fn accepted(root: &Path, a: &Accepted, cache: Option<&Path>) -> Result<Coverage> {
         let made = || -> Result<Coverage> {
             let l = enabled(a)?;
-            let names: Vec<String> = l.iter().map(|x| x.geometry.clone()).collect();
+            let names: Vec<String> = l.iter().filter_map(|x| Some(x.stored.as_ref()?.geometry.clone())).collect();
             let geoms: Vec<Geometry> = read_all(root, &names)?
                 .iter()
                 .zip(&names)
@@ -264,11 +279,13 @@ impl Coverage {
 }
 
 /// The drawn regions of `regions` (as `recipes` lists them) from the accepted version's drawn
-/// files.
+/// files; an empty region (none stored) has none.
 pub fn drawn(root: &Path, a: &Accepted, regions: &[Recipe]) -> Result<Vec<DrawnRegion>> {
     let l = listed(a)?;
-    let names: Vec<String> =
-        regions.iter().filter_map(|r| l.iter().find(|x| x.recipe.id == r.id).map(|x| x.drawn.clone())).collect();
+    let names: Vec<String> = regions
+        .iter()
+        .filter_map(|r| Some(l.iter().find(|x| x.recipe.id == r.id)?.stored.as_ref()?.drawn.clone()))
+        .collect();
     read_all(root, &names)?
         .iter()
         .zip(&names)

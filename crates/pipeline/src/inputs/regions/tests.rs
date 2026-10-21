@@ -456,6 +456,36 @@ fn a_region_missing_a_fact_is_an_error() {
     assert_eq!(read::recipes(&a).unwrap().len(), 1);
     a.index.files.get_mut("a.toml").unwrap().facts.remove("drawn");
     assert!(read::listed(&a).is_err() && read::recipes(&a).is_err(), "never a region left out");
+    // Its drawing without its geometry: as broken.
+    let facts = &mut a.index.files.get_mut("a.toml").unwrap().facts;
+    let g = facts.remove("geometry").unwrap();
+    facts.insert("drawn".into(), g);
+    assert!(read::listed(&a).is_err());
+}
+
+/// The live index's shape (task #504): a cut of `@index.be2033d2b403ccb0.json` (regions 1,028, rules
+/// `cover = "earth"`), whose `*-outside-its-regions` (hand_out_all, every place handed out) resolved
+/// to nothing and so have no geometry or drawing in their facts. It reads; they're listed and in the
+/// tree, never built.
+#[test]
+fn the_live_index_with_empty_regions_reads() {
+    let index: Index = serde_json::from_str(include_str!("testdata/index-empty-regions.json")).unwrap();
+    let d = tempfile::tempdir().unwrap();
+    let a =
+        crate::inputs::Accepted { root: d.path().to_path_buf(), version: "@index.be2033d2b403ccb0.json".into(), index };
+    let l = read::listed(&a).unwrap();
+    let by = |id: &str| l.iter().find(|x| x.recipe.id == id).unwrap();
+    for id in ["bolivia-outside-its-regions", "china-outside-its-regions"] {
+        assert!(by(id).stored.is_none() && by(id).disabled, "{id}");
+    }
+    assert!(by("andorra").stored.is_some() && !by("andorra").disabled);
+    assert!(by("beni").stored.is_some() && by("beni").disabled);
+    assert_eq!(l.len(), 5);
+    assert_eq!(read::recipes(&a).unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["andorra", "hong-kong"]);
+    let t = read::tree(&a.index);
+    let bolivia = t.folders.iter().find(|f| f.path == "bolivia").unwrap();
+    assert_eq!(bolivia.regions, ["beni", "bolivia-outside-its-regions"]);
+    assert!(read::drawn(d.path(), &a, &[by("bolivia-outside-its-regions").recipe.clone()]).unwrap().is_empty());
 }
 
 #[test]
@@ -571,6 +601,29 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
         cov.by_region().iter().map(|(i, _)| i).collect::<Vec<_>>()
     );
     let off_print = cov.fingerprint(b_box);
+
+    // Empty by design (resolved to nothing: no stored files), enabled (c) or disabled (b): read,
+    // listed and in the tree (the panel shows it), but neither among the regions built nor in the
+    // coverage or the drawing.
+    let mut e = a.clone();
+    for p in ["b.toml", "c.toml"] {
+        let facts = &mut e.index.files.get_mut(p).unwrap().facts;
+        facts.remove("geometry");
+        facts.remove("drawn");
+    }
+    let l = read::listed(&e).unwrap();
+    assert_eq!(
+        l.iter().map(|l| (l.recipe.id.as_str(), l.stored.is_some(), l.disabled)).collect::<Vec<_>>(),
+        [("a", true, false), ("b", false, true), ("c", false, false)]
+    );
+    let t = read::tree(&e.index);
+    assert!(t.regions.contains(&"b".to_string()) && t.regions.contains(&"c".to_string()));
+    assert_eq!(read::recipes(&e).unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a"]);
+    let ce = Coverage::accepted(root, &e, None).unwrap();
+    assert!(ce.contains([5_000_000, 5_000_000]));
+    assert!(ce.by_region().iter().all(|(id, _)| id.starts_with("a")));
+    let named = |id: &str| Recipe { id: id.into(), name: id.into(), outline: vec![] };
+    assert_eq!(read::drawn(root, &e, &[named("a"), named("c")]).unwrap().len(), 1, "c has no drawing");
 
     // Enabled: a new version, b in the regions and the coverage, and the jobs over its box keyed anew.
     drop_files(root, &[("b.toml", &region("b", "outline = [\"osm:2\"]\n"))]);

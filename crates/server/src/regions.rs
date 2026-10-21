@@ -394,7 +394,6 @@ fn tree(s: &crate::AppState, listed: &[Listed]) -> pipeline::inputs::regions::re
         for l in listed {
             let mut facts = serde_json::Map::new();
             facts.insert("id".into(), l.id.clone().into());
-            facts.insert("geometry".into(), "-".into());
             i.files.insert(
                 l.path.clone(),
                 pipeline::inputs::FileEntry { file: String::new(), size: 0, keyed: String::new(), facts },

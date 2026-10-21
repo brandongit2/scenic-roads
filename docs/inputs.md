@@ -566,7 +566,10 @@ per part, unchanged**; any operation gives one shape (two across the antimeridia
 crosses. A region with water and no land is stored `"water_only": true` (in the head) and the
 coverage keeps it apart, for the depth's targets alone (docs/regions.md). The index names
 each region's files in `facts.geometry` and `facts.drawn`, and its `keyed` digest is the geometry
-file's content name, so an edit that doesn't change the result reruns nothing.
+file's content name, so an edit that doesn't change the result reruns nothing. A region that
+resolved to nothing (a `hand_out_all` region, every stretch handed out) is stored with no files: its
+facts name neither, and the readers list it (the Regions list shows it) but leave it out of the
+regions built, the coverage and the drawing (no area to cover).
 
 **Reading:** `Coverage::accepted(root, accepted)` (crate::inputs::regions::read) builds the coverage
 from the stored shapes, regions in id order, shapes in stored order. Nothing rebuilds the coverage

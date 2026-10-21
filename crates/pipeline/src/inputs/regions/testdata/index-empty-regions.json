@@ -1,0 +1,88 @@
+{
+ "accepted": {},
+ "checks": "regions 2",
+ "files": {
+  "andorra.toml": {
+   "facts": {
+    "drawn": "sources/inputs/regions/@drawn/andorra.d9d3c25eed060c57.json",
+    "geometry": "sources/inputs/regions/@geometry/andorra.ad4158159ed08e90.rgeo",
+    "id": "andorra",
+    "name": "Andorra",
+    "outline": [
+     "osm:9407"
+    ]
+   },
+   "file": "sources/inputs/regions/andorra.7befc50d8f16d81a.toml",
+   "keyed": "sources/inputs/regions/@geometry/andorra.ad4158159ed08e90.rgeo",
+   "size": 66
+  },
+  "bolivia/beni.toml": {
+   "facts": {
+    "disabled": true,
+    "drawn": "sources/inputs/regions/@drawn/beni.28d0635ca7f4aeea.json",
+    "geometry": "sources/inputs/regions/@geometry/beni.e14a1e38158adcf8.rgeo",
+    "id": "beni",
+    "name": "Beni",
+    "outline": [
+     "osm:405935"
+    ]
+   },
+   "file": "sources/inputs/regions/bolivia/beni.a2ef3baa84c2e5e1.toml",
+   "keyed": "sources/inputs/regions/@geometry/beni.e14a1e38158adcf8.rgeo",
+   "size": 120
+  },
+  "bolivia/bolivia-outside-its-regions.toml": {
+   "facts": {
+    "disabled": true,
+    "id": "bolivia-outside-its-regions",
+    "name": "Bolivia: land outside its regions",
+    "outline": [
+     "{minus [osm:252645, osm:405935, osm:396197, osm:393562, osm:400473, osm:395910, osm:3358584, osm:4509552, osm:3360565, osm:396198]}"
+    ]
+   },
+   "file": "sources/inputs/regions/bolivia/bolivia-outside-its-regions.e5f5e364b4f2642d.toml",
+   "keyed": "e5f5e364b4f2642d",
+   "size": 2110
+  },
+  "china/china-outside-its-regions.toml": {
+   "facts": {
+    "disabled": true,
+    "id": "china-outside-its-regions",
+    "name": "China: land outside its regions",
+    "outline": [
+     "{minus [osm:270056, osm:913011, osm:912940, osm:913069, osm:553303, osm:153314, osm:911844, osm:286342, osm:286937, osm:2128285, osm:912998, osm:199073, osm:407492, osm:913110, osm:913106, osm:913073, osm:161349, osm:913012, osm:913109, osm:198590, osm:912942, osm:1867188, osm:913101, osm:153269, osm:913100, osm:913006, osm:913067, osm:913105, osm:913068, osm:912999, osm:153310, osm:153292, osm:913094, osm:553302]}"
+    ]
+   },
+   "file": "sources/inputs/regions/china/china-outside-its-regions.28df2228519d1434.toml",
+   "keyed": "28df2228519d1434",
+   "size": 4843
+  },
+  "china/hong-kong.toml": {
+   "facts": {
+    "drawn": "sources/inputs/regions/@drawn/hong-kong.7ffbfa2103d8090f.json",
+    "geometry": "sources/inputs/regions/@geometry/hong-kong.2af07b789a9e9127.rgeo",
+    "id": "hong-kong",
+    "name": "Hong Kong",
+    "outline": [
+     "osm:913110",
+     "water {minus [{intersect [osm:913110, eez:8486]}, eez:8321, eez:21796, eez:48954, eez:49003]}"
+    ]
+   },
+   "file": "sources/inputs/regions/china/hong-kong.579115dc0af638f4.toml",
+   "keyed": "sources/inputs/regions/@geometry/hong-kong.2af07b789a9e9127.rgeo",
+   "size": 274
+  },
+  "pins.toml": {
+   "facts": {
+    "pins": {
+     "osm": "2026-09-28"
+    }
+   },
+   "file": "sources/inputs/regions/pins.0428252f8eba6092.toml",
+   "keyed": "0428252f8eba6092",
+   "size": 19
+  }
+ },
+ "fmt": 1,
+ "unit": "regions"
+}
