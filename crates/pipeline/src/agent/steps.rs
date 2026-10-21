@@ -500,7 +500,9 @@ pub const TABLE: [Step; 51] = [
         )
     },
     Step {
-        mem_mb: 1024,
+        // (railfeeds.py reads the coverage's outlines whole: 2.0 GB at its peak on the 244 MB of 126
+        // regions, task #498.)
+        mem_mb: 2560,
         ..step(
             "trains",
             Fetch,
@@ -1460,7 +1462,7 @@ mod tests {
             ("heritage", 6144),
             ("rail", 6144),
             ("items", 3072),
-            ("rail-feeds", 1024),
+            ("rail-feeds", 2560),
             ("bld-fetch", 2560),
             ("marks", 4096),
             ("overlays", 4096),

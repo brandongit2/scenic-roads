@@ -393,7 +393,9 @@ of their own (docs/building.md §2):
   - The Mobility Database catalogue's active, keyless GTFS feeds of the countries the coverage is in
     (`pipeline::rail::countries`: a country holding 5 % of one of the coverage's outlines, or half of
     whose area the coverage holds; a territory with an ISO 3166-2 code brings its country too) whose
-    box meets it. The declaration's `own_code` and `country` correct the catalogue's codes.
+    box meets it (as `pipeline::coverage` answers: an outline's edge within its buffer of the box,
+    else the box inside it under the even–odd rule; asked of the rings through an STR tree, never of
+    the outlines merged, `dem/near.py`). The declaration's `own_code` and `country` correct the catalogue's codes.
   - Of those, the ones running rail, checked once by reading `routes.txt` with range requests (only
     a whole answer counts).
   - The declared feeds first, in their `order`, where a territory matches and their stops meet the

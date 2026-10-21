@@ -71,11 +71,9 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from shapely.geometry import Polygon, box
-from shapely.ops import unary_union
-
 import ferrygtfs
 import railgtfs
+from near import EvenOdd
 from timings import phase
 
 UA = "scenic-roads/0.1 (personal offline map)"
@@ -113,22 +111,19 @@ def write_json(path: Path, v) -> None:
     tmp.replace(path)
 
 
-def coverage(path: str):
+def coverage(path: str) -> EvenOdd:
     """The coverage, as the job writes it (a feature per outline: its rings under the even–odd rule,
-    its buffer in metres), as one geometry."""
-    shapes = []
-    for f in json.loads(Path(path).read_text())["features"]:
-        g = None
-        for poly in f["geometry"]["coordinates"]:
-            for ring in poly:
-                if len(ring) >= 3:
-                    p = Polygon(ring).buffer(0)
-                    g = p if g is None else g.symmetric_difference(p)
-        if g is None:
-            continue
-        b = f["properties"].get("buffer_m") or 0
-        shapes.append(g.buffer(b / 111_000) if b else g)
-    return unary_union(shapes)
+    its buffer in metres)."""
+    feats = json.loads(Path(path).read_text())["features"]
+    feats.reverse()
+
+    def shapes():
+        # (Each feature's JSON let go as its rings are read: the outlines aren't held twice.)
+        while feats:
+            f = feats.pop()
+            yield [ring for poly in f["geometry"]["coordinates"] for ring in poly], f["properties"].get("buffer_m") or 0.0
+
+    return EvenOdd(shapes())
 
 
 def keys(path: str | None) -> dict[str, str]:
@@ -362,7 +357,7 @@ def unanswered(c: dict) -> bool:
     return len(w) == 2 and w[0] == "http" and w[1].isdigit() and transient(int(w[1]))
 
 
-def catalogue_feeds(path: str, cover, countries: set[str], country_of: dict[str, str]) -> list[dict]:
+def catalogue_feeds(path: str, cover: EvenOdd, countries: set[str], country_of: dict[str, str]) -> list[dict]:
     """The catalogue's active GTFS feeds of `countries` (as `country_of`, its declaration's `country`,
     corrects them) whose box meets the coverage, in its order."""
     out = []
@@ -374,11 +369,11 @@ def catalogue_feeds(path: str, cover, countries: set[str], country_of: dict[str,
             if row["redirect.id"]:
                 continue
             try:
-                bb = box(float(row["location.bounding_box.minimum_longitude"]), float(row["location.bounding_box.minimum_latitude"]),
-                         float(row["location.bounding_box.maximum_longitude"]), float(row["location.bounding_box.maximum_latitude"]))
+                bb = (float(row["location.bounding_box.minimum_longitude"]), float(row["location.bounding_box.minimum_latitude"]),
+                      float(row["location.bounding_box.maximum_longitude"]), float(row["location.bounding_box.maximum_latitude"]))
             except ValueError:
                 continue
-            if not cover.intersects(bb):
+            if not cover.meets(*bb):
                 continue
             url = row["urls.latest"] or (row["urls.direct_download"] if row["urls.authentication_type"] in ("", "0") else "")
             if not url:
@@ -495,8 +490,8 @@ def serves(d: dict, mode: str) -> bool:
     return not d.get("modes") or mode in d["modes"]
 
 
-def stops_box(path: Path):
-    """The box of a zip's stops (stops.txt), or None when it has none."""
+def stops_box(path: Path) -> tuple[float, float, float, float] | None:
+    """The box of a zip's stops (stops.txt), w, s, e, n, or None when it has none."""
     xs, ys = [], []
     with zipfile.ZipFile(path) as z:
         for s in railgtfs.rows(z, "stops.txt"):
@@ -507,7 +502,7 @@ def stops_box(path: Path):
             if (x, y) != (0.0, 0.0) and -180 <= x <= 180 and -90 <= y <= 90:
                 xs.append(x)
                 ys.append(y)
-    return box(min(xs), min(ys), max(xs), max(ys)) if xs else None
+    return (min(xs), min(ys), max(xs), max(ys)) if xs else None
 
 
 def main():
@@ -687,7 +682,7 @@ def main():
         try:
             with phase("the declared feeds' stops read", "nas-read"):
                 b = stops_box(zip_path(f["id"], rec))
-                if b is None or not cover.intersects(b):
+                if b is None or not cover.meets(*b):
                     return "its stops are beyond the coverage"
                 if not f.get("modes"):
                     with zipfile.ZipFile(zip_path(f["id"], rec)) as z:
