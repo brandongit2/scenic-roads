@@ -220,10 +220,11 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   beneath it (a stored pixel with a value and a class is water whole, any other none), its depth
   their water's mean weighted by share. It's water (class: the most common of its water's by share,
   the least byte of a tie; one source's, never a blend) at half a pixel or more: how the map masks
-  the depth by the basemap's water (`web/src/depth.worker.ts`, a pixel covered half or more). Less
-  keeps its value as the land's band does (class none): the map shows it where it draws water
-  there, so a lake it draws keeps depth, and one speck of fine water in a coarse pixel's thousands
-  makes no water class. With no water, the mean of the land's band; else none. Terrain's analogue:
+  the depth by the basemap's water (`web/src/depth.worker.ts`, a pixel covered half or more). With
+  less, its depth and share are carried while reducing (so specks of water merge into a lake
+  further out) but it's stored with no value, unless the base has water there (the map draws any
+  stored value as the land's band, which would mottle the land between small lakes). With no
+  water, the mean of the land's own band (where its source had one); else none. Terrain's analogue:
   its z8 and coarser rebuilt from children (`terrain_pack`, `REBUILD_Z`).
 - **The water** (`depth::build`, `terrain_water`'s `depth_polys`): the basemap's z6–14 (its z14
   scaled at z15–16), the terrain's sea and lakes and also its rivers (class `river`). A pixel is

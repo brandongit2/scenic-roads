@@ -417,6 +417,8 @@ struct Tiles<'a> {
     made: BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>,
     /// The base packs, read by a piece's job (an assembly's reads only its own tiles).
     base: Option<WorkPacks>,
+    /// In their place, a measure's (`compose_hi`'s `base`).
+    base_on: Option<BaseTile<'a>>,
     decoded: RefCell<HashMap<(u8, u32, u32), Stored>>,
 }
 
@@ -426,6 +428,7 @@ impl<'a> Tiles<'a> {
             out,
             made: BTreeMap::new(),
             base: reads_base.then(WorkPacks::default),
+            base_on: None,
             decoded: RefCell::new(HashMap::new()),
         }
     }
@@ -434,8 +437,9 @@ impl<'a> Tiles<'a> {
         if let Some((d, _)) = self.made.get(&(z, x, y)) {
             return Ok(Some(d.clone()));
         }
-        match &self.base {
-            Some(b) if (3..=8).contains(&z) => {
+        match (&self.base, self.base_on) {
+            (Some(_), Some(f)) if (3..=8).contains(&z) => f(z, x, y),
+            (Some(b), None) if (3..=8).contains(&z) => {
                 let l = base_logical(x >> (z - 3), y >> (z - 3));
                 Ok(b.get(self.out, &l, z, x, y)?.map(|mut p| p.swap_remove(0)))
             }
@@ -689,6 +693,19 @@ impl Px {
         self.d.iter().any(|&v| v < NODATA_MIN)
     }
 
+    /// As a stored tile has it: water under half a pixel (class none, a share) has no value; its
+    /// depth is carried here only to merge it with its neighbours' water zoomed further out. A
+    /// band stays only where its source had one (share 0). None when nothing's left.
+    fn stored(&self) -> Option<Px> {
+        let mut t = self.clone();
+        for i in 0..65536 {
+            if t.f[i] > 0 && t.f[i] < WATER_SHARE && t.c[i] == super::C_NONE {
+                t.d[i] = NODATA;
+            }
+        }
+        t.has_data().then_some(t)
+    }
+
     /// Quadrant `(dx, dy)` scaled up to a tile, each pixel its parent's.
     fn quadrant_up(&self, (dx, dy): (u32, u32)) -> Px {
         let mut out = Px::none(0);
@@ -718,8 +735,8 @@ const KIDS: [(u32, u32); 4] = [(0, 0), (1, 0), (0, 1), (1, 1)];
 /// Child `src` (quadrant `(dx, dy)` of its parent) reduced into `dst`'s quadrant. A pixel's share
 /// of water is the mean of the 2 × 2's; its depth their water's mean weighted by their shares, so a
 /// lake a fraction of a pixel keeps its depth. It's water (its class the most common of its water's
-/// by share, the least byte of a tie) when its share is `WATER_SHARE` or more; with less, its value
-/// stays as the land's band (class none), where the map draws water there anyway. With no water,
+/// by share, the least byte of a tie) when its share is `WATER_SHARE` or more; with less, class
+/// none, its value carried for coarser levels but not stored (`Px::stored`). With no water,
 /// the mean of the land's band (class none); with neither, none. In a mid (`partial`), a pixel with
 /// any of the four `UNCOVERED` is `UNCOVERED`: the base's stands where the mid's tiles don't cover
 /// it whole.
@@ -882,7 +899,7 @@ pub fn compose_base(
                         reduce(t.get_or_insert_with(|| Px::none(0)), k, &Px::decoded(d, c)?, false);
                     }
                 }
-                if let Some(t) = t.filter(Px::has_data) {
+                if let Some(t) = t.and_then(|t| t.stored()) {
                     made.insert((z, x, y), t.encoded()?);
                 }
             }
@@ -968,7 +985,9 @@ pub fn assemble(q: (u32, u32), base: Z8, mid: Z8) -> Result<BTreeMap<(u8, u32, u
             return Ok(None);
         }
         let _p = phase("tiles encoded", Class::Compute);
-        made.insert((z, x, y), t.encoded()?);
+        if let Some(s) = t.stored() {
+            made.insert((z, x, y), s.encoded()?);
+        }
         Ok(Some(t))
     }
     at(base, mid, &mut made, 3, q.0, q.1)?;
@@ -985,7 +1004,7 @@ fn close(rd: Reader, wc: WaterCache) {
 
 /// The piece of z6 tile `t`: its hi packs (z9–16) and its mid; how many tiles.
 pub fn build_hi(out: &mut Out, sources: &[Source], water: &dyn WaterSource, t: (u32, u32)) -> Result<usize> {
-    let made = compose_hi(out, sources, water, t, HI.1)?;
+    let made = compose_hi(out, sources, water, t, HI.1, None)?;
     let mid = mid_of(&made)?;
     put_packs(out, &made, "hi", (6, t.0, t.1))?;
     let _p = crate::timings::phase("packs written", crate::timings::Class::NasWrite);
@@ -994,18 +1013,24 @@ pub fn build_hi(out: &mut Out, sources: &[Source], water: &dyn WaterSource, t: (
     Ok(made.len())
 }
 
+/// A z3–8 tile's depth PNG, by zoom, x and y (None: none).
+pub type BaseTile<'a> = &'a dyn Fn(u8, u32, u32) -> Result<Option<Vec<u8>>>;
+
 /// The piece of z6 tile `t`'s tiles, made, unwritten: z9 to `upto` (at most z16) composed (`upto`
-/// below z16: a measure of part of it).
+/// below z16: a measure of part of it), its capped pixels scaled up from the base packs or, given
+/// `base`, from its z3–8 tiles (a measure's: the stored lo packs, which are the base's z6–8).
 pub fn compose_hi(
     out: &Out,
     sources: &[Source],
     water: &dyn WaterSource,
     t: (u32, u32),
     upto: u8,
+    base: Option<BaseTile>,
 ) -> Result<BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>> {
     let rd = Reader::default();
     let upto = upto.min(HI.1);
     let mut tl = Tiles::new(out, true);
+    tl.base_on = base;
     let mut wc = WaterCache::default();
     let zooms = u64::from(upto.saturating_sub(HI.0) + 1);
     for z in HI.0..=upto {

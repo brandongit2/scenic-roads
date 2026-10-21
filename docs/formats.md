@@ -441,7 +441,8 @@ its zoom; a lo tile wherever a pixel has a value. A missing tile is its nearest 
 scaled up (bilinear for depth, with that ancestor's neighbours' edges; nearest for classes).
 A lo tile's pixel is reduced from the finest depth beneath it (docs/steps.md §3): its depth the
 mean of the water beneath weighted by its share; its class the most common of theirs where water
-covers half the pixel or more, else 0 (a value under less water, or the land's band).
+covers half the pixel or more; with less water no value (the base's where it has water there);
+the land's own band (class 0) kept.
 
 - **`depth`** (encoding `terrarium-png`): metres below the water's surface (the sea's mean level, a
   lake's mean surface), negative; drying heights positive (at most 20 m); +12,000 m where there's

@@ -4043,7 +4043,7 @@ pub fn mark_shared(lines: &mut [Line]) {
 
 /// The steps the checklist counts, in order: the regions' build to the end (the pass's own are the
 /// agent's, before them).
-pub const COUNTED: [&str; 33] = [
+pub const COUNTED: [&str; 34] = [
     "heritage-sites",
     "terrain",
     "terrain-lo",

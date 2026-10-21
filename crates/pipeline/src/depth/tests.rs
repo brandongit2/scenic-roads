@@ -419,14 +419,16 @@ fn a_small_lake_keeps_its_depth_zoomed_out() {
     let (x, y, px, py) = where_(8, 0.61, 0.61);
     let base = work_depth(&out, &base_logical(q.0, q.1), 8, x, y);
     assert!(base.is_none_or(|t| depth_at(&t, px, py) >= NODATA_MIN), "the base has no lake there");
-    for z in [8u8, 5, 3] {
+    for z in [8u8, 5] {
         let (x, y, px, py) = where_(z, 0.61, 0.61);
         let t = tile(&out, LAYER, "lo", (3, q.0, q.1), z, x, y).unwrap_or_else(|| panic!("z{z}"));
         assert!((depth_at(&t, px, py) + 6.0).abs() < 0.05, "z{z}: {}", depth_at(&t, px, py));
-        // (At z3 the lake is under half its pixel: a value, but not water.)
         let c = tile(&out, CLASS_LAYER, "lo", (3, q.0, q.1), z, x, y).unwrap();
-        assert_eq!(class_at(&c, px, py), if z == 3 { C_NONE } else { C_MEASURED | (4 << 4) }, "z{z}");
+        assert_eq!(class_at(&c, px, py), C_MEASURED | (4 << 4), "z{z}");
     }
+    // (At z3 the lake is under half its pixel, with no water of the base's there: no value.)
+    let (x, y, px, py) = where_(3, 0.61, 0.61);
+    assert!(tile(&out, LAYER, "lo", (3, q.0, q.1), 3, x, y).is_none_or(|t| depth_at(&t, px, py) >= NODATA_MIN));
     // The open sea, with nothing finer beneath it, is the base's.
     let (x, y, px, py) = where_(8, 0.45, 0.9);
     let lo = tile(&out, LAYER, "lo", (3, q.0, q.1), 8, x, y).unwrap();
@@ -552,6 +554,26 @@ fn a_mid_meets_the_base_without_a_seam() {
     assert_eq!(at(201, 50), (0.0, C_NONE), "the base's shore band goes on");
     assert_eq!(at(50, 5), (-10.0, C_MEASURED | 0x10), "a mid's band never replaces the base's water");
     assert_eq!(at(100, 7), (-10.0, C_MEASURED | 0x10));
+}
+
+/// Task #532 re-review: a mid's water under half a pixel where the base has no water has no value
+/// (else the map would draw it as the land's band between every small lake); the land's own band
+/// (share 0) stays.
+#[test]
+fn under_half_water_without_the_bases_has_no_value() {
+    use super::build::{assemble, Px};
+    let mut mid = Px::none(C_NONE);
+    (mid.d[0], mid.c[0], mid.f[0]) = (-3.0, C_NONE, 64);
+    (mid.d[1], mid.c[1], mid.f[1]) = (0.5, C_NONE, 0);
+    (mid.d[2], mid.c[2], mid.f[2]) = (-4.0, 0x11, 255);
+    let m = vec![
+        fall::encode(&Grid::F(mid.d.clone())).unwrap(),
+        fall::encode(&Grid::C(mid.c.clone())).unwrap(),
+        fall::encode(&Grid::C(mid.f.clone())).unwrap(),
+    ];
+    let got = assemble((0, 0), &|_, _| Ok(None), &|x, y| Ok(((x, y) == (0, 0)).then(|| m.clone()))).unwrap();
+    let (d, _) = &got[&(8, 0, 0)];
+    assert_eq!([depth_at(d, 0, 0), depth_at(d, 1, 0), depth_at(d, 2, 0)], [NODATA, 0.5, -4.0]);
 }
 /// Task #398: an assembly's and a piece's run are timed by stage (no hour of "(untimed)"): the
 /// sources' files opened and windows read, the water read, composing and within it feathering
@@ -857,7 +879,7 @@ fn measure_a_real_assembly() {
     let made = if z == 3 {
         super::build::compose_base(&out, &srcs, &water, q, upto).unwrap()
     } else {
-        super::build::compose_hi(&out, &srcs, &water, q, upto).unwrap()
+        super::build::compose_hi(&out, &srcs, &water, q, upto, None).unwrap()
     };
     let wall = t0.elapsed().as_secs_f64();
     let r = crate::timings::snapshot(true).unwrap();
@@ -924,12 +946,32 @@ fn measure_a_real_lo() {
     let t0 = std::time::Instant::now();
     let before = read("lo", (3, q.0, q.1));
     let read_lo = t0.elapsed().as_secs_f64();
+    // (`SCENIC_DEPTH_FRESH="x/y …"`: z6 tiles composed afresh, not read from their stored hi packs.)
+    let fresh: Vec<String> =
+        std::env::var("SCENIC_DEPTH_FRESH").unwrap_or_default().split_whitespace().map(str::to_string).collect();
+    let mut fresh_from = None;
     let (mut mids, mut mid_s, mut read_s, mut hi_tiles, mut pieces) =
         (std::collections::BTreeMap::new(), 0.0, 0.0, 0usize, 0);
     for tx in q.0 * 8..q.0 * 8 + 8 {
         for ty in q.1 * 8..q.1 * 8 + 8 {
             let t1 = std::time::Instant::now();
-            let made = read("hi", (6, tx, ty));
+            let made = if fresh.contains(&format!("{tx}/{ty}")) {
+                // (Composed afresh from the sources, read only, its capped pixels from the stored
+                // lo pack: the base's z6–8.)
+                let lo = |z: u8, x: u32, y: u32| Ok(before.get(&(z, x, y)).map(|p| p.0.clone()));
+                let (srcs, water) = fresh_from.get_or_insert_with(|| {
+                    crate::sys::raise_open_files();
+                    (
+                        grids::declared(out.root(), &out.manifest).unwrap(),
+                        crate::terrain_pack::open_water(&out).unwrap(),
+                    )
+                });
+                let m = super::build::compose_hi(&out, srcs, water, (tx, ty), super::build::HI.1, Some(&lo)).unwrap();
+                println!("6/{tx}/{ty} composed afresh: {} tiles in {:.0} s", m.len(), t1.elapsed().as_secs_f64());
+                m
+            } else {
+                read("hi", (6, tx, ty))
+            };
             read_s += t1.elapsed().as_secs_f64();
             if made.is_empty() {
                 continue;
@@ -959,7 +1001,7 @@ fn measure_a_real_lo() {
         after.len()
     );
     // (Drawn: the water's depth on a log ramp of blues to 300 m, a drying height or a value of
-    // class none (the land's band, water under half a pixel) light sand, none grey.)
+    // class none (the land's band) light sand, none grey.)
     let colour = |v: f32, c: u8| -> [u8; 3] {
         if v >= NODATA_MIN {
             [200, 200, 200]

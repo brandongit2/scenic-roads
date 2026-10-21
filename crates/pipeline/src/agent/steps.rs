@@ -180,7 +180,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, World, Z3, Z6, Z8};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 52] = [
+pub const TABLE: [Step; 53] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
