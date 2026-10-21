@@ -12,13 +12,14 @@
 //! - **The view** (`View`, in the agent's status): the lead and its term; each member, read by id
 //!   from its heartbeat (never listed), with its state and whether the lead can be handed to it,
 //!   and why not; what a takeover from this Mac needs; a handover under way; "no lead", and why; the
-//!   proactive offer (§6.5); the ask's state; the last change of lead in words. Made again every
+//!   the ask's state; the last change of lead in words. Made again every
 //!   `VIEW_S`, and at once after an ask or a change. A lead whose heartbeat is out of touch while its
 //!   coordinator answered this Mac lately (`ANSWERED_S`) is late, not gone (`View::quiet`): no "no
 //!   lead", and no takeover unforced.
-//! - **The proactive offer, automatic** when the owner turns it on (`AUTO` on the NAS, `scenic lead
-//!   auto on`): the lead asks the handover itself once the offer has stood `AUTO_AFTER_S`, never
-//!   while a handover or an ask is under way, nor within `CALM_S` of the last change of lead (`auto`).
+//! - **The lead's battery low** (§6.5): a lead on battery below `cond::BATTERY_MIN` asks to hand
+//!   the lead to a member that can lead (`low_battery`), as the owner's ask would; again every
+//!   `BATTERY_AGAIN_S` while it still leads so. The app is otherwise not smart about who leads: the
+//!   owner hands the lead over by hand.
 //! - **The history** (`notes`): each term made (handed over, taken back, taken over, re-asserted),
 //!   stepped down from, and a handover's offer, end, giving up or drop, as `term` events: into the
 //!   lead's coordinator's history (the build page's activity, and the NAS's history per writer
@@ -34,13 +35,11 @@ use crate::pool::{reachable, term};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// The owner's switch for the proactive offer to be taken by itself, on the NAS (off while missing).
-pub const AUTO: &str = "state/pool/auto-handover";
-/// How long the offer stands before the lead takes it by itself, the switch on (s).
-pub const AUTO_AFTER_S: u64 = 300;
-/// No automatic handover within this of the last change of lead, or of the last automatic ask (s):
-/// so the lead can't flap between two Macs on the edge of their conditions.
+/// No handover away from an unreachable lead (`away`) within this of its last such ask (s).
 pub const CALM_S: u64 = 1800;
+/// A lead on battery below `cond::BATTERY_MIN` asks to hand the lead over again this often while it
+/// still leads so (s): its last ask came to nothing (none could take it, or the handover failed).
+pub const BATTERY_AGAIN_S: u64 = 300;
 /// No lead for this long (by this Mac's clock: since the lead was last heard from, or since this
 /// Mac first saw the term unreadable or the lead stood down) is an alert, on every view (s).
 pub const ALERT_S: u64 = 3600;
@@ -106,10 +105,10 @@ pub struct Kept {
     pub asked: Option<Asked>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change: Option<Change>,
-    /// The offer as first seen standing (its target, since when), and the last automatic ask.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub offered: Option<(String, u64)>,
-    pub auto_at: u64,
+    /// The last time this Mac, leading on a battery below `cond::BATTERY_MIN`, asked to hand the
+    /// lead over (`low_battery`).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub battery_at: u64,
     /// The last time this Mac, leading while members couldn't reach it, asked to hand the lead
     /// away (`away`).
     #[serde(skip_serializing_if = "is_zero")]
@@ -191,14 +190,6 @@ pub struct Handing {
     pub since: u64,
 }
 
-/// The proactive offer (§6.5): the lead is away or on battery, and another member is home on power.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Offer {
-    pub to: String,
-    pub host: String,
-    pub why: String,
-}
-
 /// The pool, as the controls show it (in the agent's status: `PoolView::lead`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -238,10 +229,6 @@ pub struct View {
     /// coordinator is unreachable from m4: connection timed out (…)".
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unreached: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub offer: Option<Offer>,
-    /// The offer is taken by itself (`AUTO`).
-    pub auto: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asked: Option<Asked>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -381,8 +368,8 @@ pub fn take(run: &mut Run, home: &Path) {
 }
 
 /// After a step: the ask's state followed, the last change of lead noted, the history's terms
-/// written, the view made again when due, and (the lead, the owner's switch on) the offer taken by
-/// itself. `coord`: this process's coordinator (the lead's), whose history the terms go to.
+/// written, the view made again when due, and the lead handed away by itself when its members can't
+/// reach it (`away`) or its battery is low (`low_battery`). `coord`: this process's coordinator (the lead's), whose history the terms go to.
 pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&crate::coord::Coordinator>) {
     let now = run.side.now();
     let dir = home.join("pool");
@@ -456,8 +443,7 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
     // The view.
     let due = run.controls.stale || run.controls.view.as_ref().is_none_or(|v| now.abs_diff(v.at) >= VIEW_S);
     if due {
-        let auto = run.side.nas().exists(AUTO).unwrap_or(false);
-        let mut v = view(run, auto);
+        let mut v = view(run);
         alert(&mut v, &mut run.controls.kept, now);
         run.controls.view = Some(v);
         run.controls.stale = false;
@@ -488,21 +474,20 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
             eprintln!("pool: members can't reach this Mac's coordinator ({why}): handing the lead to {host}, which they reach");
         }
     }
-    // The offer, taken by itself (the lead's, the switch on).
-    if let Some(v) = run.controls.view.clone() {
-        let going = run.controls.kept.asked.as_ref().is_some_and(|a| matches!(a.state, State::Going | State::Passed));
-        let last_change = v.lead.as_ref().map_or(0, |l| l.since);
-        if v.leading {
-            if let Some(to) =
-                auto(v.offer.as_ref(), v.auto, &mut run.controls.kept, now, last_change, going || v.handing.is_some())
-            {
-                let host = host_of(run, &to);
-                let by = format!("the pool by itself ({})", v.offer.as_ref().map_or(String::new(), |o| o.why.clone()));
-                run.controls.page.push(LeadRequest { ask: LeadAsk::Give { to: to.clone() }, by: by.clone(), at: now });
-                eprintln!("pool: the offer stood {} min: handing the lead to {host} by itself", AUTO_AFTER_S / 60);
-            }
-        } else {
-            run.controls.kept.offered = None;
+    // The lead's battery below the threshold: the lead to a member that can lead.
+    if let Some(v) = run.controls.view.clone().filter(|v| v.leading) {
+        let going = run.controls.kept.asked.as_ref().is_some_and(|a| matches!(a.state, State::Going | State::Passed))
+            || v.handing.is_some();
+        if let Some(to) = low_battery(&v, &mut run.controls.kept, now, going) {
+            let host = host_of(run, &to);
+            let pct = v.members.iter().find(|m| m.me).and_then(|m| m.conds).and_then(|c| c.battery).unwrap_or(0);
+            let why = format!("its battery at {pct} %, below {} %", crate::agent::cond::BATTERY_MIN);
+            run.controls.page.push(LeadRequest {
+                ask: LeadAsk::Give { to: to.clone() },
+                by: format!("the pool by itself ({why})"),
+                at: now,
+            });
+            eprintln!("pool: this Mac leads with {why}: handing the lead to {host}");
         }
     }
     run.controls.save(&dir);
@@ -599,7 +584,7 @@ fn lead_answered(run: &Run, now: u64) -> Option<u64> {
 }
 
 /// The view, made now.
-fn view(run: &Run, auto: bool) -> View {
+fn view(run: &Run) -> View {
     let side = &run.side;
     let now = side.now();
     let me = side.member().id.clone();
@@ -723,7 +708,6 @@ fn view(run: &Run, auto: bool) -> View {
         let t = side.takeover();
         Takeover { refused: t.refused, force: t.force, downgrade: t.downgrade }
     });
-    let offer = offer(lead_beat.as_ref(), &members);
     let unreached = members
         .iter()
         .flat_map(|m| reachable::unreached(&pool_beats, &m.member, now).into_iter().map(move |(b, r)| (m, b, r)))
@@ -756,8 +740,6 @@ fn view(run: &Run, auto: bool) -> View {
         short: side.driver().unread_since().is_some(),
         handing,
         unreached,
-        offer,
-        auto,
         asked: run.controls.kept.asked.clone(),
         change: run.controls.kept.change.clone(),
     }
@@ -875,51 +857,20 @@ fn span(s: u64) -> String {
 /// What the owner does about a coordinator members can't reach (docs/pool.md §6.8).
 pub const OWNER_STEPS: &str = "On the Mac named: check it is awake, on the network and its agent running; then allow Scenic in System Settings › Network › Firewall (Options…), or turn the firewall off. Until then the lead stays off it";
 
-/// The proactive offer (§6.5): the lead's heartbeat says it's away from home or on battery, no
-/// handover is under way, and another member is home on power, able to lead, and the lead can be
-/// handed to it: the first such, by host.
-pub fn offer(lead: Option<&Heartbeat>, members: &[Member]) -> Option<Offer> {
-    let l = lead?;
-    let c = l.conds?;
-    if (c.home && c.ac) || l.pool.handing_to.is_some() || l.pool.leads.is_none() {
+/// The lead's battery low (docs/pool.md §6.5): this Mac leads on battery below
+/// `cond::BATTERY_MIN` (its heartbeat's conditions), nothing under way (`busy`: a handover, an
+/// ask), its last such ask `BATTERY_AGAIN_S` ago or more (`kept.battery_at`). To the first member
+/// that can lead (`Member::can_lead`), by host, as a lead paused or quitting hands it; none:
+/// nothing, and it keeps leading. The ask's time is kept.
+pub fn low_battery(v: &View, kept: &mut Kept, now: u64, busy: bool) -> Option<String> {
+    let me = v.members.iter().find(|m| m.me)?.conds?;
+    let low = !me.ac && me.battery.is_some_and(|b| b < crate::agent::cond::BATTERY_MIN);
+    if !v.leading || !low || busy || now.saturating_sub(kept.battery_at) < BATTERY_AGAIN_S {
         return None;
     }
-    let why =
-        if !c.home { format!("{} is away from home", l.pool.host) } else { format!("{} is on battery", l.pool.host) };
-    members
-        .iter()
-        .filter(|m| !m.leads && m.can_lead && m.conds.is_some_and(|c| c.home && c.ac && c.able))
-        .min_by(|a, b| a.host.cmp(&b.host))
-        .map(|m| Offer { to: m.member.clone(), host: m.host.clone(), why })
-}
-
-/// The offer taken by itself (the owner's switch, `on`): its target once the same offer has stood
-/// `AUTO_AFTER_S` (`kept.offered`: since when), nothing under way (`busy`: a handover, an ask), the
-/// last change of lead (`last_change`: the current term's start) and the last automatic ask
-/// `CALM_S` ago or more. The ask's time is kept.
-pub fn auto(
-    offer: Option<&Offer>,
-    on: bool,
-    kept: &mut Kept,
-    now: u64,
-    last_change: u64,
-    busy: bool,
-) -> Option<String> {
-    let Some(o) = offer else {
-        kept.offered = None;
-        return None;
-    };
-    if kept.offered.as_ref().is_none_or(|(to, _)| *to != o.to) {
-        kept.offered = Some((o.to.clone(), now));
-    }
-    let since = kept.offered.as_ref().map_or(now, |(_, t)| *t);
-    let calm = now.saturating_sub(last_change) >= CALM_S && now.saturating_sub(kept.auto_at) >= CALM_S;
-    if !on || busy || !calm || now.saturating_sub(since) < AUTO_AFTER_S {
-        return None;
-    }
-    kept.auto_at = now;
-    kept.offered = None;
-    Some(o.to.clone())
+    let to = v.members.iter().find(|m| !m.me && !m.leads && m.can_lead)?;
+    kept.battery_at = now;
+    Some(to.member.clone())
 }
 
 /// The step's events of the terms, as the history notes them (kind `term`, `worker` this Mac's
@@ -1091,14 +1042,6 @@ pub fn said(v: &View, now: u64) -> Vec<String> {
     if !v.unreached.is_empty() {
         out.push(OWNER_STEPS.to_string());
     }
-    if let Some(o) = &v.offer {
-        out.push(format!(
-            "Offer: hand the build to {} ({}){}",
-            o.host,
-            o.why,
-            if v.auto { "; taken by itself after five minutes (auto on)" } else { "" }
-        ));
-    }
     if let Some(t) = &v.takeover {
         if v.no_lead.is_some() || t.refused.is_none() {
             let needs: Vec<String> = [
@@ -1234,68 +1177,38 @@ mod tests {
     }
 
     #[test]
-    fn the_offer_when_the_lead_is_away_or_on_battery() {
-        let mut lead = hb("mini", 100, Some(HOME));
-        lead.pool.leads = Some(3);
-        let ms =
-            [member("air", HOME, true), member("pro", Conds { ac: false, ..HOME }, true), member("zed", HOME, false)];
-        assert_eq!(offer(Some(&lead), &ms), None, "the lead home on power: none");
-        lead.conds = Some(Conds { ac: false, ..HOME });
-        assert_eq!(
-            offer(Some(&lead), &ms),
-            Some(Offer { to: "m-air".into(), host: "air".into(), why: "mini is on battery".into() })
-        );
-        lead.conds = Some(Conds { home: false, ..HOME });
-        assert!(offer(Some(&lead), &ms).is_some_and(|o| o.why.contains("away")));
-        // None to take it: on battery, or the lead can't be handed to it; a handover already under way.
-        assert_eq!(offer(Some(&lead), &ms[1..]), None);
-        lead.pool.handing_to = Some(crate::pool::beat::HandingTo {
-            to: "m-air".into(),
-            term: 3,
-            offer: 1,
-            since: 1,
-            stage: Stage::Offered,
-        });
-        assert_eq!(offer(Some(&lead), &ms), None);
-        // A lead whose app says nothing of its conditions offers nothing.
-        assert_eq!(offer(Some(&hb("mini", 100, None)), &ms), None);
-    }
-
-    #[test]
-    fn the_offer_is_taken_by_itself_only_switched_on_after_it_stood_and_never_flapping() {
-        let o = Offer { to: "m-air".into(), host: "air".into(), why: "mini is on battery".into() };
+    fn the_lead_hands_over_only_below_the_battery_threshold() {
+        let lead = |c: Conds| Member { me: true, leads: true, ..member("mini", c, false) };
+        let v = |c: Conds| View {
+            leading: true,
+            members: vec![lead(c), member("air", HOME, true), member("zed", HOME, false)],
+            ..Default::default()
+        };
         let t0 = 1_000_000;
-        let mut k = Kept::default();
-        // Off: never.
-        for dt in [0, 300, 3000] {
-            assert_eq!(auto(Some(&o), false, &mut k, t0 + dt, 0, false), None);
+        let low = Conds { ac: false, battery: Some(crate::agent::cond::BATTERY_MIN - 1), ..HOME };
+        // Home on power, on battery at or above the threshold, away from home with the NAS: nothing.
+        for c in [
+            HOME,
+            Conds { ac: false, battery: Some(crate::agent::cond::BATTERY_MIN), ..HOME },
+            Conds { ac: false, battery: Some(54), ..HOME },
+            Conds { home: false, ..HOME },
+            Conds { home: false, ac: false, battery: Some(80), ..HOME },
+        ] {
+            assert_eq!(low_battery(&v(c), &mut Kept::default(), t0, false), None, "{c:?}");
         }
-        // On: once it stood five minutes.
+        // Below it: to the member that can lead.
         let mut k = Kept::default();
-        assert_eq!(auto(Some(&o), true, &mut k, t0, 0, false), None);
-        assert_eq!(auto(Some(&o), true, &mut k, t0 + 299, 0, false), None);
-        assert_eq!(auto(Some(&o), true, &mut k, t0 + 300, 0, false), Some("m-air".into()));
-        // The flap guard: the lead moved (a term begun at t0 + 360); the new lead on battery at once,
-        // the offer back to mini: not within half an hour of the change, nor of the last ask.
-        let back = Offer { to: "m-mini".into(), host: "mini".into(), why: "air is on battery".into() };
-        let change = t0 + 360;
-        let mut k2 = Kept::default();
-        for dt in [400, 700, 1000, 2000] {
-            assert_eq!(auto(Some(&back), true, &mut k2, t0 + dt, change, false), None, "at {dt}");
-        }
-        assert_eq!(auto(Some(&back), true, &mut k2, change + CALM_S, change, false), Some("m-mini".into()));
-        // The same process: its own last automatic ask holds it too.
-        let mut k3 = Kept { auto_at: t0, ..Default::default() };
-        assert_eq!(auto(Some(&o), true, &mut k3, t0 + 10, 0, false), None);
-        assert_eq!(auto(Some(&o), true, &mut k3, t0 + CALM_S - 1, 0, false), None);
-        assert_eq!(auto(Some(&o), true, &mut k3, t0 + CALM_S, 0, false), Some("m-air".into()));
-        // Not while a handover or an ask is under way; the offer gone, its time starts again.
-        let mut k4 = Kept::default();
-        auto(Some(&o), true, &mut k4, t0, 0, false);
-        assert_eq!(auto(Some(&o), true, &mut k4, t0 + 600, 0, true), None);
-        assert_eq!(auto(None, true, &mut k4, t0 + 601, 0, false), None);
-        assert_eq!(auto(Some(&o), true, &mut k4, t0 + 602, 0, false), None);
-        assert_eq!(auto(Some(&o), true, &mut k4, t0 + 902, 0, false), Some("m-air".into()));
+        assert_eq!(low_battery(&v(low), &mut k, t0, false), Some("m-air".into()));
+        assert_eq!(k.battery_at, t0);
+        // Asked again only after a while; not while a handover or an ask is under way; not as a member.
+        assert_eq!(low_battery(&v(low), &mut k, t0 + BATTERY_AGAIN_S - 1, false), None);
+        assert_eq!(low_battery(&v(low), &mut k, t0 + BATTERY_AGAIN_S, true), None);
+        assert_eq!(low_battery(&v(low), &mut k, t0 + BATTERY_AGAIN_S, false), Some("m-air".into()));
+        assert_eq!(low_battery(&View { leading: false, ..v(low) }, &mut Kept::default(), t0, false), None);
+        // None can lead: nothing.
+        let mut none = v(low);
+        none.members.retain(|m| m.me || !m.can_lead);
+        assert_eq!(low_battery(&none, &mut Kept::default(), t0, false), None);
     }
 
     #[test]
@@ -1897,44 +1810,33 @@ mod tests {
         }
 
         #[test]
-        fn the_offer_on_battery_taken_by_itself_once_switched_on() {
+        fn a_lead_on_battery_hands_over_by_itself_only_below_the_threshold() {
             let d = tempfile::tempdir().unwrap();
             let (mut a, mut b) = pool(d.path());
-            let ib = b.id();
-            // Half an hour on since term 1 began; A on battery: B is offered, on every Mac's view.
-            pass_all(&mut [&mut a, &mut b], CALM_S);
-            a.conds = Conds { ac: false, battery: Some(40), ..HOME };
-            until(&mut [&mut a, &mut b], |m| m[1].view().offer.is_some());
-            let o = b.view().offer.unwrap();
-            assert_eq!((o.to.as_str(), o.why.ends_with("is on battery")), (ib.as_str(), true));
-            // The switch off: five minutes on, nothing.
-            pass_all(&mut [&mut a, &mut b], AUTO_AFTER_S + 30);
-            for _ in 0..3 {
-                a.go();
-                b.go();
+            // On battery above the threshold, or away from home with the NAS: A keeps the lead.
+            for c in [Conds { ac: false, battery: Some(40), ..HOME }, Conds { home: false, able: false, ..HOME }] {
+                a.conds = c;
+                pass_all(&mut [&mut a, &mut b], 3600);
+                for _ in 0..4 {
+                    a.go();
+                    b.go();
+                }
+                assert_eq!(a.run.side.driver().leads(), Some(1), "{c:?}");
             }
-            assert_eq!(a.run.side.driver().leads(), Some(1));
-            // On: once the offer stood five minutes, the lead hands over by itself.
-            std::fs::write(a.root.join(AUTO), "").unwrap();
+            // Below it: handed to B by itself.
+            a.conds = Conds { ac: false, battery: Some(crate::agent::cond::BATTERY_MIN - 1), able: false, ..HOME };
             pass_all(&mut [&mut a, &mut b], VIEW_S);
-            a.go();
-            assert!(a.view().auto, "read with the view, every half minute");
-            pass_all(&mut [&mut a, &mut b], AUTO_AFTER_S);
             until(&mut [&mut a, &mut b], |m| m[1].run.side.driver().leads() == Some(2));
-            assert!(a.asked().by.starts_with("the pool by itself"), "{:?}", a.asked());
-            // B, its new lead, at once on battery too: no offer back for half an hour.
+            assert!(a.asked().by.starts_with("the pool by itself (its battery at 29 %"), "{:?}", a.asked());
+            // B, its new lead, on battery above the threshold: no handing back.
             b.conds = Conds { ac: false, battery: Some(40), ..HOME };
             a.conds = HOME;
-            a.go();
-            b.go();
-            pass_all(&mut [&mut a, &mut b], VIEW_S);
-            until(&mut [&mut a, &mut b], |m| m[1].view().offer.is_some());
-            pass_all(&mut [&mut a, &mut b], AUTO_AFTER_S + 60);
+            pass_all(&mut [&mut a, &mut b], 3600);
             for _ in 0..4 {
                 a.go();
                 b.go();
             }
-            assert_eq!(b.run.side.driver().leads(), Some(2), "no flapping back");
+            assert_eq!(b.run.side.driver().leads(), Some(2));
         }
 
         #[test]

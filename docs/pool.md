@@ -168,35 +168,28 @@ Leases keep their ids (`<term>-<n>`) and wall-clock deadlines across the handove
 the old lead's included, renews with B (§7.6). A lead with journal entries left to read gives up a
 handover (to be asked again).
 
-**The strongest Mac leads.** Besides the owner's asks, the lead asks itself to hand over, through
-the same stages, to the member with the highest capacity score (`handover::score`, from #237's
-`crate::coord::Capacity`: its own measured each loop, a member's the last its asks carried,
-whatever its age (`Coordinator::last_capacities`; a busy member asks nothing for long), the newest
-of a host's slots, left out once the member's heartbeat is out of touch; placement keeps to
-`CAP_FRESH_S`). The score is the memory guard's limit (4 points a GB) plus its cores (8 each), scaled
-down by free disk below 50 GB (none: 0), halved while its owner uses it, and on battery scaled by
-half its charge; away from home or without the NAS, 0. Its jobs' load isn't counted, so the free
-disk is taken before its jobs' reservations (free space less the room target; an older app's
-`disk_mb`): a busy lead whose jobs
-reserved its room once scored 0 and offered the lead to any idle Mac (#491). No Mac is named: a member is offered the
-lead when its score beats the lead's by 25 % and at least 16 points (`handover::beats`) at every
-look for 5 minutes (`PREFER_S`), and `Driver::hand_to` lets it. The margin holds both ways, so a
-score moving less than that doesn't hand the lead back; an offer that comes to nothing is made
-again only after twice as long each time (10, 20, then 40 minutes). Lead-only work weighs the
-members' memory guard limits (#491): the lead's last plan notes the most a target of a step only the
-lead runs (the non-shared steps), planned or held by the guard, is expected to take: the larger of
-its floor and its measured peak, which survives `scenic pool floors --clear` (`Agent::lead_need`).
-Targets no Mac's limit fits don't count (they wait whoever leads, and would hide those one can run:
-`handover::lead_need`). With the lead's limit fitting it, a member whose limit doesn't
-(or isn't known) is never offered the lead, whatever it scores; with the lead's short of it, only
-members whose limit fits it count, and the best of them is offered the lead whatever the scores
-(seen so for 5 minutes, as any: `handover::fits_lead_work`). So the lead goes to a Mac that can run
-the waiting heritage or buildings' sources, never away from one. Never while a lead-only job
-(`agent::every::LEAD_ONLY`, or a duty) runs on the lead, a handover is under way, or entries wait to
-be read whole (it couldn't settle). The lead's log says each such offer, with both scores. So a
-weaker Mac that got the lead (the owner's ask, a takeover, or a lead whose update waited on its job
-handing to a member already on the new app, §7.6) offers it back to the stronger within minutes of
-that one running the same app.
+**Who leads is the owner's call.** The app isn't smart about who leads: no capacity score, no
+offer of its own. The owner hands the lead over by hand (§6.3) when about to leave. The lead moves
+by itself only on these four triggers, each to a member that can lead (home, on power or charged
+past `cond::BATTERY_MIN`, not paused, room past its disk target, an app the rule allows, reachable):
+
+1. **Its battery below `cond::BATTERY_MIN`** (30 %): the lead, on battery under it by its own
+   heartbeat's conditions, asks to hand over to the first member that can lead, by host
+   (`agent::lead::low_battery`), through the stages above; asked again every `BATTERY_AGAIN_S`
+   (5 min) while it still leads so. None can: it keeps leading. On battery at or above it, or away
+   from home with the NAS, it keeps the lead.
+2. **Uncontactable:** its heartbeat stops (asleep, offline, crashed, the app quit, the build
+   paused): taken over as silent (§6.5). A lead quitting or paused alone first hands the lead over
+   itself (`Agent::hand_for_quit`, `hand_for_hold`), and one its members can't reach hands it to one
+   they can (§6.8).
+3. **It lost the NAS while online** (away, reachable over Tailscale, its share gone): it can't write
+   its heartbeat, and its coordinator's answers stop saying its term (`Coordinator::set_member(None)`),
+   so members don't count it late: taken over as silent (§6.5).
+4. **It stood down** (§6.6): taken over after `STOOD_DOWN_S` (§6.5).
+
+A lead whose update waits on its jobs hands the lead to a member already on the new app (§7.6).
+Lead-only work that doesn't fit the lead's memory limit waits; its status line names a member whose
+limit fits it, for the owner to hand the lead over by hand if wanted (§7.2, Floors).
 
 ### 6.5 Taking over (the lead is gone)
 
@@ -242,10 +235,6 @@ that one running the same app.
   overtaken; the files it alone named go to GC. A stale lead's step already under way when the new
   term was made may write today's three files from its older records on one or more steps, until the new
   lead's next save. So: rarely, some work is built twice; nothing is corrupted.
-- **A proactive offer** (`crate::agent::lead::offer`) before it comes to that: when the lead is
-  away or on battery and another member is home on power, every control offers "Hand the Build to
-  <Mac>". With `scenic lead auto on` (`state/pool/auto-handover`) the lead hands over by itself
-  once the offer has stood five minutes, not within half an hour of the last change.
 - **A lead that stood down** (§6.6) is taken over automatically after `STOOD_DOWN_S` (2 min) by a
   member that can lead and whose app the rule allows; candidates try in turn (newest app, then
   lowest id), the create-new deciding.
@@ -273,8 +262,9 @@ its heartbeat), so another member takes over (§6.5). Every step it also checks 
   loop steps it about every 20 s, and the pool's own thread steps it when that loop has been quiet
   for `QUIET_S` (25 s). Jobs and the coordinator's start/stop stay with the loop. A tick held past
   `STALL_S` is taken as hung on the share: the lead grants nothing and the status says so.
-- **Late, not gone:** every coordinator answer carries `x-pool-term` and `x-pool-member`; a lead
-  whose heartbeat is stale but whose coordinator answered within `ANSWERED_S` is shown as late.
+- **Late, not gone:** every coordinator answer carries `x-pool-term` and `x-pool-member`, except
+  while its Mac has lost the NAS; a lead whose heartbeat is stale but whose coordinator answered
+  with them within `ANSWERED_S` is shown as late, and isn't taken over by itself.
 - **The lead stays awake** (`caffeinate -i`) while it leads with leases out.
 
 ### 6.8 Reaching the lead
@@ -591,8 +581,8 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   (`floors.json`, and the pool's state), rising only, tagged with whether it ran alone and the
   step's `cost_version`. A target's predicted memory is never below its floor. A target whose
   floor exceeds this Mac's limit goes to a Mac with room; past every Mac's, it waits; for a lead-only
-  step, the status names a member with room, which the lead offers the lead within minutes (§6.4),
-  or `scenic lead give`. `scenic pool floors [--clear
+  step, the status names a member with room, for the owner to hand the lead to by hand
+  (`scenic lead give`) if wanted. `scenic pool floors [--clear
   [<step> [<target>]]]` lists or clears them.
 
 ### 7.3 Results: the journal
@@ -864,8 +854,8 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
 - **Views** (menu bar, worker page, `scenic lead`, `scenic status`) read the
   agent's `pool.lead` (`crate::agent::lead::View`) or the fresher `agent/pool/view.json`
   (`lead::own_status`): each member's state and whether the lead can be handed to it
-  (`Driver::hand_to`), what a takeover needs (`Driver::takeover`), "no lead" and why, the offer, the
-  last ask and change of lead.
+  (`Driver::hand_to`), what a takeover needs (`Driver::takeover`), "no lead" and why, the last ask
+  and change of lead.
 - **The alert** (`lead::alert`, `ALERT_S`: an hour with no lead) says no Mac took it over by itself
   (none could lead, or the app rule refused) and names the command to take over; the menu bar
   notifies once.
@@ -878,7 +868,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
 
 - **Menu bar:** on the lead, "Hand the Build To ▸" with each member's state (greyed with why); on a
   member, "Make This Mac Lead", or "Take Over the Build…" with no lead in touch (says what it forces
-  or downgrades); the proactive offer; Pause/Resume.
+  or downgrades); Pause/Resume.
 - **Worker page:** "Make lead" per member, a handover's progress, "Take it" (unforced). On a Mac not
   leading these, and Pause, are this Mac's own page's alone (its viewer or broker answers none from
   elsewhere): its agent passes them on (the pause as its menu's, `crate::control::request`; the
@@ -897,9 +887,8 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   that message leaves the member's last few sent (`KEPT`); and a member rolled back reads its own
   `mail.json` (its sent messages) as empty, so it may take messages again.
 - **`scenic lead`**: shows the pool; `scenic lead give <member>`, `scenic lead take [--force]
-  [--downgrade]`, `scenic lead auto on|off`. `scenic status` shows the pool too. The owner's give
-  isn't weighed against lead-only work; the lead's proactive offer (§6.4) is, so a lead given to a
-  Mac whose limit can't fit lead-only work waiting offers it back to one whose limit can.
+  [--downgrade]`. `scenic status` shows the pool too. No control offers a handover by itself: the
+  owner's give is the only way the lead moves short of §6.4's four triggers.
 - **Forcing stays on the Mac:** `/work/lead` refuses forced takeovers.
 - **Cancelling a job** (`crate::control::Cancel`): `scenic job cancel <target> [--step <step>]
   [--rerun-after-update]`, or the menu bar's "Cancel <job>" on the Mac running it (Option: "…,
@@ -945,7 +934,7 @@ run, claims, the named writer (`SCENIC_BUILD_MAC`), the NAS's hand-off folders, 
 writes.
 
 Still behind switches under `state/pool/` (a file; off while missing unless noted):
-`slots` (§7.6), `resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2), `auto-handover` (§6.5),
+`slots` (§7.6), `resume` (§7.2, §7.4), `brokers` (§8), `placement` (§7.2),
 `memory-guard` (on while missing). A new switch is made only once every
 member's heartbeat shows the app that has it. The old files `state/pool/enabled` and
 `state/pool/shadow` stay on the NAS while an older app may read them.
@@ -1018,7 +1007,7 @@ tiles (`pack_raw_with`) stays inside the piece's job.
 
 - **Automatic takeover** of a lead that stood down, or that went silent for `SILENT_S` (#435, 19
   Oct: a lead restarted to its FileVault login screen left the pool without a lead for 85 min);
-  before that, the proactive offer, automatic only when the owner turns it on.
+  the lead otherwise moves only by the owner's hand, its battery low, or the NAS lost (§6.4, #497).
 - **`tailscale serve` on every Mac** (`tailscale serve --bg 8090`) gives pages HTTPS; the agent
   finds it via `tailscale serve status --json` and puts it in its heartbeat. Without it, plain HTTP
   on the tailnet reaches every member, and an HTTPS page reaches only members with HTTPS. The

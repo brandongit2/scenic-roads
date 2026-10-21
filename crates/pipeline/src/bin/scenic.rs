@@ -13,8 +13,6 @@
 //!                                       of touch or stood down; --force with it in touch, past a
 //!                                       term that can't be read, or over this Mac's own handover;
 //!                                       --downgrade on an app older than the term's
-//!   scenic lead auto on|off             the proactive offer taken by itself (the lead away or on
-//!                                       battery five minutes, another Mac home on power)
 //!   scenic pause [--now] | resume       pause the whole build (every Mac's jobs stop at their next
 //!                                       safe point; --now: frozen at once), or let it go on
 //!   scenic pause --here | <member>      pause one Mac alone (this one, or a member by host name or
@@ -205,24 +203,6 @@ fn lead(args: &[String]) -> Result<()> {
             }
             return Ok(());
         }
-        Some("auto") => {
-            let r = root(args, false)?;
-            let p = r.join(l::AUTO);
-            match pos.get(1).copied() {
-                Some("on") => {
-                    pipeline::whole::write(&p, format!("turned on by scenic lead on {host}\n").as_bytes())?;
-                    println!("on: when the lead is away or on battery and another Mac is home on power for five minutes, the lead hands the build to it by itself (never within half an hour of the last change of lead)");
-                }
-                Some("off") => {
-                    if let Err(e) = std::fs::remove_file(&p) {
-                        anyhow::ensure!(e.kind() == std::io::ErrorKind::NotFound, "{e}");
-                    }
-                    println!("off: the offer waits for a click");
-                }
-                _ => println!("{}", if p.exists() { "on" } else { "off" }),
-            }
-            return Ok(());
-        }
         Some("give") => {
             let to =
                 pos.get(1).map(|s| s.to_string()).context("scenic lead give <member: its host name or member id>")?;
@@ -251,7 +231,7 @@ fn lead(args: &[String]) -> Result<()> {
             }
             LeadAsk::Take { force, downgrade }
         }
-        Some(x) => bail!("scenic lead [give <member> | take [--force] [--downgrade] | auto on|off], not {x}"),
+        Some(x) => bail!("scenic lead [give <member> | take [--force] [--downgrade]], not {x}"),
     };
     let r = pipeline::control::request_lead(&home, ask, &format!("scenic lead on {host}"))?;
     println!("asked this Mac's agent; its pool's next step takes the ask up, within half a minute");

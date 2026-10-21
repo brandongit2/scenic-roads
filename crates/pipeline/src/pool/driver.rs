@@ -258,15 +258,6 @@ pub enum Ask {
     Act(Act),
 }
 
-/// What a lead weighs to offer the lead by capacity (`Heard`'s scores, lead_only, limits and
-/// lead_need_mb).
-struct Strength {
-    scores: Vec<(String, u64)>,
-    lead_only: bool,
-    limits: Vec<(String, u64)>,
-    need: u64,
-}
-
 /// What a member heard since its last step.
 #[derive(Clone, Debug, Default)]
 pub struct Heard {
@@ -296,21 +287,6 @@ pub struct Heard {
     /// The members' heartbeats as the agent last read them (shadow runs' left out): whom they
     /// report they can't reach (crate::pool::reachable), for `hand_to`.
     pub reports: Vec<Beat>,
-    /// Leading: each Mac's score as a lead (crate::pool::handover::score), by member id, its own
-    /// among them, from the capacities its coordinator has fresh: the lead offers the lead to a
-    /// member that beats its own for minutes (`handover::Prefer`). None measured: none offered.
-    pub scores: Vec<(String, u64)>,
-    /// Leading: a lead-only job (a duty, crate::agent::every::LEAD_ONLY) runs here: the lead isn't
-    /// offered by capacity meanwhile.
-    pub lead_only: bool,
-    /// Leading: each Mac's memory guard limit (MB), by member id, from the same capacities as
-    /// `scores`.
-    pub limits: Vec<(String, u64)>,
-    /// Leading: the memory the most demanding target of a step only the lead runs, waiting or
-    /// planned here, is expected to take (MB; 0: none). The lead isn't offered by capacity to a
-    /// member whose limit fits it less than the lead's does; and a lead whose limit can't fit it
-    /// offers the lead to a member whose limit can, whatever their scores (`fits_lead_work`).
-    pub lead_need_mb: u64,
     /// When the lead's coordinator last answered this Mac (its wall clock, unix s): a lead whose
     /// heartbeat is silent but which answered within `beat::OUT_OF_TOUCH_S` is late, not gone, and
     /// isn't taken over by itself.
@@ -396,8 +372,6 @@ pub enum Event {
     /// Its handover of term `term` to `to`: offered, settling, passed, over, taken back, given up,
     /// or dropped (the take-back refused by the app rule, or the owner's takeover in its place).
     Handover { term: u64, to: String, what: &'static str },
-    /// Offering the lead to `to` by capacity: its score, and the lead's own.
-    Prefers { to: String, theirs: u64, own: u64 },
     /// Journal entries merged: applied, passed over (an older lease's), refused; and whether they
     /// came from a listing.
     /// (`done`: the applied entries' jobs done, crate::pool::records::Merged::done.)
@@ -468,8 +442,6 @@ struct Lead {
     term: Term,
     records: Records,
     hand: Handover,
-    /// The member it prefers to itself by capacity, and since when.
-    prefer: handover::Prefer,
     /// The entries members told it of and it hasn't acknowledged, by who told it.
     told: BTreeMap<String, String>,
     /// Entries told or listed not read whole yet (not readable yet, or past the step's time for
@@ -791,24 +763,7 @@ impl Driver {
         }
         self.restarted = false;
         if self.lead.is_some() {
-            let strength = Strength {
-                scores: heard.scores,
-                lead_only: heard.lead_only,
-                limits: heard.limits,
-                need: heard.lead_need_mb,
-            };
-            self.lead_step(
-                io,
-                &mut out,
-                tells,
-                hand_asks,
-                heard.listed,
-                heard.settled,
-                check,
-                busy,
-                learnt.is_ok(),
-                strength,
-            );
+            self.lead_step(io, &mut out, tells, hand_asks, heard.listed, heard.settled, check, busy, learnt.is_ok());
         } else if let Some(t) = self.cur.lead.as_ref().filter(|t| t.member != self.me.id) {
             out.send.extend(hand_asks.into_iter().map(|to| (t.member.clone(), Msg::HandTo(to))));
         }
@@ -1148,7 +1103,6 @@ impl Driver {
             term: t.clone(),
             records: r,
             hand: Handover::Leading,
-            prefer: Default::default(),
             told: BTreeMap::new(),
             waiting: BTreeSet::new(),
             unreadable: BTreeMap::new(),
@@ -1186,53 +1140,16 @@ impl Driver {
         check: Check,
         busy: u64,
         learnt: bool,
-        Strength { scores, lead_only, limits, need }: Strength,
     ) {
         let me = self.me.id.clone();
         // An ask, checked (§6.3): as `hand_to` answers the controls.
-        let mut ask = asks.last().cloned().and_then(|to| match self.hand_to(io, &to) {
+        let ask = asks.last().cloned().and_then(|to| match self.hand_to(io, &to) {
             Ok(()) => Some(to),
             Err(why) => {
                 out.events.push(Event::Waits { what: "hand the lead over", why: format!("to {to}: {why}") });
                 None
             }
         });
-        // Else, the strongest Mac that can take it, by capacity (§6.4): the members `hand_to` lets
-        // it hand to, not while a handover is under way, a lead-only job runs, or entries wait to
-        // be read whole.
-        if ask.is_none() {
-            let own = scores.iter().find(|(m, _)| *m == me).map(|s| s.1);
-            // (Entries waiting to be read whole: it couldn't settle.)
-            let hold =
-                lead_only || self.lead.as_ref().is_some_and(|l| l.hand != Handover::Leading || !l.waiting.is_empty());
-            // (Lead-only work waiting or planned: a member whose limit fits it less than the
-            // lead's is left out; with the lead's short of it, only members whose limit fits it
-            // count, and they're offered it whatever the scores.)
-            let limit = |m: &str| limits.iter().find(|(x, _)| x == m).map(|l| l.1);
-            let fit = handover::fits_lead_work(need, limit(&me));
-            let urge = fit == handover::Fit::Short;
-            // (A member that beats it but can't be handed to now is left out; one that doesn't
-            // beat it counts, to start the time over.)
-            let others: Vec<(String, u64)> = scores
-                .iter()
-                .filter(|(m, _)| *m != me && fit.allows(need, limit(m)))
-                .filter(|(m, s)| {
-                    hold || !(urge || own.is_some_and(|o| handover::beats(*s, o))) || self.hand_to(io, m).is_ok()
-                })
-                .cloned()
-                .collect();
-            let now = io.now();
-            let l = self.lead.as_mut().expect("leading");
-            // (None left by the fit: the time starts over, not kept for when the work is done.)
-            if fit != handover::Fit::Free && others.is_empty() {
-                l.prefer = handover::Prefer::default();
-            }
-            if let Some(to) = l.prefer.step(now, own, &others, hold, urge) {
-                let theirs = others.iter().find(|(m, _)| *m == to).map_or(0, |s| s.1);
-                out.events.push(Event::Prefers { to: to.clone(), theirs, own: own.unwrap_or(0) });
-                ask = Some(to);
-            }
-        }
         let own: Vec<String> = self.saved.mine.to_tell(self.cur.term);
         let now = io.now();
         let l = self.lead.as_mut().expect("leading");
@@ -2273,10 +2190,9 @@ mod tests {
     }
 
     #[test]
-    fn a_stronger_member_gets_the_lead_by_capacity() {
-        // A (weak) leads; B, stronger, runs a long job and asks nothing: its last capacity, however
-        // old, scores it (agent::pool's `scores_of`). After five minutes A offers it the lead, and
-        // hands over; B, leading, offers A nothing back.
+    fn the_lead_stays_put_unasked_and_moves_by_the_owners_ask() {
+        // (Task #497) A leads, B idle and able: hours on, nothing moves the lead by itself; the
+        // owner's ask hands it to B.
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
@@ -2284,110 +2200,17 @@ mod tests {
         let mut b = Driver::unlocked(member(B, "Mac-mini", V2), Saved::default());
         assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
         step(&mut b, &ib, able());
-        let scores = || Heard { scores: vec![(A.into(), 40), (B.into(), 176)], ..able() };
-        let held = step(&mut a, &ia, Heard { lead_only: true, ..scores() });
-        assert!(!held.events.iter().any(|e| matches!(e, Event::Prefers { .. })));
-        let mut offered = false;
-        for _ in 0..20 {
+        for _ in 0..240 {
             ia.pass(30);
             ib.pass(30);
             step(&mut b, &ib, able());
-            let o = step(&mut a, &ia, scores());
-            offered |= o.events.iter().any(|e| matches!(e, Event::Prefers { to, .. } if to == B));
-            if offered {
-                break;
-            }
+            let o = step(&mut a, &ia, able());
+            assert!(!o.events.iter().any(|e| matches!(e, Event::Handover { .. })), "{:?}", o.events);
+            assert_eq!(o.leads, Some(1));
         }
-        assert!(offered, "B offered the lead within minutes");
-        ib.pass(5);
-        step(&mut b, &ib, able());
-        ia.pass(5);
-        assert!(step(&mut a, &ia, scores()).settle);
-        ia.pass(5);
-        let o = step(&mut a, &ia, Heard { settled: Some(serde_json::json!({"leases": []})), ..scores() });
-        assert!(o.events.iter().any(|e| matches!(e, Event::Handover { what: "passed", .. })), "{:?}", o.events);
-        ib.pass(5);
-        assert_eq!(step(&mut b, &ib, scores()).leads, Some(2));
-        for _ in 0..20 {
-            ib.pass(30);
-            ia.pass(30);
-            step(&mut a, &ia, able());
-            let o = step(&mut b, &ib, scores());
-            assert!(!o.events.iter().any(|e| matches!(e, Event::Prefers { .. })), "{:?}", o.events);
-        }
-    }
-
-    #[test]
-    fn lead_only_work_keeps_the_lead_on_the_mac_whose_limit_fits_it() {
-        // (Task #491) A, the M4 (42 GB), leads, busy; B, the M1 (12 GB), idle, scores higher.
-        // Heritage waits with a target of about 21.4 GB that only the lead runs: B isn't offered
-        // the lead. Once B leads anyway (the owner's ask), it offers the lead back to A within
-        // minutes, whatever the scores.
-        let mem = Mem::default();
-        setup(&mem);
-        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        let mut b = Driver::unlocked(member(B, "MacBook-Pro", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
-        step(&mut b, &ib, able());
-        let heard = || Heard {
-            scores: vec![(A.into(), 36), (B.into(), 128)],
-            limits: vec![(A.into(), 42 << 10), (B.into(), 12 << 10)],
-            lead_need_mb: 21_914,
-            ..able()
-        };
-        let prefers = |o: &Out, to: &str| o.events.iter().any(|e| matches!(e, Event::Prefers { to: t, .. } if t == to));
-        for _ in 0..30 {
-            ia.pass(30);
-            ib.pass(30);
-            step(&mut b, &ib, able());
-            assert!(!prefers(&step(&mut a, &ia, heard()), B), "B can't run heritage: not offered");
-        }
-        // B leads by the owner's ask.
         hand_over(&mut a, &ia, &mut b, &ib);
         ib.pass(5);
-        assert_eq!(step(&mut b, &ib, heard()).leads, Some(2));
-        // Heritage still waiting: B offers the lead back to A within minutes, though A scores lower.
-        let mut offered = false;
-        for _ in 0..20 {
-            ia.pass(30);
-            ib.pass(30);
-            step(&mut a, &ia, able());
-            offered |= prefers(&step(&mut b, &ib, heard()), A);
-            if offered {
-                break;
-            }
-        }
-        assert!(offered, "A offered the lead back");
-    }
-
-    #[test]
-    fn with_no_lead_only_work_waiting_the_scores_alone_decide() {
-        // The same Macs, nothing lead-only waiting: the higher-scoring B is offered the lead.
-        let mem = Mem::default();
-        setup(&mem);
-        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        let mut b = Driver::unlocked(member(B, "MacBook-Pro", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
-        step(&mut b, &ib, able());
-        let heard = || Heard {
-            scores: vec![(A.into(), 36), (B.into(), 128)],
-            limits: vec![(A.into(), 42 << 10), (B.into(), 12 << 10)],
-            ..able()
-        };
-        let mut offered = false;
-        for _ in 0..20 {
-            ia.pass(30);
-            ib.pass(30);
-            step(&mut b, &ib, able());
-            let o = step(&mut a, &ia, heard());
-            offered |= o.events.iter().any(|e| matches!(e, Event::Prefers { to, .. } if to == B));
-            if offered {
-                break;
-            }
-        }
-        assert!(offered);
+        assert_eq!(step(&mut b, &ib, able()).leads, Some(2));
     }
 
     #[test]
@@ -2837,6 +2660,37 @@ mod tests {
         assert!(back.events.iter().any(|e| matches!(e, Event::SteppedDown { term: 1, .. })), "{:?}", back.events);
         ib.pass(20);
         assert_eq!(step(&mut b, &ib, able()).leads, Some(2), "B keeps the lead");
+    }
+
+    #[test]
+    fn a_lead_that_lost_the_nas_while_online_is_taken_over() {
+        // (Task #497) A loses the NAS (away, its share unmounted) but stays online: its heartbeat
+        // stops. While its coordinator's answers still say its term, B holds off ("late, not
+        // gone"); once they say none (crate::coord's `set_member(None)`, so `answered` is None), B
+        // takes over within the silent bound.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        step(&mut b, &ib, able());
+        for _ in 0..90 {
+            ib.pass(20);
+            let answered = Some(ib.now());
+            assert_eq!(step(&mut b, &ib, Heard { answered, ..able() }).leads, None, "answering: late, not gone");
+        }
+        let lost = ib.now();
+        let mut took = None;
+        for _ in 0..90 {
+            ib.pass(20);
+            if step(&mut b, &ib, able()).leads.is_some() {
+                took.get_or_insert(ib.now());
+            }
+        }
+        let at = took.expect("taken over");
+        assert!(at - lost <= SILENT_SEEN_S + 2 * AUTO_RANK_S + 40, "{} s", at - lost);
+        assert!(term::read(&mem, 2).unwrap().unwrap().how.contains("silent"));
     }
 
     #[test]

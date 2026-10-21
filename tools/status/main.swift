@@ -16,7 +16,7 @@
 // presets, or the memory guard's limit alone). With
 // the pool on (docs/pool.md §11), its agent's view of the pool: who leads, each Mac and its state,
 // and the lead's items: Hand the Build To ▸ on the lead, Make This Mac Lead and Take Over the
-// Build… (confirming) on another Mac, the proactive offer; each an ask to that agent
+// Build… (confirming) on another Mac; each an ask to that agent
 // (`lead-request.json`), which checks it as its driver would.
 //
 // It's the menu bar item of Scenic.app, the app opened from Launchpad, Spotlight or /Applications
@@ -228,8 +228,6 @@ struct PoolView: Decodable {
     let handing: Handing?
     /// Who can't reach whom, each with why (agents from #198 on: docs/pool.md §6.8).
     let unreached: [String]?
-    let offer: PoolOffer?
-    let auto: Bool?
     let asked: LeadAsked?
     let change: LeadChange?
 }
@@ -271,12 +269,6 @@ struct Handing: Decodable {
     let since: Int
 }
 
-struct PoolOffer: Decodable {
-    let to: String
-    let host: String
-    let why: String
-}
-
 struct LeadAsked: Decodable {
     let by: String
     let at: Int
@@ -311,14 +303,11 @@ struct LeadItem {
 
 /// The pool's items for this Mac's menu: on the lead, "Hand the Build To ▸" its members, each with
 /// its state, those that can't lead greyed with why; on another member, "Make This Mac Lead" and,
-/// with no lead in touch, "Take Over the Build…"; the proactive offer on every Mac; an ask under way.
+/// with no lead in touch, "Take Over the Build…"; an ask under way.
 func leadItems(_ v: PoolView, me: String) -> [LeadItem] {
     var out: [LeadItem] = []
     if let a = v.asked, a.state == "passed" || a.state == "going" {
         out.append(LeadItem(title: "\(a.said)…", enabled: false))
-    }
-    if let o = v.offer {
-        out.append(LeadItem(title: "Hand the Build to \(o.host)", tip: "\(o.why), and \(o.host) is home on power\((v.auto ?? false) ? "; handed over by itself after five minutes" : "")", action: .give(o.to, o.host, false)))
     }
     if v.leading {
         let others = v.members.filter { $0.me != true }

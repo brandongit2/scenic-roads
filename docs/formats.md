@@ -860,8 +860,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/pool/members/<id>.json`: a heartbeat `{member, host, app, beat, leads, handing_to: {to,
     term, offer, since, stage}, ready_for, stood_down, addresses, members, conds: {home, ac, battery,
     able}}` (with brokers on, `broker: {urls, https, waiting: {<kind>: {n, mb}}, out}`).
-  - Switches (present or `on` in it: on; `off` or missing: off, unless said): `auto-handover`
-    (`scenic lead auto on|off`), `slots` (§7.6), `memory-guard` (missing: on; §7.2), `resume`
+  - Switches (present or `on` in it: on; `off` or missing: off, unless said): `slots` (§7.6), `memory-guard` (missing: on; §7.2), `resume`
     (§7.2, §7.4), `brokers` (§8; every coordinator answers `POST /work/where`), `placement` (§7.2:
     jobs get `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `delta-catalog` and `near-slope`
     (docs/building.md §2, Publishing's switches), all under `state/pool/`.

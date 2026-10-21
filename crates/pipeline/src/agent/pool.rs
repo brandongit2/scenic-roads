@@ -288,43 +288,6 @@ impl Conds {
     }
 }
 
-/// `Run::scores`, given this Mac, the members' heartbeats, the capacities by worker and the time:
-/// each member's score and its memory guard's limit (MB).
-fn scores_of(
-    me: &Member,
-    beats: &[Beat],
-    caps: Vec<(String, crate::coord::Capacity)>,
-    now: u64,
-) -> Vec<(String, u64, u64)> {
-    // (A worker's host: its slot's number taken off.)
-    let host_of = |w: &str| match w.rsplit_once(" #") {
-        Some((h, n)) if n.parse::<usize>().is_ok() => h.to_string(),
-        _ => w.to_string(),
-    };
-    let mut newest: BTreeMap<String, crate::coord::Capacity> = BTreeMap::new();
-    for (w, cap) in caps {
-        let h = host_of(&w).to_lowercase();
-        if newest.get(&h).is_none_or(|c| c.at < cap.at) {
-            newest.insert(h, cap);
-        }
-    }
-    newest
-        .into_iter()
-        .filter_map(|(h, cap)| {
-            let id = if h.eq_ignore_ascii_case(&me.host) {
-                me.id.clone()
-            } else {
-                let b = beats.iter().filter(|b| b.host.eq_ignore_ascii_case(&h)).max_by_key(|b| b.beat)?;
-                if b.out_of_touch(now) {
-                    return None;
-                }
-                b.member.clone()
-            };
-            Some((id, crate::pool::handover::score(&cap), cap.limit_mb))
-        })
-        .collect()
-}
-
 /// A listing made off the loop: its kind, and the thread making it.
 struct Making {
     what: Kind,
@@ -352,14 +315,6 @@ pub struct Give {
     pub asks: Vec<driver::Ask>,
     /// Its Mac's conditions, for its heartbeat (None: left out).
     pub conds: Option<Conds>,
-    /// Leading: each Mac's score as a lead by member id (`Heard::scores`), and whether a lead-only
-    /// job runs here (`Heard::lead_only`).
-    pub scores: Vec<(String, u64)>,
-    pub lead_only: bool,
-    /// Leading: each Mac's memory guard limit by member id (MB, `Heard::limits`), and the memory
-    /// the lead-only work waiting or planned here needs (`Heard::lead_need_mb`).
-    pub limits: Vec<(String, u64)>,
-    pub lead_need_mb: u64,
     /// When the lead's coordinator last answered this Mac (`Heard::answered`).
     pub answered: Option<u64>,
 }
@@ -716,10 +671,6 @@ impl Side {
             reassert: give.reassert,
             members: self.members.iter().cloned().collect(),
             reports: self.beats.clone(),
-            scores: give.scores,
-            lead_only: give.lead_only,
-            limits: give.limits,
-            lead_need_mb: give.lead_need_mb,
             answered: give.answered,
         };
         self.conds = give.conds;
@@ -1080,9 +1031,6 @@ pub fn said(e: &Event) -> String {
         ),
         Event::SteppedDown { term, why } => format!("no longer leads term {term}: {why}"),
         Event::Handover { term, to, what } => format!("its handover of term {term} to {to}: {what}"),
-        Event::Prefers { to, theirs, own } => {
-            format!("offers the lead to {to} by capacity: its score {theirs}, this Mac's {own}")
-        }
         Event::Merged { applied, overtaken, refused, listed, .. } => format!(
             "merged {} entr{} ({overtaken} passed over, {refused} refused){}",
             applied.len(),
@@ -1294,12 +1242,6 @@ pub struct Cx {
     /// A duty (a catalog, a sweep) runs here, or passed its gate to start: a tick doesn't settle a
     /// handover (the agent's step stops the duty first).
     pub duty: bool,
-    /// A lead-only job (crate::agent::every::LEAD_ONLY, or a duty) runs here: the lead isn't
-    /// offered by capacity meanwhile (`Heard::lead_only`).
-    pub lead_only: bool,
-    /// The memory the most demanding target of a step only the lead runs, planned or held, is
-    /// expected to take (MB; 0: none): `Heard::lead_need_mb`.
-    pub lead_need_mb: u64,
     /// The agent's loop is starting a job (its lease from this coordinator): a tick doesn't settle
     /// until it's done.
     pub starting: bool,
@@ -1756,20 +1698,9 @@ impl Run {
         (r, out)
     }
 
-    /// Each Mac's score as a lead (crate::pool::handover::score), by member id: from the last
-    /// capacity this process's coordinator (the lead's) has of each of its slots' workers, whatever
-    /// its age (`Coordinator::last_capacities`: a busy member asks nothing for long), the newest
-    /// per host; a member's (its host's newest heartbeat's) left out once that heartbeat is out of
-    /// touch. None without a coordinator.
-    fn scores(&self) -> Vec<(String, u64, u64)> {
-        let Some(c) = &self.cx.coord else { return Vec::new() };
-        scores_of(self.side.member(), &self.side.beats, c.last_capacities(), self.side.now())
-    }
-
     /// One step: what the agent gathered handed over, the gates kept; the role's change noted (it
     /// restarts into its new part).
     pub fn step(&mut self, able: bool) -> Out {
-        let scores = self.scores();
         let give = Give {
             entries: std::mem::take(&mut self.entries),
             settled: self.settled.take(),
@@ -1777,10 +1708,6 @@ impl Run {
             reassert: self.reassert,
             asks: std::mem::take(&mut self.asks),
             conds: self.conds,
-            scores: scores.iter().map(|(m, s, _)| (m.clone(), *s)).collect(),
-            lead_only: self.cx.lead_only || self.cx.duty,
-            limits: scores.into_iter().map(|(m, _, l)| (m, l)).collect(),
-            lead_need_mb: self.cx.lead_need_mb,
             answered: self.cx.lead_answered,
         };
         let marks = std::mem::take(&mut self.marks);
@@ -2260,40 +2187,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn scores_count_a_busy_members_last_capacity_until_its_heartbeat_is_out_of_touch() {
-        let me = Member { id: "m-a".into(), host: "MacBook-Air".into(), app: String::new() };
-        let cap = |at: u64, gb: u64| crate::coord::Capacity {
-            at,
-            limit_mb: gb << 10,
-            cores: 8,
-            disk_mb: 100 << 10,
-            ac: true,
-            home: true,
-            nas: true,
-            ..Default::default()
-        };
-        let now = 100_000;
-        let beat = |host: &str, id: &str, at: u64| Beat {
-            member: id.into(),
-            host: host.into(),
-            beat: at,
-            ..Default::default()
-        };
-        // The mini asked an hour ago (busy since), its slot #2 two hours ago; its heartbeat fresh.
-        let caps = vec![
-            ("MacBook-Air".to_string(), cap(now, 8)),
-            ("Mac-mini".to_string(), cap(now - 3600, 24)),
-            ("Mac-mini #2".to_string(), cap(now - 7200, 2)),
-        ];
-        let old = beat("Mac-mini", "m-old", now - 90_000);
-        let mut got = scores_of(&me, &[old.clone(), beat("Mac-mini", "m-b", now - 30)], caps.clone(), now);
-        got.sort();
-        let s = |gb: u64| crate::pool::handover::score(&cap(0, gb));
-        assert_eq!(got, vec![("m-a".to_string(), s(8), 8 << 10), ("m-b".to_string(), s(24), 24 << 10)]);
-        // Its heartbeat out of touch: left out.
-        assert_eq!(scores_of(&me, &[old], caps, now), vec![("m-a".to_string(), s(8), 8 << 10)]);
-    }
     use crate::pool::driver::Ask;
     use crate::pool::journal::LeaseId;
 
@@ -3117,7 +3010,7 @@ mod tests {
         client.ask(&ask).ok();
         let first = client.answered().expect("answered");
         assert_eq!((first.term, first.member.as_deref()), (None, None), "not a pool's lead yet: it says nothing");
-        c.set_member("m-000000000000000a");
+        c.set_member(Some("m-000000000000000a"));
         c.set_term(3);
         client.ask(&ask).ok();
         let a = client.answered().unwrap();
@@ -3137,6 +3030,13 @@ mod tests {
         assert_eq!(lead_answered(Some(&a), Some(&term(3, "m-000000000000000c"))), None, "another member's");
         assert_eq!(lead_answered(Some(&first), Some(&term(3, "m-000000000000000a"))), None, "one that says nothing");
         assert_eq!(lead_answered(None, Some(&term(3, "m-000000000000000a"))), None);
+        // (Task #497) Its Mac lost the NAS: its answers say nothing, so its members don't count it
+        // late, and take it over once its heartbeat is silent.
+        c.set_member(None);
+        client.ask(&ask).ok();
+        let lost = client.answered().unwrap();
+        assert_eq!((lost.term, lost.member.as_deref()), (None, None));
+        assert_eq!(lead_answered(Some(&lost), Some(&term(3, "m-000000000000000a"))), None);
     }
 
     #[test]

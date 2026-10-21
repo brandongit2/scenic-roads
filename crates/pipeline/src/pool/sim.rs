@@ -159,10 +159,6 @@ struct Cfg {
     /// Now and then a listing its agent loses (its listing's thread gone), never handed back: its
     /// lead asks again once it's overdue (`driver::OVERDUE_S`).
     lost_lists: bool,
-    /// The Macs' capacities differ (mac0 the strongest, each next weaker, each loop's a little
-    /// off): its lead offers the lead to a stronger Mac (crate::pool::handover::Prefer), and at the
-    /// end the strongest that can lead leads.
-    prefer: bool,
 }
 
 impl Cfg {
@@ -186,7 +182,6 @@ impl Cfg {
             fails: false,
             stalls: false,
             lost_lists: false,
-            prefer: false,
         }
     }
 
@@ -220,11 +215,6 @@ impl Cfg {
         c.fails = r.chance(0.2);
         c.stalls = r.chance(0.15);
         c.lost_lists = r.chance(0.15);
-        c.prefer = r.chance(0.5);
-        if c.prefer {
-            // (Time for the strongest to get the lead back, and ten quiet minutes after.)
-            c.end += 1800;
-        }
         c
     }
 }
@@ -668,20 +658,12 @@ impl World {
         // lead's reads; a listing its agent lost, asked for again two hours on.)
         let behind = r.is_some() && self.macs.iter().any(|m| m.leads == Some(h) && !m.gone && !m.caught);
         let merging = lack > 0 && self.behind.is_none_or(|b| lack < b);
-        // (Or, preferring the strongest, a handover to it just made, its target not leading yet:
-        // its lead may hand over only once caught up, late in a run gone on.)
-        let taking = self.cfg.prefer
-            && self.made.get(&h).is_some_and(|&(_, at)| at + QUIET_S > self.t)
-            && !self.macs.iter().any(|m| m.leads == Some(h));
-        if self.cfg.draft || !(merging || behind || taking) || self.t >= self.cfg.end + MERGING_S {
+        if self.cfg.draft || !(merging || behind) || self.t >= self.cfg.end + MERGING_S {
             return false;
         }
         self.behind = Some(lack);
         self.end = self.t + QUIET_S;
-        if taking && !(merging || behind) {
-            self.count("ten minutes more, a handover taking up");
-            self.note(|| format!("the run goes on: term {h} not taken up yet"));
-        } else if merging {
+        if merging {
             self.count("ten minutes more, the lead merging");
             self.note(|| format!("the run goes on: term {h}'s records lack {lack} entries"));
         } else {
@@ -1371,36 +1353,11 @@ impl World {
             return self.wrong(format!("term {h}'s file isn't whole at the end"));
         };
         let named = t.member.clone();
-        // (Preferring the strongest: the first Mac, not gone, on an app the term's lead may hand to.
-        // Its lead may hand it the lead only once caught up, which a run gone on past its end may
-        // come to late: the handover to it then, after ten quiet minutes, is the terms settling.)
-        let best = (0..self.macs.len())
-            .find(|&k| !self.macs[k].gone && term::app_at_least(&app(self.macs[k].app), &t.app))
-            .filter(|_| self.cfg.prefer);
-        let before = self.made.range(..h).next_back().map(|(_, &(_, at))| at);
-        let settled_late = best.is_some_and(|b| self.macs[b].id == named)
-            && t.how.starts_with("handed over")
-            && before.is_some_and(|b| b + QUIET_S <= self.cfg.end);
-        if at + QUIET_S > self.cfg.end && !settled_late {
+        if at + QUIET_S > self.cfg.end {
             self.wrong(format!(
                 "term {h} was made at {at} s, in the run's last ten minutes (of {} s) or after: the terms don't settle",
                 self.cfg.end
             ));
-        }
-        // (Not demanded: of a run gone on past its end, its lead merging what the faults left (not
-        // caught up, it can't settle); with entries cut short or erroring, which wait an hour to be
-        // refused (it isn't offered meanwhile); with clocks skewed past half of `OUT_OF_TOUCH_S`,
-        // its heartbeat out of touch to the lead's clock; or with reads kept past half an offer's
-        // time, its answer read too late; or with slow listings, a settle at times past its
-        // minute, given up each time.)
-        let demanded = self.t <= self.cfg.end
-            && !self.cfg.truncs
-            && !self.cfg.fails
-            && self.cfg.skew < super::beat::OUT_OF_TOUCH_S / 2
-            && self.cfg.stale < super::handover::OFFER_S / 2
-            && self.cfg.list_s == (0, 0);
-        if let Some(b) = best.filter(|&b| self.macs[b].id != named && demanded) {
-            self.wrong(format!("term {h} names {named} at the end, not mac{b}, the strongest that can lead"));
         }
         for k in 0..self.macs.len() {
             let (is, leads) = (self.macs[k].id == named, self.macs[k].leads);
@@ -1763,15 +1720,6 @@ impl Mac {
         let faulting = self.sim.faulting()?;
         let members = (0..self.n).map(id).collect();
         let mut heard = Heard { able: self.rng.chance(0.9), listed: self.listed.take(), members, ..Default::default() };
-        if self.sim.op(|w, _| w.cfg.prefer)? {
-            // (Each Mac's score: 200 for mac0, 60 less each next, 10% off either way each loop.)
-            heard.scores = (0..self.n)
-                .map(|k| {
-                    let base = 200 - 60 * k as u64;
-                    (id(k), base * 9 / 10 + self.rng.below(base / 5 + 1))
-                })
-                .collect();
-        }
         let mut forced = None;
         for m in self.sim.inbox()? {
             match m {
@@ -1928,7 +1876,6 @@ impl Mac {
             Event::SteppedDown { why, .. } if why.starts_with("can't re-assert") => self.sim.count("stood down"),
             Event::Handover { to, what: "passed", .. } => self.sim.op(|w, me| w.split(me, to))?,
             Event::Handover { what: "dropped", .. } => self.sim.count("handovers dropped"),
-            Event::Prefers { .. } => self.sim.count("offered by capacity"),
             _ => {}
         }
         self.sim.note(|| format!("mac{k}: {ev:?}"));
@@ -2329,15 +2276,6 @@ fn a_development_build_or_a_rollback_leaves_a_lead() {
     for what in ["stood down", "forced downgrades"] {
         assert!(counts.get(what).is_some_and(|&n| n >= 1), "{what}: {:?}", counts.get(what));
     }
-}
-
-#[test]
-fn the_strongest_mac_leads_and_the_lead_doesnt_flap() {
-    // The Macs' capacities differ, each loop's a little off: once the faults stop the strongest Mac
-    // that can lead gets the lead back within minutes, and no term is made in the run's last ten
-    // minutes (no handing back and forth: `World::finish`).
-    let counts = check_all(0..400, |_| Cfg { prefer: true, end: 2400 + 3300, ..Cfg::pool() });
-    assert!(counts.get("offered by capacity").is_some_and(|&n| n >= 20), "{counts:?}");
 }
 
 #[test]

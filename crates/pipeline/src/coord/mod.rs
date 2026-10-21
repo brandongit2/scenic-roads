@@ -317,7 +317,7 @@ pub struct Shared {
     pub min_app: Option<String>,
     /// The pool's member this coordinator is (its agent's), while it leads: every answer says so,
     /// with its term (`POOL_MEMBER`, `POOL_TERM`), so a member tells its lead's coordinator from
-    /// another's (crate::agent::lead's "late, not gone").
+    /// another's (crate::agent::lead's "late, not gone"). None while its Mac has lost the NAS.
     pub pool_member: Option<String>,
     /// The build page's asks of the pool's lead (`/work/lead`), for the agent to take up
     /// (crate::agent::lead).
@@ -2464,17 +2464,6 @@ impl Coordinator {
         out
     }
 
-    /// Each worker's last capacity, whatever its age (this Mac's own first): the lead's choice of
-    /// the strongest Mac (crate::pool::handover::score), which counts a member stale only when
-    /// its heartbeat is out of touch, a busy member asking nothing for long all the same. Placement
-    /// keeps to `capacities`.
-    pub fn last_capacities(&self) -> Vec<(String, Capacity)> {
-        let s = self.shared.lock().unwrap();
-        let own = s.own_cap.clone().map(|c| (self.me.clone(), c));
-        let others = s.workers.iter().filter_map(|(n, w)| Some((n.clone(), w.cap.clone()?)));
-        own.into_iter().chain(others).collect()
-    }
-
     /// Placement by how crucial a job is on (`Some`: the forecast's slack and measured speeds) or
     /// off (docs/pool.md §12, phase 4's eleventh batch; crate::agent::placement). Its draws' windows
     /// run from when it was first turned on.
@@ -2831,9 +2820,11 @@ impl Coordinator {
         })
     }
 
-    /// The pool's member this coordinator answers as (`Shared::pool_member`).
-    pub fn set_member(&self, member: &str) {
-        self.shared.lock().unwrap().pool_member = Some(member.to_string());
+    /// The pool's member this coordinator answers as (`Shared::pool_member`); None while its Mac
+    /// has lost the NAS: its answers then say no term, so its members don't count it "late, not
+    /// gone" and take over once its heartbeat is silent (docs/pool.md §6.5).
+    pub fn set_member(&self, member: Option<&str>) {
+        self.shared.lock().unwrap().pool_member = member.map(str::to_string);
     }
 
     /// The pool's term the leases it grants now are in (docs/pool.md §7.5; 0: the pool off).

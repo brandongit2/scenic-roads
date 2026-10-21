@@ -467,13 +467,8 @@ enum Tell {
 }
 
 impl Tell {
-    /// Tells lead `c`: true once it answered (taken, or the lease gone); said when it refused it or
-    /// didn't answer.
-    fn to(&self, c: &crate::coord::client::Client) -> bool {
-        self.tell(c).is_some()
-    }
-
-    /// `to`, saying how it answered: None not answered; Some(true) it refused the hand-off.
+    /// Tells lead `c`, saying how it answered: None not answered; Some(true) it refused the
+    /// hand-off; said when it refused it or didn't answer.
     fn tell(&self, c: &crate::coord::client::Client) -> Option<bool> {
         let (id, r) = match self {
             Tell::Done(d) => (
@@ -1513,10 +1508,6 @@ pub struct Agent {
     /// The last start held by something on a short timer (the pool's step under way, the answers
     /// going to the NAS): the idle agent plans again next loop.
     start_soon: std::cell::Cell<bool>,
-    /// The most memory a target of a step only the lead runs, planned or held by the guard in the
-    /// last plan, is expected to take (MB: its learned floor or its measured peak; 0: none): the
-    /// lead isn't offered by capacity to a member whose limit can't fit it (docs/pool.md §6.4).
-    lead_need: std::cell::Cell<u64>,
 }
 
 /// The agent's part of the gate (docs/inputs.md §4.2, §4.7).
@@ -1855,7 +1846,6 @@ impl Agent {
             out_why,
             inputs: Gate::default(),
             start_soon: Default::default(),
-            lead_need: Default::default(),
         };
         // (The jobs the agent before this one left running, taken over before anything is
         // planned or offered.)
@@ -4293,17 +4283,9 @@ impl Agent {
         // (The jobs started: their leases are in the coordinator's state, so a tick may settle a
         // handover from here; a duty that started runs, so it may not until this loop stops it.)
         let duty = self.slots.iter().any(|s| s.running.as_ref().is_some_and(|j| is_duty(&j.spec.id)));
-        // (A lead-only job running: the lead isn't offered by capacity meanwhile, crate::pool::handover.)
-        let lead_only = self.slots.iter().any(|s| {
-            s.running
-                .as_ref()
-                .is_some_and(|j| step_of(&j.spec.id).is_some_and(|st| every::LEAD_ONLY.contains(&st.as_str())))
-        });
         if let Some(Some(mut run)) = self.try_pooled() {
             run.cx.starting = false;
             run.cx.duty = duty;
-            run.cx.lead_only = lead_only;
-            run.cx.lead_need_mb = self.lead_need.get();
         }
         // A lease for a job that didn't start (room on the disk, say): given back.
         for k in 0..self.slots.len() {
@@ -5689,20 +5671,6 @@ impl Agent {
         }
     }
 
-    /// The memory the most demanding target of a step only the lead runs among `works` is expected
-    /// to take (MB): its holding floor or its peak, the larger, among the targets some Mac's limit
-    /// fits (`Agent::lead_need`, `handover::lead_need`).
-    fn lead_need_of(&self, works: &[build::Work]) -> u64 {
-        let Some(c) = &self.coord else { return 0 };
-        let most = c.largest_limit().unwrap_or(0).max(memguard::limit_mb(self.total_mb()));
-        let needs = works
-            .iter()
-            .filter(|w| !steps::SHARED.contains(&w.step.as_str()))
-            .flat_map(|w| w.targets.iter().map(move |(t, _)| (w.step.as_str(), t.as_str())))
-            .map(|(st, t)| c.holding_floor(st, t).map_or(0, |f| f.mb).max(c.peak(st, t).unwrap_or(0)));
-        crate::pool::handover::lead_need(needs, most)
-    }
-
     /// The targets of the plan's `works` the memory guard holds (its switch on): those whose floor,
     /// learned alone the way its step runs now, passes this Mac's limit (`here`), and of them those
     /// past every Mac's in the pool, as the lead knows them (`all`: a step only this Mac runs, this
@@ -5736,13 +5704,13 @@ impl Agent {
                 }
             }
             if n_all > 0 && !steps::SHARED.contains(&w.step.as_str()) {
-                // A step only the lead runs: judged against the lead's limit alone. A member whose
-                // limit fits it is named: the lead offers it the lead by itself within minutes
-                // (docs/pool.md §6.4, `Agent::lead_need`), or the owner hands it (`scenic lead give`).
+                // A step only the lead runs: judged against the lead's limit alone; it waits. A
+                // member whose limit fits it is named, for the owner to hand it the lead by hand
+                // (`scenic lead give`) if wanted.
                 let (s, v) = if n_all == 1 { ("", "s") } else { ("s", "") };
                 let remedy = match c.roomiest_agent().filter(|(_, l)| *l >= need) {
                     Some((m, l)) => format!(
-                        "{m}'s limit is {:.1} GB: the lead is offered to it within minutes (or `scenic lead give {m}`), or fix the step's memory",
+                        "{m}'s limit is {:.1} GB: hand it the lead by hand if wanted (`scenic lead give {m}`), or fix the step's memory",
                         gb(l)
                     ),
                     None => {
@@ -7430,7 +7398,6 @@ impl Agent {
         // Mac's built only by a Mac with room.)
         let holds = self.guard_holds(&plan);
         waiting.extend(holds.why.iter().cloned());
-        self.lead_need.set(self.lead_need_of(&plan));
         for w in plan.iter_mut() {
             w.targets.retain(|t| !holds.all.contains(&(w.step.clone(), t.0.clone())));
         }
@@ -9450,6 +9417,8 @@ impl Agent {
             run.cx.root = None;
             if let Some(co) = &self.coord {
                 co.set_moving(Some("the NAS isn't reachable".into()));
+                // (Its answers say no term: its members take over once its heartbeat is silent.)
+                co.set_member(None);
             }
             return Some(run.gates.clone());
         };
@@ -9496,7 +9465,7 @@ impl Agent {
         let cur = run.side.driver().current().lead.clone();
         let lead_answered = pool::lead_answered(answered.as_ref(), cur.as_ref());
         if let Some(co) = &self.coord {
-            co.set_member(&run.side.member().id);
+            co.set_member(Some(&run.side.member().id));
         }
         run.cx = pool::Cx {
             root: Some(r.to_path_buf()),
@@ -9505,8 +9474,6 @@ impl Agent {
             able,
             duty,
             // (Set where the jobs start, below.)
-            lead_only: run.cx.lead_only,
-            lead_need_mb: run.cx.lead_need_mb,
             starting: false,
             lead_answered,
             broker: self.brokering(),
