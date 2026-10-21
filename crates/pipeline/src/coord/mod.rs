@@ -140,7 +140,9 @@ pub fn cost_version(step: &str) -> u32 {
         "trees-lo" | "terrain-lo" | "slope-lo" => 1,
         // (A grid lined up with no overview sampled from one askew, task #433: the assemblies
         // that read tens of GB read a hundredth of it.)
-        "depth" | "depth-lo" => 1,
+        "depth" | "depth-base" => 1,
+        // (Task #532: assembled from the mids and the base, no source read.)
+        "depth-lo" => 2,
         _ => 0,
     }
 }
@@ -2523,8 +2525,9 @@ fn stale_peak(disks: &BTreeMap<String, u64>, step: &str, mb: u64) -> bool {
 }
 
 /// The steps whose kept disk measures may hold a run that measured more than the job (task #398:
-/// `depth-lo`, a 35 GB job peak against its targets' 65 MB, which kept its jobs on the lead's Mac).
-const REMEASURED: [&str; 1] = ["depth-lo"];
+/// `depth-lo`, a 35 GB job peak against its targets' 65 MB, which kept its jobs on the lead's Mac;
+/// its composing is `depth-base`'s since task #532, its old measures still kept under its name).
+const REMEASURED: [&str; 2] = ["depth-lo", "depth-base"];
 
 /// `REMEASURED`'s job peaks and target measures far above what its targets measure (past three
 /// times their median and a GB: an outlier or two can't lift a median as they lift a 90th

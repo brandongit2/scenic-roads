@@ -436,9 +436,12 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
 ## Depth (`layers/depth/`, `layers/depth-class/`; pipeline::depth)
 
 Two layers of 256-px PNG tiles in packs like the terrain's: `lo/3-x-y` (z3–8) and `hi/6-x-y` (z9–16,
-only where a source is finer than z8). A tile is stored where one of its water pixels has data of
-its zoom (every water tile up to z8); a missing one is its nearest stored ancestor scaled up (bilinear
-for depth, with that ancestor's neighbours' edges; nearest for classes).
+only where a source is finer than z8). A hi tile is stored where one of its water pixels has data of
+its zoom; a lo tile wherever a pixel has a value. A missing tile is its nearest stored ancestor
+scaled up (bilinear for depth, with that ancestor's neighbours' edges; nearest for classes).
+A lo tile's pixel is reduced from the finest depth beneath it (docs/steps.md §3): the mean of the
+water with data among the 2 × 2 beneath (so a lake or shore under a pixel wide keeps a value), its
+class the most common of theirs; with no water, the mean of the land's band, class 0.
 
 - **`depth`** (encoding `terrarium-png`): metres below the water's surface (the sea's mean level, a
   lake's mean surface), negative; drying heights positive (at most 20 m); +12,000 m where there's
@@ -450,6 +453,12 @@ for depth, with that ancestor's neighbours' edges; nearest for classes).
   source's `code` (docs/inputs.md §6.10).
 - **The catalog's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "notice"}]}`,
   the accepted depth declarations (the credits' depth line and notices, and the readout).
+- **Work packs** (not served; packs as above, meta `{"layer": "depth", "work": <logical>}`, each
+  tile's blob its depth PNG's length (u32, little-endian), the depth PNG, then the class PNG):
+  `work/depth-base/3-x-y`, z3–8 composed from the sources (`depth-base`; z3–5 reduced), what `depth`
+  scales capped pixels up from at z8 and coarser and what `depth-lo` takes where nothing finer lies
+  beneath; `work/depth-mid/6-x-y`, a z6 tile's z8 tiles reduced from its finest hi tiles (`depth`),
+  class byte 7 where none of its tiles beneath has a value (the base's stands there).
 
 ## Catalog (`catalog/<n>.json.zst`)
 

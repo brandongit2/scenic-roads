@@ -86,8 +86,9 @@ the lead.
 | Tree cover | Tree cover | `trees` | pack | a z6 tile | ⇄ |
 | | Tree cover, zoomed out | `trees-lo` | pack | a z3 tile | ⇄ |
 | | Tree cover's blocks (task) | `treeblock` | | a task of Tree cover | ⇄ |
-| Water depth | Depth, zoomed out | `depth-lo` | pack | a z3 tile | ⇄ |
+| Water depth | Depth base | `depth-base` | pack | a z3 tile | ⇄ |
 | | Depth | `depth` | pack | a z6 tile | ⇄ |
+| | Depth, zoomed out | `depth-lo` | pack | a z3 tile | ⇄ |
 | Roads | Roads | `unit` | pack | a z6 tile | ⇄ |
 | | Roads' last steps (task) | `tail` | | a task of Roads | ⇄ |
 | Map tiles | Map tiles | `pack` | pack | a z6 tile | ⇄ |

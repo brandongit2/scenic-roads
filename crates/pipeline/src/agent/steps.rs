@@ -121,7 +121,7 @@ pub const STAGES: [Stage; 14] = [
     Stage { id: "terrain", title: "Terrain", does: "The terrain packs, a tile at a time, assembled zoomed out by z3 tile." },
     Stage { id: "slope", title: "Slope", does: "The slope packs from the terrain, a tile at a time, assembled zoomed out by z3 tile." },
     Stage { id: "trees", title: "Tree cover", does: "The tree cover, height and leaf type, a tile at a time, assembled zoomed out by z3 tile." },
-    Stage { id: "depth", title: "Water depth", does: "The depth under the seas and lakes from the depth sources: zoomed out by z3 tile, then a tile at a time where a source has finer detail." },
+    Stage { id: "depth", title: "Water depth", does: "The depth under the seas and lakes from the depth sources: a coarse base by z3 tile, a tile at a time where a source has finer detail, then assembled zoomed out by z3 tile." },
     Stage { id: "roads", title: "Roads", does: "Each tile's roads, their elevations and scenery: the base packs the map's details and profiles read." },
     Stage { id: "tiles", title: "Map tiles", does: "The road and rail map tiles drawn from the base packs, by tile and zoomed out by z3 tile." },
     Stage { id: "finish", title: "Map finishing", does: "What publishing adds around the tiles: the road index, rail stops, ferries, the world levels, and a prune." },
@@ -436,10 +436,10 @@ pub const TABLE: [Step; 52] = [
             "depth",
             Pack,
             Z3,
-            "depth-lo",
-            "Depth, zoomed out",
-            "Composes a z3 tile's zoomed-out depth from the depth sources on the basemap's water.",
-            w_depth_lo,
+            "depth-base",
+            "Depth base",
+            "Composes a z3 tile's coarse depth from the depth sources on the basemap's water.",
+            w_depth_base,
         )
     },
     Step {
@@ -451,10 +451,20 @@ pub const TABLE: [Step; 52] = [
             Z6,
             "depth",
             "Depth",
-            "Composes a tile's depth where a source has detail finer than the zoomed-out levels.",
+            "Composes a tile's depth where a source has detail finer than the coarse levels.",
             w_depth,
         )
     },
+    // (Its z8 tiles decoded one at a time, five levels' tiles at most held: well under the default.)
+    step(
+        "depth",
+        Pack,
+        Z3,
+        "depth-lo",
+        "Depth, zoomed out",
+        "Assembles a z3 tile's zoomed-out depth from its tiles' finest depth and the base.",
+        w_depth_lo,
+    ),
     // (A z6 tile's most its jobs took here, 8.4 GB, 2026-10-05; offered by its extract's size.)
     Step {
         mem_mb: 8600,
@@ -1051,12 +1061,14 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
                     || l == crate::bld::field::mid_logical(t.x, t.y))
         }),
         "bldfield-lo" => tile.is_some_and(|t| t.z == 3 && l == crate::bld::field::lo_logical(t.x, t.y)),
-        // (A z6 tile's depth hi packs, a z3 tile's lo packs.)
+        // (A z3 tile's depth base, a z6 tile's depth hi packs and mid, a z3 tile's lo packs.)
+        "depth-base" => tile.is_some_and(|t| t.z == 3 && l == crate::depth::build::base_logical(t.x, t.y)),
         "depth" => tile.is_some_and(|t| {
             t.z == 6
-                && [crate::depth::LAYER, crate::depth::CLASS_LAYER]
-                    .iter()
-                    .any(|ly| l == crate::depth::build::hi_logical(ly, t.x, t.y))
+                && (l == crate::depth::build::mid_logical(t.x, t.y)
+                    || [crate::depth::LAYER, crate::depth::CLASS_LAYER]
+                        .iter()
+                        .any(|ly| l == crate::depth::build::hi_logical(ly, t.x, t.y)))
         }),
         "depth-lo" => tile.is_some_and(|t| {
             t.z == 3
@@ -1261,9 +1273,15 @@ fn w_terrain_lo(l: &str, _: bool) -> bool {
     pack(l, "terrain", &["lo"])
 }
 
-/// A z6 tile's depth and class hi packs (removed where it makes none).
+/// A z3 tile's depth base (removed where it makes none).
+fn w_depth_base(l: &str, _: bool) -> bool {
+    matches!(parts(l).as_slice(), ["work", "depth-base", t] if tile(t, 3))
+}
+
+/// A z6 tile's depth and class hi packs and its mid (removed where it makes none).
 fn w_depth(l: &str, _: bool) -> bool {
     pack_of(l, &|ly| ly == crate::depth::LAYER || ly == crate::depth::CLASS_LAYER, &["hi"])
+        || matches!(parts(l).as_slice(), ["work", "depth-mid", t] if tile(t, 6))
 }
 
 /// A z3 tile's depth and class lo packs.
@@ -1707,8 +1725,9 @@ mod tests {
                 "slope-lo",
                 "trees",
                 "trees-lo",
-                "depth-lo",
+                "depth-base",
                 "depth",
+                "depth-lo",
                 "unit",
                 "pack",
                 "lo",

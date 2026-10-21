@@ -25,7 +25,7 @@ lists them in):
    switch: the lead's status fresh (its beat and its file's time within `--stale-min`, 10 min); the
    same accepted version naming the packed index for `--min-age-h` (24 h) at least, from when a
    sweep first saw it (`done.json`'s `taken_in_seen`, with the version and copy seen: another one
-   seen, as after a rollback, starts the wait again); and no depth or depth-lo job running on any
+   seen, as after a rollback, starts the wait again); and no depth, depth-base or depth-lo job running on any
    Mac (the lead's and each helper's jobs in status.json, the old fields `job`, `beside`, `more`
    too), none its waiting list names, and none held to resume in the members' progress files
    (`state/pool/progress/<member>.json`). Jobs planned and leased but not yet started aren't in
@@ -299,11 +299,12 @@ def taken_in(a, sid: str, packed: Path) -> bool:
     return copy is not None and (a.root / copy).read_bytes() == want
 
 
-DEPTH_STEPS = ("depth", "depth-lo")
+# (depth-lo reads no source since task #532; kept for a lead still on an older build.)
+DEPTH_STEPS = ("depth-base", "depth", "depth-lo")
 
 
 def depth_jobs(a) -> list[str]:
-    """The depth and depth-lo jobs running on any Mac as the lead's status says (its jobs, and an
+    """The depth-base, depth and depth-lo jobs running on any Mac as the lead's status says (its jobs, and an
     older agent's `job`, `beside` and `more`, the lead's and each helper's), the depth steps it
     says wait, and the depth jobs held to resume in the members' progress files
     (state/pool/progress/<member>.json, crate::agent::resume)."""

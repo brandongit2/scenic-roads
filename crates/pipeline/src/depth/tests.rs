@@ -1,7 +1,7 @@
 //! The depth steps on fixtures: a z6 tile of sea and land with a lake, a coarse sea source over it
 //! all, a finer one over a patch of the sea, and a lake survey.
 
-use super::build::{build_hi, build_lo, hi_logical, lo_logical, square};
+use super::build::{base_logical, build_base, build_hi, build_lo, hi_logical, lo_logical, mid_logical, square};
 use super::fall::{self, Grid, Kind};
 use super::grids::{tests::grid_file, window_box, Grid as SGrid, Source};
 use super::*;
@@ -49,38 +49,55 @@ impl WaterSource for Fixture {
 
 /// The global pixel (column, row) of (u, v) in `T` at zoom z.
 fn at(z: u8, u: f64, v: f64) -> (i64, i64) {
-    let n = f64::from(1u32 << (z - 6)) * 256.0;
+    let n = 2f64.powi(i32::from(z) - 6) * 256.0;
     (((f64::from(T.0) + u) * n) as i64, ((f64::from(T.1) + v) * n) as i64)
 }
 
+/// A source of one grid of zoom `zoom` over (u0, v0)–(u1, v1) of `T`, its values `f` of a cell's
+/// column and row, its file in `dir`.
+#[allow(clippy::too_many_arguments)]
+fn source(
+    dir: &Path,
+    code: u8,
+    lake: bool,
+    zoom: u8,
+    u0: f64,
+    v0: f64,
+    u1: f64,
+    v1: f64,
+    f: &dyn Fn(i64, i64) -> f32,
+) -> Source {
+    let (c0, r0) = at(zoom, u0, v0);
+    let (c1, r1) = at(zoom, u1, v1);
+    let p = dir.join(format!("{code}.tif"));
+    grid_file(&p, zoom, c0, r0, (c1 - c0) as u32, (r1 - r0) as u32, f);
+    Source {
+        id: format!("s{code}"),
+        code,
+        lake,
+        band_m: 2000.0,
+        intertidal: false,
+        datum_exact: true,
+        rivers: false,
+        estimated: false,
+        label: format!("S{code}"),
+        datum: "MSL".into(),
+        notice: None,
+        grids: vec![SGrid {
+            bbox: window_box(zoom, c0, r0, (c1 - c0) as usize, (r1 - r0) as usize),
+            zoom,
+            file: p,
+            zoom_file: None,
+            low_file: None,
+            packed: None,
+        }],
+        pin: format!("s{code}"),
+    }
+}
+
 fn sources(dir: &Path) -> Vec<Source> {
-    let mk = |code: u8, lake: bool, zoom: u8, u0: f64, v0: f64, u1: f64, v1: f64, f: &dyn Fn(i64, i64) -> f32| {
-        let (c0, r0) = at(zoom, u0, v0);
-        let (c1, r1) = at(zoom, u1, v1);
-        let p = dir.join(format!("{code}.tif"));
-        grid_file(&p, zoom, c0, r0, (c1 - c0) as u32, (r1 - r0) as u32, f);
-        Source {
-            id: format!("s{code}"),
-            code,
-            lake,
-            band_m: 2000.0,
-            intertidal: false,
-            datum_exact: true,
-            rivers: false,
-            estimated: false,
-            label: format!("S{code}"),
-            datum: "MSL".into(),
-            notice: None,
-            grids: vec![SGrid {
-                bbox: window_box(zoom, c0, r0, (c1 - c0) as usize, (r1 - r0) as usize),
-                zoom,
-                file: p,
-                zoom_file: None,
-                low_file: None,
-                packed: None,
-            }],
-            pin: format!("s{code}"),
-        }
+    let mk = |code, lake, zoom, u0, v0, u1, v1, f: &dyn Fn(i64, i64) -> f32| {
+        source(dir, code, lake, zoom, u0, v0, u1, v1, f)
     };
     vec![
         // The whole tile, deep (z8).
@@ -121,14 +138,15 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
     let srcs = sources(d.path());
     let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
     let q = (T.0 >> 3, T.1 >> 3);
-    let n_lo = build_lo(&mut out, &srcs, &Fixture, q).unwrap();
+    assert!(build_base(&mut out, &srcs, &Fixture, q).unwrap() > 0 && out.get(&base_logical(q.0, q.1)).is_some());
+    let n_hi = build_hi(&mut out, &srcs, &Fixture, T).unwrap();
+    assert!(n_hi > 0 && out.get(&hi_logical(LAYER, T.0, T.1)).is_some() && out.get(&mid_logical(T.0, T.1)).is_some());
+    let n_lo = build_lo(&mut out, q).unwrap();
     assert!(
         n_lo > 0
             && out.get(&lo_logical(LAYER, q.0, q.1)).is_some()
             && out.get(&lo_logical(CLASS_LAYER, q.0, q.1)).is_some()
     );
-    let n_hi = build_hi(&mut out, &srcs, &Fixture, T).unwrap();
-    assert!(n_hi > 0 && out.get(&hi_logical(LAYER, T.0, T.1)).is_some());
     let lo = (3, q.0, q.1);
     let hi = (6, T.0, T.1);
 
@@ -176,7 +194,7 @@ fn the_depth_of_a_tile_follows_its_sources_detail() {
     let Grid::F(v) = g else { panic!() };
     assert!((v[py * 256 + px] + 50.0).abs() < 0.6, "{}", v[py * 256 + px]);
 
-    // The same again, byte for byte: the piece made again from the same lo packs keeps its
+    // The same again, byte for byte: the piece made again from the same bases keeps its
     // content names.
     let names: Vec<Option<String>> = [hi_logical(LAYER, T.0, T.1), hi_logical(CLASS_LAYER, T.0, T.1)]
         .iter()
@@ -230,8 +248,9 @@ impl WaterSource for WithMore {
 fn packs(srcs: &[Source], water: &dyn WaterSource, root: &Path) -> (Out, Vec<Option<String>>) {
     let mut out = Out::unbound(&root.join("root"), &root.join("scratch")).unwrap();
     let q = (T.0 >> 3, T.1 >> 3);
-    build_lo(&mut out, srcs, water, q).unwrap();
+    build_base(&mut out, srcs, water, q).unwrap();
     build_hi(&mut out, srcs, water, T).unwrap();
+    build_lo(&mut out, q).unwrap();
     let names = [
         lo_logical(LAYER, q.0, q.1),
         lo_logical(CLASS_LAYER, q.0, q.1),
@@ -354,6 +373,107 @@ fn an_estimated_source_is_classed_so() {
     let (x, y, px, py) = where_(11, 0.75, 0.25);
     let c = tile(&out, CLASS_LAYER, "hi", (6, T.0, T.1), 11, x, y).expect("the lake's z11 tile");
     assert_eq!(class_at(&c, px, py), C_ESTIMATED | (3 << 4));
+}
+
+/// `Fixture`'s water and a small lake (key 78) the basemap draws from z10 only (it drops small
+/// polygons zoomed out).
+struct SmallLake;
+
+/// The small lake's rectangle in `T` (u0, v0, u1, v1): 5 pixels of z8 a side.
+const SMALL: [f64; 4] = [0.6, 0.6, 0.62, 0.62];
+
+impl WaterSource for SmallLake {
+    fn polys(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Poly>> {
+        let mut out = Fixture.polys(z, x, y)?;
+        if (10..=14).contains(&z) {
+            if let Some(r) = rect(z, x, y, SMALL[0], SMALL[1], SMALL[2], SMALL[3]) {
+                out.push(square(WKind::Lake, 78, r[0], r[1], r[2], r[3]));
+            }
+        }
+        Ok(out)
+    }
+    fn pin(&self) -> String {
+        "small-lake".into()
+    }
+}
+
+/// The depth PNG of tile z/x/y in work pack `logical` (a base's, a mid's).
+fn work_depth(out: &Out, logical: &str, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
+    let b = std::fs::read(out.path(out.get(logical)?)).unwrap();
+    let idx = store::pack::PackIndex::parse_bytes(&b).unwrap();
+    let p = idx.get(&b, z, x, y).unwrap()?.1;
+    let n = u32::from_le_bytes(p[..4].try_into().unwrap()) as usize;
+    Some(p[4..4 + n].to_vec())
+}
+
+/// Task #532: a lake the basemap drops zoomed out keeps the depth its finer tiles have at z8 and
+/// coarser, where the base, composed on the zoomed-out water, has none; its class the lake
+/// source's.
+#[test]
+fn a_small_lake_keeps_its_depth_zoomed_out() {
+    let d = tempfile::tempdir().unwrap();
+    let mut srcs = sources(d.path());
+    srcs.push(source(d.path(), 4, true, 12, 0.59, 0.59, 0.63, 0.63, &|_, _| -6.0));
+    let (out, _) = packs(&srcs, &SmallLake, d.path());
+    let q = (T.0 >> 3, T.1 >> 3);
+    let (x, y, px, py) = where_(8, 0.61, 0.61);
+    let base = work_depth(&out, &base_logical(q.0, q.1), 8, x, y);
+    assert!(base.is_none_or(|t| depth_at(&t, px, py) >= NODATA_MIN), "the base has no lake there");
+    for z in [8u8, 5, 3] {
+        let (x, y, px, py) = where_(z, 0.61, 0.61);
+        let t = tile(&out, LAYER, "lo", (3, q.0, q.1), z, x, y).unwrap_or_else(|| panic!("z{z}"));
+        assert!((depth_at(&t, px, py) + 6.0).abs() < 0.05, "z{z}: {}", depth_at(&t, px, py));
+        let c = tile(&out, CLASS_LAYER, "lo", (3, q.0, q.1), z, x, y).unwrap();
+        assert_eq!(class_at(&c, px, py), C_MEASURED | (4 << 4), "z{z}");
+    }
+    // The open sea, with nothing finer beneath it, is the base's.
+    let (x, y, px, py) = where_(8, 0.45, 0.9);
+    let lo = tile(&out, LAYER, "lo", (3, q.0, q.1), 8, x, y).unwrap();
+    let base = work_depth(&out, &base_logical(q.0, q.1), 8, x, y).unwrap();
+    assert_eq!(depth_at(&lo, px, py), depth_at(&base, px, py));
+}
+
+/// Reducing: the water's mean, however little of the 2 × 2 it is, its most common class (the
+/// least byte of a tie); with no water the land's band; with neither, uncovered where any is.
+#[test]
+fn reducing_keeps_the_water_beneath_a_pixel() {
+    use super::build::{reduce, UNCOVERED};
+    let mut src = (vec![NODATA; 65536], vec![C_NONE; 65536]);
+    let mut set = |px: usize, py: usize, v: f32, c: u8| {
+        src.0[py * 256 + px] = v;
+        src.1[py * 256 + px] = c;
+    };
+    // (Pixel 0: one water pixel of four. 1: three of two classes. 2: the land's band. 3: uncovered.)
+    set(1, 1, -4.0, 0x11);
+    set(2, 0, -2.0, 0x21);
+    set(3, 0, -4.0, 0x11);
+    set(2, 1, -6.0, 0x21);
+    set(3, 1, 1.0, C_NONE);
+    set(4, 0, 0.5, C_NONE);
+    set(7, 1, 0.0, UNCOVERED);
+    let mut dst = (vec![NODATA; 65536], vec![C_NONE; 65536]);
+    reduce(&mut dst, (1, 0), &src);
+    let got: Vec<(f32, u8)> = (128..133).map(|i| (dst.0[i], dst.1[i])).collect();
+    assert_eq!(got, [(-4.0, 0x11), (-4.0, 0x21), (0.5, C_NONE), (NODATA, UNCOVERED), (NODATA, C_NONE)]);
+}
+
+/// A mid: a z8 tile reduced from the finest tile beneath each place, the rest uncovered.
+#[test]
+fn a_mid_is_the_finest_beneath_reduced() {
+    use super::build::{mid_of, UNCOVERED};
+    let enc = |v: f32, c: u8| {
+        (fall::encode(&Grid::F(vec![v; 65536])).unwrap(), fall::encode(&Grid::C(vec![c; 65536])).unwrap())
+    };
+    // (z9 tile 0/0 of z8 tile 0/0 all -3, and its z10 child 1/1 all -5: z8's quadrant 0 is -3 but
+    // for its own quadrant 3, -5; the rest none beneath.)
+    let made = std::collections::BTreeMap::from([((9, 0, 0), enc(-3.0, 0x11)), ((10, 1, 1), enc(-5.0, 0x21))]);
+    let mid = mid_of(&made).unwrap();
+    assert_eq!(mid.keys().copied().collect::<Vec<_>>(), [(8, 0, 0)]);
+    let (d, c) = &mid[&(8, 0, 0)];
+    let at = |px: usize, py: usize| (depth_at(d, px, py), class_at(c, px, py));
+    assert_eq!(at(10, 10), (-3.0, 0x11));
+    assert_eq!(at(100, 100), (-5.0, 0x21));
+    assert_eq!(at(200, 10), (NODATA, UNCOVERED));
 }
 
 /// Task #398: an assembly's and a piece's run are timed by stage (no hour of "(untimed)"): the
@@ -595,8 +715,8 @@ fn measure_the_waters_reads() {
 }
 
 /// A measure on real data, reading the NAS alone (nothing written): `SCENIC_DEPTH_MEASURE="<root>
-/// x/y <upto> <reads>"` composes z3 tile x/y's assembly to zoom `upto` (`SCENIC_DEPTH_MEASURE="<root>
-/// 6/x/y <upto> <reads>"`: z6 tile x/y's piece, from the NAS's lo packs) with `reads` windows read
+/// x/y <upto> <reads>"` composes z3 tile x/y's base to zoom `upto` (`SCENIC_DEPTH_MEASURE="<root>
+/// 6/x/y <upto> <reads>"`: z6 tile x/y's piece, from the NAS's bases) with `reads` windows read
 /// at once (1: in turn, the grids too), and prints its phases, the depth files opened and read, and
 /// the digest of the tiles made. `SCENIC_DEPTH_PACKED="<id>=<index>=<folder> …"` (task #452) reads
 /// source `id`'s grids by a packed index (producers/depth/repack.py's) from its packs in `folder`
@@ -655,10 +775,10 @@ fn measure_a_real_assembly() {
     }
     let water = crate::terrain_pack::open_water(&out).unwrap();
     let io0 = grids::io_counts();
-    crate::timings::start(if z == 3 { "depth-lo" } else { "depth" });
+    crate::timings::start(if z == 3 { "depth-base" } else { "depth" });
     let t0 = std::time::Instant::now();
     let made = if z == 3 {
-        super::build::compose_lo(&out, &srcs, &water, q, upto).unwrap()
+        super::build::compose_base(&out, &srcs, &water, q, upto).unwrap()
     } else {
         super::build::compose_hi(&out, &srcs, &water, q, upto).unwrap()
     };
@@ -685,4 +805,119 @@ fn measure_a_real_assembly() {
         }
     }
     println!("  untimed {:.1} s of {:.1} s", r.untimed_s, r.wall_s);
+}
+
+/// Task #532's measure on real data, read only: `SCENIC_DEPTH_LO="<root> 3/x/y <out dir> <z,x0,y0,nx,ny> …"`
+/// takes z3 tile Q's stored lo packs as its base (their z6–8 are what `depth-base` composes) and its
+/// z6 tiles' stored hi packs (what `depth` makes, the mids reduced from them as `build_hi` does),
+/// assembles Q as `depth-lo` does, prints the times, and draws each window (zoom z, tiles x0.. by
+/// y0.., nx by ny) before (the stored lo packs) and after as PNGs in the out dir.
+#[test]
+fn measure_a_real_lo() {
+    let Ok(m) = std::env::var("SCENIC_DEPTH_LO") else { return };
+    let a: Vec<&str> = m.split_whitespace().collect();
+    let root = Path::new(a[0]);
+    let (x, y) = a[1].strip_prefix("3/").unwrap().split_once('/').unwrap();
+    let q: (u32, u32) = (x.parse().unwrap(), y.parse().unwrap());
+    let dir = Path::new(a[2]);
+    std::fs::create_dir_all(dir).unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let out = Out::unbound(root, scratch.path()).unwrap();
+    type Tiles = std::collections::BTreeMap<(u8, u32, u32), (Vec<u8>, Vec<u8>)>;
+    // (A pack's tiles: both layers', by zoom, x, y.)
+    let read = |scope: &str, r: (u8, u32, u32)| -> Tiles {
+        let mut t = Tiles::new();
+        for (layer, which) in [(LAYER, 0), (CLASS_LAYER, 1)] {
+            let Some(c) = out.get(&format!("layers/{layer}/{scope}/{}-{}-{}", r.0, r.1, r.2)) else { continue };
+            // (Read whole: a read a tile is a round trip each over SMB.)
+            let f = std::fs::read(out.path(c)).unwrap();
+            let idx = store::pack::PackIndex::parse_bytes(&f).unwrap();
+            for e in &idx.entries {
+                let b = idx.read_blob(&f, e).unwrap();
+                let p = t.entry(e.zxy()).or_default();
+                if which == 0 {
+                    p.0 = b;
+                } else {
+                    p.1 = b;
+                }
+            }
+        }
+        t
+    };
+    let t0 = std::time::Instant::now();
+    let before = read("lo", (3, q.0, q.1));
+    let read_lo = t0.elapsed().as_secs_f64();
+    let (mut mids, mut mid_s, mut read_s, mut hi_tiles, mut pieces) = (Tiles::new(), 0.0, 0.0, 0usize, 0);
+    for tx in q.0 * 8..q.0 * 8 + 8 {
+        for ty in q.1 * 8..q.1 * 8 + 8 {
+            let t1 = std::time::Instant::now();
+            let made = read("hi", (6, tx, ty));
+            read_s += t1.elapsed().as_secs_f64();
+            if made.is_empty() {
+                continue;
+            }
+            pieces += 1;
+            hi_tiles += made.len();
+            let t2 = std::time::Instant::now();
+            mids.extend(super::build::mid_of(&made).unwrap());
+            mid_s += t2.elapsed().as_secs_f64();
+        }
+    }
+    let z8 = |m: &Tiles, x: u32, y: u32| Ok(m.get(&(8, x, y)).cloned());
+    let t3 = std::time::Instant::now();
+    let after = super::build::assemble(q, &|x, y| z8(&before, x, y), &|x, y| z8(&mids, x, y)).unwrap();
+    let asm_s = t3.elapsed().as_secs_f64();
+    println!(
+        "3/{}/{}: lo pack read {read_lo:.1} s ({} tiles); {pieces} z6 tiles' hi packs read {read_s:.1} s ({hi_tiles} tiles); \
+         mids reduced {mid_s:.1} s ({} z8 tiles); assembled {asm_s:.1} s ({} tiles)",
+        q.0,
+        q.1,
+        before.len(),
+        mids.len(),
+        after.len()
+    );
+    // (Drawn: the depth on a log ramp of blues to 300 m, a drying height or the land's band light
+    // sand, none grey.)
+    let colour = |v: f32| -> [u8; 3] {
+        if v >= NODATA_MIN {
+            [200, 200, 200]
+        } else if v >= 0.0 {
+            [236, 222, 180]
+        } else {
+            let t = ((1.0 - v).ln() / 301f32.ln()).clamp(0.0, 1.0);
+            [(170.0 * (1.0 - t)) as u8 + 8, (215.0 * (1.0 - t)) as u8 + 30, (255.0 - 150.0 * t) as u8]
+        }
+    };
+    for w in &a[3..] {
+        let n: Vec<u32> = w.split(',').map(|s| s.parse().unwrap()).collect();
+        let (z, x0, y0, nx, ny) = (n[0] as u8, n[1], n[2], n[3], n[4]);
+        for (name, tiles) in [("before", &before), ("after", &after)] {
+            let (wpx, hpx) = (nx as usize * 256, ny as usize * 256);
+            let mut rgb = vec![0u8; wpx * hpx * 3];
+            for j in 0..ny {
+                for i in 0..nx {
+                    let v = match tiles.get(&(z, x0 + i, y0 + j)) {
+                        Some((d, _)) => match fall::decode(Kind::Terrarium, d).unwrap() {
+                            Grid::F(v) => v,
+                            _ => unreachable!(),
+                        },
+                        None => vec![NODATA; 65536],
+                    };
+                    for py in 0..256usize {
+                        for px in 0..256usize {
+                            let o = ((j as usize * 256 + py) * wpx + i as usize * 256 + px) * 3;
+                            rgb[o..o + 3].copy_from_slice(&colour(v[py * 256 + px]));
+                        }
+                    }
+                }
+            }
+            let p = dir.join(format!("{z}-{x0}-{y0}-{nx}x{ny}-{name}.png"));
+            let f = std::io::BufWriter::new(std::fs::File::create(&p).unwrap());
+            let mut enc = png::Encoder::new(f, wpx as u32, hpx as u32);
+            enc.set_color(png::ColorType::Rgb);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header().unwrap().write_image_data(&rgb).unwrap();
+            println!("  {}", p.display());
+        }
+    }
 }

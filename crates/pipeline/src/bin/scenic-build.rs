@@ -777,7 +777,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "z3 tiles");
         }
         "bldtile-task" => bldtile_task_step(&mut out, &args)?,
-        "depth-lo" | "depth" => depth_step(&mut out, &args, step.as_str())?,
+        "depth-base" | "depth" | "depth-lo" => depth_step(&mut out, &args, step.as_str())?,
         "terrain-fine" => terrain_fine_step(&mut out, &args)?,
         "trees" => {
             // trees <tile …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]: the tree cover
@@ -5128,33 +5128,40 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
     landing.land(out)
 }
 
-/// depth-lo <Q …> | depth <T …>: the depth's assemblies of z3 tiles Q (their lo packs, z3–8) or
-/// z6 tiles of z6 tiles T (their hi packs, z9–16), from the declared depth sources on the latest
-/// pass's water (pipeline::depth::build).
+/// depth-base <Q …> | depth <T …> | depth-lo <Q …>: the depth's bases of z3 tiles Q (z3–8 from the
+/// declared depth sources on the latest pass's water), its z6 tiles T (their hi packs, z9–16, and
+/// mids, from the sources too), or its assemblies of z3 tiles Q (their lo packs, z3–8, from the
+/// mids and the base) (pipeline::depth::build).
 fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
-    let z = if step == "depth-lo" { 3 } else { 6 };
+    let z = if step == "depth" { 6 } else { 3 };
     let ts: Vec<TileId> = positional(args)
         .iter()
         .map(|t| TileId::parse(t).filter(|u| u.z == z).with_context(|| format!("not a z{z} tile: {t}")))
         .collect::<Result<_>>()?;
     anyhow::ensure!(!ts.is_empty(), "{step} <{z}/x/y …>");
-    let p = phase("the depth sources' declarations read", Class::NasRead);
-    let sources = pipeline::depth::grids::declared(out.root(), &out.manifest)?;
-    anyhow::ensure!(!sources.is_empty(), "no depth source is declared (inputs/sources/, docs/inputs.md §6.10)");
-    drop(p);
-    let p = phase("the basemap's water opened", Class::NasRead);
-    let water = pipeline::terrain_pack::open_water(out)?;
-    drop(p);
-    let names: Vec<String> = ts.iter().map(|t| format!("Composing the depth of {}", t.slash())).collect();
+    let (sources, water) = if step == "depth-lo" {
+        (Vec::new(), None)
+    } else {
+        let p = phase("the depth sources' declarations read", Class::NasRead);
+        let sources = pipeline::depth::grids::declared(out.root(), &out.manifest)?;
+        anyhow::ensure!(!sources.is_empty(), "no depth source is declared (inputs/sources/, docs/inputs.md §6.10)");
+        drop(p);
+        let p = phase("the basemap's water opened", Class::NasRead);
+        let water = pipeline::terrain_pack::open_water(out)?;
+        drop(p);
+        (sources, Some(water))
+    };
+    let verb = if water.is_some() { "Composing" } else { "Assembling" };
+    let names: Vec<String> = ts.iter().map(|t| format!("{verb} the depth of {}", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     for (k, &t) in ts.iter().enumerate() {
         pipeline::control::safe_point(step);
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start(step, &t.slash());
-        let n = if z == 3 {
-            pipeline::depth::build::build_lo(out, &sources, &water, (t.x, t.y))?
-        } else {
-            pipeline::depth::build::build_hi(out, &sources, &water, (t.x, t.y))?
+        let n = match (step, &water) {
+            ("depth-base", Some(w)) => pipeline::depth::build::build_base(out, &sources, w, (t.x, t.y))?,
+            ("depth", Some(w)) => pipeline::depth::build::build_hi(out, &sources, w, (t.x, t.y))?,
+            _ => pipeline::depth::build::build_lo(out, (t.x, t.y))?,
         };
         eprintln!("{step} {}: {n} tiles", t.slash());
         pipeline::control::done(step, &t.slash());

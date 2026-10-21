@@ -80,8 +80,10 @@ pub struct Keys {
     /// The buildings field's lo levels, per z3 tile ("3/x/y": `bld_targets`).
     #[serde(default)]
     pub bldfield_lo: BTreeMap<String, String>,
-    /// The depth's z6 tiles, per z6 tile ("6/x/y"), and its assemblies, per z3 tile ("3/x/y":
-    /// `depth_targets`).
+    /// The depth's bases, per z3 tile ("3/x/y"), its z6 tiles, per z6 tile ("6/x/y"), and its
+    /// assemblies, per z3 tile (`depth_targets`).
+    #[serde(default)]
+    pub depth_base: BTreeMap<String, String>,
     #[serde(default)]
     pub depth: BTreeMap<String, String>,
     #[serde(default)]
@@ -162,6 +164,7 @@ impl Keys {
             "bldprep" => &mut self.bldprep,
             "bldtiles" => &mut self.bldtiles,
             "bldfield-lo" => &mut self.bldfield_lo,
+            "depth-base" => &mut self.depth_base,
             "depth" => &mut self.depth,
             "depth-lo" => &mut self.depth_lo,
             "terrain-fine" => &mut self.terrain_fine,
@@ -186,6 +189,7 @@ impl Keys {
             "bldprep" => &self.bldprep,
             "bldtiles" => &self.bldtiles,
             "bldfield-lo" => &self.bldfield_lo,
+            "depth-base" => &self.depth_base,
             "depth" => &self.depth,
             "depth-lo" => &self.depth_lo,
             "terrain-fine" => &self.terrain_fine,
@@ -3539,27 +3543,34 @@ fn bld_rank<'a>(regions: &'a [&'a Coverage]) -> impl Fn(&str) -> BldRank + 'a {
 }
 
 /// The depth chain's targets (docs/steps.md §3): every z3 tile within `REACH_KM` of the
-/// coverage that a depth source meets (`depth-lo`: zooms 3–8), and every z6 tile within it that a
-/// source with a grid finer than z8 meets (`depth`: zooms 9–16), each with its key; the targets
-/// whose water digests aren't worked out yet (`unknown`) wait.
+/// coverage that a depth source meets (`depth-base`, then `depth-lo`: zooms 3–8), and every z6
+/// tile within it that a source with a grid finer than z8 meets (`depth`: zooms 9–16), each with
+/// its key; the targets whose water digests aren't worked out yet (`unknown`) wait.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DepthTargets {
-    pub lo: Vec<(String, String)>,
+    pub base: Vec<(String, String)>,
     pub hi: Vec<(String, String)>,
+    pub lo: Vec<(String, String)>,
     pub unknown: usize,
 }
 
-/// The depth's version line in its keys.
+/// The depth's version line in its keys: its step's own version.
 fn depth_versions(step: &str) -> String {
-    format!("{step} {} {}", crate::depth::build::DEPTH_V, crate::depth::build::DEPTH_LO_V)
+    use crate::depth::build::{DEPTH_BASE_V, DEPTH_LO_V, DEPTH_V};
+    let v = match step {
+        "depth-base" => DEPTH_BASE_V,
+        "depth" => DEPTH_V,
+        _ => DEPTH_LO_V,
+    };
+    format!("{step} {v}")
 }
 
 /// What a depth z6 tile's water digest is made from (`WaterIdx`'s from): its z6–12 tiles, as the depth
 /// reads them (the rivers too: `terrain_water::RIVERS_FROM`).
 pub const DEPTH_WATER_FROM: &str = "depth z6-12 +rivers";
-/// A depth assembly's: its z3 tile's z6–8, the rivers too ("depth 3/x/y": the terrain's assembly
+/// A depth base's: its z3 tile's z6–8, the rivers too ("depth 3/x/y": the terrain's assembly
 /// reads the same tiles without them, "3/x/y").
-pub const DEPTH_LO_WATER_FROM: &str = "depth z6-8 +rivers";
+pub const DEPTH_BASE_WATER_FROM: &str = "depth z6-8 +rivers";
 
 /// The z3 tiles (assemblies) and z6 tiles (z6 tiles) the depth builds for the coverage and its
 /// declared sources (`DepthTargets`).
@@ -3603,7 +3614,7 @@ pub fn depth_water_reads(cov: &Coverage, sources: &[crate::depth::grids::Source]
     let mut out: Vec<crate::terrain_water::Reads> = lo
         .into_iter()
         .map(|q| {
-            (format!("depth 3/{}/{}", q.0, q.1), DEPTH_LO_WATER_FROM.to_string(), crate::terrain_water::z3_tiles(q))
+            (format!("depth 3/{}/{}", q.0, q.1), DEPTH_BASE_WATER_FROM.to_string(), crate::terrain_water::z3_tiles(q))
         })
         .collect();
     for (x, y) in hi {
@@ -3621,11 +3632,13 @@ pub fn depth_water_reads(cov: &Coverage, sources: &[crate::depth::grids::Source]
 /// The depth's targets with their keys; None while its sources can't be read or there's no water
 /// source (no basemap yet).
 ///
-/// - an assembly's key: the versions, the z3 tile, the sources meeting it (their ids and digests),
-///   the water it reads ("depth 3/x/y", `DEPTH_LO_WATER_FROM`);
-/// - a z6 tile's: the versions, the z6 tile, the sources meeting it, the lo packs of its z3 tile and
-///   its eight neighbours (what its capped pixels are scaled up from), its water ("depth 6/x/y").
+/// - a base's key: its version, the z3 tile, the sources meeting it (their ids and digests), the
+///   water it reads ("depth 3/x/y", `DEPTH_BASE_WATER_FROM`);
+/// - a z6 tile's: its version, the z6 tile, the sources meeting it, the bases of its z3 tile and
+///   its eight neighbours (what its capped pixels are scaled up from), its water ("depth 6/x/y");
+/// - an assembly's: its version, the z3 tile, its base and the mids of its z6 tiles.
 pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Option<DepthTargets> {
+    use crate::depth::build::{base_logical, mid_logical};
     let sources = tiles.depth(m)?;
     let pin = crate::terrain_pack::water_source_pin(m)?;
     let idx = tiles.water_idx(m, &pin);
@@ -3634,65 +3647,84 @@ pub fn depth_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &Terra
     let pins = |b: [f64; 4]| -> String {
         sources.iter().filter(|s| s.meeting(b).next().is_some()).map(|s| s.pin.as_str()).collect::<Vec<_>>().join(",")
     };
+    let named = |l: &str| m.get(l).map_or("-", String::as_str).to_string();
     let (lo, hi) = depth_tiles(cov, &sources);
     let mut out = DepthTargets::default();
-    for q in lo {
+    for &q in &lo {
         let t = format!("3/{}/{}", q.0, q.1);
-        let Some(w) = water_key(Some(&pin), idx, &format!("depth {t}"), DEPTH_LO_WATER_FROM) else {
+        let Some(w) = water_key(Some(&pin), idx, &format!("depth {t}"), DEPTH_BASE_WATER_FROM) else {
             out.unknown += 1;
             continue;
         };
-        out.lo.push((
+        out.base.push((
             t.clone(),
-            h(&[&depth_versions("depth-lo"), &t, &pins(deg(crate::hipack::tile_bounds(3, q.0, q.1))), &w]),
+            h(&[&depth_versions("depth-base"), &t, &pins(deg(crate::hipack::tile_bounds(3, q.0, q.1))), &w]),
         ));
     }
-    for (x, y) in hi {
+    for &(x, y) in &hi {
         let t = format!("6/{x}/{y}");
         let Some(w) = water_key(Some(&pin), idx, &format!("depth {t}"), DEPTH_WATER_FROM) else {
             out.unknown += 1;
             continue;
         };
         let (qx, qy) = (i64::from(x >> 3), i64::from(y >> 3));
-        let mut los = Vec::new();
+        let mut bases = Vec::new();
         for dy in -1..=1i64 {
             for dx in -1..=1i64 {
                 let (ax, ay) = ((qx + dx).rem_euclid(8), qy + dy);
                 if (0..8).contains(&ay) {
-                    los.push(
-                        m.get(&crate::depth::build::lo_logical(crate::depth::LAYER, ax as u32, ay as u32))
-                            .map_or("-", String::as_str)
-                            .to_string(),
-                    );
+                    bases.push(named(&base_logical(ax as u32, ay as u32)));
                 }
             }
         }
         // (A margin: the block's pad reads a little past the tile.)
         let b = crate::hipack::grow(crate::hipack::tile_bounds(6, x, y), 2.0);
-        out.hi.push((t.clone(), h(&[&depth_versions("depth"), &t, &pins(deg(b)), &los.join(","), &w])));
+        out.hi.push((t.clone(), h(&[&depth_versions("depth"), &t, &pins(deg(b)), &bases.join(","), &w])));
+    }
+    // (An assembly once its base's water is known.)
+    for q in lo.into_iter().filter(|q| out.base.iter().any(|(t, _)| *t == format!("3/{}/{}", q.0, q.1))) {
+        let t = format!("3/{}/{}", q.0, q.1);
+        let mids: Vec<String> =
+            hi.iter().filter(|&&(x, y)| (x >> 3, y >> 3) == q).map(|&(x, y)| named(&mid_logical(x, y))).collect();
+        out.lo
+            .push((t.clone(), h(&[&depth_versions("depth-lo"), &t, &named(&base_logical(q.0, q.1)), &mids.join(",")])));
     }
     Some(out)
 }
 
-/// The depth chain's work that can run now: the stale assemblies, then the stale z6 tiles whose z3
-/// tile and its neighbours' assemblies are done as they'll stay (their lo packs are in the z6 tiles'
-/// keys).
+/// The depth chain's work that can run now: the stale bases; the stale z6 tiles whose z3 tile's
+/// and its neighbours' bases are done as they'll stay (the bases are in the z6 tiles' keys); the
+/// stale assemblies whose base and z6 tiles are (their mids are in the assemblies' keys).
 pub fn depth_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Vec<Work> {
     let Some(dt) = depth_targets(cov, m, tiles) else { return Vec::new() };
-    let lo: Vec<(String, String)> = dt.lo.iter().filter(|(t, k)| done.depth_lo.get(t) != Some(k)).cloned().collect();
-    let stale_q: BTreeSet<(u32, u32)> = lo.iter().filter_map(|(t, _)| TileId::parse(t)).map(|u| (u.x, u.y)).collect();
+    let stale = |ts: &[(String, String)], d: &BTreeMap<String, String>| -> Vec<(String, String)> {
+        ts.iter().filter(|(t, k)| d.get(t) != Some(k)).cloned().collect()
+    };
+    let at = |ts: &[(String, String)]| -> BTreeSet<(u32, u32)> {
+        ts.iter().filter_map(|(t, _)| TileId::parse(t)).map(|u| (u.x, u.y)).collect()
+    };
+    let base = stale(&dt.base, &done.depth_base);
+    let stale_base = at(&base);
     let ready = |t: &str| {
         TileId::parse(t).is_some_and(|u| {
             let (qx, qy) = (i64::from(u.x >> 3), i64::from(u.y >> 3));
             (-1..=1i64).all(|dy| {
-                (-1..=1i64).all(|dx| !stale_q.contains(&((qx + dx).rem_euclid(8) as u32, (qy + dy).clamp(0, 7) as u32)))
+                (-1..=1i64)
+                    .all(|dx| !stale_base.contains(&((qx + dx).rem_euclid(8) as u32, (qy + dy).clamp(0, 7) as u32)))
             })
         })
     };
-    let hi: Vec<(String, String)> =
-        dt.hi.iter().filter(|(t, k)| done.depth.get(t) != Some(k) && ready(t)).cloned().collect();
+    let hi: Vec<(String, String)> = stale(&dt.hi, &done.depth).into_iter().filter(|(t, _)| ready(t)).collect();
+    let stale_hi: BTreeSet<(u32, u32)> =
+        at(&stale(&dt.hi, &done.depth)).into_iter().map(|(x, y)| (x >> 3, y >> 3)).collect();
+    let lo: Vec<(String, String)> = stale(&dt.lo, &done.depth_lo)
+        .into_iter()
+        .filter(|(t, _)| {
+            TileId::parse(t).is_some_and(|u| !stale_base.contains(&(u.x, u.y)) && !stale_hi.contains(&(u.x, u.y)))
+        })
+        .collect();
     let mut out = Vec::new();
-    for (step, targets) in [("depth-lo", lo), ("depth", hi)] {
+    for (step, targets) in [("depth-base", base), ("depth", hi), ("depth-lo", lo)] {
         if !targets.is_empty() {
             out.push(Work { step: step.into(), targets });
         }
@@ -3780,12 +3812,15 @@ fn fine_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &
 /// The depth chain's first stale step, as if each before it succeeded (`remaining`).
 fn depth_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> Option<Work> {
     let dt = depth_targets(cov, m, tiles)?;
-    let lo: Vec<(String, String)> = dt.lo.into_iter().filter(|(t, k)| done.depth_lo.get(t) != Some(k)).collect();
-    if !lo.is_empty() {
-        return Some(Work { step: "depth-lo".into(), targets: lo });
+    for (step, ts, d) in
+        [("depth-base", dt.base, &done.depth_base), ("depth", dt.hi, &done.depth), ("depth-lo", dt.lo, &done.depth_lo)]
+    {
+        let ts: Vec<(String, String)> = ts.into_iter().filter(|(t, k)| d.get(t) != Some(k)).collect();
+        if !ts.is_empty() {
+            return Some(Work { step: step.into(), targets: ts });
+        }
     }
-    let hi: Vec<(String, String)> = dt.hi.into_iter().filter(|(t, k)| done.depth.get(t) != Some(k)).collect();
-    (!hi.is_empty()).then(|| Work { step: "depth".into(), targets: hi })
+    None
 }
 
 /// One step's line of the build's checklist: its targets done of all (`total` None until an earlier
@@ -4016,8 +4051,9 @@ pub const COUNTED: [&str; 33] = [
     "slope-lo",
     "trees",
     "trees-lo",
-    "depth-lo",
+    "depth-base",
     "depth",
+    "depth-lo",
     "terrain-fine",
     "unit",
     "pack",
@@ -4148,8 +4184,9 @@ pub fn checklist(
     let dk = dt.as_ref().is_some_and(|d| d.unknown == 0);
     let empty = DepthTargets::default();
     let d = dt.as_ref().unwrap_or(&empty);
-    out.push(sized("depth-lo", &d.lo, &done.depth_lo, dk));
+    out.push(sized("depth-base", &d.base, &done.depth_base, dk));
     out.push(sized("depth", &d.hi, &done.depth, dk));
+    out.push(sized("depth-lo", &d.lo, &done.depth_lo, dk));
     // (Known once the fine datasets are read.)
     let ft = fine_targets(cov, m, done, tiles);
     let fk: Vec<(String, String)> = ft.iter().flatten().map(|(t, k, _)| (t.clone(), k.clone())).collect();
@@ -7625,7 +7662,7 @@ pub(crate) mod tests {
         // The water's digests not worked out yet: the targets wait, and the terrain-water job is
         // asked for them.
         let dt = depth_targets(&c, &m, &tiles).unwrap();
-        assert!(dt.lo.is_empty() && dt.hi.is_empty() && dt.unknown > 0);
+        assert!(dt.base.is_empty() && dt.hi.is_empty() && dt.lo.is_empty() && dt.unknown > 0);
         let pin = crate::terrain_pack::water_source_pin(&m).unwrap();
         let reads = depth_water_reads(&c, &depth_sources());
         assert!(
@@ -7647,7 +7684,7 @@ pub(crate) mod tests {
         tiles.hold_water(&name, idx);
         let dt = depth_targets(&c, &m, &tiles).unwrap();
         assert_eq!(dt.unknown, 0);
-        assert!(dt.lo.iter().any(|t| t.0 == "3/3/2"));
+        assert!(dt.base.iter().any(|t| t.0 == "3/3/2") && dt.lo.iter().any(|t| t.0 == "3/3/2"));
         // Z6 tiles only where the fine source is.
         assert!(
             !dt.hi.is_empty()
@@ -7658,25 +7695,35 @@ pub(crate) mod tests {
             "{:?}",
             dt.hi
         );
-        // The assemblies first; the z6 tiles once theirs are done.
+        // The bases first; the z6 tiles once theirs are done; the assemblies once their base and
+        // z6 tiles are.
         let w = depth_work(&c, &m, &done, &tiles);
-        assert_eq!(w.iter().map(|x| x.step.as_str()).collect::<Vec<_>>(), ["depth-lo"]);
+        assert_eq!(w.iter().map(|x| x.step.as_str()).collect::<Vec<_>>(), ["depth-base"]);
         let mut d2 = done.clone();
-        d2.record("depth-lo", &w[0].targets);
+        d2.record("depth-base", &w[0].targets);
+        // (The assemblies whose z3 tile has none of the z6 tiles go with them.)
         let w = depth_work(&c, &m, &d2, &tiles);
-        assert_eq!(w.iter().map(|x| x.step.as_str()).collect::<Vec<_>>(), ["depth"]);
-        d2.record("depth", &w[0].targets);
+        assert_eq!(w[0].step, "depth");
+        assert!(w[1..].iter().all(|x| x.step == "depth-lo" && x.targets.iter().all(|t| t.0 != "3/3/2")));
+        for x in &w {
+            d2.record(&x.step, &x.targets);
+        }
+        let w = depth_work(&c, &m, &d2, &tiles);
+        assert_eq!(w.iter().map(|x| (x.step.as_str(), x.targets.len())).collect::<Vec<_>>(), [("depth-lo", 1)]);
+        d2.record("depth-lo", &w[0].targets);
         assert!(depth_work(&c, &m, &d2, &tiles).is_empty());
         assert!(remaining(&d2, |d| depth_next(&c, &m, d, &tiles)).is_empty());
-        // An assembly's lo pack made new changes its z6 tiles' keys; a fine source changed, its
-        // z6 tiles' alone.
+        // A base made new changes its z6 tiles' keys and its assembly's; a mid made new, its
+        // assembly's alone; a fine source changed, its z6 tiles' alone.
         let mut m2 = m.clone();
-        m2.insert(
-            crate::depth::build::lo_logical(crate::depth::LAYER, 3, 2),
-            "layers/depth/lo/3-3-2.0303030303030303.pack".into(),
-        );
+        m2.insert(crate::depth::build::base_logical(3, 2), "work/depth-base/3-3-2.0303030303030303.pack".into());
         let after = depth_targets(&c, &m2, &tiles).unwrap();
-        assert!(after.hi.iter().zip(&dt.hi).all(|(a, b)| a.1 != b.1) && after.lo == dt.lo);
+        let q = |d: &DepthTargets| d.lo.iter().find(|t| t.0 == "3/3/2").cloned();
+        assert!(after.hi.iter().zip(&dt.hi).all(|(a, b)| a.1 != b.1) && after.base == dt.base && q(&after) != q(&dt));
+        let mut m3 = m.clone();
+        m3.insert(crate::depth::build::mid_logical(28, 16), "work/depth-mid/6-28-16.0404040404040404.pack".into());
+        let after = depth_targets(&c, &m3, &tiles).unwrap();
+        assert!(after.hi == dt.hi && after.base == dt.base && q(&after) != q(&dt));
         let mut moved = depth_sources();
         moved[1].pin = "s2 changed".into();
         tiles.hold_depth("x", moved);
