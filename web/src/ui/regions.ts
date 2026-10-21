@@ -236,7 +236,6 @@ export class RegionsPanel {
   /** A region's outlines: the catalog's (each entry's; none until the coverage is loaded), or for a
    * pending one its osm: entries' areas, once loaded. */
   private outlinesOf(r: Region): Outline[] {
-    if (r.disabled) return { text: 'disabled', cls: 'off', title: 'Disabled in its file (disabled = true): checked like every region, and other regions may name it, but nothing is built for it, so it isn’t on the map and can’t be downloaded. Its file enables it.' };
     if (this.isPending(r)) return this.pendingOutlines.get(r.id) ?? [];
     return (this.coverage?.features ?? []).filter((f) => f.properties?.region === r.id);
   }
@@ -303,6 +302,7 @@ export class RegionsPanel {
       const fs = r.held ?? [];
       return { text: `held: ${fs[0]?.message ?? 'a finding holds it'}${fs.length > 1 ? ` (+${fs.length - 1})` : ''}`, cls: 'held', title: `Its last accepted outline stays in use until these are fixed:\n${fs.map((f) => `${f.id}: ${f.message}`).join('\n')}` };
     }
+    if (r.disabled) return { text: 'disabled', cls: 'off', title: 'Disabled in its file (disabled = true): checked like every region, and other regions may name it, but nothing is built for it, so it isn’t on the map and can’t be downloaded. Its file enables it.' };
     if (this.isPending(r)) return { text: 'pending', cls: 'wait', title: 'Not on the map yet: it’s added when the lead next publishes the map data' };
     const building = this.coverage?.regions?.find((b) => b.id === r.id)?.tiles;
     if (building) return { text: tilesText(building), cls: 'wait', title: 'Still building: its tiles are on the map as each catalog brings them, and a download of it grows with them' };
