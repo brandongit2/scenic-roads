@@ -9383,6 +9383,9 @@ impl Agent {
             self.pool_hung = since;
             if let Some(co) = &self.coord {
                 co.set_moving(Some("its pool step hangs (the NAS not answering)".into()));
+                // (Its answers say no term: its members take over once its heartbeat is silent,
+                // rather than count it late, not gone; the next pool step that runs says it again.)
+                co.set_member(None);
                 // (On a thread of its own, not waited for: the NAS it reads and removes on hangs. One
                 // at a time; and not once the contact was published again since it began.)
                 let busy = self.unpublishing.as_ref().is_some_and(|t| !t.is_finished());
@@ -15060,6 +15063,8 @@ mod pool_tests {
         a.step().unwrap();
         assert_eq!(moving(&a).as_deref(), Some("its pool step hangs (the NAS not answering)"));
         assert!(a.published.is_none() && a.pool_hung.is_some(), "its contact off the NAS");
+        let member = |a: &Agent| a.coord.as_ref().unwrap().shared.lock().unwrap().pool_member.clone();
+        assert_eq!(member(&a), None, "its answers say no term: not late, not gone");
         a.step().unwrap();
         assert!(a.published.is_none(), "kept off while it hangs");
         let st = read_status(Some(&r), &a.o.home).unwrap();
@@ -15074,6 +15079,7 @@ mod pool_tests {
         t.join().unwrap();
         a.step().unwrap();
         assert!(a.pool_hung.is_none() && a.pool_skips == 0 && a.published.is_some());
+        assert!(member(&a).is_some(), "its term said again");
         assert_ne!(moving(&a).as_deref(), Some("its pool step hangs (the NAS not answering)"));
         let st = read_status(Some(&r), &a.o.home).unwrap();
         assert!(!st.waiting.iter().any(|w| w.why.contains("has hung")), "{:?}", st.waiting);

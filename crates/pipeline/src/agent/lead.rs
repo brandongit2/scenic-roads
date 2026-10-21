@@ -16,7 +16,7 @@
 //!   `VIEW_S`, and at once after an ask or a change. A lead whose heartbeat is out of touch while its
 //!   coordinator answered this Mac lately (`ANSWERED_S`) is late, not gone (`View::quiet`): no "no
 //!   lead", and no takeover unforced.
-//! - **The lead's battery low** (§6.5): a lead on battery below `cond::BATTERY_MIN` asks to hand
+//! - **The lead's battery low** (§6.4): a lead on battery below `cond::BATTERY_MIN` asks to hand
 //!   the lead to a member that can lead (`low_battery`), as the owner's ask would; again every
 //!   `BATTERY_AGAIN_S` while it still leads so. The app is otherwise not smart about who leads: the
 //!   owner hands the lead over by hand.
@@ -109,6 +109,9 @@ pub struct Kept {
     /// lead over (`low_battery`).
     #[serde(skip_serializing_if = "is_zero")]
     pub battery_at: u64,
+    /// The member that ask named: the next goes to the one after it (`low_battery`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery_to: Option<String>,
     /// The last time this Mac, leading while members couldn't reach it, asked to hand the lead
     /// away (`away`).
     #[serde(skip_serializing_if = "is_zero")]
@@ -857,20 +860,24 @@ fn span(s: u64) -> String {
 /// What the owner does about a coordinator members can't reach (docs/pool.md §6.8).
 pub const OWNER_STEPS: &str = "On the Mac named: check it is awake, on the network and its agent running; then allow Scenic in System Settings › Network › Firewall (Options…), or turn the firewall off. Until then the lead stays off it";
 
-/// The lead's battery low (docs/pool.md §6.5): this Mac leads on battery below
+/// The lead's battery low (docs/pool.md §6.4): this Mac leads on battery below
 /// `cond::BATTERY_MIN` (its heartbeat's conditions), nothing under way (`busy`: a handover, an
-/// ask), its last such ask `BATTERY_AGAIN_S` ago or more (`kept.battery_at`). To the first member
-/// that can lead (`Member::can_lead`), by host, as a lead paused or quitting hands it; none:
-/// nothing, and it keeps leading. The ask's time is kept.
+/// ask), its last such ask `BATTERY_AGAIN_S` ago or more (`kept.battery_at`). To a member that
+/// can lead (`Member::can_lead`), in host order, round-robin: the one after the member last asked
+/// (`kept.battery_to`), so one that never answered isn't asked again while another could take it;
+/// none: nothing, and it keeps leading. The ask's time and target are kept.
 pub fn low_battery(v: &View, kept: &mut Kept, now: u64, busy: bool) -> Option<String> {
     let me = v.members.iter().find(|m| m.me)?.conds?;
     let low = !me.ac && me.battery.is_some_and(|b| b < crate::agent::cond::BATTERY_MIN);
     if !v.leading || !low || busy || now.saturating_sub(kept.battery_at) < BATTERY_AGAIN_S {
         return None;
     }
-    let to = v.members.iter().find(|m| !m.me && !m.leads && m.can_lead)?;
+    let can: Vec<&Member> = v.members.iter().filter(|m| !m.me && !m.leads && m.can_lead).collect();
+    let after = kept.battery_to.as_ref().and_then(|t| can.iter().position(|m| m.member == *t)).map_or(0, |i| i + 1);
+    let to = can.get(after % can.len().max(1))?.member.clone();
     kept.battery_at = now;
-    Some(to.member.clone())
+    kept.battery_to = Some(to.clone());
+    Some(to)
 }
 
 /// The step's events of the terms, as the history notes them (kind `term`, `worker` this Mac's
@@ -1203,7 +1210,17 @@ mod tests {
         // Asked again only after a while; not while a handover or an ask is under way; not as a member.
         assert_eq!(low_battery(&v(low), &mut k, t0 + BATTERY_AGAIN_S - 1, false), None);
         assert_eq!(low_battery(&v(low), &mut k, t0 + BATTERY_AGAIN_S, true), None);
-        assert_eq!(low_battery(&v(low), &mut k, t0 + BATTERY_AGAIN_S, false), Some("m-air".into()));
+        assert_eq!(low_battery(&v(low), &mut k, t0 + BATTERY_AGAIN_S, false), Some("m-air".into()), "the only one");
+        // Two that can lead: air never answered, so the next ask goes to pro, then round to air.
+        let mut two = v(low);
+        two.members.push(member("pro", HOME, true));
+        let mut k = Kept::default();
+        assert_eq!(low_battery(&two, &mut k, t0, false), Some("m-air".into()));
+        assert_eq!(low_battery(&two, &mut k, t0 + BATTERY_AGAIN_S, false), Some("m-pro".into()));
+        assert_eq!(low_battery(&two, &mut k, t0 + 2 * BATTERY_AGAIN_S, false), Some("m-air".into()));
+        // The one last asked gone from those that can: the first again.
+        let mut k = Kept { battery_to: Some("m-gone".into()), ..Default::default() };
+        assert_eq!(low_battery(&two, &mut k, t0, false), Some("m-air".into()));
         assert_eq!(low_battery(&View { leading: false, ..v(low) }, &mut Kept::default(), t0, false), None);
         // None can lead: nothing.
         let mut none = v(low);
