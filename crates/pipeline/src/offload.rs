@@ -18,7 +18,7 @@
 //! more work.
 
 use crate::coord::client::Client;
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use crate::unit::Run;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -266,7 +266,7 @@ impl Offload {
     }
 
     /// Offers `runs` over unit `u`'s folder `dir` (and its roadside buildings `bdir`).
-    pub fn offer(&self, u: Unit, dir: &Path, bdir: Option<&Path>, runs: &[Run]) -> Result<Offered> {
+    pub fn offer(&self, u: TileId, dir: &Path, bdir: Option<&Path>, runs: &[Run]) -> Result<Offered> {
         let root = self.dir.join(u.dash());
         std::fs::remove_dir_all(&root).ok();
         let mut inputs: BTreeMap<String, u64> = BTreeMap::new();
@@ -842,7 +842,7 @@ mod tests {
             clock: store::clock::real(),
             note: None,
         };
-        let u = Unit::parse("6/1/1").unwrap();
+        let u = TileId::parse("6/1/1").unwrap();
         let t = o.offer(u, &dir, None, &runs).unwrap();
         // The M1: asks, runs it natively, hands it back.
         let m1 = Client::at(vec![url], c.contact.token.clone(), "m1");
@@ -1089,7 +1089,7 @@ mod tests {
         };
         let p = Patience { here_s: Some(30.0) };
         let status = |t: &Offered| o.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).unwrap().1;
-        let unit = Unit::parse("6/1/1").unwrap();
+        let unit = TileId::parse("6/1/1").unwrap();
         // How long the job waited (slept) on the clock since `from`.
         let waited = |from: (u64, Duration)| clock.slept().1 - from.1;
         // No one asking but one sparing too little for it (300 MB at least): taken back at once.

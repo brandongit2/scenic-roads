@@ -11,7 +11,11 @@ tasks for any worker, `docs/workers.md`.
 | Concept | What it is | Where |
 |---|---|---|
 | **step** | one kind of work, described by one row of the steps table | `crate::agent::steps::TABLE` |
-| **target** | what one run of a step is for: a tile, an area, the world (`scope`) | the plan (`agent::build::Work`) |
+| **target** | what one run of a step is for: a z6 tile, a z3 tile, an input, the world (`scope`) | the plan (`agent::build::Work`) |
+| **z6 tile** | the build's working grid: most per-tile steps (terrain, slope, trees, `unit`, …) make a z6 tile's files at a time; `6/x/y`, named `6-x-y` in files | `Scope::Z6` |
+| **z3 tile** | 8 × 8 z6 tiles: the zoomed-out levels (the `…-lo` steps) are assembled per z3 tile; `3/x/y`, `3-x-y` | `Scope::Z3` |
+| **z8 tile** | 4 × 4 per z6 tile: the 3D buildings' tasks (`bldtile`), tree cover's blocks and terrain's subtrees are made per z8 tile | `bld::task`, docs/workers.md §3 |
+| **area** | geography only: a polygon or map feature (a region's outline, protected and heritage areas, the area overlays, a rule's areas), never a grid tile; a number is a *size* (km²) | |
 | **key** | a target's version and inputs by content; a target is done when its record's key is the plan's | `state/build/jobs.json` (docs/steps.md §12) |
 | **job** | a step over a batch of its targets, run on one Mac | `agent::jobs::JobSpec` |
 | **task** | a pure piece a running job offers any worker, described as a step is | `steps::TASKS`, workers.md §3 |
@@ -28,14 +32,14 @@ Every row has the same fields; nothing about a step is kept anywhere else.
 | `title` | the name people see | "Roads", "Terrain, zoomed out" |
 | `does` | one sentence: what it makes from what | |
 | `kind` | where its output goes | `fetch` (`sources/`, from outside), `derive` (`work/`, `global/`: what other steps read), `pack` (what the map serves), `publish` (a catalog), `keep` (checks, lists, removals, backups) |
-| `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), `area` (a z3 tile), `tile` (a z6 tile), `input` (a drop box); a task's `task` |
+| `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), z3 tile, z6 tile, `input` (a drop box); a task's `task`. Counted in "z3 tiles", "z6 tiles", … (`Scope::noun`); sent as `scope` `area` and `tile` by `/work/steps` (the stored words, kept: `Scope`'s serde names) |
 | `stage` | its stage | `pass`, `sites`, `terrain`, `slope`, `trees`, `depth`, `roads`, `tiles`, `finish`, `trains`, `landmarks`, `buildings`, `publish`, `upkeep` |
 | `place` | which Mac runs it: derived from the pool's rules (`agent::every::offered`), not kept | `any` (any member whose measured room fits), `lead` |
 | resources | its first guess of memory until measured, whether members take it and at what rank (`shared`), a whole-build run alone (`alone`), whether it keeps the pass's answers (`answered`), its write-set (`writes`). The rest is measured, not kept: each target's memory, disk, cores, time and NAS rate by the step's model (`needs::Book`), targets per job (`coord::JOB_S`), and whether a job runs with others on a Mac (packing, by those measures) | pool.md §7.2, §7.7 |
 
 The naming of titles: the thing a step makes (**Terrain**, **Roads**, **Map tiles**); its zoomed-out
-assembly by area "…, zoomed out"; its world level "…, world level"; a fetch "…'s sources" or what it
-fetches (**Rail timetables**); a task its step's piece (**Terrain's subtrees**).
+assembly by z3 tile "…, zoomed out"; its world level "…, world level"; a fetch "…'s sources" or what it
+fetches (**Rail timetables**); a task its step's part (**Terrain's subtrees**).
 
 Every text about a step is templated from its row (`steps::title`, `said`, `counted`):
 
@@ -74,20 +78,20 @@ the lead.
 | | Regions' extract | `regions-extract` | derive | the world | lead |
 | Heritage sites | Heritage sites | `heritage-sites` | derive | the world | lead |
 | Terrain | Terrain water | `terrain-water` | derive | the world | lead |
-| | Terrain | `terrain` | pack | a tile | ⇄ |
-| | Terrain, zoomed out | `terrain-lo` | pack | an area | ⇄ |
+| | Terrain | `terrain` | pack | a z6 tile | ⇄ |
+| | Terrain, zoomed out | `terrain-lo` | pack | a z3 tile | ⇄ |
 | | Terrain's subtrees (task) | `terrainsub` | | a task of Terrain | ⇄ |
-| Slope | Slope | `slope` | pack | a tile | ⇄ |
-| | Slope, zoomed out | `slope-lo` | pack | an area | ⇄ |
-| Tree cover | Tree cover | `trees` | pack | a tile | ⇄ |
-| | Tree cover, zoomed out | `trees-lo` | pack | an area | ⇄ |
+| Slope | Slope | `slope` | pack | a z6 tile | ⇄ |
+| | Slope, zoomed out | `slope-lo` | pack | a z3 tile | ⇄ |
+| Tree cover | Tree cover | `trees` | pack | a z6 tile | ⇄ |
+| | Tree cover, zoomed out | `trees-lo` | pack | a z3 tile | ⇄ |
 | | Tree cover's blocks (task) | `treeblock` | | a task of Tree cover | ⇄ |
-| Water depth | Depth, zoomed out | `depth-lo` | pack | an area | ⇄ |
-| | Depth | `depth` | pack | a tile | ⇄ |
-| Roads | Roads | `unit` | pack | a tile | ⇄ |
+| Water depth | Depth, zoomed out | `depth-lo` | pack | a z3 tile | ⇄ |
+| | Depth | `depth` | pack | a z6 tile | ⇄ |
+| Roads | Roads | `unit` | pack | a z6 tile | ⇄ |
 | | Roads' last steps (task) | `tail` | | a task of Roads | ⇄ |
-| Map tiles | Map tiles | `pack` | pack | a tile | ⇄ |
-| | Map tiles, zoomed out | `lo` | pack | an area | ⇄ |
+| Map tiles | Map tiles | `pack` | pack | a z6 tile | ⇄ |
+| | Map tiles, zoomed out | `lo` | pack | a z3 tile | ⇄ |
 | Map finishing | Prune | `prune` | keep | the world | lead |
 | | Road index | `roadunits` | derive | the world | lead |
 | | Rail stops | `stations` | pack | the world | lead |
@@ -96,17 +100,17 @@ the lead.
 | | Slope, world level | `slope-root` | pack | the world | lead |
 | Trains | Rail timetables | `rail-feeds` | fetch | the world | lead |
 | | Trains a day | `rail` | derive | the world | lead |
-| Landmarks | Landmark candidates | `pois` | derive | a tile | ⇄ |
-| | Peaks | `peaks` | derive | a tile | ⇄ |
+| Landmarks | Landmark candidates | `pois` | derive | a z6 tile | ⇄ |
+| | Peaks | `peaks` | derive | a z6 tile | ⇄ |
 | | Wikidata facts | `items` | fetch | the world | lead |
 | | Heritage details | `heritage` | derive | the world | lead |
 | | Landmarks | `marks` | pack | the world | lead |
 | | Area overlays | `overlays` | pack | the world | lead |
 | 3D buildings | Buildings' sources | `bld-fetch` | fetch | the world | lead |
-| | Buildings read | `bldprep` | derive | a tile | ⇄ |
-| | 3D buildings | `bldtiles` | pack | a tile | ⇄ |
-| | 3D buildings, zoomed out | `bldfield-lo` | pack | an area | ⇄ |
-| | 3D buildings' areas (task) | `bldtile` | | a task of 3D buildings | ⇄ |
+| | Buildings read | `bldprep` | derive | a z6 tile | ⇄ |
+| | 3D buildings | `bldtiles` | pack | a z6 tile | ⇄ |
+| | 3D buildings, zoomed out | `bldfield-lo` | pack | a z3 tile | ⇄ |
+| | 3D buildings' z8 tiles (task) | `bldtile` | | a task of 3D buildings | ⇄ |
 | Publishing | Catalog | `catalog` | publish | the world | lead |
 | | Catalog, held | `catalog-held` | publish | the world | lead |
 | Upkeep | Input check | `inputs` | keep | an input | lead |
@@ -115,7 +119,7 @@ the lead.
 | | Clean-up | `gc` | keep | the world | lead |
 | | Backup | `backup` | keep | the world | lead |
 
-Publishing has no lane or step of its own: it goes per unit (docs/building.md §2, Publishing), and the
+Publishing has no lane or step of its own: it goes per z6 tile (docs/building.md §2, Publishing), and the
 forecast marks each region where it's all on the map (`map_at`).
 
 ## 4. The checklist
@@ -124,9 +128,9 @@ The agent's status carries the build to the end as a line per stage (`agent::bui
 with an item per step counted (`agent::build::Item`: its step, title and noun, and its targets
 `done` of `total`, or `left` (a worldwide step's run: 1 or 0; a chain step's: the targets of its
 works to come), or neither while it can't be sized yet, "to come"). A line names every step of its
-stage (`steps`); its own `done` and `total` count the items of one noun (`unit`: the first sized
-item's), never tiles and areas as one, and its `left` every item's targets left (none while an item
-isn't sized); its counts in words are a noun at a time ("398 of 398 tiles · 18 of 18 areas", "2
+stage (`steps`); its own `done` and `total` count the items of one noun (its `unit` field: the first sized
+item's), never z6 and z3 tiles as one, and its `left` every item's targets left (none while an item
+isn't sized); its counts in words are a noun at a time ("398 of 398 z6 tiles · 18 of 18 z3 tiles", "2
 runs left": `Line::counts`, said the same by the page and the menu bar); then its jobs to come in
 order (`next`), why it waits or which Mac is on it (`note`), and which of its steps any member may
 take (`shared`). `agent::build::fold` makes the lines from the items; the planet's and its

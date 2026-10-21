@@ -905,7 +905,7 @@ fn steps(args: &[String]) -> Result<()> {
     let each = |r: &steps::Info| match (&r.of, r.scope) {
         (Some(of), _) => format!("a task of {}", steps::title(of)),
         (None, Scope::World) => "the world".to_string(),
-        (None, s) => format!("{} {}", if s == Scope::Area || s == Scope::Input { "an" } else { "a" }, s.noun()),
+        (None, s) => format!("{} {}", if s == Scope::Input { "an" } else { "a" }, s.noun()),
     };
     for st in steps::STAGES {
         println!("{}: {}", st.title, st.does);
@@ -1451,7 +1451,7 @@ fn main() -> Result<()> {
             );
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             let root = opt(&args, "--root").map(PathBuf::from);
-            // (Timed as a task of its kind: a tail's, a 3D buildings' area's, tree cover's blocks'.)
+            // (Timed as a task of its kind: a tail's, a 3D buildings' z3 tile's, tree cover's blocks'.)
             let kind = format!("task {}", pipeline::offload::task_kind(&spec));
             let r = pipeline::timings::job(&kind, || {
                 pipeline::offload::run_task(&client, lease, &spec, &dir, &bin, root.as_deref())

@@ -19,7 +19,7 @@
 
 use crate::coverage::Coverage;
 use crate::dem::spacing::Spacing;
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
 use serde::{Deserialize, Serialize};
@@ -131,7 +131,7 @@ pub fn logical(date: &str) -> String {
 }
 
 /// A unit's tile grown by `LONG_KM` (E7): where its ordinary ways are.
-pub fn near_box(u: Unit) -> [i32; 4] {
+pub fn near_box(u: TileId) -> [i32; 4] {
     crate::hipack::grow(crate::hipack::tile_bounds(u.z, u.x, u.y), LONG_KM)
 }
 
@@ -159,7 +159,7 @@ impl Reaches {
         Ok(zstd::encode_all(&serde_json::to_vec(self)?[..], 9)?)
     }
 
-    pub fn get(&self, u: Unit) -> Option<&Reach> {
+    pub fn get(&self, u: TileId) -> Option<&Reach> {
         self.units.get(&u.slash())
     }
 }
@@ -173,14 +173,14 @@ impl Reach {
 
     /// What of the coverage the unit reads, for its key: the coverage inside its tile grown by
     /// `LONG_KM`, and which of its long ways touch the coverage.
-    pub fn coverage_key(&self, cov: &Coverage, u: Unit, sp: &dyn Spacing) -> String {
+    pub fn coverage_key(&self, cov: &Coverage, u: TileId, sp: &dyn Spacing) -> String {
         let touching: String = self.long.iter().map(|w| if w.touches(cov, sp) { '1' } else { '0' }).collect();
         format!("{}|{touching}", cov.fingerprint(near_box(u)))
     }
 
     /// The box of the ways the unit owns, wherever they go (E7): its tile, its owned box and its own
     /// long ways. A base pack's ways lie inside it (the map tiles are keyed by it).
-    pub fn owned_extent(&self, u: Unit) -> [i32; 4] {
+    pub fn owned_extent(&self, u: TileId) -> [i32; 4] {
         let mut b = crate::hipack::tile_bounds(u.z, u.x, u.y);
         let mut add = |p: [i32; 4]| b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[2]), b[3].max(p[3])];
         if let Some(o) = self.owned {
@@ -196,7 +196,7 @@ impl Reach {
 
     /// The box of everything the unit's ways reach (E7): its tile grown by `LONG_KM` and its long
     /// ways.
-    pub fn extent(&self, u: Unit) -> [i32; 4] {
+    pub fn extent(&self, u: TileId) -> [i32; 4] {
         let mut b = near_box(u);
         for p in self.long.iter().flat_map(|w| &w.verts) {
             b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
@@ -222,7 +222,7 @@ fn within(b: [i32; 4], p: [i32; 2]) -> bool {
 }
 
 /// The reach of unit `u` from its piece (None when no way of the piece counts).
-pub fn of_piece(piece: &Path, u: Unit) -> Result<Option<Reach>> {
+pub fn of_piece(piece: &Path, u: TileId) -> Result<Option<Reach>> {
     // Pass 1, ways: each counted way's node ids (flat).
     #[derive(Default)]
     struct Ways {
@@ -400,7 +400,7 @@ mod tests {
         };
         // A tile owning a ferry from its coast (-20, 65) far east to (0, 60); its own roads far from
         // the coverage.
-        let u = Unit { z: 6, x: 28, y: 16 };
+        let u = TileId { z: 6, x: 28, y: 16 };
         let ferry = LongWay { owned: true, ferry: true, verts: vec![e7(-20.0, 65.0), e7(-10.0, 62.0), e7(0.0, 60.0)] };
         let r = Reach {
             owned: Some([e7(-21.0, 64.5)[0], e7(-21.0, 64.5)[1], e7(-20.5, 65.0)[0], e7(-20.5, 65.0)[1]]),
@@ -464,6 +464,6 @@ mod tests {
         );
         let back: Reaches = serde_json::from_slice(&zstd::decode_all(&r.encode().unwrap()[..]).unwrap()).unwrap();
         assert_eq!(back, r);
-        assert_eq!(back.get(Unit { z: 6, x: 31, y: 20 }).unwrap().owned, Some([1, 2, 3, 4]));
+        assert_eq!(back.get(TileId { z: 6, x: 31, y: 20 }).unwrap().owned, Some([1, 2, 3, 4]));
     }
 }

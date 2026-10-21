@@ -1,7 +1,7 @@
 //! A dataset's files kept whole (`[data] store = true`, docs/inputs.md §5.2 "Fetched data"): each
 //! in `sources/fetched/<dataset>/<file name>` as a compressed GeoTIFF, written here from a
 //! downloaded copy (crate::dem::fabdem_fetch) and read back and compared before it takes its name.
-//! Area builds only read the store (crate::dem::generic::stored).
+//! Tile builds only read the store (crate::dem::generic::stored).
 
 use crate::geotiff::{key, write_f32, Tiff};
 use anyhow::{ensure, Context, Result};

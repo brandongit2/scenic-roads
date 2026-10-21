@@ -34,12 +34,12 @@ def build(check=False):
             lb.append(tx('st-lbl', at[0], at[1], label, anchor=anchor))
 
     rows = [            ('inputs/', 'the drop boxes: regions (enabled and disabled), translations, descriptions, registers, timetables, sources, keys'),
-            ('sources/', 'the planet (the NAS fetches it), its pieces and sets; every download, once; the depth grids, packed per z6 tile'),
-            ('base/ · hidata/', 'per area (z6 tile): its ways with elevations and scenic values; query parts'),
+            ('sources/', 'the planet (the NAS fetches it), its z6 tile extracts and sets; every download, once; the depth grids, packed per z6 tile'),
+            ('base/ · hidata/', 'per z6 tile: its ways with elevations and scenic values; query parts'),
             ('markdata/ · ovdata/', 'landmark points per z6 tile, in one bundle; area and park details per z3 tile'),
-            ('global/', 'worldwide results: whole roads, road → areas, trains a day, languages'),
+            ('global/', 'worldwide results: whole roads, road → z6 tiles, trains a day, languages'),
             ('layers/', 'what the map draws, in packs (detail near the coverage) or one bundle a small layer; basemap, water'),
-            ('work/ · cache/', 'build intermediates; what each area keeps for its next run, on either Mac'),
+            ('work/ · cache/', 'build intermediates; what each z6 tile keeps for its next run, on either Mac'),
             ('app/ · catalog/', 'the app your Macs run; catalogs: every file the map reads'),
             ('state/', 'who leads (terms); the journal; the records: what each file is made from')]
     # GC: unreferenced files after 14 days, daily, when the NAS is quiet or after waiting a day (storage.md, pool.md §7.2)
@@ -90,7 +90,7 @@ def build(check=False):
     aria = ('Where the data lives. The NAS is the source of truth: the drop boxes in inputs, with your regions, translations, '
             'descriptions, registers, timetables and source declarations; sources (the planet the NAS fetches itself, and every '
             'download, kept once, the depth grids among them); base data and query data per z6 tile, landmark points in one bundle, '
-            'worldwide results, the layers in packs or bundles, build intermediates and what each area keeps for its next run, the '
+            'worldwide results, the layers in packs or bundles, build intermediates and what each z6 tile keeps for its next run, the '
             'published app, the catalogs (at most one a minute), and the build’s terms, journal and records. The lead and every member '
             'run jobs packed by their measured memory, disk and cores, staging on their SSDs, at any charge. What was made by hand, by '
             'you, by Claude agents or by downloads a script can’t make, goes into the NAS directly. Your Macs run the map under a '

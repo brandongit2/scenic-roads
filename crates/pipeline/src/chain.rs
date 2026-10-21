@@ -11,7 +11,7 @@
 //!      an unnamed bridge or a gap in the tagging, not a different road.
 //! Within a level the straightest wins (levels 1–3 up to 100°), then the lower way id. A oneway
 //! is only continued in its direction of travel. The decision at a node depends only on the ways
-//! through it, so it can be made per area for the nodes inside the area.
+//! through it, so it can be made per tile for the nodes inside the tile.
 //!
 //! **Walking.** Pairs form paths and cycles. A path is walked from the end whose way has the lower
 //! id; a cycle from its lowest way id, in that way's direction. Each way gets its road's id (the

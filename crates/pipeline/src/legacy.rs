@@ -11,13 +11,13 @@ use std::path::Path;
 
 /// A unit's tile (z6), or any z/x/y tile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Unit {
+pub struct TileId {
     pub z: u8,
     pub x: u32,
     pub y: u32,
 }
 
-impl Unit {
+impl TileId {
     pub fn key(&self) -> u64 {
         roadcore::archive::tile_key(self.z, self.x, self.y)
     }
@@ -29,16 +29,16 @@ impl Unit {
     pub fn dash(&self) -> String {
         format!("{}-{}-{}", self.z, self.x, self.y)
     }
-    pub fn of_point(z: u8, p: [i32; 2]) -> Unit {
+    pub fn of_point(z: u8, p: [i32; 2]) -> TileId {
         let (x, y) = merc(p[0] as f64 * roadcore::E7, p[1] as f64 * roadcore::E7);
         let n = (1u64 << z) as f64;
         let c = |v: f64| ((v * n).floor().max(0.0) as u32).min((1u32 << z) - 1);
-        Unit { z, x: c(x), y: c(y) }
+        TileId { z, x: c(x), y: c(y) }
     }
-    pub fn parse(s: &str) -> Option<Unit> {
+    pub fn parse(s: &str) -> Option<TileId> {
         let mut it = s.split(['/', '-']).map(|t| t.parse::<u32>().ok());
         let (z, x, y) = (it.next()??, it.next()??, it.next()??);
-        Some(Unit { z: z as u8, x, y })
+        Some(TileId { z: z as u8, x, y })
     }
 }
 
@@ -106,19 +106,19 @@ impl Legacy {
 
     /// Every way's unit (z6 tile of its first vertex), and the ways of each unit in base-pack order:
     /// by the z9 tile of the first vertex, then the folder's (Morton) order.
-    pub fn units(&self) -> BTreeMap<Unit, Vec<u32>> {
+    pub fn units(&self) -> BTreeMap<TileId, Vec<u32>> {
         let ways = self.ways.ways();
-        let keyed: Vec<(Unit, u64, u32)> = ways
+        let keyed: Vec<(TileId, u64, u32)> = ways
             .par_iter()
             .enumerate()
             .map(|(i, w)| {
                 let p = self.first_vertex(w);
-                let u = Unit::of_point(6, p);
-                let z9 = Unit::of_point(9, p).key();
+                let u = TileId::of_point(6, p);
+                let z9 = TileId::of_point(9, p).key();
                 (u, z9, i as u32)
             })
             .collect();
-        let mut by: BTreeMap<Unit, Vec<(u64, u32)>> = BTreeMap::new();
+        let mut by: BTreeMap<TileId, Vec<(u64, u32)>> = BTreeMap::new();
         for (u, z9, i) in keyed {
             by.entry(u).or_default().push((z9, i));
         }
@@ -145,7 +145,7 @@ pub struct BaseSections {
 }
 
 /// Build a unit's base pack from the folder's ways `idx` (in base-pack order).
-pub fn base_sections(lg: &Legacy, unit: Unit, idx: &[u32], built: &str) -> BaseSections {
+pub fn base_sections(lg: &Legacy, unit: TileId, idx: &[u32], built: &str) -> BaseSections {
     let all = lg.ways.ways();
     let verts = lg.ways.verts();
     let mut strings: Vec<&str> = vec![""];
@@ -214,7 +214,7 @@ pub fn base_sections(lg: &Legacy, unit: Unit, idx: &[u32], built: &str) -> BaseS
         if let Some(a) = &lg.drape {
             dr.extend_from_slice(&a.get()[r.clone()]);
         }
-        let z9 = Unit::of_point(9, verts[w.vstart as usize]).key();
+        let z9 = TileId::of_point(9, verts[w.vstart as usize]).key();
         match sub9.last_mut() {
             Some(s) if s.key == z9 => s.count += 1,
             _ => sub9.push(Sub9 { key: z9, first: li as u32, count: 1 }),

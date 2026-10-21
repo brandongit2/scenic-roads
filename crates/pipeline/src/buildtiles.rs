@@ -8,7 +8,7 @@
 //! release's bbox columns, its files in parallel, into local parts by tile, which are then merged
 //! per tile onto the NAS. A unit reads the tiles near its roads (`tiles_for`, `stage`).
 
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use crate::out::Out;
 use crate::reach::Reach;
 use anyhow::{Context, Result};
@@ -45,7 +45,7 @@ pub fn index_logical(release: &str) -> String {
 }
 
 /// Where release `release`'s tile `t` is.
-pub fn tile_path(root: &Path, release: &str, t: Unit) -> PathBuf {
+pub fn tile_path(root: &Path, release: &str, t: TileId) -> PathBuf {
     dir(root, release).join(format!("{}/{}-{}.f32", t.z, t.x, t.y))
 }
 
@@ -79,7 +79,7 @@ impl Index {
     }
 
     /// The bytes of tile `t`'s file (16 a building), when it has buildings.
-    pub fn bytes(&self, t: Unit) -> Option<u64> {
+    pub fn bytes(&self, t: TileId) -> Option<u64> {
         self.tiles.get(&t.slash()).map(|n| 16 * n)
     }
 }
@@ -89,14 +89,14 @@ impl Index {
 /// NAS whole when it isn't there and held for the job (store::cachefile): a unit's buildings step
 /// reads its tiles whole, and units side by side read the same ones. None when the tile has no
 /// buildings.
-pub fn local_tile(root: &Path, index: &Index, t: Unit, cache: &Path) -> Result<Option<PathBuf>> {
+pub fn local_tile(root: &Path, index: &Index, t: TileId, cache: &Path) -> Result<Option<PathBuf>> {
     let Some((src, local, want)) = tile_copy(root, index, t, cache) else { return Ok(None) };
     fetch_tile(&src, &local, want)?;
     Ok(Some(local))
 }
 
 /// Where tile `t` is on the NAS, where its copy in `cache` goes, and its length (`local_tile`).
-pub fn tile_copy(root: &Path, index: &Index, t: Unit, cache: &Path) -> Option<(PathBuf, PathBuf, u64)> {
+pub fn tile_copy(root: &Path, index: &Index, t: TileId, cache: &Path) -> Option<(PathBuf, PathBuf, u64)> {
     let want = index.bytes(t)?;
     Some((
         tile_path(root, &index.release, t),
@@ -127,7 +127,7 @@ pub fn fetch_tile(src: &Path, local: &Path, want: u64) -> Result<()> {
 /// The tiles unit `u` reads buildings from: those within `MARGIN_KM` of its tile grown by
 /// `reach::LONG_KM`, where its ordinary ways lie, or of its own long roads, which it keeps whole
 /// however far they go (`reach`; ferries have no roadside buildings).
-pub fn tiles_for(u: Unit, reach: Option<&Reach>) -> Vec<Unit> {
+pub fn tiles_for(u: TileId, reach: Option<&Reach>) -> Vec<TileId> {
     let mut tiles = BTreeSet::new();
     add_tiles(&mut tiles, crate::reach::near_box(u));
     for w in reach.into_iter().flat_map(|r| &r.long).filter(|w| w.owned && !w.ferry) {
@@ -143,7 +143,7 @@ pub fn tiles_for(u: Unit, reach: Option<&Reach>) -> Vec<Unit> {
 }
 
 /// Adds the tiles within `MARGIN_KM` of box `b` (E7) to `out`.
-fn add_tiles(out: &mut BTreeSet<Unit>, b: [i32; 4]) {
+fn add_tiles(out: &mut BTreeSet<TileId>, b: [i32; 4]) {
     let b = crate::hipack::grow(b, MARGIN_KM);
     let n = 1i64 << ZOOM;
     let col = |lon: i32| ((lon as i64 + 1_800_000_000) * n / 3_600_000_000).clamp(0, n - 1) as u32;
@@ -152,7 +152,7 @@ fn add_tiles(out: &mut BTreeSet<Unit>, b: [i32; 4]) {
     let row = |lat: i32| (edges.partition_point(|&e| e > lat) as u32).saturating_sub(1).min(n as u32 - 1);
     for x in col(b[0])..=col(b[2]) {
         for y in row(b[3])..=row(b[1]) {
-            out.insert(Unit { z: ZOOM, x, y });
+            out.insert(TileId { z: ZOOM, x, y });
         }
     }
 }
@@ -233,7 +233,7 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
     anyhow::ensure!(!files.is_empty() && done == files.len(), "{done} of the release's {} files scanned", files.len());
     // Each tile's parts, from every file of the release.
     let p = phase("the scan's parts listed", Class::Disk);
-    let mut by_tile: BTreeMap<Unit, Vec<PathBuf>> = BTreeMap::new();
+    let mut by_tile: BTreeMap<TileId, Vec<PathBuf>> = BTreeMap::new();
     for d in std::fs::read_dir(&parts)? {
         let d = d?.path();
         if !d.is_dir() {
@@ -242,7 +242,7 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
         anyhow::ensure!(d.join(".done").exists(), "{}: not scanned whole", d.display());
         for f in std::fs::read_dir(&d)? {
             let f = f?.path();
-            let Some(t) = f.file_stem().and_then(|s| s.to_str()).and_then(Unit::parse) else { continue };
+            let Some(t) = f.file_stem().and_then(|s| s.to_str()).and_then(TileId::parse) else { continue };
             by_tile.entry(t).or_default().push(f);
         }
     }
@@ -314,7 +314,7 @@ fn canonical(mut v: Vec<[f32; 4]>) -> Vec<[f32; 4]> {
 pub fn stage(
     root: &Path,
     index: &Index,
-    u: Unit,
+    u: TileId,
     reach: Option<&Reach>,
     dir: &Path,
     cache: Option<&Path>,
@@ -345,17 +345,17 @@ mod tests {
 
     #[test]
     fn a_unit_reads_the_tiles_near_its_roads() {
-        let u = Unit { z: 6, x: 32, y: 21 };
+        let u = TileId { z: 6, x: 32, y: 21 };
         let near = tiles_for(u, None);
         // Its tile's z8 tiles and those within 20 km (+ 1 km): the same as the tiles meeting that box.
         let b = crate::hipack::grow(crate::reach::near_box(u), MARGIN_KM);
         let deg = |v: i32| v as f64 * 1e-7;
-        let want: Vec<Unit> = crate::stage::tiles_in(ZOOM, [deg(b[0]), deg(b[1]), deg(b[2]), deg(b[3])])
+        let want: Vec<TileId> = crate::stage::tiles_in(ZOOM, [deg(b[0]), deg(b[1]), deg(b[2]), deg(b[3])])
             .into_iter()
-            .map(|(x, y)| Unit { z: ZOOM, x, y })
+            .map(|(x, y)| TileId { z: ZOOM, x, y })
             .collect();
         assert_eq!(near, want);
-        assert!(near.contains(&Unit { z: ZOOM, x: 128, y: 84 }) && near.len() == 36, "{near:?}");
+        assert!(near.contains(&TileId { z: ZOOM, x: 128, y: 84 }) && near.len() == 36, "{near:?}");
         // Its own long road out to the next z6 tile but one reads the z8 tiles along it; a ferry,
         // or a road it doesn't own, doesn't.
         let tb = crate::hipack::tile_bounds(6, 32, 21);
@@ -377,7 +377,7 @@ mod tests {
             let p = [100_000_000, (lat * 1e7) as i32];
             let mut s = BTreeSet::new();
             add_tiles(&mut s, [p[0], p[1], p[0], p[1]]);
-            assert!(s.contains(&Unit::of_point(ZOOM, p)), "{lat}: {s:?}");
+            assert!(s.contains(&TileId::of_point(ZOOM, p)), "{lat}: {s:?}");
         }
     }
 
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn a_unit_links_its_tiles_with_buildings() {
         let d = tempfile::tempdir().unwrap();
-        let u = Unit { z: 6, x: 32, y: 21 };
+        let u = TileId { z: 6, x: 32, y: 21 };
         let near = tiles_for(u, None);
         let index = Index {
             fmt: 1,

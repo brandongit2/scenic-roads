@@ -1,5 +1,6 @@
 use super::*;
 use crate::bld::e7;
+use anyhow::Context;
 
 /// A square footprint (E7) of `half` degrees around (lon, lat), wound `ccw` or not.
 fn square(lon: f64, lat: f64, half: f64, ccw: bool) -> Vec<[i32; 2]> {
@@ -41,7 +42,7 @@ fn feet_of(rings: &[(Vec<[i32; 2]>, u16, u16)]) -> Vec<Foot<'_>> {
 }
 
 /// Area 8/129/88's buildings: a grid of houses of both windings, a 60 m tower, a 150 m one on a
-/// 30 m base, and a house across the area's west edge.
+/// 30 m base, and a house across the z8 tile's west edge.
 fn town() -> Vec<(Vec<[i32; 2]>, u16, u16)> {
     let mut b = Vec::new();
     for i in 0..40 {
@@ -62,13 +63,13 @@ fn town() -> Vec<(Vec<[i32; 2]>, u16, u16)> {
 
 #[test]
 fn areas_and_tops_kept() {
-    // One 15 m house, alone: Σ f × texel area is its footprint, v / f its top, Σ w × texel area its
+    // One 15 m house, alone: Σ f × texel z8 tile is its footprint, v / f its top, Σ w × texel z8 tile its
     // walls (perimeter × height), at level 8 (means of level 14's).
     let r = square(2.3501, 48.8602, 0.0002, true);
     let rings = vec![(r.clone(), 150u16, 0u16)];
     let feet = feet_of(&rings);
     let a = (129, 88);
-    let mut field = area(a, &feet, &[]);
+    let mut field = z8(a, &feet, &[]);
     let mid = field.mid.take().unwrap().planes;
     let (w0, n0) = world7(r[3]);
     let (w1, s1) = world7(r[1]);
@@ -101,18 +102,18 @@ fn the_same_bytes_in_any_order() {
     let a = (129, 88);
     let her = heritage(a, &feet, &[[e7(2.40), e7(48.85)]]);
     assert!(!her.is_empty());
-    let one = area(a, &feet, &her);
+    let one = z8(a, &feet, &her);
     // Reversed, and on one thread.
     let rev: Vec<(Vec<[i32; 2]>, u16, u16)> = rings.iter().rev().cloned().collect();
     let feet2 = feet_of(&rev);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
-    let two = pool.install(|| area(a, &feet2, &her));
+    let two = pool.install(|| z8(a, &feet2, &her));
     assert_eq!(one, two);
     // The towers: in every level, the finest too.
     let l13: u8 = one.tiles.iter().filter(|t| t.0 == 13).map(|t| t.3[0]).fold(0, |m, k| m | k);
     let l12: u8 = one.tiles.iter().filter(|t| t.0 == 12).map(|t| t.3[0]).fold(0, |m, k| m | k);
     assert_eq!((l13 & 0b11000, l12 & 0b11000), (0b11000, 0b11000), "{l13:b} {l12:b}");
-    // The house across the west edge: its part in the area counted, in the first column.
+    // The house across the west edge: its part in the z8 tile counted, in the first column.
     let mid = &one.mid.as_ref().unwrap().planes;
     assert_eq!(one.mid.as_ref().unwrap().heritage, her);
     let k = class_of(90);
@@ -125,7 +126,7 @@ fn encoding_round_trip() {
     let rings = town();
     let feet = feet_of(&rings);
     let a = (129, 88);
-    let field = area(a, &feet, &[]);
+    let field = z8(a, &feet, &[]);
     let mid = &field.mid.as_ref().unwrap().planes;
     let b9 = field.tiles.iter().find(|t| t.0 == 9).unwrap();
     decode(&b9.3);
@@ -160,18 +161,18 @@ fn mids_and_lo() {
     let feet = feet_of(&rings);
     let a = (129, 88);
     let her = heritage(a, &feet, &[[e7(2.4001), e7(48.8501)]]);
-    let field = area(a, &feet, &her);
+    let field = z8(a, &feet, &her);
     let m = field.mid.clone().unwrap();
     let mid = m.planes.clone();
-    let mut areas = BTreeMap::new();
-    areas.insert(a, m);
-    let bytes = write_mid(&areas).unwrap();
-    assert_eq!(read_mid(&bytes).unwrap(), areas, "kept exactly");
-    // Z3 tile 3/4/2 holds z6 6/32/22 (area 129/88's).
+    let mut z8s = BTreeMap::new();
+    z8s.insert(a, m);
+    let bytes = write_mid(&z8s).unwrap();
+    assert_eq!(read_mid(&bytes).unwrap(), z8s, "kept exactly");
+    // Z3 tile 3/4/2 holds z6 6/32/22 (z8 tile 129/88's).
     let lo_tiles = lo((4, 2), &|x, y| Ok(((x, y) == (32, 22)).then(|| bytes.clone()))).unwrap();
     let got: Vec<(u8, u32, u32)> = lo_tiles.iter().map(|t| (t.0, t.1, t.2)).collect();
     assert_eq!(got, [(8, 129, 88), (7, 64, 44), (6, 32, 22), (5, 16, 11), (4, 8, 5)]);
-    // Level 8 the area's planes, its heritage list after them.
+    // Level 8 the z8 tile's planes, its heritage list after them.
     assert_eq!(lo_tiles[0].3, encode(&mid, ALL_CLASSES, &her).unwrap());
     // Level 7 is level 8's parent (8/129/88 the ne quadrant of 7/64/44).
     let p7 = Planes::parent([None, Some(&mid), None, None]).unwrap();
@@ -187,8 +188,8 @@ fn heritage_lists_the_buildings_holding_a_site() {
     let b = heritage(a, &feet, &[[e7(2.4001), e7(48.8501)], [e7(2.35035), e7(48.86)]]);
     assert_eq!(u32::from_le_bytes(b[0..4].try_into().unwrap()), 1);
     assert_eq!((u16::from_le_bytes([b[4], b[5]]), u16::from_le_bytes([b[6], b[7]]), b[8]), (600, 0, 4));
-    // Kept with the area's level-8 planes, for its level-8 tile (`lo`), after the WebP.
-    let field = area(a, &feet, &b);
+    // Kept with the z8 tile's level-8 planes, for its level-8 tile (`lo`), after the WebP.
+    let field = z8(a, &feet, &b);
     let m = field.mid.unwrap();
     assert_eq!(m.heritage, b);
     assert_eq!(split(&encode(&m.planes, ALL_CLASSES, &m.heritage).unwrap()).unwrap().2, &b[..]);
@@ -272,7 +273,7 @@ fn heritage_slices_against_markdata() {
         .flat_map(|(_, c)| crate::marks::markdata_files(&root.join(c)).unwrap())
         .collect();
     for t in ["6-33-22", "6-18-24", "6-56-25", "6-17-23", "6-31-18", "6-32-22"] {
-        let u = crate::legacy::Unit::parse(t).unwrap();
+        let u = crate::legacy::TileId::parse(t).unwrap();
         let md = markdata.get(&(u.x, u.y)).map(|r| sites_of_markdata(r).unwrap()).unwrap_or_default();
         let all = markdata
             .get(&(u.x, u.y))
@@ -333,7 +334,7 @@ fn offsets_to_the_centroid() {
     let r = square(2.3601, 48.8702, 0.0016, true);
     let rings = vec![(r.clone(), 150u16, 0u16)];
     let feet = feet_of(&rings);
-    let field = area(a, &feet, &[]);
+    let field = z8(a, &feet, &[]);
     let (cxw, cyw) = world7([crate::bld::e7(2.3601), crate::bld::e7(48.8702)]);
     for (z, x0, y0, b) in field.tiles.iter().filter(|t| t.0 >= 13) {
         let scale = (1u64 << (*z as u32 + 9)) as f64;
@@ -366,7 +367,7 @@ fn small_buildings_offsets_stay_within_them() {
     // texel (3.1 m texels at 48.9° N: the edge house 9 × 14 of them).
     let rings = town();
     let feet = feet_of(&rings);
-    let field = area((129, 88), &feet, &[]);
+    let field = z8((129, 88), &feet, &[]);
     let mut worst = 0i32;
     for (_, _, _, b) in field.tiles.iter().filter(|t| t.0 == 14) {
         let (mask, classes) = decode(b);
@@ -395,7 +396,7 @@ fn a_courtyard_and_overlaps() {
             .iter()
             .map(|(rs, h)| Foot { polys: vec![rs.iter().map(Vec::as_slice).collect()], h: *h, m: 0 })
             .collect();
-        let mid = area(a, &feet, &[]).mid.unwrap().planes;
+        let mid = z8(a, &feet, &[]).mid.unwrap().planes;
         let c = mid.c[0].as_ref().unwrap();
         let (mut f, mut v) = (0.0, 0.0);
         for i in 0..T * T {

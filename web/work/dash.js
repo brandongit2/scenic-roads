@@ -74,7 +74,7 @@ function countOf(x, noun) {
   return "to come";
 }
 // A stage's counts, a noun at a time in its items' order (build::Line::counts): "398 of 398 tiles ·
-// 18 of 18 areas", "2 runs left"; "done" or "to come" with no item to count (an older lead's line:
+// 18 of 18 z3 tiles", "2 runs left"; "done" or "to come" with no item to count (an older lead's line:
 // its own count).
 function countsOf(l) {
   const out = [];
@@ -273,7 +273,7 @@ function verdictText(m) {
 }
 
 // The next region (or regions, at the same time) to reach the map as it's built now: the forecast's
-// earliest `map_at` (its last unit's end, its map tiles drawn, a catalog within the minute).
+// earliest `map_at` (its last z6 tile's end, its map tiles drawn, a catalog within the minute).
 function nextOnMap(m) {
   const regs = (m.fc?.regions || []).filter((r) => r.map_at);
   if (!regs.length) return null;
@@ -361,7 +361,7 @@ function stages(m) {
 function progressText(p, j, now) {
   const pct = Math.floor((p.done / p.total) * 100);
   // (One item whose share is said: "the planet filtered"; else "0.4 of 1 tile", its noun singular.)
-  const unit = p.total === 1 ? p.unit.replace(/^(\w+?)s\b/, "$1") : p.unit;
+  const unit = p.total === 1 ? p.unit.replace(/^((?:z\d+ )?\w+?)s\b/, "$1") : p.unit;
   const amount = p.total === 1 && /^the /.test(p.unit) ? p.unit : `${Number.isInteger(p.done) || p.total > 100 ? n(Math.floor(p.done)) : (Math.floor(p.done * 10) / 10).toFixed(1)} of ${n(p.total)} ${unit}`;
   const eta = p.eta_s != null && !j.paused ? ` · about ${dur(p.eta_s)} left (≈ ${clock(now + p.eta_s)})` : "";
   return `${pct}% · ${amount}${eta}`;
@@ -777,7 +777,7 @@ function publishing(m) {
   const waits = (a.waiting || []).filter((w) => w.step === "catalog" || /publish/i.test(w.what));
   for (const w of waits) rows.push(h("div", "small warn", w.why));
   if (u?.regions?.length) rows.push(h("div", "small", `Done, not on the map as they are: ${u.regions.slice(0, 6).map((r) => `${m.regionName[r.id] || r.id} (${r.kinds.join(", ")})`).join(", ")}${u.regions.length > 6 ? ` and ${u.regions.length - 6} more` : ""}`));
-  if (!u) rows.push(h("div", "small dim", "A unit's map tiles are drawn as soon as it's built, and a catalog goes out at most each minute."));
+  if (!u) rows.push(h("div", "small dim", "A z6 tile's map tiles are drawn as soon as it's built, and a catalog goes out at most each minute."));
   return h("div", "pub", rows);
 }
 

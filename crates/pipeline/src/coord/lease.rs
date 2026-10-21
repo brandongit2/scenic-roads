@@ -431,7 +431,7 @@ mod tests {
         assert!(l.held("pack", t0).is_empty());
         // Renewed by its own worker only.
         let t1 = t0 + Duration::from_secs(500);
-        assert!(l.renew(a, "m1", Some("2/6 areas".into()), t1));
+        assert!(l.renew(a, "m1", Some("2/6 z3 tiles".into()), t1));
         assert!(!l.renew(a, "m4", None, t1));
         assert!(l.get(a, "m1", t1).is_some() && l.get(a, "m4", t1).is_none());
         // Past ttl without a beat: b and the task lapse, a (renewed) lives on.
@@ -452,7 +452,7 @@ mod tests {
             [(a, "m1")],
             "tasks aren't saved"
         );
-        assert_eq!(back.all(t3)[0].progress.as_deref(), Some("2/6 areas"));
+        assert_eq!(back.all(t3)[0].progress.as_deref(), Some("2/6 z3 tiles"));
         assert!(back.grant("m1", job(&[("6/3/3", "k4")]), t3) > t + 1);
         // Finished by its worker only; this Mac's own dropped at a restart.
         assert!(back.finish(a, "m4", t3).is_none());

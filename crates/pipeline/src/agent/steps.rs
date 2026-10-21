@@ -6,8 +6,8 @@
 //! - **title**: the name people see; **does**: one sentence of what it makes from what.
 //! - **kind**: where its output goes (`Kind`: a fetch from outside, a derived work file, a pack the
 //!   map serves, a publish, upkeep).
-//! - **scope**: what one target is (`Scope`: the world, an area (a z3 tile), a tile (a z6 tile), an
-//!   input's drop box); its noun counts a job's targets everywhere ("8 tiles").
+//! - **scope**: what one target is (`Scope`: the world, a z3 tile, a z6 tile, an input's drop
+//!   box); its noun counts a job's targets everywhere ("8 z6 tiles").
 //! - **stage**: where it sits in the build's order (`STAGES`): the checklist's lines, the page's
 //!   groups and colours.
 //! - **place**: which Mac runs it (`Place`: the lead alone, or any member), derived from the pool's
@@ -40,7 +40,7 @@
 //! in crate::agent::pool's check). A shared step's files for its targets (`saves`, which
 //! crate::coord's check of a member's hand-off and the merge's check use) are checked beside it.
 
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
@@ -66,10 +66,12 @@ pub enum Kind {
 pub enum Scope {
     /// Everything at once: one target, the step's own name (or a pass's date).
     World,
-    /// A z3 tile ("3/x/y"): 8 × 8 tiles.
-    Area,
-    /// A z6 tile ("6/x/y").
-    Tile,
+    /// A z3 tile ("3/x/y"): 8 × 8 z6 tiles. (Stored and sent as "area": `/work/steps`' `scope`.)
+    #[serde(rename = "area")]
+    Z3,
+    /// A z6 tile ("6/x/y"). (Stored and sent as "tile".)
+    #[serde(rename = "tile")]
+    Z6,
     /// An input's drop box (docs/inputs.md §4.3).
     Input,
     /// A task's piece of a job (`TASKS`).
@@ -81,8 +83,8 @@ impl Scope {
     pub const fn noun(self) -> &'static str {
         match self {
             Scope::World => "run",
-            Scope::Area => "area",
-            Scope::Tile => "tile",
+            Scope::Z3 => "z3 tile",
+            Scope::Z6 => "z6 tile",
             Scope::Input => "input",
             Scope::Task => "task",
         }
@@ -112,12 +114,12 @@ pub struct Stage {
 pub const STAGES: [Stage; 14] = [
     Stage { id: "pass", title: "OpenStreetMap pass", does: "The newest planet read once for the whole world: its sets, outlines, pieces and road values, the basemap, the water, and what the regions' steps read." },
     Stage { id: "sites", title: "Heritage sites", does: "The heritage sites and designated areas the regions' tiles read." },
-    Stage { id: "terrain", title: "Terrain", does: "The terrain packs, a tile at a time, assembled zoomed out by area." },
-    Stage { id: "slope", title: "Slope", does: "The slope packs from the terrain, a tile at a time, assembled zoomed out by area." },
-    Stage { id: "trees", title: "Tree cover", does: "The tree cover, height and leaf type, a tile at a time, assembled zoomed out by area." },
-    Stage { id: "depth", title: "Water depth", does: "The depth under the seas and lakes from the depth sources: zoomed out by area, then a tile at a time where a source has finer detail." },
+    Stage { id: "terrain", title: "Terrain", does: "The terrain packs, a tile at a time, assembled zoomed out by z3 tile." },
+    Stage { id: "slope", title: "Slope", does: "The slope packs from the terrain, a tile at a time, assembled zoomed out by z3 tile." },
+    Stage { id: "trees", title: "Tree cover", does: "The tree cover, height and leaf type, a tile at a time, assembled zoomed out by z3 tile." },
+    Stage { id: "depth", title: "Water depth", does: "The depth under the seas and lakes from the depth sources: zoomed out by z3 tile, then a tile at a time where a source has finer detail." },
     Stage { id: "roads", title: "Roads", does: "Each tile's roads, their elevations and scenery: the base packs the map's details and profiles read." },
-    Stage { id: "tiles", title: "Map tiles", does: "The road and rail map tiles drawn from the base packs, by tile and zoomed out by area." },
+    Stage { id: "tiles", title: "Map tiles", does: "The road and rail map tiles drawn from the base packs, by tile and zoomed out by z3 tile." },
     Stage { id: "finish", title: "Map finishing", does: "What publishing adds around the tiles: the road index, rail stops, ferries, the world levels, and a prune." },
     Stage { id: "trains", title: "Trains", does: "Trains a day on the regions' rail, from timetables." },
     Stage { id: "landmarks", title: "Landmarks", does: "The landmarks: candidates, peaks, Wikidata facts, heritage details, ranked and drawn, and the area overlays." },
@@ -141,7 +143,7 @@ pub struct Step {
     pub stage: &'static str,
     /// The memory a job of it is expected to take (MB) before a target's own run has said
     /// (`SCENIC_COSTS`, crate::coord::Cost): offered so to the members, and reckoned so beside
-    /// another job. (Units and candidates are offered by their piece's size, terrain by its area's,
+    /// another job. (Units and candidates are offered by their piece's size, terrain by its z3 tile's,
     /// the 3D buildings by their rows: crate::agent's offers.)
     pub mem_mb: u64,
     /// Other members take its jobs (the shared steps), at this rank of preference (what later steps
@@ -171,7 +173,7 @@ const fn step(
 }
 
 use Kind::{Derive, Fetch, Keep, Pack, Publish};
-use Scope::{Area, Input, Tile, World};
+use Scope::{Input, World, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
 pub const TABLE: [Step; 51] = [
@@ -328,7 +330,7 @@ pub const TABLE: [Step; 51] = [
             w_heritage_sites,
         )
     },
-    // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is an area's whole run, the scheme
+    // Terrain's pieces (a z6 tile each, eight a job; a z3 tile is its whole run, the scheme
     // before pieces).
     Step {
         ..step(
@@ -346,7 +348,7 @@ pub const TABLE: [Step; 51] = [
         ..step(
             "terrain",
             Pack,
-            Tile,
+            Z6,
             "terrain",
             "Terrain",
             "Builds a tile's terrain packs, repaired and its water flattened.",
@@ -360,28 +362,28 @@ pub const TABLE: [Step; 51] = [
         ..step(
             "terrain",
             Pack,
-            Area,
+            Z3,
             "terrain-lo",
             "Terrain, zoomed out",
-            "Assembles an area's zoomed-out terrain from its tiles.",
+            "Assembles a z3 tile's zoomed-out terrain from its tiles.",
             w_terrain_lo,
         )
     },
-    // (Slope holds a z6 tile's tiles at a time, under a GB; its assembly the area's lo tiles.)
+    // (Slope holds a z6 tile's tiles at a time, under a GB; its assembly the z3 tile's lo tiles.)
     Step {
         mem_mb: 1500,
         shared: Some(1),
-        ..step("slope", Pack, Tile, "slope", "Slope", "Works out a tile's slope from its terrain.", w_slope)
+        ..step("slope", Pack, Z6, "slope", "Slope", "Works out a tile's slope from its terrain.", w_slope)
     },
     Step {
         mem_mb: 1000,
         ..step(
             "slope",
             Pack,
-            Area,
+            Z3,
             "slope-lo",
             "Slope, zoomed out",
-            "Assembles an area's zoomed-out slope from its tiles.",
+            "Assembles a z3 tile's zoomed-out slope from its tiles.",
             w_slope_lo,
         )
     },
@@ -391,17 +393,17 @@ pub const TABLE: [Step; 51] = [
     Step {
         mem_mb: 1000,
         shared: Some(2),
-        ..step("trees", Pack, Tile, "trees", "Tree cover", "Maps a tile's tree cover, height and leaf type.", w_trees)
+        ..step("trees", Pack, Z6, "trees", "Tree cover", "Maps a tile's tree cover, height and leaf type.", w_trees)
     },
     Step {
         mem_mb: 500,
         ..step(
             "trees",
             Pack,
-            Area,
+            Z3,
             "trees-lo",
             "Tree cover, zoomed out",
-            "Assembles an area's zoomed-out tree cover from its tiles.",
+            "Assembles a z3 tile's zoomed-out tree cover from its tiles.",
             w_trees_lo,
         )
     },
@@ -413,10 +415,10 @@ pub const TABLE: [Step; 51] = [
         ..step(
             "depth",
             Pack,
-            Area,
+            Z3,
             "depth-lo",
             "Depth, zoomed out",
-            "Composes an area's zoomed-out depth from the depth sources on the basemap's water.",
+            "Composes a z3 tile's zoomed-out depth from the depth sources on the basemap's water.",
             w_depth_lo,
         )
     },
@@ -426,7 +428,7 @@ pub const TABLE: [Step; 51] = [
         ..step(
             "depth",
             Pack,
-            Tile,
+            Z6,
             "depth",
             "Depth",
             "Composes a tile's depth where a source has detail finer than the zoomed-out levels.",
@@ -440,7 +442,7 @@ pub const TABLE: [Step; 51] = [
         ..step(
             "roads",
             Pack,
-            Tile,
+            Z6,
             "unit",
             "Roads",
             "Builds a tile's roads, their elevations and scenery: its base pack and road values.",
@@ -448,16 +450,16 @@ pub const TABLE: [Step; 51] = [
         )
     },
     Step {
-        ..step("tiles", Pack, Tile, "pack", "Map tiles", "Draws a tile's road and rail map tiles and its data.", w_pack)
+        ..step("tiles", Pack, Z6, "pack", "Map tiles", "Draws a tile's road and rail map tiles and its data.", w_pack)
     },
     Step {
         ..step(
             "tiles",
             Pack,
-            Area,
+            Z3,
             "lo",
             "Map tiles, zoomed out",
-            "Draws an area's zoomed-out road and rail map tiles.",
+            "Draws a z3 tile's zoomed-out road and rail map tiles.",
             w_lo,
         )
     },
@@ -484,7 +486,7 @@ pub const TABLE: [Step; 51] = [
             World,
             "terrain-root",
             "Terrain, world level",
-            "Builds the world-level terrain from the areas' zoomed-out packs.",
+            "Builds the world-level terrain from the z3 tiles' zoomed-out packs.",
             w_terrain_root,
         )
     },
@@ -495,7 +497,7 @@ pub const TABLE: [Step; 51] = [
             World,
             "slope-root",
             "Slope, world level",
-            "Builds the world-level slope from the areas' zoomed-out packs.",
+            "Builds the world-level slope from the z3 tiles' zoomed-out packs.",
             w_slope_root,
         )
     },
@@ -520,20 +522,12 @@ pub const TABLE: [Step; 51] = [
     Step {
         mem_mb: 2048,
         shared: Some(4),
-        ..step("landmarks", Derive, Tile, "pois", "Landmark candidates", "Finds a tile's landmark candidates.", w_pois)
+        ..step("landmarks", Derive, Z6, "pois", "Landmark candidates", "Finds a tile's landmark candidates.", w_pois)
     },
     Step {
         mem_mb: 2500,
         shared: Some(5),
-        ..step(
-            "landmarks",
-            Derive,
-            Tile,
-            "peaks",
-            "Peaks",
-            "Measures a tile's peaks' prominence and isolation.",
-            w_peaks,
-        )
+        ..step("landmarks", Derive, Z6, "peaks", "Peaks", "Measures a tile's peaks' prominence and isolation.", w_peaks)
     },
     Step {
         mem_mb: 3072,
@@ -600,7 +594,7 @@ pub const TABLE: [Step; 51] = [
         ..step(
             "buildings",
             Derive,
-            Tile,
+            Z6,
             "bldprep",
             "Buildings read",
             "Reads a tile's buildings from the sources into normalized files.",
@@ -613,7 +607,7 @@ pub const TABLE: [Step; 51] = [
         ..step(
             "buildings",
             Pack,
-            Tile,
+            Z6,
             "bldtiles",
             "3D buildings",
             "Raises a tile's 3D buildings and its far buildings' field.",
@@ -626,10 +620,10 @@ pub const TABLE: [Step; 51] = [
         ..step(
             "buildings",
             Pack,
-            Area,
+            Z3,
             "bldfield-lo",
             "3D buildings, zoomed out",
-            "Assembles an area's zoomed-out buildings' field from its tiles.",
+            "Assembles a z3 tile's zoomed-out buildings' field from its tiles.",
             w_bldfield_lo,
         )
     },
@@ -739,8 +733,8 @@ pub const TASKS: [Task; 4] = [
     },
     Task {
         name: crate::bld::task::KIND,
-        title: "3D buildings' areas",
-        does: "A z8 area of a 3D buildings tile.",
+        title: "3D buildings' z8 tiles",
+        does: "A z8 tile of a 3D buildings tile.",
         step: "bldtiles",
     },
 ];
@@ -787,7 +781,7 @@ pub fn title(step: &str) -> Cow<'static, str> {
     Cow::Owned(step.to_string())
 }
 
-/// What one target of `step` is called ("tile", "area", "run", "input"; a task's "task"; an
+/// What one target of `step` is called ("z6 tile", "z3 tile", "run", "input"; a task's "task"; an
 /// unknown step's "target").
 pub fn noun(step: &str) -> &'static str {
     match row(step) {
@@ -797,12 +791,12 @@ pub fn noun(step: &str) -> &'static str {
     }
 }
 
-/// `n` targets of `step`, counted in its noun: "8 tiles", "1 area".
+/// `n` targets of `step`, counted in its noun: "8 z6 tiles", "1 z3 tile".
 pub fn counted(step: &str, n: usize) -> String {
     format!("{n} {}{}", noun(step), if n == 1 { "" } else { "s" })
 }
 
-/// A job of `step` over `n` targets, said: "Terrain: 8 tiles", "Outlines" (a worldwide step's one
+/// A job of `step` over `n` targets, said: "Terrain: 8 z6 tiles", "Outlines" (a worldwide step's one
 /// run).
 pub fn said(step: &str, n: usize) -> String {
     let t = title(step);
@@ -1018,13 +1012,13 @@ pub fn outside_by(e: &crate::pool::journal::Entry, writes: &dyn Fn(&str, bool) -
 /// packs lacked; candidates' and peaks' own files; a tree cover piece's (a z6 tile's) hi packs of
 /// the tree layers and its mid, an assembly's (a z3 tile's) lo packs of them; terrain's and slope's
 /// pieces (a z6 tile's) hi pack of their layer and its mid, an assembly's (a z3 tile's) lo pack; an
-/// area's (a z3 tile's) lo pack and its z6 tiles' hi packs of terrain, slope, or the tree layers (a
+/// a z3 tile's lo pack and its z6 tiles' hi packs of terrain, slope, or the tree layers (a
 /// z3 tile's whole run: a lease of the scheme before pieces); a z6 tile's normalized buildings
 /// (`bldprep`) or 3D buildings' hi pack, its field's hi pack and mid (`bldtiles`); a z3 tile's field
 /// lo pack (`bldfield-lo`). False for the other steps.
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
     let dash = target.replace('/', "-");
-    let tile = Unit::parse(target);
+    let tile = TileId::parse(target);
     match step {
         "unit" => crate::unit::saved_files(&dash).iter().any(|f| f == l),
         "pois" | "peaks" => l == format!("work/{step}/{dash}"),
@@ -1225,7 +1219,7 @@ fn w_spoken(l: &str, _: bool) -> bool {
     l == "global/spoken"
 }
 
-/// A piece's hi pack and mid (a z6 tile); an area's whole run's lo pack and its z6 tiles' hi packs.
+/// A piece's hi pack and mid (a z6 tile); a z3 tile's whole run's lo pack and its z6 tiles' hi packs.
 fn w_terrain(l: &str, _: bool) -> bool {
     pack(l, "terrain", &["lo", "hi"]) || matches!(parts(l).as_slice(), ["work", "terrain-mid", t] if tile(t, 6))
 }
@@ -1618,10 +1612,10 @@ mod tests {
         }
         assert_eq!(
             (noun("unit"), noun("terrain-lo"), noun("outlines"), noun("inputs"), noun("tail"), noun("a newer step")),
-            ("tile", "area", "run", "input", "task", "target")
+            ("z6 tile", "z3 tile", "run", "input", "task", "target")
         );
-        assert_eq!(said("terrain", 8), "Terrain: 8 tiles");
-        assert_eq!(said("terrain-lo", 1), "Terrain, zoomed out: 1 area");
+        assert_eq!(said("terrain", 8), "Terrain: 8 z6 tiles");
+        assert_eq!(said("terrain-lo", 1), "Terrain, zoomed out: 1 z3 tile");
         assert_eq!(said("outlines", 1), "Outlines");
         assert_eq!([title("tail"), title("a-newer-step")], ["Roads' last steps", "a-newer-step"]);
         assert!(matches!(title("a-newer-step"), Cow::Owned(_)) && matches!(title("unit"), Cow::Borrowed(_)));

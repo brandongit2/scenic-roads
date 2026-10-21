@@ -12,7 +12,7 @@
 //! - **`bldtiles T`** ([`job`]): the buildings of T that touch the coverage, their heights filled
 //!   ([`fill`]: the neighbours' rule reads the buildings within 300 m beyond T's edges from its 8
 //!   neighbours' files), the z14 tiles encoded ([`tiles`]), written as the hi pack
-//!   `layers/buildings/hi/6-x-y`. A z8 area at a time. Pure: its output is a function of its inputs'
+//!   `layers/buildings/hi/6-x-y`. A z8 tile at a time. Pure: its output is a function of its inputs'
 //!   bytes (the work files and the coverage over T).
 //!
 //! (The design's `buildings T` step is `bldtiles` here: `buildings` is the roadside buildings' job,

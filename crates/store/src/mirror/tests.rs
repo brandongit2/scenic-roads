@@ -96,7 +96,7 @@ fn basemap_tiles(seed: u8) -> Vec<(u8, u32, u32, Vec<u8>)> {
     t
 }
 
-/// Two areas' files, A (the z6 tile 6/32/21) and B (6/33/21), the worldwide ones and a basemap.
+/// Two z6 tiles' files, A (the z6 tile 6/32/21) and B (6/33/21), the worldwide ones and a basemap.
 /// `seed` changes their contents; `b_base` B's base pack's alone.
 fn two_areas(nas: &Nas, n: u64, seed: u8, b_base: u8) -> Catalog {
     let mut c = Catalog::new(n);
@@ -147,8 +147,8 @@ fn world(cat: &Catalog) -> Vec<Item> {
     v
 }
 
-/// An area's download: its hi pack, base pack, road values and hi data, then its basemap piece.
-fn area(cat: &Catalog, tile: &str) -> Vec<Item> {
+/// A z6 tile's download: its hi pack, base pack, road values and hi data, then its basemap piece.
+fn z6_files(cat: &Catalog, tile: &str) -> Vec<Item> {
     let mut v: Vec<Item> = ["global/roads", "hidata", "base", "layers/roads/hi"]
         .iter()
         .map(|d| cat.files[&format!("{d}/{tile}")].clone())
@@ -214,7 +214,7 @@ fn the_world_and_an_area_are_copied_in_order_and_verified() {
     let home = tempfile::tempdir().unwrap();
     let m = big(home.path());
     let cat = two_areas(&nas, 1, 0, 1);
-    let w = wanted(&[world(&cat), area(&cat, "6-32-21")]);
+    let w = wanted(&[world(&cat), z6_files(&cat, "6-32-21")]);
     // The essentials in copy order: worldwide files, root and lo packs, the per-tile records.
     let names: Vec<&str> = essentials(&cat)
         .iter()
@@ -275,7 +275,7 @@ fn what_no_download_wants_goes_and_the_rest_stays_as_it_is() {
     let home = tempfile::tempdir().unwrap();
     let m = big(home.path());
     let cat = two_areas(&nas, 1, 0, 1);
-    // Everything the old mirror would have copied: both areas, the outlines, the whole basemap.
+    // Everything the old mirror would have copied: both z6 tiles, the outlines, the whole basemap.
     let all: Vec<Item> = cat.files.values().map(|f| Item::File { name: f.file.clone(), size: f.size }).collect();
     sync(&m, &cat, &wanted(std::slice::from_ref(&all)), &nas);
     fs::write(home.path().join("mirror").join(OLD_USES), b"{}").unwrap();
@@ -287,7 +287,7 @@ fn what_no_download_wants_goes_and_the_rest_stays_as_it_is() {
     let removed: Arc<Mutex<Vec<String>>> = Default::default();
     let r2 = removed.clone();
     m.on_remove(move |n| r2.lock().unwrap().extend(n.iter().cloned()));
-    let w = wanted(&[world(&cat), area(&cat, "6-32-21")]);
+    let w = wanted(&[world(&cat), z6_files(&cat, "6-32-21")]);
     let s = sync(&m, &cat, &w, &nas);
     let gone = [
         "base/6-33-21",
@@ -335,11 +335,11 @@ fn a_new_catalog_replaces_what_changed() {
     let home = tempfile::tempdir().unwrap();
     let m = big(home.path());
     let cat1 = two_areas(&nas, 1, 0, 1);
-    sync(&m, &cat1, &wanted(&[world(&cat1), area(&cat1, "6-33-21")]), &nas);
+    sync(&m, &cat1, &wanted(&[world(&cat1), z6_files(&cat1, "6-33-21")]), &nas);
     // B's base pack and the basemap changed: the old ones go, the new come; nothing else is copied.
     let mut cat2 = two_areas(&nas, 2, 0, 99);
     nas.put(&mut cat2, "layers/basemap/world", "pmtiles", &pieces::archive(&basemap_tiles(77), Compression::Gzip));
-    let s = sync(&m, &cat2, &wanted(&[world(&cat2), area(&cat2, "6-33-21")]), &nas);
+    let s = sync(&m, &cat2, &wanted(&[world(&cat2), z6_files(&cat2, "6-33-21")]), &nas);
     assert_eq!((s.copied, s.removed, s.pending), (3, 3, 0), "{s:?}");
     assert!(
         !home.path().join("mirror").join(BASEMAP).join(hash_of(&basemap(&cat1)).unwrap()).exists(),
@@ -362,7 +362,7 @@ fn a_download_that_doesnt_fit_waits_and_nothing_goes_for_it() {
     // Room for 30 kB more above the reserve: of B, its road values and hi data come, its base
     // pack (576 kB) and hi pack (50 kB) wait, and the room says how much more they need.
     cap.store(used(&home.path().join("mirror")) + reserve + 30_000, SeqCst);
-    let w2 = wanted(&[world(&cat), area(&cat, "6-33-21")]);
+    let w2 = wanted(&[world(&cat), z6_files(&cat, "6-33-21")]);
     let before = m.room(&w2).unwrap();
     assert_eq!(before.unknown, 1, "B's piece isn't sized yet");
     let s = sync(&m, &cat, &w2, &nas);
@@ -389,7 +389,7 @@ fn a_file_a_job_holds_stays_until_let_go() {
     let home = tempfile::tempdir().unwrap();
     let m = big(home.path());
     let cat = two_areas(&nas, 1, 0, 1);
-    sync(&m, &cat, &wanted(&[world(&cat), area(&cat, "6-32-21")]), &nas);
+    sync(&m, &cat, &wanted(&[world(&cat), z6_files(&cat, "6-32-21")]), &nas);
     let base = m.path(&cat.files["base/6-32-21"].file);
     let bytes = std::fs::read(&base).unwrap();
     crate::cachefile::hold_existing(&base).unwrap().unwrap();
@@ -409,7 +409,7 @@ fn while_the_build_runs_copies_keep_to_the_rate() {
     let home = tempfile::tempdir().unwrap();
     let m = big(home.path());
     let cat = two_areas(&nas, 1, 0, 1);
-    let w = wanted(&[area(&cat, "6-32-21")]);
+    let w = wanted(&[z6_files(&cat, "6-32-21")]);
     let seen = AtomicBool::new(false);
     let slow = || {
         if m.copying().is_some_and(|c| c.slow) {
@@ -527,7 +527,7 @@ fn damaged_nas_files_are_not_kept() {
     let mut b = fs::read(&bm).unwrap();
     b[(off + u64::from(len) - 6) as usize] ^= 0x10;
     fs::write(&bm, &b).unwrap();
-    let s = sync(&m, &cat, &wanted(&[world(&cat), area(&cat, "6-32-21")]), &nas);
+    let s = sync(&m, &cat, &wanted(&[world(&cat), z6_files(&cat, "6-32-21")]), &nas);
     assert_eq!((s.copied, s.failed, s.pending, s.end), (8, 3, 3, SyncEnd::Done), "{s:?}");
     assert!(
         m.local(&hi).is_none()
@@ -613,11 +613,11 @@ fn a_changed_reserve_counts_from_the_next_sync_and_raising_it_deletes_nothing() 
     let m = mirror_on(home.path(), &cap, 0);
     let w1 = wanted(&[world(&cat)]);
     sync(&m, &cat, &w1, &nas);
-    // 1 MB free from here on: the area waits under a 1 MB reserve.
+    // 1 MB free from here on: the z6 tile waits under a 1 MB reserve.
     cap.store(used(&home.path().join("mirror")) + 1_000_000, SeqCst);
     m.set_reserve(1_000_000);
     assert_eq!(m.reserve(), 1_000_000);
-    let w2 = wanted(&[world(&cat), area(&cat, "6-33-21")]);
+    let w2 = wanted(&[world(&cat), z6_files(&cat, "6-33-21")]);
     let s = sync(&m, &cat, &w2, &nas);
     assert_eq!((s.copied, s.removed), (0, 0), "{s:?}");
     assert!(s.waiting > 0);

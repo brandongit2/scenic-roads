@@ -1,15 +1,15 @@
 //! AWS's raw terrain tiles on the NAS, packed (docs/macs.md, Downloads), in archives grouped the
 //! way the terrain's packs are (crate::terrain_pack::build_q), so a job copies the archives of what
-//! it makes and no more: z9–12 by their z6 tile (`6-<x>-<y>`), z3–8 by their z3 tile
-//! (`3-<x>-<y>`), z0–2 together (`root`). Each is roadcore::archive's RDTILES1 (an empty entry for
-//! a tile AWS doesn't have), content-named (`<area>.<hash16>.tiles`) in
+//! it makes and no more. A tile's *shard* (`shard`) is where its archives are kept: z9–12 by their
+//! z6 tile (`6-<x>-<y>`), z3–8 by their z3 tile (`3-<x>-<y>`), z0–2 together (`root`). Each archive is roadcore::archive's RDTILES1 (an empty entry for
+//! a tile AWS doesn't have), content-named (`<shard>.<hash16>.tiles`) in
 //! `sources/aws-terrarium/packs/`, so a copy anywhere is right for good; `packs/index.json` lists
-//! each area's archives, oldest first.
+//! each shard's archives, oldest first.
 //!
-//! New tiles reach the NAS as an archive of their own beside their area's others: one large write
+//! New tiles reach the NAS as an archive of their own beside their shard's others: one large write
 //! (the NAS takes small files a tile at a time at ~23 a second, and stalls doing it), and nothing
-//! there is written again for them. An area's archives are kept each more than twice the size of
-//! all those after it (archives from the first that isn't are merged into one), so an area has a
+//! there is written again for them. A shard's archives are kept each more than twice the size of
+//! all those after it (archives from the first that isn't are merged into one), so a shard has a
 //! dozen at most, and a tile is rewritten a dozen times at most, however it came.
 //!
 //! On the NAS, the lead's archives are named by the index or listed in its `gone`, with when:
@@ -47,14 +47,14 @@ const GRACE: u64 = 24 * 3600;
 /// changes of the index): bounds the disk the NAS's own tiles take here while they're packed.
 const GROUP: u64 = 1 << 30;
 
-/// How far a long step is, for the status: `(what, done, total)` ("tiles", "areas" …).
+/// How far a long step is, for the status: `(what, done, total)` ("tiles", "shards" …).
 pub type Progress<'a> = &'a (dyn Fn(&str, u64, u64) + Sync);
 
 const META: &str = r#"{"kind":"aws-terrarium raw tiles"}"#;
 
-/// The area a tile is packed in, as the terrain is: its z6 tile's for z9–12, its z3 tile's for
+/// The shard a tile is packed in, as the terrain is: its z6 tile's for z9–12, its z3 tile's for
 /// z3–8, `root` for z0–2.
-pub fn area(z: u8, x: u32, y: u32) -> String {
+pub fn shard(z: u8, x: u32, y: u32) -> String {
     match z {
         9.. => format!("6-{}-{}", x >> (z - 6), y >> (z - 6)),
         3..=8 => format!("3-{}-{}", x >> (z - 3), y >> (z - 3)),
@@ -69,11 +69,13 @@ pub struct Pack {
     pub bytes: u64,
 }
 
-/// Each area's archives, oldest first; and the archives on the NAS it doesn't name, with when they
+/// Each shard's archives, oldest first (stored as `areas`, its name when a shard was called an area:
+/// the NAS's `packs/index.json` keeps it); and the archives on the NAS it doesn't name, with when they
 /// were listed (unix seconds): deleted GRACE later.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Index {
-    pub areas: BTreeMap<String, Vec<Pack>>,
+    #[serde(rename = "areas")]
+    pub shards: BTreeMap<String, Vec<Pack>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub gone: BTreeMap<String, u64>,
 }
@@ -120,17 +122,17 @@ impl Index {
         crate::whole::write(&store.join(INDEX), &serde_json::to_vec_pretty(self)?)
     }
 
-    /// An area's archives, oldest first.
-    pub fn of(&self, area: &str) -> &[Pack] {
-        self.areas.get(area).map_or(&[], Vec::as_slice)
+    /// A shard's archives, oldest first.
+    pub fn of(&self, shard: &str) -> &[Pack] {
+        self.shards.get(shard).map_or(&[], Vec::as_slice)
     }
 
     fn names(&self, name: &str) -> bool {
-        self.areas.values().flatten().any(|p| p.name == name)
+        self.shards.values().flatten().any(|p| p.name == name)
     }
 }
 
-/// Archives copied from the NAS at once by a process: a terrain job's reads span dozens of areas,
+/// Archives copied from the NAS at once by a process: a terrain job's reads span dozens of shards,
 /// and the NAS's disks serve a few large reads well, dozens at once badly.
 const COPIES: usize = 3;
 
@@ -250,16 +252,16 @@ fn own(stem: &str, ext: &str) -> String {
     format!("{stem}.{}-{}.{ext}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
-/// An area's tiles: those its archives have (keys), and the new ones (key → their place in the
+/// A shard's tiles: those its archives have (keys), and the new ones (key → their place in the
 /// spool: offset, length; length 0 for one AWS doesn't have).
 #[derive(Default)]
-struct Area {
+struct Shard {
     have: HashSet<u64>,
     new: BTreeMap<u64, (u64, u32)>,
 }
 
-/// Packs tiles: each area's new ones (those its archives lack) into an archive of their own, put on
-/// the NAS and named in the index, then each area's newest archives merged where due.
+/// Packs tiles: each shard's new ones (those its archives lack) into an archive of their own, put on
+/// the NAS and named in the index, then each shard's newest archives merged where due.
 pub struct Packer {
     /// The local cache: archives are made in its `packs/`, and stay there when `keep`.
     dir: PathBuf,
@@ -267,18 +269,18 @@ pub struct Packer {
     root: PathBuf,
     /// The index as last read.
     index: Index,
-    /// Every new tile's bytes as they come, in one file: each area's archive is written from it at
+    /// Every new tile's bytes as they come, in one file: each shard's archive is written from it at
     /// the end, its tiles in key order.
     spool: BufWriter<std::fs::File>,
     spool_path: PathBuf,
     pos: u64,
-    areas: BTreeMap<String, Area>,
-    /// The last tile's area, and the areas given new archives.
+    shards: BTreeMap<String, Shard>,
+    /// The last tile's shard, and the shards given new archives.
     last: Option<String>,
     touched: std::collections::BTreeSet<String>,
-    /// Archives the index names that the NAS lacks (area, name): taken out of it at the next change.
+    /// Archives the index names that the NAS lacks (shard, name): taken out of it at the next change.
     missing: Vec<(String, String)>,
-    /// Tiles added that their areas' archives didn't have.
+    /// Tiles added that their shards' archives didn't have.
     pub added: usize,
     /// Whether the archives made stay in `dir/packs` (a job's: read again soon) or go once on the
     /// NAS (the NAS's own tiles packed: tens of GB).
@@ -322,7 +324,7 @@ impl Packer {
             spool: BufWriter::with_capacity(1 << 20, f),
             spool_path,
             pos: 0,
-            areas: BTreeMap::new(),
+            shards: BTreeMap::new(),
             last: None,
             touched: Default::default(),
             missing: Vec::new(),
@@ -333,16 +335,16 @@ impl Packer {
         })
     }
 
-    /// Adds a tile (None: AWS doesn't have it); whether it's new to its area's archives. Past an
-    /// area with GROUP spooled, what's spooled goes up first: the disk it takes here stays small,
-    /// and tiles given in area order are packed an area once.
+    /// Adds a tile (None: AWS doesn't have it); whether it's new to its shard's archives. Past an
+    /// shard with GROUP spooled, what's spooled goes up first: the disk it takes here stays small,
+    /// and tiles given in shard order are packed a shard once.
     pub fn add(&mut self, z: u8, x: u32, y: u32, png: Option<&[u8]>) -> Result<bool> {
-        let a = area(z, x, y);
+        let a = shard(z, x, y);
         if self.pos >= GROUP && self.last.as_ref() != Some(&a) {
             self.flush()?;
         }
         self.last = Some(a.clone());
-        if !self.areas.contains_key(&a) {
+        if !self.shards.contains_key(&a) {
             let have = match self.keys(&a, false) {
                 Ok(h) => h,
                 // (An archive named in the index as read before is gone: that's out of date. One
@@ -353,9 +355,9 @@ impl Packer {
                 }
                 Err(e) => return Err(e),
             };
-            self.areas.insert(a.clone(), Area { have, new: BTreeMap::new() });
+            self.shards.insert(a.clone(), Shard { have, new: BTreeMap::new() });
         }
-        let s = self.areas.get_mut(&a).unwrap();
+        let s = self.shards.get_mut(&a).unwrap();
         let key = tile_key(z, x, y);
         // (A tile both AWS's and "none", as two files can say: AWS's.)
         let none_yet = s.new.get(&key).is_some_and(|e| e.1 == 0) && png.is_some();
@@ -372,11 +374,11 @@ impl Packer {
         Ok(true)
     }
 
-    /// The tiles `area`'s archives have: from their copies here, else the NAS's (their entries
+    /// The tiles `shard`'s archives have: from their copies here, else the NAS's (their entries
     /// alone). `pass`: one the NAS lacks is passed over (listed as missing), not an error.
-    fn keys(&mut self, area: &str, pass: bool) -> Result<HashSet<u64>> {
+    fn keys(&mut self, shard: &str, pass: bool) -> Result<HashSet<u64>> {
         let mut have = HashSet::new();
-        for p in self.index.of(area).to_vec() {
+        for p in self.index.of(shard).to_vec() {
             // (This Mac's copy held as it's read, store::cachefile: one room-making took between a
             // look and the read would pass for the NAS's own missing.)
             let local = self.dir.join("packs").join(&p.name);
@@ -391,7 +393,7 @@ impl Packer {
                         "rawpack: {} is named but not on the NAS: passed over, and taken out of the index",
                         p.name
                     );
-                    self.missing.push((area.to_string(), p.name.clone()));
+                    self.missing.push((shard.to_string(), p.name.clone()));
                 }
                 Err(e) => return Err(e),
             }
@@ -399,30 +401,30 @@ impl Packer {
         Ok(have)
     }
 
-    /// Writes each area's new tiles so far into an archive of their own and puts them on the NAS,
+    /// Writes each shard's new tiles so far into an archive of their own and puts them on the NAS,
     /// named in the index (GROUP's worth at a time); the spool starts again, empty.
     pub fn flush(&mut self) -> Result<()> {
         self.spool.flush()?;
         let mut pending = Vec::new();
-        for (area, a) in &mut self.areas {
+        for (shard, a) in &mut self.shards {
             if a.new.is_empty() {
                 continue;
             }
             let new = std::mem::take(&mut a.new);
             a.have.extend(new.keys());
-            pending.push((area.clone(), new.into_iter().map(|(k, (o, l))| (k, o, l)).collect::<Vec<_>>()));
+            pending.push((shard.clone(), new.into_iter().map(|(k, (o, l))| (k, o, l)).collect::<Vec<_>>()));
         }
         let mut group: Vec<(String, Pack)> = Vec::new();
-        for (area, tiles) in pending {
+        for (shard, tiles) in pending {
             let spool = self.spool.get_ref();
-            let pack = self.write(&area, tiles.len(), |i, b| {
+            let pack = self.write(&shard, tiles.len(), |i, b| {
                 let (k, o, l) = tiles[i];
                 b.resize(l as usize, 0);
                 spool.read_exact_at(b, o)?;
                 Ok(k)
             })?;
-            self.touched.insert(area.clone());
-            group.push((area, pack));
+            self.touched.insert(shard.clone());
+            group.push((shard, pack));
             if group.iter().map(|g| g.1.bytes).sum::<u64>() >= GROUP {
                 self.put_up(std::mem::take(&mut group))?;
             }
@@ -434,19 +436,19 @@ impl Packer {
         Ok(())
     }
 
-    /// `flush`, then each area given new archives has its newest merged where due (one that can't
-    /// be now is merged when it next has new tiles). Those areas.
+    /// `flush`, then each shard given new archives has its newest merged where due (one that can't
+    /// be now is merged when it next has new tiles). Those shards.
     pub fn finish(self) -> Result<Vec<String>> {
         self.finish_with(&|_, _, _| {})
     }
 
-    /// `finish`, saying how far it is: `progress("areas", done, total)` as each area given new
+    /// `finish`, saying how far it is: `progress("shards", done, total)` as each shard given new
     /// archives has had its merging done.
     pub fn finish_with(mut self, progress: Progress) -> Result<Vec<String>> {
         self.flush()?;
         let touched: Vec<String> = std::mem::take(&mut self.touched).into_iter().collect();
         // A member's: its archives handed off for the lead to name (and merge, when it packs
-        // those areas next).
+        // those shards next).
         if let Some(dir) = self.handoff.clone() {
             if !self.handed.is_empty() {
                 crate::handoff::write(
@@ -454,20 +456,20 @@ impl Packer {
                     &crate::handoff::Handoff { raw: std::mem::take(&mut self.handed), ..Default::default() },
                 )?;
             }
-            progress("areas", touched.len() as u64, touched.len() as u64);
+            progress("shards", touched.len() as u64, touched.len() as u64);
             return Ok(touched);
         }
-        for (i, area) in touched.iter().enumerate() {
+        for (i, shard) in touched.iter().enumerate() {
             // (The agent asked to stop: the rest are merged when they next have new tiles.)
             if crate::agent::stopping() {
                 break;
             }
-            progress("areas", i as u64, touched.len() as u64);
-            if let Err(e) = self.merge_due(area) {
-                eprintln!("rawpack: {area}'s archives not merged now ({e:#})");
+            progress("shards", i as u64, touched.len() as u64);
+            if let Err(e) = self.merge_due(shard) {
+                eprintln!("rawpack: {shard}'s archives not merged now ({e:#})");
             }
         }
-        progress("areas", touched.len() as u64, touched.len() as u64);
+        progress("shards", touched.len() as u64, touched.len() as u64);
         if !touched.is_empty() {
             self.sweep();
         }
@@ -496,9 +498,9 @@ impl Packer {
 
     /// An archive of `n` tiles written here, named by its content: `tile(i, b)` puts the i-th's
     /// bytes (in key order) in `b` and gives its key.
-    fn write(&self, area: &str, n: usize, mut tile: impl FnMut(usize, &mut Vec<u8>) -> Result<u64>) -> Result<Pack> {
+    fn write(&self, shard: &str, n: usize, mut tile: impl FnMut(usize, &mut Vec<u8>) -> Result<u64>) -> Result<Pack> {
         // (Written held, store::cachefile's scratch file beside its folder: room-making leaves it.)
-        let (part, held) = store::cachefile::scratch(&self.dir.join("packs").join(own(area, "part")))?;
+        let (part, held) = store::cachefile::scratch(&self.dir.join("packs").join(own(shard, "part")))?;
         let r = (|| -> Result<()> {
             let mut w = ArchiveWriter::create(&part, META)?;
             let mut b = Vec::new();
@@ -513,7 +515,7 @@ impl Packer {
             std::fs::remove_file(&part).ok();
             return Err(e);
         }
-        let name = format!("{area}.{}.tiles", store::naming::hash16_file(&part)?);
+        let name = format!("{shard}.{}.tiles", store::naming::hash16_file(&part)?);
         let bytes = std::fs::metadata(&part)?.len();
         // (Named only if it isn't there: one of the same name has the same tiles.)
         store::cachefile::publish(held, &part, &self.dir.join("packs").join(&name))?;
@@ -532,7 +534,7 @@ impl Packer {
     }
 
     /// Puts new archives on the NAS and names them in the index: listed in its `gone` first, so one
-    /// cut short there goes later; then each added to its area's archives. The copies here go
+    /// cut short there goes later; then each added to its shard's archives. The copies here go
     /// unless kept.
     fn put_up(&mut self, group: Vec<(String, Pack)>) -> Result<()> {
         if group.is_empty() {
@@ -540,12 +542,12 @@ impl Packer {
         }
         // A helper's: on the NAS whole, then handed off (`finish`); the index isn't its to change.
         if self.handoff.is_some() {
-            for (area, p) in group {
+            for (shard, p) in group {
                 self.put(&p)?;
                 if !self.keep {
                     drop_copy(&self.dir.join("packs").join(&p.name));
                 }
-                self.handed.push((area, p));
+                self.handed.push((shard, p));
             }
             return Ok(());
         }
@@ -563,13 +565,13 @@ impl Packer {
         // (Named only once it's there whole: a put stopped past GRACE may have seen it deleted.)
         let (store, mut absent) = (self.store.clone(), Vec::new());
         self.commit(|ix| {
-            for (area, p) in &group {
+            for (shard, p) in &group {
                 if !there(&store, p) {
                     ix.gone.insert(p.name.clone(), unix_now());
                     absent.push(p.name.clone());
                     continue;
                 }
-                let l = ix.areas.entry(area.clone()).or_default();
+                let l = ix.shards.entry(shard.clone()).or_default();
                 if !l.contains(p) {
                     l.push(p.clone());
                 }
@@ -584,13 +586,13 @@ impl Packer {
         Ok(())
     }
 
-    /// Merges `area`'s newest archives into one while `due`, each copied here whole first; the
+    /// Merges `shard`'s newest archives into one while `due`, each copied here whole first; the
     /// merged archive is named in their place if they're still there (another packer may have
     /// merged them first: then it goes, unnamed, and that packer carries on).
-    fn merge_due(&mut self, area: &str) -> Result<()> {
-        while let Some(from) = due(self.index.of(area)) {
-            let run = self.index.of(area)[from..].to_vec();
-            let merged = self.merge(area, &run)?;
+    fn merge_due(&mut self, shard: &str) -> Result<()> {
+        while let Some(from) = due(self.index.of(shard)) {
+            let run = self.index.of(shard)[from..].to_vec();
+            let merged = self.merge(shard, &run)?;
             let now = unix_now();
             self.commit(|ix| {
                 if !ix.names(&merged.name) {
@@ -605,7 +607,7 @@ impl Packer {
                     absent = true;
                     return;
                 }
-                let l = ix.areas.entry(area.to_string()).or_default();
+                let l = ix.shards.entry(shard.to_string()).or_default();
                 if let Some(i) = l.windows(run.len()).position(|w| w == run.as_slice()) {
                     l.splice(i..i + run.len(), [merged.clone()]);
                     for p in &run {
@@ -632,7 +634,7 @@ impl Packer {
     }
 
     /// One archive here of the tiles of `run`'s archives (copied here whole first).
-    fn merge(&self, area: &str, run: &[Pack]) -> Result<Pack> {
+    fn merge(&self, shard: &str, run: &[Pack]) -> Result<Pack> {
         let archives = run
             .iter()
             .map(|p| Archive::open(&local_copy(&self.dir, &self.store, &p.name)?))
@@ -645,7 +647,7 @@ impl Packer {
             }
         }
         let tiles: Vec<(usize, Entry)> = tiles.into_values().collect();
-        self.write(area, tiles.len(), |i, b| {
+        self.write(shard, tiles.len(), |i, b| {
             let (a, e) = tiles[i];
             b.clear();
             b.extend_from_slice(archives[a].get_entry(&e));
@@ -662,17 +664,17 @@ impl Packer {
         let mut ix = Index::load_to_change(&self.store, &[])?;
         f(&mut ix);
         // (Archives found missing, still so.)
-        for (area, name) in missing {
+        for (shard, name) in missing {
             if std::fs::metadata(self.store.join("packs").join(&name))
                 .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
             {
-                if let Some(l) = ix.areas.get_mut(&area) {
+                if let Some(l) = ix.shards.get_mut(&shard) {
                     l.retain(|p| p.name != name);
                 }
             }
         }
-        ix.areas.retain(|_, l| !l.is_empty());
-        let named: HashSet<String> = ix.areas.values().flatten().map(|p| p.name.clone()).collect();
+        ix.shards.retain(|_, l| !l.is_empty());
+        let named: HashSet<String> = ix.shards.values().flatten().map(|p| p.name.clone()).collect();
         let now = unix_now();
         let mut gone = BTreeMap::new();
         for (name, at) in std::mem::take(&mut ix.gone) {
@@ -728,28 +730,28 @@ pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::
     let naming: Vec<&str> = handed.iter().map(|(_, p)| p.name.as_str()).collect();
     let mut ix = Index::load_to_change(store, &naming)?;
     let mut n = Named::default();
-    for (area, p) in handed {
+    for (shard, p) in handed {
         if !there(store, p) {
             eprintln!("rawpack: {} was handed over, but isn't on the NAS whole: not named", p.name);
             continue;
         }
-        // (Its tiles its area's, all of them: one misfiled, or not an archive, would stop every job
-        // that reads the area. Its entries alone are read.)
+        // (Its tiles its shard's, all of them: one misfiled, or not an archive, would stop every job
+        // that reads the shard. Its entries alone are read.)
         match entries_of(&store.join("packs").join(&p.name)) {
-            Ok((_, es)) if es.iter().all(|e| area_of_key(e.key) == *area) => {}
+            Ok((_, es)) if es.iter().all(|e| shard_of_key(e.key) == *shard) => {}
             Ok(_) => {
-                eprintln!("rawpack: {} was handed over for {area}, but has tiles of other areas: not named", p.name);
+                eprintln!("rawpack: {} was handed over for {shard}, but has tiles of other shards: not named", p.name);
                 continue;
             }
             Err(e) => {
                 // (The NAS slow or away now, most likely: tried again with the next merge.)
                 eprintln!("rawpack: {} was handed over, but can't be read now ({e:#}): named later", p.name);
-                n.again.push((area.clone(), p.clone()));
+                n.again.push((shard.clone(), p.clone()));
                 continue;
             }
         }
         ix.gone.remove(&p.name);
-        let l = ix.areas.entry(area.clone()).or_default();
+        let l = ix.shards.entry(shard.clone()).or_default();
         if !l.contains(p) {
             l.push(p.clone());
             n.new += 1;
@@ -767,14 +769,14 @@ pub struct Named {
     pub again: Vec<(String, Pack)>,
 }
 
-/// The area of the tile an archive's key is (roadcore::archive::tile_key).
-fn area_of_key(key: u64) -> String {
+/// The shard of the tile an archive's key is (roadcore::archive::tile_key).
+fn shard_of_key(key: u64) -> String {
     let m = (1u64 << 29) - 1;
-    area((key >> 58) as u8, ((key >> 29) & m) as u32, (key & m) as u32)
+    shard((key >> 58) as u8, ((key >> 29) & m) as u32, (key & m) as u32)
 }
 
-/// Whether `a` is an area as `area` names one: `root`, or a z3 or z6 tile's `z-x-y`.
-pub fn is_area(a: &str) -> bool {
+/// Whether `a` is a shard as `shard` names one: `root`, or a z3 or z6 tile's `z-x-y`.
+pub fn is_shard(a: &str) -> bool {
     if a == "root" {
         return true;
     }
@@ -786,9 +788,9 @@ pub fn is_area(a: &str) -> bool {
     }
 }
 
-/// Whether `name` is an archive of `area` as packing names one: `<area>.<16 hex>.tiles`.
-pub fn named_for(name: &str, area: &str) -> bool {
-    name.strip_prefix(area)
+/// Whether `name` is an archive of `shard` as packing names one: `<shard>.<16 hex>.tiles`.
+pub fn named_for(name: &str, shard: &str) -> bool {
+    name.strip_prefix(shard)
         .and_then(|r| r.strip_prefix('.'))
         .and_then(|r| r.strip_suffix(".tiles"))
         .is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
@@ -832,7 +834,7 @@ pub fn pack_local(dir: &Path, store: &Path, root: &Path, keep: bool) -> Result<u
 }
 
 /// `pack_local`, saying how far it is (`progress`): the tiles packed of those waiting ("raw tiles",
-/// their archives put on the NAS as they go), then the areas whose archives were merged ("areas").
+/// their archives put on the NAS as they go), then the shards whose archives were merged ("shards").
 pub fn pack_local_with(dir: &Path, store: &Path, root: &Path, keep: bool, progress: Progress) -> Result<usize> {
     pack_local_to(dir, store, root, keep, std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from), progress)
 }
@@ -902,16 +904,16 @@ fn pack_local_to(
     p.flush()?;
     progress("raw tiles", n, n);
     let added = p.added;
-    let areas = p.finish_with(progress)?;
+    let shards = p.finish_with(progress)?;
     // (Not one a job reads now: store::cachefile; packed again next time, the same bytes.)
     for path in &packed {
         store::cachefile::try_remove(path);
     }
-    if !areas.is_empty() {
+    if !shards.is_empty() {
         eprintln!(
-            "rawpack: {added} tiles packed onto the NAS ({} area{})",
-            areas.len(),
-            if areas.len() == 1 { "" } else { "s" }
+            "rawpack: {added} tiles packed onto the NAS ({} shard{})",
+            shards.len(),
+            if shards.len() == 1 { "" } else { "s" }
         );
     }
     Ok(packed.len())
@@ -954,12 +956,12 @@ pub fn pack_tar(input: impl Read, dir: &Path, store: &Path, root: &Path, expect:
         }
     }
     r.added = p.added;
-    let areas = p.finish()?;
+    let shards = p.finish()?;
     eprintln!(
-        "rawpack: {} tiles, {} new to their archives ({} areas), {} left out, {} other files",
+        "rawpack: {} tiles, {} new to their archives ({} shards), {} left out, {} other files",
         r.tiles,
         r.added,
-        areas.len(),
+        shards.len(),
         r.broken,
         r.other
     );
@@ -974,8 +976,8 @@ pub fn pack_tar(input: impl Read, dir: &Path, store: &Path, root: &Path, expect:
     Ok(r)
 }
 
-/// Paths of tiles (`./<z>/<x>/<y>.png`, a line each), in their areas' order, for a tar stream that
-/// `pack_tar` then packs an area once; lines that aren't tiles, after. Those `have` says are packed
+/// Paths of tiles (`./<z>/<x>/<y>.png`, a line each), in their shards' order, for a tar stream that
+/// `pack_tar` then packs a shard once; lines that aren't tiles, after. Those `have` says are packed
 /// already are left out, so a run again (one stopped partway) streams only what's left.
 pub fn order(paths: &str, have: impl Fn(&str, u64) -> bool) -> String {
     let mut v: Vec<(Option<String>, &str)> = paths
@@ -983,7 +985,7 @@ pub fn order(paths: &str, have: impl Fn(&str, u64) -> bool) -> String {
         .filter(|l| !l.is_empty())
         .filter_map(|l| match parse_tile(l) {
             Some((z, x, y, _)) => {
-                let a = area(z, x, y);
+                let a = shard(z, x, y);
                 (!have(&a, tile_key(z, x, y))).then_some((Some(a), l))
             }
             None => Some((None, l)),
@@ -993,11 +995,11 @@ pub fn order(paths: &str, have: impl Fn(&str, u64) -> bool) -> String {
     v.into_iter().map(|(_, l)| format!("{l}\n")).collect()
 }
 
-/// The tiles the store's archives hold, by area (their entries read, not the archives).
+/// The tiles the store's archives hold, by shard (their entries read, not the archives).
 pub fn packed(store: &Path) -> Result<std::collections::HashMap<String, HashSet<u64>>> {
     let index = Index::load(store)?;
     let mut out = std::collections::HashMap::new();
-    for (area, packs) in &index.areas {
+    for (shard, packs) in &index.shards {
         let mut keys = HashSet::new();
         for p in packs {
             match entries_of(&store.join("packs").join(&p.name)) {
@@ -1009,7 +1011,7 @@ pub fn packed(store: &Path) -> Result<std::collections::HashMap<String, HashSet<
                 Err(e) => return Err(e),
             }
         }
-        out.insert(area.clone(), keys);
+        out.insert(shard.clone(), keys);
     }
     Ok(out)
 }
@@ -1129,7 +1131,7 @@ pub struct Checked {
 pub fn check(store: &Path, every: usize) -> Result<Checked> {
     let index = Index::load(store)?;
     let mut c = Checked::default();
-    for p in index.areas.values().flatten() {
+    for p in index.shards.values().flatten() {
         c.archives += 1;
         let at = store.join("packs").join(&p.name);
         match named_right(&at, &p.name).and_then(|ok| Ok((ok, entries_of(&at)?))) {
@@ -1212,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn tiles_go_up_packed_by_area_and_come_back() {
+    fn tiles_go_up_packed_by_shard_and_come_back() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
         // Tiles AWS gave, waiting here (two minutes old), one it hasn't, and one too new to pack
@@ -1225,9 +1227,9 @@ mod tests {
         assert_eq!(pack_local(&dir, &store, &root, true).unwrap(), 4);
         let index = Index::load(&store).unwrap();
         // 12/2048/1365 is under z6 tile 32/21; 8/128/85 under z3 tile 4/2; 2/1/1 above z3.
-        assert_eq!(index.areas.keys().collect::<Vec<_>>(), ["3-4-2", "6-32-21", "root"]);
+        assert_eq!(index.shards.keys().collect::<Vec<_>>(), ["3-4-2", "6-32-21", "root"]);
         assert!(index.gone.is_empty(), "named, so off the list");
-        for p in index.areas.values().flatten() {
+        for p in index.shards.values().flatten() {
             assert!(store.join("packs").join(&p.name).exists() && dir.join("packs").join(&p.name).exists());
             assert_eq!(std::fs::metadata(store.join("packs").join(&p.name)).unwrap().len(), p.bytes);
         }
@@ -1263,7 +1265,7 @@ mod tests {
         let (store, dir, root) = nas(d.path());
         let outbox = d.path().join("outbox");
         std::fs::create_dir_all(&outbox).unwrap();
-        // The NAS's store names one area's archive already; a helper fetched more of it, and another.
+        // The NAS's store names one shard's archive already; a helper fetched more of it, and another.
         put(&dir, "12/2048/1365.png", &png(), 120);
         pack_local(&dir, &store, &root, true).unwrap();
         let before = Index::load(&store).unwrap();
@@ -1277,8 +1279,8 @@ mod tests {
         let handed: Vec<crate::handoff::Handoff> = crate::handoff::written_in(&outbox).unwrap().unwrap();
         let raw: Vec<(String, Pack)> = handed.into_iter().flat_map(|h| h.raw).collect();
         assert_eq!(raw.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["3-4-2", "6-32-21"]);
-        for (area, p) in &raw {
-            assert!(there(&store, p) && named_for(&p.name, area), "{}", p.name);
+        for (shard, p) in &raw {
+            assert!(there(&store, p) && named_for(&p.name, shard), "{}", p.name);
             assert!(!dir.join("packs").join(&p.name).exists());
         }
         // The lead names them; a missing one isn't.
@@ -1323,7 +1325,7 @@ mod tests {
         .is_err());
         drop(lock);
         assert!(!store.join(INDEX).exists() && store.join("packs").join(&named).exists());
-        // Put back: packing goes on (the area's archives merged as they grow).
+        // Put back: packing goes on (the shard's archives merged as they grow).
         std::fs::rename(d.path().join("index.json.aside"), store.join(INDEX)).unwrap();
         assert_eq!(pack_local(&dir, &store, &root, true).unwrap(), 1);
         let ix = Index::load(&store).unwrap();
@@ -1349,7 +1351,7 @@ mod tests {
     }
 
     #[test]
-    fn a_handed_archive_of_another_areas_tiles_isnt_named() {
+    fn a_handed_archive_of_another_shards_tiles_isnt_named() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
         let outbox = d.path().join("outbox");
@@ -1361,13 +1363,13 @@ mod tests {
         pack_local_to(&dir, &store, &root, true, Some(outbox.clone()), &|_, _, _| {}).unwrap();
         let raw: Vec<(String, Pack)> =
             crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
-        // The same archive said to be another area's (renamed to match): not named; as its own, named.
-        let (area, p) = raw[0].clone();
-        let other = Pack { name: p.name.replacen(&area, "6-33-21", 1), bytes: p.bytes };
+        // The same archive said to be another shard's (renamed to match): not named; as its own, named.
+        let (shard, p) = raw[0].clone();
+        let other = Pack { name: p.name.replacen(&shard, "6-33-21", 1), bytes: p.bytes };
         std::fs::copy(store.join("packs").join(&p.name), store.join("packs").join(&other.name)).unwrap();
         let lock = crate::out::BuildLock::take(&root).unwrap();
         assert_eq!(name_handed(&store, &[("6-33-21".into(), other)], &lock).unwrap().new, 0);
-        assert_eq!(name_handed(&store, &[(area.clone(), p)], &lock).unwrap().new, 1);
+        assert_eq!(name_handed(&store, &[(shard.clone(), p)], &lock).unwrap().new, 1);
         drop(lock);
         assert!(Index::load(&store).unwrap().of("6-33-21").is_empty());
     }
@@ -1412,20 +1414,20 @@ mod tests {
             3
         );
         let said = said.into_inner().unwrap();
-        // The tiles from none to all, then the two areas' merging, done.
+        // The tiles from none to all, then the two shards' merging, done.
         assert_eq!(said.first(), Some(&("raw tiles".to_string(), 0, 3)));
         assert!(said.contains(&("raw tiles".to_string(), 3, 3)));
-        assert_eq!(said.last(), Some(&("areas".to_string(), 2, 2)));
+        assert_eq!(said.last(), Some(&("shards".to_string(), 2, 2)));
         assert!(said.iter().all(|(_, d, t)| d <= t));
         let at = |w: &str| said.iter().position(|s| s.0 == w).unwrap();
-        assert!(at("raw tiles") < at("areas"));
+        assert!(at("raw tiles") < at("shards"));
     }
 
     #[test]
-    fn new_tiles_go_up_beside_an_areas_archive_and_merge_when_due() {
+    fn new_tiles_go_up_beside_a_shards_archive_and_merge_when_due() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
-        // An area's archive of twenty tiles.
+        // A shard's archive of twenty tiles.
         for y in 0..20 {
             put(&dir, &format!("12/2048/{}.png", 1344 + y), &png(), 120);
         }
@@ -1490,7 +1492,7 @@ mod tests {
     fn a_merge_another_packer_made_first_is_dropped() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
-        // Two archives for an area, due merging: the second put up and named, not yet merged.
+        // Two archives for a shard, due merging: the second put up and named, not yet merged.
         put(&dir, "12/2048/1365.png", &png(), 120);
         pack_local(&dir, &store, &root, true).unwrap();
         let mut p = Packer::new(&dir, &store, &root).unwrap();
@@ -1527,7 +1529,7 @@ mod tests {
         let first = Index::load(&store).unwrap().of("6-32-21").to_vec();
         all.finish().unwrap();
         let ix = Index::load(&store).unwrap();
-        for p in ix.areas.values().flatten() {
+        for p in ix.shards.values().flatten() {
             assert!(store.join("packs").join(&p.name).exists(), "{} is named and there", p.name);
         }
         let l = ix.of("6-32-21");
@@ -1541,8 +1543,8 @@ mod tests {
         let (store, dir, root) = nas(d.path());
         put(&dir, "12/2048/1365.png", &png(), 120);
         pack_local(&dir, &store, &root, true).unwrap();
-        // A packer begun now, and the area's archive merged away (and gone from the NAS, as a day
-        // later) before it reaches the area: it reads the index again.
+        // A packer begun now, and the shard's archive merged away (and gone from the NAS, as a day
+        // later) before it reaches the shard: it reads the index again.
         let mut p = Packer::new(&d.path().join("late"), &store, &root).unwrap();
         put(&dir, "12/2048/1366.png", &png(), 120);
         pack_local(&dir, &store, &root, true).unwrap();
@@ -1612,7 +1614,7 @@ mod tests {
             Packed { files: 4, tiles: 3, added: 3, broken: 1, other: 0 }
         );
         let index = Index::load(&store).unwrap();
-        assert_eq!(index.areas.keys().collect::<Vec<_>>(), ["6-32-21"]);
+        assert_eq!(index.shards.keys().collect::<Vec<_>>(), ["6-32-21"]);
         let a = Archive::open(&store.join("packs").join(&index.of("6-32-21")[0].name)).unwrap();
         assert_eq!(a.get(9, 256, 170), Some(&png()[..]));
         assert_eq!(a.get(12, 2049, 1365), Some(&[][..]));
@@ -1638,7 +1640,7 @@ mod tests {
     fn two_packers_at_once_keep_each_others_tiles() {
         let d = tempfile::tempdir().unwrap();
         let (store, _, root) = nas(d.path());
-        // Both begin from the same (empty) index for one area; each adds its own tile.
+        // Both begin from the same (empty) index for one shard; each adds its own tile.
         let mut a = Packer::new(&d.path().join("a"), &store, &root).unwrap();
         let mut b = Packer::new(&d.path().join("b"), &store, &root).unwrap();
         a.add(12, 2048, 1365, Some(&png())).unwrap();
@@ -1687,7 +1689,7 @@ mod tests {
         let cut = Pack { bytes: pack.bytes + 1, ..pack.clone() };
         assert!(p.put_up(vec![("6-32-21".into(), cut)]).is_err());
         let ix = Index::load(&store).unwrap();
-        assert!(ix.areas.is_empty() && ix.gone.contains_key(&pack.name), "listed as gone, not named");
+        assert!(ix.shards.is_empty() && ix.gone.contains_key(&pack.name), "listed as gone, not named");
     }
 
     #[test]
@@ -1699,7 +1701,7 @@ mod tests {
         let lost = Index::load(&store).unwrap().of("6-32-21")[0].name.clone();
         std::fs::remove_file(store.join("packs").join(&lost)).unwrap();
         std::fs::remove_file(dir.join("packs").join(&lost)).unwrap();
-        // More of that area packs, and the index stops naming the lost archive.
+        // More of that shard packs, and the index stops naming the lost archive.
         put(&dir, "12/2048/1366.png", &png(), 120);
         assert_eq!(pack_local(&dir, &store, &root, true).unwrap(), 1);
         let ix = Index::load(&store).unwrap();
@@ -1741,7 +1743,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stream_in_area_order() {
+    fn a_stream_in_shard_order() {
         let list = "./12/2049/1365.png\n./notes.txt\n./8/128/85.png\n./12/2048/1365.png\n./2/1/1.png\n";
         assert_eq!(
             order(list, |_, _| false),
@@ -1774,13 +1776,13 @@ mod tests {
         p.add(12, 2048, 1365, Some(&png())).unwrap();
         p.add(12, 2048, 1366, Some(&png())).unwrap();
         assert!(!store.join(INDEX).exists());
-        // (Past the area with the spool full, as if: what's spooled goes up, the spool starts again.)
+        // (Past the shard with the spool full, as if: what's spooled goes up, the spool starts again.)
         p.pos = GROUP;
         p.add(12, 4096, 1365, Some(&png())).unwrap();
-        assert_eq!(Index::load(&store).unwrap().areas.keys().collect::<Vec<_>>(), ["6-32-21"]);
+        assert_eq!(Index::load(&store).unwrap().shards.keys().collect::<Vec<_>>(), ["6-32-21"]);
         assert_eq!(p.pos, png().len() as u64);
         p.finish().unwrap();
-        assert_eq!(Index::load(&store).unwrap().areas.len(), 2);
+        assert_eq!(Index::load(&store).unwrap().shards.len(), 2);
     }
 
     #[test]
@@ -1804,11 +1806,11 @@ mod tests {
         assert_eq!(parse_tile("8/1/2.none"), Some((8, 1, 2, false)));
         assert_eq!(parse_tile("8/1/2.png.tmp"), None);
         assert_eq!(parse_tile("@eaDir/8/1/2.png"), None);
-        assert_eq!(area(12, 690, 949), "6-10-14");
-        assert_eq!(area(9, 5, 7), "6-0-0");
-        assert_eq!(area(8, 128, 85), "3-4-2");
-        assert_eq!(area(3, 4, 2), "3-4-2");
-        assert_eq!(area(5, 3, 3), "3-0-0");
-        assert_eq!(area(2, 1, 1), "root");
+        assert_eq!(shard(12, 690, 949), "6-10-14");
+        assert_eq!(shard(9, 5, 7), "6-0-0");
+        assert_eq!(shard(8, 128, 85), "3-4-2");
+        assert_eq!(shard(3, 4, 2), "3-4-2");
+        assert_eq!(shard(5, 3, 3), "3-0-0");
+        assert_eq!(shard(2, 1, 1), "root");
     }
 }

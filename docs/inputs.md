@@ -221,7 +221,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 - The catalog's `credits` (formats.md, Catalog) are made from the accepted descriptions (§5.1) by
   crate::inputs::credits, beside `pipeline::rules::CREDITS` for sources with no description yet
   (descriptions win for a source both name), with one rule for which to list: those whose extent
-  meets the coverage, 20 km around it, or a built unit's ways (`rules::listed`). A description's
+  meets the coverage, 20 km around it, or a built z6 tile's ways (`rules::listed`). A description's
   extent is `facts.extent` in the index (a box, or `"world"`), derived from the data, never typed;
   one whose extent isn't known is listed nowhere.
 - **Credit edits reach the catalog without rebuilding:** credits enter no step's key, but the
@@ -304,10 +304,10 @@ Fetch methods are protocols, generic code used by any declaration, through `pipe
 asks before any internet request. A range read (a GeoTIFF's tiles) is streamed, and one that breaks
 off goes on from the bytes received with a new range request (`fetch::net`: only a request that
 moves nothing counts against the retries). A server that gives no answer after its retries is noted
-for its host and port in the unit job's cache (`fetch-down/<host>`, with `_<port>` when the URL names one; `SCENIC_FETCH_DOWN`): requests to that server
+for its host and port in the z6 tile job's cache (`fetch-down/<host>`, with `_<port>` when the URL names one; `SCENIC_FETCH_DOWN`): requests to that server
 fail at once for the next 30 minutes instead of each waiting out its retries, and a step that ends so
-exits 69, which the unit job reads as the area's server being down: it sets that area aside, builds
-its other areas, and fails at its end naming the areas set aside, which the agent's retry builds later. The data servers a worker's task may read through the coordinator
+exits 69, which the `unit` job reads as the z6 tile's server being down: it sets that z6 tile aside, builds
+its other z6 tiles, and fails at its end naming the z6 tiles set aside, which the agent's retry builds later. The data servers a worker's task may read through the coordinator
 (docs/workers.md §3) are derived from the accepted declarations (`coord::hosts`): the hosts of the
 roads' elevation datasets' web files (their `urls`, their index's URLs, their tile template; not a
 dataset kept in the store, nor the terrain's) and of the land-cover source's. A dataset kept in a store (`[data] store`, §6.8) is
@@ -837,7 +837,7 @@ Derived: `facts.box`, `facts.entries`, and `facts.extent` (the box) for the cred
   lists every register merged (`registers`).
 - **Keys:** heritage-sites names the meeting registers' `keyed` digests (`registers_now`) and the
   matches' accepted version, and is given the indexes it planned with (`--heritage-index`,
-  `--heritage-matches-index`). Without an accepted version it waits (and the units, marks and
+  `--heritage-matches-index`). Without an accepted version it waits (and the z6 tiles, marks and
   overlays with it).
 - **Credits and popups** by register (§4.8). A register's whole box decides where it's credited.
 - The chain's caches (Wikidata, Wikipedia, World Heritage answers) are the pass's answers
@@ -1072,7 +1072,7 @@ heights' conversion (step 3) and the 3D terrain (#144).
 | `surface` | `ground` or `surface` | a DTM, or a DSM with trees and buildings |
 | `heights` | `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` | the height reference, brought to EGM2008 before the blend (below); `mixed` allowed for the terrain's alone |
 | `rank` | integer, default 0 | overrides the order by resolution (lower first), where datasets of one resolution differ in quality |
-| `code` | 1–8 | the source byte (at most `roadcore::NDEM` − 1, where the server counts a way's sources) in the units' outputs (`src.u8`), named on the map by `label`; none for the terrain's |
+| `code` | 1–8 | the source byte (at most `roadcore::NDEM` − 1, where the server counts a way's sources) in the z6 tiles' outputs (`src.u8`), named on the map by `label`; none for the terrain's |
 | `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the catalog's `dem_labels` (formats.md, Catalog), as a credit edit does (§4.8) |
 | `terrain` | bool, default false | read by the 3D terrain, never by the roads' elevations (below) |
 | `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes); `"world"` makes any dataset's coverage the world (FABDEM) |
@@ -1153,7 +1153,7 @@ territory.
   first dataset was converted and whose dataset beneath had no value, `unconverted_seam`: task
   #467); a dataset no chain reaches is left as it is, said by the agent (the status's `notices`,
   apart from the waits: an info line on the build page and "note: elevation heights — not
-  converted to EGM2008: …" in scenic status) and by the unit job (`elevation: <id>: its heights …
+  converted to EGM2008: …" in scenic status) and by the z6 tile job (`elevation: <id>: its heights …
   left as they are`); a unit job given no accepted sources says it converts nothing.
   `producers/geoid/fetch.sh` reads each host's robots.txt first, alone, judged by
   `producers/geoid/robots.py` (RFC 9309 groups, our token's group over `*`'s, Allow and Disallow by
@@ -1173,18 +1173,18 @@ territory.
     JGD2011 → EGM2008 +0.13 m at Sapporo to +0.33 m at Fukuoka (+0.95 m on Okinawa). 3DEP's tiles
     off the conterminous US and Alaska (Hawaii, Puerto Rico, the islands) aren't on NAVD88 and no
     grid covers them: their heights stay as sampled, counted.
-  - **Keys:** a converted dataset's line in a unit's key (and the plan's `tag`, by which kept DEM
+  - **Keys:** a converted dataset's line in a z6 tile's key (and the plan's `tag`, by which kept DEM
     samples are judged) names its chain's digest (the sources' ids and `keyed`, `Conversion::digest`):
-    `<id> <keyed> to EGM2008 <digest>`, so declaring or editing a grid rebuilds just the units
+    `<id> <keyed> to EGM2008 <digest>`, so declaring or editing a grid rebuilds just the z6 tiles
     meeting a dataset it converts. A sample made under the DEM rules (the seed's) is never valid
     for a converted dataset (`DemValidity`: those weren't converted). With the six declarations
-    accepted, the units meeting 3DEP, HRDEM, MRDEM or GSI's datasets are built again: 241 of the 285
-    keyed units (by their z6 tiles, 18 Oct); FABDEM's alone keep their keys.
+    accepted, the z6 tiles meeting 3DEP, HRDEM, MRDEM or GSI's datasets are built again: 241 of the 285
+    keyed z6 tiles (as of 18 Oct); FABDEM's alone keep their keys.
 - **FABDEM** is declared with `territory = "world"` and the coarsest rank: the worldwide fallback.
   It's `store = true`: all of FABDEM V1-2 (19,011 tiles, about 297 GiB) is kept once in
-  `sources/fetched/fabdem/`, and area builds only read it. Its index still names each tile by its
+  `sources/fetched/fabdem/`, and z6 tile builds only read it. Its index still names each tile by its
   Bristol zip member (`<zip URL>#<tile>.tif`): the URL names the tile and its stored file, and the
-  index is unchanged so no unit's key changes. The store is filled by `scenic-build fabdem-fetch
+  index is unchanged so no z6 tile's key changes. The store is filled by `scenic-build fabdem-fetch
   --root <nas> --mirror https://huggingface.co/datasets/pavelzaitsau/fabdem-v12 --work <local dir>
   [--first <square>,…]` (crate::dem::fabdem_fetch), from that Hugging Face mirror (the same pixels,
   two tiles compared; Bristol's server resets our requests):
@@ -1195,39 +1195,39 @@ territory.
   rewritten, read back and compared under a temporary name, then renamed). It skips stored tiles,
   so a stopped run is started again as it is. The input check measures a stored dataset's sampled
   files from the store too, so fetch the tiles first, then change FABDEM's declaration.
-- **Keys:** a unit names the `keyed` digests of the datasets whose coverage meets its ways
+- **Keys:** a z6 tile names the `keyed` digests of the datasets whose coverage meets its ways
   (`agent::build::unit_key`); a dataset's `keyed` includes its index's content and dropped files, so
-  adding a tile reruns the units it meets. `agent::rekey` keeps what keys made before the
+  adding a tile reruns the z6 tiles it meets. `agent::rekey` keeps what keys made before the
   declarations need (`dem_rules_meeting`, `pre_elevation_unit_key`).
 - **The switch:** the check records `sources/inputs/elevation/@switched` (the accepted index and the
   published app that recorded it) once a version of the declarations is accepted; a development
-  build records none. Until then `elev` and the unit job don't run and the units wait (the agent
+  build records none. Until then `elev` and the z6 tile job don't run and the z6 tiles wait (the agent
   says why). From then on no older app leads, is handed the lead or is granted work
   (`regions::read::switch_app`, the coordinator's `min_app`).
-- **The unit's plan:** the unit job writes `elevation.json` into the unit's folder (the datasets in
-  order, each with its files meeting the unit's vertices: `dem::declared::plan`), which `elev` reads,
+- **The z6 tile's plan:** the z6 tile job writes `elevation.json` into the z6 tile's folder (the datasets in
+  order, each with its files meeting the z6 tile's vertices: `dem::declared::plan`), which `elev` reads,
   natively or as WebAssembly; without one `elev` refuses to run.
 - **The DEM cache** (`sources/dem-cache/`, `cache/dem-units/`, `unit::DemValidity`): a samples file
   made from the declarations records their digest and is valid while it holds. Older samples are
   valid only where a single dataset covers the vertex and the sample carries its code. The seed
-  (`sources/dem-cache/`, made under the DEM rules) is neither copied to a Mac nor read for a unit
+  (`sources/dem-cache/`, made under the DEM rules) is neither copied to a Mac nor read for a z6 tile
   when two datasets or more cover every 1° cell its vertices meet (`DemValidity::seed_serves`):
-  none of its samples could be valid there. It's copied, once a Mac, by the first unit it can serve.
+  none of its samples could be valid there. It's copied, once a Mac, by the first z6 tile it can serve.
 - **Densification** (crate::dem::spacing, `extract`): a way's points are put 8 m apart (`FINE_M`)
   where a roads' dataset finer than 15 m (`COARSE_M`, its measured `resolution`) has data in the 1°
   cell of the way's first node (its measured `cover`), 15 m elsewhere; ferries not at all. A cell
-  is the point's degrees floored: its west and south edges are its own. The unit job writes the
-  fine cells into the unit's folder (`spacing.json`), which `extract` reads; the reach tests the
-  units' long ways at the same spacing (`reach::LongWay::touches`). The other steps' `extract` runs
+  is the point's degrees floored: its west and south edges are its own. The z6 tile job writes the
+  fine cells into the z6 tile's folder (`spacing.json`), which `extract` reads; the reach tests the
+  z6 tiles' long ways at the same spacing (`reach::LongWay::touches`). The other steps' `extract` runs
   (the links, rail and candidates) read the same file (`Fine::of_records`); the rail and candidates keys name its whole digest, read by the planner from the accepted index (`spacing::digest_read`, cached by version; unreadable, they wait), the links are the pass's (made once a pass). Today's datasets make HRDEM,
   3DEP (10.3 m, 1/3″) and GSI's fine, MRDEM and FABDEM (30 m) not.
-  - **Keys:** each unit's reach records the cells its ways start in (`Reach::cells`); its key
+  - **Keys:** each z6 tile's reach records the cells its ways start in (`Reach::cells`); its key
     names those of them that are fine (`Fine::key`), so a dataset added, dropped or measured
-    again rebuilds just the units with a way starting where the spacing changes.
+    again rebuilds just the z6 tiles with a way starting where the spacing changes.
   - **Re-keyed** (`agent::rekey::rekey_spacing`): the spacing was 8 m west of 40° W and in a box
-    over Japan, 15 m elsewhere (`rekey::Before`). A unit current under its key from before whose
+    over Japan, 15 m elsewhere (`rekey::Before`). A z6 tile current under its key from before whose
     every cell is wholly fine or wholly coarse under that rule and the same now is recorded under
-    its key now: `extract` puts the same points. The others (the units of Mexico, Central and
+    its key now: `extract` puts the same points. The others (the z6 tiles of Mexico, Central and
     South America, the Caribbean, Greenland, French Guiana, the Northwestern Hawaiian Islands and
     the parts of Canada and Alaska without fine data, which go to 15 m; Guam and the western
     Aleutians, which go to 8 m; and any unit with a way starting in a cell the rule split, at 122.5° E or
@@ -1244,17 +1244,17 @@ blended in north of 60°N (Copernicus GLO-30: the index from the bucket's tile l
 the water's flattening, the blend by latitude and the mask's reading (3 and up: filled from another
 source) are the terrain's code. The declarations themselves are kept in
 `producers/elevation/terrain/` (`terrarium.toml`, `glo30.toml`).
-- **Keys:** a terrain piece names the terrain's declarations by their ids and `keyed` digests
+- **Keys:** a terrain z6 tile names the terrain's declarations by their ids and `keyed` digests
   (`terrain_sources::pin`, in `agent::build::terrain_piece_key`); with none accepted (or one that
   can't be read) its key is unknown and the terrain waits. The roads' keys and plan don't change
   when a terrain declaration does.
-- **Re-keyed** (`agent::rekey::derive_sources`): a piece recorded under the key that named its
+- **Re-keyed** (`agent::rekey::derive_sources`): a z6 tile recorded under the key that named its
   sources as code had them (`rekey::SOURCES_BEFORE`) is read under its key now when the declarations
   name the same: the base's template, the northern tiles' and masks' origin and the set of 1° cells
   match what the code read (`rekey::named_before`, by digests; the cells' is `rekey::cells_digest`
   of the tile list it read, `NORTH_CELLS_BEFORE`). The packs are then the same bytes
   (`terrain_pack::tests::the_declared_sources_make_the_same_terrain_and_slope_packs`), and slope,
-  keyed on the terrain packs' contents, is unchanged with them. Other sources: every piece made again.
+  keyed on the terrain packs' contents, is unchanged with them. Other sources: every z6 tile made again.
 - **The rollout:** first both Macs run the app that reads the declarations; then the northern
   dataset's files are copied (not moved) from `sources/copernicus-dem/` to `sources/fetched/glo30/`
   (the same names), so an older app mid-build still reads the old folder, which is deleted later;
@@ -1299,22 +1299,22 @@ accepted version); a unit's programs from `sources.json` in its folder (`unit::U
 land cover, the canopy files' URLs); a tree cover run from `sources.json` beside its coverage
 (`trees::RunSources`, passed to the trees program, `trees.py` and `leaftype.py` as `--sources`);
 Python steps by role from the file `SCENIC_SOURCES` names (`dem/declared.py`, written by
-`inputs::sources::write_for_python`). The jobs that read them (the units, tree cover, items, the
+`inputs::sources::write_for_python`). The jobs that read them (the z6 tiles, tree cover, items, the
 heritage chain) wait until a version is accepted (the agent's `hold_for_sources`); the lake fill,
 and the water, terrain and catalog that read it, wait too (`lakefill::run::planned_source`); so do
-the roadside buildings' job and the units' keys (the release, `buildtiles::release_of`, held by
+the roadside buildings' job and the z6 tiles' keys (the release, `buildtiles::release_of`, held by
 `agent::tiles` for the keys) and the 3D buildings' chain (no "bld-key" in `agent::input_digests`).
 
 **Keys.** A key names a declared source only where it named the source in code before: the lake
 fill's key names its zips' pin, and the declaration only once it names other than the code had
 (`Source::key_extra` against `agent::rekey::declared_before::LAKE_FILL`, the staged declaration's
-digest); the roadside buildings' (the units', the buildings job's) and the 3D buildings' (bld-fetch,
+digest); the roadside buildings' (the z6 tiles', the buildings job's) and the 3D buildings' (bld-fetch,
 bldprep) keys name the declared release, and the declarations only once they name other than the
 code had (`bld::sources::declared`: `Source::key_part` against `declared_before::BUILDINGS`, and
 `key_extra` against `BUILDING_HEIGHTS`), so while they're as staged every key is the one it was, and
 the stores keep their names (`sources/buildings/<release>/`, `sources/overture/<release>/`,
 `sources/ghsl/<version>/`, its version `R2023A`). The land cover, canopy and leaf types entered no
-key in code; a unit's key names the land-cover and canopy declarations, a tree cover piece's the
+key in code; a z6 tile's key names the land-cover and canopy declarations, a tree cover z6 tile's the
 canopy and leaf-type ones, only once they aren't as staged (`inputs::sources::unit_extra`,
 `trees_extra`, against `declared_before::LAND_COVER`, `CANOPY`, `LEAF_EUROPE`,
 `LEAF_NORTH_AMERICA`), so a changed legend or index builds them again rather than leaving them mixed
@@ -1344,7 +1344,7 @@ Also kept: fonts (`scripts/fonts.sh`, the app's own assets). The depth's sources
 grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) among them.
 
 **The rollout:**
-1. Both Macs run the app that reads the declarations. Until a version is accepted, the units, tree
+1. Both Macs run the app that reads the declarations. Until a version is accepted, the z6 tiles, tree
    cover, items, heritage chain, lake fill (and the water, terrain and catalog that read it), the
    roadside buildings' job and the 3D buildings wait, and say so.
 2. CanVec's zips are copied with their times kept (`cp -p`) from `sources/canvec/50k/` to

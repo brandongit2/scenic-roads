@@ -58,7 +58,7 @@ but holds the sources' reads as sub-phases, so depth's NAS share is really highe
   water 1.5 %. These are round trips, not bytes: the overviews read are a few MB a grid.
 - **unit** (a full build's: 46 h over 319 runs): elevations 58 % (3DEP sampled 19 %, the edges
   blended 28 %: the internet, 0.5–3 MB/s a connection from S3, task #216), layers staged from the
-  packs 8 %, the next area's packs copied ahead 5 % (beside), base pack written 5 %, DEM cache
+  packs 8 %, the next z6 tile's packs copied ahead 5 % (beside), base pack written 5 %, DEM cache
   slice 5 %. In the small rebuilds of the last 20 runs, "missing grids written" is 38 %
   (1 min 36 s a run at CPU/wall 0.1; cause not found: §5).
 - **bldtiles** (12 min): tiles made 84 % (CPU/wall 5.9), uploaded 13 % (1.2 GB a run at 13 MB/s).
@@ -68,7 +68,7 @@ but holds the sources' reads as sub-phases, so depth's NAS share is really highe
   43 MB/s).
 - **slope** (2 min, the last 20: 24 s): its terrain pack copied here 30 % (52 MB/s), uploaded
   42 % (13 MB/s), tiles worked out 17 %.
-- **pack** (32 s): the areas' base packs copied here 46 % (26 MB/s); the uploads beside landed
+- **pack** (32 s): the z6 tiles' base packs copied here 46 % (26 MB/s); the uploads beside landed
   (untimed before #445) 25 %.
 - **names-todo** (10 min, all NAS reads: the roads' names 58 %, the labels' 24 %); runs only when
   its inputs change since #445.
@@ -98,7 +98,7 @@ tiles made is the same before and after (§6). No version bump.
    brings 70 min to about 28. A local copy doesn't fit the M4's disk (43 GB free). `-s
    complete_ways` reads twice but changes what is clipped: not byte-identical.
 4. **The uploads at 13 MB/s** (bldtiles 13 %, slope 42 %, lo 20 %, pack 13 %): Wi-Fi; ethernet.
-5. **The unit's elevations**: the internet (S3), tasks #216 and #445; not the NAS.
+5. **The z6 tile's elevations**: the internet (S3), tasks #216 and #445; not the NAS.
 6. **slope's untimed 67 %** over the window: the landing of put-off uploads, timed since #445
    ("the uploads beside landed"); the last 20 runs are 0.4 % untimed.
 
@@ -138,11 +138,11 @@ depth-lo run of 41 min to roughly 20–30; the next runs' `scenic timings` will 
 ## 7. What ethernet changes
 
 - **Bandwidth-bound (ethernet helps, up to 4×)**: heritage's clip (84 % of 83 min), every upload
-  (bldtiles, slope, lo, pack, terrain: 13 MB/s now), the packs and pieces copied to a job (pack 46 %,
+  (bldtiles, slope, lo, pack, terrain: 13 MB/s now), the packs and extracts copied to a job (pack 46 %,
   slope 30 %, lo 23 %), names-todo, gc, peaks' z12 tiles (82 %).
 - **Round-trip-bound (ethernet helps little: the NAS's HDD seeks and queueing, 50–120 ms a read
-  under load, 5–10 ms idle)**: depth's and depth-lo's opens, windows and water reads, the unit's
+  under load, 5–10 ms idle)**: depth's and depth-lo's opens, windows and water reads, the z6 tile's
   staging and small writes. These are what this task cut.
 - **Compute-bound (nothing changes)**: bldtiles' tiles (84 %), terrain's (82 %), depth's gaps
   filled and scaling, lo's drawing, peaks' measures.
-- **Internet-bound**: the unit's elevations (58 % of a full build's unit time).
+- **Internet-bound**: the z6 tile's elevations (58 % of a full build's z6 tile time).

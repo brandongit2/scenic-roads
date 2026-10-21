@@ -96,7 +96,7 @@ impl Fine {
         Ok(Fine::of_accepted(&super::declared::accepted(&a)?))
     }
 
-    /// The whole of it as one digest: what the steps that read a spacing file over areas they
+    /// The whole of it as one digest: what the steps that read a spacing file over tiles they
     /// don't divide by cells (the links, rail and candidates) name in their keys.
     pub fn digest(&self) -> String {
         let cells: Vec<String> = self.cells.iter().map(|c| format!("{},{}", c[0], c[1])).collect();

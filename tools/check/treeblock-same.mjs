@@ -1,5 +1,5 @@
-// A row of a tree cover piece's z8 blocks as a page's task (docs/steps.md §2, Trees, docs/workers.md
-// §3): its task folder cut from the NAS's coverage (`scenic-build treeblock-task`, as a piece's run
+// A row of a tree cover z6 tile's z8 blocks as a page's task (docs/steps.md §2, Trees, docs/workers.md
+// §3): its task folder cut from the NAS's coverage (`scenic-build treeblock-task`, as a z6 tile's run
 // cuts it), then the `trees` program's `--blocks` run natively (on each thread count given), each
 // block alone natively (`--block`), as WebAssembly under Node's WASI (tools/check/wasi-run.mjs),
 // and as WebAssembly under the page's own runtime (web/work/runtime.js: its in-memory files, its
@@ -8,7 +8,7 @@
 // them. Each run's time and memory said, and the bytes the page's run read. Exits 1 on any
 // difference.
 //
-//   node tools/check/treeblock-same.mjs --root <NAS project> --piece 6/x/y --row y --work <dir>
+//   node tools/check/treeblock-same.mjs --root <NAS project> --tile 6/x/y --row y --work <dir>
 //        [--bin target/release] [--wasm target/wasm32-wasip1/release] [--threads 1,0]
 //        [--pass d] [--regions dir]
 //
@@ -23,9 +23,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../..");
 const args = process.argv.slice(2);
 const arg = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d);
-const root = arg("--root") && resolve(arg("--root")), piece = arg("--piece"), rowY = arg("--row"), work = arg("--work") && resolve(arg("--work"));
-if (!root || !piece || !rowY || !work) {
-  console.error("usage: treeblock-same.mjs --root <dir> --piece 6/x/y --row y --work <dir> [--bin dir] [--wasm dir] [--threads 1,0] [--pass d] [--regions dir]");
+const root = arg("--root") && resolve(arg("--root")), tile = arg("--tile"), rowY = arg("--row"), work = arg("--work") && resolve(arg("--work"));
+if (!root || !tile || !rowY || !work) {
+  console.error("usage: treeblock-same.mjs --root <dir> --tile 6/x/y --row y --work <dir> [--bin dir] [--wasm dir] [--threads 1,0] [--pass d] [--regions dir]");
   process.exit(2);
 }
 const bin = resolve(arg("--bin", join(repo, "target/release")));
@@ -65,10 +65,10 @@ function tiles(p) {
 rmSync(work, { recursive: true, force: true });
 mkdirSync(work, { recursive: true });
 const extra = ["--pass", "--regions"].flatMap((k) => (arg(k) ? [k, arg(k)] : []));
-const cutOut = execFileSync(join(bin, "scenic-build"), ["treeblock-task", piece, "--row", rowY, "--root", root, "--scratch", join(work, "scratch"), "--out", work, ...extra], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+const cutOut = execFileSync(join(bin, "scenic-build"), ["treeblock-task", tile, "--row", rowY, "--root", root, "--scratch", join(work, "scratch"), "--out", work, ...extra], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
 const cut = JSON.parse(cutOut.trim().split("\n").pop());
 const blocks = cut.blocks.split(",");
-console.log(`row ${cut.blocks} of ${cut.piece}: squares ${cut.squares || "none"}, its coverage ${(cut.coverage_bytes / 1024).toFixed(0)} kB`);
+console.log(`row ${cut.blocks} of ${cut.tile}: squares ${cut.squares || "none"}, its coverage ${(cut.coverage_bytes / 1024).toFixed(0)} kB`);
 const cov = join(work, "task/u/coverage.json");
 const chm = join(root, "sources/canopy"), leaf = join(root, "sources/trees/leaf");
 const common = (out) => ["--blocks", cut.blocks, "--coverage", cov, "--chm", chm, "--leaf", leaf, "--squares", cut.squares, "--out", out];

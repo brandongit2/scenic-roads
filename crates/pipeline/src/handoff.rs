@@ -33,7 +33,7 @@ pub struct Handoff {
     #[serde(default)]
     pub done: Option<(String, Vec<(String, String)>)>,
     /// AWS's raw terrain tiles the job fetched, packed into archives it put on the NAS (terrain,
-    /// peaks: crate::rawpack, a member's own way): (area, archive) for the lead to name in the
+    /// peaks: crate::rawpack, a member's own way): (shard, archive) for the lead to name in the
     /// raw store's index, which it alone writes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub raw: Vec<(String, crate::rawpack::Pack)>,

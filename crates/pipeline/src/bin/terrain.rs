@@ -349,8 +349,8 @@ fn scan() -> Result<()> {
             }
             let tq = std::time::Instant::now();
             let mut n = 0usize;
-            // (A reader of the raw tiles per z6 tile, and one for q's levels: each area's archives
-            // are copied here when read, and deleted once it's done, so the cache holds one area.)
+            // (A reader of the raw tiles per z6 tile, and one for q's levels: each shard's archives
+            // are copied here when read, and deleted once it's done, so the cache holds one shard.)
             let fresh = || pipeline::terrain_pack::RawTiles::with_store(&cache, &store, &base);
             let done_with = |raw: pipeline::terrain_pack::RawTiles| {
                 drop(raw);

@@ -53,14 +53,14 @@
 //!   bldtiles <T …> [--pass d] [--regions dir]  the 3D buildings' tiles of z6 tiles T
 //!                                (pipeline::bld::job): the buildings touching the coverage, their
 //!                                heights filled, z14, as the hi pack layers/buildings/hi/6-x-y;
-//!                                under the agent, some z8 areas offered to workers as tasks
+//!                                under the agent, some z8 tiles offered to workers as tasks
 //!                                with the field (levels 14–9) as layers/buildings-field/hi/6-x-y and
 //!                                its level-8 planes as work/bldfield-mid/6-x-y
 //!   bldfield-lo <Q …>            z3 tiles Q's zoomed-out buildings field (levels 8–4, the lo pack
 //!                                layers/buildings-field/lo/3-x-y) from their z6 tiles' mids
-//!   bldtile-task <8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]  a z8 area's task folder
+//!   bldtile-task <8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]  a z8 tile's task folder
 //!                                as a bldtiles job cuts it (pipeline::bld::task; a z6 tile: its
-//!                                densest area), for the `bldtile` program and the checks
+//!                                densest z8 tile), for the `bldtile` program and the checks
 //!   trees <T …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]  the tree cover layers
 //!                                (pipeline::treepacks), clipped to the coverage: of z6 tiles T (a
 //!                                piece: its hi packs and its mid; --expect-same, those made again
@@ -146,7 +146,7 @@ use anyhow::{bail, Context, Result};
 use pipeline::basepack::BasePack;
 use pipeline::hipack::{self, b, meets, tile_bounds};
 use pipeline::layers::{self, LayerOut};
-use pipeline::legacy::{self, Legacy, Unit};
+use pipeline::legacy::{self, Legacy, TileId};
 use pipeline::out::Out;
 use pipeline::timings::{phase, Class};
 use std::collections::{BTreeMap, BTreeSet};
@@ -249,7 +249,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
     // tail-spec U --root R: unit U's tail as a task gives it a worker (its steps, where its places lie, the
     // data servers it may read), for tools/check/tail.mjs; nothing written.
     if step == "tail-spec" {
-        let u = positional(&args).first().and_then(|s| Unit::parse(s)).context("tail-spec U")?;
+        let u = positional(&args).first().and_then(|s| TileId::parse(s)).context("tail-spec U")?;
         // (The data servers as the accepted declarations under --root name them: crate::coord::hosts.)
         let root = PathBuf::from(opt(&args, "--root").context("tail-spec U --root <nas project folder>")?);
         let spec = serde_json::json!({ "runs": pipeline::unit::tail(u, true, true), "places": pipeline::offload::places(), "web_hosts": pipeline::coord::hosts::now(&root)? });
@@ -464,7 +464,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 .context("no complete OSM pass")?;
             // --near-coverage: the pieces meeting the regions, 10 km round (as their candidates read them).
             let cov = if args.iter().any(|a| a == "--near-coverage") { Some(coverage_of(&out, &args)?) } else { None };
-            let near = |u: Unit| {
+            let near = |u: TileId| {
                 cov.as_ref().is_none_or(|c| {
                     let b = pipeline::stage::tile_box_grown(u.z, u.x, u.y, 10.0);
                     let e7 = |v: f64| (v * 1e7).round() as i32;
@@ -535,7 +535,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             // AWS's raw tiles packed into the NAS's archives (pipeline::rawpack): a tar stream of
             // them on stdin (the NAS's own: tools/nas/raw-pack.sh), the files listed for it `n`,
             // else the cache's tiles waiting to go. --order: tile paths on stdin, those the archives
-            // lack put in their areas' order on stdout (for the stream; a run again streams only
+            // lack put in their shards' order on stdout (for the stream; a run again streams only
             // what's left). --check: every archive the index names read
             // and matched against its name, and one tile in n of each against the NAS's loose copy.
             let store = out.root().join("sources/aws-terrarium");
@@ -762,19 +762,19 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "bldfield-lo" => {
             // bldfield-lo <Q …>: each z3 tile's zoomed-out field of the 3D buildings (levels 8–4,
             // its lo pack) from its z6 tiles' mids (pipeline::bld::job::build_lo).
-            let qs: Vec<Unit> = positional(&args)
+            let qs: Vec<TileId> = positional(&args)
                 .iter()
-                .map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}")))
+                .map(|t| TileId::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}")))
                 .collect::<Result<_>>()?;
             for (k, &q) in qs.iter().enumerate() {
                 pipeline::control::safe_point("bldfield-lo");
-                pipeline::agent::jobs::report(k as u64, qs.len() as u64, "areas");
+                pipeline::agent::jobs::report(k as u64, qs.len() as u64, "z3 tiles");
                 let t = cost_start("bldfield-lo", &q.slash());
                 pipeline::bld::job::build_lo(&mut out, q)?;
                 pipeline::control::done("bldfield-lo", &q.slash());
                 note_cost("bldfield-lo", &q.slash(), t);
             }
-            pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "areas");
+            pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "z3 tiles");
         }
         "bldtile-task" => bldtile_task_step(&mut out, &args)?,
         "depth-lo" | "depth" => depth_step(&mut out, &args, step.as_str())?,
@@ -788,10 +788,12 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let dem = std::fs::canonicalize(opt(&args, "--dem").unwrap_or_else(|| "dem".into()))?;
             let chm = PathBuf::from(opt(&args, "--chm").unwrap_or_else(|| "data/cache/chm10".into()));
             let workers: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(8);
-            let ts: Vec<Unit> = positional(&args)
+            let ts: Vec<TileId> = positional(&args)
                 .iter()
                 .map(|t| {
-                    Unit::parse(t).filter(|u| u.z == 3 || u.z == 6).with_context(|| format!("not a z3 or z6 tile: {t}"))
+                    TileId::parse(t)
+                        .filter(|u| u.z == 3 || u.z == 6)
+                        .with_context(|| format!("not a z3 or z6 tile: {t}"))
                 })
                 .collect::<Result<_>>()?;
             let same: BTreeSet<String> = opt(&args, "--expect-same")
@@ -809,7 +811,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let of = |k: usize| if n > 1 { format!(" ({} of {n})", k + 1) } else { String::new() };
             let mut names: Vec<String> = Vec::new();
             for (k, u) in ts.iter().enumerate() {
-                let what = if u.z == 3 { "the area's".to_string() } else { format!("{}'s", u.slash()) };
+                let what = if u.z == 3 { "the z3 tile's".to_string() } else { format!("{}'s", u.slash()) };
                 names.push(format!("Mapping {what} tree cover{}", of(k)));
                 names.push(format!("Writing {what} tree cover to the NAS{}", of(k)));
             }
@@ -843,26 +845,26 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             // assembled from its pieces' mids (pipeline::treepacks::build_lo).
             let cov = coverage_of(&out, &args)?;
             let workers: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(8);
-            let qs: Vec<Unit> = positional(&args)
+            let qs: Vec<TileId> = positional(&args)
                 .iter()
-                .map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}")))
+                .map(|t| TileId::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}")))
                 .collect::<Result<_>>()?;
             for (k, &q) in qs.iter().enumerate() {
                 pipeline::control::safe_point("trees-lo");
-                pipeline::agent::jobs::report(k as u64, qs.len() as u64, "areas");
+                pipeline::agent::jobs::report(k as u64, qs.len() as u64, "z3 tiles");
                 let t = cost_start("trees-lo", &q.slash());
                 pipeline::treepacks::build_lo(&mut out, &cov, q, &scratch, workers)?;
                 pipeline::control::done("trees-lo", &q.slash());
                 note_cost("trees-lo", &q.slash(), t);
             }
-            pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "areas");
+            pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "z3 tiles");
         }
         "trees-coverage" => {
             // trees-coverage <z3 tile> --out <file> [--pass d]: the coverage the trees program reads
             // there (its cov.json), to run it by hand. It only reads: nothing is saved.
             let cov = coverage_of(&out, &args)?;
             let t = positional(&args).first().cloned().context("a z3 tile")?;
-            let q = Unit::parse(&t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))?;
+            let q = TileId::parse(&t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))?;
             let f = PathBuf::from(opt(&args, "--out").context("--out <file>")?);
             std::fs::write(&f, serde_json::to_vec(&pipeline::treepacks::coverage_json(&cov, q))?)?;
             return Ok(());
@@ -874,7 +876,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let cov = coverage_of(&out, &args)?;
             let t = positional(&args)
                 .first()
-                .and_then(|t| Unit::parse(t))
+                .and_then(|t| TileId::parse(t))
                 .filter(|u| u.z == 6)
                 .context("treeblock-task <6/x/y> --row y")?;
             let y: u32 = opt(&args, "--row").context("--row y")?.parse()?;
@@ -901,7 +903,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let cov = coverage_of(&out, &args)?;
             let t = positional(&args)
                 .first()
-                .and_then(|t| Unit::parse(t))
+                .and_then(|t| TileId::parse(t))
                 .filter(|u| u.z == 6)
                 .context("terrainsub-task <6/x/y> --out dir")?;
             let dir = PathBuf::from(opt(&args, "--out").context("--out dir")?);
@@ -948,7 +950,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let cov = coverage_of(&out, &args)?;
             let t = positional(&args)
                 .first()
-                .and_then(|t| Unit::parse(t))
+                .and_then(|t| TileId::parse(t))
                 .filter(|u| u.z == 6)
                 .context("terrain-same <6/x/y>")?;
             let raw_dir = PathBuf::from(
@@ -1055,7 +1057,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
 
 /// A unit's road values file: the values per way, and the ways by road (sorted (road, way index)
 /// pairs, for the server's whole-road lookups).
-fn put_roads(out: &mut Out, u: Unit, recs: &[pipeline::legacy::RoadRec]) -> Result<String> {
+fn put_roads(out: &mut Out, u: TileId, recs: &[pipeline::legacy::RoadRec]) -> Result<String> {
     let mut byroad: Vec<[u64; 2]> = recs.iter().enumerate().map(|(i, r)| [r.road, i as u64]).collect();
     byroad.sort_unstable();
     put_sect(
@@ -1068,7 +1070,7 @@ fn put_roads(out: &mut Out, u: Unit, recs: &[pipeline::legacy::RoadRec]) -> Resu
 
 /// A unit's road ids (`pipeline::out::ROAD_IDS`): its road values' roads, sorted, each once, as
 /// section "ids" (u64); what the road → units index reads of it (`roadunits`).
-fn put_road_ids(out: &mut Out, u: Unit, recs: &[pipeline::legacy::RoadRec]) -> Result<String> {
+fn put_road_ids(out: &mut Out, u: TileId, recs: &[pipeline::legacy::RoadRec]) -> Result<String> {
     let ids = road_ids(recs);
     put_sect(
         out,
@@ -1120,7 +1122,7 @@ fn sect_local(out: &Out, logical: &str, meta: serde_json::Value, sections: &[(&s
 /// (crate::extents: the lead's, those it lacks read from their headers): None (every unit)
 /// when no tiles are named, the reaches or extents can't be read, or a unit isn't in the reaches
 /// (said).
-fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[Unit]) -> Option<BTreeSet<Unit>> {
+fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[TileId]) -> Option<BTreeSet<TileId>> {
     if only.is_empty() {
         return None;
     }
@@ -1140,7 +1142,7 @@ fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[Unit]) -> Option<
     if let Some(u) = out
         .manifest
         .keys()
-        .filter_map(|k| k.strip_prefix("base/").and_then(Unit::parse))
+        .filter_map(|k| k.strip_prefix("base/").and_then(TileId::parse))
         .find(|&u| reach.get(u).is_none())
     {
         eprintln!("unit {} isn't in the reaches of the pass of {date}: every unit's base pack opened", u.slash());
@@ -1176,9 +1178,9 @@ fn owners_here(out: &Out, pass: Option<String>, z: u8, only: &[Unit]) -> Option<
 
 /// The manifest's units whose base pack's extent (kept with `reach`) isn't all inside where
 /// `reach` puts their ways (`build::unit_ways`): units built by other reaches.
-fn outside_their_ways(m: &BTreeMap<String, String>, reach: &pipeline::reach::Reaches) -> Vec<Unit> {
+fn outside_their_ways(m: &BTreeMap<String, String>, reach: &pipeline::reach::Reaches) -> Vec<TileId> {
     m.iter()
-        .filter_map(|(l, c)| Some((l.strip_prefix("base/").and_then(Unit::parse)?, reach.extents.get(c)?)))
+        .filter_map(|(l, c)| Some((l.strip_prefix("base/").and_then(TileId::parse)?, reach.extents.get(c)?)))
         .filter(|(u, e)| {
             let w = pipeline::agent::build::unit_ways(Some(reach), *u);
             !(e[0] >= w[0] && e[1] >= w[1] && e[2] <= w[2] && e[3] <= w[3])
@@ -1196,11 +1198,11 @@ fn open_for_tiles(
     mirror: Option<&Path>,
     pass: Option<String>,
     z: u8,
-    only: &[Unit],
+    only: &[TileId],
 ) -> Result<(Vec<BasePack>, Reads)> {
-    let areas: Vec<hipack::Bounds> = only.iter().map(|t| tile_bounds(t.z, t.x, t.y)).collect();
-    let areas = (!only.is_empty()).then_some(&areas[..]);
-    open_units(out, cache, mirror, owners_here(out, pass, z, only).as_ref(), areas)
+    let boxes: Vec<hipack::Bounds> = only.iter().map(|t| tile_bounds(t.z, t.x, t.y)).collect();
+    let boxes = (!only.is_empty()).then_some(&boxes[..]);
+    open_units(out, cache, mirror, owners_here(out, pass, z, only).as_ref(), boxes)
 }
 
 /// The files a job read its base packs into (`open_units`), deleted when it's dropped (the job
@@ -1231,9 +1233,9 @@ impl Drop for Reads {
 }
 
 /// The base packs (with their road values) of the manifest's units, of only those in `owning`
-/// when given, each only where its ways reach `areas` (all of it: None): from this Mac's mirror
+/// when given, each only where its ways reach `boxes` (all of it: None): from this Mac's mirror
 /// when it has them (whole, mapped), else read in part from the NAS (crate::basepart: the byte
-/// ranges of the chunks of ways meeting the areas, copied into sparse files at the top of the
+/// ranges of the chunks of ways meeting the z6 tiles, copied into sparse files at the top of the
 /// job's scratch, where the agent counts the disk it takes, and mapped; deleted as the `Reads`
 /// returned is dropped). Their way indexes are kept in `cache` by content name
 /// (`basepart::index_path`), a few kB each; whatever else is there (whole packs as jobs copied
@@ -1242,10 +1244,10 @@ fn open_units(
     out: &Out,
     cache: &Path,
     mirror: Option<&Path>,
-    owning: Option<&BTreeSet<Unit>>,
-    areas: Option<&[hipack::Bounds]>,
+    owning: Option<&BTreeSet<TileId>>,
+    boxes: Option<&[hipack::Bounds]>,
 ) -> Result<(Vec<BasePack>, Reads)> {
-    let _p = phase("the areas' base packs here", Class::NasRead);
+    let _p = phase("the z6 tiles' base packs here", Class::NasRead);
     std::fs::create_dir_all(cache)?;
     let mut all: Vec<(String, String, String)> = Vec::new();
     for (k, v) in &out.manifest {
@@ -1258,8 +1260,10 @@ fn open_units(
     // anyway: prune_cache.)
     let kept: Vec<String> = all.iter().map(|(_, b, _)| format!("{b}.idx")).collect();
     prune_cache(cache, &kept.iter().map(String::as_str).collect())?;
-    let units: Vec<&(String, String, String)> =
-        all.iter().filter(|(u, _, _)| owning.is_none_or(|o| Unit::parse(u).is_some_and(|u| o.contains(&u)))).collect();
+    let units: Vec<&(String, String, String)> = all
+        .iter()
+        .filter(|(u, _, _)| owning.is_none_or(|o| TileId::parse(u).is_some_and(|u| o.contains(&u))))
+        .collect();
     let mut reads = Reads { files: Vec::new(), bytes: 0, secs: 0 };
     let read0 = std::time::Instant::now();
     let mut packs = Vec::with_capacity(units.len());
@@ -1268,7 +1272,7 @@ fn open_units(
     for (k, (u, base, roads)) in units.iter().enumerate() {
         if k == 0 || said.elapsed() >= std::time::Duration::from_secs(1) {
             said = std::time::Instant::now();
-            pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas' base packs here");
+            pipeline::agent::jobs::report(k as u64, units.len() as u64, "z6 tiles' base packs here");
         }
         // (The mirror renames a file into place only once it's copied and checked, and deletes
         // one only under an exclusive lock: held here under a shared one, it stays.)
@@ -1293,7 +1297,7 @@ fn open_units(
             &out.path(roads),
             &pipeline::basepart::index_path(cache, base),
             [&to[0], &to[1]],
-            areas,
+            boxes,
         )
         .with_context(|| format!("unit {u}: its base pack read from the NAS"))?;
         pipeline::timings::count(n.bytes, 2);
@@ -1302,7 +1306,7 @@ fn open_units(
         packs.push(bp);
     }
     reads.secs = read0.elapsed().as_secs().max(1);
-    pipeline::agent::jobs::report(units.len() as u64, units.len() as u64, "areas' base packs here");
+    pipeline::agent::jobs::report(units.len() as u64, units.len() as u64, "z6 tiles' base packs here");
     let whole: u64 = packs.iter().map(|bp| bp.bytes()).sum();
     eprintln!(
         "base packs: {} units, {} MB read from the NAS in {} reads (their files: {} MB)",
@@ -1342,15 +1346,15 @@ fn prune_cache(cache: &Path, keep: &BTreeSet<&str>) -> Result<()> {
 }
 
 /// The z-level tiles any way of `packs` touches.
-fn tiles_touched(packs: &[BasePack], z: u8) -> Result<BTreeSet<Unit>> {
+fn tiles_touched(packs: &[BasePack], z: u8) -> Result<BTreeSet<TileId>> {
     let mut set = BTreeSet::new();
     for bp in packs {
         for bb in bp.bboxes()? {
-            let a = Unit::of_point(z, [bb[0], bb[3]]);
-            let c = Unit::of_point(z, [bb[2], bb[1]]);
+            let a = TileId::of_point(z, [bb[0], bb[3]]);
+            let c = TileId::of_point(z, [bb[2], bb[1]]);
             for x in a.x..=c.x {
                 for y in a.y..=c.y {
-                    set.insert(Unit { z, x, y });
+                    set.insert(TileId { z, x, y });
                 }
             }
         }
@@ -1358,21 +1362,23 @@ fn tiles_touched(packs: &[BasePack], z: u8) -> Result<BTreeSet<Unit>> {
     Ok(set)
 }
 
-fn parse_tiles(list: &[String], z: u8) -> Result<Vec<Unit>> {
-    list.iter().map(|s| Unit::parse(s).filter(|u| u.z == z).with_context(|| format!("not a z{z} tile: {s}"))).collect()
+fn parse_tiles(list: &[String], z: u8) -> Result<Vec<TileId>> {
+    list.iter()
+        .map(|s| TileId::parse(s).filter(|u| u.z == z).with_context(|| format!("not a z{z} tile: {s}")))
+        .collect()
 }
 
 // ---- pack(T) --------------------------------------------------------------------------------
 
 fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, only: &[String]) -> Result<()> {
-    let parts = Parts(&["Getting the areas' base packs here", "Drawing the map tiles"]);
+    let parts = Parts(&["Getting the z6 tiles' base packs here", "Drawing the map tiles"]);
     parts.start(0);
     let only = parse_tiles(only, 6)?;
     // (Only the tiles' owners: no other unit's ways come into them.)
     let (packs, reads) = open_for_tiles(out, cache, mirror, pass, 6, &only)?;
     let refs: Vec<&BasePack> = packs.iter().collect();
     let p = phase("the tiles they touch found", Class::Compute);
-    let ts: Vec<Unit> = if only.is_empty() { tiles_touched(&packs, 6)?.into_iter().collect() } else { only };
+    let ts: Vec<TileId> = if only.is_empty() { tiles_touched(&packs, 6)?.into_iter().collect() } else { only };
     drop(p);
     eprintln!("pack: {} tiles from {} units", ts.len(), packs.len());
     parts.start(1);
@@ -1491,13 +1497,13 @@ fn drop_entries(out: &mut Out, logicals: &[String]) -> Result<()> {
 // ---- lo packs -------------------------------------------------------------------------------
 
 fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, only: &[String]) -> Result<()> {
-    let parts = Parts(&["Getting the areas' base packs here", "Drawing the zoomed-out tiles"]);
+    let parts = Parts(&["Getting the z6 tiles' base packs here", "Drawing the zoomed-out tiles"]);
     parts.start(0);
     let only = parse_tiles(only, 3)?;
     let (packs, reads) = open_for_tiles(out, cache, mirror, pass, 3, &only)?;
     let refs: Vec<&BasePack> = packs.iter().collect();
     let p = phase("the tiles they touch found", Class::Compute);
-    let qs: Vec<Unit> = if only.is_empty() { tiles_touched(&packs, 3)?.into_iter().collect() } else { only };
+    let qs: Vec<TileId> = if only.is_empty() { tiles_touched(&packs, 3)?.into_iter().collect() } else { only };
     drop(p);
     eprintln!("lo: {} tiles from {} units", qs.len(), packs.len());
     parts.start(1);
@@ -1794,7 +1800,7 @@ fn catalog(
                 layer_bundles.push((layer.to_string(), logical.clone()));
             }
             ["layers", layer, scope, key] => {
-                let u = Unit::parse(key).context("pack key")?;
+                let u = TileId::parse(key).context("pack key")?;
                 let enc = layer_encoding(layer);
                 let zs = match *scope {
                     "root" => (0, 2),
@@ -1809,20 +1815,20 @@ fn catalog(
                 );
             }
             ["base", u] => {
-                base.insert(Unit::parse(u).context("unit")?.slash(), logical.clone());
+                base.insert(TileId::parse(u).context("unit")?.slash(), logical.clone());
             }
             ["global", "roads", u] => {
-                roads.insert(Unit::parse(u).context("unit")?.slash(), logical.clone());
+                roads.insert(TileId::parse(u).context("unit")?.slash(), logical.clone());
             }
             ["hidata", t] => {
-                hidata.insert(Unit::parse(t).context("tile")?.slash(), logical.clone());
+                hidata.insert(TileId::parse(t).context("tile")?.slash(), logical.clone());
             }
             ["markdata", "all"] => markdata_bundle = Some(logical.clone()),
             ["markdata", t] => {
-                markdata.insert(Unit::parse(t).context("tile")?.slash(), logical.clone());
+                markdata.insert(TileId::parse(t).context("tile")?.slash(), logical.clone());
             }
             ["ovdata", t] => {
-                ovdata.insert(Unit::parse(t).context("tile")?.slash(), logical.clone());
+                ovdata.insert(TileId::parse(t).context("tile")?.slash(), logical.clone());
             }
             ["global", ..] if served_global(logical) => {
                 global.insert(logical.trim_start_matches("global/").to_string(), logical.clone());
@@ -1872,7 +1878,7 @@ fn catalog(
             .manifest
             .keys()
             .filter_map(|l| l.strip_prefix(&format!("layers/{}/lo/", pipeline::depth::LAYER)))
-            .filter_map(Unit::parse)
+            .filter_map(TileId::parse)
             .map(|u| {
                 let b = pipeline::hipack::tile_bounds(u.z, u.x, u.y);
                 [f64::from(b[0]) * 1e-7, f64::from(b[1]) * 1e-7, f64::from(b[2]) * 1e-7, f64::from(b[3]) * 1e-7]
@@ -2104,7 +2110,7 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
         .filter_map(|(u, logical)| match out.get(logical).and_then(|c| known.get(c)) {
             // (An empty unit's extent is inverted: nothing of it is anywhere.)
             Some(s) => (s.extent[0] <= s.extent[2]).then_some(s.extent),
-            None => Unit::parse(u).map(|u| tile_bounds(u.z, u.x, u.y)),
+            None => TileId::parse(u).map(|u| tile_bounds(u.z, u.x, u.y)),
         })
         .collect()
 }
@@ -2116,7 +2122,7 @@ fn cost_start(step: &str, target: &str) -> std::time::Instant {
     pipeline::sys::reset_group_peak();
     note_started(&pipeline::coord::cost_key(step, target));
     // (A tile's area, among its inputs' measures: pipeline::costin.)
-    if let Some(u) = Unit::parse(target) {
+    if let Some(u) = TileId::parse(target) {
         pipeline::costin::set("km2", pipeline::costin::tile_km2(u.z, u.x, u.y));
     }
     std::time::Instant::now()
@@ -2176,14 +2182,14 @@ fn done_line(step: &str, target: &str, t0: std::time::Instant) -> serde_json::Va
 }
 
 /// The raw tiles a job fetched, packed onto the NAS (pipeline::rawpack): an archive of their own an
-/// area, not a file a tile; kept here too, for the next jobs. Not packed now (the NAS away), they
+/// shard, not a file a tile; kept here too, for the next jobs. Not packed now (the NAS away), they
 /// wait in the cache for the next job or room-making.
 fn pack_raw(out: &Out, dir: &Path) {
     pack_raw_with(out, dir, &|_, _, _| {})
 }
 
 /// `pack_raw`, saying how far it is (`progress` lines for the status: the tiles packed, then the
-/// areas whose archives were merged).
+/// shards whose archives were merged).
 fn pack_raw_with(out: &Out, dir: &Path, progress: pipeline::rawpack::Progress) {
     let _p = phase("new raw tiles packed onto the NAS", Class::NasWrite);
     match pipeline::rawpack::pack_local_with(dir, &out.root().join("sources/aws-terrarium"), out.root(), true, progress)
@@ -2241,10 +2247,10 @@ fn epoch_of(t: &str) -> Option<i64> {
 /// `rekey-check`: what re-keying the records for the units' new keys (pipeline::agent::rekey) would
 /// do now, read from the NAS with nothing written (no scratch folder, no index kept): the units
 /// re-keyed, and those left to build again, each with why. And the times that show its one
-/// assumption: a unit re-keyed that reads an area's zoomed-out terrain (z8–z4) was built after the
-/// build first made that area's (before, it may have staged the converted legacy tiles, which its
+/// assumption: a unit re-keyed that reads a z3 tile's zoomed-out terrain (z8–z4) was built after the
+/// build first made that z3 tile's (before, it may have staged the converted legacy tiles, which its
 /// old key couldn't tell from the build's; docs/building.md §2, A new key scheme): its base pack written
-/// over an hour after that area's first lo pack after the conversion's (the first catalog's), by
+/// over an hour after that z3 tile's first lo pack after the conversion's (the first catalog's), by
 /// that file's time or, if earlier, the catalog's that first listed it.
 fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
     use pipeline::agent::{build, rekey, tiles::TerrainTiles};
@@ -2306,9 +2312,9 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
         if again.changed() || twice != after { "it changed the records again" } else { "nothing to do" },
         t2.elapsed().as_secs_f64()
     );
-    let rec = |u: Unit| keys.unit.get(&u.slash());
-    let new_of = |u: Unit| new.get(&u.slash()).and_then(Option::as_ref);
-    let current: Vec<Unit> = old.iter().filter(|(u, k)| rec(*u) == Some(k)).map(|(u, _)| *u).collect();
+    let rec = |u: TileId| keys.unit.get(&u.slash());
+    let new_of = |u: TileId| new.get(&u.slash()).and_then(Option::as_ref);
+    let current: Vec<TileId> = old.iter().filter(|(u, k)| rec(*u) == Some(k)).map(|(u, _)| *u).collect();
     let already = old.iter().filter(|(u, _)| rec(*u).is_some() && rec(*u) == new_of(*u)).count();
     let stale = old.iter().filter(|(u, k)| rec(*u).is_some_and(|x| x != k && Some(x) != new_of(*u))).count();
     let never = old.iter().filter(|(u, _)| rec(*u).is_none()).count();
@@ -2353,15 +2359,15 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
         println!("  {u}  unknown now: {why}");
     }
 
-    // The build's first zoomed-out terrain of each area it makes terrain for.
+    // The build's first zoomed-out terrain of each z3 tile it makes terrain for.
     let targets: BTreeSet<String> = build::coverage_tiles(&cov).keys().map(|q| format!("3/{}/{}", q.0, q.1)).collect();
     // The stale terrain hi packs: their z6 tile no longer near the coverage, or left by an earlier
-    // run (older than the area's lo pack: its last run made no hi tiles for the piece).
+    // run (older than the z3 tile's lo pack: its last run made no hi tiles for the piece).
     let pieces: BTreeSet<(u32, u32)> = build::coverage_tiles(&cov).into_values().flatten().collect();
     let hi: Vec<(u32, u32)> = m
         .keys()
         .filter_map(|l| l.strip_prefix("layers/terrain/hi/"))
-        .filter_map(Unit::parse)
+        .filter_map(TileId::parse)
         .map(|t| (t.x, t.y))
         .collect();
     let left: Vec<String> = hi
@@ -2372,7 +2378,7 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
         })
         .collect();
     let gone = hi.iter().filter(|t| !pieces.contains(*t)).count();
-    println!("terrain hi packs: {}, {} of them stale: {gone} of z6 tiles the coverage left, {} an earlier run left (older than their area's lo pack){}", hi.len(), gone + left.len(), left.len(), words(&left));
+    println!("terrain hi packs: {}, {} of them stale: {gone} of z6 tiles the coverage left, {} an earlier run left (older than their z3 tile's lo pack){}", hi.len(), gone + left.len(), left.len(), words(&left));
     // (The served catalogs and those held for review, as they were made.)
     let mut cats: Vec<(i64, String, store::catalog::Catalog)> = Vec::new();
     for dir in ["catalog", "catalog-held"] {
@@ -2410,7 +2416,7 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
             }
         }
     }
-    println!("the build's first zoomed-out terrain of each area it makes terrain for (after catalog {}'s, the conversion's), written:", first.n);
+    println!("the build's first zoomed-out terrain of each z3 tile it makes terrain for (after catalog {}'s, the conversion's), written:", first.n);
     for q in &targets {
         match first_new.get(q) {
             Some((t, name)) => println!("  {q}  {} (first listed by {name})", utc(*t)),
@@ -2422,23 +2428,23 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
     for &u in &current {
         let (Some(base), Some(ru)) = (m.get(&format!("base/{}", u.dash())), reach.get(u)) else { continue };
         let Ok(read) = build::unit_terrain_tiles(u, ru, &m, &tiles) else { continue };
-        let areas: BTreeSet<String> = read
+        let z3s: BTreeSet<String> = read
             .iter()
             .filter(|t| (4..=8).contains(&t.0))
             .map(|&(z, x, y, _)| format!("3/{}/{}", x >> (z - 3), y >> (z - 3)))
             .filter(|q| targets.contains(q))
             .collect();
-        if areas.is_empty() {
+        if z3s.is_empty() {
             continue;
         }
         reading += 1;
         let is_moved = r.moved.contains(&u.slash());
         moved += is_moved as usize;
         let at = mtime(base);
-        if at.is_some_and(|b| areas.iter().all(|q| first_new.get(q).is_some_and(|(t, _)| b - 3600 > *t))) {
+        if at.is_some_and(|b| z3s.iter().all(|q| first_new.get(q).is_some_and(|(t, _)| b - 3600 > *t))) {
             shown += 1;
         } else {
-            let each: Vec<String> = areas
+            let each: Vec<String> = z3s
                 .iter()
                 .map(|q| format!("{q} {}", first_new.get(q).map_or("none".to_string(), |(t, _)| utc(*t))))
                 .collect();
@@ -2451,8 +2457,8 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
             ));
         }
     }
-    println!("units current under the old keys, with outputs, that read zoomed-out terrain (z8–z4) of those areas: {reading} ({moved} of them re-keyed)");
-    println!("  built over an hour after the build first made each such area's: {shown}");
+    println!("units current under the old keys, with outputs, that read zoomed-out terrain (z8–z4) of those z3 tiles: {reading} ({moved} of them re-keyed)");
+    println!("  built over an hour after the build first made each such z3 tile's: {shown}");
     println!("  not shown so: {}", not.len());
     for l in &not {
         println!("{l}");
@@ -2472,8 +2478,8 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
 /// halved) and the packs made again (their size now).
 /// `p5-check terrain`: what switching terrain and slope from a z3 tile's whole run to pieces and
 /// assemblies (pipeline::agent::rekey::derive) does now: each z3 tile's records read as its pieces
-/// and assembly, or not and why; slope's pieces left to make (reading another area's terrain); the
-/// work after the switch, and its time by the areas' last runs (`--costs`: the coordinator's
+/// and assembly, or not and why; slope's pieces left to make (reading another z3 tile's terrain); the
+/// work after the switch, and its time by the z3 tiles' last runs (`--costs`: the coordinator's
 /// costs.json); and what deriving costs a plan. Reads only: the terrain packs' indexes into memory.
 fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
     use pipeline::agent::{build, rekey, tiles::TerrainTiles};
@@ -2489,7 +2495,7 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
         None => BTreeMap::new(),
     };
     let me = pipeline::agent::cond::host();
-    // (An area's last whole run of `step`, at this Mac's pace.)
+    // (A z3 tile's last whole run of `step`, at this Mac's pace.)
     let last_run = |step: &str, q: &str| {
         costs.get(&pipeline::coord::cost_key(step, q)).map(|c| {
             if c.worker.as_deref().is_none_or(|w| w == me) {
@@ -2512,7 +2518,7 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
         recipes.len(),
         t0.elapsed().as_secs_f64()
     );
-    let z3 = |map: &BTreeMap<String, String>| map.keys().filter(|t| Unit::parse(t).is_some_and(|u| u.z == 3)).count();
+    let z3 = |map: &BTreeMap<String, String>| map.keys().filter(|t| TileId::parse(t).is_some_and(|u| u.z == 3)).count();
     println!(
         "records: terrain {} z3 tiles' whole runs (the old scheme), {} pieces, {} assemblies; slope {} z3, {} pieces, {} assemblies",
         z3(&keys.terrain),
@@ -2560,14 +2566,14 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
     for (q, why) in &d.unknown {
         println!("  slope {q}: kept for the next pass: {why}");
     }
-    // Each area.
+    // Each z3 tile.
     let by_q = build::coverage_tiles(&cov);
     let (mut piece_s, mut slope_left_s, mut backfill_t, mut backfill_s, mut mids_needed) =
         (0.0f64, 0.0f64, 0.0f64, 0.0f64, Vec::new());
     for (q, ts) in &by_q {
         let qs = format!("3/{}/{}", q.0, q.1);
         let left: Vec<&(String, String)> =
-            d.slope_left.iter().filter(|(t, _)| build::area_of(t).as_deref() == Some(qs.as_str())).collect();
+            d.slope_left.iter().filter(|(t, _)| build::z3_of(t).as_deref() == Some(qs.as_str())).collect();
         let (tr, sr) = (last_run("terrain", &qs), last_run("slope", &qs));
         let n = ts.len() as f64;
         if let Some(s) = tr {
@@ -2610,11 +2616,11 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
     );
     let mean = mids_needed.iter().sum::<usize>() as f64 / mids_needed.len().max(1) as f64;
     println!(
-        "a stale terrain piece before its area's mids are made: its area's other pieces made again for their mids, {mean:.1} on average (at most {}); after the backfill, none",
+        "a stale terrain piece before its z3 tile's mids are made: its z3 tile's other pieces made again for their mids, {mean:.1} on average (at most {}); after the backfill, none",
         mids_needed.iter().max().unwrap_or(&0)
     );
     println!(
-        "its time by the areas' last runs (at this Mac's pace, a piece its area's share): slope's pieces left {:.2} h; the backfill: terrain {:.1} h, slope {:.1} h; a terrain piece {:.0} s on average; the assemblies a minute each",
+        "its time by the z3 tiles' last runs (at this Mac's pace, a piece its z3 tile's share): slope's pieces left {:.2} h; the backfill: terrain {:.1} h, slope {:.1} h; a terrain piece {:.0} s on average; the assemblies a minute each",
         slope_left_s / 3600.0,
         backfill_t / 3600.0,
         backfill_s / 3600.0,
@@ -2655,7 +2661,7 @@ fn water_key_check(root: &Path, args: &[String]) -> Result<()> {
         recipes.len(),
         t0.elapsed().as_secs_f64()
     );
-    let z3 = |map: &BTreeMap<String, String>| map.keys().filter(|t| Unit::parse(t).is_some_and(|u| u.z == 3)).count();
+    let z3 = |map: &BTreeMap<String, String>| map.keys().filter(|t| TileId::parse(t).is_some_and(|u| u.z == 3)).count();
     println!(
         "records: terrain {} z3 tiles' whole runs, {} pieces, {} assemblies",
         z3(&keys.terrain),
@@ -2762,7 +2768,7 @@ fn water_key_check(root: &Path, args: &[String]) -> Result<()> {
             println!("    {t}: {why}");
         }
         println!(
-            "  terrain left to make: {} of {} pieces, {} of {} assemblies ({} keys unknown); areas whose terrain is to be made: {}",
+            "  terrain left to make: {} of {} pieces, {} of {} assemblies ({} keys unknown); z3 tiles whose terrain is to be made: {}",
             w.terrain_pieces_left.len(),
             tt.terrain.len(),
             w.terrain_lo_left.len(),
@@ -2789,7 +2795,7 @@ fn water_key_check(root: &Path, args: &[String]) -> Result<()> {
     held(&mut m2, &mut tiles2, idx.clone());
     held(&mut m2, &mut tiles2, WaterIdx { pin: pin2.clone(), ..idx.clone() });
     let (_, same) = left(&m2, &tiles2, "a new basemap whose water is the same")?;
-    // And with some pieces' water changed (a lake fill's): those pieces, their areas' assemblies.
+    // And with some pieces' water changed (a lake fill's): those pieces, their z3 tiles' assemblies.
     let k: usize = opt(args, "--fill").map(|v| v.parse()).transpose()?.unwrap_or(10);
     let mut changed = WaterIdx { pin: pin2, ..idx.clone() };
     let touched: Vec<String> = changed
@@ -2867,7 +2873,7 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
     let z3: Vec<(String, String)> = keys
         .trees
         .iter()
-        .filter(|(t, _)| Unit::parse(t).is_some_and(|u| u.z == 3))
+        .filter(|(t, _)| TileId::parse(t).is_some_and(|u| u.z == 3))
         .map(|(t, k)| (t.clone(), k.clone()))
         .collect();
     println!("pass {date}, {} regions; tree cover's records: {} z3 tiles' whole runs (the old scheme), {} pieces, {} assemblies", recipes.len(), z3.len(), keys.trees.len() - z3.len(), keys.trees_lo.len());
@@ -2892,14 +2898,14 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
             .map(|d| d.as_secs() as i64)
     };
     let size = |c: &str| std::fs::metadata(root.join(c)).map(|md| md.len()).unwrap_or(0);
-    let packs_of = |q: Unit| -> Vec<&String> {
+    let packs_of = |q: TileId| -> Vec<&String> {
         m.iter()
             .filter(|(l, _)| {
                 pipeline::treepacks::LAYERS.iter().any(|layer| l.starts_with(&format!("layers/{layer}/")))
                     && (l.ends_with(&format!("/lo/{}", q.dash()))
                         || l.rsplit('/')
                             .next()
-                            .and_then(Unit::parse)
+                            .and_then(TileId::parse)
                             .is_some_and(|u| u.z == 6 && (u.x >> 3, u.y >> 3) == (q.x, q.y)))
             })
             .map(|(_, c)| c)
@@ -2907,7 +2913,7 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
     };
     let (mut rebuild, mut backfill_s, mut bytes, mut unknown_s) = (0.0f64, 0.0f64, 0u64, 0usize);
     for (q, k) in &z3 {
-        let Some(u) = Unit::parse(q) else { continue };
+        let Some(u) = TileId::parse(q) else { continue };
         let state = match old.get(q) {
             Some(now) if now == k && *now == rekey::v1::trees_none(q) => "current, \"none\"",
             Some(now) if now == k => "current",
@@ -2942,11 +2948,11 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
     }
     // The work the plan has after the switch.
     let w = build::tree_work(&tt, &m, &after);
-    let areas: BTreeSet<String> = w.pieces.iter().filter_map(|(t, _)| pipeline::treepacks::area_of(t)).collect();
+    let z3s: BTreeSet<String> = w.pieces.iter().filter_map(|(t, _)| pipeline::treepacks::z3_of(t)).collect();
     println!(
         "after the switch, tree cover's work: {} pieces to make, in {} z3 tiles ({} of them current, their mids for an assembly), {} assemblies runnable now of {} stale, {} mids to backfill in idle time (expected the same)",
         w.pieces.len(),
-        areas.len(),
+        z3s.len(),
         w.pieces.iter().filter(|(t, k)| after.trees.get(t) == Some(k)).count(),
         w.lo.len(),
         w.stale_lo.len(),
@@ -2965,7 +2971,7 @@ fn p5_check(root: &Path, args: &[String]) -> Result<()> {
 // ---- base(U) from the pass ------------------------------------------------------------------
 
 /// The pass's road values of a unit: (OSM way id, record), sorted by id.
-fn pass_roads(out: &Out, date: &str, u: Unit) -> Result<Vec<(u64, pipeline::legacy::RoadRec)>> {
+fn pass_roads(out: &Out, date: &str, u: TileId) -> Result<Vec<(u64, pipeline::legacy::RoadRec)>> {
     let Some(name) = out.get(&format!("sources/osm/{date}/roads/{}", u.dash())) else { return Ok(Vec::new()) };
     let b = std::fs::read(out.path(name))?;
     Ok(b.chunks_exact(32)
@@ -2991,11 +2997,11 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // (Spaced as the units' extract spaces them: pipeline::dem::spacing.)
     let spacing = scratch.join(pipeline::dem::spacing::FILE);
     pipeline::dem::spacing::Fine::of_records(out.root(), &out.manifest)?.write(&spacing)?;
-    let units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
+    let units: Vec<TileId> = positional(args).iter().filter_map(|s| TileId::parse(s)).collect();
     drop(setup);
     for (k, &u) in units.iter().enumerate() {
         pipeline::control::safe_point("pois");
-        pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas");
+        pipeline::agent::jobs::report(k as u64, units.len() as u64, "z6 tiles");
         let t = cost_start("pois", &u.slash());
         let Some(piece) = out.get(&format!("sources/osm/{date}/pieces/{}", u.dash())).map(|n| out.path(n)) else {
             eprintln!("pois {}: no piece", u.slash());
@@ -3163,11 +3169,11 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let z8 = open_z8(out, &cache)?;
     drop(p);
     std::fs::create_dir_all(scratch)?;
-    let units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
-    // Its parts: the areas' peaks, then the raw tiles AWS gave packed onto the NAS.
-    let parts = Parts(&["Measuring the areas' peaks", "Packing the new raw tiles onto the NAS"]);
+    let units: Vec<TileId> = positional(args).iter().filter_map(|s| TileId::parse(s)).collect();
+    // Its parts: the z6 tiles' peaks, then the raw tiles AWS gave packed onto the NAS.
+    let parts = Parts(&["Measuring the z6 tiles' peaks", "Packing the new raw tiles onto the NAS"]);
     parts.start(0);
-    // Each area's candidates and z12 tiles, the next area's read while this one's are measured
+    // Each z6 tile's candidates and z12 tiles, the next z6 tile's read while this one's are measured
     // (unit::read_ahead), from the packs as the manifest had them at the start (the job writes none).
     let pois: Vec<Option<PathBuf>> =
         units.iter().map(|u| out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c))).collect();
@@ -3191,9 +3197,9 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let order: Vec<usize> = (0..units.len()).collect();
     unit::read_ahead(&order, load, |k, _, (peaks, z12)| {
         let u = units[k];
-        // (A safe point before each area: the raw tiles fetched wait in the cache for the next job.)
+        // (A safe point before each z6 tile: the raw tiles fetched wait in the cache for the next job.)
         pipeline::control::safe_point("peaks");
-        pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas");
+        pipeline::agent::jobs::report(k as u64, units.len() as u64, "z6 tiles");
         let t = cost_start("peaks", &u.slash());
         let p = phase("prominence and isolation measured", Class::Compute);
         let res = unit::run(&peaks, &summits, &base8, &z12, &z8, coarse_threads)?;
@@ -3233,7 +3239,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         note_cost("peaks", &u.slash(), t);
         Ok(())
     })?;
-    pipeline::agent::jobs::report(units.len() as u64, units.len() as u64, "areas");
+    pipeline::agent::jobs::report(units.len() as u64, units.len() as u64, "z6 tiles");
     parts.start(1);
     pack_raw_with(out, &raw_dir, &|what, done, total| pipeline::agent::jobs::report(done, total, what));
     Ok(())
@@ -3270,9 +3276,10 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     let views: HashMap<String, f64> = serde_json::from_value(read_json(views_file)?)?;
     drop(p);
     let units = pipeline::agent::build::pois_units(&cov, &date, &out.manifest);
-    let parts = Parts(&["Reading every area's candidates and peaks", "Ranking the landmarks", "Writing their tiles"]);
+    let parts =
+        Parts(&["Reading every z6 tile's candidates and peaks", "Ranking the landmarks", "Writing their tiles"]);
     parts.start(0);
-    let p = phase("every area's candidates and peaks read", Class::NasRead);
+    let p = phase("every z6 tile's candidates and peaks read", Class::NasRead);
     let mut cands: Vec<(String, pipeline::marksjob::Candidate)> = Vec::new();
     let (mut with_peaks, mut missing_peaks) = (0, 0);
     for (u, _, _) in &units {
@@ -3894,7 +3901,7 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
         "Reading the heritage registers",
         "Clipping the protected areas to the coverage (osmium)",
         "Locating the registers' sites (heritage.py)",
-        "Slicing them per area",
+        "Slicing them per z6 tile",
         "Uploading",
     ]);
     parts.start(0);
@@ -3936,7 +3943,7 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     heritage_script(&root, &dem, out.root(), None, "heritage.py", &hargs)?;
     parts.start(3);
     // The units' slices, then the whole files.
-    let p = phase("the sites and areas sliced per area", Class::Compute);
+    let p = phase("the sites and areas sliced per z6 tile", Class::Compute);
     let her = std::fs::read(b.join("heritage.json"))?;
     let sites = slice_sites(&her)?;
     // (The World Heritage components apart: the 3D buildings' heritage lists leave them out.)
@@ -4010,7 +4017,7 @@ fn canopy_files(b: [f64; 4]) -> Vec<String> {
 /// rebuild's are.
 fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     use pipeline::unit::{build_folder, Tools};
-    let u = positional(args).first().and_then(|s| Unit::parse(s)).context("unit-snap U")?;
+    let u = positional(args).first().and_then(|s| TileId::parse(s)).context("unit-snap U")?;
     let dir = PathBuf::from(opt(args, "--out").context("--out <dir>")?);
     let (date, cov, _) = pass_and_coverage(out, args)?;
     let reach = pipeline::reach::Reaches::load(out.root(), &out.manifest, &date)
@@ -4023,7 +4030,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     std::fs::create_dir_all(&kept)?;
     for e in std::fs::read_dir(out.root().join("cache").join(pipeline::unit::DEM_UNITS))?.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        let Some(n) = name.split('.').next().and_then(|s| Unit::parse(&s.replace('-', "/"))) else { continue };
+        let Some(n) = name.split('.').next().and_then(|s| TileId::parse(&s.replace('-', "/"))) else { continue };
         if n.x.abs_diff(u.x) <= 1 && n.y.abs_diff(u.y) <= 1 && !kept.join(&name).exists() {
             store::sys::copy_data(e.path(), kept.join(&name))?;
         }
@@ -4101,12 +4108,12 @@ fn elevation_of(out: &Out) -> Result<Option<pipeline::inputs::Accepted>> {
     )?))
 }
 
-/// The unit job's progress (pipeline::unit::Areas): each area under way by the stages it's
+/// The unit job's progress (pipeline::unit::TileProgress): each z6 tile under way by the stages it's
 /// through, said as they finish.
-static AREAS: std::sync::Mutex<Option<pipeline::unit::Areas>> = std::sync::Mutex::new(None);
+static TILE_PROGRESS: std::sync::Mutex<Option<pipeline::unit::TileProgress>> = std::sync::Mutex::new(None);
 
-fn areas(f: impl FnOnce(&mut pipeline::unit::Areas)) {
-    if let Ok(mut a) = AREAS.lock() {
+fn tile_progress(f: impl FnOnce(&mut pipeline::unit::TileProgress)) {
+    if let Ok(mut a) = TILE_PROGRESS.lock() {
         if let Some(a) = a.as_mut() {
             f(a);
         }
@@ -4171,7 +4178,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let pieces: serde_json::Value = serde_json::from_slice(&std::fs::read(
         out.path(out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?),
     )?)?;
-    let mut units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
+    let mut units: Vec<TileId> = positional(args).iter().filter_map(|s| TileId::parse(s)).collect();
     // The pass's reaches: which units the coverage builds, and the roadside buildings' tiles each
     // reads (unless a folder of them is given), from the release's (the buildings step).
     let buildings = match tools.buildings {
@@ -4195,7 +4202,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let a = tools.elevation.as_ref().context("the declared elevation datasets' accepted version")?;
         let fine = pipeline::dem::spacing::Fine::of_accepted(&pipeline::dem::declared::accepted(a)?);
         for k in pieces["pieces"].as_object().context("pieces")?.keys() {
-            let u = Unit::parse(k).context("unit")?;
+            let u = TileId::parse(k).context("unit")?;
             if pipeline::agent::build::builds(&cov, reach, u, &fine) {
                 units.push(u);
             }
@@ -4210,10 +4217,11 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             std::fs::remove_file(e.path()).ok();
         }
     }
-    // Its progress: area by area, each by its stages (their times on this Mac learned and kept with
+    // Its progress: z6 tile by z6 tile, each by its stages (their times on this Mac learned and kept with
     // its caches).
-    *AREAS.lock().unwrap() = Some(pipeline::unit::Areas::new(units.len(), Some(tools.cache.join("unit-stages.json"))));
-    pipeline::unit::on_stage(Some(Box::new(|stage, frac, took| areas(|a| a.stage(stage, frac, took)))));
+    *TILE_PROGRESS.lock().unwrap() =
+        Some(pipeline::unit::TileProgress::new(units.len(), Some(tools.cache.join("unit-stages.json"))));
+    pipeline::unit::on_stage(Some(Box::new(|stage, frac, took| tile_progress(|a| a.stage(stage, frac, took)))));
     // This Mac's copies of the packs staging reads (pipeline::stage), kept with the agent's caches.
     let blobs = store::blobs::Blobs::new(tools.cache.join("blobs"));
     // The next unit's piece and packs, copied while this one builds (one stream: large sequential
@@ -4224,9 +4232,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let offload = pipeline::offload::Offload::from_env(scratch);
     let mut out_now: std::collections::VecDeque<(Built, pipeline::offload::Offered)> = Default::default();
     let mut paused = false;
-    // The areas set aside: a server a step reads gave no answer (pipeline::unit::source_down). The
-    // job goes on with its other areas, and fails at its end with these left for its next run.
-    let mut aside: Vec<(Unit, String)> = Vec::new();
+    // The z6 tiles set aside: a server a step reads gave no answer (pipeline::unit::source_down). The
+    // job goes on with its other z6 tiles, and fails at its end with these left for its next run.
+    let mut aside: Vec<(TileId, String)> = Vec::new();
     // The cache files held for the units (store::cachefile): each unit's let go once the unit after
     // it is under way (what this unit and the next's copying ahead hold stays), so room-making may
     // take them meanwhile, and a job of hundreds of units doesn't hold them all.
@@ -4235,13 +4243,13 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         if let Some(m) = held_since.replace(store::cachefile::mark()) {
             store::cachefile::release_before(m);
         }
-        // A safe point before each area: with the build pausing, the areas whose last steps are out
+        // A safe point before each z6 tile: with the build pausing, the z6 tiles whose last steps are out
         // are settled (below), and the job ends.
         if pipeline::control::draining() {
             paused = true;
             break;
         }
-        areas(|a| {
+        tile_progress(|a| {
             a.on(&u.slash());
             a.say(true);
         });
@@ -4254,7 +4262,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let written_at = store::cachefile::written();
         let t = std::time::Instant::now();
         if let Some(h) = ahead.take() {
-            // (The area before's copying ahead of this one's piece and packs, not done yet.)
+            // (The z6 tile before's copying ahead of this one's piece and packs, not done yet.)
             let _p = phase("waiting for the copying ahead", Class::Wait);
             h.join().ok();
         }
@@ -4292,7 +4300,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             let (root, blobs) = (o.root().to_path_buf(), blobs.clone());
             ahead = Some(std::thread::spawn(move || {
                 // (A phase beside the main thread's: crate::timings.)
-                let _p = phase("next area's piece and packs copied ahead", Class::NasRead);
+                let _p = phase("next z6 tile's piece and packs copied ahead", Class::NasRead);
                 // (Under this process's own temporary name, renamed whole: another job on this Mac
                 // may be copying the same file.)
                 let copy = |src: &Path, dst: &Path| {
@@ -4360,7 +4368,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let piece_logical = format!("sources/osm/{date}/pieces/{}", u.dash());
         let Some(piece) = out.get(&piece_logical).map(|n| out.path(n)) else {
             eprintln!("unit {}: no piece (nothing there)", u.slash());
-            areas(|a| a.finished(&u.slash()));
+            tile_progress(|a| a.finished(&u.slash()));
             continue;
         };
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
@@ -4411,7 +4419,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                     set_aside(&mut aside, u, e)?;
                     std::fs::remove_file(&local_piece).ok();
                     clean();
-                    areas(|a| a.finished(&u.slash()));
+                    tile_progress(|a| a.finished(&u.slash()));
                     continue;
                 }
             }
@@ -4430,7 +4438,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             if let Err(e) = run_tail(here, &dir, &tools) {
                 set_aside(&mut aside, u, e)?;
                 clean();
-                areas(|a| a.finished(&u.slash()));
+                tile_progress(|a| a.finished(&u.slash()));
                 continue;
             }
         }
@@ -4484,7 +4492,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                     if let Err(e) = r {
                         set_aside(&mut aside, u, e)?;
                         clean();
-                        areas(|a| a.finished(&u.slash()));
+                        tile_progress(|a| a.finished(&u.slash()));
                         continue;
                     }
                     pipeline::costin::add_to(&mut b.sizes, taken);
@@ -4524,24 +4532,24 @@ fn app_folder(exe: &Path) -> Result<PathBuf> {
     Ok(exe.parent().context("bin")?.to_path_buf())
 }
 
-/// Sets area `u` aside when `e` is a server that gave no answer (pipeline::unit::source_down):
+/// Sets z6 tile `u` aside when `e` is a server that gave no answer (pipeline::unit::source_down):
 /// noted, for the job's end (`aside_end`); else `e`, which ends the job.
-fn set_aside(aside: &mut Vec<(Unit, String)>, u: Unit, e: anyhow::Error) -> Result<()> {
+fn set_aside(aside: &mut Vec<(TileId, String)>, u: TileId, e: anyhow::Error) -> Result<()> {
     if !pipeline::unit::source_down(&e) {
         return Err(e);
     }
-    eprintln!("unit {}: set aside, the job goes on with its other areas: {e:#}", u.slash());
+    eprintln!("unit {}: set aside, the job goes on with its other z6 tiles: {e:#}", u.slash());
     aside.push((u, format!("{e:#}")));
     Ok(())
 }
 
-/// The job's end with areas set aside (of `of`): a failure naming them, so they're built again
-/// later (the agent's retry); the areas it built are kept as each was saved.
-fn aside_end(aside: &[(Unit, String)], of: usize) -> Result<()> {
+/// The job's end with z6 tiles set aside (of `of`): a failure naming them, so they're built again
+/// later (the agent's retry); the z6 tiles it built are kept as each was saved.
+fn aside_end(aside: &[(TileId, String)], of: usize) -> Result<()> {
     let Some((_, first)) = aside.first() else { return Ok(()) };
     let names: Vec<String> = aside.iter().map(|(u, _)| u.slash()).collect();
     bail!(
-        "{} of {of} areas set aside, a server they read giving no answer ({}); the others built. The first: {first}",
+        "{} of {of} z6 tiles set aside, a server they read giving no answer ({}); the others built. The first: {first}",
         aside.len(),
         names.join(" ")
     )
@@ -4549,7 +4557,7 @@ fn aside_end(aside: &[(Unit, String)], of: usize) -> Result<()> {
 
 /// A unit prepared (and its tail's first steps run), waiting to be finished and committed.
 struct Built {
-    u: Unit,
+    u: TileId,
     dir: PathBuf,
     bdir: PathBuf,
     rep: pipeline::unit::Report,
@@ -4582,14 +4590,14 @@ fn settle_tails(
     offload: Option<&pipeline::offload::Offload>,
     waiting: &mut std::collections::VecDeque<(Built, pipeline::offload::Offered)>,
     wait: bool,
-    aside: &mut Vec<(Unit, String)>,
+    aside: &mut Vec<(TileId, String)>,
 ) -> Result<()> {
     let Some(o) = offload else { return Ok(()) };
     let mut i = 0;
     while i < waiting.len() {
         let (b, task) = &mut waiting[i];
         // (Its last steps run here, when they're taken back: its stages.)
-        areas(|a| a.on(&b.u.slash()));
+        tile_progress(|a| a.on(&b.u.slash()));
         let (dir, tools, anywhere) = (b.dir.clone(), b.tools.clone(), b.anywhere.clone());
         // (What its steps read when run here is added to its sizes: `costin::measured`. A tail a
         // worker settled adds none.)
@@ -4609,7 +4617,7 @@ fn settle_tails(
         // (This Mac's own run of its steps, as its stages have taken here: a worker is waited on
         // only while its pace says it'll be back sooner, and measured against it.)
         let mut here_s = None;
-        areas(|a| here_s = a.here_s(&anywhere.iter().map(|r| r.what.as_str()).collect::<Vec<_>>()));
+        tile_progress(|a| here_s = a.here_s(&anywhere.iter().map(|r| r.what.as_str()).collect::<Vec<_>>()));
         let patience = pipeline::offload::Patience { here_s: Some(here_s.unwrap_or(TAIL_GUESS_S)) };
         let settled = o.settle(task, &b.dir, wait, patience, &mut here);
         // (Its steps run here, a server they read giving no answer: set aside as the job's own are.)
@@ -4619,7 +4627,7 @@ fn settle_tails(
                 set_aside(aside, b.u, e)?;
                 std::fs::remove_dir_all(&b.dir).ok();
                 std::fs::remove_dir_all(&b.bdir).ok();
-                areas(|a| a.finished(&b.u.slash()));
+                tile_progress(|a| a.finished(&b.u.slash()));
                 continue;
             }
             Ok(s) => s,
@@ -4653,7 +4661,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     let Built { u, dir, bdir, rep, tools, carry, piece, t, peak, group, disk, mut sizes, .. } = b;
     use pipeline::timings::Class;
     use pipeline::unit::{owns, stage as unit_stage};
-    areas(|a| a.on(&u.slash()));
+    tile_progress(|a| a.on(&u.slash()));
     // The DEM samples its elevations made (its last steps' first, here or by a worker), kept.
     if rep.kept_ways > 0 {
         let s = unit_stage("DEM samples kept", Class::NasWrite);
@@ -4709,7 +4717,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
         clean();
         s.end();
         pipeline::control::done("unit", &u.slash());
-        areas(|a| a.finished(&u.slash()));
+        tile_progress(|a| a.finished(&u.slash()));
         return Ok(());
     }
     // The owned ways, in base-pack order, with the pass's road values.
@@ -4795,7 +4803,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     }
     pipeline::control::done("unit", &u.slash());
     s.end();
-    areas(|a| a.finished(&u.slash()));
+    tile_progress(|a| a.finished(&u.slash()));
     let s = unit_stage("its folders removed", Class::Disk);
     drop(lg);
     clean();
@@ -4834,7 +4842,7 @@ fn prune_step(out: &mut Out, args: &[String]) -> Result<()> {
     let mut gone = 0;
     for t in positional(args) {
         let (kind, at) = t.split_once(' ').with_context(|| format!("{t:?}: a prune target is \"<kind> <z/x/y>\""))?;
-        let d = Unit::parse(at).with_context(|| format!("{t:?}: not a tile"))?.dash();
+        let d = TileId::parse(at).with_context(|| format!("{t:?}: not a tile"))?.dash();
         let logicals = match kind {
             "unit" => pipeline::out::UNIT_OUTPUTS.iter().map(|p| format!("{p}{d}")).collect(),
             "pois" => vec![format!("work/pois/{d}"), format!("work/peaks/{d}")],
@@ -4875,14 +4883,14 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::create_dir_all(scratch)?;
     let local = scratch.join("reach-piece.osm.pbf");
     let mut all = Reaches { fmt: 1, date: date.clone(), ..Default::default() };
-    let only: Vec<String> = positional(args).iter().filter_map(|s| Unit::parse(s)).map(|u| u.slash()).collect();
+    let only: Vec<String> = positional(args).iter().filter_map(|s| TileId::parse(s)).map(|u| u.slash()).collect();
     let todo: Vec<(&String, &String)> =
         pieces.pieces.iter().filter(|(u, _)| only.is_empty() || only.contains(u)).collect();
     let n = todo.len() as u64;
     let t0 = std::time::Instant::now();
     for (k, (u, l)) in todo.into_iter().enumerate() {
-        pipeline::agent::jobs::report(k as u64, n, "areas");
-        let unit = Unit::parse(u).with_context(|| format!("unit {u}"))?;
+        pipeline::agent::jobs::report(k as u64, n, "z6 tiles");
+        let unit = TileId::parse(u).with_context(|| format!("unit {u}"))?;
         let src = out.path(out.get(l).with_context(|| format!("{l} isn't in the manifest"))?);
         let p = phase("pieces copied from the NAS", Class::NasRead);
         p.count(store::sys::copy_data(&src, &local).with_context(|| format!("copy {}", src.display()))?, 1);
@@ -4934,7 +4942,7 @@ fn roadunits(out: &mut Out) -> Result<()> {
         srcs.iter().filter(|(u, c)| was.get(u) == Some(c)).map(|(u, _)| *u).collect();
     let mut pairs: Vec<(u64, u64)> =
         flat_before.chunks_exact(2).map(|p| (p[0], p[1])).filter(|(_, u)| kept.contains(u)).collect();
-    let fresh: Vec<&(Unit, String, String)> = reads.iter().filter(|(u, _, _)| !kept.contains(&u.key())).collect();
+    let fresh: Vec<&(TileId, String, String)> = reads.iter().filter(|(u, _, _)| !kept.contains(&u.key())).collect();
     let p = phase("the units' road ids read", Class::NasRead);
     for (k, (u, l, content)) in fresh.iter().enumerate() {
         pipeline::agent::jobs::report(k as u64, fresh.len() as u64, "units' road ids read");
@@ -5004,11 +5012,11 @@ fn regions_coverage(
 }
 
 /// The z6 tiles named (`6/x/y`), at least one.
-fn z6_tiles(args: &[String], step: &str) -> Result<Vec<Unit>> {
-    let ts: Vec<Unit> = positional(args)
+fn z6_tiles(args: &[String], step: &str) -> Result<Vec<TileId>> {
+    let ts: Vec<TileId> = positional(args)
         .iter()
         .map(|t| {
-            Unit::parse(t).filter(|u| u.z == 6 && u.x < 64 && u.y < 64).with_context(|| format!("not a z6 tile: {t}"))
+            TileId::parse(t).filter(|u| u.z == 6 && u.x < 64 && u.y < 64).with_context(|| format!("not a z6 tile: {t}"))
         })
         .collect::<Result<_>>()?;
     anyhow::ensure!(!ts.is_empty(), "{step} <6/x/y …>");
@@ -5076,7 +5084,7 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
     let names: Vec<String> = ts.iter().map(|t| format!("Raising the 3D buildings of {}", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     // Other workers, through the lead's coordinator (the agent's jobs there): some of a tile's
-    // z8 areas offered as tasks while it builds the others.
+    // z8 tiles offered as tasks while it builds the others.
     let offload = pipeline::offload::Offload::from_env(&out.scratch);
     // (Each tile's uploads go on beside the next tile's work: it's noted done once they've landed.)
     let mut landing = Landing::default();
@@ -5099,9 +5107,9 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
 /// pass's water (pipeline::depth::build).
 fn depth_step(out: &mut Out, args: &[String], step: &str) -> Result<()> {
     let z = if step == "depth-lo" { 3 } else { 6 };
-    let ts: Vec<Unit> = positional(args)
+    let ts: Vec<TileId> = positional(args)
         .iter()
-        .map(|t| Unit::parse(t).filter(|u| u.z == z).with_context(|| format!("not a z{z} tile: {t}")))
+        .map(|t| TileId::parse(t).filter(|u| u.z == z).with_context(|| format!("not a z{z} tile: {t}")))
         .collect::<Result<_>>()?;
     anyhow::ensure!(!ts.is_empty(), "{step} <{z}/x/y …>");
     let p = phase("the depth sources' declarations read", Class::NasRead);
@@ -5140,7 +5148,7 @@ fn treeblock_task(out: &Out, cov: &pipeline::coverage::Coverage, row: &[(u32, u3
             && row.iter().all(|b| b.1 == row[0].1 && (b.0 >> 2, b.1 >> 2) == (row[0].0 >> 2, row[0].1 >> 2)),
         "a row: blocks of one z6 tile and one row"
     );
-    let piece = Unit { z: 6, x: row[0].0 >> 2, y: row[0].1 >> 2 };
+    let piece = TileId { z: 6, x: row[0].0 >> 2, y: row[0].1 >> 2 };
     std::fs::remove_dir_all(dir).ok();
     let cj = serde_json::to_string(&pipeline::treepacks::coverage_json(cov, piece))?;
     task::cut(&cj, row, &dir.join("task"))?;
@@ -5202,23 +5210,23 @@ fn treeblock_task(out: &Out, cov: &pipeline::coverage::Coverage, row: &[(u32, u3
     }
     println!(
         "{}",
-        serde_json::json!({ "piece": piece.slash(), "blocks": task::blocks_arg(row), "squares": task::squares_arg(&squares), "coverage_bytes": std::fs::metadata(dir.join("task/u").join(task::COVERAGE))?.len() })
+        serde_json::json!({ "tile": piece.slash(), "blocks": task::blocks_arg(row), "squares": task::squares_arg(&squares), "coverage_bytes": std::fs::metadata(dir.join("task/u").join(task::COVERAGE))?.len() })
     );
     Ok(())
 }
 
-/// bldtile-task <8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]: a z8 area's task folder, as a
+/// bldtile-task <8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]: a z8 tile's task folder, as a
 /// `bldtiles` job cuts it for a worker (pipeline::bld::task::cut; for the checks: the `bldtile`
-/// program then runs over it). A z6 tile: its area with the most buildings.
+/// program then runs over it). A z6 tile: its z8 tile with the most buildings.
 fn bldtile_task_step(out: &mut Out, args: &[String]) -> Result<()> {
     let u = positional(args)
         .first()
-        .and_then(|s| Unit::parse(s))
+        .and_then(|s| TileId::parse(s))
         .filter(|u| u.z == 6 || u.z == 8)
         .context("bldtile-task <8/x/y | 6/x/y> --out dir")?;
     let dir = PathBuf::from(opt(args, "--out").context("--out dir")?);
     let cov = coverage_of(out, args)?;
-    let t = pipeline::bld::task::tile_of(Unit {
+    let t = pipeline::bld::task::tile_of(TileId {
         z: 8,
         x: if u.z == 6 { u.x << 2 } else { u.x },
         y: if u.z == 6 { u.y << 2 } else { u.y },
@@ -5227,7 +5235,7 @@ fn bldtile_task_step(out: &mut Out, args: &[String]) -> Result<()> {
     let a = if u.z == 8 {
         (u.x, u.y)
     } else {
-        // (The area whose blocks hold the most records.)
+        // (The z8 tile whose blocks hold the most records.)
         let own = files[4].as_ref().context("no work file for that tile")?;
         let mut by: BTreeMap<(u32, u32), u64> = BTreeMap::new();
         for e in &own.index {
@@ -5241,23 +5249,23 @@ fn bldtile_task_step(out: &mut Out, args: &[String]) -> Result<()> {
     let c = pipeline::bld::task::cut(&files, &cov, t, a, &sites, &dir)?;
     println!(
         "{}",
-        serde_json::json!({ "area": format!("8/{}/{}", a.0, a.1), "bytes": c.bytes, "records": c.records, "mem_mb": c.mem_mb(), "secs": t0.elapsed().as_secs_f64() })
+        serde_json::json!({ "tile": format!("8/{}/{}", a.0, a.1), "bytes": c.bytes, "records": c.records, "mem_mb": c.mem_mb(), "secs": t0.elapsed().as_secs_f64() })
     );
     Ok(())
 }
 
-/// The z6 tiles an area's whole terrain or slope run makes, by z3 pack: those near the coverage (as
+/// The z6 tiles a z3 tile's whole terrain or slope run makes, by z3 pack: those near the coverage (as
 /// the agent's keys list them, `build::coverage_tiles`) of each z3 pack named (`3/x/y`), or with
 /// none named every z6 tile near the coverage. (Z6 tiles named are pieces: `pieces_named`.)
 fn terrain_targets(
     cov: &pipeline::coverage::Coverage,
     args: &[String],
 ) -> Result<BTreeMap<(u32, u32), Vec<(u32, u32)>>> {
-    let _p = phase("the areas' pieces near the coverage worked out", Class::Compute);
+    let _p = phase("the z3 tiles' pieces near the coverage worked out", Class::Compute);
     let near = pipeline::agent::build::coverage_tiles(cov);
-    let named: Vec<Unit> = positional(args)
+    let named: Vec<TileId> = positional(args)
         .iter()
-        .map(|s| Unit::parse(s).with_context(|| format!("not a tile: {s}")))
+        .map(|s| TileId::parse(s).with_context(|| format!("not a tile: {s}")))
         .collect::<Result<_>>()?;
     if named.is_empty() {
         return Ok(near);
@@ -5271,7 +5279,7 @@ fn terrain_targets(
                     .with_context(|| format!("3/{}/{}: no tile of it is near the coverage", t.x, t.y))?;
                 by_q.entry((t.x, t.y)).or_default().extend(list);
             }
-            z => anyhow::bail!("{z}/{}/{}: an area's whole run takes z3 tiles", t.x, t.y),
+            z => anyhow::bail!("{z}/{}/{}: a z3 tile's whole run takes z3 tiles", t.x, t.y),
         }
     }
     for list in by_q.values_mut() {
@@ -5282,22 +5290,25 @@ fn terrain_targets(
 }
 
 /// The z6 tiles named (pieces: `terrain` and `slope` of z6 tiles; one not near the coverage is a
-/// "none" piece, whose run drops its hi pack and mid, if any); None when none is (an area's whole
+/// "none" piece, whose run drops its hi pack and mid, if any); None when none is (a z3 tile's whole
 /// run, of z3 tiles or of all); an error when z6 tiles are named with others. `--expect-same`'s,
 /// those of them made again as they are (each near the coverage).
-fn pieces_named(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<Option<(Vec<Unit>, BTreeSet<String>)>> {
+fn pieces_named(
+    cov: &pipeline::coverage::Coverage,
+    args: &[String],
+) -> Result<Option<(Vec<TileId>, BTreeSet<String>)>> {
     let _p = phase("the pieces near the coverage worked out", Class::Compute);
-    let mut named: Vec<Unit> = positional(args)
+    let mut named: Vec<TileId> = positional(args)
         .iter()
-        .map(|s| Unit::parse(s).with_context(|| format!("not a tile: {s}")))
+        .map(|s| TileId::parse(s).with_context(|| format!("not a tile: {s}")))
         .collect::<Result<_>>()?;
     // (`--pieces-of Q,…`: every piece of those z3 tiles, by hand.)
     if let Some(qs) = opt(args, "--pieces-of") {
         let near = pipeline::agent::build::coverage_tiles(cov);
         for q in qs.split(',').filter(|q| !q.is_empty()) {
-            let u = Unit::parse(q).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {q}"))?;
+            let u = TileId::parse(q).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {q}"))?;
             let ts = near.get(&(u.x, u.y)).with_context(|| format!("{q}: no tile of it is near the coverage"))?;
-            named.extend(ts.iter().map(|&(x, y)| Unit { z: 6, x, y }));
+            named.extend(ts.iter().map(|&(x, y)| TileId { z: 6, x, y }));
         }
     }
     let same: BTreeSet<String> = opt(args, "--expect-same")
@@ -5307,7 +5318,7 @@ fn pieces_named(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<O
         anyhow::ensure!(same.is_empty(), "--expect-same is for pieces (z6 tiles)");
         return Ok(None);
     }
-    anyhow::ensure!(named.iter().all(|u| u.z == 6), "z6 tiles (pieces) or z3 tiles (areas' whole runs), not both");
+    anyhow::ensure!(named.iter().all(|u| u.z == 6), "z6 tiles (pieces) or z3 tiles (z3 tiles' whole runs), not both");
     let near = pipeline::agent::build::coverage_tiles(cov);
     for u in &named {
         if near.get(&(u.x >> 3, u.y >> 3)).is_some_and(|ts| ts.contains(&(u.x, u.y))) {
@@ -5319,7 +5330,7 @@ fn pieces_named(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<O
             u.slash()
         );
     }
-    let slashes: BTreeSet<String> = named.iter().map(Unit::slash).collect();
+    let slashes: BTreeSet<String> = named.iter().map(TileId::slash).collect();
     anyhow::ensure!(
         same.is_subset(&slashes),
         "--expect-same names z6 tiles not given: {:?}",
@@ -5331,16 +5342,16 @@ fn pieces_named(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<O
 /// The z3 tiles named (assemblies: `terrain-lo`, `slope-lo`), each with its pieces (its z6 tiles
 /// near the coverage, in column then row order; none for a "none" assembly, a z3 tile the coverage
 /// has left, whose run drops its lo pack).
-fn areas_named(
+fn z3s_named(
     cov: &pipeline::coverage::Coverage,
     args: &[String],
     step: &str,
-) -> Result<Vec<(Unit, Vec<(u32, u32)>)>> {
-    let _p = phase("the areas' pieces near the coverage worked out", Class::Compute);
+) -> Result<Vec<(TileId, Vec<(u32, u32)>)>> {
+    let _p = phase("the z3 tiles' pieces near the coverage worked out", Class::Compute);
     let near = pipeline::agent::build::coverage_tiles(cov);
-    let qs: Vec<Unit> = positional(args)
+    let qs: Vec<TileId> = positional(args)
         .iter()
-        .map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}")))
+        .map(|t| TileId::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}")))
         .collect::<Result<_>>()?;
     anyhow::ensure!(!qs.is_empty(), "{step} <3/x/y …>");
     Ok(qs.into_iter().map(|q| (q, near.get(&(q.x, q.y)).cloned().unwrap_or_default())).collect())
@@ -5352,8 +5363,8 @@ fn areas_named(
 fn none_assemblies(
     out: &mut Out,
     step: &str,
-    qs: Vec<(Unit, Vec<(u32, u32)>)>,
-) -> Result<Vec<(Unit, Vec<(u32, u32)>)>> {
+    qs: Vec<(TileId, Vec<(u32, u32)>)>,
+) -> Result<Vec<(TileId, Vec<(u32, u32)>)>> {
     let (gone, rest): (Vec<_>, Vec<_>) = qs.into_iter().partition(|(_, ts)| ts.is_empty());
     for (q, _) in &gone {
         pipeline::control::safe_point(step);
@@ -5374,12 +5385,12 @@ fn terrain_pieces(
     out: &mut Out,
     args: &[String],
     cov: &pipeline::coverage::Coverage,
-    ts: &[Unit],
+    ts: &[TileId],
     same: &BTreeSet<String>,
 ) -> Result<()> {
     // ("None" pieces, z6 tiles the coverage has left, first: their hi packs and mids dropped, nothing
     // read, no cost noted; a job of them alone opens no sources and packs nothing.)
-    let (ts, gone): (Vec<Unit>, Vec<Unit>) =
+    let (ts, gone): (Vec<TileId>, Vec<TileId>) =
         ts.iter().partition(|t| pipeline::terrain_pack::near_coverage(cov, 6, t.x, t.y, 20.0));
     for t in &gone {
         pipeline::control::safe_point("terrain");
@@ -5409,7 +5420,7 @@ fn terrain_pieces(
     // (Each piece's offered as it begins; offering ahead (`offer_ahead`), the next's then too, its
     // head start the piece under way's tiles.)
     let offload = pipeline::offload::Offload::from_env(&out.scratch);
-    let offer_after = |t: &Unit, before: usize| {
+    let offer_after = |t: &TileId, before: usize| {
         pipeline::terrain_task::Offers::offer_after(
             offload.as_ref(),
             (t.x, t.y),
@@ -5419,7 +5430,7 @@ fn terrain_pieces(
             before,
         )
     };
-    let offer = |t: &Unit| offer_after(t, 0);
+    let offer = |t: &TileId| offer_after(t, 0);
     let offer_ahead = pipeline::terrain_task::offer_ahead();
     let mut ahead: Option<pipeline::terrain_task::Offers> = None;
     // (Each piece's uploads go on beside the next piece's work: it's noted done once they've landed.)
@@ -5519,7 +5530,7 @@ fn water_idx_of(
 /// pack from its pieces' mids), then the raw tiles AWS gave packed onto the NAS.
 fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
-    let qs = none_assemblies(out, "terrain-lo", areas_named(&cov, args, "terrain-lo")?)?;
+    let qs = none_assemblies(out, "terrain-lo", z3s_named(&cov, args, "terrain-lo")?)?;
     if qs.is_empty() {
         return Ok(());
     }
@@ -5551,7 +5562,12 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
 
 /// slope <6/x/y …> [--expect-same T,…]: slope's pieces (pipeline::slope_pack::build_piece); of a z6
 /// tile the coverage has left, its hi pack and mid dropped (pipeline::slope_pack::drop_piece).
-fn slope_pieces(out: &mut Out, cov: &pipeline::coverage::Coverage, ts: &[Unit], same: &BTreeSet<String>) -> Result<()> {
+fn slope_pieces(
+    out: &mut Out,
+    cov: &pipeline::coverage::Coverage,
+    ts: &[TileId],
+    same: &BTreeSet<String>,
+) -> Result<()> {
     let names: Vec<String> = ts.iter().map(|t| format!("Working out {}'s slope", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     // (Each piece's uploads go on beside the next piece's work: it's noted done once they've landed.)
@@ -5671,17 +5687,17 @@ impl Landing {
 /// slope-lo <3/x/y …>: slope's assemblies (pipeline::slope_pack::build_lo).
 fn slope_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
-    let qs = none_assemblies(out, "slope-lo", areas_named(&cov, args, "slope-lo")?)?;
+    let qs = none_assemblies(out, "slope-lo", z3s_named(&cov, args, "slope-lo")?)?;
     for (k, (q, ts)) in qs.iter().enumerate() {
         pipeline::control::safe_point("slope-lo");
-        pipeline::agent::jobs::report(k as u64, qs.len() as u64, "areas");
+        pipeline::agent::jobs::report(k as u64, qs.len() as u64, "z3 tiles");
         let c = cost_start("slope-lo", &q.slash());
         let r = pipeline::slope_pack::build_lo(out, (q.x, q.y), ts, &|_, _, _| {})?;
         eprintln!("slope-lo {}: {r:?} ({:.0?})", q.slash(), c.elapsed());
         pipeline::control::done("slope-lo", &q.slash());
         note_cost("slope-lo", &q.slash(), c);
     }
-    pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "areas");
+    pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "z3 tiles");
     Ok(())
 }
 
@@ -5702,14 +5718,14 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
     let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
     let coarse = pipeline::terrain_pack::Coarse::new(&raw);
     let src = opened.sources(Some(&coarse));
-    // Its parts, for the status (agent::jobs::part): each area's tiles fetched and shaded, then its
+    // Its parts, for the status (agent::jobs::part): each z3 tile's tiles fetched and shaded, then its
     // terrain written; then the raw tiles AWS gave packed onto the NAS. Each says how far it is.
     let n = by_q.len();
     let of = |k: usize| if n > 1 { format!(" ({} of {n})", k + 1) } else { String::new() };
     let mut names: Vec<String> = Vec::new();
     for k in 0..n {
-        names.push(format!("Fetching, shading and writing the area's terrain tiles{}", of(k)));
-        names.push(format!("Writing the area's zoomed-out terrain to the NAS{}", of(k)));
+        names.push(format!("Fetching, shading and writing the z3 tile's terrain tiles{}", of(k)));
+        names.push(format!("Writing the z3 tile's zoomed-out terrain to the NAS{}", of(k)));
     }
     names.push("Packing the new raw tiles onto the NAS".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -5729,7 +5745,7 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::control::done("terrain", &format!("3/{}/{}", q.0, q.1));
         note_cost("terrain", &format!("3/{}/{}", q.0, q.1), t);
     }
-    // (The areas are written: with the build pausing, the raw tiles wait in the cache for the next
+    // (The z3 tiles are written: with the build pausing, the raw tiles wait in the cache for the next
     // job, which packs them.)
     pipeline::control::safe_point("terrain");
     pipeline::agent::jobs::part(names.len() - 1, &names);
@@ -5744,14 +5760,14 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
     }
     let by_q = terrain_targets(&cov, args)?;
     eprintln!("slope: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
-    // Its parts, for the status (as terrain's): each area's slope worked out, then written. Each
+    // Its parts, for the status (as terrain's): each z3 tile's slope worked out, then written. Each
     // says how far it is.
     let n = by_q.len();
     let of = |k: usize| if n > 1 { format!(" ({} of {n})", k + 1) } else { String::new() };
     let mut names: Vec<String> = Vec::new();
     for k in 0..n {
-        names.push(format!("Working out the area's slope{}", of(k)));
-        names.push(format!("Writing the area's slope to the NAS{}", of(k)));
+        names.push(format!("Working out the z3 tile's slope{}", of(k)));
+        names.push(format!("Writing the z3 tile's slope to the NAS{}", of(k)));
     }
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     for (k, (q, list)) in by_q.into_iter().enumerate() {
@@ -6415,12 +6431,12 @@ mod tests {
         assert_eq!(super::app_folder(&apps.join("current/scenic-build")).unwrap(), apps.join("v1"));
     }
 
-    /// An area whose step's server gave no answer is set aside, the job going on with its others
+    /// A z6 tile whose step's server gave no answer is set aside, the job going on with its others
     /// and failing at its end naming it; any other failure ends the job at once.
     #[test]
     fn an_area_whose_server_gave_no_answer_is_set_aside() {
-        use super::{aside_end, set_aside, Unit};
-        let (a, b) = (Unit::parse("6/13/26").unwrap(), Unit::parse("6/11/26").unwrap());
+        use super::{aside_end, set_aside, TileId};
+        let (a, b) = (TileId::parse("6/13/26").unwrap(), TileId::parse("6/11/26").unwrap());
         let mut aside = Vec::new();
         let down = anyhow::Error::new(pipeline::unit::SourceDown(
             "elevations (elev): a server it reads gave no answer".into(),
@@ -6429,7 +6445,7 @@ mod tests {
         assert!(set_aside(&mut aside, b, anyhow::anyhow!("elevations (elev) failed (exit status: 1)")).is_err());
         assert_eq!(aside.len(), 1);
         let e = aside_end(&aside, 3).unwrap_err().to_string();
-        assert!(e.starts_with("1 of 3 areas set aside") && e.contains("6/13/26"), "{e}");
+        assert!(e.starts_with("1 of 3 z6 tiles set aside") && e.contains("6/13/26"), "{e}");
         assert!(aside_end(&[], 3).is_ok());
     }
 
@@ -6438,12 +6454,12 @@ mod tests {
     /// NAS (their way indexes kept in the cache); another unit's file is neither read nor opened.
     #[test]
     fn a_pack_job_opens_only_its_tiles_owners() {
-        use pipeline::legacy::Unit;
+        use pipeline::legacy::TileId;
         let d = tempfile::tempdir().unwrap();
         let (root, mirror, cache) = (d.path().join("nas"), d.path().join("mirror"), d.path().join("cache"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let units: Vec<Unit> =
-            ["6-32-21", "6-33-21", "6-40-30", "6-31-22"].iter().map(|s| Unit::parse(s).unwrap()).collect();
+        let units: Vec<TileId> =
+            ["6-32-21", "6-33-21", "6-40-30", "6-31-22"].iter().map(|s| TileId::parse(s).unwrap()).collect();
         let mut m = std::collections::BTreeMap::new();
         let mut names = std::collections::BTreeMap::new();
         for (i, u) in units.iter().enumerate() {
@@ -6486,7 +6502,7 @@ mod tests {
             "its neighbours' ways reach into it, a far unit's don't (its extent not kept yet)"
         );
         let (packs, reads) = super::open_units(&out, &cache, Some(&mirror), Some(&owners), None).unwrap();
-        let opened: std::collections::BTreeSet<Unit> = packs.iter().map(|bp| bp.unit).collect();
+        let opened: std::collections::BTreeSet<TileId> = packs.iter().map(|bp| bp.unit).collect();
         assert_eq!(opened, owners);
         // Read in part from the NAS (task #396): the owners' base packs the mirror doesn't have,
         // their way indexes kept in the cache, no copies there; the reads deleted with the job's.
@@ -6920,9 +6936,10 @@ mod tests {
     /// from every list.
     #[test]
     fn the_road_index_reads_only_the_lists_changed() {
-        use pipeline::legacy::{RoadRec, Unit};
+        use pipeline::legacy::{RoadRec, TileId};
         let rec = |road: u64| RoadRec { road, len: 1.0, offset: 0.0, dir: 0, _pad: [0; 7] };
-        let (a, b, c) = (Unit::parse("6/1/1").unwrap(), Unit::parse("6/1/2").unwrap(), Unit::parse("6/1/3").unwrap());
+        let (a, b, c) =
+            (TileId::parse("6/1/1").unwrap(), TileId::parse("6/1/2").unwrap(), TileId::parse("6/1/3").unwrap());
         // (a built before the road ids: its road values alone; b and c with theirs.)
         let fill = |out: &mut pipeline::out::Out, c_roads: &[RoadRec]| {
             super::put_roads(out, a, &[rec(5), rec(1), rec(5)]).unwrap();

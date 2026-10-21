@@ -5,8 +5,8 @@
 //!
 //! - `phase(name, class)` opens a phase (a guard: it ends when dropped); `sub` opens one inside the
 //!   phase open on this thread, at most one level down. A phase opened again under the same name
-//!   adds to it (`n` counts its spans): a loop over areas or tiles gives each of its stages one
-//!   phase, with totals, never one per area.
+//!   adds to it (`n` counts its spans): a loop over z3 tiles or tiles gives each of its stages one
+//!   phase, with totals, never one per z3 tile.
 //! - `count(bytes, files)` adds to the innermost phase open on this thread (`Phase::count` to a
 //!   given one, from any thread): an addition to two atomics, cheap enough for a loop's body.
 //! - A child program run within a phase (`child(&mut cmd)`) writes its own phases (this module's

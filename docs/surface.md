@@ -63,7 +63,7 @@
   - **Each region**: its size, Download or Remove, and its state (downloaded, copying N %, next,
     waiting for room, away). A region brings the World; the World can't be removed while a region
     or view is downloaded. A region still building says "x of y tiles, on the map as they come"
-    (every unit built but not yet recorded built: "finishing: x of x tiles, the last map tiles and
+    (every z6 tile built but not yet recorded built: "finishing: x of x tiles, the last map tiles and
     layers being made")
     (its catalog's `tiles`; the menu bar and `scenic status` say the same, from the agent's
     status) and can be downloaded: its download grows with each catalog, what's here never fetched
@@ -73,7 +73,7 @@
   - The Mac's line: what's downloaded, free space, the reserve, the copy under way, and that copies
     keep to 20 MB/s while the build runs.
 - The status bar offers to reload when new data or a new app is in, and says when the NAS or the map server can't be reached.
-- New areas appear as their catalog goes out, a unit's tiles within minutes of its build (docs/building.md §2, Publishing).
+- New areas appear as their catalog goes out, a z6 tile's tiles within minutes of its build (docs/building.md §2, Publishing).
 
 **Translations and descriptions** (docs/names.md) are drop boxes of the input check: `inputs/translations/` and
 `inputs/descriptions/` (docs/inputs.md §6.3, §6.4). A drop shows on the map a few minutes after it's

@@ -115,7 +115,7 @@ fn is_zero64(v: &u64) -> bool {
 
 /// The way a step runs now, as far as its memory and time go: a cost measured another way says
 /// nothing of what a run takes now (terrain 2 and slope 2: each z6 tile's pack written as it's made,
-/// where they held their whole area's; tree cover 2: a z6 tile a run (a piece), where 1 was a z3
+/// where they held their whole z3 tile's; tree cover 2: a z6 tile a run (a piece), where 1 was a z3
 /// tile's whole run with the trees program, a band of a block's rows at a time on each thread, and
 /// before that trees.py's workers each held a block's every zoom-12 value, 12 to 36 GB together;
 /// its assemblies 1; terrain 3 and slope 3: a z6 tile a run (a piece), their assemblies 1; terrain
@@ -148,7 +148,7 @@ pub fn unit_peak(costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 
         .unwrap_or_else(|| (piece >> 20).saturating_mul(10).max(3700))
 }
 
-/// The kinds of task a page may take: a unit's tail, a 3D buildings' z8 area (`bld::task::KIND`),
+/// The kinds of task a page may take: a unit's tail, a 3D buildings' z8 tile (`bld::task::KIND`),
 /// a row of a tree cover piece's z8 blocks (`trees::task::KIND`), a terrain piece's z8 subtrees
 /// (`terrain_task::KIND`).
 pub const PAGE_TASKS: [&str; 4] = ["tail", crate::bld::task::KIND, crate::trees::task::KIND, crate::terrain_task::KIND];
@@ -1597,7 +1597,7 @@ pub struct Ask {
     pub label: Option<String>,
     /// The kinds of work it does: a shared step's jobs (crate::agent::steps::SHARED: it mounts
     /// the NAS), "tail", "bldtile", "treeblock" or "terrainsub" (tasks: a unit's tail, a 3D
-    /// buildings' z8 area, a row of tree cover's z8 blocks, a terrain piece's z8 subtrees).
+    /// buildings' z8 tile, a row of tree cover's z8 blocks, a terrain piece's z8 subtrees).
     pub can: Vec<String>,
     /// The memory it spares now (MB).
     pub mem_mb: u64,
@@ -3303,7 +3303,7 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
 /// A job's hand-off, when it's its lease's: its done record is the lease's, every change is to one
 /// of the files its step saves for one of the lease's targets (`saves`), each a content name of
 /// that file, every upload it says it checked is one of its own, and each raw tiles' archive it put
-/// on the NAS is named as packing names one for its area. (Of any area: a job packs every loose
+/// on the NAS is named as packing names one for its shard. (Of any shard: a job packs every loose
 /// tile in the helper's cache, an earlier job's left there too, a job stopped before it packed:
 /// tiles of the NAS's own, whatever job fetched them.)
 #[cfg(not(target_os = "wasi"))]
@@ -3317,9 +3317,9 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
         None => anyhow::bail!("no done record"),
     }
     anyhow::ensure!(crate::agent::steps::SHARED.contains(&step), "a hand-off of {step} isn't work a worker does");
-    for (area, p) in &h.raw {
-        anyhow::ensure!(crate::rawpack::is_area(area), "{area} isn't an area of raw tiles");
-        anyhow::ensure!(crate::rawpack::named_for(&p.name, area), "{} isn't an archive of {area}", p.name);
+    for (shard, p) in &h.raw {
+        anyhow::ensure!(crate::rawpack::is_shard(shard), "{shard} isn't a shard of raw tiles");
+        anyhow::ensure!(crate::rawpack::named_for(&p.name, shard), "{} isn't an archive of {shard}", p.name);
     }
     // (Of the targets it says it did: one it didn't finish may have saved part of its files.)
     let did: Vec<&(String, String)> = h.done.as_ref().map(|d| d.1.iter().collect()).unwrap_or_default();
@@ -3594,7 +3594,7 @@ fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
     s.paused = pause;
 }
 
-/// The raw tiles' archives of a hand-off not taken, each well named for its area, journaled on their
+/// The raw tiles' archives of a hand-off not taken, each well named for its shard, journaled on their
 /// own (crate::handoff::RAW_AGAIN) for the next merge to name: they're on the NAS, and unnamed they'd
 /// go two days later, their tiles fetched again.
 #[cfg(not(target_os = "wasi"))]
@@ -3602,7 +3602,7 @@ fn raw_again(journal: &Path, h: Option<&Handoff>) {
     let raw: Vec<(String, crate::rawpack::Pack)> = h
         .into_iter()
         .flat_map(|h| h.raw.iter())
-        .filter(|(a, p)| crate::rawpack::is_area(a) && crate::rawpack::named_for(&p.name, a))
+        .filter(|(a, p)| crate::rawpack::is_shard(a) && crate::rawpack::named_for(&p.name, a))
         .cloned()
         .collect();
     if raw.is_empty() {
@@ -3799,7 +3799,7 @@ fn route(
         "/work/ask" => {
             let mut a: Ask = serde_json::from_slice(body)?;
             anyhow::ensure!(!a.worker.is_empty() && a.worker.len() <= 120, "a worker needs a name");
-            // (A page: a page's tasks, the tails, the 3D buildings' areas and tree cover's rows, under a
+            // (A page: a page's tasks, the tails, the 3D buildings' z8 tiles and tree cover's rows, under a
             // page's name.)
             if let Some(n) = own_name(&a.worker) {
                 if a.kind != "web" || a.can.iter().any(|c| !PAGE_TASKS.contains(&c.as_str())) {
@@ -5778,7 +5778,7 @@ mod tests {
 
     #[test]
     fn a_cost_measured_another_way_says_nothing_of_memory() {
-        // Terrain measured holding its whole area (before it wrote a z6 tile at a time): its
+        // Terrain measured holding its whole z3 tile (before it wrote a z6 tile at a time): its
         // estimate instead; measured since: what it took.
         let mut costs = BTreeMap::new();
         costs.insert(
@@ -5828,7 +5828,7 @@ mod tests {
         let units: Vec<(String, String, u64)> =
             (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
         c.offer_units("2026-09-28", units);
-        // A worker that spares 4 GB takes two areas (the third too big), hands one back.
+        // A worker that spares 4 GB takes two z3 tiles (the third too big), hands one back.
         // (Each measured: a unit not measured would take its step's largest, crate::needs.)
         for (u, mb) in [("6/1/1", 9000), ("6/1/2", 3000), ("6/1/3", 3000)] {
             c.shared.lock().unwrap().costs.insert(
@@ -5856,7 +5856,7 @@ mod tests {
             .as_array()
             .unwrap()
             .is_empty());
-        // The swarm: the history's number and the hours; the worker's fit (the area it holds, the one
+        // The swarm: the history's number and the hours; the worker's fit (the z3 tile it holds, the one
         // too big for it); the tasks by state.
         let (_, sw) = w.post_json("/work/swarm", &serde_json::json!({})).unwrap();
         assert_eq!(sw["seq"].as_u64(), Some(last));
@@ -6040,7 +6040,7 @@ mod tests {
         let g = w.ask(&ask(4096)).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!() };
         assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/1/1", "6/1/2"]);
-        w.give_back(g.lease, "the build paused before it finished an area").unwrap();
+        w.give_back(g.lease, "the build paused before it finished a z3 tile").unwrap();
         let g = w.ask(&ask(4096)).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!() };
         assert_eq!(targets.len(), 2, "given back, not failed: offered to it again at once");
@@ -8145,7 +8145,7 @@ mod tests {
                 .collect();
             Handoff { changes, done: Some((step.into(), ts(t))), raw, ..Default::default() }
         };
-        // An area's lo pack and its z6 tiles' hi packs; not another area's.
+        // A z3 tile's lo pack and its z6 tiles' hi packs; not another z3 tile's.
         assert!(check_handoff(
             &h("slope", "3/2/2", &["layers/slope/lo/3-2-2", "layers/slope/hi/6-16-16", "layers/slope/hi/6-23-23"], &[]),
             "slope",
@@ -8234,13 +8234,13 @@ mod tests {
         );
         assert!(check_handoff(&h("pois", "6/1/3", &["work/pois/6-1-3"], &[]), "pois", &ts("6/1/3")).is_ok());
         assert!(check_handoff(&h("pois", "6/1/3", &["work/peaks/6-1-3"], &[]), "pois", &ts("6/1/3")).is_err());
-        // Raw tiles' archives: its own areas, named by their content.
+        // Raw tiles' archives: its own shards, named by their content.
         let terrain = |raw: &[(&str, &str)]| {
             check_handoff(&h("terrain", "3/2/2", &["layers/terrain/lo/3-2-2"], raw), "terrain", &ts("3/2/2"))
         };
         assert!(terrain(&[("6-20-21", "6-20-21.0123456789abcdef.tiles"), ("3-2-2", "3-2-2.0123456789abcdef.tiles")])
             .is_ok());
-        // Another area's (an earlier job's tiles, packed with this one's) too, and the root's.
+        // Another shard's (an earlier job's tiles, packed with this one's) too, and the root's.
         assert!(
             terrain(&[("6-30-21", "6-30-21.0123456789abcdef.tiles"), ("root", "root.0123456789abcdef.tiles")]).is_ok()
         );
@@ -8290,7 +8290,7 @@ mod tests {
         assert_eq!(targets, &vec![("6/1/3".to_string(), "k3".to_string()), ("6/1/1".into(), "k1".into())]);
         assert_eq!(pass, "2026-09-28");
         assert!(w.ask(&ask(4096)).unwrap().is_none(), "held: nothing left");
-        assert!(w.beat(g.lease, Some("1/2 areas")).unwrap());
+        assert!(w.beat(g.lease, Some("1/2 z3 tiles")).unwrap());
         // A hand-off naming another unit's files is refused; its own, journaled whole.
         // (Its raw tiles' archives, on the NAS whatever became of it, kept for naming: the well
         // named alone.)

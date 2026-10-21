@@ -612,7 +612,7 @@ impl WaterIdx {
 pub const AREA_FROM: &str = "z6-8";
 
 /// The water tiles z3 tile `q`'s assembly reads: z6–8, the whole of it (none coarser: `polys`).
-pub fn area_tiles(q: (u32, u32)) -> Vec<(u8, u32, u32)> {
+pub fn z3_tiles(q: (u32, u32)) -> Vec<(u8, u32, u32)> {
     (6..=8u8)
         .flat_map(|z| {
             let s = 1u32 << (z - 3);

@@ -158,7 +158,7 @@ fn run() -> Result<()> {
         });
     }
     let b = get("block")?;
-    let u = pipeline::legacy::Unit::parse(b)
+    let u = pipeline::legacy::TileId::parse(b)
         .filter(|u| u.z == trees::ZBLOCK)
         .with_context(|| format!("--block 8/x/y, not {b}"))?;
     within(&|| {

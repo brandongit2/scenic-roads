@@ -63,7 +63,7 @@ pub fn sub_of(z: u8, x: u32, y: u32) -> (u32, u32) {
 pub fn parse_subtrees(s: &str) -> Result<Vec<(u32, u32)>> {
     s.split(',')
         .map(|b| {
-            crate::legacy::Unit::parse(b.trim())
+            crate::legacy::TileId::parse(b.trim())
                 .filter(|u| u.z == 8)
                 .map(|u| (u.x, u.y))
                 .with_context(|| format!("not a z8 subtree: {b}"))
@@ -430,7 +430,7 @@ impl Inputs {
 
     /// The piece and the group's subtrees.
     pub fn piece(&self) -> Result<(u32, u32)> {
-        let u = crate::legacy::Unit::parse(&self.meta.piece)
+        let u = crate::legacy::TileId::parse(&self.meta.piece)
             .filter(|u| u.z == 6)
             .context("a task's piece isn't a z6 tile")?;
         Ok((u.x, u.y))
@@ -1281,7 +1281,7 @@ mod tests {
         eprintln!("worker: {who}");
         let pieces: Vec<(u32, u32)> = env("TT_PIECES")
             .split(',')
-            .map(|p| crate::legacy::Unit::parse(p).filter(|u| u.z == 6).map(|u| (u.x, u.y)).unwrap())
+            .map(|p| crate::legacy::TileId::parse(p).filter(|u| u.z == 6).map(|u| (u.x, u.y)).unwrap())
             .collect();
         for (k, &t) in pieces.iter().enumerate() {
             let (hi_l, mid_l) = (format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1));

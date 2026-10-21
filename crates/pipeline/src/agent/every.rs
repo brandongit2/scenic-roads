@@ -41,7 +41,7 @@ pub const LEAD_ONLY: [&str; 11] = [
 ];
 
 /// Whether the lead offers its members `step`'s targets: a step of the steps
-/// table of targets by area (not a worldwide one: `names_target` of its name, a run alone, the
+/// table of targets by tile (not a worldwide one: `names_target` of its name, a run alone, the
 /// spoken languages) that isn't the lead's (`LEAD_ONLY`) and doesn't keep the pass's answers
 /// (crate::agent::steps::ANSWERED), the shared steps among them.
 pub fn offered(step: &str) -> bool {

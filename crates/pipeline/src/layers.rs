@@ -404,7 +404,7 @@ mod measure {
             .iter()
             .filter(|(l, _)| l.starts_with("markdata/"))
             .map(|(l, p)| {
-                let u = crate::legacy::Unit::parse(l.trim_start_matches("markdata/")).unwrap();
+                let u = crate::legacy::TileId::parse(l.trim_start_matches("markdata/")).unwrap();
                 let to = dl.join(format!("{}.member", l.replace('/', "_")));
                 std::fs::copy(p, &to).unwrap();
                 (6, u.x, u.y, to)
@@ -450,7 +450,7 @@ mod measure {
         let bidx = store::pack::PackIndex::read_from(&bundle).unwrap();
         assert_eq!(bidx.entries.len(), markdata.len());
         for (l, p) in olds.iter().filter(|(l, _)| l.starts_with("markdata/")) {
-            let u = crate::legacy::Unit::parse(l.trim_start_matches("markdata/")).unwrap();
+            let u = crate::legacy::TileId::parse(l.trim_start_matches("markdata/")).unwrap();
             let e = bidx.find(6, u.x, u.y).unwrap();
             assert_eq!(bidx.read_blob(&bundle, &e).unwrap(), std::fs::read(p).unwrap(), "{l}");
             assert_eq!(e.offset % BUNDLE_ALIGN, 0);
@@ -504,7 +504,7 @@ mod measure {
                         layers_out.entry(ly.to_string()).or_insert_with(|| LayerOut::new(enc)).add_bundle(l, &keys);
                     }
                     ["layers", ly, scope, k] => {
-                        let u = crate::legacy::Unit::parse(k).unwrap();
+                        let u = crate::legacy::TileId::parse(k).unwrap();
                         let enc = if ly.starts_with("marks-") { "rdmt" } else { "mvt" };
                         layers_out.entry(ly.to_string()).or_insert_with(|| LayerOut::new(enc)).add(
                             scope,
@@ -520,10 +520,10 @@ mod measure {
                         }
                     }
                     ["markdata", t] => {
-                        cat.markdata.insert(crate::legacy::Unit::parse(t).unwrap().slash(), l.clone());
+                        cat.markdata.insert(crate::legacy::TileId::parse(t).unwrap().slash(), l.clone());
                     }
                     ["ovdata", t] => {
-                        cat.ovdata.insert(crate::legacy::Unit::parse(t).unwrap().slash(), l.clone());
+                        cat.ovdata.insert(crate::legacy::TileId::parse(t).unwrap().slash(), l.clone());
                     }
                     ["global", g @ ..] => {
                         cat.global.insert(g.join("/"), l.clone());

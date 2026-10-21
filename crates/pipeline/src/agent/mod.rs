@@ -114,7 +114,7 @@ const HOLD_READ_EVERY: Duration = Duration::from_secs(30);
 /// times UPDATE_MARGIN, at most UPDATE_CAP, never less than DRAIN_GRACE. ×1.5 because a target's
 /// measured time varies by about a third between runs (another job beside it, the NAS's load), and
 /// a pace read early in a part runs ahead of its slower end; 3 h because a later app's fixes (often
-/// the reason for the update) shouldn't wait longer than a night's long target, an area's terrain,
+/// the reason for the update) shouldn't wait longer than a night's long target, a z3 tile's terrain,
 /// takes at most. A job that used less than a core-minute of CPU over UPDATE_STALL (its sampler's
 /// `busy_at`, crate::agent::memguard) holds it no longer, whatever its progress lines say: a step
 /// may print none for hours.
@@ -363,7 +363,7 @@ struct Slot {
     mem_drain: Option<String>,
     /// That drain is for its job alone past the limit while the Mac isn't short of memory: only
     /// trouble stops it at once, not the time a pause gives a safe point (a long single-target job,
-    /// an area's whole terrain run, may have none for hours).
+    /// a z3 tile's whole terrain run, may have none for hours).
     mem_drain_alone: bool,
     /// Its job is being stopped by the memory guard (its lease ends so: kept from this Mac).
     guard_stopped: bool,
@@ -505,9 +505,9 @@ impl Tell {
 /// How long an end owed to the lead is tried (s): as long as its lease lasts unrenewed.
 const OWED_S: u64 = crate::coord::TTL.as_secs();
 
-/// The free space a member's job of `step` needs: a terrain run's as on the lead (its area's
+/// The free space a member's job of `step` needs: a terrain run's as on the lead (its shard's
 /// archives copied here and merged); a task's ("tail": a unit's last steps, its files fetched from
-/// the coordinator; "bldtile": a 3D buildings' z8 area, its blocks) 5 GB, but tree cover's row of
+/// the coordinator; "bldtile": a 3D buildings' z8 tile, its blocks) 5 GB, but tree cover's row of
 /// z8 blocks ("treeblock": it reads the squares where they lie, and writes ~80 MB) and a terrain
 /// piece's z8 subtrees ("terrainsub": a file of tens of MB, and their tiles) 1 GB; the others none
 /// of their own: their grant's measured disk is reserved for them (`reservation`), and the owner's
@@ -535,21 +535,21 @@ fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
         .collect()
 }
 
-/// Whether `p` is an archive copy a terrain job's target (`id`: "terrain 3/x/y", an area's whole
-/// run; "terrain 6/x/y", a piece; "terrain-lo 3/x/y", an assembly) reads at once: an area's run its
-/// z3 area's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), a piece its z6 tile's, an
-/// assembly its z3 area's (crate::rawpack's areas).
+/// Whether `p` is an archive copy a terrain job's target (`id`: "terrain 3/x/y", a z3 tile's whole
+/// run; "terrain 6/x/y", a piece; "terrain-lo 3/x/y", an assembly) reads at once: a z3 tile's run its
+/// shard's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), a piece its z6 tile's, an
+/// assembly its z3 tile's (crate::rawpack's shards).
 fn terrain_reads(id: &str, p: &Path) -> bool {
     let tile = |s: &str| -> Option<(u32, u32, u32)> {
         let mut v = s.split(['/', '-']).map(|t| t.parse::<u32>().ok());
         Some((v.next()??, v.next()??, v.next()??))
     };
     let in_packs = p.parent().and_then(Path::file_name).is_some_and(|d| d == "packs");
-    let area = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).and_then(tile);
+    let shard = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).and_then(tile);
     if !in_packs {
         return false;
     }
-    match (id.split_once(' '), area) {
+    match (id.split_once(' '), shard) {
         (Some(("terrain", t)), Some(a)) => match tile(t) {
             Some((3, x, y)) => {
                 matches!(a, (3, ax, ay) if (ax, ay) == (x, y))
@@ -565,7 +565,7 @@ fn terrain_reads(id: &str, p: &Path) -> bool {
 
 /// The memory a step's job is expected to take (MB) before one has run for its target and said
 /// (`SCENIC_COSTS`): its row's in the steps table. (Units and candidates are offered by their
-/// piece's size, crate::coord::job_peak; terrain by its area's size, `terrain_peak`; the 3D
+/// piece's size, crate::coord::job_peak; terrain by its z3 tile's size, `terrain_peak`; the 3D
 /// buildings by their rows, `bld_peak`.)
 fn first_peak(step: &str) -> u64 {
     steps::mem_mb(step)
@@ -582,7 +582,7 @@ fn bld_peak(step: &str, rows: u64) -> u64 {
 }
 
 /// `bldtiles`' (B5's pilot with the field and its centroids' offsets, 2026-10-15, on the
-/// M4's 14 threads): 1.8 GB and 1,100 B a record of its largest z8 area (taken as two fifths of
+/// M4's 14 threads): 1.8 GB and 1,100 B a record of its largest z8 tile (taken as two fifths of
 /// the rows), the field's cells in flight the fixed part. Measured 1.3–2.9 GB for tiles of up to
 /// 52 k records, 3.8 GB for Toronto's 9.5 M, 4.5 GB for Annecy's 10.0 M, 7.9 GB for New York's
 /// 14.6 M and 10.2 GB for Kantō's 30.3 M.
@@ -590,12 +590,12 @@ pub const fn bldtiles_peak(rows: u64) -> u64 {
     1800 + rows * 2 / 5 * 1100 / (1 << 20)
 }
 
-/// The memory a terrain run of an area of `z6` tiles near the coverage is expected to take (MB),
+/// The memory a terrain run of a z3 tile of `z6` tiles near the coverage is expected to take (MB),
 /// before one has said: it holds a z6 tile's shaded hi tiles at a time (z9–12, up to 5,440, ~270 KB
 /// each until written: crate::terrain_pack::build_q_with) with its z12 repairs while its z11 is made
-/// (up to 4,096 at 256 KB), each z6 tile's z9 repairs and quarters (~20 MB) and the area's zoomed-out
+/// (up to 4,096 at 256 KB), each z6 tile's z9 repairs and quarters (~20 MB) and the z3 tile's zoomed-out
 /// tiles (z3–8, 1,365), and half a GB besides: 3.3 to 4.6 GB, what a helper spares. (Measured
-/// before it wrote a z6 tile at a time: 32.9 GB for 3/0/2's whole area at once.)
+/// before it wrote a z6 tile at a time: 32.9 GB for 3/0/2's whole z3 tile at once.)
 /// (A piece: one z6 tile, `terrain_peak(1)`.)
 fn terrain_peak(z6: usize) -> u64 {
     500 + 5440 * 270 / 1024 + 4096 / 4 + 1365 * 270 / 1024 + z6 as u64 * 20
@@ -738,7 +738,7 @@ pub struct Status {
     /// Region recipes, and the ones that don't parse.
     pub regions: Vec<recipes::Recipe>,
     pub bad_recipes: Vec<(String, String)>,
-    /// Per region, how many of its areas are built (after the first pass).
+    /// Per region, how many of its z6 tiles are built (after the first pass).
     #[serde(default)]
     pub built: BTreeMap<String, build::RegionState>,
     /// The build to the end, step by step: the pass's steps, then the regions'.
@@ -2316,7 +2316,7 @@ impl Agent {
                 ))
             }
             crate::coord::Grant { lease, work: crate::coord::Granted::Task { id, task, .. }, .. } => {
-                // A task (a unit's tail, or a 3D buildings' z8 area, for the lead's job), run here
+                // A task (a unit's tail, or a 3D buildings' z8 tile, for the lead's job), run here
                 // by `scenic run-task` over its files fetched from the coordinator, reading the NAS's
                 // data where it lies (only reading it: crate::unit::Tools::stores_read_only).
                 let dir = self.outbox().join(lease.to_string());
@@ -2351,13 +2351,13 @@ impl Agent {
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
                 self.slots[k].lease = Some(Held::Leased { lease, dir });
                 let what = if task["runs"][0]["prog"] == crate::bld::task::KIND {
-                    format!("3D buildings of the lead's area {unit}")
+                    format!("3D buildings of the lead's z8 tile {unit}")
                 } else if task["runs"][0]["what"] == crate::trees::task::KIND {
                     format!("Tree cover of the lead's blocks {}", task["blocks"].as_str().unwrap_or(&unit))
                 } else if task["runs"][0]["what"] == crate::terrain_task::KIND {
                     format!("Terrain of the lead's subtrees {}", task["subtrees"].as_str().unwrap_or(&unit))
                 } else {
-                    format!("Scenery for the lead's area {unit}")
+                    format!("Scenery for the lead's z6 tile {unit}")
                 };
                 Some((
                     k,
@@ -4844,7 +4844,7 @@ impl Agent {
         let (id, what) = (spec.id.clone(), spec.what.clone());
         let step = step_of(&id).unwrap_or_default();
         // Room on the disk for it, from the caches that are cheap to fill again (a terrain run's
-        // more, its area's archive copies spared; the OSM pass's own need, less the pack cache it
+        // more, its shard's archive copies spared; the OSM pass's own need, less the pack cache it
         // clears; a helper's Mac has less room). Made before its targets are claimed: it can take
         // minutes, and a claim is refreshed only while a job runs. Made only while no other job
         // runs here (the loop that looks after it waits meanwhile): beside another, a job starts only with
@@ -4895,7 +4895,7 @@ impl Agent {
             // (Never without the NAS: what goes here must be kept there.)
             // (The OSM pass without the margin: its need is what its conditions admitted it with.)
             let margin = if id.starts_with("osm-pass") { 0 } else { room::margin(need) };
-            // (What this job and the queued ones read goes last: a terrain run's own area's
+            // (What this job and the queued ones read goes last: a terrain run's own shard's
             // archive copies, the pageview months for an items or heritage job, …)
             let mut hints = self.hints();
             hints.add(
@@ -7342,7 +7342,7 @@ impl Agent {
         // A 3D buildings tile's rows read (crate::bld::sources::digests), for its jobs' memory.
         let bld_rows = |t: &str| inputs.get(&format!("bldprep-rows {t}")).and_then(|v| v.parse::<u64>().ok());
         let mut offers: Vec<crate::coord::Offer> = Vec::new();
-        // (A terrain area's z6 tiles near the coverage, for its run's expected memory: only when
+        // (A terrain z3 tile's z6 tiles near the coverage, for its run's expected memory: only when
         // there's terrain to offer.)
         let z6: BTreeMap<String, usize> = if plan.iter().any(|w| w.step == "terrain") {
             build::coverage_tiles(cov).into_iter().map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len())).collect()
@@ -7435,7 +7435,7 @@ impl Agent {
             // (What can't be listed now: the regions' work after a new pass, or while the units wait.)
             let blind = match newer {
                 Some(d) => Some(format!("a new OpenStreetMap pass (the planet of {d}) comes first; the regions' work is known once it's done")),
-                None if planned.regions.is_empty() => Some("the areas wait for the pass's heritage sites, reaches and roadside buildings; what the regions need is known once they're made".to_string()),
+                None if planned.regions.is_empty() => Some("the z6 tiles wait for the pass's heritage sites, reaches and roadside buildings; what the regions need is known once they're made".to_string()),
                 None => None,
             };
             let z6: BTreeMap<String, usize> = build::coverage_tiles(cov)
@@ -8119,7 +8119,7 @@ impl Agent {
         build::fold(&items, &next, &notes)
     }
 
-    /// Per region, how many of its areas are built (none before the first pass makes the outlines).
+    /// Per region, how many of its z6 tiles are built (none before the first pass makes the outlines).
     fn region_progress(&self, root: &Path, regions: &[recipes::Recipe]) -> BTreeMap<String, build::RegionState> {
         let Some(date) = self.latest_pass(root) else { return BTreeMap::new() };
         let manifest: BTreeMap<String, String> = nasread::read(&root.join("state/build/manifest.json"))
@@ -10726,7 +10726,7 @@ fn first_secs(step: &str) -> f64 {
         "terrain-water" => 900.0,
         "heritage" => 5400.0,
         // (Terrain's and slope's pieces a z6 tile, their assemblies a z3 tile's zoomed-out levels:
-        // the areas' last runs, 9,707 s and ~4,100 s over ~400 z6 tiles, 2026-10.)
+        // the z3 tiles' last runs, 9,707 s and ~4,100 s over ~400 z6 tiles, 2026-10.)
         "terrain" => 25.0,
         "terrain-lo" => 60.0,
         "slope" => 10.0,
@@ -11069,7 +11069,7 @@ mod tests {
     /// passes their tables.
     #[test]
     fn a_units_programs_pass_their_tables() {
-        let u = crate::legacy::Unit::parse("6/1/1").unwrap();
+        let u = crate::legacy::TileId::parse("6/1/1").unwrap();
         let mut seen = 0;
         for r in crate::unit::tail(u, true, true) {
             let cmd: Vec<String> = std::iter::once(format!("/app/{}", r.prog)).chain(r.args.iter().cloned()).collect();
@@ -11082,7 +11082,7 @@ mod tests {
     }
 
     #[test]
-    fn a_terrain_run_reads_its_own_areas_archives() {
+    fn a_terrain_run_reads_its_own_shards_archives() {
         let packs = Path::new("/c/aws-terrarium/packs");
         for (name, ours) in [
             ("3-1-2.0123456789abcdef.tiles", true),
@@ -11098,7 +11098,7 @@ mod tests {
         assert!(!terrain_reads("unit 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles")));
         assert!(!terrain_reads("terrain-root terrain-root", &packs.join("root.0123456789abcdef.tiles")));
         assert!(!terrain_reads("terrain 3/1/2", Path::new("/c/aws-terrarium/12/2048/1500.png")));
-        // A piece its z6 tile's; an assembly its area's.
+        // A piece its z6 tile's; an assembly its z3 tile's.
         assert!(
             terrain_reads("terrain 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles"))
                 && !terrain_reads("terrain 6/8/16", &packs.join("6-8-17.0123456789abcdef.tiles"))
@@ -13410,7 +13410,7 @@ mod tests {
     }
 
     /// A root as the build has it before the units' keys changed: a pass whose reaches build
-    /// Reykjavik's unit (6/28/17) for region a, the heritage sites and the terrain made (the area's
+    /// Reykjavik's unit (6/28/17) for region a, the heritage sites and the terrain made (the z3 tile's
     /// lo pack a real pack), and the unit built under the old keys, with its outputs. Its old key.
     fn rekey_root(root: &Path) -> String {
         rekey_root_with(root, [-220_000_000, 640_000_000, -217_000_000, 641_600_000])
@@ -14336,8 +14336,8 @@ mod tests {
 
     #[test]
     fn an_update_waits_for_a_long_target_by_its_measured_time() {
-        // (Task #266: an area's elevation step 81 min in was stopped 15 min into an update's drain,
-        // the area lost. The drain waits for the target under way by its measured time; the clock
+        // (Task #266: a z3 tile's elevation step 81 min in was stopped 15 min into an update's drain,
+        // the z3 tile lost. The drain waits for the target under way by its measured time; the clock
         // here moved by setting when the drain began and when the progress last moved.)
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));

@@ -803,7 +803,7 @@ impl DrawnRegion {
 
 /// How far a drawn outline may stray from its file's: about a pixel when the whole outline fills a
 /// screen, within the pass's own range for the panel (1 km for countries, 60 m for the smallest
-/// areas).
+/// z3 tiles).
 pub(crate) fn draw_tolerance_m(rings: &[Vec<[i32; 2]>]) -> f64 {
     let mut bb = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
     for p in rings.iter().flatten() {

@@ -72,11 +72,14 @@ table        count × Section (48 bytes): [u8; 24] name (NUL-padded), u64 offset
 A local file is mmapped and its sections cast in place. A NAS file is read through the I/O pool in
 256 KB pages, or whole sections for scans.
 
-## Units
+## Roads' z6 tiles
 
-Every unit is a z6 tile. A way's owner unit is the z6 tile of its first vertex.
+The roads are made and stored per z6 tile. A way's owner is the z6 tile of its first vertex. (Stored
+names keep the word `unit` for a z6 tile, from before the grid's terms were fixed: the meta key
+`"unit"`, the `unit` step, `global/roadunits`, `cache/dem-units/`, `cache/scenic-units/`, the
+catalog's `units` list; the OSM pass's `pieces/` folder holds its z6 tile extracts.)
 
-## Base pack (`base/<z>-<x>-<y>.<h>.sect`): what one unit owns
+## Base pack (`base/<z>-<x>-<y>.<h>.sect`): what one z6 tile owns
 
 Meta: `{"fmt": 1, "unit": "z/x/y", "ways", "verts", "samples", "extent": [w, s, e, n] (E7, all owned
 geometry), "source": "pass:<date>", "scenic": bool, "drape": bool, "summary": {…}}`. `summary` is
@@ -108,9 +111,9 @@ size (1024 ways), u32 chunk count n, n × `[w, s, e, n]` i32 (each chunk's ways'
 × u64 (each chunk's first sample; the last the samples' count), then u64 XXH3 of all before it;
 one that doesn't check is worked out again.
 
-## Road values (`global/roads/<z>-<x>-<y>.<h>.sect`): per owned way of a unit
+## Road values (`global/roads/<z>-<x>-<y>.<h>.sect`): per owned way of a z6 tile
 
-Section `roads`, one 24-byte record per way of the unit's base pack, in the same order:
+Section `roads`, one 24-byte record per way of the z6 tile's base pack, in the same order:
 
 ```
 u64 road id      the lowest OSM way id of the road
@@ -147,7 +150,7 @@ lower id; a cycle starts at its lowest way id, in that way's direction.
 | `lbins`, `lrbins` | `LBin` (64 B) | their bins: up to 500 m of a part with one set of drive filter attributes (rail: one way) |
 
 ```
-Here    { u64 id; u64 owner (unit tile key); u32 index (in the owner's base pack); u8 class;
+Here    { u64 id; u64 owner (z6 tile key); u32 index (in the owner's base pack); u8 class;
           u8 flags (WayRec flags); u8 extra (bit 0 unnamed, bit 1 rail); u8 pad;
           [i32; 4] bbox; }                                                       // 40 bytes
 Part    { u64 road; f32 offset (of the first sample along the road); u32 first (psamples index);
@@ -313,7 +316,7 @@ dem/bldprep.py's docstring lists the columns.
 MVT 2.1, extent 4096, layer `b`, a feature per building or part touching the coverage (centroid or
 a vertex in it, with the 1 km buffer), whole in the tile of its centroid (not clipped). A building
 or outline (not a part) is also copied whole into each other tile its exteriors reach (`o` 1), from
-up to 310 m beyond a z8 area's edge. Quantized to the tile grid; repeated points dropped; rings of
+up to 310 m beyond a z8 tile's edge. Quantized to the tile grid; repeated points dropped; rings of
 fewer than 3 points or no area dropped (an exterior with its holes); exteriors positive, holes
 negative. No edge parallel to an axis beyond the extent: such an edge gets points a unit off it,
 outside the ring, at MapLibre's subdivision lines (every 2,048 units) and midway, and a slanted edge
@@ -354,20 +357,21 @@ the coarser texel's centre).
   slice), each u16 top (dm), u16 base (dm), u8 m, m points (u16 x, u16 y in the z8 tile's 65,536 a
   side) of its first polygon's exterior, simplified (Douglas–Peucker, tolerance doubling from half
   a unit) to at most 16.
-- **Mids** `work/bldfield-mid/6-<x>-<y>.<h>.zst`: zstd (level 3) of `BFMID03\0`, then each z8 area
+- **Mids** `work/bldfield-mid/6-<x>-<y>.<h>.zst`: zstd (level 3) of `BFMID03\0`, then each z8 tile
   with a building, by x then y: u32 x, u32 y, u32 heritage list bytes and that list, u8 class mask,
   each held class's `f`, `w`, `v`, `ox`, `oy` planes as 512 × 512 f32 (the level-8 values exactly).
 
-**A z8 area's task** (`pipeline::bld::task`, docs/buildings3d.md §3.6; a folder on the job's Mac,
+**A z8 tile's task** (`pipeline::bld::task`, docs/buildings3d.md §3.6; a folder on the job's Mac,
 sent to the worker as `u/…`, not in the manifest): `6-<x>-<y>.sect` for each of T's and its 8
-neighbours' normalized files with a block the area reads (its own and those within 620 m), each
+neighbours' normalized files with a block the z8 tile reads (its own and those within 620 m), each
 with the same meta and only those blocks as stored; `coverage.sect` (meta `{"fmt": 1, "shapes":
 [{"source", "country", "buffer_m", "rings": [vertex counts]}, …]}`, section `verts` `[i32; 2]`): the
-shapes whose buffered box meets the box of every point the area asks about, whole, in the recipes'
+shapes whose buffered box meets the box of every point the z8 tile asks about, whole, in the recipes'
 order; `heritage.bin`, T's heritage points (`[i32; 2]` pairs, sorted). `bldtile` writes there
-`area.tiles` (RDTILES, meta `{"layer": "buildings", "area": "8/x/y", "encoding": "mvt"}`),
+`area.tiles` (RDTILES, meta `{"layer": "buildings", "area": "8/x/y", "encoding": "mvt"}`; the names `area.*` and the meta's `"area"` are
+from when a z8 tile was called an area, and stay),
 `area.field` (RDTILES, `{"layer": "buildings-field", …, "encoding": "field5-webp"}`, levels 9–14),
-`area.mid` (a mid of the area alone) and `area.json` (`bld::job::Summary`).
+`area.mid` (a mid of the z8 tile alone) and `area.json` (`bld::job::Summary`).
 
 ## Other tasks' folders
 
@@ -378,7 +382,7 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
   grown by 0.01°). `trees --blocks` writes `8-<x>-<y>/` per block: `trees-cover.tiles`,
   `trees-height.tiles`, `trees-leaf.tiles` (RDTILES, meta `trees::META`: zoom 8–12 tiles) and
   `trees-tops.bin` (`pyramid::Tops::to_bytes`).
-- **A terrain piece's subtrees** (`pipeline::terrain_task`, docs/steps.md §2, Terrain): `in.sect`, meta
+- **A terrain z6 tile's subtrees** (`pipeline::terrain_task`, docs/steps.md §2, Terrain): `in.sect`, meta
   `{"fmt": 1, "step": "terrainsub", "v": TERRAIN_V, "piece": "6/x/y", "subtrees": "8/x/y,…",
   "levels": [[z, [[x, y], …]], …] (z12 → z9), "water", "north", "coarse", "cells": [[lat, lon, "sea"
   | "missing" | "cell", width, first row, rows, first column, columns], …]}` (GLO-30 cells and the
@@ -469,7 +473,7 @@ that decodes and parses, else the next.
   an app that reads only 1 passes a catalog of 2 over and keeps the last it can read until it updates.
 - `credits`: `pipeline::rules::CREDITS` plus the inputs' accepted descriptions
   (`pipeline::inputs::credits`, docs/inputs.md §4.8; a description replaces the table's entry of its
-  `what`), those whose areas meet the coverage + 20 km or a built unit's extent. `areas` are w, s, e,
+  `what`), those whose areas meet the coverage + 20 km or a built z6 tile's extent. `areas` are w, s, e,
   n boxes in degrees, left out for credits that hold everywhere. A heritage register's credit has
   `register`, which popups name their source by (docs/inputs.md §6.5).
 - `dem_labels`: the elevation datasets' labels by source byte (`src.u8`), from their accepted
@@ -479,9 +483,9 @@ that decodes and parses, else the next.
 - `coverage`: the regions built for: those done at publish time as their recipes then were
   (`--ready <id>=<outline digest>,…`), and those not done yet as the last catalog had them, in the
   recipes' order. A region still building (the agent's `--building <id>=<built>/<total>,…`: every
-  region its plan doesn't record built, with its units built of those it builds, by the records)
+  region its plan doesn't record built, with its z6 tiles built of those it builds, by the records)
   that the last catalog didn't have built is recorded as its recipe is now with `tiles`
-  (`coverage::DrawnRegion::tiles`): its units are on the map, and downloadable, as they come. A
+  (`coverage::DrawnRegion::tiles`): its z6 tiles are on the map, and downloadable, as they come. A
   built region has no `tiles`; an app made before them reads such a region as built, and this app
   reads a catalog without them as before. Outlines are GeoJSON MultiPolygon coordinates in degrees to 5 decimals, rings
   closed: `osm:` entries from the pass's simplified outlines, others simplified by size (60 m–1 km);
@@ -707,17 +711,16 @@ class, id) within a tile. The client sends the id with the clicked point.
 
 ## Other files (listed, not specified)
 
-- **The OSM pass** (`sources/osm/<date>/`): `planet.osm.pbf`; `filtered`; `pieces/<u>`,
-  `pieces.json`; `sets/<name>[-v<n>]`; `roads/<u>.bin` (32 B a way: u64 way id, its road values);
+- **The OSM pass** (`sources/osm/<date>/`): `planet.osm.pbf`; `filtered`; `pieces/<u>` (the z6 tile extracts), `pieces.json`; `sets/<name>[-v<n>]`; `roads/<u>.bin` (32 B a way: u64 way id, its road values);
   `outlines` (sectioned, meta `fmt` "outlines-1" and the `repaired`, `stale`, `unassembled`
   relations; `recs` (64 B `OutlineRec`), `rings`, `points`, `srings`, `spoints`, `strings`);
-  `reach.json.zst` (`{fmt, date, units: {"6/x/y": {owned: [w, s, e, n] | null, long: [{owned,
-  ferry, verts}], cells: [[x, y]]}}}`, E7: the box of a unit's ways within its tile + 20 km, every
+  `reach.json.zst` (`{fmt, date, units: {"6/x/y" (`units`: the stored key): {owned: [w, s, e, n] | null, long: [{owned,
+  ferry, verts}], cells: [[x, y]]}}}`, E7: the box of a z6 tile's ways within it + 20 km, every
   way reaching further, whole, and the 1° cells (west, south corners, degrees) its ways other than
   ferries start in; `pipeline::reach`); `pass.json`.
-- **Global files:** `global/roads/<u>` (above); `global/roadids/<u>` (`ids`: the unit's road ids,
-  sorted u64, each once); `global/roadunits` (`pairs`: sorted u64 road, u64 unit key; `srcs`: JSON
-  `[ROADUNITS_V, [[unit key, content name of what it read]]]`); `global/railfreq` (as `/api/railfreq`); `global/marks/summary` (`{fmt, kinds,
+- **Global files:** `global/roads/<u>` (above); `global/roadids/<u>` (`ids`: the z6 tile's road ids,
+  sorted u64, each once); `global/roadunits` (`pairs`: sorted u64 road, u64 z6 tile key; `srcs`: JSON
+  `[ROADUNITS_V, [[z6 tile key, content name of what it read]]]`); `global/railfreq` (as `/api/railfreq`); `global/marks/summary` (`{fmt, kinds,
   tiers}`); `global/roaden/<u>` (`{OSM way id: English}` where `name:en` differs); `global/spoken`
   (`names::spoken::Spoken::to_bytes`); `global/heritage/*`.
 - **Grid layers:** `grid-{class,canopy,cover}` hi packs of z11 tiles, encoding `u8-zstd`, not served.
@@ -726,7 +729,7 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **Work files** (zstd JSON lines unless said): `work/pois/<u>`, `work/peaks/<u>`,
   `work/summits/<date>`, `work/trailends/<date>`; `work/heritage/<date>/{base/<stem>, pos/6-x-y.json,
   parts/6-x-y.json, areas/6-x-y.jsonl, <stem>}` (`parts`: World Heritage components among `pos`;
-  an area in each z6 tile its box meets); `work/marks/heritage-dots.json`; `work/rail/used.json`
+  `areas`: a heritage or designated area's polygon in each z6 tile its box meets); `work/marks/heritage-dots.json`; `work/rail/used.json`
   (per feed: `id`, `provider`, `url`, `licence`, `fetched`, `status`, and when "ok" `day`, `trips`,
   `duplicates`, `rail_routes`); `work/rail/lines.json` (`{"lines": [{osm, kind, name, ref, operator,
   from, to, km, served_km, passenger}], "unmatched"}`); `work/ferries/lines.json` (`{"lines": [{…,
@@ -757,9 +760,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     `sources/trees/nalcms-2020.tif` (size and CRC-32 checked).
   - Downloads kept so each is made once (temporary names end `.<host>.<pid>.tmp`):
     `sources/canopy/meta_chm_lat=<top>.0_lon=<left>.0_{median,p95,cover5m}.tif` (empty: Meta lacks
-    it); `sources/aws-terrarium/packs/<area>.<hash16>.tiles` (AWS's raw tiles in RDTILES1, areas
+    it); `sources/aws-terrarium/packs/<shard>.<hash16>.tiles` (AWS's raw tiles in RDTILES1, shards
     `6-<x>-<y>` for zooms 9–12, `3-<x>-<y>` for 3–8, `root` for 0–2; an empty entry where AWS lacks
-    the tile; meta `{"kind":"aws-terrarium raw tiles"}`) with `packs/index.json` (`{areas: {area:
+    the tile; meta `{"kind":"aws-terrarium raw tiles"}`) with `packs/index.json` (`{areas: {shard:
     [{name, bytes}, …]}, gone: {name: unix seconds}}`, archives oldest first, read newest first;
     `gone` deleted a day after), and loose `sources/aws-terrarium/<z>/<x>/<y>.png` (`.none`);
     `sources/pageviews/<YYYY-MM>.tsv.zst` (a `#langs\t<lang>,…` line, then
@@ -783,7 +786,7 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **Stop pairs** (railgtfs.py's, docs/inputs.md §6.7.2): 21-byte records, f32 lon_a, lat_a, lon_b,
   lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular; +0x80 a lower bound; +0x20 / +0x40 stop A /
   B beyond the coverage), f32 trains A → B on a typical weekday.
-- **Kept for units' later runs** (`cache/`, not swept): `cache/dem-units/<u>.<box>.dem` (`<box>` 32
+- **Kept for z6 tiles' later runs** (`cache/`, not swept): `cache/dem-units/<u>.<box>.dem` (`<box>` 32
   hex digits: "RDDEM002", u64 count, the points' box (4 × i32), what it was sampled under (4 × u32:
   `u32::MAX`, 0, the declared elevation datasets' digest in two halves), then sorted keys,
   elevations, sources) and `cache/scenic-units/<u>/` (canopy.keys, canopy.tiles, view.keys,
@@ -794,7 +797,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     lead's agent runs (`page`: the build page over HTTPS when `tailscale serve` proxies it).
   - On the lead, `agent/coord/`: `workers-token` (32 hex digits, mode 600); `page`; `leases.json`
     (`{next, leases: [{id, worker, work, progress}]}`); `costs.json` (`{<cost key>: {peak_mb,
-    secs, worker, v, sizes}}`, `sizes` as in `costs.jsonl`, absent before task #235; keys: a unit, `"<step> <target>"`, or `"<kind> <unit>"` for tasks: `tail 6/x/y`,
+    secs, worker, v, sizes}}`, `sizes` as in `costs.jsonl`, absent before task #235; keys: a z6 tile, `"<step> <target>"`, or `"<kind> <tile>"` for tasks: `tail 6/x/y`,
     `bldtile 8/x/y`, `treeblock 8/x/y`, `terrainsub 8/x/y`); `floors.json` (`{<cost key>: {mb, alone,
     v}}`, crate::agent::memguard::Floor; `scenic pool floors` lists and clears them);
     `disks.json` (`{<cost key>: MB}`, rising only, docs/pool.md §7.7); `job-disks-v5.json`
@@ -810,12 +813,12 @@ class, id) within a tile. The client sends the id with the clicked point.
     of z3 `terrain` and `trees` runs, an old step shape, dropped from `costs.json`, `floors.json`
     and `disks.json` as they're read); `journal/<worker>/` (hand-offs sent rather than journaled, drained into the
     pool's journal); `tasks/<id>/`; `pause.json` (`{pause: {mode: "drain" | "freeze", by, at} | null,
-    at}`, `pipeline::control::Pause`); `costs.jsonl` (`SCENIC_COSTS`: `{unit, started}` as a target
+    at}`, `pipeline::control::Pause`); `costs.jsonl` (`SCENIC_COSTS`: `{unit, started}` (`unit`: the target, stored so) as a target
     begins, `{unit, peak_mb, secs, v, disk_mb, sizes}` as it ends; `sizes`, `pipeline::costin`, a
-    map of the target's input measures, absent from lines before it: `bytes` and `threads` (the threads it was given) always, `cpu_ms` (its process's CPU time over the target, its programs' as each is waited for; a unit's with its tail's steps run here after its other measures were taken) where it can be read
-    (bytes: what the store's readers read for the target, plus a step's own inputs: a unit's piece,
-    pack's and lo's base packs, pois' piece); `km2` (the tile's area) and `tiffs` (GeoTIFFs opened)
-    for every tile target; a unit's `ways` and `vertices` kept, `piece_ways`, `dem_tiles`. A unit's
+    map of the target's input measures, absent from lines before it: `bytes` and `threads` (the threads it was given) always, `cpu_ms` (its process's CPU time over the target, its programs' as each is waited for; a z6 tile's with its tail's steps run here after its other measures were taken) where it can be read
+    (bytes: what the store's readers read for the target, plus a step's own inputs: a z6 tile's extract,
+    pack's and lo's base packs, pois' extract); `km2` (the tile's size in km²) and `tiffs` (GeoTIFFs opened)
+    for every tile target; a z6 tile's `ways` and `vertices` kept, `piece_ways`, `dem_tiles`. A z6 tile's
     bytes and tiffs include its programs' own (each run with `SCENIC_READS` naming a file it
     appends `<bytes> <tiffs>` to as it exits, `costin::report_on_exit`), its tail's steps run here
     after its other measures were taken among them; a tail a worker ran (settled remotely) adds
@@ -842,7 +845,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   - **Lead asks** (`pipeline::control::LeadRequest`, docs/pool.md §6.3): `lead-request.json`, `{ask:
     {kind: "give", to} | {kind: "take", force, downgrade}, by, at}`, from the menu or `scenic lead`; the build page's via `POST /work/lead` (never forced).
   - A hand-off (`pipeline::handoff`): `{changes: {logical: content name | null}, pending: {content
-    name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] | null, raw: [[area,
+    name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] | null, raw: [[shard,
     {name, bytes}], …]}`, named `<ns>-<pid>.json` in write order; `<folder>.merged` holds the last
     merged; `.bad` one set aside unparsed.
   - `state/helpers/<host>.json`: a member's status while not leading.

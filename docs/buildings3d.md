@@ -53,7 +53,7 @@ Companions: `docs/steps.md` (pipeline, keys), `docs/building.md` (order), `docs/
 | France's IGN BD TOPO, Japan's PLATEAU | Planned (§5): measured heights where they replace estimates |
 
 The same release serves the roadside-buildings factor and the 3D buildings, so they agree; a new
-release re-keys every unit and every buildings tile together. In the coverage, ~339 M buildings and
+release re-keys every z6 tile's roads and every buildings tile together. In the coverage, ~339 M buildings and
 2.8 M parts; 48 % have a height or floors, 37 % of all heights being Microsoft's estimates (which
 grow ~1.2 m a floor and rarely reach 20 m, so they rank after floors).
 
@@ -135,16 +135,16 @@ release (§5).
   in f64, rounds to E7, keeps what's centred in T, samples GHSL and writes the normalized file.
   Python only decodes; every number in a file is computed in Rust. Checks the columns' names and
   types, failing on a schema change.
-- **`bldtiles T`**, per z6 tile meeting the coverage, a z8 area at a time (`pipeline::bld::job`):
+- **`bldtiles T`**, per z6 tile meeting the coverage, a z8 tile at a time (`pipeline::bld::job`):
   the buildings of T touching the coverage, heights filled (reading the buildings within 620 m
-  around the area), the z14 tiles encoded (`bld::tiles`), and the field's levels 14–9 and each
-  area's level-8 planes (`bld::field`). A building within 310 m beyond the area that reaches into
+  around the z8 tile), the z14 tiles encoded (`bld::tiles`), and the field's levels 14–9 and each
+  z8 tile's level-8 planes (`bld::field`). A building within 310 m beyond the z8 tile that reaches into
   its tiles is filled there too, for its copies (§3.4). Pure. A tile with no building loses its
   packs.
 - **`bldfield-lo`**, per z3 tile once all its `bldtiles` targets are done: field levels 8–4 from the
   mids, as `terrain-lo` and `trees-lo`.
 
-No unit's key reads any of them.
+No `unit` (roads) key reads any of them.
 
 ### 3.2 Keys and versions
 
@@ -168,7 +168,7 @@ No unit's key reads any of them.
 ### 3.3 Order, publishing, the chain
 
 `agent::build::bld_work`:
-- **A chain of its own**, beside the roads', trains' and landmarks'. It reads no unit and no
+- **A chain of its own**, beside the roads', trains' and landmarks'. It reads no roads and no
   terrain, so runs from the start: `bld-fetch` when its key changed; a prune of files no target
   has; every stale `bldprep`; `bldtiles T` once T and its 8 neighbours are prepared and the sources
   are here; `bldfield-lo` once its z3 tile's `bldtiles` are done. Listed after the landmarks', tiles
@@ -222,20 +222,20 @@ docs/formats.md has the bytes. In brief:
   (`agent::steps::SHARED`); a hand-off saves only its tiles' files (`coord::saves`). `bldprep` needs
   the NAS (up to ~3 GB of parquet a tile). Memory is learned per target (`SCENIC_COSTS`, "bldprep
   6/x/y", "bldtiles 6/x/y"); first guesses (`agent::bld_peak`): 0.3 GB + 160 B a row read for
-  `bldprep`, 0.25 GB + 280 B a building of the largest z8 area (taken as two fifths of the rows) for
+  `bldprep`, 0.25 GB + 280 B a building of the largest z8 tile (taken as two fifths of the rows) for
   `bldtiles`.
 - **Pages** (docs/workers.md §3, `pipeline::bld::task`): under the agent, a `bldtiles` job offers
-  some of each tile's z8 areas as tasks of kind `bldtile` while workers that take them are around
+  some of each tile's z8 tiles as tasks of kind `bldtile` while workers that take them are around
   (one per worker, three at once, from the far end of the tile's list). The task's files, cut on the
-  lead: the blocks of T's and its neighbours' work files the area reads, the coverage's shapes that
+  lead: the blocks of T's and its neighbours' work files the z8 tile reads, the coverage's shapes that
   can answer for its points, T's heritage points. The program `bldtile` (`/work/prog/bldtile.wasm`
-  in a page, the app's `bldtile` on a Mac via `scenic run-task`) writes the area's z14 tiles, field
-  levels 14–9, level-8 planes and summary; the job puts them into the pack in the area's turn. In
-  its turn, an area not taken waits 30 s for a faster worker, then is made here; one out is waited
+  in a page, the app's `bldtile` on a Mac via `scenic run-task`) writes the z8 tile's z14 tiles, field
+  levels 14–9, level-8 planes and summary; the job puts them into the pack in the z8 tile's turn. In
+  its turn, a z8 tile not taken waits 30 s for a faster worker, then is made here; one out is waited
   for while the worker's pace says it'll beat the job, else raced. A worker's first three results,
   then one in eight, are checked byte for byte against the job's own run; a difference marks the
   worker bad. Memory first guessed from its files and the model above; a worker's measure replaces
-  it (`bldtile 8/x/y`). Areas larger than a page can hold go to a Mac.
+  it (`bldtile 8/x/y`). Z8 tiles larger than a page can hold go to a Mac.
 - `bldprep` isn't a task: pages can't reach the NAS's parquet.
 - An app that predates these steps drops their records; `Keys` keeps records it doesn't know
   (`other`).
@@ -383,9 +383,9 @@ is drawn twice nor missed.
 
 **Tiles** (formats.md, The field): 512 × 512 texels, levels 4–14 (level 14's texel 4.8 m at the
 equator).
-- Built in `bldtiles T` per z8 area with the meshes: every building and part extruded meeting the
-  area, rasterized into level 14 (exact areas, walls deposited texel by texel, i64 fixed point),
-  then levels 13–9 by means of four. Each area's level-8 planes go exactly into T's mid
+- Built in `bldtiles T` per z8 tile with the meshes: every building and part extruded meeting the
+  z8 tile, rasterized into level 14 (exact areas, walls deposited texel by texel, i64 fixed point),
+  then levels 13–9 by means of four. Each z8 tile's level-8 planes go exactly into T's mid
   (`work/bldfield-mid/6-x-y`); `bldfield-lo` makes levels 8–4.
 - Encoding `field5-webp`: 8-bit lossless WebP (√f, log2(1 + w), each class's mean top within its
   range; then the centroid offsets). Decoded to linear values in the worker before mipmaps.
@@ -483,17 +483,17 @@ Tokyo 56 → 36), ~8 ms with `?bldfield=off`; a still view repainted, with the c
 
 - **The release leaves S3 on 2026-11-25.** The coverage's files stay on the NAS; a later region
   whose files are missing fails `bld-fetch` (naming them) until the next pinned release, which
-  fetches ~62 GB and rebuilds every unit and buildings tile. Old releases are deleted by hand (GC
+  fetches ~62 GB and rebuilds every z6 tile's roads and every buildings tile. Old releases are deleted by hand (GC
   never sweeps `sources/`).
 - **Estimated heights:** 88 % of buildings; tall unmeasured ones come out low, so skylines are thin
   where heights aren't measured. Planned: measured heights from BD TOPO (France) and PLATEAU
   (Japan's cities).
-- **Planned:** building heights in the near-field horizons and the viewshed tool (every unit
+- **Planned:** building heights in the near-field horizons and the viewshed tool (every z6 tile's roads
   rebuilt); a custom layer (§4.7); click to open the OSM way; the tallest building in the In view
   summary.
 - **Occlusion artefacts:** where the terrain mesh lies above a road, a building behind it can show
   over it; a bridge deck near a wall (§4.2).
 - **Rare geometry:** a MultiPolygon's polygon or a hole wholly beyond one edge of its tile isn't
-  drawn (MapLibre skips rings outside the tile); copies reach only 310 m beyond a z8 area, so a huge
+  drawn (MapLibre skips rings outside the tile); copies reach only 310 m beyond a z8 tile, so a huge
   building's flat footprint can be cut; neighbours aren't wrapped across the antimeridian.
 - **Overlapping footprints** from conflation could z-fight; none seen so far.

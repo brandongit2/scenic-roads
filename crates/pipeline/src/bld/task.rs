@@ -1,23 +1,23 @@
-//! A z8 area of `bldtiles T` as a task (docs/buildings3d.md §3.6, docs/workers.md §3): its files cut
+//! A z8 tile of `bldtiles T` as a task (docs/buildings3d.md §3.6, docs/workers.md §3): its files cut
 //! from T's and its neighbours' work files where the job runs, the program `bldtile` (natively, or
-//! as WebAssembly in a page) making the area's tiles from them, and the job taking them into T's
-//! pack in the area's turn.
+//! as WebAssembly in a page) making the z8 tile's tiles from them, and the job taking them into T's
+//! pack in the z8 tile's turn.
 //!
 //! A task's folder (`u/` on a worker; docs/formats.md):
-//! - `6-<x>-<y>.sect`: of T's and its 8 neighbours' work files, those with a block the area reads
-//!   (`job::area_blocks`: its own, and those within the margin around it), each a work file of the
+//! - `6-<x>-<y>.sect`: of T's and its 8 neighbours' work files, those with a block the z8 tile reads
+//!   (`job::z8_blocks`: its own, and those within the margin around it), each a work file of the
 //!   same format and meta holding only those blocks, their bytes as stored (not compressed again);
-//! - `coverage.sect`: the coverage's shapes that can answer for a point the area asks about (any of
+//! - `coverage.sect`: the coverage's shapes that can answer for a point the z8 tile asks about (any of
 //!   its blocks' records' centroids and vertices, and the blocks' boxes), in the recipes' order,
 //!   each whole with its buffer and country: a building's shape is then the same shape (another
 //!   index), so its country and the first-match order are the same.
 //!
 //! - `heritage.bin`: T's heritage sites (`job::sites`), E7 pairs (i32 LE), sorted.
 //!
-//! What the program writes there: `area.tiles` (an RDTILES archive of the area's z14 tiles, as
-//! `job::area_tiles` makes them), `area.json` (its `job::Summary`), `area.field` (an RDTILES
+//! What the program writes there: `area.tiles` (an RDTILES archive of the z8 tile's z14 tiles, as
+//! `job::z8_tiles` makes them), `area.json` (its `job::Summary`), `area.field` (an RDTILES
 //! archive of its field's tiles, levels 14–9) and `area.mid` (its level-8 planes, `field::write_mid`;
-//! none without a building). The job's own run of an area
+//! none without a building). The job's own run of a z8 tile
 //! (one no worker finished, or a worker's result checked) writes the same two files the same way,
 //! from the whole work files: a worker's are compared with them byte for byte.
 
@@ -25,7 +25,7 @@ use super::field;
 use super::job::{self, AddTile, Summary};
 use super::work::{self, WorkFile};
 use crate::coverage::{Coverage, Shape};
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use anyhow::{ensure, Context, Result};
 use roadcore::archive::{Archive, ArchiveWriter};
 use std::collections::BTreeMap;
@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 
 /// The coverage's file in a task's folder.
 pub const COVERAGE: &str = "coverage.sect";
-/// What the program writes: the area's tiles, and what it made.
+/// What the program writes: the z8 tile's tiles, and what it made.
 pub const TILES: &str = "area.tiles";
 pub const SUMMARY: &str = "area.json";
 pub const FIELD: &str = "area.field";
@@ -50,7 +50,7 @@ fn file_name(x: i64, y: i64) -> String {
     format!("6-{x}-{y}.sect")
 }
 
-/// What a cut wrote: its files' bytes, and the area's own buildings and parts (its blocks' counts).
+/// What a cut wrote: its files' bytes, and the z8 tile's own buildings and parts (its blocks' counts).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Cut {
     pub bytes: u64,
@@ -59,19 +59,19 @@ pub struct Cut {
 
 impl Cut {
     /// A task's predicted memory (MB): its files three times over (a page holds them, the program
-    /// reads them in, and room as much again), and the model of `bldtiles` for an area of its
+    /// reads them in, and room as much again), and the model of `bldtiles` for a z8 tile of its
     /// records (`crate::agent::bldtiles_peak`, the field's cells in flight with it).
     pub fn mem_mb(&self) -> u64 {
         (self.bytes >> 20) * 3 + crate::agent::bldtiles_peak(self.records * 5 / 2)
     }
 }
 
-/// Writes area `a`'s task files (of T, `files` its and its neighbours' work files as
+/// Writes z8 tile `a`'s task files (of T, `files` its and its neighbours' work files as
 /// `job::work_files` has them) into `dir`.
 pub fn cut(
     files: &[Option<WorkFile>],
     cov: &Coverage,
-    t: Unit,
+    t: TileId,
     a: (u32, u32),
     sites: &[[i32; 2]],
     dir: &Path,
@@ -79,9 +79,9 @@ pub fn cut(
     ensure!(files.len() == 9, "T and its 8 neighbours");
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join(SITES), sites_bytes(sites))?;
-    let (list, n_own) = job::area_blocks(files, t, a);
+    let (list, n_own) = job::z8_blocks(files, t, a);
     let records = list[..n_own].iter().map(|(_, e)| e.count as u64).sum();
-    // Each file's blocks, by key; and the box of every point the area asks the coverage about.
+    // Each file's blocks, by key; and the box of every point the z8 tile asks the coverage about.
     let mut by_file: BTreeMap<usize, Vec<work::IndexEntry>> = BTreeMap::new();
     let mut ext = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
     let mut grow = |p: [i32; 2]| ext = [ext[0].min(p[0]), ext[1].min(p[1]), ext[2].max(p[0]), ext[3].max(p[1])];
@@ -186,7 +186,7 @@ pub fn read_coverage(path: &Path) -> Result<Coverage> {
 
 /// A task folder's work files, as `job::work_files` has T's and its neighbours' (those not there:
 /// none).
-pub fn open_files(dir: &Path, t: Unit) -> Result<Vec<Option<WorkFile>>> {
+pub fn open_files(dir: &Path, t: TileId) -> Result<Vec<Option<WorkFile>>> {
     let mut files = Vec::with_capacity(9);
     for dy in -1i64..=1 {
         for dx in -1i64..=1 {
@@ -197,25 +197,25 @@ pub fn open_files(dir: &Path, t: Unit) -> Result<Vec<Option<WorkFile>>> {
     Ok(files)
 }
 
-/// The z6 tile of area `a` (a z8 tile).
-pub fn tile_of(a: Unit) -> Unit {
-    Unit { z: 6, x: a.x >> 2, y: a.y >> 2 }
+/// The z6 tile of z8 tile `a` (a z8 tile).
+pub fn tile_of(a: TileId) -> TileId {
+    TileId { z: 6, x: a.x >> 2, y: a.y >> 2 }
 }
 
 /// Area `a`'s tiles and summary written into `dir` (`TILES`, `SUMMARY`), from `files` and `cov`
 /// (the whole work files and coverage, or a task's): the program's run and the job's own.
-pub fn write_area(
+pub fn write_z8(
     files: &[Option<WorkFile>],
     cov: &Coverage,
-    a: Unit,
+    a: TileId,
     sites: &[[i32; 2]],
     dir: &Path,
 ) -> Result<Summary> {
-    ensure!(a.z == 8, "an area is a z8 tile ({} isn't one)", a.slash());
+    ensure!(a.z == 8, "a z8 tile is a z8 tile ({} isn't one)", a.slash());
     std::fs::create_dir_all(dir)?;
     let meta = serde_json::json!({ "layer": super::LAYER, "area": a.slash(), "encoding": "mvt" }).to_string();
     let mut w = ArchiveWriter::create(&dir.join(TILES), &meta)?;
-    let (sum, f) = job::area_tiles(files, cov, tile_of(a), (a.x, a.y), sites, &mut |z, x, y, gz, raw| {
+    let (sum, f) = job::z8_tiles(files, cov, tile_of(a), (a.x, a.y), sites, &mut |z, x, y, gz, raw| {
         w.add(z, x, y, gz, raw as usize)
     })?;
     w.finish()?;
@@ -233,35 +233,35 @@ pub fn write_area(
     Ok(sum)
 }
 
-/// The program's run: area `a`'s task folder `dir` read, its tiles and summary written there.
-pub fn run(dir: &Path, a: Unit) -> Result<Summary> {
+/// The program's run: z8 tile `a`'s task folder `dir` read, its tiles and summary written there.
+pub fn run(dir: &Path, a: TileId) -> Result<Summary> {
     let files = open_files(dir, tile_of(a))?;
     let cov = read_coverage(&dir.join(COVERAGE))?;
-    write_area(&files, &cov, a, &read_sites(&dir.join(SITES))?, dir)
+    write_z8(&files, &cov, a, &read_sites(&dir.join(SITES))?, dir)
 }
 
-/// An area's results in `dir` (`write_area`'s, a worker's or this Mac's), each tile given to `add`
-/// in order (zoom, x, y: as `area_tiles` gives them); its summary and field. A tile outside the
-/// area, or of another zoom or level, is refused.
-pub fn take_area(dir: &Path, a: Unit, add: &mut AddTile) -> Result<(Summary, field::AreaField)> {
-    let sum: Summary = serde_json::from_slice(&std::fs::read(dir.join(SUMMARY))?).context("an area's summary")?;
+/// A z8 tile's results in `dir` (`write_z8`'s, a worker's or this Mac's), each tile given to `add`
+/// in order (zoom, x, y: as `z8_tiles` gives them); its summary and field. A tile outside the
+/// z8 tile, or of another zoom or level, is refused.
+pub fn take_z8(dir: &Path, a: TileId, add: &mut AddTile) -> Result<(Summary, field::Z8Field)> {
+    let sum: Summary = serde_json::from_slice(&std::fs::read(dir.join(SUMMARY))?).context("a z8 tile's summary")?;
     let ar = Archive::open(&dir.join(TILES))?;
     for e in ar.entries() {
         let (z, x, y) = super::key_zxy(e.key);
         ensure!(
             z == super::ZOOM && (x >> (z - 8), y >> (z - 8)) == (a.x, a.y),
-            "area {}'s tiles hold {z}/{x}/{y}",
+            "z8 tile {}'s tiles hold {z}/{x}/{y}",
             a.slash()
         );
         add(z, x, y, ar.get_entry(e), e.raw_len)?;
     }
-    let mut f = field::AreaField::default();
+    let mut f = field::Z8Field::default();
     let ar = Archive::open(&dir.join(FIELD))?;
     for e in ar.entries() {
         let (z, x, y) = super::key_zxy(e.key);
         ensure!(
             (field::LEVEL_HI_MIN..=field::LEVEL_MAX).contains(&z) && (x >> (z - 8), y >> (z - 8)) == (a.x, a.y),
-            "area {}'s field holds {z}/{x}/{y}",
+            "z8 tile {}'s field holds {z}/{x}/{y}",
             a.slash()
         );
         f.tiles.push((z, x, y, ar.get_entry(e).to_vec()));
@@ -271,7 +271,7 @@ pub fn take_area(dir: &Path, a: Unit, add: &mut AddTile) -> Result<(Summary, fie
     match std::fs::read(dir.join(MID)) {
         Ok(b) => {
             let mut m = field::read_mid(&b)?;
-            ensure!(m.len() == 1 && m.contains_key(&(a.x, a.y)), "area {}'s mid holds another area", a.slash());
+            ensure!(m.len() == 1 && m.contains_key(&(a.x, a.y)), "z8 tile {}'s mid holds another z8 tile", a.slash());
             f.mid = m.remove(&(a.x, a.y));
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -280,9 +280,9 @@ pub fn take_area(dir: &Path, a: Unit, add: &mut AddTile) -> Result<(Summary, fie
     Ok((sum, f))
 }
 
-/// A task's spec (the shape of a tail's: crate::offload) for area `a`: the program `bldtile` over
+/// A task's spec (the shape of a tail's: crate::offload) for z8 tile `a`: the program `bldtile` over
 /// its folder.
-pub fn spec(a: Unit, version: &str, inputs: &BTreeMap<String, u64>) -> serde_json::Value {
+pub fn spec(a: TileId, version: &str, inputs: &BTreeMap<String, u64>) -> serde_json::Value {
     let run = crate::unit::Run {
         what: KIND.into(),
         prog: KIND.into(),
@@ -303,7 +303,7 @@ pub fn inputs_of(root: &Path) -> Result<BTreeMap<String, u64>> {
     Ok(out)
 }
 
-/// Whether two areas' results are the same bytes (every file, `MID` there in both or neither).
+/// Whether two z8 tiles' results are the same bytes (every file, `MID` there in both or neither).
 pub fn same_files(a: &Path, b: &Path) -> bool {
     OUTPUTS.iter().all(|f| match (std::fs::read(a.join(f)), std::fs::read(b.join(f))) {
         (Ok(x), Ok(y)) => x == y,
@@ -314,33 +314,33 @@ pub fn same_files(a: &Path, b: &Path) -> bool {
     })
 }
 
-/// Where an area's results wait for its turn in the pack.
-pub fn results_dir(scratch: &Path, a: Unit) -> PathBuf {
+/// Where a z8 tile's results wait for its turn in the pack.
+pub fn results_dir(scratch: &Path, a: TileId) -> PathBuf {
     scratch.join("bldtile-results").join(a.dash())
 }
 
-/// A `bldtiles` job's areas out as tasks (crate::offload), as a unit job's tails are: offered from
+/// A `bldtiles` job's z8 tiles out as tasks (crate::offload), as a unit job's tails are: offered from
 /// the far end of T's list while workers that take them are around (at most three out at once),
-/// settled in their turn. Nothing waits on a worker longer than this Mac would take: an area no one
+/// settled in their turn. Nothing waits on a worker longer than this Mac would take: a z8 tile no one
 /// took is given a moment, then taken back and run here; one a worker holds is waited on while the
 /// worker will be back with it before this Mac's run would end (crate::offload::Patience: its
-/// buildings at the pace of the areas made here), then raced here; a worker's result is taken, or
+/// buildings at the pace of the z8 tiles made here), then raced here; a worker's result is taken, or
 /// (the coordinator says when) checked against this Mac's run byte for byte, a difference marking
 /// the worker bad.
 pub struct Offers<'a> {
     offload: Option<&'a crate::offload::Offload>,
-    t: Unit,
+    t: TileId,
     /// Where results wait for their turn (`results_dir`).
     scratch: PathBuf,
-    /// The areas out (by their place in T's list), and those settled before their turn.
+    /// The z8 tiles out (by their place in T's list), and those settled before their turn.
     out: BTreeMap<usize, crate::offload::Offered>,
     ready: BTreeMap<usize, PathBuf>,
-    /// The areas from here to the end were offered (or kept here).
+    /// The z8 tiles from here to the end were offered (or kept here).
     far: usize,
     /// At most this many out at once.
     most: usize,
-    /// The buildings each area out has (its work files' records), and the areas made here so far:
-    /// their time and buildings (what an area takes here, `Patience`).
+    /// The buildings each z8 tile out has (its work files' records), and the z8 tiles made here so far:
+    /// their time and buildings (what a z8 tile takes here, `Patience`).
     records: BTreeMap<usize, u64>,
     here: (f64, u64),
     /// T's heritage sites (`SITES`).
@@ -351,8 +351,8 @@ impl<'a> Offers<'a> {
     pub fn new(
         offload: Option<&'a crate::offload::Offload>,
         scratch: &Path,
-        t: Unit,
-        areas: usize,
+        t: TileId,
+        z8s: usize,
         sites: &[[i32; 2]],
     ) -> Offers<'a> {
         let scratch = scratch.to_path_buf();
@@ -363,7 +363,7 @@ impl<'a> Offers<'a> {
             scratch,
             out: BTreeMap::new(),
             ready: BTreeMap::new(),
-            far: areas,
+            far: z8s,
             most: 3,
             records: BTreeMap::new(),
             here: (0.0, 0),
@@ -371,27 +371,27 @@ impl<'a> Offers<'a> {
         }
     }
 
-    /// An area made here took `secs` for its `records` buildings (and parts, and those outside).
+    /// A z8 tile made here took `secs` for its `records` buildings (and parts, and those outside).
     pub fn made_here(&mut self, records: u64, secs: f64) {
         self.here = (self.here.0 + secs, self.here.1 + records);
     }
 
-    /// About how long area `i` would take here (seconds), at the pace of those made here so far.
+    /// About how long z8 tile `i` would take here (seconds), at the pace of those made here so far.
     fn here_s(&self, i: usize) -> Option<f64> {
         let (secs, n) = self.here;
         (n > 0).then(|| secs / n as f64 * self.records.get(&i).copied().unwrap_or(0) as f64)
     }
 
-    fn area(&self, areas: &[(u32, u32)], i: usize) -> Unit {
-        Unit { z: 8, x: areas[i].0, y: areas[i].1 }
+    fn z8(&self, z8s: &[(u32, u32)], i: usize) -> TileId {
+        TileId { z: 8, x: z8s[i].0, y: z8s[i].1 }
     }
 
-    /// Before area `k` runs: the areas workers finished meanwhile settled, and more offered from the
+    /// Before z8 tile `k` runs: the z8 tiles workers finished meanwhile settled, and more offered from the
     /// far end (beyond `k`) while fewer are out than workers around (at most three).
-    pub fn top_up(&mut self, files: &[Option<WorkFile>], cov: &Coverage, areas: &[(u32, u32)], k: usize) -> Result<()> {
+    pub fn top_up(&mut self, files: &[Option<WorkFile>], cov: &Coverage, z8s: &[(u32, u32)], k: usize) -> Result<()> {
         let Some(o) = self.offload else { return Ok(()) };
         for i in self.out.keys().copied().collect::<Vec<_>>() {
-            self.settle(files, cov, areas, i, false)?;
+            self.settle(files, cov, z8s, i, false)?;
         }
         if self.far <= k + 1 || self.out.len() >= self.most {
             return Ok(());
@@ -399,7 +399,7 @@ impl<'a> Offers<'a> {
         let depth = o.workers(KIND).min(self.most);
         while self.out.len() < depth && self.far > k + 1 {
             self.far -= 1;
-            let a = self.area(areas, self.far);
+            let a = self.z8(z8s, self.far);
             let offered = (|| {
                 let root = o.task_root(&format!("bldtile-{}", a.dash()));
                 let c = cut(files, cov, self.t, (a.x, a.y), &self.sites, &root.join("u"))?;
@@ -413,7 +413,7 @@ impl<'a> Offers<'a> {
                 }
                 Err(e) => {
                     // (Run here in its turn, and none offered after it.)
-                    eprintln!("bldtiles {}: area {} not offered ({e:#}); run here", self.t.slash(), a.slash());
+                    eprintln!("bldtiles {}: z8 tile {} not offered ({e:#}); run here", self.t.slash(), a.slash());
                     self.most = 0;
                     break;
                 }
@@ -423,36 +423,36 @@ impl<'a> Offers<'a> {
     }
 
     /// Area `k`'s results, if it was offered: settled now (waiting for no one), in a folder to take
-    /// into the pack (`take_area`) and remove. None: it's to run here.
+    /// into the pack (`take_z8`) and remove. None: it's to run here.
     pub fn result(
         &mut self,
         files: &[Option<WorkFile>],
         cov: &Coverage,
-        areas: &[(u32, u32)],
+        z8s: &[(u32, u32)],
         k: usize,
     ) -> Result<Option<PathBuf>> {
         if self.out.contains_key(&k) {
-            self.settle(files, cov, areas, k, true)?;
+            self.settle(files, cov, z8s, k, true)?;
         }
         Ok(self.ready.remove(&k))
     }
 
-    /// Settles area `i`'s task (with `wait` false, only when a worker finished or failed it; else
+    /// Settles z8 tile `i`'s task (with `wait` false, only when a worker finished or failed it; else
     /// with the patience its time here allows): its results put in its folder.
     fn settle(
         &mut self,
         files: &[Option<WorkFile>],
         cov: &Coverage,
-        areas: &[(u32, u32)],
+        z8s: &[(u32, u32)],
         i: usize,
         wait: bool,
     ) -> Result<()> {
         let (Some(o), Some(task)) = (self.offload, self.out.get(&i)) else { return Ok(()) };
-        let a = self.area(areas, i);
+        let a = self.z8(z8s, i);
         let mine = results_dir(&self.scratch, a);
         let here = || -> Result<()> {
             std::fs::remove_dir_all(&mine).ok();
-            write_area(files, cov, a, &self.sites, &mine).map(|_| ())
+            write_z8(files, cov, a, &self.sites, &mine).map(|_| ())
         };
         let theirs = |st: &serde_json::Value| st["out"].as_str().map(|o| Path::new(o).join("u"));
         let mut take = |st: &serde_json::Value| -> Result<()> {
@@ -469,11 +469,11 @@ impl<'a> Offers<'a> {
                         store::sys::copy_data(from.join(f), mine.join(f)).with_context(|| format!("take {f}"))?;
                     }
                 }
-                take_area(&mine, a, &mut |_, _, _, _, _| Ok(())).map(|_| ())
+                take_z8(&mine, a, &mut |_, _, _, _, _| Ok(())).map(|_| ())
             })();
             if let Err(e) = ok {
                 eprintln!(
-                    "bldtiles {}: area {}: a worker's result doesn't read ({e:#}); run here",
+                    "bldtiles {}: z8 tile {}: a worker's result doesn't read ({e:#}); run here",
                     self.t.slash(),
                     a.slash()
                 );
@@ -484,7 +484,11 @@ impl<'a> Offers<'a> {
         let mut same = |st: &serde_json::Value, _: std::time::SystemTime| -> Result<bool> {
             let same = theirs(st).is_some_and(|d| same_files(&d, &mine));
             if !same {
-                eprintln!("bldtiles {}: area {}: a worker's tiles differ from this Mac's", self.t.slash(), a.slash());
+                eprintln!(
+                    "bldtiles {}: z8 tile {}: a worker's tiles differ from this Mac's",
+                    self.t.slash(),
+                    a.slash()
+                );
             }
             Ok(same)
         };
@@ -507,7 +511,7 @@ impl<'a> Offers<'a> {
                 format!("here: {w}'s differed, and it gets no more work")
             }
         };
-        eprintln!("bldtiles {}: area {} made {how}", self.t.slash(), a.slash());
+        eprintln!("bldtiles {}: z8 tile {} made {how}", self.t.slash(), a.slash());
         self.out.remove(&i);
         self.records.remove(&i);
         self.ready.insert(i, mine);
@@ -525,7 +529,7 @@ mod tests {
     };
 
     /// Tile `t`'s work file in `dir`, from buildings and parts.
-    fn work(dir: &Path, t: Unit, bs: &[B], parts: &[B]) -> WorkFile {
+    fn work(dir: &Path, t: TileId, bs: &[B], parts: &[B]) -> WorkFile {
         let mut s = prep::MAGIC.to_vec();
         frame(&mut s, false, bs);
         if !parts.is_empty() {
@@ -558,10 +562,10 @@ mod tests {
 
     /// T (6/32/22) and its east neighbour (6/33/22, lon 5.625 on): buildings on both sides of
     /// their edge (measured, with floors, unmeasured among measured ones, one in the neighbour's
-    /// file reaching into T's area, an outline with a part), one in the circles' overlap with
-    /// floors, and a few in Paris (another area).
+    /// file reaching into T's z8 tile, an outline with a part), one in the circles' overlap with
+    /// floors, and a few in Paris (another z8 tile).
     fn files(d: &Path) -> Vec<Option<WorkFile>> {
-        let (t, e) = (Unit { z: 6, x: 32, y: 22 }, Unit { z: 6, x: 33, y: 22 });
+        let (t, e) = (TileId { z: 6, x: 32, y: 22 }, TileId { z: 6, x: 33, y: 22 });
         let lat = 48.80;
         let mut mine = vec![
             B { id: 1, rings: vec![square(5.6235, lat, 0.0004)], height: 45.0, ..Default::default() },
@@ -595,7 +599,7 @@ mod tests {
             ..Default::default()
         }];
         let mut theirs = vec![
-            // Its centroid in the neighbour's tile, reaching west into T's area: copied there.
+            // Its centroid in the neighbour's tile, reaching west into T's z8 tile: copied there.
             B { id: 100, rings: vec![square(5.6240, lat, 0.0025)], height: 18.0, ..Default::default() },
             // In the overlap, and in Spain's alone, with floors.
             B { id: 101, rings: vec![square(5.6380, lat, 0.0002)], floors: 4, ..Default::default() },
@@ -627,23 +631,23 @@ mod tests {
     }
 
     #[test]
-    fn an_areas_task_makes_the_tiles_the_whole_files_make() {
+    fn a_z8_tiles_task_makes_the_tiles_the_whole_files_make() {
         let d = tempfile::tempdir().unwrap();
-        let t = Unit { z: 6, x: 32, y: 22 };
+        let t = TileId { z: 6, x: 32, y: 22 };
         let files = files(d.path());
         let cov = coverage();
-        let areas = job::areas_of(&files);
-        assert_eq!(areas, [(129, 88), (131, 88)]);
+        let z8s = job::z8_tiles_of(&files);
+        assert_eq!(z8s, [(129, 88), (131, 88)]);
         // A heritage site in the 45 m tower.
         let sites = [[crate::bld::e7(5.6235), crate::bld::e7(48.80)]];
         let mut all: Tiles = Vec::new();
         let whole = job::tiles_of(&files, &cov, t, &sites, &mut collect(&mut all)).unwrap();
         let mut merged = Summary::default();
-        let mut by_area: Tiles = Vec::new();
-        for &a in &areas {
-            let a8 = Unit { z: 8, x: a.0, y: a.1 };
+        let mut by_z8: Tiles = Vec::new();
+        for &a in &z8s {
+            let a8 = TileId { z: 8, x: a.0, y: a.1 };
             let mut here: Tiles = Vec::new();
-            let (s, f) = job::area_tiles(&files, &cov, t, a, &sites, &mut collect(&mut here)).unwrap();
+            let (s, f) = job::z8_tiles(&files, &cov, t, a, &sites, &mut collect(&mut here)).unwrap();
             merged.merge(&s);
             assert!(!f.tiles.is_empty() && f.mid.is_some());
             // Cut, run as the program runs, taken back: the same tiles and summary.
@@ -652,17 +656,17 @@ mod tests {
             let got = run(&dir, a8).unwrap();
             assert_eq!(got, s);
             let mut back: Tiles = Vec::new();
-            assert_eq!(take_area(&dir, a8, &mut collect(&mut back)).unwrap(), (s, f));
-            assert_eq!(back, here, "area {}", a8.slash());
+            assert_eq!(take_z8(&dir, a8, &mut collect(&mut back)).unwrap(), (s, f));
+            assert_eq!(back, here, "z8 tile {}", a8.slash());
             assert!(!here.is_empty());
-            // Only the shapes that can answer there, in order; the area's own records counted.
+            // Only the shapes that can answer there, in order; the z8 tile's own records counted.
             let tc = read_coverage(&dir.join(COVERAGE)).unwrap();
             let countries: Vec<&str> = tc.shapes.iter().map(|s| s.country.as_str()).collect();
             if a == (131, 88) {
                 assert_eq!(countries, ["FR", "ES"]);
                 assert!(dir.join("6-33-22.sect").is_file(), "the neighbour's blocks");
                 assert_eq!(c.records, 14);
-                // The neighbour's building copied into the area; the floors of one in the circles'
+                // The neighbour's building copied into the z8 tile; the floors of one in the circles'
                 // overlap by France's storeys (the first shape), not Spain's.
                 assert!(here.iter().any(|tl| props(&tl.3).contains(&(180, 0, 1))), "a copy of the neighbour's");
                 let fr = fill::floors_dm(5, fill::storey("FR")) as u64;
@@ -679,22 +683,22 @@ mod tests {
             let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
             pool.install(|| run(&one, a8)).unwrap();
             assert!(same_files(&one, &dir));
-            by_area.extend(here);
+            by_z8.extend(here);
         }
-        // tiles_of: the areas' tiles in order, their summaries merged.
-        assert_eq!(all, by_area);
+        // tiles_of: the z8 tiles' tiles in order, their summaries merged.
+        assert_eq!(all, by_z8);
         assert_eq!(merged, whole);
         assert!(whole.tiles > 0 && whole.features > 0);
         assert_eq!(whole.heritage, 1, "the tower holding the site");
-        // A worker's tile outside its area is refused.
-        let a8 = Unit { z: 8, x: 131, y: 88 };
+        // A worker's tile outside its z8 tile is refused.
+        let a8 = TileId { z: 8, x: 131, y: 88 };
         let bad = d.path().join("bad");
         std::fs::create_dir_all(&bad).unwrap();
         std::fs::copy(d.path().join(a8.dash()).join(SUMMARY), bad.join(SUMMARY)).unwrap();
         let mut w = ArchiveWriter::create(&bad.join(TILES), "{}").unwrap();
         w.add(14, 1, 1, b"x", 1).unwrap();
         w.finish().unwrap();
-        assert!(take_area(&bad, a8, &mut |_, _, _, _, _| Ok(())).is_err());
+        assert!(take_z8(&bad, a8, &mut |_, _, _, _, _| Ok(())).is_err());
     }
 
     use crate::bld::fill;
@@ -728,7 +732,7 @@ mod tests {
         let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
         assert_eq!(task["runs"][0]["prog"], KIND);
         assert_eq!(task["runs"][0]["args"][0], "{dir}");
-        let a = Unit::parse(task["unit"].as_str().unwrap()).unwrap();
+        let a = TileId::parse(task["unit"].as_str().unwrap()).unwrap();
         std::fs::remove_dir_all(dir).ok();
         let u = dir.join("u");
         std::fs::create_dir_all(&u).unwrap();
@@ -753,12 +757,12 @@ mod tests {
     }
 
     #[test]
-    fn areas_go_to_workers_and_come_back_the_same() {
+    fn z8_tiles_go_to_workers_and_come_back_the_same() {
         let d = tempfile::tempdir().unwrap();
-        let t = Unit { z: 6, x: 32, y: 22 };
+        let t = TileId { z: 6, x: 32, y: 22 };
         let files = files(d.path());
         let cov = coverage();
-        let areas = job::areas_of(&files);
+        let z8s = job::z8_tiles_of(&files);
         let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
         // (The coordinator and the job on a virtual clock: the job's waits are counted in it.)
         let clock = store::clock::Virtual::new();
@@ -767,48 +771,48 @@ mod tests {
         let o =
             crate::offload::Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job")).clock(clock.clone());
         let scratch = d.path().join("job");
-        // No worker around: nothing offered, every area run here.
-        let mut offers = Offers::new(Some(&o), &scratch, t, areas.len(), &[]);
-        offers.top_up(&files, &cov, &areas, 0).unwrap();
+        // No worker around: nothing offered, every z8 tile run here.
+        let mut offers = Offers::new(Some(&o), &scratch, t, z8s.len(), &[]);
+        offers.top_up(&files, &cov, &z8s, 0).unwrap();
         assert!(offers.out.is_empty());
         // A worker that takes them asks (nothing yet), and is counted.
         let m1 = crate::coord::client::Client::at(vec![url], c.contact.token.clone(), "m1");
         assert!(worker_runs(&m1, false, &d.path().join("m1")).is_none());
-        offers.top_up(&files, &cov, &areas, 0).unwrap();
-        // The far end's area offered (one worker: one out), never the one under way.
+        offers.top_up(&files, &cov, &z8s, 0).unwrap();
+        // The far end's z8 tile offered (one worker: one out), never the one under way.
         assert_eq!(offers.out.keys().copied().collect::<Vec<_>>(), [1]);
         let task = worker_runs(&m1, false, &d.path().join("m1")).unwrap();
         assert_eq!(task["unit"], "8/131/88");
-        // Before area 0 runs: the finished one settled (a first result: checked here, the same).
-        offers.top_up(&files, &cov, &areas, 0).unwrap();
+        // Before z8 tile 0 runs: the finished one settled (a first result: checked here, the same).
+        offers.top_up(&files, &cov, &z8s, 0).unwrap();
         assert!(offers.out.is_empty());
-        let dir = offers.result(&files, &cov, &areas, 1).unwrap().unwrap();
+        let dir = offers.result(&files, &cov, &z8s, 1).unwrap().unwrap();
         let mut got: Tiles = Vec::new();
-        let a8 = Unit { z: 8, x: 131, y: 88 };
-        take_area(&dir, a8, &mut collect(&mut got)).unwrap();
+        let a8 = TileId { z: 8, x: 131, y: 88 };
+        take_z8(&dir, a8, &mut collect(&mut got)).unwrap();
         let mut want: Tiles = Vec::new();
-        job::area_tiles(&files, &cov, t, (131, 88), &[], &mut collect(&mut want)).unwrap();
+        job::z8_tiles(&files, &cov, t, (131, 88), &[], &mut collect(&mut want)).unwrap();
         assert_eq!(got, want);
-        assert!(offers.result(&files, &cov, &areas, 0).unwrap().is_none(), "area 0 runs here");
+        assert!(offers.result(&files, &cov, &z8s, 0).unwrap().is_none(), "z8 tile 0 runs here");
         {
             let s = c.shared.lock().unwrap();
             assert_eq!(s.workers["m1"].checked, 1);
             assert!(!s.workers["m1"].bad);
-            // Its cost learned under its kind and area.
+            // Its cost learned under its kind and z8 tile.
             assert_eq!(s.costs["bldtile 8/131/88"].peak_mb, 300);
         }
         // Offered again (another job), with the cost learned; a spoilt result: checked, run here,
         // and the worker gets no more work. (Its pace forgotten first: measured slower than this
-        // Mac's run on its first area, it would be given none, coord::task::Tasks::pick.)
+        // Mac's run on its first z8 tile, it would be given none, coord::task::Tasks::pick.)
         c.shared.lock().unwrap().tasks.paces.clear();
-        let mut offers = Offers::new(Some(&o), &scratch, t, areas.len(), &[]);
-        offers.top_up(&files, &cov, &areas, 0).unwrap();
+        let mut offers = Offers::new(Some(&o), &scratch, t, z8s.len(), &[]);
+        offers.top_up(&files, &cov, &z8s, 0).unwrap();
         assert_eq!(offers.out.len(), 1);
         assert_eq!(c.shared.lock().unwrap().tasks.by_id.values().next().unwrap().mem_mb, 330);
         worker_runs(&m1, true, &d.path().join("m1")).unwrap();
-        let dir = offers.result(&files, &cov, &areas, 1).unwrap().unwrap();
+        let dir = offers.result(&files, &cov, &z8s, 1).unwrap().unwrap();
         let mut again: Tiles = Vec::new();
-        take_area(&dir, a8, &mut collect(&mut again)).unwrap();
+        take_z8(&dir, a8, &mut collect(&mut again)).unwrap();
         assert_eq!(again, want, "this Mac's");
         assert!(c.shared.lock().unwrap().workers["m1"].bad);
         // A task no one took (a worker asking, sparing too little for it): taken back and run here
@@ -817,17 +821,17 @@ mod tests {
             crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m2");
         m2.ask(&crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 10, ..Default::default() })
             .unwrap();
-        let mut offers = Offers::new(Some(&o), &scratch, t, areas.len(), &[]);
-        offers.top_up(&files, &cov, &areas, 0).unwrap();
+        let mut offers = Offers::new(Some(&o), &scratch, t, z8s.len(), &[]);
+        offers.top_up(&files, &cov, &z8s, 0).unwrap();
         assert_eq!(offers.out.len(), 1);
         assert_eq!(offers.here_s(1), None);
         offers.made_here(10, 2.0);
         assert!(offers.records[&1] > 0);
         assert_eq!(offers.here_s(1), Some(0.2 * offers.records[&1] as f64));
-        let dir = offers.result(&files, &cov, &areas, 1).unwrap().unwrap();
+        let dir = offers.result(&files, &cov, &z8s, 1).unwrap().unwrap();
         assert_eq!(clock.slept().0, 0, "never waited");
         let mut third: Tiles = Vec::new();
-        take_area(&dir, a8, &mut collect(&mut third)).unwrap();
+        take_z8(&dir, a8, &mut collect(&mut third)).unwrap();
         assert_eq!(third, want);
         assert!(c.shared.lock().unwrap().tasks.by_id.is_empty(), "closed");
     }

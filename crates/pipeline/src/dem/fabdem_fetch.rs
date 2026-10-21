@@ -12,7 +12,6 @@
 use anyhow::{bail, ensure, Context, Result};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// A Hugging Face dataset's file list, with sizes, from its URL (`<host>/datasets/<owner>/<name>`).
@@ -414,7 +413,7 @@ pub fn listing(net: &Net, mirror: &str) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::geotiff::write_f32;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     const MIRROR: &str = "https://mirror.example/datasets/o/fabdem";
 

@@ -26,10 +26,11 @@ What each step does, in detail. The steps as one table (names, chains, the check
 6. **Basemap:** Planetiler on (b), worldwide (`layers/basemap/world-<date>`), its jar and data pinned
    in `sources/basemap/`. The pass refuses a jar of another version than
    `pipeline::water::PLANETILER_VERSION` until `tools/coastcheck` has checked it.
-7. **Cut (a) into z6 pieces:** a depth-first quad tree, four outputs per osmium run (osmium keeps
-   ~4 GB of id sets per output). Ways whole, multipolygons completed, 10 km buffer. Each piece is
-   uploaded with its road links as soon as it's cut. (`scenic-build patch-ferries` gives pieces the
-   ferry ways a pass filtered without `w/route=ferry` lacks.)
+7. **Cut (a) into z6 tile extracts:** a depth-first quad tree, four outputs per osmium run (osmium
+   keeps ~4 GB of id sets per output). Ways whole, multipolygons completed, 10 km buffer. Each
+   extract (stored in `sources/osm/<date>/pieces/`: the folder's old name, kept) is uploaded with
+   its road links as soon as it's cut. (`scenic-build patch-ferries` gives extracts the ferry ways
+   a pass filtered without `w/route=ferry` lacks.)
 8. **Road values** (below).
 9. **Finish:** the pass's summary is written; older passes retire from the manifest (but the
    previous pass's outlines, which the outlines step reads).
@@ -37,16 +38,16 @@ What each step does, in detail. The steps as one table (names, chains, the check
 ## 2. Global-source layers
 
 - **Terrain** (`pipeline::terrain_pack`), two steps:
-  - **terrain**, a piece per z6 tile near the coverage (`build_piece`): its z9–12 within the
+  - **terrain**, a run per z6 tile near the coverage (`build_piece`): its z9–12 within the
     coverage plus 20 km, zoom capped by latitude so pixels stay ≥ 15 m (z12 to 67°, z11 to 79°, z10
     beyond): its hi pack; and its mid (`work/terrain-mid/6-x-y`, never served: its z9 tiles' 2×2
-    means as f32, and its lakes' levels). A piece making no hi tile drops its hi pack; there the
+    means as f32, and its lakes' levels). A z6 tile making no hi tile drops its hi pack; there the
     server makes tiles from the z8 ones.
   - **terrain-lo**, an assembly per z3 tile (`build_lo`): z8 → z3 made again from children (a
-    piece's z9 means from its mid), since a lake's level at z8 is gathered from the whole area: its
+    z6 tile's z9 means from its mid), since a lake's level at z8 is gathered from the whole z3 tile: its
     lo pack.
-  - A piece's z8 subtrees, grouped by shared lakes, are tasks (`terrainsub`, docs/workers.md §3).
-    The piece's own run prepares each level a block at a time (a z8 subtree's tiles at z12, the
+  - A z6 tile's z8 subtrees, grouped by shared lakes, are tasks (`terrainsub`, docs/workers.md §3).
+    The z6 tile's own run prepares each level a block at a time (a z8 subtree's tiles at z12, the
     tiles under one four levels up: `terrain_pack::blocks`), the next block prepared while this
     one's tiles are finished. A tile whose lakes all have their levels by then (known from finer
     levels, or lakes no other block's tile has, found from the water's lake polygons first) is
@@ -54,9 +55,9 @@ What each step does, in detail. The steps as one table (names, chains, the check
     So a run holds about two blocks' prepared tiles, not the level's: the same bytes, since a lake's
     level is of its samples in any order. Measured (task #447, footprint with `MallocLargeCache=0`):
     6/8/18 5.5–6.0 GB → 2.6–3.0 GB, 6/13/18 6.5 → 2.8 GB, 6/10/21 3.2 → 1.1 GB. `scenic-build
-    terrain-same 6/x/y [--whole]` makes a live piece either way and sets its pack's and mid's
+    terrain-same 6/x/y [--whole]` makes a live z6 tile either way and sets its pack's and mid's
     content names beside the manifest's, writing nothing to the NAS.
-  - Together they make the same packs, byte for byte, as the area's whole run (`build_q_with`,
+  - Together they make the same packs, byte for byte, as the z3 tile's whole run (`build_q_with`,
     `scenic-build terrain 3/x/y`; `terrain_pack` tests).
   - **The root (z0–2)** is made from the lo packs once no terrain work is left.
   - **Sources:** declared in `inputs/elevation/` (`terrain = true`, docs/inputs.md §6.8,
@@ -66,7 +67,7 @@ What each step does, in detail. The steps as one table (names, chains, the check
     pinned in the key (`TERRAIN_V`, the declarations' `keyed` digests, the digest of the water the
     target reads), so
     a rebuild with the same key gives identical packs. The digests are worked out once a basemap by
-    the `terrain-water` job, so a new pass remakes only pieces whose water changed.
+    the `terrain-water` job, so a new pass remakes only z6 tiles whose water changed.
   - **Repair** (`roadcore::grid::repair_terrain`, README "Terrain repair"): one pass taking what is
     broken or undefined and nothing else. Voids are filled; a tower or pit is a blob of the tile's
     component tree, taken whole and judged against the ground it meets (standing out over 100 m,
@@ -89,45 +90,45 @@ What each step does, in detail. The steps as one table (names, chains, the check
     together. Partly-water pixels are blended.
   - **Below zero** is clamped to 0 after the water. Planned: polders keeping their depth.
 - **Slope** (`pipeline::slope_pack`): z11 and coarser stored, from transient z12 Horn slope; the
-  server makes z12 on demand. **slope**, a piece per z6 tile (its z9–11 hi pack and its mid,
+  server makes z12 on demand. **slope**, a run per z6 tile (its z9–11 hi pack and its mid,
   `work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs (its own z6 tile's copied
   whole first) and its neighbours' edge strips; **slope-lo**, an assembly per z3 tile from its
-  pieces' mids (each read whole, eight at once, under a deadline and tried again while it fails
-  transiently). Together the area's whole run's packs, byte for byte.
+  z6 tiles' mids (each read whole, eight at once, under a deadline and tried again while it fails
+  transiently). Together the z3 tile's whole run's packs, byte for byte.
 - **Worldwide z8 terrain** (`sources/terrain-z8-v3`, once, not served): every z8 tile repaired, with
   each tile's maximum (AWS's tiles alone, task #465). Peaks read it.
-- **Grids (z11):** land cover, canopy and cover, for analysis only. Each unit makes the grid tiles
-  its packs lack and uploads them as its z6 tile's `grid-*` hi packs; they aren't in units' keys
+- **Grids (z11):** land cover, canopy and cover, for analysis only. Each `unit` job makes the grid tiles
+  its packs lack and uploads them as its z6 tile's `grid-*` hi packs; they aren't in those jobs' keys
   (made from fixed datasets, the same whether read or made).
 - **Trees** (cover, height, leaf type), zoom 4–12, clipped to the coverage (`pipeline::treepacks`,
   running the `trees` program, `pipeline::trees`):
-  - **trees**, a piece per z6 tile the coverage meets (`trees --z6`): its zoom 9–12 hi packs and its
+  - **trees**, a run per z6 tile the coverage meets (`trees --z6`): its zoom 9–12 hi packs and its
     mid (`work/trees-mid/6-x-y`: zoom-8 tiles and values).
-  - **trees-lo**, an assembly per z3 tile (`trees --assemble-lo`): zoom 8–4 from its pieces' mids.
+  - **trees-lo**, an assembly per z3 tile (`trees --assemble-lo`): zoom 8–4 from its z6 tiles' mids.
   - Together the same bytes as a z3 tile's whole run (`trees --z3`, `scenic-build trees 3/x/y`), from
     Meta's canopy squares (`sources/canopy/`, each downloaded once under a `<file>.lock`) and the
     leaf-type squares (`sources/trees/leaf/`, made by `dem/leaftype.py`).
   - Lossless WebP by `pipeline::webp`. `tools/check/trees-same.py` compares it with `dem/trees.py
     --z3` (same pixels); `SCENIC_TREES_PY=1` uses trees.py for a whole run.
-  - `trees --block`, `--blocks` and `--assemble` run blocks alone; a row of a piece's blocks is a
+  - `trees --block`, `--blocks` and `--assemble` run blocks alone; a row of a z6 tile's blocks is a
     task (`treeblock`, docs/workers.md §3), the same bytes natively and in WebAssembly.
-- **Area overlays:** `docs/phase5.md`. The `overlays` job runs after marks (it needs the World
+- **Area overlays** (the heritage and designated areas' outlines): `docs/phase5.md`. The `overlays` job runs after marks (it needs the World
   Heritage dots' ids).
 - **3D buildings:** `docs/buildings3d.md`. Every building in the coverage from the Overture release,
   tiles z12–14 per z6 tile (`bldprep`, `bldtiles`; `pipeline::bld`, dem/bldprep.py), a z6 tile's
-  z8 areas offered as tasks (`bldtile`); below zoom 14 the far buildings' field (buildings3d.md
+  z8 tiles offered as tasks (`bldtile`); below zoom 14 the far buildings' field (buildings3d.md
   §4.8; `?bldfield=off` leaves it out). Planned: national heights (PLATEAU, BD TOPO).
 
 The server builds missing deeper terrain and slope tiles from their ancestors.
 
-## 3. Depth (per area and tile, from the depth sources)
+## 3. Depth (per z3 and z6 tile, from the depth sources)
 
 Depth under the seas and lakes (`pipeline::depth`; its sources docs/inputs.md §6.10; its files
 docs/formats.md, Depth), split by tile like the terrain, so downloads and the mirror take it as it is.
 - **Targets:** every z3 tile within 200 nautical miles (`REACH_KM`, a region's EEZ's reach) of the
   coverage that a source meets (`depth-lo`, any Mac), and every z6 tile within it that a source
   finer than z8 meets (`depth`, any Mac). Both read only the NAS (the sources' grids, the basemap,
-  the lo packs) and write their packs there. The 15″ grid covers the rest of an area's water.
+  the lo packs) and write their packs there. The 15″ grid covers the rest of a z3 tile's water.
 - **Reading the sources:** a source's grids are packed by z6 tile (docs/inputs.md §6.10, Packs:
   a tar of whole GeoTIFFs, each read in place by its byte range), so a job opens a pack once and
   reads its grids from it, not a file a grid; a pack is kept open by the job's reader like a grid
@@ -184,7 +185,7 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   which cover under half), a pixel water only with the rivers' share, and narrow water are land
   where no source has a value, so a river no source is drawn in changes nothing. Narrow water a
   source has values in is new depth: the sea's slivers under a pixel wide change many coastal
-  pieces (intended).
+  z6 tiles (intended).
 - **Composing a block** (8 × 8 tiles and a 32-pixel margin; `depth::compose`), on that water:
   sources sampled (coarser grids
   interpolated, finer ones averaged from the overview that lines up) and painted coarse to fine;
@@ -219,7 +220,7 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
      packed once by `producers/depth/repack.py`.
   3. The declarations (`producers/depth/declarations/`) and the indexes are dropped into
      `inputs/sources/`. Once accepted, the terrain-water job works out the depth targets' water
-     digests (once a basemap), then the assemblies run, then the pieces.
+     digests (once a basemap), then the assemblies run, then the z6 tiles.
 
 ## 4. Water (per pass, worldwide)
 
@@ -292,59 +293,60 @@ drawn as a raster.
   continuing a named one of its class within 35°. The straightest go first, within 100°. Oneways
   pair only in their direction. Ties: higher level, straightest, lower way id. Rail pairs by line
   identity; ferries and ways with under two vertices never chain.
-- **Per piece:** the pairing at a node depends only on the ways through it, so it's exact per piece.
+- **Per extract:** the pairing at a node depends only on the ways through it, so it's exact per z6 tile extract.
 - **Roads:** pairings form paths and cycles; a union-find and an ordered walk give each way its road
   id (the road's lowest way id), the road's length, and its offset and direction.
-- **Storage:** per unit, `sources/osm/<date>/roads/<u>`, copied by each unit job into
+- **Storage:** per z6 tile, `sources/osm/<date>/roads/<u>`, copied by each `unit` job into
   `global/roads/<u>` with `byroad` (ways sorted by road).
 - Lengths include parts outside the coverage.
 - Elevation smoothing uses a local continuation rule (`Net.cont`) in base(U).
 
-## 6. Per unit: base(U)
+## 6. Roads, per z6 tile: base(U)
 
-The unit job runs the unit's programs on a unit folder, wiped at each run:
-1. **extract:** U's ways that touch the coverage, on U's piece. Rail tracks without a route relation
+The `unit` job ("Roads"; its step name is kept as stored) runs the programs for one z6 tile U on
+a scratch folder, wiped at each run:
+1. **extract:** U's ways that touch the coverage, on U's extract. Rail tracks without a route relation
    are kept by type.
 2. **Elevations:** `elev` (`pipeline::dem`), the declared elevation datasets (docs/inputs.md §6.8) by
    their plan for U (`elevation.json`) through one sampler, blended at their edges, on U's slice of
-   the per-vertex DEM cache (the seed, where one of its samples could be valid, and the units' kept
+   the per-vertex DEM cache (the seed, where one of its samples could be valid, and the z6 tiles' kept
    samples). U's samples are kept for later runs and its neighbours'.
-3. **Heritage:** the heritage-sites job's slices within U + 30 km; `areaflags` rasterises the areas
+3. **Heritage:** the heritage-sites job's slices within U + 30 km; `areaflags` rasterises the heritage and designated areas
    onto U's grid.
 4. **Terrain and grids:** terrain z11 and the grids, staged from the packs the manifest names.
    Missing grid tiles are made.
-5. **`tile elev`:** clean-up and grade, with junction context from the piece.
+5. **`tile elev`:** clean-up and grade, with junction context from the extract.
 6. **scenic:** `scenic-metrics` prep, canopy, view, buildings and flags for every sample of the ways
    U owns. Buildings come from the roadside buildings' z8 tiles within 1 km of U's tile + 20 km and
    its long roads. Canopy and view results are kept in `cache/scenic-units/` (`scache::Carry`), so a
    later run redoes only new samples and those near grid tiles whose terrain or land cover changed;
    a change of `scache::SCENIC_V` redoes all.
 7. **Output:** the base pack (per-vertex arrays and records, indexed by z9 sub-tile),
-   `global/roads/<u>`, `global/roadids/<u>` (its roads' ids, what the road → units index reads),
-   `global/roaden/<u>` (the roads' own English), and `grid-*` hi packs. A unit
+   `global/roads/<u>`, `global/roadids/<u>` (its roads' ids, what the road → z6 tiles index reads),
+   `global/roaden/<u>` (the roads' own English), and `grid-*` hi packs. A z6 tile
    left with no ways in the coverage drops them.
 
 Elevations are u16 decimetres from −500 m (to 6,053.5 m); readers also take older packs' i16.
 
-Landmark candidates and peaks have their own per-unit jobs (`docs/phase5.md`).
+Landmark candidates and peaks have their own per-z6-tile jobs (`docs/phase5.md`).
 
 ## 7. Roadside buildings: the world, once per release
 
 The buildings job (`pipeline::buildtiles`) makes Overture's building boxes for the world from one
-pinned release, before any unit runs: `dem/buildings.py --world` reads the release's bbox columns,
+pinned release, before any `unit` job runs: `dem/buildings.py --world` reads the release's bbox columns,
 24 files at a time, into local parts by z8 tile (each file marked done once written, so a run cut
-short resumes); each tile's parts are merged onto the NAS, then the index. A unit's key names the
-index, so a new release rebuilds every unit.
+short resumes); each tile's parts are merged onto the NAS, then the index. A z6 tile's key names the
+index, so a new release rebuilds every z6 tile.
 
 ## 8. Per z6 pack: pack(T)
 
-- **Reads:** the base packs and road values of T's owners, every unit whose ways come into T (its
+- **Reads:** the base packs and road values of T's owners, every z6 tile whose ways come into T (its
   owned extent from the pass's reach; without one, its tile + 20 km), grown by the base pack's own
   extent where that lies further (a pack built by other reaches; each pack's header extent kept
   in `state/build/extents.json`, which the lead keeps as it plans, reading each new pack's header
   once; jobs only read it, and read the headers of packs it lacks without writing). A job opens
   only its tiles' owners (`build::owners_of`, the rule their keys read); one given no tiles, or
-  whose reaches don't list every unit, opens every unit. Of each it reads from the NAS only the
+  whose reaches don't list every z6 tile, opens every one. Of each it reads from the NAS only the
   byte ranges of the ways that can reach its tiles (task #396, `crate::basepart`): the ways cut
   into chunks of 1,024 in file order, each chunk's box and first sample in the pack's *way index*,
   kept on the Mac (`<cache>/base/<content name>.idx`, a few kB) once worked out from the pack's
@@ -362,24 +364,24 @@ index, so a new release rebuilds every unit.
 - Landmarks, stations, ferries and overlays come from their own jobs, so no road pack depends on
   worldwide rankings.
 
-## 9. Worldwide steps after the units
+## 9. Worldwide steps after the z6 tiles
 
-- **Road → units index** (`global/roadunits`): for whole-road hover. From the units' road ids
-  (`global/roadids/<u>`; a unit built before them: its road values), keyed on them by content; it
+- **Road → z6 tiles index** (`global/roadunits`, its stored name): for whole-road hover. From the z6 tiles' road ids
+  (`global/roadids/<u>`; a z6 tile built before them: its road values), keyed on them by content; it
   reads only the lists changed since the index before, which names each by content (`srcs`).
 - **Labels** (per pass): places, states, seas, lakes and parks from the labels set (`dem/labels.py`,
   with own English, kana reading, OSM languages and OSM object: docs/names.md).
 - **Water** (per pass): above.
 - **Spoken languages** (per pass, the `spoken` job): `global/spoken` (docs/names.md).
-- **Rail stops:** from the rail set, for the built units' tiles + 20 km.
+- **Rail stops:** from the rail set, for the built z6 tiles + 20 km.
 - **Ferries:** worldwide, from the ferries set, the ferry feeds (`dem/ferrygtfs.py`, docs/inputs.md
   §6.7.0) and the static timetables (docs/inputs.md §6.7.2).
 - **Rail service** (below).
 - **Landmarks:** `docs/phase5.md`.
 - **The to-do lists:** `names-todo` after a catalog the map serves that changed what it reads
-  (`namestodo::inputs_key`: the units, coverage, languages spoken, labels' hi packs, base packs,
+  (`namestodo::inputs_key`: the z6 tiles, coverage, languages spoken, labels' hi packs, base packs,
   own-road lists, hi data, landmark points and area overlays, by content; a catalog of depth or
-  terrain alone changes none), at most daily while units build, after any such once none's left
+  terrain alone changes none), at most daily while z6 tiles build, after any such once none's left
   (docs/names.md, `NAMES_TODO_EVERY_S`); `timetables-todo` after each rail
   and ferries run (docs/inputs.md §6.7.3).
 
@@ -441,31 +443,31 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   each terrain target reads of it; it fills the digests file (`work/water-idx/<hash16 of the pin>`)
   when a target's digest is missing. The digest (`terrain_water::tiles_digest`) is over the
   polygons as the terrain reads them, so only a change the terrain could see changes it. Until a
-  target's digest exists its key is unknown and its area waits.
-- **terrain (a piece):** the coverage within 20 km of its tile, the terrain's declarations
+  target's digest exists its key is unknown and its z3 tile waits.
+- **terrain (a z6 tile):** the coverage within 20 km of its tile, the terrain's declarations
   (crate::terrain_sources::pin: their ids and `keyed` digests; until they're accepted its key is
   unknown and it waits), the digest of
-  its water (`agent::build::water_key`), and "no hi tiles" for a piece making none
-  (`piece_key_made`). A "none" piece is keyed on the version and the tile (`none_piece_key`).
-- **terrain-lo (an assembly):** its pieces' mids by content ("-" for a piece without one) and the
+  its water (`agent::build::water_key`), and "no hi tiles" for a z6 tile making none
+  (`piece_key_made`). A "none" z6 tile is keyed on the version and the tile (`none_piece_key`).
+- **terrain-lo (an assembly):** its z6 tiles' mids by content ("-" for a z6 tile without one) and the
   digest of its z6–8 water; `TERRAIN_LO_V`. "none" likewise (`none_lo_key`).
-- **slope (a piece):** every terrain tile it can read, by content, from the packs' indexes
+- **slope (a z6 tile):** every terrain tile it can read, by content, from the packs' indexes
   (`agent::build::slope_piece_reads`), so a change along a neighbour's edge reruns it, one inside
   doesn't.
-- **slope-lo:** its pieces' mids and the area's terrain lo pack; `SLOPE_LO_V`.
-- **trees (a piece):** the coverage inside the tile; `TREES_V` changes with any change to the bytes
-  a piece writes.
-- **trees-lo:** its pieces' mids; `TREES_LO_V`.
-- **heritage-sites:** the pass, its areas set, the registers meeting the cover (their `keyed`
+- **slope-lo:** its z6 tiles' mids and the z3 tile's terrain lo pack; `SLOPE_LO_V`.
+- **trees (a z6 tile):** the coverage inside the tile; `TREES_V` changes with any change to the bytes
+  a z6 tile writes.
+- **trees-lo:** its z6 tiles' mids; `TREES_LO_V`.
+- **heritage-sites:** the pass, its areas set (the protected and Indigenous areas), the registers meeting the cover (their `keyed`
   digests), the matches' accepted version, the coverage.
-- **unit:** its piece, the pass's road values, the coverage as its ways meet it, the versions of the
+- **unit** (a z6 tile): its extract, the pass's road values, the coverage as its ways meet it, the versions of the
   location rules where its ways go, its heritage slices, the roadside buildings' index, the elevation
   datasets' plan, and the terrain tiles it reads by content (`agent::build::unit_terrain`: each
   tile's XXH3 from its pack's index): what it stages, every z11 tile, and at its ways' points the
-  z12 tile or the finest staged above it. A unit whose terrain indexes can't be read has no key and
+  z12 tile or the finest staged above it. A z6 tile whose terrain indexes can't be read has no key and
   isn't built; the status says so.
-- **pack(T):** the base packs and road values of its owners, the units whose ways come into T.
-- **lo:** the base packs and road values of the units whose owned extent meets its z3 tile.
+- **pack(T):** the base packs and road values of its owners, the z6 tiles whose ways come into T.
+- **lo:** the base packs and road values of the z6 tiles whose owned extent meets its z3 tile.
 - **rail-feeds:** the declarations' accepted index, the catalogue's copy, the coverage, the pass's
   outlines, and which keys `inputs/keys.env` holds by name (never values). Not what it writes.
 - **rail:** the feeds' list (each zip by content name and its day), the static timetables' accepted
@@ -493,7 +495,7 @@ keeps its content name, so jobs keyed on it stop there.
 | our layers | the pack for the tile; names attached |
 | basemap | tiles from the catalog's PMTiles archives (`/tiles/base`); names attached |
 | drives, rides, rail lines | parts from the hidata in view plus half the window, joined by offset; zoomed out (wider than ~1,200 km) from the 500 m summaries (`approx`) |
-| whole road (hover) | the road's parts, through the road → units index |
+| whole road (hover) | the road's parts, through the road → z6 tiles index |
 | details, profiles | by OSM id plus location (ways-here index → base pack) |
 | landmarks, overlays, stations, ferries | by view (`docs/phase5.md`) |
 | `/api/meta` | the map's meta, summed from the base packs' summaries |

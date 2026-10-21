@@ -31,7 +31,7 @@ pub const MOST: usize = 3;
 pub fn parse_blocks(s: &str) -> Result<Vec<(u32, u32)>> {
     s.split(',')
         .map(|b| {
-            crate::legacy::Unit::parse(b.trim())
+            crate::legacy::TileId::parse(b.trim())
                 .filter(|u| u.z == ZBLOCK)
                 .map(|u| (u.x, u.y))
                 .with_context(|| format!("not a zoom-8 block: {b}"))
@@ -216,7 +216,7 @@ type Out = (Offered, Vec<(u32, u32)>);
 /// What the job runs a row with here: the row's blocks made into a folder (`trees::blocks_files`).
 pub type Here<'a> = &'a (dyn Fn(&[(u32, u32)], &Path) -> Result<()> + Sync);
 
-/// A piece's rows out as tasks (crate::offload), as a `bldtiles` job's areas are: offered from
+/// A piece's rows out as tasks (crate::offload), as a `bldtiles` job's z8 tiles are: offered from
 /// the far end (its last rows) when the run begins, one per worker that takes them around, at most
 /// `MOST`, never every row; each settled when the run comes to its first block, waiting for no
 /// worker longer than this Mac would take (`Patience`: its blocks at the pace of the blocks made

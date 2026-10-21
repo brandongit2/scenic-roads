@@ -1,7 +1,7 @@
 //! Reading base packs (docs/formats.md "Base pack") and road values from local files (this
 //! Mac's cache), memory-mapped, as typed slices.
 
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use anyhow::{bail, ensure, Context, Result};
 use memmap2::Mmap;
 use roadcore::elev::Elevs;
@@ -68,7 +68,7 @@ impl Sect {
 
 /// One unit's base pack, with its road values.
 pub struct BasePack {
-    pub unit: Unit,
+    pub unit: TileId,
     pub sect: Sect,
     roads: Sect,
     pub strings: Vec<String>,
@@ -94,8 +94,12 @@ impl BasePack {
 
     /// A base pack and its road values from their sectioned files, opened.
     pub fn from_sects(sect: Sect, roads: Sect) -> Result<BasePack> {
-        let unit =
-            sect.meta.get("unit").and_then(|v| v.as_str()).and_then(Unit::parse).context("base pack without a unit")?;
+        let unit = sect
+            .meta
+            .get("unit")
+            .and_then(|v| v.as_str())
+            .and_then(TileId::parse)
+            .context("base pack without a unit")?;
         let extent: Vec<i32> = serde_json::from_value(sect.meta.get("extent").cloned().unwrap_or_default())?;
         ensure!(extent.len() == 4, "base pack extent");
         let strings =

@@ -1,34 +1,35 @@
 # Building
 
-How the work is divided into units and jobs, and how the pool's Macs run them.
+How the work is divided into z6 tiles and jobs, and how the pool's Macs run them.
 
 ## 1. How the work is divided
 
-**Units.** A unit is a z6 tile (about 600 km across at the equator). Units are fixed by the OSM
-pass's cut; a split into z7 or z8 tiles waits until a unit outgrows the M4 (task #480). Packs for serving
-are per z6 tile (hi), per z3 tile (lo) and one root (z0–2).
+**The grid.** Most work is per z6 tile (about 600 km across at the equator). The z6 tiles are fixed
+by the OSM pass's cut; a split into z7 or z8 tiles waits until a z6 tile outgrows the M4 (task
+#480). Packs for serving are per z6 tile (hi), per z3 tile (lo) and one root (z0–2). (The step that
+makes a z6 tile's roads is named `unit`, as it is stored; docs/pipeline.md §1 has the terms.)
 
 **Where it runs.** All work runs on the pool's Macs (§2, The pool) except the planet's download,
 which the NAS does itself. The jobs (§2 has their order and keys):
 1. **The OSM pass**, when the NAS holds a newer planet: the filtered planet, the worldwide sets
    (rail, ferries, designated areas, places, outlines, labels, summits, hiking routes,
-   heritage-named objects, water), the worldwide basemap, pieces (filtered OSM per unit, 10 km
+   heritage-named objects, water), the worldwide basemap, z6 tile extracts (filtered OSM per z6 tile, 10 km
    buffer, ways whole) and worldwide road values (docs/steps.md).
-2. **Worldwide jobs, once per pass:** missing sets, the outlines, hiking routes' ends, each unit's
+2. **Worldwide jobs, once per pass:** missing sets, the outlines, hiking routes' ends, each z6 tile's
    reach (docs/regions.md), summits, place labels, the water, the lake fill; once ever, the worldwide z8 terrain.
 3. **Heritage sites and designated areas:** one job over the coverage plus 20 km.
-4. **Global-source layers near the coverage:** terrain, slope and tree cover, a piece per z6 tile
+4. **Global-source layers near the coverage:** terrain, slope and tree cover, a run per z6 tile
    and an assembly per z3 tile.
-5. **Per unit**, for every unit meeting the coverage, a region at a time: base(U), the ways U owns
-   (a way belongs to the unit of its first node) that touch the coverage, with per-vertex
+5. **Per z6 tile**, for every z6 tile meeting the coverage, a region at a time: base(U), the ways U owns
+   (a way belongs to the z6 tile of its first node) that touch the coverage, with per-vertex
    elevations, grade and scenic channels.
-6. **Then chains** that don't wait for each other: **roads** (road → units index, pack(T) per z6
-   tile from the base data of the units whose ways come into it, lo packs, rail stops and ferries, roots,
+6. **Then chains** that don't wait for each other: **roads** (road → z6 tiles index, pack(T) per z6
+   tile from the base data of the z6 tiles whose ways come into it, lo packs, rail stops and ferries, roots,
    then a catalog), **rail service** (docs/steps.md), **landmarks** (`docs/phase5.md`) and **3D buildings**
    (`docs/buildings3d.md`).
 
 Because road values come from the whole planet, adding a region changes nothing outside its own
-units and the packs of the tiles their ways come into.
+z6 tiles and the packs of the tiles their ways come into.
 
 ## 2. Building
 
@@ -45,9 +46,9 @@ from the first (`edit_held`).
   re-keys records as it reads them (`agent::rekey::as_read`: the plan, the status, the checklist,
   the regions' state, `--expect-same`, `scenic-build p5-check`), deriving in memory
   (`rekey::derive`), a record a job saved always winning. The old schemes (`rekey::v1`, `v2`, and
-  the terrain pieces' keys naming their sources as code had them, `rekey::SOURCES_BEFORE`) are
+  the terrain z6 tiles' keys naming their sources as code had them, `rekey::SOURCES_BEFORE`) are
   kept for late records. `scenic-build rekey-check`, `scenic-build p5-check terrain`, `scenic-build p5-check trees` and `scenic-build water-key-check`
-  say what they'd do, reading only. Pieces current only by derivation have no mid: it's made in idle
+  say what they'd do, reading only. Z6 tiles current only by derivation have no mid: it's made in idle
   time, expected the same (Order).
 - **A job** is one step over a run of stale targets: as many as fit a quarter of an hour by their
   measured times (`coord::JOB_S`), a step kept to the lead in one job, so a failure or a new app
@@ -141,7 +142,7 @@ from the first (`edit_held`).
     the agent's target and the agent never touches the mirror (task #460).
   - A trim, clear or freeing runs on its own thread; jobs run meanwhile. Nothing goes through a link.
     Each ends early when the agent is asked to stop.
-- **Units run in map order** (by 10° square, then tile), so what one fetches serves the next.
+- **Z6 tiles run in map order** (by 10° square, then tile), so what one fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours.
 - **Restarts** (task #393): a job outlives its agent. Its record (`job[-k].json` in the agent's
   folder) holds its spec, threads and log from its start, and the agent saves its slot there (its
@@ -175,23 +176,23 @@ from the first (`edit_held`).
   step (docs/pipeline.md §4), its targets done of all in its noun, its jobs left in order, and why
   work isn't this Mac's now. A job of several parts says them (`parts: <i>
   [names]`) and the status lists them, done, under way and to come. A long part says how far it is;
-  osmium's `--progress` counts. A unit job's area counts by its stages, each weighted by its learned
+  osmium's `--progress` counts. A `unit` job's z6 tile counts by its stages, each weighted by its learned
   time (`unit-stages.json`). A part's time left comes from its own pace; a stuck part shows as such.
 - **The heartbeat's resources:** each Mac's memory, cores and load, disk free and droppable caches,
   NAS latency and free space; its build caches (`caches`) and room target (`caches.room`).
 - **The forecast** (`agent::forecast`), made with each plan and in the heartbeat: the work left run
   through in the order the agent runs it. The lead takes the pass's worldwide jobs, then a region at
-  a time (terrain, then units), else the chains' work; its other slots any work in its order that
+  a time (terrain, then z6 tiles), else the chains' work; its other slots any work in its order that
   fits beside it, and each member's slots any work any Mac may run that fits them, as the
   coordinator packs its asks: a lane per slot each Mac may run now (docs/pool.md §10, Each Mac's
   jobs), each starting with its slot's running job.
-  Units reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. Publishing
-  goes per unit: a region's map tiles (`RegionLeft::packs`: its units' z6 tiles stale now or to be
-  once its units left are built) are drawn once its units are, ahead of the regions' work, each at
+  Z6 tiles reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. Publishing
+  goes per z6 tile: a region's map tiles (`RegionLeft::packs`: its z6 tiles' map tiles stale now or to be
+  once its z6 tiles left are built) are drawn once its z6 tiles are, ahead of the regions' work, each at
   its own measured time; a region is all on the map as it's built now (`map_at`) at its last
-  unit's end, plus its map tiles, plus at most a minute for the catalog (`CATALOG_EVERY_S`). The
+  z6 tile's end, plus its map tiles, plus at most a minute for the catalog (`CATALOG_EVERY_S`). The
   whole-map steps go by their cadence (`publishes`): the low zooms, the landmarks and the area
-  overlays each once its cadence has passed since it last went (`LastCatalog`), or once no unit or
+  overlays each once its cadence has passed since it last went (`LastCatalog`), or once no z6 tile or
   terrain is left, whichever comes first (the low zooms may go sooner, half their packs stale).
   Each target takes its last run's time at the lead's pace, else its step's mean, else a first
   guess; each machine at its measured speed (half the lead's until measured). Run three times for
@@ -218,20 +219,20 @@ from the first (`edit_held`).
   (docs/formats.md, Timings) goes to `SCENIC_TIMINGS`; the agent keeps `timings.jsonl`, the lead's
   coordinator `coord/timings.jsonl` for every worker. `scenic timings [kind] [--last N] [--host
   mac]` prints them (`--here` this Mac's own).
-- **Publishing's times** (`pipeline::pubtimes`, task #250): each stage from a unit's job to its
-  tiles on every Mac's map leaves an event. In the history: the unit's job ending; its hand-off
+- **Publishing's times** (`pipeline::pubtimes`, task #250): each stage from a z6 tile's job to its
+  tiles on every Mac's map leaves an event. In the history: the z6 tile's job ending; its hand-off
   merged (`merged`: each journal entry's key, member, step and targets); the map tiles
   first planned at their keys (`planned`: noted once per tile and key, what was noted known again
-  from the history after a restart or a change of lead; with, per unit, the tiles its change made
+  from the history after a restart or a change of lead; with, per z6 tile, the tiles its change made
   stale: their owners whose base pack or road values differ from the served catalog's), leased and
   done; and catalog n written (`catalog`: its `n`, its job's time, delta or whole, the files listed
   and stat'ed, its phases once written, from the catalog's own `catalog-stats:` log line). On the
   NAS, each Mac's map server appends to `state/publish/<host>.jsonl` its adoption of each catalog
   and its mirror's sync of it (begun, and through everything wanted). The Mac writing a catalog
   tells its own server at once (`/api/catalog/refresh`); the others look every 10 s while a build
-  runs (docs/macs.md). `scenic timings publish [--last N]` joins them: a unit is in the first catalog begun
-  once it was merged and its stale tiles packed; per catalog and per unit, the hand-off, planned, leased, packed, catalog, servers
-  and mirrors, the tiles each unit restaled, which of ferries, stations, roadunits, marks and
+  runs (docs/macs.md). `scenic timings publish [--last N]` joins them: a z6 tile is in the first catalog begun
+  once it was merged and its stale tiles packed; per catalog and per z6 tile, the hand-off, planned, leased, packed, catalog, servers
+  and mirrors, the tiles each z6 tile restaled, which of ferries, stations, roadunits, marks and
   names-todo ran, and the medians (the catalogs' phases split delta and whole).
 
 **The pool** (`docs/pool.md`; `crate::pool`, `crate::agent::pool`; other workers: `docs/workers.md`),
@@ -259,13 +260,13 @@ join (why)" (`Status::role`, `out_of_pool`).
 - **What's offered** (crate::agent::every): every step to every member except the lead's own
   (`LEAD_ONLY`: catalogs, prune, `bld-fetch`, the OSM pass, GC, backup, input checks, …), the steps
   that keep the pass's answers, and the worldwide steps. The steps table (`agent::steps`, docs/pool.md
-  §7.2) ranks the shared steps (`agent::steps::SHARED`): terrain's and slope's pieces, tree cover's
-  pieces, units, the landmarks' candidates and peaks, bldprep and bldtiles. The status marks a step
+  §7.2) ranks the shared steps (`agent::steps::SHARED`): terrain's and slope's z6 tiles, tree cover's
+  z6 tiles, roads (`unit`), the landmarks' candidates and peaks, bldprep and bldtiles. The status marks a step
   any member may take with ⇄ (`agent::steps::place`).
-- **What fits a member:** each target is offered with its expected memory: a unit's from its piece;
+- **What fits a member:** each target is offered with its expected memory: a `unit` job's from its extract;
   another's what its last run took (sampled four times a second, `SCENIC_COSTS`), else a related
-  measure, else a first guess per step (terrain piece 3.3 GB, its assembly 1.2, tree cover piece 1,
-  slope piece 1.5, peaks 2.5; the 3D buildings' by the rows they read, `agent::bld_peak`). Measures
+  measure, else a first guess per step (terrain z6 tile 3.3 GB, its assembly 1.2, tree cover z6 tile 1,
+  slope z6 tile 1.5, peaks 2.5; the 3D buildings' by the rows they read, `agent::bld_peak`). Measures
   of older `coord::cost_version`s count for nothing. A member asks only for steps its disk has room
   for, never while a newer app waits, and takes the earliest step with a fitting target, from the
   front of the plan (the coordinator's `pick_every`; after its own last target of the step when
@@ -280,7 +281,7 @@ join (why)" (`Status::role`, `out_of_pool`).
   work is offered again, its "lapse" in the history saying why (no word from its worker for ten
   minutes: `coord::lapse_why`). A member's job that fails saying nothing goes to the lead with a
   reason all the same (`fail_why`). Paused, every lease is held. The lead's own jobs hold leases too, so a
-  target is never built twice at once. A worker's failed unit isn't offered to it for an hour,
+  target is never built twice at once. A worker's failed z6 tile isn't offered to it for an hour,
   doubling.
 - **The coordinator's state** (leases, costs, failures, the pause) is the term's, on the NAS
   (`state/coord/term/<E>/state.json`); the workers' token and accepted devices are the pool's
@@ -308,21 +309,21 @@ join (why)" (`Status::role`, `out_of_pool`).
    slot or beside a job.
 1. **The OSM pass**, when the NAS holds a newer planet.
 2. **The pass's worldwide jobs:** `pass-sets`, `outlines` (the rest waits for them), hiking routes'
-   ends, `reach`, `terrain-z8` (once), roadside buildings (once per release; units wait), summits,
+   ends, `reach`, `terrain-z8` (once), roadside buildings (once per release; z6 tiles wait), summits,
    labels, the lake fill, the water.
 3. **The regions' build,** a region at a time (`agent::build::plan`):
    - heritage-sites first;
-   - regions the map hasn't at all first, then those it has; of each, the one with the fewest units
-     left first. For each: the stale terrain areas it reads (pieces, then each assembly once its
-     pieces are current with mids), then its units whose terrain is built, then slope and tree
+   - regions the map hasn't at all first, then those it has; of each, the one with the fewest z6 tiles
+     left first. For each: the stale terrain z3 tiles it reads (z6 tiles, then each assembly once its
+     z6 tiles are current with mids), then its z6 tiles whose terrain is built, then slope and tree
      cover; but first, the slope and tree cover of the regions done that the map hasn't as they are
      now. Other members take the earliest step offered them with work that fits, from the front of
      the plan (the coordinator's `pick_every`).
    - **Publishing**, before all of the regions' work (after heritage-sites), as soon as the records
      change, from the records as they are (nothing is fixed as of a time): a prune of what the
      coverage no longer builds (docs/regions.md, Shrinking), then the publishing chain (4, Roads), its map tiles
-     whose owners changed a unit's together (`build::by_unit`: the units whose base pack or road
-     values differ from the served catalog's, in build order; the tiles no unit's change explains
+     whose owners changed a z6 tile's together (`build::by_unit`: the z6 tiles whose base pack or road
+     values differ from the served catalog's, in build order; the tiles no z6 tile's change explains
      by their z3 tile), each group its own work and offer, so a job of them opens one halo of base
      packs (crate::needs::HALO_STEPS: its disk the halo's cache, not its tiles' summed, its NAS
      weight what it writes; docs/pool.md §7.1, §7.7), offered in the plan's order to every
@@ -330,7 +331,7 @@ join (why)" (`Status::role`, `out_of_pool`).
      index are drawn (`build::CATALOG_GATE`) and none of their hand-offs waits to be merged (or ten
      minutes after it was first held back), a
      catalog (5), listed before the chain's rest (the low zooms, rail stops, ferries, roots), which
-     goes out with a later one. Nothing is published before a unit is
+     goes out with a later one. Nothing is published before a z6 tile is
      built, while the regions have work left. The lead keeps `publishing.json` in its agent's folder
      (`build::LastCatalog`: when its last catalog went out, the last with the low zooms made, and
      when a catalog due was first held back since),
@@ -344,7 +345,7 @@ join (why)" (`Status::role`, `out_of_pool`).
      still building as "x of y tiles, on the map as they come", and when all of it is.
    - **The low zooms' cadence** (`build::low_gate`): the low zooms (roads' and rails' lo packs,
      terrain's and slope's roots, and with `near-slope` the slope and tree cover assemblies) are
-     planned when nothing else is queued (no unit, terrain, slope or tree piece, 3D buildings or
+     planned when nothing else is queued (no `unit`, terrain, slope or tree cover z6 tile, 3D buildings or
      depth work), at once; else `build::LOW_EVERY_S` (three hours) after a catalog last went out
      with them made (`LastCatalog::low_at`), when half the roads' lo packs are stale
      (`build::low_due`), or once everything is built. The gate decides only when; their keys stay
@@ -360,18 +361,18 @@ join (why)" (`Status::role`, `out_of_pool`).
        when the deltas add up to a whole one (`store::catalog::whole_due`), or a delta's run nears
        `MAX_CHAIN`. Readers apply deltas (`store::catalog::latest_nas_from`). Switch on only once
        every Mac's server reads deltas. Held catalogs are always whole.
-     - `near-slope`: a done region's slope and tree cover are the pieces near it
-       (`Publishing::near`), not every stale piece around; it's recorded built with those.
+     - `near-slope`: a done region's slope and tree cover are the z6 tiles near it
+       (`Publishing::near`), not every stale z6 tile around; it's recorded built with those.
 4. **Four chains:**
-   - **Roads** (the publishing chain, `build::publish_chain`): a prune of map tiles no unit is near,
-     pack (the map tiles), the road → units index, lo, stations, ferries, terrain and slope roots,
+   - **Roads** (the publishing chain, `build::publish_chain`): a prune of map tiles no z6 tile is near,
+     pack (the map tiles), the road → z6 tiles index, lo, stations, ferries, terrain and slope roots,
      its first stale step at a time.
    - **Rail service**, from the start: `rail-feeds`, then `rail` (docs/steps.md §10).
    - **Landmarks**, from the start, each step once what it reads is built
      (`agent::build::landmarks_work`): candidates, peaks, items, the heritage chain, marks, then the
-     overlays. Marks at most hourly while units build (`MARKS_EVERY_S`), the overlays at most every
+     overlays. Marks at most hourly while z6 tiles build (`MARKS_EVERY_S`), the overlays at most every
      6 h (`OVERLAYS_EVERY_S`) on their own gate, from the dots the last marks run wrote; both at
-     once after the last unit.
+     once after the last z6 tile.
    - **Gated by time** (`build::GATED`: marks, overlays, names-todo): the gate decides only when
      a step is planned; its key stays by content. When each last ran is the lead's observation of
      its recorded key changing (`LastCatalog::observe`, kept in `publishing.json`; not known: due).
@@ -380,7 +381,7 @@ join (why)" (`Status::role`, `out_of_pool`).
      regions' order.
 
    The trains', landmarks' and buildings' work is listed after the regions'. Last, in idle time: the
-   mids of pieces current without one, each made again with `--expect-same` (`scenic-build
+   mids of z6 tiles current without one, each made again with `--expect-same` (`scenic-build
    trees|terrain|slope --expect-same`: a pack differing from the manifest fails the job).
 5. **A catalog** whenever the served files, the regions or which of them are done change
    (`build::catalog_key`), at most one each `build::CATALOG_EVERY_S` (a minute) since the last
@@ -393,10 +394,10 @@ join (why)" (`Status::role`, `out_of_pool`).
    `build::CATALOG_CAP_S` (ten minutes) one goes out with what's drawn and merged, its minute
    allowing, the status saying which held it (the map tiles or the road index to draw, or their
    hand-offs waiting to be merged). It records as built (`--ready <id>=<outline
-   digest>,…`) the regions done whose units are merged, whose map tiles are drawn and merged and
+   digest>,…`) the regions done whose z6 tiles are merged, whose map tiles are drawn and merged and
    whose slope and tree cover are made, and the others as the last catalog had them; the status
    says why a done region isn't yet ("waiting to be merged", "map tiles to draw", "slope and tree
-   cover to make"). A unit's hand-off waiting holds no catalog: it goes out with a later one.
+   cover to make"). A z6 tile's hand-off waiting holds no catalog: it goes out with a later one.
    While `inputs/hold-catalog` exists, catalogs go to `catalog-held/`.
 6. **Daily:** backup and GC.
 
@@ -442,7 +443,7 @@ function from one implementation (the `det` crate, over `libm`). Checked per ste
 
 **Validation:** every upload is read back and checked against its hash, and a catalog fails on a
 missing file. A held catalog is compared with the current map by hand. Planned: decode checks,
-plausible ranges, and holding a publish when a unit loses over 20 % of its ways without its coverage
+plausible ranges, and holding a publish when a z6 tile loses over 20 % of its ways without its coverage
 shrinking.
 
 **Tests:** a test holds on any Mac in any state, so none turns on the wall clock, the real machine
@@ -477,7 +478,7 @@ everything is rebuilt.
 `publish.sh --rollback` swaps `current.json` and `previous.json`. The agent never fetches from git.
 
 **Programs:** `scenic` (the user's command and the agent); `scenic-build` (the build steps);
-`server`; the unit's programs `extract`, `elev`, `areaflags`, `landcover`, `tile`, `scenic-metrics`
+`server`; the `unit` job's programs `extract`, `elev`, `areaflags`, `landcover`, `tile`, `scenic-metrics`
 (rail runs `extract` and `railfreq`, tree cover `trees`). The app also carries `dem/` (the Python
 steps, run in `dem/.venv`, which uv makes from `uv.lock` at a Mac's first Python step: task #456),
 Scenic.app, `web/` and `fonts/`. `tools/app/install.sh` gives the agent a PATH with uv, osmium, zstd

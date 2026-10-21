@@ -1,10 +1,10 @@
-//! Per-area packs from base packs (docs/steps.md): pack(T) for a z6 tile T (road and rail tiles
+//! Per-tile packs from base packs (docs/steps.md): pack(T) for a z6 tile T (road and rail tiles
 //! z9–14, and hidata: the ways drawn here, query parts, rail lines) and lo packs for a z3 tile (road
-//! and rail tiles z4–8). Each reads the base packs of every unit whose geometry reaches the area,
+//! and rail tiles z4–8). Each reads the base packs of every unit whose geometry reaches the tile,
 //! never anything per region.
 
 use crate::basepack::BasePack;
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use crate::tiling::{self, Encoded, WayIn};
 use anyhow::Result;
 use det::Det;
@@ -56,20 +56,20 @@ pub struct Staged {
     pub bbox: Bounds,
 }
 
-/// Ways of `packs` whose bbox meets `area`.
-pub fn ways_in(packs: &[&BasePack], area: Bounds) -> Result<Vec<Staged>> {
+/// Ways of `packs` whose bbox meets `within`.
+pub fn ways_in(packs: &[&BasePack], within: Bounds) -> Result<Vec<Staged>> {
     let per: Vec<Vec<Staged>> = packs
         .par_iter()
         .enumerate()
         .map(|(pi, bp)| -> Result<Vec<Staged>> {
-            if !meets(bp.extent, area) {
+            if !meets(bp.extent, within) {
                 return Ok(Vec::new());
             }
             Ok(bp
                 .bboxes()?
                 .iter()
                 .enumerate()
-                .filter(|(_, bb)| meets(**bb, area))
+                .filter(|(_, bb)| meets(**bb, within))
                 .map(|(wi, bb)| Staged { pack: pi, way: wi as u32, bbox: *bb })
                 .collect())
         })
@@ -143,7 +143,7 @@ fn way_len(v: &[[i32; 2]]) -> f64 {
 }
 
 /// The hidata of z6 tile `t`: `in_t` are the ways meeting T.
-pub fn hidata(t: Unit, packs: &[&BasePack], in_t: &[Staged]) -> Result<HiData> {
+pub fn hidata(t: TileId, packs: &[&BasePack], in_t: &[Staged]) -> Result<HiData> {
     let tb = tile_bounds(t.z, t.x, t.y);
     // here: sorted by OSM id.
     let mut here: Vec<Here> = in_t

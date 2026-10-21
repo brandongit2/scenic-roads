@@ -25,11 +25,11 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
   - **AWS's raw terrain tiles** are packed onto the NAS (`pipeline::rawpack`,
     `sources/aws-terrarium/packs/`, listed in `index.json`) in archives grouped as the terrain's
     packs are (z9–12 by z6 tile, z3–8 by z3 tile, z0–2 together). A job's new tiles go up at its end
-    as one archive beside its area's others (the NAS's small-file writes run at ~23 a second). An
-    area's archives are each kept more than twice the size of all those after it, else merged, so
-    an area has a dozen at most. Archives leave the index through its `gone` list and are deleted a
+    as one archive beside its shard's others (the NAS's small-file writes run at ~23 a second). A
+    shard's archives are each kept more than twice the size of all those after it, else merged, so
+    a shard has a dozen at most. Archives leave the index through its `gone` list and are deleted a
     day later, so a reader of the old index stays right. Only the lead changes the index; a job
-    puts its archives there unlisted and hands them off. A tile is read by range for an area's first
+    puts its archives there unlisted and hands them off. A tile is read by range for a shard's first
     16, then each archive is copied whole once and checked against its name.
   - **The Wikidata and Wikipedia answers** the items job and the heritage chain got for a pass
     (`pipeline::answers`) are kept as one archive per pass (`sources/items/<date>/answers.tar.zst`,
@@ -48,29 +48,29 @@ lead's coordinator. Below, the M4 (48 GB) unless said.
   copy of what the NAS keeps, or made from it, refilled from the NAS, never the internet.
   - **The cheap ones** (emptied for room, trimmed after the build, cleared): canopy squares
     (`chm10/`; the M4's trim keeps them), raw terrain tiles and archive copies (`aws-terrarium/`),
-    copies of record files staging reads (`blobs/`: hi packs, roadside buildings' z8 tiles, units'
+    copies of record files staging reads (`blobs/`: hi packs, roadside buildings' z8 tiles, z6 tiles'
     kept DEM samples), pageview month indexes (`items/months/`).
   - **Cleared too, on the owner's ask:** the pack cache (`base/`, the base packs' way indexes for
     pack(T) and lo), the
     per-vertex DEM seed (only while the NAS has it whole), local copies the summits and peaks jobs
     read, and the heritage jobs' clip of the filtered planet (made again by osmium in about an hour).
-  - **Kept:** the answers (`items/`, `heritage-<date>/`), the trains' stop pairs (`rail/`), the unit
-    stages' timings (`unit-stages.json`), what a unit kept that isn't on the NAS yet, and the
+  - **Kept:** the answers (`items/`, `heritage-<date>/`), the trains' stop pairs (`rail/`), the z6 tile
+    stages' timings (`unit-stages.json`), what a z6 tile kept that isn't on the NAS yet, and the
     coverage as last read (`coverage/<key>.cov`, reused while every recipe and outline file has the
     name, length and time it had).
   - Nothing is deleted through a link, nor anything in the NAS's project folder.
 - **Its own map** is served from the NAS and what it has downloaded (Mirror).
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free) and copies the planet to
   the SSD when there's room, else reads it from the NAS.
-- **What a unit keeps for its later runs** is on the NAS (`cache/`), shared by both Macs: its DEM
-  samples (`dem-units/`) and canopy and view results (`scenic-units/`, docs/steps.md §6). A unit's build
+- **What a z6 tile keeps for its later runs** is on the NAS (`cache/`), shared by both Macs: its DEM
+  samples (`dem-units/`) and canopy and view results (`scenic-units/`, docs/steps.md §6). A z6 tile's build
   folders go once it's built.
 
 **The M1 (16 GB)** leads when it holds the term; as a member it builds what the lead's coordinator
 gives it (docs/building.md §2, The pool): any shared step's jobs that fit the memory its owner gives the build there
 (`scenic memory`, within the memory guard's limit: docs/pool.md §7.1) and its disk (its room target kept free past each job's measured disk; a task 5 GB, tree cover's rows and terrain's subtrees 1 GB), from the far end of the list (terrain from the
-near end), else units' tails (`docs/workers.md`). A unit's predicted peak is the most its job's
-processes held together last time, else about ten times its piece, never under 3.7 GB nor below its
+near end), else z6 tiles' tails (`docs/workers.md`). A z6 tile's predicted peak is the most its job's
+processes held together last time, else about ten times its extract, never under 3.7 GB nor below its
 floor (docs/pool.md §7.2). A member's status is `state/helpers/<host>.json`, the lead's the heartbeat
 (`state/status.json`).
 

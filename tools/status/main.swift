@@ -424,7 +424,7 @@ struct Recipe: Decodable {
 }
 
 /// The forecast's part the menu shows: when it'll all be done (and the range), and when each region
-/// is all on the map as it's built now (its `map_at`: its last unit, its map tiles drawn, a catalog
+/// is all on the map as it's built now (its `map_at`: its last z6 tile, its map tiles drawn, a catalog
 /// within the minute).
 struct Forecast: Decodable {
     let done_at: Int?
@@ -502,8 +502,8 @@ struct Step: Decodable {
         return false
     }
 
-    /// Its counts in words, a noun at a time in its items' order ("398 of 398 tiles", "18 of 18
-    /// areas", "2 runs left"), as the build page and `scenic status` say them; an agent's before
+    /// Its counts in words, a noun at a time in its items' order ("398 of 398 z6 tiles", "18 of 18
+    /// z3 tiles", "2 runs left"), as the build page and `scenic status` say them; an agent's before
     /// items: its own count.
     var counts: [String] {
         guard let items, !items.isEmpty else {
@@ -728,7 +728,7 @@ func grouped(_ v: Double) -> String {
     return f.string(from: NSNumber(value: v)) ?? "\(Int(v))"
 }
 
-/// A job's progress in words: "40% · 2.4 of 6 areas · about 12 min left" (the item under way
+/// A job's progress in words: "40% · 2.4 of 6 z6 tiles · about 12 min left" (the item under way
 /// counted by how much of it is done; one item alone, its share), and when it hasn't moved on for a
 /// quarter of an hour, since when.
 func progressText(_ p: JobProgress, paused: Bool, now: Int) -> String {
@@ -806,7 +806,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         if let w = j.waiting { out.append(Line(text: w.prefix(1).uppercased() + w.dropFirst(), style: .small)) }
         out.append(Line(text: "Running \(duration(r.now - j.started)) (since \(clock(j.started)))", style: .small))
     }
-    // The other Macs helping (units only), each with its job.
+    // The other Macs helping (z6 tile jobs only), each with its job.
     for h in freshHelpers(r) {
         guard let j = h.firstJob else {
             out.append(Line(text: "\(h.host) is helping; nothing for it to build now", style: .small))
@@ -889,13 +889,13 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         }
     }
     if let built = s.built, !built.isEmpty {
-        // Whole regions (the checklist counts the areas, each once: regions share areas).
+        // Whole regions (the checklist counts the z6 tiles, each once: regions share z6 tiles).
         let done = built.values.filter { $0.total > 0 && $0.built >= $0.total }.count
         out.append(Line(text: "", style: .separator))
         out.append(Line(text: "Regions built: \(done) of \(built.count)", style: .small))
         // Those still building, as the Regions panel says them: on the map as their tiles come, and
         // when all of it is (the forecast's).
-        // Every unit built but not yet recorded built (publishing's held regions): finishing.
+        // Every z6 tile built but not yet recorded built (publishing's held regions): finishing.
         let held = Set((s.publishing?.regions ?? []).filter { r in r.kinds.contains { k in k != "new region" && k != "rebuilt" } }.map(\.id))
         for r in s.regions ?? [] {
             if let b = built[r.id], b.built < b.total {
@@ -1924,7 +1924,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         } else {
             let it = NSMenuItem(title: "Pause Building", action: #selector(pauseBuild), keyEquivalent: "")
             it.target = self
-            it.toolTip = "Every Mac's running job stops at its next safe point (an area, a map tile), keeping what it did; nothing new starts until you resume"
+            it.toolTip = "Every Mac's running job stops at its next safe point (a z3 tile, a z6 tile, a map tile), keeping what it did; nothing new starts until you resume"
             m.addItem(it)
             let now = NSMenuItem(title: "Pause Building Now", action: #selector(pauseBuildNow), keyEquivalent: "")
             now.target = self

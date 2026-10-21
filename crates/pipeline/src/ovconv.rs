@@ -17,7 +17,7 @@
 
 use crate::hipack::{grow, meets, tile_bounds};
 use crate::layers::{pack_of, write_pack};
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use crate::markconv::{self, src_bytes};
 use crate::marks::{self, IdSource};
 use crate::out::Out;
@@ -95,7 +95,7 @@ fn mvt_value(v: &Value) -> Option<MvtValue> {
 
 /// The z3 tile ("3/x/y") holding a point.
 fn z3_of(lon: f64, lat: f64) -> String {
-    Unit::of_point(3, [marks::e7(lon), marks::e7(lat)]).slash()
+    TileId::of_point(3, [marks::e7(lon), marks::e7(lat)]).slash()
 }
 
 /// The z6 tiles meeting the coverage (the base packs' units) grown by `HALO_KM`: where hi tiles go.
@@ -109,7 +109,7 @@ fn hi_cover(out: &Out) -> HashSet<(u32, u32)> {
 pub fn cover_of<'a>(names: impl Iterator<Item = &'a String>) -> std::collections::BTreeSet<(u32, u32)> {
     let grown: Vec<_> = names
         .filter_map(|k| k.strip_prefix("base/"))
-        .filter_map(Unit::parse)
+        .filter_map(TileId::parse)
         .map(|u| grow(tile_bounds(u.z, u.x, u.y), HALO_KM))
         .collect();
     let mut s = std::collections::BTreeSet::new();
@@ -320,7 +320,7 @@ fn areas_and_parks(
     let _p = crate::timings::phase("ovdata made and uploaded", crate::timings::Class::NasWrite);
     let n_ov = owned.len();
     for (tile, keys) in owned {
-        let u = Unit::parse(&tile).unwrap();
+        let u = TileId::parse(&tile).unwrap();
         let logical = format!("ovdata/{}", u.dash());
         let local = out.scratch_file(&format!("{logical}.sect"));
         let counts: BTreeMap<&str, usize> = keys.iter().map(|(k, r)| (*k, r.rows.len())).collect();
@@ -726,7 +726,7 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
     let kept: Vec<&crate::stations::Stop> = all
         .iter()
         .filter(|s| {
-            let u = Unit::of_point(6, [marks::e7(s.lon), marks::e7(s.lat)]);
+            let u = TileId::of_point(6, [marks::e7(s.lon), marks::e7(s.lat)]);
             cover.contains(&(u.x, u.y))
         })
         .collect();

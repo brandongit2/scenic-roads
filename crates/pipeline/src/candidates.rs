@@ -4,7 +4,7 @@
 //! sorted by key as `work/pois/<u>` (zstd JSON lines).
 
 use crate::coverage::Coverage;
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -54,7 +54,7 @@ pub struct Cand {
 
 /// The candidates in extract's `pois.json` (made with `--candidates`) that unit `u` owns and the
 /// coverage holds: a point by its position, a way when one of its nodes is inside.
-pub fn from_pois(pois_json: &[u8], u: Unit, cov: &Coverage) -> Result<Vec<Cand>> {
+pub fn from_pois(pois_json: &[u8], u: TileId, cov: &Coverage) -> Result<Vec<Cand>> {
     let v: serde_json::Value = serde_json::from_slice(pois_json).context("pois.json")?;
     let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
     let mut out = Vec::new();
@@ -142,7 +142,7 @@ mod tests {
             d.path(),
         )
         .unwrap();
-        let u = Unit { z: 6, x: 28, y: 17 };
+        let u = TileId { z: 6, x: 28, y: 17 };
         let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
         assert!(crate::unit::owns(tb, [-219_000_000, 641_300_000]), "{tb:?}");
         let pois = br#"{"type":"FeatureCollection","features":[

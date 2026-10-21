@@ -21,7 +21,7 @@ What is not built is marked planned.
 - **The coordinator** (`pipeline::coord`) runs in the lead's agent on port 8090: it grants jobs,
   holds leases, serves the data plane (§4) and brokers tasks (§5). Each member also brokers its own
   jobs' tasks (docs/pool.md §8).
-- **Jobs** of the plan (terrain's, slope's and tree cover's pieces, units, candidates, peaks,
+- **Jobs** of the plan (the z6 tile runs of terrain, slope, tree cover, roads (`unit`), candidates, peaks,
   bldprep, bldtiles, map tiles) go to workers that mount the NAS (every Mac's agent). A job saves
   into the store's content-named files; its record changes come back as one hand-off through the
   journal (docs/pool.md §7.3).
@@ -29,29 +29,30 @@ What is not built is marked planned.
   folder of files, giving files back. A task's folder is served by the Mac whose job offers it;
   what it reads of the NAS's stores and the DEM servers it reads where it lies (§3), never writing.
 - **Impure work stays at the hub:** downloads into the NAS's stores, staging from packs, keeping a
-  unit's DEM samples, and every write to the records.
+  z6 tile's DEM samples, and every write to the records.
 - **Workers** hold nothing the build depends on: a lost worker costs only its work in hand.
 
 ## 3. Tasks
 
-Four kinds, all with the same spec shape (`unit`, `version`, `runs`, `inputs`, `places`), run by
+Four kinds, all with the same spec shape (`unit` (stored: the task's z6 or z8 tile), `version`, `runs`, `inputs`, `places`), run by
 the page and by `scenic run-task` unchanged:
 
-- **A unit's tail** (`tail`, `pipeline::offload`, `unit::tail`): from elevations on (clean-up and
+- **A z6 tile's tail** (`tail`, `pipeline::offload`, `unit::tail`): from elevations on (clean-up and
   grade, prep, canopy, view, buildings, flags). Each step lists the files it reads (`Run::reads`);
   `tools/check/tail.mjs` runs the task as a browser does and compares every file with the native
-  run's. While the NAS's store lacks one of a unit's canopy squares (`unit::canopy_stored`), the
-  steps through canopy run in the job (`unit::keep_here`), which downloads it. The unit job clones
+  run's. While the NAS's store lacks one of a z6 tile's canopy squares (`unit::canopy_stored`), the
+  steps through canopy run in the job (`unit::keep_here`), which downloads it. The `unit` job clones
   the files into the task's folder (copy-on-write) and offers at most three tails at once.
-- **The 3D buildings' z8 areas** (`bldtile`, `pipeline::bld::task`, docs/buildings3d.md §3.6): a
-  `bldtiles` job offers some of a z6 tile's areas, cut from its work files; the run is `bldtile`
-  over `{dir}`, writing `area.tiles` and `area.json`. Checked by `tools/check/bldtile-same.mjs`.
-- **Tree cover's rows of blocks** (`treeblock`, `pipeline::trees::task`, docs/steps.md §2, Trees): a piece's
+- **The 3D buildings' z8 tiles** (`bldtile`, `pipeline::bld::task`, docs/buildings3d.md §3.6): a
+  `bldtiles` job offers some of a z6 tile's z8 tiles, cut from its work files; the run is `bldtile`
+  over `{dir}`, writing `area.tiles` and `area.json` (the files' names from when a z8 tile was
+  called an area: kept, as the task's files' names and the `"area"` in their meta are stored). Checked by `tools/check/bldtile-same.mjs`.
+- **Tree cover's rows of blocks** (`treeblock`, `pipeline::trees::task`, docs/steps.md §2, Trees): a z6 tile's
   run offers rows (up to four z8 blocks sharing canopy rows), run as `trees --blocks … --coverage
   {dir}/coverage.json --chm {chm} --leaf {sources}/trees/leaf --squares … --out {dir}`. The task's
   one file is the coverage cut to the row; canopy strips are read where they lie. Checked by
   `tools/check/treeblock-same.mjs`.
-- **Terrain's z8 subtrees** (`terrainsub`, `pipeline::terrain_task`, docs/steps.md §2, Terrain): a piece's
+- **Terrain's z8 subtrees** (`terrainsub`, `pipeline::terrain_task`, docs/steps.md §2, Terrain): a z6 tile's
   16 subtrees go out in groups closed under the lakes they share (a lake's level depends on all its
   shore); groups over two subtrees are not offered. Its one file `u/in.sect` holds all it reads;
   the run `terrainsub --in {dir}/in.sect --out {dir}` writes `hi.sect` and `mid.sect`.
@@ -85,18 +86,18 @@ Common rules:
   While a job only waits it writes `SCENIC_WAITING` (`offload::WAITING_ENV`) so its agent counts
   its room free (docs/pool.md §7.7). An unmeasured worker's raced task is kept for it to finish
   (`Tasks::measure`) to learn its pace. With placement on (`state/pool/placement`), terrain and
-  tree pieces offer ahead (`terrain_task::offer_ahead`) with a head start a slower worker may use.
+  tree cover z6 tiles offer ahead (`terrain_task::offer_ahead`) with a head start a slower worker may use.
 - **Versions:** a task names the job's build; a page fetches that build's WebAssembly programs
   (`/work/prog/<name>.wasm`, shipped in the app's `wasm/`).
 - **Determinism:** one maths library (`det`, over `libm`), thread-count-independent reductions, no
   hash-map order in outputs, the real zstd everywhere.
 - **Planned:** staging as a task; heavy steps cut into sample ranges; more kinds (map tiles,
-  landmarks, slope subtrees); smaller 3D-building areas.
+  landmarks, slope subtrees); smaller 3D-building z8 tiles.
 
 ## 4. Data: the coordinator's plane
 
 - **Built:** packs that staging reads are copied once to the job's Mac's SSD (`blobs/`,
-  content-named) and shared by its units; the next unit's inputs are copied ahead; task files are
+  content-named) and shared by its z6 tiles; the next z6 tile's inputs are copied ahead; task files are
   served from that SSD; one disk budget covers the caches (docs/building.md §2, Room on the disk).
 - **Planned:** exact byte ranges fetched; a content-named index per dataset instead of listings;
   writes journaled on the SSD and committed in groups; reads and writes paced by the NAS's latency.
@@ -116,7 +117,7 @@ Common rules:
   broker that offered it; a hand-back for a gone lease is refused (410).
 - **Restarts:** token, leases and costs are kept per term (`state/coord/`, docs/pool.md §7.5); a
   worker rereads `state/coordinator.json` when it can't reach the coordinator or its token fails.
-- **Failures:** a worker's failed unit isn't offered to it for an hour, doubling; a task out of
+- **Failures:** a worker's failed z6 tile isn't offered to it for an hour, doubling; a task out of
   memory goes only to workers sparing more; after two other failures the job runs it.
 - **Verification:** a worker's first three results, then one in eight, are checked against the
   job's own run; any difference stops its work.
@@ -124,8 +125,8 @@ Common rules:
 
 ## 6. Fitting the work to the worker
 
-- **Predicted peaks:** a unit's is its last measured peak (`SCENIC_COSTS`), else about ten times
-  its piece, at least 3.7 GB and its floor (docs/pool.md §7.2). A task's: §3, Memory.
+- **Predicted peaks:** a z6 tile's `unit` job is its last measured peak (`SCENIC_COSTS`), else about ten times
+  its extract, at least 3.7 GB and its floor (docs/pool.md §7.2). A task's: §3, Memory.
 - **Ceilings, enforced:** programs import their memory, and the page caps each `WebAssembly.Memory`
   at its task's budget: an overrun is a failed task, not a killed tab.
 - **The page's ceiling, learned:** starts from `navigator.deviceMemory`, else 3 GB on an iPad, else

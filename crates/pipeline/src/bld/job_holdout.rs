@@ -36,7 +36,7 @@ fn held(c: [i32; 2]) -> bool {
     ((c[0] as i64).wrapping_mul(73_856_093) ^ (c[1] as i64).wrapping_mul(19_349_663)).rem_euclid(10) == 0
 }
 
-fn files_of(dir: &Path, t: Unit) -> Vec<Option<WorkFile>> {
+fn files_of(dir: &Path, t: TileId) -> Vec<Option<WorkFile>> {
     let mut out = Vec::new();
     for dy in -1i64..=1 {
         for dx in -1i64..=1 {
@@ -53,9 +53,9 @@ fn files_of(dir: &Path, t: Unit) -> Vec<Option<WorkFile>> {
 
 // (A block's columns side by side, by record.)
 #[allow(clippy::needless_range_loop)]
-fn tile(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, qs: &mut Vec<Q>, ms: &mut Vec<M>, own_n: &mut u64) {
+fn tile(files: &[Option<WorkFile>], cov: &Coverage, t: TileId, qs: &mut Vec<Q>, ms: &mut Vec<M>, own_n: &mut u64) {
     let own = files[4].as_ref().unwrap();
-    let mut areas: Vec<(u32, u32)> = own
+    let mut z8s: Vec<(u32, u32)> = own
         .index
         .iter()
         .map(|e| {
@@ -63,11 +63,11 @@ fn tile(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, qs: &mut Vec<Q>, ms
             (x >> 6, y >> 6)
         })
         .collect();
-    areas.sort_unstable();
-    areas.dedup();
+    z8s.sort_unstable();
+    z8s.dedup();
     let codes: Vec<Option<Codes>> = files.iter().map(|f| f.as_ref().map(|f| Codes::of(&f.meta))).collect();
-    for &a in &areas {
-        let (list, n_own) = area_blocks(files, t, a);
+    for &a in &z8s {
+        let (list, n_own) = z8_blocks(files, t, a);
         let blocks: Vec<Block> =
             list.par_iter().map(|(fi, e)| files[*fi].as_ref().unwrap().block(e)).collect::<Result<_>>().unwrap();
         let shapes: Vec<Vec<Option<usize>>> = blocks[..n_own]
@@ -192,7 +192,7 @@ fn holdout() {
     let cov = Coverage::accepted(&root, &crate::inputs::regions::read::source_now(&root).unwrap(), None).unwrap();
     let (mut qs, mut ms, mut n) = (Vec::new(), Vec::new(), 0u64);
     for t in std::env::var("TILES").unwrap().split(',') {
-        let t = Unit::parse(t).unwrap();
+        let t = TileId::parse(t).unwrap();
         let files = files_of(Path::new(&dir), t);
         let (q0, m0) = (qs.len(), ms.len());
         tile(&files, &cov, t, &mut qs, &mut ms, &mut n);

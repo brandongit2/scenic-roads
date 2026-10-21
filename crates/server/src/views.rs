@@ -1,4 +1,4 @@
-//! Typed views of the per-area files (docs/formats.md): sectioned files read from the Mac's mirror
+//! Typed views of the per-z6-tile files (docs/formats.md): sectioned files read from the Mac's mirror
 //! (memory-mapped) or from the NAS (never mapped: read through the I/O pool, a page at a time for
 //! the few records a request needs, or whole for what a query scans; see `pages`).
 

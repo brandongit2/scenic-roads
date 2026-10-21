@@ -169,10 +169,10 @@ pub fn restaled_by(
     tiles: &[String],
 ) -> BTreeMap<String, Vec<String>> {
     use crate::agent::build::{owns, unit_reach};
-    use crate::legacy::Unit;
-    let changed: Vec<(Unit, [i32; 4])> = m
+    use crate::legacy::TileId;
+    let changed: Vec<(TileId, [i32; 4])> = m
         .keys()
-        .filter_map(|l| l.strip_prefix("base/").and_then(Unit::parse))
+        .filter_map(|l| l.strip_prefix("base/").and_then(TileId::parse))
         .filter(|u| {
             [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash())]
                 .iter()

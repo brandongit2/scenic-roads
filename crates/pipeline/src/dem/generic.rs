@@ -215,7 +215,7 @@ pub fn stored(id: &str, dir: &std::path::Path, url: &str) -> Result<Option<Arc<d
         if dir.join(format!("{name}.none")).exists() {
             return Ok(None);
         }
-        bail!("{id}: tile {name} isn't in the store ({}): area builds don't download it; fetch it into the store first (scenic-build fabdem-fetch, docs/inputs.md §6.8)", dir.display());
+        bail!("{id}: tile {name} isn't in the store ({}): z6 tile builds don't download it; fetch it into the store first (scenic-build fabdem-fetch, docs/inputs.md §6.8)", dir.display());
     }
     ensure!(
         crate::whole::tiff_file_whole(&f),

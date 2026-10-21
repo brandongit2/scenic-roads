@@ -70,7 +70,7 @@ lines hold for their source area's languages.
 and from the next pass `osmpass::BASEMAP_LANGUAGES`); roads (`global/roaden/<u>`, no language tags).
 
 **To-do** (`pipeline::namestodo`, the `names-todo` job, after a catalog the map serves that changed
-what it reads (`inputs_key`): at most daily while units build, after any such once none's left):
+what it reads (`inputs_key`): at most daily while z6 tiles build, after any such once none's left):
 - **`inputs/translations/todo/<language>.jsonl`:** each name something in the coverage has with no
   English of its own and no line in any language spoken there. Read from labels, roads and rail
   lines (base packs, each way placed once by the ways-here index), and landmarks. Names already in

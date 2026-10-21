@@ -2,7 +2,7 @@
 //! elevation Douglas-Peucker, then an exact clip at tile edges (round caps make the seams
 //! invisible), then per tile the sub-pixel pieces merged into dots and the lines encoded.
 //!
-//! Used by `scenic-build pack`/`lo` (the ways of one area, gathered from base packs), which
+//! Used by `scenic-build pack`/`lo` (the ways of one tile, gathered from base packs), which
 //! describes each way with a `WayIn` and chooses which tiles to keep.
 
 use crate::count_bar;

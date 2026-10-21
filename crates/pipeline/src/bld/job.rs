@@ -1,17 +1,17 @@
 //! `bldtiles T` (docs/buildings3d.md §3.1): z6 tile T's buildings that touch the coverage, their
 //! heights filled ([`super::fill`]), as the z14 tiles ([`super::tiles`]) of the hi pack
-//! `layers/buildings/hi/6-x-y`, a z8 area at a time.
+//! `layers/buildings/hi/6-x-y`, a z8 tile at a time.
 //!
 //! - **Which:** a building or part touches the coverage when its centroid or one of its vertices
 //!   is inside it (with the 1 km buffer of `osm:` outlines), as a way does (docs/regions.md). Its
 //!   country, which the fill's fits go by, is that of its centroid's shape (`Coverage::shape_at`:
 //!   the first outline holding it, else the first buffer reaching it), else its first vertex's
 //!   with one (`Shape::country`; the coverage's fits where it's unknown).
-//! - **The neighbours' rule** reads every building of the area's blocks and of the blocks within
+//! - **The neighbours' rule** reads every building of the z8 tile's blocks and of the blocks within
 //!   620 m around it, from T's file and its 8 neighbours', in the coverage or not.
-//! - **Copies:** a building reaching into tiles of the area other than its own is copied into
-//!   them (`tiles`: for the flat footprints), from the area itself or from 310 m around it; the
-//!   latter filled here as their own area fills them (their 300 m all read).
+//! - **Copies:** a building reaching into tiles of the z8 tile other than its own is copied into
+//!   them (`tiles`: for the flat footprints), from the z8 tile itself or from 310 m around it; the
+//!   latter filled here as their own z8 tile fills them (their 300 m all read).
 //! - **Zooms:** z14 alone, every building and part (below zoom 14 the field draws them:
 //!   [`super::field`]).
 //! - Pure: the pack is a function of the work files' bytes and the coverage over T (its shapes and
@@ -23,18 +23,18 @@ use super::tiles::{self, Feat};
 use super::work::{flag, Block, IndexEntry, Meta, WorkFile};
 use super::{key_zxy, tile_box_deg, world7, EQ};
 use crate::coverage::Coverage;
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use crate::out::Out;
 use anyhow::{ensure, Context, Result};
 use det::Det;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 
-/// How far beyond an area a building is copied into the area's tiles from (its centroid), ground
+/// How far beyond a z8 tile a building is copied into the z8 tile's tiles from (its centroid), ground
 /// metres: one reaching further into them isn't copied (its flat footprint cut at the edge).
 const COPY_M: f64 = 310.0;
-/// How far beyond an area its blocks are read, ground metres: the buildings within [`COPY_M`] are
-/// filled as their own area fills them, the neighbours' rule reading 300 m around each.
+/// How far beyond a z8 tile its blocks are read, ground metres: the buildings within [`COPY_M`] are
+/// filled as their own z8 tile fills them, the neighbours' rule reading 300 m around each.
 const MARGIN_M: f64 = COPY_M + fill::FAR_M + 10.0;
 
 /// What a run made.
@@ -82,7 +82,7 @@ impl Summary {
         keep(&mut self.fullest, t, 2);
     }
 
-    /// Another run's (another area's) added: the counts, and the heaviest and fullest tiles of both
+    /// Another run's (another z8 tile's) added: the counts, and the heaviest and fullest tiles of both
     /// (each list the eight first of the two, as one run noting every tile would have them).
     pub fn merge(&mut self, o: &Summary) {
         self.buildings += o.buildings;
@@ -152,9 +152,9 @@ pub(super) fn box14(key: u64) -> [i32; 4] {
     crate::hipack::tile_bounds(14, x, y)
 }
 
-/// The blocks area `a` (a z8 tile of T) reads: its own (T's blocks in it), then those within
+/// The blocks z8 tile `a` (a z8 tile of T) reads: its own (T's blocks in it), then those within
 /// [`MARGIN_M`] around it, as (file, entry) with `files` T and its neighbours ((dy + 1) × 3 + dx + 1).
-pub(super) fn area_blocks(files: &[Option<WorkFile>], t: Unit, a: (u32, u32)) -> (Vec<(usize, IndexEntry)>, usize) {
+pub(super) fn z8_blocks(files: &[Option<WorkFile>], t: TileId, a: (u32, u32)) -> (Vec<(usize, IndexEntry)>, usize) {
     let own: Vec<(usize, IndexEntry)> = files[4].as_ref().map_or(Vec::new(), |f| {
         f.index
             .iter()
@@ -167,8 +167,8 @@ pub(super) fn area_blocks(files: &[Option<WorkFile>], t: Unit, a: (u32, u32)) ->
     });
     let n_own = own.len();
     let mut out = own;
-    // The area's box grown by the margin, in world units.
-    let g = grown_area(a, MARGIN_M);
+    // The z8 tile's box grown by the margin, in world units.
+    let g = grown_z8(a, MARGIN_M);
     let c = |v: f64| (v * 16384.0).floor().clamp(0.0, 16383.0) as u32;
     for y in c(g[1])..=c(g[3]) {
         for x in c(g[0])..=c(g[2]) {
@@ -188,7 +188,7 @@ pub(super) fn area_blocks(files: &[Option<WorkFile>], t: Unit, a: (u32, u32)) ->
     (out, n_own)
 }
 
-/// An area's own record, filled: (top, base, s, floors, kind, k).
+/// A z8 tile's own record, filled: (top, base, s, floors, kind, k).
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Filled {
     h: u16,
@@ -202,10 +202,10 @@ struct Filled {
 /// Where `tiles_of` gives each tile: (z, x, y, the gzip'd tile, its raw length).
 pub type AddTile<'a> = dyn FnMut(u8, u32, u32, &[u8], u32) -> Result<()> + 'a;
 
-/// T's z8 areas with buildings (T's work file's, as `area_blocks` has them), in order.
-pub fn areas_of(files: &[Option<WorkFile>]) -> Vec<(u32, u32)> {
+/// T's z8 tiles with buildings (T's work file's, as `z8_blocks` has them), in order.
+pub fn z8_tiles_of(files: &[Option<WorkFile>]) -> Vec<(u32, u32)> {
     let Some(own) = files.get(4).and_then(Option::as_ref) else { return Vec::new() };
-    let mut areas: Vec<(u32, u32)> = own
+    let mut z8s: Vec<(u32, u32)> = own
         .index
         .iter()
         .map(|e| {
@@ -213,54 +213,54 @@ pub fn areas_of(files: &[Option<WorkFile>]) -> Vec<(u32, u32)> {
             (x >> 6, y >> 6)
         })
         .collect();
-    areas.sort_unstable();
-    areas.dedup();
-    areas
+    z8s.sort_unstable();
+    z8s.dedup();
+    z8s
 }
 
-/// Every tile of T (its work file and its neighbours' in `files`, as `area_blocks` has them), in
-/// order (each z8 area's, by zoom, x, y), given to `add` (the field's left out).
+/// Every tile of T (its work file and its neighbours' in `files`, as `z8_blocks` has them), in
+/// order (each z8 tile's, by zoom, x, y), given to `add` (the field's left out).
 pub fn tiles_of(
     files: &[Option<WorkFile>],
     cov: &Coverage,
-    t: Unit,
+    t: TileId,
     sites: &[[i32; 2]],
     add: &mut AddTile,
 ) -> Result<Summary> {
     ensure!(files.len() == 9, "T and its 8 neighbours");
     let mut sum = Summary::default();
-    let areas = areas_of(files);
-    for (k, &a) in areas.iter().enumerate() {
-        crate::agent::jobs::report(k as u64, areas.len() as u64, "z8 areas done");
-        sum.merge(&area_tiles(files, cov, t, a, sites, add)?.0);
+    let z8s = z8_tiles_of(files);
+    for (k, &a) in z8s.iter().enumerate() {
+        crate::agent::jobs::report(k as u64, z8s.len() as u64, "z8 tiles done");
+        sum.merge(&z8_tiles(files, cov, t, a, sites, add)?.0);
     }
-    crate::agent::jobs::report(areas.len() as u64, areas.len() as u64, "z8 areas done");
+    crate::agent::jobs::report(z8s.len() as u64, z8s.len() as u64, "z8 tiles done");
     Ok(sum)
 }
 
 /// Area `a`'s tiles (a z8 tile of T: its buildings, and copies of those around it reaching into its
-/// tiles), by zoom, x, y, given to `add`: what `tiles_of` makes of it; and its field (`field::area`:
-/// every building and part extruded that meets the area, its own and those filled here around it,
+/// tiles), by zoom, x, y, given to `add`: what `tiles_of` makes of it; and its field (`field::z8 tile`:
+/// every building and part extruded that meets the z8 tile, its own and those filled here around it,
 /// its mid carrying the heritage list of its own that hold one of `sites`, E7). It reads
-/// only the blocks `area_blocks` names, and the coverage where they are: a task's files
+/// only the blocks `z8_blocks` names, and the coverage where they are: a task's files
 /// (`super::task::cut`) give the same tiles.
-pub fn area_tiles(
+pub fn z8_tiles(
     files: &[Option<WorkFile>],
     cov: &Coverage,
-    t: Unit,
+    t: TileId,
     a: (u32, u32),
     sites: &[[i32; 2]],
     add: &mut AddTile,
-) -> Result<(Summary, field::AreaField)> {
+) -> Result<(Summary, field::Z8Field)> {
     ensure!(files.len() == 9, "T and its 8 neighbours");
     let mut sum = Summary::default();
     let codes: Vec<Option<Codes>> = files.iter().map(|f| f.as_ref().map(|f| Codes::of(&f.meta))).collect();
-    let (list, n_own) = area_blocks(files, t, a);
+    let (list, n_own) = z8_blocks(files, t, a);
     let blocks: Vec<Block> =
         list.par_iter().map(|(fi, e)| files[*fi].as_ref().unwrap().block(e)).collect::<Result<_>>()?;
-    // The records filled here: the area's own, and those within COPY_M around it (copied into
+    // The records filled here: the z8 tile's own, and those within COPY_M around it (copied into
     // its tiles where they reach them).
-    let reach = grown_area(a, COPY_M);
+    let reach = grown_z8(a, COPY_M);
     let filled_here: Vec<Vec<bool>> = blocks
         .par_iter()
         .enumerate()
@@ -330,8 +330,8 @@ pub fn area_tiles(
     }
     let bb = tile_box_deg(8, a.0, a.1);
     let near = Near::new(pts, (bb[1].abs().max(bb[3].abs()) + 0.05).min(85.0).to_radians().dcos());
-    // The records filled here, filled (a record within COPY_M of the area has every building
-    // within 300 m of it read: the same as its own area makes it).
+    // The records filled here, filled (a record within COPY_M of the z8 tile has every building
+    // within 300 m of it read: the same as its own z8 tile makes it).
     let filled: Vec<Vec<Option<Filled>>> = blocks
         .par_iter()
         .zip(&list)
@@ -380,10 +380,10 @@ pub fn area_tiles(
                 .collect()
         })
         .collect();
-    // The area's tiles: its own records, in the tiles of their centroids; and the copies, for
-    // the flat footprints, of every building filled here into the area's tiles it reaches.
+    // The z8 tile's tiles: its own records, in the tiles of their centroids; and the copies, for
+    // the flat footprints, of every building filled here into the z8 tile's tiles it reaches.
     let mut by_tile: BTreeMap<(u8, u32, u32), Vec<Feat>> = BTreeMap::new();
-    // The field's footprints (every one extruded: not an outline with parts), and the area's own.
+    // The field's footprints (every one extruded: not an outline with parts), and the z8 tile's own.
     let mut feet: Vec<field::Foot> = Vec::new();
     let mut own_feet: Vec<usize> = Vec::new();
     for (bi, (b, (_, e))) in blocks.iter().zip(&list).enumerate() {
@@ -458,7 +458,7 @@ pub fn area_tiles(
     if her.len() >= 4 {
         sum.heritage = u32::from_le_bytes(her[..4].try_into().unwrap()) as u64;
     }
-    let f = field::area(a, &feet, &her);
+    let f = field::z8(a, &feet, &her);
     for (z, _, _, b) in &f.tiles {
         let k = (*z - field::LEVEL_HI_MIN) as usize;
         sum.field_tiles[k] += 1;
@@ -469,7 +469,7 @@ pub fn area_tiles(
 
 /// Area `a`'s box (a z8 tile) grown by `m` ground metres (at its latitude furthest from the
 /// equator), in world units: w, n, e, s (y grows southward).
-fn grown_area(a: (u32, u32), m: f64) -> [f64; 4] {
+fn grown_z8(a: (u32, u32), m: f64) -> [f64; 4] {
     let b = tile_box_deg(8, a.0, a.1);
     let cos = b[1].abs().max(b[3].abs()).min(85.0).to_radians().dcos();
     let g = m / (EQ * cos);
@@ -477,7 +477,7 @@ fn grown_area(a: (u32, u32), m: f64) -> [f64; 4] {
 }
 
 /// T and its 8 neighbours' work files ((dy + 1) × 3 + dx + 1), from the build's records.
-pub fn work_files(out: &Out, t: Unit) -> Result<Vec<Option<WorkFile>>> {
+pub fn work_files(out: &Out, t: TileId) -> Result<Vec<Option<WorkFile>>> {
     let mut files = Vec::with_capacity(9);
     for dy in -1i64..=1 {
         for dx in -1i64..=1 {
@@ -498,7 +498,7 @@ pub fn work_files(out: &Out, t: Unit) -> Result<Vec<Option<WorkFile>>> {
 /// Runs `bldfield-lo Q` (a z3 tile): its field's levels 8–4 from its z6 tiles' mids
 /// (`field::lo`), as the lo pack `layers/buildings-field/lo/3-x-y`, or that dropped with no mid
 /// there. Its tiles.
-pub fn build_lo(out: &mut Out, q: Unit) -> Result<usize> {
+pub fn build_lo(out: &mut Out, q: TileId) -> Result<usize> {
     ensure!(q.z == 3, "bldfield-lo takes z3 tiles ({} isn't one)", q.slash());
     use crate::timings::{phase, Class};
     let t0 = std::time::Instant::now();
@@ -552,7 +552,7 @@ pub fn build_lo(out: &mut Out, q: Unit) -> Result<usize> {
 /// T's heritage sites for the field's heritage lists: the newest pass's slice of T's sites
 /// (`crate::heritage::pos_logical`) less its World Heritage components (`parts_logical`), as the
 /// map's dots are; none without a slice.
-pub fn sites(out: &Out, t: Unit) -> Result<Vec<[i32; 2]>> {
+pub fn sites(out: &Out, t: TileId) -> Result<Vec<[i32; 2]>> {
     let Some(d) = crate::heritage::latest_date(&out.manifest) else { return Ok(Vec::new()) };
     let read = |l: String| -> Result<Vec<[i32; 2]>> {
         match out.get(&l) {
@@ -570,10 +570,10 @@ pub fn sites(out: &Out, t: Unit) -> Result<Vec<[i32; 2]>> {
 }
 
 /// Runs `bldtiles T`: its hi pack, its field's hi pack and its field's mid made and uploaded (or,
-/// with no building touching the coverage, those it had dropped). With `offload` (the lead's coordinator), some of its z8 areas are
+/// with no building touching the coverage, those it had dropped). With `offload` (the lead's coordinator), some of its z8 tiles are
 /// offered to workers as tasks (`super::task::Offers`) while the others are made here, in order;
-/// every area's tiles go into the pack in its turn, the same bytes wherever it was made.
-pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::offload::Offload>) -> Result<Summary> {
+/// every z8 tile's tiles go into the pack in its turn, the same bytes wherever it was made.
+pub fn build(out: &mut Out, cov: &Coverage, t: TileId, offload: Option<&crate::offload::Offload>) -> Result<Summary> {
     let sum = build_later(out, cov, t, offload)?;
     out.save()?;
     out.claim_into_costin();
@@ -586,7 +586,7 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
 pub fn build_later(
     out: &mut Out,
     cov: &Coverage,
-    t: Unit,
+    t: TileId,
     offload: Option<&crate::offload::Offload>,
 ) -> Result<Summary> {
     ensure!(t.z == 6, "bldtiles takes z6 tiles ({} isn't one)", t.slash());
@@ -600,7 +600,7 @@ pub fn build_later(
     let meta = serde_json::json!({"layer": super::LAYER, "scope": "hi", "root": t.slash(), "encoding": "mvt"});
     let mut w = store::pack::PackWriter::create(&local, meta, true)?;
     let mut n = 0u64;
-    // The field's hi pack (levels 14–9), and its areas' level-8 planes and heritage lists for the mid.
+    // The field's hi pack (levels 14–9), and its z8 tiles' level-8 planes and heritage lists for the mid.
     let field_logical = field::hi_logical(t.x, t.y);
     let field_local = out.scratch_file(&format!("{field_logical}.pack"));
     let fmeta =
@@ -608,30 +608,30 @@ pub fn build_later(
     let mut fw = store::pack::PackWriter::create(&field_local, fmeta, false)?;
     let mut mids: BTreeMap<(u32, u32), field::Mid> = BTreeMap::new();
     let sites = sites(out, t)?;
-    let areas = areas_of(&files);
-    let mut offers = super::task::Offers::new(offload, &out.scratch, t, areas.len(), &sites);
+    let z8s = z8_tiles_of(&files);
+    let mut offers = super::task::Offers::new(offload, &out.scratch, t, z8s.len(), &sites);
     let mut sum = Summary::default();
-    for (k, &a) in areas.iter().enumerate() {
-        crate::agent::jobs::report(k as u64, areas.len() as u64, "z8 areas done");
+    for (k, &a) in z8s.iter().enumerate() {
+        crate::agent::jobs::report(k as u64, z8s.len() as u64, "z8 tiles done");
         {
-            let _p = phase("areas offered to other workers", Class::Net);
-            offers.top_up(&files, cov, &areas, k)?;
+            let _p = phase("z8 tiles offered to other workers", Class::Net);
+            offers.top_up(&files, cov, &z8s, k)?;
         }
         let mut add = |z: u8, x: u32, y: u32, gz: &[u8], raw: u32| {
             n += 1;
             w.add(z, x, y, gz, raw)
         };
-        let (s, f) = match offers.result(&files, cov, &areas, k)? {
+        let (s, f) = match offers.result(&files, cov, &z8s, k)? {
             Some(dir) => {
-                let _p = phase("another worker's area taken in", Class::Disk);
-                let s = super::task::take_area(&dir, Unit { z: 8, x: a.0, y: a.1 }, &mut add)?;
+                let _p = phase("another worker's z8 tile taken in", Class::Disk);
+                let s = super::task::take_z8(&dir, TileId { z: 8, x: a.0, y: a.1 }, &mut add)?;
                 std::fs::remove_dir_all(&dir).ok();
                 s
             }
             None => {
-                let _p = phase("areas' tiles made here", Class::Compute);
+                let _p = phase("z8 tiles' tiles made here", Class::Compute);
                 let here = std::time::Instant::now();
-                let (s, f) = area_tiles(&files, cov, t, a, &sites, &mut add)?;
+                let (s, f) = z8_tiles(&files, cov, t, a, &sites, &mut add)?;
                 offers.made_here(s.buildings + s.parts + s.outside, here.elapsed().as_secs_f64());
                 (s, f)
             }
@@ -644,7 +644,7 @@ pub fn build_later(
             mids.insert(a, m);
         }
     }
-    crate::agent::jobs::report(areas.len() as u64, areas.len() as u64, "z8 areas done");
+    crate::agent::jobs::report(z8s.len() as u64, z8s.len() as u64, "z8 tiles done");
     w.finish()?;
     fw.finish()?;
     // The field's hi pack and mid, and the meshes': each uploaded, or dropped with nothing in it.
@@ -719,7 +719,7 @@ mod tests {
     }
 
     /// A work file of tile `t` from buildings, in `dir`.
-    fn work(dir: &std::path::Path, t: Unit, bs: &[B]) -> WorkFile {
+    fn work(dir: &std::path::Path, t: TileId, bs: &[B]) -> WorkFile {
         let mut s = prep::MAGIC.to_vec();
         frame(&mut s, false, bs);
         end(&mut s);
@@ -734,7 +734,7 @@ mod tests {
         // Near Châtelet (6/32/22): a measured tower, buildings with floors, a block of unmeasured
         // houses among measured ones (the neighbours' rule), one far off (size), and one outside
         // the coverage (a 3 km circle).
-        let t = Unit { z: 6, x: 32, y: 22 };
+        let t = TileId { z: 6, x: 32, y: 22 };
         let d = tempfile::tempdir().unwrap();
         let (lon, lat) = (2.3470, 48.8580);
         let mut bs = vec![
@@ -831,9 +831,9 @@ mod tests {
     fn copies_for_the_flat_footprints() {
         // In 6/32/22, a building across the line between z14 tiles 8297 and 8298 (lon 2.3291…),
         // filled by the neighbours' rule (ten measured houses around it), and one across a z8
-        // area's edge (lon 2.8125, between areas 129 and 130): each in its centroid's tile, and a
+        // z8 tile's edge (lon 2.8125, between z8 tiles 129 and 130): each in its centroid's tile, and a
         // copy in the other, the same but for o.
-        let t = Unit { z: 6, x: 32, y: 22 };
+        let t = TileId { z: 6, x: 32, y: 22 };
         let d = tempfile::tempdir().unwrap();
         let line = crate::bld::tile_box_deg(14, 8298, 5634)[0];
         let lat = 48.86;
@@ -866,7 +866,7 @@ mod tests {
         assert_eq!(copy, &vec![(120, 3, 1)]);
         let (x1, y1) = crate::bld::tile_of(crate::bld::world(edge + 0.00005, lat + 0.00015), 14);
         assert_eq!(got[&(14, x1, y1)], vec![(300, 0, 0)]);
-        assert_eq!(got[&(14, x1 - 1, y1)], vec![(300, 0, 1)], "copied across the areas' edge");
+        assert_eq!(got[&(14, x1 - 1, y1)], vec![(300, 0, 1)], "copied across the z8 tiles' edge");
         assert!(got.keys().all(|k| k.0 == 14));
     }
 }

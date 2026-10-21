@@ -98,7 +98,7 @@ in the summits list's order.
 ## Stations
 
 `layers/stations/{root,lo,hi}`: MVT, layer `s` (`n, en, g, m, sp, mz`). A tile at zoom z holds the
-stops shown up to z + 1; zoom 12 holds every stop within the built units' tiles + 20 km.
+stops shown up to z + 1; zoom 12 holds every stop within the built z6 tiles' tiles + 20 km.
 
 ## Ferries
 
@@ -130,50 +130,50 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 | `trailends` (per pass) | `hikes` | `work/trailends/<d>`: every simple linear hiking route's two ends |
 | `terrain-z8` (once; network) | AWS's raw z8 tiles | `sources/terrain-z8-v3` and `-v3-max` |
 | `summits` (per pass) | `summits` set, `terrain-z8` | `work/summits/<d>` |
-| `heritage-sites` (before the units) | the registers meeting the cover, the matches (docs/inputs.md §6.5), the pass's `areas` set, the coverage | `work/heritage/<d>/base/…` and per z6 tile slices |
+| `heritage-sites` (before the z6 tiles) | the registers meeting the cover, the matches (docs/inputs.md §6.5), the pass's `areas` set, the coverage | `work/heritage/<d>/base/…` and per z6 tile slices |
 | `unit` | as docs/steps.md, with the heritage slices within U + 30 km | the base pack |
-| `pois` (per unit) | U's piece, `trailends`, the coverage | `work/pois/<u>` |
-| `peaks` (per unit; network) | U's peak candidates, `summits`, z12 within 30 km, `terrain-z8` | `work/peaks/<u>` |
-| `items` (per pass; network) | the current units' candidates' QIDs | `sources/items/<d>/{facts,views,meta}` |
+| `pois` (per z6 tile) | U's extract, `trailends`, the coverage | `work/pois/<u>` |
+| `peaks` (per z6 tile; network) | U's peak candidates, `summits`, z12 within 30 km, `terrain-z8` | `work/peaks/<u>` |
+| `items` (per pass; network) | the current z6 tiles' candidates' QIDs | `sources/items/<d>/{facts,views,meta}` |
 | `heritage` (network) | the heritage-sites outputs, the `areas` and `named` sets, the filtered planet within the cover, the pass's answers | `work/heritage/<d>/…` |
-| `marks` (worldwide) | the units' `work/pois` and `work/peaks`, the items' facts and views, the heritage job's outputs | a `marks-*` bundle per kind, the `markdata` bundle, `global/marks/summary`, `work/marks/heritage-dots` |
+| `marks` (worldwide) | the z6 tiles' `work/pois` and `work/peaks`, the items' facts and views, the heritage job's outputs | a `marks-*` bundle per kind, the `markdata` bundle, `global/marks/summary`, `work/marks/heritage-dots` |
 | `overlays` | the heritage job's outputs, `work/marks/heritage-dots` | an `ov-*` bundle per layer, `ovdata`, `global/heritage/…` |
-| `stations` (roads chain) | the `rail` set, the z6 tiles within 20 km of a built unit | `stations` packs |
+| `stations` (roads chain) | the `rail` set, the z6 tiles within 20 km of a built z6 tile | `stations` packs |
 | `ferries` (roads chain) | the `ferries` set, the ferry feeds (`dem/ferrygtfs.py`), the static timetables (docs/inputs.md §6.7.2) | `ferries` packs |
 
 **Keys** are the step version plus the content names of what a job reads. heritage-sites, heritage
 and items include the pass's date; the coverage enters as a hash of its shapes; stations name
-the z6 tiles within 20 km of a built unit (`ovconv::cover_of`: a unit amid built ones changes
-nothing); overlays name the built units, the heritage dots as the last marks run wrote them
+the z6 tiles within 20 km of a built z6 tile (`ovconv::cover_of`: a z6 tile amid built ones changes
+nothing); overlays name the built z6 tiles, the heritage dots as the last marks run wrote them
 (`work/marks/heritage-dots`) and the pass's heritage job's files; ferries the ferries set, the ferry feeds' list (each zip by
 content) and the static timetables' index, all `ovconv::ferries_job` reads. `pass-sets` and
 `terrain-z8` run when their versioned outputs are missing. peaks (`agent::build::peaks_keys`) name
-the unit's candidates, the summits, `terrain-z8` and its max, the terrain hi packs within U + 30 km,
+the z6 tile's candidates, the summits, `terrain-z8` and its max, the terrain hi packs within U + 30 km,
 and `TERRAIN_V` (raw tiles outside the packs are processed by its code), not the z12 tiles read
 (task #484).
 
 **Network jobs:** a tile or answer that can't be fetched fails the job (retried), never counts as
 "none".
 
-**Determinism across units:** a peak's result reads only z12 within 28 km and the worldwide z8, the
-same whichever unit computes it (z12 the pack's tile, else AWS's raw tile repaired; a missing z12
+**Determinism across z6 tiles:** a peak's result reads only z12 within 28 km and the worldwide z8, the
+same whichever z6 tile computes it (z12 the pack's tile, else AWS's raw tile repaired; a missing z12
 tile is sea level). Neighbouring summits count at their own heights; ties go by tagged height,
-distance, OSM id. Trailheads within 150 m are de-duplicated on U plus the piece's buffer in one
-order, so neighbouring units agree; route ends come from the whole route; the coverage clip comes
+distance, OSM id. Trailheads within 150 m are de-duplicated on U plus the extract's buffer in one
+order, so neighbouring z6 tiles agree; route ends come from the whole route; the coverage clip comes
 after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sites.
 
 ### The landmark jobs, step by step
 
-- **Candidates (`pois`)**, a job per unit so their rules don't rebuild units: extract on U's piece
+- **Candidates (`pois`)**, a job per z6 tile so their rules don't rebuild the roads: `extract` on U's extract
   with `--candidates` and the pass's trailends, written as zstd JSON lines sorted by key
   (`n<id>`, `w<id>` or `trail:<relation>:<node>`, plus the kind), in one order (trailhead rank,
-  key, kind) before the 150 m dedup. Route ends near the piece's roads (300 m). Clipped to the
+  key, kind) before the 150 m dedup. Route ends near the extract's roads (300 m). Clipped to the
   points U owns in the coverage. A viewpoint that is also a volcano becomes a peak; pure volcanoes
   stay summits. Each carries `key, kind, lon, lat` (E7), `name, ele, osm, qid`, `en` (`name:en`; in
   Japan `name:ja-Latn`/`name:ja_rm`), kept tags (`marksjob::detail_keys`), `length_m` for covered
   bridges, `viewpoint: "yes"` for peaks tagged so.
 - **`trailends`** (per pass): each `hikes` route's way-end nodes used once; exactly two make a simple
-  linear route. Worldwide, so every unit sees the same ends.
+  linear route. Worldwide, so every z6 tile sees the same ends.
 - **`terrain-z8`** (once): AWS's 65,536 raw z8 tiles repaired (`terrain_pack::process`), one
   content-named pack under `sources/` with each tile's maximum. Coverage-free (the packs' z8 isn't),
   so floods and isolation searches don't depend on what's built.
@@ -181,12 +181,12 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   are the same as a candidate's (shared code). Each summit's z8 pixel is raised to its `ele` when
   plausible: at most 8,900 m, at most 1,500 m over the highest z8 pixel within one pixel, and at
   most twice that plus 300 m.
-- **`peaks`** (per unit, `pipeline::peaks`):
+- **`peaks`** (per z6 tile, `pipeline::peaks`):
   - z12 is the pack's tile when the manifest has it, else AWS's raw tile repaired with no sources
-    (not GLO-30 nor the water: task #465), read back from the PNG as stored. A unit's pack tiles
+    (not GLO-30 nor the water: task #465), read back from the PNG as stored. A z6 tile's pack tiles
     are read in spans (neighbours under 256 KB apart together, up to 32 MB a read, 8 reads at
     once, each under a 2-minute deadline and retried after 2, 5, 15, 30 s when it fails
-    transiently), and a job's next unit's are read while this one's peaks are measured
+    transiently), and a job's next z6 tile's are read while this one's peaks are measured
     (`unit::read_ahead`).
   - Summits within 28 km + a margin get a summit pixel (highest within 150 m), a height (max(ele,
     DEM) when `ele` is within −30/+200 m of the DEM, else the DEM's) and a claim on shared pixels.
@@ -201,12 +201,12 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
   5,000 items at a time. The answers are kept on the NAS (`sources/items/<d>/answers.tar.zst`:
   docs/macs.md, Downloads). meta holds the months and the fetch days. User-Agent "scenic-roads/0.1
   (personal offline map)"; a 403 or failed batch fails the job.
-- **`marks`** (worldwide): reads the current units' pois and peaks from the manifest, builds
+- **`marks`** (worldwide): reads the current z6 tiles' pois and peaks from the manifest, builds
   `marksjob::Candidate`s, turns them into points (`marksjob::poi_points`), adds the heritage points,
   and writes with `markconv::write` (summits by −ele, stable over fame). Descriptions are applied
   when serving.
-- **Checks:** a unit run twice gives the same bytes and neighbouring units agree near their border
-  (done for candidates and peaks); planned: a region-sized extract against the union of its units'
+- **Checks:** a z6 tile run twice gives the same bytes and neighbouring z6 tiles agree near their border
+  (done for candidates and peaks); planned: a region-sized extract against the union of its z6 tiles'
   candidates.
 
 ### Heritage and area flags
@@ -214,19 +214,19 @@ after the dedup. The municipal heritage dedupe (40 m) runs once, in heritage-sit
 The heritage chain (heritage.py, heritagewd.py, heritagedetails.py, areadetails.py, whsshapes.py,
 filterprops.py, pageviews.py, interest.py, layers.py) runs in Python in a stand-in root laid out as
 the repository (`dem/` the app's scripts, `data/heritage/` the pass's working copy of the answers;
-docs/inputs.md §6.5.2), split into two jobs so the units never wait on Wikidata.
+docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikidata.
 - **The registers** are an input (docs/inputs.md §6.5): heritage-sites links the accepted registers
   meeting the cover and the owner's matches into its scratch for heritage.py (`--registers`,
   `--matches`).
 - **The chain's answers** are kept per pass as the items job's are (`heritage-<d>/` in the cache,
   `sources/items/<d>/heritage.tar.zst` on the NAS); a new pass starts from the last's.
-- **`heritage-sites`** (before the units): the cover is the z12 tiles within 20 km of the coverage
+- **`heritage-sites`** (before the z6 tiles): the cover is the z12 tiles within 20 km of the coverage
   (`Coverage::meets_rect`, heritage.py's `--tiles`); the designated areas are the pass's `areas` set
   clipped to it. Outputs: `work/heritage/<d>/base/<file>`, and per z6 tile the sites' positions
   (`pos/6-x-y`), World Heritage components among them (`parts/6-x-y`), and the area polygons meeting
   it with their flag bits (`areas/6-x-y`).
-- **The units** read the slices within U + 30 km: `heritage.json` feeds the flags step, and
-  `areaflags` (pipeline::areaflags) rasterises the polygons onto the unit's grid. Their keys name the
+- **The z6 tiles** read the slices within U + 30 km: `heritage.json` feeds the flags step, and
+  `areaflags` (pipeline::areaflags) rasterises the polygons onto the z6 tile's grid. Their keys name the
   slices.
 - **The `heritage` job** (after items, before marks) runs the rest of the chain over the same cover:
   the pass's areas and named objects within it, and for whsshapes the filtered planet clipped to it
@@ -244,7 +244,7 @@ docs/inputs.md §6.5.2), split into two jobs so the units never wait on Wikidata
 handles them. `work/` holds build intermediates,
 in no catalog: `work/pois/<u>`, `work/peaks/<u>`, `work/trailends/<d>`, `work/summits/<d>`,
 `work/heritage/<d>/…`, `work/marks/heritage-dots`. GC keeps what the manifest names; a retired pass's
-entries leave it when a newer pass completes, a unit's pois and peaks with the prune (docs/regions.md,
+entries leave it when a newer pass completes, a z6 tile's pois and peaks with the prune (docs/regions.md,
 Shrinking).
 
 ## Zoomed-out queries

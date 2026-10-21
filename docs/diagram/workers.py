@@ -45,7 +45,7 @@ def build(check=False):
     agent_lines = ['plans every step from the job keys, a region at a', 'time: those the map lacks first, the fewest tiles',
                    'left first; runs its own steps (the pass, worldwide', 'steps, catalogs, GC) and any shared step, packed',
                    'by measured memory, disk and cores; merges the', 'journal into the term’s records; publishes each',
-                   'unit’s map tiles as it’s built, a catalog at most', 'each minute']
+                   'z6 tile’s map tiles as it’s built, a catalog at most', 'each minute']
     coord_lines = ['port 8090, for this Mac, its LAN and the tailnet;', 'grants every job, the lead’s own too, on leases',
                    'of ten minutes renewed each minute: a lapsed', 'lease’s work is offered again; holds jobs to the',
                    'NAS budget; its state is the term’s, on the NAS;', 'checks a worker’s first three tasks, then one in',
@@ -61,8 +61,8 @@ def build(check=False):
     wx, ww = 1148, W - 16 - 1148
     page = box(wx, top, ww, 'Any device · the build page', ['/work/ on the lead: anyone on its LAN or the',
                                                             'tailnet sees the build; a tab helps, no key:',
-                                                            'an area’s last steps, tree cover’s rows of',
-                                                            'blocks, 3D buildings’ z8 areas (WebAssembly)'])
+                                                            'a z6 tile’s last steps, tree cover’s rows of',
+                                                            'blocks, 3D buildings’ z8 tiles (WebAssembly)'])
     m1 = box(wx, page[1] + page[3] + 22, ww, 'The M1 (16 GB) · a member', ['takes every shared step’s (⇄) jobs that fit',
                                                                          'the memory its owner gives the build (scenic',
                                                                          'memory) and its disk, the zoomed-out',
@@ -101,7 +101,7 @@ def build(check=False):
     aria = ('Who builds the map. The NAS holds the terms, which say who leads, the journal every job writes its results to, the '
             'term’s records, which only the lead writes, every built file by content name and a catalog at most each minute; GC runs '
             'daily, when the NAS is quiet (or after waiting a day). The lead plans every step a region at a time, runs its own steps and any shared one, packed by '
-            'measured memory, disk and cores, merges the journal into the records and publishes each unit’s map tiles as it’s built. '
+            'measured memory, disk and cores, merges the journal into the records and publishes each z6 tile’s map tiles as it’s built. '
             'Its coordinator, on port 8090, grants every job on ten-minute leases renewed each minute: jobs to the M1, a member that '
             'takes the shared steps that fit the memory its owner gives the build, and tasks to any worker, a device’s build page too, '
             'with no key; a worker’s first three tasks, then one in eight, are checked. Who leads is the owner’s call: the lead is '

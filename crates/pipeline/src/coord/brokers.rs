@@ -144,7 +144,7 @@ pub fn answer(b: &Brokers, a: &Ask) -> serde_json::Value {
         .collect();
     asks.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.host.cmp(&y.1.host)));
     let brokers: Vec<serde_json::Value> =
-        asks.iter().map(|(n, p, base)| serde_json::json!({ "base": base, "waiting": n })).collect();
+        asks.iter().map(|(n, _, base)| serde_json::json!({ "base": base, "waiting": n })).collect();
     let members: Vec<String> = b.peers.iter().filter_map(|p| base(p.broker.as_ref()?, a.https)).collect();
     let lead = b.peers.iter().find(|p| p.lead).and_then(|p| base(p.broker.as_ref()?, a.https));
     serde_json::json!({ "brokers": brokers, "members": members, "lead": lead })

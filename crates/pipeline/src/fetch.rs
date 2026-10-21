@@ -59,7 +59,7 @@ pub fn is_unreachable(e: &anyhow::Error) -> bool {
 }
 
 /// A program's exit status when a server it needs gave no answer (EX_UNAVAILABLE): the unit job
-/// sets that area aside and goes on with its others (crate::unit::SourceDown).
+/// sets that z6 tile aside and goes on with its others (crate::unit::SourceDown).
 pub const UNREACHABLE_EXIT: u8 = 69;
 
 /// A program's end: its error printed as `main`'s would be, its status `UNREACHABLE_EXIT` when a
@@ -76,7 +76,7 @@ pub fn exit_with(r: Result<()>) -> std::process::ExitCode {
 
 /// The folder of hosts that gave no answer lately (SCENIC_FETCH_DOWN; the unit job sets it for its
 /// programs): a file per host, written as a request gives up on it, so the requests after it (the
-/// job's next areas' programs) don't each wait out their retries, minutes, on a server that's
+/// job's next z6 tiles' programs) don't each wait out their retries, minutes, on a server that's
 /// down. The host is asked again once its note is `DOWN_S` old.
 pub const DOWN_ENV: &str = "SCENIC_FETCH_DOWN";
 pub const DOWN_S: u64 = 30 * 60;
@@ -847,6 +847,7 @@ mod net {
 
         /// With the notes of hosts that gave no answer in `dir` (super::down_check) in place of
         /// SCENIC_FETCH_DOWN's.
+        #[cfg(test)]
         pub fn with_down(self, dir: Option<PathBuf>) -> Net {
             Net { down: dir, ..self }
         }
@@ -1102,7 +1103,7 @@ mod net {
         /// in all otherwise): a connection silent past its head's wait, or a body not all in by
         /// its time, is an attempt failed, asked again. A host whose every failure was a body past
         /// its time isn't noted down (`note_down`): it answers, slowly, and a busy link (many
-        /// tiles at once) mustn't set the job's areas aside; one that never answered is.
+        /// tiles at once) mustn't set the job's z6 tiles aside; one that never answered is.
         pub(super) fn get_by(&self, url: &str, deadline: Option<super::Within>) -> Result<Option<Vec<u8>>> {
             down_check(self.down.as_deref(), url)?;
             let _slot = HostSlot::take(url);

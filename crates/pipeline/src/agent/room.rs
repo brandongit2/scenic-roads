@@ -19,7 +19,7 @@
 //!   takes a listing of its own for ~14 MB: seconds each when the NAS is busy, hours for tens of GB.
 //! - Then raw tiles a folder at a time and the squares read since, together, the least recently
 //!   used first (a folder by its newest tile, and in it the oldest first, so a folder's tiles go
-//!   together): the squares of the area being built, which the next jobs read again, outlast idle
+//!   together): the squares of the z3 tile being built, which the next jobs read again, outlast idle
 //!   tiles.
 //! - A file goes once the NAS's folder, listed once (sixteen at a time: a listing mostly waits on
 //!   the NAS; a folder that can't be listed now, or whose listing is cut short, keeps its raw tiles
@@ -31,21 +31,21 @@
 //!   files stall the NAS: ~23 a second, and both Macs' processes wait on it meanwhile). One that
 //!   isn't whole itself (cut short, or a temporary file) is deleted without being kept anywhere.
 //! - Raw tiles the NAS lacks are packed onto it first (crate::rawpack: an archive of their own for
-//!   each area, one large write each, none kept here), then go; the copies of its archives here
+//!   each shard, one large write each, none kept here), then go; the copies of its archives here
 //!   (`aws-terrarium/packs/`) go as the copies of the records' files do, each by its own use (a
 //!   job marks one used when it opens it), without asking it.
 //! - A pageview month's index goes once the NAS has it at its size; one it lacks stays (pageviews.py
 //!   puts it there when it next reads it), as do the counts from before the indexes: none is copied
 //!   there from here.
 //!
-//! - A file the jobs queued and running read (`Hints`: a terrain run's own area's archive copies;
+//! - A file the jobs queued and running read (`Hints`: a terrain run's own shard's archive copies;
 //!   the pageview months, for an items or heritage job; a unit's canopy squares and packs; the
 //!   base packs copied here for the map tiles) goes last.
 //!
 //! After the build (`trim`): once the build has nothing left to build (the lead's forecast:
 //! no work, nothing to publish), jobs running here or not, the agent empties those caches by the same
 //! rules, once (again only after a job has run here since): a member all of them, the lead all
-//! but the canopy squares, which every pass's areas read again and which never change. (Not down
+//! but the canopy squares, which every pass's z3 tiles read again and which never change. (Not down
 //! to the room target: room-making makes that much room before each job, so the build ends with
 //! about that free, and a trim to it would free little or nothing, while that Mac's mirror copies
 //! nothing until 150 GB are free.)
@@ -106,7 +106,7 @@ pub fn margin(need: u64) -> u64 {
 /// NAS folders listed at once.
 const LIST_AHEAD: usize = 16;
 
-/// Canopy squares read this lately (the area being built's, which the next jobs read again) wait
+/// Canopy squares read this lately (the z3 tile being built's, which the next jobs read again) wait
 /// with the raw tiles, in least recently used order; the others go before any tile.
 const RECENT: std::time::Duration = std::time::Duration::from_secs(3600);
 
@@ -346,9 +346,9 @@ pub fn gone(clear: &BTreeMap<String, u64>, mb_s: f64) -> Vec<Gone> {
         .filter(|(_, &b)| b > 0)
         .map(|(k, &b)| {
             let back = match k.as_str() {
-                "canopy" => format!("copied back from the NAS as the areas that read them are built ({} in all)", time(b)),
+                "canopy" => format!("copied back from the NAS as the z3 tiles that read them are built ({} in all)", time(b)),
                 "terrain" => format!("copied back from the NAS's archives as terrain and peaks read them ({} in all)", time(b)),
-                "blobs" => format!("copied back from the NAS as the areas are built again ({} in all)", time(b)),
+                "blobs" => format!("copied back from the NAS as the z3 tiles are built again ({} in all)", time(b)),
                 "months" => format!("copied back from the NAS when the items and heritage jobs next run ({})", time(b)),
                 "base" => format!("copied back by the next map tiles' job, from the mirror where it has them, else the NAS ({})", time(b)),
                 "dem" => format!("copied back from the NAS by the next unit job ({})", time(b)),
@@ -744,7 +744,7 @@ fn toward_with(
 /// a running job uses it holds (store::cachefile), and a stale hint costs only a fetch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hints {
-    /// Terrain jobs' targets ("terrain 3/x/y", an area's whole run; "terrain 6/x/y", a piece;
+    /// Terrain jobs' targets ("terrain 3/x/y", a z3 tile's whole run; "terrain 6/x/y", a piece;
     /// "terrain-lo 3/x/y", an assembly): the archive copies they read (`terrain_reads`).
     pub terrain: Vec<String>,
     /// An items or heritage job: the pageview months.
@@ -1111,7 +1111,7 @@ fn free_cheap(
     if free >= need {
         return Ok(BTreeMap::new());
     }
-    // Raw tiles the NAS lacks, packed onto it first (an archive an area: large writes), and gone
+    // Raw tiles the NAS lacks, packed onto it first (an archive a shard: large writes), and gone
     // here once they're there. (Not from a linked folder: what's packed is deleted where it lies;
     // the packer passes links over inside it.)
     let tiles = cache.join("aws-terrarium");
@@ -1138,7 +1138,7 @@ fn free_cheap(
     let lately = SystemTime::now().checked_sub(RECENT).unwrap_or(SystemTime::UNIX_EPOCH);
     let mut groups: BTreeMap<PathBuf, Vec<(SystemTime, u64, PathBuf)>> = BTreeMap::new();
     for f in files {
-        // (An area's archive, each by its own use, as a canopy square.)
+        // (A shard's archive, each by its own use, as a canopy square.)
         let key = if f.2.starts_with(&tiles) && !f.2.starts_with(&packs) {
             f.2.parent().map(Path::to_path_buf).unwrap_or_default()
         } else {
@@ -1402,13 +1402,13 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
         let nas = &d.path().join("nas/sources");
-        // The job's own area's archive, idle longest, and another area's.
+        // The job's own shard's archive, idle longest, and another shard's.
         let own = whole(&c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles"), 9000);
         let other = whole(&c.join("aws-terrarium/packs/6-9-9.0000000000000002.tiles"), 7200);
         let all = used(c);
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
         let hint = |p: &Path| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("6-1-1."));
-        // Short of one archive: the other area's goes, though the job's own was idle longer.
+        // Short of one archive: the other shard's goes, though the job's own was idle longer.
         assert_eq!(make_room_with(c, nas, 1000 + own, 1000 + own, &disk(1000), &hint).unwrap(), other);
         assert!(
             c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles").exists()
@@ -1416,7 +1416,7 @@ mod tests {
         );
         // Far short: it goes too, last (a hint, not a rule: it costs a copy, never a failure).
         assert_eq!(make_room_with(c, nas, 1 << 40, 1 << 40, &disk(0), &hint).unwrap(), own);
-        // As the agent hints a terrain run's own area's archives (`terrain_reads`).
+        // As the agent hints a terrain run's own shard's archives (`terrain_reads`).
         let mut h = Hints::default();
         h.add("terrain", &["3/0/0".to_string()]);
         assert!(
@@ -1472,7 +1472,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
         let nas = &d.path().join("nas/sources");
-        // An area's archive idle longest, a canopy square idle two hours, another read a minute ago.
+        // A shard's archive idle longest, a canopy square idle two hours, another read a minute ago.
         let arch = whole(&c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles"), 9000);
         let idle = whole(&c.join("chm10/idle.tif"), 7200);
         file(&c.join("chm10/none.tif"), 0, 8000);
@@ -1521,7 +1521,7 @@ mod tests {
         let all = used(c);
         let disk = move |p: &Path| Ok(all - used(p));
         make_room_spared(c, nas, a, a, &disk).unwrap();
-        // Packed onto the NAS (an archive for their area, named in the index), gone here.
+        // Packed onto the NAS (an archive for their shard, named in the index), gone here.
         let index = crate::rawpack::Index::load(&nas.join("aws-terrarium")).unwrap();
         let name = &index.of("6-32-21")[0].name;
         assert!(nas.join("aws-terrarium/packs").join(name).exists());
@@ -1755,7 +1755,7 @@ mod tests {
         let tiles = whole(&c.join("aws-terrarium/12/2048/1365.png"), 9000)
             + whole(&c.join("aws-terrarium/12/2048/1366.png"), 9000);
         let f = trim(c, nas, &spare).unwrap();
-        // The raw tiles packed onto the NAS (an archive for their area, named in the index), gone
+        // The raw tiles packed onto the NAS (an archive for their shard, named in the index), gone
         // here with the copy; the square kept, and not counted as left.
         let index = crate::rawpack::Index::load(&nas.join("aws-terrarium")).unwrap();
         assert!(nas.join("aws-terrarium/packs").join(&index.of("6-32-21")[0].name).exists());

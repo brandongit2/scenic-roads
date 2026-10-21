@@ -565,7 +565,7 @@ pub fn report(done: u64, total: u64, unit: &str) {
 }
 
 /// Says how far a job is, `report`'s way, counting the item under way by how much of it is done
-/// (`progress: 2.375/6 areas`): a job whose items each take long moves on within each.
+/// (`progress: 2.375/6 z6 tiles`): a job whose items each take long moves on within each.
 pub fn report_f(done: f64, total: u64, unit: &str) {
     let d = (done.clamp(0.0, total as f64) * 1000.0).floor() / 1000.0;
     eprintln!("progress: {d}/{total} {unit}");
@@ -870,7 +870,7 @@ mod tests {
         std::fs::write(&log, "a\nthread 'main' panicked at src/x.rs:1:2:\nboom\nnote: run with RUST_BACKTRACE=1\n")
             .unwrap();
         assert_eq!(error_of(&log), "thread 'main' panicked at src/x.rs:1:2:\nboom");
-        std::fs::write(&log, "progress: 1/2 areas\n").unwrap();
+        std::fs::write(&log, "progress: 1/2 z6 tiles\n").unwrap();
         assert_eq!(error_of(&log), "");
     }
 
@@ -894,13 +894,14 @@ mod tests {
         let log = d.path().join("log");
         // Said, then 100 KB of a program's output: out of the log's end, so not known.
         let noise = "x".repeat(99) + "\n";
-        std::fs::write(&log, format!("{RUN_START}t (1) ===\nprogress: 2.5/6 areas\n{}", noise.repeat(1000))).unwrap();
+        std::fs::write(&log, format!("{RUN_START}t (1) ===\nprogress: 2.5/6 z6 tiles\n{}", noise.repeat(1000)))
+            .unwrap();
         assert_eq!(said(&log), Said::Unknown);
         // Short: all of it this run's, and nothing said yet.
         std::fs::write(&log, format!("{RUN_START}t (1) ===\nstarting\n")).unwrap();
         assert_eq!(said(&log), Said::NoneYet);
-        std::fs::write(&log, "starting\nprogress: 2.375/6 areas\n").unwrap();
-        assert_eq!(said(&log), Said::Progress(2.375, 6.0, "areas".into()));
+        std::fs::write(&log, "starting\nprogress: 2.375/6 z6 tiles\n").unwrap();
+        assert_eq!(said(&log), Said::Progress(2.375, 6.0, "z6 tiles".into()));
     }
 
     #[test]
@@ -910,8 +911,8 @@ mod tests {
         assert_eq!(fraction_of("[======] 100%"), Some(1.0));
         assert_eq!(fraction_of("progress: 1/0 none"), None);
         assert_eq!(fraction_of("cache: reused 5 of 6"), None);
-        assert_eq!(unit_key("steps (clipping the areas)"), "steps");
-        assert_eq!(unit_key("areas"), "areas");
+        assert_eq!(unit_key("steps (clipping the tiles)"), "steps");
+        assert_eq!(unit_key("z6 tiles"), "z6 tiles");
         assert_eq!(unit_key("MB (of 3)x"), "MB (of 3)x");
         let mut lines = Vec::new();
         each_line(&b"[>   ]  0% \r[=>  ]  50% \rdone\nlast"[..], |l| lines.push(l.to_string()));

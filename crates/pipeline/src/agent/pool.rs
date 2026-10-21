@@ -943,7 +943,7 @@ fn load_saved(p: &Path) -> (Saved, Vec<u8>) {
 /// and names targets; every change is to a logical name, as a content name of it, and within its
 /// step's outputs (crate::agent::steps::outside: the function its job's `Out` wrote by, so an entry
 /// it refuses is one an older app's job, or a damaged one, made); each raw tiles' archive it names
-/// is one of its area. A shared
+/// is one of its shard. A shared
 /// step's (what a helper's coordinator checked of its hand-off: crate::coord, `check_handoff`):
 /// every change is to a file its step saves for one of the targets it did, every upload it says
 /// is pending one of its saves, every one it says it checked one of those. (Not that its targets
@@ -971,9 +971,9 @@ pub fn check(e: &Entry, _r: &Records) -> std::result::Result<(), String> {
     if let Some(why) = crate::agent::steps::outside(e) {
         return Err(why);
     }
-    for (area, p) in &h.raw {
-        if !crate::rawpack::is_area(area) || !crate::rawpack::named_for(&p.name, area) {
-            return Err(format!("{} isn't an archive of {area}", p.name));
+    for (shard, p) in &h.raw {
+        if !crate::rawpack::is_shard(shard) || !crate::rawpack::named_for(&p.name, shard) {
+            return Err(format!("{} isn't an archive of {shard}", p.name));
         }
     }
     if crate::agent::steps::SHARED.contains(&e.step.as_str()) {

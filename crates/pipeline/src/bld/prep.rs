@@ -13,7 +13,7 @@
 
 use super::work::{self, flag, osm, Block, Meta};
 use super::{e7, z14_key, DEG_M};
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use crate::out::Out;
 use anyhow::{bail, ensure, Context, Result};
 use det::Det;
@@ -439,7 +439,7 @@ fn offsets(f: &Frame, name: &str, n: usize) -> Result<Vec<u64>> {
 }
 
 impl Prepped {
-    fn add_rows(&mut self, f: &Frame, t: Unit, part: bool) -> Result<()> {
+    fn add_rows(&mut self, f: &Frame, t: TileId, part: bool) -> Result<()> {
         let h = &f.header;
         let n = h["n"].as_u64().context("a frame without n")? as usize;
         self.stats.rows += n as u64;
@@ -671,7 +671,7 @@ impl Prepped {
     }
 
     /// Writes the normalized file of tile `t` to `path`; its counts.
-    pub fn write(mut self, t: Unit, release: &str, path: &Path) -> Result<Stats> {
+    pub fn write(mut self, t: TileId, release: &str, path: &Path) -> Result<Stats> {
         self.resolve_parts();
         let ord = self.order();
         let (classes, rc) = self.classes.sorted("classes")?;
@@ -729,7 +729,7 @@ impl Prepped {
 }
 
 /// Reads bldprep.py's stream for tile `t` (its magic, then frames to the end frame).
-pub fn read_stream(r: &mut dyn Read, t: Unit) -> Result<Prepped> {
+pub fn read_stream(r: &mut dyn Read, t: TileId) -> Result<Prepped> {
     let mut m = [0u8; 6];
     r.read_exact(&mut m).context("bldprep.py wrote nothing")?;
     ensure!(&m == MAGIC, "not bldprep.py's stream");
@@ -744,7 +744,7 @@ pub fn read_stream(r: &mut dyn Read, t: Unit) -> Result<Prepped> {
 
 impl Prepped {
     /// Takes a frame of bldprep.py's stream: whether it was the end.
-    fn take(&mut self, f: &Frame, t: Unit) -> Result<bool> {
+    fn take(&mut self, f: &Frame, t: TileId) -> Result<bool> {
         match f.kind {
             kind::GHSL => {
                 // (The rows sample GHSL as they're read: none would have it.)
@@ -772,7 +772,7 @@ impl Prepped {
 /// the normalized file written and uploaded as `work/bld/6-x-y` (or, when T has no building, the
 /// one it had dropped). Its counts. The release and GHSL's folder are the declared sources'
 /// (crate::inputs::sources, given bldprep.py by `SCENIC_SOURCES`).
-pub fn run(out: &mut Out, t: Unit, dem: &Path) -> Result<Stats> {
+pub fn run(out: &mut Out, t: TileId, dem: &Path) -> Result<Stats> {
     let release = crate::buildtiles::release_of(out.root(), &out.manifest)?;
     let declared =
         crate::inputs::sources::write_for_python(out.root(), &out.manifest, &out.scratch_file("bldprep-sources"))?;
@@ -1053,7 +1053,7 @@ pub(crate) mod tests {
     fn a_stream_makes_a_file() {
         // Tile 6/32/22 (Paris); buildings near Châtelet, one in the next tile, one underground, a
         // part and its outline, and an outline whose parts aren't there.
-        let t = Unit { z: 6, x: 32, y: 22 };
+        let t = TileId { z: 6, x: 32, y: 22 };
         let mut s = MAGIC.to_vec();
         let b = |id: u128, lon: f64, lat: f64| B { id, rings: vec![square(lon, lat, 0.0002)], ..Default::default() };
         frame(
@@ -1106,7 +1106,7 @@ pub(crate) mod tests {
 
     #[test]
     fn parts_drawn_and_ghsl_first() {
-        let t = Unit { z: 6, x: 32, y: 22 };
+        let t = TileId { z: 6, x: 32, y: 22 };
         let b = |id: u128, lon: f64, lat: f64| B { id, rings: vec![square(lon, lat, 0.0002)], ..Default::default() };
         // An outline whose only part is underground: drawn itself, not as an outline with parts.
         let mut s = MAGIC.to_vec();

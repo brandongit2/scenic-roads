@@ -1,8 +1,8 @@
-//! A z8 area's 3D buildings tiles from its task folder (`pipeline::bld::task`; docs/buildings3d.md
+//! A z8 tile's 3D buildings tiles from its task folder (`pipeline::bld::task`; docs/buildings3d.md
 //! §3.6): the program a `bldtiles` job's task runs, natively or as WebAssembly in a page.
 //!
 //! usage: bldtile <dir> <8/x/y> [--workers n]
-//!            dir: the area's task folder (its work files' blocks, `coverage.sect`); writes there
+//!            dir: the z8 tile's task folder (its work files' blocks, `coverage.sect`); writes there
 //!            `area.tiles` (its z14 tiles, RDTILES) and `area.json` (what it made)
 
 use anyhow::{bail, Context, Result};
@@ -23,10 +23,10 @@ fn main() -> Result<()> {
             rest.push(a);
         }
     }
-    let [dir, area] = &rest[..] else { bail!("{USAGE}") };
-    let a = pipeline::legacy::Unit::parse(area)
+    let [dir, tile] = &rest[..] else { bail!("{USAGE}") };
+    let a = pipeline::legacy::TileId::parse(tile)
         .filter(|u| u.z == 8)
-        .with_context(|| format!("not a z8 area: {area}\n{USAGE}"))?;
+        .with_context(|| format!("not a z8 tile: {tile}\n{USAGE}"))?;
     let dir = PathBuf::from(dir);
     // (Threads as many as said, else rayon's; in WebAssembly, none can be made: this one.)
     let mut pool = rayon::ThreadPoolBuilder::new();

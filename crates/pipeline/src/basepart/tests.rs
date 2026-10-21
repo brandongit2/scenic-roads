@@ -1,6 +1,6 @@
 use super::*;
 use crate::hipack::{self, tile_bounds};
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use roadcore::packs::{RailRel, RoadRec, Sub9};
 use roadcore::scenic::ch;
 
@@ -117,12 +117,12 @@ fn refs(p: &[PathBuf; 2]) -> [&Path; 2] {
 }
 
 /// What a pack job makes of tile `t` from `bp`: its ways, road and rail tiles and hidata, as bytes.
-fn made(bp: &BasePack, t: Unit) -> Vec<Vec<u8>> {
+fn made(bp: &BasePack, t: TileId) -> Vec<Vec<u8>> {
     made_of(&[bp], t)
 }
 
 /// `made`, of several packs.
-fn made_of(packs: &[&BasePack], t: Unit) -> Vec<Vec<u8>> {
+fn made_of(packs: &[&BasePack], t: TileId) -> Vec<Vec<u8>> {
     let tb = tile_bounds(t.z, t.x, t.y);
     let packs: Vec<&BasePack> = packs.iter().copied().filter(|bp| hipack::meets(bp.extent, tb)).collect();
     let packs = &packs[..];
@@ -150,12 +150,12 @@ fn made_of(packs: &[&BasePack], t: Unit) -> Vec<Vec<u8>> {
 
 /// A neighbour's base pack read only where tile T's ways are: what's made of T is byte-identical
 /// to what the whole pack makes, from a small part of the file; the way boxes kept, the next
-/// read smaller still; read for every area, the whole pack.
+/// read smaller still; read for every tile, the whole pack.
 #[test]
 fn a_part_read_makes_the_same_bytes() {
     let d = tempfile::tempdir().unwrap();
     let (base, roads) = make(d.path(), 20 * CHUNK + 77);
-    let t = Unit { z: 6, x: 10, y: 20 };
+    let t = TileId { z: 6, x: 10, y: 20 };
     let whole = BasePack::open(&base, &roads).unwrap();
     let want = made(&whole, t);
     assert!(want[0].len() > 100, "some ways reach T");
@@ -178,7 +178,7 @@ fn a_part_read_makes_the_same_bytes() {
     let s = d.path().join("all");
     std::fs::create_dir_all(&s).unwrap();
     let (all, _) = open(&base, &roads, &boxes, refs(&to(&s)), None).unwrap();
-    let own = Unit { z: 6, x: 11, y: 20 };
+    let own = TileId { z: 6, x: 11, y: 20 };
     assert_eq!(made(&all, own), made(&whole, own));
     assert_eq!(made(&all, t), want);
 }
@@ -190,7 +190,7 @@ fn bad_boxes_are_worked_out_again() {
     let (base, roads) = make(d.path(), 3 * CHUNK);
     let boxes = d.path().join("b.boxes");
     std::fs::write(&boxes, b"WAYIDX02short").unwrap();
-    let t = Unit { z: 6, x: 10, y: 20 };
+    let t = TileId { z: 6, x: 10, y: 20 };
     let s = d.path().join("s");
     std::fs::create_dir_all(&s).unwrap();
     let (part, _) = open(&base, &roads, &boxes, refs(&to(&s)), Some(&[tile_bounds(6, 10, 20)])).unwrap();

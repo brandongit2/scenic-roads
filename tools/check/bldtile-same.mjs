@@ -1,15 +1,15 @@
-// A 3D buildings' z8 area as a page's task (docs/buildings3d.md §3.6–3.7): its task folder cut from
+// A 3D buildings' z8 tile as a page's task (docs/buildings3d.md §3.6–3.7): its task folder cut from
 // real work files (`scenic-build bldtile-task`, as a bldtiles job cuts it), then the `bldtile`
 // program run over a copy natively (on each thread count given) and over another as WebAssembly
 // under Node's WASI (tools/check/wasi-run.mjs, as a page runs it), their outputs (area.tiles,
 // area.json) compared byte for byte. Each run's time and peak memory said. Exits 1 on any
 // difference.
 //
-//   node tools/check/bldtile-same.mjs --root <build root> --area <6/x/y | 8/x/y> --work <dir>
+//   node tools/check/bldtile-same.mjs --root <build root> --tile <6/x/y | 8/x/y> --work <dir>
 //        [--bin target/release] [--wasm target/wasm32-wasip1/release] [--threads 1,8]
 //        [--pass d] [--regions dir]
 //
-// A z6 tile: its area with the most buildings. --root: a root with the tile's (and its
+// A z6 tile: its z8 tile with the most buildings. --root: a root with the tile's (and its
 // neighbours') work files in its manifest, its regions and the pass's outlines; only --work is
 // written.
 import { execFileSync, spawnSync } from "node:child_process";
@@ -21,9 +21,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "../..");
 const args = process.argv.slice(2);
 const arg = (k, d) => (args.includes(k) ? args[args.indexOf(k) + 1] : d);
-const root = arg("--root"), area = arg("--area"), work = arg("--work") && resolve(arg("--work"));
-if (!root || !area || !work) {
-  console.error("usage: bldtile-same.mjs --root <dir> --area <6/x/y | 8/x/y> --work <dir> [--bin dir] [--wasm dir] [--threads 1,8] [--pass d] [--regions dir]");
+const root = arg("--root"), tile = arg("--tile"), work = arg("--work") && resolve(arg("--work"));
+if (!root || !tile || !work) {
+  console.error("usage: bldtile-same.mjs --root <dir> --tile <6/x/y | 8/x/y> --work <dir> [--bin dir] [--wasm dir] [--threads 1,8] [--pass d] [--regions dir]");
   process.exit(2);
 }
 const bin = resolve(arg("--bin", join(repo, "target/release")));
@@ -48,21 +48,21 @@ rmSync(work, { recursive: true, force: true });
 mkdirSync(work, { recursive: true });
 const task = join(work, "task");
 const extra = ["--pass", "--regions"].flatMap((k) => (arg(k) ? [k, arg(k)] : []));
-const cutOut = execFileSync(join(bin, "scenic-build"), ["bldtile-task", area, "--root", root, "--scratch", join(work, "scratch"), "--out", task, ...extra], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
+const cutOut = execFileSync(join(bin, "scenic-build"), ["bldtile-task", tile, "--root", root, "--scratch", join(work, "scratch"), "--out", task, ...extra], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
 const cut = JSON.parse(cutOut.trim().split("\n").pop());
-console.log(`cut ${cut.area}: ${(cut.bytes / 2 ** 20).toFixed(1)} MB of files, ${cut.records} records, predicted ${cut.mem_mb} MB, in ${cut.secs.toFixed(1)} s`);
+console.log(`cut ${cut.tile}: ${(cut.bytes / 2 ** 20).toFixed(1)} MB of files, ${cut.records} records, predicted ${cut.mem_mb} MB, in ${cut.secs.toFixed(1)} s`);
 
 const runs = [];
 for (const n of threads) {
   const d = join(work, `native-${n || "all"}`);
   cpSync(task, d, { recursive: true });
-  const r = timed(join(bin, "bldtile"), [d, cut.area, ...(n ? ["--workers", String(n)] : [])]);
+  const r = timed(join(bin, "bldtile"), [d, cut.tile, ...(n ? ["--workers", String(n)] : [])]);
   runs.push({ name: `native, ${n || "all"} thread${n === 1 ? "" : "s"}`, d, ...r });
 }
 {
   const d = join(work, "wasm");
   cpSync(task, d, { recursive: true });
-  const r = timed(process.execPath, [join(here, "wasi-run.mjs"), join(wasm, "bldtile.wasm"), "{}", d, cut.area]);
+  const r = timed(process.execPath, [join(here, "wasi-run.mjs"), join(wasm, "bldtile.wasm"), "{}", d, cut.tile]);
   const m = r.err.match(/run (\d+) exit (\d+) mem (\d+)/);
   runs.push({ name: "WebAssembly (Node's WASI)", d, ...r, s: m ? Number(m[1]) / 1000 : r.s, wasmMb: m ? Number(m[3]) : null });
 }
@@ -77,5 +77,5 @@ for (const r of runs) {
   console.log(`${r.name}: ${r.s.toFixed(1)} s, ${mem}: ${same ? "the same bytes" : "DIFFERENT"}`);
 }
 const sum = JSON.parse(readFileSync(join(first.d, "area.json"), "utf8"));
-console.log(`area ${cut.area}: ${sum.buildings} buildings, ${sum.parts} parts, ${sum.tiles} tiles, ${(readFileSync(join(first.d, "area.tiles")).length / 2 ** 20).toFixed(1)} MB`);
+console.log(`z8 tile ${cut.tile}: ${sum.buildings} buildings, ${sum.parts} parts, ${sum.tiles} tiles, ${(readFileSync(join(first.d, "area.tiles")).length / 2 ** 20).toFixed(1)} MB`);
 process.exit(bad ? 1 : 0);

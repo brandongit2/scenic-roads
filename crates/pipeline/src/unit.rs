@@ -11,7 +11,7 @@
 //! from the DEM servers once.
 
 use crate::coverage::Coverage;
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use anyhow::{bail, ensure, Context, Result};
 use roadcore::WayRec;
 use std::collections::BTreeMap;
@@ -113,7 +113,7 @@ impl DemValidity {
 
 /// Keeps a unit's DEM samples (the `dem-cache.*` elev left in `from`: its vertices, cached or
 /// sampled anew, under `v`) for later runs of it and of its neighbours. Returns how many.
-pub fn dem_samples_keep(dir: &Path, u: Unit, from: &Path, v: &DemValidity) -> Result<usize> {
+pub fn dem_samples_keep(dir: &Path, u: TileId, from: &Path, v: &DemValidity) -> Result<usize> {
     dem_samples_keep_with(dir, u, from, None, v)
 }
 
@@ -121,7 +121,7 @@ pub fn dem_samples_keep(dir: &Path, u: Unit, from: &Path, v: &DemValidity) -> Re
 /// neighbours' slices on this Mac read instead of the NAS's.
 pub fn dem_samples_keep_with(
     dir: &Path,
-    u: Unit,
+    u: TileId,
     from: &Path,
     copies: Option<&Path>,
     v: &DemValidity,
@@ -740,7 +740,7 @@ impl Tools {
     }
 
     /// Where unit `u`'s scenic results are kept between its runs (crate::scache::Carry).
-    pub fn scenic_kept(&self, u: Unit) -> PathBuf {
+    pub fn scenic_kept(&self, u: TileId) -> PathBuf {
         self.shared.as_ref().unwrap_or(&self.cache).join("scenic-units").join(u.dash())
     }
 }
@@ -770,8 +770,8 @@ pub fn stage_said(stage: &str, frac: f64, took: Option<std::time::Duration>) {
 }
 
 /// A unit's stages in the order they run (`Laps::lap`'s and the programs' names), each with about
-/// how long it takes (seconds: the M4's, over its areas of 2026-10): how far an area is, by
-/// the stages it's through (`Areas`), until this Mac has timed its own.
+/// how long it takes (seconds: the M4's, over its z6 tiles of 2026-10): how far a z6 tile is, by
+/// the stages it's through (`TileProgress`), until this Mac has timed its own.
 pub const STAGES: [(&str, f64); 25] = [
     ("piece copied from the NAS", 10.0),
     ("buildings staged", 1.0),
@@ -801,16 +801,16 @@ pub const STAGES: [(&str, f64); 25] = [
     ("its folders removed", 1.0),
 ];
 
-/// A unit job's progress (scenic-build's unit step), area by area: those finished, and each under
+/// A unit job's progress (scenic-build's unit step), z6 tile by z6 tile: those finished, and each under
 /// way by how far through its stages it is (`STAGES`), each stage weighted by about how long it
-/// takes here (learned as areas finish, and kept: `file`). Its line says `<areas>/<n> areas`.
-pub struct Areas {
+/// takes here (learned as z6 tiles finish, and kept: `file`). Its line says `<done>/<n> z6 tiles`.
+pub struct TileProgress {
     n: usize,
-    /// The areas finished (a stage said after, such as its folders' removal, counts for nothing).
+    /// The z6 tiles finished (a stage said after, such as its folders' removal, counts for nothing).
     finished: std::collections::BTreeSet<String>,
-    /// The areas under way (prepared here, or their last steps out with other workers): how far each is.
+    /// The z6 tiles under way (prepared here, or their last steps out with other workers): how far each is.
     under_way: BTreeMap<String, f64>,
-    /// The area whose stages are said now.
+    /// The z6 tile whose stages are said now.
     current: Option<String>,
     /// About how long each stage takes here (seconds), and those this Mac has timed (kept or now).
     secs: BTreeMap<String, f64>,
@@ -819,9 +819,9 @@ pub struct Areas {
     said_at: Option<std::time::Instant>,
 }
 
-impl Areas {
-    /// `n` areas, their stages' times learned in `file` (when there is one).
-    pub fn new(n: usize, file: Option<PathBuf>) -> Areas {
+impl TileProgress {
+    /// `n` z6 tiles, their stages' times learned in `file` (when there is one).
+    pub fn new(n: usize, file: Option<PathBuf>) -> TileProgress {
         let mut secs: BTreeMap<String, f64> = STAGES.iter().map(|(s, t)| (s.to_string(), *t)).collect();
         let mut learned = std::collections::BTreeSet::new();
         if let Some(kept) = file
@@ -836,7 +836,7 @@ impl Areas {
                 secs.insert(s, t);
             }
         }
-        Areas {
+        TileProgress {
             n,
             finished: Default::default(),
             under_way: BTreeMap::new(),
@@ -853,12 +853,12 @@ impl Areas {
         stages.iter().map(|s| self.learned.contains(*s).then(|| self.secs.get(*s).copied()).flatten()).sum()
     }
 
-    /// Stages said from now on are area `u`'s.
+    /// Stages said from now on are z6 tile `u`'s.
     pub fn on(&mut self, u: &str) {
         self.current = Some(u.to_string());
     }
 
-    /// The current area's `stage` is `frac` done (1: finished, in `took`): it counts that far, and
+    /// The current z6 tile's `stage` is `frac` done (1: finished, in `took`): it counts that far, and
     /// the time teaches this Mac's weight for the stage.
     pub fn stage(&mut self, stage: &str, frac: f64, took: Option<std::time::Duration>) {
         let Some(i) = STAGES.iter().position(|(s, _)| *s == stage) else { return };
@@ -874,14 +874,14 @@ impl Areas {
         let w = |s: &str| self.secs.get(s).copied().unwrap_or(1.0).max(0.1);
         let total: f64 = STAGES.iter().map(|(s, _)| w(s)).sum();
         let before: f64 = STAGES[..i].iter().map(|(s, _)| w(s)).sum();
-        // (Never back: a stage said again, or one an area skipped, is no step back.)
+        // (Never back: a stage said again, or one a z6 tile skipped, is no step back.)
         let f = ((before + frac.clamp(0.0, 1.0) * w(stage)) / total).min(0.999);
         let e = self.under_way.entry(u).or_insert(0.0);
         *e = e.max(f);
         self.say(frac >= 1.0);
     }
 
-    /// Area `u` is done (built and saved, or nothing to build).
+    /// z6 tile `u` is done (built and saved, or nothing to build).
     pub fn finished(&mut self, u: &str) {
         self.under_way.remove(u);
         self.finished.insert(u.to_string());
@@ -889,7 +889,7 @@ impl Areas {
         self.keep();
     }
 
-    /// The areas done, counting each under way by how far it is.
+    /// The z6 tiles done, counting each under way by how far it is.
     pub fn done(&self) -> f64 {
         (self.finished.len() as f64 + self.under_way.values().sum::<f64>()).min(self.n as f64)
     }
@@ -901,7 +901,7 @@ impl Areas {
             return;
         }
         self.said_at = Some(std::time::Instant::now());
-        crate::agent::jobs::report_f(self.done(), self.n as u64, "areas");
+        crate::agent::jobs::report_f(self.done(), self.n as u64, "z6 tiles");
     }
 
     /// The stages' times learned, kept for this Mac's next job (a cache: not keeping them costs
@@ -1001,7 +1001,7 @@ fn run_in(c: Command, what: &str, log: &Path, dir: &Path, tools: &Tools) -> Resu
 
 /// A unit's step ended by a server it reads giving no answer (its program's exit status
 /// crate::fetch::UNREACHABLE_EXIT): the network's or the server's, not the unit's. The unit job sets
-/// the area aside and goes on with its others (scenic-build's `unit` step).
+/// the z6 tile aside and goes on with its others (scenic-build's `unit` step).
 #[derive(Debug)]
 pub struct SourceDown(pub String);
 
@@ -1109,7 +1109,7 @@ pub type HeritageInputs<'a> = &'a dyn Fn([f64; 4], &Path) -> Result<(usize, usiz
 /// then its `tail`. Leaves the unit folder ready for its base pack.
 #[allow(clippy::too_many_arguments)]
 pub fn build_folder(
-    u: Unit,
+    u: TileId,
     piece: &Path,
     dir: &Path,
     cov: &Coverage,
@@ -1129,7 +1129,7 @@ pub fn build_folder(
 /// The DEM samples a unit's elevations made (its tail's first step), kept for its later runs and
 /// its neighbours' (new ones aren't sampled twice). A cache: not keeping them (the NAS away) only
 /// costs sampling them again.
-pub fn keep_dem_samples(u: Unit, dir: &Path, tools: &Tools) {
+pub fn keep_dem_samples(u: TileId, dir: &Path, tools: &Tools) {
     let v = match crate::dem::declared::read_plan(dir) {
         Ok(Some(p)) => DemValidity::of(&p),
         Ok(None) => {
@@ -1155,7 +1155,7 @@ pub fn keep_dem_samples(u: Unit, dir: &Path, tools: &Tools) {
 /// the tail's first step: they read the DEM servers' files where they lie, so any worker may.)
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_folder(
-    u: Unit,
+    u: TileId,
     piece: &Path,
     dir: &Path,
     cov: &Coverage,
@@ -1378,7 +1378,7 @@ pub fn canopy_stored(dir: &Path, sources: &Path) -> bool {
 /// data the elevations and canopy read is read where it lies: the DEM servers' files and the NAS's
 /// (`{net}`, `{sources}`, `{chm}`: a browser's through the coordinator, a Mac's as this
 /// Mac reads them).
-pub fn tail(u: Unit, buildings: bool, store: bool) -> Vec<Run> {
+pub fn tail(u: TileId, buildings: bool, store: bool) -> Vec<Run> {
     // What each step reads of the unit's folder, earlier steps' outputs too: a task sends what's
     // there when it starts (traced in WebAssembly, the outputs compared: tools/check/tail.mjs).
     let mine = |names: &[&str]| {
@@ -1628,10 +1628,10 @@ mod tests {
     }
 
     #[test]
-    fn an_area_counts_by_the_stages_it_is_through() {
+    fn a_z6_tile_counts_by_the_stages_it_is_through() {
         let d = tempfile::tempdir().unwrap();
         let file = d.path().join("unit-stages.json");
-        let mut a = Areas::new(4, Some(file.clone()));
+        let mut a = TileProgress::new(4, Some(file.clone()));
         let total: f64 = STAGES.iter().map(|s| s.1).sum();
         a.on("6/1/1");
         a.stage("piece copied from the NAS", 1.0, None);
@@ -1644,7 +1644,7 @@ mod tests {
         a.stage("extract", 1.0, None);
         a.stage("something else", 1.0, None);
         assert!((a.done() - (before + 75.0) / total).abs() < 1e-9);
-        // Its last steps out with another worker while the next area builds: both count.
+        // Its last steps out with another worker while the next z6 tile builds: both count.
         a.on("6/1/2");
         a.stage("extract", 1.0, None);
         let two = a.done();
@@ -1660,12 +1660,12 @@ mod tests {
         a.finished("6/1/2");
         let kept: BTreeMap<String, f64> = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
         assert_eq!(kept["DEM cache slice"], 0.75 * 30.0 + 0.25 * 70.0);
-        assert_eq!(Areas::new(4, Some(file.clone())).secs["DEM cache slice"], 40.0);
+        assert_eq!(TileProgress::new(4, Some(file.clone())).secs["DEM cache slice"], 40.0);
         assert_eq!(a.done(), 2.0);
         // How long stages take here, once this Mac has timed each (kept or now): a tail's patience.
         assert_eq!(a.here_s(&["DEM cache slice"]), Some(40.0));
         assert_eq!(a.here_s(&["DEM cache slice", "scenic view"]), None);
-        assert_eq!(Areas::new(4, Some(file)).here_s(&["DEM cache slice"]), Some(40.0));
+        assert_eq!(TileProgress::new(4, Some(file)).here_s(&["DEM cache slice"]), Some(40.0));
     }
 
     #[test]
@@ -1705,7 +1705,7 @@ mod tests {
 
     #[test]
     fn a_whole_tail_may_run_anywhere_but_the_canopy_squares_a_worker_cant_have() {
-        let u = Unit::parse("6/20/22").unwrap();
+        let u = TileId::parse("6/20/22").unwrap();
         let what = |runs: &[Run]| runs.iter().map(|r| r.what.clone()).collect::<Vec<_>>();
         let mut runs = tail(u, true, true);
         let (here, anywhere) = split(&runs);
@@ -1779,7 +1779,7 @@ mod tests {
             std::fs::write(run.join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
             std::fs::write(run.join("dem-cache.elev.f32"), bytemuck::cast_slice(&vec![7.0f32; pts.len()])).unwrap();
             std::fs::write(run.join("dem-cache.src.u8"), vec![1u8; pts.len()]).unwrap();
-            dem_samples_keep(&units, Unit { z: 6, x: 1, y: 2 }, &run, &rules()).unwrap()
+            dem_samples_keep(&units, TileId { z: 6, x: 1, y: 2 }, &run, &rules()).unwrap()
         };
         let names = || {
             let mut v: Vec<String> = std::fs::read_dir(&units)
@@ -1918,7 +1918,10 @@ mod tests {
         std::fs::write(run.join("dem-cache.keys.u64"), bytemuck::cast_slice(&mine)).unwrap();
         std::fs::write(run.join("dem-cache.elev.f32"), bytemuck::cast_slice(&[30.0f32, 40.0])).unwrap();
         std::fs::write(run.join("dem-cache.src.u8"), [1u8, 1]).unwrap();
-        assert_eq!(dem_samples_keep(&d.path().join(DEM_UNITS), Unit { z: 6, x: 1, y: 2 }, &run, &rules()).unwrap(), 2);
+        assert_eq!(
+            dem_samples_keep(&d.path().join(DEM_UNITS), TileId { z: 6, x: 1, y: 2 }, &run, &rules()).unwrap(),
+            2
+        );
         assert_eq!(
             dem_cache_slice(d.path(), &d.path().join(DEM_UNITS), [-5, -5, 10, 10], &d.path().join("u"), &rules())
                 .unwrap(),
@@ -1962,7 +1965,7 @@ mod tests {
             .unwrap();
             std::fs::write(run.join("dem-cache.src.u8"), (0..m).map(|i| (i % 7) as u8).collect::<Vec<_>>()).unwrap();
             let units = d.path().join(format!("u{n}"));
-            dem_samples_keep(&units, Unit { z: 6, x: 1, y: 2 }, &run, &rules()).unwrap();
+            dem_samples_keep(&units, TileId { z: 6, x: 1, y: 2 }, &run, &rules()).unwrap();
             let file = std::fs::read_dir(&units).unwrap().flatten().next().map(|e| e.path());
             let Some(file) = file else { continue };
             let whole = std::fs::read(&file).unwrap();
@@ -2008,7 +2011,7 @@ mod tests {
             std::fs::write(run.join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
             std::fs::write(run.join("dem-cache.elev.f32"), bytemuck::cast_slice(&vec![elev; pts.len()])).unwrap();
             std::fs::write(run.join("dem-cache.src.u8"), vec![1u8; pts.len()]).unwrap();
-            dem_samples_keep_with(&units, Unit { z: 6, x: 1, y: 2 }, &run, copies, &rules()).unwrap()
+            dem_samples_keep_with(&units, TileId { z: 6, x: 1, y: 2 }, &run, copies, &rules()).unwrap()
         };
         let slice = |b: [i32; 4], to: &str, copies: Option<&Path>| {
             let n = dem_cache_slice_with(&d.path().join("no-seed"), &units, b, &d.path().join(to), copies, &rules())

@@ -53,7 +53,7 @@ classes = [('base', 'Map context'), ('place', 'Places & heritage'), ('terr', 'El
            ('scen', 'Scenic metrics'), ('land', 'Land cover & trees'), ('bldg', 'Buildings'), ('osm', 'OpenStreetMap (shared)'), ('mix', 'Several classes')]
 shapes = [('src', 'source'), ('cur', 'curated input: made by hand'), ('kept', 'kept between runs'), ('card', 'build step, over the files it writes'),
           ('pill', 'server route'), ('layer', 'map layer'), ('computed', 'made in the browser')]
-scopes = [('area', 'per z6 tile (300–600 km), near the coverage'), ('pack', 'per z3 area: its zoomed-out levels'), ('global', 'once, for the whole world')]
+scopes = [('z6', 'per z6 tile (300–600 km), near the coverage'), ('z3', 'per z3 tile: its zoomed-out levels'), ('global', 'once, for the whole world')]
 runs = [('shared', 'any member of the pool may take its jobs; unmarked: the lead’s alone'), ('task', 'parts run as tasks: any worker, a device’s page too')]
 repro = list(diag.REPRO.items())
 formats = [('packs', 'a layer’s tiles under one root tile, with an index'), ('bundles', 'a small layer’s every tile in one pack (…/all)'), ('sectioned', 'named arrays: base packs, hidata, markdata'),
@@ -81,7 +81,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <header>
 <div>
 <h1>Scenic Roads · data pipeline</h1>
-<p class="sub">OpenStreetMap comes from one worldwide download, cut by area, and a region is only an outline of what to build, so region size and borders never show. One Mac leads the build (the M4 today): it moves when you hand it over, or by itself only on low battery, a silent heartbeat, a lost NAS or a stand-down. The others, and any device you let help, take work from it. What a person or an agent made by hand, the curated inputs, is marked apart, with how it could be made again (the list at the end). Your enabled regions are built; disabled ones are only checked. The planet: 28 September 2026. Times and memory are measured (docs/phase-times.md, 20 Oct 2026) unless marked a guess.</p>
+<p class="sub">OpenStreetMap comes from one worldwide download, cut by z6 tile, and a region is only an outline of what to build, so region size and borders never show. One Mac leads the build (the M4 today): it moves when you hand it over, or by itself only on low battery, a silent heartbeat, a lost NAS or a stand-down. The others, and any device you let help, take work from it. What a person or an agent made by hand, the curated inputs, is marked apart, with how it could be made again (the list at the end). Your enabled regions are built; disabled ones are only checked. The planet: 28 September 2026. Times and memory are measured (docs/phase-times.md, 20 Oct 2026) unless marked a guess.</p>
 </div>
 </header>
 {legend}
@@ -98,7 +98,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <figure>
 <h3>How each layer is built</h3>
 <div class="scroll">{proposed.build(CHECK)}</div>
-<figcaption>Every step runs per z6 tile, per z3 area near the coverage, or once for the whole world; regions only say which tiles to build, and publishing puts each unit on the map within minutes of its build. Values that span areas (whole roads, landmarks’ fame, ferries) come from worldwide steps, so tile edges and region borders don’t show. Translations and descriptions need no rebuild. Folded corner: a curated input, with how it could be made again. A card’s last line: a target’s median and 90th-percentile time and its peak memory (p90), or a worldwide run’s.</figcaption>
+<figcaption>Every step runs per z6 tile, per z3 tile near the coverage, or once for the whole world; regions only say which tiles to build, and publishing puts each z6 tile on the map within minutes of its build. Values that span areas (whole roads, landmarks’ fame, ferries) come from worldwide steps, so tile edges and region borders don’t show. Translations and descriptions need no rebuild. Folded corner: a curated input, with how it could be made again. A card’s last line: a target’s median and 90th-percentile time and its peak memory (p90), or a worldwide run’s.</figcaption>
 </figure>
 {curated.html()}
 </main>

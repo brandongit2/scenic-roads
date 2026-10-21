@@ -9,7 +9,7 @@
 //! the build was paused stays paused until it hears otherwise.
 //!
 //! A pause stops the work at its next safe point (`Mode::Drain`): the running job finishes the
-//! target it's on (an area, a map tile, a terrain area), saves it, notes it done (`done`) and ends
+//! target it's on (a z3 tile, a z6 tile, a map tile), saves it, notes it done (`done`) and ends
 //! (`PAUSED_EXIT`); nothing new starts. A job that hasn't reached a safe point within the agent's
 //! grace is frozen where it is instead, and goes on from there. Or at once (`Mode::Freeze`): the job
 //! frozen where it is. Either way nothing done is lost, and nothing is counted as a failure.

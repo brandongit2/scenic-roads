@@ -244,8 +244,10 @@ pub fn read_ahead<I: Sync, T: Send>(
         for (k, it) in items.iter().enumerate() {
             let t = match ahead.take() {
                 Some(h) => {
-                    let _p =
-                        crate::timings::phase("the next area's z12 tiles waited for", crate::timings::Class::NasRead);
+                    let _p = crate::timings::phase(
+                        "the next z6 tile's z12 tiles waited for",
+                        crate::timings::Class::NasRead,
+                    );
                     h.join().map_err(|_| anyhow::anyhow!("the read ahead panicked"))??
                 }
                 None => load(it)?,

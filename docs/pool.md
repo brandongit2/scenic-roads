@@ -31,7 +31,7 @@ Where state lives:
 | Records, built files, catalogs | NAS: `state/build/`, content-named files | caches (`agent/cache/…`) | reads them |
 | Downloads | NAS: `sources/` | cache copies | nothing |
 | A pass's Wikidata/Wikipedia answers | NAS: `sources/items/<date>/` (`pipeline::answers`) | `agent/cache/items/`, `agent/cache/heritage-<date>/` | its first run takes them |
-| Units' kept state | NAS: `cache/dem-units/`, `cache/scenic-units/` | none | nothing |
+| Z6 tiles' kept state | NAS: `cache/dem-units/`, `cache/scenic-units/` | none | nothing |
 | A job's progress (the OSM pass's stages, scratch) | the Mac running it | scratch folders | the OSM pass's resumed there (§7.2, Resuming); the rest redone |
 | The coordinator's state, token, history | NAS: `state/coord/` | `agent/coord/` | loads it (§6.2, §7.5) |
 | The lead's own (its catalogs' record, daily jobs' last runs) | the lead's disk | `agent/publishing.json`, `agent/state.json` | starts afresh |
@@ -365,7 +365,7 @@ build) or a member waiting for its update.
 (`Grant::disk_mb`: its targets' disks summed, or the 90th percentile of the disk its step's last
 20 jobs took over their runs (`job-disks-v5.json`), the larger; 0 for a cold start; a halo
 step's, `needs::HALO_STEPS`: `pack` and `lo`, the most of its targets' rather than their sum. A
-`pack` job takes one unit's map tiles (`build::by_unit`'s groups, each its own offer); `lo` stays
+`pack` job takes one z6 tile's map tiles (`build::by_unit`'s groups, each its own offer); `lo` stays
 one work of a pass's z3 tiles (the low zooms' gate opens for a pass as a whole). A `pack` or `lo`
 job's disk is its own: the parts of its halo's base packs it reads from the NAS, into its scratch,
 and its output (task #396; docs/steps.md §8); their runs and targets' disks from when their
@@ -381,7 +381,7 @@ and when:
 - *The fill* (`coord::Shared::fills`, `cache-fills.json`): a job that did all its targets (not
   a paused or stopped one) and whose disk passed its targets' output by 512 MB or more, and by
   at least half the fill kept, filled the cache; that excess (its run less its own output, so a
-  unit's output isn't counted in the DEM cache's) is the fill. Warm runs, and a part copied
+  z6 tile's output isn't counted in the DEM cache's) is the fill. Warm runs, and a part copied
   (a part refilled after an eviction), leave it.
 - *What a Mac holds* (`Capacity::caches`, `have_mb`): read off its disk as its agent asks
   (`caches_here`: the bytes of its cache folder's `dem-cache.*` files), so
@@ -428,7 +428,7 @@ the Mac's cores). The cores a Mac's jobs may use together (`coord::ask_cores`) a
 less, while its owner uses it, its in-use share's. Each job is granted its
 measured cores within the packed share (`coord::packed_share`: a quarter of those cores, at least
 two where they allow: the M1's 8, 2) and the cores its other jobs leave, else the share; a step
-reading the NAS as it goes (`coord::NAS_STEPS`: unit, elev, pack, lo; or one whose costs show
+reading the NAS as it goes (`coord::NAS_STEPS`: `unit`, elev, pack, lo; or one whose costs show
 10 MB/s or more of NAS bytes) the share, never fewer, its threads overlapping the waits. A first
 job alone gets no more than the share, so its run is never measured to take every core and leave
 no room beside it. The agent, the lead's as a member's,
@@ -469,7 +469,7 @@ generated from it at build time.
 
 Rows of note: `trees`/`terrain`/`slope` per z6 tile with `*-lo` assemblies per z3 tile (docs/steps.md);
 `bldprep`/`bldtiles` per z6 tile, `bld-fetch` the lead's (docs/buildings3d.md §3.6); `inputs`, a
-target per unit, the lead's, planned before every other job (docs/inputs.md §4.3).
+target per z6 tile, the lead's, planned before every other job (docs/inputs.md §4.3).
 
 - **Every step to every member** (`crate::agent::every`, `crate::coord`'s `pick_every`): all but the
   lead's own steps (`every::LEAD_ONLY`: catalogs, prunes, `bld-fetch`, the answer-keeping steps, the
@@ -534,7 +534,7 @@ target per unit, the lead's, planned before every other job (docs/inputs.md §4.
 - **The forecast for equal machines** (`crate::agent::forecast::equal_machines`): a second forecast,
   `equal`, with each member's slots and the pages as lanes at their measured speeds. Reports only.
 
-**A job waiting on a worker** (`crate::offload`'s `WAITING_ENV`): a unit job waiting on a faster
+**A job waiting on a worker** (`crate::offload`'s `WAITING_ENV`): a z6 tile job waiting on a faster
 worker for its tail writes `SCENIC_WAITING`; while it exists the lead's asks count the waiting
 job's current memory and none of its cores (the room past its measures given back to the ask,
 `lead_grants`). A job started beside a waiting one **yields** to it (stopped at once, given back,
@@ -548,7 +548,7 @@ not counted as a failure, no floor learned) when it resumes and the jobs no long
   macOS malloc's cache of freed large blocks (`MallocLargeCache=0`, an undocumented libmalloc
   setting, `store::spawn::NO_LARGE_CACHE`; their children inherit it; the agent and server, started
   by launchd, keep it): with it, freed blocks stay in a
-  process's footprint, and a dense unit's scenic-build held 6–7 GB of them while its programs ran.
+  process's footprint, and a dense z6 tile's scenic-build held 6–7 GB of them while its programs ran.
 - **Limit:** the Mac's memory less an eighth, 4 GB at least. Over it, the largest fitting alone,
   another job stops at its next safe point (`memguard::decide_by`): one that yields first, else the
   newest (by its start's minute), then the least progressed, never the largest; one at a time, and none more while the
@@ -657,7 +657,7 @@ never correctness, politeness or work.
 | input size | measured per target beside its cost (`sizes` in `costs.jsonl`, `pipeline::costin`: bytes read, threads, area, GeoTIFFs opened, the bytes and files its `Out` made on the NAS (`wrote`, `creates`), and the counts a step has: ways and vertices, buildings, peaks); read by the step's model (below) |
 | disk | measured per target: bytes written through `store::cachefile` and the scratch writers (`SCENIC_WRITTEN`), plus a look each minute at the largest files in a slot's scratch folder; kept as the target's disk floor (`disks.json`). **Disk guard:** when free space falls below the owner's room target (less a thirtieth of it, so a job just let in at the target isn't frozen at once: `memguard::disk_short_of`), the fastest-growing job is frozen (another too if the disk falls past half the target), room is made from caches no job holds (`room::toward`), and it goes on once the target is free again or is given back. No target is set until the owner picks one (Off is none); with none, the guard fires only at an actually full disk, with no other floor. Given-back jobs' scratch folders are deleted oldest first when room is short (`room::free_given_back`) |
 | jobs on one Mac | a job is granted beside others only if their measured memory, disk and cores fit (packing, §7.2), and only while every member reports the new app (§7.1, Mixed versions); a cold start runs alone |
-| raw tiles | `store::cachefile`'s locks; packing deletes only tiles no job holds; a job reopens its area's archives when the index changed (`RawTiles::get`, `refresh_area`) |
+| raw tiles | `store::cachefile`'s locks; packing deletes only tiles no job holds; a job reopens its shard's archives when the index changed (`RawTiles::get`, `refresh_shard`; a shard is the z6 tile, z3 tile or `root` whose archives hold a tile: docs/macs.md) |
 | Wikimedia budget | `crate::budget`: one budget for the pool, enforced at egress. Every job's connections go through its agent's proxy (`crate::budget::proxy`, `HTTPS_PROXY`), the job sandboxed (`sandbox-exec`) to deny any other way out. A metered connection takes a token first: leases are create-new files per slot of a ten-second window (`state/pool/wiki/<class>/<window>-<slot>`). `wiki` four requests a second; `query` (WDQS, QLever) one query per two seconds of query time. A 429 told to the proxy (`POST /hold`, dem/budget.py) holds every Mac. The NAS away, each Mac takes the rate divided by known members. Lint: `tests/budgets.rs` |
 | NAS and network budget | `crate::budget::nas`: the lead's own jobs always; the members' too unless `state/pool/nas-budget` says `off` (on while missing). A job's **NAS weight** is its share of the NAS in thousandths: its targets' measured rate (`needs::Book::nas`: `bytes` read plus `wrote`, and `creates`, each over its wall time, a halo step's (`pack`, `lo`) `wrote` alone, its job's read rate (`nas_read` over `nas_secs`: what the job read of the halo's base packs from the NAS and the time that took, on each of its targets; a measure without `nas_secs`, task #396's first, counts no reads) in place of its `bytes` (the halo's base packs' files); its own run's, else its step's 90th percentile of each; none measured, 0), and its metadata work (task #451: `listed`, `stats`, `deletes` from `costin::meta`, the folder entries it listed and the files it statted and deleted (renames counted as deletes), each over its wall time; counted by GC's walks, which note a cost line `gc gc` in their job's costs file, and the inputs step's drop-box listing), each over the NAS's limit, added: one combined weight, at most the whole (1000); a job its heaviest target's (a job of no targets of its own, its lease's, its step's). **The limits** are measured: the lead's coordinator probes the NAS every 30 minutes, whatever the switch says (`probe`: 12 files of 4 KB made, one of 16 MB written, synced and read back past the cache, the 12 files deleted one by one, and a kept folder of its own (`<host>-meta` beside the probe's folders, 48 files, never removed by the stale-folder clean-up) listed and its files statted, measured only once it has gone unwritten 5 minutes so the answers come from the NAS, not this Mac's SMB cache of what it just wrote (missing or young: made, and 0 this probe; a 0 weighs nothing and the day's best is kept), in a folder of its own under `state/pool/nas-probe/<host>-<pid>`, all removed after; as it starts, the coordinator removes its host's folders a stopped process left, never another host's) and takes the best of the last day's probes (a probe under the build's load measures what's left). `scenic pool nas-probe [--dir <folder>]` runs one. **Enforced at grant** (`coord`'s `pick_every` and `pick_own`, so `pack` too, the lead's own jobs among them): a member's target is granted only while the weights of every job leased in the pool (the lead's own among them) leave room for its own within the whole (1000), or while no other member's job weighs anything (the lead's own alone never hold it back), or, weighing the whole itself, once it has waited 10 minutes for the budget alone and no leased job weighs the whole (`Limits::fits_job`, `OWN_AGE`: two members' jobs never starve it); the lead's own only within the whole, or while nothing leased weighs anything (`Limits::fits_own`); a planned job of the lead's own also while no leased job weighs the whole, once it weighs the whole itself, or has waited 10 minutes for the budget alone and the lead's own leased jobs leave it room within the whole (`Limits::fits_own_job`, `OWN_AGE`, the wait timed from when it was first held back and forgotten once granted: members' small jobs never hold it back for good, and the lead's own aged jobs don't pile up past the budget; the simulator checks each start of the lead's own against the same rule, with the waits as the coordinator kept them); **an aged target holds its room** (`Shared::nas_reserved`, task #444): of the targets held back for the budget alone for 10 minutes or more (and passed over in the last two minutes), the one held back first has its weight kept free: no other job weighing anything is granted, a member's or the lead's, unless the leased jobs, it and that one fit within the whole, so a target weighing less than the whole but more than the room left (depth-lo's) goes as the leased jobs end instead of waiting behind a stream of smaller ones; it never lets the budget past the whole, the reserved target itself aside (a member's whole-weight job going by `fits_job`'s aged path, or an aged job of the lead's own by `fits_own_job`); a target is noted waiting only when its asker would take it but for the budget (its measured memory and disk fit, or a cold start it's the one to make), so one no asker can take never holds room; a cold job of its own waits for the lead's jobs to end (§7.2) only when it would fit with the members' jobs alone. **The lead's own jobs are always held to it**, whatever the switch says (the limits probed: `nas_own`); the switch, unless `off`, holds the members' too (`nas`). Switched `off`, the members' jobs are not held and the lead's own are held by their own weights alone (`Shared::nas_room_heaviest`: a member's unheld jobs no longer keep the lead idle). The rest wait for a job to end; a target held back for over 30 minutes is a waiting line in the lead's status (`Coordinator::nas_waits`), once each (`agent::nas_wait_lines`). **The clean-up waits for a quiet NAS** (`QUIET_STEPS`: `gc`; task #451, after GC beside two depth-lo jobs held the NAS at 34 % IO wait and all three stalled): it starts only beside leased jobs weighing nothing, or, its weight measured, within the whole with them (`Limits::fits_quiet`), and the room held for an aged target; unmeasured, also only while no leased job is of a step known to read the NAS (`NAS_STEPS`) or unmeasured for it (`nas_unknown_running`). Its wait isn't noted (it holds no room) until it has been held back 24 hours since it was last granted (`QUIET_AGE`, `Shared::quiet_since`, kept in memory: a new coordinator counts afresh): then it goes as an aged job of the lead's own (`fits_own_job`, its wait noted, its room held). Running, it yields at its next safe point (each folder of its sweeps; `control::draining`, its cost line noted first, ending as paused) when a target held back for the budget `OWN_AGE` doesn't fit beside the leased jobs but would without it (`Coordinator::nas_yield`, asked by the agent each loop). **Downloads:** a job of a fetching step (steps table kind `Fetch`) counts one, capped pool-wide by the switch's `downloads <n>` (no cap without it): the lead's own fetching steps (`bld-fetch`, `rail-feeds`; none is offered to members). Not held to it: tasks |
 | a pass's answers | `crate::answers`: a lease on the NAS (`state/pool/answers.lease`, renewed every 150 s, lapsing after 10 min) around each sync; on a Mac a reader/writer lock (`answers::Local`) |
@@ -666,13 +666,13 @@ never correctness, politeness or work.
 
 **One model per step** (`pipeline::needs::Book`: `need(step, target, threads, guess)`, and `mem`
 alone for the picks): only what was measured the way the step runs now counts
-(`coord::cost_version`); a run or floor of an older way of it (a unit's before v2) is neither a
+(`coord::cost_version`); a run or floor of an older way of it (a z6 tile's before v2) is neither a
 target's memory or time measure, nor a fit's run, nor part of a prior (disk floors, `disks.json`, carry no version and always count). A target's memory, disk and time are its own
 run's (memory never below its floor; a floor alone counts as its measure); else base + k × size
 fitted over the step's measured runs (least squares raised to cover every run, × 1.1, capped at the
 most a run it was made from measured; threads a term when the runs differ in them), on whichever size
-fits best (a `sizes` measure the target has from an earlier run, or its tile's area); else, for units
-and landmark candidates, their piece-size first guess (`coord::unit_peak`), so one dense unit doesn't
+fits best (a `sizes` measure the target has from an earlier run, or its tile's area); else, for z6 tiles
+and landmark candidates, their extract-size first guess (`coord::unit_peak`), so one dense z6 tile doesn't
 set every other's; else the step's prior: memory and disk, the 90th percentile of its targets'
 measures (memory: their floors among them), a heavy target held by its own floor; time, the mean
 of its targets' runs, the expected time a job's targets are counted to the quarter hour by and the
@@ -941,8 +941,8 @@ member's heartbeat shows the app that has it. The old files `state/pool/enabled`
 `state/pool/shadow` stay on the NAS while an older app may read them.
 
 Planned: readers reading the term's snapshot and the lead no longer writing today's three files;
-journal GC; the HTTP pool API; resuming beyond the OSM pass. Packing a terrain piece's fetched raw
-tiles (`pack_raw_with`) stays inside the piece's job.
+journal GC; the HTTP pool API; resuming beyond the OSM pass. Packing a terrain z6 tile's fetched raw
+tiles (`pack_raw_with`) stays inside that z6 tile's job.
 
 ## 13. Testing
 
@@ -987,13 +987,13 @@ tiles (`pack_raw_with`) stays inside the piece's job.
   fill at most, a setting), kept on its disk after, and no job is granted a cache's reservation
   beside another reading it there (§7.1, Disk reservations): a member copying the DEM cache a
   part at a time is reserved what it truly lacks at each first job, and again in full after its
-  cache is emptied, the pass the same; with units in the plan, a halo's map tiles are offered once its unit is
-  built, before the units left: on the M4 and the M1, the NAS budget on and both steps measured
-  before, each Mac runs map tiles beside units, and the plan finishes. The M4 as measured on 18
-  Oct (48 GB, 14 cores, 85 GB free, its caches on its disk so none of them reserved; units of 6.6
-  GB writing 6 GB, `pack` and `lo` 0.3 and 0.5 GB) runs four units at once within its memory and
+  cache is emptied, the pass the same; with z6 tiles in the plan, a halo's map tiles are offered once its z6 tile is
+  built, before the z6 tiles left: on the M4 and the M1, the NAS budget on and both steps measured
+  before, each Mac runs map tiles beside z6 tiles, and the plan finishes. The M4 as measured on 18
+  Oct (48 GB, 14 cores, 85 GB free, its caches on its disk so none of them reserved; z6 tiles of 6.6
+  GB writing 6 GB, `pack` and `lo` 0.3 and 0.5 GB) runs four z6 tiles at once within its memory and
   disk, map tiles and low zooms beside each other. With its DEM cache gone and its fill measured,
-  the first unit is granted the fill, none beside it is, no start over-commits the disk, and units
+  the first z6 tile is granted the fill, none beside it is, no start over-commits the disk, and z6 tiles
   still run three or more at once. Not
   modelled: other step dependencies, failures; a job's time doesn't depend on its threads.
 - **The agent's tests** (`crate::agent::pool`, `crate::agent::lead`, the agent's `pool_tests`): two

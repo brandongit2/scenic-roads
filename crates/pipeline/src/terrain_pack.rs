@@ -794,9 +794,9 @@ fn index_stamp(store: &std::path::Path) -> Result<Stamp, ()> {
     }
 }
 
-/// An area's raw tile archives as read (RawTiles): its first tiles straight from the NAS's (each
+/// A shard's raw tile archives as read (RawTiles): its first tiles straight from the NAS's (each
 /// archive's entries read once, then a ranged read a tile), so a job wanting a tile or two of an
-/// area doesn't copy hundreds of MB; past RANGED of them, copied here whole and opened (one large
+/// shard doesn't copy hundreds of MB; past RANGED of them, copied here whole and opened (one large
 /// read each, then local, as a terrain job reads thousands). One whose copy failed is read by range
 /// for the rest of the job (`stay`), not copied again for each tile.
 enum Opened {
@@ -804,12 +804,12 @@ enum Opened {
     Here(std::sync::Arc<[roadcore::archive::Archive]>),
 }
 
-/// The tiles of an area read straight from the NAS's archives before they're copied here whole.
+/// The tiles of a shard read straight from the NAS's archives before they're copied here whole.
 const RANGED: usize = 16;
 
 /// AWS's raw tiles, kept so each is downloaded once: in the lead's cache as they come, then on
 /// the NAS packed (crate::rawpack: archives grouped as the terrain is, packed at the end of the job
-/// that fetched them, or by room-making), read from there (`Opened`: a few tiles of an area by
+/// that fetched them, or by room-making), read from there (`Opened`: a few tiles of a shard by
 /// range, else its archives copied here whole); and the NAS's loose tiles from before (`sources/aws-terrarium/<z>/<x>/<y>.png`,
 /// `.none` for a tile AWS doesn't have), while they're there. Packs are always made from the same
 /// immutable source: processing a tile twice isn't idempotent, so stored (processed) tiles are never
@@ -830,15 +830,15 @@ pub struct RawTiles {
     /// be), and again when an archive it names is gone from the NAS (a job that outlived it).
     index: Mutex<(Option<std::sync::Arc<crate::rawpack::Index>>, Option<std::time::Instant>)>,
     /// The index's stamp as it was read (`load_index`): one changed since (an archive packed meanwhile,
-    /// by another job here or room-making, of tiles this job's cache held) has an area's archives
+    /// by another job here or room-making, of tiles this job's cache held) has a shard's archives
     /// opened again before a tile they lack is fetched from AWS.
     index_stamp: Mutex<Stamp>,
-    /// The index's stamp each area's archives were opened by (`index_stamp` as it
-    /// was then): an area whose index has changed since is opened again before AWS is asked for a
-    /// tile it lacks, whichever area read the index last.
+    /// The index's stamp each shard's archives were opened by (`index_stamp` as it
+    /// was then): a shard whose index has changed since is opened again before AWS is asked for a
+    /// tile it lacks, whichever shard read the index last.
     opened_at: Mutex<HashMap<String, Stamp>>,
-    /// Each area's archives, newest first, opened when first wanted: by the area's own lock, so
-    /// reading one from the NAS holds up only the tiles of that area.
+    /// Each shard's archives, newest first, opened when first wanted: by the shard's own lock, so
+    /// reading one from the NAS holds up only the tiles of that shard.
     archives: Mutex<HashMap<String, std::sync::Arc<Mutex<Option<Opened>>>>>,
 }
 
@@ -900,7 +900,7 @@ impl RawTiles {
     }
 
     /// `index`, with the stamp of the bytes it was read from (`load_index`), taken together under
-    /// its lock: an area opened by it is known by the stamp of the index it was opened by, not one
+    /// its lock: a shard opened by it is known by the stamp of the index it was opened by, not one
     /// another thread read since.
     fn index_pair(&self, st: &std::path::Path, fresh: bool) -> Option<(std::sync::Arc<crate::rawpack::Index>, Stamp)> {
         let mut s = self.index.lock().unwrap();
@@ -928,18 +928,18 @@ impl RawTiles {
         pair(&s)
     }
 
-    /// An area's archives, newest first: here when each has its copy here, else to be read by range
+    /// A shard's archives, newest first: here when each has its copy here, else to be read by range
     /// (each one's entries read now, from its copy here or the NAS's). None when one can't be (not
     /// remembered: the NAS may answer next time). An archive the index names that's gone from the
     /// NAS (a job that outlived the index it read) has the index read again.
-    fn open_area(&self, st: &std::path::Path, area: &str) -> Option<Opened> {
+    fn open_shard(&self, st: &std::path::Path, shard: &str) -> Option<Opened> {
         for fresh in [false, true] {
             let (index, stamp) = self.index_pair(st, fresh)?;
             // (Known by the stamp of the index it's opened by, as `get` compares.)
-            self.opened_at.lock().unwrap().insert(area.to_string(), stamp);
-            let packs = index.of(area);
+            self.opened_at.lock().unwrap().insert(shard.to_string(), stamp);
+            let packs = index.of(shard);
             if packs.iter().all(|p| self.dir.join("packs").join(&p.name).exists()) {
-                if let Some(here) = self.copy_area(st, packs) {
+                if let Some(here) = self.copy_shard(st, packs) {
                     return Some(Opened::Here(here));
                 }
             }
@@ -956,7 +956,7 @@ impl RawTiles {
                     // (Gone from the NAS: the index read before is out of date.)
                     Err(e) if !fresh && crate::rawpack::not_found(&e) => break,
                     Err(e) => {
-                        eprintln!("terrain: the raw tiles of {area}: {e:#}");
+                        eprintln!("terrain: the raw tiles of {shard}: {e:#}");
                         return None;
                     }
                 }
@@ -971,7 +971,7 @@ impl RawTiles {
     /// Archives `packs`' copies here, newest first, each copied from the NAS whole the first time
     /// (checked against its name) and marked used (room-making deletes the least recently used);
     /// None when one can't be.
-    fn copy_area(
+    fn copy_shard(
         &self,
         st: &std::path::Path,
         packs: &[crate::rawpack::Pack],
@@ -992,19 +992,19 @@ impl RawTiles {
         Some(v.into())
     }
 
-    /// A tile from its area's archives: Some(None) when AWS hasn't it, None when they (or the
+    /// A tile from its shard's archives: Some(None) when AWS hasn't it, None when they (or the
     /// store) haven't it whole.
     fn archived(&self, z: u8, x: u32, y: u32) -> Option<Option<Vec<u8>>> {
         self.archived_by(z, x, y, &mut None)
     }
 
-    /// `archived`, saying in `used` the stamp of the index the area's archives it looked in were
-    /// opened by (taken under the area's lock: another thread may open them again a moment after),
+    /// `archived`, saying in `used` the stamp of the index the shard's archives it looked in were
+    /// opened by (taken under the shard's lock: another thread may open them again a moment after),
     /// so `get` opens them again only when the index has changed since those were opened.
     fn archived_by(&self, z: u8, x: u32, y: u32, used: &mut Option<Stamp>) -> Option<Option<Vec<u8>>> {
         let st = self.store.as_ref()?;
-        let area = crate::rawpack::area(z, x, y);
-        let cell = self.archives.lock().unwrap().entry(area.clone()).or_default().clone();
+        let shard = crate::rawpack::shard(z, x, y);
+        let cell = self.archives.lock().unwrap().entry(shard.clone()).or_default().clone();
         let key = roadcore::archive::tile_key(z, x, y);
         let whole = |b: &[u8]| -> Option<Option<Vec<u8>>> {
             if b.is_empty() {
@@ -1012,15 +1012,15 @@ impl RawTiles {
             } else if crate::whole::png_whole(b) {
                 Some(Some(b.to_vec()))
             } else {
-                eprintln!("terrain: {z}/{x}/{y} in an archive of {area} isn't whole: passed over");
+                eprintln!("terrain: {z}/{x}/{y} in an archive of {shard} isn't whole: passed over");
                 None
             }
         };
         let here = {
             let mut c = cell.lock().unwrap();
             if c.is_none() {
-                let opened = self.open_area(st, &area);
-                *used = Some(self.opened_at.lock().unwrap().get(&area).copied().flatten());
+                let opened = self.open_shard(st, &shard);
+                *used = Some(self.opened_at.lock().unwrap().get(&shard).copied().flatten());
                 *c = Some(opened?);
             }
             // (Read a few times: copied here whole, if it can be, by the index as it is now, which
@@ -1029,17 +1029,17 @@ impl RawTiles {
                 if *reads >= RANGED {
                     match self
                         .index_pair(st, false)
-                        .and_then(|(index, stamp)| self.copy_area(st, index.of(&area)).map(|h| (h, stamp)))
+                        .and_then(|(index, stamp)| self.copy_shard(st, index.of(&shard)).map(|h| (h, stamp)))
                     {
                         Some((h, stamp)) => {
                             *c = Some(Opened::Here(h));
-                            self.opened_at.lock().unwrap().insert(area.clone(), stamp);
+                            self.opened_at.lock().unwrap().insert(shard.clone(), stamp);
                         }
                         None => *stay = true,
                     }
                 }
             }
-            *used = Some(self.opened_at.lock().unwrap().get(&area).copied().flatten());
+            *used = Some(self.opened_at.lock().unwrap().get(&shard).copied().flatten());
             match c.as_mut()? {
                 Opened::Here(h) => h.clone(),
                 Opened::Ranged { archives, reads, .. } => {
@@ -1048,7 +1048,7 @@ impl RawTiles {
                         let Ok(i) = entries.binary_search_by_key(&key, |e| e.key) else { continue };
                         let mut b = vec![0u8; entries[i].len as usize];
                         if let Err(e) = store::sys::PosIo::read_exact_at(f, &mut b, entries[i].offset) {
-                            eprintln!("terrain: {z}/{x}/{y} from an archive of {area}: {e}");
+                            eprintln!("terrain: {z}/{x}/{y} from an archive of {shard}: {e}");
                             return None;
                         }
                         if let Some(t) = whole(&b) {
@@ -1062,16 +1062,16 @@ impl RawTiles {
         here.iter().find_map(|a| a.get(z, x, y).and_then(|b| whole(b)))
     }
 
-    /// Whether tile (z, x, y) is in its area's archives, by its entry alone (no tile read): the
+    /// Whether tile (z, x, y) is in its shard's archives, by its entry alone (no tile read): the
     /// prefetch passes those over, as the build reads them itself (and checks them whole, taking
     /// one that isn't again then).
     fn in_archive(&self, z: u8, x: u32, y: u32) -> bool {
         let Some(st) = self.store.as_ref() else { return false };
-        let area = crate::rawpack::area(z, x, y);
-        let cell = self.archives.lock().unwrap().entry(area.clone()).or_default().clone();
+        let shard = crate::rawpack::shard(z, x, y);
+        let cell = self.archives.lock().unwrap().entry(shard.clone()).or_default().clone();
         let mut c = cell.lock().unwrap();
         if c.is_none() {
-            match self.open_area(st, &area) {
+            match self.open_shard(st, &shard) {
                 Some(o) => *c = Some(o),
                 None => return false,
             }
@@ -1097,7 +1097,7 @@ impl RawTiles {
         if none.exists() {
             return Ok((None, false));
         }
-        // In its area's archive.
+        // In its shard's archive.
         let mut used = None;
         if let Some(b) = self.archived_by(z, x, y, &mut used) {
             return Ok((b, false));
@@ -1118,12 +1118,12 @@ impl RawTiles {
                 store::cachefile::put(&none, b"")?;
                 return Ok((None, false));
             }
-            // Packed into an archive since this job opened its area's (its loose copy here taken by
-            // room-making or another job's packing meanwhile): its area's archives opened again,
+            // Packed into an archive since this job opened its shard's (its loose copy here taken by
+            // room-making or another job's packing meanwhile): its shard's archives opened again,
             // the index read afresh, before AWS is asked (docs/pool.md §7.7: two raw-tile jobs at
             // once on one Mac).
-            let area = crate::rawpack::area(z, x, y);
-            if self.refresh_area(st, &area, used) {
+            let shard = crate::rawpack::shard(z, x, y);
+            if self.refresh_shard(st, &shard, used) {
                 if let Some(b) = self.archived(z, x, y) {
                     return Ok((b, false));
                 }
@@ -1132,24 +1132,24 @@ impl RawTiles {
         self.fetch(z, x, y).map(|b| (b, true))
     }
 
-    /// Whether area `area`'s archives may hold a tile they lacked when looked in (`used`: the stamp of
+    /// Whether shard `shard`'s archives may hold a tile they lacked when looked in (`used`: the stamp of
     /// the index they were opened by then; None: none looked in): decided, and acted on, under the
-    /// area's lock, so no other thread opens them from an older index between. Opened again by the
+    /// shard's lock, so no other thread opens them from an older index between. Opened again by the
     /// index read afresh when the index has changed since, or when they couldn't be opened (true);
     /// true too when another thread has opened them again since that look (look again); false when
     /// nothing has changed (the tile isn't in them: AWS is asked).
-    fn refresh_area(&self, st: &std::path::Path, area: &str, used: Option<Stamp>) -> bool {
+    fn refresh_shard(&self, st: &std::path::Path, shard: &str, used: Option<Stamp>) -> bool {
         let Some(used) = used else { return false };
-        // (The map let go before the area's lock is waited on.)
-        let cell = self.archives.lock().unwrap().entry(area.to_string()).or_default().clone();
+        // (The map let go before the shard's lock is waited on.)
+        let cell = self.archives.lock().unwrap().entry(shard.to_string()).or_default().clone();
         let mut c = cell.lock().unwrap();
-        let cur = self.opened_at.lock().unwrap().get(area).copied().flatten();
+        let cur = self.opened_at.lock().unwrap().get(shard).copied().flatten();
         let now = index_stamp(st);
         if c.is_some() && now == Ok(cur) {
             return cur != used;
         }
         self.index(st, true);
-        *c = self.open_area(st, area);
+        *c = self.open_shard(st, shard);
         true
     }
 
@@ -1298,11 +1298,11 @@ pub fn build_q(
     build_q_with(out, raw, q, ts, cov, src, &|_, _, _| {})
 }
 
-/// What a terrain piece (a z6 tile's run: `build_piece`) keeps for its area's assembly
+/// What a terrain piece (a z6 tile's run: `build_piece`) keeps for its z3 tile's assembly
 /// (`build_lo`), its mid: its z9 tiles' 2×2 means (128 × 128, f32: each a quarter of the z8 tile
 /// above), and its lakes' levels as its own levels gave them (crate::terrain_water). Its z8–z6
-/// can't be made with it: a lake's level at z8 is gathered from the whole area's z8 tiles, and the
-/// area's levels start from every piece's lakes, the first piece's (in column, then row order)
+/// can't be made with it: a lake's level at z8 is gathered from the whole z3 tile's z8 tiles, and the
+/// z3 tile's levels start from every piece's lakes, the first piece's (in column, then row order)
 /// kept for a lake two of them have.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Mid {
@@ -1361,7 +1361,7 @@ pub fn read_mid(path: &std::path::Path) -> anyhow::Result<((u32, u32), Mid)> {
     );
     let t = m["tile"]
         .as_str()
-        .and_then(crate::legacy::Unit::parse)
+        .and_then(crate::legacy::TileId::parse)
         .filter(|u| u.z == 6)
         .with_context(|| format!("{}: no z6 tile", what()))?;
     let t = (t.x, t.y);
@@ -1614,7 +1614,7 @@ impl<'a> Maker<'a> {
         Ok((hi, Mid { quads: quads.into_iter().collect(), levels: lakes.into_iter().collect() }))
     }
 
-    /// An area's assembly (z3 tile `q`): its levels z8 → z3, the whole of it, from its pieces' mids
+    /// A z3 tile's assembly (z3 tile `q`): its levels z8 → z3, the whole of it, from its pieces' mids
     /// (`mids`, in column then row order: their z9 tiles' means taken in, each lake's level the
     /// first of them that has one, the levels' lakes added below them). Its lo tiles, sorted.
     ///
@@ -1781,7 +1781,7 @@ pub(crate) fn drop_named(out: &mut Out, logicals: &[String]) -> usize {
     gone.len()
 }
 
-/// An area's levels (z3 tile `q`'s), z8 → z3, the whole of it.
+/// A z3 tile's levels (z3 tile `q`'s), z8 → z3, the whole of it.
 fn upper_levels(q: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)> {
     (3..=8u8)
         .rev()
@@ -1826,7 +1826,7 @@ fn saying<T>(
     Ok(r)
 }
 
-/// `build_q`, saying how far it is (`progress`): the area's tiles, every level's, each half done once
+/// `build_q`, saying how far it is (`progress`): the z3 tile's tiles, every level's, each half done once
 /// it's here (fetched from AWS, or read from the NAS's archives) and done once shaded ("tiles",
 /// every few seconds; each z6 tile's hi pack written as its tiles are done), then its lo pack
 /// written ("packs").
@@ -1850,7 +1850,8 @@ pub fn build_q_with(
     let mine: Vec<Vec<(u8, Vec<(u32, u32)>)>> = ts.iter().map(|&t| piece_levels(cov, t)).collect();
     let total: u64 = mine.iter().flatten().map(|(_, t)| t.len() as u64).sum::<u64>() + 1365;
     let mk = Maker::new(raw, src);
-    let made = crate::timings::phase("the area's tiles made and its hi packs uploaded", crate::timings::Class::Mixed);
+    let made =
+        crate::timings::phase("the z3 tile's tiles made and its hi packs uploaded", crate::timings::Class::Mixed);
     let lo = saying(&mk, total, progress, || {
         let mut mids: Vec<((u32, u32), Mid)> = Vec::new();
         for (&t, levels) in ts.iter().zip(mine) {
@@ -1868,7 +1869,7 @@ pub fn build_q_with(
             }
             mids.push((t, mid));
         }
-        // (The area's z6 tiles the coverage has left: their hi packs go. Not their mids, which
+        // (The z3 tile's z6 tiles the coverage has left: their hi packs go. Not their mids, which
         // a whole run never writes (its lease's write-set: agent::steps::saves); their "none"
         // pieces drop those.)
         for x in q.0 * 8..(q.0 + 1) * 8 {
@@ -1903,7 +1904,7 @@ pub fn build_q_with(
 /// Makes z6 tile `t`'s terrain (a piece: its levels z12 → z9, `piece_levels`) and uploads it: its hi
 /// pack (none when it made no tile: the manifest's then dropped, so no earlier run's hi tiles stay
 /// above the z8–z6 its assembly makes from the raw tiles alone) and its mid (`Mid`, `mid_logical`),
-/// which its area's assembly reads (`build_lo`). A z6 tile the coverage has left (not near it: no
+/// which its z3 tile's assembly reads (`build_lo`). A z6 tile the coverage has left (not near it: no
 /// piece) has its hi pack and mid dropped instead (`drop_piece`). `expect_same`: a piece made again
 /// as it is (its mid made), whose hi pack must come out as the manifest has it (none where it has
 /// none), else an error and nothing uploaded. Says how far it is as `build_q_with` does.
@@ -2058,7 +2059,7 @@ pub fn build_lo(
         p.count(0, 1);
         let c = out
             .get(&mid_logical(t.0, t.1))
-            .with_context(|| format!("6/{}/{} has no mid yet: its area can't be assembled", t.0, t.1))?;
+            .with_context(|| format!("6/{}/{} has no mid yet: its z3 tile can't be assembled", t.0, t.1))?;
         let (of, mid) = read_mid(&out.path(c))?;
         anyhow::ensure!(of == t, "{c} is 6/{}/{}'s mid", of.0, of.1);
         mids.push((t, mid));
@@ -2066,7 +2067,7 @@ pub fn build_lo(
     drop(p);
     let mk = Maker::new(raw, src);
     let refs: Vec<((u32, u32), &Mid)> = mids.iter().map(|(t, m)| (*t, m)).collect();
-    let p = crate::timings::phase("the area's tiles made (z8 → z3)", crate::timings::Class::Mixed);
+    let p = crate::timings::phase("the z3 tile's tiles made (z8 → z3)", crate::timings::Class::Mixed);
     let lo = saying(&mk, 1365, progress, || mk.lo(q, &refs))?;
     drop(p);
     mk.report(&mut rep);
@@ -2264,9 +2265,9 @@ pub(crate) mod tests {
         assert!(said.iter().all(|(_, d, t)| d <= t));
     }
 
-    /// The area's terrain made as it was before it was written a z6 tile at a time: every level at
+    /// The z3 tile's terrain made as it was before it was written a z6 tile at a time: every level at
     /// once, every tile held until the packs are written (the reference for the test below).
-    fn whole_area(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage) {
+    fn whole_z3(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage) {
         let mut levels: Vec<(u8, Vec<(u32, u32)>)> = Vec::new();
         for z in (9..=12u8).rev() {
             let s = 1u32 << (z - 6);
@@ -2331,11 +2332,11 @@ pub(crate) mod tests {
         out.save().unwrap();
     }
 
-    /// A small coverage in the far north and its area's raw tiles, written under `local` as a
-    /// cache keeps them: the area, its z6 tiles near the coverage, and the coverage.
+    /// A small coverage in the far north and its z3 tile's raw tiles, written under `local` as a
+    /// cache keeps them: the z3 tile, its z6 tiles near the coverage, and the coverage.
     fn north_tiles(d: &std::path::Path, local: &std::path::Path) -> ((u32, u32), Vec<(u32, u32)>, Coverage) {
         // A small coverage in the far north (z11 the finest there: fewer tiles) on two z6 tiles'
-        // edge, and its area's z6 tiles near it.
+        // edge, and its z3 tile's z6 tiles near it.
         let cov = Coverage::fixture(
             &[crate::agent::recipes::Recipe {
                 id: "r".into(),
@@ -2403,7 +2404,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_z6_tile_at_a_time_makes_what_the_whole_area_did() {
+    fn a_z6_tile_at_a_time_makes_what_the_whole_z3_tile_did() {
         let d = tempfile::tempdir().unwrap();
         let local = d.path().join("local");
         let (q, ts, cov) = north_tiles(d.path(), &local);
@@ -2418,13 +2419,13 @@ pub(crate) mod tests {
         let now = made("now", &|out| {
             build_q(out, &raw, q, ts, &cov, &Sources::default()).unwrap();
         });
-        let before = made("before", &|out| whole_area(out, &raw, q, ts, &cov));
+        let before = made("before", &|out| whole_z3(out, &raw, q, ts, &cov));
         assert_eq!(now.len(), ts.len() + 1);
         assert_eq!(now, before, "the same packs, byte for byte (their content names)");
     }
 
     /// Room-making mid-job (docs/building.md §2, store::cachefile): a terrain run whose raw tiles come
-    /// from the NAS (half loose there, half in their area's archives), while every file of its
+    /// from the NAS (half loose there, half in their z3 tile's archives), while every file of its
     /// cache no job holds is deleted as fast as it can be, makes the same packs, byte for byte, as
     /// a run left alone.
     #[test]
@@ -2437,7 +2438,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let staged = d.path().join("staged");
         let (q, ts, cov) = north_tiles(d.path(), &staged);
-        // Half the tiles loose on the NAS, the rest packed into their area's archives there.
+        // Half the tiles loose on the NAS, the rest packed into their z3 tile's archives there.
         let mut files = Vec::new();
         crate::agent::room::walk_for_test(&staged, &mut files);
         let old = std::time::SystemTime::now() - Duration::from_secs(120);
@@ -2481,7 +2482,7 @@ pub(crate) mod tests {
     }
 
     /// Two raw-tile jobs at once on one Mac (docs/pool.md §7.7, the raw tiles' group's going): two
-    /// terrain pieces of one area reading their raw tiles through one cache at the same time, while
+    /// terrain pieces of one z3 tile reading their raw tiles through one cache at the same time, while
     /// the tiles waiting there are packed onto the NAS and deleted under them (rawpack::pack_local:
     /// only tiles no job holds, only once their archive is named) and every copy of the NAS's
     /// archives no job holds is deleted as fast as it can be (as room-making takes them: a loose
@@ -2496,7 +2497,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         let staged = d.path().join("staged");
         let (_q, ts, cov) = north_tiles(d.path(), &staged);
-        // A third of the tiles loose on the NAS, a third in their area's archives there, a third
+        // A third of the tiles loose on the NAS, a third in their z3 tile's archives there, a third
         // waiting in this Mac's cache (fetched by an earlier job, not packed yet): in each run's.
         let mut files = Vec::new();
         crate::agent::room::walk_for_test(&staged, &mut files);
@@ -2669,7 +2670,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn raw_tiles_from_their_areas_archive() {
+    fn raw_tiles_from_their_shards_archive() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
         let store = root.join("sources/aws-terrarium");
@@ -2688,7 +2689,7 @@ pub(crate) mod tests {
                 .unwrap();
         }
         assert_eq!(crate::rawpack::pack_local(&other, &store, &root, true).unwrap(), 2);
-        // A fresh cache reads them from their area's archive on the NAS, a tile at a time (no loose
+        // A fresh cache reads them from their shard's archive on the NAS, a tile at a time (no loose
         // file here or there, no copy of the archive yet)...
         let local = d.path().join("local");
         let raw = RawTiles::with_store(&local, &store, crate::terrain_sources::TEST_BASE);
@@ -2705,7 +2706,7 @@ pub(crate) mod tests {
         // Another job finds the copy here.
         let again = RawTiles::with_store(&local, &store, crate::terrain_sources::TEST_BASE);
         assert_eq!(again.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
-        // A prefetch passes archived tiles over, reading none of them: however often, the area's
+        // A prefetch passes archived tiles over, reading none of them: however often, the shard's
         // archive isn't copied here (as reading its tiles that often would).
         let fresh = RawTiles::with_store(&d.path().join("fresh"), &store, crate::terrain_sources::TEST_BASE);
         for _ in 0..=RANGED / 2 {
@@ -2715,9 +2716,9 @@ pub(crate) mod tests {
         assert_eq!(fresh.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
     }
 
-    /// The area's terrain as main made it at 1fa03d8 (TERRAIN_V 3), before it was made as pieces and an
+    /// The z3 tile's terrain as main made it at 1fa03d8 (TERRAIN_V 3), before it was made as pieces and an
     /// assembly: the reference the pieces and assembly must match, byte for byte.
-    fn area_v3(
+    fn z3_v3(
         out: &mut Out,
         raw: &RawTiles,
         q: (u32, u32),
@@ -2911,7 +2912,7 @@ pub(crate) mod tests {
         Ok(rep)
     }
 
-    /// Raw tiles for the area of `ts` (z3 tile `q`): every z9–12 tile near `cov` and every z3–8 tile
+    /// Raw tiles for the z3 tile of `ts` (z3 tile `q`): every z9–12 tile near `cov` and every z3–8 tile
     /// of q; smooth slopes, every third with a spike and a pit (repairs, which the level above takes
     /// in), every seventh missing (the open sea).
     pub(crate) fn synthetic_raw(local: &std::path::Path, cov: &Coverage, q: (u32, u32), ts: &[(u32, u32)]) {
@@ -2965,12 +2966,12 @@ pub(crate) mod tests {
         vec![rect(Kind::Lake, 5, 11.0, 70.42, 11.5, 70.5), rect(Kind::Sea, 0, 10.9, 70.56, 11.6, 70.6)]
     }
 
-    /// The pieces and the assembly (each from the mids as uploaded) make what main's area run made,
+    /// The pieces and the assembly (each from the mids as uploaded) make what main's z3 tile run made,
     /// byte for byte, with GLO-30, the water (a lake across two pieces: its level the first's) and
-    /// AWS's z9 tiles for the walled patches; so does the area run made of them. A piece made again
+    /// AWS's z9 tiles for the walled patches; so does the z3 tile run made of them. A piece made again
     /// expecting the same changes nothing; one that isn't the same uploads nothing.
     #[test]
-    fn pieces_and_their_assembly_make_the_area_runs_packs() {
+    fn pieces_and_their_assembly_make_the_z3_runs_packs() {
         use crate::terrain_north::tests::FnCells;
         let d = tempfile::tempdir().unwrap();
         let local = d.path().join("local");
@@ -3002,10 +3003,10 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>()
         };
         let mut v3 = open("v3");
-        let r = area_v3(&mut v3, &raw, q, ts, &cov, &src, &|_, _, _| {}).unwrap();
+        let r = z3_v3(&mut v3, &raw, q, ts, &cov, &src, &|_, _, _| {}).unwrap();
         assert!(r.repaired > 0, "{r:?}");
-        let mut area = open("area");
-        build_q(&mut area, &raw, q, ts, &cov, &src).unwrap();
+        let mut z3run = open("z3run");
+        build_q(&mut z3run, &raw, q, ts, &cov, &src).unwrap();
         let mut parts = open("parts");
         for &t in ts {
             build_piece(&mut parts, &raw, t, &cov, &src, false, &|_, _, _| {}).unwrap();
@@ -3021,7 +3022,7 @@ pub(crate) mod tests {
         assert!(mids.iter().any(|m| !m.quads.is_empty()));
         build_lo(&mut parts, &raw, q, ts, &src, &|_, _, _| {}).unwrap();
         assert_eq!(terrain(&v3).len(), ts.len() + 1);
-        assert_eq!(terrain(&area), terrain(&v3), "the area run as pieces and an assembly in memory");
+        assert_eq!(terrain(&z3run), terrain(&v3), "the z3 tile run as pieces and an assembly in memory");
         assert_eq!(terrain(&parts), terrain(&v3), "the pieces' jobs and the assembly's");
         // A mid as written reads back bit for bit.
         let p = d.path().join("again.sect");
@@ -3143,7 +3144,7 @@ pub(crate) mod tests {
     }
 
     /// Byte identity on the build's own data, by hand on the M4 (§10): the terrain and slope
-    /// packs of the z3 tiles `P5_AREAS` ("3/2/2,3/0/2") in two roots' manifests, `P5_A` (an area's
+    /// packs of the z3 tiles `P5_AREAS` ("3/2/2,3/0/2") in two roots' manifests, `P5_A` (a z3 tile's
     /// whole run, main's) and `P5_B` (its pieces and assembly), and `P5_LIVE` (the NAS's, if set):
     /// each pack's content name, and every tile's pixels (terrain's heights, slope's quarters),
     /// those along a z6 tile's edge counted apart.
@@ -3159,13 +3160,13 @@ pub(crate) mod tests {
             roots.iter().map(|(_, r)| crate::out::read_record(&r.join("state/build/manifest.json")).unwrap()).collect();
         let mut failed = false;
         for a in env("P5_AREAS").split(',') {
-            let q = crate::legacy::Unit::parse(a).filter(|u| u.z == 3).unwrap();
+            let q = crate::legacy::TileId::parse(a).filter(|u| u.z == 3).unwrap();
             for layer in ["terrain", "slope"] {
                 let of_q = |l: &str| {
                     l.strip_prefix(&format!("layers/{layer}/")).is_some_and(|r| {
                         r == format!("lo/3-{}-{}", q.x, q.y)
                             || r.strip_prefix("hi/")
-                                .and_then(|t| crate::legacy::Unit::parse(&t.replace('-', "/")))
+                                .and_then(|t| crate::legacy::TileId::parse(&t.replace('-', "/")))
                                 .is_some_and(|u| (u.x >> 3, u.y >> 3) == (q.x, q.y))
                     })
                 };
@@ -3311,31 +3312,31 @@ pub(crate) mod tests {
                 && again.get(&mid).is_some()
         );
         assert_eq!(drop_piece(&mut out, (10, 10)).unwrap(), 0, "nothing left to drop");
-        // An area's whole run drops the same hi packs: its piece's making no hi tile, and its z6
+        // A z3 tile's whole run drops the same hi packs: its piece's making no hi tile, and its z6
         // tile's the coverage has left (that tile's mid left to its "none" piece); its other
         // pieces' it writes. Every name it changes is one its lease may (agent::steps::saves).
         let by_q = crate::agent::build::coverage_tiles(&cov);
         let ts = by_q.get(&(2, 2)).unwrap().clone();
         assert!(ts.contains(&(21, 18)) && ts.contains(&(22, 18)), "{ts:?}");
-        let local = d.path().join("area-raw");
+        let local = d.path().join("z3run-raw");
         synthetic_raw(&local, &cov, (2, 2), &ts);
         let raw = RawTiles::with_store(&local, &d.path().join("store"), crate::terrain_sources::TEST_BASE);
-        let mut area = Out::unbound(&d.path().join("area"), &d.path().join("area-scratch")).unwrap();
+        let mut z3run = Out::unbound(&d.path().join("z3run"), &d.path().join("z3run-scratch")).unwrap();
         let (ahi, alhi, almid) =
             ("layers/terrain/hi/6-21-18".to_string(), "layers/terrain/hi/6-16-17".to_string(), mid_logical(16, 17));
         for l in [&ahi, &alhi, &almid] {
-            fake(&mut area, l);
+            fake(&mut z3run, l);
         }
-        let before = area.manifest.clone();
-        build_q(&mut area, &raw, (2, 2), &ts, &cov, &src).unwrap();
+        let before = z3run.manifest.clone();
+        build_q(&mut z3run, &raw, (2, 2), &ts, &cov, &src).unwrap();
         let changed: Vec<&String> =
-            before.keys().chain(area.manifest.keys()).filter(|l| before.get(*l) != area.manifest.get(*l)).collect();
+            before.keys().chain(z3run.manifest.keys()).filter(|l| before.get(*l) != z3run.manifest.get(*l)).collect();
         assert!(changed.iter().any(|l| l.as_str() == alhi), "{changed:?}");
         for l in &changed {
-            assert!(crate::agent::steps::saves("terrain", "3/2/2", l), "{l}: outside an area run's write-set");
+            assert!(crate::agent::steps::saves("terrain", "3/2/2", l), "{l}: outside a z3 tile run's write-set");
         }
-        assert!(area.get(&ahi).is_none() && area.get(&alhi).is_none() && area.get(&almid).is_some());
-        assert!(area.get("layers/terrain/hi/6-22-18").is_some() && area.get("layers/terrain/lo/3-2-2").is_some());
+        assert!(z3run.get(&ahi).is_none() && z3run.get(&alhi).is_none() && z3run.get(&almid).is_some());
+        assert!(z3run.get("layers/terrain/hi/6-22-18").is_some() && z3run.get("layers/terrain/lo/3-2-2").is_some());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 # Sizes
 
 **Measured** (the 2026-09-28 pass): planet 95.1 GB; filtered 60.6 GB; sets 10.9 GB; outlines 2.7 GB;
-pieces ~58 GB; basemap 28.6 GB (Planetiler needs ~6× its 16.3 GB input while it runs); water 1.38 GB.
+z6 tile extracts ~58 GB; basemap 28.6 GB (Planetiler needs ~6× its 16.3 GB input while it runs); water 1.38 GB.
 
 **Estimated:**
 

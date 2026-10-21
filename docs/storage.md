@@ -13,15 +13,15 @@ sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, 
                pageviews/, dem-cache/ (per-vertex DEM seed), fetched/fabdem/, buildings/<release>/,
                trees/, canopy/, aws-terrarium/, rail/, canvec/, fetched/glo30/, terrain-z8-v3,
                inputs/<unit>/ (the input check's checked copies and accepted indexes: inputs.md §4.6)
-base/          base packs, one per unit
+base/          base packs, one per z6 tile
 hidata/        per z6 tile: ways-here index, query parts, rail lines, zoomed-out summaries
 markdata/      landmark points per z6 tile, in one bundle (all)
 ovdata/        per z3 tile: area and park details
-global/        worldwide files: road values per unit, road → units, rail frequencies, landmark
+global/        worldwide files: road values per z6 tile, road → z6 tiles, rail frequencies, landmark
                totals, heritage/, spoken
 layers/<layer>/  root, lo and hi packs, or one bundle (all); basemap/world-<date>.<hash>.pmtiles
 work/          build intermediates, not served
-cache/         what units keep for later runs, shared by both Macs: dem-units/, scenic-units/
+cache/         what z6 tiles keep for later runs, shared by both Macs: dem-units/, scenic-units/
 catalog/       <n>.json.zst (or deltas): every file the map reads, by content name
 catalog-held/  a catalog kept back for review (while inputs/hold-catalog exists)
 app/           published app versions; current.json, previous.json
@@ -38,9 +38,9 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   #449: heritage-sites' slices, hundreds of small files nearly all unchanged): there at its size, it
   is touched and taken; missing, put again; of another size, the put fails (a damaged file is
   removed by hand).
-- **Uploads beside the work** (`Out::put_file_later`): slope and terrain pieces, map tiles (`pack`)
+- **Uploads beside the work** (`Out::put_file_later`): slope and terrain z6 tiles, map tiles (`pack`)
   and the 3D buildings' tiles upload a target's files on a thread of their own while the job works
-  on its next target, and a unit its grids and base pack while it makes its road values. A file is
+  on its next target, and a z6 tile its grids and base pack while it makes its road values. A file is
   named in the manifest only once it has landed; a target is saved and noted done only after its
   uploads have (`save_upto`); at a safe point with the build pausing, the target uploading is
   landed and noted done, then the job stops. Its cost line counts its own uploads' bytes. A put,
@@ -61,7 +61,7 @@ folder's, so `std::fs::copy` or plain `cp` fail with "Permission denied".
 **Packs, never one file per tile.** SMB manages about 80 random reads per second per file.
 - **Our layers** use packs: a header and meta, the blobs (identical blobs stored once), then an index
   of (tile key, offset, length, raw length, 64-bit hash) sorted by key. Root: z0–2; lo: z3–8 per z3
-  tile; hi: z9–14 per z6 tile. Hi tiles exist only near the coverage for the layers built by area;
+  tile; hi: z9–14 per z6 tile. Hi tiles exist only near the coverage for the layers built per z6 tile;
   worldwide layers (labels, water) have them wherever they have tiles.
 - **Bundles** (docs/formats.md): a small layer one job makes whole (each landmark kind's thinned
   tiles, each area overlay) is one pack of every tile, `layers/<layer>/all`, which the catalog names

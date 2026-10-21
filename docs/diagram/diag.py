@@ -8,7 +8,7 @@ W = 1484
 COLS = {'src': (16, 180), 'd1': (224, 196), 'd2': (448, 196), 'd3': (672, 196), 'd4': (896, 196),
         'srv': (1114, 154), 'brw': (1288, 180)}
 CLASSES = ['base', 'place', 'terr', 'net', 'scen', 'land', 'bldg', 'osm', 'mix']
-TAB = {'area': 'PER Z6 TILE', 'pack': 'PER Z3 AREA', 'global': 'WORLDWIDE', 'task': 'TASK'}
+TAB = {'z6': 'PER Z6 TILE', 'z3': 'PER Z3 TILE', 'global': 'WORLDWIDE', 'task': 'TASK'}
 # Before a step's language: members may take its jobs (agent::steps::SHARED).
 SHARED = '⇄'
 # How reproducible a curated input is today: its method written down, or partly.
@@ -104,7 +104,7 @@ class Diagram:
     def card(self, k, col, y, title, tool, subs, groups, kept=None, minh=0, scope=None, shared=False, task=False, fig=None):
         """A build step (tinted header: name, language, what it does) over the files it writes
         (body: names, then format and size); scope: a tab saying how it's divided; shared: any member of the pool may take its jobs (⇄ before the
-        language); task: a second tab, the step is part of an area's last steps, which any worker
+        language); task: a second tab, the step is part of a z6 tile's last steps, which any worker
         may run as a task (a device's page too); fig: its time and memory, from docs/phase-times.md or
         the steps table (`agent::steps`), said as measured or a first guess. Texts wrap to the card's width."""
         x, w = COLS[col]
@@ -334,8 +334,8 @@ svg .card-sep{stroke:color-mix(in srgb,var(--k) 45%,var(--surface));stroke-width
 svg .card-ol{fill:none;stroke:var(--k);stroke-width:1.2}
 svg .tab{fill:color-mix(in srgb,var(--k) 17%,var(--surface));stroke:var(--k);stroke-width:1}
 svg .tab-t{font:600 9px var(--sans);letter-spacing:.08em;fill:var(--muted)}
-svg .tab.pack{fill:color-mix(in srgb,var(--k) 55%,var(--surface))}
-svg .tab.pack+.tab-t{fill:var(--fg)}
+svg .tab.z3{fill:color-mix(in srgb,var(--k) 55%,var(--surface))}
+svg .tab.z3+.tab-t{fill:var(--fg)}
 svg .tab.global{fill:var(--k)}
 svg .tab.global+.tab-t{fill:var(--surface)}
 svg .tab.task{fill:var(--surface)}

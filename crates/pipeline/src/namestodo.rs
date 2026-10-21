@@ -524,7 +524,7 @@ fn roads(
     let n = cat.base.len() as u64;
     for (i, (unit, logical)) in cat.base.iter().enumerate() {
         progress("units' ways read", i as u64, n);
-        let (Some(path), Some(u)) = (path_of(root, cat, logical), crate::legacy::Unit::parse(unit)) else { continue };
+        let (Some(path), Some(u)) = (path_of(root, cat, logical), crate::legacy::TileId::parse(unit)) else { continue };
         let s = sect(&path)?;
         let ways: Vec<WayRec> = s.read_pod("ways")?;
         let strings: Vec<String> =
@@ -652,7 +652,7 @@ fn landmarks(
     }
     for (i, (tile, logical)) in cat.markdata.iter().enumerate() {
         progress("landmark tiles read", i as u64, n);
-        let Some(t) = crate::legacy::Unit::parse(tile).map(|u| (u.x, u.y)) else { continue };
+        let Some(t) = crate::legacy::TileId::parse(tile).map(|u| (u.x, u.y)) else { continue };
         let Some(s) = files.get(logical.as_str()).and_then(|f| f.get(&t)) else { continue };
         let pts: Vec<crate::marks::MarkPt> = s.read_pod("pts")?;
         let blocks = |name: &str, idx: &str| -> Result<Vec<Vec<u8>>> {

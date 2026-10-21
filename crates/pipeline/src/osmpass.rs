@@ -7,7 +7,7 @@
 
 use crate::chain::{self, Interner, Link, RoadVal};
 use crate::hipack::{grow, tile_bounds};
-use crate::legacy::Unit;
+use crate::legacy::TileId;
 use crate::out::Out;
 use anyhow::{bail, ensure, Context, Result};
 use rayon::prelude::*;
@@ -329,13 +329,13 @@ fn filtered_nas(out: &Out, date: &str) -> Result<PathBuf> {
 /// subtree is done.
 fn cut_tree(
     input: &Path,
-    t: Unit,
+    t: TileId,
     consume: bool,
     work: &Path,
-    each: &mut dyn FnMut(Unit, &Path) -> Result<()>,
+    each: &mut dyn FnMut(TileId, &Path) -> Result<()>,
 ) -> Result<()> {
-    let kids: Vec<Unit> =
-        (0..2u32).flat_map(|i| (0..2u32).map(move |j| Unit { z: t.z + 1, x: t.x * 2 + i, y: t.y * 2 + j })).collect();
+    let kids: Vec<TileId> =
+        (0..2u32).flat_map(|i| (0..2u32).map(move |j| TileId { z: t.z + 1, x: t.x * 2 + i, y: t.y * 2 + j })).collect();
     let dir = work.join(format!("z{}", t.z + 1));
     let marker = work.join(format!("{}.cut", t.dash()));
     if !marker.exists() {
@@ -370,7 +370,7 @@ fn cut_tree(
 }
 
 /// An osmium extract config: one bbox per tile (grown by the buffer) → `dir/<z-x-y>.osm.pbf`.
-fn extract_config(tiles: &[Unit], dir: &Path) -> serde_json::Value {
+fn extract_config(tiles: &[TileId], dir: &Path) -> serde_json::Value {
     let ex: Vec<serde_json::Value> = tiles
         .iter()
         .map(|u| {
@@ -383,7 +383,7 @@ fn extract_config(tiles: &[Unit], dir: &Path) -> serde_json::Value {
 }
 
 /// Cut `input` into one piece per tile, in batches (osmium keeps an id set per output).
-fn cut(input: &Path, tiles: &[Unit], dir: &Path, batch: usize) -> Result<()> {
+fn cut(input: &Path, tiles: &[TileId], dir: &Path, batch: usize) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     for (i, chunk) in tiles.chunks(batch).enumerate() {
         let cfg = dir.join(format!("extract-{i}.json"));
@@ -461,7 +461,7 @@ impl UnitLinks {
 
 /// Run `extract` on a piece and work out its unit's chaining inputs.
 /// `spacing`: the declared datasets' spacing file (crate::dem::spacing), as the units' extract has it.
-pub fn unit_links(extract: &Path, spacing: &Path, piece: &Path, unit: Unit, work: &Path) -> Result<UnitLinks> {
+pub fn unit_links(extract: &Path, spacing: &Path, piece: &Path, unit: TileId, work: &Path) -> Result<UnitLinks> {
     std::fs::create_dir_all(work)?;
     let mut c = store::spawn::command(extract);
     c.arg(work).arg(spacing).arg(piece);
@@ -566,8 +566,8 @@ const PARTS: [&str; 9] = [
     "Making the worldwide sets (osmium)",
     "Filtering the basemap's input (osmium)",
     "Drawing the worldwide basemap (Planetiler)",
-    "Cutting the planet into areas",
-    "Reading the areas' road links",
+    "Cutting the planet into z6 tiles",
+    "Reading the z6 tiles' road links",
     "Walking the world's roads and writing their values",
 ];
 
@@ -839,10 +839,10 @@ pub fn run_pass(
             .filter_map(|(_, c)| std::fs::metadata(out.path(c)).ok())
             .map(|m| m.len() >> 20)
             .sum();
-        part(6, "the planet cut into areas");
-        let cut_report = |mb: u64| report(mb.min(total_mb.saturating_sub(1)), total_mb, "MB cut into areas");
+        part(6, "the planet cut into z6 tiles");
+        let cut_report = |mb: u64| report(mb.min(total_mb.saturating_sub(1)), total_mb, "MB cut into z6 tiles");
         cut_report(done_mb);
-        cut_tree(&src, Unit { z: 0, x: 0, y: 0 }, local, &tree, &mut |u, f| {
+        cut_tree(&src, TileId { z: 0, x: 0, y: 0 }, local, &tree, &mut |u, f| {
             let logical = format!("sources/osm/{date}/pieces/{}", u.dash());
             if out.get(&logical).is_none() {
                 let mb = std::fs::metadata(f).map(|m| m.len() >> 20).unwrap_or(0);
@@ -864,7 +864,7 @@ pub fn run_pass(
         let mut pieces = Pieces { date: date.to_string(), ..Default::default() };
         let prefix = format!("sources/osm/{date}/pieces/");
         for k in out.manifest.keys().filter(|k| k.starts_with(&prefix)) {
-            if let Some(u) = Unit::parse(&k[prefix.len()..]) {
+            if let Some(u) = TileId::parse(&k[prefix.len()..]) {
                 pieces.pieces.insert(u.slash(), k.clone());
             }
         }
@@ -881,12 +881,12 @@ pub fn run_pass(
     if !done(scratch, "roads").exists() {
         // Every unit's chaining inputs (kept by the cut, else worked out from its piece), then the
         // worldwide walk; values sliced by owner unit.
-        let mut all: Vec<(Unit, UnitLinks)> = Vec::new();
+        let mut all: Vec<(TileId, UnitLinks)> = Vec::new();
         let n = pieces.pieces.len() as u64;
-        part(7, "areas' road links read");
+        part(7, "z6 tiles' road links read");
         for (k, (u, _)) in pieces.pieces.iter().enumerate() {
-            report(k as u64, n, "areas' road links read");
-            let unit = Unit::parse(u).context("unit")?;
+            report(k as u64, n, "z6 tiles' road links read");
+            let unit = TileId::parse(u).context("unit")?;
             let lf = links.join(format!("{}.bin", unit.dash()));
             let ul = match UnitLinks::load(&lf) {
                 Ok(ul) => ul,
@@ -898,15 +898,15 @@ pub fn run_pass(
             };
             all.push((unit, ul));
         }
-        report(n, n, "areas' road links read");
-        let (units, mut lists): (Vec<Unit>, Vec<UnitLinks>) = all.into_iter().unzip();
+        report(n, n, "z6 tiles' road links read");
+        let (units, mut lists): (Vec<TileId>, Vec<UnitLinks>) = all.into_iter().unzip();
         part(8, "the roads walked");
         let p = crate::timings::sub("walked", crate::timings::Class::Compute);
         let (ways, vals) = walk_all(&mut lists);
         drop(p);
         let _p = crate::timings::sub("their values uploaded", crate::timings::Class::NasWrite);
         for (k, (unit, ul)) in units.iter().zip(&lists).enumerate() {
-            report(k as u64, n, "areas' road values written");
+            report(k as u64, n, "z6 tiles' road values written");
             let mut recs: Vec<u8> = Vec::with_capacity(ul.ways.len() * 32);
             let mut ids: Vec<u64> = ul.ways.iter().map(|w| w.0).collect();
             ids.sort_unstable();
@@ -926,7 +926,7 @@ pub fn run_pass(
             }
             out.put_bytes(&format!("sources/osm/{date}/roads/{}", unit.dash()), "bin", &recs)?;
         }
-        report(n, n, "areas' road values written");
+        report(n, n, "z6 tiles' road values written");
         out.save()?;
         mark(scratch, "roads")?;
     }
@@ -1076,18 +1076,23 @@ pub fn newer_planet(root: &Path, have: Option<&str>) -> Result<Option<(PathBuf, 
 /// and the ways they gained. The records are saved once, at the end: a piece changed goes stale the
 /// roads' reach, and with it the units' planning on both Macs, so saving each as it changed would
 /// hold the units up for the whole run (a run stopped part way saves none, and is run again).
-pub fn patch_ferries(out: &mut Out, date: &str, scratch: &Path, only: &dyn Fn(Unit) -> bool) -> Result<(usize, usize)> {
+pub fn patch_ferries(
+    out: &mut Out,
+    date: &str,
+    scratch: &Path,
+    only: &dyn Fn(TileId) -> bool,
+) -> Result<(usize, usize)> {
     let set = out.path(out.get(&set_name(date, "ferries")).context("the pass's ferries set")?);
     let work = scratch.join("patch-ferries");
     std::fs::create_dir_all(&work)?;
     let local_set = work.join("ferries.osm.pbf");
     store::sys::copy_data(&set, &local_set)?;
     let prefix = format!("sources/osm/{date}/pieces/");
-    let pieces: Vec<(Unit, String, String)> = out
+    let pieces: Vec<(TileId, String, String)> = out
         .manifest
         .range(prefix.clone()..)
         .take_while(|(l, _)| l.starts_with(&prefix))
-        .filter_map(|(l, c)| Some((Unit::parse(&l[prefix.len()..])?, l.clone(), c.clone())))
+        .filter_map(|(l, c)| Some((TileId::parse(&l[prefix.len()..])?, l.clone(), c.clone())))
         .filter(|(u, _, _)| only(*u))
         .collect();
     let (mut changed, mut gained) = (0, 0);

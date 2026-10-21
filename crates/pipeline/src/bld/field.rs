@@ -12,10 +12,10 @@
 //! Densities, so a coarser level is the mean of its four children. Every level holds every building
 //! (the meshes are z14's alone, from map zoom 14); level 14 is drawn from zoom 13 to 14.
 //!
-//! - **`bldtiles T`** makes a z8 area's levels 14–9 and its level-8 planes ([`area`]) from the same records as its meshes
-//!   (filled, `job::area_tiles`): every building and part extruded (not an outline with parts, not a
-//!   copy), the area's own and those around it reaching in, each rasterized into the z13 cells of the
-//!   area it meets at level 14, in fixed point (i64: the sums don't depend on their order), the cells'
+//! - **`bldtiles T`** makes a z8 tile's levels 14–9 and its level-8 planes ([`z8 tile`]) from the same records as its meshes
+//!   (filled, `job::z8_tiles`): every building and part extruded (not an outline with parts, not a
+//!   copy), the z8 tile's own and those around it reaching in, each rasterized into the z13 cells of the
+//!   z8 tile it meets at level 14, in fixed point (i64: the sums don't depend on their order), the cells'
 //!   level 13 from their level 14, then levels 12–8 by means of four in a fixed order. The level-8
 //!   planes are kept exactly ([`write_mid`]: `work/bldfield-mid/6-x-y`).
 //! - **`bldfield-lo Q`** (a z3 tile) makes levels 8–4 from its z6 tiles' mids ([`lo`]): the lo packs
@@ -27,11 +27,11 @@
 //!   and G the offset from the texel's centre to its buildings' centroid (their mean, by coverage) in
 //!   the level's texels + 128, within ±127, B 0 (128, 128 where √f rounds to 0). A class whose `f` and `w` both round to 0 everywhere
 //!   is left out; a tile with none isn't written. A level-8 tile (a z8
-//!   area) may carry its heritage list after the WebP ([`heritage`]: of T's heritage sites as the
+//!   z8 tile) may carry its heritage list after the WebP ([`heritage`]: of T's heritage sites as the
 //!   heritage chain slices them, its World Heritage components left out, `job::sites`).
 
 use super::world7;
-use anyhow::{ensure, Context, Result};
+use anyhow::{ensure, Result};
 use det::Det;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
@@ -45,7 +45,7 @@ pub const CLASS_TOP_DM: [u16; 4] = [80, 200, 400, 1000];
 /// Each class's range of mean tops (m), as the encoding codes them.
 pub const LO_M: [f64; K] = [0.0, 8.0, 20.0, 40.0, 100.0];
 pub const HI_M: [f64; K] = [8.0, 20.0, 40.0, 100.0, 1000.0];
-/// The finest level, and the hi packs' coarsest (a z8 area's), and the lo packs' coarsest.
+/// The finest level, and the hi packs' coarsest (a z8 tile's), and the lo packs' coarsest.
 pub const LEVEL_MAX: u8 = 14;
 pub const LEVEL_HI_MIN: u8 = 9;
 pub const LEVEL_MIN: u8 = 4;
@@ -57,7 +57,7 @@ pub const ENCODING: &str = "field5-webp";
 pub const LO_V: u32 = 1;
 /// A tile's planes, every class (MB).
 const PLANES_MB: u64 = ((K * 3 * T * T * 4) >> 20) as u64;
-/// What `bldfield-lo` holds at most (MB): one z6 tile's mid at a time, its 16 areas' planes both
+/// What `bldfield-lo` holds at most (MB): one z6 tile's mid at a time, its 16 z8 tiles' planes both
 /// decompressed and read (`read_mid`), the four level-7 tiles and the parent, the levels above's
 /// four children each (levels 4 and 5), and 256 MB for the program.
 pub const LO_PEAK_MB: u64 = 256 + 16 * PLANES_MB * 2 + (5 + 4 * 2) * PLANES_MB;
@@ -68,7 +68,7 @@ const SV: f64 = (1u64 << 24) as f64;
 const SW: f64 = (1u64 << 16) as f64;
 /// Coverage × a centroid's coordinate (texels).
 const SG: f64 = (1u64 << 20) as f64;
-/// Level-14 texels a z13 cell side, and z13 cells an area side.
+/// Level-14 texels a z13 cell side, and z13 cells a z8 tile side.
 const N: usize = 1024;
 const STRIDE: usize = N + 2;
 const CELLS: u32 = 32;
@@ -467,15 +467,15 @@ fn cell(feet: &[Foot], list: &[u32], cx: u32, cy: u32) -> Planes {
     out
 }
 
-/// What an area's field made: its tiles, levels 14–8 ((level, x, y, `field5-webp` bytes), in that
+/// What a z8 tile's field made: its tiles, levels 14–8 ((level, x, y, `field5-webp` bytes), in that
 /// order, each level by x, y), and its level-8 planes (the mid's; None: no building).
 #[derive(Debug, Default, PartialEq)]
-pub struct AreaField {
+pub struct Z8Field {
     pub tiles: Vec<(u8, u32, u32, Vec<u8>)>,
     pub mid: Option<Mid>,
 }
 
-/// An area's level-8 planes and its heritage list ([`heritage`]): what its mid keeps, and what
+/// A z8 tile's level-8 planes and its heritage list ([`heritage`]): what its mid keeps, and what
 /// `bldfield-lo` makes its level-8 tile of.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Mid {
@@ -485,8 +485,8 @@ pub struct Mid {
 
 /// Area `a`'s field (a z8 tile) from the footprints meeting it (any order: the sums are integers),
 /// its level-8 tile carrying the heritage list `her` ([`heritage`]).
-pub fn area(a: (u32, u32), feet: &[Foot], her: &[u8]) -> AreaField {
-    // The footprints by the area's z13 cells their boxes meet.
+pub fn z8(a: (u32, u32), feet: &[Foot], her: &[u8]) -> Z8Field {
+    // The footprints by the z8 tile's z13 cells their boxes meet.
     let (ax, ay) = (a.0 as f64 * CELLS as f64 * N as f64, a.1 as f64 * CELLS as f64 * N as f64);
     let mut lists: Vec<Vec<u32>> = vec![Vec::new(); (CELLS * CELLS) as usize];
     for (fi, ft) in feet.iter().enumerate() {
@@ -576,7 +576,7 @@ pub fn area(a: (u32, u32), feet: &[Foot], her: &[u8]) -> AreaField {
             up(9, bx, by, kids)
         })
         .collect();
-    // (Level 8 a z8 area's own tile: the lo packs', made by `lo` from the mid.)
+    // (Level 8 a z8 tile's own tile: the lo packs', made by `lo` from the mid.)
     let mut tiles = Vec::new();
     let mut planes: Vec<Option<Planes>> = Vec::with_capacity(4);
     for (t, p) in z9 {
@@ -586,7 +586,7 @@ pub fn area(a: (u32, u32), feet: &[Foot], her: &[u8]) -> AreaField {
     let mid = Planes::parent([planes[0].as_ref(), planes[1].as_ref(), planes[2].as_ref(), planes[3].as_ref()])
         .map(|planes| Mid { planes, heritage: her.to_vec() });
     tiles.sort_by(|p, q| q.0.cmp(&p.0).then((p.1, p.2).cmp(&(q.1, q.2))));
-    AreaField { tiles, mid }
+    Z8Field { tiles, mid }
 }
 
 /// A level's tile (`z`, `x`, `y`) from its four children's (nw, ne, sw, se: their tiles and planes):
@@ -821,12 +821,12 @@ pub fn heritage(a: (u32, u32), feet: &[Foot], sites: &[[i32; 2]]) -> Vec<u8> {
 
 const MID_MAGIC: &[u8; 8] = b"BFMID03\0";
 
-/// A z6 tile's mid: its areas' level-8 planes, exactly, and their heritage lists (magic, then each
-/// area by (x, y): u32 x, u32 y, u32 the heritage list's bytes and those bytes, u8 class mask,
+/// A z6 tile's mid: its z8 tiles' level-8 planes, exactly, and their heritage lists (magic, then each
+/// z8 tile by (x, y): u32 x, u32 y, u32 the heritage list's bytes and those bytes, u8 class mask,
 /// each class's f, w, v as 512 × 512 f32 LE), zstd'd.
-pub fn write_mid(areas: &BTreeMap<(u32, u32), Mid>) -> Result<Vec<u8>> {
+pub fn write_mid(z8s: &BTreeMap<(u32, u32), Mid>) -> Result<Vec<u8>> {
     let mut raw = MID_MAGIC.to_vec();
-    for (&(x, y), m) in areas {
+    for (&(x, y), m) in z8s {
         let p = &m.planes;
         ensure!(p.n == T, "a mid's planes are a tile's");
         raw.extend_from_slice(&x.to_le_bytes());
@@ -880,7 +880,7 @@ pub fn read_mid(b: &[u8]) -> Result<BTreeMap<(u32, u32), Mid>> {
 }
 
 /// The lo levels (8–4) of z3 tile `q`, from its z6 tiles' mids (`mid(x, y)`: None where there's
-/// none; level 8 each area's planes, its heritage list after them): (level, x, y, `field5-webp`),
+/// none; level 8 each z8 tile's planes, its heritage list after them): (level, x, y, `field5-webp`),
 /// by level from 8, then x, y.
 pub fn lo(
     q: (u32, u32),
@@ -890,10 +890,10 @@ pub fn lo(
     fn node(z: u8, x: u32, y: u32, mid: &(dyn Fn(u32, u32) -> Result<Option<Vec<u8>>> + Sync)) -> Result<Out> {
         if z == 6 {
             let Some(b) = mid(x, y)? else { return Ok((Vec::new(), None)) };
-            let areas = read_mid(&b)?;
-            let get = |ax: u32, ay: u32| areas.get(&(ax, ay)).map(|m| &m.planes);
+            let z8s = read_mid(&b)?;
+            let get = |ax: u32, ay: u32| z8s.get(&(ax, ay)).map(|m| &m.planes);
             let mut tiles = Vec::new();
-            for (&(ax, ay), m) in &areas {
+            for (&(ax, ay), m) in &z8s {
                 if let Some(b) = encode(&m.planes, ALL_CLASSES, &m.heritage) {
                     tiles.push((8, ax, ay, b));
                 }

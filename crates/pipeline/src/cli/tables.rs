@@ -106,7 +106,7 @@ pub const SCENIC_BUILD: Table = Table {
         c("bldfield-lo", "<Q …>", "z3 tiles Q's zoomed-out buildings field", &[], &[], ANY),
         c("depth-lo", "<Q …>", "z3 tiles Q's zoomed-out depth (lo packs, z3–8) from the declared depth sources", &[], &[], ANY),
         c("depth", "<T …>", "z6 tiles T's depth (hi packs, z9–16) where a depth source is finer than z8", &[], &[], ANY),
-        c("bldtile-task", "<8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]", "a z8 area's task folder as a bldtiles job cuts it", &[], &["--out", "--pass", "--regions"], 1),
+        c("bldtile-task", "<8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]", "a z8 tile's task folder as a bldtiles job cuts it", &[], &["--out", "--pass", "--regions"], 1),
         c("trees", "<T …> [--pass d] [--regions dir] [--dem dir] [--chm dir] [--expect-same T,…]", "the tree cover layers, clipped to the coverage: of z6 tiles T, or a z3 tile's whole", &[], &["--pass", "--regions", "--dem", "--chm", "--expect-same"], ANY),
         c("trees-lo", "<Q …> [--pass d] [--regions dir]", "z3 tiles Q's zoomed-out tree cover (lo packs) from their pieces' mids", &[], PASS_REGIONS, ANY),
         c("trees-coverage", "<Q> --out <file> [--pass d] [--regions dir]", "the coverage the trees program reads for z3 tile Q; nothing written to the NAS", &[], &["--out", "--pass", "--regions"], 1),

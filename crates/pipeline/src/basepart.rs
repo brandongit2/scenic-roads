@@ -1,4 +1,4 @@
-//! A base pack (and its road values) read only where some areas need it (Task #396): what a pack
+//! A base pack (and its road values) read only where some tiles need it (Task #396): what a pack
 //! or lo job takes of a neighbour's base pack is the few ways reaching its tiles, so it reads those
 //! byte ranges from the NAS rather than copying the whole file.
 //!
@@ -6,10 +6,10 @@
 //! order of their first vertex, docs/formats.md "Base pack", so a chunk's ways lie together), each
 //! with the box of its ways' boxes and where its samples start: the pack's *way index*, kept on
 //! this Mac by content name (`index_path`, a few kB) once worked out from its `ways`, `verts` and
-//! `samples`. The chunks whose box meets an area are read: their ways' records, vertices and
+//! `samples`. The chunks whose box meets a wanted box are read: their ways' records, vertices and
 //! per-vertex values, samples, and road values; the small sections (`strings`, `rail`, `sub9`)
 //! whole; nothing of the sections pack and lo don't read (`raw`, `src`). Every way whose box meets
-//! an area is in such a chunk, so what the job makes is what it made from the whole file.
+//! a wanted box is in such a chunk, so what the job makes is what it made from the whole file.
 //!
 //! The ranges are copied into a sparse local file the size of the original, at their own offsets,
 //! then mapped as a whole file is (crate::basepack::Sect::open_only, only the sections read named):
@@ -39,7 +39,7 @@ const READ: usize = 8 << 20;
 /// Reads of one file at once.
 const READERS: usize = 4;
 const MAGIC: &[u8; 8] = b"WAYIDX02";
-/// The box of nothing (meets no area).
+/// The box of nothing (meets no wanted box).
 const EMPTY: Bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
 
 /// The sections read only where the chunks are, by vertex.
@@ -307,16 +307,16 @@ fn layout(c: &mut Copy) -> Result<Layout> {
 }
 
 /// Base pack `base` and road values `roads` (files, on the NAS or anywhere), read where chunks
-/// meeting `areas` are (every chunk: None), copied into local files `to` (sparse) and opened. Its
+/// meeting `boxes` are (every chunk: None), copied into local files `to` (sparse) and opened. Its
 /// way index is read from, or kept in, `index` (`index_path`). What was read of the two files.
 pub fn open(
     base: &Path,
     roads: &Path,
     index: &Path,
     to: [&Path; 2],
-    areas: Option<&[Bounds]>,
+    boxes: Option<&[Bounds]>,
 ) -> Result<(BasePack, Read)> {
-    open_watched(base, roads, index, to, areas, STALL)
+    open_watched(base, roads, index, to, boxes, STALL)
 }
 
 /// `open`, its NAS reads given up after `stall` without a byte (`watched`).
@@ -325,7 +325,7 @@ pub fn open_watched(
     roads: &Path,
     index: &Path,
     to: [&Path; 2],
-    areas: Option<&[Bounds]>,
+    boxes: Option<&[Bounds]>,
     stall: Duration,
 ) -> Result<(BasePack, Read)> {
     let [bdst, rdst] = to;
@@ -377,10 +377,10 @@ pub fn open_watched(
         }
     };
     ensure!(ix.samples.last().copied() == Some(nsamples) || chunks == 0, "the way index's samples out of step");
-    // (The chunks meeting the areas, as spans of chunks, neighbours together.)
+    // (The chunks meeting the boxes, as spans of chunks, neighbours together.)
     let mut spans: Vec<std::ops::Range<usize>> = Vec::new();
     for (i, b) in ix.boxes.iter().enumerate() {
-        if !areas.is_none_or(|a| a.iter().any(|a| meets(*b, *a))) {
+        if !boxes.is_none_or(|a| a.iter().any(|a| meets(*b, *a))) {
             continue;
         }
         match spans.last_mut() {
