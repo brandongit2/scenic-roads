@@ -93,6 +93,17 @@ class EvenOddTest(unittest.TestCase):
         self.assertFalse(cov.meets(10.1 + 2 * KM, 45.0, 10.2, 45.05))
         self.assertFalse(EvenOdd([([square(10.0, 45.0, 0.1)], 0.0)]).meets(10.1 + 0.5 * KM, 45.0, 10.2, 45.05))
 
+    def test_the_buffer_reaches_a_corner_as_rusts_rectangle(self):
+        # Rust grows the box by a rectangle: 0.0075° diagonally off the NE corner of a unit square
+        # (about 1.06 km at 0°, beyond a round 1000 m) still meets it.
+        cov = EvenOdd([([square(0.0, 0.0, 1.0)], 1000.0)])
+        self.assertTrue(cov.meets(1.0075, 1.0075, 1.1, 1.1))
+        self.assertFalse(cov.meets(1.01, 1.01, 1.1, 1.1))
+
+    def test_a_grown_box_across_the_antimeridian(self):
+        cov = EvenOdd([([square(179.9, 10.0, 0.0999)], 1000.0)])
+        self.assertTrue(cov.meets(-180.0, 10.0, -179.9, 10.05))
+
     def test_a_box_past_the_pole_meets_only_what_it_covers(self):
         # (The catalogue has boxes past ±90°: with no margin, not every longitude.)
         cov = EvenOdd([([square(3.0, 49.0, 0.5)], 0.0)])
