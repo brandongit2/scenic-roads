@@ -2207,7 +2207,7 @@ mod tests {
                 })
                 .collect(),
         });
-        crate::terrain_sources::Declared { base: base.into(), north, pin: "p".into() }
+        crate::terrain_sources::Declared { base: base.into(), north, pin: "p".into(), fine: None }
     }
 
     #[test]
@@ -2266,7 +2266,10 @@ mod tests {
         ma.insert(ev.clone(), "elevation-index".into());
         let at = |pin: &str, as_before: bool| {
             let (_, mut t) = with_water(&m, Some(A), &[&wa]);
-            t.hold_terrain("elevation-index", crate::agent::tiles::TerrainPin { pin: pin.into(), as_before });
+            t.hold_terrain(
+                "elevation-index",
+                crate::agent::tiles::TerrainPin { pin: pin.into(), as_before, fine: Vec::new() },
+            );
             t
         };
         // The terrain made by an older app: its z6 tiles' keys name the sources as the code had them.

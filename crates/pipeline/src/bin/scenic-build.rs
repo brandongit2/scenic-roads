@@ -1805,6 +1805,7 @@ fn catalog(
                 let zs = match *scope {
                     "root" => (0, 2),
                     "lo" => (3, 8),
+                    "fine" => (pipeline::terrain_fine::PACK_Z + 3, pipeline::terrain_fine::MAX_Z),
                     _ => (9, 14),
                 };
                 layers.entry(layer.to_string()).or_insert_with(|| LayerOut::new(enc)).add(
@@ -1841,6 +1842,12 @@ fn catalog(
         if let Some(zs) = layer_zooms(l) {
             (x.minzoom, x.maxzoom) = zs;
         }
+    }
+    // (The terrain to the finest zoom its fine datasets make, where it has fine packs:
+    // pipeline::terrain_fine.)
+    if let Some(x) = layers.get_mut("terrain").filter(|x| !x.fine.is_empty()) {
+        let d = pipeline::terrain_sources::read(out)?;
+        x.maxzoom = pipeline::terrain_fine::max_zoom(d.fine.as_ref().map_or(&[][..], |f| &f.sets));
     }
     global.extend(worldwide_globals(&out.manifest));
     drop(p);

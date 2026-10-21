@@ -444,6 +444,7 @@ impl Inputs {
             north: self.meta.north.then_some(self as &dyn Cells),
             water: self.meta.water.then_some(self as &dyn WaterSource),
             coarse: self.meta.coarse.then_some(&coarse),
+            fine: None,
         };
         crate::terrain_pack::make_piece(self, &src, self.meta.levels.clone())
     }
@@ -896,7 +897,7 @@ mod tests {
         let water = Across { a, b };
         let cells = cells();
         let coarse = Coarse::new(&raw);
-        let src = Sources { north: Some(&cells), water: Some(&water), coarse: Some(&coarse) };
+        let src = Sources { north: Some(&cells), water: Some(&water), coarse: Some(&coarse), fine: None };
         let gs = groups(&levels, Some(&water)).unwrap();
         assert_eq!(gs.len(), subs.len() - 1, "the lake's two subtrees in one group");
         let joint = gs.iter().find(|g| g.contains(&a)).unwrap();
@@ -1073,7 +1074,7 @@ mod tests {
         let water = Across { a, b };
         let cells = cells();
         let coarse = Coarse::new(&raw);
-        let src = Sources { north: Some(&cells), water: Some(&water), coarse: Some(&coarse) };
+        let src = Sources { north: Some(&cells), water: Some(&water), coarse: Some(&coarse), fine: None };
         let alone = piece(p, "alone", t, &cov, &raw, &src, None);
         assert!(alone.0.is_some() && alone.1.is_some());
         let (c, port) = crate::coord::start_for_test(&p.join("coord"), "m4", "");

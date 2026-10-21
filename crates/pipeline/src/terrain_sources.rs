@@ -19,6 +19,9 @@ pub struct Declared {
     pub north: Option<North>,
     /// What the terrain's keys name (`pin`).
     pub pin: String,
+    /// The roads' datasets finer than the terrain's, which make it finer where they have data
+    /// (crate::terrain_fine); None when none is.
+    pub fine: Option<crate::terrain_fine::Fine>,
 }
 
 /// A GeoTIFF dataset of 1° tiles, by its tile index.
@@ -71,6 +74,7 @@ pub fn of(a: &crate::inputs::Accepted) -> Result<Declared> {
         base: base.context("no tile pyramid is declared for the terrain (`terrain = true`, docs/inputs.md §6.8)")?,
         north,
         pin: pin(&ds),
+        fine: crate::terrain_fine::Fine::of(a, &ds)?,
     })
 }
 

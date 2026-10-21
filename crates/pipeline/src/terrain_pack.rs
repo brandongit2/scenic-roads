@@ -56,6 +56,9 @@ pub struct Sources<'a> {
     pub north: Option<&'a dyn crate::terrain_north::Cells>,
     pub water: Option<&'a dyn crate::terrain_water::WaterSource>,
     pub coarse: Option<&'a Coarse<'a>>,
+    /// The datasets finer than the base (crate::terrain_fine): a z6 tile's run makes its fine packs
+    /// from them after its hi pack.
+    pub fine: Option<&'a crate::terrain_fine::Fine>,
 }
 
 /// The basemap the terrain's water comes from: the latest pass's (`layers/basemap/world-<date>`),
@@ -125,6 +128,7 @@ impl SourceFiles {
             north: self.north.as_ref().map(|n| n as &dyn crate::terrain_north::Cells),
             water: Some(&self.water),
             coarse,
+            fine: self.declared.fine.as_ref(),
         }
     }
 }
@@ -1756,10 +1760,12 @@ pub fn makes_hi(cov: &Coverage, t: (u32, u32)) -> bool {
     piece_levels(cov, t).iter().any(|(_, ts)| !ts.is_empty())
 }
 
-/// Drops z6 tile `t`'s terrain hi pack and mid from the manifest (a z6 tile the coverage has left:
+/// Drops z6 tile `t`'s terrain hi pack, fine packs and mid from the manifest (a z6 tile the coverage has left:
 /// docs/regions.md, Shrinking), saving it; how many it had.
 pub fn drop_piece(out: &mut Out, t: (u32, u32)) -> anyhow::Result<usize> {
-    let n = drop_named(out, &[format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1)]);
+    let mut gone = vec![format!("layers/terrain/hi/6-{}-{}", t.0, t.1), mid_logical(t.0, t.1)];
+    gone.extend(crate::terrain_fine::named_under(&out.manifest, t));
+    let n = drop_named(out, &gone);
     out.save()?;
     Ok(n)
 }
@@ -1857,6 +1863,7 @@ pub fn build_q_with(
         for (&t, levels) in ts.iter().zip(mine) {
             let (hi, mid) = mk.piece(levels, true)?;
             rep.hi_tiles += hi.len();
+            let base = src.fine.is_some().then(|| hi.clone());
             let mut it = hi.into_iter().map(|(z, x, y, b)| {
                 let n = b.len() as u32;
                 (z, x, y, b, n)
@@ -1867,6 +1874,9 @@ pub fn build_q_with(
             {
                 drop_named(out, &[format!("layers/terrain/hi/6-{}-{}", t.0, t.1)]);
             }
+            if let (Some(fine), Some(hi)) = (src.fine, base) {
+                fine_tiles(out, t, &hi, src, fine, progress)?;
+            }
             mids.push((t, mid));
         }
         // (The z3 tile's z6 tiles the coverage has left: their hi packs go. Not their mids, which
@@ -1875,7 +1885,9 @@ pub fn build_q_with(
         for x in q.0 * 8..(q.0 + 1) * 8 {
             for y in q.1 * 8..(q.1 + 1) * 8 {
                 if !near_coverage(cov, 6, x, y, 20.0) {
-                    drop_named(out, &[format!("layers/terrain/hi/6-{x}-{y}")]);
+                    let mut gone = vec![format!("layers/terrain/hi/6-{x}-{y}")];
+                    gone.extend(crate::terrain_fine::named_under(&out.manifest, (x, y)));
+                    drop_named(out, &gone);
                 }
             }
         }
@@ -2008,6 +2020,8 @@ pub fn build_piece_later(
     progress("packs", 0, 1);
     let p = crate::timings::phase("its hi pack and mid written", crate::timings::Class::Disk);
     rep.hi_tiles = hi.len();
+    // (Its tiles kept for its fine tiles, which are made from them: crate::terrain_fine.)
+    let base = (src.fine.is_some() && !expect_same).then(|| hi.clone());
     let mut it = hi.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;
         (z, x, y, b, n)
@@ -2035,7 +2049,37 @@ pub fn build_piece_later(
         }
     }
     out.put_file_later(&ml, "sect", &mid_path)?;
+    if let (Some(fine), Some(hi)) = (src.fine, base) {
+        fine_tiles(out, t, &hi, src, fine, progress)?;
+    }
     Ok(rep)
+}
+
+/// Z6 tile `t`'s fine tiles (crate::terrain_fine) from its tiles `hi`, uploaded, said in the log.
+fn fine_tiles(
+    out: &mut Out,
+    t: (u32, u32),
+    hi: &[(u8, u32, u32, Vec<u8>)],
+    src: &Sources,
+    fine: &crate::terrain_fine::Fine,
+    progress: crate::rawpack::Progress,
+) -> anyhow::Result<()> {
+    let _p = crate::timings::phase("its fine tiles made and uploaded", crate::timings::Class::Mixed);
+    let fetch = crate::fetch::Fetcher::from_env();
+    let r = crate::terrain_fine::make(out, t, hi, src.water, fine, &fetch, progress)?;
+    if r.base_tiles > 0 && r.with_data > 0 {
+        eprintln!(
+            "terrain 6/{}/{}: fine: {} of {} base tiles with finer data, {} tiles in {} packs, {} MB",
+            t.0,
+            t.1,
+            r.with_data,
+            r.base_tiles,
+            r.tiles,
+            r.packs,
+            r.bytes >> 20
+        );
+    }
+    Ok(())
 }
 
 /// Makes z3 tile `q`'s zoomed-out terrain (an assembly: its levels z8 → z3, the whole of it) from
@@ -2993,7 +3037,7 @@ pub(crate) mod tests {
         let cells = FnCells::new(|lat, lon| (200.0 + (lat - 70.0) * 100.0 + (lon - 10.0) * 50.0) as f32);
         let water = crate::terrain_water::tests::Fixed(lake_across);
         let coarse = Coarse::new(&raw);
-        let src = Sources { north: Some(&cells), water: Some(&water), coarse: Some(&coarse) };
+        let src = Sources { north: Some(&cells), water: Some(&water), coarse: Some(&coarse), fine: None };
         let open = |root: &str| Out::unbound(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
         let terrain = |o: &Out| {
             o.manifest
@@ -3081,7 +3125,7 @@ pub(crate) mod tests {
         let water = crate::terrain_water::tests::Fixed(lake_across);
         let make = |name: &str, raw: &RawTiles, north: &dyn crate::terrain_north::Cells| -> Vec<(String, String)> {
             let coarse = Coarse::new(raw);
-            let src = Sources { north: Some(north), water: Some(&water), coarse: Some(&coarse) };
+            let src = Sources { north: Some(north), water: Some(&water), coarse: Some(&coarse), fine: None };
             let mut out = Out::unbound(&d.path().join(name), &d.path().join(format!("{name}-scratch"))).unwrap();
             for &t in ts {
                 build_piece(&mut out, raw, t, &cov, &src, false, &|_, _, _| {}).unwrap();
@@ -3269,7 +3313,7 @@ pub(crate) mod tests {
         let d = tempfile::tempdir().unwrap();
         let cov = near_without_hi(d.path());
         let raw = RawTiles::new(&d.path().join("raw"), crate::terrain_sources::TEST_BASE);
-        let src = Sources { north: None, water: None, coarse: None };
+        let src = Sources { north: None, water: None, coarse: None, fine: None };
         let mut out = Out::unbound(&d.path().join("root"), &d.path().join("scratch")).unwrap();
         // (Files an earlier run left: their bytes don't matter here.)
         let fake = |out: &mut Out, l: &str| {
@@ -3375,7 +3419,7 @@ pub(crate) mod tests {
             v
         }
         let water = Fixed(polys);
-        let src = Sources { north: Some(&cells), water: Some(&water), coarse: None };
+        let src = Sources { north: Some(&cells), water: Some(&water), coarse: None, fine: None };
         let raw = |x: u32| {
             let g = crate::terrain_north::north_tile(&cells, Z, x, y).unwrap().g;
             let mut e: Vec<f32> = g.iter().map(|v| v + 47.0).collect();

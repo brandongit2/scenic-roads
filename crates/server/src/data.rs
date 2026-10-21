@@ -435,9 +435,14 @@ impl Data {
     fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         let cat = self.catalog();
         let l = cat.layers.get(layer)?;
+        let f = pipeline::terrain_fine::PACK_Z;
         match z {
             0..=2 => l.root.clone(),
             3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
+            // (The terrain's finer than its base: its fine packs by z10 tile, pipeline::terrain_fine.)
+            _ if z > f + 2 && !l.fine.is_empty() => {
+                l.fine.get(&format!("{f}/{}/{}", x >> (z - f), y >> (z - f))).cloned()
+            }
             _ => l.hi.get(&format!("6/{}/{}", x >> (z - 6), y >> (z - 6))).cloned(),
         }
     }
@@ -548,7 +553,7 @@ impl Data {
         let cat = self.catalog();
         let Some(l) = cat.layers.get(layer) else { return String::new() };
         let mut h = blake3::Hasher::new();
-        for logical in l.root.iter().chain(l.lo.values()).chain(l.hi.values()) {
+        for logical in l.root.iter().chain(l.lo.values()).chain(l.hi.values()).chain(l.fine.values()) {
             if let Some(f) = cat.files.get(logical) {
                 h.update(f.file.as_bytes());
             }

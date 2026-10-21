@@ -170,7 +170,7 @@ async function main() {
   setLandColour(store.s.land);
   setWaterColours(store.s.water.colour, lakeColour(store.s.water.colour));
   // diff: false, so the new style loads as one (style.load, below) rather than as edits to the empty one.
-  map.setStyle(baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.water), { diff: false });
+  map.setStyle(baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.water, meta.layers?.terrain?.[1] ?? 12), { diff: false });
   if (EVAL) installEval(map);
   // The far buildings' field (bldfield.ts, task #102), on by default where the catalog has its
   // layer (`buildings-field`); `?bldfield=off` leaves it out, `?bldfield=<url>` takes its tiles from

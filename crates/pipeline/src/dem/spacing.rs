@@ -178,7 +178,7 @@ mod tests {
                     store: false,
                 },
             },
-            measured: Measured { crs: Some(4326), resolution, cover: cover.clone() },
+            measured: Measured { crs: Some(4326), resolution, full: None, cover: cover.clone() },
             keyed: "k".into(),
         };
         (d, Cover::of(cover.as_deref()))

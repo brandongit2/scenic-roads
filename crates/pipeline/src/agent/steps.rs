@@ -1053,7 +1053,11 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
                 && crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}"))
         }
         "terrain" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| {
-            l == crate::terrain_pack::mid_logical(t.x, t.y) || l == format!("layers/terrain/hi/{dash}")
+            l == crate::terrain_pack::mid_logical(t.x, t.y)
+                || l == format!("layers/terrain/hi/{dash}")
+                || fine_under(l).is_some_and(|f| {
+                    (f.0 >> (crate::terrain_fine::PACK_Z - 6), f.1 >> (crate::terrain_fine::PACK_Z - 6)) == (t.x, t.y)
+                })
         }),
         "slope" if tile.is_some_and(|u| u.z == 6) => tile
             .is_some_and(|t| l == crate::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
@@ -1067,13 +1071,17 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
                 "slope" => &["slope"],
                 _ => &crate::treepacks::LAYERS,
             };
-            layers.iter().any(|layer| {
-                l == format!("layers/{layer}/lo/{dash}")
-                    || l.strip_prefix(&format!("layers/{layer}/hi/6-"))
-                        .and_then(|r| r.split_once('-'))
-                        .and_then(|(x, y)| Some((x.parse::<u32>().ok()?, y.parse::<u32>().ok()?)))
-                        .is_some_and(|(x, y)| (x >> 3, y >> 3) == (q.x, q.y))
-            })
+            (step == "terrain"
+                && fine_under(l).is_some_and(|f| {
+                    (f.0 >> (crate::terrain_fine::PACK_Z - 3), f.1 >> (crate::terrain_fine::PACK_Z - 3)) == (q.x, q.y)
+                }))
+                || layers.iter().any(|layer| {
+                    l == format!("layers/{layer}/lo/{dash}")
+                        || l.strip_prefix(&format!("layers/{layer}/hi/6-"))
+                            .and_then(|r| r.split_once('-'))
+                            .and_then(|(x, y)| Some((x.parse::<u32>().ok()?, y.parse::<u32>().ok()?)))
+                            .is_some_and(|(x, y)| (x >> 3, y >> 3) == (q.x, q.y))
+                })
         }
         _ => false,
     }
@@ -1113,6 +1121,7 @@ fn pack_of(l: &str, layer: &dyn Fn(&str) -> bool, scopes: &[&str]) -> bool {
             "root" => *t == "0-0-0",
             "lo" => tile(t, 3),
             "hi" => tile(t, 6),
+            "fine" => tile(t, crate::terrain_fine::PACK_Z.into()),
             _ => false,
         },
         _ => false,
@@ -1219,9 +1228,17 @@ fn w_spoken(l: &str, _: bool) -> bool {
     l == "global/spoken"
 }
 
-/// A z6 tile's hi pack and mid (a z6 tile); a z3 tile's whole run's lo pack and its z6 tiles' hi packs.
+/// A terrain fine pack's z10 tile (crate::terrain_fine::pack_logical).
+fn fine_under(l: &str) -> Option<(u32, u32)> {
+    let t = l.strip_prefix("layers/terrain/fine/")?;
+    let u = TileId::parse(t).filter(|u| u.z == crate::terrain_fine::PACK_Z)?;
+    pack(l, "terrain", &["fine"]).then_some((u.x, u.y))
+}
+
+/// A z6 tile's hi pack, fine packs and mid (a z6 tile); a z3 tile's whole run's lo pack and its z6
+/// tiles' hi and fine packs.
 fn w_terrain(l: &str, _: bool) -> bool {
-    pack(l, "terrain", &["lo", "hi"]) || matches!(parts(l).as_slice(), ["work", "terrain-mid", t] if tile(t, 6))
+    pack(l, "terrain", &["lo", "hi", "fine"]) || matches!(parts(l).as_slice(), ["work", "terrain-mid", t] if tile(t, 6))
 }
 
 fn w_terrain_lo(l: &str, _: bool) -> bool {

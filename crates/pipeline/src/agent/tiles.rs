@@ -93,6 +93,27 @@ pub const TEST_SOURCES: &str = "terrain-sources test";
 pub struct TerrainPin {
     pub pin: String,
     pub as_before: bool,
+    /// The datasets finer than the terrain's (crate::terrain_fine): a z6 tile meeting one names it
+    /// in its key (`fine_key`).
+    pub fine: Vec<crate::terrain_fine::FineSet>,
+}
+
+impl TerrainPin {
+    /// What z6 tile `t`'s key names of the declared sources: `pin`, and the fine datasets finer than
+    /// the base there (none: `pin` alone, the key as before they were).
+    pub fn sources_of(&self, t: (u32, u32)) -> String {
+        let lines = crate::terrain_fine::key_lines(&self.fine, t);
+        if lines.is_empty() {
+            self.pin.clone()
+        } else {
+            format!("{}\nfine {}\n{}", self.pin, crate::terrain_fine::FINE_V, lines.join("\n"))
+        }
+    }
+
+    /// What the targets' memo names of the fine datasets.
+    pub fn fine_tag(&self) -> String {
+        self.fine.iter().map(|f| f.line.as_str()).collect::<Vec<_>>().join(",")
+    }
 }
 
 /// The declared elevation datasets as the z6 tiles' keys name them: each with its coverage.
@@ -208,7 +229,11 @@ impl TerrainTiles {
         }
         let got = crate::inputs::open(root, m, elevation::UNIT)
             .and_then(|a| crate::terrain_sources::of(&a.ok_or_else(|| anyhow::anyhow!("no accepted version"))?))
-            .map(|d| TerrainPin { as_before: super::rekey::named_before(&d), pin: d.pin })
+            .map(|d| TerrainPin {
+                as_before: super::rekey::named_before(&d),
+                fine: d.fine.as_ref().map(|f| f.sets.clone()).unwrap_or_default(),
+                pin: d.pin,
+            })
             .map_err(|e| format!("{e:#}"));
         // (Said once a reason: the terrain's keys wait meanwhile.)
         if let Err(why) = &got {
@@ -319,7 +344,11 @@ impl TerrainTiles {
         #[cfg(test)]
         if self.terrain.is_none() {
             static TEST: std::sync::OnceLock<TerrainPin> = std::sync::OnceLock::new();
-            return Some(TEST.get_or_init(|| TerrainPin { pin: TEST_SOURCES.into(), as_before: true }));
+            return Some(TEST.get_or_init(|| TerrainPin {
+                pin: TEST_SOURCES.into(),
+                as_before: true,
+                fine: Vec::new(),
+            }));
         }
         let want = m.get(&crate::inputs::logical(crate::inputs::elevation::UNIT))?;
         match &self.terrain {

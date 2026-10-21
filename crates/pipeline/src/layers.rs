@@ -1,5 +1,6 @@
 //! Layers as packs (docs/formats.md "Pack"): every tile in exactly one pack — the root pack
-//! (z0–2), a lo pack per z3 tile (z3–8) or a hi pack per z6 tile (z9–14) — uploaded content-named
+//! (z0–2), a lo pack per z3 tile (z3–8) or a hi pack per z6 tile (z9–14; the terrain's z13 and finer
+//! in fine packs per z10 tile, crate::terrain_fine) — uploaded content-named
 //! under `layers/<layer>/`. A small layer made whole by one job may instead be one bundle
 //! (`layers/<layer>/all`, docs/formats.md "Bundles"): every tile in one pack, which the catalog
 //! names for each pack key its tiles fall in (`bundle_keys`).
@@ -27,6 +28,9 @@ pub struct LayerOut {
     pub root: Option<String>,
     pub lo: BTreeMap<String, String>,
     pub hi: BTreeMap<String, String>,
+    /// The terrain's fine packs by z10 tile (crate::terrain_fine).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fine: BTreeMap<String, String>,
 }
 
 impl LayerOut {
@@ -40,6 +44,9 @@ impl LayerOut {
             "root" => self.root = Some(logical),
             "lo" => {
                 self.lo.insert(k, logical);
+            }
+            "fine" => {
+                self.fine.insert(k, logical);
             }
             _ => {
                 self.hi.insert(k, logical);

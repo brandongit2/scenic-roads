@@ -2,7 +2,7 @@
 import type { Map as MLMap } from 'maplibre-gl';
 import * as maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
-import { HYPSO, terrainTiles } from './basemap';
+import { HYPSO, terrainMaxzoom, terrainTiles } from './basemap';
 import { PALETTES, baseKey, isRev, paletteFn } from './palettes';
 import type { ScaleFields, Terrain } from './state';
 import { CONTOUR_MINZOOM } from './contours';
@@ -192,7 +192,7 @@ const contourUrl = (density: number) => {
 
 /** The contours' terrain tiles (maplibre-contour fetches them itself, in its worker). */
 function newDemSource() {
-  const d = new mlcontour.DemSource({ url: terrainTiles(), encoding: 'terrarium', maxzoom: 12, worker: true, cacheSize: 200 });
+  const d = new mlcontour.DemSource({ url: terrainTiles(), encoding: 'terrarium', maxzoom: terrainMaxzoom(), worker: true, cacheSize: 200 });
   d.setupMaplibre(maplibregl);
   return d;
 }

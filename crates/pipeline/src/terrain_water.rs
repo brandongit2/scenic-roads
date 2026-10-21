@@ -31,7 +31,7 @@ use std::sync::Arc;
 const SS: usize = 4;
 const NONE: u16 = u16::MAX;
 /// A pixel's samples (SS × SS): a share of 1.
-const FULL: u8 = (SS * SS) as u8;
+pub const FULL: u8 = (SS * SS) as u8;
 /// A lake's own pixels are flat when their spread (the middle half's) is within this (m).
 const FLAT_M: f32 = 1.0;
 /// The shore's percentile a lake's level is.

@@ -89,8 +89,24 @@ What each step does, in detail. The steps as one table (names, chains, the check
     intermittent water and pools are left. One level per lake by OSM id across the tiles made
     together. Partly-water pixels are blended.
   - **Below zero** is clamped to 0 after the water. Planned: polders keeping their depth.
+  - **Finer than the base** (crate::terrain_fine, task #533): where a roads' elevation dataset is
+    finer than the terrain's finest declared dataset by over a tenth (by its full resolution,
+    inputs.md §6.8 `full`: HRDEM 2 m, USGS 3DEP 10 m, GSI's), the z6 tile's run goes on past its
+    finest base zoom to the dataset's (pixels no finer than half its cell: 2 m to z16, 3DEP to z14,
+    z13 north of ~55°; a tile pyramid to its own zoom), after its hi pack. A fine tile is the datasets
+    read at full resolution (blended at their edges as the roads' sampler does), the stored base tile
+    last so the data blends into it over four base pixels where it ends; the base's water kept by
+    each pixel's share of the base tile's sea and lakes; below zero to 0; rounded to 0.1 m. Only
+    base tiles whose datasets have data in a 128 × 128 grid of them make any, and only tiles with
+    some of that data are stored, in fine packs by z10 tile (formats.md, Pack); elsewhere the server
+    makes finer tiles from their ancestors. Heights as each dataset gives them (no geoid
+    conversion). The base's levels (z9–12) are made as before, so the analysis grid (z11) and the
+    roads don't change. Its key names those datasets (`id keyed`, `FINE_V`) only where one is
+    finer than the base, so the other z6 tiles' keys are as before. A `terrain-same` run makes
+    none. Measured (6/18/22, HRDEM; 6/13/24, 3DEP): a z12 tile's subtree to z16 ~11 MB and ~10 s,
+    to z14 ~0.8 MB and ~1.3 s; over the coverage ~0.5 TB for HRDEM and ~0.14 TB for 3DEP.
 - **Slope** (`pipeline::slope_pack`): z11 and coarser stored, from transient z12 Horn slope; the
-  server makes z12 on demand. **slope**, a run per z6 tile (its z9–11 hi pack and its mid,
+  server makes z12 and finer on demand (to z14, or as deep as the terrain's fine tiles go). **slope**, a run per z6 tile (its z9–11 hi pack and its mid,
   `work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs (its own z6 tile's copied
   whole first) and its neighbours' edge strips; **slope-lo**, an assembly per z3 tile from its
   z6 tiles' mids (each read whole, eight at once, under a deadline and tried again while it fails
@@ -449,7 +465,8 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   target's digest exists its key is unknown and its z3 tile waits.
 - **terrain (a z6 tile):** the coverage within 20 km of its tile, the terrain's declarations
   (crate::terrain_sources::pin: their ids and `keyed` digests; until they're accepted its key is
-  unknown and it waits), the digest of
+  unknown and it waits), where a dataset finer than the base meets it those datasets
+  (`TerrainPin::sources_of`: `terrain_fine::FINE_V` and their `id keyed`), the digest of
   its water (`agent::build::water_key`), and "no hi tiles" for a z6 tile making none
   (`piece_key_made`). A "none" z6 tile is keyed on the version and the tile (`none_piece_key`).
 - **terrain-lo (an assembly):** its z6 tiles' mids by content ("-" for a z6 tile without one) and the

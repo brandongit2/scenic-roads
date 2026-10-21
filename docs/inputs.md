@@ -1089,7 +1089,7 @@ heights' conversion (step 3) and the 3D terrain (#144).
 | `[data] url` / `urls` / `index` / `files` | | exactly one: GeoTIFFs by URL, a tile index (GeoJSON footprints with each file's `url` or `file`, and optionally its fill mask's URL, `mask`; made by `producers/elevation/indexes.py`), or dropped files by glob |
 | `[data] store` | bool | the files read from `sources/fetched/<dataset>/` alone, by their URLs' last part (after a `#`, the member's name); never fetched by a build: a file the store lacks is an error naming it, one noted `<name>.none` has no data |
 | `[data] encoding`, `url`, `zoom` | | for `tiles`: `terrarium`, `terrain-rgb`, `gsi-png`; the URL template; the zoom |
-| `[data] read_resolution` | metres | read a finer dataset at its nearest overview (HRDEM's 2 m at 8 m) |
+| `[data] read_resolution` | metres | the roads read a finer dataset at its nearest overview (HRDEM's 2 m at 8 m); the map's terrain reads it at its full resolution (steps.md §2, Terrain, finer than the base) |
 
 ```toml
 name = "NRCan HRDEM, 2 m lidar mosaic"
@@ -1107,7 +1107,8 @@ read_resolution = 8
 **Read from the data at check time** (`facts.measured`, beside the parsed `facts.declaration`): a
 GeoTIFF dataset's CRS and resolution (headers by range request: an index's first, last and seven
 files between, or every file without an index; one CRS the app projects, the coarsest resolution at
-the overview read) and its coverage (`cover`): the 1° cells its data meets, merged into boxes. Index
+the overview read; where `read_resolution` reads it coarser, also its full resolution, `full`: the
+finest of those files' full images) and its coverage (`cover`): the 1° cells its data meets, merged into boxes. Index
 files meet by footprint; other files by where they have valid data at their coarsest overview, so a
 file's empty margins cover nothing. A tile pyramid's resolution comes from its zoom at its coverage's
 mid-latitude, and a tile is read to check it's 256 px (`generic::TILE_PX`). The coverage is also the

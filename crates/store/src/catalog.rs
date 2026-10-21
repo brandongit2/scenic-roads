@@ -124,6 +124,10 @@ pub struct Layer {
     /// Hi packs (z9–14) by z6 tile.
     #[serde(default)]
     pub hi: BTreeMap<String, String>,
+    /// Fine packs (z13 and finer) by z10 tile: the terrain's where a dataset is finer than its base
+    /// (pipeline::terrain_fine).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub fine: BTreeMap<String, String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -150,7 +154,7 @@ impl Catalog {
             if let Some(r) = &l.root {
                 out.push((format!("layers.{name}.root"), r.as_str()));
             }
-            for (k, v) in l.lo.iter().chain(&l.hi) {
+            for (k, v) in l.lo.iter().chain(&l.hi).chain(&l.fine) {
                 out.push((format!("layers.{name}[{k}]"), v.as_str()));
             }
         }

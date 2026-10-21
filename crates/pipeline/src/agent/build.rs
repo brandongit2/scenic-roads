@@ -1162,6 +1162,7 @@ pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles
         &named(crate::terrain_water::IDX_PREFIX),
         &crate::terrain_pack::water_source_pin(m).unwrap_or_default(),
         tiles.terrain_sources(m).map_or("-", |p| p.pin.as_str()),
+        &tiles.terrain_sources(m).map_or_else(String::new, |p| p.fine_tag()),
     ]);
     let made = std::cell::RefCell::new(None);
     let kept = tiles.memo("terrain-targets", &from, || {
@@ -1191,7 +1192,7 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
     let idx = pin.as_deref().and_then(|p| tiles.water_idx(m, p));
     let water = |t: &str, from: &str| water_key(pin.as_deref(), idx, t, from);
     // (The terrain's declared sources: its z6 tiles wait while there are none.)
-    let sources = tiles.terrain_sources(m).map(|p| p.pin.as_str());
+    let sources = tiles.terrain_sources(m);
     let mut out = TerrainTargets::default();
     let near = coverage_tiles(cov);
     for (q, ts) in &near {
@@ -1203,9 +1204,10 @@ fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tile
             let hi = crate::terrain_pack::makes_hi(cov, (x, y));
             out.terrain.push((
                 t.clone(),
-                water(&t, &fp)
-                    .zip(sources)
-                    .map_or_else(|| UNKNOWN.to_string(), |(w, s)| piece_key_made((x, y), &fp, s, &w, hi)),
+                water(&t, &fp).zip(sources).map_or_else(
+                    || UNKNOWN.to_string(),
+                    |(w, s)| piece_key_made((x, y), &fp, &s.sources_of((x, y)), &w, hi),
+                ),
             ));
             out.slope.push((t.clone(), slope_piece_key((x, y), m, tiles).ok()));
             tmids.push(format!("{t}={}", get(&crate::terrain_pack::mid_logical(x, y))));
@@ -5766,7 +5768,7 @@ pub(crate) mod tests {
                 encoding: "terrarium".into(),
             },
         };
-        let measured = crate::dem::declared::Measured { crs: None, resolution: 30.0, cover: cover.clone() };
+        let measured = crate::dem::declared::Measured { crs: None, resolution: 30.0, full: None, cover: cover.clone() };
         (
             crate::dem::declared::Accepted {
                 convert: None,

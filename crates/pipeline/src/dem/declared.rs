@@ -270,6 +270,11 @@ pub struct Measured {
     /// Metres, as read (the overview `read_resolution` picks; a tile pyramid's at its coverage's
     /// mid-latitude).
     pub resolution: f64,
+    /// Metres, its full resolution, where `read_resolution` reads it coarser (the finest of its
+    /// sampled files' full images): the map's terrain reads it so (crate::terrain_fine). None:
+    /// read at its full resolution already.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full: Option<f64>,
     /// Where it has data: 1° cells merged into boxes (w, s, e, n); None: the world.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<Vec<[f64; 4]>>,
@@ -313,7 +318,7 @@ pub fn cells_to_boxes(cells: &BTreeSet<(i32, i32)>) -> Vec<[f64; 4]> {
 }
 
 /// Where a dataset has data, as 1° cells (the world: every cell).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cover {
     pub world: bool,
     pub cells: HashSet<(i32, i32)>,
@@ -668,7 +673,7 @@ pub fn convert(ds: &mut [Accepted], geoid: &[crate::inputs::sources::Source]) ->
 }
 
 /// A dataset as the keys and the plan's tag name it: `id keyed`, and its conversion's digest.
-fn line(d: &Accepted) -> String {
+pub fn line(d: &Accepted) -> String {
     match &d.convert {
         None => format!("{} {}", d.id, d.keyed),
         Some(c) => format!("{} {} to {} {}", d.id, d.keyed, super::geoid::TARGET, c.digest),
@@ -887,7 +892,7 @@ encoding = "terrarium"
             id: id.into(),
             path: format!("{id}.toml"),
             declaration: decl(heights),
-            measured: Measured { crs: Some(4326), resolution: 10.0, cover: None },
+            measured: Measured { crs: Some(4326), resolution: 10.0, full: None, cover: None },
             keyed: "k".into(),
             convert: None,
         };

@@ -36,7 +36,12 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
 ```
 
 - Root pack: z0–2 (root "0/0/0"). Lo pack: z3–8 under one z3 tile. Hi pack: z9–14 under one z6
-  tile. A tile lives in exactly one pack.
+  tile. The terrain's tiles finer than z12 (where a dataset is finer than its base,
+  pipeline::terrain_fine) are in fine packs, `layers/terrain/fine/10-<x>-<y>`: z13 and finer under
+  one z10 tile, only where they have the finer data (a z6 tile's would be up to 130 GB); the
+  catalog names them under the layer's `fine`, and its terrain's `maxzoom` is then the finest zoom
+  its fine datasets make (`terrain_fine::max_zoom`). The server reads them from the NAS (no Mac
+  mirrors them), and downloads leave them out. A tile lives in exactly one pack.
 - Readers fetch header and index once (two range reads) and keep the index locally
   (`idx/<file hash>.idx`), so serving a tile is one range read.
 - **Layer bundles** (`layers/<layer>/all`; meta `{"layer", "scope": "all", "encoding"}`): every tile
@@ -451,7 +456,8 @@ that decodes and parses, else the next.
   "units": ["6/32/21"],
   "layers": {
     "terrain": {"encoding": "terrarium-png", "minzoom": 0, "maxzoom": 12, "root": "<logical>",
-                "lo": {"3/4/2": "<logical>"}, "hi": {"6/32/21": "<logical>"}},
+                "lo": {"3/4/2": "<logical>"}, "hi": {"6/32/21": "<logical>"},
+                "fine": {"10/295/360": "<logical>"}},
     "roads": {"encoding": "rt7", "minzoom": 4, "maxzoom": 14, "lo": {…}, "hi": {…}}
   },
   "basemap": ["<logical of a .pmtiles>"],

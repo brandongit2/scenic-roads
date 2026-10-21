@@ -175,7 +175,7 @@ fn good_declarations_are_measured_from_their_data() {
     let ix = super::super::Index {
         fmt: 1,
         unit: UNIT.into(),
-        checks: "elevation 1".into(),
+        checks: "elevation 2".into(),
         files,
         accepted: BTreeMap::new(),
     };

@@ -6,7 +6,8 @@
 //! MapLibre colour-relief layer can colour the terrain by slope with the same machinery. The slope
 //! layer stores z11 and coarser (four quarter slopes a pixel); z12, and any tile the layer lacks,
 //! is made here from the terrain (Horn's method with the neighbouring tiles), as the slope step
-//! makes its finest level.
+//! makes its finest level: to z14, or as deep as the terrain's fine tiles go (from them where
+//! they're stored, so the slope there is the fine data's).
 
 use crate::tiles::{etag_match, not_modified, versioned};
 use crate::S;
@@ -250,7 +251,8 @@ pub async fn slope_tile(
         if let Some(g) = stored(&s, "slope", z, x, y, &headers) {
             return g;
         }
-        if z > 14 {
+        // (Made as deep as the terrain is stored anywhere: its fine tiles' zooms, pipeline::terrain_fine.)
+        if z > s.data.catalog().layers.get("terrain").map_or(14, |l| l.maxzoom.max(14)) {
             return Got::Made(flat());
         }
         made(&SLOPE, gen(&s), z, x, y, || Ok(slope_png(&s, z, x, y)?.unwrap_or_else(flat)))
