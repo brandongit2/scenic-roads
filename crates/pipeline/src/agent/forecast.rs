@@ -259,18 +259,13 @@ pub struct EqualLanes {
 impl Record<'_> {
     /// The forecast it holds: the lead's.
     pub fn forecast(&self) -> Forecast {
-        // (The equal machines' view beside it, on a thread of its own.)
-        std::thread::scope(|s| {
-            let equal = self
-                .equal
-                .as_ref()
-                .map(|e| s.spawn(|| equal_machines(&self.input, e.lanes.clone(), e.running.clone())));
-            let mut f = forecast(&self.input);
-            f.each_s = self.each_s.clone();
-            f.waiting = self.waiting.clone();
-            f.equal = equal.map(|h| Box::new(h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))));
-            f
-        })
+        // (The equal machines' view after it, with its own budget: three runs at a time at most.)
+        let mut f = forecast(&self.input);
+        f.each_s = self.each_s.clone();
+        f.waiting = self.waiting.clone();
+        f.equal =
+            self.equal.as_ref().map(|e| Box::new(equal_machines(&self.input, e.lanes.clone(), e.running.clone())));
+        f
     }
 
     /// Every time and speed in it made finite (JSON has no NaN nor infinity: one would read back
@@ -1213,6 +1208,16 @@ const KEY: &str = "forecast";
 /// (task #544).
 pub const BUDGET: Duration = Duration::from_secs(15);
 
+/// The calling thread at the utility QoS (macOS): a forecast's runs give way to the jobs and the
+/// owner's own work. Elsewhere, nothing.
+pub fn low_priority() {
+    #[cfg(target_os = "macos")]
+    // SAFETY: sets only the calling thread's QoS class; no pointers.
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
+    }
+}
+
 /// The forecast for `inp`, within `BUDGET`.
 pub fn forecast(inp: &Input) -> Forecast {
     forecast_by(inp, Instant::now() + BUDGET)
@@ -1223,8 +1228,14 @@ pub fn forecast_by(inp: &Input, deadline: Instant) -> Forecast {
     let now = inp.now as f64;
     // (The three runs side by side, each on a thread of its own.)
     let (expected, soon, late) = std::thread::scope(|s| {
-        let soon = s.spawn(|| run(inp, &|c| c.secs * if c.known { 0.95 } else { 0.75 }, deadline));
-        let late = s.spawn(|| run(inp, &|c| c.secs * if c.known { 1.15 } else { 1.6 }, deadline));
+        let soon = s.spawn(|| {
+            low_priority();
+            run(inp, &|c| c.secs * if c.known { 0.95 } else { 0.75 }, deadline)
+        });
+        let late = s.spawn(|| {
+            low_priority();
+            run(inp, &|c| c.secs * if c.known { 1.15 } else { 1.6 }, deadline)
+        });
         let expected = run(inp, &|c| c.secs, deadline);
         let join =
             |h: std::thread::ScopedJoinHandle<'_, Sim>| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
@@ -2804,7 +2815,7 @@ mod tests {
         eprintln!("live scale, {n} targets: {} ms", took.as_millis());
         assert!(!f.partial && f.done_at.is_some(), "{:?}", f.why);
         assert!(took < Duration::from_secs(90), "{took:?}");
-        // The equal machines' view beside it, within its budget (cut there: partial, said so).
+        // The equal machines' view after it, within its budget (cut there: partial, said so).
         let rec = Record {
             input: inp,
             each_s: BTreeMap::new(),
@@ -2813,7 +2824,7 @@ mod tests {
         };
         let t = Instant::now();
         let e = rec.forecast().equal.expect("the equal machines' view");
-        assert!(t.elapsed() < BUDGET + Duration::from_secs(10), "{:?}", t.elapsed());
+        assert!(t.elapsed() < 2 * BUDGET + Duration::from_secs(10), "{:?}", t.elapsed());
         assert!(e.done_at.is_some() || e.partial, "{:?}", e.why);
     }
 

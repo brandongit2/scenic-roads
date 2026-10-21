@@ -7999,6 +7999,7 @@ impl Agent {
     /// made there too (as data, for the NAS: written by the lead's pool step, `pool_lead_files`).
     fn start_forecast(&self, record: forecast::Record<'static>) {
         let run = std::thread::Builder::new().name("forecast".into()).spawn(move || {
+            forecast::low_priority();
             let took = std::time::Instant::now();
             let f = record.forecast();
             Forecasted { forecast: f, bytes: record.bytes(), took: took.elapsed() }

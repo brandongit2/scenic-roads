@@ -416,7 +416,7 @@ function nextBlock(m, name) {
   const next = (m.fc?.next?.[name] || []).filter((x) => x.until > m.now);
   if (!next.length) return null;
   const say = (x) => `${S.said(x.step, x.targets.length)} (${clock(x.from)}–${clock(x.until)})`;
-  return h("div", "next", h("b", null, "Next: "), next.slice(0, 3).map(say).join(" · then "));
+  return h("div", "next", h("b", null, "Next: "), next.slice(0, 3).map(say).join(" · then "), m.fc.partial ? h("span", "dim", " (a partial forecast: cut at its time budget)") : null);
 }
 
 function facts(st, x, m) {
@@ -676,7 +676,9 @@ function schedule(m) {
   const titles = new Set();
   const stages = [...stagesSeen].sort((p, q) => order.indexOf(p) - order.indexOf(q)).filter((g) => !titles.has(S.stageTitle(g)) && titles.add(S.stageTitle(g)));
   const legend = h("div", "legend", stages.map((g) => h("span", null, h("i", { style: { background: STAGE_COLOURS[g] || "#7b8590" } }), S.stageTitle(g))), Object.keys(outs).length ? h("span", null, h("i", { class: "rmark" }), "a region all on the map") : null);
-  return h("div", "sched", h("div", "lanewrap", lanes), legend);
+  // (A forecast cut at its time budget (forecast::BUDGET): the lanes end where its run stopped.)
+  const cut = fc.partial && h("div", "why", "Partial: the forecast was cut at its time budget; each lane ends where its run stopped, the work after it not placed");
+  return h("div", "sched", cut || null, h("div", "lanewrap", lanes), legend);
 }
 
 // The regions: their order to the map, or by name, or by what's left; each its state, what it has

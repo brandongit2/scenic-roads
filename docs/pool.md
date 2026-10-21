@@ -564,9 +564,10 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   `equal`, with each member's slots and the pages as lanes at their measured speeds. Reports only.
 - **The forecast runs off the loop** (task #544): the lead makes its input on the loop and runs it
   on a thread of its own (`Agent::start_forecast`); the status keeps the last one done, so reaping,
-  starting jobs and writing the status never wait on it. Its three runs (and the equal machines'
-  view) go side by side, each cut at `forecast::BUDGET` (15 s): one cut is `partial`, its `why`
-  says so, no finish shown. On 21 Oct's live input (4,155 targets, 20 lanes) the lead's view took
+  starting jobs and writing the status never wait on it. Its three runs go side by side, the
+  equal machines' view's three after them (three threads at most, each at the utility QoS:
+  `forecast::low_priority`), each view cut at `forecast::BUDGET` (15 s): one cut is `partial`, its
+  `why` says so, no finish shown, and the build page marks its lanes and next jobs partial. On 21 Oct's live input (4,155 targets, 20 lanes) the lead's view took
   3.7 s and the equal machines' 3.3 s (205 s and 89 s before #544; a quarter hour on the lead).
 
 **A job waiting on a worker** (`crate::offload`'s `WAITING_ENV`): a z6 tile job waiting on a faster

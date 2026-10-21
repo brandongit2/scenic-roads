@@ -413,8 +413,9 @@ impl PageView {
     fn forecast_run(&self, record: Option<&(SystemTime, Arc<Record<'static>>)>, now: u64, own: &[OwnLane]) {
         let mut r = self.forecast.lock().unwrap();
         r.take(false);
+        // (No record: the last one dropped; one running kept until it's done, never two at once.)
         let Some((t, rec)) = record else {
-            *r = Runs::default();
+            (r.done, r.of) = (None, None);
             return;
         };
         let due = r.of.is_none_or(|(at, started)| at != *t || started.elapsed() >= FORECAST_EVERY);
@@ -422,10 +423,10 @@ impl PageView {
             return;
         }
         let (rec, own) = (rec.clone(), own.to_vec());
-        match std::thread::Builder::new()
-            .name("pageview-forecast".into())
-            .spawn(move || local_forecast(&rec, now, &own))
-        {
+        match std::thread::Builder::new().name("pageview-forecast".into()).spawn(move || {
+            super::forecast::low_priority();
+            local_forecast(&rec, now, &own)
+        }) {
             Ok(h) => (r.running, r.of) = (Some(h), Some((*t, Instant::now()))),
             Err(e) => eprintln!("pageview: the forecast's thread: {e}"),
         }
