@@ -3751,7 +3751,7 @@ pub struct Line {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<Item>,
     /// The jobs still to do, by name, in the order they'll run (a step's runs together, its targets
-    /// counted: "Peaks: 178 tiles"); the first is the one under way.
+    /// counted: "Peaks: 178 z6 tiles"); the first is the one under way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next: Vec<String>,
     /// While it has work left and isn't this Mac's job now: why (another Mac is on it, it waits
@@ -5982,7 +5982,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             next_of(&[w("peaks", 12), w("peaks", 166), w("items", 1), w("heritage", 1)]),
-            ["Peaks: 178 tiles", "Wikidata facts", "Heritage details"]
+            ["Peaks: 178 z6 tiles", "Wikidata facts", "Heritage details"]
         );
         assert_eq!(next_of(&[w("pois", 1), w("marks", 1)]), ["Landmark candidates: 1 tile", "Landmarks"]);
     }
@@ -6030,12 +6030,12 @@ pub(crate) mod tests {
         );
         assert_eq!(
             line(&l, "terrain").counts(),
-            [format!("0 of {pieces} tiles"), "0 of 1 z3 tiles".to_string()],
+            [format!("0 of {pieces} z6 tiles"), "0 of 1 z3 tiles".to_string()],
             "a noun at a time"
         );
         assert_eq!(
             (line(&l, "roads").done, line(&l, "roads").total, line(&l, "roads").unit.as_str()),
-            (0, Some(1), "tiles")
+            (0, Some(1), "z6 tiles")
         );
         assert_eq!(line(&l, "tiles").total, None, "no tiles built: the map tiles aren't known yet");
         assert_eq!(line(&l, "sites").left, Some(1));
@@ -6077,7 +6077,7 @@ pub(crate) mod tests {
         assert!(roads.counts()[0].starts_with(&format!("{} run", roads.left.unwrap())), "{:?}", roads.counts());
         assert_eq!(
             line(&l, "terrain").counts(),
-            [format!("{pieces} of {pieces} tiles"), "1 of 1 z3 tiles".to_string()],
+            [format!("{pieces} of {pieces} z6 tiles"), "1 of 1 z3 tiles".to_string()],
             "a done stage still says its counts"
         );
         assert_eq!(line(&l, "publish").left, Some(1));
@@ -7564,7 +7564,7 @@ pub(crate) mod tests {
         let tt = bld_targets(&c, &m, &inputs);
         assert_eq!(
             (b.done, b.total, b.unit.as_str()),
-            (0, Some(tt.prep.len() + tt.tiles.len()), "tiles"),
+            (0, Some(tt.prep.len() + tt.tiles.len()), "z6 tiles"),
             "its tiles the line's, its z3 tiles and the fetch's run apart"
         );
         assert_eq!(b.left, Some(1 + tt.prep.len() + tt.tiles.len() + tt.lo.len()), "the fetch's run too");
