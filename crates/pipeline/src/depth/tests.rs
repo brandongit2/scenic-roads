@@ -1000,51 +1000,100 @@ fn measure_a_real_lo() {
         mids.len(),
         after.len()
     );
-    // (Drawn: the water's depth on a log ramp of blues to 300 m, a drying height or a value of
-    // class none (the land's band) light sand, none grey.)
-    let colour = |v: f32, c: u8| -> [u8; 3] {
+    // (Drawn twice. `debug`: the water's depth on a log ramp of blues to 300 m, a drying height or
+    // a value of class none (the land's band) light sand, none grey. `map`: as the app draws it
+    // (web/src/depth.worker.ts): depth only inside the basemap's water (a map tile of zoom z - 1
+    // is drawn from these zoom-z tiles, masked by its vector tile's water at half a pixel); water
+    // with no depth pale (the relief leaves it to the basemap's own water colour); land grey,
+    // whatever the tile holds there.)
+    let ramp = |v: f32| -> [u8; 3] {
+        let t = ((1.0 - v).ln() / 301f32.ln()).clamp(0.0, 1.0);
+        [(170.0 * (1.0 - t)) as u8 + 8, (215.0 * (1.0 - t)) as u8 + 30, (255.0 - 150.0 * t) as u8]
+    };
+    let debug = |v: f32, c: u8, _w: bool| -> [u8; 3] {
         if v >= NODATA_MIN {
             [200, 200, 200]
         } else if v >= 0.0 || c == C_NONE {
             [236, 222, 180]
         } else {
-            let t = ((1.0 - v).ln() / 301f32.ln()).clamp(0.0, 1.0);
-            [(170.0 * (1.0 - t)) as u8 + 8, (215.0 * (1.0 - t)) as u8 + 30, (255.0 - 150.0 * t) as u8]
+            ramp(v)
         }
     };
+    let map = |v: f32, _c: u8, w: bool| -> [u8; 3] {
+        match (w, v < NODATA_MIN) {
+            (false, _) => [200, 200, 200],
+            (true, false) => [214, 236, 244],
+            (true, true) => ramp(v.min(-0.05)),
+        }
+    };
+    // (The basemap's own water, as the app masks with: not the lakes filled in, a layer of their own.)
+    let water = crate::terrain_pack::open_water(&out).unwrap().base;
+    // (The basemap's water over tile z/x/y at 256 px: the vector tile of zoom z - 1 the map masks
+    // with, its quadrant scaled up; water at half a pixel. The basemap's water is read from z6 on,
+    // so a z6 tile takes its own, finer than the map's.)
+    let mask = |z: u8, x: u32, y: u32| -> Vec<bool> {
+        let up = u8::from(z > 6);
+        let (ox, oy) = (f64::from(x & u32::from(up)) * 256.0, f64::from(y & u32::from(up)) * 256.0);
+        let k = f64::from(1 + up);
+        let polys: Vec<_> = water
+            .depth_polys(z - up, x >> up, y >> up)
+            .unwrap()
+            .into_iter()
+            .map(|mut p| {
+                for r in &mut p.rings {
+                    for v in r.iter_mut() {
+                        *v = [v[0] * k - ox, v[1] * k - oy];
+                    }
+                }
+                p
+            })
+            .collect();
+        let wt = crate::terrain_water::water_tile(&polys);
+        let half = u16::from(crate::terrain_water::FULL / 2);
+        (0..65536).map(|i| u16::from(wt.sea[i]) + u16::from(wt.lake[i]) + u16::from(wt.river_at(i)) >= half).collect()
+    };
+    let tag = std::env::var("SCENIC_DEPTH_TAG").unwrap_or_else(|_| "after".into());
     for w in &a[3..] {
         let n: Vec<u32> = w.split(',').map(|s| s.parse().unwrap()).collect();
         let (z, x0, y0, nx, ny) = (n[0] as u8, n[1], n[2], n[3], n[4]);
-        for (name, tiles) in [("before", &before), ("after", &after)] {
-            let (wpx, hpx) = (nx as usize * 256, ny as usize * 256);
-            let mut rgb = vec![0u8; wpx * hpx * 3];
-            for j in 0..ny {
-                for i in 0..nx {
-                    let (v, k) = match tiles.get(&(z, x0 + i, y0 + j)) {
-                        Some((d, c)) => {
-                            match (fall::decode(Kind::Terrarium, d).unwrap(), fall::decode(Kind::Class, c).unwrap()) {
-                                (Grid::F(v), Grid::C(k)) => (v, k),
-                                _ => unreachable!(),
+        let masks: std::collections::BTreeMap<(u32, u32), Vec<bool>> = (0..ny)
+            .flat_map(|j| (0..nx).map(move |i| (x0 + i, y0 + j)))
+            .map(|(x, y)| ((x, y), mask(z, x, y)))
+            .collect();
+        for (name, tiles) in [("before", &before), (tag.as_str(), &after)] {
+            for (style, colour) in [("debug", &debug as &dyn Fn(f32, u8, bool) -> [u8; 3]), ("map", &map)] {
+                let (wpx, hpx) = (nx as usize * 256, ny as usize * 256);
+                let mut rgb = vec![0u8; wpx * hpx * 3];
+                for j in 0..ny {
+                    for i in 0..nx {
+                        let (v, k) = match tiles.get(&(z, x0 + i, y0 + j)) {
+                            Some((d, c)) => {
+                                match (fall::decode(Kind::Terrarium, d).unwrap(), fall::decode(Kind::Class, c).unwrap())
+                                {
+                                    (Grid::F(v), Grid::C(k)) => (v, k),
+                                    _ => unreachable!(),
+                                }
                             }
-                        }
-                        None => (vec![NODATA; 65536], vec![C_NONE; 65536]),
-                    };
-                    for py in 0..256usize {
-                        for px in 0..256usize {
-                            let o = ((j as usize * 256 + py) * wpx + i as usize * 256 + px) * 3;
-                            let s = py * 256 + px;
-                            rgb[o..o + 3].copy_from_slice(&colour(v[s], k[s]));
+                            None => (vec![NODATA; 65536], vec![C_NONE; 65536]),
+                        };
+                        let m = &masks[&(x0 + i, y0 + j)];
+                        for py in 0..256usize {
+                            for px in 0..256usize {
+                                let o = ((j as usize * 256 + py) * wpx + i as usize * 256 + px) * 3;
+                                let s = py * 256 + px;
+                                rgb[o..o + 3].copy_from_slice(&colour(v[s], k[s], m[s]));
+                            }
                         }
                     }
                 }
+                let p = dir.join(format!("{z}-{x0}-{y0}-{nx}x{ny}-{name}-{style}.png"));
+                let f = std::io::BufWriter::new(std::fs::File::create(&p).unwrap());
+                let mut enc = png::Encoder::new(f, wpx as u32, hpx as u32);
+                enc.set_color(png::ColorType::Rgb);
+                enc.set_depth(png::BitDepth::Eight);
+                enc.write_header().unwrap().write_image_data(&rgb).unwrap();
+                println!("  {}", p.display());
             }
-            let p = dir.join(format!("{z}-{x0}-{y0}-{nx}x{ny}-{name}.png"));
-            let f = std::io::BufWriter::new(std::fs::File::create(&p).unwrap());
-            let mut enc = png::Encoder::new(f, wpx as u32, hpx as u32);
-            enc.set_color(png::ColorType::Rgb);
-            enc.set_depth(png::BitDepth::Eight);
-            enc.write_header().unwrap().write_image_data(&rgb).unwrap();
-            println!("  {}", p.display());
         }
     }
 }
