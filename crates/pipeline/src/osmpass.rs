@@ -125,7 +125,7 @@ pub fn make_missing_sets(out: &mut Out, date: &str, src: &Input, scratch: &Path)
     for (k, (name, _, exprs)) in missing.iter().enumerate() {
         crate::agent::jobs::stage(k as u64, missing.len() as u64, &format!("sets made ({name} now)"));
         let o = scratch.join(format!("set-{name}.osm.pbf"));
-        tags_filter(src, &o, exprs, scratch, &format!("osmium tags-filter (set {name})"), "sets filtered")?;
+        tags_filter(src, &o, exprs, scratch, &format!("osmium tags-filter (set {name})"), Some("sets filtered"))?;
         let p = crate::timings::phase("sets uploaded", crate::timings::Class::NasWrite);
         out.put_file(&set_name(date, name), "osm.pbf", &o)?;
         drop(p);
@@ -143,32 +143,42 @@ pub enum Input {
     Nas(PathBuf),
 }
 
-/// `osmium tags-filter` of `src` by `exprs` into `o`, timed as `phase`: osmium's time for a local
-/// file, the NAS's read (its bytes counted) for one on the NAS.
-fn tags_filter(src: &Input, o: &Path, exprs: &[&str], scratch: &Path, what: &str, phase: &str) -> Result<()> {
-    let filter = |input: &Path, progress: bool| {
+/// `osmium tags-filter` of `src` by `exprs` into `o` (`read_input`), in a phase of its own when
+/// given one (`phase`: osmium's time for a local file, the NAS's read for one on the NAS).
+fn tags_filter(src: &Input, o: &Path, exprs: &[&str], scratch: &Path, what: &str, phase: Option<&str>) -> Result<()> {
+    use crate::timings::Class;
+    let _p = phase.map(|ph| match src {
+        Input::Local(_) => crate::timings::phase(&format!("{ph} (osmium)"), Class::Compute),
+        Input::Nas(_) => crate::timings::phase(&format!("{ph} (osmium, over SSH)"), Class::NasRead),
+    });
+    // (Adding the objects the matches reference, osmium reads its input twice.)
+    read_input(src, &scratch.join("stream"), 2, |input, local| {
         let mut c = osmium();
         c.args(["tags-filter", "--overwrite", "-F", "pbf", "-o"]).arg(o).arg(input).args(exprs);
-        if progress {
+        if local {
             run_osmium(c, what)
         } else {
             run(c, what)
         }
-    };
+    })
+}
+
+/// Runs `run` on `src`'s path: a local file's own, or one streaming a file on the NAS over SSH
+/// (`streamed`, `reads` reads of it expected, for progress; the bytes counted as the enclosing
+/// phase's), with whether it's local.
+fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool) -> Result<()>) -> Result<()> {
     match src {
-        Input::Local(p) => {
-            let _p = crate::timings::phase(&format!("{phase} (osmium)"), crate::timings::Class::Compute);
-            filter(p, true)
-        }
+        Input::Local(p) => run(p, true),
         #[cfg(target_os = "wasi")]
-        Input::Nas(p) => bail!("{}: no streaming off the NAS here", p.display()),
+        Input::Nas(p) => {
+            let _ = (dir, reads);
+            bail!("{}: no streaming off the NAS here", p.display())
+        }
         #[cfg(not(target_os = "wasi"))]
         Input::Nas(p) => {
             let remote =
                 store::nas::on_nas(p).with_context(|| format!("{} isn't on the NAS's mounted share", p.display()))?;
-            let len = std::fs::metadata(p)?.len();
-            let _p = crate::timings::phase(&format!("{phase} (osmium, over SSH)"), crate::timings::Class::NasRead);
-            let n = streamed(&ssh, &remote, len, &scratch.join("stream"), |input| filter(input, false))?;
+            let n = streamed(&ssh, &remote, reads, dir, |input| run(input, false))?;
             crate::timings::count(n, 1);
             Ok(())
         }
@@ -195,24 +205,26 @@ fn proxy_addr(url: &str) -> Option<String> {
     a.contains(':').then(|| a.to_string())
 }
 
-/// Runs `run` on a path that reads as `remote` (a file on the NAS, `len` bytes) streamed over SSH
+/// Runs `run` on a path that reads as `remote` (a file on the NAS) streamed over SSH
 /// (`ssh`'s command, `cat` on the NAS), never through the SMB mount: a soft mount times out on
 /// osmium's hour-long reads ("Close failed: Operation timed out", 2026-10-21, four times). osmium
 /// reads its input twice to add the objects the matches reference (and refuses stdin for that), so
 /// the path is a link to a named pipe, fed one `cat` each time osmium opens it: once it's opened,
-/// the link is pointed at a fresh pipe for the next open. Returns the bytes read off the NAS. In
-/// `dir`, made afresh.
+/// the link is pointed at a fresh pipe for the next open. Each read must carry the file's whole
+/// length (its size taken over SSH first): a short `cat` that exits 0 fails. `reads`: how many
+/// reads `run` makes, for progress (0: none said, the caller says its own). Returns the bytes read off the NAS. In `dir`, made afresh.
 #[cfg(not(target_os = "wasi"))]
 pub fn streamed(
     ssh: &(dyn Fn() -> Command + Sync),
     remote: &str,
-    len: u64,
+    reads: u32,
     dir: &Path,
     run: impl FnOnce(&Path) -> Result<()>,
 ) -> Result<u64> {
     let quoted = format!("'{}'", remote.replace('\'', "'\\''"));
     let mut check = ssh();
-    check.arg(store::nas::SSH).arg(format!("test -r {quoted}"));
+    // (Its size by `ls`, as producers/depth/repack.py reads sizes on the NAS: `-L` through a link.)
+    check.arg(store::nas::SSH).arg(format!("test -r {quoted} && ls -lnL -- {quoted}"));
     let ok = store::spawn::output(&mut check).with_context(|| "run ssh")?;
     ensure!(
         ok.status.success(),
@@ -220,6 +232,11 @@ pub fn streamed(
         store::nas::SSH,
         String::from_utf8_lossy(&ok.stderr).trim()
     );
+    let len: u64 = String::from_utf8_lossy(&ok.stdout)
+        .split_whitespace()
+        .nth(4)
+        .and_then(|n| n.parse().ok())
+        .with_context(|| format!("{remote}'s size on the NAS ({})", String::from_utf8_lossy(&ok.stdout).trim()))?;
     std::fs::remove_dir_all(dir).ok();
     std::fs::create_dir_all(dir)?;
     let link = dir.join("input.osm.pbf");
@@ -267,6 +284,7 @@ pub fn streamed(
                 let mut child = store::spawn::spawn(&mut c).context("run ssh")?;
                 let mut from = child.stdout.take().context("ssh's output")?;
                 let mut buf = vec![0u8; 1 << 20];
+                let before = total;
                 let copied = (|| -> std::io::Result<()> {
                     loop {
                         let n = std::io::Read::read(&mut from, &mut buf)?;
@@ -275,9 +293,9 @@ pub fn streamed(
                         }
                         std::io::Write::write_all(&mut w, &buf[..n])?;
                         total += n as u64;
-                        // (Two reads, as osmium makes with references to add; said each 0.1 %.)
-                        let f = (total as f64 / (2 * len.max(1)) as f64).min(0.99);
-                        if f - said >= 0.001 {
+                        // (Said each 0.1 %.)
+                        let f = (total as f64 / (u64::from(reads.max(1)) * len.max(1)) as f64).min(0.99);
+                        if reads > 0 && f - said >= 0.001 {
                             crate::agent::jobs::within(f);
                             said = f;
                         }
@@ -289,6 +307,7 @@ pub fn streamed(
                 let st = child.wait()?;
                 copied.context("stream the NAS's file to osmium")?;
                 ensure!(st.success(), "ssh {} cat {remote} failed: {st}", store::nas::SSH);
+                ensure!(total - before == len, "a short read of {remote}: {} of its {len} bytes", total - before);
             }
             Ok(total)
         });
@@ -498,7 +517,7 @@ fn filtered_nas(out: &Out, date: &str) -> Result<PathBuf> {
 /// Resumable: `<tile>.cut` marks a tile whose quarters were cut, `<tile>.done` one whose whole
 /// subtree is done.
 fn cut_tree(
-    input: &Path,
+    input: &Input,
     t: TileId,
     consume: bool,
     work: &Path,
@@ -509,12 +528,15 @@ fn cut_tree(
     let dir = work.join(format!("z{}", t.z + 1));
     let marker = work.join(format!("{}.cut", t.dash()));
     if !marker.exists() {
-        cut(input, &kids, &dir, 4)?;
+        // (osmium extract with the smart strategy reads its input four times (1.19), each open a stream of its own when
+        // it's on the NAS; the cut says its progress by the extracts made.)
+        read_input(input, &work.join("stream"), 0, |p, _| cut(p, &kids, &dir, 4))?;
         std::fs::write(&marker, b"")?;
     }
-    // Its quarters are on disk: the input goes (`consume`: a z6 tile of this tree, not the root's).
-    if consume {
-        std::fs::remove_file(input).ok();
+    // Its quarters are on disk: the input goes (`consume`: a z6 tile of this tree, or the root's
+    // local copy).
+    if let (true, Input::Local(p)) = (consume, input) {
+        std::fs::remove_file(p).ok();
     }
     for k in kids {
         let done = work.join(format!("{}.done", k.dash()));
@@ -532,7 +554,7 @@ fn cut_tree(
                 std::fs::remove_file(&f)?;
             }
         } else if f.exists() || cut_already {
-            cut_tree(&f, k, true, work, each)?;
+            cut_tree(&Input::Local(f), k, true, work, each)?;
         }
         std::fs::write(&done, b"")?;
     }
@@ -860,14 +882,7 @@ pub fn run_pass(
     if !done(scratch, "filter").exists() {
         part(1, "the planet filtered (osmium)");
         let src = if copy_first { Input::Local(local_planet.clone()) } else { Input::Nas(planet.to_path_buf()) };
-        tags_filter(
-            &src,
-            &filtered,
-            FILTER_A,
-            scratch,
-            "osmium tags-filter (the pipeline's tags)",
-            "the planet filtered",
-        )?;
+        tags_filter(&src, &filtered, FILTER_A, scratch, "osmium tags-filter (the pipeline's tags)", None)?;
         part(2, "the filtered planet uploaded");
         out.put_file_with(
             &format!("sources/osm/{date}/filtered"),
@@ -885,7 +900,7 @@ pub fn run_pass(
             stage(k as u64, SETS.len() as u64, &format!("sets made ({name} now)"));
             let o = scratch.join(format!("set-{name}.osm.pbf"));
             let src = Input::Local(filtered.clone());
-            tags_filter(&src, &o, exprs, scratch, &format!("osmium tags-filter (set {name})"), "sets filtered")?;
+            tags_filter(&src, &o, exprs, scratch, &format!("osmium tags-filter (set {name})"), Some("sets filtered"))?;
             let _p = crate::timings::sub("sets uploaded", crate::timings::Class::NasWrite);
             out.put_file(&set_name(date, name), "osm.pbf", &o)?;
             std::fs::remove_file(&o).ok();
@@ -925,14 +940,7 @@ pub fn run_pass(
         if !(b.exists() && done(scratch, "basemap-input").exists()) {
             let src =
                 if filtered.exists() { Input::Local(filtered.clone()) } else { Input::Nas(filtered_nas(out, date)?) };
-            tags_filter(
-                &src,
-                &b,
-                FILTER_BASEMAP,
-                scratch,
-                "osmium tags-filter (basemap)",
-                "the basemap's input filtered",
-            )?;
+            tags_filter(&src, &b, FILTER_BASEMAP, scratch, "osmium tags-filter (basemap)", None)?;
             mark(scratch, "basemap-input")?;
         }
         part(5, "the basemap drawn (Planetiler)");
@@ -1007,11 +1015,11 @@ pub fn run_pass(
             std::fs::remove_file(&filtered)?;
         }
         let local = filtered.exists();
-        let src = if local { filtered.clone() } else { filtered_nas(out, date)? };
+        let path = if local { filtered.clone() } else { filtered_nas(out, date)? };
         let work = scratch.join("extract-work");
         // Progress by data: the extracts' sizes against the filtered planet's (their buffers overlap a
         // little, so it's capped just short of the end), the extracts uploaded before a restart too.
-        let total_mb = std::fs::metadata(&src)?.len() >> 20;
+        let total_mb = std::fs::metadata(&path)?.len() >> 20;
         let prefix = format!("sources/osm/{date}/pieces/");
         let mut done_mb: u64 = out
             .manifest
@@ -1023,6 +1031,7 @@ pub fn run_pass(
         part(6, "the planet cut into z6 tiles");
         let cut_report = |mb: u64| report(mb.min(total_mb.saturating_sub(1)), total_mb, "MB cut into z6 tiles");
         cut_report(done_mb);
+        let src = if local { Input::Local(path) } else { Input::Nas(path) };
         cut_tree(&src, TileId { z: 0, x: 0, y: 0 }, local, &tree, &mut |u, f| {
             let logical = format!("sources/osm/{date}/pieces/{}", u.dash());
             if out.get(&logical).is_none() {
@@ -1498,10 +1507,36 @@ mod tests {
         dest
     }
 
-    /// A filter of a file on the NAS streamed over SSH (`streamed`), through a fake `ssh` that runs
-    /// its command here: osmium reads it twice (the matches' nodes added), each read counted; an
-    /// SSH that can't reach the NAS fails clearly, before osmium runs; an osmium that fails leaves
-    /// no feeder waiting.
+    /// A fake `ssh` (in the returned folder) that runs its command here: its last argument; with
+    /// FAIL set it can't connect, with SHORT set a `cat` stops after 50 bytes and exits 0.
+    fn fake_ssh(dir: &Path) -> impl Fn(&str) -> Box<dyn Fn() -> Command + Sync> {
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let fake = bin.join("ssh");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\n[ -n \"$FAIL\" ] && { echo 'Permission denied' >&2; exit 255; }\nfor a; do last=$a; done\n\
+             case \"$last\" in cat*) [ -n \"$SHORT\" ] && { sh -c \"$last\" | head -c 50; exit 0; };; esac\n\
+             exec sh -c \"$last\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        move |mode: &str| {
+            let (bin, mode) = (bin.clone(), mode.to_string());
+            Box::new(move || {
+                let mut c = store::spawn::command_in("ssh", bin.as_os_str());
+                if !mode.is_empty() {
+                    c.env(&mode, "1");
+                }
+                c
+            })
+        }
+    }
+
+    /// A filter of a file on the NAS streamed over SSH (`streamed`): osmium reads it twice (the
+    /// matches' nodes added), each read counted; an SSH that can't reach the NAS fails clearly,
+    /// before osmium runs; a short read fails though `cat` exits 0; an osmium that fails leaves no
+    /// feeder waiting.
     #[test]
     fn a_filter_streams_the_nas_file_over_ssh() {
         let d = tempfile::tempdir().unwrap();
@@ -1510,26 +1545,7 @@ mod tests {
             "planet",
             "n1 v1 x1 y1\nn2 v1 x2 y1\nn3 v1 x3 y1\nw10 v1 Twikidata=Q1 Nn1,n2\nw11 v1 Thighway=road Nn2,n3\n",
         );
-        let bin = d.path().join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let fake = bin.join("ssh");
-        // (Its last argument is the command; with FAIL set it can't connect.)
-        std::fs::write(
-            &fake,
-            "#!/bin/sh\n[ -n \"$FAIL\" ] && { echo 'Permission denied' >&2; exit 255; }\nfor a; do last=$a; done\nexec sh -c \"$last\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        let ssh = |fail: bool| {
-            let bin = bin.clone();
-            move || {
-                let mut c = store::spawn::command_in("ssh", bin.as_os_str());
-                if fail {
-                    c.env("FAIL", "1");
-                }
-                c
-            }
-        };
+        let ssh = fake_ssh(d.path());
         let o = d.path().join("out.osm.pbf");
         let len = std::fs::metadata(&src).unwrap().len();
         let remote = src.to_str().unwrap();
@@ -1540,21 +1556,55 @@ mod tests {
             c.arg("w/wikidata");
             run(c, "osmium tags-filter")
         };
-        let n = streamed(&ssh(false), remote, len, &stream, filter).unwrap();
+        let n = streamed(&*ssh(""), remote, 2, &stream, filter).unwrap();
         assert_eq!(n, 2 * len, "read twice, each read counted");
         let opl = store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(&o)).unwrap().stdout;
         let ids: Vec<String> =
             String::from_utf8(opl).unwrap().lines().map(|l| l.split(' ').next().unwrap().to_string()).collect();
         assert_eq!(ids, ["n1", "n2", "w10"]);
         assert!(!stream.exists(), "its pipes gone");
-        let e = streamed(&ssh(true), remote, len, &stream, |_| panic!("osmium ran")).unwrap_err();
+        let e = streamed(&*ssh("FAIL"), remote, 2, &stream, |_| panic!("osmium ran")).unwrap_err();
         assert!(format!("{e:#}").contains("SSH keys"), "{e:#}");
-        let e = streamed(&ssh(false), remote, len, &stream, |p| {
+        let e = streamed(&*ssh("SHORT"), remote, 2, &stream, filter).unwrap_err();
+        assert!(format!("{e:#}").contains("short read"), "{e:#}");
+        let e = streamed(&*ssh(""), remote, 2, &stream, |p| {
             drop(std::fs::File::open(p).unwrap());
             anyhow::bail!("osmium failed")
         })
         .unwrap_err();
         assert!(format!("{e:#}").contains("osmium failed"), "{e:#}");
+    }
+
+    /// The first cut (`cut`, osmium extract's smart strategy) of a file streamed off the NAS makes
+    /// the extracts the local file's cut makes, each of its reads whole.
+    #[test]
+    fn the_cut_streams_the_nas_file_over_ssh() {
+        let d = tempfile::tempdir().unwrap();
+        let src = osm(
+            d.path(),
+            "planet",
+            "n1 v1 x1.0 y50.0\nn2 v1 x1.1 y50.0\nn3 v1 x-100 y-40\nn4 v1 x-100.1 y-40\n\
+             w10 v1 Thighway=road Nn1,n2\nw11 v1 Thighway=road Nn3,n4\n\
+             r20 v1 Ttype=multipolygon Mw10@outer\n",
+        );
+        let ssh = fake_ssh(d.path());
+        let len = std::fs::metadata(&src).unwrap().len();
+        let kids: Vec<TileId> = (0..2).flat_map(|x| (0..2).map(move |y| TileId { z: 1, x, y })).collect();
+        let (here, there) = (d.path().join("here"), d.path().join("there"));
+        cut(&src, &kids, &here, 4).unwrap();
+        let n = streamed(&*ssh(""), src.to_str().unwrap(), 0, &d.path().join("stream"), |p| cut(p, &kids, &there, 4))
+            .unwrap();
+        assert_eq!(n, 4 * len, "four whole reads (osmium 1.19)");
+        let opl = |p: &Path| {
+            store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(p)).unwrap().stdout
+        };
+        for k in &kids {
+            let f = format!("{}.osm.pbf", k.dash());
+            assert_eq!(here.join(&f).exists(), there.join(&f).exists(), "{f}");
+            if here.join(&f).exists() {
+                assert_eq!(opl(&here.join(&f)), opl(&there.join(&f)), "{f}");
+            }
+        }
     }
 
     #[test]

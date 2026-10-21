@@ -19,8 +19,12 @@ What each step does, in detail. The steps as one table (names, chains, the check
    (`osmpass::streamed`: `ssh brandontsang@fishandchips.local cat …`, one stream for each of
    osmium's two reads, through a named pipe; the soft mount timed out on the hour-long reads). It
    needs SSH keys to the NAS (docs/macs.md) and fails saying so. A job under the budgets' sandbox
-   reaches the NAS through its agent's proxy (`CONNECT`, unmetered). The bytes count as NAS reads.
-   The first cut (`osmium extract`) still reads (a) off the mount when the local copy went.
+   reaches the NAS through its agent's proxy (`CONNECT`, unmetered). The bytes count as NAS reads;
+   each read must carry the file's whole size (taken over SSH first). The first cut (`osmium
+   extract`, four reads) streams (a) the same way when the local copy went. Known retry cause: a
+   job frozen by memguard for over 10 minutes freezes its stream too (the feeder is in the job's
+   process group), the proxy ends the idle tunnel, and the job fails; its retry redoes that
+   stage.
 5. **Outlines:** administrative levels 2–8 and ISO 3166 areas, assembled into polygons in a
    sectioned file, with simplified copies. Made by their own step (`outlines`,
    `osmpass::make_outlines`, keyed by `OUTLINES_V`, the pass, the set and the previous outlines);

@@ -86,6 +86,12 @@ M1, with room for more at once (build memory 28 GB by default).
 3. Mount the NAS share at `/Volumes/personal`, its password saved to the login Keychain.
 4. Homebrew, then `brew install osmium-tool openjdk@21 uv git`.
 5. Tailscale; SSH keys both ways with the other Macs.
+   SSH to the NAS too (the OSM pass's filters stream big inputs over it, `osmpass::streamed`):
+   this Mac's public key in `~/.ssh/authorized_keys` of `brandontsang@fishandchips.local`, and the
+   NAS's host key accepted once by hand (`ssh brandontsang@fishandchips.local true`, answering
+   yes), since the build's `ssh` runs in batch mode and refuses an unknown host. Check:
+   `ssh -o BatchMode=yes brandontsang@fishandchips.local ls /volume1/personal/projects/scenic-roads`.
+   The share `/Volumes/personal` is `/volume1/personal` on the NAS.
 6. `tools/app/install.sh` (it also creates the map server's LaunchAgent), then open Scenic.app once.
 7. Allow `scenic` and `server` through the firewall (pool.md §6.8).
 8. `scenic memory` says the build's memory (total − 4 GB unless set); the room target is the
