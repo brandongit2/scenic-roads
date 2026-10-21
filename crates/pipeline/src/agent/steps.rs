@@ -26,8 +26,8 @@
 //! Not in it: the disk a job starts with (the owner's room target and the job's measured disk, the disk guard
 //! behind it), groups of steps never run at once on one Mac (the raw tiles' accessor, the budgets'
 //! proxy and the answers' lease guard what they share where it's used), and which jobs run beside
-//! which (the coordinator packs a Mac's jobs by their measures; a cold start alone: docs/pool.md
-//! §7.2).
+//! which (the coordinator packs a Mac's jobs by their measures; a cold start by its provisional
+//! need, `mem_mb` times 3/2: docs/pool.md §7.7).
 //!
 //! The step sets (`SHARED`, `ANSWERED`) are made from the table at compile time (a set whose size
 //! isn't what the table gives fails the build), and a step's first guess of memory is read from its
@@ -142,8 +142,8 @@ pub struct Step {
     /// Its stage's id (`STAGES`).
     pub stage: &'static str,
     /// The memory a job of it is expected to take (MB) before a target's own run has said
-    /// (`SCENIC_COSTS`, crate::coord::Cost): offered so to the members, and reckoned so beside
-    /// another job. (Z6 tiles and candidates are offered by their extract's size, terrain by its z3 tile's,
+    /// (`SCENIC_COSTS`, crate::coord::Cost): offered so to the members, and a cold start packed
+    /// beside other jobs at 3/2 of it (crate::coord::provisional_mb). (Z6 tiles and candidates are offered by their extract's size, terrain by its z3 tile's,
     /// the 3D buildings by their rows: crate::agent's offers.)
     pub mem_mb: u64,
     /// Other members take its jobs (the shared steps), at this rank of preference (what later steps

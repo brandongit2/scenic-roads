@@ -474,8 +474,8 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
 - **Every step to every member** (`crate::agent::every`, `crate::coord`'s `pick_every`): all but the
   lead's own steps (`every::LEAD_ONLY`: catalogs, prunes, `bld-fetch`, the answer-keeping steps, the
   worldwide steps) go to any member whose measured room fits, the lead among them. A cold start
-  (§7.7) goes to the member with the most room (`most_room`: of those asking lately and holding no
-  job, the lead's own agent among them), alone, while no job of its step runs.
+  (§7.7) goes, one target, to the first asker its provisional need fits (or one holding no job),
+  while no job of its step runs anywhere.
 - **The lead's own steps by grant too** (`Agent::offer_plan`, `coord`'s `pick_own`): the lead
   offers its whole plan in its order (the publishing chain among it), each offered step's targets
   where its work first comes and each of its own planned jobs whole (`Offer::job`). The authority
@@ -483,8 +483,9 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   only to the current lead's member, asking in process; a member's ask over HTTP never gets one.
   One job of such a step runs at a time; its measures (memory, disk), the NAS budget (always, §7.7)
   and a cancel's hold hold it as they hold a member's job. Its cold start (none of it measured)
-  has the lead as its asker, whatever another's room, and runs alone: while the lead holds jobs, it
-  is granted nothing more until they end (`own_cold_waits`), then that job before any other. A
+  goes by its provisional need (§7.7) like any other: beside the lead's jobs when that fits the
+  room left; when it doesn't, the lead is granted nothing more until enough of its jobs end
+  (`own_cold_waits`; all of them for one bigger than its whole room), so offered work never starves it. A
   planned job that can't start for a reason of the agent's own (a failure's wait, the proxy not
   up, the memory guard's hour: `wait_reason`) isn't asked for. One that fails (or the memory guard
   stops) ends its lease failed (`finish_failed`): its targets are kept from the lead an hour,
@@ -492,8 +493,9 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
 - **Packing** (`coord`'s `pack`): a Mac may hold several leases. An ask says how many jobs it would
   start (`want`); while every member reports the new app (§7.1, Mixed versions; else one each) the
   coordinator grants up to that many in one answer (`Grant::more`, each its own
-  lease), packed in plan order into the ask's room: each after the first the Mac holds must be
-  measured (memory, disk, and cores: `needs::Book::cores`, within the packed share, §7.1) and fit
+  lease), packed in plan order into the ask's room: each after the first the Mac holds must fit,
+  by its measures (memory, disk, and cores: `needs::Book::cores`, within the packed share, §7.1;
+  cores not said count as the share) or a cold start's provisional need (§7.7), within
   what's left: the ask's memory and disk (the build's memory on its Mac, §7.1, `Agent::build_room`;
   and its free disk) and its Mac's cores (less the in-use share's
   while its owner uses it, and less the cores busy outside the pool: those its last minute's load
@@ -502,11 +504,9 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   load lags a minute and is rounded up: a job just ended), `coord::outside_cores`; task #440: a Mac swamped by other work, builds and tests,
   gets no job beside those it holds, and its refusal says the cores busy outside the pool), less the measured needs of every job it holds and of those granted
   with it. A lease counts until it ends or lapses: a restarted Mac's old leases hold its room
-  until their TTL runs out. A cold start goes only to a Mac holding no lease, alone, and nothing
-  goes beside one; but a cold job of the lead's own (none of its step's runs the way it runs now noted a cost) whose
-  targets each have a floor the memory guard measured alone, the way it runs now, within the room
-  left goes beside its running jobs (`floors_fit`: the input
-  checks, which noted no cost before task #445, waited hours for a Mac running nothing). With placement on, a member holding a job whose cores, as its last ask
+  until their TTL runs out. The room left is never more than what the Mac's jobs hold now leaves
+  (the ask's memory less `Capacity::held_mb`, its memory guard's last sample): a cold start holding
+  past its provisional need counts at what it holds. With placement on, a member holding a job whose cores, as its last ask
   showed, are filled by load from outside the pool with its jobs' (`Shared::swamped`; its own
   jobs alone filling them don't count) isn't among those a target is drawn to: the others take it. Each job is as many targets as fit a quarter hour (`JOB_S`) by their measured
   times (an unmeasured target's: its step's mean, the latest earlier way's when larger while the way it
@@ -656,7 +656,7 @@ never correctness, politeness or work.
 | memory | measured per target (`peak_mb`, the guard's floors, §7.2) |
 | input size | measured per target beside its cost (`sizes` in `costs.jsonl`, `pipeline::costin`: bytes read, threads, area, GeoTIFFs opened, the bytes and files its `Out` made on the NAS (`wrote`, `creates`), and the counts a step has: ways and vertices, buildings, peaks); read by the step's model (below) |
 | disk | measured per target: bytes written through `store::cachefile` and the scratch writers (`SCENIC_WRITTEN`), plus a look each minute at the largest files in a slot's scratch folder; kept as the target's disk floor (`disks.json`). **Disk guard:** when free space falls below the owner's room target (less a thirtieth of it, so a job just let in at the target isn't frozen at once: `memguard::disk_short_of`), the fastest-growing job is frozen (another too if the disk falls past half the target), room is made from caches no job holds (`room::toward`), and it goes on once the target is free again or is given back. No target is set until the owner picks one (Off is none); with none, the guard fires only at an actually full disk, with no other floor. Given-back jobs' scratch folders are deleted oldest first when room is short (`room::free_given_back`) |
-| jobs on one Mac | a job is granted beside others only if their measured memory, disk and cores fit (packing, §7.2), and only while every member reports the new app (§7.1, Mixed versions); a cold start runs alone |
+| jobs on one Mac | a job is granted beside others only if their measured memory, disk and cores fit (packing, §7.2), and only while every member reports the new app (§7.1, Mixed versions); a cold start by its provisional need (§7.7) |
 | raw tiles | `store::cachefile`'s locks; packing deletes only tiles no job holds; a job reopens its shard's archives when the index changed (`RawTiles::get`, `refresh_shard`; a shard is the z6 tile, z3 tile or `root` whose archives hold a tile: docs/macs.md) |
 | Wikimedia budget | `crate::budget`: one budget for the pool, enforced at egress. Every job's connections go through its agent's proxy (`crate::budget::proxy`, `HTTPS_PROXY`), the job sandboxed (`sandbox-exec`) to deny any other way out. A metered connection takes a token first: leases are create-new files per slot of a ten-second window (`state/pool/wiki/<class>/<window>-<slot>`). `wiki` four requests a second; `query` (WDQS, QLever) one query per two seconds of query time. A 429 told to the proxy (`POST /hold`, dem/budget.py) holds every Mac. The NAS away, each Mac takes the rate divided by known members. Lint: `tests/budgets.rs` |
 | NAS and network budget | `crate::budget::nas`: the lead's own jobs always; the members' too unless `state/pool/nas-budget` says `off` (on while missing). A job's **NAS weight** is its share of the NAS in thousandths: its targets' measured rate (`needs::Book::nas`: `bytes` read plus `wrote`, and `creates`, each over its wall time, a halo step's (`pack`, `lo`) `wrote` alone, its job's read rate (`nas_read` over `nas_secs`: what the job read of the halo's base packs from the NAS and the time that took, on each of its targets; a measure without `nas_secs`, task #396's first, counts no reads) in place of its `bytes` (the halo's base packs' files); its own run's, else its step's 90th percentile of each; none measured, 0), and its metadata work (task #451: `listed`, `stats`, `deletes` from `costin::meta`, the folder entries it listed and the files it statted and deleted (renames counted as deletes), each over its wall time; counted by GC's walks, which note a cost line `gc gc` in their job's costs file, and the inputs step's drop-box listing), each over the NAS's limit, added: one combined weight, at most the whole (1000); a job its heaviest target's (a job of no targets of its own, its lease's, its step's). **The limits** are measured: the lead's coordinator probes the NAS every 30 minutes, whatever the switch says (`probe`: 12 files of 4 KB made, one of 16 MB written, synced and read back past the cache, the 12 files deleted one by one, and a kept folder of its own (`<host>-meta` beside the probe's folders, 48 files, never removed by the stale-folder clean-up) listed and its files statted, measured only once it has gone unwritten 5 minutes so the answers come from the NAS, not this Mac's SMB cache of what it just wrote (missing or young: made, and 0 this probe; a 0 weighs nothing and the day's best is kept), in a folder of its own under `state/pool/nas-probe/<host>-<pid>`, all removed after; as it starts, the coordinator removes its host's folders a stopped process left, never another host's) and takes the best of the last day's probes (a probe under the build's load measures what's left). `scenic pool nas-probe [--dir <folder>]` runs one. **Enforced at grant** (`coord`'s `pick_every` and `pick_own`, so `pack` too, the lead's own jobs among them): a member's target is granted only while the weights of every job leased in the pool (the lead's own among them) leave room for its own within the whole (1000), or while no other member's job weighs anything (the lead's own alone never hold it back), or, weighing the whole itself, once it has waited 10 minutes for the budget alone and no leased job weighs the whole (`Limits::fits_job`, `OWN_AGE`: two members' jobs never starve it); the lead's own only within the whole, or while nothing leased weighs anything (`Limits::fits_own`); a planned job of the lead's own also while no leased job weighs the whole, once it weighs the whole itself, or has waited 10 minutes for the budget alone and the lead's own leased jobs leave it room within the whole (`Limits::fits_own_job`, `OWN_AGE`, the wait timed from when it was first held back and forgotten once granted: members' small jobs never hold it back for good, and the lead's own aged jobs don't pile up past the budget; the simulator checks each start of the lead's own against the same rule, with the waits as the coordinator kept them); **an aged target holds its room** (`Shared::nas_reserved`, task #444): of the targets held back for the budget alone for 10 minutes or more (and passed over in the last two minutes), the one held back first has its weight kept free: no other job weighing anything is granted, a member's or the lead's, unless the leased jobs, it and that one fit within the whole, so a target weighing less than the whole but more than the room left (depth-lo's) goes as the leased jobs end instead of waiting behind a stream of smaller ones; it never lets the budget past the whole, the reserved target itself aside (a member's whole-weight job going by `fits_job`'s aged path, or an aged job of the lead's own by `fits_own_job`); a target is noted waiting only when its asker would take it but for the budget (its measured memory and disk fit, or a cold start it's the one to make), so one no asker can take never holds room; a cold job of its own waits for the lead's jobs to end (§7.2) only when it would fit with the members' jobs alone. **The lead's own jobs are always held to it**, whatever the switch says (the limits probed: `nas_own`); the switch, unless `off`, holds the members' too (`nas`). Switched `off`, the members' jobs are not held and the lead's own are held by their own weights alone (`Shared::nas_room_heaviest`: a member's unheld jobs no longer keep the lead idle). The rest wait for a job to end; a target held back for over 30 minutes is a waiting line in the lead's status (`Coordinator::nas_waits`), once each (`agent::nas_wait_lines`). **The clean-up waits for a quiet NAS** (`QUIET_STEPS`: `gc`; task #451, after GC beside two depth-lo jobs held the NAS at 34 % IO wait and all three stalled): it starts only beside leased jobs weighing nothing, or, its weight measured, within the whole with them (`Limits::fits_quiet`), and the room held for an aged target; unmeasured, also only while no leased job is of a step known to read the NAS (`NAS_STEPS`) or unmeasured for it (`nas_unknown_running`). Its wait isn't noted (it holds no room) until it has been held back 24 hours since it was last granted (`QUIET_AGE`, `Shared::quiet_since`, kept in memory: a new coordinator counts afresh): then it goes as an aged job of the lead's own (`fits_own_job`, its wait noted, its room held). Running, it yields at its next safe point (each folder of its sweeps; `control::draining`, its cost line noted first, ending as paused) when a target held back for the budget `OWN_AGE` doesn't fit beside the leased jobs but would without it (`Coordinator::nas_yield`, asked by the agent each loop). **Downloads:** a job of a fetching step (steps table kind `Fetch`) counts one, capped pool-wide by the switch's `downloads <n>` (no cap without it): the lead's own fetching steps (`bld-fetch`, `rail-feeds`; none is offered to members). Not held to it: tasks |
@@ -685,8 +685,16 @@ changes. The coordinator's picks (`pick`, `pick_every`, `measured`, `secs_of`, `
 and the forecast all read it. `scenic pool needs --fit` prints each step's fits and their held-out
 errors (memory, wall time, disk) beside the prior's, and lists the steps that don't fit.
 
-**A cold start** (no target of its step measured) runs alone on the Mac with the most room; after
-one run, the step's other targets are offered by its model (above). A floor never stalls the build: the first slot starts once
+**A cold start** (no target of its step measured; task #499) is packed by its *provisional need*:
+the most its step declares (the steps table's `mem_mb`) or it was offered with, times 3/2
+(`coord::provisional_mb`), its disk its step's measures' (else none), its cores the packed share.
+It goes beside other jobs when that fits the room left, and other jobs go beside it by the same
+figure; one bigger than a Mac's whole room goes only to a Mac holding no job. One job of the step
+runs in the pool at a time (`pick_every`, the lead's `cold_under_way`), so the step is measured
+before it fans out. Its Mac's room left is never more than what its jobs hold now leaves (§7.2,
+`Capacity::held_mb`), so one holding past its provisional need is counted at what it holds as soon
+as the guard samples it; one that grows past the Mac's limit is the memory guard's (§7.2), which
+learns its floor. After one run, the step's other targets are offered by its model (above). A floor never stalls the build: the first slot starts once
 room-making has done what it can, the disk guard as backstop.
 
 Planned: `cost_version` derived from the step's key version (`crate::agent::build`'s `*_V`) rather
@@ -835,7 +843,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   running job numbered by its real slot (`JobView::slot`: slots may be sparse, so a Mac running
   only its fourth slot shows slot 4), with that slot's lane's next work; and why nothing more
   fits: the packing's refusal as its last ask was packed (`Coordinator::refusals`, the status's
-  `packing`: a cold start running or waiting, cores short for the next job open, or nothing
+  `packing`: a cold job of the lead's own waiting for room, cores short for the next job open, or nothing
   offered fitting the room left), shown while the refusal itself is younger than two minutes
   (`CAP_FRESH_S`), older ones dropped. The forecast's lanes are per slot
   (`<host>`, `<host> #2`, …), as many as the slots each Mac may run now (`forecast::slot_lanes`):
@@ -845,7 +853,7 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   each clean stretch, opening then). A Mac's lanes share its whole room as the coordinator packs
   an ask (`forecast::MacRoom`: the memory its asks spare for its jobs together, its cores; each
   job its packed cores, `coord::packed_cores_of`; a slot's job no item is held at its step's
-  peak; a step not measured runs alone; a job an ask while a member runs an older app); a
+  peak; a step not measured by its provisional need, one of it at a time; a job an ask while a member runs an older app); a
   member's take any work of the plan any Mac may run, from the front of the plan's order
   (`pick_every`), the lead's own steps (`steps::Place::Lead`) staying on the lead's lanes; each
   lane starts with its slot's running job and its time left (a member's without progress said:
@@ -965,9 +973,9 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
   disk written evenly over its run, the rest its reservation (an ask says its free space now less
   its room target and its reservations); its measures go back into the coordinator (crate::needs reads
   them). Checked at every start, first where a job may go (no Mac past its slots; lead-only steps
-  on the lead, granted as its own jobs; a cold start alone on its Mac and in the pool, nothing
-  beside one), then what it takes (past a Mac's memory limit only a cold start, stopped by the
-  guard; never past its disk, every job on it counted whole, so no Mac's disk is over-committed,
+  on the lead, granted as its own jobs; one cold start of a step in the pool at a time), then what
+  it takes (past a Mac's memory limit only a cold start, stopped by the guard; a cold start's NAS
+  weight, unknown to the coordinator, not counted against the budget; never past its disk, every job on it counted whole, so no Mac's disk is over-committed,
   or past its cores with the threads granted); and the plan finishes. A run with an M1 8 GB past
   its room target and 5 GB jobs finishes reserving, and over-commits without (asking with its free
   space now alone).

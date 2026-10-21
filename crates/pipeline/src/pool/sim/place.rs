@@ -31,8 +31,8 @@
 //!
 //! Checked at every start, first where a job may go at all: no Mac past its slots; a halo step's job
 //! within one halo; a step kept to the
-//! lead (crate::agent::every::LEAD_ONLY, or not offered) only on the lead; a cold start alone on its
-//! Mac and in the pool, and nothing beside one. Then what it takes: past its Mac's memory limit only
+//! lead (crate::agent::every::LEAD_ONLY, or not offered) only on the lead; one cold start of a step
+//! in the pool at a time (beside other jobs by its provisional need, task #499). Then what it takes: past its Mac's memory limit only
 //! a cold start, stopped by the guard; never past its disk (every job on it counted whole: no Mac's
 //! disk over-committed, however little its jobs have written yet); its threads (those granted it,
 //! crate::coord::Grant::threads, at least one) and those of the jobs beside it never past its Mac's
@@ -161,6 +161,8 @@ struct Job {
     threads: u32,
     /// Its NAS weight (its step's true rate by the limits).
     nas: u32,
+    /// A cold start: its weight unknown to the coordinator when granted, so not counted against the
+    /// NAS budget (the coordinator weighs it 0 too).
     cold: bool,
 }
 
@@ -452,16 +454,6 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             if k > 0 && (!every::offered(step) || every::LEAD_ONLY.contains(&step)) {
                 return Err(format!("{} (a member) placed {step}, kept to the lead", cfg.macs[k].name));
             }
-            if cold && !running[k].is_empty() {
-                return Err(format!(
-                    "{} placed a cold start of {step} beside {:?}",
-                    cfg.macs[k].name,
-                    running[k].iter().map(|j| &j.step).collect::<Vec<_>>()
-                ));
-            }
-            if running[k].iter().any(|j| j.cold) {
-                return Err(format!("{} placed {step} beside a cold start", cfg.macs[k].name));
-            }
             if cold && running.iter().flatten().any(|j| j.step == step) {
                 return Err(format!(
                     "{} placed a cold start of {step} while another of its jobs runs",
@@ -521,14 +513,16 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             // (The NAS budget on: a measured job only within the pool's room left; a member's also
             // with no other member's job weighing anything (the lead's own never hold it back), the
             // lead's own with nothing weighing anything.)
-            let pool_nas: u32 = running.iter().flatten().map(|j| j.nas).sum();
-            let members_nas: u32 = running.iter().skip(1).flatten().map(|j| j.nas).sum();
-            let heaviest = running.iter().flatten().map(|j| j.nas).max().unwrap_or(0);
+            // (A cold start's weight unknown to the coordinator: not counted.)
+            let w = |j: &Job| if j.cold { 0 } else { j.nas };
+            let pool_nas: u32 = running.iter().flatten().map(w).sum();
+            let members_nas: u32 = running.iter().skip(1).flatten().map(w).sum();
+            let heaviest = running.iter().flatten().map(w).max().unwrap_or(0);
             let fits = if k == 0 {
                 // (A planned job of the lead's own may go beside jobs none of which weighs the whole,
                 // within the whole with the lead's own: coord's own_nas_fits, its wait as the
                 // coordinator timed it.)
-                let own_nas: u32 = running[0].iter().map(|j| j.nas).sum();
+                let own_nas: u32 = running[0].iter().map(w).sum();
                 let waited = targets.iter().any(|t| aged.borrow().contains(&(step.to_string(), t.clone())));
                 crate::budget::nas::Limits::fits_own_job(pool_nas, own_nas, heaviest, job.nas, waited)
             } else {
@@ -815,16 +809,17 @@ mod tests {
 
     /// The lead's jobs by grant (task #244): it packs several at once by its measures like any
     /// member, its own steps (`bld-fetch`, `catalog`) on it alone; the member one at a time; nothing
-    /// past a Mac's memory, cores or disk; cold starts alone; the plan done.
+    /// past a Mac's memory, cores or disk; one cold start of a step at a time; the plan done.
     #[test]
     fn the_lead_packs_its_jobs_by_grant_and_runs_its_own_steps() {
         let r = run(&cfg(m4_m1(), 1)).unwrap();
         assert!(r.most[0] >= 2 && r.most[1] == 1, "{r:?}");
         assert!(r.ran.iter().all(|&n| n > 0), "{r:?}");
         assert!(r.lead_steps.contains("bld-fetch") && r.lead_steps.contains("catalog"), "{r:?}");
-        // The map tiles shared: the member takes `pack` jobs while the lead takes some too, and
-        // neither takes the lead's own steps from it.
-        assert!(r.lead_steps.contains("pack") && r.member_steps.contains("pack"), "{r:?}");
+        // The shared steps shared: the member takes some while the lead takes `pack` (with cold
+        // starts beside others since task #499, the lead takes the tiles' `pack` before the member
+        // asks), and the member never the lead's own steps.
+        assert!(r.lead_steps.contains("pack") && !r.member_steps.is_empty(), "{r:?}");
         assert!(!r.member_steps.contains("bld-fetch") && !r.member_steps.contains("catalog"), "{r:?}");
     }
 
@@ -841,10 +836,9 @@ mod tests {
         assert!(r.secs <= two.secs, "{} s with four, {} s with two", r.secs, two.secs);
     }
 
-    /// Members with two slots: a cold start goes only to a Mac running nothing (`most_room`), so the
-    /// M1 reaches two measured jobs at once and every invariant holds.
+    /// Members with two slots: the M1 reaches two jobs at once and every invariant holds.
     #[test]
-    fn members_with_two_slots_pack_two_jobs_and_no_cold_start_beside_one() {
+    fn members_with_two_slots_pack_two_jobs() {
         let r = run(&cfg(m4_m1(), 2)).unwrap();
         assert_eq!(r.most[1], 2, "{r:?}");
     }

@@ -9,7 +9,7 @@
 //! each Mac may run now, and the slots the lead's ramp grows to later, `Machine::from_s`), takes
 //! from the front of the plan's order the first work that it may run (a member never the lead's own
 //! steps) and that fits its Mac's room beside what the Mac runs, as the coordinator packs an ask
-//! (`MacRoom`: its whole memory and its cores at the packed share each; a step not measured alone;
+//! (`MacRoom`: its whole memory and its cores at the packed share each; a step not measured by its provisional need, one of it at a time;
 //! a job an ask while a member runs an older app); the pages' lane (`helper`) the far end of the
 //! first shared step it can do (terrain's near end). Each lane starts with its slot's job under
 //! way. The trains' and the landmarks' chains run from the start, each step once what it reads is
@@ -94,8 +94,7 @@ pub struct Cost {
 }
 
 /// What a Mac runs at a moment of the run (`run`'s `snap`): its room, jobs and their memory and
-/// packed cores, whether one is a cold start, when its last job started, and the steps under way
-/// anywhere.
+/// packed cores, when its last job started, and the steps under way anywhere.
 #[derive(Default)]
 struct Snap {
     room: MacRoom,
@@ -103,7 +102,6 @@ struct Snap {
     jobs: usize,
     mem_mb: u64,
     cores: u32,
-    cold: bool,
     last_start: f64,
     steps: std::collections::BTreeSet<String>,
 }
@@ -698,7 +696,7 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
 }
 
 /// The items ready to take (their deps done, not yet taken), each phase's in order: the measured
-/// apart from the cold starts (by step: a cold start's room is its step's alone), and the shared
+/// apart from the cold starts (by step: one of a step at a time), and the shared
 /// steps' by step for the pages' lane. Each pick's scan then skips what its Mac can't take as a
 /// whole.
 #[derive(Default)]
@@ -740,10 +738,20 @@ impl Ready {
     }
 }
 
+/// The memory an item is packed at: its peak, a cold start's provisional need
+/// (crate::coord::provisional_mb).
+fn need_mb(c: &Cost) -> u64 {
+    if c.known {
+        c.peak_mb
+    } else {
+        crate::coord::provisional_mb(c.peak_mb)
+    }
+}
+
 /// One run through the work, each item's time `scale`d. Kept to about O(items × lanes): the items
 /// under way (`inflight`) held apart, each item's deps not yet done counted down as they end, each
 /// phase's items whose deps are done (`ready`) scanned in order (none at all while its Mac's room
-/// takes nothing more: a cold start under way, the older app's gap, no core left), the regions'
+/// takes nothing more: the older app's gap, no core left), the regions'
 /// counts kept as items are taken.
 fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
     let (mut items, region_items) = items(inp);
@@ -871,9 +879,8 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
                 let Some(k) = it.by.filter(|&k| on_mac(k)) else { continue };
                 running_on[k] |= it.running;
                 sn.jobs += 1;
-                sn.mem_mb += it.cost.peak_mb;
+                sn.mem_mb += need_mb(&it.cost);
                 sn.cores += crate::coord::packed_cores_of(&it.step, it.cost.cores, share);
-                sn.cold |= !it.cost.known;
             }
             // (A slot busy with a job no item is: its memory (its step's first target's peak), cores.)
             for k in 0..n {
@@ -889,19 +896,16 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         });
         // Whether item `i` may start beside what the Mac runs, as the coordinator packs
         // (crate::coord's `pack_why`): within its memory and its cores (each job its packed cores,
-        // crate::coord::packed_cores_of); a cold start (its time not measured) alone on its Mac,
-        // none of its step under way anywhere, and nothing beside one; while a member runs an older
-        // app, a job an ask (`OLD_APP_GAP_S`).
+        // crate::coord::packed_cores_of); a cold start (its time not measured) by its provisional
+        // need (crate::coord::provisional_mb), or alone on its Mac, none of its step under way
+        // anywhere (task #499); while a member runs an older app, a job an ask (`OLD_APP_GAP_S`).
         let room_ok = |items: &[Item], i: usize| -> bool {
             let Some(sn) = &sn else { return true };
             let it = &items[i];
-            if sn.cold {
+            if !it.cost.known && sn.steps.contains(&it.step) {
                 return false;
             }
-            if !it.cost.known {
-                return sn.jobs == 0 && !sn.steps.contains(&it.step);
-            }
-            if sn.room.mem_mb > 0 && sn.mem_mb + it.cost.peak_mb > sn.room.mem_mb {
+            if sn.room.mem_mb > 0 && sn.mem_mb + need_mb(&it.cost) > sn.room.mem_mb && (it.cost.known || sn.jobs > 0) {
                 return false;
             }
             if sn.jobs > 0
@@ -916,11 +920,10 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             Some(sn) if inp.old_app && sn.last_start + OLD_APP_GAP_S > t + 1e-9 => sn.last_start + OLD_APP_GAP_S,
             _ => f64::INFINITY,
         };
-        // (Its Mac takes nothing more now, whatever the item: a cold start under way, the older
-        // app's gap, or no core left beside its jobs.)
+        // (Its Mac takes nothing more now, whatever the item: the older app's gap, or no core left
+        // beside its jobs.)
         let shut = sn.as_ref().is_some_and(|sn| {
-            sn.cold
-                || (inp.old_app && t < sn.last_start + OLD_APP_GAP_S - 1e-9)
+            (inp.old_app && t < sn.last_start + OLD_APP_GAP_S - 1e-9)
                 || (sn.jobs > 0 && sn.cores >= sn.room.cores.max(1))
         });
         // The first of phase `p` it may take (`ok`), in order among those ready.
@@ -929,11 +932,10 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
                 return None;
             }
             let known = ready.known[pi(p)].iter().copied().find(|&i| ok(i) && room_ok(items, i));
-            // (A cold start: only on a Mac running nothing, none of its step under way anywhere;
-            // each step's first it may take.)
+            // (A cold start: none of its step under way anywhere; each step's first it may take.)
             let cold = ready.cold[pi(p)]
                 .iter()
-                .filter(|(step, _)| sn.as_ref().is_none_or(|sn| sn.jobs == 0 && !sn.steps.contains(*step)))
+                .filter(|(step, _)| sn.as_ref().is_none_or(|sn| !sn.steps.contains(*step)))
                 .filter_map(|(_, set)| set.iter().copied().find(|&i| ok(i) && room_ok(items, i)))
                 .min();
             match (known, cold) {
@@ -1907,7 +1909,7 @@ mod tests {
         assert_eq!(most(&run(&inp, &|c| c.secs)), 4);
         inp.macs.insert("m1".into(), MacRoom { mem_mb: 8000, cores: 4 });
         assert_eq!(most(&run(&inp, &|c| c.secs)), 2);
-        // A step not measured runs alone on its Mac, none of it elsewhere.
+        // A step not measured: one of its jobs at a time in the pool (task #499: beside others by its provisional need).
         let cold = |step: &str, t: &str| Cost { known: false, ..small(step, t) };
         inp.costs = cost_table(&regions, &cold);
         assert_eq!(most(&run(&inp, &|c| c.secs)), 1);
@@ -2025,18 +2027,16 @@ mod tests {
                 })
                 .collect();
             let jobs = on.len() + busy.len();
-            if on.iter().any(|it| !it.cost.known) {
+            if !items[i].cost.known
+                && items
+                    .iter()
+                    .any(|it| it.step == items[i].step && it.by.is_some() && it.from <= t + 1e-9 && it.end > t + 1e-9)
+            {
                 return false;
             }
-            if !items[i].cost.known {
-                let step_on = items
-                    .iter()
-                    .any(|it| it.step == items[i].step && it.by.is_some() && it.from <= t + 1e-9 && it.end > t + 1e-9);
-                return jobs == 0 && !step_on;
-            }
-            let mem: u64 = on.iter().map(|it| it.cost.peak_mb).sum::<u64>()
+            let mem: u64 = on.iter().map(|it| need_mb(&it.cost)).sum::<u64>()
                 + busy.iter().map(|&k| inp.machines[k].running_mb).sum::<u64>();
-            if room.mem_mb > 0 && mem + items[i].cost.peak_mb > room.mem_mb {
+            if room.mem_mb > 0 && mem + need_mb(&items[i].cost) > room.mem_mb && (items[i].cost.known || jobs > 0) {
                 return false;
             }
             let cores: u32 =

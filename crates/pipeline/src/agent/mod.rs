@@ -5542,7 +5542,7 @@ impl Agent {
     /// lease or runs a job, the job's measured disk less what it has written so far. On the lead,
     /// a running job's by its own measures (`disk_left`); a member's by what its lead granted it
     /// with (`Slot::reserve_mb`), a job granted and not yet started whole. Nothing for a slot
-    /// holding nothing, or a cold start (no measure: it runs alone, the disk guard its backstop).
+    /// holding nothing, or a cold start (no measure: the disk guard its backstop).
     fn reservation(&self, k: usize) -> u64 {
         let s = &self.slots[k];
         if s.running.is_none() && s.lease.is_none() {
@@ -7364,8 +7364,8 @@ impl Agent {
                 w.targets.retain(|t| !others.contains(&t.0));
             }
         }
-        // A cold start of a step another worker runs now: none of the lead's own beside it (a cold
-        // start runs alone in the pool).
+        // A cold start of a step another worker runs now: none of the lead's own of that step (one
+        // cold start of a step in the pool at a time).
         if let Some(c) = &self.coord {
             for w in plan.iter_mut().filter(|w| !w.targets.is_empty() && c.cold_under_way(&w.step)) {
                 waiting.push(Waiting {
@@ -11996,7 +11996,7 @@ mod tests {
 
     /// Every job of the lead's by grant (task #244, docs/pool.md §7.2): its plan offered through its
     /// own coordinator, its own steps (not offered to every member) granted to it alone, whole, and
-    /// packed by their measures as a member's are: a cold start alone, nothing beside it; a measured
+    /// packed by their measures as a member's are: a cold start by its provisional need; a measured
     /// job beside another only when both fit this Mac's limit and its disk room; each started in a
     /// slot of its own (its scratch, and its worker in the history, its slot's). A member asking
     /// for the lead's steps gets none; nothing starts here without a grant.
@@ -12053,11 +12053,14 @@ mod tests {
         // Nothing starts without a grant.
         assert!(!a.try_start_said(0, job("labels"), &cond, Some(&root), &mut w));
         assert!(w.iter().any(|w| w.why.contains("not granted")), "{w:?}");
-        // A cold start (labels never measured): alone, nothing beside it.
+        // Cold starts (labels and items never measured): by their provisional needs (task #499),
+        // the two beside each other within the 12 GB.
         let plan = [job("labels"), job("items")];
-        assert_eq!(lead_start(&mut a, &plan, &cond, &root, &mut w), [0], "{w:?}");
-        assert!(lead_start(&mut a, &plan, &cond, &root, &mut w).is_empty());
-        assert_eq!(running(&a), ["labels labels"]);
+        assert!(lead_start(&mut a, &plan, &cond, &root, &mut w).contains(&0), "{w:?}");
+        lead_start(&mut a, &plan, &cond, &root, &mut w);
+        let mut r = running(&a);
+        r.sort();
+        assert_eq!(r, ["items items", "labels labels"]);
         // A member asking for the lead's steps: none of them.
         let m1 = crate::coord::client::Client::at(
             vec![format!("http://127.0.0.1:{port}")],
@@ -15049,8 +15052,10 @@ mod pool_tests {
             .reflected
             .iter()
             .any(|k| k.ends_with(&format!("/1-{}", rec.reflected.iter().next().unwrap().rsplit('-').next().unwrap()))));
+        // (Its own, lease 1's: other jobs may run beside it, cold starts too since task #499.)
         assert!(
-            std::fs::read_dir(home.join("pool/jobs")).map_or(true, |mut d| d.next().is_none()),
+            std::fs::read_dir(home.join("pool/jobs"))
+                .map_or(true, |d| !d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("1-"))),
             "its folder removed once its saved state held the entry"
         );
         // The writer isn't named any more (its file as it was), the coordinator's state of its term

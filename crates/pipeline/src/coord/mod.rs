@@ -614,29 +614,6 @@ impl Shared {
         job_secs(&self.costs, step, target, worker).or_else(|| self.book().secs(step, target, 0))
     }
 
-    /// The worker that takes a cold start of `step` now (docs/pool.md §7.7): of the agents around
-    /// asking lately for it holding no job's lease (the lead's own asks among them), the one with
-    /// the most room (memory, then disk; by name between equals); None when none asks.
-    fn most_room(&self, step: &str, now: Instant) -> Option<String> {
-        let room = |w: &Worker| (w.mem_mb, w.ask.as_ref().and_then(|a| a.disk_mb).unwrap_or(0));
-        let best = self
-            .workers
-            .iter()
-            .filter(|(n, w)| {
-                !w.bad
-                    && w.kind == "native"
-                    && now.duration_since(w.seen) < AROUND
-                    && w.asked.is_some_and(|a| now.duration_since(a) < ASKING)
-                    && w.can.iter().any(|c| c == step)
-                    // (Only one the step may be granted to: crate::agent::every::grants.)
-                    && crate::agent::every::grants(step, false, **n == self.lead_name)
-                    // (A worker running a job isn't idle, whatever its room.)
-                    && self.job_leases(n, now).is_empty()
-            })
-            .max_by(|(n1, w1), (n2, w2)| room(w1).cmp(&room(w2)).then(n2.cmp(n1)))?;
-        Some(best.0.clone())
-    }
-
     /// `worker`'s live jobs' leases.
     fn job_leases(&self, worker: &str, now: Instant) -> Vec<Lease> {
         self.leases.all(now).into_iter().filter(|l| l.worker == worker && matches!(l.work, Work::Job { .. })).collect()
@@ -767,6 +744,11 @@ impl Shared {
         }
     }
 
+    /// `packed_cores` of cores `c` as said (None, not said: the share).
+    fn cores_of(&self, step: &str, targets: &[String], c: Option<u32>, share: u32) -> u32 {
+        c.map_or(share, |c| self.packed_cores(step, targets, c, share))
+    }
+
     /// What a job of `step` over `targets` is measured to take (as `Coordinator::measured_batch`:
     /// the most of their memory, their disks summed or the most a job of the step took), and its
     /// cores (crate::needs::Book::cores: the most of its targets'; None when one's aren't said);
@@ -788,6 +770,35 @@ impl Shared {
             },
             cores,
         ))
+    }
+
+    /// What a job of `step` over `targets` is packed as (task #499): its measure (`job_need`), else,
+    /// a cold start, its provisional need (`provisional`). Cores not said count as the packed share.
+    fn pack_need(&self, step: &str, targets: &[String]) -> (Measured, Option<u32>) {
+        self.job_need(step, targets).unwrap_or_else(|| (self.provisional(step, targets), None))
+    }
+
+    /// A cold start's provisional need (task #499): `provisional_mb` of the most its step declares
+    /// (crate::agent::steps' `mem_mb`) or it was offered with (`offered_guess`), the disk its step's
+    /// measures say (none: 0). It goes beside other jobs when that fits; the memory guard
+    /// (crate::agent::memguard) stops one that overruns, and its floor is learned.
+    fn provisional(&self, step: &str, targets: &[String]) -> Measured {
+        let b = self.book();
+        let declared = crate::agent::steps::mem_mb(step);
+        let each = targets.iter().map(|t| self.offered_guess(step, t).max(declared)).max().unwrap_or(declared);
+        Measured {
+            mem_mb: provisional_mb(each),
+            disk_mb: targets.iter().filter_map(|t| b.disk(step, t, 0)).max().unwrap_or(0),
+            own: false,
+        }
+    }
+
+    /// Whether a cold start of `step` over `targets` may go to `a`'s worker (task #499): its
+    /// provisional need fits the room `a` spares, or the worker holds no job (one bigger than its
+    /// whole room goes alone, as every cold start did before: the guard learns its floor).
+    fn cold_fits(&self, step: &str, targets: &[String], a: &Ask, now: Instant) -> bool {
+        let m = self.provisional(step, targets);
+        (m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d)) || self.job_leases(&a.worker, now).is_empty()
     }
 
     /// A job of offer `o`'s step over `pick` granted to `a`'s worker: its lease, the worker's last
@@ -856,9 +867,9 @@ impl Shared {
     /// crate::agent::every::grants), up to the jobs it wants (`Ask::want`, at least one). Each after
     /// the first it holds goes beside the others: measured (memory, disk, cores, crate::needs),
     /// within the room left (the ask's memory and disk, and its Mac's cores, less every job it
-    /// holds and those granted in this answer: a lease held counts until it ends or lapses); a cold
-    /// start only to a worker holding nothing (`most_room`), alone. Nothing while it runs a cold
-    /// start. None: no job.
+    /// holds and those granted in this answer: a lease held counts until it ends or lapses, and
+    /// never more than what its jobs hold now leaves); a cold start by its provisional need
+    /// (`pack_need`), task #499. None: no job.
     fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, now: Instant) -> Option<Grant> {
         let (g, why) = self.pack_why(a, offers, lead, now);
         match why {
@@ -871,19 +882,11 @@ impl Shared {
     /// `pack`, and why it granted fewer jobs than the ask wanted (None: as many as it wanted).
     fn pack_why(&mut self, a: &Ask, offers: &[Offer], lead: bool, now: Instant) -> (Option<Grant>, Option<String>) {
         let mine = self.job_leases(&a.worker, now);
-        // (A cold job of the lead's own waiting to start, `own_cold_waits`: nothing more while the
-        // lead holds jobs, until they end; then it alone, before any other work.)
-        let cold_own: Vec<Offer> = if lead {
-            offers.iter().find(|o| self.own_cold_waits(o, a, now)).cloned().into_iter().collect()
-        } else {
-            Vec::new()
-        };
-        if !cold_own.is_empty() && !mine.is_empty() {
-            return (None, Some("a cold job of the lead's own waits for its jobs to end, to start alone".into()));
-        }
-        let offers = if cold_own.is_empty() { offers } else { &cold_own[..] };
+        // (A job held: its measure, else its provisional need, `pack_need`; a task, nothing.)
         let need = |s: &Shared, l: &Lease| match &l.work {
-            Work::Job { step, targets } => s.job_need(step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>()),
+            Work::Job { step, targets } => {
+                Some(s.pack_need(step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>()))
+            }
             Work::Task { .. } => None,
         };
         let needs: Vec<Option<(Measured, Option<u32>)>> = mine.iter().map(|l| need(self, l)).collect();
@@ -894,21 +897,15 @@ impl Shared {
                 Work::Task { .. } => None,
             })
             .collect();
-        // (Nothing beside a cold start.)
-        if needs.iter().any(Option::is_none) {
-            return (None, Some("a cold start runs: nothing goes beside it until it's measured".into()));
-        }
         let total = ask_cores(a);
         let share = packed_share(total);
-        // (Cores left: none when a job held doesn't say its own. A job's cores packed: its measured
-        // ones within the packed share, the threads it was granted.)
+        // (Cores left: each job's packed cores, its measured ones within the packed share, the
+        // share when it doesn't say its own.)
         let mut cores = needs
             .iter()
+            .flatten()
             .zip(&held_steps)
-            .try_fold(total, |left, (n, (st, ts))| {
-                n.and_then(|(_, c)| c).map(|c| left.saturating_sub(self.packed_cores(st, ts, c, share)))
-            })
-            .unwrap_or(0);
+            .fold(total, |left, ((_, c), (st, ts))| left.saturating_sub(self.cores_of(st, ts, *c, share)));
         // (Its Mac's load from outside the pool (other processes: builds, tests): the cores its
         // last minute's load average keeps busy (`Capacity::cores_free`) past the threads of the
         // jobs it holds, less those the in-use share keeps already, come off the cores left
@@ -927,6 +924,12 @@ impl Shared {
             if !reserved_by_agent(l) {
                 room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb));
             }
+        }
+        // (And never more than what its jobs hold now, as its memory guard last sampled them
+        // (`Capacity::held_mb`), leaves: a cold start past its provisional need is counted at what
+        // it holds as soon as it's sampled, task #499.)
+        if let Some(c) = a.cap.as_ref().filter(|_| !mine.is_empty()) {
+            room.mem_mb = room.mem_mb.min(a.mem_mb.saturating_sub(c.held_mb));
         }
         // (The shared caches its Mac's jobs read (crate::needs::CACHES), each reserved once: with
         // the first job granted reading it, in its grant's disk. One no job its agent reserves for
@@ -948,10 +951,17 @@ impl Shared {
         // every ask while any member around is on one (`old_member`); else as many as it wants.)
         let old = if a.cap.is_none() { Some(a.worker.clone()) } else { self.old_member(now) };
         let want = if old.is_some() { 1 } else { a.want.max(1) };
+        // (A cold job of the lead's own that doesn't fit the room left (`own_cold_waits`): nothing
+        // more until its jobs end and it fits, so the work offered doesn't starve it.)
+        if lead && !mine.is_empty() {
+            if let Some(o) = offers.iter().find(|o| self.own_cold_waits(o, a, room.mem_mb, now)) {
+                return (None, Some(format!("a cold job of {} waits for room for its provisional need", o.step)));
+            }
+        }
         let mut held = mine.len();
         let mut grants: Vec<Grant> = Vec::new();
         // (Why the last round granted nothing: a job open but short of cores, or nothing open in
-        // the room left; a cold start granted, alone.)
+        // the room left.)
         let mut why: Option<String> = None;
         while grants.len() < want {
             let mut short: Option<(String, u32)> = None;
@@ -973,17 +983,10 @@ impl Shared {
                     continue;
                 }
                 let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
-                let n = self.job_need(&o.step, &ts);
-                // (A cold job of the lead's own whose floors fit: beside, on a core, `floors_fit`.)
-                // (Its memory then the floors', its cores unknown: only a step none of whose runs
-                // noted a cost, not a measured one whose costs lack its threads.)
-                let floored = o.job.is_some() && self.cold(&o.step) && self.floors_fit(&o.step, &ts, &room_o);
-                if beside
-                    && !floored
-                    && !matches!(n, Some((_, Some(c))) if self.packed_cores(&o.step, &ts, c, share) <= cores)
-                {
+                let n = self.pack_need(&o.step, &ts);
+                let need = self.cores_of(&o.step, &ts, n.1, share);
+                if beside && need > cores {
                     if short.is_none() {
-                        let need = n.and_then(|(_, c)| c).map_or(0, |c| self.packed_cores(&o.step, &ts, c, share));
                         short = Some((o.step.clone(), need));
                     }
                     continue;
@@ -994,7 +997,6 @@ impl Shared {
             let Some((o, pick, n)) = got else {
                 let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
                 why = Some(match short {
-                    Some((st, 0)) => format!("{st} isn't measured: a cold start goes only to a Mac running nothing"),
                     Some((st, c)) if outside > 0 => {
                         format!(
                             "cores: {cores} of {total} left ({outside} busy outside the pool), a job of {st} takes {c}"
@@ -1017,8 +1019,7 @@ impl Shared {
             // (Its threads: its packed cores (`packed_cores`), else the share; within the cores
             // left, one at least.)
             let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
-            let threads =
-                n.and_then(|(_, c)| c).map_or(share, |c| self.packed_cores(&o.step, &ts, c, share)).min(cores).max(1);
+            let threads = self.cores_of(&o.step, &ts, n.1, share).min(cores).max(1);
             // (A planned job of no targets of its own is offered under its id's, keyless, to be
             // measured by it: its lease holds none, as its hand-off names none.)
             let pick = if o.job.is_some() { pick.into_iter().filter(|t| !t.1.is_empty()).collect() } else { pick };
@@ -1027,14 +1028,10 @@ impl Shared {
             grants.push(self.grant_job(a, o, pick, threads, fill, now));
             held += 1;
             caches.extend(crate::needs::cache_of(&o.step));
-            // (A cold start alone.)
-            let Some((m, c)) = n else {
-                why = Some(format!("a cold start of {} runs alone until it's measured", o.step));
-                break;
-            };
+            let (m, _) = n;
             room.mem_mb = room.mem_mb.saturating_sub(m.mem_mb);
             room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb + fill));
-            cores = c.map_or(0, |_| cores.saturating_sub(threads));
+            cores = cores.saturating_sub(threads);
         }
         let why = why.filter(|_| grants.len() < want).or_else(|| {
             old.filter(|_| a.want > grants.len() && !grants.is_empty()).map(|w| {
@@ -1078,37 +1075,18 @@ impl Shared {
         })
     }
 
-    /// Whether the lead's own planned job of offer `o` waits only for the lead to hold nothing: open
-    /// (`own_open`) and a cold start (none of it measured). The lead's ask is then granted nothing
-    /// more until its jobs end and it starts (`pack`), so a cold job of its own isn't starved by the
-    /// offered work it would otherwise keep taking.
-    fn own_cold_waits(&self, o: &Offer, a: &Ask, now: Instant) -> bool {
+    /// Whether the lead's own planned job of offer `o` waits for room: open (`own_open`), a cold
+    /// start (none of it measured) whose provisional need doesn't fit the room `left` beside the
+    /// lead's jobs. The lead's ask is then granted nothing more until its jobs end enough for it, or
+    /// all of them (`pack`, `pick_own`), so the offered work it would otherwise keep taking doesn't
+    /// starve it.
+    fn own_cold_waits(&self, o: &Offer, a: &Ask, left: u64, now: Instant) -> bool {
         let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
         o.job.is_some()
+            && self.job_need(&o.step, &ts).is_none()
+            && self.provisional(&o.step, &ts).mem_mb > left
             && self.own_open(o, a, now)
             && self.own_nas_fits(o, now, true)
-            && self.job_need(&o.step, &ts).is_none()
-            && !self.floors_fit(&o.step, &ts, a)
-    }
-
-    /// Whether every target of `ts` has a floor of `step` the memory guard measured
-    /// (crate::agent::memguard: the most a run of it took) within what `a` spares: a step that never
-    /// noted a cost (the input checks' before task #445) is so measured by its runs all the same,
-    /// and goes beside running jobs instead of waiting for its Mac to run nothing, which with
-    /// long jobs may never come.
-    fn floors_fit(&self, step: &str, ts: &[String], a: &Ask) -> bool {
-        // (A floor the way it runs now, measured alone: a batch's is only a lower bound.)
-        let v = cost_version(step);
-        !ts.is_empty()
-            && ts
-                .iter()
-                .all(|t| self.floors.get(&cost_key(step, t)).is_some_and(|f| f.v >= v && f.alone && f.mb <= a.mem_mb))
-    }
-
-    /// Whether none of `step`'s runs the way it runs now noted a cost: a cold step.
-    fn cold(&self, step: &str) -> bool {
-        let v = cost_version(step);
-        !self.costs.iter().any(|(k, c)| crate::agent::memguard::step_of_key(k) == step && c.v >= v)
     }
 
     /// Whether the NAS budget has room for the lead's own planned job of offer `o`: its weight
@@ -1165,8 +1143,8 @@ impl Shared {
     /// The lead's own planned job of offer `o` (`Offer::job`), whole: all its targets, when it's open
     /// (`own_open`), the NAS budget has room for it (its weight, and a download under the cap: the
     /// lead's own always held to it, `nas_room`), and its measures (memory, disk) fit what the ask
-    /// spares; a cold start (none of it measured) when the lead holds nothing, the lead its asker
-    /// whatever another's room. Empty: not now.
+    /// spares; a cold start (none of it measured) by its provisional need (`pack_need`), or alone
+    /// (`cold_fits`). Empty: not now.
     fn pick_own(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
         if !self.own_open(o, a, now) {
             return Vec::new();
@@ -1174,7 +1152,7 @@ impl Shared {
         let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
         let fits = match self.job_need(&o.step, &ts) {
             Some((m, _)) => m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d),
-            None => self.job_leases(&a.worker, now).is_empty() || self.floors_fit(&o.step, &ts, a),
+            None => self.cold_fits(&o.step, &ts, a, now),
         };
         // (The budget asked last: its wait noted only when the job would go but for it.)
         if !fits || !self.own_nas_fits(o, now, false) {
@@ -1189,8 +1167,8 @@ impl Shared {
     /// its last target of the step when that one's open; each measured (memory, disk) within what it
     /// spares, as many as fit `JOB_S` by their measured times (`secs_of`: one with none ends the job
     /// after its first), their disk summed (or the most a job of the step took, the larger) within
-    /// its room. A cold start (`measured` None) only to the worker with the most room
-    /// (`most_room`), alone.
+    /// its room. A cold start (`measured` None) by its provisional need, one job of its step in the
+    /// pool at a time.
     fn pick_every(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
         let held = self.leases.held(&o.step, now);
         let open = |t: &str, k: &str| {
@@ -1235,7 +1213,6 @@ impl Shared {
                 }
             })
         };
-        let cold_here = std::cell::OnceCell::new();
         let takeable = |i: usize| {
             let (t, k, _) = &o.targets[i];
             // (Its wait noted only when this asker would take it but for the budget: a target no
@@ -1243,12 +1220,10 @@ impl Shared {
             open(t, k)
                 && match self.measured(&o.step, t) {
                     Some(m) => fits(&m),
-                    // (Alone: no job of its step under way anywhere, the lead's own held by a lease too.)
-                    None => {
-                        held.is_empty()
-                            && *cold_here
-                                .get_or_init(|| self.most_room(&o.step, now).as_deref() == Some(a.worker.as_str()))
-                    }
+                    // (A cold start: by its provisional need (`provisional`), while no job of its
+                    // step is under way anywhere (the lead's own held by a lease too): one learns
+                    // its measure before the step fans out.)
+                    None => held.is_empty() && self.cold_fits(&o.step, std::slice::from_ref(t), a, now),
                 }
                 && (nas_fits(t) || {
                     self.nas_wait(&o.step, t, now);
@@ -1294,8 +1269,8 @@ impl Shared {
     /// targets it may take (`takeable`) from the one measured to take longest (`secs_of`; plan
     /// order between equals, those never measured last), the first drawn to it among the members
     /// asking lately whose room fits it (`placement::draw`, by their measured speeds, in the window
-    /// `now` is in since `since`); a cold start (none of its step measured) as `most_room` decides,
-    /// undrawn.
+    /// `now` is in since `since`); a cold start (none of its step measured) undrawn, by its
+    /// provisional need (`cold_fits`).
     /// Whether `a`'s worker could take measured target `t` (its key `k`) of offer `o` now, by
     /// `pick_every`'s rules: not held (`held`), not done, not kept from it after it failed it, and
     /// its measures within the room its ask says.
@@ -1778,6 +1753,11 @@ pub const JOB_S: u64 = 15 * 60;
 pub const NAS_FAILED_RUN: u32 = 2;
 /// The most targets a job so offered takes, whatever their times (a step measured at no time).
 pub const JOB_MAX: usize = 256;
+/// A cold start's provisional memory (MB) from the most its step declares or it was offered with,
+/// `mb`: times 3/2 (task #499; `Shared::provisional`, the forecast's packing too).
+pub fn provisional_mb(mb: u64) -> u64 {
+    mb.saturating_mul(3) / 2
+}
 
 /// Work granted.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2538,7 +2518,7 @@ impl Coordinator {
 
     /// Whether a cold start of `step` (none of its targets measured) is under way on another worker
     /// (a lease of it held by one): this Mac then starts none of its own, as none is granted to
-    /// another meanwhile (`pick_every`), so a cold start runs alone in the pool.
+    /// another meanwhile (`pick_every`), so one cold start of a step runs in the pool at a time.
     pub fn cold_under_way(&self, step: &str) -> bool {
         self.shared.lock().unwrap().measured(step, "").is_none() && !self.held_by_others(step).is_empty()
     }
@@ -6646,45 +6626,36 @@ mod tests {
         assert_eq!(granted(&w, &every_ask("m1", "lo", 4096, 10_000)), ["3/1/1", "3/1/2"]);
     }
 
-    /// A cold start (a step none of whose targets has run) goes alone to the worker with the most
-    /// room asking for it lately, and to none while this Mac (the lead) has more; one that hasn't
-    /// asked lately doesn't count.
+    /// A cold start (a step none of whose targets has run) goes, alone in its job, to a worker its
+    /// provisional need fits (task #499: the step's declared memory times 3/2), one job of the step
+    /// in the pool at a time; once one has run (measured), the hold lifts: the others are offered by
+    /// its measures, batched.
     #[test]
-    fn every_step_a_cold_start_goes_alone_to_the_member_with_the_most_room() {
-        let (_d, c, m1, clock) = every((1000, 1000));
+    fn every_step_a_cold_start_goes_by_its_provisional_need_one_at_a_time() {
+        let (_d, c, m1, _clock) = every((1000, 1000));
         let m2 = client::Client::at(m1.urls(), c.contact.token.clone(), "m2");
         measured_offer(&c, "lo", &[("3/1/1", None), ("3/1/2", None), ("3/1/3", None)]);
         let g = m2.ask(&every_ask("m2", "lo", 8192, 100_000)).unwrap().unwrap();
         assert!(
             matches!(&g.work, Granted::Job { targets, .. } if targets.len() == 1 && targets[0].0 == "3/1/1"),
-            "alone, the largest asking"
+            "one target, the first"
         );
         // While a job of the step is under way (a member's, or the lead's own: its lease), no other
         // cold start of it.
-        assert!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)).is_empty(), "one under way");
+        assert!(granted(&m1, &every_ask("m1", "lo", 16_000, 100_000)).is_empty(), "one under way");
         m2.give_back(g.lease, "the test").unwrap();
         let own = c.hold("lo", &[("3/1/3".into(), "k 3/1/3".into())]).unwrap();
-        assert!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)).is_empty(), "the lead's own under way");
+        assert!(granted(&m1, &every_ask("m1", "lo", 16_000, 100_000)).is_empty(), "the lead's own under way");
         c.finish(own, &[]);
-        assert!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)).is_empty(), "the larger asked lately");
-        clock.advance(ASKING);
-        let g = m1.ask(&every_ask("m1", "lo", 4096, 100_000)).unwrap().unwrap();
-        assert!(
-            matches!(&g.work, Granted::Job { targets, .. } if targets.len() == 1 && targets[0].0 == "3/1/1"),
-            "the larger no longer asking"
-        );
-        m1.give_back(g.lease, "the test").unwrap();
-        // The lead's own agent asking with more room than any: it starts them itself.
-        lead_asks(&c, (16_000, 200_000));
-        assert!(granted(&m2, &every_ask("m2", "lo", 8192, 100_000)).is_empty());
-        // Once a target of the step has run, the others are offered by its measures, batched.
+        let g = m1.ask(&every_ask("m1", "lo", 16_000, 100_000)).unwrap().unwrap();
+        assert!(matches!(&g.work, Granted::Job { targets, .. } if targets.len() == 1), "to the next asker");
+        // Measured: the hold lifts, the others offered by its measures, batched, beside the first.
         c.add_costs(&[(
             cost_key("lo", "3/1/1"),
             Cost { peak_mb: 500, secs: 60, worker: None, v: cost_version("lo"), ..Default::default() },
         )]);
-        assert_eq!(granted(&m1, &every_ask("m1", "lo", 4096, 100_000)), ["3/1/2", "3/1/3"]);
+        assert_eq!(granted(&m2, &every_ask("m2", "lo", 4096, 100_000)), ["3/1/2", "3/1/3"]);
     }
-
     /// `n` targets of `step` measured (2 GB, 100 MB of disk, ten minutes: a job each), their runs'
     /// threads said when `threads` is.
     fn packable(c: &Coordinator, step: &str, n: usize, threads: Option<u64>) {
@@ -6836,71 +6807,65 @@ mod tests {
         assert!(waits.iter().any(|(s, t, m)| s == "slope" && t == "6/1/2" && *m >= 30), "{waits:?}");
     }
 
-    /// A cold job of the lead's own (a catalog never measured) isn't starved: while the lead holds
-    /// measured jobs, its asks get nothing more; once they end, the catalog alone, before any offered
-    /// work. A member with more room, asking for the step it may never be granted, isn't its asker.
+    /// Task #499: a cold job of the lead's own (a catalog never measured) goes beside the lead's
+    /// jobs when its provisional need (its declared memory times 3/2) fits the room left; one that
+    /// fits only the lead's whole room isn't starved: its asks get nothing more until it fits. A
+    /// member with more room, asking for the step it may never be granted, isn't its asker.
     #[test]
-    fn a_cold_job_of_the_leads_own_starts_once_its_jobs_end() {
-        let (_d, c, w, _clock) = every((0, 0));
-        packable(&c, "slope", 4, Some(1));
-        let mut offers = c.shared.lock().unwrap().offers.clone();
-        offers.insert(
-            0,
-            Offer {
-                step: "catalog".into(),
-                targets: vec![("catalog".into(), "k".into(), 0)],
-                job: Some("catalog catalog".into()),
-            },
-        );
-        c.offer("p", offers);
-        // (A member with far more room asking for the catalog: never granted it, nor its asker.)
-        assert!(w
-            .ask(&Ask { can: vec!["catalog".into()], ..every_ask("m1", "catalog", 1 << 20, 1 << 30) })
-            .unwrap()
-            .is_none());
-        let a =
-            Ask { want: 4, can: vec!["slope".into(), "catalog".into()], ..every_ask("m4", "slope", 64_000, 100_000) };
-        // The lead holding a measured job: nothing more while the cold catalog waits.
-        let held = c.hold("slope", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
-        assert!(c.ask_own(&a, &BTreeSet::new()).is_none(), "drained for the catalog");
-        // (Why nothing more fits, for the status: task #246.)
-        let why = |c: &Coordinator| c.refusals().into_values().collect::<Vec<_>>().join("; ");
-        assert!(why(&c).contains("a cold job of the lead's own waits"), "{}", why(&c));
-        c.finish(held, &[]);
-        let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
-        assert_eq!(g.job.as_deref(), Some("catalog catalog"));
-        assert!(g.more.is_empty(), "a cold start alone");
-        assert!(why(&c).contains("a cold start of catalog runs alone"), "{}", why(&c));
+    fn a_cold_job_of_the_leads_own_goes_by_its_provisional_need() {
+        let provisional = crate::agent::steps::mem_mb("catalog") * 3 / 2;
+        for (room, beside) in [(64_000, true), (2000 + provisional - 1, false)] {
+            let (_d, c, w, _clock) = every((0, 0));
+            packable(&c, "slope", 4, Some(1));
+            let mut offers = c.shared.lock().unwrap().offers.clone();
+            offers.insert(
+                0,
+                Offer {
+                    step: "catalog".into(),
+                    targets: vec![("catalog".into(), "k".into(), 0)],
+                    job: Some("catalog catalog".into()),
+                },
+            );
+            c.offer("p", offers);
+            // (A member with far more room asking for the catalog: never granted it.)
+            assert!(w
+                .ask(&Ask { can: vec!["catalog".into()], ..every_ask("m1", "catalog", 1 << 20, 1 << 30) })
+                .unwrap()
+                .is_none());
+            let a =
+                Ask { want: 4, can: vec!["slope".into(), "catalog".into()], ..every_ask("m4", "slope", room, 100_000) };
+            let held = c.hold("slope", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
+            let why = |c: &Coordinator| c.refusals().into_values().collect::<Vec<_>>().join("; ");
+            let g = c.ask_own(&a, &BTreeSet::new());
+            if beside {
+                let g = g.expect("beside the slope job");
+                assert_eq!(g.job.as_deref(), Some("catalog catalog"));
+                assert!(!g.more.is_empty(), "more beside the cold start");
+                continue;
+            }
+            assert!(g.is_none(), "drained for the catalog");
+            assert!(why(&c).contains("a cold job of catalog waits for room"), "{}", why(&c));
+            c.finish(held, &[]);
+            let g = c.ask_own(&a, &BTreeSet::new()).unwrap();
+            assert_eq!(g.job.as_deref(), Some("catalog catalog"));
+        }
     }
 
-    /// Task #445: a cold job of the lead's own whose targets' floors the memory guard measured (an
-    /// input check, which noted no cost) goes beside the lead's running jobs when they fit its room,
-    /// instead of waiting for them all to end; one whose floor doesn't fit still waits.
+    /// A job of the lead's own whose targets' floors the memory guard measured (an input check,
+    /// which noted no cost, so says no cores: packed as the share) goes beside the lead's running
+    /// jobs when it fits the room left; a floor past the room keeps it off.
     #[test]
-    fn a_cold_job_of_the_leads_own_with_floors_goes_beside() {
+    fn a_job_measured_by_its_floors_goes_beside() {
         let own = |unit: &str| Offer {
             step: "inputs".into(),
             targets: vec![(format!("inputs/{unit}"), "k".into(), 0)],
             job: Some(format!("inputs inputs/{unit}")),
         };
-        // (mb, alone, version, a cost without threads noted): beside or not.
         let v = cost_version("inputs");
-        for (mb, alone, fv, costed, beside) in [
-            (340, true, v, false, true),
-            (90_000, true, v, false, false),
-            (340, false, v, false, false),
-            (340, true, v, true, false),
-        ] {
+        for (mb, alone, beside) in [(340, true, true), (90_000, true, false), (340, false, true)] {
             let (_d, c, _w, _clock) = every((0, 0));
             packable(&c, "slope", 4, Some(1));
-            c.add_floors(&[(cost_key("inputs", "inputs/sources"), Floor { mb, alone, v: fv })]);
-            if costed {
-                // (Measured, its costs without its threads: not cold, so not beside on floors.)
-                c.add_costs(&[(
-                    cost_key("inputs", "inputs/other"),
-                    Cost { peak_mb: 300, secs: 30, worker: None, v, ..Default::default() },
-                )]);
-            }
+            c.add_floors(&[(cost_key("inputs", "inputs/sources"), Floor { mb, alone, v })]);
             let mut offers = c.shared.lock().unwrap().offers.clone();
             offers.insert(0, own("sources"));
             c.offer("p", offers);
@@ -6917,21 +6882,8 @@ mod tests {
                 .flatten()
                 .collect();
             let why = c.refusals().into_values().collect::<Vec<_>>().join("; ");
-            assert_eq!(
-                jobs.iter().any(|j| j == "inputs inputs/sources"),
-                beside,
-                "{mb} MB {alone} {costed}: {jobs:?} {why}"
-            );
+            assert_eq!(jobs.iter().any(|j| j == "inputs inputs/sources"), beside, "{mb} MB {alone}: {jobs:?} {why}");
         }
-        // A floor of an earlier way of its step counts for nothing.
-        let (_d, c, _w, _clock) = every((0, 0));
-        let a = every_ask("m4", "depth", 64_000, 100_000);
-        let ts = vec!["6/1/1".to_string()];
-        let dv = cost_version("depth");
-        c.add_floors(&[(cost_key("depth", "6/1/1"), Floor { mb: 300, alone: true, v: dv - 1 })]);
-        assert!(!c.shared.lock().unwrap().floors_fit("depth", &ts, &a), "a stale floor");
-        c.add_floors(&[(cost_key("depth", "6/1/1"), Floor { mb: 300, alone: true, v: dv })]);
-        assert!(c.shared.lock().unwrap().floors_fit("depth", &ts, &a), "a floor the way it runs now");
     }
 
     /// A failed job of the lead's own (`finish_failed`) is kept from it as a member's failed work is:
@@ -7427,10 +7379,10 @@ mod tests {
         packable(&c, "slope", 6, Some(2));
         assert_eq!(all_granted(&w, &Ask { want: 1, ..a.clone() }).len(), 1);
         assert_eq!(all_granted(&w, &Ask { want: 0, ..a.clone() }).len(), 1);
-        // Cores not said: nothing beside the first.
+        // Cores not said: each counted as the packed share (2 of 8), four at once.
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope", 6, None);
-        assert_eq!(all_granted(&w, &a).len(), 1);
+        assert_eq!(all_granted(&w, &a).len(), 4);
     }
 
     /// A mixed-version pool (task #247): an older app's ask (no capacity, one slot) is granted one
@@ -7639,27 +7591,88 @@ mod tests {
         }
     }
 
-    /// A cold start goes only to a member running nothing, alone, and nothing goes beside it while
-    /// it runs.
+    /// Task #499: a cold start is packed by its provisional need (its step's declared memory times
+    /// 3/2): beside measured jobs when that fits the room left, and measured jobs beside it; past the
+    /// room left, not beside (alone once its worker holds nothing, whatever its size).
     #[test]
-    fn packing_keeps_a_cold_start_alone() {
+    fn packing_takes_a_cold_start_by_its_provisional_need() {
         let cold = Offer { step: "lo".into(), targets: vec![("3/1/1".into(), "k 3/1/1".into(), 0)], job: None };
-        let a = Ask { want: 3, can: vec!["slope".into(), "lo".into()], ..every_ask("m1", "slope", 64_000, 100_000) };
+        let provisional = crate::agent::steps::mem_mb("lo") * 3 / 2;
+        let a = |mem: u64| Ask {
+            want: 3,
+            can: vec!["slope".into(), "lo".into()],
+            ..every_ask("m1", "slope", mem, 100_000)
+        };
+        // Room for both measured (2 GB each) and the cold one: all three.
         let (_d, c, w, _clock) = every((0, 0));
         packable(&c, "slope", 2, Some(2));
         let mut offers = c.shared.lock().unwrap().offers.clone();
         offers.push(cold.clone());
         c.offer("p", offers);
-        assert_eq!(all_granted(&w, &a), [["6/1/1"], ["6/1/2"]], "measured ones packed; no cold start beside them");
-        // Nothing held: the cold start, alone; then nothing beside it.
+        assert_eq!(all_granted(&w, &a(4000 + provisional)), [["6/1/1"], ["6/1/2"], ["3/1/1"]], "beside");
+        // A megabyte short: the measured ones only.
         let (_d, c, w, _clock) = every((0, 0));
-        c.offer("p", vec![cold.clone()]);
-        assert_eq!(all_granted(&w, &a), [["3/1/1"]]);
         packable(&c, "slope", 2, Some(2));
         let mut offers = c.shared.lock().unwrap().offers.clone();
-        offers.push(cold);
+        offers.push(cold.clone());
         c.offer("p", offers);
-        assert!(all_granted(&w, &a).is_empty(), "beside a cold start: nothing");
+        assert_eq!(all_granted(&w, &a(4000 + provisional - 1)), [["6/1/1"], ["6/1/2"]], "past the room left");
+        // Nothing held: a cold start bigger than its whole room goes, alone.
+        let (_d, c, w, _clock) = every((0, 0));
+        c.offer("p", vec![cold.clone()]);
+        assert_eq!(all_granted(&w, &a(provisional / 2)), [["3/1/1"]]);
+        // Measured jobs beside a running cold start, by its provisional need.
+        packable(&c, "slope", 2, Some(2));
+        assert_eq!(all_granted(&w, &a(4000 + provisional)), [["6/1/1"], ["6/1/2"]], "beside a cold start");
+    }
+
+    /// Task #499: the room left is never more than what its Mac's jobs hold now leaves (its memory
+    /// guard's last sample, `Capacity::held_mb`): a cold start holding past its provisional need is
+    /// counted at what it holds, so nothing goes beside an overrun; the guard stops one that grows
+    /// past the limit (agent::memguard's tests).
+    #[test]
+    fn packing_counts_what_a_cold_start_holds_now() {
+        let cold = Offer { step: "lo".into(), targets: vec![("3/1/1".into(), "k 3/1/1".into(), 0)], job: None };
+        let a = |held_mb: u64| Ask {
+            want: 3,
+            can: vec!["slope".into(), "lo".into()],
+            cap: Some(Capacity { at: unix_now(), cores: 8, cores_free: 8, held_mb, ..Default::default() }),
+            ..every_ask("m1", "slope", 20_000, 100_000)
+        };
+        let (_d, c, w, _clock) = every((0, 0));
+        c.offer("p", vec![cold]);
+        assert_eq!(all_granted(&w, &a(0)), [["3/1/1"]]);
+        packable(&c, "slope", 4, Some(2));
+        // Holding 17 GB of the 20: one 2 GB job fits beside it, not two.
+        assert_eq!(all_granted(&w, &a(17_000)), [["6/1/1"]], "by what it holds");
+        // Holding 19 GB: nothing.
+        assert!(all_granted(&w, &a(19_000)).is_empty(), "an overrun: nothing beside");
+    }
+
+    /// Today's stalls (task #499, 21 Oct): (1) bld-fetch, the lead's own, unmeasured (its floor
+    /// cleared) on the M4: the other slots no longer sit idle beside it; (2) slope unmeasured while
+    /// the M4 runs a one-thread input check: it starts beside it instead of waiting for a Mac
+    /// running nothing.
+    #[test]
+    fn todays_two_cold_starts_no_longer_stall() {
+        // (1) bld-fetch held, cold: measured slope jobs go beside it.
+        let (_d, c, _w, _clock) = every((0, 0));
+        packable(&c, "slope", 4, Some(2));
+        let a = Ask { want: 11, can: vec!["slope".into()], ..every_ask("m4", "slope", 40_000, 400_000) };
+        let _f = c.hold("bld-fetch", &[("6/9/0".into(), "k 6/9/0".into())]).unwrap();
+        let g = c.ask_own(&a, &BTreeSet::new()).expect("beside the cold bld-fetch");
+        assert!(1 + g.more.len() >= 2, "{}", 1 + g.more.len());
+        // (2) the M4 holding a measured input check; slope never measured: granted beside it.
+        let (_d, c, _w, _clock) = every((0, 0));
+        packable(&c, "inputs", 1, Some(1));
+        let _i = c.hold("inputs", &[("6/1/1".into(), "k 6/1/1".into())]).unwrap();
+        c.offer(
+            "p",
+            vec![Offer { step: "slope".into(), targets: vec![("6/2/2".into(), "k 6/2/2".into(), 0)], job: None }],
+        );
+        let a = Ask { want: 11, can: vec!["slope".into()], ..every_ask("m4", "slope", 40_000, 400_000) };
+        let g = c.ask_own(&a, &BTreeSet::new()).expect("slope beside the input check");
+        assert!(matches!(&g.work, Granted::Job { step, .. } if step == "slope"));
     }
 
     fn placement(slack: &[(&str, u64)], speed: &[(&str, f64)]) -> crate::agent::placement::Placement {
