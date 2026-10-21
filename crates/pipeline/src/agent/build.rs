@@ -5984,7 +5984,7 @@ pub(crate) mod tests {
             next_of(&[w("peaks", 12), w("peaks", 166), w("items", 1), w("heritage", 1)]),
             ["Peaks: 178 z6 tiles", "Wikidata facts", "Heritage details"]
         );
-        assert_eq!(next_of(&[w("pois", 1), w("marks", 1)]), ["Landmark candidates: 1 tile", "Landmarks"]);
+        assert_eq!(next_of(&[w("pois", 1), w("marks", 1)]), ["Landmark candidates: 1 z6 tile", "Landmarks"]);
     }
 
     #[test]
@@ -7572,7 +7572,7 @@ pub(crate) mod tests {
             b.counts(),
             [
                 "1 run left".to_string(),
-                format!("0 of {} tiles", tt.prep.len() + tt.tiles.len()),
+                format!("0 of {} z6 tiles", tt.prep.len() + tt.tiles.len()),
                 format!("0 of {} z3 tiles", tt.lo.len())
             ]
         );
@@ -7584,7 +7584,7 @@ pub(crate) mod tests {
                 step: "bldtiles".into(),
                 targets: vec![("6/1/1".into(), "k".into()), ("6/1/2".into(), "k".into())]
             }]),
-            ["3D buildings: 2 tiles"]
+            ["3D buildings: 2 z6 tiles"]
         );
         let st = fold(&checklist_to_come(), &BTreeMap::new(), &BTreeMap::new());
         assert_eq!(
