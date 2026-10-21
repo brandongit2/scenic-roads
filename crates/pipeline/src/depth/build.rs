@@ -449,32 +449,28 @@ fn level(
     zmin: u8,
     done: &(dyn Fn(f64) + Sync),
 ) -> Result<usize> {
-    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicU32, Ordering};
     let side = n.div_ceil(BLOCK);
     let blocks = AtomicU32::new(0);
-    let stop = AtomicBool::new(false);
+    // (The reporter stops however the blocks end, a panic too, when `stop` drops: else the scope
+    // waits on it for good. The drop wakes it at once: a level never waits out its 200 ms.)
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    let counted = &blocks;
     // (Said every few seconds by a thread beside the work: a block's sources can take minutes on the
     // NAS, so a block's share counts its grids sampled so far, crate::depth::grids::sampled.)
     std::thread::scope(|s| {
-        s.spawn(|| {
+        s.spawn(move || {
             let mut last = std::time::Instant::now();
-            while !stop.load(Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_millis(200));
+            let tick = std::time::Duration::from_millis(200);
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(tick) {
                 if last.elapsed() >= SAY_EVERY {
-                    let k = f64::from(blocks.load(Ordering::Relaxed));
+                    let k = f64::from(counted.load(Ordering::Relaxed));
                     done(((k + super::grids::sampled()) / f64::from(side * side)).min(1.0));
                     last = std::time::Instant::now();
                 }
             }
         });
-        // (Stopped however the blocks end, a panic too: else the scope waits on it for good.)
-        struct Stop<'a>(&'a AtomicBool);
-        impl Drop for Stop<'_> {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::Relaxed);
-            }
-        }
-        let _stop = Stop(&stop);
+        let _stop = stop;
         level_blocks(t, sources, rd, water, wc, z, x0, y0, n, zmin, &blocks)
     })
 }

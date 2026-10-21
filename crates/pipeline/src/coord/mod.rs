@@ -8216,16 +8216,10 @@ mod tests {
         let (_d, c, w1, clock) = every((0, 0));
         let w2 = client::Client::at(w1.urls(), c.contact.token.clone(), "m2");
         let ts: Vec<String> = (0..400).map(|i| format!("6/{}/{}", i % 20, i / 20)).collect();
-        for t in &ts {
-            c.add_costs_by(
-                &[(
-                    cost_key("pack", t),
-                    Cost { peak_mb: 500, secs: 900, worker: None, v: cost_version("pack"), ..Default::default() },
-                )],
-                "m1",
-            );
-            c.add_disks(&[(cost_key("pack", t), 10)]);
-        }
+        // (In one call each: every call writes the whole costs file.)
+        let cost = Cost { peak_mb: 500, secs: 900, worker: None, v: cost_version("pack"), ..Default::default() };
+        c.add_costs_by(&ts.iter().map(|t| (cost_key("pack", t), cost.clone())).collect::<Vec<_>>(), "m1");
+        c.add_disks(&ts.iter().map(|t| (cost_key("pack", t), 10)).collect::<Vec<_>>());
         // (Both asking lately: nothing offered yet.)
         let (a1, a2) = (every_ask("m1", "pack", 4096, 10_000), every_ask("m2", "pack", 4096, 10_000));
         assert!(w1.ask(&a1).unwrap().is_none() && w2.ask(&a2).unwrap().is_none());

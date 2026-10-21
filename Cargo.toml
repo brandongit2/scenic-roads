@@ -19,3 +19,13 @@ opt-level = 3
 lto = "thin"
 codegen-units = 4
 debug = false
+
+# Tests optimized (task #505): the suite's heavy tests (packs built from fixture tiles, the pool's
+# simulations) ran 5-15x slower unoptimized; the slowest, 193 s, takes 28 s at these levels. The
+# workspace's crates at 1 (a rebuild after an edit stays ~15 s), the third-party ones at 3 (built
+# once). Debug assertions and overflow checks stay on, as in dev.
+[profile.test]
+opt-level = 1
+
+[profile.test.package."*"]
+opt-level = 3

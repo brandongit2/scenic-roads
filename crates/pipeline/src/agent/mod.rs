@@ -14269,8 +14269,10 @@ mod tests {
         assert!(b.slots[0].running.is_none(), "not taken over");
         assert!(home.join("job.json").exists(), "left to `run`'s stop of orphans");
         assert!(jobs::adopt(&home.join("job.json")).is_none());
+        // (Reaped as it ends, as its own parent would: a zombie would hold the stop to its 30 s.)
+        let reaper = std::thread::spawn(move || child.wait());
         jobs::stop_orphan(&home.join("job.json"));
-        let _ = child.wait();
+        let _ = reaper.join();
         assert!(!crate::sys::signal_group(pgid, crate::sys::Signal::Probe));
     }
 

@@ -145,11 +145,12 @@ fn cancelled(url: &str) -> Result<()> {
     Ok(())
 }
 
-/// A retry's wait of `secs`, in slices, ending early in an error when this thread's reader stops;
-/// then the host's note checked again (`down_check`: another request may have found it down).
+/// A retry's wait of `secs` (each `second` long: a real second but in tests), in slices, ending
+/// early in an error when this thread's reader stops; then the host's note checked again
+/// (`down_check`: another request may have found it down).
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
-fn retry_wait(dir: Option<&Path>, url: &str, secs: u64) -> Result<()> {
-    let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+fn retry_wait(dir: Option<&Path>, url: &str, secs: u64, second: std::time::Duration) -> Result<()> {
+    let end = std::time::Instant::now() + second * secs as u32;
     loop {
         cancelled(url)?;
         let now = std::time::Instant::now();
@@ -813,6 +814,8 @@ mod net {
         agent: ureq::Agent,
         /// The notes of hosts that gave no answer lately (SCENIC_FETCH_DOWN: super::down_check).
         down: Option<PathBuf>,
+        /// A second of the retries' waits: a real one but in tests (`with_second`).
+        second: Duration,
     }
 
     /// An answer that's worth asking again: too many requests, a server's error, or no answer.
@@ -842,7 +845,7 @@ mod net {
 
     impl Net {
         pub fn new() -> Net {
-            Net { agent: Self::config().build().into(), down: down_dir() }
+            Net { agent: Self::config().build().into(), down: down_dir(), second: Duration::from_secs(1) }
         }
 
         /// With the notes of hosts that gave no answer in `dir` (super::down_check) in place of
@@ -852,10 +855,21 @@ mod net {
             Net { down: dir, ..self }
         }
 
+        /// With the retries' waits counted in `second`s (a test's few ms): the same tries in
+        /// the same order, without waiting out real seconds.
+        #[cfg(test)]
+        pub fn with_second(self, second: Duration) -> Net {
+            Net { second, ..self }
+        }
+
         /// HTTPS only, and no redirect followed (one comes back as an answer, which isn't a file:
         /// an error).
         pub fn strict() -> Net {
-            Net { agent: Self::config().https_only(true).max_redirects(0).build().into(), down: down_dir() }
+            Net {
+                agent: Self::config().https_only(true).max_redirects(0).build().into(),
+                down: down_dir(),
+                second: Duration::from_secs(1),
+            }
         }
 
         fn config() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
@@ -938,7 +952,7 @@ mod net {
             let mut last = String::new();
             for attempt in 0..=10u32 {
                 if attempt > 0 {
-                    retry_wait(self.down.as_deref(), url, (2u64 << (attempt - 1)).min(60))?;
+                    retry_wait(self.down.as_deref(), url, (2u64 << (attempt - 1)).min(60), self.second)?;
                 }
                 cancelled(url)?;
                 match f()? {
@@ -1014,7 +1028,8 @@ mod net {
             down_check(self.down.as_deref(), url)?;
             loop {
                 if requests > 0 {
-                    retry_wait(self.down.as_deref(), url, if idle == 0 { 2 } else { (2u64 << (idle - 1)).min(60) })?;
+                    let secs = if idle == 0 { 2 } else { (2u64 << (idle - 1)).min(60) };
+                    retry_wait(self.down.as_deref(), url, secs, self.second)?;
                 }
                 cancelled(url)?;
                 crate::fetch::online(url)?;
@@ -1114,7 +1129,7 @@ mod net {
             let late = |e: &ureq::Error| matches!(e, ureq::Error::Timeout(ureq::Timeout::RecvBody));
             for attempt in 0..8u64 {
                 if attempt > 0 {
-                    retry_wait(self.down.as_deref(), url, 2 * attempt)?;
+                    retry_wait(self.down.as_deref(), url, 2 * attempt, self.second)?;
                 }
                 cancelled(url)?;
                 crate::fetch::online(url)?;
@@ -1223,7 +1238,7 @@ mod tests {
 
     /// Task #426 re-review: a host that takes the connection and never answers (each attempt's
     /// head past its wait) is noted down, as one giving no answer: only a body past its time is
-    /// late without being down. (About a minute: its eight tries and their waits.)
+    /// late without being down. (Its eight tries' waits, 56 s, in 10 ms seconds.)
     #[cfg(not(target_os = "wasi"))]
     #[test]
     fn a_host_silent_after_connecting_is_noted_down_within_a_tiles_limits() {
@@ -1232,7 +1247,9 @@ mod tests {
         let url = format!("http://127.0.0.1:{}/t.png", l.local_addr().unwrap().port());
         let dir = tempfile::tempdir().unwrap();
         let within = Within { head: std::time::Duration::from_millis(200), floor: 10_000, most: 64_000 };
-        let e = net::Net::new().with_down(Some(dir.path().to_path_buf())).get_by(&url, Some(within)).unwrap_err();
+        let net =
+            net::Net::new().with_down(Some(dir.path().to_path_buf())).with_second(std::time::Duration::from_millis(10));
+        let e = net.get_by(&url, Some(within)).unwrap_err();
         assert!(is_unreachable(&e), "{e:#}");
         let note = down_note(Some(dir.path()), &url).unwrap();
         assert!(note.exists(), "not noted down: {e:#}");
@@ -1407,12 +1424,14 @@ mod tests {
         // no byte is asked for twice.
         let file = served(data.clone(), "\"v1\"");
         let url = dropping_server(file.clone(), 100_000, 2);
-        let got = net::Net::new().range(&url, 1000, 251_000).unwrap();
+        // (Its retries' 2 s waits in 10 ms seconds.)
+        let fast = || net::Net::new().with_second(std::time::Duration::from_millis(10));
+        let got = fast().range(&url, 1000, 251_000).unwrap();
         assert_eq!(got, data[1000..251_000]);
         assert_eq!(file.lock().unwrap().2, [(1000, 250_999), (101_000, 250_999), (201_000, 250_999)]);
         // A whole-file read through the fetcher's own path (the same server, dropping once).
         let url = dropping_server(served(data.clone(), "\"v1\""), 50_000, 1);
-        let r = net::Net::new().open(&url, None, None).unwrap().unwrap();
+        let r = fast().open(&url, None, None).unwrap().unwrap();
         assert_eq!(r.read_at(200_000, 100_000).unwrap(), data[200_000..300_000]);
     }
 
