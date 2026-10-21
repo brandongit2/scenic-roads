@@ -28,9 +28,7 @@ from the NAS); a GHSL zip's length and every member's CRC-32 (zipfile's test, wh
 A file already in place at its listed size is skipped: only checked files are put there. A file
 that fails its check is fetched again once from the start, then fails the run.
 
-Gentle with the NAS and the build: at most --jobs transfers at once (2-4), and at most --max-mb-s
-MB/s in all (0: no cap). The defaults, 2 and 3 MB/s, leave the build some of the home line, which
-gave ~2-4 MB/s from S3 on 2026-10-05. A request that gets no answer (no connection, a timeout, a
+At most --jobs transfers at once (1-4, default 3); no speed cap. A request that gets no answer (no connection, a timeout, a
 429 or a 5xx, an answer cut short) is tried again with a growing wait (Retry-After honoured); a
 refusal (403, 404) fails that file. When the NAS goes away, the run waits for it (up to --nas-wait-h hours), then goes
 on from the temporary files. One run at a time per Mac (a lock in $TMPDIR). The User-Agent says who
@@ -42,7 +40,7 @@ its output appended to the NAS's state/logs/bldfetch.log.
 usage: bldfetch.py --root <NAS project folder> --release <release> [--server URL | --coverage f]
        (SCENIC_SOURCES: the declared sources, dem/declared.py; the release their buildings source's
        version, as scenic-build bld-fetch gives both)
-                   [--margin-km 20] [--jobs 2] [--max-mb-s 3] [--only overture|ghsl] [--limit n]
+                   [--margin-km 20] [--jobs 3] [--only overture|ghsl] [--limit n]
                    [--nas-wait-h 6] [--dry-run]
        --limit n: only the n smallest files of each source (a test)
 """
@@ -397,24 +395,6 @@ def ghsl_jobs(args, cov) -> tuple[list[dict], Path]:
 
 # ---- downloading -----------------------------------------------------------------------------------
 
-class Throttle:
-    """At most `rate` bytes a second over every transfer (0: no cap)."""
-
-    def __init__(self, rate: float):
-        self.rate, self.lock, self.t, self.debt = rate, threading.Lock(), time.monotonic(), 0.0
-
-    def take(self, n: int) -> None:
-        if self.rate <= 0:
-            return
-        with self.lock:
-            now = time.monotonic()
-            self.debt = max(0.0, self.debt - (now - self.t) * self.rate) + n
-            self.t = now
-            wait = self.debt / self.rate - 1.0  # a second's burst allowed
-        if wait > 0:
-            time.sleep(wait)
-
-
 class Progress:
     def __init__(self, files: int, total: int):
         self.files, self.total = files, total
@@ -493,7 +473,7 @@ def wait_for_nas(root: Path, hours: float) -> None:
         time.sleep(60)
 
 
-def fetch(job: dict, root: Path, throttle: Throttle, prog: Progress, nas_wait_h: float) -> tuple[str, int]:
+def fetch(job: dict, root: Path, prog: Progress, nas_wait_h: float) -> tuple[str, int]:
     """One file into place (see the module's docstring): what was done, and the bytes this run
     fetched of it (the rest were here from a run cut short)."""
     dest: Path = job["dest"]
@@ -545,7 +525,6 @@ def fetch(job: dict, root: Path, throttle: Throttle, prog: Progress, nas_wait_h:
                                 b = r.read(CHUNK)
                                 if not b:
                                     break
-                                throttle.take(len(b))
                                 f.write(b)
                                 if hasher:
                                     hasher.update(b)
@@ -624,8 +603,7 @@ def main() -> None:
     ap.add_argument("--server", default="http://localhost:7311", help="the map's server, for the coverage")
     ap.add_argument("--coverage", help="the coverage as a GeoJSON file instead")
     ap.add_argument("--margin-km", type=float, default=20.0)
-    ap.add_argument("--jobs", type=int, default=2, help="transfers at once (2-4)")
-    ap.add_argument("--max-mb-s", type=float, default=3.0, help="MB/s in all (0: no cap)")
+    ap.add_argument("--jobs", type=int, default=3, help="transfers at once (1-4)")
     ap.add_argument("--only", choices=["overture", "ghsl"])
     ap.add_argument("--limit", type=int, default=0, help="only the n smallest files of each source (a test)")
     ap.add_argument("--nas-wait-h", type=float, default=6.0)
@@ -644,8 +622,7 @@ def main() -> None:
     for s in (signal.SIGTERM, signal.SIGINT):
         signal.signal(s, lambda *_: STOP.set())
 
-    log(f"bldfetch: pid {os.getpid()} on {HOST}, root {root}, {args.jobs} transfers at once, "
-        f"{'no cap' if args.max_mb_s <= 0 else f'at most {args.max_mb_s:g} MB/s'}")
+    log(f"bldfetch: pid {os.getpid()} on {HOST}, root {root}, {args.jobs} transfers at once")
     with phase("the coverage read", "mixed"):
         cov, what = coverage(args)
     log(f"coverage: {len(what)} regions ({', '.join(what[:6])}{', …' if len(what) > 6 else ''}), files within {args.margin_km:g} km of it")
@@ -679,7 +656,6 @@ def main() -> None:
             print(f"  {'here ' if j['name'] in here else 'fetch'} {j['src']:8s} {j['size'] / 1e6:9.1f} MB  {j['name']}")
         return
 
-    throttle = Throttle(args.max_mb_s * 1e6)
     prog = Progress(len(jobs), known)
     stop_report = threading.Event()
 
@@ -734,7 +710,7 @@ def main() -> None:
             return
         try:
             t0 = time.monotonic()
-            what, new = fetch(job, root, throttle, prog, args.nas_wait_h)
+            what, new = fetch(job, root, prog, args.nas_wait_h)
             if what == "fetched":
                 dt = time.monotonic() - t0
                 check = "ETag (MD5 of its parts)" if job["etag"] else "zip CRC-32"

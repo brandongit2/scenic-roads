@@ -108,7 +108,7 @@ else. Building heights don't enter the roadside factor, the horizons or the view
 The coverage comes from the server (`/api/regions`, `/api/areas/<id>`), so a new region fetches only
 new files. Each file is written to a temporary name, resumed by range requests (S3 only while its
 ETag holds), checked (Overture's multipart ETag, GHSL's zip CRCs) and renamed; files in place at
-their listed size are skipped. Two transfers, 3 MB/s in all. S3 keeps a release ~60 days (this one
+their listed size are skipped. Three transfers at once, no speed cap. S3 keeps a release ~60 days (this one
 until 2026-11-25); after that a region whose files aren't on the NAS waits for the next pinned
 release (§5).
 
