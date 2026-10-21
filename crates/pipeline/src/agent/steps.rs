@@ -143,7 +143,7 @@ pub struct Step {
     pub stage: &'static str,
     /// The memory a job of it is expected to take (MB) before a target's own run has said
     /// (`SCENIC_COSTS`, crate::coord::Cost): offered so to the members, and a cold start packed
-    /// beside other jobs at 3/2 of it (crate::coord::provisional_mb). (Z6 tiles and candidates are offered by their extract's size, terrain by its z3 tile's,
+    /// beside other jobs at 3/2 of it (crate::coord::sched::provisional_mb). (Z6 tiles and candidates are offered by their extract's size, terrain by its z3 tile's,
     /// the 3D buildings by their rows: crate::agent's offers.)
     pub mem_mb: u64,
     /// Other members take its jobs (the shared steps), at this rank of preference (what later steps

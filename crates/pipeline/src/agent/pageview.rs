@@ -469,7 +469,7 @@ mod tests {
     }
 
     fn record(now: u64) -> Record<'static> {
-        let c = Cost { secs: 600.0, known: true, peak_mb: 1000, cores: None };
+        let c = Cost { secs: 600.0, known: true, peak_mb: 1000 };
         Record {
             input: Input {
                 now,
@@ -484,7 +484,7 @@ mod tests {
                 machines: vec![mac("m4", 300.0), Machine { equal: true, ..mac("m1", 900.0) }],
                 running: BTreeMap::new(),
                 macs: BTreeMap::new(),
-                old_app: false,
+                sched: None,
             },
             each_s: BTreeMap::new(),
             waiting: BTreeMap::new(),

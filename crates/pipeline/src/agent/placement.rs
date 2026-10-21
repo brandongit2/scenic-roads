@@ -49,7 +49,7 @@ pub fn on(root: &Path) -> Option<bool> {
 }
 
 /// What the lead's coordinator places by (`crate::coord::Coordinator::set_placement`).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Placement {
     /// Each step's slack in the forecast (s); a step the forecast gives no end is last.
     pub slack: BTreeMap<String, u64>,

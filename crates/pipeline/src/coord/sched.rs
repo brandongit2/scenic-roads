@@ -1,0 +1,1323 @@
+//! The scheduler (docs/pool.md §7.2, §7.7): the one place a job is granted. Every rule that decides
+//! which jobs a Mac's ask gets lives here and nowhere else (tests/grant_rules.rs keeps it so): the
+//! offers in plan order, the lead's own planned jobs to the lead alone (crate::agent::every::grants),
+//! a step's targets as a run in plan order (`pick_every`) and the lead's planned jobs whole
+//! (`pick_own`), the packing by measured memory, disk and cores (crate::needs), cold starts by their
+//! provisional need, one at a time on a Mac and never-measured steps alone, the NAS budget
+//! (crate::budget::nas: its weights and limits, the aged reservations, quiet steps, the downloads'
+//! cap, the gate on the NAS's own load), the mixed-version hold (one job an ask while a member runs
+//! an older app) and placement (crate::agent::placement).
+//!
+//! It's pure: `Sched::pack` decides from its state (`Sched`), the ask and a clock it's handed
+//! (`Clock`), and changes nothing but its state (the leases it grants, the targets' waits on the
+//! budget, each worker's last target). No file, no network, no wall clock, no log: the live
+//! coordinator (crate::coord's `Shared::pack`) saves, logs and records its grants; the forecast
+//! (crate::agent::forecast) runs the same `pack` over simulated time on a copy of the live state
+//! (`State`), so its schedule is the coordinator's by construction.
+
+use super::lease::{Lease, Leases, Work};
+use super::{cost_key, cost_version, disk_words, first_guess, job_secs, Ask, Cost, Measured, Offer, Worker};
+use super::{AROUND, ASKING};
+use crate::agent::memguard::Floor;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+/// The time a decision is made at: the coordinator's clock (`now`, what leases and waits are
+/// reckoned in) and the wall clock's unix second with it (a lease's `granted_at`). The live
+/// coordinator reads both; the forecast steps them through simulated time.
+#[derive(Clone, Copy, Debug)]
+pub struct Clock {
+    pub now: Instant,
+    pub unix: u64,
+}
+
+/// A job granted (`Sched::pack`): its lease (held in `Sched::leases` from then), step and targets
+/// (target, key), the threads it runs, the disk it reserves (its measure and its shared cache's
+/// fill), and the lead's planned job it is (`Offer::job`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pick {
+    pub lease: u64,
+    pub step: String,
+    pub targets: Vec<(String, String)>,
+    pub threads: u32,
+    pub disk_mb: u64,
+    pub job: Option<String>,
+}
+
+/// What every grant is decided from: the leases out, the plan's offers, the work done and failed,
+/// the workers' last asks, the measures (costs, floors, disk floors, jobs' disks, caches' fills)
+/// and the NAS budget's limits and waits.
+#[derive(Debug, Default)]
+pub struct Sched {
+    pub leases: Leases,
+    /// The plan's work a worker that mounts the NAS may do, a step at a time in plan order, and the
+    /// lead's own planned jobs (`Offer::job`).
+    pub offers: Vec<Offer>,
+    /// Work done (journaled, or recorded by this Mac's job), (step, target) → key, under a key the
+    /// plan hasn't shown yet: not offered again meanwhile.
+    pub done: BTreeMap<(String, String), String>,
+    /// A worker's failures: (worker, cost_key(step, target)) → (the last, how many): not offered to
+    /// it again for an hour, doubling each time.
+    pub failed: BTreeMap<(String, String), (Instant, u32)>,
+    pub workers: BTreeMap<String, Worker>,
+    pub costs: BTreeMap<String, Cost>,
+    /// What a target takes at least (by cost key: crate::agent::memguard::Floor), as a run that
+    /// didn't measure it saw it hold: its predicted memory is never below it. A measure of the
+    /// target, a run's own (the same kind of figure: its job's processes together, sampled), takes
+    /// its place. Kept in `floors.json`.
+    pub floors: BTreeMap<String, Floor>,
+    /// The disk a target takes at least (MB, by cost key): the most a run of it was seen to take
+    /// (counted by the accessors that write a job's files, the largest at the top of its scratch
+    /// folder, the disk's fall while it ran alone: crate::agent::memguard). Only rises. Kept in
+    /// `disks.json`.
+    pub disks: BTreeMap<String, u64>,
+    /// The disk each step's last jobs took over their whole runs (MB, by step, oldest first, the
+    /// last `JOB_PEAKS`): a batch's cache writes add up over its targets, and outside programs'
+    /// files can outlast a target, so a batch is reckoned by the larger of its targets' disk
+    /// summed and these runs' 90th percentile (`job_floor`); a step reading a shared cache's
+    /// (crate::needs::CACHES) count for nothing past their cache's fill (`note_fill`). Kept in
+    /// `job-disks-v5.json` (`JOB_DISKS`).
+    pub job_disks: BTreeMap<String, Vec<u64>>,
+    /// What filling each shared cache (crate::needs::CACHES) on a Mac takes (MB, by cache): the
+    /// last run that filled it, its disk past its targets' own output (`note_fill`). A Mac is
+    /// reserved what of it its capacity says it lacks (`missing`). Kept in `cache-fills.json`.
+    pub fills: BTreeMap<String, u64>,
+    /// The steps' models of their needs (crate::needs), kept while `needs_rev` stands: it moves with
+    /// each cost, floor or disk floor taken or cleared.
+    pub needs: crate::needs::Cache,
+    pub needs_rev: u64,
+    /// The app this Mac's agent runs: an agent on another builds with other code than the keys it
+    /// would record say, so it gets no work ("" in tests: any).
+    pub app: String,
+    /// Placement by how crucial a job is (docs/pool.md §12, phase 4's eleventh batch:
+    /// crate::agent::placement), while the lead's switch has it on, and when it was first told (its
+    /// draws' windows are reckoned from then): the offers tried by their steps' slack, a member's
+    /// targets and the tasks drawn among those asking by measured speed, a task offered ahead given
+    /// to a slower worker its head start covers. None: as before.
+    pub placement: Option<(crate::agent::placement::Placement, Instant)>,
+    /// The NAS budget's limits (docs/pool.md §7.7, crate::budget::nas): the NAS's as probed, and the
+    /// downloads' cap. Read by `pick_every` (so `pack` too). None: the switch off, or no probe yet.
+    pub nas: Option<crate::budget::nas::Limits>,
+    /// The NAS's limits as probed whatever the switch says: the lead's own jobs are always held to
+    /// the budget (`nas_room`). None: not probed yet.
+    pub nas_own: Option<crate::budget::nas::Limits>,
+    /// This Mac's member name, its own jobs' leases held under it (`Coordinator::ask_own`): the NAS
+    /// budget lets a member's job go past the whole while the lead's own alone hold weight.
+    pub lead_name: String,
+    /// Targets passed over for the NAS budget alone ((step, target) → (first, last time)), for the
+    /// status (`Coordinator::nas_waits`); a target granted is let go.
+    pub nas_waits: Mutex<BTreeMap<(String, String), (Instant, Instant)>>,
+    /// When each quiet step's job (crate::budget::nas::QUIET_STEPS) was first held back for a
+    /// quiet NAS since it was last granted: past `QUIET_AGE` it goes as an aged job (task #451).
+    pub quiet_since: Mutex<BTreeMap<String, Instant>>,
+    /// Each worker's last target granted of a step ((worker, step) → target): its next run starts
+    /// just after it in plan order when it can (`pick_every`).
+    pub last: BTreeMap<(String, String), String>,
+    /// The steps with a measure of any kind, as the measures stood (`never_measured`).
+    pub measured_steps: Mutex<(u64, BTreeSet<String>)>,
+}
+
+/// The NAS budget's weights for one placement (`Shared::nas_room`): the limits, one Book, and each
+/// step's 90th percentile kept once worked out (crate::needs::Book::nas_prior).
+pub(crate) struct NasWeigher<'a> {
+    limits: crate::budget::nas::Limits,
+    book: crate::needs::Book<'a>,
+    priors: std::cell::RefCell<BTreeMap<String, Option<crate::budget::nas::Rate>>>,
+}
+
+impl NasWeigher<'_> {
+    /// The weight of `target` of `step` (none of its step measured: the whole for a NAS step, else 0).
+    fn weight(&self, step: &str, target: &str) -> u32 {
+        let r = self
+            .book
+            .nas_own(step, target)
+            .or_else(|| *self.priors.borrow_mut().entry(step.to_string()).or_insert_with(|| self.book.nas_prior(step)));
+        // (A step known to read the NAS (`NAS_STEPS`) none of whose runs noted its rate, in any
+        // way it ran: the whole budget, so its first job never overloads the NAS unseen, task #499
+        // review; its step's runs of earlier ways count by `nas_prior`.)
+        r.map_or(if NAS_STEPS.contains(&step) { crate::budget::nas::WHOLE } else { 0 }, |r| self.limits.weight(r))
+    }
+}
+
+/// What a job is packed as (`Shared::pack_need`): its memory and disk, its cores as measured
+/// (None: not said), and whether it's a cold start (none of it measured, `m` its provisional need).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Need {
+    m: Measured,
+    cores: Option<u32>,
+    cold: bool,
+}
+
+/// The steps known to honour the threads they're granted (task #499 review): their cold starts
+/// count as the packed share, the others' as the whole Mac. `slope`: a Rust step on the rayon pool
+/// the agent sizes (`RAYON_NUM_THREADS`, crate::agent::jobs); `bld-fetch`: its downloads bounded
+/// by its `--jobs` (3 by default, at most 4), waiting on the network.
+const THREADS_HONOURED: &[&str] = &["slope", "bld-fetch"];
+
+/// Whether `step` honours the threads it's granted (`THREADS_HONOURED`).
+pub(super) fn honours_threads(step: &str) -> bool {
+    THREADS_HONOURED.contains(&step)
+}
+
+/// A cold start's provisional memory (MB) from the most its step declares or it was offered with,
+/// `mb`: times 3/2 (task #499; `Shared::provisional`, the forecast's packing too).
+pub(super) fn provisional_mb(mb: u64) -> u64 {
+    mb.saturating_mul(3) / 2
+}
+
+/// The cores `a`'s Mac has for its jobs together: its capacity's (else the ask's), less the in-use
+/// share's (`Capacity::kept_cores`) while its owner uses it; one at least.
+pub fn ask_cores(a: &Ask) -> u32 {
+    let cap = a.cap.as_ref();
+    let total = cap.map(|c| c.cores).filter(|&c| c > 0).unwrap_or(a.cores).max(1);
+    total.saturating_sub(cap.filter(|c| c.in_use).map_or(0, |c| c.kept_cores)).max(1)
+}
+
+/// The cores `a`'s Mac has busy outside the pool: those its last minute's load average keeps busy
+/// (its capacity's `cores` less `cores_free`) past `ours`, the threads of the pool's jobs it holds,
+/// less the cores the in-use share keeps from its jobs already while its owner uses it
+/// (`ask_cores` takes those off). 0 for an ask without a capacity.
+/// The load average lags a minute and is rounded up, and `ours` counts granted threads: an excess
+/// within the packed share (`packed_share`, a job's threads: one just ended still in the load) is
+/// taken for that and counts none.
+pub fn outside_cores(a: &Ask, ours: u32) -> u32 {
+    a.cap.as_ref().map_or(0, |c| {
+        let busy = c.cores.saturating_sub(c.cores_free);
+        let kept = if c.in_use { c.kept_cores } else { 0 };
+        let excess = busy.saturating_sub(ours).saturating_sub(kept);
+        if excess <= packed_share(ask_cores(a)) {
+            0
+        } else {
+            excess
+        }
+    })
+}
+
+/// The most threads a packed job is granted, of the `cores` its Mac has for its jobs:
+/// a quarter of them, at least two where they allow (the M1's 8: 2; the M4's 14: 3). The same alone or
+/// beside others: a run's threads bound what it's measured to use (crate::needs::Book::cores), so a
+/// job given them all while alone could be measured to leave no room beside it.
+pub fn packed_share(cores: u32) -> u32 {
+    (cores / 4).max(2).min(cores.max(1))
+}
+
+/// The steps that read the NAS as they go (their threads overlap the waits): never granted fewer
+/// than the packed share.
+pub(super) const NAS_STEPS: &[&str] = &["unit", "elev", "pack", "lo"];
+
+/// How long a job offered runs, at most, by its targets' measured
+/// times (s): a quarter of an hour (docs/pool.md §7.7, batch). Its first target is taken whatever
+/// its time.
+pub const JOB_S: u64 = 15 * 60;
+
+/// The most targets a job so offered takes, whatever their times (a step measured at no time).
+pub(super) const JOB_MAX: usize = 256;
+
+impl Sched {
+    /// The 90th percentile of the disk `step`'s last jobs took (MB; 0: none seen).
+    pub(super) fn job_p90(&self, step: &str) -> u64 {
+        self.job_disks.get(step).and_then(|v| crate::needs::p90(v.clone())).unwrap_or(0)
+    }
+
+    /// The disk a job of `step` takes at least, whatever its targets (MB): its last jobs' 90th
+    /// percentile; 0 for a step reading a shared cache, whose jobs' runs measure its fill (`fills`,
+    /// reserved where a Mac lacks it) and its targets' own output (`measured`).
+    pub(super) fn job_floor(&self, step: &str) -> u64 {
+        if crate::needs::cache_of(step).is_some() {
+            0
+        } else {
+            self.job_p90(step)
+        }
+    }
+
+    /// What filling shared cache `cache` (crate::needs::CACHES) on a Mac takes (MB; 0: never
+    /// measured).
+    pub(super) fn fill_mb(&self, cache: &str) -> u64 {
+        self.fills.get(cache).copied().unwrap_or(0)
+    }
+
+    /// What of shared cache `cache` the Mac asking `a` lacks (MB): its fill less what its capacity
+    /// says its cache folder holds of it; the whole fill when its ask says nothing of its caches
+    /// (an older agent's).
+    pub(super) fn missing(&self, cache: &str, a: &Ask) -> u64 {
+        let have = a.cap.as_ref().and_then(|c| c.caches.get(cache)).map_or(0, |h| h.have_mb);
+        self.fill_mb(cache).saturating_sub(have)
+    }
+
+    /// The floor of `target` of `step` that holds it off a Mac: one learned alone, the way its step
+    /// runs now (crate::coord::cost_version).
+    pub(super) fn holding_floor(&self, step: &str, target: &str) -> Option<Floor> {
+        self.floors.get(&cost_key(step, target)).filter(|f| f.v >= cost_version(step)).copied()
+    }
+
+    /// The memory a job of `step` for `target` is expected to take (MB), as `job_peak` sizes it from
+    /// its costs and `size`, and never below its floor (one of an older way of its step too: the best
+    /// estimate there is until it runs again).
+    pub(super) fn peak_of(&self, step: &str, target: &str, size: u64, threads: u32) -> u64 {
+        self.book().mem(step, target, threads, first_guess(&self.costs, step, target, size)).0
+    }
+
+    /// The measures crate::needs reads (the costs, the floors and the disk floors), its models kept
+    /// in `needs` until they change (`needs_rev`; their counts too, for a change made in place).
+    pub(super) fn book(&self) -> crate::needs::Book<'_> {
+        crate::needs::Book::kept(&self.costs, &self.floors, &self.disks, &self.needs, self.rev())
+    }
+
+    /// Where the measures stand: it moves with each cost, floor or disk floor taken or cleared
+    /// (`needs_rev`, and their counts for a change made in place).
+    fn rev(&self) -> u64 {
+        self.needs_rev.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ ((self.costs.len() as u64) << 40 | (self.floors.len() as u64) << 20 | self.disks.len() as u64)
+            ^ (self.job_disks.len() as u64).rotate_left(60)
+    }
+
+    /// The first guess of offered `target` of `step` (`first_guess` by the size it was offered
+    /// with), 0 when it isn't offered.
+    pub(super) fn offered_guess(&self, step: &str, target: &str) -> u64 {
+        self.offers
+            .iter()
+            .filter(|o| o.step == step)
+            .find_map(|o| o.targets.iter().find(|t| t.0 == target))
+            .map_or(0, |t| first_guess(&self.costs, step, target, t.2))
+    }
+
+    /// `Coordinator::measured`, under its lock: its step's model's (crate::needs) memory and disk (a
+    /// z6 tile's or candidates' extract-size guess first while their fit isn't good, by the size it was
+    /// offered with); None while nothing of its step was measured. Floors of an older way of the
+    /// step count for nothing (crate::needs).
+    pub(super) fn measured(&self, step: &str, target: &str) -> Option<Measured> {
+        let b = self.book();
+        let (mem_mb, from) = b.mem(step, target, 0, self.offered_guess(step, target));
+        (from != crate::needs::From::Table).then(|| Measured {
+            mem_mb,
+            disk_mb: b.disk(step, target, 0).unwrap_or(0),
+            own: from == crate::needs::From::Measured,
+        })
+    }
+
+    /// How long `target` of `step` is measured to take `worker` (s): its own run's (`job_secs`), else
+    /// its step's model's (crate::needs: its fit, else the mean of its step's runs); None when
+    /// none of its step's has run the way it runs now.
+    pub(super) fn secs_of(&self, step: &str, target: &str, worker: &str) -> Option<u64> {
+        job_secs(&self.costs, step, target, worker).or_else(|| self.book().secs(step, target, 0))
+    }
+
+    /// `worker`'s live jobs' leases.
+    pub(super) fn job_leases(&self, worker: &str, now: Instant) -> Vec<Lease> {
+        self.leases.all(now).into_iter().filter(|l| l.worker == worker && matches!(l.work, Work::Job { .. })).collect()
+    }
+
+    /// A job of `step` over `targets`: its NAS weight under `l` (its heaviest target's,
+    /// crate::budget::nas; 0 for a target none of whose step's runs measured it; with none, its
+    /// step's), and whether it
+    /// downloads (its step's kind a fetch, crate::agent::steps::Kind::Fetch).
+    /// (`nw` keeps the Book and the steps' percentiles for one placement: `NasWeigher`.)
+    pub(super) fn job_nas(nw: &NasWeigher, step: &str, targets: &[String]) -> (u32, bool) {
+        // (A job of no targets of its own, the clean-up's lease: its step's measured weight, task #451.)
+        let w = if targets.is_empty() {
+            nw.weight(step, "")
+        } else {
+            targets.iter().map(|t| nw.weight(step, t)).max().unwrap_or(0)
+        };
+        (w, crate::agent::steps::row(step).is_some_and(|r| r.kind == crate::agent::steps::Kind::Fetch))
+    }
+
+    /// The NAS budget now (docs/pool.md §7.7) for an ask of the lead's own (`lead`) or a member's:
+    /// its weigher, the NAS weight of every job leased in the pool together, of the members' among
+    /// them (all but the lead's own), and the downloading jobs; None while it's off for the asker
+    /// (the lead's own: only before the NAS was first probed, `nas_own`).
+    pub(super) fn nas_room(&self, now: Instant, lead: bool) -> Option<(NasWeigher<'_>, u32, u32, usize)> {
+        self.nas_room_heaviest(now, lead).map(|(nw, w, members, dl, _)| (nw, w, members, dl))
+    }
+
+    /// `nas_room`, and the most one leased job weighs, of all and of the members' ([all, members]).
+    pub(super) fn nas_room_heaviest(
+        &self,
+        now: Instant,
+        lead: bool,
+    ) -> Option<(NasWeigher<'_>, u32, u32, usize, [u32; 2])> {
+        let limits = if lead { self.nas_own.or(self.nas)? } else { self.nas? };
+        let nw = NasWeigher { limits, book: self.book(), priors: Default::default() };
+        // (The switch `off`: the members' jobs aren't held, so the lead's own aren't held back by
+        // them either, only by its own (task #440: else a member's unheld jobs keep the lead idle).)
+        let members_held = self.nas.is_some();
+        let (mut w, mut members, mut dl, mut most) = (0u32, 0u32, 0usize, [0u32; 2]);
+        for lease in self.leases.all(now) {
+            if !members_held && lease.worker != self.lead_name {
+                continue;
+            }
+            if let Work::Job { step, targets } = &lease.work {
+                let (jw, d) = Self::job_nas(&nw, step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
+                w = w.saturating_add(jw);
+                most[0] = most[0].max(jw);
+                if lease.worker != self.lead_name {
+                    members = members.saturating_add(jw);
+                    most[1] = most[1].max(jw);
+                }
+                dl += usize::from(d);
+            }
+        }
+        Some((nw, w, members, dl, most))
+    }
+
+    /// The room the NAS budget holds for a target aged in it (task #444): of the targets held back
+    /// for the budget alone for `OWN_AGE` or more and passed over in the last two minutes, the one
+    /// first held back: (step, target, its weight). While it's held, no other job weighing anything
+    /// starts unless it leaves that room (`nas_reserve_ok`): the leased jobs end, and it fits.
+    pub(super) fn nas_reserved(&self, nw: &NasWeigher, now: Instant) -> Option<(String, String, u32)> {
+        let g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+        g.iter()
+            .filter(|(_, (since, last))| {
+                now.saturating_duration_since(*since) >= crate::budget::nas::OWN_AGE
+                    && now.saturating_duration_since(*last) < Duration::from_secs(120)
+            })
+            .min_by_key(|(k, (since, _))| (*since, (*k).clone()))
+            .map(|((st, t), _)| (st.clone(), t.clone(), nw.weight(st, t)))
+    }
+
+    /// Whether a job of `step` over `targets` of weight `w`, beside leased jobs weighing `running`,
+    /// leaves the room held for an aged target (`nas_reserved`): it weighs nothing, nothing's
+    /// held, it's the one held for, or both fit within the whole.
+    pub(super) fn nas_reserve_ok(
+        &self,
+        nw: &NasWeigher,
+        now: Instant,
+        step: &str,
+        targets: &[String],
+        running: u32,
+        w: u32,
+    ) -> bool {
+        w == 0
+            || self.nas_reserved(nw, now).is_none_or(|(st, t, rw)| {
+                (st == step && targets.contains(&t))
+                    || running.saturating_add(w).saturating_add(rw) <= crate::budget::nas::WHOLE
+            })
+    }
+
+    /// Whether a leased job may load the NAS unseen by its weight: one of a step known to read it
+    /// (`NAS_STEPS`), or one none of whose step's runs measured its NAS rate (a cold one).
+    pub(super) fn nas_unknown_running(&self, nw: &NasWeigher, now: Instant) -> bool {
+        self.leases.all(now).into_iter().any(|l| match &l.work {
+            Work::Job { step, targets } => {
+                NAS_STEPS.contains(&step.as_str())
+                    || if targets.is_empty() {
+                        nw.book.nas(step, "").is_none()
+                    } else {
+                        targets.iter().any(|t| nw.book.nas(step, &t.0).is_none())
+                    }
+            }
+            _ => false,
+        })
+    }
+
+    /// Notes `target` of `step` passed over for the NAS budget alone now.
+    pub(super) fn nas_wait(&self, step: &str, target: &str, now: Instant) {
+        let mut g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+        g.entry((step.to_string(), target.to_string())).and_modify(|e| e.1 = now).or_insert((now, now));
+    }
+
+    /// Whether a job of `step` over `targets` reads the NAS enough that its threads overlap waiting
+    /// on it: a step known to (`NAS_STEPS`), or one whose costs show 10 MB/s or more of NAS bytes.
+    pub(super) fn reads_nas(&self, step: &str, targets: &[String]) -> bool {
+        NAS_STEPS.contains(&step) || {
+            let b = self.book();
+            targets.iter().any(|t| b.nas(step, t).is_some_and(|r| r.bytes_s >= 10e6))
+        }
+    }
+
+    /// The cores a packed job of `step` over `targets`, measured to take `c`, is granted (and
+    /// counted for): `c` within the packed `share`; a NAS-reading one (`reads_nas`) the share, never
+    /// fewer.
+    pub(super) fn packed_cores(&self, step: &str, targets: &[String], c: u32, share: u32) -> u32 {
+        if self.reads_nas(step, targets) {
+            share
+        } else {
+            c.min(share).max(1)
+        }
+    }
+
+    /// `packed_cores` of cores `c` as said (None, not said: the share).
+    pub(super) fn cores_of(&self, step: &str, targets: &[String], c: Option<u32>, share: u32) -> u32 {
+        c.map_or(share, |c| self.packed_cores(step, targets, c, share))
+    }
+
+    /// What a job of `step` over `targets` is measured to take (as `Coordinator::measured_batch`:
+    /// the most of their memory, their disks summed or the most a job of the step took), and its
+    /// cores (crate::needs::Book::cores: the most of its targets'; None when one's aren't said);
+    /// None when any is a cold start.
+    pub(super) fn job_need(&self, step: &str, targets: &[String]) -> Option<(Measured, Option<u32>)> {
+        let each: Vec<Measured> = targets.iter().map(|t| self.measured(step, t)).collect::<Option<_>>()?;
+        let job = self.job_floor(step);
+        let b = self.book();
+        let cores = targets
+            .iter()
+            .map(|t| b.cores(step, t))
+            .collect::<Option<Vec<u32>>>()
+            .map(|v| v.into_iter().max().unwrap_or(0));
+        Some((
+            Measured {
+                mem_mb: each.iter().map(|m| m.mem_mb).max().unwrap_or(0),
+                disk_mb: crate::needs::batch_disk(step, each.iter().map(|m| m.disk_mb)).max(job),
+                own: each.iter().all(|m| m.own),
+            },
+            cores,
+        ))
+    }
+
+    /// What a job of `step` over `targets` is packed as (task #499): its measure (`job_need`), else,
+    /// a cold start (`Need::cold`), its provisional need (`provisional`).
+    pub(super) fn pack_need(&self, step: &str, targets: &[String]) -> Need {
+        match self.job_need(step, targets) {
+            Some((m, cores)) => Need { m, cores, cold: false },
+            None => Need { m: self.provisional(step, targets), cores: None, cold: true },
+        }
+    }
+
+    /// The cores a job packed as `n` counts for on a Mac of `total` cores (packed share `share`):
+    /// its measured ones within the share (`packed_cores`), the share when not said; a cold start's
+    /// the share only when its step honours the threads it's granted (`THREADS_HONOURED`), else
+    /// the whole Mac (task #499 review: one that runs as many threads as the Mac has would swamp
+    /// the jobs beside it).
+    pub(super) fn need_cores(&self, step: &str, targets: &[String], n: &Need, share: u32, total: u32) -> u32 {
+        if n.cold && !THREADS_HONOURED.contains(&step) {
+            total
+        } else {
+            self.cores_of(step, targets, n.cores, share)
+        }
+    }
+
+    /// Whether no run of `step` has left a measure of any kind, whatever the way it ran (task #499
+    /// review): no cost, floor, disk floor or job's disk. A step that has run before (its memory's
+    /// measure gone with a new way or a cleared floor) isn't; one never measured runs alone,
+    /// nothing beside it, as before task #499.
+    pub fn never_measured(&self, step: &str) -> bool {
+        // (The steps measured kept while the measures stand, `rev`: an ask asks it for every job.)
+        let mut g = self.measured_steps.lock().unwrap_or_else(|e| e.into_inner());
+        if g.0 != self.rev() || g.1.is_empty() {
+            let of = |k: &String| crate::agent::memguard::step_of_key(k).to_string();
+            let mut steps: BTreeSet<String> =
+                self.costs.keys().chain(self.floors.keys()).chain(self.disks.keys()).map(of).collect();
+            steps.extend(self.job_disks.keys().cloned());
+            *g = (self.rev(), steps);
+        }
+        !g.1.contains(step)
+    }
+
+    /// A cold start's provisional need (task #499): `provisional_mb` of the most its step declares
+    /// (crate::agent::steps' `mem_mb`) or it was offered with (`offered_guess`), the disk its step's
+    /// measures say (none: 0). It goes beside other jobs when that fits; the memory guard
+    /// (crate::agent::memguard) stops one that overruns, and its floor is learned.
+    pub(super) fn provisional(&self, step: &str, targets: &[String]) -> Measured {
+        let b = self.book();
+        let declared = crate::agent::steps::mem_mb(step);
+        let each = targets.iter().map(|t| self.offered_guess(step, t).max(declared)).max().unwrap_or(declared);
+        Measured {
+            mem_mb: provisional_mb(each),
+            disk_mb: targets.iter().filter_map(|t| b.disk(step, t, 0)).max().unwrap_or(0),
+            own: false,
+        }
+    }
+
+    /// Whether a cold start of `step` over `targets` may go to `a`'s worker (task #499): its
+    /// provisional need fits the room `a` spares, or the worker holds no job (one bigger than its
+    /// whole room goes alone, as every cold start did before: the guard learns its floor).
+    pub(super) fn cold_fits(&self, step: &str, targets: &[String], a: &Ask, now: Instant) -> bool {
+        let m = self.provisional(step, targets);
+        (m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d)) || self.job_leases(&a.worker, now).is_empty()
+    }
+
+    /// The disk a job of `step` reserves for its shared cache (crate::needs::CACHES) on the Mac
+    /// asking `a`, whose jobs read `caches` already: what of the cache it lacks (`missing`) when
+    /// it's the first there to read it, else none (MB).
+    pub(super) fn cache_fill(&self, step: &str, caches: &BTreeSet<&'static str>, a: &Ask) -> u64 {
+        crate::needs::cache_of(step).filter(|c| !caches.contains(c)).map_or(0, |c| self.missing(c, a))
+    }
+
+    /// The jobs `a`'s worker is granted (docs/pool.md §7.2), packed into its room in `offers`' order
+    /// (each by `pick_every`, the lead's own planned jobs by `pick_own`, those to `lead` alone:
+    /// crate::agent::every::grants), up to the jobs it wants (`Ask::want`, at least one). Each after
+    /// the first it holds goes beside the others: measured (memory, disk, cores, crate::needs),
+    /// within the room left (the ask's memory and disk, and its Mac's cores, less every job it
+    /// holds and those granted in this answer: a lease held counts until it ends or lapses, and
+    /// never more than what its jobs hold now leaves); a cold start by its provisional need
+    /// (`pack_need`), task #499. Each granted holds its lease from then (`grant`). And why it
+    /// granted fewer jobs than the ask wanted (None: as many as it wanted).
+    pub fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<String>) {
+        let now = clock.now;
+        let mine = self.job_leases(&a.worker, now);
+        // (A job held: its measure, else its provisional need, `pack_need`; a task, nothing.)
+        let need = |s: &Sched, l: &Lease| match &l.work {
+            Work::Job { step, targets } => {
+                Some(s.pack_need(step, &targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>()))
+            }
+            Work::Task { .. } => None,
+        };
+        let needs: Vec<Option<Need>> = mine.iter().map(|l| need(self, l)).collect();
+        let held_steps: Vec<(String, Vec<String>)> = mine
+            .iter()
+            .filter_map(|l| match &l.work {
+                Work::Job { step, targets } => Some((step.clone(), targets.iter().map(|t| t.0.clone()).collect())),
+                Work::Task { .. } => None,
+            })
+            .collect();
+        // (A cold start of a step never measured in any way: nothing beside it, as before task
+        // #499.)
+        if let Some((st, _)) = needs
+            .iter()
+            .flatten()
+            .zip(&held_steps)
+            .find(|(n, (st, _))| n.cold && self.never_measured(st))
+            .map(|(_, s)| s.clone())
+        {
+            return (Vec::new(), Some(format!("{st} was never measured: nothing goes beside its first job")));
+        }
+        // (At most one cold start on a Mac (task #499 review): two unknown needs never meet.)
+        let mut cold_here = needs.iter().flatten().any(|n| n.cold);
+        let total = ask_cores(a);
+        let share = packed_share(total);
+        // (Cores left: each job's, `need_cores`.)
+        let mut cores = needs
+            .iter()
+            .flatten()
+            .zip(&held_steps)
+            .fold(total, |left, (n, (st, ts))| left.saturating_sub(self.need_cores(st, ts, n, share, total)));
+        // (Its Mac's load from outside the pool (other processes: builds, tests): the cores its
+        // last minute's load average keeps busy (`Capacity::cores_free`) past the threads of the
+        // jobs it holds, less those the in-use share keeps already, come off the cores left
+        // (task #440): a Mac swamped by other work is granted no job beside the ones it holds.)
+        let outside = outside_cores(a, mine.iter().map(|l| l.threads).sum::<u32>().max(total.saturating_sub(cores)));
+        cores = cores.saturating_sub(outside);
+        // (The ask's memory and disk are its Mac's whole room for jobs, whatever it runs (the
+        // memory its owner gives the build, the agent's `build_room`; its free disk): every job
+        // it holds is taken off its memory here. Its disk is taken off already for the jobs its agent reserves for (its capacity's
+        // leases: the disk said is the free space less their reservations); the others it holds
+        // (granted since it asked, or an older agent's) are taken off here.)
+        let reserved_by_agent = |l: &Lease| a.cap.as_ref().is_some_and(|c| c.leases.contains(&l.id));
+        let mut room = a.clone();
+        for (l, n) in mine.iter().zip(needs.iter().flatten()) {
+            room.mem_mb = room.mem_mb.saturating_sub(n.m.mem_mb);
+            if !reserved_by_agent(l) {
+                room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(n.m.disk_mb));
+            }
+        }
+        // (And never more than what its jobs hold now, as its memory guard last sampled them
+        // (`Capacity::held_mb`), leaves: a cold start past its provisional need is counted at what
+        // it holds as soon as it's sampled, task #499.)
+        if let Some(c) = a.cap.as_ref().filter(|_| !mine.is_empty()) {
+            room.mem_mb = room.mem_mb.min(a.mem_mb.saturating_sub(c.held_mb));
+        }
+        // (The shared caches its Mac's jobs read (crate::needs::CACHES), each reserved once: with
+        // the first job granted reading it, in its grant's disk. One no job its agent reserves for
+        // holds is taken off here.)
+        let mut caches: BTreeSet<&'static str> = BTreeSet::new();
+        for (st, _) in &held_steps {
+            if let Some(c) = crate::needs::cache_of(st) {
+                if caches.insert(c)
+                    && !mine.iter().any(|l| {
+                        reserved_by_agent(l)
+                            && matches!(&l.work, Work::Job { step, .. } if crate::needs::cache_of(step) == Some(c))
+                    })
+                {
+                    room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(self.missing(c, a)));
+                }
+            }
+        }
+        // (The jobs it may be granted: one to an ask without a capacity (an older app's), and to
+        // every ask while any member around is on one (`old_member`); else as many as it wants.)
+        let old = if a.cap.is_none() { Some(a.worker.clone()) } else { self.old_member(now) };
+        let want = if old.is_some() { 1 } else { a.want.max(1) };
+        // (A cold job of the lead's own that can't go beside its jobs (`own_cold_waits`): nothing
+        // more until they end; then it, before any other work, so the work offered doesn't starve
+        // it. Once they've ended, if it still can't be granted (its disk, say), the other offers
+        // go: the lead never sits idle for it.)
+        let mut cold_own: Vec<Offer> = if lead {
+            offers
+                .iter()
+                .find(|o| {
+                    crate::agent::every::grants(&o.step, true, lead)
+                        && self.own_cold_waits(o, a, room.mem_mb, cold_here, now)
+                })
+                .cloned()
+                .into_iter()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if let Some(o) = cold_own.first() {
+            if !mine.is_empty() {
+                return (Vec::new(), Some(format!("a cold job of {} waits for the lead's jobs to end", o.step)));
+            }
+            let fill = self.cache_fill(&o.step, &caches, a);
+            let room_o = Ask { disk_mb: room.disk_mb.map(|d| d.saturating_sub(fill)), ..room.clone() };
+            if self.pick_own(o, &room_o, now).is_empty() {
+                cold_own.clear();
+            }
+        }
+        let offers = if cold_own.is_empty() { offers } else { &cold_own[..] };
+        let mut held = mine.len();
+        let mut grants: Vec<Pick> = Vec::new();
+        // (Why the last round granted nothing: a job open but short of cores, or nothing open in
+        // the room left.)
+        let mut why: Option<String> = None;
+        while grants.len() < want {
+            let mut short: Option<(String, u32)> = None;
+            let mut cold_why: Option<String> = None;
+            let beside = held > 0;
+            let mut got = None;
+            for o in offers {
+                if !crate::agent::every::grants(&o.step, o.job.is_some(), lead) {
+                    continue;
+                }
+                // (A job reading a shared cache none here reads yet: its room less the cache's.)
+                let fill = self.cache_fill(&o.step, &caches, a);
+                let room_o = match room.disk_mb {
+                    Some(d) if fill > 0 => Ask { disk_mb: Some(d.saturating_sub(fill)), ..room.clone() },
+                    _ => room.clone(),
+                };
+                let pick =
+                    if o.job.is_some() { self.pick_own(o, &room_o, now) } else { self.pick_every(o, &room_o, now) };
+                if pick.is_empty() {
+                    continue;
+                }
+                let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
+                let n = self.pack_need(&o.step, &ts);
+                if beside && n.cold && (cold_here || self.never_measured(&o.step)) {
+                    cold_why.get_or_insert_with(|| {
+                        if cold_here {
+                            format!("{} isn't measured: one cold start on a Mac at a time", o.step)
+                        } else {
+                            format!("{} was never measured: its first job goes only to a Mac running nothing", o.step)
+                        }
+                    });
+                    continue;
+                }
+                let need = self.need_cores(&o.step, &ts, &n, share, total);
+                if beside && need > cores {
+                    if short.is_none() {
+                        short = Some((o.step.clone(), need));
+                    }
+                    continue;
+                }
+                got = Some((o, pick, n));
+                break;
+            }
+            let Some((o, pick, n)) = got else {
+                let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+                why = Some(match short {
+                    None if cold_why.is_some() => cold_why.unwrap_or_default(),
+                    Some((st, c)) if outside > 0 => {
+                        format!(
+                            "cores: {cores} of {total} left ({outside} busy outside the pool), a job of {st} takes {c}"
+                        )
+                    }
+                    Some((st, c)) => format!("cores: {cores} of {total} left, a job of {st} takes {c}"),
+                    None => format!(
+                        "nothing offered fits the room left ({} memory{}) or is free to take",
+                        gb(room.mem_mb),
+                        room.disk_mb
+                            .map(|d| match a.cap.as_ref().filter(|c| c.free_mb > 0) {
+                                Some(c) => format!("; disk: {}", disk_words(c, d)),
+                                None => format!(", {} disk", gb(d)),
+                            })
+                            .unwrap_or_default()
+                    ),
+                });
+                break;
+            };
+            // (Its threads: its packed cores (`packed_cores`), else the share; within the cores
+            // left, one at least.)
+            let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
+            let threads = self.need_cores(&o.step, &ts, &n, share, total).min(cores).max(1);
+            // (A planned job of no targets of its own is offered under its id's, keyless, to be
+            // measured by it: its lease holds none, as its hand-off names none.)
+            let pick = if o.job.is_some() { pick.into_iter().filter(|t| !t.1.is_empty()).collect() } else { pick };
+            // (A cold start's too: its step unmeasured, its cache's fill may be.)
+            let fill = self.cache_fill(&o.step, &caches, a);
+            grants.push(self.grant(a, o, pick, threads, fill, clock));
+            held += 1;
+            caches.extend(crate::needs::cache_of(&o.step));
+            cold_here |= n.cold;
+            let m = n.m;
+            room.mem_mb = room.mem_mb.saturating_sub(m.mem_mb);
+            room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(m.disk_mb + fill));
+            cores = cores.saturating_sub(threads);
+        }
+        let why = why.filter(|_| grants.len() < want).or_else(|| {
+            old.filter(|_| a.want > grants.len() && !grants.is_empty()).map(|w| {
+                format!("one job at a time: {w} runs an older app (its asks say no capacity); packing waits for every member on the new one")
+            })
+        });
+        (grants, why)
+    }
+
+    /// A job of offer `o`'s step over `pick` granted to `a`'s worker with `threads` (`fill`: the disk
+    /// its shared cache is reserved, added to its own: `cache_fill`): its lease, the worker's last
+    /// target of the step, its targets' waits on the NAS budget let go.
+    fn grant(
+        &mut self,
+        a: &Ask,
+        o: &Offer,
+        pick: Vec<(String, String)>,
+        threads: u32,
+        fill: u64,
+        clock: Clock,
+    ) -> Pick {
+        if let Some(l) = pick.last() {
+            self.last.insert((a.worker.clone(), o.step.clone()), l.0.clone());
+        }
+        let lease = self.leases.grant_at(
+            &a.worker,
+            Work::Job { step: o.step.clone(), targets: pick.clone() },
+            clock.now,
+            clock.unix,
+        );
+        self.leases.set_threads(lease, threads);
+        {
+            let mut g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+            for t in &pick {
+                g.remove(&(o.step.clone(), t.0.clone()));
+            }
+            self.quiet_since.lock().unwrap_or_else(|e| e.into_inner()).remove(&o.step);
+        }
+        let ts: Vec<String> = pick.iter().map(|t| t.0.clone()).collect();
+        let disk_mb = self.job_need(&o.step, &ts).map_or(0, |(m, _)| m.disk_mb) + fill;
+        Pick { lease, step: o.step.clone(), targets: pick, threads, disk_mb, job: o.job.clone() }
+    }
+
+    /// A member around on an older app (its last ask said no capacity, `Ask::cap`; an agent's,
+    /// not a page's), the first by name; None when every one reports the new app. While there's
+    /// one, every ask is granted one job (`pack`) and the old wire is still written
+    /// (`crate::agent::Status::all_new`).
+    pub(super) fn old_member(&self, now: Instant) -> Option<String> {
+        self.workers
+            .iter()
+            .filter(|(_, w)| w.kind == "native" && !w.bad && now.saturating_duration_since(w.seen) < AROUND)
+            .find(|(_, w)| w.ask.is_some() && w.old)
+            .map(|(n, _)| n.clone())
+    }
+
+    /// Whether the lead's own planned job of offer `o` (`Offer::job`) is open to `a`'s worker: its
+    /// targets (some), none held (a cancel's hold until a newer app among them: `Leases::held`),
+    /// done under its key or kept from the worker after it failed, and no other job of its step
+    /// runs anywhere (one job of a step kept to the lead at a time).
+    pub(super) fn own_open(&self, o: &Offer, a: &Ask, now: Instant) -> bool {
+        if o.targets.is_empty()
+            || self.leases.all(now).iter().any(|l| matches!(&l.work, Work::Job { step, .. } if *step == o.step))
+        {
+            return false;
+        }
+        let held = self.leases.held(&o.step, now);
+        o.targets.iter().all(|(t, k, _)| {
+            let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
+                now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
+            });
+            !held.contains(t) && self.done.get(&(o.step.clone(), t.clone())) != Some(k) && !backoff
+        })
+    }
+
+    /// Whether the lead's own planned job of offer `o` waits for room: open (`own_open`), a cold
+    /// start (none of it measured) that can't go beside the lead's jobs: its provisional need past
+    /// the room `left`, its step never measured, a cold start held there already (`cold_held`), or
+    /// its cores the whole Mac (`need_cores`). The lead's ask is then granted nothing more until
+    /// its jobs end enough for it, or all of them (`pack`, `pick_own`), so the offered work it would
+    /// otherwise keep taking doesn't starve it.
+    pub(super) fn own_cold_waits(&self, o: &Offer, a: &Ask, left: u64, cold_held: bool, now: Instant) -> bool {
+        let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
+        o.job.is_some()
+            && self.job_need(&o.step, &ts).is_none()
+            && (self.provisional(&o.step, &ts).mem_mb > left
+                || cold_held
+                || self.never_measured(&o.step)
+                || !THREADS_HONOURED.contains(&o.step.as_str()))
+            && self.own_open(o, a, now)
+            && self.own_nas_fits(o, now, true)
+    }
+
+    /// Whether the NAS budget has room for the lead's own planned job of offer `o`: its weight
+    /// within the whole or beside nothing weighing anything, a download under the cap (the lead's
+    /// own always held to it, `nas_room`); `alone`: as if the lead held nothing (the members' jobs
+    /// alone counted: what its cold job would meet once its own jobs end, `own_cold_waits`), a test
+    /// that changes nothing (no wait noted, no quiet clock started). Not `alone`, held back for the budget alone, it's noted waiting (`nas_wait`), and goes beside leased jobs
+    /// none of which weighs the whole once it weighs the whole itself or has waited `OWN_AGE`
+    /// (crate::budget::nas::Limits::fits_own_job: members' small jobs never hold it for good).
+    pub(super) fn own_nas_fits(&self, o: &Offer, now: Instant, alone: bool) -> bool {
+        let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
+        let waited = {
+            let g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+            ts.iter().filter_map(|t| g.get(&(o.step.clone(), t.clone())).map(|e| e.0)).min()
+        }
+        .is_some_and(|since| now.duration_since(since) >= crate::budget::nas::OWN_AGE);
+        self.nas_room_heaviest(now, true).is_none_or(|(nw, running, members, dl, most)| {
+            let (w, fetch) = Self::job_nas(&nw, &o.step, &ts);
+            let (running, heaviest) = if alone { (members, most[1]) } else { (running, most[0]) };
+            if fetch && nw.limits.downloads.is_some_and(|c| dl >= c) {
+                return false;
+            }
+            let own = running.saturating_sub(members);
+            // (A quiet step, the clean-up: alone or within the whole by its measured weight, never
+            // aged past it, its wait not noted: it never holds room, crate::budget::nas::QUIET_STEPS.)
+            // Held back `QUIET_AGE` (a pool that stays busy), it goes as an aged job of the lead's
+            // own, its wait noted so its room is held: never starved for good.
+            let quiet = crate::budget::nas::QUIET_STEPS.contains(&o.step.as_str()) && {
+                let mut g = self.quiet_since.lock().unwrap_or_else(|e| e.into_inner());
+                let since = if alone {
+                    g.get(&o.step).copied().unwrap_or(now)
+                } else {
+                    *g.entry(o.step.clone()).or_insert(now)
+                };
+                now.saturating_duration_since(since) < crate::budget::nas::QUIET_AGE
+            };
+            let waited = waited || (crate::budget::nas::QUIET_STEPS.contains(&o.step.as_str()) && !quiet);
+            let fits = if quiet {
+                // (Unmeasured, it goes only beside no NAS-heavy job: none of a step known to read
+                // the NAS, none whose weight isn't measured yet.)
+                crate::budget::nas::Limits::fits_quiet(running, w) && (w > 0 || !self.nas_unknown_running(&nw, now))
+            } else {
+                crate::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited)
+            } && nw.limits.open(running, w)
+                && (alone || self.nas_reserve_ok(&nw, now, &o.step, &ts, running, w));
+            if !fits && !alone && !quiet {
+                for t in &ts {
+                    self.nas_wait(&o.step, t, now);
+                }
+            }
+            fits
+        })
+    }
+
+    /// The lead's own planned job of offer `o` (`Offer::job`), whole: all its targets, when it's open
+    /// (`own_open`), the NAS budget has room for it (its weight, and a download under the cap: the
+    /// lead's own always held to it, `nas_room`), and its measures (memory, disk) fit what the ask
+    /// spares; a cold start (none of it measured) by its provisional need (`pack_need`), or alone
+    /// (`cold_fits`). Empty: not now.
+    pub(super) fn pick_own(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
+        if !self.own_open(o, a, now) {
+            return Vec::new();
+        }
+        let ts: Vec<String> = o.targets.iter().map(|t| t.0.clone()).collect();
+        let fits = match self.job_need(&o.step, &ts) {
+            Some((m, _)) => m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb <= d),
+            None => self.cold_fits(&o.step, &ts, a, now),
+        };
+        // (The budget asked last: its wait noted only when the job would go but for it.)
+        if !fits || !self.own_nas_fits(o, now, false) {
+            return Vec::new();
+        }
+        o.targets.iter().map(|(t, k, _)| (t.clone(), k.clone())).collect()
+    }
+
+    /// Every step to every member (docs/pool.md §12, phase 4's ninth batch): the targets of offer
+    /// `o` that `a`'s worker may do now, as a run contiguous in plan order (one held, done, kept from
+    /// it after it failed, or past its room ends the run), from the front of the plan, or just after
+    /// its last target of the step when that one's open; each measured (memory, disk) within what it
+    /// spares, as many as fit `JOB_S` by their measured times (`secs_of`: one with none ends the job
+    /// after its first), their disk summed (or the most a job of the step took, the larger) within
+    /// its room. A cold start (`measured` None) by its provisional need, one job of its step in the
+    /// pool at a time.
+    pub(super) fn pick_every(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
+        let held = self.leases.held(&o.step, now);
+        let open = |t: &str, k: &str| {
+            let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
+                now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
+            });
+            !held.contains(t)
+                && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k)
+                && !backoff
+        };
+        let job_disk = self.job_floor(&o.step);
+        let fits = |m: &Measured| m.mem_mb <= a.mem_mb && a.disk_mb.is_none_or(|d| m.disk_mb.max(job_disk) <= d);
+        // (The NAS budget on: a target whose weight the pool's leased jobs leave no room for, or a
+        // download past the cap, is left for later.)
+        let lead = a.worker == self.lead_name;
+        let nas = self.nas_room_heaviest(now, lead);
+        let downloads_full = nas.as_ref().is_some_and(|(nw, _, _, dl, _)| {
+            nw.limits.downloads.is_some_and(|c| *dl >= c) && Self::job_nas(nw, &o.step, &[]).1
+        });
+        if downloads_full {
+            return Vec::new();
+        }
+        // (The lead's own asks held within the whole, or alone; a member's past it beside the
+        // lead's own alone: crate::budget::nas::Limits.)
+        let nas_fits = |t: &str| {
+            nas.as_ref().is_none_or(|(nw, running, members, _, most)| {
+                let w = nw.weight(&o.step, t);
+                // (The NAS's own load over the owner's target: nothing new that weighs anything
+                // but beside nothing, crate::budget::nas::Loop.)
+                if !nw.limits.open(*running, w) {
+                    return false;
+                }
+                // (Room held for a target aged in the budget left to it: `nas_reserved`.)
+                if !self.nas_reserve_ok(nw, now, &o.step, &[t.to_string()], *running, w) {
+                    return false;
+                }
+                if lead {
+                    crate::budget::nas::Limits::fits_own(*running, w)
+                } else {
+                    // (A whole one aged `OWN_AGE` goes beside jobs none of which weighs the whole.)
+                    let waited = {
+                        let g = self.nas_waits.lock().unwrap_or_else(|e| e.into_inner());
+                        g.get(&(o.step.clone(), t.to_string()))
+                            .is_some_and(|e| now.duration_since(e.0) >= crate::budget::nas::OWN_AGE)
+                    };
+                    crate::budget::nas::Limits::fits_job(*members, *running, most[0], w, waited)
+                }
+            })
+        };
+        let takeable = |i: usize| {
+            let (t, k, _) = &o.targets[i];
+            // (Its wait noted only when this asker would take it but for the budget: a target no
+            // asker can take never ages into holding room, `nas_reserved`.)
+            open(t, k)
+                && match self.measured(&o.step, t) {
+                    Some(m) => fits(&m),
+                    // (A cold start: by its provisional need (`provisional`), while no job of its
+                    // step is under way anywhere (the lead's own held by a lease too): one learns
+                    // its measure before the step fans out.)
+                    None => held.is_empty() && self.cold_fits(&o.step, std::slice::from_ref(t), a, now),
+                }
+                && (nas_fits(t) || {
+                    self.nas_wait(&o.step, t, now);
+                    false
+                })
+        };
+        let after = self
+            .last
+            .get(&(a.worker.clone(), o.step.clone()))
+            .and_then(|l| o.targets.iter().position(|t| t.0 == *l))
+            .map(|i| i + 1);
+        let start = match &self.placement {
+            // (Placement on: from the target measured to take longest that's drawn to this worker.)
+            Some((p, since)) => self.placed_start(o, a, p, *since, now, &held, &takeable),
+            None => after
+                .filter(|&i| i < o.targets.len() && takeable(i))
+                .or_else(|| (0..o.targets.len()).find(|&i| takeable(i))),
+        };
+        let Some(start) = start else { return Vec::new() };
+        let first = &o.targets[start];
+        let Some(m0) = self.measured(&o.step, &first.0) else { return vec![(first.0.clone(), first.1.clone())] };
+        let mut pick = vec![(first.0.clone(), first.1.clone())];
+        let (mut secs, mut disk) = (self.secs_of(&o.step, &first.0, &a.worker), m0.disk_mb);
+        for (t, k, _) in &o.targets[start + 1..] {
+            let (Some(s), Some(m)) = (secs, self.measured(&o.step, t)) else { break };
+            let Some(more) = self.secs_of(&o.step, t, &a.worker) else { break };
+            if pick.len() >= JOB_MAX
+                || !open(t, k)
+                || !fits(&m)
+                || !nas_fits(t)
+                || s + more > JOB_S
+                || a.disk_mb.is_some_and(|d| crate::needs::batch_disk(&o.step, [disk, m.disk_mb]).max(job_disk) > d)
+            {
+                break;
+            }
+            pick.push((t.clone(), k.clone()));
+            (secs, disk) = (Some(s + more), crate::needs::batch_disk(&o.step, [disk, m.disk_mb]));
+        }
+        pick
+    }
+
+    /// Whether `a`'s worker could take measured target `t` (its key `k`) of offer `o` now, by
+    /// `pick_every`'s rules: not held (`held`), not done, not kept from it after it failed it, and
+    /// its measures within the room its ask says.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn may_take_measured(
+        &self,
+        o: &Offer,
+        a: &Ask,
+        t: &str,
+        k: &str,
+        m: &Measured,
+        held: &BTreeSet<String>,
+        now: Instant,
+    ) -> bool {
+        let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| {
+            now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5))
+        });
+        let job_disk = self.job_floor(&o.step);
+        !held.contains(t)
+            && self.done.get(&(o.step.clone(), t.to_string())).map(String::as_str) != Some(k)
+            && !backoff
+            && m.mem_mb <= a.mem_mb
+            && a.disk_mb.is_none_or(|d| m.disk_mb.max(job_disk) <= d)
+    }
+
+    /// Whether `worker`, as its last ask `x` said, is kept from more jobs by work outside the pool:
+    /// it holds a job, and the cores busy outside the pool (`outside_cores`, past its jobs' packed
+    /// cores) with those cores fill its Mac's (task #440): placement draws targets among the
+    /// others. Its own jobs alone filling its cores don't count.
+    pub(super) fn swamped(&self, worker: &str, x: &Ask, now: Instant) -> bool {
+        let mine = self.job_leases(worker, now);
+        if mine.is_empty() {
+            return false;
+        }
+        let total = ask_cores(x);
+        let share = packed_share(total);
+        let ours: u32 = mine
+            .iter()
+            .map(|l| match &l.work {
+                // (The threads it was granted, else its packed cores.)
+                _ if l.threads > 0 => l.threads,
+                Work::Job { step, targets } => {
+                    let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
+                    self.job_need(step, &ts)
+                        .and_then(|(_, c)| c)
+                        .map_or(share, |c| self.packed_cores(step, &ts, c, share))
+                }
+                Work::Task { .. } => 0,
+            })
+            .sum();
+        let outside = outside_cores(x, ours);
+        outside > 0 && ours.saturating_add(outside) >= total
+    }
+
+    /// Placement on (crate::agent::placement): where `a`'s worker's run of offer `o` starts. The
+    /// targets it may take (`takeable`) from the one measured to take longest (`secs_of`; plan
+    /// order between equals, those never measured last), the first drawn to it among the members
+    /// asking lately whose room fits it (`placement::draw`, by their measured speeds, in the window
+    /// `now` is in since `since`); a cold start (none of its step measured) undrawn, by its
+    /// provisional need (`cold_fits`).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn placed_start(
+        &self,
+        o: &Offer,
+        a: &Ask,
+        p: &crate::agent::placement::Placement,
+        since: Instant,
+        now: Instant,
+        held: &BTreeSet<String>,
+        takeable: &dyn Fn(usize) -> bool,
+    ) -> Option<usize> {
+        use crate::agent::placement;
+        let mut order: Vec<(Option<u64>, usize)> =
+            (0..o.targets.len()).map(|i| (self.secs_of(&o.step, &o.targets[i].0, &a.worker), i)).collect();
+        order.sort_by(|x, y| y.0.is_some().cmp(&x.0.is_some()).then(y.0.cmp(&x.0)).then(x.1.cmp(&y.1)));
+        let window = now.saturating_duration_since(since).as_secs();
+        order.into_iter().map(|(_, i)| i).find(|&i| {
+            if !takeable(i) {
+                return false;
+            }
+            let (t, k, _) = &o.targets[i];
+            let Some(m) = self.measured(&o.step, t) else { return true };
+            // (Each other member by the rules its own ask would meet: not one that couldn't take it.)
+            let mut who: Vec<(String, f64)> = self
+                .workers
+                .iter()
+                .filter(|(n, w)| {
+                    *n != &a.worker
+                        && !w.bad
+                        && w.kind == "native"
+                        && now.duration_since(w.seen) < AROUND
+                        && w.asked.is_some_and(|at| now.duration_since(at) < ASKING)
+                        && w.app.as_ref().is_none_or(|x| *x == self.app)
+                })
+                .filter(|(n, w)| {
+                    w.ask.as_ref().is_some_and(|x| {
+                        x.can.contains(&o.step)
+                            && self.may_take_measured(o, x, t, k, &m, held, now)
+                            && !self.swamped(n, x, now)
+                    })
+                })
+                .map(|(n, _)| (n.clone(), p.weight(n)))
+                .collect();
+            who.push((a.worker.clone(), p.weight(&a.worker)));
+            placement::draw(&placement::key(&format!("{} {t}", o.step), window), &who) == Some(a.worker.as_str())
+        })
+    }
+}
+
+/// The scheduler's state as data (`Sched::state`, `Sched::from_state`): what the forecast runs the
+/// scheduler on (crate::agent::forecast::Input::sched, written with the lead's forecast), and what a
+/// recorded status gives a test. Its times as ages: seconds before it was taken.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct State {
+    /// The jobs' leases out: their workers, steps, targets (target, key) and threads.
+    pub leases: Vec<Leased>,
+    pub offers: Vec<Offer>,
+    /// (step, target, key) done under a key the plan hasn't shown yet.
+    pub done: Vec<(String, String, String)>,
+    /// (worker, cost key, age of the last, how many).
+    pub failed: Vec<(String, String, u64, u32)>,
+    /// Each worker's last ask (the lead's own with its capacity: `Coordinator::sched_state`).
+    pub workers: Vec<Asked>,
+    pub costs: BTreeMap<String, Cost>,
+    pub floors: BTreeMap<String, Floor>,
+    pub disks: BTreeMap<String, u64>,
+    pub job_disks: BTreeMap<String, Vec<u64>>,
+    pub fills: BTreeMap<String, u64>,
+    pub app: String,
+    pub lead_name: String,
+    pub placement: Option<(crate::agent::placement::Placement, u64)>,
+    pub nas: Option<crate::budget::nas::Limits>,
+    pub nas_own: Option<crate::budget::nas::Limits>,
+    /// (step, target, age first held back, age last).
+    pub nas_waits: Vec<(String, String, u64, u64)>,
+    /// (step, age).
+    pub quiet_since: Vec<(String, u64)>,
+    /// (worker, step, its last target).
+    pub last: Vec<(String, String, String)>,
+}
+
+/// A job's lease out (`State::leases`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Leased {
+    pub worker: String,
+    pub step: String,
+    pub targets: Vec<(String, String)>,
+    pub threads: u32,
+}
+
+/// A worker's last ask (`State::workers`): the ask, whether it ran an older app (`Worker::old`) or
+/// was found wrong (`Worker::bad`), and the ages of its last request and ask.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Asked {
+    pub ask: Ask,
+    pub old: bool,
+    pub bad: bool,
+    pub seen_s: u64,
+    pub asked_s: Option<u64>,
+}
+
+/// `now` less `age` seconds (as far back as an `Instant` goes).
+fn ago(now: Instant, age: u64) -> Instant {
+    now.checked_sub(Duration::from_secs(age)).unwrap_or(now)
+}
+
+impl Sched {
+    /// Its state as data at `now` (`State`).
+    pub fn state(&self, now: Instant) -> State {
+        let age = |t: Instant| now.saturating_duration_since(t).as_secs();
+        State {
+            leases: self
+                .leases
+                .all(now)
+                .into_iter()
+                .filter_map(|l| match l.work {
+                    Work::Job { step, targets } => Some(Leased { worker: l.worker, step, targets, threads: l.threads }),
+                    Work::Task { .. } => None,
+                })
+                .collect(),
+            offers: self.offers.clone(),
+            done: self.done.iter().map(|((s, t), k)| (s.clone(), t.clone(), k.clone())).collect(),
+            failed: self.failed.iter().map(|((w, k), (at, n))| (w.clone(), k.clone(), age(*at), *n)).collect(),
+            workers: self
+                .workers
+                .values()
+                .filter_map(|w| {
+                    Some(Asked {
+                        ask: w.ask.clone()?,
+                        old: w.old,
+                        bad: w.bad,
+                        seen_s: age(w.seen),
+                        asked_s: w.asked.map(age),
+                    })
+                })
+                .collect(),
+            costs: self.costs.clone(),
+            floors: self.floors.clone(),
+            disks: self.disks.clone(),
+            job_disks: self.job_disks.clone(),
+            fills: self.fills.clone(),
+            app: self.app.clone(),
+            lead_name: self.lead_name.clone(),
+            placement: self.placement.as_ref().map(|(p, since)| (p.clone(), age(*since))),
+            nas: self.nas,
+            nas_own: self.nas_own,
+            nas_waits: self
+                .nas_waits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .map(|((s, t), (a, b))| (s.clone(), t.clone(), age(*a), age(*b)))
+                .collect(),
+            quiet_since: self
+                .quiet_since
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .map(|(s, a)| (s.clone(), age(*a)))
+                .collect(),
+            last: self.last.iter().map(|((w, s), t)| (w.clone(), s.clone(), t.clone())).collect(),
+        }
+    }
+
+    /// A scheduler in state `s` at `now` (`clock`), its leases lasting `ttl` without a beat: the
+    /// leases out granted again (fresh ids), each worker's ask as it was.
+    pub fn from_state(s: &State, clock: Clock, ttl: Duration) -> Sched {
+        let now = clock.now;
+        let mut leases = Leases::new(ttl);
+        leases.app = s.app.clone();
+        for l in &s.leases {
+            let id = leases.grant_at(
+                &l.worker,
+                Work::Job { step: l.step.clone(), targets: l.targets.clone() },
+                now,
+                clock.unix,
+            );
+            leases.set_threads(id, l.threads);
+        }
+        let workers = s
+            .workers
+            .iter()
+            .map(|w| {
+                let a = &w.ask;
+                (
+                    a.worker.clone(),
+                    Worker {
+                        kind: a.kind.clone(),
+                        label: a.label.clone().unwrap_or_else(|| a.worker.clone()),
+                        can: a.can.clone(),
+                        mem_mb: a.mem_mb,
+                        cores: a.cores,
+                        app: a.app.clone(),
+                        visible: a.visible,
+                        cap: a.cap.clone(),
+                        ask: Some(a.clone()),
+                        old: w.old,
+                        seen: ago(now, w.seen_s),
+                        asked: w.asked_s.map(|x| ago(now, x)),
+                        what: String::new(),
+                        done: 0,
+                        failed: 0,
+                        checked: 0,
+                        bad: w.bad,
+                    },
+                )
+            })
+            .collect();
+        Sched {
+            leases,
+            offers: s.offers.clone(),
+            done: s.done.iter().map(|(st, t, k)| ((st.clone(), t.clone()), k.clone())).collect(),
+            failed: s.failed.iter().map(|(w, k, a, n)| ((w.clone(), k.clone()), (ago(now, *a), *n))).collect(),
+            workers,
+            costs: s.costs.clone(),
+            floors: s.floors.clone(),
+            disks: s.disks.clone(),
+            job_disks: s.job_disks.clone(),
+            fills: s.fills.clone(),
+            needs: Default::default(),
+            needs_rev: 0,
+            app: s.app.clone(),
+            placement: s.placement.as_ref().map(|(p, a)| (p.clone(), ago(now, *a))),
+            nas: s.nas,
+            nas_own: s.nas_own,
+            lead_name: s.lead_name.clone(),
+            nas_waits: Mutex::new(
+                s.nas_waits
+                    .iter()
+                    .map(|(st, t, a, b)| ((st.clone(), t.clone()), (ago(now, *a), ago(now, *b))))
+                    .collect(),
+            ),
+            quiet_since: Mutex::new(s.quiet_since.iter().map(|(st, a)| (st.clone(), ago(now, *a))).collect()),
+            last: s.last.iter().map(|(w, st, t)| ((w.clone(), st.clone()), t.clone())).collect(),
+            measured_steps: Default::default(),
+        }
+    }
+
+    /// Lease `id` ended (its job done): its work no longer held.
+    pub fn end(&mut self, id: u64) {
+        self.leases.cancel(id);
+    }
+}

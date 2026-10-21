@@ -448,8 +448,8 @@ its build's jobs together, set per Mac, whether its owner uses it or not. `sceni
 the menu bar's Memory ▸ sets it in the agent's folder (`build-memory.json`); `scenic memory off` or
 the menu's The Memory Guard's Limit clears it; `scenic memory` says how it stands. The agent reads
 it each loop. It is the memory of the Mac's asks (`Ask::mem_mb`, a member's and the lead's own:
-`Agent::build_room`), its capacity's `build_mb`, and the forecast's room for that Mac
-(`forecast::MacRoom`), always within the memory guard's limit (`buildmem::room_mb`: the smaller of
+`Agent::build_room`), its capacity's `build_mb`, and so the forecast's (which asks as that Mac's
+last ask did), always within the memory guard's limit (`buildmem::room_mb`: the smaller of
 the two); not set, the limit alone. The build page's Mac card, `scenic status` and the menu bar
 show it.
 
@@ -466,6 +466,30 @@ generated from it at build time.
 | alone | a whole-build run kept to the lead (`crate::agent::every`) |
 | answered | keeps the pass's answers (the lead's alone) |
 | write-set | the manifest names its jobs may change (`agent::steps::writes`, §7.3) |
+
+**One scheduler** (`crate::coord::sched`, task #535): every rule below that decides which jobs an
+ask gets lives there and nowhere else: `Sched::pack` takes the scheduler's state (the leases out,
+the offers, work done and failed, each worker's last ask, the measures, the NAS budget's limits and
+waits), the ask and a clock (`sched::Clock`), and returns the jobs granted (`sched::Pick`), changing
+nothing but that state: no file, network, wall clock or log. The live coordinator (`Shared::pack`)
+calls it on each real ask, then saves the leases, logs and records the grants. The forecast
+(`agent::forecast`'s `run`) calls the same `pack` in a loop over simulated time on the lead's state
+as data (`sched::State`, `Coordinator::sched_state`, written with the forecast's input): each lane
+asks on its Mac's behalf as its last ask did, jobs end at their modelled times and give their leases
+back, and a job of a step never measured leaves its measures as its hand-off would. So the schedule
+packs as the coordinator packs: by memory, disk, cores, the NAS budget, cold starts, the lead-only
+steps and the mixed-version hold. Guards: `tests/grant_rules.rs` fails on a grant rule named
+outside the scheduler; `fed_a_recorded_state_the_forecast_grants_what_the_coordinator_grants`
+holds the forecast's first grants to the coordinator's; at run time the lead logs where its real
+grants since the last forecast departed from that forecast's first hour (`forecast::departures`,
+"the grants departed from the forecast"). What stays outside the scheduler moves the finish: the
+times and NAS weights are measured estimates, and the repack, the owner's pauses, battery
+handovers and a NAS slower than its probe are not foreseen. The backtest
+(`backtest_against_the_history`, run by hand on the NAS's `state/`) forecasts from each term's
+recorded state the jobs the history shows started in the next 6 h: over 58 starts of 18–21 Oct,
+busy time with 1 job at once M4 78 % (history 70 %), M1 71 % (57 %); 4+ jobs M4 13 % (4 %), M1
+13 % (14 %); the last job's end within a median 55 % (mean −3 %): its work is all taken as ready at
+the start, where the plan released it over the window.
 
 Rows of note: `trees`/`terrain`/`slope` per z6 tile with `*-lo` assemblies per z3 tile (docs/steps.md);
 `bldprep`/`bldtiles` per z6 tile, `bld-fetch` the lead's (docs/buildings3d.md §3.6); `inputs`, a
@@ -687,7 +711,7 @@ errors (memory, wall time, disk) beside the prior's, and lists the steps that do
 
 **A cold start** (no target of its step measured; task #499) is packed by its *provisional need*:
 the most its step declares (the steps table's `mem_mb`) or it was offered with, times 3/2
-(`coord::provisional_mb`), its disk its step's measures' (else none); its cores the packed share
+(`coord::sched::provisional_mb`), its disk its step's measures' (else none); its cores the packed share
 when its step is known to honour the threads it's granted (`coord::THREADS_HONOURED`: `slope`, on
 the rayon pool the agent sizes; `bld-fetch`, its downloads bounded by `--jobs`), else the whole
 Mac. It goes beside other jobs when that fits the room left, and other jobs go beside it by the
@@ -856,12 +880,9 @@ Planned: an HTTP pool API (`POST /pool/lead`, `/pool/status`) in place of the ma
   the lead's its ramp's, each member's `agent::job_slots` of the cores of its capacity (else a
   lane per job it runs: an older agent's jobs, not saying their slots, by their place), never
   fewer than its last running slot's number, and the lead's slots its ramp grows to later (one
-  each clean stretch, opening then). A Mac's lanes share its whole room as the coordinator packs
-  an ask (`forecast::MacRoom`: the memory its asks spare for its jobs together, its cores; each
-  job its packed cores, `coord::packed_cores_of`; a slot's job no item is held at its step's
-  peak; a step not measured by its provisional need, one of it at a time; a job an ask while a member runs an older app); a
-  member's take any work of the plan any Mac may run, from the front of the plan's order
-  (`pick_every`), the lead's own steps (`steps::Place::Lead`) staying on the lead's lanes; each
+  each clean stretch, opening then). Each lane's next job is the coordinator's scheduler's grant to
+  its Mac (§7.2, One scheduler), the Mac's room shared by its lanes as the scheduler packs it (a Mac
+  whose ask isn't recorded: `forecast::MacRoom`); each
   lane starts with its slot's running job and its time left (a member's without progress said:
   its step's measured time). The page names a lane by its Mac's chip and slot ("M4 Pro 2";
   `cond::Resources::chip`). Each lane runs at its slot's measured speed (else the lead's other

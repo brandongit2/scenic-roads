@@ -199,7 +199,8 @@ pub struct Probe {
 }
 
 /// The pool's limits now: the NAS's (a probe's), and the downloads' cap.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Limits {
     pub bytes_s: f64,
     pub creates_s: f64,

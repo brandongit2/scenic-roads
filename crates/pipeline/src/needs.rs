@@ -178,7 +178,7 @@ struct Model {
 /// made at (the owner's: the coordinator bumps its count with each cost, floor or disk floor it
 /// takes), by (step, measure).
 #[derive(Debug, Default)]
-pub struct Cache(Mutex<(u64, BTreeMap<(String, Measure), Model>)>);
+pub struct Cache(Mutex<(u64, BTreeMap<(String, Measure), Model>)>, Mutex<(u64, BTreeMap<String, Option<u32>>)>);
 
 /// The measures needs are read from: what each target cost (crate::coord::Cost), and, where kept,
 /// the floors (crate::agent::memguard) and disk floors (MB, by cost key); the models made from them
@@ -592,7 +592,15 @@ impl<'a> Book<'a> {
         if let Some(t) = self.costs.get(&cost_key(step, target)).and_then(threads) {
             return Some(t);
         }
-        self.costs.iter().filter(|(k, _)| step_of_key(k) == step).filter_map(|(_, c)| threads(c)).max()
+        let most = || self.costs.iter().filter(|(k, _)| step_of_key(k) == step).filter_map(|(_, c)| threads(c)).max();
+        // (Its step's most kept with the models while the measures stand: a placement asks it for
+        // every job held.)
+        let CacheRef::Kept(cache) = &self.cache else { return most() };
+        let mut g = cache.1.lock().unwrap_or_else(|e| e.into_inner());
+        if g.0 != self.rev {
+            *g = (self.rev, BTreeMap::new());
+        }
+        *g.1.entry(step.to_string()).or_insert_with(most)
     }
 
     /// The NAS rate a job of `step` for `target` runs at, as measured (crate::costin: `bytes` read

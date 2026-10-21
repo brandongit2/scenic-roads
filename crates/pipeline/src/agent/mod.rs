@@ -7628,6 +7628,17 @@ impl Agent {
             Some(c) => c.for_forecast(),
             None => Default::default(),
         };
+        // (Where the real grants since the last forecast departed from its next steps: logged.)
+        if let Some(prev) = self.forecast.borrow().as_ref() {
+            let real: Vec<(u64, String, String)> = events
+                .iter()
+                .filter(|e| e.kind == "lease")
+                .filter_map(|e| Some((e.t, e.worker.clone()?, e.step.clone()?)))
+                .collect();
+            for d in forecast::departures(prev, &real, now_s()) {
+                eprintln!("agent: the grants departed from the forecast: {d}");
+            }
+        }
         // Each worker's speed against the lead's, from the history (half until it's measured):
         // every one that measured a cost or did shared work, asleep or not (its costs are put at the
         // lead's pace by it); the members heard from lately are the machines.
@@ -7676,20 +7687,17 @@ impl Agent {
         let need_mb = |step: &str, t: &str| book.need(step, t, 0, peak(step, t)).mem_mb;
         let cost = |step: &str, t: &str| -> Cost {
             match costs.get(&crate::coord::cost_key(step, t)) {
-                Some(c) => Cost {
-                    secs: c.secs as f64 * pace(c.worker.as_ref()),
-                    known: true,
-                    peak_mb: need_mb(step, t),
-                    cores: book.cores(step, t),
-                },
-                None => Cost { secs: per(step), known: false, peak_mb: need_mb(step, t), cores: book.cores(step, t) },
+                Some(c) => {
+                    Cost { secs: c.secs as f64 * pace(c.worker.as_ref()), known: true, peak_mb: need_mb(step, t) }
+                }
+                None => Cost { secs: per(step), known: false, peak_mb: need_mb(step, t) },
             }
         };
         // The lead's own steps: what a target took here lately (measured), else a first guess.
         let mine = |step: &str, n: usize| -> Cost {
             let (each, known) =
                 self.mem.step_secs.get(&secs_key(step)).map_or((first_secs(step), false), |&t| (t, true));
-            Cost { secs: each * n.max(1) as f64, known, peak_mb: 0, cores: None }
+            Cost { secs: each * n.max(1) as f64, known, peak_mb: 0 }
         };
         let step_of = |id: &str| id.split(' ').next().unwrap_or("").to_string();
         // (Each job before the regions' is a step of its own; one running now is its slot's
@@ -7753,14 +7761,6 @@ impl Agent {
                 .and_then(|s| s.running.as_ref())
                 .map(|r| (step_of(&r.spec.id), r.spec.record.as_ref().map_or(1, |w| w.targets.len().max(1))))
         };
-        // (Its memory: its step's first target's peak.)
-        let running_mb_of = |k: usize| {
-            self.slots.get(k).and_then(|s| s.running.as_ref()).map_or(0, |r| {
-                let step = step_of(&r.spec.id);
-                let t = r.spec.record.as_ref().and_then(|w| w.targets.first()).map_or(String::new(), |t| t.0.clone());
-                need_mb(&step, &t)
-            })
-        };
         // Its other slots: a lane each, as many as it may run now (its ramp's: `forecast::slot_lanes`),
         // and those its ramp grows to over the forecast, one each clean stretch from when it next
         // grows (`RAMP_CLEAN_S`; within two days); each any work of the plan that fits its Mac's room
@@ -7782,7 +7782,6 @@ impl Agent {
             unit_extra_s,
             lead_steps: true,
             running: running_of(0),
-            running_mb: running_mb_of(0),
             mac: Some(self.host.clone()),
             from_s: 0.0,
         }];
@@ -7813,7 +7812,6 @@ impl Agent {
                 unit_extra_s,
                 lead_steps: true,
                 running: running_of(k),
-                running_mb: running_mb_of(k),
                 mac: Some(self.host.clone()),
                 from_s: if k < own_lanes { 0.0 } else { grows[k - own_lanes] },
             });
@@ -7875,11 +7873,6 @@ impl Agent {
                 });
                 let busy_s = eta.map_or(0.0, |e| forecast::busy_s(e, lease_left));
                 let targets = leased.iter().find(|l| l.0 == name).map_or(1, |l| l.2.len().max(1));
-                // (Its job's memory: its step's first target's peak.)
-                let running_mb = job.map_or(0, |j| {
-                    let t = leased.iter().find(|l| l.0 == name).and_then(|l| l.2.first().cloned()).unwrap_or_default();
-                    need_mb(&step_of(&j.id), &t)
-                });
                 machines.push(Machine {
                     name,
                     speed,
@@ -7891,7 +7884,6 @@ impl Agent {
                     unit_extra_s: 0.0,
                     lead_steps: false,
                     running: job.map(|j| (step_of(&j.id), targets)),
-                    running_mb,
                     mac: Some(h.host.clone()),
                     from_s: 0.0,
                 });
@@ -7932,7 +7924,7 @@ impl Agent {
             machines,
             running,
             macs: rooms,
-            old_app: self.coord.as_ref().is_some_and(|c| !c.all_new()),
+            sched: self.coord.as_ref().map(|c| c.sched_state()),
         };
         let mut f = forecast::forecast(&inp);
         // (Each step's time a target, for the page to weigh the targets done: the headline.)

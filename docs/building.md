@@ -182,10 +182,10 @@ from the first (`edit_held`).
   NAS latency and free space; its build caches (`caches`) and room target (`caches.room`).
 - **The forecast** (`agent::forecast`), made with each plan and in the heartbeat: the work left run
   through in the order the agent runs it. The lead takes the pass's worldwide jobs, then a region at
-  a time (terrain, then z6 tiles), else the chains' work; its other slots any work in its order that
-  fits beside it, and each member's slots any work any Mac may run that fits them, as the
-  coordinator packs its asks: a lane per slot each Mac may run now (docs/pool.md §10, Each Mac's
-  jobs), each starting with its slot's running job.
+  a time (terrain, then z6 tiles), else the chains' work; its other slots and each member's any work
+  of the plan: a lane per slot each Mac may run now (docs/pool.md §10, Each Mac's jobs), each
+  starting with its slot's running job, every job the one the coordinator's own scheduler would
+  grant its Mac then (docs/pool.md §7.2, One scheduler).
   Z6 tiles reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. Publishing
   goes per z6 tile: a region's map tiles (`RegionLeft::packs`: its z6 tiles' map tiles stale now or to be
   once its z6 tiles left are built) are drawn once its z6 tiles are, ahead of the regions' work, each at

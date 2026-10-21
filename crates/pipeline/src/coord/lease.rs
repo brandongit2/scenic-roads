@@ -110,7 +110,7 @@ impl Hold {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Leases {
     next: u64,
     by_id: BTreeMap<u64, Lease>,
@@ -137,6 +137,12 @@ struct Saved {
     leases: Vec<Lease>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     holds: Vec<Hold>,
+}
+
+impl Default for Leases {
+    fn default() -> Leases {
+        Leases::new(super::TTL)
+    }
 }
 
 impl Leases {
@@ -282,9 +288,14 @@ impl Leases {
 
     /// A lease of `work` to `worker`; its id. (The caller makes sure no one else holds it.)
     pub fn grant(&mut self, worker: &str, work: Work, now: Instant) -> u64 {
+        let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        self.grant_at(worker, work, now, unix)
+    }
+
+    /// `grant`, its `granted_at` the unix second given (the scheduler's clock, crate::coord::sched).
+    pub fn grant_at(&mut self, worker: &str, work: Work, now: Instant, granted_at: u64) -> u64 {
         let id = self.next;
         self.next += 1;
-        let granted_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         self.by_id.insert(
             id,
             Lease {

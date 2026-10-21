@@ -153,6 +153,7 @@ button:disabled { opacity: .5; }
 .stage .pbar { margin: 2px 0 3px 21px; }
 .stage .row.item + .pbar { margin-left: 33px; height: 3px; }
 .stage .note { color: var(--dim); font-size: 11px; margin: 3px 0 0 21px; }
+.road .note { color: var(--dim); font-size: 11px; margin: 6px 0 0; }
 .mark { color: var(--dim); text-align: center; } .mark.ok { color: var(--ok); } .mark.run { color: var(--accent); }
 .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
 
