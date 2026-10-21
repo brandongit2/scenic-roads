@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """pipeline.html: how the map is built, where the data lives, who builds it and the curated inputs, on one page.
 
-To republish: `python3 page.py out.html`, then republish out.html to https://claude.ai/artifact/PrjaaDXLuuXGpGr2xt5Vjg.
+To republish: `python3 page.py out.html`, then republish out.html to https://claude.ai/artifact/2LamxyqCeK6YLbkSpPPbrj.
 
 usage: page.py OUT.html [--check] [--full]
   --check  data-max on texts (for the overflow check)
