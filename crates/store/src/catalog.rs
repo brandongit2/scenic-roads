@@ -732,6 +732,7 @@ mod tests {
                 root: Some(root),
                 lo: [("3/4/2".to_string(), lo)].into(),
                 hi: [("6/32/21".to_string(), hi)].into(),
+                fine: BTreeMap::new(),
                 extra: BTreeMap::new(),
             },
         );

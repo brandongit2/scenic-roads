@@ -530,11 +530,13 @@ mod tests {
         let terrain = declared::accepted_terrain(&a).unwrap();
         let mut ds = declared::accepted(&a).unwrap();
         assert!(sets(&ds, &terrain).is_empty(), "the fixture's roads dataset is coarser than the terrain's");
-        ds[0].measured.resolution = 8.0;
+        // (Its full resolution counts, not the one it's read at.)
         ds[0].measured.full = Some(2.0);
         let s = sets(&ds, &terrain);
         assert_eq!(s.len(), 1);
-        assert_eq!(s[0].detail, Detail::Raster(2000));
+        let Data::Tiles { zoom, .. } = &ds[0].declaration.data else { panic!("the fixture's is a pyramid") };
+        assert_eq!(s[0].detail, Detail::Pyramid(*zoom as u8));
+        assert_eq!(s[0].line, declared::line(&ds[0]));
     }
 
     #[test]
