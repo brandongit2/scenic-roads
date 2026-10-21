@@ -439,9 +439,9 @@ Two layers of 256-px PNG tiles in packs like the terrain's: `lo/3-x-y` (z3–8) 
 only where a source is finer than z8). A hi tile is stored where one of its water pixels has data of
 its zoom; a lo tile wherever a pixel has a value. A missing tile is its nearest stored ancestor
 scaled up (bilinear for depth, with that ancestor's neighbours' edges; nearest for classes).
-A lo tile's pixel is reduced from the finest depth beneath it (docs/steps.md §3): the mean of the
-water with data among the 2 × 2 beneath (so a lake or shore under a pixel wide keeps a value), its
-class the most common of theirs; with no water, the mean of the land's band, class 0.
+A lo tile's pixel is reduced from the finest depth beneath it (docs/steps.md §3): its depth the
+mean of the water beneath weighted by its share; its class the most common of theirs where water
+covers half the pixel or more, else 0 (a value under less water, or the land's band).
 
 - **`depth`** (encoding `terrarium-png`): metres below the water's surface (the sea's mean level, a
   lake's mean surface), negative; drying heights positive (at most 20 m); +12,000 m where there's
@@ -454,11 +454,13 @@ class the most common of theirs; with no water, the mean of the land's band, cla
 - **The catalog's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "notice"}]}`,
   the accepted depth declarations (the credits' depth line and notices, and the readout).
 - **Work packs** (not served; packs as above, meta `{"layer": "depth", "work": <logical>}`, each
-  tile's blob its depth PNG's length (u32, little-endian), the depth PNG, then the class PNG):
-  `work/depth-base/3-x-y`, z3–8 composed from the sources (`depth-base`; z3–5 reduced), what `depth`
-  scales capped pixels up from at z8 and coarser and what `depth-lo` takes where nothing finer lies
-  beneath; `work/depth-mid/6-x-y`, a z6 tile's z8 tiles reduced from its finest hi tiles (`depth`),
-  class byte 7 where none of its tiles beneath has a value (the base's stands there).
+  tile's blob its PNGs, each but the last after its length (u32, little-endian)):
+  `work/depth-base/3-x-y`, the depth and class PNGs of z3–8 composed from the sources
+  (`depth-base`; z3–5 reduced), what `depth` scales capped pixels up from at z8 and coarser and
+  what `depth-lo` takes where nothing finer covers; `work/depth-mid/6-x-y`, a z6 tile's z8 tiles
+  reduced from its finest hi tiles (`depth`): depth, class (byte 7 where its tiles don't cover the
+  pixel whole or none has a value: the base's stands there) and each pixel's share of water (8-bit
+  grey PNG, 255 whole).
 
 ## Catalog (`catalog/<n>.json.zst`)
 

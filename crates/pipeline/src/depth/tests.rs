@@ -423,8 +423,9 @@ fn a_small_lake_keeps_its_depth_zoomed_out() {
         let (x, y, px, py) = where_(z, 0.61, 0.61);
         let t = tile(&out, LAYER, "lo", (3, q.0, q.1), z, x, y).unwrap_or_else(|| panic!("z{z}"));
         assert!((depth_at(&t, px, py) + 6.0).abs() < 0.05, "z{z}: {}", depth_at(&t, px, py));
+        // (At z3 the lake is under half its pixel: a value, but not water.)
         let c = tile(&out, CLASS_LAYER, "lo", (3, q.0, q.1), z, x, y).unwrap();
-        assert_eq!(class_at(&c, px, py), C_MEASURED | (4 << 4), "z{z}");
+        assert_eq!(class_at(&c, px, py), if z == 3 { C_NONE } else { C_MEASURED | (4 << 4) }, "z{z}");
     }
     // The open sea, with nothing finer beneath it, is the base's.
     let (x, y, px, py) = where_(8, 0.45, 0.9);
@@ -433,28 +434,55 @@ fn a_small_lake_keeps_its_depth_zoomed_out() {
     assert_eq!(depth_at(&lo, px, py), depth_at(&base, px, py));
 }
 
-/// Reducing: the water's mean, however little of the 2 × 2 it is, its most common class (the
-/// least byte of a tie); with no water the land's band; with neither, uncovered where any is.
+/// Reducing: the share of water the 2 × 2's mean, the depth their water's mean by share; water
+/// (its most common class by share) only at half a pixel or more, less a value with class none; the
+/// land's band alone, its mean; uncovered only in a mid.
 #[test]
-fn reducing_keeps_the_water_beneath_a_pixel() {
-    use super::build::{reduce, UNCOVERED};
-    let mut src = (vec![NODATA; 65536], vec![C_NONE; 65536]);
-    let mut set = |px: usize, py: usize, v: f32, c: u8| {
-        src.0[py * 256 + px] = v;
-        src.1[py * 256 + px] = c;
+fn reducing_weights_the_water_by_its_share() {
+    use super::build::{reduce, Px, UNCOVERED};
+    let mut src = Px::none(C_NONE);
+    let mut set = |px: usize, py: usize, v: f32, c: u8, f: u8| {
+        let i = py * 256 + px;
+        (src.d[i], src.c[i], src.f[i]) = (v, c, f);
     };
-    // (Pixel 0: one water pixel of four. 1: three of two classes. 2: the land's band. 3: uncovered.)
-    set(1, 1, -4.0, 0x11);
-    set(2, 0, -2.0, 0x21);
-    set(3, 0, -4.0, 0x11);
-    set(2, 1, -6.0, 0x21);
-    set(3, 1, 1.0, C_NONE);
-    set(4, 0, 0.5, C_NONE);
-    set(7, 1, 0.0, UNCOVERED);
-    let mut dst = (vec![NODATA; 65536], vec![C_NONE; 65536]);
-    reduce(&mut dst, (1, 0), &src);
-    let got: Vec<(f32, u8)> = (128..133).map(|i| (dst.0[i], dst.1[i])).collect();
-    assert_eq!(got, [(-4.0, 0x11), (-4.0, 0x21), (0.5, C_NONE), (NODATA, UNCOVERED), (NODATA, C_NONE)]);
+    // (Pixel 0: one water pixel of four. 1: three of two classes and a band. 2: the band alone.
+    // 3: uncovered. 4: a whole and a half-water pixel.)
+    set(1, 1, -4.0, 0x11, 255);
+    set(2, 0, -2.0, 0x21, 255);
+    set(3, 0, -4.0, 0x11, 255);
+    set(2, 1, -6.0, 0x21, 255);
+    set(3, 1, 1.0, C_NONE, 0);
+    set(4, 0, 0.5, C_NONE, 0);
+    set(7, 1, 0.0, UNCOVERED, 0);
+    set(8, 0, -2.0, 0x11, 255);
+    set(9, 0, -6.0, 0x11, 128);
+    let got = |partial: bool| {
+        let mut dst = Px::none(C_NONE);
+        reduce(&mut dst, (1, 0), &src, partial);
+        (128..133).map(|i| (dst.d[i], dst.c[i], dst.f[i])).collect::<Vec<_>>()
+    };
+    let w = (-2.0 * 255.0 - 6.0 * 128.0) / 383.0;
+    assert_eq!(
+        got(false),
+        [(-4.0, C_NONE, 64), (-4.0, 0x21, 191), (0.5, C_NONE, 0), (NODATA, C_NONE, 0), (w, C_NONE, 96)]
+    );
+    assert_eq!(got(true)[3], (NODATA, UNCOVERED, 0));
+}
+
+/// Task #532 review: one water pixel of z14 in a z8 pixel's 4,096 keeps its value there but
+/// doesn't make it water (no speckle of water classes zoomed out).
+#[test]
+fn a_speck_of_fine_water_is_no_water_zoomed_out() {
+    use super::build::{reduce, Px};
+    let mut t = Px::none(C_NONE);
+    (t.d[0], t.c[0], t.f[0]) = (-3.0, 0x11, 255);
+    for _ in 0..6 {
+        let mut up = Px::none(C_NONE);
+        reduce(&mut up, (0, 0), &t, false);
+        t = up;
+    }
+    assert_eq!((t.d[0], t.c[0]), (-3.0, C_NONE));
+    assert!(t.f[0] <= 1);
 }
 
 /// A mid: a z8 tile reduced from the finest tile beneath each place, the rest uncovered.
@@ -469,13 +497,62 @@ fn a_mid_is_the_finest_beneath_reduced() {
     let made = std::collections::BTreeMap::from([((9, 0, 0), enc(-3.0, 0x11)), ((10, 1, 1), enc(-5.0, 0x21))]);
     let mid = mid_of(&made).unwrap();
     assert_eq!(mid.keys().copied().collect::<Vec<_>>(), [(8, 0, 0)]);
-    let (d, c) = &mid[&(8, 0, 0)];
-    let at = |px: usize, py: usize| (depth_at(d, px, py), class_at(c, px, py));
-    assert_eq!(at(10, 10), (-3.0, 0x11));
-    assert_eq!(at(100, 100), (-5.0, 0x21));
-    assert_eq!(at(200, 10), (NODATA, UNCOVERED));
+    let p = &mid[&(8, 0, 0)];
+    let at = |px: usize, py: usize| (depth_at(&p[0], px, py), class_at(&p[1], px, py), class_at(&p[2], px, py));
+    assert_eq!(at(10, 10), (-3.0, 0x11, 255));
+    assert_eq!(at(100, 100), (-5.0, 0x21, 255));
+    assert_eq!(at(200, 10), (NODATA, UNCOVERED, 0));
 }
 
+/// Task #532 review: where a mid meets the base (a z6 tile with a mid beside one without, or the
+/// part of a z8 tile its tiles don't cover) the base's water and shore go on unchanged: a mid
+/// replaces the base only where it covers a pixel whole, and its band never the base's water;
+/// a small lake the base lacks comes from the mid.
+#[test]
+fn a_mid_meets_the_base_without_a_seam() {
+    use super::build::{assemble, Px, UNCOVERED};
+    let png = |t: &Px, f: bool| -> Vec<Vec<u8>> {
+        let mut v = vec![fall::encode(&Grid::F(t.d.clone())).unwrap(), fall::encode(&Grid::C(t.c.clone())).unwrap()];
+        if f {
+            v.push(fall::encode(&Grid::C(t.f.clone())).unwrap());
+        }
+        v
+    };
+    // (The base: water at -10 left of x 200, its band of 0 at 200–202, land beyond.)
+    let mut base = Px::none(C_NONE);
+    for y in 0..256 {
+        for x in 0..203 {
+            let i = y * 256 + x;
+            (base.d[i], base.c[i]) = if x < 200 { (-10.0, C_MEASURED | 0x10) } else { (0.0, C_NONE) };
+        }
+    }
+    // (The mid: the left half covered, the water there at -9; row 5 its band (0) where the base
+    // has water; a small lake (a quarter of a pixel, -3) on the land at x 220 isn't covered, at
+    // (100, 7) is (the base has water there: it stays the base's), and on covered land none.)
+    let mut mid = Px::none(UNCOVERED);
+    for y in 0..256 {
+        for x in 0..128 {
+            let i = y * 256 + x;
+            (mid.d[i], mid.c[i], mid.f[i]) = (-9.0, C_MEASURED | 0x20, 255);
+        }
+    }
+    for x in 0..128 {
+        (mid.d[5 * 256 + x], mid.c[5 * 256 + x], mid.f[5 * 256 + x]) = (0.0, C_NONE, 0);
+    }
+    (mid.d[7 * 256 + 100], mid.c[7 * 256 + 100], mid.f[7 * 256 + 100]) = (-3.0, C_NONE, 64);
+    let (b, m) = (png(&base, false), png(&mid, true));
+    let got = assemble((0, 0), &|x, y| Ok(((x, y) == (0, 0)).then(|| b.clone())), &|x, y| {
+        Ok(((x, y) == (0, 0)).then(|| m.clone()))
+    })
+    .unwrap();
+    let (d, c) = &got[&(8, 0, 0)];
+    let at = |x: usize, y: usize| (depth_at(d, x, y), class_at(c, x, y));
+    assert_eq!(at(50, 50), (-9.0, C_MEASURED | 0x20), "the mid's water where it covers");
+    assert_eq!(at(150, 50), (-10.0, C_MEASURED | 0x10), "the base's beyond it");
+    assert_eq!(at(201, 50), (0.0, C_NONE), "the base's shore band goes on");
+    assert_eq!(at(50, 5), (-10.0, C_MEASURED | 0x10), "a mid's band never replaces the base's water");
+    assert_eq!(at(100, 7), (-10.0, C_MEASURED | 0x10));
+}
 /// Task #398: an assembly's and a piece's run are timed by stage (no hour of "(untimed)"): the
 /// sources' files opened and windows read, the water read, composing and within it feathering
 /// (and the gaps filled, which the fixture has none of), the tiles encoded, the coarse levels and the packs written.
@@ -847,7 +924,8 @@ fn measure_a_real_lo() {
     let t0 = std::time::Instant::now();
     let before = read("lo", (3, q.0, q.1));
     let read_lo = t0.elapsed().as_secs_f64();
-    let (mut mids, mut mid_s, mut read_s, mut hi_tiles, mut pieces) = (Tiles::new(), 0.0, 0.0, 0usize, 0);
+    let (mut mids, mut mid_s, mut read_s, mut hi_tiles, mut pieces) =
+        (std::collections::BTreeMap::new(), 0.0, 0.0, 0usize, 0);
     for tx in q.0 * 8..q.0 * 8 + 8 {
         for ty in q.1 * 8..q.1 * 8 + 8 {
             let t1 = std::time::Instant::now();
@@ -863,9 +941,13 @@ fn measure_a_real_lo() {
             mid_s += t2.elapsed().as_secs_f64();
         }
     }
-    let z8 = |m: &Tiles, x: u32, y: u32| Ok(m.get(&(8, x, y)).cloned());
     let t3 = std::time::Instant::now();
-    let after = super::build::assemble(q, &|x, y| z8(&before, x, y), &|x, y| z8(&mids, x, y)).unwrap();
+    let after = super::build::assemble(
+        q,
+        &|x, y| Ok(before.get(&(8, x, y)).map(|(d, c)| vec![d.clone(), c.clone()])),
+        &|x, y| Ok(mids.get(&(8, x, y)).cloned()),
+    )
+    .unwrap();
     let asm_s = t3.elapsed().as_secs_f64();
     println!(
         "3/{}/{}: lo pack read {read_lo:.1} s ({} tiles); {pieces} z6 tiles' hi packs read {read_s:.1} s ({hi_tiles} tiles); \
@@ -876,12 +958,12 @@ fn measure_a_real_lo() {
         mids.len(),
         after.len()
     );
-    // (Drawn: the depth on a log ramp of blues to 300 m, a drying height or the land's band light
-    // sand, none grey.)
-    let colour = |v: f32| -> [u8; 3] {
+    // (Drawn: the water's depth on a log ramp of blues to 300 m, a drying height or a value of
+    // class none (the land's band, water under half a pixel) light sand, none grey.)
+    let colour = |v: f32, c: u8| -> [u8; 3] {
         if v >= NODATA_MIN {
             [200, 200, 200]
-        } else if v >= 0.0 {
+        } else if v >= 0.0 || c == C_NONE {
             [236, 222, 180]
         } else {
             let t = ((1.0 - v).ln() / 301f32.ln()).clamp(0.0, 1.0);
@@ -896,17 +978,20 @@ fn measure_a_real_lo() {
             let mut rgb = vec![0u8; wpx * hpx * 3];
             for j in 0..ny {
                 for i in 0..nx {
-                    let v = match tiles.get(&(z, x0 + i, y0 + j)) {
-                        Some((d, _)) => match fall::decode(Kind::Terrarium, d).unwrap() {
-                            Grid::F(v) => v,
-                            _ => unreachable!(),
-                        },
-                        None => vec![NODATA; 65536],
+                    let (v, k) = match tiles.get(&(z, x0 + i, y0 + j)) {
+                        Some((d, c)) => {
+                            match (fall::decode(Kind::Terrarium, d).unwrap(), fall::decode(Kind::Class, c).unwrap()) {
+                                (Grid::F(v), Grid::C(k)) => (v, k),
+                                _ => unreachable!(),
+                            }
+                        }
+                        None => (vec![NODATA; 65536], vec![C_NONE; 65536]),
                     };
                     for py in 0..256usize {
                         for px in 0..256usize {
                             let o = ((j as usize * 256 + py) * wpx + i as usize * 256 + px) * 3;
-                            rgb[o..o + 3].copy_from_slice(&colour(v[py * 256 + px]));
+                            let s = py * 256 + px;
+                            rgb[o..o + 3].copy_from_slice(&colour(v[s], k[s]));
                         }
                     }
                 }

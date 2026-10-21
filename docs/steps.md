@@ -205,19 +205,26 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   (`work/depth-mid/6-x-y`, `depth::build::mid_of`): its z8 tiles reduced level by level from the
   finest of its tiles beneath each place (where a zoom's tile is missing under a finer one, the
   coarser tile scaled up stands in, and a finer pixel without a value leaves the coarser's: a stored
-  tile leaves out what it didn't compose; where none of its tiles has a value, the pixel is marked
-  uncovered).
-- **depth-lo (a z3 tile):** the lo packs the map reads. Each z8 tile its z6 tile's mid's, the base's
-  pixels where the mid's are uncovered or there's no mid (open sea, GEBCO's alone); z3–7 each its
-  children reduced. No source is read: seconds a tile (3/2/2: 2 s), not the composing's hours. So a small
-  lake the basemap drops zoomed out (or draws under half a pixel), and the shores, keep the depth
-  their fine tiles have instead of vanishing or stepping by whole coarse pixels (task #532). Where
-  only the base lies beneath, its z6–7 are now reduced from its z8 too, not composed at their zoom.
-- **Reducing** (`depth::build::reduce`): a pixel is the mean of the water with data among the 2 × 2
-  beneath it (however little of it is water), its class the most common of theirs (the least byte
-  of a tie: one source's, never a blend); with no water, the mean of the land's band (class none);
-  else none. Terrain's analogue: its z8 and coarser rebuilt from children (`terrain_pack`,
-  `REBUILD_Z`).
+  tile leaves out what it didn't compose; a pixel not wholly under its tiles, or where none has a
+  value, is marked uncovered), with each pixel's share of water.
+- **depth-lo (a z3 tile):** the lo packs the map reads. Each z8 pixel the mid's where the mid
+  covers it whole, except where the mid has under half a pixel of water and the base has water
+  there (a band never replaces the base's water); else the base's (open sea, GEBCO's alone, and
+  any z6 tile without a mid: no seam where one with a mid meets one without, the base's shore bands
+  go on). Z3–7 each its children reduced. No source is read: seconds a tile (3/2/2: 2 s), not the
+  composing's hours. So a lake the basemap draws zoomed out keeps the depth its fine tiles have,
+  where the base, composed on coarser water, had none or stepped by whole pixels (task #532).
+  Where only the base lies beneath, its z6–7 are now reduced from its z8 too, not composed at their
+  zoom.
+- **Reducing** (`depth::build::reduce`): a pixel's share of water is the mean of the 2 × 2's
+  beneath it (a stored pixel with a value and a class is water whole, any other none), its depth
+  their water's mean weighted by share. It's water (class: the most common of its water's by share,
+  the least byte of a tie; one source's, never a blend) at half a pixel or more: how the map masks
+  the depth by the basemap's water (`web/src/depth.worker.ts`, a pixel covered half or more). Less
+  keeps its value as the land's band does (class none): the map shows it where it draws water
+  there, so a lake it draws keeps depth, and one speck of fine water in a coarse pixel's thousands
+  makes no water class. With no water, the mean of the land's band; else none. Terrain's analogue:
+  its z8 and coarser rebuilt from children (`terrain_pack`, `REBUILD_Z`).
 - **The water** (`depth::build`, `terrain_water`'s `depth_polys`): the basemap's z6–14 (its z14
   scaled at z15–16), the terrain's sea and lakes and also its rivers (class `river`). A pixel is
   water when they cover half of it or more, or when it's narrow water (some of it water and none of
