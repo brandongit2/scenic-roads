@@ -37,7 +37,7 @@ shutil.copytree(SRC, OUT)
 files = {}
 for d, _, fs in os.walk(OUT):
     for f in fs:
-        if f.endswith('.toml') and f not in ('pins.toml', '_group.toml'):
+        if f.endswith('.toml') and not f.startswith('_'):
             files[f[:-5]] = os.path.relpath(os.path.join(d, f), OUT)
 built = json.load(open(os.path.join(args.src, 'built.json')))
 by_name = {}
@@ -577,7 +577,7 @@ def tomlv(v):
 
 for d, _, fs in os.walk(OUT):
     for f in fs:
-        if f.endswith('.toml') and f not in ('pins.toml', '_group.toml') and f[:-5] not in R:
+        if f.endswith('.toml') and not f.startswith('_') and f[:-5] not in R:
             os.remove(os.path.join(d, f))
 for id, r in R.items():
     # (#420's GAP/APPROX lines are dropped: what's approximate now is said by gen-notes' approx.)
@@ -600,8 +600,8 @@ for id, r in R.items():
     p = os.path.join(OUT, r['path'])
     os.makedirs(os.path.dirname(p), exist_ok=True)
     open(p, 'w').write('\n'.join(out) + '\n')
-if not os.path.exists(os.path.join(OUT, 'pins.toml')):
-    open(os.path.join(OUT, 'pins.toml'), 'w').write('osm = "2026-09-28"\n')
+if not os.path.exists(os.path.join(OUT, '_pins.toml')):
+    open(os.path.join(OUT, '_pins.toml'), 'w').write('osm = "2026-09-28"\n')
 json.dump(notes, open(os.path.join(args.out, 'gen-notes.json'), 'w'), indent=1, ensure_ascii=False, default=str)
 print(len(R), 'regions;', len(notes['added']), 'added;', len(notes['removed']), 'removed;', len(notes['unassigned_zones']), 'zones unassigned')
 for u in notes['unassigned_zones']:

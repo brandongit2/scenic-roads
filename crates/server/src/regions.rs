@@ -241,7 +241,7 @@ impl Listed {
 type ListedAll = (Vec<Listed>, Vec<(String, String)>);
 
 /// Every region file in the folder and its subfolders (`how/`, `todo/` and the names every drop box
-/// passes over aside, and `pins.toml` and `rules.toml`), by id; the files that don't parse. The NAS failing midway is
+/// passes over aside, and the special files), by id; the files that don't parse. The NAS failing midway is
 /// an error, never a shorter list.
 fn load_all(pool: &IoPool, dir: &std::path::Path) -> Result<ListedAll> {
     let (mut ok, mut bad) = (Vec::new(), Vec::new());
@@ -261,7 +261,7 @@ fn load_all(pool: &IoPool, dir: &std::path::Path) -> Result<ListedAll> {
                 stack.push((d.join(&it.name), path));
                 continue;
             }
-            if !it.name.ends_with(".toml") || path == "pins.toml" || path == pipeline::inputs::regions::tiles::RULES {
+            if !it.name.ends_with(".toml") || pipeline::inputs::regions::resolve::special(&path).is_some() {
                 continue;
             }
             let p = d.join(&it.name);
@@ -663,13 +663,19 @@ mod tests {
             "id = \"azores\"\nname = \"Azores\"\noutline = [{ buffer = \"osm:1629145\", by = \"12 nmi\" }]\n",
         )
         .unwrap();
-        // Broken ones reported; other files (a `.toml.removed` among them), ignored names, pins.toml, rules.toml
-        // and how/ left out.
+        // Broken ones reported; other files (a `.toml.removed` among them), ignored names, the special files (`_`
+        // names; the old pins.toml and rules.toml too) and how/ left out.
         std::fs::write(dir.join("bad.toml"), "id = \"other\"\nname = \"x\"\noutline = [\"osm:1\"]").unwrap();
         std::fs::write(dir.join("old.toml.removed"), region("old", "Old")).unwrap();
         std::fs::write(dir.join(".half.toml.tmp"), "half").unwrap();
-        std::fs::write(dir.join("pins.toml"), "osm = \"2026-09-28\"\n").unwrap();
-        std::fs::write(dir.join("rules.toml"), "cover = \"earth\"\n").unwrap();
+        for (n, t) in [
+            ("_pins.toml", "osm = \"2026-09-28\"\n"),
+            ("_rules.toml", "cover = \"earth\"\n"),
+            ("pins.toml", "osm = \"2026-09-28\"\n"),
+            ("rules.toml", "cover = \"earth\"\n"),
+        ] {
+            std::fs::write(dir.join(n), t).unwrap();
+        }
         std::fs::create_dir_all(dir.join("how")).unwrap();
         std::fs::write(dir.join("how/example.toml"), region("example", "Example")).unwrap();
         let (ok, bad) = load_all(&pool, &dir).unwrap();

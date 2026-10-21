@@ -8,7 +8,7 @@ contract is docs/inputs.md in the repository.
 
 | Folder | Kind | What goes in |
 |---|---|---|
-| `regions/` | declare | `<id>.toml` per region, `<name>.geojson` shapes, `_group.toml` per folder, `pins.toml` |
+| `regions/` | declare | `<id>.toml` per region, `<name>.geojson` shapes, `_group.toml` per folder, `_pins.toml`, `_rules.toml` |
 | `languages/` | declare | `territories.tsv`, `about.toml` |
 | `translations/` | request–fulfil | answer files `**/*.jsonl`; the app's lists in `todo/` |
 | `descriptions/` | request–fulfil | answer files `**/*.jsonl`, `about.toml`; the app's lists in `todo/` |
@@ -34,7 +34,7 @@ Not inputs: `keys.env` (secrets), `hold-catalog` (a control), `ferries/` (not a 
 - `todo/` is the app's, `how/` the owner's: how the input is made, pointing to the producers in the
   repository's `producers/<input>/`, with agents' briefs and what was done by hand. Neither is read
   as input.
-- Names starting with `.`, `@`, `#` or `_` are ignored (except regions' `_group.toml`).
+- Names starting with `.`, `@`, `#` or `_` are ignored (except regions' special `_*.toml` files).
 - Any other file not in the box's shape is an error, never skipped silently (`regions/` ignores
   unknown files).
 
