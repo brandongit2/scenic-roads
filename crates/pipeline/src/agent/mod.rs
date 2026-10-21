@@ -1442,6 +1442,9 @@ pub struct Agent {
     /// The last plan's forecast (crate::agent::forecast), and the last catalog it read, for the
     /// status.
     forecast: std::cell::RefCell<Option<forecast::Forecast>>,
+    /// When each (Mac, step) last had its grants' departure from the forecast logged
+    /// (`forecast_now`): once an hour at most.
+    departed: std::cell::RefCell<BTreeMap<(String, String), u64>>,
     /// The last forecast's record (forecast::Record::bytes), until the lead's pool step writes it
     /// to the NAS (`pool_lead_files`).
     forecast_input: std::cell::RefCell<Option<Vec<u8>>>,
@@ -1815,6 +1818,7 @@ impl Agent {
             orphans: Vec::new(),
             last_cond: None,
             forecast: Default::default(),
+            departed: Default::default(),
             forecast_input: Default::default(),
             publish_line: Default::default(),
             timetables: Default::default(),
@@ -7635,8 +7639,14 @@ impl Agent {
                 .filter(|e| e.kind == "lease")
                 .filter_map(|e| Some((e.t, e.worker.clone()?, e.step.clone()?)))
                 .collect();
-            for d in forecast::departures(prev, &real, now_s()) {
-                eprintln!("agent: the grants departed from the forecast: {d}");
+            // (Each Mac and step said at most once an hour.)
+            let now = now_s();
+            let mut said = self.departed.borrow_mut();
+            said.retain(|_, at| now.saturating_sub(*at) < 3600);
+            for (k, d) in forecast::departures(prev, &real, now) {
+                if said.insert(k, now).is_none() {
+                    eprintln!("agent: the grants departed from the forecast: {d}");
+                }
             }
         }
         // Each worker's speed against the lead's, from the history (half until it's measured):

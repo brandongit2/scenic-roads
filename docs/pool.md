@@ -488,8 +488,13 @@ handovers and a NAS slower than its probe are not foreseen. The backtest
 (`backtest_against_the_history`, run by hand on the NAS's `state/`) forecasts from each term's
 recorded state the jobs the history shows started in the next 6 h: over 58 starts of 18–21 Oct,
 busy time with 1 job at once M4 78 % (history 70 %), M1 71 % (57 %); 4+ jobs M4 13 % (4 %), M1
-13 % (14 %); the last job's end within a median 55 % (mean −3 %): its work is all taken as ready at
-the start, where the plan released it over the window.
+13 % (14 %). The finish time falls short of the task's done bar: the last job's end is off by a
+median 55 % (mean −3 %), for two reasons: the backtest releases all of a window's work at its start,
+where the plan released it over the window, and the NAS's limits are guessed (100 MB/s, 40
+creates/s), the probe's not being on the NAS. The forecast also assumes no load from outside the
+pool (each ask's `cores_free` taken as its cores): while the owner uses a Mac it's optimistic. The
+lead logs a departure only when a Mac's jobs of a step differ from the forecast's by 2 or more and
+by more than half, each Mac and step at most once an hour.
 
 Rows of note: `trees`/`terrain`/`slope` per z6 tile with `*-lo` assemblies per z3 tile (docs/steps.md);
 `bldprep`/`bldtiles` per z6 tile, `bld-fetch` the lead's (docs/buildings3d.md §3.6); `inputs`, a

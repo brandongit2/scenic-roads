@@ -989,7 +989,7 @@ function render() {
     h("div", "road",
       h("div", "box", h("h3", null, "Schedule", h("span", null, "each machine's work from now to the end")), schedule(m),
         // (What the coordinator's own scheduler decides, run ahead: docs/pool.md §7.2. What it can't see, said.)
-        h("p", "note", "Granted as the coordinator grants: by each Mac's room, cores and the NAS budget. Times and NAS weights are measured estimates; a pause, a repack, a Mac handing over on battery or a slow NAS moves the finish.")),
+        h("p", "note", "Granted as the coordinator grants: by each Mac's room, cores and the NAS budget. Times and NAS weights are measured estimates, and no load from outside the build is assumed (optimistic while a Mac is in use); a pause, a repack, a Mac handing over on battery or a slow NAS moves the finish.")),
       h("div", "box", h("h3", null, "Publishing"), publishing(m))));
   // (Their own part: while their search has the keyboard, only it waits to be refreshed.)
   const regions = section("d-regions", "regions", null, null,

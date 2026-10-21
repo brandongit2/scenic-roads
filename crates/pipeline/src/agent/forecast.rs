@@ -1301,10 +1301,11 @@ pub fn forecast(inp: &Input) -> Forecast {
 
 /// Where the lead's real grants departed from forecast `f`'s next steps: each Mac and step granted
 /// more or fewer jobs from when it was made until `until` (unix s) than its run granted by then
-/// (`Forecast::grants`, its first hour), in words. `real`: the grants made, (unix s, Mac, step).
+/// (`Forecast::grants`, its first hour), by 2 or more and by more than half the forecast's
+/// (`departed`): ((Mac, step), in words). `real`: the grants made, (unix s, Mac, step).
 /// What the scheduler can't see moves them (docs/pool.md §7.8): a job ending sooner or later than
 /// measured, the owner's pause, a Mac handing over on battery, the NAS slower than its probe.
-pub fn departures(f: &Forecast, real: &[(u64, String, String)], until: u64) -> Vec<String> {
+pub fn departures(f: &Forecast, real: &[(u64, String, String)], until: u64) -> Vec<((String, String), String)> {
     let until = until.min(f.at + GRANTS_S as u64);
     let mut n: BTreeMap<(&str, &str), (usize, usize)> = BTreeMap::new();
     for g in f.grants.iter().filter(|g| (g.at as u64) < until) {
@@ -1314,9 +1315,18 @@ pub fn departures(f: &Forecast, real: &[(u64, String, String)], until: u64) -> V
         n.entry((mac, step)).or_default().1 += 1;
     }
     n.into_iter()
-        .filter(|(_, (fc, got))| fc != got)
-        .map(|((mac, step), (fc, got))| format!("{mac}: {got} job(s) of {step} granted, the forecast's {fc}"))
+        .filter(|(_, (fc, got))| departed(*fc, *got))
+        .map(|((mac, step), (fc, got))| {
+            ((mac.to_string(), step.to_string()), format!("{mac}: {got} job(s) of {step} granted, the forecast's {fc}"))
+        })
         .collect()
+}
+
+/// Whether `got` jobs granted against the forecast's `fc` is a departure worth saying: 2 or more
+/// apart, and more than half the forecast's (one job early or late is the clock's grain).
+fn departed(fc: usize, got: usize) -> bool {
+    let d = fc.abs_diff(got);
+    d >= 2 && d * 2 > fc
 }
 
 /// The forecast for equal machines (docs/pool.md §7.2, §12 4.12): the same work as `inp`'s, run
@@ -2535,6 +2545,17 @@ mod tests {
             abs.get(abs.len() / 2).copied().unwrap_or(0.0) * 100.0,
             fin_err.iter().sum::<f64>() / fin_err.len().max(1) as f64 * 100.0
         );
+    }
+
+    #[test]
+    fn a_departure_is_two_jobs_and_half_the_forecasts_apart() {
+        assert!(!departed(3, 4) && !departed(10, 13) && departed(0, 2) && departed(4, 1) && departed(3, 6));
+        let g = |at: f64| Grant { mac: "m4".into(), step: "unit".into(), targets: vec![], at };
+        let f = Forecast { at: 1000, grants: vec![g(1000.0), g(1100.0), g(1200.0), g(9000.0)], ..Default::default() };
+        let real =
+            |n: usize| (0..n).map(|k| (1000 + k as u64, "m4".to_string(), "unit".to_string())).collect::<Vec<_>>();
+        assert!(departures(&f, &real(4), 2000).is_empty(), "one more: not said");
+        assert_eq!(departures(&f, &real(0), 2000).len(), 1, "none of three");
     }
 
     #[test]
