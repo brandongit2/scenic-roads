@@ -382,6 +382,8 @@ pub struct Tiff {
     cache: Option<(u64, Arc<Mutex<BlockCache>>)>,
     /// The bytes of tile arrays this file may still keep (`STRILES_KEPT` less those kept).
     kept_left: std::sync::atomic::AtomicU64,
+    /// Held while an array is read to be kept (`keep`): one read for every thread's first ask.
+    keeping: Mutex<()>,
 }
 
 impl std::fmt::Debug for Tiff {
@@ -482,6 +484,7 @@ impl Tiff {
             band0: (1.0, 0.0),
             cache: None,
             kept_left: std::sync::atomic::AtomicU64::new(budget),
+            keeping: Mutex::new(()),
         };
         let main = t.image(&dirs[0]).context("TIFF image")?;
         t.images.push(main);
@@ -517,8 +520,11 @@ impl Tiff {
     }
 
     /// Array `s` read whole and kept, within the file's budget (`STRILES_KEPT`; past it, nothing).
+    /// Under the file's lock: two threads' first asks read it once; a read that fails charges
+    /// nothing.
     fn keep(&self, s: &Striles) -> Result<()> {
         let Striles::At { off, typ, count, kept } = s else { return Ok(()) };
+        let _one = self.keeping.lock().unwrap_or_else(|e| e.into_inner());
         if kept.get().is_some() {
             return Ok(());
         }
@@ -532,8 +538,17 @@ impl Tiff {
         if taken.is_err() {
             return Ok(());
         }
-        let b = self.src.read_at(*off, n as usize)?;
-        let _ = kept.set(b.chunks_exact(sz as usize).map(|c| self.order.uint(c)).collect());
+        let b = match self.src.read_at(*off, n as usize) {
+            Ok(b) => b,
+            Err(e) => {
+                self.kept_left.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+                return Err(e.into());
+            }
+        };
+        ensure!(b.len() as u64 == n, "a tile array of {} bytes read, {n} expected", b.len());
+        if kept.set(b.chunks_exact(sz as usize).map(|c| self.order.uint(c)).collect()).is_err() {
+            self.kept_left.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -764,7 +779,7 @@ impl Tiff {
                     self.keep(s)?;
                 }
                 if let Some(v) = kept.get() {
-                    return Ok(v[i as usize]);
+                    return v.get(i as usize).copied().context("tile index past the TIFF's array kept");
                 }
                 let sz = type_size(*typ).unwrap();
                 Ok(self.order.uint(&self.src.read_at(off + i * sz, sz as usize)?))
@@ -1830,11 +1845,62 @@ mod tests {
                     (k * 1000) as f64 + (y * 100 + x) as f64
                 });
             let src = counted(b);
-            let t = Tiff::open_keeping(src.clone(), 8).unwrap();
+            // (The budget: the first image's two arrays' bytes, found with none kept.)
+            let bytes_of = |s: &Striles| match s {
+                Striles::At { count, typ, .. } => count * type_size(*typ).unwrap(),
+                Striles::Inline(_) => 0,
+            };
+            let probe = Tiff::open_keeping(src.clone(), 0).unwrap();
+            let budget = bytes_of(&probe.images[0].offsets) + bytes_of(&probe.images[0].counts);
+            assert!(budget > 0 && budget < bytes_of(&probe.images[1].offsets) + budget);
+            let t = Tiff::open_keeping(src.clone(), budget).unwrap();
             let n0 = reads(&src);
             assert_eq!(t.read_window(0, 0, 0, 40, 30).unwrap(), vals[0]);
             assert_eq!(t.read_window(1, 0, 0, 20, 15).unwrap(), vals[1]);
             assert!(reads(&src) > n0 + 2, "an array past the budget is read entry by entry");
+            let kept_of = |s: &Striles| match s {
+                Striles::Inline(_) => None,
+                Striles::At { kept, .. } => Some(kept.get().is_some()),
+            };
+            assert_eq!(kept_of(&t.images[0].offsets), Some(true), "the first image's array kept");
+            assert_eq!(kept_of(&t.images[1].offsets), Some(false), "the overview's not, past the budget");
+        }
+        // Arrays kept lazily (no window holds them at open: a budget given after): eight threads'
+        // first asks on one image read its arrays once, the budget charged once; a failed read
+        // charges nothing, and the next ask reads again.
+        {
+            let data: Vec<f32> =
+                (0..2048 * 2048).map(|i| ((i as u64 * 2_654_435_761) % 1_000_003) as f32 * 1.7).collect();
+            let bytes = write_f32(2048, 2048, &data, 256, [0.0, 1.0, 0.0, 0.0, 0.0, -1.0], 4326, None).unwrap();
+            let src = counted(bytes);
+            let t = Tiff::open_keeping(src.clone(), 0)
+                .unwrap()
+                .with_shared_cache(1, Arc::new(Mutex::new(BlockCache::new(64 << 20))));
+            let arrays: Vec<&Striles> = [&t.images[0].offsets, &t.images[0].counts]
+                .into_iter()
+                .filter(|s| matches!(s, Striles::At { .. }))
+                .collect();
+            assert_eq!(arrays.len(), 2, "64 tiles: arrays out of line");
+            let n: u64 = arrays
+                .iter()
+                .map(|s| match s {
+                    Striles::At { count, typ, .. } => count * type_size(*typ).unwrap(),
+                    _ => 0,
+                })
+                .sum();
+            t.kept_left.store(n, std::sync::atomic::Ordering::Relaxed);
+            src.trip.store(1, std::sync::atomic::Ordering::SeqCst);
+            assert!(t.keep(arrays[0]).is_err(), "the read failed");
+            assert_eq!(t.kept_left.load(std::sync::atomic::Ordering::Relaxed), n, "refunded");
+            let before = reads(&src);
+            std::thread::scope(|s| {
+                for _ in 0..8 {
+                    s.spawn(|| t.block(0, 2, 3).unwrap());
+                }
+            });
+            assert_eq!(t.kept_left.load(std::sync::atomic::Ordering::Relaxed), 0, "both arrays charged once");
+            assert_eq!(reads(&src), before + 3, "two arrays and the block's data, once each");
+            assert_eq!(t.block(0, 2, 3).unwrap().f32_at(1, 1), data[(3 * 256 + 1) * 2048 + 2 * 256 + 1]);
         }
         // (Values that don't compress: a file of many windows.)
         let data: Vec<f32> = (0..1024 * 1024).map(|i| ((i as u64 * 2_654_435_761) % 1_000_003) as f32 * 1.7).collect();

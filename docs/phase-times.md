@@ -79,7 +79,7 @@ but holds the sources' reads as sub-phases, so depth's NAS share is really highe
 | change | bound by | before → after (measured) | ethernet |
 |---|---|---|---|
 | A GeoTIFF's header read in windows and its tile arrays kept (`geotiff::Windowed`, `STRILES_KEPT`): an open 1–2 reads (was 24–38), a block's read 1 (was 3); commit 64a7c64a | round trips | 3.7–5.9× fewer range reads on three tiles; wall 36.9 → 26.2 s warm on 3/3/2, cold-to-cold not measured (§6) | helps little: a round trip on the NAS under load is its disks' seeks, not the link |
-| A block's water tiles read from the basemap in runs (`PmTiles::get_many`, `WaterSource::depth_polys_many`), decoded and rasterised on the job's threads; commit ac2387a1 | round trips, then CPU | the water phase 11.3 → 1.8 s and 6.4 → 1.8 s warm, 14.3 → 1.3 s cold-then-warm (§6) | the same |
+| A block's water tiles read from the basemap in runs (`PmTiles::get_many`, `WaterSource::depth_polys_many`), decoded and rasterised on the job's threads; commit ac2387a1 | round trips, then CPU | the water phase 11.3 → 1.8 s and 6.4 → 1.8 s warm, 14.3 → 1.3 s cold-then-warm (§6): 3.6–11× | the same |
 
 Byte-identical outputs: the same bytes are read, in fewer reads; the measure's digest of the
 tiles made is the same before and after (§6). No version bump.
@@ -124,8 +124,8 @@ digest of the tiles made is the same before and after on every tile: 3/3/2 23c0b
 | | final code, warm | 361.4 s | 87,648 | 1.3 s | 76.0 s | 273.8 s |
 
 What is measured: **3.7–5.9× fewer range reads** on every tile (64,802 → 17,525; 55,971 →
-14,219; 520,752 → 87,648), and **the water phase 4–11× faster** in every pair (11.3 → 1.8 s
-warm, 6.4 → 1.8 s warm, 14.3 → 1.3 s). What is not: a cold-to-cold wall time on one tile (3/3/2's
+14,219; 520,752 → 87,648), and **the water phase 3.6–11× faster** in every pair (11.3 → 1.8 s
+warm, 6.4 → 1.8 s warm; 14.3 → 1.3 s on 3/1/3 is cold then warm, so its 11× includes the cache). What is not: a cold-to-cold wall time on one tile (3/3/2's
 cold before, 122 s, was under the publish suite; 3/0/1's cold after, 84 s, under other agents'
 tests; the warm pairs, 36.9 → 26.2 s and 24.6 → 23.8 s, hide the round trips in the page cache).
 On 3/1/3 the second run still read the NAS (361 s against 464 s cold: the reads left are the
