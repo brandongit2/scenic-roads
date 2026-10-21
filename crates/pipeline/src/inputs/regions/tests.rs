@@ -463,6 +463,21 @@ fn a_region_missing_a_fact_is_an_error() {
     assert!(read::listed(&a).is_err());
 }
 
+/// `rules.toml` taken in beside the regions (its facts the rules, no outline): not a region, so the
+/// regions read (21 Oct: the index taking it in stopped the regions' build, "rules.toml has no outline").
+#[test]
+fn the_rules_file_is_not_a_region() {
+    let index: Index = serde_json::from_str(include_str!("testdata/index-empty-regions.json")).unwrap();
+    let d = tempfile::tempdir().unwrap();
+    let mut a =
+        crate::inputs::Accepted { root: d.path().to_path_buf(), version: "@index.be2033d2b403ccb0.json".into(), index };
+    let n = read::listed(&a).unwrap().len();
+    let mut rules = a.index.files.values().next().unwrap().clone();
+    rules.facts = serde_json::from_str(r#"{"rules": {"cover": "earth", "sliver_km2": 50.0}}"#).unwrap();
+    a.index.files.insert("rules.toml".into(), rules);
+    assert_eq!(read::listed(&a).unwrap().len(), n);
+}
+
 /// The live index's shape (task #504): a cut of `@index.be2033d2b403ccb0.json` (regions 1,028, rules
 /// `cover = "earth"`), whose `*-outside-its-regions` (hand_out_all, every place handed out) resolved
 /// to nothing and so have no geometry or drawing in their facts. It reads; they're listed and in the
