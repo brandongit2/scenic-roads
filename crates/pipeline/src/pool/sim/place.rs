@@ -161,8 +161,7 @@ struct Job {
     threads: u32,
     /// Its NAS weight (its step's true rate by the limits).
     nas: u32,
-    /// A cold start: its weight unknown to the coordinator when granted, so not counted against the
-    /// NAS budget (the coordinator weighs it 0 too).
+    /// A cold start: none of its step measured when granted (at most one on a Mac).
     cold: bool,
 }
 
@@ -454,6 +453,9 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             if k > 0 && (!every::offered(step) || every::LEAD_ONLY.contains(&step)) {
                 return Err(format!("{} (a member) placed {step}, kept to the lead", cfg.macs[k].name));
             }
+            if cold && running[k].iter().any(|j| j.cold) {
+                return Err(format!("{} placed a cold start of {step} beside another cold start", cfg.macs[k].name));
+            }
             if cold && running.iter().flatten().any(|j| j.step == step) {
                 return Err(format!(
                     "{} placed a cold start of {step} while another of its jobs runs",
@@ -513,8 +515,9 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
             // (The NAS budget on: a measured job only within the pool's room left; a member's also
             // with no other member's job weighing anything (the lead's own never hold it back), the
             // lead's own with nothing weighing anything.)
-            // (A cold start's weight unknown to the coordinator: not counted.)
-            let w = |j: &Job| if j.cold { 0 } else { j.nas };
+            // (Every job at its true weight, a cold start's too: the coordinator weighs a cold NAS
+            // step's at the whole, task #499 review.)
+            let w = |j: &Job| j.nas;
             let pool_nas: u32 = running.iter().flatten().map(w).sum();
             let members_nas: u32 = running.iter().skip(1).flatten().map(w).sum();
             let heaviest = running.iter().flatten().map(w).max().unwrap_or(0);
@@ -681,10 +684,13 @@ fn run_with(cfg: &Cfg, reserve: bool) -> Result<Run, String> {
                     let Granted::Job { step, targets, .. } = g.work else {
                         return Err("a task granted".into());
                     };
-                    // (Run with the threads granted it, as the agent runs it.)
-                    let e = out.granted.entry(step.clone()).or_insert((g.threads, g.threads));
-                    *e = (e.0.min(g.threads), e.1.max(g.threads));
-                    let ts = targets.into_iter().map(|t| t.0).collect();
+                    // (Run with the threads granted it, as the agent runs it; a measured job's noted:
+                    // a cold start's may be the whole Mac, task #499 review.)
+                    let ts: Vec<String> = targets.into_iter().map(|t| t.0).collect();
+                    if measured(&step, &ts).is_some() {
+                        let e = out.granted.entry(step.clone()).or_insert((g.threads, g.threads));
+                        *e = (e.0.min(g.threads), e.1.max(g.threads));
+                    }
                     out.member_steps.insert(step.clone());
                     let e = out.granted_disk.entry(step.clone()).or_default();
                     *e = (*e).max(g.disk_mb);
@@ -816,10 +822,9 @@ mod tests {
         assert!(r.most[0] >= 2 && r.most[1] == 1, "{r:?}");
         assert!(r.ran.iter().all(|&n| n > 0), "{r:?}");
         assert!(r.lead_steps.contains("bld-fetch") && r.lead_steps.contains("catalog"), "{r:?}");
-        // The shared steps shared: the member takes some while the lead takes `pack` (with cold
-        // starts beside others since task #499, the lead takes the tiles' `pack` before the member
-        // asks), and the member never the lead's own steps.
-        assert!(r.lead_steps.contains("pack") && !r.member_steps.is_empty(), "{r:?}");
+        // The map tiles shared: the member takes `pack` jobs while the lead takes some too, and
+        // neither takes the lead's own steps from it.
+        assert!(r.lead_steps.contains("pack") && r.member_steps.contains("pack"), "{r:?}");
         assert!(!r.member_steps.contains("bld-fetch") && !r.member_steps.contains("catalog"), "{r:?}");
     }
 

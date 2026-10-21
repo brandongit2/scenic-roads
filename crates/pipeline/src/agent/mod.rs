@@ -11996,7 +11996,7 @@ mod tests {
 
     /// Every job of the lead's by grant (task #244, docs/pool.md §7.2): its plan offered through its
     /// own coordinator, its own steps (not offered to every member) granted to it alone, whole, and
-    /// packed by their measures as a member's are: a cold start by its provisional need; a measured
+    /// packed by their measures as a member's are: a step never measured alone, nothing beside it; a measured
     /// job beside another only when both fit this Mac's limit and its disk room; each started in a
     /// slot of its own (its scratch, and its worker in the history, its slot's). A member asking
     /// for the lead's steps gets none; nothing starts here without a grant.
@@ -12053,14 +12053,11 @@ mod tests {
         // Nothing starts without a grant.
         assert!(!a.try_start_said(0, job("labels"), &cond, Some(&root), &mut w));
         assert!(w.iter().any(|w| w.why.contains("not granted")), "{w:?}");
-        // Cold starts (labels and items never measured): by their provisional needs (task #499),
-        // the two beside each other within the 12 GB.
+        // A cold start of a step never measured (labels): alone, nothing beside it.
         let plan = [job("labels"), job("items")];
-        assert!(lead_start(&mut a, &plan, &cond, &root, &mut w).contains(&0), "{w:?}");
-        lead_start(&mut a, &plan, &cond, &root, &mut w);
-        let mut r = running(&a);
-        r.sort();
-        assert_eq!(r, ["items items", "labels labels"]);
+        assert_eq!(lead_start(&mut a, &plan, &cond, &root, &mut w), [0], "{w:?}");
+        assert!(lead_start(&mut a, &plan, &cond, &root, &mut w).is_empty());
+        assert_eq!(running(&a), ["labels labels"]);
         // A member asking for the lead's steps: none of them.
         let m1 = crate::coord::client::Client::at(
             vec![format!("http://127.0.0.1:{port}")],

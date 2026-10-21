@@ -94,7 +94,8 @@ pub struct Cost {
 }
 
 /// What a Mac runs at a moment of the run (`run`'s `snap`): its room, jobs and their memory and
-/// packed cores, when its last job started, and the steps under way anywhere.
+/// packed cores, whether one is a cold start, when its last job started, and the steps under way
+/// anywhere.
 #[derive(Default)]
 struct Snap {
     room: MacRoom,
@@ -102,6 +103,8 @@ struct Snap {
     jobs: usize,
     mem_mb: u64,
     cores: u32,
+    /// A cold start among them.
+    cold: bool,
     last_start: f64,
     steps: std::collections::BTreeSet<String>,
 }
@@ -748,6 +751,17 @@ fn need_mb(c: &Cost) -> u64 {
     }
 }
 
+/// The cores an item counts for on a Mac of `total` cores (packed share `share`), as the coordinator
+/// packs (crate::coord's `need_cores`): its packed cores; a cold start's the whole Mac unless its
+/// step honours the threads it's granted (crate::coord::honours_threads).
+fn item_cores(step: &str, c: &Cost, share: u32, total: u32) -> u32 {
+    if !c.known && !crate::coord::honours_threads(step) {
+        total
+    } else {
+        crate::coord::packed_cores_of(step, c.cores, share)
+    }
+}
+
 /// One run through the work, each item's time `scale`d. Kept to about O(items × lanes): the items
 /// under way (`inflight`) held apart, each item's deps not yet done counted down as they end, each
 /// phase's items whose deps are done (`ready`) scanned in order (none at all while its Mac's room
@@ -880,7 +894,8 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
                 running_on[k] |= it.running;
                 sn.jobs += 1;
                 sn.mem_mb += need_mb(&it.cost);
-                sn.cores += crate::coord::packed_cores_of(&it.step, it.cost.cores, share);
+                sn.cores += item_cores(&it.step, &it.cost, share, room.cores.max(1));
+                sn.cold |= !it.cost.known;
             }
             // (A slot busy with a job no item is: its memory (its step's first target's peak), cores.)
             for k in 0..n {
@@ -902,14 +917,15 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         let room_ok = |items: &[Item], i: usize| -> bool {
             let Some(sn) = &sn else { return true };
             let it = &items[i];
-            if !it.cost.known && sn.steps.contains(&it.step) {
+            // (One cold start on a Mac at a time.)
+            if !it.cost.known && (sn.steps.contains(&it.step) || sn.cold) {
                 return false;
             }
             if sn.room.mem_mb > 0 && sn.mem_mb + need_mb(&it.cost) > sn.room.mem_mb && (it.cost.known || sn.jobs > 0) {
                 return false;
             }
             if sn.jobs > 0
-                && sn.cores + crate::coord::packed_cores_of(&it.step, it.cost.cores, sn.share) > sn.room.cores.max(1)
+                && sn.cores + item_cores(&it.step, &it.cost, sn.share, sn.room.cores.max(1)) > sn.room.cores.max(1)
             {
                 return false;
             }
@@ -2028,9 +2044,10 @@ mod tests {
                 .collect();
             let jobs = on.len() + busy.len();
             if !items[i].cost.known
-                && items
-                    .iter()
-                    .any(|it| it.step == items[i].step && it.by.is_some() && it.from <= t + 1e-9 && it.end > t + 1e-9)
+                && (on.iter().any(|it| !it.cost.known)
+                    || items.iter().any(|it| {
+                        it.step == items[i].step && it.by.is_some() && it.from <= t + 1e-9 && it.end > t + 1e-9
+                    }))
             {
                 return false;
             }
@@ -2039,19 +2056,18 @@ mod tests {
             if room.mem_mb > 0 && mem + need_mb(&items[i].cost) > room.mem_mb && (items[i].cost.known || jobs > 0) {
                 return false;
             }
-            let cores: u32 =
-                on.iter().map(|it| crate::coord::packed_cores_of(&it.step, it.cost.cores, share)).sum::<u32>()
-                    + busy
-                        .iter()
-                        .map(|&k| {
-                            inp.machines[k]
-                                .running
-                                .as_ref()
-                                .map_or(share, |(st, _)| crate::coord::packed_cores_of(st, None, share))
-                        })
-                        .sum::<u32>();
+            let cores: u32 = on.iter().map(|it| item_cores(&it.step, &it.cost, share, room.cores.max(1))).sum::<u32>()
+                + busy
+                    .iter()
+                    .map(|&k| {
+                        inp.machines[k]
+                            .running
+                            .as_ref()
+                            .map_or(share, |(st, _)| crate::coord::packed_cores_of(st, None, share))
+                    })
+                    .sum::<u32>();
             if jobs > 0
-                && cores + crate::coord::packed_cores_of(&items[i].step, items[i].cost.cores, share) > room.cores.max(1)
+                && cores + item_cores(&items[i].step, &items[i].cost, share, room.cores.max(1)) > room.cores.max(1)
             {
                 return false;
             }
