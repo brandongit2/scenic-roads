@@ -1,8 +1,9 @@
 //! The Synology's own figures over SNMPv3 (docs/pool.md §7.7, task #534): the one reader of them,
 //! for the NAS budget's closed loop (crate::budget::nas::Loop) and the build page's NAS figures
 //! (task #517). Polled by the lead alone. The keys (`NAS_SNMP_USER`, `NAS_SNMP_AUTH`) are read
-//! from the project's `inputs/keys.env` (git-ignored copies in each Mac's `data/keys.env`), passed
-//! to `/usr/bin/snmpget` and never logged or printed.
+//! from the project's `inputs/keys.env` (git-ignored copies in each Mac's `data/keys.env`), handed
+//! to `/usr/bin/snmpget` in a private config file (`Session`), never on its command line, and
+//! never logged or printed.
 
 use std::path::Path;
 use std::time::Duration;
@@ -46,29 +47,88 @@ pub fn read_keys(root: &Path) -> Option<Keys> {
     parse_keys(&std::fs::read_to_string(root.join(KEYS)).ok()?)
 }
 
-/// Asks the NAS for `oids` (their values in order, as `snmpget -Oqv` prints them).
-pub fn get(keys: &Keys, oids: &[&str]) -> std::io::Result<Vec<String>> {
-    let mut cmd = store::spawn::command("/usr/bin/snmpget");
-    cmd.args(["-v3", "-l", "authNoPriv", "-a", "SHA", "-Oqv", "-r", "0"])
-        .args(["-t", &TIMEOUT.as_secs().to_string()])
-        .args(["-u", &keys.user, "-A", &keys.auth, HOST])
-        .args(oids);
-    let out = store::spawn::output(&mut cmd)?;
-    if !out.status.success() {
-        // (Its stderr names no key; kept short.)
-        let e = String::from_utf8_lossy(&out.stderr);
-        return Err(std::io::Error::other(format!("snmpget: {}", e.lines().next().unwrap_or("failed"))));
-    }
-    let v: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string()).collect();
-    if v.len() != oids.len() {
-        return Err(std::io::Error::other(format!("snmpget: {} answers for {} asked", v.len(), oids.len())));
-    }
-    Ok(v)
+/// How long a poll may run at all before it's killed (snmpget's own timeout doesn't cover the
+/// host's mDNS lookup).
+pub const KILL: Duration = Duration::from_secs(8);
+
+/// A session's keys in an `snmp.conf` of its own (0600, in a 0700 folder under the temp folder,
+/// `SNMPCONFPATH`), so the auth key is never in a command line; removed when dropped. One per
+/// lead's coordinator, made again only when the keys change. `~/.snmp` is never touched.
+pub struct Session {
+    keys: Keys,
+    dir: std::path::PathBuf,
 }
 
-/// Each disk's busy share now (%).
-pub fn disk_busy(keys: &Keys) -> std::io::Result<Vec<f64>> {
-    parse_busy(&get(keys, &DISK_BUSY)?)
+impl Session {
+    pub fn new(keys: Keys) -> std::io::Result<Session> {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let dir = std::env::temp_dir().join(format!("scenic-snmp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+        let s = Session { keys, dir };
+        let mut f =
+            std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(s.dir.join("snmp.conf"))?;
+        write!(
+            f,
+            "defSecurityName {}\ndefSecurityLevel authNoPriv\ndefAuthType SHA\ndefAuthPassphrase {}\n",
+            s.keys.user, s.keys.auth
+        )?;
+        Ok(s)
+    }
+
+    /// Whether this session was made from `k`.
+    pub fn is_for(&self, k: &Keys) -> bool {
+        &self.keys == k
+    }
+
+    /// Asks the NAS for `oids` (their values in order, as `snmpget -Oqv` prints them).
+    pub fn get(&self, oids: &[&str]) -> std::io::Result<Vec<String>> {
+        use std::io::Read;
+        let mut cmd = store::spawn::command("/usr/bin/snmpget");
+        cmd.args(["-v3", "-Oqv", "-r", "0", "-t", &TIMEOUT.as_secs().to_string(), HOST])
+            .args(oids)
+            .env("SNMPCONFPATH", &self.dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = store::spawn::spawn(&mut cmd)?;
+        let t = std::time::Instant::now();
+        let status = loop {
+            if let Some(s) = child.try_wait()? {
+                break s;
+            }
+            if t.elapsed() >= KILL {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::other(format!("snmpget: no answer in {} s", KILL.as_secs())));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let (mut out, mut err) = (String::new(), String::new());
+        child.stdout.take().map(|mut o| o.read_to_string(&mut out));
+        child.stderr.take().map(|mut e| e.read_to_string(&mut err));
+        if !status.success() {
+            // (Its stderr names no key; kept short.)
+            return Err(std::io::Error::other(format!("snmpget: {}", err.lines().next().unwrap_or("failed"))));
+        }
+        let v: Vec<String> = out.lines().map(|l| l.trim().to_string()).collect();
+        if v.len() != oids.len() {
+            return Err(std::io::Error::other(format!("snmpget: {} answers for {} asked", v.len(), oids.len())));
+        }
+        Ok(v)
+    }
+
+    /// Each disk's busy share now (%).
+    pub fn disk_busy(&self) -> std::io::Result<Vec<f64>> {
+        parse_busy(&self.get(&DISK_BUSY)?)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 fn parse_busy(v: &[String]) -> std::io::Result<Vec<f64>> {
@@ -88,6 +148,22 @@ mod tests {
         assert!(!format!("{k:?}").contains("secret"));
         assert!(parse_keys("NAS_SNMP_USER=u\n").is_none());
         assert!(parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH=\n").is_none());
+    }
+
+    /// A session's config file is private and gone when it's dropped.
+    #[test]
+    fn a_sessions_config_is_private_and_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let k = parse_keys("NAS_SNMP_USER=u\nNAS_SNMP_AUTH=secret\n").unwrap();
+        let s = Session::new(k.clone()).unwrap();
+        let f = s.dir.join("snmp.conf");
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(&s.dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert!(std::fs::read_to_string(&f).unwrap().contains("defAuthPassphrase secret"));
+        assert!(s.is_for(&k));
+        let dir = s.dir.clone();
+        drop(s);
+        assert!(!dir.exists());
     }
 
     #[test]

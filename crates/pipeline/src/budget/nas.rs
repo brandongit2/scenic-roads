@@ -19,10 +19,11 @@
 //!   one by one, and removes the rest. The coordinator probes every `EVERY_S`, whatever the switch
 //!   says, and takes the best of the last `KEEP_S`'s probes (`Probes`): a probe run while the build
 //!   loads the NAS measures what's left, so the best is the nearest to the whole.
-//! - **The closed loop** (`Loop`, task #534): every 10 s the coordinator reads the NAS's own disks'
-//!   busy shares (crate::budget::snmp) and scales the limits by a gain kept under the owner's
-//!   target (`Target`, `scenic nas-target`, by default `DEFAULT_TARGET_PCT`), whatever loads the
-//!   NAS, the build or not.
+//! - **The gate on the NAS's own load** (`Loop`, task #534): every 10 s the coordinator reads the
+//!   NAS's own disks' busy shares (crate::budget::snmp); while the busiest, smoothed, is over the
+//!   owner's target (`Target`, `scenic nas-target`, by default `DEFAULT_TARGET_PCT`), whatever
+//!   loads the NAS, the build or not, no new job that weighs anything goes but beside nothing that
+//!   weighs anything (`Limits::open`).
 //! - **Downloads**: a job of a fetching step (crate::agent::steps::Kind::Fetch) counts one; the
 //!   switch's `downloads <n>` caps them pool-wide (no cap without it).
 
@@ -97,62 +98,55 @@ pub fn set_target(root: &Path, pct: Option<u32>, by: &str) -> anyhow::Result<Opt
     Ok(Some(t))
 }
 
-/// The closed loop on the NAS's own disk load (task #534): the probed limits scaled by `gain`,
-/// lowered while the busiest disk (smoothed) is over the target, raised back toward 1 once it's
-/// `BAND` under it. Scaled limits make every job weigh more, the running ones too, so a NAS
-/// over its target takes no new job that weighs anything until the load falls (the alone rules
-/// stand: a job beside nothing that weighs anything still goes).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// The gate on the NAS's own disk load (task #534): the busiest disk's busy share, smoothed,
+/// against the owner's target. Over it, the budget is held (`Limits::held`): no new job that
+/// weighs anything is granted but beside nothing that weighs anything (`Limits::open`); the
+/// weights and the room are as the probes' limits give them, so a held NAS never admits what an
+/// unheld one refuses. Nothing to wind up: it holds exactly while the load is over the target.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Loop {
-    pub gain: f64,
-    /// The busiest disk's busy share, smoothed (%; None: not read yet).
+    /// The busiest disk's busy share, smoothed (%; None: not read, the gate open).
     pub load: Option<f64>,
+    /// The target it was last read against (%).
+    pub target: u32,
 }
 
-/// The loop's gain's floor, its steps down and up per reading, the smoothing's weight of a new
-/// reading, and the band under the target the load must fall below before the gain rises.
-pub const GAIN_MIN: f64 = 0.25;
-pub const GAIN_DOWN: f64 = 0.9;
-pub const GAIN_UP: f64 = 1.05;
+/// The smoothing's weight of a new reading (one each 10 s: about half a minute's memory, so one
+/// busy second doesn't hold the pool, nor one quiet one open it).
 pub const SMOOTH: f64 = 0.3;
-pub const BAND: f64 = 10.0;
-
-impl Default for Loop {
-    fn default() -> Self {
-        Loop { gain: 1.0, load: None }
-    }
-}
 
 impl Loop {
     /// One reading of the disks' busy shares (%) against the target `pct`.
     pub fn read(&mut self, busy: &[f64], pct: u32) {
         let Some(now) = busy.iter().copied().filter(|b| b.is_finite()).reduce(f64::max) else { return };
-        let load = self.load.map_or(now, |l| l + SMOOTH * (now - l));
-        self.load = Some(load);
-        if load > pct as f64 {
-            self.gain = (self.gain * GAIN_DOWN).max(GAIN_MIN);
-        } else if load < pct as f64 - BAND {
-            self.gain = (self.gain * GAIN_UP).min(1.0);
-        }
+        self.load = Some(self.load.map_or(now, |l| l + SMOOTH * (now - l)));
+        self.target = pct;
     }
 
-    /// No reading to be had (no keys, the NAS not answering): the probe's limits alone.
+    /// No reading to be had (no keys, the NAS not answering): the gate open, the probes' limits
+    /// alone.
     pub fn lost(&mut self) {
         *self = Loop::default();
+    }
+
+    /// Whether the load is over the target.
+    pub fn held(&self) -> bool {
+        self.load.is_some_and(|l| l > self.target as f64)
+    }
+
+    /// Why the budget is held, for the lead's waiting lines (None: not held).
+    pub fn why(&self) -> Option<String> {
+        let l = self.load.filter(|_| self.held())?;
+        Some(format!("held by NAS load ({l:.0} % > target {} %)", self.target))
     }
 }
 
 impl Limits {
-    /// The limits scaled by the loop's gain (the downloads' cap as it was).
-    pub fn scaled(self, g: f64) -> Limits {
-        Limits {
-            bytes_s: self.bytes_s * g,
-            creates_s: self.creates_s * g,
-            listed_s: self.listed_s * g,
-            stats_s: self.stats_s * g,
-            deletes_s: self.deletes_s * g,
-            downloads: self.downloads,
-        }
+    /// The gate (`Loop`) for a job of weight `w` beside leased jobs weighing `running`: open
+    /// unless held, and a held one still lets through what weighs nothing or goes beside nothing
+    /// that weighs anything. Only ever narrows the `fits*` rules.
+    pub fn open(&self, running: u32, w: u32) -> bool {
+        !self.held || w == 0 || running == 0
     }
 }
 
@@ -214,6 +208,8 @@ pub struct Limits {
     pub stats_s: f64,
     pub deletes_s: f64,
     pub downloads: Option<usize>,
+    /// The NAS's own load over the owner's target (`Loop::held`): the gate shut (`open`).
+    pub held: bool,
 }
 
 /// A target's or job's measured NAS rate (crate::needs::Book::nas): bytes and files made, and its
@@ -322,6 +318,7 @@ impl Probes {
             stats_s: best(|p| p.stats_s),
             deletes_s: best(|p| p.deletes_s),
             downloads,
+            held: false,
         })
     }
 }
@@ -528,31 +525,53 @@ mod tests {
         assert!(Limits::fits_own(0, 1000) && !Limits::fits_own(1, 1000), "the lead's own: within the whole, or alone");
     }
 
-    /// The loop lowers the gain while the busiest disk is over the target, to its floor at most,
-    /// holds it within the band, and raises it back to 1 below it; lost, the probes' limits alone.
+    /// The gate holds while the busiest disk, smoothed, is over the target; lost, it's open.
     #[test]
-    fn the_loop_keeps_the_nas_under_its_target() {
+    fn the_gate_holds_while_the_nas_is_over_its_target() {
         let mut l = Loop::default();
+        assert!(!l.held() && l.why().is_none(), "not read: open");
         l.read(&[60.0, 95.0, 70.0], 85);
-        assert_eq!((l.load, l.gain), (Some(95.0), GAIN_DOWN), "the busiest disk counts");
-        for _ in 0..100 {
-            l.read(&[99.0], 85);
+        assert_eq!(l.load, Some(95.0), "the busiest disk counts");
+        assert!(l.held());
+        assert_eq!(l.why().unwrap(), "held by NAS load (95 % > target 85 %)");
+        l.read(&[70.0], 85);
+        assert!(l.held(), "one quieter reading doesn't open it: {:?}", l.load);
+        for _ in 0..10 {
+            l.read(&[70.0], 85);
         }
-        assert_eq!(l.gain, GAIN_MIN, "never below its floor");
-        let mut held = l;
-        held.load = Some(80.0);
-        held.read(&[80.0], 85);
-        assert_eq!(held.gain, GAIN_MIN, "within the band: held");
-        for _ in 0..200 {
-            l.read(&[40.0], 85);
-        }
-        assert_eq!(l.gain, 1.0, "never above the probes' limits");
+        assert!(!l.held());
+        l.read(&[99.0], 85);
         l.lost();
         assert_eq!(l, Loop::default());
-        let lim = Limits { bytes_s: 100e6, creates_s: 40.0, downloads: Some(2), ..Default::default() };
-        let r = Rate { bytes_s: 25e6, ..Default::default() };
-        assert_eq!(lim.scaled(0.5).weight(r), 500, "a lowered gain: every job weighs more");
-        assert_eq!(lim.scaled(0.5).downloads, Some(2));
+    }
+
+    /// Admission is monotonic in the load: held, the gate never admits what open refuses (the
+    /// weights and room untouched, so none of the `fits*` rules' "weighs the whole" ways opens).
+    #[test]
+    fn a_held_nas_never_admits_what_an_open_one_refuses() {
+        let open = Limits::default();
+        let held = Limits { held: true, ..Default::default() };
+        let ws = [0, 1, 150, 450, 700, 999, 1000];
+        for &running in &ws {
+            for &members in &ws {
+                for &w in &ws {
+                    for &heaviest in &ws {
+                        for waited in [false, true] {
+                            let job = |l: &Limits| {
+                                Limits::fits_job(members, running, heaviest, w, waited) && l.open(running, w)
+                            };
+                            let own = |l: &Limits| {
+                                Limits::fits_own_job(running, members, heaviest, w, waited) && l.open(running, w)
+                            };
+                            assert!(!job(&held) || job(&open));
+                            assert!(!own(&held) || own(&open));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(!held.open(450, 150) && held.open(0, 1000) && held.open(450, 0));
+        assert!(open.open(450, 150));
     }
 
     /// The owner's target: set, read, bounded and cleared under the project folder.

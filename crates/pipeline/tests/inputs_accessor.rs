@@ -83,7 +83,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/agent/mod.rs", "gate_work", "\"inputs-listing\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the drop box"),
     ("crates/pipeline/src/agent/mod.rs", "input_digests", "\"inputs/keys.env\"", "inputs/keys.env's key names (not an input, §2)"),
     ("crates/pipeline/src/budget/snmp.rs", "KEYS", "\"inputs/keys.env\"", "inputs/keys.env's SNMP keys for the lead's NAS load reads (not an input, §2)"),
-    ("crates/pipeline/src/offload.rs", "offer","\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
+    ("crates/pipeline/src/offload.rs", "offer", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/pipeline/src/offload.rs", "run_task", "spec[\"inputs\"]", "a task's input files (its spec's \"inputs\"), not a drop box"),
     ("crates/server/src/regions.rs", "nas", "\"inputs/regions\"", "the Regions panel: the owner's tool (§2), its writes and the list it edits"),
     ("crates/server/src/descriptions.rs", "load", "\"descriptions: {} from {} files\"", "the map server's descriptions: its log's words, not a path"),

@@ -348,8 +348,8 @@ pub struct Shared {
     /// the lead's slots' ramp holds and its stretch starts again (crate::agent's `tend_ramp`); one
     /// alone (a hiccup every few hours, probes being half an hour apart) is neither.
     pub nas_failures: u32,
-    /// The closed loop on the NAS's own disk load (crate::budget::nas::Loop): its gain scales
-    /// `nas` and `nas_own` from the probes' best; its load is the busiest disk's, smoothed.
+    /// The gate on the NAS's own disk load (crate::budget::nas::Loop): held, `nas` and `nas_own`
+    /// say so (`Limits::held`); read by the lead's waiting lines (`Coordinator::nas_held`).
     pub nas_loop: crate::budget::nas::Loop,
     /// This Mac's member name, its own jobs' leases held under it (`Coordinator::ask_own`): the NAS
     /// budget lets a member's job go past the whole while the lead's own alone hold weight.
@@ -1219,7 +1219,8 @@ impl Shared {
                 crate::budget::nas::Limits::fits_quiet(running, w) && (w > 0 || !self.nas_unknown_running(&nw, now))
             } else {
                 crate::budget::nas::Limits::fits_own_job(running, own, heaviest, w, waited)
-            } && (alone || self.nas_reserve_ok(&nw, now, &o.step, &ts, running, w));
+            } && nw.limits.open(running, w)
+                && (alone || self.nas_reserve_ok(&nw, now, &o.step, &ts, running, w));
             if !fits && !alone && !quiet {
                 for t in &ts {
                     self.nas_wait(&o.step, t, now);
@@ -1285,6 +1286,11 @@ impl Shared {
         let nas_fits = |t: &str| {
             nas.as_ref().is_none_or(|(nw, running, members, _, most)| {
                 let w = nw.weight(&o.step, t);
+                // (The NAS's own load over the owner's target: nothing new that weighs anything
+                // but beside nothing, crate::budget::nas::Loop.)
+                if !nw.limits.open(*running, w) {
+                    return false;
+                }
                 // (Room held for a target aged in the budget left to it: `nas_reserved`.)
                 if !self.nas_reserve_ok(nw, now, &o.step, &[t.to_string()], *running, w) {
                     return false;
@@ -2483,6 +2489,12 @@ impl Coordinator {
 
     /// The targets waiting on the NAS budget alone for longer than `NAS_WAIT_SAY_S` (passed over in
     /// the last two minutes): (step, target, minutes), for the status's waiting lines.
+    /// Why the NAS budget is held by the NAS's own load, if it is ("held by NAS load (91 % >
+    /// target 85 %)", crate::budget::nas::Loop::why).
+    pub fn nas_held(&self) -> Option<String> {
+        self.shared.lock().unwrap().nas_loop.why()
+    }
+
     pub fn nas_waits(&self) -> Vec<(String, String, u64)> {
         let s = self.shared.lock().unwrap();
         let now = s.now();
@@ -3298,9 +3310,8 @@ fn app_when(v: &str) -> String {
 /// The NAS budget's probes (crate::budget::nas), on a thread of their own while the coordinator
 /// runs: while the NAS's project folder is known (`root`), each 10 s the switch is read; on, the NAS
 /// is probed every `EVERY_S` (in a folder of this process's, removed after) and the limits set to
-/// the best of the last day's probes, scaled by the closed loop on the NAS's own disk load read
-/// each round (nas::Loop, against the owner's target); off, the limits are let go. A probe that
-/// fails leaves them.
+/// the best of the last day's probes, held shut while the NAS's own disk load read each round is
+/// over the owner's target (nas::Loop); off, the limits are let go. A probe that fails leaves them.
 #[cfg(not(target_os = "wasi"))]
 fn nas_prober(
     shared: Arc<Mutex<Shared>>,
@@ -3312,6 +3323,8 @@ fn nas_prober(
     let run = move || {
         let mut probes = nas::Probes::default();
         let mut nas_loop = nas::Loop::default();
+        // (Its config file removed when this thread ends: the lead stood down or stopped.)
+        let mut session: Option<crate::budget::snmp::Session> = None;
         let mut last: Option<std::time::Instant> = None;
         let mut cleaned = false;
         while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
@@ -3352,20 +3365,27 @@ fn nas_prober(
                         }
                         // (The NAS's own disk load against the owner's target, read outside the
                         // lock: up to snmp::TIMEOUT.)
-                        match crate::budget::snmp::read_keys(&r).map(|k| crate::budget::snmp::disk_busy(&k)) {
+                        let keys = crate::budget::snmp::read_keys(&r);
+                        if keys.as_ref().is_none_or(|k| !session.as_ref().is_some_and(|s| s.is_for(k))) {
+                            session = keys.and_then(|k| {
+                                crate::budget::snmp::Session::new(k)
+                                    .inspect_err(|e| eprintln!("coordinator: no SNMP session: {e}"))
+                                    .ok()
+                            });
+                        }
+                        match session.as_ref().map(|s| s.disk_busy()) {
                             Some(Ok(busy)) => nas_loop.read(&busy, nas::target_pct(nas::read_target(&r).as_ref())),
                             Some(Err(e)) => {
                                 if nas_loop.load.is_some() {
-                                    eprintln!(
-                                        "coordinator: the NAS's disk load not read ({e}): the probes' limits alone"
-                                    );
+                                    eprintln!("coordinator: the NAS's disk load not read ({e}): the gate open");
                                 }
                                 nas_loop.lost();
                             }
                             None => nas_loop.lost(),
                         }
-                        let g = nas_loop.gain;
-                        let own = probes.limits(sw.as_ref().and_then(|w| w.downloads)).map(|l| l.scaled(g));
+                        let held = nas_loop.held();
+                        let gate = |l: nas::Limits| nas::Limits { held, ..l };
+                        let own = probes.limits(sw.as_ref().and_then(|w| w.downloads)).map(gate);
                         let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
                         s.nas_loop = nas_loop;
                         s.nas_own = own;
@@ -3374,7 +3394,7 @@ fn nas_prober(
                             Some(false) => s.nas_failures = 0,
                             None => {}
                         }
-                        s.nas = sw.and_then(|w| probes.limits(w.downloads)).map(|l| l.scaled(g));
+                        s.nas = sw.and_then(|w| probes.limits(w.downloads)).map(gate);
                     }
                 }
             }
@@ -7250,6 +7270,7 @@ mod tests {
             stats_s: 500.0,
             deletes_s: 40.0,
             downloads: None,
+            held: false,
         };
         {
             let mut s = c.shared.lock().unwrap();
@@ -7343,6 +7364,7 @@ mod tests {
             stats_s: 500.0,
             deletes_s: 40.0,
             downloads: None,
+            held: false,
         };
         {
             let mut s = c.shared.lock().unwrap();

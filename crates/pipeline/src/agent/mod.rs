@@ -992,14 +992,20 @@ pub struct Notice {
 
 /// The waiting lines for targets the lead's NAS budget has held back (`waits`: step, target,
 /// minutes; coord::Coordinator::nas_waits), once each: those already in `waiting` (a plan's lines,
-/// kept and said again between plans) replaced (task #444: each was listed twice).
-fn nas_wait_lines(waiting: &mut Vec<Waiting>, waits: Vec<(String, String, u64)>) {
+/// kept and said again between plans) replaced (task #444: each was listed twice). While the
+/// budget is held by the NAS's own load (`held`, coord::Coordinator::nas_held), a line says so,
+/// and each target's says it too.
+fn nas_wait_lines(waiting: &mut Vec<Waiting>, waits: Vec<(String, String, u64)>, held: Option<String>) {
     const WHY: &str = "for room in the pool's NAS budget (docs/pool.md §7.7)";
     waiting.retain(|w| !w.why.ends_with(WHY));
+    let by = held.as_ref().map_or(String::new(), |h| format!(", {h},"));
+    if let Some(h) = &held {
+        waiting.push(Waiting { what: "the NAS".into(), why: format!("{h}: new jobs wait {WHY}"), step: None });
+    }
     for (step, t, min) in waits {
         waiting.push(Waiting {
             what: format!("{step} {t}"),
-            why: format!("waiting {min} min {WHY}"),
+            why: format!("waiting {min} min{by} {WHY}"),
             step: Some(step),
         });
     }
@@ -4211,7 +4217,11 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building".into(), why: why.clone() });
         }
         // (The lead's coordinator: targets its NAS budget has held back over half an hour.)
-        nas_wait_lines(&mut waiting, self.coord.as_ref().map(|c| c.nas_waits()).unwrap_or_default());
+        nas_wait_lines(
+            &mut waiting,
+            self.coord.as_ref().map(|c| c.nas_waits()).unwrap_or_default(),
+            self.coord.as_ref().and_then(|c| c.nas_held()),
+        );
         // Leading: this Mac's own agent asks its coordinator for work as a member asks the lead's
         // (`lead_grants`), each loop a slot is free. (A trim, a clear or a freeing toward the room
         // target under way: jobs start meanwhile, what they use held, store::cachefile.)
@@ -10818,11 +10828,17 @@ mod tests {
     #[test]
     fn nas_wait_lines_once_each() {
         let mut w = vec![Waiting { what: "other".into(), why: "x".into(), step: None }];
-        nas_wait_lines(&mut w, vec![("depth-lo".into(), "3/1/3".into(), 45)]);
-        nas_wait_lines(&mut w, vec![("depth-lo".into(), "3/1/3".into(), 48)]);
+        nas_wait_lines(&mut w, vec![("depth-lo".into(), "3/1/3".into(), 45)], None);
+        nas_wait_lines(&mut w, vec![("depth-lo".into(), "3/1/3".into(), 48)], None);
         assert_eq!(w.len(), 2, "{w:?}");
         assert!(w[1].why.starts_with("waiting 48 min") && w[1].what == "depth-lo 3/1/3", "{w:?}");
-        nas_wait_lines(&mut w, Vec::new());
+        // (Held by the NAS's own load: a line for the NAS, and each target's says why.)
+        let held = Some("held by NAS load (91 % > target 85 %)".to_string());
+        nas_wait_lines(&mut w, vec![("depth-lo".into(), "3/1/3".into(), 50)], held.clone());
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert!(w[1].what == "the NAS" && w[1].why.starts_with("held by NAS load (91 %"), "{w:?}");
+        assert!(w[2].why.starts_with("waiting 50 min, held by NAS load"), "{w:?}");
+        nas_wait_lines(&mut w, Vec::new(), None);
         assert_eq!(w.len(), 1, "granted: gone");
     }
     use super::*;
