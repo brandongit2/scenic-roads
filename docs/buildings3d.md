@@ -100,7 +100,7 @@ else. Building heights don't enter the roadside factor, the horizons or the view
 ### 2.6 Downloads
 
 `dem/bldfetch.py` (run by `bld-fetch`, §3.1) fetches whole files onto the NAS:
-- Overture's files with a row group meeting the coverage grown by 20 km (buildings and parts), into
+- Overture's files with a row group within 20 km of the coverage (buildings and parts), into
   `sources/overture/<release>/theme=buildings/type=<type>/`, with `buildings.json` and
   `footers.json.gz` (every row group's box, from the footers);
 - GHSL's 10° tiles meeting it, into `sources/ghsl/R2023A/`, with `index.json`.

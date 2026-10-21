@@ -5,15 +5,15 @@ has it, each fetched once:
   - Overture Maps' building and building-part files of one release (theme=buildings, type=building
     and type=building_part, GeoParquet on Overture's public S3 bucket, read anonymously over HTTPS)
     that hold a building within --margin-km of the coverage: a file is taken when one of its row
-    groups' boxes (its footer's bbox statistics) meets the coverage grown by the margin. Into
+    groups' boxes (its footer's bbox statistics) comes within the margin of the coverage. Into
       sources/overture/<release>/theme=buildings/type=<type>/<file>   (the release's dot a dash,
                                                                        as sources/buildings/ has it)
     with sources/overture/<release>/buildings.json: the files here, each with its size, S3 ETag,
     rows and row groups' boxes, and the coverage they were chosen for; and footers.json.gz, every
     file of the release's row-group boxes (read once: a release never changes).
   - GHSL's building-height tiles (GHS-BUILT-H R2023A, ANBH: the average height of the buildings in
-    each 3 arcsec cell, epoch 2018, WGS84; EC JRC, CC BY 4.0) meeting the coverage grown by the
-    margin, as JRC's 10° zips. Into sources/ghsl/R2023A/<file>.zip, with index.json.
+    each 3 arcsec cell, epoch 2018, WGS84; EC JRC, CC BY 4.0) within the margin of the coverage,
+    as JRC's 10° zips. Into sources/ghsl/R2023A/<file>.zip, with index.json.
 
 The coverage is a GeoJSON file (--coverage: the agent's job writes it from the regions' accepted
 geometry, as the build reads it), or, by hand, the regions' osm: parts as the map's server has them
@@ -224,17 +224,35 @@ class Near:
     one of 98 k polygons: each polygon's 20 km ring overlapping thousands of others), task #493."""
 
     def __init__(self, polys: list, margin_km: float):
-        from shapely import STRtree
+        from shapely import STRtree, make_valid
+        # (An invalid polygon, a ring crossing itself, answers distances wrongly: made valid first,
+        # its parts kept, unlike buffer(0), which drops a bowtie's lobe.)
+        fixed = []
+        for g in polys:
+            if not g.is_valid:
+                g = make_valid(g)
+                fixed += [x for x in getattr(g, "geoms", [g]) if x.geom_type in ("Polygon", "MultiPolygon")]
+            else:
+                fixed.append(g)
+        polys = [x for g in fixed for x in getattr(g, "geoms", [g]) if not x.is_empty]
         self.polys, self.margin_km = polys, margin_km
         self.tree = STRtree(polys)
 
     def meets(self, w: float, s: float, e: float, n: float) -> bool:
         from shapely.geometry import box
         # Degrees of longitude shrink with latitude: the margin in degrees at the highest latitude
-        # within the margin of the box, so it's at least the margin everywhere near it.
-        lat = min(80.0, max(abs(s), abs(n)) + self.margin_km / 111.32)
-        d = self.margin_km / (111.32 * math.cos(math.radians(lat)))
-        return len(self.tree.query(box(w, s, e, n), predicate="dwithin", distance=d)) > 0
+        # within the margin of the box, so it's at least the margin everywhere near it. Near a pole
+        # (that latitude's circle shorter than the margin's reach) every longitude is near.
+        dlat = self.margin_km / 111.32
+        lat = max(abs(s), abs(n)) + dlat
+        c = math.cos(math.radians(min(lat, 90.0)))
+        dlon = self.margin_km / (111.32 * c) if c > 1e-9 else math.inf
+        if dlon >= 180.0:
+            return len(self.tree.query(box(-180.0, s - dlat, 180.0, n + dlat))) > 0
+        # (No wrap in the coordinates: the box also as it is a turn east and west, so a polygon at
+        # 179.9° meets a box at -179.9°.)
+        return any(len(self.tree.query(box(w + k, s, e + k, n), predicate="dwithin", distance=dlon)) > 0
+                   for k in (0.0, -360.0, 360.0))
 
 
 # ---- Overture --------------------------------------------------------------------------------------
@@ -666,7 +684,7 @@ def main() -> None:
         f"{'no cap' if args.max_mb_s <= 0 else f'at most {args.max_mb_s:g} MB/s'}")
     with phase("the coverage read", "mixed"):
         cov, what = coverage(args)
-    log(f"coverage: {len(what)} regions ({', '.join(what[:6])}{', …' if len(what) > 6 else ''}), grown {args.margin_km:g} km")
+    log(f"coverage: {len(what)} regions ({', '.join(what[:6])}{', …' if len(what) > 6 else ''}), files within {args.margin_km:g} km of it")
 
     jobs, ov_base, ov_cache, gh_base = [], None, {}, None
     if args.only in (None, "overture"):
