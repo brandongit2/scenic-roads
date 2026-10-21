@@ -7184,7 +7184,7 @@ impl Agent {
             waiting.push(Waiting {
                 step: Some("heritage-sites".into()),
                 what: steps::stage_title("sites").into(),
-                why: format!("the regions' units wait: {why}"),
+                why: format!("the regions' z6 tiles wait: {why}"),
             });
         }
         // Z6 tiles whose terrain can't be worked out now (a pack's index unread): they wait for it.

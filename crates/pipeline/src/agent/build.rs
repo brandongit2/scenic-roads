@@ -377,7 +377,7 @@ pub fn reach_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opti
         .then(|| Work { step: "reach".into(), targets: vec![("reach".into(), k)] })
 }
 
-/// The reach job's key: its version and the extracts, by content (a extract cut again changes it).
+/// The reach job's key: its version and the extracts, by content (an extract cut again changes it).
 pub fn reach_key(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
     let prefix = format!("sources/osm/{date}/pieces/");
     let pieces: Vec<&str> =
@@ -1173,7 +1173,7 @@ pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles
         if whole {
             Ok(json)
         } else {
-            Err(Unread("a slope piece's key, or the water or declared sources a terrain target reads".into()))
+            Err(Unread("a slope z6 tile's key, or the water or declared sources a terrain target reads".into()))
         }
     });
     match (made.into_inner(), kept) {
@@ -2114,8 +2114,8 @@ pub fn plan(
         work.extend(depth_work(cov, m, done, tiles));
         work.extend(backfill.iter().cloned());
         let why = match heritage_awaits_acceptance(cov, date, m, inputs) {
-            Some(r) => format!("the regions' units wait for the pass's heritage sites: {r}"),
-            None => "the regions' units wait for the pass's heritage sites, reaches or roadside buildings".into(),
+            Some(r) => format!("the regions' z6 tiles wait for the pass's heritage sites: {r}"),
+            None => "the regions' z6 tiles wait for the pass's heritage sites, reaches or roadside buildings".into(),
         };
         let publishing = PublishLine { why, ..Default::default() };
         return Plan { work, backfill, publishing, ..Default::default() };
@@ -2452,7 +2452,7 @@ pub fn plan(
         // (Nothing before a z6 tile is built, while the regions have work left: none of theirs to show
         // yet.)
         None if done.unit.is_empty() && !last_now => {
-            publishing.why = "nothing to publish until a unit is built".into();
+            publishing.why = "nothing to publish until a z6 tile is built".into();
         }
         None => {
             let chain = publish_chain(date, m, done, &pl, roots_held, low);
@@ -5266,7 +5266,7 @@ pub(crate) mod tests {
         // before a z6 tile is built).
         let p = plan(&BTreeMap::new());
         assert_eq!(steps(&p), ["unit", "slope", "trees"]);
-        assert_eq!(p.publishing.why, "nothing to publish until a unit is built");
+        assert_eq!(p.publishing.why, "nothing to publish until a z6 tile is built");
         assert_eq!(units(&p), ["6/28/16", "6/31/16", "6/29/16", "6/30/16"]);
         assert!(p.ready.is_empty());
         // a and c on the map already (as they are, or redrawn): b first, though it has more left.
